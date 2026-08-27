@@ -267,7 +267,9 @@ st.markdown(
       .st-key-history_home_nav div.stButton > button,
       .st-key-history_home_nav button,
       .st-key-camera_home_nav div.stButton > button,
-      .st-key-camera_home_nav button {
+      .st-key-camera_home_nav button,
+      .st-key-global_home_nav div.stButton > button,
+      .st-key-global_home_nav button {
         border: 2px solid #2F9E73 !important;
         background: rgba(47, 158, 115, .08) !important;
         color: inherit !important;
@@ -276,7 +278,9 @@ st.markdown(
       .st-key-history_home_nav div.stButton > button:hover,
       .st-key-history_home_nav button:hover,
       .st-key-camera_home_nav div.stButton > button:hover,
-      .st-key-camera_home_nav button:hover {
+      .st-key-camera_home_nav button:hover,
+      .st-key-global_home_nav div.stButton > button:hover,
+      .st-key-global_home_nav button:hover {
         background: rgba(47, 158, 115, .13) !important;
         border-color: #278663 !important;
       }
@@ -3681,6 +3685,18 @@ def render_home_button(label, page_name, key, ensure_trip=False):
         go_page(page_name)
 
 
+def render_global_bottom_home_button(page_name):
+    """Keep a full-width route to Home at the very bottom of major subpages."""
+    st.divider()
+    with st.container(key="global_home_nav"):
+        if st.button(
+            "トップページに戻る",
+            use_container_width=True,
+            key=f"global_bottom_home_{page_name}",
+        ):
+            go_page("home")
+
+
 def page_top(title, caption=""):
     c1, c2 = st.columns([1, 5], vertical_alignment="center")
     with c1:
@@ -5136,3 +5152,9 @@ elif page == "settings":
 else:
     st.session_state["main_page"] = "home"
     st.rerun()
+
+# Camera already has its Home button directly under the camera form. For the
+# other major pages, keep a consistent Home route at the absolute bottom even
+# when the page body returned early from one of its internal flows.
+if page in {"diary", "review", "settings"}:
+    render_global_bottom_home_button(page)
