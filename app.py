@@ -133,6 +133,18 @@ st.markdown(
         -webkit-box-orient: vertical;
         overflow: hidden !important;
       }
+      .st-key-diary_photo_nav div.stButton > button,
+      .st-key-diary_photo_nav button {
+        border: 2px solid #4A90E2 !important;
+        background: rgba(74, 144, 226, .08) !important;
+        color: inherit !important;
+        box-shadow: 0 0 0 2px rgba(74, 144, 226, .04) inset;
+      }
+      .st-key-diary_photo_nav div.stButton > button:hover,
+      .st-key-diary_photo_nav button:hover {
+        background: rgba(74, 144, 226, .13) !important;
+        border-color: #3B82C4 !important;
+      }
       .st-key-mobile_capture [data-testid="stFileUploaderDropzone"] {
         padding: 1rem;
         border-radius: 20px;
@@ -2492,8 +2504,13 @@ def confirm_photo_delete_dialog(trip_id, photo_id):
             st.rerun(scope="app")
 
 
-def render_diary_delete_controls(trip_id, photos, current_photo_id=None):
-    """Render the selected-photo delete button, then whole-day delete at the bottom."""
+def render_diary_delete_controls(
+    trip_id,
+    photos,
+    current_photo_id=None,
+    show_photo_navigation=False,
+):
+    """Render photo navigation/reset/delete controls and whole-day delete at the bottom."""
     st.divider()
 
     photo_ids = [p.get("id") for p in photos if p.get("id")]
@@ -2505,8 +2522,34 @@ def render_diary_delete_controls(trip_id, photos, current_photo_id=None):
             st.session_state[selected_key] = selected_photo_id
 
     if selected_photo_id:
-        photo_number = photo_ids.index(selected_photo_id) + 1
+        photo_index = photo_ids.index(selected_photo_id)
+        photo_number = photo_index + 1
         st.caption(f"対象：写真 {photo_number} / {len(photo_ids)}（上の一覧で選択できます）")
+
+        if show_photo_navigation:
+            has_next_photo = photo_index < len(photo_ids) - 1
+            nav_label = "次の写真へ" if has_next_photo else "前の画面に戻る"
+            with st.container(key="diary_photo_nav"):
+                if st.button(
+                    nav_label,
+                    use_container_width=True,
+                    key=f"diary_photo_nav_button_{trip_id}_{selected_photo_id}",
+                ):
+                    if has_next_photo:
+                        next_photo_id = photo_ids[photo_index + 1]
+                        state = st.session_state.get(f"reflection_state_{trip_id}")
+                        if isinstance(state, dict):
+                            open_diary_photo_talk(trip_id, next_photo_id, state)
+                        else:
+                            st.session_state[selected_key] = next_photo_id
+                            st.session_state[f"diary_talk_photo_{trip_id}"] = next_photo_id
+                        st.rerun()
+                    else:
+                        st.session_state.pop(f"diary_talk_photo_{trip_id}", None)
+                        if st.session_state.pop(f"diary_existing_photo_view_{trip_id}", False):
+                            st.session_state.pop(f"reflection_state_{trip_id}", None)
+                        st.rerun()
+
         if st.button(
             "↻ この画像の会話をリセット",
             use_container_width=True,
@@ -3698,7 +3741,7 @@ def page_diary():
         st.error("写真を読み込めませんでした。")
         with st.expander("保護者向け詳細"):
             st.code(str(exc))
-        render_diary_delete_controls(trip_id, photos, current_photo_id=pid)
+        render_diary_delete_controls(trip_id, photos, current_photo_id=pid, show_photo_navigation=True)
         return
 
     location_label = photo_location_label(photo)
@@ -3712,7 +3755,7 @@ def page_diary():
             item["done"] = False
             update_photo_reflection(pid, item.get("conversation", []), item.get("signals", {}), done=False)
             st.rerun()
-        render_diary_delete_controls(trip_id, photos, current_photo_id=pid)
+        render_diary_delete_controls(trip_id, photos, current_photo_id=pid, show_photo_navigation=True)
         return
 
     if not item.get("started"):
@@ -3773,7 +3816,7 @@ def page_diary():
             if st.session_state.pop(f"diary_existing_photo_view_{trip_id}", False):
                 st.session_state.pop(f"reflection_state_{trip_id}", None)
             st.rerun()
-        render_diary_delete_controls(trip_id, photos, current_photo_id=pid)
+        render_diary_delete_controls(trip_id, photos, current_photo_id=pid, show_photo_navigation=True)
         return
 
     render_conversation(item.get("conversation", []))
@@ -3840,7 +3883,7 @@ def page_diary():
             st.session_state.pop(f"reflection_state_{trip_id}", None)
         st.rerun()
 
-    render_diary_delete_controls(trip_id, photos, current_photo_id=pid)
+    render_diary_delete_controls(trip_id, photos, current_photo_id=pid, show_photo_navigation=True)
 
 
 # ============================================================
