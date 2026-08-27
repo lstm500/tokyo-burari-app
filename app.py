@@ -724,23 +724,31 @@ def download_photo(storage_path):
 
 
 def upload_photo(trip_id, image_bytes):
+    # Keep Storage upload as a raw binary body. In particular, do not send an
+    # x-upsert header for new files. This avoids current Storage edge cases
+    # where multipart/x-upsert requests can be rejected even for a fresh path.
     compressed = normalize_photo(image_bytes)
+    if not compressed:
+        raise ValueError("写真データが空です。")
+
     stamp = now_jst().strftime("%Y%m%d_%H%M%S_%f")
     path = f"{trip_id}/{stamp}_{uuid.uuid4().hex[:8]}.jpg"
-    file_obj = io.BytesIO(compressed)
-    file_obj.name = "photo.jpg"
+    client = supabase_client()
+
+    storage_saved = False
     try:
-        supabase_client().storage.from_(PHOTO_BUCKET).upload(
+        client.storage.from_(PHOTO_BUCKET).upload(
             path=path,
-            file=file_obj,
+            file=compressed,
             file_options={
                 "content-type": "image/jpeg",
                 "cache-control": "3600",
-                "upsert": "false",
             },
         )
+        storage_saved = True
+
         result = (
-            supabase_client()
+            client
             .table(PHOTO_TABLE)
             .insert(
                 {
@@ -755,12 +763,13 @@ def upload_photo(trip_id, image_bytes):
         )
         download_photo.clear()
         return (result.data or [None])[0]
-    except Exception:
-        try:
-            supabase_client().storage.from_(PHOTO_BUCKET).remove([path])
-        except Exception:
-            pass
-        raise
+    except Exception as exc:
+        if storage_saved:
+            try:
+                client.storage.from_(PHOTO_BUCKET).remove([path])
+            except Exception:
+                pass
+        raise RuntimeError(f"写真保存処理でエラーが発生しました: {exc}") from exc
 
 
 # ============================================================
