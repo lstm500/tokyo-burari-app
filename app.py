@@ -2129,10 +2129,47 @@ def diary_title_for_trip(trip, photos=None):
     return "ぶらり旅（場所未登録）"
 
 
+def unique_auto_diary_title(base_title, exclude_trip_id=None):
+    """Add 2, 3, ... inside the parentheses when an automatic diary title is already used."""
+    base_title = str(base_title or "").strip()
+    if not (base_title.startswith("ぶらり旅（") and base_title.endswith("）")):
+        return base_title
+
+    try:
+        rows = (
+            supabase_client()
+            .table(DIARY_TABLE)
+            .select("trip_id,title")
+            .execute()
+        ).data or []
+    except Exception:
+        # Title de-duplication must never prevent the diary itself from being shown/saved.
+        return base_title
+
+    used_titles = {
+        str(row.get("title") or "").strip()
+        for row in rows
+        if str(row.get("trip_id") or "") != str(exclude_trip_id or "")
+        and str(row.get("title") or "").strip()
+    }
+    if base_title not in used_titles:
+        return base_title
+
+    stem = base_title[:-1]
+    suffix = 2
+    while f"{stem}{suffix}）" in used_titles:
+        suffix += 1
+    return f"{stem}{suffix}）"
+
+
 def diary_display_title(diary, trip, photos=None):
-    """Prefer a saved/custom diary title, falling back to the automatic place title."""
+    """Prefer a saved/custom title; unsaved automatic titles are numbered when duplicated."""
     saved = str((diary or {}).get("title") or "").strip()
-    return saved or diary_title_for_trip(trip, photos=photos)
+    if saved:
+        return saved
+    trip_id = str((trip or {}).get("id") or "") or None
+    base_title = diary_title_for_trip(trip, photos=photos)
+    return unique_auto_diary_title(base_title, exclude_trip_id=trip_id)
 
 
 def update_diary_title(trip_id, title):
@@ -2428,10 +2465,14 @@ def save_diary(trip_id, title, diary_text, raw_conversation, ai_meta):
     existing = get_diary_for_trip(trip_id)
     trip = get_trip(trip_id) or {}
     # If the parent renamed a saved diary, recreating the diary must not overwrite
-    # that custom title with the automatically detected place name.
+    # that custom title. A newly created automatic title is de-duplicated as
+    # ぶらり旅（場所）, ぶらり旅（場所2）, ぶらり旅（場所3）, ...
     existing_title = str((existing or {}).get("title") or "").strip()
-    requested_title = str(title or "").strip()
-    fixed_title = existing_title or requested_title or diary_title_for_trip(trip)
+    if existing_title:
+        fixed_title = existing_title
+    else:
+        auto_title = diary_title_for_trip(trip)
+        fixed_title = unique_auto_diary_title(auto_title, exclude_trip_id=trip_id)
     payload = {
         "trip_id": trip_id,
         "title": fixed_title,
