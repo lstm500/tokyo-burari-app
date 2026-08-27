@@ -93,55 +93,152 @@ st.markdown(
         margin: .1rem .15rem .1rem 0;
         font-size: .85rem;
       }
-      .st-key-home_menu div.stButton > button,
-      .st-key-home_destination div.stButton > button {
-        width: 100% !important;
-        height: 7.6rem !important;
-        min-height: 7.6rem !important;
-        max-height: 7.6rem !important;
-        box-sizing: border-box !important;
-        border-radius: 22px !important;
-        overflow: hidden !important;
+      /* ---------------- Home: calm, mobile-first dashboard ---------------- */
+      .home-hero {
+        margin: .15rem 0 1rem;
+        padding: 1.15rem 1.2rem 1.05rem;
+        border-radius: 24px;
+        border: 1px solid rgba(74, 144, 226, .14);
+        background:
+          radial-gradient(circle at 92% 0%, rgba(74, 144, 226, .12), transparent 34%),
+          linear-gradient(145deg, rgba(74, 144, 226, .055), rgba(255,255,255,0));
+        box-shadow: 0 10px 30px rgba(30, 58, 95, .055);
       }
-      .st-key-home_menu div.stButton > button {
-        font-size: 1.24rem;
+      .home-eyebrow {
+        font-size: .78rem;
         font-weight: 800;
-        line-height: 1.4;
-        white-space: pre-line;
+        letter-spacing: .12em;
+        opacity: .58;
+        margin-bottom: .35rem;
       }
-      /* Frequent actions: camera and diary share the same blue frame. */
+      .home-title {
+        font-size: 1.9rem;
+        font-weight: 850;
+        letter-spacing: -.02em;
+        line-height: 1.18;
+      }
+      .home-tagline {
+        margin-top: .45rem;
+        font-size: .96rem;
+        line-height: 1.55;
+        opacity: .70;
+      }
+      .home-status {
+        display: flex;
+        align-items: center;
+        gap: .55rem;
+        flex-wrap: wrap;
+        margin: -.25rem 0 1.05rem;
+        padding: .68rem .82rem;
+        border: 1px solid rgba(128,128,128,.14);
+        border-radius: 16px;
+        background: rgba(128,128,128,.035);
+        font-size: .88rem;
+        line-height: 1.35;
+      }
+      .home-status-badge {
+        display: inline-flex;
+        align-items: center;
+        min-height: 1.7rem;
+        padding: .16rem .48rem;
+        border-radius: 999px;
+        background: rgba(74, 144, 226, .10);
+        font-size: .76rem;
+        font-weight: 800;
+        white-space: nowrap;
+      }
+      .home-status-main { font-weight: 800; }
+      .home-status-sub { opacity: .66; }
+      .home-section-label {
+        margin: .2rem 0 .5rem;
+        font-size: .78rem;
+        font-weight: 800;
+        letter-spacing: .08em;
+        opacity: .55;
+      }
+      .st-key-home_primary [data-testid="stHorizontalBlock"],
+      .st-key-home_secondary [data-testid="stHorizontalBlock"] {
+        gap: .72rem;
+      }
+      .st-key-home_primary div.stButton > button,
+      .st-key-home_secondary div.stButton > button {
+        width: 100% !important;
+        box-sizing: border-box !important;
+        overflow: hidden !important;
+        white-space: pre-line !important;
+        transition: transform .12s ease, box-shadow .12s ease, background .12s ease;
+      }
+      .st-key-home_primary div.stButton > button {
+        height: 6.45rem !important;
+        min-height: 6.45rem !important;
+        max-height: 6.45rem !important;
+        border-radius: 24px !important;
+        font-size: 1.18rem !important;
+        font-weight: 820 !important;
+        line-height: 1.35 !important;
+      }
+      .st-key-home_secondary div.stButton > button {
+        height: 4.85rem !important;
+        min-height: 4.85rem !important;
+        max-height: 4.85rem !important;
+        border-radius: 20px !important;
+        font-size: 1.03rem !important;
+        font-weight: 760 !important;
+        line-height: 1.3 !important;
+      }
       .st-key-home_camera div.stButton > button,
       .st-key-home_camera button,
       .st-key-home_diary div.stButton > button,
       .st-key-home_diary button {
-        border-width: 2px !important;
-        border-style: solid !important;
-        border-color: #4A90E2 !important;
+        border: 1.5px solid rgba(74, 144, 226, .66) !important;
+        background: linear-gradient(145deg, rgba(74, 144, 226, .11), rgba(74, 144, 226, .035)) !important;
+        box-shadow: 0 7px 18px rgba(74, 144, 226, .08) !important;
       }
-      /* Occasional action: use a different, softer warm frame. */
+      .st-key-home_camera div.stButton > button:hover,
+      .st-key-home_diary div.stButton > button:hover {
+        transform: translateY(-1px);
+        background: linear-gradient(145deg, rgba(74, 144, 226, .16), rgba(74, 144, 226, .055)) !important;
+        box-shadow: 0 9px 22px rgba(74, 144, 226, .12) !important;
+      }
       .st-key-home_review div.stButton > button,
       .st-key-home_review button {
-        border-width: 2px !important;
-        border-style: solid !important;
-        border-color: #F59E0B !important;
+        border: 1.5px solid rgba(245, 158, 11, .62) !important;
+        background: linear-gradient(145deg, rgba(245, 158, 11, .10), rgba(245, 158, 11, .025)) !important;
+        box-shadow: 0 5px 15px rgba(245, 158, 11, .055) !important;
       }
-      .st-key-home_menu [data-testid="stHorizontalBlock"] {
-        gap: .75rem;
+      .st-key-home_settings div.stButton > button,
+      .st-key-home_settings button {
+        border: 1px solid rgba(128,128,128,.22) !important;
+        background: rgba(128,128,128,.035) !important;
+      }
+      .st-key-home_destination {
+        margin-top: .42rem;
       }
       .st-key-home_destination div.stButton > button {
-        font-size: 1.10rem !important;
-        font-weight: 760 !important;
-        line-height: 1.35 !important;
-        white-space: pre-line !important;
-        margin-top: 0 !important;
-        padding-left: .55rem !important;
-        padding-right: .55rem !important;
+        width: 100% !important;
+        min-height: 2.75rem !important;
+        height: auto !important;
+        max-height: none !important;
+        border-radius: 14px !important;
+        border: 1px solid rgba(128,128,128,.16) !important;
+        background: rgba(128,128,128,.025) !important;
+        font-size: .86rem !important;
+        font-weight: 670 !important;
+        line-height: 1.25 !important;
+        opacity: .78;
+        padding: .52rem .66rem !important;
       }
-      .st-key-home_destination div.stButton > button p {
-        display: -webkit-box !important;
-        -webkit-line-clamp: 3;
-        -webkit-box-orient: vertical;
-        overflow: hidden !important;
+      .st-key-home_destination div.stButton > button:hover {
+        opacity: 1;
+        background: rgba(74, 144, 226, .055) !important;
+        border-color: rgba(74, 144, 226, .28) !important;
+      }
+      .home-footer-note {
+        margin-top: 1rem;
+        text-align: center;
+        font-size: .78rem;
+        line-height: 1.45;
+        opacity: .48;
       }
       .st-key-diary_photo_nav div.stButton > button,
       .st-key-diary_photo_nav button {
@@ -200,17 +297,29 @@ st.markdown(
           padding-left: .75rem;
           padding-right: .75rem;
         }
-        .st-key-home_menu div.stButton > button,
-        .st-key-home_destination div.stButton > button {
-          height: 7.0rem !important;
-          min-height: 7.0rem !important;
-          max-height: 7.0rem !important;
+        .home-hero {
+          padding: 1rem 1rem .92rem;
+          border-radius: 21px;
         }
-        .st-key-home_menu div.stButton > button {
-          font-size: 1.12rem;
+        .home-title { font-size: 1.72rem; }
+        .home-tagline { font-size: .90rem; }
+        .st-key-home_primary div.stButton > button {
+          height: 5.95rem !important;
+          min-height: 5.95rem !important;
+          max-height: 5.95rem !important;
+          border-radius: 21px !important;
+          font-size: 1.05rem !important;
+        }
+        .st-key-home_secondary div.stButton > button {
+          height: 4.45rem !important;
+          min-height: 4.45rem !important;
+          max-height: 4.45rem !important;
+          border-radius: 18px !important;
+          font-size: .94rem !important;
         }
         .st-key-home_destination div.stButton > button {
-          font-size: 1.02rem !important;
+          min-height: 2.55rem !important;
+          font-size: .80rem !important;
         }
       }
     </style>
@@ -417,7 +526,7 @@ _LIVE_CAMERA_CSS = """
 
 _LIVE_CAMERA_JS = r"""
 export default function(component) {
-  const { parentElement, setTriggerValue } = component;
+  const { parentElement, setTriggerValue, data } = component;
   const video = parentElement.querySelector('#live-camera-video');
   const canvas = parentElement.querySelector('#live-camera-canvas');
   const menu = parentElement.querySelector('#camera-menu');
@@ -518,6 +627,9 @@ export default function(component) {
       await video.play();
       shootButton.disabled = false;
       showCameraActions();
+      try {
+        localStorage.setItem('tokyo_burari_last_camera_open_v1', String(Date.now()));
+      } catch (_) {}
       setStatus('');
     } catch (err) {
       console.error(err);
@@ -723,6 +835,13 @@ export default function(component) {
   galleryInput.addEventListener('change', chooseGalleryPhoto);
   reviewSave.addEventListener('click', savePendingPhoto);
   reviewRetry.addEventListener('click', retryPendingPhoto);
+
+  // If the app was opened again within one hour of the last successful camera
+  // activation, Python passes auto_start=true once. Browsers that still require a
+  // user gesture will simply leave the normal 'カメラを開く' button available.
+  if (data?.auto_start) {
+    queueMicrotask(() => startCamera());
+  }
 
   return () => {
     startButton.removeEventListener('click', startCamera);
@@ -1361,6 +1480,99 @@ except Exception:
     browser_history_component = None
 
 
+# ============================================================
+# Browser persistence: auto login + recent camera session
+# ============================================================
+_BROWSER_PERSISTENCE_HTML = """
+<div id="tokyo-burari-browser-persistence" hidden></div>
+"""
+
+_BROWSER_PERSISTENCE_JS = r"""
+export default function(component) {
+  const { parentElement, data, setTriggerValue } = component;
+  const authKey = 'tokyo_burari_auto_login_v1';
+  const cameraKey = 'tokyo_burari_last_camera_open_v1';
+
+  try {
+    const storeToken = String(data?.store_auth_token || '');
+    if (storeToken) localStorage.setItem(authKey, storeToken);
+    if (data?.clear_auth_token) localStorage.removeItem(authKey);
+
+    const state = {
+      auth_token: localStorage.getItem(authKey) || '',
+      last_camera_open_at: Number(localStorage.getItem(cameraKey) || 0),
+    };
+    const serialized = JSON.stringify(state);
+    if (parentElement.dataset.lastBrowserState !== serialized) {
+      parentElement.dataset.lastBrowserState = serialized;
+      queueMicrotask(() => setTriggerValue('browser_state', state));
+    }
+  } catch (err) {
+    const message = (err && err.message) ? String(err.message) : 'browser storage unavailable';
+    if (parentElement.dataset.lastBrowserError !== message) {
+      parentElement.dataset.lastBrowserError = message;
+      queueMicrotask(() => setTriggerValue('browser_error', message));
+    }
+  }
+}
+"""
+
+try:
+    browser_persistence_component = st.components.v2.component(
+        "tokyo_burari_browser_persistence",
+        html=_BROWSER_PERSISTENCE_HTML,
+        js=_BROWSER_PERSISTENCE_JS,
+    )
+except Exception:
+    browser_persistence_component = None
+
+
+def browser_auto_login_token():
+    """Return a browser-storable credential that becomes invalid if FAMILY_PIN changes."""
+    if not FAMILY_PIN:
+        return ""
+    return hmac.new(
+        FAMILY_PIN.encode("utf-8"),
+        b"tokyo-burari-auto-login-v1",
+        hashlib.sha256,
+    ).hexdigest()
+
+
+def read_browser_persistence(key):
+    if browser_persistence_component is None:
+        return None
+    result = browser_persistence_component(
+        data={},
+        key=key,
+        on_browser_state_change=lambda: None,
+        on_browser_error_change=lambda: None,
+    )
+    state = getattr(result, "browser_state", None)
+    return state if isinstance(state, dict) else None
+
+
+def write_browser_auto_login(token, key="browser_auto_login_store"):
+    if browser_persistence_component is None or not token:
+        return
+    browser_persistence_component(
+        data={"store_auth_token": token},
+        key=key,
+        on_browser_state_change=lambda: None,
+        on_browser_error_change=lambda: None,
+    )
+
+
+def clear_browser_auto_login(key="browser_auto_login_clear"):
+    if browser_persistence_component is None:
+        return
+    browser_persistence_component(
+        data={"clear_auth_token": True},
+        key=key,
+        on_browser_state_change=lambda: None,
+        on_browser_error_change=lambda: None,
+    )
+
+
 def decode_camera_data_url(data_url):
     """Decode a trusted data URL emitted by the live camera component."""
     if not isinstance(data_url, str) or not data_url.startswith("data:image/"):
@@ -1419,8 +1631,25 @@ def verify_setup():
 def require_family_pin():
     if not FAMILY_PIN:
         return
+
+    token = browser_auto_login_token()
+
     if st.session_state.get("_family_authenticated", False):
+        if st.session_state.pop("_persist_auto_login_pending", False):
+            write_browser_auto_login(token)
         return
+
+    # First try the credential saved on this browser. The component reports once
+    # after localStorage is available; if it matches, no PIN screen is required.
+    browser_state = read_browser_persistence("browser_auto_login_gate")
+    if isinstance(browser_state, dict):
+        stored_token = str(browser_state.get("auth_token") or "")
+        if stored_token and hmac.compare_digest(stored_token, token):
+            st.session_state["_family_authenticated"] = True
+            st.session_state["_family_pin_failures"] = 0
+            st.session_state["_family_pin_locked_until"] = 0.0
+            st.session_state["_browser_last_camera_open_at"] = browser_state.get("last_camera_open_at") or 0
+            st.rerun()
 
     st.title("📷 東京ぶらり旅プロジェクト")
     st.caption("家族用のあいことばを入れてください。")
@@ -1445,6 +1674,10 @@ def require_family_pin():
             st.session_state["_family_authenticated"] = True
             st.session_state["_family_pin_failures"] = 0
             st.session_state["_family_pin_locked_until"] = 0.0
+            # Store the derived token on the next render, after authentication.
+            st.session_state["_persist_auto_login_pending"] = True
+            if isinstance(browser_state, dict):
+                st.session_state["_browser_last_camera_open_at"] = browser_state.get("last_camera_open_at") or 0
             st.rerun()
         failures += 1
         if failures >= 5:
@@ -1886,6 +2119,26 @@ def diary_title_for_trip(trip, photos=None):
     return "ぶらり旅（場所未登録）"
 
 
+def diary_display_title(diary, trip, photos=None):
+    """Prefer a saved/custom diary title, falling back to the automatic place title."""
+    saved = str((diary or {}).get("title") or "").strip()
+    return saved or diary_title_for_trip(trip, photos=photos)
+
+
+def update_diary_title(trip_id, title):
+    value = str(title or "").strip()
+    if not value:
+        raise ValueError("タイトルを入力してください。")
+    (
+        supabase_client()
+        .table(DIARY_TABLE)
+        .update({"title": value, "updated_at": now_jst().isoformat()})
+        .eq("trip_id", trip_id)
+        .execute()
+    )
+    return value
+
+
 # ============================================================
 # Image helpers
 # ============================================================
@@ -2164,7 +2417,11 @@ def get_diary_for_trip(trip_id):
 def save_diary(trip_id, title, diary_text, raw_conversation, ai_meta):
     existing = get_diary_for_trip(trip_id)
     trip = get_trip(trip_id) or {}
-    fixed_title = diary_title_for_trip(trip)
+    # If the parent renamed a saved diary, recreating the diary must not overwrite
+    # that custom title with the automatically detected place name.
+    existing_title = str((existing or {}).get("title") or "").strip()
+    requested_title = str(title or "").strip()
+    fixed_title = existing_title or requested_title or diary_title_for_trip(trip)
     payload = {
         "trip_id": trip_id,
         "title": fixed_title,
@@ -2249,7 +2506,8 @@ def delete_diary_and_related_data(trip_id):
 def confirm_diary_delete_dialog(trip_id, photo_count):
     trip = get_trip(trip_id) or {}
     photos = list_trip_photos(trip_id)
-    title = diary_title_for_trip(trip, photos=photos)
+    diary = get_diary_for_trip(trip_id)
+    title = diary_display_title(diary, trip, photos=photos)
     st.write(f"**{title}** を削除します。")
     st.warning(
         f"この日の記録、写真 {photo_count}枚、写真について話したコメントをすべて削除します。"
@@ -3109,6 +3367,33 @@ def init_state():
 VALID_APP_PAGES = {"home", "camera", "diary", "review", "settings"}
 
 
+def restore_recent_camera_session():
+    """On a new browser session, reopen the camera if it was used within one hour."""
+    if st.session_state.get("_recent_camera_restore_checked", False):
+        return
+
+    last_open = st.session_state.get("_browser_last_camera_open_at")
+    if last_open is None:
+        browser_state = read_browser_persistence("browser_recent_camera_restore")
+        if browser_state is None:
+            return
+        last_open = browser_state.get("last_camera_open_at") or 0
+        st.session_state["_browser_last_camera_open_at"] = last_open
+
+    st.session_state["_recent_camera_restore_checked"] = True
+    try:
+        last_open_ms = float(last_open or 0)
+    except Exception:
+        last_open_ms = 0.0
+
+    age_ms = time.time() * 1000.0 - last_open_ms
+    if last_open_ms > 0 and 0 <= age_ms <= 60 * 60 * 1000:
+        st.session_state["main_page"] = "camera"
+        st.session_state["_camera_auto_start"] = True
+        st.session_state["_history_action"] = "replace"
+        st.rerun()
+
+
 def go_page(page_name, history_mode="push"):
     target = page_name if page_name in VALID_APP_PAGES else "home"
     if st.session_state.get("main_page") != target:
@@ -3283,16 +3568,21 @@ def render_conversation(conversation):
 
 
 def trip_label(trip):
-    """Label a diary candidate with the same place rule used by the diary title."""
+    """Label a diary candidate, including a custom saved title when present."""
     trip = trip or {}
     trip_id = trip.get("id")
     photos = []
+    diary = None
     if trip_id:
         try:
             photos = list_trip_photos(trip_id)
         except Exception:
             photos = []
-    title = diary_title_for_trip(trip, photos=photos)
+        try:
+            diary = get_diary_for_trip(trip_id)
+        except Exception:
+            diary = None
+    title = diary_display_title(diary, trip, photos=photos)
     return f"{trip.get('trip_date', '')}　{title}"
 
 
@@ -3406,8 +3696,16 @@ def open_diary_photo_talk(trip_id, photo_id, state):
 # Page: Home
 # ============================================================
 def page_home():
-    st.title("📷 東京ぶらり旅")
-    st.caption("答えを教える旅ではなく、自分なりの『気になる』を増やす旅。")
+    st.markdown(
+        """
+        <div class="home-hero">
+          <div class="home-eyebrow">TOKYO BURARI</div>
+          <div class="home-title">東京ぶらり旅</div>
+          <div class="home-tagline">気になったものを残して、あとで自分の言葉にする。</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
     active = get_trip(st.session_state.active_trip_id) if st.session_state.active_trip_id else None
     active_photos = []
@@ -3415,69 +3713,221 @@ def page_home():
     if active and active.get("status") == "active" and active.get("trip_date") == today_iso():
         active_photos = list_trip_photos(active["id"])
         active_place = trip_place_label(active, photos=active_photos)
-        st.caption(f"今日の写真 {len(active_photos)}枚")
 
-    with st.container(key="home_menu"):
-        row1_left, row1_right = st.columns(2)
-        with row1_left:
+    status_main = f"今日の写真 {len(active_photos)}枚" if active_photos else "今日はまだ写真なし"
+    status_sub = active_place or "地名は写真から自動取得できます"
+    st.markdown(
+        f"""
+        <div class="home-status">
+          <span class="home-status-badge">今日</span>
+          <span class="home-status-main">{html.escape(status_main)}</span>
+          <span class="home-status-sub">{html.escape(status_sub)}</span>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    st.markdown('<div class="home-section-label">いつもの記録</div>', unsafe_allow_html=True)
+    with st.container(key="home_primary"):
+        primary_left, primary_right = st.columns(2)
+        with primary_left:
             render_home_button("📷\nカメラで撮る", "camera", "home_camera", ensure_trip=True)
-
-            # Manual fallback for cases where the phone/browser cannot provide GPS.
-            with st.container(key="home_destination"):
-                place_button_label = f"地名：{active_place}" if active_place else "地名：登録なし（自動取得）"
-                if st.button(place_button_label, key="home_destination_toggle", use_container_width=True):
-                    st.session_state.show_home_destination_editor = not bool(
-                        st.session_state.get("show_home_destination_editor")
-                    )
-                    st.rerun()
-
-                if st.session_state.get("show_home_destination_editor"):
-                    trip = ensure_today_trip()
-                    current_trip = get_trip(trip["id"]) or trip
-                    current_photos = list_trip_photos(trip["id"])
-                    current_place = trip_place_label(current_trip, photos=current_photos)
-                    destination = st.text_input(
-                        "地名",
-                        value=str(current_trip.get("destination") or current_place),
-                        placeholder="例：神楽坂、浅草のあたり",
-                        key=f"home_destination_input_{trip['id']}",
-                        label_visibility="collapsed",
-                    )
-                    save_col, close_col = st.columns([2, 1])
-                    with save_col:
-                        if st.button(
-                            "保存",
-                            type="primary",
-                            use_container_width=True,
-                            key=f"home_destination_save_{trip['id']}",
-                        ):
-                            try:
-                                update_trip_destination(trip["id"], destination)
-                                st.session_state.show_home_destination_editor = False
-                                st.rerun()
-                            except Exception as exc:
-                                st.error("地名を保存できませんでした。")
-                                with st.expander("保護者向け詳細"):
-                                    st.code(str(exc))
-                    with close_col:
-                        if st.button(
-                            "閉じる",
-                            use_container_width=True,
-                            key=f"home_destination_close_{trip['id']}",
-                        ):
-                            st.session_state.show_home_destination_editor = False
-                            st.rerun()
-
-        with row1_right:
+        with primary_right:
             render_home_button("📖\n日記", "diary", "home_diary")
 
-        row2_left, row2_right = st.columns(2)
-        with row2_left:
+    # Manual fallback for cases where the phone/browser cannot provide GPS.
+    with st.container(key="home_destination"):
+        place_button_label = f"📍 地名：{active_place}" if active_place else "📍 地名：自動取得（必要なら手入力）"
+        if st.button(place_button_label, key="home_destination_toggle", use_container_width=True):
+            st.session_state.show_home_destination_editor = not bool(
+                st.session_state.get("show_home_destination_editor")
+            )
+            st.rerun()
+
+        if st.session_state.get("show_home_destination_editor"):
+            trip = ensure_today_trip()
+            current_trip = get_trip(trip["id"]) or trip
+            current_photos = list_trip_photos(trip["id"])
+            current_place = trip_place_label(current_trip, photos=current_photos)
+            destination = st.text_input(
+                "地名",
+                value=str(current_trip.get("destination") or current_place),
+                placeholder="例：神楽坂、浅草のあたり",
+                key=f"home_destination_input_{trip['id']}",
+                label_visibility="collapsed",
+            )
+            save_col, close_col = st.columns([2, 1])
+            with save_col:
+                if st.button(
+                    "保存",
+                    type="primary",
+                    use_container_width=True,
+                    key=f"home_destination_save_{trip['id']}",
+                ):
+                    try:
+                        update_trip_destination(trip["id"], destination)
+                        st.session_state.show_home_destination_editor = False
+                        st.rerun()
+                    except Exception as exc:
+                        st.error("地名を保存できませんでした。")
+                        with st.expander("保護者向け詳細"):
+                            st.code(str(exc))
+            with close_col:
+                if st.button(
+                    "閉じる",
+                    use_container_width=True,
+                    key=f"home_destination_close_{trip['id']}",
+                ):
+                    st.session_state.show_home_destination_editor = False
+                    st.rerun()
+
+    st.markdown('<div class="home-section-label" style="margin-top:1rem;">たまに使う</div>', unsafe_allow_html=True)
+    with st.container(key="home_secondary"):
+        secondary_left, secondary_right = st.columns([1.2, 1])
+        with secondary_left:
             render_home_button("🔍\n振り返り（たまに）", "review", "home_review")
-        with row2_right:
+        with secondary_right:
             render_home_button("⚙️\n設定", "settings", "home_settings")
 
-    st.caption("写真は何枚撮っても、0枚でも構いません。気になったときだけ使います。")
+    st.markdown(
+        '<div class="home-footer-note">写真は0枚でも大丈夫。気になったときだけ使います。</div>',
+        unsafe_allow_html=True,
+    )
+
+
+def render_diary_title_editor(trip_id, current_title, key_prefix):
+    with st.expander("タイトルを変更"):
+        edited_title = st.text_input(
+            "日記タイトル",
+            value=str(current_title or ""),
+            key=f"{key_prefix}_title_input_{trip_id}",
+        )
+        if st.button(
+            "タイトルを保存",
+            use_container_width=True,
+            key=f"{key_prefix}_title_save_{trip_id}",
+        ):
+            try:
+                update_diary_title(trip_id, edited_title)
+                st.session_state["_diary_notice"] = "日記のタイトルを変更しました。"
+                st.rerun()
+            except Exception as exc:
+                st.error("タイトルを変更できませんでした。")
+                with st.expander("保護者向け詳細"):
+                    st.code(str(exc))
+
+
+def render_recent_camera_photo_comment(trip):
+    """Show the just-saved photo below the camera and let the child comment immediately."""
+    trip_id = (trip or {}).get("id")
+    if not trip_id:
+        return
+    recent_key = f"_camera_recent_photo_{trip_id}"
+    photo_id = st.session_state.get(recent_key)
+    if not photo_id:
+        return
+
+    photos = list_trip_photos(trip_id)
+    photo = next((p for p in photos if p.get("id") == photo_id), None)
+    if not photo:
+        st.session_state.pop(recent_key, None)
+        return
+
+    st.divider()
+    st.markdown("#### 今撮った写真")
+    try:
+        image_bytes = download_photo(photo["storage_path"])
+        st.image(image_bytes, use_container_width=True)
+    except Exception as exc:
+        st.error("今撮った写真を表示できませんでした。")
+        with st.expander("保護者向け詳細"):
+            st.code(str(exc))
+        return
+
+    location_label = photo_location_label(photo)
+    if location_label:
+        st.caption(f"📍 {location_label}")
+
+    reflection = photo.get("reflection_json") or {}
+    if not isinstance(reflection, dict):
+        reflection = {}
+    conversation = _stored_photo_conversation(photo)
+    signals = photo.get("signals_json") or {}
+    if not isinstance(signals, dict):
+        signals = {}
+    done = bool(reflection.get("conversation_done"))
+
+    if conversation:
+        render_conversation(conversation)
+
+    audio_state_key = f"quick_photo_audio_{photo_id}"
+    audio_pending_key = f"quick_photo_audio_pending_{photo_id}"
+    if st.session_state.get(audio_state_key):
+        st.audio(
+            st.session_state[audio_state_key],
+            format="audio/wav",
+            autoplay=bool(st.session_state.get(audio_pending_key, False)),
+        )
+        st.session_state[audio_pending_key] = False
+
+    if done:
+        st.success("コメントを保存しました。")
+        return
+
+    child_turns = sum(1 for x in conversation if x.get("role") == "child")
+    if child_turns == 0:
+        st.caption("この写真について、まず自由に1回話してね。")
+        mic_label = "今撮った写真について話してね"
+    else:
+        mic_label = "AIの質問に答えてね"
+
+    serial_key = f"quick_photo_answer_serial_{photo_id}"
+    serial = int(st.session_state.get(serial_key) or 0)
+    answer_audio = far_field_audio_input(
+        mic_label,
+        key=f"quick_photo_answer_{photo_id}_{serial}",
+    )
+    digest_key = f"quick_photo_answer_digest_{photo_id}_{serial}"
+    if answer_audio is None:
+        return
+
+    digest = audio_digest(answer_audio)
+    if not digest or st.session_state.get(digest_key) == digest:
+        return
+
+    try:
+        with st.spinner("声を聞いています…"):
+            transcript = transcribe_audio(
+                answer_audio,
+                f"東京ぶらり旅で今撮った写真について、子どもが自由に説明しています。場所は{location_label or '不明'}です。",
+            )
+            if not transcript:
+                raise ValueError("文字起こしが空でした。")
+            conversation = list(conversation)
+            conversation.append({"role": "child", "text": transcript})
+            child_turns = sum(1 for x in conversation if x.get("role") == "child")
+            result = next_photo_turn(image_bytes, conversation, child_turns)
+            assistant_text = str(result.get("reply", "")).strip()
+            next_question = str(result.get("next_question", "")).strip()
+            if next_question:
+                assistant_text = (assistant_text + " " + next_question).strip()
+            if not assistant_text:
+                assistant_text = "ありがとう。"
+            conversation.append({"role": "assistant", "text": assistant_text})
+            signals = merge_signals(signals, result.get("signals", {}))
+            done = bool(result.get("done"))
+            update_photo_reflection(photo_id, conversation, signals, done=done)
+            audio = speech_bytes(assistant_text)
+
+        st.session_state[audio_state_key] = audio
+        st.session_state[audio_pending_key] = True
+        st.session_state[serial_key] = serial + 1
+        st.session_state[digest_key] = digest
+        st.rerun()
+    except Exception as exc:
+        st.error("うまく聞き取れませんでした。もう一度話してください。")
+        with st.expander("保護者向け詳細"):
+            st.code(str(exc))
 
 
 # ============================================================
@@ -3496,9 +3946,12 @@ def page_trip():
 
     if live_camera_component is None:
         st.error("ライブカメラ機能に必要なStreamlitのバージョンが古いです。requirements.txtを更新してください。")
+        render_recent_camera_photo_comment(trip)
         return
 
+    auto_start = bool(st.session_state.pop("_camera_auto_start", False))
     result = live_camera_component(
+        data={"auto_start": auto_start},
         key=f"live_camera_{trip['id']}_{st.session_state.capture_serial}",
         on_photo_change=lambda: None,
         on_camera_error_change=lambda: None,
@@ -3511,40 +3964,42 @@ def page_trip():
         if message:
             st.warning(message)
 
-    if not (isinstance(payload, dict) and payload.get("data_url")):
-        return
+    if isinstance(payload, dict) and payload.get("data_url"):
+        try:
+            raw = decode_camera_data_url(payload["data_url"])
+            digest = hashlib.sha1(raw).hexdigest()
+            if st.session_state.get(digest_key) != digest:
+                capture_source = str(payload.get("source") or "camera")
+                fresh_trip = get_trip(trip["id"]) or trip
+                location = build_photo_location(
+                    payload.get("location"),
+                    fresh_trip,
+                    capture_source=capture_source,
+                )
 
-    try:
-        raw = decode_camera_data_url(payload["data_url"])
-        digest = hashlib.sha1(raw).hexdigest()
-        if st.session_state.get(digest_key) == digest:
-            return
+                with st.spinner("写真を残しています…"):
+                    saved_photo = upload_photo(
+                        trip["id"],
+                        raw,
+                        location=location,
+                        captured_at=payload.get("captured_at"),
+                        capture_source=capture_source,
+                    )
 
-        capture_source = str(payload.get("source") or "camera")
-        fresh_trip = get_trip(trip["id"]) or trip
-        location = build_photo_location(
-            payload.get("location"),
-            fresh_trip,
-            capture_source=capture_source,
-        )
+                st.session_state[digest_key] = digest
+                if isinstance(saved_photo, dict) and saved_photo.get("id"):
+                    st.session_state[f"_camera_recent_photo_{trip['id']}"] = saved_photo["id"]
+                st.session_state.capture_serial += 1
+                st.session_state["_camera_notice"] = "写真を保存しました。"
+                st.rerun()
+        except Exception as exc:
+            st.error("写真を保存できませんでした。")
+            with st.expander("保護者向け詳細"):
+                st.code(str(exc))
 
-        with st.spinner("写真を残しています…"):
-            upload_photo(
-                trip["id"],
-                raw,
-                location=location,
-                captured_at=payload.get("captured_at"),
-                capture_source=capture_source,
-            )
-
-        st.session_state[digest_key] = digest
-        st.session_state.capture_serial += 1
-        st.session_state["_camera_notice"] = "写真を保存しました。"
-        st.rerun()
-    except Exception as exc:
-        st.error("写真を保存できませんでした。")
-        with st.expander("保護者向け詳細"):
-            st.code(str(exc))
+    # Keep the camera choices at the top, then show the just-saved photo and its
+    # comment recorder directly underneath.
+    render_recent_camera_photo_comment(trip)
 
 
 # ============================================================
@@ -3607,7 +4062,7 @@ def page_diary():
             if open_diary_photo_talk(trip_id, clicked_pid, state):
                 st.rerun()
 
-        existing_title = diary_title_for_trip(trip, photos=photos)
+        existing_title = diary_display_title(existing, trip, photos=photos)
         st.markdown(
             f"""
             <div class="diary-card">
@@ -3617,6 +4072,7 @@ def page_diary():
             """,
             unsafe_allow_html=True,
         )
+        render_diary_title_editor(trip_id, existing_title, "diary_existing")
         if photos and st.button("この日の写真から、もう一度日記をつくる", use_container_width=True):
             reflection_state(trip_id, photos)
             st.session_state.pop(f"diary_existing_photo_view_{trip_id}", None)
@@ -3665,7 +4121,7 @@ def page_diary():
                         result, raw = compose_diary(trip, photo_states)
                         audio = speech_bytes(result["diary"])
                     state["draft"] = result["diary"]
-                    state["draft_title"] = diary_title_for_trip(trip, photos=photos)
+                    state["draft_title"] = diary_display_title(existing, trip, photos=photos)
                     state["draft_meta"] = {
                         "child_points": result.get("child_points", []),
                         "signals": result.get("signals", {}),
@@ -3681,7 +4137,7 @@ def page_diary():
             render_diary_delete_controls(trip_id, photos, current_photo_id=selected_pid)
             return
 
-        fixed_title = diary_title_for_trip(trip, photos=photos)
+        fixed_title = diary_display_title(existing, trip, photos=photos)
         state["draft_title"] = fixed_title
         st.markdown(
             f"""
@@ -3960,10 +4416,11 @@ def page_history(embedded=False):
         trip = detail_row["trip"]
         trip_id = diary["trip_id"]
         photos = list_trip_photos(trip_id)
-        daily_title = diary_title_for_trip(trip, photos=photos)
+        daily_title = diary_display_title(diary, trip, photos=photos)
         title = f"{trip.get('trip_date', '')}　{daily_title}"
 
         st.markdown(f"### {html.escape(title)}")
+        render_diary_title_editor(trip_id, daily_title, "history_detail")
         render_small_gallery(photos, max_count=None, columns=3)
         st.markdown(
             f"""
@@ -4016,7 +4473,7 @@ def page_history(embedded=False):
         trip = row["trip"]
         trip_id = diary["trip_id"]
         photos = list_trip_photos(trip_id)
-        daily_title = diary_title_for_trip(trip, photos=photos)
+        daily_title = diary_display_title(diary, trip, photos=photos)
         title = f"{trip.get('trip_date', '')}　{daily_title}"
         if st.button(
             title,
@@ -4179,6 +4636,13 @@ def page_settings():
             go_page("camera")
 
     st.divider()
+    st.markdown("#### 自動ログイン")
+    st.caption("この端末では、一度あいことばを入力すると次回から自動でログインします。")
+    if st.button("この端末の自動ログインを解除", use_container_width=True, key="settings_clear_auto_login"):
+        clear_browser_auto_login()
+        st.success("この端末の自動ログインを解除しました。次回はあいことばが必要です。")
+
+    st.divider()
     st.markdown("#### カメラについて")
     st.write(
         "『カメラで撮る』画面では、ブラウザのライブカメラを直接開いて撮影します。"
@@ -4200,6 +4664,7 @@ def page_settings():
 verify_setup()
 require_family_pin()
 init_state()
+restore_recent_camera_session()
 sync_browser_history()
 
 page = st.session_state.get("main_page", "home")
