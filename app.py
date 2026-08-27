@@ -1950,7 +1950,7 @@ def page_home():
 
             # Manual fallback for cases where the phone/browser cannot provide GPS.
             with st.container(key="home_destination"):
-                place_button_label = f"📍\n{active_place}" if active_place else "📍\n登録なし"
+                place_button_label = f"地名：{active_place}" if active_place else "地名：登録なし（自動取得）"
                 if st.button(place_button_label, key="home_destination_toggle", use_container_width=True):
                     st.session_state.show_home_destination_editor = not bool(
                         st.session_state.get("show_home_destination_editor")
@@ -2600,7 +2600,7 @@ def page_settings():
     )
     st.caption(
         "初回はカメラとは別に位置情報の許可も求められます。位置情報がオフ・拒否・取得不能の場合は、"
-        "ホームの地名表示（未登録なら「登録なし」）を押して入力した内容を写真の場所として使います。"
+        "ホームの地名表示（未登録なら「地名：登録なし（自動取得）」）を押して入力した内容を写真の場所として使います。"
     )
 
     st.divider()
