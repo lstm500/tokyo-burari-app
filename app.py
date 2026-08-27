@@ -106,6 +106,12 @@ st.markdown(
         line-height: 1.4;
         white-space: pre-line;
       }
+      .st-key-home_camera div.stButton > button,
+      .st-key-home_camera button {
+        border-width: 2px !important;
+        border-style: solid !important;
+        border-color: #4A90E2 !important;
+      }
       .st-key-home_menu [data-testid="stHorizontalBlock"] {
         gap: .75rem;
       }
@@ -114,7 +120,7 @@ st.markdown(
         font-weight: 760 !important;
         line-height: 1.35 !important;
         white-space: pre-line !important;
-        margin-top: .75rem !important;
+        margin-top: 0 !important;
         padding-left: .55rem !important;
         padding-right: .55rem !important;
       }
