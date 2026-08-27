@@ -1488,10 +1488,18 @@ _BROWSER_PERSISTENCE_HTML = """
 """
 
 _BROWSER_PERSISTENCE_JS = r"""
+// Streamlit v2's component parentElement is not guaranteed to expose HTMLElement.dataset
+// on every browser/runtime. Keep component-local bookkeeping in a global registry instead.
+const registry = globalThis.__tokyoBurariPersistenceRegistry ||
+  (globalThis.__tokyoBurariPersistenceRegistry = new Map());
+
 export default function(component) {
-  const { parentElement, data, setTriggerValue } = component;
+  const { data, setTriggerValue } = component;
   const authKey = 'tokyo_burari_auto_login_v1';
   const cameraKey = 'tokyo_burari_last_camera_open_v1';
+  const instanceKey = String(data?.instance_key || 'default');
+  const runtime = registry.get(instanceKey) || { lastState: '', lastError: '' };
+  registry.set(instanceKey, runtime);
 
   try {
     const storeToken = String(data?.store_auth_token || '');
@@ -1503,14 +1511,16 @@ export default function(component) {
       last_camera_open_at: Number(localStorage.getItem(cameraKey) || 0),
     };
     const serialized = JSON.stringify(state);
-    if (parentElement.dataset.lastBrowserState !== serialized) {
-      parentElement.dataset.lastBrowserState = serialized;
+    if (runtime.lastState !== serialized) {
+      runtime.lastState = serialized;
+      runtime.lastError = '';
       queueMicrotask(() => setTriggerValue('browser_state', state));
     }
   } catch (err) {
     const message = (err && err.message) ? String(err.message) : 'browser storage unavailable';
-    if (parentElement.dataset.lastBrowserError !== message) {
-      parentElement.dataset.lastBrowserError = message;
+    if (runtime.lastError !== message) {
+      runtime.lastError = message;
+      // Do not touch DOM-specific properties here. Report the failure as data only.
       queueMicrotask(() => setTriggerValue('browser_error', message));
     }
   }
@@ -1542,7 +1552,7 @@ def read_browser_persistence(key):
     if browser_persistence_component is None:
         return None
     result = browser_persistence_component(
-        data={},
+        data={"instance_key": key},
         key=key,
         on_browser_state_change=lambda: None,
         on_browser_error_change=lambda: None,
@@ -1555,7 +1565,7 @@ def write_browser_auto_login(token, key="browser_auto_login_store"):
     if browser_persistence_component is None or not token:
         return
     browser_persistence_component(
-        data={"store_auth_token": token},
+        data={"store_auth_token": token, "instance_key": key},
         key=key,
         on_browser_state_change=lambda: None,
         on_browser_error_change=lambda: None,
@@ -1566,7 +1576,7 @@ def clear_browser_auto_login(key="browser_auto_login_clear"):
     if browser_persistence_component is None:
         return
     browser_persistence_component(
-        data={"clear_auth_token": True},
+        data={"clear_auth_token": True, "instance_key": key},
         key=key,
         on_browser_state_change=lambda: None,
         on_browser_error_change=lambda: None,
