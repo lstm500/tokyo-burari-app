@@ -4663,7 +4663,18 @@ def page_diary():
 
     try:
         image_bytes = download_photo(photo["storage_path"])
-        st.image(image_bytes, use_container_width=True)
+        # Keep a clicked diary photo compact on phones so the whole image and the
+        # conversation controls can remain visible without excessive scrolling.
+        diary_photo_src = image_data_url(image_bytes)
+        st.markdown(
+            f"""
+            <div style="display:flex;justify-content:center;align-items:center;width:100%;margin:.25rem 0 .45rem;">
+              <img src="{diary_photo_src}" alt="日記の写真"
+                   style="display:block;max-width:min(72vw,320px);max-height:34dvh;width:auto;height:auto;object-fit:contain;border-radius:14px;" />
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
     except Exception as exc:
         st.error("写真を読み込めませんでした。")
         with st.expander("保護者向け詳細"):
