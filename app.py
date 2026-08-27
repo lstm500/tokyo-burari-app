@@ -699,6 +699,124 @@ except Exception:
 
 
 # ============================================================
+# Clickable diary photo gallery
+# ============================================================
+_DIARY_GALLERY_HTML = """
+<div id="diary-photo-grid" class="diary-photo-grid"></div>
+"""
+
+_DIARY_GALLERY_CSS = """
+.diary-photo-grid {
+  width: 100%;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  box-sizing: border-box;
+}
+.diary-photo-card {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 100%;
+  min-width: 0;
+  margin: 0;
+  padding: 5px;
+  border-radius: 14px;
+  box-sizing: border-box;
+  cursor: pointer;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+  overflow: hidden;
+}
+.diary-photo-card.talked {
+  border: 3px solid #F59E0B;
+  background: rgba(245, 158, 11, .18);
+  box-shadow: 0 0 0 1px rgba(245, 158, 11, .08) inset;
+}
+.diary-photo-card.untalked {
+  border: 3px solid #AEB6C2;
+  background: rgba(174, 182, 194, .20);
+  box-shadow: 0 0 0 1px rgba(174, 182, 194, .08) inset;
+}
+.diary-photo-card:active {
+  transform: scale(.985);
+}
+.diary-photo-card img {
+  display: block;
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  object-fit: cover;
+  border-radius: 9px;
+  background: rgba(128, 128, 128, .08);
+}
+.diary-photo-location {
+  margin-top: 4px;
+  font-size: 10px;
+  line-height: 1.25;
+  color: var(--st-text-color);
+  opacity: .78;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+@media (max-width: 640px) {
+  .diary-photo-grid { gap: 6px; }
+  .diary-photo-card { padding: 4px; border-radius: 12px; }
+  .diary-photo-card img { border-radius: 8px; }
+  .diary-photo-location { font-size: 9px; }
+}
+"""
+
+_DIARY_GALLERY_JS = r"""
+export default function(component) {
+  const { parentElement, data, setTriggerValue } = component;
+  const grid = parentElement.querySelector('#diary-photo-grid');
+  if (!grid) return;
+
+  grid.replaceChildren();
+  const photos = Array.isArray(data?.photos) ? data.photos : [];
+
+  for (const photo of photos) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = `diary-photo-card ${photo.talked ? 'talked' : 'untalked'}`;
+    button.setAttribute(
+      'aria-label',
+      photo.talked ? '話した写真を開く' : 'まだ話していない写真を開く'
+    );
+
+    const img = document.createElement('img');
+    img.src = photo.src || '';
+    img.alt = 'ぶらり旅の写真';
+    button.appendChild(img);
+
+    if (photo.location) {
+      const location = document.createElement('div');
+      location.className = 'diary-photo-location';
+      location.textContent = `📍 ${photo.location}`;
+      button.appendChild(location);
+    }
+
+    button.addEventListener('click', () => {
+      setTriggerValue('photo_id', String(photo.id));
+    });
+
+    grid.appendChild(button);
+  }
+}
+"""
+
+try:
+    diary_gallery_component = st.components.v2.component(
+        "tokyo_burari_diary_gallery",
+        html=_DIARY_GALLERY_HTML,
+        css=_DIARY_GALLERY_CSS,
+        js=_DIARY_GALLERY_JS,
+    )
+except Exception:
+    diary_gallery_component = None
+
+
+# ============================================================
 # Browser history bridge
 # ============================================================
 # Streamlit session-state navigation does not create browser history entries by
@@ -1528,6 +1646,8 @@ def delete_diary_and_related_data(trip_id):
     # Clear any in-progress diary state for the deleted trip.
     st.session_state.pop(f"reflection_state_{trip_id}", None)
     st.session_state.pop(f"diary_selected_photo_{trip_id}", None)
+    st.session_state.pop(f"diary_talk_photo_{trip_id}", None)
+    st.session_state.pop(f"diary_existing_photo_view_{trip_id}", None)
     st.session_state.pop("diary_trip_selector", None)
     if st.session_state.get("preferred_diary_trip_id") == trip_id:
         st.session_state.preferred_diary_trip_id = None
@@ -1694,6 +1814,10 @@ def delete_photo_and_related_data(trip_id, photo_id):
             st.session_state.pop(selected_key, None)
 
     st.session_state.pop(f"delete_photo_selector_{trip_id}", None)
+    if st.session_state.get(f"diary_talk_photo_{trip_id}") == photo_id:
+        st.session_state.pop(f"diary_talk_photo_{trip_id}", None)
+    if st.session_state.pop(f"diary_existing_photo_view_{trip_id}", False):
+        st.session_state.pop(f"reflection_state_{trip_id}", None)
     download_photo.clear()
     return {"month_key": month_key}
 
@@ -2407,76 +2531,86 @@ def render_small_gallery(photos, max_count=4):
 
 
 def render_diary_photo_gallery(trip_id, photos, state=None):
-    """Show every photo at once; blue border means the child has already talked about it."""
+    """Show all photos in a three-column clickable grid."""
     if not photos:
         return None
 
-    selected_key = f"diary_selected_photo_{trip_id}"
-    photo_ids = [p.get("id") for p in photos if p.get("id")]
-    selected = st.session_state.get(selected_key)
-    if state is not None:
-        selected = state.get("selected_photo_id") or selected
-    if selected not in photo_ids:
-        selected = photo_ids[0]
-        st.session_state[selected_key] = selected
-        if state is not None:
-            state["selected_photo_id"] = selected
-            state["photo_index"] = 0
-
     st.markdown("#### この日の写真")
-    st.caption("青い枠：すでに話した写真　／　グレーの枠：まだ話していない写真")
+    st.caption("オレンジ：話した写真　／　グレー：まだ話していない写真")
 
-    cols = st.columns(2)
-    for idx, photo in enumerate(photos):
+    cards = []
+    photo_ids = []
+    for photo in photos:
         pid = photo.get("id")
         if not pid:
             continue
         item = (state or {}).get("items", {}).get(pid, {}) if isinstance(state, dict) else {}
         conversation = item.get("conversation") or _stored_photo_conversation(photo)
         talked = _conversation_has_child_words(conversation)
-        border_color = "#3B82F6" if talked else "#AEB6C2"
-        border_width = "4px" if pid == selected else "3px"
-        status_text = "話した" if talked else "まだ話していない"
         location_label = photo_location_label(photo)
+        try:
+            image_bytes = download_photo(photo["storage_path"])
+            encoded = base64.b64encode(image_bytes).decode("ascii")
+            src = f"data:image/jpeg;base64,{encoded}"
+        except Exception:
+            src = ""
 
-        with cols[idx % 2]:
-            try:
-                image_bytes = download_photo(photo["storage_path"])
-                encoded = base64.b64encode(image_bytes).decode("ascii")
-                location_html = (
-                    f'<div style="font-size:.78rem;opacity:.72;margin-top:.25rem;">📍 {html.escape(location_label)}</div>'
-                    if location_label else ""
-                )
-                card_html = (
-                    f'<div style="border:{border_width} solid {border_color};border-radius:16px;padding:6px;margin:.2rem 0 .35rem;box-sizing:border-box;">'
-                    f'<img src="data:image/jpeg;base64,{encoded}" style="display:block;width:100%;height:170px;object-fit:contain;border-radius:10px;background:rgba(128,128,128,.06);" />'
-                    f'<div style="font-size:.82rem;font-weight:700;margin-top:.35rem;">{status_text}</div>'
-                    f'{location_html}</div>'
-                )
-                st.markdown(card_html, unsafe_allow_html=True)
-            except Exception:
+        cards.append(
+            {
+                "id": str(pid),
+                "src": src,
+                "talked": bool(talked),
+                "location": str(location_label or ""),
+            }
+        )
+        photo_ids.append(str(pid))
+
+    if not cards:
+        return None
+
+    if diary_gallery_component is not None:
+        serial_key = f"diary_gallery_serial_{trip_id}"
+        serial = int(st.session_state.get(serial_key) or 0)
+        result = diary_gallery_component(
+            data={"photos": cards},
+            key=f"diary_gallery_{trip_id}_{serial}",
+            on_photo_id_change=lambda: None,
+        )
+        clicked = str(getattr(result, "photo_id", "") or "")
+        if clicked in photo_ids:
+            # Reset the component before the gallery is shown again so the previous
+            # click does not immediately reopen the same photo.
+            st.session_state[serial_key] = serial + 1
+            return clicked
+        return None
+
+    # Fallback for environments where the v2 component is unavailable.
+    cols = st.columns(3)
+    for idx, card in enumerate(cards):
+        with cols[idx % 3]:
+            if card["src"]:
                 st.markdown(
-                    f'<div style="border:{border_width} solid {border_color};border-radius:16px;padding:1rem;margin:.2rem 0 .35rem;">画像を読み込めませんでした。</div>',
+                    f'<img src="{card["src"]}" style="width:100%;aspect-ratio:1/1;object-fit:cover;border-radius:10px;" />',
                     unsafe_allow_html=True,
                 )
+            if st.button("写真を開く", use_container_width=True, key=f"diary_photo_fallback_{trip_id}_{card['id']}"):
+                return card["id"]
+    return None
 
-            button_label = "選択中" if pid == selected else ("この写真を見る" if talked else "この写真で話す")
-            if st.button(
-                button_label,
-                use_container_width=True,
-                disabled=(pid == selected),
-                key=f"diary_photo_pick_{trip_id}_{pid}",
-            ):
-                st.session_state[selected_key] = pid
-                if state is not None:
-                    state["selected_photo_id"] = pid
-                    state["photo_index"] = photo_ids.index(pid)
-                    state["audio_bytes"] = None
-                    state["audio_pending"] = False
-                    state["answer_serial"] = int(state.get("answer_serial") or 0) + 1
-                st.rerun()
 
-    return selected
+def open_diary_photo_talk(trip_id, photo_id, state):
+    """Switch from the gallery to one photo's conversation screen."""
+    photo_ids = list(state.get("photo_ids") or [])
+    if photo_id not in photo_ids:
+        return False
+    state["selected_photo_id"] = photo_id
+    state["photo_index"] = photo_ids.index(photo_id)
+    state["audio_bytes"] = None
+    state["audio_pending"] = False
+    state["answer_serial"] = int(state.get("answer_serial") or 0) + 1
+    st.session_state[f"diary_selected_photo_{trip_id}"] = photo_id
+    st.session_state[f"diary_talk_photo_{trip_id}"] = photo_id
+    return True
 
 
 # ============================================================
@@ -2674,8 +2808,16 @@ def page_diary():
     photos = list_trip_photos(trip_id)
     existing = get_diary_for_trip(trip_id)
 
+    talk_key = f"diary_talk_photo_{trip_id}"
+
     if existing and f"reflection_state_{trip_id}" not in st.session_state:
-        selected_pid = render_diary_photo_gallery(trip_id, photos, state=None) if photos else None
+        clicked_pid = render_diary_photo_gallery(trip_id, photos, state=None) if photos else None
+        if clicked_pid:
+            state = reflection_state(trip_id, photos)
+            st.session_state[f"diary_existing_photo_view_{trip_id}"] = True
+            if open_diary_photo_talk(trip_id, clicked_pid, state):
+                st.rerun()
+
         existing_title = diary_title_for_trip(trip, photos=photos)
         st.markdown(
             f"""
@@ -2687,25 +2829,12 @@ def page_diary():
             unsafe_allow_html=True,
         )
         if photos and st.button("この日の写真から、もう一度日記をつくる", use_container_width=True):
-            st.session_state[f"reflection_state_{trip_id}"] = {
-                "photo_ids": [p["id"] for p in photos],
-                "photo_index": 0,
-                "selected_photo_id": selected_pid,
-                "items": {},
-                "audio_bytes": None,
-                "audio_pending": False,
-                "answer_serial": 0,
-                "draft": None,
-                "draft_title": None,
-                "draft_meta": {},
-                "raw_conversation": {},
-                "draft_audio": None,
-                "draft_audio_pending": False,
-                "revision_serial": 0,
-            }
+            reflection_state(trip_id, photos)
+            st.session_state.pop(f"diary_existing_photo_view_{trip_id}", None)
+            st.session_state.pop(talk_key, None)
             st.rerun()
 
-        render_diary_delete_controls(trip_id, photos, current_photo_id=selected_pid)
+        render_diary_delete_controls(trip_id, photos)
         return
 
     if not photos:
@@ -2715,12 +2844,20 @@ def page_diary():
 
     state = reflection_state(trip_id, photos)
     photo_map = {p["id"]: p for p in photos}
-    selected_pid = render_diary_photo_gallery(trip_id, photos, state=state)
+    selected_pid = st.session_state.get(talk_key)
+    in_talk_mode = selected_pid in photo_map
+
+    if not in_talk_mode:
+        st.session_state.pop(talk_key, None)
+        clicked_pid = render_diary_photo_gallery(trip_id, photos, state=state)
+        if clicked_pid and open_diary_photo_talk(trip_id, clicked_pid, state):
+            st.rerun()
+        selected_pid = state.get("selected_photo_id")
 
     all_done = bool(state["photo_ids"]) and all(
         bool(state["items"].get(pid, {}).get("done")) for pid in state["photo_ids"]
     )
-    if all_done:
+    if (not in_talk_mode) and all_done:
         if not state.get("draft"):
             st.success("写真のお話はここまで。日記にまとめられます。")
             if st.button("AIと日記をつくる", type="primary", use_container_width=True):
@@ -2831,6 +2968,10 @@ def page_diary():
         render_diary_delete_controls(trip_id, photos, current_photo_id=selected_pid)
         return
 
+    if not in_talk_mode:
+        render_diary_delete_controls(trip_id, photos)
+        return
+
     if selected_pid not in photo_map:
         render_diary_delete_controls(trip_id, photos)
         return
@@ -2838,14 +2979,30 @@ def page_diary():
     pid = selected_pid
     photo = photo_map[pid]
     item = state["items"][pid]
-    photo_number = state["photo_ids"].index(pid) + 1
-    st.markdown(f"#### 選択中：写真 {photo_number} / {len(state['photo_ids'])}")
+
+    if st.button("← 写真一覧へ", use_container_width=True, key=f"back_to_diary_gallery_{trip_id}_{pid}"):
+        st.session_state.pop(talk_key, None)
+        if st.session_state.pop(f"diary_existing_photo_view_{trip_id}", False):
+            st.session_state.pop(f"reflection_state_{trip_id}", None)
+        st.rerun()
+
+    try:
+        image_bytes = download_photo(photo["storage_path"])
+        st.image(image_bytes, use_container_width=True)
+    except Exception as exc:
+        st.error("写真を読み込めませんでした。")
+        with st.expander("保護者向け詳細"):
+            st.code(str(exc))
+        render_diary_delete_controls(trip_id, photos, current_photo_id=pid)
+        return
+
     location_label = photo_location_label(photo)
     if location_label:
         st.caption(f"📍 {location_label}")
 
     if item.get("done"):
-        st.info("この写真のお話は完了しています。別の写真は上の一覧から選べます。")
+        render_conversation(item.get("conversation", []))
+        st.info("この写真のお話は完了しています。")
         if st.button("この写真についてもう少し話す", use_container_width=True, key=f"reopen_photo_{trip_id}_{pid}"):
             item["done"] = False
             update_photo_reflection(pid, item.get("conversation", []), item.get("signals", {}), done=False)
@@ -2858,7 +3015,6 @@ def page_diary():
         with c1:
             if st.button("この写真について話す", type="primary", use_container_width=True, key=f"start_photo_talk_{trip_id}_{pid}"):
                 try:
-                    image_bytes = download_photo(photo["storage_path"])
                     with st.spinner("写真を見ています…"):
                         question = initial_photo_question(image_bytes)
                         audio = speech_bytes(question)
@@ -2879,16 +3035,10 @@ def page_diary():
                 item["done"] = True
                 item["started"] = True
                 update_photo_reflection(pid, [], {}, done=True)
+                st.session_state.pop(talk_key, None)
+                if st.session_state.pop(f"diary_existing_photo_view_{trip_id}", False):
+                    st.session_state.pop(f"reflection_state_{trip_id}", None)
                 st.rerun()
-        render_diary_delete_controls(trip_id, photos, current_photo_id=pid)
-        return
-
-    try:
-        image_bytes = download_photo(photo["storage_path"])
-    except Exception as exc:
-        st.error("写真を読み込めませんでした。")
-        with st.expander("保護者向け詳細"):
-            st.code(str(exc))
         render_diary_delete_controls(trip_id, photos, current_photo_id=pid)
         return
 
@@ -2951,8 +3101,11 @@ def page_diary():
     if st.button("この写真のお話はここまで", use_container_width=True, key=f"finish_photo_talk_{trip_id}_{pid}"):
         item["done"] = True
         update_photo_reflection(pid, item.get("conversation", []), item.get("signals", {}), done=True)
-        state["audio_bytes"] = speech_bytes("教えてくれてありがとう。ほかの写真も上から選べるよ。")
-        state["audio_pending"] = True
+        state["audio_bytes"] = None
+        state["audio_pending"] = False
+        st.session_state.pop(talk_key, None)
+        if st.session_state.pop(f"diary_existing_photo_view_{trip_id}", False):
+            st.session_state.pop(f"reflection_state_{trip_id}", None)
         st.rerun()
 
     render_diary_delete_controls(trip_id, photos, current_photo_id=pid)
