@@ -1756,6 +1756,22 @@ def ask_json_with_image(prompt, image_bytes, name, schema, max_output_tokens=800
     return json.loads(result.output_text)
 
 
+def ask_json_with_images(prompt, image_items, name, schema, max_output_tokens=1000):
+    """Ask the vision model with several labeled images in one request."""
+    content = [{"type": "input_text", "text": prompt}]
+    for label, image_bytes in image_items or []:
+        label = str(label or "").strip()
+        if label:
+            content.append({"type": "input_text", "text": label})
+        if image_bytes:
+            content.append({"type": "input_image", "image_url": image_data_url(image_bytes)})
+    input_value = [{"role": "user", "content": content}]
+    result = openai_client().responses.create(
+        **response_args(VISION_MODEL, input_value, name, schema, max_output_tokens)
+    )
+    return json.loads(result.output_text)
+
+
 def enhance_audio_for_transcription(audio_file):
     """Normalize quiet PCM WAV recordings before transcription.
 
@@ -2737,6 +2753,7 @@ def delete_photo_and_related_data(trip_id, photo_id):
         # This analysis may have referred to the deleted comment. Hide it until the
         # diary is rebuilt from the remaining child comments.
         ai_meta["reflection_summary"] = ""
+        ai_meta["trip_summary"] = ""
 
         (
             client
@@ -2850,6 +2867,7 @@ def reset_photo_conversation(trip_id, photo_id):
                         remaining_child_points.append(value)
         ai_meta["child_points"] = remaining_child_points[:3]
         ai_meta["reflection_summary"] = ""
+        ai_meta["trip_summary"] = ""
 
         remaining_photos = list_trip_photos(trip_id)
         merged_signals = {}
@@ -3403,9 +3421,10 @@ AIが新しい出来事や感情を足してはいけません。
 - 本人のコメントが1つもない場合は、写真を残した事実と「コメントはまだない」ことだけを短く書く。
 - 大人っぽい抽象語へ変換しすぎない。
 - title はシステム側で「ぶらり旅（地名）」に固定するため、内容は diary に集中する。
-- reflection_summary は保護者向けに、その日の本人の発言だけを根拠として「何に興味・注意が向いていたか」「どんな疑問や比較、理由づけ、改善の発想があったか」「どんなWantがあったか」を2〜4文程度で簡潔にまとめる。
+- reflection_summary は保護者向けに、本人が入力・発話したコメントを第一の根拠として分析する。単なる発言の言い換えではなく、「何に興味・注意が向いていたか」「どんな比較・理由づけ・疑問・改善の発想があったか」「どんなWantがあったか」を2〜4文程度で簡潔にまとめる。
+- reflection_summary は、興味や思考を示す根拠がどのコメントにあるかを意識し、根拠が弱い場合は断定しない。
 - reflection_summary は性格診断・能力評価・将来予測にしない。「〜な子だ」と固定せず、「この日は〜に目が向いていた」「〜と考えていた」のようにその日の発言の範囲で書く。
-- reflection_summary で本人が言っていない感情・意図を断定しない。推測が必要な場合は「〜に関心が向いていたようです」のように弱く表現する。材料が少なければ、そのことを短く明記する。
+- reflection_summary で本人が言っていない感情・意図を断定しない。材料が少なければ、そのことを短く明記する。
 - child_points はAIの解釈ではなく、日記と reflection_summary の根拠になった本人の発言を短く3つ以内で抜き出す。
 - signals は本人が実際に話した内容だけを整理し、推測を足さない。
 """.strip()
@@ -3413,6 +3432,140 @@ AIが新しい出来事や感情を足してはいけません。
     result["title"] = diary_title_for_trip(trip)
     result["signals"] = merge_signals(all_signals, result.get("signals", {}))
     return result, raw
+
+
+def _vision_ready_photo(image_bytes, max_side=720, quality=76):
+    """Shrink a stored photo for the AI summary request without changing the saved original."""
+    try:
+        with Image.open(io.BytesIO(image_bytes)) as img:
+            img = ImageOps.exif_transpose(img).convert("RGB")
+            img.thumbnail((max_side, max_side))
+            out = io.BytesIO()
+            img.save(out, format="JPEG", quality=quality, optimize=True)
+            return out.getvalue()
+    except Exception:
+        return image_bytes
+
+
+def summarize_burari_from_photos(trip, photos):
+    """Summarize one trip from the actual photos plus the child's saved comments."""
+    comment_lines = []
+    image_items = []
+    child_points = []
+
+    for idx, photo in enumerate(photos or [], start=1):
+        conversation = _stored_photo_conversation(photo)
+        child_comments = [
+            str(turn.get("text") or "").strip()
+            for turn in conversation
+            if isinstance(turn, dict)
+            and turn.get("role") == "child"
+            and str(turn.get("text") or "").strip()
+        ]
+        location = str(photo_location_label(photo) or "").strip()
+        joined = " / ".join(child_comments) if child_comments else "本人コメントなし"
+        comment_lines.append(f"写真{idx}（{location or '場所不明'}）: {joined}")
+        for value in child_comments:
+            if value not in child_points:
+                child_points.append(value)
+        try:
+            raw = download_photo(photo.get("storage_path"))
+            if raw:
+                image_items.append((f"写真{idx}", _vision_ready_photo(raw)))
+        except Exception:
+            # One unreadable image must not prevent the other photos/comments from being summarized.
+            pass
+
+    schema = {
+        "type": "object",
+        "properties": {
+            "trip_summary": {"type": "string"},
+            "reflection_summary": {"type": "string"},
+            "child_points": {"type": "array", "items": {"type": "string"}},
+        },
+        "required": ["trip_summary", "reflection_summary", "child_points"],
+        "additionalProperties": False,
+    }
+    comments_text = "\n".join(comment_lines) if comment_lines else "写真・コメントなし"
+    prompt = f"""
+5〜6歳の子どもの「東京ぶらり旅」1回分をまとめてください。
+入力には、その日に保存された写真と、各写真について本人が話したコメントがあります。
+
+日付: {(trip or {}).get('trip_date', '')}
+行き先メモ: {str((trip or {}).get('destination') or '').strip() or 'なし'}
+写真ごとの本人コメント:
+{comments_text}
+
+出力ルール:
+- trip_summary は、そのぶらり旅全体を2〜4文で簡潔にまとめる。写真から確認できる対象と、本人が実際に話した内容を結びつけてよい。
+- 写真に写っていない出来事や、本人が言っていない感情・意図を作らない。
+- reflection_summary は本人のコメントを第一の根拠として、「何に興味・注意が向いていたか」「どんな比較・理由づけ・疑問があったか」「どうしたい・こうなってほしいというWantがあったか」を2〜4文で分析する。
+- reflection_summary は単なるコメントの言い換えではなく、その日の興味や思考の向きを整理する。ただし性格診断・能力評価・将来予測はしない。
+- 写真はコメントの対象を理解するための補助根拠として使う。写真だけを見て本人の感情やWantを推測しない。
+- 本人コメントが少ない場合は無理に分析せず、「判断材料が少ない」ことを明記する。
+- child_points は分析の根拠になった本人の言葉を3つ以内で短く抜き出す。本人コメントがなければ空配列にする。
+""".strip()
+
+    # When every photo failed to download, comments alone are still sufficient for a cautious summary.
+    if image_items:
+        result = ask_json_with_images(
+            prompt,
+            image_items,
+            "summarize_burari_photos_and_comments",
+            schema,
+            1000,
+        )
+    else:
+        result = ask_json(
+            prompt,
+            "summarize_burari_comments_only",
+            schema,
+            1000,
+        )
+    result["child_points"] = list(result.get("child_points") or [])[:3]
+    return result
+
+
+def save_burari_ai_summary(trip_id, result):
+    """Persist the on-demand AI trip summary inside the existing diary ai_meta."""
+    diary = get_diary_for_trip(trip_id)
+    if not diary:
+        raise ValueError("先に日記を保存してください。")
+    meta = diary.get("ai_meta") or {}
+    if not isinstance(meta, dict):
+        meta = {}
+    meta["trip_summary"] = str((result or {}).get("trip_summary") or "").strip()
+    meta["reflection_summary"] = str((result or {}).get("reflection_summary") or "").strip()
+    points = list((result or {}).get("child_points") or [])[:3]
+    if points:
+        meta["child_points"] = points
+    meta["photo_comment_summary_updated_at"] = now_jst().isoformat()
+    (
+        supabase_client()
+        .table(DIARY_TABLE)
+        .update({"ai_meta": meta, "updated_at": now_jst().isoformat()})
+        .eq("trip_id", trip_id)
+        .execute()
+    )
+    return meta
+
+
+def render_burari_trip_summary(meta):
+    if not isinstance(meta, dict):
+        return
+    summary = str(meta.get("trip_summary") or "").strip()
+    if not summary:
+        return
+    st.markdown("#### AIによる、このぶらり旅のまとめ")
+    st.markdown(
+        f"""
+        <div class="talk-card">
+          <div class="small-note">写真と本人のコメントを一緒に見て、このぶらり旅全体をまとめています。</div>
+          <div class="big-text" style="margin-top:.45rem;">{html.escape(summary)}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 def render_diary_reflection_summary(meta):
@@ -4515,7 +4668,24 @@ def page_diary():
             """,
             unsafe_allow_html=True,
         )
-        render_diary_reflection_summary(existing.get("ai_meta") or {})
+        existing_meta = existing.get("ai_meta") or {}
+        if photos and st.button(
+            "AIにまとめてもらう",
+            use_container_width=True,
+            key=f"ai_trip_summary_{trip_id}",
+        ):
+            try:
+                with st.spinner("写真とコメントを見て、このぶらり旅をまとめています…"):
+                    summary_result = summarize_burari_from_photos(trip, photos)
+                    save_burari_ai_summary(trip_id, summary_result)
+                st.session_state["_diary_notice"] = "写真とコメントからAIのまとめを更新しました。"
+                st.rerun()
+            except Exception as exc:
+                st.error("AIのまとめを作れませんでした。もう一度試してください。")
+                with st.expander("保護者向け詳細"):
+                    st.code(str(exc))
+        render_burari_trip_summary(existing_meta)
+        render_diary_reflection_summary(existing_meta)
         render_diary_title_editor(trip_id, existing_title, "diary_existing")
         if photos and st.button("この日の写真から、もう一度日記をつくる", use_container_width=True):
             reflection_state(trip_id, photos)
@@ -4593,6 +4763,26 @@ def page_diary():
             """,
             unsafe_allow_html=True,
         )
+        if photos and st.button(
+            "AIにまとめてもらう",
+            use_container_width=True,
+            key=f"ai_trip_summary_draft_{trip_id}",
+        ):
+            try:
+                with st.spinner("写真とコメントを見て、このぶらり旅をまとめています…"):
+                    summary_result = summarize_burari_from_photos(trip, photos)
+                draft_meta = state.setdefault("draft_meta", {})
+                draft_meta["trip_summary"] = str(summary_result.get("trip_summary") or "").strip()
+                draft_meta["reflection_summary"] = str(summary_result.get("reflection_summary") or "").strip()
+                points = list(summary_result.get("child_points") or [])[:3]
+                if points:
+                    draft_meta["child_points"] = points
+                st.rerun()
+            except Exception as exc:
+                st.error("AIのまとめを作れませんでした。もう一度試してください。")
+                with st.expander("保護者向け詳細"):
+                    st.code(str(exc))
+        render_burari_trip_summary(state.get("draft_meta") or {})
         render_diary_reflection_summary(state.get("draft_meta") or {})
         if state.get("draft_audio"):
             st.audio(
@@ -4889,6 +5079,7 @@ def page_history(embedded=False):
         )
 
         meta = diary.get("ai_meta") or {}
+        render_burari_trip_summary(meta)
         render_diary_reflection_summary(meta)
         child_points = meta.get("child_points", []) if isinstance(meta, dict) else []
         if child_points:
