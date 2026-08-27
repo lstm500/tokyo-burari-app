@@ -160,168 +160,296 @@ MONTHLY_TABLE = "burari_monthly_reviews"
 
 
 # ============================================================
-# Native mobile camera component
+# Live mobile camera component
 # ============================================================
-# Streamlit's built-in st.camera_input uses getUserMedia and therefore depends
-# on browser camera permissions. This component instead uses a normal HTML
-# file input with capture="environment", which asks a mobile browser to hand
-# off to the phone's rear camera app. The captured image is resized in the
-# browser before it is sent back to Python.
-_NATIVE_CAMERA_HTML = """
-<div class="native-camera-wrap">
-  <input id="native-camera-input" type="file" accept="image/*" capture="environment" />
-  <label class="native-camera-button" for="native-camera-input">
-    <span class="camera-icon">📷</span>
-    <span class="camera-title">いま写真を撮る</span>
-    <span class="camera-sub">スマホのカメラを開きます</span>
-  </label>
-  <div id="native-camera-status" class="camera-status" aria-live="polite"></div>
+# Use getUserMedia so the app opens a live camera preview instead of handing
+# control to the OS file picker. Browser permission is still required; no web
+# app can bypass a camera permission that the user/browser has denied.
+_LIVE_CAMERA_HTML = """
+<div class="live-camera-wrap">
+  <div id="camera-placeholder" class="camera-placeholder">
+    <div class="camera-placeholder-icon">📷</div>
+    <div class="camera-placeholder-title">カメラを開いて撮影</div>
+    <div class="camera-placeholder-sub">下の「カメラを開く」を押してください</div>
+  </div>
+  <video id="live-camera-video" class="live-camera-video" playsinline autoplay muted hidden></video>
+  <canvas id="live-camera-canvas" hidden></canvas>
+
+  <div class="camera-actions">
+    <button id="live-camera-start" class="camera-main-button" type="button">📷 カメラを開く</button>
+    <button id="live-camera-shoot" class="camera-shoot-button" type="button" disabled>● 撮影する</button>
+    <button id="live-camera-stop" class="camera-sub-button" type="button" hidden>カメラを閉じる</button>
+  </div>
+  <div id="live-camera-status" class="camera-status" aria-live="polite"></div>
 </div>
 """
 
-_NATIVE_CAMERA_CSS = """
-.native-camera-wrap {
-  width: 100%;
-  font-family: var(--st-font);
-}
-#native-camera-input {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  opacity: 0;
-  pointer-events: none;
-}
-.native-camera-button {
-  min-height: 112px;
+_LIVE_CAMERA_CSS = """
+.live-camera-wrap {
   width: 100%;
   box-sizing: border-box;
+  font-family: var(--st-font);
+}
+.camera-placeholder,
+.live-camera-video {
+  width: 100%;
+  min-height: 250px;
+  max-height: 62vh;
+  box-sizing: border-box;
+  border-radius: 20px;
+  background: rgba(128,128,128,.08);
+  border: 1px solid rgba(128,128,128,.22);
+}
+.camera-placeholder {
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 4px;
-  border: 2px solid var(--st-primary-color);
-  border-radius: 20px;
-  background: color-mix(in srgb, var(--st-primary-color) 8%, transparent);
-  color: var(--st-text-color);
-  cursor: pointer;
-  user-select: none;
-  -webkit-tap-highlight-color: transparent;
-  touch-action: manipulation;
+  padding: 28px 18px;
+  text-align: center;
 }
-.native-camera-button:active {
-  transform: scale(.985);
-}
-.camera-icon {
-  font-size: 34px;
+.camera-placeholder-icon {
+  font-size: 44px;
   line-height: 1;
+  margin-bottom: 10px;
 }
-.camera-title {
+.camera-placeholder-title {
   font-size: 20px;
   font-weight: 800;
-  line-height: 1.25;
+  line-height: 1.35;
 }
-.camera-sub {
-  font-size: 12px;
+.camera-placeholder-sub {
+  margin-top: 6px;
+  font-size: 13px;
   opacity: .72;
 }
+.live-camera-video {
+  object-fit: cover;
+}
+.camera-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin-top: 12px;
+}
+.camera-main-button,
+.camera-shoot-button,
+.camera-sub-button {
+  width: 100%;
+  min-height: 62px;
+  border-radius: 17px;
+  font-size: 17px;
+  font-weight: 800;
+  cursor: pointer;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+.camera-main-button {
+  border: 2px solid var(--st-primary-color);
+  background: color-mix(in srgb, var(--st-primary-color) 9%, transparent);
+  color: var(--st-text-color);
+}
+.camera-shoot-button {
+  border: 2px solid var(--st-primary-color);
+  background: var(--st-primary-color);
+  color: white;
+}
+.camera-shoot-button:disabled {
+  opacity: .4;
+  cursor: default;
+}
+.camera-sub-button {
+  grid-column: 1 / -1;
+  min-height: 48px;
+  border: 1px solid rgba(128,128,128,.28);
+  background: transparent;
+  color: var(--st-text-color);
+}
 .camera-status {
-  min-height: 20px;
-  margin-top: 7px;
+  min-height: 42px;
+  margin-top: 9px;
+  padding: 0 4px;
   text-align: center;
   font-size: 13px;
-  opacity: .75;
+  line-height: 1.5;
+  opacity: .85;
+}
+@media (max-width: 640px) {
+  .camera-placeholder,
+  .live-camera-video {
+    min-height: 300px;
+  }
+  .camera-actions {
+    grid-template-columns: 1fr;
+  }
+  .camera-sub-button {
+    grid-column: auto;
+  }
 }
 """
 
-_NATIVE_CAMERA_JS = r"""
+_LIVE_CAMERA_JS = r"""
 export default function(component) {
   const { parentElement, setTriggerValue } = component;
-  const input = parentElement.querySelector('#native-camera-input');
-  const status = parentElement.querySelector('#native-camera-status');
+  const video = parentElement.querySelector('#live-camera-video');
+  const canvas = parentElement.querySelector('#live-camera-canvas');
+  const placeholder = parentElement.querySelector('#camera-placeholder');
+  const startButton = parentElement.querySelector('#live-camera-start');
+  const shootButton = parentElement.querySelector('#live-camera-shoot');
+  const stopButton = parentElement.querySelector('#live-camera-stop');
+  const status = parentElement.querySelector('#live-camera-status');
 
-  const fileToDataUrl = (blob) => new Promise((resolve, reject) => {
+  let stream = null;
+
+  const stopStream = () => {
+    if (stream) {
+      stream.getTracks().forEach((track) => track.stop());
+      stream = null;
+    }
+    if (video) {
+      video.pause();
+      video.srcObject = null;
+      video.hidden = true;
+    }
+    if (placeholder) placeholder.hidden = false;
+    if (shootButton) shootButton.disabled = true;
+    if (stopButton) stopButton.hidden = true;
+    if (startButton) startButton.textContent = '📷 カメラを開く';
+  };
+
+  const errorMessage = (err) => {
+    const name = (err && err.name) ? err.name : '';
+    if (name === 'NotAllowedError' || name === 'PermissionDeniedError') {
+      return 'カメラが許可されていません。ブラウザのアドレスバーにあるサイト設定 → 権限 → カメラを「許可」にして、このページを再読み込みしてください。';
+    }
+    if (name === 'NotFoundError' || name === 'DevicesNotFoundError') {
+      return '利用できるカメラが見つかりませんでした。';
+    }
+    if (name === 'NotReadableError' || name === 'TrackStartError') {
+      return 'カメラを開けませんでした。ほかのアプリがカメラを使っていないか確認してください。';
+    }
+    if (name === 'OverconstrainedError' || name === 'ConstraintNotSatisfiedError') {
+      return '背面カメラを指定できませんでした。もう一度お試しください。';
+    }
+    if (name === 'SecurityError') {
+      return 'ブラウザのセキュリティ設定でカメラがブロックされています。サイトのカメラ権限を確認してください。';
+    }
+    return 'カメラを開けませんでした。ブラウザのカメラ権限を確認してください。';
+  };
+
+  const startCamera = async () => {
+    stopStream();
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      const message = 'このブラウザでは直接カメラを開けません。ChromeまたはSafariの最新版で開いてください。';
+      status.textContent = message;
+      setTriggerValue('camera_error', { name: 'Unsupported', message });
+      return;
+    }
+
+    status.textContent = 'カメラの使用を許可してください…';
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({
+        audio: false,
+        video: {
+          facingMode: { ideal: 'environment' },
+          width: { ideal: 1920 },
+          height: { ideal: 1080 }
+        }
+      });
+      video.srcObject = stream;
+      video.hidden = false;
+      placeholder.hidden = true;
+      await video.play();
+      shootButton.disabled = false;
+      stopButton.hidden = false;
+      startButton.textContent = '↻ カメラを開き直す';
+      status.textContent = 'カメラが開きました。写したいものを画面に入れて「撮影する」を押してください。';
+    } catch (err) {
+      console.error(err);
+      stopStream();
+      const message = errorMessage(err);
+      status.textContent = message;
+      setTriggerValue('camera_error', {
+        name: (err && err.name) ? err.name : 'CameraError',
+        message,
+        detail: (err && err.message) ? String(err.message) : ''
+      });
+    }
+  };
+
+  const blobToDataUrl = (blob) => new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => resolve(reader.result);
     reader.onerror = reject;
     reader.readAsDataURL(blob);
   });
 
-  const loadImage = (file) => new Promise((resolve, reject) => {
-    const url = URL.createObjectURL(file);
-    const img = new Image();
-    img.onload = () => {
-      URL.revokeObjectURL(url);
-      resolve(img);
-    };
-    img.onerror = (err) => {
-      URL.revokeObjectURL(url);
-      reject(err);
-    };
-    img.src = url;
-  });
+  const takePhoto = async () => {
+    if (!stream || !video.videoWidth || !video.videoHeight) return;
+    shootButton.disabled = true;
+    status.textContent = '撮影しています…';
 
-  const preparePhoto = async (file) => {
-    const img = await loadImage(file);
-    const maxSide = 1600;
-    const srcW = img.naturalWidth || img.width;
-    const srcH = img.naturalHeight || img.height;
-    const scale = Math.min(1, maxSide / Math.max(srcW, srcH));
-    const width = Math.max(1, Math.round(srcW * scale));
-    const height = Math.max(1, Math.round(srcH * scale));
-
-    const canvas = document.createElement('canvas');
-    canvas.width = width;
-    canvas.height = height;
-    const ctx = canvas.getContext('2d', { alpha: false });
-    ctx.drawImage(img, 0, 0, width, height);
-
-    const blob = await new Promise((resolve) => {
-      canvas.toBlob(resolve, 'image/jpeg', 0.84);
-    });
-    if (!blob) throw new Error('camera image conversion failed');
-    return await fileToDataUrl(blob);
-  };
-
-  const onChange = async () => {
-    const file = input.files && input.files[0];
-    if (!file) return;
-    status.textContent = '写真を準備しています…';
     try {
-      const dataUrl = await preparePhoto(file);
+      const srcW = video.videoWidth;
+      const srcH = video.videoHeight;
+      const maxSide = 1600;
+      const scale = Math.min(1, maxSide / Math.max(srcW, srcH));
+      const width = Math.max(1, Math.round(srcW * scale));
+      const height = Math.max(1, Math.round(srcH * scale));
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext('2d', { alpha: false });
+      ctx.drawImage(video, 0, 0, width, height);
+      const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', 0.86));
+      if (!blob) throw new Error('canvas conversion failed');
+      const dataUrl = await blobToDataUrl(blob);
       setTriggerValue('photo', {
         data_url: dataUrl,
-        name: file.name || 'camera.jpg',
-        captured_at: new Date().toISOString(),
+        name: 'camera.jpg',
+        captured_at: new Date().toISOString()
       });
-      status.textContent = '写真を受け取りました。';
+      status.textContent = '撮影しました。写真を確認してください。';
+      stopStream();
     } catch (err) {
       console.error(err);
-      status.textContent = '写真を読み込めませんでした。もう一度撮ってください。';
-      setTriggerValue('camera_error', '画像を読み込めませんでした');
-    } finally {
-      input.value = '';
+      shootButton.disabled = false;
+      const message = '撮影した画像を作れませんでした。もう一度お試しください。';
+      status.textContent = message;
+      setTriggerValue('camera_error', { name: 'CaptureError', message });
     }
   };
 
-  input.addEventListener('change', onChange);
-  return () => input.removeEventListener('change', onChange);
+  const closeCamera = () => {
+    stopStream();
+    status.textContent = 'カメラを閉じました。';
+  };
+
+  startButton.addEventListener('click', startCamera);
+  shootButton.addEventListener('click', takePhoto);
+  stopButton.addEventListener('click', closeCamera);
+
+  return () => {
+    startButton.removeEventListener('click', startCamera);
+    shootButton.removeEventListener('click', takePhoto);
+    stopButton.removeEventListener('click', closeCamera);
+    stopStream();
+  };
 }
 """
 
 try:
-    native_camera_component = st.components.v2.component(
-        "tokyo_burari_native_camera",
-        html=_NATIVE_CAMERA_HTML,
-        css=_NATIVE_CAMERA_CSS,
-        js=_NATIVE_CAMERA_JS,
+    live_camera_component = st.components.v2.component(
+        "tokyo_burari_live_camera",
+        html=_LIVE_CAMERA_HTML,
+        css=_LIVE_CAMERA_CSS,
+        js=_LIVE_CAMERA_JS,
     )
 except Exception:
-    native_camera_component = None
+    live_camera_component = None
 
 
 def decode_camera_data_url(data_url):
-    """Decode a trusted data URL emitted by the native camera component."""
+    """Decode a trusted data URL emitted by the live camera component."""
     if not isinstance(data_url, str) or not data_url.startswith("data:image/"):
         raise ValueError("カメラ画像の形式が不正です。")
     try:
@@ -1313,23 +1441,24 @@ def page_trip():
     st.markdown(f"**{trip.get('trip_date', '')}　{destination or '今日のぶらり旅'}**　／　写真 {len(photos)}枚")
 
     st.markdown("#### 写真を追加")
-    st.caption("『いま写真を撮る』はスマホ標準のカメラアプリを起動する方式です。ブラウザ内カメラの権限画面は使いません。")
+    st.caption("『カメラを開く』を押すと、この画面に背面カメラの映像を表示します。初回だけブラウザのカメラ許可が必要です。")
 
     pending_key = f"pending_camera_photo_{trip['id']}"
     digest_key = f"pending_camera_digest_{trip['id']}"
     pending = st.session_state.get(pending_key)
 
     if pending is None:
-        if native_camera_component is not None:
-            result = native_camera_component(
-                key=f"native_camera_{trip['id']}_{st.session_state.capture_serial}",
+        if live_camera_component is not None:
+            result = live_camera_component(
+                key=f"live_camera_{trip['id']}_{st.session_state.capture_serial}",
                 on_photo_change=lambda: None,
                 on_camera_error_change=lambda: None,
             )
             payload = getattr(result, "photo", None)
             camera_error = getattr(result, "camera_error", None)
             if camera_error:
-                st.warning("カメラから写真を受け取れませんでした。もう一度試してください。")
+                message = camera_error.get("message") if isinstance(camera_error, dict) else str(camera_error)
+                st.warning(message or "カメラを開けませんでした。ブラウザのカメラ権限を確認してください。")
             if isinstance(payload, dict) and payload.get("data_url"):
                 try:
                     raw = decode_camera_data_url(payload["data_url"])
@@ -1343,7 +1472,7 @@ def page_trip():
                     with st.expander("保護者向け詳細"):
                         st.code(str(exc))
         else:
-            st.error("スマホカメラ機能に必要なStreamlitのバージョンが古いです。requirements.txtを更新してください。")
+            st.error("ライブカメラ機能に必要なStreamlitのバージョンが古いです。requirements.txtを更新してください。")
 
     if pending is not None:
         st.image(pending, caption="この写真を残す？", use_container_width=True)
@@ -1908,10 +2037,10 @@ def page_settings():
     st.divider()
     st.markdown("#### カメラについて")
     st.write(
-        "通常は『カメラで撮る』画面の『写真を撮る・選ぶ』を使います。"
-        "これはスマホの写真選択機能を使うため、Streamlit画面内のカメラ権限が使えない端末でも動きやすい方式です。"
+        "『カメラで撮る』画面では、ブラウザのライブカメラを直接開いて撮影します。"
+        "初回だけ、このサイトへのカメラ使用を『許可』してください。"
     )
-    st.caption("ブラウザの直接カメラは任意機能として残しています。Safari/Chromeでカメラ権限を許可した場合だけ使えます。")
+    st.caption("許可を拒否した場合は、ブラウザのサイト設定 → 権限 → カメラを『許可』に変更してから再読み込みしてください。写真フォルダから選ぶ機能も残しています。")
 
     st.divider()
     st.markdown("#### プロジェクトの考え方")
