@@ -265,14 +265,18 @@ st.markdown(
         border-color: #3B82C4 !important;
       }
       .st-key-history_home_nav div.stButton > button,
-      .st-key-history_home_nav button {
+      .st-key-history_home_nav button,
+      .st-key-camera_home_nav div.stButton > button,
+      .st-key-camera_home_nav button {
         border: 2px solid #2F9E73 !important;
         background: rgba(47, 158, 115, .08) !important;
         color: inherit !important;
         box-shadow: 0 0 0 2px rgba(47, 158, 115, .04) inset;
       }
       .st-key-history_home_nav div.stButton > button:hover,
-      .st-key-history_home_nav button:hover {
+      .st-key-history_home_nav button:hover,
+      .st-key-camera_home_nav div.stButton > button:hover,
+      .st-key-camera_home_nav button:hover {
         background: rgba(47, 158, 115, .13) !important;
         border-color: #278663 !important;
       }
@@ -4367,6 +4371,17 @@ def page_trip():
         on_photo_change=lambda: None,
         on_camera_error_change=lambda: None,
     )
+
+    # Keep a full-width route back to the home screen immediately below the
+    # camera form, so it remains easy to leave camera mode on a phone.
+    with st.container(key="camera_home_nav"):
+        if st.button(
+            "トップページに戻る",
+            use_container_width=True,
+            key="camera_home_button",
+        ):
+            go_page("home")
+
     payload = getattr(result, "photo", None)
     camera_error = getattr(result, "camera_error", None)
 
