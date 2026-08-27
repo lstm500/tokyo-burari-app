@@ -88,6 +88,38 @@ st.markdown(
         margin: .1rem .15rem .1rem 0;
         font-size: .85rem;
       }
+      .st-key-home_menu div.stButton > button {
+        min-height: 8.2rem;
+        border-radius: 22px;
+        font-size: 1.30rem;
+        font-weight: 800;
+        line-height: 1.45;
+        white-space: pre-line;
+      }
+      .st-key-home_menu [data-testid="stHorizontalBlock"] {
+        gap: .75rem;
+      }
+      .st-key-mobile_capture [data-testid="stFileUploaderDropzone"] {
+        padding: 1rem;
+        border-radius: 20px;
+      }
+      .st-key-mobile_capture [data-testid="stFileUploaderDropzone"] button {
+        min-height: 4.5rem;
+        width: 100%;
+        border-radius: 18px;
+        font-size: 1.08rem;
+        font-weight: 800;
+      }
+      @media (max-width: 640px) {
+        .block-container {
+          padding-left: .75rem;
+          padding-right: .75rem;
+        }
+        .st-key-home_menu div.stButton > button {
+          min-height: 7.4rem;
+          font-size: 1.16rem;
+        }
+      }
     </style>
     """,
     unsafe_allow_html=True,
@@ -398,6 +430,31 @@ def get_latest_active_trip():
         .eq("status", "active")
         .order("started_at", desc=True)
         .limit(1)
+        .execute()
+    )
+    return (result.data or [None])[0]
+
+
+def get_today_active_trip():
+    result = (
+        supabase_client()
+        .table(TRIP_TABLE)
+        .select("*")
+        .eq("status", "active")
+        .eq("trip_date", today_iso())
+        .order("started_at", desc=True)
+        .limit(1)
+        .execute()
+    )
+    return (result.data or [None])[0]
+
+
+def update_trip_destination(trip_id, destination):
+    result = (
+        supabase_client()
+        .table(TRIP_TABLE)
+        .update({"destination": str(destination or "").strip()})
+        .eq("id", trip_id)
         .execute()
     )
     return (result.data or [None])[0]
@@ -893,7 +950,7 @@ def monthly_speech_text(review):
 # ============================================================
 def init_state():
     defaults = {
-        "main_page": "📷 ぶらり旅",
+        "main_page": "home",
         "active_trip_id": None,
         "capture_serial": 0,
         "preferred_diary_trip_id": None,
@@ -902,16 +959,64 @@ def init_state():
         if key not in st.session_state:
             st.session_state[key] = value
 
-    # Page buttons run after the navigation widget has been created.
-    # Apply navigation requests on the next rerun, before creating that widget.
+    # Older deployed versions used the visible menu labels as state values.
+    legacy_pages = {
+        "📷 ぶらり旅": "camera",
+        "📖 今日の日記": "diary",
+        "📚 これまで": "review",
+        "🔍 今月の発見": "review",
+    }
+    current_page = st.session_state.get("main_page")
+    if current_page in legacy_pages:
+        st.session_state["main_page"] = legacy_pages[current_page]
+
     next_page = st.session_state.pop("_next_page", None)
     if next_page:
-        st.session_state["main_page"] = next_page
+        st.session_state["main_page"] = legacy_pages.get(next_page, next_page)
+
+    if st.session_state.active_trip_id:
+        active = get_trip(st.session_state.active_trip_id)
+        if not active or active.get("status") != "active" or active.get("trip_date") != today_iso():
+            st.session_state.active_trip_id = None
 
     if not st.session_state.active_trip_id:
-        active = get_latest_active_trip()
+        active = get_today_active_trip()
         if active:
             st.session_state.active_trip_id = active["id"]
+
+
+def go_page(page_name):
+    st.session_state["main_page"] = page_name
+    st.rerun()
+
+
+def ensure_today_trip():
+    trip = get_trip(st.session_state.active_trip_id) if st.session_state.active_trip_id else None
+    if trip and trip.get("status") == "active" and trip.get("trip_date") == today_iso():
+        return trip
+    trip = get_today_active_trip()
+    if not trip:
+        trip = create_trip("")
+    st.session_state.active_trip_id = trip["id"]
+    return trip
+
+
+def render_home_button(label, page_name, key, ensure_trip=False):
+    if st.button(label, key=key, use_container_width=True):
+        if ensure_trip:
+            ensure_today_trip()
+        go_page(page_name)
+
+
+def page_top(title, caption=""):
+    c1, c2 = st.columns([1, 5], vertical_alignment="center")
+    with c1:
+        if st.button("←", key=f"home_back_{title}", help="ホームへ戻る", use_container_width=True):
+            go_page("home")
+    with c2:
+        st.subheader(title)
+    if caption:
+        st.caption(caption)
 
 
 def reflection_state(trip_id, photos):
@@ -985,57 +1090,105 @@ def render_small_gallery(photos, max_count=4):
 
 
 # ============================================================
+# Page: Home
+# ============================================================
+def page_home():
+    st.title("📷 東京ぶらり旅")
+    st.caption("答えを教える旅ではなく、自分なりの『気になる』を増やす旅。")
+
+    active = get_trip(st.session_state.active_trip_id) if st.session_state.active_trip_id else None
+    if active and active.get("status") == "active" and active.get("trip_date") == today_iso():
+        photos = list_trip_photos(active["id"])
+        destination = str(active.get("destination") or "").strip()
+        label = destination or "今日のぶらり旅"
+        st.caption(f"{label}　／　写真 {len(photos)}枚")
+
+    with st.container(key="home_menu"):
+        row1_left, row1_right = st.columns(2)
+        with row1_left:
+            render_home_button("📷\nカメラで撮る", "camera", "home_camera", ensure_trip=True)
+        with row1_right:
+            render_home_button("📖\n日記", "diary", "home_diary")
+
+        row2_left, row2_right = st.columns(2)
+        with row2_left:
+            render_home_button("🔍\n振り返り", "review", "home_review")
+        with row2_right:
+            render_home_button("⚙️\n設定", "settings", "home_settings")
+
+    st.caption("写真は何枚撮っても、0枚でも構いません。気になったときだけ使います。")
+
+
+# ============================================================
 # Page: Trip / camera
 # ============================================================
 def page_trip():
-    st.subheader("📷 ぶらり旅")
-    st.caption("目的地に着くことより、途中で自分の『気になる』に出会うことを大切にします。")
-
-    trip = get_trip(st.session_state.active_trip_id) if st.session_state.active_trip_id else None
-    if not trip or trip.get("status") != "active":
-        st.markdown(
-            """
-            <div class="hero-card">
-              <div class="hero-title">今日は、どのあたりをぶらりする？</div>
-              <div class="small-note">行き先はざっくりでOK。書かなくても始められます。</div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-        destination = st.text_input(
-            "今日の行き先メモ（任意）",
-            placeholder="例：神楽坂、浅草のあたり",
-            key="new_trip_destination",
-        )
-        if st.button("📷 ぶらり旅をはじめる", type="primary", use_container_width=True):
-            try:
-                trip = create_trip(destination)
-                st.session_state.active_trip_id = trip["id"]
-                st.session_state.capture_serial += 1
-                st.rerun()
-            except Exception as exc:
-                st.error("ぶらり旅を開始できませんでした。")
-                with st.expander("保護者向け詳細"):
-                    st.code(str(exc))
-        return
-
-    photos = list_trip_photos(trip["id"])
-    st.markdown(f"**{trip_label(trip)}**　／　写真 {len(photos)}枚")
-    st.caption("撮りたいと思ったものだけ撮ればOK。便利・不便を探す必要も、何枚か撮る必要もありません。")
-
-    camera = st.camera_input(
-        "気になるものがあったら撮ってね",
-        key=f"burari_camera_{st.session_state.capture_serial}",
+    page_top(
+        "📷 カメラで撮る",
+        "気になったものだけ残します。便利・不便を探す必要も、何枚か撮る必要もありません。",
     )
-    if camera is not None:
-        st.image(camera, caption="この写真を残す？", use_container_width=True)
+
+    trip = ensure_today_trip()
+    photos = list_trip_photos(trip["id"])
+    destination = str(trip.get("destination") or "").strip()
+    st.markdown(f"**{trip.get('trip_date', '')}　{destination or '今日のぶらり旅'}**　／　写真 {len(photos)}枚")
+
+    st.markdown("#### 写真を追加")
+    st.caption("下をタップすると、スマホでは『カメラで撮る』または『写真を選ぶ』を選べます。ブラウザのカメラ権限がなくても使える方式です。")
+    with st.container(key="mobile_capture"):
+        upload = st.file_uploader(
+            "📷 写真を撮る・選ぶ",
+            type=["jpg", "jpeg", "png", "webp"],
+            accept_multiple_files=False,
+            key=f"mobile_photo_{trip['id']}_{st.session_state.capture_serial}",
+        )
+
+    if upload is not None:
+        st.image(upload, caption="この写真を残す？", use_container_width=True)
         c1, c2 = st.columns(2)
         with c1:
             if st.button(
                 "この写真を残す",
                 type="primary",
                 use_container_width=True,
-                key=f"save_camera_{st.session_state.capture_serial}",
+                key=f"save_mobile_{st.session_state.capture_serial}",
+            ):
+                try:
+                    with st.spinner("写真を残しています…"):
+                        upload_photo(trip["id"], upload.getvalue())
+                    st.session_state.capture_serial += 1
+                    st.rerun()
+                except Exception as exc:
+                    st.error("写真を保存できませんでした。")
+                    with st.expander("保護者向け詳細"):
+                        st.code(str(exc))
+        with c2:
+            if st.button(
+                "選びなおす",
+                use_container_width=True,
+                key=f"retry_mobile_{st.session_state.capture_serial}",
+            ):
+                st.session_state.capture_serial += 1
+                st.rerun()
+
+    use_direct_camera = st.checkbox(
+        "ブラウザのカメラを直接使う（任意）",
+        value=False,
+        key=f"direct_camera_toggle_{trip['id']}",
+    )
+    if use_direct_camera:
+        st.caption("Safari/Chrome側でカメラ権限が許可されている場合だけ使えます。使えない場合は上の『写真を撮る・選ぶ』を使ってください。")
+        camera = st.camera_input(
+            "ブラウザのカメラを開く",
+            key=f"direct_camera_{st.session_state.capture_serial}",
+        )
+        if camera is not None:
+            st.image(camera, caption="この写真を残す？", use_container_width=True)
+            if st.button(
+                "直接カメラの写真を残す",
+                type="primary",
+                use_container_width=True,
+                key=f"save_direct_{st.session_state.capture_serial}",
             ):
                 try:
                     with st.spinner("写真を残しています…"):
@@ -1046,59 +1199,51 @@ def page_trip():
                     st.error("写真を保存できませんでした。")
                     with st.expander("保護者向け詳細"):
                         st.code(str(exc))
-        with c2:
-            if st.button(
-                "撮りなおす",
-                use_container_width=True,
-                key=f"retry_camera_{st.session_state.capture_serial}",
-            ):
-                st.session_state.capture_serial += 1
-                st.rerun()
-
-    with st.expander("スマホにある写真を追加する"):
-        uploads = st.file_uploader(
-            "写真を選ぶ",
-            type=["jpg", "jpeg", "png", "webp"],
-            accept_multiple_files=True,
-            key=f"photo_upload_{trip['id']}",
-        )
-        if uploads and st.button("選んだ写真を残す", use_container_width=True):
-            try:
-                with st.spinner("写真を保存しています…"):
-                    for uploaded in uploads:
-                        upload_photo(trip["id"], uploaded.getvalue())
-                st.success("写真を追加しました。")
-                st.rerun()
-            except Exception as exc:
-                st.error("写真を追加できませんでした。")
-                with st.expander("保護者向け詳細"):
-                    st.code(str(exc))
 
     if photos:
         st.markdown("#### 今日の写真")
-        render_small_gallery(list(reversed(photos)), max_count=4)
+        render_small_gallery(list(reversed(photos)), max_count=6)
 
     st.caption("人の顔・住所・学校名など、個人が分かる情報は必要以上に撮らないようにしてください。")
 
-    if st.button("今日はここまで → 写真を振り返る", use_container_width=True):
+    if photos and st.button("撮影を終えて日記へ", type="primary", use_container_width=True):
         try:
             finish_trip(trip["id"])
             st.session_state.preferred_diary_trip_id = trip["id"]
             st.session_state.active_trip_id = None
-            st.session_state["_next_page"] = "📖 今日の日記"
+            st.session_state["_next_page"] = "diary"
             st.rerun()
         except Exception as exc:
             st.error("旅を終了できませんでした。")
             with st.expander("保護者向け詳細"):
                 st.code(str(exc))
 
-
 # ============================================================
 # Page: Diary conversation
 # ============================================================
 def page_diary():
-    st.subheader("📖 今日の日記")
-    st.caption("写真を見ながらAIと少し話します。AIは本人が話していない内容を日記に足しません。")
+    page_top(
+        "📖 日記",
+        "写真を見ながらAIと少し話します。AIは本人が話していない内容を日記に足しません。",
+    )
+
+    active = get_trip(st.session_state.active_trip_id) if st.session_state.active_trip_id else None
+    if active and active.get("status") == "active" and active.get("trip_date") == today_iso():
+        active_photos = list_trip_photos(active["id"])
+        if active_photos:
+            st.info(f"今日のぶらり旅に写真が {len(active_photos)}枚あります。日記を作るなら、ここで旅を区切ります。")
+            if st.button("今日の写真で日記をつくる", type="primary", use_container_width=True):
+                try:
+                    finish_trip(active["id"])
+                    st.session_state.preferred_diary_trip_id = active["id"]
+                    st.session_state.active_trip_id = None
+                    st.rerun()
+                except Exception as exc:
+                    st.error("日記の準備ができませんでした。")
+                    with st.expander("保護者向け詳細"):
+                        st.code(str(exc))
+        else:
+            st.caption("今日のぶらり旅は始まっていますが、まだ写真はありません。")
 
     trips = list_recent_trips_for_diary()
     if not trips:
@@ -1254,7 +1399,7 @@ def page_diary():
                 )
                 st.session_state.pop(f"reflection_state_{trip_id}", None)
                 st.session_state.preferred_diary_trip_id = None
-                st.session_state["_next_page"] = "📚 これまで"
+                st.session_state["_next_page"] = "review"
                 st.rerun()
             except Exception as exc:
                 st.error("日記を保存できませんでした。")
@@ -1374,8 +1519,9 @@ def page_diary():
 # ============================================================
 # Page: History
 # ============================================================
-def page_history():
-    st.subheader("📚 これまでの日記")
+def page_history(embedded=False):
+    if not embedded:
+        page_top("📚 これまでの日記")
     rows = list_recent_diaries()
     if not rows:
         st.info("まだ日記はありません。")
@@ -1407,8 +1553,9 @@ def page_history():
 # ============================================================
 # Page: Monthly review
 # ============================================================
-def page_monthly():
-    st.subheader("🔍 今月の発見")
+def page_monthly(embedded=False):
+    if not embedded:
+        page_top("🔍 今月の発見")
     st.caption("AIが評価するのではなく、これまでの本人の言葉をつないで返します。")
 
     recent = list_recent_diaries(limit=120)
@@ -1500,30 +1647,91 @@ def page_monthly():
 
 
 # ============================================================
+# Page: Review / Settings
+# ============================================================
+def page_review():
+    page_top(
+        "🔍 振り返り",
+        "過去の日記を読み返したり、1か月分の『気になる』をAIとつないだりします。",
+    )
+    tab_history, tab_month = st.tabs(["📚 これまでの日記", "🔍 今月の発見"])
+    with tab_history:
+        page_history(embedded=True)
+    with tab_month:
+        page_monthly(embedded=True)
+
+
+def page_settings():
+    page_top("⚙️ 設定", "旅の行き先メモや区切りを保護者が調整できます。")
+
+    active = get_trip(st.session_state.active_trip_id) if st.session_state.active_trip_id else None
+    if active and active.get("status") == "active" and active.get("trip_date") == today_iso():
+        photos = list_trip_photos(active["id"])
+        st.markdown("#### 今日のぶらり旅")
+        st.write(f"日付：**{active.get('trip_date', '')}**　／　写真：**{len(photos)}枚**")
+        destination = st.text_input(
+            "行き先メモ（任意）",
+            value=str(active.get("destination") or ""),
+            placeholder="例：神楽坂、浅草のあたり",
+            key=f"settings_destination_{active['id']}",
+        )
+        if st.button("行き先メモを保存", use_container_width=True):
+            try:
+                update_trip_destination(active["id"], destination)
+                st.success("保存しました。")
+            except Exception as exc:
+                st.error("保存できませんでした。")
+                with st.expander("保護者向け詳細"):
+                    st.code(str(exc))
+
+        if photos and st.button("この旅を区切って日記へ", type="primary", use_container_width=True):
+            try:
+                finish_trip(active["id"])
+                st.session_state.preferred_diary_trip_id = active["id"]
+                st.session_state.active_trip_id = None
+                st.session_state["_next_page"] = "diary"
+                st.rerun()
+            except Exception as exc:
+                st.error("旅を区切れませんでした。")
+                with st.expander("保護者向け詳細"):
+                    st.code(str(exc))
+    else:
+        st.info("今日はまだぶらり旅を始めていません。")
+        if st.button("今日のぶらり旅を始める", type="primary", use_container_width=True):
+            ensure_today_trip()
+            go_page("camera")
+
+    st.divider()
+    st.markdown("#### カメラについて")
+    st.write(
+        "通常は『カメラで撮る』画面の『写真を撮る・選ぶ』を使います。"
+        "これはスマホの写真選択機能を使うため、Streamlit画面内のカメラ権限が使えない端末でも動きやすい方式です。"
+    )
+    st.caption("ブラウザの直接カメラは任意機能として残しています。Safari/Chromeでカメラ権限を許可した場合だけ使えます。")
+
+    st.divider()
+    st.markdown("#### プロジェクトの考え方")
+    st.caption("写真の枚数や『便利・不便を見つけること』を課題にはしません。本人が気になったものを残し、あとから本人の言葉で振り返ります。")
+
+
+# ============================================================
 # Main UI
 # ============================================================
 verify_setup()
 require_family_pin()
 init_state()
 
-st.title("📷 東京ぶらり旅プロジェクト")
-st.caption("答えを教える旅ではなく、自分なりの『気になる』を増やす旅。")
-
-pages = ["📷 ぶらり旅", "📖 今日の日記", "📚 これまで", "🔍 今月の発見"]
-st.radio(
-    "画面",
-    pages,
-    horizontal=True,
-    label_visibility="collapsed",
-    key="main_page",
-)
-st.divider()
-
-if st.session_state.main_page == "📷 ぶらり旅":
+page = st.session_state.get("main_page", "home")
+if page == "home":
+    page_home()
+elif page == "camera":
     page_trip()
-elif st.session_state.main_page == "📖 今日の日記":
+elif page == "diary":
     page_diary()
-elif st.session_state.main_page == "📚 これまで":
-    page_history()
+elif page == "review":
+    page_review()
+elif page == "settings":
+    page_settings()
 else:
-    page_monthly()
+    st.session_state["main_page"] = "home"
+    st.rerun()
