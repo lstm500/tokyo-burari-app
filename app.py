@@ -160,6 +160,180 @@ MONTHLY_TABLE = "burari_monthly_reviews"
 
 
 # ============================================================
+# Native mobile camera component
+# ============================================================
+# Streamlit's built-in st.camera_input uses getUserMedia and therefore depends
+# on browser camera permissions. This component instead uses a normal HTML
+# file input with capture="environment", which asks a mobile browser to hand
+# off to the phone's rear camera app. The captured image is resized in the
+# browser before it is sent back to Python.
+_NATIVE_CAMERA_HTML = """
+<div class="native-camera-wrap">
+  <input id="native-camera-input" type="file" accept="image/*" capture="environment" />
+  <label class="native-camera-button" for="native-camera-input">
+    <span class="camera-icon">📷</span>
+    <span class="camera-title">いま写真を撮る</span>
+    <span class="camera-sub">スマホのカメラを開きます</span>
+  </label>
+  <div id="native-camera-status" class="camera-status" aria-live="polite"></div>
+</div>
+"""
+
+_NATIVE_CAMERA_CSS = """
+.native-camera-wrap {
+  width: 100%;
+  font-family: var(--st-font);
+}
+#native-camera-input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+.native-camera-button {
+  min-height: 112px;
+  width: 100%;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  border: 2px solid var(--st-primary-color);
+  border-radius: 20px;
+  background: color-mix(in srgb, var(--st-primary-color) 8%, transparent);
+  color: var(--st-text-color);
+  cursor: pointer;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
+}
+.native-camera-button:active {
+  transform: scale(.985);
+}
+.camera-icon {
+  font-size: 34px;
+  line-height: 1;
+}
+.camera-title {
+  font-size: 20px;
+  font-weight: 800;
+  line-height: 1.25;
+}
+.camera-sub {
+  font-size: 12px;
+  opacity: .72;
+}
+.camera-status {
+  min-height: 20px;
+  margin-top: 7px;
+  text-align: center;
+  font-size: 13px;
+  opacity: .75;
+}
+"""
+
+_NATIVE_CAMERA_JS = r"""
+export default function(component) {
+  const { parentElement, setTriggerValue } = component;
+  const input = parentElement.querySelector('#native-camera-input');
+  const status = parentElement.querySelector('#native-camera-status');
+
+  const fileToDataUrl = (blob) => new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = reject;
+    reader.readAsDataURL(blob);
+  });
+
+  const loadImage = (file) => new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      URL.revokeObjectURL(url);
+      resolve(img);
+    };
+    img.onerror = (err) => {
+      URL.revokeObjectURL(url);
+      reject(err);
+    };
+    img.src = url;
+  });
+
+  const preparePhoto = async (file) => {
+    const img = await loadImage(file);
+    const maxSide = 1600;
+    const srcW = img.naturalWidth || img.width;
+    const srcH = img.naturalHeight || img.height;
+    const scale = Math.min(1, maxSide / Math.max(srcW, srcH));
+    const width = Math.max(1, Math.round(srcW * scale));
+    const height = Math.max(1, Math.round(srcH * scale));
+
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext('2d', { alpha: false });
+    ctx.drawImage(img, 0, 0, width, height);
+
+    const blob = await new Promise((resolve) => {
+      canvas.toBlob(resolve, 'image/jpeg', 0.84);
+    });
+    if (!blob) throw new Error('camera image conversion failed');
+    return await fileToDataUrl(blob);
+  };
+
+  const onChange = async () => {
+    const file = input.files && input.files[0];
+    if (!file) return;
+    status.textContent = '写真を準備しています…';
+    try {
+      const dataUrl = await preparePhoto(file);
+      setTriggerValue('photo', {
+        data_url: dataUrl,
+        name: file.name || 'camera.jpg',
+        captured_at: new Date().toISOString(),
+      });
+      status.textContent = '写真を受け取りました。';
+    } catch (err) {
+      console.error(err);
+      status.textContent = '写真を読み込めませんでした。もう一度撮ってください。';
+      setTriggerValue('camera_error', '画像を読み込めませんでした');
+    } finally {
+      input.value = '';
+    }
+  };
+
+  input.addEventListener('change', onChange);
+  return () => input.removeEventListener('change', onChange);
+}
+"""
+
+try:
+    native_camera_component = st.components.v2.component(
+        "tokyo_burari_native_camera",
+        html=_NATIVE_CAMERA_HTML,
+        css=_NATIVE_CAMERA_CSS,
+        js=_NATIVE_CAMERA_JS,
+    )
+except Exception:
+    native_camera_component = None
+
+
+def decode_camera_data_url(data_url):
+    """Decode a trusted data URL emitted by the native camera component."""
+    if not isinstance(data_url, str) or not data_url.startswith("data:image/"):
+        raise ValueError("カメラ画像の形式が不正です。")
+    try:
+        header, encoded = data_url.split(",", 1)
+    except ValueError as exc:
+        raise ValueError("カメラ画像を読み込めません。") from exc
+    if ";base64" not in header:
+        raise ValueError("カメラ画像の形式が不正です。")
+    return base64.b64decode(encoded, validate=True)
+
+
+# ============================================================
 # Clients / setup
 # ============================================================
 @st.cache_resource(show_spinner=False)
@@ -1139,31 +1313,48 @@ def page_trip():
     st.markdown(f"**{trip.get('trip_date', '')}　{destination or '今日のぶらり旅'}**　／　写真 {len(photos)}枚")
 
     st.markdown("#### 写真を追加")
-    st.info("下の大きなボタンをタップし、スマホ側で『カメラ』『写真を撮影』または『写真を選ぶ』を選んでください。ブラウザ内のカメラ機能は使いません。")
-    with st.container(key="mobile_capture"):
-        upload = st.file_uploader(
-            "写真を撮る・選ぶ",
-            type=["jpg", "jpeg", "png", "webp"],
-            accept_multiple_files=False,
-            label_visibility="collapsed",
-            key=f"mobile_photo_{trip['id']}_{st.session_state.capture_serial}",
-        )
+    st.caption("『いま写真を撮る』はスマホ標準のカメラアプリを起動する方式です。ブラウザ内カメラの権限画面は使いません。")
 
-    st.caption("※ Android / iPhone の標準の写真選択画面を使う方式です。表示される選択肢は端末・ブラウザによって少し異なります。")
+    pending_key = f"pending_camera_photo_{trip['id']}"
+    digest_key = f"pending_camera_digest_{trip['id']}"
+    pending = st.session_state.get(pending_key)
 
-    if upload is not None:
-        st.image(upload, caption="この写真を残す？", use_container_width=True)
+    if pending is None:
+        if native_camera_component is not None:
+            result = native_camera_component(
+                key=f"native_camera_{trip['id']}_{st.session_state.capture_serial}",
+                on_photo_change=lambda: None,
+                on_camera_error_change=lambda: None,
+            )
+            payload = getattr(result, "photo", None)
+            camera_error = getattr(result, "camera_error", None)
+            if camera_error:
+                st.warning("カメラから写真を受け取れませんでした。もう一度試してください。")
+            if isinstance(payload, dict) and payload.get("data_url"):
+                try:
+                    raw = decode_camera_data_url(payload["data_url"])
+                    digest = hashlib.sha1(raw).hexdigest()
+                    if st.session_state.get(digest_key) != digest:
+                        st.session_state[pending_key] = raw
+                        st.session_state[digest_key] = digest
+                        pending = raw
+                except Exception as exc:
+                    st.error("撮影した写真を読み込めませんでした。")
+                    with st.expander("保護者向け詳細"):
+                        st.code(str(exc))
+        else:
+            st.error("スマホカメラ機能に必要なStreamlitのバージョンが古いです。requirements.txtを更新してください。")
+
+    if pending is not None:
+        st.image(pending, caption="この写真を残す？", use_container_width=True)
         c1, c2 = st.columns(2)
         with c1:
-            if st.button(
-                "この写真を残す",
-                type="primary",
-                use_container_width=True,
-                key=f"save_mobile_{st.session_state.capture_serial}",
-            ):
+            if st.button("この写真を残す", type="primary", use_container_width=True, key="save_native_camera"):
                 try:
                     with st.spinner("写真を残しています…"):
-                        upload_photo(trip["id"], upload.getvalue())
+                        upload_photo(trip["id"], pending)
+                    st.session_state.pop(pending_key, None)
+                    st.session_state.pop(digest_key, None)
                     st.session_state.capture_serial += 1
                     st.rerun()
                 except Exception as exc:
@@ -1171,13 +1362,47 @@ def page_trip():
                     with st.expander("保護者向け詳細"):
                         st.code(str(exc))
         with c2:
-            if st.button(
-                "選びなおす",
-                use_container_width=True,
-                key=f"retry_mobile_{st.session_state.capture_serial}",
-            ):
+            if st.button("撮りなおす", use_container_width=True, key="retry_native_camera"):
+                st.session_state.pop(pending_key, None)
+                st.session_state.pop(digest_key, None)
                 st.session_state.capture_serial += 1
                 st.rerun()
+
+    with st.expander("🖼 すでに撮った写真から選ぶ"):
+        st.caption("カメラではなく、スマホの写真フォルダにある画像を使う場合はこちらです。")
+        upload = st.file_uploader(
+            "写真を選ぶ",
+            type=["jpg", "jpeg", "png", "webp"],
+            accept_multiple_files=False,
+            key=f"gallery_photo_{trip['id']}_{st.session_state.capture_serial}",
+        )
+        if upload is not None:
+            st.image(upload, caption="この写真を残す？", use_container_width=True)
+            g1, g2 = st.columns(2)
+            with g1:
+                if st.button(
+                    "この写真を残す",
+                    type="primary",
+                    use_container_width=True,
+                    key=f"save_gallery_{st.session_state.capture_serial}",
+                ):
+                    try:
+                        with st.spinner("写真を残しています…"):
+                            upload_photo(trip["id"], upload.getvalue())
+                        st.session_state.capture_serial += 1
+                        st.rerun()
+                    except Exception as exc:
+                        st.error("写真を保存できませんでした。")
+                        with st.expander("保護者向け詳細"):
+                            st.code(str(exc))
+            with g2:
+                if st.button(
+                    "選びなおす",
+                    use_container_width=True,
+                    key=f"retry_gallery_{st.session_state.capture_serial}",
+                ):
+                    st.session_state.capture_serial += 1
+                    st.rerun()
 
     if photos:
         st.markdown("#### 今日の写真")
