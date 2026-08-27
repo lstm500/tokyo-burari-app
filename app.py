@@ -8,6 +8,9 @@ import os
 import tempfile
 import time
 import uuid
+import wave
+import sys
+from array import array
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 from datetime import date, datetime, timedelta
@@ -1052,15 +1055,75 @@ def ask_json_with_image(prompt, image_bytes, name, schema, max_output_tokens=800
     return json.loads(result.output_text)
 
 
+def enhance_audio_for_transcription(audio_file):
+    """Normalize quiet PCM WAV recordings before transcription.
+
+    Streamlit's microphone widget does not expose hardware microphone gain.
+    This keeps the original recording format but gently raises quiet speech so
+    the transcription model receives a clearer signal. Unsupported WAV formats
+    simply fall back to the original bytes.
+    """
+    try:
+        audio_file.seek(0)
+        raw = audio_file.read()
+        if not raw:
+            return audio_file
+
+        with wave.open(io.BytesIO(raw), "rb") as reader:
+            params = reader.getparams()
+            frames = reader.readframes(reader.getnframes())
+
+        if params.sampwidth != 2 or not frames:
+            fallback = io.BytesIO(raw)
+            fallback.name = getattr(audio_file, "name", "speech.wav")
+            return fallback
+
+        samples = array("h")
+        samples.frombytes(frames)
+        if sys.byteorder != "little":
+            samples.byteswap()
+        peak = max((abs(v) for v in samples), default=0)
+        if peak <= 0:
+            fallback = io.BytesIO(raw)
+            fallback.name = getattr(audio_file, "name", "speech.wav")
+            return fallback
+
+        # Do not over-amplify normal recordings. Quiet voices can be raised up to 4x.
+        target_peak = 28000
+        gain = min(4.0, target_peak / peak) if peak < 18000 else 1.0
+        if gain > 1.05:
+            for i, value in enumerate(samples):
+                samples[i] = max(-32768, min(32767, int(round(value * gain))))
+
+        if sys.byteorder != "little":
+            samples.byteswap()
+        out = io.BytesIO()
+        with wave.open(out, "wb") as writer:
+            writer.setparams(params)
+            writer.writeframes(samples.tobytes())
+        out.seek(0)
+        out.name = getattr(audio_file, "name", "speech.wav")
+        return out
+    except Exception:
+        try:
+            audio_file.seek(0)
+        except Exception:
+            pass
+        return audio_file
+
+
 def transcribe_audio(audio_file, context=""):
+    audio_file = enhance_audio_for_transcription(audio_file)
     audio_file.seek(0)
     prompt = (
         "5〜6歳の子どもの日本語の発話です。"
+        "幼児の小さい声や少し不明瞭な発音も、前後の文脈を使って丁寧に聞き取ってください。"
+        "ただし聞こえない語を推測で作らないでください。"
         "子どもらしい言い回しを大人の表現に直しすぎず、聞こえた内容を自然な日本語として文字起こししてください。"
         "言い直しがあるときは、最後に言い直した内容を優先してください。"
     )
     if context:
-        prompt += " 文脈: " + context[:1200]
+        prompt += " 文脈: " + context[:1600]
     result = openai_client().audio.transcriptions.create(
         model=TRANSCRIBE_MODEL,
         file=audio_file,
@@ -1533,6 +1596,12 @@ def update_photo_reflection(photo_id, conversation, signals, done=None):
     if not isinstance(reflection, dict):
         reflection = {}
     reflection["conversation"] = conversation
+    child_comments = [
+        str(turn.get("text") or "").strip()
+        for turn in (conversation or [])
+        if isinstance(turn, dict) and turn.get("role") == "child" and str(turn.get("text") or "").strip()
+    ]
+    reflection["child_comment"] = " / ".join(child_comments)
     if done is not None:
         reflection["conversation_done"] = bool(done)
 
@@ -1822,6 +1891,96 @@ def delete_photo_and_related_data(trip_id, photo_id):
     return {"month_key": month_key}
 
 
+def reset_photo_conversation(trip_id, photo_id):
+    """Clear only the conversation/signals for one photo while keeping the image."""
+    client = supabase_client()
+    trip = get_trip(trip_id) or {}
+
+    # update_photo_reflection preserves capture/location metadata in reflection_json.
+    update_photo_reflection(photo_id, [], {}, done=False)
+
+    # A saved monthly review may contain wording from this photo conversation.
+    trip_date = str(trip.get("trip_date") or "")
+    month_key = trip_date[:7] if len(trip_date) >= 7 else ""
+    if month_key:
+        first_day, _ = month_bounds(month_key)
+        client.table(MONTHLY_TABLE).delete().eq("review_month", first_day).execute()
+        for key in (
+            f"monthly_review_{month_key}",
+            f"monthly_audio_{month_key}",
+            f"monthly_audio_pending_{month_key}",
+        ):
+            st.session_state.pop(key, None)
+
+    state = st.session_state.get(f"reflection_state_{trip_id}")
+    if isinstance(state, dict):
+        items = state.setdefault("items", {})
+        items[photo_id] = {
+            "conversation": [],
+            "signals": {},
+            "done": False,
+            "started": False,
+        }
+        state["selected_photo_id"] = photo_id
+        photo_ids = list(state.get("photo_ids") or [])
+        if photo_id in photo_ids:
+            state["photo_index"] = photo_ids.index(photo_id)
+        state["audio_bytes"] = None
+        state["audio_pending"] = False
+        state["answer_serial"] = int(state.get("answer_serial") or 0) + 1
+        # Any unsaved draft was based on the old conversation, so require rebuilding it.
+        state["draft"] = None
+        state["draft_title"] = None
+        state["draft_meta"] = {}
+        state["raw_conversation"] = {}
+        state["draft_audio"] = None
+        state["draft_audio_pending"] = False
+
+    st.session_state[f"diary_selected_photo_{trip_id}"] = photo_id
+    return {"month_key": month_key}
+
+
+@st.dialog("この画像の会話をリセットしますか？")
+def confirm_photo_conversation_reset_dialog(trip_id, photo_id):
+    photos = list_trip_photos(trip_id)
+    photo_ids = [p.get("id") for p in photos]
+    if photo_id not in photo_ids:
+        st.warning("この画像は見つかりません。")
+        if st.button("閉じる", use_container_width=True, key=f"dialog_reset_missing_{trip_id}"):
+            st.rerun(scope="app")
+        return
+
+    photo_number = photo_ids.index(photo_id) + 1
+    st.write(f"**写真 {photo_number} / {len(photo_ids)}** の会話をリセットします。")
+    st.warning(
+        "この画像について保存した本人の発言、AIとの会話、感情・Wantの記録を消します。"
+        "画像そのものと保存済みの日記本文は残ります。"
+    )
+    reset_col, cancel_col = st.columns(2)
+    with reset_col:
+        if st.button(
+            "リセットする",
+            type="primary",
+            use_container_width=True,
+            key=f"dialog_photo_reset_yes_{trip_id}_{photo_id}",
+        ):
+            try:
+                reset_photo_conversation(trip_id, photo_id)
+                st.session_state["_diary_notice"] = "この画像の会話をリセットしました。もう一度、最初から話せます。"
+                st.rerun(scope="app")
+            except Exception as exc:
+                st.error("会話をリセットできませんでした。")
+                with st.expander("保護者向け詳細"):
+                    st.code(str(exc))
+    with cancel_col:
+        if st.button(
+            "キャンセル",
+            use_container_width=True,
+            key=f"dialog_photo_reset_no_{trip_id}_{photo_id}",
+        ):
+            st.rerun(scope="app")
+
+
 @st.dialog("この画像を削除しますか？")
 def confirm_photo_delete_dialog(trip_id, photo_id):
     photos = list_trip_photos(trip_id)
@@ -1877,7 +2036,13 @@ def render_diary_delete_controls(trip_id, photos, current_photo_id=None):
 
     if selected_photo_id:
         photo_number = photo_ids.index(selected_photo_id) + 1
-        st.caption(f"削除対象：写真 {photo_number} / {len(photo_ids)}（上の一覧で選択できます）")
+        st.caption(f"対象：写真 {photo_number} / {len(photo_ids)}（上の一覧で選択できます）")
+        if st.button(
+            "↻ この画像の会話をリセット",
+            use_container_width=True,
+            key=f"diary_photo_reset_{trip_id}_{selected_photo_id}",
+        ):
+            confirm_photo_conversation_reset_dialog(trip_id, selected_photo_id)
         if st.button(
             "🗑 この画像を削除",
             use_container_width=True,
@@ -2011,8 +2176,9 @@ SIGNAL_SCHEMA = {
         "inconvenient": {"type": "array", "items": {"type": "string"}},
         "people": {"type": "array", "items": {"type": "string"}},
         "wish": {"type": "array", "items": {"type": "string"}},
+        "surprise": {"type": "array", "items": {"type": "string"}},
     },
-    "required": ["like", "dislike", "curiosity", "convenient", "inconvenient", "people", "wish"],
+    "required": ["like", "dislike", "curiosity", "convenient", "inconvenient", "people", "wish", "surprise"],
     "additionalProperties": False,
 }
 
@@ -2051,6 +2217,8 @@ def conversation_text(conversation):
 
 
 def next_photo_turn(image_bytes, conversation, child_turn_count):
+    # The child always speaks first. After that, ask at most two very short
+    # follow-up questions to clarify feeling/meaning and, when natural, a Want.
     force_done = child_turn_count >= 3
     schema = {
         "type": "object",
@@ -2065,30 +2233,35 @@ def next_photo_turn(image_bytes, conversation, child_turn_count):
     }
     prompt = f"""
 あなたは5〜6歳の子どもと「東京ぶらり旅」の写真を振り返っています。
-写真と、ここまでの会話を見て、次の応答を作ってください。
+この写真では、AIより先に子どもが自由に話しています。
+写真と会話を見て、必要なことだけを短く確認してください。
 
 会話:
 {conversation_text(conversation)}
 
-子どもの回答回数: {child_turn_count}
+子どもの発話回数: {child_turn_count}
 
-目的は日記の材料を集めることですが、尋問や学習課題にしません。
-大切なのは「本人が何に気づいたか」「どう感じたか」「なぜ気になったか」を本人の言葉で残すことです。
+確認したいことは次の2つです。すでに本人が話している内容は聞き直しません。
+1. この写真を撮ったときの本人の感じ方・意味。たとえば、よい、いや、変だ、なぜだろう、驚いた、もっとよくしたい等。
+2. 本人の発言に自然な兆しがある場合だけ、どうなったらよいか・どうしたいかという Want。
 
-ルール:
-- reply は子どもの発言を受け止める短い一言。過剰に褒めない。
-- next_question は必要な場合だけ1問。5〜6歳向けに短くする。
-- 写真や発言から感情を決めつけない。
-- 「便利？不便？」「困った？」のように選択肢へ誘導しすぎない。
-- すでに理由と気持ちが分かれば、2回答目以降は done=true にしてよい。
-- 「こうだったらもっといい」という発想が自然に出そうなときだけ、それを尋ねてよい。
-- 子どもが話したくなさそうなら早めに終える。
-- {"今回は必ず done=true。next_question は空文字にする。" if force_done else "最大3回答で終える。"}
-- signals は子どもが実際に話した内容だけを分類する。推測は入れない。
-- signals に該当がなければ空配列。
-- done=true のとき next_question は空文字。
+厳守:
+- 最初の自由な発話を尊重し、写真の意味や感情をAIが決めつけない。
+- reply は0〜8文字程度。例:「うん。」「そうなんだ。」。長い感想・説明・要約は禁止。
+- next_question は必要な場合だけ1問、できれば15文字程度。1回に1つだけ聞く。
+- 感情が不明なら「それ、どう思った？」のように中立に聞く。
+- Want が自然にありそうなら「どうなったらいい？」または「どうしたい？」程度にする。
+- 「いい？悪い？」「困った？」「驚いた？」のように答えを選ばせる質問を原則しない。
+- 理由・感じ方が十分に分かり、Wantを無理に聞く必要がなければ done=true。
+- 子どもが話したくなさそうなら早く終える。
+- {"今回は必ず done=true。next_question は空文字にする。" if force_done else "子どもの発話は最大3回（最初の自由発話＋追質問2回）で終える。"}
+- signals は本人が実際に話した内容だけを記録する。推測は禁止。
+- like=よい/好き、dislike=いや/悪い、curiosity=疑問、wish=こうしたい/こうなってほしい/改善したい、surprise=驚き。
+- convenient / inconvenient / people も本人が明示した場合だけ入れる。
+- 該当しなければ各配列は空。
+- done=true のとき next_question は空文字。reply は「ありがとう。」程度でよい。
 """.strip()
-    result = ask_json_with_image(prompt, image_bytes, "next_photo_turn", schema, 700)
+    result = ask_json_with_image(prompt, image_bytes, "next_photo_turn", schema, 620)
     if force_done:
         result["done"] = True
         result["next_question"] = ""
@@ -2097,7 +2270,7 @@ def next_photo_turn(image_bytes, conversation, child_turn_count):
 
 def merge_signals(old, new):
     result = {k: list(v or []) for k, v in (old or {}).items()}
-    for key in ["like", "dislike", "curiosity", "convenient", "inconvenient", "people", "wish"]:
+    for key in ["like", "dislike", "curiosity", "convenient", "inconvenient", "people", "wish", "surprise"]:
         result.setdefault(key, [])
         for value in (new or {}).get(key, []) or []:
             value = str(value or "").strip()
@@ -3011,34 +3184,65 @@ def page_diary():
         return
 
     if not item.get("started"):
-        c1, c2 = st.columns(2)
-        with c1:
-            if st.button("この写真について話す", type="primary", use_container_width=True, key=f"start_photo_talk_{trip_id}_{pid}"):
+        st.markdown("#### まず、この写真について話してね")
+        st.caption("何が気になったか、見たこと、思ったことを自由に話してね。AIはそのあと必要なことだけ短く聞きます。")
+        first_audio = st.audio_input(
+            "まず自由に話してね",
+            sample_rate=48000,
+            key=f"photo_first_answer_{trip_id}_{pid}_{state['answer_serial']}",
+        )
+        first_digest_key = f"photo_first_digest_{trip_id}_{pid}_{state['answer_serial']}"
+        if first_audio is not None:
+            digest = audio_digest(first_audio)
+            if digest and st.session_state.get(first_digest_key) != digest:
                 try:
-                    with st.spinner("写真を見ています…"):
-                        question = initial_photo_question(image_bytes)
-                        audio = speech_bytes(question)
-                    item["conversation"] = [{"role": "assistant", "text": question}]
-                    item["started"] = True
-                    item["done"] = False
-                    update_photo_reflection(pid, item["conversation"], item.get("signals", {}), done=False)
+                    audio_file = io.BytesIO(first_audio.getvalue())
+                    audio_file.name = "child_first_comment.wav"
+                    with st.spinner("声を聞いています…"):
+                        transcript = transcribe_audio(
+                            audio_file,
+                            f"東京ぶらり旅の写真について、子どもがAIに聞かれる前に自由に説明しています。場所は{location_label or '不明'}です。",
+                        )
+                        if not transcript:
+                            raise ValueError("文字起こしが空でした。")
+                        item["conversation"] = [{"role": "child", "text": transcript}]
+                        item["started"] = True
+                        item["done"] = False
+                        result = next_photo_turn(image_bytes, item["conversation"], 1)
+                        assistant_text = str(result.get("reply", "")).strip()
+                        next_question = str(result.get("next_question", "")).strip()
+                        if next_question:
+                            assistant_text = (assistant_text + " " + next_question).strip()
+                        if not assistant_text:
+                            assistant_text = "ありがとう。"
+                        item["conversation"].append({"role": "assistant", "text": assistant_text})
+                        item["signals"] = merge_signals(item.get("signals", {}), result.get("signals", {}))
+                        item["done"] = bool(result.get("done"))
+                        update_photo_reflection(
+                            pid,
+                            item["conversation"],
+                            item["signals"],
+                            done=item["done"],
+                        )
+                        audio = speech_bytes(assistant_text)
                     state["audio_bytes"] = audio
                     state["audio_pending"] = True
                     state["answer_serial"] += 1
+                    st.session_state[first_digest_key] = digest
                     st.rerun()
                 except Exception as exc:
-                    st.error("写真について話し始められませんでした。")
+                    st.error("うまく聞き取れませんでした。もう一度話してください。")
                     with st.expander("保護者向け詳細"):
                         st.code(str(exc))
-        with c2:
-            if st.button("この写真はとばす", use_container_width=True, key=f"skip_photo_{trip_id}_{pid}"):
-                item["done"] = True
-                item["started"] = True
-                update_photo_reflection(pid, [], {}, done=True)
-                st.session_state.pop(talk_key, None)
-                if st.session_state.pop(f"diary_existing_photo_view_{trip_id}", False):
-                    st.session_state.pop(f"reflection_state_{trip_id}", None)
-                st.rerun()
+
+        if st.button("この写真はとばす", use_container_width=True, key=f"skip_photo_{trip_id}_{pid}"):
+            item["done"] = True
+            item["started"] = True
+            update_photo_reflection(pid, [], {}, done=True)
+            st.session_state.pop(talk_key, None)
+            if st.session_state.pop(f"diary_existing_photo_view_{trip_id}", False):
+                st.session_state.pop(f"reflection_state_{trip_id}", None)
+            st.rerun()
         render_diary_delete_controls(trip_id, photos, current_photo_id=pid)
         return
 
@@ -3053,7 +3257,7 @@ def page_diary():
 
     answer_audio = st.audio_input(
         "マイクを押して話してね",
-        sample_rate=16000,
+        sample_rate=48000,
         key=f"photo_answer_{trip_id}_{pid}_{state['answer_serial']}",
     )
     digest_key = f"photo_answer_digest_{trip_id}_{pid}_{state['answer_serial']}"
@@ -3066,7 +3270,7 @@ def page_diary():
                 with st.spinner("声を聞いています…"):
                     transcript = transcribe_audio(
                         audio_file,
-                        "東京ぶらり旅の写真を見ながら、AIの短い質問に子どもが答えています。",
+                        f"東京ぶらり旅の写真を見ながら、AIの短い質問に子どもが答えています。場所は{location_label or '不明'}です。",
                     )
                     if not transcript:
                         raise ValueError("文字起こしが空でした。")
@@ -3077,7 +3281,7 @@ def page_diary():
                     if result.get("next_question"):
                         assistant_text = (assistant_text + " " + str(result["next_question"]).strip()).strip()
                     if not assistant_text:
-                        assistant_text = "教えてくれてありがとう。"
+                        assistant_text = "ありがとう。"
                     item["conversation"].append({"role": "assistant", "text": assistant_text})
                     item["signals"] = merge_signals(item.get("signals", {}), result.get("signals", {}))
                     item["done"] = bool(result.get("done"))
