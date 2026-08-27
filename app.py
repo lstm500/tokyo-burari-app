@@ -240,6 +240,23 @@ st.markdown(
         line-height: 1.45;
         opacity: .48;
       }
+      [class*="st-key-ai_trip_summary_"] div.stButton > button,
+      [class*="st-key-ai_trip_summary_"] button {
+        border: 2px solid #C58BD8 !important;
+        background: linear-gradient(135deg, rgba(255, 216, 235, .48), rgba(224, 214, 255, .46)) !important;
+        color: inherit !important;
+        border-radius: 18px !important;
+        font-weight: 780 !important;
+        box-shadow: 0 6px 16px rgba(197, 139, 216, .16), 0 0 0 2px rgba(255,255,255,.20) inset !important;
+        transition: transform .12s ease, box-shadow .12s ease, background .12s ease, border-color .12s ease;
+      }
+      [class*="st-key-ai_trip_summary_"] div.stButton > button:hover,
+      [class*="st-key-ai_trip_summary_"] button:hover {
+        border-color: #B675CD !important;
+        background: linear-gradient(135deg, rgba(255, 205, 230, .66), rgba(215, 201, 255, .62)) !important;
+        box-shadow: 0 8px 20px rgba(197, 139, 216, .22), 0 0 0 2px rgba(255,255,255,.24) inset !important;
+        transform: translateY(-1px);
+      }
       .st-key-diary_photo_nav div.stButton > button,
       .st-key-diary_photo_nav button {
         border: 2px solid #4A90E2 !important;
