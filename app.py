@@ -1500,8 +1500,8 @@ def confirm_diary_delete_dialog(trip_id, photo_count):
     title = diary_title_for_trip(trip, photos=photos)
     st.write(f"**{title}** を削除します。")
     st.warning(
-        f"日記、写真 {photo_count}枚、写真について話したコメントをすべて削除します。"
-        "この操作は元に戻せません。"
+        f"この日の記録、写真 {photo_count}枚、写真について話したコメントをすべて削除します。"
+        "日記が未完成の場合は、途中までの内容も削除されます。この操作は元に戻せません。"
     )
     delete_col, cancel_col = st.columns(2)
     with delete_col:
@@ -1528,6 +1528,207 @@ def confirm_diary_delete_dialog(trip_id, photo_count):
             key=f"dialog_delete_no_{trip_id}",
         ):
             st.rerun(scope="app")
+
+
+
+def delete_photo_and_related_data(trip_id, photo_id):
+    """Delete one photo plus its per-photo conversation/comment data."""
+    client = supabase_client()
+    trip = get_trip(trip_id) or {}
+    photos = list_trip_photos(trip_id)
+    photo = next((p for p in photos if p.get("id") == photo_id), None)
+    if not photo:
+        raise ValueError("削除する画像が見つかりませんでした。")
+
+    storage_path = str(photo.get("storage_path") or "").strip()
+    if storage_path:
+        client.storage.from_(PHOTO_BUCKET).remove([storage_path])
+
+    # reflection_json contains the conversation/comments for this photo, so deleting
+    # the photo row removes those records together with the image metadata.
+    client.table(PHOTO_TABLE).delete().eq("id", photo_id).eq("trip_id", trip_id).execute()
+
+    # If a completed diary exists, remove the deleted photo's copied raw conversation
+    # from the diary record as well. The diary prose itself is intentionally kept.
+    existing = get_diary_for_trip(trip_id)
+    if existing:
+        raw = existing.get("raw_conversation") or {}
+        if not isinstance(raw, dict):
+            raw = {}
+        raw.pop(str(photo_id), None)
+        raw.pop(photo_id, None)
+
+        ai_meta = existing.get("ai_meta") or {}
+        if not isinstance(ai_meta, dict):
+            ai_meta = {}
+        remaining_child_points = []
+        for conversation in raw.values():
+            if not isinstance(conversation, list):
+                continue
+            for turn in conversation:
+                if isinstance(turn, dict) and turn.get("role") == "child":
+                    value = str(turn.get("text") or "").strip()
+                    if value and value not in remaining_child_points:
+                        remaining_child_points.append(value)
+        ai_meta["child_points"] = remaining_child_points[:3]
+
+        remaining_photos = [p for p in list_trip_photos(trip_id) if p.get("id") != photo_id]
+        merged_signals = {}
+        for remaining in remaining_photos:
+            merged_signals = merge_signals(merged_signals, remaining.get("signals_json") or {})
+        ai_meta["signals"] = merged_signals
+
+        (
+            client
+            .table(DIARY_TABLE)
+            .update(
+                {
+                    "raw_conversation": raw,
+                    "ai_meta": ai_meta,
+                    "updated_at": now_jst().isoformat(),
+                }
+            )
+            .eq("id", existing["id"])
+            .execute()
+        )
+
+    # A monthly summary may have used this photo's comments as evidence. Clear the
+    # saved snapshot so a later monthly review is rebuilt from the remaining data.
+    trip_date = str(trip.get("trip_date") or "")
+    month_key = trip_date[:7] if len(trip_date) >= 7 else ""
+    if month_key:
+        first_day, _ = month_bounds(month_key)
+        client.table(MONTHLY_TABLE).delete().eq("review_month", first_day).execute()
+        for key in (
+            f"monthly_review_{month_key}",
+            f"monthly_audio_{month_key}",
+            f"monthly_audio_pending_{month_key}",
+        ):
+            st.session_state.pop(key, None)
+
+    # Keep an unfinished diary session consistent after removing the current image.
+    state = st.session_state.get(f"reflection_state_{trip_id}")
+    if isinstance(state, dict):
+        old_ids = list(state.get("photo_ids") or [])
+        old_index = int(state.get("photo_index") or 0)
+        if photo_id in old_ids:
+            deleted_index = old_ids.index(photo_id)
+            new_ids = [pid for pid in old_ids if pid != photo_id]
+            state["photo_ids"] = new_ids
+            items = state.get("items") or {}
+            if isinstance(items, dict):
+                items.pop(photo_id, None)
+            if not new_ids:
+                state["photo_index"] = 0
+            elif deleted_index < old_index:
+                state["photo_index"] = max(0, old_index - 1)
+            elif deleted_index == old_index:
+                state["photo_index"] = min(old_index, len(new_ids) - 1)
+            else:
+                state["photo_index"] = min(old_index, len(new_ids) - 1)
+
+            # Any unsaved draft was based on the old set of photos, so rebuild it.
+            state["draft"] = None
+            state["draft_title"] = None
+            state["draft_meta"] = {}
+            state["raw_conversation"] = {}
+            state["draft_audio"] = None
+            state["draft_audio_pending"] = False
+            state["audio_bytes"] = None
+            state["audio_pending"] = False
+            state["answer_serial"] = int(state.get("answer_serial") or 0) + 1
+
+    st.session_state.pop(f"delete_photo_selector_{trip_id}", None)
+    download_photo.clear()
+    return {"month_key": month_key}
+
+
+@st.dialog("この画像を削除しますか？")
+def confirm_photo_delete_dialog(trip_id, photo_id):
+    photos = list_trip_photos(trip_id)
+    photo_ids = [p.get("id") for p in photos]
+    if photo_id not in photo_ids:
+        st.warning("この画像はすでに削除されています。")
+        if st.button("閉じる", use_container_width=True, key=f"dialog_photo_missing_{trip_id}"):
+            st.rerun(scope="app")
+        return
+
+    photo_number = photo_ids.index(photo_id) + 1
+    st.write(f"**写真 {photo_number} / {len(photo_ids)}** を削除します。")
+    st.warning(
+        "この画像と、この画像について話したコメントを削除します。"
+        "保存済みの日記本文そのものは削除しません。"
+    )
+    delete_col, cancel_col = st.columns(2)
+    with delete_col:
+        if st.button(
+            "削除する",
+            type="primary",
+            use_container_width=True,
+            key=f"dialog_photo_delete_yes_{trip_id}_{photo_id}",
+        ):
+            try:
+                delete_photo_and_related_data(trip_id, photo_id)
+                st.session_state["_diary_notice"] = "画像と、その画像について話したコメントを削除しました。"
+                st.rerun(scope="app")
+            except Exception as exc:
+                st.error("画像を削除できませんでした。")
+                with st.expander("保護者向け詳細"):
+                    st.code(str(exc))
+    with cancel_col:
+        if st.button(
+            "キャンセル",
+            use_container_width=True,
+            key=f"dialog_photo_delete_no_{trip_id}_{photo_id}",
+        ):
+            st.rerun(scope="app")
+
+
+def render_diary_delete_controls(trip_id, photos, current_photo_id=None):
+    """Render photo deletion first, then whole-day deletion at the page bottom."""
+    st.divider()
+
+    photo_ids = [p.get("id") for p in photos if p.get("id")]
+    selected_photo_id = current_photo_id if current_photo_id in photo_ids else None
+
+    if photo_ids:
+        if selected_photo_id is None:
+            if len(photo_ids) == 1:
+                selected_photo_id = photo_ids[0]
+            else:
+                selected_photo_id = st.selectbox(
+                    "削除する画像",
+                    photo_ids,
+                    format_func=lambda x: f"写真 {photo_ids.index(x) + 1} / {len(photo_ids)}",
+                    key=f"delete_photo_selector_{trip_id}",
+                )
+
+            # When no photo is already on screen (for example a completed diary),
+            # show the selected image so "この画像" is unambiguous.
+            selected_photo = next((p for p in photos if p.get("id") == selected_photo_id), None)
+            if selected_photo:
+                try:
+                    preview = download_photo(selected_photo["storage_path"])
+                    st.image(preview, width=240)
+                    label = photo_location_label(selected_photo)
+                    if label:
+                        st.caption(f"📍 {label}")
+                except Exception:
+                    st.caption("画像のプレビューを読み込めませんでした。")
+
+        if selected_photo_id and st.button(
+            "🗑 この画像を削除",
+            use_container_width=True,
+            key=f"diary_photo_delete_{trip_id}_{selected_photo_id}",
+        ):
+            confirm_photo_delete_dialog(trip_id, selected_photo_id)
+
+    if st.button(
+        "🗑 この日記を削除",
+        use_container_width=True,
+        key=f"diary_page_delete_{trip_id}",
+    ):
+        confirm_diary_delete_dialog(trip_id, len(photos))
 
 
 def list_recent_diaries(limit=60):
@@ -2294,6 +2495,7 @@ def page_diary():
     photos = list_trip_photos(trip_id)
     existing = get_diary_for_trip(trip_id)
 
+    # Completed diary: show the diary, then photo/day delete controls at the bottom.
     if existing and f"reflection_state_{trip_id}" not in st.session_state:
         existing_title = diary_title_for_trip(trip, photos=photos)
         st.markdown(
@@ -2323,19 +2525,13 @@ def page_diary():
             }
             st.rerun()
 
-        # Keep deletion in one predictable place: after a day is selected, at the
-        # very bottom of that diary page. Confirmation is shown in a modal dialog.
-        st.divider()
-        if st.button(
-            "🗑 この日記を削除",
-            use_container_width=True,
-            key=f"diary_page_delete_{trip_id}",
-        ):
-            confirm_diary_delete_dialog(trip_id, len(photos))
+        render_diary_delete_controls(trip_id, photos)
         return
 
+    # Even an unfinished candidate with zero photos can be deleted from this page.
     if not photos:
-        st.warning("このぶらり旅には写真がありません。写真のある旅を選んでください。")
+        st.warning("このぶらり旅には写真がありません。")
+        render_diary_delete_controls(trip_id, photos)
         return
 
     state = reflection_state(trip_id, photos)
@@ -2374,6 +2570,7 @@ def page_diary():
                     st.error("日記をまとめられませんでした。もう一度試してください。")
                     with st.expander("保護者向け詳細"):
                         st.code(str(exc))
+            render_diary_delete_controls(trip_id, photos)
             return
 
         fixed_title = diary_title_for_trip(trip)
@@ -2448,6 +2645,8 @@ def page_diary():
                 st.error("日記を保存できませんでした。")
                 with st.expander("保護者向け詳細"):
                     st.code(str(exc))
+
+        render_diary_delete_controls(trip_id, photos)
         return
 
     # Current photo conversation
@@ -2465,6 +2664,7 @@ def page_diary():
         st.error("写真を読み込めませんでした。")
         with st.expander("保護者向け詳細"):
             st.code(str(exc))
+        render_diary_delete_controls(trip_id, photos, current_photo_id=pid)
         return
 
     if not item.get("started"):
@@ -2492,6 +2692,7 @@ def page_diary():
                 update_photo_reflection(pid, [], {})
                 state["photo_index"] += 1
                 st.rerun()
+        render_diary_delete_controls(trip_id, photos, current_photo_id=pid)
         return
 
     render_conversation(item.get("conversation", []))
@@ -2510,6 +2711,7 @@ def page_diary():
             state["audio_pending"] = False
             state["answer_serial"] += 1
             st.rerun()
+        render_diary_delete_controls(trip_id, photos, current_photo_id=pid)
         return
 
     answer_audio = st.audio_input(
@@ -2560,6 +2762,8 @@ def page_diary():
         state["audio_bytes"] = speech_bytes("教えてくれてありがとう。つぎの写真にいこう。")
         state["audio_pending"] = True
         st.rerun()
+
+    render_diary_delete_controls(trip_id, photos, current_photo_id=pid)
 
 
 # ============================================================
