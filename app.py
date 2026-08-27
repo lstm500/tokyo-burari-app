@@ -145,6 +145,30 @@ st.markdown(
         background: rgba(74, 144, 226, .13) !important;
         border-color: #3B82C4 !important;
       }
+      .st-key-history_back_nav div.stButton > button,
+      .st-key-history_back_nav button {
+        border: 2px solid #4A90E2 !important;
+        background: rgba(74, 144, 226, .08) !important;
+        color: inherit !important;
+        box-shadow: 0 0 0 2px rgba(74, 144, 226, .04) inset;
+      }
+      .st-key-history_back_nav div.stButton > button:hover,
+      .st-key-history_back_nav button:hover {
+        background: rgba(74, 144, 226, .13) !important;
+        border-color: #3B82C4 !important;
+      }
+      .st-key-history_home_nav div.stButton > button,
+      .st-key-history_home_nav button {
+        border: 2px solid #2F9E73 !important;
+        background: rgba(47, 158, 115, .08) !important;
+        color: inherit !important;
+        box-shadow: 0 0 0 2px rgba(47, 158, 115, .04) inset;
+      }
+      .st-key-history_home_nav div.stButton > button:hover,
+      .st-key-history_home_nav button:hover {
+        background: rgba(47, 158, 115, .13) !important;
+        border-color: #278663 !important;
+      }
       .st-key-mobile_capture [data-testid="stFileUploaderDropzone"] {
         padding: 1rem;
         border-radius: 20px;
@@ -2200,6 +2224,8 @@ def delete_diary_and_related_data(trip_id):
     st.session_state.pop(f"diary_talk_photo_{trip_id}", None)
     st.session_state.pop(f"diary_existing_photo_view_{trip_id}", None)
     st.session_state.pop("diary_trip_selector", None)
+    if st.session_state.get("history_detail_trip_id") == trip_id:
+        st.session_state.pop("history_detail_trip_id", None)
     if st.session_state.get("preferred_diary_trip_id") == trip_id:
         st.session_state.preferred_diary_trip_id = None
     if st.session_state.get("active_trip_id") == trip_id:
@@ -3260,15 +3286,20 @@ def trip_label(trip):
     return f"{trip.get('trip_date', '')}　{title}"
 
 
-def render_small_gallery(photos, max_count=4):
-    subset = photos[:max_count]
+def render_small_gallery(photos, max_count=None, columns=3):
+    """Render diary photos in a compact grid; history uses three per row."""
+    subset = list(photos or [])
+    if max_count is not None:
+        subset = subset[:max_count]
     if not subset:
         return
-    cols = st.columns(min(2, len(subset)))
+
+    column_count = max(1, min(int(columns or 3), 3))
+    cols = st.columns(column_count)
     for idx, photo in enumerate(subset):
         try:
             image = download_photo(photo["storage_path"])
-            with cols[idx % len(cols)]:
+            with cols[idx % column_count]:
                 st.image(image, use_container_width=True)
                 location_label = photo_location_label(photo)
                 if location_label:
@@ -3893,11 +3924,83 @@ def page_history(embedded=False):
     if not embedded:
         page_top("📚 これまでの日記")
 
+    notice = st.session_state.pop("_diary_notice", None)
+    if notice:
+        st.success(notice)
+
     rows = list_recent_diaries()
     if not rows:
+        st.session_state.pop("history_detail_trip_id", None)
         st.info("まだ日記はありません。")
         return
 
+    detail_trip_id = st.session_state.get("history_detail_trip_id")
+    detail_row = next(
+        (row for row in rows if row.get("diary", {}).get("trip_id") == detail_trip_id),
+        None,
+    )
+    if detail_trip_id and detail_row is None:
+        st.session_state.pop("history_detail_trip_id", None)
+        detail_trip_id = None
+
+    # A diary title opens a dedicated detail screen. This makes the bottom
+    # navigation unambiguous on a phone: back returns to the history list.
+    if detail_row is not None:
+        diary = detail_row["diary"]
+        trip = detail_row["trip"]
+        trip_id = diary["trip_id"]
+        photos = list_trip_photos(trip_id)
+        daily_title = diary_title_for_trip(trip, photos=photos)
+        title = f"{trip.get('trip_date', '')}　{daily_title}"
+
+        st.markdown(f"### {html.escape(title)}")
+        render_small_gallery(photos, max_count=None, columns=3)
+        st.markdown(
+            f"""
+            <div class="diary-card">
+              <div class="big-text">{html.escape(diary.get('diary_text') or '')}</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        meta = diary.get("ai_meta") or {}
+        child_points = meta.get("child_points", []) if isinstance(meta, dict) else []
+        if child_points:
+            with st.expander("この日記のもとになった言葉"):
+                for point in child_points[:3]:
+                    st.write("・" + str(point))
+
+        st.divider()
+        back_col, home_col = st.columns(2)
+        with back_col:
+            with st.container(key="history_back_nav"):
+                if st.button(
+                    "← 前の画面に戻る",
+                    use_container_width=True,
+                    key=f"history_back_{trip_id}",
+                ):
+                    st.session_state.pop("history_detail_trip_id", None)
+                    st.rerun()
+        with home_col:
+            with st.container(key="history_home_nav"):
+                if st.button(
+                    "トップ画面に戻る",
+                    use_container_width=True,
+                    key=f"history_home_{trip_id}",
+                ):
+                    st.session_state.pop("history_detail_trip_id", None)
+                    go_page("home")
+
+        if st.button(
+            "🗑 この日記を削除",
+            use_container_width=True,
+            key=f"history_delete_{trip_id}",
+        ):
+            confirm_diary_delete_dialog(trip_id, len(photos))
+        return
+
+    st.caption("読みたい日記を選んでください。")
     for row in rows:
         diary = row["diary"]
         trip = row["trip"]
@@ -3905,22 +4008,13 @@ def page_history(embedded=False):
         photos = list_trip_photos(trip_id)
         daily_title = diary_title_for_trip(trip, photos=photos)
         title = f"{trip.get('trip_date', '')}　{daily_title}"
-        with st.expander(title):
-            render_small_gallery(photos, max_count=4)
-            st.markdown(
-                f"""
-                <div class="diary-card">
-                  <div class="big-text">{html.escape(diary.get('diary_text') or '')}</div>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
-            meta = diary.get("ai_meta") or {}
-            child_points = meta.get("child_points", []) if isinstance(meta, dict) else []
-            if child_points:
-                with st.expander("この日記のもとになった言葉"):
-                    for point in child_points[:3]:
-                        st.write("・" + str(point))
+        if st.button(
+            title,
+            use_container_width=True,
+            key=f"history_open_{trip_id}",
+        ):
+            st.session_state["history_detail_trip_id"] = trip_id
+            st.rerun()
 
 
 # ============================================================
