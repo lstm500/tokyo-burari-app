@@ -2375,8 +2375,17 @@ def render_conversation(conversation):
 
 
 def trip_label(trip):
-    destination = str(trip.get("destination") or "").strip()
-    return f"{trip.get('trip_date', '')}　{destination or 'ぶらり旅'}"
+    """Label a diary candidate with the same place rule used by the diary title."""
+    trip = trip or {}
+    trip_id = trip.get("id")
+    photos = []
+    if trip_id:
+        try:
+            photos = list_trip_photos(trip_id)
+        except Exception:
+            photos = []
+    title = diary_title_for_trip(trip, photos=photos)
+    return f"{trip.get('trip_date', '')}　{title}"
 
 
 def render_small_gallery(photos, max_count=4):
