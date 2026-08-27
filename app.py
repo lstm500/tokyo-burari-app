@@ -257,6 +257,30 @@ st.markdown(
         box-shadow: 0 8px 20px rgba(197, 139, 216, .22), 0 0 0 2px rgba(255,255,255,.24) inset !important;
         transform: translateY(-1px);
       }
+      [class*="st-key-summary_feedback_good_"] div.stButton > button,
+      [class*="st-key-summary_feedback_good_"] button {
+        border: 1.8px solid rgba(72, 166, 123, .72) !important;
+        background: rgba(183, 236, 207, .28) !important;
+        border-radius: 16px !important;
+        font-weight: 760 !important;
+      }
+      [class*="st-key-summary_feedback_good_"] div.stButton > button:hover,
+      [class*="st-key-summary_feedback_good_"] button:hover {
+        background: rgba(183, 236, 207, .44) !important;
+        border-color: rgba(49, 139, 97, .88) !important;
+      }
+      [class*="st-key-summary_feedback_bad_"] div.stButton > button,
+      [class*="st-key-summary_feedback_bad_"] button {
+        border: 1.8px solid rgba(218, 126, 137, .68) !important;
+        background: rgba(255, 214, 219, .25) !important;
+        border-radius: 16px !important;
+        font-weight: 760 !important;
+      }
+      [class*="st-key-summary_feedback_bad_"] div.stButton > button:hover,
+      [class*="st-key-summary_feedback_bad_"] button:hover {
+        background: rgba(255, 214, 219, .42) !important;
+        border-color: rgba(194, 91, 105, .88) !important;
+      }
       .st-key-diary_photo_nav div.stButton > button,
       .st-key-diary_photo_nav button {
         border: 2px solid #4A90E2 !important;
@@ -2602,12 +2626,21 @@ def save_diary(trip_id, title, diary_text, raw_conversation, ai_meta):
     else:
         auto_title = diary_title_for_trip(trip)
         fixed_title = unique_auto_diary_title(auto_title, exclude_trip_id=trip_id)
+    incoming_meta = dict(ai_meta or {}) if isinstance(ai_meta or {}, dict) else {}
+    existing_meta = (existing or {}).get("ai_meta") or {}
+    if not isinstance(existing_meta, dict):
+        existing_meta = {}
+    # Good/Bad examples are learning history, not part of the current diary draft.
+    # Keep that history when an existing diary is rebuilt unless the new draft already has it.
+    if existing_meta.get("summary_feedback_history") and not incoming_meta.get("summary_feedback_history"):
+        incoming_meta["summary_feedback_history"] = list(existing_meta.get("summary_feedback_history") or [])
+
     payload = {
         "trip_id": trip_id,
         "title": fixed_title,
         "diary_text": str(diary_text or "").strip(),
         "raw_conversation": raw_conversation,
-        "ai_meta": ai_meta or {},
+        "ai_meta": incoming_meta,
         "updated_at": now_jst().isoformat(),
     }
     if existing:
@@ -2771,6 +2804,7 @@ def delete_photo_and_related_data(trip_id, photo_id):
         # diary is rebuilt from the remaining child comments.
         ai_meta["reflection_summary"] = ""
         ai_meta["trip_summary"] = ""
+        _clear_summary_feedback_fields(ai_meta, clear_history=True)
 
         (
             client
@@ -2885,6 +2919,7 @@ def reset_photo_conversation(trip_id, photo_id):
         ai_meta["child_points"] = remaining_child_points[:3]
         ai_meta["reflection_summary"] = ""
         ai_meta["trip_summary"] = ""
+        _clear_summary_feedback_fields(ai_meta, clear_history=True)
 
         remaining_photos = list_trip_photos(trip_id)
         merged_signals = {}
@@ -3418,6 +3453,7 @@ def compose_diary(trip, photo_states):
             for turn in item.get("conversation", [])
         )
     )
+    feedback_guidance = build_summary_feedback_guidance()
     prompt = f"""
 5〜6歳の子どもが東京ぶらり旅のあとに話した内容から、本人の日記を作ります。
 AIが新しい出来事や感情を足してはいけません。
@@ -3429,6 +3465,8 @@ AIが新しい出来事や感情を足してはいけません。
 本人のコメントがない写真: {max(0, total_photo_count - commented_photo_count)}枚
 子どもが写真を見ながら話した言葉:
 {evidence}
+
+{feedback_guidance}
 
 ルール:
 - diary は3〜7文程度。発言が少なければ無理に長くしない。
@@ -3464,6 +3502,358 @@ def _vision_ready_photo(image_bytes, max_side=720, quality=76):
             return out.getvalue()
     except Exception:
         return image_bytes
+
+
+SUMMARY_FEEDBACK_HISTORY_LIMIT = 12
+SUMMARY_FEEDBACK_SCAN_LIMIT = 80
+SUMMARY_GOOD_EXAMPLE_LIMIT = 3
+SUMMARY_BAD_EXAMPLE_LIMIT = 2
+
+
+def _summary_generation_key(meta):
+    if not isinstance(meta, dict):
+        return ""
+    saved_key = str(meta.get("photo_comment_summary_updated_at") or "").strip()
+    if saved_key:
+        return saved_key
+    source = "\n".join(
+        [
+            str(meta.get("trip_summary") or "").strip(),
+            str(meta.get("reflection_summary") or "").strip(),
+        ]
+    ).strip()
+    if not source:
+        return ""
+    return hashlib.sha1(source.encode("utf-8")).hexdigest()
+
+
+def _clear_summary_feedback_fields(meta, clear_history=False):
+    """Remove current Good/Bad state; optionally erase all learned examples too."""
+    if not isinstance(meta, dict):
+        return meta
+    for key in (
+        "summary_feedback",
+        "summary_feedback_at",
+        "summary_feedback_generation_key",
+        "summary_feedback_example",
+    ):
+        meta.pop(key, None)
+    if clear_history:
+        meta.pop("summary_feedback_history", None)
+    return meta
+
+
+def _apply_summary_feedback_to_meta(meta, rating):
+    """Attach one rating to the exact summary that is currently visible."""
+    rating = str(rating or "").strip().lower()
+    if rating not in {"good", "bad"}:
+        raise ValueError("評価は Good または Bad を指定してください。")
+    meta = dict(meta or {}) if isinstance(meta or {}, dict) else {}
+    trip_summary = str(meta.get("trip_summary") or "").strip()
+    reflection_summary = str(meta.get("reflection_summary") or "").strip()
+    if not (trip_summary or reflection_summary):
+        raise ValueError("評価できるAIまとめがありません。")
+
+    generation_key = _summary_generation_key(meta)
+    if not generation_key:
+        generation_key = hashlib.sha1(
+            f"{trip_summary}\n{reflection_summary}".encode("utf-8")
+        ).hexdigest()
+    now_value = now_jst().isoformat()
+    entry = {
+        "rating": rating,
+        "generation_key": generation_key,
+        "trip_summary": trip_summary,
+        "reflection_summary": reflection_summary,
+        "at": now_value,
+    }
+
+    history = meta.get("summary_feedback_history") or []
+    if not isinstance(history, list):
+        history = []
+    # Pressing the other button changes the rating for this output instead of
+    # creating duplicate training examples for one generation.
+    history = [
+        item for item in history
+        if not isinstance(item, dict) or str(item.get("generation_key") or "") != generation_key
+    ]
+    history.append(entry)
+    meta["summary_feedback_history"] = history[-SUMMARY_FEEDBACK_HISTORY_LIMIT:]
+    meta["summary_feedback"] = rating
+    meta["summary_feedback_at"] = now_value
+    meta["summary_feedback_generation_key"] = generation_key
+    meta["summary_feedback_example"] = {
+        "trip_summary": trip_summary,
+        "reflection_summary": reflection_summary,
+    }
+    return meta
+
+
+def _summary_feedback_entries(limit=SUMMARY_FEEDBACK_SCAN_LIMIT):
+    """Collect recent persisted ratings without needing a new Supabase table."""
+    try:
+        rows = (
+            supabase_client()
+            .table(DIARY_TABLE)
+            .select("id,trip_id,ai_meta,updated_at")
+            .order("updated_at", desc=True)
+            .limit(limit)
+            .execute()
+        ).data or []
+    except Exception:
+        return []
+
+    entries = []
+    seen = set()
+    for row in rows:
+        meta = row.get("ai_meta") or {}
+        if not isinstance(meta, dict):
+            continue
+        history = meta.get("summary_feedback_history") or []
+        if isinstance(history, list):
+            for item in reversed(history):
+                if not isinstance(item, dict):
+                    continue
+                rating = str(item.get("rating") or "").lower()
+                if rating not in {"good", "bad"}:
+                    continue
+                generation_key = str(item.get("generation_key") or "")
+                dedupe_key = (str(row.get("id") or ""), generation_key, str(item.get("at") or ""))
+                if dedupe_key in seen:
+                    continue
+                seen.add(dedupe_key)
+                entries.append(
+                    {
+                        "rating": rating,
+                        "trip_summary": str(item.get("trip_summary") or "").strip(),
+                        "reflection_summary": str(item.get("reflection_summary") or "").strip(),
+                        "at": str(item.get("at") or row.get("updated_at") or ""),
+                    }
+                )
+
+        # Backward-compatible fallback if a current rating exists without history.
+        if not history:
+            rating = str(meta.get("summary_feedback") or "").lower()
+            if rating in {"good", "bad"}:
+                example = meta.get("summary_feedback_example") or {}
+                if not isinstance(example, dict):
+                    example = {}
+                entries.append(
+                    {
+                        "rating": rating,
+                        "trip_summary": str(example.get("trip_summary") or meta.get("trip_summary") or "").strip(),
+                        "reflection_summary": str(example.get("reflection_summary") or meta.get("reflection_summary") or "").strip(),
+                        "at": str(meta.get("summary_feedback_at") or row.get("updated_at") or ""),
+                    }
+                )
+
+    # Unsaved draft feedback should also have a small immediate effect during the
+    # current session. Once saved, it becomes part of the persisted diary history.
+    for state_key in list(st.session_state.keys()):
+        if not str(state_key).startswith("reflection_state_"):
+            continue
+        state = st.session_state.get(state_key)
+        if not isinstance(state, dict):
+            continue
+        draft_meta = state.get("draft_meta") or {}
+        if not isinstance(draft_meta, dict):
+            continue
+        draft_history = draft_meta.get("summary_feedback_history") or []
+        if not isinstance(draft_history, list):
+            continue
+        for item in reversed(draft_history):
+            if not isinstance(item, dict):
+                continue
+            rating = str(item.get("rating") or "").lower()
+            if rating not in {"good", "bad"}:
+                continue
+            entries.append(
+                {
+                    "rating": rating,
+                    "trip_summary": str(item.get("trip_summary") or "").strip(),
+                    "reflection_summary": str(item.get("reflection_summary") or "").strip(),
+                    "at": str(item.get("at") or ""),
+                }
+            )
+
+    entries.sort(key=lambda item: str(item.get("at") or ""), reverse=True)
+    return entries
+
+
+def get_summary_feedback_status():
+    entries = _summary_feedback_entries()
+    good = [item for item in entries if item.get("rating") == "good"]
+    bad = [item for item in entries if item.get("rating") == "bad"]
+    return {
+        "good_count": len(good),
+        "bad_count": len(bad),
+        "good_examples": good[:SUMMARY_GOOD_EXAMPLE_LIMIT],
+        "bad_examples": bad[:SUMMARY_BAD_EXAMPLE_LIMIT],
+    }
+
+
+def _feedback_example_text(item, max_chars=560):
+    parts = []
+    trip_summary = str((item or {}).get("trip_summary") or "").strip()
+    reflection_summary = str((item or {}).get("reflection_summary") or "").strip()
+    if trip_summary:
+        parts.append("ぶらり旅のまとめ: " + trip_summary)
+    if reflection_summary:
+        parts.append("興味・考えのまとめ: " + reflection_summary)
+    text = "\n".join(parts).strip()
+    if len(text) > max_chars:
+        text = text[: max_chars - 1].rstrip() + "…"
+    return text
+
+
+def build_summary_feedback_guidance():
+    """Return a deliberately weak few-shot preference hint from Good/Bad history."""
+    status = get_summary_feedback_status()
+    good = status.get("good_examples") or []
+    bad = status.get("bad_examples") or []
+    if not good and not bad:
+        return ""
+
+    lines = [
+        "過去のGood/Bad評価による弱い調整:",
+        "- 以下は過去の事実を今回へ持ち込むための資料ではなく、文章のまとめ方・分析の粒度・言い回しだけの弱い参考です。",
+        "- 今回の写真と本人コメントを最優先し、過去文の内容や固有名詞をコピーしないでください。",
+        "- Good例に少しだけ近い書き方を選び、Bad例に近い書き方は少しだけ避けてください。基本ルールを変えるほど強く寄せないでください。",
+    ]
+    if good:
+        lines.append("Goodとして評価された最近の例:")
+        for idx, item in enumerate(good, start=1):
+            text = _feedback_example_text(item)
+            if text:
+                lines.append(f"[Good {idx}]\n{text}")
+    if bad:
+        lines.append("Badとして評価された最近の例（内容ではなく書き方だけを弱く避ける）:")
+        for idx, item in enumerate(bad, start=1):
+            text = _feedback_example_text(item)
+            if text:
+                lines.append(f"[Bad {idx}]\n{text}")
+    return "\n".join(lines)
+
+
+def save_summary_feedback(trip_id, rating):
+    diary = get_diary_for_trip(trip_id)
+    if not diary:
+        raise ValueError("日記が見つかりませんでした。")
+    meta = _apply_summary_feedback_to_meta(diary.get("ai_meta") or {}, rating)
+    (
+        supabase_client()
+        .table(DIARY_TABLE)
+        .update({"ai_meta": meta, "updated_at": now_jst().isoformat()})
+        .eq("trip_id", trip_id)
+        .execute()
+    )
+    return meta
+
+
+def reset_summary_feedback_learning():
+    """Return AI summary generation to its pre-feedback behavior without deleting summaries."""
+    client = supabase_client()
+    rows = client.table(DIARY_TABLE).select("id,ai_meta").execute().data or []
+    changed = 0
+    for row in rows:
+        meta = row.get("ai_meta") or {}
+        if not isinstance(meta, dict):
+            continue
+        before = json.dumps(meta, ensure_ascii=False, sort_keys=True)
+        _clear_summary_feedback_fields(meta, clear_history=True)
+        after = json.dumps(meta, ensure_ascii=False, sort_keys=True)
+        if before == after:
+            continue
+        (
+            client
+            .table(DIARY_TABLE)
+            .update({"ai_meta": meta, "updated_at": now_jst().isoformat()})
+            .eq("id", row["id"])
+            .execute()
+        )
+        changed += 1
+
+    # Also clear unsaved feedback in any in-progress diary draft in this session.
+    for key in list(st.session_state.keys()):
+        if not str(key).startswith("reflection_state_"):
+            continue
+        state = st.session_state.get(key)
+        if not isinstance(state, dict):
+            continue
+        draft_meta = state.get("draft_meta")
+        if isinstance(draft_meta, dict):
+            _clear_summary_feedback_fields(draft_meta, clear_history=True)
+    return changed
+
+
+@st.dialog("AIまとめのGood/Bad反映をリセットしますか？")
+def confirm_summary_feedback_reset_dialog():
+    st.write("Good/Badから学習した『まとめ方の好み』だけを消して、標準の出力方法に戻します。")
+    st.caption("保存済みの日記・写真・AIまとめ本文は削除しません。Good/Badの評価履歴は消えます。")
+    reset_col, cancel_col = st.columns(2)
+    with reset_col:
+        if st.button("リセットする", type="primary", use_container_width=True, key="summary_feedback_reset_yes"):
+            try:
+                reset_summary_feedback_learning()
+                st.session_state["_settings_notice"] = "AIまとめのGood/Bad反映をリセットしました。"
+                st.rerun(scope="app")
+            except Exception as exc:
+                st.error("リセットできませんでした。")
+                with st.expander("保護者向け詳細"):
+                    st.code(str(exc))
+    with cancel_col:
+        if st.button("キャンセル", use_container_width=True, key="summary_feedback_reset_no"):
+            st.rerun(scope="app")
+
+
+def render_summary_feedback_controls(meta, trip_id, key_prefix, draft_state=None):
+    """Render Good/Bad for one visible AI summary and persist or stage the rating."""
+    if not isinstance(meta, dict):
+        return
+    if not (str(meta.get("trip_summary") or "").strip() or str(meta.get("reflection_summary") or "").strip()):
+        return
+
+    current = str(meta.get("summary_feedback") or "").lower()
+    st.caption("上のAIまとめを評価します。次回以降のまとめ方に少しだけ反映されます。")
+    good_col, bad_col = st.columns(2)
+    with good_col:
+        good_label = "👍 Good ✓" if current == "good" else "👍 Good"
+        if st.button(
+            good_label,
+            use_container_width=True,
+            key=f"summary_feedback_good_{key_prefix}_{trip_id}",
+        ):
+            try:
+                if draft_state is None:
+                    save_summary_feedback(trip_id, "good")
+                else:
+                    draft_state["draft_meta"] = _apply_summary_feedback_to_meta(
+                        draft_state.get("draft_meta") or {}, "good"
+                    )
+                st.rerun()
+            except Exception as exc:
+                st.error("Good評価を保存できませんでした。")
+                with st.expander("保護者向け詳細"):
+                    st.code(str(exc))
+    with bad_col:
+        bad_label = "👎 Bad ✓" if current == "bad" else "👎 Bad"
+        if st.button(
+            bad_label,
+            use_container_width=True,
+            key=f"summary_feedback_bad_{key_prefix}_{trip_id}",
+        ):
+            try:
+                if draft_state is None:
+                    save_summary_feedback(trip_id, "bad")
+                else:
+                    draft_state["draft_meta"] = _apply_summary_feedback_to_meta(
+                        draft_state.get("draft_meta") or {}, "bad"
+                    )
+                st.rerun()
+            except Exception as exc:
+                st.error("Bad評価を保存できませんでした。")
+                with st.expander("保護者向け詳細"):
+                    st.code(str(exc))
 
 
 def summarize_burari_from_photos(trip, photos):
@@ -3506,6 +3896,7 @@ def summarize_burari_from_photos(trip, photos):
         "additionalProperties": False,
     }
     comments_text = "\n".join(comment_lines) if comment_lines else "写真・コメントなし"
+    feedback_guidance = build_summary_feedback_guidance()
     prompt = f"""
 5〜6歳の子どもの「東京ぶらり旅」1回分をまとめてください。
 入力には、その日に保存された写真と、各写真について本人が話したコメントがあります。
@@ -3514,6 +3905,8 @@ def summarize_burari_from_photos(trip, photos):
 行き先メモ: {str((trip or {}).get('destination') or '').strip() or 'なし'}
 写真ごとの本人コメント:
 {comments_text}
+
+{feedback_guidance}
 
 出力ルール:
 - trip_summary は、そのぶらり旅全体を2〜4文で簡潔にまとめる。写真から確認できる対象と、本人が実際に話した内容を結びつけてよい。
@@ -3554,6 +3947,7 @@ def save_burari_ai_summary(trip_id, result):
     meta = diary.get("ai_meta") or {}
     if not isinstance(meta, dict):
         meta = {}
+    _clear_summary_feedback_fields(meta, clear_history=False)
     meta["trip_summary"] = str((result or {}).get("trip_summary") or "").strip()
     meta["reflection_summary"] = str((result or {}).get("reflection_summary") or "").strip()
     points = list((result or {}).get("child_points") or [])[:3]
@@ -4706,6 +5100,7 @@ def page_diary():
                     st.code(str(exc))
         render_burari_trip_summary(existing_meta)
         render_diary_reflection_summary(existing_meta)
+        render_summary_feedback_controls(existing_meta, trip_id, "saved")
         render_diary_title_editor(trip_id, existing_title, "diary_existing")
         if photos and st.button("この日の写真から、もう一度日記をつくる", use_container_width=True):
             reflection_state(trip_id, photos)
@@ -4792,8 +5187,10 @@ def page_diary():
                 with st.spinner("写真とコメントを見て、このぶらり旅をまとめています…"):
                     summary_result = summarize_burari_from_photos(trip, photos)
                 draft_meta = state.setdefault("draft_meta", {})
+                _clear_summary_feedback_fields(draft_meta, clear_history=False)
                 draft_meta["trip_summary"] = str(summary_result.get("trip_summary") or "").strip()
                 draft_meta["reflection_summary"] = str(summary_result.get("reflection_summary") or "").strip()
+                draft_meta["photo_comment_summary_updated_at"] = now_jst().isoformat()
                 points = list(summary_result.get("child_points") or [])[:3]
                 if points:
                     draft_meta["child_points"] = points
@@ -4804,6 +5201,7 @@ def page_diary():
                     st.code(str(exc))
         render_burari_trip_summary(state.get("draft_meta") or {})
         render_diary_reflection_summary(state.get("draft_meta") or {})
+        render_summary_feedback_controls(state.get("draft_meta") or {}, trip_id, "draft", draft_state=state)
         if state.get("draft_audio"):
             st.audio(
                 state["draft_audio"],
@@ -5101,6 +5499,7 @@ def page_history(embedded=False):
         meta = diary.get("ai_meta") or {}
         render_burari_trip_summary(meta)
         render_diary_reflection_summary(meta)
+        render_summary_feedback_controls(meta, trip_id, "history")
         child_points = meta.get("child_points", []) if isinstance(meta, dict) else []
         if child_points:
             with st.expander("この日記のもとになった言葉"):
@@ -5267,6 +5666,10 @@ def page_review():
 def page_settings():
     page_top("⚙️ 設定", "旅の行き先メモや区切りを保護者が調整できます。")
 
+    settings_notice = st.session_state.pop("_settings_notice", None)
+    if settings_notice:
+        st.success(settings_notice)
+
     active = get_trip(st.session_state.active_trip_id) if st.session_state.active_trip_id else None
     if active and active.get("status") == "active" and active.get("trip_date") == today_iso():
         photos = list_trip_photos(active["id"])
@@ -5303,6 +5706,41 @@ def page_settings():
         if st.button("今日のぶらり旅を始める", type="primary", use_container_width=True):
             ensure_today_trip()
             go_page("camera")
+
+    st.divider()
+    st.markdown("#### AIまとめの調整")
+    feedback_status = get_summary_feedback_status()
+    good_count = int(feedback_status.get("good_count") or 0)
+    bad_count = int(feedback_status.get("bad_count") or 0)
+    if good_count == 0 and bad_count == 0:
+        st.write("現在は**標準のまとめ方**です。Good/Badの影響はありません。")
+    else:
+        st.write(f"これまでの評価：**Good {good_count}件** ／ **Bad {bad_count}件**")
+        st.caption(
+            "次回のAIまとめでは、直近のGood最大3件の文章構成・分析の粒度・言い回しを少しだけ参考にし、"
+            "Bad最大2件に近い書き方を少しだけ避けます。写真と本人コメント、基本ルールの方を常に優先し、過去の内容はコピーしません。"
+        )
+        with st.expander("現在参考にしているGood / Badを見る"):
+            good_examples = feedback_status.get("good_examples") or []
+            bad_examples = feedback_status.get("bad_examples") or []
+            if good_examples:
+                st.markdown("**Goodとして参考にしている例**")
+                for idx, item in enumerate(good_examples, start=1):
+                    text = _feedback_example_text(item, max_chars=360)
+                    if text:
+                        st.write(f"{idx}. {text}")
+            if bad_examples:
+                st.markdown("**Badとして弱く避けている例**")
+                for idx, item in enumerate(bad_examples, start=1):
+                    text = _feedback_example_text(item, max_chars=360)
+                    if text:
+                        st.write(f"{idx}. {text}")
+    if st.button(
+        "Good/Bad反映前の標準に戻す",
+        use_container_width=True,
+        key="settings_reset_summary_feedback",
+    ):
+        confirm_summary_feedback_reset_dialog()
 
     st.divider()
     st.markdown("#### 自動ログイン")
