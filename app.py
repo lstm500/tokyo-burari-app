@@ -332,7 +332,7 @@ _LIVE_CAMERA_CSS = """
 
 _LIVE_CAMERA_JS = r"""
 export default function(component) {
-  const { parentElement, setTriggerValue } = component;
+  const { parentElement, setTriggerValue, data } = component;
   const video = parentElement.querySelector('#live-camera-video');
   const canvas = parentElement.querySelector('#live-camera-canvas');
   const menu = parentElement.querySelector('#camera-menu');
@@ -585,6 +585,12 @@ export default function(component) {
   shootButton.addEventListener('click', takePhoto);
   stopButton.addEventListener('click', closeCamera);
   galleryInput.addEventListener('change', chooseGalleryPhoto);
+
+  // When the user chose "撮りなおす／選びなおす", reopen the camera
+  // automatically so another tap on "カメラを開く" is unnecessary.
+  if (data && data.auto_start) {
+    queueMicrotask(() => startCamera());
+  }
 
   return () => {
     startButton.removeEventListener('click', startCamera);
@@ -1365,6 +1371,53 @@ def save_diary(trip_id, title, diary_text, raw_conversation, ai_meta):
     )
 
 
+def delete_diary_and_related_data(trip_id):
+    """Delete one saved diary plus all photos and photo conversations for that trip."""
+    client = supabase_client()
+    trip = get_trip(trip_id) or {}
+    photos = list_trip_photos(trip_id)
+    storage_paths = [str(p.get("storage_path") or "").strip() for p in photos]
+    storage_paths = [path for path in storage_paths if path]
+
+    # Remove the binary photo files first. If Storage cannot be reached, abort the
+    # deletion so the visible database records are not left pointing to missing files.
+    if storage_paths:
+        client.storage.from_(PHOTO_BUCKET).remove(storage_paths)
+
+    # A photo's reflection_json contains the per-photo conversation/comments, so
+    # deleting the photo rows deletes those comments together with the photo record.
+    client.table(PHOTO_TABLE).delete().eq("trip_id", trip_id).execute()
+    client.table(DIARY_TABLE).delete().eq("trip_id", trip_id).execute()
+    # Once its diary/photos are gone, remove the trip container as well so the
+    # deleted day cannot reappear as an empty trip in diary/monthly screens.
+    client.table(TRIP_TABLE).delete().eq("id", trip_id).execute()
+
+    # A saved monthly review can contain wording derived from the deleted diary.
+    # Remove that month's snapshot so it cannot continue showing deleted material.
+    trip_date = str(trip.get("trip_date") or "")
+    month_key = trip_date[:7] if len(trip_date) >= 7 else ""
+    if month_key:
+        first_day, _ = month_bounds(month_key)
+        client.table(MONTHLY_TABLE).delete().eq("review_month", first_day).execute()
+        for key in (
+            f"monthly_review_{month_key}",
+            f"monthly_audio_{month_key}",
+            f"monthly_audio_pending_{month_key}",
+        ):
+            st.session_state.pop(key, None)
+
+    # Clear any in-progress diary state for the deleted trip.
+    st.session_state.pop(f"reflection_state_{trip_id}", None)
+    st.session_state.pop("diary_trip_selector", None)
+    if st.session_state.get("preferred_diary_trip_id") == trip_id:
+        st.session_state.preferred_diary_trip_id = None
+    if st.session_state.get("active_trip_id") == trip_id:
+        st.session_state.active_trip_id = None
+    download_photo.clear()
+
+    return {"photo_count": len(photos), "month_key": month_key}
+
+
 def list_recent_diaries(limit=60):
     result = (
         supabase_client()
@@ -1758,8 +1811,10 @@ def init_state():
         "main_page": "home",
         "active_trip_id": None,
         "capture_serial": 0,
+        "camera_auto_start": False,
         "preferred_diary_trip_id": None,
         "show_home_destination_editor": False,
+        "confirm_delete_diary_id": None,
     }
     for key, value in defaults.items():
         if key not in st.session_state:
@@ -2032,7 +2087,9 @@ def page_trip():
 
     if pending is None:
         if live_camera_component is not None:
+            auto_start_camera = bool(st.session_state.pop("camera_auto_start", False))
             result = live_camera_component(
+                data={"auto_start": auto_start_camera},
                 key=f"live_camera_{trip['id']}_{st.session_state.capture_serial}",
                 on_photo_change=lambda: None,
                 on_camera_error_change=lambda: None,
@@ -2105,6 +2162,7 @@ def page_trip():
             for key in (pending_key, digest_key, location_key, captured_at_key, source_key):
                 st.session_state.pop(key, None)
             st.session_state.capture_serial += 1
+            st.session_state.camera_auto_start = True
             st.rerun()
 
 
@@ -2182,6 +2240,45 @@ def page_diary():
                 "revision_serial": 0,
             }
             st.rerun()
+
+        existing_diary_id = existing.get("id") or trip_id
+        if st.session_state.get("confirm_delete_diary_id") == existing_diary_id:
+            st.warning(
+                f"この日記と写真 {len(photos)}枚、写真について話したコメントをすべて削除します。"
+                "この操作は元に戻せません。"
+            )
+            del_col, cancel_col = st.columns(2)
+            with del_col:
+                if st.button(
+                    "完全に削除する",
+                    type="primary",
+                    use_container_width=True,
+                    key=f"diary_page_delete_yes_{existing_diary_id}",
+                ):
+                    try:
+                        delete_diary_and_related_data(trip_id)
+                        st.session_state.confirm_delete_diary_id = None
+                        st.rerun()
+                    except Exception as exc:
+                        st.error("日記を削除できませんでした。")
+                        with st.expander("保護者向け詳細"):
+                            st.code(str(exc))
+            with cancel_col:
+                if st.button(
+                    "キャンセル",
+                    use_container_width=True,
+                    key=f"diary_page_delete_no_{existing_diary_id}",
+                ):
+                    st.session_state.confirm_delete_diary_id = None
+                    st.rerun()
+        else:
+            if st.button(
+                "🗑 この日記を削除",
+                use_container_width=True,
+                key=f"diary_page_delete_{existing_diary_id}",
+            ):
+                st.session_state.confirm_delete_diary_id = existing_diary_id
+                st.rerun()
         return
 
     if not photos:
@@ -2418,6 +2515,11 @@ def page_diary():
 def page_history(embedded=False):
     if not embedded:
         page_top("📚 これまでの日記")
+
+    notice = st.session_state.pop("_history_notice", None)
+    if notice:
+        st.success(notice)
+
     rows = list_recent_diaries()
     if not rows:
         st.info("まだ日記はありません。")
@@ -2426,7 +2528,9 @@ def page_history(embedded=False):
     for row in rows:
         diary = row["diary"]
         trip = row["trip"]
-        photos = list_trip_photos(diary["trip_id"])
+        trip_id = diary["trip_id"]
+        diary_id = diary.get("id") or trip_id
+        photos = list_trip_photos(trip_id)
         daily_title = diary_title_for_trip(trip, photos=photos)
         title = f"{trip.get('trip_date', '')}　{daily_title}"
         with st.expander(title):
@@ -2445,6 +2549,48 @@ def page_history(embedded=False):
                 with st.expander("この日記のもとになった言葉"):
                     for point in child_points[:3]:
                         st.write("・" + str(point))
+
+            confirm_key = f"delete_confirm_{diary_id}"
+            if st.session_state.get("confirm_delete_diary_id") == diary_id:
+                st.warning(
+                    f"この日記と写真 {len(photos)}枚、写真について話したコメントをすべて削除します。"
+                    "この操作は元に戻せません。"
+                )
+                delete_col, cancel_col = st.columns(2)
+                with delete_col:
+                    if st.button(
+                        "完全に削除する",
+                        type="primary",
+                        use_container_width=True,
+                        key=f"{confirm_key}_yes",
+                    ):
+                        try:
+                            result = delete_diary_and_related_data(trip_id)
+                            st.session_state.confirm_delete_diary_id = None
+                            st.session_state["_history_notice"] = (
+                                f"日記と写真 {result['photo_count']}枚、関連するコメントを削除しました。"
+                            )
+                            st.rerun()
+                        except Exception as exc:
+                            st.error("日記を削除できませんでした。")
+                            with st.expander("保護者向け詳細"):
+                                st.code(str(exc))
+                with cancel_col:
+                    if st.button(
+                        "キャンセル",
+                        use_container_width=True,
+                        key=f"{confirm_key}_no",
+                    ):
+                        st.session_state.confirm_delete_diary_id = None
+                        st.rerun()
+            else:
+                if st.button(
+                    "🗑 この日記を削除",
+                    use_container_width=True,
+                    key=f"delete_diary_{diary_id}",
+                ):
+                    st.session_state.confirm_delete_diary_id = diary_id
+                    st.rerun()
 
 
 # ============================================================
