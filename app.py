@@ -104,10 +104,15 @@ st.markdown(
         border-radius: 20px;
       }
       .st-key-mobile_capture [data-testid="stFileUploaderDropzone"] button {
-        min-height: 4.5rem;
+        min-height: 4.8rem;
         width: 100%;
         border-radius: 18px;
-        font-size: 1.08rem;
+        font-size: 0;
+        font-weight: 800;
+      }
+      .st-key-mobile_capture [data-testid="stFileUploaderDropzone"] button::after {
+        content: "📷 写真を撮る・選ぶ";
+        font-size: 1.10rem;
         font-weight: 800;
       }
       @media (max-width: 640px) {
@@ -1134,14 +1139,17 @@ def page_trip():
     st.markdown(f"**{trip.get('trip_date', '')}　{destination or '今日のぶらり旅'}**　／　写真 {len(photos)}枚")
 
     st.markdown("#### 写真を追加")
-    st.caption("下をタップすると、スマホでは『カメラで撮る』または『写真を選ぶ』を選べます。ブラウザのカメラ権限がなくても使える方式です。")
+    st.info("下の大きなボタンをタップし、スマホ側で『カメラ』『写真を撮影』または『写真を選ぶ』を選んでください。ブラウザ内のカメラ機能は使いません。")
     with st.container(key="mobile_capture"):
         upload = st.file_uploader(
-            "📷 写真を撮る・選ぶ",
+            "写真を撮る・選ぶ",
             type=["jpg", "jpeg", "png", "webp"],
             accept_multiple_files=False,
+            label_visibility="collapsed",
             key=f"mobile_photo_{trip['id']}_{st.session_state.capture_serial}",
         )
+
+    st.caption("※ Android / iPhone の標準の写真選択画面を使う方式です。表示される選択肢は端末・ブラウザによって少し異なります。")
 
     if upload is not None:
         st.image(upload, caption="この写真を残す？", use_container_width=True)
@@ -1170,35 +1178,6 @@ def page_trip():
             ):
                 st.session_state.capture_serial += 1
                 st.rerun()
-
-    use_direct_camera = st.checkbox(
-        "ブラウザのカメラを直接使う（任意）",
-        value=False,
-        key=f"direct_camera_toggle_{trip['id']}",
-    )
-    if use_direct_camera:
-        st.caption("Safari/Chrome側でカメラ権限が許可されている場合だけ使えます。使えない場合は上の『写真を撮る・選ぶ』を使ってください。")
-        camera = st.camera_input(
-            "ブラウザのカメラを開く",
-            key=f"direct_camera_{st.session_state.capture_serial}",
-        )
-        if camera is not None:
-            st.image(camera, caption="この写真を残す？", use_container_width=True)
-            if st.button(
-                "直接カメラの写真を残す",
-                type="primary",
-                use_container_width=True,
-                key=f"save_direct_{st.session_state.capture_serial}",
-            ):
-                try:
-                    with st.spinner("写真を残しています…"):
-                        upload_photo(trip["id"], camera.getvalue())
-                    st.session_state.capture_serial += 1
-                    st.rerun()
-                except Exception as exc:
-                    st.error("写真を保存できませんでした。")
-                    with st.expander("保護者向け詳細"):
-                        st.code(str(exc))
 
     if photos:
         st.markdown("#### 今日の写真")
