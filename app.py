@@ -2597,6 +2597,9 @@ def delete_photo_and_related_data(trip_id, photo_id):
         for remaining in remaining_photos:
             merged_signals = merge_signals(merged_signals, remaining.get("signals_json") or {})
         ai_meta["signals"] = merged_signals
+        # This analysis may have referred to the deleted comment. Hide it until the
+        # diary is rebuilt from the remaining child comments.
+        ai_meta["reflection_summary"] = ""
 
         (
             client
@@ -2684,6 +2687,54 @@ def reset_photo_conversation(trip_id, photo_id):
 
     # update_photo_reflection preserves capture/location metadata in reflection_json.
     update_photo_reflection(photo_id, [], {}, done=False)
+
+    # If a completed diary already exists, the copied raw conversation and AI
+    # analysis must not keep showing a comment that was just reset. Keep the diary
+    # prose itself, matching the existing reset behavior.
+    existing = get_diary_for_trip(trip_id)
+    if existing:
+        raw = existing.get("raw_conversation") or {}
+        if not isinstance(raw, dict):
+            raw = {}
+        raw.pop(str(photo_id), None)
+        raw.pop(photo_id, None)
+
+        ai_meta = existing.get("ai_meta") or {}
+        if not isinstance(ai_meta, dict):
+            ai_meta = {}
+        remaining_child_points = []
+        for conversation in raw.values():
+            if not isinstance(conversation, list):
+                continue
+            for turn in conversation:
+                if isinstance(turn, dict) and turn.get("role") == "child":
+                    value = str(turn.get("text") or "").strip()
+                    if value and value not in remaining_child_points:
+                        remaining_child_points.append(value)
+        ai_meta["child_points"] = remaining_child_points[:3]
+        ai_meta["reflection_summary"] = ""
+
+        remaining_photos = list_trip_photos(trip_id)
+        merged_signals = {}
+        for remaining in remaining_photos:
+            if remaining.get("id") == photo_id:
+                continue
+            merged_signals = merge_signals(merged_signals, remaining.get("signals_json") or {})
+        ai_meta["signals"] = merged_signals
+
+        (
+            client
+            .table(DIARY_TABLE)
+            .update(
+                {
+                    "raw_conversation": raw,
+                    "ai_meta": ai_meta,
+                    "updated_at": now_jst().isoformat(),
+                }
+            )
+            .eq("id", existing["id"])
+            .execute()
+        )
 
     # A saved monthly review may contain wording from this photo conversation.
     trip_date = str(trip.get("trip_date") or "")
@@ -3175,10 +3226,11 @@ def compose_diary(trip, photo_states):
         "properties": {
             "title": {"type": "string"},
             "diary": {"type": "string"},
+            "reflection_summary": {"type": "string"},
             "child_points": {"type": "array", "items": {"type": "string"}},
             "signals": SIGNAL_SCHEMA,
         },
-        "required": ["title", "diary", "child_points", "signals"],
+        "required": ["title", "diary", "reflection_summary", "child_points", "signals"],
         "additionalProperties": False,
     }
     destination = str(trip.get("destination") or "").strip()
@@ -3198,13 +3250,35 @@ AIが新しい出来事や感情を足してはいけません。
 - 「楽しかった」「不便だった」などを、本人が言っていないのに補わない。
 - 大人っぽい抽象語へ変換しすぎない。
 - title はシステム側で「ぶらり旅（地名）」に固定するため、内容は diary に集中する。
-- child_points はAIの解釈ではなく、日記の根拠になった本人の発言を短く3つ以内で抜き出す。
+- reflection_summary は保護者向けに、その日の本人の発言だけを根拠として「何に興味・注意が向いていたか」「どんな疑問や比較、理由づけ、改善の発想があったか」「どんなWantがあったか」を2〜4文程度で簡潔にまとめる。
+- reflection_summary は性格診断・能力評価・将来予測にしない。「〜な子だ」と固定せず、「この日は〜に目が向いていた」「〜と考えていた」のようにその日の発言の範囲で書く。
+- reflection_summary で本人が言っていない感情・意図を断定しない。推測が必要な場合は「〜に関心が向いていたようです」のように弱く表現する。材料が少なければ、そのことを短く明記する。
+- child_points はAIの解釈ではなく、日記と reflection_summary の根拠になった本人の発言を短く3つ以内で抜き出す。
 - signals は本人が実際に話した内容だけを整理し、推測を足さない。
 """.strip()
     result = ask_json(prompt, "compose_burari_diary", schema, 1100)
     result["title"] = diary_title_for_trip(trip)
     result["signals"] = merge_signals(all_signals, result.get("signals", {}))
     return result, raw
+
+
+def render_diary_reflection_summary(meta):
+    """Show a cautious AI summary grounded only in the child's saved comments."""
+    if not isinstance(meta, dict):
+        return
+    summary = str(meta.get("reflection_summary") or "").strip()
+    if not summary:
+        return
+    st.markdown("#### AIによる、この日の興味・考えのまとめ")
+    st.markdown(
+        f"""
+        <div class="talk-card">
+          <div class="small-note">本人が写真について話したコメントだけをもとにした、その日の振り返りです。性格や能力の評価ではありません。</div>
+          <div class="big-text" style="margin-top:.45rem;">{html.escape(summary)}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 def revise_diary(draft, correction, child_evidence):
@@ -3847,7 +3921,18 @@ def render_recent_camera_photo_comment(trip):
     st.markdown("#### 今撮った写真")
     try:
         image_bytes = download_photo(photo["storage_path"])
-        st.image(image_bytes, use_container_width=True)
+        # Keep the just-saved preview compact so the photo and microphone can fit
+        # together on a phone screen. The full image is still stored unchanged.
+        preview_src = image_data_url(image_bytes)
+        st.markdown(
+            f"""
+            <div style="display:flex;justify-content:center;align-items:center;width:100%;margin:.25rem 0 .45rem;">
+              <img src="{preview_src}" alt="今撮った写真"
+                   style="display:block;max-width:min(72vw,320px);max-height:34dvh;width:auto;height:auto;object-fit:contain;border-radius:14px;" />
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
     except Exception as exc:
         st.error("今撮った写真を表示できませんでした。")
         with st.expander("保護者向け詳細"):
@@ -4082,6 +4167,7 @@ def page_diary():
             """,
             unsafe_allow_html=True,
         )
+        render_diary_reflection_summary(existing.get("ai_meta") or {})
         render_diary_title_editor(trip_id, existing_title, "diary_existing")
         if photos and st.button("この日の写真から、もう一度日記をつくる", use_container_width=True):
             reflection_state(trip_id, photos)
@@ -4133,6 +4219,7 @@ def page_diary():
                     state["draft"] = result["diary"]
                     state["draft_title"] = diary_display_title(existing, trip, photos=photos)
                     state["draft_meta"] = {
+                        "reflection_summary": str(result.get("reflection_summary") or "").strip(),
                         "child_points": result.get("child_points", []),
                         "signals": result.get("signals", {}),
                     }
@@ -4158,6 +4245,7 @@ def page_diary():
             """,
             unsafe_allow_html=True,
         )
+        render_diary_reflection_summary(state.get("draft_meta") or {})
         if state.get("draft_audio"):
             st.audio(
                 state["draft_audio"],
@@ -4442,6 +4530,7 @@ def page_history(embedded=False):
         )
 
         meta = diary.get("ai_meta") or {}
+        render_diary_reflection_summary(meta)
         child_points = meta.get("child_points", []) if isinstance(meta, dict) else []
         if child_points:
             with st.expander("この日記のもとになった言葉"):
