@@ -502,6 +502,98 @@ except Exception:
     live_camera_component = None
 
 
+# ============================================================
+# Browser history bridge
+# ============================================================
+# Streamlit session-state navigation does not create browser history entries by
+# itself. This small component mirrors each app screen into window.history so
+# Chrome/Safari back and forward buttons move between app screens first.
+_HISTORY_JS = r"""
+export default function(component) {
+  const { data, setTriggerValue } = component;
+  const validPages = new Set(['home', 'camera', 'diary', 'review', 'settings']);
+  const marker = '__tokyo_burari_page__';
+  const requestedPage = validPages.has(data?.page) ? data.page : 'home';
+  const action = data?.action || 'sync';
+
+  const pageFromUrl = () => {
+    try {
+      const value = new URL(window.location.href).searchParams.get('view');
+      return validPages.has(value) ? value : 'home';
+    } catch (_) {
+      return 'home';
+    }
+  };
+
+  const pageFromHistory = () => {
+    const value = window.history.state && window.history.state[marker];
+    return validPages.has(value) ? value : pageFromUrl();
+  };
+
+  const urlFor = (page) => {
+    const url = new URL(window.location.href);
+    if (page === 'home') {
+      url.searchParams.delete('view');
+    } else {
+      url.searchParams.set('view', page);
+    }
+    return url.pathname + url.search + url.hash;
+  };
+
+  let currentPage = pageFromHistory();
+  const state = window.history.state || {};
+
+  // Mark the entry used to open the app as the app's home/current entry.
+  if (!validPages.has(state[marker])) {
+    const initialPage = pageFromUrl();
+    window.history.replaceState(
+      { ...state, [marker]: initialPage },
+      '',
+      urlFor(initialPage)
+    );
+    currentPage = initialPage;
+  }
+
+  if (action === 'push' && currentPage !== requestedPage) {
+    window.history.pushState(
+      { ...(window.history.state || {}), [marker]: requestedPage },
+      '',
+      urlFor(requestedPage)
+    );
+    currentPage = requestedPage;
+  } else if (action === 'replace' && currentPage !== requestedPage) {
+    window.history.replaceState(
+      { ...(window.history.state || {}), [marker]: requestedPage },
+      '',
+      urlFor(requestedPage)
+    );
+    currentPage = requestedPage;
+  } else if (action === 'sync' && currentPage !== requestedPage) {
+    // This covers a page reload or a browser-restored tab whose URL/history
+    // already points at an internal app screen.
+    queueMicrotask(() => setTriggerValue('page', currentPage));
+  }
+
+  const onPopState = (event) => {
+    const statePage = event.state && event.state[marker];
+    const target = validPages.has(statePage) ? statePage : pageFromUrl();
+    setTriggerValue('page', validPages.has(target) ? target : 'home');
+  };
+
+  window.addEventListener('popstate', onPopState);
+  return () => window.removeEventListener('popstate', onPopState);
+}
+"""
+
+try:
+    browser_history_component = st.components.v2.component(
+        'tokyo_burari_browser_history',
+        js=_HISTORY_JS,
+    )
+except Exception:
+    browser_history_component = None
+
+
 def decode_camera_data_url(data_url):
     """Decode a trusted data URL emitted by the live camera component."""
     if not isinstance(data_url, str) or not data_url.startswith("data:image/"):
@@ -1342,7 +1434,10 @@ def init_state():
 
     next_page = st.session_state.pop("_next_page", None)
     if next_page:
-        st.session_state["main_page"] = legacy_pages.get(next_page, next_page)
+        target_page = legacy_pages.get(next_page, next_page)
+        if target_page != st.session_state.get("main_page"):
+            st.session_state["main_page"] = target_page
+            st.session_state["_history_action"] = "push"
 
     if st.session_state.active_trip_id:
         active = get_trip(st.session_state.active_trip_id)
@@ -1355,9 +1450,42 @@ def init_state():
             st.session_state.active_trip_id = active["id"]
 
 
-def go_page(page_name):
-    st.session_state["main_page"] = page_name
+VALID_APP_PAGES = {"home", "camera", "diary", "review", "settings"}
+
+
+def go_page(page_name, history_mode="push"):
+    target = page_name if page_name in VALID_APP_PAGES else "home"
+    if st.session_state.get("main_page") != target:
+        st.session_state["main_page"] = target
+        st.session_state["_history_action"] = (
+            history_mode if history_mode in {"push", "replace"} else "push"
+        )
     st.rerun()
+
+
+def sync_browser_history():
+    """Keep Chrome/Safari Back/Forward aligned with the app's internal pages."""
+    if browser_history_component is None:
+        return
+
+    page = st.session_state.get("main_page", "home")
+    if page not in VALID_APP_PAGES:
+        page = "home"
+        st.session_state["main_page"] = page
+
+    action = st.session_state.pop("_history_action", "sync")
+    result = browser_history_component(
+        data={"page": page, "action": action},
+        key="tokyo_burari_browser_history_instance",
+        on_page_change=lambda: None,
+    )
+    browser_page = getattr(result, "page", None)
+    if browser_page in VALID_APP_PAGES and browser_page != page:
+        st.session_state["main_page"] = browser_page
+        # A browser Back/Forward event has already changed window.history. Do not
+        # push a new entry while reflecting that event back into Streamlit.
+        st.session_state.pop("_history_action", None)
+        st.rerun()
 
 
 def ensure_today_trip():
@@ -2057,6 +2185,7 @@ def page_settings():
 verify_setup()
 require_family_pin()
 init_state()
+sync_browser_history()
 
 page = st.session_state.get("main_page", "home")
 if page == "home":
