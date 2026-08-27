@@ -2163,27 +2163,115 @@ def unique_auto_diary_title(base_title, exclude_trip_id=None):
 
 
 def diary_display_title(diary, trip, photos=None):
-    """Prefer a saved/custom title; unsaved automatic titles are numbered when duplicated."""
+    """Prefer the latest saved/custom title; unsaved automatic titles are numbered."""
+    trip_id = str((trip or {}).get("id") or (diary or {}).get("trip_id") or "") or None
+    if trip_id:
+        # After a title edit, keep every part of the current Streamlit rerun on the
+        # exact same value while Supabase-backed widgets are reconstructed.
+        override = str(st.session_state.get(f"_diary_title_override_{trip_id}") or "").strip()
+        if override:
+            return override
+
     saved = str((diary or {}).get("title") or "").strip()
     if saved:
         return saved
-    trip_id = str((trip or {}).get("id") or "") or None
     base_title = diary_title_for_trip(trip, photos=photos)
     return unique_auto_diary_title(base_title, exclude_trip_id=trip_id)
 
 
 def update_diary_title(trip_id, title):
+    """Persist a manual title and verify it before updating the UI."""
     value = str(title or "").strip()
     if not value:
         raise ValueError("タイトルを入力してください。")
-    (
-        supabase_client()
+
+    client = supabase_client()
+    client.table(DIARY_TABLE).update(
+        {"title": value, "updated_at": now_jst().isoformat()}
+    ).eq("trip_id", trip_id).execute()
+
+    # Supabase update() can complete without raising even if no row matched. Read it
+    # back so the user never sees a success message when the title was not stored.
+    check = (
+        client
         .table(DIARY_TABLE)
-        .update({"title": value, "updated_at": now_jst().isoformat()})
+        .select("trip_id,title")
         .eq("trip_id", trip_id)
+        .limit(1)
         .execute()
     )
-    return value
+    row = (check.data or [None])[0]
+    stored = str((row or {}).get("title") or "").strip()
+    if stored != value:
+        raise ValueError("タイトルの保存を確認できませんでした。")
+
+    st.session_state[f"_diary_title_override_{trip_id}"] = stored
+    st.session_state["_diary_selector_serial"] = int(
+        st.session_state.get("_diary_selector_serial") or 0
+    ) + 1
+    return stored
+
+
+def normalize_duplicate_saved_diary_titles():
+    """Repair old duplicate automatic titles once per app session.
+
+    v34 prevents new automatic duplicates, but diaries saved by older versions can
+    already contain the same automatic title. Keep the oldest one unchanged and
+    rename later duplicates as ぶらり旅（場所2）, ぶらり旅（場所3）, ... .
+    Manual/custom titles outside the automatic ぶらり旅（...） form are untouched.
+    """
+    if st.session_state.get("_duplicate_saved_titles_checked", False):
+        return
+    st.session_state["_duplicate_saved_titles_checked"] = True
+
+    client = supabase_client()
+    try:
+        rows = (
+            client
+            .table(DIARY_TABLE)
+            .select("id,trip_id,title,created_at")
+            .order("created_at")
+            .execute()
+        ).data or []
+    except Exception:
+        return
+
+    used_titles = {
+        str(row.get("title") or "").strip()
+        for row in rows
+        if str(row.get("title") or "").strip()
+    }
+    seen = set()
+    changed = False
+
+    for row in rows:
+        title = str(row.get("title") or "").strip()
+        if not title:
+            continue
+        if title not in seen:
+            seen.add(title)
+            continue
+        if not (title.startswith("ぶらり旅（") and title.endswith("）")):
+            continue
+
+        stem = title[:-1]
+        suffix = 2
+        candidate = f"{stem}{suffix}）"
+        while candidate in used_titles:
+            suffix += 1
+            candidate = f"{stem}{suffix}）"
+
+        client.table(DIARY_TABLE).update(
+            {"title": candidate, "updated_at": now_jst().isoformat()}
+        ).eq("id", row.get("id")).execute()
+        used_titles.add(candidate)
+        seen.add(candidate)
+        changed = True
+
+    if changed:
+        st.session_state["_diary_selector_serial"] = int(
+            st.session_state.get("_diary_selector_serial") or 0
+        ) + 1
 
 
 # ============================================================
@@ -3471,6 +3559,7 @@ def init_state():
         "capture_serial": 0,
         "preferred_diary_trip_id": None,
         "show_home_destination_editor": False,
+        "_diary_selector_serial": 0,
     }
     for key, value in defaults.items():
         if key not in st.session_state:
@@ -4116,8 +4205,11 @@ def render_diary_title_editor(trip_id, current_title, key_prefix):
             key=f"{key_prefix}_title_save_{trip_id}",
         ):
             try:
-                update_diary_title(trip_id, edited_title)
-                st.session_state["_diary_notice"] = "日記のタイトルを変更しました。"
+                saved_title = update_diary_title(trip_id, edited_title)
+                # Preserve the diary being viewed while the selectbox is rebuilt with
+                # a fresh key, so its visible label changes immediately on mobile too.
+                st.session_state.preferred_diary_trip_id = trip_id
+                st.session_state["_diary_notice"] = f"日記のタイトルを「{saved_title}」に変更しました。"
                 st.rerun()
             except Exception as exc:
                 st.error("タイトルを変更できませんでした。")
@@ -4360,12 +4452,13 @@ def page_diary():
     ids = [t["id"] for t in trips]
     preferred = st.session_state.preferred_diary_trip_id
     default_index = ids.index(preferred) if preferred in ids else 0
+    selector_serial = int(st.session_state.get("_diary_selector_serial") or 0)
     trip_id = st.selectbox(
         "振り返る日",
         ids,
         index=default_index,
         format_func=lambda x: trip_label(next(t for t in trips if t["id"] == x)),
-        key="diary_trip_selector",
+        key=f"diary_trip_selector_{selector_serial}",
     )
     trip = next(t for t in trips if t["id"] == trip_id)
     photos = list_trip_photos(trip_id)
@@ -4988,6 +5081,7 @@ verify_setup()
 require_family_pin()
 init_state()
 finalize_previous_days_into_diaries()
+normalize_duplicate_saved_diary_titles()
 restore_recent_camera_session()
 sync_browser_history()
 
