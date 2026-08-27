@@ -310,11 +310,21 @@ _LIVE_CAMERA_CSS = """
   gap: 8px;
   margin: 0 0 8px 0;
 }
-.camera-shoot-button,
-.camera-save-button {
+.camera-shoot-button {
   border: 2px solid var(--st-primary-color);
   background: var(--st-primary-color);
   color: white;
+}
+.camera-save-button {
+  border: 2px solid #15803d;
+  background: #16a34a;
+  color: white;
+  box-shadow: 0 0 0 3px rgba(22, 163, 74, .14);
+}
+.camera-save-button:hover,
+.camera-save-button:focus-visible {
+  border-color: #166534;
+  background: #15803d;
 }
 .camera-sub-button,
 .camera-retry-button {
@@ -1143,8 +1153,40 @@ def trip_place_label(trip, photos=None):
 
 
 def diary_title_for_trip(trip, photos=None):
-    place = trip_place_label(trip, photos=photos)
-    return f"ぶらり旅（{place}）" if place else "ぶらり旅（場所未登録）"
+    """Build the diary title from a manual destination, otherwise the first photo GPS label."""
+    trip = trip or {}
+    destination = str(trip.get("destination") or "").strip()
+    if destination:
+        return f"ぶらり旅（{destination}）"
+
+    trip_id = trip.get("id")
+    if photos is None and trip_id:
+        try:
+            photos = list_trip_photos(trip_id)
+        except Exception:
+            photos = []
+
+    # When no place was entered manually, use the same place label shown on the
+    # first photo in the diary UI. This keeps the title consistent with the visible
+    # "📍 place" caption even if older saved rows used a slightly different source tag.
+    if photos:
+        first_photo = photos[0]
+        place = str(photo_location_label(first_photo) or "").strip()
+        if place and place != "位置情報あり":
+            return f"ぶらり旅（{place}）"
+
+        # If GPS coordinates exist but the coarse label was not persisted, try the
+        # reverse geocoder once more before falling back to an unregistered title.
+        first_location = get_photo_location(first_photo)
+        if isinstance(first_location, dict):
+            lat = first_location.get("latitude")
+            lon = first_location.get("longitude")
+            if lat is not None and lon is not None:
+                place = str(reverse_geocode_rough(lat, lon) or "").strip()
+                if place:
+                    return f"ぶらり旅（{place}）"
+
+    return "ぶらり旅（場所未登録）"
 
 
 # ============================================================
@@ -1358,7 +1400,7 @@ def list_trip_photos(trip_id):
     return result.data or []
 
 
-def update_photo_reflection(photo_id, conversation, signals):
+def update_photo_reflection(photo_id, conversation, signals, done=None):
     client = supabase_client()
     current = (
         client
@@ -1373,6 +1415,8 @@ def update_photo_reflection(photo_id, conversation, signals):
     if not isinstance(reflection, dict):
         reflection = {}
     reflection["conversation"] = conversation
+    if done is not None:
+        reflection["conversation_done"] = bool(done)
 
     (
         client
@@ -1483,6 +1527,7 @@ def delete_diary_and_related_data(trip_id):
 
     # Clear any in-progress diary state for the deleted trip.
     st.session_state.pop(f"reflection_state_{trip_id}", None)
+    st.session_state.pop(f"diary_selected_photo_{trip_id}", None)
     st.session_state.pop("diary_trip_selector", None)
     if st.session_state.get("preferred_diary_trip_id") == trip_id:
         st.session_state.preferred_diary_trip_id = None
@@ -1637,6 +1682,16 @@ def delete_photo_and_related_data(trip_id, photo_id):
             state["audio_bytes"] = None
             state["audio_pending"] = False
             state["answer_serial"] = int(state.get("answer_serial") or 0) + 1
+            if state.get("selected_photo_id") == photo_id:
+                state["selected_photo_id"] = new_ids[0] if new_ids else None
+
+    selected_key = f"diary_selected_photo_{trip_id}"
+    if st.session_state.get(selected_key) == photo_id:
+        remaining_ids = [p.get("id") for p in list_trip_photos(trip_id) if p.get("id")]
+        if remaining_ids:
+            st.session_state[selected_key] = remaining_ids[0]
+        else:
+            st.session_state.pop(selected_key, None)
 
     st.session_state.pop(f"delete_photo_selector_{trip_id}", None)
     download_photo.clear()
@@ -1685,38 +1740,21 @@ def confirm_photo_delete_dialog(trip_id, photo_id):
 
 
 def render_diary_delete_controls(trip_id, photos, current_photo_id=None):
-    """Render photo deletion first, then whole-day deletion at the page bottom."""
+    """Render the selected-photo delete button, then whole-day delete at the bottom."""
     st.divider()
 
     photo_ids = [p.get("id") for p in photos if p.get("id")]
-    selected_photo_id = current_photo_id if current_photo_id in photo_ids else None
+    selected_key = f"diary_selected_photo_{trip_id}"
+    selected_photo_id = current_photo_id if current_photo_id in photo_ids else st.session_state.get(selected_key)
+    if selected_photo_id not in photo_ids:
+        selected_photo_id = photo_ids[0] if photo_ids else None
+        if selected_photo_id:
+            st.session_state[selected_key] = selected_photo_id
 
-    if photo_ids:
-        if selected_photo_id is None:
-            if len(photo_ids) == 1:
-                selected_photo_id = photo_ids[0]
-            else:
-                selected_photo_id = st.selectbox(
-                    "削除する画像",
-                    photo_ids,
-                    format_func=lambda x: f"写真 {photo_ids.index(x) + 1} / {len(photo_ids)}",
-                    key=f"delete_photo_selector_{trip_id}",
-                )
-
-            # When no photo is already on screen (for example a completed diary),
-            # show the selected image so "この画像" is unambiguous.
-            selected_photo = next((p for p in photos if p.get("id") == selected_photo_id), None)
-            if selected_photo:
-                try:
-                    preview = download_photo(selected_photo["storage_path"])
-                    st.image(preview, width=240)
-                    label = photo_location_label(selected_photo)
-                    if label:
-                        st.caption(f"📍 {label}")
-                except Exception:
-                    st.caption("画像のプレビューを読み込めませんでした。")
-
-        if selected_photo_id and st.button(
+    if selected_photo_id:
+        photo_number = photo_ids.index(selected_photo_id) + 1
+        st.caption(f"削除対象：写真 {photo_number} / {len(photo_ids)}（上の一覧で選択できます）")
+        if st.button(
             "🗑 この画像を削除",
             use_container_width=True,
             key=f"diary_photo_delete_{trip_id}_{selected_photo_id}",
@@ -2227,6 +2265,23 @@ def page_top(title, caption=""):
         st.caption(caption)
 
 
+def _stored_photo_conversation(photo):
+    reflection = (photo or {}).get("reflection_json") or {}
+    if not isinstance(reflection, dict):
+        return []
+    conversation = reflection.get("conversation") or []
+    return conversation if isinstance(conversation, list) else []
+
+
+def _conversation_has_child_words(conversation):
+    for turn in conversation or []:
+        if not isinstance(turn, dict) or turn.get("role") != "child":
+            continue
+        if str(turn.get("text") or "").strip():
+            return True
+    return False
+
+
 def reflection_state(trip_id, photos):
     key = f"reflection_state_{trip_id}"
     photo_ids = [p["id"] for p in photos]
@@ -2234,6 +2289,7 @@ def reflection_state(trip_id, photos):
         st.session_state[key] = {
             "photo_ids": photo_ids,
             "photo_index": 0,
+            "selected_photo_id": None,
             "items": {},
             "audio_bytes": None,
             "audio_pending": False,
@@ -2248,11 +2304,51 @@ def reflection_state(trip_id, photos):
         }
     state = st.session_state[key]
     state["photo_ids"] = photo_ids
+
+    photo_map = {p["id"]: p for p in photos}
     for pid in photo_ids:
-        state["items"].setdefault(
-            pid,
-            {"conversation": [], "signals": {}, "done": False, "started": False},
+        photo = photo_map[pid]
+        reflection = photo.get("reflection_json") or {}
+        if not isinstance(reflection, dict):
+            reflection = {}
+        stored_conversation = _stored_photo_conversation(photo)
+        stored_signals = photo.get("signals_json") or {}
+        stored_done = reflection.get("conversation_done")
+        if stored_done is None:
+            stored_done = _conversation_has_child_words(stored_conversation)
+
+        if pid not in state["items"]:
+            state["items"][pid] = {
+                "conversation": list(stored_conversation),
+                "signals": stored_signals if isinstance(stored_signals, dict) else {},
+                "done": bool(stored_done),
+                "started": bool(stored_conversation),
+            }
+        else:
+            item = state["items"][pid]
+            if not item.get("conversation") and stored_conversation:
+                item["conversation"] = list(stored_conversation)
+                item["started"] = True
+            if not item.get("signals") and isinstance(stored_signals, dict):
+                item["signals"] = stored_signals
+            if stored_done:
+                item["done"] = True
+
+    for pid in list(state.get("items", {}).keys()):
+        if pid not in photo_ids:
+            state["items"].pop(pid, None)
+
+    selected_key = f"diary_selected_photo_{trip_id}"
+    selected = st.session_state.get(selected_key) or state.get("selected_photo_id")
+    if selected not in photo_ids:
+        selected = next(
+            (pid for pid in photo_ids if not state["items"].get(pid, {}).get("done")),
+            photo_ids[0] if photo_ids else None,
         )
+    state["selected_photo_id"] = selected
+    if selected:
+        st.session_state[selected_key] = selected
+        state["photo_index"] = photo_ids.index(selected)
     return state
 
 
@@ -2298,6 +2394,80 @@ def render_small_gallery(photos, max_count=4):
                     st.caption(f"📍 {location_label}")
         except Exception:
             pass
+
+
+
+def render_diary_photo_gallery(trip_id, photos, state=None):
+    """Show every photo at once; blue border means the child has already talked about it."""
+    if not photos:
+        return None
+
+    selected_key = f"diary_selected_photo_{trip_id}"
+    photo_ids = [p.get("id") for p in photos if p.get("id")]
+    selected = st.session_state.get(selected_key)
+    if state is not None:
+        selected = state.get("selected_photo_id") or selected
+    if selected not in photo_ids:
+        selected = photo_ids[0]
+        st.session_state[selected_key] = selected
+        if state is not None:
+            state["selected_photo_id"] = selected
+            state["photo_index"] = 0
+
+    st.markdown("#### この日の写真")
+    st.caption("青い枠：すでに話した写真　／　グレーの枠：まだ話していない写真")
+
+    cols = st.columns(2)
+    for idx, photo in enumerate(photos):
+        pid = photo.get("id")
+        if not pid:
+            continue
+        item = (state or {}).get("items", {}).get(pid, {}) if isinstance(state, dict) else {}
+        conversation = item.get("conversation") or _stored_photo_conversation(photo)
+        talked = _conversation_has_child_words(conversation)
+        border_color = "#3B82F6" if talked else "#AEB6C2"
+        border_width = "4px" if pid == selected else "3px"
+        status_text = "話した" if talked else "まだ話していない"
+        location_label = photo_location_label(photo)
+
+        with cols[idx % 2]:
+            try:
+                image_bytes = download_photo(photo["storage_path"])
+                encoded = base64.b64encode(image_bytes).decode("ascii")
+                location_html = (
+                    f'<div style="font-size:.78rem;opacity:.72;margin-top:.25rem;">📍 {html.escape(location_label)}</div>'
+                    if location_label else ""
+                )
+                card_html = (
+                    f'<div style="border:{border_width} solid {border_color};border-radius:16px;padding:6px;margin:.2rem 0 .35rem;box-sizing:border-box;">'
+                    f'<img src="data:image/jpeg;base64,{encoded}" style="display:block;width:100%;height:170px;object-fit:contain;border-radius:10px;background:rgba(128,128,128,.06);" />'
+                    f'<div style="font-size:.82rem;font-weight:700;margin-top:.35rem;">{status_text}</div>'
+                    f'{location_html}</div>'
+                )
+                st.markdown(card_html, unsafe_allow_html=True)
+            except Exception:
+                st.markdown(
+                    f'<div style="border:{border_width} solid {border_color};border-radius:16px;padding:1rem;margin:.2rem 0 .35rem;">画像を読み込めませんでした。</div>',
+                    unsafe_allow_html=True,
+                )
+
+            button_label = "選択中" if pid == selected else ("この写真を見る" if talked else "この写真で話す")
+            if st.button(
+                button_label,
+                use_container_width=True,
+                disabled=(pid == selected),
+                key=f"diary_photo_pick_{trip_id}_{pid}",
+            ):
+                st.session_state[selected_key] = pid
+                if state is not None:
+                    state["selected_photo_id"] = pid
+                    state["photo_index"] = photo_ids.index(pid)
+                    state["audio_bytes"] = None
+                    state["audio_pending"] = False
+                    state["answer_serial"] = int(state.get("answer_serial") or 0) + 1
+                st.rerun()
+
+    return selected
 
 
 # ============================================================
@@ -2495,8 +2665,8 @@ def page_diary():
     photos = list_trip_photos(trip_id)
     existing = get_diary_for_trip(trip_id)
 
-    # Completed diary: show the diary, then photo/day delete controls at the bottom.
     if existing and f"reflection_state_{trip_id}" not in st.session_state:
+        selected_pid = render_diary_photo_gallery(trip_id, photos, state=None) if photos else None
         existing_title = diary_title_for_trip(trip, photos=photos)
         st.markdown(
             f"""
@@ -2507,10 +2677,11 @@ def page_diary():
             """,
             unsafe_allow_html=True,
         )
-        if st.button("この日の写真から、もう一度日記をつくる", use_container_width=True):
+        if photos and st.button("この日の写真から、もう一度日記をつくる", use_container_width=True):
             st.session_state[f"reflection_state_{trip_id}"] = {
                 "photo_ids": [p["id"] for p in photos],
                 "photo_index": 0,
+                "selected_photo_id": selected_pid,
                 "items": {},
                 "audio_bytes": None,
                 "audio_pending": False,
@@ -2525,10 +2696,9 @@ def page_diary():
             }
             st.rerun()
 
-        render_diary_delete_controls(trip_id, photos)
+        render_diary_delete_controls(trip_id, photos, current_photo_id=selected_pid)
         return
 
-    # Even an unfinished candidate with zero photos can be deleted from this page.
     if not photos:
         st.warning("このぶらり旅には写真がありません。")
         render_diary_delete_controls(trip_id, photos)
@@ -2536,9 +2706,12 @@ def page_diary():
 
     state = reflection_state(trip_id, photos)
     photo_map = {p["id"]: p for p in photos}
+    selected_pid = render_diary_photo_gallery(trip_id, photos, state=state)
 
-    # All photos reviewed -> draft diary
-    if state["photo_index"] >= len(state["photo_ids"]):
+    all_done = bool(state["photo_ids"]) and all(
+        bool(state["items"].get(pid, {}).get("done")) for pid in state["photo_ids"]
+    )
+    if all_done:
         if not state.get("draft"):
             st.success("写真のお話はここまで。日記にまとめられます。")
             if st.button("AIと日記をつくる", type="primary", use_container_width=True):
@@ -2557,7 +2730,7 @@ def page_diary():
                         result, raw = compose_diary(trip, photo_states)
                         audio = speech_bytes(result["diary"])
                     state["draft"] = result["diary"]
-                    state["draft_title"] = diary_title_for_trip(trip)
+                    state["draft_title"] = diary_title_for_trip(trip, photos=photos)
                     state["draft_meta"] = {
                         "child_points": result.get("child_points", []),
                         "signals": result.get("signals", {}),
@@ -2570,10 +2743,10 @@ def page_diary():
                     st.error("日記をまとめられませんでした。もう一度試してください。")
                     with st.expander("保護者向け詳細"):
                         st.code(str(exc))
-            render_diary_delete_controls(trip_id, photos)
+            render_diary_delete_controls(trip_id, photos, current_photo_id=selected_pid)
             return
 
-        fixed_title = diary_title_for_trip(trip)
+        fixed_title = diary_title_for_trip(trip, photos=photos)
         state["draft_title"] = fixed_title
         st.markdown(
             f"""
@@ -2632,7 +2805,7 @@ def page_diary():
             try:
                 save_diary(
                     trip_id,
-                    diary_title_for_trip(trip),
+                    fixed_title,
                     state["draft"],
                     state.get("raw_conversation", {}),
                     state.get("draft_meta", {}),
@@ -2646,37 +2819,44 @@ def page_diary():
                 with st.expander("保護者向け詳細"):
                     st.code(str(exc))
 
+        render_diary_delete_controls(trip_id, photos, current_photo_id=selected_pid)
+        return
+
+    if selected_pid not in photo_map:
         render_diary_delete_controls(trip_id, photos)
         return
 
-    # Current photo conversation
-    pid = state["photo_ids"][state["photo_index"]]
+    pid = selected_pid
     photo = photo_map[pid]
     item = state["items"][pid]
-    st.markdown(f"#### 写真 {state['photo_index'] + 1} / {len(state['photo_ids'])}")
-    try:
-        image_bytes = download_photo(photo["storage_path"])
-        st.image(image_bytes, use_container_width=True)
-        location_label = photo_location_label(photo)
-        if location_label:
-            st.caption(f"📍 {location_label}")
-    except Exception as exc:
-        st.error("写真を読み込めませんでした。")
-        with st.expander("保護者向け詳細"):
-            st.code(str(exc))
+    photo_number = state["photo_ids"].index(pid) + 1
+    st.markdown(f"#### 選択中：写真 {photo_number} / {len(state['photo_ids'])}")
+    location_label = photo_location_label(photo)
+    if location_label:
+        st.caption(f"📍 {location_label}")
+
+    if item.get("done"):
+        st.info("この写真のお話は完了しています。別の写真は上の一覧から選べます。")
+        if st.button("この写真についてもう少し話す", use_container_width=True, key=f"reopen_photo_{trip_id}_{pid}"):
+            item["done"] = False
+            update_photo_reflection(pid, item.get("conversation", []), item.get("signals", {}), done=False)
+            st.rerun()
         render_diary_delete_controls(trip_id, photos, current_photo_id=pid)
         return
 
     if not item.get("started"):
         c1, c2 = st.columns(2)
         with c1:
-            if st.button("この写真について話す", type="primary", use_container_width=True):
+            if st.button("この写真について話す", type="primary", use_container_width=True, key=f"start_photo_talk_{trip_id}_{pid}"):
                 try:
+                    image_bytes = download_photo(photo["storage_path"])
                     with st.spinner("写真を見ています…"):
                         question = initial_photo_question(image_bytes)
                         audio = speech_bytes(question)
                     item["conversation"] = [{"role": "assistant", "text": question}]
                     item["started"] = True
+                    item["done"] = False
+                    update_photo_reflection(pid, item["conversation"], item.get("signals", {}), done=False)
                     state["audio_bytes"] = audio
                     state["audio_pending"] = True
                     state["answer_serial"] += 1
@@ -2686,12 +2866,20 @@ def page_diary():
                     with st.expander("保護者向け詳細"):
                         st.code(str(exc))
         with c2:
-            if st.button("この写真はとばす", use_container_width=True):
+            if st.button("この写真はとばす", use_container_width=True, key=f"skip_photo_{trip_id}_{pid}"):
                 item["done"] = True
                 item["started"] = True
-                update_photo_reflection(pid, [], {})
-                state["photo_index"] += 1
+                update_photo_reflection(pid, [], {}, done=True)
                 st.rerun()
+        render_diary_delete_controls(trip_id, photos, current_photo_id=pid)
+        return
+
+    try:
+        image_bytes = download_photo(photo["storage_path"])
+    except Exception as exc:
+        st.error("写真を読み込めませんでした。")
+        with st.expander("保護者向け詳細"):
+            st.code(str(exc))
         render_diary_delete_controls(trip_id, photos, current_photo_id=pid)
         return
 
@@ -2703,16 +2891,6 @@ def page_diary():
             autoplay=bool(state.get("audio_pending")),
         )
         state["audio_pending"] = False
-
-    if item.get("done"):
-        if st.button("つぎの写真へ", type="primary", use_container_width=True):
-            state["photo_index"] += 1
-            state["audio_bytes"] = None
-            state["audio_pending"] = False
-            state["answer_serial"] += 1
-            st.rerun()
-        render_diary_delete_controls(trip_id, photos, current_photo_id=pid)
-        return
 
     answer_audio = st.audio_input(
         "マイクを押して話してね",
@@ -2744,7 +2922,12 @@ def page_diary():
                     item["conversation"].append({"role": "assistant", "text": assistant_text})
                     item["signals"] = merge_signals(item.get("signals", {}), result.get("signals", {}))
                     item["done"] = bool(result.get("done"))
-                    update_photo_reflection(pid, item["conversation"], item["signals"])
+                    update_photo_reflection(
+                        pid,
+                        item["conversation"],
+                        item["signals"],
+                        done=item["done"],
+                    )
                     audio = speech_bytes(assistant_text)
                 state["audio_bytes"] = audio
                 state["audio_pending"] = True
@@ -2756,10 +2939,10 @@ def page_diary():
                 with st.expander("保護者向け詳細"):
                     st.code(str(exc))
 
-    if st.button("この写真のお話はここまで", use_container_width=True):
+    if st.button("この写真のお話はここまで", use_container_width=True, key=f"finish_photo_talk_{trip_id}_{pid}"):
         item["done"] = True
-        update_photo_reflection(pid, item.get("conversation", []), item.get("signals", {}))
-        state["audio_bytes"] = speech_bytes("教えてくれてありがとう。つぎの写真にいこう。")
+        update_photo_reflection(pid, item.get("conversation", []), item.get("signals", {}), done=True)
+        state["audio_bytes"] = speech_bytes("教えてくれてありがとう。ほかの写真も上から選べるよ。")
         state["audio_pending"] = True
         st.rerun()
 
