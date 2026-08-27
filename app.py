@@ -91,22 +91,24 @@ st.markdown(
         font-size: .85rem;
       }
       .st-key-home_menu div.stButton > button {
-        min-height: 8.2rem;
+        min-height: 7.6rem;
         border-radius: 22px;
-        font-size: 1.30rem;
+        font-size: 1.24rem;
         font-weight: 800;
-        line-height: 1.45;
+        line-height: 1.4;
         white-space: pre-line;
       }
       .st-key-home_menu [data-testid="stHorizontalBlock"] {
         gap: .75rem;
       }
       .st-key-home_destination div.stButton > button {
-        min-height: 3.0rem !important;
-        border-radius: 14px !important;
-        font-size: .98rem !important;
-        line-height: 1.2 !important;
-        white-space: normal !important;
+        min-height: 7.6rem !important;
+        border-radius: 22px !important;
+        font-size: 1.10rem !important;
+        font-weight: 760 !important;
+        line-height: 1.35 !important;
+        white-space: pre-line !important;
+        margin-top: .75rem !important;
       }
       .st-key-mobile_capture [data-testid="stFileUploaderDropzone"] {
         padding: 1rem;
@@ -130,8 +132,12 @@ st.markdown(
           padding-right: .75rem;
         }
         .st-key-home_menu div.stButton > button {
-          min-height: 7.4rem;
-          font-size: 1.16rem;
+          min-height: 7.0rem;
+          font-size: 1.12rem;
+        }
+        .st-key-home_destination div.stButton > button {
+          min-height: 7.0rem !important;
+          font-size: 1.02rem !important;
         }
       }
     </style>
@@ -1006,8 +1012,34 @@ def photo_location_preview(location):
         accuracy_text = f"（精度 ±{int(round(accuracy))}m）" if isinstance(accuracy, (int, float)) else ""
         return f"📍 GPS位置情報を取得しました{accuracy_text}"
     if source == "manual_destination" and label:
-        return f"📍 {label}（今日の行き先）"
-    return "📍 位置情報を取得できませんでした。ホームの「今日の行き先！」から手入力できます。"
+        return f"📍 {label}"
+    return "📍 位置情報を取得できませんでした。ホームの地名表示を押して手入力できます。"
+
+
+def trip_place_label(trip, photos=None):
+    """Return the best coarse place name already registered for a trip."""
+    trip = trip or {}
+    destination = str(trip.get("destination") or "").strip()
+    if destination:
+        return destination
+
+    trip_id = trip.get("id")
+    if photos is None and trip_id:
+        try:
+            photos = list_trip_photos(trip_id)
+        except Exception:
+            photos = []
+
+    for photo in photos or []:
+        label = photo_location_label(photo)
+        if label and label != "位置情報あり":
+            return label
+    return ""
+
+
+def diary_title_for_trip(trip, photos=None):
+    place = trip_place_label(trip, photos=photos)
+    return f"ぶらり旅（{place}）" if place else "ぶらり旅（場所未登録）"
 
 
 # ============================================================
@@ -1279,9 +1311,11 @@ def get_diary_for_trip(trip_id):
 
 def save_diary(trip_id, title, diary_text, raw_conversation, ai_meta):
     existing = get_diary_for_trip(trip_id)
+    trip = get_trip(trip_id) or {}
+    fixed_title = diary_title_for_trip(trip)
     payload = {
         "trip_id": trip_id,
-        "title": str(title or "").strip(),
+        "title": fixed_title,
         "diary_text": str(diary_text or "").strip(),
         "raw_conversation": raw_conversation,
         "ai_meta": ai_meta or {},
@@ -1559,11 +1593,12 @@ AIが新しい出来事や感情を足してはいけません。
 - 子どもの語彙や言い回しをできるだけ残し、読みやすい順番に整える。
 - 「楽しかった」「不便だった」などを、本人が言っていないのに補わない。
 - 大人っぽい抽象語へ変換しすぎない。
-- title は短く、内容に忠実にする。
+- title はシステム側で「ぶらり旅（地名）」に固定するため、内容は diary に集中する。
 - child_points はAIの解釈ではなく、日記の根拠になった本人の発言を短く3つ以内で抜き出す。
 - signals は本人が実際に話した内容だけを整理し、推測を足さない。
 """.strip()
     result = ask_json(prompt, "compose_burari_diary", schema, 1100)
+    result["title"] = diary_title_for_trip(trip)
     result["signals"] = merge_signals(all_signals, result.get("signals", {}))
     return result, raw
 
@@ -1883,11 +1918,12 @@ def page_home():
     st.caption("答えを教える旅ではなく、自分なりの『気になる』を増やす旅。")
 
     active = get_trip(st.session_state.active_trip_id) if st.session_state.active_trip_id else None
+    active_photos = []
+    active_place = ""
     if active and active.get("status") == "active" and active.get("trip_date") == today_iso():
-        photos = list_trip_photos(active["id"])
-        destination = str(active.get("destination") or "").strip()
-        label = destination or "今日のぶらり旅"
-        st.caption(f"{label}　／　写真 {len(photos)}枚")
+        active_photos = list_trip_photos(active["id"])
+        active_place = trip_place_label(active, photos=active_photos)
+        st.caption(f"今日の写真 {len(active_photos)}枚")
 
     with st.container(key="home_menu"):
         row1_left, row1_right = st.columns(2)
@@ -1896,7 +1932,8 @@ def page_home():
 
             # Manual fallback for cases where the phone/browser cannot provide GPS.
             with st.container(key="home_destination"):
-                if st.button("📍 今日の行き先！", key="home_destination_toggle", use_container_width=True):
+                place_button_label = f"📍\n{active_place}" if active_place else "📍\n登録なし"
+                if st.button(place_button_label, key="home_destination_toggle", use_container_width=True):
                     st.session_state.show_home_destination_editor = not bool(
                         st.session_state.get("show_home_destination_editor")
                     )
@@ -1905,9 +1942,11 @@ def page_home():
                 if st.session_state.get("show_home_destination_editor"):
                     trip = ensure_today_trip()
                     current_trip = get_trip(trip["id"]) or trip
+                    current_photos = list_trip_photos(trip["id"])
+                    current_place = trip_place_label(current_trip, photos=current_photos)
                     destination = st.text_input(
-                        "今日の行き先",
-                        value=str(current_trip.get("destination") or ""),
+                        "地名",
+                        value=str(current_trip.get("destination") or current_place),
                         placeholder="例：神楽坂、浅草のあたり",
                         key=f"home_destination_input_{trip['id']}",
                         label_visibility="collapsed",
@@ -1925,7 +1964,7 @@ def page_home():
                                 st.session_state.show_home_destination_editor = False
                                 st.rerun()
                             except Exception as exc:
-                                st.error("行き先を保存できませんでした。")
+                                st.error("地名を保存できませんでした。")
                                 with st.expander("保護者向け詳細"):
                                     st.code(str(exc))
                     with close_col:
@@ -2092,10 +2131,11 @@ def page_diary():
     existing = get_diary_for_trip(trip_id)
 
     if existing and f"reflection_state_{trip_id}" not in st.session_state:
+        existing_title = diary_title_for_trip(trip, photos=photos)
         st.markdown(
             f"""
             <div class="diary-card">
-              <div class="hero-title">{html.escape(existing.get('title') or 'ぶらり旅の日記')}</div>
+              <div class="hero-title">{html.escape(existing_title)}</div>
               <div class="big-text">{html.escape(existing.get('diary_text') or '')}</div>
             </div>
             """,
@@ -2147,7 +2187,7 @@ def page_diary():
                         result, raw = compose_diary(trip, photo_states)
                         audio = speech_bytes(result["diary"])
                     state["draft"] = result["diary"]
-                    state["draft_title"] = result["title"]
+                    state["draft_title"] = diary_title_for_trip(trip)
                     state["draft_meta"] = {
                         "child_points": result.get("child_points", []),
                         "signals": result.get("signals", {}),
@@ -2162,10 +2202,12 @@ def page_diary():
                         st.code(str(exc))
             return
 
+        fixed_title = diary_title_for_trip(trip)
+        state["draft_title"] = fixed_title
         st.markdown(
             f"""
             <div class="diary-card">
-              <div class="hero-title">{html.escape(state.get('draft_title') or '今日のぶらり旅')}</div>
+              <div class="hero-title">{html.escape(fixed_title)}</div>
               <div class="big-text">{html.escape(state.get('draft') or '')}</div>
             </div>
             """,
@@ -2219,7 +2261,7 @@ def page_diary():
             try:
                 save_diary(
                     trip_id,
-                    state.get("draft_title") or "ぶらり旅の日記",
+                    diary_title_for_trip(trip),
                     state["draft"],
                     state.get("raw_conversation", {}),
                     state.get("draft_meta", {}),
@@ -2360,9 +2402,10 @@ def page_history(embedded=False):
     for row in rows:
         diary = row["diary"]
         trip = row["trip"]
-        title = f"{trip.get('trip_date', '')}　{diary.get('title') or trip.get('destination') or 'ぶらり旅'}"
+        photos = list_trip_photos(diary["trip_id"])
+        daily_title = diary_title_for_trip(trip, photos=photos)
+        title = f"{trip.get('trip_date', '')}　{daily_title}"
         with st.expander(title):
-            photos = list_trip_photos(diary["trip_id"])
             render_small_gallery(photos, max_count=4)
             st.markdown(
                 f"""
@@ -2539,7 +2582,7 @@ def page_settings():
     )
     st.caption(
         "初回はカメラとは別に位置情報の許可も求められます。位置情報がオフ・拒否・取得不能の場合は、"
-        "ホームの「📍 今日の行き先！」に入力した内容を写真の場所として使います。"
+        "ホームの地名表示（未登録なら「登録なし」）を押して入力した内容を写真の場所として使います。"
     )
 
     st.divider()
