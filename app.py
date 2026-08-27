@@ -2687,55 +2687,117 @@ def conversation_text(conversation):
 
 
 def next_photo_turn(image_bytes, conversation, child_turn_count):
-    # The child always speaks first. After that, ask at most two very short
-    # follow-up questions to clarify feeling/meaning and, when natural, a Want.
-    force_done = child_turn_count >= 3
+    """Analyze the child's words and enforce a very short diary conversation.
+
+    Normal case: finish after the child's first free comment.
+    Exception 1: if the first comment has no subjective feeling/reaction, ask once
+    how the child felt/thought about it.
+    Exception 2: if a negative reaction appears and no Want has been stated yet,
+    ask once what the child wants to do/change. After that answer, always finish.
+    """
     schema = {
         "type": "object",
         "properties": {
-            "reply": {"type": "string"},
-            "next_question": {"type": "string"},
-            "done": {"type": "boolean"},
+            "first_has_feeling": {"type": "boolean"},
+            "latest_has_feeling": {"type": "boolean"},
+            "any_negative": {"type": "boolean"},
+            "has_want": {"type": "boolean"},
             "signals": SIGNAL_SCHEMA,
         },
-        "required": ["reply", "next_question", "done", "signals"],
+        "required": [
+            "first_has_feeling",
+            "latest_has_feeling",
+            "any_negative",
+            "has_want",
+            "signals",
+        ],
         "additionalProperties": False,
     }
     prompt = f"""
-あなたは5〜6歳の子どもと「東京ぶらり旅」の写真を振り返っています。
-この写真では、AIより先に子どもが自由に話しています。
-写真と会話を見て、必要なことだけを短く確認してください。
+あなたは5〜6歳の子どもの「東京ぶらり旅」の写真について、本人の発言だけを分類します。
+写真は文脈として見てもよいですが、感情・評価・Wantは必ず本人の言葉だけから判定してください。
+写真から感情を推測してはいけません。
 
 会話:
 {conversation_text(conversation)}
 
 子どもの発話回数: {child_turn_count}
 
-確認したいことは次の2つです。すでに本人が話している内容は聞き直しません。
-1. この写真を撮ったときの本人の感じ方・意味。たとえば、よい、いや、変だ、なぜだろう、驚いた、もっとよくしたい等。
-2. 本人の発言に自然な兆しがある場合だけ、どうなったらよいか・どうしたいかという Want。
+必ず確認する項目:
+1. first_has_feeling
+   最初の子どもの自由発話に、本人の主観的な感じ方・反応が明示されているか。
+   「楽しい、好き、いい、うれしい、おもしろい、いや、怖い、困った、悲しい、変だと思った、気になった、びっくりした、なぜだろうと思った、便利、不便」などを含む。
+   単なる物や出来事の説明（「電車があった」「赤かった」「人がいた」等）だけなら false。
+   Wantだけがあって感情・評価・反応がない場合も、first_has_feeling は false とする。
+2. latest_has_feeling
+   直近の子どもの発話に同様の主観的な感じ方・反応が明示されているか。
+3. any_negative
+   子どもの発言のどこかに、明確にネガティブ寄りの感じ方・評価があるか。
+   例: いや、嫌い、怖い、悲しい、困った、汚い、危ない、うるさい、不便、よくない、残念、直したいほど不満。
+   単なる疑問・驚き・「変だと思った」だけでは原則 false。写真から推測しない。
+4. has_want
+   子ども自身が「こうしたい」「こうなってほしい」「増やしたい」「なくしたい」「直したい」など、今後どうしたいかを明示しているか。
 
-厳守:
-- 最初の自由な発話を尊重し、写真の意味や感情をAIが決めつけない。
-- reply は0〜8文字程度。例:「うん。」「そうなんだ。」。長い感想・説明・要約は禁止。
-- next_question は必要な場合だけ1問、できれば15文字程度。1回に1つだけ聞く。
-- 感情が不明なら「それ、どう思った？」のように中立に聞く。
-- Want が自然にありそうなら「どうなったらいい？」または「どうしたい？」程度にする。
-- 「いい？悪い？」「困った？」「驚いた？」のように答えを選ばせる質問を原則しない。
-- 理由・感じ方が十分に分かり、Wantを無理に聞く必要がなければ done=true。
-- 子どもが話したくなさそうなら早く終える。
-- {"今回は必ず done=true。next_question は空文字にする。" if force_done else "子どもの発話は最大3回（最初の自由発話＋追質問2回）で終える。"}
-- signals は本人が実際に話した内容だけを記録する。推測は禁止。
+signals:
+- 本人が実際に言った内容だけを記録する。推測は禁止。
 - like=よい/好き、dislike=いや/悪い、curiosity=疑問、wish=こうしたい/こうなってほしい/改善したい、surprise=驚き。
 - convenient / inconvenient / people も本人が明示した場合だけ入れる。
 - 該当しなければ各配列は空。
-- done=true のとき next_question は空文字。reply は「ありがとう。」程度でよい。
 """.strip()
-    result = ask_json_with_image(prompt, image_bytes, "next_photo_turn", schema, 620)
-    if force_done:
-        result["done"] = True
-        result["next_question"] = ""
-    return result
+
+    analysis = ask_json_with_image(prompt, image_bytes, "analyze_photo_turn", schema, 520)
+
+    first_has_feeling = bool(analysis.get("first_has_feeling"))
+    any_negative = bool(analysis.get("any_negative"))
+    has_want = bool(analysis.get("has_want"))
+
+    # Because our own follow-up wording is fixed, the previous question tells us
+    # exactly which branch the child is currently answering.
+    previous_ai = ""
+    for turn in reversed(conversation[:-1]):
+        if turn.get("role") == "assistant":
+            previous_ai = str(turn.get("text") or "")
+            break
+    answered_feeling_question = "どう思った" in previous_ai
+    answered_want_question = "どうしたい" in previous_ai
+
+    next_question = ""
+    done = True
+
+    if child_turn_count <= 1:
+        # Always inspect the first free comment. Most photos end here.
+        if not first_has_feeling:
+            next_question = "それ、どう思った？"
+            done = False
+        elif any_negative and not has_want:
+            next_question = "どうしたい？"
+            done = False
+    elif answered_feeling_question:
+        # The one allowed feeling follow-up has now been answered. Only a newly
+        # surfaced negative feeling may justify one final Want question.
+        if any_negative and not has_want:
+            next_question = "どうしたい？"
+            done = False
+    elif answered_want_question:
+        # Want has been asked once. End even if the answer is brief or unclear.
+        done = True
+        next_question = ""
+    else:
+        # Safety valve for older saved conversations or unexpected states.
+        done = True
+        next_question = ""
+
+    # Absolute cap: first comment + feeling question + Want question.
+    if child_turn_count >= 3:
+        done = True
+        next_question = ""
+
+    return {
+        "reply": "ありがとう。" if done else "うん。",
+        "next_question": next_question,
+        "done": done,
+        "signals": analysis.get("signals") or {},
+    }
 
 
 def merge_signals(old, new):
@@ -3655,7 +3717,7 @@ def page_diary():
 
     if not item.get("started"):
         st.markdown("#### まず、この写真について話してね")
-        st.caption("何が気になったか、見たこと、思ったことを自由に話してね。AIはそのあと必要なことだけ短く聞きます。")
+        st.caption("まず自由に1回話してね。基本はこれで終わりです。気持ちが分からないときだけ一度聞き、ネガティブな気持ちが出たときだけ『どうしたい？』まで聞きます。")
         first_audio = far_field_audio_input(
             "まず自由に話してね",
             key=f"photo_first_answer_{trip_id}_{pid}_{state['answer_serial']}",
