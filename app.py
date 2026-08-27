@@ -167,20 +167,20 @@ MONTHLY_TABLE = "burari_monthly_reviews"
 # app can bypass a camera permission that the user/browser has denied.
 _LIVE_CAMERA_HTML = """
 <div class="live-camera-wrap">
-  <div id="camera-placeholder" class="camera-placeholder">
-    <div class="camera-placeholder-icon">📷</div>
-    <div class="camera-placeholder-title">カメラを開いて撮影</div>
-    <div class="camera-placeholder-sub">下の「カメラを開く」を押してください</div>
-  </div>
   <video id="live-camera-video" class="live-camera-video" playsinline autoplay muted hidden></video>
   <canvas id="live-camera-canvas" hidden></canvas>
 
-  <div class="camera-actions">
-    <button id="live-camera-start" class="camera-main-button" type="button">📷 カメラを開く</button>
-    <button id="live-camera-shoot" class="camera-shoot-button" type="button" disabled>● 撮影する</button>
-    <button id="live-camera-stop" class="camera-sub-button" type="button" hidden>カメラを閉じる</button>
+  <div id="camera-menu" class="camera-menu">
+    <button id="live-camera-start" class="camera-menu-button" type="button">📷 カメラを開く</button>
+    <input id="gallery-photo-input" class="gallery-photo-input" type="file" accept="image/*" />
+    <label class="camera-menu-button gallery-button" for="gallery-photo-input">🖼 すでに撮った写真から選ぶ</label>
   </div>
-  <div id="live-camera-status" class="camera-status" aria-live="polite"></div>
+
+  <div id="camera-active-actions" class="camera-active-actions" hidden>
+    <button id="live-camera-shoot" class="camera-shoot-button" type="button">● 撮影する</button>
+    <button id="live-camera-stop" class="camera-sub-button" type="button">カメラを閉じる</button>
+  </div>
+  <div id="live-camera-status" class="camera-status" aria-live="polite" hidden></div>
 </div>
 """
 
@@ -189,101 +189,97 @@ _LIVE_CAMERA_CSS = """
   width: 100%;
   box-sizing: border-box;
   font-family: var(--st-font);
+  padding: 0;
+  margin: 0;
 }
-.camera-placeholder,
-.live-camera-video {
-  width: 100%;
-  min-height: 250px;
-  max-height: 62vh;
-  box-sizing: border-box;
-  border-radius: 20px;
-  background: rgba(128,128,128,.08);
-  border: 1px solid rgba(128,128,128,.22);
-}
-.camera-placeholder {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  padding: 28px 18px;
-  text-align: center;
-}
-.camera-placeholder-icon {
-  font-size: 44px;
-  line-height: 1;
-  margin-bottom: 10px;
-}
-.camera-placeholder-title {
-  font-size: 20px;
-  font-weight: 800;
-  line-height: 1.35;
-}
-.camera-placeholder-sub {
-  margin-top: 6px;
-  font-size: 13px;
-  opacity: .72;
-}
-.live-camera-video {
-  object-fit: cover;
-}
-.camera-actions {
+.camera-menu {
   display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 10px;
-  margin-top: 12px;
+  grid-template-columns: 1fr;
+  gap: 12px;
+  margin: 0;
 }
-.camera-main-button,
+.gallery-photo-input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+.camera-menu-button,
+.gallery-button,
 .camera-shoot-button,
 .camera-sub-button {
   width: 100%;
-  min-height: 62px;
-  border-radius: 17px;
-  font-size: 17px;
+  min-height: 72px;
+  box-sizing: border-box;
+  border-radius: 18px;
+  font-size: 18px;
   font-weight: 800;
   cursor: pointer;
   touch-action: manipulation;
   -webkit-tap-highlight-color: transparent;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 12px 16px;
 }
-.camera-main-button {
+.camera-menu-button,
+.gallery-button {
   border: 2px solid var(--st-primary-color);
-  background: color-mix(in srgb, var(--st-primary-color) 9%, transparent);
+  background: color-mix(in srgb, var(--st-primary-color) 8%, transparent);
   color: var(--st-text-color);
+}
+.gallery-button {
+  border-color: rgba(128,128,128,.28);
+  background: transparent;
+}
+.live-camera-video {
+  width: 100%;
+  max-height: 68vh;
+  aspect-ratio: 3 / 4;
+  object-fit: cover;
+  box-sizing: border-box;
+  border-radius: 16px;
+  background: #000;
+  margin: 0 0 10px 0;
+}
+.camera-active-actions {
+  display: grid;
+  grid-template-columns: 2fr 1fr;
+  gap: 10px;
+  margin: 0;
 }
 .camera-shoot-button {
   border: 2px solid var(--st-primary-color);
   background: var(--st-primary-color);
   color: white;
 }
-.camera-shoot-button:disabled {
-  opacity: .4;
-  cursor: default;
-}
 .camera-sub-button {
-  grid-column: 1 / -1;
-  min-height: 48px;
   border: 1px solid rgba(128,128,128,.28);
   background: transparent;
   color: var(--st-text-color);
 }
 .camera-status {
-  min-height: 42px;
-  margin-top: 9px;
-  padding: 0 4px;
-  text-align: center;
+  margin: 8px 0 0 0;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: rgba(255, 193, 7, .12);
   font-size: 13px;
-  line-height: 1.5;
-  opacity: .85;
+  line-height: 1.45;
 }
 @media (max-width: 640px) {
-  .camera-placeholder,
-  .live-camera-video {
-    min-height: 300px;
+  .camera-menu-button,
+  .gallery-button {
+    min-height: 68px;
+    font-size: 17px;
   }
-  .camera-actions {
+  .camera-active-actions {
     grid-template-columns: 1fr;
   }
+  .camera-shoot-button,
   .camera-sub-button {
-    grid-column: auto;
+    min-height: 58px;
   }
 }
 """
@@ -293,13 +289,31 @@ export default function(component) {
   const { parentElement, setTriggerValue } = component;
   const video = parentElement.querySelector('#live-camera-video');
   const canvas = parentElement.querySelector('#live-camera-canvas');
-  const placeholder = parentElement.querySelector('#camera-placeholder');
+  const menu = parentElement.querySelector('#camera-menu');
   const startButton = parentElement.querySelector('#live-camera-start');
+  const galleryInput = parentElement.querySelector('#gallery-photo-input');
+  const activeActions = parentElement.querySelector('#camera-active-actions');
   const shootButton = parentElement.querySelector('#live-camera-shoot');
   const stopButton = parentElement.querySelector('#live-camera-stop');
   const status = parentElement.querySelector('#live-camera-status');
 
   let stream = null;
+
+  const setStatus = (message) => {
+    if (!status) return;
+    status.textContent = message || '';
+    status.hidden = !message;
+  };
+
+  const showMenu = () => {
+    if (menu) menu.hidden = false;
+    if (activeActions) activeActions.hidden = true;
+  };
+
+  const showCameraActions = () => {
+    if (menu) menu.hidden = true;
+    if (activeActions) activeActions.hidden = false;
+  };
 
   const stopStream = () => {
     if (stream) {
@@ -311,29 +325,17 @@ export default function(component) {
       video.srcObject = null;
       video.hidden = true;
     }
-    if (placeholder) placeholder.hidden = false;
-    if (shootButton) shootButton.disabled = true;
-    if (stopButton) stopButton.hidden = true;
-    if (startButton) startButton.textContent = '📷 カメラを開く';
+    showMenu();
   };
 
   const errorMessage = (err) => {
     const name = (err && err.name) ? err.name : '';
     if (name === 'NotAllowedError' || name === 'PermissionDeniedError') {
-      return 'カメラが許可されていません。ブラウザのアドレスバーにあるサイト設定 → 権限 → カメラを「許可」にして、このページを再読み込みしてください。';
+      return 'カメラが許可されていません。ブラウザのサイト設定でカメラを「許可」にして、このページを再読み込みしてください。';
     }
-    if (name === 'NotFoundError' || name === 'DevicesNotFoundError') {
-      return '利用できるカメラが見つかりませんでした。';
-    }
-    if (name === 'NotReadableError' || name === 'TrackStartError') {
-      return 'カメラを開けませんでした。ほかのアプリがカメラを使っていないか確認してください。';
-    }
-    if (name === 'OverconstrainedError' || name === 'ConstraintNotSatisfiedError') {
-      return '背面カメラを指定できませんでした。もう一度お試しください。';
-    }
-    if (name === 'SecurityError') {
-      return 'ブラウザのセキュリティ設定でカメラがブロックされています。サイトのカメラ権限を確認してください。';
-    }
+    if (name === 'NotFoundError' || name === 'DevicesNotFoundError') return '利用できるカメラが見つかりませんでした。';
+    if (name === 'NotReadableError' || name === 'TrackStartError') return 'カメラを開けませんでした。ほかのアプリがカメラを使っていないか確認してください。';
+    if (name === 'SecurityError') return 'ブラウザのセキュリティ設定でカメラがブロックされています。';
     return 'カメラを開けませんでした。ブラウザのカメラ権限を確認してください。';
   };
 
@@ -341,12 +343,12 @@ export default function(component) {
     stopStream();
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
       const message = 'このブラウザでは直接カメラを開けません。ChromeまたはSafariの最新版で開いてください。';
-      status.textContent = message;
+      setStatus(message);
       setTriggerValue('camera_error', { name: 'Unsupported', message });
       return;
     }
 
-    status.textContent = 'カメラの使用を許可してください…';
+    setStatus('カメラの使用を許可してください…');
     try {
       stream = await navigator.mediaDevices.getUserMedia({
         audio: false,
@@ -358,17 +360,14 @@ export default function(component) {
       });
       video.srcObject = stream;
       video.hidden = false;
-      placeholder.hidden = true;
       await video.play();
-      shootButton.disabled = false;
-      stopButton.hidden = false;
-      startButton.textContent = '↻ カメラを開き直す';
-      status.textContent = 'カメラが開きました。写したいものを画面に入れて「撮影する」を押してください。';
+      showCameraActions();
+      setStatus('');
     } catch (err) {
       console.error(err);
       stopStream();
       const message = errorMessage(err);
-      status.textContent = message;
+      setStatus(message);
       setTriggerValue('camera_error', {
         name: (err && err.name) ? err.name : 'CameraError',
         message,
@@ -384,11 +383,36 @@ export default function(component) {
     reader.readAsDataURL(blob);
   });
 
+  const prepareImageFile = async (file) => {
+    const url = URL.createObjectURL(file);
+    try {
+      const img = await new Promise((resolve, reject) => {
+        const node = new Image();
+        node.onload = () => resolve(node);
+        node.onerror = reject;
+        node.src = url;
+      });
+      const srcW = img.naturalWidth || img.width;
+      const srcH = img.naturalHeight || img.height;
+      const maxSide = 1600;
+      const scale = Math.min(1, maxSide / Math.max(srcW, srcH));
+      const width = Math.max(1, Math.round(srcW * scale));
+      const height = Math.max(1, Math.round(srcH * scale));
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext('2d', { alpha: false });
+      ctx.drawImage(img, 0, 0, width, height);
+      const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', 0.86));
+      if (!blob) throw new Error('image conversion failed');
+      return await blobToDataUrl(blob);
+    } finally {
+      URL.revokeObjectURL(url);
+    }
+  };
+
   const takePhoto = async () => {
     if (!stream || !video.videoWidth || !video.videoHeight) return;
     shootButton.disabled = true;
-    status.textContent = '撮影しています…';
-
     try {
       const srcW = video.videoWidth;
       const srcH = video.videoHeight;
@@ -406,32 +430,55 @@ export default function(component) {
       setTriggerValue('photo', {
         data_url: dataUrl,
         name: 'camera.jpg',
+        source: 'camera',
         captured_at: new Date().toISOString()
       });
-      status.textContent = '撮影しました。写真を確認してください。';
       stopStream();
     } catch (err) {
       console.error(err);
       shootButton.disabled = false;
       const message = '撮影した画像を作れませんでした。もう一度お試しください。';
-      status.textContent = message;
+      setStatus(message);
       setTriggerValue('camera_error', { name: 'CaptureError', message });
+    }
+  };
+
+  const chooseGalleryPhoto = async () => {
+    const file = galleryInput.files && galleryInput.files[0];
+    if (!file) return;
+    try {
+      const dataUrl = await prepareImageFile(file);
+      setTriggerValue('photo', {
+        data_url: dataUrl,
+        name: file.name || 'gallery.jpg',
+        source: 'gallery',
+        captured_at: new Date().toISOString()
+      });
+    } catch (err) {
+      console.error(err);
+      const message = '写真を読み込めませんでした。別の写真を選んでください。';
+      setStatus(message);
+      setTriggerValue('camera_error', { name: 'GalleryError', message });
+    } finally {
+      galleryInput.value = '';
     }
   };
 
   const closeCamera = () => {
     stopStream();
-    status.textContent = 'カメラを閉じました。';
+    setStatus('');
   };
 
   startButton.addEventListener('click', startCamera);
   shootButton.addEventListener('click', takePhoto);
   stopButton.addEventListener('click', closeCamera);
+  galleryInput.addEventListener('change', chooseGalleryPhoto);
 
   return () => {
     startButton.removeEventListener('click', startCamera);
     shootButton.removeEventListener('click', takePhoto);
     stopButton.removeEventListener('click', closeCamera);
+    galleryInput.removeEventListener('change', chooseGalleryPhoto);
     stopStream();
   };
 }
@@ -1430,19 +1477,12 @@ def page_home():
 # Page: Trip / camera
 # ============================================================
 def page_trip():
-    page_top(
-        "📷 カメラで撮る",
-        "気になったものだけ残します。便利・不便を探す必要も、何枚か撮る必要もありません。",
-    )
+    # Keep the capture screen intentionally minimal: a small back control and,
+    # before a photo is chosen, only the two photo-source buttons.
+    if st.button("←", key="camera_back_home", help="ホームへ戻る"):
+        go_page("home")
 
     trip = ensure_today_trip()
-    photos = list_trip_photos(trip["id"])
-    destination = str(trip.get("destination") or "").strip()
-    st.markdown(f"**{trip.get('trip_date', '')}　{destination or '今日のぶらり旅'}**　／　写真 {len(photos)}枚")
-
-    st.markdown("#### 写真を追加")
-    st.caption("『カメラを開く』を押すと、この画面に背面カメラの映像を表示します。初回だけブラウザのカメラ許可が必要です。")
-
     pending_key = f"pending_camera_photo_{trip['id']}"
     digest_key = f"pending_camera_digest_{trip['id']}"
     pending = st.session_state.get(pending_key)
@@ -1458,7 +1498,8 @@ def page_trip():
             camera_error = getattr(result, "camera_error", None)
             if camera_error:
                 message = camera_error.get("message") if isinstance(camera_error, dict) else str(camera_error)
-                st.warning(message or "カメラを開けませんでした。ブラウザのカメラ権限を確認してください。")
+                if message:
+                    st.warning(message)
             if isinstance(payload, dict) and payload.get("data_url"):
                 try:
                     raw = decode_camera_data_url(payload["data_url"])
@@ -1467,89 +1508,36 @@ def page_trip():
                         st.session_state[pending_key] = raw
                         st.session_state[digest_key] = digest
                         pending = raw
+                        st.rerun()
                 except Exception as exc:
-                    st.error("撮影した写真を読み込めませんでした。")
+                    st.error("写真を読み込めませんでした。")
                     with st.expander("保護者向け詳細"):
                         st.code(str(exc))
         else:
             st.error("ライブカメラ機能に必要なStreamlitのバージョンが古いです。requirements.txtを更新してください。")
+        return
 
-    if pending is not None:
-        st.image(pending, caption="この写真を残す？", use_container_width=True)
-        c1, c2 = st.columns(2)
-        with c1:
-            if st.button("この写真を残す", type="primary", use_container_width=True, key="save_native_camera"):
-                try:
-                    with st.spinner("写真を残しています…"):
-                        upload_photo(trip["id"], pending)
-                    st.session_state.pop(pending_key, None)
-                    st.session_state.pop(digest_key, None)
-                    st.session_state.capture_serial += 1
-                    st.rerun()
-                except Exception as exc:
-                    st.error("写真を保存できませんでした。")
-                    with st.expander("保護者向け詳細"):
-                        st.code(str(exc))
-        with c2:
-            if st.button("撮りなおす", use_container_width=True, key="retry_native_camera"):
+    st.image(pending, caption="この写真を残す？", use_container_width=True)
+    c1, c2 = st.columns(2)
+    with c1:
+        if st.button("この写真を残す", type="primary", use_container_width=True, key="save_camera_photo"):
+            try:
+                with st.spinner("写真を残しています…"):
+                    upload_photo(trip["id"], pending)
                 st.session_state.pop(pending_key, None)
                 st.session_state.pop(digest_key, None)
                 st.session_state.capture_serial += 1
                 st.rerun()
-
-    with st.expander("🖼 すでに撮った写真から選ぶ"):
-        st.caption("カメラではなく、スマホの写真フォルダにある画像を使う場合はこちらです。")
-        upload = st.file_uploader(
-            "写真を選ぶ",
-            type=["jpg", "jpeg", "png", "webp"],
-            accept_multiple_files=False,
-            key=f"gallery_photo_{trip['id']}_{st.session_state.capture_serial}",
-        )
-        if upload is not None:
-            st.image(upload, caption="この写真を残す？", use_container_width=True)
-            g1, g2 = st.columns(2)
-            with g1:
-                if st.button(
-                    "この写真を残す",
-                    type="primary",
-                    use_container_width=True,
-                    key=f"save_gallery_{st.session_state.capture_serial}",
-                ):
-                    try:
-                        with st.spinner("写真を残しています…"):
-                            upload_photo(trip["id"], upload.getvalue())
-                        st.session_state.capture_serial += 1
-                        st.rerun()
-                    except Exception as exc:
-                        st.error("写真を保存できませんでした。")
-                        with st.expander("保護者向け詳細"):
-                            st.code(str(exc))
-            with g2:
-                if st.button(
-                    "選びなおす",
-                    use_container_width=True,
-                    key=f"retry_gallery_{st.session_state.capture_serial}",
-                ):
-                    st.session_state.capture_serial += 1
-                    st.rerun()
-
-    if photos:
-        st.markdown("#### 今日の写真")
-        render_small_gallery(list(reversed(photos)), max_count=6)
-
-    st.caption("人の顔・住所・学校名など、個人が分かる情報は必要以上に撮らないようにしてください。")
-
-    if photos and st.button("撮影を終えて日記へ", type="primary", use_container_width=True):
-        try:
-            finish_trip(trip["id"])
-            st.session_state.preferred_diary_trip_id = trip["id"]
-            st.session_state.active_trip_id = None
-            st.session_state["_next_page"] = "diary"
+            except Exception as exc:
+                st.error("写真を保存できませんでした。")
+                with st.expander("保護者向け詳細"):
+                    st.code(str(exc))
+    with c2:
+        if st.button("撮りなおす／選びなおす", use_container_width=True, key="retry_camera_photo"):
+            st.session_state.pop(pending_key, None)
+            st.session_state.pop(digest_key, None)
+            st.session_state.capture_serial += 1
             st.rerun()
-        except Exception as exc:
-            st.error("旅を終了できませんでした。")
-            with st.expander("保護者向け詳細"):
-                st.code(str(exc))
 
 # ============================================================
 # Page: Diary conversation
