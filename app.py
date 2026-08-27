@@ -3235,12 +3235,26 @@ def compose_diary(trip, photo_states):
     }
     destination = str(trip.get("destination") or "").strip()
     evidence = "\n".join(evidence_parts) if evidence_parts else "子どもの発言はほとんどありません。"
+    total_photo_count = len(photo_states)
+    commented_photo_count = sum(
+        1
+        for item in photo_states
+        if any(
+            isinstance(turn, dict)
+            and turn.get("role") == "child"
+            and str(turn.get("text") or "").strip()
+            for turn in item.get("conversation", [])
+        )
+    )
     prompt = f"""
 5〜6歳の子どもが東京ぶらり旅のあとに話した内容から、本人の日記を作ります。
 AIが新しい出来事や感情を足してはいけません。
 
 日付: {trip.get('trip_date', '')}
 行き先メモ: {destination or 'なし'}
+保存されている写真: {total_photo_count}枚
+本人のコメントがある写真: {commented_photo_count}枚
+本人のコメントがない写真: {max(0, total_photo_count - commented_photo_count)}枚
 子どもが写真を見ながら話した言葉:
 {evidence}
 
@@ -3248,6 +3262,8 @@ AIが新しい出来事や感情を足してはいけません。
 - diary は3〜7文程度。発言が少なければ無理に長くしない。
 - 子どもの語彙や言い回しをできるだけ残し、読みやすい順番に整える。
 - 「楽しかった」「不便だった」などを、本人が言っていないのに補わない。
+- コメントがない写真について、写真の内容・出来事・感情を推測して文章を作らない。写真枚数そのものは事実として書いてよい。
+- 本人のコメントが1つもない場合は、写真を残した事実と「コメントはまだない」ことだけを短く書く。
 - 大人っぽい抽象語へ変換しすぎない。
 - title はシステム側で「ぶらり旅（地名）」に固定するため、内容は diary に集中する。
 - reflection_summary は保護者向けに、その日の本人の発言だけを根拠として「何に興味・注意が向いていたか」「どんな疑問や比較、理由づけ、改善の発想があったか」「どんなWantがあったか」を2〜4文程度で簡潔にまとめる。
@@ -3557,6 +3573,173 @@ def _conversation_has_child_words(conversation):
         if str(turn.get("text") or "").strip():
             return True
     return False
+
+
+def finalize_previous_days_into_diaries():
+    """Rescue photos from older unfinished trips and create a provisional diary.
+
+    A trip can remain ``active`` when the user takes photos and closes the app
+    without explicitly creating a diary. Older active trips are not shown by the
+    normal diary selector, which can make those photos look as if they disappeared.
+    On the first authenticated render of each calendar day, move every older trip
+    that still has photos into the diary flow and save a diary immediately.
+
+    Only the child's already-saved words are used for prose/analysis. Photos with
+    no child comment are kept in the diary gallery but never receive invented
+    events, feelings, or intentions.
+    """
+    today = today_iso()
+    guard_key = "_stale_rollover_checked_for"
+    if st.session_state.get(guard_key) == today:
+        return
+    st.session_state[guard_key] = today
+
+    client = supabase_client()
+    try:
+        result = (
+            client
+            .table(TRIP_TABLE)
+            .select("*")
+            .in_("status", ["active", "ready_for_diary"])
+            .lt("trip_date", today)
+            .order("trip_date")
+            .order("started_at")
+            .execute()
+        )
+        stale_trips = result.data or []
+    except Exception as exc:
+        st.session_state["_rollover_warning"] = (
+            "前日までの写真の確認に失敗しました。写真データは削除していません。"
+        )
+        st.session_state["_rollover_warning_detail"] = str(exc)
+        return
+
+    created_count = 0
+    rescued_count = 0
+    failed_count = 0
+
+    for trip in stale_trips:
+        trip_id = trip.get("id")
+        if not trip_id:
+            continue
+
+        try:
+            photos = list_trip_photos(trip_id)
+        except Exception:
+            failed_count += 1
+            continue
+        if not photos:
+            # Do not create an empty diary just because an old empty trip row exists.
+            continue
+
+        existing = get_diary_for_trip(trip_id)
+        if existing:
+            if trip.get("status") != "diary_done":
+                client.table(TRIP_TABLE).update({"status": "diary_done"}).eq("id", trip_id).execute()
+            continue
+
+        # First make the photos visible in the normal diary selector. Even if the
+        # AI step fails later, the photos are no longer stranded in an old active trip.
+        if trip.get("status") == "active":
+            ended_at = str(photos[-1].get("captured_at") or now_jst().isoformat())
+            (
+                client
+                .table(TRIP_TABLE)
+                .update({"status": "ready_for_diary", "ended_at": ended_at})
+                .eq("id", trip_id)
+                .execute()
+            )
+            rescued_count += 1
+
+        photo_states = []
+        child_comments = []
+        raw = {}
+        merged_signals = {}
+        for photo in photos:
+            pid = photo.get("id")
+            conversation = _stored_photo_conversation(photo)
+            signals = photo.get("signals_json") or {}
+            if not isinstance(signals, dict):
+                signals = {}
+            photo_states.append(
+                {
+                    "photo_id": pid,
+                    "conversation": conversation,
+                    "signals": signals,
+                }
+            )
+            raw[str(pid)] = conversation
+            merged_signals = merge_signals(merged_signals, signals)
+            for turn in conversation:
+                if not isinstance(turn, dict) or turn.get("role") != "child":
+                    continue
+                value = str(turn.get("text") or "").strip()
+                if value:
+                    child_comments.append(value)
+
+        try:
+            if child_comments:
+                try:
+                    composed, raw = compose_diary(trip, photo_states)
+                    diary_text = str(composed.get("diary") or "").strip()
+                    reflection_summary = str(composed.get("reflection_summary") or "").strip()
+                    child_points = list(composed.get("child_points") or [])[:3]
+                    merged_signals = merge_signals(merged_signals, composed.get("signals", {}))
+                except Exception:
+                    # The photos must still survive day rollover even if the AI call is
+                    # temporarily unavailable. Keep a factual diary from the saved words.
+                    diary_text = f"この日は写真を{len(photos)}枚残しました。写真を見ながら話した言葉も保存しています。"
+                    reflection_summary = (
+                        "本人のコメントは保存されています。AIによる興味・考えのまとめは、"
+                        "この日記を作り直すと更新できます。"
+                    )
+                    child_points = child_comments[:3]
+            else:
+                diary_text = (
+                    f"この日は写真を{len(photos)}枚残しました。"
+                    "写真についての本人のコメントはまだありません。"
+                )
+                reflection_summary = (
+                    "本人のコメントがまだないため、この記録だけから興味や考え方は判断していません。"
+                )
+                child_points = []
+
+            ai_meta = {
+                "child_points": child_points,
+                "signals": merged_signals,
+                "reflection_summary": reflection_summary,
+                "auto_rollover": True,
+                "auto_rollover_reason": "day_changed_before_diary_creation",
+                "photo_count": len(photos),
+                "commented_photo_count": sum(
+                    1 for state in photo_states if _conversation_has_child_words(state.get("conversation", []))
+                ),
+            }
+            save_diary(
+                trip_id,
+                diary_title_for_trip(trip, photos=photos),
+                diary_text,
+                raw,
+                ai_meta,
+            )
+            created_count += 1
+        except Exception:
+            # It is already ready_for_diary, so the user can still see and finish it
+            # manually instead of losing access to the previous day's photos.
+            failed_count += 1
+
+    if created_count:
+        st.session_state["_rollover_notice"] = (
+            f"前日までに残っていた写真を {created_count}件の日記に自動でまとめました。"
+        )
+    elif rescued_count:
+        st.session_state["_rollover_notice"] = (
+            "前日までの写真を日記画面から確認できる状態に戻しました。"
+        )
+    if failed_count:
+        st.session_state["_rollover_warning"] = (
+            "一部の日記は自動作成できませんでしたが、写真は日記画面から確認できます。"
+        )
 
 
 def reflection_state(trip_id, photos):
@@ -4763,8 +4946,20 @@ def page_settings():
 verify_setup()
 require_family_pin()
 init_state()
+finalize_previous_days_into_diaries()
 restore_recent_camera_session()
 sync_browser_history()
+
+rollover_notice = st.session_state.pop("_rollover_notice", None)
+if rollover_notice:
+    st.success(rollover_notice)
+rollover_warning = st.session_state.pop("_rollover_warning", None)
+if rollover_warning:
+    st.warning(rollover_warning)
+    rollover_detail = st.session_state.pop("_rollover_warning_detail", None)
+    if rollover_detail:
+        with st.expander("保護者向け詳細"):
+            st.code(str(rollover_detail))
 
 page = st.session_state.get("main_page", "home")
 if page == "home":
