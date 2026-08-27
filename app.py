@@ -109,11 +109,21 @@ st.markdown(
         line-height: 1.4;
         white-space: pre-line;
       }
+      /* Frequent actions: camera and diary share the same blue frame. */
       .st-key-home_camera div.stButton > button,
-      .st-key-home_camera button {
+      .st-key-home_camera button,
+      .st-key-home_diary div.stButton > button,
+      .st-key-home_diary button {
         border-width: 2px !important;
         border-style: solid !important;
         border-color: #4A90E2 !important;
+      }
+      /* Occasional action: use a different, softer warm frame. */
+      .st-key-home_review div.stButton > button,
+      .st-key-home_review button {
+        border-width: 2px !important;
+        border-style: solid !important;
+        border-color: #F59E0B !important;
       }
       .st-key-home_menu [data-testid="stHorizontalBlock"] {
         gap: .75rem;
@@ -3463,7 +3473,7 @@ def page_home():
 
         row2_left, row2_right = st.columns(2)
         with row2_left:
-            render_home_button("🔍\n振り返り", "review", "home_review")
+            render_home_button("🔍\n振り返り（たまに）", "review", "home_review")
         with row2_right:
             render_home_button("⚙️\n設定", "settings", "home_settings")
 
