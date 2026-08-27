@@ -8,6 +8,8 @@ import os
 import tempfile
 import time
 import uuid
+from urllib.parse import urlencode
+from urllib.request import Request, urlopen
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -98,6 +100,13 @@ st.markdown(
       }
       .st-key-home_menu [data-testid="stHorizontalBlock"] {
         gap: .75rem;
+      }
+      .st-key-home_destination div.stButton > button {
+        min-height: 3.0rem !important;
+        border-radius: 14px !important;
+        font-size: .98rem !important;
+        line-height: 1.2 !important;
+        white-space: normal !important;
       }
       .st-key-mobile_capture [data-testid="stFileUploaderDropzone"] {
         padding: 1rem;
@@ -390,6 +399,56 @@ export default function(component) {
     reader.readAsDataURL(blob);
   });
 
+  const getLocationAtCapture = () => new Promise((resolve) => {
+    if (!navigator.geolocation) {
+      resolve({
+        ok: false,
+        error_code: 'UNSUPPORTED',
+        error_message: 'このブラウザでは位置情報を取得できません。'
+      });
+      return;
+    }
+
+    navigator.geolocation.getCurrentPosition(
+      (position) => {
+        resolve({
+          ok: true,
+          latitude: position.coords.latitude,
+          longitude: position.coords.longitude,
+          accuracy_m: position.coords.accuracy,
+          altitude_m: position.coords.altitude,
+          heading_deg: position.coords.heading,
+          speed_mps: position.coords.speed,
+          measured_at: new Date(position.timestamp).toISOString()
+        });
+      },
+      (error) => {
+        let code = 'POSITION_ERROR';
+        let message = '位置情報を取得できませんでした。';
+        if (error && error.code === 1) {
+          code = 'PERMISSION_DENIED';
+          message = '位置情報が許可されていません。';
+        } else if (error && error.code === 2) {
+          code = 'POSITION_UNAVAILABLE';
+          message = '端末の位置情報を利用できません。';
+        } else if (error && error.code === 3) {
+          code = 'TIMEOUT';
+          message = '位置情報の取得が時間切れになりました。';
+        }
+        resolve({
+          ok: false,
+          error_code: code,
+          error_message: message
+        });
+      },
+      {
+        enableHighAccuracy: true,
+        timeout: 5000,
+        maximumAge: 15000
+      }
+    );
+  });
+
   const prepareImageFile = async (file) => {
     const url = URL.createObjectURL(file);
     try {
@@ -420,7 +479,12 @@ export default function(component) {
   const takePhoto = async () => {
     if (!stream || !video.videoWidth || !video.videoHeight) return;
     shootButton.disabled = true;
+    const capturedAt = new Date().toISOString();
     try {
+      // Start GPS lookup at the same moment as the shutter so the saved
+      // coordinates are as close as possible to the actual capture location.
+      const locationPromise = getLocationAtCapture();
+
       const srcW = video.videoWidth;
       const srcH = video.videoHeight;
       const maxSide = 1600;
@@ -434,13 +498,19 @@ export default function(component) {
       const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', 0.86));
       if (!blob) throw new Error('canvas conversion failed');
       const dataUrl = await blobToDataUrl(blob);
+
+      setStatus('位置情報を確認しています…');
+      const location = await locationPromise;
+
       setTriggerValue('photo', {
         data_url: dataUrl,
         name: 'camera.jpg',
         source: 'camera',
-        captured_at: new Date().toISOString()
+        captured_at: capturedAt,
+        location
       });
       stopStream();
+      setStatus('');
     } catch (err) {
       console.error(err);
       shootButton.disabled = false;
@@ -459,7 +529,12 @@ export default function(component) {
         data_url: dataUrl,
         name: file.name || 'gallery.jpg',
         source: 'gallery',
-        captured_at: new Date().toISOString()
+        captured_at: new Date().toISOString(),
+        location: {
+          ok: false,
+          error_code: 'GALLERY',
+          error_message: '写真フォルダから選んだ画像の撮影位置は自動取得しません。'
+        }
       });
     } catch (err) {
       console.error(err);
@@ -799,6 +874,143 @@ def audio_digest(uploaded_file):
 
 
 # ============================================================
+# Location helpers
+# ============================================================
+@st.cache_data(ttl=86400, show_spinner=False)
+def reverse_geocode_rough(latitude, longitude):
+    """Best-effort coarse place label. Exact address is intentionally not shown."""
+    try:
+        lat = round(float(latitude), 4)
+        lon = round(float(longitude), 4)
+    except (TypeError, ValueError):
+        return ""
+
+    params = urlencode(
+        {
+            "format": "jsonv2",
+            "lat": lat,
+            "lon": lon,
+            "zoom": 15,
+            "addressdetails": 1,
+            "accept-language": "ja",
+        }
+    )
+    req = Request(
+        f"https://nominatim.openstreetmap.org/reverse?{params}",
+        headers={
+            "User-Agent": "TokyoBurariApp/1.0 (family-use reverse geocoding)",
+            "Accept": "application/json",
+        },
+    )
+    try:
+        with urlopen(req, timeout=3.5) as response:
+            data = json.loads(response.read().decode("utf-8"))
+    except Exception:
+        return ""
+
+    address = data.get("address") if isinstance(data, dict) else {}
+    if not isinstance(address, dict):
+        address = {}
+
+    # Keep the child-facing label intentionally coarse. Do not expose a street
+    # address or house number even if the geocoder returns one.
+    for key in (
+        "neighbourhood",
+        "quarter",
+        "suburb",
+        "city_district",
+        "town",
+        "village",
+        "city",
+        "municipality",
+    ):
+        value = str(address.get(key) or "").strip()
+        if value:
+            return value if value.endswith("付近") else f"{value}付近"
+    return ""
+
+
+def build_photo_location(raw_location, trip, capture_source="camera"):
+    """Normalize browser GPS and fall back to the trip's manual destination."""
+    destination = str((trip or {}).get("destination") or "").strip()
+    source = str(capture_source or "camera").strip().lower()
+
+    if source == "camera" and isinstance(raw_location, dict) and raw_location.get("ok"):
+        try:
+            latitude = float(raw_location.get("latitude"))
+            longitude = float(raw_location.get("longitude"))
+        except (TypeError, ValueError):
+            latitude = longitude = None
+
+        if latitude is not None and longitude is not None:
+            accuracy = raw_location.get("accuracy_m")
+            try:
+                accuracy = round(float(accuracy), 1) if accuracy is not None else None
+            except (TypeError, ValueError):
+                accuracy = None
+
+            place_label = reverse_geocode_rough(latitude, longitude)
+            return {
+                "source": "gps",
+                "latitude": latitude,
+                "longitude": longitude,
+                "accuracy_m": accuracy,
+                "measured_at": raw_location.get("measured_at"),
+                "place_label": place_label,
+                "place_provider": "OpenStreetMap Nominatim" if place_label else "",
+            }
+
+    if destination:
+        return {
+            "source": "manual_destination",
+            "place_label": destination,
+            "gps_error_code": (
+                raw_location.get("error_code") if isinstance(raw_location, dict) else ""
+            ),
+        }
+
+    return {
+        "source": "unavailable",
+        "place_label": "",
+        "gps_error_code": (
+            raw_location.get("error_code") if isinstance(raw_location, dict) else ""
+        ),
+    }
+
+
+def get_photo_location(photo):
+    reflection = (photo or {}).get("reflection_json") or {}
+    if not isinstance(reflection, dict):
+        return {}
+    location = reflection.get("location") or {}
+    return location if isinstance(location, dict) else {}
+
+
+def photo_location_label(photo):
+    location = get_photo_location(photo)
+    label = str(location.get("place_label") or "").strip()
+    if label:
+        return label
+    if location.get("source") == "gps":
+        return "位置情報あり"
+    return ""
+
+
+def photo_location_preview(location):
+    if not isinstance(location, dict):
+        return ""
+    source = location.get("source")
+    label = str(location.get("place_label") or "").strip()
+    if source == "gps":
+        accuracy = location.get("accuracy_m")
+        accuracy_text = f"（精度 ±{int(round(accuracy))}m）" if isinstance(accuracy, (int, float)) else ""
+        return f"📍 GPS位置情報を取得しました{accuracy_text}"
+    if source == "manual_destination" and label:
+        return f"📍 {label}（今日の行き先）"
+    return "📍 位置情報を取得できませんでした。ホームの「今日の行き先！」から手入力できます。"
+
+
+# ============================================================
 # Image helpers
 # ============================================================
 def normalize_photo(raw_bytes, max_side=1600, quality=84):
@@ -815,10 +1027,9 @@ def download_photo(storage_path):
     return supabase_client().storage.from_(PHOTO_BUCKET).download(storage_path)
 
 
-def upload_photo(trip_id, image_bytes):
+def upload_photo(trip_id, image_bytes, location=None, captured_at=None, capture_source="camera"):
     # Keep Storage upload as a raw binary body. In particular, do not send an
-    # x-upsert header for new files. This avoids current Storage edge cases
-    # where multipart/x-upsert requests can be rejected even for a fresh path.
+    # x-upsert header for new files.
     compressed = normalize_photo(image_bytes)
     if not compressed:
         raise ValueError("写真データが空です。")
@@ -826,6 +1037,11 @@ def upload_photo(trip_id, image_bytes):
     stamp = now_jst().strftime("%Y%m%d_%H%M%S_%f")
     path = f"{trip_id}/{stamp}_{uuid.uuid4().hex[:8]}.jpg"
     client = supabase_client()
+
+    reflection = {
+        "capture_source": str(capture_source or "camera"),
+        "location": location if isinstance(location, dict) else {},
+    }
 
     storage_saved = False
     try:
@@ -846,8 +1062,8 @@ def upload_photo(trip_id, image_bytes):
                 {
                     "trip_id": trip_id,
                     "storage_path": path,
-                    "captured_at": now_jst().isoformat(),
-                    "reflection_json": {},
+                    "captured_at": str(captured_at or now_jst().isoformat()),
+                    "reflection_json": reflection,
                     "signals_json": {},
                 }
             )
@@ -912,13 +1128,62 @@ def get_today_active_trip():
 
 
 def update_trip_destination(trip_id, destination):
+    destination = str(destination or "").strip()
+    client = supabase_client()
     result = (
-        supabase_client()
+        client
         .table(TRIP_TABLE)
-        .update({"destination": str(destination or "").strip()})
+        .update({"destination": destination})
         .eq("id", trip_id)
         .execute()
     )
+
+    # If GPS was unavailable, a destination entered later should also become the
+    # fallback label for photos already saved on today's trip. Never overwrite GPS.
+    try:
+        photos = (
+            client
+            .table(PHOTO_TABLE)
+            .select("id,reflection_json")
+            .eq("trip_id", trip_id)
+            .execute()
+        ).data or []
+        for photo in photos:
+            reflection = photo.get("reflection_json") or {}
+            if not isinstance(reflection, dict):
+                reflection = {}
+            location = reflection.get("location") or {}
+            if isinstance(location, dict) and location.get("source") == "gps":
+                continue
+            reflection["location"] = (
+                {
+                    "source": "manual_destination",
+                    "place_label": destination,
+                    "gps_error_code": (
+                        location.get("gps_error_code") if isinstance(location, dict) else ""
+                    ),
+                }
+                if destination
+                else {
+                    "source": "unavailable",
+                    "place_label": "",
+                    "gps_error_code": (
+                        location.get("gps_error_code") if isinstance(location, dict) else ""
+                    ),
+                }
+            )
+            (
+                client
+                .table(PHOTO_TABLE)
+                .update({"reflection_json": reflection})
+                .eq("id", photo["id"])
+                .execute()
+            )
+    except Exception:
+        # The destination itself is more important than the optional backfill.
+        # Do not fail the manual save if a legacy photo cannot be updated.
+        pass
+
     return (result.data or [None])[0]
 
 
@@ -957,12 +1222,27 @@ def list_trip_photos(trip_id):
 
 
 def update_photo_reflection(photo_id, conversation, signals):
+    client = supabase_client()
+    current = (
+        client
+        .table(PHOTO_TABLE)
+        .select("reflection_json")
+        .eq("id", photo_id)
+        .limit(1)
+        .execute()
+    )
+    row = (current.data or [None])[0] or {}
+    reflection = row.get("reflection_json") or {}
+    if not isinstance(reflection, dict):
+        reflection = {}
+    reflection["conversation"] = conversation
+
     (
-        supabase_client()
+        client
         .table(PHOTO_TABLE)
         .update(
             {
-                "reflection_json": {"conversation": conversation},
+                "reflection_json": reflection,
                 "signals_json": signals or {},
             }
         )
@@ -1335,7 +1615,11 @@ def build_month_evidence(bundle):
         conv = reflection.get("conversation", []) if isinstance(reflection, dict) else []
         child = [x.get("text", "") for x in conv if x.get("role") == "child"]
         if child:
-            lines.append(f"[{trip.get('trip_date', '')} / 写真] 本人の発言: " + " / ".join(child))
+            where = photo_location_label(p) or trip.get("destination") or "場所メモなし"
+            lines.append(
+                f"[{trip.get('trip_date', '')} / 写真 / {where}] 本人の発言: "
+                + " / ".join(child)
+            )
     return "\n".join(lines)
 
 
@@ -1416,6 +1700,7 @@ def init_state():
         "active_trip_id": None,
         "capture_serial": 0,
         "preferred_diary_trip_id": None,
+        "show_home_destination_editor": False,
     }
     for key, value in defaults.items():
         if key not in st.session_state:
@@ -1583,6 +1868,9 @@ def render_small_gallery(photos, max_count=4):
             image = download_photo(photo["storage_path"])
             with cols[idx % len(cols)]:
                 st.image(image, use_container_width=True)
+                location_label = photo_location_label(photo)
+                if location_label:
+                    st.caption(f"📍 {location_label}")
         except Exception:
             pass
 
@@ -1605,6 +1893,50 @@ def page_home():
         row1_left, row1_right = st.columns(2)
         with row1_left:
             render_home_button("📷\nカメラで撮る", "camera", "home_camera", ensure_trip=True)
+
+            # Manual fallback for cases where the phone/browser cannot provide GPS.
+            with st.container(key="home_destination"):
+                if st.button("📍 今日の行き先！", key="home_destination_toggle", use_container_width=True):
+                    st.session_state.show_home_destination_editor = not bool(
+                        st.session_state.get("show_home_destination_editor")
+                    )
+                    st.rerun()
+
+                if st.session_state.get("show_home_destination_editor"):
+                    trip = ensure_today_trip()
+                    current_trip = get_trip(trip["id"]) or trip
+                    destination = st.text_input(
+                        "今日の行き先",
+                        value=str(current_trip.get("destination") or ""),
+                        placeholder="例：神楽坂、浅草のあたり",
+                        key=f"home_destination_input_{trip['id']}",
+                        label_visibility="collapsed",
+                    )
+                    save_col, close_col = st.columns([2, 1])
+                    with save_col:
+                        if st.button(
+                            "保存",
+                            type="primary",
+                            use_container_width=True,
+                            key=f"home_destination_save_{trip['id']}",
+                        ):
+                            try:
+                                update_trip_destination(trip["id"], destination)
+                                st.session_state.show_home_destination_editor = False
+                                st.rerun()
+                            except Exception as exc:
+                                st.error("行き先を保存できませんでした。")
+                                with st.expander("保護者向け詳細"):
+                                    st.code(str(exc))
+                    with close_col:
+                        if st.button(
+                            "閉じる",
+                            use_container_width=True,
+                            key=f"home_destination_close_{trip['id']}",
+                        ):
+                            st.session_state.show_home_destination_editor = False
+                            st.rerun()
+
         with row1_right:
             render_home_button("📖\n日記", "diary", "home_diary")
 
@@ -1629,6 +1961,10 @@ def page_trip():
     trip = ensure_today_trip()
     pending_key = f"pending_camera_photo_{trip['id']}"
     digest_key = f"pending_camera_digest_{trip['id']}"
+    location_key = f"pending_camera_location_{trip['id']}"
+    captured_at_key = f"pending_camera_captured_at_{trip['id']}"
+    source_key = f"pending_camera_source_{trip['id']}"
+
     pending = st.session_state.get(pending_key)
 
     if pending is None:
@@ -1644,13 +1980,27 @@ def page_trip():
                 message = camera_error.get("message") if isinstance(camera_error, dict) else str(camera_error)
                 if message:
                     st.warning(message)
+
             if isinstance(payload, dict) and payload.get("data_url"):
                 try:
                     raw = decode_camera_data_url(payload["data_url"])
                     digest = hashlib.sha1(raw).hexdigest()
                     if st.session_state.get(digest_key) != digest:
+                        capture_source = str(payload.get("source") or "camera")
+                        # Refresh the trip so a just-entered manual destination is
+                        # available as the fallback when GPS is off or denied.
+                        fresh_trip = get_trip(trip["id"]) or trip
+                        location = build_photo_location(
+                            payload.get("location"),
+                            fresh_trip,
+                            capture_source=capture_source,
+                        )
+
                         st.session_state[pending_key] = raw
                         st.session_state[digest_key] = digest
+                        st.session_state[location_key] = location
+                        st.session_state[captured_at_key] = payload.get("captured_at")
+                        st.session_state[source_key] = capture_source
                         pending = raw
                         st.rerun()
                 except Exception as exc:
@@ -1661,15 +2011,26 @@ def page_trip():
             st.error("ライブカメラ機能に必要なStreamlitのバージョンが古いです。requirements.txtを更新してください。")
         return
 
+    pending_location = st.session_state.get(location_key) or {}
     st.image(pending, caption="この写真を残す？", use_container_width=True)
+    location_text = photo_location_preview(pending_location)
+    if location_text:
+        st.caption(location_text)
+
     c1, c2 = st.columns(2)
     with c1:
         if st.button("この写真を残す", type="primary", use_container_width=True, key="save_camera_photo"):
             try:
                 with st.spinner("写真を残しています…"):
-                    upload_photo(trip["id"], pending)
-                st.session_state.pop(pending_key, None)
-                st.session_state.pop(digest_key, None)
+                    upload_photo(
+                        trip["id"],
+                        pending,
+                        location=pending_location,
+                        captured_at=st.session_state.get(captured_at_key),
+                        capture_source=st.session_state.get(source_key) or "camera",
+                    )
+                for key in (pending_key, digest_key, location_key, captured_at_key, source_key):
+                    st.session_state.pop(key, None)
                 st.session_state.capture_serial += 1
                 st.rerun()
             except Exception as exc:
@@ -1678,10 +2039,11 @@ def page_trip():
                     st.code(str(exc))
     with c2:
         if st.button("撮りなおす／選びなおす", use_container_width=True, key="retry_camera_photo"):
-            st.session_state.pop(pending_key, None)
-            st.session_state.pop(digest_key, None)
+            for key in (pending_key, digest_key, location_key, captured_at_key, source_key):
+                st.session_state.pop(key, None)
             st.session_state.capture_serial += 1
             st.rerun()
+
 
 # ============================================================
 # Page: Diary conversation
@@ -1880,6 +2242,9 @@ def page_diary():
     try:
         image_bytes = download_photo(photo["storage_path"])
         st.image(image_bytes, use_container_width=True)
+        location_label = photo_location_label(photo)
+        if location_label:
+            st.caption(f"📍 {location_label}")
     except Exception as exc:
         st.error("写真を読み込めませんでした。")
         with st.expander("保護者向け詳細"):
@@ -2172,7 +2537,10 @@ def page_settings():
         "『カメラで撮る』画面では、ブラウザのライブカメラを直接開いて撮影します。"
         "初回だけ、このサイトへのカメラ使用を『許可』してください。"
     )
-    st.caption("許可を拒否した場合は、ブラウザのサイト設定 → 権限 → カメラを『許可』に変更してから再読み込みしてください。写真フォルダから選ぶ機能も残しています。")
+    st.caption(
+        "初回はカメラとは別に位置情報の許可も求められます。位置情報がオフ・拒否・取得不能の場合は、"
+        "ホームの「📍 今日の行き先！」に入力した内容を写真の場所として使います。"
+    )
 
     st.divider()
     st.markdown("#### プロジェクトの考え方")
