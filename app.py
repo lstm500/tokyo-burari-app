@@ -702,6 +702,410 @@ except Exception:
 
 
 # ============================================================
+# Far-field mobile microphone component
+# ============================================================
+# The standard Streamlit audio widget does not expose browser microphone
+# processing controls. This component is tuned for a child speaking from a
+# short distance away: request automatic gain, avoid aggressive noise
+# suppression, boost quiet input in Web Audio, and show a live level meter.
+_FAR_FIELD_MIC_HTML = """
+<div class="far-mic-wrap">
+  <button id="far-mic-toggle" class="far-mic-button" type="button">🎙 録音する</button>
+  <div id="far-mic-status" class="far-mic-status">スマホから少し離れて話しても拾いやすい録音モードです。</div>
+  <div class="far-mic-meter" aria-hidden="true">
+    <div id="far-mic-meter-fill" class="far-mic-meter-fill"></div>
+  </div>
+  <div class="far-mic-meter-label">声の大きさ</div>
+</div>
+"""
+
+_FAR_FIELD_MIC_CSS = """
+.far-mic-wrap {
+  width: 100%;
+  box-sizing: border-box;
+  font-family: var(--st-font);
+  margin: .2rem 0 .65rem;
+}
+.far-mic-button {
+  width: 100%;
+  min-height: 64px;
+  border-radius: 18px;
+  border: 2px solid #2563eb;
+  background: rgba(37, 99, 235, .10);
+  color: var(--st-text-color);
+  font-size: 18px;
+  font-weight: 800;
+  cursor: pointer;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+.far-mic-button.recording {
+  border-color: #dc2626;
+  background: #dc2626;
+  color: white;
+  box-shadow: 0 0 0 3px rgba(220, 38, 38, .12);
+}
+.far-mic-button:disabled {
+  opacity: .62;
+  cursor: default;
+}
+.far-mic-status {
+  margin-top: 7px;
+  font-size: 13px;
+  line-height: 1.45;
+  opacity: .82;
+}
+.far-mic-meter {
+  width: 100%;
+  height: 12px;
+  margin-top: 8px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: rgba(128, 128, 128, .18);
+}
+.far-mic-meter-fill {
+  width: 2%;
+  height: 100%;
+  border-radius: inherit;
+  background: #22c55e;
+  transition: width 90ms linear;
+}
+.far-mic-meter-label {
+  margin-top: 2px;
+  text-align: right;
+  font-size: 10px;
+  opacity: .55;
+}
+@media (max-width: 640px) {
+  .far-mic-button {
+    min-height: 62px;
+    font-size: 17px;
+  }
+}
+"""
+
+_FAR_FIELD_MIC_JS = r"""
+export default function(component) {
+  const { parentElement, data, setTriggerValue } = component;
+  const button = parentElement.querySelector('#far-mic-toggle');
+  const status = parentElement.querySelector('#far-mic-status');
+  const meterFill = parentElement.querySelector('#far-mic-meter-fill');
+  if (!button || !status || !meterFill) return;
+
+  let inputStream = null;
+  let audioContext = null;
+  let source = null;
+  let highpass = null;
+  let analyser = null;
+  let gainNode = null;
+  let compressor = null;
+  let destination = null;
+  let recorder = null;
+  let chunks = [];
+  let meterTimer = null;
+  let maxTimer = null;
+  let startedAt = 0;
+  let recording = false;
+  let cancelled = false;
+  let peakRms = 0;
+
+  const label = String(data?.label || '録音');
+
+  const setStatus = (text) => {
+    status.textContent = text || '';
+  };
+
+  const setMeter = (percent) => {
+    const safe = Math.max(2, Math.min(100, Number(percent) || 2));
+    meterFill.style.width = `${safe}%`;
+  };
+
+  const errorMessage = (err) => {
+    const name = (err && err.name) ? err.name : '';
+    if (name === 'NotAllowedError' || name === 'PermissionDeniedError') {
+      return 'マイクが許可されていません。ブラウザのサイト設定でマイクを「許可」にしてください。';
+    }
+    if (name === 'NotFoundError' || name === 'DevicesNotFoundError') return '利用できるマイクが見つかりませんでした。';
+    if (name === 'NotReadableError' || name === 'TrackStartError') return 'マイクを開けませんでした。ほかのアプリがマイクを使っていないか確認してください。';
+    return 'マイクを開けませんでした。ChromeまたはSafariの最新版でお試しください。';
+  };
+
+  const chooseMimeType = () => {
+    if (!window.MediaRecorder) return '';
+    const candidates = [
+      'audio/webm;codecs=opus',
+      'audio/webm',
+      'audio/mp4',
+      'audio/ogg;codecs=opus'
+    ];
+    for (const candidate of candidates) {
+      try {
+        if (MediaRecorder.isTypeSupported(candidate)) return candidate;
+      } catch (_) {}
+    }
+    return '';
+  };
+
+  const extensionFor = (mime) => {
+    const value = String(mime || '').toLowerCase();
+    if (value.includes('mp4')) return 'm4a';
+    if (value.includes('ogg')) return 'ogg';
+    if (value.includes('wav')) return 'wav';
+    return 'webm';
+  };
+
+  const blobToDataUrl = (blob) => new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = reject;
+    reader.readAsDataURL(blob);
+  });
+
+  const stopTracksAndGraph = async () => {
+    if (meterTimer) {
+      clearInterval(meterTimer);
+      meterTimer = null;
+    }
+    if (maxTimer) {
+      clearTimeout(maxTimer);
+      maxTimer = null;
+    }
+    if (inputStream) {
+      inputStream.getTracks().forEach((track) => track.stop());
+      inputStream = null;
+    }
+    try { source && source.disconnect(); } catch (_) {}
+    try { highpass && highpass.disconnect(); } catch (_) {}
+    try { analyser && analyser.disconnect(); } catch (_) {}
+    try { gainNode && gainNode.disconnect(); } catch (_) {}
+    try { compressor && compressor.disconnect(); } catch (_) {}
+    source = null;
+    highpass = null;
+    analyser = null;
+    gainNode = null;
+    compressor = null;
+    destination = null;
+    if (audioContext) {
+      try { await audioContext.close(); } catch (_) {}
+      audioContext = null;
+    }
+    setMeter(2);
+  };
+
+  const updateLevelAndGain = () => {
+    if (!recording || !analyser || !gainNode || !audioContext) return;
+    const values = new Float32Array(analyser.fftSize);
+    analyser.getFloatTimeDomainData(values);
+    let sum = 0;
+    for (let i = 0; i < values.length; i++) sum += values[i] * values[i];
+    const rms = Math.sqrt(sum / Math.max(1, values.length));
+    peakRms = Math.max(peakRms, rms);
+
+    // Logarithmic meter: roughly -60 dB to -15 dB maps to 0-100%.
+    const db = 20 * Math.log10(Math.max(rms, 0.000001));
+    const meter = Math.max(2, Math.min(100, ((db + 60) / 45) * 100));
+    setMeter(meter);
+
+    // Distant voices tend to arrive quietly. Raise them before encoding, but
+    // keep a compressor after the gain stage so a sudden close voice does not clip.
+    let targetGain = 1.25;
+    if (rms < 0.006) targetGain = 4.5;
+    else if (rms < 0.012) targetGain = 4.0;
+    else if (rms < 0.025) targetGain = 3.0;
+    else if (rms < 0.05) targetGain = 2.0;
+    gainNode.gain.setTargetAtTime(targetGain, audioContext.currentTime, 0.12);
+  };
+
+  const finishRecording = async () => {
+    const mime = (recorder && recorder.mimeType) || chooseMimeType() || 'audio/webm';
+    const blob = new Blob(chunks, { type: mime });
+    const durationMs = Math.max(0, Date.now() - startedAt);
+    await stopTracksAndGraph();
+    recording = false;
+    button.classList.remove('recording');
+    button.disabled = false;
+    button.textContent = '🎙 録音する';
+
+    if (cancelled || !blob.size) {
+      cancelled = false;
+      setStatus('録音を開始できます。');
+      return;
+    }
+
+    try {
+      const dataUrl = await blobToDataUrl(blob);
+      setStatus('声を送っています…');
+      button.disabled = true;
+      setTriggerValue('audio', {
+        data_url: dataUrl,
+        mime_type: mime,
+        name: `speech.${extensionFor(mime)}`,
+        duration_ms: durationMs,
+        peak_rms: peakRms
+      });
+    } catch (err) {
+      console.error(err);
+      setStatus('録音データを作れませんでした。もう一度お試しください。');
+      button.disabled = false;
+      setTriggerValue('audio_error', { name: 'EncodeError', message: String(err?.message || err || '') });
+    }
+  };
+
+  const stopRecording = () => {
+    if (!recording || !recorder) return;
+    button.disabled = true;
+    setStatus('録音を止めています…');
+    if (maxTimer) {
+      clearTimeout(maxTimer);
+      maxTimer = null;
+    }
+    try {
+      if (recorder.state !== 'inactive') recorder.stop();
+    } catch (err) {
+      console.error(err);
+      cancelled = true;
+      stopTracksAndGraph();
+      recording = false;
+      button.classList.remove('recording');
+      button.disabled = false;
+      button.textContent = '🎙 録音する';
+      setStatus('録音を止められませんでした。もう一度お試しください。');
+    }
+  };
+
+  const startRecording = async () => {
+    if (recording) return;
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia || !window.MediaRecorder) {
+      const message = 'このブラウザでは距離対応マイクを利用できません。ChromeまたはSafariの最新版でお試しください。';
+      setStatus(message);
+      setTriggerValue('audio_error', { name: 'Unsupported', message });
+      return;
+    }
+
+    button.disabled = true;
+    setStatus('マイクを準備しています…');
+    cancelled = false;
+    peakRms = 0;
+    chunks = [];
+
+    try {
+      inputStream = await navigator.mediaDevices.getUserMedia({
+        video: false,
+        audio: {
+          channelCount: { ideal: 1 },
+          sampleRate: { ideal: 48000 },
+          autoGainControl: { ideal: true },
+          noiseSuppression: { ideal: false },
+          echoCancellation: { ideal: false }
+        }
+      });
+
+      const AudioContextCtor = window.AudioContext || window.webkitAudioContext;
+      if (!AudioContextCtor) throw new Error('AudioContext is unavailable');
+      try {
+        audioContext = new AudioContextCtor({ sampleRate: 48000 });
+      } catch (_) {
+        audioContext = new AudioContextCtor();
+      }
+      await audioContext.resume();
+
+      source = audioContext.createMediaStreamSource(inputStream);
+      highpass = audioContext.createBiquadFilter();
+      highpass.type = 'highpass';
+      highpass.frequency.value = 80;
+      highpass.Q.value = 0.7;
+
+      analyser = audioContext.createAnalyser();
+      analyser.fftSize = 2048;
+      analyser.smoothingTimeConstant = 0.65;
+
+      gainNode = audioContext.createGain();
+      gainNode.gain.value = 2.5;
+
+      compressor = audioContext.createDynamicsCompressor();
+      compressor.threshold.value = -18;
+      compressor.knee.value = 24;
+      compressor.ratio.value = 4;
+      compressor.attack.value = 0.003;
+      compressor.release.value = 0.25;
+
+      destination = audioContext.createMediaStreamDestination();
+      source.connect(highpass);
+      highpass.connect(analyser);
+      highpass.connect(gainNode);
+      gainNode.connect(compressor);
+      compressor.connect(destination);
+
+      const mimeType = chooseMimeType();
+      const options = { audioBitsPerSecond: 96000 };
+      if (mimeType) options.mimeType = mimeType;
+      recorder = new MediaRecorder(destination.stream, options);
+      recorder.addEventListener('dataavailable', (event) => {
+        if (event.data && event.data.size > 0) chunks.push(event.data);
+      });
+      recorder.addEventListener('stop', finishRecording, { once: true });
+      recorder.addEventListener('error', (event) => {
+        const err = event?.error || event;
+        console.error(err);
+        setTriggerValue('audio_error', { name: 'RecorderError', message: String(err?.message || err || '') });
+      });
+
+      recorder.start(250);
+      recording = true;
+      startedAt = Date.now();
+      button.disabled = false;
+      button.classList.add('recording');
+      button.textContent = '■ 録音を止める';
+      setStatus(`${label}：録音中。少し離れた声は自動で持ち上げます。`);
+      meterTimer = setInterval(updateLevelAndGain, 100);
+      maxTimer = setTimeout(stopRecording, 60000);
+    } catch (err) {
+      console.error(err);
+      await stopTracksAndGraph();
+      recording = false;
+      button.classList.remove('recording');
+      button.disabled = false;
+      button.textContent = '🎙 録音する';
+      const message = errorMessage(err);
+      setStatus(message);
+      setTriggerValue('audio_error', {
+        name: (err && err.name) ? err.name : 'MicrophoneError',
+        message,
+        detail: (err && err.message) ? String(err.message) : ''
+      });
+    }
+  };
+
+  const onToggle = () => {
+    if (recording) stopRecording();
+    else startRecording();
+  };
+
+  button.addEventListener('click', onToggle);
+
+  return () => {
+    button.removeEventListener('click', onToggle);
+    cancelled = true;
+    if (recorder && recorder.state !== 'inactive') {
+      try { recorder.stop(); } catch (_) {}
+    }
+    stopTracksAndGraph();
+  };
+}
+"""
+
+try:
+    far_field_mic_component = st.components.v2.component(
+        "tokyo_burari_far_field_mic",
+        html=_FAR_FIELD_MIC_HTML,
+        css=_FAR_FIELD_MIC_CSS,
+        js=_FAR_FIELD_MIC_JS,
+    )
+except Exception:
+    far_field_mic_component = None
+
+
+# ============================================================
 # Clickable diary photo gallery
 # ============================================================
 _DIARY_GALLERY_HTML = """
@@ -1173,6 +1577,72 @@ def audio_digest(uploaded_file):
         return hashlib.sha1(data).hexdigest()
     except Exception:
         return ""
+
+
+def decode_audio_data_url(payload, fallback_name="speech.webm"):
+    """Turn the far-field browser recorder payload into an OpenAI upload file."""
+    if not isinstance(payload, dict):
+        return None
+    data_url = str(payload.get("data_url") or "")
+    if not data_url.startswith("data:audio/"):
+        raise ValueError("録音データの形式が不正です。")
+    try:
+        header, encoded = data_url.split(",", 1)
+    except ValueError as exc:
+        raise ValueError("録音データを読み込めません。") from exc
+    if ";base64" not in header:
+        raise ValueError("録音データの形式が不正です。")
+    raw = base64.b64decode(encoded, validate=True)
+    if not raw:
+        raise ValueError("録音データが空です。")
+
+    mime_type = str(payload.get("mime_type") or header[5:].split(";", 1)[0]).lower()
+    if "mp4" in mime_type:
+        extension = "m4a"
+    elif "ogg" in mime_type:
+        extension = "ogg"
+    elif "wav" in mime_type:
+        extension = "wav"
+    else:
+        extension = "webm"
+
+    audio_file = io.BytesIO(raw)
+    requested_name = str(payload.get("name") or "").strip()
+    audio_file.name = requested_name if requested_name else fallback_name.rsplit(".", 1)[0] + "." + extension
+    return audio_file
+
+
+def far_field_audio_input(label, key):
+    """Record speech with browser-side gain tuned for a child a short distance away."""
+    if far_field_mic_component is None:
+        return st.audio_input(label, sample_rate=16000, key=f"{key}_fallback")
+
+    result = far_field_mic_component(
+        data={"label": str(label or "録音")},
+        key=key,
+        on_audio_change=lambda: None,
+        on_audio_error_change=lambda: None,
+    )
+    error = getattr(result, "audio_error", None)
+    if error:
+        message = ""
+        if isinstance(error, dict):
+            message = str(error.get("message") or "").strip()
+        if message:
+            st.warning(message)
+        st.caption("距離対応マイクが使えない場合は、下の予備マイクを使えます。")
+        return st.audio_input("予備のマイク", sample_rate=16000, key=f"{key}_fallback")
+
+    payload = getattr(result, "audio", None)
+    if not payload:
+        return None
+    try:
+        return decode_audio_data_url(payload)
+    except Exception as exc:
+        st.error("録音データを読み込めませんでした。もう一度録音してください。")
+        with st.expander("保護者向け詳細"):
+            st.code(str(exc))
+        return None
 
 
 # ============================================================
@@ -3186,9 +3656,8 @@ def page_diary():
     if not item.get("started"):
         st.markdown("#### まず、この写真について話してね")
         st.caption("何が気になったか、見たこと、思ったことを自由に話してね。AIはそのあと必要なことだけ短く聞きます。")
-        first_audio = st.audio_input(
+        first_audio = far_field_audio_input(
             "まず自由に話してね",
-            sample_rate=48000,
             key=f"photo_first_answer_{trip_id}_{pid}_{state['answer_serial']}",
         )
         first_digest_key = f"photo_first_digest_{trip_id}_{pid}_{state['answer_serial']}"
@@ -3196,8 +3665,7 @@ def page_diary():
             digest = audio_digest(first_audio)
             if digest and st.session_state.get(first_digest_key) != digest:
                 try:
-                    audio_file = io.BytesIO(first_audio.getvalue())
-                    audio_file.name = "child_first_comment.wav"
+                    audio_file = first_audio
                     with st.spinner("声を聞いています…"):
                         transcript = transcribe_audio(
                             audio_file,
@@ -3255,9 +3723,8 @@ def page_diary():
         )
         state["audio_pending"] = False
 
-    answer_audio = st.audio_input(
-        "マイクを押して話してね",
-        sample_rate=48000,
+    answer_audio = far_field_audio_input(
+        "AIの質問に答えてね",
         key=f"photo_answer_{trip_id}_{pid}_{state['answer_serial']}",
     )
     digest_key = f"photo_answer_digest_{trip_id}_{pid}_{state['answer_serial']}"
@@ -3265,8 +3732,7 @@ def page_diary():
         digest = audio_digest(answer_audio)
         if digest and st.session_state.get(digest_key) != digest:
             try:
-                audio_file = io.BytesIO(answer_audio.getvalue())
-                audio_file.name = "child_answer.wav"
+                audio_file = answer_audio
                 with st.spinner("声を聞いています…"):
                     transcript = transcribe_audio(
                         audio_file,
