@@ -90,9 +90,17 @@ st.markdown(
         margin: .1rem .15rem .1rem 0;
         font-size: .85rem;
       }
+      .st-key-home_menu div.stButton > button,
+      .st-key-home_destination div.stButton > button {
+        width: 100% !important;
+        height: 7.6rem !important;
+        min-height: 7.6rem !important;
+        max-height: 7.6rem !important;
+        box-sizing: border-box !important;
+        border-radius: 22px !important;
+        overflow: hidden !important;
+      }
       .st-key-home_menu div.stButton > button {
-        min-height: 7.6rem;
-        border-radius: 22px;
         font-size: 1.24rem;
         font-weight: 800;
         line-height: 1.4;
@@ -102,13 +110,19 @@ st.markdown(
         gap: .75rem;
       }
       .st-key-home_destination div.stButton > button {
-        min-height: 7.6rem !important;
-        border-radius: 22px !important;
         font-size: 1.10rem !important;
         font-weight: 760 !important;
         line-height: 1.35 !important;
         white-space: pre-line !important;
         margin-top: .75rem !important;
+        padding-left: .55rem !important;
+        padding-right: .55rem !important;
+      }
+      .st-key-home_destination div.stButton > button p {
+        display: -webkit-box !important;
+        -webkit-line-clamp: 3;
+        -webkit-box-orient: vertical;
+        overflow: hidden !important;
       }
       .st-key-mobile_capture [data-testid="stFileUploaderDropzone"] {
         padding: 1rem;
@@ -131,12 +145,16 @@ st.markdown(
           padding-left: .75rem;
           padding-right: .75rem;
         }
+        .st-key-home_menu div.stButton > button,
+        .st-key-home_destination div.stButton > button {
+          height: 7.0rem !important;
+          min-height: 7.0rem !important;
+          max-height: 7.0rem !important;
+        }
         .st-key-home_menu div.stButton > button {
-          min-height: 7.0rem;
           font-size: 1.12rem;
         }
         .st-key-home_destination div.stButton > button {
-          min-height: 7.0rem !important;
           font-size: 1.02rem !important;
         }
       }
