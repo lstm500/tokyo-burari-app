@@ -167,7 +167,6 @@ MONTHLY_TABLE = "burari_monthly_reviews"
 # app can bypass a camera permission that the user/browser has denied.
 _LIVE_CAMERA_HTML = """
 <div class="live-camera-wrap">
-  <video id="live-camera-video" class="live-camera-video" playsinline autoplay muted hidden></video>
   <canvas id="live-camera-canvas" hidden></canvas>
 
   <div id="camera-menu" class="camera-menu">
@@ -178,8 +177,10 @@ _LIVE_CAMERA_HTML = """
 
   <div id="camera-active-actions" class="camera-active-actions" hidden>
     <button id="live-camera-shoot" class="camera-shoot-button" type="button">● 撮影する</button>
-    <button id="live-camera-stop" class="camera-sub-button" type="button">カメラを閉じる</button>
+    <button id="live-camera-stop" class="camera-sub-button" type="button">閉じる</button>
   </div>
+
+  <video id="live-camera-video" class="live-camera-video" playsinline autoplay muted hidden></video>
   <div id="live-camera-status" class="camera-status" aria-live="polite" hidden></div>
 </div>
 """
@@ -191,6 +192,12 @@ _LIVE_CAMERA_CSS = """
   font-family: var(--st-font);
   padding: 0;
   margin: 0;
+}
+.camera-menu[hidden],
+.camera-active-actions[hidden],
+.live-camera-video[hidden],
+.camera-status[hidden] {
+  display: none !important;
 }
 .camera-menu {
   display: grid;
@@ -236,19 +243,19 @@ _LIVE_CAMERA_CSS = """
 }
 .live-camera-video {
   width: 100%;
-  max-height: 68vh;
+  max-height: 58dvh;
   aspect-ratio: 3 / 4;
   object-fit: cover;
   box-sizing: border-box;
   border-radius: 16px;
   background: #000;
-  margin: 0 0 10px 0;
+  margin: 0;
 }
 .camera-active-actions {
   display: grid;
-  grid-template-columns: 2fr 1fr;
-  gap: 10px;
-  margin: 0;
+  grid-template-columns: 3fr 1fr;
+  gap: 8px;
+  margin: 0 0 8px 0;
 }
 .camera-shoot-button {
   border: 2px solid var(--st-primary-color);
@@ -275,7 +282,7 @@ _LIVE_CAMERA_CSS = """
     font-size: 17px;
   }
   .camera-active-actions {
-    grid-template-columns: 1fr;
+    grid-template-columns: 3fr 1fr;
   }
   .camera-shoot-button,
   .camera-sub-button {
