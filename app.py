@@ -220,6 +220,15 @@ _LIVE_CAMERA_HTML = """
   </div>
 
   <video id="live-camera-video" class="live-camera-video" playsinline autoplay muted hidden></video>
+
+  <div id="camera-review" class="camera-review" hidden>
+    <div class="camera-review-actions">
+      <button id="camera-review-save" class="camera-save-button" type="button">この写真を残す</button>
+      <button id="camera-review-retry" class="camera-retry-button" type="button">撮りなおす／選びなおす</button>
+    </div>
+    <img id="camera-review-image" class="camera-review-image" alt="撮影した写真の確認" />
+  </div>
+
   <div id="live-camera-status" class="camera-status" aria-live="polite" hidden></div>
 </div>
 """
@@ -235,6 +244,7 @@ _LIVE_CAMERA_CSS = """
 .camera-menu[hidden],
 .camera-active-actions[hidden],
 .live-camera-video[hidden],
+.camera-review[hidden],
 .camera-status[hidden] {
   display: none !important;
 }
@@ -254,7 +264,9 @@ _LIVE_CAMERA_CSS = """
 .camera-menu-button,
 .gallery-button,
 .camera-shoot-button,
-.camera-sub-button {
+.camera-sub-button,
+.camera-save-button,
+.camera-retry-button {
   width: 100%;
   min-height: 72px;
   box-sizing: border-box;
@@ -280,7 +292,8 @@ _LIVE_CAMERA_CSS = """
   border-color: rgba(128,128,128,.28);
   background: transparent;
 }
-.live-camera-video {
+.live-camera-video,
+.camera-review-image {
   width: 100%;
   max-height: 58dvh;
   aspect-ratio: 3 / 4;
@@ -290,21 +303,28 @@ _LIVE_CAMERA_CSS = """
   background: #000;
   margin: 0;
 }
-.camera-active-actions {
+.camera-active-actions,
+.camera-review-actions {
   display: grid;
   grid-template-columns: 3fr 1fr;
   gap: 8px;
   margin: 0 0 8px 0;
 }
-.camera-shoot-button {
+.camera-shoot-button,
+.camera-save-button {
   border: 2px solid var(--st-primary-color);
   background: var(--st-primary-color);
   color: white;
 }
-.camera-sub-button {
+.camera-sub-button,
+.camera-retry-button {
   border: 1px solid rgba(128,128,128,.28);
   background: transparent;
   color: var(--st-text-color);
+}
+.camera-review {
+  width: 100%;
+  margin: 0;
 }
 .camera-status {
   margin: 8px 0 0 0;
@@ -320,19 +340,25 @@ _LIVE_CAMERA_CSS = """
     min-height: 68px;
     font-size: 17px;
   }
-  .camera-active-actions {
+  .camera-active-actions,
+  .camera-review-actions {
     grid-template-columns: 3fr 1fr;
   }
   .camera-shoot-button,
-  .camera-sub-button {
+  .camera-sub-button,
+  .camera-save-button,
+  .camera-retry-button {
     min-height: 58px;
+    font-size: 15px;
+    padding-left: 8px;
+    padding-right: 8px;
   }
 }
 """
 
 _LIVE_CAMERA_JS = r"""
 export default function(component) {
-  const { parentElement, setTriggerValue, data } = component;
+  const { parentElement, setTriggerValue } = component;
   const video = parentElement.querySelector('#live-camera-video');
   const canvas = parentElement.querySelector('#live-camera-canvas');
   const menu = parentElement.querySelector('#camera-menu');
@@ -341,9 +367,14 @@ export default function(component) {
   const activeActions = parentElement.querySelector('#camera-active-actions');
   const shootButton = parentElement.querySelector('#live-camera-shoot');
   const stopButton = parentElement.querySelector('#live-camera-stop');
+  const review = parentElement.querySelector('#camera-review');
+  const reviewImage = parentElement.querySelector('#camera-review-image');
+  const reviewSave = parentElement.querySelector('#camera-review-save');
+  const reviewRetry = parentElement.querySelector('#camera-review-retry');
   const status = parentElement.querySelector('#live-camera-status');
 
   let stream = null;
+  let pendingPhoto = null;
 
   const setStatus = (message) => {
     if (!status) return;
@@ -351,14 +382,33 @@ export default function(component) {
     status.hidden = !message;
   };
 
+  const hideReview = () => {
+    if (review) review.hidden = true;
+    if (reviewImage) reviewImage.removeAttribute('src');
+  };
+
   const showMenu = () => {
     if (menu) menu.hidden = false;
     if (activeActions) activeActions.hidden = true;
+    if (video) video.hidden = true;
+    hideReview();
   };
 
   const showCameraActions = () => {
     if (menu) menu.hidden = true;
     if (activeActions) activeActions.hidden = false;
+    if (video) video.hidden = false;
+    hideReview();
+  };
+
+  const showReview = (dataUrl) => {
+    if (menu) menu.hidden = true;
+    if (activeActions) activeActions.hidden = true;
+    // Hide only the preview element. The MediaStream itself keeps running so a
+    // camera retry is immediate and does not require reopening the camera.
+    if (video) video.hidden = true;
+    if (reviewImage) reviewImage.src = dataUrl;
+    if (review) review.hidden = false;
   };
 
   const stopStream = () => {
@@ -371,6 +421,7 @@ export default function(component) {
       video.srcObject = null;
       video.hidden = true;
     }
+    pendingPhoto = null;
     showMenu();
   };
 
@@ -405,8 +456,8 @@ export default function(component) {
         }
       });
       video.srcObject = stream;
-      video.hidden = false;
       await video.play();
+      shootButton.disabled = false;
       showCameraActions();
       setStatus('');
     } catch (err) {
@@ -465,17 +516,9 @@ export default function(component) {
           code = 'TIMEOUT';
           message = '位置情報の取得が時間切れになりました。';
         }
-        resolve({
-          ok: false,
-          error_code: code,
-          error_message: message
-        });
+        resolve({ ok: false, error_code: code, error_message: message });
       },
-      {
-        enableHighAccuracy: true,
-        timeout: 5000,
-        maximumAge: 15000
-      }
+      { enableHighAccuracy: true, timeout: 5000, maximumAge: 15000 }
     );
   });
 
@@ -511,10 +554,7 @@ export default function(component) {
     shootButton.disabled = true;
     const capturedAt = new Date().toISOString();
     try {
-      // Start GPS lookup at the same moment as the shutter so the saved
-      // coordinates are as close as possible to the actual capture location.
       const locationPromise = getLocationAtCapture();
-
       const srcW = video.videoWidth;
       const srcH = video.videoHeight;
       const maxSide = 1600;
@@ -531,15 +571,14 @@ export default function(component) {
 
       setStatus('位置情報を確認しています…');
       const location = await locationPromise;
-
-      setTriggerValue('photo', {
+      pendingPhoto = {
         data_url: dataUrl,
         name: 'camera.jpg',
         source: 'camera',
         captured_at: capturedAt,
         location
-      });
-      stopStream();
+      };
+      showReview(dataUrl);
       setStatus('');
     } catch (err) {
       console.error(err);
@@ -555,7 +594,7 @@ export default function(component) {
     if (!file) return;
     try {
       const dataUrl = await prepareImageFile(file);
-      setTriggerValue('photo', {
+      pendingPhoto = {
         data_url: dataUrl,
         name: file.name || 'gallery.jpg',
         source: 'gallery',
@@ -565,7 +604,9 @@ export default function(component) {
           error_code: 'GALLERY',
           error_message: '写真フォルダから選んだ画像の撮影位置は自動取得しません。'
         }
-      });
+      };
+      showReview(dataUrl);
+      setStatus('');
     } catch (err) {
       console.error(err);
       const message = '写真を読み込めませんでした。別の写真を選んでください。';
@@ -574,6 +615,42 @@ export default function(component) {
     } finally {
       galleryInput.value = '';
     }
+  };
+
+  const savePendingPhoto = () => {
+    if (!pendingPhoto) return;
+    reviewSave.disabled = true;
+    reviewRetry.disabled = true;
+    const photoToSave = pendingPhoto;
+    setStatus('写真を保存しています…');
+    // Saving ends this capture. A retry, in contrast, never stops a live camera.
+    if (stream) {
+      stream.getTracks().forEach((track) => track.stop());
+      stream = null;
+    }
+    setTriggerValue('photo', photoToSave);
+  };
+
+  const retryPendingPhoto = async () => {
+    if (!pendingPhoto) return;
+    const source = pendingPhoto.source;
+    pendingPhoto = null;
+    reviewSave.disabled = false;
+    reviewRetry.disabled = false;
+    setStatus('');
+
+    if (source === 'camera' && stream && stream.getTracks().some((track) => track.readyState === 'live')) {
+      // The stream was deliberately kept alive while the captured still image was
+      // being reviewed. Return to it immediately without another getUserMedia call.
+      if (video.srcObject !== stream) video.srcObject = stream;
+      await video.play();
+      shootButton.disabled = false;
+      showCameraActions();
+      return;
+    }
+
+    // Gallery retry (or an unexpectedly ended stream) returns to the source menu.
+    showMenu();
   };
 
   const closeCamera = () => {
@@ -585,18 +662,16 @@ export default function(component) {
   shootButton.addEventListener('click', takePhoto);
   stopButton.addEventListener('click', closeCamera);
   galleryInput.addEventListener('change', chooseGalleryPhoto);
-
-  // When the user chose "撮りなおす／選びなおす", reopen the camera
-  // automatically so another tap on "カメラを開く" is unnecessary.
-  if (data && data.auto_start) {
-    queueMicrotask(() => startCamera());
-  }
+  reviewSave.addEventListener('click', savePendingPhoto);
+  reviewRetry.addEventListener('click', retryPendingPhoto);
 
   return () => {
     startButton.removeEventListener('click', startCamera);
     shootButton.removeEventListener('click', takePhoto);
     stopButton.removeEventListener('click', closeCamera);
     galleryInput.removeEventListener('change', chooseGalleryPhoto);
+    reviewSave.removeEventListener('click', savePendingPhoto);
+    reviewRetry.removeEventListener('click', retryPendingPhoto);
     stopStream();
   };
 }
@@ -1418,6 +1493,43 @@ def delete_diary_and_related_data(trip_id):
     return {"photo_count": len(photos), "month_key": month_key}
 
 
+@st.dialog("この日記を削除しますか？")
+def confirm_diary_delete_dialog(trip_id, photo_count):
+    trip = get_trip(trip_id) or {}
+    photos = list_trip_photos(trip_id)
+    title = diary_title_for_trip(trip, photos=photos)
+    st.write(f"**{title}** を削除します。")
+    st.warning(
+        f"日記、写真 {photo_count}枚、写真について話したコメントをすべて削除します。"
+        "この操作は元に戻せません。"
+    )
+    delete_col, cancel_col = st.columns(2)
+    with delete_col:
+        if st.button(
+            "削除する",
+            type="primary",
+            use_container_width=True,
+            key=f"dialog_delete_yes_{trip_id}",
+        ):
+            try:
+                result = delete_diary_and_related_data(trip_id)
+                st.session_state["_diary_notice"] = (
+                    f"日記と写真 {result['photo_count']}枚、関連するコメントを削除しました。"
+                )
+                st.rerun(scope="app")
+            except Exception as exc:
+                st.error("日記を削除できませんでした。")
+                with st.expander("保護者向け詳細"):
+                    st.code(str(exc))
+    with cancel_col:
+        if st.button(
+            "キャンセル",
+            use_container_width=True,
+            key=f"dialog_delete_no_{trip_id}",
+        ):
+            st.rerun(scope="app")
+
+
 def list_recent_diaries(limit=60):
     result = (
         supabase_client()
@@ -1811,10 +1923,8 @@ def init_state():
         "main_page": "home",
         "active_trip_id": None,
         "capture_serial": 0,
-        "camera_auto_start": False,
         "preferred_diary_trip_id": None,
         "show_home_destination_editor": False,
-        "confirm_delete_diary_id": None,
     }
     for key, value in defaults.items():
         if key not in st.session_state:
@@ -2071,99 +2181,67 @@ def page_home():
 # Page: Trip / camera
 # ============================================================
 def page_trip():
-    # Keep the capture screen intentionally minimal: a small back control and,
-    # before a photo is chosen, only the two photo-source buttons.
     if st.button("←", key="camera_back_home", help="ホームへ戻る"):
         go_page("home")
 
     trip = ensure_today_trip()
-    pending_key = f"pending_camera_photo_{trip['id']}"
-    digest_key = f"pending_camera_digest_{trip['id']}"
-    location_key = f"pending_camera_location_{trip['id']}"
-    captured_at_key = f"pending_camera_captured_at_{trip['id']}"
-    source_key = f"pending_camera_source_{trip['id']}"
+    digest_key = f"saved_camera_digest_{trip['id']}"
 
-    pending = st.session_state.get(pending_key)
+    notice = st.session_state.pop("_camera_notice", None)
+    if notice:
+        st.success(notice)
 
-    if pending is None:
-        if live_camera_component is not None:
-            auto_start_camera = bool(st.session_state.pop("camera_auto_start", False))
-            result = live_camera_component(
-                data={"auto_start": auto_start_camera},
-                key=f"live_camera_{trip['id']}_{st.session_state.capture_serial}",
-                on_photo_change=lambda: None,
-                on_camera_error_change=lambda: None,
-            )
-            payload = getattr(result, "photo", None)
-            camera_error = getattr(result, "camera_error", None)
-            if camera_error:
-                message = camera_error.get("message") if isinstance(camera_error, dict) else str(camera_error)
-                if message:
-                    st.warning(message)
-
-            if isinstance(payload, dict) and payload.get("data_url"):
-                try:
-                    raw = decode_camera_data_url(payload["data_url"])
-                    digest = hashlib.sha1(raw).hexdigest()
-                    if st.session_state.get(digest_key) != digest:
-                        capture_source = str(payload.get("source") or "camera")
-                        # Refresh the trip so a just-entered manual destination is
-                        # available as the fallback when GPS is off or denied.
-                        fresh_trip = get_trip(trip["id"]) or trip
-                        location = build_photo_location(
-                            payload.get("location"),
-                            fresh_trip,
-                            capture_source=capture_source,
-                        )
-
-                        st.session_state[pending_key] = raw
-                        st.session_state[digest_key] = digest
-                        st.session_state[location_key] = location
-                        st.session_state[captured_at_key] = payload.get("captured_at")
-                        st.session_state[source_key] = capture_source
-                        pending = raw
-                        st.rerun()
-                except Exception as exc:
-                    st.error("写真を読み込めませんでした。")
-                    with st.expander("保護者向け詳細"):
-                        st.code(str(exc))
-        else:
-            st.error("ライブカメラ機能に必要なStreamlitのバージョンが古いです。requirements.txtを更新してください。")
+    if live_camera_component is None:
+        st.error("ライブカメラ機能に必要なStreamlitのバージョンが古いです。requirements.txtを更新してください。")
         return
 
-    pending_location = st.session_state.get(location_key) or {}
-    st.image(pending, caption="この写真を残す？", use_container_width=True)
-    location_text = photo_location_preview(pending_location)
-    if location_text:
-        st.caption(location_text)
+    result = live_camera_component(
+        key=f"live_camera_{trip['id']}_{st.session_state.capture_serial}",
+        on_photo_change=lambda: None,
+        on_camera_error_change=lambda: None,
+    )
+    payload = getattr(result, "photo", None)
+    camera_error = getattr(result, "camera_error", None)
 
-    c1, c2 = st.columns(2)
-    with c1:
-        if st.button("この写真を残す", type="primary", use_container_width=True, key="save_camera_photo"):
-            try:
-                with st.spinner("写真を残しています…"):
-                    upload_photo(
-                        trip["id"],
-                        pending,
-                        location=pending_location,
-                        captured_at=st.session_state.get(captured_at_key),
-                        capture_source=st.session_state.get(source_key) or "camera",
-                    )
-                for key in (pending_key, digest_key, location_key, captured_at_key, source_key):
-                    st.session_state.pop(key, None)
-                st.session_state.capture_serial += 1
-                st.rerun()
-            except Exception as exc:
-                st.error("写真を保存できませんでした。")
-                with st.expander("保護者向け詳細"):
-                    st.code(str(exc))
-    with c2:
-        if st.button("撮りなおす／選びなおす", use_container_width=True, key="retry_camera_photo"):
-            for key in (pending_key, digest_key, location_key, captured_at_key, source_key):
-                st.session_state.pop(key, None)
-            st.session_state.capture_serial += 1
-            st.session_state.camera_auto_start = True
-            st.rerun()
+    if camera_error:
+        message = camera_error.get("message") if isinstance(camera_error, dict) else str(camera_error)
+        if message:
+            st.warning(message)
+
+    if not (isinstance(payload, dict) and payload.get("data_url")):
+        return
+
+    try:
+        raw = decode_camera_data_url(payload["data_url"])
+        digest = hashlib.sha1(raw).hexdigest()
+        if st.session_state.get(digest_key) == digest:
+            return
+
+        capture_source = str(payload.get("source") or "camera")
+        fresh_trip = get_trip(trip["id"]) or trip
+        location = build_photo_location(
+            payload.get("location"),
+            fresh_trip,
+            capture_source=capture_source,
+        )
+
+        with st.spinner("写真を残しています…"):
+            upload_photo(
+                trip["id"],
+                raw,
+                location=location,
+                captured_at=payload.get("captured_at"),
+                capture_source=capture_source,
+            )
+
+        st.session_state[digest_key] = digest
+        st.session_state.capture_serial += 1
+        st.session_state["_camera_notice"] = "写真を保存しました。"
+        st.rerun()
+    except Exception as exc:
+        st.error("写真を保存できませんでした。")
+        with st.expander("保護者向け詳細"):
+            st.code(str(exc))
 
 
 # ============================================================
@@ -2174,6 +2252,10 @@ def page_diary():
         "📖 日記",
         "写真を見ながらAIと少し話します。AIは本人が話していない内容を日記に足しません。",
     )
+
+    notice = st.session_state.pop("_diary_notice", None)
+    if notice:
+        st.success(notice)
 
     active = get_trip(st.session_state.active_trip_id) if st.session_state.active_trip_id else None
     if active and active.get("status") == "active" and active.get("trip_date") == today_iso():
@@ -2241,44 +2323,15 @@ def page_diary():
             }
             st.rerun()
 
-        existing_diary_id = existing.get("id") or trip_id
-        if st.session_state.get("confirm_delete_diary_id") == existing_diary_id:
-            st.warning(
-                f"この日記と写真 {len(photos)}枚、写真について話したコメントをすべて削除します。"
-                "この操作は元に戻せません。"
-            )
-            del_col, cancel_col = st.columns(2)
-            with del_col:
-                if st.button(
-                    "完全に削除する",
-                    type="primary",
-                    use_container_width=True,
-                    key=f"diary_page_delete_yes_{existing_diary_id}",
-                ):
-                    try:
-                        delete_diary_and_related_data(trip_id)
-                        st.session_state.confirm_delete_diary_id = None
-                        st.rerun()
-                    except Exception as exc:
-                        st.error("日記を削除できませんでした。")
-                        with st.expander("保護者向け詳細"):
-                            st.code(str(exc))
-            with cancel_col:
-                if st.button(
-                    "キャンセル",
-                    use_container_width=True,
-                    key=f"diary_page_delete_no_{existing_diary_id}",
-                ):
-                    st.session_state.confirm_delete_diary_id = None
-                    st.rerun()
-        else:
-            if st.button(
-                "🗑 この日記を削除",
-                use_container_width=True,
-                key=f"diary_page_delete_{existing_diary_id}",
-            ):
-                st.session_state.confirm_delete_diary_id = existing_diary_id
-                st.rerun()
+        # Keep deletion in one predictable place: after a day is selected, at the
+        # very bottom of that diary page. Confirmation is shown in a modal dialog.
+        st.divider()
+        if st.button(
+            "🗑 この日記を削除",
+            use_container_width=True,
+            key=f"diary_page_delete_{trip_id}",
+        ):
+            confirm_diary_delete_dialog(trip_id, len(photos))
         return
 
     if not photos:
@@ -2516,10 +2569,6 @@ def page_history(embedded=False):
     if not embedded:
         page_top("📚 これまでの日記")
 
-    notice = st.session_state.pop("_history_notice", None)
-    if notice:
-        st.success(notice)
-
     rows = list_recent_diaries()
     if not rows:
         st.info("まだ日記はありません。")
@@ -2529,7 +2578,6 @@ def page_history(embedded=False):
         diary = row["diary"]
         trip = row["trip"]
         trip_id = diary["trip_id"]
-        diary_id = diary.get("id") or trip_id
         photos = list_trip_photos(trip_id)
         daily_title = diary_title_for_trip(trip, photos=photos)
         title = f"{trip.get('trip_date', '')}　{daily_title}"
@@ -2549,48 +2597,6 @@ def page_history(embedded=False):
                 with st.expander("この日記のもとになった言葉"):
                     for point in child_points[:3]:
                         st.write("・" + str(point))
-
-            confirm_key = f"delete_confirm_{diary_id}"
-            if st.session_state.get("confirm_delete_diary_id") == diary_id:
-                st.warning(
-                    f"この日記と写真 {len(photos)}枚、写真について話したコメントをすべて削除します。"
-                    "この操作は元に戻せません。"
-                )
-                delete_col, cancel_col = st.columns(2)
-                with delete_col:
-                    if st.button(
-                        "完全に削除する",
-                        type="primary",
-                        use_container_width=True,
-                        key=f"{confirm_key}_yes",
-                    ):
-                        try:
-                            result = delete_diary_and_related_data(trip_id)
-                            st.session_state.confirm_delete_diary_id = None
-                            st.session_state["_history_notice"] = (
-                                f"日記と写真 {result['photo_count']}枚、関連するコメントを削除しました。"
-                            )
-                            st.rerun()
-                        except Exception as exc:
-                            st.error("日記を削除できませんでした。")
-                            with st.expander("保護者向け詳細"):
-                                st.code(str(exc))
-                with cancel_col:
-                    if st.button(
-                        "キャンセル",
-                        use_container_width=True,
-                        key=f"{confirm_key}_no",
-                    ):
-                        st.session_state.confirm_delete_diary_id = None
-                        st.rerun()
-            else:
-                if st.button(
-                    "🗑 この日記を削除",
-                    use_container_width=True,
-                    key=f"delete_diary_{diary_id}",
-                ):
-                    st.session_state.confirm_delete_diary_id = diary_id
-                    st.rerun()
 
 
 # ============================================================
