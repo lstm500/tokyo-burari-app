@@ -423,12 +423,12 @@ _LIVE_CAMERA_HTML = """
     <label class="camera-menu-button gallery-button" for="gallery-photo-input">🖼 すでに撮った写真から選ぶ</label>
   </div>
 
+  <video id="live-camera-video" class="live-camera-video" playsinline autoplay muted hidden></video>
+
   <div id="camera-active-actions" class="camera-active-actions" hidden>
     <button id="live-camera-shoot" class="camera-shoot-button" type="button">● 撮影する</button>
     <button id="live-camera-stop" class="camera-sub-button" type="button">閉じる</button>
   </div>
-
-  <video id="live-camera-video" class="live-camera-video" playsinline autoplay muted hidden></video>
 
   <div id="camera-review" class="camera-review" hidden>
     <div class="camera-review-actions">
@@ -517,6 +517,11 @@ _LIVE_CAMERA_CSS = """
   display: grid;
   grid-template-columns: 3fr 1fr;
   gap: 8px;
+}
+.camera-active-actions {
+  margin: 8px 0 0 0;
+}
+.camera-review-actions {
   margin: 0 0 8px 0;
 }
 .camera-shoot-button {
@@ -1364,6 +1369,10 @@ _DIARY_GALLERY_CSS = """
   background: rgba(174, 182, 194, .20);
   box-shadow: 0 0 0 1px rgba(174, 182, 194, .08) inset;
 }
+.diary-photo-card.pending {
+  border: 1px solid rgba(128,128,128,.16);
+  background: transparent;
+}
 .diary-photo-card:active { transform: scale(.985); }
 .diary-photo-card img {
   display: block;
@@ -1425,6 +1434,7 @@ export default function(component) {
 
   grid.replaceChildren();
   const photos = Array.isArray(data?.photos) ? data.photos : [];
+  const deleteOnly = Boolean(data?.delete_only);
 
   for (const photo of photos) {
     const wrap = document.createElement('div');
@@ -1432,11 +1442,12 @@ export default function(component) {
 
     const button = document.createElement('button');
     button.type = 'button';
-    button.className = `diary-photo-card ${photo.talked ? 'talked' : 'untalked'}`;
+    button.className = `diary-photo-card ${deleteOnly ? 'pending' : (photo.talked ? 'talked' : 'untalked')}`;
     button.setAttribute(
       'aria-label',
-      photo.talked ? '話した写真を開く' : 'まだ話していない写真を開く'
+      deleteOnly ? 'まだ日記になっていない写真' : (photo.talked ? '話した写真を開く' : 'まだ話していない写真を開く')
     );
+    if (deleteOnly) button.style.cursor = 'default';
 
     const img = document.createElement('img');
     img.src = photo.src || '';
@@ -1453,9 +1464,11 @@ export default function(component) {
       button.appendChild(location);
     }
 
-    button.addEventListener('click', () => {
-      setTriggerValue('photo_id', String(photo.id));
-    });
+    if (!deleteOnly) {
+      button.addEventListener('click', () => {
+        setTriggerValue('photo_id', String(photo.id));
+      });
+    }
 
     const remove = document.createElement('button');
     remove.type = 'button';
@@ -3443,10 +3456,20 @@ def confirm_diary_delete_dialog(trip_id, photo_count):
 
 
 
-def delete_photo_and_related_data(trip_id, photo_id, known_photos=None):
-    """Delete one photo; if it was the last image, remove the empty diary/trip too."""
+def delete_photo_and_related_data(
+    trip_id,
+    photo_id,
+    known_photos=None,
+    known_trip=None,
+    skip_existing_diary_lookup=False,
+):
+    """Delete one photo; if it was the last image, remove the empty diary/trip too.
+
+    Pending-diary grids already know the trip/photo metadata and know that no saved
+    diary exists. Reusing that information avoids several Supabase round-trips.
+    """
     client = supabase_client()
-    trip = get_trip(trip_id) or {}
+    trip = dict(known_trip) if isinstance(known_trip, dict) else (get_trip(trip_id) or {})
     photos = list(known_photos) if isinstance(known_photos, (list, tuple)) else list_trip_photos(trip_id)
     photo = next((p for p in photos if p.get("id") == photo_id), None)
     if not photo:
@@ -3475,15 +3498,16 @@ def delete_photo_and_related_data(trip_id, photo_id, known_photos=None):
             .order("captured_at")
             .execute()
         ).data or []
-    existing = get_diary_for_trip(trip_id)
+    existing = None if skip_existing_diary_lookup else get_diary_for_trip(trip_id)
     diary_deleted = not remaining_photos
 
     if diary_deleted:
-        # An image-less diary has no source material in this app. Remove both the
-        # saved diary and its empty trip container so it cannot reappear in lists.
-        client.table(DIARY_TABLE).delete().eq("trip_id", trip_id).eq(
-            "family_key", current_family_key()
-        ).eq("member_key", current_member_key()).execute()
+        # An image-less record has no source material in this app. Pending trips have
+        # no diary row, so skip that unnecessary delete request in the fast path.
+        if not skip_existing_diary_lookup:
+            client.table(DIARY_TABLE).delete().eq("trip_id", trip_id).eq(
+                "family_key", current_family_key()
+            ).eq("member_key", current_member_key()).execute()
         client.table(TRIP_TABLE).delete().eq("id", trip_id).eq(
             "family_key", current_family_key()
         ).eq("member_key", current_member_key()).execute()
@@ -3534,7 +3558,7 @@ def delete_photo_and_related_data(trip_id, photo_id, known_photos=None):
     # A monthly summary may contain content from the removed image/comment.
     trip_date = str(trip.get("trip_date") or "")
     month_key = trip_date[:7] if len(trip_date) >= 7 else ""
-    if month_key:
+    if month_key and not skip_existing_diary_lookup:
         first_day, _ = month_bounds(month_key)
         client.table(MONTHLY_TABLE).delete().eq("review_month", first_day).eq(
             "family_key", current_family_key()
@@ -3760,7 +3784,7 @@ def confirm_photo_conversation_reset_dialog(trip_id, photo_id):
 
 
 @st.dialog("この画像を削除しますか？")
-def confirm_photo_delete_dialog(trip_id, photo_id, photos=None):
+def confirm_photo_delete_dialog(trip_id, photo_id, photos=None, is_pending=False, trip=None):
     photos = list(photos) if isinstance(photos, (list, tuple)) else list_trip_photos(trip_id)
     photo_ids = [p.get("id") for p in photos]
     if photo_id not in photo_ids:
@@ -3772,15 +3796,24 @@ def confirm_photo_delete_dialog(trip_id, photo_id, photos=None):
     photo_number = photo_ids.index(photo_id) + 1
     st.write(f"**写真 {photo_number} / {len(photo_ids)}** を削除します。")
     if len(photo_ids) == 1:
-        st.warning(
-            "この画像はこの日記の最後の1枚です。画像とコメントを削除すると、"
-            "画像が0枚になるため、この日記も自動的に削除します。"
-        )
+        if is_pending:
+            st.warning(
+                "この画像は、まだ日記になっていないこのぶらり旅の最後の1枚です。"
+                "削除すると写真が0枚になるため、この未日記の記録も自動的に削除します。"
+            )
+        else:
+            st.warning(
+                "この画像はこの日記の最後の1枚です。画像とコメントを削除すると、"
+                "画像が0枚になるため、この日記も自動的に削除します。"
+            )
     else:
-        st.warning(
-            "この画像と、この画像について話したコメントを削除します。"
-            "保存済みの日記本文そのものは残ります。"
-        )
+        if is_pending:
+            st.warning("この画像と、この画像について話したコメントを削除します。")
+        else:
+            st.warning(
+                "この画像と、この画像について話したコメントを削除します。"
+                "保存済みの日記本文そのものは残ります。"
+            )
     delete_col, cancel_col = st.columns(2)
     with delete_col:
         if st.button(
@@ -3794,9 +3827,14 @@ def confirm_photo_delete_dialog(trip_id, photo_id, photos=None):
                     trip_id,
                     photo_id,
                     known_photos=photos,
+                    known_trip=trip,
+                    skip_existing_diary_lookup=bool(is_pending),
                 )
                 if result.get("diary_deleted"):
-                    st.session_state["_diary_notice"] = "最後の画像を削除したため、この日記も自動的に削除しました。"
+                    if is_pending:
+                        st.session_state["_diary_notice"] = "最後の画像を削除したため、この未日記のぶらり旅も削除しました。"
+                    else:
+                        st.session_state["_diary_notice"] = "最後の画像を削除したため、この日記も自動的に削除しました。"
                 else:
                     st.session_state["_diary_notice"] = "画像と、その画像について話したコメントを削除しました。"
                 st.rerun(scope="app")
@@ -5075,7 +5113,19 @@ def restore_recent_camera_session():
 
 def go_page(page_name, history_mode="push"):
     target = page_name if page_name in VALID_APP_PAGES else "home"
-    if st.session_state.get("main_page") != target:
+    current = st.session_state.get("main_page")
+    if current != target:
+        # Opening Diary from another page should start with no saved diary selected.
+        # This avoids downloading any saved-diary photos until the user explicitly
+        # chooses a trip, and it also makes the screen less visually busy.
+        if target == "diary":
+            st.session_state.preferred_diary_trip_id = None
+            st.session_state["_diary_selector_serial"] = int(
+                st.session_state.get("_diary_selector_serial") or 0
+            ) + 1
+            for key in list(st.session_state.keys()):
+                if str(key).startswith("diary_trip_selector_"):
+                    st.session_state.pop(key, None)
         st.session_state["main_page"] = target
         st.session_state["_history_action"] = (
             history_mode if history_mode in {"push", "replace"} else "push"
@@ -5629,39 +5679,78 @@ def trip_label(trip):
 
 
 
-def render_pending_thumbnail_grid(photos, max_count=None):
-    """Compact, fixed three-across thumbnails for the pending-diary section."""
+def render_pending_thumbnail_grid(trip_id, photos, max_count=None, trip=None):
+    """Three-across pending thumbnails with a small delete × at top right."""
     subset = list(photos or [])
     if max_count is not None:
         subset = subset[: max(0, int(max_count))]
     if not subset:
         return
+
     paths = tuple(str(photo.get("storage_path") or "") for photo in subset if photo.get("storage_path"))
     signed = signed_photo_url_map(paths) if paths else {}
     cards = []
+    photo_ids = []
     for photo in subset:
-        src = photo_display_url(photo, signed, max_px=360, quality=74)
-        if not src:
+        pid = str(photo.get("id") or "")
+        if not pid:
             continue
-        place = str(photo_location_label(photo) or "").strip()
-        place_html = f'<div style="font-size:9px;opacity:.62;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:3px;">📍 {html.escape(place)}</div>' if place else ""
+        src = photo_display_url(photo, signed, max_px=360, quality=74)
         cards.append(
-            f"""<div style="min-width:0;">
-                  <div style="width:100%;aspect-ratio:1/1;border-radius:10px;overflow:hidden;background:rgba(127,127,127,.08);">
-                    <img src="{html.escape(src, quote=True)}" alt="未日記写真" loading="lazy" decoding="async" fetchpriority="low" style="display:block;width:100%;height:100%;object-fit:cover;" />
-                  </div>
-                  {place_html}
-                </div>"""
+            {
+                "id": pid,
+                "src": src,
+                "talked": False,
+                "location": str(photo_location_label(photo) or ""),
+            }
         )
+        photo_ids.append(pid)
+
     if not cards:
         return
-    st.markdown(
-        '<div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px;width:100%;margin:.35rem 0 .55rem;">'
-        + "".join(cards)
-        + "</div>",
-        unsafe_allow_html=True,
-    )
 
+    if diary_gallery_component is not None:
+        serial_key = f"pending_gallery_serial_{trip_id}"
+        serial = int(st.session_state.get(serial_key) or 0)
+        result = diary_gallery_component(
+            data={"photos": cards, "delete_only": True},
+            key=f"pending_gallery_{trip_id}_{serial}",
+            on_photo_id_change=lambda: None,
+            on_delete_photo_id_change=lambda: None,
+        )
+        delete_clicked = str(getattr(result, "delete_photo_id", "") or "")
+        if delete_clicked in photo_ids:
+            st.session_state[serial_key] = serial + 1
+            confirm_photo_delete_dialog(
+                trip_id,
+                delete_clicked,
+                photos=subset,
+                is_pending=True,
+                trip=trip,
+            )
+        return
+
+    # Fallback for old component runtimes. Keep three columns and a compact × action.
+    cols = st.columns(3)
+    for idx, card in enumerate(cards):
+        with cols[idx % 3]:
+            if card["src"]:
+                st.markdown(
+                    f'<img src="{html.escape(card["src"], quote=True)}" style="width:100%;aspect-ratio:1/1;object-fit:cover;border-radius:10px;" />',
+                    unsafe_allow_html=True,
+                )
+            if st.button(
+                "×",
+                key=f"pending_photo_fallback_delete_{trip_id}_{card['id']}",
+                help="この写真を削除",
+            ):
+                confirm_photo_delete_dialog(
+                    trip_id,
+                    card["id"],
+                    photos=subset,
+                    is_pending=True,
+                    trip=trip,
+                )
 
 def render_small_gallery(photos, max_count=None, columns=3):
     """Render history photos lazily; the browser downloads visible images in parallel."""
@@ -6155,7 +6244,11 @@ def page_diary():
             )
             st.markdown(f"**{html.escape(str(pending_trip.get('trip_date') or ''))}　{html.escape(pending_title)}**　・ 写真 {len(pending_photos)}枚")
             st.caption(f"本人コメントあり：{commented_count} / {len(pending_photos)}枚")
-            render_pending_thumbnail_grid(pending_photos)
+            render_pending_thumbnail_grid(
+                pending_id,
+                pending_photos,
+                trip=pending_trip,
+            )
             if st.button(
                 "📖 この写真で日記を作る",
                 type="primary",
@@ -6201,17 +6294,24 @@ def page_diary():
         for trip_id_value in ids
     }
     preferred = st.session_state.preferred_diary_trip_id
-    default_index = ids.index(str(preferred)) if str(preferred) in ids else 0
+    default_index = ids.index(str(preferred)) if str(preferred) in ids else None
     selector_serial = int(st.session_state.get("_diary_selector_serial") or 0)
     trip_id = st.selectbox(
         "振り返る日",
         ids,
         index=default_index,
+        placeholder="振り返る日を選んでください",
         format_func=lambda x: label_map.get(str(x), str(x)),
         key=f"diary_trip_selector_{selector_serial}",
     )
+    if trip_id is None:
+        st.caption("振り返る日を選ぶと、そのぶらり旅の日記と写真を表示します。")
+        return
+
     trip_id = str(trip_id)
     trip = trip_map[trip_id]
+    # Do not fetch any saved-diary photos until a specific trip is selected. This
+    # keeps the initial diary page substantially lighter on mobile connections.
     photos = list_trip_photos(trip_id)
     existing = diary_map.get(trip_id)
 
