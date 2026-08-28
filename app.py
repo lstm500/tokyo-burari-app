@@ -172,44 +172,61 @@ st.markdown(
         height: 6.45rem !important;
         min-height: 6.45rem !important;
         max-height: 6.45rem !important;
-        border-radius: 24px !important;
-        font-size: 1.28rem !important;
-        font-weight: 820 !important;
+        border-radius: 26px !important;
+        font-size: 1.32rem !important;
+        font-weight: 830 !important;
         line-height: 1.35 !important;
+        letter-spacing: .01em !important;
       }
       .st-key-home_secondary div.stButton > button {
-        height: 4.85rem !important;
-        min-height: 4.85rem !important;
-        max-height: 4.85rem !important;
-        border-radius: 20px !important;
-        font-size: 1.10rem !important;
-        font-weight: 760 !important;
+        height: 4.95rem !important;
+        min-height: 4.95rem !important;
+        max-height: 4.95rem !important;
+        border-radius: 22px !important;
+        font-size: 1.14rem !important;
+        font-weight: 780 !important;
         line-height: 1.3 !important;
+        letter-spacing: .01em !important;
       }
       .st-key-home_camera div.stButton > button,
       .st-key-home_camera button,
       .st-key-home_diary div.stButton > button,
       .st-key-home_diary button {
-        border: 1.5px solid rgba(74, 144, 226, .66) !important;
-        background: linear-gradient(145deg, rgba(74, 144, 226, .11), rgba(74, 144, 226, .035)) !important;
-        box-shadow: 0 7px 18px rgba(74, 144, 226, .08) !important;
+        border: 1.8px solid rgba(115, 165, 232, .82) !important;
+        background: linear-gradient(155deg, rgba(232, 244, 255, .98), rgba(245, 240, 255, .94)) !important;
+        box-shadow: 0 10px 24px rgba(101, 150, 220, .11), 0 0 0 2px rgba(255,255,255,.34) inset !important;
       }
       .st-key-home_camera div.stButton > button:hover,
-      .st-key-home_diary div.stButton > button:hover {
+      .st-key-home_camera button:hover,
+      .st-key-home_diary div.stButton > button:hover,
+      .st-key-home_diary button:hover {
         transform: translateY(-1px);
-        background: linear-gradient(145deg, rgba(74, 144, 226, .16), rgba(74, 144, 226, .055)) !important;
-        box-shadow: 0 9px 22px rgba(74, 144, 226, .12) !important;
+        background: linear-gradient(155deg, rgba(220, 239, 255, 1), rgba(240, 233, 255, .98)) !important;
+        box-shadow: 0 12px 26px rgba(101, 150, 220, .14), 0 0 0 2px rgba(255,255,255,.42) inset !important;
       }
       .st-key-home_review div.stButton > button,
       .st-key-home_review button {
-        border: 1.5px solid rgba(245, 158, 11, .62) !important;
-        background: linear-gradient(145deg, rgba(245, 158, 11, .10), rgba(245, 158, 11, .025)) !important;
-        box-shadow: 0 5px 15px rgba(245, 158, 11, .055) !important;
+        border: 1.8px solid rgba(237, 176, 84, .80) !important;
+        background: linear-gradient(155deg, rgba(255, 247, 226, .98), rgba(255, 238, 214, .94)) !important;
+        box-shadow: 0 9px 22px rgba(238, 178, 80, .10), 0 0 0 2px rgba(255,255,255,.30) inset !important;
+      }
+      .st-key-home_review div.stButton > button:hover,
+      .st-key-home_review button:hover {
+        transform: translateY(-1px);
+        background: linear-gradient(155deg, rgba(255, 243, 215, 1), rgba(255, 232, 199, .98)) !important;
+        box-shadow: 0 11px 24px rgba(238, 178, 80, .14), 0 0 0 2px rgba(255,255,255,.36) inset !important;
       }
       .st-key-home_settings div.stButton > button,
       .st-key-home_settings button {
-        border: 1px solid rgba(128,128,128,.22) !important;
-        background: rgba(128,128,128,.035) !important;
+        border: 1.6px solid rgba(176, 154, 227, .68) !important;
+        background: linear-gradient(155deg, rgba(245, 241, 255, .98), rgba(238, 245, 255, .94)) !important;
+        box-shadow: 0 8px 20px rgba(176, 154, 227, .08), 0 0 0 2px rgba(255,255,255,.30) inset !important;
+      }
+      .st-key-home_settings div.stButton > button:hover,
+      .st-key-home_settings button:hover {
+        transform: translateY(-1px);
+        background: linear-gradient(155deg, rgba(241, 235, 255, 1), rgba(233, 242, 255, .98)) !important;
+        box-shadow: 0 10px 22px rgba(176, 154, 227, .12), 0 0 0 2px rgba(255,255,255,.36) inset !important;
       }
       .st-key-home_destination {
         margin-top: .42rem;
@@ -359,16 +376,16 @@ st.markdown(
           height: 6.20rem !important;
           min-height: 6.20rem !important;
           max-height: 6.20rem !important;
-          border-radius: 21px !important;
-          font-size: 1.13rem !important;
+          border-radius: 22px !important;
+          font-size: 1.18rem !important;
           line-height: 1.28 !important;
         }
         .st-key-home_secondary div.stButton > button {
-          height: 4.65rem !important;
-          min-height: 4.65rem !important;
-          max-height: 4.65rem !important;
-          border-radius: 18px !important;
-          font-size: 1.00rem !important;
+          height: 4.70rem !important;
+          min-height: 4.70rem !important;
+          max-height: 4.70rem !important;
+          border-radius: 19px !important;
+          font-size: 1.05rem !important;
         }
         .st-key-home_destination div.stButton > button {
           min-height: 2.55rem !important;
@@ -1975,6 +1992,56 @@ def update_current_member_name(display_name):
     )
     st.session_state["_current_member_name"] = display_name
     return display_name
+
+
+def verify_current_member_pin(pin):
+    """Check a candidate phrase without ever exposing the stored credential."""
+    pin = str(pin or "").strip()
+    if not pin:
+        return False
+    account = get_member_account(current_family_key(), current_member_key()) or {}
+    salt = str(account.get("pin_salt") or "")
+    expected = str(account.get("pin_hash") or "")
+    actual = _family_pin_hash(pin, salt)
+    return bool(expected and actual and hmac.compare_digest(actual, expected))
+
+
+def update_current_member_pin(new_pin):
+    """Replace the current personal account phrase and refresh this browser's auto-login token."""
+    new_pin = str(new_pin or "").strip()
+    if len(new_pin) < 4:
+        raise ValueError("新しいあいことばは4文字以上にしてください。")
+    if len(new_pin) > 64:
+        raise ValueError("新しいあいことばは64文字以内にしてください。")
+
+    family_key = current_family_key()
+    member_key = current_member_key()
+    if not get_member_account(family_key, member_key):
+        raise ValueError("現在の個人アカウントが見つかりません。")
+
+    salt = uuid.uuid4().hex
+    pin_hash = _family_pin_hash(new_pin, salt)
+    (
+        supabase_client()
+        .table(MEMBER_TABLE)
+        .update(
+            {
+                "pin_salt": salt,
+                "pin_hash": pin_hash,
+                "updated_at": now_jst().isoformat(),
+            }
+        )
+        .eq("family_key", family_key)
+        .eq("member_key", member_key)
+        .execute()
+    )
+
+    # Tokens on other browsers were derived from the old hash and become invalid.
+    # Keep this already-authenticated browser convenient by replacing only its token.
+    token = browser_auto_login_token(family_key, member_key, pin_hash)
+    if token:
+        write_browser_auto_login(token, key="browser_auto_login_after_pin_change")
+    return True
 
 
 @st.cache_data(ttl=1800, show_spinner=False)
@@ -5921,9 +5988,9 @@ def page_home():
     with st.container(key="home_primary"):
         primary_left, primary_right = st.columns(2)
         with primary_left:
-            render_home_button("📷\n写真を撮る", "camera", "home_camera", ensure_trip=True)
+            render_home_button("📸\n写真を撮る", "camera", "home_camera", ensure_trip=True)
         with primary_right:
-            render_home_button("📖\n日記にする・見る", "diary", "home_diary")
+            render_home_button("📔\n日記にする・見る", "diary", "home_diary")
 
     # Manual fallback for cases where the phone/browser cannot provide GPS.
     with st.container(key="home_destination"):
@@ -5975,9 +6042,9 @@ def page_home():
     with st.container(key="home_secondary"):
         secondary_left, secondary_right = st.columns([1.2, 1])
         with secondary_left:
-            render_home_button("🔍\n振り返り（たまに）", "review", "home_review")
+            render_home_button("🪄\n振り返り（たまに）", "review", "home_review")
         with secondary_right:
-            render_home_button("⚙️\n設定", "settings", "home_settings")
+            render_home_button("🌼\n設定", "settings", "home_settings")
 
     st.markdown(
         '<div class="home-footer-note">写真は0枚でも大丈夫。気になったときだけ使います。</div>',
@@ -6956,6 +7023,60 @@ def page_settings():
     if settings_notice:
         st.success(settings_notice)
 
+    st.markdown("#### ログイン情報を確認")
+    st.write(f"家族ID：`{current_family_key()}`")
+    st.write(f"個人ID：`{current_member_key()}`")
+    st.caption(
+        "あいことばは安全のため元の文字列を保存していないので、画面に表示することはできません。"
+        "思い当たるあいことばが合っているか確認するか、ログイン中に新しいあいことばへ再設定できます。"
+    )
+
+    check_pin = st.text_input(
+        "確認したいあいことば",
+        type="password",
+        key="settings_check_current_member_pin",
+        placeholder="思い当たるあいことばを入力",
+    )
+    if st.button(
+        "このあいことばで合っているか確認",
+        use_container_width=True,
+        key="settings_verify_current_member_pin",
+    ):
+        if verify_current_member_pin(check_pin):
+            st.success("このあいことばで合っています。")
+        else:
+            st.error("このあいことばではありません。")
+
+    with st.expander("あいことばを変更・再設定"):
+        st.caption("現在のあいことばを忘れていても、ログイン中であれば新しく設定できます。")
+        new_pin = st.text_input(
+            "新しいあいことば",
+            type="password",
+            key="settings_new_member_pin",
+        )
+        new_pin_confirm = st.text_input(
+            "新しいあいことば（確認）",
+            type="password",
+            key="settings_new_member_pin_confirm",
+        )
+        if st.button(
+            "新しいあいことばに変更",
+            use_container_width=True,
+            key="settings_change_member_pin",
+        ):
+            try:
+                if new_pin != new_pin_confirm:
+                    raise ValueError("確認用のあいことばが一致していません。")
+                update_current_member_pin(new_pin)
+                st.session_state.pop("settings_check_current_member_pin", None)
+                st.session_state.pop("settings_new_member_pin", None)
+                st.session_state.pop("settings_new_member_pin_confirm", None)
+                st.session_state["_settings_notice"] = "あいことばを変更しました。"
+                st.rerun()
+            except Exception as exc:
+                st.error(str(exc))
+
+    st.divider()
     st.markdown("#### 個人アカウント")
     st.write(
         f"現在：**{current_member_name()}**　（個人ID：`{current_member_key()}`）  "
