@@ -345,6 +345,9 @@ st.markdown(
         .block-container {
           padding-left: .75rem;
           padding-right: .75rem;
+          /* Keep the first app row below Streamlit's mobile toolbar.
+             The extra safe-area term also covers phones with a display cutout. */
+          padding-top: calc(3.35rem + env(safe-area-inset-top, 0px)) !important;
         }
         .home-hero {
           padding: 1rem 1rem .92rem;
