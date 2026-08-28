@@ -197,38 +197,38 @@ st.markdown(
         transition: transform .12s ease, box-shadow .12s ease, background .12s ease;
       }
       .st-key-home_primary div.stButton > button {
-        height: 8.05rem !important;
-        min-height: 8.05rem !important;
-        max-height: 8.05rem !important;
-        border-radius: 26px !important;
-        font-size: 1.22rem !important;
+        height: 5.35rem !important;
+        min-height: 5.35rem !important;
+        max-height: 5.35rem !important;
+        border-radius: 24px !important;
+        font-size: 1.34rem !important;
         font-weight: 840 !important;
-        line-height: 1.22 !important;
+        line-height: 1.18 !important;
         letter-spacing: .01em !important;
-        padding: .78rem .80rem .72rem .80rem !important;
+        padding: .62rem .82rem !important;
         display: flex !important;
-        flex-direction: column !important;
+        flex-direction: row !important;
         align-items: center !important;
         justify-content: center !important;
-        gap: .28rem !important;
-        text-align: center !important;
+        gap: .72rem !important;
+        text-align: left !important;
       }
       .st-key-home_secondary div.stButton > button {
-        height: 7.15rem !important;
-        min-height: 7.15rem !important;
-        max-height: 7.15rem !important;
-        border-radius: 22px !important;
-        font-size: 1.10rem !important;
-        font-weight: 790 !important;
-        line-height: 1.20 !important;
+        height: 4.75rem !important;
+        min-height: 4.75rem !important;
+        max-height: 4.75rem !important;
+        border-radius: 21px !important;
+        font-size: 1.22rem !important;
+        font-weight: 800 !important;
+        line-height: 1.16 !important;
         letter-spacing: .01em !important;
-        padding: .72rem .75rem .64rem .75rem !important;
+        padding: .56rem .72rem !important;
         display: flex !important;
-        flex-direction: column !important;
+        flex-direction: row !important;
         align-items: center !important;
         justify-content: center !important;
-        gap: .24rem !important;
-        text-align: center !important;
+        gap: .60rem !important;
+        text-align: left !important;
       }
       .st-key-home_primary div.stButton > button p,
       .st-key-home_secondary div.stButton > button p {
@@ -419,24 +419,24 @@ st.markdown(
         .home-title { font-size: 1.72rem; }
         .home-tagline { font-size: .90rem; }
         .st-key-home_primary div.stButton > button {
-          height: 7.35rem !important;
-          min-height: 7.35rem !important;
-          max-height: 7.35rem !important;
-          border-radius: 22px !important;
-          font-size: 1.12rem !important;
-          line-height: 1.20 !important;
-          padding: .68rem .58rem .62rem .58rem !important;
-          gap: .22rem !important;
+          height: 4.95rem !important;
+          min-height: 4.95rem !important;
+          max-height: 4.95rem !important;
+          border-radius: 21px !important;
+          font-size: 1.20rem !important;
+          line-height: 1.14 !important;
+          padding: .52rem .52rem !important;
+          gap: .48rem !important;
         }
         .st-key-home_secondary div.stButton > button {
-          height: 6.55rem !important;
-          min-height: 6.55rem !important;
-          max-height: 6.55rem !important;
-          border-radius: 19px !important;
-          font-size: 1.00rem !important;
-          line-height: 1.18 !important;
-          padding: .60rem .55rem .56rem .55rem !important;
-          gap: .18rem !important;
+          height: 4.45rem !important;
+          min-height: 4.45rem !important;
+          max-height: 4.45rem !important;
+          border-radius: 18px !important;
+          font-size: 1.10rem !important;
+          line-height: 1.12 !important;
+          padding: .46rem .48rem !important;
+          gap: .42rem !important;
         }
         .st-key-home_destination div.stButton > button {
           min-height: 2.55rem !important;
@@ -5340,10 +5340,10 @@ def inject_home_icon_css():
         ".st-key-home_camera div.stButton > button::before,"
         ".st-key-home_diary div.stButton > button::before,"
         ".st-key-home_review div.stButton > button::before,"
-        ".st-key-home_settings div.stButton > button::before{content:'';display:block;background-repeat:no-repeat;background-position:center;background-size:contain;}",
-        ".st-key-home_camera div.stButton > button::before,.st-key-home_diary div.stButton > button::before{width:68px;height:68px;flex:0 0 68px;}",
-        ".st-key-home_review div.stButton > button::before,.st-key-home_settings div.stButton > button::before{width:58px;height:58px;flex:0 0 58px;}",
-        "@media (max-width: 640px){.st-key-home_camera div.stButton > button::before,.st-key-home_diary div.stButton > button::before{width:58px;height:58px;flex-basis:58px;}.st-key-home_review div.stButton > button::before,.st-key-home_settings div.stButton > button::before{width:48px;height:48px;flex-basis:48px;}}",
+        ".st-key-home_settings div.stButton > button::before{content:'';display:block;background-repeat:no-repeat;background-position:center;background-size:contain;flex-shrink:0;}",
+        ".st-key-home_camera div.stButton > button::before,.st-key-home_diary div.stButton > button::before{width:58px;height:58px;flex-basis:58px;}",
+        ".st-key-home_review div.stButton > button::before,.st-key-home_settings div.stButton > button::before{width:50px;height:50px;flex-basis:50px;}",
+        "@media (max-width: 640px){.st-key-home_camera div.stButton > button::before,.st-key-home_diary div.stButton > button::before{width:46px;height:46px;flex-basis:46px;}.st-key-home_review div.stButton > button::before,.st-key-home_settings div.stButton > button::before{width:40px;height:40px;flex-basis:40px;}}",
     ]
     if camera_uri:
         css_chunks.append(f'.st-key-home_camera div.stButton > button::before{{background-image:url("{camera_uri}") !important;}}')
