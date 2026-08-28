@@ -1675,6 +1675,19 @@ def today_iso():
 
 
 
+@st.cache_data(ttl=1800, show_spinner=False)
+def _verify_remote_schema_cached():
+    """Cold-start schema probe only; repeated Streamlit reruns reuse the result."""
+    client = supabase_client()
+    # These three probes cover authentication and the main diary path. The migration
+    # is cumulative, so avoiding three extra HTTP round-trips here materially speeds
+    # up every cold start while still catching an unapplied v44 migration early.
+    client.table(FAMILY_TABLE).select("family_key").limit(1).execute()
+    client.table(MEMBER_TABLE).select("family_key,member_key").limit(1).execute()
+    client.table(TRIP_TABLE).select("id,family_key,member_key").limit(1).execute()
+    return True
+
+
 def verify_setup():
     if not OPENAI_API_KEY:
         st.error("OPENAI_API_KEY が設定されていません。Streamlit Secrets を確認してください。")
@@ -1686,13 +1699,7 @@ def verify_setup():
         st.error("SUPABASE_URL と SUPABASE_SECRET_KEY が設定されていません。")
         st.stop()
     try:
-        client = supabase_client()
-        client.table(FAMILY_TABLE).select("family_key").limit(1).execute()
-        client.table(MEMBER_TABLE).select("family_key,member_key").limit(1).execute()
-        client.table(TRIP_TABLE).select("id,family_key,member_key").limit(1).execute()
-        client.table(PHOTO_TABLE).select("id,family_key,member_key").limit(1).execute()
-        client.table(DIARY_TABLE).select("id,family_key,member_key").limit(1).execute()
-        client.table(MONTHLY_TABLE).select("id,family_key,member_key").limit(1).execute()
+        _verify_remote_schema_cached()
     except Exception as exc:
         st.error("個人アカウント対応のSupabase設定が必要です。supabase_personal_account_migration.sql を1回実行してください。")
         with st.expander("保護者向け詳細"):
@@ -1799,8 +1806,9 @@ def update_current_family_name(display_name):
     return display_name
 
 
+@st.cache_data(ttl=1800, show_spinner=False)
 def ensure_default_family_account():
-    """Ensure the original/default family container exists."""
+    """Ensure the original/default family container exists, at most once per cache TTL."""
     account = get_family_account("default")
     if account:
         return
@@ -1906,6 +1914,7 @@ def update_current_member_name(display_name):
     return display_name
 
 
+@st.cache_data(ttl=1800, show_spinner=False)
 def ensure_default_member_account():
     """Ensure legacy data has a matching `main` personal account for first login."""
     existing = get_member_account("default", "main")
@@ -2738,9 +2747,29 @@ def normalize_photo(raw_bytes, max_side=1600, quality=84):
         return out.getvalue()
 
 
-@st.cache_data(ttl=120, show_spinner=False)
+@st.cache_data(ttl=1800, max_entries=96, show_spinner=False)
 def download_photo(storage_path):
     return supabase_client().storage.from_(PHOTO_BUCKET).download(storage_path)
+
+
+@st.cache_data(ttl=1800, max_entries=192, show_spinner=False)
+def thumbnail_photo_bytes(storage_path, max_px=420, quality=76):
+    """Small immutable preview bytes for grids; avoids resending full photos on reruns."""
+    image_bytes = download_photo(storage_path)
+    try:
+        with Image.open(io.BytesIO(image_bytes)) as img:
+            img = ImageOps.exif_transpose(img).convert("RGB")
+            img.thumbnail((int(max_px), int(max_px)))
+            out = io.BytesIO()
+            img.save(out, format="JPEG", quality=int(quality), optimize=True)
+            return out.getvalue()
+    except Exception:
+        return image_bytes
+
+
+@st.cache_data(ttl=1800, max_entries=192, show_spinner=False)
+def thumbnail_photo_data_url(storage_path, max_px=420, quality=76):
+    return image_data_url(thumbnail_photo_bytes(storage_path, max_px=max_px, quality=quality))
 
 
 def upload_photo(trip_id, image_bytes, location=None, captured_at=None, capture_source="camera"):
@@ -3007,6 +3036,44 @@ def get_diary_for_trip(trip_id):
         .execute()
     )
     return (result.data or [None])[0]
+
+
+def diaries_for_trip_ids(trip_ids):
+    """Fetch many diaries in one request instead of one request per trip."""
+    ids = list(dict.fromkeys(str(x) for x in (trip_ids or []) if x))
+    if not ids:
+        return {}
+    rows = (
+        supabase_client()
+        .table(DIARY_TABLE)
+        .select("*")
+        .eq("family_key", current_family_key()).eq("member_key", current_member_key())
+        .in_("trip_id", ids)
+        .execute()
+    ).data or []
+    return {str(row.get("trip_id")): row for row in rows if row.get("trip_id")}
+
+
+def photos_for_trip_ids(trip_ids):
+    """Fetch many trips' photo metadata in one request and group it locally."""
+    ids = list(dict.fromkeys(str(x) for x in (trip_ids or []) if x))
+    grouped = {trip_id: [] for trip_id in ids}
+    if not ids:
+        return grouped
+    rows = (
+        supabase_client()
+        .table(PHOTO_TABLE)
+        .select("*")
+        .eq("family_key", current_family_key()).eq("member_key", current_member_key())
+        .in_("trip_id", ids)
+        .order("captured_at")
+        .execute()
+    ).data or []
+    for row in rows:
+        trip_id = str(row.get("trip_id") or "")
+        if trip_id in grouped:
+            grouped[trip_id].append(row)
+    return grouped
 
 
 def save_diary(trip_id, title, diary_text, raw_conversation, ai_meta):
@@ -4885,7 +4952,7 @@ def finalize_previous_days_into_diaries():
 
 
 def list_pending_photo_trips(limit=40):
-    """Return this personal account's trips that still have photos but no saved diary."""
+    """Return trips with photos but no diary using three batched DB requests."""
     result = (
         supabase_client()
         .table(TRIP_TABLE)
@@ -4897,14 +4964,20 @@ def list_pending_photo_trips(limit=40):
         .limit(limit)
         .execute()
     )
-    pending = []
-    for trip in result.data or []:
-        if get_diary_for_trip(trip.get("id")):
-            continue
-        photos = list_trip_photos(trip.get("id"))
-        if photos:
-            pending.append({"trip": trip, "photos": photos})
-    return pending
+    trips = result.data or []
+    if not trips:
+        return []
+
+    trip_ids = [str(trip.get("id")) for trip in trips if trip.get("id")]
+    diary_map = diaries_for_trip_ids(trip_ids)
+    pending_trips = [trip for trip in trips if str(trip.get("id")) not in diary_map]
+    pending_ids = [str(trip.get("id")) for trip in pending_trips if trip.get("id")]
+    photo_map = photos_for_trip_ids(pending_ids)
+    return [
+        {"trip": trip, "photos": photo_map.get(str(trip.get("id")), [])}
+        for trip in pending_trips
+        if photo_map.get(str(trip.get("id")), [])
+    ]
 
 
 def _title_against_used(base_title, used_titles):
@@ -5129,18 +5202,7 @@ def render_pending_thumbnail_grid(photos, max_count=None):
     cards = []
     for photo in subset:
         try:
-            image_bytes = download_photo(photo["storage_path"])
-            # Use a small browser thumbnail; the stored original is left untouched.
-            try:
-                with Image.open(io.BytesIO(image_bytes)) as img:
-                    img = ImageOps.exif_transpose(img).convert("RGB")
-                    img.thumbnail((360, 360))
-                    out = io.BytesIO()
-                    img.save(out, format="JPEG", quality=76, optimize=True)
-                    image_bytes = out.getvalue()
-            except Exception:
-                pass
-            src = image_data_url(image_bytes)
+            src = thumbnail_photo_data_url(photo["storage_path"], max_px=360, quality=74)
         except Exception:
             continue
         place = str(photo_location_label(photo) or "").strip()
@@ -5175,7 +5237,7 @@ def render_small_gallery(photos, max_count=None, columns=3):
     cols = st.columns(column_count)
     for idx, photo in enumerate(subset):
         try:
-            image = download_photo(photo["storage_path"])
+            image = thumbnail_photo_bytes(photo["storage_path"], max_px=520, quality=78)
             with cols[idx % column_count]:
                 st.image(image, use_container_width=True)
                 location_label = photo_location_label(photo)
@@ -5205,9 +5267,7 @@ def render_diary_photo_gallery(trip_id, photos, state=None):
         talked = _conversation_has_child_words(conversation)
         location_label = photo_location_label(photo)
         try:
-            image_bytes = download_photo(photo["storage_path"])
-            encoded = base64.b64encode(image_bytes).decode("ascii")
-            src = f"data:image/jpeg;base64,{encoded}"
+            src = thumbnail_photo_data_url(photo["storage_path"], max_px=420, quality=76)
         except Exception:
             src = ""
 
@@ -5661,26 +5721,35 @@ def page_diary():
             st.divider()
 
     all_trips = list_recent_trips_for_diary()
-    trips = [t for t in all_trips if get_diary_for_trip(t.get("id"))]
+    all_trip_ids = [str(t.get("id")) for t in all_trips if t.get("id")]
+    diary_map = diaries_for_trip_ids(all_trip_ids)
+    trips = [t for t in all_trips if str(t.get("id")) in diary_map]
     if not trips:
         if not pending_rows:
             st.info("まだ日記はありません。")
         return
 
-    ids = [t["id"] for t in trips]
+    ids = [str(t["id"]) for t in trips]
+    trip_map = {str(t["id"]): t for t in trips}
+    label_map = {
+        trip_id_value: f"{trip_map[trip_id_value].get('trip_date', '')}　"
+        f"{diary_display_title(diary_map.get(trip_id_value), trip_map[trip_id_value], photos=None)}"
+        for trip_id_value in ids
+    }
     preferred = st.session_state.preferred_diary_trip_id
-    default_index = ids.index(preferred) if preferred in ids else 0
+    default_index = ids.index(str(preferred)) if str(preferred) in ids else 0
     selector_serial = int(st.session_state.get("_diary_selector_serial") or 0)
     trip_id = st.selectbox(
         "振り返る日",
         ids,
         index=default_index,
-        format_func=lambda x: trip_label(next(t for t in trips if t["id"] == x)),
+        format_func=lambda x: label_map.get(str(x), str(x)),
         key=f"diary_trip_selector_{selector_serial}",
     )
-    trip = next(t for t in trips if t["id"] == trip_id)
+    trip_id = str(trip_id)
+    trip = trip_map[trip_id]
     photos = list_trip_photos(trip_id)
-    existing = get_diary_for_trip(trip_id)
+    existing = diary_map.get(trip_id)
 
     talk_key = f"diary_talk_photo_{trip_id}"
 
@@ -6181,8 +6250,8 @@ def page_history(embedded=False):
         diary = row["diary"]
         trip = row["trip"]
         trip_id = diary["trip_id"]
-        photos = list_trip_photos(trip_id)
-        daily_title = diary_display_title(diary, trip, photos=photos)
+        # Saved diaries already carry their final title. Avoid one photo query per row.
+        daily_title = diary_display_title(diary, trip, photos=None)
         title = f"{trip.get('trip_date', '')}　{daily_title}"
         if st.button(
             title,
@@ -6297,10 +6366,18 @@ def page_review():
         "🔍 振り返り",
         "過去の日記を読み返したり、1か月分の『気になる』をAIとつないだりします。",
     )
-    tab_history, tab_month = st.tabs(["📚 これまでの日記", "🔍 今月の発見"])
-    with tab_history:
+    # st.tabs executes both tab bodies on every rerun. A radio keeps the same two
+    # choices but loads only the page the user is actually viewing.
+    review_view = st.radio(
+        "振り返りの表示",
+        ["📚 これまでの日記", "🔍 今月の発見"],
+        horizontal=True,
+        label_visibility="collapsed",
+        key="review_view_selector",
+    )
+    if review_view == "📚 これまでの日記":
         page_history(embedded=True)
-    with tab_month:
+    else:
         page_monthly(embedded=True)
 
 
