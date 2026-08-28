@@ -5,6 +5,7 @@ import html
 import io
 import json
 import os
+import random
 import tempfile
 import time
 import uuid
@@ -56,7 +57,22 @@ HOME_ICON_CANDIDATES = {
         os.path.join(APP_DIR, "train.png"),
         "/mnt/data/かわいい緑の通勤電車ステッカー.png",
     ],
+    "train_yamanote": [os.path.join(APP_DIR, "assets", "icons", "train_yamanote.png")],
+    "train_keihin_tohoku": [os.path.join(APP_DIR, "assets", "icons", "train_keihin_tohoku.png")],
+    "train_chuo_rapid": [os.path.join(APP_DIR, "assets", "icons", "train_chuo_rapid.png")],
+    "train_chuo_sobu": [os.path.join(APP_DIR, "assets", "icons", "train_chuo_sobu.png")],
+    "train_sotetsu": [os.path.join(APP_DIR, "assets", "icons", "train_sotetsu.png")],
+    "train_shonan_shinjuku": [os.path.join(APP_DIR, "assets", "icons", "train_shonan_shinjuku.png")],
 }
+
+HOME_TRAIN_LINES = [
+    ("山手線", "train_yamanote"),
+    ("京浜東北線", "train_keihin_tohoku"),
+    ("中央本線快速", "train_chuo_rapid"),
+    ("中央・総武線", "train_chuo_sobu"),
+    ("相鉄線", "train_sotetsu"),
+    ("湘南新宿ライン", "train_shonan_shinjuku"),
+]
 
 
 # ============================================================
@@ -5382,6 +5398,20 @@ def _home_icon_uri(name):
     return ""
 
 
+def _home_train_for_session():
+    """Pick one route for this browser session; a full page reload gets a fresh pick."""
+    valid_keys = {icon_key for _, icon_key in HOME_TRAIN_LINES}
+    selected_key = str(st.session_state.get("_home_train_icon_key") or "")
+    if selected_key not in valid_keys:
+        line_name, selected_key = random.choice(HOME_TRAIN_LINES)
+        st.session_state["_home_train_icon_key"] = selected_key
+        st.session_state["_home_train_line_name"] = line_name
+    else:
+        line_name = next((name for name, key in HOME_TRAIN_LINES if key == selected_key), "電車")
+        st.session_state["_home_train_line_name"] = line_name
+    return line_name, _home_icon_uri(selected_key) or _home_icon_uri("train")
+
+
 def inject_home_icon_css():
     camera_uri = _home_icon_uri("camera")
     diary_uri = _home_icon_uri("diary")
@@ -6113,10 +6143,11 @@ def open_diary_photo_talk(trip_id, photo_id, state):
 def page_home():
     inject_home_icon_css()
     st.caption(f"{current_family_name()} ／ 個人：{current_member_name()}（{current_member_key()}）")
-    # Train asset includes a short rail section and is intentionally integrated at the hero's right edge.
-    train_uri = _home_icon_uri("train")
+    # The hero train keeps the same track-equipped illustration, but varies by route on each new session.
+    train_line_name, train_uri = _home_train_for_session()
     train_html = (
-        f'<div class="home-hero-train"><img src="{train_uri}" alt="ぶらり旅の電車アイコン"></div>'
+        f'<div class="home-hero-train" title="{html.escape(train_line_name)}">'
+        f'<img src="{train_uri}" alt="{html.escape(train_line_name)}をイメージした電車アイコン"></div>'
         if train_uri
         else ""
     )
@@ -6127,7 +6158,7 @@ def page_home():
             <div class="home-hero-copy">
               <div class="home-eyebrow">TOKYO BURARI</div>
               <div class="home-title">東京ぶらり旅</div>
-              <div class="home-tagline">気になったものを残して、あとで自分の言葉にする。</div>
+              <div class="home-tagline">思った。を残そう</div>
             </div>
             {train_html}
           </div>
