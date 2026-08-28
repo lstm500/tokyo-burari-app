@@ -51,6 +51,11 @@ HOME_ICON_CANDIDATES = {
         "/mnt/data/tokyo_burari_app_v54/assets/icons/settings.png",
         "/mnt/data/かわいい光沢ギア設定アイコン.png",
     ],
+    "train": [
+        os.path.join(APP_DIR, "assets", "icons", "train.png"),
+        os.path.join(APP_DIR, "train.png"),
+        "/mnt/data/かわいい緑の通勤電車ステッカー.png",
+    ],
 }
 
 
@@ -131,6 +136,32 @@ st.markdown(
           radial-gradient(circle at 92% 0%, rgba(74, 144, 226, .12), transparent 34%),
           linear-gradient(145deg, rgba(74, 144, 226, .055), rgba(255,255,255,0));
         box-shadow: 0 10px 30px rgba(30, 58, 95, .055);
+      }
+      .home-hero-inner {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: .9rem;
+      }
+      .home-hero-copy {
+        flex: 1 1 auto;
+        min-width: 0;
+      }
+      .home-hero-train {
+        flex: 0 0 auto;
+        width: 92px;
+        height: 76px;
+        display: flex;
+        align-items: center;
+        justify-content: flex-end;
+        margin-right: -.18rem;
+      }
+      .home-hero-train img {
+        display: block;
+        width: 92px;
+        height: 76px;
+        object-fit: contain;
+        filter: drop-shadow(0 5px 8px rgba(33, 75, 49, .08));
       }
       .home-eyebrow {
         font-size: .78rem;
@@ -434,6 +465,9 @@ st.markdown(
           padding: 1rem 1rem .92rem;
           border-radius: 21px;
         }
+        .home-hero-inner { gap: .45rem; }
+        .home-hero-train { width: 76px; height: 64px; margin-right: -.12rem; }
+        .home-hero-train img { width: 76px; height: 64px; }
         .home-title { font-size: 1.72rem; }
         .home-tagline { font-size: .90rem; }
         .st-key-home_primary div.stButton > button {
@@ -6079,12 +6113,24 @@ def open_diary_photo_talk(trip_id, photo_id, state):
 def page_home():
     inject_home_icon_css()
     st.caption(f"{current_family_name()} ／ 個人：{current_member_name()}（{current_member_key()}）")
+    # Train asset includes a short rail section and is intentionally integrated at the hero's right edge.
+    train_uri = _home_icon_uri("train")
+    train_html = (
+        f'<div class="home-hero-train"><img src="{train_uri}" alt="ぶらり旅の電車アイコン"></div>'
+        if train_uri
+        else ""
+    )
     st.markdown(
-        """
+        f"""
         <div class="home-hero">
-          <div class="home-eyebrow">TOKYO BURARI</div>
-          <div class="home-title">東京ぶらり旅</div>
-          <div class="home-tagline">気になったものを残して、あとで自分の言葉にする。</div>
+          <div class="home-hero-inner">
+            <div class="home-hero-copy">
+              <div class="home-eyebrow">TOKYO BURARI</div>
+              <div class="home-title">東京ぶらり旅</div>
+              <div class="home-tagline">気になったものを残して、あとで自分の言葉にする。</div>
+            </div>
+            {train_html}
+          </div>
         </div>
         """,
         unsafe_allow_html=True,
