@@ -25,6 +25,34 @@ try:
 except Exception:
     create_client = None
 
+APP_DIR = os.path.dirname(os.path.abspath(__file__))
+HOME_ICON_CANDIDATES = {
+    "camera": [
+        os.path.join(APP_DIR, "assets", "icons", "camera.png"),
+        os.path.join(APP_DIR, "camera.png"),
+        "/mnt/data/tokyo_burari_app_v54/assets/icons/camera.png",
+        "/mnt/data/かわいいカメラとフラッシュアイコン.png",
+    ],
+    "diary": [
+        os.path.join(APP_DIR, "assets", "icons", "diary.png"),
+        os.path.join(APP_DIR, "diary.png"),
+        "/mnt/data/tokyo_burari_app_v54/assets/icons/diary.png",
+        "/mnt/data/かわいい青い日記帳アイコン.png",
+    ],
+    "review": [
+        os.path.join(APP_DIR, "assets", "icons", "review.png"),
+        os.path.join(APP_DIR, "review.png"),
+        "/mnt/data/tokyo_burari_app_v54/assets/icons/review.png",
+        "/mnt/data/振り返るキュートな黒白猫.png",
+    ],
+    "settings": [
+        os.path.join(APP_DIR, "assets", "icons", "settings.png"),
+        os.path.join(APP_DIR, "settings.png"),
+        "/mnt/data/tokyo_burari_app_v54/assets/icons/settings.png",
+        "/mnt/data/かわいい光沢ギア設定アイコン.png",
+    ],
+}
+
 
 # ============================================================
 # Basic settings
@@ -169,24 +197,34 @@ st.markdown(
         transition: transform .12s ease, box-shadow .12s ease, background .12s ease;
       }
       .st-key-home_primary div.stButton > button {
-        height: 6.45rem !important;
-        min-height: 6.45rem !important;
-        max-height: 6.45rem !important;
+        height: 8.15rem !important;
+        min-height: 8.15rem !important;
+        max-height: 8.15rem !important;
         border-radius: 26px !important;
-        font-size: 1.32rem !important;
-        font-weight: 830 !important;
-        line-height: 1.35 !important;
-        letter-spacing: .01em !important;
-      }
-      .st-key-home_secondary div.stButton > button {
-        height: 4.95rem !important;
-        min-height: 4.95rem !important;
-        max-height: 4.95rem !important;
-        border-radius: 22px !important;
-        font-size: 1.14rem !important;
-        font-weight: 780 !important;
+        font-size: 1.34rem !important;
+        font-weight: 840 !important;
         line-height: 1.3 !important;
         letter-spacing: .01em !important;
+        padding-top: 5.05rem !important;
+        padding-bottom: .95rem !important;
+        background-repeat: no-repeat !important;
+        background-position: center 14px !important;
+        background-size: 72px 72px !important;
+      }
+      .st-key-home_secondary div.stButton > button {
+        height: 7.45rem !important;
+        min-height: 7.45rem !important;
+        max-height: 7.45rem !important;
+        border-radius: 22px !important;
+        font-size: 1.18rem !important;
+        font-weight: 790 !important;
+        line-height: 1.26 !important;
+        letter-spacing: .01em !important;
+        padding-top: 4.55rem !important;
+        padding-bottom: .86rem !important;
+        background-repeat: no-repeat !important;
+        background-position: center 12px !important;
+        background-size: 60px 60px !important;
       }
       .st-key-home_camera div.stButton > button,
       .st-key-home_camera button,
@@ -5250,6 +5288,55 @@ def render_home_button(label, page_name, key, ensure_trip=False):
         go_page(page_name)
 
 
+@st.cache_data(show_spinner=False)
+def _local_icon_data_uri(path):
+    """Read a local PNG/JPEG once and return a compact data URI for CSS backgrounds."""
+    if not path or not os.path.exists(path):
+        return ""
+    try:
+        with Image.open(path) as img:
+            img = img.convert("RGBA")
+            img.thumbnail((180, 180), Image.LANCZOS)
+            canvas = Image.new("RGBA", (180, 180), (0, 0, 0, 0))
+            x = (180 - img.width) // 2
+            y = (180 - img.height) // 2
+            canvas.paste(img, (x, y), img)
+            buf = io.BytesIO()
+            canvas.save(buf, format="PNG", optimize=True)
+        encoded = base64.b64encode(buf.getvalue()).decode("ascii")
+        return f"data:image/png;base64,{encoded}"
+    except Exception:
+        return ""
+
+
+def _home_icon_uri(name):
+    for path in HOME_ICON_CANDIDATES.get(name, []):
+        uri = _local_icon_data_uri(path)
+        if uri:
+            return uri
+    return ""
+
+
+def inject_home_icon_css():
+    camera_uri = _home_icon_uri("camera")
+    diary_uri = _home_icon_uri("diary")
+    review_uri = _home_icon_uri("review")
+    settings_uri = _home_icon_uri("settings")
+
+    css_chunks = []
+    if camera_uri:
+        css_chunks.append(f'.st-key-home_camera div.stButton > button{{background-image:url("{camera_uri}") !important;}}')
+    if diary_uri:
+        css_chunks.append(f'.st-key-home_diary div.stButton > button{{background-image:url("{diary_uri}") !important;}}')
+    if review_uri:
+        css_chunks.append(f'.st-key-home_review div.stButton > button{{background-image:url("{review_uri}") !important;}}')
+    if settings_uri:
+        css_chunks.append(f'.st-key-home_settings div.stButton > button{{background-image:url("{settings_uri}") !important;}}')
+
+    if css_chunks:
+        st.markdown("<style>" + "\n".join(css_chunks) + "</style>", unsafe_allow_html=True)
+
+
 def render_global_bottom_home_button(page_name):
     """Keep a full-width route to Home at the very bottom of major subpages."""
     st.divider()
@@ -5952,6 +6039,7 @@ def open_diary_photo_talk(trip_id, photo_id, state):
 # Page: Home
 # ============================================================
 def page_home():
+    inject_home_icon_css()
     st.caption(f"{current_family_name()} ／ 個人：{current_member_name()}（{current_member_key()}）")
     st.markdown(
         """
@@ -5988,9 +6076,9 @@ def page_home():
     with st.container(key="home_primary"):
         primary_left, primary_right = st.columns(2)
         with primary_left:
-            render_home_button("📸\n写真を撮る", "camera", "home_camera", ensure_trip=True)
+            render_home_button("写真を撮る", "camera", "home_camera", ensure_trip=True)
         with primary_right:
-            render_home_button("📔\n日記にする・見る", "diary", "home_diary")
+            render_home_button("日記にする・見る", "diary", "home_diary")
 
     # Manual fallback for cases where the phone/browser cannot provide GPS.
     with st.container(key="home_destination"):
@@ -6042,9 +6130,9 @@ def page_home():
     with st.container(key="home_secondary"):
         secondary_left, secondary_right = st.columns([1.2, 1])
         with secondary_left:
-            render_home_button("🪄\n振り返り（たまに）", "review", "home_review")
+            render_home_button("振り返り\n（たまに）", "review", "home_review")
         with secondary_right:
-            render_home_button("🌼\n設定", "settings", "home_settings")
+            render_home_button("設定", "settings", "home_settings")
 
     st.markdown(
         '<div class="home-footer-note">写真は0枚でも大丈夫。気になったときだけ使います。</div>',
