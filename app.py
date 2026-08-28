@@ -404,6 +404,7 @@ PHOTO_TABLE = "burari_photos"
 DIARY_TABLE = "burari_diaries"
 MONTHLY_TABLE = "burari_monthly_reviews"
 FAMILY_TABLE = "burari_families"
+MEMBER_TABLE = "burari_members"
 
 
 # ============================================================
@@ -1587,19 +1588,20 @@ except Exception:
     browser_persistence_component = None
 
 
-def browser_auto_login_token(family_key, credential_hash):
-    """Return an opaque browser credential bound to one family account."""
+
+def browser_auto_login_token(family_key, member_key, credential_hash):
+    """Return an opaque browser credential bound to one personal account in a family."""
     family_key = str(family_key or "").strip()
+    member_key = str(member_key or "").strip()
     credential_hash = str(credential_hash or "").strip()
-    if not family_key or not credential_hash:
+    if not family_key or not member_key or not credential_hash:
         return ""
     signature = hmac.new(
         credential_hash.encode("utf-8"),
-        f"tokyo-burari-auto-login-v2|{family_key}".encode("utf-8"),
+        f"tokyo-burari-auto-login-v3|{family_key}|{member_key}".encode("utf-8"),
         hashlib.sha256,
     ).hexdigest()
-    return f"{family_key}|{signature}"
-
+    return f"{family_key}|{member_key}|{signature}"
 
 def read_browser_persistence(key):
     if browser_persistence_component is None:
@@ -1672,6 +1674,7 @@ def today_iso():
     return now_jst().date().isoformat()
 
 
+
 def verify_setup():
     if not OPENAI_API_KEY:
         st.error("OPENAI_API_KEY が設定されていません。Streamlit Secrets を確認してください。")
@@ -1685,16 +1688,16 @@ def verify_setup():
     try:
         client = supabase_client()
         client.table(FAMILY_TABLE).select("family_key").limit(1).execute()
-        client.table(TRIP_TABLE).select("id,family_key").limit(1).execute()
-        client.table(PHOTO_TABLE).select("id,family_key").limit(1).execute()
-        client.table(DIARY_TABLE).select("id,family_key").limit(1).execute()
-        client.table(MONTHLY_TABLE).select("id,family_key").limit(1).execute()
+        client.table(MEMBER_TABLE).select("family_key,member_key").limit(1).execute()
+        client.table(TRIP_TABLE).select("id,family_key,member_key").limit(1).execute()
+        client.table(PHOTO_TABLE).select("id,family_key,member_key").limit(1).execute()
+        client.table(DIARY_TABLE).select("id,family_key,member_key").limit(1).execute()
+        client.table(MONTHLY_TABLE).select("id,family_key,member_key").limit(1).execute()
     except Exception as exc:
-        st.error("家族アカウント対応のSupabase設定が必要です。supabase_family_migration.sql を1回実行してください。")
+        st.error("個人アカウント対応のSupabase設定が必要です。supabase_personal_account_migration.sql を1回実行してください。")
         with st.expander("保護者向け詳細"):
             st.code(str(exc))
         st.stop()
-
 
 def _family_pin_hash(pin, salt):
     pin = str(pin or "")
@@ -1746,31 +1749,41 @@ def list_family_accounts():
     return result.data or []
 
 
-def create_family_account(family_key, display_name, pin):
+
+def create_family_account(family_key, display_name, member_key, member_name, pin):
     family_key = _normalize_family_key(family_key)
     display_name = str(display_name or "").strip()
-    pin = str(pin or "").strip()
     if not family_key:
         raise ValueError("家族IDを入力してください。")
     if not display_name:
         raise ValueError("家族名を入力してください。")
     if len(display_name) > 40:
         raise ValueError("家族名は40文字以内にしてください。")
-    if len(pin) < 4:
-        raise ValueError("あいことばは4文字以上にしてください。")
     if get_family_account(family_key):
         raise ValueError("その家族IDはすでに使われています。")
-    salt = uuid.uuid4().hex
-    payload = {
+
+    client = supabase_client()
+    family_payload = {
         "family_key": family_key,
         "display_name": display_name,
-        "pin_salt": salt,
-        "pin_hash": _family_pin_hash(pin, salt),
+        # v44以降、ログイン資格情報は個人アカウント側に置きます。
+        "pin_salt": "",
+        "pin_hash": "",
         "created_at": now_jst().isoformat(),
         "updated_at": now_jst().isoformat(),
     }
-    supabase_client().table(FAMILY_TABLE).insert(payload).execute()
-    return payload
+    client.table(FAMILY_TABLE).insert(family_payload).execute()
+    try:
+        member = create_member_account(member_key, member_name, pin, family_key=family_key)
+    except Exception:
+        # 個人アカウントが作れなければ、ログイン不能な空家族を残さない。
+        try:
+            client.table(FAMILY_TABLE).delete().eq("family_key", family_key).execute()
+        except Exception:
+            pass
+        raise
+    family_payload["first_member"] = member
+    return family_payload
 
 
 def update_current_family_name(display_name):
@@ -1787,35 +1800,154 @@ def update_current_family_name(display_name):
 
 
 def ensure_default_family_account():
-    """Attach pre-v43 data to the default family and bootstrap its existing PIN."""
+    """Ensure the original/default family container exists."""
     account = get_family_account("default")
     if account:
-        if FAMILY_PIN:
-            salt = str(account.get("pin_salt") or "") or uuid.uuid4().hex
-            expected = _family_pin_hash(FAMILY_PIN, salt)
-            if not hmac.compare_digest(str(account.get("pin_hash") or ""), expected):
-                supabase_client().table(FAMILY_TABLE).update(
-                    {
-                        "display_name": str(account.get("display_name") or "家族1"),
-                        "pin_salt": salt,
-                        "pin_hash": expected,
-                        "updated_at": now_jst().isoformat(),
-                    }
-                ).eq("family_key", "default").execute()
         return
-
-    salt = uuid.uuid4().hex if FAMILY_PIN else ""
-    pin_hash = _family_pin_hash(FAMILY_PIN, salt) if FAMILY_PIN else ""
     supabase_client().table(FAMILY_TABLE).insert(
         {
             "family_key": "default",
             "display_name": "家族1",
+            "pin_salt": "",
+            "pin_hash": "",
+            "created_at": now_jst().isoformat(),
+            "updated_at": now_jst().isoformat(),
+        }
+    ).execute()
+
+
+def _normalize_member_key(value):
+    value = str(value or "").strip()
+    if not value:
+        return ""
+    if len(value) > 32:
+        raise ValueError("個人IDは32文字以内にしてください。")
+    if not all(ch.isalnum() or ch in {"-", "_"} for ch in value):
+        raise ValueError("個人IDは文字・数字・ハイフン・アンダーバーで入力してください。")
+    return value
+
+
+def get_member_account(family_key, member_key):
+    family_key = str(family_key or "").strip()
+    member_key = str(member_key or "").strip()
+    if not family_key or not member_key:
+        return None
+    result = (
+        supabase_client()
+        .table(MEMBER_TABLE)
+        .select("*")
+        .eq("family_key", family_key)
+        .eq("member_key", member_key)
+        .limit(1)
+        .execute()
+    )
+    return (result.data or [None])[0]
+
+
+def list_family_members(family_key=None):
+    family_key = str(family_key or current_family_key()).strip()
+    result = (
+        supabase_client()
+        .table(MEMBER_TABLE)
+        .select("family_key,member_key,display_name,created_at")
+        .eq("family_key", family_key)
+        .order("created_at")
+        .execute()
+    )
+    return result.data or []
+
+
+def create_member_account(member_key, display_name, pin, family_key=None):
+    family_key = _normalize_family_key(family_key or current_family_key())
+    member_key = _normalize_member_key(member_key)
+    display_name = str(display_name or "").strip()
+    pin = str(pin or "").strip()
+    if not family_key or not get_family_account(family_key):
+        raise ValueError("家族アカウントが見つかりません。")
+    if not member_key:
+        raise ValueError("個人IDを入力してください。")
+    if not display_name:
+        raise ValueError("個人名を入力してください。")
+    if len(display_name) > 40:
+        raise ValueError("個人名は40文字以内にしてください。")
+    if len(pin) < 4:
+        raise ValueError("個人のあいことばは4文字以上にしてください。")
+    if get_member_account(family_key, member_key):
+        raise ValueError("その個人IDは、この家族ですでに使われています。")
+    salt = uuid.uuid4().hex
+    payload = {
+        "family_key": family_key,
+        "member_key": member_key,
+        "display_name": display_name,
+        "pin_salt": salt,
+        "pin_hash": _family_pin_hash(pin, salt),
+        "created_at": now_jst().isoformat(),
+        "updated_at": now_jst().isoformat(),
+    }
+    supabase_client().table(MEMBER_TABLE).insert(payload).execute()
+    return payload
+
+
+def update_current_member_name(display_name):
+    display_name = str(display_name or "").strip()
+    if not display_name:
+        raise ValueError("個人名を入力してください。")
+    if len(display_name) > 40:
+        raise ValueError("個人名は40文字以内にしてください。")
+    (
+        supabase_client()
+        .table(MEMBER_TABLE)
+        .update({"display_name": display_name, "updated_at": now_jst().isoformat()})
+        .eq("family_key", current_family_key())
+        .eq("member_key", current_member_key())
+        .execute()
+    )
+    st.session_state["_current_member_name"] = display_name
+    return display_name
+
+
+def ensure_default_member_account():
+    """Ensure legacy data has a matching `main` personal account for first login."""
+    existing = get_member_account("default", "main")
+    if existing:
+        # A cumulative migration run on a pre-v43 database may have created main
+        # before the app could copy FAMILY_PIN. Fill only an empty credential.
+        if FAMILY_PIN and not str(existing.get("pin_hash") or "").strip():
+            salt = str(existing.get("pin_salt") or "").strip() or uuid.uuid4().hex
+            supabase_client().table(MEMBER_TABLE).update(
+                {
+                    "pin_salt": salt,
+                    "pin_hash": _family_pin_hash(FAMILY_PIN, salt),
+                    "updated_at": now_jst().isoformat(),
+                }
+            ).eq("family_key", "default").eq("member_key", "main").execute()
+        return
+    family = get_family_account("default") or {}
+    # Prefer the old family credential if v43 had already populated it; otherwise
+    # use the original FAMILY_PIN secret. This keeps existing users able to enter.
+    legacy_salt = str(family.get("pin_salt") or "").strip()
+    legacy_hash = str(family.get("pin_hash") or "").strip()
+    if legacy_salt and legacy_hash:
+        salt = legacy_salt
+        pin_hash = legacy_hash
+    elif FAMILY_PIN:
+        salt = uuid.uuid4().hex
+        pin_hash = _family_pin_hash(FAMILY_PIN, salt)
+    else:
+        salt = ""
+        pin_hash = ""
+    supabase_client().table(MEMBER_TABLE).insert(
+        {
+            "family_key": "default",
+            "member_key": "main",
+            "display_name": "メイン",
             "pin_salt": salt,
             "pin_hash": pin_hash,
             "created_at": now_jst().isoformat(),
             "updated_at": now_jst().isoformat(),
         }
     ).execute()
+
 
 
 def current_family_key():
@@ -1835,10 +1967,29 @@ def current_family_name():
     return name
 
 
-def _set_authenticated_family(account, persist=False):
+def current_member_key():
+    return str(st.session_state.get("_current_member_key") or "main").strip() or "main"
+
+
+def current_member_name():
+    cached = str(st.session_state.get("_current_member_name") or "").strip()
+    if cached:
+        return cached
+    try:
+        account = get_member_account(current_family_key(), current_member_key()) or {}
+        name = str(account.get("display_name") or current_member_key()).strip()
+    except Exception:
+        name = current_member_key()
+    st.session_state["_current_member_name"] = name
+    return name
+
+
+def _set_authenticated_family(family_account, member_account, persist=False):
     st.session_state["_family_authenticated"] = True
-    st.session_state["_current_family_key"] = str(account.get("family_key") or "default")
-    st.session_state["_current_family_name"] = str(account.get("display_name") or account.get("family_key") or "家族")
+    st.session_state["_current_family_key"] = str(family_account.get("family_key") or member_account.get("family_key") or "default")
+    st.session_state["_current_family_name"] = str(family_account.get("display_name") or family_account.get("family_key") or "家族")
+    st.session_state["_current_member_key"] = str(member_account.get("member_key") or "main")
+    st.session_state["_current_member_name"] = str(member_account.get("display_name") or member_account.get("member_key") or "個人")
     st.session_state["_family_pin_failures"] = 0
     st.session_state["_family_pin_locked_until"] = 0.0
     if persist:
@@ -1846,8 +1997,12 @@ def _set_authenticated_family(account, persist=False):
 
 
 def logout_family_account():
-    clear_browser_auto_login("browser_auto_login_family_logout")
-    keep = {"_suppress_auto_login_once": True}
+    clear_browser_auto_login("browser_auto_login_person_logout")
+    keep = {
+        "_suppress_auto_login_once": True,
+        "_last_family_key": current_family_key(),
+        "_last_member_key": current_member_key(),
+    }
     for key in list(st.session_state.keys()):
         try:
             del st.session_state[key]
@@ -1858,10 +2013,17 @@ def logout_family_account():
 
 
 def require_family_pin():
-    if st.session_state.get("_family_authenticated", False) and st.session_state.get("_current_family_key"):
+    """Login to an independent personal account nested under a family account."""
+    if (
+        st.session_state.get("_family_authenticated", False)
+        and st.session_state.get("_current_family_key")
+        and st.session_state.get("_current_member_key")
+    ):
         if st.session_state.pop("_persist_auto_login_pending", False):
-            account = get_family_account(current_family_key()) or {}
-            token = browser_auto_login_token(account.get("family_key"), account.get("pin_hash"))
+            member = get_member_account(current_family_key(), current_member_key()) or {}
+            token = browser_auto_login_token(
+                current_family_key(), current_member_key(), member.get("pin_hash")
+            )
             write_browser_auto_login(token)
         return
 
@@ -1869,32 +2031,40 @@ def require_family_pin():
     browser_state = None if suppress_auto else read_browser_persistence("browser_auto_login_gate")
     if isinstance(browser_state, dict):
         stored_token = str(browser_state.get("auth_token") or "")
-        if "|" in stored_token:
-            family_key, _ = stored_token.split("|", 1)
+        parts = stored_token.split("|")
+        if len(parts) == 3:
+            family_key, member_key, _ = parts
             try:
-                account = get_family_account(family_key)
+                family = get_family_account(family_key)
+                member = get_member_account(family_key, member_key)
             except Exception:
-                account = None
-            if account:
-                expected = browser_auto_login_token(account.get("family_key"), account.get("pin_hash"))
+                family = None
+                member = None
+            if family and member:
+                expected = browser_auto_login_token(
+                    family_key, member_key, member.get("pin_hash")
+                )
                 if expected and hmac.compare_digest(stored_token, expected):
-                    _set_authenticated_family(account, persist=False)
+                    _set_authenticated_family(family, member, persist=False)
                     st.session_state["_browser_last_camera_open_at"] = browser_state.get("last_camera_open_at") or 0
                     st.rerun()
 
-    # Preserve the old no-PIN mode for a single default account.
+    # Legacy no-PIN installation: default/main can still enter without a secret.
     try:
-        accounts = list_family_accounts()
+        default_family = get_family_account("default") or {}
+        default_member = get_member_account("default", "main") or {}
     except Exception:
-        accounts = []
-    if len(accounts) == 1:
-        account = get_family_account(accounts[0].get("family_key")) or {}
-        if not str(account.get("pin_hash") or "").strip():
-            _set_authenticated_family(account, persist=False)
+        default_family = {}
+        default_member = {}
+    if default_family and default_member and not str(default_member.get("pin_hash") or "").strip():
+        families = list_family_accounts()
+        members = list_family_members("default")
+        if len(families) == 1 and len(members) == 1:
+            _set_authenticated_family(default_family, default_member, persist=False)
             return
 
     st.title("📷 東京ぶらり旅プロジェクト")
-    st.caption("家族アカウントを選んで、あいことばを入れてください。")
+    st.caption("家族アカウントの中の、個人アカウントでログインしてください。")
 
     failures = int(st.session_state.get("_family_pin_failures", 0))
     locked_until = float(st.session_state.get("_family_pin_locked_until", 0.0))
@@ -1908,10 +2078,17 @@ def require_family_pin():
         value=str(st.session_state.get("_last_family_key") or "default"),
         max_chars=32,
         key="_family_account_input",
+        autocomplete="organization",
+    )
+    member_key = st.text_input(
+        "個人ID",
+        value=str(st.session_state.get("_last_member_key") or "main"),
+        max_chars=32,
+        key="_member_account_input",
         autocomplete="username",
     )
     entered = st.text_input(
-        "あいことば",
+        "個人のあいことば",
         type="password",
         max_chars=64,
         key="_family_pin_input",
@@ -1919,20 +2096,29 @@ def require_family_pin():
     )
     if st.button("はいる", type="primary", use_container_width=True):
         try:
-            normalized = _normalize_family_key(family_key)
-            st.session_state["_last_family_key"] = normalized
-            account = get_family_account(normalized)
+            normalized_family = _normalize_family_key(family_key)
+            normalized_member = _normalize_member_key(member_key)
+            st.session_state["_last_family_key"] = normalized_family
+            st.session_state["_last_member_key"] = normalized_member
+            family = get_family_account(normalized_family)
+            member = get_member_account(normalized_family, normalized_member)
         except Exception:
-            account = None
+            family = None
+            member = None
+
         valid = False
-        if account and entered:
-            salt = str(account.get("pin_salt") or "")
-            expected = str(account.get("pin_hash") or "")
-            actual = _family_pin_hash(entered.strip(), salt)
-            valid = bool(expected and actual and hmac.compare_digest(actual, expected))
+        if family and member:
+            expected = str(member.get("pin_hash") or "")
+            if expected:
+                salt = str(member.get("pin_salt") or "")
+                actual = _family_pin_hash(entered.strip(), salt) if entered else ""
+                valid = bool(actual and hmac.compare_digest(actual, expected))
+            else:
+                valid = not entered
+
         if valid:
-            _set_authenticated_family(account, persist=True)
-            # Do not auto-open a camera from a different family after manual account switching.
+            _set_authenticated_family(family, member, persist=True)
+            # Never reopen another person's recent camera session after switching accounts.
             st.session_state["_browser_last_camera_open_at"] = 0
             st.rerun()
 
@@ -1943,9 +2129,8 @@ def require_family_pin():
             st.error("入力回数が多いため、1分ほど待ってからもう一度試してください。")
         else:
             st.session_state["_family_pin_failures"] = failures
-            st.error("家族IDまたはあいことばが違います。")
+            st.error("家族ID・個人ID・あいことばのいずれかが違います。")
     st.stop()
-
 
 # ============================================================
 # OpenAI helpers
@@ -2403,7 +2588,7 @@ def unique_auto_diary_title(base_title, exclude_trip_id=None):
             supabase_client()
             .table(DIARY_TABLE)
             .select("trip_id,title")
-            .eq("family_key", current_family_key())
+            .eq("family_key", current_family_key()).eq("member_key", current_member_key())
             .execute()
         ).data or []
     except Exception:
@@ -2452,7 +2637,7 @@ def update_diary_title(trip_id, title):
     client = supabase_client()
     client.table(DIARY_TABLE).update(
         {"title": value, "updated_at": now_jst().isoformat()}
-    ).eq("trip_id", trip_id).eq("family_key", current_family_key()).execute()
+    ).eq("trip_id", trip_id).eq("family_key", current_family_key()).eq("member_key", current_member_key()).execute()
 
     # Supabase update() can complete without raising even if no row matched. Read it
     # back so the user never sees a success message when the title was not stored.
@@ -2461,7 +2646,7 @@ def update_diary_title(trip_id, title):
         .table(DIARY_TABLE)
         .select("trip_id,title")
         .eq("trip_id", trip_id)
-        .eq("family_key", current_family_key())
+        .eq("family_key", current_family_key()).eq("member_key", current_member_key())
         .limit(1)
         .execute()
     )
@@ -2485,7 +2670,7 @@ def normalize_duplicate_saved_diary_titles():
     rename later duplicates as ぶらり旅（場所2）, ぶらり旅（場所3）, ... .
     Manual/custom titles outside the automatic ぶらり旅（...） form are untouched.
     """
-    guard_key = f"_duplicate_saved_titles_checked_{current_family_key()}"
+    guard_key = f"_duplicate_saved_titles_checked_{current_family_key()}_{current_member_key()}"
     if st.session_state.get(guard_key, False):
         return
     st.session_state[guard_key] = True
@@ -2496,7 +2681,7 @@ def normalize_duplicate_saved_diary_titles():
             client
             .table(DIARY_TABLE)
             .select("id,trip_id,title,created_at")
-            .eq("family_key", current_family_key())
+            .eq("family_key", current_family_key()).eq("member_key", current_member_key())
             .order("created_at")
             .execute()
         ).data or []
@@ -2530,7 +2715,7 @@ def normalize_duplicate_saved_diary_titles():
 
         client.table(DIARY_TABLE).update(
             {"title": candidate, "updated_at": now_jst().isoformat()}
-        ).eq("id", row.get("id")).eq("family_key", current_family_key()).execute()
+        ).eq("id", row.get("id")).eq("family_key", current_family_key()).eq("member_key", current_member_key()).execute()
         used_titles.add(candidate)
         seen.add(candidate)
         changed = True
@@ -2560,7 +2745,7 @@ def download_photo(storage_path):
 
 def upload_photo(trip_id, image_bytes, location=None, captured_at=None, capture_source="camera"):
     if not get_trip(trip_id):
-        raise ValueError("現在の家族アカウントのぶらり旅が見つかりません。")
+        raise ValueError("現在の個人アカウントのぶらり旅が見つかりません。")
     # Keep Storage upload as a raw binary body. In particular, do not send an
     # x-upsert header for new files.
     compressed = normalize_photo(image_bytes)
@@ -2568,7 +2753,7 @@ def upload_photo(trip_id, image_bytes, location=None, captured_at=None, capture_
         raise ValueError("写真データが空です。")
 
     stamp = now_jst().strftime("%Y%m%d_%H%M%S_%f")
-    path = f"{current_family_key()}/{trip_id}/{stamp}_{uuid.uuid4().hex[:8]}.jpg"
+    path = f"{current_family_key()}/{current_member_key()}/{trip_id}/{stamp}_{uuid.uuid4().hex[:8]}.jpg"
     client = supabase_client()
 
     reflection = {
@@ -2595,6 +2780,7 @@ def upload_photo(trip_id, image_bytes, location=None, captured_at=None, capture_
                 {
                     "trip_id": trip_id,
                     "family_key": current_family_key(),
+                    "member_key": current_member_key(),
                     "storage_path": path,
                     "captured_at": str(captured_at or now_jst().isoformat()),
                     "reflection_json": reflection,
@@ -2624,6 +2810,7 @@ def create_trip(destination=""):
         .insert(
             {
                 "family_key": current_family_key(),
+                "member_key": current_member_key(),
                 "trip_date": today_iso(),
                 "destination": str(destination or "").strip(),
                 "status": "active",
@@ -2640,7 +2827,7 @@ def get_latest_active_trip():
         supabase_client()
         .table(TRIP_TABLE)
         .select("*")
-        .eq("family_key", current_family_key())
+        .eq("family_key", current_family_key()).eq("member_key", current_member_key())
         .eq("status", "active")
         .order("started_at", desc=True)
         .limit(1)
@@ -2654,7 +2841,7 @@ def get_today_active_trip():
         supabase_client()
         .table(TRIP_TABLE)
         .select("*")
-        .eq("family_key", current_family_key())
+        .eq("family_key", current_family_key()).eq("member_key", current_member_key())
         .eq("status", "active")
         .eq("trip_date", today_iso())
         .order("started_at", desc=True)
@@ -2672,7 +2859,7 @@ def update_trip_destination(trip_id, destination):
         .table(TRIP_TABLE)
         .update({"destination": destination})
         .eq("id", trip_id)
-        .eq("family_key", current_family_key())
+        .eq("family_key", current_family_key()).eq("member_key", current_member_key())
         .execute()
     )
 
@@ -2682,7 +2869,7 @@ def update_trip_destination(trip_id, destination):
             .table(PHOTO_TABLE)
             .select("id,reflection_json")
             .eq("trip_id", trip_id)
-            .eq("family_key", current_family_key())
+            .eq("family_key", current_family_key()).eq("member_key", current_member_key())
             .execute()
         ).data or []
         for photo in photos:
@@ -2710,7 +2897,7 @@ def update_trip_destination(trip_id, destination):
                 .table(PHOTO_TABLE)
                 .update({"reflection_json": reflection})
                 .eq("id", photo["id"])
-                .eq("family_key", current_family_key())
+                .eq("family_key", current_family_key()).eq("member_key", current_member_key())
                 .execute()
             )
     except Exception:
@@ -2726,7 +2913,7 @@ def get_trip(trip_id):
         .table(TRIP_TABLE)
         .select("*")
         .eq("id", trip_id)
-        .eq("family_key", current_family_key())
+        .eq("family_key", current_family_key()).eq("member_key", current_member_key())
         .limit(1)
         .execute()
     )
@@ -2739,7 +2926,7 @@ def finish_trip(trip_id):
         .table(TRIP_TABLE)
         .update({"status": "ready_for_diary", "ended_at": now_jst().isoformat()})
         .eq("id", trip_id)
-        .eq("family_key", current_family_key())
+        .eq("family_key", current_family_key()).eq("member_key", current_member_key())
         .execute()
     )
 
@@ -2750,7 +2937,7 @@ def list_trip_photos(trip_id):
         .table(PHOTO_TABLE)
         .select("*")
         .eq("trip_id", trip_id)
-        .eq("family_key", current_family_key())
+        .eq("family_key", current_family_key()).eq("member_key", current_member_key())
         .order("captured_at")
         .execute()
     )
@@ -2764,7 +2951,7 @@ def update_photo_reflection(photo_id, conversation, signals, done=None):
         .table(PHOTO_TABLE)
         .select("reflection_json")
         .eq("id", photo_id)
-        .eq("family_key", current_family_key())
+        .eq("family_key", current_family_key()).eq("member_key", current_member_key())
         .limit(1)
         .execute()
     )
@@ -2787,7 +2974,7 @@ def update_photo_reflection(photo_id, conversation, signals, done=None):
         .table(PHOTO_TABLE)
         .update({"reflection_json": reflection, "signals_json": signals or {}})
         .eq("id", photo_id)
-        .eq("family_key", current_family_key())
+        .eq("family_key", current_family_key()).eq("member_key", current_member_key())
         .execute()
     )
 
@@ -2797,7 +2984,7 @@ def list_recent_trips_for_diary(limit=40):
         supabase_client()
         .table(TRIP_TABLE)
         .select("*")
-        .eq("family_key", current_family_key())
+        .eq("family_key", current_family_key()).eq("member_key", current_member_key())
         .in_("status", ["ready_for_diary", "diary_done"])
         .order("trip_date", desc=True)
         .order("started_at", desc=True)
@@ -2815,7 +3002,7 @@ def get_diary_for_trip(trip_id):
         .table(DIARY_TABLE)
         .select("*")
         .eq("trip_id", trip_id)
-        .eq("family_key", current_family_key())
+        .eq("family_key", current_family_key()).eq("member_key", current_member_key())
         .limit(1)
         .execute()
     )
@@ -2826,7 +3013,7 @@ def save_diary(trip_id, title, diary_text, raw_conversation, ai_meta):
     existing = get_diary_for_trip(trip_id)
     trip = get_trip(trip_id)
     if not trip:
-        raise ValueError("現在の家族アカウントのぶらり旅が見つかりません。")
+        raise ValueError("現在の個人アカウントのぶらり旅が見つかりません。")
     existing_title = str((existing or {}).get("title") or "").strip()
     requested_title = str(title or "").strip()
     if existing_title:
@@ -2845,6 +3032,7 @@ def save_diary(trip_id, title, diary_text, raw_conversation, ai_meta):
     payload = {
         "trip_id": trip_id,
         "family_key": current_family_key(),
+        "member_key": current_member_key(),
         "title": fixed_title,
         "diary_text": str(diary_text or "").strip(),
         "raw_conversation": raw_conversation,
@@ -2857,7 +3045,7 @@ def save_diary(trip_id, title, diary_text, raw_conversation, ai_meta):
             .table(DIARY_TABLE)
             .update(payload)
             .eq("id", existing["id"])
-            .eq("family_key", current_family_key())
+            .eq("family_key", current_family_key()).eq("member_key", current_member_key())
             .execute()
         )
     else:
@@ -2868,7 +3056,7 @@ def save_diary(trip_id, title, diary_text, raw_conversation, ai_meta):
         .table(TRIP_TABLE)
         .update({"status": "diary_done", "ended_at": trip.get("ended_at") or now_jst().isoformat()})
         .eq("id", trip_id)
-        .eq("family_key", current_family_key())
+        .eq("family_key", current_family_key()).eq("member_key", current_member_key())
         .execute()
     )
     return get_diary_for_trip(trip_id)
@@ -2889,11 +3077,11 @@ def delete_diary_and_related_data(trip_id):
 
     # A photo's reflection_json contains the per-photo conversation/comments, so
     # deleting the photo rows deletes those comments together with the photo record.
-    client.table(PHOTO_TABLE).delete().eq("trip_id", trip_id).eq("family_key", current_family_key()).execute()
-    client.table(DIARY_TABLE).delete().eq("trip_id", trip_id).eq("family_key", current_family_key()).execute()
+    client.table(PHOTO_TABLE).delete().eq("trip_id", trip_id).eq("family_key", current_family_key()).eq("member_key", current_member_key()).execute()
+    client.table(DIARY_TABLE).delete().eq("trip_id", trip_id).eq("family_key", current_family_key()).eq("member_key", current_member_key()).execute()
     # Once its diary/photos are gone, remove the trip container as well so the
     # deleted day cannot reappear as an empty trip in diary/monthly screens.
-    client.table(TRIP_TABLE).delete().eq("id", trip_id).eq("family_key", current_family_key()).execute()
+    client.table(TRIP_TABLE).delete().eq("id", trip_id).eq("family_key", current_family_key()).eq("member_key", current_member_key()).execute()
 
     # A saved monthly review can contain wording derived from the deleted diary.
     # Remove that month's snapshot so it cannot continue showing deleted material.
@@ -2901,7 +3089,7 @@ def delete_diary_and_related_data(trip_id):
     month_key = trip_date[:7] if len(trip_date) >= 7 else ""
     if month_key:
         first_day, _ = month_bounds(month_key)
-        client.table(MONTHLY_TABLE).delete().eq("review_month", first_day).eq("family_key", current_family_key()).execute()
+        client.table(MONTHLY_TABLE).delete().eq("review_month", first_day).eq("family_key", current_family_key()).eq("member_key", current_member_key()).execute()
         for key in (
             f"monthly_review_{month_key}",
             f"monthly_audio_{month_key}",
@@ -2980,7 +3168,7 @@ def delete_photo_and_related_data(trip_id, photo_id):
 
     # reflection_json contains the conversation/comments for this photo, so deleting
     # the photo row removes those records together with the image metadata.
-    client.table(PHOTO_TABLE).delete().eq("id", photo_id).eq("trip_id", trip_id).eq("family_key", current_family_key()).execute()
+    client.table(PHOTO_TABLE).delete().eq("id", photo_id).eq("trip_id", trip_id).eq("family_key", current_family_key()).eq("member_key", current_member_key()).execute()
 
     # If a completed diary exists, remove the deleted photo's copied raw conversation
     # from the diary record as well. The diary prose itself is intentionally kept.
@@ -3028,7 +3216,7 @@ def delete_photo_and_related_data(trip_id, photo_id):
                 }
             )
             .eq("id", existing["id"])
-            .eq("family_key", current_family_key())
+            .eq("family_key", current_family_key()).eq("member_key", current_member_key())
             .execute()
         )
 
@@ -3038,7 +3226,7 @@ def delete_photo_and_related_data(trip_id, photo_id):
     month_key = trip_date[:7] if len(trip_date) >= 7 else ""
     if month_key:
         first_day, _ = month_bounds(month_key)
-        client.table(MONTHLY_TABLE).delete().eq("review_month", first_day).eq("family_key", current_family_key()).execute()
+        client.table(MONTHLY_TABLE).delete().eq("review_month", first_day).eq("family_key", current_family_key()).eq("member_key", current_member_key()).execute()
         for key in (
             f"monthly_review_{month_key}",
             f"monthly_audio_{month_key}",
@@ -3152,7 +3340,7 @@ def reset_photo_conversation(trip_id, photo_id):
                 }
             )
             .eq("id", existing["id"])
-            .eq("family_key", current_family_key())
+            .eq("family_key", current_family_key()).eq("member_key", current_member_key())
             .execute()
         )
 
@@ -3161,7 +3349,7 @@ def reset_photo_conversation(trip_id, photo_id):
     month_key = trip_date[:7] if len(trip_date) >= 7 else ""
     if month_key:
         first_day, _ = month_bounds(month_key)
-        client.table(MONTHLY_TABLE).delete().eq("review_month", first_day).eq("family_key", current_family_key()).execute()
+        client.table(MONTHLY_TABLE).delete().eq("review_month", first_day).eq("family_key", current_family_key()).eq("member_key", current_member_key()).execute()
         for key in (
             f"monthly_review_{month_key}",
             f"monthly_audio_{month_key}",
@@ -3351,7 +3539,7 @@ def list_recent_diaries(limit=60):
         supabase_client()
         .table(DIARY_TABLE)
         .select("*")
-        .eq("family_key", current_family_key())
+        .eq("family_key", current_family_key()).eq("member_key", current_member_key())
         .order("created_at", desc=True)
         .limit(limit)
         .execute()
@@ -3364,7 +3552,7 @@ def list_recent_diaries(limit=60):
         supabase_client()
         .table(TRIP_TABLE)
         .select("*")
-        .eq("family_key", current_family_key())
+        .eq("family_key", current_family_key()).eq("member_key", current_member_key())
         .in_("id", trip_ids)
         .execute()
     )
@@ -3392,7 +3580,7 @@ def get_month_bundle(month_key):
         supabase_client()
         .table(TRIP_TABLE)
         .select("*")
-        .eq("family_key", current_family_key())
+        .eq("family_key", current_family_key()).eq("member_key", current_member_key())
         .gte("trip_date", start)
         .lt("trip_date", end)
         .order("trip_date")
@@ -3406,7 +3594,7 @@ def get_month_bundle(month_key):
         supabase_client()
         .table(DIARY_TABLE)
         .select("*")
-        .eq("family_key", current_family_key())
+        .eq("family_key", current_family_key()).eq("member_key", current_member_key())
         .in_("trip_id", trip_ids)
         .execute()
     )
@@ -3414,7 +3602,7 @@ def get_month_bundle(month_key):
         supabase_client()
         .table(PHOTO_TABLE)
         .select("id,trip_id,captured_at,reflection_json,signals_json")
-        .eq("family_key", current_family_key())
+        .eq("family_key", current_family_key()).eq("member_key", current_member_key())
         .in_("trip_id", trip_ids)
         .order("captured_at")
         .execute()
@@ -3432,7 +3620,7 @@ def get_saved_monthly_review(month_key):
         supabase_client()
         .table(MONTHLY_TABLE)
         .select("*")
-        .eq("family_key", current_family_key())
+        .eq("family_key", current_family_key()).eq("member_key", current_member_key())
         .eq("review_month", first_day)
         .limit(1)
         .execute()
@@ -3445,6 +3633,7 @@ def save_monthly_review(month_key, review_json):
     existing = get_saved_monthly_review(month_key)
     payload = {
         "family_key": current_family_key(),
+        "member_key": current_member_key(),
         "review_month": first_day,
         "review_json": review_json,
         "updated_at": now_jst().isoformat(),
@@ -3455,7 +3644,7 @@ def save_monthly_review(month_key, review_json):
             .table(MONTHLY_TABLE)
             .update(payload)
             .eq("id", existing["id"])
-            .eq("family_key", current_family_key())
+            .eq("family_key", current_family_key()).eq("member_key", current_member_key())
             .execute()
         )
     else:
@@ -3821,7 +4010,7 @@ def _summary_feedback_entries(limit=SUMMARY_FEEDBACK_SCAN_LIMIT):
             supabase_client()
             .table(DIARY_TABLE)
             .select("id,trip_id,ai_meta,updated_at")
-            .eq("family_key", current_family_key())
+            .eq("family_key", current_family_key()).eq("member_key", current_member_key())
             .order("updated_at", desc=True)
             .limit(limit)
             .execute()
@@ -3971,7 +4160,7 @@ def save_summary_feedback(trip_id, rating):
         .table(DIARY_TABLE)
         .update({"ai_meta": meta, "updated_at": now_jst().isoformat()})
         .eq("trip_id", trip_id)
-        .eq("family_key", current_family_key())
+        .eq("family_key", current_family_key()).eq("member_key", current_member_key())
         .execute()
     )
     return meta
@@ -3983,7 +4172,7 @@ def reset_summary_feedback_learning():
     rows = (
         client.table(DIARY_TABLE)
         .select("id,ai_meta")
-        .eq("family_key", current_family_key())
+        .eq("family_key", current_family_key()).eq("member_key", current_member_key())
         .execute()
     ).data or []
     changed = 0
@@ -4001,7 +4190,7 @@ def reset_summary_feedback_learning():
             .table(DIARY_TABLE)
             .update({"ai_meta": meta, "updated_at": now_jst().isoformat()})
             .eq("id", row["id"])
-            .eq("family_key", current_family_key())
+            .eq("family_key", current_family_key()).eq("member_key", current_member_key())
             .execute()
         )
         changed += 1
@@ -4192,7 +4381,7 @@ def save_burari_ai_summary(trip_id, result):
         .table(DIARY_TABLE)
         .update({"ai_meta": meta, "updated_at": now_jst().isoformat()})
         .eq("trip_id", trip_id)
-        .eq("family_key", current_family_key())
+        .eq("family_key", current_family_key()).eq("member_key", current_member_key())
         .execute()
     )
     return meta
@@ -4540,7 +4729,7 @@ def finalize_previous_days_into_diaries():
     events, feelings, or intentions.
     """
     today = today_iso()
-    guard_key = f"_stale_rollover_checked_for_{current_family_key()}"
+    guard_key = f"_stale_rollover_checked_for_{current_family_key()}_{current_member_key()}"
     if st.session_state.get(guard_key) == today:
         return
     st.session_state[guard_key] = today
@@ -4551,7 +4740,7 @@ def finalize_previous_days_into_diaries():
             client
             .table(TRIP_TABLE)
             .select("*")
-            .eq("family_key", current_family_key())
+            .eq("family_key", current_family_key()).eq("member_key", current_member_key())
             .in_("status", ["active", "ready_for_diary"])
             .lt("trip_date", today)
             .order("trip_date")
@@ -4587,7 +4776,7 @@ def finalize_previous_days_into_diaries():
         existing = get_diary_for_trip(trip_id)
         if existing:
             if trip.get("status") != "diary_done":
-                client.table(TRIP_TABLE).update({"status": "diary_done"}).eq("id", trip_id).eq("family_key", current_family_key()).execute()
+                client.table(TRIP_TABLE).update({"status": "diary_done"}).eq("id", trip_id).eq("family_key", current_family_key()).eq("member_key", current_member_key()).execute()
             continue
 
         # First make the photos visible in the normal diary selector. Even if the
@@ -4599,7 +4788,7 @@ def finalize_previous_days_into_diaries():
                 .table(TRIP_TABLE)
                 .update({"status": "ready_for_diary", "ended_at": ended_at})
                 .eq("id", trip_id)
-                .eq("family_key", current_family_key())
+                .eq("family_key", current_family_key()).eq("member_key", current_member_key())
                 .execute()
             )
             rescued_count += 1
@@ -4696,12 +4885,12 @@ def finalize_previous_days_into_diaries():
 
 
 def list_pending_photo_trips(limit=40):
-    """Return this family's trips that still have photos but no saved diary."""
+    """Return this personal account's trips that still have photos but no saved diary."""
     result = (
         supabase_client()
         .table(TRIP_TABLE)
         .select("*")
-        .eq("family_key", current_family_key())
+        .eq("family_key", current_family_key()).eq("member_key", current_member_key())
         .in_("status", ["active", "ready_for_diary", "diary_done"])
         .order("trip_date", desc=True)
         .order("started_at", desc=True)
@@ -4737,7 +4926,7 @@ def pending_diary_titles(pending_rows):
         supabase_client()
         .table(DIARY_TABLE)
         .select("title")
-        .eq("family_key", current_family_key())
+        .eq("family_key", current_family_key()).eq("member_key", current_member_key())
         .execute()
     ).data or []
     used = {str(row.get("title") or "").strip() for row in saved if str(row.get("title") or "").strip()}
@@ -4929,6 +5118,51 @@ def trip_label(trip):
     return f"{trip.get('trip_date', '')}　{title}"
 
 
+
+def render_pending_thumbnail_grid(photos, max_count=None):
+    """Compact, fixed three-across thumbnails for the pending-diary section."""
+    subset = list(photos or [])
+    if max_count is not None:
+        subset = subset[: max(0, int(max_count))]
+    if not subset:
+        return
+    cards = []
+    for photo in subset:
+        try:
+            image_bytes = download_photo(photo["storage_path"])
+            # Use a small browser thumbnail; the stored original is left untouched.
+            try:
+                with Image.open(io.BytesIO(image_bytes)) as img:
+                    img = ImageOps.exif_transpose(img).convert("RGB")
+                    img.thumbnail((360, 360))
+                    out = io.BytesIO()
+                    img.save(out, format="JPEG", quality=76, optimize=True)
+                    image_bytes = out.getvalue()
+            except Exception:
+                pass
+            src = image_data_url(image_bytes)
+        except Exception:
+            continue
+        place = str(photo_location_label(photo) or "").strip()
+        place_html = f'<div style="font-size:9px;opacity:.62;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:3px;">📍 {html.escape(place)}</div>' if place else ""
+        cards.append(
+            f"""<div style="min-width:0;">
+                  <div style="width:100%;aspect-ratio:1/1;border-radius:10px;overflow:hidden;background:rgba(127,127,127,.08);">
+                    <img src="{src}" alt="未日記写真" style="display:block;width:100%;height:100%;object-fit:cover;" />
+                  </div>
+                  {place_html}
+                </div>"""
+        )
+    if not cards:
+        return
+    st.markdown(
+        '<div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px;width:100%;margin:.35rem 0 .55rem;">'
+        + "".join(cards)
+        + "</div>",
+        unsafe_allow_html=True,
+    )
+
+
 def render_small_gallery(photos, max_count=None, columns=3):
     """Render diary photos in a compact grid; history uses three per row."""
     subset = list(photos or [])
@@ -5039,7 +5273,7 @@ def open_diary_photo_talk(trip_id, photo_id, state):
 # Page: Home
 # ============================================================
 def page_home():
-    st.caption(f"家族アカウント：{current_family_name()}（{current_family_key()}）")
+    st.caption(f"{current_family_name()} ／ 個人：{current_member_name()}（{current_member_key()}）")
     st.markdown(
         """
         <div class="home-hero">
@@ -5399,7 +5633,7 @@ def page_diary():
             )
             st.markdown(f"**{html.escape(str(pending_trip.get('trip_date') or ''))}　{html.escape(pending_title)}**　・ 写真 {len(pending_photos)}枚")
             st.caption(f"本人コメントあり：{commented_count} / {len(pending_photos)}枚")
-            render_small_gallery(pending_photos, max_count=6, columns=3)
+            render_pending_thumbnail_grid(pending_photos)
             if st.button(
                 "📖 この写真で日記を作る",
                 type="primary",
@@ -6070,16 +6304,69 @@ def page_review():
         page_monthly(embedded=True)
 
 
+
 def page_settings():
-    page_top("⚙️ 設定", "旅の行き先メモや区切りを保護者が調整できます。")
+    page_top("⚙️ 設定", "家族と個人アカウント、旅の設定を管理します。")
 
     settings_notice = st.session_state.pop("_settings_notice", None)
     if settings_notice:
         st.success(settings_notice)
 
+    st.markdown("#### 個人アカウント")
+    st.write(
+        f"現在：**{current_member_name()}**　（個人ID：`{current_member_key()}`）  "
+        f"／ 家族：**{current_family_name()}**（`{current_family_key()}`）"
+    )
+    st.caption(
+        "ログイン、写真、日記、月ごとの振り返り、AIまとめのGood/Bad学習は個人アカウントごとに分かれます。"
+        "同じ家族の別の個人アカウントから、この個人の写真や日記は表示されません。"
+    )
+    with st.expander("現在の個人名を変更"):
+        renamed_member = st.text_input(
+            "個人名",
+            value=current_member_name(),
+            key="rename_current_member_name",
+        )
+        if st.button("個人名を保存", use_container_width=True, key="save_current_member_name"):
+            try:
+                saved_name = update_current_member_name(renamed_member)
+                st.session_state["_settings_notice"] = f"個人名を『{saved_name}』に変更しました。"
+                st.rerun()
+            except Exception as exc:
+                st.error(str(exc))
+
+    with st.expander("この家族に個人アカウントを追加"):
+        new_member_name = st.text_input("個人名", placeholder="例：大嘉、父、母", key="new_member_display_name")
+        new_member_key = st.text_input("個人ID", placeholder="例：taiga", key="new_member_key")
+        new_member_pin = st.text_input("個人のあいことば", type="password", key="new_member_pin")
+        if st.button("個人アカウントを作成", use_container_width=True, key="create_member_account_button"):
+            try:
+                created = create_member_account(new_member_key, new_member_name, new_member_pin)
+                st.session_state["_settings_notice"] = (
+                    f"個人アカウント『{created['display_name']}』を作成しました。"
+                    "切り替えるときは下のログアウトを押してください。"
+                )
+                st.rerun()
+            except Exception as exc:
+                st.error(str(exc))
+
+    members = list_family_members()
+    with st.expander("この家族の個人アカウント"):
+        for member in members:
+            marker = " ← 現在" if str(member.get("member_key")) == current_member_key() else ""
+            st.write(
+                f"・{member.get('display_name') or member.get('member_key')}"
+                f"（個人ID: {member.get('member_key')}）{marker}"
+            )
+
+    if st.button("ログアウトして個人アカウントを切り替える", use_container_width=True, key="personal_account_logout"):
+        logout_family_account()
+        st.rerun()
+
+    st.divider()
     st.markdown("#### 家族アカウント")
-    st.write(f"現在：**{current_family_name()}**　（家族ID：`{current_family_key()}`）")
-    st.caption("写真・日記・月ごとの振り返り・AIまとめのGood/Bad学習は、この家族アカウントごとに分かれます。")
+    st.write(f"家族：**{current_family_name()}**　（家族ID：`{current_family_key()}`）")
+    st.caption("家族アカウントは個人アカウントをまとめる入れ物です。写真や日記の所有者は個人アカウントです。")
     with st.expander("現在の家族名を変更"):
         renamed_family = st.text_input(
             "家族名",
@@ -6093,27 +6380,30 @@ def page_settings():
                 st.rerun()
             except Exception as exc:
                 st.error(str(exc))
+
     with st.expander("新しい家族アカウントを作る"):
+        st.caption("新しい家族には、最初の個人アカウントも同時に作ります。")
         new_family_name = st.text_input("家族名", placeholder="例：原田家", key="new_family_display_name")
         new_family_key = st.text_input("家族ID", placeholder="例：harada2", key="new_family_key")
-        new_family_pin = st.text_input("あいことば", type="password", key="new_family_pin")
-        if st.button("家族アカウントを作成", use_container_width=True, key="create_family_account_button"):
+        first_member_name = st.text_input("最初の個人名", placeholder="例：父", key="new_family_first_member_name")
+        first_member_key = st.text_input("最初の個人ID", placeholder="例：father", key="new_family_first_member_key")
+        first_member_pin = st.text_input("最初の個人のあいことば", type="password", key="new_family_first_member_pin")
+        if st.button("家族＋個人アカウントを作成", use_container_width=True, key="create_family_account_button"):
             try:
-                created = create_family_account(new_family_key, new_family_name, new_family_pin)
+                created = create_family_account(
+                    new_family_key,
+                    new_family_name,
+                    first_member_key,
+                    first_member_name,
+                    first_member_pin,
+                )
                 st.session_state["_settings_notice"] = (
-                    f"家族アカウント『{created['display_name']}』を作成しました。切り替えるときは一度ログアウトしてください。"
+                    f"家族『{created['display_name']}』と最初の個人アカウントを作成しました。"
+                    "切り替えるときはログアウトしてください。"
                 )
                 st.rerun()
             except Exception as exc:
                 st.error(str(exc))
-    accounts = list_family_accounts()
-    if len(accounts) > 1:
-        with st.expander("登録されている家族アカウント"):
-            for account in accounts:
-                st.write(f"・{account.get('display_name') or account.get('family_key')}（ID: {account.get('family_key')}）")
-    if st.button("ログアウトして家族を切り替える", use_container_width=True, key="family_account_logout"):
-        logout_family_account()
-        st.rerun()
 
     st.divider()
     active = get_trip(st.session_state.active_trip_id) if st.session_state.active_trip_id else None
@@ -6163,8 +6453,8 @@ def page_settings():
     else:
         st.write(f"これまでの評価：**Good {good_count}件** ／ **Bad {bad_count}件**")
         st.caption(
-            "次回のAIまとめでは、直近のGood最大3件の文章構成・分析の粒度・言い回しを少しだけ参考にし、"
-            "Bad最大2件に近い書き方を少しだけ避けます。写真と本人コメント、基本ルールの方を常に優先し、過去の内容はコピーしません。"
+            "次回のAIまとめでは、この個人アカウントの直近Good最大3件を少しだけ参考にし、"
+            "Bad最大2件に近い書き方を少しだけ避けます。写真と本人コメント、基本ルールを常に優先します。"
         )
         with st.expander("現在参考にしているGood / Badを見る"):
             good_examples = feedback_status.get("good_examples") or []
@@ -6172,15 +6462,15 @@ def page_settings():
             if good_examples:
                 st.markdown("**Goodとして参考にしている例**")
                 for idx, item in enumerate(good_examples, start=1):
-                    text = _feedback_example_text(item, max_chars=360)
-                    if text:
-                        st.write(f"{idx}. {text}")
+                    value = _feedback_example_text(item, max_chars=360)
+                    if value:
+                        st.write(f"{idx}. {value}")
             if bad_examples:
                 st.markdown("**Badとして弱く避けている例**")
                 for idx, item in enumerate(bad_examples, start=1):
-                    text = _feedback_example_text(item, max_chars=360)
-                    if text:
-                        st.write(f"{idx}. {text}")
+                    value = _feedback_example_text(item, max_chars=360)
+                    if value:
+                        st.write(f"{idx}. {value}")
     if st.button(
         "Good/Bad反映前の標準に戻す",
         use_container_width=True,
@@ -6190,10 +6480,10 @@ def page_settings():
 
     st.divider()
     st.markdown("#### 自動ログイン")
-    st.caption("この端末では、一度あいことばを入力すると次回から自動でログインします。")
+    st.caption("この端末では、一度個人アカウントへログインすると次回から同じ個人で自動ログインします。")
     if st.button("この端末の自動ログインを解除", use_container_width=True, key="settings_clear_auto_login"):
         clear_browser_auto_login()
-        st.success("この端末の自動ログインを解除しました。次回はあいことばが必要です。")
+        st.success("この端末の自動ログインを解除しました。次回は個人IDとあいことばが必要です。")
 
     st.divider()
     st.markdown("#### カメラについて")
@@ -6203,19 +6493,19 @@ def page_settings():
     )
     st.caption(
         "初回はカメラとは別に位置情報の許可も求められます。位置情報がオフ・拒否・取得不能の場合は、"
-        "ホームの地名表示（未登録なら「地名：登録なし（自動取得）」）を押して入力した内容を写真の場所として使います。"
+        "ホームの地名表示（未登録なら『地名：登録なし（自動取得）』）を押して入力した内容を写真の場所として使います。"
     )
 
     st.divider()
     st.markdown("#### プロジェクトの考え方")
     st.caption("写真の枚数や『便利・不便を見つけること』を課題にはしません。本人が気になったものを残し、あとから本人の言葉で振り返ります。")
 
-
 # ============================================================
 # Main UI
 # ============================================================
 verify_setup()
 ensure_default_family_account()
+ensure_default_member_account()
 require_family_pin()
 init_state()
 finalize_previous_days_into_diaries()
