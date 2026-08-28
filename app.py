@@ -1336,6 +1336,10 @@ _DIARY_GALLERY_CSS = """
   gap: 8px;
   box-sizing: border-box;
 }
+.diary-photo-wrap {
+  position: relative;
+  min-width: 0;
+}
 .diary-photo-card {
   appearance: none;
   -webkit-appearance: none;
@@ -1360,9 +1364,7 @@ _DIARY_GALLERY_CSS = """
   background: rgba(174, 182, 194, .20);
   box-shadow: 0 0 0 1px rgba(174, 182, 194, .08) inset;
 }
-.diary-photo-card:active {
-  transform: scale(.985);
-}
+.diary-photo-card:active { transform: scale(.985); }
 .diary-photo-card img {
   display: block;
   width: 100%;
@@ -1371,6 +1373,31 @@ _DIARY_GALLERY_CSS = """
   border-radius: 9px;
   background: rgba(128, 128, 128, .08);
 }
+.diary-photo-delete {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  z-index: 3;
+  width: 25px;
+  height: 25px;
+  padding: 0;
+  margin: 0;
+  border-radius: 999px;
+  border: 1.5px solid rgba(255,255,255,.92);
+  background: rgba(49,54,63,.72);
+  color: #fff;
+  font-size: 18px;
+  line-height: 20px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  box-shadow: 0 1px 5px rgba(0,0,0,.22);
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+.diary-photo-delete:active { transform: scale(.94); }
 .diary-photo-location {
   margin-top: 4px;
   font-size: 10px;
@@ -1386,6 +1413,7 @@ _DIARY_GALLERY_CSS = """
   .diary-photo-card { padding: 4px; border-radius: 12px; }
   .diary-photo-card img { border-radius: 8px; }
   .diary-photo-location { font-size: 9px; }
+  .diary-photo-delete { top: 2px; right: 2px; width: 23px; height: 23px; font-size: 17px; }
 }
 """
 
@@ -1399,6 +1427,9 @@ export default function(component) {
   const photos = Array.isArray(data?.photos) ? data.photos : [];
 
   for (const photo of photos) {
+    const wrap = document.createElement('div');
+    wrap.className = 'diary-photo-wrap';
+
     const button = document.createElement('button');
     button.type = 'button';
     button.className = `diary-photo-card ${photo.talked ? 'talked' : 'untalked'}`;
@@ -1410,6 +1441,9 @@ export default function(component) {
     const img = document.createElement('img');
     img.src = photo.src || '';
     img.alt = 'ぶらり旅の写真';
+    img.loading = 'lazy';
+    img.decoding = 'async';
+    img.fetchPriority = 'low';
     button.appendChild(img);
 
     if (photo.location) {
@@ -1423,7 +1457,20 @@ export default function(component) {
       setTriggerValue('photo_id', String(photo.id));
     });
 
-    grid.appendChild(button);
+    const remove = document.createElement('button');
+    remove.type = 'button';
+    remove.className = 'diary-photo-delete';
+    remove.textContent = '×';
+    remove.setAttribute('aria-label', 'この写真を削除');
+    remove.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      setTriggerValue('delete_photo_id', String(photo.id));
+    });
+
+    wrap.appendChild(button);
+    wrap.appendChild(remove);
+    grid.appendChild(wrap);
   }
 }
 """
@@ -1679,10 +1726,9 @@ def today_iso():
 def _verify_remote_schema_cached():
     """Cold-start schema probe only; repeated Streamlit reruns reuse the result."""
     client = supabase_client()
-    # These three probes cover authentication and the main diary path. The migration
-    # is cumulative, so avoiding three extra HTTP round-trips here materially speeds
-    # up every cold start while still catching an unapplied v44 migration early.
-    client.table(FAMILY_TABLE).select("family_key").limit(1).execute()
+    # Two probes are enough to confirm the v44 personal-account migration. Avoid
+    # touching every table on cold start; real page queries will surface any later
+    # table-specific problem only when that page is actually opened.
     client.table(MEMBER_TABLE).select("family_key,member_key").limit(1).execute()
     client.table(TRIP_TABLE).select("id,family_key,member_key").limit(1).execute()
     return True
@@ -1993,10 +2039,51 @@ def current_member_name():
     return name
 
 
+# ============================================================
+# Lightweight per-session DB cache
+# ============================================================
+def _session_cache_get(key, max_age_seconds=12):
+    entry = st.session_state.get(key)
+    if not isinstance(entry, dict):
+        return None
+    try:
+        age = time.time() - float(entry.get("at") or 0.0)
+    except Exception:
+        return None
+    if age < 0 or age > float(max_age_seconds):
+        return None
+    return entry.get("value")
+
+
+def _session_cache_set(key, value):
+    st.session_state[key] = {"at": time.time(), "value": value}
+    return value
+
+
+def _account_cache_key(name, *parts):
+    suffix = "|".join(str(x) for x in parts)
+    return f"_fastdb|{current_family_key()}|{current_member_key()}|{name}|{suffix}"
+
+
+def _invalidate_fast_db_cache():
+    """Clear only small account-scoped DB snapshots after a write."""
+    for key in list(st.session_state.keys()):
+        if str(key).startswith("_fastdb|"):
+            st.session_state.pop(key, None)
+
+
 def _set_authenticated_family(family_account, member_account, persist=False):
+    family_account = family_account or {}
+    member_account = member_account or {}
+    family_key = str(family_account.get("family_key") or member_account.get("family_key") or "default")
     st.session_state["_family_authenticated"] = True
-    st.session_state["_current_family_key"] = str(family_account.get("family_key") or member_account.get("family_key") or "default")
-    st.session_state["_current_family_name"] = str(family_account.get("display_name") or family_account.get("family_key") or "家族")
+    st.session_state["_current_family_key"] = family_key
+    family_name = str(family_account.get("display_name") or "").strip()
+    if family_name:
+        st.session_state["_current_family_name"] = family_name
+    else:
+        # Family display name is cosmetic. Load it lazily only on screens that show it.
+        st.session_state.pop("_current_family_name", None)
     st.session_state["_current_member_key"] = str(member_account.get("member_key") or "main")
     st.session_state["_current_member_name"] = str(member_account.get("display_name") or member_account.get("member_key") or "個人")
     st.session_state["_family_pin_failures"] = 0
@@ -2044,33 +2131,35 @@ def require_family_pin():
         if len(parts) == 3:
             family_key, member_key, _ = parts
             try:
-                family = get_family_account(family_key)
+                # The personal account is sufficient to validate the credential.
+                # Family display metadata is fetched lazily later only if a page shows it.
                 member = get_member_account(family_key, member_key)
             except Exception:
-                family = None
                 member = None
-            if family and member:
+            if member:
                 expected = browser_auto_login_token(
                     family_key, member_key, member.get("pin_hash")
                 )
                 if expected and hmac.compare_digest(stored_token, expected):
-                    _set_authenticated_family(family, member, persist=False)
+                    _set_authenticated_family({"family_key": family_key}, member, persist=False)
                     st.session_state["_browser_last_camera_open_at"] = browser_state.get("last_camera_open_at") or 0
                     st.rerun()
 
-    # Legacy no-PIN installation: default/main can still enter without a secret.
-    try:
-        default_family = get_family_account("default") or {}
-        default_member = get_member_account("default", "main") or {}
-    except Exception:
-        default_family = {}
-        default_member = {}
-    if default_family and default_member and not str(default_member.get("pin_hash") or "").strip():
-        families = list_family_accounts()
-        members = list_family_members("default")
-        if len(families) == 1 and len(members) == 1:
-            _set_authenticated_family(default_family, default_member, persist=False)
-            return
+    # Legacy no-PIN installation: only probe the legacy account when the app truly
+    # has no FAMILY_PIN. Normal PIN installations skip these four network requests.
+    if not FAMILY_PIN:
+        try:
+            default_family = get_family_account("default") or {}
+            default_member = get_member_account("default", "main") or {}
+        except Exception:
+            default_family = {}
+            default_member = {}
+        if default_family and default_member and not str(default_member.get("pin_hash") or "").strip():
+            families = list_family_accounts()
+            members = list_family_members("default")
+            if len(families) == 1 and len(members) == 1:
+                _set_authenticated_family(default_family, default_member, persist=False)
+                return
 
     st.title("📷 東京ぶらり旅プロジェクト")
     st.caption("家族アカウントの中の、個人アカウントでログインしてください。")
@@ -2109,14 +2198,21 @@ def require_family_pin():
             normalized_member = _normalize_member_key(member_key)
             st.session_state["_last_family_key"] = normalized_family
             st.session_state["_last_member_key"] = normalized_member
-            family = get_family_account(normalized_family)
             member = get_member_account(normalized_family, normalized_member)
+            family = {"family_key": normalized_family} if member else None
+            if normalized_family == "default" and normalized_member == "main" and not member:
+                # Bootstrap only on the rare first login to a brand-new/legacy install,
+                # instead of paying these checks on every normal app load.
+                ensure_default_family_account()
+                ensure_default_member_account()
+                member = get_member_account(normalized_family, normalized_member)
+                family = {"family_key": normalized_family} if member else None
         except Exception:
             family = None
             member = None
 
         valid = False
-        if family and member:
+        if member:
             expected = str(member.get("pin_hash") or "")
             if expected:
                 salt = str(member.get("pin_salt") or "")
@@ -2668,6 +2764,7 @@ def update_diary_title(trip_id, title):
     st.session_state["_diary_selector_serial"] = int(
         st.session_state.get("_diary_selector_serial") or 0
     ) + 1
+    _invalidate_fast_db_cache()
     return stored
 
 
@@ -2772,9 +2869,104 @@ def thumbnail_photo_data_url(storage_path, max_px=420, quality=76):
     return image_data_url(thumbnail_photo_bytes(storage_path, max_px=max_px, quality=quality))
 
 
+def _signed_url_from_value(value):
+    """Extract a Storage signed URL from supabase-py response variants."""
+    if isinstance(value, str):
+        url = value.strip()
+    elif isinstance(value, dict):
+        url = ""
+        for key in ("signedURL", "signedUrl", "signed_url", "url"):
+            candidate = value.get(key)
+            if isinstance(candidate, str) and candidate.strip():
+                url = candidate.strip()
+                break
+        if not url and isinstance(value.get("data"), dict):
+            return _signed_url_from_value(value.get("data"))
+    else:
+        url = ""
+    if not url:
+        return ""
+    if url.startswith("http://") or url.startswith("https://"):
+        return url
+    if url.startswith("/storage/v1/"):
+        return SUPABASE_URL.rstrip("/") + url
+    if url.startswith("/object/"):
+        return SUPABASE_URL.rstrip("/") + "/storage/v1" + url
+    return url
+
+
+@st.cache_data(ttl=540, max_entries=128, show_spinner=False)
+def signed_photo_url_map(storage_paths, expires_in=900):
+    """Create short-lived private image URLs in one Storage request when possible.
+
+    The browser can then fetch visible images in parallel and lazily instead of the
+    Streamlit server downloading, resizing and base64-encoding every gallery image
+    before the page is allowed to render.
+    """
+    paths = tuple(dict.fromkeys(str(x or "").strip() for x in (storage_paths or ()) if str(x or "").strip()))
+    if not paths:
+        return {}
+    bucket = supabase_client().storage.from_(PHOTO_BUCKET)
+    result = {}
+    try:
+        if hasattr(bucket, "create_signed_urls"):
+            response = bucket.create_signed_urls(list(paths), int(expires_in))
+            rows = response
+            if isinstance(response, dict):
+                rows = response.get("data") or response.get("signedURLs") or response.get("signed_urls") or []
+            elif hasattr(response, "data"):
+                rows = getattr(response, "data") or []
+            if isinstance(rows, list):
+                for idx, row in enumerate(rows):
+                    path = ""
+                    if isinstance(row, dict):
+                        path = str(row.get("path") or row.get("name") or "").strip()
+                    if not path and idx < len(paths):
+                        path = paths[idx]
+                    url = _signed_url_from_value(row)
+                    if path and url:
+                        result[path] = url
+    except Exception:
+        result = {}
+
+    # Fallback for SDKs without batch signing. Missing items only are signed one by
+    # one; if signing itself is unavailable callers fall back to cached thumbnails.
+    for path in paths:
+        if path in result:
+            continue
+        try:
+            response = bucket.create_signed_url(path, int(expires_in))
+            url = _signed_url_from_value(response)
+            if url:
+                result[path] = url
+        except Exception:
+            pass
+    return result
+
+
+def photo_display_url(photo, signed_map=None, max_px=420, quality=76):
+    path = str((photo or {}).get("storage_path") or "").strip()
+    if not path:
+        return ""
+    if isinstance(signed_map, dict) and signed_map.get(path):
+        return str(signed_map[path])
+    try:
+        single = signed_photo_url_map((path,))
+        if single.get(path):
+            return str(single[path])
+    except Exception:
+        pass
+    try:
+        return thumbnail_photo_data_url(path, max_px=max_px, quality=quality)
+    except Exception:
+        return ""
+
+
 def upload_photo(trip_id, image_bytes, location=None, captured_at=None, capture_source="camera"):
-    if not get_trip(trip_id):
-        raise ValueError("現在の個人アカウントのぶらり旅が見つかりません。")
+    active_snapshot = get_active_trip_fast(max_age_seconds=20) if st.session_state.get("active_trip_id") else None
+    if not active_snapshot or str(active_snapshot.get("id") or "") != str(trip_id):
+        if not get_trip(trip_id):
+            raise ValueError("現在の個人アカウントのぶらり旅が見つかりません。")
     # Keep Storage upload as a raw binary body. In particular, do not send an
     # x-upsert header for new files.
     compressed = normalize_photo(image_bytes)
@@ -2819,6 +3011,7 @@ def upload_photo(trip_id, image_bytes, location=None, captured_at=None, capture_
             .execute()
         )
         download_photo.clear()
+        _invalidate_fast_db_cache()
         return (result.data or [None])[0]
     except Exception as exc:
         if storage_saved:
@@ -2848,7 +3041,9 @@ def create_trip(destination=""):
         )
         .execute()
     )
-    return (result.data or [None])[0]
+    created = (result.data or [None])[0]
+    _invalidate_fast_db_cache()
+    return created
 
 
 def get_latest_active_trip():
@@ -2931,12 +3126,23 @@ def update_trip_destination(trip_id, destination):
             )
     except Exception:
         pass
-    return (result.data or [None])[0]
+    updated = (result.data or [None])[0]
+    if st.session_state.get("active_trip_id") == trip_id:
+        snapshot = get_active_trip_fast(max_age_seconds=20) or {}
+        snapshot = dict(snapshot)
+        snapshot["destination"] = destination
+        _cache_active_trip_snapshot(snapshot)
+    _invalidate_fast_db_cache()
+    return updated
 
 
 def get_trip(trip_id):
     if not trip_id:
         return None
+    cache_key = _account_cache_key("trip", trip_id)
+    cached = _session_cache_get(cache_key, max_age_seconds=20)
+    if cached is not None:
+        return cached
     result = (
         supabase_client()
         .table(TRIP_TABLE)
@@ -2946,7 +3152,7 @@ def get_trip(trip_id):
         .limit(1)
         .execute()
     )
-    return (result.data or [None])[0]
+    return _session_cache_set(cache_key, (result.data or [None])[0])
 
 
 def finish_trip(trip_id):
@@ -2958,9 +3164,19 @@ def finish_trip(trip_id):
         .eq("family_key", current_family_key()).eq("member_key", current_member_key())
         .execute()
     )
+    if st.session_state.get("active_trip_id") == trip_id:
+        st.session_state.active_trip_id = None
+        _invalidate_active_trip_snapshot()
+    _invalidate_fast_db_cache()
 
 
 def list_trip_photos(trip_id):
+    if not trip_id:
+        return []
+    cache_key = _account_cache_key("trip_photos", trip_id)
+    cached = _session_cache_get(cache_key, max_age_seconds=12)
+    if cached is not None:
+        return cached
     result = (
         supabase_client()
         .table(PHOTO_TABLE)
@@ -2970,7 +3186,7 @@ def list_trip_photos(trip_id):
         .order("captured_at")
         .execute()
     )
-    return result.data or []
+    return _session_cache_set(cache_key, result.data or [])
 
 
 def update_photo_reflection(photo_id, conversation, signals, done=None):
@@ -3006,6 +3222,7 @@ def update_photo_reflection(photo_id, conversation, signals, done=None):
         .eq("family_key", current_family_key()).eq("member_key", current_member_key())
         .execute()
     )
+    _invalidate_fast_db_cache()
 
 
 def list_recent_trips_for_diary(limit=40):
@@ -3126,6 +3343,7 @@ def save_diary(trip_id, title, diary_text, raw_conversation, ai_meta):
         .eq("family_key", current_family_key()).eq("member_key", current_member_key())
         .execute()
     )
+    _invalidate_fast_db_cache()
     return get_diary_for_trip(trip_id)
 
 
@@ -3176,7 +3394,12 @@ def delete_diary_and_related_data(trip_id):
         st.session_state.preferred_diary_trip_id = None
     if st.session_state.get("active_trip_id") == trip_id:
         st.session_state.active_trip_id = None
+        _invalidate_active_trip_snapshot()
     download_photo.clear()
+    thumbnail_photo_bytes.clear()
+    thumbnail_photo_data_url.clear()
+    signed_photo_url_map.clear()
+    _invalidate_fast_db_cache()
 
     return {"photo_count": len(photos), "month_key": month_key}
 
@@ -3220,11 +3443,11 @@ def confirm_diary_delete_dialog(trip_id, photo_count):
 
 
 
-def delete_photo_and_related_data(trip_id, photo_id):
-    """Delete one photo plus its per-photo conversation/comment data."""
+def delete_photo_and_related_data(trip_id, photo_id, known_photos=None):
+    """Delete one photo; if it was the last image, remove the empty diary/trip too."""
     client = supabase_client()
     trip = get_trip(trip_id) or {}
-    photos = list_trip_photos(trip_id)
+    photos = list(known_photos) if isinstance(known_photos, (list, tuple)) else list_trip_photos(trip_id)
     photo = next((p for p in photos if p.get("id") == photo_id), None)
     if not photo:
         raise ValueError("削除する画像が見つかりませんでした。")
@@ -3233,14 +3456,38 @@ def delete_photo_and_related_data(trip_id, photo_id):
     if storage_path:
         client.storage.from_(PHOTO_BUCKET).remove([storage_path])
 
-    # reflection_json contains the conversation/comments for this photo, so deleting
-    # the photo row removes those records together with the image metadata.
-    client.table(PHOTO_TABLE).delete().eq("id", photo_id).eq("trip_id", trip_id).eq("family_key", current_family_key()).eq("member_key", current_member_key()).execute()
+    client.table(PHOTO_TABLE).delete().eq("id", photo_id).eq("trip_id", trip_id).eq(
+        "family_key", current_family_key()
+    ).eq("member_key", current_member_key()).execute()
 
-    # If a completed diary exists, remove the deleted photo's copied raw conversation
-    # from the diary record as well. The diary prose itself is intentionally kept.
+    # We already have the gallery's photo metadata, so normal deletions need no
+    # second photo-list query. Only when it looks like the last image was removed do
+    # one tiny verification query, protecting against another device adding a photo
+    # at the same moment.
+    remaining_photos = [p for p in photos if p.get("id") != photo_id]
+    if not remaining_photos:
+        remaining_photos = (
+            client
+            .table(PHOTO_TABLE)
+            .select("id,trip_id,storage_path,captured_at,reflection_json,signals_json")
+            .eq("trip_id", trip_id)
+            .eq("family_key", current_family_key()).eq("member_key", current_member_key())
+            .order("captured_at")
+            .execute()
+        ).data or []
     existing = get_diary_for_trip(trip_id)
-    if existing:
+    diary_deleted = not remaining_photos
+
+    if diary_deleted:
+        # An image-less diary has no source material in this app. Remove both the
+        # saved diary and its empty trip container so it cannot reappear in lists.
+        client.table(DIARY_TABLE).delete().eq("trip_id", trip_id).eq(
+            "family_key", current_family_key()
+        ).eq("member_key", current_member_key()).execute()
+        client.table(TRIP_TABLE).delete().eq("id", trip_id).eq(
+            "family_key", current_family_key()
+        ).eq("member_key", current_member_key()).execute()
+    elif existing:
         raw = existing.get("raw_conversation") or {}
         if not isinstance(raw, dict):
             raw = {}
@@ -3261,13 +3508,10 @@ def delete_photo_and_related_data(trip_id, photo_id):
                         remaining_child_points.append(value)
         ai_meta["child_points"] = remaining_child_points[:3]
 
-        remaining_photos = [p for p in list_trip_photos(trip_id) if p.get("id") != photo_id]
         merged_signals = {}
         for remaining in remaining_photos:
             merged_signals = merge_signals(merged_signals, remaining.get("signals_json") or {})
         ai_meta["signals"] = merged_signals
-        # This analysis may have referred to the deleted comment. Hide it until the
-        # diary is rebuilt from the remaining child comments.
         ai_meta["reflection_summary"] = ""
         ai_meta["trip_summary"] = ""
         _clear_summary_feedback_fields(ai_meta, clear_history=True)
@@ -3287,13 +3531,14 @@ def delete_photo_and_related_data(trip_id, photo_id):
             .execute()
         )
 
-    # A monthly summary may have used this photo's comments as evidence. Clear the
-    # saved snapshot so a later monthly review is rebuilt from the remaining data.
+    # A monthly summary may contain content from the removed image/comment.
     trip_date = str(trip.get("trip_date") or "")
     month_key = trip_date[:7] if len(trip_date) >= 7 else ""
     if month_key:
         first_day, _ = month_bounds(month_key)
-        client.table(MONTHLY_TABLE).delete().eq("review_month", first_day).eq("family_key", current_family_key()).eq("member_key", current_member_key()).execute()
+        client.table(MONTHLY_TABLE).delete().eq("review_month", first_day).eq(
+            "family_key", current_family_key()
+        ).eq("member_key", current_member_key()).execute()
         for key in (
             f"monthly_review_{month_key}",
             f"monthly_audio_{month_key}",
@@ -3301,9 +3546,11 @@ def delete_photo_and_related_data(trip_id, photo_id):
         ):
             st.session_state.pop(key, None)
 
-    # Keep an unfinished diary session consistent after removing the current image.
-    state = st.session_state.get(f"reflection_state_{trip_id}")
-    if isinstance(state, dict):
+    state_key = f"reflection_state_{trip_id}"
+    state = st.session_state.get(state_key)
+    if diary_deleted:
+        st.session_state.pop(state_key, None)
+    elif isinstance(state, dict):
         old_ids = list(state.get("photo_ids") or [])
         old_index = int(state.get("photo_index") or 0)
         if photo_id in old_ids:
@@ -3313,16 +3560,12 @@ def delete_photo_and_related_data(trip_id, photo_id):
             items = state.get("items") or {}
             if isinstance(items, dict):
                 items.pop(photo_id, None)
-            if not new_ids:
-                state["photo_index"] = 0
-            elif deleted_index < old_index:
+            if deleted_index < old_index:
                 state["photo_index"] = max(0, old_index - 1)
             elif deleted_index == old_index:
                 state["photo_index"] = min(old_index, len(new_ids) - 1)
             else:
                 state["photo_index"] = min(old_index, len(new_ids) - 1)
-
-            # Any unsaved draft was based on the old set of photos, so rebuild it.
             state["draft"] = None
             state["draft_title"] = None
             state["draft_meta"] = {}
@@ -3335,22 +3578,45 @@ def delete_photo_and_related_data(trip_id, photo_id):
             if state.get("selected_photo_id") == photo_id:
                 state["selected_photo_id"] = new_ids[0] if new_ids else None
 
+    remaining_ids = [p.get("id") for p in remaining_photos if p.get("id")]
     selected_key = f"diary_selected_photo_{trip_id}"
-    if st.session_state.get(selected_key) == photo_id:
-        remaining_ids = [p.get("id") for p in list_trip_photos(trip_id) if p.get("id")]
-        if remaining_ids:
+    if remaining_ids:
+        if st.session_state.get(selected_key) == photo_id:
             st.session_state[selected_key] = remaining_ids[0]
-        else:
-            st.session_state.pop(selected_key, None)
+    else:
+        st.session_state.pop(selected_key, None)
 
     st.session_state.pop(f"delete_photo_selector_{trip_id}", None)
-    if st.session_state.get(f"diary_talk_photo_{trip_id}") == photo_id:
+    if st.session_state.get(f"diary_talk_photo_{trip_id}") == photo_id or diary_deleted:
         st.session_state.pop(f"diary_talk_photo_{trip_id}", None)
     if st.session_state.pop(f"diary_existing_photo_view_{trip_id}", False):
-        st.session_state.pop(f"reflection_state_{trip_id}", None)
-    download_photo.clear()
-    return {"month_key": month_key}
+        st.session_state.pop(state_key, None)
 
+    if diary_deleted:
+        st.session_state.pop(f"_diary_title_override_{trip_id}", None)
+        if st.session_state.get("history_detail_trip_id") == trip_id:
+            st.session_state.pop("history_detail_trip_id", None)
+        if str(st.session_state.get("preferred_diary_trip_id") or "") == str(trip_id):
+            st.session_state.preferred_diary_trip_id = None
+        if str(st.session_state.get("active_trip_id") or "") == str(trip_id):
+            st.session_state.active_trip_id = None
+            _invalidate_active_trip_snapshot()
+        st.session_state["_diary_selector_serial"] = int(
+            st.session_state.get("_diary_selector_serial") or 0
+        ) + 1
+
+    # Clear only image/data caches affected by this deletion. This also prevents a
+    # just-deleted image from lingering visually in a cached thumbnail.
+    download_photo.clear()
+    thumbnail_photo_bytes.clear()
+    thumbnail_photo_data_url.clear()
+    signed_photo_url_map.clear()
+    _invalidate_fast_db_cache()
+    return {
+        "month_key": month_key,
+        "diary_deleted": diary_deleted,
+        "remaining_photo_count": len(remaining_photos),
+    }
 
 def reset_photo_conversation(trip_id, photo_id):
     """Clear only the conversation/signals for one photo while keeping the image."""
@@ -3494,8 +3760,8 @@ def confirm_photo_conversation_reset_dialog(trip_id, photo_id):
 
 
 @st.dialog("この画像を削除しますか？")
-def confirm_photo_delete_dialog(trip_id, photo_id):
-    photos = list_trip_photos(trip_id)
+def confirm_photo_delete_dialog(trip_id, photo_id, photos=None):
+    photos = list(photos) if isinstance(photos, (list, tuple)) else list_trip_photos(trip_id)
     photo_ids = [p.get("id") for p in photos]
     if photo_id not in photo_ids:
         st.warning("この画像はすでに削除されています。")
@@ -3505,10 +3771,16 @@ def confirm_photo_delete_dialog(trip_id, photo_id):
 
     photo_number = photo_ids.index(photo_id) + 1
     st.write(f"**写真 {photo_number} / {len(photo_ids)}** を削除します。")
-    st.warning(
-        "この画像と、この画像について話したコメントを削除します。"
-        "保存済みの日記本文そのものは削除しません。"
-    )
+    if len(photo_ids) == 1:
+        st.warning(
+            "この画像はこの日記の最後の1枚です。画像とコメントを削除すると、"
+            "画像が0枚になるため、この日記も自動的に削除します。"
+        )
+    else:
+        st.warning(
+            "この画像と、この画像について話したコメントを削除します。"
+            "保存済みの日記本文そのものは残ります。"
+        )
     delete_col, cancel_col = st.columns(2)
     with delete_col:
         if st.button(
@@ -3518,8 +3790,15 @@ def confirm_photo_delete_dialog(trip_id, photo_id):
             key=f"dialog_photo_delete_yes_{trip_id}_{photo_id}",
         ):
             try:
-                delete_photo_and_related_data(trip_id, photo_id)
-                st.session_state["_diary_notice"] = "画像と、その画像について話したコメントを削除しました。"
+                result = delete_photo_and_related_data(
+                    trip_id,
+                    photo_id,
+                    known_photos=photos,
+                )
+                if result.get("diary_deleted"):
+                    st.session_state["_diary_notice"] = "最後の画像を削除したため、この日記も自動的に削除しました。"
+                else:
+                    st.session_state["_diary_notice"] = "画像と、その画像について話したコメントを削除しました。"
                 st.rerun(scope="app")
             except Exception as exc:
                 st.error("画像を削除できませんでした。")
@@ -3532,7 +3811,6 @@ def confirm_photo_delete_dialog(trip_id, photo_id):
             key=f"dialog_photo_delete_no_{trip_id}_{photo_id}",
         ):
             st.rerun(scope="app")
-
 
 def render_diary_delete_controls(
     trip_id,
@@ -3591,7 +3869,7 @@ def render_diary_delete_controls(
             use_container_width=True,
             key=f"diary_photo_delete_{trip_id}_{selected_photo_id}",
         ):
-            confirm_photo_delete_dialog(trip_id, selected_photo_id)
+            confirm_photo_delete_dialog(trip_id, selected_photo_id, photos=photos)
 
     if st.button(
         "🗑 この日記を削除",
@@ -3601,9 +3879,36 @@ def render_diary_delete_controls(
         confirm_diary_delete_dialog(trip_id, len(photos))
 
 
-def list_recent_diaries(limit=60):
+def _list_recent_diaries_uncached(limit=60):
+    """Load diaries and their trip metadata in one PostgREST request when available."""
+    client = supabase_client()
+    try:
+        relation = TRIP_TABLE
+        rows = (
+            client
+            .table(DIARY_TABLE)
+            .select(f"*,{relation}(*)")
+            .eq("family_key", current_family_key()).eq("member_key", current_member_key())
+            .order("created_at", desc=True)
+            .limit(limit)
+            .execute()
+        ).data or []
+        bundled = []
+        for diary in rows:
+            trip = diary.pop(relation, None) if isinstance(diary, dict) else None
+            if isinstance(trip, list):
+                trip = trip[0] if trip else None
+            if isinstance(trip, dict) and trip.get("id"):
+                bundled.append({"diary": diary, "trip": trip})
+        if bundled or not rows:
+            return bundled
+    except Exception:
+        pass
+
+    # Compatibility fallback for PostgREST schemas where relationship embedding is
+    # not exposed yet. Still batched: two requests total, never N+1.
     result = (
-        supabase_client()
+        client
         .table(DIARY_TABLE)
         .select("*")
         .eq("family_key", current_family_key()).eq("member_key", current_member_key())
@@ -3614,9 +3919,9 @@ def list_recent_diaries(limit=60):
     diaries = result.data or []
     if not diaries:
         return []
-    trip_ids = list({d["trip_id"] for d in diaries})
+    trip_ids = list({d["trip_id"] for d in diaries if d.get("trip_id")})
     trip_result = (
-        supabase_client()
+        client
         .table(TRIP_TABLE)
         .select("*")
         .eq("family_key", current_family_key()).eq("member_key", current_member_key())
@@ -3631,6 +3936,14 @@ def list_recent_diaries(limit=60):
     ]
 
 
+def list_recent_diaries(limit=60):
+    cache_key = _account_cache_key("recent_diaries", int(limit))
+    cached = _session_cache_get(cache_key, max_age_seconds=15)
+    if cached is not None:
+        return cached
+    return _session_cache_set(cache_key, _list_recent_diaries_uncached(limit=limit))
+
+
 def month_bounds(month_key):
     year, month = [int(x) for x in month_key.split("-")]
     start = date(year, month, 1)
@@ -3643,8 +3956,41 @@ def month_bounds(month_key):
 
 def get_month_bundle(month_key):
     start, end = month_bounds(month_key)
+    client = supabase_client()
+    try:
+        rows = (
+            client
+            .table(TRIP_TABLE)
+            .select(
+                f"*,{DIARY_TABLE}(*),"
+                f"{PHOTO_TABLE}(id,trip_id,captured_at,reflection_json,signals_json)"
+            )
+            .eq("family_key", current_family_key()).eq("member_key", current_member_key())
+            .gte("trip_date", start)
+            .lt("trip_date", end)
+            .order("trip_date")
+            .execute()
+        ).data or []
+        trips, diaries, photos = [], [], []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            trip = dict(row)
+            embedded_diaries = trip.pop(DIARY_TABLE, []) or []
+            embedded_photos = trip.pop(PHOTO_TABLE, []) or []
+            if isinstance(embedded_diaries, dict):
+                embedded_diaries = [embedded_diaries]
+            if isinstance(embedded_photos, dict):
+                embedded_photos = [embedded_photos]
+            trips.append(trip)
+            diaries.extend(x for x in embedded_diaries if isinstance(x, dict))
+            photos.extend(x for x in embedded_photos if isinstance(x, dict))
+        return {"trips": trips, "diaries": diaries, "photos": photos}
+    except Exception:
+        pass
+
     trips_result = (
-        supabase_client()
+        client
         .table(TRIP_TABLE)
         .select("*")
         .eq("family_key", current_family_key()).eq("member_key", current_member_key())
@@ -3658,7 +4004,7 @@ def get_month_bundle(month_key):
         return {"trips": [], "diaries": [], "photos": []}
     trip_ids = [t["id"] for t in trips]
     diaries_result = (
-        supabase_client()
+        client
         .table(DIARY_TABLE)
         .select("*")
         .eq("family_key", current_family_key()).eq("member_key", current_member_key())
@@ -3666,7 +4012,7 @@ def get_month_bundle(month_key):
         .execute()
     )
     photos_result = (
-        supabase_client()
+        client
         .table(PHOTO_TABLE)
         .select("id,trip_id,captured_at,reflection_json,signals_json")
         .eq("family_key", current_family_key()).eq("member_key", current_member_key())
@@ -3679,7 +4025,6 @@ def get_month_bundle(month_key):
         "diaries": diaries_result.data or [],
         "photos": photos_result.data or [],
     }
-
 
 def get_saved_monthly_review(month_key):
     first_day, _ = month_bounds(month_key)
@@ -4230,6 +4575,7 @@ def save_summary_feedback(trip_id, rating):
         .eq("family_key", current_family_key()).eq("member_key", current_member_key())
         .execute()
     )
+    _invalidate_fast_db_cache()
     return meta
 
 
@@ -4272,6 +4618,7 @@ def reset_summary_feedback_learning():
         draft_meta = state.get("draft_meta")
         if isinstance(draft_meta, dict):
             _clear_summary_feedback_fields(draft_meta, clear_history=True)
+    _invalidate_fast_db_cache()
     return changed
 
 
@@ -4451,6 +4798,7 @@ def save_burari_ai_summary(trip_id, result):
         .eq("family_key", current_family_key()).eq("member_key", current_member_key())
         .execute()
     )
+    _invalidate_fast_db_cache()
     return meta
 
 
@@ -4617,6 +4965,36 @@ def monthly_speech_text(review):
 # ============================================================
 # Session helpers
 # ============================================================
+def _cache_active_trip_snapshot(trip):
+    trip = trip if isinstance(trip, dict) else None
+    st.session_state["_active_trip_snapshot"] = trip
+    st.session_state["_active_trip_snapshot_at"] = time.time()
+    if trip and trip.get("id"):
+        st.session_state.active_trip_id = trip["id"]
+    return trip
+
+
+def _invalidate_active_trip_snapshot():
+    st.session_state.pop("_active_trip_snapshot", None)
+    st.session_state.pop("_active_trip_snapshot_at", None)
+
+
+def get_active_trip_fast(max_age_seconds=20):
+    trip_id = st.session_state.get("active_trip_id")
+    if not trip_id:
+        return None
+    snapshot = st.session_state.get("_active_trip_snapshot")
+    snapshot_at = float(st.session_state.get("_active_trip_snapshot_at") or 0.0)
+    if (
+        isinstance(snapshot, dict)
+        and str(snapshot.get("id") or "") == str(trip_id)
+        and (time.time() - snapshot_at) <= float(max_age_seconds)
+    ):
+        return snapshot
+    trip = get_trip(trip_id)
+    return _cache_active_trip_snapshot(trip)
+
+
 def init_state():
     defaults = {
         "main_page": "home",
@@ -4648,15 +5026,21 @@ def init_state():
             st.session_state["main_page"] = target_page
             st.session_state["_history_action"] = "push"
 
+    today = today_iso()
     if st.session_state.active_trip_id:
-        active = get_trip(st.session_state.active_trip_id)
-        if not active or active.get("status") != "active" or active.get("trip_date") != today_iso():
+        active = get_active_trip_fast(max_age_seconds=20)
+        if not active or active.get("status") != "active" or active.get("trip_date") != today:
             st.session_state.active_trip_id = None
+            _invalidate_active_trip_snapshot()
 
-    if not st.session_state.active_trip_id:
+    # If there is no active trip, remember a negative lookup for this person/day.
+    # Previously every Streamlit rerun queried Supabase again when there was no trip.
+    lookup_key = f"{current_family_key()}|{current_member_key()}|{today}"
+    if not st.session_state.active_trip_id and st.session_state.get("_today_active_lookup_key") != lookup_key:
         active = get_today_active_trip()
+        st.session_state["_today_active_lookup_key"] = lookup_key
         if active:
-            st.session_state.active_trip_id = active["id"]
+            _cache_active_trip_snapshot(active)
 
 
 VALID_APP_PAGES = {"home", "camera", "diary", "review", "settings"}
@@ -4725,13 +5109,16 @@ def sync_browser_history():
 
 
 def ensure_today_trip():
-    trip = get_trip(st.session_state.active_trip_id) if st.session_state.active_trip_id else None
+    trip = get_active_trip_fast(max_age_seconds=20) if st.session_state.active_trip_id else None
     if trip and trip.get("status") == "active" and trip.get("trip_date") == today_iso():
         return trip
     trip = get_today_active_trip()
     if not trip:
         trip = create_trip("")
-    st.session_state.active_trip_id = trip["id"]
+    _cache_active_trip_snapshot(trip)
+    st.session_state["_today_active_lookup_key"] = (
+        f"{current_family_key()}|{current_member_key()}|{today_iso()}"
+    )
     return trip
 
 
@@ -4951,10 +5338,50 @@ def finalize_previous_days_into_diaries():
         )
 
 
-def list_pending_photo_trips(limit=40):
-    """Return trips with photos but no diary using three batched DB requests."""
+def _list_pending_photo_trips_uncached(limit=40):
+    """Return trips with photos but no diary, normally in one PostgREST request."""
+    client = supabase_client()
+    try:
+        rows = (
+            client
+            .table(TRIP_TABLE)
+            .select(
+                f"*,{DIARY_TABLE}(id,trip_id,title),"
+                f"{PHOTO_TABLE}(id,trip_id,storage_path,captured_at,reflection_json,signals_json)"
+            )
+            .eq("family_key", current_family_key()).eq("member_key", current_member_key())
+            .in_("status", ["active", "ready_for_diary", "diary_done"])
+            .order("trip_date", desc=True)
+            .order("started_at", desc=True)
+            .limit(limit)
+            .execute()
+        ).data or []
+        pending = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            trip = dict(row)
+            embedded_diary = trip.pop(DIARY_TABLE, []) or []
+            photos = trip.pop(PHOTO_TABLE, []) or []
+            if isinstance(embedded_diary, dict):
+                embedded_diary = [embedded_diary]
+            if isinstance(photos, dict):
+                photos = [photos]
+            if embedded_diary or not photos:
+                continue
+            photos = sorted(
+                [p for p in photos if isinstance(p, dict)],
+                key=lambda p: str(p.get("captured_at") or ""),
+            )
+            if photos:
+                pending.append({"trip": trip, "photos": photos})
+        return pending
+    except Exception:
+        pass
+
+    # Relationship embedding fallback for older PostgREST metadata caches.
     result = (
-        supabase_client()
+        client
         .table(TRIP_TABLE)
         .select("*")
         .eq("family_key", current_family_key()).eq("member_key", current_member_key())
@@ -4967,7 +5394,6 @@ def list_pending_photo_trips(limit=40):
     trips = result.data or []
     if not trips:
         return []
-
     trip_ids = [str(trip.get("id")) for trip in trips if trip.get("id")]
     diary_map = diaries_for_trip_ids(trip_ids)
     pending_trips = [trip for trip in trips if str(trip.get("id")) not in diary_map]
@@ -4978,6 +5404,14 @@ def list_pending_photo_trips(limit=40):
         for trip in pending_trips
         if photo_map.get(str(trip.get("id")), [])
     ]
+
+
+def list_pending_photo_trips(limit=40):
+    cache_key = _account_cache_key("pending_photo_trips", int(limit))
+    cached = _session_cache_get(cache_key, max_age_seconds=10)
+    if cached is not None:
+        return cached
+    return _session_cache_set(cache_key, _list_pending_photo_trips_uncached(limit=limit))
 
 
 def _title_against_used(base_title, used_titles):
@@ -4993,16 +5427,19 @@ def _title_against_used(base_title, used_titles):
     return f"{stem}{suffix}）"
 
 
-def pending_diary_titles(pending_rows):
-    """Number pending titles too, including ぶらり旅（場所未登録2） etc."""
-    saved = (
-        supabase_client()
-        .table(DIARY_TABLE)
-        .select("title")
-        .eq("family_key", current_family_key()).eq("member_key", current_member_key())
-        .execute()
-    ).data or []
-    used = {str(row.get("title") or "").strip() for row in saved if str(row.get("title") or "").strip()}
+def pending_diary_titles(pending_rows, used_titles=None):
+    """Number pending titles too, reusing already-loaded diary titles when available."""
+    if used_titles is None:
+        saved = (
+            supabase_client()
+            .table(DIARY_TABLE)
+            .select("title")
+            .eq("family_key", current_family_key()).eq("member_key", current_member_key())
+            .execute()
+        ).data or []
+        used = {str(row.get("title") or "").strip() for row in saved if str(row.get("title") or "").strip()}
+    else:
+        used = {str(value or "").strip() for value in used_titles if str(value or "").strip()}
     result = {}
     # Oldest first gets the unnumbered base name; later trips get 2, 3, ... .
     ordered = sorted(
@@ -5199,18 +5636,19 @@ def render_pending_thumbnail_grid(photos, max_count=None):
         subset = subset[: max(0, int(max_count))]
     if not subset:
         return
+    paths = tuple(str(photo.get("storage_path") or "") for photo in subset if photo.get("storage_path"))
+    signed = signed_photo_url_map(paths) if paths else {}
     cards = []
     for photo in subset:
-        try:
-            src = thumbnail_photo_data_url(photo["storage_path"], max_px=360, quality=74)
-        except Exception:
+        src = photo_display_url(photo, signed, max_px=360, quality=74)
+        if not src:
             continue
         place = str(photo_location_label(photo) or "").strip()
         place_html = f'<div style="font-size:9px;opacity:.62;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:3px;">📍 {html.escape(place)}</div>' if place else ""
         cards.append(
             f"""<div style="min-width:0;">
                   <div style="width:100%;aspect-ratio:1/1;border-radius:10px;overflow:hidden;background:rgba(127,127,127,.08);">
-                    <img src="{src}" alt="未日記写真" style="display:block;width:100%;height:100%;object-fit:cover;" />
+                    <img src="{html.escape(src, quote=True)}" alt="未日記写真" loading="lazy" decoding="async" fetchpriority="low" style="display:block;width:100%;height:100%;object-fit:cover;" />
                   </div>
                   {place_html}
                 </div>"""
@@ -5226,27 +5664,35 @@ def render_pending_thumbnail_grid(photos, max_count=None):
 
 
 def render_small_gallery(photos, max_count=None, columns=3):
-    """Render diary photos in a compact grid; history uses three per row."""
+    """Render history photos lazily; the browser downloads visible images in parallel."""
     subset = list(photos or [])
     if max_count is not None:
         subset = subset[:max_count]
     if not subset:
         return
-
     column_count = max(1, min(int(columns or 3), 3))
-    cols = st.columns(column_count)
-    for idx, photo in enumerate(subset):
-        try:
-            image = thumbnail_photo_bytes(photo["storage_path"], max_px=520, quality=78)
-            with cols[idx % column_count]:
-                st.image(image, use_container_width=True)
-                location_label = photo_location_label(photo)
-                if location_label:
-                    st.caption(f"📍 {location_label}")
-        except Exception:
-            pass
-
-
+    paths = tuple(str(photo.get("storage_path") or "") for photo in subset if photo.get("storage_path"))
+    signed = signed_photo_url_map(paths) if paths else {}
+    cards = []
+    for photo in subset:
+        src = photo_display_url(photo, signed, max_px=520, quality=78)
+        if not src:
+            continue
+        location = str(photo_location_label(photo) or "").strip()
+        location_html = (
+            f'<div style="font-size:10px;opacity:.65;margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">📍 {html.escape(location)}</div>'
+            if location else ""
+        )
+        cards.append(
+            f'<div style="min-width:0;"><img src="{html.escape(src, quote=True)}" loading="lazy" decoding="async" fetchpriority="low" '
+            f'style="display:block;width:100%;aspect-ratio:1/1;object-fit:cover;border-radius:10px;" />{location_html}</div>'
+        )
+    if cards:
+        st.markdown(
+            f'<div style="display:grid;grid-template-columns:repeat({column_count},minmax(0,1fr));gap:6px;width:100%;">'
+            + "".join(cards) + "</div>",
+            unsafe_allow_html=True,
+        )
 
 def render_diary_photo_gallery(trip_id, photos, state=None):
     """Show all photos in a three-column clickable grid."""
@@ -5256,6 +5702,8 @@ def render_diary_photo_gallery(trip_id, photos, state=None):
     st.markdown("#### この日の写真")
     st.caption("オレンジ：話した写真　／　グレー：まだ話していない写真")
 
+    paths = tuple(str(photo.get("storage_path") or "") for photo in photos if photo.get("storage_path"))
+    signed = signed_photo_url_map(paths) if paths else {}
     cards = []
     photo_ids = []
     for photo in photos:
@@ -5266,10 +5714,7 @@ def render_diary_photo_gallery(trip_id, photos, state=None):
         conversation = item.get("conversation") or _stored_photo_conversation(photo)
         talked = _conversation_has_child_words(conversation)
         location_label = photo_location_label(photo)
-        try:
-            src = thumbnail_photo_data_url(photo["storage_path"], max_px=420, quality=76)
-        except Exception:
-            src = ""
+        src = photo_display_url(photo, signed, max_px=420, quality=76)
 
         cards.append(
             {
@@ -5291,7 +5736,16 @@ def render_diary_photo_gallery(trip_id, photos, state=None):
             data={"photos": cards},
             key=f"diary_gallery_{trip_id}_{serial}",
             on_photo_id_change=lambda: None,
+            on_delete_photo_id_change=lambda: None,
         )
+        delete_clicked = str(getattr(result, "delete_photo_id", "") or "")
+        if delete_clicked in photo_ids:
+            # Reset the component immediately so the same delete event is not emitted
+            # again while the confirmation dialog is open.
+            st.session_state[serial_key] = serial + 1
+            confirm_photo_delete_dialog(trip_id, delete_clicked, photos=photos)
+            return None
+
         clicked = str(getattr(result, "photo_id", "") or "")
         if clicked in photo_ids:
             # Reset the component before the gallery is shown again so the previous
@@ -5309,8 +5763,13 @@ def render_diary_photo_gallery(trip_id, photos, state=None):
                     f'<img src="{card["src"]}" style="width:100%;aspect-ratio:1/1;object-fit:cover;border-radius:10px;" />',
                     unsafe_allow_html=True,
                 )
-            if st.button("写真を開く", use_container_width=True, key=f"diary_photo_fallback_{trip_id}_{card['id']}"):
-                return card["id"]
+            action_cols = st.columns([1, 3])
+            with action_cols[0]:
+                if st.button("×", key=f"diary_photo_fallback_delete_{trip_id}_{card['id']}", help="この写真を削除"):
+                    confirm_photo_delete_dialog(trip_id, card["id"], photos=photos)
+            with action_cols[1]:
+                if st.button("写真を開く", use_container_width=True, key=f"diary_photo_fallback_{trip_id}_{card['id']}"):
+                    return card["id"]
     return None
 
 
@@ -5345,7 +5804,7 @@ def page_home():
         unsafe_allow_html=True,
     )
 
-    active = get_trip(st.session_state.active_trip_id) if st.session_state.active_trip_id else None
+    active = get_active_trip_fast(max_age_seconds=20) if st.session_state.active_trip_id else None
     active_photos = []
     active_place = ""
     if active and active.get("status") == "active" and active.get("trip_date") == today_iso():
@@ -5476,25 +5935,19 @@ def render_recent_camera_photo_comment(trip):
 
     st.divider()
     st.markdown("#### 今撮った写真")
-    try:
-        image_bytes = download_photo(photo["storage_path"])
-        # Keep the just-saved preview compact so the photo and microphone can fit
-        # together on a phone screen. The full image is still stored unchanged.
-        preview_src = image_data_url(image_bytes)
+    preview_src = photo_display_url(photo)
+    if preview_src:
         st.markdown(
             f"""
             <div style="display:flex;justify-content:center;align-items:center;width:100%;margin:.25rem 0 .45rem;">
-              <img src="{preview_src}" alt="今撮った写真"
+              <img src="{html.escape(preview_src, quote=True)}" alt="今撮った写真" loading="lazy" decoding="async"
                    style="display:block;max-width:min(72vw,320px);max-height:34dvh;width:auto;height:auto;object-fit:contain;border-radius:14px;" />
             </div>
             """,
             unsafe_allow_html=True,
         )
-    except Exception as exc:
-        st.error("今撮った写真を表示できませんでした。")
-        with st.expander("保護者向け詳細"):
-            st.code(str(exc))
-        return
+    else:
+        st.warning("写真のプレビューを表示できませんでした。コメントは続けられます。")
 
     location_label = photo_location_label(photo)
     if location_label:
@@ -5558,6 +6011,7 @@ def render_recent_camera_photo_comment(trip):
             conversation = list(conversation)
             conversation.append({"role": "child", "text": transcript})
             child_turns = sum(1 for x in conversation if x.get("role") == "child")
+            image_bytes = download_photo(photo["storage_path"])
             result = next_photo_turn(image_bytes, conversation, child_turns)
             assistant_text = str(result.get("reply", "")).strip()
             next_question = str(result.get("next_question", "")).strip()
@@ -5633,10 +6087,9 @@ def page_trip():
             digest = hashlib.sha1(raw).hexdigest()
             if st.session_state.get(digest_key) != digest:
                 capture_source = str(payload.get("source") or "camera")
-                fresh_trip = get_trip(trip["id"]) or trip
                 location = build_photo_location(
                     payload.get("location"),
-                    fresh_trip,
+                    trip,
                     capture_source=capture_source,
                 )
 
@@ -5673,16 +6126,25 @@ def page_diary():
         "📖 日記",
         "まだ日記になっていない写真を一覧で確認できます。日記作成後も写真を開いて本人の言葉を追加できます。",
     )
-
+    # Old unfinished trips are already shown by list_pending_photo_trips(), so no
+    # AI rollover or historical title scan is needed before the page can appear.
     notice = st.session_state.pop("_diary_notice", None)
     if notice:
         st.success(notice)
 
+    # One diary+trip request is shared by the pending-title numbering and the
+    # saved-diary selector below, instead of loading the same diary metadata twice.
+    recent_rows = list_recent_diaries(limit=80)
+    saved_titles = [
+        str((row.get("diary") or {}).get("title") or "").strip()
+        for row in recent_rows
+        if str((row.get("diary") or {}).get("title") or "").strip()
+    ]
     pending_rows = list_pending_photo_trips()
     if pending_rows:
         st.markdown("#### まだ日記になっていない写真")
         st.caption("撮影済みで、まだ日記として保存されていないぶらり旅です。『日記を作る』を押した時点で保存します。")
-        pending_titles = pending_diary_titles(pending_rows)
+        pending_titles = pending_diary_titles(pending_rows, used_titles=saved_titles)
         for item in pending_rows:
             pending_trip = item.get("trip") or {}
             pending_photos = item.get("photos") or []
@@ -5720,10 +6182,12 @@ def page_diary():
                         st.code(str(exc))
             st.divider()
 
-    all_trips = list_recent_trips_for_diary()
-    all_trip_ids = [str(t.get("id")) for t in all_trips if t.get("id")]
-    diary_map = diaries_for_trip_ids(all_trip_ids)
-    trips = [t for t in all_trips if str(t.get("id")) in diary_map]
+    diary_map = {
+        str((row.get("diary") or {}).get("trip_id") or ""): row.get("diary") or {}
+        for row in recent_rows
+        if (row.get("diary") or {}).get("trip_id")
+    }
+    trips = [row.get("trip") or {} for row in recent_rows if (row.get("trip") or {}).get("id")]
     if not trips:
         if not pending_rows:
             st.info("まだ日記はありません。")
@@ -5995,26 +6459,19 @@ def page_diary():
             st.session_state.pop(f"reflection_state_{trip_id}", None)
         st.rerun()
 
-    try:
-        image_bytes = download_photo(photo["storage_path"])
-        # Keep a clicked diary photo compact on phones so the whole image and the
-        # conversation controls can remain visible without excessive scrolling.
-        diary_photo_src = image_data_url(image_bytes)
+    diary_photo_src = photo_display_url(photo)
+    if diary_photo_src:
         st.markdown(
             f"""
             <div style="display:flex;justify-content:center;align-items:center;width:100%;margin:.25rem 0 .45rem;">
-              <img src="{diary_photo_src}" alt="日記の写真"
+              <img src="{html.escape(diary_photo_src, quote=True)}" alt="日記の写真" loading="lazy" decoding="async"
                    style="display:block;max-width:min(72vw,320px);max-height:34dvh;width:auto;height:auto;object-fit:contain;border-radius:14px;" />
             </div>
             """,
             unsafe_allow_html=True,
         )
-    except Exception as exc:
-        st.error("写真を読み込めませんでした。")
-        with st.expander("保護者向け詳細"):
-            st.code(str(exc))
-        render_diary_delete_controls(trip_id, photos, current_photo_id=pid, show_photo_navigation=True)
-        return
+    else:
+        st.warning("写真のプレビューを表示できませんでした。会話は続けられます。")
 
     location_label = photo_location_label(photo)
     if location_label:
@@ -6053,6 +6510,7 @@ def page_diary():
                         item["conversation"] = [{"role": "child", "text": transcript}]
                         item["started"] = True
                         item["done"] = False
+                        image_bytes = download_photo(photo["storage_path"])
                         result = next_photo_turn(image_bytes, item["conversation"], 1)
                         assistant_text = str(result.get("reply", "")).strip()
                         next_question = str(result.get("next_question", "")).strip()
@@ -6119,6 +6577,7 @@ def page_diary():
                         raise ValueError("文字起こしが空でした。")
                     item["conversation"].append({"role": "child", "text": transcript})
                     child_turns = sum(1 for x in item["conversation"] if x.get("role") == "child")
+                    image_bytes = download_photo(photo["storage_path"])
                     result = next_photo_turn(image_bytes, item["conversation"], child_turns)
                     assistant_text = str(result.get("reply", "")).strip()
                     if result.get("next_question"):
@@ -6483,7 +6942,7 @@ def page_settings():
                 st.error(str(exc))
 
     st.divider()
-    active = get_trip(st.session_state.active_trip_id) if st.session_state.active_trip_id else None
+    active = get_active_trip_fast(max_age_seconds=20) if st.session_state.active_trip_id else None
     if active and active.get("status") == "active" and active.get("trip_date") == today_iso():
         photos = list_trip_photos(active["id"])
         st.markdown("#### 今日のぶらり旅")
@@ -6581,12 +7040,10 @@ def page_settings():
 # Main UI
 # ============================================================
 verify_setup()
-ensure_default_family_account()
-ensure_default_member_account()
 require_family_pin()
 init_state()
-finalize_previous_days_into_diaries()
-normalize_duplicate_saved_diary_titles()
+# Daily rollover and old-title repair can touch many rows. They are diary/history
+# maintenance, not startup requirements, so home/camera opens no longer wait for them.
 restore_recent_camera_session()
 sync_browser_history()
 
