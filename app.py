@@ -210,7 +210,7 @@ st.markdown(
         flex-direction: row !important;
         align-items: center !important;
         justify-content: center !important;
-        gap: .72rem !important;
+        gap: .54rem !important;
         text-align: left !important;
       }
       .st-key-home_secondary div.stButton > button {
@@ -227,12 +227,16 @@ st.markdown(
         flex-direction: row !important;
         align-items: center !important;
         justify-content: center !important;
-        gap: .60rem !important;
+        gap: .48rem !important;
         text-align: left !important;
       }
       .st-key-home_primary div.stButton > button p,
       .st-key-home_secondary div.stButton > button p {
         margin: 0 !important;
+        width: auto !important;
+        flex: 0 1 auto !important;
+        min-width: 0 !important;
+        max-width: calc(100% - 4.6rem) !important;
       }
       .st-key-home_camera div.stButton > button,
       .st-key-home_camera button,
@@ -426,7 +430,7 @@ st.markdown(
           font-size: 1.20rem !important;
           line-height: 1.14 !important;
           padding: .52rem .52rem !important;
-          gap: .48rem !important;
+          gap: .38rem !important;
         }
         .st-key-home_secondary div.stButton > button {
           height: 4.45rem !important;
@@ -436,7 +440,7 @@ st.markdown(
           font-size: 1.10rem !important;
           line-height: 1.12 !important;
           padding: .46rem .48rem !important;
-          gap: .42rem !important;
+          gap: .34rem !important;
         }
         .st-key-home_destination div.stButton > button {
           min-height: 2.55rem !important;
@@ -5340,7 +5344,7 @@ def inject_home_icon_css():
         ".st-key-home_camera div.stButton > button::before,"
         ".st-key-home_diary div.stButton > button::before,"
         ".st-key-home_review div.stButton > button::before,"
-        ".st-key-home_settings div.stButton > button::before{content:'';display:block;background-repeat:no-repeat;background-position:center;background-size:contain;flex-shrink:0;}",
+        ".st-key-home_settings div.stButton > button::before{content:'';display:block;background-repeat:no-repeat;background-position:center;background-size:contain;flex-shrink:0;margin:0 !important;}",
         ".st-key-home_camera div.stButton > button::before,.st-key-home_diary div.stButton > button::before{width:58px;height:58px;flex-basis:58px;}",
         ".st-key-home_review div.stButton > button::before,.st-key-home_settings div.stButton > button::before{width:50px;height:50px;flex-basis:50px;}",
         "@media (max-width: 640px){.st-key-home_camera div.stButton > button::before,.st-key-home_diary div.stButton > button::before{width:46px;height:46px;flex-basis:46px;}.st-key-home_review div.stButton > button::before,.st-key-home_settings div.stButton > button::before{width:40px;height:40px;flex-basis:40px;}}",
