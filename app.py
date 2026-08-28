@@ -197,34 +197,42 @@ st.markdown(
         transition: transform .12s ease, box-shadow .12s ease, background .12s ease;
       }
       .st-key-home_primary div.stButton > button {
-        height: 8.15rem !important;
-        min-height: 8.15rem !important;
-        max-height: 8.15rem !important;
+        height: 8.05rem !important;
+        min-height: 8.05rem !important;
+        max-height: 8.05rem !important;
         border-radius: 26px !important;
-        font-size: 1.34rem !important;
+        font-size: 1.22rem !important;
         font-weight: 840 !important;
-        line-height: 1.3 !important;
+        line-height: 1.22 !important;
         letter-spacing: .01em !important;
-        padding-top: 5.05rem !important;
-        padding-bottom: .95rem !important;
-        background-repeat: no-repeat !important;
-        background-position: center 14px !important;
-        background-size: 72px 72px !important;
+        padding: .78rem .80rem .72rem .80rem !important;
+        display: flex !important;
+        flex-direction: column !important;
+        align-items: center !important;
+        justify-content: center !important;
+        gap: .28rem !important;
+        text-align: center !important;
       }
       .st-key-home_secondary div.stButton > button {
-        height: 7.45rem !important;
-        min-height: 7.45rem !important;
-        max-height: 7.45rem !important;
+        height: 7.15rem !important;
+        min-height: 7.15rem !important;
+        max-height: 7.15rem !important;
         border-radius: 22px !important;
-        font-size: 1.18rem !important;
+        font-size: 1.10rem !important;
         font-weight: 790 !important;
-        line-height: 1.26 !important;
+        line-height: 1.20 !important;
         letter-spacing: .01em !important;
-        padding-top: 4.55rem !important;
-        padding-bottom: .86rem !important;
-        background-repeat: no-repeat !important;
-        background-position: center 12px !important;
-        background-size: 60px 60px !important;
+        padding: .72rem .75rem .64rem .75rem !important;
+        display: flex !important;
+        flex-direction: column !important;
+        align-items: center !important;
+        justify-content: center !important;
+        gap: .24rem !important;
+        text-align: center !important;
+      }
+      .st-key-home_primary div.stButton > button p,
+      .st-key-home_secondary div.stButton > button p {
+        margin: 0 !important;
       }
       .st-key-home_camera div.stButton > button,
       .st-key-home_camera button,
@@ -411,19 +419,24 @@ st.markdown(
         .home-title { font-size: 1.72rem; }
         .home-tagline { font-size: .90rem; }
         .st-key-home_primary div.stButton > button {
-          height: 6.20rem !important;
-          min-height: 6.20rem !important;
-          max-height: 6.20rem !important;
+          height: 7.35rem !important;
+          min-height: 7.35rem !important;
+          max-height: 7.35rem !important;
           border-radius: 22px !important;
-          font-size: 1.18rem !important;
-          line-height: 1.28 !important;
+          font-size: 1.12rem !important;
+          line-height: 1.20 !important;
+          padding: .68rem .58rem .62rem .58rem !important;
+          gap: .22rem !important;
         }
         .st-key-home_secondary div.stButton > button {
-          height: 4.70rem !important;
-          min-height: 4.70rem !important;
-          max-height: 4.70rem !important;
+          height: 6.55rem !important;
+          min-height: 6.55rem !important;
+          max-height: 6.55rem !important;
           border-radius: 19px !important;
-          font-size: 1.05rem !important;
+          font-size: 1.00rem !important;
+          line-height: 1.18 !important;
+          padding: .60rem .55rem .56rem .55rem !important;
+          gap: .18rem !important;
         }
         .st-key-home_destination div.stButton > button {
           min-height: 2.55rem !important;
@@ -5323,19 +5336,26 @@ def inject_home_icon_css():
     review_uri = _home_icon_uri("review")
     settings_uri = _home_icon_uri("settings")
 
-    css_chunks = []
+    css_chunks = [
+        ".st-key-home_camera div.stButton > button::before,"
+        ".st-key-home_diary div.stButton > button::before,"
+        ".st-key-home_review div.stButton > button::before,"
+        ".st-key-home_settings div.stButton > button::before{content:'';display:block;background-repeat:no-repeat;background-position:center;background-size:contain;}",
+        ".st-key-home_camera div.stButton > button::before,.st-key-home_diary div.stButton > button::before{width:68px;height:68px;flex:0 0 68px;}",
+        ".st-key-home_review div.stButton > button::before,.st-key-home_settings div.stButton > button::before{width:58px;height:58px;flex:0 0 58px;}",
+        "@media (max-width: 640px){.st-key-home_camera div.stButton > button::before,.st-key-home_diary div.stButton > button::before{width:58px;height:58px;flex-basis:58px;}.st-key-home_review div.stButton > button::before,.st-key-home_settings div.stButton > button::before{width:48px;height:48px;flex-basis:48px;}}",
+    ]
     if camera_uri:
-        css_chunks.append(f'.st-key-home_camera div.stButton > button{{background-image:url("{camera_uri}") !important;}}')
+        css_chunks.append(f'.st-key-home_camera div.stButton > button::before{{background-image:url("{camera_uri}") !important;}}')
     if diary_uri:
-        css_chunks.append(f'.st-key-home_diary div.stButton > button{{background-image:url("{diary_uri}") !important;}}')
+        css_chunks.append(f'.st-key-home_diary div.stButton > button::before{{background-image:url("{diary_uri}") !important;}}')
     if review_uri:
-        css_chunks.append(f'.st-key-home_review div.stButton > button{{background-image:url("{review_uri}") !important;}}')
+        css_chunks.append(f'.st-key-home_review div.stButton > button::before{{background-image:url("{review_uri}") !important;}}')
     if settings_uri:
-        css_chunks.append(f'.st-key-home_settings div.stButton > button{{background-image:url("{settings_uri}") !important;}}')
+        css_chunks.append(f'.st-key-home_settings div.stButton > button::before{{background-image:url("{settings_uri}") !important;}}')
 
     if css_chunks:
         st.markdown("<style>" + "\n".join(css_chunks) + "</style>", unsafe_allow_html=True)
-
 
 def render_global_bottom_home_button(page_name):
     """Keep a full-width route to Home at the very bottom of major subpages."""
