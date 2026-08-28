@@ -6945,7 +6945,11 @@ def page_review():
 
 
 def page_settings():
-    page_top("⚙️ 設定", "家族と個人アカウント、旅の設定を管理します。")
+    # Settings already has the shared full-width Home button at the bottom, so do
+    # not render the top back/Home control here. This also avoids the mobile top
+    # toolbar overlap that can make the upper control hard to tap.
+    st.subheader("⚙️ 設定")
+    st.caption("家族と個人アカウント、旅の設定を管理します。")
 
     settings_notice = st.session_state.pop("_settings_notice", None)
     if settings_notice:
