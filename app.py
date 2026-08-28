@@ -31,31 +31,22 @@ HOME_ICON_CANDIDATES = {
     "camera": [
         os.path.join(APP_DIR, "assets", "icons", "camera.png"),
         os.path.join(APP_DIR, "camera.png"),
-        "/mnt/data/tokyo_burari_app_v54/assets/icons/camera.png",
-        "/mnt/data/かわいいカメラとフラッシュアイコン.png",
     ],
     "diary": [
         os.path.join(APP_DIR, "assets", "icons", "diary.png"),
         os.path.join(APP_DIR, "diary.png"),
-        "/mnt/data/tokyo_burari_app_v54/assets/icons/diary.png",
-        "/mnt/data/かわいい青い日記帳アイコン.png",
     ],
     "review": [
         os.path.join(APP_DIR, "assets", "icons", "review.png"),
         os.path.join(APP_DIR, "review.png"),
-        "/mnt/data/tokyo_burari_app_v54/assets/icons/review.png",
-        "/mnt/data/振り返るキュートな黒白猫.png",
     ],
     "settings": [
         os.path.join(APP_DIR, "assets", "icons", "settings.png"),
         os.path.join(APP_DIR, "settings.png"),
-        "/mnt/data/tokyo_burari_app_v54/assets/icons/settings.png",
-        "/mnt/data/かわいい光沢ギア設定アイコン.png",
     ],
     "train": [
         os.path.join(APP_DIR, "assets", "icons", "train.png"),
         os.path.join(APP_DIR, "train.png"),
-        "/mnt/data/かわいい緑の通勤電車ステッカー.png",
     ],
     "train_yamanote": [os.path.join(APP_DIR, "assets", "icons", "train_yamanote.png")],
     "train_keihin_tohoku": [os.path.join(APP_DIR, "assets", "icons", "train_keihin_tohoku.png")],
@@ -63,16 +54,81 @@ HOME_ICON_CANDIDATES = {
     "train_chuo_sobu": [os.path.join(APP_DIR, "assets", "icons", "train_chuo_sobu.png")],
     "train_sotetsu": [os.path.join(APP_DIR, "assets", "icons", "train_sotetsu.png")],
     "train_shonan_shinjuku": [os.path.join(APP_DIR, "assets", "icons", "train_shonan_shinjuku.png")],
+    "camera_yamanote": [os.path.join(APP_DIR, "assets", "icons", "camera_yamanote.png")],
+    "camera_keihin_tohoku": [os.path.join(APP_DIR, "assets", "icons", "camera_keihin_tohoku.png")],
+    "camera_chuo_rapid": [os.path.join(APP_DIR, "assets", "icons", "camera_chuo_rapid.png")],
+    "camera_chuo_sobu": [os.path.join(APP_DIR, "assets", "icons", "camera_chuo_sobu.png")],
+    "camera_sotetsu": [os.path.join(APP_DIR, "assets", "icons", "camera_sotetsu.png")],
+    "camera_shonan_shinjuku": [os.path.join(APP_DIR, "assets", "icons", "camera_shonan_shinjuku.png")],
+    "diary_yamanote": [os.path.join(APP_DIR, "assets", "icons", "diary_yamanote.png")],
+    "diary_keihin_tohoku": [os.path.join(APP_DIR, "assets", "icons", "diary_keihin_tohoku.png")],
+    "diary_chuo_rapid": [os.path.join(APP_DIR, "assets", "icons", "diary_chuo_rapid.png")],
+    "diary_chuo_sobu": [os.path.join(APP_DIR, "assets", "icons", "diary_chuo_sobu.png")],
+    "diary_sotetsu": [os.path.join(APP_DIR, "assets", "icons", "diary_sotetsu.png")],
+    "diary_shonan_shinjuku": [os.path.join(APP_DIR, "assets", "icons", "diary_shonan_shinjuku.png")],
 }
 
-HOME_TRAIN_LINES = [
-    ("山手線", "train_yamanote"),
-    ("京浜東北線", "train_keihin_tohoku"),
-    ("中央本線快速", "train_chuo_rapid"),
-    ("中央・総武線", "train_chuo_sobu"),
-    ("相鉄線", "train_sotetsu"),
-    ("湘南新宿ライン", "train_shonan_shinjuku"),
-]
+# One route choice controls the train, camera and diary together so the home screen
+# reads as one coherent visual theme. The camera/diary versions are deliberately
+# lighter pastel variants of the route color.
+HOME_ROUTE_THEMES = {
+    "train_yamanote": {
+        "line_name": "山手線",
+        "camera_key": "camera_yamanote",
+        "diary_key": "diary_yamanote",
+        "accent": "#7EBD52",
+        "accent_rgb": "126,189,82",
+        "accent2": "#BDEB91",
+        "accent2_rgb": "189,235,145",
+    },
+    "train_keihin_tohoku": {
+        "line_name": "京浜東北線",
+        "camera_key": "camera_keihin_tohoku",
+        "diary_key": "diary_keihin_tohoku",
+        "accent": "#62C5E5",
+        "accent_rgb": "98,197,229",
+        "accent2": "#B9EAF4",
+        "accent2_rgb": "185,234,244",
+    },
+    "train_chuo_rapid": {
+        "line_name": "中央本線快速",
+        "camera_key": "camera_chuo_rapid",
+        "diary_key": "diary_chuo_rapid",
+        "accent": "#F3982D",
+        "accent_rgb": "243,152,45",
+        "accent2": "#FFD3A5",
+        "accent2_rgb": "255,211,165",
+    },
+    "train_chuo_sobu": {
+        "line_name": "中央・総武線",
+        "camera_key": "camera_chuo_sobu",
+        "diary_key": "diary_chuo_sobu",
+        "accent": "#E4C72D",
+        "accent_rgb": "228,199,45",
+        "accent2": "#FFF0A4",
+        "accent2_rgb": "255,240,164",
+    },
+    "train_sotetsu": {
+        "line_name": "相鉄線",
+        "camera_key": "camera_sotetsu",
+        "diary_key": "diary_sotetsu",
+        "accent": "#3D6FA6",
+        "accent_rgb": "61,111,166",
+        "accent2": "#B7CEEA",
+        "accent2_rgb": "183,206,234",
+    },
+    "train_shonan_shinjuku": {
+        "line_name": "湘南新宿ライン",
+        "camera_key": "camera_shonan_shinjuku",
+        "diary_key": "diary_shonan_shinjuku",
+        "accent": "#65AE55",
+        "accent_rgb": "101,174,85",
+        "accent2": "#F0A15B",
+        "accent2_rgb": "240,161,91",
+    },
+}
+
+HOME_TRAIN_LINES = [(theme["line_name"], key) for key, theme in HOME_ROUTE_THEMES.items()]
 
 
 # ============================================================
@@ -5398,25 +5454,34 @@ def _home_icon_uri(name):
     return ""
 
 
-def _home_train_for_session():
-    """Pick one route for this browser session; a full page reload gets a fresh pick."""
-    valid_keys = {icon_key for _, icon_key in HOME_TRAIN_LINES}
+def _home_theme_for_session():
+    """Choose one route theme and keep train/camera/diary coordinated for the session."""
+    valid_keys = set(HOME_ROUTE_THEMES)
     selected_key = str(st.session_state.get("_home_train_icon_key") or "")
     if selected_key not in valid_keys:
-        line_name, selected_key = random.choice(HOME_TRAIN_LINES)
+        selected_key = random.choice(list(HOME_ROUTE_THEMES.keys()))
         st.session_state["_home_train_icon_key"] = selected_key
-        st.session_state["_home_train_line_name"] = line_name
-    else:
-        line_name = next((name for name, key in HOME_TRAIN_LINES if key == selected_key), "電車")
-        st.session_state["_home_train_line_name"] = line_name
-    return line_name, _home_icon_uri(selected_key) or _home_icon_uri("train")
+    theme = dict(HOME_ROUTE_THEMES[selected_key])
+    theme["train_key"] = selected_key
+    st.session_state["_home_train_line_name"] = theme["line_name"]
+    return theme
+
+
+def _home_train_for_session():
+    """Backward-compatible helper returning the selected route name and train image."""
+    theme = _home_theme_for_session()
+    return theme["line_name"], _home_icon_uri(theme["train_key"]) or _home_icon_uri("train")
 
 
 def inject_home_icon_css():
-    camera_uri = _home_icon_uri("camera")
-    diary_uri = _home_icon_uri("diary")
+    theme = _home_theme_for_session()
+    camera_uri = _home_icon_uri(theme["camera_key"]) or _home_icon_uri("camera")
+    diary_uri = _home_icon_uri(theme["diary_key"]) or _home_icon_uri("diary")
     review_uri = _home_icon_uri("review")
     settings_uri = _home_icon_uri("settings")
+    accent = theme["accent"]
+    rgb1 = theme["accent_rgb"]
+    rgb2 = theme["accent2_rgb"]
 
     css_chunks = [
         ".st-key-home_camera div.stButton > button::before,"
@@ -5426,6 +5491,8 @@ def inject_home_icon_css():
         ".st-key-home_camera div.stButton > button::before,.st-key-home_diary div.stButton > button::before{width:54px;height:54px;}",
         ".st-key-home_review div.stButton > button::before,.st-key-home_settings div.stButton > button::before{width:46px;height:46px;}",
         "@media (max-width: 640px){.st-key-home_camera div.stButton > button::before,.st-key-home_diary div.stButton > button::before{width:42px;height:42px;}.st-key-home_review div.stButton > button::before,.st-key-home_settings div.stButton > button::before{width:36px;height:36px;}}",
+        f'.st-key-home_camera div.stButton > button,.st-key-home_diary div.stButton > button{{border-color:{accent} !important;background:linear-gradient(155deg,rgba({rgb2},.25),rgba({rgb1},.07)) !important;box-shadow:0 9px 22px rgba({rgb1},.10),0 0 0 2px rgba(255,255,255,.34) inset !important;}}',
+        f'.st-key-home_camera div.stButton > button:hover,.st-key-home_diary div.stButton > button:hover{{border-color:{accent} !important;background:linear-gradient(155deg,rgba({rgb2},.34),rgba({rgb1},.11)) !important;box-shadow:0 11px 24px rgba({rgb1},.14),0 0 0 2px rgba(255,255,255,.40) inset !important;}}',
     ]
     if camera_uri:
         css_chunks.append(f'.st-key-home_camera div.stButton > button::before{{background-image:url("{camera_uri}") !important;}}')
