@@ -173,7 +173,7 @@ st.markdown(
         min-height: 6.45rem !important;
         max-height: 6.45rem !important;
         border-radius: 24px !important;
-        font-size: 1.18rem !important;
+        font-size: 1.28rem !important;
         font-weight: 820 !important;
         line-height: 1.35 !important;
       }
@@ -182,7 +182,7 @@ st.markdown(
         min-height: 4.85rem !important;
         max-height: 4.85rem !important;
         border-radius: 20px !important;
-        font-size: 1.03rem !important;
+        font-size: 1.10rem !important;
         font-weight: 760 !important;
         line-height: 1.3 !important;
       }
@@ -356,18 +356,19 @@ st.markdown(
         .home-title { font-size: 1.72rem; }
         .home-tagline { font-size: .90rem; }
         .st-key-home_primary div.stButton > button {
-          height: 5.95rem !important;
-          min-height: 5.95rem !important;
-          max-height: 5.95rem !important;
+          height: 6.20rem !important;
+          min-height: 6.20rem !important;
+          max-height: 6.20rem !important;
           border-radius: 21px !important;
-          font-size: 1.05rem !important;
+          font-size: 1.13rem !important;
+          line-height: 1.28 !important;
         }
         .st-key-home_secondary div.stButton > button {
-          height: 4.45rem !important;
-          min-height: 4.45rem !important;
-          max-height: 4.45rem !important;
+          height: 4.65rem !important;
+          min-height: 4.65rem !important;
+          max-height: 4.65rem !important;
           border-radius: 18px !important;
-          font-size: .94rem !important;
+          font-size: 1.00rem !important;
         }
         .st-key-home_destination div.stButton > button {
           min-height: 2.55rem !important;
@@ -5920,9 +5921,9 @@ def page_home():
     with st.container(key="home_primary"):
         primary_left, primary_right = st.columns(2)
         with primary_left:
-            render_home_button("📷\nカメラで撮る", "camera", "home_camera", ensure_trip=True)
+            render_home_button("📷\n写真を撮る", "camera", "home_camera", ensure_trip=True)
         with primary_right:
-            render_home_button("📖\n日記", "diary", "home_diary")
+            render_home_button("📖\n日記にする・見る", "diary", "home_diary")
 
     # Manual fallback for cases where the phone/browser cannot provide GPS.
     with st.container(key="home_destination"):
