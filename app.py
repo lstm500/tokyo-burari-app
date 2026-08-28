@@ -193,7 +193,7 @@ st.markdown(
         width: 100% !important;
         box-sizing: border-box !important;
         overflow: hidden !important;
-        white-space: pre-line !important;
+        white-space: nowrap !important;
         transition: transform .12s ease, box-shadow .12s ease, background .12s ease;
       }
       .st-key-home_primary div.stButton > button {
@@ -210,7 +210,7 @@ st.markdown(
         flex-direction: row !important;
         align-items: center !important;
         justify-content: center !important;
-        gap: .54rem !important;
+        gap: .68rem !important;
         text-align: left !important;
       }
       .st-key-home_secondary div.stButton > button {
@@ -227,16 +227,30 @@ st.markdown(
         flex-direction: row !important;
         align-items: center !important;
         justify-content: center !important;
-        gap: .48rem !important;
+        gap: .62rem !important;
         text-align: left !important;
+      }
+      .st-key-home_primary div.stButton > button [data-testid="stMarkdownContainer"],
+      .st-key-home_secondary div.stButton > button [data-testid="stMarkdownContainer"] {
+        display: block !important;
+        flex: 0 0 auto !important;
+        width: auto !important;
+        min-width: max-content !important;
+        max-width: none !important;
+        margin: 0 !important;
+        padding: 0 !important;
       }
       .st-key-home_primary div.stButton > button p,
       .st-key-home_secondary div.stButton > button p {
         margin: 0 !important;
         width: auto !important;
-        flex: 0 1 auto !important;
-        min-width: 0 !important;
-        max-width: calc(100% - 4.6rem) !important;
+        min-width: max-content !important;
+        max-width: none !important;
+        white-space: nowrap !important;
+        word-break: keep-all !important;
+        overflow-wrap: normal !important;
+        writing-mode: horizontal-tb !important;
+        text-orientation: mixed !important;
       }
       .st-key-home_camera div.stButton > button,
       .st-key-home_camera button,
@@ -430,7 +444,7 @@ st.markdown(
           font-size: 1.20rem !important;
           line-height: 1.14 !important;
           padding: .52rem .52rem !important;
-          gap: .38rem !important;
+          gap: .54rem !important;
         }
         .st-key-home_secondary div.stButton > button {
           height: 4.45rem !important;
@@ -440,7 +454,7 @@ st.markdown(
           font-size: 1.10rem !important;
           line-height: 1.12 !important;
           padding: .46rem .48rem !important;
-          gap: .34rem !important;
+          gap: .48rem !important;
         }
         .st-key-home_destination div.stButton > button {
           min-height: 2.55rem !important;
@@ -6154,7 +6168,7 @@ def page_home():
     with st.container(key="home_secondary"):
         secondary_left, secondary_right = st.columns([1.2, 1])
         with secondary_left:
-            render_home_button("振り返り\n（たまに）", "review", "home_review")
+            render_home_button("振り返り（たまに）", "review", "home_review")
         with secondary_right:
             render_home_button("設定", "settings", "home_settings")
 
