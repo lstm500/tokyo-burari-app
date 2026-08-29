@@ -5083,14 +5083,17 @@ def render_monthly_replay_player(period_label, review, playback, photo_items):
       .burari-replay-wrap {{
         border: 1px solid rgba(128,128,128,.22);
         border-radius: 22px;
-        padding: 1rem;
+        padding: .38rem;
         margin: .35rem 0 .8rem;
+        box-sizing: border-box;
         background: linear-gradient(180deg, rgba(255,255,255,.96), rgba(246,249,252,.96));
       }}
       .burari-replay-phone {{
-        max-width: 360px;
+        width: min(410px, 100%);
+        max-width: 410px;
+        box-sizing: border-box;
         margin: 0 auto .8rem;
-        padding: 10px;
+        padding: 8px;
         border-radius: 28px;
         background: #111827;
         box-shadow: 0 16px 32px rgba(17,24,39,.18);
@@ -5432,7 +5435,7 @@ def render_monthly_replay_player(period_label, review, playback, photo_items):
       burariShowSlide(0);
     </script>
     """
-    st.components.v1.html(component_html, height=960, scrolling=False)
+    st.components.v1.html(component_html, height=1040, scrolling=False)
 
 
 def _monthly_replay_state(month_key, review):
