@@ -12,7 +12,7 @@ import uuid
 import wave
 import sys
 from array import array
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlparse, parse_qs
 from urllib.request import Request, urlopen
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -4613,6 +4613,519 @@ def save_monthly_review(month_key, review_json):
 
 
 # ============================================================
+# Monthly replay helpers
+# ============================================================
+def get_monthly_playback(review):
+    if not isinstance(review, dict):
+        return {}
+    playback = review.get("_playback") or {}
+    return dict(playback) if isinstance(playback, dict) else {}
+
+
+def save_monthly_playback(month_key, review, playback):
+    updated = dict(review or {})
+    if isinstance(playback, dict) and playback:
+        updated["_playback"] = dict(playback)
+    else:
+        updated.pop("_playback", None)
+    save_monthly_review(month_key, updated)
+    st.session_state[f"monthly_review_{month_key}"] = updated
+    return updated
+
+
+def format_mmss(total_seconds):
+    try:
+        total_seconds = max(0, int(total_seconds))
+    except Exception:
+        total_seconds = 0
+    minutes, seconds = divmod(total_seconds, 60)
+    hours, minutes = divmod(minutes, 60)
+    if hours:
+        return f"{hours}:{minutes:02d}:{seconds:02d}"
+    return f"{minutes}:{seconds:02d}"
+
+
+def parse_youtube_video_id(value):
+    value = str(value or "").strip()
+    if not value:
+        return ""
+    if len(value) == 11 and all(ch.isalnum() or ch in {"-", "_"} for ch in value):
+        return value
+    try:
+        parsed = urlparse(value)
+    except Exception:
+        return ""
+    host = str(parsed.netloc or "").lower()
+    path = str(parsed.path or "")
+    query = parse_qs(parsed.query or "")
+    video_id = ""
+    if "youtu.be" in host:
+        video_id = path.strip("/").split("/")[0]
+    elif "youtube.com" in host or "youtube-nocookie.com" in host:
+        if path == "/watch":
+            video_id = (query.get("v") or [""])[0]
+        elif path.startswith("/embed/"):
+            video_id = path.split("/embed/", 1)[1].split("/")[0]
+        elif path.startswith("/shorts/"):
+            video_id = path.split("/shorts/", 1)[1].split("/")[0]
+        elif path.startswith("/live/"):
+            video_id = path.split("/live/", 1)[1].split("/")[0]
+    video_id = "".join(ch for ch in str(video_id) if ch.isalnum() or ch in {"-", "_"})
+    return video_id if 8 <= len(video_id) <= 15 else ""
+
+
+def youtube_watch_url(video_id):
+    video_id = str(video_id or "").strip()
+    return f"https://www.youtube.com/watch?v={video_id}" if video_id else ""
+
+
+def youtube_embed_url(video_id, start_seconds=0, end_seconds=0, autoplay=False):
+    video_id = str(video_id or "").strip()
+    if not video_id:
+        return ""
+    params = {
+        "start": max(0, int(start_seconds or 0)),
+        "autoplay": 1 if autoplay else 0,
+        "controls": 1,
+        "rel": 0,
+        "modestbranding": 1,
+        "playsinline": 1,
+    }
+    end_seconds = int(end_seconds or 0)
+    if end_seconds > params["start"]:
+        params["end"] = end_seconds
+    return f"https://www.youtube.com/embed/{video_id}?{urlencode(params)}"
+
+
+def fetch_youtube_oembed(url):
+    url = str(url or "").strip()
+    if not url:
+        return {}
+    api_url = "https://www.youtube.com/oembed?" + urlencode({"url": url, "format": "json"})
+    request = Request(api_url, headers={"User-Agent": "Mozilla/5.0"})
+    try:
+        with urlopen(request, timeout=6) as response:
+            data = json.loads(response.read().decode("utf-8", "ignore"))
+        if isinstance(data, dict):
+            return {
+                "title": str(data.get("title") or "").strip(),
+                "author_name": str(data.get("author_name") or "").strip(),
+            }
+    except Exception:
+        return {}
+    return {}
+
+
+def guess_monthly_replay_window(youtube_url, month_key, review):
+    meta = fetch_youtube_oembed(youtube_url)
+    themes = []
+    if isinstance(review, dict):
+        for item in review.get("findings", []) or []:
+            if isinstance(item, dict):
+                theme = str(item.get("theme") or "").strip()
+                if theme:
+                    themes.append(theme)
+    review_hint = " / ".join(themes[:3]) or str((review or {}).get("opening") or "").strip() or "特記事項なし"
+    schema = {
+        "type": "object",
+        "properties": {
+            "start_seconds": {"type": "integer"},
+            "end_seconds": {"type": "integer"},
+            "reason": {"type": "string"},
+            "confidence": {"type": "string"},
+        },
+        "required": ["start_seconds", "end_seconds", "reason", "confidence"],
+        "additionalProperties": False,
+    }
+    title = str(meta.get("title") or "").strip()
+    author = str(meta.get("author_name") or "").strip()
+    prompt = f"""
+あなたは、月ごとの写真振り返りで使うYouTube音楽の『おすすめ区間』を提案します。
+目的は、アプリ内で9:16の写真スライドを見返すときに、耳に残りやすい部分を短く使うことです。
+
+入力:
+- 対象期間: {month_key}
+- YouTube URL: {youtube_url}
+- 分かる場合のタイトル: {title or '不明'}
+- 分かる場合の投稿者: {author or '不明'}
+- その月の振り返り要点: {review_hint}
+
+ルール:
+- できるだけサビ・フック・いちばん印象に残りやすい部分を優先する。
+- 曲や動画の正確な構成が分からない場合は、一般的なポップスの流れをもとに慎重に推測する。
+- 使う長さは12〜25秒。理想は18〜22秒。
+- start_seconds は0以上600以下。
+- end_seconds は start_seconds より後にする。
+- reason は日本語で60文字以内、簡潔に。
+- confidence は low / medium / high のいずれか。
+- 実在確認できないことを断定しない。推測であることを前提に、もっとも無難な候補を1つだけ返す。
+""".strip()
+    try:
+        result = ask_json(prompt, "burari_monthly_replay_window", schema, 280)
+    except Exception:
+        result = {}
+    start = max(0, min(600, int(result.get("start_seconds") or 48)))
+    end = int(result.get("end_seconds") or (start + 20))
+    if end <= start:
+        end = start + 20
+    end = max(start + 12, min(start + 25, end))
+    end = min(620, end)
+    reason = str(result.get("reason") or "一般的なサビ位置をもとに推測しました。").strip()
+    confidence = str(result.get("confidence") or "low").strip().lower()
+    if confidence not in {"low", "medium", "high"}:
+        confidence = "low"
+    return {
+        "youtube_url": youtube_url,
+        "video_id": parse_youtube_video_id(youtube_url),
+        "title": title,
+        "author_name": author,
+        "start_seconds": start,
+        "end_seconds": end,
+        "reason": reason,
+        "confidence": confidence,
+        "updated_at": now_jst().isoformat(),
+        "source": "ai_guess",
+    }
+
+
+def build_monthly_replay_photo_items(bundle, limit=18):
+    trip_map = {str(t.get("id")): t for t in (bundle or {}).get("trips", []) if isinstance(t, dict) and t.get("id")}
+    photos = [p for p in (bundle or {}).get("photos", []) if isinstance(p, dict)]
+    photos.sort(key=lambda p: (
+        str(trip_map.get(str(p.get("trip_id")), {}).get("trip_date") or ""),
+        str(p.get("captured_at") or ""),
+        str(p.get("id") or ""),
+    ))
+    if not photos:
+        return []
+    if len(photos) > limit:
+        step = len(photos) / float(limit)
+        picked = []
+        seen = set()
+        for idx in range(limit):
+            item = photos[min(int(idx * step), len(photos) - 1)]
+            key = str(item.get("id") or idx)
+            if key not in seen:
+                picked.append(item)
+                seen.add(key)
+        photos = picked or photos[:limit]
+    signed_map = signed_photo_url_map([str(p.get("storage_path") or "") for p in photos], expires_in=1800)
+    items = []
+    for idx, photo in enumerate(photos, start=1):
+        url = photo_display_url(photo, signed_map=signed_map, max_px=1080, quality=86)
+        if not url:
+            continue
+        trip = trip_map.get(str(photo.get("trip_id")), {})
+        label_bits = []
+        trip_date = str(trip.get("trip_date") or "").strip()
+        place = str(photo_location_label(photo) or trip.get("destination") or "").strip()
+        if trip_date:
+            label_bits.append(trip_date)
+        if place:
+            label_bits.append(place)
+        caption = " / ".join(label_bits) or f"写真{idx}"
+        items.append({"url": url, "caption": caption})
+    return items
+
+
+def render_monthly_replay_player(period_label, review, playback, photo_items):
+    if not photo_items:
+        return
+    video_id = str((playback or {}).get("video_id") or "").strip() or parse_youtube_video_id((playback or {}).get("youtube_url"))
+    if not video_id:
+        return
+    start_seconds = max(0, int((playback or {}).get("start_seconds") or 0))
+    end_seconds = int((playback or {}).get("end_seconds") or (start_seconds + 20))
+    if end_seconds <= start_seconds:
+        end_seconds = start_seconds + 20
+    duration_seconds = max(12, end_seconds - start_seconds)
+    display_ms = max(1300, min(4500, int(duration_seconds * 1000 / max(1, len(photo_items)))))
+    opening = html.escape(str((review or {}).get("opening") or "").strip())
+    period_label_escaped = html.escape(str(period_label or "期間の振り返り"))
+    first_caption = html.escape(str(photo_items[0].get("caption") or "")) if photo_items else ""
+    embed_src = youtube_embed_url(video_id, start_seconds=start_seconds, end_seconds=end_seconds, autoplay=True)
+    payload = json.dumps(photo_items, ensure_ascii=False)
+    component_html = f"""
+    <style>
+      .burari-replay-wrap {{
+        border: 1px solid rgba(128,128,128,.22);
+        border-radius: 22px;
+        padding: 1rem;
+        margin: .5rem 0 1rem;
+        background: linear-gradient(180deg, rgba(255,255,255,.96), rgba(246,249,252,.96));
+      }}
+      .burari-replay-phone {{
+        max-width: 360px;
+        margin: 0 auto .9rem;
+        padding: 10px;
+        border-radius: 28px;
+        background: #111827;
+        box-shadow: 0 16px 32px rgba(17,24,39,.18);
+      }}
+      .burari-replay-stage {{
+        position: relative;
+        width: 100%;
+        aspect-ratio: 9 / 16;
+        overflow: hidden;
+        border-radius: 22px;
+        background: #0f172a;
+      }}
+      .burari-replay-stage img {{
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+        display: block;
+      }}
+      .burari-replay-top {{
+        position: absolute;
+        top: 0;
+        left: 0;
+        right: 0;
+        padding: 14px 14px 34px;
+        color: #fff;
+        background: linear-gradient(180deg, rgba(0,0,0,.65), rgba(0,0,0,0));
+        text-shadow: 0 1px 3px rgba(0,0,0,.45);
+      }}
+      .burari-replay-kicker {{ font-size: 12px; opacity: .86; letter-spacing: .04em; }}
+      .burari-replay-title {{ font-size: 20px; font-weight: 800; line-height: 1.25; margin-top: 4px; }}
+      .burari-replay-opening {{ font-size: 13px; line-height: 1.45; margin-top: 7px; opacity: .96; }}
+      .burari-replay-bottom {{
+        position: absolute;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        padding: 34px 14px 14px;
+        color: #fff;
+        background: linear-gradient(180deg, rgba(0,0,0,0), rgba(0,0,0,.72));
+        text-shadow: 0 1px 3px rgba(0,0,0,.45);
+      }}
+      .burari-replay-caption {{ font-size: 13px; line-height: 1.45; }}
+      .burari-replay-progress {{ font-size: 12px; opacity: .86; margin-top: 4px; }}
+      .burari-replay-controls {{ display: flex; gap: .55rem; margin-top: .75rem; }}
+      .burari-replay-controls button {{
+        flex: 1;
+        border: 0;
+        border-radius: 999px;
+        padding: .8rem .9rem;
+        font-size: 14px;
+        font-weight: 700;
+        cursor: pointer;
+      }}
+      #burariReplayStart {{ background: #2563eb; color: #fff; }}
+      #burariReplayAgain {{ background: #e5edf8; color: #123; }}
+      .burari-replay-meta {{ text-align: center; font-size: 13px; margin-bottom: .65rem; }}
+      .burari-replay-player {{ width: 100%; aspect-ratio: 16 / 9; border: 0; border-radius: 18px; background: #000; }}
+      .burari-replay-note {{ font-size: 12px; opacity: .82; margin-top: .4rem; }}
+    </style>
+    <div class="burari-replay-wrap">
+      <div class="burari-replay-phone">
+        <div class="burari-replay-stage">
+          <img id="burariReplayImage" src="{html.escape(str(photo_items[0].get('url') or ''))}" alt="期間の振り返り写真" />
+          <div class="burari-replay-top">
+            <div class="burari-replay-kicker">まとめた期間の振り返り</div>
+            <div class="burari-replay-title">{period_label_escaped}</div>
+            <div class="burari-replay-opening">{opening}</div>
+          </div>
+          <div class="burari-replay-bottom">
+            <div class="burari-replay-caption" id="burariReplayCaption">{first_caption}</div>
+            <div class="burari-replay-progress" id="burariReplayProgress">1 / {len(photo_items)}</div>
+          </div>
+        </div>
+        <div class="burari-replay-controls">
+          <button id="burariReplayStart" type="button">▶ 再生</button>
+          <button id="burariReplayAgain" type="button">↻ もう一度</button>
+        </div>
+      </div>
+      <div class="burari-replay-meta">音楽区間：{format_mmss(start_seconds)}〜{format_mmss(end_seconds)} ／ 写真 {len(photo_items)}枚</div>
+      <iframe
+        id="burariReplayPlayer"
+        class="burari-replay-player"
+        src="about:blank"
+        allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+        allowfullscreen
+        title="YouTube 振り返り再生"
+      ></iframe>
+      <div class="burari-replay-note">再生を押すと、YouTubeの埋め込み再生と写真切り替えを同時に始めます。</div>
+    </div>
+    <script>
+      const burariSlides = {payload};
+      const burariEmbedSrc = {json.dumps(embed_src)};
+      const burariDisplayMs = {display_ms};
+      let burariIndex = 0;
+      let burariTimer = null;
+      const burariImg = document.getElementById('burariReplayImage');
+      const burariCaption = document.getElementById('burariReplayCaption');
+      const burariProgress = document.getElementById('burariReplayProgress');
+      const burariFrame = document.getElementById('burariReplayPlayer');
+      function burariShowSlide(index) {{
+        if (!burariSlides.length) return;
+        const item = burariSlides[index % burariSlides.length] || {{}};
+        if (item.url) burariImg.src = item.url;
+        burariCaption.textContent = item.caption || '';
+        burariProgress.textContent = `${{(index % burariSlides.length) + 1}} / ${{burariSlides.length}}`;
+      }}
+      function burariStopTimer() {{
+        if (burariTimer) {{
+          clearInterval(burariTimer);
+          burariTimer = null;
+        }}
+      }}
+      function burariStart() {{
+        burariStopTimer();
+        burariIndex = 0;
+        burariShowSlide(burariIndex);
+        if (burariSlides.length > 1) {{
+          burariTimer = setInterval(() => {{
+            burariIndex = (burariIndex + 1) % burariSlides.length;
+            burariShowSlide(burariIndex);
+          }}, burariDisplayMs);
+        }}
+        burariFrame.src = burariEmbedSrc + '&cache=' + Date.now();
+      }}
+      document.getElementById('burariReplayStart').addEventListener('click', burariStart);
+      document.getElementById('burariReplayAgain').addEventListener('click', burariStart);
+      burariShowSlide(0);
+    </script>
+    """
+    st.components.v1.html(component_html, height=940, scrolling=False)
+
+
+def render_monthly_replay_section(month_key, period_label, bundle, review):
+    photo_items = build_monthly_replay_photo_items(bundle, limit=18)
+    st.divider()
+    st.markdown("#### 音楽つきの期間振り返り再生")
+    st.caption("YouTubeの埋め込み再生に合わせて、9:16画面で写真を順番に見返せます。音楽区間はAIにサビ候補を推測させることもできます。")
+    if not photo_items:
+        st.info("この期間には再生に使える写真がありません。")
+        return
+
+    playback = get_monthly_playback(review)
+    url_key = f"monthly_replay_url_{month_key}"
+    start_key = f"monthly_replay_start_{month_key}"
+    end_key = f"monthly_replay_end_{month_key}"
+    reason_key = f"monthly_replay_reason_{month_key}"
+    confidence_key = f"monthly_replay_confidence_{month_key}"
+    title_key = f"monthly_replay_title_{month_key}"
+
+    if url_key not in st.session_state:
+        st.session_state[url_key] = str(playback.get("youtube_url") or "")
+    if start_key not in st.session_state:
+        st.session_state[start_key] = int(playback.get("start_seconds") or 48)
+    if end_key not in st.session_state:
+        st.session_state[end_key] = int(playback.get("end_seconds") or 68)
+    if reason_key not in st.session_state:
+        st.session_state[reason_key] = str(playback.get("reason") or "")
+    if confidence_key not in st.session_state:
+        st.session_state[confidence_key] = str(playback.get("confidence") or "")
+    if title_key not in st.session_state:
+        st.session_state[title_key] = str(playback.get("title") or "")
+
+    with st.expander("YouTubeの音楽と再生設定", expanded=bool(playback)):
+        st.write(f"使う写真：**{len(photo_items)}枚**")
+        st.text_input(
+            "YouTube URL",
+            key=url_key,
+            placeholder="https://www.youtube.com/watch?v=...",
+        )
+        current_url = str(st.session_state.get(url_key) or "").strip()
+        video_id = parse_youtube_video_id(current_url)
+        if current_url and not video_id:
+            st.warning("YouTube URLの形式を読み取れませんでした。通常の共有URLか埋め込みURLを入れてください。")
+        elif video_id:
+            st.caption(f"再生対象: {youtube_watch_url(video_id)}")
+
+        cols = st.columns(3)
+        with cols[0]:
+            if st.button("AIにおすすめ時間を推測", use_container_width=True, key=f"guess_monthly_replay_{month_key}"):
+                if not video_id:
+                    st.error("先に有効なYouTube URLを入力してください。")
+                else:
+                    try:
+                        with st.spinner("AIがサビ候補を推測しています…"):
+                            guessed = guess_monthly_replay_window(current_url, month_key, review)
+                        st.session_state[start_key] = int(guessed.get("start_seconds") or 48)
+                        st.session_state[end_key] = int(guessed.get("end_seconds") or 68)
+                        st.session_state[reason_key] = str(guessed.get("reason") or "")
+                        st.session_state[confidence_key] = str(guessed.get("confidence") or "")
+                        st.session_state[title_key] = str(guessed.get("title") or "")
+                        save_monthly_playback(month_key, review, guessed)
+                        st.success(f"おすすめ区間を {format_mmss(st.session_state[start_key])}〜{format_mmss(st.session_state[end_key])} に設定しました。")
+                        st.rerun()
+                    except Exception as exc:
+                        st.error("おすすめ時間を推測できませんでした。")
+                        with st.expander("保護者向け詳細"):
+                            st.code(str(exc))
+        with cols[1]:
+            if st.button("URLと時間を保存", use_container_width=True, key=f"save_monthly_replay_{month_key}"):
+                if not video_id:
+                    st.error("先に有効なYouTube URLを入力してください。")
+                else:
+                    start_seconds = max(0, int(st.session_state.get(start_key) or 0))
+                    end_seconds = int(st.session_state.get(end_key) or (start_seconds + 20))
+                    if end_seconds <= start_seconds:
+                        end_seconds = start_seconds + 20
+                        st.session_state[end_key] = end_seconds
+                    meta = fetch_youtube_oembed(current_url)
+                    payload = {
+                        "youtube_url": current_url,
+                        "video_id": video_id,
+                        "title": str(meta.get("title") or st.session_state.get(title_key) or "").strip(),
+                        "author_name": str(meta.get("author_name") or "").strip(),
+                        "start_seconds": start_seconds,
+                        "end_seconds": end_seconds,
+                        "reason": str(st.session_state.get(reason_key) or "").strip(),
+                        "confidence": str(st.session_state.get(confidence_key) or "manual").strip(),
+                        "updated_at": now_jst().isoformat(),
+                        "source": "manual",
+                    }
+                    save_monthly_playback(month_key, review, payload)
+                    st.success("この期間の再生設定を保存しました。")
+                    st.rerun()
+        with cols[2]:
+            if st.button("再生設定を消す", use_container_width=True, key=f"clear_monthly_replay_{month_key}"):
+                st.session_state[url_key] = ""
+                st.session_state[start_key] = 48
+                st.session_state[end_key] = 68
+                st.session_state[reason_key] = ""
+                st.session_state[confidence_key] = ""
+                st.session_state[title_key] = ""
+                save_monthly_playback(month_key, review, {})
+                st.success("この期間の再生設定を消しました。")
+                st.rerun()
+
+        st.number_input("開始（秒）", min_value=0, step=1, key=start_key)
+        st.number_input("終了（秒）", min_value=1, step=1, key=end_key)
+        start_seconds = max(0, int(st.session_state.get(start_key) or 0))
+        end_seconds = int(st.session_state.get(end_key) or (start_seconds + 20))
+        if end_seconds <= start_seconds:
+            st.warning("終了は開始より後にしてください。保存時に自動調整されます。")
+        st.caption(f"現在の区間: {format_mmss(start_seconds)}〜{format_mmss(max(end_seconds, start_seconds + 1))}")
+        if st.session_state.get(title_key):
+            st.write(f"候補タイトル: **{st.session_state[title_key]}**")
+        reason = str(st.session_state.get(reason_key) or "").strip()
+        confidence = str(st.session_state.get(confidence_key) or "").strip()
+        if reason:
+            confidence_label = {"low": "低め", "medium": "中くらい", "high": "高め", "manual": "手動"}.get(confidence, confidence)
+            st.caption(f"AIメモ: {reason}（確からしさ: {confidence_label or '不明'}）")
+        st.caption("※ サビ候補はAIの推測です。曲によって外れることがあります。必要なら秒数を手で直してください。")
+
+    current_url = str(st.session_state.get(url_key) or "").strip()
+    video_id = parse_youtube_video_id(current_url)
+    if not video_id:
+        return
+    playback = {
+        "youtube_url": current_url,
+        "video_id": video_id,
+        "start_seconds": max(0, int(st.session_state.get(start_key) or 0)),
+        "end_seconds": max(1, int(st.session_state.get(end_key) or 1)),
+        "reason": str(st.session_state.get(reason_key) or "").strip(),
+        "confidence": str(st.session_state.get(confidence_key) or "").strip(),
+        "title": str(st.session_state.get(title_key) or "").strip(),
+    }
+    render_monthly_replay_player(period_label, review, playback, photo_items)
+
+
+# ============================================================
 # AI diary conversation
 # ============================================================
 SIGNAL_SCHEMA = {
@@ -7635,8 +8148,12 @@ def page_monthly(embedded=False):
     button_label = "AIとこの期間を振り返る" if not review else "この期間をもう一度まとめる"
     if st.button(button_label, type="primary" if not review else "secondary", use_container_width=True):
         try:
+            previous_review = review if isinstance(review, dict) else {}
+            previous_playback = get_monthly_playback(previous_review)
             with st.spinner("この期間の言葉をつないでいます…"):
                 review = make_monthly_review(month_key, bundle)
+                if previous_playback:
+                    review["_playback"] = previous_playback
                 save_monthly_review(month_key, review)
                 audio = speech_bytes(monthly_speech_text(review))
             st.session_state[session_key] = review
@@ -7690,6 +8207,8 @@ def page_monthly(embedded=False):
     with st.expander("保護者向けメモ"):
         st.write(review.get("parent_note", ""))
         st.caption("能力評価や性格診断ではなく、保存された発言・日記の範囲でまとめています。")
+
+    render_monthly_replay_section(month_key, period_label, bundle, review)
 
 
 # ============================================================
