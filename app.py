@@ -6875,8 +6875,10 @@ def render_home_button(label, page_name, key, ensure_trip=False, open_period_rev
             # The user's click is a valid browser gesture: use it to request the camera
             # immediately on the next render. Do not block on a trip lookup first.
             st.session_state["_camera_auto_start"] = True
-        elif page_name == "review" and open_period_review:
-            st.session_state["review_view_selector"] = "🗓 期間の振り返り"
+        elif page_name == "review":
+            # Always enter Review through the clear two-choice menu. The period-review
+            # nudge on Home is still shown, but it no longer skips past this selector.
+            st.session_state.pop("review_view_selector", None)
         elif ensure_trip:
             ensure_today_trip()
         go_page(page_name)
@@ -8815,6 +8817,9 @@ def render_monthly_ai_comments(review):
 def page_monthly(embedded=False):
     if not embedded:
         page_top("🗓 期間の振り返り")
+    deleted_notice = st.session_state.pop("_monthly_video_deleted_notice", None)
+    if deleted_notice:
+        st.success(deleted_notice)
     st.caption("保存した日記と本人の言葉を、まとまった期間ごとにつないで振り返ります。")
 
     recent = list_recent_diaries(limit=120)
@@ -9049,31 +9054,140 @@ def page_monthly(embedded=False):
                 with st.expander("保護者向け詳細"):
                     st.code(str(exc))
 
+    # The replay is generated from this period's photos plus the attached music
+    # settings; there is no separate video file. Deleting the replay therefore
+    # removes only this period's music/replay association. Diaries, photos, AI
+    # comments, and the member's saved music library are kept.
+    delete_video_confirm_key = f"monthly_delete_video_confirm_{month_key}"
+    st.divider()
+    with st.container(key="monthly_delete_video_area"):
+        if st.session_state.get(delete_video_confirm_key):
+            st.warning("この期間の振り返り動画を削除します。写真・日記・AIコメント・保存済み音楽は削除されません。")
+            delete_col, cancel_col = st.columns([1.25, 1])
+            with delete_col:
+                if st.button(
+                    "削除する",
+                    type="primary",
+                    use_container_width=True,
+                    key=f"monthly_delete_video_confirm_button_{month_key}",
+                ):
+                    try:
+                        state = _monthly_replay_state(month_key, review)
+                        save_monthly_playback(month_key, review, {})
+                        for state_key in (
+                            state["url_key"],
+                            state["start_key"],
+                            state["end_key"],
+                            state["reason_key"],
+                            state["confidence_key"],
+                            state["title_key"],
+                            f"monthly_replay_applied_{month_key}",
+                            f"monthly_music_settings_open_{month_key}",
+                            f"monthly_time_settings_open_{month_key}",
+                            delete_video_confirm_key,
+                        ):
+                            st.session_state.pop(state_key, None)
+                        st.session_state["_monthly_video_deleted_notice"] = "この期間の振り返り動画を削除しました。"
+                        st.rerun()
+                    except Exception as exc:
+                        st.error("振り返り動画を削除できませんでした。")
+                        with st.expander("保護者向け詳細"):
+                            st.code(str(exc))
+            with cancel_col:
+                if st.button(
+                    "キャンセル",
+                    use_container_width=True,
+                    key=f"monthly_delete_video_cancel_{month_key}",
+                ):
+                    st.session_state.pop(delete_video_confirm_key, None)
+                    st.rerun()
+        else:
+            if st.button(
+                "🗑 この振り返り動画を削除する",
+                use_container_width=True,
+                key=f"monthly_delete_video_{month_key}",
+            ):
+                st.session_state[delete_video_confirm_key] = True
+                st.rerun()
+
 
 # ============================================================
 # Page: Review / Settings
 # ============================================================
 def page_review():
-    mark_current_month_review_seen()
-    if st.session_state.get("review_view_selector") == "🔍 今月の発見":
-        st.session_state["review_view_selector"] = "🗓 期間の振り返り"
+    period_label = "🗓 期間の振り返り"
+    history_label = "📚 これまでの日記"
+    current_view = st.session_state.get("review_view_selector")
+    if current_view == "🔍 今月の発見":
+        current_view = period_label
+        st.session_state["review_view_selector"] = current_view
+    if current_view not in {period_label, history_label}:
+        current_view = None
+
     page_top(
         "🔍 振り返り",
-        "過去の日記を読み返したり、まとまった期間の『気になる』をAIとつないだりします。",
+        "見たい振り返りを選んでください。期間のまとめと、1日ごとの日記を分けて見られます。",
     )
-    # st.tabs executes both tab bodies on every rerun. A radio keeps the same two
-    # choices but loads only the page the user is actually viewing.
-    review_view = st.radio(
-        "振り返りの表示",
-        ["📚 これまでの日記", "🗓 期間の振り返り"],
-        horizontal=True,
-        label_visibility="collapsed",
-        key="review_view_selector",
+    st.markdown(
+        """
+        <style>
+          .st-key-review_period_choice,
+          .st-key-review_history_choice {
+            border: 1px solid rgba(128,128,128,.18);
+            border-radius: 18px;
+            padding: .58rem .68rem .48rem;
+            margin: .18rem 0 .62rem;
+            background: rgba(255,255,255,.72);
+          }
+          .st-key-review_period_choice div.stButton > button,
+          .st-key-review_history_choice div.stButton > button {
+            min-height: 3.2rem;
+            font-size: 1.05rem;
+            font-weight: 800;
+            border-radius: 14px;
+          }
+          .st-key-review_period_choice [data-testid="stCaptionContainer"],
+          .st-key-review_history_choice [data-testid="stCaptionContainer"] {
+            margin-top: -.18rem;
+            padding: 0 .18rem .06rem;
+          }
+        </style>
+        """,
+        unsafe_allow_html=True,
     )
-    if review_view == "📚 これまでの日記":
+
+    st.markdown("#### 見たい振り返り")
+    with st.container(key="review_period_choice"):
+        if st.button(
+            period_label,
+            type="primary" if current_view == period_label else "secondary",
+            use_container_width=True,
+            key="review_choose_period",
+        ):
+            st.session_state["review_view_selector"] = period_label
+            st.rerun()
+        st.caption("写真と音楽の振り返りムービーや、AIからの短い気づきを見る")
+
+    with st.container(key="review_history_choice"):
+        if st.button(
+            history_label,
+            type="primary" if current_view == history_label else "secondary",
+            use_container_width=True,
+            key="review_choose_history",
+        ):
+            st.session_state["review_view_selector"] = history_label
+            st.rerun()
+        st.caption("これまで作った日記を、1日ごとに読み返す")
+
+    if current_view == period_label:
+        mark_current_month_review_seen()
+        st.divider()
+        page_monthly(embedded=True)
+    elif current_view == history_label:
+        st.divider()
         page_history(embedded=True)
     else:
-        page_monthly(embedded=True)
+        st.caption("上のどちらかを押すと内容が表示されます。")
 
 
 
