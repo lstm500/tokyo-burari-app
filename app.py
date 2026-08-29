@@ -4511,7 +4511,7 @@ def get_month_bundle(month_key):
             .table(TRIP_TABLE)
             .select(
                 f"*,{DIARY_TABLE}(*),"
-                f"{PHOTO_TABLE}(id,trip_id,captured_at,reflection_json,signals_json)"
+                f"{PHOTO_TABLE}(id,trip_id,storage_path,captured_at,reflection_json,signals_json)"
             )
             .eq("family_key", current_family_key()).eq("member_key", current_member_key())
             .gte("trip_date", start)
@@ -4562,7 +4562,7 @@ def get_month_bundle(month_key):
     photos_result = (
         client
         .table(PHOTO_TABLE)
-        .select("id,trip_id,captured_at,reflection_json,signals_json")
+        .select("id,trip_id,storage_path,captured_at,reflection_json,signals_json")
         .eq("family_key", current_family_key()).eq("member_key", current_member_key())
         .in_("trip_id", trip_ids)
         .order("captured_at")
