@@ -1844,6 +1844,9 @@ export default function(component) {
   const { data, setTriggerValue } = component;
   const authKey = 'tokyo_burari_auto_login_v1';
   const cameraKey = 'tokyo_burari_last_camera_open_v1';
+  const accountKey = String(data?.account_key || '');
+  const reviewSeenKey = accountKey ? `tokyo_burari_review_seen_v1:${accountKey}` : '';
+  const reviewCheckKey = accountKey ? `tokyo_burari_review_check_v1:${accountKey}` : '';
   const instanceKey = String(data?.instance_key || 'default');
   const runtime = registry.get(instanceKey) || { lastState: '', lastError: '' };
   registry.set(instanceKey, runtime);
@@ -1853,9 +1856,27 @@ export default function(component) {
     if (storeToken) localStorage.setItem(authKey, storeToken);
     if (data?.clear_auth_token) localStorage.removeItem(authKey);
 
+    if (reviewSeenKey && data?.mark_review_seen_month) {
+      localStorage.setItem(reviewSeenKey, String(data.mark_review_seen_month));
+    }
+    if (reviewCheckKey && data?.store_review_check && typeof data.store_review_check === 'object') {
+      localStorage.setItem(reviewCheckKey, JSON.stringify(data.store_review_check));
+    }
+
+    let reviewCheck = null;
+    if (reviewCheckKey) {
+      try {
+        reviewCheck = JSON.parse(localStorage.getItem(reviewCheckKey) || 'null');
+      } catch (_) {
+        reviewCheck = null;
+      }
+    }
+
     const state = {
       auth_token: localStorage.getItem(authKey) || '',
       last_camera_open_at: Number(localStorage.getItem(cameraKey) || 0),
+      review_seen_month: reviewSeenKey ? (localStorage.getItem(reviewSeenKey) || '') : '',
+      review_check: reviewCheck,
     };
     const serialized = JSON.stringify(state);
     if (runtime.lastState !== serialized) {
@@ -1899,17 +1920,68 @@ def browser_auto_login_token(family_key, member_key, credential_hash):
     ).hexdigest()
     return f"{family_key}|{member_key}|{signature}"
 
-def read_browser_persistence(key):
+def read_browser_persistence(key, extra_data=None):
     if browser_persistence_component is None:
         return None
+    data = {"instance_key": key}
+    if isinstance(extra_data, dict):
+        data.update(extra_data)
     result = browser_persistence_component(
-        data={"instance_key": key},
+        data=data,
         key=key,
         on_browser_state_change=lambda: None,
         on_browser_error_change=lambda: None,
     )
     state = getattr(result, "browser_state", None)
     return state if isinstance(state, dict) else None
+
+
+def _browser_review_account_key():
+    return f"{current_family_key()}|{current_member_key()}"
+
+
+def read_browser_review_state():
+    account_key = _browser_review_account_key()
+    key_hash = hashlib.sha1(account_key.encode("utf-8")).hexdigest()[:12]
+    return read_browser_persistence(
+        f"browser_review_state_{key_hash}",
+        {"account_key": account_key},
+    )
+
+
+def write_browser_review_seen(month_key):
+    if browser_persistence_component is None or not month_key:
+        return
+    account_key = _browser_review_account_key()
+    key_hash = hashlib.sha1(account_key.encode("utf-8")).hexdigest()[:12]
+    browser_persistence_component(
+        data={
+            "instance_key": f"browser_review_seen_{key_hash}_{month_key}",
+            "account_key": account_key,
+            "mark_review_seen_month": str(month_key),
+        },
+        key=f"browser_review_seen_{key_hash}_{month_key}",
+        on_browser_state_change=lambda: None,
+        on_browser_error_change=lambda: None,
+    )
+
+
+def write_browser_review_check(check_payload):
+    if browser_persistence_component is None or not isinstance(check_payload, dict):
+        return
+    account_key = _browser_review_account_key()
+    current_month = str(check_payload.get("month") or "")
+    key_hash = hashlib.sha1(account_key.encode("utf-8")).hexdigest()[:12]
+    browser_persistence_component(
+        data={
+            "instance_key": f"browser_review_check_{key_hash}_{current_month}",
+            "account_key": account_key,
+            "store_review_check": check_payload,
+        },
+        key=f"browser_review_check_{key_hash}_{current_month}",
+        on_browser_state_change=lambda: None,
+        on_browser_error_change=lambda: None,
+    )
 
 
 def write_browser_auto_login(token, key="browser_auto_login_store"):
@@ -4281,6 +4353,155 @@ def month_bounds(month_key):
     return start.isoformat(), end.isoformat()
 
 
+def previous_month_key(month_key=None):
+    if month_key:
+        year, month = [int(x) for x in str(month_key).split("-")]
+        first = date(year, month, 1)
+    else:
+        today = now_jst().date()
+        first = date(today.year, today.month, 1)
+    return (first - timedelta(days=1)).strftime("%Y-%m")
+
+
+def _month_has_photo_input(month_key):
+    """True when the month has material worth reviewing: a diary or the child's saved words."""
+    start, end = month_bounds(month_key)
+    client = supabase_client()
+
+    def photo_has_child_words(photo):
+        reflection = (photo or {}).get("reflection_json") or {}
+        if not isinstance(reflection, dict):
+            return False
+        if str(reflection.get("child_comment") or "").strip():
+            return True
+        conversation = reflection.get("conversation") or []
+        return any(
+            isinstance(turn, dict)
+            and turn.get("role") == "child"
+            and str(turn.get("text") or "").strip()
+            for turn in conversation
+        )
+
+    try:
+        rows = (
+            client
+            .table(TRIP_TABLE)
+            .select(f"id,{DIARY_TABLE}(id),{PHOTO_TABLE}(id,reflection_json)")
+            .eq("family_key", current_family_key()).eq("member_key", current_member_key())
+            .gte("trip_date", start)
+            .lt("trip_date", end)
+            .execute()
+        ).data or []
+        for row in rows:
+            diaries = (row or {}).get(DIARY_TABLE) or []
+            if isinstance(diaries, dict):
+                diaries = [diaries]
+            if diaries:
+                return True
+            photos = (row or {}).get(PHOTO_TABLE) or []
+            if isinstance(photos, dict):
+                photos = [photos]
+            if any(photo_has_child_words(photo) for photo in photos):
+                return True
+        return False
+    except Exception:
+        trips = (
+            client
+            .table(TRIP_TABLE)
+            .select("id")
+            .eq("family_key", current_family_key()).eq("member_key", current_member_key())
+            .gte("trip_date", start)
+            .lt("trip_date", end)
+            .execute()
+        ).data or []
+        trip_ids = [str(row.get("id")) for row in trips if row.get("id")]
+        if not trip_ids:
+            return False
+        diaries = (
+            client
+            .table(DIARY_TABLE)
+            .select("id")
+            .eq("family_key", current_family_key()).eq("member_key", current_member_key())
+            .in_("trip_id", trip_ids)
+            .limit(1)
+            .execute()
+        ).data or []
+        if diaries:
+            return True
+        photos = (
+            client
+            .table(PHOTO_TABLE)
+            .select("id,reflection_json")
+            .eq("family_key", current_family_key()).eq("member_key", current_member_key())
+            .in_("trip_id", trip_ids)
+            .execute()
+        ).data or []
+        return any(photo_has_child_words(photo) for photo in photos)
+
+
+def home_review_attention_needed():
+    """Nudge once each month when the immediately preceding month has photo input."""
+    current_month = now_jst().strftime("%Y-%m")
+    prior_month = previous_month_key(current_month)
+
+    if st.session_state.get("_review_seen_month") == current_month:
+        return False
+
+    session_check = st.session_state.get("_home_review_attention_check")
+    if isinstance(session_check, dict) and (
+        str(session_check.get("month") or "") == current_month
+        and str(session_check.get("previous_month") or "") == prior_month
+    ):
+        return bool(session_check.get("has_previous_content"))
+
+    browser_state = read_browser_review_state()
+    if isinstance(browser_state, dict):
+        if str(browser_state.get("review_seen_month") or "") == current_month:
+            st.session_state["_review_seen_month"] = current_month
+            return False
+        stored_check = browser_state.get("review_check")
+        if isinstance(stored_check, dict) and (
+            str(stored_check.get("month") or "") == current_month
+            and str(stored_check.get("previous_month") or "") == prior_month
+        ):
+            st.session_state["_home_review_attention_check"] = dict(stored_check)
+            return bool(stored_check.get("has_previous_content"))
+    elif browser_persistence_component is not None:
+        # Keep the first Home paint DB-free. localStorage returns immediately and
+        # triggers a cheap rerun; the monthly DB check happens only after that.
+        return False
+
+    try:
+        has_previous = _month_has_photo_input(prior_month)
+    except Exception:
+        has_previous = False
+
+    check = {
+        "month": current_month,
+        "previous_month": prior_month,
+        "has_previous_content": bool(has_previous),
+    }
+    st.session_state["_home_review_attention_check"] = check
+    write_browser_review_check(check)
+    return bool(has_previous)
+
+
+def mark_current_month_review_seen():
+    current_month = now_jst().strftime("%Y-%m")
+    if st.session_state.get("_review_seen_month") == current_month:
+        return
+    st.session_state["_review_seen_month"] = current_month
+    write_browser_review_seen(current_month)
+
+
+def format_month_label(month_key):
+    try:
+        year, month = [int(x) for x in str(month_key).split("-")]
+        return f"{year}年{month}月"
+    except Exception:
+        return str(month_key)
+
+
 def get_month_bundle(month_key):
     start, end = month_bounds(month_key)
     client = supabase_client()
@@ -5456,12 +5677,14 @@ def ensure_today_trip():
     return trip
 
 
-def render_home_button(label, page_name, key, ensure_trip=False):
+def render_home_button(label, page_name, key, ensure_trip=False, open_period_review=False):
     if st.button(label, key=key, use_container_width=True):
         if page_name == "camera":
             # The user's click is a valid browser gesture: use it to request the camera
             # immediately on the next render. Do not block on a trip lookup first.
             st.session_state["_camera_auto_start"] = True
+        elif page_name == "review" and open_period_review:
+            st.session_state["review_view_selector"] = "🗓 期間の振り返り"
         elif ensure_trip:
             ensure_today_trip()
         go_page(page_name)
@@ -5509,7 +5732,7 @@ def _home_train_for_session():
     return theme["line_name"], _home_icon_uri(theme["train_key"]) or _home_icon_uri("train")
 
 
-def inject_home_icon_css():
+def inject_home_icon_css(review_attention=False):
     theme = _home_theme_for_session()
     camera_uri = _home_icon_uri(theme["camera_key"]) or _home_icon_uri("camera")
     diary_uri = _home_icon_uri(theme["diary_key"]) or _home_icon_uri("diary")
@@ -5533,6 +5756,14 @@ def inject_home_icon_css():
         f'.st-key-home_settings div.stButton > button{{border-color:rgba({rgb1},.46) !important;background:linear-gradient(155deg,rgba({rgb2},.18),rgba({rgb1},.035)) !important;box-shadow:0 8px 20px rgba({rgb1},.07),0 0 0 2px rgba(255,255,255,.30) inset !important;}}',
         f'.st-key-home_settings div.stButton > button:hover{{border-color:rgba({rgb1},.62) !important;background:linear-gradient(155deg,rgba({rgb2},.25),rgba({rgb1},.065)) !important;box-shadow:0 10px 22px rgba({rgb1},.10),0 0 0 2px rgba(255,255,255,.35) inset !important;}}',
     ]
+    if review_attention:
+        css_chunks.extend([
+            '@keyframes burariReviewPulse{0%,100%{box-shadow:0 9px 22px rgba(226,133,24,.18),0 0 0 2px rgba(255,255,255,.34) inset,0 0 0 0 rgba(226,133,24,.18);}50%{box-shadow:0 11px 25px rgba(226,133,24,.26),0 0 0 2px rgba(255,255,255,.40) inset,0 0 0 7px rgba(226,133,24,0);}}',
+            '.st-key-home_review div.stButton > button{position:relative !important;border:2.6px solid rgba(218,126,20,.96) !important;background:linear-gradient(155deg,rgba(255,241,202,.99),rgba(255,218,169,.97)) !important;animation:burariReviewPulse 2.6s ease-in-out infinite !important;}',
+            '.st-key-home_review div.stButton > button::after{content:"";position:absolute;top:8px;right:10px;width:10px;height:10px;border-radius:999px;background:#E95C32;box-shadow:0 0 0 3px rgba(233,92,50,.16);}',
+            '@media (prefers-reduced-motion: reduce){.st-key-home_review div.stButton > button{animation:none !important;}}',
+        ])
+
     if camera_uri:
         css_chunks.append(f'.st-key-home_camera div.stButton > button::before{{background-image:url("{camera_uri}") !important;}}')
     if diary_uri:
@@ -6268,7 +6499,8 @@ def open_diary_photo_talk(trip_id, photo_id, state):
 # Page: Home
 # ============================================================
 def page_home():
-    inject_home_icon_css()
+    review_attention = home_review_attention_needed()
+    inject_home_icon_css(review_attention=review_attention)
     fast_family_name = str(st.session_state.get("_current_family_name") or current_family_key())
     fast_member_name = str(st.session_state.get("_current_member_name") or current_member_key())
     st.caption(f"{fast_family_name} ／ 個人：{fast_member_name}（{current_member_key()}）")
@@ -6382,7 +6614,8 @@ def page_home():
     with st.container(key="home_secondary"):
         secondary_left, secondary_right = st.columns([1.2, 1])
         with secondary_left:
-            render_home_button("振り返り（たまに）", "review", "home_review")
+            review_label = "振り返り（先月あり）" if review_attention else "振り返り（たまに）"
+            render_home_button(review_label, "review", "home_review", open_period_review=review_attention)
         with secondary_right:
             render_home_button("設定", "settings", "home_settings")
 
@@ -7351,10 +7584,11 @@ def page_history(embedded=False):
 # ============================================================
 def page_monthly(embedded=False):
     if not embedded:
-        page_top("🔍 今月の発見")
-    st.caption("AIが評価するのではなく、これまでの本人の言葉をつないで返します。")
+        page_top("🗓 期間の振り返り")
+    st.caption("保存した日記と本人の言葉を、まとまった期間ごとにつないで振り返ります。")
 
     recent = list_recent_diaries(limit=120)
+    pending_rows = list_pending_photo_trips(limit=80)
     month_keys = []
     for row in recent:
         trip_date = str(row.get("trip", {}).get("trip_date") or "")
@@ -7362,18 +7596,34 @@ def page_monthly(embedded=False):
             key = trip_date[:7]
             if key not in month_keys:
                 month_keys.append(key)
-    current_month = now_jst().strftime("%Y-%m")
-    if current_month not in month_keys:
-        month_keys.insert(0, current_month)
+    for row in pending_rows:
+        trip_date = str((row.get("trip") or {}).get("trip_date") or "")
+        if len(trip_date) >= 7:
+            key = trip_date[:7]
+            if key not in month_keys:
+                month_keys.append(key)
+    month_keys = sorted(month_keys, reverse=True)
     if not month_keys:
-        month_keys = [current_month]
+        month_keys = [now_jst().strftime("%Y-%m")]
 
-    month_key = st.selectbox("振り返る月", month_keys, key="monthly_selector")
+    month_key = st.selectbox(
+        "振り返る期間",
+        month_keys,
+        format_func=format_month_label,
+        key="monthly_selector",
+    )
+    period_label = format_month_label(month_key)
+    st.markdown(f"### {period_label}の振り返り")
     bundle = get_month_bundle(month_key)
     completed_count = len(bundle["diaries"])
-    st.write(f"この月の日記：**{completed_count}回**")
-    if completed_count == 0:
-        st.info("この月には、まだ保存された日記がありません。")
+    commented_photo_count = sum(
+        1
+        for photo in bundle.get("photos", [])
+        if _conversation_has_child_words(_stored_photo_conversation(photo))
+    )
+    st.write(f"この期間の日記：**{completed_count}回**　／　本人の言葉がある写真：**{commented_photo_count}枚**")
+    if completed_count == 0 and commented_photo_count == 0:
+        st.info("この期間には、まだ振り返りに使える本人の言葉がありません。")
         return
 
     saved = get_saved_monthly_review(month_key)
@@ -7382,10 +7632,10 @@ def page_monthly(embedded=False):
         st.session_state[session_key] = saved.get("review_json") or {}
     review = st.session_state.get(session_key)
 
-    button_label = "AIと今月を振り返る" if not review else "今の記録でもう一度まとめる"
+    button_label = "AIとこの期間を振り返る" if not review else "この期間をもう一度まとめる"
     if st.button(button_label, type="primary" if not review else "secondary", use_container_width=True):
         try:
-            with st.spinner("今月の言葉をつないでいます…"):
+            with st.spinner("この期間の言葉をつないでいます…"):
                 review = make_monthly_review(month_key, bundle)
                 save_monthly_review(month_key, review)
                 audio = speech_bytes(monthly_speech_text(review))
@@ -7394,7 +7644,7 @@ def page_monthly(embedded=False):
             st.session_state[f"monthly_audio_pending_{month_key}"] = True
             st.rerun()
         except Exception as exc:
-            st.error("今月の振り返りを作れませんでした。")
+            st.error("期間の振り返りを作れませんでした。")
             with st.expander("保護者向け詳細"):
                 st.code(str(exc))
 
@@ -7446,15 +7696,18 @@ def page_monthly(embedded=False):
 # Page: Review / Settings
 # ============================================================
 def page_review():
+    mark_current_month_review_seen()
+    if st.session_state.get("review_view_selector") == "🔍 今月の発見":
+        st.session_state["review_view_selector"] = "🗓 期間の振り返り"
     page_top(
         "🔍 振り返り",
-        "過去の日記を読み返したり、1か月分の『気になる』をAIとつないだりします。",
+        "過去の日記を読み返したり、まとまった期間の『気になる』をAIとつないだりします。",
     )
     # st.tabs executes both tab bodies on every rerun. A radio keeps the same two
     # choices but loads only the page the user is actually viewing.
     review_view = st.radio(
         "振り返りの表示",
-        ["📚 これまでの日記", "🔍 今月の発見"],
+        ["📚 これまでの日記", "🗓 期間の振り返り"],
         horizontal=True,
         label_visibility="collapsed",
         key="review_view_selector",
