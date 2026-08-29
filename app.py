@@ -5450,9 +5450,11 @@ def _monthly_replay_state(month_key, review):
     if url_key not in st.session_state:
         st.session_state[url_key] = str(playback.get("youtube_url") or "")
     if start_key not in st.session_state:
-        st.session_state[start_key] = int(playback.get("start_seconds") or 48)
+        raw_start = playback.get("start_seconds")
+        st.session_state[start_key] = int(raw_start if raw_start is not None else 48)
     if end_key not in st.session_state:
-        st.session_state[end_key] = int(playback.get("end_seconds") or 68)
+        raw_end = playback.get("end_seconds")
+        st.session_state[end_key] = int(raw_end if raw_end is not None else 68)
     if reason_key not in st.session_state:
         st.session_state[reason_key] = str(playback.get("reason") or "")
     if confidence_key not in st.session_state:
@@ -5637,24 +5639,53 @@ def render_monthly_music_settings(month_key, bundle, review, expanded=True):
 
 
 def render_monthly_time_settings(month_key, review):
-    """Edit only the playback window, without showing URL/music replacement controls."""
+    """Edit only the current music's playback window.
+
+    The time editor intentionally uses dedicated widget keys. This prevents stale
+    values from the full music-settings form from overriding the interval that is
+    actually applied to the replay.
+    """
     state = _monthly_replay_state(month_key, review)
-    playback = state["playback"]
+    playback = get_monthly_playback(review) or state["playback"]
     current_url = str(st.session_state.get(state["url_key"]) or playback.get("youtube_url") or "").strip()
-    video_id = parse_youtube_video_id(current_url)
+    video_id = str(playback.get("video_id") or "").strip() or parse_youtube_video_id(current_url)
     if not video_id:
         st.warning("先に音楽を設定してください。")
         return
 
+    edit_start_key = f"monthly_time_edit_start_{month_key}"
+    edit_end_key = f"monthly_time_edit_end_{month_key}"
+
+    # If this view was restored without going through the open button, initialize
+    # it from the interval currently used by the replay.
+    applied = st.session_state.get(f"monthly_replay_applied_{month_key}")
+    if isinstance(applied, dict):
+        current_start = max(0, int(applied.get("start_seconds") if applied.get("start_seconds") is not None else 0))
+        current_end = int(applied.get("end_seconds") if applied.get("end_seconds") is not None else current_start + 20)
+    else:
+        raw_start = playback.get("start_seconds")
+        raw_end = playback.get("end_seconds")
+        current_start = max(0, int(raw_start if raw_start is not None else st.session_state.get(state["start_key"], 0)))
+        current_end = int(raw_end if raw_end is not None else st.session_state.get(state["end_key"], current_start + 20))
+    if current_end <= current_start:
+        current_end = current_start + 20
+
+    if edit_start_key not in st.session_state:
+        st.session_state[edit_start_key] = current_start
+    if edit_end_key not in st.session_state:
+        st.session_state[edit_end_key] = current_end
+
     with st.container(border=True):
         st.markdown("**音楽を再生する時間**")
-        st.number_input("開始（秒）", min_value=0, step=1, key=state["start_key"])
-        st.number_input("終了（秒）", min_value=1, step=1, key=state["end_key"])
-        start_seconds = max(0, int(st.session_state.get(state["start_key"]) or 0))
-        end_seconds = int(st.session_state.get(state["end_key"]) or (start_seconds + 20))
+        st.caption(f"現在の再生設定：{format_mmss(current_start)}〜{format_mmss(current_end)}")
+        st.number_input("開始（秒）", min_value=0, step=1, key=edit_start_key)
+        st.number_input("終了（秒）", min_value=1, step=1, key=edit_end_key)
+        start_seconds = max(0, int(st.session_state.get(edit_start_key) or 0))
+        end_seconds = int(st.session_state.get(edit_end_key) or (start_seconds + 20))
         if end_seconds <= start_seconds:
-            st.warning("終了は開始より後にしてください。")
-        st.caption(f"設定中：{format_mmss(start_seconds)}〜{format_mmss(max(end_seconds, start_seconds + 1))}")
+            st.warning("終了は開始より後にしてください。反映時は開始から20秒後に自動調整します。")
+        display_end = end_seconds if end_seconds > start_seconds else start_seconds + 20
+        st.caption(f"変更後：{format_mmss(start_seconds)}〜{format_mmss(display_end)}")
         if st.button(
             "この時間を再生に反映",
             type="primary",
@@ -5663,7 +5694,7 @@ def render_monthly_time_settings(month_key, review):
         ):
             if end_seconds <= start_seconds:
                 end_seconds = start_seconds + 20
-                st.session_state[state["end_key"]] = end_seconds
+
             updated = dict(playback or {})
             updated.update({
                 "youtube_url": current_url,
@@ -5678,11 +5709,16 @@ def render_monthly_time_settings(month_key, review):
                 "source": "manual_time",
             })
             save_monthly_playback(month_key, review, updated)
+
+            # Keep every replay source in sync so the next rerun immediately uses
+            # the newly entered interval.
+            st.session_state[state["start_key"]] = start_seconds
+            st.session_state[state["end_key"]] = end_seconds
+            st.session_state[state["confidence_key"]] = "manual"
             st.session_state[f"monthly_replay_applied_{month_key}"] = {
                 "start_seconds": start_seconds,
                 "end_seconds": end_seconds,
             }
-            st.session_state[state["confidence_key"]] = "manual"
             st.session_state[f"monthly_time_settings_open_{month_key}"] = False
             st.success(f"{format_mmss(start_seconds)}〜{format_mmss(end_seconds)} に変更しました。")
             st.rerun()
@@ -8954,9 +8990,27 @@ def page_monthly(embedded=False):
         use_container_width=True,
         key=f"monthly_change_music_time_{month_key}",
     ):
-        st.session_state[time_settings_open_key] = not bool(st.session_state.get(time_settings_open_key))
-        if st.session_state[time_settings_open_key]:
+        opening_time_settings = not bool(st.session_state.get(time_settings_open_key))
+        st.session_state[time_settings_open_key] = opening_time_settings
+        if opening_time_settings:
             st.session_state[settings_open_key] = False
+
+            # Every time the editor is opened, preload the interval that is actually
+            # being used by the current replay rather than any older form value.
+            current_playback = get_monthly_playback(review) or {}
+            applied = st.session_state.get(f"monthly_replay_applied_{month_key}")
+            if isinstance(applied, dict):
+                raw_start = applied.get("start_seconds")
+                raw_end = applied.get("end_seconds")
+            else:
+                raw_start = current_playback.get("start_seconds")
+                raw_end = current_playback.get("end_seconds")
+            current_start = max(0, int(raw_start if raw_start is not None else 0))
+            current_end = int(raw_end if raw_end is not None else current_start + 20)
+            if current_end <= current_start:
+                current_end = current_start + 20
+            st.session_state[f"monthly_time_edit_start_{month_key}"] = current_start
+            st.session_state[f"monthly_time_edit_end_{month_key}"] = current_end
 
     if st.session_state.get(time_settings_open_key):
         render_monthly_time_settings(month_key, review)
