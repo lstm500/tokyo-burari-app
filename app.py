@@ -9065,34 +9065,34 @@ def page_monthly(embedded=False):
             st.warning("この期間の振り返り動画を削除します。写真・日記・AIコメント・保存済み音楽は削除されません。")
             delete_col, cancel_col = st.columns([1.25, 1])
             with delete_col:
-                if st.button(
-                    "削除する",
-                    type="primary",
-                    use_container_width=True,
-                    key=f"monthly_delete_video_confirm_button_{month_key}",
-                ):
-                    try:
-                        state = _monthly_replay_state(month_key, review)
-                        save_monthly_playback(month_key, review, {})
-                        for state_key in (
-                            state["url_key"],
-                            state["start_key"],
-                            state["end_key"],
-                            state["reason_key"],
-                            state["confidence_key"],
-                            state["title_key"],
-                            f"monthly_replay_applied_{month_key}",
-                            f"monthly_music_settings_open_{month_key}",
-                            f"monthly_time_settings_open_{month_key}",
-                            delete_video_confirm_key,
-                        ):
-                            st.session_state.pop(state_key, None)
-                        st.session_state["_monthly_video_deleted_notice"] = "この期間の振り返り動画を削除しました。"
-                        st.rerun()
-                    except Exception as exc:
-                        st.error("振り返り動画を削除できませんでした。")
-                        with st.expander("保護者向け詳細"):
-                            st.code(str(exc))
+                with st.container(key="monthly_delete_video_confirm_action"):
+                    if st.button(
+                        "削除する",
+                        use_container_width=True,
+                        key=f"monthly_delete_video_confirm_button_{month_key}",
+                    ):
+                        try:
+                            state = _monthly_replay_state(month_key, review)
+                            save_monthly_playback(month_key, review, {})
+                            for state_key in (
+                                state["url_key"],
+                                state["start_key"],
+                                state["end_key"],
+                                state["reason_key"],
+                                state["confidence_key"],
+                                state["title_key"],
+                                f"monthly_replay_applied_{month_key}",
+                                f"monthly_music_settings_open_{month_key}",
+                                f"monthly_time_settings_open_{month_key}",
+                                delete_video_confirm_key,
+                            ):
+                                st.session_state.pop(state_key, None)
+                            st.session_state["_monthly_video_deleted_notice"] = "この期間の振り返り動画を削除しました。"
+                            st.rerun()
+                        except Exception as exc:
+                            st.error("振り返り動画を削除できませんでした。")
+                            with st.expander("保護者向け詳細"):
+                                st.code(str(exc))
             with cancel_col:
                 if st.button(
                     "キャンセル",
@@ -9102,13 +9102,14 @@ def page_monthly(embedded=False):
                     st.session_state.pop(delete_video_confirm_key, None)
                     st.rerun()
         else:
-            if st.button(
-                "🗑 この振り返り動画を削除する",
-                use_container_width=True,
-                key=f"monthly_delete_video_{month_key}",
-            ):
-                st.session_state[delete_video_confirm_key] = True
-                st.rerun()
+            with st.container(key="monthly_delete_video_action"):
+                if st.button(
+                    "🗑 この振り返り動画を削除する",
+                    use_container_width=True,
+                    key=f"monthly_delete_video_{month_key}",
+                ):
+                    st.session_state[delete_video_confirm_key] = True
+                    st.rerun()
 
 
 # ============================================================
@@ -9151,6 +9152,42 @@ def page_review():
             margin-top: -.18rem;
             padding: 0 .18rem .06rem;
           }
+          .st-key-review_back_menu_bottom {
+            margin-top: .34rem;
+            margin-bottom: .10rem;
+          }
+          .st-key-review_back_menu_bottom div.stButton > button {
+            min-height: 3.05rem;
+            border: 1.9px solid rgba(218,126,20,.90) !important;
+            border-radius: 14px !important;
+            background: linear-gradient(155deg, rgba(255,241,202,.99), rgba(255,218,169,.97)) !important;
+            color: #633a05 !important;
+            font-weight: 800 !important;
+            box-shadow: 0 8px 18px rgba(218,126,20,.14), 0 0 0 2px rgba(255,255,255,.34) inset !important;
+          }
+          .st-key-review_back_menu_bottom div.stButton > button:hover {
+            background: linear-gradient(155deg, rgba(255,235,187,1), rgba(255,207,142,.99)) !important;
+            border-color: rgba(197,105,10,.98) !important;
+          }
+          .st-key-monthly_delete_video_action {
+            margin-top: .24rem;
+            margin-bottom: .12rem;
+          }
+          .st-key-monthly_delete_video_action div.stButton > button,
+          .st-key-monthly_delete_video_confirm_action div.stButton > button {
+            min-height: 3.0rem;
+            border: 1.8px solid rgba(199,62,62,.82) !important;
+            border-radius: 14px !important;
+            background: linear-gradient(155deg, rgba(255,238,238,.99), rgba(255,218,218,.97)) !important;
+            color: #8b1f1f !important;
+            font-weight: 800 !important;
+            box-shadow: 0 7px 16px rgba(180,54,54,.10), 0 0 0 2px rgba(255,255,255,.30) inset !important;
+          }
+          .st-key-monthly_delete_video_action div.stButton > button:hover,
+          .st-key-monthly_delete_video_confirm_action div.stButton > button:hover {
+            background: linear-gradient(155deg, rgba(255,226,226,1), rgba(255,202,202,.99)) !important;
+            border-color: rgba(177,43,43,.96) !important;
+          }
         </style>
         """,
         unsafe_allow_html=True,
@@ -9188,6 +9225,18 @@ def page_review():
         page_history(embedded=True)
     else:
         st.caption("上のどちらかを押すと内容が表示されます。")
+
+    # Keep a clear two-step exit at the very bottom of either review detail:
+    # first return to the review chooser, then the shared Home button below it.
+    if current_view in {period_label, history_label}:
+        with st.container(key="review_back_menu_bottom"):
+            if st.button(
+                "↩ 振り返り（たまに）に戻る",
+                use_container_width=True,
+                key="review_back_to_menu_bottom",
+            ):
+                st.session_state.pop("review_view_selector", None)
+                st.rerun()
 
 
 
