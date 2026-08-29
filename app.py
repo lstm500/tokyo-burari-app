@@ -18,13 +18,9 @@ from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import streamlit as st
-from openai import OpenAI
-from PIL import Image, ImageOps
 
-try:
-    from supabase import create_client
-except Exception:
-    create_client = None
+# Cold-start priority: home and camera UI should not import AI/image/database clients
+# until a feature actually needs them. Streamlit itself is the only eager app dependency.
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 HOME_ICON_CANDIDATES = {
@@ -1533,15 +1529,26 @@ export default function(component) {
 }
 """
 
-try:
-    far_field_mic_component = st.components.v2.component(
-        "tokyo_burari_far_field_mic",
-        html=_FAR_FIELD_MIC_HTML,
-        css=_FAR_FIELD_MIC_CSS,
-        js=_FAR_FIELD_MIC_JS,
-    )
-except Exception:
-    far_field_mic_component = None
+far_field_mic_component = None
+_far_field_mic_component_initialized = False
+
+
+def _get_far_field_mic_component():
+    """Register the microphone component only when a diary/comment recorder is opened."""
+    global far_field_mic_component, _far_field_mic_component_initialized
+    if _far_field_mic_component_initialized:
+        return far_field_mic_component
+    _far_field_mic_component_initialized = True
+    try:
+        far_field_mic_component = st.components.v2.component(
+            "tokyo_burari_far_field_mic",
+            html=_FAR_FIELD_MIC_HTML,
+            css=_FAR_FIELD_MIC_CSS,
+            js=_FAR_FIELD_MIC_JS,
+        )
+    except Exception:
+        far_field_mic_component = None
+    return far_field_mic_component
 
 
 # ============================================================
@@ -1706,15 +1713,26 @@ export default function(component) {
 }
 """
 
-try:
-    diary_gallery_component = st.components.v2.component(
-        "tokyo_burari_diary_gallery",
-        html=_DIARY_GALLERY_HTML,
-        css=_DIARY_GALLERY_CSS,
-        js=_DIARY_GALLERY_JS,
-    )
-except Exception:
-    diary_gallery_component = None
+diary_gallery_component = None
+_diary_gallery_component_initialized = False
+
+
+def _get_diary_gallery_component():
+    """Register the diary gallery only when a diary/photo grid is actually shown."""
+    global diary_gallery_component, _diary_gallery_component_initialized
+    if _diary_gallery_component_initialized:
+        return diary_gallery_component
+    _diary_gallery_component_initialized = True
+    try:
+        diary_gallery_component = st.components.v2.component(
+            "tokyo_burari_diary_gallery",
+            html=_DIARY_GALLERY_HTML,
+            css=_DIARY_GALLERY_CSS,
+            js=_DIARY_GALLERY_JS,
+        )
+    except Exception:
+        diary_gallery_component = None
+    return diary_gallery_component
 
 
 # ============================================================
@@ -1934,14 +1952,23 @@ def decode_camera_data_url(data_url):
 # ============================================================
 @st.cache_resource(show_spinner=False)
 def openai_client():
+    # OpenAI is not needed to draw home/camera. Import only for an AI action.
+    from openai import OpenAI
     return OpenAI(api_key=OPENAI_API_KEY)
 
 
 @st.cache_resource(show_spinner=False)
 def supabase_client():
-    if not (create_client and SUPABASE_URL and SUPABASE_SECRET_KEY):
+    # Supabase is imported on the first real database operation instead of every
+    # process cold start. This matters most when an authenticated Streamlit session
+    # can show Home/Camera without touching the database.
+    if not (SUPABASE_URL and SUPABASE_SECRET_KEY):
         return None
-    return create_client(SUPABASE_URL, SUPABASE_SECRET_KEY)
+    try:
+        from supabase import create_client as _create_client
+    except Exception as exc:
+        raise RuntimeError("Supabase ライブラリがありません。requirements.txt を確認してください。") from exc
+    return _create_client(SUPABASE_URL, SUPABASE_SECRET_KEY)
 
 
 def now_jst():
@@ -1966,21 +1993,12 @@ def _verify_remote_schema_cached():
 
 
 def verify_setup():
+    """Fast startup validation. Remote schema is verified lazily by the first DB action."""
     if not OPENAI_API_KEY:
         st.error("OPENAI_API_KEY が設定されていません。Streamlit Secrets を確認してください。")
         st.stop()
-    if create_client is None:
-        st.error("Supabase ライブラリがありません。requirements.txt を確認してください。")
-        st.stop()
     if not (SUPABASE_URL and SUPABASE_SECRET_KEY):
         st.error("SUPABASE_URL と SUPABASE_SECRET_KEY が設定されていません。")
-        st.stop()
-    try:
-        _verify_remote_schema_cached()
-    except Exception as exc:
-        st.error("個人アカウント対応のSupabase設定が必要です。supabase_personal_account_migration.sql を1回実行してください。")
-        with st.expander("保護者向け詳細"):
-            st.code(str(exc))
         st.stop()
 
 def _family_pin_hash(pin, salt):
@@ -2737,10 +2755,11 @@ def decode_audio_data_url(payload, fallback_name="speech.webm"):
 
 def far_field_audio_input(label, key):
     """Record speech with browser-side gain tuned for a child a short distance away."""
-    if far_field_mic_component is None:
+    component = _get_far_field_mic_component()
+    if component is None:
         return st.audio_input(label, sample_rate=16000, key=f"{key}_fallback")
 
-    result = far_field_mic_component(
+    result = component(
         data={"label": str(label or "録音")},
         key=key,
         on_audio_change=lambda: None,
@@ -3117,6 +3136,7 @@ def normalize_duplicate_saved_diary_titles():
 # Image helpers
 # ============================================================
 def normalize_photo(raw_bytes, max_side=1600, quality=84):
+    from PIL import Image, ImageOps
     with Image.open(io.BytesIO(raw_bytes)) as img:
         img = ImageOps.exif_transpose(img).convert("RGB")
         img.thumbnail((max_side, max_side))
@@ -3135,6 +3155,7 @@ def thumbnail_photo_bytes(storage_path, max_px=420, quality=76):
     """Small immutable preview bytes for grids; avoids resending full photos on reruns."""
     image_bytes = download_photo(storage_path)
     try:
+        from PIL import Image, ImageOps
         with Image.open(io.BytesIO(image_bytes)) as img:
             img = ImageOps.exif_transpose(img).convert("RGB")
             img.thumbnail((int(max_px), int(max_px)))
@@ -4626,6 +4647,7 @@ AIが新しい出来事や感情を足してはいけません。
 def _vision_ready_photo(image_bytes, max_side=720, quality=76):
     """Shrink a stored photo for the AI summary request without changing the saved original."""
     try:
+        from PIL import Image, ImageOps
         with Image.open(io.BytesIO(image_bytes)) as img:
             img = ImageOps.exif_transpose(img).convert("RGB")
             img.thumbnail((max_side, max_side))
@@ -5333,39 +5355,33 @@ def init_state():
             st.session_state["_history_action"] = "push"
 
     today = today_iso()
+    # Do not query Supabase during startup merely to rediscover today's trip.
+    # If we already have a local snapshot and it is clearly from another day, clear it.
+    # Otherwise the first data-requiring action (saving a photo, opening diary, etc.)
+    # resolves the database state lazily.
     if st.session_state.active_trip_id:
-        active = get_active_trip_fast(max_age_seconds=20)
-        if not active or active.get("status") != "active" or active.get("trip_date") != today:
-            st.session_state.active_trip_id = None
-            _invalidate_active_trip_snapshot()
+        snapshot = st.session_state.get("_active_trip_snapshot")
+        if isinstance(snapshot, dict) and str(snapshot.get("id") or "") == str(st.session_state.active_trip_id):
+            if snapshot.get("status") != "active" or snapshot.get("trip_date") != today:
+                st.session_state.active_trip_id = None
+                _invalidate_active_trip_snapshot()
 
-    # If there is no active trip, remember a negative lookup for this person/day.
-    # Previously every Streamlit rerun queried Supabase again when there was no trip.
-    lookup_key = f"{current_family_key()}|{current_member_key()}|{today}"
-    if not st.session_state.active_trip_id and st.session_state.get("_today_active_lookup_key") != lookup_key:
-        active = get_today_active_trip()
-        st.session_state["_today_active_lookup_key"] = lookup_key
-        if active:
-            _cache_active_trip_snapshot(active)
 
 
 VALID_APP_PAGES = {"home", "camera", "diary", "review", "settings"}
 
 
 def restore_recent_camera_session():
-    """On a new browser session, reopen the camera if it was used within one hour."""
+    """Reopen a recently used camera without an extra browser-storage component call."""
     if st.session_state.get("_recent_camera_restore_checked", False):
         return
+    st.session_state["_recent_camera_restore_checked"] = True
 
+    # A fresh auto-login already read browser persistence and stored this value.
+    # If it is unavailable, skip restoration rather than delaying the Home screen.
     last_open = st.session_state.get("_browser_last_camera_open_at")
     if last_open is None:
-        browser_state = read_browser_persistence("browser_recent_camera_restore")
-        if browser_state is None:
-            return
-        last_open = browser_state.get("last_camera_open_at") or 0
-        st.session_state["_browser_last_camera_open_at"] = last_open
-
-    st.session_state["_recent_camera_restore_checked"] = True
+        return
     try:
         last_open_ms = float(last_open or 0)
     except Exception:
@@ -5442,28 +5458,26 @@ def ensure_today_trip():
 
 def render_home_button(label, page_name, key, ensure_trip=False):
     if st.button(label, key=key, use_container_width=True):
-        if ensure_trip:
+        if page_name == "camera":
+            # The user's click is a valid browser gesture: use it to request the camera
+            # immediately on the next render. Do not block on a trip lookup first.
+            st.session_state["_camera_auto_start"] = True
+        elif ensure_trip:
             ensure_today_trip()
         go_page(page_name)
 
 
 @st.cache_data(show_spinner=False)
 def _local_icon_data_uri(path):
-    """Read a local PNG/JPEG once and return a compact data URI for CSS backgrounds."""
+    """Return a local icon as a data URI without decoding/re-encoding it."""
     if not path or not os.path.exists(path):
         return ""
     try:
-        with Image.open(path) as img:
-            img = img.convert("RGBA")
-            img.thumbnail((180, 180), Image.LANCZOS)
-            canvas = Image.new("RGBA", (180, 180), (0, 0, 0, 0))
-            x = (180 - img.width) // 2
-            y = (180 - img.height) // 2
-            canvas.paste(img, (x, y), img)
-            buf = io.BytesIO()
-            canvas.save(buf, format="PNG", optimize=True)
-        encoded = base64.b64encode(buf.getvalue()).decode("ascii")
-        return f"data:image/png;base64,{encoded}"
+        suffix = os.path.splitext(path)[1].lower()
+        mime = "image/jpeg" if suffix in {".jpg", ".jpeg"} else "image/png"
+        with open(path, "rb") as f:
+            encoded = base64.b64encode(f.read()).decode("ascii")
+        return f"data:{mime};base64,{encoded}"
     except Exception:
         return ""
 
@@ -6061,10 +6075,11 @@ def render_pending_thumbnail_grid(trip_id, photos, max_count=None, trip=None):
     if not cards:
         return
 
-    if diary_gallery_component is not None:
+    gallery_component = _get_diary_gallery_component()
+    if gallery_component is not None:
         serial_key = f"pending_gallery_serial_{trip_id}"
         serial = int(st.session_state.get(serial_key) or 0)
-        result = diary_gallery_component(
+        result = gallery_component(
             data={"photos": cards, "delete_only": True},
             key=f"pending_gallery_{trip_id}_{serial}",
             on_photo_id_change=lambda: None,
@@ -6170,10 +6185,11 @@ def render_diary_photo_gallery(trip_id, photos, state=None):
     if not cards:
         return None
 
-    if diary_gallery_component is not None:
+    gallery_component = _get_diary_gallery_component()
+    if gallery_component is not None:
         serial_key = f"diary_gallery_serial_{trip_id}"
         serial = int(st.session_state.get(serial_key) or 0)
-        result = diary_gallery_component(
+        result = gallery_component(
             data={"photos": cards},
             key=f"diary_gallery_{trip_id}_{serial}",
             on_photo_id_change=lambda: None,
@@ -6234,7 +6250,9 @@ def open_diary_photo_talk(trip_id, photo_id, state):
 # ============================================================
 def page_home():
     inject_home_icon_css()
-    st.caption(f"{current_family_name()} ／ 個人：{current_member_name()}（{current_member_key()}）")
+    fast_family_name = str(st.session_state.get("_current_family_name") or current_family_key())
+    fast_member_name = str(st.session_state.get("_current_member_name") or current_member_key())
+    st.caption(f"{fast_family_name} ／ 個人：{fast_member_name}（{current_member_key()}）")
     # The hero train keeps the same track-equipped illustration, but varies by route on each new session.
     train_line_name, train_uri = _home_train_for_session()
     train_html = (
@@ -6250,7 +6268,7 @@ def page_home():
             <div class="home-hero-copy">
               <div class="home-eyebrow">TOKYO BURARI</div>
               <div class="home-title">東京<span class="home-title-accent">ぶらり</span>旅</div>
-              <div class="home-tagline">思った。を残そう</div>
+              <div class="home-tagline">思った。感じた。をそのまま残そう</div>
             </div>
             {train_html}
           </div>
@@ -6259,15 +6277,23 @@ def page_home():
         unsafe_allow_html=True,
     )
 
-    active = get_active_trip_fast(max_age_seconds=20) if st.session_state.active_trip_id else None
-    active_photos = []
-    active_place = ""
-    if active and active.get("status") == "active" and active.get("trip_date") == today_iso():
-        active_photos = list_trip_photos(active["id"])
-        active_place = trip_place_label(active, photos=active_photos)
-
-    status_main = f"今日の写真 {len(active_photos)}枚" if active_photos else "今日はまだ写真なし"
-    status_sub = active_place or "地名は写真から自動取得できます"
+    # Home is intentionally DB-free. Counts/place are updated in session immediately
+    # after a successful capture; a fresh browser session shows a neutral status until
+    # the first data action instead of delaying every launch with two network requests.
+    active = st.session_state.get("_active_trip_snapshot")
+    if not isinstance(active, dict) or active.get("trip_date") != today_iso() or active.get("status") != "active":
+        active = None
+    cached_count = st.session_state.get("_home_today_photo_count")
+    active_place = str(st.session_state.get("_home_today_place") or (active or {}).get("destination") or "").strip()
+    if cached_count is None:
+        status_main = "今日の記録"
+    else:
+        try:
+            count_value = max(0, int(cached_count))
+        except Exception:
+            count_value = 0
+        status_main = f"今日の写真 {count_value}枚" if count_value else "今日はまだ写真なし"
+    status_sub = active_place or "写真を撮ると、ここに今日の記録が表示されます"
     st.markdown(
         f"""
         <div class="home-status">
@@ -6283,7 +6309,7 @@ def page_home():
     with st.container(key="home_primary"):
         primary_left, primary_right = st.columns(2)
         with primary_left:
-            render_home_button("写真を撮る", "camera", "home_camera", ensure_trip=True)
+            render_home_button("写真を撮る", "camera", "home_camera")
         with primary_right:
             render_home_button("日記にする・見る", "diary", "home_diary")
 
@@ -6498,28 +6524,27 @@ def page_trip():
     if st.button("←", key="camera_back_home", help="ホームへ戻る"):
         go_page("home")
 
-    trip = ensure_today_trip()
-    digest_key = f"saved_camera_digest_{trip['id']}"
-
     notice = st.session_state.pop("_camera_notice", None)
     if notice:
         st.success(notice)
 
     if live_camera_component is None:
         st.error("ライブカメラ機能に必要なStreamlitのバージョンが古いです。requirements.txtを更新してください。")
-        render_recent_camera_photo_comment(trip)
         return
 
+    # Critical path: mount/start camera first. No Supabase call occurs above this line.
     auto_start = bool(st.session_state.pop("_camera_auto_start", False))
+    active_snapshot = st.session_state.get("_active_trip_snapshot")
+    if not isinstance(active_snapshot, dict) or active_snapshot.get("trip_date") != today_iso() or active_snapshot.get("status") != "active":
+        active_snapshot = None
+    camera_trip_key = str((active_snapshot or {}).get("id") or "pending")
     result = live_camera_component(
         data={"auto_start": auto_start},
-        key=f"live_camera_{trip['id']}_{st.session_state.capture_serial}",
+        key=f"live_camera_{camera_trip_key}_{st.session_state.capture_serial}",
         on_photo_change=lambda: None,
         on_camera_error_change=lambda: None,
     )
 
-    # Keep a full-width route back to the home screen immediately below the
-    # camera form, so it remains easy to leave camera mode on a phone.
     with st.container(key="camera_home_nav"):
         if st.button(
             "トップページに戻る",
@@ -6540,7 +6565,10 @@ def page_trip():
         try:
             raw = decode_camera_data_url(payload["data_url"])
             digest = hashlib.sha1(raw).hexdigest()
+            digest_key = "saved_camera_digest_current"
             if st.session_state.get(digest_key) != digest:
+                # The DB work begins only after the user has actually captured/saved a photo.
+                trip = ensure_today_trip()
                 capture_source = str(payload.get("source") or "camera")
                 location = build_photo_location(
                     payload.get("location"),
@@ -6560,6 +6588,18 @@ def page_trip():
                 st.session_state[digest_key] = digest
                 if isinstance(saved_photo, dict) and saved_photo.get("id"):
                     st.session_state[f"_camera_recent_photo_{trip['id']}"] = saved_photo["id"]
+
+                # Update Home's lightweight display without rereading today's photo list.
+                previous_count = st.session_state.get("_home_today_photo_count")
+                try:
+                    previous_count = int(previous_count) if previous_count is not None else 0
+                except Exception:
+                    previous_count = 0
+                st.session_state["_home_today_photo_count"] = previous_count + 1
+                place_label = str((location or {}).get("place_label") or trip.get("destination") or "").strip()
+                if place_label:
+                    st.session_state["_home_today_place"] = place_label
+
                 st.session_state.capture_serial += 1
                 st.session_state["_camera_notice"] = "写真を保存しました。"
                 st.rerun()
@@ -6568,9 +6608,10 @@ def page_trip():
             with st.expander("保護者向け詳細"):
                 st.code(str(exc))
 
-    # Keep the camera choices at the top, then show the just-saved photo and its
-    # comment recorder directly underneath.
-    render_recent_camera_photo_comment(trip)
+    # Recent-photo comment UI is available after a save, using only the in-session snapshot.
+    trip = st.session_state.get("_active_trip_snapshot")
+    if isinstance(trip, dict) and trip.get("id"):
+        render_recent_camera_photo_comment(trip)
 
 
 # ============================================================
@@ -6750,7 +6791,7 @@ def page_diary():
     all_done = bool(state["photo_ids"]) and all(
         bool(state["items"].get(pid, {}).get("done")) for pid in state["photo_ids"]
     )
-    if (not in_talk_mode) and all_done:
+    if (not in_talk_mode) and (all_done or bool(state.get("draft"))):
         if not state.get("draft"):
             st.success("写真のお話はここまで。日記にまとめられます。")
             if st.button("AIと日記をつくる", type="primary", use_container_width=True):
@@ -6950,7 +6991,73 @@ def page_diary():
             item["done"] = False
             update_photo_reflection(pid, item.get("conversation", []), item.get("signals", {}), done=False)
             st.rerun()
-        render_diary_delete_controls(trip_id, photos, current_photo_id=pid, show_photo_navigation=True)
+
+        photo_ids = list(state.get("photo_ids") or [])
+        current_index = photo_ids.index(pid) if pid in photo_ids else -1
+        has_next_photo = 0 <= current_index < len(photo_ids) - 1
+
+        if has_next_photo:
+            if st.button(
+                "次の写真にする",
+                use_container_width=True,
+                key=f"next_photo_after_talk_{trip_id}_{pid}",
+            ):
+                next_photo_id = photo_ids[current_index + 1]
+                if open_diary_photo_talk(trip_id, next_photo_id, state):
+                    st.rerun()
+
+        has_child_evidence = any(
+            _conversation_has_child_words(state.get("items", {}).get(state_pid, {}).get("conversation", []))
+            for state_pid in photo_ids
+        )
+        if has_child_evidence and st.button(
+            "これでAIにまとめてもらう",
+            type="primary",
+            use_container_width=True,
+            key=f"finish_and_compose_diary_{trip_id}_{pid}",
+        ):
+            try:
+                photo_states = []
+                for state_pid in photo_ids:
+                    state_item = state.get("items", {}).get(state_pid, {})
+                    photo_states.append(
+                        {
+                            "photo_id": state_pid,
+                            "conversation": state_item.get("conversation", []),
+                            "signals": state_item.get("signals", {}),
+                        }
+                    )
+                with st.spinner("ここまで話したことを日記にまとめています…"):
+                    result, raw = compose_diary(trip, photo_states)
+                    audio = speech_bytes(result["diary"])
+                state["draft"] = result["diary"]
+                state["draft_title"] = diary_display_title(existing, trip, photos=photos)
+                state["draft_meta"] = {
+                    "reflection_summary": str(result.get("reflection_summary") or "").strip(),
+                    "child_points": result.get("child_points", []),
+                    "signals": result.get("signals", {}),
+                }
+                state["raw_conversation"] = raw
+                state["draft_audio"] = audio
+                state["draft_audio_pending"] = True
+                saved = save_diary(
+                    trip_id,
+                    state["draft_title"],
+                    state["draft"],
+                    state.get("raw_conversation", {}),
+                    state.get("draft_meta", {}),
+                )
+                state["draft_title"] = diary_display_title(saved, trip, photos=photos)
+                state["draft_saved"] = True
+                st.session_state.pop(talk_key, None)
+                st.session_state["_diary_notice"] = "ここまで話した内容で日記を作成して保存しました。"
+                st.rerun()
+            except Exception as exc:
+                st.error("日記をまとめられませんでした。もう一度試してください。")
+                with st.expander("保護者向け詳細"):
+                    st.code(str(exc))
+
+        render_diary_delete_controls(trip_id, photos, current_photo_id=pid, show_photo_navigation=False)
         return
 
     if not item.get("started"):
@@ -7569,7 +7676,6 @@ init_state()
 # Daily rollover and old-title repair can touch many rows. They are diary/history
 # maintenance, not startup requirements, so home/camera opens no longer wait for them.
 restore_recent_camera_session()
-sync_browser_history()
 
 rollover_notice = st.session_state.pop("_rollover_notice", None)
 if rollover_notice:
@@ -7596,6 +7702,11 @@ elif page == "settings":
 else:
     st.session_state["main_page"] = "home"
     st.rerun()
+
+
+# Update browser history after the visible page has been queued, so an invisible
+# bridge never sits ahead of Home/Camera on the perceived critical path.
+sync_browser_history()
 
 # Camera already has its Home button directly under the camera form. For the
 # other major pages, keep a consistent Home route at the absolute bottom even
