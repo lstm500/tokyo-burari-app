@@ -240,16 +240,22 @@ st.markdown(
         font-weight: 800;
         letter-spacing: .12em;
         opacity: .58;
-        margin-bottom: .35rem;
+        margin-bottom: .42rem;
       }
       .home-title {
-        font-size: 1.9rem;
-        font-weight: 850;
-        letter-spacing: -.02em;
-        line-height: 1.18;
+        font-family: "Hiragino Sans", "Hiragino Kaku Gothic ProN", "Yu Gothic", "Noto Sans JP", sans-serif;
+        font-size: clamp(2.05rem, 5.5vw, 2.35rem);
+        font-weight: 900;
+        letter-spacing: .015em;
+        line-height: 1.08;
+        color: rgba(31, 38, 48, .97);
+        text-wrap: nowrap;
+        text-shadow: 0 1px 0 rgba(255,255,255,.70);
+        margin-top: .02rem;
+        margin-bottom: .12rem;
       }
       .home-tagline {
-        margin-top: .45rem;
+        margin-top: .52rem;
         font-size: .96rem;
         line-height: 1.55;
         opacity: .70;
@@ -540,7 +546,11 @@ st.markdown(
         .home-hero-inner { gap: .45rem; }
         .home-hero-train { width: 76px; height: 64px; margin-right: -.12rem; }
         .home-hero-train img { width: 76px; height: 64px; }
-        .home-title { font-size: 1.72rem; }
+        .home-title {
+          font-size: clamp(1.86rem, 8.1vw, 2.04rem);
+          letter-spacing: .01em;
+          line-height: 1.08;
+        }
         .home-tagline { font-size: .90rem; }
         .st-key-home_primary div.stButton > button {
           height: 4.95rem !important;
