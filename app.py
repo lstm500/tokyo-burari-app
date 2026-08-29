@@ -6227,26 +6227,76 @@ note は「こう直したよ」のような短い説明にしてください。
 # ============================================================
 # Monthly review AI
 # ============================================================
-def build_month_evidence(bundle):
-    trip_map = {t["id"]: t for t in bundle["trips"]}
-    lines = []
-    for d in sorted(bundle["diaries"], key=lambda x: trip_map.get(x["trip_id"], {}).get("trip_date", "")):
-        trip = trip_map.get(d["trip_id"], {})
-        lines.append(
-            f"[{trip.get('trip_date', '')} / {trip.get('destination') or '行き先メモなし'}] 日記: {d.get('diary_text', '')}"
-        )
-    for p in bundle["photos"]:
-        trip = trip_map.get(p["trip_id"], {})
-        reflection = p.get("reflection_json") or {}
-        conv = reflection.get("conversation", []) if isinstance(reflection, dict) else []
-        child = [x.get("text", "") for x in conv if x.get("role") == "child"]
-        if child:
-            where = photo_location_label(p) or trip.get("destination") or "場所メモなし"
-            lines.append(
-                f"[{trip.get('trip_date', '')} / 写真 / {where}] 本人の発言: "
-                + " / ".join(child)
-            )
-    return "\n".join(lines)
+def build_month_inner_evidence(bundle):
+    """Build monthly evidence with the child's own saved words as the primary source.
+
+    The generated diary is itself AI-organized text, so it should not be the main
+    source when we are trying to reflect the child's inner interests back to them.
+    """
+    trip_map = {
+        str(t.get("id")): t
+        for t in (bundle or {}).get("trips", [])
+        if isinstance(t, dict) and t.get("id")
+    }
+    comment_lines = []
+    comment_count = 0
+    comment_days = set()
+
+    for photo in (bundle or {}).get("photos", []):
+        if not isinstance(photo, dict):
+            continue
+        trip = trip_map.get(str(photo.get("trip_id")), {})
+        reflection = photo.get("reflection_json") or {}
+        conversation = reflection.get("conversation", []) if isinstance(reflection, dict) else []
+        child_words = []
+        for turn in conversation or []:
+            if not isinstance(turn, dict) or turn.get("role") != "child":
+                continue
+            value = str(turn.get("text") or "").strip()
+            if value:
+                child_words.append(value)
+        if not child_words:
+            continue
+        trip_date = str(trip.get("trip_date") or "").strip()
+        where = str(photo_location_label(photo) or trip.get("destination") or "場所メモなし").strip()
+        for value in child_words:
+            comment_lines.append(f"[{trip_date or '日付不明'} / {where}] {value}")
+            comment_count += 1
+            if trip_date:
+                comment_days.add(trip_date)
+
+    if comment_lines:
+        return {
+            "text": "\n".join(comment_lines),
+            "comment_count": comment_count,
+            "day_count": len(comment_days),
+            "source": "child_comments",
+        }
+
+    # Compatibility fallback for older periods that have a saved diary but no raw
+    # per-photo conversation. Keep the prompt aware that this is weaker evidence.
+    diary_lines = []
+    diary_days = set()
+    for diary in sorted(
+        (bundle or {}).get("diaries", []),
+        key=lambda x: str(trip_map.get(str((x or {}).get("trip_id")), {}).get("trip_date") or ""),
+    ):
+        if not isinstance(diary, dict):
+            continue
+        trip = trip_map.get(str(diary.get("trip_id")), {})
+        trip_date = str(trip.get("trip_date") or "").strip()
+        diary_text = str(diary.get("diary_text") or "").strip()
+        if not diary_text:
+            continue
+        diary_lines.append(f"[{trip_date or '日付不明'}] {diary_text}")
+        if trip_date:
+            diary_days.add(trip_date)
+    return {
+        "text": "\n".join(diary_lines),
+        "comment_count": 0,
+        "day_count": len(diary_days),
+        "source": "diary_fallback",
+    }
 
 
 def make_monthly_review(month_key, bundle):
@@ -6275,30 +6325,59 @@ def make_monthly_review(month_key, bundle):
         "required": ["opening", "findings", "repeated_notices", "wishes", "one_question", "parent_note"],
         "additionalProperties": False,
     }
-    evidence = build_month_evidence(bundle)
+    evidence_bundle = build_month_inner_evidence(bundle)
+    evidence = str(evidence_bundle.get("text") or "").strip() or "本人の言葉はほとんどありません。"
+    comment_count = int(evidence_bundle.get("comment_count") or 0)
+    day_count = int(evidence_bundle.get("day_count") or 0)
+    source = str(evidence_bundle.get("source") or "")
+    source_note = (
+        "以下は本人が写真について実際に残したコメントです。"
+        if source == "child_comments"
+        else "本人の生コメントが残っていないため、本人の発言をもとに作った保存日記を補助材料として使います。推測は特に弱くしてください。"
+    )
     prompt = f"""
-「東京ぶらり旅プロジェクト」の{month_key}の記録を振り返ります。
+「東京ぶらり旅プロジェクト」の{month_key}の記録から、本人に返す短い『気づき』を作ります。
 対象は5〜6歳の子どもです。
+
+{source_note}
+コメント数: {comment_count}件
+記録日数: {day_count}日
 
 記録:
 {evidence}
 
-この振り返りの役割は、子どもを評価・分類することではなく、過去の本人の言葉を鏡のように返し、本人が自分の「気になる」に気づけるようにすることです。
+目的:
+本人が過去に言った言葉をそのまま並べることではありません。
+複数の言葉に共通するものを一段だけ抽象化し、本人が
+「ぼく、こういうところが気になっていたんだ」
+「こういうときに心が動くんだ」
+と自分で気づけるような、短く本質的なコメントにしてください。
+
+ここでいう『内面』は心理診断ではありません。
+記録から比較的自然に読み取れる、今の関心の向き・大事にしていそうなこと・心が動くポイント・迷いや違和感の向きだけを扱います。
 
 厳守:
-- 「観察力が高い」「社会課題に関心が強い」「○○タイプ」のような能力評価・性格診断をしない。
-- 点数をつけない。
-- 記録にないことを推測しない。
-- evidence は具体的な日記・発言の事実にする。
-- findings は最大3件。共通点が弱ければ無理に3件にしない。
-- repeated_notices は、別の日にも繰り返し現れた本人の気づきだけ。なければ空配列。
-- wishes は本人が実際に言った「こうだったら」「またやりたい」等だけ。なければ空配列。
-- ask_child と one_question は、答えを誘導しない短い質問にする。
-- opening は子ども向けに短く自然に。
-- parent_note は保護者向けに、件数・日付・発言など観察可能な事実を中心に1〜3文でまとめる。
+- 本人の発言を長く引用したり、発言の一覧を作ったりしない。
+- 具体的な写真や出来事を順番に要約しない。
+- まず共通する意味を探し、その意味を子どもにも分かる言葉で返す。
+- 『観察力が高い』『優しい性格』『社会課題に関心が強い』『○○タイプ』など、能力評価・性格診断・ラベル付けをしない。
+- 将来像や才能を予測しない。
+- 記録にない感情を断定しない。
+- 推測を含むときは『〜が気になっていたみたい』『〜を大事にしていたように見える』のように弱く言う。
+- 1件しか根拠がないテーマを、その子全体の傾向のように一般化しない。
+- 複数の日に同じ向きが出ているときだけ、期間全体の傾向として扱う。
+- opening は本人向けの一言。25〜55文字程度、1文だけ。最も本質的な気づきを1つに絞る。
+- findings は最大2件。theme は12文字程度まで。evidence は『根拠の引用』ではなく、その共通点を一段抽象化した説明を1文、35〜80文字程度で書く。
+- findings の内容は opening の言い換えだけにしない。別の気づきが弱ければ1件だけでよい。
+- ask_child は、その気づきを本人が自分で確かめられる短い問い。必要なときだけ1件まで。不要なら空文字。
+- one_question も問いは1つまで。ask_child がある場合は原則空文字にする。
+- repeated_notices と wishes は内部互換のため残すが、通常は空配列にする。
+- parent_note は保護者向け。どの程度の記録量から推測したかと、断定を避けた理由を1〜2文で簡潔に書く。本人の発言を長く引用しない。
+- 全体として簡潔にする。
 """.strip()
-    return ask_json(prompt, "burari_monthly_review", schema, 1400)
-
+    result = ask_json(prompt, "burari_monthly_review_insight_v2", schema, 1000)
+    result["_insight_version"] = 2
+    return result
 
 def monthly_speech_text(review):
     parts = [review.get("opening", "")]
@@ -8390,37 +8469,37 @@ def page_history(embedded=False):
 
 def render_monthly_ai_comments(review):
     review = review if isinstance(review, dict) else {}
-    st.markdown("#### AIのコメント")
-    st.markdown(
-        f'<div class="monthly-card"><div class="big-text">{html.escape(review.get("opening", ""))}</div></div>',
-        unsafe_allow_html=True,
-    )
+    st.markdown("#### AIからの気づき")
+    opening = str(review.get("opening") or "").strip()
+    if opening:
+        st.markdown(
+            f'<div class="monthly-card"><div class="big-text">{html.escape(opening)}</div></div>',
+            unsafe_allow_html=True,
+        )
 
-    for idx, finding in enumerate(review.get("findings", []), start=1):
-        st.markdown(f"#### {idx}. {finding.get('theme', '')}")
-        st.write(finding.get("evidence", ""))
-        if finding.get("ask_child"):
-            st.info(f"聞いてみる：{finding['ask_child']}")
+    first_question = ""
+    for finding in list(review.get("findings", []) or [])[:2]:
+        if not isinstance(finding, dict):
+            continue
+        theme = str(finding.get("theme") or "").strip()
+        insight = str(finding.get("evidence") or "").strip()
+        if theme:
+            st.markdown(f"**{theme}**")
+        if insight:
+            st.write(insight)
+        if not first_question:
+            first_question = str(finding.get("ask_child") or "").strip()
 
-    repeated = review.get("repeated_notices", []) or []
-    if repeated:
-        st.markdown("#### 前にも出てきた『気になる』")
-        for item in repeated:
-            st.write("・" + str(item))
-
-    wishes = review.get("wishes", []) or []
-    if wishes:
-        st.markdown("#### 『こうだったらいいな』の記録")
-        for item in wishes:
-            st.write("・" + str(item))
-
-    if review.get("one_question"):
-        st.markdown("#### 最後にひとつ")
-        st.info(review["one_question"])
+    question = first_question or str(review.get("one_question") or "").strip()
+    if question:
+        st.info(f"ちょっと考えてみる：{question}")
 
     with st.expander("保護者向けメモ"):
         st.write(review.get("parent_note", ""))
-        st.caption("能力評価や性格診断ではなく、保存された発言・日記の範囲でまとめています。")
+        st.caption(
+            "本人が残したコメントの共通点を一段抽象化した振り返りです。"
+            "性格診断・能力評価・将来予測ではありません。"
+        )
 
 
 # ============================================================
@@ -8503,6 +8582,20 @@ def page_monthly(embedded=False):
     comments_open_key = f"monthly_ai_comments_open_{month_key}"
 
     if not music_ready:
+        # Older saved reviews may still contain quote-like summaries. Since the AI
+        # comment is visible in the no-music state, upgrade it once to the insight format.
+        if int(review.get("_insight_version") or 0) < 2:
+            try:
+                with st.spinner("本人の言葉から、短い気づきを作り直しています…"):
+                    refreshed = make_monthly_review(month_key, bundle)
+                    previous_playback = get_monthly_playback(review)
+                    if previous_playback:
+                        refreshed["_playback"] = previous_playback
+                    save_monthly_review(month_key, refreshed)
+                st.session_state[session_key] = refreshed
+                st.rerun()
+            except Exception:
+                pass
         # With no music configured, make the next action obvious at the top.
         if st.button(
             "🎵 音楽をセットする",
@@ -8566,6 +8659,21 @@ def page_monthly(embedded=False):
         render_monthly_music_settings(month_key, bundle, review, expanded=True)
 
     if st.session_state.get(comments_open_key):
+        # Upgrade legacy saved summaries only when the user asks to see AI comments.
+        if int(review.get("_insight_version") or 0) < 2:
+            try:
+                with st.spinner("本人の言葉から、短い気づきを作り直しています…"):
+                    refreshed = make_monthly_review(month_key, bundle)
+                    previous_playback = get_monthly_playback(review)
+                    if previous_playback:
+                        refreshed["_playback"] = previous_playback
+                    save_monthly_review(month_key, refreshed)
+                st.session_state[session_key] = refreshed
+                st.rerun()
+            except Exception as exc:
+                st.error("AIの気づきを更新できませんでした。")
+                with st.expander("保護者向け詳細"):
+                    st.code(str(exc))
         render_monthly_ai_comments(review)
         if st.button(
             "この期間をもう一度まとめる",
