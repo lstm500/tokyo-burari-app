@@ -5043,6 +5043,7 @@ def render_monthly_replay_player(period_label, review, playback, photo_items):
       let burariTimer = null;
       let burariEndTimer = null;
       let burariPositionTimer = null;
+      let burariPlaybackGuardTimer = null;
       let burariPlayer = null;
       let burariPlayerReady = false;
       let burariPendingStart = false;
@@ -5075,6 +5076,10 @@ def render_monthly_replay_player(period_label, review, playback, photo_items):
           clearTimeout(burariPositionTimer);
           burariPositionTimer = null;
         }}
+        if (burariPlaybackGuardTimer) {{
+          clearTimeout(burariPlaybackGuardTimer);
+          burariPlaybackGuardTimer = null;
+        }}
       }}
 
       function burariStopAtEnd() {{
@@ -5104,6 +5109,9 @@ def render_monthly_replay_player(period_label, review, playback, photo_items):
       }}
 
       function burariStartSlideLoopOnce() {{
+        // Photo motion must not depend on YouTube's position-confirmation event.
+        // A newly changed video can take a moment to emit PLAYING/currentTime,
+        // but the slideshow should still start reliably from the user's click.
         if (burariSlideLoopStarted) return;
         burariSlideLoopStarted = true;
         if (burariSlides.length > 1) {{
@@ -5112,7 +5120,21 @@ def render_monthly_replay_player(period_label, review, playback, photo_items):
             burariShowSlide(burariIndex);
           }}, burariDisplayMs);
         }}
-        burariEndTimer = setTimeout(burariStopAtEnd, Math.max(1000, burariDurationMs));
+      }}
+
+      function burariArmEndTimer() {{
+        if (burariEndTimer) {{
+          clearTimeout(burariEndTimer);
+          burariEndTimer = null;
+        }}
+        let remainingMs = Math.max(1000, burariDurationMs);
+        try {{
+          const current = Number(burariPlayer && burariPlayer.getCurrentTime ? burariPlayer.getCurrentTime() : NaN);
+          if (Number.isFinite(current) && current >= burariStartSeconds - 3 && current < burariEndSeconds) {{
+            remainingMs = Math.max(1000, Math.round((burariEndSeconds - current) * 1000));
+          }}
+        }} catch (_) {{}}
+        burariEndTimer = setTimeout(burariStopAtEnd, remainingMs);
       }}
 
       function burariConfirmRequestedPosition(attempt = 0) {{
@@ -5122,14 +5144,14 @@ def render_monthly_replay_player(period_label, review, playback, photo_items):
         const closeEnough = Number.isFinite(current) && Math.abs(current - burariStartSeconds) <= 2.0;
         if (closeEnough) {{
           burariWaitingForRequestedPosition = false;
-          burariStartSlideLoopOnce();
+          burariArmEndTimer();
           if (burariStatus) burariStatus.textContent = `再生中：${{burariStartSeconds}}秒 → ${{burariEndSeconds}}秒`;
           return;
         }}
         if (attempt >= 8) {{
           try {{ burariPlayer.seekTo(burariStartSeconds, true); }} catch (_) {{}}
           burariWaitingForRequestedPosition = false;
-          burariStartSlideLoopOnce();
+          burariArmEndTimer();
           if (burariStatus) burariStatus.textContent = `再生中：${{burariStartSeconds}}秒 → ${{burariEndSeconds}}秒`;
           return;
         }}
@@ -5149,7 +5171,16 @@ def render_monthly_replay_player(period_label, review, playback, photo_items):
         burariSlideLoopStarted = false;
         burariIndex = 0;
         burariShowSlide(burariIndex);
+        // Start the photo slideshow immediately and independently. This fixes the
+        // changed-music case where YouTube plays but its PLAYING/currentTime event
+        // arrives late or not at all inside the embedded iframe.
+        burariStartSlideLoopOnce();
         if (burariStatus) burariStatus.textContent = `指定位置 ${{burariStartSeconds}}秒へ移動しています…`;
+        // Safety net: even if YouTube never reports a position event, the photo
+        // loop is bounded by the requested music window instead of running forever.
+        burariPlaybackGuardTimer = setTimeout(() => {{
+          if (!burariEndTimer) burariArmEndTimer();
+        }}, 3200);
         try {{
           burariPlayer.loadVideoById({{
             videoId: burariVideoId,
@@ -5188,8 +5219,12 @@ def render_monthly_replay_player(period_label, review, playback, photo_items):
             }},
             onStateChange: function(event) {{
               if (!window.YT) return;
-              if (event.data === YT.PlayerState.PLAYING && burariWaitingForRequestedPosition) {{
-                burariConfirmRequestedPosition(0);
+              if (event.data === YT.PlayerState.PLAYING) {{
+                if (burariWaitingForRequestedPosition) {{
+                  burariConfirmRequestedPosition(0);
+                }} else if (burariSlideLoopStarted && !burariEndTimer) {{
+                  burariArmEndTimer();
+                }}
               }} else if (event.data === YT.PlayerState.ENDED) {{
                 burariStopTimers();
                 burariPendingStart = false;
