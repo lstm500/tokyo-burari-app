@@ -4877,6 +4877,20 @@ def build_monthly_replay_photo_items(bundle, limit=18):
     return items
 
 
+def monthly_playback_is_ready(playback):
+    if not isinstance(playback, dict):
+        return False
+    video_id = str(playback.get("video_id") or "").strip() or parse_youtube_video_id(playback.get("youtube_url"))
+    if not video_id:
+        return False
+    try:
+        start_seconds = max(0, int(playback.get("start_seconds") or 0))
+        end_seconds = int(playback.get("end_seconds") or 0)
+    except Exception:
+        return False
+    return end_seconds > start_seconds
+
+
 def render_monthly_replay_player(period_label, review, playback, photo_items):
     if not photo_items:
         return
@@ -4891,7 +4905,6 @@ def render_monthly_replay_player(period_label, review, playback, photo_items):
     # Keep the slideshow lively even when there are only a few photos. It may loop,
     # but the separate end timer always stops it exactly with the requested music window.
     display_ms = max(1300, min(4500, int(max(12, duration_seconds) * 1000 / max(1, len(photo_items)))))
-    opening = html.escape(str((review or {}).get("opening") or "").strip())
     period_label_escaped = html.escape(str(period_label or "期間の振り返り"))
     first_caption = html.escape(str(photo_items[0].get("caption") or "")) if photo_items else ""
     payload = json.dumps(photo_items, ensure_ascii=False)
@@ -4901,12 +4914,12 @@ def render_monthly_replay_player(period_label, review, playback, photo_items):
         border: 1px solid rgba(128,128,128,.22);
         border-radius: 22px;
         padding: 1rem;
-        margin: .5rem 0 1rem;
+        margin: .35rem 0 .8rem;
         background: linear-gradient(180deg, rgba(255,255,255,.96), rgba(246,249,252,.96));
       }}
       .burari-replay-phone {{
         max-width: 360px;
-        margin: 0 auto .9rem;
+        margin: 0 auto .8rem;
         padding: 10px;
         border-radius: 28px;
         background: #111827;
@@ -4938,7 +4951,6 @@ def render_monthly_replay_player(period_label, review, playback, photo_items):
       }}
       .burari-replay-kicker {{ font-size: 12px; opacity: .86; letter-spacing: .04em; }}
       .burari-replay-title {{ font-size: 20px; font-weight: 800; line-height: 1.25; margin-top: 4px; }}
-      .burari-replay-opening {{ font-size: 13px; line-height: 1.45; margin-top: 7px; opacity: .96; }}
       .burari-replay-bottom {{
         position: absolute;
         left: 0;
@@ -4951,17 +4963,20 @@ def render_monthly_replay_player(period_label, review, playback, photo_items):
       }}
       .burari-replay-caption {{ font-size: 13px; line-height: 1.45; }}
       .burari-replay-progress {{ font-size: 12px; opacity: .86; margin-top: 4px; }}
-      .burari-replay-controls {{ display: flex; gap: .55rem; margin-top: .75rem; }}
+      .burari-replay-controls {{ display: flex; gap: .42rem; margin-top: .72rem; }}
       .burari-replay-controls button {{
         flex: 1;
+        min-width: 0;
         border: 0;
         border-radius: 999px;
-        padding: .8rem .9rem;
-        font-size: 14px;
-        font-weight: 700;
+        padding: .72rem .48rem;
+        font-size: 13px;
+        font-weight: 750;
+        white-space: nowrap;
         cursor: pointer;
       }}
       #burariReplayStart {{ background: #2563eb; color: #fff; }}
+      #burariReplayStop {{ background: #fee2e2; color: #991b1b; }}
       #burariReplayAgain {{ background: #e5edf8; color: #123; }}
       .burari-replay-meta {{ text-align: center; font-size: 13px; margin-bottom: .65rem; }}
       .burari-replay-player-wrap {{
@@ -4997,7 +5012,6 @@ def render_monthly_replay_player(period_label, review, playback, photo_items):
           <div class="burari-replay-top">
             <div class="burari-replay-kicker">まとめた期間の振り返り</div>
             <div class="burari-replay-title">{period_label_escaped}</div>
-            <div class="burari-replay-opening">{opening}</div>
           </div>
           <div class="burari-replay-bottom">
             <div class="burari-replay-caption" id="burariReplayCaption">{first_caption}</div>
@@ -5006,7 +5020,8 @@ def render_monthly_replay_player(period_label, review, playback, photo_items):
         </div>
         <div class="burari-replay-controls">
           <button id="burariReplayStart" type="button">▶ 再生</button>
-          <button id="burariReplayAgain" type="button">↻ もう一度</button>
+          <button id="burariReplayStop" type="button">■ 中断</button>
+          <button id="burariReplayAgain" type="button">↻ 最初から</button>
         </div>
       </div>
       <div class="burari-replay-meta">音楽区間：{format_mmss(start_seconds)}〜{format_mmss(end_seconds)} ／ 写真 {len(photo_items)}枚</div>
@@ -5064,6 +5079,7 @@ def render_monthly_replay_player(period_label, review, playback, photo_items):
 
       function burariStopAtEnd() {{
         burariStopTimers();
+        burariPendingStart = false;
         burariWaitingForRequestedPosition = false;
         burariSlideLoopStarted = false;
         try {{
@@ -5072,6 +5088,19 @@ def render_monthly_replay_player(period_label, review, playback, photo_items):
           }}
         }} catch (_) {{}}
         if (burariStatus) burariStatus.textContent = `終了：${{burariEndSeconds}}秒で停止しました。`;
+      }}
+
+      function burariInterrupt() {{
+        burariStopTimers();
+        burariPendingStart = false;
+        burariWaitingForRequestedPosition = false;
+        burariSlideLoopStarted = false;
+        try {{
+          if (burariPlayer && typeof burariPlayer.pauseVideo === 'function') {{
+            burariPlayer.pauseVideo();
+          }}
+        }} catch (_) {{}}
+        if (burariStatus) burariStatus.textContent = '中断しました。▶ 再生で指定区間の最初から再生できます。';
       }}
 
       function burariStartSlideLoopOnce() {{
@@ -5098,7 +5127,6 @@ def render_monthly_replay_player(period_label, review, playback, photo_items):
           return;
         }}
         if (attempt >= 8) {{
-          // Final fallback: force the requested position one last time, then continue.
           try {{ burariPlayer.seekTo(burariStartSeconds, true); }} catch (_) {{}}
           burariWaitingForRequestedPosition = false;
           burariStartSlideLoopOnce();
@@ -5123,8 +5151,6 @@ def render_monthly_replay_player(period_label, review, playback, photo_items):
         burariShowSlide(burariIndex);
         if (burariStatus) burariStatus.textContent = `指定位置 ${{burariStartSeconds}}秒へ移動しています…`;
         try {{
-          // loadVideoById starts a fresh playback request at the exact manual start.
-          // Do not first play the previously-cued position, which can ignore seekTo.
           burariPlayer.loadVideoById({{
             videoId: burariVideoId,
             startSeconds: burariStartSeconds,
@@ -5151,7 +5177,6 @@ def render_monthly_replay_player(period_label, review, playback, photo_items):
           events: {{
             onReady: function() {{
               burariPlayerReady = true;
-              // Cue the requested segment so the player shows the correct location even before playback.
               try {{
                 burariPlayer.cueVideoById({{
                   videoId: burariVideoId,
@@ -5167,6 +5192,7 @@ def render_monthly_replay_player(period_label, review, playback, photo_items):
                 burariConfirmRequestedPosition(0);
               }} else if (event.data === YT.PlayerState.ENDED) {{
                 burariStopTimers();
+                burariPendingStart = false;
                 burariWaitingForRequestedPosition = false;
                 burariSlideLoopStarted = false;
                 if (burariStatus) burariStatus.textContent = '再生が終了しました。';
@@ -5181,21 +5207,15 @@ def render_monthly_replay_player(period_label, review, playback, photo_items):
       document.head.appendChild(burariApiScript);
 
       document.getElementById('burariReplayStart').addEventListener('click', burariActuallyStart);
+      document.getElementById('burariReplayStop').addEventListener('click', burariInterrupt);
       document.getElementById('burariReplayAgain').addEventListener('click', burariActuallyStart);
       burariShowSlide(0);
     </script>
     """
     st.components.v1.html(component_html, height=960, scrolling=False)
 
-def render_monthly_replay_section(month_key, period_label, bundle, review):
-    photo_items = build_monthly_replay_photo_items(bundle, limit=18)
-    st.divider()
-    st.markdown("#### 音楽つきの期間振り返り再生")
-    st.caption("YouTubeの埋め込み再生に合わせて、9:16画面で写真を順番に見返せます。音楽区間はAIにサビ候補を推測させることもできます。")
-    if not photo_items:
-        st.info("この期間には再生に使える写真がありません。")
-        return
 
+def _monthly_replay_state(month_key, review):
     playback = get_monthly_playback(review)
     url_key = f"monthly_replay_url_{month_key}"
     start_key = f"monthly_replay_start_{month_key}"
@@ -5217,8 +5237,34 @@ def render_monthly_replay_section(month_key, period_label, bundle, review):
     if title_key not in st.session_state:
         st.session_state[title_key] = str(playback.get("title") or "")
 
-    with st.expander("YouTubeの音楽と再生設定", expanded=bool(playback)):
-        st.write(f"使う写真：**{len(photo_items)}枚**")
+    return {
+        "playback": playback,
+        "url_key": url_key,
+        "start_key": start_key,
+        "end_key": end_key,
+        "reason_key": reason_key,
+        "confidence_key": confidence_key,
+        "title_key": title_key,
+    }
+
+
+def render_monthly_music_settings(month_key, bundle, review, expanded=True):
+    photo_items = build_monthly_replay_photo_items(bundle, limit=18)
+    state = _monthly_replay_state(month_key, review)
+    playback = state["playback"]
+    url_key = state["url_key"]
+    start_key = state["start_key"]
+    end_key = state["end_key"]
+    reason_key = state["reason_key"]
+    confidence_key = state["confidence_key"]
+    title_key = state["title_key"]
+
+    with st.expander("YouTubeの音楽と再生設定", expanded=expanded):
+        if photo_items:
+            st.write(f"使う写真：**{len(photo_items)}枚**")
+        else:
+            st.warning("この期間には再生に使える写真がありません。音楽は設定できますが、写真ムービーは表示できません。")
+
         st.text_input(
             "YouTube URL",
             key=url_key,
@@ -5248,6 +5294,7 @@ def render_monthly_replay_section(month_key, period_label, bundle, review):
                         "start_seconds": int(st.session_state[start_key]),
                         "end_seconds": int(st.session_state[end_key]),
                     }
+                    st.session_state[f"monthly_music_settings_open_{month_key}"] = False
                     st.success(f"おすすめ区間を {format_mmss(st.session_state[start_key])}〜{format_mmss(st.session_state[end_key])} に設定しました。")
                     st.rerun()
                 except Exception as exc:
@@ -5298,6 +5345,7 @@ def render_monthly_replay_section(month_key, period_label, bundle, review):
                         "end_seconds": end_seconds,
                     }
                     st.session_state[confidence_key] = "manual"
+                    st.session_state[f"monthly_music_settings_open_{month_key}"] = False
                     st.success(f"{format_mmss(start_seconds)}〜{format_mmss(end_seconds)} を再生に反映しました。")
                     st.rerun()
         with apply_cols[1]:
@@ -5309,6 +5357,7 @@ def render_monthly_replay_section(month_key, period_label, bundle, review):
                 st.session_state[confidence_key] = ""
                 st.session_state[title_key] = ""
                 st.session_state.pop(f"monthly_replay_applied_{month_key}", None)
+                st.session_state[f"monthly_music_settings_open_{month_key}"] = True
                 save_monthly_playback(month_key, review, {})
                 st.success("この期間の再生設定を消しました。")
                 st.rerun()
@@ -5331,30 +5380,42 @@ def render_monthly_replay_section(month_key, period_label, bundle, review):
             st.caption(f"AIメモ: {reason}（確からしさ: {confidence_label or '不明'}）")
         st.caption("※ サビ候補はAIの推測です。曲によって外れることがあります。必要なら秒数を手で直してください。")
 
-    current_url = str(st.session_state.get(url_key) or "").strip()
+
+def render_monthly_replay_section(month_key, period_label, bundle, review):
+    photo_items = build_monthly_replay_photo_items(bundle, limit=18)
+    if not photo_items:
+        st.info("この期間には再生に使える写真がありません。")
+        return False
+
+    state = _monthly_replay_state(month_key, review)
+    playback = state["playback"]
+    current_url = str(st.session_state.get(state["url_key"]) or playback.get("youtube_url") or "").strip()
     video_id = parse_youtube_video_id(current_url)
     if not video_id:
-        return
+        return False
+
     applied = st.session_state.get(f"monthly_replay_applied_{month_key}")
     if not isinstance(applied, dict):
         applied = {
-            "start_seconds": int(playback.get("start_seconds") or st.session_state.get(start_key) or 0),
-            "end_seconds": int(playback.get("end_seconds") or st.session_state.get(end_key) or 1),
+            "start_seconds": int(playback.get("start_seconds") or st.session_state.get(state["start_key"]) or 0),
+            "end_seconds": int(playback.get("end_seconds") or st.session_state.get(state["end_key"]) or 1),
         }
     applied_start = max(0, int(applied.get("start_seconds") or 0))
     applied_end = int(applied.get("end_seconds") or (applied_start + 20))
     if applied_end <= applied_start:
         applied_end = applied_start + 20
-    playback = {
+
+    effective_playback = {
         "youtube_url": current_url,
         "video_id": video_id,
         "start_seconds": applied_start,
         "end_seconds": applied_end,
-        "reason": str(st.session_state.get(reason_key) or "").strip(),
-        "confidence": str(st.session_state.get(confidence_key) or "").strip(),
-        "title": str(st.session_state.get(title_key) or "").strip(),
+        "reason": str(st.session_state.get(state["reason_key"]) or "").strip(),
+        "confidence": str(st.session_state.get(state["confidence_key"]) or "").strip(),
+        "title": str(st.session_state.get(state["title_key"]) or "").strip(),
     }
-    render_monthly_replay_player(period_label, review, playback, photo_items)
+    render_monthly_replay_player(period_label, review, effective_playback, photo_items)
+    return True
 
 
 # ============================================================
@@ -8327,6 +8388,41 @@ def page_history(embedded=False):
             st.rerun()
 
 
+def render_monthly_ai_comments(review):
+    review = review if isinstance(review, dict) else {}
+    st.markdown("#### AIのコメント")
+    st.markdown(
+        f'<div class="monthly-card"><div class="big-text">{html.escape(review.get("opening", ""))}</div></div>',
+        unsafe_allow_html=True,
+    )
+
+    for idx, finding in enumerate(review.get("findings", []), start=1):
+        st.markdown(f"#### {idx}. {finding.get('theme', '')}")
+        st.write(finding.get("evidence", ""))
+        if finding.get("ask_child"):
+            st.info(f"聞いてみる：{finding['ask_child']}")
+
+    repeated = review.get("repeated_notices", []) or []
+    if repeated:
+        st.markdown("#### 前にも出てきた『気になる』")
+        for item in repeated:
+            st.write("・" + str(item))
+
+    wishes = review.get("wishes", []) or []
+    if wishes:
+        st.markdown("#### 『こうだったらいいな』の記録")
+        for item in wishes:
+            st.write("・" + str(item))
+
+    if review.get("one_question"):
+        st.markdown("#### 最後にひとつ")
+        st.info(review["one_question"])
+
+    with st.expander("保護者向けメモ"):
+        st.write(review.get("parent_note", ""))
+        st.caption("能力評価や性格診断ではなく、保存された発言・日記の範囲でまとめています。")
+
+
 # ============================================================
 # Page: Monthly review
 # ============================================================
@@ -8380,67 +8476,115 @@ def page_monthly(embedded=False):
         st.session_state[session_key] = saved.get("review_json") or {}
     review = st.session_state.get(session_key)
 
-    button_label = "AIとこの期間を振り返る" if not review else "この期間をもう一度まとめる"
-    if st.button(button_label, type="primary" if not review else "secondary", use_container_width=True):
-        try:
-            previous_review = review if isinstance(review, dict) else {}
-            previous_playback = get_monthly_playback(previous_review)
-            with st.spinner("この期間の言葉をつないでいます…"):
-                review = make_monthly_review(month_key, bundle)
-                if previous_playback:
-                    review["_playback"] = previous_playback
-                save_monthly_review(month_key, review)
-            st.session_state[session_key] = review
-            # Period reviews are intentionally text-only. Remove any audio left
-            # in the session by an older deployed version so nothing auto-plays.
-            st.session_state.pop(f"monthly_audio_{month_key}", None)
-            st.session_state.pop(f"monthly_audio_pending_{month_key}", None)
-            st.rerun()
-        except Exception as exc:
-            st.error("期間の振り返りを作れませんでした。")
-            with st.expander("保護者向け詳細"):
-                st.code(str(exc))
-
-    review = st.session_state.get(session_key)
+    # First-time creation still needs AI to assemble the review before music/video can be paired with it.
     if not review:
+        if st.button("AIとこの期間を振り返る", type="primary", use_container_width=True):
+            try:
+                with st.spinner("この期間の言葉をつないでいます…"):
+                    review = make_monthly_review(month_key, bundle)
+                    save_monthly_review(month_key, review)
+                st.session_state[session_key] = review
+                st.session_state.pop(f"monthly_audio_{month_key}", None)
+                st.session_state.pop(f"monthly_audio_pending_{month_key}", None)
+                st.rerun()
+            except Exception as exc:
+                st.error("期間の振り返りを作れませんでした。")
+                with st.expander("保護者向け詳細"):
+                    st.code(str(exc))
         return
 
-    st.markdown(
-        f'<div class="monthly-card"><div class="big-text">{html.escape(review.get("opening", ""))}</div></div>',
-        unsafe_allow_html=True,
-    )
-    # Older versions generated and auto-played TTS here. Period reviews are now
-    # silent unless the user explicitly starts the YouTube music replay below.
+    # Period reviews are text-only unless the user starts the YouTube replay.
     st.session_state.pop(f"monthly_audio_{month_key}", None)
     st.session_state.pop(f"monthly_audio_pending_{month_key}", None)
 
-    for idx, finding in enumerate(review.get("findings", []), start=1):
-        st.markdown(f"#### {idx}. {finding.get('theme', '')}")
-        st.write(finding.get("evidence", ""))
-        if finding.get("ask_child"):
-            st.info(f"聞いてみる：{finding['ask_child']}")
+    playback = get_monthly_playback(review)
+    music_ready = monthly_playback_is_ready(playback)
+    settings_open_key = f"monthly_music_settings_open_{month_key}"
+    comments_open_key = f"monthly_ai_comments_open_{month_key}"
 
-    repeated = review.get("repeated_notices", []) or []
-    if repeated:
-        st.markdown("#### 前にも出てきた『気になる』")
-        for item in repeated:
-            st.write("・" + str(item))
+    if not music_ready:
+        # With no music configured, make the next action obvious at the top.
+        if st.button(
+            "🎵 音楽をセットする",
+            type="primary",
+            use_container_width=True,
+            key=f"monthly_music_setup_top_{month_key}",
+        ):
+            st.session_state[settings_open_key] = True
 
-    wishes = review.get("wishes", []) or []
-    if wishes:
-        st.markdown("#### 『こうだったらいいな』の記録")
-        for item in wishes:
-            st.write("・" + str(item))
+        if st.session_state.get(settings_open_key):
+            render_monthly_music_settings(month_key, bundle, review, expanded=True)
 
-    if review.get("one_question"):
-        st.markdown("#### 最後にひとつ")
-        st.info(review["one_question"])
+        # Until a movie exists, keep the normal AI review visible.
+        render_monthly_ai_comments(review)
+        if st.button(
+            "この期間をもう一度まとめる",
+            use_container_width=True,
+            key=f"monthly_regenerate_without_music_{month_key}",
+        ):
+            try:
+                previous_playback = get_monthly_playback(review)
+                with st.spinner("この期間の言葉をつないでいます…"):
+                    refreshed = make_monthly_review(month_key, bundle)
+                    if previous_playback:
+                        refreshed["_playback"] = previous_playback
+                    save_monthly_review(month_key, refreshed)
+                st.session_state[session_key] = refreshed
+                st.rerun()
+            except Exception as exc:
+                st.error("期間の振り返りを作れませんでした。")
+                with st.expander("保護者向け詳細"):
+                    st.code(str(exc))
+        return
 
-    with st.expander("保護者向けメモ"):
-        st.write(review.get("parent_note", ""))
-        st.caption("能力評価や性格診断ではなく、保存された発言・日記の範囲でまとめています。")
+    # Once music is configured, the movie becomes the main content.
+    st.markdown("#### 振り返りムービー")
+    rendered = render_monthly_replay_section(month_key, period_label, bundle, review)
+    if not rendered:
+        st.warning("振り返りムービーを表示できませんでした。音楽または写真の設定を確認してください。")
 
-    render_monthly_replay_section(month_key, period_label, bundle, review)
+    action_cols = st.columns(2)
+    with action_cols[0]:
+        if st.button(
+            "🎵 音楽を変更する",
+            use_container_width=True,
+            key=f"monthly_change_music_{month_key}",
+        ):
+            st.session_state[settings_open_key] = not bool(st.session_state.get(settings_open_key))
+    with action_cols[1]:
+        comments_open = bool(st.session_state.get(comments_open_key))
+        comments_label = "AIのコメントを閉じる" if comments_open else "AIのコメントを見る"
+        if st.button(
+            comments_label,
+            use_container_width=True,
+            key=f"monthly_toggle_ai_comments_{month_key}",
+        ):
+            st.session_state[comments_open_key] = not comments_open
+            st.rerun()
+
+    if st.session_state.get(settings_open_key):
+        render_monthly_music_settings(month_key, bundle, review, expanded=True)
+
+    if st.session_state.get(comments_open_key):
+        render_monthly_ai_comments(review)
+        if st.button(
+            "この期間をもう一度まとめる",
+            use_container_width=True,
+            key=f"monthly_regenerate_with_music_{month_key}",
+        ):
+            try:
+                previous_playback = get_monthly_playback(review)
+                with st.spinner("この期間の言葉をつないでいます…"):
+                    refreshed = make_monthly_review(month_key, bundle)
+                    if previous_playback:
+                        refreshed["_playback"] = previous_playback
+                    save_monthly_review(month_key, refreshed)
+                st.session_state[session_key] = refreshed
+                st.rerun()
+            except Exception as exc:
+                st.error("期間の振り返りを作れませんでした。")
+                with st.expander("保護者向け詳細"):
+                    st.code(str(exc))
 
 
 # ============================================================
