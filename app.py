@@ -44,6 +44,12 @@ HOME_ICON_CANDIDATES = {
         os.path.join(APP_DIR, "assets", "icons", "settings.png"),
         os.path.join(APP_DIR, "settings.png"),
     ],
+    "settings_yamanote": [os.path.join(APP_DIR, "assets", "icons", "settings_yamanote.png")],
+    "settings_keihin_tohoku": [os.path.join(APP_DIR, "assets", "icons", "settings_keihin_tohoku.png")],
+    "settings_chuo_rapid": [os.path.join(APP_DIR, "assets", "icons", "settings_chuo_rapid.png")],
+    "settings_chuo_sobu": [os.path.join(APP_DIR, "assets", "icons", "settings_chuo_sobu.png")],
+    "settings_sotetsu": [os.path.join(APP_DIR, "assets", "icons", "settings_sotetsu.png")],
+    "settings_shonan_shinjuku": [os.path.join(APP_DIR, "assets", "icons", "settings_shonan_shinjuku.png")],
     "train": [
         os.path.join(APP_DIR, "assets", "icons", "train.png"),
         os.path.join(APP_DIR, "train.png"),
@@ -76,6 +82,7 @@ HOME_ROUTE_THEMES = {
         "line_name": "山手線",
         "camera_key": "camera_yamanote",
         "diary_key": "diary_yamanote",
+        "settings_key": "settings_yamanote",
         "accent": "#7EBD52",
         "accent_rgb": "126,189,82",
         "accent2": "#BDEB91",
@@ -85,6 +92,7 @@ HOME_ROUTE_THEMES = {
         "line_name": "京浜東北線",
         "camera_key": "camera_keihin_tohoku",
         "diary_key": "diary_keihin_tohoku",
+        "settings_key": "settings_keihin_tohoku",
         "accent": "#62C5E5",
         "accent_rgb": "98,197,229",
         "accent2": "#B9EAF4",
@@ -94,6 +102,7 @@ HOME_ROUTE_THEMES = {
         "line_name": "中央本線快速",
         "camera_key": "camera_chuo_rapid",
         "diary_key": "diary_chuo_rapid",
+        "settings_key": "settings_chuo_rapid",
         "accent": "#F3982D",
         "accent_rgb": "243,152,45",
         "accent2": "#FFD3A5",
@@ -103,6 +112,7 @@ HOME_ROUTE_THEMES = {
         "line_name": "中央・総武線",
         "camera_key": "camera_chuo_sobu",
         "diary_key": "diary_chuo_sobu",
+        "settings_key": "settings_chuo_sobu",
         "accent": "#E4C72D",
         "accent_rgb": "228,199,45",
         "accent2": "#FFF0A4",
@@ -112,6 +122,7 @@ HOME_ROUTE_THEMES = {
         "line_name": "相鉄線",
         "camera_key": "camera_sotetsu",
         "diary_key": "diary_sotetsu",
+        "settings_key": "settings_sotetsu",
         "accent": "#3D6FA6",
         "accent_rgb": "61,111,166",
         "accent2": "#B7CEEA",
@@ -121,6 +132,7 @@ HOME_ROUTE_THEMES = {
         "line_name": "湘南新宿ライン",
         "camera_key": "camera_shonan_shinjuku",
         "diary_key": "diary_shonan_shinjuku",
+        "settings_key": "settings_shonan_shinjuku",
         "accent": "#65AE55",
         "accent_rgb": "101,174,85",
         "accent2": "#F0A15B",
@@ -5488,7 +5500,7 @@ def inject_home_icon_css():
     camera_uri = _home_icon_uri(theme["camera_key"]) or _home_icon_uri("camera")
     diary_uri = _home_icon_uri(theme["diary_key"]) or _home_icon_uri("diary")
     review_uri = _home_icon_uri("review")
-    settings_uri = _home_icon_uri("settings")
+    settings_uri = _home_icon_uri(theme["settings_key"]) or _home_icon_uri("settings")
     accent = theme["accent"]
     rgb1 = theme["accent_rgb"]
     rgb2 = theme["accent2_rgb"]
@@ -5504,6 +5516,8 @@ def inject_home_icon_css():
         f'.home-title-accent{{color:color-mix(in srgb, {accent} 80%, rgba(31, 38, 48, .96) 20%);text-shadow:0 1px 0 rgba(255,255,255,.72);}}',
         f'.st-key-home_camera div.stButton > button,.st-key-home_diary div.stButton > button{{border-color:{accent} !important;background:linear-gradient(155deg,rgba({rgb2},.25),rgba({rgb1},.07)) !important;box-shadow:0 9px 22px rgba({rgb1},.10),0 0 0 2px rgba(255,255,255,.34) inset !important;}}',
         f'.st-key-home_camera div.stButton > button:hover,.st-key-home_diary div.stButton > button:hover{{border-color:{accent} !important;background:linear-gradient(155deg,rgba({rgb2},.34),rgba({rgb1},.11)) !important;box-shadow:0 11px 24px rgba({rgb1},.14),0 0 0 2px rgba(255,255,255,.40) inset !important;}}',
+        f'.st-key-home_settings div.stButton > button{{border-color:rgba({rgb1},.46) !important;background:linear-gradient(155deg,rgba({rgb2},.18),rgba({rgb1},.035)) !important;box-shadow:0 8px 20px rgba({rgb1},.07),0 0 0 2px rgba(255,255,255,.30) inset !important;}}',
+        f'.st-key-home_settings div.stButton > button:hover{{border-color:rgba({rgb1},.62) !important;background:linear-gradient(155deg,rgba({rgb2},.25),rgba({rgb1},.065)) !important;box-shadow:0 10px 22px rgba({rgb1},.10),0 0 0 2px rgba(255,255,255,.35) inset !important;}}',
     ]
     if camera_uri:
         css_chunks.append(f'.st-key-home_camera div.stButton > button::before{{background-image:url("{camera_uri}") !important;}}')
