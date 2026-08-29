@@ -207,9 +207,15 @@ st.markdown(
         font-size: .85rem;
       }
       /* ---------------- Home: calm, mobile-first dashboard ---------------- */
+      .home-account {
+        margin: 0 0 .38rem;
+        font-size: .76rem;
+        line-height: 1.25;
+        opacity: .62;
+      }
       .home-hero {
-        margin: .15rem 0 1rem;
-        padding: 1.15rem 1.2rem 1.05rem;
+        margin: .10rem 0 .78rem;
+        padding: 1rem 1.08rem .90rem;
         border-radius: 24px;
         border: 1px solid rgba(74, 144, 226, .14);
         background:
@@ -229,8 +235,8 @@ st.markdown(
       }
       .home-hero-train {
         flex: 0 0 auto;
-        width: 92px;
-        height: 76px;
+        width: 84px;
+        height: 70px;
         display: flex;
         align-items: center;
         justify-content: flex-end;
@@ -238,8 +244,8 @@ st.markdown(
       }
       .home-hero-train img {
         display: block;
-        width: 92px;
-        height: 76px;
+        width: 84px;
+        height: 70px;
         object-fit: contain;
         filter: drop-shadow(0 5px 8px rgba(33, 75, 49, .08));
       }
@@ -248,7 +254,7 @@ st.markdown(
         font-weight: 800;
         letter-spacing: .12em;
         opacity: .58;
-        margin-bottom: .42rem;
+        margin-bottom: .32rem;
       }
       .home-title {
         font-family: "Hiragino Sans", "Hiragino Kaku Gothic ProN", "Yu Gothic", "Noto Sans JP", sans-serif;
@@ -263,8 +269,8 @@ st.markdown(
         margin-bottom: .12rem;
       }
       .home-tagline {
-        margin-top: .52rem;
-        font-size: .96rem;
+        margin-top: .40rem;
+        font-size: .92rem;
         line-height: 1.55;
         opacity: .70;
       }
@@ -273,8 +279,8 @@ st.markdown(
         align-items: center;
         gap: .55rem;
         flex-wrap: wrap;
-        margin: -.25rem 0 1.05rem;
-        padding: .68rem .82rem;
+        margin: -.12rem 0 .80rem;
+        padding: .56rem .70rem;
         border: 1px solid rgba(128,128,128,.14);
         border-radius: 16px;
         background: rgba(128,128,128,.035);
@@ -295,7 +301,7 @@ st.markdown(
       .home-status-main { font-weight: 800; }
       .home-status-sub { opacity: .66; }
       .home-section-label {
-        margin: .2rem 0 .5rem;
+        margin: .12rem 0 .36rem;
         font-size: .78rem;
         font-weight: 800;
         letter-spacing: .08em;
@@ -303,7 +309,7 @@ st.markdown(
       }
       .st-key-home_primary [data-testid="stHorizontalBlock"],
       .st-key-home_secondary [data-testid="stHorizontalBlock"] {
-        gap: .72rem;
+        gap: .56rem;
       }
       .st-key-home_primary div.stButton > button,
       .st-key-home_secondary div.stButton > button {
@@ -314,9 +320,9 @@ st.markdown(
         transition: transform .12s ease, box-shadow .12s ease, background .12s ease;
       }
       .st-key-home_primary div.stButton > button {
-        height: 5.35rem !important;
-        min-height: 5.35rem !important;
-        max-height: 5.35rem !important;
+        height: 4.90rem !important;
+        min-height: 4.90rem !important;
+        max-height: 4.90rem !important;
         border-radius: 24px !important;
         font-size: 1.34rem !important;
         font-weight: 840 !important;
@@ -331,9 +337,9 @@ st.markdown(
         text-align: left !important;
       }
       .st-key-home_secondary div.stButton > button {
-        height: 4.75rem !important;
-        min-height: 4.75rem !important;
-        max-height: 4.75rem !important;
+        height: 4.35rem !important;
+        min-height: 4.35rem !important;
+        max-height: 4.35rem !important;
         border-radius: 21px !important;
         font-size: 1.22rem !important;
         font-weight: 800 !important;
@@ -410,7 +416,7 @@ st.markdown(
         box-shadow: 0 10px 22px rgba(176, 154, 227, .12), 0 0 0 2px rgba(255,255,255,.36) inset !important;
       }
       .st-key-home_destination {
-        margin-top: .42rem;
+        margin-top: .30rem;
       }
       .st-key-home_destination div.stButton > button {
         width: 100% !important;
@@ -432,7 +438,7 @@ st.markdown(
         border-color: rgba(74, 144, 226, .28) !important;
       }
       .home-footer-note {
-        margin-top: 1rem;
+        margin-top: .72rem;
         text-align: center;
         font-size: .78rem;
         line-height: 1.45;
@@ -541,48 +547,91 @@ st.markdown(
       }
       @media (max-width: 640px) {
         .block-container {
-          padding-left: .75rem;
-          padding-right: .75rem;
+          padding-left: .68rem;
+          padding-right: .68rem;
           /* Keep the first app row below Streamlit's mobile toolbar.
              The extra safe-area term also covers phones with a display cutout. */
           padding-top: calc(3.35rem + env(safe-area-inset-top, 0px)) !important;
         }
+        .home-account {
+          margin-bottom: .26rem;
+          font-size: .70rem;
+          line-height: 1.18;
+        }
         .home-hero {
-          padding: 1rem 1rem .92rem;
-          border-radius: 21px;
+          margin-bottom: .58rem;
+          padding: .76rem .84rem .70rem;
+          border-radius: 19px;
         }
-        .home-hero-inner { gap: .45rem; }
-        .home-hero-train { width: 76px; height: 64px; margin-right: -.12rem; }
-        .home-hero-train img { width: 76px; height: 64px; }
+        .home-hero-inner { gap: .34rem; }
+        .home-hero-train { width: 66px; height: 56px; margin-right: -.10rem; }
+        .home-hero-train img { width: 66px; height: 56px; }
+        .home-eyebrow {
+          font-size: .69rem;
+          margin-bottom: .20rem;
+        }
         .home-title {
-          font-size: clamp(1.86rem, 8.1vw, 2.04rem);
+          font-size: clamp(1.72rem, 7.4vw, 1.90rem);
           letter-spacing: .01em;
-          line-height: 1.08;
+          line-height: 1.04;
         }
-        .home-tagline { font-size: .90rem; }
+        .home-tagline {
+          margin-top: .28rem;
+          font-size: .82rem;
+          line-height: 1.38;
+        }
+        .home-status {
+          gap: .40rem;
+          margin: -.05rem 0 .58rem;
+          padding: .46rem .58rem;
+          border-radius: 14px;
+          font-size: .80rem;
+          line-height: 1.25;
+        }
+        .home-status-badge {
+          min-height: 1.48rem;
+          padding: .10rem .40rem;
+          font-size: .70rem;
+        }
+        .home-section-label {
+          margin: .08rem 0 .26rem;
+          font-size: .72rem;
+        }
+        .st-key-home_primary [data-testid="stHorizontalBlock"],
+        .st-key-home_secondary [data-testid="stHorizontalBlock"] {
+          gap: .42rem;
+        }
         .st-key-home_primary div.stButton > button {
-          height: 4.95rem !important;
-          min-height: 4.95rem !important;
-          max-height: 4.95rem !important;
-          border-radius: 21px !important;
-          font-size: 1.20rem !important;
-          line-height: 1.14 !important;
-          padding: .52rem .64rem !important;
-          column-gap: .42rem !important;
+          height: 4.42rem !important;
+          min-height: 4.42rem !important;
+          max-height: 4.42rem !important;
+          border-radius: 19px !important;
+          font-size: 1.10rem !important;
+          line-height: 1.10 !important;
+          padding: .42rem .52rem !important;
+          column-gap: .34rem !important;
         }
         .st-key-home_secondary div.stButton > button {
-          height: 4.45rem !important;
-          min-height: 4.45rem !important;
-          max-height: 4.45rem !important;
-          border-radius: 18px !important;
-          font-size: 1.10rem !important;
-          line-height: 1.12 !important;
-          padding: .46rem .58rem !important;
-          column-gap: .36rem !important;
+          height: 3.92rem !important;
+          min-height: 3.92rem !important;
+          max-height: 3.92rem !important;
+          border-radius: 17px !important;
+          font-size: 1.00rem !important;
+          line-height: 1.08 !important;
+          padding: .38rem .46rem !important;
+          column-gap: .28rem !important;
+        }
+        .st-key-home_destination {
+          margin-top: .22rem;
         }
         .st-key-home_destination div.stButton > button {
-          min-height: 2.55rem !important;
-          font-size: .80rem !important;
+          min-height: 2.28rem !important;
+          font-size: .76rem !important;
+          padding: .40rem .52rem !important;
+        }
+        .home-footer-note {
+          margin-top: .55rem;
+          font-size: .72rem;
         }
       }
     </style>
@@ -4978,9 +5027,12 @@ def render_monthly_replay_player(period_label, review, playback, photo_items):
       let burariIndex = 0;
       let burariTimer = null;
       let burariEndTimer = null;
+      let burariPositionTimer = null;
       let burariPlayer = null;
       let burariPlayerReady = false;
       let burariPendingStart = false;
+      let burariWaitingForRequestedPosition = false;
+      let burariSlideLoopStarted = false;
       const burariImg = document.getElementById('burariReplayImage');
       const burariCaption = document.getElementById('burariReplayCaption');
       const burariProgress = document.getElementById('burariReplayProgress');
@@ -5004,16 +5056,57 @@ def render_monthly_replay_player(period_label, review, playback, photo_items):
           clearTimeout(burariEndTimer);
           burariEndTimer = null;
         }}
+        if (burariPositionTimer) {{
+          clearTimeout(burariPositionTimer);
+          burariPositionTimer = null;
+        }}
       }}
 
       function burariStopAtEnd() {{
         burariStopTimers();
+        burariWaitingForRequestedPosition = false;
+        burariSlideLoopStarted = false;
         try {{
           if (burariPlayer && typeof burariPlayer.pauseVideo === 'function') {{
             burariPlayer.pauseVideo();
           }}
         }} catch (_) {{}}
         if (burariStatus) burariStatus.textContent = `終了：${{burariEndSeconds}}秒で停止しました。`;
+      }}
+
+      function burariStartSlideLoopOnce() {{
+        if (burariSlideLoopStarted) return;
+        burariSlideLoopStarted = true;
+        if (burariSlides.length > 1) {{
+          burariTimer = setInterval(() => {{
+            burariIndex = (burariIndex + 1) % burariSlides.length;
+            burariShowSlide(burariIndex);
+          }}, burariDisplayMs);
+        }}
+        burariEndTimer = setTimeout(burariStopAtEnd, Math.max(1000, burariDurationMs));
+      }}
+
+      function burariConfirmRequestedPosition(attempt = 0) {{
+        if (!burariPlayer || !burariPlayerReady) return;
+        let current = -1;
+        try {{ current = Number(burariPlayer.getCurrentTime()); }} catch (_) {{}}
+        const closeEnough = Number.isFinite(current) && Math.abs(current - burariStartSeconds) <= 2.0;
+        if (closeEnough) {{
+          burariWaitingForRequestedPosition = false;
+          burariStartSlideLoopOnce();
+          if (burariStatus) burariStatus.textContent = `再生中：${{burariStartSeconds}}秒 → ${{burariEndSeconds}}秒`;
+          return;
+        }}
+        if (attempt >= 8) {{
+          // Final fallback: force the requested position one last time, then continue.
+          try {{ burariPlayer.seekTo(burariStartSeconds, true); }} catch (_) {{}}
+          burariWaitingForRequestedPosition = false;
+          burariStartSlideLoopOnce();
+          if (burariStatus) burariStatus.textContent = `再生中：${{burariStartSeconds}}秒 → ${{burariEndSeconds}}秒`;
+          return;
+        }}
+        try {{ burariPlayer.seekTo(burariStartSeconds, true); }} catch (_) {{}}
+        burariPositionTimer = setTimeout(() => burariConfirmRequestedPosition(attempt + 1), 220);
       }}
 
       function burariActuallyStart() {{
@@ -5024,46 +5117,58 @@ def render_monthly_replay_player(period_label, review, playback, photo_items):
         }}
         burariPendingStart = false;
         burariStopTimers();
+        burariWaitingForRequestedPosition = true;
+        burariSlideLoopStarted = false;
         burariIndex = 0;
         burariShowSlide(burariIndex);
+        if (burariStatus) burariStatus.textContent = `指定位置 ${{burariStartSeconds}}秒へ移動しています…`;
         try {{
-          // Use the IFrame Player API instead of relying only on URL parameters.
-          // This guarantees that the current manual start/end values drive playback.
-          burariPlayer.seekTo(burariStartSeconds, true);
-          burariPlayer.playVideo();
-        }} catch (_) {{}}
-        if (burariSlides.length > 1) {{
-          burariTimer = setInterval(() => {{
-            burariIndex = (burariIndex + 1) % burariSlides.length;
-            burariShowSlide(burariIndex);
-          }}, burariDisplayMs);
+          // loadVideoById starts a fresh playback request at the exact manual start.
+          // Do not first play the previously-cued position, which can ignore seekTo.
+          burariPlayer.loadVideoById({{
+            videoId: burariVideoId,
+            startSeconds: burariStartSeconds,
+            endSeconds: burariEndSeconds,
+          }});
+        }} catch (_) {{
+          try {{
+            burariPlayer.seekTo(burariStartSeconds, true);
+            burariPlayer.playVideo();
+          }} catch (_) {{}}
         }}
-        burariEndTimer = setTimeout(burariStopAtEnd, Math.max(1000, burariDurationMs));
-        if (burariStatus) burariStatus.textContent = `再生中：${{burariStartSeconds}}秒 → ${{burariEndSeconds}}秒`;
       }}
 
       window.onYouTubeIframeAPIReady = function() {{
         burariPlayer = new YT.Player('burariReplayPlayer', {{
           width: '100%',
           height: '200',
-          videoId: burariVideoId,
           playerVars: {{
             controls: 1,
             rel: 0,
             playsinline: 1,
             modestbranding: 1,
-            start: burariStartSeconds,
-            end: burariEndSeconds,
           }},
           events: {{
             onReady: function() {{
               burariPlayerReady = true;
-              try {{ burariPlayer.cueVideoById({{videoId: burariVideoId, startSeconds: burariStartSeconds, endSeconds: burariEndSeconds}}); }} catch (_) {{}}
+              // Cue the requested segment so the player shows the correct location even before playback.
+              try {{
+                burariPlayer.cueVideoById({{
+                  videoId: burariVideoId,
+                  startSeconds: burariStartSeconds,
+                  endSeconds: burariEndSeconds,
+                }});
+              }} catch (_) {{}}
               if (burariPendingStart) burariActuallyStart();
             }},
             onStateChange: function(event) {{
-              if (window.YT && event.data === YT.PlayerState.ENDED) {{
+              if (!window.YT) return;
+              if (event.data === YT.PlayerState.PLAYING && burariWaitingForRequestedPosition) {{
+                burariConfirmRequestedPosition(0);
+              }} else if (event.data === YT.PlayerState.ENDED) {{
                 burariStopTimers();
+                burariWaitingForRequestedPosition = false;
+                burariSlideLoopStarted = false;
                 if (burariStatus) burariStatus.textContent = '再生が終了しました。';
               }}
             }}
@@ -6387,9 +6492,9 @@ def inject_home_icon_css(review_attention=False):
         ".st-key-home_diary div.stButton > button::before,"
         ".st-key-home_review div.stButton > button::before,"
         ".st-key-home_settings div.stButton > button::before{content:'';display:block;background-repeat:no-repeat;background-position:center;background-size:contain;flex-shrink:0;margin:0 !important;}",
-        ".st-key-home_camera div.stButton > button::before,.st-key-home_diary div.stButton > button::before{width:54px;height:54px;}",
-        ".st-key-home_review div.stButton > button::before,.st-key-home_settings div.stButton > button::before{width:46px;height:46px;}",
-        "@media (max-width: 640px){.st-key-home_camera div.stButton > button::before,.st-key-home_diary div.stButton > button::before{width:42px;height:42px;}.st-key-home_review div.stButton > button::before,.st-key-home_settings div.stButton > button::before{width:36px;height:36px;}}",
+        ".st-key-home_camera div.stButton > button::before,.st-key-home_diary div.stButton > button::before{width:50px;height:50px;}",
+        ".st-key-home_review div.stButton > button::before,.st-key-home_settings div.stButton > button::before{width:42px;height:42px;}",
+        "@media (max-width: 640px){.st-key-home_camera div.stButton > button::before,.st-key-home_diary div.stButton > button::before{width:36px;height:36px;}.st-key-home_review div.stButton > button::before,.st-key-home_settings div.stButton > button::before{width:30px;height:30px;}}",
         f'.home-title-accent{{color:color-mix(in srgb, {accent} 80%, rgba(31, 38, 48, .96) 20%);text-shadow:0 1px 0 rgba(255,255,255,.72);}}',
         f'.st-key-home_camera div.stButton > button,.st-key-home_diary div.stButton > button{{border-color:{accent} !important;background:linear-gradient(155deg,rgba({rgb2},.25),rgba({rgb1},.07)) !important;box-shadow:0 9px 22px rgba({rgb1},.10),0 0 0 2px rgba(255,255,255,.34) inset !important;}}',
         f'.st-key-home_camera div.stButton > button:hover,.st-key-home_diary div.stButton > button:hover{{border-color:{accent} !important;background:linear-gradient(155deg,rgba({rgb2},.34),rgba({rgb1},.11)) !important;box-shadow:0 11px 24px rgba({rgb1},.14),0 0 0 2px rgba(255,255,255,.40) inset !important;}}',
@@ -7143,7 +7248,10 @@ def page_home():
     inject_home_icon_css(review_attention=review_attention)
     fast_family_name = str(st.session_state.get("_current_family_name") or current_family_key())
     fast_member_name = str(st.session_state.get("_current_member_name") or current_member_key())
-    st.caption(f"{fast_family_name} ／ 個人：{fast_member_name}（{current_member_key()}）")
+    st.markdown(
+        f'<div class="home-account">{html.escape(fast_family_name)} ／ 個人：{html.escape(fast_member_name)}（{html.escape(current_member_key())}）</div>',
+        unsafe_allow_html=True,
+    )
     # The hero train keeps the same track-equipped illustration, but varies by route on each new session.
     train_line_name, train_uri = _home_train_for_session()
     train_html = (
@@ -7250,7 +7358,7 @@ def page_home():
                     st.session_state.show_home_destination_editor = False
                     st.rerun()
 
-    st.markdown('<div class="home-section-label" style="margin-top:1rem;">たまに使う</div>', unsafe_allow_html=True)
+    st.markdown('<div class="home-section-label" style="margin-top:.60rem;">たまに使う</div>', unsafe_allow_html=True)
     with st.container(key="home_secondary"):
         secondary_left, secondary_right = st.columns([1.2, 1])
         with secondary_left:
