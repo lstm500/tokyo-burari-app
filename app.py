@@ -6046,12 +6046,12 @@ def trip_label(trip):
 
 
 def render_pending_thumbnail_grid(trip_id, photos, max_count=None, trip=None):
-    """Three-across pending thumbnails with a small delete × at top right."""
+    """Three-across pending thumbnails. Talked photos are orange and every photo opens its talk screen."""
     subset = list(photos or [])
     if max_count is not None:
         subset = subset[: max(0, int(max_count))]
     if not subset:
-        return
+        return None
 
     paths = tuple(str(photo.get("storage_path") or "") for photo in subset if photo.get("storage_path"))
     signed = signed_photo_url_map(paths) if paths else {}
@@ -6061,26 +6061,28 @@ def render_pending_thumbnail_grid(trip_id, photos, max_count=None, trip=None):
         pid = str(photo.get("id") or "")
         if not pid:
             continue
+        conversation = _stored_photo_conversation(photo)
+        talked = _conversation_has_child_words(conversation)
         src = photo_display_url(photo, signed, max_px=360, quality=74)
         cards.append(
             {
                 "id": pid,
                 "src": src,
-                "talked": False,
+                "talked": bool(talked),
                 "location": str(photo_location_label(photo) or ""),
             }
         )
         photo_ids.append(pid)
 
     if not cards:
-        return
+        return None
 
     gallery_component = _get_diary_gallery_component()
     if gallery_component is not None:
         serial_key = f"pending_gallery_serial_{trip_id}"
         serial = int(st.session_state.get(serial_key) or 0)
         result = gallery_component(
-            data={"photos": cards, "delete_only": True},
+            data={"photos": cards},
             key=f"pending_gallery_{trip_id}_{serial}",
             on_photo_id_change=lambda: None,
             on_delete_photo_id_change=lambda: None,
@@ -6095,17 +6097,33 @@ def render_pending_thumbnail_grid(trip_id, photos, max_count=None, trip=None):
                 is_pending=True,
                 trip=trip,
             )
-        return
+            return None
 
-    # Fallback for old component runtimes. Keep three columns and a compact × action.
+        clicked = str(getattr(result, "photo_id", "") or "")
+        if clicked in photo_ids:
+            st.session_state[serial_key] = serial + 1
+            return clicked
+        return None
+
+    # Fallback for old component runtimes. Preserve the same orange/gray meaning and make photos openable.
     cols = st.columns(3)
     for idx, card in enumerate(cards):
         with cols[idx % 3]:
+            border = "#F59E0B" if card["talked"] else "#AEB6C2"
+            background = "rgba(245,158,11,.18)" if card["talked"] else "rgba(174,182,194,.20)"
             if card["src"]:
                 st.markdown(
-                    f'<img src="{html.escape(card["src"], quote=True)}" style="width:100%;aspect-ratio:1/1;object-fit:cover;border-radius:10px;" />',
+                    f'<div style="padding:4px;border:3px solid {border};background:{background};border-radius:12px;">'
+                    f'<img src="{html.escape(card["src"], quote=True)}" style="display:block;width:100%;aspect-ratio:1/1;object-fit:cover;border-radius:8px;" />'
+                    '</div>',
                     unsafe_allow_html=True,
                 )
+            if st.button(
+                "写真を開く",
+                use_container_width=True,
+                key=f"pending_photo_fallback_open_{trip_id}_{card['id']}",
+            ):
+                return card["id"]
             if st.button(
                 "×",
                 key=f"pending_photo_fallback_delete_{trip_id}_{card['id']}",
@@ -6118,6 +6136,7 @@ def render_pending_thumbnail_grid(trip_id, photos, max_count=None, trip=None):
                     is_pending=True,
                     trip=trip,
                 )
+    return None
 
 def render_small_gallery(photos, max_count=None, columns=3):
     """Render history photos lazily; the browser downloads visible images in parallel."""
@@ -6637,7 +6656,8 @@ def page_diary():
         if str((row.get("diary") or {}).get("title") or "").strip()
     ]
     pending_rows = list_pending_photo_trips()
-    if pending_rows:
+    pending_open_id = str(st.session_state.get("_pending_diary_open_trip_id") or "")
+    if pending_rows and not pending_open_id:
         st.markdown("#### まだ日記になっていない写真")
         st.caption("撮影済みで、まだ日記として保存されていないぶらり旅です。『日記を作る』を押した時点で保存します。")
         pending_titles = pending_diary_titles(pending_rows, used_titles=saved_titles)
@@ -6651,11 +6671,16 @@ def page_diary():
             )
             st.markdown(f"**{html.escape(str(pending_trip.get('trip_date') or ''))}　{html.escape(pending_title)}**　・ 写真 {len(pending_photos)}枚")
             st.caption(f"本人コメントあり：{commented_count} / {len(pending_photos)}枚")
-            render_pending_thumbnail_grid(
+            clicked_pending_pid = render_pending_thumbnail_grid(
                 pending_id,
                 pending_photos,
                 trip=pending_trip,
             )
+            if clicked_pending_pid:
+                pending_state = reflection_state(pending_id, pending_photos)
+                st.session_state["_pending_diary_open_trip_id"] = pending_id
+                if open_diary_photo_talk(pending_id, clicked_pending_pid, pending_state):
+                    st.rerun()
             if st.button(
                 "📖 この写真で日記を作る",
                 type="primary",
@@ -6674,6 +6699,8 @@ def page_diary():
                         st.session_state.active_trip_id = None
                     st.session_state.preferred_diary_trip_id = pending_id
                     st.session_state.pop(f"reflection_state_{pending_id}", None)
+                    if st.session_state.get("_pending_diary_open_trip_id") == pending_id:
+                        st.session_state.pop("_pending_diary_open_trip_id", None)
                     st.session_state["_diary_notice"] = "日記を作成して、そのまま保存しました。"
                     st.rerun()
                 except Exception as exc:
@@ -6687,40 +6714,65 @@ def page_diary():
         for row in recent_rows
         if (row.get("diary") or {}).get("trip_id")
     }
-    trips = [row.get("trip") or {} for row in recent_rows if (row.get("trip") or {}).get("id")]
-    if not trips:
-        if not pending_rows:
-            st.info("まだ日記はありません。")
-        return
 
-    ids = [str(t["id"]) for t in trips]
-    trip_map = {str(t["id"]): t for t in trips}
-    label_map = {
-        trip_id_value: f"{trip_map[trip_id_value].get('trip_date', '')}　"
-        f"{diary_display_title(diary_map.get(trip_id_value), trip_map[trip_id_value], photos=None)}"
-        for trip_id_value in ids
-    }
-    preferred = st.session_state.preferred_diary_trip_id
-    default_index = ids.index(str(preferred)) if str(preferred) in ids else None
-    selector_serial = int(st.session_state.get("_diary_selector_serial") or 0)
-    trip_id = st.selectbox(
-        "振り返る日",
-        ids,
-        index=default_index,
-        placeholder="振り返る日を選んでください",
-        format_func=lambda x: label_map.get(str(x), str(x)),
-        key=f"diary_trip_selector_{selector_serial}",
+    # A pending photo can be opened directly from the top grid without first creating a diary.
+    pending_open_row = next(
+        (
+            row for row in pending_rows
+            if str((row.get("trip") or {}).get("id") or "") == pending_open_id
+        ),
+        None,
     )
-    if trip_id is None:
-        st.caption("振り返る日を選ぶと、そのぶらり旅の日記と写真を表示します。")
-        return
 
-    trip_id = str(trip_id)
-    trip = trip_map[trip_id]
-    # Do not fetch any saved-diary photos until a specific trip is selected. This
-    # keeps the initial diary page substantially lighter on mobile connections.
-    photos = list_trip_photos(trip_id)
-    existing = diary_map.get(trip_id)
+    if pending_open_row is not None:
+        trip = pending_open_row.get("trip") or {}
+        trip_id = str(trip.get("id") or pending_open_id)
+        photos = pending_open_row.get("photos") or []
+        existing = None
+        if st.button(
+            "← 日記一覧へ戻る",
+            use_container_width=True,
+            key=f"pending_diary_back_{trip_id}",
+        ):
+            st.session_state.pop("_pending_diary_open_trip_id", None)
+            st.session_state.pop(f"diary_talk_photo_{trip_id}", None)
+            st.session_state.pop(f"reflection_state_{trip_id}", None)
+            st.rerun()
+    else:
+        trips = [row.get("trip") or {} for row in recent_rows if (row.get("trip") or {}).get("id")]
+        if not trips:
+            if not pending_rows:
+                st.info("まだ日記はありません。")
+            return
+
+        ids = [str(t["id"]) for t in trips]
+        trip_map = {str(t["id"]): t for t in trips}
+        label_map = {
+            trip_id_value: f"{trip_map[trip_id_value].get('trip_date', '')}　"
+            f"{diary_display_title(diary_map.get(trip_id_value), trip_map[trip_id_value], photos=None)}"
+            for trip_id_value in ids
+        }
+        preferred = st.session_state.preferred_diary_trip_id
+        default_index = ids.index(str(preferred)) if str(preferred) in ids else None
+        selector_serial = int(st.session_state.get("_diary_selector_serial") or 0)
+        trip_id = st.selectbox(
+            "振り返る日",
+            ids,
+            index=default_index,
+            placeholder="振り返る日を選んでください",
+            format_func=lambda x: label_map.get(str(x), str(x)),
+            key=f"diary_trip_selector_{selector_serial}",
+        )
+        if trip_id is None:
+            st.caption("振り返る日を選ぶと、そのぶらり旅の日記と写真を表示します。")
+            return
+
+        trip_id = str(trip_id)
+        trip = trip_map[trip_id]
+        # Do not fetch any saved-diary photos until a specific trip is selected. This
+        # keeps the initial diary page substantially lighter on mobile connections.
+        photos = list_trip_photos(trip_id)
+        existing = diary_map.get(trip_id)
 
     talk_key = f"diary_talk_photo_{trip_id}"
 
