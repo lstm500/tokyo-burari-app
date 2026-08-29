@@ -4914,8 +4914,29 @@ def render_monthly_replay_player(period_label, review, playback, photo_items):
       #burariReplayStart {{ background: #2563eb; color: #fff; }}
       #burariReplayAgain {{ background: #e5edf8; color: #123; }}
       .burari-replay-meta {{ text-align: center; font-size: 13px; margin-bottom: .65rem; }}
-      .burari-replay-player {{ width: 100%; aspect-ratio: 16 / 9; border: 0; border-radius: 18px; background: #000; }}
-      .burari-replay-note {{ font-size: 12px; opacity: .82; margin-top: .4rem; }}
+      .burari-replay-player-wrap {{
+        max-width: 356px;
+        margin: .55rem auto 0;
+        padding: 7px;
+        border-radius: 16px;
+        background: rgba(17,24,39,.06);
+        border: 1px solid rgba(128,128,128,.16);
+      }}
+      .burari-replay-player-label {{
+        text-align: center;
+        font-size: 11px;
+        opacity: .68;
+        margin: 0 0 5px;
+      }}
+      .burari-replay-player {{
+        display: block;
+        width: 100%;
+        height: 200px;
+        border: 0;
+        border-radius: 11px;
+        background: #000;
+      }}
+      .burari-replay-note {{ max-width: 356px; margin: .42rem auto 0; font-size: 11px; opacity: .72; text-align: center; }}
     </style>
     <div class="burari-replay-wrap">
       <div class="burari-replay-phone">
@@ -4937,15 +4958,18 @@ def render_monthly_replay_player(period_label, review, playback, photo_items):
         </div>
       </div>
       <div class="burari-replay-meta">音楽区間：{format_mmss(start_seconds)}〜{format_mmss(end_seconds)} ／ 写真 {len(photo_items)}枚</div>
-      <iframe
-        id="burariReplayPlayer"
-        class="burari-replay-player"
-        src="about:blank"
-        allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
-        allowfullscreen
-        title="YouTube 振り返り再生"
-      ></iframe>
-      <div class="burari-replay-note">再生を押すと、YouTubeの埋め込み再生と写真切り替えを同時に始めます。</div>
+      <div class="burari-replay-player-wrap">
+        <div class="burari-replay-player-label">YouTube 音楽</div>
+        <iframe
+          id="burariReplayPlayer"
+          class="burari-replay-player"
+          src="about:blank"
+          allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+          allowfullscreen
+          title="YouTube 振り返り再生"
+        ></iframe>
+      </div>
+      <div class="burari-replay-note">YouTubeの仕様上、再生中の公式プレーヤーは完全には隠さず、最小限の大きさで表示します。</div>
     </div>
     <script>
       const burariSlides = {payload};
@@ -8155,10 +8179,11 @@ def page_monthly(embedded=False):
                 if previous_playback:
                     review["_playback"] = previous_playback
                 save_monthly_review(month_key, review)
-                audio = speech_bytes(monthly_speech_text(review))
             st.session_state[session_key] = review
-            st.session_state[f"monthly_audio_{month_key}"] = audio
-            st.session_state[f"monthly_audio_pending_{month_key}"] = True
+            # Period reviews are intentionally text-only. Remove any audio left
+            # in the session by an older deployed version so nothing auto-plays.
+            st.session_state.pop(f"monthly_audio_{month_key}", None)
+            st.session_state.pop(f"monthly_audio_pending_{month_key}", None)
             st.rerun()
         except Exception as exc:
             st.error("期間の振り返りを作れませんでした。")
@@ -8173,14 +8198,10 @@ def page_monthly(embedded=False):
         f'<div class="monthly-card"><div class="big-text">{html.escape(review.get("opening", ""))}</div></div>',
         unsafe_allow_html=True,
     )
-    audio = st.session_state.get(f"monthly_audio_{month_key}")
-    if audio:
-        st.audio(
-            audio,
-            format="audio/wav",
-            autoplay=bool(st.session_state.get(f"monthly_audio_pending_{month_key}", False)),
-        )
-        st.session_state[f"monthly_audio_pending_{month_key}"] = False
+    # Older versions generated and auto-played TTS here. Period reviews are now
+    # silent unless the user explicitly starts the YouTube music replay below.
+    st.session_state.pop(f"monthly_audio_{month_key}", None)
+    st.session_state.pop(f"monthly_audio_pending_{month_key}", None)
 
     for idx, finding in enumerate(review.get("findings", []), start=1):
         st.markdown(f"#### {idx}. {finding.get('theme', '')}")
