@@ -666,6 +666,7 @@ TRIP_TABLE = "burari_trips"
 PHOTO_TABLE = "burari_photos"
 DIARY_TABLE = "burari_diaries"
 MONTHLY_TABLE = "burari_monthly_reviews"
+MUSIC_LIBRARY_REVIEW_DATE = "1900-01-01"
 FAMILY_TABLE = "burari_families"
 MEMBER_TABLE = "burari_members"
 
@@ -4682,6 +4683,174 @@ def save_monthly_playback(month_key, review, playback):
     return updated
 
 
+def _music_library_session_key():
+    return f"_music_library_{current_family_key()}_{current_member_key()}"
+
+
+def _normalize_music_library_item(item):
+    item = item if isinstance(item, dict) else {}
+    url = str(item.get("youtube_url") or "").strip()
+    video_id = str(item.get("video_id") or "").strip() or parse_youtube_video_id(url)
+    if not video_id:
+        return None
+    try:
+        start_seconds = max(0, int(item.get("start_seconds") or 0))
+    except Exception:
+        start_seconds = 0
+    try:
+        end_seconds = int(item.get("end_seconds") or (start_seconds + 20))
+    except Exception:
+        end_seconds = start_seconds + 20
+    if end_seconds <= start_seconds:
+        end_seconds = start_seconds + 20
+    return {
+        "youtube_url": url or youtube_watch_url(video_id),
+        "video_id": video_id,
+        "title": str(item.get("title") or "").strip(),
+        "author_name": str(item.get("author_name") or "").strip(),
+        "start_seconds": start_seconds,
+        "end_seconds": end_seconds,
+        "reason": str(item.get("reason") or "").strip(),
+        "confidence": str(item.get("confidence") or "").strip(),
+        "saved_at": str(item.get("saved_at") or item.get("updated_at") or "").strip(),
+    }
+
+
+def get_saved_music_library(force=False):
+    """Return the current member's saved YouTube music choices.
+
+    The library lives in one sentinel row of the existing monthly-review table, so
+    no new Supabase table or migration is required. It is still isolated by family/member.
+    """
+    cache_key = _music_library_session_key()
+    if not force and isinstance(st.session_state.get(cache_key), list):
+        return list(st.session_state.get(cache_key) or [])
+
+    result = (
+        supabase_client()
+        .table(MONTHLY_TABLE)
+        .select("id,review_json,updated_at")
+        .eq("family_key", current_family_key())
+        .eq("member_key", current_member_key())
+        .eq("review_month", MUSIC_LIBRARY_REVIEW_DATE)
+        .limit(1)
+        .execute()
+    )
+    row = (result.data or [None])[0]
+    review_json = (row or {}).get("review_json") or {}
+    raw_items = review_json.get("items") if isinstance(review_json, dict) else []
+    raw_items = raw_items if isinstance(raw_items, list) else []
+    items = []
+    seen = set()
+    for raw in raw_items:
+        item = _normalize_music_library_item(raw)
+        if not item:
+            continue
+        key = item["video_id"]
+        if key in seen:
+            continue
+        seen.add(key)
+        items.append(item)
+    st.session_state[cache_key] = items
+    return list(items)
+
+
+def _write_saved_music_library(items):
+    normalized = []
+    seen = set()
+    for raw in list(items or [])[:50]:
+        item = _normalize_music_library_item(raw)
+        if not item or item["video_id"] in seen:
+            continue
+        seen.add(item["video_id"])
+        normalized.append(item)
+
+    client = supabase_client()
+    existing = (
+        client.table(MONTHLY_TABLE)
+        .select("id")
+        .eq("family_key", current_family_key())
+        .eq("member_key", current_member_key())
+        .eq("review_month", MUSIC_LIBRARY_REVIEW_DATE)
+        .limit(1)
+        .execute()
+    )
+    row = (existing.data or [None])[0]
+    now_value = now_jst().isoformat()
+    payload = {
+        "family_key": current_family_key(),
+        "member_key": current_member_key(),
+        "review_month": MUSIC_LIBRARY_REVIEW_DATE,
+        "review_json": {"_record_type": "music_library", "items": normalized},
+        "updated_at": now_value,
+    }
+    if row:
+        (
+            client.table(MONTHLY_TABLE)
+            .update(payload)
+            .eq("id", row["id"])
+            .eq("family_key", current_family_key())
+            .eq("member_key", current_member_key())
+            .execute()
+        )
+    else:
+        payload["created_at"] = now_value
+        client.table(MONTHLY_TABLE).insert(payload).execute()
+    st.session_state[_music_library_session_key()] = normalized
+    return normalized
+
+
+def save_music_to_library(playback):
+    item = _normalize_music_library_item(playback)
+    if not item:
+        raise ValueError("保存できるYouTube音楽が設定されていません。")
+    meta = fetch_youtube_oembed(item.get("youtube_url"))
+    if meta:
+        item["title"] = str(meta.get("title") or item.get("title") or "").strip()
+        item["author_name"] = str(meta.get("author_name") or item.get("author_name") or "").strip()
+    if not item.get("title"):
+        item["title"] = f"YouTube音楽 {item['video_id']}"
+    item["saved_at"] = now_jst().isoformat()
+
+    items = get_saved_music_library(force=True)
+    items = [x for x in items if str(x.get("video_id") or "") != item["video_id"]]
+    items.insert(0, item)
+    _write_saved_music_library(items)
+    return item
+
+
+def music_library_label(item):
+    item = item if isinstance(item, dict) else {}
+    title = str(item.get("title") or item.get("video_id") or "保存した音楽").strip()
+    author = str(item.get("author_name") or "").strip()
+    start_seconds = int(item.get("start_seconds") or 0)
+    end_seconds = int(item.get("end_seconds") or (start_seconds + 20))
+    prefix = f"{title} / {author}" if author else title
+    return f"{prefix}（{format_mmss(start_seconds)}〜{format_mmss(end_seconds)}）"
+
+
+def apply_music_library_item(month_key, review, item):
+    item = _normalize_music_library_item(item)
+    if not item:
+        raise ValueError("保存した音楽を読み込めませんでした。")
+    state = _monthly_replay_state(month_key, review)
+    st.session_state[state["url_key"]] = item["youtube_url"]
+    st.session_state[state["start_key"]] = int(item["start_seconds"])
+    st.session_state[state["end_key"]] = int(item["end_seconds"])
+    st.session_state[state["reason_key"]] = str(item.get("reason") or "")
+    st.session_state[state["confidence_key"]] = str(item.get("confidence") or "saved")
+    st.session_state[state["title_key"]] = str(item.get("title") or "")
+    playback = dict(item)
+    playback["updated_at"] = now_jst().isoformat()
+    playback["source"] = "saved_library"
+    save_monthly_playback(month_key, review, playback)
+    st.session_state[f"monthly_replay_applied_{month_key}"] = {
+        "start_seconds": int(item["start_seconds"]),
+        "end_seconds": int(item["end_seconds"]),
+    }
+    return playback
+
+
 def format_mmss(total_seconds):
     try:
         total_seconds = max(0, int(total_seconds))
@@ -4902,9 +5071,10 @@ def render_monthly_replay_player(period_label, review, playback, photo_items):
     if end_seconds <= start_seconds:
         end_seconds = start_seconds + 20
     duration_seconds = max(1, end_seconds - start_seconds)
-    # Keep the slideshow lively even when there are only a few photos. It may loop,
-    # but the separate end timer always stops it exactly with the requested music window.
-    display_ms = max(1300, min(4500, int(max(12, duration_seconds) * 1000 / max(1, len(photo_items)))))
+    # Show every photo at least once when possible, but cap each photo at 2.5s so
+    # a small set of photos naturally loops again while a longer music segment is playing.
+    # Photo cycling is never used as the stop condition; only the music end time stops playback.
+    display_ms = max(900, min(2500, int(max(1, duration_seconds) * 1000 / max(1, len(photo_items)))))
     period_label_escaped = html.escape(str(period_label or "期間の振り返り"))
     first_caption = html.escape(str(photo_items[0].get("caption") or "")) if photo_items else ""
     payload = json.dumps(photo_items, ensure_ascii=False)
@@ -5029,7 +5199,7 @@ def render_monthly_replay_player(period_label, review, playback, photo_items):
         <div class="burari-replay-player-label">YouTube 音楽</div>
         <div id="burariReplayPlayer"></div>
       </div>
-      <div class="burari-replay-status" id="burariReplayStatus">再生すると {format_mmss(start_seconds)} から始まり、{format_mmss(end_seconds)} で止まります。</div>
+      <div class="burari-replay-status" id="burariReplayStatus">再生すると {format_mmss(start_seconds)} から始まり、{format_mmss(end_seconds)} まで写真を繰り返します。</div>
       <div class="burari-replay-note">YouTubeの仕様上、再生中の公式プレーヤーは完全には隠さず、最小限の大きさで表示します。</div>
     </div>
     <script>
@@ -5041,9 +5211,9 @@ def render_monthly_replay_player(period_label, review, playback, photo_items):
       const burariDurationMs = {duration_seconds * 1000};
       let burariIndex = 0;
       let burariTimer = null;
-      let burariEndTimer = null;
+      let burariMusicWatchTimer = null;
+      let burariFallbackEndTimer = null;
       let burariPositionTimer = null;
-      let burariPlaybackGuardTimer = null;
       let burariPlayer = null;
       let burariPlayerReady = false;
       let burariPendingStart = false;
@@ -5068,17 +5238,17 @@ def render_monthly_replay_player(period_label, review, playback, photo_items):
           clearInterval(burariTimer);
           burariTimer = null;
         }}
-        if (burariEndTimer) {{
-          clearTimeout(burariEndTimer);
-          burariEndTimer = null;
+        if (burariMusicWatchTimer) {{
+          clearInterval(burariMusicWatchTimer);
+          burariMusicWatchTimer = null;
+        }}
+        if (burariFallbackEndTimer) {{
+          clearTimeout(burariFallbackEndTimer);
+          burariFallbackEndTimer = null;
         }}
         if (burariPositionTimer) {{
           clearTimeout(burariPositionTimer);
           burariPositionTimer = null;
-        }}
-        if (burariPlaybackGuardTimer) {{
-          clearTimeout(burariPlaybackGuardTimer);
-          burariPlaybackGuardTimer = null;
         }}
       }}
 
@@ -5122,19 +5292,39 @@ def render_monthly_replay_player(period_label, review, playback, photo_items):
         }}
       }}
 
-      function burariArmEndTimer() {{
-        if (burariEndTimer) {{
-          clearTimeout(burariEndTimer);
-          burariEndTimer = null;
+      function burariStartMusicEndWatch() {{
+        // The photo list may loop any number of times. It must never decide when the
+        // music stops. Watch YouTube's real playback position and stop only when the
+        // requested end second is actually reached.
+        if (burariMusicWatchTimer) {{
+          clearInterval(burariMusicWatchTimer);
+          burariMusicWatchTimer = null;
         }}
-        let remainingMs = Math.max(1000, burariDurationMs);
-        try {{
-          const current = Number(burariPlayer && burariPlayer.getCurrentTime ? burariPlayer.getCurrentTime() : NaN);
-          if (Number.isFinite(current) && current >= burariStartSeconds - 3 && current < burariEndSeconds) {{
-            remainingMs = Math.max(1000, Math.round((burariEndSeconds - current) * 1000));
+        if (burariFallbackEndTimer) {{
+          clearTimeout(burariFallbackEndTimer);
+          burariFallbackEndTimer = null;
+        }}
+        burariMusicWatchTimer = setInterval(() => {{
+          try {{
+            if (!burariPlayer || typeof burariPlayer.getCurrentTime !== 'function') return;
+            const current = Number(burariPlayer.getCurrentTime());
+            if (Number.isFinite(current) && current >= burariEndSeconds - 0.12) {{
+              burariStopAtEnd();
+            }}
+          }} catch (_) {{}}
+        }}, 180);
+
+        // Very generous safety net for browsers that stop reporting currentTime.
+        // It is intentionally much longer than the requested segment so buffering
+        // cannot make the slideshow/music stop early.
+        const fallbackMs = Math.max(15000, burariDurationMs * 3 + 10000);
+        burariFallbackEndTimer = setTimeout(() => {{
+          let current = -1;
+          try {{ current = Number(burariPlayer && burariPlayer.getCurrentTime ? burariPlayer.getCurrentTime() : -1); }} catch (_) {{}}
+          if (!Number.isFinite(current) || current >= burariEndSeconds - 0.5) {{
+            burariStopAtEnd();
           }}
-        }} catch (_) {{}}
-        burariEndTimer = setTimeout(burariStopAtEnd, remainingMs);
+        }}, fallbackMs);
       }}
 
       function burariConfirmRequestedPosition(attempt = 0) {{
@@ -5144,14 +5334,14 @@ def render_monthly_replay_player(period_label, review, playback, photo_items):
         const closeEnough = Number.isFinite(current) && Math.abs(current - burariStartSeconds) <= 2.0;
         if (closeEnough) {{
           burariWaitingForRequestedPosition = false;
-          burariArmEndTimer();
+          burariStartMusicEndWatch();
           if (burariStatus) burariStatus.textContent = `再生中：${{burariStartSeconds}}秒 → ${{burariEndSeconds}}秒`;
           return;
         }}
         if (attempt >= 8) {{
           try {{ burariPlayer.seekTo(burariStartSeconds, true); }} catch (_) {{}}
           burariWaitingForRequestedPosition = false;
-          burariArmEndTimer();
+          burariStartMusicEndWatch();
           if (burariStatus) burariStatus.textContent = `再生中：${{burariStartSeconds}}秒 → ${{burariEndSeconds}}秒`;
           return;
         }}
@@ -5176,11 +5366,8 @@ def render_monthly_replay_player(period_label, review, playback, photo_items):
         // arrives late or not at all inside the embedded iframe.
         burariStartSlideLoopOnce();
         if (burariStatus) burariStatus.textContent = `指定位置 ${{burariStartSeconds}}秒へ移動しています…`;
-        // Safety net: even if YouTube never reports a position event, the photo
-        // loop is bounded by the requested music window instead of running forever.
-        burariPlaybackGuardTimer = setTimeout(() => {{
-          if (!burariEndTimer) burariArmEndTimer();
-        }}, 3200);
+        // The slideshow is intentionally independent from YouTube readiness.
+        // A separate currentTime watcher below controls the real end of playback.
         try {{
           burariPlayer.loadVideoById({{
             videoId: burariVideoId,
@@ -5222,15 +5409,13 @@ def render_monthly_replay_player(period_label, review, playback, photo_items):
               if (event.data === YT.PlayerState.PLAYING) {{
                 if (burariWaitingForRequestedPosition) {{
                   burariConfirmRequestedPosition(0);
-                }} else if (burariSlideLoopStarted && !burariEndTimer) {{
-                  burariArmEndTimer();
+                }} else if (!burariMusicWatchTimer) {{
+                  burariStartMusicEndWatch();
                 }}
               }} else if (event.data === YT.PlayerState.ENDED) {{
-                burariStopTimers();
-                burariPendingStart = false;
-                burariWaitingForRequestedPosition = false;
-                burariSlideLoopStarted = false;
-                if (burariStatus) burariStatus.textContent = '再生が終了しました。';
+                // ENDED is a YouTube-side end signal (requested segment or source video).
+                // A completed photo cycle never reaches this branch and never stops music.
+                burariStopAtEnd();
               }}
             }}
           }}
@@ -5299,6 +5484,38 @@ def render_monthly_music_settings(month_key, bundle, review, expanded=True):
             st.write(f"使う写真：**{len(photo_items)}枚**")
         else:
             st.warning("この期間には再生に使える写真がありません。音楽は設定できますが、写真ムービーは表示できません。")
+
+        try:
+            saved_music = get_saved_music_library()
+        except Exception:
+            saved_music = []
+        if saved_music:
+            st.markdown("**保存した音楽から選ぶ**")
+            saved_choice_key = f"monthly_saved_music_choice_{month_key}"
+            selected_index = st.selectbox(
+                "保存した音楽",
+                options=list(range(len(saved_music))),
+                format_func=lambda idx: music_library_label(saved_music[idx]),
+                key=saved_choice_key,
+                label_visibility="collapsed",
+            )
+            if st.button(
+                "この音楽を使う",
+                type="primary",
+                use_container_width=True,
+                key=f"monthly_use_saved_music_{month_key}",
+            ):
+                try:
+                    selected = saved_music[int(selected_index)]
+                    apply_music_library_item(month_key, review, selected)
+                    st.session_state[f"monthly_music_settings_open_{month_key}"] = False
+                    st.success(f"『{selected.get('title') or '保存した音楽'}』を設定しました。")
+                    st.rerun()
+                except Exception as exc:
+                    st.error("保存した音楽を設定できませんでした。")
+                    with st.expander("保護者向け詳細"):
+                        st.code(str(exc))
+            st.divider()
 
         st.text_input(
             "YouTube URL",
@@ -5414,6 +5631,58 @@ def render_monthly_music_settings(month_key, bundle, review, expanded=True):
             confidence_label = {"low": "低め", "medium": "中くらい", "high": "高め", "manual": "手動"}.get(confidence, confidence)
             st.caption(f"AIメモ: {reason}（確からしさ: {confidence_label or '不明'}）")
         st.caption("※ サビ候補はAIの推測です。曲によって外れることがあります。必要なら秒数を手で直してください。")
+
+
+def render_monthly_time_settings(month_key, review):
+    """Edit only the playback window, without showing URL/music replacement controls."""
+    state = _monthly_replay_state(month_key, review)
+    playback = state["playback"]
+    current_url = str(st.session_state.get(state["url_key"]) or playback.get("youtube_url") or "").strip()
+    video_id = parse_youtube_video_id(current_url)
+    if not video_id:
+        st.warning("先に音楽を設定してください。")
+        return
+
+    with st.container(border=True):
+        st.markdown("**音楽を再生する時間**")
+        st.number_input("開始（秒）", min_value=0, step=1, key=state["start_key"])
+        st.number_input("終了（秒）", min_value=1, step=1, key=state["end_key"])
+        start_seconds = max(0, int(st.session_state.get(state["start_key"]) or 0))
+        end_seconds = int(st.session_state.get(state["end_key"]) or (start_seconds + 20))
+        if end_seconds <= start_seconds:
+            st.warning("終了は開始より後にしてください。")
+        st.caption(f"設定中：{format_mmss(start_seconds)}〜{format_mmss(max(end_seconds, start_seconds + 1))}")
+        if st.button(
+            "この時間を再生に反映",
+            type="primary",
+            use_container_width=True,
+            key=f"apply_monthly_time_only_{month_key}",
+        ):
+            if end_seconds <= start_seconds:
+                end_seconds = start_seconds + 20
+                st.session_state[state["end_key"]] = end_seconds
+            updated = dict(playback or {})
+            updated.update({
+                "youtube_url": current_url,
+                "video_id": video_id,
+                "title": str(st.session_state.get(state["title_key"]) or playback.get("title") or "").strip(),
+                "author_name": str(playback.get("author_name") or "").strip(),
+                "start_seconds": start_seconds,
+                "end_seconds": end_seconds,
+                "reason": str(st.session_state.get(state["reason_key"]) or playback.get("reason") or "").strip(),
+                "confidence": "manual",
+                "updated_at": now_jst().isoformat(),
+                "source": "manual_time",
+            })
+            save_monthly_playback(month_key, review, updated)
+            st.session_state[f"monthly_replay_applied_{month_key}"] = {
+                "start_seconds": start_seconds,
+                "end_seconds": end_seconds,
+            }
+            st.session_state[state["confidence_key"]] = "manual"
+            st.session_state[f"monthly_time_settings_open_{month_key}"] = False
+            st.success(f"{format_mmss(start_seconds)}〜{format_mmss(end_seconds)} に変更しました。")
+            st.rerun()
 
 
 def render_monthly_replay_section(month_key, period_label, bundle, review):
@@ -8671,6 +8940,19 @@ def page_monthly(embedded=False):
     if not rendered:
         st.warning("振り返りムービーを表示できませんでした。音楽または写真の設定を確認してください。")
 
+    time_settings_open_key = f"monthly_time_settings_open_{month_key}"
+    if st.button(
+        "⏱ 音楽を再生する時間を変更する",
+        use_container_width=True,
+        key=f"monthly_change_music_time_{month_key}",
+    ):
+        st.session_state[time_settings_open_key] = not bool(st.session_state.get(time_settings_open_key))
+        if st.session_state[time_settings_open_key]:
+            st.session_state[settings_open_key] = False
+
+    if st.session_state.get(time_settings_open_key):
+        render_monthly_time_settings(month_key, review)
+
     action_cols = st.columns(2)
     with action_cols[0]:
         if st.button(
@@ -8679,6 +8961,41 @@ def page_monthly(embedded=False):
             key=f"monthly_change_music_{month_key}",
         ):
             st.session_state[settings_open_key] = not bool(st.session_state.get(settings_open_key))
+            if st.session_state[settings_open_key]:
+                st.session_state[time_settings_open_key] = False
+
+        if st.button(
+            "☆ この音楽を保存する",
+            use_container_width=True,
+            key=f"monthly_save_current_music_{month_key}",
+        ):
+            try:
+                state = _monthly_replay_state(month_key, review)
+                current_playback = dict(get_monthly_playback(review) or {})
+                current_url = str(st.session_state.get(state["url_key"]) or current_playback.get("youtube_url") or "").strip()
+                video_id = parse_youtube_video_id(current_url)
+                applied = st.session_state.get(f"monthly_replay_applied_{month_key}")
+                if not isinstance(applied, dict):
+                    applied = {
+                        "start_seconds": int(current_playback.get("start_seconds") or st.session_state.get(state["start_key"]) or 0),
+                        "end_seconds": int(current_playback.get("end_seconds") or st.session_state.get(state["end_key"]) or 1),
+                    }
+                current_playback.update({
+                    "youtube_url": current_url,
+                    "video_id": video_id,
+                    "title": str(st.session_state.get(state["title_key"]) or current_playback.get("title") or "").strip(),
+                    "start_seconds": max(0, int(applied.get("start_seconds") or 0)),
+                    "end_seconds": int(applied.get("end_seconds") or 1),
+                    "reason": str(st.session_state.get(state["reason_key"]) or current_playback.get("reason") or "").strip(),
+                    "confidence": str(st.session_state.get(state["confidence_key"]) or current_playback.get("confidence") or "").strip(),
+                })
+                saved_item = save_music_to_library(current_playback)
+                st.success(f"『{saved_item.get('title') or 'この音楽'}』を保存しました。")
+            except Exception as exc:
+                st.error("この音楽を保存できませんでした。")
+                with st.expander("保護者向け詳細"):
+                    st.code(str(exc))
+
     with action_cols[1]:
         comments_open = bool(st.session_state.get(comments_open_key))
         comments_label = "AIのコメントを閉じる" if comments_open else "AIのコメントを見る"
