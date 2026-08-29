@@ -4975,23 +4975,30 @@ def render_monthly_replay_player(period_label, review, playback, photo_items):
       const burariSlides = {payload};
       const burariEmbedSrc = {json.dumps(embed_src)};
       const burariDisplayMs = {display_ms};
+      const burariDurationMs = {duration_seconds * 1000};
       let burariIndex = 0;
       let burariTimer = null;
+      let burariEndTimer = null;
       const burariImg = document.getElementById('burariReplayImage');
       const burariCaption = document.getElementById('burariReplayCaption');
       const burariProgress = document.getElementById('burariReplayProgress');
       const burariFrame = document.getElementById('burariReplayPlayer');
       function burariShowSlide(index) {{
         if (!burariSlides.length) return;
-        const item = burariSlides[index % burariSlides.length] || {{}};
+        const safeIndex = ((index % burariSlides.length) + burariSlides.length) % burariSlides.length;
+        const item = burariSlides[safeIndex] || {{}};
         if (item.url) burariImg.src = item.url;
         burariCaption.textContent = item.caption || '';
-        burariProgress.textContent = `${{(index % burariSlides.length) + 1}} / ${{burariSlides.length}}`;
+        burariProgress.textContent = `${{safeIndex + 1}} / ${{burariSlides.length}}`;
       }}
       function burariStopTimer() {{
         if (burariTimer) {{
           clearInterval(burariTimer);
           burariTimer = null;
+        }}
+        if (burariEndTimer) {{
+          clearTimeout(burariEndTimer);
+          burariEndTimer = null;
         }}
       }}
       function burariStart() {{
@@ -5004,6 +5011,13 @@ def render_monthly_replay_player(period_label, review, playback, photo_items):
             burariShowSlide(burariIndex);
           }}, burariDisplayMs);
         }}
+        burariEndTimer = setTimeout(() => {{
+          if (burariTimer) {{
+            clearInterval(burariTimer);
+            burariTimer = null;
+          }}
+          burariEndTimer = null;
+        }}, Math.max(1000, burariDurationMs));
         burariFrame.src = burariEmbedSrc + '&cache=' + Date.now();
       }}
       document.getElementById('burariReplayStart').addEventListener('click', burariStart);
