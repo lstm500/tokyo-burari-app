@@ -6267,7 +6267,7 @@ def page_home():
           <div class="home-hero-inner">
             <div class="home-hero-copy">
               <div class="home-eyebrow">TOKYO BURARI</div>
-              <div class="home-title">東京<span class="home-title-accent">ぶらり</span>旅</div>
+              <div class="home-title"><span class="home-title-accent">ぶらり</span>旅</div>
               <div class="home-tagline">思った。感じた。をそのまま残そう</div>
             </div>
             {train_html}
