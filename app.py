@@ -5501,7 +5501,7 @@ def inject_home_icon_css():
         ".st-key-home_camera div.stButton > button::before,.st-key-home_diary div.stButton > button::before{width:54px;height:54px;}",
         ".st-key-home_review div.stButton > button::before,.st-key-home_settings div.stButton > button::before{width:46px;height:46px;}",
         "@media (max-width: 640px){.st-key-home_camera div.stButton > button::before,.st-key-home_diary div.stButton > button::before{width:42px;height:42px;}.st-key-home_review div.stButton > button::before,.st-key-home_settings div.stButton > button::before{width:36px;height:36px;}}",
-        f'.home-title-accent{{color:color-mix(in srgb, {accent} 42%, rgba(31, 38, 48, .96) 58%);text-shadow:0 1px 0 rgba(255,255,255,.72);}}',
+        f'.home-title-accent{{color:color-mix(in srgb, {accent} 80%, rgba(31, 38, 48, .96) 20%);text-shadow:0 1px 0 rgba(255,255,255,.72);}}',
         f'.st-key-home_camera div.stButton > button,.st-key-home_diary div.stButton > button{{border-color:{accent} !important;background:linear-gradient(155deg,rgba({rgb2},.25),rgba({rgb1},.07)) !important;box-shadow:0 9px 22px rgba({rgb1},.10),0 0 0 2px rgba(255,255,255,.34) inset !important;}}',
         f'.st-key-home_camera div.stButton > button:hover,.st-key-home_diary div.stButton > button:hover{{border-color:{accent} !important;background:linear-gradient(155deg,rgba({rgb2},.34),rgba({rgb1},.11)) !important;box-shadow:0 11px 24px rgba({rgb1},.14),0 0 0 2px rgba(255,255,255,.40) inset !important;}}',
     ]
