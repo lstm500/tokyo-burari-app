@@ -4838,12 +4838,13 @@ def render_monthly_replay_player(period_label, review, playback, photo_items):
     end_seconds = int((playback or {}).get("end_seconds") or (start_seconds + 20))
     if end_seconds <= start_seconds:
         end_seconds = start_seconds + 20
-    duration_seconds = max(12, end_seconds - start_seconds)
-    display_ms = max(1300, min(4500, int(duration_seconds * 1000 / max(1, len(photo_items)))))
+    duration_seconds = max(1, end_seconds - start_seconds)
+    # Keep the slideshow lively even when there are only a few photos. It may loop,
+    # but the separate end timer always stops it exactly with the requested music window.
+    display_ms = max(1300, min(4500, int(max(12, duration_seconds) * 1000 / max(1, len(photo_items)))))
     opening = html.escape(str((review or {}).get("opening") or "").strip())
     period_label_escaped = html.escape(str(period_label or "期間の振り返り"))
     first_caption = html.escape(str(photo_items[0].get("caption") or "")) if photo_items else ""
-    embed_src = youtube_embed_url(video_id, start_seconds=start_seconds, end_seconds=end_seconds, autoplay=True)
     payload = json.dumps(photo_items, ensure_ascii=False)
     component_html = f"""
     <style>
@@ -4928,15 +4929,17 @@ def render_monthly_replay_player(period_label, review, playback, photo_items):
         opacity: .68;
         margin: 0 0 5px;
       }}
-      .burari-replay-player {{
+      #burariReplayPlayer {{
         display: block;
         width: 100%;
         height: 200px;
         border: 0;
         border-radius: 11px;
         background: #000;
+        overflow: hidden;
       }}
       .burari-replay-note {{ max-width: 356px; margin: .42rem auto 0; font-size: 11px; opacity: .72; text-align: center; }}
+      .burari-replay-status {{ text-align:center; font-size:12px; margin:.45rem 0 0; opacity:.78; }}
     </style>
     <div class="burari-replay-wrap">
       <div class="burari-replay-phone">
@@ -4960,29 +4963,29 @@ def render_monthly_replay_player(period_label, review, playback, photo_items):
       <div class="burari-replay-meta">音楽区間：{format_mmss(start_seconds)}〜{format_mmss(end_seconds)} ／ 写真 {len(photo_items)}枚</div>
       <div class="burari-replay-player-wrap">
         <div class="burari-replay-player-label">YouTube 音楽</div>
-        <iframe
-          id="burariReplayPlayer"
-          class="burari-replay-player"
-          src="about:blank"
-          allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
-          allowfullscreen
-          title="YouTube 振り返り再生"
-        ></iframe>
+        <div id="burariReplayPlayer"></div>
       </div>
+      <div class="burari-replay-status" id="burariReplayStatus">再生すると {format_mmss(start_seconds)} から始まり、{format_mmss(end_seconds)} で止まります。</div>
       <div class="burari-replay-note">YouTubeの仕様上、再生中の公式プレーヤーは完全には隠さず、最小限の大きさで表示します。</div>
     </div>
     <script>
       const burariSlides = {payload};
-      const burariEmbedSrc = {json.dumps(embed_src)};
+      const burariVideoId = {json.dumps(video_id)};
+      const burariStartSeconds = {start_seconds};
+      const burariEndSeconds = {end_seconds};
       const burariDisplayMs = {display_ms};
       const burariDurationMs = {duration_seconds * 1000};
       let burariIndex = 0;
       let burariTimer = null;
       let burariEndTimer = null;
+      let burariPlayer = null;
+      let burariPlayerReady = false;
+      let burariPendingStart = false;
       const burariImg = document.getElementById('burariReplayImage');
       const burariCaption = document.getElementById('burariReplayCaption');
       const burariProgress = document.getElementById('burariReplayProgress');
-      const burariFrame = document.getElementById('burariReplayPlayer');
+      const burariStatus = document.getElementById('burariReplayStatus');
+
       function burariShowSlide(index) {{
         if (!burariSlides.length) return;
         const safeIndex = ((index % burariSlides.length) + burariSlides.length) % burariSlides.length;
@@ -4991,7 +4994,8 @@ def render_monthly_replay_player(period_label, review, playback, photo_items):
         burariCaption.textContent = item.caption || '';
         burariProgress.textContent = `${{safeIndex + 1}} / ${{burariSlides.length}}`;
       }}
-      function burariStopTimer() {{
+
+      function burariStopTimers() {{
         if (burariTimer) {{
           clearInterval(burariTimer);
           burariTimer = null;
@@ -5001,32 +5005,82 @@ def render_monthly_replay_player(period_label, review, playback, photo_items):
           burariEndTimer = null;
         }}
       }}
-      function burariStart() {{
-        burariStopTimer();
+
+      function burariStopAtEnd() {{
+        burariStopTimers();
+        try {{
+          if (burariPlayer && typeof burariPlayer.pauseVideo === 'function') {{
+            burariPlayer.pauseVideo();
+          }}
+        }} catch (_) {{}}
+        if (burariStatus) burariStatus.textContent = `終了：${{burariEndSeconds}}秒で停止しました。`;
+      }}
+
+      function burariActuallyStart() {{
+        if (!burariPlayerReady || !burariPlayer) {{
+          burariPendingStart = true;
+          if (burariStatus) burariStatus.textContent = 'YouTubeプレーヤーを準備しています…';
+          return;
+        }}
+        burariPendingStart = false;
+        burariStopTimers();
         burariIndex = 0;
         burariShowSlide(burariIndex);
+        try {{
+          // Use the IFrame Player API instead of relying only on URL parameters.
+          // This guarantees that the current manual start/end values drive playback.
+          burariPlayer.seekTo(burariStartSeconds, true);
+          burariPlayer.playVideo();
+        }} catch (_) {{}}
         if (burariSlides.length > 1) {{
           burariTimer = setInterval(() => {{
             burariIndex = (burariIndex + 1) % burariSlides.length;
             burariShowSlide(burariIndex);
           }}, burariDisplayMs);
         }}
-        burariEndTimer = setTimeout(() => {{
-          if (burariTimer) {{
-            clearInterval(burariTimer);
-            burariTimer = null;
-          }}
-          burariEndTimer = null;
-        }}, Math.max(1000, burariDurationMs));
-        burariFrame.src = burariEmbedSrc + '&cache=' + Date.now();
+        burariEndTimer = setTimeout(burariStopAtEnd, Math.max(1000, burariDurationMs));
+        if (burariStatus) burariStatus.textContent = `再生中：${{burariStartSeconds}}秒 → ${{burariEndSeconds}}秒`;
       }}
-      document.getElementById('burariReplayStart').addEventListener('click', burariStart);
-      document.getElementById('burariReplayAgain').addEventListener('click', burariStart);
+
+      window.onYouTubeIframeAPIReady = function() {{
+        burariPlayer = new YT.Player('burariReplayPlayer', {{
+          width: '100%',
+          height: '200',
+          videoId: burariVideoId,
+          playerVars: {{
+            controls: 1,
+            rel: 0,
+            playsinline: 1,
+            modestbranding: 1,
+            start: burariStartSeconds,
+            end: burariEndSeconds,
+          }},
+          events: {{
+            onReady: function() {{
+              burariPlayerReady = true;
+              try {{ burariPlayer.cueVideoById({{videoId: burariVideoId, startSeconds: burariStartSeconds, endSeconds: burariEndSeconds}}); }} catch (_) {{}}
+              if (burariPendingStart) burariActuallyStart();
+            }},
+            onStateChange: function(event) {{
+              if (window.YT && event.data === YT.PlayerState.ENDED) {{
+                burariStopTimers();
+                if (burariStatus) burariStatus.textContent = '再生が終了しました。';
+              }}
+            }}
+          }}
+        }});
+      }};
+
+      const burariApiScript = document.createElement('script');
+      burariApiScript.src = 'https://www.youtube.com/iframe_api';
+      document.head.appendChild(burariApiScript);
+
+      document.getElementById('burariReplayStart').addEventListener('click', burariActuallyStart);
+      document.getElementById('burariReplayAgain').addEventListener('click', burariActuallyStart);
       burariShowSlide(0);
     </script>
     """
-    st.components.v1.html(component_html, height=940, scrolling=False)
-
+    st.components.v1.html(component_html, height=960, scrolling=False)
 
 def render_monthly_replay_section(month_key, period_label, bundle, review):
     photo_items = build_monthly_replay_photo_items(bundle, limit=18)
@@ -5072,29 +5126,46 @@ def render_monthly_replay_section(month_key, period_label, bundle, review):
         elif video_id:
             st.caption(f"再生対象: {youtube_watch_url(video_id)}")
 
-        cols = st.columns(3)
-        with cols[0]:
-            if st.button("AIにおすすめ時間を推測", use_container_width=True, key=f"guess_monthly_replay_{month_key}"):
-                if not video_id:
-                    st.error("先に有効なYouTube URLを入力してください。")
-                else:
-                    try:
-                        with st.spinner("AIがサビ候補を推測しています…"):
-                            guessed = guess_monthly_replay_window(current_url, month_key, review)
-                        st.session_state[start_key] = int(guessed.get("start_seconds") or 48)
-                        st.session_state[end_key] = int(guessed.get("end_seconds") or 68)
-                        st.session_state[reason_key] = str(guessed.get("reason") or "")
-                        st.session_state[confidence_key] = str(guessed.get("confidence") or "")
-                        st.session_state[title_key] = str(guessed.get("title") or "")
-                        save_monthly_playback(month_key, review, guessed)
-                        st.success(f"おすすめ区間を {format_mmss(st.session_state[start_key])}〜{format_mmss(st.session_state[end_key])} に設定しました。")
-                        st.rerun()
-                    except Exception as exc:
-                        st.error("おすすめ時間を推測できませんでした。")
-                        with st.expander("保護者向け詳細"):
-                            st.code(str(exc))
-        with cols[1]:
-            if st.button("URLと時間を保存", use_container_width=True, key=f"save_monthly_replay_{month_key}"):
+        if st.button("AIにおすすめ時間を推測", use_container_width=True, key=f"guess_monthly_replay_{month_key}"):
+            if not video_id:
+                st.error("先に有効なYouTube URLを入力してください。")
+            else:
+                try:
+                    with st.spinner("AIがサビ候補を推測しています…"):
+                        guessed = guess_monthly_replay_window(current_url, month_key, review)
+                    st.session_state[start_key] = int(guessed.get("start_seconds") or 48)
+                    st.session_state[end_key] = int(guessed.get("end_seconds") or 68)
+                    st.session_state[reason_key] = str(guessed.get("reason") or "")
+                    st.session_state[confidence_key] = str(guessed.get("confidence") or "")
+                    st.session_state[title_key] = str(guessed.get("title") or "")
+                    save_monthly_playback(month_key, review, guessed)
+                    st.session_state[f"monthly_replay_applied_{month_key}"] = {
+                        "start_seconds": int(st.session_state[start_key]),
+                        "end_seconds": int(st.session_state[end_key]),
+                    }
+                    st.success(f"おすすめ区間を {format_mmss(st.session_state[start_key])}〜{format_mmss(st.session_state[end_key])} に設定しました。")
+                    st.rerun()
+                except Exception as exc:
+                    st.error("おすすめ時間を推測できませんでした。")
+                    with st.expander("保護者向け詳細"):
+                        st.code(str(exc))
+
+        st.number_input("開始（秒）", min_value=0, step=1, key=start_key)
+        st.number_input("終了（秒）", min_value=1, step=1, key=end_key)
+        start_seconds = max(0, int(st.session_state.get(start_key) or 0))
+        end_seconds = int(st.session_state.get(end_key) or (start_seconds + 20))
+        if end_seconds <= start_seconds:
+            st.warning("終了は開始より後にしてください。保存時に自動調整されます。")
+        st.caption(f"入力中の区間: {format_mmss(start_seconds)}〜{format_mmss(max(end_seconds, start_seconds + 1))}")
+
+        apply_cols = st.columns([1.4, 1])
+        with apply_cols[0]:
+            if st.button(
+                "この時間を再生に反映",
+                type="primary",
+                use_container_width=True,
+                key=f"apply_monthly_replay_time_{month_key}",
+            ):
                 if not video_id:
                     st.error("先に有効なYouTube URLを入力してください。")
                 else:
@@ -5104,7 +5175,7 @@ def render_monthly_replay_section(month_key, period_label, bundle, review):
                         end_seconds = start_seconds + 20
                         st.session_state[end_key] = end_seconds
                     meta = fetch_youtube_oembed(current_url)
-                    payload = {
+                    applied_payload = {
                         "youtube_url": current_url,
                         "video_id": video_id,
                         "title": str(meta.get("title") or st.session_state.get(title_key) or "").strip(),
@@ -5112,14 +5183,19 @@ def render_monthly_replay_section(month_key, period_label, bundle, review):
                         "start_seconds": start_seconds,
                         "end_seconds": end_seconds,
                         "reason": str(st.session_state.get(reason_key) or "").strip(),
-                        "confidence": str(st.session_state.get(confidence_key) or "manual").strip(),
+                        "confidence": "manual",
                         "updated_at": now_jst().isoformat(),
                         "source": "manual",
                     }
-                    save_monthly_playback(month_key, review, payload)
-                    st.success("この期間の再生設定を保存しました。")
+                    save_monthly_playback(month_key, review, applied_payload)
+                    st.session_state[f"monthly_replay_applied_{month_key}"] = {
+                        "start_seconds": start_seconds,
+                        "end_seconds": end_seconds,
+                    }
+                    st.session_state[confidence_key] = "manual"
+                    st.success(f"{format_mmss(start_seconds)}〜{format_mmss(end_seconds)} を再生に反映しました。")
                     st.rerun()
-        with cols[2]:
+        with apply_cols[1]:
             if st.button("再生設定を消す", use_container_width=True, key=f"clear_monthly_replay_{month_key}"):
                 st.session_state[url_key] = ""
                 st.session_state[start_key] = 48
@@ -5127,17 +5203,20 @@ def render_monthly_replay_section(month_key, period_label, bundle, review):
                 st.session_state[reason_key] = ""
                 st.session_state[confidence_key] = ""
                 st.session_state[title_key] = ""
+                st.session_state.pop(f"monthly_replay_applied_{month_key}", None)
                 save_monthly_playback(month_key, review, {})
                 st.success("この期間の再生設定を消しました。")
                 st.rerun()
 
-        st.number_input("開始（秒）", min_value=0, step=1, key=start_key)
-        st.number_input("終了（秒）", min_value=1, step=1, key=end_key)
-        start_seconds = max(0, int(st.session_state.get(start_key) or 0))
-        end_seconds = int(st.session_state.get(end_key) or (start_seconds + 20))
-        if end_seconds <= start_seconds:
-            st.warning("終了は開始より後にしてください。保存時に自動調整されます。")
-        st.caption(f"現在の区間: {format_mmss(start_seconds)}〜{format_mmss(max(end_seconds, start_seconds + 1))}")
+        applied = st.session_state.get(f"monthly_replay_applied_{month_key}")
+        if not isinstance(applied, dict):
+            applied = {
+                "start_seconds": int(playback.get("start_seconds") or start_seconds),
+                "end_seconds": int(playback.get("end_seconds") or end_seconds),
+            }
+        st.caption(
+            f"再生に反映中: {format_mmss(applied.get('start_seconds'))}〜{format_mmss(applied.get('end_seconds'))}"
+        )
         if st.session_state.get(title_key):
             st.write(f"候補タイトル: **{st.session_state[title_key]}**")
         reason = str(st.session_state.get(reason_key) or "").strip()
@@ -5151,11 +5230,21 @@ def render_monthly_replay_section(month_key, period_label, bundle, review):
     video_id = parse_youtube_video_id(current_url)
     if not video_id:
         return
+    applied = st.session_state.get(f"monthly_replay_applied_{month_key}")
+    if not isinstance(applied, dict):
+        applied = {
+            "start_seconds": int(playback.get("start_seconds") or st.session_state.get(start_key) or 0),
+            "end_seconds": int(playback.get("end_seconds") or st.session_state.get(end_key) or 1),
+        }
+    applied_start = max(0, int(applied.get("start_seconds") or 0))
+    applied_end = int(applied.get("end_seconds") or (applied_start + 20))
+    if applied_end <= applied_start:
+        applied_end = applied_start + 20
     playback = {
         "youtube_url": current_url,
         "video_id": video_id,
-        "start_seconds": max(0, int(st.session_state.get(start_key) or 0)),
-        "end_seconds": max(1, int(st.session_state.get(end_key) or 1)),
+        "start_seconds": applied_start,
+        "end_seconds": applied_end,
         "reason": str(st.session_state.get(reason_key) or "").strip(),
         "confidence": str(st.session_state.get(confidence_key) or "").strip(),
         "title": str(st.session_state.get(title_key) or "").strip(),
