@@ -5081,19 +5081,19 @@ def render_monthly_replay_player(period_label, review, playback, photo_items):
     component_html = f"""
     <style>
       .burari-replay-wrap {{
-        border: 1px solid rgba(128,128,128,.22);
+        border: 1px solid rgba(128,128,128,.16);
         border-radius: 22px;
-        padding: .38rem;
-        margin: .35rem 0 .8rem;
+        padding: .12rem;
+        margin: .24rem 0 .8rem;
         box-sizing: border-box;
         background: linear-gradient(180deg, rgba(255,255,255,.96), rgba(246,249,252,.96));
       }}
       .burari-replay-phone {{
-        width: min(410px, 100%);
-        max-width: 410px;
+        width: min(480px, 100%);
+        max-width: 480px;
         box-sizing: border-box;
         margin: 0 auto .8rem;
-        padding: 8px;
+        padding: 6px;
         border-radius: 28px;
         background: #111827;
         box-shadow: 0 16px 32px rgba(17,24,39,.18);
@@ -5435,7 +5435,7 @@ def render_monthly_replay_player(period_label, review, playback, photo_items):
       burariShowSlide(0);
     </script>
     """
-    st.components.v1.html(component_html, height=1040, scrolling=False)
+    st.components.v1.html(component_html, height=1180, scrolling=False)
 
 
 def _monthly_replay_state(month_key, review):
@@ -9060,14 +9060,15 @@ def page_monthly(embedded=False):
 
     with action_cols[1]:
         comments_open = bool(st.session_state.get(comments_open_key))
-        comments_label = "AIのコメントを閉じる" if comments_open else "AIのコメントを見る"
-        if st.button(
-            comments_label,
-            use_container_width=True,
-            key=f"monthly_toggle_ai_comments_{month_key}",
-        ):
-            st.session_state[comments_open_key] = not comments_open
-            st.rerun()
+        comments_label = "AIのコメントを閉じる" if comments_open else "✨ AIのコメントを見る"
+        with st.container(key="monthly_ai_comments_action"):
+            if st.button(
+                comments_label,
+                use_container_width=True,
+                key=f"monthly_toggle_ai_comments_{month_key}",
+            ):
+                st.session_state[comments_open_key] = not comments_open
+                st.rerun()
 
     if st.session_state.get(settings_open_key):
         render_monthly_music_settings(month_key, bundle, review, expanded=True)
@@ -9241,6 +9242,20 @@ def page_review():
           .st-key-monthly_delete_video_confirm_action div.stButton > button:hover {
             background: linear-gradient(155deg, rgba(255,226,226,1), rgba(255,202,202,.99)) !important;
             border-color: rgba(177,43,43,.96) !important;
+          }
+          .st-key-monthly_ai_comments_action div.stButton > button {
+            min-height: 3.0rem;
+            border: 1.9px solid rgba(91,91,214,.82) !important;
+            border-radius: 14px !important;
+            background: linear-gradient(155deg, rgba(235,238,255,.99), rgba(215,224,255,.98)) !important;
+            color: #303785 !important;
+            font-weight: 850 !important;
+            box-shadow: 0 8px 20px rgba(83,91,205,.16), 0 0 0 2px rgba(255,255,255,.38) inset !important;
+          }
+          .st-key-monthly_ai_comments_action div.stButton > button:hover {
+            background: linear-gradient(155deg, rgba(225,230,255,1), rgba(198,211,255,.99)) !important;
+            border-color: rgba(73,73,191,.96) !important;
+            transform: translateY(-1px);
           }
         </style>
         """,
