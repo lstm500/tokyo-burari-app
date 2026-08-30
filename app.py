@@ -26,7 +26,7 @@ from zoneinfo import ZoneInfo
 
 import streamlit as st
 
-APP_BUILD = "v127"
+APP_BUILD = "v129"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -6568,13 +6568,22 @@ def record_video_ai_human_choices(video_photo, selected_ranks):
         selection = {}
     now_value = now_jst().isoformat()
     items = selection.get("items") or []
+    # Keep the current selection state in sync even when a reviewed video is
+    # opened again and the user changes which AI stills are selected. Previously
+    # selected photos that were already copied into the diary are not deleted
+    # automatically; this only updates the latest preference/selection state.
     for item in items:
         if not isinstance(item, dict):
             continue
-        if int(item.get("rank") or 0) in ranks:
+        item_rank = int(item.get("rank") or 0)
+        if item_rank in ranks:
             item["human_selected"] = True
             item["human_selected_at"] = now_value
+        else:
+            item["human_selected"] = False
+            item.pop("human_selected_at", None)
     selection["items"] = items
+    selection["review_result"] = "kept"
     feedback_history = list(selection.get("feedback_history") or [])
     feedback_history.append(
         {
@@ -7570,6 +7579,48 @@ def render_video_delete_controls(video_photo, key_prefix):
             ):
                 st.session_state.pop(state_key, None)
                 st.rerun()
+
+
+@st.dialog("この動画を削除しますか？")
+def show_video_delete_dialog(video_photo):
+    """Confirm deletion started from the × button on a video card."""
+    if not isinstance(video_photo, dict) or not photo_is_video(video_photo):
+        st.warning("この動画はすでに削除されているか、読み込めませんでした。")
+        return
+
+    photo_id = str(video_photo.get("id") or "").strip()
+    if not photo_id:
+        st.warning("削除する動画を確認できませんでした。")
+        return
+
+    st.markdown(f"**{html.escape(_moments_video_title(video_photo))}**")
+    st.warning(
+        "この動画を削除します。元動画、代表画像、AIの候補・未保存の切り取り画像も削除されます。"
+        "すでに日記へ残した静止画は削除しません。この操作は元に戻せません。"
+    )
+    yes_col, no_col = st.columns(2, gap="small")
+    with yes_col:
+        if st.button(
+            "削除する",
+            type="primary",
+            use_container_width=True,
+            key=f"video_grid_delete_yes_{photo_id}",
+        ):
+            try:
+                delete_video_and_related_data(video_photo)
+                st.session_state["_video_delete_notice"] = "動画を削除しました。"
+                st.rerun(scope="app")
+            except Exception as exc:
+                st.error("動画を削除できませんでした。")
+                with st.expander("保護者向け詳細"):
+                    st.code(str(exc))
+    with no_col:
+        if st.button(
+            "キャンセル",
+            use_container_width=True,
+            key=f"video_grid_delete_no_{photo_id}",
+        ):
+            st.rerun()
 
 
 def reset_photo_conversation(trip_id, photo_id):
@@ -12569,6 +12620,11 @@ def _render_moments_picker(photo, index):
         f"AIが映えを重視して最大{VIDEO_AI_MAX_SELECTIONS}枚を選んでいます。3×3で比較し、気に入った写真を複数選べます。"
         "選んだ結果は、次回以降のAIセレクションにも軽く反映されます。"
     )
+    if status == "reviewed":
+        st.info(
+            "確認済みの動画も、写真をタップして再度選択できます。"
+            "すでに日記へ残した写真は自動削除せず、新しく選んだ写真を追加で残せます。"
+        )
 
     paths = tuple(str(item.get("storage_path") or "").strip() for item in items)
     try:
@@ -12624,7 +12680,7 @@ def _render_moments_picker(photo, index):
             data={
                 "photos": cards,
                 "selected_ranks": selected_ranks,
-                "disabled": status == "reviewed",
+                "disabled": False,
             },
             key=f"moments_tap_picker_{video_id}_{round_number}_{serial}",
             on_selected_ranks_change=lambda: None,
@@ -12671,7 +12727,7 @@ def _render_moments_picker(photo, index):
                     if st.button(
                         "選択解除" if rank in selected_ranks else "選択",
                         use_container_width=True,
-                        disabled=status == "reviewed",
+                        disabled=False,
                         key=f"moments_fallback_pick_{video_id}_{round_number}_{rank}",
                     ):
                         current = set(selected_ranks)
@@ -12688,7 +12744,7 @@ def _render_moments_picker(photo, index):
         f"選択した写真を残す（{len(selected_rank_set)}枚）",
         type="primary",
         use_container_width=True,
-        disabled=(not selected_rank_set) or status == "reviewed",
+        disabled=not selected_rank_set,
         key=f"moments_send_{video_id}_{round_number}",
     )
     if send_clicked:
@@ -12712,7 +12768,7 @@ def _render_moments_picker(photo, index):
                     previous_count = 0
                 st.session_state["_home_today_photo_count"] = previous_count + newly_saved
             st.session_state["_moments_notice"] = (
-                f"選択した{len(selected_rank_set)}枚を日記の写真として残しました。"
+                f"選択した{len(selected_rank_set)}枚を確認しました。新しく選んだ写真は日記に残しました。"
                 "今回選んだ傾向は、今後のAIセレクションにも反映します。"
             )
             st.rerun()
@@ -12766,7 +12822,7 @@ def _render_moments_picker(photo, index):
                     st.code(str(exc))
 
     if status == "reviewed":
-        st.success("この動画から選んだ写真は日記に残してあります。")
+        st.success("この動画は確認済みです。写真をタップすれば、いつでも再度選択できます。")
 
 
 def _render_video_storage_repair_panel(db_video_count):
@@ -12860,6 +12916,280 @@ def _render_video_storage_repair_panel(db_video_count):
                 st.rerun()
 
 
+_VIDEO_LIBRARY_GRID_HTML = """
+<div id="video-library-grid" class="video-library-grid"></div>
+"""
+
+_VIDEO_LIBRARY_GRID_CSS = """
+.video-library-grid {
+  width: 100%;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  box-sizing: border-box;
+  margin: 5px 0 10px;
+}
+.video-library-card,
+.video-library-empty {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  border-radius: 12px;
+}
+.video-library-card {
+  position: relative;
+  overflow: hidden;
+  border: 1px solid rgba(174,182,194,.45);
+  background: rgba(174,182,194,.055);
+}
+.video-library-open {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 100%;
+  display: block;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--st-text-color);
+  text-align: left;
+  cursor: pointer;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+.video-library-open:active { transform: scale(.99); }
+.video-library-image-wrap {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  overflow: hidden;
+  background: rgba(128,128,128,.08);
+}
+.video-library-image-wrap img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.video-library-placeholder {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  opacity: .62;
+}
+.video-library-play {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: 34px;
+  height: 34px;
+  border-radius: 999px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0,0,0,.52);
+  color: white;
+  font-size: 16px;
+  line-height: 1;
+  box-shadow: 0 2px 8px rgba(0,0,0,.2);
+  pointer-events: none;
+}
+.video-library-delete {
+  appearance: none;
+  -webkit-appearance: none;
+  position: absolute;
+  z-index: 5;
+  top: 5px;
+  right: 5px;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: rgba(17,24,39,.82);
+  color: white;
+  font-size: 21px;
+  font-weight: 700;
+  line-height: 26px;
+  text-align: center;
+  cursor: pointer;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+  box-shadow: 0 2px 7px rgba(0,0,0,.24);
+}
+.video-library-delete:active { transform: scale(.92); }
+.video-library-info {
+  padding: 6px 7px 7px;
+  min-height: 57px;
+  box-sizing: border-box;
+}
+.video-library-title {
+  font-size: 10px;
+  line-height: 1.25;
+  font-weight: 750;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.video-library-meta {
+  margin-top: 3px;
+  font-size: 9px;
+  line-height: 1.2;
+  opacity: .78;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.video-library-status {
+  margin-top: 3px;
+  font-size: 8.5px;
+  line-height: 1.2;
+  opacity: .78;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.video-library-empty {
+  aspect-ratio: 1 / 1;
+  border: 1px dashed rgba(128,128,128,.16);
+  background: rgba(128,128,128,.025);
+}
+@media (max-width: 640px) {
+  .video-library-grid { gap: 6px; }
+  .video-library-card { border-radius: 10px; }
+  .video-library-delete {
+    top: 4px;
+    right: 4px;
+    width: 25px;
+    height: 25px;
+    font-size: 19px;
+    line-height: 23px;
+  }
+  .video-library-play { width: 30px; height: 30px; font-size: 14px; }
+  .video-library-info { padding: 5px 5px 6px; min-height: 52px; }
+  .video-library-title { font-size: 9px; }
+  .video-library-meta { font-size: 8px; }
+  .video-library-status { font-size: 7.5px; }
+}
+"""
+
+_VIDEO_LIBRARY_GRID_JS = r"""
+export default function(component) {
+  const { parentElement, data, setTriggerValue } = component;
+  const grid = parentElement.querySelector('#video-library-grid');
+  if (!grid) return;
+
+  grid.replaceChildren();
+  const videos = Array.isArray(data?.videos) ? data.videos.slice(0, 9) : [];
+
+  for (let index = 0; index < 9; index += 1) {
+    const video = videos[index];
+    if (!video) {
+      const empty = document.createElement('div');
+      empty.className = 'video-library-empty';
+      grid.appendChild(empty);
+      continue;
+    }
+
+    const id = String(video.id || '');
+    const card = document.createElement('div');
+    card.className = 'video-library-card';
+
+    const openButton = document.createElement('button');
+    openButton.type = 'button';
+    openButton.className = 'video-library-open';
+    openButton.setAttribute('aria-label', `${String(video.title || '動画')}を見る`);
+
+    const imageWrap = document.createElement('div');
+    imageWrap.className = 'video-library-image-wrap';
+    if (video.src) {
+      const img = document.createElement('img');
+      img.src = String(video.src);
+      img.alt = '動画サムネイル';
+      img.loading = 'lazy';
+      img.decoding = 'async';
+      img.fetchPriority = 'low';
+      imageWrap.appendChild(img);
+    } else {
+      const placeholder = document.createElement('div');
+      placeholder.className = 'video-library-placeholder';
+      placeholder.textContent = '動画';
+      imageWrap.appendChild(placeholder);
+    }
+
+    const play = document.createElement('div');
+    play.className = 'video-library-play';
+    play.textContent = '▶';
+    imageWrap.appendChild(play);
+
+    const info = document.createElement('div');
+    info.className = 'video-library-info';
+
+    const title = document.createElement('div');
+    title.className = 'video-library-title';
+    title.textContent = String(video.title || '');
+    info.appendChild(title);
+
+    const meta = document.createElement('div');
+    meta.className = 'video-library-meta';
+    meta.textContent = String(video.meta || '');
+    info.appendChild(meta);
+
+    const status = document.createElement('div');
+    status.className = 'video-library-status';
+    status.textContent = String(video.status || '');
+    info.appendChild(status);
+
+    openButton.appendChild(imageWrap);
+    openButton.appendChild(info);
+    openButton.addEventListener('click', () => {
+      if (id) setTriggerValue('open_video_id', id);
+    });
+
+    const deleteButton = document.createElement('button');
+    deleteButton.type = 'button';
+    deleteButton.className = 'video-library-delete';
+    deleteButton.textContent = '×';
+    deleteButton.setAttribute('aria-label', `${String(video.title || '動画')}を削除`);
+    deleteButton.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      if (id) setTriggerValue('delete_video_id', id);
+    });
+
+    card.appendChild(openButton);
+    card.appendChild(deleteButton);
+    grid.appendChild(card);
+  }
+}
+"""
+
+video_library_grid_component = None
+_video_library_grid_component_initialized = False
+
+
+def _get_video_library_grid_component():
+    global video_library_grid_component, _video_library_grid_component_initialized
+    if _video_library_grid_component_initialized:
+        return video_library_grid_component
+    _video_library_grid_component_initialized = True
+    try:
+        video_library_grid_component = st.components.v2.component(
+            "tokyo_burari_video_library_grid_v128",
+            html=_VIDEO_LIBRARY_GRID_HTML,
+            css=_VIDEO_LIBRARY_GRID_CSS,
+            js=_VIDEO_LIBRARY_GRID_JS,
+        )
+    except Exception:
+        video_library_grid_component = None
+    return video_library_grid_component
+
+
 def page_videos():
     delete_notice = st.session_state.pop("_video_delete_notice", None)
     if delete_notice:
@@ -12867,7 +13197,7 @@ def page_videos():
 
     page_top(
         "🎞️ 動画保管庫",
-        "保存された元動画を確認できます。AIの選定状況に関係なく、保存済み動画はここに表示されます。",
+        "保存された元動画を3×3で確認できます。動画を押すと再生、右上の×で削除できます。",
     )
 
     try:
@@ -12903,84 +13233,151 @@ def page_videos():
         st.info("DBに登録された動画はありません。上の「Storage実体を確認」で、未登録の動画が残っていないか確認できます。")
         return
 
-    st.caption("動画一覧は3列で表示します。見たい動画だけ開けます。")
-    for row_start in range(0, len(videos), 3):
-        row_columns = st.columns(3, gap="small")
-        for column_offset in range(3):
-            item_index = row_start + column_offset
-            with row_columns[column_offset]:
-                if item_index >= len(videos):
-                    st.markdown(
-                        '<div style="width:100%;aspect-ratio:1/1;border-radius:12px;'
-                        'border:1px dashed rgba(128,128,128,.18);background:rgba(128,128,128,.035);"></div>',
-                        unsafe_allow_html=True,
-                    )
-                    st.caption(" ")
-                    continue
+    # Nine videos per page keeps the vault as an exact 3×3 grid on both desktop
+    # and mobile. The custom component never collapses the three columns.
+    per_page = 9
+    page_count = max(1, (len(videos) + per_page - 1) // per_page)
+    page_key = "_video_library_grid_page"
+    try:
+        current_page = int(st.session_state.get(page_key) or 0)
+    except Exception:
+        current_page = 0
+    current_page = max(0, min(current_page, page_count - 1))
+    st.session_state[page_key] = current_page
 
-                video_row = videos[item_index]
-                metadata = photo_media_metadata(video_row)
-                title = html.escape(_moments_video_title(video_row))
-                size_value = max(0, int(metadata.get("video_size_bytes") or 0))
-                duration_ms = max(0, int(metadata.get("video_duration_ms") or 0))
+    start_index = current_page * per_page
+    visible_videos = videos[start_index:start_index + per_page]
+    cards = []
+    for local_index, video_row in enumerate(visible_videos):
+        metadata = photo_media_metadata(video_row)
+        size_value = max(0, int(metadata.get("video_size_bytes") or 0))
+        duration_ms = max(0, int(metadata.get("video_duration_ms") or 0))
+        detail_parts = []
+        if duration_ms:
+            detail_parts.append(f"{max(1, round(duration_ms / 1000))}秒")
+        if size_value:
+            detail_parts.append(format_storage_size(size_value))
+
+        selection = metadata.get("ai_selection") or {}
+        status_label = ""
+        if isinstance(selection, dict):
+            status = str(selection.get("status") or "").lower()
+            if status == "processing":
+                stage = str(selection.get("stage") or "").strip().lower()
+                status_label = "✨ 候補を自動準備中" if stage == "candidate_preparation" else "✨ いい瞬間を自動選定中"
+            elif status in {"", "waiting_candidates"}:
+                status_label = "✨ 自動処理を開始待ち"
+            elif status == "ready":
+                status_label = "✨ いい瞬間を確認できます"
+            elif status == "reviewed":
+                status_label = "✓ いい瞬間を確認済み"
+            elif status == "error":
+                status_label = "AI選定は未完了"
+
+        poster_path = str(video_row.get("storage_path") or "").strip()
+        preview_url = photo_display_url(video_row)
+        if not preview_url and poster_path:
+            try:
+                preview_url = thumbnail_photo_data_url(poster_path, max_px=520, quality=82)
+            except Exception:
+                preview_url = ""
+
+        cards.append(
+            {
+                "id": str(video_row.get("id") or ""),
+                "src": preview_url,
+                "title": _moments_video_title(video_row),
+                "meta": " ／ ".join(detail_parts),
+                "status": status_label,
+            }
+        )
+
+    grid_component = _get_video_library_grid_component()
+    handled_action = False
+    if grid_component is not None:
+        serial_key = "_video_library_grid_serial"
+        serial = int(st.session_state.get(serial_key) or 0)
+        result = grid_component(
+            data={"videos": cards},
+            key=f"video_library_grid_{current_page}_{serial}",
+            on_open_video_id_change=lambda: None,
+            on_delete_video_id_change=lambda: None,
+        )
+        open_video_id = str(getattr(result, "open_video_id", None) or "").strip()
+        delete_video_id = str(getattr(result, "delete_video_id", None) or "").strip()
+
+        if delete_video_id:
+            target = next((row for row in visible_videos if str(row.get("id") or "") == delete_video_id), None)
+            if target:
+                st.session_state[serial_key] = serial + 1
+                show_video_delete_dialog(target)
+                handled_action = True
+        elif open_video_id:
+            target = next((row for row in visible_videos if str(row.get("id") or "") == open_video_id), None)
+            if target:
+                metadata = photo_media_metadata(target)
                 detail_parts = []
+                duration_ms = max(0, int(metadata.get("video_duration_ms") or 0))
+                size_value = max(0, int(metadata.get("video_size_bytes") or 0))
                 if duration_ms:
                     detail_parts.append(f"{max(1, round(duration_ms / 1000))}秒")
                 if size_value:
                     detail_parts.append(format_storage_size(size_value))
+                st.session_state[serial_key] = serial + 1
+                show_video_library_dialog(target, _moments_video_title(target), " ／ ".join(detail_parts))
+                handled_action = True
+    else:
+        # Fallback for older Streamlit runtimes. Keep three columns and place an ×
+        # control at the upper-right area of each card.
+        for row_start in range(0, per_page, 3):
+            row_columns = st.columns(3, gap="small")
+            for offset in range(3):
+                item_index = row_start + offset
+                with row_columns[offset]:
+                    if item_index >= len(visible_videos):
+                        st.write("")
+                        continue
+                    video_row = visible_videos[item_index]
+                    card = cards[item_index]
+                    _, delete_col = st.columns([5, 1], gap="small")
+                    with delete_col:
+                        if st.button(
+                            "×",
+                            key=f"video_fallback_delete_{current_page}_{item_index}_{video_row.get('id')}",
+                            help="この動画を削除",
+                        ):
+                            show_video_delete_dialog(video_row)
+                    if card.get("src"):
+                        st.image(card["src"], use_container_width=True)
+                    st.caption(card.get("title") or "")
+                    if st.button(
+                        "見る",
+                        use_container_width=True,
+                        key=f"video_fallback_open_{current_page}_{item_index}_{video_row.get('id')}",
+                    ):
+                        show_video_library_dialog(video_row, card.get("title") or "", card.get("meta") or "")
 
-                selection = metadata.get("ai_selection") or {}
-                status_label = ""
-                if isinstance(selection, dict):
-                    status = str(selection.get("status") or "").lower()
-                    if status == "processing":
-                        stage = str(selection.get("stage") or "").strip().lower()
-                        status_label = "✨ 候補を自動準備中" if stage == "candidate_preparation" else "✨ いい瞬間を自動選定中"
-                    elif status in {"", "waiting_candidates"}:
-                        status_label = "✨ いい瞬間の自動処理を開始待ち"
-                    elif status == "ready":
-                        status_label = "✨ いい瞬間を確認できます"
-                    elif status == "reviewed":
-                        status_label = "✓ いい瞬間を確認済み"
-                    elif status == "error":
-                        status_label = "AI選定は未完了です"
-
-                poster_path = str(video_row.get("storage_path") or "").strip()
-                preview_url = photo_display_url(video_row)
-                if not preview_url and poster_path:
-                    try:
-                        preview_url = thumbnail_photo_data_url(poster_path, max_px=520, quality=82)
-                    except Exception:
-                        preview_url = ""
-                if preview_url:
-                    st.markdown(
-                        '<div style="width:100%;aspect-ratio:1/1;overflow:hidden;border-radius:12px;'
-                        'background:rgba(128,128,128,.08);border:1px solid rgba(128,128,128,.10);">'
-                        f'<img src="{html.escape(preview_url, quote=True)}" alt="動画サムネイル" '
-                        'loading="lazy" decoding="async" style="display:block;width:100%;height:100%;object-fit:cover;" />'
-                        '</div>',
-                        unsafe_allow_html=True,
-                    )
-                else:
-                    st.markdown(
-                        '<div style="width:100%;aspect-ratio:1/1;display:flex;align-items:center;justify-content:center;'
-                        'border-radius:12px;background:rgba(128,128,128,.05);border:1px dashed rgba(128,128,128,.18);'
-                        'font-size:.8rem;color:rgba(49,51,63,.72);">サムネイルなし</div>',
-                        unsafe_allow_html=True,
-                    )
-
-                st.markdown(f"**{title}**")
-                if detail_parts:
-                    st.caption(" ／ ".join(detail_parts))
-                if status_label:
-                    st.caption(status_label)
-
-                if st.button("見る", use_container_width=True, key=f"video_grid_open_{item_index}_{video_row.get('id')}"):
-                    caption = " ／ ".join(detail_parts)
-                    if status_label:
-                        caption = (caption + "\n" if caption else "") + status_label
-                    show_video_library_dialog(video_row, _moments_video_title(video_row), caption)
-                render_video_delete_controls(video_row, f"video_library_card_{item_index}")
+    if page_count > 1 and not handled_action:
+        st.caption(f"{current_page + 1} / {page_count}ページ　（1ページ9本）")
+        prev_col, next_col = st.columns(2, gap="small")
+        with prev_col:
+            if st.button(
+                "← 前の9本",
+                use_container_width=True,
+                disabled=current_page <= 0,
+                key=f"video_grid_prev_{current_page}",
+            ):
+                st.session_state[page_key] = max(0, current_page - 1)
+                st.rerun()
+        with next_col:
+            if st.button(
+                "次の9本 →",
+                use_container_width=True,
+                disabled=current_page >= page_count - 1,
+                key=f"video_grid_next_{current_page}",
+            ):
+                st.session_state[page_key] = min(page_count - 1, current_page + 1)
+                st.rerun()
 
 
 def page_moments():
@@ -13034,7 +13431,7 @@ def page_moments():
 
     if reviewed:
         st.divider()
-        with st.expander(f"確認済みの動画（{len(reviewed)}本）"):
+        with st.expander(f"確認済みの動画（{len(reviewed)}本）— 再選択できます"):
             for idx, video in enumerate(reviewed[:30]):
                 if idx:
                     st.divider()
