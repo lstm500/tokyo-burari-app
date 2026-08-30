@@ -5163,7 +5163,7 @@ def register_browser_uploaded_video(
         client.storage.from_(PHOTO_BUCKET).upload(
             path=poster_path,
             file=poster,
-            file_options={"content-type": (_sniff_media_mime(poster) or "image/jpeg"), "cache-control": "3600"},
+            file_options={"content-type": (_sniff_media_mime(image_bytes) or "image/jpeg"), "cache-control": "3600"},
         )
         poster_uploaded = True
         result = (
@@ -5296,7 +5296,7 @@ def upload_video(
         client.storage.from_(PHOTO_BUCKET).upload(
             path=poster_path,
             file=poster,
-            file_options={"content-type": (_sniff_media_mime(poster) or "image/jpeg"), "cache-control": "3600"},
+            file_options={"content-type": (_sniff_media_mime(image_bytes) or "image/jpeg"), "cache-control": "3600"},
         )
         uploaded_paths.append(poster_path)
         client.storage.from_(PHOTO_BUCKET).upload(
