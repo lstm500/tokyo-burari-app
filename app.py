@@ -10,7 +10,10 @@ import tempfile
 import time
 import uuid
 import wave
+import zipfile
+import threading
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from array import array
 from urllib.parse import urlencode, urlparse, parse_qs
 from urllib.request import Request, urlopen
@@ -18,6 +21,8 @@ from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import streamlit as st
+
+APP_BUILD = "v103"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -666,6 +671,13 @@ try:
 except Exception:
     VIDEO_STORAGE_QUOTA_MB = 0
 
+VIDEO_MAX_SECONDS = 30
+# Existing camera encoding and server guard cap one 30-second recording at 25 MB.
+# Capacity is checked against this full reserve before video recording starts.
+VIDEO_MAX_BYTES = 25 * 1024 * 1024
+VIDEO_AI_MAX_SELECTIONS = 9
+VIDEO_AI_MAX_CANDIDATES = 18
+
 TRIP_TABLE = "burari_trips"
 PHOTO_TABLE = "burari_photos"
 DIARY_TABLE = "burari_diaries"
@@ -708,7 +720,7 @@ _LIVE_CAMERA_HTML = """
       <button id="camera-review-retry" class="camera-retry-button" type="button">撮りなおす／選びなおす</button>
     </div>
     <button id="camera-review-find-moments" class="camera-find-button" type="button" hidden>✨ いい瞬間を探す</button>
-    <div id="camera-review-build" class="camera-review-build" hidden>camera v101</div>
+    <div id="camera-review-build" class="camera-review-build" hidden>camera v103</div>
     <img id="camera-review-image" class="camera-review-image" alt="撮影した写真の確認" />
     <video id="camera-review-video" class="camera-review-video" playsinline controls hidden></video>
   </div>
@@ -923,6 +935,15 @@ export default function(component) {
   const status = parentElement.querySelector('#live-camera-status');
 
   const VIDEO_MAX_SECONDS = 30;
+  const videoAllowed = data?.video_allowed !== false;
+  const videoCapacityMessage = String(
+    data?.video_capacity_message || '動画の保存容量が不足しているため、最大30秒の動画を撮影できません。'
+  );
+  if (!videoAllowed && videoStartButton) {
+    videoStartButton.disabled = true;
+    videoStartButton.textContent = '🎥 動画を撮る（容量不足）';
+    videoStartButton.title = videoCapacityMessage;
+  }
   let stream = null;
   let cameraMode = 'photo';
   let pendingMedia = null;
@@ -936,12 +957,10 @@ export default function(component) {
   let recordingTimer = null;
   let recordingMaxTimer = null;
   let recordingCancelled = false;
-  // Good-moments search is guarded by a fresh pointer gesture that must start
-  // and end on the review button. This makes a recording-stop tap/click-through
-  // structurally unable to launch frame extraction.
+  // Good-moments search is a separate review action. The button remains hidden
+  // briefly after recording stops, so the stop gesture cannot fall through to it.
   let videoReviewGeneration = 0;
-  let videoReviewShownAt = 0;
-  let goodMomentsPointerGesture = null;
+  let goodMomentsRevealTimer = null;
 
   const setStatus = (message) => {
     if (!status) return;
@@ -971,8 +990,11 @@ export default function(component) {
       shootButton.textContent = cameraMode === 'video' ? '● 録画を開始' : '● 写真を撮る';
     }
     if (modeSwitchButton) {
-      modeSwitchButton.disabled = Boolean(recording);
-      modeSwitchButton.textContent = cameraMode === 'video' ? '📷 写真へ' : '🎥 動画へ';
+      modeSwitchButton.disabled = Boolean(recording) || (cameraMode !== 'video' && !videoAllowed);
+      modeSwitchButton.textContent = cameraMode === 'video'
+        ? '📷 写真へ'
+        : (videoAllowed ? '🎥 動画へ' : '🎥 動画へ（容量不足）');
+      modeSwitchButton.title = (!videoAllowed && cameraMode !== 'video') ? videoCapacityMessage : '';
     }
   };
 
@@ -984,8 +1006,20 @@ export default function(component) {
     recordingStatus.textContent = `● 録画中 ${mm}:${ss} / 0:${String(VIDEO_MAX_SECONDS).padStart(2, '0')}`;
   };
 
-  const resetGoodMomentsGesture = () => {
-    goodMomentsPointerGesture = null;
+  const clearGoodMomentsRevealTimer = () => {
+    if (goodMomentsRevealTimer) {
+      clearTimeout(goodMomentsRevealTimer);
+      goodMomentsRevealTimer = null;
+    }
+  };
+
+  const disarmGoodMomentsButton = () => {
+    clearGoodMomentsRevealTimer();
+    if (!reviewFindMoments) return;
+    reviewFindMoments.dataset.armedGeneration = '';
+    reviewFindMoments.hidden = true;
+    reviewFindMoments.disabled = false;
+    reviewFindMoments.textContent = '\u2728 \u3044\u3044\u77ac\u9593\u3092\u63a2\u3059';
   };
 
   const revokeReviewVideoUrl = () => {
@@ -996,8 +1030,7 @@ export default function(component) {
   };
 
   const hideReview = () => {
-    resetGoodMomentsGesture();
-    videoReviewShownAt = 0;
+    disarmGoodMomentsButton();
     if (review) review.hidden = true;
     if (reviewImage) {
       reviewImage.hidden = true;
@@ -1011,6 +1044,7 @@ export default function(component) {
     }
     revokeReviewVideoUrl();
     if (reviewFindMoments) {
+      reviewFindMoments.dataset.armedGeneration = '';
       reviewFindMoments.hidden = true;
       reviewFindMoments.disabled = false;
       reviewFindMoments.textContent = '✨ いい瞬間を探す';
@@ -1063,17 +1097,25 @@ export default function(component) {
     }
     reviewSave.textContent = 'この動画を残す';
     reviewRetry.textContent = '撮りなおす';
-    if (reviewFindMoments) {
-      reviewFindMoments.hidden = false;
-      reviewFindMoments.disabled = false;
-      reviewFindMoments.textContent = '✨ いい瞬間を探す';
-    }
+    videoReviewGeneration += 1;
+    const reviewGeneration = videoReviewGeneration;
+    disarmGoodMomentsButton();
     if (reviewBuild) reviewBuild.hidden = false;
     if (review) review.hidden = false;
-    videoReviewGeneration += 1;
-    videoReviewShownAt = performance.now();
-    resetGoodMomentsGesture();
     setStatus('');
+
+    // Important: do not extract frames here. Only reveal and arm the button
+    // after the recording-stop interaction has fully ended.
+    goodMomentsRevealTimer = setTimeout(() => {
+      goodMomentsRevealTimer = null;
+      if (reviewGeneration !== videoReviewGeneration) return;
+      if (!review || review.hidden || !reviewFindMoments) return;
+      if (!pendingMedia || pendingMedia.kind !== 'video' || !pendingVideoBlob) return;
+      reviewFindMoments.dataset.armedGeneration = String(reviewGeneration);
+      reviewFindMoments.hidden = false;
+      reviewFindMoments.disabled = false;
+      reviewFindMoments.textContent = '\u2728 \u3044\u3044\u77ac\u9593\u3092\u63a2\u3059';
+    }, 700);
   };
 
   const stopActiveRecorderSilently = () => {
@@ -1118,8 +1160,13 @@ export default function(component) {
   };
 
   const startCamera = async (mode = 'photo') => {
+    const requestedMode = mode === 'video' ? 'video' : 'photo';
+    if (requestedMode === 'video' && !videoAllowed) {
+      setStatus(videoCapacityMessage);
+      return;
+    }
     stopStream();
-    cameraMode = mode === 'video' ? 'video' : 'photo';
+    cameraMode = requestedMode;
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
       const message = 'このブラウザでは直接カメラを開けません。ChromeまたはSafariの最新版で開いてください。';
       setStatus(message);
@@ -1286,7 +1333,7 @@ export default function(component) {
       const measuredDuration = Number.isFinite(probe.duration) && probe.duration > 0
         ? probe.duration
         : Math.max(0.2, Number(durationMs || 0) / 1000);
-      const sampleCount = Math.max(12, Math.min(24, Math.ceil(measuredDuration * 1.2)));
+      const sampleCount = Math.max(12, Math.min(18, Math.ceil(measuredDuration * 1.2)));
       const frameCanvas = document.createElement('canvas');
       const srcW = probe.videoWidth || video.videoWidth || 1280;
       const srcH = probe.videoHeight || video.videoHeight || 720;
@@ -1454,34 +1501,55 @@ export default function(component) {
           const blob = new Blob(recordedChunks, { type: finalType });
           recordedChunks = [];
           if (!blob.size) throw new Error('recorded video is empty');
-          setStatus('動画を準備しています…');
-          const [dataUrl, posterDataUrl, location] = await Promise.all([
+
+          // Video recording is intentionally auto-save. There is no keep/retry
+          // review screen for video. Candidate-frame extraction runs locally while
+          // the upload payload is prepared, then the server saves the video and
+          // continues AI selection in the background.
+          if (menu) menu.hidden = true;
+          if (activeActions) activeActions.hidden = true;
+          if (video) video.hidden = true;
+          setStatus('動画を自動保存する準備をしています…');
+
+          const candidatePromise = extractVideoCandidateFrames(blob, durationMs)
+            .catch((err) => {
+              console.warn('candidate extraction failed', err);
+              return [];
+            });
+          const [dataUrl, posterDataUrl, location, candidateFrames] = await Promise.all([
             blobToDataUrl(blob),
             capturePosterDataUrl(),
-            recordingLocationPromise || getLocationAtCapture()
+            recordingLocationPromise || getLocationAtCapture(),
+            candidatePromise
           ]);
-          pendingVideoBlob = blob;
+
           const recordingId = (globalThis.crypto && typeof globalThis.crypto.randomUUID === 'function')
             ? globalThis.crypto.randomUUID()
             : `video_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
-          pendingMedia = {
+          const mediaToSave = {
             kind: 'video',
             recording_id: recordingId,
             data_url: dataUrl,
             poster_data_url: posterDataUrl,
-            candidate_frames: [],
+            candidate_frames: Array.isArray(candidateFrames) ? candidateFrames : [],
             mime_type: finalType,
             duration_ms: durationMs,
             name: finalType.includes('mp4') ? 'camera.mp4' : 'camera.webm',
             source: 'video_camera',
             captured_at: recordingCapturedAt || new Date().toISOString(),
-            location
+            location,
+            auto_save: true
           };
-          showVideoReview(blob);
-          setStatus('');
+
+          if (stream) {
+            stream.getTracks().forEach((track) => track.stop());
+            stream = null;
+          }
+          setStatus('動画を自動保存しています。いい瞬間はあとで自動選定します…');
+          setTriggerValue('video', mediaToSave);
         } catch (err) {
           console.error(err);
-          const message = '録画した動画を準備できませんでした。もう一度お試しください。';
+          const message = '録画した動画を保存準備できませんでした。もう一度お試しください。';
           setStatus(message);
           setTriggerValue('camera_error', { name: 'VideoPrepareError', message });
         } finally {
@@ -1489,6 +1557,7 @@ export default function(component) {
           recordingLocationPromise = null;
         }
       };
+
       mediaRecorder.start(500);
       recordingStartedAt = Date.now();
       setRecordingUi(true);
@@ -1534,17 +1603,18 @@ export default function(component) {
     }
   };
 
-  const findGoodMoments = async (gestureToken) => {
-    // Hard gate: frame extraction can only be entered with a token created by a
-    // fresh pointerdown -> pointerup sequence on the visible review button.
-    // Neither recording stop, timer stop, a synthetic click, nor click-through
-    // can create this token.
-    if (!gestureToken || gestureToken.explicit !== true) return;
-    if (gestureToken.review_generation !== videoReviewGeneration) return;
+  const findGoodMoments = async (event) => {
+    // Hard gate: only a real click on the separately armed review button may
+    // start frame extraction. Recording stop and review rendering never call it.
+    if (!event || event.isTrusted !== true) return;
+    if (!reviewFindMoments || event.currentTarget !== reviewFindMoments) return;
+    if (reviewFindMoments.dataset.armedGeneration !== String(videoReviewGeneration)) return;
     if (!pendingMedia || pendingMedia.kind !== 'video' || !pendingVideoBlob) return;
-    if (!review || review.hidden || !reviewFindMoments || reviewFindMoments.hidden) return;
+    if (!review || review.hidden || reviewFindMoments.hidden) return;
 
-    resetGoodMomentsGesture();
+    event.preventDefault();
+    event.stopPropagation();
+    reviewFindMoments.dataset.armedGeneration = '';
     if (reviewFindMoments) {
       reviewFindMoments.disabled = true;
       reviewFindMoments.textContent = '候補を準備しています…';
@@ -1585,45 +1655,6 @@ export default function(component) {
     }
   };
 
-  const beginGoodMomentsPointer = (event) => {
-    if (!event || event.isTrusted !== true) return;
-    if (!reviewFindMoments || reviewFindMoments.disabled || reviewFindMoments.hidden) return;
-    if (!review || review.hidden) return;
-    if (!pendingMedia || pendingMedia.kind !== 'video' || !pendingVideoBlob) return;
-    if (!videoReviewShownAt || performance.now() < videoReviewShownAt) return;
-
-    goodMomentsPointerGesture = {
-      pointer_id: event.pointerId,
-      review_generation: videoReviewGeneration,
-      started_at: performance.now(),
-    };
-  };
-
-  const finishGoodMomentsPointer = (event) => {
-    if (!event || event.isTrusted !== true) {
-      resetGoodMomentsGesture();
-      return;
-    }
-    const gesture = goodMomentsPointerGesture;
-    resetGoodMomentsGesture();
-    if (!gesture) return;
-    if (gesture.pointer_id !== event.pointerId) return;
-    if (gesture.review_generation !== videoReviewGeneration) return;
-    if ((performance.now() - gesture.started_at) > 5000) return;
-    if (!reviewFindMoments || event.currentTarget !== reviewFindMoments) return;
-
-    event.preventDefault();
-    event.stopPropagation();
-    void findGoodMoments({
-      explicit: true,
-      review_generation: videoReviewGeneration,
-    });
-  };
-
-  const cancelGoodMomentsPointer = () => {
-    resetGoodMomentsGesture();
-  };
-
   const savePendingMedia = () => {
     if (!pendingMedia) return;
     reviewSave.disabled = true;
@@ -1648,10 +1679,7 @@ export default function(component) {
     pendingVideoBlob = null;
     reviewSave.disabled = false;
     reviewRetry.disabled = false;
-    if (reviewFindMoments) {
-      reviewFindMoments.disabled = false;
-      reviewFindMoments.textContent = '✨ いい瞬間を探す';
-    }
+    disarmGoodMomentsButton();
     setStatus('');
     hideReview();
 
@@ -1696,9 +1724,7 @@ export default function(component) {
   galleryInput.addEventListener('change', chooseGalleryPhoto);
   reviewSave.addEventListener('click', savePendingMedia);
   reviewRetry.addEventListener('click', retryPendingMedia);
-  reviewFindMoments?.addEventListener('pointerdown', beginGoodMomentsPointer);
-  reviewFindMoments?.addEventListener('pointerup', finishGoodMomentsPointer);
-  reviewFindMoments?.addEventListener('pointercancel', cancelGoodMomentsPointer);
+  reviewFindMoments?.addEventListener('click', findGoodMoments);
 
   if (data?.auto_start_mode === 'video') {
     queueMicrotask(() => startCamera('video'));
@@ -1715,20 +1741,19 @@ export default function(component) {
     galleryInput.removeEventListener('change', chooseGalleryPhoto);
     reviewSave.removeEventListener('click', savePendingMedia);
     reviewRetry.removeEventListener('click', retryPendingMedia);
-    reviewFindMoments?.removeEventListener('pointerdown', beginGoodMomentsPointer);
-    reviewFindMoments?.removeEventListener('pointerup', finishGoodMomentsPointer);
-    reviewFindMoments?.removeEventListener('pointercancel', cancelGoodMomentsPointer);
+    reviewFindMoments?.removeEventListener('click', findGoodMoments);
+    clearGoodMomentsRevealTimer();
     stopStream();
     hideReview();
   };
 }
 """
 
-LIVE_CAMERA_COMPONENT_BUILD = "v101"
+LIVE_CAMERA_COMPONENT_BUILD = "v103"
 
 try:
     live_camera_component = st.components.v2.component(
-        "tokyo_burari_live_camera_v101",
+        "tokyo_burari_live_camera_v103",
         html=_LIVE_CAMERA_HTML,
         css=_LIVE_CAMERA_CSS,
         js=_LIVE_CAMERA_JS,
@@ -2368,7 +2393,7 @@ def _get_diary_gallery_component():
 _HISTORY_JS = r"""
 export default function(component) {
   const { data, setTriggerValue } = component;
-  const validPages = new Set(['home', 'camera', 'diary', 'review', 'settings']);
+  const validPages = new Set(['home', 'camera', 'moments', 'diary', 'review', 'settings']);
   const marker = '__tokyo_burari_page__';
   const requestedPage = validPages.has(data?.page) ? data.page : 'home';
   const action = data?.action || 'sync';
@@ -4054,6 +4079,11 @@ def photo_all_storage_paths(photo):
         selection_path = str(item.get("storage_path") or "").strip()
         if selection_path and selection_path not in paths:
             paths.append(selection_path)
+    selection_meta = photo_media_metadata(photo).get("ai_selection") or {}
+    if isinstance(selection_meta, dict):
+        bundle_path = str(selection_meta.get("candidate_bundle_path") or "").strip()
+        if bundle_path and bundle_path not in paths:
+            paths.append(bundle_path)
     return paths
 
 
@@ -4127,6 +4157,14 @@ def video_storage_quota_bytes():
 
 def current_video_storage_usage_bytes():
     """Total original-video bytes for the signed-in person, across all trips."""
+    cache_key = _account_cache_key("video_storage_usage")
+    cached = _session_cache_get(cache_key, max_age_seconds=8)
+    if cached is not None:
+        try:
+            return max(0, int(cached))
+        except Exception:
+            pass
+
     client = supabase_client()
     total = 0
     offset = 0
@@ -4153,7 +4191,7 @@ def current_video_storage_usage_bytes():
         if len(rows) < page_size:
             break
         offset += page_size
-    return total
+    return _session_cache_set(cache_key, total)
 
 
 def format_storage_size(num_bytes):
@@ -4182,6 +4220,43 @@ def ensure_video_storage_capacity(incoming_bytes):
         )
 
 
+def video_recording_capacity_status():
+    """Reserve enough room for one maximum 30-second recording before opening video mode."""
+    quota = video_storage_quota_bytes()
+    if quota <= 0:
+        return {
+            "allowed": True,
+            "usage_bytes": 0,
+            "quota_bytes": 0,
+            "remaining_bytes": None,
+            "required_bytes": VIDEO_MAX_BYTES,
+            "message": "動画は最大30秒です。",
+        }
+
+    usage = current_video_storage_usage_bytes()
+    remaining = max(0, quota - usage)
+    allowed = remaining >= VIDEO_MAX_BYTES
+    if allowed:
+        message = (
+            f"最大30秒の動画を撮影できます。残り {format_storage_size(remaining)} / "
+            f"上限 {format_storage_size(quota)}"
+        )
+    else:
+        message = (
+            "最大30秒の動画1本分の空き容量がありません。"
+            f" 残り {format_storage_size(remaining)} / 上限 {format_storage_size(quota)}。"
+            f"撮影には少なくとも {format_storage_size(VIDEO_MAX_BYTES)} の空きが必要です。"
+        )
+    return {
+        "allowed": allowed,
+        "usage_bytes": usage,
+        "quota_bytes": quota,
+        "remaining_bytes": remaining,
+        "required_bytes": VIDEO_MAX_BYTES,
+        "message": message,
+    }
+
+
 def upload_video(
     trip_id,
     video_bytes,
@@ -4204,7 +4279,10 @@ def upload_video(
 
     if not video_bytes:
         raise ValueError("動画データが空です。")
-    if len(video_bytes) > 25 * 1024 * 1024:
+    duration_value = max(0, int(duration_ms or 0))
+    if duration_value > (VIDEO_MAX_SECONDS * 1000 + 1000):
+        raise ValueError("動画が30秒を超えています。30秒以内で撮影してください。")
+    if len(video_bytes) > VIDEO_MAX_BYTES:
         raise ValueError("動画が大きすぎます。30秒以内で撮り直してください。")
     ensure_video_storage_capacity(len(video_bytes))
     poster = normalize_photo(poster_bytes)
@@ -4317,23 +4395,94 @@ def _hamming64(a, b):
     return (int(a) ^ int(b)).bit_count()
 
 
-def choose_video_ai_frames(frame_items):
-    """Ask vision AI for nine diverse best stills; no category quota is imposed."""
+def _ask_json_with_images_client(client, prompt, image_items, name, schema, max_output_tokens=1500):
+    """Vision JSON helper that can run from a background worker without Streamlit cache state."""
+    content = [{"type": "input_text", "text": prompt}]
+    for label, image_bytes in image_items or []:
+        label = str(label or "").strip()
+        if label:
+            content.append({"type": "input_text", "text": label})
+        if image_bytes:
+            content.append({"type": "input_image", "image_url": image_data_url(image_bytes)})
+    input_value = [{"role": "user", "content": content}]
+    result = client.responses.create(
+        **response_args(VISION_MODEL, input_value, name, schema, max_output_tokens)
+    )
+    return json.loads(result.output_text)
+
+
+def _video_preference_prompt_text(preference_context):
+    context = preference_context if isinstance(preference_context, dict) else {}
+    liked = context.get("quality_counts") or {}
+    rejected = context.get("rejected_quality_counts") or {}
+    liked_count = sum(max(0, int(v or 0)) for v in liked.values()) if isinstance(liked, dict) else 0
+    rejected_count = sum(max(0, int(v or 0)) for v in rejected.values()) if isinstance(rejected, dict) else 0
+    if not liked_count and not rejected_count:
+        return "まだ本人の選択履歴は少ないため、一般的な写真の良さを中心に選んでください。"
+
+    label_map = {
+        "expression": "表情",
+        "action": "躍動感",
+        "beauty": "写真の美しさ",
+        "subject": "被写体の魅力",
+        "story": "印象的な瞬間",
+        "other": "総合",
+    }
+    liked_parts = []
+    for key, value in sorted(
+        (liked.items() if isinstance(liked, dict) else []),
+        key=lambda x: int(x[1] or 0),
+        reverse=True,
+    ):
+        if int(value or 0) > 0:
+            liked_parts.append(f"{label_map.get(str(key), str(key))}:{int(value)}")
+    rejected_parts = []
+    for key, value in sorted(
+        (rejected.items() if isinstance(rejected, dict) else []),
+        key=lambda x: int(x[1] or 0),
+        reverse=True,
+    ):
+        if int(value or 0) > 0:
+            rejected_parts.append(f"{label_map.get(str(key), str(key))}:{int(value)}")
+
+    text = "本人が過去に実際に選んだ写真の傾向を軽く優先してください。"
+    if liked_parts:
+        text += " 選ばれた傾向=" + "、".join(liked_parts[:5]) + "。"
+    if rejected_parts:
+        text += " 『取り直す』でまとめて却下された傾向=" + "、".join(rejected_parts[:5]) + "。"
+    text += " ただし履歴に過剰適合せず、その動画固有の良い瞬間も残してください。"
+    return text
+
+
+def choose_video_ai_frames(
+    frame_items,
+    preference_context=None,
+    excluded_frame_ids=None,
+    ai_client=None,
+):
+    """Pick up to nine diverse stills, adapting gently to prior human choices."""
     frames = list(frame_items or [])
-    if len(frames) < 9:
-        raise ValueError("AIセレクション用の候補画像が9枚未満です。")
+    if not frames:
+        raise ValueError("AIセレクション用の候補画像がありません。")
+
+    excluded = {str(x) for x in (excluded_frame_ids or []) if str(x)}
+    available = [frame for frame in frames if str(frame.get("frame_id") or "") not in excluded]
+    # A reroll should avoid the previous set when enough candidates remain.
+    # If the pool is exhausted, allow reuse rather than returning nothing.
+    if len(available) >= 3:
+        frames = available
 
     schema = {
         "type": "object",
         "properties": {
             "selections": {
                 "type": "array",
-                "minItems": 9,
-                "maxItems": 9,
+                "minItems": 1,
+                "maxItems": VIDEO_AI_MAX_SELECTIONS,
                 "items": {
                     "type": "object",
                     "properties": {
-                        "rank": {"type": "integer", "minimum": 1, "maximum": 9},
+                        "rank": {"type": "integer", "minimum": 1, "maximum": VIDEO_AI_MAX_SELECTIONS},
                         "frame_id": {"type": "string"},
                         "score": {"type": "integer", "minimum": 0, "maximum": 100},
                         "primary_quality": {
@@ -4350,49 +4499,90 @@ def choose_video_ai_frames(frame_items):
         "required": ["selections"],
         "additionalProperties": False,
     }
+
+    preference_text = _video_preference_prompt_text(preference_context)
     prompt = (
-        "動画から静止画9枚を選ぶフォトセレクターです。候補フレームを時刻順に渡します。\n"
-        "カテゴリ別に3枚ずつ等の枚数制限は一切ありません。9枚すべてを総合評価で選んでください。\n"
-        "人物・生物では、笑顔・驚き・真剣さなど画像から明確に見える表情、印象的なしぐさ、躍動感、"
-        "顔や全身の見え方を重視します。内面の感情は断定せず、見た目の表情だけを評価してください。\n"
+        "動画から、人があとで写真として残したくなる静止画を選ぶフォトセレクターです。候補フレームを時刻順に渡します。\n"
+        f"出力は最大{VIDEO_AI_MAX_SELECTIONS}枚です。枚数を埋めるために弱い写真を無理に選ぶ必要はありません。"
+        "通常は4〜9枚程度、良い瞬間が少なければそれより少なくて構いません。\n"
+        "カテゴリ別の枚数制限はありません。人物・生物では、画像から明確に見える笑顔・驚き・真剣さなどの表情、"
+        "印象的なしぐさ、躍動感、顔や全身の見え方を重視してください。内面の感情は断定しないでください。\n"
         "物・乗り物・風景では、被写体がきれいに見える瞬間、動きのタイミング、ピント、ブレ、露出、色、"
         "構図、遮蔽物の少なさを重視してください。\n"
-        "どの被写体でも、写真としての完成度と『この動画を代表する印象的な瞬間』を評価してください。\n"
-        "重要: ほぼ同じ場面・同じ表情の近接フレームを複数選ばず、動画全体の異なる時点や場面がなるべく"
-        "含まれるようにしてください。ただし質を下げてまで均等配分する必要はありません。\n"
-        "rank=1をAI BESTとし、rank=1〜9を重複なく返してください。reasonは日本語で短く具体的にしてください。"
+        "ほぼ同じ場面・同じ表情の近接フレームは重複させず、動画全体の違う瞬間も適度に含めてください。\n"
+        f"{preference_text}\n"
+        "rank=1をAI BESTとし、選んだ枚数の範囲でrankを1から連番にしてください。"
+        "reasonは日本語で短く具体的にしてください。"
     )
-    image_items = [
-        (f"{frame['frame_id']} / {int(frame['timestamp_ms']) / 1000:.1f}秒", frame["ai_bytes"])
-        for frame in frames
-    ]
+
+    context = preference_context if isinstance(preference_context, dict) else {}
+    image_items = []
+    for idx, image_bytes in enumerate(context.get("reference_images") or [], start=1):
+        if image_bytes:
+            image_items.append((f"過去に本人が選んだ好みの参考画像 {idx}", image_bytes))
+    image_items.extend(
+        [
+            (f"候補 {frame['frame_id']} / {int(frame['timestamp_ms']) / 1000:.1f}秒", frame["ai_bytes"])
+            for frame in frames
+            if frame.get("ai_bytes")
+        ]
+    )
+
+    ask_client = ai_client
     try:
-        result = ask_json_with_images(
-            prompt,
-            image_items,
-            "video_best_frames",
-            schema,
-            max_output_tokens=1700,
-        )
+        if ask_client is None:
+            result = ask_json_with_images(
+                prompt,
+                image_items,
+                "video_best_frames_v103",
+                schema,
+                max_output_tokens=1700,
+            )
+        else:
+            result = _ask_json_with_images_client(
+                ask_client,
+                prompt,
+                image_items,
+                "video_best_frames_v103",
+                schema,
+                max_output_tokens=1700,
+            )
     except Exception:
-        # Some model/provider limits are more conservative with many images. Retry
-        # with 12 temporally spread candidates rather than failing the saved video.
+        # Retry with fewer temporally spread candidates if the provider rejects
+        # a large multi-image request.
         if len(frames) <= 12:
             raise
         step = (len(frames) - 1) / 11
         retry_indexes = sorted({round(i * step) for i in range(12)})
         retry_frames = [frames[i] for i in retry_indexes]
-        retry_items = [
-            (f"{frame['frame_id']} / {int(frame['timestamp_ms']) / 1000:.1f}秒", frame["ai_bytes"])
-            for frame in retry_frames
-        ]
-        result = ask_json_with_images(
-            prompt,
-            retry_items,
-            "video_best_frames_retry",
-            schema,
-            max_output_tokens=1700,
+        retry_items = []
+        for idx, image_bytes in enumerate(context.get("reference_images") or [], start=1):
+            if image_bytes:
+                retry_items.append((f"過去に本人が選んだ好みの参考画像 {idx}", image_bytes))
+        retry_items.extend(
+            [
+                (f"候補 {frame['frame_id']} / {int(frame['timestamp_ms']) / 1000:.1f}秒", frame["ai_bytes"])
+                for frame in retry_frames
+                if frame.get("ai_bytes")
+            ]
         )
+        if ask_client is None:
+            result = ask_json_with_images(
+                prompt,
+                retry_items,
+                "video_best_frames_v103_retry",
+                schema,
+                max_output_tokens=1700,
+            )
+        else:
+            result = _ask_json_with_images_client(
+                ask_client,
+                prompt,
+                retry_items,
+                "video_best_frames_v103_retry",
+                schema,
+                max_output_tokens=1700,
+            )
 
     by_id = {str(frame.get("frame_id")): frame for frame in frames}
     raw = result.get("selections") if isinstance(result, dict) else []
@@ -4400,6 +4590,7 @@ def choose_video_ai_frames(frame_items):
         [item for item in (raw or []) if isinstance(item, dict)],
         key=lambda item: int(item.get("rank") or 99),
     )
+
     selected = []
     used_ids = set()
     used_hashes = []
@@ -4409,8 +4600,6 @@ def choose_video_ai_frames(frame_items):
         if not frame or frame_id in used_ids:
             continue
         frame_hash = _image_dhash64(frame.get("image_bytes"))
-        # Reject only near-identical frames here. Broader semantic diversity is
-        # handled by the AI prompt so different expressions in one scene can remain.
         if any(_hamming64(frame_hash, existing) <= 1 for existing in used_hashes):
             continue
         selected.append(
@@ -4418,69 +4607,38 @@ def choose_video_ai_frames(frame_items):
                 "frame": frame,
                 "score": max(0, min(100, int(item.get("score") or 0))),
                 "primary_quality": str(item.get("primary_quality") or "other"),
-                "reason": str(item.get("reason") or "").strip()[:80],
+                "reason": str(item.get("reason") or "").strip()[:100],
                 "hash": frame_hash,
             }
         )
         used_ids.add(frame_id)
         used_hashes.append(frame_hash)
-        if len(selected) >= 9:
+        if len(selected) >= VIDEO_AI_MAX_SELECTIONS:
             break
 
-    # A malformed response or an almost-identical pick must not leave an 8-cell
-    # grid. Fill from unused frames, prioritizing the time point furthest from the
-    # already selected set while still rejecting exact-looking duplicates.
-    while len(selected) < 9:
-        candidates = []
-        selected_times = [int(x["frame"].get("timestamp_ms") or 0) for x in selected]
-        for frame in frames:
-            frame_id = str(frame.get("frame_id") or "")
-            if frame_id in used_ids:
-                continue
-            frame_hash = _image_dhash64(frame.get("image_bytes"))
-            if any(_hamming64(frame_hash, existing) <= 1 for existing in used_hashes):
-                continue
-            timestamp = int(frame.get("timestamp_ms") or 0)
-            distance = min((abs(timestamp - t) for t in selected_times), default=10**9)
-            candidates.append((distance, timestamp, frame, frame_hash))
-        if not candidates:
-            break
-        _, _, frame, frame_hash = max(candidates, key=lambda x: (x[0], x[1]))
-        selected.append(
-            {
-                "frame": frame,
-                "score": 0,
-                "primary_quality": "other",
-                "reason": "動画全体の違う場面を残すため選択",
-                "hash": frame_hash,
-            }
-        )
-        used_ids.add(str(frame.get("frame_id") or ""))
-        used_hashes.append(frame_hash)
-
-    if len(selected) < 9:
-        # Final safety fallback for very short/static videos: allow visually similar
-        # frames only when there are no nine distinct-looking candidates at all.
-        for frame in frames:
-            frame_id = str(frame.get("frame_id") or "")
-            if frame_id in used_ids:
-                continue
+    if not selected:
+        # Safety fallback: one to nine temporally spaced frames. This keeps the
+        # workflow usable even if a malformed model response slips through.
+        target = min(VIDEO_AI_MAX_SELECTIONS, len(frames))
+        if target <= 0:
+            raise ValueError("AIセレクションを作成できませんでした。")
+        if target == 1:
+            fallback_frames = [frames[len(frames) // 2]]
+        else:
+            step = (len(frames) - 1) / (target - 1)
+            fallback_frames = [frames[round(i * step)] for i in range(target)]
+        for frame in fallback_frames:
             selected.append(
                 {
                     "frame": frame,
                     "score": 0,
                     "primary_quality": "other",
-                    "reason": "候補が少ないため時間の違う瞬間を選択",
+                    "reason": "動画全体から時間の違う候補を選択",
                     "hash": _image_dhash64(frame.get("image_bytes")),
                 }
             )
-            used_ids.add(frame_id)
-            if len(selected) >= 9:
-                break
 
-    if len(selected) < 9:
-        raise ValueError("AIセレクションを9枚そろえられませんでした。")
-    return selected[:9]
+    return selected[:VIDEO_AI_MAX_SELECTIONS]
 
 
 def _video_selection_base_path(photo):
@@ -4503,6 +4661,536 @@ def _write_photo_reflection(photo_id, reflection):
     )
     signed_photo_url_map.clear()
     _invalidate_fast_db_cache()
+
+
+def _write_photo_reflection_for_owner(photo_id, reflection, family_key, member_key, client=None):
+    """Owner-explicit variant safe to call from a background worker."""
+    db = client
+    if db is None:
+        from supabase import create_client as _create_client
+        db = _create_client(SUPABASE_URL, SUPABASE_SECRET_KEY)
+    (
+        db
+        .table(PHOTO_TABLE)
+        .update({"reflection_json": reflection if isinstance(reflection, dict) else {}})
+        .eq("id", photo_id)
+        .eq("family_key", str(family_key))
+        .eq("member_key", str(member_key))
+        .execute()
+    )
+
+
+def _storage_bytes(value):
+    if isinstance(value, (bytes, bytearray)):
+        return bytes(value)
+    content = getattr(value, "content", None)
+    if isinstance(content, (bytes, bytearray)):
+        return bytes(content)
+    data = getattr(value, "data", None)
+    if isinstance(data, (bytes, bytearray)):
+        return bytes(data)
+    return b""
+
+
+def _build_video_candidate_bundle(frame_items):
+    frames = list(frame_items or [])[:VIDEO_AI_MAX_CANDIDATES]
+    if not frames:
+        raise ValueError("動画の候補フレームがありません。")
+    manifest = []
+    out = io.BytesIO()
+    with zipfile.ZipFile(out, "w", compression=zipfile.ZIP_STORED) as zf:
+        for index, frame in enumerate(frames, start=1):
+            raw = frame.get("image_bytes")
+            if not raw:
+                continue
+            frame_id = str(frame.get("frame_id") or f"F{index:02d}")[:24]
+            filename = f"{index:02d}_{frame_id}.jpg"
+            zf.writestr(filename, raw)
+            manifest.append(
+                {
+                    "filename": filename,
+                    "frame_id": frame_id,
+                    "timestamp_ms": max(0, int(frame.get("timestamp_ms") or 0)),
+                }
+            )
+        zf.writestr(
+            "manifest.json",
+            json.dumps({"version": 1, "frames": manifest}, ensure_ascii=False).encode("utf-8"),
+        )
+    if not manifest:
+        raise ValueError("動画の候補フレームを保存できませんでした。")
+    return out.getvalue(), manifest
+
+
+def _read_video_candidate_bundle(bundle_bytes):
+    frames = []
+    if not bundle_bytes:
+        return frames
+    with zipfile.ZipFile(io.BytesIO(bundle_bytes), "r") as zf:
+        manifest = json.loads(zf.read("manifest.json").decode("utf-8"))
+        for index, item in enumerate(manifest.get("frames") or [], start=1):
+            if not isinstance(item, dict):
+                continue
+            filename = str(item.get("filename") or "")
+            if not filename:
+                continue
+            raw = zf.read(filename)
+            if not raw:
+                continue
+            image_bytes = normalize_photo(raw, max_side=1280, quality=82)
+            ai_bytes = normalize_photo(raw, max_side=640, quality=72)
+            frames.append(
+                {
+                    "frame_id": str(item.get("frame_id") or f"F{index:02d}")[:24],
+                    "timestamp_ms": max(0, int(item.get("timestamp_ms") or 0)),
+                    "image_bytes": image_bytes,
+                    "ai_bytes": ai_bytes,
+                }
+            )
+    frames.sort(key=lambda x: (int(x.get("timestamp_ms") or 0), str(x.get("frame_id") or "")))
+    return frames[:VIDEO_AI_MAX_CANDIDATES]
+
+
+def store_video_ai_candidate_bundle(photo, frame_items):
+    """Persist candidates once so background selection and rerolls survive Streamlit reruns."""
+    if not isinstance(photo, dict) or not photo.get("id") or not photo_is_video(photo):
+        raise ValueError("候補保存対象の動画が見つかりません。")
+    bundle_bytes, manifest = _build_video_candidate_bundle(frame_items)
+    base = _video_selection_base_path(photo)
+    if not base:
+        raise ValueError("動画の保存先を確認できませんでした。")
+    bundle_path = f"{base}_candidates_v103.zip"
+    client = supabase_client()
+    client.storage.from_(PHOTO_BUCKET).upload(
+        path=bundle_path,
+        file=bundle_bytes,
+        file_options={"content-type": "application/zip", "cache-control": "3600"},
+    )
+
+    reflection = dict(photo_media_metadata(photo))
+    reflection["ai_selection"] = {
+        "status": "processing",
+        "queued_at": now_jst().isoformat(),
+        "candidate_count": len(manifest),
+        "candidate_bundle_path": bundle_path,
+        "round": 0,
+        "items": [],
+        "history": [],
+        "feedback_history": [],
+    }
+    try:
+        _write_photo_reflection(photo["id"], reflection)
+    except Exception:
+        try:
+            client.storage.from_(PHOTO_BUCKET).remove([bundle_path])
+        except Exception:
+            pass
+        raise
+    updated = dict(photo)
+    updated["reflection_json"] = reflection
+    return updated
+
+
+def _load_video_ai_preference_context_for_owner(client, family_key, member_key, max_rows=80):
+    """Build lightweight per-person preferences from photos they actually chose."""
+    rows = (
+        client
+        .table(PHOTO_TABLE)
+        .select("id,captured_at,storage_path,reflection_json")
+        .eq("family_key", str(family_key))
+        .eq("member_key", str(member_key))
+        .order("captured_at", desc=True)
+        .limit(int(max_rows))
+        .execute()
+    ).data or []
+
+    quality_counts = {}
+    rejected_quality_counts = {}
+    reference_paths = []
+    for row in rows:
+        reflection = row.get("reflection_json") or {}
+        if not isinstance(reflection, dict):
+            continue
+
+        # Durable learning signal: a still explicitly sent to the diary remains
+        # useful even if the source video is later deleted.
+        if bool(reflection.get("human_selected_from_video")) or str(reflection.get("capture_source") or "") == "video_ai_selection":
+            quality = str(reflection.get("source_selection_quality") or "other")
+            quality_counts[quality] = int(quality_counts.get(quality, 0)) + 1
+            durable_path = str(row.get("storage_path") or "").strip()
+            if durable_path and durable_path not in reference_paths:
+                reference_paths.append(durable_path)
+
+        selection = reflection.get("ai_selection") or {}
+        if not isinstance(selection, dict):
+            continue
+
+        for item in selection.get("items") or []:
+            if not isinstance(item, dict) or not item.get("human_selected"):
+                continue
+            # When a chosen still was copied into the normal diary-photo collection,
+            # the durable photo row above is the canonical learning signal.
+            if item.get("saved_photo_id"):
+                continue
+            quality = str(item.get("primary_quality") or "other")
+            quality_counts[quality] = int(quality_counts.get(quality, 0)) + 1
+            path = str(item.get("storage_path") or "").strip()
+            if path and path not in reference_paths:
+                reference_paths.append(path)
+
+        for history in selection.get("history") or []:
+            if not isinstance(history, dict) or not history.get("reroll_rejected"):
+                continue
+            for quality in history.get("qualities") or []:
+                quality = str(quality or "other")
+                rejected_quality_counts[quality] = int(rejected_quality_counts.get(quality, 0)) + 1
+
+    reference_images = []
+    for path in reference_paths[:4]:
+        try:
+            raw = _storage_bytes(client.storage.from_(PHOTO_BUCKET).download(path))
+            if raw:
+                reference_images.append(normalize_photo(raw, max_side=640, quality=72))
+        except Exception:
+            continue
+
+    return {
+        "quality_counts": quality_counts,
+        "rejected_quality_counts": rejected_quality_counts,
+        "reference_images": reference_images,
+    }
+
+
+def _background_clients():
+    from openai import OpenAI
+    from supabase import create_client as _create_client
+    return (
+        _create_client(SUPABASE_URL, SUPABASE_SECRET_KEY),
+        OpenAI(api_key=OPENAI_API_KEY),
+    )
+
+
+@st.cache_resource(show_spinner=False)
+def _video_ai_executor():
+    return ThreadPoolExecutor(max_workers=2, thread_name_prefix="burari-video-ai")
+
+
+@st.cache_resource(show_spinner=False)
+def _video_ai_job_registry():
+    return {"lock": threading.Lock(), "futures": {}}
+
+
+def _background_store_video_ai_selection(
+    client,
+    photo,
+    family_key,
+    member_key,
+    selections,
+    round_number,
+    previous_paths=None,
+):
+    base = _video_selection_base_path(photo)
+    if not base:
+        raise ValueError("動画の保存先を確認できませんでした。")
+    uploaded_paths = []
+    items = []
+    job_token = uuid.uuid4().hex[:8]
+    try:
+        for rank, selected in enumerate(list(selections or [])[:VIDEO_AI_MAX_SELECTIONS], start=1):
+            frame = selected.get("frame") or {}
+            image_bytes = frame.get("image_bytes")
+            if not image_bytes:
+                continue
+            path = f"{base}_ai_r{int(round_number):02d}_{job_token}_{rank:02d}.jpg"
+            client.storage.from_(PHOTO_BUCKET).upload(
+                path=path,
+                file=image_bytes,
+                file_options={"content-type": "image/jpeg", "cache-control": "3600"},
+            )
+            uploaded_paths.append(path)
+            items.append(
+                {
+                    "rank": rank,
+                    "storage_path": path,
+                    "frame_id": str(frame.get("frame_id") or ""),
+                    "timestamp_ms": max(0, int(frame.get("timestamp_ms") or 0)),
+                    "score": int(selected.get("score") or 0),
+                    "primary_quality": str(selected.get("primary_quality") or "other"),
+                    "reason": str(selected.get("reason") or "").strip(),
+                    "ai_best": rank == 1,
+                    "saved_photo_id": None,
+                    "human_selected": False,
+                }
+            )
+        if not items:
+            raise ValueError("AIセレクションを作成できませんでした。")
+
+        fresh = (
+            client.table(PHOTO_TABLE)
+            .select("*")
+            .eq("id", photo.get("id"))
+            .eq("family_key", str(family_key))
+            .eq("member_key", str(member_key))
+            .limit(1)
+            .execute()
+        )
+        row = (fresh.data or [None])[0] or photo
+        reflection = dict(photo_media_metadata(row))
+        selection_meta = reflection.get("ai_selection") or {}
+        if not isinstance(selection_meta, dict):
+            selection_meta = {}
+        selection_meta.update(
+            {
+                "status": "ready",
+                "generated_at": now_jst().isoformat(),
+                "round": int(round_number),
+                "items": items,
+                "last_error": "",
+            }
+        )
+        reflection["ai_selection"] = selection_meta
+        _write_photo_reflection_for_owner(
+            photo.get("id"), reflection, family_key, member_key, client=client
+        )
+
+        stale_paths = [str(x) for x in (previous_paths or []) if str(x)]
+        if stale_paths:
+            try:
+                client.storage.from_(PHOTO_BUCKET).remove(stale_paths)
+            except Exception:
+                pass
+        return True
+    except Exception:
+        if uploaded_paths:
+            try:
+                client.storage.from_(PHOTO_BUCKET).remove(uploaded_paths)
+            except Exception:
+                pass
+        raise
+
+
+def _run_video_ai_background_job(photo_id, family_key, member_key):
+    client, ai_client = _background_clients()
+    result = (
+        client.table(PHOTO_TABLE)
+        .select("*")
+        .eq("id", str(photo_id))
+        .eq("family_key", str(family_key))
+        .eq("member_key", str(member_key))
+        .limit(1)
+        .execute()
+    )
+    photo = (result.data or [None])[0]
+    if not photo or not photo_is_video(photo):
+        return
+
+    reflection = dict(photo_media_metadata(photo))
+    selection_meta = reflection.get("ai_selection") or {}
+    if not isinstance(selection_meta, dict):
+        selection_meta = {}
+    bundle_path = str(selection_meta.get("candidate_bundle_path") or "").strip()
+    if not bundle_path:
+        raise ValueError("動画の候補フレームが見つかりません。")
+
+    try:
+        bundle_raw = _storage_bytes(client.storage.from_(PHOTO_BUCKET).download(bundle_path))
+        frames = _read_video_candidate_bundle(bundle_raw)
+        if not frames:
+            raise ValueError("動画の候補フレームを読み込めませんでした。")
+
+        preference = _load_video_ai_preference_context_for_owner(
+            client, family_key, member_key
+        )
+        history = selection_meta.get("history") or []
+        excluded_ids = []
+        if isinstance(history, list):
+            for history_item in history[-4:]:
+                if not isinstance(history_item, dict) or not history_item.get("reroll_rejected"):
+                    continue
+                excluded_ids.extend(
+                    [str(x) for x in (history_item.get("frame_ids") or []) if str(x)]
+                )
+
+        current_items = selection_meta.get("items") or []
+        previous_paths = [
+            str(item.get("storage_path") or "").strip()
+            for item in current_items
+            if isinstance(item, dict) and str(item.get("storage_path") or "").strip()
+        ]
+        round_number = max(1, int(selection_meta.get("round") or 0) + 1)
+        selections = choose_video_ai_frames(
+            frames,
+            preference_context=preference,
+            excluded_frame_ids=excluded_ids,
+            ai_client=ai_client,
+        )
+        _background_store_video_ai_selection(
+            client,
+            photo,
+            family_key,
+            member_key,
+            selections,
+            round_number,
+            previous_paths=previous_paths,
+        )
+    except Exception as exc:
+        try:
+            fresh = (
+                client.table(PHOTO_TABLE)
+                .select("reflection_json")
+                .eq("id", str(photo_id))
+                .eq("family_key", str(family_key))
+                .eq("member_key", str(member_key))
+                .limit(1)
+                .execute()
+            )
+            row = (fresh.data or [None])[0] or {}
+            latest_reflection = row.get("reflection_json") or reflection
+            if not isinstance(latest_reflection, dict):
+                latest_reflection = dict(reflection)
+            latest_selection = latest_reflection.get("ai_selection") or {}
+            if not isinstance(latest_selection, dict):
+                latest_selection = {}
+            # Preserve the last usable set on reroll failure.
+            if latest_selection.get("items"):
+                latest_selection["status"] = "ready"
+            else:
+                latest_selection["status"] = "error"
+            latest_selection["last_error"] = str(exc)[:240]
+            latest_selection["updated_at"] = now_jst().isoformat()
+            latest_reflection["ai_selection"] = latest_selection
+            _write_photo_reflection_for_owner(
+                photo_id, latest_reflection, family_key, member_key, client=client
+            )
+        except Exception:
+            pass
+
+
+def launch_video_ai_background_job(photo):
+    """Submit at most one active worker per video; safe to call again for recovery."""
+    if not isinstance(photo, dict) or not photo.get("id") or not photo_is_video(photo):
+        return False
+    family_key = str(photo.get("family_key") or current_family_key())
+    member_key = str(photo.get("member_key") or current_member_key())
+    photo_id = str(photo.get("id"))
+    registry = _video_ai_job_registry()
+    with registry["lock"]:
+        existing = registry["futures"].get(photo_id)
+        if existing is not None and not existing.done():
+            return False
+        future = _video_ai_executor().submit(
+            _run_video_ai_background_job,
+            photo_id,
+            family_key,
+            member_key,
+        )
+        registry["futures"][photo_id] = future
+    return True
+
+
+def request_video_ai_reroll(photo):
+    """Reject the current set and queue another selection from the same saved candidates."""
+    if not isinstance(photo, dict) or not photo.get("id") or not photo_is_video(photo):
+        raise ValueError("動画が見つかりません。")
+    current = (
+        supabase_client()
+        .table(PHOTO_TABLE)
+        .select("*")
+        .eq("id", photo.get("id"))
+        .eq("family_key", current_family_key())
+        .eq("member_key", current_member_key())
+        .limit(1)
+        .execute()
+    )
+    fresh = (current.data or [None])[0] or photo
+    reflection = dict(photo_media_metadata(fresh))
+    selection = reflection.get("ai_selection") or {}
+    if not isinstance(selection, dict):
+        selection = {}
+    if not str(selection.get("candidate_bundle_path") or "").strip():
+        raise ValueError("この動画は再選定用の候補を保存していません。")
+
+    items = [item for item in (selection.get("items") or []) if isinstance(item, dict)]
+    history = list(selection.get("history") or [])
+    history.append(
+        {
+            "round": int(selection.get("round") or 0),
+            "reroll_rejected": True,
+            "at": now_jst().isoformat(),
+            "frame_ids": [str(item.get("frame_id") or "") for item in items],
+            "qualities": [str(item.get("primary_quality") or "other") for item in items],
+        }
+    )
+    selection["history"] = history[-12:]
+    selection["status"] = "processing"
+    selection["queued_at"] = now_jst().isoformat()
+    reflection["ai_selection"] = selection
+    _write_photo_reflection(photo.get("id"), reflection)
+
+    updated = dict(fresh)
+    updated["reflection_json"] = reflection
+    launch_video_ai_background_job(updated)
+    return updated
+
+
+def record_video_ai_human_choices(video_photo, selected_ranks):
+    """Persist explicit human picks so future AI selections can adapt per person."""
+    ranks = {int(x) for x in (selected_ranks or []) if int(x) > 0}
+    if not ranks:
+        return video_photo
+    current = (
+        supabase_client()
+        .table(PHOTO_TABLE)
+        .select("*")
+        .eq("id", video_photo.get("id"))
+        .eq("family_key", current_family_key())
+        .eq("member_key", current_member_key())
+        .limit(1)
+        .execute()
+    )
+    fresh = (current.data or [None])[0] or video_photo
+    reflection = dict(photo_media_metadata(fresh))
+    selection = reflection.get("ai_selection") or {}
+    if not isinstance(selection, dict):
+        selection = {}
+    now_value = now_jst().isoformat()
+    items = selection.get("items") or []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        if int(item.get("rank") or 0) in ranks:
+            item["human_selected"] = True
+            item["human_selected_at"] = now_value
+    selection["items"] = items
+    feedback_history = list(selection.get("feedback_history") or [])
+    feedback_history.append(
+        {
+            "at": now_value,
+            "selected_ranks": sorted(ranks),
+            "round": int(selection.get("round") or 0),
+        }
+    )
+    selection["feedback_history"] = feedback_history[-20:]
+    selection["reviewed_at"] = now_value
+    selection["status"] = "reviewed"
+    reflection["ai_selection"] = selection
+    _write_photo_reflection(video_photo.get("id"), reflection)
+
+    # Once the user has accepted at least one still, the candidate ZIP is no
+    # longer needed for reroll and can be removed to control storage cost.
+    bundle_path = str(selection.get("candidate_bundle_path") or "").strip()
+    if bundle_path:
+        try:
+            supabase_client().storage.from_(PHOTO_BUCKET).remove([bundle_path])
+            selection["candidate_bundle_path"] = ""
+            reflection["ai_selection"] = selection
+            _write_photo_reflection(video_photo.get("id"), reflection)
+        except Exception:
+            pass
+
+    updated = dict(fresh)
+    updated["reflection_json"] = reflection
+    return updated
 
 
 def store_preselected_video_ai_selection(photo, selections, candidate_count=0):
@@ -4637,6 +5325,9 @@ def save_video_ai_selection_as_photo(video_photo, selection_item):
             "source_video_photo_id": str(video_photo.get("id") or ""),
             "source_selection_rank": rank,
             "source_selection_timestamp_ms": int(selection_item.get("timestamp_ms") or 0),
+            "source_selection_quality": str(selection_item.get("primary_quality") or "other"),
+            "source_selection_reason": str(selection_item.get("reason") or "").strip()[:120],
+            "human_selected_from_video": True,
         },
     )
     saved_id = str((saved or {}).get("id") or "")
@@ -8044,7 +8735,7 @@ def init_state():
 
 
 
-VALID_APP_PAGES = {"home", "camera", "diary", "review", "settings"}
+VALID_APP_PAGES = {"home", "camera", "moments", "diary", "review", "settings"}
 
 
 def restore_recent_camera_session():
@@ -8775,12 +9466,18 @@ def render_video_ai_selection(photo, key_prefix="video_selection", allow_save=Tr
         selection_meta = {}
     items = video_ai_selection_items(photo)
     if not items:
-        if str(selection_meta.get("status") or "") == "error":
+        status = str(selection_meta.get("status") or "")
+        if status == "processing":
+            st.caption("✨ AIがこの動画のいい瞬間をバックグラウンドで探しています。")
+        elif status == "error":
             st.caption("AIセレクションを作成できませんでした。動画は保存されています。")
         return
 
     st.markdown("##### AIが選んだセレクション")
-    st.caption("表情・躍動感・写真としての美しさ・被写体の魅力などを総合評価し、似た場面が並びすぎないよう9枚を選んでいます。")
+    st.caption(
+        f"表情・躍動感・写真としての美しさ・被写体の魅力などを総合評価し、"
+        f"似た場面が並びすぎないよう最大{VIDEO_AI_MAX_SELECTIONS}枚を選んでいます。"
+    )
     paths = tuple(str(item.get("storage_path") or "").strip() for item in items)
     try:
         signed_map = signed_photo_url_map(paths, expires_in=1800)
@@ -8835,6 +9532,7 @@ def render_video_ai_selection(photo, key_prefix="video_selection", allow_save=Tr
                     try:
                         with st.spinner("写真として保存しています…"):
                             save_video_ai_selection_as_photo(photo, item)
+                            record_video_ai_human_choices(photo, {rank})
                         previous_count = st.session_state.get("_home_today_photo_count")
                         try:
                             previous_count = int(previous_count) if previous_count is not None else 0
@@ -9313,6 +10011,14 @@ def page_home():
         with primary_right:
             render_home_button("日記にする・見る", "diary", "home_diary")
 
+    with st.container(key="home_good_moments"):
+        if st.button(
+            "✨ いい瞬間を見る",
+            key="home_good_moments_button",
+            use_container_width=True,
+        ):
+            go_page("moments")
+
     # Manual fallback for cases where the phone/browser cannot provide GPS.
     with st.container(key="home_destination"):
         place_button_label = f"📍 地名：{active_place}" if active_place else "📍 地名：自動取得（必要なら手入力）"
@@ -9374,6 +10080,284 @@ def page_home():
     )
 
 
+
+def list_member_videos_for_moments(limit=300):
+    rows = (
+        supabase_client()
+        .table(PHOTO_TABLE)
+        .select("*")
+        .eq("family_key", current_family_key())
+        .eq("member_key", current_member_key())
+        .order("captured_at", desc=True)
+        .limit(max(1, int(limit)))
+        .execute()
+    ).data or []
+    # The query is already newest-first. page_moments groups by review status
+    # without disturbing that order inside each group.
+    return [row for row in rows if photo_is_video(row)]
+
+
+def _moments_video_title(photo):
+    captured = str(photo.get("captured_at") or "").strip()
+    label = captured
+    try:
+        parsed = datetime.fromisoformat(captured.replace("Z", "+00:00"))
+        label = parsed.astimezone(ZoneInfo(APP_TIMEZONE)).strftime("%Y/%m/%d %H:%M")
+    except Exception:
+        pass
+    place = photo_location_label(photo)
+    return f"{label}　{place}" if place else label
+
+
+def _render_moments_picker(photo, index):
+    selection_meta = photo_media_metadata(photo).get("ai_selection") or {}
+    if not isinstance(selection_meta, dict):
+        selection_meta = {}
+    status = str(selection_meta.get("status") or "").strip().lower()
+    title = _moments_video_title(photo)
+    video_id = str(photo.get("id") or "")
+    round_number = int(selection_meta.get("round") or 0)
+
+    st.markdown(f"#### {html.escape(title)}")
+    with st.expander("元の動画を見る"):
+        video_url = video_display_url(photo)
+        if video_url:
+            st.video(video_url)
+        else:
+            st.caption("動画を読み込めませんでした。")
+
+    if status == "processing":
+        launch_video_ai_background_job(photo)
+        st.info("AIがこの動画のいい瞬間を探しています。ほかの画面に移動しても構いません。")
+        if st.button(
+            "状態を更新",
+            use_container_width=True,
+            key=f"moments_refresh_{video_id}_{index}",
+        ):
+            st.rerun()
+        return
+
+    if status == "error":
+        st.warning("この動画のAIセレクションをまだ作成できていません。")
+        detail = str(selection_meta.get("last_error") or selection_meta.get("message") or "").strip()
+        if detail:
+            with st.expander("詳細"):
+                st.code(detail)
+        if str(selection_meta.get("candidate_bundle_path") or "").strip():
+            if st.button(
+                "もう一度いい瞬間を探す",
+                use_container_width=True,
+                key=f"moments_retry_error_{video_id}_{index}",
+            ):
+                try:
+                    request_video_ai_reroll(photo)
+                    st.rerun()
+                except Exception as exc:
+                    st.error("再選定を開始できませんでした。")
+                    with st.expander("保護者向け詳細"):
+                        st.code(str(exc))
+        return
+
+    items = video_ai_selection_items(photo)
+    if not items:
+        st.caption("この動画には、まだAIセレクションがありません。")
+        if str(selection_meta.get("candidate_bundle_path") or "").strip():
+            if st.button(
+                "いい瞬間を探す",
+                use_container_width=True,
+                key=f"moments_start_{video_id}_{index}",
+            ):
+                try:
+                    request_video_ai_reroll(photo)
+                    st.rerun()
+                except Exception as exc:
+                    st.error("AI選定を開始できませんでした。")
+                    with st.expander("保護者向け詳細"):
+                        st.code(str(exc))
+        return
+
+    st.caption(
+        f"AIが最大{VIDEO_AI_MAX_SELECTIONS}枚を選んでいます。気に入った写真を複数選べます。"
+        "選んだ結果は、次回以降のAIセレクションにも軽く反映されます。"
+    )
+
+    paths = tuple(str(item.get("storage_path") or "").strip() for item in items)
+    try:
+        signed_map = signed_photo_url_map(paths, expires_in=1800)
+    except Exception:
+        signed_map = {}
+
+    selected_ranks = []
+    columns = st.columns(3, gap="small")
+    for item_index, item in enumerate(items):
+        rank = int(item.get("rank") or item_index + 1)
+        path = str(item.get("storage_path") or "").strip()
+        with columns[item_index % 3]:
+            url = str(signed_map.get(path) or "")
+            if not url:
+                try:
+                    url = thumbnail_photo_data_url(path, max_px=520, quality=82)
+                except Exception:
+                    url = ""
+            if url:
+                st.markdown(
+                    '<div style="width:100%;aspect-ratio:1/1;overflow:hidden;border-radius:12px;'
+                    'background:rgba(128,128,128,.08);">'
+                    f'<img src="{html.escape(url, quote=True)}" alt="いい瞬間 {rank}" '
+                    'loading="lazy" decoding="async" '
+                    'style="display:block;width:100%;height:100%;object-fit:cover;" /></div>',
+                    unsafe_allow_html=True,
+                )
+            else:
+                st.caption("画像を表示できません")
+
+            if bool(item.get("ai_best")) or rank == 1:
+                st.markdown("**★ AI BEST**")
+            quality = _video_selection_quality_label(item.get("primary_quality"))
+            seconds = max(0, int(item.get("timestamp_ms") or 0)) / 1000
+            reason = str(item.get("reason") or "").strip()
+            st.caption(f"{seconds:.1f}秒・{quality}" + (f"\n{reason}" if reason else ""))
+
+            chosen = st.checkbox(
+                "この写真が好き",
+                value=bool(item.get("human_selected")),
+                disabled=status == "reviewed",
+                key=f"moments_pick_{video_id}_{round_number}_{rank}",
+            )
+            if chosen:
+                selected_ranks.append(rank)
+
+            if st.button(
+                "大きく見る",
+                use_container_width=True,
+                key=f"moments_view_{video_id}_{round_number}_{rank}",
+            ):
+                show_video_ai_selection_dialog(
+                    path,
+                    "★ AI BEST" if rank == 1 else f"SELECT {rank}",
+                    f"{seconds:.1f}秒・{quality}" + (f"\n{reason}" if reason else ""),
+                )
+
+    selected_rank_set = set(selected_ranks)
+    send_clicked = st.button(
+        f"選んだ写真を日記へ送る（{len(selected_rank_set)}枚）",
+        type="primary",
+        use_container_width=True,
+        disabled=(not selected_rank_set) or status == "reviewed",
+        key=f"moments_send_{video_id}_{round_number}",
+    )
+    if send_clicked:
+        newly_saved = 0
+        try:
+            with st.spinner("選んだ写真を日記へ送っています…"):
+                for item in items:
+                    rank = int(item.get("rank") or 0)
+                    if rank not in selected_rank_set:
+                        continue
+                    if not item.get("saved_photo_id"):
+                        save_video_ai_selection_as_photo(photo, item)
+                        newly_saved += 1
+                record_video_ai_human_choices(photo, selected_rank_set)
+
+            if newly_saved:
+                previous_count = st.session_state.get("_home_today_photo_count")
+                try:
+                    previous_count = int(previous_count) if previous_count is not None else 0
+                except Exception:
+                    previous_count = 0
+                st.session_state["_home_today_photo_count"] = previous_count + newly_saved
+            st.session_state["_moments_notice"] = (
+                f"{len(selected_rank_set)}枚を日記の写真として送りました。"
+                "今回選んだ傾向は、今後のAIセレクションにも反映します。"
+            )
+            st.rerun()
+        except Exception as exc:
+            st.error("写真を日記へ送れませんでした。")
+            with st.expander("保護者向け詳細"):
+                st.code(str(exc))
+
+    can_reroll = bool(str(selection_meta.get("candidate_bundle_path") or "").strip())
+    if can_reroll and status != "reviewed":
+        if st.button(
+            "この動画のいい瞬間を取り直す",
+            use_container_width=True,
+            disabled=bool(selected_rank_set),
+            help="気に入る写真がない場合に、同じ動画の別の候補からAIが選び直します。",
+            key=f"moments_reroll_{video_id}_{round_number}",
+        ):
+            try:
+                request_video_ai_reroll(photo)
+                st.session_state["_moments_notice"] = (
+                    "前回の候補は好みではなかったという情報を残し、別の候補から選び直しています。"
+                )
+                st.rerun()
+            except Exception as exc:
+                st.error("いい瞬間を取り直せませんでした。")
+                with st.expander("保護者向け詳細"):
+                    st.code(str(exc))
+
+    if status == "reviewed":
+        st.success("この動画から選んだ写真は日記へ送信済みです。")
+
+
+def page_moments():
+    if st.button("←", key="moments_back_home", help="ホームへ戻る"):
+        go_page("home")
+
+    page_top(
+        "✨ いい瞬間",
+        "動画ごとにAIが選んだ瞬間を確認し、気に入った写真だけ日記へ送れます。",
+    )
+    notice = st.session_state.pop("_moments_notice", None)
+    if notice:
+        st.success(notice)
+
+    try:
+        videos = list_member_videos_for_moments(limit=300)
+    except Exception as exc:
+        st.error("動画の一覧を読み込めませんでした。")
+        with st.expander("保護者向け詳細"):
+            st.code(str(exc))
+        return
+
+    if not videos:
+        st.info("まだ動画がありません。動画を撮影すると、自動保存後にAIがいい瞬間を探します。")
+        return
+
+    pending = []
+    ready = []
+    reviewed = []
+    for video in videos:
+        selection = photo_media_metadata(video).get("ai_selection") or {}
+        if not isinstance(selection, dict):
+            selection = {}
+        status = str(selection.get("status") or "").lower()
+        if status == "reviewed":
+            reviewed.append(video)
+        elif status in {"processing", "error"}:
+            pending.append(video)
+        else:
+            ready.append(video)
+
+    display_videos = pending + ready
+    if display_videos:
+        for idx, video in enumerate(display_videos):
+            if idx:
+                st.divider()
+            _render_moments_picker(video, idx)
+    else:
+        st.info("未確認のAIセレクションはありません。")
+
+    if reviewed:
+        st.divider()
+        with st.expander(f"確認済みの動画（{len(reviewed)}本）"):
+            for idx, video in enumerate(reviewed[:30]):
+                if idx:
+                    st.divider()
+                _render_moments_picker(video, 1000 + idx)
+
+
+
 def render_diary_title_editor(trip_id, current_title, key_prefix):
     with st.expander("タイトルを変更"):
         edited_title = st.text_input(
@@ -9421,7 +10405,7 @@ def render_recent_camera_photo_comment(trip):
     if not render_saved_media_preview(photo, image_alt="今撮った動画の代表画像" if is_video else "今撮った写真"):
         st.warning("撮影した記録のプレビューを表示できませんでした。コメントは続けられます。")
     if is_video:
-        render_video_ai_selection(photo, key_prefix="recent_video_selection", allow_save=True)
+        st.caption("✨ いい瞬間はバックグラウンドで自動選定します。トップページの「いい瞬間を見る」から確認できます。")
 
     location_label = photo_location_label(photo)
     if location_label:
@@ -9515,23 +10499,31 @@ def render_recent_camera_photo_comment(trip):
 # ============================================================
 def page_trip():
     if st.button("←", key="camera_back_home", help="ホームへ戻る"):
-        st.session_state.pop("_pending_video_ai_review", None)
-        st.session_state.pop("_pending_video_ai_review_digest", None)
-        st.session_state.pop("_last_video_selection_request_id", None)
         go_page("home")
 
     notice = st.session_state.pop("_camera_notice", None)
     if notice:
         st.success(notice)
 
-    if render_pending_video_ai_review():
-        return
-
     if live_camera_component is None:
         st.error("ライブカメラ機能に必要なStreamlitのバージョンが古いです。requirements.txtを更新してください。")
         return
 
-    # Critical path: mount/start camera first. No Supabase call occurs above this line.
+    # Video mode is gated before recording begins. We reserve the full 25 MB
+    # server cap, which corresponds to the maximum 30-second recording.
+    try:
+        video_capacity = video_recording_capacity_status()
+    except Exception as exc:
+        video_capacity = {
+            "allowed": False,
+            "message": "動画の保存容量を確認できないため、動画撮影を一時停止しています。",
+        }
+        with st.expander("動画容量チェックの詳細"):
+            st.code(str(exc))
+
+    if not bool(video_capacity.get("allowed")):
+        st.warning(str(video_capacity.get("message") or "動画の保存容量が不足しています。"))
+
     auto_start = bool(st.session_state.pop("_camera_auto_start", False))
     auto_start_video = bool(st.session_state.pop("_camera_auto_start_video", False))
     active_snapshot = st.session_state.get("_active_trip_snapshot")
@@ -9542,11 +10534,12 @@ def page_trip():
         data={
             "auto_start": auto_start,
             "auto_start_mode": "video" if auto_start_video else ("photo" if auto_start else ""),
+            "video_allowed": bool(video_capacity.get("allowed")),
+            "video_capacity_message": str(video_capacity.get("message") or ""),
         },
-        key=f"live_camera_v101_{camera_trip_key}_{st.session_state.capture_serial}",
+        key=f"live_camera_v103_{camera_trip_key}_{st.session_state.capture_serial}",
         on_photo_change=lambda: None,
         on_video_change=lambda: None,
-        on_video_selection_change=lambda: None,
         on_camera_error_change=lambda: None,
     )
 
@@ -9560,70 +10553,7 @@ def page_trip():
 
     payload = getattr(result, "photo", None)
     video_payload = getattr(result, "video", None)
-    video_selection_payload = getattr(result, "video_selection", None)
     camera_error = getattr(result, "camera_error", None)
-
-    selection_request_id = ""
-    if isinstance(video_selection_payload, dict):
-        selection_request_id = str(video_selection_payload.get("selection_request_id") or "").strip()
-    explicit_selection_request = (
-        isinstance(video_selection_payload, dict)
-        and video_selection_payload.get("selection_requested") is True
-        and bool(selection_request_id)
-    )
-
-    if (
-        explicit_selection_request
-        and video_selection_payload.get("data_url")
-        and video_selection_payload.get("poster_data_url")
-        and st.session_state.get("_last_video_selection_request_id") != selection_request_id
-    ):
-        # Only an explicit press of "いい瞬間を探す" may enter this block.
-        # Merely stopping a recording is intentionally insufficient.
-        st.session_state["_last_video_selection_request_id"] = selection_request_id
-        try:
-            mime_type, video_raw = decode_camera_video_data_url(video_selection_payload["data_url"])
-            poster_raw = decode_camera_data_url(video_selection_payload["poster_data_url"])
-            candidate_frames = decode_video_candidate_frames(video_selection_payload.get("candidate_frames") or [])
-            if len(candidate_frames) < 9:
-                raise ValueError("良い瞬間の候補画像を9枚以上作れませんでした。")
-            digest = hashlib.sha1(video_raw).hexdigest()
-            if st.session_state.get("_pending_video_ai_review_digest") != digest:
-                with st.spinner("AIが9枚のいい瞬間を選んでいます…"):
-                    selections = choose_video_ai_frames(candidate_frames)
-                compact_selections = []
-                for selected in selections[:9]:
-                    frame = selected.get("frame") or {}
-                    compact_selections.append(
-                        {
-                            "frame": {
-                                "frame_id": str(frame.get("frame_id") or ""),
-                                "timestamp_ms": max(0, int(frame.get("timestamp_ms") or 0)),
-                                "image_bytes": frame.get("image_bytes"),
-                            },
-                            "score": int(selected.get("score") or 0),
-                            "primary_quality": str(selected.get("primary_quality") or "other"),
-                            "reason": str(selected.get("reason") or "").strip(),
-                        }
-                    )
-                st.session_state["_pending_video_ai_review"] = {
-                    "video_raw": video_raw,
-                    "poster_raw": poster_raw,
-                    "mime_type": mime_type or video_selection_payload.get("mime_type") or "video/webm",
-                    "duration_ms": max(0, int(video_selection_payload.get("duration_ms") or 0)),
-                    "source": str(video_selection_payload.get("source") or "video_camera"),
-                    "captured_at": video_selection_payload.get("captured_at"),
-                    "location": video_selection_payload.get("location") if isinstance(video_selection_payload.get("location"), dict) else {},
-                    "candidate_count": len(candidate_frames),
-                    "selections": compact_selections,
-                }
-                st.session_state["_pending_video_ai_review_digest"] = digest
-                st.session_state.capture_serial += 1
-                st.rerun()
-        except Exception as exc:
-            st.error("いい瞬間を探せませんでした。動画はまだ保存されていません。")
-            with st.expander("保護者向け詳細"):
-                st.code(str(exc))
 
     if camera_error:
         message = camera_error.get("message") if isinstance(camera_error, dict) else str(camera_error)
@@ -9637,8 +10567,8 @@ def page_trip():
             digest = hashlib.sha1(video_raw).hexdigest()
             digest_key = "saved_camera_video_digest_current"
             if st.session_state.get(digest_key) != digest:
-                # Preserve the camera fast path: DB work begins only after the user
-                # explicitly chooses to keep the recorded video.
+                # The browser already checked that a full 30-second reserve was
+                # available. The upload helper checks the actual final byte size again.
                 trip = ensure_today_trip()
                 capture_source = str(video_payload.get("source") or "video_camera")
                 location = build_photo_location(
@@ -9646,8 +10576,12 @@ def page_trip():
                     trip,
                     capture_source=capture_source,
                 )
+                candidate_frames = decode_video_candidate_frames(
+                    video_payload.get("candidate_frames") or [],
+                    max_frames=VIDEO_AI_MAX_CANDIDATES,
+                )
 
-                with st.spinner("動画を残しています…"):
+                with st.spinner("動画を保管庫に自動保存しています…"):
                     saved_video = upload_video(
                         trip["id"],
                         video_raw,
@@ -9659,10 +10593,24 @@ def page_trip():
                         capture_source=capture_source,
                     )
 
+                    # One compact ZIP keeps the wider candidate pool available for
+                    # background selection and a later "取り直す" request.
+                    if isinstance(saved_video, dict) and saved_video.get("id") and candidate_frames:
+                        try:
+                            saved_video = store_video_ai_candidate_bundle(
+                                saved_video,
+                                candidate_frames,
+                            )
+                        except Exception as candidate_exc:
+                            mark_video_ai_selection_error(saved_video, candidate_exc)
+
                 st.session_state[digest_key] = digest
+
                 if isinstance(saved_video, dict) and saved_video.get("id"):
-                    # Reuse the existing recent-media conversation path.
                     st.session_state[f"_camera_recent_photo_{trip['id']}"] = saved_video["id"]
+                    selection_meta = photo_media_metadata(saved_video).get("ai_selection") or {}
+                    if isinstance(selection_meta, dict) and str(selection_meta.get("candidate_bundle_path") or "").strip():
+                        launch_video_ai_background_job(saved_video)
 
                 previous_count = st.session_state.get("_home_today_photo_count")
                 try:
@@ -9675,7 +10623,11 @@ def page_trip():
                     st.session_state["_home_today_place"] = place_label
 
                 st.session_state.capture_serial += 1
-                st.session_state["_camera_notice"] = "動画を保存しました。"
+                st.session_state["_camera_notice"] = (
+                    "動画を保管庫に保存しました。いい瞬間はバックグラウンドで自動選定しています。"
+                    if candidate_frames else
+                    "動画を保管庫に保存しました。候補画像の作成に失敗したため、AI選定は行われていません。"
+                )
                 st.rerun()
         except Exception as exc:
             st.error("動画を保存できませんでした。")
@@ -9688,7 +10640,6 @@ def page_trip():
             digest = hashlib.sha1(raw).hexdigest()
             digest_key = "saved_camera_digest_current"
             if st.session_state.get(digest_key) != digest:
-                # The DB work begins only after the user has actually captured/saved a photo.
                 trip = ensure_today_trip()
                 capture_source = str(payload.get("source") or "camera")
                 location = build_photo_location(
@@ -9710,7 +10661,6 @@ def page_trip():
                 if isinstance(saved_photo, dict) and saved_photo.get("id"):
                     st.session_state[f"_camera_recent_photo_{trip['id']}"] = saved_photo["id"]
 
-                # Update Home's lightweight display without rereading today's photo list.
                 previous_count = st.session_state.get("_home_today_photo_count")
                 try:
                     previous_count = int(previous_count) if previous_count is not None else 0
@@ -9729,7 +10679,6 @@ def page_trip():
             with st.expander("保護者向け詳細"):
                 st.code(str(exc))
 
-    # Recent-media comment UI is available after a save, using only the in-session snapshot.
     trip = st.session_state.get("_active_trip_snapshot")
     if isinstance(trip, dict) and trip.get("id"):
         render_recent_camera_photo_comment(trip)
@@ -11201,7 +12150,13 @@ def page_settings():
             st.write(
                 f"この個人アカウント：**{format_storage_size(usage_bytes)} / {format_storage_size(quota_bytes)}**"
             )
-            st.caption(f"残り：{format_storage_size(remaining_bytes)}。AIセレクションの静止画はこの動画容量には含めません。")
+            st.caption(
+                f"残り：{format_storage_size(remaining_bytes)}。動画撮影を始める前に、"
+                f"最大30秒分として {format_storage_size(VIDEO_MAX_BYTES)} の空きがあるか確認します。"
+                "AIセレクションの静止画・候補ZIPはこの動画容量には含めません。"
+            )
+            if remaining_bytes < VIDEO_MAX_BYTES:
+                st.warning("最大30秒の動画1本分の空きがないため、現在は動画撮影を開始できません。")
             st.progress(min(1.0, usage_bytes / quota_bytes) if quota_bytes else 0.0)
         except Exception as exc:
             st.caption("動画容量を確認できませんでした。")
@@ -11220,6 +12175,8 @@ def page_settings():
         "初回だけ、このサイトへのカメラ使用を『許可』してください。"
     )
     st.caption(
+        "動画は最大30秒です。録画を止めると確認画面を挟まず保管庫へ自動保存し、"
+        "AIがバックグラウンドで最大9枚の『いい瞬間』を選びます。"
         "初回はカメラとは別に位置情報の許可も求められます。位置情報がオフ・拒否・取得不能の場合は、"
         "ホームの地名表示（未登録なら『地名：登録なし（自動取得）』）を押して入力した内容を写真の場所として使います。"
     )
@@ -11227,6 +12184,7 @@ def page_settings():
     st.divider()
     st.markdown("#### プロジェクトの考え方")
     st.caption("写真の枚数や『便利・不便を見つけること』を課題にはしません。本人が気になったものを残し、あとから本人の言葉で振り返ります。")
+    st.caption(f"アプリビルド：{APP_BUILD}")
 
 # ============================================================
 # Main UI
@@ -11254,6 +12212,8 @@ if page == "home":
     page_home()
 elif page == "camera":
     page_trip()
+elif page == "moments":
+    page_moments()
 elif page == "diary":
     page_diary()
 elif page == "review":
@@ -11272,5 +12232,5 @@ sync_browser_history()
 # Camera already has its Home button directly under the camera form. For the
 # other major pages, keep a consistent Home route at the absolute bottom even
 # when the page body returned early from one of its internal flows.
-if page in {"diary", "review", "settings"}:
+if page in {"moments", "diary", "review", "settings"}:
     render_global_bottom_home_button(page)
