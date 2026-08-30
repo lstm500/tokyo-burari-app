@@ -23,7 +23,7 @@ from zoneinfo import ZoneInfo
 
 import streamlit as st
 
-APP_BUILD = "v112"
+APP_BUILD = "v113"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -679,6 +679,10 @@ VIDEO_MAX_SECONDS = 30
 VIDEO_MAX_BYTES = 6 * 1024 * 1024
 VIDEO_AI_MAX_SELECTIONS = 9
 VIDEO_AI_MAX_CANDIDATES = 12
+# Background AI must never remain in "processing" indefinitely.
+# One provider call is bounded, and a stale Streamlit worker can be relaunched.
+VIDEO_AI_REQUEST_TIMEOUT_SECONDS = 30
+VIDEO_AI_STALE_SECONDS = 120
 
 TRIP_TABLE = "burari_trips"
 PHOTO_TABLE = "burari_photos"
@@ -5627,13 +5631,23 @@ def _background_clients():
     from supabase import create_client as _create_client
     return (
         _create_client(SUPABASE_URL, SUPABASE_SECRET_KEY),
-        OpenAI(api_key=OPENAI_API_KEY),
+        # Do not inherit a very long SDK/network timeout in a background worker.
+        # If the provider is unavailable, the row is moved to error instead of
+        # staying in "processing" for many minutes.
+        OpenAI(
+            api_key=OPENAI_API_KEY,
+            timeout=float(VIDEO_AI_REQUEST_TIMEOUT_SECONDS),
+            max_retries=0,
+        ),
     )
 
 
 @st.cache_resource(show_spinner=False)
 def _video_ai_executor():
-    return ThreadPoolExecutor(max_workers=2, thread_name_prefix="burari-video-ai")
+    # Four slots leave room for recovery if a provider/network call from an old
+    # Streamlit run is still unwinding. The registry still limits normal work to
+    # one current job per video.
+    return ThreadPoolExecutor(max_workers=4, thread_name_prefix="burari-video-ai")
 
 
 @st.cache_resource(show_spinner=False)
@@ -5704,6 +5718,7 @@ def _background_store_video_ai_selection(
             {
                 "status": "ready",
                 "generated_at": now_jst().isoformat(),
+                "updated_at": now_jst().isoformat(),
                 "round": int(round_number),
                 "items": items,
                 "last_error": "",
@@ -5730,6 +5745,30 @@ def _background_store_video_ai_selection(
         raise
 
 
+def _video_ai_timestamp_age_seconds(selection_meta):
+    if not isinstance(selection_meta, dict):
+        return None
+    raw = (
+        selection_meta.get("started_at")
+        or selection_meta.get("updated_at")
+        or selection_meta.get("queued_at")
+    )
+    if not raw:
+        return None
+    try:
+        dt = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=JST)
+        return max(0.0, (now_jst() - dt.astimezone(JST)).total_seconds())
+    except Exception:
+        return None
+
+
+def video_ai_processing_is_stale(selection_meta):
+    age = _video_ai_timestamp_age_seconds(selection_meta)
+    return age is not None and age >= float(VIDEO_AI_STALE_SECONDS)
+
+
 def _run_video_ai_background_job(photo_id, family_key, member_key):
     client, ai_client = _background_clients()
     result = (
@@ -5752,6 +5791,20 @@ def _run_video_ai_background_job(photo_id, family_key, member_key):
     bundle_path = str(selection_meta.get("candidate_bundle_path") or "").strip()
     if not bundle_path:
         raise ValueError("動画の候補フレームが見つかりません。")
+
+    # Persist an actual worker start time. If Streamlit restarts after this point,
+    # the home/moments pages can detect a stale job and safely relaunch it.
+    selection_meta["status"] = "processing"
+    selection_meta["started_at"] = now_jst().isoformat()
+    selection_meta["updated_at"] = selection_meta["started_at"]
+    selection_meta["attempt"] = max(0, int(selection_meta.get("attempt") or 0)) + 1
+    reflection["ai_selection"] = selection_meta
+    try:
+        _write_photo_reflection_for_owner(
+            photo_id, reflection, family_key, member_key, client=client
+        )
+    except Exception:
+        pass
 
     try:
         bundle_raw = _storage_bytes(client.storage.from_(PHOTO_BUCKET).download(bundle_path))
@@ -5828,24 +5881,52 @@ def _run_video_ai_background_job(photo_id, family_key, member_key):
 
 
 def launch_video_ai_background_job(photo):
-    """Submit at most one active worker per video; safe to call again for recovery."""
+    """Submit one current worker per video and recover stale/lost Streamlit jobs."""
     if not isinstance(photo, dict) or not photo.get("id") or not photo_is_video(photo):
         return False
     family_key = str(photo.get("family_key") or current_family_key())
     member_key = str(photo.get("member_key") or current_member_key())
     photo_id = str(photo.get("id"))
+    selection_meta = photo_media_metadata(photo).get("ai_selection") or {}
+    stale_in_db = video_ai_processing_is_stale(selection_meta)
+
     registry = _video_ai_job_registry()
     with registry["lock"]:
-        existing = registry["futures"].get(photo_id)
-        if existing is not None and not existing.done():
-            return False
+        existing_entry = registry["futures"].get(photo_id)
+        if isinstance(existing_entry, dict):
+            existing = existing_entry.get("future")
+            started_monotonic = float(existing_entry.get("started_monotonic") or 0.0)
+        else:
+            # Compatibility with cached v112 registry entries during a hot reload.
+            existing = existing_entry
+            started_monotonic = 0.0
+
+        if existing is not None:
+            if not existing.done():
+                worker_age = (time.monotonic() - started_monotonic) if started_monotonic else 0.0
+                if not stale_in_db and (not worker_age or worker_age < VIDEO_AI_STALE_SECONDS):
+                    return False
+                # cancel() only succeeds if the old work has not started. If it is
+                # already running, the provider timeout lets it unwind shortly.
+                try:
+                    existing.cancel()
+                except Exception:
+                    pass
+            elif not stale_in_db:
+                # A very recent cached DB row may still say processing for a few
+                # seconds after the worker finished. Do not immediately run it twice.
+                return False
+
         future = _video_ai_executor().submit(
             _run_video_ai_background_job,
             photo_id,
             family_key,
             member_key,
         )
-        registry["futures"][photo_id] = future
+        registry["futures"][photo_id] = {
+            "future": future,
+            "started_monotonic": time.monotonic(),
+        }
     return True
 
 
@@ -10722,6 +10803,7 @@ def _home_video_counts_cached(family_key, member_key):
 
     saved_count = 0
     before_clip_count = 0
+    processing_rows = []
     for row in rows:
         if not photo_is_video(row):
             continue
@@ -10735,7 +10817,12 @@ def _home_video_counts_cached(family_key, member_key):
         status = str(selection.get("status") or "").strip().lower()
         if status != "reviewed":
             before_clip_count += 1
-    return saved_count, before_clip_count
+        if status == "processing":
+            job_row = dict(row)
+            job_row["family_key"] = str(family_key)
+            job_row["member_key"] = str(member_key)
+            processing_rows.append(job_row)
+    return saved_count, before_clip_count, processing_rows
 
 
 def home_video_counts():
@@ -10743,7 +10830,14 @@ def home_video_counts():
         counts = _home_video_counts_cached(current_family_key(), current_member_key())
         st.session_state["_home_video_saved_count"] = int(counts[0])
         st.session_state["_home_video_before_clip_count"] = int(counts[1])
-        return counts
+        # A Streamlit process can restart after a video is saved. On every home
+        # refresh, quietly resume any DB row that still says "processing".
+        for pending in list(counts[2] or [])[:8]:
+            try:
+                launch_video_ai_background_job(pending)
+            except Exception:
+                pass
+        return int(counts[0]), int(counts[1])
     except Exception:
         saved = st.session_state.get("_home_video_saved_count")
         before = st.session_state.get("_home_video_before_clip_count")
@@ -10956,11 +11050,15 @@ def _render_moments_picker(photo, index):
             st.caption("動画を読み込めませんでした。")
 
     if status == "processing":
+        stale = video_ai_processing_is_stale(selection_meta)
         try:
             launch_video_ai_background_job(photo)
         except Exception:
             pass
-        st.info("AIがこの動画のいい瞬間を探しています。ほかの画面に移動しても構いません。")
+        if stale:
+            st.warning("AI処理が長引いたため、自動で処理を再開しています。通常は1分以内を目安に更新してください。")
+        else:
+            st.info("AIがこの動画のいい瞬間を探しています。ほかの画面に移動しても構いません。")
         if st.button(
             "状態を更新",
             use_container_width=True,
