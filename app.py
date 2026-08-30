@@ -10860,6 +10860,32 @@ def show_video_ai_selection_dialog(storage_path, title, caption):
         st.caption(caption)
 
 
+@st.dialog("元動画")
+def show_video_library_dialog(video_url, title, caption, poster_path=""):
+    if video_url:
+        st.video(video_url)
+    elif poster_path:
+        try:
+            signed = signed_photo_url_map((poster_path,), expires_in=1800)
+            poster_url = str(signed.get(poster_path) or "")
+        except Exception:
+            poster_url = ""
+        if poster_url:
+            st.image(poster_url, use_container_width=True)
+        else:
+            try:
+                st.image(download_photo(poster_path), use_container_width=True)
+            except Exception:
+                st.warning("動画プレビューを表示できませんでした。")
+    else:
+        st.warning("動画プレビューを表示できませんでした。")
+
+    if title:
+        st.markdown(f"**{title}**")
+    if caption:
+        st.caption(caption)
+
+
 def render_video_ai_selection(photo, key_prefix="video_selection", allow_save=True):
     """Render the nine AI-selected stills in a uniform 3x3 grid."""
     if not photo_is_video(photo):
@@ -12226,39 +12252,84 @@ def page_videos():
         st.info("DBに登録された動画はありません。上の「Storage実体を確認」で、未登録の動画が残っていないか確認できます。")
         return
 
-    for index, video_row in enumerate(videos):
-        if index:
-            st.divider()
-        st.markdown(f"#### {html.escape(_moments_video_title(video_row))}")
-        metadata = photo_media_metadata(video_row)
-        size_value = max(0, int(metadata.get("video_size_bytes") or 0))
-        duration_ms = max(0, int(metadata.get("video_duration_ms") or 0))
-        detail_parts = []
-        if duration_ms:
-            detail_parts.append(f"{max(1, round(duration_ms / 1000))}秒")
-        if size_value:
-            detail_parts.append(format_storage_size(size_value))
-        if detail_parts:
-            st.caption(" ／ ".join(detail_parts))
-        video_url = video_display_url(video_row, expires_in=1800)
-        if video_url:
-            st.video(video_url)
-        else:
-            st.warning("元動画を読み込めませんでした。保存記録は存在します。")
-        selection = metadata.get("ai_selection") or {}
-        if isinstance(selection, dict):
-            status = str(selection.get("status") or "").lower()
-            if status == "processing":
-                stage = str(selection.get("stage") or "").strip().lower()
-                st.caption("✨ 候補を自動準備中" if stage == "candidate_preparation" else "✨ いい瞬間を自動選定中")
-            elif status in {"", "waiting_candidates"}:
-                st.caption("✨ いい瞬間の自動処理を開始待ち")
-            elif status == "ready":
-                st.caption("✨ いい瞬間を確認できます")
-            elif status == "reviewed":
-                st.caption("✓ いい瞬間を確認済み")
-            elif status == "error":
-                st.caption("AI選定は未完了です。元動画は保存されています。")
+    st.caption("動画一覧は3列で表示します。見たい動画だけ開けます。")
+    for row_start in range(0, len(videos), 3):
+        row_columns = st.columns(3, gap="small")
+        for column_offset in range(3):
+            item_index = row_start + column_offset
+            with row_columns[column_offset]:
+                if item_index >= len(videos):
+                    st.markdown(
+                        '<div style="width:100%;aspect-ratio:1/1;border-radius:12px;'
+                        'border:1px dashed rgba(128,128,128,.18);background:rgba(128,128,128,.035);"></div>',
+                        unsafe_allow_html=True,
+                    )
+                    st.caption(" ")
+                    continue
+
+                video_row = videos[item_index]
+                metadata = photo_media_metadata(video_row)
+                title = html.escape(_moments_video_title(video_row))
+                size_value = max(0, int(metadata.get("video_size_bytes") or 0))
+                duration_ms = max(0, int(metadata.get("video_duration_ms") or 0))
+                detail_parts = []
+                if duration_ms:
+                    detail_parts.append(f"{max(1, round(duration_ms / 1000))}秒")
+                if size_value:
+                    detail_parts.append(format_storage_size(size_value))
+
+                selection = metadata.get("ai_selection") or {}
+                status_label = ""
+                if isinstance(selection, dict):
+                    status = str(selection.get("status") or "").lower()
+                    if status == "processing":
+                        stage = str(selection.get("stage") or "").strip().lower()
+                        status_label = "✨ 候補を自動準備中" if stage == "candidate_preparation" else "✨ いい瞬間を自動選定中"
+                    elif status in {"", "waiting_candidates"}:
+                        status_label = "✨ いい瞬間の自動処理を開始待ち"
+                    elif status == "ready":
+                        status_label = "✨ いい瞬間を確認できます"
+                    elif status == "reviewed":
+                        status_label = "✓ いい瞬間を確認済み"
+                    elif status == "error":
+                        status_label = "AI選定は未完了です"
+
+                poster_path = str(video_row.get("storage_path") or "").strip()
+                preview_url = photo_display_url(video_row)
+                if not preview_url and poster_path:
+                    try:
+                        preview_url = thumbnail_photo_data_url(poster_path, max_px=520, quality=82)
+                    except Exception:
+                        preview_url = ""
+                if preview_url:
+                    st.markdown(
+                        '<div style="width:100%;aspect-ratio:1/1;overflow:hidden;border-radius:12px;'
+                        'background:rgba(128,128,128,.08);border:1px solid rgba(128,128,128,.10);">'
+                        f'<img src="{html.escape(preview_url, quote=True)}" alt="動画サムネイル" '
+                        'loading="lazy" decoding="async" style="display:block;width:100%;height:100%;object-fit:cover;" />'
+                        '</div>',
+                        unsafe_allow_html=True,
+                    )
+                else:
+                    st.markdown(
+                        '<div style="width:100%;aspect-ratio:1/1;display:flex;align-items:center;justify-content:center;'
+                        'border-radius:12px;background:rgba(128,128,128,.05);border:1px dashed rgba(128,128,128,.18);'
+                        'font-size:.8rem;color:rgba(49,51,63,.72);">サムネイルなし</div>',
+                        unsafe_allow_html=True,
+                    )
+
+                st.markdown(f"**{title}**")
+                if detail_parts:
+                    st.caption(" ／ ".join(detail_parts))
+                if status_label:
+                    st.caption(status_label)
+
+                video_url = video_display_url(video_row, expires_in=1800)
+                if st.button("見る", use_container_width=True, key=f"video_grid_open_{item_index}_{video_row.get('id')}"):
+                    caption = " ／ ".join(detail_parts)
+                    if status_label:
+                        caption = (caption + "\n" if caption else "") + status_label
+                    show_video_library_dialog(video_url, _moments_video_title(video_row), caption, poster_path)
 
 
 def page_moments():
