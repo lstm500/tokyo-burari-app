@@ -26,7 +26,7 @@ from zoneinfo import ZoneInfo
 
 import streamlit as st
 
-APP_BUILD = "v119"
+APP_BUILD = "v120"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -676,10 +676,11 @@ except Exception:
     VIDEO_STORAGE_QUOTA_MB = 0
 
 VIDEO_MAX_SECONDS = 15
+VIDEO_PROCESSING_MAX_SECONDS = 20
 # Keep one 15-second recording within the reliable range for Supabase standard uploads.
 # The browser records at about 0.9 Mbps video + 64 kbps audio, so 6 MB leaves
 # comfortable container/codec overhead while also being the pre-recording reserve.
-VIDEO_MAX_BYTES = 3 * 1024 * 1024
+VIDEO_MAX_BYTES = 6 * 1024 * 1024
 VIDEO_AI_MAX_SELECTIONS = 9
 VIDEO_AI_MAX_CANDIDATES = 12
 # Background AI must never remain in "processing" indefinitely.
@@ -4746,7 +4747,7 @@ def video_recording_capacity_status():
             "quota_bytes": 0,
             "remaining_bytes": None,
             "required_bytes": VIDEO_MAX_BYTES,
-            "message": "動画は最大15秒です。",
+            "message": "動画は最大15秒です。保存処理には20秒相当のバッファを確保します。",
         }
 
     usage = current_video_storage_usage_bytes()
@@ -4754,12 +4755,12 @@ def video_recording_capacity_status():
     allowed = remaining >= VIDEO_MAX_BYTES
     if allowed:
         message = (
-            f"最大15秒の動画を撮影できます。残り {format_storage_size(remaining)} / "
+            f"最大15秒の動画を撮影できます（保存処理用バッファ込み）。残り {format_storage_size(remaining)} / "
             f"上限 {format_storage_size(quota)}"
         )
     else:
         message = (
-            "最大15秒の動画1本分の空き容量がありません。"
+            "最大15秒の動画1本分と保存処理用バッファの空き容量がありません。"
             f" 残り {format_storage_size(remaining)} / 上限 {format_storage_size(quota)}。"
             f"撮影には少なくとも {format_storage_size(VIDEO_MAX_BYTES)} の空きが必要です。"
         )
@@ -4996,7 +4997,7 @@ def register_browser_uploaded_video(
     if size_value <= 0:
         raise ValueError("動画の容量を確認できませんでした。")
     if size_value > VIDEO_MAX_BYTES:
-        raise ValueError("動画が大きすぎます。15秒以内で撮り直してください。")
+        raise ValueError("動画データが保存処理の許容容量を超えています。録画は15秒で自動停止しますが、保存側には20秒相当のバッファを設けています。")
     ensure_video_storage_capacity(size_value)
 
     try:
@@ -5009,7 +5010,7 @@ def register_browser_uploaded_video(
     clean_mime = str(mime_type or "video/webm").split(";", 1)[0].strip().lower()
     if clean_mime not in {"video/mp4", "video/webm"}:
         clean_mime = "video/webm"
-    duration_value = min(VIDEO_MAX_SECONDS * 1000, max(0, int(duration_ms or 0)))
+    duration_value = min(VIDEO_PROCESSING_MAX_SECONDS * 1000, max(0, int(duration_ms or 0)))
     base = path.rsplit("_video.", 1)[0]
     poster_path = base + "_video.jpg"
     client = supabase_client()
@@ -5112,11 +5113,11 @@ def upload_video(
     # The browser caps recording at 15 seconds, so do not reject a valid video based
     # on wall-clock delay between recorder.stop() and the onstop callback.
     duration_value = min(
-        VIDEO_MAX_SECONDS * 1000,
+        VIDEO_PROCESSING_MAX_SECONDS * 1000,
         max(0, int(duration_ms or 0)),
     )
     if len(video_bytes) > VIDEO_MAX_BYTES:
-        raise ValueError("動画が大きすぎます。15秒以内で撮り直してください。")
+        raise ValueError("動画データが保存処理の許容容量を超えています。録画は15秒で自動停止しますが、保存側には20秒相当のバッファを設けています。")
     ensure_video_storage_capacity(len(video_bytes))
     poster = normalize_photo(poster_bytes)
     if not poster:
@@ -14379,11 +14380,11 @@ def page_settings():
             )
             st.caption(
                 f"残り：{format_storage_size(remaining_bytes)}。動画撮影を始める前に、"
-                f"最大15秒分として {format_storage_size(VIDEO_MAX_BYTES)} の空きがあるか確認します。"
+                f"15秒録画＋保存処理用バッファとして {format_storage_size(VIDEO_MAX_BYTES)} の空きがあるか確認します。"
                 "AIセレクションの静止画・候補ZIPはこの動画容量には含めません。"
             )
             if remaining_bytes < VIDEO_MAX_BYTES:
-                st.warning("最大15秒の動画1本分の空きがないため、現在は動画撮影を開始できません。")
+                st.warning("15秒録画と保存処理用バッファの空きがないため、現在は動画撮影を開始できません。")
             st.progress(min(1.0, usage_bytes / quota_bytes) if quota_bytes else 0.0)
         except Exception as exc:
             st.caption("動画容量を確認できませんでした。")
