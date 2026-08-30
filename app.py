@@ -27,7 +27,7 @@ from zoneinfo import ZoneInfo
 
 import streamlit as st
 
-APP_BUILD = "v133"
+APP_BUILD = "v134"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -687,12 +687,12 @@ VIDEO_AI_SAMPLE_INTERVAL_MS = 100
 VIDEO_AI_MAX_CANDIDATES = 150
 # Every 0.1-second frame is evaluated by AI. Batching is only an API payload
 # boundary; it is not a non-AI quality filter.
-VIDEO_AI_BATCH_SIZE = 25
-VIDEO_AI_BATCH_KEEP = 6
-VIDEO_AI_BATCH_WORKERS = 3
+VIDEO_AI_BATCH_SIZE = 12
+VIDEO_AI_BATCH_KEEP = 4
+VIDEO_AI_BATCH_WORKERS = 2
 # Background AI must never remain in "processing" indefinitely.
 # One provider call is bounded, and a stale Streamlit worker can be relaunched.
-VIDEO_AI_REQUEST_TIMEOUT_SECONDS = 60
+VIDEO_AI_REQUEST_TIMEOUT_SECONDS = 90
 VIDEO_AI_STALE_SECONDS = 300
 
 TRIP_TABLE = "burari_trips"
@@ -1290,7 +1290,7 @@ export default function(component) {
   };
 
   const buildCandidateSheet = async (frames) => {
-    const source = Array.isArray(frames) ? frames.slice(0, 12) : [];
+    const source = Array.isArray(frames) ? frames.slice(0, 150) : [];
     if (!source.length) return null;
     const loaded = [];
     for (const frame of source) {
@@ -1307,7 +1307,7 @@ export default function(component) {
       } catch (_) {}
     }
     if (!loaded.length) return null;
-    const columns = Math.min(4, loaded.length);
+    const columns = Math.min(15, loaded.length);
     const rows = Math.ceil(loaded.length / columns);
     const tileWidth = Math.max(1, loaded[0].image.naturalWidth || loaded[0].image.width || 320);
     const tileHeight = Math.max(1, loaded[0].image.naturalHeight || loaded[0].image.height || 180);
@@ -1347,25 +1347,25 @@ export default function(component) {
   const captureRecordingCandidateFrame = async () => {
     if (recordingCandidateBusy || !recordingStartedAt || !video.videoWidth || !video.videoHeight) return;
     if (!mediaRecorder || mediaRecorder.state !== 'recording') return;
-    if (recordingCandidateFrames.length >= 12) return;
+    if (recordingCandidateFrames.length >= 150) return;
     recordingCandidateBusy = true;
     try {
       const frameCanvas = document.createElement('canvas');
       const srcW = video.videoWidth || 960;
       const srcH = video.videoHeight || 540;
-      const maxSide = 360;
+      const maxSide = 240;
       const scale = Math.min(1, maxSide / Math.max(srcW, srcH));
       frameCanvas.width = Math.max(1, Math.round(srcW * scale));
       frameCanvas.height = Math.max(1, Math.round(srcH * scale));
       const ctx = frameCanvas.getContext('2d', { alpha: false });
       ctx.drawImage(video, 0, 0, frameCanvas.width, frameCanvas.height);
-      const jpegBlob = await new Promise((resolve) => frameCanvas.toBlob(resolve, 'image/jpeg', 0.55));
-      if (!jpegBlob || jpegBlob.size > 70 * 1024) return;
+      const jpegBlob = await new Promise((resolve) => frameCanvas.toBlob(resolve, 'image/jpeg', 0.58));
+      if (!jpegBlob || jpegBlob.size > 45 * 1024) return;
       const timestampMs = Math.max(0, Date.now() - recordingStartedAt);
       const dataUrl = await blobToDataUrl(jpegBlob);
       const index = recordingCandidateFrames.length + 1;
       recordingCandidateFrames.push({
-        frame_id: `F${String(index).padStart(2, '0')}`,
+        frame_id: `F${String(index).padStart(3, '0')}`,
         timestamp_ms: timestampMs,
         data_url: dataUrl
       });
@@ -1504,11 +1504,11 @@ export default function(component) {
       const measuredDuration = Number.isFinite(probe.duration) && probe.duration > 0
         ? probe.duration
         : Math.max(0.2, Number(durationMs || 0) / 1000);
-      const sampleCount = Math.max(12, Math.min(18, Math.ceil(measuredDuration * 1.2)));
+      const sampleCount = Math.max(1, Math.min(150, Math.ceil(measuredDuration * 10)));
       const frameCanvas = document.createElement('canvas');
       const srcW = probe.videoWidth || video.videoWidth || 1280;
       const srcH = probe.videoHeight || video.videoHeight || 720;
-      const maxSide = 1280;
+      const maxSide = 240;
       const scale = Math.min(1, maxSide / Math.max(srcW, srcH));
       frameCanvas.width = Math.max(1, Math.round(srcW * scale));
       frameCanvas.height = Math.max(1, Math.round(srcH * scale));
@@ -1516,17 +1516,16 @@ export default function(component) {
       const frames = [];
 
       for (let i = 0; i < sampleCount; i += 1) {
-        // Sample the center of each time slice rather than the boundaries so
-        // starting/stopping camera motion is less likely to dominate the candidates.
-        const seconds = measuredDuration * ((i + 0.5) / sampleCount);
+        // Exact 0.1-second timeline positions: 0.0, 0.1, 0.2 ... up to 14.9s.
+        const seconds = Math.min(Math.max(0, measuredDuration - 0.02), i / 10);
         try {
           await seekVideoFrame(probe, Math.min(Math.max(0, measuredDuration - 0.02), seconds));
           ctx.drawImage(probe, 0, 0, frameCanvas.width, frameCanvas.height);
-          const jpegBlob = await new Promise((resolve) => frameCanvas.toBlob(resolve, 'image/jpeg', 0.82));
+          const jpegBlob = await new Promise((resolve) => frameCanvas.toBlob(resolve, 'image/jpeg', 0.60));
           if (!jpegBlob) continue;
           const dataUrl = await blobToDataUrl(jpegBlob);
           frames.push({
-            frame_id: `F${String(i + 1).padStart(2, '0')}`,
+            frame_id: `F${String(i + 1).padStart(3, '0')}`,
             timestamp_ms: Math.max(0, Math.round(seconds * 1000)),
             data_url: dataUrl
           });
@@ -1684,7 +1683,7 @@ export default function(component) {
           if (video) video.hidden = true;
           setStatus('動画を自動保存する準備をしています…');
 
-          let candidateFrames = recordingCandidateFrames.slice(0, 12);
+          let candidateFrames = recordingCandidateFrames.slice(0, 150);
           recordingCandidateFrames = [];
 
           // Poster/location are useful metadata, but neither is allowed to block the
@@ -1714,11 +1713,11 @@ export default function(component) {
           // If live sampling produced too few frames on this browser, reconstruct
           // them from the just-recorded local Blob. The original video is already
           // safely in Storage, so this fallback can never block its preservation.
-          if (candidateFrames.length < 4) {
+          if (candidateFrames.length < Math.min(120, Math.max(1, Math.ceil(durationMs / 100)))) {
             try {
               setStatus('動画は保存済みです。AI候補を準備しています…');
               const rebuilt = await extractVideoCandidateFrames(blob, durationMs);
-              if (Array.isArray(rebuilt) && rebuilt.length) candidateFrames = rebuilt.slice(0, 12);
+              if (Array.isArray(rebuilt) && rebuilt.length > candidateFrames.length) candidateFrames = rebuilt.slice(0, 150);
             } catch (rebuildErr) {
               console.warn('candidate rebuild skipped', rebuildErr);
             }
@@ -1798,8 +1797,11 @@ export default function(component) {
       recordingTimer = setInterval(updateRecordingClock, 250);
       // Small stills are collected while the user records. They are not AI-analysed
       // here; the server stores the original video first and processes them later.
-      setTimeout(() => { captureRecordingCandidateFrame(); }, 550);
-      recordingCandidateTimer = setInterval(() => { captureRecordingCandidateFrame(); }, 2200);
+      // Capture at 0.1-second cadence while recording. Encoding is intentionally
+      // small so this can run on phones without sending the frames through the
+      // Streamlit component payload.
+      setTimeout(() => { captureRecordingCandidateFrame(); }, 100);
+      recordingCandidateTimer = setInterval(() => { captureRecordingCandidateFrame(); }, 100);
       recordingMaxTimer = setTimeout(stopVideoRecording, VIDEO_MAX_SECONDS * 1000);
       setStatus('');
     } catch (err) {
@@ -4971,9 +4973,10 @@ def get_camera_video_upload_reservation(trip_id, capture_serial):
     storage_path = f"{family_key}/{member_key}/{trip_id}/{stamp}_{token}_video.video"
     signed_url = _create_signed_video_upload_url(storage_path)
     candidate_sheet_path = f"{family_key}/{member_key}/{trip_id}/{stamp}_{token}_candidates.jpg"
-    # v130: do not create a browser candidate sheet. The saved original is sampled
-    # server-side at 0.1-second intervals so all frames enter the AI pipeline.
-    candidate_sheet_signed_url = ""
+    # v134: create the 0.1-second candidate sheet in the browser automatically.
+    # This removes ffmpeg as a hard requirement on Streamlit Cloud while keeping
+    # every captured candidate available to the vision pipeline.
+    candidate_sheet_signed_url = _create_signed_video_upload_url(candidate_sheet_path)
     reservation = {
         "trip_id": str(trip_id),
         "family_key": str(family_key),
@@ -5492,34 +5495,52 @@ def choose_video_ai_frames(
 
         def run_first_stage_batch(spec):
             batch_index, batch, batch_keep, batch_prompt = spec
-            result = call_selector(
-                batch,
-                batch_prompt,
-                f"video_moments_v133_coarse_{batch_index}",
-                batch_keep,
-                max_output_tokens=1300,
-            )
-            by_id = {str(frame.get("frame_id") or ""): frame for frame in batch}
-            ranked = sorted(
-                [item for item in ((result or {}).get("selections") or []) if isinstance(item, dict)],
-                key=lambda item: int(item.get("rank") or 99),
-            )
-            records = []
-            for item in ranked:
-                frame_id = str(item.get("frame_id") or "")
-                frame = by_id.get(frame_id)
-                if not frame:
-                    continue
-                records.append(
-                    {
+            def parse_result(result, candidate_batch):
+                by_id = {str(frame.get("frame_id") or ""): frame for frame in candidate_batch}
+                ranked = sorted(
+                    [item for item in ((result or {}).get("selections") or []) if isinstance(item, dict)],
+                    key=lambda item: int(item.get("rank") or 99),
+                )
+                records = []
+                for item in ranked:
+                    frame_id = str(item.get("frame_id") or "")
+                    frame = by_id.get(frame_id)
+                    if not frame:
+                        continue
+                    records.append({
                         "frame": frame,
                         "score": max(0, min(100, int(item.get("score") or 0))),
                         "primary_quality": str(item.get("primary_quality") or "other"),
                         "reason": str(item.get("reason") or "").strip()[:100],
                         "batch_rank": max(1, int(item.get("rank") or 99)),
-                    }
+                    })
+                return records
+
+            try:
+                result = call_selector(
+                    batch,
+                    batch_prompt,
+                    f"video_moments_v134_coarse_{batch_index}",
+                    batch_keep,
+                    max_output_tokens=1100,
                 )
-            return records
+                return parse_result(result, batch)
+            except Exception:
+                # A single oversized/rate-limited request must not fail all 150
+                # frames. Split this same batch and let AI inspect every frame.
+                records = []
+                for part_index, start in enumerate(range(0, len(batch), 6), start=1):
+                    part = batch[start:start + 6]
+                    part_keep = min(2, len(part))
+                    part_result = call_selector(
+                        part,
+                        batch_prompt,
+                        f"video_moments_v134_coarse_{batch_index}_retry_{part_index}",
+                        part_keep,
+                        max_output_tokens=800,
+                    )
+                    records.extend(parse_result(part_result, part))
+                return records
 
         if callable(progress_callback):
             try:
@@ -5585,7 +5606,7 @@ def choose_video_ai_frames(
         final_result = call_selector(
             final_frames,
             final_prompt,
-            "video_moments_v133_final",
+            "video_moments_v134_final",
             VIDEO_AI_MAX_SELECTIONS,
             max_output_tokens=1800,
         )
@@ -5604,7 +5625,7 @@ def choose_video_ai_frames(
             semi_result = call_selector(
                 semi,
                 semi_prompt,
-                f"video_moments_v133_semifinal_{semifinal_index}",
+                f"video_moments_v134_semifinal_{semifinal_index}",
                 semi_keep,
                 max_output_tokens=1200,
             )
@@ -5620,7 +5641,7 @@ def choose_video_ai_frames(
         final_result = call_selector(
             semifinal_records,
             final_prompt,
-            "video_moments_v133_final_retry",
+            "video_moments_v134_final_retry",
             VIDEO_AI_MAX_SELECTIONS,
             max_output_tokens=1800,
         )
@@ -5833,6 +5854,9 @@ def store_video_ai_candidate_sheet(photo, sheet_path, manifest, columns=4, rows=
         "candidate_manifest": manifest,
         "candidate_sheet_columns": max(1, int(columns or 4)),
         "candidate_sheet_rows": max(1, int(rows or ((len(manifest) + max(1, int(columns or 4)) - 1) // max(1, int(columns or 4))))),
+        "candidate_sample_interval_ms": VIDEO_AI_SAMPLE_INTERVAL_MS,
+        "candidate_sampling_version": "browser_0p1_v134",
+        "stage": "ai_selection",
         "round": int(previous.get("round") or 0),
         "items": list(previous.get("items") or []),
         "history": list(previous.get("history") or []),
@@ -6338,15 +6362,17 @@ def _run_video_ai_background_job(photo_id, family_key, member_key):
     selection_meta["started_at"] = now_jst().isoformat()
     selection_meta["updated_at"] = selection_meta["started_at"]
     selection_meta["attempt"] = max(0, int(selection_meta.get("attempt") or 0)) + 1
-    selection_meta["pipeline_mode"] = "inline_v133"
+    selection_meta["pipeline_mode"] = "inline_v134"
     expected_candidate_count = _video_ai_expected_candidate_count(photo)
     existing_candidate_count = max(0, int(selection_meta.get("candidate_count") or 0))
     sampling_version = str(selection_meta.get("candidate_sampling_version") or "").strip()
-    needs_fine_sampling = (
-        sampling_version != "v132_memory"
-        or not _video_ai_has_candidate_source(selection_meta)
-        or existing_candidate_count < max(1, int(math.floor(expected_candidate_count * 0.9)))
+    has_candidate_source = _video_ai_has_candidate_source(selection_meta)
+    persisted_candidate_ready = (
+        has_candidate_source
+        and existing_candidate_count >= max(1, int(math.floor(expected_candidate_count * 0.9)))
+        and sampling_version in {"browser_0p1_v134", "v132_memory"}
     )
+    needs_fine_sampling = not persisted_candidate_ready
     selection_meta["stage"] = "candidate_preparation" if needs_fine_sampling else "ai_selection"
     reflection["ai_selection"] = selection_meta
     try:
@@ -6367,28 +6393,47 @@ def _run_video_ai_background_job(photo_id, family_key, member_key):
                 str(selection_meta.get("candidate_bundle_path") or "").strip(),
                 str(selection_meta.get("candidate_sheet_path") or "").strip(),
             ]
-            frames = _background_extract_video_candidate_frames(client, photo)
-            selection_meta["status"] = "processing"
-            selection_meta["stage"] = "ai_selection"
-            selection_meta["candidate_count"] = len(frames)
-            selection_meta["candidate_bundle_path"] = ""
-            selection_meta["candidate_sheet_path"] = ""
-            selection_meta["candidate_sample_interval_ms"] = VIDEO_AI_SAMPLE_INTERVAL_MS
-            selection_meta["candidate_sampling_version"] = "v132_memory"
-            selection_meta["updated_at"] = now_jst().isoformat()
-            reflection["ai_selection"] = selection_meta
             try:
-                _write_photo_reflection_for_owner(
-                    photo_id, reflection, family_key, member_key, client=client
-                )
-            except Exception:
-                pass
-            stale_paths = [path for path in old_candidate_paths if path]
-            if stale_paths:
+                frames = _background_extract_video_candidate_frames(client, photo)
+            except Exception as extraction_exc:
+                # If a browser sheet exists, use it rather than failing because the
+                # deployment has no ffmpeg. Otherwise move to automatic browser
+                # recovery; no button in the viewer is required.
+                if has_candidate_source:
+                    frames = _load_video_ai_candidate_frames(client, selection_meta)
+                else:
+                    selection_meta["status"] = "waiting_browser_candidates"
+                    selection_meta["stage"] = "browser_candidate_preparation"
+                    selection_meta["last_error"] = str(extraction_exc)[:240]
+                    selection_meta["updated_at"] = now_jst().isoformat()
+                    selection_meta["pipeline_mode"] = "browser_fallback_v134"
+                    reflection["ai_selection"] = selection_meta
+                    _write_photo_reflection_for_owner(
+                        photo_id, reflection, family_key, member_key, client=client
+                    )
+                    return
+            if frames and not has_candidate_source:
+                selection_meta["status"] = "processing"
+                selection_meta["stage"] = "ai_selection"
+                selection_meta["candidate_count"] = len(frames)
+                selection_meta["candidate_bundle_path"] = ""
+                selection_meta["candidate_sheet_path"] = ""
+                selection_meta["candidate_sample_interval_ms"] = VIDEO_AI_SAMPLE_INTERVAL_MS
+                selection_meta["candidate_sampling_version"] = "v132_memory"
+                selection_meta["updated_at"] = now_jst().isoformat()
+                reflection["ai_selection"] = selection_meta
                 try:
-                    client.storage.from_(PHOTO_BUCKET).remove(stale_paths)
+                    _write_photo_reflection_for_owner(
+                        photo_id, reflection, family_key, member_key, client=client
+                    )
                 except Exception:
                     pass
+                stale_paths = [path for path in old_candidate_paths if path]
+                if stale_paths:
+                    try:
+                        client.storage.from_(PHOTO_BUCKET).remove(stale_paths)
+                    except Exception:
+                        pass
         else:
             frames = _load_video_ai_candidate_frames(client, selection_meta)
 
@@ -6492,7 +6537,7 @@ def _run_video_ai_background_job(photo_id, family_key, member_key):
 def launch_video_ai_background_job(photo):
     """Run the saved-video AI pipeline automatically in the normal Streamlit run.
 
-    v133 intentionally does not detach the first-time selector into a long-lived
+    v134 intentionally does not detach the first-time selector into a long-lived
     ThreadPoolExecutor task. Streamlit workers can be rerun/recycled independently
     of those detached futures, which can leave a DB row in ``processing`` forever.
     Keeping the pipeline inside the active server execution is slower for that one
@@ -6572,12 +6617,12 @@ def launch_video_ai_background_job(photo):
             if not isinstance(latest, dict):
                 latest = {}
             latest_status = str(latest.get("status") or "").strip().lower()
-            if latest_status not in {"ready", "reviewed", "error"}:
+            if latest_status not in {"ready", "reviewed", "error", "waiting_browser_candidates"}:
                 latest["status"] = "error"
                 latest["stage"] = str(latest.get("stage") or "pipeline")
                 latest["last_error"] = "自動処理が終了状態を返さなかったため停止しました。"
                 latest["updated_at"] = now_jst().isoformat()
-                latest["pipeline_mode"] = "inline_v133"
+                latest["pipeline_mode"] = "inline_v134"
                 reflection["ai_selection"] = latest
                 _write_photo_reflection_for_owner(
                     photo_id, reflection, family_key, member_key
@@ -6633,19 +6678,33 @@ def resume_member_video_background_jobs(limit=24, min_interval_seconds=0):
         has_items = bool(video_ai_selection_items(row))
         if status in {"ready", "reviewed"} and has_items:
             continue
+        if status == "waiting_browser_candidates":
+            # The automatic browser recovery component handles this state.
+            continue
 
-        # Rescue one failed pre-v133 job automatically. A v133 failure is left as
-        # an explicit error so the app never enters an endless automatic retry loop.
+        # v134 retries one older failure automatically. Candidate-extraction errors
+        # are routed to browser recovery instead of repeatedly invoking ffmpeg.
         if status == "error":
-            if selection.get("v133_inline_retry") or has_items:
+            if has_items or selection.get("v134_auto_retry"):
                 continue
+            last_error = str(selection.get("last_error") or selection.get("message") or "")
+            candidate_failure = (
+                str(selection.get("stage") or "") in {"candidate_preparation", "browser_candidate_preparation"}
+                or "ffmpeg" in last_error.lower()
+                or "候補画像" in last_error
+                or "元動画から" in last_error
+            )
             try:
-                selection["v133_inline_retry"] = True
-                selection["status"] = "waiting_candidates"
+                selection["v134_auto_retry"] = True
                 selection["queued_at"] = now_jst().isoformat()
                 selection["updated_at"] = selection["queued_at"]
-                selection["pipeline_mode"] = "inline_v133"
-                selection["last_error"] = ""
+                selection["pipeline_mode"] = "inline_v134"
+                if candidate_failure and not _video_ai_has_candidate_source(selection):
+                    selection["status"] = "waiting_browser_candidates"
+                    selection["stage"] = "browser_candidate_preparation"
+                else:
+                    selection["status"] = "waiting_candidates"
+                    selection["last_error"] = ""
                 reflection = dict(photo_media_metadata(row))
                 reflection["ai_selection"] = selection
                 _write_photo_reflection_for_owner(
@@ -6656,6 +6715,8 @@ def resume_member_video_background_jobs(limit=24, min_interval_seconds=0):
                 )
                 row = dict(row)
                 row["reflection_json"] = reflection
+                if selection["status"] == "waiting_browser_candidates":
+                    continue
             except Exception:
                 continue
 
@@ -6673,7 +6734,7 @@ def resume_member_video_background_jobs(limit=24, min_interval_seconds=0):
                 selection["status"] = "error"
                 selection["last_error"] = str(exc)[:240]
                 selection["updated_at"] = now_jst().isoformat()
-                selection["pipeline_mode"] = "inline_v133"
+                selection["pipeline_mode"] = "inline_v134"
                 reflection["ai_selection"] = selection
                 _write_photo_reflection_for_owner(
                     row.get("id"),
@@ -12329,14 +12390,14 @@ export default function(component) {
           probe.addEventListener('error', () => { clearTimeout(timer); reject(new Error('動画情報を読み込めません')); }, { once: true });
         });
         const duration = Number.isFinite(probe.duration) && probe.duration > 0 ? probe.duration : 1;
-        const count = Math.max(4, Math.min(12, Math.ceil(duration / 2)));
+        const count = Math.max(1, Math.min(150, Math.ceil(duration * 10)));
         const srcW = probe.videoWidth || 1280;
         const srcH = probe.videoHeight || 720;
-        const maxSide = 480;
+        const maxSide = 240;
         const scale = Math.min(1, maxSide / Math.max(srcW, srcH));
         const tileW = Math.max(1, Math.round(srcW * scale));
         const tileH = Math.max(1, Math.round(srcH * scale));
-        const columns = Math.min(4, count);
+        const columns = Math.min(15, count);
         const rows = Math.ceil(count / columns);
         const sheet = document.createElement('canvas');
         sheet.width = tileW * columns;
@@ -12348,13 +12409,13 @@ export default function(component) {
         let actual = 0;
         for (let i = 0; i < count; i += 1) {
           if (cancelled) return;
-          const seconds = Math.min(Math.max(0, duration - 0.03), duration * ((i + 0.5) / count));
+          const seconds = Math.min(Math.max(0, duration - 0.03), i / 10);
           try {
             await seek(probe, seconds);
             const col = actual % columns;
             const row = Math.floor(actual / columns);
             ctx.drawImage(probe, col * tileW, row * tileH, tileW, tileH);
-            manifest.push({ frame_id: `F${String(actual + 1).padStart(2, '0')}`, timestamp_ms: Math.round(seconds * 1000), tile_index: actual });
+            manifest.push({ frame_id: `F${String(actual + 1).padStart(3, '0')}`, timestamp_ms: Math.round(seconds * 1000), tile_index: actual });
             actual += 1;
           } catch (_) {}
         }
@@ -12397,7 +12458,7 @@ export default function(component) {
 
 try:
     moments_recovery_component = st.components.v2.component(
-        "tokyo_burari_moments_recovery_v116",
+        "tokyo_burari_moments_recovery_v134",
         html=_MOMENTS_RECOVERY_HTML,
         js=_MOMENTS_RECOVERY_JS,
     )
@@ -12409,7 +12470,7 @@ def _candidate_sheet_recovery_reservation(photo):
     video_id = str((photo or {}).get("id") or "").strip()
     if not video_id:
         raise ValueError("動画IDを確認できません。")
-    key = f"_moments_recovery_reservation_v116_{video_id}"
+    key = f"_moments_recovery_reservation_v134_{video_id}"
     current = st.session_state.get(key)
     if isinstance(current, dict) and current.get("path") and current.get("signed_url"):
         return current
@@ -12449,7 +12510,7 @@ def _render_moments_candidate_recovery(photo, index):
             "sheet_path": reservation.get("path"),
             "recovery_id": reservation.get("recovery_id"),
         },
-        key=f"moments_recovery_v116_{photo.get('id')}_{reservation.get('recovery_id')}",
+        key=f"moments_recovery_v134_{photo.get('id')}_{reservation.get('recovery_id')}",
         on_candidate_sheet_change=lambda: None,
         on_recovery_error_change=lambda: None,
     )
@@ -12463,7 +12524,7 @@ def _render_moments_candidate_recovery(photo, index):
                 columns=payload.get("columns") or 4,
                 rows=payload.get("rows") or 0,
             )
-            st.session_state.pop(f"_moments_recovery_reservation_v116_{photo.get('id')}", None)
+            st.session_state.pop(f"_moments_recovery_reservation_v134_{photo.get('id')}", None)
             launch_video_ai_background_job(updated)
             try:
                 _home_video_counts_cached.clear()
@@ -12480,6 +12541,44 @@ def _render_moments_candidate_recovery(photo, index):
         with st.expander("詳細"):
             st.code(str(error_payload.get("message")))
     return True
+
+
+def auto_recover_one_video_candidate_sheet():
+    """Automatically recover one video that needs browser-side frame extraction.
+
+    This renders the recovery component without requiring a viewer button. The
+    component fetches the already-saved original video, samples it every 0.1s,
+    uploads one contact sheet, and triggers the normal AI pipeline.
+    """
+    if moments_recovery_component is None:
+        return False
+    try:
+        rows = (
+            supabase_client()
+            .table(PHOTO_TABLE)
+            .select("*")
+            .eq("family_key", current_family_key())
+            .eq("member_key", current_member_key())
+            .order("captured_at", desc=True)
+            .limit(24)
+            .execute()
+        ).data or []
+    except Exception:
+        return False
+
+    for row in rows:
+        if not photo_is_video(row):
+            continue
+        selection = photo_media_metadata(row).get("ai_selection") or {}
+        if not isinstance(selection, dict):
+            selection = {}
+        status = str(selection.get("status") or "").strip().lower()
+        if status != "waiting_browser_candidates":
+            continue
+        st.caption("保存済み動画から、いい瞬間の候補を自動復旧しています…")
+        _render_moments_candidate_recovery(row, -134)
+        return True
+    return False
 
 
 def list_member_videos_for_moments(limit=300):
@@ -12784,7 +12883,7 @@ def _render_moments_picker(photo, index):
             st.rerun()
         return
 
-    if status in {"", "waiting_candidates"}:
+    if status in {"", "waiting_candidates", "waiting_browser_candidates"}:
         st.info("現在いい瞬間の切り取り中です。")
         if st.button(
             "状態を更新",
@@ -13964,19 +14063,33 @@ def page_trip():
                 except Exception:
                     pass
 
-                # v130: the original saved video is always the authoritative source
-                # for AI candidates. The worker extracts every 0.1 seconds (up to 150
-                # frames for a 15-second video), so browser-side 12-frame sampling is
-                # never allowed to lower selection precision.
+                # v134: prefer the 0.1-second contact sheet built automatically in
+                # the browser while/just after recording. This makes ffmpeg optional.
                 ai_status = "queued_recovery"
                 if isinstance(saved_video, dict) and saved_video.get("id"):
-                    try:
-                        saved_video = mark_video_ai_waiting_candidates(
-                            saved_video,
-                            "保存済みの元動画を0.1秒間隔で切り出し、全候補をAI評価します。",
-                        )
-                    except Exception:
-                        pass
+                    sheet_path = str(video_payload.get("candidate_sheet_path") or "").strip()
+                    sheet_manifest = [x for x in (video_payload.get("candidate_manifest") or []) if isinstance(x, dict)]
+                    reserved_sheet = str(reservation.get("candidate_sheet_path") or "").strip()
+                    if sheet_path and reserved_sheet and sheet_path == reserved_sheet and sheet_manifest:
+                        try:
+                            saved_video = store_video_ai_candidate_sheet(
+                                saved_video,
+                                sheet_path,
+                                sheet_manifest,
+                                columns=video_payload.get("candidate_sheet_columns") or 15,
+                                rows=video_payload.get("candidate_sheet_rows") or 0,
+                            )
+                            ai_status = "queued"
+                        except Exception:
+                            ai_status = "queued_recovery"
+                    if ai_status == "queued_recovery":
+                        try:
+                            saved_video = mark_video_ai_waiting_candidates(
+                                saved_video,
+                                "ブラウザ候補を確認できないため、自動復旧を準備しています。",
+                            )
+                        except Exception:
+                            pass
 
                 if ai_status in {"queued", "queued_recovery"} and isinstance(saved_video, dict) and saved_video.get("id"):
                     try:
@@ -15599,13 +15712,16 @@ init_state()
 # v133: unfinished videos are processed automatically in the normal Streamlit
 # execution, not in a detached long-lived thread. No viewer/button action is
 # required. Process one saved video, then rerun so another queued video can follow.
-_video_auto_processed_v133 = resume_member_video_background_jobs()
-if _video_auto_processed_v133:
+_video_auto_processed_v134 = resume_member_video_background_jobs()
+if _video_auto_processed_v134:
     try:
         _home_video_counts_cached.clear()
     except Exception:
         pass
     st.rerun()
+# If server-side extraction is unavailable (for example ffmpeg is absent), recover
+# automatically in the browser from the already-saved video. No button is needed.
+auto_recover_one_video_candidate_sheet()
 # Daily rollover and old-title repair can touch many rows. They are diary/history
 # maintenance, not startup requirements, so home/camera opens no longer wait for them.
 restore_recent_camera_session()
