@@ -27,7 +27,7 @@ from zoneinfo import ZoneInfo
 
 import streamlit as st
 
-APP_BUILD = "v134"
+APP_BUILD = "v135"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -695,6 +695,15 @@ VIDEO_AI_BATCH_WORKERS = 2
 VIDEO_AI_REQUEST_TIMEOUT_SECONDS = 90
 VIDEO_AI_STALE_SECONDS = 300
 
+# Best-effort post-save video stabilization. The original recording is never
+# overwritten. A lightly stabilized MP4 proxy is created when ffmpeg/deshake is
+# available; playback and AI frame extraction prefer that proxy. Any failure falls
+# back to the original without blocking video preservation or Good Moments.
+VIDEO_STABILIZATION_VERSION = "v135_deshake_light"
+VIDEO_STABILIZATION_TIMEOUT_SECONDS = 90
+VIDEO_STABILIZATION_RX = 16
+VIDEO_STABILIZATION_RY = 16
+
 TRIP_TABLE = "burari_trips"
 PHOTO_TABLE = "burari_photos"
 DIARY_TABLE = "burari_diaries"
@@ -1231,6 +1240,22 @@ export default function(component) {
       });
       video.srcObject = stream;
       await video.play();
+      // Prefer the phone/browser's own stabilization when it exposes a compatible
+      // media-track constraint. Unknown constraints are never forced, so devices
+      // without this capability continue normally.
+      if (cameraMode === 'video') {
+        try {
+          const supported = (navigator.mediaDevices && navigator.mediaDevices.getSupportedConstraints)
+            ? navigator.mediaDevices.getSupportedConstraints()
+            : {};
+          const track = stream.getVideoTracks && stream.getVideoTracks()[0];
+          if (track && track.applyConstraints && supported && supported.imageStabilization) {
+            await track.applyConstraints({ advanced: [{ imageStabilization: true }] });
+          }
+        } catch (stabilizationErr) {
+          console.warn('camera hardware stabilization unavailable', stabilizationErr);
+        }
+      }
       shootButton.disabled = false;
       shootButton.textContent = cameraMode === 'video' ? '● 録画を開始' : '● 写真を撮る';
       showCameraActions();
@@ -1988,11 +2013,11 @@ export default function(component) {
 }
 """
 
-LIVE_CAMERA_COMPONENT_BUILD = "v126"
+LIVE_CAMERA_COMPONENT_BUILD = "v135"
 
 try:
     live_camera_component = st.components.v2.component(
-        "tokyo_burari_live_camera_v126",
+        "tokyo_burari_live_camera_v135",
         html=_LIVE_CAMERA_HTML,
         css=_LIVE_CAMERA_CSS,
         js=_LIVE_CAMERA_JS,
@@ -4364,13 +4389,52 @@ def diary_photos_only(photos):
 
 
 def photo_video_storage_path(photo):
+    """Original recording path. This is never replaced by stabilization."""
     if not photo_is_video(photo):
         return ""
     return str(photo_media_metadata(photo).get("video_storage_path") or "").strip()
 
 
+def photo_video_stabilization_meta(photo):
+    metadata = photo_media_metadata(photo)
+    value = metadata.get("video_stabilization") or {}
+    return value if isinstance(value, dict) else {}
+
+
+def photo_stabilized_video_storage_path(photo):
+    """Return the ready stabilized proxy, if one exists."""
+    meta = photo_video_stabilization_meta(photo)
+    if str(meta.get("status") or "").strip().lower() != "ready":
+        return ""
+    return str(meta.get("storage_path") or "").strip()
+
+
+def photo_video_playback_path(photo):
+    """Prefer the stabilized proxy for playback while preserving the original."""
+    return photo_stabilized_video_storage_path(photo) or photo_video_storage_path(photo)
+
+
+def photo_video_ai_source_path(photo):
+    """AI frame extraction uses the stabilized proxy whenever it is available."""
+    return photo_stabilized_video_storage_path(photo) or photo_video_storage_path(photo)
+
+
+def video_is_stabilized(photo):
+    return bool(photo_stabilized_video_storage_path(photo))
+
+
+def video_stabilization_caption(photo):
+    meta = photo_video_stabilization_meta(photo)
+    status = str(meta.get("status") or "").strip().lower()
+    if status == "ready" and photo_stabilized_video_storage_path(photo):
+        return "手振れ補正：軽め（元動画も保存しています）"
+    if status == "processing":
+        return "手振れ補正版を自動作成中です"
+    return ""
+
+
 def video_display_url(photo, expires_in=1800):
-    path = photo_video_storage_path(photo)
+    path = photo_video_playback_path(photo)
     if not path:
         return ""
     try:
@@ -4388,6 +4452,9 @@ def photo_all_storage_paths(photo):
     video_path = photo_video_storage_path(photo)
     if video_path and video_path not in paths:
         paths.append(video_path)
+    stabilized_path = photo_stabilized_video_storage_path(photo)
+    if stabilized_path and stabilized_path not in paths:
+        paths.append(stabilized_path)
     for item in video_ai_selection_items(photo):
         selection_path = str(item.get("storage_path") or "").strip()
         if selection_path and selection_path not in paths:
@@ -4548,7 +4615,10 @@ def _storage_path_is_original_video(path, mime_type=""):
     if mime.startswith("video/"):
         return True
     ext = value.rsplit(".", 1)[-1] if "." in value else ""
-    return "_video." in value and ext in {"video", "webm", "mp4", "mov", "m4v"}
+    # Stabilized playback proxies are video objects too. Keep this historical
+    # predicate broad enough that Storage audit/cleanup can account for both the
+    # untouched original and the derived stabilized MP4.
+    return ("_video." in value or "_stabilized_" in value) and ext in {"video", "webm", "mp4", "mov", "m4v"}
 
 
 def _list_member_storage_objects(max_depth=4):
@@ -4622,6 +4692,9 @@ def _member_db_storage_references():
             video_path = photo_video_storage_path(row)
             if video_path:
                 video_refs.add(str(video_path))
+            stabilized_path = photo_stabilized_video_storage_path(row)
+            if stabilized_path:
+                video_refs.add(str(stabilized_path))
         if len(rows) < page_size:
             break
         offset += page_size
@@ -4697,11 +4770,10 @@ def test_video_storage_upload_destination():
 
 
 def current_video_storage_usage_bytes():
-    """Actual original-video bytes for the signed-in person.
+    """Actual video bytes for the signed-in person, including stabilized proxies.
 
-    v111 prefers the Storage object list so orphan videos also count toward the per-person
-    quota. If Storage listing itself is unavailable, it falls back to DB metadata so the
-    rest of the app can continue operating.
+    Storage listing is preferred so orphan video objects also count toward the per-person
+    quota. If listing is unavailable, DB metadata provides a conservative fallback.
     """
     cache_key = _account_cache_key("video_storage_usage")
     cached = _session_cache_get(cache_key, max_age_seconds=30)
@@ -4738,6 +4810,12 @@ def current_video_storage_usage_bytes():
                 continue
             try:
                 total += max(0, int(reflection.get("video_size_bytes") or 0))
+            except Exception:
+                pass
+            try:
+                stabilization = reflection.get("video_stabilization") or {}
+                if isinstance(stabilization, dict) and str(stabilization.get("status") or "").lower() == "ready":
+                    total += max(0, int(stabilization.get("size_bytes") or 0))
             except Exception:
                 pass
         if len(rows) < page_size:
@@ -5057,6 +5135,15 @@ def register_browser_uploaded_video(
         "video_duration_ms": duration_value,
         "video_size_bytes": size_value,
         "browser_direct_upload": True,
+        "video_stabilization": {
+            "version": VIDEO_STABILIZATION_VERSION,
+            "mode": "light",
+            "status": "queued",
+            "storage_path": "",
+            "size_bytes": 0,
+            "original_preserved": True,
+            "last_error": "",
+        },
     }
     try:
         client.storage.from_(PHOTO_BUCKET).upload(
@@ -5180,6 +5267,15 @@ def upload_video(
         "video_mime_type": clean_mime,
         "video_duration_ms": duration_value,
         "video_size_bytes": len(video_bytes),
+        "video_stabilization": {
+            "version": VIDEO_STABILIZATION_VERSION,
+            "mode": "light",
+            "status": "queued",
+            "storage_path": "",
+            "size_bytes": 0,
+            "original_preserved": True,
+            "last_error": "",
+        },
     }
 
     try:
@@ -5934,6 +6030,238 @@ def _ffmpeg_executable():
     return ""
 
 
+def _video_stabilization_input_suffix(photo):
+    metadata = photo_media_metadata(photo)
+    mime = str(metadata.get("video_mime_type") or "").lower()
+    if "mp4" in mime or "quicktime" in mime or "mov" in mime:
+        return ".mp4"
+    return ".webm"
+
+
+def _ensure_video_stabilized_copy(client, photo, family_key, member_key, force=False):
+    """Create a light stabilized playback/AI proxy while preserving the original.
+
+    Stabilization is deliberately best-effort. The original recording remains the
+    durable source of truth, and any ffmpeg/filter/quota failure is persisted as a
+    non-fatal status so video saving and Good Moments can continue via the original
+    or the browser-created 0.1-second candidate sheet.
+    """
+    if not isinstance(photo, dict) or not photo_is_video(photo):
+        return photo
+
+    original_path = photo_video_storage_path(photo)
+    if not original_path:
+        return photo
+
+    reflection = dict(photo_media_metadata(photo))
+    current_meta = reflection.get("video_stabilization") or {}
+    if not isinstance(current_meta, dict):
+        current_meta = {}
+    current_status = str(current_meta.get("status") or "").strip().lower()
+    current_version = str(current_meta.get("version") or "").strip()
+    current_path = str(current_meta.get("storage_path") or "").strip()
+
+    if not force and current_version == VIDEO_STABILIZATION_VERSION:
+        if current_status == "ready" and current_path:
+            return photo
+        if current_status in {"unavailable", "error", "skipped_quota"}:
+            return photo
+
+    def persist(status, *, storage_path="", size_bytes=0, last_error="", extra=None):
+        nonlocal reflection
+        latest_meta = dict(current_meta)
+        latest_meta.update(
+            {
+                "version": VIDEO_STABILIZATION_VERSION,
+                "mode": "light",
+                "status": str(status),
+                "storage_path": str(storage_path or ""),
+                "size_bytes": max(0, int(size_bytes or 0)),
+                "updated_at": now_jst().isoformat(),
+                "last_error": str(last_error or "")[:240],
+                "original_preserved": True,
+            }
+        )
+        if extra:
+            latest_meta.update(dict(extra))
+        reflection = dict(photo_media_metadata(photo))
+        reflection["video_stabilization"] = latest_meta
+        _write_photo_reflection_for_owner(
+            photo.get("id"), reflection, family_key, member_key, client=client
+        )
+        updated = dict(photo)
+        updated["reflection_json"] = reflection
+        return updated
+
+    ffmpeg = _ffmpeg_executable()
+    if not ffmpeg:
+        return persist(
+            "unavailable",
+            last_error="この実行環境では動画手振れ補正用のffmpegを利用できないため、元動画を使用します。",
+            extra={"fallback_to_original": True},
+        )
+
+    try:
+        original_raw = _storage_bytes(client.storage.from_(PHOTO_BUCKET).download(original_path))
+    except Exception as exc:
+        return persist(
+            "error",
+            last_error=f"手振れ補正用に元動画を読み込めませんでした: {exc}",
+            extra={"fallback_to_original": True},
+        )
+    if not original_raw:
+        return persist(
+            "error",
+            last_error="手振れ補正用に元動画を読み込めませんでした。",
+            extra={"fallback_to_original": True},
+        )
+
+    try:
+        persist(
+            "processing",
+            last_error="",
+            extra={"started_at": now_jst().isoformat(), "fallback_to_original": True},
+        )
+    except Exception:
+        pass
+
+    with tempfile.TemporaryDirectory(prefix="burari-stabilize-") as tmpdir:
+        input_path = os.path.join(tmpdir, "source" + _video_stabilization_input_suffix(photo))
+        output_path = os.path.join(tmpdir, "stabilized.mp4")
+        with open(input_path, "wb") as fh:
+            fh.write(original_raw)
+
+        # Mild translation/rotation compensation. A small search radius prevents
+        # intentional pans and a child's movement from being over-corrected. Mirror
+        # edge fill avoids the strong zoom/crop typical of aggressive stabilization.
+        filter_value = (
+            f"deshake=rx={int(VIDEO_STABILIZATION_RX)}:ry={int(VIDEO_STABILIZATION_RY)}:"
+            "edge=mirror:blocksize=8:contrast=125:search=less"
+        )
+        command = [
+            ffmpeg,
+            "-nostdin",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-i",
+            input_path,
+            "-vf",
+            filter_value,
+            "-map",
+            "0:v:0",
+            "-map",
+            "0:a?",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "veryfast",
+            "-crf",
+            "23",
+            "-pix_fmt",
+            "yuv420p",
+            "-c:a",
+            "aac",
+            "-b:a",
+            "64k",
+            "-movflags",
+            "+faststart",
+            "-max_muxing_queue_size",
+            "1024",
+            "-y",
+            output_path,
+        ]
+        try:
+            completed = subprocess.run(
+                command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=float(VIDEO_STABILIZATION_TIMEOUT_SECONDS),
+                check=False,
+            )
+        except subprocess.TimeoutExpired:
+            return persist(
+                "error",
+                last_error="軽い手振れ補正が時間切れになったため、元動画を使用します。",
+                extra={"fallback_to_original": True},
+            )
+
+        if completed.returncode != 0 or not os.path.exists(output_path):
+            detail = completed.stderr.decode("utf-8", errors="ignore").strip().replace("\n", " ")
+            if len(detail) > 180:
+                detail = detail[:177] + "..."
+            return persist(
+                "error",
+                last_error="軽い手振れ補正を作成できなかったため、元動画を使用します。" + (f" {detail}" if detail else ""),
+                extra={"fallback_to_original": True},
+            )
+
+        stabilized_raw = Path(output_path).read_bytes()
+        if not stabilized_raw:
+            return persist(
+                "error",
+                last_error="手振れ補正版が空だったため、元動画を使用します。",
+                extra={"fallback_to_original": True},
+            )
+
+    # A derived proxy must never make the account exceed an explicit video quota.
+    try:
+        ensure_video_storage_capacity(len(stabilized_raw))
+    except Exception as exc:
+        return persist(
+            "skipped_quota",
+            last_error=f"保存容量を優先して手振れ補正版の保存を省略しました: {exc}",
+            extra={"fallback_to_original": True},
+        )
+
+    base = _video_selection_base_path(photo)
+    stabilized_path = f"{base}_stabilized_v135_{uuid.uuid4().hex[:8]}.mp4"
+    uploaded = False
+    try:
+        client.storage.from_(PHOTO_BUCKET).upload(
+            path=stabilized_path,
+            file=stabilized_raw,
+            file_options={"content-type": "video/mp4", "cache-control": "3600"},
+        )
+        uploaded = True
+        updated = persist(
+            "ready",
+            storage_path=stabilized_path,
+            size_bytes=len(stabilized_raw),
+            last_error="",
+            extra={
+                "generated_at": now_jst().isoformat(),
+                "fallback_to_original": False,
+                "filter": "deshake_light",
+            },
+        )
+        if current_path and current_path != stabilized_path:
+            try:
+                client.storage.from_(PHOTO_BUCKET).remove([current_path])
+            except Exception:
+                pass
+        try:
+            signed_photo_url_map.clear()
+        except Exception:
+            pass
+        try:
+            _invalidate_video_storage_audit_cache()
+        except Exception:
+            pass
+        return updated
+    except Exception as exc:
+        if uploaded:
+            try:
+                client.storage.from_(PHOTO_BUCKET).remove([stabilized_path])
+            except Exception:
+                pass
+        return persist(
+            "error",
+            last_error=f"手振れ補正版を保存できなかったため、元動画を使用します: {exc}",
+            extra={"fallback_to_original": True},
+        )
+
+
 def _video_ai_expected_candidate_count(photo):
     metadata = photo_media_metadata(photo)
     duration_ms = max(0, int(metadata.get("video_duration_ms") or 0))
@@ -5951,14 +6279,15 @@ def _video_ai_expected_candidate_count(photo):
 
 
 def _background_extract_video_candidate_frames(client, photo):
-    """Extract every 0.1-second candidate from the stored original video.
+    """Extract every 0.1-second candidate from the preferred processing video.
 
-    v130 intentionally creates up to 150 candidates for a 15-second recording.
-    No CV/heuristic quality score is used to reduce this pool before AI review.
+    v135 prefers the lightly stabilized proxy when available and otherwise uses the
+    untouched original. Up to 150 frames are still shown to AI without non-AI
+    quality pruning.
     """
-    video_path = photo_video_storage_path(photo)
+    video_path = photo_video_ai_source_path(photo)
     if not video_path:
-        raise ValueError("元動画の保存先を確認できませんでした。")
+        raise ValueError("AI処理用動画の保存先を確認できませんでした。")
     ffmpeg = _ffmpeg_executable()
     if not ffmpeg:
         raise RuntimeError("動画から候補画像を作るためのffmpegを利用できません。")
@@ -6350,6 +6679,16 @@ def _run_video_ai_background_job(photo_id, family_key, member_key):
     if not photo or not photo_is_video(photo):
         return
 
+    # v135: preserve the original and try to create a light stabilized proxy first.
+    # Stabilization is non-fatal; if unavailable or unsuccessful, the same pipeline
+    # continues with the untouched original/browser candidate sheet.
+    try:
+        photo = _ensure_video_stabilized_copy(
+            client, photo, family_key, member_key, force=False
+        ) or photo
+    except Exception:
+        pass
+
     reflection = dict(photo_media_metadata(photo))
     selection_meta = reflection.get("ai_selection") or {}
     if not isinstance(selection_meta, dict):
@@ -6362,17 +6701,22 @@ def _run_video_ai_background_job(photo_id, family_key, member_key):
     selection_meta["started_at"] = now_jst().isoformat()
     selection_meta["updated_at"] = selection_meta["started_at"]
     selection_meta["attempt"] = max(0, int(selection_meta.get("attempt") or 0)) + 1
-    selection_meta["pipeline_mode"] = "inline_v134"
+    selection_meta["pipeline_mode"] = "inline_v135"
     expected_candidate_count = _video_ai_expected_candidate_count(photo)
     existing_candidate_count = max(0, int(selection_meta.get("candidate_count") or 0))
     sampling_version = str(selection_meta.get("candidate_sampling_version") or "").strip()
     has_candidate_source = _video_ai_has_candidate_source(selection_meta)
+    stabilized_ready = video_is_stabilized(photo)
     persisted_candidate_ready = (
         has_candidate_source
         and existing_candidate_count >= max(1, int(math.floor(expected_candidate_count * 0.9)))
         and sampling_version in {"browser_0p1_v134", "v132_memory"}
+        and not stabilized_ready
     )
-    needs_fine_sampling = not persisted_candidate_ready
+    # When a stabilized proxy exists, deliberately re-sample it at 0.1-second
+    # intervals so Good Moments is selected from the corrected motion rather than
+    # from the pre-stabilization live candidate sheet.
+    needs_fine_sampling = stabilized_ready or not persisted_candidate_ready
     selection_meta["stage"] = "candidate_preparation" if needs_fine_sampling else "ai_selection"
     reflection["ai_selection"] = selection_meta
     try:
@@ -6406,7 +6750,7 @@ def _run_video_ai_background_job(photo_id, family_key, member_key):
                     selection_meta["stage"] = "browser_candidate_preparation"
                     selection_meta["last_error"] = str(extraction_exc)[:240]
                     selection_meta["updated_at"] = now_jst().isoformat()
-                    selection_meta["pipeline_mode"] = "browser_fallback_v134"
+                    selection_meta["pipeline_mode"] = "browser_fallback_v135"
                     reflection["ai_selection"] = selection_meta
                     _write_photo_reflection_for_owner(
                         photo_id, reflection, family_key, member_key, client=client
@@ -6419,7 +6763,9 @@ def _run_video_ai_background_job(photo_id, family_key, member_key):
                 selection_meta["candidate_bundle_path"] = ""
                 selection_meta["candidate_sheet_path"] = ""
                 selection_meta["candidate_sample_interval_ms"] = VIDEO_AI_SAMPLE_INTERVAL_MS
-                selection_meta["candidate_sampling_version"] = "v132_memory"
+                selection_meta["candidate_sampling_version"] = (
+                    "stabilized_memory_v135" if video_is_stabilized(photo) else "v132_memory"
+                )
                 selection_meta["updated_at"] = now_jst().isoformat()
                 reflection["ai_selection"] = selection_meta
                 try:
@@ -6622,7 +6968,7 @@ def launch_video_ai_background_job(photo):
                 latest["stage"] = str(latest.get("stage") or "pipeline")
                 latest["last_error"] = "自動処理が終了状態を返さなかったため停止しました。"
                 latest["updated_at"] = now_jst().isoformat()
-                latest["pipeline_mode"] = "inline_v134"
+                latest["pipeline_mode"] = "inline_v135"
                 reflection["ai_selection"] = latest
                 _write_photo_reflection_for_owner(
                     photo_id, reflection, family_key, member_key
@@ -6682,10 +7028,10 @@ def resume_member_video_background_jobs(limit=24, min_interval_seconds=0):
             # The automatic browser recovery component handles this state.
             continue
 
-        # v134 retries one older failure automatically. Candidate-extraction errors
-        # are routed to browser recovery instead of repeatedly invoking ffmpeg.
+        # v135 gives one fresh automatic retry to an older failed video so the new
+        # stabilization/fallback path can recover v134 failures without user action.
         if status == "error":
-            if has_items or selection.get("v134_auto_retry"):
+            if has_items or selection.get("v135_auto_retry"):
                 continue
             last_error = str(selection.get("last_error") or selection.get("message") or "")
             candidate_failure = (
@@ -6695,10 +7041,10 @@ def resume_member_video_background_jobs(limit=24, min_interval_seconds=0):
                 or "元動画から" in last_error
             )
             try:
-                selection["v134_auto_retry"] = True
+                selection["v135_auto_retry"] = True
                 selection["queued_at"] = now_jst().isoformat()
                 selection["updated_at"] = selection["queued_at"]
-                selection["pipeline_mode"] = "inline_v134"
+                selection["pipeline_mode"] = "inline_v135"
                 if candidate_failure and not _video_ai_has_candidate_source(selection):
                     selection["status"] = "waiting_browser_candidates"
                     selection["stage"] = "browser_candidate_preparation"
@@ -6734,7 +7080,7 @@ def resume_member_video_background_jobs(limit=24, min_interval_seconds=0):
                 selection["status"] = "error"
                 selection["last_error"] = str(exc)[:240]
                 selection["updated_at"] = now_jst().isoformat()
-                selection["pipeline_mode"] = "inline_v134"
+                selection["pipeline_mode"] = "inline_v135"
                 reflection["ai_selection"] = selection
                 _write_photo_reflection_for_owner(
                     row.get("id"),
@@ -11543,6 +11889,9 @@ def render_saved_media_preview(photo, image_alt="ぶらり旅の写真", compact
             duration_ms = int(photo_media_metadata(photo).get("video_duration_ms") or 0)
             if duration_ms > 0:
                 st.caption(f"🎥 動画 {max(1, round(duration_ms / 1000))}秒")
+            stabilization_caption = video_stabilization_caption(photo)
+            if stabilization_caption:
+                st.caption(stabilization_caption)
             render_video_delete_controls(photo, f"{delete_key_prefix}_{photo.get('id')}")
             return True
 
@@ -11588,7 +11937,7 @@ def show_video_ai_selection_dialog(storage_path, title, caption):
         st.caption(caption)
 
 
-@st.dialog("元動画")
+@st.dialog("動画")
 def show_video_library_dialog(video_photo, title, caption):
     video_url = video_display_url(video_photo, expires_in=1800)
     poster_path = str((video_photo or {}).get("storage_path") or "").strip()
@@ -11614,6 +11963,9 @@ def show_video_library_dialog(video_photo, title, caption):
         st.markdown(f"**{title}**")
     if caption:
         st.caption(caption)
+    stabilization_caption = video_stabilization_caption(video_photo)
+    if stabilization_caption:
+        st.caption(stabilization_caption)
     render_video_delete_controls(video_photo, f"video_library_dialog_{video_photo.get('id')}")
 
 
@@ -12852,10 +13204,14 @@ def _render_moments_picker(photo, index):
     round_number = int(selection_meta.get("round") or 0)
 
     st.markdown(f"#### {html.escape(title)}")
-    with st.expander("元の動画を見る"):
+    video_expander_label = "動画を見る（軽い手振れ補正）" if video_is_stabilized(photo) else "元の動画を見る"
+    with st.expander(video_expander_label):
         video_url = video_display_url(photo)
         if video_url:
             st.video(video_url)
+            stabilization_caption = video_stabilization_caption(photo)
+            if stabilization_caption:
+                st.caption(stabilization_caption)
             render_video_delete_controls(photo, f"moments_source_{video_id}_{index}")
         else:
             st.caption("動画を読み込めませんでした。")
@@ -13952,7 +14308,7 @@ def page_trip():
             "video_candidate_sheet_signed_url": str(video_reservation.get("candidate_sheet_signed_url") or ""),
             "video_candidate_sheet_storage_path": str(video_reservation.get("candidate_sheet_path") or ""),
         },
-        key=f"live_camera_v126_{camera_trip_key}_{st.session_state.capture_serial}",
+        key=f"live_camera_v135_{camera_trip_key}_{st.session_state.capture_serial}",
         on_photo_change=lambda: None,
         on_video_change=lambda: None,
         on_camera_error_change=lambda: None,
@@ -15671,6 +16027,7 @@ def page_settings():
                 f"残り：{format_storage_size(remaining_bytes)}。動画撮影を始める前に、"
                 f"15秒録画＋保存処理用バッファとして {format_storage_size(VIDEO_MAX_BYTES)} の空きがあるか確認します。"
                 "AIセレクションの静止画・候補ZIPはこの動画容量には含めません。"
+                "軽い手振れ補正版を作成できた場合、その補正版は動画容量に含まれます。"
             )
             if remaining_bytes < VIDEO_MAX_BYTES:
                 st.warning("15秒録画と保存処理用バッファの空きがないため、現在は動画撮影を開始できません。")
@@ -15692,8 +16049,9 @@ def page_settings():
         "初回だけ、このサイトへのカメラ使用を『許可』してください。"
     )
     st.caption(
-        "動画は最大15秒です。録画を止めると確認画面を挟まず保管庫へ自動保存し、"
-        "AIが自動で最大9枚の『いい瞬間』を選びます。"
+        "動画は最大15秒です。録画を止めると確認画面を挟まず元動画を保管庫へ自動保存します。"
+        "対応環境では元動画を残したまま軽い手振れ補正版を別に作成し、再生とAIの『いい瞬間』選定では補正版を優先します。"
+        "補正に失敗した場合は自動で元動画へ戻るため、動画保存や最大9枚の自動選定は止めません。"
         "初回はカメラとは別に位置情報の許可も求められます。位置情報がオフ・拒否・取得不能の場合は、"
         "ホームの地名表示（未登録なら『地名：登録なし（自動取得）』）を押して入力した内容を写真の場所として使います。"
     )
@@ -15712,8 +16070,8 @@ init_state()
 # v133: unfinished videos are processed automatically in the normal Streamlit
 # execution, not in a detached long-lived thread. No viewer/button action is
 # required. Process one saved video, then rerun so another queued video can follow.
-_video_auto_processed_v134 = resume_member_video_background_jobs()
-if _video_auto_processed_v134:
+_video_auto_processed_v135 = resume_member_video_background_jobs()
+if _video_auto_processed_v135:
     try:
         _home_video_counts_cached.clear()
     except Exception:
