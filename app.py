@@ -15,14 +15,14 @@ import threading
 import sys
 from concurrent.futures import ThreadPoolExecutor
 from array import array
-from urllib.parse import urlencode, urlparse, parse_qs
+from urllib.parse import urlencode, urlparse, parse_qs, quote
 from urllib.request import Request, urlopen
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import streamlit as st
 
-APP_BUILD = "v105"
+APP_BUILD = "v107"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -677,7 +677,7 @@ VIDEO_MAX_SECONDS = 30
 # comfortable container/codec overhead while also being the pre-recording reserve.
 VIDEO_MAX_BYTES = 6 * 1024 * 1024
 VIDEO_AI_MAX_SELECTIONS = 9
-VIDEO_AI_MAX_CANDIDATES = 18
+VIDEO_AI_MAX_CANDIDATES = 12
 
 TRIP_TABLE = "burari_trips"
 PHOTO_TABLE = "burari_photos"
@@ -936,9 +936,14 @@ export default function(component) {
   const status = parentElement.querySelector('#live-camera-status');
 
   const VIDEO_MAX_SECONDS = 30;
-  const videoAllowed = data?.video_allowed !== false;
+  // v107: the browser uploads the video blob straight to a short-lived Supabase
+  // signed upload URL. The multi-megabyte video is never serialized through a
+  // Streamlit component trigger value.
+  const videoUploadSignedUrl = String(data?.video_upload_signed_url || '');
+  const videoUploadStoragePath = String(data?.video_upload_storage_path || '');
+  const videoAllowed = data?.video_allowed !== false && Boolean(videoUploadSignedUrl && videoUploadStoragePath);
   const videoCapacityMessage = String(
-    data?.video_capacity_message || '動画の保存容量が不足しているため、最大30秒の動画を撮影できません。'
+    data?.video_capacity_message || '動画の保存容量または保存先を確認できないため、最大30秒の動画を撮影できません。'
   );
   if (!videoAllowed && videoStartButton) {
     videoStartButton.disabled = true;
@@ -1231,26 +1236,48 @@ export default function(component) {
     reader.readAsDataURL(blob);
   });
 
+  const uploadVideoBlobToSignedUrl = async (blob) => {
+    if (!videoUploadSignedUrl || !videoUploadStoragePath) {
+      throw new Error('signed video upload destination is unavailable');
+    }
+    // Match Supabase storage-js uploadToSignedUrl semantics for Blob uploads:
+    // multipart/form-data with cacheControl plus the Blob body, using PUT.
+    const form = new FormData();
+    form.append('cacheControl', '3600');
+    form.append('', blob, 'capture.video');
+    const response = await fetch(videoUploadSignedUrl, {
+      method: 'PUT',
+      headers: { 'x-upsert': 'true' },
+      body: form
+    });
+    if (!response.ok) {
+      let detail = '';
+      try { detail = await response.text(); } catch (_) {}
+      throw new Error(`signed video upload failed (${response.status}) ${String(detail || '').slice(0, 180)}`);
+    }
+    return true;
+  };
+
 
   // Capture small candidate stills while recording. This avoids reopening/seeking
   // the finished video before upload and keeps the component payload small.
   const captureRecordingCandidateFrame = async () => {
     if (recordingCandidateBusy || !recordingStartedAt || !video.videoWidth || !video.videoHeight) return;
     if (!mediaRecorder || mediaRecorder.state !== 'recording') return;
-    if (recordingCandidateFrames.length >= 18) return;
+    if (recordingCandidateFrames.length >= 12) return;
     recordingCandidateBusy = true;
     try {
       const frameCanvas = document.createElement('canvas');
       const srcW = video.videoWidth || 960;
       const srcH = video.videoHeight || 540;
-      const maxSide = 480;
+      const maxSide = 360;
       const scale = Math.min(1, maxSide / Math.max(srcW, srcH));
       frameCanvas.width = Math.max(1, Math.round(srcW * scale));
       frameCanvas.height = Math.max(1, Math.round(srcH * scale));
       const ctx = frameCanvas.getContext('2d', { alpha: false });
       ctx.drawImage(video, 0, 0, frameCanvas.width, frameCanvas.height);
-      const jpegBlob = await new Promise((resolve) => frameCanvas.toBlob(resolve, 'image/jpeg', 0.62));
-      if (!jpegBlob || jpegBlob.size > 140 * 1024) return;
+      const jpegBlob = await new Promise((resolve) => frameCanvas.toBlob(resolve, 'image/jpeg', 0.55));
+      if (!jpegBlob || jpegBlob.size > 70 * 1024) return;
       const timestampMs = Math.max(0, Date.now() - recordingStartedAt);
       const dataUrl = await blobToDataUrl(jpegBlob);
       const index = recordingCandidateFrames.length + 1;
@@ -1322,6 +1349,24 @@ export default function(component) {
     ctx.drawImage(video, 0, 0, width, height);
     const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', 0.86));
     if (!blob) throw new Error('canvas conversion failed');
+    return await blobToDataUrl(blob);
+  };
+
+
+  const captureVideoPosterDataUrl = async () => {
+    if (!video.videoWidth || !video.videoHeight) throw new Error('video frame unavailable');
+    const srcW = video.videoWidth;
+    const srcH = video.videoHeight;
+    const maxSide = 900;
+    const scale = Math.min(1, maxSide / Math.max(srcW, srcH));
+    const width = Math.max(1, Math.round(srcW * scale));
+    const height = Math.max(1, Math.round(srcH * scale));
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext('2d', { alpha: false });
+    ctx.drawImage(video, 0, 0, width, height);
+    const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', 0.72));
+    if (!blob) throw new Error('video poster conversion failed');
     return await blobToDataUrl(blob);
   };
 
@@ -1556,21 +1601,27 @@ export default function(component) {
           if (video) video.hidden = true;
           setStatus('動画を自動保存する準備をしています…');
 
-          const candidateFrames = recordingCandidateFrames.slice(0, 18);
+          const candidateFrames = recordingCandidateFrames.slice(0, 12);
           recordingCandidateFrames = [];
-          const [dataUrl, posterDataUrl, location] = await Promise.all([
-            blobToDataUrl(blob),
-            capturePosterDataUrl(),
+          const [posterDataUrl, location] = await Promise.all([
+            captureVideoPosterDataUrl(),
             recordingLocationPromise || getLocationAtCapture()
           ]);
+
+          // Upload the multi-megabyte Blob directly to Supabase. Do this before
+          // notifying Streamlit, so the component trigger only carries compact JSON
+          // plus small JPEG stills and never carries the video Base64 itself.
+          setStatus('動画を保管庫へ送信しています…');
+          await uploadVideoBlobToSignedUrl(blob);
 
           const recordingId = (globalThis.crypto && typeof globalThis.crypto.randomUUID === 'function')
             ? globalThis.crypto.randomUUID()
             : `video_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
           const mediaToSave = {
-            kind: 'video',
+            kind: 'video_uploaded',
             recording_id: recordingId,
-            data_url: dataUrl,
+            video_storage_path: videoUploadStoragePath,
+            video_size_bytes: blob.size,
             poster_data_url: posterDataUrl,
             candidate_frames: Array.isArray(candidateFrames) ? candidateFrames : [],
             mime_type: finalType,
@@ -1579,14 +1630,15 @@ export default function(component) {
             source: 'video_camera',
             captured_at: recordingCapturedAt || new Date().toISOString(),
             location,
-            auto_save: true
+            auto_save: true,
+            upload_complete: true
           };
 
           if (stream) {
             stream.getTracks().forEach((track) => track.stop());
             stream = null;
           }
-          setStatus('動画を自動保存しています。いい瞬間はあとで自動選定します…');
+          setStatus('動画を保管庫へ送信しました。記録を登録しています…');
           setTriggerValue('video', mediaToSave);
         } catch (err) {
           console.error(err);
@@ -1607,7 +1659,7 @@ export default function(component) {
       // Small stills are collected while the user records. They are not AI-analysed
       // here; the server stores the original video first and processes them later.
       setTimeout(() => { captureRecordingCandidateFrame(); }, 550);
-      recordingCandidateTimer = setInterval(() => { captureRecordingCandidateFrame(); }, 1600);
+      recordingCandidateTimer = setInterval(() => { captureRecordingCandidateFrame(); }, 2200);
       recordingMaxTimer = setTimeout(stopVideoRecording, VIDEO_MAX_SECONDS * 1000);
       setStatus('');
     } catch (err) {
@@ -1794,11 +1846,11 @@ export default function(component) {
 }
 """
 
-LIVE_CAMERA_COMPONENT_BUILD = "v106"
+LIVE_CAMERA_COMPONENT_BUILD = "v107"
 
 try:
     live_camera_component = st.components.v2.component(
-        "tokyo_burari_live_camera_v106",
+        "tokyo_burari_live_camera_v107",
         html=_LIVE_CAMERA_HTML,
         css=_LIVE_CAMERA_CSS,
         js=_LIVE_CAMERA_JS,
@@ -4350,6 +4402,245 @@ def video_recording_capacity_status():
         "required_bytes": VIDEO_MAX_BYTES,
         "message": message,
     }
+
+
+def _extract_signed_upload_value(response, names):
+    """Read signed-upload fields from storage-py dict/model response variants."""
+    if response is None:
+        return ""
+    if isinstance(response, dict):
+        for name in names:
+            value = response.get(name)
+            if value not in (None, ""):
+                return str(value)
+        nested = response.get("data")
+        if nested is not response:
+            value = _extract_signed_upload_value(nested, names)
+            if value:
+                return value
+    for name in names:
+        try:
+            value = getattr(response, name, None)
+        except Exception:
+            value = None
+        if value not in (None, ""):
+            return str(value)
+    try:
+        model_data = response.model_dump()
+    except Exception:
+        model_data = None
+    if isinstance(model_data, dict):
+        return _extract_signed_upload_value(model_data, names)
+    return ""
+
+
+def _normalize_supabase_storage_signed_url(value):
+    url = str(value or "").strip()
+    if not url:
+        return ""
+    if url.startswith("http://") or url.startswith("https://"):
+        return url
+    if url.startswith("/storage/v1/"):
+        return SUPABASE_URL.rstrip("/") + url
+    if url.startswith("/object/"):
+        return SUPABASE_URL.rstrip("/") + "/storage/v1" + url
+    if url.startswith("/"):
+        return SUPABASE_URL.rstrip("/") + url
+    return url
+
+
+def _create_signed_video_upload_url(path):
+    """Create a 2-hour signed Storage PUT target without exposing the service key."""
+    bucket = supabase_client().storage.from_(PHOTO_BUCKET)
+    response = None
+    if hasattr(bucket, "create_signed_upload_url"):
+        try:
+            response = bucket.create_signed_upload_url(path, options={"upsert": "true"})
+        except TypeError:
+            response = bucket.create_signed_upload_url(path)
+        signed_url = _normalize_supabase_storage_signed_url(
+            _extract_signed_upload_value(response, ("signed_url", "signedUrl", "url"))
+        )
+        if signed_url:
+            return signed_url
+
+    # Compatibility fallback for older storage-py builds. The secret key is used
+    # only server-side to mint a short-lived signed URL; it is never sent itself.
+    encoded_path = quote(f"{PHOTO_BUCKET}/{path}", safe="/")
+    endpoint = f"{SUPABASE_URL.rstrip('/')}/storage/v1/object/upload/sign/{encoded_path}"
+    request = Request(
+        endpoint,
+        data=b"{}",
+        method="POST",
+        headers={
+            "apikey": SUPABASE_SECRET_KEY,
+            "Authorization": f"Bearer {SUPABASE_SECRET_KEY}",
+            "Content-Type": "application/json",
+            "x-upsert": "true",
+        },
+    )
+    with urlopen(request, timeout=15) as http_response:
+        payload = json.loads(http_response.read().decode("utf-8"))
+    signed_url = _normalize_supabase_storage_signed_url(
+        _extract_signed_upload_value(payload, ("signed_url", "signedUrl", "url"))
+    )
+    if not signed_url:
+        raise RuntimeError("動画の一時アップロード先を作成できませんでした。")
+    return signed_url
+
+
+def get_camera_video_upload_reservation(trip_id, capture_serial):
+    """Return one stable signed upload destination for the current camera capture."""
+    state_key = "_camera_video_upload_reservation_v107"
+    current = st.session_state.get(state_key)
+    family_key = current_family_key()
+    member_key = current_member_key()
+    serial = int(capture_serial or 0)
+    if isinstance(current, dict):
+        if (
+            str(current.get("trip_id") or "") == str(trip_id)
+            and str(current.get("family_key") or "") == str(family_key)
+            and str(current.get("member_key") or "") == str(member_key)
+            and int(current.get("capture_serial") or -1) == serial
+            and str(current.get("storage_path") or "").strip()
+            and str(current.get("signed_url") or "").strip()
+        ):
+            return current
+
+    stamp = now_jst().strftime("%Y%m%d_%H%M%S_%f")
+    token = uuid.uuid4().hex[:12]
+    # The extension is intentionally generic because MediaRecorder may emit MP4 on
+    # Safari and WebM on Chromium. Storage metadata carries the real MIME type.
+    storage_path = f"{family_key}/{member_key}/{trip_id}/{stamp}_{token}_video.video"
+    signed_url = _create_signed_video_upload_url(storage_path)
+    reservation = {
+        "trip_id": str(trip_id),
+        "family_key": str(family_key),
+        "member_key": str(member_key),
+        "capture_serial": serial,
+        "storage_path": storage_path,
+        "signed_url": signed_url,
+        "created_at": now_jst().isoformat(),
+    }
+    st.session_state[state_key] = reservation
+    return reservation
+
+
+def clear_camera_video_upload_reservation():
+    st.session_state.pop("_camera_video_upload_reservation_v107", None)
+
+
+def register_browser_uploaded_video(
+    trip_id,
+    video_storage_path,
+    video_size_bytes,
+    poster_bytes,
+    mime_type="video/webm",
+    duration_ms=0,
+    location=None,
+    captured_at=None,
+    capture_source="video_camera",
+):
+    """Register a video already uploaded by the browser to a signed Storage path."""
+    active_snapshot = get_active_trip_fast(max_age_seconds=20) if st.session_state.get("active_trip_id") else None
+    if not active_snapshot or str(active_snapshot.get("id") or "") != str(trip_id):
+        if not get_trip(trip_id):
+            raise ValueError("現在の個人アカウントのぶらり旅が見つかりません。")
+
+    path = str(video_storage_path or "").strip()
+    expected_prefix = f"{current_family_key()}/{current_member_key()}/{trip_id}/"
+    if not path or not path.startswith(expected_prefix) or "_video." not in path:
+        raise ValueError("動画の保存先を確認できませんでした。")
+
+    size_value = max(0, int(video_size_bytes or 0))
+    if size_value <= 0:
+        raise ValueError("動画の容量を確認できませんでした。")
+    if size_value > VIDEO_MAX_BYTES:
+        raise ValueError("動画が大きすぎます。30秒以内で撮り直してください。")
+    ensure_video_storage_capacity(size_value)
+
+    poster = normalize_photo(poster_bytes)
+    if not poster:
+        raise ValueError("動画の代表画像を作れませんでした。")
+
+    clean_mime = str(mime_type or "video/webm").split(";", 1)[0].strip().lower()
+    if clean_mime not in {"video/mp4", "video/webm"}:
+        clean_mime = "video/webm"
+    duration_value = min(VIDEO_MAX_SECONDS * 1000, max(0, int(duration_ms or 0)))
+    base = path.rsplit("_video.", 1)[0]
+    poster_path = base + "_video.jpg"
+    client = supabase_client()
+    poster_uploaded = False
+    reflection = {
+        "capture_source": str(capture_source or "video_camera"),
+        "location": location if isinstance(location, dict) else {},
+        "media_type": "video",
+        "video_storage_path": path,
+        "video_mime_type": clean_mime,
+        "video_duration_ms": duration_value,
+        "video_size_bytes": size_value,
+        "browser_direct_upload": True,
+    }
+    try:
+        client.storage.from_(PHOTO_BUCKET).upload(
+            path=poster_path,
+            file=poster,
+            file_options={"content-type": "image/jpeg", "cache-control": "3600"},
+        )
+        poster_uploaded = True
+        result = (
+            client.table(PHOTO_TABLE)
+            .insert(
+                {
+                    "trip_id": trip_id,
+                    "family_key": current_family_key(),
+                    "member_key": current_member_key(),
+                    "storage_path": poster_path,
+                    "captured_at": str(captured_at or now_jst().isoformat()),
+                    "reflection_json": reflection,
+                    "signals_json": {},
+                }
+            )
+            .execute()
+        )
+        saved_row = (result.data or [None])[0]
+        if not isinstance(saved_row, dict):
+            saved_row = {}
+        if not saved_row.get("id"):
+            try:
+                lookup = (
+                    client.table(PHOTO_TABLE)
+                    .select("id,trip_id,storage_path,captured_at,reflection_json,signals_json")
+                    .eq("trip_id", trip_id)
+                    .eq("family_key", current_family_key()).eq("member_key", current_member_key())
+                    .eq("storage_path", poster_path)
+                    .limit(1)
+                    .execute()
+                )
+                rows = lookup.data or []
+                if rows and isinstance(rows[0], dict):
+                    saved_row = rows[0]
+            except Exception:
+                pass
+        download_photo.clear()
+        signed_photo_url_map.clear()
+        _invalidate_fast_db_cache()
+        if not saved_row:
+            saved_row = {
+                "trip_id": trip_id,
+                "storage_path": poster_path,
+                "captured_at": str(captured_at or now_jst().isoformat()),
+                "reflection_json": reflection,
+                "signals_json": {},
+            }
+        return saved_row
+    except Exception:
+        if poster_uploaded:
+            try:
+                client.storage.from_(PHOTO_BUCKET).remove([poster_path])
+            except Exception:
+                pass
+        raise
 
 
 def upload_video(
@@ -10665,15 +10956,38 @@ def page_trip():
     active_snapshot = st.session_state.get("_active_trip_snapshot")
     if not isinstance(active_snapshot, dict) or active_snapshot.get("trip_date") != today_iso() or active_snapshot.get("status") != "active":
         active_snapshot = None
-    camera_trip_key = str((active_snapshot or {}).get("id") or "pending")
+
+    # v107: reserve a short-lived signed Storage upload destination before video
+    # recording. The browser can then PUT the Blob straight to Supabase and only
+    # return compact metadata to Streamlit.
+    video_reservation = {}
+    video_allowed = bool(video_capacity.get("allowed"))
+    video_capacity_message = str(video_capacity.get("message") or "")
+    camera_trip = active_snapshot
+    if video_allowed:
+        try:
+            camera_trip = camera_trip or ensure_today_trip()
+            video_reservation = get_camera_video_upload_reservation(
+                camera_trip["id"],
+                st.session_state.capture_serial,
+            )
+        except Exception as exc:
+            video_allowed = False
+            video_capacity_message = "動画の保存先を準備できないため、現在は動画撮影を開始できません。"
+            with st.expander("動画保存先の準備エラー"):
+                st.code(str(exc))
+
+    camera_trip_key = str((camera_trip or {}).get("id") or "pending")
     result = live_camera_component(
         data={
             "auto_start": auto_start,
             "auto_start_mode": "video" if auto_start_video else ("photo" if auto_start else ""),
-            "video_allowed": bool(video_capacity.get("allowed")),
-            "video_capacity_message": str(video_capacity.get("message") or ""),
+            "video_allowed": video_allowed,
+            "video_capacity_message": video_capacity_message,
+            "video_upload_signed_url": str(video_reservation.get("signed_url") or ""),
+            "video_upload_storage_path": str(video_reservation.get("storage_path") or ""),
         },
-        key=f"live_camera_v106_{camera_trip_key}_{st.session_state.capture_serial}",
+        key=f"live_camera_v107_{camera_trip_key}_{st.session_state.capture_serial}",
         on_photo_change=lambda: None,
         on_video_change=lambda: None,
         on_camera_error_change=lambda: None,
@@ -10696,17 +11010,51 @@ def page_trip():
         if message:
             st.warning(message)
 
-    if isinstance(video_payload, dict) and video_payload.get("data_url") and video_payload.get("poster_data_url"):
-        save_stage = "撮影データの読み込み"
+    if (
+        isinstance(video_payload, dict)
+        and video_payload.get("upload_complete")
+        and video_payload.get("video_storage_path")
+    ):
+        save_stage = "アップロード済み動画の確認"
         video_saved = False
+        uploaded_video_path = str(video_payload.get("video_storage_path") or "").strip()
         try:
-            mime_type, video_raw = decode_camera_video_data_url(video_payload["data_url"])
-            poster_raw = decode_camera_data_url(video_payload["poster_data_url"])
-            digest = hashlib.sha1(video_raw).hexdigest()
+            reservation = st.session_state.get("_camera_video_upload_reservation_v107")
+            if not isinstance(reservation, dict):
+                raise ValueError("動画の保存予約を確認できませんでした。")
+            if uploaded_video_path != str(reservation.get("storage_path") or "").strip():
+                raise ValueError("動画の保存先が撮影前の予約と一致しません。")
+
+            save_stage = "代表画像の読み込み"
+            poster_raw = b""
+            try:
+                poster_raw = decode_camera_data_url(video_payload.get("poster_data_url"))
+            except Exception:
+                # The original video is already safely in Storage. If the compact
+                # poster value was dropped by the component runtime, reuse the first
+                # valid AI still rather than failing the whole video registration.
+                for frame_item in video_payload.get("candidate_frames") or []:
+                    if not isinstance(frame_item, dict):
+                        continue
+                    try:
+                        poster_raw = decode_camera_data_url(frame_item.get("data_url"))
+                    except Exception:
+                        poster_raw = b""
+                    if poster_raw:
+                        break
+                if not poster_raw:
+                    raise ValueError("動画の代表画像を受信できませんでした。")
+
+            video_size = max(0, int(video_payload.get("video_size_bytes") or 0))
+            recording_id = str(video_payload.get("recording_id") or "").strip()
+            digest_source = f"{uploaded_video_path}|{video_size}|{recording_id}"
+            digest = hashlib.sha1(digest_source.encode("utf-8")).hexdigest()
             digest_key = "saved_camera_video_digest_current"
             if st.session_state.get(digest_key) != digest:
-                save_stage = "保存先の準備"
+                save_stage = "動画記録の登録"
                 trip = ensure_today_trip()
+                if str(trip.get("id") or "") != str(reservation.get("trip_id") or ""):
+                    raise ValueError("動画の保存先と現在のぶらり旅が一致しません。")
                 capture_source = str(video_payload.get("source") or "video_camera")
                 location = build_photo_location(
                     video_payload.get("location"),
@@ -10714,31 +11062,26 @@ def page_trip():
                     capture_source=capture_source,
                 )
 
-                # Do not decode or process AI stills yet. The original video is always
-                # persisted first; candidate processing is strictly post-save.
-                candidate_frames = []
-
-                save_stage = "動画本体の保管庫への保存"
-                with st.spinner("動画を保管庫に自動保存しています…"):
-                    saved_video = upload_video(
+                with st.spinner("動画を保管庫に登録しています…"):
+                    saved_video = register_browser_uploaded_video(
                         trip["id"],
-                        video_raw,
+                        uploaded_video_path,
+                        video_size,
                         poster_raw,
-                        mime_type=mime_type or video_payload.get("mime_type"),
+                        mime_type=video_payload.get("mime_type"),
                         duration_ms=video_payload.get("duration_ms"),
                         location=location,
                         captured_at=video_payload.get("captured_at"),
                         capture_source=capture_source,
                     )
 
-                # From this point onward the original video is durably saved. Mark the
-                # digest immediately so an AI/candidate failure cannot upload it twice.
                 video_saved = True
                 st.session_state[digest_key] = digest
                 if isinstance(saved_video, dict) and saved_video.get("id"):
                     st.session_state[f"_camera_recent_photo_{trip['id']}"] = saved_video["id"]
 
-                # Only now decode the lightweight stills captured during recording.
+                # AI stills are deliberately secondary. The video is already registered
+                # before these compact frames are decoded or stored.
                 try:
                     candidate_frames = decode_video_candidate_frames(
                         video_payload.get("candidate_frames") or [],
@@ -10751,14 +11094,9 @@ def page_trip():
                 if candidate_frames and isinstance(saved_video, dict) and saved_video.get("id"):
                     try:
                         save_stage = "AI候補画像の保管"
-                        saved_video = store_video_ai_candidate_bundle(
-                            saved_video,
-                            candidate_frames,
-                        )
+                        saved_video = store_video_ai_candidate_bundle(saved_video, candidate_frames)
                         ai_status = "queued"
                     except Exception as candidate_exc:
-                        # AI preparation is secondary. Never report this as a video-save
-                        # failure because the original video is already in storage.
                         ai_status = "candidate_error"
                         mark_video_ai_selection_error(saved_video, candidate_exc)
 
@@ -10767,8 +11105,6 @@ def page_trip():
                         save_stage = "AIバックグラウンド処理の開始"
                         launch_video_ai_background_job(saved_video)
                     except Exception as background_exc:
-                        # Keep the persisted candidate bundle. The top-page recovery
-                        # path can launch the job again on the next visit.
                         ai_status = "queued_recovery"
                         try:
                             reflection = dict(photo_media_metadata(saved_video))
@@ -10792,6 +11128,7 @@ def page_trip():
                 if place_label:
                     st.session_state["_home_today_place"] = place_label
 
+                clear_camera_video_upload_reservation()
                 st.session_state.capture_serial += 1
                 if ai_status in {"queued", "queued_recovery"}:
                     notice = "動画を保管庫に保存しました。いい瞬間はバックグラウンドで自動選定しています。"
@@ -10806,15 +11143,18 @@ def page_trip():
                 st.warning("動画本体は保管庫に保存済みです。保存後の処理だけ完了できませんでした。")
             else:
                 detail = str(exc).strip().replace("\n", " ")
-                if len(detail) > 180:
-                    detail = detail[:177] + "..."
+                if len(detail) > 220:
+                    detail = detail[:217] + "..."
                 st.error(f"動画を保存できませんでした。処理段階：{save_stage}" + (f" ／ {detail}" if detail else ""))
-                if save_stage == "撮影データの読み込み" and isinstance(video_payload, dict):
-                    video_value = _coerce_component_data_url(video_payload.get("data_url"))
-                    poster_value = _coerce_component_data_url(video_payload.get("poster_data_url"))
-                    video_header = video_value.split(",", 1)[0][:100] if video_value else "(なし)"
-                    poster_header = poster_value.split(",", 1)[0][:100] if poster_value else "(なし)"
-                    st.caption(f"受信形式：動画 {video_header} / 代表画像 {poster_header}")
+                # The Blob was already uploaded directly by the browser. Remove it if
+                # registration failed, so the next recording can safely reuse the same
+                # signed reservation without leaving an orphaned object.
+                if uploaded_video_path and isinstance(reservation if 'reservation' in locals() else None, dict):
+                    if uploaded_video_path == str(reservation.get("storage_path") or "").strip():
+                        try:
+                            supabase_client().storage.from_(PHOTO_BUCKET).remove([uploaded_video_path])
+                        except Exception:
+                            pass
             with st.expander("保護者向け詳細"):
                 st.code(f"処理段階: {save_stage}\n{exc}")
 
