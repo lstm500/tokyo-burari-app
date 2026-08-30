@@ -707,6 +707,8 @@ _LIVE_CAMERA_HTML = """
       <button id="camera-review-save" class="camera-save-button" type="button">この写真を残す</button>
       <button id="camera-review-retry" class="camera-retry-button" type="button">撮りなおす／選びなおす</button>
     </div>
+    <button id="camera-review-find-moments" class="camera-find-button" type="button" hidden>✨ いい瞬間を探す</button>
+    <div id="camera-review-build" class="camera-review-build" hidden>camera v101</div>
     <img id="camera-review-image" class="camera-review-image" alt="撮影した写真の確認" />
     <video id="camera-review-video" class="camera-review-video" playsinline controls hidden></video>
   </div>
@@ -729,6 +731,8 @@ _LIVE_CAMERA_CSS = """
 .camera-review[hidden],
 .camera-review-image[hidden],
 .camera-review-video[hidden],
+.camera-find-button[hidden],
+.camera-review-build[hidden],
 .camera-recording-status[hidden],
 .camera-status[hidden] {
   display: none !important;
@@ -752,7 +756,8 @@ _LIVE_CAMERA_CSS = """
 .camera-mode-switch-button,
 .camera-sub-button,
 .camera-save-button,
-.camera-retry-button {
+.camera-retry-button,
+.camera-find-button {
   width: 100%;
   min-height: 68px;
   box-sizing: border-box;
@@ -804,6 +809,28 @@ _LIVE_CAMERA_CSS = """
 .camera-review-actions { grid-template-columns: 3fr 1fr; }
 .camera-active-actions { margin: 8px 0 0 0; }
 .camera-review-actions { margin: 0 0 8px 0; }
+.camera-find-button {
+  margin: 0 0 8px 0;
+  border: 2px solid #7c3aed;
+  background: rgba(124, 58, 237, .10);
+  color: var(--st-text-color);
+}
+.camera-find-button:hover,
+.camera-find-button:focus-visible {
+  background: rgba(124, 58, 237, .16);
+}
+.camera-review-build {
+  margin: -2px 0 8px 0;
+  text-align: right;
+  font-size: 10px;
+  line-height: 1;
+  opacity: .38;
+  user-select: none;
+}
+.camera-find-button:disabled {
+  opacity: .62;
+  cursor: default;
+}
 .camera-recording-status {
   margin: 8px 0 0;
   padding: 8px 10px;
@@ -891,12 +918,15 @@ export default function(component) {
   const reviewVideo = parentElement.querySelector('#camera-review-video');
   const reviewSave = parentElement.querySelector('#camera-review-save');
   const reviewRetry = parentElement.querySelector('#camera-review-retry');
+  const reviewFindMoments = parentElement.querySelector('#camera-review-find-moments');
+  const reviewBuild = parentElement.querySelector('#camera-review-build');
   const status = parentElement.querySelector('#live-camera-status');
 
   const VIDEO_MAX_SECONDS = 30;
   let stream = null;
   let cameraMode = 'photo';
   let pendingMedia = null;
+  let pendingVideoBlob = null;
   let reviewVideoUrl = '';
   let mediaRecorder = null;
   let recordedChunks = [];
@@ -906,6 +936,12 @@ export default function(component) {
   let recordingTimer = null;
   let recordingMaxTimer = null;
   let recordingCancelled = false;
+  // Good-moments search is guarded by a fresh pointer gesture that must start
+  // and end on the review button. This makes a recording-stop tap/click-through
+  // structurally unable to launch frame extraction.
+  let videoReviewGeneration = 0;
+  let videoReviewShownAt = 0;
+  let goodMomentsPointerGesture = null;
 
   const setStatus = (message) => {
     if (!status) return;
@@ -948,6 +984,10 @@ export default function(component) {
     recordingStatus.textContent = `● 録画中 ${mm}:${ss} / 0:${String(VIDEO_MAX_SECONDS).padStart(2, '0')}`;
   };
 
+  const resetGoodMomentsGesture = () => {
+    goodMomentsPointerGesture = null;
+  };
+
   const revokeReviewVideoUrl = () => {
     if (reviewVideoUrl) {
       try { URL.revokeObjectURL(reviewVideoUrl); } catch (_) {}
@@ -956,6 +996,8 @@ export default function(component) {
   };
 
   const hideReview = () => {
+    resetGoodMomentsGesture();
+    videoReviewShownAt = 0;
     if (review) review.hidden = true;
     if (reviewImage) {
       reviewImage.hidden = true;
@@ -968,6 +1010,12 @@ export default function(component) {
       try { reviewVideo.load(); } catch (_) {}
     }
     revokeReviewVideoUrl();
+    if (reviewFindMoments) {
+      reviewFindMoments.hidden = true;
+      reviewFindMoments.disabled = false;
+      reviewFindMoments.textContent = '✨ いい瞬間を探す';
+    }
+    if (reviewBuild) reviewBuild.hidden = true;
   };
 
   const showMenu = () => {
@@ -997,6 +1045,8 @@ export default function(component) {
     }
     reviewSave.textContent = 'この写真を残す';
     reviewRetry.textContent = '撮りなおす／選びなおす';
+    if (reviewFindMoments) reviewFindMoments.hidden = true;
+    if (reviewBuild) reviewBuild.hidden = true;
     if (review) review.hidden = false;
   };
 
@@ -1013,7 +1063,17 @@ export default function(component) {
     }
     reviewSave.textContent = 'この動画を残す';
     reviewRetry.textContent = '撮りなおす';
+    if (reviewFindMoments) {
+      reviewFindMoments.hidden = false;
+      reviewFindMoments.disabled = false;
+      reviewFindMoments.textContent = '✨ いい瞬間を探す';
+    }
+    if (reviewBuild) reviewBuild.hidden = false;
     if (review) review.hidden = false;
+    videoReviewGeneration += 1;
+    videoReviewShownAt = performance.now();
+    resetGoodMomentsGesture();
+    setStatus('');
   };
 
   const stopActiveRecorderSilently = () => {
@@ -1040,6 +1100,7 @@ export default function(component) {
       video.hidden = true;
     }
     pendingMedia = null;
+    pendingVideoBlob = null;
     showMenu();
   };
 
@@ -1393,18 +1454,22 @@ export default function(component) {
           const blob = new Blob(recordedChunks, { type: finalType });
           recordedChunks = [];
           if (!blob.size) throw new Error('recorded video is empty');
-          setStatus('動画から良い瞬間の候補を準備しています…');
-          const [dataUrl, posterDataUrl, candidateFrames, location] = await Promise.all([
+          setStatus('動画を準備しています…');
+          const [dataUrl, posterDataUrl, location] = await Promise.all([
             blobToDataUrl(blob),
             capturePosterDataUrl(),
-            extractVideoCandidateFrames(blob, durationMs),
             recordingLocationPromise || getLocationAtCapture()
           ]);
+          pendingVideoBlob = blob;
+          const recordingId = (globalThis.crypto && typeof globalThis.crypto.randomUUID === 'function')
+            ? globalThis.crypto.randomUUID()
+            : `video_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
           pendingMedia = {
             kind: 'video',
+            recording_id: recordingId,
             data_url: dataUrl,
             poster_data_url: posterDataUrl,
-            candidate_frames: candidateFrames,
+            candidate_frames: [],
             mime_type: finalType,
             duration_ms: durationMs,
             name: finalType.includes('mp4') ? 'camera.mp4' : 'camera.webm',
@@ -1469,6 +1534,96 @@ export default function(component) {
     }
   };
 
+  const findGoodMoments = async (gestureToken) => {
+    // Hard gate: frame extraction can only be entered with a token created by a
+    // fresh pointerdown -> pointerup sequence on the visible review button.
+    // Neither recording stop, timer stop, a synthetic click, nor click-through
+    // can create this token.
+    if (!gestureToken || gestureToken.explicit !== true) return;
+    if (gestureToken.review_generation !== videoReviewGeneration) return;
+    if (!pendingMedia || pendingMedia.kind !== 'video' || !pendingVideoBlob) return;
+    if (!review || review.hidden || !reviewFindMoments || reviewFindMoments.hidden) return;
+
+    resetGoodMomentsGesture();
+    if (reviewFindMoments) {
+      reviewFindMoments.disabled = true;
+      reviewFindMoments.textContent = '候補を準備しています…';
+    }
+    reviewSave.disabled = true;
+    reviewRetry.disabled = true;
+    setStatus('動画からいい瞬間の候補を準備しています…');
+
+    try {
+      const candidateFrames = await extractVideoCandidateFrames(
+        pendingVideoBlob,
+        pendingMedia.duration_ms
+      );
+      if (!Array.isArray(candidateFrames) || candidateFrames.length < 9) {
+        throw new Error('not enough candidate frames');
+      }
+      const requestId = (globalThis.crypto && typeof globalThis.crypto.randomUUID === 'function')
+        ? globalThis.crypto.randomUUID()
+        : `selection_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+      const request = {
+        ...pendingMedia,
+        candidate_frames: candidateFrames,
+        selection_requested: true,
+        selection_request_id: requestId,
+        selection_requested_at: new Date().toISOString()
+      };
+      setTriggerValue('video_selection', request);
+    } catch (err) {
+      console.error(err);
+      const message = '良い瞬間を探す準備ができませんでした。もう一度お試しください。';
+      setStatus(message);
+      reviewSave.disabled = false;
+      reviewRetry.disabled = false;
+      if (reviewFindMoments) {
+        reviewFindMoments.textContent = '✨ いい瞬間を探す';
+      }
+      setTriggerValue('camera_error', { name: 'VideoSelectionPrepareError', message });
+    }
+  };
+
+  const beginGoodMomentsPointer = (event) => {
+    if (!event || event.isTrusted !== true) return;
+    if (!reviewFindMoments || reviewFindMoments.disabled || reviewFindMoments.hidden) return;
+    if (!review || review.hidden) return;
+    if (!pendingMedia || pendingMedia.kind !== 'video' || !pendingVideoBlob) return;
+    if (!videoReviewShownAt || performance.now() < videoReviewShownAt) return;
+
+    goodMomentsPointerGesture = {
+      pointer_id: event.pointerId,
+      review_generation: videoReviewGeneration,
+      started_at: performance.now(),
+    };
+  };
+
+  const finishGoodMomentsPointer = (event) => {
+    if (!event || event.isTrusted !== true) {
+      resetGoodMomentsGesture();
+      return;
+    }
+    const gesture = goodMomentsPointerGesture;
+    resetGoodMomentsGesture();
+    if (!gesture) return;
+    if (gesture.pointer_id !== event.pointerId) return;
+    if (gesture.review_generation !== videoReviewGeneration) return;
+    if ((performance.now() - gesture.started_at) > 5000) return;
+    if (!reviewFindMoments || event.currentTarget !== reviewFindMoments) return;
+
+    event.preventDefault();
+    event.stopPropagation();
+    void findGoodMoments({
+      explicit: true,
+      review_generation: videoReviewGeneration,
+    });
+  };
+
+  const cancelGoodMomentsPointer = () => {
+    resetGoodMomentsGesture();
+  };
+
   const savePendingMedia = () => {
     if (!pendingMedia) return;
     reviewSave.disabled = true;
@@ -1490,8 +1645,13 @@ export default function(component) {
     if (!pendingMedia) return;
     const source = pendingMedia.source;
     pendingMedia = null;
+    pendingVideoBlob = null;
     reviewSave.disabled = false;
     reviewRetry.disabled = false;
+    if (reviewFindMoments) {
+      reviewFindMoments.disabled = false;
+      reviewFindMoments.textContent = '✨ いい瞬間を探す';
+    }
     setStatus('');
     hideReview();
 
@@ -1536,8 +1696,13 @@ export default function(component) {
   galleryInput.addEventListener('change', chooseGalleryPhoto);
   reviewSave.addEventListener('click', savePendingMedia);
   reviewRetry.addEventListener('click', retryPendingMedia);
+  reviewFindMoments?.addEventListener('pointerdown', beginGoodMomentsPointer);
+  reviewFindMoments?.addEventListener('pointerup', finishGoodMomentsPointer);
+  reviewFindMoments?.addEventListener('pointercancel', cancelGoodMomentsPointer);
 
-  if (data?.auto_start) {
+  if (data?.auto_start_mode === 'video') {
+    queueMicrotask(() => startCamera('video'));
+  } else if (data?.auto_start) {
     queueMicrotask(() => startCamera('photo'));
   }
 
@@ -1550,15 +1715,20 @@ export default function(component) {
     galleryInput.removeEventListener('change', chooseGalleryPhoto);
     reviewSave.removeEventListener('click', savePendingMedia);
     reviewRetry.removeEventListener('click', retryPendingMedia);
+    reviewFindMoments?.removeEventListener('pointerdown', beginGoodMomentsPointer);
+    reviewFindMoments?.removeEventListener('pointerup', finishGoodMomentsPointer);
+    reviewFindMoments?.removeEventListener('pointercancel', cancelGoodMomentsPointer);
     stopStream();
     hideReview();
   };
 }
 """
 
+LIVE_CAMERA_COMPONENT_BUILD = "v101"
+
 try:
     live_camera_component = st.components.v2.component(
-        "tokyo_burari_live_camera",
+        "tokyo_burari_live_camera_v101",
         html=_LIVE_CAMERA_HTML,
         css=_LIVE_CAMERA_CSS,
         js=_LIVE_CAMERA_JS,
@@ -4335,11 +4505,13 @@ def _write_photo_reflection(photo_id, reflection):
     _invalidate_fast_db_cache()
 
 
-def store_video_ai_selection(photo, frame_items):
-    """Run AI selection, store nine JPEG derivatives, and attach them to the video row."""
+def store_preselected_video_ai_selection(photo, selections, candidate_count=0):
+    """Store nine already-selected JPEG derivatives and attach them to a saved video."""
     if not isinstance(photo, dict) or not photo.get("id") or not photo_is_video(photo):
         raise ValueError("AIセレクション対象の動画が見つかりません。")
-    selections = choose_video_ai_frames(frame_items)
+    selected_items = list(selections or [])[:9]
+    if len(selected_items) < 9:
+        raise ValueError("AIセレクションを9枚そろえられませんでした。")
     base = _video_selection_base_path(photo)
     if not base:
         raise ValueError("動画の保存先を確認できませんでした。")
@@ -4348,12 +4520,15 @@ def store_video_ai_selection(photo, frame_items):
     uploaded_paths = []
     items = []
     try:
-        for rank, selected in enumerate(selections, start=1):
-            frame = selected["frame"]
+        for rank, selected in enumerate(selected_items, start=1):
+            frame = selected.get("frame") or {}
+            image_bytes = frame.get("image_bytes")
+            if not image_bytes:
+                raise ValueError("AIセレクション画像を読み込めませんでした。")
             path = f"{base}_ai_{rank:02d}.jpg"
             client.storage.from_(PHOTO_BUCKET).upload(
                 path=path,
-                file=frame["image_bytes"],
+                file=image_bytes,
                 file_options={"content-type": "image/jpeg", "cache-control": "3600"},
             )
             uploaded_paths.append(path)
@@ -4375,7 +4550,7 @@ def store_video_ai_selection(photo, frame_items):
         reflection["ai_selection"] = {
             "status": "ready",
             "generated_at": now_jst().isoformat(),
-            "candidate_count": len(frame_items or []),
+            "candidate_count": max(0, int(candidate_count or 0)),
             "items": items,
         }
         _write_photo_reflection(photo["id"], reflection)
@@ -4390,6 +4565,15 @@ def store_video_ai_selection(photo, frame_items):
                 pass
         raise
 
+
+def store_video_ai_selection(photo, frame_items):
+    """Run AI selection, store nine JPEG derivatives, and attach them to the video row."""
+    selections = choose_video_ai_frames(frame_items)
+    return store_preselected_video_ai_selection(
+        photo,
+        selections,
+        candidate_count=len(frame_items or []),
+    )
 
 def mark_video_ai_selection_error(photo, message):
     if not isinstance(photo, dict) or not photo.get("id"):
@@ -8664,6 +8848,154 @@ def render_video_ai_selection(photo, key_prefix="video_selection", allow_save=Tr
                             st.code(str(exc))
 
 
+@st.dialog("AIセレクション")
+def show_pending_video_ai_selection_dialog(image_bytes, title, caption):
+    if not image_bytes:
+        st.warning("画像を表示できませんでした。")
+        return
+    st.image(image_bytes, use_container_width=True)
+    if title:
+        st.markdown(f"**{title}**")
+    if caption:
+        st.caption(caption)
+
+
+def render_pending_video_ai_review():
+    """Review AI picks before the recorded video is persisted."""
+    pending = st.session_state.get("_pending_video_ai_review")
+    if not isinstance(pending, dict):
+        return False
+    selections = list(pending.get("selections") or [])[:9]
+    if len(selections) < 9 or not pending.get("video_raw") or not pending.get("poster_raw"):
+        st.session_state.pop("_pending_video_ai_review", None)
+        return False
+
+    st.markdown("### 撮影した動画")
+    st.caption("AIセレクションを確認中です。まだこの動画は保存されていません。")
+    st.video(pending["video_raw"], format=str(pending.get("mime_type") or "video/webm"))
+
+    save_col, retry_col = st.columns([3, 1], gap="small")
+    with save_col:
+        save_video_clicked = st.button(
+            "この動画を残す",
+            type="primary",
+            use_container_width=True,
+            key="pending_ai_video_save",
+        )
+    with retry_col:
+        retry_video_clicked = st.button(
+            "撮り直す",
+            use_container_width=True,
+            key="pending_ai_video_retry",
+        )
+
+    if retry_video_clicked:
+        st.session_state.pop("_pending_video_ai_review", None)
+        st.session_state.pop("_pending_video_ai_review_digest", None)
+        st.session_state.capture_serial += 1
+        st.session_state["_camera_auto_start_video"] = True
+        st.rerun()
+
+    if save_video_clicked:
+        try:
+            trip = ensure_today_trip()
+            capture_source = str(pending.get("source") or "video_camera")
+            location = build_photo_location(
+                pending.get("location"),
+                trip,
+                capture_source=capture_source,
+            )
+            with st.spinner("動画を残しています…"):
+                saved_video = upload_video(
+                    trip["id"],
+                    pending["video_raw"],
+                    pending["poster_raw"],
+                    mime_type=pending.get("mime_type"),
+                    duration_ms=pending.get("duration_ms"),
+                    location=location,
+                    captured_at=pending.get("captured_at"),
+                    capture_source=capture_source,
+                )
+
+            ai_selection_ok = False
+            if isinstance(saved_video, dict) and saved_video.get("id"):
+                try:
+                    with st.spinner("選んだ9枚を保存しています…"):
+                        saved_video = store_preselected_video_ai_selection(
+                            saved_video,
+                            selections,
+                            candidate_count=pending.get("candidate_count"),
+                        )
+                    ai_selection_ok = True
+                except Exception as selection_exc:
+                    mark_video_ai_selection_error(saved_video, selection_exc)
+
+            if isinstance(saved_video, dict) and saved_video.get("id"):
+                st.session_state[f"_camera_recent_photo_{trip['id']}"] = saved_video["id"]
+
+            previous_count = st.session_state.get("_home_today_photo_count")
+            try:
+                previous_count = int(previous_count) if previous_count is not None else 0
+            except Exception:
+                previous_count = 0
+            st.session_state["_home_today_photo_count"] = previous_count + 1
+            place_label = str((location or {}).get("place_label") or trip.get("destination") or "").strip()
+            if place_label:
+                st.session_state["_home_today_place"] = place_label
+
+            st.session_state.pop("_pending_video_ai_review", None)
+            st.session_state.pop("_pending_video_ai_review_digest", None)
+            st.session_state.capture_serial += 1
+            st.session_state["_camera_notice"] = (
+                "動画を保存し、AIセレクション9枚も保存しました。"
+                if ai_selection_ok else
+                "動画を保存しました。AIセレクションの保存には失敗しました。"
+            )
+            st.rerun()
+        except Exception as exc:
+            st.error("動画を保存できませんでした。")
+            with st.expander("保護者向け詳細"):
+                st.code(str(exc))
+
+    st.markdown("##### AIが選んだセレクション")
+    st.caption("表情・躍動感・写真としての美しさ・被写体の魅力などを総合評価し、似た場面が並びすぎないよう9枚を選んでいます。")
+    columns = st.columns(3, gap="small")
+    for index, selected in enumerate(selections):
+        rank = index + 1
+        frame = selected.get("frame") or {}
+        image_bytes = frame.get("image_bytes")
+        timestamp_ms = max(0, int(frame.get("timestamp_ms") or 0))
+        quality = _video_selection_quality_label(selected.get("primary_quality"))
+        reason = str(selected.get("reason") or "").strip()
+        caption = f"{timestamp_ms / 1000:.1f}秒・{quality}"
+        if reason:
+            caption += f"\n{reason}"
+        best_label = "★ AI BEST" if rank == 1 else f"SELECT {rank}"
+        with columns[index % 3]:
+            if image_bytes:
+                data_url = "data:image/jpeg;base64," + base64.b64encode(image_bytes).decode("ascii")
+                st.markdown(
+                    '<div style="width:100%;aspect-ratio:1/1;overflow:hidden;border-radius:12px;background:rgba(128,128,128,.08);">'
+                    f'<img src="{data_url}" alt="AIセレクション {rank}" style="display:block;width:100%;height:100%;object-fit:cover;" />'
+                    '</div>',
+                    unsafe_allow_html=True,
+                )
+            else:
+                st.caption("画像を表示できません")
+            if rank == 1:
+                st.markdown("**★ AI BEST**")
+            st.caption(caption)
+            if st.button(
+                "大きく見る",
+                use_container_width=True,
+                key=f"pending_ai_video_view_{rank}",
+            ):
+                show_pending_video_ai_selection_dialog(image_bytes, best_label, caption)
+
+    st.caption("動画を残すと、この9枚もAIセレクションとして保存され、各画像をあとから写真として保存できます。")
+    return True
+
+
 def trip_label(trip):
     """Label a diary candidate, including a custom saved title when present."""
     trip = trip or {}
@@ -9183,11 +9515,17 @@ def render_recent_camera_photo_comment(trip):
 # ============================================================
 def page_trip():
     if st.button("←", key="camera_back_home", help="ホームへ戻る"):
+        st.session_state.pop("_pending_video_ai_review", None)
+        st.session_state.pop("_pending_video_ai_review_digest", None)
+        st.session_state.pop("_last_video_selection_request_id", None)
         go_page("home")
 
     notice = st.session_state.pop("_camera_notice", None)
     if notice:
         st.success(notice)
+
+    if render_pending_video_ai_review():
+        return
 
     if live_camera_component is None:
         st.error("ライブカメラ機能に必要なStreamlitのバージョンが古いです。requirements.txtを更新してください。")
@@ -9195,15 +9533,20 @@ def page_trip():
 
     # Critical path: mount/start camera first. No Supabase call occurs above this line.
     auto_start = bool(st.session_state.pop("_camera_auto_start", False))
+    auto_start_video = bool(st.session_state.pop("_camera_auto_start_video", False))
     active_snapshot = st.session_state.get("_active_trip_snapshot")
     if not isinstance(active_snapshot, dict) or active_snapshot.get("trip_date") != today_iso() or active_snapshot.get("status") != "active":
         active_snapshot = None
     camera_trip_key = str((active_snapshot or {}).get("id") or "pending")
     result = live_camera_component(
-        data={"auto_start": auto_start},
-        key=f"live_camera_{camera_trip_key}_{st.session_state.capture_serial}",
+        data={
+            "auto_start": auto_start,
+            "auto_start_mode": "video" if auto_start_video else ("photo" if auto_start else ""),
+        },
+        key=f"live_camera_v101_{camera_trip_key}_{st.session_state.capture_serial}",
         on_photo_change=lambda: None,
         on_video_change=lambda: None,
+        on_video_selection_change=lambda: None,
         on_camera_error_change=lambda: None,
     )
 
@@ -9217,7 +9560,70 @@ def page_trip():
 
     payload = getattr(result, "photo", None)
     video_payload = getattr(result, "video", None)
+    video_selection_payload = getattr(result, "video_selection", None)
     camera_error = getattr(result, "camera_error", None)
+
+    selection_request_id = ""
+    if isinstance(video_selection_payload, dict):
+        selection_request_id = str(video_selection_payload.get("selection_request_id") or "").strip()
+    explicit_selection_request = (
+        isinstance(video_selection_payload, dict)
+        and video_selection_payload.get("selection_requested") is True
+        and bool(selection_request_id)
+    )
+
+    if (
+        explicit_selection_request
+        and video_selection_payload.get("data_url")
+        and video_selection_payload.get("poster_data_url")
+        and st.session_state.get("_last_video_selection_request_id") != selection_request_id
+    ):
+        # Only an explicit press of "いい瞬間を探す" may enter this block.
+        # Merely stopping a recording is intentionally insufficient.
+        st.session_state["_last_video_selection_request_id"] = selection_request_id
+        try:
+            mime_type, video_raw = decode_camera_video_data_url(video_selection_payload["data_url"])
+            poster_raw = decode_camera_data_url(video_selection_payload["poster_data_url"])
+            candidate_frames = decode_video_candidate_frames(video_selection_payload.get("candidate_frames") or [])
+            if len(candidate_frames) < 9:
+                raise ValueError("良い瞬間の候補画像を9枚以上作れませんでした。")
+            digest = hashlib.sha1(video_raw).hexdigest()
+            if st.session_state.get("_pending_video_ai_review_digest") != digest:
+                with st.spinner("AIが9枚のいい瞬間を選んでいます…"):
+                    selections = choose_video_ai_frames(candidate_frames)
+                compact_selections = []
+                for selected in selections[:9]:
+                    frame = selected.get("frame") or {}
+                    compact_selections.append(
+                        {
+                            "frame": {
+                                "frame_id": str(frame.get("frame_id") or ""),
+                                "timestamp_ms": max(0, int(frame.get("timestamp_ms") or 0)),
+                                "image_bytes": frame.get("image_bytes"),
+                            },
+                            "score": int(selected.get("score") or 0),
+                            "primary_quality": str(selected.get("primary_quality") or "other"),
+                            "reason": str(selected.get("reason") or "").strip(),
+                        }
+                    )
+                st.session_state["_pending_video_ai_review"] = {
+                    "video_raw": video_raw,
+                    "poster_raw": poster_raw,
+                    "mime_type": mime_type or video_selection_payload.get("mime_type") or "video/webm",
+                    "duration_ms": max(0, int(video_selection_payload.get("duration_ms") or 0)),
+                    "source": str(video_selection_payload.get("source") or "video_camera"),
+                    "captured_at": video_selection_payload.get("captured_at"),
+                    "location": video_selection_payload.get("location") if isinstance(video_selection_payload.get("location"), dict) else {},
+                    "candidate_count": len(candidate_frames),
+                    "selections": compact_selections,
+                }
+                st.session_state["_pending_video_ai_review_digest"] = digest
+                st.session_state.capture_serial += 1
+                st.rerun()
+        except Exception as exc:
+            st.error("いい瞬間を探せませんでした。動画はまだ保存されていません。")
+            with st.expander("保護者向け詳細"):
+                st.code(str(exc))
 
     if camera_error:
         message = camera_error.get("message") if isinstance(camera_error, dict) else str(camera_error)
@@ -9228,7 +9634,6 @@ def page_trip():
         try:
             mime_type, video_raw = decode_camera_video_data_url(video_payload["data_url"])
             poster_raw = decode_camera_data_url(video_payload["poster_data_url"])
-            candidate_frames = decode_video_candidate_frames(video_payload.get("candidate_frames") or [])
             digest = hashlib.sha1(video_raw).hexdigest()
             digest_key = "saved_camera_video_digest_current"
             if st.session_state.get(digest_key) != digest:
@@ -9254,17 +9659,6 @@ def page_trip():
                         capture_source=capture_source,
                     )
 
-                ai_selection_ok = False
-                if isinstance(saved_video, dict) and saved_video.get("id") and len(candidate_frames) >= 9:
-                    try:
-                        with st.spinner("AIが動画から良い瞬間を9枚選んでいます…"):
-                            saved_video = store_video_ai_selection(saved_video, candidate_frames)
-                        ai_selection_ok = True
-                    except Exception as selection_exc:
-                        mark_video_ai_selection_error(saved_video, selection_exc)
-                elif isinstance(saved_video, dict) and saved_video.get("id"):
-                    mark_video_ai_selection_error(saved_video, "候補画像を9枚以上作れませんでした。")
-
                 st.session_state[digest_key] = digest
                 if isinstance(saved_video, dict) and saved_video.get("id"):
                     # Reuse the existing recent-media conversation path.
@@ -9281,11 +9675,7 @@ def page_trip():
                     st.session_state["_home_today_place"] = place_label
 
                 st.session_state.capture_serial += 1
-                st.session_state["_camera_notice"] = (
-                    "動画を保存し、AIセレクション9枚を作りました。"
-                    if ai_selection_ok else
-                    "動画を保存しました。AIセレクションは作成できませんでした。"
-                )
+                st.session_state["_camera_notice"] = "動画を保存しました。"
                 st.rerun()
         except Exception as exc:
             st.error("動画を保存できませんでした。")
