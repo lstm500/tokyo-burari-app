@@ -23,7 +23,7 @@ from zoneinfo import ZoneInfo
 
 import streamlit as st
 
-APP_BUILD = "v113"
+APP_BUILD = "v114"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -946,6 +946,8 @@ export default function(component) {
   // Streamlit component trigger value.
   const videoUploadSignedUrl = String(data?.video_upload_signed_url || '');
   const videoUploadStoragePath = String(data?.video_upload_storage_path || '');
+  const candidateSheetSignedUrl = String(data?.video_candidate_sheet_signed_url || '');
+  const candidateSheetStoragePath = String(data?.video_candidate_sheet_storage_path || '');
   const videoUnavailableReason = String(data?.video_unavailable_reason || '');
   const videoAllowed = data?.video_allowed !== false && Boolean(videoUploadSignedUrl && videoUploadStoragePath);
   const videoCapacityMessage = String(
@@ -1245,24 +1247,18 @@ export default function(component) {
     reader.readAsDataURL(blob);
   });
 
-  const uploadVideoBlobToSignedUrl = async (blob) => {
-    if (!videoUploadSignedUrl || !videoUploadStoragePath) {
-      throw new Error('動画のアップロード先がありません');
-    }
-    // v111: send a raw binary body to a brand-new signed path. Avoid multipart/form-data
-    // and x-upsert, both of which have caused Storage upload failures on some hosted
-    // Supabase projects. A unique path means overwrite/upsert is unnecessary.
+  const uploadRawBlobToSignedUrl = async (blob, signedUrl, contentType, label) => {
+    if (!signedUrl) throw new Error(`${label || 'ファイル'}のアップロード先がありません`);
     const payload = await blob.arrayBuffer();
-    if (!payload || !payload.byteLength) throw new Error('録画データが空です');
-    const contentType = String(blob.type || '').split(';', 1)[0] || 'video/webm';
+    if (!payload || !payload.byteLength) throw new Error(`${label || 'ファイル'}が空です`);
     let lastError = null;
     for (let attempt = 0; attempt < 2; attempt += 1) {
       try {
-        const response = await fetch(videoUploadSignedUrl, {
+        const response = await fetch(signedUrl, {
           method: 'PUT',
           headers: {
             'cache-control': 'max-age=3600',
-            'content-type': contentType
+            'content-type': contentType || 'application/octet-stream'
           },
           body: payload
         });
@@ -1271,14 +1267,65 @@ export default function(component) {
         try { detail = await response.text(); } catch (_) {}
         const compact = String(detail || '').replace(/\s+/g, ' ').trim().slice(0, 220);
         lastError = new Error(`Supabase Storage ${response.status}${compact ? `: ${compact}` : ''}`);
-        // Permission, MIME, size and conflict errors do not improve by retrying.
         if ([400, 401, 403, 409, 413, 415].includes(response.status)) break;
       } catch (err) {
         lastError = err;
       }
       if (attempt === 0) await new Promise((resolve) => setTimeout(resolve, 450));
     }
-    throw lastError || new Error('動画アップロードに失敗しました');
+    throw lastError || new Error(`${label || 'ファイル'}アップロードに失敗しました`);
+  };
+
+  const buildCandidateSheet = async (frames) => {
+    const source = Array.isArray(frames) ? frames.slice(0, 12) : [];
+    if (!source.length) return null;
+    const loaded = [];
+    for (const frame of source) {
+      const dataUrl = String(frame?.data_url || '');
+      if (!dataUrl) continue;
+      try {
+        const image = await new Promise((resolve, reject) => {
+          const node = new Image();
+          node.onload = () => resolve(node);
+          node.onerror = reject;
+          node.src = dataUrl;
+        });
+        loaded.push({ frame, image });
+      } catch (_) {}
+    }
+    if (!loaded.length) return null;
+    const columns = Math.min(4, loaded.length);
+    const rows = Math.ceil(loaded.length / columns);
+    const tileWidth = Math.max(1, loaded[0].image.naturalWidth || loaded[0].image.width || 320);
+    const tileHeight = Math.max(1, loaded[0].image.naturalHeight || loaded[0].image.height || 180);
+    const sheet = document.createElement('canvas');
+    sheet.width = tileWidth * columns;
+    sheet.height = tileHeight * rows;
+    const ctx = sheet.getContext('2d', { alpha: false });
+    ctx.fillStyle = '#000';
+    ctx.fillRect(0, 0, sheet.width, sheet.height);
+    const manifest = [];
+    loaded.forEach((entry, index) => {
+      const col = index % columns;
+      const row = Math.floor(index / columns);
+      ctx.drawImage(entry.image, col * tileWidth, row * tileHeight, tileWidth, tileHeight);
+      manifest.push({
+        frame_id: String(entry.frame?.frame_id || `F${String(index + 1).padStart(2, '0')}`),
+        timestamp_ms: Math.max(0, Number(entry.frame?.timestamp_ms || 0)),
+        tile_index: index
+      });
+    });
+    const blob = await new Promise((resolve) => sheet.toBlob(resolve, 'image/jpeg', 0.80));
+    if (!blob) return null;
+    return { blob, manifest, columns, rows, tile_width: tileWidth, tile_height: tileHeight };
+  };
+
+  const uploadVideoBlobToSignedUrl = async (blob) => {
+    if (!videoUploadSignedUrl || !videoUploadStoragePath) {
+      throw new Error('動画のアップロード先がありません');
+    }
+    const contentType = String(blob.type || '').split(';', 1)[0] || 'video/webm';
+    return await uploadRawBlobToSignedUrl(blob, videoUploadSignedUrl, contentType, '動画');
   };
 
 
@@ -1624,7 +1671,7 @@ export default function(component) {
           if (video) video.hidden = true;
           setStatus('動画を自動保存する準備をしています…');
 
-          const candidateFrames = recordingCandidateFrames.slice(0, 12);
+          let candidateFrames = recordingCandidateFrames.slice(0, 12);
           recordingCandidateFrames = [];
 
           // Poster/location are useful metadata, but neither is allowed to block the
@@ -1651,6 +1698,42 @@ export default function(component) {
           setStatus('動画を保管庫へ送信しています…');
           await uploadVideoBlobToSignedUrl(blob);
 
+          // If live sampling produced too few frames on this browser, reconstruct
+          // them from the just-recorded local Blob. The original video is already
+          // safely in Storage, so this fallback can never block its preservation.
+          if (candidateFrames.length < 4) {
+            try {
+              setStatus('動画は保存済みです。AI候補を準備しています…');
+              const rebuilt = await extractVideoCandidateFrames(blob, durationMs);
+              if (Array.isArray(rebuilt) && rebuilt.length) candidateFrames = rebuilt.slice(0, 12);
+            } catch (rebuildErr) {
+              console.warn('candidate rebuild skipped', rebuildErr);
+            }
+          }
+
+          // Candidate stills are never returned to Streamlit as a large array of
+          // base64 images. Pack them into one JPEG contact sheet and upload it
+          // directly to Storage. This makes the AI hand-off independent of the
+          // component payload size and survives Streamlit reruns.
+          let candidateSheetPath = '';
+          let candidateManifest = [];
+          let candidateSheetColumns = 0;
+          let candidateSheetRows = 0;
+          if (candidateFrames.length && candidateSheetSignedUrl && candidateSheetStoragePath) {
+            try {
+              const sheet = await buildCandidateSheet(candidateFrames);
+              if (sheet?.blob) {
+                await uploadRawBlobToSignedUrl(sheet.blob, candidateSheetSignedUrl, 'image/jpeg', 'AI候補画像');
+                candidateSheetPath = candidateSheetStoragePath;
+                candidateManifest = sheet.manifest || [];
+                candidateSheetColumns = Number(sheet.columns || 0);
+                candidateSheetRows = Number(sheet.rows || 0);
+              }
+            } catch (sheetErr) {
+              console.warn('candidate sheet upload skipped', sheetErr);
+            }
+          }
+
           const recordingId = (globalThis.crypto && typeof globalThis.crypto.randomUUID === 'function')
             ? globalThis.crypto.randomUUID()
             : `video_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
@@ -1660,7 +1743,11 @@ export default function(component) {
             video_storage_path: videoUploadStoragePath,
             video_size_bytes: blob.size,
             poster_data_url: posterDataUrl,
-            candidate_frames: Array.isArray(candidateFrames) ? candidateFrames : [],
+            candidate_frames: [],
+            candidate_sheet_path: candidateSheetPath,
+            candidate_manifest: candidateManifest,
+            candidate_sheet_columns: candidateSheetColumns,
+            candidate_sheet_rows: candidateSheetRows,
             mime_type: finalType,
             duration_ms: durationMs,
             name: finalType.includes('mp4') ? 'camera.mp4' : 'camera.webm',
@@ -1886,11 +1973,11 @@ export default function(component) {
 }
 """
 
-LIVE_CAMERA_COMPONENT_BUILD = "v111"
+LIVE_CAMERA_COMPONENT_BUILD = "v114"
 
 try:
     live_camera_component = st.components.v2.component(
-        "tokyo_burari_live_camera_v111",
+        "tokyo_burari_live_camera_v114",
         html=_LIVE_CAMERA_HTML,
         css=_LIVE_CAMERA_CSS,
         js=_LIVE_CAMERA_JS,
@@ -4271,6 +4358,9 @@ def photo_all_storage_paths(photo):
         bundle_path = str(selection_meta.get("candidate_bundle_path") or "").strip()
         if bundle_path and bundle_path not in paths:
             paths.append(bundle_path)
+        sheet_path = str(selection_meta.get("candidate_sheet_path") or "").strip()
+        if sheet_path and sheet_path not in paths:
+            paths.append(sheet_path)
     return paths
 
 
@@ -4821,7 +4911,7 @@ def _create_signed_video_upload_url(path):
 
 def get_camera_video_upload_reservation(trip_id, capture_serial):
     """Return one stable signed upload destination for the current camera capture."""
-    state_key = "_camera_video_upload_reservation_v111"
+    state_key = "_camera_video_upload_reservation_v114"
     current = st.session_state.get(state_key)
     family_key = current_family_key()
     member_key = current_member_key()
@@ -4843,6 +4933,13 @@ def get_camera_video_upload_reservation(trip_id, capture_serial):
     # Safari and WebM on Chromium. Storage metadata carries the real MIME type.
     storage_path = f"{family_key}/{member_key}/{trip_id}/{stamp}_{token}_video.video"
     signed_url = _create_signed_video_upload_url(storage_path)
+    candidate_sheet_path = f"{family_key}/{member_key}/{trip_id}/{stamp}_{token}_candidates.jpg"
+    candidate_sheet_signed_url = ""
+    try:
+        candidate_sheet_signed_url = _create_signed_video_upload_url(candidate_sheet_path)
+    except Exception:
+        # Candidate preparation must never block original video recording.
+        candidate_sheet_signed_url = ""
     reservation = {
         "trip_id": str(trip_id),
         "family_key": str(family_key),
@@ -4850,6 +4947,8 @@ def get_camera_video_upload_reservation(trip_id, capture_serial):
         "capture_serial": serial,
         "storage_path": storage_path,
         "signed_url": signed_url,
+        "candidate_sheet_path": candidate_sheet_path,
+        "candidate_sheet_signed_url": candidate_sheet_signed_url,
         "created_at": now_jst().isoformat(),
     }
     st.session_state[state_key] = reservation
@@ -4857,7 +4956,7 @@ def get_camera_video_upload_reservation(trip_id, capture_serial):
 
 
 def clear_camera_video_upload_reservation():
-    st.session_state.pop("_camera_video_upload_reservation_v111", None)
+    st.session_state.pop("_camera_video_upload_reservation_v114", None)
 
 
 def _video_placeholder_poster_bytes():
@@ -5516,6 +5615,128 @@ def _read_video_candidate_bundle(bundle_bytes):
     return frames[:VIDEO_AI_MAX_CANDIDATES]
 
 
+def _read_video_candidate_sheet(sheet_bytes, manifest, columns=4, rows=0):
+    """Split a browser-created JPEG contact sheet back into candidate frames."""
+    if not sheet_bytes:
+        return []
+    items = [x for x in (manifest or []) if isinstance(x, dict)][:VIDEO_AI_MAX_CANDIDATES]
+    if not items:
+        return []
+    from PIL import Image
+    image = Image.open(io.BytesIO(sheet_bytes)).convert("RGB")
+    columns = max(1, min(int(columns or 4), len(items)))
+    rows = max(1, int(rows or ((len(items) + columns - 1) // columns)))
+    tile_w = max(1, image.width // columns)
+    tile_h = max(1, image.height // rows)
+    frames = []
+    for index, item in enumerate(items):
+        tile_index = max(0, int(item.get("tile_index") if item.get("tile_index") is not None else index))
+        col = tile_index % columns
+        row = tile_index // columns
+        if row >= rows:
+            continue
+        crop = image.crop((col * tile_w, row * tile_h, min(image.width, (col + 1) * tile_w), min(image.height, (row + 1) * tile_h)))
+        out = io.BytesIO()
+        crop.save(out, format="JPEG", quality=88, optimize=True)
+        raw = out.getvalue()
+        if not raw:
+            continue
+        frames.append(
+            {
+                "frame_id": str(item.get("frame_id") or f"F{index + 1:02d}")[:24],
+                "timestamp_ms": max(0, int(item.get("timestamp_ms") or 0)),
+                "image_bytes": normalize_photo(raw, max_side=1280, quality=82),
+                "ai_bytes": normalize_photo(raw, max_side=640, quality=72),
+            }
+        )
+    frames.sort(key=lambda x: (int(x.get("timestamp_ms") or 0), str(x.get("frame_id") or "")))
+    return frames[:VIDEO_AI_MAX_CANDIDATES]
+
+
+def store_video_ai_candidate_sheet(photo, sheet_path, manifest, columns=4, rows=0):
+    """Attach an already-uploaded candidate contact sheet to a saved video."""
+    if not isinstance(photo, dict) or not photo.get("id") or not photo_is_video(photo):
+        raise ValueError("候補保存対象の動画が見つかりません。")
+    sheet_path = str(sheet_path or "").strip()
+    manifest = [x for x in (manifest or []) if isinstance(x, dict)][:VIDEO_AI_MAX_CANDIDATES]
+    if not sheet_path or not manifest:
+        raise ValueError("動画の候補シートがありません。")
+    reflection = dict(photo_media_metadata(photo))
+    previous = reflection.get("ai_selection") or {}
+    if not isinstance(previous, dict):
+        previous = {}
+    reflection["ai_selection"] = {
+        **previous,
+        "status": "processing",
+        "queued_at": now_jst().isoformat(),
+        "updated_at": now_jst().isoformat(),
+        "candidate_count": len(manifest),
+        "candidate_sheet_path": sheet_path,
+        "candidate_manifest": manifest,
+        "candidate_sheet_columns": max(1, int(columns or 4)),
+        "candidate_sheet_rows": max(1, int(rows or ((len(manifest) + max(1, int(columns or 4)) - 1) // max(1, int(columns or 4))))),
+        "round": int(previous.get("round") or 0),
+        "items": list(previous.get("items") or []),
+        "history": list(previous.get("history") or []),
+        "feedback_history": list(previous.get("feedback_history") or []),
+        "last_error": "",
+    }
+    _write_photo_reflection(photo["id"], reflection)
+    updated = dict(photo)
+    updated["reflection_json"] = reflection
+    return updated
+
+
+def mark_video_ai_waiting_candidates(photo, message=""):
+    if not isinstance(photo, dict) or not photo.get("id"):
+        return photo
+    reflection = dict(photo_media_metadata(photo))
+    previous = reflection.get("ai_selection") or {}
+    if not isinstance(previous, dict):
+        previous = {}
+    previous.update(
+        {
+            "status": "waiting_candidates",
+            "updated_at": now_jst().isoformat(),
+            "last_error": str(message or "")[:240],
+            "items": list(previous.get("items") or []),
+        }
+    )
+    reflection["ai_selection"] = previous
+    _write_photo_reflection(photo["id"], reflection)
+    updated = dict(photo)
+    updated["reflection_json"] = reflection
+    return updated
+
+
+def _video_ai_has_candidate_source(selection_meta):
+    if not isinstance(selection_meta, dict):
+        return False
+    return bool(
+        str(selection_meta.get("candidate_sheet_path") or "").strip()
+        or str(selection_meta.get("candidate_bundle_path") or "").strip()
+    )
+
+
+def _load_video_ai_candidate_frames(client, selection_meta):
+    if not isinstance(selection_meta, dict):
+        return []
+    sheet_path = str(selection_meta.get("candidate_sheet_path") or "").strip()
+    if sheet_path:
+        raw = _storage_bytes(client.storage.from_(PHOTO_BUCKET).download(sheet_path))
+        return _read_video_candidate_sheet(
+            raw,
+            selection_meta.get("candidate_manifest") or [],
+            columns=selection_meta.get("candidate_sheet_columns") or 4,
+            rows=selection_meta.get("candidate_sheet_rows") or 0,
+        )
+    bundle_path = str(selection_meta.get("candidate_bundle_path") or "").strip()
+    if bundle_path:
+        raw = _storage_bytes(client.storage.from_(PHOTO_BUCKET).download(bundle_path))
+        return _read_video_candidate_bundle(raw)
+    return []
+
+
 def store_video_ai_candidate_bundle(photo, frame_items):
     """Persist candidates once so background selection and rerolls survive Streamlit reruns."""
     if not isinstance(photo, dict) or not photo.get("id") or not photo_is_video(photo):
@@ -5788,8 +6009,7 @@ def _run_video_ai_background_job(photo_id, family_key, member_key):
     selection_meta = reflection.get("ai_selection") or {}
     if not isinstance(selection_meta, dict):
         selection_meta = {}
-    bundle_path = str(selection_meta.get("candidate_bundle_path") or "").strip()
-    if not bundle_path:
+    if not _video_ai_has_candidate_source(selection_meta):
         raise ValueError("動画の候補フレームが見つかりません。")
 
     # Persist an actual worker start time. If Streamlit restarts after this point,
@@ -5807,8 +6027,7 @@ def _run_video_ai_background_job(photo_id, family_key, member_key):
         pass
 
     try:
-        bundle_raw = _storage_bytes(client.storage.from_(PHOTO_BUCKET).download(bundle_path))
-        frames = _read_video_candidate_bundle(bundle_raw)
+        frames = _load_video_ai_candidate_frames(client, selection_meta)
         if not frames:
             raise ValueError("動画の候補フレームを読み込めませんでした。")
 
@@ -5949,7 +6168,7 @@ def request_video_ai_reroll(photo):
     selection = reflection.get("ai_selection") or {}
     if not isinstance(selection, dict):
         selection = {}
-    if not str(selection.get("candidate_bundle_path") or "").strip():
+    if not _video_ai_has_candidate_source(selection):
         raise ValueError("この動画は再選定用の候補を保存していません。")
 
     items = [item for item in (selection.get("items") or []) if isinstance(item, dict)]
@@ -6024,11 +6243,16 @@ def record_video_ai_human_choices(video_photo, selected_ranks):
 
     # Once the user has accepted at least one still, the candidate ZIP is no
     # longer needed for reroll and can be removed to control storage cost.
-    bundle_path = str(selection.get("candidate_bundle_path") or "").strip()
-    if bundle_path:
+    candidate_paths = [
+        str(selection.get("candidate_bundle_path") or "").strip(),
+        str(selection.get("candidate_sheet_path") or "").strip(),
+    ]
+    candidate_paths = [x for x in candidate_paths if x]
+    if candidate_paths:
         try:
-            supabase_client().storage.from_(PHOTO_BUCKET).remove([bundle_path])
+            supabase_client().storage.from_(PHOTO_BUCKET).remove(candidate_paths)
             selection["candidate_bundle_path"] = ""
+            selection["candidate_sheet_path"] = ""
             reflection["ai_selection"] = selection
             _write_photo_reflection(video_photo.get("id"), reflection)
         except Exception:
@@ -6113,12 +6337,20 @@ def mark_video_ai_selection_error(photo, message):
     if not isinstance(photo, dict) or not photo.get("id"):
         return
     reflection = dict(photo_media_metadata(photo))
-    reflection["ai_selection"] = {
-        "status": "error",
-        "generated_at": now_jst().isoformat(),
-        "message": str(message or "AIセレクションを作成できませんでした。")[:240],
-        "items": [],
-    }
+    selection = reflection.get("ai_selection") or {}
+    if not isinstance(selection, dict):
+        selection = {}
+    selection.update(
+        {
+            "status": "error",
+            "generated_at": now_jst().isoformat(),
+            "updated_at": now_jst().isoformat(),
+            "message": str(message or "AIセレクションを作成できませんでした。")[:240],
+            "last_error": str(message or "AIセレクションを作成できませんでした。")[:240],
+            "items": list(selection.get("items") or []),
+        }
+    )
+    reflection["ai_selection"] = selection
     try:
         _write_photo_reflection(photo["id"], reflection)
     except Exception:
@@ -11004,6 +11236,215 @@ def page_home():
 
 
 
+_MOMENTS_RECOVERY_HTML = """
+<div id="moments-recovery" style="font-size:14px;color:#6b7280;padding:.35rem 0;">元動画からAI候補を準備しています…</div>
+"""
+
+_MOMENTS_RECOVERY_JS = r"""
+export default function(component) {
+  const { data, setTriggerValue, parentElement } = component;
+  const status = parentElement.querySelector('#moments-recovery');
+  let cancelled = false;
+  const setStatus = (text) => { if (status) status.textContent = text || ''; };
+  const blobToDataUrl = (blob) => new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ''));
+    reader.onerror = reject;
+    reader.readAsDataURL(blob);
+  });
+  const seek = (video, seconds) => new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('seek timeout')), 5000);
+    const done = () => { clearTimeout(timer); resolve(); };
+    const fail = () => { clearTimeout(timer); reject(new Error('seek failed')); };
+    video.addEventListener('seeked', done, { once: true });
+    video.addEventListener('error', fail, { once: true });
+    try { video.currentTime = seconds; } catch (err) { clearTimeout(timer); reject(err); }
+  });
+  const upload = async (blob, url) => {
+    const response = await fetch(url, {
+      method: 'PUT',
+      headers: { 'content-type': 'image/jpeg', 'cache-control': 'max-age=3600' },
+      body: await blob.arrayBuffer()
+    });
+    if (!response.ok) {
+      let detail = '';
+      try { detail = await response.text(); } catch (_) {}
+      throw new Error(`候補画像の保存に失敗しました (${response.status}) ${String(detail || '').slice(0, 160)}`);
+    }
+  };
+  const run = async () => {
+    if (!data?.enabled || !data?.video_url || !data?.sheet_signed_url || !data?.sheet_path) return;
+    try {
+      setStatus('元動画を読み込み、AI候補を準備しています…');
+      const response = await fetch(String(data.video_url));
+      if (!response.ok) throw new Error(`元動画を読み込めません (${response.status})`);
+      const videoBlob = await response.blob();
+      const objectUrl = URL.createObjectURL(videoBlob);
+      const probe = document.createElement('video');
+      probe.preload = 'auto';
+      probe.muted = true;
+      probe.playsInline = true;
+      probe.src = objectUrl;
+      try {
+        await new Promise((resolve, reject) => {
+          const timer = setTimeout(() => reject(new Error('動画情報の読込がタイムアウトしました')), 7000);
+          probe.addEventListener('loadedmetadata', () => { clearTimeout(timer); resolve(); }, { once: true });
+          probe.addEventListener('error', () => { clearTimeout(timer); reject(new Error('動画情報を読み込めません')); }, { once: true });
+        });
+        const duration = Number.isFinite(probe.duration) && probe.duration > 0 ? probe.duration : 1;
+        const count = Math.max(4, Math.min(12, Math.ceil(duration / 2)));
+        const srcW = probe.videoWidth || 1280;
+        const srcH = probe.videoHeight || 720;
+        const maxSide = 480;
+        const scale = Math.min(1, maxSide / Math.max(srcW, srcH));
+        const tileW = Math.max(1, Math.round(srcW * scale));
+        const tileH = Math.max(1, Math.round(srcH * scale));
+        const columns = Math.min(4, count);
+        const rows = Math.ceil(count / columns);
+        const sheet = document.createElement('canvas');
+        sheet.width = tileW * columns;
+        sheet.height = tileH * rows;
+        const ctx = sheet.getContext('2d', { alpha: false });
+        ctx.fillStyle = '#000';
+        ctx.fillRect(0, 0, sheet.width, sheet.height);
+        const manifest = [];
+        let actual = 0;
+        for (let i = 0; i < count; i += 1) {
+          if (cancelled) return;
+          const seconds = Math.min(Math.max(0, duration - 0.03), duration * ((i + 0.5) / count));
+          try {
+            await seek(probe, seconds);
+            const col = actual % columns;
+            const row = Math.floor(actual / columns);
+            ctx.drawImage(probe, col * tileW, row * tileH, tileW, tileH);
+            manifest.push({ frame_id: `F${String(actual + 1).padStart(2, '0')}`, timestamp_ms: Math.round(seconds * 1000), tile_index: actual });
+            actual += 1;
+          } catch (_) {}
+        }
+        if (!actual) throw new Error('元動画から候補画像を作れませんでした');
+        // Repack to the actual row count if a few seeks failed.
+        const actualRows = Math.ceil(actual / columns);
+        const finalCanvas = document.createElement('canvas');
+        finalCanvas.width = sheet.width;
+        finalCanvas.height = tileH * actualRows;
+        finalCanvas.getContext('2d', { alpha: false }).drawImage(sheet, 0, 0);
+        const sheetBlob = await new Promise((resolve) => finalCanvas.toBlob(resolve, 'image/jpeg', 0.82));
+        if (!sheetBlob) throw new Error('候補シートを作れませんでした');
+        setStatus('候補画像を保管庫へ保存しています…');
+        await upload(sheetBlob, String(data.sheet_signed_url));
+        if (cancelled) return;
+        setStatus('AI選定を開始します…');
+        setTriggerValue('candidate_sheet', {
+          path: String(data.sheet_path),
+          manifest,
+          columns,
+          rows: actualRows,
+          recovery_id: String(data.recovery_id || '')
+        });
+      } finally {
+        try { probe.pause(); } catch (_) {}
+        probe.removeAttribute('src');
+        try { probe.load(); } catch (_) {}
+        URL.revokeObjectURL(objectUrl);
+      }
+    } catch (err) {
+      const message = String(err?.message || err || '候補画像を準備できませんでした').slice(0, 240);
+      setStatus(message);
+      setTriggerValue('recovery_error', { message });
+    }
+  };
+  queueMicrotask(run);
+  return () => { cancelled = true; };
+}
+"""
+
+try:
+    moments_recovery_component = st.components.v2.component(
+        "tokyo_burari_moments_recovery_v114",
+        html=_MOMENTS_RECOVERY_HTML,
+        js=_MOMENTS_RECOVERY_JS,
+    )
+except Exception:
+    moments_recovery_component = None
+
+
+def _candidate_sheet_recovery_reservation(photo):
+    video_id = str((photo or {}).get("id") or "").strip()
+    if not video_id:
+        raise ValueError("動画IDを確認できません。")
+    key = f"_moments_recovery_reservation_v114_{video_id}"
+    current = st.session_state.get(key)
+    if isinstance(current, dict) and current.get("path") and current.get("signed_url"):
+        return current
+    base = _video_selection_base_path(photo)
+    if not base:
+        raise ValueError("動画の保存先を確認できません。")
+    path = f"{base}_candidates_recovery_{uuid.uuid4().hex[:8]}.jpg"
+    reservation = {
+        "path": path,
+        "signed_url": _create_signed_video_upload_url(path),
+        "recovery_id": uuid.uuid4().hex,
+    }
+    st.session_state[key] = reservation
+    return reservation
+
+
+def _render_moments_candidate_recovery(photo, index):
+    if moments_recovery_component is None:
+        st.warning("この動画の候補画像がありません。元動画からの再生成機能を読み込めませんでした。")
+        return False
+    video_url = video_display_url(photo, expires_in=1800)
+    if not video_url:
+        st.warning("元動画を読み込めないため、AI候補を再生成できません。")
+        return False
+    try:
+        reservation = _candidate_sheet_recovery_reservation(photo)
+    except Exception as exc:
+        st.warning("AI候補の再生成先を準備できませんでした。")
+        with st.expander("詳細"):
+            st.code(str(exc))
+        return False
+    result = moments_recovery_component(
+        data={
+            "enabled": True,
+            "video_url": video_url,
+            "sheet_signed_url": reservation.get("signed_url"),
+            "sheet_path": reservation.get("path"),
+            "recovery_id": reservation.get("recovery_id"),
+        },
+        key=f"moments_recovery_v114_{photo.get('id')}_{reservation.get('recovery_id')}",
+        on_candidate_sheet_change=lambda: None,
+        on_recovery_error_change=lambda: None,
+    )
+    payload = getattr(result, "candidate_sheet", None)
+    if isinstance(payload, dict) and str(payload.get("path") or "") == str(reservation.get("path") or ""):
+        try:
+            updated = store_video_ai_candidate_sheet(
+                photo,
+                payload.get("path"),
+                payload.get("manifest") or [],
+                columns=payload.get("columns") or 4,
+                rows=payload.get("rows") or 0,
+            )
+            st.session_state.pop(f"_moments_recovery_reservation_v114_{photo.get('id')}", None)
+            launch_video_ai_background_job(updated)
+            try:
+                _home_video_counts_cached.clear()
+            except Exception:
+                pass
+            st.rerun()
+        except Exception as exc:
+            st.error("元動画からAI候補を登録できませんでした。")
+            with st.expander("保護者向け詳細"):
+                st.code(str(exc))
+    error_payload = getattr(result, "recovery_error", None)
+    if isinstance(error_payload, dict) and error_payload.get("message"):
+        st.warning("元動画からの候補作成に失敗しました。")
+        with st.expander("詳細"):
+            st.code(str(error_payload.get("message")))
+    return True
+
+
 def list_member_videos_for_moments(limit=300):
     rows = (
         supabase_client()
@@ -11049,6 +11490,11 @@ def _render_moments_picker(photo, index):
         else:
             st.caption("動画を読み込めませんでした。")
 
+    if status == "processing" and not _video_ai_has_candidate_source(selection_meta):
+        st.info("動画は保存済みですが、AI用の候補画像がありません。元動画から候補を作り直します。")
+        _render_moments_candidate_recovery(photo, index)
+        return
+
     if status == "processing":
         stale = video_ai_processing_is_stale(selection_meta)
         try:
@@ -11067,13 +11513,18 @@ def _render_moments_picker(photo, index):
             st.rerun()
         return
 
+    if status in {"", "waiting_candidates"} and not _video_ai_has_candidate_source(selection_meta):
+        st.info("この動画は保存済みですが、AI用の候補画像がまだありません。元動画から自動で候補を作り直します。")
+        _render_moments_candidate_recovery(photo, index)
+        return
+
     if status == "error":
         st.warning("この動画のAIセレクションをまだ作成できていません。")
         detail = str(selection_meta.get("last_error") or selection_meta.get("message") or "").strip()
         if detail:
             with st.expander("詳細"):
                 st.code(detail)
-        if str(selection_meta.get("candidate_bundle_path") or "").strip():
+        if _video_ai_has_candidate_source(selection_meta):
             if st.button(
                 "もう一度いい瞬間を探す",
                 use_container_width=True,
@@ -11086,12 +11537,14 @@ def _render_moments_picker(photo, index):
                     st.error("再選定を開始できませんでした。")
                     with st.expander("保護者向け詳細"):
                         st.code(str(exc))
+        else:
+            _render_moments_candidate_recovery(photo, index)
         return
 
     items = video_ai_selection_items(photo)
     if not items:
-        st.caption("この動画には、まだAIセレクションがありません。")
-        if str(selection_meta.get("candidate_bundle_path") or "").strip():
+        if _video_ai_has_candidate_source(selection_meta):
+            st.caption("AI候補は保存済みです。選定処理を開始できます。")
             if st.button(
                 "いい瞬間を探す",
                 use_container_width=True,
@@ -11104,6 +11557,9 @@ def _render_moments_picker(photo, index):
                     st.error("AI選定を開始できませんでした。")
                     with st.expander("保護者向け詳細"):
                         st.code(str(exc))
+        else:
+            st.info("AI用の候補画像がないため、元動画から自動で再生成します。")
+            _render_moments_candidate_recovery(photo, index)
         return
 
     st.caption(
@@ -11429,10 +11885,10 @@ def page_moments():
         status = str(selection.get("status") or "").lower()
         if status == "reviewed":
             reviewed.append(video)
-        elif status in {"processing", "error"}:
-            pending.append(video)
-        else:
+        elif status == "ready" and video_ai_selection_items(video):
             ready.append(video)
+        else:
+            pending.append(video)
 
     display_videos = pending + ready
     if display_videos:
@@ -11663,8 +12119,10 @@ def page_trip():
             "video_unavailable_reason": video_unavailable_reason,
             "video_upload_signed_url": str(video_reservation.get("signed_url") or ""),
             "video_upload_storage_path": str(video_reservation.get("storage_path") or ""),
+            "video_candidate_sheet_signed_url": str(video_reservation.get("candidate_sheet_signed_url") or ""),
+            "video_candidate_sheet_storage_path": str(video_reservation.get("candidate_sheet_path") or ""),
         },
-        key=f"live_camera_v111_{camera_trip_key}_{st.session_state.capture_serial}",
+        key=f"live_camera_v114_{camera_trip_key}_{st.session_state.capture_serial}",
         on_photo_change=lambda: None,
         on_video_change=lambda: None,
         on_camera_error_change=lambda: None,
@@ -11701,7 +12159,7 @@ def page_trip():
         video_saved = False
         uploaded_video_path = str(video_payload.get("video_storage_path") or "").strip()
         try:
-            reservation = st.session_state.get("_camera_video_upload_reservation_v111")
+            reservation = st.session_state.get("_camera_video_upload_reservation_v114")
             if not isinstance(reservation, dict):
                 raise ValueError("動画の保存予約を確認できませんでした。")
             reserved_video_path = str(reservation.get("storage_path") or "").strip()
@@ -11783,25 +12241,57 @@ def page_trip():
                 except Exception:
                     pass
 
-                # AI stills are deliberately secondary. The video is already registered
-                # before these compact frames are decoded or stored.
-                try:
-                    candidate_frames = decode_video_candidate_frames(
-                        video_payload.get("candidate_frames") or [],
-                        max_frames=VIDEO_AI_MAX_CANDIDATES,
-                    )
-                except Exception:
-                    candidate_frames = []
+                # AI candidates are secondary to the original video. v114 prefers a
+                # contact sheet that the browser uploaded directly to Storage. This
+                # avoids sending many base64 images through the Streamlit trigger.
+                candidate_sheet_path = str(video_payload.get("candidate_sheet_path") or "").strip()
+                expected_sheet_path = str(reservation.get("candidate_sheet_path") or "").strip() if isinstance(reservation, dict) else ""
+                if expected_sheet_path and candidate_sheet_path != expected_sheet_path:
+                    candidate_sheet_path = ""
+                candidate_manifest = [
+                    x for x in (video_payload.get("candidate_manifest") or []) if isinstance(x, dict)
+                ][:VIDEO_AI_MAX_CANDIDATES]
 
                 ai_status = "no_candidates"
-                if candidate_frames and isinstance(saved_video, dict) and saved_video.get("id"):
+                if candidate_sheet_path and candidate_manifest and isinstance(saved_video, dict) and saved_video.get("id"):
                     try:
-                        save_stage = "AI候補画像の保管"
-                        saved_video = store_video_ai_candidate_bundle(saved_video, candidate_frames)
+                        save_stage = "AI候補シートの登録"
+                        saved_video = store_video_ai_candidate_sheet(
+                            saved_video,
+                            candidate_sheet_path,
+                            candidate_manifest,
+                            columns=video_payload.get("candidate_sheet_columns") or 4,
+                            rows=video_payload.get("candidate_sheet_rows") or 0,
+                        )
                         ai_status = "queued"
                     except Exception as candidate_exc:
                         ai_status = "candidate_error"
                         mark_video_ai_selection_error(saved_video, candidate_exc)
+                else:
+                    # Compatibility fallback for videos recorded by older camera builds.
+                    try:
+                        candidate_frames = decode_video_candidate_frames(
+                            video_payload.get("candidate_frames") or [],
+                            max_frames=VIDEO_AI_MAX_CANDIDATES,
+                        )
+                    except Exception:
+                        candidate_frames = []
+                    if candidate_frames and isinstance(saved_video, dict) and saved_video.get("id"):
+                        try:
+                            save_stage = "AI候補画像の保管"
+                            saved_video = store_video_ai_candidate_bundle(saved_video, candidate_frames)
+                            ai_status = "queued"
+                        except Exception as candidate_exc:
+                            ai_status = "candidate_error"
+                            mark_video_ai_selection_error(saved_video, candidate_exc)
+                    elif isinstance(saved_video, dict) and saved_video.get("id"):
+                        try:
+                            saved_video = mark_video_ai_waiting_candidates(
+                                saved_video,
+                                "録画時の候補画像が保存されていないため、元動画から候補を再生成します。",
+                            )
+                        except Exception:
+                            pass
 
                 if ai_status == "queued" and isinstance(saved_video, dict) and saved_video.get("id"):
                     try:
@@ -11838,7 +12328,7 @@ def page_trip():
                 elif ai_status == "candidate_error":
                     notice = "動画は保管庫に保存しました。AI候補の準備だけ失敗したため、「いい瞬間を見る」から再処理できます。"
                 else:
-                    notice = "動画は保管庫に保存しました。候補画像を作れなかったため、「いい瞬間を見る」から再処理してください。"
+                    notice = "動画は保管庫に保存しました。候補画像は「いい瞬間を見る」を開いたときに元動画から自動再生成します。"
                 st.session_state["_camera_notice"] = notice
                 st.rerun()
         except Exception as exc:
