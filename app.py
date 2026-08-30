@@ -27,7 +27,7 @@ from zoneinfo import ZoneInfo
 
 import streamlit as st
 
-APP_BUILD = "v136"
+APP_BUILD = "v139"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -678,10 +678,10 @@ except Exception:
 
 VIDEO_MAX_SECONDS = 15
 VIDEO_PROCESSING_MAX_SECONDS = 20
-# Keep one 15-second recording within the reliable range for Supabase standard uploads.
-# The browser records at about 0.9 Mbps video + 64 kbps audio, so 6 MB leaves
-# comfortable container/codec overhead while also being the pre-recording reserve.
-VIDEO_MAX_BYTES = 6 * 1024 * 1024
+# v139 quality-first source recording. The AI thumbnails are generated only after
+# recording stops, so capture can devote its resources to the original video.
+# 8 MB safely covers ~3.6 Mbps 1080p video + 96 kbps audio for 15 seconds.
+VIDEO_MAX_BYTES = 8 * 1024 * 1024
 VIDEO_AI_MAX_SELECTIONS = 9
 VIDEO_AI_SAMPLE_INTERVAL_MS = 100
 VIDEO_AI_MAX_CANDIDATES = 150
@@ -1234,8 +1234,10 @@ export default function(component) {
         } : false,
         video: {
           facingMode: { ideal: 'environment' },
-          width: { ideal: 1280 },
-          height: { ideal: 720 }
+          width: { ideal: 1920 },
+          height: { ideal: 1080 },
+          frameRate: { ideal: 30, max: 30 },
+          aspectRatio: { ideal: 1.7777777778 }
         }
       });
       video.srcObject = stream;
@@ -1660,10 +1662,19 @@ export default function(component) {
     recordingCapturedAt = new Date().toISOString();
     recordingLocationPromise = getLocationAtCapture();
     const mimeType = chooseRecorderMimeType();
+    const captureTrack = stream.getVideoTracks && stream.getVideoTracks()[0];
+    const captureSettings = (captureTrack && captureTrack.getSettings) ? captureTrack.getSettings() : {};
+    const captureWidth = Math.max(0, Number(captureSettings?.width || video.videoWidth || 0));
+    const captureHeight = Math.max(0, Number(captureSettings?.height || video.videoHeight || 0));
+    const captureFrameRate = Math.max(0, Number(captureSettings?.frameRate || 0));
+    const capturePixels = captureWidth * captureHeight;
+    const requestedVideoBitrate = capturePixels >= 1700000
+      ? 3600000
+      : (capturePixels >= 800000 ? 2800000 : 2000000);
     try {
       const options = {
-        videoBitsPerSecond: 900000,
-        audioBitsPerSecond: 64000
+        videoBitsPerSecond: requestedVideoBitrate,
+        audioBitsPerSecond: 96000
       };
       if (mimeType) options.mimeType = mimeType;
       try {
@@ -1700,15 +1711,15 @@ export default function(component) {
           recordedChunks = [];
           if (!blob.size) throw new Error('recorded video is empty');
 
-          // Auto-save the original video first. Good-moment candidates have already
-          // been captured as lightweight stills during recording, so stopping a
-          // recording never seeks/decodes the finished video before upload.
+          // v139: preserve recording quality. No 0.1-second JPEG work runs while
+          // MediaRecorder is active. The untouched original is uploaded first; only
+          // after recording has ended do we decode lightweight AI thumbnails.
           if (menu) menu.hidden = true;
           if (activeActions) activeActions.hidden = true;
           if (video) video.hidden = true;
           setStatus('動画を自動保存する準備をしています…');
 
-          let candidateFrames = recordingCandidateFrames.slice(0, 150);
+          let candidateFrames = [];
           recordingCandidateFrames = [];
 
           // Poster/location are useful metadata, but neither is allowed to block the
@@ -1735,17 +1746,14 @@ export default function(component) {
           setStatus('動画を保管庫へ送信しています…');
           await uploadVideoBlobToSignedUrl(blob);
 
-          // If live sampling produced too few frames on this browser, reconstruct
-          // them from the just-recorded local Blob. The original video is already
-          // safely in Storage, so this fallback can never block its preservation.
-          if (candidateFrames.length < Math.min(120, Math.max(1, Math.ceil(durationMs / 100)))) {
-            try {
-              setStatus('動画は保存済みです。AI候補を準備しています…');
-              const rebuilt = await extractVideoCandidateFrames(blob, durationMs);
-              if (Array.isArray(rebuilt) && rebuilt.length > candidateFrames.length) candidateFrames = rebuilt.slice(0, 150);
-            } catch (rebuildErr) {
-              console.warn('candidate rebuild skipped', rebuildErr);
-            }
+          // Build every 0.1-second AI thumbnail only after recording has finished.
+          // This keeps the 240px/JPEG work completely off the live recording path.
+          try {
+            setStatus('元動画は保存済みです。AI候補を準備しています…');
+            const rebuilt = await extractVideoCandidateFrames(blob, durationMs);
+            if (Array.isArray(rebuilt) && rebuilt.length) candidateFrames = rebuilt.slice(0, 150);
+          } catch (rebuildErr) {
+            console.warn('candidate rebuild skipped', rebuildErr);
           }
 
           // Candidate stills are never returned to Streamlit as a large array of
@@ -1787,6 +1795,10 @@ export default function(component) {
             candidate_sheet_rows: candidateSheetRows,
             mime_type: finalType,
             duration_ms: durationMs,
+            capture_width: captureWidth,
+            capture_height: captureHeight,
+            capture_frame_rate: captureFrameRate,
+            video_bitrate_bps: Number((recorder && recorder.videoBitsPerSecond) || requestedVideoBitrate || 0),
             name: finalType.includes('mp4') ? 'camera.mp4' : 'camera.webm',
             source: 'video_camera',
             captured_at: recordingCapturedAt || new Date().toISOString(),
@@ -1820,13 +1832,8 @@ export default function(component) {
       setRecordingUi(true);
       updateRecordingClock();
       recordingTimer = setInterval(updateRecordingClock, 250);
-      // Small stills are collected while the user records. They are not AI-analysed
-      // here; the server stores the original video first and processes them later.
-      // Capture at 0.1-second cadence while recording. Encoding is intentionally
-      // small so this can run on phones without sending the frames through the
-      // Streamlit component payload.
-      setTimeout(() => { captureRecordingCandidateFrame(); }, 100);
-      recordingCandidateTimer = setInterval(() => { captureRecordingCandidateFrame(); }, 100);
+      // v139 quality-first recording: do not generate JPEG candidates while the
+      // MediaRecorder encoder is running. Candidate extraction starts after stop.
       recordingMaxTimer = setTimeout(stopVideoRecording, VIDEO_MAX_SECONDS * 1000);
       setStatus('');
     } catch (err) {
@@ -2013,11 +2020,11 @@ export default function(component) {
 }
 """
 
-LIVE_CAMERA_COMPONENT_BUILD = "v135"
+LIVE_CAMERA_COMPONENT_BUILD = "v139"
 
 try:
     live_camera_component = st.components.v2.component(
-        "tokyo_burari_live_camera_v135",
+        "tokyo_burari_live_camera_v139",
         html=_LIVE_CAMERA_HTML,
         css=_LIVE_CAMERA_CSS,
         js=_LIVE_CAMERA_JS,
@@ -4415,8 +4422,8 @@ def photo_video_playback_path(photo):
 
 
 def photo_video_ai_source_path(photo):
-    """AI frame extraction uses the stabilized proxy whenever it is available."""
-    return photo_stabilized_video_storage_path(photo) or photo_video_storage_path(photo)
+    """AI timing is based on the untouched original, matching the final still source."""
+    return photo_video_storage_path(photo)
 
 
 def video_is_stabilized(photo):
@@ -5092,6 +5099,10 @@ def register_browser_uploaded_video(
     location=None,
     captured_at=None,
     capture_source="video_camera",
+    capture_width=0,
+    capture_height=0,
+    capture_frame_rate=0,
+    video_bitrate_bps=0,
 ):
     """Register a video already uploaded by the browser to a signed Storage path."""
     active_snapshot = get_active_trip_fast(max_age_seconds=20) if st.session_state.get("active_trip_id") else None
@@ -5135,6 +5146,13 @@ def register_browser_uploaded_video(
         "video_duration_ms": duration_value,
         "video_size_bytes": size_value,
         "browser_direct_upload": True,
+        "video_capture": {
+            "width": max(0, int(capture_width or 0)),
+            "height": max(0, int(capture_height or 0)),
+            "frame_rate": max(0.0, float(capture_frame_rate or 0)),
+            "video_bitrate_bps": max(0, int(video_bitrate_bps or 0)),
+            "quality_pipeline": "v139_record_first_then_ai",
+        },
         "video_stabilization": {
             "version": VIDEO_STABILIZATION_VERSION,
             "mode": "light",
@@ -6039,15 +6057,10 @@ def _video_stabilization_input_suffix(photo):
 
 
 def _extract_selected_high_quality_frames_from_original(client, photo, selections):
-    """Re-extract only AI-selected timestamps from the untouched original video.
+    """Re-extract AI-selected timestamps from the untouched original video only.
 
-    The 0.1-second candidates can stay small and inexpensive for vision ranking.
-    Final stills are generated independently from the original recording so candidate
-    thumbnail resolution/compression never becomes the saved-photo resolution.
-
-    Important: this function returns only frames taken from the original video.
-    If extraction fails, callers must treat it as a failure instead of falling back
-    to the low-resolution candidate thumbnails.
+    Low-resolution 0.1-second candidates are ranking aids and can never become
+    user-facing stills. Failure to extract from the original is a hard failure.
     """
     selected_items = list(selections or [])[:VIDEO_AI_MAX_SELECTIONS]
     if not selected_items:
@@ -6095,51 +6108,20 @@ def _extract_selected_high_quality_frames_from_original(client, photo, selection
             if not frame_id:
                 continue
             timestamp_s = f"{timestamp_ms / 1000.0:.3f}"
-            command_accurate = [
-                ffmpeg,
-                "-nostdin",
-                "-hide_banner",
-                "-loglevel",
-                "error",
-                "-i",
-                input_path,
-                "-ss",
-                timestamp_s,
-                "-frames:v",
-                "1",
-                "-an",
-                "-f",
-                "image2pipe",
-                "-vcodec",
-                "png",
-                "pipe:1",
+            accurate = [
+                ffmpeg, "-nostdin", "-hide_banner", "-loglevel", "error",
+                "-i", input_path, "-ss", timestamp_s, "-frames:v", "1",
+                "-an", "-f", "image2pipe", "-vcodec", "png", "pipe:1",
             ]
-            command_fast = [
-                ffmpeg,
-                "-nostdin",
-                "-hide_banner",
-                "-loglevel",
-                "error",
-                "-ss",
-                timestamp_s,
-                "-i",
-                input_path,
-                "-frames:v",
-                "1",
-                "-an",
-                "-f",
-                "image2pipe",
-                "-vcodec",
-                "png",
-                "pipe:1",
+            fast = [
+                ffmpeg, "-nostdin", "-hide_banner", "-loglevel", "error",
+                "-ss", timestamp_s, "-i", input_path, "-frames:v", "1",
+                "-an", "-f", "image2pipe", "-vcodec", "png", "pipe:1",
             ]
-            raw = run_extract(command_accurate) or run_extract(command_fast)
+            raw = run_extract(accurate) or run_extract(fast)
             if not raw:
                 continue
-            # thumbnail() never enlarges, so a 720p/1080p original stays at its
-            # native dimensions; JPEG 94 keeps the selected still visually close
-            # to the original video frame.
-            image_bytes = normalize_photo(raw, max_side=2560, quality=94)
+            image_bytes = normalize_photo(raw, max_side=4096, quality=96)
             if image_bytes:
                 results[frame_id] = image_bytes
     return results
@@ -6669,31 +6651,27 @@ def _background_store_video_ai_selection(
     base = _video_selection_base_path(photo)
     if not base:
         raise ValueError("動画の保存先を確認できませんでした。")
-    selected_items = list(selections or [])[:VIDEO_AI_MAX_SELECTIONS]
-    if not selected_items:
-        raise ValueError("AIセレクションを作成できませんでした。")
     uploaded_paths = []
     items = []
     job_token = uuid.uuid4().hex[:8]
     high_quality_by_id = _extract_selected_high_quality_frames_from_original(
-        client, photo, selected_items
+        client, photo, selections
     )
-    expected_frame_ids = [str((selected.get("frame") or {}).get("frame_id") or "").strip() for selected in selected_items]
-    missing_frame_ids = [frame_id for frame_id in expected_frame_ids if frame_id and frame_id not in high_quality_by_id]
-    if missing_frame_ids:
+    selected_items = list(selections or [])[:VIDEO_AI_MAX_SELECTIONS]
+    expected_ids = [str((s.get("frame") or {}).get("frame_id") or "").strip() for s in selected_items]
+    missing_ids = [frame_id for frame_id in expected_ids if frame_id and frame_id not in high_quality_by_id]
+    if missing_ids:
         raise ValueError(
-            f"AIが選んだ{len(missing_frame_ids)}枚を元動画から高画質で再抽出できませんでした。"
-            "低画質候補は保存せず、元動画由来のきれいな画像だけを採用します。"
+            f"AIが選んだ{len(missing_ids)}枚を元動画から高画質で再抽出できませんでした。"
+            "低画質候補は保存しません。"
         )
     high_quality_count = 0
     try:
         for rank, selected in enumerate(selected_items, start=1):
             frame = selected.get("frame") or {}
             frame_id = str(frame.get("frame_id") or "").strip()
-            if not frame_id:
-                raise ValueError("AIセレクション候補のフレームIDが不足しています。")
             image_bytes = high_quality_by_id.get(frame_id)
-            if not image_bytes:
+            if not frame_id or not image_bytes:
                 raise ValueError("元動画から高画質画像を読み込めませんでした。")
             output_source = "original_video"
             high_quality_count += 1
@@ -6719,8 +6697,8 @@ def _background_store_video_ai_selection(
                     "human_selected": False,
                 }
             )
-        if len(items) < len(selected_items):
-            raise ValueError("AIセレクションを元動画から必要枚数ぶん保存できませんでした。")
+        if len(items) != len(selected_items):
+            raise ValueError("元動画由来の高画質画像を必要枚数保存できませんでした。")
 
         fresh = (
             client.table(PHOTO_TABLE)
@@ -6743,7 +6721,7 @@ def _background_store_video_ai_selection(
                 "updated_at": now_jst().isoformat(),
                 "round": int(round_number),
                 "items": items,
-                "final_frame_mode": "original_reextract_required_v138",
+                "final_frame_mode": "original_reextract_required_v139",
                 "high_quality_count": int(high_quality_count),
                 "last_error": "",
             }
@@ -6830,22 +6808,19 @@ def _run_video_ai_background_job(photo_id, family_key, member_key):
     selection_meta["started_at"] = now_jst().isoformat()
     selection_meta["updated_at"] = selection_meta["started_at"]
     selection_meta["attempt"] = max(0, int(selection_meta.get("attempt") or 0)) + 1
-    selection_meta["pipeline_mode"] = "inline_v135"
+    selection_meta["pipeline_mode"] = "inline_v139"
     expected_candidate_count = _video_ai_expected_candidate_count(photo)
     existing_candidate_count = max(0, int(selection_meta.get("candidate_count") or 0))
     sampling_version = str(selection_meta.get("candidate_sampling_version") or "").strip()
     has_candidate_source = _video_ai_has_candidate_source(selection_meta)
-    stabilized_ready = video_is_stabilized(photo)
     persisted_candidate_ready = (
         has_candidate_source
         and existing_candidate_count >= max(1, int(math.floor(expected_candidate_count * 0.9)))
         and sampling_version in {"browser_0p1_v134", "v132_memory"}
-        and not stabilized_ready
     )
-    # When a stabilized proxy exists, deliberately re-sample it at 0.1-second
-    # intervals so Good Moments is selected from the corrected motion rather than
-    # from the pre-stabilization live candidate sheet.
-    needs_fine_sampling = stabilized_ready or not persisted_candidate_ready
+    # v139 decouples playback stabilization from still selection. AI candidates and
+    # the final saved stills both follow the untouched original-video timeline.
+    needs_fine_sampling = not persisted_candidate_ready
     selection_meta["stage"] = "candidate_preparation" if needs_fine_sampling else "ai_selection"
     reflection["ai_selection"] = selection_meta
     try:
@@ -7223,8 +7198,8 @@ def resume_member_video_background_jobs(limit=24, min_interval_seconds=0):
     return 0
 
 
-def request_video_ai_reroll(photo):
-    """Reject the current set and automatically create another selection."""
+def request_video_ai_reroll(photo, record_rejection=True):
+    """Create another selection; optionally treat the current set as explicitly rejected."""
     if not isinstance(photo, dict) or not photo.get("id") or not photo_is_video(photo):
         raise ValueError("動画が見つかりません。")
     current = (
@@ -7247,18 +7222,26 @@ def request_video_ai_reroll(photo):
 
     items = [item for item in (selection.get("items") or []) if isinstance(item, dict)]
     history = list(selection.get("history") or [])
-    history.append(
-        {
-            "round": int(selection.get("round") or 0),
-            "reroll_rejected": True,
-            "at": now_jst().isoformat(),
-            "frame_ids": [str(item.get("frame_id") or "") for item in items],
-            "qualities": [str(item.get("primary_quality") or "other") for item in items],
-        }
-    )
+    history_entry = {
+        "round": int(selection.get("round") or 0),
+        "at": now_jst().isoformat(),
+        "frame_ids": [str(item.get("frame_id") or "") for item in items],
+        "qualities": [str(item.get("primary_quality") or "other") for item in items],
+    }
+    if record_rejection:
+        history_entry["reroll_rejected"] = True
+    else:
+        # A confirmed video can be cut again simply to see another set. This is not
+        # negative feedback about the previous photographs, so do not exclude them
+        # from future preference learning or the new AI pass.
+        history_entry["reroll_rejected"] = False
+        history_entry["manual_recut"] = True
+    history.append(history_entry)
     selection["history"] = history[-12:]
     selection["status"] = "processing"
     selection["queued_at"] = now_jst().isoformat()
+    selection.pop("reviewed_at", None)
+    selection.pop("review_result", None)
     reflection["ai_selection"] = selection
     _write_photo_reflection(photo.get("id"), reflection)
 
@@ -7445,22 +7428,20 @@ def store_preselected_video_ai_selection(photo, selections, candidate_count=0):
     high_quality_by_id = _extract_selected_high_quality_frames_from_original(
         client, photo, selected_items
     )
-    expected_frame_ids = [str((selected.get("frame") or {}).get("frame_id") or "").strip() for selected in selected_items]
-    missing_frame_ids = [frame_id for frame_id in expected_frame_ids if frame_id and frame_id not in high_quality_by_id]
-    if missing_frame_ids:
+    expected_ids = [str((s.get("frame") or {}).get("frame_id") or "").strip() for s in selected_items]
+    missing_ids = [frame_id for frame_id in expected_ids if frame_id and frame_id not in high_quality_by_id]
+    if missing_ids:
         raise ValueError(
-            f"AIが選んだ{len(missing_frame_ids)}枚を元動画から高画質で再抽出できませんでした。"
-            "低画質候補は保存せず、元動画由来のきれいな画像だけを採用します。"
+            f"AIが選んだ{len(missing_ids)}枚を元動画から高画質で再抽出できませんでした。"
+            "低画質候補は保存しません。"
         )
     high_quality_count = 0
     try:
         for rank, selected in enumerate(selected_items, start=1):
             frame = selected.get("frame") or {}
             frame_id = str(frame.get("frame_id") or "").strip()
-            if not frame_id:
-                raise ValueError("AIセレクション候補のフレームIDが不足しています。")
             image_bytes = high_quality_by_id.get(frame_id)
-            if not image_bytes:
+            if not frame_id or not image_bytes:
                 raise ValueError("AIセレクション画像を元動画から読み込めませんでした。")
             output_source = "original_video"
             high_quality_count += 1
@@ -7492,7 +7473,7 @@ def store_preselected_video_ai_selection(photo, selections, candidate_count=0):
             "generated_at": now_jst().isoformat(),
             "candidate_count": max(0, int(candidate_count or 0)),
             "items": items,
-            "final_frame_mode": "original_reextract_required_v138",
+            "final_frame_mode": "original_reextract_required_v139",
             "high_quality_count": int(high_quality_count),
         }
         _write_photo_reflection(photo["id"], reflection)
@@ -13351,7 +13332,54 @@ def _render_moments_picker(photo, index):
     video_id = str(photo.get("id") or "")
     round_number = int(selection_meta.get("round") or 0)
 
+    def render_reviewed_recut_button():
+        can_recut = bool(_video_ai_has_candidate_source(selection_meta) or photo_video_storage_path(photo))
+        if not can_recut:
+            return
+        st.markdown("---")
+        if st.button(
+            "🔄 いい瞬間をもう一度作る",
+            use_container_width=True,
+            key=f"moments_reviewed_recut_{video_id}_{round_number}",
+            help=(
+                "元動画から0.1秒間隔で再評価して、新しい『いい瞬間』候補を作ります。"
+                "すでに日記へ残した写真は削除しません。"
+            ),
+        ):
+            try:
+                with st.spinner("元動画から、いい瞬間をもう一度作っています…"):
+                    request_video_ai_reroll(photo, record_rejection=False)
+                st.session_state.pop(f"_moments_tap_selected_{video_id}_{round_number}", None)
+                st.session_state.pop(f"_moments_tap_serial_{video_id}_{round_number}", None)
+                st.session_state["_moments_notice"] = (
+                    "元動画から新しい『いい瞬間』の再作成を開始しました。"
+                    "すでに日記へ残した写真はそのまま残ります。"
+                )
+                st.rerun()
+            except Exception as exc:
+                st.error("いい瞬間をもう一度作成できませんでした。")
+                with st.expander("保護者向け詳細"):
+                    st.code(str(exc))
+
     st.markdown(f"#### {html.escape(title)}")
+    capture_meta = photo_media_metadata(photo).get("video_capture") or {}
+    if isinstance(capture_meta, dict):
+        width = max(0, int(capture_meta.get("width") or 0))
+        height = max(0, int(capture_meta.get("height") or 0))
+        fps = max(0.0, float(capture_meta.get("frame_rate") or 0))
+        bitrate = max(0, int(capture_meta.get("video_bitrate_bps") or 0))
+        details = []
+        if width and height:
+            details.append(f"{width}×{height}")
+        if fps:
+            details.append(f"{fps:.0f}fps")
+        if bitrate:
+            details.append(f"約{bitrate / 1_000_000:.1f}Mbps")
+        if details:
+            st.caption("元動画品質：" + " / ".join(details))
+    high_quality_count = max(0, int(selection_meta.get("high_quality_count") or 0))
+    if status in {"ready", "reviewed"} and high_quality_count:
+        st.caption(f"切り抜き：元動画から高画質再抽出 {high_quality_count}枚")
     video_expander_label = "動画を見る（軽い手振れ補正）" if video_is_stabilized(photo) else "元の動画を見る"
     with st.expander(video_expander_label):
         video_url = video_display_url(photo)
@@ -13409,6 +13437,7 @@ def _render_moments_picker(photo, index):
     items = video_ai_selection_items(photo)
     if status == "reviewed" and str(selection_meta.get("review_result") or "") == "none_kept":
         st.success("この動画では、写真を1枚も残さない選択をしています。")
+        render_reviewed_recut_button()
         return
     if not items:
         st.info("いい瞬間の自動処理結果を待っています。")
@@ -13429,6 +13458,7 @@ def _render_moments_picker(photo, index):
             "確認済みの動画も、写真をタップして再度選択できます。"
             "すでに日記へ残した写真は自動削除せず、新しく選んだ写真を追加で残せます。"
         )
+        render_reviewed_recut_button()
 
     paths = tuple(str(item.get("storage_path") or "").strip() for item in items)
     try:
@@ -14456,7 +14486,7 @@ def page_trip():
             "video_candidate_sheet_signed_url": str(video_reservation.get("candidate_sheet_signed_url") or ""),
             "video_candidate_sheet_storage_path": str(video_reservation.get("candidate_sheet_path") or ""),
         },
-        key=f"live_camera_v135_{camera_trip_key}_{st.session_state.capture_serial}",
+        key=f"live_camera_v139_{camera_trip_key}_{st.session_state.capture_serial}",
         on_photo_change=lambda: None,
         on_video_change=lambda: None,
         on_camera_error_change=lambda: None,
@@ -14556,6 +14586,10 @@ def page_trip():
                         location=location,
                         captured_at=video_payload.get("captured_at"),
                         capture_source=capture_source,
+                        capture_width=video_payload.get("capture_width"),
+                        capture_height=video_payload.get("capture_height"),
+                        capture_frame_rate=video_payload.get("capture_frame_rate"),
+                        video_bitrate_bps=video_payload.get("video_bitrate_bps"),
                     )
 
                 video_saved = True
