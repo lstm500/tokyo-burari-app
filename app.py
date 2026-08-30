@@ -26,7 +26,7 @@ from zoneinfo import ZoneInfo
 
 import streamlit as st
 
-APP_BUILD = "v115"
+APP_BUILD = "v116"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -1976,11 +1976,11 @@ export default function(component) {
 }
 """
 
-LIVE_CAMERA_COMPONENT_BUILD = "v115"
+LIVE_CAMERA_COMPONENT_BUILD = "v116"
 
 try:
     live_camera_component = st.components.v2.component(
-        "tokyo_burari_live_camera_v115",
+        "tokyo_burari_live_camera_v116",
         html=_LIVE_CAMERA_HTML,
         css=_LIVE_CAMERA_CSS,
         js=_LIVE_CAMERA_JS,
@@ -4914,7 +4914,7 @@ def _create_signed_video_upload_url(path):
 
 def get_camera_video_upload_reservation(trip_id, capture_serial):
     """Return one stable signed upload destination for the current camera capture."""
-    state_key = "_camera_video_upload_reservation_v115"
+    state_key = "_camera_video_upload_reservation_v116"
     current = st.session_state.get(state_key)
     family_key = current_family_key()
     member_key = current_member_key()
@@ -4959,7 +4959,7 @@ def get_camera_video_upload_reservation(trip_id, capture_serial):
 
 
 def clear_camera_video_upload_reservation():
-    st.session_state.pop("_camera_video_upload_reservation_v115", None)
+    st.session_state.pop("_camera_video_upload_reservation_v116", None)
 
 
 def _video_placeholder_poster_bytes():
@@ -5229,7 +5229,7 @@ def _video_selection_quality_label(value):
     labels = {
         "expression": "表情",
         "action": "躍動感",
-        "beauty": "写真の美しさ",
+        "beauty": "映え・写真美",
         "subject": "被写体の魅力",
         "story": "印象的な瞬間",
         "other": "総合",
@@ -5290,7 +5290,7 @@ def _video_preference_prompt_text(preference_context):
     label_map = {
         "expression": "表情",
         "action": "躍動感",
-        "beauty": "写真の美しさ",
+        "beauty": "映え・写真美",
         "subject": "被写体の魅力",
         "story": "印象的な瞬間",
         "other": "総合",
@@ -5312,13 +5312,40 @@ def _video_preference_prompt_text(preference_context):
         if int(value or 0) > 0:
             rejected_parts.append(f"{label_map.get(str(key), str(key))}:{int(value)}")
 
-    text = "本人が過去に実際に選んだ写真の傾向を軽く優先してください。"
+    text = (
+        "本人が過去に実際に選んだ写真の傾向は参考にしてください。"
+        "ただし選定の土台は常に『一目で残したくなる映え』を優先し、過去の好みに寄せすぎないでください。"
+    )
     if liked_parts:
         text += " 選ばれた傾向=" + "、".join(liked_parts[:5]) + "。"
     if rejected_parts:
         text += " 『取り直す』でまとめて却下された傾向=" + "、".join(rejected_parts[:5]) + "。"
     text += " ただし履歴に過剰適合せず、その動画固有の良い瞬間も残してください。"
     return text
+
+
+def _video_photogenic_fallback_score(image_bytes):
+    """Cheap visual-quality score used only if the AI response cannot be used."""
+    try:
+        from PIL import Image, ImageFilter, ImageStat
+        with Image.open(io.BytesIO(image_bytes)) as img:
+            rgb = img.convert("RGB")
+            rgb.thumbnail((320, 320))
+            gray = rgb.convert("L")
+            gray_stat = ImageStat.Stat(gray)
+            brightness = float(gray_stat.mean[0])
+            contrast = float(gray_stat.stddev[0])
+            edges = gray.filter(ImageFilter.FIND_EDGES)
+            sharpness = float(ImageStat.Stat(edges).stddev[0])
+            saturation = float(ImageStat.Stat(rgb.convert("HSV")).mean[1])
+
+        exposure = max(0.0, 1.0 - abs(brightness - 132.0) / 132.0)
+        sharp_term = min(1.0, sharpness / 42.0)
+        contrast_term = min(1.0, contrast / 62.0)
+        saturation_term = min(1.0, saturation / 105.0)
+        return (0.42 * sharp_term) + (0.24 * contrast_term) + (0.20 * exposure) + (0.14 * saturation_term)
+    except Exception:
+        return 0.0
 
 
 def choose_video_ai_frames(
@@ -5370,16 +5397,19 @@ def choose_video_ai_frames(
     preference_text = _video_preference_prompt_text(preference_context)
     prompt = (
         "動画から、人があとで写真として残したくなる静止画を選ぶフォトセレクターです。候補フレームを時刻順に渡します。\n"
-        f"出力は最大{VIDEO_AI_MAX_SELECTIONS}枚です。枚数を埋めるために弱い写真を無理に選ぶ必要はありません。"
-        "通常は4〜9枚程度、良い瞬間が少なければそれより少なくて構いません。\n"
-        "カテゴリ別の枚数制限はありません。人物・生物では、画像から明確に見える笑顔・驚き・真剣さなどの表情、"
-        "印象的なしぐさ、躍動感、顔や全身の見え方を重視してください。内面の感情は断定しないでください。\n"
-        "物・乗り物・風景では、被写体がきれいに見える瞬間、動きのタイミング、ピント、ブレ、露出、色、"
-        "構図、遮蔽物の少なさを重視してください。\n"
-        "ほぼ同じ場面・同じ表情の近接フレームは重複させず、動画全体の違う瞬間も適度に含めてください。\n"
+        f"出力は最大{VIDEO_AI_MAX_SELECTIONS}枚です。候補が9枚以上あり、明らかな失敗写真でなければ、基本は9枚を選んで3×3で比較できるようにしてください。"
+        "ただし、ピンぼけ・大きな手ぶれ・目つぶり・顔や主役の大きな見切れ・強い白飛び/黒つぶれなど、明確に残したくない写真で枚数を埋めないでください。\n"
+        "最重要は『映え』です。一目見たときの写真としての強さを最優先してください。"
+        "scoreは次の目安で総合評価してください：映え・写真美45%、表情や決定的瞬間25%、被写体の魅力や物語性20%、動画全体の多様性10%。\n"
+        "映え・写真美では、主役がひと目で分かる構図、光のきれいさ、自然で印象的な色、背景との分離、ピント・解像感、"
+        "余白やバランス、奥行き、視線を引く構図、写真単体で見たときの完成度を重視してください。"
+        "人物・生物では、自然な笑顔・驚き・真剣な表情、目線、躍動感、姿勢、顔や全身の見え方も重視してください。内面の感情は断定しないでください。\n"
+        "物・乗り物・風景では、被写体が最も魅力的に見える角度、光、色、瞬間、動き、背景、構図を重視してください。"
+        "単に時間が違うだけの平凡なカットより、『この1枚を残したい』と思えるカットを上位にしてください。\n"
+        "ほぼ同じ場面・同じ表情の近接フレームは重複させず、似た写真しかない場合はより映える方だけを残してください。\n"
         f"{preference_text}\n"
-        "rank=1をAI BESTとし、選んだ枚数の範囲でrankを1から連番にしてください。"
-        "reasonは日本語で短く具体的にしてください。"
+        "rank=1をAI BESTとし、最も映える写真を1位にしてください。選んだ枚数の範囲でrankを1から連番にしてください。"
+        "primary_qualityは、その写真が選ばれた最大の理由を表してください。reasonは日本語で短く具体的にしてください。"
     )
 
     context = preference_context if isinstance(preference_context, dict) else {}
@@ -5401,7 +5431,7 @@ def choose_video_ai_frames(
             result = ask_json_with_images(
                 prompt,
                 image_items,
-                "video_best_frames_v103",
+                "video_best_frames_v116",
                 schema,
                 max_output_tokens=1700,
             )
@@ -5410,7 +5440,7 @@ def choose_video_ai_frames(
                 ask_client,
                 prompt,
                 image_items,
-                "video_best_frames_v103",
+                "video_best_frames_v116",
                 schema,
                 max_output_tokens=1700,
             )
@@ -5437,7 +5467,7 @@ def choose_video_ai_frames(
             result = ask_json_with_images(
                 prompt,
                 retry_items,
-                "video_best_frames_v103_retry",
+                "video_best_frames_v116_retry",
                 schema,
                 max_output_tokens=1700,
             )
@@ -5446,7 +5476,7 @@ def choose_video_ai_frames(
                 ask_client,
                 prompt,
                 retry_items,
-                "video_best_frames_v103_retry",
+                "video_best_frames_v116_retry",
                 schema,
                 max_output_tokens=1700,
             )
@@ -5483,27 +5513,67 @@ def choose_video_ai_frames(
         if len(selected) >= VIDEO_AI_MAX_SELECTIONS:
             break
 
-    if not selected:
-        # Safety fallback: one to nine temporally spaced frames. This keeps the
-        # workflow usable even if a malformed model response slips through.
-        target = min(VIDEO_AI_MAX_SELECTIONS, len(frames))
-        if target <= 0:
-            raise ValueError("AIセレクションを作成できませんでした。")
-        if target == 1:
-            fallback_frames = [frames[len(frames) // 2]]
-        else:
-            step = (len(frames) - 1) / (target - 1)
-            fallback_frames = [frames[round(i * step)] for i in range(target)]
-        for frame in fallback_frames:
+    # Keep the viewer close to a full 3x3 whenever there are enough distinct,
+    # reasonably photogenic candidates. The AI ranking remains first; these
+    # additions only fill empty slots with the strongest unused frames.
+    target_count = min(VIDEO_AI_MAX_SELECTIONS, len(frames))
+    if 0 < len(selected) < target_count:
+        remaining = [frame for frame in frames if str(frame.get("frame_id") or "") not in used_ids]
+        remaining.sort(
+            key=lambda frame: _video_photogenic_fallback_score(frame.get("image_bytes")),
+            reverse=True,
+        )
+        for frame in remaining:
+            frame_hash = _image_dhash64(frame.get("image_bytes"))
+            if any(_hamming64(frame_hash, existing) <= 1 for existing in used_hashes):
+                continue
+            visual_score = _video_photogenic_fallback_score(frame.get("image_bytes"))
+            # Avoid filling the grid with an obviously weak frame solely to make nine.
+            if visual_score < 0.28 and len(selected) >= 6:
+                continue
             selected.append(
                 {
                     "frame": frame,
-                    "score": 0,
-                    "primary_quality": "other",
-                    "reason": "動画全体から時間の違う候補を選択",
-                    "hash": _image_dhash64(frame.get("image_bytes")),
+                    "score": max(0, min(100, int(round(visual_score * 100)))),
+                    "primary_quality": "beauty",
+                    "reason": "3×3比較用に見栄えの良い候補を補完",
+                    "hash": frame_hash,
                 }
             )
+            used_ids.add(str(frame.get("frame_id") or ""))
+            used_hashes.append(frame_hash)
+            if len(selected) >= target_count:
+                break
+
+    if not selected:
+        # Safety fallback: prefer visually strong frames rather than merely spacing
+        # them across time. Near-duplicates are still removed.
+        target = min(VIDEO_AI_MAX_SELECTIONS, len(frames))
+        if target <= 0:
+            raise ValueError("AIセレクションを作成できませんでした。")
+        scored_frames = sorted(
+            frames,
+            key=lambda frame: _video_photogenic_fallback_score(frame.get("image_bytes")),
+            reverse=True,
+        )
+        fallback_hashes = []
+        for frame in scored_frames:
+            frame_hash = _image_dhash64(frame.get("image_bytes"))
+            if any(_hamming64(frame_hash, existing) <= 1 for existing in fallback_hashes):
+                continue
+            visual_score = _video_photogenic_fallback_score(frame.get("image_bytes"))
+            selected.append(
+                {
+                    "frame": frame,
+                    "score": max(0, min(100, int(round(visual_score * 100)))),
+                    "primary_quality": "beauty",
+                    "reason": "写真の見栄え・明瞭さを優先して選択",
+                    "hash": frame_hash,
+                }
+            )
+            fallback_hashes.append(frame_hash)
+            if len(selected) >= target:
+                break
 
     return selected[:VIDEO_AI_MAX_SELECTIONS]
 
@@ -5758,7 +5828,7 @@ def _ffmpeg_executable():
 def _background_extract_video_candidate_frames(client, photo):
     """Extract still candidates from the already-saved original video on the server.
 
-    This is the primary recovery path in v115. It means candidate generation does
+    This is the primary recovery path in v116. It means candidate generation does
     not depend on opening the "いい瞬間を見る" page. The browser-created contact
     sheet remains an optimization, not a requirement for the pipeline to start.
     """
@@ -6167,7 +6237,7 @@ def _run_video_ai_background_job(photo_id, family_key, member_key):
     if not isinstance(selection_meta, dict):
         selection_meta = {}
 
-    # From v115 onward the worker owns the complete post-save pipeline. A video
+    # From v116 onward the worker owns the complete post-save pipeline. A video
     # without browser-generated candidates is not "waiting for the viewer"; the
     # worker extracts candidates from the stored original first, then runs AI.
     selection_meta["status"] = "processing"
@@ -6343,10 +6413,10 @@ def resume_member_video_background_jobs(limit=24, min_interval_seconds=8):
     button for video processing.
     """
     now_mono = time.monotonic()
-    last = float(st.session_state.get("_video_pipeline_resume_at_v115") or 0.0)
+    last = float(st.session_state.get("_video_pipeline_resume_at_v116") or 0.0)
     if last and (now_mono - last) < float(min_interval_seconds):
         return 0
-    st.session_state["_video_pipeline_resume_at_v115"] = now_mono
+    st.session_state["_video_pipeline_resume_at_v116"] = now_mono
     try:
         rows = (
             supabase_client()
@@ -6369,16 +6439,16 @@ def resume_member_video_background_jobs(limit=24, min_interval_seconds=8):
         if not isinstance(selection, dict):
             selection = {}
         status = str(selection.get("status") or "").strip().lower()
-        # ready/reviewed are complete. v115 gives older failed, unselected rows
+        # ready/reviewed are complete. v116 gives older failed, unselected rows
         # one automatic migration retry so a video that was stuck under v113/v114
         # does not require opening the viewer. The marker prevents retry loops.
         if status in {"ready", "reviewed"}:
             continue
         if status == "error":
-            if selection.get("v115_auto_retry") or selection.get("items"):
+            if selection.get("v116_auto_retry") or selection.get("items"):
                 continue
             try:
-                selection["v115_auto_retry"] = True
+                selection["v116_auto_retry"] = True
                 selection["status"] = "waiting_candidates"
                 selection["queued_at"] = now_jst().isoformat()
                 selection["updated_at"] = selection["queued_at"]
@@ -11616,7 +11686,7 @@ export default function(component) {
 
 try:
     moments_recovery_component = st.components.v2.component(
-        "tokyo_burari_moments_recovery_v115",
+        "tokyo_burari_moments_recovery_v116",
         html=_MOMENTS_RECOVERY_HTML,
         js=_MOMENTS_RECOVERY_JS,
     )
@@ -11628,7 +11698,7 @@ def _candidate_sheet_recovery_reservation(photo):
     video_id = str((photo or {}).get("id") or "").strip()
     if not video_id:
         raise ValueError("動画IDを確認できません。")
-    key = f"_moments_recovery_reservation_v115_{video_id}"
+    key = f"_moments_recovery_reservation_v116_{video_id}"
     current = st.session_state.get(key)
     if isinstance(current, dict) and current.get("path") and current.get("signed_url"):
         return current
@@ -11668,7 +11738,7 @@ def _render_moments_candidate_recovery(photo, index):
             "sheet_path": reservation.get("path"),
             "recovery_id": reservation.get("recovery_id"),
         },
-        key=f"moments_recovery_v115_{photo.get('id')}_{reservation.get('recovery_id')}",
+        key=f"moments_recovery_v116_{photo.get('id')}_{reservation.get('recovery_id')}",
         on_candidate_sheet_change=lambda: None,
         on_recovery_error_change=lambda: None,
     )
@@ -11682,7 +11752,7 @@ def _render_moments_candidate_recovery(photo, index):
                 columns=payload.get("columns") or 4,
                 rows=payload.get("rows") or 0,
             )
-            st.session_state.pop(f"_moments_recovery_reservation_v115_{photo.get('id')}", None)
+            st.session_state.pop(f"_moments_recovery_reservation_v116_{photo.get('id')}", None)
             launch_video_ai_background_job(updated)
             try:
                 _home_video_counts_cached.clear()
@@ -11746,7 +11816,7 @@ def _render_moments_picker(photo, index):
         else:
             st.caption("動画を読み込めませんでした。")
 
-    # v115: this page is a viewer only. It never starts candidate extraction or
+    # v116: this page is a viewer only. It never starts candidate extraction or
     # initial AI selection. Those jobs start automatically after video storage and
     # are also resumed by app-level maintenance after a Streamlit restart.
     if status == "processing":
@@ -11796,7 +11866,7 @@ def _render_moments_picker(photo, index):
         return
 
     st.caption(
-        f"AIが最大{VIDEO_AI_MAX_SELECTIONS}枚を選んでいます。気に入った写真を複数選べます。"
+        f"AIが映えを重視して最大{VIDEO_AI_MAX_SELECTIONS}枚を選んでいます。3×3で比較し、気に入った写真を複数選べます。"
         "選んだ結果は、次回以降のAIセレクションにも軽く反映されます。"
     )
 
@@ -11807,55 +11877,69 @@ def _render_moments_picker(photo, index):
         signed_map = {}
 
     selected_ranks = []
-    columns = st.columns(3, gap="small")
-    for item_index, item in enumerate(items):
-        rank = int(item.get("rank") or item_index + 1)
-        path = str(item.get("storage_path") or "").strip()
-        with columns[item_index % 3]:
-            url = str(signed_map.get(path) or "")
-            if not url:
-                try:
-                    url = thumbnail_photo_data_url(path, max_px=520, quality=82)
-                except Exception:
-                    url = ""
-            if url:
-                st.markdown(
-                    '<div style="width:100%;aspect-ratio:1/1;overflow:hidden;border-radius:12px;'
-                    'background:rgba(128,128,128,.08);">'
-                    f'<img src="{html.escape(url, quote=True)}" alt="いい瞬間 {rank}" '
-                    'loading="lazy" decoding="async" '
-                    'style="display:block;width:100%;height:100%;object-fit:cover;" /></div>',
-                    unsafe_allow_html=True,
+    grid_items = list(items)[:VIDEO_AI_MAX_SELECTIONS]
+    for row_start in range(0, VIDEO_AI_MAX_SELECTIONS, 3):
+        row_columns = st.columns(3, gap="small")
+        for column_offset in range(3):
+            item_index = row_start + column_offset
+            with row_columns[column_offset]:
+                if item_index >= len(grid_items):
+                    st.markdown(
+                        '<div style="width:100%;aspect-ratio:1/1;border-radius:12px;'
+                        'border:1px dashed rgba(128,128,128,.18);background:rgba(128,128,128,.035);">'
+                        '</div>',
+                        unsafe_allow_html=True,
+                    )
+                    st.caption(" ")
+                    continue
+
+                item = grid_items[item_index]
+                rank = int(item.get("rank") or item_index + 1)
+                path = str(item.get("storage_path") or "").strip()
+                url = str(signed_map.get(path) or "")
+                if not url:
+                    try:
+                        url = thumbnail_photo_data_url(path, max_px=520, quality=82)
+                    except Exception:
+                        url = ""
+                if url:
+                    st.markdown(
+                        '<div style="width:100%;aspect-ratio:1/1;overflow:hidden;border-radius:12px;'
+                        'background:rgba(128,128,128,.08);">'
+                        f'<img src="{html.escape(url, quote=True)}" alt="いい瞬間 {rank}" '
+                        'loading="lazy" decoding="async" '
+                        'style="display:block;width:100%;height:100%;object-fit:cover;" /></div>',
+                        unsafe_allow_html=True,
+                    )
+                else:
+                    st.caption("画像を表示できません")
+
+                if bool(item.get("ai_best")) or rank == 1:
+                    st.markdown("**★ AI BEST**")
+                quality = _video_selection_quality_label(item.get("primary_quality"))
+                seconds = max(0, int(item.get("timestamp_ms") or 0)) / 1000
+                reason = str(item.get("reason") or "").strip()
+                st.caption(f"{seconds:.1f}秒・{quality}" + (f"\n{reason}" if reason else ""))
+
+                chosen = st.checkbox(
+                    "この写真が好き",
+                    value=bool(item.get("human_selected")),
+                    disabled=status == "reviewed",
+                    key=f"moments_pick_{video_id}_{round_number}_{rank}",
                 )
-            else:
-                st.caption("画像を表示できません")
+                if chosen:
+                    selected_ranks.append(rank)
 
-            if bool(item.get("ai_best")) or rank == 1:
-                st.markdown("**★ AI BEST**")
-            quality = _video_selection_quality_label(item.get("primary_quality"))
-            seconds = max(0, int(item.get("timestamp_ms") or 0)) / 1000
-            reason = str(item.get("reason") or "").strip()
-            st.caption(f"{seconds:.1f}秒・{quality}" + (f"\n{reason}" if reason else ""))
-
-            chosen = st.checkbox(
-                "この写真が好き",
-                value=bool(item.get("human_selected")),
-                disabled=status == "reviewed",
-                key=f"moments_pick_{video_id}_{round_number}_{rank}",
-            )
-            if chosen:
-                selected_ranks.append(rank)
-
-            if st.button(
-                "大きく見る",
-                use_container_width=True,
-                key=f"moments_view_{video_id}_{round_number}_{rank}",
-            ):
-                show_video_ai_selection_dialog(
-                    path,
-                    "★ AI BEST" if rank == 1 else f"SELECT {rank}",
-                    f"{seconds:.1f}秒・{quality}" + (f"\n{reason}" if reason else ""),
-                )
+                if st.button(
+                    "大きく見る",
+                    use_container_width=True,
+                    key=f"moments_view_{video_id}_{round_number}_{rank}",
+                ):
+                    show_video_ai_selection_dialog(
+                        path,
+                        "★ AI BEST" if rank == 1 else f"SELECT {rank}",
+                        f"{seconds:.1f}秒・{quality}" + (f"\n{reason}" if reason else ""),
+                    )
 
     selected_rank_set = set(selected_ranks)
     send_clicked = st.button(
@@ -11895,23 +11979,24 @@ def _render_moments_picker(photo, index):
             with st.expander("保護者向け詳細"):
                 st.code(str(exc))
 
-    can_reroll = bool(str(selection_meta.get("candidate_bundle_path") or "").strip())
+    can_reroll = _video_ai_has_candidate_source(selection_meta)
     if can_reroll and status != "reviewed":
+        st.markdown("---")
         if st.button(
-            "この動画のいい瞬間を取り直す",
+            "🔄 再作成",
             use_container_width=True,
             disabled=bool(selected_rank_set),
-            help="気に入る写真がない場合に、同じ動画の別の候補からAIが選び直します。",
+            help="現在の候補に気に入る写真がない場合、同じ動画から映えを重視して別の候補を再作成します。",
             key=f"moments_reroll_{video_id}_{round_number}",
         ):
             try:
                 request_video_ai_reroll(photo)
                 st.session_state["_moments_notice"] = (
-                    "前回の候補は好みではなかったという情報を残し、別の候補から選び直しています。"
+                    "前回の候補は好みではなかったという情報を残し、映えを重視して別の候補を再作成しています。"
                 )
                 st.rerun()
             except Exception as exc:
-                st.error("いい瞬間を取り直せませんでした。")
+                st.error("いい瞬間を再作成できませんでした。")
                 with st.expander("保護者向け詳細"):
                     st.code(str(exc))
 
@@ -12358,7 +12443,7 @@ def page_trip():
             "video_candidate_sheet_signed_url": str(video_reservation.get("candidate_sheet_signed_url") or ""),
             "video_candidate_sheet_storage_path": str(video_reservation.get("candidate_sheet_path") or ""),
         },
-        key=f"live_camera_v115_{camera_trip_key}_{st.session_state.capture_serial}",
+        key=f"live_camera_v116_{camera_trip_key}_{st.session_state.capture_serial}",
         on_photo_change=lambda: None,
         on_video_change=lambda: None,
         on_camera_error_change=lambda: None,
@@ -12395,7 +12480,7 @@ def page_trip():
         video_saved = False
         uploaded_video_path = str(video_payload.get("video_storage_path") or "").strip()
         try:
-            reservation = st.session_state.get("_camera_video_upload_reservation_v115")
+            reservation = st.session_state.get("_camera_video_upload_reservation_v116")
             if not isinstance(reservation, dict):
                 raise ValueError("動画の保存予約を確認できませんでした。")
             reserved_video_path = str(reservation.get("storage_path") or "").strip()
@@ -12477,7 +12562,7 @@ def page_trip():
                 except Exception:
                     pass
 
-                # AI candidates are secondary to the original video. v115 prefers a
+                # AI candidates are secondary to the original video. v116 prefers a
                 # contact sheet that the browser uploaded directly to Storage. This
                 # avoids sending many base64 images through the Streamlit trigger.
                 candidate_sheet_path = str(video_payload.get("candidate_sheet_path") or "").strip()
@@ -12540,7 +12625,7 @@ def page_trip():
                             )
                         except Exception:
                             pass
-                        # v115: missing browser candidates no longer wait for the
+                        # v116: missing browser candidates no longer wait for the
                         # user to open the viewer. The background worker downloads
                         # the saved original and extracts its own candidates.
                         ai_status = "queued_recovery"
