@@ -22,7 +22,7 @@ from zoneinfo import ZoneInfo
 
 import streamlit as st
 
-APP_BUILD = "v103"
+APP_BUILD = "v104"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -720,7 +720,7 @@ _LIVE_CAMERA_HTML = """
       <button id="camera-review-retry" class="camera-retry-button" type="button">撮りなおす／選びなおす</button>
     </div>
     <button id="camera-review-find-moments" class="camera-find-button" type="button" hidden>✨ いい瞬間を探す</button>
-    <div id="camera-review-build" class="camera-review-build" hidden>camera v103</div>
+    <div id="camera-review-build" class="camera-review-build" hidden>camera v104</div>
     <img id="camera-review-image" class="camera-review-image" alt="撮影した写真の確認" />
     <video id="camera-review-video" class="camera-review-video" playsinline controls hidden></video>
   </div>
@@ -1749,11 +1749,11 @@ export default function(component) {
 }
 """
 
-LIVE_CAMERA_COMPONENT_BUILD = "v103"
+LIVE_CAMERA_COMPONENT_BUILD = "v104"
 
 try:
     live_camera_component = st.components.v2.component(
-        "tokyo_burari_live_camera_v103",
+        "tokyo_burari_live_camera_v104",
         html=_LIVE_CAMERA_HTML,
         css=_LIVE_CAMERA_CSS,
         js=_LIVE_CAMERA_JS,
@@ -4279,9 +4279,13 @@ def upload_video(
 
     if not video_bytes:
         raise ValueError("動画データが空です。")
-    duration_value = max(0, int(duration_ms or 0))
-    if duration_value > (VIDEO_MAX_SECONDS * 1000 + 1000):
-        raise ValueError("動画が30秒を超えています。30秒以内で撮影してください。")
+    # MediaRecorder.onstop may fire after the actual recording has already stopped.
+    # The browser caps recording at 30 seconds, so do not reject a valid video based
+    # on wall-clock delay between recorder.stop() and the onstop callback.
+    duration_value = min(
+        VIDEO_MAX_SECONDS * 1000,
+        max(0, int(duration_ms or 0)),
+    )
     if len(video_bytes) > VIDEO_MAX_BYTES:
         raise ValueError("動画が大きすぎます。30秒以内で撮り直してください。")
     ensure_video_storage_capacity(len(video_bytes))
@@ -4311,7 +4315,7 @@ def upload_video(
         "media_type": "video",
         "video_storage_path": video_path,
         "video_mime_type": clean_mime,
-        "video_duration_ms": max(0, int(duration_ms or 0)),
+        "video_duration_ms": duration_value,
         "video_size_bytes": len(video_bytes),
     }
 
@@ -4345,10 +4349,13 @@ def upload_video(
             )
             .execute()
         )
+        saved_row = (result.data or [None])[0]
+        if not isinstance(saved_row, dict) or not saved_row.get("id"):
+            raise RuntimeError("動画の保存記録をデータベースに作成できませんでした。")
         download_photo.clear()
         signed_photo_url_map.clear()
         _invalidate_fast_db_cache()
-        return (result.data or [None])[0]
+        return saved_row
     except Exception as exc:
         if uploaded_paths:
             try:
@@ -4759,7 +4766,7 @@ def store_video_ai_candidate_bundle(photo, frame_items):
     base = _video_selection_base_path(photo)
     if not base:
         raise ValueError("動画の保存先を確認できませんでした。")
-    bundle_path = f"{base}_candidates_v103.zip"
+    bundle_path = f"{base}_candidates_v104.zip"
     client = supabase_client()
     client.storage.from_(PHOTO_BUCKET).upload(
         path=bundle_path,
@@ -10127,7 +10134,10 @@ def _render_moments_picker(photo, index):
             st.caption("動画を読み込めませんでした。")
 
     if status == "processing":
-        launch_video_ai_background_job(photo)
+        try:
+            launch_video_ai_background_job(photo)
+        except Exception:
+            pass
         st.info("AIがこの動画のいい瞬間を探しています。ほかの画面に移動しても構いません。")
         if st.button(
             "状態を更新",
@@ -10537,7 +10547,7 @@ def page_trip():
             "video_allowed": bool(video_capacity.get("allowed")),
             "video_capacity_message": str(video_capacity.get("message") or ""),
         },
-        key=f"live_camera_v103_{camera_trip_key}_{st.session_state.capture_serial}",
+        key=f"live_camera_v104_{camera_trip_key}_{st.session_state.capture_serial}",
         on_photo_change=lambda: None,
         on_video_change=lambda: None,
         on_camera_error_change=lambda: None,
@@ -10561,14 +10571,15 @@ def page_trip():
             st.warning(message)
 
     if isinstance(video_payload, dict) and video_payload.get("data_url") and video_payload.get("poster_data_url"):
+        save_stage = "撮影データの読み込み"
+        video_saved = False
         try:
             mime_type, video_raw = decode_camera_video_data_url(video_payload["data_url"])
             poster_raw = decode_camera_data_url(video_payload["poster_data_url"])
             digest = hashlib.sha1(video_raw).hexdigest()
             digest_key = "saved_camera_video_digest_current"
             if st.session_state.get(digest_key) != digest:
-                # The browser already checked that a full 30-second reserve was
-                # available. The upload helper checks the actual final byte size again.
+                save_stage = "保存先の準備"
                 trip = ensure_today_trip()
                 capture_source = str(video_payload.get("source") or "video_camera")
                 location = build_photo_location(
@@ -10576,11 +10587,18 @@ def page_trip():
                     trip,
                     capture_source=capture_source,
                 )
-                candidate_frames = decode_video_candidate_frames(
-                    video_payload.get("candidate_frames") or [],
-                    max_frames=VIDEO_AI_MAX_CANDIDATES,
-                )
 
+                # Decode candidate stills before the rerun destroys the browser camera
+                # component. Failure here must never prevent the original video save.
+                try:
+                    candidate_frames = decode_video_candidate_frames(
+                        video_payload.get("candidate_frames") or [],
+                        max_frames=VIDEO_AI_MAX_CANDIDATES,
+                    )
+                except Exception:
+                    candidate_frames = []
+
+                save_stage = "動画本体の保管庫への保存"
                 with st.spinner("動画を保管庫に自動保存しています…"):
                     saved_video = upload_video(
                         trip["id"],
@@ -10593,24 +10611,46 @@ def page_trip():
                         capture_source=capture_source,
                     )
 
-                    # One compact ZIP keeps the wider candidate pool available for
-                    # background selection and a later "取り直す" request.
-                    if isinstance(saved_video, dict) and saved_video.get("id") and candidate_frames:
-                        try:
-                            saved_video = store_video_ai_candidate_bundle(
-                                saved_video,
-                                candidate_frames,
-                            )
-                        except Exception as candidate_exc:
-                            mark_video_ai_selection_error(saved_video, candidate_exc)
-
+                # From this point onward the original video is durably saved. Mark the
+                # digest immediately so an AI/candidate failure cannot upload it twice.
+                video_saved = True
                 st.session_state[digest_key] = digest
+                st.session_state[f"_camera_recent_photo_{trip['id']}"] = saved_video["id"]
 
-                if isinstance(saved_video, dict) and saved_video.get("id"):
-                    st.session_state[f"_camera_recent_photo_{trip['id']}"] = saved_video["id"]
-                    selection_meta = photo_media_metadata(saved_video).get("ai_selection") or {}
-                    if isinstance(selection_meta, dict) and str(selection_meta.get("candidate_bundle_path") or "").strip():
+                ai_status = "no_candidates"
+                if candidate_frames:
+                    try:
+                        save_stage = "AI候補画像の保管"
+                        saved_video = store_video_ai_candidate_bundle(
+                            saved_video,
+                            candidate_frames,
+                        )
+                        ai_status = "queued"
+                    except Exception as candidate_exc:
+                        # AI preparation is secondary. Never report this as a video-save
+                        # failure because the original video is already in storage.
+                        ai_status = "candidate_error"
+                        mark_video_ai_selection_error(saved_video, candidate_exc)
+
+                if ai_status == "queued":
+                    try:
+                        save_stage = "AIバックグラウンド処理の開始"
                         launch_video_ai_background_job(saved_video)
+                    except Exception as background_exc:
+                        # Keep the persisted candidate bundle. The top-page recovery
+                        # path can launch the job again on the next visit.
+                        ai_status = "queued_recovery"
+                        try:
+                            reflection = dict(photo_media_metadata(saved_video))
+                            selection = reflection.get("ai_selection") or {}
+                            if not isinstance(selection, dict):
+                                selection = {}
+                            selection["status"] = "processing"
+                            selection["last_error"] = str(background_exc)[:240]
+                            reflection["ai_selection"] = selection
+                            _write_photo_reflection(saved_video["id"], reflection)
+                        except Exception:
+                            pass
 
                 previous_count = st.session_state.get("_home_today_photo_count")
                 try:
@@ -10623,16 +10663,21 @@ def page_trip():
                     st.session_state["_home_today_place"] = place_label
 
                 st.session_state.capture_serial += 1
-                st.session_state["_camera_notice"] = (
-                    "動画を保管庫に保存しました。いい瞬間はバックグラウンドで自動選定しています。"
-                    if candidate_frames else
-                    "動画を保管庫に保存しました。候補画像の作成に失敗したため、AI選定は行われていません。"
-                )
+                if ai_status in {"queued", "queued_recovery"}:
+                    notice = "動画を保管庫に保存しました。いい瞬間はバックグラウンドで自動選定しています。"
+                elif ai_status == "candidate_error":
+                    notice = "動画は保管庫に保存しました。AI候補の準備だけ失敗したため、「いい瞬間を見る」から再処理できます。"
+                else:
+                    notice = "動画は保管庫に保存しました。候補画像を作れなかったため、「いい瞬間を見る」から再処理してください。"
+                st.session_state["_camera_notice"] = notice
                 st.rerun()
         except Exception as exc:
-            st.error("動画を保存できませんでした。")
+            if video_saved:
+                st.warning("動画本体は保管庫に保存済みです。保存後の処理だけ完了できませんでした。")
+            else:
+                st.error("動画を保存できませんでした。")
             with st.expander("保護者向け詳細"):
-                st.code(str(exc))
+                st.code(f"処理段階: {save_stage}\n{exc}")
 
     if isinstance(payload, dict) and payload.get("data_url"):
         try:
