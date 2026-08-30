@@ -27,7 +27,7 @@ from zoneinfo import ZoneInfo
 
 import streamlit as st
 
-APP_BUILD = "v139"
+APP_BUILD = "v140"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -687,13 +687,13 @@ VIDEO_AI_SAMPLE_INTERVAL_MS = 100
 VIDEO_AI_MAX_CANDIDATES = 150
 # Every 0.1-second frame is evaluated by AI. Batching is only an API payload
 # boundary; it is not a non-AI quality filter.
-VIDEO_AI_BATCH_SIZE = 12
-VIDEO_AI_BATCH_KEEP = 4
-VIDEO_AI_BATCH_WORKERS = 2
+VIDEO_AI_BATCH_SIZE = 25
+VIDEO_AI_BATCH_KEEP = 6
+VIDEO_AI_BATCH_WORKERS = 3
 # Background AI must never remain in "processing" indefinitely.
 # One provider call is bounded, and a stale Streamlit worker can be relaunched.
-VIDEO_AI_REQUEST_TIMEOUT_SECONDS = 90
-VIDEO_AI_STALE_SECONDS = 300
+VIDEO_AI_REQUEST_TIMEOUT_SECONDS = 30
+VIDEO_AI_STALE_SECONDS = 240
 
 # Best-effort post-save video stabilization. The original recording is never
 # overwritten. A lightly stabilized MP4 proxy is created when ffmpeg/deshake is
@@ -1746,38 +1746,14 @@ export default function(component) {
           setStatus('動画を保管庫へ送信しています…');
           await uploadVideoBlobToSignedUrl(blob);
 
-          // Build every 0.1-second AI thumbnail only after recording has finished.
-          // This keeps the 240px/JPEG work completely off the live recording path.
-          try {
-            setStatus('元動画は保存済みです。AI候補を準備しています…');
-            const rebuilt = await extractVideoCandidateFrames(blob, durationMs);
-            if (Array.isArray(rebuilt) && rebuilt.length) candidateFrames = rebuilt.slice(0, 150);
-          } catch (rebuildErr) {
-            console.warn('candidate rebuild skipped', rebuildErr);
-          }
-
-          // Candidate stills are never returned to Streamlit as a large array of
-          // base64 images. Pack them into one JPEG contact sheet and upload it
-          // directly to Storage. This makes the AI hand-off independent of the
-          // component payload size and survives Streamlit reruns.
+          // v140: do not build any browser-side 0.1-second JPEG sheet. The saved
+          // original video is now the single source of truth. The server extracts
+          // native-resolution 0.1-second frames once, then creates separate small
+          // AI copies. This removes duplicated work and avoids low-resolution paths.
           let candidateSheetPath = '';
           let candidateManifest = [];
           let candidateSheetColumns = 0;
           let candidateSheetRows = 0;
-          if (candidateFrames.length && candidateSheetSignedUrl && candidateSheetStoragePath) {
-            try {
-              const sheet = await buildCandidateSheet(candidateFrames);
-              if (sheet?.blob) {
-                await uploadRawBlobToSignedUrl(sheet.blob, candidateSheetSignedUrl, 'image/jpeg', 'AI候補画像');
-                candidateSheetPath = candidateSheetStoragePath;
-                candidateManifest = sheet.manifest || [];
-                candidateSheetColumns = Number(sheet.columns || 0);
-                candidateSheetRows = Number(sheet.rows || 0);
-              }
-            } catch (sheetErr) {
-              console.warn('candidate sheet upload skipped', sheetErr);
-            }
-          }
 
           const recordingId = (globalThis.crypto && typeof globalThis.crypto.randomUUID === 'function')
             ? globalThis.crypto.randomUUID()
@@ -2020,11 +1996,11 @@ export default function(component) {
 }
 """
 
-LIVE_CAMERA_COMPONENT_BUILD = "v139"
+LIVE_CAMERA_COMPONENT_BUILD = "v140"
 
 try:
     live_camera_component = st.components.v2.component(
-        "tokyo_burari_live_camera_v139",
+        "tokyo_burari_live_camera_v140",
         html=_LIVE_CAMERA_HTML,
         css=_LIVE_CAMERA_CSS,
         js=_LIVE_CAMERA_JS,
@@ -5151,7 +5127,7 @@ def register_browser_uploaded_video(
             "height": max(0, int(capture_height or 0)),
             "frame_rate": max(0.0, float(capture_frame_rate or 0)),
             "video_bitrate_bps": max(0, int(video_bitrate_bps or 0)),
-            "quality_pipeline": "v139_record_first_then_ai",
+            "quality_pipeline": "v140_native_single_pass",
         },
         "video_stabilization": {
             "version": VIDEO_STABILIZATION_VERSION,
@@ -5634,27 +5610,23 @@ def choose_video_ai_frames(
                 result = call_selector(
                     batch,
                     batch_prompt,
-                    f"video_moments_v134_coarse_{batch_index}",
+                    f"video_moments_v140_coarse_{batch_index}",
                     batch_keep,
                     max_output_tokens=1100,
                 )
                 return parse_result(result, batch)
             except Exception:
-                # A single oversized/rate-limited request must not fail all 150
-                # frames. Split this same batch and let AI inspect every frame.
-                records = []
-                for part_index, start in enumerate(range(0, len(batch), 6), start=1):
-                    part = batch[start:start + 6]
-                    part_keep = min(2, len(part))
-                    part_result = call_selector(
-                        part,
-                        batch_prompt,
-                        f"video_moments_v134_coarse_{batch_index}_retry_{part_index}",
-                        part_keep,
-                        max_output_tokens=800,
-                    )
-                    records.extend(parse_result(part_result, part))
-                return records
+                # v140 keeps retry time bounded. Retry the same complete batch once
+                # so every raw frame is still AI-reviewed, but never expand one
+                # failure into many sequential requests that can run for minutes.
+                result = call_selector(
+                    batch,
+                    batch_prompt,
+                    f"video_moments_v140_coarse_{batch_index}_retry",
+                    batch_keep,
+                    max_output_tokens=1100,
+                )
+                return parse_result(result, batch)
 
         if callable(progress_callback):
             try:
@@ -5707,10 +5679,10 @@ def choose_video_ai_frames(
         "rank=1をAI BESTとし、最も残したい1枚を1位にしてください。reasonは日本語で短く具体的にしてください。"
     )
 
-    # The first-stage shortlist is normally ~36 frames (6 batches x 6). This is
-    # small enough for a final cross-video comparison. If the provider rejects a
-    # large final request, perform another AI-only tournament; never fall back to
-    # a non-AI visual score to decide which raw frames survive.
+    # The first-stage shortlist is normally ~36 frames. If the provider rejects
+    # the full final request, retry once with the strongest first-stage AI winners.
+    # Every raw 0.1-second frame has already been AI-reviewed at least once; no
+    # non-AI quality filter is introduced here.
     if callable(progress_callback):
         try:
             progress_callback("final_selection", 1, 1, "AI最終選定中")
@@ -5720,46 +5692,32 @@ def choose_video_ai_frames(
         final_result = call_selector(
             final_frames,
             final_prompt,
-            "video_moments_v134_final",
+            "video_moments_v140_final",
             VIDEO_AI_MAX_SELECTIONS,
             max_output_tokens=1800,
         )
     except Exception:
-        if len(final_frames) <= 16:
+        if not shortlist_records:
             raise
-        semifinal_records = []
-        for semifinal_index, semi_start in enumerate(range(0, len(final_frames), 16), start=1):
-            semi = final_frames[semi_start:semi_start + 16]
-            semi_keep = min(6, len(semi))
-            semi_prompt = (
-                "動画全体の最終選考に進む候補を選びます。すべての画像を比較し、"
-                f"この組から最大{semi_keep}枚を選んでください。映え、表情、決定的瞬間、被写体の魅力を優先してください。\n"
-                f"{preference_text}"
-            )
-            semi_result = call_selector(
-                semi,
-                semi_prompt,
-                f"video_moments_v134_semifinal_{semifinal_index}",
-                semi_keep,
-                max_output_tokens=1200,
-            )
-            semi_by_id = {str(frame.get("frame_id") or ""): frame for frame in semi}
-            for item in (semi_result or {}).get("selections") or []:
-                if not isinstance(item, dict):
-                    continue
-                frame = semi_by_id.get(str(item.get("frame_id") or ""))
-                if frame:
-                    semifinal_records.append(frame)
-        if not semifinal_records:
-            raise ValueError("AIの最終候補を作成できませんでした。")
+        ranked_shortlist = sorted(
+            shortlist_records,
+            key=lambda record: (
+                int(record.get("score") or 0),
+                -int(record.get("batch_rank") or 99),
+            ),
+            reverse=True,
+        )
+        retry_frames = [record["frame"] for record in ranked_shortlist[:18] if record.get("frame")]
+        if len(retry_frames) < VIDEO_AI_MAX_SELECTIONS:
+            raise
         final_result = call_selector(
-            semifinal_records,
+            retry_frames,
             final_prompt,
-            "video_moments_v134_final_retry",
+            "video_moments_v140_final_retry",
             VIDEO_AI_MAX_SELECTIONS,
             max_output_tokens=1800,
         )
-        final_frames = semifinal_records
+        final_frames = retry_frames
 
     by_id = {str(frame.get("frame_id") or ""): frame for frame in final_frames}
     raw = final_result.get("selections") if isinstance(final_result, dict) else []
@@ -5776,7 +5734,7 @@ def choose_video_ai_frames(
         frame = by_id.get(frame_id)
         if not frame or frame_id in used_ids:
             continue
-        frame_hash = _image_dhash64(frame.get("image_bytes"))
+        frame_hash = _image_dhash64(frame.get("ai_bytes") or frame.get("image_bytes"))
         # Only remove near-identical duplicates after AI has already evaluated them.
         if any(_hamming64(frame_hash, existing) <= 1 for existing in used_hashes):
             continue
@@ -6056,77 +6014,6 @@ def _video_stabilization_input_suffix(photo):
     return ".webm"
 
 
-def _extract_selected_high_quality_frames_from_original(client, photo, selections):
-    """Re-extract AI-selected timestamps from the untouched original video only.
-
-    Low-resolution 0.1-second candidates are ranking aids and can never become
-    user-facing stills. Failure to extract from the original is a hard failure.
-    """
-    selected_items = list(selections or [])[:VIDEO_AI_MAX_SELECTIONS]
-    if not selected_items:
-        return {}
-
-    original_path = photo_video_storage_path(photo)
-    ffmpeg = _ffmpeg_executable()
-    if not original_path or not ffmpeg:
-        return {}
-
-    try:
-        video_raw = _storage_bytes(client.storage.from_(PHOTO_BUCKET).download(original_path))
-    except Exception:
-        return {}
-    if not video_raw:
-        return {}
-
-    def run_extract(command):
-        try:
-            completed = subprocess.run(
-                command,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                timeout=25,
-                check=False,
-            )
-            raw = bytes(completed.stdout or b"")
-            if completed.returncode != 0 or not raw:
-                return b""
-            return raw
-        except Exception:
-            return b""
-
-    results = {}
-    suffix = _video_stabilization_input_suffix(photo)
-    with tempfile.TemporaryDirectory(prefix="burari-final-stills-") as tmpdir:
-        input_path = os.path.join(tmpdir, "original" + suffix)
-        with open(input_path, "wb") as fh:
-            fh.write(video_raw)
-
-        for selected in selected_items:
-            frame = selected.get("frame") or {}
-            frame_id = str(frame.get("frame_id") or "")
-            timestamp_ms = max(0, int(frame.get("timestamp_ms") or 0))
-            if not frame_id:
-                continue
-            timestamp_s = f"{timestamp_ms / 1000.0:.3f}"
-            accurate = [
-                ffmpeg, "-nostdin", "-hide_banner", "-loglevel", "error",
-                "-i", input_path, "-ss", timestamp_s, "-frames:v", "1",
-                "-an", "-f", "image2pipe", "-vcodec", "png", "pipe:1",
-            ]
-            fast = [
-                ffmpeg, "-nostdin", "-hide_banner", "-loglevel", "error",
-                "-ss", timestamp_s, "-i", input_path, "-frames:v", "1",
-                "-an", "-f", "image2pipe", "-vcodec", "png", "pipe:1",
-            ]
-            raw = run_extract(accurate) or run_extract(fast)
-            if not raw:
-                continue
-            image_bytes = normalize_photo(raw, max_side=4096, quality=96)
-            if image_bytes:
-                results[frame_id] = image_bytes
-    return results
-
-
 def _ensure_video_stabilized_copy(client, photo, family_key, member_key, force=False):
     """Create a light stabilized playback/AI proxy while preserving the original.
 
@@ -6368,18 +6255,22 @@ def _video_ai_expected_candidate_count(photo):
 
 
 def _background_extract_video_candidate_frames(client, photo):
-    """Extract every 0.1-second candidate from the preferred processing video.
+    """Extract every 0.1-second candidate from the untouched original at native size.
 
-    v135 prefers the lightly stabilized proxy when available and otherwise uses the
-    untouched original. Up to 150 frames are still shown to AI without non-AI
-    quality pruning.
+    v140 performs one ffmpeg pass over the saved original video. Each candidate keeps
+    a high-quality native-resolution JPEG for eventual user-facing output, while AI
+    receives a separate small copy. The final selected stills therefore never depend
+    on 240px/480px candidate thumbnails and do not need nine separate ffmpeg seeks.
     """
-    video_path = photo_video_ai_source_path(photo)
+    video_path = photo_video_storage_path(photo)
     if not video_path:
-        raise ValueError("AI処理用動画の保存先を確認できませんでした。")
+        raise ValueError("元動画の保存先を確認できませんでした。")
     ffmpeg = _ffmpeg_executable()
     if not ffmpeg:
-        raise RuntimeError("動画から候補画像を作るためのffmpegを利用できません。")
+        raise RuntimeError(
+            "元動画から高画質のいい瞬間を作るためのffmpegを利用できません。"
+            "低画質候補には切り替えません。"
+        )
 
     video_raw = _storage_bytes(client.storage.from_(PHOTO_BUCKET).download(video_path))
     if not video_raw:
@@ -6388,12 +6279,15 @@ def _background_extract_video_candidate_frames(client, photo):
     target_count = _video_ai_expected_candidate_count(photo)
     fps = 1000.0 / float(VIDEO_AI_SAMPLE_INTERVAL_MS)
     suffix = ".mp4" if str(video_path).lower().endswith(".mp4") else ".webm"
-    with tempfile.TemporaryDirectory(prefix="burari-video-ai-") as tmpdir:
-        input_path = os.path.join(tmpdir, "source" + suffix)
+    with tempfile.TemporaryDirectory(prefix="burari-video-ai-v140-") as tmpdir:
+        input_path = os.path.join(tmpdir, "original" + suffix)
         output_pattern = os.path.join(tmpdir, "frame_%03d.jpg")
         with open(input_path, "wb") as fh:
             fh.write(video_raw)
 
+        # No scale filter: keep the original video frame dimensions. q=1 is the
+        # highest practical JPEG quality for ffmpeg's image2 encoder and avoids the
+        # previous 240/480px quality loss. AI copies are downsized later in Python.
         command = [
             ffmpeg,
             "-nostdin",
@@ -6403,11 +6297,11 @@ def _background_extract_video_candidate_frames(client, photo):
             "-i",
             input_path,
             "-vf",
-            f"fps={fps:.6f}:start_time=0:round=near,scale=480:480:force_original_aspect_ratio=decrease",
+            f"fps={fps:.6f}:start_time=0:round=near",
             "-frames:v",
             str(target_count),
             "-q:v",
-            "4",
+            "1",
             output_pattern,
         ]
         try:
@@ -6415,20 +6309,20 @@ def _background_extract_video_candidate_frames(client, photo):
                 command,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                timeout=60,
+                timeout=45,
                 check=False,
             )
         except subprocess.TimeoutExpired as exc:
-            raise RuntimeError("元動画から0.1秒間隔の候補画像作成が60秒でタイムアウトしました。") from exc
+            raise RuntimeError("元動画から高画質候補を作る処理が45秒でタイムアウトしました。") from exc
 
         files = sorted(Path(tmpdir).glob("frame_*.jpg"))[:target_count]
         if completed.returncode != 0 and not files:
             detail = completed.stderr.decode("utf-8", errors="ignore").strip().replace("\n", " ")
             if len(detail) > 180:
                 detail = detail[:177] + "..."
-            raise RuntimeError("元動画から候補画像を作成できませんでした。" + (f" {detail}" if detail else ""))
+            raise RuntimeError("元動画から高画質候補を作成できませんでした。" + (f" {detail}" if detail else ""))
         if not files:
-            raise ValueError("元動画から候補画像を1枚も作成できませんでした。")
+            raise ValueError("元動画から高画質候補を1枚も作成できませんでした。")
 
         frames = []
         for index, frame_path in enumerate(files, start=1):
@@ -6440,12 +6334,16 @@ def _background_extract_video_candidate_frames(client, photo):
                 {
                     "frame_id": f"F{index:03d}",
                     "timestamp_ms": timestamp_ms,
-                    "image_bytes": normalize_photo(raw, max_side=1280, quality=84),
-                    "ai_bytes": normalize_photo(raw, max_side=640, quality=72),
+                    # User-facing source: native-resolution frame from the original
+                    # recording, without any resize or additional JPEG recompression.
+                    "image_bytes": raw,
+                    # AI-only copy. This has no effect on saved-photo quality.
+                    "ai_bytes": normalize_photo(raw, max_side=640, quality=74),
+                    "output_source": "original_video_native_0p1_v140",
                 }
             )
         if not frames:
-            raise ValueError("元動画から有効な候補画像を作成できませんでした。")
+            raise ValueError("元動画から有効な高画質候補を作成できませんでした。")
         return frames[:VIDEO_AI_MAX_CANDIDATES]
 
 def _background_store_video_ai_candidate_bundle(client, photo, family_key, member_key, frame_items):
@@ -6648,33 +6546,34 @@ def _background_store_video_ai_selection(
     round_number,
     previous_paths=None,
 ):
+    """Persist only native-resolution frames extracted from the original video."""
     base = _video_selection_base_path(photo)
     if not base:
         raise ValueError("動画の保存先を確認できませんでした。")
+    selected_items = list(selections or [])[:VIDEO_AI_MAX_SELECTIONS]
+    if not selected_items:
+        raise ValueError("AIセレクションを作成できませんでした。")
+
+    # v140 never performs a second seek/re-extraction pass. The one 0.1-second
+    # ffmpeg pass already produced native-resolution source frames. Refuse anything
+    # that did not originate from that path rather than showing a blurry fallback.
+    for selected in selected_items:
+        frame = selected.get("frame") or {}
+        if str(frame.get("output_source") or "") != "original_video_native_0p1_v140":
+            raise ValueError("低解像度候補が混在しているため保存を中止しました。元動画から再処理します。")
+        if not frame.get("image_bytes"):
+            raise ValueError("元動画由来の高画質画像を読み込めませんでした。")
+
     uploaded_paths = []
     items = []
     job_token = uuid.uuid4().hex[:8]
-    high_quality_by_id = _extract_selected_high_quality_frames_from_original(
-        client, photo, selections
-    )
-    selected_items = list(selections or [])[:VIDEO_AI_MAX_SELECTIONS]
-    expected_ids = [str((s.get("frame") or {}).get("frame_id") or "").strip() for s in selected_items]
-    missing_ids = [frame_id for frame_id in expected_ids if frame_id and frame_id not in high_quality_by_id]
-    if missing_ids:
-        raise ValueError(
-            f"AIが選んだ{len(missing_ids)}枚を元動画から高画質で再抽出できませんでした。"
-            "低画質候補は保存しません。"
-        )
-    high_quality_count = 0
     try:
         for rank, selected in enumerate(selected_items, start=1):
             frame = selected.get("frame") or {}
             frame_id = str(frame.get("frame_id") or "").strip()
-            image_bytes = high_quality_by_id.get(frame_id)
+            image_bytes = frame.get("image_bytes")
             if not frame_id or not image_bytes:
-                raise ValueError("元動画から高画質画像を読み込めませんでした。")
-            output_source = "original_video"
-            high_quality_count += 1
+                raise ValueError("元動画由来の高画質画像を読み込めませんでした。")
             path = f"{base}_ai_r{int(round_number):02d}_{job_token}_{rank:02d}.jpg"
             client.storage.from_(PHOTO_BUCKET).upload(
                 path=path,
@@ -6688,7 +6587,7 @@ def _background_store_video_ai_selection(
                     "storage_path": path,
                     "frame_id": frame_id,
                     "timestamp_ms": max(0, int(frame.get("timestamp_ms") or 0)),
-                    "output_source": output_source,
+                    "output_source": "original_video_native_0p1_v140",
                     "score": int(selected.get("score") or 0),
                     "primary_quality": str(selected.get("primary_quality") or "other"),
                     "reason": str(selected.get("reason") or "").strip(),
@@ -6721,8 +6620,9 @@ def _background_store_video_ai_selection(
                 "updated_at": now_jst().isoformat(),
                 "round": int(round_number),
                 "items": items,
-                "final_frame_mode": "original_reextract_required_v139",
-                "high_quality_count": int(high_quality_count),
+                "final_frame_mode": "original_native_0p1_single_pass_v140",
+                "high_quality_count": len(items),
+                "progress_message": "完了",
                 "last_error": "",
             }
         )
@@ -6745,7 +6645,6 @@ def _background_store_video_ai_selection(
             except Exception:
                 pass
         raise
-
 
 def _video_ai_timestamp_age_seconds(selection_meta):
     if not isinstance(selection_meta, dict):
@@ -6772,6 +6671,7 @@ def video_ai_processing_is_stale(selection_meta):
 
 
 def _run_video_ai_background_job(photo_id, family_key, member_key):
+    """Run one complete Good Moments job synchronously in the active Streamlit run."""
     client, ai_client = _background_clients()
     result = (
         client.table(PHOTO_TABLE)
@@ -6784,44 +6684,20 @@ def _run_video_ai_background_job(photo_id, family_key, member_key):
     )
     photo = (result.data or [None])[0]
     if not photo or not photo_is_video(photo):
-        return
-
-    # v135: preserve the original and try to create a light stabilized proxy first.
-    # Stabilization is non-fatal; if unavailable or unsuccessful, the same pipeline
-    # continues with the untouched original/browser candidate sheet.
-    try:
-        photo = _ensure_video_stabilized_copy(
-            client, photo, family_key, member_key, force=False
-        ) or photo
-    except Exception:
-        pass
+        return False
 
     reflection = dict(photo_media_metadata(photo))
     selection_meta = reflection.get("ai_selection") or {}
     if not isinstance(selection_meta, dict):
         selection_meta = {}
 
-    # From v116 onward the worker owns the complete post-save pipeline. A video
-    # without browser-generated candidates is not "waiting for the viewer"; the
-    # worker extracts candidates from the stored original first, then runs AI.
     selection_meta["status"] = "processing"
+    selection_meta["stage"] = "candidate_preparation"
     selection_meta["started_at"] = now_jst().isoformat()
     selection_meta["updated_at"] = selection_meta["started_at"]
     selection_meta["attempt"] = max(0, int(selection_meta.get("attempt") or 0)) + 1
-    selection_meta["pipeline_mode"] = "inline_v139"
-    expected_candidate_count = _video_ai_expected_candidate_count(photo)
-    existing_candidate_count = max(0, int(selection_meta.get("candidate_count") or 0))
-    sampling_version = str(selection_meta.get("candidate_sampling_version") or "").strip()
-    has_candidate_source = _video_ai_has_candidate_source(selection_meta)
-    persisted_candidate_ready = (
-        has_candidate_source
-        and existing_candidate_count >= max(1, int(math.floor(expected_candidate_count * 0.9)))
-        and sampling_version in {"browser_0p1_v134", "v132_memory"}
-    )
-    # v139 decouples playback stabilization from still selection. AI candidates and
-    # the final saved stills both follow the untouched original-video timeline.
-    needs_fine_sampling = not persisted_candidate_ready
-    selection_meta["stage"] = "candidate_preparation" if needs_fine_sampling else "ai_selection"
+    selection_meta["pipeline_mode"] = "inline_single_pass_v140"
+    selection_meta["progress_message"] = "元動画から高画質候補を準備中"
     reflection["ai_selection"] = selection_meta
     try:
         _write_photo_reflection_for_owner(
@@ -6831,67 +6707,20 @@ def _run_video_ai_background_job(photo_id, family_key, member_key):
         pass
 
     try:
-        frames = None
-        if needs_fine_sampling:
-            # v132: keep the complete 0.1-second candidate set in worker memory.
-            # Persisting ~150 JPEGs as a ZIP created a large Storage upload and was
-            # the main failure/stall point in v130/v131. Rerolls simply resample the
-            # original saved video instead.
-            old_candidate_paths = [
-                str(selection_meta.get("candidate_bundle_path") or "").strip(),
-                str(selection_meta.get("candidate_sheet_path") or "").strip(),
-            ]
-            try:
-                frames = _background_extract_video_candidate_frames(client, photo)
-            except Exception as extraction_exc:
-                # If a browser sheet exists, use it rather than failing because the
-                # deployment has no ffmpeg. Otherwise move to automatic browser
-                # recovery; no button in the viewer is required.
-                if has_candidate_source:
-                    frames = _load_video_ai_candidate_frames(client, selection_meta)
-                else:
-                    selection_meta["status"] = "waiting_browser_candidates"
-                    selection_meta["stage"] = "browser_candidate_preparation"
-                    selection_meta["last_error"] = str(extraction_exc)[:240]
-                    selection_meta["updated_at"] = now_jst().isoformat()
-                    selection_meta["pipeline_mode"] = "browser_fallback_v135"
-                    reflection["ai_selection"] = selection_meta
-                    _write_photo_reflection_for_owner(
-                        photo_id, reflection, family_key, member_key, client=client
-                    )
-                    return
-            if frames and not has_candidate_source:
-                selection_meta["status"] = "processing"
-                selection_meta["stage"] = "ai_selection"
-                selection_meta["candidate_count"] = len(frames)
-                selection_meta["candidate_bundle_path"] = ""
-                selection_meta["candidate_sheet_path"] = ""
-                selection_meta["candidate_sample_interval_ms"] = VIDEO_AI_SAMPLE_INTERVAL_MS
-                selection_meta["candidate_sampling_version"] = (
-                    "stabilized_memory_v135" if video_is_stabilized(photo) else "v132_memory"
-                )
-                selection_meta["updated_at"] = now_jst().isoformat()
-                reflection["ai_selection"] = selection_meta
-                try:
-                    _write_photo_reflection_for_owner(
-                        photo_id, reflection, family_key, member_key, client=client
-                    )
-                except Exception:
-                    pass
-                stale_paths = [path for path in old_candidate_paths if path]
-                if stale_paths:
-                    try:
-                        client.storage.from_(PHOTO_BUCKET).remove(stale_paths)
-                    except Exception:
-                        pass
-        else:
-            frames = _load_video_ai_candidate_frames(client, selection_meta)
-
+        # v140 always samples the untouched original in one native-resolution pass.
+        # Legacy browser sheets/low-resolution bundles are ignored for final quality.
+        frames = _background_extract_video_candidate_frames(client, photo)
         if not frames:
-            raise ValueError("動画の候補フレームを読み込めませんでした。")
+            raise ValueError("元動画から高画質候補フレームを読み込めませんでした。")
 
         selection_meta["status"] = "processing"
         selection_meta["stage"] = "ai_selection"
+        selection_meta["candidate_count"] = len(frames)
+        selection_meta["candidate_bundle_path"] = ""
+        selection_meta["candidate_sheet_path"] = ""
+        selection_meta["candidate_sample_interval_ms"] = VIDEO_AI_SAMPLE_INTERVAL_MS
+        selection_meta["candidate_sampling_version"] = "original_native_0p1_v140"
+        selection_meta["progress_message"] = "AI一次選定を開始"
         selection_meta["updated_at"] = now_jst().isoformat()
         reflection["ai_selection"] = selection_meta
         try:
@@ -6950,6 +6779,7 @@ def _run_video_ai_background_job(photo_id, family_key, member_key):
             round_number,
             previous_paths=previous_paths,
         )
+        return True
     except Exception as exc:
         try:
             fresh = (
@@ -6968,8 +6798,8 @@ def _run_video_ai_background_job(photo_id, family_key, member_key):
             latest_selection = latest_reflection.get("ai_selection") or {}
             if not isinstance(latest_selection, dict):
                 latest_selection = {}
-            # Preserve the last usable set on reroll failure. Initial processing
-            # failures become error rather than an endless "processing" spinner.
+            # If a reroll fails, keep the prior usable set. For a first pass, expose
+            # a terminal error immediately rather than leaving a spinner for minutes.
             if latest_selection.get("items"):
                 latest_selection["status"] = "ready"
             else:
@@ -6977,12 +6807,14 @@ def _run_video_ai_background_job(photo_id, family_key, member_key):
             latest_selection["last_error"] = str(exc)[:240]
             latest_selection["updated_at"] = now_jst().isoformat()
             latest_selection["stage"] = str(latest_selection.get("stage") or "pipeline")
+            latest_selection["pipeline_mode"] = "inline_single_pass_v140"
             latest_reflection["ai_selection"] = latest_selection
             _write_photo_reflection_for_owner(
                 photo_id, latest_reflection, family_key, member_key, client=client
             )
         except Exception:
             pass
+        return False
 
 def launch_video_ai_background_job(photo):
     """Run the saved-video AI pipeline automatically in the normal Streamlit run.
@@ -7072,7 +6904,7 @@ def launch_video_ai_background_job(photo):
                 latest["stage"] = str(latest.get("stage") or "pipeline")
                 latest["last_error"] = "自動処理が終了状態を返さなかったため停止しました。"
                 latest["updated_at"] = now_jst().isoformat()
-                latest["pipeline_mode"] = "inline_v135"
+                latest["pipeline_mode"] = "inline_single_pass_v140"
                 reflection["ai_selection"] = latest
                 _write_photo_reflection_for_owner(
                     photo_id, reflection, family_key, member_key
@@ -7128,33 +6960,19 @@ def resume_member_video_background_jobs(limit=24, min_interval_seconds=0):
         has_items = bool(video_ai_selection_items(row))
         if status in {"ready", "reviewed"} and has_items:
             continue
-        if status == "waiting_browser_candidates":
-            # The automatic browser recovery component handles this state.
-            continue
-
-        # v135 gives one fresh automatic retry to an older failed video so the new
-        # stabilization/fallback path can recover v134 failures without user action.
+        # v140 no longer depends on browser candidate recovery. Old waiting/error
+        # states are automatically retried once using the saved original video.
         if status == "error":
-            if has_items or selection.get("v135_auto_retry"):
+            if has_items or selection.get("v140_auto_retry"):
                 continue
-            last_error = str(selection.get("last_error") or selection.get("message") or "")
-            candidate_failure = (
-                str(selection.get("stage") or "") in {"candidate_preparation", "browser_candidate_preparation"}
-                or "ffmpeg" in last_error.lower()
-                or "候補画像" in last_error
-                or "元動画から" in last_error
-            )
             try:
-                selection["v135_auto_retry"] = True
+                selection["v140_auto_retry"] = True
                 selection["queued_at"] = now_jst().isoformat()
                 selection["updated_at"] = selection["queued_at"]
-                selection["pipeline_mode"] = "inline_v135"
-                if candidate_failure and not _video_ai_has_candidate_source(selection):
-                    selection["status"] = "waiting_browser_candidates"
-                    selection["stage"] = "browser_candidate_preparation"
-                else:
-                    selection["status"] = "waiting_candidates"
-                    selection["last_error"] = ""
+                selection["pipeline_mode"] = "inline_single_pass_v140"
+                selection["status"] = "waiting_candidates"
+                selection["stage"] = "candidate_preparation"
+                selection["last_error"] = ""
                 reflection = dict(photo_media_metadata(row))
                 reflection["ai_selection"] = selection
                 _write_photo_reflection_for_owner(
@@ -7165,8 +6983,24 @@ def resume_member_video_background_jobs(limit=24, min_interval_seconds=0):
                 )
                 row = dict(row)
                 row["reflection_json"] = reflection
-                if selection["status"] == "waiting_browser_candidates":
-                    continue
+            except Exception:
+                continue
+        elif status == "waiting_browser_candidates":
+            try:
+                selection["status"] = "waiting_candidates"
+                selection["stage"] = "candidate_preparation"
+                selection["pipeline_mode"] = "inline_single_pass_v140"
+                selection["last_error"] = ""
+                reflection = dict(photo_media_metadata(row))
+                reflection["ai_selection"] = selection
+                _write_photo_reflection_for_owner(
+                    row.get("id"),
+                    reflection,
+                    row.get("family_key") or current_family_key(),
+                    row.get("member_key") or current_member_key(),
+                )
+                row = dict(row)
+                row["reflection_json"] = reflection
             except Exception:
                 continue
 
@@ -7184,7 +7018,7 @@ def resume_member_video_background_jobs(limit=24, min_interval_seconds=0):
                 selection["status"] = "error"
                 selection["last_error"] = str(exc)[:240]
                 selection["updated_at"] = now_jst().isoformat()
-                selection["pipeline_mode"] = "inline_v135"
+                selection["pipeline_mode"] = "inline_single_pass_v140"
                 reflection["ai_selection"] = selection
                 _write_photo_reflection_for_owner(
                     row.get("id"),
@@ -7412,7 +7246,7 @@ def record_video_ai_no_choice(video_photo):
 
 
 def store_preselected_video_ai_selection(photo, selections, candidate_count=0):
-    """Store nine already-selected JPEG derivatives and attach them to a saved video."""
+    """Store already-selected timestamps using one native-resolution original pass."""
     if not isinstance(photo, dict) or not photo.get("id") or not photo_is_video(photo):
         raise ValueError("AIセレクション対象の動画が見つかりません。")
     selected_items = list(selections or [])[:9]
@@ -7423,28 +7257,35 @@ def store_preselected_video_ai_selection(photo, selections, candidate_count=0):
         raise ValueError("動画の保存先を確認できませんでした。")
 
     client = supabase_client()
+    # Legacy/manual paths may carry small browser candidates. Rebuild the full
+    # 0.1-second native-resolution set once from the original and remap by time.
+    native_frames = _background_extract_video_candidate_frames(client, photo)
+    if not native_frames:
+        raise ValueError("元動画から高画質画像を作成できませんでした。")
+    native_by_id = {str(frame.get("frame_id") or ""): frame for frame in native_frames}
+
+    def native_for_selected(selected):
+        source_frame = selected.get("frame") or {}
+        frame_id = str(source_frame.get("frame_id") or "")
+        if frame_id and frame_id in native_by_id:
+            return native_by_id[frame_id]
+        target_ms = max(0, int(source_frame.get("timestamp_ms") or 0))
+        return min(
+            native_frames,
+            key=lambda frame: abs(int(frame.get("timestamp_ms") or 0) - target_ms),
+        )
+
     uploaded_paths = []
     items = []
-    high_quality_by_id = _extract_selected_high_quality_frames_from_original(
-        client, photo, selected_items
-    )
-    expected_ids = [str((s.get("frame") or {}).get("frame_id") or "").strip() for s in selected_items]
-    missing_ids = [frame_id for frame_id in expected_ids if frame_id and frame_id not in high_quality_by_id]
-    if missing_ids:
-        raise ValueError(
-            f"AIが選んだ{len(missing_ids)}枚を元動画から高画質で再抽出できませんでした。"
-            "低画質候補は保存しません。"
-        )
-    high_quality_count = 0
     try:
         for rank, selected in enumerate(selected_items, start=1):
-            frame = selected.get("frame") or {}
-            frame_id = str(frame.get("frame_id") or "").strip()
-            image_bytes = high_quality_by_id.get(frame_id)
+            native = native_for_selected(selected)
+            frame_id = str(native.get("frame_id") or "").strip()
+            image_bytes = native.get("image_bytes")
+            if str(native.get("output_source") or "") != "original_video_native_0p1_v140":
+                raise ValueError("元動画由来ではない画像は保存しません。")
             if not frame_id or not image_bytes:
                 raise ValueError("AIセレクション画像を元動画から読み込めませんでした。")
-            output_source = "original_video"
-            high_quality_count += 1
             path = f"{base}_ai_{rank:02d}.jpg"
             client.storage.from_(PHOTO_BUCKET).upload(
                 path=path,
@@ -7457,8 +7298,8 @@ def store_preselected_video_ai_selection(photo, selections, candidate_count=0):
                     "rank": rank,
                     "storage_path": path,
                     "frame_id": frame_id,
-                    "timestamp_ms": max(0, int(frame.get("timestamp_ms") or 0)),
-                    "output_source": output_source,
+                    "timestamp_ms": max(0, int(native.get("timestamp_ms") or 0)),
+                    "output_source": "original_video_native_0p1_v140",
                     "score": int(selected.get("score") or 0),
                     "primary_quality": str(selected.get("primary_quality") or "other"),
                     "reason": str(selected.get("reason") or "").strip(),
@@ -7471,10 +7312,10 @@ def store_preselected_video_ai_selection(photo, selections, candidate_count=0):
         reflection["ai_selection"] = {
             "status": "ready",
             "generated_at": now_jst().isoformat(),
-            "candidate_count": max(0, int(candidate_count or 0)),
+            "candidate_count": max(0, int(candidate_count or len(native_frames))),
             "items": items,
-            "final_frame_mode": "original_reextract_required_v139",
-            "high_quality_count": int(high_quality_count),
+            "final_frame_mode": "original_native_0p1_single_pass_v140",
+            "high_quality_count": len(items),
         }
         _write_photo_reflection(photo["id"], reflection)
         updated = dict(photo)
@@ -7487,7 +7328,6 @@ def store_preselected_video_ai_selection(photo, selections, candidate_count=0):
             except Exception:
                 pass
         raise
-
 
 def store_video_ai_selection(photo, frame_items):
     """Run AI selection, store nine JPEG derivatives, and attach them to the video row."""
@@ -13379,7 +13219,7 @@ def _render_moments_picker(photo, index):
             st.caption("元動画品質：" + " / ".join(details))
     high_quality_count = max(0, int(selection_meta.get("high_quality_count") or 0))
     if status in {"ready", "reviewed"} and high_quality_count:
-        st.caption(f"切り抜き：元動画から高画質再抽出 {high_quality_count}枚")
+        st.caption(f"切り抜き：元動画の元解像度フレーム {high_quality_count}枚")
     video_expander_label = "動画を見る（軽い手振れ補正）" if video_is_stabilized(photo) else "元の動画を見る"
     with st.expander(video_expander_label):
         video_url = video_display_url(photo)
@@ -14486,7 +14326,7 @@ def page_trip():
             "video_candidate_sheet_signed_url": str(video_reservation.get("candidate_sheet_signed_url") or ""),
             "video_candidate_sheet_storage_path": str(video_reservation.get("candidate_sheet_path") or ""),
         },
-        key=f"live_camera_v139_{camera_trip_key}_{st.session_state.capture_serial}",
+        key=f"live_camera_v140_{camera_trip_key}_{st.session_state.capture_serial}",
         on_photo_change=lambda: None,
         on_video_change=lambda: None,
         on_camera_error_change=lambda: None,
@@ -16232,8 +16072,8 @@ def page_settings():
     )
     st.caption(
         "動画は最大15秒です。録画を止めると確認画面を挟まず元動画を保管庫へ自動保存します。"
-        "対応環境では元動画を残したまま軽い手振れ補正版を別に作成し、再生とAIの『いい瞬間』選定では補正版を優先します。"
-        "補正に失敗した場合は自動で元動画へ戻るため、動画保存や最大9枚の自動選定は止めません。"
+        "『いい瞬間』は保存済みの元動画を0.1秒間隔で元解像度のまま1回だけ切り出し、AI用には別の軽量コピーを使います。"
+        "利用者が見る最大9枚は元動画由来の高画質フレームのみで、低解像度候補へは切り替えません。"
         "初回はカメラとは別に位置情報の許可も求められます。位置情報がオフ・拒否・取得不能の場合は、"
         "ホームの地名表示（未登録なら『地名：登録なし（自動取得）』）を押して入力した内容を写真の場所として使います。"
     )
@@ -16252,16 +16092,17 @@ init_state()
 # v133: unfinished videos are processed automatically in the normal Streamlit
 # execution, not in a detached long-lived thread. No viewer/button action is
 # required. Process one saved video, then rerun so another queued video can follow.
-_video_auto_processed_v135 = resume_member_video_background_jobs()
-if _video_auto_processed_v135:
+with st.spinner("保存済み動画の『いい瞬間』を自動処理しています…"):
+    _video_auto_processed_v140 = resume_member_video_background_jobs()
+if _video_auto_processed_v140:
     try:
         _home_video_counts_cached.clear()
     except Exception:
         pass
     st.rerun()
-# If server-side extraction is unavailable (for example ffmpeg is absent), recover
-# automatically in the browser from the already-saved video. No button is needed.
-auto_recover_one_video_candidate_sheet()
+# v140 does not use browser-side low-resolution candidate recovery. If native
+# extraction from the saved original is unavailable, the job ends as an explicit
+# error instead of silently substituting blurry frames.
 # Daily rollover and old-title repair can touch many rows. They are diary/history
 # maintenance, not startup requirements, so home/camera opens no longer wait for them.
 restore_recent_camera_session()
