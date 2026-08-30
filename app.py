@@ -722,7 +722,7 @@ _LIVE_CAMERA_HTML = """
       <button id="camera-review-retry" class="camera-retry-button" type="button">撮りなおす／選びなおす</button>
     </div>
     <button id="camera-review-find-moments" class="camera-find-button" type="button" hidden>✨ いい瞬間を探す</button>
-    <div id="camera-review-build" class="camera-review-build" hidden>camera v111</div>
+    <div id="camera-review-build" class="camera-review-build" hidden>camera v105</div>
     <img id="camera-review-image" class="camera-review-image" alt="撮影した写真の確認" />
     <video id="camera-review-video" class="camera-review-video" playsinline controls hidden></video>
   </div>
@@ -975,11 +975,6 @@ export default function(component) {
   // briefly after recording stops, so the stop gesture cannot fall through to it.
   let videoReviewGeneration = 0;
   let goodMomentsRevealTimer = null;
-  // A Streamlit component may be re-rendered while getUserMedia()/video.play() is
-  // still settling. Track the current camera request so an obsolete async result
-  // cannot turn a harmless preview interruption into a permission error.
-  let cameraOpenGeneration = 0;
-  let componentDisposed = false;
 
   const setStatus = (message) => {
     if (!status) return;
@@ -1153,52 +1148,20 @@ export default function(component) {
     setRecordingUi(false);
   };
 
-  const stopStream = (invalidateCameraRequest = true) => {
-    if (invalidateCameraRequest) cameraOpenGeneration += 1;
+  const stopStream = () => {
     stopActiveRecorderSilently();
     if (stream) {
       stream.getTracks().forEach((track) => track.stop());
       stream = null;
     }
     if (video) {
-      try { video.pause(); } catch (_) {}
+      video.pause();
       video.srcObject = null;
       video.hidden = true;
     }
     pendingMedia = null;
     pendingVideoBlob = null;
     showMenu();
-  };
-
-  const isBenignPreviewInterruption = (err) => {
-    const name = String(err?.name || '');
-    const detail = String(err?.message || '');
-    return name === 'AbortError'
-      || /play\(\).*interrupted/i.test(detail)
-      || /interrupted by a call to pause/i.test(detail)
-      || /interrupted by a new load request/i.test(detail);
-  };
-
-  const playPreviewBestEffort = async (generation) => {
-    if (!video || componentDisposed || generation !== cameraOpenGeneration) return;
-    // getUserMedia already succeeded. Preview playback is deliberately best-effort:
-    // Chrome/Android can reject play() when Streamlit re-renders and pauses the old
-    // element during the same tick. That is not a camera-permission failure.
-    for (let attempt = 0; attempt < 2; attempt += 1) {
-      if (componentDisposed || generation !== cameraOpenGeneration) return;
-      try {
-        const maybePromise = video.play();
-        if (maybePromise && typeof maybePromise.then === 'function') await maybePromise;
-        return;
-      } catch (err) {
-        if (componentDisposed || generation !== cameraOpenGeneration) return;
-        if (!isBenignPreviewInterruption(err)) {
-          console.warn('camera preview play failed', err);
-          return;
-        }
-        await new Promise((resolve) => setTimeout(resolve, 90));
-      }
-    }
   };
 
   const errorMessage = (err, mode = cameraMode) => {
@@ -1211,7 +1174,6 @@ export default function(component) {
     if (name === 'NotFoundError' || name === 'DevicesNotFoundError') return '利用できるカメラが見つかりませんでした。';
     if (name === 'NotReadableError' || name === 'TrackStartError') return 'カメラを開けませんでした。ほかのアプリがカメラを使っていないか確認してください。';
     if (name === 'SecurityError') return 'ブラウザのセキュリティ設定でカメラがブロックされています。';
-    if (name === 'AbortError') return 'カメラ映像の表示が一時的に中断されました。もう一度カメラを開いてください。';
     return 'カメラを開けませんでした。ブラウザのカメラ・マイク権限を確認してください。';
   };
 
@@ -1221,12 +1183,7 @@ export default function(component) {
       setStatus(videoCapacityMessage);
       return;
     }
-
-    // Invalidate every older async camera-open attempt, but do not invalidate this
-    // new one when clearing an existing stream.
-    const generation = cameraOpenGeneration + 1;
-    cameraOpenGeneration = generation;
-    stopStream(false);
+    stopStream();
     cameraMode = requestedMode;
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
       const message = 'このブラウザでは直接カメラを開けません。ChromeまたはSafariの最新版で開いてください。';
@@ -1242,9 +1199,8 @@ export default function(component) {
     }
 
     setStatus(cameraMode === 'video' ? 'カメラとマイクの使用を許可してください…' : 'カメラの使用を許可してください…');
-    let openedStream = null;
     try {
-      openedStream = await navigator.mediaDevices.getUserMedia({
+      stream = await navigator.mediaDevices.getUserMedia({
         audio: cameraMode === 'video' ? {
           echoCancellation: true,
           noiseSuppression: true,
@@ -1256,18 +1212,8 @@ export default function(component) {
           height: { ideal: 720 }
         }
       });
-
-      // If Streamlit has already re-rendered or another camera mode was requested,
-      // discard this now-obsolete stream without surfacing an error to the user.
-      if (componentDisposed || generation !== cameraOpenGeneration) {
-        openedStream.getTracks().forEach((track) => track.stop());
-        return;
-      }
-
-      stream = openedStream;
-      video.muted = true;
-      video.playsInline = true;
       video.srcObject = stream;
+      await video.play();
       shootButton.disabled = false;
       shootButton.textContent = cameraMode === 'video' ? '● 録画を開始' : '● 写真を撮る';
       showCameraActions();
@@ -1275,17 +1221,9 @@ export default function(component) {
         localStorage.setItem('tokyo_burari_last_camera_open_v1', String(Date.now()));
       } catch (_) {}
       setStatus(cameraMode === 'video' ? '動画は最大30秒です。音声も一緒に記録します。' : '');
-
-      // Do not await this as part of camera permission/opening. A rejected play()
-      // promise on Android Chrome is often only a lifecycle race with Streamlit.
-      void playPreviewBestEffort(generation);
     } catch (err) {
       console.error(err);
-      if (openedStream && openedStream !== stream) {
-        try { openedStream.getTracks().forEach((track) => track.stop()); } catch (_) {}
-      }
-      if (componentDisposed || generation !== cameraOpenGeneration) return;
-      stopStream(false);
+      stopStream();
       const message = errorMessage(err, cameraMode);
       setStatus(message);
       setTriggerValue('camera_error', {
@@ -1928,8 +1866,6 @@ export default function(component) {
   }
 
   return () => {
-    componentDisposed = true;
-    cameraOpenGeneration += 1;
     startButton.removeEventListener('click', startPhotoCamera);
     videoStartButton.removeEventListener('click', startVideoCamera);
     modeSwitchButton.removeEventListener('click', switchCameraMode);
@@ -1940,7 +1876,7 @@ export default function(component) {
     reviewRetry.removeEventListener('click', retryPendingMedia);
     reviewFindMoments?.removeEventListener('click', findGoodMoments);
     clearGoodMomentsRevealTimer();
-    stopStream(false);
+    stopStream();
     hideReview();
   };
 }
@@ -4891,7 +4827,7 @@ def get_camera_video_upload_reservation(trip_id, capture_serial):
             str(current.get("trip_id") or "") == str(trip_id)
             and str(current.get("family_key") or "") == str(family_key)
             and str(current.get("member_key") or "") == str(member_key)
-            and int(current.get("capture_serial") or -1) == serial
+            and int(current.get("capture_serial") if current.get("capture_serial") is not None else -1) == serial
             and str(current.get("storage_path") or "").strip()
             and str(current.get("signed_url") or "").strip()
         ):
@@ -11595,7 +11531,7 @@ def page_trip():
         if isinstance(camera_error, dict):
             detail = str(camera_error.get("detail") or "").strip()
             if detail and detail not in str(message or ""):
-                with st.expander("カメラ・動画エラーの詳細", expanded=True):
+                with st.expander("動画保存エラーの詳細", expanded=True):
                     st.code(detail)
 
     if (
@@ -11610,8 +11546,25 @@ def page_trip():
             reservation = st.session_state.get("_camera_video_upload_reservation_v111")
             if not isinstance(reservation, dict):
                 raise ValueError("動画の保存予約を確認できませんでした。")
-            if uploaded_video_path != str(reservation.get("storage_path") or "").strip():
-                raise ValueError("動画の保存先が撮影前の予約と一致しません。")
+            reserved_video_path = str(reservation.get("storage_path") or "").strip()
+            if uploaded_video_path != reserved_video_path:
+                # A Streamlit rerun can recreate the reservation object while the browser
+                # is finishing a direct upload. The uploaded path itself was originally
+                # minted by this server, so accept it when it is still inside the current
+                # signed-in member and trip prefix. This also makes registration resilient
+                # to a stale reservation without weakening cross-member isolation.
+                safe_prefix = (
+                    f"{current_family_key()}/{current_member_key()}/"
+                    f"{str(reservation.get('trip_id') or '')}/"
+                )
+                if not (
+                    uploaded_video_path.startswith(safe_prefix)
+                    and _storage_path_is_original_video(
+                        uploaded_video_path,
+                        video_payload.get("mime_type"),
+                    )
+                ):
+                    raise ValueError("動画の保存先が撮影前の予約と一致しません。")
 
             save_stage = "代表画像の読み込み"
             poster_raw = b""
@@ -11737,12 +11690,26 @@ def page_trip():
                 # The Blob was already uploaded directly by the browser. Remove it if
                 # registration failed, so the next recording can safely reuse the same
                 # signed reservation without leaving an orphaned object.
-                if uploaded_video_path and isinstance(reservation if 'reservation' in locals() else None, dict):
-                    if uploaded_video_path == str(reservation.get("storage_path") or "").strip():
-                        try:
+                if uploaded_video_path:
+                    try:
+                        cleanup_trip_id = str(
+                            (reservation.get("trip_id") if isinstance(reservation if 'reservation' in locals() else None, dict) else None)
+                            or (camera_trip or {}).get("id")
+                            or ""
+                        )
+                        cleanup_prefix = f"{current_family_key()}/{current_member_key()}/{cleanup_trip_id}/"
+                        if (
+                            cleanup_trip_id
+                            and uploaded_video_path.startswith(cleanup_prefix)
+                            and _storage_path_is_original_video(
+                                uploaded_video_path,
+                                video_payload.get("mime_type"),
+                            )
+                        ):
                             supabase_client().storage.from_(PHOTO_BUCKET).remove([uploaded_video_path])
-                        except Exception:
-                            pass
+                            _invalidate_video_storage_audit_cache()
+                    except Exception:
+                        pass
             with st.expander("保護者向け詳細"):
                 st.code(f"処理段階: {save_stage}\n{exc}")
 
