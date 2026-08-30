@@ -1794,11 +1794,11 @@ export default function(component) {
 }
 """
 
-LIVE_CAMERA_COMPONENT_BUILD = "v105"
+LIVE_CAMERA_COMPONENT_BUILD = "v106"
 
 try:
     live_camera_component = st.components.v2.component(
-        "tokyo_burari_live_camera_v105",
+        "tokyo_burari_live_camera_v106",
         html=_LIVE_CAMERA_HTML,
         css=_LIVE_CAMERA_CSS,
         js=_LIVE_CAMERA_JS,
@@ -2700,33 +2700,83 @@ def clear_browser_auto_login(key="browser_auto_login_clear"):
     )
 
 
-def _decode_browser_media_data_url(data_url, expected_prefix):
-    """Decode a trusted base64 data URL emitted by an in-app media component."""
-    if not isinstance(data_url, str) or not data_url.startswith(expected_prefix):
+def _coerce_component_data_url(value):
+    """Normalize Streamlit component media values across browser/SDK variants."""
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, dict):
+        # Some component/runtime versions wrap a trigger value one level deeper.
+        for key in ("data_url", "value", "url", "data"):
+            candidate = value.get(key)
+            if candidate is value:
+                continue
+            normalized = _coerce_component_data_url(candidate)
+            if normalized:
+                return normalized
+    return ""
+
+
+def _sniff_media_mime(raw):
+    """Infer the media type from file signatures instead of trusting browser MIME labels."""
+    if not raw:
+        return ""
+    if raw.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if raw.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if len(raw) >= 12 and raw[:4] == b"RIFF" and raw[8:12] == b"WEBP":
+        return "image/webp"
+    if raw.startswith(b"GIF87a") or raw.startswith(b"GIF89a"):
+        return "image/gif"
+    # ISO Base Media File Format: MP4/MOV/3GP variants carry an ftyp box near byte 4.
+    if len(raw) >= 12 and raw[4:8] == b"ftyp":
+        return "video/mp4"
+    # WebM/Matroska EBML header. MediaRecorder commonly emits WebM on Chrome/Android.
+    if raw.startswith(b"\x1a\x45\xdf\xa3"):
+        return "video/webm"
+    return ""
+
+
+def _decode_browser_media_data_url(data_url, expected_kind=None):
+    """Decode component media without assuming the browser's MIME label is reliable."""
+    normalized = _coerce_component_data_url(data_url)
+    if not normalized or not normalized.lower().startswith("data:"):
         raise ValueError("撮影データの形式が不正です。")
     try:
-        header, encoded = data_url.split(",", 1)
+        header, encoded = normalized.split(",", 1)
     except ValueError as exc:
         raise ValueError("撮影データを読み込めません。") from exc
-    if ";base64" not in header:
+    if ";base64" not in header.lower():
         raise ValueError("撮影データの形式が不正です。")
-    mime_type = header[5:].split(";", 1)[0].strip().lower()
+
+    declared_mime = header[5:].split(";", 1)[0].strip().lower()
+    # Browser/FileReader output is valid base64 but some engines insert whitespace.
+    compact = "".join(encoded.split())
     try:
-        raw = base64.b64decode(encoded, validate=True)
+        raw = base64.b64decode(compact, validate=False)
     except Exception as exc:
         raise ValueError("撮影データを読み込めません。") from exc
-    return mime_type, raw
+    if not raw:
+        raise ValueError("撮影データが空です。")
+
+    sniffed_mime = _sniff_media_mime(raw)
+    effective_mime = sniffed_mime or declared_mime
+    if expected_kind == "image" and not effective_mime.startswith("image/"):
+        raise ValueError("撮影画像の形式を判定できませんでした。")
+    if expected_kind == "video" and not effective_mime.startswith("video/"):
+        raise ValueError("撮影動画の形式を判定できませんでした。")
+    return effective_mime, raw
 
 
 def decode_camera_data_url(data_url):
     """Decode a trusted image data URL emitted by the live camera component."""
-    _, raw = _decode_browser_media_data_url(data_url, "data:image/")
+    _, raw = _decode_browser_media_data_url(data_url, "image")
     return raw
 
 
 def decode_camera_video_data_url(data_url):
-    """Decode a trusted video data URL emitted by the live camera component."""
-    mime_type, raw = _decode_browser_media_data_url(data_url, "data:video/")
+    """Decode a MediaRecorder data URL, tolerating generic browser MIME labels."""
+    mime_type, raw = _decode_browser_media_data_url(data_url, "video")
     return mime_type, raw
 
 
@@ -10623,7 +10673,7 @@ def page_trip():
             "video_allowed": bool(video_capacity.get("allowed")),
             "video_capacity_message": str(video_capacity.get("message") or ""),
         },
-        key=f"live_camera_v105_{camera_trip_key}_{st.session_state.capture_serial}",
+        key=f"live_camera_v106_{camera_trip_key}_{st.session_state.capture_serial}",
         on_photo_change=lambda: None,
         on_video_change=lambda: None,
         on_camera_error_change=lambda: None,
@@ -10759,6 +10809,12 @@ def page_trip():
                 if len(detail) > 180:
                     detail = detail[:177] + "..."
                 st.error(f"動画を保存できませんでした。処理段階：{save_stage}" + (f" ／ {detail}" if detail else ""))
+                if save_stage == "撮影データの読み込み" and isinstance(video_payload, dict):
+                    video_value = _coerce_component_data_url(video_payload.get("data_url"))
+                    poster_value = _coerce_component_data_url(video_payload.get("poster_data_url"))
+                    video_header = video_value.split(",", 1)[0][:100] if video_value else "(なし)"
+                    poster_header = poster_value.split(",", 1)[0][:100] if poster_value else "(なし)"
+                    st.caption(f"受信形式：動画 {video_header} / 代表画像 {poster_header}")
             with st.expander("保護者向け詳細"):
                 st.code(f"処理段階: {save_stage}\n{exc}")
 
