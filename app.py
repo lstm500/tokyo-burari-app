@@ -4328,6 +4328,11 @@ def photo_is_video(photo):
     )
 
 
+def diary_photos_only(photos):
+    """Return still-photo rows only; original video rows never appear in diaries."""
+    return [photo for photo in (photos or []) if isinstance(photo, dict) and not photo_is_video(photo)]
+
+
 def photo_video_storage_path(photo):
     if not photo_is_video(photo):
         return ""
@@ -6583,6 +6588,88 @@ def record_video_ai_human_choices(video_photo, selected_ranks):
             _write_photo_reflection(video_photo.get("id"), reflection)
         except Exception:
             pass
+
+    updated = dict(fresh)
+    updated["reflection_json"] = reflection
+    return updated
+
+
+def record_video_ai_no_choice(video_photo):
+    """Mark a video reviewed with no stills kept, and learn a weak negative signal."""
+    if not isinstance(video_photo, dict) or not video_photo.get("id") or not photo_is_video(video_photo):
+        raise ValueError("動画が見つかりません。")
+
+    client = supabase_client()
+    current = (
+        client.table(PHOTO_TABLE)
+        .select("*")
+        .eq("id", video_photo.get("id"))
+        .eq("family_key", current_family_key())
+        .eq("member_key", current_member_key())
+        .limit(1)
+        .execute()
+    )
+    fresh = (current.data or [None])[0] or video_photo
+    reflection = dict(photo_media_metadata(fresh))
+    selection = reflection.get("ai_selection") or {}
+    if not isinstance(selection, dict):
+        selection = {}
+
+    now_value = now_jst().isoformat()
+    items = [item for item in (selection.get("items") or []) if isinstance(item, dict)]
+    history = list(selection.get("history") or [])
+    history.append(
+        {
+            "round": int(selection.get("round") or 0),
+            "reroll_rejected": True,
+            "final_rejected_all": True,
+            "at": now_value,
+            "frame_ids": [str(item.get("frame_id") or "") for item in items],
+            "qualities": [str(item.get("primary_quality") or "other") for item in items],
+        }
+    )
+    selection["history"] = history[-12:]
+
+    feedback_history = list(selection.get("feedback_history") or [])
+    feedback_history.append(
+        {
+            "at": now_value,
+            "selected_ranks": [],
+            "rejected_all": True,
+            "round": int(selection.get("round") or 0),
+        }
+    )
+    selection["feedback_history"] = feedback_history[-20:]
+    selection["reviewed_at"] = now_value
+    selection["review_result"] = "none_kept"
+    selection["status"] = "reviewed"
+
+    # No still was kept, so remove temporary AI-derived images and candidate data.
+    cleanup_paths = []
+    for item in items:
+        path = str(item.get("storage_path") or "").strip()
+        if path:
+            cleanup_paths.append(path)
+    for key in ("candidate_bundle_path", "candidate_sheet_path"):
+        path = str(selection.get(key) or "").strip()
+        if path:
+            cleanup_paths.append(path)
+    cleanup_paths = list(dict.fromkeys(cleanup_paths))
+    if cleanup_paths:
+        try:
+            client.storage.from_(PHOTO_BUCKET).remove(cleanup_paths)
+        except Exception:
+            pass
+
+    selection["items"] = []
+    selection["candidate_bundle_path"] = ""
+    selection["candidate_sheet_path"] = ""
+    reflection["ai_selection"] = selection
+    _write_photo_reflection(video_photo.get("id"), reflection)
+    try:
+        _home_video_counts_cached.clear()
+    except Exception:
+        pass
 
     updated = dict(fresh)
     updated["reflection_json"] = reflection
@@ -9802,7 +9889,8 @@ def render_summary_feedback_controls(meta, trip_id, key_prefix, draft_state=None
 
 
 def summarize_burari_from_photos(trip, photos):
-    """Summarize one trip from the actual photos plus the child's saved comments."""
+    """Summarize one trip from still photos plus the child's saved comments."""
+    photos = diary_photos_only(photos)
     comment_lines = []
     image_items = []
     child_points = []
@@ -10658,7 +10746,7 @@ def _list_pending_photo_trips_uncached(limit=40):
             if embedded_diary or not photos:
                 continue
             photos = sorted(
-                [p for p in photos if isinstance(p, dict)],
+                diary_photos_only([p for p in photos if isinstance(p, dict)]),
                 key=lambda p: str(p.get("captured_at") or ""),
             )
             if photos:
@@ -10687,11 +10775,12 @@ def _list_pending_photo_trips_uncached(limit=40):
     pending_trips = [trip for trip in trips if str(trip.get("id")) not in diary_map]
     pending_ids = [str(trip.get("id")) for trip in pending_trips if trip.get("id")]
     photo_map = photos_for_trip_ids(pending_ids)
-    return [
-        {"trip": trip, "photos": photo_map.get(str(trip.get("id")), [])}
-        for trip in pending_trips
-        if photo_map.get(str(trip.get("id")), [])
-    ]
+    result_rows = []
+    for trip in pending_trips:
+        stills = diary_photos_only(photo_map.get(str(trip.get("id")), []))
+        if stills:
+            result_rows.append({"trip": trip, "photos": stills})
+    return result_rows
 
 
 def list_pending_photo_trips(limit=40):
@@ -10749,9 +10838,9 @@ def pending_diary_titles(pending_rows, used_titles=None):
 
 
 def create_and_save_diary_from_photos(trip, photos, requested_title=None, reason="manual_create"):
-    """Create a diary from already-saved child comments and persist it immediately."""
+    """Create a diary from already-saved still-photo comments and persist it immediately."""
     trip = trip or {}
-    photos = photos or []
+    photos = diary_photos_only(photos)
     if not trip.get("id") or not photos:
         raise ValueError("日記にする写真がありません。")
 
@@ -10806,6 +10895,7 @@ def create_and_save_diary_from_photos(trip, photos, requested_title=None, reason
 
 
 def reflection_state(trip_id, photos):
+    photos = diary_photos_only(photos)
     key = f"reflection_state_{trip_id}"
     photo_ids = [p["id"] for p in photos]
     if key not in st.session_state:
@@ -11238,8 +11328,8 @@ def trip_label(trip):
 
 
 def render_pending_thumbnail_grid(trip_id, photos, max_count=None, trip=None):
-    """Three-across pending thumbnails. Talked photos are orange and every photo opens its talk screen."""
-    subset = list(photos or [])
+    """Three-across pending still-photo thumbnails."""
+    subset = diary_photos_only(photos)
     if max_count is not None:
         subset = subset[: max(0, int(max_count))]
     if not subset:
@@ -11262,7 +11352,7 @@ def render_pending_thumbnail_grid(trip_id, photos, max_count=None, trip=None):
                 "src": src,
                 "talked": bool(talked),
                 "location": str(photo_location_label(photo) or ""),
-                "is_video": bool(photo_is_video(photo)),
+                "is_video": False,
             }
         )
         photo_ids.append(pid)
@@ -11312,7 +11402,7 @@ def render_pending_thumbnail_grid(trip_id, photos, max_count=None, trip=None):
                     unsafe_allow_html=True,
                 )
             if st.button(
-                "動画を開く" if card.get("is_video") else "写真を開く",
+                "写真を開く",
                 use_container_width=True,
                 key=f"pending_photo_fallback_open_{trip_id}_{card['id']}",
             ):
@@ -11332,8 +11422,8 @@ def render_pending_thumbnail_grid(trip_id, photos, max_count=None, trip=None):
     return None
 
 def render_small_gallery(photos, max_count=None, columns=3):
-    """Render history photos lazily; the browser downloads visible images in parallel."""
-    subset = list(photos or [])
+    """Render history still photos lazily; original videos are intentionally omitted."""
+    subset = diary_photos_only(photos)
     if max_count is not None:
         subset = subset[:max_count]
     if not subset:
@@ -11367,7 +11457,8 @@ def render_small_gallery(photos, max_count=None, columns=3):
         )
 
 def render_diary_photo_gallery(trip_id, photos, state=None):
-    """Show all photos in a three-column clickable grid."""
+    """Show diary still photos in a three-column clickable grid."""
+    photos = diary_photos_only(photos)
     if not photos:
         return None
 
@@ -11394,7 +11485,7 @@ def render_diary_photo_gallery(trip_id, photos, state=None):
                 "src": src,
                 "talked": bool(talked),
                 "location": str(location_label or ""),
-                "is_video": bool(photo_is_video(photo)),
+                "is_video": False,
             }
         )
         photo_ids.append(str(pid))
@@ -12142,7 +12233,7 @@ def _get_moments_select_component():
     _moments_select_component_initialized = True
     try:
         moments_select_component = st.components.v2.component(
-            "tokyo_burari_moments_select_v122",
+            "tokyo_burari_moments_select_v124",
             html=_MOMENTS_SELECT_HTML,
             css=_MOMENTS_SELECT_CSS,
             js=_MOMENTS_SELECT_JS,
@@ -12210,6 +12301,9 @@ def _render_moments_picker(photo, index):
         return
 
     items = video_ai_selection_items(photo)
+    if status == "reviewed" and str(selection_meta.get("review_result") or "") == "none_kept":
+        st.success("この動画では、写真を1枚も残さない選択をしています。")
+        return
     if not items:
         st.info("いい瞬間の自動処理結果を待っています。")
         if st.button(
@@ -12375,6 +12469,27 @@ def _render_moments_picker(photo, index):
             st.error("選択した写真を残せませんでした。")
             with st.expander("保護者向け詳細"):
                 st.code(str(exc))
+
+    if status != "reviewed":
+        if st.button(
+            "どれも残さない",
+            use_container_width=True,
+            key=f"moments_keep_none_{video_id}_{round_number}",
+            help="今回の候補写真は1枚も日記に残さず、この動画の確認を完了します。元動画は動画保管庫に残ります。",
+        ):
+            try:
+                with st.spinner("今回の候補を残さない設定にしています…"):
+                    record_video_ai_no_choice(photo)
+                st.session_state.pop(selection_state_key, None)
+                st.session_state.pop(component_serial_key, None)
+                st.session_state["_moments_notice"] = (
+                    "この動画からは写真を残しませんでした。元動画は動画保管庫に残っています。"
+                )
+                st.rerun()
+            except Exception as exc:
+                st.error("どれも残さない設定を保存できませんでした。")
+                with st.expander("保護者向け詳細"):
+                    st.code(str(exc))
 
     can_reroll = _video_ai_has_candidate_source(selection_meta)
     if can_reroll and status != "reviewed":
@@ -13208,7 +13323,7 @@ def page_trip():
 def page_diary():
     page_top(
         "📖 日記",
-        "まだ日記になっていない写真・動画を一覧で確認できます。日記作成後も記録を開いて本人の言葉を追加できます。",
+        "まだ日記になっていない写真を一覧で確認できます。元動画は動画保管庫で管理し、日記には静止画だけを残します。",
     )
     # Old unfinished trips are already shown by list_pending_photo_trips(), so no
     # AI rollover or historical title scan is needed before the page can appear.
@@ -13227,8 +13342,8 @@ def page_diary():
     pending_rows = list_pending_photo_trips()
     pending_open_id = str(st.session_state.get("_pending_diary_open_trip_id") or "")
     if pending_rows and not pending_open_id:
-        st.markdown("#### まだ日記になっていない写真・動画")
-        st.caption("撮影済みで、まだ日記として保存されていない写真・動画です。『日記を作る』を押した時点で保存します。")
+        st.markdown("#### まだ日記になっていない写真")
+        st.caption("撮影済みで、まだ日記として保存されていない写真です。動画そのものは日記には表示しません。")
         pending_titles = pending_diary_titles(pending_rows, used_titles=saved_titles)
         for item in pending_rows:
             pending_trip = item.get("trip") or {}
@@ -13338,9 +13453,9 @@ def page_diary():
 
         trip_id = str(trip_id)
         trip = trip_map[trip_id]
-        # Do not fetch any saved-diary photos until a specific trip is selected. This
-        # keeps the initial diary page substantially lighter on mobile connections.
-        photos = list_trip_photos(trip_id)
+        # Do not fetch any saved-diary photos until a specific trip is selected.
+        # Original video rows stay in the video vault and are excluded from the diary.
+        photos = diary_photos_only(list_trip_photos(trip_id))
         existing = diary_map.get(trip_id)
 
     talk_key = f"diary_talk_photo_{trip_id}"
@@ -13587,11 +13702,11 @@ def page_diary():
             st.session_state.pop(f"reflection_state_{trip_id}", None)
         st.rerun()
 
-    is_video = photo_is_video(photo)
-    if not render_saved_media_preview(photo, image_alt="日記の動画の代表画像" if is_video else "日記の写真", delete_key_prefix="diary_media"):
-        st.warning("記録のプレビューを表示できませんでした。会話は続けられます。")
-    if is_video:
-        render_video_ai_selection(photo, key_prefix=f"diary_video_selection_{trip_id}_{pid}", allow_save=True)
+    if photo_is_video(photo):
+        st.info("元動画は日記には表示しません。動画保管庫から確認できます。")
+        return
+    if not render_saved_media_preview(photo, image_alt="日記の写真", delete_key_prefix="diary_media"):
+        st.warning("写真のプレビューを表示できませんでした。会話は続けられます。")
 
     location_label = photo_location_label(photo)
     if location_label:
@@ -13835,33 +13950,13 @@ def page_history(embedded=False):
         diary = detail_row["diary"]
         trip = detail_row["trip"]
         trip_id = diary["trip_id"]
-        photos = list_trip_photos(trip_id)
+        photos = diary_photos_only(list_trip_photos(trip_id))
         daily_title = diary_display_title(diary, trip, photos=photos)
         title = f"{trip.get('trip_date', '')}　{daily_title}"
 
         st.markdown(f"### {html.escape(title)}")
         render_diary_title_editor(trip_id, daily_title, "history_detail")
         render_small_gallery(photos, max_count=None, columns=3)
-        history_videos = [photo for photo in photos if photo_is_video(photo)]
-        if history_videos:
-            with st.expander(f"🎥 この日の動画（{len(history_videos)}本）"):
-                for video_index, video_photo in enumerate(history_videos, start=1):
-                    video_url = video_display_url(video_photo)
-                    if video_url:
-                        if len(history_videos) > 1:
-                            st.caption(f"動画 {video_index}")
-                        st.video(video_url)
-                        render_video_delete_controls(
-                            video_photo,
-                            f"history_video_{trip_id}_{video_index}",
-                        )
-                        render_video_ai_selection(
-                            video_photo,
-                            key_prefix=f"history_video_selection_{trip_id}_{video_index}",
-                            allow_save=True,
-                        )
-                    else:
-                        st.warning("動画を読み込めませんでした。")
         st.markdown(
             f"""
             <div class="diary-card">
