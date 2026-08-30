@@ -26,7 +26,7 @@ from zoneinfo import ZoneInfo
 
 import streamlit as st
 
-APP_BUILD = "v116"
+APP_BUILD = "v119"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -675,11 +675,11 @@ try:
 except Exception:
     VIDEO_STORAGE_QUOTA_MB = 0
 
-VIDEO_MAX_SECONDS = 30
-# Keep one 30-second recording within the reliable range for Supabase standard uploads.
+VIDEO_MAX_SECONDS = 15
+# Keep one 15-second recording within the reliable range for Supabase standard uploads.
 # The browser records at about 0.9 Mbps video + 64 kbps audio, so 6 MB leaves
 # comfortable container/codec overhead while also being the pre-recording reserve.
-VIDEO_MAX_BYTES = 6 * 1024 * 1024
+VIDEO_MAX_BYTES = 3 * 1024 * 1024
 VIDEO_AI_MAX_SELECTIONS = 9
 VIDEO_AI_MAX_CANDIDATES = 12
 # Background AI must never remain in "processing" indefinitely.
@@ -943,7 +943,7 @@ export default function(component) {
   const reviewBuild = parentElement.querySelector('#camera-review-build');
   const status = parentElement.querySelector('#live-camera-status');
 
-  const VIDEO_MAX_SECONDS = 30;
+  const VIDEO_MAX_SECONDS = 15;
   // v107: the browser uploads the video blob straight to a short-lived Supabase
   // signed upload URL. The multi-megabyte video is never serialized through a
   // Streamlit component trigger value.
@@ -954,7 +954,7 @@ export default function(component) {
   const videoUnavailableReason = String(data?.video_unavailable_reason || '');
   const videoAllowed = data?.video_allowed !== false && Boolean(videoUploadSignedUrl && videoUploadStoragePath);
   const videoCapacityMessage = String(
-    data?.video_capacity_message || '動画の保存容量または保存先を確認できないため、最大30秒の動画を撮影できません。'
+    data?.video_capacity_message || '動画の保存容量または保存先を確認できないため、最大15秒の動画を撮影できません。'
   );
   const unavailableSuffix = videoUnavailableReason === 'quota'
     ? '容量不足'
@@ -1229,7 +1229,7 @@ export default function(component) {
       try {
         localStorage.setItem('tokyo_burari_last_camera_open_v1', String(Date.now()));
       } catch (_) {}
-      setStatus(cameraMode === 'video' ? '動画は最大30秒です。音声も一緒に記録します。' : '');
+      setStatus(cameraMode === 'video' ? '動画は最大15秒です。音声も一緒に記録します。' : '');
     } catch (err) {
       console.error(err);
       stopStream();
@@ -4737,7 +4737,7 @@ def ensure_video_storage_capacity(incoming_bytes):
 
 
 def video_recording_capacity_status():
-    """Reserve enough room for one maximum 30-second recording before opening video mode."""
+    """Reserve enough room for one maximum 15-second recording before opening video mode."""
     quota = video_storage_quota_bytes()
     if quota <= 0:
         return {
@@ -4746,7 +4746,7 @@ def video_recording_capacity_status():
             "quota_bytes": 0,
             "remaining_bytes": None,
             "required_bytes": VIDEO_MAX_BYTES,
-            "message": "動画は最大30秒です。",
+            "message": "動画は最大15秒です。",
         }
 
     usage = current_video_storage_usage_bytes()
@@ -4754,12 +4754,12 @@ def video_recording_capacity_status():
     allowed = remaining >= VIDEO_MAX_BYTES
     if allowed:
         message = (
-            f"最大30秒の動画を撮影できます。残り {format_storage_size(remaining)} / "
+            f"最大15秒の動画を撮影できます。残り {format_storage_size(remaining)} / "
             f"上限 {format_storage_size(quota)}"
         )
     else:
         message = (
-            "最大30秒の動画1本分の空き容量がありません。"
+            "最大15秒の動画1本分の空き容量がありません。"
             f" 残り {format_storage_size(remaining)} / 上限 {format_storage_size(quota)}。"
             f"撮影には少なくとも {format_storage_size(VIDEO_MAX_BYTES)} の空きが必要です。"
         )
@@ -4996,7 +4996,7 @@ def register_browser_uploaded_video(
     if size_value <= 0:
         raise ValueError("動画の容量を確認できませんでした。")
     if size_value > VIDEO_MAX_BYTES:
-        raise ValueError("動画が大きすぎます。30秒以内で撮り直してください。")
+        raise ValueError("動画が大きすぎます。15秒以内で撮り直してください。")
     ensure_video_storage_capacity(size_value)
 
     try:
@@ -5109,14 +5109,14 @@ def upload_video(
     if not video_bytes:
         raise ValueError("動画データが空です。")
     # MediaRecorder.onstop may fire after the actual recording has already stopped.
-    # The browser caps recording at 30 seconds, so do not reject a valid video based
+    # The browser caps recording at 15 seconds, so do not reject a valid video based
     # on wall-clock delay between recorder.stop() and the onstop callback.
     duration_value = min(
         VIDEO_MAX_SECONDS * 1000,
         max(0, int(duration_ms or 0)),
     )
     if len(video_bytes) > VIDEO_MAX_BYTES:
-        raise ValueError("動画が大きすぎます。30秒以内で撮り直してください。")
+        raise ValueError("動画が大きすぎます。15秒以内で撮り直してください。")
     ensure_video_storage_capacity(len(video_bytes))
     poster = normalize_photo(poster_bytes)
     if not poster:
@@ -14379,11 +14379,11 @@ def page_settings():
             )
             st.caption(
                 f"残り：{format_storage_size(remaining_bytes)}。動画撮影を始める前に、"
-                f"最大30秒分として {format_storage_size(VIDEO_MAX_BYTES)} の空きがあるか確認します。"
+                f"最大15秒分として {format_storage_size(VIDEO_MAX_BYTES)} の空きがあるか確認します。"
                 "AIセレクションの静止画・候補ZIPはこの動画容量には含めません。"
             )
             if remaining_bytes < VIDEO_MAX_BYTES:
-                st.warning("最大30秒の動画1本分の空きがないため、現在は動画撮影を開始できません。")
+                st.warning("最大15秒の動画1本分の空きがないため、現在は動画撮影を開始できません。")
             st.progress(min(1.0, usage_bytes / quota_bytes) if quota_bytes else 0.0)
         except Exception as exc:
             st.caption("動画容量を確認できませんでした。")
@@ -14402,7 +14402,7 @@ def page_settings():
         "初回だけ、このサイトへのカメラ使用を『許可』してください。"
     )
     st.caption(
-        "動画は最大30秒です。録画を止めると確認画面を挟まず保管庫へ自動保存し、"
+        "動画は最大15秒です。録画を止めると確認画面を挟まず保管庫へ自動保存し、"
         "AIがバックグラウンドで最大9枚の『いい瞬間』を選びます。"
         "初回はカメラとは別に位置情報の許可も求められます。位置情報がオフ・拒否・取得不能の場合は、"
         "ホームの地名表示（未登録なら『地名：登録なし（自動取得）』）を押して入力した内容を写真の場所として使います。"
