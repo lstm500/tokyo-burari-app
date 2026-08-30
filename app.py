@@ -27,7 +27,7 @@ from zoneinfo import ZoneInfo
 
 import streamlit as st
 
-APP_BUILD = "v130"
+APP_BUILD = "v132"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -689,10 +689,11 @@ VIDEO_AI_MAX_CANDIDATES = 150
 # boundary; it is not a non-AI quality filter.
 VIDEO_AI_BATCH_SIZE = 25
 VIDEO_AI_BATCH_KEEP = 6
+VIDEO_AI_BATCH_WORKERS = 3
 # Background AI must never remain in "processing" indefinitely.
 # One provider call is bounded, and a stale Streamlit worker can be relaunched.
 VIDEO_AI_REQUEST_TIMEOUT_SECONDS = 60
-VIDEO_AI_STALE_SECONDS = 600
+VIDEO_AI_STALE_SECONDS = 300
 
 TRIP_TABLE = "burari_trips"
 PHOTO_TABLE = "burari_photos"
@@ -5383,6 +5384,7 @@ def choose_video_ai_frames(
     preference_context=None,
     excluded_frame_ids=None,
     ai_client=None,
+    progress_callback=None,
 ):
     """Pick up to nine stills after AI has inspected every 0.1-second candidate.
 
@@ -5467,10 +5469,12 @@ def choose_video_ai_frames(
             max_output_tokens=max_output_tokens,
         )
 
-    # Stage 1: every 0.1-second frame is shown to AI. The fixed batch size only
-    # prevents an oversized single request; no CV score removes frames beforehand.
+    # Stage 1: every 0.1-second frame is shown to AI. Batches are an API payload
+    # boundary only. v132 runs up to three batches concurrently so 150-frame
+    # analysis does not spend six request latencies back-to-back.
     coarse_records = []
     if len(frames) > VIDEO_AI_BATCH_SIZE:
+        batch_specs = []
         for batch_index, batch_start in enumerate(range(0, len(frames), VIDEO_AI_BATCH_SIZE), start=1):
             batch = frames[batch_start:batch_start + VIDEO_AI_BATCH_SIZE]
             batch_keep = min(VIDEO_AI_BATCH_KEEP, len(batch))
@@ -5484,10 +5488,14 @@ def choose_video_ai_frames(
                 f"{preference_text}\n"
                 "rank=1をこのバッチのBESTとし、scoreは0〜100で付けてください。"
             )
+            batch_specs.append((batch_index, batch, batch_keep, batch_prompt))
+
+        def run_first_stage_batch(spec):
+            batch_index, batch, batch_keep, batch_prompt = spec
             result = call_selector(
                 batch,
                 batch_prompt,
-                f"video_moments_v130_coarse_{batch_index}",
+                f"video_moments_v132_coarse_{batch_index}",
                 batch_keep,
                 max_output_tokens=1300,
             )
@@ -5496,12 +5504,13 @@ def choose_video_ai_frames(
                 [item for item in ((result or {}).get("selections") or []) if isinstance(item, dict)],
                 key=lambda item: int(item.get("rank") or 99),
             )
+            records = []
             for item in ranked:
                 frame_id = str(item.get("frame_id") or "")
                 frame = by_id.get(frame_id)
                 if not frame:
                     continue
-                coarse_records.append(
+                records.append(
                     {
                         "frame": frame,
                         "score": max(0, min(100, int(item.get("score") or 0))),
@@ -5510,6 +5519,29 @@ def choose_video_ai_frames(
                         "batch_rank": max(1, int(item.get("rank") or 99)),
                     }
                 )
+            return records
+
+        if callable(progress_callback):
+            try:
+                progress_callback("ai_selection", 0, len(batch_specs), "AI一次選定を開始")
+            except Exception:
+                pass
+
+        workers = max(1, min(int(VIDEO_AI_BATCH_WORKERS), len(batch_specs)))
+        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="burari-ai-batch") as batch_executor:
+            futures = [batch_executor.submit(run_first_stage_batch, spec) for spec in batch_specs]
+            for completed_index, future in enumerate(futures, start=1):
+                coarse_records.extend(future.result())
+                if callable(progress_callback):
+                    try:
+                        progress_callback(
+                            "ai_selection",
+                            completed_index,
+                            len(batch_specs),
+                            f"AI一次選定 {completed_index}/{len(batch_specs)}",
+                        )
+                    except Exception:
+                        pass
 
         # De-duplicate only identical frame IDs emitted by the model; this is not a
         # visual quality filter. Every original frame has already been AI-reviewed.
@@ -5544,11 +5576,16 @@ def choose_video_ai_frames(
     # small enough for a final cross-video comparison. If the provider rejects a
     # large final request, perform another AI-only tournament; never fall back to
     # a non-AI visual score to decide which raw frames survive.
+    if callable(progress_callback):
+        try:
+            progress_callback("final_selection", 1, 1, "AI最終選定中")
+        except Exception:
+            pass
     try:
         final_result = call_selector(
             final_frames,
             final_prompt,
-            "video_moments_v130_final",
+            "video_moments_v132_final",
             VIDEO_AI_MAX_SELECTIONS,
             max_output_tokens=1800,
         )
@@ -5567,7 +5604,7 @@ def choose_video_ai_frames(
             semi_result = call_selector(
                 semi,
                 semi_prompt,
-                f"video_moments_v130_semifinal_{semifinal_index}",
+                f"video_moments_v132_semifinal_{semifinal_index}",
                 semi_keep,
                 max_output_tokens=1200,
             )
@@ -5583,7 +5620,7 @@ def choose_video_ai_frames(
         final_result = call_selector(
             semifinal_records,
             final_prompt,
-            "video_moments_v130_final_retry",
+            "video_moments_v132_final_retry",
             VIDEO_AI_MAX_SELECTIONS,
             max_output_tokens=1800,
         )
@@ -6303,8 +6340,10 @@ def _run_video_ai_background_job(photo_id, family_key, member_key):
     selection_meta["attempt"] = max(0, int(selection_meta.get("attempt") or 0)) + 1
     expected_candidate_count = _video_ai_expected_candidate_count(photo)
     existing_candidate_count = max(0, int(selection_meta.get("candidate_count") or 0))
+    sampling_version = str(selection_meta.get("candidate_sampling_version") or "").strip()
     needs_fine_sampling = (
-        not _video_ai_has_candidate_source(selection_meta)
+        sampling_version != "v132_memory"
+        or not _video_ai_has_candidate_source(selection_meta)
         or existing_candidate_count < max(1, int(math.floor(expected_candidate_count * 0.9)))
     )
     selection_meta["stage"] = "candidate_preparation" if needs_fine_sampling else "ai_selection"
@@ -6317,30 +6356,47 @@ def _run_video_ai_background_job(photo_id, family_key, member_key):
         pass
 
     try:
+        frames = None
         if needs_fine_sampling:
-            extracted_frames = _background_extract_video_candidate_frames(client, photo)
-            photo = _background_store_video_ai_candidate_bundle(
-                client,
-                photo,
-                family_key,
-                member_key,
-                extracted_frames,
-            )
-            reflection = dict(photo_media_metadata(photo))
-            selection_meta = reflection.get("ai_selection") or {}
-            if not isinstance(selection_meta, dict):
-                selection_meta = {}
+            # v132: keep the complete 0.1-second candidate set in worker memory.
+            # Persisting ~150 JPEGs as a ZIP created a large Storage upload and was
+            # the main failure/stall point in v130/v131. Rerolls simply resample the
+            # original saved video instead.
+            old_candidate_paths = [
+                str(selection_meta.get("candidate_bundle_path") or "").strip(),
+                str(selection_meta.get("candidate_sheet_path") or "").strip(),
+            ]
+            frames = _background_extract_video_candidate_frames(client, photo)
+            selection_meta["status"] = "processing"
+            selection_meta["stage"] = "ai_selection"
+            selection_meta["candidate_count"] = len(frames)
+            selection_meta["candidate_bundle_path"] = ""
+            selection_meta["candidate_sheet_path"] = ""
+            selection_meta["candidate_sample_interval_ms"] = VIDEO_AI_SAMPLE_INTERVAL_MS
+            selection_meta["candidate_sampling_version"] = "v132_memory"
+            selection_meta["updated_at"] = now_jst().isoformat()
+            reflection["ai_selection"] = selection_meta
+            try:
+                _write_photo_reflection_for_owner(
+                    photo_id, reflection, family_key, member_key, client=client
+                )
+            except Exception:
+                pass
+            stale_paths = [path for path in old_candidate_paths if path]
+            if stale_paths:
+                try:
+                    client.storage.from_(PHOTO_BUCKET).remove(stale_paths)
+                except Exception:
+                    pass
+        else:
+            frames = _load_video_ai_candidate_frames(client, selection_meta)
 
-        frames = _load_video_ai_candidate_frames(client, selection_meta)
         if not frames:
             raise ValueError("動画の候補フレームを読み込めませんでした。")
 
-        # Mark the exact stage so the UI can distinguish candidate extraction from
-        # the AI ranking itself without using the viewer as a trigger.
         selection_meta["status"] = "processing"
         selection_meta["stage"] = "ai_selection"
         selection_meta["updated_at"] = now_jst().isoformat()
-        reflection = dict(photo_media_metadata(photo))
         reflection["ai_selection"] = selection_meta
         try:
             _write_photo_reflection_for_owner(
@@ -6369,11 +6425,25 @@ def _run_video_ai_background_job(photo_id, family_key, member_key):
             if isinstance(item, dict) and str(item.get("storage_path") or "").strip()
         ]
         round_number = max(1, int(selection_meta.get("round") or 0) + 1)
+
+        def update_ai_progress(stage, completed=0, total=0, message=""):
+            selection_meta["status"] = "processing"
+            selection_meta["stage"] = str(stage or "ai_selection")
+            selection_meta["progress_completed"] = max(0, int(completed or 0))
+            selection_meta["progress_total"] = max(0, int(total or 0))
+            selection_meta["progress_message"] = str(message or "")[:120]
+            selection_meta["updated_at"] = now_jst().isoformat()
+            reflection["ai_selection"] = selection_meta
+            _write_photo_reflection_for_owner(
+                photo_id, reflection, family_key, member_key, client=client
+            )
+
         selections = choose_video_ai_frames(
             frames,
             preference_context=preference,
             excluded_frame_ids=excluded_ids,
             ai_client=ai_client,
+            progress_callback=update_ai_progress,
         )
         _background_store_video_ai_selection(
             client,
@@ -6508,10 +6578,10 @@ def resume_member_video_background_jobs(limit=24, min_interval_seconds=8):
         if status in {"ready", "reviewed"}:
             continue
         if status == "error":
-            if selection.get("v116_auto_retry") or selection.get("items"):
+            if selection.get("v132_auto_retry") or selection.get("items"):
                 continue
             try:
-                selection["v116_auto_retry"] = True
+                selection["v132_auto_retry"] = True
                 selection["status"] = "waiting_candidates"
                 selection["queued_at"] = now_jst().isoformat()
                 selection["updated_at"] = selection["queued_at"]
@@ -6556,8 +6626,8 @@ def request_video_ai_reroll(photo):
     selection = reflection.get("ai_selection") or {}
     if not isinstance(selection, dict):
         selection = {}
-    if not _video_ai_has_candidate_source(selection):
-        raise ValueError("この動画は再選定用の候補を保存していません。")
+    if not (_video_ai_has_candidate_source(selection) or photo_video_storage_path(fresh)):
+        raise ValueError("この動画は再選定できる元動画を保存していません。")
 
     items = [item for item in (selection.get("items") or []) if isinstance(item, dict)]
     history = list(selection.get("history") or [])
@@ -11892,7 +11962,7 @@ def open_diary_photo_talk(trip_id, photo_id, state):
 # ============================================================
 # Page: Home
 # ============================================================
-@st.cache_data(ttl=10, max_entries=64, show_spinner=False)
+@st.cache_data(ttl=3, max_entries=64, show_spinner=False)
 def _home_video_counts_cached(family_key, member_key):
     """Return (saved videos, videos not yet accepted as diary stills)."""
     rows = (
@@ -11952,6 +12022,24 @@ def home_video_counts():
             return max(0, int(saved)), max(0, int(before))
         except Exception:
             return None
+
+
+def _render_home_video_count_status():
+    """Refresh video processing counts while the home page remains open."""
+    video_counts = home_video_counts()
+    if video_counts is not None:
+        saved_video_count, before_clip_count = video_counts
+        st.caption(
+            f"保存済み {saved_video_count}本　／　瞬間切り取り前 {before_clip_count}本"
+        )
+    else:
+        st.caption("保存済み本数を確認できませんでした。")
+
+
+if hasattr(st, "fragment"):
+    render_home_video_count_status = st.fragment(run_every="5s")(_render_home_video_count_status)
+else:
+    render_home_video_count_status = _render_home_video_count_status
 
 
 def page_home():
@@ -12040,14 +12128,7 @@ def page_home():
             use_container_width=True,
         ):
             go_page("videos")
-        video_counts = home_video_counts()
-        if video_counts is not None:
-            saved_video_count, before_clip_count = video_counts
-            st.caption(
-                f"保存済み {saved_video_count}本　／　瞬間切り取り前 {before_clip_count}本"
-            )
-        else:
-            st.caption("保存済み本数を確認できませんでした。")
+        render_home_video_count_status()
 
     # Manual fallback for cases where the phone/browser cannot provide GPS.
     with st.container(key="home_destination"):
@@ -12605,10 +12686,13 @@ def _render_moments_picker(photo, index):
     # are also resumed by app-level maintenance after a Streamlit restart.
     if status == "processing":
         stage = str(selection_meta.get("stage") or "").strip().lower()
-        if stage == "candidate_preparation" or not _video_ai_has_candidate_source(selection_meta):
+        if stage == "candidate_preparation":
             st.info("保存済み動画を0.1秒間隔で切り出し、AI候補を準備しています。")
         else:
-            st.info("AIがこの動画のいい瞬間を自動で選んでいます。")
+            st.info("現在いい瞬間の切り取り中です。")
+            progress_message = str(selection_meta.get("progress_message") or "").strip()
+            if progress_message:
+                st.caption(progress_message)
         if video_ai_processing_is_stale(selection_meta):
             st.caption("処理が長引いています。アプリ側で自動再開の対象になります。")
         if st.button(
@@ -12620,7 +12704,7 @@ def _render_moments_picker(photo, index):
         return
 
     if status in {"", "waiting_candidates"}:
-        st.info("この動画は保存済みです。いい瞬間の切り取りはバックグラウンドで自動開始します。")
+        st.info("現在いい瞬間の切り取り中です。")
         if st.button(
             "状態を更新",
             use_container_width=True,
@@ -12834,7 +12918,7 @@ def _render_moments_picker(photo, index):
                 with st.expander("保護者向け詳細"):
                     st.code(str(exc))
 
-    can_reroll = _video_ai_has_candidate_source(selection_meta)
+    can_reroll = bool(_video_ai_has_candidate_source(selection_meta) or photo_video_storage_path(photo))
     if can_reroll and status != "reviewed":
         st.markdown("---")
         if st.button(
