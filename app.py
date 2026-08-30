@@ -27,7 +27,7 @@ from zoneinfo import ZoneInfo
 
 import streamlit as st
 
-APP_BUILD = "v132"
+APP_BUILD = "v133"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -5495,7 +5495,7 @@ def choose_video_ai_frames(
             result = call_selector(
                 batch,
                 batch_prompt,
-                f"video_moments_v132_coarse_{batch_index}",
+                f"video_moments_v133_coarse_{batch_index}",
                 batch_keep,
                 max_output_tokens=1300,
             )
@@ -5585,7 +5585,7 @@ def choose_video_ai_frames(
         final_result = call_selector(
             final_frames,
             final_prompt,
-            "video_moments_v132_final",
+            "video_moments_v133_final",
             VIDEO_AI_MAX_SELECTIONS,
             max_output_tokens=1800,
         )
@@ -5604,7 +5604,7 @@ def choose_video_ai_frames(
             semi_result = call_selector(
                 semi,
                 semi_prompt,
-                f"video_moments_v132_semifinal_{semifinal_index}",
+                f"video_moments_v133_semifinal_{semifinal_index}",
                 semi_keep,
                 max_output_tokens=1200,
             )
@@ -5620,7 +5620,7 @@ def choose_video_ai_frames(
         final_result = call_selector(
             semifinal_records,
             final_prompt,
-            "video_moments_v132_final_retry",
+            "video_moments_v133_final_retry",
             VIDEO_AI_MAX_SELECTIONS,
             max_output_tokens=1800,
         )
@@ -6338,6 +6338,7 @@ def _run_video_ai_background_job(photo_id, family_key, member_key):
     selection_meta["started_at"] = now_jst().isoformat()
     selection_meta["updated_at"] = selection_meta["started_at"]
     selection_meta["attempt"] = max(0, int(selection_meta.get("attempt") or 0)) + 1
+    selection_meta["pipeline_mode"] = "inline_v133"
     expected_candidate_count = _video_ai_expected_candidate_count(photo)
     existing_candidate_count = max(0, int(selection_meta.get("candidate_count") or 0))
     sampling_version = str(selection_meta.get("candidate_sampling_version") or "").strip()
@@ -6489,72 +6490,130 @@ def _run_video_ai_background_job(photo_id, family_key, member_key):
             pass
 
 def launch_video_ai_background_job(photo):
-    """Submit one current worker per video and recover stale/lost Streamlit jobs."""
+    """Run the saved-video AI pipeline automatically in the normal Streamlit run.
+
+    v133 intentionally does not detach the first-time selector into a long-lived
+    ThreadPoolExecutor task. Streamlit workers can be rerun/recycled independently
+    of those detached futures, which can leave a DB row in ``processing`` forever.
+    Keeping the pipeline inside the active server execution is slower for that one
+    request, but it is deterministic: no viewer button or other user action is
+    required, and a later app execution can resume any unfinished row.
+
+    The historical function name is retained so existing callers keep working.
+    """
     if not isinstance(photo, dict) or not photo.get("id") or not photo_is_video(photo):
         return False
+
+    photo_id = str(photo.get("id") or "").strip()
     family_key = str(photo.get("family_key") or current_family_key())
     member_key = str(photo.get("member_key") or current_member_key())
-    photo_id = str(photo.get("id"))
-    selection_meta = photo_media_metadata(photo).get("ai_selection") or {}
-    stale_in_db = video_ai_processing_is_stale(selection_meta)
+    if not photo_id:
+        return False
 
-    registry = _video_ai_job_registry()
-    with registry["lock"]:
-        existing_entry = registry["futures"].get(photo_id)
-        if isinstance(existing_entry, dict):
-            existing = existing_entry.get("future")
-            started_monotonic = float(existing_entry.get("started_monotonic") or 0.0)
-        else:
-            # Compatibility with cached v112 registry entries during a hot reload.
-            existing = existing_entry
-            started_monotonic = 0.0
-
-        if existing is not None:
-            if not existing.done():
-                worker_age = (time.monotonic() - started_monotonic) if started_monotonic else 0.0
-                if not stale_in_db and (not worker_age or worker_age < VIDEO_AI_STALE_SECONDS):
-                    return False
-                # cancel() only succeeds if the old work has not started. If it is
-                # already running, the provider timeout lets it unwind shortly.
-                try:
-                    existing.cancel()
-                except Exception:
-                    pass
-            elif not stale_in_db:
-                # A very recent cached DB row may still say processing for a few
-                # seconds after the worker finished. Do not immediately run it twice.
-                return False
-
-        future = _video_ai_executor().submit(
-            _run_video_ai_background_job,
-            photo_id,
-            family_key,
-            member_key,
+    # Re-read the row so stale home-page cache data can never reprocess a video
+    # that has already reached ready/reviewed.
+    fresh = photo
+    try:
+        result = (
+            supabase_client()
+            .table(PHOTO_TABLE)
+            .select("*")
+            .eq("id", photo_id)
+            .eq("family_key", family_key)
+            .eq("member_key", member_key)
+            .limit(1)
+            .execute()
         )
-        registry["futures"][photo_id] = {
-            "future": future,
-            "started_monotonic": time.monotonic(),
-        }
-    return True
+        row = (result.data or [None])[0]
+        if isinstance(row, dict) and row:
+            fresh = row
+    except Exception:
+        pass
+
+    selection = photo_media_metadata(fresh).get("ai_selection") or {}
+    if not isinstance(selection, dict):
+        selection = {}
+    status = str(selection.get("status") or "").strip().lower()
+    if status in {"ready", "reviewed"} and video_ai_selection_items(fresh):
+        return False
+
+    # Prevent accidental recursion during one Streamlit execution. This guard is
+    # session-local; DB state remains the durable source of truth across reruns.
+    active_key = "_video_ai_inline_active_v133"
+    if str(st.session_state.get(active_key) or "") == photo_id:
+        return False
+    st.session_state[active_key] = photo_id
+
+    attempted = False
+    try:
+        attempted = True
+        # This function owns all exceptions and persists either ready or error.
+        _run_video_ai_background_job(photo_id, family_key, member_key)
+
+        # A provider/storage failure should normally already be recorded as error.
+        # If the worker ever returns without a terminal state, convert that silent
+        # stall into an explicit error instead of leaving ``processing`` forever.
+        try:
+            result = (
+                supabase_client()
+                .table(PHOTO_TABLE)
+                .select("reflection_json")
+                .eq("id", photo_id)
+                .eq("family_key", family_key)
+                .eq("member_key", member_key)
+                .limit(1)
+                .execute()
+            )
+            row = (result.data or [None])[0] or {}
+            reflection = row.get("reflection_json") or {}
+            if not isinstance(reflection, dict):
+                reflection = {}
+            latest = reflection.get("ai_selection") or {}
+            if not isinstance(latest, dict):
+                latest = {}
+            latest_status = str(latest.get("status") or "").strip().lower()
+            if latest_status not in {"ready", "reviewed", "error"}:
+                latest["status"] = "error"
+                latest["stage"] = str(latest.get("stage") or "pipeline")
+                latest["last_error"] = "自動処理が終了状態を返さなかったため停止しました。"
+                latest["updated_at"] = now_jst().isoformat()
+                latest["pipeline_mode"] = "inline_v133"
+                reflection["ai_selection"] = latest
+                _write_photo_reflection_for_owner(
+                    photo_id, reflection, family_key, member_key
+                )
+        except Exception:
+            pass
+    finally:
+        if str(st.session_state.get(active_key) or "") == photo_id:
+            st.session_state.pop(active_key, None)
+        try:
+            _home_video_counts_cached.clear()
+        except Exception:
+            pass
+
+    return attempted
 
 
-def resume_member_video_background_jobs(limit=24, min_interval_seconds=8):
-    """Resume unfinished video pipelines independently of the viewer page.
+def resume_member_video_background_jobs(limit=24, min_interval_seconds=0):
+    """Automatically process unfinished saved videos without any user action.
 
-    This runs as lightweight app maintenance. It is intentionally separate from
-    "いい瞬間を見る", which must remain a read/review screen rather than a start
-    button for video processing.
+    v133 processes at most one unfinished video in each normal Streamlit execution.
+    The main entry point immediately reruns after an attempt, so additional queued
+    videos advance one by one. This is deliberately not tied to opening the viewer.
     """
     now_mono = time.monotonic()
-    last = float(st.session_state.get("_video_pipeline_resume_at_v116") or 0.0)
-    if last and (now_mono - last) < float(min_interval_seconds):
+    last_key = "_video_pipeline_resume_at_v133_inline"
+    last = float(st.session_state.get(last_key) or 0.0)
+    if min_interval_seconds and last and (now_mono - last) < float(min_interval_seconds):
         return 0
-    st.session_state["_video_pipeline_resume_at_v116"] = now_mono
+    st.session_state[last_key] = now_mono
+
     try:
         rows = (
             supabase_client()
             .table(PHOTO_TABLE)
-            .select("id,family_key,member_key,captured_at,reflection_json")
+            .select("*")
             .eq("family_key", current_family_key())
             .eq("member_key", current_member_key())
             .order("captured_at", desc=True)
@@ -6564,7 +6623,6 @@ def resume_member_video_background_jobs(limit=24, min_interval_seconds=8):
     except Exception:
         return 0
 
-    resumed = 0
     for row in rows:
         if not photo_is_video(row):
             continue
@@ -6572,19 +6630,22 @@ def resume_member_video_background_jobs(limit=24, min_interval_seconds=8):
         if not isinstance(selection, dict):
             selection = {}
         status = str(selection.get("status") or "").strip().lower()
-        # ready/reviewed are complete. v116 gives older failed, unselected rows
-        # one automatic migration retry so a video that was stuck under v113/v114
-        # does not require opening the viewer. The marker prevents retry loops.
-        if status in {"ready", "reviewed"}:
+        has_items = bool(video_ai_selection_items(row))
+        if status in {"ready", "reviewed"} and has_items:
             continue
+
+        # Rescue one failed pre-v133 job automatically. A v133 failure is left as
+        # an explicit error so the app never enters an endless automatic retry loop.
         if status == "error":
-            if selection.get("v132_auto_retry") or selection.get("items"):
+            if selection.get("v133_inline_retry") or has_items:
                 continue
             try:
-                selection["v132_auto_retry"] = True
+                selection["v133_inline_retry"] = True
                 selection["status"] = "waiting_candidates"
                 selection["queued_at"] = now_jst().isoformat()
                 selection["updated_at"] = selection["queued_at"]
+                selection["pipeline_mode"] = "inline_v133"
+                selection["last_error"] = ""
                 reflection = dict(photo_media_metadata(row))
                 reflection["ai_selection"] = selection
                 _write_photo_reflection_for_owner(
@@ -6597,18 +6658,37 @@ def resume_member_video_background_jobs(limit=24, min_interval_seconds=8):
                 row["reflection_json"] = reflection
             except Exception:
                 continue
+
         try:
             if launch_video_ai_background_job(row):
-                resumed += 1
-        except Exception:
-            continue
-        if resumed >= 4:
-            break
-    return resumed
+                return 1
+        except Exception as exc:
+            # Best-effort terminal error marker. No user button is needed to start
+            # the job; this only makes a real failure visible rather than "stuck".
+            try:
+                reflection = dict(photo_media_metadata(row))
+                selection = reflection.get("ai_selection") or {}
+                if not isinstance(selection, dict):
+                    selection = {}
+                selection["status"] = "error"
+                selection["last_error"] = str(exc)[:240]
+                selection["updated_at"] = now_jst().isoformat()
+                selection["pipeline_mode"] = "inline_v133"
+                reflection["ai_selection"] = selection
+                _write_photo_reflection_for_owner(
+                    row.get("id"),
+                    reflection,
+                    row.get("family_key") or current_family_key(),
+                    row.get("member_key") or current_member_key(),
+                )
+            except Exception:
+                pass
+            return 1
+    return 0
 
 
 def request_video_ai_reroll(photo):
-    """Reject the current set and queue another selection from the same saved candidates."""
+    """Reject the current set and automatically create another selection."""
     if not isinstance(photo, dict) or not photo.get("id") or not photo_is_video(photo):
         raise ValueError("動画が見つかりません。")
     current = (
@@ -11487,7 +11567,7 @@ def render_video_ai_selection(photo, key_prefix="video_selection", allow_save=Tr
     if not items:
         status = str(selection_meta.get("status") or "")
         if status == "processing":
-            st.caption("✨ AIがこの動画のいい瞬間をバックグラウンドで探しています。")
+            st.caption("✨ AIがこの動画のいい瞬間を自動で作成しています。")
         elif status == "error":
             st.caption("AIセレクションを作成できませんでした。動画は保存されています。")
         return
@@ -11978,6 +12058,7 @@ def _home_video_counts_cached(family_key, member_key):
     saved_count = 0
     before_clip_count = 0
     processing_rows = []
+    error_count = 0
     for row in rows:
         if not photo_is_video(row):
             continue
@@ -11997,7 +12078,9 @@ def _home_video_counts_cached(family_key, member_key):
             job_row["family_key"] = str(family_key)
             job_row["member_key"] = str(member_key)
             processing_rows.append(job_row)
-    return saved_count, before_clip_count, processing_rows
+        elif status == "error":
+            error_count += 1
+    return saved_count, before_clip_count, processing_rows, error_count
 
 
 def home_video_counts():
@@ -12005,13 +12088,9 @@ def home_video_counts():
         counts = _home_video_counts_cached(current_family_key(), current_member_key())
         st.session_state["_home_video_saved_count"] = int(counts[0])
         st.session_state["_home_video_before_clip_count"] = int(counts[1])
-        # A Streamlit process can restart after a video is saved. On every home
-        # refresh, quietly resume any DB row that still says "processing".
-        for pending in list(counts[2] or [])[:8]:
-            try:
-                launch_video_ai_background_job(pending)
-            except Exception:
-                pass
+        st.session_state["_home_video_error_count"] = int(counts[3]) if len(counts) > 3 else 0
+        # v133 processing is driven by the app-level automatic scheduler. Home
+        # only reads status; opening or refreshing this page is never a trigger.
         return int(counts[0]), int(counts[1])
     except Exception:
         saved = st.session_state.get("_home_video_saved_count")
@@ -12029,8 +12108,10 @@ def _render_home_video_count_status():
     video_counts = home_video_counts()
     if video_counts is not None:
         saved_video_count, before_clip_count = video_counts
+        error_count = max(0, int(st.session_state.get("_home_video_error_count") or 0))
+        suffix = f"　／　処理エラー {error_count}本" if error_count else ""
         st.caption(
-            f"保存済み {saved_video_count}本　／　瞬間切り取り前 {before_clip_count}本"
+            f"保存済み {saved_video_count}本　／　瞬間切り取り前 {before_clip_count}本{suffix}"
         )
     else:
         st.caption("保存済み本数を確認できませんでした。")
@@ -13606,7 +13687,7 @@ def render_recent_camera_photo_comment(trip):
     if not render_saved_media_preview(photo, image_alt="今撮った動画の代表画像" if is_video else "今撮った写真", delete_key_prefix="recent_camera"):
         st.warning("撮影した記録のプレビューを表示できませんでした。コメントは続けられます。")
     if is_video:
-        st.caption("✨ いい瞬間はバックグラウンドで自動選定します。トップページの「いい瞬間を見る」から確認できます。")
+        st.caption("✨ いい瞬間は自動で作成します。トップページの「いい瞬間を見る」から確認できます。")
 
     location_label = photo_location_label(photo)
     if location_label:
@@ -13899,8 +13980,9 @@ def page_trip():
 
                 if ai_status in {"queued", "queued_recovery"} and isinstance(saved_video, dict) and saved_video.get("id"):
                     try:
-                        save_stage = "AIバックグラウンド処理の開始"
-                        launch_video_ai_background_job(saved_video)
+                        save_stage = "AI自動処理"
+                        with st.spinner("動画を保存しました。いい瞬間を自動作成しています…"):
+                            launch_video_ai_background_job(saved_video)
                     except Exception as background_exc:
                         ai_status = "queued_recovery"
                         try:
@@ -13930,9 +14012,9 @@ def page_trip():
                 st.session_state["_browser_last_camera_mode"] = "video"
                 st.session_state.capture_serial += 1
                 if ai_status in {"queued", "queued_recovery"}:
-                    notice = "動画を保管庫に保存しました。いい瞬間はバックグラウンドで自動選定しています。"
+                    notice = "動画を保管庫に保存しました。いい瞬間は自動で作成します。"
                 else:
-                    notice = "動画を保管庫に保存しました。いい瞬間の切り取りを自動で開始しました。"
+                    notice = "動画を保管庫に保存しました。いい瞬間を自動で作成しました。"
                 st.session_state["_camera_notice"] = notice
                 st.rerun()
         except Exception as exc:
@@ -15498,7 +15580,7 @@ def page_settings():
     )
     st.caption(
         "動画は最大15秒です。録画を止めると確認画面を挟まず保管庫へ自動保存し、"
-        "AIがバックグラウンドで最大9枚の『いい瞬間』を選びます。"
+        "AIが自動で最大9枚の『いい瞬間』を選びます。"
         "初回はカメラとは別に位置情報の許可も求められます。位置情報がオフ・拒否・取得不能の場合は、"
         "ホームの地名表示（未登録なら『地名：登録なし（自動取得）』）を押して入力した内容を写真の場所として使います。"
     )
@@ -15514,10 +15596,16 @@ def page_settings():
 verify_setup()
 require_family_pin()
 init_state()
-# Video processing is resumed independently of the viewer page. A saved video
-# starts/continues candidate extraction and AI selection as soon as the app has
-# a normal execution cycle; opening "いい瞬間を見る" is never required.
-resume_member_video_background_jobs()
+# v133: unfinished videos are processed automatically in the normal Streamlit
+# execution, not in a detached long-lived thread. No viewer/button action is
+# required. Process one saved video, then rerun so another queued video can follow.
+_video_auto_processed_v133 = resume_member_video_background_jobs()
+if _video_auto_processed_v133:
+    try:
+        _home_video_counts_cached.clear()
+    except Exception:
+        pass
+    st.rerun()
 # Daily rollover and old-title repair can touch many rows. They are diary/history
 # maintenance, not startup requirements, so home/camera opens no longer wait for them.
 restore_recent_camera_session()
