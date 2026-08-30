@@ -22,7 +22,7 @@ from zoneinfo import ZoneInfo
 
 import streamlit as st
 
-APP_BUILD = "v104"
+APP_BUILD = "v105"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -672,9 +672,10 @@ except Exception:
     VIDEO_STORAGE_QUOTA_MB = 0
 
 VIDEO_MAX_SECONDS = 30
-# Existing camera encoding and server guard cap one 30-second recording at 25 MB.
-# Capacity is checked against this full reserve before video recording starts.
-VIDEO_MAX_BYTES = 25 * 1024 * 1024
+# Keep one 30-second recording within the reliable range for Supabase standard uploads.
+# The browser records at about 0.9 Mbps video + 64 kbps audio, so 6 MB leaves
+# comfortable container/codec overhead while also being the pre-recording reserve.
+VIDEO_MAX_BYTES = 6 * 1024 * 1024
 VIDEO_AI_MAX_SELECTIONS = 9
 VIDEO_AI_MAX_CANDIDATES = 18
 
@@ -720,7 +721,7 @@ _LIVE_CAMERA_HTML = """
       <button id="camera-review-retry" class="camera-retry-button" type="button">撮りなおす／選びなおす</button>
     </div>
     <button id="camera-review-find-moments" class="camera-find-button" type="button" hidden>✨ いい瞬間を探す</button>
-    <div id="camera-review-build" class="camera-review-build" hidden>camera v104</div>
+    <div id="camera-review-build" class="camera-review-build" hidden>camera v105</div>
     <img id="camera-review-image" class="camera-review-image" alt="撮影した写真の確認" />
     <video id="camera-review-video" class="camera-review-video" playsinline controls hidden></video>
   </div>
@@ -956,6 +957,9 @@ export default function(component) {
   let recordingLocationPromise = null;
   let recordingTimer = null;
   let recordingMaxTimer = null;
+  let recordingCandidateTimer = null;
+  let recordingCandidateBusy = false;
+  let recordingCandidateFrames = [];
   let recordingCancelled = false;
   // Good-moments search is a separate review action. The button remains hidden
   // briefly after recording stops, so the stop gesture cannot fall through to it.
@@ -976,6 +980,10 @@ export default function(component) {
     if (recordingMaxTimer) {
       clearTimeout(recordingMaxTimer);
       recordingMaxTimer = null;
+    }
+    if (recordingCandidateTimer) {
+      clearInterval(recordingCandidateTimer);
+      recordingCandidateTimer = null;
     }
   };
 
@@ -1223,6 +1231,41 @@ export default function(component) {
     reader.readAsDataURL(blob);
   });
 
+
+  // Capture small candidate stills while recording. This avoids reopening/seeking
+  // the finished video before upload and keeps the component payload small.
+  const captureRecordingCandidateFrame = async () => {
+    if (recordingCandidateBusy || !recordingStartedAt || !video.videoWidth || !video.videoHeight) return;
+    if (!mediaRecorder || mediaRecorder.state !== 'recording') return;
+    if (recordingCandidateFrames.length >= 18) return;
+    recordingCandidateBusy = true;
+    try {
+      const frameCanvas = document.createElement('canvas');
+      const srcW = video.videoWidth || 960;
+      const srcH = video.videoHeight || 540;
+      const maxSide = 480;
+      const scale = Math.min(1, maxSide / Math.max(srcW, srcH));
+      frameCanvas.width = Math.max(1, Math.round(srcW * scale));
+      frameCanvas.height = Math.max(1, Math.round(srcH * scale));
+      const ctx = frameCanvas.getContext('2d', { alpha: false });
+      ctx.drawImage(video, 0, 0, frameCanvas.width, frameCanvas.height);
+      const jpegBlob = await new Promise((resolve) => frameCanvas.toBlob(resolve, 'image/jpeg', 0.62));
+      if (!jpegBlob || jpegBlob.size > 140 * 1024) return;
+      const timestampMs = Math.max(0, Date.now() - recordingStartedAt);
+      const dataUrl = await blobToDataUrl(jpegBlob);
+      const index = recordingCandidateFrames.length + 1;
+      recordingCandidateFrames.push({
+        frame_id: `F${String(index).padStart(2, '0')}`,
+        timestamp_ms: timestampMs,
+        data_url: dataUrl
+      });
+    } catch (err) {
+      console.warn('live candidate frame skipped', err);
+    } finally {
+      recordingCandidateBusy = false;
+    }
+  };
+
   const getLocationAtCapture = () => new Promise((resolve) => {
     if (!navigator.geolocation) {
       resolve({
@@ -1459,14 +1502,16 @@ export default function(component) {
     }
 
     recordedChunks = [];
+    recordingCandidateFrames = [];
+    recordingCandidateBusy = false;
     recordingCancelled = false;
     recordingCapturedAt = new Date().toISOString();
     recordingLocationPromise = getLocationAtCapture();
     const mimeType = chooseRecorderMimeType();
     try {
       const options = {
-        videoBitsPerSecond: 1600000,
-        audioBitsPerSecond: 96000
+        videoBitsPerSecond: 900000,
+        audioBitsPerSecond: 64000
       };
       if (mimeType) options.mimeType = mimeType;
       try {
@@ -1492,6 +1537,7 @@ export default function(component) {
         mediaRecorder = null;
         if (recordingCancelled) {
           recordedChunks = [];
+          recordingCandidateFrames = [];
           recordingCancelled = false;
           return;
         }
@@ -1502,25 +1548,20 @@ export default function(component) {
           recordedChunks = [];
           if (!blob.size) throw new Error('recorded video is empty');
 
-          // Video recording is intentionally auto-save. There is no keep/retry
-          // review screen for video. Candidate-frame extraction runs locally while
-          // the upload payload is prepared, then the server saves the video and
-          // continues AI selection in the background.
+          // Auto-save the original video first. Good-moment candidates have already
+          // been captured as lightweight stills during recording, so stopping a
+          // recording never seeks/decodes the finished video before upload.
           if (menu) menu.hidden = true;
           if (activeActions) activeActions.hidden = true;
           if (video) video.hidden = true;
           setStatus('動画を自動保存する準備をしています…');
 
-          const candidatePromise = extractVideoCandidateFrames(blob, durationMs)
-            .catch((err) => {
-              console.warn('candidate extraction failed', err);
-              return [];
-            });
-          const [dataUrl, posterDataUrl, location, candidateFrames] = await Promise.all([
+          const candidateFrames = recordingCandidateFrames.slice(0, 18);
+          recordingCandidateFrames = [];
+          const [dataUrl, posterDataUrl, location] = await Promise.all([
             blobToDataUrl(blob),
             capturePosterDataUrl(),
-            recordingLocationPromise || getLocationAtCapture(),
-            candidatePromise
+            recordingLocationPromise || getLocationAtCapture()
           ]);
 
           const recordingId = (globalThis.crypto && typeof globalThis.crypto.randomUUID === 'function')
@@ -1563,6 +1604,10 @@ export default function(component) {
       setRecordingUi(true);
       updateRecordingClock();
       recordingTimer = setInterval(updateRecordingClock, 250);
+      // Small stills are collected while the user records. They are not AI-analysed
+      // here; the server stores the original video first and processes them later.
+      setTimeout(() => { captureRecordingCandidateFrame(); }, 550);
+      recordingCandidateTimer = setInterval(() => { captureRecordingCandidateFrame(); }, 1600);
       recordingMaxTimer = setTimeout(stopVideoRecording, VIDEO_MAX_SECONDS * 1000);
       setStatus('');
     } catch (err) {
@@ -1749,11 +1794,11 @@ export default function(component) {
 }
 """
 
-LIVE_CAMERA_COMPONENT_BUILD = "v104"
+LIVE_CAMERA_COMPONENT_BUILD = "v105"
 
 try:
     live_camera_component = st.components.v2.component(
-        "tokyo_burari_live_camera_v104",
+        "tokyo_burari_live_camera_v105",
         html=_LIVE_CAMERA_HTML,
         css=_LIVE_CAMERA_CSS,
         js=_LIVE_CAMERA_JS,
@@ -4350,11 +4395,42 @@ def upload_video(
             .execute()
         )
         saved_row = (result.data or [None])[0]
-        if not isinstance(saved_row, dict) or not saved_row.get("id"):
-            raise RuntimeError("動画の保存記録をデータベースに作成できませんでした。")
+        if not isinstance(saved_row, dict):
+            saved_row = {}
+        # Some PostgREST/Supabase configurations accept an INSERT but do not return
+        # the inserted representation. Recover it by its unique storage path instead
+        # of treating an empty response as a failed video save.
+        if not saved_row.get("id"):
+            try:
+                lookup = (
+                    client
+                    .table(PHOTO_TABLE)
+                    .select("id,trip_id,storage_path,captured_at,reflection_json,signals_json")
+                    .eq("trip_id", trip_id)
+                    .eq("family_key", current_family_key()).eq("member_key", current_member_key())
+                    .eq("storage_path", poster_path)
+                    .limit(1)
+                    .execute()
+                )
+                rows = lookup.data or []
+                if rows and isinstance(rows[0], dict):
+                    saved_row = rows[0]
+            except Exception:
+                pass
         download_photo.clear()
         signed_photo_url_map.clear()
         _invalidate_fast_db_cache()
+        if not saved_row:
+            # The INSERT request completed without raising. Preserve the uploaded
+            # files and let the next normal list refresh recover the DB row rather
+            # than deleting a potentially successful save.
+            saved_row = {
+                "trip_id": trip_id,
+                "storage_path": poster_path,
+                "captured_at": str(captured_at or now_jst().isoformat()),
+                "reflection_json": reflection,
+                "signals_json": {},
+            }
         return saved_row
     except Exception as exc:
         if uploaded_paths:
@@ -4766,7 +4842,7 @@ def store_video_ai_candidate_bundle(photo, frame_items):
     base = _video_selection_base_path(photo)
     if not base:
         raise ValueError("動画の保存先を確認できませんでした。")
-    bundle_path = f"{base}_candidates_v104.zip"
+    bundle_path = f"{base}_candidates_v105.zip"
     client = supabase_client()
     client.storage.from_(PHOTO_BUCKET).upload(
         path=bundle_path,
@@ -10547,7 +10623,7 @@ def page_trip():
             "video_allowed": bool(video_capacity.get("allowed")),
             "video_capacity_message": str(video_capacity.get("message") or ""),
         },
-        key=f"live_camera_v104_{camera_trip_key}_{st.session_state.capture_serial}",
+        key=f"live_camera_v105_{camera_trip_key}_{st.session_state.capture_serial}",
         on_photo_change=lambda: None,
         on_video_change=lambda: None,
         on_camera_error_change=lambda: None,
@@ -10588,15 +10664,9 @@ def page_trip():
                     capture_source=capture_source,
                 )
 
-                # Decode candidate stills before the rerun destroys the browser camera
-                # component. Failure here must never prevent the original video save.
-                try:
-                    candidate_frames = decode_video_candidate_frames(
-                        video_payload.get("candidate_frames") or [],
-                        max_frames=VIDEO_AI_MAX_CANDIDATES,
-                    )
-                except Exception:
-                    candidate_frames = []
+                # Do not decode or process AI stills yet. The original video is always
+                # persisted first; candidate processing is strictly post-save.
+                candidate_frames = []
 
                 save_stage = "動画本体の保管庫への保存"
                 with st.spinner("動画を保管庫に自動保存しています…"):
@@ -10615,10 +10685,20 @@ def page_trip():
                 # digest immediately so an AI/candidate failure cannot upload it twice.
                 video_saved = True
                 st.session_state[digest_key] = digest
-                st.session_state[f"_camera_recent_photo_{trip['id']}"] = saved_video["id"]
+                if isinstance(saved_video, dict) and saved_video.get("id"):
+                    st.session_state[f"_camera_recent_photo_{trip['id']}"] = saved_video["id"]
+
+                # Only now decode the lightweight stills captured during recording.
+                try:
+                    candidate_frames = decode_video_candidate_frames(
+                        video_payload.get("candidate_frames") or [],
+                        max_frames=VIDEO_AI_MAX_CANDIDATES,
+                    )
+                except Exception:
+                    candidate_frames = []
 
                 ai_status = "no_candidates"
-                if candidate_frames:
+                if candidate_frames and isinstance(saved_video, dict) and saved_video.get("id"):
                     try:
                         save_stage = "AI候補画像の保管"
                         saved_video = store_video_ai_candidate_bundle(
@@ -10632,7 +10712,7 @@ def page_trip():
                         ai_status = "candidate_error"
                         mark_video_ai_selection_error(saved_video, candidate_exc)
 
-                if ai_status == "queued":
+                if ai_status == "queued" and isinstance(saved_video, dict) and saved_video.get("id"):
                     try:
                         save_stage = "AIバックグラウンド処理の開始"
                         launch_video_ai_background_job(saved_video)
@@ -10675,7 +10755,10 @@ def page_trip():
             if video_saved:
                 st.warning("動画本体は保管庫に保存済みです。保存後の処理だけ完了できませんでした。")
             else:
-                st.error("動画を保存できませんでした。")
+                detail = str(exc).strip().replace("\n", " ")
+                if len(detail) > 180:
+                    detail = detail[:177] + "..."
+                st.error(f"動画を保存できませんでした。処理段階：{save_stage}" + (f" ／ {detail}" if detail else ""))
             with st.expander("保護者向け詳細"):
                 st.code(f"処理段階: {save_stage}\n{exc}")
 
