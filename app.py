@@ -672,11 +672,11 @@ try:
 except Exception:
     VIDEO_STORAGE_QUOTA_MB = 0
 
-VIDEO_MAX_SECONDS = 20
-# Reserve a conservative upper bound for one 20-second mobile recording.
-# The recorder targets about 0.8 Mbps video + 64 kbps audio, but some phone/browser
-# combinations may ignore bitrate hints. 12 MB prevents false rejection after upload.
-VIDEO_MAX_BYTES = 12 * 1024 * 1024
+VIDEO_MAX_SECONDS = 30
+# Keep one 30-second recording within the reliable range for Supabase standard uploads.
+# The browser records at about 0.9 Mbps video + 64 kbps audio, so 6 MB leaves
+# comfortable container/codec overhead while also being the pre-recording reserve.
+VIDEO_MAX_BYTES = 6 * 1024 * 1024
 VIDEO_AI_MAX_SELECTIONS = 9
 VIDEO_AI_MAX_CANDIDATES = 12
 
@@ -708,7 +708,7 @@ _LIVE_CAMERA_HTML = """
 
   <video id="live-camera-video" class="live-camera-video" playsinline autoplay muted hidden></video>
 
-  <div id="camera-recording-status" class="camera-recording-status" hidden>● 録画中 0:00 / 0:20</div>
+  <div id="camera-recording-status" class="camera-recording-status" hidden>● 録画中 0:00 / 0:30</div>
 
   <div id="camera-active-actions" class="camera-active-actions" hidden>
     <button id="live-camera-shoot" class="camera-shoot-button" type="button">● 撮影する</button>
@@ -722,7 +722,7 @@ _LIVE_CAMERA_HTML = """
       <button id="camera-review-retry" class="camera-retry-button" type="button">撮りなおす／選びなおす</button>
     </div>
     <button id="camera-review-find-moments" class="camera-find-button" type="button" hidden>✨ いい瞬間を探す</button>
-    <div id="camera-review-build" class="camera-review-build" hidden>camera v112</div>
+    <div id="camera-review-build" class="camera-review-build" hidden>camera v105</div>
     <img id="camera-review-image" class="camera-review-image" alt="撮影した写真の確認" />
     <video id="camera-review-video" class="camera-review-video" playsinline controls hidden></video>
   </div>
@@ -936,8 +936,7 @@ export default function(component) {
   const reviewBuild = parentElement.querySelector('#camera-review-build');
   const status = parentElement.querySelector('#live-camera-status');
 
-  const VIDEO_MAX_SECONDS = 20;
-  const VIDEO_MAX_BYTES = 12 * 1024 * 1024;
+  const VIDEO_MAX_SECONDS = 30;
   // v107: the browser uploads the video blob straight to a short-lived Supabase
   // signed upload URL. The multi-megabyte video is never serialized through a
   // Streamlit component trigger value.
@@ -946,7 +945,7 @@ export default function(component) {
   const videoUnavailableReason = String(data?.video_unavailable_reason || '');
   const videoAllowed = data?.video_allowed !== false && Boolean(videoUploadSignedUrl && videoUploadStoragePath);
   const videoCapacityMessage = String(
-    data?.video_capacity_message || '動画の保存容量または保存先を確認できないため、最大20秒の動画を撮影できません。'
+    data?.video_capacity_message || '動画の保存容量または保存先を確認できないため、最大30秒の動画を撮影できません。'
   );
   const unavailableSuffix = videoUnavailableReason === 'quota'
     ? '容量不足'
@@ -1209,9 +1208,8 @@ export default function(component) {
         } : false,
         video: {
           facingMode: { ideal: 'environment' },
-          width: { ideal: 960, max: 1280 },
-          height: { ideal: 540, max: 720 },
-          frameRate: { ideal: 24, max: 30 }
+          width: { ideal: 1280 },
+          height: { ideal: 720 }
         }
       });
       video.srcObject = stream;
@@ -1222,7 +1220,7 @@ export default function(component) {
       try {
         localStorage.setItem('tokyo_burari_last_camera_open_v1', String(Date.now()));
       } catch (_) {}
-      setStatus(cameraMode === 'video' ? '動画は最大20秒です。音声も一緒に記録します。' : '');
+      setStatus(cameraMode === 'video' ? '動画は最大30秒です。音声も一緒に記録します。' : '');
     } catch (err) {
       console.error(err);
       stopStream();
@@ -1247,7 +1245,7 @@ export default function(component) {
     if (!videoUploadSignedUrl || !videoUploadStoragePath) {
       throw new Error('動画のアップロード先がありません');
     }
-    // v112: send a raw binary body to a brand-new signed path. Avoid multipart/form-data
+    // v111: send a raw binary body to a brand-new signed path. Avoid multipart/form-data
     // and x-upsert, both of which have caused Storage upload failures on some hosted
     // Supabase projects. A unique path means overwrite/upsert is unnecessary.
     const payload = await blob.arrayBuffer();
@@ -1538,12 +1536,10 @@ export default function(component) {
 
   const chooseRecorderMimeType = () => {
     const candidates = [
-      // Chromium/Android is generally most reliable with WebM + VP8. Safari will
-      // fall through to MP4 when WebM recording is unavailable.
-      'video/webm;codecs=vp8,opus',
-      'video/webm',
       'video/mp4;codecs=h264,aac',
-      'video/mp4'
+      'video/mp4',
+      'video/webm;codecs=vp8,opus',
+      'video/webm'
     ];
     for (const type of candidates) {
       try {
@@ -1578,24 +1574,14 @@ export default function(component) {
     const mimeType = chooseRecorderMimeType();
     try {
       const options = {
-        videoBitsPerSecond: 800000,
+        videoBitsPerSecond: 900000,
         audioBitsPerSecond: 64000
       };
       if (mimeType) options.mimeType = mimeType;
       try {
         mediaRecorder = new MediaRecorder(stream, options);
-      } catch (typedRecorderError) {
-        // Some Chromium/Android builds report MP4 support but reject codec-specific
-        // constructor options. Retry without forcing a MIME type while keeping the
-        // bitrate cap; only use the browser default as the final compatibility fallback.
-        try {
-          mediaRecorder = new MediaRecorder(stream, {
-            videoBitsPerSecond: 800000,
-            audioBitsPerSecond: 64000
-          });
-        } catch (_) {
-          mediaRecorder = new MediaRecorder(stream);
-        }
+      } catch (_) {
+        mediaRecorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
       }
       mediaRecorder.ondataavailable = (event) => {
         if (event.data && event.data.size > 0) recordedChunks.push(event.data);
@@ -1625,10 +1611,6 @@ export default function(component) {
           const blob = new Blob(recordedChunks, { type: finalType });
           recordedChunks = [];
           if (!blob.size) throw new Error('recorded video is empty');
-          if (blob.size > VIDEO_MAX_BYTES) {
-            const mb = (blob.size / (1024 * 1024)).toFixed(1);
-            throw new Error(`20秒以内でも動画容量が大きすぎます（${mb} MB）。もう一度撮影してください。`);
-          }
 
           // Auto-save the original video first. Good-moment candidates have already
           // been captured as lightweight stills during recording, so stopping a
@@ -1900,11 +1882,11 @@ export default function(component) {
 }
 """
 
-LIVE_CAMERA_COMPONENT_BUILD = "v112"
+LIVE_CAMERA_COMPONENT_BUILD = "v111"
 
 try:
     live_camera_component = st.components.v2.component(
-        "tokyo_burari_live_camera_v112",
+        "tokyo_burari_live_camera_v111",
         html=_LIVE_CAMERA_HTML,
         css=_LIVE_CAMERA_CSS,
         js=_LIVE_CAMERA_JS,
@@ -4658,7 +4640,7 @@ def ensure_video_storage_capacity(incoming_bytes):
 
 
 def video_recording_capacity_status():
-    """Reserve enough room for one maximum 20-second recording before opening video mode."""
+    """Reserve enough room for one maximum 30-second recording before opening video mode."""
     quota = video_storage_quota_bytes()
     if quota <= 0:
         return {
@@ -4667,7 +4649,7 @@ def video_recording_capacity_status():
             "quota_bytes": 0,
             "remaining_bytes": None,
             "required_bytes": VIDEO_MAX_BYTES,
-            "message": "動画は最大20秒です。",
+            "message": "動画は最大30秒です。",
         }
 
     usage = current_video_storage_usage_bytes()
@@ -4675,12 +4657,12 @@ def video_recording_capacity_status():
     allowed = remaining >= VIDEO_MAX_BYTES
     if allowed:
         message = (
-            f"最大20秒の動画を撮影できます。残り {format_storage_size(remaining)} / "
+            f"最大30秒の動画を撮影できます。残り {format_storage_size(remaining)} / "
             f"上限 {format_storage_size(quota)}"
         )
     else:
         message = (
-            "最大20秒の動画1本分の空き容量がありません。"
+            "最大30秒の動画1本分の空き容量がありません。"
             f" 残り {format_storage_size(remaining)} / 上限 {format_storage_size(quota)}。"
             f"撮影には少なくとも {format_storage_size(VIDEO_MAX_BYTES)} の空きが必要です。"
         )
@@ -4772,7 +4754,7 @@ def _supabase_secret_key_kind():
 def _create_signed_video_upload_url(path):
     """Create a signed Storage PUT target, preferring the raw Storage REST API.
 
-    v112 creates a fresh, non-upsert signed target. The browser uploads a raw binary
+    v111 creates a fresh, non-upsert signed target. The browser uploads a raw binary
     body to that unique path, avoiding multipart/form-data and x-upsert.
     """
     errors = []
@@ -4835,7 +4817,7 @@ def _create_signed_video_upload_url(path):
 
 def get_camera_video_upload_reservation(trip_id, capture_serial):
     """Return one stable signed upload destination for the current camera capture."""
-    state_key = "_camera_video_upload_reservation_v112"
+    state_key = "_camera_video_upload_reservation_v111"
     current = st.session_state.get(state_key)
     family_key = current_family_key()
     member_key = current_member_key()
@@ -4871,7 +4853,6 @@ def get_camera_video_upload_reservation(trip_id, capture_serial):
 
 
 def clear_camera_video_upload_reservation():
-    st.session_state.pop("_camera_video_upload_reservation_v112", None)
     st.session_state.pop("_camera_video_upload_reservation_v111", None)
 
 
@@ -4909,7 +4890,7 @@ def register_browser_uploaded_video(
     if size_value <= 0:
         raise ValueError("動画の容量を確認できませんでした。")
     if size_value > VIDEO_MAX_BYTES:
-        raise ValueError("動画が大きすぎます。20秒以内で撮り直してください。")
+        raise ValueError("動画が大きすぎます。30秒以内で撮り直してください。")
     ensure_video_storage_capacity(size_value)
 
     try:
@@ -5029,7 +5010,7 @@ def upload_video(
         max(0, int(duration_ms or 0)),
     )
     if len(video_bytes) > VIDEO_MAX_BYTES:
-        raise ValueError("動画が大きすぎます。20秒以内で撮り直してください。")
+        raise ValueError("動画が大きすぎます。30秒以内で撮り直してください。")
     ensure_video_storage_capacity(len(video_bytes))
     poster = normalize_photo(poster_bytes)
     if not poster:
@@ -5955,6 +5936,10 @@ def record_video_ai_human_choices(video_photo, selected_ranks):
     selection["status"] = "reviewed"
     reflection["ai_selection"] = selection
     _write_photo_reflection(video_photo.get("id"), reflection)
+    try:
+        _home_video_counts_cached.clear()
+    except Exception:
+        pass
 
     # Once the user has accepted at least one still, the candidate ZIP is no
     # longer needed for reroll and can be removed to control storage cost.
@@ -10722,6 +10707,54 @@ def open_diary_photo_talk(trip_id, photo_id, state):
 # ============================================================
 # Page: Home
 # ============================================================
+@st.cache_data(ttl=10, max_entries=64, show_spinner=False)
+def _home_video_counts_cached(family_key, member_key):
+    """Return (saved videos, videos not yet accepted as diary stills)."""
+    rows = (
+        supabase_client()
+        .table(PHOTO_TABLE)
+        .select("id,reflection_json")
+        .eq("family_key", str(family_key))
+        .eq("member_key", str(member_key))
+        .limit(1000)
+        .execute()
+    ).data or []
+
+    saved_count = 0
+    before_clip_count = 0
+    for row in rows:
+        if not photo_is_video(row):
+            continue
+        saved_count += 1
+        selection = photo_media_metadata(row).get("ai_selection") or {}
+        if not isinstance(selection, dict):
+            selection = {}
+        # "瞬間切り取り前" means the user has not yet accepted one or more
+        # AI-selected stills and sent them to the diary. Processing / ready /
+        # error / not-started videos all remain in this count.
+        status = str(selection.get("status") or "").strip().lower()
+        if status != "reviewed":
+            before_clip_count += 1
+    return saved_count, before_clip_count
+
+
+def home_video_counts():
+    try:
+        counts = _home_video_counts_cached(current_family_key(), current_member_key())
+        st.session_state["_home_video_saved_count"] = int(counts[0])
+        st.session_state["_home_video_before_clip_count"] = int(counts[1])
+        return counts
+    except Exception:
+        saved = st.session_state.get("_home_video_saved_count")
+        before = st.session_state.get("_home_video_before_clip_count")
+        if saved is None or before is None:
+            return None
+        try:
+            return max(0, int(saved)), max(0, int(before))
+        except Exception:
+            return None
+
+
 def page_home():
     review_attention = home_review_attention_needed()
     inject_home_icon_css(review_attention=review_attention)
@@ -10806,6 +10839,14 @@ def page_home():
             use_container_width=True,
         ):
             go_page("videos")
+        video_counts = home_video_counts()
+        if video_counts is not None:
+            saved_video_count, before_clip_count = video_counts
+            st.caption(
+                f"保存済み {saved_video_count}本　／　瞬間切り取り前 {before_clip_count}本"
+            )
+        else:
+            st.caption("保存済み本数を確認できませんでした。")
 
     # Manual fallback for cases where the phone/browser cannot provide GPS.
     with st.container(key="home_destination"):
@@ -11525,7 +11566,7 @@ def page_trip():
             "video_upload_signed_url": str(video_reservation.get("signed_url") or ""),
             "video_upload_storage_path": str(video_reservation.get("storage_path") or ""),
         },
-        key=f"live_camera_v112_{camera_trip_key}_{st.session_state.capture_serial}",
+        key=f"live_camera_v111_{camera_trip_key}_{st.session_state.capture_serial}",
         on_photo_change=lambda: None,
         on_video_change=lambda: None,
         on_camera_error_change=lambda: None,
@@ -11562,7 +11603,7 @@ def page_trip():
         video_saved = False
         uploaded_video_path = str(video_payload.get("video_storage_path") or "").strip()
         try:
-            reservation = st.session_state.get("_camera_video_upload_reservation_v112")
+            reservation = st.session_state.get("_camera_video_upload_reservation_v111")
             if not isinstance(reservation, dict):
                 raise ValueError("動画の保存予約を確認できませんでした。")
             reserved_video_path = str(reservation.get("storage_path") or "").strip()
@@ -11639,6 +11680,10 @@ def page_trip():
                 st.session_state[digest_key] = digest
                 if isinstance(saved_video, dict) and saved_video.get("id"):
                     st.session_state[f"_camera_recent_photo_{trip['id']}"] = saved_video["id"]
+                try:
+                    _home_video_counts_cached.clear()
+                except Exception:
+                    pass
 
                 # AI stills are deliberately secondary. The video is already registered
                 # before these compact frames are decoded or stored.
@@ -13251,11 +13296,11 @@ def page_settings():
             )
             st.caption(
                 f"残り：{format_storage_size(remaining_bytes)}。動画撮影を始める前に、"
-                f"最大20秒分として {format_storage_size(VIDEO_MAX_BYTES)} の空きがあるか確認します。"
+                f"最大30秒分として {format_storage_size(VIDEO_MAX_BYTES)} の空きがあるか確認します。"
                 "AIセレクションの静止画・候補ZIPはこの動画容量には含めません。"
             )
             if remaining_bytes < VIDEO_MAX_BYTES:
-                st.warning("最大20秒の動画1本分の空きがないため、現在は動画撮影を開始できません。")
+                st.warning("最大30秒の動画1本分の空きがないため、現在は動画撮影を開始できません。")
             st.progress(min(1.0, usage_bytes / quota_bytes) if quota_bytes else 0.0)
         except Exception as exc:
             st.caption("動画容量を確認できませんでした。")
@@ -13274,7 +13319,7 @@ def page_settings():
         "初回だけ、このサイトへのカメラ使用を『許可』してください。"
     )
     st.caption(
-        "動画は最大20秒です。録画を止めると確認画面を挟まず保管庫へ自動保存し、"
+        "動画は最大30秒です。録画を止めると確認画面を挟まず保管庫へ自動保存し、"
         "AIがバックグラウンドで最大9枚の『いい瞬間』を選びます。"
         "初回はカメラとは別に位置情報の許可も求められます。位置情報がオフ・拒否・取得不能の場合は、"
         "ホームの地名表示（未登録なら『地名：登録なし（自動取得）』）を押して入力した内容を写真の場所として使います。"
