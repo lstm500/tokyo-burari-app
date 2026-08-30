@@ -22,7 +22,7 @@ from zoneinfo import ZoneInfo
 
 import streamlit as st
 
-APP_BUILD = "v107"
+APP_BUILD = "v108"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -941,13 +941,17 @@ export default function(component) {
   // Streamlit component trigger value.
   const videoUploadSignedUrl = String(data?.video_upload_signed_url || '');
   const videoUploadStoragePath = String(data?.video_upload_storage_path || '');
+  const videoUnavailableReason = String(data?.video_unavailable_reason || '');
   const videoAllowed = data?.video_allowed !== false && Boolean(videoUploadSignedUrl && videoUploadStoragePath);
   const videoCapacityMessage = String(
     data?.video_capacity_message || '動画の保存容量または保存先を確認できないため、最大30秒の動画を撮影できません。'
   );
+  const unavailableSuffix = videoUnavailableReason === 'quota'
+    ? '容量不足'
+    : (videoUnavailableReason === 'storage_setup' ? '保存先エラー' : '利用不可');
   if (!videoAllowed && videoStartButton) {
     videoStartButton.disabled = true;
-    videoStartButton.textContent = '🎥 動画を撮る（容量不足）';
+    videoStartButton.textContent = `🎥 動画を撮る（${unavailableSuffix}）`;
     videoStartButton.title = videoCapacityMessage;
   }
   let stream = null;
@@ -1006,7 +1010,7 @@ export default function(component) {
       modeSwitchButton.disabled = Boolean(recording) || (cameraMode !== 'video' && !videoAllowed);
       modeSwitchButton.textContent = cameraMode === 'video'
         ? '📷 写真へ'
-        : (videoAllowed ? '🎥 動画へ' : '🎥 動画へ（容量不足）');
+        : (videoAllowed ? '🎥 動画へ' : `🎥 動画へ（${unavailableSuffix}）`);
       modeSwitchButton.title = (!videoAllowed && cameraMode !== 'video') ? videoCapacityMessage : '';
     }
   };
@@ -1846,11 +1850,11 @@ export default function(component) {
 }
 """
 
-LIVE_CAMERA_COMPONENT_BUILD = "v107"
+LIVE_CAMERA_COMPONENT_BUILD = "v108"
 
 try:
     live_camera_component = st.components.v2.component(
-        "tokyo_burari_live_camera_v107",
+        "tokyo_burari_live_camera_v108",
         html=_LIVE_CAMERA_HTML,
         css=_LIVE_CAMERA_CSS,
         js=_LIVE_CAMERA_JS,
@@ -4459,7 +4463,7 @@ def _create_signed_video_upload_url(path):
         except TypeError:
             response = bucket.create_signed_upload_url(path)
         signed_url = _normalize_supabase_storage_signed_url(
-            _extract_signed_upload_value(response, ("signed_url", "signedUrl", "url"))
+            _extract_signed_upload_value(response, ("signed_url", "signedUrl", "signedURL", "url"))
         )
         if signed_url:
             return signed_url
@@ -4468,21 +4472,26 @@ def _create_signed_video_upload_url(path):
     # only server-side to mint a short-lived signed URL; it is never sent itself.
     encoded_path = quote(f"{PHOTO_BUCKET}/{path}", safe="/")
     endpoint = f"{SUPABASE_URL.rstrip('/')}/storage/v1/object/upload/sign/{encoded_path}"
+    headers = {
+        "apikey": SUPABASE_SECRET_KEY,
+        "Content-Type": "application/json",
+        "x-upsert": "true",
+    }
+    # New Supabase sb_secret_* keys are opaque API keys, not JWTs. Sending them
+    # as Authorization: Bearer causes Invalid JWT on direct REST calls. Legacy
+    # service_role JWTs still use the Authorization header.
+    if not str(SUPABASE_SECRET_KEY or "").startswith("sb_secret_"):
+        headers["Authorization"] = f"Bearer {SUPABASE_SECRET_KEY}"
     request = Request(
         endpoint,
         data=b"{}",
         method="POST",
-        headers={
-            "apikey": SUPABASE_SECRET_KEY,
-            "Authorization": f"Bearer {SUPABASE_SECRET_KEY}",
-            "Content-Type": "application/json",
-            "x-upsert": "true",
-        },
+        headers=headers,
     )
     with urlopen(request, timeout=15) as http_response:
         payload = json.loads(http_response.read().decode("utf-8"))
     signed_url = _normalize_supabase_storage_signed_url(
-        _extract_signed_upload_value(payload, ("signed_url", "signedUrl", "url"))
+        _extract_signed_upload_value(payload, ("signed_url", "signedUrl", "signedURL", "url"))
     )
     if not signed_url:
         raise RuntimeError("動画の一時アップロード先を作成できませんでした。")
@@ -4491,7 +4500,7 @@ def _create_signed_video_upload_url(path):
 
 def get_camera_video_upload_reservation(trip_id, capture_serial):
     """Return one stable signed upload destination for the current camera capture."""
-    state_key = "_camera_video_upload_reservation_v107"
+    state_key = "_camera_video_upload_reservation_v108"
     current = st.session_state.get(state_key)
     family_key = current_family_key()
     member_key = current_member_key()
@@ -4527,7 +4536,7 @@ def get_camera_video_upload_reservation(trip_id, capture_serial):
 
 
 def clear_camera_video_upload_reservation():
-    st.session_state.pop("_camera_video_upload_reservation_v107", None)
+    st.session_state.pop("_camera_video_upload_reservation_v108", None)
 
 
 def register_browser_uploaded_video(
@@ -9159,7 +9168,7 @@ def init_state():
 
 
 
-VALID_APP_PAGES = {"home", "camera", "moments", "diary", "review", "settings"}
+VALID_APP_PAGES = {"home", "camera", "videos", "moments", "diary", "review", "settings"}
 
 
 def restore_recent_camera_session():
@@ -10443,6 +10452,14 @@ def page_home():
         ):
             go_page("moments")
 
+    with st.container(key="home_video_vault"):
+        if st.button(
+            "🎞️ 動画保管庫",
+            key="home_video_vault_button",
+            use_container_width=True,
+        ):
+            go_page("videos")
+
     # Manual fallback for cases where the phone/browser cannot provide GPS.
     with st.container(key="home_destination"):
         place_button_label = f"📍 地名：{active_place}" if active_place else "📍 地名：自動取得（必要なら手入力）"
@@ -10727,6 +10744,75 @@ def _render_moments_picker(photo, index):
         st.success("この動画から選んだ写真は日記へ送信済みです。")
 
 
+def page_videos():
+    if st.button("←", key="videos_back_home", help="ホームへ戻る"):
+        go_page("home")
+
+    page_top(
+        "🎞️ 動画保管庫",
+        "保存された元動画を確認できます。AIの選定状況に関係なく、保存済み動画はここに表示されます。",
+    )
+
+    try:
+        videos = list_member_videos_for_moments(limit=500)
+    except Exception as exc:
+        st.error("動画保管庫を読み込めませんでした。")
+        with st.expander("保護者向け詳細"):
+            st.code(str(exc))
+        return
+
+    quota = video_storage_quota_bytes()
+    try:
+        usage = current_video_storage_usage_bytes()
+    except Exception:
+        usage = sum(
+            max(0, int(photo_media_metadata(v).get("video_size_bytes") or 0))
+            for v in videos
+        )
+    if quota > 0:
+        st.caption(
+            f"保存済み動画：{len(videos)}本 ／ 使用量 {format_storage_size(usage)} / "
+            f"上限 {format_storage_size(quota)} ／ 残り {format_storage_size(max(0, quota - usage))}"
+        )
+    else:
+        st.caption(f"保存済み動画：{len(videos)}本 ／ 使用量 {format_storage_size(usage)} ／ 総容量上限は未設定")
+
+    if not videos:
+        st.info("保存済みの動画はありません。現在の動画使用量も0Bです。")
+        return
+
+    for index, video_row in enumerate(videos):
+        if index:
+            st.divider()
+        st.markdown(f"#### {html.escape(_moments_video_title(video_row))}")
+        metadata = photo_media_metadata(video_row)
+        size_value = max(0, int(metadata.get("video_size_bytes") or 0))
+        duration_ms = max(0, int(metadata.get("video_duration_ms") or 0))
+        detail_parts = []
+        if duration_ms:
+            detail_parts.append(f"{max(1, round(duration_ms / 1000))}秒")
+        if size_value:
+            detail_parts.append(format_storage_size(size_value))
+        if detail_parts:
+            st.caption(" ／ ".join(detail_parts))
+        video_url = video_display_url(video_row, expires_in=1800)
+        if video_url:
+            st.video(video_url)
+        else:
+            st.warning("元動画を読み込めませんでした。保存記録は存在します。")
+        selection = metadata.get("ai_selection") or {}
+        if isinstance(selection, dict):
+            status = str(selection.get("status") or "").lower()
+            if status == "processing":
+                st.caption("✨ いい瞬間を選定中")
+            elif status == "ready":
+                st.caption("✨ いい瞬間を確認できます")
+            elif status == "reviewed":
+                st.caption("✓ いい瞬間を確認済み")
+            elif status == "error":
+                st.caption("AI選定は未完了です。元動画は保存されています。")
+
+
 def page_moments():
     if st.button("←", key="moments_back_home", help="ホームへ戻る"):
         go_page("home")
@@ -10936,8 +11022,10 @@ def page_trip():
         st.error("ライブカメラ機能に必要なStreamlitのバージョンが古いです。requirements.txtを更新してください。")
         return
 
-    # Video mode is gated before recording begins. We reserve the full 25 MB
-    # server cap, which corresponds to the maximum 30-second recording.
+    # Video mode is gated before recording begins. Capacity and Storage-upload
+    # preparation are deliberately reported as separate states: a failure to mint
+    # an upload destination must never be mislabeled as "capacity shortage".
+    video_unavailable_reason = ""
     try:
         video_capacity = video_recording_capacity_status()
     except Exception as exc:
@@ -10945,10 +11033,13 @@ def page_trip():
             "allowed": False,
             "message": "動画の保存容量を確認できないため、動画撮影を一時停止しています。",
         }
+        video_unavailable_reason = "capacity_check"
         with st.expander("動画容量チェックの詳細"):
             st.code(str(exc))
 
     if not bool(video_capacity.get("allowed")):
+        if not video_unavailable_reason:
+            video_unavailable_reason = "quota"
         st.warning(str(video_capacity.get("message") or "動画の保存容量が不足しています。"))
 
     auto_start = bool(st.session_state.pop("_camera_auto_start", False))
@@ -10973,7 +11064,9 @@ def page_trip():
             )
         except Exception as exc:
             video_allowed = False
-            video_capacity_message = "動画の保存先を準備できないため、現在は動画撮影を開始できません。"
+            video_unavailable_reason = "storage_setup"
+            video_capacity_message = "保存容量ではなく、動画のアップロード先を準備できないため撮影を開始できません。"
+            st.error(video_capacity_message)
             with st.expander("動画保存先の準備エラー"):
                 st.code(str(exc))
 
@@ -10984,10 +11077,11 @@ def page_trip():
             "auto_start_mode": "video" if auto_start_video else ("photo" if auto_start else ""),
             "video_allowed": video_allowed,
             "video_capacity_message": video_capacity_message,
+            "video_unavailable_reason": video_unavailable_reason,
             "video_upload_signed_url": str(video_reservation.get("signed_url") or ""),
             "video_upload_storage_path": str(video_reservation.get("storage_path") or ""),
         },
-        key=f"live_camera_v107_{camera_trip_key}_{st.session_state.capture_serial}",
+        key=f"live_camera_v108_{camera_trip_key}_{st.session_state.capture_serial}",
         on_photo_change=lambda: None,
         on_video_change=lambda: None,
         on_camera_error_change=lambda: None,
@@ -11019,7 +11113,7 @@ def page_trip():
         video_saved = False
         uploaded_video_path = str(video_payload.get("video_storage_path") or "").strip()
         try:
-            reservation = st.session_state.get("_camera_video_upload_reservation_v107")
+            reservation = st.session_state.get("_camera_video_upload_reservation_v108")
             if not isinstance(reservation, dict):
                 raise ValueError("動画の保存予約を確認できませんでした。")
             if uploaded_video_path != str(reservation.get("storage_path") or "").strip():
@@ -12667,6 +12761,7 @@ def page_settings():
     st.divider()
     st.markdown("#### 動画の保存容量")
     quota_bytes = video_storage_quota_bytes()
+    st.caption(f"現在の設定値：VIDEO_STORAGE_QUOTA_MB = {VIDEO_STORAGE_QUOTA_MB}")
     if quota_bytes > 0:
         try:
             usage_bytes = current_video_storage_usage_bytes()
@@ -12736,6 +12831,8 @@ if page == "home":
     page_home()
 elif page == "camera":
     page_trip()
+elif page == "videos":
+    page_videos()
 elif page == "moments":
     page_moments()
 elif page == "diary":
@@ -12756,5 +12853,5 @@ sync_browser_history()
 # Camera already has its Home button directly under the camera form. For the
 # other major pages, keep a consistent Home route at the absolute bottom even
 # when the page body returned early from one of its internal flows.
-if page in {"moments", "diary", "review", "settings"}:
+if page in {"videos", "moments", "diary", "review", "settings"}:
     render_global_bottom_home_button(page)
