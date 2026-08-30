@@ -5431,7 +5431,7 @@ def choose_video_ai_frames(
             result = ask_json_with_images(
                 prompt,
                 image_items,
-                "video_best_frames_v116",
+                "video_best_frames_v117",
                 schema,
                 max_output_tokens=1700,
             )
@@ -5440,7 +5440,7 @@ def choose_video_ai_frames(
                 ask_client,
                 prompt,
                 image_items,
-                "video_best_frames_v116",
+                "video_best_frames_v117",
                 schema,
                 max_output_tokens=1700,
             )
@@ -5467,7 +5467,7 @@ def choose_video_ai_frames(
             result = ask_json_with_images(
                 prompt,
                 retry_items,
-                "video_best_frames_v116_retry",
+                "video_best_frames_v117_retry",
                 schema,
                 max_output_tokens=1700,
             )
@@ -5476,7 +5476,7 @@ def choose_video_ai_frames(
                 ask_client,
                 prompt,
                 retry_items,
-                "video_best_frames_v116_retry",
+                "video_best_frames_v117_retry",
                 schema,
                 max_output_tokens=1700,
             )
@@ -11878,51 +11878,141 @@ def _render_moments_picker(photo, index):
 
     selected_ranks = []
     grid_items = list(items)[:VIDEO_AI_MAX_SELECTIONS]
+
+    # On narrow mobile screens Streamlit columns may become visually uneven.
+    # Render the photo area itself as a fixed HTML/CSS 3×3 grid so the user can
+    # always compare the candidates at a glance, then show compact controls below.
+    grid_cells = []
+    for item_index in range(VIDEO_AI_MAX_SELECTIONS):
+        if item_index >= len(grid_items):
+            grid_cells.append('<div class="moments-grid-cell moments-grid-empty"></div>')
+            continue
+
+        item = grid_items[item_index]
+        rank = int(item.get("rank") or item_index + 1)
+        path = str(item.get("storage_path") or "").strip()
+        url = str(signed_map.get(path) or "")
+        if not url:
+            try:
+                url = thumbnail_photo_data_url(path, max_px=520, quality=82)
+            except Exception:
+                url = ""
+        quality = _video_selection_quality_label(item.get("primary_quality"))
+        seconds = max(0, int(item.get("timestamp_ms") or 0)) / 1000
+        reason = html.escape(str(item.get("reason") or "").strip())
+        badge = "★ AI BEST" if bool(item.get("ai_best")) or rank == 1 else f"#{rank}"
+        meta = html.escape(f"{seconds:.1f}秒・{quality}")
+        reason_html = f'<div class="moments-grid-reason">{reason}</div>' if reason else ""
+        if url:
+            image_html = (
+                f'<img src="{html.escape(url, quote=True)}" alt="いい瞬間 {rank}" '
+                'loading="lazy" decoding="async" />'
+            )
+        else:
+            image_html = '<div class="moments-grid-missing">画像なし</div>'
+        grid_cells.append(
+            '<div class="moments-grid-cell">'
+            f'<div class="moments-grid-image-wrap">{image_html}<div class="moments-grid-badge">{html.escape(badge)}</div></div>'
+            f'<div class="moments-grid-meta">{meta}</div>'
+            f'{reason_html}'
+            '</div>'
+        )
+
+    st.markdown(
+        """
+        <style>
+        .moments-grid {
+            display:grid;
+            grid-template-columns:repeat(3, minmax(0, 1fr));
+            gap:10px;
+            margin:0.35rem 0 0.8rem 0;
+        }
+        .moments-grid-cell {
+            min-width:0;
+        }
+        .moments-grid-image-wrap {
+            position:relative;
+            width:100%;
+            aspect-ratio:1 / 1;
+            overflow:hidden;
+            border-radius:12px;
+            background:rgba(128,128,128,.08);
+            border:1px solid rgba(128,128,128,.10);
+        }
+        .moments-grid-image-wrap img {
+            display:block;
+            width:100%;
+            height:100%;
+            object-fit:cover;
+        }
+        .moments-grid-badge {
+            position:absolute;
+            left:6px;
+            top:6px;
+            padding:2px 6px;
+            border-radius:999px;
+            background:rgba(0,0,0,.62);
+            color:#fff;
+            font-size:0.68rem;
+            line-height:1.2;
+            font-weight:700;
+            backdrop-filter: blur(2px);
+        }
+        .moments-grid-meta {
+            margin-top:5px;
+            font-size:0.72rem;
+            font-weight:600;
+            line-height:1.25;
+            color:inherit;
+        }
+        .moments-grid-reason {
+            margin-top:2px;
+            font-size:0.68rem;
+            line-height:1.22;
+            color:rgba(49, 51, 63, 0.82);
+            display:-webkit-box;
+            -webkit-line-clamp:2;
+            -webkit-box-orient:vertical;
+            overflow:hidden;
+        }
+        .moments-grid-empty {
+            aspect-ratio:1 / 1;
+            border-radius:12px;
+            border:1px dashed rgba(128,128,128,.18);
+            background:rgba(128,128,128,.035);
+        }
+        .moments-grid-missing {
+            display:flex;
+            align-items:center;
+            justify-content:center;
+            width:100%;
+            height:100%;
+            font-size:0.72rem;
+            color:rgba(49, 51, 63, 0.72);
+        }
+        </style>
+        """ + f'<div class="moments-grid">{"".join(grid_cells)}</div>',
+        unsafe_allow_html=True,
+    )
+
+    st.caption("下のボタンで、好きな写真の選択や拡大表示ができます。")
     for row_start in range(0, VIDEO_AI_MAX_SELECTIONS, 3):
         row_columns = st.columns(3, gap="small")
         for column_offset in range(3):
             item_index = row_start + column_offset
             with row_columns[column_offset]:
                 if item_index >= len(grid_items):
-                    st.markdown(
-                        '<div style="width:100%;aspect-ratio:1/1;border-radius:12px;'
-                        'border:1px dashed rgba(128,128,128,.18);background:rgba(128,128,128,.035);">'
-                        '</div>',
-                        unsafe_allow_html=True,
-                    )
-                    st.caption(" ")
+                    st.write("")
                     continue
 
                 item = grid_items[item_index]
                 rank = int(item.get("rank") or item_index + 1)
                 path = str(item.get("storage_path") or "").strip()
-                url = str(signed_map.get(path) or "")
-                if not url:
-                    try:
-                        url = thumbnail_photo_data_url(path, max_px=520, quality=82)
-                    except Exception:
-                        url = ""
-                if url:
-                    st.markdown(
-                        '<div style="width:100%;aspect-ratio:1/1;overflow:hidden;border-radius:12px;'
-                        'background:rgba(128,128,128,.08);">'
-                        f'<img src="{html.escape(url, quote=True)}" alt="いい瞬間 {rank}" '
-                        'loading="lazy" decoding="async" '
-                        'style="display:block;width:100%;height:100%;object-fit:cover;" /></div>',
-                        unsafe_allow_html=True,
-                    )
-                else:
-                    st.caption("画像を表示できません")
-
-                if bool(item.get("ai_best")) or rank == 1:
-                    st.markdown("**★ AI BEST**")
                 quality = _video_selection_quality_label(item.get("primary_quality"))
                 seconds = max(0, int(item.get("timestamp_ms") or 0)) / 1000
                 reason = str(item.get("reason") or "").strip()
-                st.caption(f"{seconds:.1f}秒・{quality}" + (f"\n{reason}" if reason else ""))
-
                 chosen = st.checkbox(
-                    "この写真が好き",
+                    f"選ぶ {rank}",
                     value=bool(item.get("human_selected")),
                     disabled=status == "reviewed",
                     key=f"moments_pick_{video_id}_{round_number}_{rank}",
@@ -11931,7 +12021,7 @@ def _render_moments_picker(photo, index):
                     selected_ranks.append(rank)
 
                 if st.button(
-                    "大きく見る",
+                    f"拡大 {rank}",
                     use_container_width=True,
                     key=f"moments_view_{video_id}_{round_number}_{rank}",
                 ):
@@ -11940,7 +12030,6 @@ def _render_moments_picker(photo, index):
                         "★ AI BEST" if rank == 1 else f"SELECT {rank}",
                         f"{seconds:.1f}秒・{quality}" + (f"\n{reason}" if reason else ""),
                     )
-
     selected_rank_set = set(selected_ranks)
     send_clicked = st.button(
         f"選んだ写真を日記へ送る（{len(selected_rank_set)}枚）",
