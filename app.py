@@ -27,7 +27,7 @@ from zoneinfo import ZoneInfo
 
 import streamlit as st
 
-APP_BUILD = "v142"
+APP_BUILD = "v143"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -966,6 +966,9 @@ export default function(component) {
   // Streamlit component trigger value.
   const videoUploadSignedUrl = String(data?.video_upload_signed_url || '');
   const videoUploadStoragePath = String(data?.video_upload_storage_path || '');
+  const videoUploadToken = String(data?.video_upload_token || '');
+  const videoTusEndpoint = String(data?.video_tus_endpoint || '');
+  const videoUploadBucket = String(data?.video_upload_bucket || '');
   const candidateSheetSignedUrl = String(data?.video_candidate_sheet_signed_url || '');
   const candidateSheetStoragePath = String(data?.video_candidate_sheet_storage_path || '');
   const videoUnavailableReason = String(data?.video_unavailable_reason || '');
@@ -1287,34 +1290,164 @@ export default function(component) {
     reader.readAsDataURL(blob);
   });
 
+  const xhrUpload = (method, url, headers, body, timeoutMs, progressHandler) => new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open(method, url, true);
+    xhr.timeout = Math.max(1000, Number(timeoutMs || 120000));
+    Object.entries(headers || {}).forEach(([key, value]) => {
+      if (value !== undefined && value !== null && String(value) !== '') xhr.setRequestHeader(key, String(value));
+    });
+    if (xhr.upload && typeof progressHandler === 'function') {
+      xhr.upload.onprogress = (event) => {
+        if (event && event.lengthComputable) progressHandler(event.loaded, event.total);
+      };
+    }
+    xhr.onload = () => {
+      const status = Number(xhr.status || 0);
+      if (status >= 200 && status < 300) {
+        resolve({ status, xhr });
+        return;
+      }
+      const detail = String(xhr.responseText || '').replace(/\s+/g, ' ').trim().slice(0, 260);
+      reject(new Error(`Storage ${status || 'error'}${detail ? `: ${detail}` : ''}`));
+    };
+    xhr.onerror = () => reject(new Error('Storageへの通信に失敗しました'));
+    xhr.ontimeout = () => reject(new Error('Storageへの送信がタイムアウトしました'));
+    xhr.onabort = () => reject(new Error('Storageへの送信が中断されました'));
+    try { xhr.send(body === undefined ? null : body); } catch (err) { reject(err); }
+  });
+
   const uploadRawBlobToSignedUrl = async (blob, signedUrl, contentType, label) => {
     if (!signedUrl) throw new Error(`${label || 'ファイル'}のアップロード先がありません`);
-    const payload = await blob.arrayBuffer();
-    if (!payload || !payload.byteLength) throw new Error(`${label || 'ファイル'}が空です`);
+    if (!blob || !blob.size) throw new Error(`${label || 'ファイル'}が空です`);
     let lastError = null;
     for (let attempt = 0; attempt < 2; attempt += 1) {
       try {
-        const response = await fetch(signedUrl, {
-          method: 'PUT',
-          headers: {
+        await xhrUpload(
+          'PUT',
+          signedUrl,
+          {
             'cache-control': 'max-age=3600',
             'content-type': contentType || 'application/octet-stream'
           },
-          body: payload
-        });
-        if (response.ok) return true;
-        let detail = '';
-        try { detail = await response.text(); } catch (_) {}
-        const compact = String(detail || '').replace(/\s+/g, ' ').trim().slice(0, 220);
-        lastError = new Error(`Supabase Storage ${response.status}${compact ? `: ${compact}` : ''}`);
-        if ([400, 401, 403, 409, 413, 415].includes(response.status)) break;
+          blob,
+          120000,
+          (loaded, total) => {
+            const pct = total > 0 ? Math.max(0, Math.min(100, Math.round((loaded / total) * 100))) : 0;
+            setStatus(`動画を保管庫へ送信しています… ${pct}%`);
+          }
+        );
+        return true;
       } catch (err) {
         lastError = err;
       }
-      if (attempt === 0) await new Promise((resolve) => setTimeout(resolve, 450));
+      if (attempt === 0) await new Promise((resolve) => setTimeout(resolve, 700));
     }
     throw lastError || new Error(`${label || 'ファイル'}アップロードに失敗しました`);
   };
+
+  const utf8Base64 = (value) => {
+    const bytes = new TextEncoder().encode(String(value || ''));
+    let binary = '';
+    const step = 8192;
+    for (let start = 0; start < bytes.length; start += step) {
+      const slice = bytes.subarray(start, Math.min(bytes.length, start + step));
+      binary += String.fromCharCode(...slice);
+    }
+    return btoa(binary);
+  };
+
+  const tusHeaders = () => {
+    const headers = { 'Tus-Resumable': '1.0.0' };
+    if (videoUploadToken) headers['x-signature'] = videoUploadToken;
+    return headers;
+  };
+
+  const createTusUpload = async (blob, contentType) => {
+    if (!videoTusEndpoint || !videoUploadToken || !videoUploadStoragePath || !videoUploadBucket) {
+      throw new Error('再開可能アップロードの情報が不足しています');
+    }
+    const metadata = [
+      `bucketName ${utf8Base64(videoUploadBucket)}`,
+      `objectName ${utf8Base64(videoUploadStoragePath)}`,
+      `contentType ${utf8Base64(contentType || 'video/webm')}`,
+      `cacheControl ${utf8Base64('3600')}`
+    ].join(',');
+    const response = await xhrUpload(
+      'POST',
+      videoTusEndpoint,
+      {
+        ...tusHeaders(),
+        'Upload-Length': String(blob.size),
+        'Upload-Metadata': metadata
+      },
+      null,
+      30000
+    );
+    let location = String(response.xhr.getResponseHeader('Location') || '').trim();
+    if (!location) throw new Error('再開可能アップロードURLを取得できませんでした');
+    try { location = new URL(location, videoTusEndpoint).toString(); } catch (_) {}
+    return location;
+  };
+
+  const readTusOffset = async (uploadUrl) => {
+    try {
+      const response = await xhrUpload('HEAD', uploadUrl, tusHeaders(), null, 30000);
+      const value = Number(response.xhr.getResponseHeader('Upload-Offset') || 0);
+      return Number.isFinite(value) && value >= 0 ? value : 0;
+    } catch (_) {
+      return 0;
+    }
+  };
+
+  const uploadVideoBlobResumable = async (blob, contentType) => {
+    const chunkSize = 6 * 1024 * 1024;
+    let uploadUrl = await createTusUpload(blob, contentType);
+    let offset = 0;
+    while (offset < blob.size) {
+      const end = Math.min(blob.size, offset + chunkSize);
+      const chunk = blob.slice(offset, end, contentType || blob.type || 'application/octet-stream');
+      let sent = false;
+      let lastError = null;
+      for (let attempt = 0; attempt < 3 && !sent; attempt += 1) {
+        try {
+          const baseOffset = offset;
+          const response = await xhrUpload(
+            'PATCH',
+            uploadUrl,
+            {
+              ...tusHeaders(),
+              'Upload-Offset': String(offset),
+              'Content-Type': 'application/offset+octet-stream'
+            },
+            chunk,
+            120000,
+            (loaded) => {
+              const totalLoaded = Math.min(blob.size, baseOffset + loaded);
+              const pct = Math.max(0, Math.min(100, Math.round((totalLoaded / blob.size) * 100)));
+              setStatus(`動画を保管庫へ送信しています… ${pct}%`);
+            }
+          );
+          const serverOffset = Number(response.xhr.getResponseHeader('Upload-Offset') || end);
+          offset = Number.isFinite(serverOffset) && serverOffset > offset ? serverOffset : end;
+          sent = true;
+        } catch (err) {
+          lastError = err;
+          const resumedOffset = await readTusOffset(uploadUrl);
+          if (resumedOffset > offset) {
+            offset = resumedOffset;
+            sent = true;
+            break;
+          }
+          if (attempt < 2) await new Promise((resolve) => setTimeout(resolve, 900 * (attempt + 1)));
+        }
+      }
+      if (!sent) throw lastError || new Error('再開可能アップロードに失敗しました');
+    }
+    setStatus('動画を保管庫へ送信しています… 100%');
+    return true;
+  };
+
 
   const buildCandidateSheet = async (frames) => {
     const source = Array.isArray(frames) ? frames.slice(0, 150) : [];
@@ -1365,6 +1498,16 @@ export default function(component) {
       throw new Error('動画のアップロード先がありません');
     }
     const contentType = String(blob.type || '').split(';', 1)[0] || 'video/webm';
+    // Supabase recommends resumable TUS uploads for files larger than 6 MB.
+    // Keep the original video bytes untouched; only the transport is chunked.
+    if (blob.size > 6 * 1024 * 1024 && videoTusEndpoint && videoUploadToken && videoUploadBucket) {
+      try {
+        return await uploadVideoBlobResumable(blob, contentType);
+      } catch (tusErr) {
+        console.warn('TUS upload failed; bounded standard upload fallback', tusErr);
+        setStatus('再開可能アップロードを再試行しています…');
+      }
+    }
     return await uploadRawBlobToSignedUrl(blob, videoUploadSignedUrl, contentType, '動画');
   };
 
@@ -1996,11 +2139,11 @@ export default function(component) {
 }
 """
 
-LIVE_CAMERA_COMPONENT_BUILD = "v140"
+LIVE_CAMERA_COMPONENT_BUILD = "v143"
 
 try:
     live_camera_component = st.components.v2.component(
-        "tokyo_burari_live_camera_v140",
+        "tokyo_burari_live_camera_v143",
         html=_LIVE_CAMERA_HTML,
         css=_LIVE_CAMERA_CSS,
         js=_LIVE_CAMERA_JS,
@@ -4966,12 +5109,37 @@ def _supabase_secret_key_kind():
     return "種類を判定できないキー"
 
 
-def _create_signed_video_upload_url(path):
-    """Create a signed Storage PUT target, preferring the raw Storage REST API.
+def _supabase_tus_endpoint():
+    """Return Supabase's resumable-upload endpoint, preferring the direct Storage host."""
+    raw = str(SUPABASE_URL or "").strip().rstrip("/")
+    if not raw:
+        return ""
+    try:
+        parsed = urlparse(raw)
+        host = str(parsed.hostname or "")
+        if host.endswith(".supabase.co") and not host.endswith(".storage.supabase.co"):
+            project_ref = host[: -len(".supabase.co")]
+            if project_ref:
+                return f"https://{project_ref}.storage.supabase.co/storage/v1/upload/resumable"
+    except Exception:
+        pass
+    return raw + "/storage/v1/upload/resumable"
 
-    v111 creates a fresh, non-upsert signed target. The browser uploads a raw binary
-    body to that unique path, avoiding multipart/form-data and x-upsert.
-    """
+
+def _signed_upload_token_from_url(url):
+    try:
+        values = parse_qs(urlparse(str(url or "")).query)
+        for key in ("token", "signature", "x-signature"):
+            rows = values.get(key) or []
+            if rows and str(rows[0] or "").strip():
+                return str(rows[0]).strip()
+    except Exception:
+        pass
+    return ""
+
+
+def _create_signed_video_upload_target(path):
+    """Create both a standard signed URL and its token for TUS resumable uploads."""
     errors = []
     if not SUPABASE_URL:
         raise RuntimeError("SUPABASE_URL が設定されていません。")
@@ -4982,7 +5150,6 @@ def _create_signed_video_upload_url(path):
             "SUPABASE_SECRET_KEY に Publishable key が設定されています。動画保存には Secret key（sb_secret_…）または service_role key が必要です。"
         )
 
-    # 1) Raw Storage REST API. This avoids storage-py version differences.
     encoded_path = quote(f"{PHOTO_BUCKET}/{path}", safe="/")
     endpoint = f"{SUPABASE_URL.rstrip('/')}/storage/v1/object/upload/sign/{encoded_path}"
     headers = {
@@ -4999,8 +5166,14 @@ def _create_signed_video_upload_url(path):
         signed_url = _normalize_supabase_storage_signed_url(
             _extract_signed_upload_value(payload, ("signed_url", "signedUrl", "signedURL", "url"))
         )
+        token = _extract_signed_upload_value(payload, ("token", "signed_token", "signedToken", "signature"))
+        token = str(token or _signed_upload_token_from_url(signed_url)).strip()
         if signed_url:
-            return signed_url
+            return {
+                "signed_url": signed_url,
+                "token": token,
+                "tus_endpoint": _supabase_tus_endpoint(),
+            }
         errors.append("Storage REST API は応答しましたが署名URLが含まれていません。")
     except HTTPError as exc:
         try:
@@ -5011,7 +5184,6 @@ def _create_signed_video_upload_url(path):
     except Exception as exc:
         errors.append(f"Storage REST API: {_safe_error_text(exc)}")
 
-    # 2) SDK fallback. Any SDK exception is caught so it can never mask the REST result.
     try:
         bucket = supabase_client().storage.from_(PHOTO_BUCKET)
         if not hasattr(bucket, "create_signed_upload_url"):
@@ -5021,13 +5193,24 @@ def _create_signed_video_upload_url(path):
             signed_url = _normalize_supabase_storage_signed_url(
                 _extract_signed_upload_value(response, ("signed_url", "signedUrl", "signedURL", "url"))
             )
+            token = _extract_signed_upload_value(response, ("token", "signed_token", "signedToken", "signature"))
+            token = str(token or _signed_upload_token_from_url(signed_url)).strip()
             if signed_url:
-                return signed_url
+                return {
+                    "signed_url": signed_url,
+                    "token": token,
+                    "tus_endpoint": _supabase_tus_endpoint(),
+                }
             errors.append("storage-py は応答しましたが署名URLが含まれていません。")
     except Exception as exc:
         errors.append(f"storage-py: {_safe_error_text(exc)}")
 
     raise RuntimeError("動画アップロード先を作成できませんでした。" + " / ".join(errors[:3]))
+
+
+def _create_signed_video_upload_url(path):
+    """Compatibility wrapper for older call sites that only need the signed URL."""
+    return str(_create_signed_video_upload_target(path).get("signed_url") or "")
 
 
 def get_camera_video_upload_reservation(trip_id, capture_serial):
@@ -5045,6 +5228,8 @@ def get_camera_video_upload_reservation(trip_id, capture_serial):
             and int(current.get("capture_serial") if current.get("capture_serial") is not None else -1) == serial
             and str(current.get("storage_path") or "").strip()
             and str(current.get("signed_url") or "").strip()
+            and str(current.get("upload_token") or "").strip()
+            and str(current.get("tus_endpoint") or "").strip()
         ):
             return current
 
@@ -5053,8 +5238,11 @@ def get_camera_video_upload_reservation(trip_id, capture_serial):
     # The extension is intentionally generic because MediaRecorder may emit MP4 on
     # Safari and WebM on Chromium. Storage metadata carries the real MIME type.
     storage_path = f"{family_key}/{member_key}/{trip_id}/{stamp}_{token}_video.video"
-    signed_url = _create_signed_video_upload_url(storage_path)
-    # v142: no browser candidate sheet is created. The stored original video is the
+    upload_target = _create_signed_video_upload_target(storage_path)
+    signed_url = str(upload_target.get("signed_url") or "")
+    upload_token = str(upload_target.get("token") or "")
+    tus_endpoint = str(upload_target.get("tus_endpoint") or "")
+    # v143: no browser candidate sheet is created. The stored original video is the
     # only source for Good Moments processing.
     candidate_sheet_path = ""
     candidate_sheet_signed_url = ""
@@ -5065,6 +5253,8 @@ def get_camera_video_upload_reservation(trip_id, capture_serial):
         "capture_serial": serial,
         "storage_path": storage_path,
         "signed_url": signed_url,
+        "upload_token": upload_token,
+        "tus_endpoint": tus_endpoint,
         "candidate_sheet_path": candidate_sheet_path,
         "candidate_sheet_signed_url": candidate_sheet_signed_url,
         "created_at": now_jst().isoformat(),
@@ -6713,7 +6903,7 @@ def _run_video_ai_background_job(photo_id, family_key, member_key):
     selection_meta["started_at"] = now_jst().isoformat()
     selection_meta["updated_at"] = selection_meta["started_at"]
     selection_meta["attempt"] = max(0, int(selection_meta.get("attempt") or 0)) + 1
-    selection_meta["pipeline_mode"] = "inline_single_pass_lossless_v142"
+    selection_meta["pipeline_mode"] = "inline_single_pass_lossless_v143"
     selection_meta["progress_message"] = "元動画から高画質候補を準備中"
     reflection["ai_selection"] = selection_meta
     try:
@@ -6736,7 +6926,7 @@ def _run_video_ai_background_job(photo_id, family_key, member_key):
         selection_meta["candidate_bundle_path"] = ""
         selection_meta["candidate_sheet_path"] = ""
         selection_meta["candidate_sample_interval_ms"] = VIDEO_AI_SAMPLE_INTERVAL_MS
-        selection_meta["candidate_sampling_version"] = "original_native_0p1_lossless_v142"
+        selection_meta["candidate_sampling_version"] = "original_native_0p1_lossless_v143"
         selection_meta["progress_message"] = "AI一次選定を開始"
         selection_meta["updated_at"] = now_jst().isoformat()
         reflection["ai_selection"] = selection_meta
@@ -6824,7 +7014,7 @@ def _run_video_ai_background_job(photo_id, family_key, member_key):
             latest_selection["last_error"] = str(exc)[:240]
             latest_selection["updated_at"] = now_jst().isoformat()
             latest_selection["stage"] = str(latest_selection.get("stage") or "pipeline")
-            latest_selection["pipeline_mode"] = "inline_single_pass_lossless_v142"
+            latest_selection["pipeline_mode"] = "inline_single_pass_lossless_v143"
             latest_reflection["ai_selection"] = latest_selection
             _write_photo_reflection_for_owner(
                 photo_id, latest_reflection, family_key, member_key, client=client
@@ -6921,7 +7111,7 @@ def launch_video_ai_background_job(photo):
                 latest["stage"] = str(latest.get("stage") or "pipeline")
                 latest["last_error"] = "自動処理が終了状態を返さなかったため停止しました。"
                 latest["updated_at"] = now_jst().isoformat()
-                latest["pipeline_mode"] = "inline_single_pass_lossless_v142"
+                latest["pipeline_mode"] = "inline_single_pass_lossless_v143"
                 reflection["ai_selection"] = latest
                 _write_photo_reflection_for_owner(
                     photo_id, reflection, family_key, member_key
@@ -6986,7 +7176,7 @@ def resume_member_video_background_jobs(limit=24, min_interval_seconds=0):
                 selection["v140_auto_retry"] = True
                 selection["queued_at"] = now_jst().isoformat()
                 selection["updated_at"] = selection["queued_at"]
-                selection["pipeline_mode"] = "inline_single_pass_lossless_v142"
+                selection["pipeline_mode"] = "inline_single_pass_lossless_v143"
                 selection["status"] = "waiting_candidates"
                 selection["stage"] = "candidate_preparation"
                 selection["last_error"] = ""
@@ -7006,7 +7196,7 @@ def resume_member_video_background_jobs(limit=24, min_interval_seconds=0):
             try:
                 selection["status"] = "waiting_candidates"
                 selection["stage"] = "candidate_preparation"
-                selection["pipeline_mode"] = "inline_single_pass_lossless_v142"
+                selection["pipeline_mode"] = "inline_single_pass_lossless_v143"
                 selection["last_error"] = ""
                 reflection = dict(photo_media_metadata(row))
                 reflection["ai_selection"] = selection
@@ -7035,7 +7225,7 @@ def resume_member_video_background_jobs(limit=24, min_interval_seconds=0):
                 selection["status"] = "error"
                 selection["last_error"] = str(exc)[:240]
                 selection["updated_at"] = now_jst().isoformat()
-                selection["pipeline_mode"] = "inline_single_pass_lossless_v142"
+                selection["pipeline_mode"] = "inline_single_pass_lossless_v143"
                 reflection["ai_selection"] = selection
                 _write_photo_reflection_for_owner(
                     row.get("id"),
@@ -14341,6 +14531,9 @@ def page_trip():
             "video_unavailable_reason": video_unavailable_reason,
             "video_upload_signed_url": str(video_reservation.get("signed_url") or ""),
             "video_upload_storage_path": str(video_reservation.get("storage_path") or ""),
+            "video_upload_token": str(video_reservation.get("upload_token") or ""),
+            "video_tus_endpoint": str(video_reservation.get("tus_endpoint") or ""),
+            "video_upload_bucket": PHOTO_BUCKET,
             "video_candidate_sheet_signed_url": str(video_reservation.get("candidate_sheet_signed_url") or ""),
             "video_candidate_sheet_storage_path": str(video_reservation.get("candidate_sheet_path") or ""),
         },
