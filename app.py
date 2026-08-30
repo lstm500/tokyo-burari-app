@@ -10343,14 +10343,54 @@ def restore_recent_camera_session():
         st.rerun()
 
 
+
+def reset_diary_navigation_for_home_entry():
+    """Return Diary to its neutral landing view when entered from Home.
+
+    Keep persisted conversations/diaries intact; only discard transient drill-down
+    state such as the previously opened photo or trip.
+    """
+    st.session_state.preferred_diary_trip_id = None
+    st.session_state.pop("_pending_diary_open_trip_id", None)
+    st.session_state["_diary_selector_serial"] = int(
+        st.session_state.get("_diary_selector_serial") or 0
+    ) + 1
+
+    opened_trip_ids = set()
+    for key in list(st.session_state.keys()):
+        key_text = str(key)
+        if key_text.startswith("diary_trip_selector_"):
+            st.session_state.pop(key, None)
+            continue
+        for prefix in (
+            "diary_talk_photo_",
+            "diary_selected_photo_",
+            "diary_existing_photo_view_",
+            "diary_gallery_serial_",
+        ):
+            if key_text.startswith(prefix):
+                trip_id = key_text[len(prefix):]
+                if trip_id:
+                    opened_trip_ids.add(trip_id)
+                st.session_state.pop(key, None)
+                break
+
+    # A reflection_state is created when a photo is opened. Removing it for the
+    # trips that were actually drilled into restores the diary/gallery landing
+    # screen. Photo conversations themselves are stored in Supabase, so this does
+    # not erase user content.
+    for trip_id in opened_trip_ids:
+        st.session_state.pop(f"reflection_state_{trip_id}", None)
+
 def go_page(page_name, history_mode="push"):
     target = page_name if page_name in VALID_APP_PAGES else "home"
     current = st.session_state.get("main_page")
     if current != target:
-        # Opening Diary from another page should start with no saved diary selected.
-        # This avoids downloading any saved-diary photos until the user explicitly
-        # chooses a trip, and it also makes the screen less visually busy.
-        if target == "diary":
+        # Home -> Diary must always open the same neutral Diary landing page, not
+        # the photo/trip the user happened to have open before returning Home.
+        if target == "diary" and current == "home":
+            reset_diary_navigation_for_home_entry()
+        elif target == "diary":
             st.session_state.preferred_diary_trip_id = None
             st.session_state["_diary_selector_serial"] = int(
                 st.session_state.get("_diary_selector_serial") or 0
