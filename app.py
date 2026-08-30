@@ -26,7 +26,7 @@ from zoneinfo import ZoneInfo
 
 import streamlit as st
 
-APP_BUILD = "v120"
+APP_BUILD = "v122"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -7375,6 +7375,95 @@ def delete_photo_and_related_data(
         "remaining_photo_count": len(remaining_photos),
     }
 
+
+def delete_video_and_related_data(video_photo):
+    """Delete one saved video plus its poster/AI working files and DB record."""
+    if not isinstance(video_photo, dict) or not photo_is_video(video_photo):
+        raise ValueError("削除する動画が見つかりませんでした。")
+    photo_id = str(video_photo.get("id") or "").strip()
+    trip_id = str(video_photo.get("trip_id") or "").strip()
+    if not photo_id or not trip_id:
+        raise ValueError("削除する動画の情報を確認できませんでした。")
+
+    # Best effort: stop a queued/running selector from doing more work for a video
+    # that the user has explicitly removed. Running provider calls may not cancel,
+    # but later DB writes are owner/id guarded and will simply find no row.
+    try:
+        registry = _video_ai_job_registry()
+        with registry["lock"]:
+            future = registry["futures"].pop(photo_id, None)
+            if future is not None:
+                future.cancel()
+    except Exception:
+        pass
+
+    result = delete_photo_and_related_data(trip_id, photo_id)
+
+    # Clear video-specific counters/audits immediately so the UI and quota checks
+    # reflect the newly freed Storage rather than waiting for cache expiry.
+    try:
+        _home_video_counts_cached.clear()
+    except Exception:
+        pass
+    try:
+        _invalidate_video_storage_audit_cache()
+    except Exception:
+        pass
+    if st.session_state.get(f"_camera_recent_photo_{trip_id}") == photo_id:
+        st.session_state.pop(f"_camera_recent_photo_{trip_id}", None)
+    return result
+
+
+def render_video_delete_controls(video_photo, key_prefix):
+    """Show a two-step delete control directly below any displayed saved video."""
+    if not isinstance(video_photo, dict) or not photo_is_video(video_photo):
+        return
+    photo_id = str(video_photo.get("id") or "").strip()
+    if not photo_id:
+        return
+    safe_prefix = str(key_prefix or "video").replace(" ", "_")
+    state_key = f"_video_delete_confirm_{safe_prefix}_{photo_id}"
+
+    if not st.session_state.get(state_key):
+        if st.button(
+            "この動画を削除する",
+            use_container_width=True,
+            key=f"video_delete_begin_{safe_prefix}_{photo_id}",
+        ):
+            st.session_state[state_key] = True
+
+    if st.session_state.get(state_key):
+        st.warning(
+            "この動画を削除します。元動画、代表画像、AIの候補・未保存の切り取り画像も削除されます。"
+            "すでに日記へ送った写真は残ります。この操作は元に戻せません。"
+        )
+        delete_col, cancel_col = st.columns(2, gap="small")
+        with delete_col:
+            if st.button(
+                "削除を実行",
+                type="primary",
+                use_container_width=True,
+                key=f"video_delete_yes_{safe_prefix}_{photo_id}",
+            ):
+                try:
+                    delete_video_and_related_data(video_photo)
+                    st.session_state.pop(state_key, None)
+                    st.session_state["_video_delete_notice"] = "動画を削除しました。"
+                    st.rerun(scope="app")
+                except Exception as exc:
+                    st.error("動画を削除できませんでした。")
+                    with st.expander("保護者向け詳細"):
+                        st.code(str(exc))
+        with cancel_col:
+            if st.button(
+                "キャンセル",
+                use_container_width=True,
+                key=f"video_delete_no_{safe_prefix}_{photo_id}",
+            ):
+                st.session_state.pop(state_key, None)
+                st.rerun()
+
+
 def reset_photo_conversation(trip_id, photo_id):
     """Clear only the conversation/signals for one photo while keeping the image."""
     client = supabase_client()
@@ -10808,7 +10897,7 @@ def render_conversation(conversation):
             st.markdown(f'<div class="child-line"><b>ぼく</b><br>{text}</div>', unsafe_allow_html=True)
 
 
-def render_saved_media_preview(photo, image_alt="ぶらり旅の写真", compact=True):
+def render_saved_media_preview(photo, image_alt="ぶらり旅の写真", compact=True, delete_key_prefix="saved_media"):
     """Render a saved video when present, otherwise its normal still image."""
     if photo_is_video(photo):
         video_url = video_display_url(photo)
@@ -10817,6 +10906,7 @@ def render_saved_media_preview(photo, image_alt="ぶらり旅の写真", compact
             duration_ms = int(photo_media_metadata(photo).get("video_duration_ms") or 0)
             if duration_ms > 0:
                 st.caption(f"🎥 動画 {max(1, round(duration_ms / 1000))}秒")
+            render_video_delete_controls(photo, f"{delete_key_prefix}_{photo.get('id')}")
             return True
 
     preview_src = photo_display_url(photo)
@@ -10862,7 +10952,9 @@ def show_video_ai_selection_dialog(storage_path, title, caption):
 
 
 @st.dialog("元動画")
-def show_video_library_dialog(video_url, title, caption, poster_path=""):
+def show_video_library_dialog(video_photo, title, caption):
+    video_url = video_display_url(video_photo, expires_in=1800)
+    poster_path = str((video_photo or {}).get("storage_path") or "").strip()
     if video_url:
         st.video(video_url)
     elif poster_path:
@@ -10885,6 +10977,7 @@ def show_video_library_dialog(video_url, title, caption, poster_path=""):
         st.markdown(f"**{title}**")
     if caption:
         st.caption(caption)
+    render_video_delete_controls(video_photo, f"video_library_dialog_{video_photo.get('id')}")
 
 
 def render_video_ai_selection(photo, key_prefix="video_selection", allow_save=True):
@@ -11826,6 +11919,239 @@ def _moments_video_title(photo):
     return f"{label}　{place}" if place else label
 
 
+
+_MOMENTS_SELECT_HTML = """
+<div id="moments-select-grid" class="moments-select-grid"></div>
+"""
+
+_MOMENTS_SELECT_CSS = """
+.moments-select-grid {
+  width: 100%;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  box-sizing: border-box;
+  margin: 4px 0 8px;
+}
+.moments-select-card,
+.moments-select-empty {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  border-radius: 13px;
+}
+.moments-select-card {
+  appearance: none;
+  -webkit-appearance: none;
+  position: relative;
+  margin: 0;
+  padding: 4px;
+  border: 3px solid rgba(174, 182, 194, .72);
+  background: rgba(174, 182, 194, .07);
+  cursor: pointer;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+  overflow: hidden;
+  color: var(--st-text-color);
+  text-align: left;
+}
+.moments-select-card.selected {
+  border-color: #F59E0B;
+  background: rgba(245, 158, 11, .16);
+  box-shadow: 0 0 0 2px rgba(245, 158, 11, .12);
+}
+.moments-select-card:active { transform: scale(.985); }
+.moments-select-card:disabled {
+  cursor: default;
+  opacity: 1;
+}
+.moments-select-image-wrap {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  overflow: hidden;
+  border-radius: 9px;
+  background: rgba(128,128,128,.08);
+}
+.moments-select-image-wrap img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.moments-select-rank,
+.moments-select-picked {
+  position: absolute;
+  z-index: 2;
+  border-radius: 999px;
+  color: #fff;
+  font-weight: 800;
+  line-height: 1.15;
+  box-shadow: 0 1px 4px rgba(0,0,0,.22);
+}
+.moments-select-rank {
+  left: 5px;
+  top: 5px;
+  padding: 3px 6px;
+  background: rgba(17,24,39,.72);
+  font-size: 9px;
+}
+.moments-select-picked {
+  right: 5px;
+  bottom: 5px;
+  padding: 4px 7px;
+  background: #F59E0B;
+  font-size: 9px;
+}
+.moments-select-meta {
+  margin-top: 5px;
+  font-size: 10px;
+  line-height: 1.2;
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.moments-select-reason {
+  margin-top: 2px;
+  min-height: 2.3em;
+  font-size: 9px;
+  line-height: 1.18;
+  opacity: .75;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.moments-select-empty {
+  aspect-ratio: 1 / 1;
+  border: 1px dashed rgba(128,128,128,.18);
+  background: rgba(128,128,128,.035);
+}
+@media (max-width: 640px) {
+  .moments-select-grid { gap: 6px; }
+  .moments-select-card { padding: 3px; border-radius: 11px; }
+  .moments-select-image-wrap { border-radius: 7px; }
+  .moments-select-meta { font-size: 9px; }
+  .moments-select-reason { font-size: 8px; }
+  .moments-select-rank, .moments-select-picked { font-size: 8px; }
+}
+"""
+
+_MOMENTS_SELECT_JS = r"""
+export default function(component) {
+  const { parentElement, data, setTriggerValue } = component;
+  const grid = parentElement.querySelector('#moments-select-grid');
+  if (!grid) return;
+
+  grid.replaceChildren();
+  const photos = Array.isArray(data?.photos) ? data.photos.slice(0, 9) : [];
+  const disabled = Boolean(data?.disabled);
+  const selected = new Set(
+    (Array.isArray(data?.selected_ranks) ? data.selected_ranks : [])
+      .map((value) => Number(value))
+      .filter((value) => Number.isFinite(value) && value > 0)
+  );
+
+  const emitSelection = () => {
+    setTriggerValue('selected_ranks', Array.from(selected).sort((a, b) => a - b));
+  };
+
+  for (let index = 0; index < 9; index += 1) {
+    const photo = photos[index];
+    if (!photo) {
+      const empty = document.createElement('div');
+      empty.className = 'moments-select-empty';
+      grid.appendChild(empty);
+      continue;
+    }
+
+    const rank = Number(photo.rank || (index + 1));
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'moments-select-card';
+    button.disabled = disabled;
+    button.setAttribute('aria-label', `写真${rank}を${selected.has(rank) ? '選択解除' : '選択'}`);
+
+    const imageWrap = document.createElement('div');
+    imageWrap.className = 'moments-select-image-wrap';
+
+    if (photo.src) {
+      const img = document.createElement('img');
+      img.src = String(photo.src);
+      img.alt = `いい瞬間 ${rank}`;
+      img.loading = 'lazy';
+      img.decoding = 'async';
+      img.fetchPriority = 'low';
+      imageWrap.appendChild(img);
+    }
+
+    const rankBadge = document.createElement('div');
+    rankBadge.className = 'moments-select-rank';
+    rankBadge.textContent = photo.ai_best ? '★ AI BEST' : `#${rank}`;
+    imageWrap.appendChild(rankBadge);
+
+    const pickedBadge = document.createElement('div');
+    pickedBadge.className = 'moments-select-picked';
+    pickedBadge.textContent = '選択中';
+    imageWrap.appendChild(pickedBadge);
+
+    const meta = document.createElement('div');
+    meta.className = 'moments-select-meta';
+    meta.textContent = String(photo.meta || '');
+
+    const reason = document.createElement('div');
+    reason.className = 'moments-select-reason';
+    reason.textContent = String(photo.reason || '');
+
+    const syncVisual = () => {
+      const active = selected.has(rank);
+      button.classList.toggle('selected', active);
+      pickedBadge.style.display = active ? 'block' : 'none';
+      button.setAttribute('aria-pressed', active ? 'true' : 'false');
+      button.setAttribute('aria-label', `写真${rank}を${active ? '選択解除' : '選択'}`);
+    };
+
+    syncVisual();
+    button.appendChild(imageWrap);
+    button.appendChild(meta);
+    button.appendChild(reason);
+
+    if (!disabled) {
+      button.addEventListener('click', () => {
+        if (selected.has(rank)) selected.delete(rank);
+        else selected.add(rank);
+        syncVisual();
+        emitSelection();
+      });
+    }
+
+    grid.appendChild(button);
+  }
+}
+"""
+
+moments_select_component = None
+_moments_select_component_initialized = False
+
+
+def _get_moments_select_component():
+    global moments_select_component, _moments_select_component_initialized
+    if _moments_select_component_initialized:
+        return moments_select_component
+    _moments_select_component_initialized = True
+    try:
+        moments_select_component = st.components.v2.component(
+            "tokyo_burari_moments_select_v122",
+            html=_MOMENTS_SELECT_HTML,
+            css=_MOMENTS_SELECT_CSS,
+            js=_MOMENTS_SELECT_JS,
+        )
+    except Exception:
+        moments_select_component = None
+    return moments_select_component
+
+
 def _render_moments_picker(photo, index):
     selection_meta = photo_media_metadata(photo).get("ai_selection") or {}
     if not isinstance(selection_meta, dict):
@@ -11840,8 +12166,10 @@ def _render_moments_picker(photo, index):
         video_url = video_display_url(photo)
         if video_url:
             st.video(video_url)
+            render_video_delete_controls(photo, f"moments_source_{video_id}_{index}")
         else:
             st.caption("動画を読み込めませんでした。")
+            render_video_delete_controls(photo, f"moments_source_missing_{video_id}_{index}")
 
     # v116: this page is a viewer only. It never starts candidate extraction or
     # initial AI selection. Those jobs start automatically after video storage and
@@ -11903,19 +12231,27 @@ def _render_moments_picker(photo, index):
     except Exception:
         signed_map = {}
 
-    selected_ranks = []
     grid_items = list(items)[:VIDEO_AI_MAX_SELECTIONS]
+    valid_ranks = {
+        int(item.get("rank") or idx + 1)
+        for idx, item in enumerate(grid_items)
+        if isinstance(item, dict)
+    }
+    selection_state_key = f"_moments_tap_selected_{video_id}_{round_number}"
+    component_serial_key = f"_moments_tap_serial_{video_id}_{round_number}"
+    if selection_state_key not in st.session_state:
+        st.session_state[selection_state_key] = sorted(
+            int(item.get("rank") or idx + 1)
+            for idx, item in enumerate(grid_items)
+            if isinstance(item, dict) and bool(item.get("human_selected"))
+        )
 
-    # On narrow mobile screens Streamlit columns may become visually uneven.
-    # Render the photo area itself as a fixed HTML/CSS 3×3 grid so the user can
-    # always compare the candidates at a glance, then show compact controls below.
-    grid_cells = []
-    for item_index in range(VIDEO_AI_MAX_SELECTIONS):
-        if item_index >= len(grid_items):
-            grid_cells.append('<div class="moments-grid-cell moments-grid-empty"></div>')
-            continue
-
-        item = grid_items[item_index]
+    selected_ranks = sorted(
+        rank for rank in (st.session_state.get(selection_state_key) or [])
+        if int(rank) in valid_ranks
+    )
+    cards = []
+    for item_index, item in enumerate(grid_items):
         rank = int(item.get("rank") or item_index + 1)
         path = str(item.get("storage_path") or "").strip()
         url = str(signed_map.get(path) or "")
@@ -11926,140 +12262,85 @@ def _render_moments_picker(photo, index):
                 url = ""
         quality = _video_selection_quality_label(item.get("primary_quality"))
         seconds = max(0, int(item.get("timestamp_ms") or 0)) / 1000
-        reason = html.escape(str(item.get("reason") or "").strip())
-        badge = "★ AI BEST" if bool(item.get("ai_best")) or rank == 1 else f"#{rank}"
-        meta = html.escape(f"{seconds:.1f}秒・{quality}")
-        reason_html = f'<div class="moments-grid-reason">{reason}</div>' if reason else ""
-        if url:
-            image_html = (
-                f'<img src="{html.escape(url, quote=True)}" alt="いい瞬間 {rank}" '
-                'loading="lazy" decoding="async" />'
-            )
-        else:
-            image_html = '<div class="moments-grid-missing">画像なし</div>'
-        grid_cells.append(
-            '<div class="moments-grid-cell">'
-            f'<div class="moments-grid-image-wrap">{image_html}<div class="moments-grid-badge">{html.escape(badge)}</div></div>'
-            f'<div class="moments-grid-meta">{meta}</div>'
-            f'{reason_html}'
-            '</div>'
+        cards.append(
+            {
+                "rank": rank,
+                "src": url,
+                "ai_best": bool(item.get("ai_best")) or rank == 1,
+                "meta": f"{seconds:.1f}秒・{quality}",
+                "reason": str(item.get("reason") or "").strip(),
+            }
         )
 
-    st.markdown(
-        """
-        <style>
-        .moments-grid {
-            display:grid;
-            grid-template-columns:repeat(3, minmax(0, 1fr));
-            gap:10px;
-            margin:0.35rem 0 0.8rem 0;
-        }
-        .moments-grid-cell {
-            min-width:0;
-        }
-        .moments-grid-image-wrap {
-            position:relative;
-            width:100%;
-            aspect-ratio:1 / 1;
-            overflow:hidden;
-            border-radius:12px;
-            background:rgba(128,128,128,.08);
-            border:1px solid rgba(128,128,128,.10);
-        }
-        .moments-grid-image-wrap img {
-            display:block;
-            width:100%;
-            height:100%;
-            object-fit:cover;
-        }
-        .moments-grid-badge {
-            position:absolute;
-            left:6px;
-            top:6px;
-            padding:2px 6px;
-            border-radius:999px;
-            background:rgba(0,0,0,.62);
-            color:#fff;
-            font-size:0.68rem;
-            line-height:1.2;
-            font-weight:700;
-            backdrop-filter: blur(2px);
-        }
-        .moments-grid-meta {
-            margin-top:5px;
-            font-size:0.72rem;
-            font-weight:600;
-            line-height:1.25;
-            color:inherit;
-        }
-        .moments-grid-reason {
-            margin-top:2px;
-            font-size:0.68rem;
-            line-height:1.22;
-            color:rgba(49, 51, 63, 0.82);
-            display:-webkit-box;
-            -webkit-line-clamp:2;
-            -webkit-box-orient:vertical;
-            overflow:hidden;
-        }
-        .moments-grid-empty {
-            aspect-ratio:1 / 1;
-            border-radius:12px;
-            border:1px dashed rgba(128,128,128,.18);
-            background:rgba(128,128,128,.035);
-        }
-        .moments-grid-missing {
-            display:flex;
-            align-items:center;
-            justify-content:center;
-            width:100%;
-            height:100%;
-            font-size:0.72rem;
-            color:rgba(49, 51, 63, 0.72);
-        }
-        </style>
-        """ + f'<div class="moments-grid">{"".join(grid_cells)}</div>',
-        unsafe_allow_html=True,
-    )
+    picker_component = _get_moments_select_component()
+    if picker_component is not None:
+        serial = int(st.session_state.get(component_serial_key) or 0)
+        result = picker_component(
+            data={
+                "photos": cards,
+                "selected_ranks": selected_ranks,
+                "disabled": status == "reviewed",
+            },
+            key=f"moments_tap_picker_{video_id}_{round_number}_{serial}",
+            on_selected_ranks_change=lambda: None,
+        )
+        result_selected = getattr(result, "selected_ranks", None)
+        if isinstance(result_selected, (list, tuple)):
+            normalized = sorted(
+                {
+                    int(value)
+                    for value in result_selected
+                    if str(value).strip().lstrip("-").isdigit() and int(value) in valid_ranks
+                }
+            )
+            if normalized != selected_ranks:
+                st.session_state[selection_state_key] = normalized
+                st.session_state[component_serial_key] = serial + 1
+                st.rerun()
+        selected_ranks = sorted(
+            rank for rank in (st.session_state.get(selection_state_key) or [])
+            if int(rank) in valid_ranks
+        )
+    else:
+        # Fallback for older Streamlit runtimes: keep the 3×3 layout and offer a
+        # compact select/unselect button immediately below each photo.
+        for row_start in range(0, VIDEO_AI_MAX_SELECTIONS, 3):
+            row_columns = st.columns(3, gap="small")
+            for column_offset in range(3):
+                item_index = row_start + column_offset
+                with row_columns[column_offset]:
+                    if item_index >= len(cards):
+                        st.write("")
+                        continue
+                    card = cards[item_index]
+                    rank = int(card["rank"])
+                    border = "#F59E0B" if rank in selected_ranks else "rgba(174,182,194,.72)"
+                    if card.get("src"):
+                        st.markdown(
+                            f'<div style="padding:3px;border:3px solid {border};border-radius:12px;">'
+                            f'<img src="{html.escape(str(card["src"]), quote=True)}" '
+                            'style="display:block;width:100%;aspect-ratio:1/1;object-fit:cover;border-radius:8px;" />'
+                            '</div>',
+                            unsafe_allow_html=True,
+                        )
+                    if st.button(
+                        "選択解除" if rank in selected_ranks else "選択",
+                        use_container_width=True,
+                        disabled=status == "reviewed",
+                        key=f"moments_fallback_pick_{video_id}_{round_number}_{rank}",
+                    ):
+                        current = set(selected_ranks)
+                        if rank in current:
+                            current.remove(rank)
+                        else:
+                            current.add(rank)
+                        st.session_state[selection_state_key] = sorted(current)
+                        st.rerun()
 
-    st.caption("下のボタンで、好きな写真の選択や拡大表示ができます。")
-    for row_start in range(0, VIDEO_AI_MAX_SELECTIONS, 3):
-        row_columns = st.columns(3, gap="small")
-        for column_offset in range(3):
-            item_index = row_start + column_offset
-            with row_columns[column_offset]:
-                if item_index >= len(grid_items):
-                    st.write("")
-                    continue
-
-                item = grid_items[item_index]
-                rank = int(item.get("rank") or item_index + 1)
-                path = str(item.get("storage_path") or "").strip()
-                quality = _video_selection_quality_label(item.get("primary_quality"))
-                seconds = max(0, int(item.get("timestamp_ms") or 0)) / 1000
-                reason = str(item.get("reason") or "").strip()
-                chosen = st.checkbox(
-                    f"選ぶ {rank}",
-                    value=bool(item.get("human_selected")),
-                    disabled=status == "reviewed",
-                    key=f"moments_pick_{video_id}_{round_number}_{rank}",
-                )
-                if chosen:
-                    selected_ranks.append(rank)
-
-                if st.button(
-                    f"拡大 {rank}",
-                    use_container_width=True,
-                    key=f"moments_view_{video_id}_{round_number}_{rank}",
-                ):
-                    show_video_ai_selection_dialog(
-                        path,
-                        "★ AI BEST" if rank == 1 else f"SELECT {rank}",
-                        f"{seconds:.1f}秒・{quality}" + (f"\n{reason}" if reason else ""),
-                    )
+    st.caption("写真をタップすると選択できます。選択中の写真はオレンジ色の枠で表示されます。")
     selected_rank_set = set(selected_ranks)
     send_clicked = st.button(
-        f"選んだ写真を日記へ送る（{len(selected_rank_set)}枚）",
+        f"選択した写真を残す（{len(selected_rank_set)}枚）",
         type="primary",
         use_container_width=True,
         disabled=(not selected_rank_set) or status == "reviewed",
@@ -12068,7 +12349,7 @@ def _render_moments_picker(photo, index):
     if send_clicked:
         newly_saved = 0
         try:
-            with st.spinner("選んだ写真を日記へ送っています…"):
+            with st.spinner("選択した写真を残しています…"):
                 for item in items:
                     rank = int(item.get("rank") or 0)
                     if rank not in selected_rank_set:
@@ -12086,12 +12367,12 @@ def _render_moments_picker(photo, index):
                     previous_count = 0
                 st.session_state["_home_today_photo_count"] = previous_count + newly_saved
             st.session_state["_moments_notice"] = (
-                f"{len(selected_rank_set)}枚を日記の写真として送りました。"
+                f"選択した{len(selected_rank_set)}枚を日記の写真として残しました。"
                 "今回選んだ傾向は、今後のAIセレクションにも反映します。"
             )
             st.rerun()
         except Exception as exc:
-            st.error("写真を日記へ送れませんでした。")
+            st.error("選択した写真を残せませんでした。")
             with st.expander("保護者向け詳細"):
                 st.code(str(exc))
 
@@ -12107,6 +12388,8 @@ def _render_moments_picker(photo, index):
         ):
             try:
                 request_video_ai_reroll(photo)
+                st.session_state.pop(selection_state_key, None)
+                st.session_state.pop(component_serial_key, None)
                 st.session_state["_moments_notice"] = (
                     "前回の候補は好みではなかったという情報を残し、映えを重視して別の候補を再作成しています。"
                 )
@@ -12117,7 +12400,7 @@ def _render_moments_picker(photo, index):
                     st.code(str(exc))
 
     if status == "reviewed":
-        st.success("この動画から選んだ写真は日記へ送信済みです。")
+        st.success("この動画から選んだ写真は日記に残してあります。")
 
 
 def _render_video_storage_repair_panel(db_video_count):
@@ -12212,6 +12495,10 @@ def _render_video_storage_repair_panel(db_video_count):
 
 
 def page_videos():
+    delete_notice = st.session_state.pop("_video_delete_notice", None)
+    if delete_notice:
+        st.success(delete_notice)
+
     if st.button("←", key="videos_back_home", help="ホームへ戻る"):
         go_page("home")
 
@@ -12325,15 +12612,19 @@ def page_videos():
                 if status_label:
                     st.caption(status_label)
 
-                video_url = video_display_url(video_row, expires_in=1800)
                 if st.button("見る", use_container_width=True, key=f"video_grid_open_{item_index}_{video_row.get('id')}"):
                     caption = " ／ ".join(detail_parts)
                     if status_label:
                         caption = (caption + "\n" if caption else "") + status_label
-                    show_video_library_dialog(video_url, _moments_video_title(video_row), caption, poster_path)
+                    show_video_library_dialog(video_row, _moments_video_title(video_row), caption)
+                render_video_delete_controls(video_row, f"video_library_card_{item_index}")
 
 
 def page_moments():
+    delete_notice = st.session_state.pop("_video_delete_notice", None)
+    if delete_notice:
+        st.success(delete_notice)
+
     if st.button("←", key="moments_back_home", help="ホームへ戻る"):
         go_page("home")
 
@@ -12435,7 +12726,7 @@ def render_recent_camera_photo_comment(trip):
     st.divider()
     is_video = photo_is_video(photo)
     st.markdown("#### 今撮った動画" if is_video else "#### 今撮った写真")
-    if not render_saved_media_preview(photo, image_alt="今撮った動画の代表画像" if is_video else "今撮った写真"):
+    if not render_saved_media_preview(photo, image_alt="今撮った動画の代表画像" if is_video else "今撮った写真", delete_key_prefix="recent_camera"):
         st.warning("撮影した記録のプレビューを表示できませんでした。コメントは続けられます。")
     if is_video:
         st.caption("✨ いい瞬間はバックグラウンドで自動選定します。トップページの「いい瞬間を見る」から確認できます。")
@@ -13297,7 +13588,7 @@ def page_diary():
         st.rerun()
 
     is_video = photo_is_video(photo)
-    if not render_saved_media_preview(photo, image_alt="日記の動画の代表画像" if is_video else "日記の写真"):
+    if not render_saved_media_preview(photo, image_alt="日記の動画の代表画像" if is_video else "日記の写真", delete_key_prefix="diary_media"):
         st.warning("記録のプレビューを表示できませんでした。会話は続けられます。")
     if is_video:
         render_video_ai_selection(photo, key_prefix=f"diary_video_selection_{trip_id}_{pid}", allow_save=True)
@@ -13560,6 +13851,10 @@ def page_history(embedded=False):
                         if len(history_videos) > 1:
                             st.caption(f"動画 {video_index}")
                         st.video(video_url)
+                        render_video_delete_controls(
+                            video_photo,
+                            f"history_video_{trip_id}_{video_index}",
+                        )
                         render_video_ai_selection(
                             video_photo,
                             key_prefix=f"history_video_selection_{trip_id}_{video_index}",
