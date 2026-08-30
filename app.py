@@ -17,12 +17,13 @@ from concurrent.futures import ThreadPoolExecutor
 from array import array
 from urllib.parse import urlencode, urlparse, parse_qs, quote
 from urllib.request import Request, urlopen
+from urllib.error import HTTPError
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import streamlit as st
 
-APP_BUILD = "v108"
+APP_BUILD = "v109"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -1850,11 +1851,11 @@ export default function(component) {
 }
 """
 
-LIVE_CAMERA_COMPONENT_BUILD = "v108"
+LIVE_CAMERA_COMPONENT_BUILD = "v109"
 
 try:
     live_camera_component = st.components.v2.component(
-        "tokyo_burari_live_camera_v108",
+        "tokyo_burari_live_camera_v109",
         html=_LIVE_CAMERA_HTML,
         css=_LIVE_CAMERA_CSS,
         js=_LIVE_CAMERA_JS,
@@ -4306,15 +4307,252 @@ def video_storage_quota_bytes():
     return int(VIDEO_STORAGE_QUOTA_MB) * 1024 * 1024 if int(VIDEO_STORAGE_QUOTA_MB) > 0 else 0
 
 
+def _coerce_storage_list_rows(response):
+    if response is None:
+        return []
+    if isinstance(response, list):
+        return [x for x in response if isinstance(x, dict)]
+    if isinstance(response, dict):
+        rows = response.get("data")
+        if isinstance(rows, list):
+            return [x for x in rows if isinstance(x, dict)]
+        rows = response.get("items")
+        if isinstance(rows, list):
+            return [x for x in rows if isinstance(x, dict)]
+    try:
+        rows = getattr(response, "data", None)
+    except Exception:
+        rows = None
+    if isinstance(rows, list):
+        return [x for x in rows if isinstance(x, dict)]
+    try:
+        dumped = response.model_dump()
+    except Exception:
+        dumped = None
+    if isinstance(dumped, dict):
+        return _coerce_storage_list_rows(dumped)
+    return []
+
+
+def _storage_row_size(row):
+    if not isinstance(row, dict):
+        return 0
+    metadata = row.get("metadata") or {}
+    candidates = [row.get("size")]
+    if isinstance(metadata, dict):
+        candidates.extend([
+            metadata.get("size"), metadata.get("contentLength"), metadata.get("content_length")
+        ])
+    for value in candidates:
+        try:
+            if value not in (None, ""):
+                return max(0, int(value))
+        except Exception:
+            continue
+    return 0
+
+
+def _storage_row_mime(row):
+    if not isinstance(row, dict):
+        return ""
+    metadata = row.get("metadata") or {}
+    for value in (
+        row.get("mimetype"), row.get("mime_type"),
+        metadata.get("mimetype") if isinstance(metadata, dict) else None,
+        metadata.get("contentType") if isinstance(metadata, dict) else None,
+        metadata.get("content_type") if isinstance(metadata, dict) else None,
+    ):
+        if value:
+            return str(value).strip().lower()
+    return ""
+
+
+def _storage_row_is_folder(row):
+    if not isinstance(row, dict):
+        return False
+    # Supabase list() represents folders without an object id/metadata.
+    object_id = row.get("id")
+    metadata = row.get("metadata")
+    if object_id in (None, "") and metadata in (None, {}, []):
+        return True
+    return False
+
+
+def _storage_path_is_original_video(path, mime_type=""):
+    value = str(path or "").strip().lower()
+    mime = str(mime_type or "").strip().lower()
+    if mime.startswith("video/"):
+        return True
+    ext = value.rsplit(".", 1)[-1] if "." in value else ""
+    return "_video." in value and ext in {"video", "webm", "mp4", "mov", "m4v"}
+
+
+def _list_member_storage_objects(max_depth=4):
+    """List actual Storage objects under only the current family/member prefix."""
+    bucket = supabase_client().storage.from_(PHOTO_BUCKET)
+    root = f"{current_family_key()}/{current_member_key()}".strip("/")
+    results = []
+    visited = set()
+
+    def walk(folder, depth):
+        folder = str(folder or "").strip("/")
+        if folder in visited or depth > max_depth:
+            return
+        visited.add(folder)
+        offset = 0
+        page_size = 500
+        while True:
+            options = {
+                "limit": page_size,
+                "offset": offset,
+                "sortBy": {"column": "name", "order": "asc"},
+            }
+            try:
+                response = bucket.list(folder, options)
+            except TypeError:
+                response = bucket.list(path=folder, options=options)
+            rows = _coerce_storage_list_rows(response)
+            for row in rows:
+                name = str(row.get("name") or "").strip("/")
+                if not name or name in {".", "..", ".emptyFolderPlaceholder"}:
+                    continue
+                full_path = f"{folder}/{name}" if folder else name
+                if _storage_row_is_folder(row):
+                    walk(full_path, depth + 1)
+                    continue
+                results.append({
+                    "path": full_path,
+                    "name": name,
+                    "size_bytes": _storage_row_size(row),
+                    "mime_type": _storage_row_mime(row),
+                    "updated_at": str(row.get("updated_at") or row.get("created_at") or ""),
+                })
+            if len(rows) < page_size:
+                break
+            offset += page_size
+
+    walk(root, 0)
+    return results
+
+
+def _member_db_storage_references():
+    client = supabase_client()
+    refs = set()
+    video_refs = set()
+    offset = 0
+    page_size = 1000
+    while True:
+        rows = (
+            client.table(PHOTO_TABLE)
+            .select("storage_path,reflection_json")
+            .eq("family_key", current_family_key()).eq("member_key", current_member_key())
+            .range(offset, offset + page_size - 1)
+            .execute()
+        ).data or []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            for path in photo_all_storage_paths(row):
+                if path:
+                    refs.add(str(path))
+            video_path = photo_video_storage_path(row)
+            if video_path:
+                video_refs.add(str(video_path))
+        if len(rows) < page_size:
+            break
+        offset += page_size
+    return refs, video_refs
+
+
+def member_storage_audit(force=False, max_age_seconds=45):
+    """Compare actual Storage objects with DB references for the signed-in person."""
+    cache_key = _account_cache_key("member_storage_audit_v109")
+    if not force:
+        cached = _session_cache_get(cache_key, max_age_seconds=max_age_seconds)
+        if isinstance(cached, dict):
+            return cached
+    objects = _list_member_storage_objects()
+    refs, video_refs = _member_db_storage_references()
+    actual_paths = {str(x.get("path") or "") for x in objects if x.get("path")}
+    video_objects = [
+        x for x in objects
+        if _storage_path_is_original_video(x.get("path"), x.get("mime_type"))
+    ]
+    orphan_videos = [x for x in video_objects if str(x.get("path") or "") not in video_refs]
+    orphan_objects = [x for x in objects if str(x.get("path") or "") not in refs]
+    report = {
+        "scanned_at": now_jst().isoformat(),
+        "root_prefix": f"{current_family_key()}/{current_member_key()}",
+        "object_count": len(objects),
+        "object_bytes": sum(max(0, int(x.get("size_bytes") or 0)) for x in objects),
+        "video_count": len(video_objects),
+        "video_bytes": sum(max(0, int(x.get("size_bytes") or 0)) for x in video_objects),
+        "orphan_video_count": len(orphan_videos),
+        "orphan_video_bytes": sum(max(0, int(x.get("size_bytes") or 0)) for x in orphan_videos),
+        "orphan_videos": orphan_videos,
+        "orphan_object_count": len(orphan_objects),
+        "orphan_object_bytes": sum(max(0, int(x.get("size_bytes") or 0)) for x in orphan_objects),
+        "missing_video_paths": sorted(video_refs - actual_paths),
+    }
+    return _session_cache_set(cache_key, report)
+
+
+def _invalidate_video_storage_audit_cache():
+    for suffix in ("member_storage_audit_v109", "video_storage_usage"):
+        key = _account_cache_key(suffix)
+        st.session_state.pop(key, None)
+
+
+def remove_orphan_member_videos(paths):
+    """Delete only unreferenced original-video objects under the current member prefix."""
+    root = f"{current_family_key()}/{current_member_key()}/"
+    safe_paths = []
+    for path in paths or []:
+        value = str(path or "").strip()
+        if value.startswith(root) and _storage_path_is_original_video(value):
+            safe_paths.append(value)
+    safe_paths = list(dict.fromkeys(safe_paths))
+    if not safe_paths:
+        return 0
+    bucket = supabase_client().storage.from_(PHOTO_BUCKET)
+    for start in range(0, len(safe_paths), 50):
+        bucket.remove(safe_paths[start:start + 50])
+    _invalidate_video_storage_audit_cache()
+    clear_camera_video_upload_reservation()
+    return len(safe_paths)
+
+
+def test_video_storage_upload_destination():
+    """Mint a signed URL only; this does not create a Storage object or consume quota."""
+    trip = ensure_today_trip()
+    probe = f"{current_family_key()}/{current_member_key()}/{trip['id']}/{now_jst().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}_video.video"
+    url = _create_signed_video_upload_url(probe)
+    if not url:
+        raise RuntimeError("署名付きアップロード先を取得できませんでした。")
+    return True
+
+
 def current_video_storage_usage_bytes():
-    """Total original-video bytes for the signed-in person, across all trips."""
+    """Actual original-video bytes for the signed-in person.
+
+    v109 prefers the Storage object list so orphan videos also count toward the per-person
+    quota. If Storage listing itself is unavailable, it falls back to DB metadata so the
+    rest of the app can continue operating.
+    """
     cache_key = _account_cache_key("video_storage_usage")
-    cached = _session_cache_get(cache_key, max_age_seconds=8)
+    cached = _session_cache_get(cache_key, max_age_seconds=30)
     if cached is not None:
         try:
             return max(0, int(cached))
         except Exception:
             pass
+
+    try:
+        report = member_storage_audit(force=False, max_age_seconds=45)
+        actual = max(0, int((report or {}).get("video_bytes") or 0))
+        return _session_cache_set(cache_key, actual)
+    except Exception:
+        pass
 
     client = supabase_client()
     total = 0
@@ -4322,8 +4560,7 @@ def current_video_storage_usage_bytes():
     page_size = 1000
     while True:
         rows = (
-            client
-            .table(PHOTO_TABLE)
+            client.table(PHOTO_TABLE)
             .select("reflection_json")
             .eq("family_key", current_family_key()).eq("member_key", current_member_key())
             .range(offset, offset + page_size - 1)
@@ -4453,23 +4690,55 @@ def _normalize_supabase_storage_signed_url(value):
     return url
 
 
-def _create_signed_video_upload_url(path):
-    """Create a 2-hour signed Storage PUT target without exposing the service key."""
-    bucket = supabase_client().storage.from_(PHOTO_BUCKET)
-    response = None
-    if hasattr(bucket, "create_signed_upload_url"):
-        try:
-            response = bucket.create_signed_upload_url(path, options={"upsert": "true"})
-        except TypeError:
-            response = bucket.create_signed_upload_url(path)
-        signed_url = _normalize_supabase_storage_signed_url(
-            _extract_signed_upload_value(response, ("signed_url", "signedUrl", "signedURL", "url"))
-        )
-        if signed_url:
-            return signed_url
+def _safe_error_text(value, limit=320):
+    text = str(value or "").strip().replace("\n", " ")
+    return text if len(text) <= limit else text[: max(0, limit - 3)] + "..."
 
-    # Compatibility fallback for older storage-py builds. The secret key is used
-    # only server-side to mint a short-lived signed URL; it is never sent itself.
+
+def _supabase_secret_key_kind():
+    """Describe the configured key without exposing any key material."""
+    key = str(SUPABASE_SECRET_KEY or "").strip()
+    if not key:
+        return "未設定"
+    if key.startswith("sb_secret_"):
+        return "Secret key（sb_secret_…）"
+    if key.startswith("sb_publishable_"):
+        return "Publishable key（sb_publishable_…）"
+    if key.count(".") == 2:
+        try:
+            payload = key.split(".", 2)[1]
+            payload += "=" * (-len(payload) % 4)
+            decoded = json.loads(base64.urlsafe_b64decode(payload.encode("ascii")).decode("utf-8"))
+            role = str(decoded.get("role") or "").strip()
+            if role == "service_role":
+                return "Legacy service_role key"
+            if role == "anon":
+                return "Legacy anon key"
+            return f"Legacy JWT key（role={role or '不明'}）"
+        except Exception:
+            return "JWT形式のキー"
+    return "種類を判定できないキー"
+
+
+def _create_signed_video_upload_url(path):
+    """Create a signed Storage PUT target, preferring the raw Storage REST API.
+
+    The previous build tried storage-py first. Some deployed storage-py versions expose
+    create_signed_upload_url but fail before returning a usable URL, which prevented the
+    compatibility fallback from running. v109 always tries the stable REST endpoint first
+    and falls back to the SDK only if that request itself fails.
+    """
+    errors = []
+    if not SUPABASE_URL:
+        raise RuntimeError("SUPABASE_URL が設定されていません。")
+    if not SUPABASE_SECRET_KEY:
+        raise RuntimeError("SUPABASE_SECRET_KEY が設定されていません。")
+    if str(SUPABASE_SECRET_KEY).startswith("sb_publishable_"):
+        raise RuntimeError(
+            "SUPABASE_SECRET_KEY に Publishable key が設定されています。動画保存には Secret key（sb_secret_…）または service_role key が必要です。"
+        )
+
+    # 1) Raw Storage REST API. This avoids storage-py version differences.
     encoded_path = quote(f"{PHOTO_BUCKET}/{path}", safe="/")
     endpoint = f"{SUPABASE_URL.rstrip('/')}/storage/v1/object/upload/sign/{encoded_path}"
     headers = {
@@ -4477,30 +4746,53 @@ def _create_signed_video_upload_url(path):
         "Content-Type": "application/json",
         "x-upsert": "true",
     }
-    # New Supabase sb_secret_* keys are opaque API keys, not JWTs. Sending them
-    # as Authorization: Bearer causes Invalid JWT on direct REST calls. Legacy
-    # service_role JWTs still use the Authorization header.
     if not str(SUPABASE_SECRET_KEY or "").startswith("sb_secret_"):
         headers["Authorization"] = f"Bearer {SUPABASE_SECRET_KEY}"
-    request = Request(
-        endpoint,
-        data=b"{}",
-        method="POST",
-        headers=headers,
-    )
-    with urlopen(request, timeout=15) as http_response:
-        payload = json.loads(http_response.read().decode("utf-8"))
-    signed_url = _normalize_supabase_storage_signed_url(
-        _extract_signed_upload_value(payload, ("signed_url", "signedUrl", "signedURL", "url"))
-    )
-    if not signed_url:
-        raise RuntimeError("動画の一時アップロード先を作成できませんでした。")
-    return signed_url
+    request = Request(endpoint, data=b"{}", method="POST", headers=headers)
+    try:
+        with urlopen(request, timeout=15) as http_response:
+            raw = http_response.read().decode("utf-8", errors="replace")
+        payload = json.loads(raw or "{}")
+        signed_url = _normalize_supabase_storage_signed_url(
+            _extract_signed_upload_value(payload, ("signed_url", "signedUrl", "signedURL", "url"))
+        )
+        if signed_url:
+            return signed_url
+        errors.append("Storage REST API は応答しましたが署名URLが含まれていません。")
+    except HTTPError as exc:
+        try:
+            detail = exc.read().decode("utf-8", errors="replace")
+        except Exception:
+            detail = ""
+        errors.append(f"Storage REST API HTTP {getattr(exc, 'code', '')}: {_safe_error_text(detail or exc)}")
+    except Exception as exc:
+        errors.append(f"Storage REST API: {_safe_error_text(exc)}")
+
+    # 2) SDK fallback. Any SDK exception is caught so it can never mask the REST result.
+    try:
+        bucket = supabase_client().storage.from_(PHOTO_BUCKET)
+        if not hasattr(bucket, "create_signed_upload_url"):
+            errors.append("現在の storage-py に create_signed_upload_url がありません。")
+        else:
+            try:
+                response = bucket.create_signed_upload_url(path, options={"upsert": "true"})
+            except TypeError:
+                response = bucket.create_signed_upload_url(path)
+            signed_url = _normalize_supabase_storage_signed_url(
+                _extract_signed_upload_value(response, ("signed_url", "signedUrl", "signedURL", "url"))
+            )
+            if signed_url:
+                return signed_url
+            errors.append("storage-py は応答しましたが署名URLが含まれていません。")
+    except Exception as exc:
+        errors.append(f"storage-py: {_safe_error_text(exc)}")
+
+    raise RuntimeError("動画アップロード先を作成できませんでした。" + " / ".join(errors[:3]))
 
 
 def get_camera_video_upload_reservation(trip_id, capture_serial):
     """Return one stable signed upload destination for the current camera capture."""
-    state_key = "_camera_video_upload_reservation_v108"
+    state_key = "_camera_video_upload_reservation_v109"
     current = st.session_state.get(state_key)
     family_key = current_family_key()
     member_key = current_member_key()
@@ -4536,7 +4828,7 @@ def get_camera_video_upload_reservation(trip_id, capture_serial):
 
 
 def clear_camera_video_upload_reservation():
-    st.session_state.pop("_camera_video_upload_reservation_v108", None)
+    st.session_state.pop("_camera_video_upload_reservation_v109", None)
 
 
 def register_browser_uploaded_video(
@@ -10744,6 +11036,97 @@ def _render_moments_picker(photo, index):
         st.success("この動画から選んだ写真は日記へ送信済みです。")
 
 
+def _render_video_storage_repair_panel(db_video_count):
+    with st.expander("Storageの整理・修復", expanded=(int(db_video_count or 0) == 0)):
+        st.caption(
+            "動画保管庫はDB登録済み動画だけを表示します。ここではSupabase Storageの実体を直接確認し、"
+            "DBに登録されていない孤立動画を安全に整理できます。"
+        )
+        st.caption(f"Supabaseキー：{_supabase_secret_key_kind()} ／ Bucket：{PHOTO_BUCKET}")
+
+        check_col, test_col = st.columns(2)
+        with check_col:
+            if st.button("Storage実体を確認", use_container_width=True, key="video_storage_audit_run"):
+                try:
+                    with st.spinner("Storageの実ファイルを確認しています…"):
+                        report = member_storage_audit(force=True)
+                    st.session_state["_video_storage_audit_visible"] = report
+                    _invalidate_video_storage_audit_cache()
+                    # Keep the just-generated report visible even though the normal cache was cleared.
+                    st.session_state["_video_storage_audit_visible"] = report
+                except Exception as exc:
+                    st.session_state.pop("_video_storage_audit_visible", None)
+                    st.error("Storage実体を確認できませんでした。")
+                    st.code(_safe_error_text(exc, 600))
+        with test_col:
+            if st.button("動画保存先をテスト", use_container_width=True, key="video_storage_sign_test"):
+                try:
+                    with st.spinner("署名付きアップロード先を確認しています…"):
+                        test_video_storage_upload_destination()
+                    clear_camera_video_upload_reservation()
+                    st.success("動画保存先を正常に作成できます。テストではファイルを作成していません。")
+                except Exception as exc:
+                    st.error("動画保存先を作成できません。")
+                    st.code(_safe_error_text(exc, 700))
+
+        report = st.session_state.get("_video_storage_audit_visible")
+        if not isinstance(report, dict):
+            return
+
+        actual_video_count = int(report.get("video_count") or 0)
+        actual_video_bytes = int(report.get("video_bytes") or 0)
+        orphan_count = int(report.get("orphan_video_count") or 0)
+        orphan_bytes = int(report.get("orphan_video_bytes") or 0)
+        st.markdown(
+            f"**Storage実体：動画 {actual_video_count}本 / {format_storage_size(actual_video_bytes)}**  "
+            f"  \n**うちDB未登録：{orphan_count}本 / {format_storage_size(orphan_bytes)}**"
+        )
+
+        missing = list(report.get("missing_video_paths") or [])
+        if missing:
+            st.warning(f"DBには記録があるのにStorageに見つからない動画が {len(missing)} 本あります。")
+
+        orphan_videos = list(report.get("orphan_videos") or [])
+        if not orphan_videos:
+            st.success("この個人アカウントには、Storageにだけ残った孤立動画はありません。")
+            return
+
+        st.warning(
+            "孤立動画が見つかりました。過去の保存失敗で動画本体だけStorageに残った可能性があります。"
+            "下の削除はDBに参照がない元動画だけを対象にします。"
+        )
+        for item in orphan_videos[:30]:
+            path = str(item.get("path") or "")
+            st.caption(f"• {path}  ({format_storage_size(item.get('size_bytes') or 0)})")
+        if len(orphan_videos) > 30:
+            st.caption(f"ほか {len(orphan_videos) - 30}件")
+
+        confirm_key = "_confirm_remove_orphan_videos"
+        if st.session_state.get(confirm_key):
+            st.error(f"DB未登録の孤立動画 {orphan_count}本をSupabase Storageから削除します。")
+            delete_col, cancel_col = st.columns(2)
+            with delete_col:
+                if st.button("孤立動画を削除する", type="primary", use_container_width=True, key="remove_orphan_videos_execute"):
+                    try:
+                        paths = [str(x.get("path") or "") for x in orphan_videos]
+                        removed = remove_orphan_member_videos(paths)
+                        st.session_state.pop(confirm_key, None)
+                        st.session_state.pop("_video_storage_audit_visible", None)
+                        st.session_state["_video_storage_repair_notice"] = f"孤立動画を{removed}本削除しました。"
+                        st.rerun()
+                    except Exception as exc:
+                        st.error("孤立動画を削除できませんでした。")
+                        st.code(_safe_error_text(exc, 700))
+            with cancel_col:
+                if st.button("キャンセル", use_container_width=True, key="remove_orphan_videos_cancel"):
+                    st.session_state.pop(confirm_key, None)
+                    st.rerun()
+        else:
+            if st.button("孤立動画を削除", use_container_width=True, key="remove_orphan_videos_prepare"):
+                st.session_state[confirm_key] = True
+                st.rerun()
+
+
 def page_videos():
     if st.button("←", key="videos_back_home", help="ホームへ戻る"):
         go_page("home")
@@ -10771,14 +11154,19 @@ def page_videos():
         )
     if quota > 0:
         st.caption(
-            f"保存済み動画：{len(videos)}本 ／ 使用量 {format_storage_size(usage)} / "
+            f"DB登録済み動画：{len(videos)}本 ／ 動画Storage実使用量 {format_storage_size(usage)} / "
             f"上限 {format_storage_size(quota)} ／ 残り {format_storage_size(max(0, quota - usage))}"
         )
     else:
-        st.caption(f"保存済み動画：{len(videos)}本 ／ 使用量 {format_storage_size(usage)} ／ 総容量上限は未設定")
+        st.caption(f"DB登録済み動画：{len(videos)}本 ／ 動画Storage実使用量 {format_storage_size(usage)} ／ 総容量上限は未設定")
+
+    repair_notice = st.session_state.pop("_video_storage_repair_notice", None)
+    if repair_notice:
+        st.success(repair_notice)
+    _render_video_storage_repair_panel(len(videos))
 
     if not videos:
-        st.info("保存済みの動画はありません。現在の動画使用量も0Bです。")
+        st.info("DBに登録された動画はありません。上の「Storage実体を確認」で、未登録の動画が残っていないか確認できます。")
         return
 
     for index, video_row in enumerate(videos):
@@ -11067,8 +11455,9 @@ def page_trip():
             video_unavailable_reason = "storage_setup"
             video_capacity_message = "保存容量ではなく、動画のアップロード先を準備できないため撮影を開始できません。"
             st.error(video_capacity_message)
-            with st.expander("動画保存先の準備エラー"):
-                st.code(str(exc))
+            st.caption(f"Supabaseキー：{_supabase_secret_key_kind()} / Bucket：{PHOTO_BUCKET}")
+            with st.expander("動画保存先の準備エラー", expanded=True):
+                st.code(_safe_error_text(exc, 900))
 
     camera_trip_key = str((camera_trip or {}).get("id") or "pending")
     result = live_camera_component(
@@ -11081,7 +11470,7 @@ def page_trip():
             "video_upload_signed_url": str(video_reservation.get("signed_url") or ""),
             "video_upload_storage_path": str(video_reservation.get("storage_path") or ""),
         },
-        key=f"live_camera_v108_{camera_trip_key}_{st.session_state.capture_serial}",
+        key=f"live_camera_v109_{camera_trip_key}_{st.session_state.capture_serial}",
         on_photo_change=lambda: None,
         on_video_change=lambda: None,
         on_camera_error_change=lambda: None,
@@ -11113,7 +11502,7 @@ def page_trip():
         video_saved = False
         uploaded_video_path = str(video_payload.get("video_storage_path") or "").strip()
         try:
-            reservation = st.session_state.get("_camera_video_upload_reservation_v108")
+            reservation = st.session_state.get("_camera_video_upload_reservation_v109")
             if not isinstance(reservation, dict):
                 raise ValueError("動画の保存予約を確認できませんでした。")
             if uploaded_video_path != str(reservation.get("storage_path") or "").strip():
