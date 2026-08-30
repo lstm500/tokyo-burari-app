@@ -682,15 +682,19 @@ _LIVE_CAMERA_HTML = """
   <canvas id="live-camera-canvas" hidden></canvas>
 
   <div id="camera-menu" class="camera-menu">
-    <button id="live-camera-start" class="camera-menu-button" type="button">📷 カメラを開く</button>
+    <button id="live-camera-start" class="camera-menu-button" type="button">📷 写真を撮る</button>
+    <button id="live-video-start" class="camera-menu-button video-menu-button" type="button">🎥 動画を撮る</button>
     <input id="gallery-photo-input" class="gallery-photo-input" type="file" accept="image/*" />
     <label class="camera-menu-button gallery-button" for="gallery-photo-input">🖼 すでに撮った写真から選ぶ</label>
   </div>
 
   <video id="live-camera-video" class="live-camera-video" playsinline autoplay muted hidden></video>
 
+  <div id="camera-recording-status" class="camera-recording-status" hidden>● 録画中 0:00 / 0:30</div>
+
   <div id="camera-active-actions" class="camera-active-actions" hidden>
     <button id="live-camera-shoot" class="camera-shoot-button" type="button">● 撮影する</button>
+    <button id="live-camera-mode-switch" class="camera-mode-switch-button" type="button">🎥 動画へ</button>
     <button id="live-camera-stop" class="camera-sub-button" type="button">閉じる</button>
   </div>
 
@@ -700,6 +704,7 @@ _LIVE_CAMERA_HTML = """
       <button id="camera-review-retry" class="camera-retry-button" type="button">撮りなおす／選びなおす</button>
     </div>
     <img id="camera-review-image" class="camera-review-image" alt="撮影した写真の確認" />
+    <video id="camera-review-video" class="camera-review-video" playsinline controls hidden></video>
   </div>
 
   <div id="live-camera-status" class="camera-status" aria-live="polite" hidden></div>
@@ -718,13 +723,16 @@ _LIVE_CAMERA_CSS = """
 .camera-active-actions[hidden],
 .live-camera-video[hidden],
 .camera-review[hidden],
+.camera-review-image[hidden],
+.camera-review-video[hidden],
+.camera-recording-status[hidden],
 .camera-status[hidden] {
   display: none !important;
 }
 .camera-menu {
   display: grid;
   grid-template-columns: 1fr;
-  gap: 12px;
+  gap: 10px;
   margin: 0;
 }
 .gallery-photo-input {
@@ -737,11 +745,12 @@ _LIVE_CAMERA_CSS = """
 .camera-menu-button,
 .gallery-button,
 .camera-shoot-button,
+.camera-mode-switch-button,
 .camera-sub-button,
 .camera-save-button,
 .camera-retry-button {
   width: 100%;
-  min-height: 72px;
+  min-height: 68px;
   box-sizing: border-box;
   border-radius: 18px;
   font-size: 18px;
@@ -761,12 +770,17 @@ _LIVE_CAMERA_CSS = """
   background: color-mix(in srgb, var(--st-primary-color) 8%, transparent);
   color: var(--st-text-color);
 }
+.video-menu-button {
+  border-color: #7c3aed;
+  background: rgba(124, 58, 237, .10);
+}
 .gallery-button {
   border-color: rgba(128,128,128,.28);
   background: transparent;
 }
 .live-camera-video,
-.camera-review-image {
+.camera-review-image,
+.camera-review-video {
   width: 100%;
   max-height: 58dvh;
   aspect-ratio: 3 / 4;
@@ -776,22 +790,35 @@ _LIVE_CAMERA_CSS = """
   background: #000;
   margin: 0;
 }
+.camera-review-video { object-fit: contain; }
 .camera-active-actions,
 .camera-review-actions {
   display: grid;
-  grid-template-columns: 3fr 1fr;
   gap: 8px;
 }
-.camera-active-actions {
-  margin: 8px 0 0 0;
-}
-.camera-review-actions {
-  margin: 0 0 8px 0;
+.camera-active-actions { grid-template-columns: 2.2fr 1.2fr .8fr; }
+.camera-review-actions { grid-template-columns: 3fr 1fr; }
+.camera-active-actions { margin: 8px 0 0 0; }
+.camera-review-actions { margin: 0 0 8px 0; }
+.camera-recording-status {
+  margin: 8px 0 0;
+  padding: 8px 10px;
+  text-align: center;
+  border-radius: 12px;
+  background: rgba(220, 38, 38, .11);
+  border: 1px solid rgba(220, 38, 38, .25);
+  color: #b91c1c;
+  font-size: 14px;
+  font-weight: 800;
 }
 .camera-shoot-button {
   border: 2px solid var(--st-primary-color);
   background: var(--st-primary-color);
   color: white;
+}
+.camera-shoot-button.recording {
+  border-color: #b91c1c;
+  background: #dc2626;
 }
 .camera-save-button {
   border: 2px solid #15803d;
@@ -804,16 +831,14 @@ _LIVE_CAMERA_CSS = """
   border-color: #166534;
   background: #15803d;
 }
+.camera-mode-switch-button,
 .camera-sub-button,
 .camera-retry-button {
   border: 1px solid rgba(128,128,128,.28);
   background: transparent;
   color: var(--st-text-color);
 }
-.camera-review {
-  width: 100%;
-  margin: 0;
-}
+.camera-review { width: 100%; margin: 0; }
 .camera-status {
   margin: 8px 0 0 0;
   padding: 8px 10px;
@@ -825,19 +850,18 @@ _LIVE_CAMERA_CSS = """
 @media (max-width: 640px) {
   .camera-menu-button,
   .gallery-button {
-    min-height: 68px;
-    font-size: 17px;
+    min-height: 62px;
+    font-size: 16px;
   }
-  .camera-active-actions,
-  .camera-review-actions {
-    grid-template-columns: 3fr 1fr;
-  }
+  .camera-active-actions { grid-template-columns: 2fr 1.1fr .8fr; }
+  .camera-review-actions { grid-template-columns: 3fr 1fr; }
   .camera-shoot-button,
+  .camera-mode-switch-button,
   .camera-sub-button,
   .camera-save-button,
   .camera-retry-button {
-    min-height: 58px;
-    font-size: 15px;
+    min-height: 56px;
+    font-size: 14px;
     padding-left: 8px;
     padding-right: 8px;
   }
@@ -851,18 +875,33 @@ export default function(component) {
   const canvas = parentElement.querySelector('#live-camera-canvas');
   const menu = parentElement.querySelector('#camera-menu');
   const startButton = parentElement.querySelector('#live-camera-start');
+  const videoStartButton = parentElement.querySelector('#live-video-start');
   const galleryInput = parentElement.querySelector('#gallery-photo-input');
   const activeActions = parentElement.querySelector('#camera-active-actions');
   const shootButton = parentElement.querySelector('#live-camera-shoot');
+  const modeSwitchButton = parentElement.querySelector('#live-camera-mode-switch');
   const stopButton = parentElement.querySelector('#live-camera-stop');
+  const recordingStatus = parentElement.querySelector('#camera-recording-status');
   const review = parentElement.querySelector('#camera-review');
   const reviewImage = parentElement.querySelector('#camera-review-image');
+  const reviewVideo = parentElement.querySelector('#camera-review-video');
   const reviewSave = parentElement.querySelector('#camera-review-save');
   const reviewRetry = parentElement.querySelector('#camera-review-retry');
   const status = parentElement.querySelector('#live-camera-status');
 
+  const VIDEO_MAX_SECONDS = 30;
   let stream = null;
-  let pendingPhoto = null;
+  let cameraMode = 'photo';
+  let pendingMedia = null;
+  let reviewVideoUrl = '';
+  let mediaRecorder = null;
+  let recordedChunks = [];
+  let recordingStartedAt = 0;
+  let recordingCapturedAt = '';
+  let recordingLocationPromise = null;
+  let recordingTimer = null;
+  let recordingMaxTimer = null;
+  let recordingCancelled = false;
 
   const setStatus = (message) => {
     if (!status) return;
@@ -870,15 +909,68 @@ export default function(component) {
     status.hidden = !message;
   };
 
+  const clearRecordingTimers = () => {
+    if (recordingTimer) {
+      clearInterval(recordingTimer);
+      recordingTimer = null;
+    }
+    if (recordingMaxTimer) {
+      clearTimeout(recordingMaxTimer);
+      recordingMaxTimer = null;
+    }
+  };
+
+  const setRecordingUi = (recording) => {
+    if (recordingStatus) recordingStatus.hidden = !recording;
+    if (!shootButton) return;
+    if (recording) {
+      shootButton.textContent = '■ 録画を止める';
+      shootButton.classList.add('recording');
+    } else {
+      shootButton.classList.remove('recording');
+      shootButton.textContent = cameraMode === 'video' ? '● 録画を開始' : '● 写真を撮る';
+    }
+    if (modeSwitchButton) {
+      modeSwitchButton.disabled = Boolean(recording);
+      modeSwitchButton.textContent = cameraMode === 'video' ? '📷 写真へ' : '🎥 動画へ';
+    }
+  };
+
+  const updateRecordingClock = () => {
+    if (!recordingStatus || !recordingStartedAt) return;
+    const elapsed = Math.min(VIDEO_MAX_SECONDS, Math.max(0, Math.floor((Date.now() - recordingStartedAt) / 1000)));
+    const mm = Math.floor(elapsed / 60);
+    const ss = String(elapsed % 60).padStart(2, '0');
+    recordingStatus.textContent = `● 録画中 ${mm}:${ss} / 0:${String(VIDEO_MAX_SECONDS).padStart(2, '0')}`;
+  };
+
+  const revokeReviewVideoUrl = () => {
+    if (reviewVideoUrl) {
+      try { URL.revokeObjectURL(reviewVideoUrl); } catch (_) {}
+      reviewVideoUrl = '';
+    }
+  };
+
   const hideReview = () => {
     if (review) review.hidden = true;
-    if (reviewImage) reviewImage.removeAttribute('src');
+    if (reviewImage) {
+      reviewImage.hidden = true;
+      reviewImage.removeAttribute('src');
+    }
+    if (reviewVideo) {
+      try { reviewVideo.pause(); } catch (_) {}
+      reviewVideo.hidden = true;
+      reviewVideo.removeAttribute('src');
+      try { reviewVideo.load(); } catch (_) {}
+    }
+    revokeReviewVideoUrl();
   };
 
   const showMenu = () => {
     if (menu) menu.hidden = false;
     if (activeActions) activeActions.hidden = true;
     if (video) video.hidden = true;
+    setRecordingUi(false);
     hideReview();
   };
 
@@ -887,19 +979,53 @@ export default function(component) {
     if (activeActions) activeActions.hidden = false;
     if (video) video.hidden = false;
     hideReview();
+    setRecordingUi(false);
   };
 
-  const showReview = (dataUrl) => {
+  const showPhotoReview = (dataUrl) => {
     if (menu) menu.hidden = true;
     if (activeActions) activeActions.hidden = true;
-    // Hide only the preview element. The MediaStream itself keeps running so a
-    // camera retry is immediate and does not require reopening the camera.
     if (video) video.hidden = true;
-    if (reviewImage) reviewImage.src = dataUrl;
+    hideReview();
+    if (reviewImage) {
+      reviewImage.src = dataUrl;
+      reviewImage.hidden = false;
+    }
+    reviewSave.textContent = 'この写真を残す';
+    reviewRetry.textContent = '撮りなおす／選びなおす';
     if (review) review.hidden = false;
   };
 
+  const showVideoReview = (blob) => {
+    if (menu) menu.hidden = true;
+    if (activeActions) activeActions.hidden = true;
+    if (video) video.hidden = true;
+    hideReview();
+    reviewVideoUrl = URL.createObjectURL(blob);
+    if (reviewVideo) {
+      reviewVideo.src = reviewVideoUrl;
+      reviewVideo.hidden = false;
+      reviewVideo.currentTime = 0;
+    }
+    reviewSave.textContent = 'この動画を残す';
+    reviewRetry.textContent = '撮りなおす';
+    if (review) review.hidden = false;
+  };
+
+  const stopActiveRecorderSilently = () => {
+    clearRecordingTimers();
+    if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+      recordingCancelled = true;
+      try { mediaRecorder.stop(); } catch (_) {}
+    }
+    mediaRecorder = null;
+    recordedChunks = [];
+    recordingStartedAt = 0;
+    setRecordingUi(false);
+  };
+
   const stopStream = () => {
+    stopActiveRecorderSilently();
     if (stream) {
       stream.getTracks().forEach((track) => track.stop());
       stream = null;
@@ -909,52 +1035,66 @@ export default function(component) {
       video.srcObject = null;
       video.hidden = true;
     }
-    pendingPhoto = null;
+    pendingMedia = null;
     showMenu();
   };
 
-  const errorMessage = (err) => {
+  const errorMessage = (err, mode = cameraMode) => {
     const name = (err && err.name) ? err.name : '';
     if (name === 'NotAllowedError' || name === 'PermissionDeniedError') {
-      return 'カメラが許可されていません。ブラウザのサイト設定でカメラを「許可」にして、このページを再読み込みしてください。';
+      return mode === 'video'
+        ? 'カメラまたはマイクが許可されていません。ブラウザのサイト設定でカメラとマイクを「許可」にしてください。'
+        : 'カメラが許可されていません。ブラウザのサイト設定でカメラを「許可」にして、このページを再読み込みしてください。';
     }
     if (name === 'NotFoundError' || name === 'DevicesNotFoundError') return '利用できるカメラが見つかりませんでした。';
     if (name === 'NotReadableError' || name === 'TrackStartError') return 'カメラを開けませんでした。ほかのアプリがカメラを使っていないか確認してください。';
     if (name === 'SecurityError') return 'ブラウザのセキュリティ設定でカメラがブロックされています。';
-    return 'カメラを開けませんでした。ブラウザのカメラ権限を確認してください。';
+    return 'カメラを開けませんでした。ブラウザのカメラ・マイク権限を確認してください。';
   };
 
-  const startCamera = async () => {
+  const startCamera = async (mode = 'photo') => {
     stopStream();
+    cameraMode = mode === 'video' ? 'video' : 'photo';
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
       const message = 'このブラウザでは直接カメラを開けません。ChromeまたはSafariの最新版で開いてください。';
       setStatus(message);
       setTriggerValue('camera_error', { name: 'Unsupported', message });
       return;
     }
+    if (cameraMode === 'video' && typeof MediaRecorder === 'undefined') {
+      const message = 'このブラウザでは動画録画に対応していません。ChromeまたはSafariの最新版で開いてください。';
+      setStatus(message);
+      setTriggerValue('camera_error', { name: 'MediaRecorderUnsupported', message });
+      return;
+    }
 
-    setStatus('カメラの使用を許可してください…');
+    setStatus(cameraMode === 'video' ? 'カメラとマイクの使用を許可してください…' : 'カメラの使用を許可してください…');
     try {
       stream = await navigator.mediaDevices.getUserMedia({
-        audio: false,
+        audio: cameraMode === 'video' ? {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true
+        } : false,
         video: {
           facingMode: { ideal: 'environment' },
-          width: { ideal: 1920 },
-          height: { ideal: 1080 }
+          width: { ideal: 1280 },
+          height: { ideal: 720 }
         }
       });
       video.srcObject = stream;
       await video.play();
       shootButton.disabled = false;
+      shootButton.textContent = cameraMode === 'video' ? '● 録画を開始' : '● 写真を撮る';
       showCameraActions();
       try {
         localStorage.setItem('tokyo_burari_last_camera_open_v1', String(Date.now()));
       } catch (_) {}
-      setStatus('');
+      setStatus(cameraMode === 'video' ? '動画は最大30秒です。音声も一緒に記録します。' : '');
     } catch (err) {
       console.error(err);
       stopStream();
-      const message = errorMessage(err);
+      const message = errorMessage(err, cameraMode);
       setStatus(message);
       setTriggerValue('camera_error', {
         name: (err && err.name) ? err.name : 'CameraError',
@@ -1013,6 +1153,23 @@ export default function(component) {
     );
   });
 
+  const capturePosterDataUrl = async () => {
+    if (!video.videoWidth || !video.videoHeight) throw new Error('video frame unavailable');
+    const srcW = video.videoWidth;
+    const srcH = video.videoHeight;
+    const maxSide = 1600;
+    const scale = Math.min(1, maxSide / Math.max(srcW, srcH));
+    const width = Math.max(1, Math.round(srcW * scale));
+    const height = Math.max(1, Math.round(srcH * scale));
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext('2d', { alpha: false });
+    ctx.drawImage(video, 0, 0, width, height);
+    const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', 0.86));
+    if (!blob) throw new Error('canvas conversion failed');
+    return await blobToDataUrl(blob);
+  };
+
   const prepareImageFile = async (file) => {
     const url = URL.createObjectURL(file);
     try {
@@ -1046,30 +1203,18 @@ export default function(component) {
     const capturedAt = new Date().toISOString();
     try {
       const locationPromise = getLocationAtCapture();
-      const srcW = video.videoWidth;
-      const srcH = video.videoHeight;
-      const maxSide = 1600;
-      const scale = Math.min(1, maxSide / Math.max(srcW, srcH));
-      const width = Math.max(1, Math.round(srcW * scale));
-      const height = Math.max(1, Math.round(srcH * scale));
-      canvas.width = width;
-      canvas.height = height;
-      const ctx = canvas.getContext('2d', { alpha: false });
-      ctx.drawImage(video, 0, 0, width, height);
-      const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', 0.86));
-      if (!blob) throw new Error('canvas conversion failed');
-      const dataUrl = await blobToDataUrl(blob);
-
+      const dataUrl = await capturePosterDataUrl();
       setStatus('位置情報を確認しています…');
       const location = await locationPromise;
-      pendingPhoto = {
+      pendingMedia = {
+        kind: 'photo',
         data_url: dataUrl,
         name: 'camera.jpg',
         source: 'camera',
         captured_at: capturedAt,
         location
       };
-      showReview(dataUrl);
+      showPhotoReview(dataUrl);
       setStatus('');
     } catch (err) {
       console.error(err);
@@ -1080,12 +1225,132 @@ export default function(component) {
     }
   };
 
+  const chooseRecorderMimeType = () => {
+    const candidates = [
+      'video/mp4;codecs=h264,aac',
+      'video/mp4',
+      'video/webm;codecs=vp8,opus',
+      'video/webm'
+    ];
+    for (const type of candidates) {
+      try {
+        if (MediaRecorder.isTypeSupported(type)) return type;
+      } catch (_) {}
+    }
+    return '';
+  };
+
+  const stopVideoRecording = () => {
+    clearRecordingTimers();
+    if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+      try { mediaRecorder.stop(); } catch (_) {}
+    }
+  };
+
+  const startVideoRecording = async () => {
+    if (!stream || !video.videoWidth || !video.videoHeight) return;
+    if (!stream.getAudioTracks().length) {
+      const message = '動画用のマイクを利用できません。カメラとマイクの権限を確認してください。';
+      setStatus(message);
+      setTriggerValue('camera_error', { name: 'MicrophoneUnavailable', message });
+      return;
+    }
+
+    recordedChunks = [];
+    recordingCancelled = false;
+    recordingCapturedAt = new Date().toISOString();
+    recordingLocationPromise = getLocationAtCapture();
+    const mimeType = chooseRecorderMimeType();
+    try {
+      const options = {
+        videoBitsPerSecond: 1600000,
+        audioBitsPerSecond: 96000
+      };
+      if (mimeType) options.mimeType = mimeType;
+      try {
+        mediaRecorder = new MediaRecorder(stream, options);
+      } catch (_) {
+        mediaRecorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+      }
+      mediaRecorder.ondataavailable = (event) => {
+        if (event.data && event.data.size > 0) recordedChunks.push(event.data);
+      };
+      mediaRecorder.onerror = (event) => {
+        console.error(event);
+        clearRecordingTimers();
+        setRecordingUi(false);
+        const message = '動画の録画中にエラーが発生しました。もう一度お試しください。';
+        setStatus(message);
+        setTriggerValue('camera_error', { name: 'VideoRecordError', message });
+      };
+      mediaRecorder.onstop = async () => {
+        clearRecordingTimers();
+        setRecordingUi(false);
+        const recorder = mediaRecorder;
+        mediaRecorder = null;
+        if (recordingCancelled) {
+          recordedChunks = [];
+          recordingCancelled = false;
+          return;
+        }
+        try {
+          const durationMs = Math.max(1, Date.now() - recordingStartedAt);
+          const finalType = (recorder && recorder.mimeType) || mimeType || 'video/webm';
+          const blob = new Blob(recordedChunks, { type: finalType });
+          recordedChunks = [];
+          if (!blob.size) throw new Error('recorded video is empty');
+          setStatus('動画を確認用に準備しています…');
+          const [dataUrl, posterDataUrl, location] = await Promise.all([
+            blobToDataUrl(blob),
+            capturePosterDataUrl(),
+            recordingLocationPromise || getLocationAtCapture()
+          ]);
+          pendingMedia = {
+            kind: 'video',
+            data_url: dataUrl,
+            poster_data_url: posterDataUrl,
+            mime_type: finalType,
+            duration_ms: durationMs,
+            name: finalType.includes('mp4') ? 'camera.mp4' : 'camera.webm',
+            source: 'video_camera',
+            captured_at: recordingCapturedAt || new Date().toISOString(),
+            location
+          };
+          showVideoReview(blob);
+          setStatus('');
+        } catch (err) {
+          console.error(err);
+          const message = '録画した動画を準備できませんでした。もう一度お試しください。';
+          setStatus(message);
+          setTriggerValue('camera_error', { name: 'VideoPrepareError', message });
+        } finally {
+          recordingStartedAt = 0;
+          recordingLocationPromise = null;
+        }
+      };
+      mediaRecorder.start(500);
+      recordingStartedAt = Date.now();
+      setRecordingUi(true);
+      updateRecordingClock();
+      recordingTimer = setInterval(updateRecordingClock, 250);
+      recordingMaxTimer = setTimeout(stopVideoRecording, VIDEO_MAX_SECONDS * 1000);
+      setStatus('');
+    } catch (err) {
+      console.error(err);
+      setRecordingUi(false);
+      const message = 'この端末では動画録画を開始できませんでした。ブラウザを最新版にしてください。';
+      setStatus(message);
+      setTriggerValue('camera_error', { name: 'VideoStartError', message });
+    }
+  };
+
   const chooseGalleryPhoto = async () => {
     const file = galleryInput.files && galleryInput.files[0];
     if (!file) return;
     try {
       const dataUrl = await prepareImageFile(file);
-      pendingPhoto = {
+      pendingMedia = {
+        kind: 'photo',
         data_url: dataUrl,
         name: file.name || 'gallery.jpg',
         source: 'gallery',
@@ -1096,7 +1361,7 @@ export default function(component) {
           error_message: '写真フォルダから選んだ画像の撮影位置は自動取得しません。'
         }
       };
-      showReview(dataUrl);
+      showPhotoReview(dataUrl);
       setStatus('');
     } catch (err) {
       console.error(err);
@@ -1108,39 +1373,40 @@ export default function(component) {
     }
   };
 
-  const savePendingPhoto = () => {
-    if (!pendingPhoto) return;
+  const savePendingMedia = () => {
+    if (!pendingMedia) return;
     reviewSave.disabled = true;
     reviewRetry.disabled = true;
-    const photoToSave = pendingPhoto;
-    setStatus('写真を保存しています…');
-    // Saving ends this capture. A retry, in contrast, never stops a live camera.
+    const mediaToSave = pendingMedia;
+    setStatus(mediaToSave.kind === 'video' ? '動画を保存しています…' : '写真を保存しています…');
     if (stream) {
       stream.getTracks().forEach((track) => track.stop());
       stream = null;
     }
-    setTriggerValue('photo', photoToSave);
+    if (mediaToSave.kind === 'video') {
+      setTriggerValue('video', mediaToSave);
+    } else {
+      setTriggerValue('photo', mediaToSave);
+    }
   };
 
-  const retryPendingPhoto = async () => {
-    if (!pendingPhoto) return;
-    const source = pendingPhoto.source;
-    pendingPhoto = null;
+  const retryPendingMedia = async () => {
+    if (!pendingMedia) return;
+    const source = pendingMedia.source;
+    pendingMedia = null;
     reviewSave.disabled = false;
     reviewRetry.disabled = false;
     setStatus('');
+    hideReview();
 
-    if (source === 'camera' && stream && stream.getTracks().some((track) => track.readyState === 'live')) {
-      // The stream was deliberately kept alive while the captured still image was
-      // being reviewed. Return to it immediately without another getUserMedia call.
+    if ((source === 'camera' || source === 'video_camera') && stream && stream.getTracks().some((track) => track.readyState === 'live')) {
+      cameraMode = source === 'video_camera' ? 'video' : 'photo';
       if (video.srcObject !== stream) video.srcObject = stream;
       await video.play();
       shootButton.disabled = false;
       showCameraActions();
       return;
     }
-
-    // Gallery retry (or an unexpectedly ended stream) returns to the source menu.
     showMenu();
   };
 
@@ -1149,28 +1415,47 @@ export default function(component) {
     setStatus('');
   };
 
-  startButton.addEventListener('click', startCamera);
-  shootButton.addEventListener('click', takePhoto);
+  const handleShoot = () => {
+    if (cameraMode === 'video') {
+      if (mediaRecorder && mediaRecorder.state === 'recording') stopVideoRecording();
+      else startVideoRecording();
+    } else {
+      takePhoto();
+    }
+  };
+
+  const switchCameraMode = () => {
+    if (mediaRecorder && mediaRecorder.state === 'recording') return;
+    startCamera(cameraMode === 'video' ? 'photo' : 'video');
+  };
+
+  const startPhotoCamera = () => startCamera('photo');
+  const startVideoCamera = () => startCamera('video');
+
+  startButton.addEventListener('click', startPhotoCamera);
+  videoStartButton.addEventListener('click', startVideoCamera);
+  modeSwitchButton.addEventListener('click', switchCameraMode);
+  shootButton.addEventListener('click', handleShoot);
   stopButton.addEventListener('click', closeCamera);
   galleryInput.addEventListener('change', chooseGalleryPhoto);
-  reviewSave.addEventListener('click', savePendingPhoto);
-  reviewRetry.addEventListener('click', retryPendingPhoto);
+  reviewSave.addEventListener('click', savePendingMedia);
+  reviewRetry.addEventListener('click', retryPendingMedia);
 
-  // If the app was opened again within one hour of the last successful camera
-  // activation, Python passes auto_start=true once. Browsers that still require a
-  // user gesture will simply leave the normal 'カメラを開く' button available.
   if (data?.auto_start) {
-    queueMicrotask(() => startCamera());
+    queueMicrotask(() => startCamera('photo'));
   }
 
   return () => {
-    startButton.removeEventListener('click', startCamera);
-    shootButton.removeEventListener('click', takePhoto);
+    startButton.removeEventListener('click', startPhotoCamera);
+    videoStartButton.removeEventListener('click', startVideoCamera);
+    modeSwitchButton.removeEventListener('click', switchCameraMode);
+    shootButton.removeEventListener('click', handleShoot);
     stopButton.removeEventListener('click', closeCamera);
     galleryInput.removeEventListener('change', chooseGalleryPhoto);
-    reviewSave.removeEventListener('click', savePendingPhoto);
-    reviewRetry.removeEventListener('click', retryPendingPhoto);
+    reviewSave.removeEventListener('click', savePendingMedia);
+    reviewRetry.removeEventListener('click', retryPendingMedia);
     stopStream();
+    hideReview();
   };
 }
 """
@@ -1682,6 +1967,21 @@ _DIARY_GALLERY_CSS = """
   -webkit-tap-highlight-color: transparent;
 }
 .diary-photo-delete:active { transform: scale(.94); }
+.diary-video-badge {
+  position: absolute;
+  left: 9px;
+  bottom: 9px;
+  z-index: 2;
+  padding: 3px 7px;
+  border-radius: 999px;
+  background: rgba(17,24,39,.78);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 1.2;
+  pointer-events: none;
+  box-shadow: 0 1px 5px rgba(0,0,0,.22);
+}
 .diary-photo-location {
   margin-top: 4px;
   font-size: 10px;
@@ -1698,6 +1998,7 @@ _DIARY_GALLERY_CSS = """
   .diary-photo-card img { border-radius: 8px; }
   .diary-photo-location { font-size: 9px; }
   .diary-photo-delete { top: 2px; right: 2px; width: 23px; height: 23px; font-size: 17px; }
+  .diary-video-badge { left: 7px; bottom: 7px; font-size: 9px; padding: 3px 6px; }
 }
 """
 
@@ -1731,6 +2032,13 @@ export default function(component) {
     img.decoding = 'async';
     img.fetchPriority = 'low';
     button.appendChild(img);
+
+    if (photo.is_video) {
+      const badge = document.createElement('div');
+      badge.className = 'diary-video-badge';
+      badge.textContent = '▶ 動画';
+      button.appendChild(badge);
+    }
 
     if (photo.location) {
       const location = document.createElement('div');
@@ -2056,17 +2364,34 @@ def clear_browser_auto_login(key="browser_auto_login_clear"):
     )
 
 
-def decode_camera_data_url(data_url):
-    """Decode a trusted data URL emitted by the live camera component."""
-    if not isinstance(data_url, str) or not data_url.startswith("data:image/"):
-        raise ValueError("カメラ画像の形式が不正です。")
+def _decode_browser_media_data_url(data_url, expected_prefix):
+    """Decode a trusted base64 data URL emitted by an in-app media component."""
+    if not isinstance(data_url, str) or not data_url.startswith(expected_prefix):
+        raise ValueError("撮影データの形式が不正です。")
     try:
         header, encoded = data_url.split(",", 1)
     except ValueError as exc:
-        raise ValueError("カメラ画像を読み込めません。") from exc
+        raise ValueError("撮影データを読み込めません。") from exc
     if ";base64" not in header:
-        raise ValueError("カメラ画像の形式が不正です。")
-    return base64.b64decode(encoded, validate=True)
+        raise ValueError("撮影データの形式が不正です。")
+    mime_type = header[5:].split(";", 1)[0].strip().lower()
+    try:
+        raw = base64.b64decode(encoded, validate=True)
+    except Exception as exc:
+        raise ValueError("撮影データを読み込めません。") from exc
+    return mime_type, raw
+
+
+def decode_camera_data_url(data_url):
+    """Decode a trusted image data URL emitted by the live camera component."""
+    _, raw = _decode_browser_media_data_url(data_url, "data:image/")
+    return raw
+
+
+def decode_camera_video_data_url(data_url):
+    """Decode a trusted video data URL emitted by the live camera component."""
+    mime_type, raw = _decode_browser_media_data_url(data_url, "data:video/")
+    return mime_type, raw
 
 
 # ============================================================
@@ -3386,6 +3711,46 @@ def photo_display_url(photo, signed_map=None, max_px=420, quality=76):
         return ""
 
 
+def photo_media_metadata(photo):
+    reflection = (photo or {}).get("reflection_json") or {}
+    return reflection if isinstance(reflection, dict) else {}
+
+
+def photo_is_video(photo):
+    reflection = photo_media_metadata(photo)
+    return str(reflection.get("media_type") or "").strip().lower() == "video" and bool(
+        str(reflection.get("video_storage_path") or "").strip()
+    )
+
+
+def photo_video_storage_path(photo):
+    if not photo_is_video(photo):
+        return ""
+    return str(photo_media_metadata(photo).get("video_storage_path") or "").strip()
+
+
+def video_display_url(photo, expires_in=1800):
+    path = photo_video_storage_path(photo)
+    if not path:
+        return ""
+    try:
+        signed = signed_photo_url_map((path,), expires_in=int(expires_in))
+        return str(signed.get(path) or "")
+    except Exception:
+        return ""
+
+
+def photo_all_storage_paths(photo):
+    paths = []
+    poster = str((photo or {}).get("storage_path") or "").strip()
+    if poster:
+        paths.append(poster)
+    video_path = photo_video_storage_path(photo)
+    if video_path and video_path not in paths:
+        paths.append(video_path)
+    return paths
+
+
 def upload_photo(trip_id, image_bytes, location=None, captured_at=None, capture_source="camera"):
     active_snapshot = get_active_trip_fast(max_age_seconds=20) if st.session_state.get("active_trip_id") else None
     if not active_snapshot or str(active_snapshot.get("id") or "") != str(trip_id):
@@ -3444,6 +3809,103 @@ def upload_photo(trip_id, image_bytes, location=None, captured_at=None, capture_
             except Exception:
                 pass
         raise RuntimeError(f"写真保存処理でエラーが発生しました: {exc}") from exc
+
+
+def upload_video(
+    trip_id,
+    video_bytes,
+    poster_bytes,
+    mime_type="video/webm",
+    duration_ms=0,
+    location=None,
+    captured_at=None,
+    capture_source="video_camera",
+):
+    """Store a short video plus a JPEG poster in the existing photo record model.
+
+    The JPEG remains the row's storage_path so all existing diary/monthly photo flows
+    keep working. The original video path is stored in reflection_json.
+    """
+    active_snapshot = get_active_trip_fast(max_age_seconds=20) if st.session_state.get("active_trip_id") else None
+    if not active_snapshot or str(active_snapshot.get("id") or "") != str(trip_id):
+        if not get_trip(trip_id):
+            raise ValueError("現在の個人アカウントのぶらり旅が見つかりません。")
+
+    if not video_bytes:
+        raise ValueError("動画データが空です。")
+    if len(video_bytes) > 25 * 1024 * 1024:
+        raise ValueError("動画が大きすぎます。30秒以内で撮り直してください。")
+    poster = normalize_photo(poster_bytes)
+    if not poster:
+        raise ValueError("動画の代表画像を作れませんでした。")
+
+    clean_mime = str(mime_type or "video/webm").split(";", 1)[0].strip().lower()
+    if clean_mime == "video/mp4":
+        extension = "mp4"
+        clean_mime = "video/mp4"
+    else:
+        extension = "webm"
+        clean_mime = "video/webm"
+
+    stamp = now_jst().strftime("%Y%m%d_%H%M%S_%f")
+    token = uuid.uuid4().hex[:8]
+    base = f"{current_family_key()}/{current_member_key()}/{trip_id}/{stamp}_{token}"
+    poster_path = base + "_video.jpg"
+    video_path = base + f"_video.{extension}"
+    client = supabase_client()
+    uploaded_paths = []
+
+    reflection = {
+        "capture_source": str(capture_source or "video_camera"),
+        "location": location if isinstance(location, dict) else {},
+        "media_type": "video",
+        "video_storage_path": video_path,
+        "video_mime_type": clean_mime,
+        "video_duration_ms": max(0, int(duration_ms or 0)),
+        "video_size_bytes": len(video_bytes),
+    }
+
+    try:
+        client.storage.from_(PHOTO_BUCKET).upload(
+            path=poster_path,
+            file=poster,
+            file_options={"content-type": "image/jpeg", "cache-control": "3600"},
+        )
+        uploaded_paths.append(poster_path)
+        client.storage.from_(PHOTO_BUCKET).upload(
+            path=video_path,
+            file=video_bytes,
+            file_options={"content-type": clean_mime, "cache-control": "3600"},
+        )
+        uploaded_paths.append(video_path)
+
+        result = (
+            client
+            .table(PHOTO_TABLE)
+            .insert(
+                {
+                    "trip_id": trip_id,
+                    "family_key": current_family_key(),
+                    "member_key": current_member_key(),
+                    "storage_path": poster_path,
+                    "captured_at": str(captured_at or now_jst().isoformat()),
+                    "reflection_json": reflection,
+                    "signals_json": {},
+                }
+            )
+            .execute()
+        )
+        download_photo.clear()
+        signed_photo_url_map.clear()
+        _invalidate_fast_db_cache()
+        return (result.data or [None])[0]
+    except Exception as exc:
+        if uploaded_paths:
+            try:
+                client.storage.from_(PHOTO_BUCKET).remove(uploaded_paths)
+            except Exception:
+                pass
+        raise RuntimeError(f"動画保存処理でエラーが発生しました: {exc}") from exc
 
 
 # ============================================================
@@ -3776,8 +4238,10 @@ def delete_diary_and_related_data(trip_id):
     client = supabase_client()
     trip = get_trip(trip_id) or {}
     photos = list_trip_photos(trip_id)
-    storage_paths = [str(p.get("storage_path") or "").strip() for p in photos]
-    storage_paths = [path for path in storage_paths if path]
+    storage_paths = []
+    for photo in photos:
+        storage_paths.extend(photo_all_storage_paths(photo))
+    storage_paths = list(dict.fromkeys(path for path in storage_paths if path))
 
     # Remove the binary photo files first. If Storage cannot be reached, abort the
     # deletion so the visible database records are not left pointing to missing files.
@@ -3886,9 +4350,9 @@ def delete_photo_and_related_data(
     if not photo:
         raise ValueError("削除する画像が見つかりませんでした。")
 
-    storage_path = str(photo.get("storage_path") or "").strip()
-    if storage_path:
-        client.storage.from_(PHOTO_BUCKET).remove([storage_path])
+    storage_paths = photo_all_storage_paths(photo)
+    if storage_paths:
+        client.storage.from_(PHOTO_BUCKET).remove(storage_paths)
 
     client.table(PHOTO_TABLE).delete().eq("id", photo_id).eq("trip_id", trip_id).eq(
         "family_key", current_family_key()
@@ -7486,6 +7950,34 @@ def render_conversation(conversation):
             st.markdown(f'<div class="child-line"><b>ぼく</b><br>{text}</div>', unsafe_allow_html=True)
 
 
+def render_saved_media_preview(photo, image_alt="ぶらり旅の写真", compact=True):
+    """Render a saved video when present, otherwise its normal still image."""
+    if photo_is_video(photo):
+        video_url = video_display_url(photo)
+        if video_url:
+            st.video(video_url)
+            duration_ms = int(photo_media_metadata(photo).get("video_duration_ms") or 0)
+            if duration_ms > 0:
+                st.caption(f"🎥 動画 {max(1, round(duration_ms / 1000))}秒")
+            return True
+
+    preview_src = photo_display_url(photo)
+    if preview_src:
+        max_width = "min(72vw,320px)" if compact else "min(90vw,520px)"
+        max_height = "34dvh" if compact else "52dvh"
+        st.markdown(
+            f"""
+            <div style="display:flex;justify-content:center;align-items:center;width:100%;margin:.25rem 0 .45rem;">
+              <img src="{html.escape(preview_src, quote=True)}" alt="{html.escape(str(image_alt), quote=True)}" loading="lazy" decoding="async"
+                   style="display:block;max-width:{max_width};max-height:{max_height};width:auto;height:auto;object-fit:contain;border-radius:14px;" />
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        return True
+    return False
+
+
 def trip_label(trip):
     """Label a diary candidate, including a custom saved title when present."""
     trip = trip or {}
@@ -7531,6 +8023,7 @@ def render_pending_thumbnail_grid(trip_id, photos, max_count=None, trip=None):
                 "src": src,
                 "talked": bool(talked),
                 "location": str(photo_location_label(photo) or ""),
+                "is_video": bool(photo_is_video(photo)),
             }
         )
         photo_ids.append(pid)
@@ -7580,7 +8073,7 @@ def render_pending_thumbnail_grid(trip_id, photos, max_count=None, trip=None):
                     unsafe_allow_html=True,
                 )
             if st.button(
-                "写真を開く",
+                "動画を開く" if card.get("is_video") else "写真を開く",
                 use_container_width=True,
                 key=f"pending_photo_fallback_open_{trip_id}_{card['id']}",
             ):
@@ -7619,9 +8112,13 @@ def render_small_gallery(photos, max_count=None, columns=3):
             f'<div style="font-size:10px;opacity:.65;margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">📍 {html.escape(location)}</div>'
             if location else ""
         )
+        video_badge = (
+            '<div style="position:absolute;left:6px;bottom:6px;padding:3px 7px;border-radius:999px;background:rgba(17,24,39,.78);color:#fff;font-size:10px;font-weight:800;">▶ 動画</div>'
+            if photo_is_video(photo) else ""
+        )
         cards.append(
-            f'<div style="min-width:0;"><img src="{html.escape(src, quote=True)}" loading="lazy" decoding="async" fetchpriority="low" '
-            f'style="display:block;width:100%;aspect-ratio:1/1;object-fit:cover;border-radius:10px;" />{location_html}</div>'
+            f'<div style="min-width:0;"><div style="position:relative;"><img src="{html.escape(src, quote=True)}" loading="lazy" decoding="async" fetchpriority="low" '
+            f'style="display:block;width:100%;aspect-ratio:1/1;object-fit:cover;border-radius:10px;" />{video_badge}</div>{location_html}</div>'
         )
     if cards:
         st.markdown(
@@ -7658,6 +8155,7 @@ def render_diary_photo_gallery(trip_id, photos, state=None):
                 "src": src,
                 "talked": bool(talked),
                 "location": str(location_label or ""),
+                "is_video": bool(photo_is_video(photo)),
             }
         )
         photo_ids.append(str(pid))
@@ -7776,7 +8274,7 @@ def page_home():
             count_value = max(0, int(cached_count))
         except Exception:
             count_value = 0
-        status_main = f"今日の写真 {count_value}枚" if count_value else "今日はまだ写真なし"
+        status_main = f"今日の記録 {count_value}件" if count_value else "今日はまだ記録なし"
     status_sub = active_place or "写真を撮ると、ここに今日の記録が表示されます"
     st.markdown(
         f"""
@@ -7793,7 +8291,7 @@ def page_home():
     with st.container(key="home_primary"):
         primary_left, primary_right = st.columns(2)
         with primary_left:
-            render_home_button("写真を撮る", "camera", "home_camera")
+            render_home_button("写真・動画を撮る", "camera", "home_camera")
         with primary_right:
             render_home_button("日記にする・見る", "diary", "home_diary")
 
@@ -7853,7 +8351,7 @@ def page_home():
             render_home_button("設定", "settings", "home_settings")
 
     st.markdown(
-        '<div class="home-footer-note">写真は0枚でも大丈夫。気になったときだけ使います。</div>',
+        '<div class="home-footer-note">写真・動画は0件でも大丈夫。気になったときだけ使います。</div>',
         unsafe_allow_html=True,
     )
 
@@ -7900,20 +8398,10 @@ def render_recent_camera_photo_comment(trip):
         return
 
     st.divider()
-    st.markdown("#### 今撮った写真")
-    preview_src = photo_display_url(photo)
-    if preview_src:
-        st.markdown(
-            f"""
-            <div style="display:flex;justify-content:center;align-items:center;width:100%;margin:.25rem 0 .45rem;">
-              <img src="{html.escape(preview_src, quote=True)}" alt="今撮った写真" loading="lazy" decoding="async"
-                   style="display:block;max-width:min(72vw,320px);max-height:34dvh;width:auto;height:auto;object-fit:contain;border-radius:14px;" />
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-    else:
-        st.warning("写真のプレビューを表示できませんでした。コメントは続けられます。")
+    is_video = photo_is_video(photo)
+    st.markdown("#### 今撮った動画" if is_video else "#### 今撮った写真")
+    if not render_saved_media_preview(photo, image_alt="今撮った動画の代表画像" if is_video else "今撮った写真"):
+        st.warning("撮影した記録のプレビューを表示できませんでした。コメントは続けられます。")
 
     location_label = photo_location_label(photo)
     if location_label:
@@ -7947,8 +8435,8 @@ def render_recent_camera_photo_comment(trip):
 
     child_turns = sum(1 for x in conversation if x.get("role") == "child")
     if child_turns == 0:
-        st.caption("この写真について、まず自由に1回話してね。")
-        mic_label = "今撮った写真について話してね"
+        st.caption("この動画について、まず自由に1回話してね。" if is_video else "この写真について、まず自由に1回話してね。")
+        mic_label = "今撮った動画について話してね" if is_video else "今撮った写真について話してね"
     else:
         mic_label = "AIの質問に答えてね"
 
@@ -7970,7 +8458,7 @@ def render_recent_camera_photo_comment(trip):
         with st.spinner("声を聞いています…"):
             transcript = transcribe_audio(
                 answer_audio,
-                f"東京ぶらり旅で今撮った写真について、子どもが自由に説明しています。場所は{location_label or '不明'}です。",
+                f"東京ぶらり旅で今撮った{'動画' if is_video else '写真'}について、子どもが自由に説明しています。場所は{location_label or '不明'}です。",
             )
             if not transcript:
                 raise ValueError("文字起こしが空でした。")
@@ -8027,6 +8515,7 @@ def page_trip():
         data={"auto_start": auto_start},
         key=f"live_camera_{camera_trip_key}_{st.session_state.capture_serial}",
         on_photo_change=lambda: None,
+        on_video_change=lambda: None,
         on_camera_error_change=lambda: None,
     )
 
@@ -8039,12 +8528,65 @@ def page_trip():
             go_page("home")
 
     payload = getattr(result, "photo", None)
+    video_payload = getattr(result, "video", None)
     camera_error = getattr(result, "camera_error", None)
 
     if camera_error:
         message = camera_error.get("message") if isinstance(camera_error, dict) else str(camera_error)
         if message:
             st.warning(message)
+
+    if isinstance(video_payload, dict) and video_payload.get("data_url") and video_payload.get("poster_data_url"):
+        try:
+            mime_type, video_raw = decode_camera_video_data_url(video_payload["data_url"])
+            poster_raw = decode_camera_data_url(video_payload["poster_data_url"])
+            digest = hashlib.sha1(video_raw).hexdigest()
+            digest_key = "saved_camera_video_digest_current"
+            if st.session_state.get(digest_key) != digest:
+                # Preserve the camera fast path: DB work begins only after the user
+                # explicitly chooses to keep the recorded video.
+                trip = ensure_today_trip()
+                capture_source = str(video_payload.get("source") or "video_camera")
+                location = build_photo_location(
+                    video_payload.get("location"),
+                    trip,
+                    capture_source=capture_source,
+                )
+
+                with st.spinner("動画を残しています…"):
+                    saved_video = upload_video(
+                        trip["id"],
+                        video_raw,
+                        poster_raw,
+                        mime_type=mime_type or video_payload.get("mime_type"),
+                        duration_ms=video_payload.get("duration_ms"),
+                        location=location,
+                        captured_at=video_payload.get("captured_at"),
+                        capture_source=capture_source,
+                    )
+
+                st.session_state[digest_key] = digest
+                if isinstance(saved_video, dict) and saved_video.get("id"):
+                    # Reuse the existing recent-media conversation path.
+                    st.session_state[f"_camera_recent_photo_{trip['id']}"] = saved_video["id"]
+
+                previous_count = st.session_state.get("_home_today_photo_count")
+                try:
+                    previous_count = int(previous_count) if previous_count is not None else 0
+                except Exception:
+                    previous_count = 0
+                st.session_state["_home_today_photo_count"] = previous_count + 1
+                place_label = str((location or {}).get("place_label") or trip.get("destination") or "").strip()
+                if place_label:
+                    st.session_state["_home_today_place"] = place_label
+
+                st.session_state.capture_serial += 1
+                st.session_state["_camera_notice"] = "動画を保存しました。"
+                st.rerun()
+        except Exception as exc:
+            st.error("動画を保存できませんでした。")
+            with st.expander("保護者向け詳細"):
+                st.code(str(exc))
 
     if isinstance(payload, dict) and payload.get("data_url"):
         try:
@@ -8093,7 +8635,7 @@ def page_trip():
             with st.expander("保護者向け詳細"):
                 st.code(str(exc))
 
-    # Recent-photo comment UI is available after a save, using only the in-session snapshot.
+    # Recent-media comment UI is available after a save, using only the in-session snapshot.
     trip = st.session_state.get("_active_trip_snapshot")
     if isinstance(trip, dict) and trip.get("id"):
         render_recent_camera_photo_comment(trip)
@@ -8105,7 +8647,7 @@ def page_trip():
 def page_diary():
     page_top(
         "📖 日記",
-        "まだ日記になっていない写真を一覧で確認できます。日記作成後も写真を開いて本人の言葉を追加できます。",
+        "まだ日記になっていない写真・動画を一覧で確認できます。日記作成後も記録を開いて本人の言葉を追加できます。",
     )
     # Old unfinished trips are already shown by list_pending_photo_trips(), so no
     # AI rollover or historical title scan is needed before the page can appear.
@@ -8124,8 +8666,8 @@ def page_diary():
     pending_rows = list_pending_photo_trips()
     pending_open_id = str(st.session_state.get("_pending_diary_open_trip_id") or "")
     if pending_rows and not pending_open_id:
-        st.markdown("#### まだ日記になっていない写真")
-        st.caption("撮影済みで、まだ日記として保存されていないぶらり旅です。『日記を作る』を押した時点で保存します。")
+        st.markdown("#### まだ日記になっていない写真・動画")
+        st.caption("撮影済みで、まだ日記として保存されていない写真・動画です。『日記を作る』を押した時点で保存します。")
         pending_titles = pending_diary_titles(pending_rows, used_titles=saved_titles)
         for item in pending_rows:
             pending_trip = item.get("trip") or {}
@@ -8484,19 +9026,9 @@ def page_diary():
             st.session_state.pop(f"reflection_state_{trip_id}", None)
         st.rerun()
 
-    diary_photo_src = photo_display_url(photo)
-    if diary_photo_src:
-        st.markdown(
-            f"""
-            <div style="display:flex;justify-content:center;align-items:center;width:100%;margin:.25rem 0 .45rem;">
-              <img src="{html.escape(diary_photo_src, quote=True)}" alt="日記の写真" loading="lazy" decoding="async"
-                   style="display:block;max-width:min(72vw,320px);max-height:34dvh;width:auto;height:auto;object-fit:contain;border-radius:14px;" />
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-    else:
-        st.warning("写真のプレビューを表示できませんでした。会話は続けられます。")
+    is_video = photo_is_video(photo)
+    if not render_saved_media_preview(photo, image_alt="日記の動画の代表画像" if is_video else "日記の写真"):
+        st.warning("記録のプレビューを表示できませんでした。会話は続けられます。")
 
     location_label = photo_location_label(photo)
     if location_label:
@@ -8747,6 +9279,17 @@ def page_history(embedded=False):
         st.markdown(f"### {html.escape(title)}")
         render_diary_title_editor(trip_id, daily_title, "history_detail")
         render_small_gallery(photos, max_count=None, columns=3)
+        history_videos = [photo for photo in photos if photo_is_video(photo)]
+        if history_videos:
+            with st.expander(f"🎥 この日の動画（{len(history_videos)}本）"):
+                for video_index, video_photo in enumerate(history_videos, start=1):
+                    video_url = video_display_url(video_photo)
+                    if video_url:
+                        if len(history_videos) > 1:
+                            st.caption(f"動画 {video_index}")
+                        st.video(video_url)
+                    else:
+                        st.warning("動画を読み込めませんでした。")
         st.markdown(
             f"""
             <div class="diary-card">
