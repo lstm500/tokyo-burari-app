@@ -661,6 +661,10 @@ SUPABASE_URL = secret("SUPABASE_URL", "")
 SUPABASE_SECRET_KEY = secret("SUPABASE_SECRET_KEY", "")
 PHOTO_BUCKET = secret("PHOTO_BUCKET", "burari-photos")
 USE_FAST_MODE = str(secret("USE_FAST_MODE", "true")).lower() in {"1", "true", "yes", "on"}
+try:
+    VIDEO_STORAGE_QUOTA_MB = max(0, int(str(secret("VIDEO_STORAGE_QUOTA_MB", "0") or "0").strip()))
+except Exception:
+    VIDEO_STORAGE_QUOTA_MB = 0
 
 TRIP_TABLE = "burari_trips"
 PHOTO_TABLE = "burari_photos"
@@ -1170,6 +1174,96 @@ export default function(component) {
     return await blobToDataUrl(blob);
   };
 
+
+  const seekVideoFrame = (node, seconds) => new Promise((resolve, reject) => {
+    let settled = false;
+    const cleanup = () => {
+      node.removeEventListener('seeked', onSeeked);
+      node.removeEventListener('error', onError);
+      clearTimeout(timer);
+    };
+    const finish = (fn, value) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      fn(value);
+    };
+    const onSeeked = () => finish(resolve);
+    const onError = () => finish(reject, new Error('video seek failed'));
+    const timer = setTimeout(() => finish(reject, new Error('video seek timeout')), 3500);
+    node.addEventListener('seeked', onSeeked, { once: true });
+    node.addEventListener('error', onError, { once: true });
+    try {
+      node.currentTime = Math.max(0, seconds);
+    } catch (err) {
+      finish(reject, err);
+    }
+  });
+
+  const extractVideoCandidateFrames = async (blob, durationMs) => {
+    const objectUrl = URL.createObjectURL(blob);
+    const probe = document.createElement('video');
+    probe.preload = 'auto';
+    probe.muted = true;
+    probe.playsInline = true;
+    probe.src = objectUrl;
+    try {
+      await new Promise((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error('video metadata timeout')), 5000);
+        const ready = () => {
+          clearTimeout(timer);
+          resolve();
+        };
+        const failed = () => {
+          clearTimeout(timer);
+          reject(new Error('video metadata failed'));
+        };
+        probe.addEventListener('loadedmetadata', ready, { once: true });
+        probe.addEventListener('error', failed, { once: true });
+      });
+
+      const measuredDuration = Number.isFinite(probe.duration) && probe.duration > 0
+        ? probe.duration
+        : Math.max(0.2, Number(durationMs || 0) / 1000);
+      const sampleCount = Math.max(12, Math.min(24, Math.ceil(measuredDuration * 1.2)));
+      const frameCanvas = document.createElement('canvas');
+      const srcW = probe.videoWidth || video.videoWidth || 1280;
+      const srcH = probe.videoHeight || video.videoHeight || 720;
+      const maxSide = 1280;
+      const scale = Math.min(1, maxSide / Math.max(srcW, srcH));
+      frameCanvas.width = Math.max(1, Math.round(srcW * scale));
+      frameCanvas.height = Math.max(1, Math.round(srcH * scale));
+      const ctx = frameCanvas.getContext('2d', { alpha: false });
+      const frames = [];
+
+      for (let i = 0; i < sampleCount; i += 1) {
+        // Sample the center of each time slice rather than the boundaries so
+        // starting/stopping camera motion is less likely to dominate the candidates.
+        const seconds = measuredDuration * ((i + 0.5) / sampleCount);
+        try {
+          await seekVideoFrame(probe, Math.min(Math.max(0, measuredDuration - 0.02), seconds));
+          ctx.drawImage(probe, 0, 0, frameCanvas.width, frameCanvas.height);
+          const jpegBlob = await new Promise((resolve) => frameCanvas.toBlob(resolve, 'image/jpeg', 0.82));
+          if (!jpegBlob) continue;
+          const dataUrl = await blobToDataUrl(jpegBlob);
+          frames.push({
+            frame_id: `F${String(i + 1).padStart(2, '0')}`,
+            timestamp_ms: Math.max(0, Math.round(seconds * 1000)),
+            data_url: dataUrl
+          });
+        } catch (err) {
+          console.warn('candidate frame skipped', err);
+        }
+      }
+      return frames;
+    } finally {
+      try { probe.pause(); } catch (_) {}
+      probe.removeAttribute('src');
+      try { probe.load(); } catch (_) {}
+      URL.revokeObjectURL(objectUrl);
+    }
+  };
+
   const prepareImageFile = async (file) => {
     const url = URL.createObjectURL(file);
     try {
@@ -1299,16 +1393,18 @@ export default function(component) {
           const blob = new Blob(recordedChunks, { type: finalType });
           recordedChunks = [];
           if (!blob.size) throw new Error('recorded video is empty');
-          setStatus('動画を確認用に準備しています…');
-          const [dataUrl, posterDataUrl, location] = await Promise.all([
+          setStatus('動画から良い瞬間の候補を準備しています…');
+          const [dataUrl, posterDataUrl, candidateFrames, location] = await Promise.all([
             blobToDataUrl(blob),
             capturePosterDataUrl(),
+            extractVideoCandidateFrames(blob, durationMs),
             recordingLocationPromise || getLocationAtCapture()
           ]);
           pendingMedia = {
             kind: 'video',
             data_url: dataUrl,
             poster_data_url: posterDataUrl,
+            candidate_frames: candidateFrames,
             mime_type: finalType,
             duration_ms: durationMs,
             name: finalType.includes('mp4') ? 'camera.mp4' : 'camera.webm',
@@ -2392,6 +2488,42 @@ def decode_camera_video_data_url(data_url):
     """Decode a trusted video data URL emitted by the live camera component."""
     mime_type, raw = _decode_browser_media_data_url(data_url, "data:video/")
     return mime_type, raw
+
+
+def decode_video_candidate_frames(items, max_frames=24):
+    """Decode browser-extracted video frames while keeping payload size bounded."""
+    frames = []
+    for index, item in enumerate(items or []):
+        if len(frames) >= int(max_frames):
+            break
+        if not isinstance(item, dict):
+            continue
+        data_url = str(item.get("data_url") or "")
+        if not data_url.startswith("data:image/"):
+            continue
+        try:
+            raw = decode_camera_data_url(data_url)
+            if not raw or len(raw) > 3 * 1024 * 1024:
+                continue
+            timestamp_ms = max(0, int(item.get("timestamp_ms") or 0))
+            frame_id = str(item.get("frame_id") or f"F{index + 1:02d}").strip()[:16]
+            # Keep a reasonably detailed frame for a photo the user may save later.
+            image_bytes = normalize_photo(raw, max_side=1280, quality=82)
+            # Vision receives a lighter copy. This cuts upload/cost without changing
+            # the stored still that is shown to the user.
+            ai_bytes = normalize_photo(raw, max_side=640, quality=72)
+            frames.append(
+                {
+                    "frame_id": frame_id or f"F{index + 1:02d}",
+                    "timestamp_ms": timestamp_ms,
+                    "image_bytes": image_bytes,
+                    "ai_bytes": ai_bytes,
+                }
+            )
+        except Exception:
+            continue
+    frames.sort(key=lambda x: (int(x.get("timestamp_ms") or 0), str(x.get("frame_id") or "")))
+    return frames
 
 
 # ============================================================
@@ -3748,10 +3880,14 @@ def photo_all_storage_paths(photo):
     video_path = photo_video_storage_path(photo)
     if video_path and video_path not in paths:
         paths.append(video_path)
+    for item in video_ai_selection_items(photo):
+        selection_path = str(item.get("storage_path") or "").strip()
+        if selection_path and selection_path not in paths:
+            paths.append(selection_path)
     return paths
 
 
-def upload_photo(trip_id, image_bytes, location=None, captured_at=None, capture_source="camera"):
+def upload_photo(trip_id, image_bytes, location=None, captured_at=None, capture_source="camera", extra_reflection=None):
     active_snapshot = get_active_trip_fast(max_age_seconds=20) if st.session_state.get("active_trip_id") else None
     if not active_snapshot or str(active_snapshot.get("id") or "") != str(trip_id):
         if not get_trip(trip_id):
@@ -3770,6 +3906,10 @@ def upload_photo(trip_id, image_bytes, location=None, captured_at=None, capture_
         "capture_source": str(capture_source or "camera"),
         "location": location if isinstance(location, dict) else {},
     }
+    if isinstance(extra_reflection, dict):
+        for key, value in extra_reflection.items():
+            if key not in {"capture_source", "location", "media_type", "video_storage_path"}:
+                reflection[str(key)] = value
 
     storage_saved = False
     try:
@@ -3811,6 +3951,67 @@ def upload_photo(trip_id, image_bytes, location=None, captured_at=None, capture_
         raise RuntimeError(f"写真保存処理でエラーが発生しました: {exc}") from exc
 
 
+def video_storage_quota_bytes():
+    return int(VIDEO_STORAGE_QUOTA_MB) * 1024 * 1024 if int(VIDEO_STORAGE_QUOTA_MB) > 0 else 0
+
+
+def current_video_storage_usage_bytes():
+    """Total original-video bytes for the signed-in person, across all trips."""
+    client = supabase_client()
+    total = 0
+    offset = 0
+    page_size = 1000
+    while True:
+        rows = (
+            client
+            .table(PHOTO_TABLE)
+            .select("reflection_json")
+            .eq("family_key", current_family_key()).eq("member_key", current_member_key())
+            .range(offset, offset + page_size - 1)
+            .execute()
+        ).data or []
+        for row in rows:
+            reflection = row.get("reflection_json") or {}
+            if not isinstance(reflection, dict):
+                continue
+            if str(reflection.get("media_type") or "").strip().lower() != "video":
+                continue
+            try:
+                total += max(0, int(reflection.get("video_size_bytes") or 0))
+            except Exception:
+                pass
+        if len(rows) < page_size:
+            break
+        offset += page_size
+    return total
+
+
+def format_storage_size(num_bytes):
+    value = max(0, int(num_bytes or 0))
+    if value >= 1024 * 1024 * 1024:
+        return f"{value / (1024 * 1024 * 1024):.2f} GB"
+    if value >= 1024 * 1024:
+        return f"{value / (1024 * 1024):.1f} MB"
+    if value >= 1024:
+        return f"{value / 1024:.1f} KB"
+    return f"{value} B"
+
+
+def ensure_video_storage_capacity(incoming_bytes):
+    quota = video_storage_quota_bytes()
+    if quota <= 0:
+        return
+    usage = current_video_storage_usage_bytes()
+    incoming = max(0, int(incoming_bytes or 0))
+    if usage + incoming > quota:
+        remaining = max(0, quota - usage)
+        raise ValueError(
+            "この個人アカウントの動画保存容量が上限を超えます。"
+            f" 現在 {format_storage_size(usage)} / 上限 {format_storage_size(quota)}、"
+            f"残り {format_storage_size(remaining)} です。不要な動画を削除してから保存してください。"
+        )
+
+
 def upload_video(
     trip_id,
     video_bytes,
@@ -3835,6 +4036,7 @@ def upload_video(
         raise ValueError("動画データが空です。")
     if len(video_bytes) > 25 * 1024 * 1024:
         raise ValueError("動画が大きすぎます。30秒以内で撮り直してください。")
+    ensure_video_storage_capacity(len(video_bytes))
     poster = normalize_photo(poster_bytes)
     if not poster:
         raise ValueError("動画の代表画像を作れませんでした。")
@@ -3906,6 +4108,383 @@ def upload_video(
             except Exception:
                 pass
         raise RuntimeError(f"動画保存処理でエラーが発生しました: {exc}") from exc
+
+
+def _video_selection_quality_label(value):
+    labels = {
+        "expression": "表情",
+        "action": "躍動感",
+        "beauty": "写真の美しさ",
+        "subject": "被写体の魅力",
+        "story": "印象的な瞬間",
+        "other": "総合",
+    }
+    return labels.get(str(value or "").strip().lower(), "総合")
+
+
+def _image_dhash64(image_bytes):
+    """Small perceptual hash used only to reject almost-identical selected frames."""
+    try:
+        from PIL import Image
+        with Image.open(io.BytesIO(image_bytes)) as img:
+            pixels = list(img.convert("L").resize((9, 8)).getdata())
+        value = 0
+        bit = 0
+        for row in range(8):
+            start = row * 9
+            for col in range(8):
+                if pixels[start + col] > pixels[start + col + 1]:
+                    value |= 1 << bit
+                bit += 1
+        return value
+    except Exception:
+        return None
+
+
+def _hamming64(a, b):
+    if a is None or b is None:
+        return 64
+    return (int(a) ^ int(b)).bit_count()
+
+
+def choose_video_ai_frames(frame_items):
+    """Ask vision AI for nine diverse best stills; no category quota is imposed."""
+    frames = list(frame_items or [])
+    if len(frames) < 9:
+        raise ValueError("AIセレクション用の候補画像が9枚未満です。")
+
+    schema = {
+        "type": "object",
+        "properties": {
+            "selections": {
+                "type": "array",
+                "minItems": 9,
+                "maxItems": 9,
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "rank": {"type": "integer", "minimum": 1, "maximum": 9},
+                        "frame_id": {"type": "string"},
+                        "score": {"type": "integer", "minimum": 0, "maximum": 100},
+                        "primary_quality": {
+                            "type": "string",
+                            "enum": ["expression", "action", "beauty", "subject", "story", "other"],
+                        },
+                        "reason": {"type": "string"},
+                    },
+                    "required": ["rank", "frame_id", "score", "primary_quality", "reason"],
+                    "additionalProperties": False,
+                },
+            }
+        },
+        "required": ["selections"],
+        "additionalProperties": False,
+    }
+    prompt = (
+        "動画から静止画9枚を選ぶフォトセレクターです。候補フレームを時刻順に渡します。\n"
+        "カテゴリ別に3枚ずつ等の枚数制限は一切ありません。9枚すべてを総合評価で選んでください。\n"
+        "人物・生物では、笑顔・驚き・真剣さなど画像から明確に見える表情、印象的なしぐさ、躍動感、"
+        "顔や全身の見え方を重視します。内面の感情は断定せず、見た目の表情だけを評価してください。\n"
+        "物・乗り物・風景では、被写体がきれいに見える瞬間、動きのタイミング、ピント、ブレ、露出、色、"
+        "構図、遮蔽物の少なさを重視してください。\n"
+        "どの被写体でも、写真としての完成度と『この動画を代表する印象的な瞬間』を評価してください。\n"
+        "重要: ほぼ同じ場面・同じ表情の近接フレームを複数選ばず、動画全体の異なる時点や場面がなるべく"
+        "含まれるようにしてください。ただし質を下げてまで均等配分する必要はありません。\n"
+        "rank=1をAI BESTとし、rank=1〜9を重複なく返してください。reasonは日本語で短く具体的にしてください。"
+    )
+    image_items = [
+        (f"{frame['frame_id']} / {int(frame['timestamp_ms']) / 1000:.1f}秒", frame["ai_bytes"])
+        for frame in frames
+    ]
+    try:
+        result = ask_json_with_images(
+            prompt,
+            image_items,
+            "video_best_frames",
+            schema,
+            max_output_tokens=1700,
+        )
+    except Exception:
+        # Some model/provider limits are more conservative with many images. Retry
+        # with 12 temporally spread candidates rather than failing the saved video.
+        if len(frames) <= 12:
+            raise
+        step = (len(frames) - 1) / 11
+        retry_indexes = sorted({round(i * step) for i in range(12)})
+        retry_frames = [frames[i] for i in retry_indexes]
+        retry_items = [
+            (f"{frame['frame_id']} / {int(frame['timestamp_ms']) / 1000:.1f}秒", frame["ai_bytes"])
+            for frame in retry_frames
+        ]
+        result = ask_json_with_images(
+            prompt,
+            retry_items,
+            "video_best_frames_retry",
+            schema,
+            max_output_tokens=1700,
+        )
+
+    by_id = {str(frame.get("frame_id")): frame for frame in frames}
+    raw = result.get("selections") if isinstance(result, dict) else []
+    ranked = sorted(
+        [item for item in (raw or []) if isinstance(item, dict)],
+        key=lambda item: int(item.get("rank") or 99),
+    )
+    selected = []
+    used_ids = set()
+    used_hashes = []
+    for item in ranked:
+        frame_id = str(item.get("frame_id") or "")
+        frame = by_id.get(frame_id)
+        if not frame or frame_id in used_ids:
+            continue
+        frame_hash = _image_dhash64(frame.get("image_bytes"))
+        # Reject only near-identical frames here. Broader semantic diversity is
+        # handled by the AI prompt so different expressions in one scene can remain.
+        if any(_hamming64(frame_hash, existing) <= 1 for existing in used_hashes):
+            continue
+        selected.append(
+            {
+                "frame": frame,
+                "score": max(0, min(100, int(item.get("score") or 0))),
+                "primary_quality": str(item.get("primary_quality") or "other"),
+                "reason": str(item.get("reason") or "").strip()[:80],
+                "hash": frame_hash,
+            }
+        )
+        used_ids.add(frame_id)
+        used_hashes.append(frame_hash)
+        if len(selected) >= 9:
+            break
+
+    # A malformed response or an almost-identical pick must not leave an 8-cell
+    # grid. Fill from unused frames, prioritizing the time point furthest from the
+    # already selected set while still rejecting exact-looking duplicates.
+    while len(selected) < 9:
+        candidates = []
+        selected_times = [int(x["frame"].get("timestamp_ms") or 0) for x in selected]
+        for frame in frames:
+            frame_id = str(frame.get("frame_id") or "")
+            if frame_id in used_ids:
+                continue
+            frame_hash = _image_dhash64(frame.get("image_bytes"))
+            if any(_hamming64(frame_hash, existing) <= 1 for existing in used_hashes):
+                continue
+            timestamp = int(frame.get("timestamp_ms") or 0)
+            distance = min((abs(timestamp - t) for t in selected_times), default=10**9)
+            candidates.append((distance, timestamp, frame, frame_hash))
+        if not candidates:
+            break
+        _, _, frame, frame_hash = max(candidates, key=lambda x: (x[0], x[1]))
+        selected.append(
+            {
+                "frame": frame,
+                "score": 0,
+                "primary_quality": "other",
+                "reason": "動画全体の違う場面を残すため選択",
+                "hash": frame_hash,
+            }
+        )
+        used_ids.add(str(frame.get("frame_id") or ""))
+        used_hashes.append(frame_hash)
+
+    if len(selected) < 9:
+        # Final safety fallback for very short/static videos: allow visually similar
+        # frames only when there are no nine distinct-looking candidates at all.
+        for frame in frames:
+            frame_id = str(frame.get("frame_id") or "")
+            if frame_id in used_ids:
+                continue
+            selected.append(
+                {
+                    "frame": frame,
+                    "score": 0,
+                    "primary_quality": "other",
+                    "reason": "候補が少ないため時間の違う瞬間を選択",
+                    "hash": _image_dhash64(frame.get("image_bytes")),
+                }
+            )
+            used_ids.add(frame_id)
+            if len(selected) >= 9:
+                break
+
+    if len(selected) < 9:
+        raise ValueError("AIセレクションを9枚そろえられませんでした。")
+    return selected[:9]
+
+
+def _video_selection_base_path(photo):
+    video_path = photo_video_storage_path(photo)
+    if "_video." in video_path:
+        return video_path.rsplit("_video.", 1)[0]
+    if "." in video_path:
+        return video_path.rsplit(".", 1)[0]
+    return video_path
+
+
+def _write_photo_reflection(photo_id, reflection):
+    (
+        supabase_client()
+        .table(PHOTO_TABLE)
+        .update({"reflection_json": reflection if isinstance(reflection, dict) else {}})
+        .eq("id", photo_id)
+        .eq("family_key", current_family_key()).eq("member_key", current_member_key())
+        .execute()
+    )
+    signed_photo_url_map.clear()
+    _invalidate_fast_db_cache()
+
+
+def store_video_ai_selection(photo, frame_items):
+    """Run AI selection, store nine JPEG derivatives, and attach them to the video row."""
+    if not isinstance(photo, dict) or not photo.get("id") or not photo_is_video(photo):
+        raise ValueError("AIセレクション対象の動画が見つかりません。")
+    selections = choose_video_ai_frames(frame_items)
+    base = _video_selection_base_path(photo)
+    if not base:
+        raise ValueError("動画の保存先を確認できませんでした。")
+
+    client = supabase_client()
+    uploaded_paths = []
+    items = []
+    try:
+        for rank, selected in enumerate(selections, start=1):
+            frame = selected["frame"]
+            path = f"{base}_ai_{rank:02d}.jpg"
+            client.storage.from_(PHOTO_BUCKET).upload(
+                path=path,
+                file=frame["image_bytes"],
+                file_options={"content-type": "image/jpeg", "cache-control": "3600"},
+            )
+            uploaded_paths.append(path)
+            items.append(
+                {
+                    "rank": rank,
+                    "storage_path": path,
+                    "frame_id": str(frame.get("frame_id") or ""),
+                    "timestamp_ms": max(0, int(frame.get("timestamp_ms") or 0)),
+                    "score": int(selected.get("score") or 0),
+                    "primary_quality": str(selected.get("primary_quality") or "other"),
+                    "reason": str(selected.get("reason") or "").strip(),
+                    "ai_best": rank == 1,
+                    "saved_photo_id": None,
+                }
+            )
+
+        reflection = dict(photo_media_metadata(photo))
+        reflection["ai_selection"] = {
+            "status": "ready",
+            "generated_at": now_jst().isoformat(),
+            "candidate_count": len(frame_items or []),
+            "items": items,
+        }
+        _write_photo_reflection(photo["id"], reflection)
+        updated = dict(photo)
+        updated["reflection_json"] = reflection
+        return updated
+    except Exception:
+        if uploaded_paths:
+            try:
+                client.storage.from_(PHOTO_BUCKET).remove(uploaded_paths)
+            except Exception:
+                pass
+        raise
+
+
+def mark_video_ai_selection_error(photo, message):
+    if not isinstance(photo, dict) or not photo.get("id"):
+        return
+    reflection = dict(photo_media_metadata(photo))
+    reflection["ai_selection"] = {
+        "status": "error",
+        "generated_at": now_jst().isoformat(),
+        "message": str(message or "AIセレクションを作成できませんでした。")[:240],
+        "items": [],
+    }
+    try:
+        _write_photo_reflection(photo["id"], reflection)
+    except Exception:
+        pass
+
+
+def video_ai_selection_items(photo):
+    selection = photo_media_metadata(photo).get("ai_selection") or {}
+    if not isinstance(selection, dict):
+        return []
+    items = selection.get("items") or []
+    if not isinstance(items, list):
+        return []
+    clean = [item for item in items if isinstance(item, dict) and str(item.get("storage_path") or "").strip()]
+    return sorted(clean, key=lambda item: int(item.get("rank") or 99))[:9]
+
+
+def _selection_capture_time(photo, timestamp_ms):
+    raw = str((photo or {}).get("captured_at") or "").strip()
+    if not raw:
+        return now_jst().isoformat()
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        return (parsed + timedelta(milliseconds=max(0, int(timestamp_ms or 0)))).isoformat()
+    except Exception:
+        return raw
+
+
+def save_video_ai_selection_as_photo(video_photo, selection_item):
+    """Copy one AI derivative into the normal photo collection exactly once."""
+    if not isinstance(video_photo, dict) or not isinstance(selection_item, dict):
+        raise ValueError("保存する画像を確認できませんでした。")
+    if selection_item.get("saved_photo_id"):
+        return str(selection_item.get("saved_photo_id"))
+
+    rank = int(selection_item.get("rank") or 0)
+    source_path = str(selection_item.get("storage_path") or "").strip()
+    if not source_path or rank <= 0:
+        raise ValueError("保存する画像を確認できませんでした。")
+    raw = download_photo(source_path)
+    reflection = photo_media_metadata(video_photo)
+    location = reflection.get("location") if isinstance(reflection.get("location"), dict) else {}
+    saved = upload_photo(
+        video_photo.get("trip_id"),
+        raw,
+        location=location,
+        captured_at=_selection_capture_time(video_photo, selection_item.get("timestamp_ms")),
+        capture_source="video_ai_selection",
+        extra_reflection={
+            "source_video_photo_id": str(video_photo.get("id") or ""),
+            "source_selection_rank": rank,
+            "source_selection_timestamp_ms": int(selection_item.get("timestamp_ms") or 0),
+        },
+    )
+    saved_id = str((saved or {}).get("id") or "")
+    if not saved_id:
+        raise RuntimeError("写真として保存できませんでした。")
+
+    current = (
+        supabase_client()
+        .table(PHOTO_TABLE)
+        .select("reflection_json")
+        .eq("id", video_photo.get("id"))
+        .eq("family_key", current_family_key()).eq("member_key", current_member_key())
+        .limit(1)
+        .execute()
+    )
+    row = (current.data or [None])[0] or {}
+    current_reflection = row.get("reflection_json") or {}
+    if not isinstance(current_reflection, dict):
+        current_reflection = {}
+    selection = current_reflection.get("ai_selection") or {}
+    if not isinstance(selection, dict):
+        selection = {}
+    items = selection.get("items") or []
+    if isinstance(items, list):
+        for item in items:
+            if isinstance(item, dict) and int(item.get("rank") or 0) == rank:
+                item["saved_photo_id"] = saved_id
+                break
+    selection["items"] = items
+    current_reflection["ai_selection"] = selection
+    _write_photo_reflection(video_photo.get("id"), current_reflection)
+    return saved_id
 
 
 # ============================================================
@@ -7978,6 +8557,113 @@ def render_saved_media_preview(photo, image_alt="ぶらり旅の写真", compact
     return False
 
 
+@st.dialog("AIセレクション")
+def show_video_ai_selection_dialog(storage_path, title, caption):
+    path = str(storage_path or "").strip()
+    if not path:
+        st.warning("画像を表示できませんでした。")
+        return
+    try:
+        signed = signed_photo_url_map((path,), expires_in=1800)
+        url = str(signed.get(path) or "")
+    except Exception:
+        url = ""
+    if url:
+        st.image(url, use_container_width=True)
+    else:
+        try:
+            st.image(download_photo(path), use_container_width=True)
+        except Exception:
+            st.warning("画像を表示できませんでした。")
+            return
+    if title:
+        st.markdown(f"**{title}**")
+    if caption:
+        st.caption(caption)
+
+
+def render_video_ai_selection(photo, key_prefix="video_selection", allow_save=True):
+    """Render the nine AI-selected stills in a uniform 3x3 grid."""
+    if not photo_is_video(photo):
+        return
+    selection_meta = photo_media_metadata(photo).get("ai_selection") or {}
+    if not isinstance(selection_meta, dict):
+        selection_meta = {}
+    items = video_ai_selection_items(photo)
+    if not items:
+        if str(selection_meta.get("status") or "") == "error":
+            st.caption("AIセレクションを作成できませんでした。動画は保存されています。")
+        return
+
+    st.markdown("##### AIが選んだセレクション")
+    st.caption("表情・躍動感・写真としての美しさ・被写体の魅力などを総合評価し、似た場面が並びすぎないよう9枚を選んでいます。")
+    paths = tuple(str(item.get("storage_path") or "").strip() for item in items)
+    try:
+        signed_map = signed_photo_url_map(paths, expires_in=1800)
+    except Exception:
+        signed_map = {}
+
+    columns = st.columns(3, gap="small")
+    for index, item in enumerate(items):
+        rank = int(item.get("rank") or index + 1)
+        path = str(item.get("storage_path") or "").strip()
+        with columns[index % 3]:
+            url = str(signed_map.get(path) or "")
+            if not url:
+                try:
+                    url = thumbnail_photo_data_url(path, max_px=520, quality=82)
+                except Exception:
+                    url = ""
+            if url:
+                image_html = (
+                    f'<div style="width:100%;aspect-ratio:1/1;overflow:hidden;border-radius:12px;background:rgba(128,128,128,.08);">'
+                    f'<img src="{html.escape(url, quote=True)}" alt="AIセレクション {rank}" loading="lazy" decoding="async" '
+                    f'style="display:block;width:100%;height:100%;object-fit:cover;" /></div>'
+                )
+                st.markdown(image_html, unsafe_allow_html=True)
+            else:
+                st.caption("画像を表示できません")
+            best_label = "★ AI BEST" if bool(item.get("ai_best")) or rank == 1 else f"SELECT {rank}"
+            if rank == 1:
+                st.markdown("**★ AI BEST**")
+            quality = _video_selection_quality_label(item.get("primary_quality"))
+            timestamp_ms = max(0, int(item.get("timestamp_ms") or 0))
+            seconds = timestamp_ms / 1000
+            reason = str(item.get("reason") or "").strip()
+            caption = f"{seconds:.1f}秒・{quality}"
+            if reason:
+                caption += f"\n{reason}"
+            st.caption(caption)
+            if st.button(
+                "大きく見る",
+                use_container_width=True,
+                key=f"{key_prefix}_view_{photo.get('id')}_{rank}",
+            ):
+                show_video_ai_selection_dialog(path, best_label, caption)
+            if allow_save:
+                saved = bool(item.get("saved_photo_id"))
+                if st.button(
+                    "保存済み" if saved else "保存する",
+                    use_container_width=True,
+                    disabled=saved,
+                    key=f"{key_prefix}_save_{photo.get('id')}_{rank}",
+                ):
+                    try:
+                        with st.spinner("写真として保存しています…"):
+                            save_video_ai_selection_as_photo(photo, item)
+                        previous_count = st.session_state.get("_home_today_photo_count")
+                        try:
+                            previous_count = int(previous_count) if previous_count is not None else 0
+                        except Exception:
+                            previous_count = 0
+                        st.session_state["_home_today_photo_count"] = previous_count + 1
+                        st.rerun()
+                    except Exception as exc:
+                        st.error("写真として保存できませんでした。")
+                        with st.expander("保護者向け詳細"):
+                            st.code(str(exc))
+
+
 def trip_label(trip):
     """Label a diary candidate, including a custom saved title when present."""
     trip = trip or {}
@@ -8402,6 +9088,8 @@ def render_recent_camera_photo_comment(trip):
     st.markdown("#### 今撮った動画" if is_video else "#### 今撮った写真")
     if not render_saved_media_preview(photo, image_alt="今撮った動画の代表画像" if is_video else "今撮った写真"):
         st.warning("撮影した記録のプレビューを表示できませんでした。コメントは続けられます。")
+    if is_video:
+        render_video_ai_selection(photo, key_prefix="recent_video_selection", allow_save=True)
 
     location_label = photo_location_label(photo)
     if location_label:
@@ -8540,6 +9228,7 @@ def page_trip():
         try:
             mime_type, video_raw = decode_camera_video_data_url(video_payload["data_url"])
             poster_raw = decode_camera_data_url(video_payload["poster_data_url"])
+            candidate_frames = decode_video_candidate_frames(video_payload.get("candidate_frames") or [])
             digest = hashlib.sha1(video_raw).hexdigest()
             digest_key = "saved_camera_video_digest_current"
             if st.session_state.get(digest_key) != digest:
@@ -8565,6 +9254,17 @@ def page_trip():
                         capture_source=capture_source,
                     )
 
+                ai_selection_ok = False
+                if isinstance(saved_video, dict) and saved_video.get("id") and len(candidate_frames) >= 9:
+                    try:
+                        with st.spinner("AIが動画から良い瞬間を9枚選んでいます…"):
+                            saved_video = store_video_ai_selection(saved_video, candidate_frames)
+                        ai_selection_ok = True
+                    except Exception as selection_exc:
+                        mark_video_ai_selection_error(saved_video, selection_exc)
+                elif isinstance(saved_video, dict) and saved_video.get("id"):
+                    mark_video_ai_selection_error(saved_video, "候補画像を9枚以上作れませんでした。")
+
                 st.session_state[digest_key] = digest
                 if isinstance(saved_video, dict) and saved_video.get("id"):
                     # Reuse the existing recent-media conversation path.
@@ -8581,7 +9281,11 @@ def page_trip():
                     st.session_state["_home_today_place"] = place_label
 
                 st.session_state.capture_serial += 1
-                st.session_state["_camera_notice"] = "動画を保存しました。"
+                st.session_state["_camera_notice"] = (
+                    "動画を保存し、AIセレクション9枚を作りました。"
+                    if ai_selection_ok else
+                    "動画を保存しました。AIセレクションは作成できませんでした。"
+                )
                 st.rerun()
         except Exception as exc:
             st.error("動画を保存できませんでした。")
@@ -9029,6 +9733,8 @@ def page_diary():
     is_video = photo_is_video(photo)
     if not render_saved_media_preview(photo, image_alt="日記の動画の代表画像" if is_video else "日記の写真"):
         st.warning("記録のプレビューを表示できませんでした。会話は続けられます。")
+    if is_video:
+        render_video_ai_selection(photo, key_prefix=f"diary_video_selection_{trip_id}_{pid}", allow_save=True)
 
     location_label = photo_location_label(photo)
     if location_label:
@@ -9288,6 +9994,11 @@ def page_history(embedded=False):
                         if len(history_videos) > 1:
                             st.caption(f"動画 {video_index}")
                         st.video(video_url)
+                        render_video_ai_selection(
+                            video_photo,
+                            key_prefix=f"history_video_selection_{trip_id}_{video_index}",
+                            allow_save=True,
+                        )
                     else:
                         st.warning("動画を読み込めませんでした。")
         st.markdown(
@@ -10089,6 +10800,28 @@ def page_settings():
     if st.button("この端末の自動ログインを解除", use_container_width=True, key="settings_clear_auto_login"):
         clear_browser_auto_login()
         st.success("この端末の自動ログインを解除しました。次回は個人IDとあいことばが必要です。")
+
+    st.divider()
+    st.markdown("#### 動画の保存容量")
+    quota_bytes = video_storage_quota_bytes()
+    if quota_bytes > 0:
+        try:
+            usage_bytes = current_video_storage_usage_bytes()
+            remaining_bytes = max(0, quota_bytes - usage_bytes)
+            st.write(
+                f"この個人アカウント：**{format_storage_size(usage_bytes)} / {format_storage_size(quota_bytes)}**"
+            )
+            st.caption(f"残り：{format_storage_size(remaining_bytes)}。AIセレクションの静止画はこの動画容量には含めません。")
+            st.progress(min(1.0, usage_bytes / quota_bytes) if quota_bytes else 0.0)
+        except Exception as exc:
+            st.caption("動画容量を確認できませんでした。")
+            with st.expander("保護者向け詳細"):
+                st.code(str(exc))
+    else:
+        st.caption(
+            "1人あたりの動画総容量はまだ未設定です。Streamlit Secrets の "
+            "VIDEO_STORAGE_QUOTA_MB に上限MBを設定すると自動で制限します。"
+        )
 
     st.divider()
     st.markdown("#### カメラについて")
