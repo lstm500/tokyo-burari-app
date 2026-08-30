@@ -27,7 +27,7 @@ from zoneinfo import ZoneInfo
 
 import streamlit as st
 
-APP_BUILD = "v136"
+APP_BUILD = "v137"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -7182,8 +7182,8 @@ def resume_member_video_background_jobs(limit=24, min_interval_seconds=0):
     return 0
 
 
-def request_video_ai_reroll(photo):
-    """Reject the current set and automatically create another selection."""
+def request_video_ai_reroll(photo, record_rejection=True):
+    """Create another selection; optionally treat the current set as explicitly rejected."""
     if not isinstance(photo, dict) or not photo.get("id") or not photo_is_video(photo):
         raise ValueError("動画が見つかりません。")
     current = (
@@ -7206,18 +7206,26 @@ def request_video_ai_reroll(photo):
 
     items = [item for item in (selection.get("items") or []) if isinstance(item, dict)]
     history = list(selection.get("history") or [])
-    history.append(
-        {
-            "round": int(selection.get("round") or 0),
-            "reroll_rejected": True,
-            "at": now_jst().isoformat(),
-            "frame_ids": [str(item.get("frame_id") or "") for item in items],
-            "qualities": [str(item.get("primary_quality") or "other") for item in items],
-        }
-    )
+    history_entry = {
+        "round": int(selection.get("round") or 0),
+        "at": now_jst().isoformat(),
+        "frame_ids": [str(item.get("frame_id") or "") for item in items],
+        "qualities": [str(item.get("primary_quality") or "other") for item in items],
+    }
+    if record_rejection:
+        history_entry["reroll_rejected"] = True
+    else:
+        # A confirmed video can be cut again simply to see another set. This is not
+        # negative feedback about the previous photographs, so do not exclude them
+        # from future preference learning or the new AI pass.
+        history_entry["reroll_rejected"] = False
+        history_entry["manual_recut"] = True
+    history.append(history_entry)
     selection["history"] = history[-12:]
     selection["status"] = "processing"
     selection["queued_at"] = now_jst().isoformat()
+    selection.pop("reviewed_at", None)
+    selection.pop("review_result", None)
     reflection["ai_selection"] = selection
     _write_photo_reflection(photo.get("id"), reflection)
 
@@ -13302,6 +13310,35 @@ def _render_moments_picker(photo, index):
     video_id = str(photo.get("id") or "")
     round_number = int(selection_meta.get("round") or 0)
 
+    def render_reviewed_recut_button():
+        can_recut = bool(_video_ai_has_candidate_source(selection_meta) or photo_video_storage_path(photo))
+        if not can_recut:
+            return
+        st.markdown("---")
+        if st.button(
+            "🔄 いい瞬間をもう一度作る",
+            use_container_width=True,
+            key=f"moments_reviewed_recut_{video_id}_{round_number}",
+            help=(
+                "元動画から0.1秒間隔で再評価して、新しい『いい瞬間』候補を作ります。"
+                "すでに日記へ残した写真は削除しません。"
+            ),
+        ):
+            try:
+                with st.spinner("元動画から、いい瞬間をもう一度作っています…"):
+                    request_video_ai_reroll(photo, record_rejection=False)
+                st.session_state.pop(f"_moments_tap_selected_{video_id}_{round_number}", None)
+                st.session_state.pop(f"_moments_tap_serial_{video_id}_{round_number}", None)
+                st.session_state["_moments_notice"] = (
+                    "元動画から新しい『いい瞬間』の再作成を開始しました。"
+                    "すでに日記へ残した写真はそのまま残ります。"
+                )
+                st.rerun()
+            except Exception as exc:
+                st.error("いい瞬間をもう一度作成できませんでした。")
+                with st.expander("保護者向け詳細"):
+                    st.code(str(exc))
+
     st.markdown(f"#### {html.escape(title)}")
     video_expander_label = "動画を見る（軽い手振れ補正）" if video_is_stabilized(photo) else "元の動画を見る"
     with st.expander(video_expander_label):
@@ -13360,6 +13397,7 @@ def _render_moments_picker(photo, index):
     items = video_ai_selection_items(photo)
     if status == "reviewed" and str(selection_meta.get("review_result") or "") == "none_kept":
         st.success("この動画では、写真を1枚も残さない選択をしています。")
+        render_reviewed_recut_button()
         return
     if not items:
         st.info("いい瞬間の自動処理結果を待っています。")
@@ -13380,6 +13418,7 @@ def _render_moments_picker(photo, index):
             "確認済みの動画も、写真をタップして再度選択できます。"
             "すでに日記へ残した写真は自動削除せず、新しく選んだ写真を追加で残せます。"
         )
+        render_reviewed_recut_button()
 
     paths = tuple(str(item.get("storage_path") or "").strip() for item in items)
     try:
