@@ -26,7 +26,7 @@ from zoneinfo import ZoneInfo
 
 import streamlit as st
 
-APP_BUILD = "v122"
+APP_BUILD = "v127"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -1228,7 +1228,9 @@ export default function(component) {
       shootButton.textContent = cameraMode === 'video' ? '● 録画を開始' : '● 写真を撮る';
       showCameraActions();
       try {
-        localStorage.setItem('tokyo_burari_last_camera_open_v1', String(Date.now()));
+        const openedAt = Date.now();
+        localStorage.setItem('tokyo_burari_last_camera_open_v1', String(openedAt));
+        localStorage.setItem('tokyo_burari_last_camera_mode_v1', cameraMode === 'video' ? 'video' : 'photo');
       } catch (_) {}
       setStatus(cameraMode === 'video' ? '動画は最大15秒です。音声も一緒に記録します。' : '');
     } catch (err) {
@@ -1977,11 +1979,11 @@ export default function(component) {
 }
 """
 
-LIVE_CAMERA_COMPONENT_BUILD = "v116"
+LIVE_CAMERA_COMPONENT_BUILD = "v126"
 
 try:
     live_camera_component = st.components.v2.component(
-        "tokyo_burari_live_camera_v116",
+        "tokyo_burari_live_camera_v126",
         html=_LIVE_CAMERA_HTML,
         css=_LIVE_CAMERA_CSS,
         js=_LIVE_CAMERA_JS,
@@ -2621,10 +2623,12 @@ def _get_diary_gallery_component():
 _HISTORY_JS = r"""
 export default function(component) {
   const { data, setTriggerValue } = component;
-  const validPages = new Set(['home', 'camera', 'moments', 'diary', 'review', 'settings']);
+  const validPages = new Set(['home', 'camera', 'videos', 'moments', 'diary', 'review', 'settings']);
   const marker = '__tokyo_burari_page__';
   const requestedPage = validPages.has(data?.page) ? data.page : 'home';
   const action = data?.action || 'sync';
+  const navigationNode = String(data?.node || requestedPage);
+  const interceptHierarchyBack = Boolean(data?.intercept_hierarchy_back) && requestedPage !== 'home';
 
   const pageFromUrl = () => {
     try {
@@ -2685,6 +2689,19 @@ export default function(component) {
   }
 
   const onPopState = (event) => {
+    if (interceptHierarchyBack) {
+      // The phone/browser Back control must mean "one folder level up", not
+      // "whatever screen happened to be visited previously". Restore the app
+      // entry immediately, then let Python apply the fixed parent mapping.
+      window.history.pushState(
+        { ...(window.history.state || {}), [marker]: requestedPage },
+        '',
+        urlFor(requestedPage)
+      );
+      const token = `${navigationNode}:${Date.now()}:${Math.random()}`;
+      setTriggerValue('hierarchy_back', token);
+      return;
+    }
     const statePage = event.state && event.state[marker];
     const target = validPages.has(statePage) ? statePage : pageFromUrl();
     setTriggerValue('page', validPages.has(target) ? target : 'home');
@@ -2697,7 +2714,7 @@ export default function(component) {
 
 try:
     browser_history_component = st.components.v2.component(
-        'tokyo_burari_browser_history',
+        'tokyo_burari_browser_history_v127',
         js=_HISTORY_JS,
     )
 except Exception:
@@ -2721,6 +2738,7 @@ export default function(component) {
   const { data, setTriggerValue } = component;
   const authKey = 'tokyo_burari_auto_login_v1';
   const cameraKey = 'tokyo_burari_last_camera_open_v1';
+  const cameraModeKey = 'tokyo_burari_last_camera_mode_v1';
   const accountKey = String(data?.account_key || '');
   const reviewSeenKey = accountKey ? `tokyo_burari_review_seen_v1:${accountKey}` : '';
   const reviewCheckKey = accountKey ? `tokyo_burari_review_check_v1:${accountKey}` : '';
@@ -2752,6 +2770,7 @@ export default function(component) {
     const state = {
       auth_token: localStorage.getItem(authKey) || '',
       last_camera_open_at: Number(localStorage.getItem(cameraKey) || 0),
+      last_camera_mode: localStorage.getItem(cameraModeKey) || '',
       review_seen_month: reviewSeenKey ? (localStorage.getItem(reviewSeenKey) || '') : '',
       review_check: reviewCheck,
     };
@@ -2774,7 +2793,7 @@ export default function(component) {
 
 try:
     browser_persistence_component = st.components.v2.component(
-        "tokyo_burari_browser_persistence",
+        "tokyo_burari_browser_persistence_v126",
         html=_BROWSER_PERSISTENCE_HTML,
         js=_BROWSER_PERSISTENCE_JS,
     )
@@ -3494,6 +3513,7 @@ def require_family_pin():
                 if expected and hmac.compare_digest(stored_token, expected):
                     _set_authenticated_family({"family_key": family_key}, member, persist=False)
                     st.session_state["_browser_last_camera_open_at"] = browser_state.get("last_camera_open_at") or 0
+                    st.session_state["_browser_last_camera_mode"] = str(browser_state.get("last_camera_mode") or "").strip().lower()
                     st.rerun()
 
     # Legacy no-PIN installation: only probe the legacy account when the app truly
@@ -3576,6 +3596,7 @@ def require_family_pin():
             _set_authenticated_family(family, member, persist=True)
             # Never reopen another person's recent camera session after switching accounts.
             st.session_state["_browser_last_camera_open_at"] = 0
+            st.session_state["_browser_last_camera_mode"] = ""
             st.rerun()
 
         failures += 1
@@ -10319,28 +10340,67 @@ def init_state():
 VALID_APP_PAGES = {"home", "camera", "videos", "moments", "diary", "review", "settings"}
 
 
-def restore_recent_camera_session():
-    """Reopen a recently used camera without an extra browser-storage component call."""
-    if st.session_state.get("_recent_camera_restore_checked", False):
-        return
-    st.session_state["_recent_camera_restore_checked"] = True
+RECENT_CAMERA_AUTO_START_SECONDS = 60 * 60
 
-    # A fresh auto-login already read browser persistence and stored this value.
-    # If it is unavailable, skip restoration rather than delaying the Home screen.
+
+def _remembered_recent_camera_mode():
+    """Return the recently used camera mode while its one-hour window is valid."""
     last_open = st.session_state.get("_browser_last_camera_open_at")
-    if last_open is None:
-        return
     try:
         last_open_ms = float(last_open or 0)
     except Exception:
         last_open_ms = 0.0
 
     age_ms = time.time() * 1000.0 - last_open_ms
-    if last_open_ms > 0 and 0 <= age_ms <= 60 * 60 * 1000:
-        st.session_state["main_page"] = "camera"
+    if not (last_open_ms > 0 and 0 <= age_ms <= RECENT_CAMERA_AUTO_START_SECONDS * 1000):
+        return ""
+
+    mode = str(st.session_state.get("_browser_last_camera_mode") or "").strip().lower()
+    # Old browser data has no mode. Preserve the previous behaviour by treating it
+    # as a recent photo-camera session.
+    return "video" if mode == "video" else "photo"
+
+
+def _sync_recent_camera_state_from_browser(key="home_recent_camera_state_v126"):
+    """Refresh the recent camera timestamp/mode from local browser storage."""
+    try:
+        state = read_browser_persistence(key)
+    except Exception:
+        state = None
+    if not isinstance(state, dict):
+        return False
+
+    try:
+        last_open_ms = float(state.get("last_camera_open_at") or 0)
+    except Exception:
+        last_open_ms = 0.0
+    mode = str(state.get("last_camera_mode") or "").strip().lower()
+    if mode not in {"photo", "video"}:
+        mode = ""
+    st.session_state["_browser_last_camera_open_at"] = last_open_ms
+    st.session_state["_browser_last_camera_mode"] = mode
+    return True
+
+
+def restore_recent_camera_session():
+    """Reopen a recently used photo/video camera in the same mode."""
+    if st.session_state.get("_recent_camera_restore_checked", False):
+        return
+    st.session_state["_recent_camera_restore_checked"] = True
+
+    mode = _remembered_recent_camera_mode()
+    if not mode:
+        return
+
+    st.session_state["main_page"] = "camera"
+    if mode == "video":
+        st.session_state["_camera_auto_start_video"] = True
+        st.session_state.pop("_camera_auto_start", None)
+    else:
         st.session_state["_camera_auto_start"] = True
-        st.session_state["_history_action"] = "replace"
-        st.rerun()
+        st.session_state.pop("_camera_auto_start_video", None)
+    st.session_state["_history_action"] = "replace"
+    st.rerun()
 
 
 
@@ -10382,6 +10442,124 @@ def reset_diary_navigation_for_home_entry():
     for trip_id in opened_trip_ids:
         st.session_state.pop(f"reflection_state_{trip_id}", None)
 
+def _active_diary_navigation_trip_id():
+    """Return the diary trip currently open in the UI, if any."""
+    pending_id = str(st.session_state.get("_pending_diary_open_trip_id") or "").strip()
+    if pending_id:
+        return pending_id
+
+    serial = int(st.session_state.get("_diary_selector_serial") or 0)
+    selected = st.session_state.get(f"diary_trip_selector_{serial}")
+    if selected:
+        return str(selected)
+
+    preferred = st.session_state.get("preferred_diary_trip_id")
+    if preferred:
+        return str(preferred)
+
+    # Fallback for an already-open photo after a widget-key migration.
+    for key, value in list(st.session_state.items()):
+        key_text = str(key)
+        if key_text.startswith("diary_talk_photo_") and value:
+            return key_text[len("diary_talk_photo_"):]
+    return ""
+
+
+def current_navigation_context():
+    """Return the current hierarchy node and any relevant object id.
+
+    This is deliberately a folder-style hierarchy, not a record of visit history.
+    """
+    page = str(st.session_state.get("main_page") or "home")
+    if page == "diary":
+        trip_id = _active_diary_navigation_trip_id()
+        if trip_id and st.session_state.get(f"diary_talk_photo_{trip_id}"):
+            return "diary_photo", trip_id
+        if trip_id:
+            return "diary_trip", trip_id
+        return "diary", ""
+
+    if page == "review":
+        current_view = st.session_state.get("review_view_selector")
+        period_label = "🗓 期間の振り返り"
+        history_label = "📚 これまでの日記"
+        if current_view == "🔍 今月の発見":
+            current_view = period_label
+        if current_view == history_label:
+            detail_trip_id = str(st.session_state.get("history_detail_trip_id") or "")
+            if detail_trip_id:
+                return "review_history_detail", detail_trip_id
+            return "review_history", ""
+        if current_view == period_label:
+            return "review_period", ""
+        return "review", ""
+
+    return page if page in VALID_APP_PAGES else "home", ""
+
+
+def navigation_parent_node(node=None):
+    """Return the fixed parent in the app hierarchy."""
+    if node is None:
+        node, _ = current_navigation_context()
+    parents = {
+        "diary_photo": "diary_trip",
+        "diary_trip": "diary",
+        "review_history_detail": "review_history",
+        "review_history": "review",
+        "review_period": "review",
+        "camera": "home",
+        "videos": "home",
+        "moments": "home",
+        "diary": "home",
+        "review": "home",
+        "settings": "home",
+    }
+    return parents.get(str(node), "")
+
+
+def _return_diary_photo_to_gallery(trip_id):
+    trip_id = str(trip_id or "")
+    if not trip_id:
+        return
+    st.session_state.pop(f"diary_talk_photo_{trip_id}", None)
+    st.session_state.pop(f"diary_selected_photo_{trip_id}", None)
+    # Existing saved-diary photo views create a temporary reflection_state solely
+    # for the individual-photo screen. Pending diaries keep their working state.
+    if st.session_state.pop(f"diary_existing_photo_view_{trip_id}", False):
+        st.session_state.pop(f"reflection_state_{trip_id}", None)
+
+
+def navigate_to_parent():
+    """Move one level up in the fixed app hierarchy, never by visit history."""
+    node, object_id = current_navigation_context()
+    if node == "home":
+        return
+
+    if node == "diary_photo":
+        _return_diary_photo_to_gallery(object_id)
+        st.session_state["_history_action"] = "replace"
+        st.rerun()
+
+    if node == "diary_trip":
+        reset_diary_navigation_for_home_entry()
+        st.session_state["_history_action"] = "replace"
+        st.rerun()
+
+    if node == "review_history_detail":
+        st.session_state.pop("history_detail_trip_id", None)
+        st.session_state["_history_action"] = "replace"
+        st.rerun()
+
+    if node in {"review_history", "review_period"}:
+        st.session_state.pop("history_detail_trip_id", None)
+        st.session_state.pop("review_view_selector", None)
+        st.session_state["_history_action"] = "replace"
+        st.rerun()
+
+    # All first-level pages have Home as their parent.
+    go_page("home", history_mode="replace")
+
+
 def go_page(page_name, history_mode="push"):
     target = page_name if page_name in VALID_APP_PAGES else "home"
     current = st.session_state.get("main_page")
@@ -10416,11 +10594,26 @@ def sync_browser_history():
         st.session_state["main_page"] = page
 
     action = st.session_state.pop("_history_action", "sync")
+    navigation_node, _ = current_navigation_context()
     result = browser_history_component(
-        data={"page": page, "action": action},
-        key="tokyo_burari_browser_history_instance",
+        data={
+            "page": page,
+            "action": action,
+            "node": navigation_node,
+            "intercept_hierarchy_back": page != "home",
+        },
+        key="tokyo_burari_browser_history_instance_v127",
         on_page_change=lambda: None,
+        on_hierarchy_back_change=lambda: None,
     )
+
+    hierarchy_back = getattr(result, "hierarchy_back", None)
+    if hierarchy_back:
+        token = str(hierarchy_back)
+        if token != str(st.session_state.get("_browser_hierarchy_back_token") or ""):
+            st.session_state["_browser_hierarchy_back_token"] = token
+            navigate_to_parent()
+
     browser_page = getattr(result, "page", None)
     if browser_page in VALID_APP_PAGES and browser_page != page:
         st.session_state["main_page"] = browser_page
@@ -10447,9 +10640,15 @@ def ensure_today_trip():
 def render_home_button(label, page_name, key, ensure_trip=False, open_period_review=False):
     if st.button(label, key=key, use_container_width=True):
         if page_name == "camera":
-            # The user's click is a valid browser gesture: use it to request the camera
-            # immediately on the next render. Do not block on a trip lookup first.
-            st.session_state["_camera_auto_start"] = True
+            # The user's click is a valid browser gesture. Reopen the camera mode
+            # used within the last hour; otherwise keep the usual photo auto-start.
+            recent_mode = _remembered_recent_camera_mode()
+            if recent_mode == "video":
+                st.session_state["_camera_auto_start_video"] = True
+                st.session_state.pop("_camera_auto_start", None)
+            else:
+                st.session_state["_camera_auto_start"] = True
+                st.session_state.pop("_camera_auto_start_video", None)
         elif page_name == "review":
             # Always enter Review through the clear two-choice menu. The period-review
             # nudge on Home is still shown, but it no longer skips past this selector.
@@ -10545,23 +10744,33 @@ def inject_home_icon_css(review_attention=False):
     if css_chunks:
         st.markdown("<style>" + "\n".join(css_chunks) + "</style>", unsafe_allow_html=True)
 
-def render_global_bottom_home_button(page_name):
-    """Keep a full-width route to Home at the very bottom of major subpages."""
+def render_global_bottom_navigation(page_name):
+    """Render hierarchy Back above the direct Home button on every non-Home page."""
+    node, _ = current_navigation_context()
+    if node == "home":
+        return
     st.divider()
-    with st.container(key="global_home_nav"):
+    with st.container(key=f"global_parent_nav_{page_name}_{node}"):
+        if st.button(
+            "← 1つ前に戻る",
+            use_container_width=True,
+            key=f"global_parent_back_{page_name}_{node}",
+        ):
+            navigate_to_parent()
+    with st.container(key=f"global_home_nav_{page_name}_{node}"):
         if st.button(
             "トップページに戻る",
             use_container_width=True,
-            key=f"global_bottom_home_{page_name}",
+            key=f"global_bottom_home_{page_name}_{node}",
         ):
-            go_page("home")
+            go_page("home", history_mode="replace")
 
 
 def page_top(title, caption=""):
     c1, c2 = st.columns([1, 5], vertical_alignment="center")
     with c1:
-        if st.button("←", key=f"home_back_{title}", help="ホームへ戻る", use_container_width=True):
-            go_page("home")
+        if st.button("←", key=f"parent_back_{title}", help="1つ前の階層に戻る", use_container_width=True):
+            navigate_to_parent()
     with c2:
         st.subheader(title)
     if caption:
@@ -11659,6 +11868,8 @@ def home_video_counts():
 
 
 def page_home():
+    # Keep the recent photo/video camera mode fresh using browser-local storage only.
+    _sync_recent_camera_state_from_browser()
     review_attention = home_review_attention_needed()
     inject_home_icon_css(review_attention=review_attention)
     fast_family_name = str(st.session_state.get("_current_family_name") or current_family_key())
@@ -12654,9 +12865,6 @@ def page_videos():
     if delete_notice:
         st.success(delete_notice)
 
-    if st.button("←", key="videos_back_home", help="ホームへ戻る"):
-        go_page("home")
-
     page_top(
         "🎞️ 動画保管庫",
         "保存された元動画を確認できます。AIの選定状況に関係なく、保存済み動画はここに表示されます。",
@@ -12779,9 +12987,6 @@ def page_moments():
     delete_notice = st.session_state.pop("_video_delete_notice", None)
     if delete_notice:
         st.success(delete_notice)
-
-    if st.button("←", key="moments_back_home", help="ホームへ戻る"):
-        go_page("home")
 
     page_top(
         "✨ いい瞬間",
@@ -12977,8 +13182,8 @@ def render_recent_camera_photo_comment(trip):
 # Page: Trip / camera
 # ============================================================
 def page_trip():
-    if st.button("←", key="camera_back_home", help="ホームへ戻る"):
-        go_page("home")
+    if st.button("←", key="camera_back_parent", help="1つ前の階層に戻る"):
+        navigate_to_parent()
 
     notice = st.session_state.pop("_camera_notice", None)
     if notice:
@@ -13050,19 +13255,11 @@ def page_trip():
             "video_candidate_sheet_signed_url": str(video_reservation.get("candidate_sheet_signed_url") or ""),
             "video_candidate_sheet_storage_path": str(video_reservation.get("candidate_sheet_path") or ""),
         },
-        key=f"live_camera_v116_{camera_trip_key}_{st.session_state.capture_serial}",
+        key=f"live_camera_v126_{camera_trip_key}_{st.session_state.capture_serial}",
         on_photo_change=lambda: None,
         on_video_change=lambda: None,
         on_camera_error_change=lambda: None,
     )
-
-    with st.container(key="camera_home_nav"):
-        if st.button(
-            "トップページに戻る",
-            use_container_width=True,
-            key="camera_home_button",
-        ):
-            go_page("home")
 
     payload = getattr(result, "photo", None)
     video_payload = getattr(result, "video", None)
@@ -13266,6 +13463,8 @@ def page_trip():
                     st.session_state["_home_today_place"] = place_label
 
                 clear_camera_video_upload_reservation()
+                st.session_state["_browser_last_camera_open_at"] = time.time() * 1000.0
+                st.session_state["_browser_last_camera_mode"] = "video"
                 st.session_state.capture_serial += 1
                 if ai_status in {"queued", "queued_recovery"}:
                     notice = "動画を保管庫に保存しました。いい瞬間はバックグラウンドで自動選定しています。"
@@ -13344,6 +13543,8 @@ def page_trip():
                 if place_label:
                     st.session_state["_home_today_place"] = place_label
 
+                st.session_state["_browser_last_camera_open_at"] = time.time() * 1000.0
+                st.session_state["_browser_last_camera_mode"] = "photo"
                 st.session_state.capture_serial += 1
                 st.session_state["_camera_notice"] = "写真を保存しました。"
                 st.rerun()
@@ -14893,8 +15094,7 @@ else:
 # bridge never sits ahead of Home/Camera on the perceived critical path.
 sync_browser_history()
 
-# Camera already has its Home button directly under the camera form. For the
-# other major pages, keep a consistent Home route at the absolute bottom even
-# when the page body returned early from one of its internal flows.
-if page in {"videos", "moments", "diary", "review", "settings"}:
-    render_global_bottom_home_button(page)
+# Every non-Home page gets the same hierarchy Back button followed by a direct
+# Home button. This is based on the app's fixed folder structure, not visit order.
+if page in {"camera", "videos", "moments", "diary", "review", "settings"}:
+    render_global_bottom_navigation(page)
