@@ -2787,6 +2787,7 @@ export default function(component) {
   const marker = '__tokyo_burari_page__';
   const requestedPage = validPages.has(data?.page) ? data.page : 'home';
   const action = data?.action || 'sync';
+  const refreshToken = String(data?.refresh_token || '');
   const navigationNode = String(data?.node || requestedPage);
   const interceptHierarchyBack = Boolean(data?.intercept_hierarchy_back) && requestedPage !== 'home';
 
@@ -2828,7 +2829,34 @@ export default function(component) {
     currentPage = initialPage;
   }
 
-  if (action === 'push' && currentPage !== requestedPage) {
+  if ((action === 'hard_replace' || action === 'hard_push')) {
+    if (action === 'hard_push' && currentPage !== requestedPage) {
+      window.history.pushState(
+        { ...(window.history.state || {}), [marker]: requestedPage },
+        '',
+        urlFor(requestedPage)
+      );
+    } else {
+      window.history.replaceState(
+        { ...(window.history.state || {}), [marker]: requestedPage },
+        '',
+        urlFor(requestedPage)
+      );
+    }
+    currentPage = requestedPage;
+
+    // A real browser reload clears any stale Streamlit DOM left behind after
+    // repeated mobile reruns. sessionStorage prevents an accidental reload loop.
+    const reloadKey = '__tokyo_burari_last_hard_refresh__';
+    const token = refreshToken || `${requestedPage}:${Date.now()}:${Math.random()}`;
+    let previousToken = '';
+    try { previousToken = sessionStorage.getItem(reloadKey) || ''; } catch (_) {}
+    if (previousToken !== token) {
+      try { sessionStorage.setItem(reloadKey, token); } catch (_) {}
+      setTimeout(() => window.location.reload(), 0);
+      return;
+    }
+  } else if (action === 'push' && currentPage !== requestedPage) {
     window.history.pushState(
       { ...(window.history.state || {}), [marker]: requestedPage },
       '',
@@ -2874,7 +2902,7 @@ export default function(component) {
 
 try:
     browser_history_component = st.components.v2.component(
-        'tokyo_burari_browser_history_v127',
+        'tokyo_burari_browser_history_v145',
         js=_HISTORY_JS,
     )
 except Exception:
@@ -6732,11 +6760,10 @@ def _background_clients():
 
 @st.cache_resource(show_spinner=False)
 def _video_ai_executor():
-    # v145 absolute UI rule: Good Moments may never execute on the Streamlit UI
-    # thread. One durable in-process worker keeps memory bounded while users remain
-    # free to navigate, return home, or record the next video. Additional videos are
-    # queued and processed automatically in order.
-    return ThreadPoolExecutor(max_workers=1, thread_name_prefix="burari-video-ai-bg")
+    # Four slots leave room for recovery if a provider/network call from an old
+    # Streamlit run is still unwinding. The registry still limits normal work to
+    # one current job per video.
+    return ThreadPoolExecutor(max_workers=4, thread_name_prefix="burari-video-ai")
 
 
 @st.cache_resource(show_spinner=False)
@@ -6879,7 +6906,7 @@ def video_ai_processing_is_stale(selection_meta):
 
 
 def _run_video_ai_background_job(photo_id, family_key, member_key):
-    """Run one complete Good Moments job inside the detached background worker."""
+    """Run one complete Good Moments job synchronously in the active Streamlit run."""
     client, ai_client = _background_clients()
     result = (
         client.table(PHOTO_TABLE)
@@ -6904,7 +6931,7 @@ def _run_video_ai_background_job(photo_id, family_key, member_key):
     selection_meta["started_at"] = now_jst().isoformat()
     selection_meta["updated_at"] = selection_meta["started_at"]
     selection_meta["attempt"] = max(0, int(selection_meta.get("attempt") or 0)) + 1
-    selection_meta["pipeline_mode"] = "background_nonblocking_v145"
+    selection_meta["pipeline_mode"] = "inline_single_pass_lossless_v143"
     selection_meta["progress_message"] = "元動画から高画質候補を準備中"
     reflection["ai_selection"] = selection_meta
     try:
@@ -7015,7 +7042,7 @@ def _run_video_ai_background_job(photo_id, family_key, member_key):
             latest_selection["last_error"] = str(exc)[:240]
             latest_selection["updated_at"] = now_jst().isoformat()
             latest_selection["stage"] = str(latest_selection.get("stage") or "pipeline")
-            latest_selection["pipeline_mode"] = "background_nonblocking_v145"
+            latest_selection["pipeline_mode"] = "inline_single_pass_lossless_v143"
             latest_reflection["ai_selection"] = latest_selection
             _write_photo_reflection_for_owner(
                 photo_id, latest_reflection, family_key, member_key, client=client
@@ -7025,13 +7052,16 @@ def _run_video_ai_background_job(photo_id, family_key, member_key):
         return False
 
 def launch_video_ai_background_job(photo):
-    """Queue Good Moments in a detached worker and return immediately.
+    """Run the saved-video AI pipeline automatically in the normal Streamlit run.
 
-    v145 invariant: this function must never run frame extraction, AI selection,
-    or still-image storage on the Streamlit UI thread. The DB row is the durable
-    queue/status record; the cached worker registry only prevents duplicate jobs
-    inside the current server process. After a Streamlit/server restart,
-    ``resume_member_video_background_jobs`` automatically relaunches unfinished rows.
+    v134 intentionally does not detach the first-time selector into a long-lived
+    ThreadPoolExecutor task. Streamlit workers can be rerun/recycled independently
+    of those detached futures, which can leave a DB row in ``processing`` forever.
+    Keeping the pipeline inside the active server execution is slower for that one
+    request, but it is deterministic: no viewer button or other user action is
+    required, and a later app execution can resume any unfinished row.
+
+    The historical function name is retained so existing callers keep working.
     """
     if not isinstance(photo, dict) or not photo.get("id") or not photo_is_video(photo):
         return False
@@ -7042,6 +7072,8 @@ def launch_video_ai_background_job(photo):
     if not photo_id:
         return False
 
+    # Re-read the row so stale home-page cache data can never reprocess a video
+    # that has already reached ready/reviewed.
     fresh = photo
     try:
         result = (
@@ -7067,60 +7099,70 @@ def launch_video_ai_background_job(photo):
     if status in {"ready", "reviewed"} and video_ai_selection_items(fresh):
         return False
 
-    registry = _video_ai_job_registry()
-    with registry["lock"]:
-        existing = registry["futures"].get(photo_id)
-        if existing is not None:
-            if not existing.done():
-                return False
-            registry["futures"].pop(photo_id, None)
+    # Prevent accidental recursion during one Streamlit execution. This guard is
+    # session-local; DB state remains the durable source of truth across reruns.
+    active_key = "_video_ai_inline_active_v133"
+    if str(st.session_state.get(active_key) or "") == photo_id:
+        return False
+    st.session_state[active_key] = photo_id
 
-        # Persist queue state before the worker starts. This write is intentionally
-        # tiny; all expensive video/AI work happens after this function returns.
+    attempted = False
+    try:
+        attempted = True
+        # This function owns all exceptions and persists either ready or error.
+        _run_video_ai_background_job(photo_id, family_key, member_key)
+
+        # A provider/storage failure should normally already be recorded as error.
+        # If the worker ever returns without a terminal state, convert that silent
+        # stall into an explicit error instead of leaving ``processing`` forever.
         try:
-            reflection = dict(photo_media_metadata(fresh))
-            queued = reflection.get("ai_selection") or {}
-            if not isinstance(queued, dict):
-                queued = {}
-            queued["status"] = "queued"
-            queued["stage"] = "candidate_preparation"
-            queued["queued_at"] = now_jst().isoformat()
-            queued["updated_at"] = queued["queued_at"]
-            queued["pipeline_mode"] = "background_nonblocking_v145"
-            queued["progress_message"] = "バックグラウンド処理待ち"
-            queued["last_error"] = ""
-            reflection["ai_selection"] = queued
-            _write_photo_reflection_for_owner(
-                photo_id, reflection, family_key, member_key
+            result = (
+                supabase_client()
+                .table(PHOTO_TABLE)
+                .select("reflection_json")
+                .eq("id", photo_id)
+                .eq("family_key", family_key)
+                .eq("member_key", member_key)
+                .limit(1)
+                .execute()
             )
+            row = (result.data or [None])[0] or {}
+            reflection = row.get("reflection_json") or {}
+            if not isinstance(reflection, dict):
+                reflection = {}
+            latest = reflection.get("ai_selection") or {}
+            if not isinstance(latest, dict):
+                latest = {}
+            latest_status = str(latest.get("status") or "").strip().lower()
+            if latest_status not in {"ready", "reviewed", "error", "waiting_browser_candidates"}:
+                latest["status"] = "error"
+                latest["stage"] = str(latest.get("stage") or "pipeline")
+                latest["last_error"] = "自動処理が終了状態を返さなかったため停止しました。"
+                latest["updated_at"] = now_jst().isoformat()
+                latest["pipeline_mode"] = "inline_single_pass_lossless_v143"
+                reflection["ai_selection"] = latest
+                _write_photo_reflection_for_owner(
+                    photo_id, reflection, family_key, member_key
+                )
         except Exception:
-            # Queueing should still be attempted; the worker will persist its own
-            # processing/error state using owner-explicit DB writes.
+            pass
+    finally:
+        if str(st.session_state.get(active_key) or "") == photo_id:
+            st.session_state.pop(active_key, None)
+        try:
+            _home_video_counts_cached.clear()
+        except Exception:
             pass
 
-        executor = _video_ai_executor()
-        future = executor.submit(
-            _run_video_ai_background_job,
-            photo_id,
-            family_key,
-            member_key,
-        )
-        registry["futures"][photo_id] = future
+    return attempted
 
-        def _release_finished_job(done_future, pid=photo_id, reg=registry):
-            with reg["lock"]:
-                if reg["futures"].get(pid) is done_future:
-                    reg["futures"].pop(pid, None)
-
-        future.add_done_callback(_release_finished_job)
-    return True
 
 def resume_member_video_background_jobs(limit=24, min_interval_seconds=0):
-    """Queue unfinished videos without ever waiting for their processing.
+    """Automatically process unfinished saved videos without any user action.
 
-    This function may perform only the short DB lookup/queue operation on the UI
-    thread. Frame extraction, AI calls, and image storage are always delegated to
-    ``_video_ai_executor``. No spinner or forced rerun is allowed around this call.
+    v133 processes at most one unfinished video in each normal Streamlit execution.
+    The main entry point immediately reruns after an attempt, so additional queued
+    videos advance one by one. This is deliberately not tied to opening the viewer.
     """
     now_mono = time.monotonic()
     last_key = "_video_pipeline_resume_at_v133_inline"
@@ -7162,7 +7204,7 @@ def resume_member_video_background_jobs(limit=24, min_interval_seconds=0):
                 selection["v140_auto_retry"] = True
                 selection["queued_at"] = now_jst().isoformat()
                 selection["updated_at"] = selection["queued_at"]
-                selection["pipeline_mode"] = "background_nonblocking_v145"
+                selection["pipeline_mode"] = "inline_single_pass_lossless_v143"
                 selection["status"] = "waiting_candidates"
                 selection["stage"] = "candidate_preparation"
                 selection["last_error"] = ""
@@ -7182,7 +7224,7 @@ def resume_member_video_background_jobs(limit=24, min_interval_seconds=0):
             try:
                 selection["status"] = "waiting_candidates"
                 selection["stage"] = "candidate_preparation"
-                selection["pipeline_mode"] = "background_nonblocking_v145"
+                selection["pipeline_mode"] = "inline_single_pass_lossless_v143"
                 selection["last_error"] = ""
                 reflection = dict(photo_media_metadata(row))
                 reflection["ai_selection"] = selection
@@ -7211,7 +7253,7 @@ def resume_member_video_background_jobs(limit=24, min_interval_seconds=0):
                 selection["status"] = "error"
                 selection["last_error"] = str(exc)[:240]
                 selection["updated_at"] = now_jst().isoformat()
-                selection["pipeline_mode"] = "background_nonblocking_v145"
+                selection["pipeline_mode"] = "inline_single_pass_lossless_v143"
                 reflection["ai_selection"] = selection
                 _write_photo_reflection_for_owner(
                     row.get("id"),
@@ -11336,6 +11378,32 @@ def _return_diary_photo_to_gallery(trip_id):
         st.session_state.pop(f"reflection_state_{trip_id}", None)
 
 
+def _request_navigation_refresh(hard=False, history_mode="replace"):
+    """Request a clean redraw after navigation.
+
+    Internal hierarchy moves keep the Streamlit session and use a full app rerun.
+    Returning to Home additionally asks the browser-history bridge for one real
+    browser reload, which removes any stale mobile DOM left by previous reruns.
+    """
+    if hard:
+        st.session_state["_history_action"] = (
+            "hard_push" if history_mode == "push" else "hard_replace"
+        )
+        st.session_state["_hard_refresh_token"] = uuid.uuid4().hex
+    else:
+        st.session_state["_history_action"] = (
+            history_mode if history_mode in {"push", "replace"} else "replace"
+        )
+    st.rerun()
+
+
+def _reset_home_navigation_state():
+    """Drop drill-down-only state before showing Home again."""
+    reset_diary_navigation_for_home_entry()
+    st.session_state.pop("history_detail_trip_id", None)
+    st.session_state.pop("review_view_selector", None)
+
+
 def navigate_to_parent():
     """Move one level up in the fixed app hierarchy, never by visit history."""
     node, object_id = current_navigation_context()
@@ -11344,30 +11412,27 @@ def navigate_to_parent():
 
     if node == "diary_photo":
         _return_diary_photo_to_gallery(object_id)
-        st.session_state["_history_action"] = "replace"
-        st.rerun()
+        _request_navigation_refresh(hard=False, history_mode="replace")
 
     if node == "diary_trip":
         reset_diary_navigation_for_home_entry()
-        st.session_state["_history_action"] = "replace"
-        st.rerun()
+        _request_navigation_refresh(hard=False, history_mode="replace")
 
     if node == "review_history_detail":
         st.session_state.pop("history_detail_trip_id", None)
-        st.session_state["_history_action"] = "replace"
-        st.rerun()
+        _request_navigation_refresh(hard=False, history_mode="replace")
 
     if node in {"review_history", "review_period"}:
         st.session_state.pop("history_detail_trip_id", None)
         st.session_state.pop("review_view_selector", None)
-        st.session_state["_history_action"] = "replace"
-        st.rerun()
+        _request_navigation_refresh(hard=False, history_mode="replace")
 
-    # All first-level pages have Home as their parent.
-    go_page("home", history_mode="replace")
+    # All first-level pages have Home as their parent. A real browser reload here
+    # clears stale widgets that can otherwise survive repeated mobile reruns.
+    go_page("home", history_mode="replace", hard_refresh=True)
 
 
-def go_page(page_name, history_mode="push"):
+def go_page(page_name, history_mode="push", hard_refresh=False):
     target = page_name if page_name in VALID_APP_PAGES else "home"
     current = st.session_state.get("main_page")
     if current != target:
@@ -11383,10 +11448,17 @@ def go_page(page_name, history_mode="push"):
             for key in list(st.session_state.keys()):
                 if str(key).startswith("diary_trip_selector_"):
                     st.session_state.pop(key, None)
+        if target == "home":
+            _reset_home_navigation_state()
         st.session_state["main_page"] = target
         st.session_state["_history_action"] = (
             history_mode if history_mode in {"push", "replace"} else "push"
         )
+    if hard_refresh:
+        st.session_state["_history_action"] = (
+            "hard_push" if history_mode == "push" else "hard_replace"
+        )
+        st.session_state["_hard_refresh_token"] = uuid.uuid4().hex
     st.rerun()
 
 
@@ -11401,15 +11473,17 @@ def sync_browser_history():
         st.session_state["main_page"] = page
 
     action = st.session_state.pop("_history_action", "sync")
+    refresh_token = str(st.session_state.pop("_hard_refresh_token", "") or "")
     navigation_node, _ = current_navigation_context()
     result = browser_history_component(
         data={
             "page": page,
             "action": action,
+            "refresh_token": refresh_token,
             "node": navigation_node,
             "intercept_hierarchy_back": page != "home",
         },
-        key="tokyo_burari_browser_history_instance_v127",
+        key="tokyo_burari_browser_history_instance_v145",
         on_page_change=lambda: None,
         on_hierarchy_back_change=lambda: None,
     )
@@ -11557,20 +11631,22 @@ def render_global_bottom_navigation(page_name):
     if node == "home":
         return
     st.divider()
-    with st.container(key=f"global_parent_nav_{page_name}_{node}"):
+    # Keep widget identities stable while moving within a page. Dynamic keys based
+    # on the hierarchy node could leave old button DOM behind on some mobile runs.
+    with st.container(key=f"global_parent_nav_{page_name}"):
         if st.button(
             "← 1つ前に戻る",
             use_container_width=True,
-            key=f"global_parent_back_{page_name}_{node}",
+            key=f"global_parent_back_{page_name}",
         ):
             navigate_to_parent()
-    with st.container(key=f"global_home_nav_{page_name}_{node}"):
+    with st.container(key=f"global_home_nav_{page_name}"):
         if st.button(
             "トップページに戻る",
             use_container_width=True,
-            key=f"global_bottom_home_{page_name}_{node}",
+            key=f"global_bottom_home_{page_name}",
         ):
-            go_page("home", history_mode="replace")
+            go_page("home", history_mode="replace", hard_refresh=True)
 
 
 def page_top(title, caption=""):
@@ -14653,10 +14729,8 @@ def page_trip():
                 if ai_status in {"queued", "queued_recovery"} and isinstance(saved_video, dict) and saved_video.get("id"):
                     try:
                         save_stage = "AI自動処理"
-                        # Never wait here. The video is already safe; Good Moments is
-                        # queued in the detached worker and the camera/navigation UI
-                        # is returned to the user immediately.
-                        launch_video_ai_background_job(saved_video)
+                        with st.spinner("動画を保存しました。いい瞬間を自動作成しています…"):
+                            launch_video_ai_background_job(saved_video)
                     except Exception as background_exc:
                         ai_status = "queued_recovery"
                         try:
@@ -15446,7 +15520,7 @@ def page_history(embedded=False):
                     key=f"history_back_{trip_id}",
                 ):
                     st.session_state.pop("history_detail_trip_id", None)
-                    st.rerun()
+                    _request_navigation_refresh(hard=False, history_mode="replace")
         with home_col:
             with st.container(key="history_home_nav"):
                 if st.button(
@@ -15455,7 +15529,7 @@ def page_history(embedded=False):
                     key=f"history_home_{trip_id}",
                 ):
                     st.session_state.pop("history_detail_trip_id", None)
-                    go_page("home")
+                    go_page("home", history_mode="replace", hard_refresh=True)
 
         if st.button(
             "🗑 この日記を削除",
@@ -16272,16 +16346,20 @@ def page_settings():
 verify_setup()
 require_family_pin()
 init_state()
-# v145 absolute rule: unfinished Good Moments jobs are only QUEUED here. Expensive
-# frame extraction / AI / image storage always runs in the detached worker, so login,
-# Home, camera, back buttons, and the next recording stay interactive at all times.
-try:
-    resume_member_video_background_jobs(limit=24, min_interval_seconds=8)
-except Exception:
-    pass
-# Low-resolution browser recovery remains disabled for the quality-first pipeline.
-# If native extraction from the saved original is unavailable, the worker records
-# an explicit error rather than substituting blurry frames.
+# v133: unfinished videos are processed automatically in the normal Streamlit
+# execution, not in a detached long-lived thread. No viewer/button action is
+# required. Process one saved video, then rerun so another queued video can follow.
+with st.spinner("保存済み動画の『いい瞬間』を自動処理しています…"):
+    _video_auto_processed_v140 = resume_member_video_background_jobs()
+if _video_auto_processed_v140:
+    try:
+        _home_video_counts_cached.clear()
+    except Exception:
+        pass
+    st.rerun()
+# v140 does not use browser-side low-resolution candidate recovery. If native
+# extraction from the saved original is unavailable, the job ends as an explicit
+# error instead of silently substituting blurry frames.
 # Daily rollover and old-title repair can touch many rows. They are diary/history
 # maintenance, not startup requirements, so home/camera opens no longer wait for them.
 restore_recent_camera_session()
