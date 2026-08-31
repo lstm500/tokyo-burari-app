@@ -30,7 +30,7 @@ import streamlit as st
 # Freshly generated update: 2026-08-31 23:49 JST
 GENERATED_UPDATE_JST = "2026-08-31T23:49:00+09:00"
 
-APP_BUILD = "v144"
+APP_BUILD = "v145"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -687,7 +687,7 @@ VIDEO_PROCESSING_MAX_SECONDS = 20
 # larger, up to the hard safety ceiling below (or the member's remaining quota).
 VIDEO_RECORDING_RESERVE_BYTES = 16 * 1024 * 1024
 VIDEO_MAX_BYTES = 48 * 1024 * 1024
-VIDEO_AI_MAX_SELECTIONS = 9
+VIDEO_AI_MAX_SELECTIONS = 3
 # Cost control: sample one candidate per second. A 15-second video therefore sends
 # at most about 15 frames to the vision selector instead of as many as 150.
 VIDEO_AI_SAMPLE_INTERVAL_MS = 1000
@@ -2009,11 +2009,11 @@ export default function(component) {
 }
 """
 
-LIVE_CAMERA_COMPONENT_BUILD = "v144"
+LIVE_CAMERA_COMPONENT_BUILD = "v145"
 
 try:
     live_camera_component = st.components.v2.component(
-        "tokyo_burari_live_camera_v144",
+        "tokyo_burari_live_camera_v145",
         html=_LIVE_CAMERA_HTML,
         css=_LIVE_CAMERA_CSS,
         js=_LIVE_CAMERA_JS,
@@ -2744,7 +2744,7 @@ export default function(component) {
 
 try:
     browser_history_component = st.components.v2.component(
-        'tokyo_burari_browser_history_v144',
+        'tokyo_burari_browser_history_v145',
         js=_HISTORY_JS,
     )
 except Exception:
@@ -5184,7 +5184,7 @@ def register_browser_uploaded_video(
             "height": max(0, int(capture_height or 0)),
             "frame_rate": max(0.0, float(capture_frame_rate or 0)),
             "video_bitrate_bps": max(0, int(video_bitrate_bps or 0)),
-            "quality_pipeline": "v144_native_1s_single_pass",
+            "quality_pipeline": "v145_native_1s_background",
         },
         "video_stabilization": {
             "version": VIDEO_STABILIZATION_VERSION,
@@ -5538,7 +5538,7 @@ def choose_video_ai_frames(
 ):
     """Pick up to nine stills after AI has inspected each one-second candidate.
 
-    v144 samples at one-second intervals to control Vision API use. With a 15-second
+    v145 samples at one-second intervals to control Vision API use. With a 15-second
     recording this is normally at most 15 frames, so the usual path sends one final
     multi-image request. The legacy batch path remains only for oversized/older pools.
     """
@@ -5664,19 +5664,19 @@ def choose_video_ai_frames(
                 result = call_selector(
                     batch,
                     batch_prompt,
-                    f"video_moments_v144_coarse_{batch_index}",
+                    f"video_moments_v145_coarse_{batch_index}",
                     batch_keep,
                     max_output_tokens=1100,
                 )
                 return parse_result(result, batch)
             except Exception:
-                # v144 keeps retry time bounded. Retry the same complete batch once
+                # v145 keeps retry time bounded. Retry the same complete batch once
                 # so every raw frame is still AI-reviewed, but never expand one
                 # failure into many sequential requests that can run for minutes.
                 result = call_selector(
                     batch,
                     batch_prompt,
-                    f"video_moments_v144_coarse_{batch_index}_retry",
+                    f"video_moments_v145_coarse_{batch_index}_retry",
                     batch_keep,
                     max_output_tokens=1100,
                 )
@@ -5724,8 +5724,8 @@ def choose_video_ai_frames(
     final_prompt = (
         "動画全体の最終フォトセレクターです。候補は1秒単位で比較されています。"
         "ここでは動画全体を横断して、最終的に残したい静止画を選んでください。\n"
-        f"出力は最大{VIDEO_AI_MAX_SELECTIONS}枚です。十分に良い候補があれば基本は9枚を選んで3×3で比較できるようにしてください。"
-        "ただし質の低い写真で9枚を埋める必要はありません。\n"
+        f"出力は最大{VIDEO_AI_MAX_SELECTIONS}枚です。十分に良い候補があれば、最も残したい3枚を選んでください。"
+        "似た写真で3枚を埋めず、動画全体から違いのある良い瞬間を優先してください。\n"
         "評価目安：映え・写真美30%、表情や決定的瞬間30%、被写体の魅力20%、動き・物語性10%、本人の過去の好み10%。"
         "特に、自然な笑顔、目線、躍動感、構図、光、色、背景との分離、ピント、被写体が魅力的に見える瞬間を重視してください。"
         "連続したほぼ同じ写真を複数選ばず、写真集として見たときにも変化がある組み合わせにしてください。\n"
@@ -5746,9 +5746,9 @@ def choose_video_ai_frames(
         final_result = call_selector(
             final_frames,
             final_prompt,
-            "video_moments_v144_final",
+            "video_moments_v145_final",
             VIDEO_AI_MAX_SELECTIONS,
-            max_output_tokens=1800,
+            max_output_tokens=900,
         )
     except Exception:
         if not shortlist_records:
@@ -5767,9 +5767,9 @@ def choose_video_ai_frames(
         final_result = call_selector(
             retry_frames,
             final_prompt,
-            "video_moments_v144_final_retry",
+            "video_moments_v145_final_retry",
             VIDEO_AI_MAX_SELECTIONS,
-            max_output_tokens=1800,
+            max_output_tokens=900,
         )
         final_frames = retry_frames
 
@@ -5981,7 +5981,7 @@ def store_video_ai_candidate_sheet(photo, sheet_path, manifest, columns=4, rows=
         "candidate_sheet_columns": max(1, int(columns or 4)),
         "candidate_sheet_rows": max(1, int(rows or ((len(manifest) + max(1, int(columns or 4)) - 1) // max(1, int(columns or 4))))),
         "candidate_sample_interval_ms": VIDEO_AI_SAMPLE_INTERVAL_MS,
-        "candidate_sampling_version": "browser_1s_v144",
+        "candidate_sampling_version": "browser_1s_v145",
         "stage": "ai_selection",
         "round": int(previous.get("round") or 0),
         "items": list(previous.get("items") or []),
@@ -6311,7 +6311,7 @@ def _video_ai_expected_candidate_count(photo):
 def _background_extract_video_candidate_frames(client, photo):
     """Extract one native-resolution candidate per second from the untouched original.
 
-    v144 performs one ffmpeg pass over the saved original video at one frame per second. Each candidate keeps
+    v145 performs one ffmpeg pass over the saved original video at one frame per second. Each candidate keeps
     a high-quality native-resolution JPEG for eventual user-facing output, while AI
     receives a separate small copy. The final selected stills therefore never depend
     on 240px/480px candidate thumbnails and do not need nine separate ffmpeg seeks.
@@ -6333,7 +6333,7 @@ def _background_extract_video_candidate_frames(client, photo):
     target_count = _video_ai_expected_candidate_count(photo)
     fps = 1000.0 / float(VIDEO_AI_SAMPLE_INTERVAL_MS)
     suffix = ".mp4" if str(video_path).lower().endswith(".mp4") else ".webm"
-    with tempfile.TemporaryDirectory(prefix="burari-video-ai-v144-") as tmpdir:
+    with tempfile.TemporaryDirectory(prefix="burari-video-ai-v145-") as tmpdir:
         input_path = os.path.join(tmpdir, "original" + suffix)
         output_pattern = os.path.join(tmpdir, "frame_%03d.jpg")
         with open(input_path, "wb") as fh:
@@ -6393,7 +6393,7 @@ def _background_extract_video_candidate_frames(client, photo):
                     "image_bytes": raw,
                     # AI-only copy. This has no effect on saved-photo quality.
                     "ai_bytes": normalize_photo(raw, max_side=640, quality=74),
-                    "output_source": "original_video_native_1s_v144",
+                    "output_source": "original_video_native_1s_v145",
                 }
             )
         if not frames:
@@ -6608,12 +6608,12 @@ def _background_store_video_ai_selection(
     if not selected_items:
         raise ValueError("AIセレクションを作成できませんでした。")
 
-    # v144 never performs a second seek/re-extraction pass. The one 1-second
+    # v145 never performs a second seek/re-extraction pass. The one 1-second
     # ffmpeg pass already produced native-resolution source frames. Refuse anything
     # that did not originate from that path rather than showing a blurry fallback.
     for selected in selected_items:
         frame = selected.get("frame") or {}
-        if str(frame.get("output_source") or "") != "original_video_native_1s_v144":
+        if str(frame.get("output_source") or "") != "original_video_native_1s_v145":
             raise ValueError("低解像度候補が混在しているため保存を中止しました。元動画から再処理します。")
         if not frame.get("image_bytes"):
             raise ValueError("元動画由来の高画質画像を読み込めませんでした。")
@@ -6641,7 +6641,7 @@ def _background_store_video_ai_selection(
                     "storage_path": path,
                     "frame_id": frame_id,
                     "timestamp_ms": max(0, int(frame.get("timestamp_ms") or 0)),
-                    "output_source": "original_video_native_1s_v144",
+                    "output_source": "original_video_native_1s_v145",
                     "score": int(selected.get("score") or 0),
                     "primary_quality": str(selected.get("primary_quality") or "other"),
                     "reason": str(selected.get("reason") or "").strip(),
@@ -6674,7 +6674,7 @@ def _background_store_video_ai_selection(
                 "updated_at": now_jst().isoformat(),
                 "round": int(round_number),
                 "items": items,
-                "final_frame_mode": "original_native_1s_single_pass_v144",
+                "final_frame_mode": "original_native_1s_single_pass_v145",
                 "high_quality_count": len(items),
                 "progress_message": "完了",
                 "last_error": "",
@@ -6750,7 +6750,7 @@ def _run_video_ai_background_job(photo_id, family_key, member_key):
     selection_meta["started_at"] = now_jst().isoformat()
     selection_meta["updated_at"] = selection_meta["started_at"]
     selection_meta["attempt"] = max(0, int(selection_meta.get("attempt") or 0)) + 1
-    selection_meta["pipeline_mode"] = "inline_single_pass_1s_v144"
+    selection_meta["pipeline_mode"] = "background_single_pass_1s_v145"
     selection_meta["progress_message"] = "元動画から高画質候補を準備中"
     reflection["ai_selection"] = selection_meta
     try:
@@ -6761,7 +6761,7 @@ def _run_video_ai_background_job(photo_id, family_key, member_key):
         pass
 
     try:
-        # v144 samples the untouched original once at one-second intervals in native resolution.
+        # v145 samples the untouched original once at one-second intervals in native resolution.
         # Legacy browser sheets/low-resolution bundles are ignored for final quality.
         frames = _background_extract_video_candidate_frames(client, photo)
         if not frames:
@@ -6773,7 +6773,7 @@ def _run_video_ai_background_job(photo_id, family_key, member_key):
         selection_meta["candidate_bundle_path"] = ""
         selection_meta["candidate_sheet_path"] = ""
         selection_meta["candidate_sample_interval_ms"] = VIDEO_AI_SAMPLE_INTERVAL_MS
-        selection_meta["candidate_sampling_version"] = "original_native_1s_v144"
+        selection_meta["candidate_sampling_version"] = "original_native_1s_v145"
         selection_meta["progress_message"] = "AI一次選定を開始"
         selection_meta["updated_at"] = now_jst().isoformat()
         reflection["ai_selection"] = selection_meta
@@ -6861,7 +6861,7 @@ def _run_video_ai_background_job(photo_id, family_key, member_key):
             latest_selection["last_error"] = str(exc)[:240]
             latest_selection["updated_at"] = now_jst().isoformat()
             latest_selection["stage"] = str(latest_selection.get("stage") or "pipeline")
-            latest_selection["pipeline_mode"] = "inline_single_pass_1s_v144"
+            latest_selection["pipeline_mode"] = "background_single_pass_1s_v145"
             latest_reflection["ai_selection"] = latest_selection
             _write_photo_reflection_for_owner(
                 photo_id, latest_reflection, family_key, member_key, client=client
@@ -6870,17 +6870,48 @@ def _run_video_ai_background_job(photo_id, family_key, member_key):
             pass
         return False
 
+def _video_ai_job_is_running(photo_id):
+    photo_id = str(photo_id or "").strip()
+    if not photo_id:
+        return False
+    registry = _video_ai_job_registry()
+    with registry["lock"]:
+        future = registry["futures"].get(photo_id)
+        if future is None:
+            return False
+        if future.done():
+            registry["futures"].pop(photo_id, None)
+            return False
+        return True
+
+
+def _video_ai_job_done(photo_id, future, registry):
+    """Remove a completed Future from the in-process registry.
+
+    The worker itself persists ready/error state in Supabase, so this callback never
+    touches Streamlit session state and is safe to run outside the UI thread.
+    """
+    try:
+        future.result()
+    except Exception:
+        # _run_video_ai_background_job already persists a terminal error when possible.
+        pass
+    try:
+        with registry["lock"]:
+            if registry["futures"].get(str(photo_id)) is future:
+                registry["futures"].pop(str(photo_id), None)
+    except Exception:
+        pass
+
+
 def launch_video_ai_background_job(photo):
-    """Run the saved-video AI pipeline automatically in the normal Streamlit run.
+    """Queue Good Moments after the original video has been saved, without blocking UI.
 
-    v134 intentionally does not detach the first-time selector into a long-lived
-    ThreadPoolExecutor task. Streamlit workers can be rerun/recycled independently
-    of those detached futures, which can leave a DB row in ``processing`` forever.
-    Keeping the pipeline inside the active server execution is slower for that one
-    request, but it is deterministic: no viewer button or other user action is
-    required, and a later app execution can resume any unfinished row.
-
-    The historical function name is retained so existing callers keep working.
+    Saving the video and creating Good Moments are intentionally separate operations.
+    This function only submits the durable post-save pipeline to a cached executor and
+    returns immediately. If the Streamlit process is recycled, Supabase still contains
+    waiting/processing state and ``resume_member_video_background_jobs`` can restart a
+    stale or waiting job during a later normal app execution.
     """
     if not isinstance(photo, dict) or not photo.get("id") or not photo_is_video(photo):
         return False
@@ -6891,8 +6922,7 @@ def launch_video_ai_background_job(photo):
     if not photo_id:
         return False
 
-    # Re-read the row so stale home-page cache data can never reprocess a video
-    # that has already reached ready/reviewed.
+    # Do a small fresh read so an old page cache never requeues an already completed row.
     fresh = photo
     try:
         result = (
@@ -6918,73 +6948,29 @@ def launch_video_ai_background_job(photo):
     if status in {"ready", "reviewed"} and video_ai_selection_items(fresh):
         return False
 
-    # Prevent accidental recursion during one Streamlit execution. This guard is
-    # session-local; DB state remains the durable source of truth across reruns.
-    active_key = "_video_ai_inline_active_v133"
-    if str(st.session_state.get(active_key) or "") == photo_id:
-        return False
-    st.session_state[active_key] = photo_id
+    registry = _video_ai_job_registry()
+    with registry["lock"]:
+        existing = registry["futures"].get(photo_id)
+        if existing is not None and not existing.done():
+            return False
+        if existing is not None:
+            registry["futures"].pop(photo_id, None)
 
-    attempted = False
-    try:
-        attempted = True
-        # This function owns all exceptions and persists either ready or error.
-        _run_video_ai_background_job(photo_id, family_key, member_key)
-
-        # A provider/storage failure should normally already be recorded as error.
-        # If the worker ever returns without a terminal state, convert that silent
-        # stall into an explicit error instead of leaving ``processing`` forever.
-        try:
-            result = (
-                supabase_client()
-                .table(PHOTO_TABLE)
-                .select("reflection_json")
-                .eq("id", photo_id)
-                .eq("family_key", family_key)
-                .eq("member_key", member_key)
-                .limit(1)
-                .execute()
-            )
-            row = (result.data or [None])[0] or {}
-            reflection = row.get("reflection_json") or {}
-            if not isinstance(reflection, dict):
-                reflection = {}
-            latest = reflection.get("ai_selection") or {}
-            if not isinstance(latest, dict):
-                latest = {}
-            latest_status = str(latest.get("status") or "").strip().lower()
-            if latest_status not in {"ready", "reviewed", "error", "waiting_browser_candidates"}:
-                latest["status"] = "error"
-                latest["stage"] = str(latest.get("stage") or "pipeline")
-                latest["last_error"] = "自動処理が終了状態を返さなかったため停止しました。"
-                latest["updated_at"] = now_jst().isoformat()
-                latest["pipeline_mode"] = "inline_single_pass_1s_v144"
-                reflection["ai_selection"] = latest
-                _write_photo_reflection_for_owner(
-                    photo_id, reflection, family_key, member_key
-                )
-        except Exception:
-            pass
-    finally:
-        if str(st.session_state.get(active_key) or "") == photo_id:
-            st.session_state.pop(active_key, None)
-        try:
-            _home_video_counts_cached.clear()
-        except Exception:
-            pass
-
-    return attempted
+        future = _video_ai_executor().submit(
+            _run_video_ai_background_job,
+            photo_id,
+            family_key,
+            member_key,
+        )
+        registry["futures"][photo_id] = future
+        future.add_done_callback(lambda done, pid=photo_id, reg=registry: _video_ai_job_done(pid, done, reg))
+    return True
 
 
-def resume_member_video_background_jobs(limit=24, min_interval_seconds=0):
-    """Automatically process unfinished saved videos without any user action.
-
-    v133 processes at most one unfinished video in each normal Streamlit execution.
-    The main entry point immediately reruns after an attempt, so additional queued
-    videos advance one by one. This is deliberately not tied to opening the viewer.
-    """
+def resume_member_video_background_jobs(limit=24, min_interval_seconds=5):
+    """Queue unfinished Good Moments jobs without waiting for them in the UI request."""
     now_mono = time.monotonic()
-    last_key = "_video_pipeline_resume_at_v133_inline"
+    last_key = "_video_pipeline_resume_at_v145_background"
     last = float(st.session_state.get(last_key) or 0.0)
     if min_interval_seconds and last and (now_mono - last) < float(min_interval_seconds):
         return 0
@@ -7004,6 +6990,7 @@ def resume_member_video_background_jobs(limit=24, min_interval_seconds=0):
     except Exception:
         return 0
 
+    launched = 0
     for row in rows:
         if not photo_is_video(row):
             continue
@@ -7012,21 +6999,29 @@ def resume_member_video_background_jobs(limit=24, min_interval_seconds=0):
             selection = {}
         status = str(selection.get("status") or "").strip().lower()
         has_items = bool(video_ai_selection_items(row))
+        photo_id = str(row.get("id") or "")
+
         if status in {"ready", "reviewed"} and has_items:
             continue
-        # v144 does not depend on browser candidate recovery. Old waiting/error
-        # states are automatically retried once using the saved original video.
+        if _video_ai_job_is_running(photo_id):
+            continue
+        if status == "processing" and not video_ai_processing_is_stale(selection):
+            # A different worker may still own this recent job. Wait for stale recovery.
+            continue
+
+        # One automatic recovery attempt for an initial failure. The original video
+        # remains untouched and is the source for the retry.
         if status == "error":
-            if has_items or selection.get("v140_auto_retry"):
+            if has_items or selection.get("v145_auto_retry"):
                 continue
             try:
-                selection["v140_auto_retry"] = True
-                selection["queued_at"] = now_jst().isoformat()
-                selection["updated_at"] = selection["queued_at"]
-                selection["pipeline_mode"] = "inline_single_pass_1s_v144"
+                selection["v145_auto_retry"] = True
                 selection["status"] = "waiting_candidates"
                 selection["stage"] = "candidate_preparation"
+                selection["queued_at"] = now_jst().isoformat()
+                selection["updated_at"] = selection["queued_at"]
                 selection["last_error"] = ""
+                selection["pipeline_mode"] = "background_single_pass_1s_v145"
                 reflection = dict(photo_media_metadata(row))
                 reflection["ai_selection"] = selection
                 _write_photo_reflection_for_owner(
@@ -7039,12 +7034,14 @@ def resume_member_video_background_jobs(limit=24, min_interval_seconds=0):
                 row["reflection_json"] = reflection
             except Exception:
                 continue
-        elif status == "waiting_browser_candidates":
+        elif status in {"waiting_browser_candidates", ""}:
             try:
                 selection["status"] = "waiting_candidates"
                 selection["stage"] = "candidate_preparation"
-                selection["pipeline_mode"] = "inline_single_pass_1s_v144"
+                selection["queued_at"] = str(selection.get("queued_at") or now_jst().isoformat())
+                selection["updated_at"] = now_jst().isoformat()
                 selection["last_error"] = ""
+                selection["pipeline_mode"] = "background_single_pass_1s_v145"
                 reflection = dict(photo_media_metadata(row))
                 reflection["ai_selection"] = selection
                 _write_photo_reflection_for_owner(
@@ -7060,30 +7057,14 @@ def resume_member_video_background_jobs(limit=24, min_interval_seconds=0):
 
         try:
             if launch_video_ai_background_job(row):
-                return 1
-        except Exception as exc:
-            # Best-effort terminal error marker. No user button is needed to start
-            # the job; this only makes a real failure visible rather than "stuck".
-            try:
-                reflection = dict(photo_media_metadata(row))
-                selection = reflection.get("ai_selection") or {}
-                if not isinstance(selection, dict):
-                    selection = {}
-                selection["status"] = "error"
-                selection["last_error"] = str(exc)[:240]
-                selection["updated_at"] = now_jst().isoformat()
-                selection["pipeline_mode"] = "inline_single_pass_1s_v144"
-                reflection["ai_selection"] = selection
-                _write_photo_reflection_for_owner(
-                    row.get("id"),
-                    reflection,
-                    row.get("family_key") or current_family_key(),
-                    row.get("member_key") or current_member_key(),
-                )
-            except Exception:
-                pass
-            return 1
-    return 0
+                launched += 1
+        except Exception:
+            continue
+        # Avoid an API burst when several old videos are queued. Two jobs can run
+        # in parallel while the user continues using the app.
+        if launched >= 2:
+            break
+    return launched
 
 
 def request_video_ai_reroll(photo, record_rejection=True):
@@ -7303,9 +7284,9 @@ def store_preselected_video_ai_selection(photo, selections, candidate_count=0):
     """Store already-selected timestamps using one native-resolution original pass."""
     if not isinstance(photo, dict) or not photo.get("id") or not photo_is_video(photo):
         raise ValueError("AIセレクション対象の動画が見つかりません。")
-    selected_items = list(selections or [])[:9]
-    if len(selected_items) < 9:
-        raise ValueError("AIセレクションを9枚そろえられませんでした。")
+    selected_items = list(selections or [])[:VIDEO_AI_MAX_SELECTIONS]
+    if len(selected_items) < VIDEO_AI_MAX_SELECTIONS:
+        raise ValueError(f"AIセレクションを{VIDEO_AI_MAX_SELECTIONS}枚そろえられませんでした。")
     base = _video_selection_base_path(photo)
     if not base:
         raise ValueError("動画の保存先を確認できませんでした。")
@@ -7336,7 +7317,7 @@ def store_preselected_video_ai_selection(photo, selections, candidate_count=0):
             native = native_for_selected(selected)
             frame_id = str(native.get("frame_id") or "").strip()
             image_bytes = native.get("image_bytes")
-            if str(native.get("output_source") or "") != "original_video_native_1s_v144":
+            if str(native.get("output_source") or "") != "original_video_native_1s_v145":
                 raise ValueError("元動画由来ではない画像は保存しません。")
             if not frame_id or not image_bytes:
                 raise ValueError("AIセレクション画像を元動画から読み込めませんでした。")
@@ -7353,7 +7334,7 @@ def store_preselected_video_ai_selection(photo, selections, candidate_count=0):
                     "storage_path": path,
                     "frame_id": frame_id,
                     "timestamp_ms": max(0, int(native.get("timestamp_ms") or 0)),
-                    "output_source": "original_video_native_1s_v144",
+                    "output_source": "original_video_native_1s_v145",
                     "score": int(selected.get("score") or 0),
                     "primary_quality": str(selected.get("primary_quality") or "other"),
                     "reason": str(selected.get("reason") or "").strip(),
@@ -7368,7 +7349,7 @@ def store_preselected_video_ai_selection(photo, selections, candidate_count=0):
             "generated_at": now_jst().isoformat(),
             "candidate_count": max(0, int(candidate_count or len(native_frames))),
             "items": items,
-            "final_frame_mode": "original_native_1s_single_pass_v144",
+            "final_frame_mode": "original_native_1s_single_pass_v145",
             "high_quality_count": len(items),
         }
         _write_photo_reflection(photo["id"], reflection)
@@ -7424,7 +7405,7 @@ def video_ai_selection_items(photo):
     if not isinstance(items, list):
         return []
     clean = [item for item in items if isinstance(item, dict) and str(item.get("storage_path") or "").strip()]
-    return sorted(clean, key=lambda item: int(item.get("rank") or 99))[:9]
+    return sorted(clean, key=lambda item: int(item.get("rank") or 99))[:VIDEO_AI_MAX_SELECTIONS]
 
 
 def _selection_capture_time(photo, timestamp_ms):
@@ -9948,7 +9929,7 @@ def render_monthly_replay_section(month_key, period_label, bundle, review):
 
 
 # ============================================================
-# AI diary conversation
+# Diary AI composition (no per-photo conversation)
 # ============================================================
 SIGNAL_SCHEMA = {
     "type": "object",
@@ -9965,153 +9946,6 @@ SIGNAL_SCHEMA = {
     "required": ["like", "dislike", "curiosity", "convenient", "inconvenient", "people", "wish", "surprise"],
     "additionalProperties": False,
 }
-
-
-def initial_photo_question(image_bytes):
-    schema = {
-        "type": "object",
-        "properties": {"question": {"type": "string"}},
-        "required": ["question"],
-        "additionalProperties": False,
-    }
-    prompt = """
-あなたは5〜6歳の子どもと「東京ぶらり旅」の写真を振り返る会話相手です。
-写真を見て、子どもがなぜこの写真を撮ったのかを本人の言葉で話せる、短い質問を1つだけ作ってください。
-
-重要:
-- 写真の意味を決めつけない。
-- 「不便だったんだね」「楽しかったんだね」のように感情や評価を誘導しない。
-- 正解を求めない。
-- 5〜6歳が一度で理解できる短い日本語にする。
-- 基本形は「この写真、何が気になって撮ったの？」だが、写真に合わせて少し自然に変えてよい。
-- 質問以外は書かない。
-""".strip()
-    try:
-        return ask_json_with_image(prompt, image_bytes, "initial_photo_question", schema, 180)["question"]
-    except Exception:
-        return "この写真、何が気になって撮ったの？"
-
-
-def conversation_text(conversation):
-    lines = []
-    for item in conversation:
-        label = "AI" if item.get("role") == "assistant" else "子ども"
-        lines.append(f"{label}: {item.get('text', '')}")
-    return "\n".join(lines)
-
-
-def next_photo_turn(image_bytes, conversation, child_turn_count):
-    """Analyze the child's words and enforce a very short diary conversation.
-
-    Normal case: finish after the child's first free comment.
-    Exception 1: if the first comment has no subjective feeling/reaction, ask once
-    how the child felt/thought about it.
-    Exception 2: if a negative reaction appears and no Want has been stated yet,
-    ask once what the child wants to do/change. After that answer, always finish.
-    """
-    schema = {
-        "type": "object",
-        "properties": {
-            "first_has_feeling": {"type": "boolean"},
-            "latest_has_feeling": {"type": "boolean"},
-            "any_negative": {"type": "boolean"},
-            "has_want": {"type": "boolean"},
-            "signals": SIGNAL_SCHEMA,
-        },
-        "required": [
-            "first_has_feeling",
-            "latest_has_feeling",
-            "any_negative",
-            "has_want",
-            "signals",
-        ],
-        "additionalProperties": False,
-    }
-    prompt = f"""
-あなたは5〜6歳の子どもの「東京ぶらり旅」の写真について、本人の発言だけを分類します。
-写真は文脈として見てもよいですが、感情・評価・Wantは必ず本人の言葉だけから判定してください。
-写真から感情を推測してはいけません。
-
-会話:
-{conversation_text(conversation)}
-
-子どもの発話回数: {child_turn_count}
-
-必ず確認する項目:
-1. first_has_feeling
-   最初の子どもの自由発話に、本人の主観的な感じ方・反応が明示されているか。
-   「楽しい、好き、いい、うれしい、おもしろい、いや、怖い、困った、悲しい、変だと思った、気になった、びっくりした、なぜだろうと思った、便利、不便」などを含む。
-   単なる物や出来事の説明（「電車があった」「赤かった」「人がいた」等）だけなら false。
-   Wantだけがあって感情・評価・反応がない場合も、first_has_feeling は false とする。
-2. latest_has_feeling
-   直近の子どもの発話に同様の主観的な感じ方・反応が明示されているか。
-3. any_negative
-   子どもの発言のどこかに、明確にネガティブ寄りの感じ方・評価があるか。
-   例: いや、嫌い、怖い、悲しい、困った、汚い、危ない、うるさい、不便、よくない、残念、直したいほど不満。
-   単なる疑問・驚き・「変だと思った」だけでは原則 false。写真から推測しない。
-4. has_want
-   子ども自身が「こうしたい」「こうなってほしい」「増やしたい」「なくしたい」「直したい」など、今後どうしたいかを明示しているか。
-
-signals:
-- 本人が実際に言った内容だけを記録する。推測は禁止。
-- like=よい/好き、dislike=いや/悪い、curiosity=疑問、wish=こうしたい/こうなってほしい/改善したい、surprise=驚き。
-- convenient / inconvenient / people も本人が明示した場合だけ入れる。
-- 該当しなければ各配列は空。
-""".strip()
-
-    analysis = ask_json_with_image(prompt, image_bytes, "analyze_photo_turn", schema, 520)
-
-    first_has_feeling = bool(analysis.get("first_has_feeling"))
-    any_negative = bool(analysis.get("any_negative"))
-    has_want = bool(analysis.get("has_want"))
-
-    # Because our own follow-up wording is fixed, the previous question tells us
-    # exactly which branch the child is currently answering.
-    previous_ai = ""
-    for turn in reversed(conversation[:-1]):
-        if turn.get("role") == "assistant":
-            previous_ai = str(turn.get("text") or "")
-            break
-    answered_feeling_question = "どう思った" in previous_ai
-    answered_want_question = "どうしたい" in previous_ai
-
-    next_question = ""
-    done = True
-
-    if child_turn_count <= 1:
-        # Always inspect the first free comment. Most photos end here.
-        if not first_has_feeling:
-            next_question = "それ、どう思った？"
-            done = False
-        elif any_negative and not has_want:
-            next_question = "どうしたい？"
-            done = False
-    elif answered_feeling_question:
-        # The one allowed feeling follow-up has now been answered. Only a newly
-        # surfaced negative feeling may justify one final Want question.
-        if any_negative and not has_want:
-            next_question = "どうしたい？"
-            done = False
-    elif answered_want_question:
-        # Want has been asked once. End even if the answer is brief or unclear.
-        done = True
-        next_question = ""
-    else:
-        # Safety valve for older saved conversations or unexpected states.
-        done = True
-        next_question = ""
-
-    # Absolute cap: first comment + feeling question + Want question.
-    if child_turn_count >= 3:
-        done = True
-        next_question = ""
-
-    return {
-        "reply": "ありがとう。" if done else "うん。",
-        "next_question": next_question,
-        "done": done,
-        "signals": analysis.get("signals") or {},
-    }
 
 
 def merge_signals(old, new):
@@ -11281,7 +11115,7 @@ def sync_browser_history():
             "node": navigation_node,
             "intercept_hierarchy_back": navigation_node in intercept_nodes,
         },
-        key="tokyo_burari_browser_history_instance_v144",
+        key="tokyo_burari_browser_history_instance_v145",
         on_page_change=lambda: None,
         on_hierarchy_back_change=lambda: None,
     )
@@ -11457,11 +11291,53 @@ def page_top(title, caption=""):
 
 
 def _stored_photo_conversation(photo):
+    """Return only the child's stored comment turns.
+
+    Older rows may contain assistant questions from the former photo-conversation
+    feature. v145 ignores those assistant turns completely; Diary now cares only
+    whether the child left a comment.
+    """
     reflection = (photo or {}).get("reflection_json") or {}
     if not isinstance(reflection, dict):
         return []
     conversation = reflection.get("conversation") or []
-    return conversation if isinstance(conversation, list) else []
+    if not isinstance(conversation, list):
+        conversation = []
+    return [
+        dict(turn)
+        for turn in conversation
+        if isinstance(turn, dict)
+        and turn.get("role") == "child"
+        and str(turn.get("text") or "").strip()
+    ]
+
+
+def photo_child_comment_text(photo):
+    reflection = (photo or {}).get("reflection_json") or {}
+    if not isinstance(reflection, dict):
+        reflection = {}
+    direct = str(reflection.get("child_comment") or "").strip()
+    if direct:
+        return direct
+    values = [str(turn.get("text") or "").strip() for turn in _stored_photo_conversation(photo)]
+    return " / ".join(value for value in values if value)
+
+
+def photo_has_child_comment(photo):
+    return bool(photo_child_comment_text(photo))
+
+
+def save_photo_child_comment(photo_id, text):
+    value = str(text or "").strip()
+    if not value:
+        raise ValueError("本人コメントが空です。")
+    update_photo_reflection(
+        photo_id,
+        [{"role": "child", "text": value}],
+        {},
+        done=True,
+    )
+    return value
 
 
 def _conversation_has_child_words(conversation):
@@ -12110,8 +11986,8 @@ def render_pending_video_ai_review():
     pending = st.session_state.get("_pending_video_ai_review")
     if not isinstance(pending, dict):
         return False
-    selections = list(pending.get("selections") or [])[:9]
-    if len(selections) < 9 or not pending.get("video_raw") or not pending.get("poster_raw"):
+    selections = list(pending.get("selections") or [])[:VIDEO_AI_MAX_SELECTIONS]
+    if len(selections) < VIDEO_AI_MAX_SELECTIONS or not pending.get("video_raw") or not pending.get("poster_raw"):
         st.session_state.pop("_pending_video_ai_review", None)
         return False
 
@@ -12165,7 +12041,7 @@ def render_pending_video_ai_review():
             ai_selection_ok = False
             if isinstance(saved_video, dict) and saved_video.get("id"):
                 try:
-                    with st.spinner("選んだ9枚を保存しています…"):
+                    with st.spinner(f"選んだ{VIDEO_AI_MAX_SELECTIONS}枚を保存しています…"):
                         saved_video = store_preselected_video_ai_selection(
                             saved_video,
                             selections,
@@ -12192,7 +12068,7 @@ def render_pending_video_ai_review():
             st.session_state.pop("_pending_video_ai_review_digest", None)
             st.session_state.capture_serial += 1
             st.session_state["_camera_notice"] = (
-                "動画を保存し、AIセレクション9枚も保存しました。"
+                f"動画を保存し、AIセレクション{VIDEO_AI_MAX_SELECTIONS}枚も保存しました。"
                 if ai_selection_ok else
                 "動画を保存しました。AIセレクションの保存には失敗しました。"
             )
@@ -12203,7 +12079,7 @@ def render_pending_video_ai_review():
                 st.code(str(exc))
 
     st.markdown("##### AIが選んだセレクション")
-    st.caption("表情・躍動感・写真としての美しさ・被写体の魅力などを総合評価し、似た場面が並びすぎないよう9枚を選んでいます。")
+    st.caption("表情・躍動感・写真としての美しさ・被写体の魅力などを総合評価し、似た場面が並びすぎないよう3枚を選んでいます。")
     columns = st.columns(3, gap="small")
     for index, selected in enumerate(selections):
         rank = index + 1
@@ -12237,7 +12113,7 @@ def render_pending_video_ai_review():
             ):
                 show_pending_video_ai_selection_dialog(image_bytes, best_label, caption)
 
-    st.caption("動画を残すと、この9枚もAIセレクションとして保存され、各画像をあとから写真として保存できます。")
+    st.caption("動画を残すと、この3枚もAIセレクションとして保存され、各画像をあとから写真として保存できます。")
     return True
 
 
@@ -13122,7 +12998,7 @@ export default function(component) {
   if (!grid) return;
 
   grid.replaceChildren();
-  const photos = Array.isArray(data?.photos) ? data.photos.slice(0, 9) : [];
+  const photos = Array.isArray(data?.photos) ? data.photos.slice(0, 3) : [];
   const disabled = Boolean(data?.disabled);
   const selected = new Set(
     (Array.isArray(data?.selected_ranks) ? data.selected_ranks : [])
@@ -13134,7 +13010,7 @@ export default function(component) {
     setTriggerValue('selected_ranks', Array.from(selected).sort((a, b) => a - b));
   };
 
-  for (let index = 0; index < 9; index += 1) {
+  for (let index = 0; index < 3; index += 1) {
     const photo = photos[index];
     if (!photo) {
       const empty = document.createElement('div');
@@ -13305,7 +13181,7 @@ def _render_moments_picker(photo, index):
     if status == "processing":
         stage = str(selection_meta.get("stage") or "").strip().lower()
         if stage == "candidate_preparation":
-            st.info("保存済み動画を1秒間隔で切り出し、AI候補を準備しています。")
+            st.info("保存済み動画を1秒間隔で切り出し、AI候補をバックグラウンドで準備しています。")
         else:
             st.info("現在いい瞬間の切り取り中です。")
             progress_message = str(selection_meta.get("progress_message") or "").strip()
@@ -13356,7 +13232,7 @@ def _render_moments_picker(photo, index):
         return
 
     st.caption(
-        f"AIが映えを重視して最大{VIDEO_AI_MAX_SELECTIONS}枚を選んでいます。3×3で比較し、気に入った写真を複数選べます。"
+        f"AIが映えを重視して最大{VIDEO_AI_MAX_SELECTIONS}枚を選んでいます。3枚から気に入った写真を選べます。"
         "選んだ結果は、次回以降のAIセレクションにも軽く反映されます。"
     )
     if status == "reviewed":
@@ -13443,7 +13319,7 @@ def _render_moments_picker(photo, index):
             if int(rank) in valid_ranks
         )
     else:
-        # Fallback for older Streamlit runtimes: keep the 3×3 layout and offer a
+        # Fallback for older Streamlit runtimes: keep the three selected images in one row and offer a
         # compact select/unselect button immediately below each photo.
         for row_start in range(0, VIDEO_AI_MAX_SELECTIONS, 3):
             row_columns = st.columns(3, gap="small")
@@ -14142,7 +14018,7 @@ def page_moments():
         return
 
     if not videos:
-        st.info("まだ動画がありません。動画を撮影すると、自動保存後にAIがいい瞬間を探します。")
+        st.info("まだ動画がありません。動画を撮影すると、動画保存後にバックグラウンドでAIがいい瞬間を探します。")
         return
 
     pending = []
@@ -14205,7 +14081,7 @@ def render_diary_title_editor(trip_id, current_title, key_prefix):
 
 
 def render_recent_camera_photo_comment(trip):
-    """Show the just-saved photo below the camera and let the child comment immediately."""
+    """Offer one optional child comment for the just-saved media, with no AI conversation."""
     trip_id = (trip or {}).get("id")
     if not trip_id:
         return
@@ -14223,55 +14099,33 @@ def render_recent_camera_photo_comment(trip):
     st.divider()
     is_video = photo_is_video(photo)
     st.markdown("#### 今撮った動画" if is_video else "#### 今撮った写真")
-    if not render_saved_media_preview(photo, image_alt="今撮った動画の代表画像" if is_video else "今撮った写真", delete_key_prefix="recent_camera"):
-        st.warning("撮影した記録のプレビューを表示できませんでした。コメントは続けられます。")
+    if not render_saved_media_preview(
+        photo,
+        image_alt="今撮った動画の代表画像" if is_video else "今撮った写真",
+        delete_key_prefix="recent_camera",
+    ):
+        st.warning("撮影した記録のプレビューを表示できませんでした。コメントは残せます。")
     if is_video:
-        st.caption("✨ いい瞬間は自動で作成します。トップページの「いい瞬間を見る」から確認できます。")
+        st.caption("✨ いい瞬間は動画保存とは別にバックグラウンドで作成します。操作を続けられます。")
 
     location_label = photo_location_label(photo)
     if location_label:
         st.caption(f"📍 {location_label}")
 
-    reflection = photo.get("reflection_json") or {}
-    if not isinstance(reflection, dict):
-        reflection = {}
-    conversation = _stored_photo_conversation(photo)
-    signals = photo.get("signals_json") or {}
-    if not isinstance(signals, dict):
-        signals = {}
-    done = bool(reflection.get("conversation_done"))
-
-    if conversation:
-        render_conversation(conversation)
-
-    audio_state_key = f"quick_photo_audio_{photo_id}"
-    audio_pending_key = f"quick_photo_audio_pending_{photo_id}"
-    if st.session_state.get(audio_state_key):
-        st.audio(
-            st.session_state[audio_state_key],
-            format="audio/wav",
-            autoplay=bool(st.session_state.get(audio_pending_key, False)),
-        )
-        st.session_state[audio_pending_key] = False
-
-    if done:
-        st.success("コメントを保存しました。")
+    existing_comment = photo_child_comment_text(photo)
+    if existing_comment:
+        st.success("本人コメントあり")
+        st.caption(existing_comment)
         return
 
-    child_turns = sum(1 for x in conversation if x.get("role") == "child")
-    if child_turns == 0:
-        st.caption("この動画について、まず自由に1回話してね。" if is_video else "この写真について、まず自由に1回話してね。")
-        mic_label = "今撮った動画について話してね" if is_video else "今撮った写真について話してね"
-    else:
-        mic_label = "AIの質問に答えてね"
-
-    serial_key = f"quick_photo_answer_serial_{photo_id}"
+    st.caption("本人コメントは任意です。残したいときだけ1回話してください。AIからの質問・追加質問はありません。")
+    serial_key = f"quick_comment_serial_{photo_id}"
     serial = int(st.session_state.get(serial_key) or 0)
     answer_audio = far_field_audio_input(
-        mic_label,
-        key=f"quick_photo_answer_{photo_id}_{serial}",
+        "本人コメントを録音",
+        key=f"quick_comment_{photo_id}_{serial}",
     )
-    digest_key = f"quick_photo_answer_digest_{photo_id}_{serial}"
+    digest_key = f"quick_comment_digest_{photo_id}_{serial}"
     if answer_audio is None:
         return
 
@@ -14280,37 +14134,21 @@ def render_recent_camera_photo_comment(trip):
         return
 
     try:
-        with st.spinner("声を聞いています…"):
+        with st.spinner("声を文字にしています…"):
             transcript = transcribe_audio(
                 answer_audio,
-                f"東京ぶらり旅で今撮った{'動画' if is_video else '写真'}について、子どもが自由に説明しています。場所は{location_label or '不明'}です。",
+                f"東京ぶらり旅で今撮った{'動画' if is_video else '写真'}について、5〜6歳の子どもが自由に1回だけコメントしています。場所は{location_label or '不明'}です。",
             )
             if not transcript:
                 raise ValueError("文字起こしが空でした。")
-            conversation = list(conversation)
-            conversation.append({"role": "child", "text": transcript})
-            child_turns = sum(1 for x in conversation if x.get("role") == "child")
-            image_bytes = download_photo(photo["storage_path"])
-            result = next_photo_turn(image_bytes, conversation, child_turns)
-            assistant_text = str(result.get("reply", "")).strip()
-            next_question = str(result.get("next_question", "")).strip()
-            if next_question:
-                assistant_text = (assistant_text + " " + next_question).strip()
-            if not assistant_text:
-                assistant_text = "ありがとう。"
-            conversation.append({"role": "assistant", "text": assistant_text})
-            signals = merge_signals(signals, result.get("signals", {}))
-            done = bool(result.get("done"))
-            update_photo_reflection(photo_id, conversation, signals, done=done)
-            audio = speech_bytes(assistant_text)
+            save_photo_child_comment(photo_id, transcript)
 
-        st.session_state[audio_state_key] = audio
-        st.session_state[audio_pending_key] = True
         st.session_state[serial_key] = serial + 1
         st.session_state[digest_key] = digest
+        st.session_state["_camera_notice"] = "本人コメントを保存しました。"
         st.rerun()
     except Exception as exc:
-        st.error("うまく聞き取れませんでした。もう一度話してください。")
+        st.error("コメントを保存できませんでした。もう一度録音してください。")
         with st.expander("保護者向け詳細"):
             st.code(str(exc))
 
@@ -14400,7 +14238,7 @@ def page_trip():
             "video_candidate_sheet_signed_url": str(video_reservation.get("candidate_sheet_signed_url") or ""),
             "video_candidate_sheet_storage_path": str(video_reservation.get("candidate_sheet_path") or ""),
         },
-        key=f"live_camera_v144_{camera_trip_key}_{st.session_state.capture_serial}",
+        key=f"live_camera_v145_{camera_trip_key}_{st.session_state.capture_serial}",
         on_photo_change=lambda: None,
         on_video_change=lambda: None,
         on_camera_error_change=lambda: None,
@@ -14544,10 +14382,10 @@ def page_trip():
                             pass
 
                 if ai_status in {"queued", "queued_recovery"} and isinstance(saved_video, dict) and saved_video.get("id"):
+                    # The original video is already committed. Queue Good Moments and
+                    # immediately return control to the camera/UI; never wait here.
                     try:
-                        save_stage = "AI自動処理"
-                        with st.spinner("動画を保存しました。いい瞬間を自動作成しています…"):
-                            launch_video_ai_background_job(saved_video)
+                        launch_video_ai_background_job(saved_video)
                     except Exception as background_exc:
                         ai_status = "queued_recovery"
                         try:
@@ -14555,8 +14393,11 @@ def page_trip():
                             selection = reflection.get("ai_selection") or {}
                             if not isinstance(selection, dict):
                                 selection = {}
-                            selection["status"] = "processing"
+                            selection["status"] = "waiting_candidates"
+                            selection["stage"] = "candidate_preparation"
                             selection["last_error"] = str(background_exc)[:240]
+                            selection["updated_at"] = now_jst().isoformat()
+                            selection["pipeline_mode"] = "background_single_pass_1s_v145"
                             reflection["ai_selection"] = selection
                             _write_photo_reflection(saved_video["id"], reflection)
                         except Exception:
@@ -14577,7 +14418,7 @@ def page_trip():
                 st.session_state["_browser_last_camera_mode"] = "video"
                 st.session_state.capture_serial += 1
                 if ai_status in {"queued", "queued_recovery"}:
-                    notice = "動画を保管庫に保存しました。いい瞬間は自動で作成します。"
+                    notice = "動画を保管庫に保存しました。いい瞬間はバックグラウンドで作成します。操作を続けられます。"
                 else:
                     notice = "動画を保管庫に保存しました。いい瞬間を自動で作成しました。"
                 st.session_state["_camera_notice"] = notice
@@ -14668,22 +14509,69 @@ def page_trip():
         render_recent_camera_photo_comment(trip)
 
 
+def render_diary_comment_status_gallery(trip_id, photos, trip=None, is_pending=False):
+    """Show still photos with only child-comment presence; no photo conversation screen."""
+    photos = diary_photos_only(photos)
+    if not photos:
+        return
+    st.markdown("#### この日の写真")
+    commented = sum(1 for photo in photos if photo_has_child_comment(photo))
+    st.caption(f"本人コメントあり：{commented} / {len(photos)}枚　（写真を開いてAIと会話する機能はありません）")
+
+    paths = tuple(str(photo.get("storage_path") or "") for photo in photos if photo.get("storage_path"))
+    signed = signed_photo_url_map(paths) if paths else {}
+    cols = st.columns(3, gap="small")
+    for index, photo in enumerate(photos):
+        with cols[index % 3]:
+            src = photo_display_url(photo, signed, max_px=420, quality=76)
+            has_comment = photo_has_child_comment(photo)
+            border = "#F59E0B" if has_comment else "#AEB6C2"
+            background = "rgba(245,158,11,.14)" if has_comment else "rgba(174,182,194,.14)"
+            if src:
+                st.markdown(
+                    f'<div style="padding:4px;border:3px solid {border};background:{background};border-radius:12px;">'
+                    f'<img src="{html.escape(src, quote=True)}" loading="lazy" decoding="async" '
+                    'style="display:block;width:100%;aspect-ratio:1/1;object-fit:cover;border-radius:8px;" />'
+                    '</div>',
+                    unsafe_allow_html=True,
+                )
+            else:
+                st.caption("画像を表示できません")
+            st.caption("💬 本人コメントあり" if has_comment else "コメントなし")
+            if st.button(
+                "×",
+                key=f"diary_status_delete_{trip_id}_{photo.get('id')}_{'pending' if is_pending else 'saved'}",
+                help="この写真を削除",
+            ):
+                confirm_photo_delete_dialog(
+                    trip_id,
+                    photo.get("id"),
+                    photos=photos,
+                    is_pending=is_pending,
+                    trip=trip,
+                )
+
+
 # ============================================================
-# Page: Diary conversation
+# Page: Diary (comment-presence only)
 # ============================================================
 def page_diary():
+    # Remove legacy per-photo conversation state left by older app builds. Stored
+    # child comments remain in Supabase and are not deleted.
+    st.session_state.pop("_pending_diary_open_trip_id", None)
+    for key in list(st.session_state.keys()):
+        key_text = str(key)
+        if key_text.startswith("diary_talk_photo_") or key_text.startswith("diary_selected_photo_") or key_text.startswith("reflection_state_"):
+            st.session_state.pop(key, None)
+
     page_top(
         "📖 日記",
-        "まだ日記になっていない写真を一覧で確認できます。元動画は動画保管庫で管理し、日記には静止画だけを残します。",
+        "写真ごとのAI会話は使いません。本人コメントがあるかどうかだけを確認し、その記録から日記を作ります。",
     )
-    # Old unfinished trips are already shown by list_pending_photo_trips(), so no
-    # AI rollover or historical title scan is needed before the page can appear.
     notice = st.session_state.pop("_diary_notice", None)
     if notice:
         st.success(notice)
 
-    # One diary+trip request is shared by the pending-title numbering and the
-    # saved-diary selector below, instead of loading the same diary metadata twice.
     recent_rows = list_recent_diaries(limit=80)
     saved_titles = [
         str((row.get("diary") or {}).get("title") or "").strip()
@@ -14691,31 +14579,29 @@ def page_diary():
         if str((row.get("diary") or {}).get("title") or "").strip()
     ]
     pending_rows = list_pending_photo_trips()
-    pending_open_id = str(st.session_state.get("_pending_diary_open_trip_id") or "")
-    if pending_rows and not pending_open_id:
+
+    if pending_rows:
         st.markdown("#### まだ日記になっていない写真")
-        st.caption("撮影済みで、まだ日記として保存されていない写真です。動画そのものは日記には表示しません。")
+        st.caption("オレンジ枠は本人コメントあり、グレー枠はコメントなしです。どちらもそのまま日記にできます。")
         pending_titles = pending_diary_titles(pending_rows, used_titles=saved_titles)
         for item in pending_rows:
             pending_trip = item.get("trip") or {}
-            pending_photos = item.get("photos") or []
+            pending_photos = diary_photos_only(item.get("photos") or [])
             pending_id = str(pending_trip.get("id") or "")
+            if not pending_id or not pending_photos:
+                continue
             pending_title = pending_titles.get(pending_id) or diary_title_for_trip(pending_trip, pending_photos)
-            commented_count = sum(
-                1 for photo in pending_photos if _conversation_has_child_words(_stored_photo_conversation(photo))
+            commented_count = sum(1 for photo in pending_photos if photo_has_child_comment(photo))
+            st.markdown(
+                f"**{html.escape(str(pending_trip.get('trip_date') or ''))}　{html.escape(pending_title)}**　・ 写真 {len(pending_photos)}枚"
             )
-            st.markdown(f"**{html.escape(str(pending_trip.get('trip_date') or ''))}　{html.escape(pending_title)}**　・ 写真 {len(pending_photos)}枚")
             st.caption(f"本人コメントあり：{commented_count} / {len(pending_photos)}枚")
-            clicked_pending_pid = render_pending_thumbnail_grid(
+            render_diary_comment_status_gallery(
                 pending_id,
                 pending_photos,
                 trip=pending_trip,
+                is_pending=True,
             )
-            if clicked_pending_pid:
-                pending_state = reflection_state(pending_id, pending_photos)
-                st.session_state["_pending_diary_open_trip_id"] = pending_id
-                if open_diary_photo_talk(pending_id, clicked_pending_pid, pending_state):
-                    st.rerun()
             if st.button(
                 "📖 この写真で日記を作る",
                 type="primary",
@@ -14723,20 +14609,18 @@ def page_diary():
                 key=f"create_pending_diary_{pending_id}",
             ):
                 try:
-                    with st.spinner("写真と本人のコメントから日記を作って保存しています…"):
+                    with st.spinner("写真と本人コメントから日記を作って保存しています…"):
                         create_and_save_diary_from_photos(
                             pending_trip,
                             pending_photos,
                             requested_title=pending_title,
-                            reason="diary_page_pending_button",
+                            reason="diary_page_pending_button_v145",
                         )
                     if st.session_state.get("active_trip_id") == pending_id:
                         st.session_state.active_trip_id = None
+                        _invalidate_active_trip_snapshot()
                     st.session_state.preferred_diary_trip_id = pending_id
-                    st.session_state.pop(f"reflection_state_{pending_id}", None)
-                    if st.session_state.get("_pending_diary_open_trip_id") == pending_id:
-                        st.session_state.pop("_pending_diary_open_trip_id", None)
-                    st.session_state["_diary_notice"] = "日記を作成して、そのまま保存しました。"
+                    st.session_state["_diary_notice"] = "日記を作成して保存しました。"
                     st.rerun()
                 except Exception as exc:
                     st.error("日記を作成できませんでした。")
@@ -14749,529 +14633,126 @@ def page_diary():
         for row in recent_rows
         if (row.get("diary") or {}).get("trip_id")
     }
+    trips = [row.get("trip") or {} for row in recent_rows if (row.get("trip") or {}).get("id")]
+    if not trips:
+        if not pending_rows:
+            st.info("まだ日記はありません。")
+        return
 
-    # A pending photo can be opened directly from the top grid without first creating a diary.
-    pending_open_row = next(
-        (
-            row for row in pending_rows
-            if str((row.get("trip") or {}).get("id") or "") == pending_open_id
-        ),
-        None,
+    ids = [str(t["id"]) for t in trips]
+    trip_map = {str(t["id"]): t for t in trips}
+    label_map = {
+        trip_id_value: f"{trip_map[trip_id_value].get('trip_date', '')}　"
+        f"{diary_display_title(diary_map.get(trip_id_value), trip_map[trip_id_value], photos=None)}"
+        for trip_id_value in ids
+    }
+    preferred = st.session_state.preferred_diary_trip_id
+    default_index = ids.index(str(preferred)) if str(preferred) in ids else None
+    selector_serial = int(st.session_state.get("_diary_selector_serial") or 0)
+    trip_id = st.selectbox(
+        "振り返る日",
+        ids,
+        index=default_index,
+        placeholder="振り返る日を選んでください",
+        format_func=lambda x: label_map.get(str(x), str(x)),
+        key=f"diary_trip_selector_{selector_serial}",
     )
+    if trip_id is None:
+        st.caption("振り返る日を選ぶと、そのぶらり旅の日記と写真を表示します。")
+        return
 
-    if pending_open_row is not None:
-        trip = pending_open_row.get("trip") or {}
-        trip_id = str(trip.get("id") or pending_open_id)
-        photos = pending_open_row.get("photos") or []
-        existing = None
-        if st.button(
-            "← 日記一覧へ戻る",
-            use_container_width=True,
-            key=f"pending_diary_back_{trip_id}",
-        ):
-            st.session_state.pop("_pending_diary_open_trip_id", None)
-            st.session_state.pop(f"diary_talk_photo_{trip_id}", None)
-            st.session_state.pop(f"reflection_state_{trip_id}", None)
-            st.rerun()
+    trip_id = str(trip_id)
+    trip = trip_map[trip_id]
+    photos = diary_photos_only(list_trip_photos(trip_id))
+    existing = diary_map.get(trip_id)
+
+    if photos:
+        render_diary_comment_status_gallery(trip_id, photos, trip=trip, is_pending=False)
     else:
-        trips = [row.get("trip") or {} for row in recent_rows if (row.get("trip") or {}).get("id")]
-        if not trips:
-            if not pending_rows:
-                st.info("まだ日記はありません。")
-            return
-
-        ids = [str(t["id"]) for t in trips]
-        trip_map = {str(t["id"]): t for t in trips}
-        label_map = {
-            trip_id_value: f"{trip_map[trip_id_value].get('trip_date', '')}　"
-            f"{diary_display_title(diary_map.get(trip_id_value), trip_map[trip_id_value], photos=None)}"
-            for trip_id_value in ids
-        }
-        preferred = st.session_state.preferred_diary_trip_id
-        default_index = ids.index(str(preferred)) if str(preferred) in ids else None
-        selector_serial = int(st.session_state.get("_diary_selector_serial") or 0)
-        trip_id = st.selectbox(
-            "振り返る日",
-            ids,
-            index=default_index,
-            placeholder="振り返る日を選んでください",
-            format_func=lambda x: label_map.get(str(x), str(x)),
-            key=f"diary_trip_selector_{selector_serial}",
-        )
-        if trip_id is None:
-            st.caption("振り返る日を選ぶと、そのぶらり旅の日記と写真を表示します。")
-            return
-
-        trip_id = str(trip_id)
-        trip = trip_map[trip_id]
-        # Do not fetch any saved-diary photos until a specific trip is selected.
-        # Original video rows stay in the video vault and are excluded from the diary.
-        photos = diary_photos_only(list_trip_photos(trip_id))
-        existing = diary_map.get(trip_id)
-
-    talk_key = f"diary_talk_photo_{trip_id}"
-
-    if existing and f"reflection_state_{trip_id}" not in st.session_state:
-        clicked_pid = render_diary_photo_gallery(trip_id, photos, state=None) if photos else None
-        if clicked_pid:
-            state = reflection_state(trip_id, photos)
-            st.session_state[f"diary_existing_photo_view_{trip_id}"] = True
-            if open_diary_photo_talk(trip_id, clicked_pid, state):
-                st.rerun()
-
-        existing_title = diary_display_title(existing, trip, photos=photos)
-        st.markdown(
-            f"""
-            <div class="diary-card">
-              <div class="hero-title">{html.escape(existing_title)}</div>
-              <div class="big-text">{html.escape(existing.get('diary_text') or '')}</div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-        existing_meta = existing.get("ai_meta") or {}
-        if photos and st.button(
-            "AIにまとめてもらう",
-            use_container_width=True,
-            key=f"ai_trip_summary_{trip_id}",
-        ):
-            try:
-                with st.spinner("写真とコメントを見て、このぶらり旅をまとめています…"):
-                    summary_result = summarize_burari_from_photos(trip, photos)
-                    save_burari_ai_summary(trip_id, summary_result)
-                st.session_state["_diary_notice"] = "写真とコメントからAIのまとめを更新しました。"
-                st.rerun()
-            except Exception as exc:
-                st.error("AIのまとめを作れませんでした。もう一度試してください。")
-                with st.expander("保護者向け詳細"):
-                    st.code(str(exc))
-        render_burari_trip_summary(existing_meta)
-        render_diary_reflection_summary(existing_meta)
-        render_summary_feedback_controls(existing_meta, trip_id, "saved")
-        render_diary_title_editor(trip_id, existing_title, "diary_existing")
-        if photos and st.button("この日の写真から、もう一度日記をつくる", use_container_width=True):
-            reflection_state(trip_id, photos)
-            st.session_state.pop(f"diary_existing_photo_view_{trip_id}", None)
-            st.session_state.pop(talk_key, None)
-            st.rerun()
-
-        render_diary_delete_controls(trip_id, photos)
-        return
-
-    if not photos:
         st.warning("このぶらり旅には写真がありません。")
-        render_diary_delete_controls(trip_id, photos)
-        return
 
-    state = reflection_state(trip_id, photos)
-    photo_map = {p["id"]: p for p in photos}
-    selected_pid = st.session_state.get(talk_key)
-    in_talk_mode = selected_pid in photo_map
-
-    if not in_talk_mode:
-        st.session_state.pop(talk_key, None)
-        clicked_pid = render_diary_photo_gallery(trip_id, photos, state=state)
-        if clicked_pid and open_diary_photo_talk(trip_id, clicked_pid, state):
-            st.rerun()
-        selected_pid = state.get("selected_photo_id")
-
-    all_done = bool(state["photo_ids"]) and all(
-        bool(state["items"].get(pid, {}).get("done")) for pid in state["photo_ids"]
-    )
-    if (not in_talk_mode) and (all_done or bool(state.get("draft"))):
-        if not state.get("draft"):
-            st.success("写真のお話はここまで。日記にまとめられます。")
-            if st.button("AIと日記をつくる", type="primary", use_container_width=True):
-                try:
-                    photo_states = []
-                    for pid in state["photo_ids"]:
-                        item = state["items"].get(pid, {})
-                        photo_states.append(
-                            {
-                                "photo_id": pid,
-                                "conversation": item.get("conversation", []),
-                                "signals": item.get("signals", {}),
-                            }
-                        )
-                    with st.spinner("話したことを日記にまとめています…"):
-                        result, raw = compose_diary(trip, photo_states)
-                        audio = speech_bytes(result["diary"])
-                    state["draft"] = result["diary"]
-                    state["draft_title"] = diary_display_title(existing, trip, photos=photos)
-                    state["draft_meta"] = {
-                        "reflection_summary": str(result.get("reflection_summary") or "").strip(),
-                        "child_points": result.get("child_points", []),
-                        "signals": result.get("signals", {}),
-                    }
-                    state["raw_conversation"] = raw
-                    state["draft_audio"] = audio
-                    state["draft_audio_pending"] = True
-                    # '日記をつくる' means create AND persist. No second save step is required.
-                    saved = save_diary(
-                        trip_id,
-                        state["draft_title"],
-                        state["draft"],
-                        state.get("raw_conversation", {}),
-                        state.get("draft_meta", {}),
-                    )
-                    state["draft_title"] = diary_display_title(saved, trip, photos=photos)
-                    state["draft_saved"] = True
-                    st.session_state["_diary_notice"] = "日記を作成して、そのまま保存しました。"
-                    st.rerun()
-                except Exception as exc:
-                    st.error("日記をまとめられませんでした。もう一度試してください。")
-                    with st.expander("保護者向け詳細"):
-                        st.code(str(exc))
-            render_diary_delete_controls(trip_id, photos, current_photo_id=selected_pid)
-            return
-
-        fixed_title = diary_display_title(existing, trip, photos=photos)
-        state["draft_title"] = fixed_title
-        st.markdown(
-            f"""
-            <div class="diary-card">
-              <div class="hero-title">{html.escape(fixed_title)}</div>
-              <div class="big-text">{html.escape(state.get('draft') or '')}</div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
+    if not existing:
         if photos and st.button(
-            "AIにまとめてもらう",
-            use_container_width=True,
-            key=f"ai_trip_summary_draft_{trip_id}",
-        ):
-            try:
-                with st.spinner("写真とコメントを見て、このぶらり旅をまとめています…"):
-                    summary_result = summarize_burari_from_photos(trip, photos)
-                draft_meta = state.setdefault("draft_meta", {})
-                _clear_summary_feedback_fields(draft_meta, clear_history=False)
-                draft_meta["trip_summary"] = str(summary_result.get("trip_summary") or "").strip()
-                draft_meta["reflection_summary"] = str(summary_result.get("reflection_summary") or "").strip()
-                draft_meta["photo_comment_summary_updated_at"] = now_jst().isoformat()
-                points = list(summary_result.get("child_points") or [])[:3]
-                if points:
-                    draft_meta["child_points"] = points
-                if get_diary_for_trip(trip_id):
-                    saved_meta = save_burari_ai_summary(trip_id, summary_result)
-                    state["draft_meta"] = saved_meta
-                st.rerun()
-            except Exception as exc:
-                st.error("AIのまとめを作れませんでした。もう一度試してください。")
-                with st.expander("保護者向け詳細"):
-                    st.code(str(exc))
-        persisted_diary = get_diary_for_trip(trip_id)
-        if persisted_diary:
-            persisted_meta = persisted_diary.get("ai_meta") or {}
-            if isinstance(persisted_meta, dict) and persisted_meta:
-                state["draft_meta"] = persisted_meta
-        render_burari_trip_summary(state.get("draft_meta") or {})
-        render_diary_reflection_summary(state.get("draft_meta") or {})
-        render_summary_feedback_controls(
-            state.get("draft_meta") or {},
-            trip_id,
-            "draft",
-            draft_state=None if persisted_diary else state,
-        )
-        if state.get("draft_audio"):
-            st.audio(
-                state["draft_audio"],
-                format="audio/wav",
-                autoplay=bool(state.get("draft_audio_pending")),
-            )
-            state["draft_audio_pending"] = False
-
-        st.markdown("#### 直したいところはある？")
-        st.caption("日記はすでに保存されています。直した内容も自動で保存します。")
-        correction_audio = st.audio_input(
-            "直したいことを話してね",
-            sample_rate=16000,
-            key=f"diary_revision_{trip_id}_{state['revision_serial']}",
-        )
-        correction_digest_key = f"diary_revision_digest_{trip_id}_{state['revision_serial']}"
-        if correction_audio is not None:
-            digest = audio_digest(correction_audio)
-            if digest and st.session_state.get(correction_digest_key) != digest:
-                try:
-                    audio_file = io.BytesIO(correction_audio.getvalue())
-                    audio_file.name = "revision.wav"
-                    with st.spinner("聞いています…"):
-                        correction = transcribe_audio(
-                            audio_file,
-                            "東京ぶらり旅の日記を読み、子どもが直したいところを話しています。",
-                        )
-                        revised = revise_diary(
-                            state["draft"],
-                            correction,
-                            all_child_evidence(state),
-                        )
-                        new_audio = speech_bytes(revised["diary"])
-                    state["draft"] = revised["diary"]
-                    state["draft_audio"] = new_audio
-                    state["draft_audio_pending"] = True
-                    state["revision_serial"] += 1
-                    save_diary(
-                        trip_id,
-                        state.get("draft_title") or fixed_title,
-                        state["draft"],
-                        state.get("raw_conversation", {}),
-                        state.get("draft_meta", {}),
-                    )
-                    state["draft_saved"] = True
-                    st.session_state[correction_digest_key] = digest
-                    st.session_state["_diary_notice"] = "修正した日記を自動で保存しました。"
-                    st.rerun()
-                except Exception as exc:
-                    st.error("修正を反映できませんでした。")
-                    with st.expander("保護者向け詳細"):
-                        st.code(str(exc))
-
-        st.success("この日記はすでに保存されています。")
-        if st.button("日記を確認する", use_container_width=True, key=f"close_saved_diary_{trip_id}"):
-            st.session_state.pop(f"reflection_state_{trip_id}", None)
-            st.session_state.preferred_diary_trip_id = trip_id
-            st.rerun()
-
-        render_diary_delete_controls(trip_id, photos, current_photo_id=selected_pid)
-        return
-
-    if not in_talk_mode:
-        render_diary_delete_controls(trip_id, photos)
-        return
-
-    if selected_pid not in photo_map:
-        render_diary_delete_controls(trip_id, photos)
-        return
-
-    pid = selected_pid
-    photo = photo_map[pid]
-    item = state["items"][pid]
-
-    if st.button("← 写真一覧へ", use_container_width=True, key=f"back_to_diary_gallery_{trip_id}_{pid}"):
-        st.session_state.pop(talk_key, None)
-        if st.session_state.pop(f"diary_existing_photo_view_{trip_id}", False):
-            st.session_state.pop(f"reflection_state_{trip_id}", None)
-        st.rerun()
-
-    if photo_is_video(photo):
-        st.info("元動画は日記には表示しません。動画保管庫から確認できます。")
-        return
-    if not render_saved_media_preview(photo, image_alt="日記の写真", delete_key_prefix="diary_media"):
-        st.warning("写真のプレビューを表示できませんでした。会話は続けられます。")
-
-    location_label = photo_location_label(photo)
-    if location_label:
-        st.caption(f"📍 {location_label}")
-
-    if item.get("done"):
-        render_conversation(item.get("conversation", []))
-        st.info("この写真のお話は完了しています。")
-        if st.button("この写真についてもう少し話す", use_container_width=True, key=f"reopen_photo_{trip_id}_{pid}"):
-            item["done"] = False
-            update_photo_reflection(pid, item.get("conversation", []), item.get("signals", {}), done=False)
-            st.rerun()
-
-        photo_ids = list(state.get("photo_ids") or [])
-        current_index = photo_ids.index(pid) if pid in photo_ids else -1
-        has_next_photo = 0 <= current_index < len(photo_ids) - 1
-
-        if has_next_photo:
-            if st.button(
-                "次の写真にする",
-                use_container_width=True,
-                key=f"next_photo_after_talk_{trip_id}_{pid}",
-            ):
-                next_photo_id = photo_ids[current_index + 1]
-                if open_diary_photo_talk(trip_id, next_photo_id, state):
-                    st.rerun()
-
-        has_child_evidence = any(
-            _conversation_has_child_words(state.get("items", {}).get(state_pid, {}).get("conversation", []))
-            for state_pid in photo_ids
-        )
-        if has_child_evidence and st.button(
-            "これでAIにまとめてもらう",
+            "📖 この写真で日記を作る",
             type="primary",
             use_container_width=True,
-            key=f"finish_and_compose_diary_{trip_id}_{pid}",
+            key=f"create_selected_diary_{trip_id}",
         ):
             try:
-                photo_states = []
-                for state_pid in photo_ids:
-                    state_item = state.get("items", {}).get(state_pid, {})
-                    photo_states.append(
-                        {
-                            "photo_id": state_pid,
-                            "conversation": state_item.get("conversation", []),
-                            "signals": state_item.get("signals", {}),
-                        }
+                with st.spinner("写真と本人コメントから日記を作って保存しています…"):
+                    create_and_save_diary_from_photos(
+                        trip,
+                        photos,
+                        reason="diary_selected_trip_v145",
                     )
-                with st.spinner("ここまで話したことを日記にまとめています…"):
-                    result, raw = compose_diary(trip, photo_states)
-                    audio = speech_bytes(result["diary"])
-                state["draft"] = result["diary"]
-                state["draft_title"] = diary_display_title(existing, trip, photos=photos)
-                state["draft_meta"] = {
-                    "reflection_summary": str(result.get("reflection_summary") or "").strip(),
-                    "child_points": result.get("child_points", []),
-                    "signals": result.get("signals", {}),
-                }
-                state["raw_conversation"] = raw
-                state["draft_audio"] = audio
-                state["draft_audio_pending"] = True
-                saved = save_diary(
-                    trip_id,
-                    state["draft_title"],
-                    state["draft"],
-                    state.get("raw_conversation", {}),
-                    state.get("draft_meta", {}),
-                )
-                state["draft_title"] = diary_display_title(saved, trip, photos=photos)
-                state["draft_saved"] = True
-                st.session_state.pop(talk_key, None)
-                st.session_state["_diary_notice"] = "ここまで話した内容で日記を作成して保存しました。"
+                st.session_state.preferred_diary_trip_id = trip_id
+                st.session_state["_diary_notice"] = "日記を作成して保存しました。"
                 st.rerun()
             except Exception as exc:
-                st.error("日記をまとめられませんでした。もう一度試してください。")
+                st.error("日記を作成できませんでした。")
                 with st.expander("保護者向け詳細"):
                     st.code(str(exc))
-
-        render_diary_delete_controls(trip_id, photos, current_photo_id=pid, show_photo_navigation=False)
+        render_diary_delete_controls(trip_id, photos)
         return
 
-    if not item.get("started"):
-        st.markdown("#### まず、この写真について話してね")
-        st.caption("まず自由に1回話してね。基本はこれで終わりです。気持ちが分からないときだけ一度聞き、ネガティブな気持ちが出たときだけ『どうしたい？』まで聞きます。")
-        first_audio = far_field_audio_input(
-            "まず自由に話してね",
-            key=f"photo_first_answer_{trip_id}_{pid}_{state['answer_serial']}",
-        )
-        first_digest_key = f"photo_first_digest_{trip_id}_{pid}_{state['answer_serial']}"
-        if first_audio is not None:
-            digest = audio_digest(first_audio)
-            if digest and st.session_state.get(first_digest_key) != digest:
-                try:
-                    audio_file = first_audio
-                    with st.spinner("声を聞いています…"):
-                        transcript = transcribe_audio(
-                            audio_file,
-                            f"東京ぶらり旅の写真について、子どもがAIに聞かれる前に自由に説明しています。場所は{location_label or '不明'}です。",
-                        )
-                        if not transcript:
-                            raise ValueError("文字起こしが空でした。")
-                        item["conversation"] = [{"role": "child", "text": transcript}]
-                        item["started"] = True
-                        item["done"] = False
-                        image_bytes = download_photo(photo["storage_path"])
-                        result = next_photo_turn(image_bytes, item["conversation"], 1)
-                        assistant_text = str(result.get("reply", "")).strip()
-                        next_question = str(result.get("next_question", "")).strip()
-                        if next_question:
-                            assistant_text = (assistant_text + " " + next_question).strip()
-                        if not assistant_text:
-                            assistant_text = "ありがとう。"
-                        item["conversation"].append({"role": "assistant", "text": assistant_text})
-                        item["signals"] = merge_signals(item.get("signals", {}), result.get("signals", {}))
-                        item["done"] = bool(result.get("done"))
-                        update_photo_reflection(
-                            pid,
-                            item["conversation"],
-                            item["signals"],
-                            done=item["done"],
-                        )
-                        audio = speech_bytes(assistant_text)
-                    state["audio_bytes"] = audio
-                    state["audio_pending"] = True
-                    state["answer_serial"] += 1
-                    st.session_state[first_digest_key] = digest
-                    st.rerun()
-                except Exception as exc:
-                    st.error("うまく聞き取れませんでした。もう一度話してください。")
-                    with st.expander("保護者向け詳細"):
-                        st.code(str(exc))
-
-        if st.button("この写真はとばす", use_container_width=True, key=f"skip_photo_{trip_id}_{pid}"):
-            item["done"] = True
-            item["started"] = True
-            update_photo_reflection(pid, [], {}, done=True)
-            st.session_state.pop(talk_key, None)
-            if st.session_state.pop(f"diary_existing_photo_view_{trip_id}", False):
-                st.session_state.pop(f"reflection_state_{trip_id}", None)
-            st.rerun()
-        render_diary_delete_controls(trip_id, photos, current_photo_id=pid, show_photo_navigation=True)
-        return
-
-    render_conversation(item.get("conversation", []))
-    if state.get("audio_bytes"):
-        st.audio(
-            state["audio_bytes"],
-            format="audio/wav",
-            autoplay=bool(state.get("audio_pending")),
-        )
-        state["audio_pending"] = False
-
-    answer_audio = far_field_audio_input(
-        "AIの質問に答えてね",
-        key=f"photo_answer_{trip_id}_{pid}_{state['answer_serial']}",
+    existing_title = diary_display_title(existing, trip, photos=photos)
+    st.markdown(
+        f"""
+        <div class="diary-card">
+          <div class="hero-title">{html.escape(existing_title)}</div>
+          <div class="big-text">{html.escape(existing.get('diary_text') or '')}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
     )
-    digest_key = f"photo_answer_digest_{trip_id}_{pid}_{state['answer_serial']}"
-    if answer_audio is not None:
-        digest = audio_digest(answer_audio)
-        if digest and st.session_state.get(digest_key) != digest:
-            try:
-                audio_file = answer_audio
-                with st.spinner("声を聞いています…"):
-                    transcript = transcribe_audio(
-                        audio_file,
-                        f"東京ぶらり旅の写真を見ながら、AIの短い質問に子どもが答えています。場所は{location_label or '不明'}です。",
-                    )
-                    if not transcript:
-                        raise ValueError("文字起こしが空でした。")
-                    item["conversation"].append({"role": "child", "text": transcript})
-                    child_turns = sum(1 for x in item["conversation"] if x.get("role") == "child")
-                    image_bytes = download_photo(photo["storage_path"])
-                    result = next_photo_turn(image_bytes, item["conversation"], child_turns)
-                    assistant_text = str(result.get("reply", "")).strip()
-                    if result.get("next_question"):
-                        assistant_text = (assistant_text + " " + str(result["next_question"]).strip()).strip()
-                    if not assistant_text:
-                        assistant_text = "ありがとう。"
-                    item["conversation"].append({"role": "assistant", "text": assistant_text})
-                    item["signals"] = merge_signals(item.get("signals", {}), result.get("signals", {}))
-                    item["done"] = bool(result.get("done"))
-                    update_photo_reflection(
-                        pid,
-                        item["conversation"],
-                        item["signals"],
-                        done=item["done"],
-                    )
-                    audio = speech_bytes(assistant_text)
-                state["audio_bytes"] = audio
-                state["audio_pending"] = True
-                state["answer_serial"] += 1
-                st.session_state[digest_key] = digest
-                st.rerun()
-            except Exception as exc:
-                st.error("うまく聞き取れませんでした。もう一度話してください。")
-                with st.expander("保護者向け詳細"):
-                    st.code(str(exc))
+    existing_meta = existing.get("ai_meta") or {}
 
-    if st.button("この写真のお話はここまで", use_container_width=True, key=f"finish_photo_talk_{trip_id}_{pid}"):
-        item["done"] = True
-        update_photo_reflection(pid, item.get("conversation", []), item.get("signals", {}), done=True)
-        state["audio_bytes"] = None
-        state["audio_pending"] = False
-        st.session_state.pop(talk_key, None)
-        if st.session_state.pop(f"diary_existing_photo_view_{trip_id}", False):
-            st.session_state.pop(f"reflection_state_{trip_id}", None)
-        st.rerun()
+    if photos and st.button(
+        "AIにまとめてもらう",
+        use_container_width=True,
+        key=f"ai_trip_summary_{trip_id}",
+    ):
+        try:
+            with st.spinner("写真と本人コメントを見て、このぶらり旅をまとめています…"):
+                summary_result = summarize_burari_from_photos(trip, photos)
+                save_burari_ai_summary(trip_id, summary_result)
+            st.session_state["_diary_notice"] = "写真と本人コメントからAIのまとめを更新しました。"
+            st.rerun()
+        except Exception as exc:
+            st.error("AIのまとめを作れませんでした。もう一度試してください。")
+            with st.expander("保護者向け詳細"):
+                st.code(str(exc))
 
-    render_diary_delete_controls(trip_id, photos, current_photo_id=pid, show_photo_navigation=True)
+    render_burari_trip_summary(existing_meta)
+    render_diary_reflection_summary(existing_meta)
+    render_summary_feedback_controls(existing_meta, trip_id, "saved")
+    render_diary_title_editor(trip_id, existing_title, "diary_existing")
+
+    if photos and st.button(
+        "この日の写真と本人コメントから、日記を作り直す",
+        use_container_width=True,
+        key=f"recreate_diary_from_comments_{trip_id}",
+    ):
+        try:
+            with st.spinner("日記を作り直しています…"):
+                create_and_save_diary_from_photos(
+                    trip,
+                    photos,
+                    requested_title=existing_title,
+                    reason="diary_recreate_comment_only_v145",
+                )
+            st.session_state.preferred_diary_trip_id = trip_id
+            st.session_state["_diary_notice"] = "本人コメントをもとに日記を作り直しました。"
+            st.rerun()
+        except Exception as exc:
+            st.error("日記を作り直せませんでした。")
+            with st.expander("保護者向け詳細"):
+                st.code(str(exc))
+
+    render_diary_delete_controls(trip_id, photos)
+    return
 
 
-# ============================================================
-# Page: History
-# ============================================================
 def page_history(embedded=False):
     if not embedded:
         page_top("📚 これまでの日記")
@@ -16147,15 +15628,16 @@ def page_settings():
     )
     st.caption(
         "動画は最大15秒です。録画を止めると確認画面を挟まず元動画を保管庫へ自動保存します。"
+        "動画の保存完了と『いい瞬間』作成は切り分け、いい瞬間はバックグラウンドで処理するため、その間もアプリを操作できます。"
         "『いい瞬間』は保存済みの元動画を1秒間隔で元解像度のまま1回だけ切り出し、AI用には別の軽量コピーを使います。"
-        "利用者が見る最大9枚は元動画由来の高画質フレームのみで、低解像度候補へは切り替えません。"
+        "AIが選ぶのは最大3枚で、利用者が見る画像は元動画由来の高画質フレームのみです。"
         "初回はカメラとは別に位置情報の許可も求められます。位置情報がオフ・拒否・取得不能の場合は、"
         "ホームの地名表示（未登録なら『地名：登録なし（自動取得）』）を押して入力した内容を写真の場所として使います。"
     )
 
     st.divider()
     st.markdown("#### プロジェクトの考え方")
-    st.caption("写真の枚数や『便利・不便を見つけること』を課題にはしません。本人が気になったものを残し、あとから本人の言葉で振り返ります。")
+    st.caption("写真の枚数や『便利・不便を見つけること』を課題にはしません。本人が気になったものを残し、本人コメントがある場合はその言葉も一緒に振り返ります。")
     st.caption(f"アプリビルド：{APP_BUILD}")
 
 # ============================================================
@@ -16164,18 +15646,14 @@ def page_settings():
 verify_setup()
 require_family_pin()
 init_state()
-# v133: unfinished videos are processed automatically in the normal Streamlit
-# execution, not in a detached long-lived thread. No viewer/button action is
-# required. Process one saved video, then rerun so another queued video can follow.
-with st.spinner("保存済み動画の『いい瞬間』を自動処理しています…"):
-    _video_auto_processed_v144 = resume_member_video_background_jobs()
-if _video_auto_processed_v144:
-    try:
-        _home_video_counts_cached.clear()
-    except Exception:
-        pass
-    st.rerun()
-# v144 does not use browser-side low-resolution candidate recovery. If native
+# v145: video preservation and Good Moments are separated. This call only submits
+# unfinished post-save jobs to the background executor and returns immediately, so
+# Home, Back, Camera and the next recording remain usable while AI is working.
+try:
+    resume_member_video_background_jobs()
+except Exception:
+    pass
+# v145 does not use browser-side low-resolution candidate recovery. If native
 # extraction from the saved original is unavailable, the job ends as an explicit
 # error instead of silently substituting blurry frames.
 # Daily rollover and old-title repair can touch many rows. They are diary/history
