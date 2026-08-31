@@ -28,6 +28,7 @@ from zoneinfo import ZoneInfo
 import streamlit as st
 
 APP_BUILD = "v145"
+# v145 is based directly on the complete v144 script; UI/pages/features are preserved.
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -2787,7 +2788,6 @@ export default function(component) {
   const marker = '__tokyo_burari_page__';
   const requestedPage = validPages.has(data?.page) ? data.page : 'home';
   const action = data?.action || 'sync';
-  const refreshToken = String(data?.refresh_token || '');
   const navigationNode = String(data?.node || requestedPage);
   const interceptHierarchyBack = Boolean(data?.intercept_hierarchy_back) && requestedPage !== 'home';
 
@@ -2829,34 +2829,7 @@ export default function(component) {
     currentPage = initialPage;
   }
 
-  if ((action === 'hard_replace' || action === 'hard_push')) {
-    if (action === 'hard_push' && currentPage !== requestedPage) {
-      window.history.pushState(
-        { ...(window.history.state || {}), [marker]: requestedPage },
-        '',
-        urlFor(requestedPage)
-      );
-    } else {
-      window.history.replaceState(
-        { ...(window.history.state || {}), [marker]: requestedPage },
-        '',
-        urlFor(requestedPage)
-      );
-    }
-    currentPage = requestedPage;
-
-    // A real browser reload clears any stale Streamlit DOM left behind after
-    // repeated mobile reruns. sessionStorage prevents an accidental reload loop.
-    const reloadKey = '__tokyo_burari_last_hard_refresh__';
-    const token = refreshToken || `${requestedPage}:${Date.now()}:${Math.random()}`;
-    let previousToken = '';
-    try { previousToken = sessionStorage.getItem(reloadKey) || ''; } catch (_) {}
-    if (previousToken !== token) {
-      try { sessionStorage.setItem(reloadKey, token); } catch (_) {}
-      setTimeout(() => window.location.reload(), 0);
-      return;
-    }
-  } else if (action === 'push' && currentPage !== requestedPage) {
+  if (action === 'push' && currentPage !== requestedPage) {
     window.history.pushState(
       { ...(window.history.state || {}), [marker]: requestedPage },
       '',
@@ -2902,7 +2875,7 @@ export default function(component) {
 
 try:
     browser_history_component = st.components.v2.component(
-        'tokyo_burari_browser_history_v145',
+        'tokyo_burari_browser_history_v127',
         js=_HISTORY_JS,
     )
 except Exception:
@@ -3716,7 +3689,22 @@ def require_family_pin():
                 _set_authenticated_family(default_family, default_member, persist=False)
                 return
 
-    st.title("📷 東京ぶらり旅プロジェクト")
+    # Keep the login header visually aligned with the current Home hero.
+    # Do not show the old "東京ぶらり旅プロジェクト" title here.
+    st.markdown(
+        """
+        <div class="home-hero" style="margin-bottom:1rem;">
+          <div class="home-hero-inner">
+            <div class="home-hero-copy">
+              <div class="home-eyebrow">BURARI</div>
+              <div class="home-title">ぶらり旅</div>
+              <div class="home-tagline">思った。感じた。をそのまま残そう</div>
+            </div>
+          </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
     st.caption("家族アカウントの中の、個人アカウントでログインしてください。")
 
     failures = int(st.session_state.get("_family_pin_failures", 0))
@@ -11378,32 +11366,6 @@ def _return_diary_photo_to_gallery(trip_id):
         st.session_state.pop(f"reflection_state_{trip_id}", None)
 
 
-def _request_navigation_refresh(hard=False, history_mode="replace"):
-    """Request a clean redraw after navigation.
-
-    Internal hierarchy moves keep the Streamlit session and use a full app rerun.
-    Returning to Home additionally asks the browser-history bridge for one real
-    browser reload, which removes any stale mobile DOM left by previous reruns.
-    """
-    if hard:
-        st.session_state["_history_action"] = (
-            "hard_push" if history_mode == "push" else "hard_replace"
-        )
-        st.session_state["_hard_refresh_token"] = uuid.uuid4().hex
-    else:
-        st.session_state["_history_action"] = (
-            history_mode if history_mode in {"push", "replace"} else "replace"
-        )
-    st.rerun()
-
-
-def _reset_home_navigation_state():
-    """Drop drill-down-only state before showing Home again."""
-    reset_diary_navigation_for_home_entry()
-    st.session_state.pop("history_detail_trip_id", None)
-    st.session_state.pop("review_view_selector", None)
-
-
 def navigate_to_parent():
     """Move one level up in the fixed app hierarchy, never by visit history."""
     node, object_id = current_navigation_context()
@@ -11412,27 +11374,30 @@ def navigate_to_parent():
 
     if node == "diary_photo":
         _return_diary_photo_to_gallery(object_id)
-        _request_navigation_refresh(hard=False, history_mode="replace")
+        st.session_state["_history_action"] = "replace"
+        st.rerun()
 
     if node == "diary_trip":
         reset_diary_navigation_for_home_entry()
-        _request_navigation_refresh(hard=False, history_mode="replace")
+        st.session_state["_history_action"] = "replace"
+        st.rerun()
 
     if node == "review_history_detail":
         st.session_state.pop("history_detail_trip_id", None)
-        _request_navigation_refresh(hard=False, history_mode="replace")
+        st.session_state["_history_action"] = "replace"
+        st.rerun()
 
     if node in {"review_history", "review_period"}:
         st.session_state.pop("history_detail_trip_id", None)
         st.session_state.pop("review_view_selector", None)
-        _request_navigation_refresh(hard=False, history_mode="replace")
+        st.session_state["_history_action"] = "replace"
+        st.rerun()
 
-    # All first-level pages have Home as their parent. A real browser reload here
-    # clears stale widgets that can otherwise survive repeated mobile reruns.
-    go_page("home", history_mode="replace", hard_refresh=True)
+    # All first-level pages have Home as their parent.
+    go_page("home", history_mode="replace")
 
 
-def go_page(page_name, history_mode="push", hard_refresh=False):
+def go_page(page_name, history_mode="push"):
     target = page_name if page_name in VALID_APP_PAGES else "home"
     current = st.session_state.get("main_page")
     if current != target:
@@ -11448,17 +11413,10 @@ def go_page(page_name, history_mode="push", hard_refresh=False):
             for key in list(st.session_state.keys()):
                 if str(key).startswith("diary_trip_selector_"):
                     st.session_state.pop(key, None)
-        if target == "home":
-            _reset_home_navigation_state()
         st.session_state["main_page"] = target
         st.session_state["_history_action"] = (
             history_mode if history_mode in {"push", "replace"} else "push"
         )
-    if hard_refresh:
-        st.session_state["_history_action"] = (
-            "hard_push" if history_mode == "push" else "hard_replace"
-        )
-        st.session_state["_hard_refresh_token"] = uuid.uuid4().hex
     st.rerun()
 
 
@@ -11473,17 +11431,15 @@ def sync_browser_history():
         st.session_state["main_page"] = page
 
     action = st.session_state.pop("_history_action", "sync")
-    refresh_token = str(st.session_state.pop("_hard_refresh_token", "") or "")
     navigation_node, _ = current_navigation_context()
     result = browser_history_component(
         data={
             "page": page,
             "action": action,
-            "refresh_token": refresh_token,
             "node": navigation_node,
             "intercept_hierarchy_back": page != "home",
         },
-        key="tokyo_burari_browser_history_instance_v145",
+        key="tokyo_burari_browser_history_instance_v127",
         on_page_change=lambda: None,
         on_hierarchy_back_change=lambda: None,
     )
@@ -11631,22 +11587,20 @@ def render_global_bottom_navigation(page_name):
     if node == "home":
         return
     st.divider()
-    # Keep widget identities stable while moving within a page. Dynamic keys based
-    # on the hierarchy node could leave old button DOM behind on some mobile runs.
-    with st.container(key=f"global_parent_nav_{page_name}"):
+    with st.container(key=f"global_parent_nav_{page_name}_{node}"):
         if st.button(
             "← 1つ前に戻る",
             use_container_width=True,
-            key=f"global_parent_back_{page_name}",
+            key=f"global_parent_back_{page_name}_{node}",
         ):
             navigate_to_parent()
-    with st.container(key=f"global_home_nav_{page_name}"):
+    with st.container(key=f"global_home_nav_{page_name}_{node}"):
         if st.button(
             "トップページに戻る",
             use_container_width=True,
-            key=f"global_bottom_home_{page_name}",
+            key=f"global_bottom_home_{page_name}_{node}",
         ):
-            go_page("home", history_mode="replace", hard_refresh=True)
+            go_page("home", history_mode="replace")
 
 
 def page_top(title, caption=""):
@@ -15520,7 +15474,7 @@ def page_history(embedded=False):
                     key=f"history_back_{trip_id}",
                 ):
                     st.session_state.pop("history_detail_trip_id", None)
-                    _request_navigation_refresh(hard=False, history_mode="replace")
+                    st.rerun()
         with home_col:
             with st.container(key="history_home_nav"):
                 if st.button(
@@ -15529,7 +15483,7 @@ def page_history(embedded=False):
                     key=f"history_home_{trip_id}",
                 ):
                     st.session_state.pop("history_detail_trip_id", None)
-                    go_page("home", history_mode="replace", hard_refresh=True)
+                    go_page("home")
 
         if st.button(
             "🗑 この日記を削除",
