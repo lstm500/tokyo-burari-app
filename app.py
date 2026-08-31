@@ -683,12 +683,14 @@ VIDEO_PROCESSING_MAX_SECONDS = 12
 # plus audio/container overhead while remaining below the recommended 20 MiB bucket cap.
 VIDEO_MAX_BYTES = 20 * 1024 * 1024
 VIDEO_AI_MAX_SELECTIONS = 3
-# v146 rebuilt video pipeline: extract source-equivalent native PNGs only.
-# 0.25 s is precise enough for a 10-second family clip while keeping full-resolution
-# AI requests bounded. No resized or lossy candidate is used anywhere in this path.
-VIDEO_AI_SAMPLE_INTERVAL_MS = 250
-VIDEO_AI_MAX_CANDIDATES = 68
-VIDEO_AI_LOCAL_SHORTLIST = 18
+# v147 video pipeline: extract source-equivalent native PNGs every 0.1 seconds.
+# For a <=10-second clip all extracted frames remain in the AI review set; batch
+# boundaries are transport limits only, not a quality pre-filter.
+VIDEO_AI_SAMPLE_INTERVAL_MS = 100
+VIDEO_AI_MAX_CANDIDATES = 100
+# For a <=10 second clip sampled every 0.1 seconds, this value keeps every
+# extracted source frame in the AI review set. It is not a quality pre-filter.
+VIDEO_AI_LOCAL_SHORTLIST = 100
 VIDEO_AI_BATCH_SIZE = 3
 VIDEO_AI_BATCH_KEEP = 2
 VIDEO_AI_BATCH_WORKERS = 3
@@ -985,6 +987,8 @@ export default function(component) {
     videoStartButton.title = videoCapacityMessage;
   }
   let stream = null;
+  let componentDisposed = false;
+  let cameraRun = 0;
   let cameraMode = 'photo';
   let pendingMedia = null;
   let pendingVideoBlob = null;
@@ -1212,6 +1216,7 @@ export default function(component) {
       setStatus(videoCapacityMessage);
       return;
     }
+    const runId = ++cameraRun;
     stopStream();
     cameraMode = requestedMode;
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
@@ -1229,7 +1234,7 @@ export default function(component) {
 
     setStatus(cameraMode === 'video' ? 'カメラとマイクの使用を許可してください…' : 'カメラの使用を許可してください…');
     try {
-      stream = await navigator.mediaDevices.getUserMedia({
+      const acquiredStream = await navigator.mediaDevices.getUserMedia({
         audio: cameraMode === 'video' ? {
           echoCancellation: true,
           noiseSuppression: true,
@@ -1243,8 +1248,15 @@ export default function(component) {
           aspectRatio: { ideal: 1.7777777778 }
         }
       });
+      if (componentDisposed || runId !== cameraRun) {
+        acquiredStream.getTracks().forEach((track) => track.stop());
+        return;
+      }
+      stream = acquiredStream;
       video.srcObject = stream;
-      await video.play();
+      const playPromise = video.play();
+      if (playPromise && typeof playPromise.then === 'function') await playPromise;
+      if (componentDisposed || runId !== cameraRun) return;
       // Prefer the phone/browser's own stabilization when it exposes a compatible
       // media-track constraint. Unknown constraints are never forced, so devices
       // without this capability continue normally.
@@ -1261,6 +1273,7 @@ export default function(component) {
           console.warn('camera hardware stabilization unavailable', stabilizationErr);
         }
       }
+      if (componentDisposed || runId !== cameraRun) return;
       shootButton.disabled = false;
       shootButton.textContent = cameraMode === 'video' ? '● 録画を開始' : '● 写真を撮る';
       showCameraActions();
@@ -1271,14 +1284,25 @@ export default function(component) {
       } catch (_) {}
       setStatus(cameraMode === 'video' ? '動画は最大10秒です。音声も一緒に記録します。' : '');
     } catch (err) {
+      const name = (err && err.name) ? String(err.name) : '';
+      const detail = (err && err.message) ? String(err.message) : '';
+      const intentionalInterruption =
+        componentDisposed ||
+        runId !== cameraRun ||
+        name === 'AbortError' ||
+        /play\(\).*interrupted/i.test(detail);
+      if (intentionalInterruption) {
+        console.debug('camera play interrupted by rerun/cleanup', err);
+        return;
+      }
       console.error(err);
       stopStream();
       const message = errorMessage(err, cameraMode);
       setStatus(message);
       setTriggerValue('camera_error', {
-        name: (err && err.name) ? err.name : 'CameraError',
+        name: name || 'CameraError',
         message,
-        detail: (err && err.message) ? String(err.message) : ''
+        detail
       });
     }
   };
@@ -1497,18 +1521,72 @@ export default function(component) {
     if (!videoUploadSignedUrl || !videoUploadStoragePath) {
       throw new Error('動画のアップロード先がありません');
     }
+    if (!blob || !blob.size) throw new Error('動画データが空です');
     const contentType = String(blob.type || '').split(';', 1)[0] || 'video/webm';
-    // Supabase recommends resumable TUS uploads for files larger than 6 MB.
-    // Keep the original video bytes untouched; only the transport is chunked.
+
+    // For files above 6 MB, prefer Supabase's resumable endpoint. If the device or
+    // network rejects that route, fall back to the one-time signed upload URL.
     if (blob.size > 6 * 1024 * 1024 && videoTusEndpoint && videoUploadToken && videoUploadBucket) {
       try {
-        return await uploadVideoBlobResumable(blob, contentType);
+        await uploadVideoBlobResumable(blob, contentType);
+        return true;
       } catch (tusErr) {
-        console.warn('TUS upload failed; bounded standard upload fallback', tusErr);
-        setStatus('再開可能アップロードを再試行しています…');
+        console.warn('resumable upload failed; signed upload fallback', tusErr);
+        setStatus('再開可能アップロードに失敗したため、通常保存へ切り替えています…');
       }
     }
-    return await uploadRawBlobToSignedUrl(blob, videoUploadSignedUrl, contentType, '動画');
+
+    // v147: keep the multi-megabyte video out of Streamlit's component value.
+    // Upload directly to the one-time Supabase signed URL using the same multipart
+    // shape as uploadToSignedUrl(), then send only small metadata back to Python.
+    let lastError = null;
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      try {
+        await new Promise((resolve, reject) => {
+          const xhr = new XMLHttpRequest();
+          xhr.open('PUT', videoUploadSignedUrl, true);
+          xhr.timeout = 120000;
+          xhr.setRequestHeader('x-upsert', 'false');
+          if (xhr.upload) {
+            xhr.upload.onprogress = (event) => {
+              if (!event || !event.lengthComputable) return;
+              const pct = Math.max(0, Math.min(100, Math.round((event.loaded / event.total) * 100)));
+              setStatus(`元動画を保存しています… ${pct}%`);
+            };
+          }
+          xhr.onload = () => {
+            const code = Number(xhr.status || 0);
+            // A retry can see 409 if the first request completed at Storage but the
+            // mobile connection lost the response. The path is unique per capture,
+            // so in that one case the object is already safely stored.
+            if ((code >= 200 && code < 300) || (attempt > 0 && code === 409)) {
+              resolve();
+              return;
+            }
+            const text = String(xhr.responseText || '').replace(/\s+/g, ' ').trim().slice(0, 220);
+            const err = new Error(`Storage ${code || 'error'}${text ? `: ${text}` : ''}`);
+            err.status = code;
+            reject(err);
+          };
+          xhr.onerror = () => reject(new Error('Storageへの通信に失敗しました'));
+          xhr.ontimeout = () => reject(new Error('Storageへの送信がタイムアウトしました'));
+          xhr.onabort = () => reject(new Error('Storageへの送信が中断されました'));
+          const form = new FormData();
+          form.append('cacheControl', '3600');
+          form.append('', blob, String(blob.type || '').includes('mp4') ? 'camera.mp4' : 'camera.webm');
+          xhr.send(form);
+        });
+        setStatus('元動画を保存しました。登録しています…');
+        return true;
+      } catch (err) {
+        lastError = err;
+        if (attempt === 0) {
+          setStatus('通信が不安定なため、元動画の保存を再試行しています…');
+          await new Promise((resolve) => setTimeout(resolve, 700));
+        }
+      }
+    }
+    throw lastError || new Error('動画の保存に失敗しました');
   };
 
 
@@ -1884,20 +1962,23 @@ export default function(component) {
             console.warn('video location skipped', locationErr);
           }
 
-          // v145 rebuilt path: do not upload from the mobile browser to Storage.
-          // Pass the untouched MediaRecorder Blob to Streamlit as a data URL; the
-          // server owns Storage upload, DB registration, frame extraction and AI.
-          // This removes signed-upload/TUS state from the capture transaction.
-          setStatus('元動画をアプリへ送信しています…');
-          const videoDataUrl = await blobToDataUrl(blob);
+          // v147: upload the untouched recording directly to the pre-signed Storage
+          // destination. Only metadata crosses the Streamlit component boundary.
+          // This avoids large base64/WebSocket payloads that can freeze the camera
+          // component immediately after recording stops.
+          if (blob.size > 20 * 1024 * 1024) {
+            throw new Error('動画サイズが20MBを超えています。10秒以内で撮影してください。');
+          }
+          setStatus('元動画を保存しています… 0%');
+          await uploadVideoBlobToSignedUrl(blob);
 
           const recordingId = (globalThis.crypto && typeof globalThis.crypto.randomUUID === 'function')
             ? globalThis.crypto.randomUUID()
             : `video_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
           const mediaToSave = {
-            kind: 'video_inline_v145',
+            kind: 'video_uploaded_v147',
             recording_id: recordingId,
-            data_url: videoDataUrl,
+            storage_path: videoUploadStoragePath,
             video_size_bytes: blob.size,
             poster_data_url: posterDataUrl,
             mime_type: finalType,
@@ -1917,10 +1998,15 @@ export default function(component) {
             stream.getTracks().forEach((track) => track.stop());
             stream = null;
           }
-          setStatus('元動画を保存し、いい瞬間を自動作成しています…');
+          if (video) {
+            try { video.pause(); } catch (_) {}
+            video.srcObject = null;
+          }
+          setStatus('元動画を保存しました。いい瞬間を自動作成しています…');
           setTriggerValue('video', mediaToSave);
         } catch (err) {
           console.error(err);
+          stopStream();
           const detail = (err && err.message) ? String(err.message).replace(/\s+/g, ' ').trim().slice(0, 240) : '';
           const message = detail
             ? `動画を保存できませんでした。${detail}`
@@ -2072,6 +2158,7 @@ export default function(component) {
   };
 
   const closeCamera = () => {
+    cameraRun += 1;
     stopStream();
     setStatus('');
   };
@@ -2110,6 +2197,8 @@ export default function(component) {
   }
 
   return () => {
+    componentDisposed = true;
+    cameraRun += 1;
     startButton.removeEventListener('click', startPhotoCamera);
     videoStartButton.removeEventListener('click', startVideoCamera);
     modeSwitchButton.removeEventListener('click', switchCameraMode);
@@ -2126,11 +2215,11 @@ export default function(component) {
 }
 """
 
-LIVE_CAMERA_COMPONENT_BUILD = "v145"
+LIVE_CAMERA_COMPONENT_BUILD = "v147"
 
 try:
     live_camera_component = st.components.v2.component(
-        "tokyo_burari_live_camera_v145",
+        "tokyo_burari_live_camera_v147",
         html=_LIVE_CAMERA_HTML,
         css=_LIVE_CAMERA_CSS,
         js=_LIVE_CAMERA_JS,
@@ -5219,8 +5308,6 @@ def get_camera_video_upload_reservation(trip_id, capture_serial):
             and int(current.get("capture_serial") if current.get("capture_serial") is not None else -1) == serial
             and str(current.get("storage_path") or "").strip()
             and str(current.get("signed_url") or "").strip()
-            and str(current.get("upload_token") or "").strip()
-            and str(current.get("tus_endpoint") or "").strip()
         ):
             return current
 
@@ -5297,7 +5384,22 @@ def register_browser_uploaded_video(
         raise ValueError("動画の容量を確認できませんでした。")
     if size_value > VIDEO_MAX_BYTES:
         raise ValueError("動画データが高画質10秒動画の保存上限を超えています。画質は下げません。保存上限またはSupabase Bucketのファイル上限を確認してください。")
-    ensure_video_storage_capacity(size_value)
+
+    # The browser has already uploaded this object. Verify the exact object before
+    # creating the DB record, and do not add its size to current usage a second time.
+    try:
+        stored_video = _storage_bytes(supabase_client().storage.from_(PHOTO_BUCKET).download(path))
+    except Exception as exc:
+        raise ValueError(f"保存先に元動画を確認できませんでした: {exc}") from exc
+    if not stored_video:
+        raise ValueError("保存先に元動画を確認できませんでした。")
+    actual_size = len(stored_video)
+    if actual_size > VIDEO_MAX_BYTES:
+        raise ValueError("保存された動画が20MBの上限を超えています。")
+    size_value = actual_size
+    quota = video_storage_quota_bytes()
+    if quota > 0 and current_video_storage_usage_bytes() > quota:
+        raise ValueError("動画保存容量の上限を超えています。不要な動画を削除してください。")
 
     try:
         poster = normalize_photo(poster_bytes) if poster_bytes else _video_placeholder_poster_bytes()
@@ -5328,7 +5430,7 @@ def register_browser_uploaded_video(
             "height": max(0, int(capture_height or 0)),
             "frame_rate": max(0.0, float(capture_frame_rate or 0)),
             "video_bitrate_bps": max(0, int(video_bitrate_bps or 0)),
-            "quality_pipeline": "v144_lossless_native_single_pass",
+            "quality_pipeline": "v147_browser_direct_original",
         },
         "video_stabilization": {
             "version": VIDEO_STABILIZATION_VERSION,
@@ -14467,9 +14569,9 @@ def page_trip():
         st.error("ライブカメラ機能に必要なStreamlitのバージョンが古いです。requirements.txtを更新してください。")
         return
 
-    # v145 rebuilt path: the browser records only. Storage upload and every later
-    # step run on the Streamlit server, so capture no longer depends on signed URLs,
-    # TUS state, or browser-side candidate sheets.
+    # v147: the browser records and sends the original Blob directly to a short-lived
+    # signed Supabase Storage destination. Streamlit receives metadata only, then
+    # registers the stored video and runs Good Moments from that saved original.
     video_unavailable_reason = ""
     try:
         video_capacity = video_recording_capacity_status()
@@ -14495,15 +14597,36 @@ def page_trip():
     camera_trip = active_snapshot or ensure_today_trip()
     camera_trip_key = str((camera_trip or {}).get("id") or "pending")
 
+    video_allowed = bool(video_capacity.get("allowed"))
+    video_upload_reservation = {}
+    if video_allowed:
+        try:
+            video_upload_reservation = get_camera_video_upload_reservation(
+                camera_trip_key, st.session_state.capture_serial
+            )
+        except Exception as exc:
+            video_allowed = False
+            video_unavailable_reason = "storage_setup"
+            video_capacity = dict(video_capacity)
+            video_capacity["message"] = "動画の保存先を準備できませんでした。Supabase Storageの設定を確認してください。"
+            st.warning(video_capacity["message"])
+            with st.expander("動画保存先エラーの詳細"):
+                st.code(str(exc))
+
     result = live_camera_component(
         data={
             "auto_start": auto_start,
             "auto_start_mode": "video" if auto_start_video else ("photo" if auto_start else ""),
-            "video_allowed": bool(video_capacity.get("allowed")),
+            "video_allowed": video_allowed,
             "video_capacity_message": str(video_capacity.get("message") or ""),
             "video_unavailable_reason": video_unavailable_reason,
+            "video_upload_signed_url": str(video_upload_reservation.get("signed_url") or ""),
+            "video_upload_storage_path": str(video_upload_reservation.get("storage_path") or ""),
+            "video_upload_token": str(video_upload_reservation.get("upload_token") or ""),
+            "video_tus_endpoint": str(video_upload_reservation.get("tus_endpoint") or ""),
+            "video_upload_bucket": PHOTO_BUCKET,
         },
-        key=f"live_camera_v145_{camera_trip_key}_{st.session_state.capture_serial}",
+        key=f"live_camera_v147_{camera_trip_key}_{st.session_state.capture_serial}",
         on_photo_change=lambda: None,
         on_video_change=lambda: None,
         on_camera_error_change=lambda: None,
@@ -14522,6 +14645,130 @@ def page_trip():
             if detail and detail not in str(message or ""):
                 with st.expander("動画保存エラーの詳細", expanded=True):
                     st.code(detail)
+
+    if isinstance(video_payload, dict) and video_payload.get("storage_path"):
+        save_stage = "保存済み元動画の確認"
+        video_registered = False
+        try:
+            recording_id = str(video_payload.get("recording_id") or "").strip()
+            if not recording_id:
+                recording_id = hashlib.sha1(
+                    (str(video_payload.get("storage_path")) + str(video_payload.get("video_size_bytes"))).encode("utf-8")
+                ).hexdigest()
+            digest_key = "saved_camera_video_recording_v147"
+            if st.session_state.get(digest_key) != recording_id:
+                trip = ensure_today_trip()
+                storage_path = str(video_payload.get("storage_path") or "").strip()
+                reservation = st.session_state.get("_camera_video_upload_reservation_v116")
+                if not isinstance(reservation, dict):
+                    raise ValueError("動画の保存予約情報を確認できませんでした。")
+                if str(reservation.get("trip_id") or "") != str(trip.get("id") or ""):
+                    raise ValueError("動画の保存先と現在のぶらり旅が一致しません。")
+                if storage_path != str(reservation.get("storage_path") or ""):
+                    raise ValueError("動画の保存先が撮影時の予約先と一致しません。")
+
+                poster_raw = b""
+                try:
+                    poster_raw = decode_camera_data_url(video_payload.get("poster_data_url"))
+                except Exception:
+                    poster_raw = _video_placeholder_poster_bytes()
+                if not poster_raw:
+                    poster_raw = _video_placeholder_poster_bytes()
+
+                capture_source = str(video_payload.get("source") or "video_camera")
+                location = build_photo_location(
+                    video_payload.get("location"), trip, capture_source=capture_source
+                )
+                duration_ms = max(0, int(video_payload.get("duration_ms") or 0))
+                if duration_ms > VIDEO_PROCESSING_MAX_SECONDS * 1000:
+                    raise ValueError("動画が最大10秒を大きく超えています。10秒以内で撮影してください。")
+
+                save_stage = "元動画の登録"
+                with st.status("元動画を確認して登録しています…", expanded=True) as video_status:
+                    saved_video = register_browser_uploaded_video(
+                        trip["id"],
+                        storage_path,
+                        int(video_payload.get("video_size_bytes") or 0),
+                        poster_raw,
+                        mime_type=video_payload.get("mime_type"),
+                        duration_ms=duration_ms,
+                        location=location,
+                        captured_at=video_payload.get("captured_at"),
+                        capture_source=capture_source,
+                        capture_width=video_payload.get("capture_width") or 0,
+                        capture_height=video_payload.get("capture_height") or 0,
+                        capture_frame_rate=video_payload.get("capture_frame_rate") or 0,
+                        video_bitrate_bps=video_payload.get("video_bitrate_bps") or 0,
+                    )
+                    video_registered = True
+                    video_status.write("元動画を保存しました。")
+
+                    if isinstance(saved_video, dict) and saved_video.get("id"):
+                        reflection = dict(photo_media_metadata(saved_video))
+                        reflection["video_capture"] = {
+                            "width": max(0, int(video_payload.get("capture_width") or 0)),
+                            "height": max(0, int(video_payload.get("capture_height") or 0)),
+                            "frame_rate": max(0.0, float(video_payload.get("capture_frame_rate") or 0)),
+                            "video_bitrate_bps": max(0, int(video_payload.get("video_bitrate_bps") or 0)),
+                            "quality_pipeline": "v147_browser_direct_original",
+                        }
+                        reflection["video_stabilization"] = {
+                            "version": "disabled_v147",
+                            "mode": "off",
+                            "status": "disabled",
+                            "storage_path": "",
+                            "size_bytes": 0,
+                            "original_preserved": True,
+                            "last_error": "",
+                        }
+                        reflection["ai_selection"] = {
+                            "status": "waiting_candidates",
+                            "queued_at": now_jst().isoformat(),
+                            "updated_at": now_jst().isoformat(),
+                            "pipeline_mode": "v147_all_frames_100ms_native_png",
+                            "items": [],
+                            "last_error": "",
+                        }
+                        _write_photo_reflection(saved_video["id"], reflection)
+                        saved_video = dict(saved_video)
+                        saved_video["reflection_json"] = reflection
+
+                    video_status.update(
+                        label="元動画を保存しました。いい瞬間は続けて自動処理します。",
+                        state="complete",
+                    )
+
+                st.session_state[digest_key] = recording_id
+                if isinstance(saved_video, dict) and saved_video.get("id"):
+                    st.session_state[f"_camera_recent_photo_{trip['id']}"] = saved_video["id"]
+                clear_camera_video_upload_reservation()
+                try:
+                    _home_video_counts_cached.clear()
+                except Exception:
+                    pass
+
+                previous_count = st.session_state.get("_home_today_photo_count")
+                try:
+                    previous_count = int(previous_count) if previous_count is not None else 0
+                except Exception:
+                    previous_count = 0
+                st.session_state["_home_today_photo_count"] = previous_count + 1
+                place_label = str((location or {}).get("place_label") or trip.get("destination") or "").strip()
+                if place_label:
+                    st.session_state["_home_today_place"] = place_label
+
+                st.session_state["_browser_last_camera_open_at"] = time.time() * 1000.0
+                st.session_state["_browser_last_camera_mode"] = "video"
+                st.session_state.capture_serial += 1
+                st.session_state["_camera_notice"] = "元動画を保存しました。いい瞬間を3枚、自動作成します。"
+                st.rerun()
+        except Exception as exc:
+            if video_registered:
+                st.warning("元動画は保存済みです。いい瞬間の自動処理は次回実行時に再開します。")
+            else:
+                st.error(f"動画を保存できませんでした。処理段階：{save_stage}")
+            with st.expander("保護者向け詳細", expanded=True):
+                st.code(f"処理段階: {save_stage}\n{exc}")
 
     if isinstance(video_payload, dict) and video_payload.get("data_url"):
         save_stage = "元動画の受信"
@@ -14578,7 +14825,7 @@ def page_trip():
                             "height": max(0, int(video_payload.get("capture_height") or 0)),
                             "frame_rate": max(0.0, float(video_payload.get("capture_frame_rate") or 0)),
                             "video_bitrate_bps": max(0, int(video_payload.get("video_bitrate_bps") or 0)),
-                            "quality_pipeline": "v146_server_owned_native_png",
+                            "quality_pipeline": "v147_all_frames_100ms_native_png",
                         }
                         reflection["video_stabilization"] = {
                             "version": "disabled_v145",
@@ -14593,7 +14840,7 @@ def page_trip():
                             "status": "waiting_candidates",
                             "queued_at": now_jst().isoformat(),
                             "updated_at": now_jst().isoformat(),
-                            "pipeline_mode": "v146_server_owned_native_png",
+                            "pipeline_mode": "v147_all_frames_100ms_native_png",
                             "items": [],
                             "last_error": "",
                         }
@@ -16498,7 +16745,7 @@ def _v145_store_selected_moments(client, video_photo, selected_rows):
             raw = Path(row["path"]).read_bytes()
             if not raw or _sniff_media_mime(raw) != "image/png":
                 raise ValueError("元動画由来のPNG静止画を読み込めませんでした。")
-            storage_path = f"{base}_good_v146_{token}_{rank:02d}.png"
+            storage_path = f"{base}_good_v147_{token}_{rank:02d}.png"
             client.storage.from_(PHOTO_BUCKET).upload(
                 path=storage_path,
                 file=raw,
@@ -16554,7 +16801,7 @@ def _v145_store_selected_moments(client, video_photo, selected_rows):
                     "storage_path": storage_path,
                     "frame_id": str(row.get("frame_id") or ""),
                     "timestamp_ms": timestamp_ms,
-                    "output_source": "original_video_native_png_v146",
+                    "output_source": "original_video_native_png_v147",
                     "score": int(round(float(row.get("ai_score") or 0))),
                     "primary_quality": str(row.get("primary_quality") or "other"),
                     "reason": str(row.get("reason") or "").strip()[:120],
@@ -16596,7 +16843,7 @@ def process_video_good_moments_v145(video_photo):
         {
             "status": "processing",
             "stage": "native_frame_extraction",
-            "pipeline_mode": "v146_server_owned_native_png",
+            "pipeline_mode": "v147_all_frames_100ms_native_png",
             "started_at": now_jst().isoformat(),
             "updated_at": now_jst().isoformat(),
             "attempt": max(0, int(selection.get("attempt") or 0)) + 1,
@@ -16648,12 +16895,12 @@ def process_video_good_moments_v145(video_photo):
             {
                 "status": "ready",
                 "stage": "complete",
-                "pipeline_mode": "v146_server_owned_native_png",
+                "pipeline_mode": "v147_all_frames_100ms_native_png",
                 "generated_at": now_jst().isoformat(),
                 "updated_at": now_jst().isoformat(),
                 "items": items,
                 "auto_saved_count": len(items),
-                "final_frame_mode": "original_native_png_v146",
+                "final_frame_mode": "original_native_png_v147",
                 "progress_message": "いい瞬間を写真として自動保存しました",
                 "last_error": "",
             }
@@ -16689,7 +16936,7 @@ def process_video_good_moments_v145(video_photo):
                 {
                     "status": "error",
                     "stage": str(latest_selection.get("stage") or "pipeline"),
-                    "pipeline_mode": "v146_server_owned_native_png",
+                    "pipeline_mode": "v147_all_frames_100ms_native_png",
                     "updated_at": now_jst().isoformat(),
                     "last_error": str(exc)[:300],
                 }
@@ -16733,7 +16980,7 @@ def resume_member_video_background_jobs(limit=24, min_interval_seconds=0):
             continue
         attempts = max(0, int(selection.get("attempt") or 0))
         pipeline = str(selection.get("pipeline_mode") or "")
-        if status == "error" and pipeline == "v146_server_owned_native_png" and attempts >= 2:
+        if status == "error" and pipeline == "v147_all_frames_100ms_native_png" and attempts >= 2:
             continue
         if status == "processing" and not video_ai_processing_is_stale(selection):
             continue
