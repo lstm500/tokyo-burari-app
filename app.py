@@ -4,27 +4,20 @@ import hmac
 import html
 import io
 import json
-import math
 import os
 import random
-import shutil
-import subprocess
-import threading
 import tempfile
 import time
 import uuid
 import wave
 import sys
 from array import array
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.parse import urlencode, urlparse, parse_qs
 from urllib.request import Request, urlopen
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import streamlit as st
-
-APP_BUILD = "v146_async_video_split"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -900,7 +893,7 @@ export default function(component) {
   const reviewRetry = parentElement.querySelector('#camera-review-retry');
   const status = parentElement.querySelector('#live-camera-status');
 
-  const VIDEO_MAX_SECONDS = 15;
+  const VIDEO_MAX_SECONDS = 30;
   let stream = null;
   let cameraMode = 'photo';
   let pendingMedia = null;
@@ -1400,19 +1393,18 @@ export default function(component) {
           const blob = new Blob(recordedChunks, { type: finalType });
           recordedChunks = [];
           if (!blob.size) throw new Error('recorded video is empty');
-          // v146: recording and Good Moments processing are separate jobs.
-          // Do not decode/extract candidate frames on the phone after recording.
-          setStatus('動画を確認できます。');
-          const [dataUrl, posterDataUrl, location] = await Promise.all([
+          setStatus('動画から良い瞬間の候補を準備しています…');
+          const [dataUrl, posterDataUrl, candidateFrames, location] = await Promise.all([
             blobToDataUrl(blob),
             capturePosterDataUrl(),
+            extractVideoCandidateFrames(blob, durationMs),
             recordingLocationPromise || getLocationAtCapture()
           ]);
           pendingMedia = {
             kind: 'video',
             data_url: dataUrl,
             poster_data_url: posterDataUrl,
-            candidate_frames: [],
+            candidate_frames: candidateFrames,
             mime_type: finalType,
             duration_ms: durationMs,
             name: finalType.includes('mp4') ? 'camera.mp4' : 'camera.webm',
@@ -3155,15 +3147,8 @@ def ask_json(prompt, name, schema, max_output_tokens=900):
 
 
 def image_data_url(image_bytes):
-    raw = bytes(image_bytes or b"")
-    if raw.startswith(b"\x89PNG\r\n\x1a\n"):
-        mime = "image/png"
-    elif raw.startswith(b"RIFF") and raw[8:12] == b"WEBP":
-        mime = "image/webp"
-    else:
-        mime = "image/jpeg"
-    encoded = base64.b64encode(raw).decode("ascii")
-    return f"data:{mime};base64,{encoded}"
+    encoded = base64.b64encode(image_bytes).decode("ascii")
+    return f"data:image/jpeg;base64,{encoded}"
 
 
 def ask_json_with_image(prompt, image_bytes, name, schema, max_output_tokens=800):
@@ -4049,13 +4034,8 @@ def upload_video(
 
     if not video_bytes:
         raise ValueError("動画データが空です。")
-    duration_value = max(0, int(duration_ms or 0))
-    # The camera stops at 15 seconds, but browsers can report a small stop/finalize
-    # overrun. Accept up to 20 seconds as a processing buffer, never as a target length.
-    if duration_value > 20_000:
-        raise ValueError("動画が長すぎます。録画は最大15秒です。")
     if len(video_bytes) > 25 * 1024 * 1024:
-        raise ValueError("動画データが大きすぎます。15秒以内で撮り直してください。")
+        raise ValueError("動画が大きすぎます。30秒以内で撮り直してください。")
     ensure_video_storage_capacity(len(video_bytes))
     poster = normalize_photo(poster_bytes)
     if not poster:
@@ -4425,725 +4405,6 @@ def mark_video_ai_selection_error(photo, message):
         _write_photo_reflection(photo["id"], reflection)
     except Exception:
         pass
-
-
-
-
-# ============================================================
-# v146: fully separated automatic video processing
-# ============================================================
-VIDEO_BG_SAMPLE_INTERVAL_MS = 100
-VIDEO_BG_MAX_CANDIDATES = 160
-VIDEO_BG_BATCH_SIZE = 8
-VIDEO_BG_BATCH_KEEP = 2
-VIDEO_BG_BATCH_WORKERS = 4
-VIDEO_BG_REQUEST_TIMEOUT_SECONDS = 75
-VIDEO_BG_STALE_SECONDS = 300
-
-
-def _background_storage_bytes(value):
-    if isinstance(value, (bytes, bytearray)):
-        return bytes(value)
-    content = getattr(value, "content", None)
-    if isinstance(content, (bytes, bytearray)):
-        return bytes(content)
-    data = getattr(value, "data", None)
-    if isinstance(data, (bytes, bytearray)):
-        return bytes(data)
-    return b""
-
-
-def _video_ffmpeg_executable():
-    path = shutil.which("ffmpeg")
-    if path:
-        return path
-    try:
-        import imageio_ffmpeg
-        candidate = str(imageio_ffmpeg.get_ffmpeg_exe() or "").strip()
-        if candidate and os.path.exists(candidate):
-            return candidate
-    except Exception:
-        pass
-    return ""
-
-
-def _background_clients():
-    from supabase import create_client as _create_client
-    from openai import OpenAI
-    return (
-        _create_client(SUPABASE_URL, SUPABASE_SECRET_KEY),
-        OpenAI(
-            api_key=OPENAI_API_KEY,
-            timeout=float(VIDEO_BG_REQUEST_TIMEOUT_SECONDS),
-            max_retries=1,
-        ),
-    )
-
-
-def _background_write_reflection(client, photo_id, family_key, member_key, reflection):
-    (
-        client.table(PHOTO_TABLE)
-        .update({"reflection_json": reflection if isinstance(reflection, dict) else {}})
-        .eq("id", str(photo_id))
-        .eq("family_key", str(family_key))
-        .eq("member_key", str(member_key))
-        .execute()
-    )
-
-
-def _background_selection_schema(max_items, min_items=1):
-    maximum = max(1, int(max_items))
-    minimum = max(1, min(int(min_items), maximum))
-    return {
-        "type": "object",
-        "properties": {
-            "selections": {
-                "type": "array",
-                "minItems": minimum,
-                "maxItems": maximum,
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "rank": {"type": "integer", "minimum": 1, "maximum": maximum},
-                        "frame_id": {"type": "string"},
-                        "score": {"type": "integer", "minimum": 0, "maximum": 100},
-                        "primary_quality": {
-                            "type": "string",
-                            "enum": ["expression", "action", "beauty", "subject", "story", "other"],
-                        },
-                        "reason": {"type": "string"},
-                    },
-                    "required": ["rank", "frame_id", "score", "primary_quality", "reason"],
-                    "additionalProperties": False,
-                },
-            }
-        },
-        "required": ["selections"],
-        "additionalProperties": False,
-    }
-
-
-def _background_call_video_selector(ai_client, candidate_frames, prompt, name, max_items, min_items=1):
-    content = [{"type": "input_text", "text": str(prompt)}]
-    for frame in candidate_frames:
-        raw = Path(frame["path"]).read_bytes()
-        content.append(
-            {
-                "type": "input_text",
-                "text": f"候補 {frame['frame_id']} / {int(frame['timestamp_ms']) / 1000:.1f}秒",
-            }
-        )
-        # v146 quality rule: the same native PNG extracted from the stored original
-        # video is sent to vision. No thumbnail, resize, or JPEG candidate is used.
-        content.append({"type": "input_image", "image_url": image_data_url(raw)})
-    input_value = [{"role": "user", "content": content}]
-    result = ai_client.responses.create(
-        **response_args(
-            VISION_MODEL,
-            input_value,
-            name,
-            _background_selection_schema(max_items, min_items=min_items),
-            max_output_tokens=1500,
-        )
-    )
-    return json.loads(result.output_text)
-
-
-def _background_parse_ranked_frames(result, candidate_frames, limit):
-    by_id = {str(frame.get("frame_id") or ""): frame for frame in candidate_frames}
-    raw_items = (result or {}).get("selections") if isinstance(result, dict) else []
-    ranked = sorted(
-        [item for item in (raw_items or []) if isinstance(item, dict)],
-        key=lambda item: int(item.get("rank") or 99),
-    )
-    output = []
-    used = set()
-    for item in ranked:
-        frame_id = str(item.get("frame_id") or "")
-        frame = by_id.get(frame_id)
-        if not frame or frame_id in used:
-            continue
-        output.append(
-            {
-                "frame": frame,
-                "score": max(0, min(100, int(item.get("score") or 0))),
-                "primary_quality": str(item.get("primary_quality") or "other"),
-                "reason": str(item.get("reason") or "").strip()[:120],
-            }
-        )
-        used.add(frame_id)
-        if len(output) >= int(limit):
-            break
-    return output
-
-
-def _background_extract_native_frames(client, photo, temp_dir):
-    video_path = photo_video_storage_path(photo)
-    if not video_path:
-        raise ValueError("元動画の保存先を確認できませんでした。")
-    ffmpeg = _video_ffmpeg_executable()
-    if not ffmpeg:
-        raise RuntimeError("元動画から画像を切り出すffmpegを利用できません。")
-
-    video_raw = _background_storage_bytes(client.storage.from_(PHOTO_BUCKET).download(video_path))
-    if not video_raw:
-        raise ValueError("保存済みの元動画を読み込めませんでした。")
-
-    metadata = photo_media_metadata(photo)
-    duration_ms = max(0, int(metadata.get("video_duration_ms") or 0))
-    if duration_ms <= 0:
-        duration_ms = 15_000
-    target_count = max(
-        9,
-        min(
-            VIDEO_BG_MAX_CANDIDATES,
-            int(math.ceil(min(16_000, duration_ms) / float(VIDEO_BG_SAMPLE_INTERVAL_MS))),
-        ),
-    )
-    suffix = ".mp4" if str(video_path).lower().endswith(".mp4") else ".webm"
-    input_path = os.path.join(temp_dir, "original" + suffix)
-    output_pattern = os.path.join(temp_dir, "native_%03d.png")
-    with open(input_path, "wb") as fh:
-        fh.write(video_raw)
-
-    fps = 1000.0 / float(VIDEO_BG_SAMPLE_INTERVAL_MS)
-    command = [
-        ffmpeg,
-        "-nostdin",
-        "-hide_banner",
-        "-loglevel",
-        "error",
-        "-i",
-        input_path,
-        "-vf",
-        f"fps={fps:.6f}:start_time=0:round=near",
-        "-frames:v",
-        str(target_count),
-        output_pattern,
-    ]
-    completed = subprocess.run(
-        command,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        timeout=60,
-        check=False,
-    )
-    files = sorted(Path(temp_dir).glob("native_*.png"))[:target_count]
-    if completed.returncode != 0 and not files:
-        detail = completed.stderr.decode("utf-8", errors="ignore").strip().replace("\n", " ")
-        raise RuntimeError("元動画から画像を作成できませんでした。" + (f" {detail[:180]}" if detail else ""))
-    if len(files) < 9:
-        raise ValueError("元動画から9枚以上の画像を切り出せませんでした。")
-
-    frames = []
-    for index, frame_path in enumerate(files, start=1):
-        frames.append(
-            {
-                "frame_id": f"F{index:03d}",
-                "timestamp_ms": max(0, (index - 1) * VIDEO_BG_SAMPLE_INTERVAL_MS),
-                "path": str(frame_path),
-            }
-        )
-    return frames
-
-
-def _background_choose_video_frames(ai_client, frames, progress_callback=None):
-    first_prompt = (
-        "15秒程度の動画を0.1秒間隔で元解像度のまま切り出した連続画像です。"
-        "この組の画像をすべて比較し、人が写真として残したくなる最も良い瞬間を選んでください。"
-        "笑顔や自然な表情、決定的瞬間、躍動感、被写体の魅力、構図、光、ピントを重視し、"
-        "手ぶれ、目つぶり、見切れ、白飛び・黒つぶれを避けてください。"
-        "似た連続フレームでは最良の瞬間を優先してください。"
-    )
-    batches = [frames[i:i + VIDEO_BG_BATCH_SIZE] for i in range(0, len(frames), VIDEO_BG_BATCH_SIZE)]
-
-    def run_batch(index, batch):
-        result = _background_call_video_selector(
-            ai_client,
-            batch,
-            first_prompt,
-            f"video_bg_v146_first_{index}",
-            min(VIDEO_BG_BATCH_KEEP, len(batch)),
-            min_items=1,
-        )
-        return _background_parse_ranked_frames(result, batch, VIDEO_BG_BATCH_KEEP)
-
-    first_records = []
-    workers = max(1, min(VIDEO_BG_BATCH_WORKERS, len(batches)))
-    with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="burari-frame-ai") as pool:
-        futures = {pool.submit(run_batch, index, batch): index for index, batch in enumerate(batches, start=1)}
-        completed_count = 0
-        for future in as_completed(futures):
-            first_records.extend(future.result())
-            completed_count += 1
-            if callable(progress_callback):
-                progress_callback("ai_first", completed_count, len(batches), f"AI一次選定 {completed_count}/{len(batches)}")
-
-    shortlist = []
-    seen = set()
-    for record in sorted(first_records, key=lambda item: int(item.get("score") or 0), reverse=True):
-        frame = record.get("frame") or {}
-        frame_id = str(frame.get("frame_id") or "")
-        if frame_id and frame_id not in seen:
-            shortlist.append(frame)
-            seen.add(frame_id)
-    if len(shortlist) < 9:
-        raise ValueError("AI一次選定で9枚以上の候補を作れませんでした。")
-
-    # Reduce only through another AI comparison. Every original frame has already
-    # been seen by AI above; no local quality score or compressed proxy is used.
-    if len(shortlist) > 12:
-        semi_batches = [shortlist[i:i + 8] for i in range(0, len(shortlist), 8)]
-
-        def run_semi(index, batch):
-            keep = min(4, len(batch))
-            minimum = min(3, keep)
-            result = _background_call_video_selector(
-                ai_client,
-                batch,
-                "動画全体の最終選考へ進める写真を選んでください。映え・表情・決定的瞬間・構図・ピントを重視してください。",
-                f"video_bg_v146_semi_{index}",
-                keep,
-                min_items=minimum,
-            )
-            return [x["frame"] for x in _background_parse_ranked_frames(result, batch, keep)]
-
-        semi_frames = []
-        with ThreadPoolExecutor(max_workers=min(VIDEO_BG_BATCH_WORKERS, len(semi_batches)), thread_name_prefix="burari-frame-semi") as pool:
-            futures = [pool.submit(run_semi, index, batch) for index, batch in enumerate(semi_batches, start=1)]
-            for future in as_completed(futures):
-                semi_frames.extend(future.result())
-        shortlist = []
-        seen = set()
-        for frame in semi_frames:
-            frame_id = str(frame.get("frame_id") or "")
-            if frame_id and frame_id not in seen:
-                shortlist.append(frame)
-                seen.add(frame_id)
-        if len(shortlist) < 9:
-            for frame in [record.get("frame") or {} for record in first_records]:
-                frame_id = str(frame.get("frame_id") or "")
-                if frame_id and frame_id not in seen:
-                    shortlist.append(frame)
-                    seen.add(frame_id)
-                if len(shortlist) >= 9:
-                    break
-
-    if callable(progress_callback):
-        progress_callback("ai_final", 1, 1, "AI最終選定中")
-
-    final_prompt = (
-        "動画全体を代表する『いい瞬間』を9枚選んでください。"
-        "9枚はほぼ同じ場面に偏らせず、写真として残したい質を最優先してください。"
-        "自然な表情、決定的瞬間、躍動感、構図、光、色、ピント、被写体の魅力を重視してください。"
-        "rank=1を最も残したい1枚として、rank=1〜9を重複なく返してください。"
-    )
-    result = _background_call_video_selector(
-        ai_client,
-        shortlist,
-        final_prompt,
-        "video_bg_v146_final",
-        9,
-        min_items=9,
-    )
-    selected = _background_parse_ranked_frames(result, shortlist, 9)
-    if len(selected) != 9:
-        raise ValueError("AI最終選定を9枚そろえられませんでした。")
-    return selected
-
-
-def _background_existing_auto_photos(client, photo):
-    rows = (
-        client.table(PHOTO_TABLE)
-        .select("id,storage_path,reflection_json")
-        .eq("trip_id", photo.get("trip_id"))
-        .eq("family_key", photo.get("family_key"))
-        .eq("member_key", photo.get("member_key"))
-        .execute()
-    ).data or []
-    existing = {}
-    source_id = str(photo.get("id") or "")
-    for row in rows:
-        reflection = row.get("reflection_json") or {}
-        if not isinstance(reflection, dict):
-            continue
-        if str(reflection.get("source_video_photo_id") or "") != source_id:
-            continue
-        if str(reflection.get("capture_source") or "") != "video_ai_auto":
-            continue
-        try:
-            rank = int(reflection.get("source_selection_rank") or 0)
-        except Exception:
-            rank = 0
-        if rank > 0:
-            existing[rank] = row
-    return existing
-
-
-def _background_capture_time(photo, timestamp_ms):
-    raw = str((photo or {}).get("captured_at") or "").strip()
-    try:
-        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00")) if raw else now_jst()
-        return (parsed + timedelta(milliseconds=max(0, int(timestamp_ms or 0)))).isoformat()
-    except Exception:
-        return raw or now_jst().isoformat()
-
-
-def _background_store_selected_photos(client, photo, selections, job_token):
-    base = _video_selection_base_path(photo)
-    if not base:
-        raise ValueError("動画の保存先を確認できませんでした。")
-    existing = _background_existing_auto_photos(client, photo)
-    video_meta = photo_media_metadata(photo)
-    location = video_meta.get("location") if isinstance(video_meta.get("location"), dict) else {}
-    items = []
-
-    for rank, selected in enumerate(selections, start=1):
-        frame = selected.get("frame") or {}
-        frame_path = str(frame.get("path") or "")
-        if not frame_path or not os.path.exists(frame_path):
-            raise ValueError("元動画由来の選定画像を読み込めませんでした。")
-        timestamp_ms = max(0, int(frame.get("timestamp_ms") or 0))
-
-        existing_row = existing.get(rank)
-        if existing_row and existing_row.get("storage_path"):
-            storage_path = str(existing_row.get("storage_path"))
-            saved_photo_id = str(existing_row.get("id") or "")
-        else:
-            image_bytes = Path(frame_path).read_bytes()
-            if not image_bytes.startswith(b"\x89PNG\r\n\x1a\n"):
-                raise ValueError("元動画からのPNG画像ではないため保存を中止しました。")
-            storage_path = f"{base}_moment_{job_token}_{rank:02d}.png"
-            client.storage.from_(PHOTO_BUCKET).upload(
-                path=storage_path,
-                file=image_bytes,
-                file_options={"content-type": "image/png", "cache-control": "3600"},
-            )
-            reflection = {
-                "capture_source": "video_ai_auto",
-                "location": location,
-                "source_video_photo_id": str(photo.get("id") or ""),
-                "source_selection_rank": rank,
-                "source_selection_timestamp_ms": timestamp_ms,
-                "source_selection_quality": str(selected.get("primary_quality") or "other"),
-                "source_selection_reason": str(selected.get("reason") or "")[:120],
-                "auto_saved_from_video": True,
-                "lossless_from_original_video": True,
-            }
-            try:
-                result = (
-                    client.table(PHOTO_TABLE)
-                    .insert(
-                        {
-                            "trip_id": photo.get("trip_id"),
-                            "family_key": photo.get("family_key"),
-                            "member_key": photo.get("member_key"),
-                            "storage_path": storage_path,
-                            "captured_at": _background_capture_time(photo, timestamp_ms),
-                            "reflection_json": reflection,
-                            "signals_json": {},
-                        }
-                    )
-                    .execute()
-                )
-                saved_row = (result.data or [None])[0] or {}
-                saved_photo_id = str(saved_row.get("id") or "")
-                if not saved_photo_id:
-                    raise RuntimeError("切り抜き画像のDB登録に失敗しました。")
-            except Exception:
-                try:
-                    client.storage.from_(PHOTO_BUCKET).remove([storage_path])
-                except Exception:
-                    pass
-                raise
-
-        items.append(
-            {
-                "rank": rank,
-                "storage_path": storage_path,
-                "frame_id": str(frame.get("frame_id") or ""),
-                "timestamp_ms": timestamp_ms,
-                "score": int(selected.get("score") or 0),
-                "primary_quality": str(selected.get("primary_quality") or "other"),
-                "reason": str(selected.get("reason") or "")[:120],
-                "ai_best": rank == 1,
-                "saved_photo_id": saved_photo_id,
-                "auto_saved": True,
-                "output_source": "original_video_native_png_v146",
-            }
-        )
-    return items
-
-
-def _background_update_video_status(client, photo, status, stage="", message="", progress_completed=0, progress_total=0):
-    fresh = (
-        client.table(PHOTO_TABLE)
-        .select("*")
-        .eq("id", photo.get("id"))
-        .eq("family_key", photo.get("family_key"))
-        .eq("member_key", photo.get("member_key"))
-        .limit(1)
-        .execute()
-    )
-    row = (fresh.data or [None])[0] or photo
-    reflection = dict(photo_media_metadata(row))
-    selection = reflection.get("ai_selection") or {}
-    if not isinstance(selection, dict):
-        selection = {}
-    selection.update(
-        {
-            "status": str(status),
-            "stage": str(stage or ""),
-            "updated_at": now_jst().isoformat(),
-            "message": str(message or "")[:240],
-            "progress_completed": max(0, int(progress_completed or 0)),
-            "progress_total": max(0, int(progress_total or 0)),
-            "pipeline_mode": "async_server_v146",
-        }
-    )
-    reflection["ai_selection"] = selection
-    _background_write_reflection(
-        client,
-        row.get("id"),
-        row.get("family_key"),
-        row.get("member_key"),
-        reflection,
-    )
-    updated = dict(row)
-    updated["reflection_json"] = reflection
-    return updated
-
-
-def _run_video_ai_background_job(photo_id, family_key, member_key):
-    client, ai_client = _background_clients()
-    result = (
-        client.table(PHOTO_TABLE)
-        .select("*")
-        .eq("id", str(photo_id))
-        .eq("family_key", str(family_key))
-        .eq("member_key", str(member_key))
-        .limit(1)
-        .execute()
-    )
-    photo = (result.data or [None])[0]
-    if not photo or not photo_is_video(photo):
-        return False
-    current_selection = photo_media_metadata(photo).get("ai_selection") or {}
-    if isinstance(current_selection, dict) and str(current_selection.get("status") or "") == "ready" and len(video_ai_selection_items(photo)) >= 9:
-        return True
-
-    job_token = uuid.uuid4().hex[:8]
-    try:
-        photo = _background_update_video_status(client, photo, "processing", "extracting", "元動画から画像を準備中")
-        with tempfile.TemporaryDirectory(prefix="burari-video-bg-v146-") as temp_dir:
-            frames = _background_extract_native_frames(client, photo, temp_dir)
-            photo = _background_update_video_status(
-                client,
-                photo,
-                "processing",
-                "ai_selection",
-                "AIがいい瞬間を選定中",
-                0,
-                max(1, int(math.ceil(len(frames) / VIDEO_BG_BATCH_SIZE))),
-            )
-
-            def progress(stage, completed, total, message):
-                nonlocal photo
-                try:
-                    photo = _background_update_video_status(
-                        client,
-                        photo,
-                        "processing",
-                        stage,
-                        message,
-                        completed,
-                        total,
-                    )
-                except Exception:
-                    pass
-
-            selections = _background_choose_video_frames(ai_client, frames, progress_callback=progress)
-            photo = _background_update_video_status(client, photo, "processing", "saving", "選んだ9枚を自動保存中")
-            items = _background_store_selected_photos(client, photo, selections, job_token)
-
-        fresh = (
-            client.table(PHOTO_TABLE)
-            .select("*")
-            .eq("id", photo.get("id"))
-            .eq("family_key", photo.get("family_key"))
-            .eq("member_key", photo.get("member_key"))
-            .limit(1)
-            .execute()
-        )
-        row = (fresh.data or [None])[0] or photo
-        reflection = dict(photo_media_metadata(row))
-        selection_meta = reflection.get("ai_selection") or {}
-        if not isinstance(selection_meta, dict):
-            selection_meta = {}
-        selection_meta.update(
-            {
-                "status": "ready",
-                "stage": "done",
-                "generated_at": now_jst().isoformat(),
-                "updated_at": now_jst().isoformat(),
-                "candidate_count": len(frames),
-                "items": items,
-                "auto_saved_count": len(items),
-                "pipeline_mode": "async_server_v146",
-                "last_error": "",
-                "message": "",
-            }
-        )
-        reflection["ai_selection"] = selection_meta
-        _background_write_reflection(
-            client,
-            row.get("id"),
-            row.get("family_key"),
-            row.get("member_key"),
-            reflection,
-        )
-        return True
-    except Exception as exc:
-        try:
-            fresh = (
-                client.table(PHOTO_TABLE)
-                .select("*")
-                .eq("id", str(photo_id))
-                .eq("family_key", str(family_key))
-                .eq("member_key", str(member_key))
-                .limit(1)
-                .execute()
-            )
-            row = (fresh.data or [None])[0] or photo or {}
-            reflection = dict(photo_media_metadata(row))
-            selection = reflection.get("ai_selection") or {}
-            if not isinstance(selection, dict):
-                selection = {}
-            selection.update(
-                {
-                    "status": "error",
-                    "stage": "error",
-                    "updated_at": now_jst().isoformat(),
-                    "last_error": str(exc)[:400],
-                    "message": str(exc)[:240],
-                    "pipeline_mode": "async_server_v146",
-                }
-            )
-            reflection["ai_selection"] = selection
-            _background_write_reflection(client, photo_id, family_key, member_key, reflection)
-        except Exception:
-            pass
-        return False
-
-
-@st.cache_resource(show_spinner=False)
-def _video_background_executor():
-    return ThreadPoolExecutor(max_workers=2, thread_name_prefix="burari-video-bg")
-
-
-@st.cache_resource(show_spinner=False)
-def _video_background_registry():
-    return {"lock": threading.Lock(), "futures": {}}
-
-
-def launch_video_ai_background_job(photo):
-    if not isinstance(photo, dict) or not photo.get("id") or not photo_is_video(photo):
-        return False
-    photo_id = str(photo.get("id"))
-    family_key = str(photo.get("family_key") or current_family_key())
-    member_key = str(photo.get("member_key") or current_member_key())
-    registry = _video_background_registry()
-    with registry["lock"]:
-        stale_ids = [key for key, future in registry["futures"].items() if future.done()]
-        for key in stale_ids:
-            registry["futures"].pop(key, None)
-        existing = registry["futures"].get(photo_id)
-        if existing is not None and not existing.done():
-            return False
-        future = _video_background_executor().submit(
-            _run_video_ai_background_job,
-            photo_id,
-            family_key,
-            member_key,
-        )
-        registry["futures"][photo_id] = future
-        return True
-
-
-def queue_video_ai_processing(photo):
-    if not isinstance(photo, dict) or not photo.get("id") or not photo_is_video(photo):
-        return photo
-    reflection = dict(photo_media_metadata(photo))
-    selection = reflection.get("ai_selection") or {}
-    if not isinstance(selection, dict):
-        selection = {}
-    selection.update(
-        {
-            "status": "queued",
-            "stage": "queued",
-            "queued_at": now_jst().isoformat(),
-            "updated_at": now_jst().isoformat(),
-            "pipeline_mode": "async_server_v146",
-            "items": list(selection.get("items") or []),
-            "last_error": "",
-            "message": "",
-        }
-    )
-    reflection["ai_selection"] = selection
-    _write_photo_reflection(photo.get("id"), reflection)
-    updated = dict(photo)
-    updated["reflection_json"] = reflection
-    return updated
-
-
-def _video_processing_age_seconds(selection):
-    raw = str((selection or {}).get("updated_at") or (selection or {}).get("queued_at") or "").strip()
-    if not raw:
-        return None
-    try:
-        dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=ZoneInfo(APP_TIMEZONE))
-        return max(0.0, (now_jst() - dt.astimezone(ZoneInfo(APP_TIMEZONE))).total_seconds())
-    except Exception:
-        return None
-
-
-def resume_video_ai_jobs_async(limit=30):
-    """Relaunch queued/stale jobs without waiting for them in the Streamlit request."""
-    try:
-        rows = (
-            supabase_client().table(PHOTO_TABLE)
-            .select("*")
-            .eq("family_key", current_family_key())
-            .eq("member_key", current_member_key())
-            .order("captured_at", desc=True)
-            .limit(max(1, int(limit)))
-            .execute()
-        ).data or []
-    except Exception:
-        return 0
-    launched = 0
-    for row in rows:
-        if not photo_is_video(row):
-            continue
-        selection = photo_media_metadata(row).get("ai_selection") or {}
-        if not isinstance(selection, dict):
-            selection = {}
-        status = str(selection.get("status") or "").strip().lower()
-        if status == "ready" and len(video_ai_selection_items(row)) >= 9:
-            continue
-        if status == "queued":
-            if launch_video_ai_background_job(row):
-                launched += 1
-        elif status == "processing":
-            age = _video_processing_age_seconds(selection)
-            if age is None or age >= VIDEO_BG_STALE_SECONDS:
-                if launch_video_ai_background_job(row):
-                    launched += 1
-        if launched >= 2:
-            break
-    return launched
 
 
 def video_ai_selection_items(photo):
@@ -9330,11 +8591,7 @@ def render_video_ai_selection(photo, key_prefix="video_selection", allow_save=Tr
         selection_meta = {}
     items = video_ai_selection_items(photo)
     if not items:
-        status = str(selection_meta.get("status") or "").strip().lower()
-        if status in {"queued", "processing"}:
-            message = str(selection_meta.get("message") or "").strip()
-            st.caption(message or "いい瞬間はバックグラウンドで自動作成中です。撮影や他の画面操作は続けられます。")
-        elif status == "error":
+        if str(selection_meta.get("status") or "") == "error":
             st.caption("AIセレクションを作成できませんでした。動画は保存されています。")
         return
 
@@ -9971,6 +9228,7 @@ def page_trip():
         try:
             mime_type, video_raw = decode_camera_video_data_url(video_payload["data_url"])
             poster_raw = decode_camera_data_url(video_payload["poster_data_url"])
+            candidate_frames = decode_video_candidate_frames(video_payload.get("candidate_frames") or [])
             digest = hashlib.sha1(video_raw).hexdigest()
             digest_key = "saved_camera_video_digest_current"
             if st.session_state.get(digest_key) != digest:
@@ -9996,12 +9254,16 @@ def page_trip():
                         capture_source=capture_source,
                     )
 
-                # v146: video preservation ends here from the phone's point of view.
-                # Good Moments extraction/AI/storage runs in a separate server job and
-                # this Streamlit request never waits for it.
-                if isinstance(saved_video, dict) and saved_video.get("id"):
-                    saved_video = queue_video_ai_processing(saved_video)
-                    launch_video_ai_background_job(saved_video)
+                ai_selection_ok = False
+                if isinstance(saved_video, dict) and saved_video.get("id") and len(candidate_frames) >= 9:
+                    try:
+                        with st.spinner("AIが動画から良い瞬間を9枚選んでいます…"):
+                            saved_video = store_video_ai_selection(saved_video, candidate_frames)
+                        ai_selection_ok = True
+                    except Exception as selection_exc:
+                        mark_video_ai_selection_error(saved_video, selection_exc)
+                elif isinstance(saved_video, dict) and saved_video.get("id"):
+                    mark_video_ai_selection_error(saved_video, "候補画像を9枚以上作れませんでした。")
 
                 st.session_state[digest_key] = digest
                 if isinstance(saved_video, dict) and saved_video.get("id"):
@@ -10020,7 +9282,9 @@ def page_trip():
 
                 st.session_state.capture_serial += 1
                 st.session_state["_camera_notice"] = (
-                    "動画を保存しました。いい瞬間はバックグラウンドで自動作成しています。次の撮影や画面操作ができます。"
+                    "動画を保存し、AIセレクション9枚を作りました。"
+                    if ai_selection_ok else
+                    "動画を保存しました。AIセレクションは作成できませんでした。"
                 )
                 st.rerun()
         except Exception as exc:
@@ -11610,13 +10874,6 @@ else:
     st.session_state["main_page"] = "home"
     st.rerun()
 
-
-# Resume queued/stale Good Moments jobs asynchronously. This only submits work;
-# it never waits for ffmpeg or AI and therefore does not block phone navigation.
-try:
-    resume_video_ai_jobs_async(limit=30)
-except Exception:
-    pass
 
 # Update browser history after the visible page has been queued, so an invisible
 # bridge never sits ahead of Home/Camera on the perceived critical path.
