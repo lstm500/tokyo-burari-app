@@ -1986,6 +1986,13 @@ def _get_far_field_mic_component():
 # Clickable diary photo gallery
 # ============================================================
 _DIARY_GALLERY_HTML = """
+<div id="diary-bulk-toolbar" class="diary-bulk-toolbar" hidden>
+  <div id="diary-bulk-count" class="diary-bulk-count">0件選択中</div>
+  <div class="diary-bulk-actions">
+    <button id="diary-bulk-cancel" class="diary-bulk-cancel" type="button">キャンセル</button>
+    <button id="diary-bulk-delete" class="diary-bulk-delete" type="button" disabled>選択した写真を削除</button>
+  </div>
+</div>
 <div id="diary-photo-grid" class="diary-photo-grid"></div>
 """
 
@@ -1997,10 +2004,82 @@ _DIARY_GALLERY_CSS = """
   gap: 8px;
   box-sizing: border-box;
 }
+.diary-bulk-toolbar {
+  width: 100%;
+  margin: 0 0 10px;
+  padding: 10px;
+  box-sizing: border-box;
+  border: 1px solid rgba(245, 158, 11, .38);
+  border-radius: 14px;
+  background: rgba(245, 158, 11, .08);
+}
+.diary-bulk-count {
+  margin: 0 0 8px;
+  font-size: 14px;
+  font-weight: 800;
+}
+.diary-bulk-actions {
+  display: grid;
+  grid-template-columns: minmax(0, .8fr) minmax(0, 1.4fr);
+  gap: 8px;
+}
+.diary-bulk-actions button {
+  min-height: 42px;
+  border-radius: 12px;
+  font-size: 13px;
+  font-weight: 800;
+  cursor: pointer;
+}
+.diary-bulk-cancel {
+  border: 1px solid rgba(128,128,128,.30);
+  background: transparent;
+  color: inherit;
+}
+.diary-bulk-delete {
+  border: 1px solid #DC2626;
+  background: #DC2626;
+  color: #fff;
+}
+.diary-bulk-delete:disabled {
+  opacity: .45;
+  cursor: default;
+}
 .diary-photo-wrap {
   position: relative;
   min-width: 0;
 }
+.diary-photo-grid.bulk-mode .diary-photo-wrap {
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+}
+.diary-photo-wrap.bulk-selected .diary-photo-card {
+  border: 4px solid #F59E0B !important;
+  background: rgba(245, 158, 11, .14) !important;
+  box-shadow: 0 0 0 2px rgba(245, 158, 11, .20) !important;
+}
+.diary-bulk-select-badge {
+  display: none;
+  position: absolute;
+  top: 7px;
+  left: 7px;
+  z-index: 5;
+  width: 27px;
+  height: 27px;
+  border-radius: 999px;
+  align-items: center;
+  justify-content: center;
+  border: 2px solid #fff;
+  background: rgba(55,65,81,.74);
+  color: #fff;
+  font-size: 17px;
+  font-weight: 900;
+  box-shadow: 0 1px 5px rgba(0,0,0,.26);
+  pointer-events: none;
+}
+.diary-photo-grid.bulk-mode .diary-bulk-select-badge { display: flex; }
+.diary-photo-wrap.bulk-selected .diary-bulk-select-badge { background: #F59E0B; }
+.diary-photo-grid.bulk-mode .diary-photo-delete { display: none; }
 .diary-photo-card {
   appearance: none;
   -webkit-appearance: none;
@@ -2037,6 +2116,12 @@ _DIARY_GALLERY_CSS = """
   object-fit: cover;
   border-radius: 9px;
   background: rgba(128, 128, 128, .08);
+}
+.diary-photo-grid.bulk-enabled .diary-photo-card,
+.diary-photo-grid.bulk-enabled .diary-photo-card img {
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
 }
 .diary-photo-delete {
   position: absolute;
@@ -2102,15 +2187,85 @@ _DIARY_GALLERY_JS = r"""
 export default function(component) {
   const { parentElement, data, setTriggerValue } = component;
   const grid = parentElement.querySelector('#diary-photo-grid');
+  const toolbar = parentElement.querySelector('#diary-bulk-toolbar');
+  const bulkCount = parentElement.querySelector('#diary-bulk-count');
+  const bulkCancel = parentElement.querySelector('#diary-bulk-cancel');
+  const bulkDelete = parentElement.querySelector('#diary-bulk-delete');
   if (!grid) return;
 
   grid.replaceChildren();
   const photos = Array.isArray(data?.photos) ? data.photos : [];
   const deleteOnly = Boolean(data?.delete_only);
+  const bulkEnabled = Boolean(data?.enable_bulk_delete);
+  const selected = new Set();
+  const wrapsById = new Map();
+  let bulkMode = false;
+  const LONG_PRESS_MS = 520;
+
+  if (bulkEnabled) grid.classList.add('bulk-enabled');
+  else grid.classList.remove('bulk-enabled');
+
+  const updateBulkUi = () => {
+    grid.classList.toggle('bulk-mode', bulkMode);
+    if (toolbar) toolbar.hidden = !bulkMode;
+    if (bulkCount) bulkCount.textContent = `${selected.size}件選択中`;
+    if (bulkDelete) {
+      bulkDelete.disabled = selected.size === 0;
+      bulkDelete.textContent = selected.size > 0
+        ? `選択した${selected.size}件を削除`
+        : '選択した写真を削除';
+    }
+    for (const [id, wrap] of wrapsById.entries()) {
+      const isSelected = selected.has(id);
+      wrap.classList.toggle('bulk-selected', isSelected);
+      const badge = wrap.querySelector('.diary-bulk-select-badge');
+      if (badge) badge.textContent = isSelected ? '✓' : '';
+    }
+  };
+
+  const selectToggle = (id) => {
+    if (!id) return;
+    if (selected.has(id)) selected.delete(id);
+    else selected.add(id);
+    updateBulkUi();
+  };
+
+  const enterBulkMode = (id) => {
+    if (!bulkEnabled) return;
+    bulkMode = true;
+    selected.add(id);
+    try {
+      if (navigator.vibrate) navigator.vibrate(24);
+    } catch (_) {}
+    updateBulkUi();
+  };
+
+  if (bulkEnabled) {
+    grid.addEventListener('contextmenu', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+    });
+  }
+
+  if (bulkCancel) {
+    bulkCancel.onclick = () => {
+      selected.clear();
+      bulkMode = false;
+      updateBulkUi();
+    };
+  }
+  if (bulkDelete) {
+    bulkDelete.onclick = () => {
+      if (!selected.size) return;
+      setTriggerValue('bulk_delete_ids_json', JSON.stringify(Array.from(selected)));
+    };
+  }
 
   for (const photo of photos) {
+    const photoId = String(photo.id || '');
     const wrap = document.createElement('div');
     wrap.className = 'diary-photo-wrap';
+    wrapsById.set(photoId, wrap);
 
     const button = document.createElement('button');
     button.type = 'button';
@@ -2127,7 +2282,23 @@ export default function(component) {
     img.loading = 'lazy';
     img.decoding = 'async';
     img.fetchPriority = 'low';
+    img.draggable = false;
+    img.setAttribute('draggable', 'false');
+    if (bulkEnabled) {
+      img.addEventListener('contextmenu', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+      });
+      button.addEventListener('contextmenu', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+      });
+    }
     button.appendChild(img);
+
+    const selectBadge = document.createElement('div');
+    selectBadge.className = 'diary-bulk-select-badge';
+    wrap.appendChild(selectBadge);
 
     if (photo.is_video) {
       const badge = document.createElement('div');
@@ -2143,9 +2314,55 @@ export default function(component) {
       button.appendChild(location);
     }
 
+    let pressTimer = null;
+    let pressStartX = 0;
+    let pressStartY = 0;
+    let longPressTriggered = false;
+
+    const clearPressTimer = () => {
+      if (pressTimer !== null) {
+        clearTimeout(pressTimer);
+        pressTimer = null;
+      }
+    };
+
+    if (bulkEnabled) {
+      button.addEventListener('pointerdown', (event) => {
+        if (event.pointerType === 'mouse' && event.button !== 0) return;
+        longPressTriggered = false;
+        pressStartX = Number(event.clientX || 0);
+        pressStartY = Number(event.clientY || 0);
+        clearPressTimer();
+        pressTimer = setTimeout(() => {
+          longPressTriggered = true;
+          enterBulkMode(photoId);
+        }, LONG_PRESS_MS);
+      });
+      button.addEventListener('pointermove', (event) => {
+        const dx = Math.abs(Number(event.clientX || 0) - pressStartX);
+        const dy = Math.abs(Number(event.clientY || 0) - pressStartY);
+        if (dx > 12 || dy > 12) clearPressTimer();
+      });
+      button.addEventListener('pointercancel', clearPressTimer);
+      button.addEventListener('pointerleave', clearPressTimer);
+      button.addEventListener('pointerup', (event) => {
+        clearPressTimer();
+        if (bulkMode) {
+          event.preventDefault();
+          event.stopPropagation();
+          if (!longPressTriggered) selectToggle(photoId);
+        }
+      });
+    }
+
     if (!deleteOnly) {
-      button.addEventListener('click', () => {
-        setTriggerValue('photo_id', String(photo.id));
+      button.addEventListener('click', (event) => {
+        if (bulkEnabled && bulkMode) {
+          event.preventDefault();
+          event.stopPropagation();
+          return;
+        }
+        setTriggerValue('photo_id', photoId);
       });
     }
 
@@ -2157,13 +2374,16 @@ export default function(component) {
     remove.addEventListener('click', (event) => {
       event.preventDefault();
       event.stopPropagation();
-      setTriggerValue('delete_photo_id', String(photo.id));
+      if (bulkMode) return;
+      setTriggerValue('delete_photo_id', photoId);
     });
 
     wrap.appendChild(button);
     wrap.appendChild(remove);
     grid.appendChild(wrap);
   }
+
+  updateBulkUi();
 }
 """
 
@@ -5303,6 +5523,129 @@ def confirm_photo_delete_dialog(trip_id, photo_id, photos=None, is_pending=False
             key=f"dialog_photo_delete_no_{trip_id}_{photo_id}",
         ):
             st.rerun(scope="app")
+
+def delete_pending_photos_bulk(trip_id, photo_ids, known_photos=None, known_trip=None):
+    """Delete multiple pending photos/videos in one operation without creating a diary."""
+    photos = list(known_photos) if isinstance(known_photos, (list, tuple)) else list_trip_photos(trip_id)
+    selected_ids = [
+        str(pid) for pid in dict.fromkeys(str(x or "") for x in (photo_ids or []))
+        if str(pid) and any(str(photo.get("id") or "") == str(pid) for photo in photos)
+    ]
+    if not selected_ids:
+        raise ValueError("削除する写真・動画が選択されていません。")
+
+    selected_set = set(selected_ids)
+    selected_photos = [photo for photo in photos if str(photo.get("id") or "") in selected_set]
+    storage_paths = []
+    for photo in selected_photos:
+        storage_paths.extend(photo_all_storage_paths(photo))
+    storage_paths = list(dict.fromkeys(str(path) for path in storage_paths if str(path)))
+
+    client = supabase_client()
+    if storage_paths:
+        client.storage.from_(PHOTO_BUCKET).remove(storage_paths)
+
+    query = (
+        client.table(PHOTO_TABLE)
+        .delete()
+        .eq("trip_id", trip_id)
+        .eq("family_key", current_family_key())
+        .eq("member_key", current_member_key())
+    )
+    if hasattr(query, "in_"):
+        query.in_("id", selected_ids).execute()
+    else:
+        for photo_id in selected_ids:
+            (
+                client.table(PHOTO_TABLE)
+                .delete()
+                .eq("id", photo_id)
+                .eq("trip_id", trip_id)
+                .eq("family_key", current_family_key())
+                .eq("member_key", current_member_key())
+                .execute()
+            )
+
+    remaining = [photo for photo in photos if str(photo.get("id") or "") not in selected_set]
+    trip_deleted = not remaining
+    if trip_deleted:
+        client.table(TRIP_TABLE).delete().eq("id", trip_id).eq(
+            "family_key", current_family_key()
+        ).eq("member_key", current_member_key()).execute()
+        st.session_state.pop(f"reflection_state_{trip_id}", None)
+        st.session_state.pop(f"diary_selected_photo_{trip_id}", None)
+        st.session_state.pop(f"diary_talk_photo_{trip_id}", None)
+        st.session_state.pop(f"_diary_title_override_{trip_id}", None)
+        if str(st.session_state.get("_pending_diary_open_trip_id") or "") == str(trip_id):
+            st.session_state.pop("_pending_diary_open_trip_id", None)
+        if str(st.session_state.get("active_trip_id") or "") == str(trip_id):
+            st.session_state.active_trip_id = None
+            _invalidate_active_trip_snapshot()
+
+    download_photo.clear()
+    thumbnail_photo_bytes.clear()
+    thumbnail_photo_data_url.clear()
+    signed_photo_url_map.clear()
+    _invalidate_fast_db_cache()
+    return {
+        "deleted_count": len(selected_ids),
+        "trip_deleted": trip_deleted,
+        "remaining_photo_count": len(remaining),
+    }
+
+
+@st.dialog("選択した写真・動画を削除しますか？")
+def confirm_pending_bulk_delete_dialog(trip_id, photo_ids, photos=None, trip=None):
+    photos = list(photos) if isinstance(photos, (list, tuple)) else list_trip_photos(trip_id)
+    valid_ids = {
+        str(photo.get("id") or "") for photo in photos if str(photo.get("id") or "")
+    }
+    selected_ids = [str(x) for x in (photo_ids or []) if str(x) in valid_ids]
+    selected_ids = list(dict.fromkeys(selected_ids))
+    if not selected_ids:
+        st.warning("削除対象が見つかりませんでした。")
+        if st.button("閉じる", use_container_width=True, key=f"bulk_delete_missing_{trip_id}"):
+            st.rerun(scope="app")
+        return
+
+    st.write(f"**{len(selected_ids)}件**の写真・動画をまとめて削除します。")
+    if len(selected_ids) == len(photos):
+        st.warning("すべて削除すると、この未日記のぶらり旅も削除されます。この操作は元に戻せません。")
+    else:
+        st.warning("選択した写真・動画と、それらに紐づく記録を削除します。この操作は元に戻せません。")
+
+    delete_col, cancel_col = st.columns(2)
+    with delete_col:
+        if st.button(
+            "まとめて削除",
+            type="primary",
+            use_container_width=True,
+            key=f"bulk_delete_yes_{trip_id}_{len(selected_ids)}",
+        ):
+            try:
+                result = delete_pending_photos_bulk(
+                    trip_id,
+                    selected_ids,
+                    known_photos=photos,
+                    known_trip=trip,
+                )
+                if result.get("trip_deleted"):
+                    st.session_state["_diary_notice"] = f"{result.get('deleted_count', 0)}件を削除し、写真が0件になったため未日記のぶらり旅も削除しました。"
+                else:
+                    st.session_state["_diary_notice"] = f"選択した{result.get('deleted_count', 0)}件をまとめて削除しました。"
+                st.rerun(scope="app")
+            except Exception as exc:
+                st.error("写真・動画をまとめて削除できませんでした。")
+                with st.expander("保護者向け詳細"):
+                    st.code(str(exc))
+    with cancel_col:
+        if st.button(
+            "キャンセル",
+            use_container_width=True,
+            key=f"bulk_delete_no_{trip_id}_{len(selected_ids)}",
+        ):
+            st.rerun(scope="app")
+
 
 def render_diary_delete_controls(
     trip_id,
@@ -8722,11 +9065,29 @@ def render_pending_thumbnail_grid(trip_id, photos, max_count=None, trip=None):
         serial_key = f"pending_gallery_serial_{trip_id}"
         serial = int(st.session_state.get(serial_key) or 0)
         result = gallery_component(
-            data={"photos": cards},
+            data={"photos": cards, "enable_bulk_delete": True},
             key=f"pending_gallery_{trip_id}_{serial}",
             on_photo_id_change=lambda: None,
             on_delete_photo_id_change=lambda: None,
+            on_bulk_delete_ids_json_change=lambda: None,
         )
+        bulk_raw = str(getattr(result, "bulk_delete_ids_json", "") or "")
+        if bulk_raw:
+            try:
+                bulk_ids = json.loads(bulk_raw)
+            except Exception:
+                bulk_ids = []
+            bulk_ids = [str(x) for x in (bulk_ids if isinstance(bulk_ids, list) else []) if str(x) in photo_ids]
+            if bulk_ids:
+                st.session_state[serial_key] = serial + 1
+                confirm_pending_bulk_delete_dialog(
+                    trip_id,
+                    bulk_ids,
+                    photos=subset,
+                    trip=trip,
+                )
+                return None
+
         delete_clicked = str(getattr(result, "delete_photo_id", "") or "")
         if delete_clicked in photo_ids:
             st.session_state[serial_key] = serial + 1
@@ -9372,6 +9733,7 @@ def page_diary():
     if pending_rows and not pending_open_id:
         st.markdown("#### まだ日記になっていない写真・動画")
         st.caption("撮影済みで、まだ日記として保存されていない写真・動画です。『日記を作る』を押した時点で保存します。")
+        st.caption("不要な写真・動画は、画像を長押しすると複数選択してまとめて削除できます。")
         pending_titles = pending_diary_titles(pending_rows, used_titles=saved_titles)
         for item in pending_rows:
             pending_trip = item.get("trip") or {}
