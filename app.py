@@ -30,7 +30,7 @@ import streamlit as st
 # Freshly generated update: 2026-08-31 23:49 JST
 GENERATED_UPDATE_JST = "2026-08-31T23:49:00+09:00"
 
-APP_BUILD = "v147"
+APP_BUILD = "v148"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -13018,6 +13018,91 @@ _MOMENTS_SELECT_CSS = """
   border: 1px dashed rgba(128,128,128,.18);
   background: rgba(128,128,128,.035);
 }
+
+/* v148 enlarged single-photo viewer. */
+.moments-select-grid.enlarge-mode {
+  display: block;
+  margin: 4px 0 10px;
+}
+.moments-enlarge-shell {
+  width: 100%;
+  box-sizing: border-box;
+}
+.moments-enlarge-nav {
+  display: grid;
+  grid-template-columns: 52px minmax(0, 1fr) 52px;
+  gap: 8px;
+  align-items: center;
+  margin: 0 0 8px;
+}
+.moments-enlarge-nav button {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 52px;
+  min-height: 44px;
+  border: 1px solid rgba(128,128,128,.28);
+  border-radius: 12px;
+  background: rgba(128,128,128,.06);
+  color: var(--st-text-color);
+  font-size: 22px;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+.moments-enlarge-nav button:disabled {
+  opacity: .28;
+  cursor: default;
+}
+.moments-enlarge-counter {
+  text-align: center;
+  font-size: 13px;
+  font-weight: 800;
+  opacity: .78;
+}
+.moments-select-card.large-card {
+  display: block;
+  width: 100%;
+  padding: 6px;
+  border-radius: 18px;
+}
+.moments-select-card.large-card .moments-select-image-wrap {
+  aspect-ratio: 4 / 5;
+  border-radius: 13px;
+  background: #111;
+}
+.moments-select-card.large-card .moments-select-image-wrap img {
+  object-fit: contain;
+}
+.moments-select-card.large-card .moments-select-rank {
+  left: 10px;
+  top: 10px;
+  padding: 6px 10px;
+  font-size: 12px;
+}
+.moments-select-card.large-card .moments-select-picked {
+  right: 10px;
+  bottom: 10px;
+  padding: 7px 11px;
+  font-size: 12px;
+}
+.moments-select-card.large-card .moments-select-meta {
+  margin-top: 8px;
+  font-size: 14px;
+  white-space: normal;
+}
+.moments-select-card.large-card .moments-select-reason {
+  margin-top: 4px;
+  min-height: 0;
+  font-size: 13px;
+  line-height: 1.35;
+  display: block;
+  opacity: .82;
+}
+.moments-enlarge-hint {
+  margin-top: 7px;
+  text-align: center;
+  font-size: 12px;
+  opacity: .70;
+}
 @media (max-width: 640px) {
   .moments-select-grid { gap: 6px; }
   .moments-select-card { padding: 3px; border-radius: 11px; }
@@ -13025,6 +13110,10 @@ _MOMENTS_SELECT_CSS = """
   .moments-select-meta { font-size: 9px; }
   .moments-select-reason { font-size: 8px; }
   .moments-select-rank, .moments-select-picked { font-size: 8px; }
+  .moments-select-card.large-card { padding: 5px; border-radius: 16px; }
+  .moments-select-card.large-card .moments-select-image-wrap { border-radius: 11px; }
+  .moments-select-card.large-card .moments-select-meta { font-size: 13px; }
+  .moments-select-card.large-card .moments-select-reason { font-size: 12px; }
 }
 """
 
@@ -13035,50 +13124,52 @@ export default function(component) {
   if (!grid) return;
 
   grid.replaceChildren();
+  grid.classList.remove('enlarge-mode');
   const photos = Array.isArray(data?.photos) ? data.photos.slice(0, 3) : [];
   const disabled = Boolean(data?.disabled);
+  const viewMode = String(data?.view_mode || 'list') === 'enlarge' ? 'enlarge' : 'list';
   const selected = new Set(
     (Array.isArray(data?.selected_ranks) ? data.selected_ranks : [])
       .map((value) => Number(value))
       .filter((value) => Number.isFinite(value) && value > 0)
   );
 
+  const rankFor = (photo, index) => Number(photo?.rank || (index + 1));
+  const validRanks = photos.map(rankFor).filter((value) => Number.isFinite(value) && value > 0);
+  let activeRank = Number(data?.active_rank || 0);
+  if (!validRanks.includes(activeRank)) activeRank = validRanks.length ? validRanks[0] : 0;
+
   const emitSelection = () => {
     setTriggerValue('selected_ranks', Array.from(selected).sort((a, b) => a - b));
   };
+  const emitActive = (rank) => {
+    if (Number.isFinite(rank) && rank > 0) setTriggerValue('active_rank', rank);
+  };
 
-  for (let index = 0; index < 3; index += 1) {
-    const photo = photos[index];
-    if (!photo) {
-      const empty = document.createElement('div');
-      empty.className = 'moments-select-empty';
-      grid.appendChild(empty);
-      continue;
-    }
-
-    const rank = Number(photo.rank || (index + 1));
+  const makeCard = (photo, index, large = false) => {
+    const rank = rankFor(photo, index);
     const button = document.createElement('button');
     button.type = 'button';
-    button.className = 'moments-select-card';
+    button.className = large ? 'moments-select-card large-card' : 'moments-select-card';
     button.disabled = disabled;
     button.setAttribute('aria-label', `写真${rank}を${selected.has(rank) ? '選択解除' : '選択'}`);
 
     const imageWrap = document.createElement('div');
     imageWrap.className = 'moments-select-image-wrap';
 
-    if (photo.src) {
+    if (photo?.src) {
       const img = document.createElement('img');
       img.src = String(photo.src);
       img.alt = `いい瞬間 ${rank}`;
-      img.loading = 'lazy';
+      img.loading = large ? 'eager' : 'lazy';
       img.decoding = 'async';
-      img.fetchPriority = 'low';
+      if (!large) img.fetchPriority = 'low';
       imageWrap.appendChild(img);
     }
 
     const rankBadge = document.createElement('div');
     rankBadge.className = 'moments-select-rank';
-    rankBadge.textContent = photo.ai_best ? '★ AI BEST' : `#${rank}`;
+    rankBadge.textContent = photo?.ai_best ? '★ AI BEST' : `#${rank}`;
     imageWrap.appendChild(rankBadge);
 
     const pickedBadge = document.createElement('div');
@@ -13088,11 +13179,11 @@ export default function(component) {
 
     const meta = document.createElement('div');
     meta.className = 'moments-select-meta';
-    meta.textContent = String(photo.meta || '');
+    meta.textContent = String(photo?.meta || '');
 
     const reason = document.createElement('div');
     reason.className = 'moments-select-reason';
-    reason.textContent = String(photo.reason || '');
+    reason.textContent = String(photo?.reason || '');
 
     const syncVisual = () => {
       const active = selected.has(rank);
@@ -13115,8 +13206,69 @@ export default function(component) {
         emitSelection();
       });
     }
+    return button;
+  };
 
-    grid.appendChild(button);
+  if (viewMode === 'enlarge') {
+    grid.classList.add('enlarge-mode');
+    const shell = document.createElement('div');
+    shell.className = 'moments-enlarge-shell';
+    if (!photos.length) {
+      const empty = document.createElement('div');
+      empty.className = 'moments-select-empty';
+      shell.appendChild(empty);
+      grid.appendChild(shell);
+      return;
+    }
+
+    let activeIndex = photos.findIndex((photo, index) => rankFor(photo, index) === activeRank);
+    if (activeIndex < 0) activeIndex = 0;
+    const activePhoto = photos[activeIndex];
+    activeRank = rankFor(activePhoto, activeIndex);
+
+    const nav = document.createElement('div');
+    nav.className = 'moments-enlarge-nav';
+    const prev = document.createElement('button');
+    prev.type = 'button';
+    prev.textContent = '‹';
+    prev.disabled = activeIndex <= 0;
+    prev.setAttribute('aria-label', '前の写真');
+    if (!prev.disabled) prev.addEventListener('click', () => emitActive(rankFor(photos[activeIndex - 1], activeIndex - 1)));
+
+    const counter = document.createElement('div');
+    counter.className = 'moments-enlarge-counter';
+    counter.textContent = `${activeIndex + 1} / ${photos.length}`;
+
+    const next = document.createElement('button');
+    next.type = 'button';
+    next.textContent = '›';
+    next.disabled = activeIndex >= photos.length - 1;
+    next.setAttribute('aria-label', '次の写真');
+    if (!next.disabled) next.addEventListener('click', () => emitActive(rankFor(photos[activeIndex + 1], activeIndex + 1)));
+
+    nav.appendChild(prev);
+    nav.appendChild(counter);
+    nav.appendChild(next);
+    shell.appendChild(nav);
+    shell.appendChild(makeCard(activePhoto, activeIndex, true));
+
+    const hint = document.createElement('div');
+    hint.className = 'moments-enlarge-hint';
+    hint.textContent = '写真をタップすると選択／解除できます';
+    shell.appendChild(hint);
+    grid.appendChild(shell);
+    return;
+  }
+
+  for (let index = 0; index < 3; index += 1) {
+    const photo = photos[index];
+    if (!photo) {
+      const empty = document.createElement('div');
+      empty.className = 'moments-select-empty';
+      grid.appendChild(empty);
+      continue;
+    }
+    grid.appendChild(makeCard(photo, index, false));
   }
 }
 """
@@ -13132,7 +13284,7 @@ def _get_moments_select_component():
     _moments_select_component_initialized = True
     try:
         moments_select_component = st.components.v2.component(
-            "tokyo_burari_moments_select_v124",
+            "tokyo_burari_moments_select_v148",
             html=_MOMENTS_SELECT_HTML,
             css=_MOMENTS_SELECT_CSS,
             js=_MOMENTS_SELECT_JS,
@@ -13142,7 +13294,7 @@ def _get_moments_select_component():
     return moments_select_component
 
 
-def _render_moments_picker(photo, index):
+def _render_moments_picker(photo, index, view_mode="list"):
     selection_meta = photo_media_metadata(photo).get("ai_selection") or {}
     if not isinstance(selection_meta, dict):
         selection_meta = {}
@@ -13326,6 +13478,15 @@ def _render_moments_picker(photo, index):
             }
         )
 
+    active_rank_key = f"_moments_enlarge_rank_{video_id}_{round_number}"
+    if valid_ranks:
+        current_active_rank = int(st.session_state.get(active_rank_key) or min(valid_ranks))
+        if current_active_rank not in valid_ranks:
+            current_active_rank = min(valid_ranks)
+            st.session_state[active_rank_key] = current_active_rank
+    else:
+        current_active_rank = 0
+
     picker_component = _get_moments_select_component()
     if picker_component is not None:
         serial = int(st.session_state.get(component_serial_key) or 0)
@@ -13333,11 +13494,15 @@ def _render_moments_picker(photo, index):
             data={
                 "photos": cards,
                 "selected_ranks": selected_ranks,
+                "active_rank": current_active_rank,
+                "view_mode": "enlarge" if view_mode == "enlarge" else "list",
                 "disabled": False,
             },
             key=f"moments_tap_picker_{video_id}_{round_number}_{serial}",
             on_selected_ranks_change=lambda: None,
+            on_active_rank_change=lambda: None,
         )
+        should_rerun = False
         result_selected = getattr(result, "selected_ranks", None)
         if isinstance(result_selected, (list, tuple)):
             normalized = sorted(
@@ -13349,49 +13514,123 @@ def _render_moments_picker(photo, index):
             )
             if normalized != selected_ranks:
                 st.session_state[selection_state_key] = normalized
-                st.session_state[component_serial_key] = serial + 1
-                st.rerun()
+                selected_ranks = normalized
+                should_rerun = True
+
+        result_active_rank = getattr(result, "active_rank", None)
+        try:
+            result_active_rank = int(result_active_rank)
+        except Exception:
+            result_active_rank = 0
+        if result_active_rank in valid_ranks and result_active_rank != current_active_rank:
+            st.session_state[active_rank_key] = result_active_rank
+            current_active_rank = result_active_rank
+            should_rerun = True
+
+        if should_rerun:
+            st.session_state[component_serial_key] = serial + 1
+            st.rerun()
+
         selected_ranks = sorted(
             rank for rank in (st.session_state.get(selection_state_key) or [])
             if int(rank) in valid_ranks
         )
     else:
-        # Fallback for older Streamlit runtimes: keep the three selected images in one row and offer a
-        # compact select/unselect button immediately below each photo.
-        for row_start in range(0, VIDEO_AI_MAX_SELECTIONS, 3):
-            row_columns = st.columns(3, gap="small")
-            for column_offset in range(3):
-                item_index = row_start + column_offset
-                with row_columns[column_offset]:
-                    if item_index >= len(cards):
-                        st.write("")
-                        continue
-                    card = cards[item_index]
-                    rank = int(card["rank"])
-                    border = "#F59E0B" if rank in selected_ranks else "rgba(174,182,194,.72)"
-                    if card.get("src"):
-                        st.markdown(
-                            f'<div style="padding:3px;border:3px solid {border};border-radius:12px;">'
-                            f'<img src="{html.escape(str(card["src"]), quote=True)}" '
-                            'style="display:block;width:100%;aspect-ratio:1/1;object-fit:cover;border-radius:8px;" />'
-                            '</div>',
-                            unsafe_allow_html=True,
-                        )
-                    if st.button(
-                        "選択解除" if rank in selected_ranks else "選択",
-                        use_container_width=True,
-                        disabled=False,
-                        key=f"moments_fallback_pick_{video_id}_{round_number}_{rank}",
-                    ):
-                        current = set(selected_ranks)
-                        if rank in current:
-                            current.remove(rank)
-                        else:
-                            current.add(rank)
-                        st.session_state[selection_state_key] = sorted(current)
-                        st.rerun()
+        # Fallback for older Streamlit runtimes. List mode keeps the existing 3-column
+        # picker; enlarged mode shows one phone-width image at a time with previous/next.
+        if view_mode == "enlarge" and cards:
+            active_index = next(
+                (i for i, card in enumerate(cards) if int(card.get("rank") or 0) == current_active_rank),
+                0,
+            )
+            active_card = cards[active_index]
+            rank = int(active_card["rank"])
+            prev_col, count_col, next_col = st.columns([1, 2.2, 1], gap="small")
+            with prev_col:
+                if st.button(
+                    "‹",
+                    use_container_width=True,
+                    disabled=active_index <= 0,
+                    key=f"moments_enlarge_prev_{video_id}_{round_number}_{rank}",
+                ):
+                    st.session_state[active_rank_key] = int(cards[active_index - 1]["rank"])
+                    st.rerun()
+            with count_col:
+                st.markdown(
+                    f'<div style="text-align:center;padding:.65rem 0;font-weight:800;">{active_index + 1} / {len(cards)}</div>',
+                    unsafe_allow_html=True,
+                )
+            with next_col:
+                if st.button(
+                    "›",
+                    use_container_width=True,
+                    disabled=active_index >= len(cards) - 1,
+                    key=f"moments_enlarge_next_{video_id}_{round_number}_{rank}",
+                ):
+                    st.session_state[active_rank_key] = int(cards[active_index + 1]["rank"])
+                    st.rerun()
 
-    st.caption("写真をタップすると選択できます。選択中の写真はオレンジ色の枠で表示されます。")
+            border = "#F59E0B" if rank in selected_ranks else "rgba(174,182,194,.72)"
+            if active_card.get("src"):
+                st.markdown(
+                    f'<div style="padding:5px;border:3px solid {border};border-radius:16px;background:#111;">'
+                    f'<img src="{html.escape(str(active_card["src"]), quote=True)}" '
+                    'style="display:block;width:100%;max-height:640px;aspect-ratio:4/5;object-fit:contain;border-radius:11px;" />'
+                    '</div>',
+                    unsafe_allow_html=True,
+                )
+            st.caption(f'{active_card.get("meta") or ""}　{active_card.get("reason") or ""}'.strip())
+            if st.button(
+                "選択解除" if rank in selected_ranks else "この写真を選択",
+                type="primary" if rank not in selected_ranks else "secondary",
+                use_container_width=True,
+                key=f"moments_enlarge_pick_{video_id}_{round_number}_{rank}",
+            ):
+                current = set(selected_ranks)
+                if rank in current:
+                    current.remove(rank)
+                else:
+                    current.add(rank)
+                st.session_state[selection_state_key] = sorted(current)
+                st.rerun()
+        else:
+            for row_start in range(0, VIDEO_AI_MAX_SELECTIONS, 3):
+                row_columns = st.columns(3, gap="small")
+                for column_offset in range(3):
+                    item_index = row_start + column_offset
+                    with row_columns[column_offset]:
+                        if item_index >= len(cards):
+                            st.write("")
+                            continue
+                        card = cards[item_index]
+                        rank = int(card["rank"])
+                        border = "#F59E0B" if rank in selected_ranks else "rgba(174,182,194,.72)"
+                        if card.get("src"):
+                            st.markdown(
+                                f'<div style="padding:3px;border:3px solid {border};border-radius:12px;">'
+                                f'<img src="{html.escape(str(card["src"]), quote=True)}" '
+                                'style="display:block;width:100%;aspect-ratio:1/1;object-fit:cover;border-radius:8px;" />'
+                                '</div>',
+                                unsafe_allow_html=True,
+                            )
+                        if st.button(
+                            "選択解除" if rank in selected_ranks else "選択",
+                            use_container_width=True,
+                            disabled=False,
+                            key=f"moments_fallback_pick_{video_id}_{round_number}_{rank}",
+                        ):
+                            current = set(selected_ranks)
+                            if rank in current:
+                                current.remove(rank)
+                            else:
+                                current.add(rank)
+                            st.session_state[selection_state_key] = sorted(current)
+                            st.rerun()
+
+    if view_mode == "enlarge":
+        st.caption("拡大モード：左右の‹ ›で写真を切り替え、写真をタップすると選択／解除できます。")
+    else:
+        st.caption("一覧モード：写真をタップすると選択できます。選択中の写真はオレンジ色の枠で表示されます。")
     selected_rank_set = set(selected_ranks)
     send_clicked = st.button(
         f"選択した写真を残す（{len(selected_rank_set)}枚）",
@@ -14089,6 +14328,42 @@ def page_moments():
         "✨ いい瞬間",
         "動画ごとにAIが選んだ瞬間を確認し、気に入った写真だけ日記へ送れます。",
     )
+
+    # v148: keep the display-mode switch in one fixed location directly below
+    # the page Back/title area. The mode is page-wide, while each video's selected
+    # ranks are shared between list and enlarged views.
+    with st.container(key="moments_view_mode_bar"):
+        mode_label = st.radio(
+            "表示モード",
+            ["一覧モード", "拡大モード"],
+            horizontal=True,
+            key="_moments_view_mode_label",
+            label_visibility="collapsed",
+        )
+    st.markdown(
+        """
+        <style>
+        .st-key-moments_view_mode_bar {
+          margin: .05rem 0 .55rem;
+          padding: .28rem .42rem;
+          border: 1px solid rgba(128,128,128,.20);
+          border-radius: 14px;
+          background: color-mix(in srgb, var(--background-color, #fff) 94%, rgba(128,128,128,.06) 6%);
+        }
+        .st-key-moments_view_mode_bar [role="radiogroup"] {
+          justify-content: center;
+          gap: .35rem;
+        }
+        .st-key-moments_view_mode_bar label {
+          min-height: 42px;
+          align-items: center;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+    view_mode = "enlarge" if mode_label == "拡大モード" else "list"
+
     notice = st.session_state.pop("_moments_notice", None)
     if notice:
         st.success(notice)
@@ -14125,7 +14400,7 @@ def page_moments():
         for idx, video in enumerate(display_videos):
             if idx:
                 st.divider()
-            _render_moments_picker(video, idx)
+            _render_moments_picker(video, idx, view_mode=view_mode)
     else:
         st.info("未確認のAIセレクションはありません。")
 
@@ -14135,7 +14410,7 @@ def page_moments():
             for idx, video in enumerate(reviewed[:30]):
                 if idx:
                     st.divider()
-                _render_moments_picker(video, 1000 + idx)
+                _render_moments_picker(video, 1000 + idx, view_mode=view_mode)
 
 
 
