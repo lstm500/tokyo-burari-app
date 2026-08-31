@@ -30,7 +30,7 @@ import streamlit as st
 # Freshly generated update: 2026-08-31 23:49 JST
 GENERATED_UPDATE_JST = "2026-08-31T23:49:00+09:00"
 
-APP_BUILD = "v145"
+APP_BUILD = "v146"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -2744,7 +2744,7 @@ export default function(component) {
 
 try:
     browser_history_component = st.components.v2.component(
-        'tokyo_burari_browser_history_v145',
+        'tokyo_burari_browser_history_v146',
         js=_HISTORY_JS,
     )
 except Exception:
@@ -11115,7 +11115,7 @@ def sync_browser_history():
             "node": navigation_node,
             "intercept_hierarchy_back": navigation_node in intercept_nodes,
         },
-        key="tokyo_burari_browser_history_instance_v145",
+        key="tokyo_burari_browser_history_instance_v146",
         on_page_change=lambda: None,
         on_hierarchy_back_change=lambda: None,
     )
@@ -11258,7 +11258,16 @@ def inject_home_icon_css(review_attention=False):
         st.markdown("<style>" + "\n".join(css_chunks) + "</style>", unsafe_allow_html=True)
 
 def render_global_bottom_navigation(page_name):
-    """Render hierarchy Back above the direct Home button on every non-Home page."""
+    """Render hierarchy Back/Home only for the page that is still active.
+
+    Browser Back and component callbacks can update ``main_page`` during the same
+    Streamlit interaction. Never append navigation controls for a page that has
+    already been replaced; otherwise old Home/Back buttons can visually linger
+    above the newly rendered Home screen on mobile.
+    """
+    live_page = str(st.session_state.get("main_page") or "home")
+    if live_page != str(page_name):
+        return
     node, _ = current_navigation_context()
     if node == "home":
         return
@@ -13413,6 +13422,53 @@ def _render_moments_picker(photo, index):
                 st.error("どれも残さない設定を保存できませんでした。")
                 with st.expander("保護者向け詳細"):
                     st.code(str(exc))
+
+        delete_without_keep_key = f"_moments_delete_without_keep_{video_id}_{round_number}"
+        if not st.session_state.get(delete_without_keep_key):
+            if st.button(
+                "🗑 どれも残さず動画を削除する",
+                use_container_width=True,
+                key=f"moments_delete_without_keep_begin_{video_id}_{round_number}",
+                help="候補写真を1枚も残さず、元動画・代表画像・未保存のAI切り取り画像も削除します。",
+            ):
+                st.session_state[delete_without_keep_key] = True
+                st.rerun()
+
+        if st.session_state.get(delete_without_keep_key):
+            st.warning(
+                "候補写真を1枚も残さず、この元動画も削除します。"
+                "すでに別操作で日記へ保存済みの静止画がある場合、その静止画は残ります。"
+                "この操作は元に戻せません。"
+            )
+            delete_col, cancel_col = st.columns(2, gap="small")
+            with delete_col:
+                if st.button(
+                    "動画を削除する",
+                    type="primary",
+                    use_container_width=True,
+                    key=f"moments_delete_without_keep_yes_{video_id}_{round_number}",
+                ):
+                    try:
+                        delete_video_and_related_data(photo)
+                        st.session_state.pop(delete_without_keep_key, None)
+                        st.session_state.pop(selection_state_key, None)
+                        st.session_state.pop(component_serial_key, None)
+                        st.session_state["_moments_notice"] = (
+                            "候補写真を残さず、元動画も削除しました。"
+                        )
+                        st.rerun(scope="app")
+                    except Exception as exc:
+                        st.error("動画を削除できませんでした。")
+                        with st.expander("保護者向け詳細"):
+                            st.code(str(exc))
+            with cancel_col:
+                if st.button(
+                    "キャンセル",
+                    use_container_width=True,
+                    key=f"moments_delete_without_keep_no_{video_id}_{round_number}",
+                ):
+                    st.session_state.pop(delete_without_keep_key, None)
+                    st.rerun()
 
     can_reroll = bool(_video_ai_has_candidate_source(selection_meta) or photo_video_storage_path(photo))
     if can_reroll and status != "reviewed":
@@ -15660,6 +15716,14 @@ except Exception:
 # maintenance, not startup requirements, so home/camera opens no longer wait for them.
 restore_recent_camera_session()
 
+# v146: resolve browser Back/Forward before drawing any visible page.
+# Previously the bridge ran after page rendering, so a mobile Back event could first
+# queue the old page (including its bottom navigation) and only then switch to Home.
+# That ordering could leave stale Back/Home controls in odd positions until another
+# rerun. Handle history first; if it changes the page, sync_browser_history() reruns
+# before any visible UI is emitted.
+sync_browser_history()
+
 rollover_notice = st.session_state.pop("_rollover_notice", None)
 if rollover_notice:
     st.success(rollover_notice)
@@ -15691,11 +15755,13 @@ else:
     st.rerun()
 
 
-# Update browser history after the visible page has been queued, so an invisible
-# bridge never sits ahead of Home/Camera on the perceived critical path.
-sync_browser_history()
-
-# Every non-Home page gets the same hierarchy Back button followed by a direct
-# Home button. This is based on the app's fixed folder structure, not visit order.
-if page in {"camera", "videos", "moments", "diary", "review", "settings"}:
-    render_global_bottom_navigation(page)
+# Keep one stable bottom-navigation slot on every page. On Home the slot is
+# intentionally empty, which explicitly clears controls left by the previous page
+# instead of relying on mobile DOM reconciliation to remove them later.
+with st.container(key="global_bottom_navigation_slot_v146"):
+    live_page = str(st.session_state.get("main_page") or "home")
+    if (
+        page == live_page
+        and page in {"camera", "videos", "moments", "diary", "review", "settings"}
+    ):
+        render_global_bottom_navigation(page)
