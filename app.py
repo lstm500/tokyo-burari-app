@@ -30,7 +30,7 @@ import streamlit as st
 # Freshly generated update: 2026-08-31 23:49 JST
 GENERATED_UPDATE_JST = "2026-08-31T23:49:00+09:00"
 
-APP_BUILD = "v148"
+APP_BUILD = "v149"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -2438,6 +2438,194 @@ def _get_far_field_mic_component():
 
 
 # ============================================================
+# Photo emotion tagging (喜・怒・哀・楽)
+# ============================================================
+PHOTO_EMOTION_ORDER = ("joy", "anger", "sadness", "fun")
+PHOTO_EMOTIONS = {
+    "joy": {
+        "label": "喜",
+        "emoji": "😊",
+        "color": "#F2C94C",
+        "rgb": "242,201,76",
+    },
+    "anger": {
+        "label": "怒",
+        "emoji": "😠",
+        "color": "#E56B6F",
+        "rgb": "229,107,111",
+    },
+    "sadness": {
+        "label": "哀",
+        "emoji": "😢",
+        "color": "#6C9BD2",
+        "rgb": "108,155,210",
+    },
+    "fun": {
+        "label": "楽",
+        "emoji": "🎉",
+        "color": "#6FBA9C",
+        "rgb": "111,186,156",
+    },
+}
+
+
+def normalize_photo_emotion_key(value):
+    """Normalize old/new emotion values into one of PHOTO_EMOTION_ORDER or ''."""
+    if isinstance(value, dict):
+        value = value.get("key") or value.get("emotion") or value.get("label") or value.get("emoji")
+    value = str(value or "").strip()
+    aliases = {
+        "joy": "joy", "喜": "joy", "😊": "joy",
+        "anger": "anger", "怒": "anger", "😠": "anger",
+        "sadness": "sadness", "sad": "sadness", "哀": "sadness", "😢": "sadness",
+        "fun": "fun", "楽": "fun", "🎉": "fun",
+    }
+    return aliases.get(value, "")
+
+
+def photo_emotion_key(photo):
+    reflection = (photo or {}).get("reflection_json") or {}
+    if not isinstance(reflection, dict):
+        return ""
+    return normalize_photo_emotion_key(reflection.get("emotion"))
+
+
+def photo_emotion_meta(photo_or_key):
+    key = photo_or_key if isinstance(photo_or_key, str) else photo_emotion_key(photo_or_key)
+    key = normalize_photo_emotion_key(key)
+    meta = dict(PHOTO_EMOTIONS.get(key) or {})
+    meta["key"] = key
+    return meta
+
+
+def next_photo_emotion_key(current):
+    current = normalize_photo_emotion_key(current)
+    cycle = ("",) + PHOTO_EMOTION_ORDER
+    try:
+        index = cycle.index(current)
+    except ValueError:
+        index = 0
+    return cycle[(index + 1) % len(cycle)]
+
+
+def photo_emotion_counts(photos):
+    counts = {key: 0 for key in PHOTO_EMOTION_ORDER}
+    selected = 0
+    for photo in diary_photos_only(photos or []):
+        key = photo_emotion_key(photo)
+        if key in counts:
+            counts[key] += 1
+            selected += 1
+    return counts, selected
+
+
+def photo_emotion_summary_text(photos, include_unset=True):
+    photos = diary_photos_only(photos or [])
+    counts, selected = photo_emotion_counts(photos)
+    parts = []
+    for key in PHOTO_EMOTION_ORDER:
+        count = int(counts.get(key) or 0)
+        if not count:
+            continue
+        meta = PHOTO_EMOTIONS[key]
+        parts.append(f"{meta['emoji']}{meta['label']} {count}枚")
+    unset = max(0, len(photos) - selected)
+    if include_unset and unset:
+        parts.append(f"未設定 {unset}枚")
+    return " ／ ".join(parts)
+
+
+def _invalidate_monthly_review_for_trip(trip_id):
+    """Emotion changes invalidate any saved monthly interpretation for that day."""
+    try:
+        trip = get_trip(trip_id) or {}
+        trip_date = str(trip.get("trip_date") or "")
+        month_key = trip_date[:7] if len(trip_date) >= 7 else ""
+        if not month_key:
+            return
+        first_day, _ = month_bounds(month_key)
+        supabase_client().table(MONTHLY_TABLE).delete().eq(
+            "review_month", first_day
+        ).eq("family_key", current_family_key()).eq("member_key", current_member_key()).execute()
+        for key in (
+            f"monthly_review_{month_key}",
+            f"monthly_audio_{month_key}",
+            f"monthly_audio_pending_{month_key}",
+        ):
+            st.session_state.pop(key, None)
+    except Exception:
+        # Emotion tagging itself must still succeed even if a stale monthly cache
+        # cannot be invalidated at this moment.
+        pass
+
+
+def update_photo_emotion(photo_id, emotion_key, trip_id=None):
+    """Persist a child-selected 喜怒哀楽 tag inside the photo's reflection_json."""
+    emotion_key = normalize_photo_emotion_key(emotion_key)
+    if emotion_key and emotion_key not in PHOTO_EMOTIONS:
+        raise ValueError("感情の種類を確認できませんでした。")
+
+    client = supabase_client()
+    query = (
+        client
+        .table(PHOTO_TABLE)
+        .select("id,trip_id,reflection_json")
+        .eq("id", photo_id)
+        .eq("family_key", current_family_key()).eq("member_key", current_member_key())
+        .limit(1)
+        .execute()
+    )
+    row = (query.data or [None])[0] or {}
+    if not row.get("id"):
+        raise ValueError("感情を設定する写真が見つかりませんでした。")
+    resolved_trip_id = str(trip_id or row.get("trip_id") or "")
+    reflection = row.get("reflection_json") or {}
+    if not isinstance(reflection, dict):
+        reflection = {}
+
+    if emotion_key:
+        meta = PHOTO_EMOTIONS[emotion_key]
+        reflection["emotion"] = {
+            "key": emotion_key,
+            "label": meta["label"],
+            "emoji": meta["emoji"],
+            "color": meta["color"],
+            "updated_at": now_jst().isoformat(),
+            "source": "child_tap_cycle_v149",
+        }
+    else:
+        reflection.pop("emotion", None)
+
+    (
+        client
+        .table(PHOTO_TABLE)
+        .update({"reflection_json": reflection})
+        .eq("id", photo_id)
+        .eq("family_key", current_family_key()).eq("member_key", current_member_key())
+        .execute()
+    )
+    _invalidate_fast_db_cache()
+    if resolved_trip_id:
+        _invalidate_monthly_review_for_trip(resolved_trip_id)
+        # A saved diary is now driven by photo emotions. Rebuild its factual body
+        # immediately without making an API call, while preserving its title.
+        try:
+            existing = get_diary_for_trip(resolved_trip_id)
+            if existing:
+                trip = get_trip(resolved_trip_id) or {}
+                photos = diary_photos_only(list_trip_photos(resolved_trip_id))
+                create_and_save_diary_from_photos(
+                    trip,
+                    photos,
+                    requested_title=str(existing.get("title") or "").strip() or None,
+                    reason="emotion_change_v149",
+                )
+        except Exception:
+            pass
+    return emotion_key
+
+
+# ============================================================
 # Clickable diary photo gallery
 # ============================================================
 _DIARY_GALLERY_HTML = """
@@ -2452,6 +2640,11 @@ _DIARY_GALLERY_CSS = """
   gap: 8px;
   box-sizing: border-box;
 }
+.diary-photo-grid.single {
+  grid-template-columns: minmax(0, 1fr);
+  max-width: 360px;
+  margin: 0 auto;
+}
 .diary-photo-wrap {
   position: relative;
   min-width: 0;
@@ -2459,30 +2652,40 @@ _DIARY_GALLERY_CSS = """
 .diary-photo-card {
   appearance: none;
   -webkit-appearance: none;
+  position: relative;
   width: 100%;
   min-width: 0;
   margin: 0;
   padding: 5px;
+  border: 3px solid #AEB6C2;
+  background: rgba(174, 182, 194, .14);
   border-radius: 14px;
   box-sizing: border-box;
   cursor: pointer;
   touch-action: manipulation;
   -webkit-tap-highlight-color: transparent;
   overflow: hidden;
-}
-.diary-photo-card.talked {
-  border: 3px solid #F59E0B;
-  background: rgba(245, 158, 11, .18);
-  box-shadow: 0 0 0 1px rgba(245, 158, 11, .08) inset;
-}
-.diary-photo-card.untalked {
-  border: 3px solid #AEB6C2;
-  background: rgba(174, 182, 194, .20);
   box-shadow: 0 0 0 1px rgba(174, 182, 194, .08) inset;
 }
-.diary-photo-card.pending {
-  border: 1px solid rgba(128,128,128,.16);
-  background: transparent;
+.diary-photo-card.emotion-joy {
+  border-color: #F2C94C;
+  background: rgba(242, 201, 76, .18);
+  box-shadow: 0 0 0 1px rgba(242, 201, 76, .10) inset;
+}
+.diary-photo-card.emotion-anger {
+  border-color: #E56B6F;
+  background: rgba(229, 107, 111, .16);
+  box-shadow: 0 0 0 1px rgba(229, 107, 111, .10) inset;
+}
+.diary-photo-card.emotion-sadness {
+  border-color: #6C9BD2;
+  background: rgba(108, 155, 210, .16);
+  box-shadow: 0 0 0 1px rgba(108, 155, 210, .10) inset;
+}
+.diary-photo-card.emotion-fun {
+  border-color: #6FBA9C;
+  background: rgba(111, 186, 156, .17);
+  box-shadow: 0 0 0 1px rgba(111, 186, 156, .10) inset;
 }
 .diary-photo-card:active { transform: scale(.985); }
 .diary-photo-card img {
@@ -2493,11 +2696,30 @@ _DIARY_GALLERY_CSS = """
   border-radius: 9px;
   background: rgba(128, 128, 128, .08);
 }
+.diary-emotion-badge {
+  position: absolute;
+  right: 9px;
+  bottom: 9px;
+  z-index: 3;
+  min-width: 30px;
+  height: 30px;
+  padding: 0 4px;
+  border-radius: 999px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(255,255,255,.90);
+  border: 1.5px solid rgba(255,255,255,.96);
+  box-shadow: 0 2px 8px rgba(0,0,0,.22);
+  font-size: 21px;
+  line-height: 1;
+  pointer-events: none;
+}
 .diary-photo-delete {
   position: absolute;
   top: 3px;
   right: 3px;
-  z-index: 3;
+  z-index: 5;
   width: 25px;
   height: 25px;
   padding: 0;
@@ -2518,21 +2740,6 @@ _DIARY_GALLERY_CSS = """
   -webkit-tap-highlight-color: transparent;
 }
 .diary-photo-delete:active { transform: scale(.94); }
-.diary-video-badge {
-  position: absolute;
-  left: 9px;
-  bottom: 9px;
-  z-index: 2;
-  padding: 3px 7px;
-  border-radius: 999px;
-  background: rgba(17,24,39,.78);
-  color: #fff;
-  font-size: 10px;
-  font-weight: 800;
-  line-height: 1.2;
-  pointer-events: none;
-  box-shadow: 0 1px 5px rgba(0,0,0,.22);
-}
 .diary-photo-location {
   margin-top: 4px;
   font-size: 10px;
@@ -2549,7 +2756,7 @@ _DIARY_GALLERY_CSS = """
   .diary-photo-card img { border-radius: 8px; }
   .diary-photo-location { font-size: 9px; }
   .diary-photo-delete { top: 2px; right: 2px; width: 23px; height: 23px; font-size: 17px; }
-  .diary-video-badge { left: 7px; bottom: 7px; font-size: 9px; padding: 3px 6px; }
+  .diary-emotion-badge { right: 7px; bottom: 7px; min-width: 27px; height: 27px; font-size: 19px; }
 }
 """
 
@@ -2560,21 +2767,39 @@ export default function(component) {
   if (!grid) return;
 
   grid.replaceChildren();
+  grid.classList.toggle('single', Boolean(data?.single));
   const photos = Array.isArray(data?.photos) ? data.photos : [];
-  const deleteOnly = Boolean(data?.delete_only);
+  const allowDelete = data?.allow_delete !== false;
+  const allowEmotion = data?.allow_emotion !== false;
+  const order = ['', 'joy', 'anger', 'sadness', 'fun'];
+  const emoji = { joy: '😊', anger: '😠', sadness: '😢', fun: '🎉' };
+  const labels = { joy: '喜', anger: '怒', sadness: '哀', fun: '楽' };
 
-  for (const photo of photos) {
+  const normalizeEmotion = (value) => order.includes(String(value || '')) ? String(value || '') : '';
+
+  const applyEmotion = (button, badge, key) => {
+    for (const value of order.slice(1)) button.classList.remove(`emotion-${value}`);
+    const normalized = normalizeEmotion(key);
+    if (normalized) button.classList.add(`emotion-${normalized}`);
+    if (normalized) {
+      badge.textContent = emoji[normalized] || '';
+      badge.hidden = false;
+      button.setAttribute('aria-label', `${labels[normalized]}。タップすると次の気持ちへ`);
+    } else {
+      badge.textContent = '';
+      badge.hidden = true;
+      button.setAttribute('aria-label', '気持ち未設定。タップすると喜になる');
+    }
+  };
+
+  for (const sourcePhoto of photos) {
+    const photo = { ...sourcePhoto };
     const wrap = document.createElement('div');
     wrap.className = 'diary-photo-wrap';
 
     const button = document.createElement('button');
     button.type = 'button';
-    button.className = `diary-photo-card ${deleteOnly ? 'pending' : (photo.talked ? 'talked' : 'untalked')}`;
-    button.setAttribute(
-      'aria-label',
-      deleteOnly ? 'まだ日記になっていない写真' : (photo.talked ? '話した写真を開く' : 'まだ話していない写真を開く')
-    );
-    if (deleteOnly) button.style.cursor = 'default';
+    button.className = 'diary-photo-card';
 
     const img = document.createElement('img');
     img.src = photo.src || '';
@@ -2584,12 +2809,11 @@ export default function(component) {
     img.fetchPriority = 'low';
     button.appendChild(img);
 
-    if (photo.is_video) {
-      const badge = document.createElement('div');
-      badge.className = 'diary-video-badge';
-      badge.textContent = '▶ 動画';
-      button.appendChild(badge);
-    }
+    const badge = document.createElement('div');
+    badge.className = 'diary-emotion-badge';
+    button.appendChild(badge);
+    photo.emotion = normalizeEmotion(photo.emotion);
+    applyEmotion(button, badge, photo.emotion);
 
     if (photo.location) {
       const location = document.createElement('div');
@@ -2598,25 +2822,38 @@ export default function(component) {
       button.appendChild(location);
     }
 
-    if (!deleteOnly) {
+    if (allowEmotion) {
       button.addEventListener('click', () => {
-        setTriggerValue('photo_id', String(photo.id));
+        const currentIndex = Math.max(0, order.indexOf(normalizeEmotion(photo.emotion)));
+        const next = order[(currentIndex + 1) % order.length];
+        photo.emotion = next;
+        applyEmotion(button, badge, next);
+        setTriggerValue('emotion_change', {
+          photo_id: String(photo.id),
+          emotion: next,
+          token: `${String(photo.id)}:${next}:${Date.now()}:${Math.random()}`,
+        });
       });
+    } else {
+      button.style.cursor = 'default';
     }
 
-    const remove = document.createElement('button');
-    remove.type = 'button';
-    remove.className = 'diary-photo-delete';
-    remove.textContent = '×';
-    remove.setAttribute('aria-label', 'この写真を削除');
-    remove.addEventListener('click', (event) => {
-      event.preventDefault();
-      event.stopPropagation();
-      setTriggerValue('delete_photo_id', String(photo.id));
-    });
-
     wrap.appendChild(button);
-    wrap.appendChild(remove);
+
+    if (allowDelete) {
+      const remove = document.createElement('button');
+      remove.type = 'button';
+      remove.className = 'diary-photo-delete';
+      remove.textContent = '×';
+      remove.setAttribute('aria-label', 'この写真を削除');
+      remove.addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        setTriggerValue('delete_photo_id', String(photo.id));
+      });
+      wrap.appendChild(remove);
+    }
+
     grid.appendChild(wrap);
   }
 }
@@ -2627,14 +2864,14 @@ _diary_gallery_component_initialized = False
 
 
 def _get_diary_gallery_component():
-    """Register the diary gallery only when a diary/photo grid is actually shown."""
+    """Register the emotion-aware diary gallery only when it is actually shown."""
     global diary_gallery_component, _diary_gallery_component_initialized
     if _diary_gallery_component_initialized:
         return diary_gallery_component
     _diary_gallery_component_initialized = True
     try:
         diary_gallery_component = st.components.v2.component(
-            "tokyo_burari_diary_gallery",
+            "tokyo_burari_diary_gallery_v149",
             html=_DIARY_GALLERY_HTML,
             css=_DIARY_GALLERY_CSS,
             js=_DIARY_GALLERY_JS,
@@ -7806,7 +8043,7 @@ def save_diary(trip_id, title, diary_text, raw_conversation, ai_meta):
 
 
 def delete_diary_and_related_data(trip_id):
-    """Delete one saved diary plus all photos and photo conversations for that trip."""
+    """Delete one saved diary plus all photos and their attached metadata for that trip."""
     client = supabase_client()
     trip = get_trip(trip_id) or {}
     photos = list_trip_photos(trip_id)
@@ -7820,7 +8057,7 @@ def delete_diary_and_related_data(trip_id):
     if storage_paths:
         client.storage.from_(PHOTO_BUCKET).remove(storage_paths)
 
-    # A photo's reflection_json contains the per-photo conversation/comments, so
+    # A photo's reflection_json contains per-photo metadata, so
     # deleting the photo rows deletes those comments together with the photo record.
     client.table(PHOTO_TABLE).delete().eq("trip_id", trip_id).eq("family_key", current_family_key()).eq("member_key", current_member_key()).execute()
     client.table(DIARY_TABLE).delete().eq("trip_id", trip_id).eq("family_key", current_family_key()).eq("member_key", current_member_key()).execute()
@@ -7872,7 +8109,7 @@ def confirm_diary_delete_dialog(trip_id, photo_count):
     title = diary_display_title(diary, trip, photos=photos)
     st.write(f"**{title}** を削除します。")
     st.warning(
-        f"この日の記録、写真 {photo_count}枚、写真について話したコメントをすべて削除します。"
+        f"この日の記録、写真 {photo_count}枚、写真につけた喜怒哀楽の記録をすべて削除します。"
         "日記が未完成の場合は、途中までの内容も削除されます。この操作は元に戻せません。"
     )
     delete_col, cancel_col = st.columns(2)
@@ -8002,7 +8239,7 @@ def delete_photo_and_related_data(
             .execute()
         )
 
-    # A monthly summary may contain content from the removed image/comment.
+    # A monthly summary may contain content from the removed image/emotion.
     trip_date = str(trip.get("trip_date") or "")
     month_key = trip_date[:7] if len(trip_date) >= 7 else ""
     if month_key and not skip_existing_diary_lookup:
@@ -8579,23 +8816,12 @@ def previous_month_key(month_key=None):
 
 
 def _month_has_photo_input(month_key):
-    """True when the month has material worth reviewing: a diary or the child's saved words."""
+    """True when the month has a diary or at least one explicit photo emotion."""
     start, end = month_bounds(month_key)
     client = supabase_client()
 
-    def photo_has_child_words(photo):
-        reflection = (photo or {}).get("reflection_json") or {}
-        if not isinstance(reflection, dict):
-            return False
-        if str(reflection.get("child_comment") or "").strip():
-            return True
-        conversation = reflection.get("conversation") or []
-        return any(
-            isinstance(turn, dict)
-            and turn.get("role") == "child"
-            and str(turn.get("text") or "").strip()
-            for turn in conversation
-        )
+    def photo_has_emotion(photo):
+        return bool(photo_emotion_key(photo))
 
     try:
         rows = (
@@ -8616,7 +8842,7 @@ def _month_has_photo_input(month_key):
             photos = (row or {}).get(PHOTO_TABLE) or []
             if isinstance(photos, dict):
                 photos = [photos]
-            if any(photo_has_child_words(photo) for photo in photos):
+            if any(photo_has_emotion(photo) for photo in photos):
                 return True
         return False
     except Exception:
@@ -8651,7 +8877,7 @@ def _month_has_photo_input(month_key):
             .in_("trip_id", trip_ids)
             .execute()
         ).data or []
-        return any(photo_has_child_words(photo) for photo in photos)
+        return any(photo_has_emotion(photo) for photo in photos)
 
 
 def home_review_attention_needed():
@@ -10055,7 +10281,7 @@ SUMMARY_BAD_EXAMPLE_LIMIT = 2
 def _summary_generation_key(meta):
     if not isinstance(meta, dict):
         return ""
-    saved_key = str(meta.get("photo_comment_summary_updated_at") or "").strip()
+    saved_key = str(meta.get("photo_emotion_summary_updated_at") or meta.get("photo_comment_summary_updated_at") or "").strip()
     if saved_key:
         return saved_key
     source = "\n".join(
@@ -10260,7 +10486,7 @@ def build_summary_feedback_guidance():
     lines = [
         "過去のGood/Bad評価による弱い調整:",
         "- 以下は過去の事実を今回へ持ち込むための資料ではなく、文章のまとめ方・分析の粒度・言い回しだけの弱い参考です。",
-        "- 今回の写真と本人コメントを最優先し、過去文の内容や固有名詞をコピーしないでください。",
+        "- 今回の写真と本人が選んだ喜怒哀楽を最優先し、過去文の内容や固有名詞をコピーしないでください。",
         "- Good例に少しだけ近い書き方を選び、Bad例に近い書き方は少しだけ避けてください。基本ルールを変えるほど強く寄せないでください。",
     ]
     if good:
@@ -10409,33 +10635,27 @@ def render_summary_feedback_controls(meta, trip_id, key_prefix, draft_state=None
 
 
 def summarize_burari_from_photos(trip, photos):
-    """Summarize one trip from still photos plus the child's saved comments."""
+    """Summarize one trip from still photos plus the child's explicit 喜怒哀楽 tags."""
     photos = diary_photos_only(photos)
-    comment_lines = []
+    emotion_lines = []
     image_items = []
-    child_points = []
+    emotion_points = []
 
     for idx, photo in enumerate(photos or [], start=1):
-        conversation = _stored_photo_conversation(photo)
-        child_comments = [
-            str(turn.get("text") or "").strip()
-            for turn in conversation
-            if isinstance(turn, dict)
-            and turn.get("role") == "child"
-            and str(turn.get("text") or "").strip()
-        ]
+        key = photo_emotion_key(photo)
+        meta = PHOTO_EMOTIONS.get(key) or {}
         location = str(photo_location_label(photo) or "").strip()
-        joined = " / ".join(child_comments) if child_comments else "本人コメントなし"
-        comment_lines.append(f"写真{idx}（{location or '場所不明'}）: {joined}")
-        for value in child_comments:
-            if value not in child_points:
-                child_points.append(value)
+        emotion_text = f"{meta.get('emoji','')} {meta.get('label','')}".strip() if key else "未設定"
+        emotion_lines.append(f"写真{idx}（{location or '場所不明'}）: {emotion_text}")
+        if key:
+            point = f"写真{idx}：{meta.get('emoji','')} {meta.get('label','')}"
+            if point not in emotion_points:
+                emotion_points.append(point)
         try:
             raw = download_photo(photo.get("storage_path"))
             if raw:
-                image_items.append((f"写真{idx}", _vision_ready_photo(raw)))
+                image_items.append((f"写真{idx} / 気持ち:{emotion_text}", _vision_ready_photo(raw)))
         except Exception:
-            # One unreadable image must not prevent the other photos/comments from being summarized.
             pass
 
     schema = {
@@ -10443,57 +10663,56 @@ def summarize_burari_from_photos(trip, photos):
         "properties": {
             "trip_summary": {"type": "string"},
             "reflection_summary": {"type": "string"},
-            "child_points": {"type": "array", "items": {"type": "string"}},
+            "emotion_points": {"type": "array", "items": {"type": "string"}},
         },
-        "required": ["trip_summary", "reflection_summary", "child_points"],
+        "required": ["trip_summary", "reflection_summary", "emotion_points"],
         "additionalProperties": False,
     }
-    comments_text = "\n".join(comment_lines) if comment_lines else "写真・コメントなし"
+    emotion_text = "\n".join(emotion_lines) if emotion_lines else "写真なし"
     feedback_guidance = build_summary_feedback_guidance()
     prompt = f"""
 5〜6歳の子どもの「東京ぶらり旅」1回分をまとめてください。
-入力には、その日に保存された写真と、各写真について本人が話したコメントがあります。
+入力には、その日に保存された写真と、本人が各写真をタップして選んだ喜怒哀楽があります。
+喜怒哀楽は本人による明示的な意思表示です。未設定の写真には感情を推測して付け足さないでください。
 
 日付: {(trip or {}).get('trip_date', '')}
 行き先メモ: {str((trip or {}).get('destination') or '').strip() or 'なし'}
-写真ごとの本人コメント:
-{comments_text}
+写真ごとの本人選択:
+{emotion_text}
 
 {feedback_guidance}
 
 出力ルール:
-- trip_summary は、そのぶらり旅全体を2〜4文で簡潔にまとめる。写真から確認できる対象と、本人が実際に話した内容を結びつけてよい。
-- 写真に写っていない出来事や、本人が言っていない感情・意図を作らない。
-- reflection_summary は本人のコメントを第一の根拠として、その日に何へ興味・注意が向いていたか、どのように比較・理由づけをしていたかなど、自然に読み取れる部分だけを2〜4文で分析する。項目を網羅する必要はない。
-- 疑問やWant（どうしたい・こうなってほしい等）は必須ではない。本人が直接言っていなくても、それまでの本人コメント全体からかなり自然に推測できる場合は、「〜を気にしていたようです」「〜したい方向がうかがえます」のような控えめな表現で含めてよい。
-- 疑問やWantを自然に推測できない場合は完全に省略する。「疑問はない」「Wantは確認できない」「判断材料が少ない」など、欠けている項目について説明しない。
-- reflection_summary は単なるコメントの言い換えではなく、その日の興味や思考の向きを整理する。ただし性格診断・能力評価・将来予測はしない。
-- 写真はコメントの対象を理解するための補助根拠として使う。写真だけから本人の感情・疑問・Wantを新たに作らない。
-- child_points は分析の根拠になった本人の言葉を3つ以内で短く抜き出す。本人コメントがなければ空配列にする。
+- trip_summary は2〜4文。写真から客観的に確認できる対象と、本人が明示した喜怒哀楽だけを結びつけてよい。
+- 写真に写っていない出来事を作らない。
+- 未設定の写真について感情・意図を推測しない。
+- reflection_summary は2〜4文。どのような写真にどの感情を付けたかという範囲で、今回の心の動きを慎重に整理する。
+- 性格診断・能力評価・将来予測・固定的な人物評価はしない。
+- 「なぜその感情だったか」は本人から説明を受けていないため、画像だけで理由を断定しない。
+- emotion_points はAIの解釈ではなく、本人が実際に選んだ「写真番号＋喜怒哀楽」を最大4件で短く列挙する。
 """.strip()
 
-    # When every photo failed to download, comments alone are still sufficient for a cautious summary.
     if image_items:
         result = ask_json_with_images(
             prompt,
             image_items,
-            "summarize_burari_photos_and_comments",
+            "summarize_burari_photos_and_emotions_v149",
             schema,
-            1000,
+            900,
         )
     else:
         result = ask_json(
             prompt,
-            "summarize_burari_comments_only",
+            "summarize_burari_emotions_only_v149",
             schema,
-            1000,
+            900,
         )
-    result["child_points"] = list(result.get("child_points") or [])[:3]
+    result["emotion_points"] = list(result.get("emotion_points") or emotion_points)[:4]
     return result
 
 
 def save_burari_ai_summary(trip_id, result):
-    """Persist the on-demand AI trip summary inside the existing diary ai_meta."""
+    """Persist the on-demand photo+emotion AI summary inside diary ai_meta."""
     diary = get_diary_for_trip(trip_id)
     if not diary:
         raise ValueError("先に日記を保存してください。")
@@ -10503,10 +10722,9 @@ def save_burari_ai_summary(trip_id, result):
     _clear_summary_feedback_fields(meta, clear_history=False)
     meta["trip_summary"] = str((result or {}).get("trip_summary") or "").strip()
     meta["reflection_summary"] = str((result or {}).get("reflection_summary") or "").strip()
-    points = list((result or {}).get("child_points") or [])[:3]
-    if points:
-        meta["child_points"] = points
-    meta["photo_comment_summary_updated_at"] = now_jst().isoformat()
+    meta["emotion_points"] = list((result or {}).get("emotion_points") or [])[:4]
+    meta.pop("child_points", None)
+    meta["photo_emotion_summary_updated_at"] = now_jst().isoformat()
     (
         supabase_client()
         .table(DIARY_TABLE)
@@ -10529,7 +10747,7 @@ def render_burari_trip_summary(meta):
     st.markdown(
         f"""
         <div class="talk-card">
-          <div class="small-note">写真と本人のコメントを一緒に見て、このぶらり旅全体をまとめています。</div>
+          <div class="small-note">写真と本人が選んだ喜怒哀楽を一緒に見て、このぶらり旅全体をまとめています。</div>
           <div class="big-text" style="margin-top:.45rem;">{html.escape(summary)}</div>
         </div>
         """,
@@ -10538,7 +10756,7 @@ def render_burari_trip_summary(meta):
 
 
 def render_diary_reflection_summary(meta):
-    """Show a cautious AI summary grounded only in the child's saved comments."""
+    """Show a cautious AI summary grounded in the child-selected photo emotions."""
     if not isinstance(meta, dict):
         return
     summary = str(meta.get("reflection_summary") or "").strip()
@@ -10548,7 +10766,7 @@ def render_diary_reflection_summary(meta):
     st.markdown(
         f"""
         <div class="talk-card">
-          <div class="small-note">本人が写真について話したコメントだけをもとにした、その日の振り返りです。性格や能力の評価ではありません。</div>
+          <div class="small-note">本人が写真ごとに選んだ喜怒哀楽をもとにした、その日の振り返りです。性格や能力の評価ではありません。</div>
           <div class="big-text" style="margin-top:.45rem;">{html.escape(summary)}</div>
         </div>
         """,
@@ -10590,53 +10808,42 @@ note は「こう直したよ」のような短い説明にしてください。
 # Monthly review AI
 # ============================================================
 def build_month_inner_evidence(bundle):
-    """Build monthly evidence with the child's own saved words as the primary source.
-
-    The generated diary is itself AI-organized text, so it should not be the main
-    source when we are trying to reflect the child's inner interests back to them.
-    """
+    """Build monthly evidence from the child's explicit photo emotion selections."""
     trip_map = {
         str(t.get("id")): t
         for t in (bundle or {}).get("trips", [])
         if isinstance(t, dict) and t.get("id")
     }
-    comment_lines = []
-    comment_count = 0
-    comment_days = set()
+    emotion_lines = []
+    emotion_count = 0
+    emotion_days = set()
 
     for photo in (bundle or {}).get("photos", []):
         if not isinstance(photo, dict):
             continue
-        trip = trip_map.get(str(photo.get("trip_id")), {})
-        reflection = photo.get("reflection_json") or {}
-        conversation = reflection.get("conversation", []) if isinstance(reflection, dict) else []
-        child_words = []
-        for turn in conversation or []:
-            if not isinstance(turn, dict) or turn.get("role") != "child":
-                continue
-            value = str(turn.get("text") or "").strip()
-            if value:
-                child_words.append(value)
-        if not child_words:
+        key = photo_emotion_key(photo)
+        if not key:
             continue
+        meta = PHOTO_EMOTIONS.get(key) or {}
+        trip = trip_map.get(str(photo.get("trip_id")), {})
         trip_date = str(trip.get("trip_date") or "").strip()
         where = str(photo_location_label(photo) or trip.get("destination") or "場所メモなし").strip()
-        for value in child_words:
-            comment_lines.append(f"[{trip_date or '日付不明'} / {where}] {value}")
-            comment_count += 1
-            if trip_date:
-                comment_days.add(trip_date)
+        emotion_lines.append(
+            f"[{trip_date or '日付不明'} / {where}] {meta.get('emoji','')} {meta.get('label','')}"
+        )
+        emotion_count += 1
+        if trip_date:
+            emotion_days.add(trip_date)
 
-    if comment_lines:
+    if emotion_lines:
         return {
-            "text": "\n".join(comment_lines),
-            "comment_count": comment_count,
-            "day_count": len(comment_days),
-            "source": "child_comments",
+            "text": "\n".join(emotion_lines),
+            "emotion_count": emotion_count,
+            "day_count": len(emotion_days),
+            "source": "photo_emotions",
         }
 
-    # Compatibility fallback for older periods that have a saved diary but no raw
-    # per-photo conversation. Keep the prompt aware that this is weaker evidence.
+    # Compatibility fallback for older periods that predate v149 emotion tagging.
     diary_lines = []
     diary_days = set()
     for diary in sorted(
@@ -10655,7 +10862,7 @@ def build_month_inner_evidence(bundle):
             diary_days.add(trip_date)
     return {
         "text": "\n".join(diary_lines),
-        "comment_count": 0,
+        "emotion_count": 0,
         "day_count": len(diary_days),
         "source": "diary_fallback",
     }
@@ -10688,58 +10895,45 @@ def make_monthly_review(month_key, bundle):
         "additionalProperties": False,
     }
     evidence_bundle = build_month_inner_evidence(bundle)
-    evidence = str(evidence_bundle.get("text") or "").strip() or "本人の言葉はほとんどありません。"
-    comment_count = int(evidence_bundle.get("comment_count") or 0)
+    evidence = str(evidence_bundle.get("text") or "").strip() or "喜怒哀楽の選択はまだありません。"
+    emotion_count = int(evidence_bundle.get("emotion_count") or 0)
     day_count = int(evidence_bundle.get("day_count") or 0)
     source = str(evidence_bundle.get("source") or "")
     source_note = (
-        "以下は本人が写真について実際に残したコメントです。"
-        if source == "child_comments"
-        else "本人の生コメントが残っていないため、本人の発言をもとに作った保存日記を補助材料として使います。推測は特に弱くしてください。"
+        "以下は、本人が写真をタップして実際に選んだ喜怒哀楽です。"
+        if source == "photo_emotions"
+        else "この期間には喜怒哀楽の記録がないため、旧形式の保存日記を互換用の補助材料として使います。推測は特に弱くしてください。"
     )
     prompt = f"""
-「東京ぶらり旅プロジェクト」の{month_key}の記録から、本人に返す短い『気づき』を作ります。
+「東京ぶらり旅プロジェクト」の{month_key}の記録から、本人に返す短い振り返りを作ります。
 対象は5〜6歳の子どもです。
 
 {source_note}
-コメント数: {comment_count}件
+感情を選んだ写真: {emotion_count}枚
 記録日数: {day_count}日
 
 記録:
 {evidence}
 
-目的:
-本人が過去に言った言葉をそのまま並べることではありません。
-複数の言葉に共通するものを一段だけ抽象化し、本人が
-「ぼく、こういうところが気になっていたんだ」
-「こういうときに心が動くんだ」
-と自分で気づけるような、短く本質的なコメントにしてください。
-
-ここでいう『内面』は心理診断ではありません。
-記録から比較的自然に読み取れる、今の関心の向き・大事にしていそうなこと・心が動くポイント・迷いや違和感の向きだけを扱います。
-
 厳守:
-- 本人の発言を長く引用したり、発言の一覧を作ったりしない。
-- 具体的な写真や出来事を順番に要約しない。
-- まず共通する意味を探し、その意味を子どもにも分かる言葉で返す。
-- 『観察力が高い』『優しい性格』『社会課題に関心が強い』『○○タイプ』など、能力評価・性格診断・ラベル付けをしない。
-- 将来像や才能を予測しない。
-- 記録にない感情を断定しない。
-- 推測を含むときは『〜が気になっていたみたい』『〜を大事にしていたように見える』のように弱く言う。
-- 1件しか根拠がないテーマを、その子全体の傾向のように一般化しない。
-- 複数の日に同じ向きが出ているときだけ、期間全体の傾向として扱う。
-- opening は本人向けの一言。25〜55文字程度、1文だけ。最も本質的な気づきを1つに絞る。
-- findings は最大2件。theme は12文字程度まで。evidence は『根拠の引用』ではなく、その共通点を一段抽象化した説明を1文、35〜80文字程度で書く。
-- findings の内容は opening の言い換えだけにしない。別の気づきが弱ければ1件だけでよい。
-- ask_child は、その気づきを本人が自分で確かめられる短い問い。必要なときだけ1件まで。不要なら空文字。
-- one_question も問いは1つまで。ask_child がある場合は原則空文字にする。
+- 喜・怒・哀・楽は本人による明示的な選択として扱う。
+- なぜその感情を選んだかは入力されていないため、理由を作らない。
+- 写真内容がこの入力には含まれないので、「何を見て喜んだ」など具体物を推測しない。
+- 複数日に同じ感情が出ている場合は「この期間は楽を選ぶ写真が多かったね」のような事実ベースの傾向は書いてよい。
+- 1件だけの感情から性格・能力・将来を一般化しない。
+- opening は本人向けの一言。25〜55文字程度、1文。
+- findings は最大2件。theme は12文字程度まで。evidence は選択された感情の分布や繰り返しを35〜80文字程度で説明する。
+- ask_child は必要なときだけ短い問いを1件まで。不要なら空文字。
+- one_question も問いは1つまで。ask_child がある場合は原則空文字。
 - repeated_notices と wishes は内部互換のため残すが、通常は空配列にする。
-- parent_note は保護者向け。どの程度の記録量から推測したかと、断定を避けた理由を1〜2文で簡潔に書く。本人の発言を長く引用しない。
+- parent_note は保護者向けに、感情選択数と記録日数を踏まえ、断定を避けていることを1〜2文で書く。
 - 全体として簡潔にする。
 """.strip()
-    result = ask_json(prompt, "burari_monthly_review_insight_v2", schema, 1000)
-    result["_insight_version"] = 2
+    result = ask_json(prompt, "burari_monthly_review_emotions_v149", schema, 850)
+    result["_insight_version"] = 3
+    result["_subjective_input_mode"] = "photo_emotion_four_choices_v149"
     return result
+
 
 def monthly_speech_text(review):
     parts = [review.get("opening", "")]
@@ -11328,12 +11522,7 @@ def page_top(title, caption=""):
 
 
 def _stored_photo_conversation(photo):
-    """Return only the child's stored comment turns.
-
-    Older rows may contain assistant questions from the former photo-conversation
-    feature. v145 ignores those assistant turns completely; Diary now cares only
-    whether the child left a comment.
-    """
+    """Legacy reader for pre-v149 stored child comments. New UI never writes comments."""
     reflection = (photo or {}).get("reflection_json") or {}
     if not isinstance(reflection, dict):
         return []
@@ -11679,60 +11868,64 @@ def pending_diary_titles(pending_rows, used_titles=None):
 
 
 def create_and_save_diary_from_photos(trip, photos, requested_title=None, reason="manual_create"):
-    """Create a diary from already-saved still-photo comments and persist it immediately."""
+    """Create and save a factual diary from photos plus the child's 喜怒哀楽 choices.
+
+    v149 intentionally makes no AI call here. The child's explicit emotion taps are
+    the only subjective evidence; richer image+emotion interpretation remains an
+    optional on-demand action via ``AIにまとめてもらう``.
+    """
     trip = trip or {}
     photos = diary_photos_only(photos)
     if not trip.get("id") or not photos:
         raise ValueError("日記にする写真がありません。")
 
-    photo_states = []
-    child_comments = []
-    raw = {}
-    merged_signals = {}
-    for photo in photos:
-        pid = photo.get("id")
-        conversation = _stored_photo_conversation(photo)
-        signals = photo.get("signals_json") or {}
-        if not isinstance(signals, dict):
-            signals = {}
-        photo_states.append({"photo_id": pid, "conversation": conversation, "signals": signals})
-        raw[str(pid)] = conversation
-        merged_signals = merge_signals(merged_signals, signals)
-        for turn in conversation:
-            if isinstance(turn, dict) and turn.get("role") == "child":
-                value = str(turn.get("text") or "").strip()
-                if value:
-                    child_comments.append(value)
+    counts, selected = photo_emotion_counts(photos)
+    unset = max(0, len(photos) - selected)
+    emotion_parts = []
+    emotion_points = []
+    photo_emotions = []
+    for index, photo in enumerate(photos, start=1):
+        key = photo_emotion_key(photo)
+        meta = PHOTO_EMOTIONS.get(key) or {}
+        photo_emotions.append(
+            {
+                "photo_id": str(photo.get("id") or ""),
+                "emotion": key,
+                "label": meta.get("label") or "",
+                "emoji": meta.get("emoji") or "",
+            }
+        )
+    for key in PHOTO_EMOTION_ORDER:
+        count = int(counts.get(key) or 0)
+        if not count:
+            continue
+        meta = PHOTO_EMOTIONS[key]
+        phrase = f"{meta['emoji']}{meta['label']}が{count}枚"
+        emotion_parts.append(phrase)
+        emotion_points.append(f"{meta['emoji']} {meta['label']}：{count}枚")
 
-    if child_comments:
-        try:
-            result, raw = compose_diary(trip, photo_states)
-            diary_text = str(result.get("diary") or "").strip()
-            reflection_summary = str(result.get("reflection_summary") or "").strip()
-            child_points = list(result.get("child_points") or [])[:3]
-            merged_signals = merge_signals(merged_signals, result.get("signals", {}))
-        except Exception:
-            diary_text = f"この日は写真を{len(photos)}枚残しました。写真について話した言葉も保存しています。"
-            reflection_summary = "本人のコメントは保存されています。AIの分析は、あとから『AIにまとめてもらう』で更新できます。"
-            child_points = child_comments[:3]
+    sentences = [f"この日は写真を{len(photos)}枚残しました。"]
+    if emotion_parts:
+        sentences.append("写真につけた気持ちは、" + "、".join(emotion_parts) + "でした。")
     else:
-        diary_text = f"この日は写真を{len(photos)}枚残しました。写真についての本人のコメントはまだありません。"
-        reflection_summary = ""
-        child_points = []
+        sentences.append("写真の気持ちはまだ選んでいません。")
+    if unset and selected:
+        sentences.append(f"まだ気持ちを選んでいない写真が{unset}枚あります。")
+    diary_text = "".join(sentences)
 
     meta = {
-        "reflection_summary": reflection_summary,
-        "child_points": child_points,
-        "signals": merged_signals,
+        "reflection_summary": "",
+        "emotion_points": emotion_points[:4],
+        "emotion_counts": counts,
+        "photo_emotions": photo_emotions,
         "photo_count": len(photos),
-        "commented_photo_count": sum(
-            1 for item in photo_states if _conversation_has_child_words(item.get("conversation", []))
-        ),
+        "emotion_selected_photo_count": selected,
         "created_from_photo_list": True,
         "create_reason": str(reason or "manual_create"),
+        "subjective_input_mode": "photo_emotion_four_choices_v149",
     }
     title = requested_title or diary_title_for_trip(trip, photos=photos)
-    return save_diary(trip["id"], title, diary_text, raw, meta)
+    return save_diary(trip["id"], title, diary_text, {}, meta)
 
 
 def reflection_state(trip_id, photos):
@@ -12269,7 +12462,7 @@ def render_pending_thumbnail_grid(trip_id, photos, max_count=None, trip=None):
     return None
 
 def render_small_gallery(photos, max_count=None, columns=3):
-    """Render history still photos lazily; original videos are intentionally omitted."""
+    """Render history still photos with persisted 喜怒哀楽 borders/icons."""
     subset = diary_photos_only(photos)
     if max_count is not None:
         subset = subset[:max_count]
@@ -12288,13 +12481,17 @@ def render_small_gallery(photos, max_count=None, columns=3):
             f'<div style="font-size:10px;opacity:.65;margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">📍 {html.escape(location)}</div>'
             if location else ""
         )
-        video_badge = (
-            '<div style="position:absolute;left:6px;bottom:6px;padding:3px 7px;border-radius:999px;background:rgba(17,24,39,.78);color:#fff;font-size:10px;font-weight:800;">▶ 動画</div>'
-            if photo_is_video(photo) else ""
+        meta = photo_emotion_meta(photo)
+        border = meta.get("color") or "#AEB6C2"
+        emoji = meta.get("emoji") or ""
+        badge = (
+            f'<div style="position:absolute;right:7px;bottom:7px;min-width:27px;height:27px;padding:0 4px;border-radius:999px;background:rgba(255,255,255,.90);display:flex;align-items:center;justify-content:center;font-size:19px;box-shadow:0 2px 7px rgba(0,0,0,.22);">{emoji}</div>'
+            if emoji else ""
         )
         cards.append(
-            f'<div style="min-width:0;"><div style="position:relative;"><img src="{html.escape(src, quote=True)}" loading="lazy" decoding="async" fetchpriority="low" '
-            f'style="display:block;width:100%;aspect-ratio:1/1;object-fit:cover;border-radius:10px;" />{video_badge}</div>{location_html}</div>'
+            f'<div style="min-width:0;"><div style="position:relative;padding:4px;border:3px solid {border};border-radius:12px;">'
+            f'<img src="{html.escape(src, quote=True)}" loading="lazy" decoding="async" fetchpriority="low" '
+            f'style="display:block;width:100%;aspect-ratio:1/1;object-fit:cover;border-radius:8px;" />{badge}</div>{location_html}</div>'
         )
     if cards:
         st.markdown(
@@ -14439,8 +14636,8 @@ def render_diary_title_editor(trip_id, current_title, key_prefix):
                     st.code(str(exc))
 
 
-def render_recent_camera_photo_comment(trip):
-    """Offer one optional child comment for the just-saved media, with no AI conversation."""
+def render_recent_camera_photo_emotion(trip):
+    """Show the latest saved media; still photos can be tagged by tapping the image."""
     trip_id = (trip or {}).get("id")
     if not trip_id:
         return
@@ -14458,58 +14655,74 @@ def render_recent_camera_photo_comment(trip):
     st.divider()
     is_video = photo_is_video(photo)
     st.markdown("#### 今撮った動画" if is_video else "#### 今撮った写真")
-    if not render_saved_media_preview(
-        photo,
-        image_alt="今撮った動画の代表画像" if is_video else "今撮った写真",
-        delete_key_prefix="recent_camera",
-    ):
-        st.warning("撮影した記録のプレビューを表示できませんでした。コメントは残せます。")
     if is_video:
-        st.caption("✨ いい瞬間は動画保存とは別にバックグラウンドで作成します。操作を続けられます。")
+        if not render_saved_media_preview(
+            photo,
+            image_alt="今撮った動画の代表画像",
+            delete_key_prefix="recent_camera",
+        ):
+            st.warning("撮影した動画のプレビューを表示できませんでした。")
+        st.caption("✨ いい瞬間は動画保存とは別にバックグラウンドで作成します。切り取った写真は、日記画面で喜怒哀楽を選べます。")
+        return
 
     location_label = photo_location_label(photo)
-    if location_label:
-        st.caption(f"📍 {location_label}")
+    st.caption("写真をタップするたびに　未設定 → 😊喜 → 😠怒 → 😢哀 → 🎉楽 → 未設定　の順で変わります。")
+    st.caption("枠色：😊喜 #F2C94C ／ 😠怒 #E56B6F ／ 😢哀 #6C9BD2 ／ 🎉楽 #6FBA9C")
 
-    existing_comment = photo_child_comment_text(photo)
-    if existing_comment:
-        st.success("本人コメントあり")
-        st.caption(existing_comment)
-        return
-
-    st.caption("本人コメントは任意です。残したいときだけ1回話してください。AIからの質問・追加質問はありません。")
-    serial_key = f"quick_comment_serial_{photo_id}"
-    serial = int(st.session_state.get(serial_key) or 0)
-    answer_audio = far_field_audio_input(
-        "本人コメントを録音",
-        key=f"quick_comment_{photo_id}_{serial}",
-    )
-    digest_key = f"quick_comment_digest_{photo_id}_{serial}"
-    if answer_audio is None:
-        return
-
-    digest = audio_digest(answer_audio)
-    if not digest or st.session_state.get(digest_key) == digest:
-        return
-
-    try:
-        with st.spinner("声を文字にしています…"):
-            transcript = transcribe_audio(
-                answer_audio,
-                f"東京ぶらり旅で今撮った{'動画' if is_video else '写真'}について、5〜6歳の子どもが自由に1回だけコメントしています。場所は{location_label or '不明'}です。",
+    path = str(photo.get("storage_path") or "")
+    signed = signed_photo_url_map((path,)) if path else {}
+    src = photo_display_url(photo, signed, max_px=720, quality=82)
+    card = {
+        "id": str(photo_id),
+        "src": src,
+        "emotion": photo_emotion_key(photo),
+        "location": str(location_label or ""),
+    }
+    gallery_component = _get_diary_gallery_component()
+    if gallery_component is not None:
+        serial_key = f"recent_emotion_serial_{photo_id}"
+        serial = int(st.session_state.get(serial_key) or 0)
+        result = gallery_component(
+            data={"photos": [card], "single": True, "allow_delete": True, "allow_emotion": True},
+            key=f"recent_emotion_{photo_id}_{serial}_{_current_ui_refresh_epoch()}",
+            on_emotion_change_change=lambda: None,
+            on_delete_photo_id_change=lambda: None,
+        )
+        change = getattr(result, "emotion_change", None)
+        if isinstance(change, dict) and str(change.get("photo_id") or "") == str(photo_id):
+            update_photo_emotion(photo_id, change.get("emotion"), trip_id=trip_id)
+            st.session_state[serial_key] = serial + 1
+            st.session_state["_camera_notice"] = "写真の気持ちを更新しました。"
+            st.rerun()
+        delete_clicked = str(getattr(result, "delete_photo_id", "") or "")
+        if delete_clicked == str(photo_id):
+            st.session_state[serial_key] = serial + 1
+            confirm_photo_delete_dialog(
+                trip_id,
+                photo_id,
+                photos=photos,
+                is_pending=True,
+                trip=trip,
             )
-            if not transcript:
-                raise ValueError("文字起こしが空でした。")
-            save_photo_child_comment(photo_id, transcript)
+        return
 
-        st.session_state[serial_key] = serial + 1
-        st.session_state[digest_key] = digest
-        st.session_state["_camera_notice"] = "本人コメントを保存しました。"
+    # Fallback for runtimes without Streamlit v2 components.
+    if src:
+        meta = photo_emotion_meta(photo)
+        border = meta.get("color") or "#AEB6C2"
+        emoji = meta.get("emoji") or ""
+        badge = (
+            f'<span style="position:absolute;right:10px;bottom:10px;background:rgba(255,255,255,.90);border-radius:999px;padding:3px 6px;font-size:22px;">{emoji}</span>'
+            if emoji else ""
+        )
+        st.markdown(
+            f'<div style="position:relative;padding:5px;border:3px solid {border};border-radius:14px;max-width:360px;margin:0 auto;">'
+            f'<img src="{html.escape(src, quote=True)}" style="display:block;width:100%;aspect-ratio:1/1;object-fit:cover;border-radius:9px;" />{badge}</div>',
+            unsafe_allow_html=True,
+        )
+    if st.button("写真の気持ちを次へ", use_container_width=True, key=f"recent_emotion_fallback_{photo_id}"):
+        update_photo_emotion(photo_id, next_photo_emotion_key(photo_emotion_key(photo)), trip_id=trip_id)
         st.rerun()
-    except Exception as exc:
-        st.error("コメントを保存できませんでした。もう一度録音してください。")
-        with st.expander("保護者向け詳細"):
-            st.code(str(exc))
 
 
 # ============================================================
@@ -14597,7 +14810,7 @@ def page_trip():
             "video_candidate_sheet_signed_url": str(video_reservation.get("candidate_sheet_signed_url") or ""),
             "video_candidate_sheet_storage_path": str(video_reservation.get("candidate_sheet_path") or ""),
         },
-        key=f"live_camera_v147_{camera_trip_key}_{st.session_state.capture_serial}_{_current_ui_refresh_epoch()}",
+        key=f"live_camera_v149_{camera_trip_key}_{st.session_state.capture_serial}_{_current_ui_refresh_epoch()}",
         on_photo_change=lambda: None,
         on_video_change=lambda: None,
         on_camera_error_change=lambda: None,
@@ -14865,41 +15078,100 @@ def page_trip():
 
     trip = st.session_state.get("_active_trip_snapshot")
     if isinstance(trip, dict) and trip.get("id"):
-        render_recent_camera_photo_comment(trip)
+        render_recent_camera_photo_emotion(trip)
 
 
-def render_diary_comment_status_gallery(trip_id, photos, trip=None, is_pending=False):
-    """Show still photos with only child-comment presence; no photo conversation screen."""
+def render_diary_emotion_gallery(trip_id, photos, trip=None, is_pending=False):
+    """Render all still photos as tappable 喜怒哀楽 cards with persistent emotion state."""
     photos = diary_photos_only(photos)
     if not photos:
         return
     st.markdown("#### この日の写真")
-    commented = sum(1 for photo in photos if photo_has_child_comment(photo))
-    st.caption(f"本人コメントあり：{commented} / {len(photos)}枚　（写真を開いてAIと会話する機能はありません）")
+    counts, selected = photo_emotion_counts(photos)
+    st.caption("写真をタップするたびに　未設定 → 😊喜 → 😠怒 → 😢哀 → 🎉楽 → 未設定　の順で変わります。")
+    summary = photo_emotion_summary_text(photos)
+    st.caption(f"感情選択済み：{selected} / {len(photos)}枚" + (f"　｜　{summary}" if summary else ""))
 
     paths = tuple(str(photo.get("storage_path") or "") for photo in photos if photo.get("storage_path"))
     signed = signed_photo_url_map(paths) if paths else {}
+    cards = []
+    photo_ids = []
+    for photo in photos:
+        pid = str(photo.get("id") or "")
+        if not pid:
+            continue
+        cards.append(
+            {
+                "id": pid,
+                "src": photo_display_url(photo, signed, max_px=520, quality=80),
+                "emotion": photo_emotion_key(photo),
+                "location": str(photo_location_label(photo) or ""),
+            }
+        )
+        photo_ids.append(pid)
+
+    gallery_component = _get_diary_gallery_component()
+    if gallery_component is not None and cards:
+        serial_key = f"diary_emotion_gallery_serial_{trip_id}_{'pending' if is_pending else 'saved'}"
+        serial = int(st.session_state.get(serial_key) or 0)
+        result = gallery_component(
+            data={"photos": cards, "allow_delete": True, "allow_emotion": True},
+            key=f"diary_emotion_gallery_{trip_id}_{serial}_{_current_ui_refresh_epoch()}",
+            on_emotion_change_change=lambda: None,
+            on_delete_photo_id_change=lambda: None,
+        )
+        change = getattr(result, "emotion_change", None)
+        if isinstance(change, dict):
+            changed_id = str(change.get("photo_id") or "")
+            if changed_id in photo_ids:
+                update_photo_emotion(changed_id, change.get("emotion"), trip_id=trip_id)
+                st.session_state[serial_key] = serial + 1
+                st.session_state["_diary_notice"] = "写真の喜怒哀楽を更新しました。"
+                st.rerun()
+        delete_clicked = str(getattr(result, "delete_photo_id", "") or "")
+        if delete_clicked in photo_ids:
+            st.session_state[serial_key] = serial + 1
+            confirm_photo_delete_dialog(
+                trip_id,
+                delete_clicked,
+                photos=photos,
+                is_pending=is_pending,
+                trip=trip,
+            )
+        return
+
+    # Fallback for old component runtimes.
     cols = st.columns(3, gap="small")
     for index, photo in enumerate(photos):
         with cols[index % 3]:
             src = photo_display_url(photo, signed, max_px=420, quality=76)
-            has_comment = photo_has_child_comment(photo)
-            border = "#F59E0B" if has_comment else "#AEB6C2"
-            background = "rgba(245,158,11,.14)" if has_comment else "rgba(174,182,194,.14)"
+            meta = photo_emotion_meta(photo)
+            border = meta.get("color") or "#AEB6C2"
+            emoji = meta.get("emoji") or ""
             if src:
+                badge = (
+                    f'<span style="position:absolute;right:7px;bottom:7px;background:rgba(255,255,255,.90);border-radius:999px;padding:2px 5px;font-size:19px;">{emoji}</span>'
+                    if emoji else ""
+                )
                 st.markdown(
-                    f'<div style="padding:4px;border:3px solid {border};background:{background};border-radius:12px;">'
-                    f'<img src="{html.escape(src, quote=True)}" loading="lazy" decoding="async" '
-                    'style="display:block;width:100%;aspect-ratio:1/1;object-fit:cover;border-radius:8px;" />'
-                    '</div>',
+                    f'<div style="position:relative;padding:4px;border:3px solid {border};border-radius:12px;">'
+                    f'<img src="{html.escape(src, quote=True)}" loading="lazy" decoding="async" style="display:block;width:100%;aspect-ratio:1/1;object-fit:cover;border-radius:8px;" />{badge}</div>',
                     unsafe_allow_html=True,
                 )
-            else:
-                st.caption("画像を表示できません")
-            st.caption("💬 本人コメントあり" if has_comment else "コメントなし")
+            if st.button(
+                "気持ちを次へ",
+                use_container_width=True,
+                key=f"emotion_fallback_{trip_id}_{photo.get('id')}_{'pending' if is_pending else 'saved'}",
+            ):
+                update_photo_emotion(
+                    photo.get("id"),
+                    next_photo_emotion_key(photo_emotion_key(photo)),
+                    trip_id=trip_id,
+                )
+                st.rerun()
             if st.button(
                 "×",
-                key=f"diary_status_delete_{trip_id}_{photo.get('id')}_{'pending' if is_pending else 'saved'}",
+                key=f"diary_emotion_delete_{trip_id}_{photo.get('id')}_{'pending' if is_pending else 'saved'}",
                 help="この写真を削除",
             ):
                 confirm_photo_delete_dialog(
@@ -14912,11 +15184,11 @@ def render_diary_comment_status_gallery(trip_id, photos, trip=None, is_pending=F
 
 
 # ============================================================
-# Page: Diary (comment-presence only)
+# Page: Diary (photo emotion tagging)
 # ============================================================
 def page_diary():
-    # Remove legacy per-photo conversation state left by older app builds. Stored
-    # child comments remain in Supabase and are not deleted.
+    # Remove transient state from the retired comment/conversation UI. Historical
+    # data stays in Supabase for compatibility, but v149 never asks for comments.
     st.session_state.pop("_pending_diary_open_trip_id", None)
     for key in list(st.session_state.keys()):
         key_text = str(key)
@@ -14925,7 +15197,7 @@ def page_diary():
 
     page_top(
         "📖 日記",
-        "写真ごとのAI会話は使いません。本人コメントがあるかどうかだけを確認し、その記録から日記を作ります。",
+        "写真をタップして喜・怒・哀・楽を選び、その気持ちの記録から日記を作ります。コメント入力は使いません。",
     )
     notice = st.session_state.pop("_diary_notice", None)
     if notice:
@@ -14941,7 +15213,7 @@ def page_diary():
 
     if pending_rows:
         st.markdown("#### まだ日記になっていない写真")
-        st.caption("オレンジ枠は本人コメントあり、グレー枠はコメントなしです。どちらもそのまま日記にできます。")
+        st.caption("写真をタップするたびに、未設定→😊喜→😠怒→😢哀→🎉楽→未設定の順で枠色が変わります。")
         pending_titles = pending_diary_titles(pending_rows, used_titles=saved_titles)
         for item in pending_rows:
             pending_trip = item.get("trip") or {}
@@ -14950,12 +15222,12 @@ def page_diary():
             if not pending_id or not pending_photos:
                 continue
             pending_title = pending_titles.get(pending_id) or diary_title_for_trip(pending_trip, pending_photos)
-            commented_count = sum(1 for photo in pending_photos if photo_has_child_comment(photo))
+            emotion_counts, emotion_selected = photo_emotion_counts(pending_photos)
             st.markdown(
                 f"**{html.escape(str(pending_trip.get('trip_date') or ''))}　{html.escape(pending_title)}**　・ 写真 {len(pending_photos)}枚"
             )
-            st.caption(f"本人コメントあり：{commented_count} / {len(pending_photos)}枚")
-            render_diary_comment_status_gallery(
+            st.caption(f"感情選択済み：{emotion_selected} / {len(pending_photos)}枚" + (f"　｜　{photo_emotion_summary_text(pending_photos)}" if photo_emotion_summary_text(pending_photos) else ""))
+            render_diary_emotion_gallery(
                 pending_id,
                 pending_photos,
                 trip=pending_trip,
@@ -14968,12 +15240,12 @@ def page_diary():
                 key=f"create_pending_diary_{pending_id}",
             ):
                 try:
-                    with st.spinner("写真と本人コメントから日記を作って保存しています…"):
+                    with st.spinner("写真と喜怒哀楽から日記を作って保存しています…"):
                         create_and_save_diary_from_photos(
                             pending_trip,
                             pending_photos,
                             requested_title=pending_title,
-                            reason="diary_page_pending_button_v145",
+                            reason="diary_page_pending_button_v149",
                         )
                     if st.session_state.get("active_trip_id") == pending_id:
                         st.session_state.active_trip_id = None
@@ -15026,7 +15298,7 @@ def page_diary():
     existing = diary_map.get(trip_id)
 
     if photos:
-        render_diary_comment_status_gallery(trip_id, photos, trip=trip, is_pending=False)
+        render_diary_emotion_gallery(trip_id, photos, trip=trip, is_pending=False)
     else:
         st.warning("このぶらり旅には写真がありません。")
 
@@ -15038,11 +15310,11 @@ def page_diary():
             key=f"create_selected_diary_{trip_id}",
         ):
             try:
-                with st.spinner("写真と本人コメントから日記を作って保存しています…"):
+                with st.spinner("写真と喜怒哀楽から日記を作って保存しています…"):
                     create_and_save_diary_from_photos(
                         trip,
                         photos,
-                        reason="diary_selected_trip_v145",
+                        reason="diary_selected_trip_v149",
                     )
                 st.session_state.preferred_diary_trip_id = trip_id
                 st.session_state["_diary_notice"] = "日記を作成して保存しました。"
@@ -15072,10 +15344,10 @@ def page_diary():
         key=f"ai_trip_summary_{trip_id}",
     ):
         try:
-            with st.spinner("写真と本人コメントを見て、このぶらり旅をまとめています…"):
+            with st.spinner("写真と喜怒哀楽を見て、このぶらり旅をまとめています…"):
                 summary_result = summarize_burari_from_photos(trip, photos)
                 save_burari_ai_summary(trip_id, summary_result)
-            st.session_state["_diary_notice"] = "写真と本人コメントからAIのまとめを更新しました。"
+            st.session_state["_diary_notice"] = "写真と喜怒哀楽からAIのまとめを更新しました。"
             st.rerun()
         except Exception as exc:
             st.error("AIのまとめを作れませんでした。もう一度試してください。")
@@ -15088,9 +15360,9 @@ def page_diary():
     render_diary_title_editor(trip_id, existing_title, "diary_existing")
 
     if photos and st.button(
-        "この日の写真と本人コメントから、日記を作り直す",
+        "この日の写真と喜怒哀楽から、日記を作り直す",
         use_container_width=True,
-        key=f"recreate_diary_from_comments_{trip_id}",
+        key=f"recreate_diary_from_emotions_{trip_id}",
     ):
         try:
             with st.spinner("日記を作り直しています…"):
@@ -15098,10 +15370,10 @@ def page_diary():
                     trip,
                     photos,
                     requested_title=existing_title,
-                    reason="diary_recreate_comment_only_v145",
+                    reason="diary_recreate_emotions_v149",
                 )
             st.session_state.preferred_diary_trip_id = trip_id
-            st.session_state["_diary_notice"] = "本人コメントをもとに日記を作り直しました。"
+            st.session_state["_diary_notice"] = "写真の喜怒哀楽をもとに日記を作り直しました。"
             st.rerun()
         except Exception as exc:
             st.error("日記を作り直せませんでした。")
@@ -15161,11 +15433,19 @@ def page_history(embedded=False):
         render_burari_trip_summary(meta)
         render_diary_reflection_summary(meta)
         render_summary_feedback_controls(meta, trip_id, "history")
-        child_points = meta.get("child_points", []) if isinstance(meta, dict) else []
-        if child_points:
-            with st.expander("この日記のもとになった言葉"):
-                for point in child_points[:3]:
+        emotion_points = meta.get("emotion_points", []) if isinstance(meta, dict) else []
+        if emotion_points:
+            with st.expander("この振り返りのもとになった喜怒哀楽"):
+                for point in emotion_points[:4]:
                     st.write("・" + str(point))
+        else:
+            # Older diaries may still contain pre-v149 comment evidence. Keep it
+            # readable for historical compatibility, but new input is emotion-only.
+            child_points = meta.get("child_points", []) if isinstance(meta, dict) else []
+            if child_points:
+                with st.expander("以前のコメント記録"):
+                    for point in child_points[:3]:
+                        st.write("・" + str(point))
 
         st.divider()
         back_col, home_col = st.columns(2)
@@ -15243,7 +15523,7 @@ def render_monthly_ai_comments(review):
     with st.expander("保護者向けメモ"):
         st.write(review.get("parent_note", ""))
         st.caption(
-            "本人が残したコメントの共通点を一段抽象化した振り返りです。"
+            "本人が写真ごとに選んだ喜怒哀楽の傾向を、断定しすぎない範囲で振り返っています。"
             "性格診断・能力評価・将来予測ではありません。"
         )
 
@@ -15257,7 +15537,7 @@ def page_monthly(embedded=False):
     deleted_notice = st.session_state.pop("_monthly_video_deleted_notice", None)
     if deleted_notice:
         st.success(deleted_notice)
-    st.caption("保存した日記と本人の言葉を、まとまった期間ごとにつないで振り返ります。")
+    st.caption("保存した日記と写真ごとの喜怒哀楽を、まとまった期間ごとにつないで振り返ります。")
 
     recent = list_recent_diaries(limit=120)
     pending_rows = list_pending_photo_trips(limit=80)
@@ -15288,14 +15568,14 @@ def page_monthly(embedded=False):
     st.markdown(f"### {period_label}の振り返り")
     bundle = get_month_bundle(month_key)
     completed_count = len(bundle["diaries"])
-    commented_photo_count = sum(
+    emotion_selected_photo_count = sum(
         1
         for photo in bundle.get("photos", [])
-        if _conversation_has_child_words(_stored_photo_conversation(photo))
+        if photo_emotion_key(photo)
     )
-    st.write(f"この期間の日記：**{completed_count}回**　／　本人の言葉がある写真：**{commented_photo_count}枚**")
-    if completed_count == 0 and commented_photo_count == 0:
-        st.info("この期間には、まだ振り返りに使える本人の言葉がありません。")
+    st.write(f"この期間の日記：**{completed_count}回**　／　喜怒哀楽を選んだ写真：**{emotion_selected_photo_count}枚**")
+    if completed_count == 0 and emotion_selected_photo_count == 0:
+        st.info("この期間には、まだ振り返りに使える喜怒哀楽の記録がありません。")
         return
 
     saved = get_saved_monthly_review(month_key)
@@ -15308,7 +15588,7 @@ def page_monthly(embedded=False):
     if not review:
         if st.button("AIとこの期間を振り返る", type="primary", use_container_width=True):
             try:
-                with st.spinner("この期間の言葉をつないでいます…"):
+                with st.spinner("この期間の喜怒哀楽をつないでいます…"):
                     review = make_monthly_review(month_key, bundle)
                     save_monthly_review(month_key, review)
                 st.session_state[session_key] = review
@@ -15333,9 +15613,9 @@ def page_monthly(embedded=False):
     if not music_ready:
         # Older saved reviews may still contain quote-like summaries. Since the AI
         # comment is visible in the no-music state, upgrade it once to the insight format.
-        if int(review.get("_insight_version") or 0) < 2:
+        if int(review.get("_insight_version") or 0) < 3:
             try:
-                with st.spinner("本人の言葉から、短い気づきを作り直しています…"):
+                with st.spinner("写真の喜怒哀楽から、短い振り返りを作り直しています…"):
                     refreshed = make_monthly_review(month_key, bundle)
                     previous_playback = get_monthly_playback(review)
                     if previous_playback:
@@ -15366,7 +15646,7 @@ def page_monthly(embedded=False):
         ):
             try:
                 previous_playback = get_monthly_playback(review)
-                with st.spinner("この期間の言葉をつないでいます…"):
+                with st.spinner("この期間の喜怒哀楽をつないでいます…"):
                     refreshed = make_monthly_review(month_key, bundle)
                     if previous_playback:
                         refreshed["_playback"] = previous_playback
@@ -15476,9 +15756,9 @@ def page_monthly(embedded=False):
 
     if st.session_state.get(comments_open_key):
         # Upgrade legacy saved summaries only when the user asks to see AI comments.
-        if int(review.get("_insight_version") or 0) < 2:
+        if int(review.get("_insight_version") or 0) < 3:
             try:
-                with st.spinner("本人の言葉から、短い気づきを作り直しています…"):
+                with st.spinner("写真の喜怒哀楽から、短い振り返りを作り直しています…"):
                     refreshed = make_monthly_review(month_key, bundle)
                     previous_playback = get_monthly_playback(review)
                     if previous_playback:
@@ -15498,7 +15778,7 @@ def page_monthly(embedded=False):
         ):
             try:
                 previous_playback = get_monthly_playback(review)
-                with st.spinner("この期間の言葉をつないでいます…"):
+                with st.spinner("この期間の喜怒哀楽をつないでいます…"):
                     refreshed = make_monthly_review(month_key, bundle)
                     if previous_playback:
                         refreshed["_playback"] = previous_playback
@@ -15917,7 +16197,7 @@ def page_settings():
         st.write(f"これまでの評価：**Good {good_count}件** ／ **Bad {bad_count}件**")
         st.caption(
             "次回のAIまとめでは、この個人アカウントの直近Good最大3件を少しだけ参考にし、"
-            "Bad最大2件に近い書き方を少しだけ避けます。写真と本人コメント、基本ルールを常に優先します。"
+            "Bad最大2件に近い書き方を少しだけ避けます。写真と本人が選んだ喜怒哀楽、基本ルールを常に優先します。"
         )
         with st.expander("現在参考にしているGood / Badを見る"):
             good_examples = feedback_status.get("good_examples") or []
@@ -15989,14 +16269,14 @@ def page_settings():
         "動画は最大15秒です。録画を止めると確認画面を挟まず元動画を保管庫へ自動保存します。"
         "動画の保存完了と『いい瞬間』作成は切り分け、いい瞬間はバックグラウンドで処理するため、その間もアプリを操作できます。"
         "『いい瞬間』は保存済みの元動画を1秒間隔で元解像度のまま1回だけ切り出し、AI用には別の軽量コピーを使います。"
-        "AIが選ぶのは最大3枚で、利用者が見る画像は元動画由来の高画質フレームのみです。"
+        "AIが選ぶのは最大3枚で、利用者が見る画像は元動画由来の高画質フレームのみです。切り取った写真は日記画面でタップして喜・怒・哀・楽を選べます。"
         "初回はカメラとは別に位置情報の許可も求められます。位置情報がオフ・拒否・取得不能の場合は、"
         "ホームの地名表示（未登録なら『地名：登録なし（自動取得）』）を押して入力した内容を写真の場所として使います。"
     )
 
     st.divider()
     st.markdown("#### プロジェクトの考え方")
-    st.caption("写真の枚数や『便利・不便を見つけること』を課題にはしません。本人が気になったものを残し、本人コメントがある場合はその言葉も一緒に振り返ります。")
+    st.caption("写真の枚数を課題にはしません。本人が気になったものを残し、写真ごとに選んだ喜・怒・哀・楽を一緒に振り返ります。")
     st.caption(f"アプリビルド：{APP_BUILD}")
 
 # ============================================================
