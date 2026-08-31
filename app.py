@@ -30,7 +30,7 @@ import streamlit as st
 # Freshly generated update: 2026-08-31 23:49 JST
 GENERATED_UPDATE_JST = "2026-08-31T23:49:00+09:00"
 
-APP_BUILD = "v150"
+APP_BUILD = "v151"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -9618,7 +9618,15 @@ def build_monthly_replay_photo_items(bundle, limit=18):
         if place:
             label_bits.append(place)
         caption = " / ".join(label_bits) or f"写真{idx}"
-        items.append({"url": url, "caption": caption})
+        emotion = photo_emotion_meta(photo)
+        items.append({
+            "url": url,
+            "caption": caption,
+            "emotion": str(emotion.get("key") or ""),
+            "emotion_label": str(emotion.get("label") or ""),
+            "emotion_emoji": str(emotion.get("emoji") or ""),
+            "emotion_color": str(emotion.get("color") or ""),
+        })
     return items
 
 
@@ -9681,6 +9689,9 @@ def render_monthly_replay_player(period_label, review, playback, photo_items):
         overflow: hidden;
         border-radius: 22px;
         background: #0f172a;
+        border: 6px solid rgba(255,255,255,.16);
+        box-sizing: border-box;
+        transition: border-color .18s ease;
       }}
       .burari-replay-stage img {{
         width: 100%;
@@ -9710,8 +9721,26 @@ def render_monthly_replay_player(period_label, review, playback, photo_items):
         background: linear-gradient(180deg, rgba(0,0,0,0), rgba(0,0,0,.72));
         text-shadow: 0 1px 3px rgba(0,0,0,.45);
       }}
-      .burari-replay-caption {{ font-size: 13px; line-height: 1.45; }}
-      .burari-replay-progress {{ font-size: 12px; opacity: .86; margin-top: 4px; }}
+      .burari-replay-caption {{ font-size: 13px; line-height: 1.45; padding-right: 54px; }}
+      .burari-replay-progress {{ font-size: 12px; opacity: .86; margin-top: 4px; padding-right: 54px; }}
+      .burari-replay-emotion {{
+        position: absolute;
+        right: 13px;
+        bottom: 13px;
+        z-index: 6;
+        width: 42px;
+        height: 42px;
+        display: none;
+        align-items: center;
+        justify-content: center;
+        border-radius: 999px;
+        background: rgba(255,255,255,.92);
+        border: 2px solid rgba(255,255,255,.96);
+        box-shadow: 0 2px 10px rgba(0,0,0,.26);
+        font-size: 27px;
+        line-height: 1;
+        pointer-events: none;
+      }}
       .burari-replay-controls {{ display: flex; gap: .42rem; margin-top: .72rem; }}
       .burari-replay-controls button {{
         flex: 1;
@@ -9766,6 +9795,7 @@ def render_monthly_replay_player(period_label, review, playback, photo_items):
             <div class="burari-replay-caption" id="burariReplayCaption">{first_caption}</div>
             <div class="burari-replay-progress" id="burariReplayProgress">1 / {len(photo_items)}</div>
           </div>
+          <div class="burari-replay-emotion" id="burariReplayEmotion" aria-hidden="true"></div>
         </div>
         <div class="burari-replay-controls">
           <button id="burariReplayStart" type="button">▶ 再生</button>
@@ -9799,15 +9829,36 @@ def render_monthly_replay_player(period_label, review, playback, photo_items):
       let burariWaitingForRequestedPosition = false;
       let burariSlideLoopStarted = false;
       const burariImg = document.getElementById('burariReplayImage');
+      const burariStage = document.querySelector('.burari-replay-stage');
+      const burariEmotion = document.getElementById('burariReplayEmotion');
       const burariCaption = document.getElementById('burariReplayCaption');
       const burariProgress = document.getElementById('burariReplayProgress');
       const burariStatus = document.getElementById('burariReplayStatus');
+      const burariDefaultFrameColor = 'rgba(255,255,255,.16)';
+      const burariEmotionColors = {{
+        joy: '#F2C94C',
+        anger: '#E56B6F',
+        sadness: '#6C9BD2',
+        fun: '#6FBA9C',
+      }};
+      const burariEmotionIcons = {{ joy: '😊', anger: '😠', sadness: '😢', fun: '🎉' }};
 
       function burariShowSlide(index) {{
         if (!burariSlides.length) return;
         const safeIndex = ((index % burariSlides.length) + burariSlides.length) % burariSlides.length;
         const item = burariSlides[safeIndex] || {{}};
         if (item.url) burariImg.src = item.url;
+        const emotionKey = String(item.emotion || '');
+        const emotionColor = burariEmotionColors[emotionKey] || String(item.emotion_color || '') || burariDefaultFrameColor;
+        const emotionIcon = burariEmotionIcons[emotionKey] || String(item.emotion_emoji || '');
+        if (burariStage) burariStage.style.borderColor = emotionKey ? emotionColor : burariDefaultFrameColor;
+        if (burariEmotion) {{
+          burariEmotion.textContent = emotionIcon;
+          burariEmotion.style.display = emotionIcon ? 'flex' : 'none';
+          burariEmotion.style.borderColor = emotionKey ? emotionColor : 'rgba(255,255,255,.96)';
+          burariEmotion.setAttribute('aria-hidden', emotionIcon ? 'false' : 'true');
+          burariEmotion.title = emotionIcon ? `${{emotionIcon}} ${{item.emotion_label || ''}}` : '';
+        }}
         burariCaption.textContent = item.caption || '';
         burariProgress.textContent = `${{safeIndex + 1}} / ${{burariSlides.length}}`;
       }}
