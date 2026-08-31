@@ -153,7 +153,7 @@ HOME_TRAIN_LINES = [(theme["line_name"], key) for key, theme in HOME_ROUTE_THEME
 # Basic settings
 # ============================================================
 st.set_page_config(
-    page_title="東京ぶらり旅プロジェクト",
+    page_title="ぶらり旅",
     page_icon="📷",
     layout="centered",
     initial_sidebar_state="collapsed",
@@ -3764,81 +3764,174 @@ def require_family_pin():
                 _set_authenticated_family(default_family, default_member, persist=False)
                 return
 
-    st.title("📷 東京ぶらり旅プロジェクト")
-    st.caption("家族アカウントの中の、個人アカウントでログインしてください。")
+    login_theme = _home_theme_for_session()
+    login_accent = login_theme["accent"]
+    login_rgb1 = login_theme["accent_rgb"]
+    login_rgb2 = login_theme["accent2_rgb"]
+    train_line_name, train_uri = _home_train_for_session()
+    login_train_html = (
+        f'<div class="home-hero-train" title="{html.escape(train_line_name)}">'
+        f'<img src="{train_uri}" alt="{html.escape(train_line_name)}\u3092\u30a4\u30e1\u30fc\u30b8\u3057\u305f\u96fb\u8eca\u30a2\u30a4\u30b3\u30f3"></div>'
+        if train_uri
+        else ""
+    )
+    st.markdown(
+        f"""
+        <style>
+          .login-hero {{
+            margin-top: .06rem;
+            margin-bottom: .72rem;
+          }}
+          .login-hero .home-title-accent {{
+            color: color-mix(in srgb, {login_accent} 80%, rgba(31, 38, 48, .96) 20%);
+            text-shadow: 0 1px 0 rgba(255,255,255,.72);
+          }}
+          .st-key-login_panel {{
+            border: 1px solid rgba(128,128,128,.16);
+            border-radius: 22px;
+            padding: 1.00rem 1.05rem .72rem;
+            margin: 0 0 .65rem;
+            background:
+              radial-gradient(circle at 96% 0%, rgba({login_rgb2},.18), transparent 34%),
+              linear-gradient(155deg, rgba(255,255,255,.10), rgba({login_rgb1},.025));
+            box-shadow: 0 10px 28px rgba(30,58,95,.045);
+          }}
+          .login-welcome {{
+            text-align: center;
+            font-size: 1.12rem;
+            line-height: 1.45;
+            font-weight: 850;
+            letter-spacing: .01em;
+            margin: .04rem 0 .20rem;
+          }}
+          .login-guide {{
+            text-align: center;
+            font-size: .84rem;
+            line-height: 1.55;
+            opacity: .66;
+            margin: 0 0 .78rem;
+          }}
+          .st-key-login_panel div[data-baseweb="input"] > div {{
+            border-radius: 14px !important;
+          }}
+          .st-key-login_panel div.stButton > button {{
+            min-height: 3.35rem !important;
+            border-radius: 16px !important;
+          }}
+          .st-key-login_panel div.stButton > button[kind="primary"],
+          .st-key-login_panel button[kind="primary"] {{
+            border-color: {login_accent} !important;
+            background: linear-gradient(145deg, rgba({login_rgb1},.98), rgba({login_rgb1},.82)) !important;
+            box-shadow: 0 8px 18px rgba({login_rgb1},.18) !important;
+          }}
+          @media (max-width: 640px) {{
+            .login-hero {{ margin-bottom: .58rem; }}
+            .st-key-login_panel {{
+              border-radius: 18px;
+              padding: .78rem .78rem .54rem;
+            }}
+            .login-welcome {{ font-size: 1.03rem; }}
+            .login-guide {{ font-size: .79rem; margin-bottom: .58rem; }}
+          }}
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        f"""
+        <div class="home-hero login-hero">
+          <div class="home-hero-inner">
+            <div class="home-hero-copy">
+              <div class="home-eyebrow">BURARI</div>
+              <div class="home-title"><span class="home-title-accent">\u3076\u3089\u308a</span>\u65c5</div>
+              <div class="home-tagline">\u601d\u3063\u305f\u3002\u611f\u3058\u305f\u3002\u3092\u305d\u306e\u307e\u307e\u6b8b\u305d\u3046</div>
+            </div>
+            {login_train_html}
+          </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
-    failures = int(st.session_state.get("_family_pin_failures", 0))
-    locked_until = float(st.session_state.get("_family_pin_locked_until", 0.0))
-    now = time.time()
-    if locked_until > now:
-        st.warning(f"入力回数が多いため、あと{max(1, int(locked_until - now))}秒ほど待ってください。")
-        st.stop()
+    with st.container(key="login_panel"):
+        st.markdown('<div class="login-welcome">\u3076\u3089\u308a\u65c5\u3078\u3088\u3046\u3053\u305d</div>', unsafe_allow_html=True)
+        st.markdown(
+            '<div class="login-guide">\u5bb6\u65cf\u30a2\u30ab\u30a6\u30f3\u30c8\u306e\u4e2d\u306e\u3001\u500b\u4eba\u30a2\u30ab\u30a6\u30f3\u30c8\u3067\u30ed\u30b0\u30a4\u30f3\u3057\u3066\u304f\u3060\u3055\u3044\u3002</div>',
+            unsafe_allow_html=True,
+        )
 
-    family_key = st.text_input(
-        "家族ID",
-        value=str(st.session_state.get("_last_family_key") or "default"),
-        max_chars=32,
-        key="_family_account_input",
-        autocomplete="organization",
-    )
-    member_key = st.text_input(
-        "個人ID",
-        value=str(st.session_state.get("_last_member_key") or "main"),
-        max_chars=32,
-        key="_member_account_input",
-        autocomplete="username",
-    )
-    entered = st.text_input(
-        "個人のあいことば",
-        type="password",
-        max_chars=64,
-        key="_family_pin_input",
-        autocomplete="current-password",
-    )
-    if st.button("はいる", type="primary", use_container_width=True):
-        try:
-            normalized_family = _normalize_family_key(family_key)
-            normalized_member = _normalize_member_key(member_key)
-            st.session_state["_last_family_key"] = normalized_family
-            st.session_state["_last_member_key"] = normalized_member
-            member = get_member_account(normalized_family, normalized_member)
-            family = {"family_key": normalized_family} if member else None
-            if normalized_family == "default" and normalized_member == "main" and not member:
-                # Bootstrap only on the rare first login to a brand-new/legacy install,
-                # instead of paying these checks on every normal app load.
-                ensure_default_family_account()
-                ensure_default_member_account()
+        failures = int(st.session_state.get("_family_pin_failures", 0))
+        locked_until = float(st.session_state.get("_family_pin_locked_until", 0.0))
+        now = time.time()
+        if locked_until > now:
+            st.warning(f"\u5165\u529b\u56de\u6570\u304c\u591a\u3044\u305f\u3081\u3001\u3042\u3068{max(1, int(locked_until - now))}\u79d2\u307b\u3069\u5f85\u3063\u3066\u304f\u3060\u3055\u3044\u3002")
+            st.stop()
+
+        family_key = st.text_input(
+            "\u5bb6\u65cfID",
+            value=str(st.session_state.get("_last_family_key") or "default"),
+            max_chars=32,
+            key="_family_account_input",
+            autocomplete="organization",
+        )
+        member_key = st.text_input(
+            "\u500b\u4ebaID",
+            value=str(st.session_state.get("_last_member_key") or "main"),
+            max_chars=32,
+            key="_member_account_input",
+            autocomplete="username",
+        )
+        entered = st.text_input(
+            "\u500b\u4eba\u306e\u3042\u3044\u3053\u3068\u3070",
+            type="password",
+            max_chars=64,
+            key="_family_pin_input",
+            autocomplete="current-password",
+        )
+        if st.button("\u306f\u3044\u308b", type="primary", use_container_width=True, key="login_enter_button"):
+            try:
+                normalized_family = _normalize_family_key(family_key)
+                normalized_member = _normalize_member_key(member_key)
+                st.session_state["_last_family_key"] = normalized_family
+                st.session_state["_last_member_key"] = normalized_member
                 member = get_member_account(normalized_family, normalized_member)
                 family = {"family_key": normalized_family} if member else None
-        except Exception:
-            family = None
-            member = None
+                if normalized_family == "default" and normalized_member == "main" and not member:
+                    # Bootstrap only on the rare first login to a brand-new/legacy install,
+                    # instead of paying these checks on every normal app load.
+                    ensure_default_family_account()
+                    ensure_default_member_account()
+                    member = get_member_account(normalized_family, normalized_member)
+                    family = {"family_key": normalized_family} if member else None
+            except Exception:
+                family = None
+                member = None
 
-        valid = False
-        if member:
-            expected = str(member.get("pin_hash") or "")
-            if expected:
-                salt = str(member.get("pin_salt") or "")
-                actual = _family_pin_hash(entered.strip(), salt) if entered else ""
-                valid = bool(actual and hmac.compare_digest(actual, expected))
+            valid = False
+            if member:
+                expected = str(member.get("pin_hash") or "")
+                if expected:
+                    salt = str(member.get("pin_salt") or "")
+                    actual = _family_pin_hash(entered.strip(), salt) if entered else ""
+                    valid = bool(actual and hmac.compare_digest(actual, expected))
+                else:
+                    valid = not entered
+
+            if valid:
+                _set_authenticated_family(family, member, persist=True)
+                # Never reopen another person's recent camera session after switching accounts.
+                st.session_state["_browser_last_camera_open_at"] = 0
+                st.session_state["_browser_last_camera_mode"] = ""
+                st.rerun()
+
+            failures += 1
+            if failures >= 5:
+                st.session_state["_family_pin_failures"] = 0
+                st.session_state["_family_pin_locked_until"] = time.time() + 60
+                st.error("\u5165\u529b\u56de\u6570\u304c\u591a\u3044\u305f\u3081\u30011\u5206\u307b\u3069\u5f85\u3063\u3066\u304b\u3089\u3082\u3046\u4e00\u5ea6\u8a66\u3057\u3066\u304f\u3060\u3055\u3044\u3002")
             else:
-                valid = not entered
-
-        if valid:
-            _set_authenticated_family(family, member, persist=True)
-            # Never reopen another person's recent camera session after switching accounts.
-            st.session_state["_browser_last_camera_open_at"] = 0
-            st.session_state["_browser_last_camera_mode"] = ""
-            st.rerun()
-
-        failures += 1
-        if failures >= 5:
-            st.session_state["_family_pin_failures"] = 0
-            st.session_state["_family_pin_locked_until"] = time.time() + 60
-            st.error("入力回数が多いため、1分ほど待ってからもう一度試してください。")
-        else:
-            st.session_state["_family_pin_failures"] = failures
-            st.error("家族ID・個人ID・あいことばのいずれかが違います。")
+                st.session_state["_family_pin_failures"] = failures
+                st.error("\u5bb6\u65cfID\u30fb\u500b\u4ebaID\u30fb\u3042\u3044\u3053\u3068\u3070\u306e\u3044\u305a\u308c\u304b\u304c\u9055\u3044\u307e\u3059\u3002")
     st.stop()
 
 # ============================================================
