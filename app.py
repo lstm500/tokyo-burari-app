@@ -27,7 +27,8 @@ from zoneinfo import ZoneInfo
 
 import streamlit as st
 
-APP_BUILD = "v145"
+APP_BUILD = "v146"
+APP_BASE_BUILD = "v144"  # 30-second change applied on top of the latest full-feature build.
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -679,9 +680,9 @@ except Exception:
 VIDEO_MAX_SECONDS = 30
 VIDEO_PROCESSING_MAX_SECONDS = 35
 # v142 quality-first source recording. Never lower source quality merely to satisfy
-# an app-side file cap. 18 MiB fits a 15-second 1080p recording at up to ~8 Mbps
-# plus audio/container overhead while remaining below the recommended 20 MiB bucket cap.
-VIDEO_MAX_BYTES = 40 * 1024 * 1024
+# an app-side file cap. 36 MiB reserves one 30-second 1080p recording at up to ~8 Mbps plus audio/container overhead.
+# This intentionally preserves source quality; the Supabase bucket per-file limit must be at least 40 MiB.
+VIDEO_MAX_BYTES = 36 * 1024 * 1024
 VIDEO_AI_MAX_SELECTIONS = 9
 VIDEO_AI_SAMPLE_INTERVAL_MS = 100
 VIDEO_AI_MAX_CANDIDATES = 300
@@ -1450,7 +1451,7 @@ export default function(component) {
 
 
   const buildCandidateSheet = async (frames) => {
-    const source = Array.isArray(frames) ? frames.slice(0, 300) : [];
+    const source = Array.isArray(frames) ? frames.slice(0, 150) : [];
     if (!source.length) return null;
     const loaded = [];
     for (const frame of source) {
@@ -1686,7 +1687,7 @@ export default function(component) {
       const frames = [];
 
       for (let i = 0; i < sampleCount; i += 1) {
-        // Exact 0.1-second timeline positions: 0.0, 0.1, 0.2 ... up to 29.9s.
+        // Exact 0.1-second timeline positions: 0.0, 0.1, 0.2 ... up to 14.9s.
         const seconds = Math.min(Math.max(0, measuredDuration - 0.02), i / 10);
         try {
           await seekVideoFrame(probe, Math.min(Math.max(0, measuredDuration - 0.02), seconds));
@@ -5434,7 +5435,7 @@ def upload_video(
     if not video_bytes:
         raise ValueError("動画データが空です。")
     # MediaRecorder.onstop may fire after the actual recording has already stopped.
-    # The browser caps recording at 15 seconds, so do not reject a valid video based
+    # The browser caps recording at 30 seconds, so do not reject a valid video based
     # on wall-clock delay between recorder.stop() and the onstop callback.
     duration_value = min(
         VIDEO_PROCESSING_MAX_SECONDS * 1000,
@@ -5773,7 +5774,7 @@ def choose_video_ai_frames(
         )
 
     # Stage 1: every 0.1-second frame is shown to AI. Batches are an API payload
-    # boundary only. v132 runs up to three batches concurrently so 300-frame
+    # boundary only. v132 runs up to three batches concurrently so 150-frame
     # analysis does not spend six request latencies back-to-back.
     coarse_records = []
     if len(frames) > VIDEO_AI_BATCH_SIZE:
@@ -6515,11 +6516,11 @@ def _background_extract_video_candidate_frames(client, photo):
                 command,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                timeout=45,
+                timeout=90,
                 check=False,
             )
         except subprocess.TimeoutExpired as exc:
-            raise RuntimeError("元動画から高画質候補を作る処理が45秒でタイムアウトしました。") from exc
+            raise RuntimeError("元動画から高画質候補を作る処理が90秒でタイムアウトしました。") from exc
 
         files = sorted(Path(tmpdir).glob("frame_*.png"))[:target_count]
         if completed.returncode != 0 and not files:
