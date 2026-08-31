@@ -30,7 +30,7 @@ import streamlit as st
 # Freshly generated update: 2026-08-31 23:49 JST
 GENERATED_UPDATE_JST = "2026-08-31T23:49:00+09:00"
 
-APP_BUILD = "v149"
+APP_BUILD = "v150"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -753,8 +753,12 @@ _LIVE_CAMERA_HTML = """
       <button id="camera-review-retry" class="camera-retry-button" type="button">撮りなおす／選びなおす</button>
     </div>
     <button id="camera-review-find-moments" class="camera-find-button" type="button" hidden>✨ いい瞬間を探す</button>
-    <div id="camera-review-build" class="camera-review-build" hidden>camera v105</div>
-    <img id="camera-review-image" class="camera-review-image" alt="撮影した写真の確認" />
+    <div id="camera-review-build" class="camera-review-build" hidden>camera v150</div>
+    <div id="camera-review-emotion-hint" class="camera-review-emotion-hint" hidden>写真をタップ：未設定 → 😊喜 → 😠怒 → 😢哀 → 🎉楽 → 未設定</div>
+    <div id="camera-review-image-shell" class="camera-review-image-shell" role="button" tabindex="0" aria-label="写真の気持ちを選ぶ" hidden>
+      <img id="camera-review-image" class="camera-review-image" alt="撮影した写真の確認" />
+      <span id="camera-review-emotion-badge" class="camera-review-emotion-badge" hidden></span>
+    </div>
     <video id="camera-review-video" class="camera-review-video" playsinline controls hidden></video>
   </div>
 
@@ -775,6 +779,8 @@ _LIVE_CAMERA_CSS = """
 .live-camera-video[hidden],
 .camera-review[hidden],
 .camera-review-image[hidden],
+.camera-review-image-shell[hidden],
+.camera-review-emotion-hint[hidden],
 .camera-review-video[hidden],
 .camera-find-button[hidden],
 .camera-review-build[hidden],
@@ -843,6 +849,57 @@ _LIVE_CAMERA_CSS = """
   border-radius: 16px;
   background: #000;
   margin: 0;
+}
+.camera-review-image-shell {
+  position: relative;
+  width: 100%;
+  box-sizing: border-box;
+  border: 4px solid #AEB6C2;
+  border-radius: 19px;
+  padding: 3px;
+  background: rgba(174,182,194,.07);
+  cursor: pointer;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+  outline: none;
+}
+.camera-review-image-shell:focus-visible {
+  box-shadow: 0 0 0 3px rgba(59,130,246,.20);
+}
+.camera-review-image-shell .camera-review-image {
+  display: block;
+  margin: 0;
+  border-radius: 12px;
+}
+.camera-review-emotion-badge {
+  position: absolute;
+  right: 11px;
+  bottom: 11px;
+  z-index: 3;
+  min-width: 34px;
+  height: 34px;
+  padding: 0 6px;
+  box-sizing: border-box;
+  border-radius: 999px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(255,255,255,.92);
+  border: 1px solid rgba(17,24,39,.10);
+  box-shadow: 0 2px 8px rgba(0,0,0,.16);
+  font-size: 22px;
+  line-height: 1;
+  pointer-events: none;
+}
+.camera-review-emotion-badge[hidden] { display: none !important; }
+.camera-review-emotion-hint {
+  margin: 2px 0 8px;
+  padding: 7px 9px;
+  border-radius: 10px;
+  background: rgba(128,128,128,.06);
+  font-size: 12px;
+  line-height: 1.35;
+  text-align: center;
 }
 .camera-review-video { object-fit: contain; }
 .camera-active-actions,
@@ -959,7 +1016,10 @@ export default function(component) {
   const stopButton = parentElement.querySelector('#live-camera-stop');
   const recordingStatus = parentElement.querySelector('#camera-recording-status');
   const review = parentElement.querySelector('#camera-review');
+  const reviewImageShell = parentElement.querySelector('#camera-review-image-shell');
   const reviewImage = parentElement.querySelector('#camera-review-image');
+  const reviewEmotionBadge = parentElement.querySelector('#camera-review-emotion-badge');
+  const reviewEmotionHint = parentElement.querySelector('#camera-review-emotion-hint');
   const reviewVideo = parentElement.querySelector('#camera-review-video');
   const reviewSave = parentElement.querySelector('#camera-review-save');
   const reviewRetry = parentElement.querySelector('#camera-review-retry');
@@ -993,6 +1053,41 @@ export default function(component) {
   let cameraMode = 'photo';
   let pendingMedia = null;
   let pendingVideoBlob = null;
+  const PHOTO_EMOTION_ORDER = ['', 'joy', 'anger', 'sadness', 'fun'];
+  const PHOTO_EMOTIONS = {
+    joy: { emoji: '😊', color: '#F2C94C', label: '喜' },
+    anger: { emoji: '😠', color: '#E56B6F', label: '怒' },
+    sadness: { emoji: '😢', color: '#6C9BD2', label: '哀' },
+    fun: { emoji: '🎉', color: '#6FBA9C', label: '楽' }
+  };
+  let pendingEmotion = '';
+  const normalizeEmotion = (value) => Object.prototype.hasOwnProperty.call(PHOTO_EMOTIONS, String(value || '')) ? String(value || '') : '';
+  const syncReviewEmotion = () => {
+    const key = normalizeEmotion(pendingEmotion);
+    const meta = PHOTO_EMOTIONS[key] || null;
+    if (reviewImageShell) {
+      reviewImageShell.style.borderColor = meta ? meta.color : '#AEB6C2';
+      reviewImageShell.style.background = meta ? `${meta.color}18` : 'rgba(174,182,194,.07)';
+      reviewImageShell.setAttribute('aria-label', meta ? `写真の気持ち：${meta.label}。タップして次へ` : '写真の気持ち：未設定。タップして喜を選ぶ');
+    }
+    if (reviewEmotionBadge) {
+      reviewEmotionBadge.textContent = meta ? meta.emoji : '';
+      reviewEmotionBadge.hidden = !meta;
+    }
+  };
+  const cycleReviewEmotion = () => {
+    if (!pendingMedia || pendingMedia.kind !== 'photo' || !reviewImageShell || reviewImageShell.hidden) return;
+    const current = normalizeEmotion(pendingEmotion);
+    const currentIndex = Math.max(0, PHOTO_EMOTION_ORDER.indexOf(current));
+    pendingEmotion = PHOTO_EMOTION_ORDER[(currentIndex + 1) % PHOTO_EMOTION_ORDER.length];
+    pendingMedia.emotion = pendingEmotion;
+    syncReviewEmotion();
+  };
+  const onReviewEmotionKeydown = (event) => {
+    if (event.key !== 'Enter' && event.key !== ' ') return;
+    event.preventDefault();
+    cycleReviewEmotion();
+  };
   let reviewVideoUrl = '';
   let mediaRecorder = null;
   let recordedChunks = [];
@@ -1084,10 +1179,14 @@ export default function(component) {
   const hideReview = () => {
     disarmGoodMomentsButton();
     if (review) review.hidden = true;
+    if (reviewImageShell) reviewImageShell.hidden = true;
+    if (reviewEmotionHint) reviewEmotionHint.hidden = true;
     if (reviewImage) {
       reviewImage.hidden = true;
       reviewImage.removeAttribute('src');
     }
+    pendingEmotion = '';
+    syncReviewEmotion();
     if (reviewVideo) {
       try { reviewVideo.pause(); } catch (_) {}
       reviewVideo.hidden = true;
@@ -1125,10 +1224,14 @@ export default function(component) {
     if (activeActions) activeActions.hidden = true;
     if (video) video.hidden = true;
     hideReview();
+    pendingEmotion = normalizeEmotion(pendingMedia?.emotion);
     if (reviewImage) {
       reviewImage.src = dataUrl;
       reviewImage.hidden = false;
     }
+    if (reviewImageShell) reviewImageShell.hidden = false;
+    if (reviewEmotionHint) reviewEmotionHint.hidden = false;
+    syncReviewEmotion();
     reviewSave.textContent = 'この写真を残す';
     reviewRetry.textContent = '撮りなおす／選びなおす';
     if (reviewFindMoments) reviewFindMoments.hidden = true;
@@ -1619,7 +1722,8 @@ export default function(component) {
         name: 'camera.jpg',
         source: 'camera',
         captured_at: capturedAt,
-        location
+        location,
+        emotion: ''
       };
       showPhotoReview(dataUrl);
       setStatus('');
@@ -1845,6 +1949,7 @@ export default function(component) {
         name: file.name || 'gallery.jpg',
         source: 'gallery',
         captured_at: new Date().toISOString(),
+        emotion: '',
         location: {
           ok: false,
           error_code: 'GALLERY',
@@ -1984,6 +2089,8 @@ export default function(component) {
   galleryInput.addEventListener('change', chooseGalleryPhoto);
   reviewSave.addEventListener('click', savePendingMedia);
   reviewRetry.addEventListener('click', retryPendingMedia);
+  reviewImageShell?.addEventListener('click', cycleReviewEmotion);
+  reviewImageShell?.addEventListener('keydown', onReviewEmotionKeydown);
   reviewFindMoments?.addEventListener('click', findGoodMoments);
 
   if (data?.auto_start_mode === 'video') {
@@ -2001,6 +2108,8 @@ export default function(component) {
     galleryInput.removeEventListener('change', chooseGalleryPhoto);
     reviewSave.removeEventListener('click', savePendingMedia);
     reviewRetry.removeEventListener('click', retryPendingMedia);
+    reviewImageShell?.removeEventListener('click', cycleReviewEmotion);
+    reviewImageShell?.removeEventListener('keydown', onReviewEmotionKeydown);
     reviewFindMoments?.removeEventListener('click', findGoodMoments);
     clearGoodMomentsRevealTimer();
     stopStream();
@@ -2009,11 +2118,11 @@ export default function(component) {
 }
 """
 
-LIVE_CAMERA_COMPONENT_BUILD = "v147"
+LIVE_CAMERA_COMPONENT_BUILD = "v150"
 
 try:
     live_camera_component = st.components.v2.component(
-        "tokyo_burari_live_camera_v147",
+        "tokyo_burari_live_camera_v150",
         html=_LIVE_CAMERA_HTML,
         css=_LIVE_CAMERA_CSS,
         js=_LIVE_CAMERA_JS,
@@ -2498,6 +2607,22 @@ def photo_emotion_meta(photo_or_key):
     return meta
 
 
+def photo_emotion_record(emotion_key, source="child_tap_cycle_v150"):
+    """Return the persisted reflection_json payload for one 喜怒哀楽 choice."""
+    emotion_key = normalize_photo_emotion_key(emotion_key)
+    if not emotion_key:
+        return None
+    meta = PHOTO_EMOTIONS[emotion_key]
+    return {
+        "key": emotion_key,
+        "label": meta["label"],
+        "emoji": meta["emoji"],
+        "color": meta["color"],
+        "updated_at": now_jst().isoformat(),
+        "source": str(source or "child_tap_cycle_v150"),
+    }
+
+
 def next_photo_emotion_key(current):
     current = normalize_photo_emotion_key(current)
     cycle = ("",) + PHOTO_EMOTION_ORDER
@@ -2584,15 +2709,7 @@ def update_photo_emotion(photo_id, emotion_key, trip_id=None):
         reflection = {}
 
     if emotion_key:
-        meta = PHOTO_EMOTIONS[emotion_key]
-        reflection["emotion"] = {
-            "key": emotion_key,
-            "label": meta["label"],
-            "emoji": meta["emoji"],
-            "color": meta["color"],
-            "updated_at": now_jst().isoformat(),
-            "source": "child_tap_cycle_v149",
-        }
+        reflection["emotion"] = photo_emotion_record(emotion_key, source="child_tap_cycle_v150")
     else:
         reflection.pop("emotion", None)
 
@@ -7435,6 +7552,67 @@ def record_video_ai_human_choices(video_photo, selected_ranks):
     return updated
 
 
+def update_video_ai_selection_emotion(video_photo, rank, emotion_key):
+    """Persist one 喜怒哀楽 choice on an AI-selected video still.
+
+    The choice lives on the source video's ai_selection item until/after that still is
+    copied into the normal photo collection. If a saved_photo_id already exists, keep
+    that photo's emotion in sync as well.
+    """
+    if not isinstance(video_photo, dict) or not video_photo.get("id") or not photo_is_video(video_photo):
+        raise ValueError("動画が見つかりません。")
+    rank = int(rank or 0)
+    if rank <= 0:
+        raise ValueError("写真の番号を確認できませんでした。")
+    emotion_key = normalize_photo_emotion_key(emotion_key)
+
+    client = supabase_client()
+    current = (
+        client.table(PHOTO_TABLE)
+        .select("*")
+        .eq("id", video_photo.get("id"))
+        .eq("family_key", current_family_key())
+        .eq("member_key", current_member_key())
+        .limit(1)
+        .execute()
+    )
+    fresh = (current.data or [None])[0] or video_photo
+    reflection = dict(photo_media_metadata(fresh))
+    selection = reflection.get("ai_selection") or {}
+    if not isinstance(selection, dict):
+        selection = {}
+    items = [item for item in (selection.get("items") or []) if isinstance(item, dict)]
+    target = None
+    for item in items:
+        if int(item.get("rank") or 0) == rank:
+            target = item
+            break
+    if target is None:
+        raise ValueError("感情を設定する切り取り写真が見つかりませんでした。")
+
+    if emotion_key:
+        target["emotion"] = photo_emotion_record(emotion_key, source="child_tap_moments_v150")
+    else:
+        target.pop("emotion", None)
+    saved_photo_id = str(target.get("saved_photo_id") or "").strip()
+    selection["items"] = items
+    selection["updated_at"] = now_jst().isoformat()
+    reflection["ai_selection"] = selection
+    _write_photo_reflection(video_photo.get("id"), reflection)
+
+    # If this cutout has already been copied to the normal photo collection,
+    # update that row too so Diary/Review always show the same border/icon.
+    if saved_photo_id:
+        try:
+            update_photo_emotion(saved_photo_id, emotion_key, trip_id=fresh.get("trip_id"))
+        except Exception:
+            pass
+
+    updated = dict(fresh)
+    updated["reflection_json"] = reflection
+    return updated
+
+
 def record_video_ai_no_choice(video_photo):
     """Mark a video reviewed with no stills kept, and learn a weak negative signal."""
     if not isinstance(video_photo, dict) or not video_photo.get("id") or not photo_is_video(video_photo):
@@ -7670,20 +7848,27 @@ def save_video_ai_selection_as_photo(video_photo, selection_item):
     raw = download_photo(source_path)
     reflection = photo_media_metadata(video_photo)
     location = reflection.get("location") if isinstance(reflection.get("location"), dict) else {}
+    selection_emotion = normalize_photo_emotion_key(selection_item.get("emotion"))
+    extra_reflection = {
+        "source_video_photo_id": str(video_photo.get("id") or ""),
+        "source_selection_rank": rank,
+        "source_selection_timestamp_ms": int(selection_item.get("timestamp_ms") or 0),
+        "source_selection_quality": str(selection_item.get("primary_quality") or "other"),
+        "source_selection_reason": str(selection_item.get("reason") or "").strip()[:120],
+        "human_selected_from_video": True,
+    }
+    if selection_emotion:
+        extra_reflection["emotion"] = photo_emotion_record(
+            selection_emotion,
+            source="child_tap_moments_v150",
+        )
     saved = upload_photo(
         video_photo.get("trip_id"),
         raw,
         location=location,
         captured_at=_selection_capture_time(video_photo, selection_item.get("timestamp_ms")),
         capture_source="video_ai_selection",
-        extra_reflection={
-            "source_video_photo_id": str(video_photo.get("id") or ""),
-            "source_selection_rank": rank,
-            "source_selection_timestamp_ms": int(selection_item.get("timestamp_ms") or 0),
-            "source_selection_quality": str(selection_item.get("primary_quality") or "other"),
-            "source_selection_reason": str(selection_item.get("reason") or "").strip()[:120],
-            "human_selected_from_video": True,
-        },
+        extra_reflection=extra_reflection,
     )
     saved_id = str((saved or {}).get("id") or "")
     if not saved_id:
@@ -13190,6 +13375,27 @@ _MOMENTS_SELECT_CSS = """
   background: #F59E0B;
   font-size: 9px;
 }
+.moments-emotion-badge {
+  position: absolute;
+  z-index: 3;
+  right: 6px;
+  bottom: 6px;
+  min-width: 28px;
+  height: 28px;
+  padding: 0 5px;
+  box-sizing: border-box;
+  border-radius: 999px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(255,255,255,.92);
+  border: 1px solid rgba(17,24,39,.10);
+  box-shadow: 0 2px 7px rgba(0,0,0,.18);
+  font-size: 18px;
+  line-height: 1;
+  pointer-events: none;
+}
+.moments-emotion-badge[hidden] { display: none !important; }
 .moments-select-meta {
   margin-top: 5px;
   font-size: 10px;
@@ -13281,6 +13487,13 @@ _MOMENTS_SELECT_CSS = """
   padding: 7px 11px;
   font-size: 12px;
 }
+.moments-select-card.large-card .moments-emotion-badge {
+  right: 12px;
+  bottom: 12px;
+  min-width: 38px;
+  height: 38px;
+  font-size: 25px;
+}
 .moments-select-card.large-card .moments-select-meta {
   margin-top: 8px;
   font-size: 14px;
@@ -13330,14 +13543,30 @@ export default function(component) {
       .map((value) => Number(value))
       .filter((value) => Number.isFinite(value) && value > 0)
   );
+  const emotionOrder = ['', 'joy', 'anger', 'sadness', 'fun'];
+  const emotionMeta = {
+    joy: { emoji: '😊', color: '#F2C94C', label: '喜' },
+    anger: { emoji: '😠', color: '#E56B6F', label: '怒' },
+    sadness: { emoji: '😢', color: '#6C9BD2', label: '哀' },
+    fun: { emoji: '🎉', color: '#6FBA9C', label: '楽' }
+  };
+  const normalizeEmotion = (value) => Object.prototype.hasOwnProperty.call(emotionMeta, String(value || '')) ? String(value || '') : '';
+  const emotions = new Map();
 
   const rankFor = (photo, index) => Number(photo?.rank || (index + 1));
+  for (let index = 0; index < photos.length; index += 1) {
+    const rank = rankFor(photos[index], index);
+    if (Number.isFinite(rank) && rank > 0) emotions.set(rank, normalizeEmotion(photos[index]?.emotion));
+  }
   const validRanks = photos.map(rankFor).filter((value) => Number.isFinite(value) && value > 0);
   let activeRank = Number(data?.active_rank || 0);
   if (!validRanks.includes(activeRank)) activeRank = validRanks.length ? validRanks[0] : 0;
 
   const emitSelection = () => {
     setTriggerValue('selected_ranks', Array.from(selected).sort((a, b) => a - b));
+  };
+  const emitEmotion = (rank, emotion) => {
+    setTriggerValue('emotion_change', { rank, emotion, nonce: `${Date.now()}_${Math.random()}` });
   };
   const emitActive = (rank) => {
     if (Number.isFinite(rank) && rank > 0) setTriggerValue('active_rank', rank);
@@ -13349,7 +13578,6 @@ export default function(component) {
     button.type = 'button';
     button.className = large ? 'moments-select-card large-card' : 'moments-select-card';
     button.disabled = disabled;
-    button.setAttribute('aria-label', `写真${rank}を${selected.has(rank) ? '選択解除' : '選択'}`);
 
     const imageWrap = document.createElement('div');
     imageWrap.className = 'moments-select-image-wrap';
@@ -13374,6 +13602,10 @@ export default function(component) {
     pickedBadge.textContent = '選択中';
     imageWrap.appendChild(pickedBadge);
 
+    const emotionBadge = document.createElement('div');
+    emotionBadge.className = 'moments-emotion-badge';
+    imageWrap.appendChild(emotionBadge);
+
     const meta = document.createElement('div');
     meta.className = 'moments-select-meta';
     meta.textContent = String(photo?.meta || '');
@@ -13383,11 +13615,29 @@ export default function(component) {
     reason.textContent = String(photo?.reason || '');
 
     const syncVisual = () => {
+      const emotion = normalizeEmotion(emotions.get(rank));
+      const eMeta = emotionMeta[emotion] || null;
       const active = selected.has(rank);
-      button.classList.toggle('selected', active);
-      pickedBadge.style.display = active ? 'block' : 'none';
+      button.classList.toggle('selected', active && !eMeta);
+      if (eMeta) {
+        button.style.borderColor = eMeta.color;
+        button.style.background = `${eMeta.color}1F`;
+        button.style.boxShadow = `0 0 0 2px ${eMeta.color}24`;
+      } else {
+        button.style.borderColor = '';
+        button.style.background = '';
+        button.style.boxShadow = '';
+      }
+      pickedBadge.style.display = active && !eMeta ? 'block' : 'none';
+      emotionBadge.textContent = eMeta ? eMeta.emoji : '';
+      emotionBadge.hidden = !eMeta;
       button.setAttribute('aria-pressed', active ? 'true' : 'false');
-      button.setAttribute('aria-label', `写真${rank}を${active ? '選択解除' : '選択'}`);
+      button.setAttribute(
+        'aria-label',
+        eMeta
+          ? `写真${rank}の気持ち：${eMeta.label}。タップして次の気持ちへ`
+          : `写真${rank}の気持ち：未設定。タップして喜を選ぶ`
+      );
     };
 
     syncVisual();
@@ -13397,9 +13647,14 @@ export default function(component) {
 
     if (!disabled) {
       button.addEventListener('click', () => {
-        if (selected.has(rank)) selected.delete(rank);
-        else selected.add(rank);
+        const current = normalizeEmotion(emotions.get(rank));
+        const currentIndex = Math.max(0, emotionOrder.indexOf(current));
+        const next = emotionOrder[(currentIndex + 1) % emotionOrder.length];
+        emotions.set(rank, next);
+        if (next) selected.add(rank);
+        else selected.delete(rank);
         syncVisual();
+        emitEmotion(rank, next);
         emitSelection();
       });
     }
@@ -13451,7 +13706,7 @@ export default function(component) {
 
     const hint = document.createElement('div');
     hint.className = 'moments-enlarge-hint';
-    hint.textContent = '写真をタップすると選択／解除できます';
+    hint.textContent = '写真をタップ：未設定 → 😊喜 → 😠怒 → 😢哀 → 🎉楽 → 未設定';
     shell.appendChild(hint);
     grid.appendChild(shell);
     return;
@@ -13481,7 +13736,7 @@ def _get_moments_select_component():
     _moments_select_component_initialized = True
     try:
         moments_select_component = st.components.v2.component(
-            "tokyo_burari_moments_select_v148",
+            "tokyo_burari_moments_select_v150",
             html=_MOMENTS_SELECT_HTML,
             css=_MOMENTS_SELECT_CSS,
             js=_MOMENTS_SELECT_JS,
@@ -13618,13 +13873,13 @@ def _render_moments_picker(photo, index, view_mode="list"):
         return
 
     st.caption(
-        f"AIが映えを重視して最大{VIDEO_AI_MAX_SELECTIONS}枚を選んでいます。3枚から気に入った写真を選べます。"
-        "選んだ結果は、次回以降のAIセレクションにも軽く反映されます。"
+        f"AIが映えを重視して最大{VIDEO_AI_MAX_SELECTIONS}枚を選んでいます。写真をタップして喜怒哀楽を付けられます。"
+        "感情を付けた写真が残す対象になり、その結果は次回以降のAIセレクションにも軽く反映されます。"
     )
     if status == "reviewed":
         st.info(
-            "確認済みの動画も、写真をタップして再度選択できます。"
-            "すでに日記へ残した写真は自動削除せず、新しく選んだ写真を追加で残せます。"
+            "確認済みの動画も、写真をタップして喜怒哀楽を変更できます。"
+            "すでに日記へ残した写真は自動削除せず、感情を変更した場合は保存済み写真にも同期します。"
         )
         render_reviewed_recut_button()
 
@@ -13670,6 +13925,7 @@ def _render_moments_picker(photo, index, view_mode="list"):
                 "rank": rank,
                 "src": url,
                 "ai_best": bool(item.get("ai_best")) or rank == 1,
+                "emotion": normalize_photo_emotion_key(item.get("emotion")),
                 "meta": f"{seconds:.1f}秒・{quality}",
                 "reason": str(item.get("reason") or "").strip(),
             }
@@ -13698,8 +13954,31 @@ def _render_moments_picker(photo, index, view_mode="list"):
             key=f"moments_tap_picker_{video_id}_{round_number}_{serial}",
             on_selected_ranks_change=lambda: None,
             on_active_rank_change=lambda: None,
+            on_emotion_change_change=lambda: None,
         )
         should_rerun = False
+        emotion_change = getattr(result, "emotion_change", None)
+        if isinstance(emotion_change, dict):
+            try:
+                emotion_rank = int(emotion_change.get("rank") or 0)
+            except Exception:
+                emotion_rank = 0
+            emotion_key = normalize_photo_emotion_key(emotion_change.get("emotion"))
+            nonce = str(emotion_change.get("nonce") or "")
+            emotion_token_key = f"_moments_emotion_token_{video_id}_{round_number}"
+            emotion_token = f"{emotion_rank}|{emotion_key}|{nonce}"
+            if emotion_rank in valid_ranks and emotion_token != str(st.session_state.get(emotion_token_key) or ""):
+                update_video_ai_selection_emotion(photo, emotion_rank, emotion_key)
+                st.session_state[emotion_token_key] = emotion_token
+                if emotion_key:
+                    st.session_state[selection_state_key] = sorted(set(st.session_state.get(selection_state_key) or []) | {emotion_rank})
+                else:
+                    st.session_state[selection_state_key] = [
+                        value for value in (st.session_state.get(selection_state_key) or [])
+                        if int(value) != emotion_rank
+                    ]
+                should_rerun = True
+
         result_selected = getattr(result, "selected_ranks", None)
         if isinstance(result_selected, (list, tuple)):
             normalized = sorted(
@@ -13825,9 +14104,9 @@ def _render_moments_picker(photo, index, view_mode="list"):
                             st.rerun()
 
     if view_mode == "enlarge":
-        st.caption("拡大モード：左右の‹ ›で写真を切り替え、写真をタップすると選択／解除できます。")
+        st.caption("拡大モード：左右の‹ ›で写真を切り替え、写真をタップして喜怒哀楽を選びます。感情を選んだ写真が『残す』対象になります。")
     else:
-        st.caption("一覧モード：写真をタップすると選択できます。選択中の写真はオレンジ色の枠で表示されます。")
+        st.caption("一覧モード：写真をタップするたびに 未設定 → 😊喜 → 😠怒 → 😢哀 → 🎉楽 → 未設定。感情の色が枠に表示されます。")
     selected_rank_set = set(selected_ranks)
     send_clicked = st.button(
         f"選択した写真を残す（{len(selected_rank_set)}枚）",
@@ -14810,7 +15089,7 @@ def page_trip():
             "video_candidate_sheet_signed_url": str(video_reservation.get("candidate_sheet_signed_url") or ""),
             "video_candidate_sheet_storage_path": str(video_reservation.get("candidate_sheet_path") or ""),
         },
-        key=f"live_camera_v149_{camera_trip_key}_{st.session_state.capture_serial}_{_current_ui_refresh_epoch()}",
+        key=f"live_camera_v150_{camera_trip_key}_{st.session_state.capture_serial}_{_current_ui_refresh_epoch()}",
         on_photo_change=lambda: None,
         on_video_change=lambda: None,
         on_camera_error_change=lambda: None,
@@ -15043,6 +15322,16 @@ def page_trip():
                     capture_source=capture_source,
                 )
 
+                initial_emotion = normalize_photo_emotion_key(payload.get("emotion"))
+                extra_reflection = None
+                if initial_emotion:
+                    extra_reflection = {
+                        "emotion": photo_emotion_record(
+                            initial_emotion,
+                            source="child_tap_camera_review_v150",
+                        )
+                    }
+
                 with st.spinner("写真を残しています…"):
                     saved_photo = upload_photo(
                         trip["id"],
@@ -15050,6 +15339,7 @@ def page_trip():
                         location=location,
                         captured_at=payload.get("captured_at"),
                         capture_source=capture_source,
+                        extra_reflection=extra_reflection,
                     )
 
                 st.session_state[digest_key] = digest
