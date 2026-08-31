@@ -744,7 +744,10 @@ _LIVE_CAMERA_HTML = """
 
   <div id="camera-review" class="camera-review" hidden>
     <div class="camera-review-actions">
-      <button id="camera-review-save" class="camera-save-button" type="button">この写真を残す</button>
+      <div class="camera-review-primary-stack">
+        <button id="camera-review-save" class="camera-save-button" type="button">この写真を残す</button>
+        <button id="camera-review-save-with-audio" class="camera-audio-save-button" type="button">録音して写真を残す</button>
+      </div>
       <button id="camera-review-retry" class="camera-retry-button" type="button">撮りなおす／選びなおす</button>
     </div>
     <button id="camera-review-find-moments" class="camera-find-button" type="button" hidden>✨ いい瞬間を探す</button>
@@ -771,6 +774,7 @@ _LIVE_CAMERA_CSS = """
 .camera-review[hidden],
 .camera-review-image[hidden],
 .camera-review-video[hidden],
+.camera-audio-save-button[hidden],
 .camera-find-button[hidden],
 .camera-review-build[hidden],
 .camera-recording-status[hidden],
@@ -796,6 +800,7 @@ _LIVE_CAMERA_CSS = """
 .camera-mode-switch-button,
 .camera-sub-button,
 .camera-save-button,
+.camera-audio-save-button,
 .camera-retry-button,
 .camera-find-button {
   width: 100%;
@@ -846,7 +851,9 @@ _LIVE_CAMERA_CSS = """
   gap: 8px;
 }
 .camera-active-actions { grid-template-columns: 2.2fr 1.2fr .8fr; }
-.camera-review-actions { grid-template-columns: 3fr 1fr; }
+.camera-review-actions { grid-template-columns: 3fr 1fr; align-items: stretch; }
+.camera-review-primary-stack { display: grid; gap: 8px; min-width: 0; }
+.camera-review-actions > .camera-retry-button { height: 100%; }
 .camera-active-actions { margin: 8px 0 0 0; }
 .camera-review-actions { margin: 0 0 8px 0; }
 .camera-find-button {
@@ -902,6 +909,24 @@ _LIVE_CAMERA_CSS = """
   border-color: #166534;
   background: #15803d;
 }
+.camera-audio-save-button {
+  border: 2px solid #15803d;
+  background: rgba(22, 163, 74, .08);
+  color: var(--st-text-color);
+}
+.camera-audio-save-button:hover,
+.camera-audio-save-button:focus-visible {
+  background: rgba(22, 163, 74, .14);
+}
+.camera-audio-save-button.recording {
+  border-color: #b91c1c;
+  background: #dc2626;
+  color: white;
+}
+.camera-audio-save-button:disabled {
+  opacity: .62;
+  cursor: default;
+}
 .camera-mode-switch-button,
 .camera-sub-button,
 .camera-retry-button {
@@ -930,6 +955,7 @@ _LIVE_CAMERA_CSS = """
   .camera-mode-switch-button,
   .camera-sub-button,
   .camera-save-button,
+  .camera-audio-save-button,
   .camera-retry-button {
     min-height: 56px;
     font-size: 14px;
@@ -957,6 +983,7 @@ export default function(component) {
   const reviewImage = parentElement.querySelector('#camera-review-image');
   const reviewVideo = parentElement.querySelector('#camera-review-video');
   const reviewSave = parentElement.querySelector('#camera-review-save');
+  const reviewSaveWithAudio = parentElement.querySelector('#camera-review-save-with-audio');
   const reviewRetry = parentElement.querySelector('#camera-review-retry');
   const reviewFindMoments = parentElement.querySelector('#camera-review-find-moments');
   const reviewBuild = parentElement.querySelector('#camera-review-build');
@@ -1008,6 +1035,12 @@ export default function(component) {
   // briefly after recording stops, so the stop gesture cannot fall through to it.
   let videoReviewGeneration = 0;
   let goodMomentsRevealTimer = null;
+  let photoAudioStream = null;
+  let photoAudioRecorder = null;
+  let photoAudioChunks = [];
+  let photoAudioStartedAt = 0;
+  let photoAudioMaxTimer = null;
+  let photoAudioCancelled = false;
 
   const setStatus = (message) => {
     if (!status) return;
@@ -1101,6 +1134,12 @@ export default function(component) {
       reviewFindMoments.textContent = '✨ いい瞬間を探す';
     }
     if (reviewBuild) reviewBuild.hidden = true;
+    if (reviewSaveWithAudio) {
+      reviewSaveWithAudio.hidden = true;
+      reviewSaveWithAudio.disabled = false;
+      reviewSaveWithAudio.classList.remove('recording');
+      reviewSaveWithAudio.textContent = '\u9332\u97f3\u3057\u3066\u5199\u771f\u3092\u6b8b\u3059';
+    }
   };
 
   const showMenu = () => {
@@ -1130,6 +1169,12 @@ export default function(component) {
     }
     reviewSave.textContent = 'この写真を残す';
     reviewRetry.textContent = '撮りなおす／選びなおす';
+    if (reviewSaveWithAudio) {
+      reviewSaveWithAudio.hidden = false;
+      reviewSaveWithAudio.disabled = false;
+      reviewSaveWithAudio.classList.remove('recording');
+      reviewSaveWithAudio.textContent = '\u9332\u97f3\u3057\u3066\u5199\u771f\u3092\u6b8b\u3059';
+    }
     if (reviewFindMoments) reviewFindMoments.hidden = true;
     if (reviewBuild) reviewBuild.hidden = true;
     if (review) review.hidden = false;
@@ -1148,6 +1193,7 @@ export default function(component) {
     }
     reviewSave.textContent = 'この動画を残す';
     reviewRetry.textContent = '撮りなおす';
+    if (reviewSaveWithAudio) reviewSaveWithAudio.hidden = true;
     videoReviewGeneration += 1;
     const reviewGeneration = videoReviewGeneration;
     disarmGoodMomentsButton();
@@ -2066,6 +2112,215 @@ export default function(component) {
     }
   };
 
+
+  const choosePhotoAudioMimeType = () => {
+    if (!window.MediaRecorder) return '';
+    const candidates = [
+      'audio/webm;codecs=opus',
+      'audio/webm',
+      'audio/mp4',
+      'audio/ogg;codecs=opus'
+    ];
+    for (const candidate of candidates) {
+      try {
+        if (MediaRecorder.isTypeSupported(candidate)) return candidate;
+      } catch (_) {}
+    }
+    return '';
+  };
+
+  const photoAudioExtensionFor = (mime) => {
+    const value = String(mime || '').toLowerCase();
+    if (value.includes('mp4')) return 'm4a';
+    if (value.includes('ogg')) return 'ogg';
+    if (value.includes('wav')) return 'wav';
+    return 'webm';
+  };
+
+  const clearPhotoAudioTimer = () => {
+    if (photoAudioMaxTimer) {
+      clearTimeout(photoAudioMaxTimer);
+      photoAudioMaxTimer = null;
+    }
+  };
+
+  const stopPhotoAudioTracks = () => {
+    clearPhotoAudioTimer();
+    if (photoAudioStream) {
+      photoAudioStream.getTracks().forEach((track) => track.stop());
+      photoAudioStream = null;
+    }
+  };
+
+  const resetPhotoAudioButton = () => {
+    if (!reviewSaveWithAudio) return;
+    reviewSaveWithAudio.disabled = false;
+    reviewSaveWithAudio.classList.remove('recording');
+    reviewSaveWithAudio.textContent = '\u9332\u97f3\u3057\u3066\u5199\u771f\u3092\u6b8b\u3059';
+  };
+
+  const cancelPhotoAudioRecording = () => {
+    photoAudioCancelled = true;
+    clearPhotoAudioTimer();
+    const activeRecorder = photoAudioRecorder;
+    if (activeRecorder && activeRecorder.state !== 'inactive') {
+      try { activeRecorder.stop(); } catch (_) {}
+    } else {
+      stopPhotoAudioTracks();
+      photoAudioRecorder = null;
+      photoAudioChunks = [];
+      photoAudioStartedAt = 0;
+      resetPhotoAudioButton();
+    }
+  };
+
+  const stopPhotoAudioAndSave = () => {
+    if (!photoAudioRecorder || photoAudioRecorder.state === 'inactive') return;
+    clearPhotoAudioTimer();
+    if (reviewSaveWithAudio) reviewSaveWithAudio.disabled = true;
+    setStatus('\u9332\u97f3\u3092\u6b62\u3081\u3066\u3001\u5199\u771f\u3068\u4e00\u7dd2\u306b\u4fdd\u5b58\u3057\u3066\u3044\u307e\u3059\u2026');
+    try { photoAudioRecorder.stop(); } catch (err) {
+      console.error(err);
+      stopPhotoAudioTracks();
+      photoAudioRecorder = null;
+      resetPhotoAudioButton();
+      reviewSave.disabled = false;
+      reviewRetry.disabled = false;
+      setStatus('\u9332\u97f3\u3092\u6b62\u3081\u3089\u308c\u307e\u305b\u3093\u3067\u3057\u305f\u3002\u3082\u3046\u4e00\u5ea6\u304a\u8a66\u3057\u304f\u3060\u3055\u3044\u3002');
+    }
+  };
+
+  const startPhotoAudioAndSave = async () => {
+    if (!pendingMedia || pendingMedia.kind !== 'photo' || !reviewSaveWithAudio) return;
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia || !window.MediaRecorder) {
+      setStatus('\u3053\u306e\u30d6\u30e9\u30a6\u30b6\u3067\u306f\u9332\u97f3\u3067\u304d\u307e\u305b\u3093\u3002Chrome\u307e\u305f\u306fSafari\u306e\u6700\u65b0\u7248\u3067\u304a\u8a66\u3057\u304f\u3060\u3055\u3044\u3002');
+      return;
+    }
+
+    photoAudioCancelled = false;
+    photoAudioChunks = [];
+    reviewSave.disabled = true;
+    reviewRetry.disabled = true;
+    reviewSaveWithAudio.disabled = true;
+    setStatus('\u30de\u30a4\u30af\u3092\u6e96\u5099\u3057\u3066\u3044\u307e\u3059\u2026');
+
+    try {
+      photoAudioStream = await navigator.mediaDevices.getUserMedia({
+        video: false,
+        audio: {
+          channelCount: { ideal: 1 },
+          sampleRate: { ideal: 48000 },
+          autoGainControl: { ideal: true },
+          noiseSuppression: { ideal: false },
+          echoCancellation: { ideal: false }
+        }
+      });
+      if (componentDisposed || !pendingMedia || pendingMedia.kind !== 'photo') {
+        stopPhotoAudioTracks();
+        return;
+      }
+
+      const mimeType = choosePhotoAudioMimeType();
+      const options = { audioBitsPerSecond: 96000 };
+      if (mimeType) options.mimeType = mimeType;
+      photoAudioRecorder = new MediaRecorder(photoAudioStream, options);
+      photoAudioRecorder.addEventListener('dataavailable', (event) => {
+        if (event.data && event.data.size > 0) photoAudioChunks.push(event.data);
+      });
+      photoAudioRecorder.addEventListener('stop', async () => {
+        const stoppedRecorder = photoAudioRecorder;
+        const finalMime = String((stoppedRecorder && stoppedRecorder.mimeType) || mimeType || 'audio/webm');
+        const blob = new Blob(photoAudioChunks, { type: finalMime });
+        const durationMs = Math.max(0, Date.now() - photoAudioStartedAt);
+        stopPhotoAudioTracks();
+        photoAudioRecorder = null;
+        photoAudioChunks = [];
+        photoAudioStartedAt = 0;
+
+        if (photoAudioCancelled || componentDisposed) {
+          photoAudioCancelled = false;
+          resetPhotoAudioButton();
+          reviewSave.disabled = false;
+          reviewRetry.disabled = false;
+          return;
+        }
+        if (!blob.size || !pendingMedia || pendingMedia.kind !== 'photo') {
+          resetPhotoAudioButton();
+          reviewSave.disabled = false;
+          reviewRetry.disabled = false;
+          setStatus('\u9332\u97f3\u30c7\u30fc\u30bf\u3092\u4f5c\u308c\u307e\u305b\u3093\u3067\u3057\u305f\u3002\u3082\u3046\u4e00\u5ea6\u304a\u8a66\u3057\u304f\u3060\u3055\u3044\u3002');
+          return;
+        }
+
+        try {
+          const dataUrl = await blobToDataUrl(blob);
+          const mediaToSave = {
+            ...pendingMedia,
+            audio: {
+              data_url: dataUrl,
+              mime_type: finalMime,
+              name: `photo-comment.${photoAudioExtensionFor(finalMime)}`,
+              duration_ms: durationMs
+            }
+          };
+          setStatus('\u5199\u771f\u3068\u9332\u97f3\u3092\u4fdd\u5b58\u3057\u3066\u3044\u307e\u3059\u2026');
+          reviewSaveWithAudio.disabled = true;
+          reviewSave.disabled = true;
+          reviewRetry.disabled = true;
+          if (stream) {
+            stream.getTracks().forEach((track) => track.stop());
+            stream = null;
+          }
+          setTriggerValue('photo', mediaToSave);
+        } catch (err) {
+          console.error(err);
+          resetPhotoAudioButton();
+          reviewSave.disabled = false;
+          reviewRetry.disabled = false;
+          setStatus('\u9332\u97f3\u30c7\u30fc\u30bf\u3092\u4fdd\u5b58\u3067\u304d\u307e\u305b\u3093\u3067\u3057\u305f\u3002\u3082\u3046\u4e00\u5ea6\u304a\u8a66\u3057\u304f\u3060\u3055\u3044\u3002');
+        }
+      }, { once: true });
+      photoAudioRecorder.addEventListener('error', (event) => {
+        console.error(event?.error || event);
+        stopPhotoAudioTracks();
+        photoAudioRecorder = null;
+        resetPhotoAudioButton();
+        reviewSave.disabled = false;
+        reviewRetry.disabled = false;
+        setStatus('\u9332\u97f3\u4e2d\u306b\u30a8\u30e9\u30fc\u304c\u8d77\u304d\u307e\u3057\u305f\u3002\u3082\u3046\u4e00\u5ea6\u304a\u8a66\u3057\u304f\u3060\u3055\u3044\u3002');
+      }, { once: true });
+
+      photoAudioRecorder.start(250);
+      photoAudioStartedAt = Date.now();
+      reviewSaveWithAudio.disabled = false;
+      reviewSaveWithAudio.classList.add('recording');
+      reviewSaveWithAudio.textContent = '\u25a0 \u9332\u97f3\u3092\u6b62\u3081\u3066\u5199\u771f\u3092\u6b8b\u3059';
+      setStatus('\u9332\u97f3\u4e2d\u3067\u3059\u3002\u8a71\u3057\u7d42\u308f\u3063\u305f\u3089\u3001\u3053\u306e\u30dc\u30bf\u30f3\u3092\u3082\u3046\u4e00\u5ea6\u62bc\u3057\u3066\u304f\u3060\u3055\u3044\u3002');
+      photoAudioMaxTimer = setTimeout(stopPhotoAudioAndSave, 60000);
+    } catch (err) {
+      console.error(err);
+      stopPhotoAudioTracks();
+      photoAudioRecorder = null;
+      resetPhotoAudioButton();
+      reviewSave.disabled = false;
+      reviewRetry.disabled = false;
+      const name = (err && err.name) ? String(err.name) : '';
+      const message = (name === 'NotAllowedError' || name === 'PermissionDeniedError')
+        ? '\u30de\u30a4\u30af\u304c\u8a31\u53ef\u3055\u308c\u3066\u3044\u307e\u305b\u3093\u3002\u30d6\u30e9\u30a6\u30b6\u306e\u30b5\u30a4\u30c8\u8a2d\u5b9a\u3067\u30de\u30a4\u30af\u3092\u300c\u8a31\u53ef\u300d\u306b\u3057\u3066\u304f\u3060\u3055\u3044\u3002'
+        : '\u30de\u30a4\u30af\u3092\u958b\u3051\u307e\u305b\u3093\u3067\u3057\u305f\u3002\u3082\u3046\u4e00\u5ea6\u304a\u8a66\u3057\u304f\u3060\u3055\u3044\u3002';
+      setStatus(message);
+    }
+  };
+
+  const savePhotoWithAudio = () => {
+    if (!pendingMedia || pendingMedia.kind !== 'photo') return;
+    if (photoAudioRecorder && photoAudioRecorder.state === 'recording') {
+      stopPhotoAudioAndSave();
+    } else {
+      startPhotoAudioAndSave();
+    }
+  };
+
   const findGoodMoments = async (event) => {
     // Hard gate: only a real click on the separately armed review button may
     // start frame extraction. Recording stop and review rendering never call it.
@@ -2120,6 +2375,7 @@ export default function(component) {
 
   const savePendingMedia = () => {
     if (!pendingMedia) return;
+    if (photoAudioRecorder && photoAudioRecorder.state !== 'inactive') cancelPhotoAudioRecording();
     reviewSave.disabled = true;
     reviewRetry.disabled = true;
     const mediaToSave = pendingMedia;
@@ -2137,6 +2393,7 @@ export default function(component) {
 
   const retryPendingMedia = async () => {
     if (!pendingMedia) return;
+    if (photoAudioRecorder || photoAudioStream) cancelPhotoAudioRecording();
     const source = pendingMedia.source;
     pendingMedia = null;
     pendingVideoBlob = null;
@@ -2158,6 +2415,7 @@ export default function(component) {
   };
 
   const closeCamera = () => {
+    if (photoAudioRecorder || photoAudioStream) cancelPhotoAudioRecording();
     cameraRun += 1;
     stopStream();
     setStatus('');
@@ -2187,6 +2445,7 @@ export default function(component) {
   stopButton.addEventListener('click', closeCamera);
   galleryInput.addEventListener('change', chooseGalleryPhoto);
   reviewSave.addEventListener('click', savePendingMedia);
+  reviewSaveWithAudio?.addEventListener('click', savePhotoWithAudio);
   reviewRetry.addEventListener('click', retryPendingMedia);
   reviewFindMoments?.addEventListener('click', findGoodMoments);
 
@@ -2206,7 +2465,9 @@ export default function(component) {
     stopButton.removeEventListener('click', closeCamera);
     galleryInput.removeEventListener('change', chooseGalleryPhoto);
     reviewSave.removeEventListener('click', savePendingMedia);
+    reviewSaveWithAudio?.removeEventListener('click', savePhotoWithAudio);
     reviewRetry.removeEventListener('click', retryPendingMedia);
+    if (photoAudioRecorder || photoAudioStream) cancelPhotoAudioRecording();
     reviewFindMoments?.removeEventListener('click', findGoodMoments);
     clearGoodMomentsRevealTimer();
     stopStream();
@@ -2215,11 +2476,11 @@ export default function(component) {
 }
 """
 
-LIVE_CAMERA_COMPONENT_BUILD = "v147"
+LIVE_CAMERA_COMPONENT_BUILD = "v149"
 
 try:
     live_camera_component = st.components.v2.component(
-        "tokyo_burari_live_camera_v147",
+        "tokyo_burari_live_camera_v149",
         html=_LIVE_CAMERA_HTML,
         css=_LIVE_CAMERA_CSS,
         js=_LIVE_CAMERA_JS,
@@ -14537,7 +14798,7 @@ def render_diary_title_editor(trip_id, current_title, key_prefix):
 
 
 def render_recent_camera_photo_comment(trip):
-    """Show the just-saved photo below the camera and let the child comment immediately."""
+    """Show the just-saved media below the camera without another recorder."""
     trip_id = (trip or {}).get("id")
     if not trip_id:
         return
@@ -14555,8 +14816,12 @@ def render_recent_camera_photo_comment(trip):
     st.divider()
     is_video = photo_is_video(photo)
     st.markdown("#### 今撮った動画" if is_video else "#### 今撮った写真")
-    if not render_saved_media_preview(photo, image_alt="今撮った動画の代表画像" if is_video else "今撮った写真", delete_key_prefix="recent_camera"):
-        st.warning("撮影した記録のプレビューを表示できませんでした。コメントは続けられます。")
+    if not render_saved_media_preview(
+        photo,
+        image_alt="今撮った動画の代表画像" if is_video else "今撮った写真",
+        delete_key_prefix="recent_camera",
+    ):
+        st.warning("撮影した記録のプレビューを表示できませんでした。")
     if is_video:
         st.caption("✨ いい瞬間は自動で作成します。トップページの「いい瞬間を見る」から確認できます。")
 
@@ -14564,87 +14829,14 @@ def render_recent_camera_photo_comment(trip):
     if location_label:
         st.caption(f"📍 {location_label}")
 
-    reflection = photo.get("reflection_json") or {}
-    if not isinstance(reflection, dict):
-        reflection = {}
     conversation = _stored_photo_conversation(photo)
-    signals = photo.get("signals_json") or {}
-    if not isinstance(signals, dict):
-        signals = {}
-    done = bool(reflection.get("conversation_done"))
-
-    if conversation:
-        render_conversation(conversation)
-
-    audio_state_key = f"quick_photo_audio_{photo_id}"
-    audio_pending_key = f"quick_photo_audio_pending_{photo_id}"
-    if st.session_state.get(audio_state_key):
-        st.audio(
-            st.session_state[audio_state_key],
-            format="audio/wav",
-            autoplay=bool(st.session_state.get(audio_pending_key, False)),
-        )
-        st.session_state[audio_pending_key] = False
-
-    if done:
-        st.success("コメントを保存しました。")
-        return
-
-    child_turns = sum(1 for x in conversation if x.get("role") == "child")
-    if child_turns == 0:
-        st.caption("この動画について、まず自由に1回話してね。" if is_video else "この写真について、まず自由に1回話してね。")
-        mic_label = "今撮った動画について話してね" if is_video else "今撮った写真について話してね"
-    else:
-        mic_label = "AIの質問に答えてね"
-
-    serial_key = f"quick_photo_answer_serial_{photo_id}"
-    serial = int(st.session_state.get(serial_key) or 0)
-    answer_audio = far_field_audio_input(
-        mic_label,
-        key=f"quick_photo_answer_{photo_id}_{serial}",
-    )
-    digest_key = f"quick_photo_answer_digest_{photo_id}_{serial}"
-    if answer_audio is None:
-        return
-
-    digest = audio_digest(answer_audio)
-    if not digest or st.session_state.get(digest_key) == digest:
-        return
-
-    try:
-        with st.spinner("声を聞いています…"):
-            transcript = transcribe_audio(
-                answer_audio,
-                f"東京ぶらり旅で今撮った{'動画' if is_video else '写真'}について、子どもが自由に説明しています。場所は{location_label or '不明'}です。",
-            )
-            if not transcript:
-                raise ValueError("文字起こしが空でした。")
-            conversation = list(conversation)
-            conversation.append({"role": "child", "text": transcript})
-            child_turns = sum(1 for x in conversation if x.get("role") == "child")
-            image_bytes = download_photo(photo["storage_path"])
-            result = next_photo_turn(image_bytes, conversation, child_turns)
-            assistant_text = str(result.get("reply", "")).strip()
-            next_question = str(result.get("next_question", "")).strip()
-            if next_question:
-                assistant_text = (assistant_text + " " + next_question).strip()
-            if not assistant_text:
-                assistant_text = "ありがとう。"
-            conversation.append({"role": "assistant", "text": assistant_text})
-            signals = merge_signals(signals, result.get("signals", {}))
-            done = bool(result.get("done"))
-            update_photo_reflection(photo_id, conversation, signals, done=done)
-            audio = speech_bytes(assistant_text)
-
-        st.session_state[audio_state_key] = audio
-        st.session_state[audio_pending_key] = True
-        st.session_state[serial_key] = serial + 1
-        st.session_state[digest_key] = digest
-        st.rerun()
-    except Exception as exc:
-        st.error("うまく聞き取れませんでした。もう一度話してください。")
-        with st.expander("保護者向け詳細"):
-            st.code(str(exc))
+    child_comments = [
+        str(item.get("text") or "").strip()
+        for item in conversation
+        if isinstance(item, dict) and item.get("role") == "child" and str(item.get("text") or "").strip()
+    ]
+    if child_comments:
+        st.caption("録音コメント：" + " / ".join(child_comments))
 
 
 # ============================================================
@@ -14719,7 +14911,7 @@ def page_trip():
             "video_tus_endpoint": str(video_upload_reservation.get("tus_endpoint") or ""),
             "video_upload_bucket": PHOTO_BUCKET,
         },
-        key=f"live_camera_v147_{camera_trip_key}_{st.session_state.capture_serial}",
+        key=f"live_camera_v149_{camera_trip_key}_{st.session_state.capture_serial}",
         on_photo_change=lambda: None,
         on_video_change=lambda: None,
         on_camera_error_change=lambda: None,
@@ -15007,6 +15199,32 @@ def page_trip():
                         capture_source=capture_source,
                     )
 
+                audio_comment_saved = False
+                audio_payload = payload.get("audio")
+                audio_comment_attempted = bool(isinstance(audio_payload, dict) and audio_payload.get("data_url"))
+                if audio_comment_attempted and isinstance(saved_photo, dict) and saved_photo.get("id"):
+                    try:
+                        with st.spinner("録音した声を記録しています…"):
+                            audio_file = decode_audio_data_url(audio_payload, fallback_name="photo_comment.webm")
+                            transcript = transcribe_audio(
+                                audio_file,
+                                f"東京ぶらり旅で今撮った写真について、子どもが自由に説明しています。場所は{str((location or {}).get('place_label') or trip.get('destination') or '不明')}です。",
+                            )
+                            transcript = str(transcript or "").strip()
+                            if not transcript:
+                                raise ValueError("文字起こしが空でした。")
+                            update_photo_reflection(
+                                saved_photo["id"],
+                                [{"role": "child", "text": transcript}],
+                                {},
+                                done=True,
+                            )
+                            audio_comment_saved = True
+                    except Exception as audio_exc:
+                        st.warning("写真は保存しましたが、録音の文字起こしに失敗しました。")
+                        with st.expander("保護者向け詳細"):
+                            st.code(str(audio_exc))
+
                 st.session_state[digest_key] = digest
                 if isinstance(saved_photo, dict) and saved_photo.get("id"):
                     st.session_state[f"_camera_recent_photo_{trip['id']}"] = saved_photo["id"]
@@ -15024,7 +15242,12 @@ def page_trip():
                 st.session_state["_browser_last_camera_open_at"] = time.time() * 1000.0
                 st.session_state["_browser_last_camera_mode"] = "photo"
                 st.session_state.capture_serial += 1
-                st.session_state["_camera_notice"] = "写真を保存しました。"
+                if audio_comment_saved:
+                    st.session_state["_camera_notice"] = "写真と録音コメントを保存しました。"
+                elif audio_comment_attempted:
+                    st.session_state["_camera_notice"] = "写真は保存しましたが、録音コメントを保存できませんでした。"
+                else:
+                    st.session_state["_camera_notice"] = "写真を保存しました。"
                 st.rerun()
         except Exception as exc:
             st.error("写真を保存できませんでした。")
