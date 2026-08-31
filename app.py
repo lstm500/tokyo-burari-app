@@ -30,7 +30,7 @@ import streamlit as st
 # Freshly generated update: 2026-08-31 23:49 JST
 GENERATED_UPDATE_JST = "2026-08-31T23:49:00+09:00"
 
-APP_BUILD = "v146"
+APP_BUILD = "v147"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -2009,11 +2009,11 @@ export default function(component) {
 }
 """
 
-LIVE_CAMERA_COMPONENT_BUILD = "v145"
+LIVE_CAMERA_COMPONENT_BUILD = "v147"
 
 try:
     live_camera_component = st.components.v2.component(
-        "tokyo_burari_live_camera_v145",
+        "tokyo_burari_live_camera_v147",
         html=_LIVE_CAMERA_HTML,
         css=_LIVE_CAMERA_CSS,
         js=_LIVE_CAMERA_JS,
@@ -2744,7 +2744,7 @@ export default function(component) {
 
 try:
     browser_history_component = st.components.v2.component(
-        'tokyo_burari_browser_history_v146',
+        'tokyo_burari_browser_history_v147',
         js=_HISTORY_JS,
     )
 except Exception:
@@ -8162,8 +8162,7 @@ def render_video_delete_controls(video_photo, key_prefix):
                 try:
                     delete_video_and_related_data(video_photo)
                     st.session_state.pop(state_key, None)
-                    st.session_state["_video_delete_notice"] = "動画を削除しました。"
-                    st.rerun(scope="app")
+                    reload_current_page_after_action("_video_delete_notice", "動画を削除しました。")
                 except Exception as exc:
                     st.error("動画を削除できませんでした。")
                     with st.expander("保護者向け詳細"):
@@ -8205,8 +8204,7 @@ def show_video_delete_dialog(video_photo):
         ):
             try:
                 delete_video_and_related_data(video_photo)
-                st.session_state["_video_delete_notice"] = "動画を削除しました。"
-                st.rerun(scope="app")
+                reload_current_page_after_action("_video_delete_notice", "動画を削除しました。")
             except Exception as exc:
                 st.error("動画を削除できませんでした。")
                 with st.expander("保護者向け詳細"):
@@ -8415,7 +8413,7 @@ def confirm_photo_delete_dialog(trip_id, photo_id, photos=None, is_pending=False
                         st.session_state["_diary_notice"] = "最後の画像を削除したため、この日記も自動的に削除しました。"
                 else:
                     st.session_state["_diary_notice"] = "画像と、その画像について話したコメントを削除しました。"
-                st.rerun(scope="app")
+                reload_current_page_after_action()
             except Exception as exc:
                 st.error("画像を削除できませんでした。")
                 with st.expander("保護者向け詳細"):
@@ -10841,6 +10839,36 @@ def init_state():
 VALID_APP_PAGES = {"home", "camera", "videos", "moments", "diary", "review", "settings"}
 
 
+def _current_ui_refresh_epoch():
+    """Return the UI generation used to remount page widgets after mutations."""
+    try:
+        return max(0, int(st.session_state.get("_ui_refresh_epoch") or 0))
+    except Exception:
+        return 0
+
+
+def reload_current_page_after_action(notice_key=None, notice_text=None):
+    """Fully rebuild the current page after save/delete style mutations.
+
+    A normal Streamlit rerun can preserve parts of a previous mobile DOM tree long
+    enough for stale Back/Home controls to appear in the vacated card area. Bump a
+    UI epoch so custom components and navigation widgets are remounted, keep the
+    same logical page/history entry, and run the whole app again.
+    """
+    page = str(st.session_state.get("main_page") or "home")
+    if page not in VALID_APP_PAGES:
+        page = "home"
+    st.session_state["main_page"] = page
+    st.session_state["_ui_refresh_epoch"] = _current_ui_refresh_epoch() + 1
+    st.session_state.pop("_browser_hierarchy_back_token", None)
+    # This is a refresh of the current page, not a navigation event. Do not add or
+    # replace browser history just because a photo/video was saved or deleted.
+    st.session_state.pop("_history_action", None)
+    if notice_key and notice_text is not None:
+        st.session_state[str(notice_key)] = str(notice_text)
+    st.rerun(scope="app")
+
+
 RECENT_CAMERA_AUTO_START_SECONDS = 60 * 60
 
 
@@ -11115,7 +11143,7 @@ def sync_browser_history():
             "node": navigation_node,
             "intercept_hierarchy_back": navigation_node in intercept_nodes,
         },
-        key="tokyo_burari_browser_history_instance_v146",
+        key=f"tokyo_burari_browser_history_instance_v147_{_current_ui_refresh_epoch()}",
         on_page_change=lambda: None,
         on_hierarchy_back_change=lambda: None,
     )
@@ -11272,18 +11300,18 @@ def render_global_bottom_navigation(page_name):
     if node == "home":
         return
     st.divider()
-    with st.container(key=f"global_parent_nav_{page_name}_{node}"):
+    with st.container(key=f"global_parent_nav_{page_name}_{node}_{_current_ui_refresh_epoch()}"):
         if st.button(
             "← 1つ前に戻る",
             use_container_width=True,
-            key=f"global_parent_back_{page_name}_{node}",
+            key=f"global_parent_back_{page_name}_{node}_{_current_ui_refresh_epoch()}",
         ):
             navigate_to_parent()
-    with st.container(key=f"global_home_nav_{page_name}_{node}"):
+    with st.container(key=f"global_home_nav_{page_name}_{node}_{_current_ui_refresh_epoch()}"):
         if st.button(
             "トップページに戻る",
             use_container_width=True,
-            key=f"global_bottom_home_{page_name}_{node}",
+            key=f"global_bottom_home_{page_name}_{node}_{_current_ui_refresh_epoch()}",
         ):
             go_page("home", history_mode="replace")
 
@@ -11291,7 +11319,7 @@ def render_global_bottom_navigation(page_name):
 def page_top(title, caption=""):
     c1, c2 = st.columns([1, 5], vertical_alignment="center")
     with c1:
-        if st.button("←", key=f"parent_back_{title}", help="1つ前の階層に戻る", use_container_width=True):
+        if st.button("←", key=f"parent_back_{title}_{_current_ui_refresh_epoch()}", help="1つ前の階層に戻る", use_container_width=True):
             navigate_to_parent()
     with c2:
         st.subheader(title)
@@ -12185,7 +12213,7 @@ def render_pending_thumbnail_grid(trip_id, photos, max_count=None, trip=None):
         serial = int(st.session_state.get(serial_key) or 0)
         result = gallery_component(
             data={"photos": cards},
-            key=f"pending_gallery_{trip_id}_{serial}",
+            key=f"pending_gallery_{trip_id}_{serial}_{_current_ui_refresh_epoch()}",
             on_photo_id_change=lambda: None,
             on_delete_photo_id_change=lambda: None,
         )
@@ -12318,7 +12346,7 @@ def render_diary_photo_gallery(trip_id, photos, state=None):
         serial = int(st.session_state.get(serial_key) or 0)
         result = gallery_component(
             data={"photos": cards},
-            key=f"diary_gallery_{trip_id}_{serial}",
+            key=f"diary_gallery_{trip_id}_{serial}_{_current_ui_refresh_epoch()}",
             on_photo_id_change=lambda: None,
             on_delete_photo_id_change=lambda: None,
         )
@@ -13456,7 +13484,7 @@ def _render_moments_picker(photo, index):
                         st.session_state["_moments_notice"] = (
                             "候補写真を残さず、元動画も削除しました。"
                         )
-                        st.rerun(scope="app")
+                        reload_current_page_after_action()
                     except Exception as exc:
                         st.error("動画を削除できませんでした。")
                         with st.expander("保護者向け詳細"):
@@ -13971,7 +13999,7 @@ def page_videos():
         serial = int(st.session_state.get(serial_key) or 0)
         result = grid_component(
             data={"videos": cards},
-            key=f"video_library_grid_{current_page}_{serial}",
+            key=f"video_library_grid_{current_page}_{serial}_{_current_ui_refresh_epoch()}",
             on_open_video_id_change=lambda: None,
             on_delete_video_id_change=lambda: None,
         )
@@ -14294,7 +14322,7 @@ def page_trip():
             "video_candidate_sheet_signed_url": str(video_reservation.get("candidate_sheet_signed_url") or ""),
             "video_candidate_sheet_storage_path": str(video_reservation.get("candidate_sheet_path") or ""),
         },
-        key=f"live_camera_v145_{camera_trip_key}_{st.session_state.capture_serial}",
+        key=f"live_camera_v147_{camera_trip_key}_{st.session_state.capture_serial}_{_current_ui_refresh_epoch()}",
         on_photo_change=lambda: None,
         on_video_change=lambda: None,
         on_camera_error_change=lambda: None,
@@ -14478,7 +14506,7 @@ def page_trip():
                 else:
                     notice = "動画を保管庫に保存しました。いい瞬間を自動で作成しました。"
                 st.session_state["_camera_notice"] = notice
-                st.rerun()
+                reload_current_page_after_action()
         except Exception as exc:
             if video_saved:
                 st.warning("動画本体は保管庫に保存済みです。保存後の処理だけ完了できませんでした。")
@@ -14554,7 +14582,7 @@ def page_trip():
                 st.session_state["_browser_last_camera_mode"] = "photo"
                 st.session_state.capture_serial += 1
                 st.session_state["_camera_notice"] = "写真を保存しました。"
-                st.rerun()
+                reload_current_page_after_action()
         except Exception as exc:
             st.error("写真を保存できませんでした。")
             with st.expander("保護者向け詳細"):
@@ -15724,44 +15752,50 @@ restore_recent_camera_session()
 # before any visible UI is emitted.
 sync_browser_history()
 
-rollover_notice = st.session_state.pop("_rollover_notice", None)
-if rollover_notice:
-    st.success(rollover_notice)
-rollover_warning = st.session_state.pop("_rollover_warning", None)
-if rollover_warning:
-    st.warning(rollover_warning)
-    rollover_detail = st.session_state.pop("_rollover_warning_detail", None)
-    if rollover_detail:
-        with st.expander("保護者向け詳細"):
-            st.code(str(rollover_detail))
+# v147: render the entire visible app inside one replaceable root. This is stronger
+# than a normal rerun for mobile Streamlit: after save/delete mutations the old root
+# is replaced as a unit, so controls from a removed video/photo card cannot remain
+# faintly visible in the vacated space. The UI epoch additionally remounts custom
+# components that hold browser-side state.
+page_root = st.empty()
+with page_root.container():
+    rollover_notice = st.session_state.pop("_rollover_notice", None)
+    if rollover_notice:
+        st.success(rollover_notice)
+    rollover_warning = st.session_state.pop("_rollover_warning", None)
+    if rollover_warning:
+        st.warning(rollover_warning)
+        rollover_detail = st.session_state.pop("_rollover_warning_detail", None)
+        if rollover_detail:
+            with st.expander("保護者向け詳細"):
+                st.code(str(rollover_detail))
 
-page = st.session_state.get("main_page", "home")
-if page == "home":
-    page_home()
-elif page == "camera":
-    page_trip()
-elif page == "videos":
-    page_videos()
-elif page == "moments":
-    page_moments()
-elif page == "diary":
-    page_diary()
-elif page == "review":
-    page_review()
-elif page == "settings":
-    page_settings()
-else:
-    st.session_state["main_page"] = "home"
-    st.rerun()
+    page = st.session_state.get("main_page", "home")
+    if page == "home":
+        page_home()
+    elif page == "camera":
+        page_trip()
+    elif page == "videos":
+        page_videos()
+    elif page == "moments":
+        page_moments()
+    elif page == "diary":
+        page_diary()
+    elif page == "review":
+        page_review()
+    elif page == "settings":
+        page_settings()
+    else:
+        st.session_state["main_page"] = "home"
+        st.rerun(scope="app")
 
-
-# Keep one stable bottom-navigation slot on every page. On Home the slot is
-# intentionally empty, which explicitly clears controls left by the previous page
-# instead of relying on mobile DOM reconciliation to remove them later.
-with st.container(key="global_bottom_navigation_slot_v146"):
-    live_page = str(st.session_state.get("main_page") or "home")
-    if (
-        page == live_page
-        and page in {"camera", "videos", "moments", "diary", "review", "settings"}
-    ):
-        render_global_bottom_navigation(page)
+    # Keep navigation inside the same replaceable root. Home intentionally renders
+    # no navigation controls at all, so a previous page's Back/Home buttons are
+    # removed together with that page rather than reconciled independently.
+    with st.container(key=f"global_bottom_navigation_slot_v147_{_current_ui_refresh_epoch()}"):
+        live_page = str(st.session_state.get("main_page") or "home")
+        if (
+            page == live_page
+            and page in {"camera", "videos", "moments", "diary", "review", "settings"}
+        ):
+            render_global_bottom_navigation(page)
