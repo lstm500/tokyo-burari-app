@@ -743,6 +743,7 @@ _LIVE_CAMERA_HTML = """
   <div id="camera-review" class="camera-review" hidden>
     <div class="camera-review-actions">
       <button id="camera-review-save" class="camera-save-button" type="button">この写真を残す</button>
+      <button id="camera-review-record-save" class="camera-record-save-button" type="button">🎙 録音して保存する</button>
       <button id="camera-review-retry" class="camera-retry-button" type="button">撮りなおす／選びなおす</button>
     </div>
     <button id="camera-review-find-moments" class="camera-find-button" type="button" hidden>✨ いい瞬間を探す</button>
@@ -844,7 +845,7 @@ _LIVE_CAMERA_CSS = """
   gap: 8px;
 }
 .camera-active-actions { grid-template-columns: 2.2fr 1.2fr .8fr; }
-.camera-review-actions { grid-template-columns: 3fr 1fr; }
+.camera-review-actions { grid-template-columns: 1fr; }
 .camera-active-actions { margin: 8px 0 0 0; }
 .camera-review-actions { margin: 0 0 8px 0; }
 .camera-find-button {
@@ -900,6 +901,22 @@ _LIVE_CAMERA_CSS = """
   border-color: #166534;
   background: #15803d;
 }
+.camera-record-save-button {
+  border: 2px solid #d97706;
+  background: rgba(245, 158, 11, .11);
+  color: #9a3412;
+}
+.camera-record-save-button:hover,
+.camera-record-save-button:focus-visible {
+  border-color: #b45309;
+  background: rgba(245, 158, 11, .18);
+}
+.camera-record-save-button.recording {
+  border-color: #dc2626;
+  background: #dc2626;
+  color: #fff;
+  box-shadow: 0 0 0 3px rgba(220, 38, 38, .12);
+}
 .camera-mode-switch-button,
 .camera-sub-button,
 .camera-retry-button {
@@ -923,7 +940,7 @@ _LIVE_CAMERA_CSS = """
     font-size: 16px;
   }
   .camera-active-actions { grid-template-columns: 2fr 1.1fr .8fr; }
-  .camera-review-actions { grid-template-columns: 3fr 1fr; }
+  .camera-review-actions { grid-template-columns: 1fr; }
   .camera-shoot-button,
   .camera-mode-switch-button,
   .camera-sub-button,
@@ -955,6 +972,7 @@ export default function(component) {
   const reviewImage = parentElement.querySelector('#camera-review-image');
   const reviewVideo = parentElement.querySelector('#camera-review-video');
   const reviewSave = parentElement.querySelector('#camera-review-save');
+  const reviewRecordSave = parentElement.querySelector('#camera-review-record-save');
   const reviewRetry = parentElement.querySelector('#camera-review-retry');
   const reviewFindMoments = parentElement.querySelector('#camera-review-find-moments');
   const reviewBuild = parentElement.querySelector('#camera-review-build');
@@ -1000,6 +1018,12 @@ export default function(component) {
   let recordingCandidateBusy = false;
   let recordingCandidateFrames = [];
   let recordingCancelled = false;
+  let photoVoiceStream = null;
+  let photoVoiceRecorder = null;
+  let photoVoiceChunks = [];
+  let photoVoiceStartedAt = 0;
+  let photoVoiceMaxTimer = null;
+  let photoVoiceSaveOnStop = false;
   // Good-moments search is a separate review action. The button remains hidden
   // briefly after recording stops, so the stop gesture cannot fall through to it.
   let videoReviewGeneration = 0;
@@ -1097,6 +1121,7 @@ export default function(component) {
       reviewFindMoments.textContent = '✨ いい瞬間を探す';
     }
     if (reviewBuild) reviewBuild.hidden = true;
+    if (reviewRecordSave) reviewRecordSave.hidden = true;
   };
 
   const showMenu = () => {
@@ -1125,6 +1150,12 @@ export default function(component) {
       reviewImage.hidden = false;
     }
     reviewSave.textContent = 'この写真を残す';
+    if (reviewRecordSave) {
+      reviewRecordSave.hidden = false;
+      reviewRecordSave.disabled = false;
+      reviewRecordSave.classList.remove('recording');
+      reviewRecordSave.textContent = '🎙 録音して保存する';
+    }
     reviewRetry.textContent = '撮りなおす／選びなおす';
     if (reviewFindMoments) reviewFindMoments.hidden = true;
     if (reviewBuild) reviewBuild.hidden = true;
@@ -1143,6 +1174,7 @@ export default function(component) {
       reviewVideo.currentTime = 0;
     }
     reviewSave.textContent = 'この動画を残す';
+    if (reviewRecordSave) reviewRecordSave.hidden = true;
     reviewRetry.textContent = '撮りなおす';
     videoReviewGeneration += 1;
     const reviewGeneration = videoReviewGeneration;
@@ -1289,6 +1321,170 @@ export default function(component) {
     reader.onerror = reject;
     reader.readAsDataURL(blob);
   });
+
+  const choosePhotoVoiceMimeType = () => {
+    const candidates = [
+      'audio/webm;codecs=opus',
+      'audio/webm',
+      'audio/mp4'
+    ];
+    for (const candidate of candidates) {
+      try {
+        if (window.MediaRecorder && MediaRecorder.isTypeSupported(candidate)) return candidate;
+      } catch (_) {}
+    }
+    return '';
+  };
+
+  const stopPhotoVoiceTracks = () => {
+    if (photoVoiceMaxTimer) {
+      clearTimeout(photoVoiceMaxTimer);
+      photoVoiceMaxTimer = null;
+    }
+    if (photoVoiceStream) {
+      try { photoVoiceStream.getTracks().forEach((track) => track.stop()); } catch (_) {}
+      photoVoiceStream = null;
+    }
+  };
+
+  const resetPhotoVoiceButton = () => {
+    if (!reviewRecordSave) return;
+    reviewRecordSave.classList.remove('recording');
+    reviewRecordSave.disabled = false;
+    reviewRecordSave.textContent = '🎙 録音して保存する';
+  };
+
+  const cancelPhotoVoiceRecording = () => {
+    photoVoiceSaveOnStop = false;
+    if (photoVoiceRecorder && photoVoiceRecorder.state !== 'inactive') {
+      try { photoVoiceRecorder.stop(); } catch (_) {}
+    }
+    photoVoiceRecorder = null;
+    photoVoiceChunks = [];
+    photoVoiceStartedAt = 0;
+    stopPhotoVoiceTracks();
+    resetPhotoVoiceButton();
+  };
+
+  const startPhotoVoiceRecording = async () => {
+    if (!pendingMedia || pendingMedia.kind !== 'photo' || !reviewRecordSave) return;
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia || !window.MediaRecorder) {
+      setStatus('このブラウザでは録音を利用できません。');
+      return;
+    }
+    try {
+      photoVoiceStream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: false,
+          autoGainControl: true,
+          channelCount: 1
+        },
+        video: false
+      });
+      const mimeType = choosePhotoVoiceMimeType();
+      photoVoiceChunks = [];
+      photoVoiceSaveOnStop = false;
+      photoVoiceRecorder = new MediaRecorder(photoVoiceStream, mimeType ? { mimeType } : undefined);
+      photoVoiceRecorder.ondataavailable = (event) => {
+        if (event.data && event.data.size > 0) photoVoiceChunks.push(event.data);
+      };
+      photoVoiceRecorder.onerror = (event) => {
+        console.error(event);
+        photoVoiceSaveOnStop = false;
+        stopPhotoVoiceTracks();
+        photoVoiceRecorder = null;
+        photoVoiceChunks = [];
+        reviewSave.disabled = false;
+        reviewRetry.disabled = false;
+        resetPhotoVoiceButton();
+        setStatus('録音中にエラーが発生しました。もう一度お試しください。');
+      };
+      photoVoiceRecorder.onstop = async () => {
+        const shouldSave = photoVoiceSaveOnStop;
+        const durationMs = Math.max(0, Date.now() - photoVoiceStartedAt);
+        const recorderMime = (photoVoiceRecorder && photoVoiceRecorder.mimeType) || mimeType || 'audio/webm';
+        const chunks = photoVoiceChunks.slice();
+        photoVoiceRecorder = null;
+        photoVoiceChunks = [];
+        photoVoiceStartedAt = 0;
+        stopPhotoVoiceTracks();
+        if (!shouldSave) {
+          reviewSave.disabled = false;
+          reviewRetry.disabled = false;
+          resetPhotoVoiceButton();
+          return;
+        }
+        try {
+          const audioBlob = new Blob(chunks, { type: recorderMime });
+          if (!audioBlob.size) throw new Error('録音データが空です');
+          const audioDataUrl = await blobToDataUrl(audioBlob);
+          const mediaToSave = {
+            ...pendingMedia,
+            voice_recording: {
+              data_url: audioDataUrl,
+              mime_type: recorderMime,
+              name: recorderMime.includes('mp4') ? 'photo_comment.m4a' : 'photo_comment.webm',
+              duration_ms: durationMs
+            }
+          };
+          reviewRecordSave.disabled = true;
+          reviewRecordSave.textContent = '声と写真を保存しています…';
+          setStatus('声と写真を保存しています…');
+          if (stream) {
+            stream.getTracks().forEach((track) => track.stop());
+            stream = null;
+          }
+          setTriggerValue('photo', mediaToSave);
+        } catch (err) {
+          console.error(err);
+          reviewSave.disabled = false;
+          reviewRetry.disabled = false;
+          resetPhotoVoiceButton();
+          setStatus('録音データを保存できませんでした。もう一度お試しください。');
+        }
+      };
+      photoVoiceRecorder.start(250);
+      photoVoiceStartedAt = Date.now();
+      reviewSave.disabled = true;
+      reviewRetry.disabled = true;
+      reviewRecordSave.classList.add('recording');
+      reviewRecordSave.textContent = '■ 録音を止めて保存';
+      setStatus('録音中です。話し終わったら、もう一度ボタンを押してください。');
+      photoVoiceMaxTimer = setTimeout(() => {
+        if (photoVoiceRecorder && photoVoiceRecorder.state === 'recording') {
+          photoVoiceSaveOnStop = true;
+          reviewRecordSave.disabled = true;
+          reviewRecordSave.textContent = '録音を止めています…';
+          try { photoVoiceRecorder.stop(); } catch (_) {}
+        }
+      }, 60000);
+    } catch (err) {
+      console.error(err);
+      stopPhotoVoiceTracks();
+      reviewSave.disabled = false;
+      reviewRetry.disabled = false;
+      resetPhotoVoiceButton();
+      const name = (err && err.name) ? String(err.name) : '';
+      const message = (name === 'NotAllowedError' || name === 'PermissionDeniedError')
+        ? '録音にはマイクの許可が必要です。ブラウザのサイト設定でマイクを許可してください。'
+        : 'マイクを開始できませんでした。もう一度お試しください。';
+      setStatus(message);
+    }
+  };
+
+  const recordAndSavePhoto = () => {
+    if (!pendingMedia || pendingMedia.kind !== 'photo') return;
+    if (photoVoiceRecorder && photoVoiceRecorder.state === 'recording') {
+      photoVoiceSaveOnStop = true;
+      reviewRecordSave.disabled = true;
+      reviewRecordSave.textContent = '録音を止めています…';
+      setStatus('録音を止めて、写真と一緒に保存しています…');
+      try { photoVoiceRecorder.stop(); } catch (_) {}
+      return;
+    }
+    startPhotoVoiceRecording();
+  };
 
   const xhrUpload = (method, url, headers, body, timeoutMs, progressHandler) => new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
@@ -2047,6 +2243,7 @@ export default function(component) {
 
   const savePendingMedia = () => {
     if (!pendingMedia) return;
+    if (photoVoiceRecorder && photoVoiceRecorder.state === 'recording') return;
     reviewSave.disabled = true;
     reviewRetry.disabled = true;
     const mediaToSave = pendingMedia;
@@ -2064,6 +2261,7 @@ export default function(component) {
 
   const retryPendingMedia = async () => {
     if (!pendingMedia) return;
+    cancelPhotoVoiceRecording();
     const source = pendingMedia.source;
     pendingMedia = null;
     pendingVideoBlob = null;
@@ -2085,6 +2283,7 @@ export default function(component) {
   };
 
   const closeCamera = () => {
+    cancelPhotoVoiceRecording();
     stopStream();
     setStatus('');
   };
@@ -2113,6 +2312,7 @@ export default function(component) {
   stopButton.addEventListener('click', closeCamera);
   galleryInput.addEventListener('change', chooseGalleryPhoto);
   reviewSave.addEventListener('click', savePendingMedia);
+  reviewRecordSave?.addEventListener('click', recordAndSavePhoto);
   reviewRetry.addEventListener('click', retryPendingMedia);
   reviewFindMoments?.addEventListener('click', findGoodMoments);
 
@@ -2130,20 +2330,22 @@ export default function(component) {
     stopButton.removeEventListener('click', closeCamera);
     galleryInput.removeEventListener('change', chooseGalleryPhoto);
     reviewSave.removeEventListener('click', savePendingMedia);
+    reviewRecordSave?.removeEventListener('click', recordAndSavePhoto);
     reviewRetry.removeEventListener('click', retryPendingMedia);
     reviewFindMoments?.removeEventListener('click', findGoodMoments);
     clearGoodMomentsRevealTimer();
+    cancelPhotoVoiceRecording();
     stopStream();
     hideReview();
   };
 }
 """
 
-LIVE_CAMERA_COMPONENT_BUILD = "v143"
+LIVE_CAMERA_COMPONENT_BUILD = "v145"
 
 try:
     live_camera_component = st.components.v2.component(
-        "tokyo_burari_live_camera_v143",
+        "tokyo_burari_live_camera_v145",
         html=_LIVE_CAMERA_HTML,
         css=_LIVE_CAMERA_CSS,
         js=_LIVE_CAMERA_JS,
@@ -3688,8 +3890,36 @@ def require_family_pin():
                 _set_authenticated_family(default_family, default_member, persist=False)
                 return
 
-    st.title("📷 東京ぶらり旅プロジェクト")
-    st.caption("家族アカウントの中の、個人アカウントでログインしてください。")
+    st.markdown(
+        """
+        <style>
+          .burari-login-wrap { margin:.15rem 0 1rem; }
+          .burari-login-hero {
+            padding:1.08rem 1.12rem 1rem;
+            border-radius:24px;
+            border:1px solid rgba(74,144,226,.15);
+            background:radial-gradient(circle at 92% 0%,rgba(126,189,82,.17),transparent 36%),linear-gradient(145deg,rgba(74,144,226,.055),rgba(255,255,255,0));
+            box-shadow:0 10px 30px rgba(30,58,95,.055);
+          }
+          .burari-login-eyebrow {font-size:.77rem;font-weight:800;letter-spacing:.14em;opacity:.55;margin-bottom:.34rem;}
+          .burari-login-title {font-family:"Hiragino Sans","Yu Gothic","Noto Sans JP",sans-serif;font-size:2.18rem;font-weight:900;line-height:1.08;letter-spacing:.015em;color:rgba(31,38,48,.97);}
+          .burari-login-title span {color:#66a944;}
+          .burari-login-tagline {margin-top:.42rem;font-size:.92rem;line-height:1.55;opacity:.70;}
+          .burari-login-guide {margin:.75rem 0 .2rem;font-size:.82rem;line-height:1.5;opacity:.64;}
+          div[data-testid="stForm"] {border:1px solid rgba(128,128,128,.16);border-radius:20px;padding:1rem 1rem .78rem;background:rgba(255,255,255,.72);box-shadow:0 8px 24px rgba(30,58,95,.035);}
+          div[data-testid="stTextInput"] input {border-radius:13px;min-height:2.9rem;}
+        </style>
+        <div class="burari-login-wrap">
+          <div class="burari-login-hero">
+            <div class="burari-login-eyebrow">BURARI</div>
+            <div class="burari-login-title"><span>ぶらり</span>旅</div>
+            <div class="burari-login-tagline">思った。感じた。をそのまま残そう</div>
+          </div>
+          <div class="burari-login-guide">家族ID・個人ID・あいことばでログインします。</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
     failures = int(st.session_state.get("_family_pin_failures", 0))
     locked_until = float(st.session_state.get("_family_pin_locked_until", 0.0))
@@ -3698,28 +3928,33 @@ def require_family_pin():
         st.warning(f"入力回数が多いため、あと{max(1, int(locked_until - now))}秒ほど待ってください。")
         st.stop()
 
-    family_key = st.text_input(
-        "家族ID",
-        value=str(st.session_state.get("_last_family_key") or "default"),
-        max_chars=32,
-        key="_family_account_input",
-        autocomplete="organization",
-    )
-    member_key = st.text_input(
-        "個人ID",
-        value=str(st.session_state.get("_last_member_key") or "main"),
-        max_chars=32,
-        key="_member_account_input",
-        autocomplete="username",
-    )
-    entered = st.text_input(
-        "個人のあいことば",
-        type="password",
-        max_chars=64,
-        key="_family_pin_input",
-        autocomplete="current-password",
-    )
-    if st.button("はいる", type="primary", use_container_width=True):
+    with st.form("burari_login_form", clear_on_submit=False, border=True):
+        family_key = st.text_input(
+            "家族ID",
+            value=str(st.session_state.get("_last_family_key") or "default"),
+            max_chars=32,
+            key="_family_account_input",
+            autocomplete="organization",
+            placeholder="家族ID",
+        )
+        member_key = st.text_input(
+            "個人ID",
+            value=str(st.session_state.get("_last_member_key") or "main"),
+            max_chars=32,
+            key="_member_account_input",
+            autocomplete="username",
+            placeholder="個人ID",
+        )
+        entered = st.text_input(
+            "あいことば",
+            type="password",
+            max_chars=64,
+            key="_family_pin_input",
+            autocomplete="current-password",
+            placeholder="あいことば",
+        )
+        submitted = st.form_submit_button("ぶらり旅をはじめる", type="primary", use_container_width=True)
+    if submitted:
         try:
             normalized_family = _normalize_family_key(family_key)
             normalized_member = _normalize_member_key(member_key)
@@ -6903,7 +7138,7 @@ def _run_video_ai_background_job(photo_id, family_key, member_key):
     selection_meta["started_at"] = now_jst().isoformat()
     selection_meta["updated_at"] = selection_meta["started_at"]
     selection_meta["attempt"] = max(0, int(selection_meta.get("attempt") or 0)) + 1
-    selection_meta["pipeline_mode"] = "background_separated_lossless_v145"
+    selection_meta["pipeline_mode"] = "inline_single_pass_lossless_v143"
     selection_meta["progress_message"] = "元動画から高画質候補を準備中"
     reflection["ai_selection"] = selection_meta
     try:
@@ -7014,7 +7249,7 @@ def _run_video_ai_background_job(photo_id, family_key, member_key):
             latest_selection["last_error"] = str(exc)[:240]
             latest_selection["updated_at"] = now_jst().isoformat()
             latest_selection["stage"] = str(latest_selection.get("stage") or "pipeline")
-            latest_selection["pipeline_mode"] = "background_separated_lossless_v145"
+            latest_selection["pipeline_mode"] = "inline_single_pass_lossless_v143"
             latest_reflection["ai_selection"] = latest_selection
             _write_photo_reflection_for_owner(
                 photo_id, latest_reflection, family_key, member_key, client=client
@@ -7024,70 +7259,122 @@ def _run_video_ai_background_job(photo_id, family_key, member_key):
         return False
 
 def launch_video_ai_background_job(photo):
-    """Submit the Good Moments pipeline to a detached worker.
+    """Run the saved-video AI pipeline automatically in the normal Streamlit run.
 
-    Video preservation and Good Moments are intentionally separate. Recording/save
-    finishes first and control returns to the user immediately. The saved original
-    is then processed automatically without requiring the viewer page or a button.
+    v134 intentionally does not detach the first-time selector into a long-lived
+    ThreadPoolExecutor task. Streamlit workers can be rerun/recycled independently
+    of those detached futures, which can leave a DB row in ``processing`` forever.
+    Keeping the pipeline inside the active server execution is slower for that one
+    request, but it is deterministic: no viewer button or other user action is
+    required, and a later app execution can resume any unfinished row.
+
+    The historical function name is retained so existing callers keep working.
     """
     if not isinstance(photo, dict) or not photo.get("id") or not photo_is_video(photo):
         return False
 
+    photo_id = str(photo.get("id") or "").strip()
     family_key = str(photo.get("family_key") or current_family_key())
     member_key = str(photo.get("member_key") or current_member_key())
-    photo_id = str(photo.get("id") or "").strip()
     if not photo_id:
         return False
 
-    selection_meta = photo_media_metadata(photo).get("ai_selection") or {}
-    if not isinstance(selection_meta, dict):
-        selection_meta = {}
-    status = str(selection_meta.get("status") or "").strip().lower()
-    if status in {"ready", "reviewed"} and video_ai_selection_items(photo):
-        return False
-    stale_in_db = video_ai_processing_is_stale(selection_meta)
-
-    registry = _video_ai_job_registry()
-    with registry["lock"]:
-        existing_entry = registry["futures"].get(photo_id)
-        if isinstance(existing_entry, dict):
-            existing = existing_entry.get("future")
-            started_monotonic = float(existing_entry.get("started_monotonic") or 0.0)
-        else:
-            existing = existing_entry
-            started_monotonic = 0.0
-
-        if existing is not None:
-            if not existing.done():
-                worker_age = (time.monotonic() - started_monotonic) if started_monotonic else 0.0
-                if not stale_in_db and (not worker_age or worker_age < VIDEO_AI_STALE_SECONDS):
-                    return False
-                try:
-                    existing.cancel()
-                except Exception:
-                    pass
-            elif not stale_in_db:
-                return False
-
-        future = _video_ai_executor().submit(
-            _run_video_ai_background_job,
-            photo_id,
-            family_key,
-            member_key,
+    # Re-read the row so stale home-page cache data can never reprocess a video
+    # that has already reached ready/reviewed.
+    fresh = photo
+    try:
+        result = (
+            supabase_client()
+            .table(PHOTO_TABLE)
+            .select("*")
+            .eq("id", photo_id)
+            .eq("family_key", family_key)
+            .eq("member_key", member_key)
+            .limit(1)
+            .execute()
         )
-        registry["futures"][photo_id] = {
-            "future": future,
-            "started_monotonic": time.monotonic(),
-        }
-    return True
+        row = (result.data or [None])[0]
+        if isinstance(row, dict) and row:
+            fresh = row
+    except Exception:
+        pass
+
+    selection = photo_media_metadata(fresh).get("ai_selection") or {}
+    if not isinstance(selection, dict):
+        selection = {}
+    status = str(selection.get("status") or "").strip().lower()
+    if status in {"ready", "reviewed"} and video_ai_selection_items(fresh):
+        return False
+
+    # Prevent accidental recursion during one Streamlit execution. This guard is
+    # session-local; DB state remains the durable source of truth across reruns.
+    active_key = "_video_ai_inline_active_v133"
+    if str(st.session_state.get(active_key) or "") == photo_id:
+        return False
+    st.session_state[active_key] = photo_id
+
+    attempted = False
+    try:
+        attempted = True
+        # This function owns all exceptions and persists either ready or error.
+        _run_video_ai_background_job(photo_id, family_key, member_key)
+
+        # A provider/storage failure should normally already be recorded as error.
+        # If the worker ever returns without a terminal state, convert that silent
+        # stall into an explicit error instead of leaving ``processing`` forever.
+        try:
+            result = (
+                supabase_client()
+                .table(PHOTO_TABLE)
+                .select("reflection_json")
+                .eq("id", photo_id)
+                .eq("family_key", family_key)
+                .eq("member_key", member_key)
+                .limit(1)
+                .execute()
+            )
+            row = (result.data or [None])[0] or {}
+            reflection = row.get("reflection_json") or {}
+            if not isinstance(reflection, dict):
+                reflection = {}
+            latest = reflection.get("ai_selection") or {}
+            if not isinstance(latest, dict):
+                latest = {}
+            latest_status = str(latest.get("status") or "").strip().lower()
+            if latest_status not in {"ready", "reviewed", "error", "waiting_browser_candidates"}:
+                latest["status"] = "error"
+                latest["stage"] = str(latest.get("stage") or "pipeline")
+                latest["last_error"] = "自動処理が終了状態を返さなかったため停止しました。"
+                latest["updated_at"] = now_jst().isoformat()
+                latest["pipeline_mode"] = "inline_single_pass_lossless_v143"
+                reflection["ai_selection"] = latest
+                _write_photo_reflection_for_owner(
+                    photo_id, reflection, family_key, member_key
+                )
+        except Exception:
+            pass
+    finally:
+        if str(st.session_state.get(active_key) or "") == photo_id:
+            st.session_state.pop(active_key, None)
+        try:
+            _home_video_counts_cached.clear()
+        except Exception:
+            pass
+
+    return attempted
 
 
-def resume_member_video_background_jobs(limit=24, min_interval_seconds=8):
-    """Resume unfinished Good Moments jobs without blocking normal app operation."""
+def resume_member_video_background_jobs(limit=24, min_interval_seconds=0):
+    """Automatically process unfinished saved videos without any user action.
+
+    v133 processes at most one unfinished video in each normal Streamlit execution.
+    The main entry point immediately reruns after an attempt, so additional queued
+    videos advance one by one. This is deliberately not tied to opening the viewer.
+    """
     now_mono = time.monotonic()
-    last_key = "_video_pipeline_resume_at_v145_background"
+    last_key = "_video_pipeline_resume_at_v133_inline"
     last = float(st.session_state.get(last_key) or 0.0)
-    if last and (now_mono - last) < float(min_interval_seconds):
+    if min_interval_seconds and last and (now_mono - last) < float(min_interval_seconds):
         return 0
     st.session_state[last_key] = now_mono
 
@@ -7105,7 +7392,6 @@ def resume_member_video_background_jobs(limit=24, min_interval_seconds=8):
     except Exception:
         return 0
 
-    resumed = 0
     for row in rows:
         if not photo_is_video(row):
             continue
@@ -7116,17 +7402,18 @@ def resume_member_video_background_jobs(limit=24, min_interval_seconds=8):
         has_items = bool(video_ai_selection_items(row))
         if status in {"ready", "reviewed"} and has_items:
             continue
-
+        # v140 no longer depends on browser candidate recovery. Old waiting/error
+        # states are automatically retried once using the saved original video.
         if status == "error":
-            if has_items or selection.get("v145_auto_retry"):
+            if has_items or selection.get("v140_auto_retry"):
                 continue
             try:
-                selection["v145_auto_retry"] = True
-                selection["status"] = "waiting_candidates"
-                selection["stage"] = "candidate_preparation"
+                selection["v140_auto_retry"] = True
                 selection["queued_at"] = now_jst().isoformat()
                 selection["updated_at"] = selection["queued_at"]
-                selection["pipeline_mode"] = "background_separated_v145"
+                selection["pipeline_mode"] = "inline_single_pass_lossless_v143"
+                selection["status"] = "waiting_candidates"
+                selection["stage"] = "candidate_preparation"
                 selection["last_error"] = ""
                 reflection = dict(photo_media_metadata(row))
                 reflection["ai_selection"] = selection
@@ -7144,9 +7431,7 @@ def resume_member_video_background_jobs(limit=24, min_interval_seconds=8):
             try:
                 selection["status"] = "waiting_candidates"
                 selection["stage"] = "candidate_preparation"
-                selection["queued_at"] = now_jst().isoformat()
-                selection["updated_at"] = selection["queued_at"]
-                selection["pipeline_mode"] = "background_separated_v145"
+                selection["pipeline_mode"] = "inline_single_pass_lossless_v143"
                 selection["last_error"] = ""
                 reflection = dict(photo_media_metadata(row))
                 reflection["ai_selection"] = selection
@@ -7163,12 +7448,30 @@ def resume_member_video_background_jobs(limit=24, min_interval_seconds=8):
 
         try:
             if launch_video_ai_background_job(row):
-                resumed += 1
-        except Exception:
-            continue
-        if resumed >= 2:
-            break
-    return resumed
+                return 1
+        except Exception as exc:
+            # Best-effort terminal error marker. No user button is needed to start
+            # the job; this only makes a real failure visible rather than "stuck".
+            try:
+                reflection = dict(photo_media_metadata(row))
+                selection = reflection.get("ai_selection") or {}
+                if not isinstance(selection, dict):
+                    selection = {}
+                selection["status"] = "error"
+                selection["last_error"] = str(exc)[:240]
+                selection["updated_at"] = now_jst().isoformat()
+                selection["pipeline_mode"] = "inline_single_pass_lossless_v143"
+                reflection["ai_selection"] = selection
+                _write_photo_reflection_for_owner(
+                    row.get("id"),
+                    reflection,
+                    row.get("family_key") or current_family_key(),
+                    row.get("member_key") or current_member_key(),
+                )
+            except Exception:
+                pass
+            return 1
+    return 0
 
 
 def request_video_ai_reroll(photo, record_rejection=True):
@@ -14333,9 +14636,13 @@ def render_recent_camera_photo_comment(trip):
         return
 
     child_turns = sum(1 for x in conversation if x.get("role") == "child")
+    if not is_video:
+        if child_turns == 0:
+            st.caption("声も一緒に残したいときは、撮影直後の「録音して保存する」を使えます。")
+        return
     if child_turns == 0:
-        st.caption("この動画について、まず自由に1回話してね。" if is_video else "この写真について、まず自由に1回話してね。")
-        mic_label = "今撮った動画について話してね" if is_video else "今撮った写真について話してね"
+        st.caption("この動画について、まず自由に1回話してね。")
+        mic_label = "今撮った動画について話してね"
     else:
         mic_label = "AIの質問に答えてね"
 
@@ -14469,7 +14776,7 @@ def page_trip():
             "video_candidate_sheet_signed_url": str(video_reservation.get("candidate_sheet_signed_url") or ""),
             "video_candidate_sheet_storage_path": str(video_reservation.get("candidate_sheet_path") or ""),
         },
-        key=f"live_camera_v142_{camera_trip_key}_{st.session_state.capture_serial}",
+        key=f"live_camera_v145_{camera_trip_key}_{st.session_state.capture_serial}",
         on_photo_change=lambda: None,
         on_video_change=lambda: None,
         on_camera_error_change=lambda: None,
@@ -14597,10 +14904,10 @@ def page_trip():
                         pass
 
                 if ai_status in {"queued", "queued_recovery"} and isinstance(saved_video, dict) and saved_video.get("id"):
-                    # The original video is already safely stored. Good Moments now
-                    # starts separately and never blocks camera/navigation controls.
                     try:
-                        launch_video_ai_background_job(saved_video)
+                        save_stage = "AI自動処理"
+                        with st.spinner("動画を保存しました。いい瞬間を自動作成しています…"):
+                            launch_video_ai_background_job(saved_video)
                     except Exception as background_exc:
                         ai_status = "queued_recovery"
                         try:
@@ -14608,11 +14915,8 @@ def page_trip():
                             selection = reflection.get("ai_selection") or {}
                             if not isinstance(selection, dict):
                                 selection = {}
-                            selection["status"] = "waiting_candidates"
-                            selection["stage"] = "candidate_preparation"
+                            selection["status"] = "processing"
                             selection["last_error"] = str(background_exc)[:240]
-                            selection["updated_at"] = now_jst().isoformat()
-                            selection["pipeline_mode"] = "background_separated_v145"
                             reflection["ai_selection"] = selection
                             _write_photo_reflection(saved_video["id"], reflection)
                         except Exception:
@@ -14633,7 +14937,7 @@ def page_trip():
                 st.session_state["_browser_last_camera_mode"] = "video"
                 st.session_state.capture_serial += 1
                 if ai_status in {"queued", "queued_recovery"}:
-                    notice = "動画を保管庫に保存しました。いい瞬間はバックグラウンドで自動作成します。"
+                    notice = "動画を保管庫に保存しました。いい瞬間は自動で作成します。"
                 else:
                     notice = "動画を保管庫に保存しました。いい瞬間を自動で作成しました。"
                 st.session_state["_camera_notice"] = notice
@@ -14695,6 +14999,32 @@ def page_trip():
                         capture_source=capture_source,
                     )
 
+                voice_comment_saved = False
+                voice_payload = payload.get("voice_recording")
+                if isinstance(voice_payload, dict) and saved_photo and saved_photo.get("id"):
+                    try:
+                        voice_file = decode_audio_data_url(voice_payload, fallback_name="photo_comment.webm")
+                        if voice_file is not None:
+                            place_label_for_voice = str((location or {}).get("place_label") or trip.get("destination") or "").strip()
+                            with st.spinner("声も一緒に保存しています…"):
+                                transcript = transcribe_audio(
+                                    voice_file,
+                                    f"ぶらり旅で今撮った写真について本人が話しています。場所は{place_label_for_voice or '不明'}です。",
+                                )
+                            transcript = str(transcript or "").strip()
+                            if transcript:
+                                update_photo_reflection(
+                                    saved_photo["id"],
+                                    [{"role": "child", "text": transcript}],
+                                    {},
+                                    done=False,
+                                )
+                                voice_comment_saved = True
+                    except Exception as voice_exc:
+                        st.warning("写真は保存しましたが、録音コメントの保存だけ完了できませんでした。")
+                        with st.expander("録音保存の詳細"):
+                            st.code(str(voice_exc))
+
                 st.session_state[digest_key] = digest
                 if isinstance(saved_photo, dict) and saved_photo.get("id"):
                     st.session_state[f"_camera_recent_photo_{trip['id']}"] = saved_photo["id"]
@@ -14712,7 +15042,7 @@ def page_trip():
                 st.session_state["_browser_last_camera_open_at"] = time.time() * 1000.0
                 st.session_state["_browser_last_camera_mode"] = "photo"
                 st.session_state.capture_serial += 1
-                st.session_state["_camera_notice"] = "写真を保存しました。"
+                st.session_state["_camera_notice"] = "写真と声を保存しました。" if voice_comment_saved else "写真を保存しました。"
                 st.rerun()
         except Exception as exc:
             st.error("写真を保存できませんでした。")
@@ -16219,12 +16549,20 @@ def page_settings():
 verify_setup()
 require_family_pin()
 init_state()
-# v145: video saving and Good Moments are separate. This only submits unfinished
-# videos to background workers and returns immediately, so normal navigation/camera
-# operation is never held by AI extraction.
-resume_member_video_background_jobs()
-# Native/lossless extraction rules are unchanged. Low-resolution candidates are
-# never substituted for user-facing stills.
+# v133: unfinished videos are processed automatically in the normal Streamlit
+# execution, not in a detached long-lived thread. No viewer/button action is
+# required. Process one saved video, then rerun so another queued video can follow.
+with st.spinner("保存済み動画の『いい瞬間』を自動処理しています…"):
+    _video_auto_processed_v140 = resume_member_video_background_jobs()
+if _video_auto_processed_v140:
+    try:
+        _home_video_counts_cached.clear()
+    except Exception:
+        pass
+    st.rerun()
+# v140 does not use browser-side low-resolution candidate recovery. If native
+# extraction from the saved original is unavailable, the job ends as an explicit
+# error instead of silently substituting blurry frames.
 # Daily rollover and old-title repair can touch many rows. They are diary/history
 # maintenance, not startup requirements, so home/camera opens no longer wait for them.
 restore_recent_camera_session()
