@@ -27,8 +27,7 @@ from zoneinfo import ZoneInfo
 
 import streamlit as st
 
-APP_BUILD = "v146"
-APP_BASE_BUILD = "v144"  # 30-second change applied on top of the latest full-feature build.
+APP_BUILD = "v144"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -677,15 +676,15 @@ try:
 except Exception:
     VIDEO_STORAGE_QUOTA_MB = 0
 
-VIDEO_MAX_SECONDS = 30
-VIDEO_PROCESSING_MAX_SECONDS = 35
+VIDEO_MAX_SECONDS = 15
+VIDEO_PROCESSING_MAX_SECONDS = 20
 # v142 quality-first source recording. Never lower source quality merely to satisfy
-# an app-side file cap. 36 MiB reserves one 30-second 1080p recording at up to ~8 Mbps plus audio/container overhead.
-# This intentionally preserves source quality; the Supabase bucket per-file limit must be at least 40 MiB.
-VIDEO_MAX_BYTES = 36 * 1024 * 1024
+# an app-side file cap. 18 MiB fits a 15-second 1080p recording at up to ~8 Mbps
+# plus audio/container overhead while remaining below the recommended 20 MiB bucket cap.
+VIDEO_MAX_BYTES = 18 * 1024 * 1024
 VIDEO_AI_MAX_SELECTIONS = 9
 VIDEO_AI_SAMPLE_INTERVAL_MS = 100
-VIDEO_AI_MAX_CANDIDATES = 300
+VIDEO_AI_MAX_CANDIDATES = 150
 # Every 0.1-second frame is evaluated by AI. Batching is only an API payload
 # boundary; it is not a non-AI quality filter.
 VIDEO_AI_BATCH_SIZE = 25
@@ -961,7 +960,7 @@ export default function(component) {
   const reviewBuild = parentElement.querySelector('#camera-review-build');
   const status = parentElement.querySelector('#live-camera-status');
 
-  const VIDEO_MAX_SECONDS = 30;
+  const VIDEO_MAX_SECONDS = 15;
   // v107: the browser uploads the video blob straight to a short-lived Supabase
   // signed upload URL. The multi-megabyte video is never serialized through a
   // Streamlit component trigger value.
@@ -975,7 +974,7 @@ export default function(component) {
   const videoUnavailableReason = String(data?.video_unavailable_reason || '');
   const videoAllowed = data?.video_allowed !== false && Boolean(videoUploadSignedUrl && videoUploadStoragePath);
   const videoCapacityMessage = String(
-    data?.video_capacity_message || '動画の保存容量または保存先を確認できないため、最大30秒の動画を撮影できません。'
+    data?.video_capacity_message || '動画の保存容量または保存先を確認できないため、最大15秒の動画を撮影できません。'
   );
   const unavailableSuffix = videoUnavailableReason === 'quota'
     ? '容量不足'
@@ -1270,7 +1269,7 @@ export default function(component) {
         localStorage.setItem('tokyo_burari_last_camera_open_v1', String(openedAt));
         localStorage.setItem('tokyo_burari_last_camera_mode_v1', cameraMode === 'video' ? 'video' : 'photo');
       } catch (_) {}
-      setStatus(cameraMode === 'video' ? '動画は最大30秒です。音声も一緒に記録します。' : '');
+      setStatus(cameraMode === 'video' ? '動画は最大15秒です。音声も一緒に記録します。' : '');
     } catch (err) {
       console.error(err);
       stopStream();
@@ -1518,7 +1517,7 @@ export default function(component) {
   const captureRecordingCandidateFrame = async () => {
     if (recordingCandidateBusy || !recordingStartedAt || !video.videoWidth || !video.videoHeight) return;
     if (!mediaRecorder || mediaRecorder.state !== 'recording') return;
-    if (recordingCandidateFrames.length >= 300) return;
+    if (recordingCandidateFrames.length >= 150) return;
     recordingCandidateBusy = true;
     try {
       const frameCanvas = document.createElement('canvas');
@@ -1675,7 +1674,7 @@ export default function(component) {
       const measuredDuration = Number.isFinite(probe.duration) && probe.duration > 0
         ? probe.duration
         : Math.max(0.2, Number(durationMs || 0) / 1000);
-      const sampleCount = Math.max(1, Math.min(300, Math.ceil(measuredDuration * 10)));
+      const sampleCount = Math.max(1, Math.min(150, Math.ceil(measuredDuration * 10)));
       const frameCanvas = document.createElement('canvas');
       const srcW = probe.videoWidth || video.videoWidth || 1280;
       const srcH = probe.videoHeight || video.videoHeight || 720;
@@ -5008,7 +5007,7 @@ def video_recording_capacity_status():
             "quota_bytes": 0,
             "remaining_bytes": None,
             "required_bytes": VIDEO_MAX_BYTES,
-            "message": f"動画は最大30秒です。高画質動画1本分として最大 {format_storage_size(VIDEO_MAX_BYTES)} を確保します。",
+            "message": f"動画は最大15秒です。高画質動画1本分として最大 {format_storage_size(VIDEO_MAX_BYTES)} を確保します。",
         }
 
     usage = current_video_storage_usage_bytes()
@@ -5016,12 +5015,12 @@ def video_recording_capacity_status():
     allowed = remaining >= VIDEO_MAX_BYTES
     if allowed:
         message = (
-            f"最大30秒の高画質動画を撮影できます。残り {format_storage_size(remaining)} / "
+            f"最大15秒の高画質動画を撮影できます。残り {format_storage_size(remaining)} / "
             f"上限 {format_storage_size(quota)}"
         )
     else:
         message = (
-            "最大30秒の高画質動画1本分の空き容量がありません。"
+            "最大15秒の高画質動画1本分の空き容量がありません。"
             f" 残り {format_storage_size(remaining)} / 上限 {format_storage_size(quota)}。"
             f"撮影には少なくとも {format_storage_size(VIDEO_MAX_BYTES)} の空きが必要です。"
         )
@@ -5306,7 +5305,7 @@ def register_browser_uploaded_video(
     if size_value <= 0:
         raise ValueError("動画の容量を確認できませんでした。")
     if size_value > VIDEO_MAX_BYTES:
-        raise ValueError("動画データが高画質30秒動画の保存上限を超えています。画質は下げません。保存上限またはSupabase Bucketのファイル上限を確認してください。")
+        raise ValueError("動画データが高画質15秒動画の保存上限を超えています。画質は下げません。保存上限またはSupabase Bucketのファイル上限を確認してください。")
     ensure_video_storage_capacity(size_value)
 
     try:
@@ -5435,14 +5434,14 @@ def upload_video(
     if not video_bytes:
         raise ValueError("動画データが空です。")
     # MediaRecorder.onstop may fire after the actual recording has already stopped.
-    # The browser caps recording at 30 seconds, so do not reject a valid video based
+    # The browser caps recording at 15 seconds, so do not reject a valid video based
     # on wall-clock delay between recorder.stop() and the onstop callback.
     duration_value = min(
         VIDEO_PROCESSING_MAX_SECONDS * 1000,
         max(0, int(duration_ms or 0)),
     )
     if len(video_bytes) > VIDEO_MAX_BYTES:
-        raise ValueError("動画データが高画質30秒動画の保存上限を超えています。画質は下げません。保存上限またはSupabase Bucketのファイル上限を確認してください。")
+        raise ValueError("動画データが高画質15秒動画の保存上限を超えています。画質は下げません。保存上限またはSupabase Bucketのファイル上限を確認してください。")
     ensure_video_storage_capacity(len(video_bytes))
     poster = normalize_photo(poster_bytes)
     if not poster:
@@ -5783,7 +5782,7 @@ def choose_video_ai_frames(
             batch = frames[batch_start:batch_start + VIDEO_AI_BATCH_SIZE]
             batch_keep = min(VIDEO_AI_BATCH_KEEP, len(batch))
             batch_prompt = (
-                "30秒以内の動画を0.1秒間隔で切り出した連続フレームの一部です。"
+                "15秒以内の動画を0.1秒間隔で切り出した連続フレームの一部です。"
                 "このバッチ内の候補をすべて見比べ、人が写真として残したくなる強い瞬間を選んでください。\n"
                 f"最大{batch_keep}枚を選びます。単なる時間分散ではなく、映え・表情・決定的瞬間・被写体の魅力を優先してください。"
                 "似た連続フレームでは、一番良い0.1秒の1枚を優先してください。"
@@ -6516,11 +6515,11 @@ def _background_extract_video_candidate_frames(client, photo):
                 command,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                timeout=90,
+                timeout=45,
                 check=False,
             )
         except subprocess.TimeoutExpired as exc:
-            raise RuntimeError("元動画から高画質候補を作る処理が90秒でタイムアウトしました。") from exc
+            raise RuntimeError("元動画から高画質候補を作る処理が45秒でタイムアウトしました。") from exc
 
         files = sorted(Path(tmpdir).glob("frame_*.png"))[:target_count]
         if completed.returncode != 0 and not files:
@@ -12920,7 +12919,7 @@ export default function(component) {
           probe.addEventListener('error', () => { clearTimeout(timer); reject(new Error('動画情報を読み込めません')); }, { once: true });
         });
         const duration = Number.isFinite(probe.duration) && probe.duration > 0 ? probe.duration : 1;
-        const count = Math.max(1, Math.min(300, Math.ceil(duration * 10)));
+        const count = Math.max(1, Math.min(150, Math.ceil(duration * 10)));
         const srcW = probe.videoWidth || 1280;
         const srcH = probe.videoHeight || 720;
         const maxSide = 240;
@@ -16243,12 +16242,12 @@ def page_settings():
             )
             st.caption(
                 f"残り：{format_storage_size(remaining_bytes)}。動画撮影を始める前に、"
-                f"30秒の高画質録画1本分として {format_storage_size(VIDEO_MAX_BYTES)} の空きがあるか確認します。"
+                f"15秒の高画質録画1本分として {format_storage_size(VIDEO_MAX_BYTES)} の空きがあるか確認します。"
                 "AIセレクションの静止画・候補ZIPはこの動画容量には含めません。"
                 "軽い手振れ補正版を作成できた場合、その補正版は動画容量に含まれます。"
             )
             if remaining_bytes < VIDEO_MAX_BYTES:
-                st.warning("30秒録画と保存処理用バッファの空きがないため、現在は動画撮影を開始できません。")
+                st.warning("15秒録画と保存処理用バッファの空きがないため、現在は動画撮影を開始できません。")
             st.progress(min(1.0, usage_bytes / quota_bytes) if quota_bytes else 0.0)
         except Exception as exc:
             st.caption("動画容量を確認できませんでした。")
@@ -16267,7 +16266,7 @@ def page_settings():
         "初回だけ、このサイトへのカメラ使用を『許可』してください。"
     )
     st.caption(
-        "動画は最大30秒です。録画を止めると確認画面を挟まず元動画を保管庫へ自動保存します。"
+        "動画は最大15秒です。録画を止めると確認画面を挟まず元動画を保管庫へ自動保存します。"
         "『いい瞬間』は保存済みの元動画を0.1秒間隔で元解像度のまま1回だけ切り出し、AI用には別の軽量コピーを使います。"
         "利用者が見る最大9枚は元動画由来の高画質フレームのみで、低解像度候補へは切り替えません。"
         "初回はカメラとは別に位置情報の許可も求められます。位置情報がオフ・拒否・取得不能の場合は、"
