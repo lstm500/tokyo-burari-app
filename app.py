@@ -28,9 +28,9 @@ from zoneinfo import ZoneInfo
 import streamlit as st
 
 # Freshly generated update: 2026-08-31 23:49 JST
-GENERATED_UPDATE_JST = "2026-09-02T01:15:00+09:00"
+GENERATED_UPDATE_JST = "2026-09-02T01:21:52+09:00"
 
-APP_BUILD = "v166"
+APP_BUILD = "v167"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -3688,6 +3688,8 @@ export default function(component) {
   const allowDelete = data?.allow_delete !== false;
   const allowEmotion = data?.allow_emotion !== false;
   const pendingStore = 'tokyo_burari_pending_tags_v166';
+  const pendingParam = String(data?.pending_param || 'feel_v159');
+  const compatStore = 'tokyo_burari_pending_feelings_v159';
   const familyKey = String(data?.family_key || '');
   const memberKey = String(data?.member_key || '');
   const modeByPhoto = (data?.mode_by_photo && typeof data.mode_by_photo === 'object') ? {...data.mode_by_photo} : {};
@@ -3707,10 +3709,33 @@ export default function(component) {
   const normalizeNormal = (value) => Object.prototype.hasOwnProperty.call(normalMeta, String(value || '')) ? String(value || '') : '';
   const normalizeParenting = (value) => Object.prototype.hasOwnProperty.call(parentingMeta, String(value || '')) ? String(value || '') : '';
 
+  const encodeCompat = (payload) => {
+    try {
+      const bytes = new TextEncoder().encode(JSON.stringify(payload));
+      let binary = '';
+      for (let i = 0; i < bytes.length; i += 0x4000) binary += String.fromCharCode(...bytes.subarray(i, i + 0x4000));
+      return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
+    } catch (_) { return ''; }
+  };
+  const mirrorCompat = (envelope) => {
+    try {
+      if (!envelope || !envelope.t || !familyKey || !memberKey) return;
+      const compat = {...envelope, v:159, f:familyKey, m:memberKey};
+      const encoded = encodeCompat(compat);
+      if (!encoded) return;
+      const url = new URL(window.location.href);
+      url.searchParams.set(pendingParam, encoded);
+      localStorage.setItem(compatStore, encoded);
+      window.history.replaceState(window.history.state || {}, '', url.pathname + url.search + url.hash);
+    } catch (_) {}
+  };
   const readPending = () => {
     try {
       const parsed = JSON.parse(String(localStorage.getItem(pendingStore) || 'null'));
-      if (parsed && Number(parsed.v) === 166 && String(parsed.f || '') === familyKey && String(parsed.m || '') === memberKey) return parsed;
+      if (parsed && Number(parsed.v) === 166 && String(parsed.f || '') === familyKey && String(parsed.m || '') === memberKey) {
+        mirrorCompat(parsed);
+        return parsed;
+      }
     } catch (_) {}
     return {v:166,f:familyKey,m:memberKey,p:{},g:{},x:{}};
   };
@@ -3724,6 +3749,7 @@ export default function(component) {
       mutator(envelope);
       envelope.t = `${Date.now()}_${Math.random().toString(36).slice(2)}`;
       localStorage.setItem(pendingStore, JSON.stringify(envelope));
+      mirrorCompat(envelope);
     } catch (_) {}
   };
   const persistNormal = (photoId, value) => mutatePending((envelope) => { envelope.p[String(photoId)] = normalizeNormal(value); });
@@ -3816,7 +3842,7 @@ def _get_diary_gallery_component():
     _diary_gallery_component_initialized = True
     try:
         diary_gallery_component = st.components.v2.component(
-            "tokyo_burari_diary_gallery_v166",
+            "tokyo_burari_diary_gallery_v167",
             html=_DIARY_GALLERY_HTML,
             css=_DIARY_GALLERY_CSS,
             js=_DIARY_GALLERY_JS,
@@ -3855,6 +3881,11 @@ export default function(component) {
         const savedBytes = Uint8Array.from(savedBinary, (char) => char.charCodeAt(0));
         const savedPayload = JSON.parse(new TextDecoder().decode(savedBytes));
         if (String(savedPayload?.t || '') === ack) localStorage.removeItem('tokyo_burari_pending_feelings_v159');
+      }
+      const v166Raw = String(localStorage.getItem('tokyo_burari_pending_tags_v166') || '');
+      if (v166Raw) {
+        const v166Payload = JSON.parse(v166Raw);
+        if (String(v166Payload?.t || '') === ack) localStorage.removeItem('tokyo_burari_pending_tags_v166');
       }
     } catch (_) {}
     window.history.replaceState(window.history.state || {}, '', url.pathname + url.search + url.hash);
@@ -3969,8 +4000,8 @@ def _apply_pending_tag_payload_v166(payload):
             pid = str(photo_id or "").strip()
             if pid:
                 parenting_changes.append({"photo_id": pid, "parenting": normalize_parenting_tag_key(parenting)})
-        if parenting_changes:
-            update_photo_parenting_tags_batch(parenting_changes)
+        if photo_changes or parenting_changes:
+            update_photo_tags_combined_v166(photo_changes, parenting_changes)
 
         moments = payload.get("x") or {}
         if isinstance(moments, dict):
@@ -14828,6 +14859,8 @@ export default function(component) {
   const familyKey=String(data?.family_key||''), memberKey=String(data?.member_key||''), videoId=String(data?.video_id||'');
   const roundNumber=Math.max(0,Number(data?.round_number||0)||0);
   const pendingStore='tokyo_burari_pending_tags_v166';
+  const pendingParam=String(data?.pending_param||'feel_v159');
+  const compatStore='tokyo_burari_pending_feelings_v159';
   const selected=new Set((Array.isArray(data?.selected_ranks)?data.selected_ranks:[]).map(Number).filter(v=>Number.isFinite(v)&&v>0));
   const nextVideoButton=parentElement.querySelector('#moments-next-video');
   const saveSelectionButton=parentElement.querySelector('#moments-save-selection');
@@ -14854,10 +14887,16 @@ export default function(component) {
   let preferredMode=String(data?.preferred_mode||'')==='parenting'?'parenting':'normal';
   const selectionTouched=new Set();
 
+  const encodeCompat=(payload)=>{
+    try{const bytes=new TextEncoder().encode(JSON.stringify(payload));let binary='';for(let i=0;i<bytes.length;i+=0x4000)binary+=String.fromCharCode(...bytes.subarray(i,i+0x4000));return btoa(binary).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/g,'');}catch(_){return '';}
+  };
+  const mirrorCompat=(envelope)=>{
+    try{if(!envelope||!envelope.t||!familyKey||!memberKey)return;const compat={...envelope,v:159,f:familyKey,m:memberKey};const encoded=encodeCompat(compat);if(!encoded)return;const url=new URL(window.location.href);url.searchParams.set(pendingParam,encoded);localStorage.setItem(compatStore,encoded);window.history.replaceState(window.history.state||{},'',url.pathname+url.search+url.hash);}catch(_){}
+  };
   const readPending=()=>{
     try{
       const parsed=JSON.parse(String(localStorage.getItem(pendingStore)||'null'));
-      if(parsed&&Number(parsed.v)===166&&String(parsed.f||'')===familyKey&&String(parsed.m||'')===memberKey)return parsed;
+      if(parsed&&Number(parsed.v)===166&&String(parsed.f||'')===familyKey&&String(parsed.m||'')===memberKey){mirrorCompat(parsed);return parsed;}
     }catch(_){}
     return {v:166,f:familyKey,m:memberKey,p:{},g:{},x:{}};
   };
@@ -14873,6 +14912,7 @@ export default function(component) {
     try{
       envelope.t=`${Date.now()}_${Math.random().toString(36).slice(2)}`;
       localStorage.setItem(pendingStore,JSON.stringify(envelope));
+      mirrorCompat(envelope);
     }catch(_){}
   };
   const persistMomentState=(rank)=>{
@@ -14990,7 +15030,7 @@ def _get_moments_select_component():
     _moments_select_component_initialized = True
     try:
         moments_select_component = st.components.v2.component(
-            "tokyo_burari_moments_select_v166",
+            "tokyo_burari_moments_select_v167",
             html=_MOMENTS_SELECT_HTML,
             css=_MOMENTS_SELECT_CSS,
             js=_MOMENTS_SELECT_JS,
@@ -15217,6 +15257,7 @@ def _render_moments_picker(photo, index, view_mode="list", next_video_action=Non
                 "member_key": current_member_key(),
                 "video_id": video_id,
                 "round_number": round_number,
+                "pending_param": PENDING_EMOTION_QUERY_PARAM,
                 "preferred_mode": str(st.session_state.get(preferred_mode_key) or "normal"),
                 "show_next_video": bool(next_cfg),
                 "next_label": str(next_cfg.get("label") or "次の動画の写真へ →"),
@@ -15232,31 +15273,11 @@ def _render_moments_picker(photo, index, view_mode="list", next_video_action=Non
             nonce = str(picker_action.get("nonce") or "")
             action_token_key = f"_moments_picker_action_token_{video_id}_{round_number}"
             if nonce and nonce != str(st.session_state.get(action_token_key) or ""):
-                pending_payload = picker_action.get("pending_payload")
-                if isinstance(pending_payload, dict):
-                    _apply_pending_tag_payload_v166(pending_payload)
-
-                raw_changes = picker_action.get("changes") or []
-                emotion_changes = []
-                parenting_changes = []
-                for change in raw_changes if isinstance(raw_changes, list) else []:
-                    if not isinstance(change, dict):
-                        continue
-                    try:
-                        change_rank = int(change.get("rank") or 0)
-                    except Exception:
-                        change_rank = 0
-                    if change_rank in valid_ranks:
-                        emotion_changes.append({"rank": change_rank, "emotion": normalize_photo_emotion_key(change.get("emotion"))})
-                        parenting_changes.append({"rank": change_rank, "parenting": normalize_parenting_tag_key(change.get("parenting"))})
-
+                # v167: tag taps are mirrored into the URL without communication and
+                # consume_pending_emotion_query() already persisted them at the very
+                # start of this real action rerun. Do not write the same tags again
+                # here; this keeps save/next actions to one DB pass.
                 action_photo = photo
-                if emotion_changes or parenting_changes:
-                    action_photo = update_video_ai_selection_tags(
-                        photo,
-                        emotion_changes=emotion_changes,
-                        parenting_changes=parenting_changes,
-                    )
 
                 committed_selected = picker_action.get("selected_ranks")
                 if isinstance(committed_selected, (list, tuple)):
@@ -16400,7 +16421,7 @@ def render_recent_camera_photo_emotion(trip):
         serial_key = f"recent_emotion_serial_{photo_id}"
         serial = int(st.session_state.get(serial_key) or 0)
         result = gallery_component(
-            data={"photos": [card], "single": True, "allow_delete": True, "allow_emotion": True, "mode_by_photo": st.session_state.get(f"_recent_icon_modes_{photo_id}") or {}, "family_key": current_family_key(), "member_key": current_member_key()},
+            data={"photos": [card], "single": True, "allow_delete": True, "allow_emotion": True, "mode_by_photo": st.session_state.get(f"_recent_icon_modes_{photo_id}") or {}, "family_key": current_family_key(), "member_key": current_member_key(), "pending_param": PENDING_EMOTION_QUERY_PARAM},
             key=f"recent_emotion_{photo_id}_{serial}_{_current_ui_refresh_epoch()}",
             on_delete_photo_id_change=lambda: None,
         )
@@ -16844,7 +16865,7 @@ def render_diary_emotion_gallery(trip_id, photos, trip=None, is_pending=False):
         serial_key = f"diary_emotion_gallery_serial_{trip_id}_{'pending' if is_pending else 'saved'}"
         serial = int(st.session_state.get(serial_key) or 0)
         result = gallery_component(
-            data={"photos": cards, "allow_delete": True, "allow_emotion": True, "mode_by_photo": st.session_state.get(f"_diary_icon_modes_{trip_id}") or {}, "family_key": current_family_key(), "member_key": current_member_key()},
+            data={"photos": cards, "allow_delete": True, "allow_emotion": True, "mode_by_photo": st.session_state.get(f"_diary_icon_modes_{trip_id}") or {}, "family_key": current_family_key(), "member_key": current_member_key(), "pending_param": PENDING_EMOTION_QUERY_PARAM},
             key=f"diary_emotion_gallery_{trip_id}_{serial}_{_current_ui_refresh_epoch()}",
             on_delete_photo_id_change=lambda: None,
         )
@@ -18021,9 +18042,9 @@ except Exception:
 restore_recent_camera_session()
 
 # Legacy v159 pending query values are still consumed for users who upgrade with an
-# older tab open. v166 uses localStorage only and flushes it on the next real app rerun.
+# older tab open. v167 mirrors browser-only choices into this URL payload with
+# history.replaceState, so the next real app action can persist them without any tap-time communication.
 consume_pending_emotion_query()
-sync_pending_tags_from_browser_v166()
 
 # v146: resolve browser Back/Forward before drawing any visible page.
 # Previously the bridge ran after page rendering, so a mobile Back event could first
