@@ -30,7 +30,7 @@ import streamlit as st
 # Freshly generated update: 2026-08-31 23:49 JST
 GENERATED_UPDATE_JST = "2026-08-31T23:49:00+09:00"
 
-APP_BUILD = "v151"
+APP_BUILD = "v152"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -9263,6 +9263,33 @@ def _music_library_session_key():
     return f"_music_library_{current_family_key()}_{current_member_key()}"
 
 
+def normalize_replay_bpm(value):
+    """Return a usable music tempo (40-220 BPM), or 0 when unknown/disabled."""
+    try:
+        bpm = int(round(float(value or 0)))
+    except Exception:
+        return 0
+    return bpm if 40 <= bpm <= 220 else 0
+
+
+def replay_beat_interval_ms(bpm, target_ms):
+    """Choose a musically natural 1/2/4/8-beat photo interval nearest the old timing."""
+    bpm = normalize_replay_bpm(bpm)
+    target_ms = max(650, min(4000, int(target_ms or 1600)))
+    if not bpm:
+        return 0, target_ms
+    beat_ms = 60000.0 / float(bpm)
+    candidates = []
+    for beats in (1, 2, 4, 8):
+        interval = beat_ms * beats
+        if 800 <= interval <= 3200:
+            candidates.append((beats, interval))
+    if not candidates:
+        candidates = [(beats, beat_ms * beats) for beats in (1, 2, 4, 8)]
+    beats, interval = min(candidates, key=lambda pair: abs(pair[1] - target_ms))
+    return int(beats), max(650, min(4000, int(round(interval))))
+
+
 def _normalize_music_library_item(item):
     item = item if isinstance(item, dict) else {}
     url = str(item.get("youtube_url") or "").strip()
@@ -9286,6 +9313,8 @@ def _normalize_music_library_item(item):
         "author_name": str(item.get("author_name") or "").strip(),
         "start_seconds": start_seconds,
         "end_seconds": end_seconds,
+        "bpm": normalize_replay_bpm(item.get("bpm")),
+        "bpm_source": str(item.get("bpm_source") or "").strip(),
         "reason": str(item.get("reason") or "").strip(),
         "confidence": str(item.get("confidence") or "").strip(),
         "saved_at": str(item.get("saved_at") or item.get("updated_at") or "").strip(),
@@ -9402,7 +9431,9 @@ def music_library_label(item):
     start_seconds = int(item.get("start_seconds") or 0)
     end_seconds = int(item.get("end_seconds") or (start_seconds + 20))
     prefix = f"{title} / {author}" if author else title
-    return f"{prefix}（{format_mmss(start_seconds)}〜{format_mmss(end_seconds)}）"
+    bpm = normalize_replay_bpm(item.get("bpm"))
+    tempo = f" / {bpm} BPM" if bpm else ""
+    return f"{prefix}（{format_mmss(start_seconds)}〜{format_mmss(end_seconds)}{tempo}）"
 
 
 def apply_music_library_item(month_key, review, item):
@@ -9413,6 +9444,7 @@ def apply_music_library_item(month_key, review, item):
     st.session_state[state["url_key"]] = item["youtube_url"]
     st.session_state[state["start_key"]] = int(item["start_seconds"])
     st.session_state[state["end_key"]] = int(item["end_seconds"])
+    st.session_state[state["bpm_key"]] = normalize_replay_bpm(item.get("bpm"))
     st.session_state[state["reason_key"]] = str(item.get("reason") or "")
     st.session_state[state["confidence_key"]] = str(item.get("confidence") or "saved")
     st.session_state[state["title_key"]] = str(item.get("title") or "")
@@ -9423,6 +9455,7 @@ def apply_music_library_item(month_key, review, item):
     st.session_state[f"monthly_replay_applied_{month_key}"] = {
         "start_seconds": int(item["start_seconds"]),
         "end_seconds": int(item["end_seconds"]),
+        "bpm": normalize_replay_bpm(item.get("bpm")),
     }
     return playback
 
@@ -9527,8 +9560,9 @@ def guess_monthly_replay_window(youtube_url, month_key, review):
             "end_seconds": {"type": "integer"},
             "reason": {"type": "string"},
             "confidence": {"type": "string"},
+            "bpm": {"type": "integer"},
         },
-        "required": ["start_seconds", "end_seconds", "reason", "confidence"],
+        "required": ["start_seconds", "end_seconds", "reason", "confidence", "bpm"],
         "additionalProperties": False,
     }
     title = str(meta.get("title") or "").strip()
@@ -9552,6 +9586,8 @@ def guess_monthly_replay_window(youtube_url, month_key, review):
 - end_seconds は start_seconds より後にする。
 - reason は日本語で60文字以内、簡潔に。
 - confidence は low / medium / high のいずれか。
+- bpm は写真切替を曲の拍に合わせるためのテンポ推定値。タイトル・投稿者から妥当に推定できる場合は40〜220の整数、分からない場合は0。
+- bpmは音声を直接解析した値ではなく、曲情報からの推定であるため、確信がなければ0にする。
 - 実在確認できないことを断定しない。推測であることを前提に、もっとも無難な候補を1つだけ返す。
 """.strip()
     try:
@@ -9568,6 +9604,7 @@ def guess_monthly_replay_window(youtube_url, month_key, review):
     confidence = str(result.get("confidence") or "low").strip().lower()
     if confidence not in {"low", "medium", "high"}:
         confidence = "low"
+    bpm = normalize_replay_bpm(result.get("bpm"))
     return {
         "youtube_url": youtube_url,
         "video_id": parse_youtube_video_id(youtube_url),
@@ -9575,6 +9612,8 @@ def guess_monthly_replay_window(youtube_url, month_key, review):
         "author_name": author,
         "start_seconds": start,
         "end_seconds": end,
+        "bpm": bpm,
+        "bpm_source": "ai_estimate" if bpm else "unknown",
         "reason": reason,
         "confidence": confidence,
         "updated_at": now_jst().isoformat(),
@@ -9655,10 +9694,13 @@ def render_monthly_replay_player(period_label, review, playback, photo_items):
     if end_seconds <= start_seconds:
         end_seconds = start_seconds + 20
     duration_seconds = max(1, end_seconds - start_seconds)
-    # Show every photo at least once when possible, but cap each photo at 2.5s so
-    # a small set of photos naturally loops again while a longer music segment is playing.
-    # Photo cycling is never used as the stop condition; only the music end time stops playback.
-    display_ms = max(900, min(2500, int(max(1, duration_seconds) * 1000 / max(1, len(photo_items)))))
+    # Base timing keeps the prior behavior. When a BPM is available, quantize the
+    # interval to a musically natural 1/2/4/8-beat unit and drive slide changes from
+    # YouTube's currentTime so buffering cannot slowly drift the photos off the music.
+    target_display_ms = max(900, min(2500, int(max(1, duration_seconds) * 1000 / max(1, len(photo_items)))))
+    bpm = normalize_replay_bpm((playback or {}).get("bpm"))
+    beats_per_slide, display_ms = replay_beat_interval_ms(bpm, target_display_ms)
+    tempo_sync = bool(bpm and beats_per_slide)
     period_label_escaped = html.escape(str(period_label or "期間の振り返り"))
     first_caption = html.escape(str(photo_items[0].get("caption") or "")) if photo_items else ""
     payload = json.dumps(photo_items, ensure_ascii=False)
@@ -9691,7 +9733,6 @@ def render_monthly_replay_player(period_label, review, playback, photo_items):
         background: #0f172a;
         border: 6px solid rgba(255,255,255,.16);
         box-sizing: border-box;
-        transition: border-color .18s ease;
       }}
       .burari-replay-stage img {{
         width: 100%;
@@ -9803,7 +9844,7 @@ def render_monthly_replay_player(period_label, review, playback, photo_items):
           <button id="burariReplayAgain" type="button">↻ 最初から</button>
         </div>
       </div>
-      <div class="burari-replay-meta">音楽区間：{format_mmss(start_seconds)}〜{format_mmss(end_seconds)} ／ 写真 {len(photo_items)}枚</div>
+      <div class="burari-replay-meta">音楽区間：{format_mmss(start_seconds)}〜{format_mmss(end_seconds)} ／ 写真 {len(photo_items)}枚{f" ／ テンポ同期：{bpm} BPM・{beats_per_slide}拍ごと" if tempo_sync else ""}</div>
       <div class="burari-replay-player-wrap">
         <div class="burari-replay-player-label">YouTube 音楽</div>
         <div id="burariReplayPlayer"></div>
@@ -9818,7 +9859,13 @@ def render_monthly_replay_player(period_label, review, playback, photo_items):
       const burariEndSeconds = {end_seconds};
       const burariDisplayMs = {display_ms};
       const burariDurationMs = {duration_seconds * 1000};
+      const burariBpm = {bpm};
+      const burariBeatsPerSlide = {beats_per_slide};
+      const burariTempoSync = {str(tempo_sync).lower()};
+      const burariSlideSeconds = Math.max(0.2, burariDisplayMs / 1000);
       let burariIndex = 0;
+      let burariLastTempoSlot = 0;
+      let burariSlidesPrepared = false;
       let burariTimer = null;
       let burariMusicWatchTimer = null;
       let burariFallbackEndTimer = null;
@@ -9843,24 +9890,60 @@ def render_monthly_replay_player(period_label, review, playback, photo_items):
       }};
       const burariEmotionIcons = {{ joy: '😊', anger: '😠', sadness: '😢', fun: '🎉' }};
 
+      const burariPreloaded = burariSlides.map((item) => {{
+        const image = new Image();
+        if (item && item.url) image.src = String(item.url);
+        return image;
+      }});
+
+      async function burariPrepareSlides() {{
+        if (burariSlidesPrepared) return;
+        const waits = burariPreloaded.map((image) => new Promise((resolve) => {{
+          if (!image || !image.src || image.complete) {{ resolve(); return; }}
+          const done = () => resolve();
+          image.addEventListener('load', done, {{ once: true }});
+          image.addEventListener('error', done, {{ once: true }});
+        }}));
+        try {{
+          await Promise.race([
+            Promise.allSettled(waits),
+            new Promise((resolve) => setTimeout(resolve, 2500)),
+          ]);
+          const decodes = burariPreloaded.map((image) => {{
+            try {{ return image && typeof image.decode === 'function' ? image.decode().catch(() => null) : Promise.resolve(); }}
+            catch (_) {{ return Promise.resolve(); }}
+          }});
+          await Promise.race([
+            Promise.allSettled(decodes),
+            new Promise((resolve) => setTimeout(resolve, 1200)),
+          ]);
+        }} catch (_) {{}}
+        burariSlidesPrepared = true;
+      }}
+
       function burariShowSlide(index) {{
         if (!burariSlides.length) return;
         const safeIndex = ((index % burariSlides.length) + burariSlides.length) % burariSlides.length;
         const item = burariSlides[safeIndex] || {{}};
-        if (item.url) burariImg.src = item.url;
         const emotionKey = String(item.emotion || '');
         const emotionColor = burariEmotionColors[emotionKey] || String(item.emotion_color || '') || burariDefaultFrameColor;
         const emotionIcon = burariEmotionIcons[emotionKey] || String(item.emotion_emoji || '');
-        if (burariStage) burariStage.style.borderColor = emotionKey ? emotionColor : burariDefaultFrameColor;
-        if (burariEmotion) {{
-          burariEmotion.textContent = emotionIcon;
-          burariEmotion.style.display = emotionIcon ? 'flex' : 'none';
-          burariEmotion.style.borderColor = emotionKey ? emotionColor : 'rgba(255,255,255,.96)';
-          burariEmotion.setAttribute('aria-hidden', emotionIcon ? 'false' : 'true');
-          burariEmotion.title = emotionIcon ? `${{emotionIcon}} ${{item.emotion_label || ''}}` : '';
-        }}
-        burariCaption.textContent = item.caption || '';
-        burariProgress.textContent = `${{safeIndex + 1}} / ${{burariSlides.length}}`;
+        // Commit the decoded image and its emotion chrome in the same animation frame.
+        // v151 changed the border immediately while the network image could appear later;
+        // preloading + one-frame commit keeps the photo, border and emoji visually locked.
+        requestAnimationFrame(() => {{
+          if (item.url && burariImg.src !== String(item.url)) burariImg.src = String(item.url);
+          if (burariStage) burariStage.style.borderColor = emotionKey ? emotionColor : burariDefaultFrameColor;
+          if (burariEmotion) {{
+            burariEmotion.textContent = emotionIcon;
+            burariEmotion.style.display = emotionIcon ? 'flex' : 'none';
+            burariEmotion.style.borderColor = emotionKey ? emotionColor : 'rgba(255,255,255,.96)';
+            burariEmotion.setAttribute('aria-hidden', emotionIcon ? 'false' : 'true');
+            burariEmotion.title = emotionIcon ? `${{emotionIcon}} ${{item.emotion_label || ''}}` : '';
+          }}
+          burariCaption.textContent = item.caption || '';
+          burariProgress.textContent = `${{safeIndex + 1}} / ${{burariSlides.length}}`;
+        }});
       }}
 
       function burariStopTimers() {{
@@ -9914,6 +9997,7 @@ def render_monthly_replay_player(period_label, review, playback, photo_items):
         // but the slideshow should still start reliably from the user's click.
         if (burariSlideLoopStarted) return;
         burariSlideLoopStarted = true;
+        if (burariTempoSync) return;
         if (burariSlides.length > 1) {{
           burariTimer = setInterval(() => {{
             burariIndex = (burariIndex + 1) % burariSlides.length;
@@ -9938,11 +10022,20 @@ def render_monthly_replay_player(period_label, review, playback, photo_items):
           try {{
             if (!burariPlayer || typeof burariPlayer.getCurrentTime !== 'function') return;
             const current = Number(burariPlayer.getCurrentTime());
+            if (Number.isFinite(current) && burariTempoSync && burariSlides.length > 1) {{
+              const elapsed = Math.max(0, current - burariStartSeconds);
+              const slot = Math.max(0, Math.floor((elapsed + 0.035) / burariSlideSeconds));
+              if (slot > burariLastTempoSlot) {{
+                burariLastTempoSlot = slot;
+                burariIndex = slot % burariSlides.length;
+                burariShowSlide(burariIndex);
+              }}
+            }}
             if (Number.isFinite(current) && current >= burariEndSeconds - 0.12) {{
               burariStopAtEnd();
             }}
           }} catch (_) {{}}
-        }}, 180);
+        }}, burariTempoSync ? 70 : 180);
 
         // Very generous safety net for browsers that stop reporting currentTime.
         // It is intentionally much longer than the requested segment so buffering
@@ -9979,7 +10072,7 @@ def render_monthly_replay_player(period_label, review, playback, photo_items):
         burariPositionTimer = setTimeout(() => burariConfirmRequestedPosition(attempt + 1), 220);
       }}
 
-      function burariActuallyStart() {{
+      async function burariActuallyStart() {{
         if (!burariPlayerReady || !burariPlayer) {{
           burariPendingStart = true;
           if (burariStatus) burariStatus.textContent = 'YouTubeプレーヤーを準備しています…';
@@ -9990,6 +10083,9 @@ def render_monthly_replay_player(period_label, review, playback, photo_items):
         burariWaitingForRequestedPosition = true;
         burariSlideLoopStarted = false;
         burariIndex = 0;
+        burariLastTempoSlot = 0;
+        if (!burariSlidesPrepared && burariStatus) burariStatus.textContent = '写真を準備しています…';
+        await burariPrepareSlides();
         burariShowSlide(burariIndex);
         // Start the photo slideshow immediately and independently. This fixes the
         // changed-music case where YouTube plays but its PLAYING/currentTime event
@@ -10073,6 +10169,7 @@ def _monthly_replay_state(month_key, review):
     reason_key = f"monthly_replay_reason_{month_key}"
     confidence_key = f"monthly_replay_confidence_{month_key}"
     title_key = f"monthly_replay_title_{month_key}"
+    bpm_key = f"monthly_replay_bpm_{month_key}"
 
     if url_key not in st.session_state:
         st.session_state[url_key] = str(playback.get("youtube_url") or "")
@@ -10088,6 +10185,8 @@ def _monthly_replay_state(month_key, review):
         st.session_state[confidence_key] = str(playback.get("confidence") or "")
     if title_key not in st.session_state:
         st.session_state[title_key] = str(playback.get("title") or "")
+    if bpm_key not in st.session_state:
+        st.session_state[bpm_key] = normalize_replay_bpm(playback.get("bpm"))
 
     return {
         "playback": playback,
@@ -10097,6 +10196,7 @@ def _monthly_replay_state(month_key, review):
         "reason_key": reason_key,
         "confidence_key": confidence_key,
         "title_key": title_key,
+        "bpm_key": bpm_key,
     }
 
 
@@ -10110,6 +10210,7 @@ def render_monthly_music_settings(month_key, bundle, review, expanded=True):
     reason_key = state["reason_key"]
     confidence_key = state["confidence_key"]
     title_key = state["title_key"]
+    bpm_key = state["bpm_key"]
 
     with st.expander("YouTubeの音楽と再生設定", expanded=expanded):
         if photo_items:
@@ -10173,10 +10274,12 @@ def render_monthly_music_settings(month_key, bundle, review, expanded=True):
                     st.session_state[reason_key] = str(guessed.get("reason") or "")
                     st.session_state[confidence_key] = str(guessed.get("confidence") or "")
                     st.session_state[title_key] = str(guessed.get("title") or "")
+                    st.session_state[bpm_key] = normalize_replay_bpm(guessed.get("bpm"))
                     save_monthly_playback(month_key, review, guessed)
                     st.session_state[f"monthly_replay_applied_{month_key}"] = {
                         "start_seconds": int(st.session_state[start_key]),
                         "end_seconds": int(st.session_state[end_key]),
+                        "bpm": normalize_replay_bpm(st.session_state.get(bpm_key)),
                     }
                     st.session_state[f"monthly_music_settings_open_{month_key}"] = False
                     st.success(f"おすすめ区間を {format_mmss(st.session_state[start_key])}〜{format_mmss(st.session_state[end_key])} に設定しました。")
@@ -10188,6 +10291,19 @@ def render_monthly_music_settings(month_key, bundle, review, expanded=True):
 
         st.number_input("開始（秒）", min_value=0, step=1, key=start_key)
         st.number_input("終了（秒）", min_value=1, step=1, key=end_key)
+        st.number_input(
+            "曲のテンポ（BPM）",
+            min_value=0,
+            max_value=220,
+            step=1,
+            key=bpm_key,
+            help="0はテンポ同期なしです。AIのおすすめ時間では曲名等からBPMも推定します。正確に合わせたい場合は既知のBPMを手入力してください。",
+        )
+        bpm = normalize_replay_bpm(st.session_state.get(bpm_key))
+        if bpm:
+            st.caption(f"写真切替を {bpm} BPM の拍に同期します。YouTube音声そのものを解析した値ではないため、必要なら手入力で微調整してください。")
+        else:
+            st.caption("BPMが0のときは、従来どおり写真枚数と再生時間から切替間隔を決めます。")
         start_seconds = max(0, int(st.session_state.get(start_key) or 0))
         end_seconds = int(st.session_state.get(end_key) or (start_seconds + 20))
         if end_seconds <= start_seconds:
@@ -10218,6 +10334,8 @@ def render_monthly_music_settings(month_key, bundle, review, expanded=True):
                         "author_name": str(meta.get("author_name") or "").strip(),
                         "start_seconds": start_seconds,
                         "end_seconds": end_seconds,
+                        "bpm": normalize_replay_bpm(st.session_state.get(bpm_key)),
+                        "bpm_source": "manual" if normalize_replay_bpm(st.session_state.get(bpm_key)) else "unknown",
                         "reason": str(st.session_state.get(reason_key) or "").strip(),
                         "confidence": "manual",
                         "updated_at": now_jst().isoformat(),
@@ -10227,6 +10345,7 @@ def render_monthly_music_settings(month_key, bundle, review, expanded=True):
                     st.session_state[f"monthly_replay_applied_{month_key}"] = {
                         "start_seconds": start_seconds,
                         "end_seconds": end_seconds,
+                        "bpm": normalize_replay_bpm(st.session_state.get(bpm_key)),
                     }
                     st.session_state[confidence_key] = "manual"
                     st.session_state[f"monthly_music_settings_open_{month_key}"] = False
@@ -10240,6 +10359,7 @@ def render_monthly_music_settings(month_key, bundle, review, expanded=True):
                 st.session_state[reason_key] = ""
                 st.session_state[confidence_key] = ""
                 st.session_state[title_key] = ""
+                st.session_state[bpm_key] = 0
                 st.session_state.pop(f"monthly_replay_applied_{month_key}", None)
                 st.session_state[f"monthly_music_settings_open_{month_key}"] = True
                 save_monthly_playback(month_key, review, {})
@@ -10252,8 +10372,10 @@ def render_monthly_music_settings(month_key, bundle, review, expanded=True):
                 "start_seconds": int(playback.get("start_seconds") or start_seconds),
                 "end_seconds": int(playback.get("end_seconds") or end_seconds),
             }
+        applied_bpm = normalize_replay_bpm(applied.get("bpm") or playback.get("bpm") or st.session_state.get(bpm_key))
         st.caption(
             f"再生に反映中: {format_mmss(applied.get('start_seconds'))}〜{format_mmss(applied.get('end_seconds'))}"
+            + (f" ／ テンポ同期 {applied_bpm} BPM" if applied_bpm else " ／ テンポ同期なし")
         )
         if st.session_state.get(title_key):
             st.write(f"候補タイトル: **{st.session_state[title_key]}**")
@@ -10262,7 +10384,7 @@ def render_monthly_music_settings(month_key, bundle, review, expanded=True):
         if reason:
             confidence_label = {"low": "低め", "medium": "中くらい", "high": "高め", "manual": "手動"}.get(confidence, confidence)
             st.caption(f"AIメモ: {reason}（確からしさ: {confidence_label or '不明'}）")
-        st.caption("※ サビ候補はAIの推測です。曲によって外れることがあります。必要なら秒数を手で直してください。")
+        st.caption("※ サビ候補とBPMはAIの推測です。YouTube音声そのものを解析していないため、曲によって外れることがあります。必要なら秒数・BPMを手で直してください。")
 
 
 def render_monthly_time_settings(month_key, review):
@@ -10380,6 +10502,7 @@ def render_monthly_replay_section(month_key, period_label, bundle, review):
         "video_id": video_id,
         "start_seconds": applied_start,
         "end_seconds": applied_end,
+        "bpm": normalize_replay_bpm(applied.get("bpm") or playback.get("bpm") or st.session_state.get(state["bpm_key"])),
         "reason": str(st.session_state.get(state["reason_key"]) or "").strip(),
         "confidence": str(st.session_state.get(state["confidence_key"]) or "").strip(),
         "title": str(st.session_state.get(state["title_key"]) or "").strip(),
