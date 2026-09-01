@@ -30,7 +30,7 @@ import streamlit as st
 # Freshly generated update: 2026-08-31 23:49 JST
 GENERATED_UPDATE_JST = "2026-09-01T22:33:00+09:00"
 
-APP_BUILD = "v155"
+APP_BUILD = "v156"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -13200,6 +13200,60 @@ else:
     render_home_video_count_status = _render_home_video_count_status
 
 
+def _render_home_storage_usage_status():
+    """Render a compact per-person video-storage meter at the very bottom of Home."""
+    quota_bytes = video_storage_quota_bytes()
+    if quota_bytes <= 0:
+        st.markdown(
+            """
+            <div style="margin:.62rem .10rem .08rem; opacity:.52; font-size:.68rem; text-align:center;">
+              動画ストレージ：上限未設定
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        return
+
+    try:
+        usage_bytes = current_video_storage_usage_bytes()
+        ratio = min(1.0, max(0.0, float(usage_bytes) / float(quota_bytes))) if quota_bytes else 0.0
+        percent = ratio * 100.0
+        usage_text = format_storage_size(usage_bytes)
+        quota_text = format_storage_size(quota_bytes)
+        st.markdown(
+            f"""
+            <div style="margin:.72rem .12rem .10rem;">
+              <div style="display:flex; justify-content:space-between; gap:.75rem; align-items:center;
+                          margin:0 2px 4px; font-size:.68rem; line-height:1.2; opacity:.58;">
+                <span>動画ストレージ</span>
+                <span>{html.escape(usage_text)} / {html.escape(quota_text)}</span>
+              </div>
+              <div style="height:6px; overflow:hidden; border-radius:999px;
+                          background:rgba(128,128,128,.14); border:1px solid rgba(128,128,128,.08);">
+                <div style="width:{percent:.2f}%; height:100%; border-radius:inherit;
+                            background:var(--st-primary-color); transition:width .25s ease;"></div>
+              </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+    except Exception:
+        st.markdown(
+            """
+            <div style="margin:.62rem .10rem .08rem; opacity:.46; font-size:.66rem; text-align:center;">
+              動画ストレージ：容量を確認できませんでした
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+
+if hasattr(st, "fragment"):
+    render_home_storage_usage_status = st.fragment(run_every="15s")(_render_home_storage_usage_status)
+else:
+    render_home_storage_usage_status = _render_home_storage_usage_status
+
+
 def page_home():
     # Keep the recent photo/video camera mode fresh using browser-local storage only.
     _sync_recent_camera_state_from_browser()
@@ -13347,6 +13401,7 @@ def page_home():
         '<div class="home-footer-note">写真・動画は0件でも大丈夫。気になったときだけ使います。</div>',
         unsafe_allow_html=True,
     )
+    render_home_storage_usage_status()
 
 
 
