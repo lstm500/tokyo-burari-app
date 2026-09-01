@@ -30,7 +30,7 @@ import streamlit as st
 # Freshly generated update: 2026-08-31 23:49 JST
 GENERATED_UPDATE_JST = "2026-09-01T23:34:00+09:00"
 
-APP_BUILD = "v157"
+APP_BUILD = "v158"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -2970,8 +2970,44 @@ def _invalidate_monthly_review_for_trip(trip_id):
         pass
 
 
-def update_photo_emotion(photo_id, emotion_key, trip_id=None):
-    """Persist a child-selected 喜怒哀楽 tag inside the photo's reflection_json."""
+def _refresh_after_photo_emotion_changes(trip_ids):
+    """Refresh caches/derived diary data once after one or more emotion writes.
+
+    v158 deliberately batches the expensive follow-up work. Previously every tap
+    invalidated caches and rebuilt the diary immediately, which made the UI feel as
+    if the whole page reloaded for each step through 喜→怒→哀→楽.
+    """
+    resolved = []
+    seen = set()
+    for value in trip_ids or []:
+        key = str(value or "").strip()
+        if key and key not in seen:
+            seen.add(key)
+            resolved.append(key)
+    _invalidate_fast_db_cache()
+    for resolved_trip_id in resolved:
+        _invalidate_monthly_review_for_trip(resolved_trip_id)
+        try:
+            existing = get_diary_for_trip(resolved_trip_id)
+            if existing:
+                trip = get_trip(resolved_trip_id) or {}
+                photos = diary_photos_only(list_trip_photos(resolved_trip_id))
+                create_and_save_diary_from_photos(
+                    trip,
+                    photos,
+                    requested_title=str(existing.get("title") or "").strip() or None,
+                    reason="emotion_change_v158_batch",
+                )
+        except Exception:
+            pass
+
+
+def update_photo_emotion(photo_id, emotion_key, trip_id=None, refresh_related=True):
+    """Persist one 喜怒哀楽 tag.
+
+    The optional refresh_related=False path is used by v158 batched UI commits so
+    multiple rapid taps do not repeat diary/monthly refresh work for every tap.
+    """
     emotion_key = normalize_photo_emotion_key(emotion_key)
     if emotion_key and emotion_key not in PHOTO_EMOTIONS:
         raise ValueError("感情の種類を確認できませんでした。")
@@ -2995,7 +3031,7 @@ def update_photo_emotion(photo_id, emotion_key, trip_id=None):
         reflection = {}
 
     if emotion_key:
-        reflection["emotion"] = photo_emotion_record(emotion_key, source="child_tap_cycle_v150")
+        reflection["emotion"] = photo_emotion_record(emotion_key, source="child_tap_cycle_v158")
     else:
         reflection.pop("emotion", None)
 
@@ -3007,25 +3043,47 @@ def update_photo_emotion(photo_id, emotion_key, trip_id=None):
         .eq("family_key", current_family_key()).eq("member_key", current_member_key())
         .execute()
     )
-    _invalidate_fast_db_cache()
-    if resolved_trip_id:
-        _invalidate_monthly_review_for_trip(resolved_trip_id)
-        # A saved diary is now driven by photo emotions. Rebuild its factual body
-        # immediately without making an API call, while preserving its title.
+    if refresh_related:
+        _refresh_after_photo_emotion_changes([resolved_trip_id] if resolved_trip_id else [])
+    return emotion_key
+
+
+def update_photo_emotions_batch(changes, valid_photo_ids=None, trip_id=None):
+    """Persist only the final emotion for each photo after a burst of taps."""
+    valid = {str(value) for value in (valid_photo_ids or []) if str(value)} if valid_photo_ids is not None else None
+    latest = {}
+    for change in changes or []:
+        if not isinstance(change, dict):
+            continue
+        photo_id = str(change.get("photo_id") or "").strip()
+        if not photo_id or (valid is not None and photo_id not in valid):
+            continue
+        latest[photo_id] = normalize_photo_emotion_key(change.get("emotion"))
+    if not latest:
+        return {}
+
+    touched_trips = set()
+    for photo_id, emotion_key in latest.items():
+        # The supplied trip_id is authoritative for the normal diary/recent-photo
+        # views. update_photo_emotion still resolves the row trip when it is absent.
+        update_photo_emotion(photo_id, emotion_key, trip_id=trip_id, refresh_related=False)
+        if trip_id:
+            touched_trips.add(str(trip_id))
+    if not touched_trips:
         try:
-            existing = get_diary_for_trip(resolved_trip_id)
-            if existing:
-                trip = get_trip(resolved_trip_id) or {}
-                photos = diary_photos_only(list_trip_photos(resolved_trip_id))
-                create_and_save_diary_from_photos(
-                    trip,
-                    photos,
-                    requested_title=str(existing.get("title") or "").strip() or None,
-                    reason="emotion_change_v149",
-                )
+            rows = (
+                supabase_client().table(PHOTO_TABLE)
+                .select("id,trip_id")
+                .in_("id", list(latest.keys()))
+                .eq("family_key", current_family_key())
+                .eq("member_key", current_member_key())
+                .execute()
+            ).data or []
+            touched_trips.update(str(row.get("trip_id") or "") for row in rows if row.get("trip_id"))
         except Exception:
             pass
-    return emotion_key
+    _refresh_after_photo_emotion_changes(touched_trips)
+    return latest
 
 
 # ============================================================
@@ -3177,8 +3235,37 @@ export default function(component) {
   const order = ['', 'joy', 'anger', 'sadness', 'fun'];
   const emoji = { joy: '😊', anger: '😠', sadness: '😢', fun: '🎉' };
   const labels = { joy: '喜', anger: '怒', sadness: '哀', fun: '楽' };
+  const pendingEmotionChanges = new Map();
+  let emotionCommitTimer = null;
 
   const normalizeEmotion = (value) => order.includes(String(value || '')) ? String(value || '') : '';
+
+  const flushEmotionChanges = () => {
+    if (emotionCommitTimer) {
+      clearTimeout(emotionCommitTimer);
+      emotionCommitTimer = null;
+    }
+    if (!pendingEmotionChanges.size) return;
+    const changes = Array.from(pendingEmotionChanges.values());
+    pendingEmotionChanges.clear();
+    setTriggerValue('emotion_batch', {
+      changes,
+      token: `${Date.now()}:${Math.random()}`,
+    });
+  };
+
+  const queueEmotionChange = (photo) => {
+    const photoId = String(photo?.id || '');
+    if (!photoId) return;
+    pendingEmotionChanges.set(photoId, {
+      photo_id: photoId,
+      emotion: normalizeEmotion(photo?.emotion),
+    });
+    if (emotionCommitTimer) clearTimeout(emotionCommitTimer);
+    // Keep rapid 喜→怒→哀→楽 taps entirely in the browser. Only the final
+    // state after the user pauses is sent to Streamlit/Supabase.
+    emotionCommitTimer = setTimeout(flushEmotionChanges, 900);
+  };
 
   const applyEmotion = (button, badge, key) => {
     for (const value of order.slice(1)) button.classList.remove(`emotion-${value}`);
@@ -3230,12 +3317,9 @@ export default function(component) {
         const currentIndex = Math.max(0, order.indexOf(normalizeEmotion(photo.emotion)));
         const next = order[(currentIndex + 1) % order.length];
         photo.emotion = next;
+        // Visual feedback is synchronous and never waits for Streamlit/Supabase.
         applyEmotion(button, badge, next);
-        setTriggerValue('emotion_change', {
-          photo_id: String(photo.id),
-          emotion: next,
-          token: `${String(photo.id)}:${next}:${Date.now()}:${Math.random()}`,
-        });
+        queueEmotionChange(photo);
       });
     } else {
       button.style.cursor = 'default';
@@ -3252,6 +3336,9 @@ export default function(component) {
       remove.addEventListener('click', (event) => {
         event.preventDefault();
         event.stopPropagation();
+        if (emotionCommitTimer) clearTimeout(emotionCommitTimer);
+        emotionCommitTimer = null;
+        pendingEmotionChanges.delete(String(photo.id || ''));
         setTriggerValue('delete_photo_id', String(photo.id));
       });
       wrap.appendChild(remove);
@@ -3259,6 +3346,10 @@ export default function(component) {
 
     grid.appendChild(wrap);
   }
+
+  return () => {
+    if (emotionCommitTimer) clearTimeout(emotionCommitTimer);
+  };
 }
 """
 
@@ -3274,7 +3365,7 @@ def _get_diary_gallery_component():
     _diary_gallery_component_initialized = True
     try:
         diary_gallery_component = st.components.v2.component(
-            "tokyo_burari_diary_gallery_v149",
+            "tokyo_burari_diary_gallery_v158",
             html=_DIARY_GALLERY_HTML,
             css=_DIARY_GALLERY_CSS,
             js=_DIARY_GALLERY_JS,
@@ -7835,19 +7926,24 @@ def record_video_ai_human_choices(video_photo, selected_ranks):
     return updated
 
 
-def update_video_ai_selection_emotion(video_photo, rank, emotion_key):
-    """Persist one 喜怒哀楽 choice on an AI-selected video still.
-
-    The choice lives on the source video's ai_selection item until/after that still is
-    copied into the normal photo collection. If a saved_photo_id already exists, keep
-    that photo's emotion in sync as well.
-    """
+def update_video_ai_selection_emotions(video_photo, changes):
+    """Persist the final emotion state for one or more AI-selected stills in one write."""
     if not isinstance(video_photo, dict) or not video_photo.get("id") or not photo_is_video(video_photo):
         raise ValueError("動画が見つかりません。")
-    rank = int(rank or 0)
-    if rank <= 0:
-        raise ValueError("写真の番号を確認できませんでした。")
-    emotion_key = normalize_photo_emotion_key(emotion_key)
+
+    latest = {}
+    for change in changes or []:
+        if not isinstance(change, dict):
+            continue
+        try:
+            rank = int(change.get("rank") or 0)
+        except Exception:
+            rank = 0
+        if rank <= 0:
+            continue
+        latest[rank] = normalize_photo_emotion_key(change.get("emotion"))
+    if not latest:
+        return video_photo
 
     client = supabase_client()
     current = (
@@ -7865,35 +7961,58 @@ def update_video_ai_selection_emotion(video_photo, rank, emotion_key):
     if not isinstance(selection, dict):
         selection = {}
     items = [item for item in (selection.get("items") or []) if isinstance(item, dict)]
-    target = None
+    found = set()
+    saved_sync = []
     for item in items:
-        if int(item.get("rank") or 0) == rank:
-            target = item
-            break
-    if target is None:
+        rank = int(item.get("rank") or 0)
+        if rank not in latest:
+            continue
+        found.add(rank)
+        emotion_key = latest[rank]
+        if emotion_key:
+            item["emotion"] = photo_emotion_record(emotion_key, source="child_tap_moments_v158")
+        else:
+            item.pop("emotion", None)
+        saved_photo_id = str(item.get("saved_photo_id") or "").strip()
+        if saved_photo_id:
+            saved_sync.append((saved_photo_id, emotion_key))
+    missing = sorted(set(latest) - found)
+    if missing:
         raise ValueError("感情を設定する切り取り写真が見つかりませんでした。")
 
-    if emotion_key:
-        target["emotion"] = photo_emotion_record(emotion_key, source="child_tap_moments_v150")
-    else:
-        target.pop("emotion", None)
-    saved_photo_id = str(target.get("saved_photo_id") or "").strip()
     selection["items"] = items
     selection["updated_at"] = now_jst().isoformat()
     reflection["ai_selection"] = selection
     _write_photo_reflection(video_photo.get("id"), reflection)
 
-    # If this cutout has already been copied to the normal photo collection,
-    # update that row too so Diary/Review always show the same border/icon.
-    if saved_photo_id:
+    touched_trips = set()
+    resolved_trip_id = str(fresh.get("trip_id") or "").strip()
+    if resolved_trip_id:
+        touched_trips.add(resolved_trip_id)
+    for saved_photo_id, emotion_key in saved_sync:
         try:
-            update_photo_emotion(saved_photo_id, emotion_key, trip_id=fresh.get("trip_id"))
+            update_photo_emotion(
+                saved_photo_id,
+                emotion_key,
+                trip_id=resolved_trip_id or None,
+                refresh_related=False,
+            )
         except Exception:
             pass
+    if saved_sync:
+        _refresh_after_photo_emotion_changes(touched_trips)
 
     updated = dict(fresh)
     updated["reflection_json"] = reflection
     return updated
+
+
+def update_video_ai_selection_emotion(video_photo, rank, emotion_key):
+    """Backward-compatible single-item wrapper around the v158 batch writer."""
+    return update_video_ai_selection_emotions(
+        video_photo,
+        [{"rank": int(rank or 0), "emotion": emotion_key}],
+    )
 
 
 def record_video_ai_no_choice(video_photo):
@@ -8143,7 +8262,7 @@ def save_video_ai_selection_as_photo(video_photo, selection_item):
     if selection_emotion:
         extra_reflection["emotion"] = photo_emotion_record(
             selection_emotion,
-            source="child_tap_moments_v150",
+            source="child_tap_moments_v158",
         )
     saved = upload_photo(
         video_photo.get("trip_id"),
@@ -13953,11 +14072,29 @@ export default function(component) {
   let activeRank = Number(data?.active_rank || 0);
   if (!validRanks.includes(activeRank)) activeRank = validRanks.length ? validRanks[0] : 0;
 
-  const emitSelection = () => {
-    setTriggerValue('selected_ranks', Array.from(selected).sort((a, b) => a - b));
+  const pendingEmotionRanks = new Set();
+  let commitTimer = null;
+  const flushPickerCommit = () => {
+    if (commitTimer) {
+      clearTimeout(commitTimer);
+      commitTimer = null;
+    }
+    if (!pendingEmotionRanks.size) return;
+    const changes = Array.from(pendingEmotionRanks).map((rank) => ({
+      rank,
+      emotion: normalizeEmotion(emotions.get(rank)),
+    }));
+    pendingEmotionRanks.clear();
+    setTriggerValue('picker_commit', {
+      changes,
+      selected_ranks: Array.from(selected).sort((a, b) => a - b),
+      nonce: `${Date.now()}_${Math.random()}`,
+    });
   };
-  const emitEmotion = (rank, emotion) => {
-    setTriggerValue('emotion_change', { rank, emotion, nonce: `${Date.now()}_${Math.random()}` });
+  const queuePickerCommit = (rank) => {
+    pendingEmotionRanks.add(rank);
+    if (commitTimer) clearTimeout(commitTimer);
+    commitTimer = setTimeout(flushPickerCommit, 900);
   };
   const emitActive = (rank) => {
     if (Number.isFinite(rank) && rank > 0) setTriggerValue('active_rank', rank);
@@ -14044,9 +14181,10 @@ export default function(component) {
         emotions.set(rank, next);
         if (next) selected.add(rank);
         else selected.delete(rank);
+        // Keep every tap local and immediate. Persist only the final state after
+        // a short pause so cycling through 喜怒哀楽 never reloads on each tap.
         syncVisual();
-        emitEmotion(rank, next);
-        emitSelection();
+        queuePickerCommit(rank);
       });
     }
     return button;
@@ -14113,6 +14251,10 @@ export default function(component) {
     }
     grid.appendChild(makeCard(photo, index, false));
   }
+
+  return () => {
+    if (commitTimer) clearTimeout(commitTimer);
+  };
 }
 """
 
@@ -14127,7 +14269,7 @@ def _get_moments_select_component():
     _moments_select_component_initialized = True
     try:
         moments_select_component = st.components.v2.component(
-            "tokyo_burari_moments_select_v153",
+            "tokyo_burari_moments_select_v158",
             html=_MOMENTS_SELECT_HTML,
             css=_MOMENTS_SELECT_CSS,
             js=_MOMENTS_SELECT_JS,
@@ -14345,31 +14487,42 @@ def _render_moments_picker(photo, index, view_mode="list"):
             key=f"moments_tap_picker_{video_id}_{round_number}_{serial}",
             on_selected_ranks_change=lambda: None,
             on_active_rank_change=lambda: None,
-            on_emotion_change_change=lambda: None,
+            on_picker_commit_change=lambda: None,
         )
         should_rerun = False
-        emotion_change = getattr(result, "emotion_change", None)
-        if isinstance(emotion_change, dict):
-            try:
-                emotion_rank = int(emotion_change.get("rank") or 0)
-            except Exception:
-                emotion_rank = 0
-            emotion_key = normalize_photo_emotion_key(emotion_change.get("emotion"))
-            nonce = str(emotion_change.get("nonce") or "")
-            emotion_token_key = f"_moments_emotion_token_{video_id}_{round_number}"
-            emotion_token = f"{emotion_rank}|{emotion_key}|{nonce}"
-            if emotion_rank in valid_ranks and emotion_token != str(st.session_state.get(emotion_token_key) or ""):
-                update_video_ai_selection_emotion(photo, emotion_rank, emotion_key)
-                st.session_state[emotion_token_key] = emotion_token
-                if emotion_key:
-                    st.session_state[selection_state_key] = sorted(set(st.session_state.get(selection_state_key) or []) | {emotion_rank})
-                else:
-                    st.session_state[selection_state_key] = [
-                        value for value in (st.session_state.get(selection_state_key) or [])
-                        if int(value) != emotion_rank
-                    ]
+        picker_commit = getattr(result, "picker_commit", None)
+        if isinstance(picker_commit, dict):
+            nonce = str(picker_commit.get("nonce") or "")
+            commit_token_key = f"_moments_picker_commit_token_{video_id}_{round_number}"
+            if nonce and nonce != str(st.session_state.get(commit_token_key) or ""):
+                raw_changes = picker_commit.get("changes") or []
+                changes = []
+                for change in raw_changes if isinstance(raw_changes, list) else []:
+                    if not isinstance(change, dict):
+                        continue
+                    try:
+                        emotion_rank = int(change.get("rank") or 0)
+                    except Exception:
+                        emotion_rank = 0
+                    if emotion_rank in valid_ranks:
+                        changes.append({"rank": emotion_rank, "emotion": normalize_photo_emotion_key(change.get("emotion"))})
+                if changes:
+                    update_video_ai_selection_emotions(photo, changes)
+                committed_selected = picker_commit.get("selected_ranks")
+                if isinstance(committed_selected, (list, tuple)):
+                    normalized_commit = sorted(
+                        {
+                            int(value)
+                            for value in committed_selected
+                            if str(value).strip().lstrip("-").isdigit() and int(value) in valid_ranks
+                        }
+                    )
+                    st.session_state[selection_state_key] = normalized_commit
+                    selected_ranks = normalized_commit
+                st.session_state[commit_token_key] = nonce
                 should_rerun = True
 
+        # Backward compatibility with already-mounted pre-v158 components.
         result_selected = getattr(result, "selected_ranks", None)
         if isinstance(result_selected, (list, tuple)):
             normalized = sorted(
@@ -15355,15 +15508,18 @@ def render_recent_camera_photo_emotion(trip):
         result = gallery_component(
             data={"photos": [card], "single": True, "allow_delete": True, "allow_emotion": True},
             key=f"recent_emotion_{photo_id}_{serial}_{_current_ui_refresh_epoch()}",
-            on_emotion_change_change=lambda: None,
+            on_emotion_batch_change=lambda: None,
             on_delete_photo_id_change=lambda: None,
         )
-        change = getattr(result, "emotion_change", None)
-        if isinstance(change, dict) and str(change.get("photo_id") or "") == str(photo_id):
-            update_photo_emotion(photo_id, change.get("emotion"), trip_id=trip_id)
-            st.session_state[serial_key] = serial + 1
-            st.session_state["_camera_notice"] = "写真の気持ちを更新しました。"
-            st.rerun()
+        batch = getattr(result, "emotion_batch", None)
+        if isinstance(batch, dict):
+            token = str(batch.get("token") or "")
+            token_key = f"_recent_emotion_batch_token_{photo_id}"
+            if token and token != str(st.session_state.get(token_key) or ""):
+                update_photo_emotions_batch(batch.get("changes") or [], valid_photo_ids=[photo_id], trip_id=trip_id)
+                st.session_state[token_key] = token
+                st.session_state[serial_key] = serial + 1
+                st.rerun()
         delete_clicked = str(getattr(result, "delete_photo_id", "") or "")
         if delete_clicked == str(photo_id):
             st.session_state[serial_key] = serial + 1
@@ -15719,7 +15875,7 @@ def page_trip():
                     extra_reflection = {
                         "emotion": photo_emotion_record(
                             initial_emotion,
-                            source="child_tap_camera_review_v150",
+                            source="child_tap_camera_review_v158",
                         )
                     }
 
@@ -15798,16 +15954,17 @@ def render_diary_emotion_gallery(trip_id, photos, trip=None, is_pending=False):
         result = gallery_component(
             data={"photos": cards, "allow_delete": True, "allow_emotion": True},
             key=f"diary_emotion_gallery_{trip_id}_{serial}_{_current_ui_refresh_epoch()}",
-            on_emotion_change_change=lambda: None,
+            on_emotion_batch_change=lambda: None,
             on_delete_photo_id_change=lambda: None,
         )
-        change = getattr(result, "emotion_change", None)
-        if isinstance(change, dict):
-            changed_id = str(change.get("photo_id") or "")
-            if changed_id in photo_ids:
-                update_photo_emotion(changed_id, change.get("emotion"), trip_id=trip_id)
+        batch = getattr(result, "emotion_batch", None)
+        if isinstance(batch, dict):
+            token = str(batch.get("token") or "")
+            token_key = f"_diary_emotion_batch_token_{trip_id}_{'pending' if is_pending else 'saved'}"
+            if token and token != str(st.session_state.get(token_key) or ""):
+                update_photo_emotions_batch(batch.get("changes") or [], valid_photo_ids=photo_ids, trip_id=trip_id)
+                st.session_state[token_key] = token
                 st.session_state[serial_key] = serial + 1
-                st.session_state["_diary_notice"] = "写真の喜怒哀楽を更新しました。"
                 st.rerun()
         delete_clicked = str(getattr(result, "delete_photo_id", "") or "")
         if delete_clicked in photo_ids:
