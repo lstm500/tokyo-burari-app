@@ -28,9 +28,9 @@ from zoneinfo import ZoneInfo
 import streamlit as st
 
 # Freshly generated update: 2026-08-31 23:49 JST
-GENERATED_UPDATE_JST = "2026-09-01T23:58:00+09:00"
+GENERATED_UPDATE_JST = "2026-09-02T00:11:12+09:00"
 
-APP_BUILD = "v159"
+APP_BUILD = "v160"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -799,19 +799,10 @@ _LIVE_CAMERA_HTML = """
     </div>
     <button id="camera-review-find-moments" class="camera-find-button" type="button" hidden>✨ いい瞬間を探す</button>
     <div id="camera-review-build" class="camera-review-build" hidden>camera v159</div>
-    <div id="camera-review-emotion-hint" class="camera-review-emotion-hint" hidden>写真をタップして、6つの気持ちから選びます。</div>
+    <div id="camera-review-emotion-hint" class="camera-review-emotion-hint" hidden>写真をタップするたびに　🥰 ほっこりした → 😊 うれしい → 😲 びっくり → 😠 おこった → 😢 かなしい → 😣 くやしい → 未設定</div>
     <div id="camera-review-image-shell" class="camera-review-image-shell" role="button" tabindex="0" aria-label="写真の気持ちを選ぶ" hidden>
       <img id="camera-review-image" class="camera-review-image" alt="撮影した写真の確認" />
       <span id="camera-review-emotion-badge" class="camera-review-emotion-badge" hidden></span>
-    </div>
-    <div id="camera-review-emotion-palette" class="camera-review-emotion-palette" hidden>
-      <button type="button" data-emotion="cozy">🥰<span>ほっこりした</span></button>
-      <button type="button" data-emotion="joy">😊<span>うれしい</span></button>
-      <button type="button" data-emotion="surprise">😲<span>びっくり</span></button>
-      <button type="button" data-emotion="anger">😠<span>おこった</span></button>
-      <button type="button" data-emotion="sadness">😢<span>かなしい</span></button>
-      <button type="button" data-emotion="frustration">😣<span>くやしい</span></button>
-      <button type="button" class="camera-review-emotion-clear" data-emotion="">× 未設定に戻す</button>
     </div>
     <video id="camera-review-video" class="camera-review-video" playsinline controls hidden></video>
   </div>
@@ -973,8 +964,8 @@ _LIVE_CAMERA_CSS = """
   bottom: 11px;
   z-index: 3;
   min-width: 34px;
-  height: 34px;
-  padding: 0 6px;
+  height: 30px;
+  padding: 0 9px;
   box-sizing: border-box;
   border-radius: 999px;
   display: flex;
@@ -983,8 +974,10 @@ _LIVE_CAMERA_CSS = """
   background: rgba(255,255,255,.92);
   border: 1px solid rgba(17,24,39,.10);
   box-shadow: 0 2px 8px rgba(0,0,0,.16);
-  font-size: 22px;
+  font-size: 11px;
   line-height: 1;
+  font-weight: 800;
+  white-space: nowrap;
   pointer-events: none;
 }
 .camera-review-emotion-badge[hidden] { display: none !important; }
@@ -1138,8 +1131,6 @@ export default function(component) {
   const reviewImage = parentElement.querySelector('#camera-review-image');
   const reviewEmotionBadge = parentElement.querySelector('#camera-review-emotion-badge');
   const reviewEmotionHint = parentElement.querySelector('#camera-review-emotion-hint');
-  const reviewEmotionPalette = parentElement.querySelector('#camera-review-emotion-palette');
-  const reviewEmotionOptions = Array.from(parentElement.querySelectorAll('#camera-review-emotion-palette [data-emotion]'));
   const reviewVideo = parentElement.querySelector('#camera-review-video');
   const reviewSave = parentElement.querySelector('#camera-review-save');
   const reviewRetry = parentElement.querySelector('#camera-review-retry');
@@ -1175,6 +1166,7 @@ export default function(component) {
   let cameraMode = 'photo';
   let pendingMedia = null;
   let pendingVideoBlob = null;
+  const PHOTO_EMOTION_ORDER = ['', 'cozy', 'joy', 'surprise', 'anger', 'sadness', 'frustration'];
   const PHOTO_EMOTIONS = {
     cozy: { emoji: '🥰', color: '#F3B6A0', label: 'ほっこりした' },
     joy: { emoji: '😊', color: '#F2C94C', label: 'うれしい' },
@@ -1191,32 +1183,25 @@ export default function(component) {
     if (reviewImageShell) {
       reviewImageShell.style.borderColor = meta ? meta.color : '#AEB6C2';
       reviewImageShell.style.background = meta ? `${meta.color}18` : 'rgba(174,182,194,.07)';
-      reviewImageShell.setAttribute('aria-label', meta ? `写真の気持ち：${meta.label}。タップして変更` : '写真の気持ちは未設定。タップして選ぶ');
+      reviewImageShell.setAttribute('aria-label', meta ? `写真の気持ち：${meta.label}。タップして次へ` : '写真の気持ちは未設定。タップするとほっこりしたになります');
     }
     if (reviewEmotionBadge) {
-      reviewEmotionBadge.textContent = meta ? meta.emoji : '';
+      reviewEmotionBadge.textContent = meta ? `${meta.emoji} ${meta.label}` : '';
       reviewEmotionBadge.hidden = !meta;
     }
-    for (const option of reviewEmotionOptions) {
-      option.classList.toggle('selected', String(option.dataset.emotion || '') === key);
-    }
   };
-  const toggleReviewEmotionPalette = () => {
-    if (!pendingMedia || pendingMedia.kind !== 'photo' || !reviewEmotionPalette) return;
-    reviewEmotionPalette.hidden = !reviewEmotionPalette.hidden;
+  const cycleReviewEmotion = (event) => {
+    event?.preventDefault?.(); event?.stopPropagation?.();
+    if (!pendingMedia || pendingMedia.kind !== 'photo') return;
+    const current = normalizeEmotion(pendingEmotion);
+    const currentIndex = Math.max(0, PHOTO_EMOTION_ORDER.indexOf(current));
+    pendingEmotion = PHOTO_EMOTION_ORDER[(currentIndex + 1) % PHOTO_EMOTION_ORDER.length];
+    pendingMedia.emotion = pendingEmotion;
+    syncReviewEmotion();
   };
   const onReviewEmotionKeydown = (event) => {
     if (event.key !== 'Enter' && event.key !== ' ') return;
-    event.preventDefault();
-    toggleReviewEmotionPalette();
-  };
-  const chooseReviewEmotion = (event) => {
-    event.preventDefault(); event.stopPropagation();
-    if (!pendingMedia || pendingMedia.kind !== 'photo') return;
-    pendingEmotion = normalizeEmotion(event.currentTarget?.dataset?.emotion);
-    pendingMedia.emotion = pendingEmotion;
-    syncReviewEmotion();
-    if (reviewEmotionPalette) reviewEmotionPalette.hidden = true;
+    cycleReviewEmotion(event);
   };
   let reviewVideoUrl = '';
   let mediaRecorder = null;
@@ -1323,7 +1308,6 @@ export default function(component) {
     if (review) review.hidden = true;
     if (reviewImageShell) reviewImageShell.hidden = true;
     if (reviewEmotionHint) reviewEmotionHint.hidden = true;
-    if (reviewEmotionPalette) reviewEmotionPalette.hidden = true;
     if (reviewImage) {
       reviewImage.hidden = true;
       reviewImage.removeAttribute('src');
@@ -1376,7 +1360,6 @@ export default function(component) {
     }
     if (reviewImageShell) reviewImageShell.hidden = false;
     if (reviewEmotionHint) reviewEmotionHint.hidden = false;
-    if (reviewEmotionPalette) reviewEmotionPalette.hidden = true;
     syncReviewEmotion();
     reviewSave.textContent = 'この写真を残す';
     reviewRetry.textContent = '撮りなおす／選びなおす';
@@ -2410,8 +2393,7 @@ export default function(component) {
   galleryVideoInput?.addEventListener('change', chooseGalleryVideo);
   reviewSave.addEventListener('click', savePendingMedia);
   reviewRetry.addEventListener('click', retryPendingMedia);
-  reviewImageShell?.addEventListener('click', toggleReviewEmotionPalette);
-  for (const option of reviewEmotionOptions) option.addEventListener('click', chooseReviewEmotion);
+  reviewImageShell?.addEventListener('click', cycleReviewEmotion);
   reviewImageShell?.addEventListener('keydown', onReviewEmotionKeydown);
   reviewFindMoments?.addEventListener('click', findGoodMoments);
 
@@ -2431,8 +2413,7 @@ export default function(component) {
     galleryVideoInput?.removeEventListener('change', chooseGalleryVideo);
     reviewSave.removeEventListener('click', savePendingMedia);
     reviewRetry.removeEventListener('click', retryPendingMedia);
-    reviewImageShell?.removeEventListener('click', toggleReviewEmotionPalette);
-    for (const option of reviewEmotionOptions) option.removeEventListener('click', chooseReviewEmotion);
+    reviewImageShell?.removeEventListener('click', cycleReviewEmotion);
     reviewImageShell?.removeEventListener('keydown', onReviewEmotionKeydown);
     reviewFindMoments?.removeEventListener('click', findGoodMoments);
     clearGoodMomentsRevealTimer();
@@ -2442,11 +2423,11 @@ export default function(component) {
 }
 """
 
-LIVE_CAMERA_COMPONENT_BUILD = "v159"
+LIVE_CAMERA_COMPONENT_BUILD = "v160"
 
 try:
     live_camera_component = st.components.v2.component(
-        "tokyo_burari_live_camera_v159",
+        "tokyo_burari_live_camera_v160",
         html=_LIVE_CAMERA_HTML,
         css=_LIVE_CAMERA_CSS,
         js=_LIVE_CAMERA_JS,
@@ -2954,7 +2935,7 @@ def photo_emotion_meta(photo_or_key):
     return meta
 
 
-def photo_emotion_record(emotion_key, source="child_tap_palette_v159"):
+def photo_emotion_record(emotion_key, source="child_tap_cycle_v160"):
     """Return the persisted reflection_json payload for one of the six v159 feelings."""
     emotion_key = normalize_photo_emotion_key(emotion_key)
     if not emotion_key:
@@ -2966,7 +2947,7 @@ def photo_emotion_record(emotion_key, source="child_tap_palette_v159"):
         "emoji": meta["emoji"],
         "color": meta["color"],
         "updated_at": now_jst().isoformat(),
-        "source": str(source or "child_tap_palette_v159"),
+        "source": str(source or "child_tap_cycle_v160"),
     }
 
 
@@ -3091,7 +3072,7 @@ def update_photo_emotion(photo_id, emotion_key, trip_id=None, refresh_related=Tr
         reflection = {}
 
     if emotion_key:
-        reflection["emotion"] = photo_emotion_record(emotion_key, source="child_tap_palette_v159")
+        reflection["emotion"] = photo_emotion_record(emotion_key, source="child_tap_cycle_v160")
     else:
         reflection.pop("emotion", None)
 
@@ -3309,10 +3290,10 @@ _DIARY_GALLERY_CSS = """
 .diary-photo-card:active { transform: scale(.985); }
 .diary-photo-card img { display:block; width:100%; aspect-ratio:1/1; object-fit:cover; border-radius:9px; background:rgba(128,128,128,.08); }
 .diary-emotion-badge {
-  position:absolute; right:9px; bottom:9px; z-index:3; min-width:30px; height:30px; padding:0 4px;
+  position:absolute; right:7px; bottom:7px; z-index:3; min-width:28px; height:24px; padding:0 6px;
   border-radius:999px; display:flex; align-items:center; justify-content:center;
-  background:rgba(255,255,255,.90); border:1.5px solid rgba(255,255,255,.96);
-  box-shadow:0 2px 8px rgba(0,0,0,.22); font-size:21px; line-height:1; pointer-events:none;
+  background:rgba(255,255,255,.92); border:1.5px solid rgba(255,255,255,.96);
+  box-shadow:0 2px 8px rgba(0,0,0,.22); font-size:8.5px; line-height:1; font-weight:800; white-space:nowrap; pointer-events:none;
 }
 .diary-emotion-badge[hidden] { display:none !important; }
 .diary-emotion-palette {
@@ -3346,7 +3327,7 @@ _DIARY_GALLERY_CSS = """
   .diary-photo-card img { border-radius:8px; }
   .diary-photo-location { font-size:9px; }
   .diary-photo-delete { top:2px; right:2px; width:23px; height:23px; font-size:17px; }
-  .diary-emotion-badge { right:7px; bottom:7px; min-width:27px; height:27px; font-size:19px; }
+  .diary-emotion-badge { right:5px; bottom:5px; min-width:25px; height:22px; padding:0 5px; font-size:7.5px; }
   .diary-emotion-palette { inset:3px; padding:4px; gap:2px; }
   .diary-emotion-option { min-height:28px; font-size:7px; padding:2px 1px; border-radius:7px; }
   .diary-emotion-option .emoji { font-size:14px; }
@@ -3424,23 +3405,21 @@ export default function(component) {
     delete envelope.p[String(photoId)];
   });
 
-  let openPalette = null;
-  const closePalette = () => {
-    if (openPalette) openPalette.hidden = true;
-    openPalette = null;
+  const cycleOrder = ['', ...order];
+  const nextEmotion = (value) => {
+    const current = normalizeEmotion(value);
+    const index = Math.max(0, cycleOrder.indexOf(current));
+    return cycleOrder[(index + 1) % cycleOrder.length];
   };
 
-  const applyEmotion = (card, badge, palette, key) => {
+  const applyEmotion = (card, badge, key) => {
     for (const value of order) card.classList.remove(`emotion-${value}`);
     const normalized = normalizeEmotion(key);
     if (normalized) card.classList.add(`emotion-${normalized}`);
     const meta = emotionMeta[normalized] || null;
-    badge.textContent = meta ? meta.emoji : '';
+    badge.textContent = meta ? `${meta.emoji} ${meta.label}` : '';
     badge.hidden = !meta;
-    card.setAttribute('aria-label', meta ? `写真の気持ち：${meta.label}。タップして変更` : '写真の気持ちは未設定。タップして選ぶ');
-    for (const option of palette.querySelectorAll('[data-emotion]')) {
-      option.classList.toggle('selected', String(option.dataset.emotion || '') === normalized);
-    }
+    card.setAttribute('aria-label', meta ? `写真の気持ち：${meta.label}。タップして次へ` : '写真の気持ちは未設定。タップするとほっこりしたになります');
   };
 
   for (const sourcePhoto of photos) {
@@ -3470,54 +3449,25 @@ export default function(component) {
       card.appendChild(location);
     }
 
-    const palette = document.createElement('div');
-    palette.className = 'diary-emotion-palette';
-    palette.hidden = true;
-    for (const emotion of order) {
-      const meta = emotionMeta[emotion];
-      const option = document.createElement('button');
-      option.type = 'button'; option.className = 'diary-emotion-option'; option.dataset.emotion = emotion;
-      option.innerHTML = `<span class="emoji">${meta.emoji}</span><span>${meta.label}</span>`;
-      option.addEventListener('click', (event) => {
-        event.preventDefault(); event.stopPropagation();
-        photo.emotion = emotion;
-        applyEmotion(card, badge, palette, emotion);
-        persistPhotoEmotion(photo.id, emotion);
-        palette.hidden = true; openPalette = null;
-      });
-      palette.appendChild(option);
-    }
-    const clear = document.createElement('button');
-    clear.type = 'button'; clear.className = 'diary-emotion-option diary-emotion-clear'; clear.dataset.emotion = '';
-    clear.textContent = '× 未設定に戻す';
-    clear.addEventListener('click', (event) => {
-      event.preventDefault(); event.stopPropagation();
-      photo.emotion = '';
-      applyEmotion(card, badge, palette, '');
-      persistPhotoEmotion(photo.id, '');
-      palette.hidden = true; openPalette = null;
-    });
-    palette.appendChild(clear);
-    applyEmotion(card, badge, palette, photo.emotion);
+    applyEmotion(card, badge, photo.emotion);
 
     if (allowEmotion) {
-      const toggle = (event) => {
+      const cycle = (event) => {
         event?.preventDefault?.(); event?.stopPropagation?.();
-        const opening = palette.hidden;
-        closePalette();
-        palette.hidden = !opening;
-        openPalette = opening ? palette : null;
+        photo.emotion = nextEmotion(photo.emotion);
+        applyEmotion(card, badge, photo.emotion);
+        // Browser-only pending state: no Streamlit trigger and no page refresh here.
+        persistPhotoEmotion(photo.id, photo.emotion);
       };
-      card.addEventListener('click', toggle);
+      card.addEventListener('click', cycle);
       card.addEventListener('keydown', (event) => {
-        if (event.key === 'Enter' || event.key === ' ') toggle(event);
+        if (event.key === 'Enter' || event.key === ' ') cycle(event);
       });
     } else {
       card.style.cursor = 'default';
     }
 
     wrap.appendChild(card);
-    wrap.appendChild(palette);
 
     if (allowDelete) {
       const remove = document.createElement('button');
@@ -3547,7 +3497,7 @@ def _get_diary_gallery_component():
     _diary_gallery_component_initialized = True
     try:
         diary_gallery_component = st.components.v2.component(
-            "tokyo_burari_diary_gallery_v159",
+            "tokyo_burari_diary_gallery_v160",
             html=_DIARY_GALLERY_HTML,
             css=_DIARY_GALLERY_CSS,
             js=_DIARY_GALLERY_JS,
@@ -8229,7 +8179,7 @@ def update_video_ai_selection_emotions(video_photo, changes):
         found.add(rank)
         emotion_key = latest[rank]
         if emotion_key:
-            item["emotion"] = photo_emotion_record(emotion_key, source="child_tap_moments_palette_v159")
+            item["emotion"] = photo_emotion_record(emotion_key, source="child_tap_moments_cycle_v160")
         else:
             item.pop("emotion", None)
         saved_photo_id = str(item.get("saved_photo_id") or "").strip()
@@ -8521,7 +8471,7 @@ def save_video_ai_selection_as_photo(video_photo, selection_item):
     if selection_emotion:
         extra_reflection["emotion"] = photo_emotion_record(
             selection_emotion,
-            source="child_tap_moments_palette_v159",
+            source="child_tap_moments_cycle_v160",
         )
     saved = upload_photo(
         video_photo.get("trip_id"),
@@ -11815,10 +11765,10 @@ def make_monthly_review(month_key, bundle):
 {evidence}
 
 厳守:
-- 喜・怒・哀・楽は本人による明示的な選択として扱う。
+- 6つの気持ち（ほっこりした・うれしい・びっくり・おこった・かなしい・くやしい）は本人による明示的な選択として扱う。
 - なぜその感情を選んだかは入力されていないため、理由を作らない。
 - 写真内容がこの入力には含まれないので、「何を見て喜んだ」など具体物を推測しない。
-- 複数日に同じ感情が出ている場合は「この期間は楽を選ぶ写真が多かったね」のような事実ベースの傾向は書いてよい。
+- 複数日に同じ感情が出ている場合は「この期間はうれしいを選ぶ写真が多かったね」のような事実ベースの傾向は書いてよい。
 - 1件だけの感情から性格・能力・将来を一般化しない。
 - opening は本人向けの一言。25〜55文字程度、1文。
 - findings は最大2件。theme は12文字程度まで。evidence は選択された感情の分布や繰り返しを35〜80文字程度で説明する。
@@ -14155,8 +14105,8 @@ _MOMENTS_SELECT_CSS = """
   right: 6px;
   bottom: 6px;
   min-width: 28px;
-  height: 28px;
-  padding: 0 5px;
+  height: 24px;
+  padding: 0 7px;
   box-sizing: border-box;
   border-radius: 999px;
   display: flex;
@@ -14165,8 +14115,10 @@ _MOMENTS_SELECT_CSS = """
   background: rgba(255,255,255,.92);
   border: 1px solid rgba(17,24,39,.10);
   box-shadow: 0 2px 7px rgba(0,0,0,.18);
-  font-size: 18px;
+  font-size: 8.5px;
   line-height: 1;
+  font-weight: 800;
+  white-space: nowrap;
   pointer-events: none;
 }
 .moments-emotion-badge[hidden] { display: none !important; }
@@ -14400,11 +14352,7 @@ export default function(component) {
     if (Number.isFinite(rank) && rank > 0) setTriggerValue('active_rank', rank);
   };
 
-  let openPalette = null;
-  const closePalette = () => {
-    if (openPalette) openPalette.hidden = true;
-    openPalette = null;
-  };
+  const cycleOrder = ['', ...emotionOrder];
 
   const makeCard = (photo, index, large = false) => {
     const rank = rankFor(photo, index);
@@ -14431,33 +14379,6 @@ export default function(component) {
     const emotionBadge = document.createElement('div');
     emotionBadge.className = 'moments-emotion-badge'; imageWrap.appendChild(emotionBadge);
 
-    const palette = document.createElement('div');
-    palette.className = 'moments-emotion-palette'; palette.hidden = true;
-    for (const emotion of emotionOrder) {
-      const meta = emotionMeta[emotion];
-      const option = document.createElement('button');
-      option.type = 'button'; option.className = 'moments-emotion-option'; option.dataset.emotion = emotion;
-      option.innerHTML = `<span class="emoji">${meta.emoji}</span><span>${meta.label}</span>`;
-      option.addEventListener('click', (event) => {
-        event.preventDefault(); event.stopPropagation();
-        emotions.set(rank, emotion); selected.add(rank);
-        syncVisual(); persistMomentState(rank);
-        palette.hidden = true; openPalette = null;
-      });
-      palette.appendChild(option);
-    }
-    const clear = document.createElement('button');
-    clear.type = 'button'; clear.className = 'moments-emotion-option moments-emotion-clear'; clear.dataset.emotion = '';
-    clear.textContent = '× 未設定に戻す';
-    clear.addEventListener('click', (event) => {
-      event.preventDefault(); event.stopPropagation();
-      emotions.set(rank, ''); selected.delete(rank);
-      syncVisual(); persistMomentState(rank);
-      palette.hidden = true; openPalette = null;
-    });
-    palette.appendChild(clear);
-    imageWrap.appendChild(palette);
-
     const metaText = document.createElement('div'); metaText.className = 'moments-select-meta'; metaText.textContent = String(photo?.meta || '');
     const reason = document.createElement('div'); reason.className = 'moments-select-reason'; reason.textContent = String(photo?.reason || '');
 
@@ -14472,21 +14393,27 @@ export default function(component) {
         card.style.borderColor = ''; card.style.background = ''; card.style.boxShadow = '';
       }
       pickedBadge.style.display = active && !eMeta ? 'block' : 'none';
-      emotionBadge.textContent = eMeta ? eMeta.emoji : ''; emotionBadge.hidden = !eMeta;
+      emotionBadge.textContent = eMeta ? `${eMeta.emoji} ${eMeta.label}` : ''; emotionBadge.hidden = !eMeta;
       card.setAttribute('aria-pressed', active ? 'true' : 'false');
-      card.setAttribute('aria-label', eMeta ? `写真${rank}の気持ち：${eMeta.label}。タップして変更` : `写真${rank}の気持ちは未設定。タップして選ぶ`);
-      for (const option of palette.querySelectorAll('[data-emotion]')) option.classList.toggle('selected', String(option.dataset.emotion || '') === emotion);
+      card.setAttribute('aria-label', eMeta ? `写真${rank}の気持ち：${eMeta.label}。タップして次へ` : `写真${rank}の気持ちは未設定。タップするとほっこりしたになります`);
     };
     syncVisual();
     card.appendChild(imageWrap); card.appendChild(metaText); card.appendChild(reason);
 
     if (!disabled) {
-      const toggle = (event) => {
+      const cycleEmotion = (event) => {
         event?.preventDefault?.(); event?.stopPropagation?.();
-        const opening = palette.hidden; closePalette(); palette.hidden = !opening; openPalette = opening ? palette : null;
+        const current = normalizeEmotion(emotions.get(rank));
+        const index = Math.max(0, cycleOrder.indexOf(current));
+        const next = cycleOrder[(index + 1) % cycleOrder.length];
+        emotions.set(rank, next);
+        if (next) selected.add(rank); else selected.delete(rank);
+        syncVisual();
+        // Keep the change entirely in browser state until another app action causes a rerun.
+        persistMomentState(rank);
       };
-      card.addEventListener('click', toggle);
-      card.addEventListener('keydown', (event) => { if (event.key === 'Enter' || event.key === ' ') toggle(event); });
+      card.addEventListener('click', cycleEmotion);
+      card.addEventListener('keydown', (event) => { if (event.key === 'Enter' || event.key === ' ') cycleEmotion(event); });
     }
     return card;
   };
@@ -14504,7 +14431,7 @@ export default function(component) {
     const next = document.createElement('button'); next.type='button'; next.textContent='›'; next.disabled=activeIndex>=photos.length-1; next.setAttribute('aria-label','次の写真');
     if (!next.disabled) next.addEventListener('click', () => emitActive(rankFor(photos[activeIndex + 1], activeIndex + 1)));
     nav.appendChild(prev); nav.appendChild(counter); nav.appendChild(next); shell.appendChild(nav); shell.appendChild(makeCard(activePhoto, activeIndex, true));
-    const hint = document.createElement('div'); hint.className='moments-enlarge-hint'; hint.textContent='写真をタップして、6つの気持ちから選びます。';
+    const hint = document.createElement('div'); hint.className='moments-enlarge-hint'; hint.textContent='写真をタップするたびに　未設定 → 🥰 ほっこりした → 😊 うれしい → 😲 びっくり → 😠 おこった → 😢 かなしい → 😣 くやしい → 未設定';
     shell.appendChild(hint); grid.appendChild(shell); return;
   }
 
@@ -14527,7 +14454,7 @@ def _get_moments_select_component():
     _moments_select_component_initialized = True
     try:
         moments_select_component = st.components.v2.component(
-            "tokyo_burari_moments_select_v159",
+            "tokyo_burari_moments_select_v160",
             html=_MOMENTS_SELECT_HTML,
             css=_MOMENTS_SELECT_CSS,
             js=_MOMENTS_SELECT_JS,
@@ -14664,7 +14591,7 @@ def _render_moments_picker(photo, index, view_mode="list"):
         return
 
     st.caption(
-        f"AIが映えを重視して最大{VIDEO_AI_MAX_SELECTIONS}枚を選んでいます。写真をタップして6つの気持ちから選べます。"
+        f"AIが映えを重視して最大{VIDEO_AI_MAX_SELECTIONS}枚を選んでいます。写真をタップするたびに気持ちが変わります（未設定 → 🥰 ほっこりした → 😊 うれしい → 😲 びっくり → 😠 おこった → 😢 かなしい → 😣 くやしい → 未設定）。"
         "感情を付けた写真が残す対象になり、その結果は次回以降のAIセレクションにも軽く反映されます。"
     )
     if status == "reviewed":
@@ -14911,9 +14838,9 @@ def _render_moments_picker(photo, index, view_mode="list"):
                             st.rerun()
 
     if view_mode == "enlarge":
-        st.caption("拡大モード：左右の‹ ›で写真を切り替え、写真をタップして6つの気持ちから選びます。選んだ写真が「残す」対象になります。気持ちを選ぶだけではページ更新しません。")
+        st.caption("拡大モード：左右の‹ ›で写真を切り替え、写真をタップするたびに 未設定 → 🥰 ほっこりした → 😊 うれしい → 😲 びっくり → 😠 おこった → 😢 かなしい → 😣 くやしい → 未設定 の順で変わります。気持ちが付いた写真が「残す」対象になり、気持ちを変えるだけではページ更新しません。")
     else:
-        st.caption("一覧モード：写真をタップすると6つの気持ちボタンが開きます。選んだ気持ちの色が枠に表示され、気持ちを選ぶだけではページ更新しません。")
+        st.caption("一覧モード：写真をタップするたびに 未設定 → 🥰 ほっこりした → 😊 うれしい → 😲 びっくり → 😠 おこった → 😢 かなしい → 😣 くやしい → 未設定 の順で枠色とアイコンが変わります。気持ちを変えるだけではページ更新しません。")
     selected_rank_set = set(selected_ranks)
     send_clicked = st.button(
         "選択した写真を残す",
@@ -14923,7 +14850,7 @@ def _render_moments_picker(photo, index, view_mode="list"):
         key=f"moments_send_{video_id}_{round_number}",
     )
     if send_clicked and not selected_rank_set:
-        st.warning("写真をタップして、残したい写真の気持ちを選んでください。")
+        st.warning("残したい写真をタップして気持ちを付けてください。")
     if send_clicked and selected_rank_set:
         newly_saved = 0
         try:
@@ -15750,11 +15677,11 @@ def render_recent_camera_photo_emotion(trip):
             delete_key_prefix="recent_camera",
         ):
             st.warning("撮影した動画のプレビューを表示できませんでした。")
-        st.caption("✨ いい瞬間は動画保存とは別にバックグラウンドで作成します。切り取った写真は、日記画面で6つの気持ちから選べます。")
+        st.caption("✨ いい瞬間は動画保存とは別にバックグラウンドで作成します。切り取った写真は、日記画面でタップするたびに6つの気持ちを切り替えられます。")
         return
 
     location_label = photo_location_label(photo)
-    st.caption("写真をタップすると6つの気持ちボタンが開きます。選ぶだけではページ更新しません。")
+    st.caption("写真をタップするたびに 未設定 → 🥰 ほっこりした → 😊 うれしい → 😲 びっくり → 😠 おこった → 😢 かなしい → 😣 くやしい → 未設定 の順で変わります。気持ちを変えるだけではページ更新しません。")
     st.caption("🥰ほっこり #F3B6A0 ／ 😊うれしい #F2C94C ／ 😲びっくり #9B7BD3 ／ 😠おこった #E56B6F ／ 😢かなしい #6C9BD2 ／ 😣くやしい #A66A8A")
 
     path = str(photo.get("storage_path") or "")
@@ -16190,7 +16117,7 @@ def render_diary_emotion_gallery(trip_id, photos, trip=None, is_pending=False):
         return
     st.markdown("#### この日の写真")
     counts, selected = photo_emotion_counts(photos)
-    st.caption("写真をタップすると6つの気持ちボタンが開きます。選ぶだけではページ更新しません。")
+    st.caption("写真をタップするたびに 未設定 → 🥰 ほっこりした → 😊 うれしい → 😲 びっくり → 😠 おこった → 😢 かなしい → 😣 くやしい → 未設定 の順で変わります。気持ちを変えるだけではページ更新しません。")
     summary = photo_emotion_summary_text(photos)
     st.caption(f"感情選択済み：{selected} / {len(photos)}枚" + (f"　｜　{summary}" if summary else ""))
 
@@ -16300,7 +16227,7 @@ def page_diary():
 
     page_top(
         "📖 日記",
-        "写真をタップして6つの気持ちから選び、その記録から日記を作ります。気持ちを選ぶだけではページ更新しません。コメント入力は使いません。",
+        "写真をタップするたびに6つの気持ちを切り替え、その記録から日記を作ります。気持ちを変えるだけではページ更新しません。コメント入力は使いません。",
     )
     notice = st.session_state.pop("_diary_notice", None)
     if notice:
@@ -16316,7 +16243,7 @@ def page_diary():
 
     if pending_rows:
         st.markdown("#### まだ日記になっていない写真")
-        st.caption("写真をタップすると6つの気持ちボタンが開きます。気持ちを選ぶだけではページ更新せず、次に別の操作をしたときにまとめて保存します。")
+        st.caption("写真をタップするたびに 未設定 → 🥰 ほっこりした → 😊 うれしい → 😲 びっくり → 😠 おこった → 😢 かなしい → 😣 くやしい → 未設定 の順で変わります。気持ちを変えるだけではページ更新せず、次に別の操作をしたときにまとめて保存します。")
         pending_titles = pending_diary_titles(pending_rows, used_titles=saved_titles)
         for item in pending_rows:
             pending_trip = item.get("trip") or {}
@@ -17373,14 +17300,14 @@ def page_settings():
         "写真カメラ起動中は下部から保存済み写真を、動画カメラ起動中は下部から保存済み動画を選べます。"
         "動画の保存完了と『いい瞬間』作成は切り分け、いい瞬間はバックグラウンドで処理するため、その間もアプリを操作できます。"
         "『いい瞬間』は保存済みの元動画を、10秒以下は0.5秒間隔・15秒は0.75秒間隔・60秒は3秒間隔・65秒は3.25秒間隔（一般式：max(0.5秒, 動画長÷20)）で最大20枚切り出し、AI用には別の軽量コピーを使います。"
-        "AIが選ぶのは最大3枚で、利用者が見る画像は元動画由来の高画質フレームのみです。切り取った写真は日記画面でタップして喜・怒・哀・楽を選べます。"
+        "AIが選ぶのは最大3枚で、利用者が見る画像は元動画由来の高画質フレームのみです。切り取った写真は日記画面でタップするたびに6つの気持ちを切り替えられます。"
         "初回はカメラとは別に位置情報の許可も求められます。位置情報がオフ・拒否・取得不能の場合は、"
         "ホームの地名表示（未登録なら『地名：登録なし（自動取得）』）を押して入力した内容を写真の場所として使います。"
     )
 
     st.divider()
     st.markdown("#### プロジェクトの考え方")
-    st.caption("写真の枚数を課題にはしません。本人が気になったものを残し、写真ごとに選んだ喜・怒・哀・楽を一緒に振り返ります。")
+    st.caption("写真の枚数を課題にはしません。本人が気になったものを残し、写真ごとに選んだ6つの気持ちを一緒に振り返ります。")
     st.caption(f"アプリビルド：{APP_BUILD}")
 
 # ============================================================
