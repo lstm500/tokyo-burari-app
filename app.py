@@ -28,9 +28,9 @@ from zoneinfo import ZoneInfo
 import streamlit as st
 
 # Freshly generated update: 2026-08-31 23:49 JST
-GENERATED_UPDATE_JST = "2026-09-02T00:54:39+09:00"
+GENERATED_UPDATE_JST = "2026-09-02T01:15:00+09:00"
 
-APP_BUILD = "v165"
+APP_BUILD = "v166"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -3378,6 +3378,78 @@ def update_photo_parenting_tags_batch(changes, valid_photo_ids=None, trip_id=Non
     return latest
 
 
+
+def update_photo_tags_combined_v166(emotion_changes=None, parenting_changes=None):
+    """Persist both tag axes with one row read/write per photo and one diary refresh."""
+    emotion_latest = {}
+    for change in emotion_changes or []:
+        if isinstance(change, dict):
+            pid = str(change.get("photo_id") or "").strip()
+            if pid:
+                emotion_latest[pid] = normalize_photo_emotion_key(change.get("emotion"))
+    parenting_latest = {}
+    for change in parenting_changes or []:
+        if isinstance(change, dict):
+            pid = str(change.get("photo_id") or "").strip()
+            if pid:
+                parenting_latest[pid] = normalize_parenting_tag_key(change.get("parenting"))
+
+    photo_ids = sorted(set(emotion_latest) | set(parenting_latest))
+    if not photo_ids:
+        return {"emotion": emotion_latest, "parenting": parenting_latest}
+
+    client = supabase_client()
+    rows = (
+        client.table(PHOTO_TABLE)
+        .select("id,trip_id,reflection_json")
+        .in_("id", photo_ids)
+        .eq("family_key", current_family_key())
+        .eq("member_key", current_member_key())
+        .execute()
+    ).data or []
+    row_map = {str(row.get("id") or ""): row for row in rows if row.get("id")}
+    touched_trips = set()
+
+    for photo_id in photo_ids:
+        row = row_map.get(photo_id)
+        if not row:
+            continue
+        reflection = row.get("reflection_json") or {}
+        if not isinstance(reflection, dict):
+            reflection = {}
+        else:
+            reflection = dict(reflection)
+
+        if photo_id in emotion_latest:
+            emotion_key = emotion_latest[photo_id]
+            if emotion_key:
+                reflection["emotion"] = photo_emotion_record(emotion_key, source="child_tap_batch_v166")
+            else:
+                reflection.pop("emotion", None)
+
+        if photo_id in parenting_latest:
+            tag_key = parenting_latest[photo_id]
+            if tag_key:
+                reflection["parenting_tag"] = parenting_tag_record(tag_key, source="parent_tap_batch_v166")
+            else:
+                reflection.pop("parenting_tag", None)
+
+        (
+            client.table(PHOTO_TABLE)
+            .update({"reflection_json": reflection})
+            .eq("id", photo_id)
+            .eq("family_key", current_family_key())
+            .eq("member_key", current_member_key())
+            .execute()
+        )
+        trip_id = str(row.get("trip_id") or "").strip()
+        if trip_id:
+            touched_trips.add(trip_id)
+
+    _refresh_after_photo_emotion_changes(touched_trips)
+    return {"emotion": emotion_latest, "parenting": parenting_latest}
+
+
 # ============================================================
 # Deferred browser emotion persistence (v159)
 # ============================================================
@@ -3454,8 +3526,8 @@ def consume_pending_emotion_query():
                 pid = str(photo_id or "").strip()
                 if pid:
                     parenting_changes.append({"photo_id": pid, "parenting": normalize_parenting_tag_key(parenting)})
-        if parenting_changes:
-            update_photo_parenting_tags_batch(parenting_changes)
+        if photo_changes or parenting_changes:
+            update_photo_tags_combined_v166(photo_changes, parenting_changes)
 
         moments = payload.get("x") or {}
         if isinstance(moments, dict):
@@ -3615,8 +3687,7 @@ export default function(component) {
   const photos = Array.isArray(data?.photos) ? data.photos : [];
   const allowDelete = data?.allow_delete !== false;
   const allowEmotion = data?.allow_emotion !== false;
-  const commitTags = data?.commit_tags === true;
-  const pendingParam = String(data?.pending_param || 'feel_v159');
+  const pendingStore = 'tokyo_burari_pending_tags_v166';
   const familyKey = String(data?.family_key || '');
   const memberKey = String(data?.member_key || '');
   const modeByPhoto = (data?.mode_by_photo && typeof data.mode_by_photo === 'object') ? {...data.mode_by_photo} : {};
@@ -3636,39 +3707,23 @@ export default function(component) {
   const normalizeNormal = (value) => Object.prototype.hasOwnProperty.call(normalMeta, String(value || '')) ? String(value || '') : '';
   const normalizeParenting = (value) => Object.prototype.hasOwnProperty.call(parentingMeta, String(value || '')) ? String(value || '') : '';
 
-  const decodePayload = (raw) => {
+  const readPending = () => {
     try {
-      let value = String(raw || '').replace(/-/g, '+').replace(/_/g, '/');
-      value += '='.repeat((4 - value.length % 4) % 4);
-      const binary = atob(value);
-      const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0));
-      const parsed = JSON.parse(new TextDecoder().decode(bytes));
-      return parsed && typeof parsed === 'object' ? parsed : null;
-    } catch (_) { return null; }
-  };
-  const encodePayload = (payload) => {
-    const bytes = new TextEncoder().encode(JSON.stringify(payload));
-    let binary = '';
-    for (let i = 0; i < bytes.length; i += 0x4000) binary += String.fromCharCode(...bytes.subarray(i, i + 0x4000));
-    return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
+      const parsed = JSON.parse(String(localStorage.getItem(pendingStore) || 'null'));
+      if (parsed && Number(parsed.v) === 166 && String(parsed.f || '') === familyKey && String(parsed.m || '') === memberKey) return parsed;
+    } catch (_) {}
+    return {v:166,f:familyKey,m:memberKey,p:{},g:{},x:{}};
   };
   const mutatePending = (mutator) => {
     if (!familyKey || !memberKey) return;
     try {
-      const url = new URL(window.location.href);
-      let envelope = decodePayload(url.searchParams.get(pendingParam));
-      if (!envelope || Number(envelope.v) !== 159 || String(envelope.f || '') !== familyKey || String(envelope.m || '') !== memberKey) {
-        envelope = {v:159,f:familyKey,m:memberKey,p:{},g:{},x:{}};
-      }
+      const envelope = readPending();
       if (!envelope.p || typeof envelope.p !== 'object') envelope.p = {};
       if (!envelope.g || typeof envelope.g !== 'object') envelope.g = {};
       if (!envelope.x || typeof envelope.x !== 'object') envelope.x = {};
       mutator(envelope);
       envelope.t = `${Date.now()}_${Math.random().toString(36).slice(2)}`;
-      const encoded = encodePayload(envelope);
-      url.searchParams.set(pendingParam, encoded);
-      try { localStorage.setItem('tokyo_burari_pending_feelings_v159', encoded); } catch (_) {}
-      window.history.replaceState(window.history.state || {}, '', url.pathname + url.search + url.hash);
+      localStorage.setItem(pendingStore, JSON.stringify(envelope));
     } catch (_) {}
   };
   const persistNormal = (photoId, value) => mutatePending((envelope) => { envelope.p[String(photoId)] = normalizeNormal(value); });
@@ -3677,47 +3732,19 @@ export default function(component) {
     delete envelope.p[String(photoId)]; delete envelope.g[String(photoId)];
   });
 
-  // v165: emotion/tag changes are committed through the component itself. This is
-  // deliberately debounced so rapid taps stay instant. Mode-only changes never emit.
-  const pendingNormal = new Map();
-  const pendingParenting = new Map();
-  let commitTimer = null;
-  const flushTagCommit = () => {
-    if (!commitTags) return;
-    if (commitTimer) { clearTimeout(commitTimer); commitTimer = null; }
-    if (!pendingNormal.size && !pendingParenting.size) return;
-    const emotionChanges = Array.from(pendingNormal, ([photo_id, emotion]) => ({photo_id, emotion}));
-    const parentingChanges = Array.from(pendingParenting, ([photo_id, parenting]) => ({photo_id, parenting}));
-    pendingNormal.clear(); pendingParenting.clear();
-    setTriggerValue('emotion_batch', {
-      emotion_changes: emotionChanges,
-      parenting_changes: parentingChanges,
-      modes: modeByPhoto,
-      token: `${Date.now()}:${Math.random()}`,
-    });
-  };
-  const queueNormalCommit = (photoId, value) => {
-    pendingNormal.set(String(photoId), normalizeNormal(value));
-    if (commitTimer) clearTimeout(commitTimer);
-    commitTimer = setTimeout(flushTagCommit, 300);
-  };
-  const queueParentingCommit = (photoId, value) => {
-    pendingParenting.set(String(photoId), normalizeParenting(value));
-    if (commitTimer) clearTimeout(commitTimer);
-    commitTimer = setTimeout(flushTagCommit, 300);
-  };
-
   const nextValue = (value, order, normalize) => {
     const cycle = ['', ...order];
     const index = Math.max(0, cycle.indexOf(normalize(value)));
     return cycle[(index + 1) % cycle.length];
   };
+  const pendingSnapshot = readPending();
 
   for (const sourcePhoto of photos) {
+    const photoId = String(sourcePhoto?.id || '');
     const photo = {
       ...sourcePhoto,
-      emotion: normalizeNormal(sourcePhoto?.emotion),
-      parenting: normalizeParenting(sourcePhoto?.parenting),
+      emotion: Object.prototype.hasOwnProperty.call(pendingSnapshot.p || {}, photoId) ? normalizeNormal(pendingSnapshot.p[photoId]) : normalizeNormal(sourcePhoto?.emotion),
+      parenting: Object.prototype.hasOwnProperty.call(pendingSnapshot.g || {}, photoId) ? normalizeParenting(pendingSnapshot.g[photoId]) : normalizeParenting(sourcePhoto?.parenting),
     };
     let activeMode = String(modeByPhoto[String(photo.id)] || '') === 'parenting' ? 'parenting' : 'normal';
     const wrap = document.createElement('div'); wrap.className = 'diary-photo-wrap';
@@ -3755,10 +3782,10 @@ export default function(component) {
         event?.preventDefault?.(); event?.stopPropagation?.();
         if (activeMode === 'parenting') {
           photo.parenting = nextValue(photo.parenting, parentingOrder, normalizeParenting);
-          if (commitTags) queueParentingCommit(photo.id, photo.parenting); else persistParenting(photo.id, photo.parenting);
+          persistParenting(photo.id, photo.parenting);
         } else {
           photo.emotion = nextValue(photo.emotion, normalOrder, normalizeNormal);
-          if (commitTags) queueNormalCommit(photo.id, photo.emotion); else persistNormal(photo.id, photo.emotion);
+          persistNormal(photo.id, photo.emotion);
         }
         syncVisual();
       };
@@ -3789,7 +3816,7 @@ def _get_diary_gallery_component():
     _diary_gallery_component_initialized = True
     try:
         diary_gallery_component = st.components.v2.component(
-            "tokyo_burari_diary_gallery_v165",
+            "tokyo_burari_diary_gallery_v166",
             html=_DIARY_GALLERY_HTML,
             css=_DIARY_GALLERY_CSS,
             js=_DIARY_GALLERY_JS,
@@ -3853,6 +3880,185 @@ def render_pending_emotion_query_cleanup():
         data={"ack_token": ack, "pending_param": PENDING_EMOTION_QUERY_PARAM},
         key=f"pending_emotion_cleanup_v159_{ack}",
     )
+
+
+# ============================================================
+# Browser-only pending tag flush bridge (v166)
+# ============================================================
+# Photo taps never contact Streamlit. They only update one localStorage envelope.
+# The next real app rerun (navigation, display-mode change, save action, etc.) mounts
+# this bridge; it sends the whole pending envelope once, and Python persists it in a
+# batch. This keeps tapping and mode switching immediate while avoiding timer-driven
+# reruns that could destabilize enlarged/list views.
+PENDING_TAG_STORE_V166 = "tokyo_burari_pending_tags_v166"
+
+_PENDING_TAG_SYNC_JS = r"""
+const STORE_KEY = 'tokyo_burari_pending_tags_v166';
+const REGISTRY_KEY = Symbol.for('tokyo_burari_pending_tag_sync_v166');
+const registry = globalThis[REGISTRY_KEY] || new Map();
+globalThis[REGISTRY_KEY] = registry;
+
+export default function(component) {
+  const { data, setTriggerValue } = component;
+  const familyKey = String(data?.family_key || '');
+  const memberKey = String(data?.member_key || '');
+  const ackToken = String(data?.ack_token || '');
+  const instanceKey = `${familyKey}|${memberKey}`;
+  const runtime = registry.get(instanceKey) || { lastSent: '' };
+  registry.set(instanceKey, runtime);
+  if (!familyKey || !memberKey) return;
+
+  const parse = (raw) => {
+    try {
+      const payload = JSON.parse(String(raw || 'null'));
+      return payload && typeof payload === 'object' ? payload : null;
+    } catch (_) { return null; }
+  };
+
+  try {
+    let raw = String(localStorage.getItem(STORE_KEY) || '');
+    let payload = parse(raw);
+
+    if (ackToken && payload && String(payload.t || '') === ackToken) {
+      localStorage.removeItem(STORE_KEY);
+      runtime.lastSent = '';
+      raw = '';
+      payload = null;
+    }
+
+    if (!payload || Number(payload.v) !== 166) return;
+    if (String(payload.f || '') !== familyKey || String(payload.m || '') !== memberKey) return;
+    const token = String(payload.t || '');
+    if (!token || token === runtime.lastSent) return;
+
+    runtime.lastSent = token;
+    queueMicrotask(() => setTriggerValue('pending_payload', payload));
+  } catch (_) {}
+}
+"""
+
+try:
+    pending_tag_sync_component_v166 = st.components.v2.component(
+        "tokyo_burari_pending_tag_sync_v166",
+        js=_PENDING_TAG_SYNC_JS,
+    )
+except Exception:
+    pending_tag_sync_component_v166 = None
+
+
+def _apply_pending_tag_payload_v166(payload):
+    if not isinstance(payload, dict) or int(payload.get("v") or 0) != 166:
+        return False
+    token = str(payload.get("t") or "").strip()
+    if not token:
+        return False
+    if str(payload.get("f") or "") != str(current_family_key()) or str(payload.get("m") or "") != str(current_member_key()):
+        return False
+    if token == str(st.session_state.get("_pending_tag_v166_processed_token") or ""):
+        st.session_state["_pending_tag_v166_ack_token"] = token
+        return True
+
+    try:
+        photo_changes = []
+        for photo_id, emotion in (payload.get("p") or {}).items() if isinstance(payload.get("p"), dict) else []:
+            pid = str(photo_id or "").strip()
+            if pid:
+                photo_changes.append({"photo_id": pid, "emotion": normalize_photo_emotion_key(emotion)})
+        parenting_changes = []
+        for photo_id, parenting in (payload.get("g") or {}).items() if isinstance(payload.get("g"), dict) else []:
+            pid = str(photo_id or "").strip()
+            if pid:
+                parenting_changes.append({"photo_id": pid, "parenting": normalize_parenting_tag_key(parenting)})
+        if parenting_changes:
+            update_photo_parenting_tags_batch(parenting_changes)
+
+        moments = payload.get("x") or {}
+        if isinstance(moments, dict):
+            for video_id, state in moments.items():
+                vid = str(video_id or "").strip()
+                if not vid or not isinstance(state, dict):
+                    continue
+                try:
+                    round_number = max(0, int(state.get("r") or 0))
+                except Exception:
+                    round_number = 0
+
+                selected_raw = state.get("s") or []
+                selected = sorted({
+                    int(value)
+                    for value in selected_raw
+                    if str(value).strip().lstrip("-").isdigit() and int(value) > 0
+                }) if isinstance(selected_raw, (list, tuple)) else []
+                st.session_state[f"_moments_tap_selected_{vid}_{round_number}"] = selected
+
+                emotion_changes = []
+                emotion_map = state.get("e") or {}
+                if isinstance(emotion_map, dict):
+                    for rank_value, emotion in emotion_map.items():
+                        try:
+                            rank = int(rank_value)
+                        except Exception:
+                            rank = 0
+                        if rank > 0:
+                            emotion_changes.append({"rank": rank, "emotion": normalize_photo_emotion_key(emotion)})
+
+                parenting_rank_changes = []
+                parenting_map = state.get("g") or {}
+                if isinstance(parenting_map, dict):
+                    for rank_value, parenting in parenting_map.items():
+                        try:
+                            rank = int(rank_value)
+                        except Exception:
+                            rank = 0
+                        if rank > 0:
+                            parenting_rank_changes.append({"rank": rank, "parenting": normalize_parenting_tag_key(parenting)})
+
+                if not emotion_changes and not parenting_rank_changes:
+                    continue
+                row = (
+                    supabase_client().table(PHOTO_TABLE)
+                    .select("*")
+                    .eq("id", vid)
+                    .eq("family_key", current_family_key())
+                    .eq("member_key", current_member_key())
+                    .limit(1)
+                    .execute()
+                ).data or []
+                video_photo = row[0] if row else None
+                if video_photo and photo_is_video(video_photo):
+                    update_video_ai_selection_tags(
+                        video_photo,
+                        emotion_changes=emotion_changes,
+                        parenting_changes=parenting_rank_changes,
+                    )
+
+        st.session_state["_pending_tag_v166_processed_token"] = token
+        st.session_state["_pending_tag_v166_ack_token"] = token
+        return True
+    except Exception as exc:
+        st.session_state["_emotion_sync_warning"] = "選んだアイコンの保存を次の操作でもう一度試します。"
+        st.session_state["_emotion_sync_warning_detail"] = _safe_error_text(exc, 700)
+        return False
+
+
+def sync_pending_tags_from_browser_v166():
+    """Flush browser-local photo/video tags only when some real app rerun occurs."""
+    if pending_tag_sync_component_v166 is None:
+        return False
+    result = pending_tag_sync_component_v166(
+        data={
+            "family_key": current_family_key(),
+            "member_key": current_member_key(),
+            "ack_token": str(st.session_state.get("_pending_tag_v166_ack_token") or ""),
+            "scan_nonce": time.time_ns(),
+        },
+        key="pending_tag_sync_instance_v166",
+        on_pending_payload_change=lambda: None,
+    )
+    payload = getattr(result, "pending_payload", None)
+    if isinstance(payload, dict):
+        return _apply_pending_tag_payload_v166(payload)
+    return False
 
 
 # ============================================================
@@ -14341,6 +14547,8 @@ def _moments_video_title(photo):
 
 _MOMENTS_SELECT_HTML = """
 <div id="moments-select-grid" class="moments-select-grid"></div>
+<button id="moments-next-video" class="moments-action-button secondary" type="button" hidden></button>
+<button id="moments-save-selection" class="moments-action-button primary" type="button" hidden></button>
 """
 
 _MOMENTS_SELECT_CSS = """
@@ -14574,6 +14782,19 @@ _MOMENTS_SELECT_CSS = """
   display: block;
   opacity: .82;
 }
+.moments-action-button {
+  appearance:none; -webkit-appearance:none; width:100%; min-height:44px; margin:7px 0 0; padding:9px 12px;
+  border-radius:12px; font-size:14px; font-weight:800; cursor:pointer; touch-action:manipulation;
+  -webkit-tap-highlight-color:transparent; box-sizing:border-box;
+}
+.moments-action-button.primary {
+  border:1px solid rgba(128,128,128,.18); background:var(--primary-color); color:#fff;
+}
+.moments-action-button.secondary {
+  border:1px solid rgba(128,128,128,.28); background:rgba(128,128,128,.07); color:var(--st-text-color);
+}
+.moments-action-button:active { transform:scale(.99); }
+.moments-action-button[hidden] { display:none !important; }
 .moments-enlarge-hint {
   margin-top: 7px;
   text-align: center;
@@ -14605,8 +14826,11 @@ export default function(component) {
   const disabled = Boolean(data?.disabled);
   const viewMode = String(data?.view_mode || 'list') === 'enlarge' ? 'enlarge' : 'list';
   const familyKey=String(data?.family_key||''), memberKey=String(data?.member_key||''), videoId=String(data?.video_id||'');
-  const roundNumber=Math.max(0,Number(data?.round_number||0)||0), pendingParam=String(data?.pending_param||'feel_v159');
+  const roundNumber=Math.max(0,Number(data?.round_number||0)||0);
+  const pendingStore='tokyo_burari_pending_tags_v166';
   const selected=new Set((Array.isArray(data?.selected_ranks)?data.selected_ranks:[]).map(Number).filter(v=>Number.isFinite(v)&&v>0));
+  const nextVideoButton=parentElement.querySelector('#moments-next-video');
+  const saveSelectionButton=parentElement.querySelector('#moments-save-selection');
 
   const normalOrder=['cozy','joy','surprise','anger','sadness','frustration'];
   const normalMeta={
@@ -14629,55 +14853,64 @@ export default function(component) {
   let activeRank=Number(data?.active_rank||0); if(!validRanks.includes(activeRank)) activeRank=validRanks.length?validRanks[0]:0;
   let preferredMode=String(data?.preferred_mode||'')==='parenting'?'parenting':'normal';
   const selectionTouched=new Set();
-  let commitTimer=null;
 
-  // v164: preload/decode all three stills once. Enlarged previous/next can then
-  // switch entirely inside the browser without a Streamlit round trip.
-  for(const photo of photos){
-    const src=String(photo?.src||'');
-    if(!src)continue;
+  const readPending=()=>{
     try{
-      const preload=new Image(); preload.decoding='async'; preload.src=src;
-      if(typeof preload.decode==='function')preload.decode().catch(()=>{});
+      const parsed=JSON.parse(String(localStorage.getItem(pendingStore)||'null'));
+      if(parsed&&Number(parsed.v)===166&&String(parsed.f||'')===familyKey&&String(parsed.m||'')===memberKey)return parsed;
     }catch(_){}
+    return {v:166,f:familyKey,m:memberKey,p:{},g:{},x:{}};
+  };
+  const pendingSnapshot=readPending();
+  const pendingMoment=(pendingSnapshot.x&&typeof pendingSnapshot.x==='object')?pendingSnapshot.x[videoId]:null;
+  if(pendingMoment&&typeof pendingMoment==='object'&&Number(pendingMoment.r||0)===roundNumber){
+    if(pendingMoment.e&&typeof pendingMoment.e==='object')for(const [rankValue,value] of Object.entries(pendingMoment.e)){const rank=Number(rankValue);if(validRanks.includes(rank))emotions.set(rank,normalizeNormal(value));}
+    if(pendingMoment.g&&typeof pendingMoment.g==='object')for(const [rankValue,value] of Object.entries(pendingMoment.g)){const rank=Number(rankValue);if(validRanks.includes(rank))parenting.set(rank,normalizeParenting(value));}
+    if(Array.isArray(pendingMoment.s)){selected.clear();for(const value of pendingMoment.s.map(Number)){if(validRanks.includes(value))selected.add(value);}}
   }
 
-  const decodePayload=(raw)=>{try{let v=String(raw||'').replace(/-/g,'+').replace(/_/g,'/');v+='='.repeat((4-v.length%4)%4);const b=atob(v);const bytes=Uint8Array.from(b,c=>c.charCodeAt(0));const p=JSON.parse(new TextDecoder().decode(bytes));return p&&typeof p==='object'?p:null;}catch(_){return null;}};
-  const encodePayload=(payload)=>{const bytes=new TextEncoder().encode(JSON.stringify(payload));let binary='';for(let i=0;i<bytes.length;i+=0x4000)binary+=String.fromCharCode(...bytes.subarray(i,i+0x4000));return btoa(binary).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/g,'');};
+  const writePending=(envelope)=>{
+    try{
+      envelope.t=`${Date.now()}_${Math.random().toString(36).slice(2)}`;
+      localStorage.setItem(pendingStore,JSON.stringify(envelope));
+    }catch(_){}
+  };
   const persistMomentState=(rank)=>{
     if(!familyKey||!memberKey||!videoId)return;
     try{
-      const url=new URL(window.location.href);let envelope=decodePayload(url.searchParams.get(pendingParam));
-      if(!envelope||Number(envelope.v)!==159||String(envelope.f||'')!==familyKey||String(envelope.m||'')!==memberKey) envelope={v:159,f:familyKey,m:memberKey,p:{},g:{},x:{}};
+      const envelope=readPending();
       if(!envelope.p||typeof envelope.p!=='object')envelope.p={}; if(!envelope.g||typeof envelope.g!=='object')envelope.g={}; if(!envelope.x||typeof envelope.x!=='object')envelope.x={};
       let state=envelope.x[videoId]; if(!state||typeof state!=='object'||Number(state.r||0)!==roundNumber)state={r:roundNumber,e:{},g:{},s:[]};
       if(!state.e||typeof state.e!=='object')state.e={}; if(!state.g||typeof state.g!=='object')state.g={};
       state.e[String(rank)]=normalizeNormal(emotions.get(rank)); state.g[String(rank)]=normalizeParenting(parenting.get(rank)); state.s=Array.from(selected).sort((a,b)=>a-b); envelope.x[videoId]=state;
-      envelope.t=`${Date.now()}_${Math.random().toString(36).slice(2)}`; const encoded=encodePayload(envelope); url.searchParams.set(pendingParam,encoded);
-      try{localStorage.setItem('tokyo_burari_pending_feelings_v159',encoded);}catch(_){} window.history.replaceState(window.history.state||{},'',url.pathname+url.search+url.hash);
+      writePending(envelope);
     }catch(_){}
   };
-  const flushPickerCommit=()=>{
-    if(commitTimer){clearTimeout(commitTimer);commitTimer=null;}
-    if(!selectionTouched.size)return;
-    const changes=Array.from(selectionTouched).map(rank=>({
-      rank,
-      emotion:normalizeNormal(emotions.get(rank)),
-      parenting:normalizeParenting(parenting.get(rank)),
-    }));
-    selectionTouched.clear();
-    setTriggerValue('picker_commit',{
-      changes,
-      selected_ranks:Array.from(selected).sort((a,b)=>a-b),
-      active_rank:activeRank,
-      preferred_mode:preferredMode,
-      nonce:`${Date.now()}:${Math.random()}`,
-    });
+  const buildActionPayload=(action)=>({
+    action:String(action||''),
+    changes:validRanks.map(rank=>({rank,emotion:normalizeNormal(emotions.get(rank)),parenting:normalizeParenting(parenting.get(rank))})),
+    selected_ranks:Array.from(selected).sort((a,b)=>a-b),
+    active_rank:activeRank,
+    preferred_mode:preferredMode,
+    pending_payload:readPending(),
+    nonce:`${Date.now()}:${Math.random()}`,
+  });
+  const emitAction=(action)=>{
+    if(disabled)return;
+    const payload=buildActionPayload(action);
+    setTriggerValue('picker_action',payload);
   };
-  const schedulePickerCommit=()=>{
-    if(commitTimer)clearTimeout(commitTimer);
-    commitTimer=setTimeout(flushPickerCommit,300);
-  };
+  if(nextVideoButton){
+    nextVideoButton.hidden=!Boolean(data?.show_next_video);
+    nextVideoButton.textContent=String(data?.next_label||'次の動画の写真へ →');
+    nextVideoButton.onclick=(event)=>{event.preventDefault();event.stopPropagation();emitAction('next_video');};
+  }
+  if(saveSelectionButton){
+    saveSelectionButton.hidden=disabled||!Boolean(data?.show_save_button!==false);
+    saveSelectionButton.textContent=String(data?.save_label||'選択した写真を残す');
+    saveSelectionButton.onclick=(event)=>{event.preventDefault();event.stopPropagation();emitAction('save_selection');};
+  }
+
   const nextValue=(value,order,normalize)=>{const cycle=['',...order];const index=Math.max(0,cycle.indexOf(normalize(value)));return cycle[(index+1)%cycle.length];};
 
   const makeCard=(photo,index,large=false)=>{
@@ -14713,7 +14946,7 @@ export default function(component) {
     normalButton.addEventListener('click',(event)=>{event.preventDefault();event.stopPropagation();activeMode='normal';preferredMode='normal';syncVisual();});
     parentingButton.addEventListener('click',(event)=>{event.preventDefault();event.stopPropagation();activeMode='parenting';preferredMode='parenting';syncVisual();});
     if(!disabled){
-      const cycle=(event)=>{event?.preventDefault?.();event?.stopPropagation?.(); selectionTouched.add(rank); if(activeMode==='parenting')parenting.set(rank,nextValue(parenting.get(rank),parentingOrder,normalizeParenting));else emotions.set(rank,nextValue(emotions.get(rank),normalOrder,normalizeNormal)); syncVisual(); schedulePickerCommit();};
+      const cycle=(event)=>{event?.preventDefault?.();event?.stopPropagation?.(); selectionTouched.add(rank); if(activeMode==='parenting')parenting.set(rank,nextValue(parenting.get(rank),parentingOrder,normalizeParenting));else emotions.set(rank,nextValue(emotions.get(rank),normalOrder,normalizeNormal)); syncVisual(); persistMomentState(rank);};
       card.addEventListener('click',cycle);card.addEventListener('keydown',(event)=>{if(event.key==='Enter'||event.key===' ')cycle(event);});
     }
     return card;
@@ -14757,7 +14990,7 @@ def _get_moments_select_component():
     _moments_select_component_initialized = True
     try:
         moments_select_component = st.components.v2.component(
-            "tokyo_burari_moments_select_v165",
+            "tokyo_burari_moments_select_v166",
             html=_MOMENTS_SELECT_HTML,
             css=_MOMENTS_SELECT_CSS,
             js=_MOMENTS_SELECT_JS,
@@ -14768,7 +15001,7 @@ def _get_moments_select_component():
 
 
 @st.fragment
-def _render_moments_picker(photo, index, view_mode="list"):
+def _render_moments_picker(photo, index, view_mode="list", next_video_action=None):
     selection_meta = photo_media_metadata(photo).get("ai_selection") or {}
     if not isinstance(selection_meta, dict):
         selection_meta = {}
@@ -14931,12 +15164,20 @@ def _render_moments_picker(photo, index, view_mode="list"):
     for item_index, item in enumerate(grid_items):
         rank = int(item.get("rank") or item_index + 1)
         path = str(item.get("storage_path") or "").strip()
-        url = str(signed_map.get(path) or "")
+        # v166: keep picker images bounded in memory. The old path preferred the
+        # original signed frame, so enlarged mode could decode several full-resolution
+        # stills per video and crash a mobile browser. Use a cached thumbnail first.
+        url = ""
+        try:
+            url = thumbnail_photo_data_url(
+                path,
+                max_px=760 if view_mode == "enlarge" else 420,
+                quality=82 if view_mode == "enlarge" else 78,
+            )
+        except Exception:
+            url = ""
         if not url:
-            try:
-                url = thumbnail_photo_data_url(path, max_px=520, quality=82)
-            except Exception:
-                url = ""
+            url = str(signed_map.get(path) or "")
         quality = _video_selection_quality_label(item.get("primary_quality"))
         seconds = max(0, int(item.get("timestamp_ms") or 0)) / 1000
         cards.append(
@@ -14964,6 +15205,7 @@ def _render_moments_picker(photo, index, view_mode="list"):
     picker_component = _get_moments_select_component()
     if picker_component is not None:
         serial = int(st.session_state.get(component_serial_key) or 0)
+        next_cfg = next_video_action if isinstance(next_video_action, dict) else {}
         result = picker_component(
             data={
                 "photos": cards,
@@ -14975,21 +15217,26 @@ def _render_moments_picker(photo, index, view_mode="list"):
                 "member_key": current_member_key(),
                 "video_id": video_id,
                 "round_number": round_number,
-                "pending_param": PENDING_EMOTION_QUERY_PARAM,
                 "preferred_mode": str(st.session_state.get(preferred_mode_key) or "normal"),
+                "show_next_video": bool(next_cfg),
+                "next_label": str(next_cfg.get("label") or "次の動画の写真へ →"),
+                "save_label": "選択を更新" if status == "reviewed" else "選択した写真を残す",
+                "show_save_button": True,
             },
             key=f"moments_tap_picker_{video_id}_{round_number}_{serial}",
-            on_selected_ranks_change=lambda: None,
-            on_active_rank_change=lambda: None,
-            on_picker_commit_change=lambda: None,
+            on_picker_action_change=lambda: None,
         )
-        should_rerun = False
-        picker_commit = getattr(result, "picker_commit", None)
-        if isinstance(picker_commit, dict):
-            nonce = str(picker_commit.get("nonce") or "")
-            commit_token_key = f"_moments_picker_commit_token_{video_id}_{round_number}"
-            if nonce and nonce != str(st.session_state.get(commit_token_key) or ""):
-                raw_changes = picker_commit.get("changes") or []
+
+        picker_action = getattr(result, "picker_action", None)
+        if isinstance(picker_action, dict):
+            nonce = str(picker_action.get("nonce") or "")
+            action_token_key = f"_moments_picker_action_token_{video_id}_{round_number}"
+            if nonce and nonce != str(st.session_state.get(action_token_key) or ""):
+                pending_payload = picker_action.get("pending_payload")
+                if isinstance(pending_payload, dict):
+                    _apply_pending_tag_payload_v166(pending_payload)
+
+                raw_changes = picker_action.get("changes") or []
                 emotion_changes = []
                 parenting_changes = []
                 for change in raw_changes if isinstance(raw_changes, list) else []:
@@ -15002,63 +15249,84 @@ def _render_moments_picker(photo, index, view_mode="list"):
                     if change_rank in valid_ranks:
                         emotion_changes.append({"rank": change_rank, "emotion": normalize_photo_emotion_key(change.get("emotion"))})
                         parenting_changes.append({"rank": change_rank, "parenting": normalize_parenting_tag_key(change.get("parenting"))})
+
+                action_photo = photo
                 if emotion_changes or parenting_changes:
-                    update_video_ai_selection_tags(
+                    action_photo = update_video_ai_selection_tags(
                         photo,
                         emotion_changes=emotion_changes,
                         parenting_changes=parenting_changes,
                     )
-                committed_selected = picker_commit.get("selected_ranks")
+
+                committed_selected = picker_action.get("selected_ranks")
                 if isinstance(committed_selected, (list, tuple)):
-                    normalized_commit = sorted(
-                        {
-                            int(value)
-                            for value in committed_selected
-                            if str(value).strip().lstrip("-").isdigit() and int(value) in valid_ranks
-                        }
-                    )
-                    st.session_state[selection_state_key] = normalized_commit
-                    selected_ranks = normalized_commit
+                    selected_ranks = sorted({
+                        int(value)
+                        for value in committed_selected
+                        if str(value).strip().lstrip("-").isdigit() and int(value) in valid_ranks
+                    })
+                    st.session_state[selection_state_key] = selected_ranks
+
                 try:
-                    committed_active_rank = int(picker_commit.get("active_rank") or 0)
+                    committed_active_rank = int(picker_action.get("active_rank") or 0)
                 except Exception:
                     committed_active_rank = 0
                 if committed_active_rank in valid_ranks:
                     st.session_state[active_rank_key] = committed_active_rank
                     current_active_rank = committed_active_rank
-                committed_mode = str(picker_commit.get("preferred_mode") or "normal")
+                committed_mode = str(picker_action.get("preferred_mode") or "normal")
                 st.session_state[preferred_mode_key] = "parenting" if committed_mode == "parenting" else "normal"
-                st.session_state[commit_token_key] = nonce
-                should_rerun = True
+                st.session_state[action_token_key] = nonce
 
-        # Backward compatibility with already-mounted pre-v158 components.
-        result_selected = getattr(result, "selected_ranks", None)
-        if isinstance(result_selected, (list, tuple)):
-            normalized = sorted(
-                {
-                    int(value)
-                    for value in result_selected
-                    if str(value).strip().lstrip("-").isdigit() and int(value) in valid_ranks
-                }
-            )
-            if normalized != selected_ranks:
-                st.session_state[selection_state_key] = normalized
-                selected_ranks = normalized
-                should_rerun = True
+                action_name = str(picker_action.get("action") or "")
+                selected_rank_set = set(selected_ranks)
+                if action_name in {"save_selection", "next_video"}:
+                    if not selected_rank_set:
+                        if action_name == "save_selection":
+                            st.warning("残したい写真をタップして気持ちを付けてください。")
+                    else:
+                        newly_saved = 0
+                        action_items = video_ai_selection_items(action_photo) or items
+                        with st.spinner("選択を更新しています…" if status == "reviewed" else "選択した写真を残しています…"):
+                            for action_item in action_items:
+                                rank = int(action_item.get("rank") or 0)
+                                if rank not in selected_rank_set:
+                                    continue
+                                if not action_item.get("saved_photo_id"):
+                                    save_video_ai_selection_as_photo(action_photo, action_item)
+                                    newly_saved += 1
+                            record_video_ai_human_choices(action_photo, selected_rank_set)
 
-        result_active_rank = getattr(result, "active_rank", None)
-        try:
-            result_active_rank = int(result_active_rank)
-        except Exception:
-            result_active_rank = 0
-        if result_active_rank in valid_ranks and result_active_rank != current_active_rank:
-            st.session_state[active_rank_key] = result_active_rank
-            current_active_rank = result_active_rank
-            should_rerun = True
+                        if newly_saved:
+                            previous_count = st.session_state.get("_home_today_photo_count")
+                            try:
+                                previous_count = int(previous_count) if previous_count is not None else 0
+                            except Exception:
+                                previous_count = 0
+                            st.session_state["_home_today_photo_count"] = previous_count + newly_saved
 
-        if should_rerun:
-            st.session_state[component_serial_key] = serial + 1
-            st.rerun(scope="fragment")
+                if action_name == "next_video" and next_cfg:
+                    state_key = str(next_cfg.get("state_key") or "")
+                    try:
+                        next_index = max(0, int(next_cfg.get("next_index") or 0))
+                    except Exception:
+                        next_index = 0
+                    if state_key:
+                        st.session_state[state_key] = next_index
+                    st.session_state["_moments_notice"] = "現在の選択を保存して、次の動画へ移動しました。"
+                    st.rerun(scope="app")
+
+                if action_name == "save_selection" and selected_rank_set:
+                    if status == "reviewed":
+                        st.session_state["_moments_notice"] = (
+                            f"写真の選択を{len(selected_rank_set)}枚に更新しました。新しく選んだ写真があれば日記に追加しました。"
+                        )
+                    else:
+                        st.session_state["_moments_notice"] = (
+                            f"選択した{len(selected_rank_set)}枚を確認しました。新しく選んだ写真は日記に残しました。"
+                            "今回選んだ傾向は、今後のAIセレクションにも反映します。"
+                        )
+                    st.rerun(scope="app")
 
         selected_ranks = sorted(
             rank for rank in (st.session_state.get(selection_state_key) or [])
@@ -15156,51 +15424,63 @@ def _render_moments_picker(photo, index, view_mode="list"):
                             st.session_state[selection_state_key] = sorted(current)
                             st.rerun()
 
+        if isinstance(next_video_action, dict):
+            next_label = str(next_video_action.get("label") or "次の動画の写真へ →")
+            if st.button(
+                next_label,
+                use_container_width=True,
+                key=f"moments_fallback_next_video_{video_id}_{round_number}",
+            ):
+                state_key = str(next_video_action.get("state_key") or "")
+                try:
+                    next_index = max(0, int(next_video_action.get("next_index") or 0))
+                except Exception:
+                    next_index = 0
+                if state_key:
+                    st.session_state[state_key] = next_index
+                st.rerun(scope="app")
+
 
     selected_rank_set = set(selected_ranks)
-    send_clicked = st.button(
-        "選択を更新" if status == "reviewed" else "選択した写真を残す",
-        type="primary",
-        use_container_width=True,
-        disabled=False,
-        key=f"moments_send_{video_id}_{round_number}",
-    )
-    if send_clicked and not selected_rank_set:
-        st.warning("残したい写真をタップして気持ちを付けてください。")
-    if send_clicked and selected_rank_set:
-        newly_saved = 0
-        try:
-            with st.spinner("選択を更新しています…" if status == "reviewed" else "選択した写真を残しています…"):
-                for item in items:
-                    rank = int(item.get("rank") or 0)
-                    if rank not in selected_rank_set:
-                        continue
-                    if not item.get("saved_photo_id"):
-                        save_video_ai_selection_as_photo(photo, item)
-                        newly_saved += 1
-                record_video_ai_human_choices(photo, selected_rank_set)
+    if picker_component is None:
+        send_clicked = st.button(
+            "選択を更新" if status == "reviewed" else "選択した写真を残す",
+            type="primary",
+            use_container_width=True,
+            disabled=False,
+            key=f"moments_send_{video_id}_{round_number}",
+        )
+        if send_clicked and not selected_rank_set:
+            st.warning("残したい写真を選んでください。")
+        if send_clicked and selected_rank_set:
+            newly_saved = 0
+            try:
+                with st.spinner("選択を更新しています…" if status == "reviewed" else "選択した写真を残しています…"):
+                    for item in items:
+                        rank = int(item.get("rank") or 0)
+                        if rank not in selected_rank_set:
+                            continue
+                        if not item.get("saved_photo_id"):
+                            save_video_ai_selection_as_photo(photo, item)
+                            newly_saved += 1
+                    record_video_ai_human_choices(photo, selected_rank_set)
 
-            if newly_saved:
-                previous_count = st.session_state.get("_home_today_photo_count")
-                try:
-                    previous_count = int(previous_count) if previous_count is not None else 0
-                except Exception:
-                    previous_count = 0
-                st.session_state["_home_today_photo_count"] = previous_count + newly_saved
-            if status == "reviewed":
+                if newly_saved:
+                    previous_count = st.session_state.get("_home_today_photo_count")
+                    try:
+                        previous_count = int(previous_count) if previous_count is not None else 0
+                    except Exception:
+                        previous_count = 0
+                    st.session_state["_home_today_photo_count"] = previous_count + newly_saved
                 st.session_state["_moments_notice"] = (
-                    f"写真の選択を{len(selected_rank_set)}枚に更新しました。新しく選んだ写真があれば日記に追加しました。"
+                    f"写真の選択を{len(selected_rank_set)}枚に更新しました。" if status == "reviewed"
+                    else f"選択した{len(selected_rank_set)}枚を確認しました。新しく選んだ写真は日記に残しました。"
                 )
-            else:
-                st.session_state["_moments_notice"] = (
-                    f"選択した{len(selected_rank_set)}枚を確認しました。新しく選んだ写真は日記に残しました。"
-                    "今回選んだ傾向は、今後のAIセレクションにも反映します。"
-                )
-            st.rerun()
-        except Exception as exc:
-            st.error("選択した写真を残せませんでした。")
-            with st.expander("保護者向け詳細"):
-                st.code(str(exc))
+                st.rerun(scope="app")
+            except Exception as exc:
+                st.error("選択した写真を残せませんでした。")
+                with st.expander("保護者向け詳細"):
+                    st.code(str(exc))
 
     if status != "reviewed":
         if st.button(
@@ -15934,10 +16214,32 @@ def page_moments():
 
     display_videos = pending + ready
     if display_videos:
-        for idx, video in enumerate(display_videos):
-            if idx:
-                st.divider()
-            _render_moments_picker(video, idx, view_mode=view_mode)
+        if view_mode == "enlarge":
+            # v166: enlarged mode keeps only one source video mounted at a time.
+            # This prevents many video players + large still components from building
+            # up in the DOM and exhausting mobile browser memory.
+            active_key = "_moments_enlarge_unreviewed_index_v166"
+            try:
+                active_index = int(st.session_state.get(active_key) or 0)
+            except Exception:
+                active_index = 0
+            active_index = max(0, min(active_index, len(display_videos) - 1))
+            st.session_state[active_key] = active_index
+            _render_moments_picker(display_videos[active_index], active_index, view_mode=view_mode)
+            if len(display_videos) > 1:
+                next_index = (active_index + 1) % len(display_videos)
+                if st.button(
+                    f"次の未確認動画へ →（{next_index + 1}/{len(display_videos)}）",
+                    use_container_width=True,
+                    key=f"moments_next_unreviewed_v166_{active_index}",
+                ):
+                    st.session_state[active_key] = next_index
+                    st.rerun(scope="app")
+        else:
+            for idx, video in enumerate(display_videos):
+                if idx:
+                    st.divider()
+                _render_moments_picker(video, idx, view_mode=view_mode)
     else:
         st.info("未確認のAIセレクションはありません。")
 
@@ -15979,7 +16281,7 @@ def page_moments():
                             except Exception as exc:
                                 failures.append(f"{_moments_video_title(reviewed_video)}: {_safe_error_text(exc, 240)}")
                     st.session_state.pop(bulk_delete_key, None)
-                    st.session_state.pop("_moments_reviewed_repick_video_id", None)
+                    st.session_state.pop("_moments_reviewed_repick_index_v166", None)
                     if failures:
                         st.session_state["_moments_notice"] = f"確認済み動画を{deleted}本削除しました。{len(failures)}本は削除できませんでした。"
                         st.session_state["_moments_bulk_delete_error_detail"] = "\n".join(failures[:12])
@@ -15996,23 +16298,31 @@ def page_moments():
                     st.session_state.pop(bulk_delete_key, None)
                     st.rerun(scope="app")
 
-        # v164: rendering every reviewed video at once made this page increasingly
-        # heavy. Load only the chosen reviewed video; its three stills then switch
-        # locally in enlarged mode without any Streamlit rerun.
-        reviewed_by_id = {str(video.get("id") or f"reviewed_{idx}"): video for idx, video in enumerate(reviewed)}
-        reviewed_ids = list(reviewed_by_id.keys())
-        reviewed_choice = st.selectbox(
-            "動画を選ぶ",
-            reviewed_ids,
-            format_func=lambda video_id: _moments_video_title(reviewed_by_id.get(video_id) or {}),
-            key="_moments_reviewed_repick_video_id",
+        # v166: reviewed videos are intentionally mounted one at a time. The next
+        # reviewed-video button lives inside the picker, directly below its three
+        # candidate stills, so moving through old videos is a single smooth action.
+        reviewed_index_key = "_moments_reviewed_repick_index_v166"
+        try:
+            reviewed_index = int(st.session_state.get(reviewed_index_key) or 0)
+        except Exception:
+            reviewed_index = 0
+        reviewed_index = max(0, min(reviewed_index, len(reviewed) - 1))
+        st.session_state[reviewed_index_key] = reviewed_index
+        st.caption(f"{reviewed_index + 1} / {len(reviewed)}本目")
+        next_cfg = None
+        if len(reviewed) > 1:
+            next_index = (reviewed_index + 1) % len(reviewed)
+            next_cfg = {
+                "state_key": reviewed_index_key,
+                "next_index": next_index,
+                "label": f"次の動画の写真へ →（{next_index + 1}/{len(reviewed)}）",
+            }
+        _render_moments_picker(
+            reviewed[reviewed_index],
+            1000 + reviewed_index,
+            view_mode=view_mode,
+            next_video_action=next_cfg,
         )
-        if reviewed_choice in reviewed_by_id:
-            _render_moments_picker(
-                reviewed_by_id[reviewed_choice],
-                1000 + reviewed_ids.index(reviewed_choice),
-                view_mode=view_mode,
-            )
 
 
 
@@ -16090,28 +16400,10 @@ def render_recent_camera_photo_emotion(trip):
         serial_key = f"recent_emotion_serial_{photo_id}"
         serial = int(st.session_state.get(serial_key) or 0)
         result = gallery_component(
-            data={"photos": [card], "single": True, "allow_delete": True, "allow_emotion": True, "commit_tags": True, "mode_by_photo": st.session_state.get(f"_recent_icon_modes_{photo_id}") or {}, "family_key": current_family_key(), "member_key": current_member_key(), "pending_param": PENDING_EMOTION_QUERY_PARAM},
+            data={"photos": [card], "single": True, "allow_delete": True, "allow_emotion": True, "mode_by_photo": st.session_state.get(f"_recent_icon_modes_{photo_id}") or {}, "family_key": current_family_key(), "member_key": current_member_key()},
             key=f"recent_emotion_{photo_id}_{serial}_{_current_ui_refresh_epoch()}",
-            on_emotion_batch_change=lambda: None,
             on_delete_photo_id_change=lambda: None,
         )
-        batch = getattr(result, "emotion_batch", None)
-        if isinstance(batch, dict):
-            token = str(batch.get("token") or "")
-            token_key = f"_recent_emotion_batch_token_{photo_id}"
-            if token and token != str(st.session_state.get(token_key) or ""):
-                emotion_changes = batch.get("emotion_changes") or batch.get("changes") or []
-                parenting_changes = batch.get("parenting_changes") or []
-                if emotion_changes:
-                    update_photo_emotions_batch(emotion_changes, valid_photo_ids=[photo_id], trip_id=trip_id)
-                if parenting_changes:
-                    update_photo_parenting_tags_batch(parenting_changes, valid_photo_ids=[photo_id], trip_id=trip_id)
-                modes = batch.get("modes")
-                if isinstance(modes, dict):
-                    st.session_state[f"_recent_icon_modes_{photo_id}"] = dict(modes)
-                st.session_state[token_key] = token
-                st.session_state[serial_key] = serial + 1
-                st.rerun(scope="fragment")
         delete_clicked = str(getattr(result, "delete_photo_id", "") or "")
         if delete_clicked == str(photo_id):
             st.session_state[serial_key] = serial + 1
@@ -16552,28 +16844,10 @@ def render_diary_emotion_gallery(trip_id, photos, trip=None, is_pending=False):
         serial_key = f"diary_emotion_gallery_serial_{trip_id}_{'pending' if is_pending else 'saved'}"
         serial = int(st.session_state.get(serial_key) or 0)
         result = gallery_component(
-            data={"photos": cards, "allow_delete": True, "allow_emotion": True, "commit_tags": True, "mode_by_photo": st.session_state.get(f"_diary_icon_modes_{trip_id}") or {}, "family_key": current_family_key(), "member_key": current_member_key(), "pending_param": PENDING_EMOTION_QUERY_PARAM},
+            data={"photos": cards, "allow_delete": True, "allow_emotion": True, "mode_by_photo": st.session_state.get(f"_diary_icon_modes_{trip_id}") or {}, "family_key": current_family_key(), "member_key": current_member_key()},
             key=f"diary_emotion_gallery_{trip_id}_{serial}_{_current_ui_refresh_epoch()}",
-            on_emotion_batch_change=lambda: None,
             on_delete_photo_id_change=lambda: None,
         )
-        batch = getattr(result, "emotion_batch", None)
-        if isinstance(batch, dict):
-            token = str(batch.get("token") or "")
-            token_key = f"_diary_emotion_batch_token_{trip_id}_{'pending' if is_pending else 'saved'}"
-            if token and token != str(st.session_state.get(token_key) or ""):
-                emotion_changes = batch.get("emotion_changes") or batch.get("changes") or []
-                parenting_changes = batch.get("parenting_changes") or []
-                if emotion_changes:
-                    update_photo_emotions_batch(emotion_changes, valid_photo_ids=photo_ids, trip_id=trip_id)
-                if parenting_changes:
-                    update_photo_parenting_tags_batch(parenting_changes, valid_photo_ids=photo_ids, trip_id=trip_id)
-                modes = batch.get("modes")
-                if isinstance(modes, dict):
-                    st.session_state[f"_diary_icon_modes_{trip_id}"] = dict(modes)
-                st.session_state[token_key] = token
-                st.session_state[serial_key] = serial + 1
-                st.rerun(scope="fragment")
         delete_clicked = str(getattr(result, "delete_photo_id", "") or "")
         if delete_clicked in photo_ids:
             st.session_state[serial_key] = serial + 1
@@ -17746,9 +18020,10 @@ except Exception:
 # maintenance, not startup requirements, so home/camera opens no longer wait for them.
 restore_recent_camera_session()
 
-# v159: emotion buttons are browser-only. A real button/navigation rerun reaches
-# here first, so commit the newest choices before that button's page logic executes.
+# Legacy v159 pending query values are still consumed for users who upgrade with an
+# older tab open. v166 uses localStorage only and flushes it on the next real app rerun.
 consume_pending_emotion_query()
+sync_pending_tags_from_browser_v166()
 
 # v146: resolve browser Back/Forward before drawing any visible page.
 # Previously the bridge ran after page rendering, so a mobile Back event could first
