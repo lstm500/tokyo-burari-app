@@ -28,9 +28,9 @@ from zoneinfo import ZoneInfo
 import streamlit as st
 
 # Freshly generated update: 2026-08-31 23:49 JST
-GENERATED_UPDATE_JST = "2026-09-02T01:46:22+09:00"
+GENERATED_UPDATE_JST = "2026-09-02T01:50:55+09:00"
 
-APP_BUILD = "v169"
+APP_BUILD = "v170"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -323,6 +323,20 @@ st.markdown(
       .st-key-home_primary [data-testid="stHorizontalBlock"],
       .st-key-home_secondary [data-testid="stHorizontalBlock"] {
         gap: .56rem;
+      }
+      /* v170: Streamlit stacks columns on narrow phones by default.
+         Keep only the Photo / Video pair locked side-by-side at every width. */
+      .st-key-home_capture_pair [data-testid="stHorizontalBlock"] {
+        display: flex !important;
+        flex-direction: row !important;
+        flex-wrap: nowrap !important;
+        align-items: stretch !important;
+        gap: .56rem !important;
+      }
+      .st-key-home_capture_pair [data-testid="stHorizontalBlock"] > [data-testid="stColumn"] {
+        flex: 1 1 0 !important;
+        width: 0 !important;
+        min-width: 0 !important;
       }
       .st-key-home_primary div.stButton > button,
       .st-key-home_secondary div.stButton > button {
@@ -617,6 +631,24 @@ st.markdown(
         .st-key-home_primary [data-testid="stHorizontalBlock"],
         .st-key-home_secondary [data-testid="stHorizontalBlock"] {
           gap: .42rem;
+        }
+        .st-key-home_capture_pair [data-testid="stHorizontalBlock"] {
+          display: flex !important;
+          flex-direction: row !important;
+          flex-wrap: nowrap !important;
+          gap: .42rem !important;
+        }
+        .st-key-home_capture_pair [data-testid="stHorizontalBlock"] > [data-testid="stColumn"] {
+          flex: 1 1 0 !important;
+          width: 0 !important;
+          min-width: 0 !important;
+        }
+        .st-key-home_capture_pair .st-key-home_camera div.stButton > button,
+        .st-key-home_capture_pair .st-key-home_video div.stButton > button {
+          font-size: 1.00rem !important;
+          padding-left: .34rem !important;
+          padding-right: .34rem !important;
+          column-gap: .24rem !important;
         }
         .st-key-home_primary div.stButton > button {
           height: 4.42rem !important;
@@ -14340,11 +14372,14 @@ def page_home():
 
     st.markdown('<div class="home-section-label">いつもの記録</div>', unsafe_allow_html=True)
     with st.container(key="home_primary"):
-        capture_left, capture_right = st.columns(2)
-        with capture_left:
-            render_home_button("写真を撮る", "camera", "home_camera", camera_mode="photo")
-        with capture_right:
-            render_home_button("動画を撮る", "camera", "home_video", camera_mode="video")
+        # v170: use a dedicated wrapper so mobile CSS can keep this pair horizontal
+        # without changing other Streamlit column layouts in the app.
+        with st.container(key="home_capture_pair"):
+            capture_left, capture_right = st.columns(2, gap="small")
+            with capture_left:
+                render_home_button("写真を撮る", "camera", "home_camera", camera_mode="photo")
+            with capture_right:
+                render_home_button("動画を撮る", "camera", "home_video", camera_mode="video")
         render_home_button("日記にする・見る", "diary", "home_diary")
 
     with st.container(key="home_good_moments"):
