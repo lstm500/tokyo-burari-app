@@ -28,9 +28,9 @@ from zoneinfo import ZoneInfo
 import streamlit as st
 
 # Freshly generated update: 2026-08-31 23:49 JST
-GENERATED_UPDATE_JST = "2026-09-01T23:34:00+09:00"
+GENERATED_UPDATE_JST = "2026-09-01T23:58:00+09:00"
 
-APP_BUILD = "v158"
+APP_BUILD = "v159"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -798,11 +798,20 @@ _LIVE_CAMERA_HTML = """
       <button id="camera-review-retry" class="camera-retry-button" type="button">撮りなおす／選びなおす</button>
     </div>
     <button id="camera-review-find-moments" class="camera-find-button" type="button" hidden>✨ いい瞬間を探す</button>
-    <div id="camera-review-build" class="camera-review-build" hidden>camera v155</div>
-    <div id="camera-review-emotion-hint" class="camera-review-emotion-hint" hidden>写真をタップ：未設定 → 😊喜 → 😠怒 → 😢哀 → 🎉楽 → 未設定</div>
+    <div id="camera-review-build" class="camera-review-build" hidden>camera v159</div>
+    <div id="camera-review-emotion-hint" class="camera-review-emotion-hint" hidden>写真をタップして、6つの気持ちから選びます。</div>
     <div id="camera-review-image-shell" class="camera-review-image-shell" role="button" tabindex="0" aria-label="写真の気持ちを選ぶ" hidden>
       <img id="camera-review-image" class="camera-review-image" alt="撮影した写真の確認" />
       <span id="camera-review-emotion-badge" class="camera-review-emotion-badge" hidden></span>
+    </div>
+    <div id="camera-review-emotion-palette" class="camera-review-emotion-palette" hidden>
+      <button type="button" data-emotion="cozy">🥰<span>ほっこりした</span></button>
+      <button type="button" data-emotion="joy">😊<span>うれしい</span></button>
+      <button type="button" data-emotion="surprise">😲<span>びっくり</span></button>
+      <button type="button" data-emotion="anger">😠<span>おこった</span></button>
+      <button type="button" data-emotion="sadness">😢<span>かなしい</span></button>
+      <button type="button" data-emotion="frustration">😣<span>くやしい</span></button>
+      <button type="button" class="camera-review-emotion-clear" data-emotion="">× 未設定に戻す</button>
     </div>
     <video id="camera-review-video" class="camera-review-video" playsinline controls hidden></video>
   </div>
@@ -828,6 +837,7 @@ _LIVE_CAMERA_CSS = """
 .camera-review-image[hidden],
 .camera-review-image-shell[hidden],
 .camera-review-emotion-hint[hidden],
+.camera-review-emotion-palette[hidden],
 .camera-review-video[hidden],
 .camera-find-button[hidden],
 .camera-review-build[hidden],
@@ -987,6 +997,20 @@ _LIVE_CAMERA_CSS = """
   line-height: 1.35;
   text-align: center;
 }
+.camera-review-emotion-palette {
+  display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:6px; margin:8px 0;
+  padding:8px; border-radius:13px; background:rgba(128,128,128,.06);
+}
+.camera-review-emotion-palette button {
+  appearance:none; -webkit-appearance:none; min-height:48px; margin:0; padding:6px 3px;
+  border:1px solid rgba(128,128,128,.23); border-radius:10px; background:rgba(255,255,255,.72);
+  color:var(--st-text-color); font-size:21px; line-height:1; font-weight:750; cursor:pointer;
+  display:flex; flex-direction:column; align-items:center; justify-content:center; gap:4px;
+  touch-action:manipulation; -webkit-tap-highlight-color:transparent;
+}
+.camera-review-emotion-palette button span { font-size:8px; line-height:1.02; }
+.camera-review-emotion-palette button.selected { outline:3px solid currentColor; outline-offset:1px; }
+.camera-review-emotion-palette .camera-review-emotion-clear { grid-column:1 / -1; min-height:32px; font-size:10px; }
 .camera-review-video { object-fit: contain; }
 .camera-active-actions,
 .camera-review-actions {
@@ -1114,6 +1138,8 @@ export default function(component) {
   const reviewImage = parentElement.querySelector('#camera-review-image');
   const reviewEmotionBadge = parentElement.querySelector('#camera-review-emotion-badge');
   const reviewEmotionHint = parentElement.querySelector('#camera-review-emotion-hint');
+  const reviewEmotionPalette = parentElement.querySelector('#camera-review-emotion-palette');
+  const reviewEmotionOptions = Array.from(parentElement.querySelectorAll('#camera-review-emotion-palette [data-emotion]'));
   const reviewVideo = parentElement.querySelector('#camera-review-video');
   const reviewSave = parentElement.querySelector('#camera-review-save');
   const reviewRetry = parentElement.querySelector('#camera-review-retry');
@@ -1149,12 +1175,13 @@ export default function(component) {
   let cameraMode = 'photo';
   let pendingMedia = null;
   let pendingVideoBlob = null;
-  const PHOTO_EMOTION_ORDER = ['', 'joy', 'anger', 'sadness', 'fun'];
   const PHOTO_EMOTIONS = {
-    joy: { emoji: '😊', color: '#F2C94C', label: '喜' },
-    anger: { emoji: '😠', color: '#E56B6F', label: '怒' },
-    sadness: { emoji: '😢', color: '#6C9BD2', label: '哀' },
-    fun: { emoji: '🎉', color: '#6FBA9C', label: '楽' }
+    cozy: { emoji: '🥰', color: '#F3B6A0', label: 'ほっこりした' },
+    joy: { emoji: '😊', color: '#F2C94C', label: 'うれしい' },
+    surprise: { emoji: '😲', color: '#9B7BD3', label: 'びっくり' },
+    anger: { emoji: '😠', color: '#E56B6F', label: 'おこった' },
+    sadness: { emoji: '😢', color: '#6C9BD2', label: 'かなしい' },
+    frustration: { emoji: '😣', color: '#A66A8A', label: 'くやしい' }
   };
   let pendingEmotion = '';
   const normalizeEmotion = (value) => Object.prototype.hasOwnProperty.call(PHOTO_EMOTIONS, String(value || '')) ? String(value || '') : '';
@@ -1164,25 +1191,32 @@ export default function(component) {
     if (reviewImageShell) {
       reviewImageShell.style.borderColor = meta ? meta.color : '#AEB6C2';
       reviewImageShell.style.background = meta ? `${meta.color}18` : 'rgba(174,182,194,.07)';
-      reviewImageShell.setAttribute('aria-label', meta ? `写真の気持ち：${meta.label}。タップして次へ` : '写真の気持ち：未設定。タップして喜を選ぶ');
+      reviewImageShell.setAttribute('aria-label', meta ? `写真の気持ち：${meta.label}。タップして変更` : '写真の気持ちは未設定。タップして選ぶ');
     }
     if (reviewEmotionBadge) {
       reviewEmotionBadge.textContent = meta ? meta.emoji : '';
       reviewEmotionBadge.hidden = !meta;
     }
+    for (const option of reviewEmotionOptions) {
+      option.classList.toggle('selected', String(option.dataset.emotion || '') === key);
+    }
   };
-  const cycleReviewEmotion = () => {
-    if (!pendingMedia || pendingMedia.kind !== 'photo' || !reviewImageShell || reviewImageShell.hidden) return;
-    const current = normalizeEmotion(pendingEmotion);
-    const currentIndex = Math.max(0, PHOTO_EMOTION_ORDER.indexOf(current));
-    pendingEmotion = PHOTO_EMOTION_ORDER[(currentIndex + 1) % PHOTO_EMOTION_ORDER.length];
-    pendingMedia.emotion = pendingEmotion;
-    syncReviewEmotion();
+  const toggleReviewEmotionPalette = () => {
+    if (!pendingMedia || pendingMedia.kind !== 'photo' || !reviewEmotionPalette) return;
+    reviewEmotionPalette.hidden = !reviewEmotionPalette.hidden;
   };
   const onReviewEmotionKeydown = (event) => {
     if (event.key !== 'Enter' && event.key !== ' ') return;
     event.preventDefault();
-    cycleReviewEmotion();
+    toggleReviewEmotionPalette();
+  };
+  const chooseReviewEmotion = (event) => {
+    event.preventDefault(); event.stopPropagation();
+    if (!pendingMedia || pendingMedia.kind !== 'photo') return;
+    pendingEmotion = normalizeEmotion(event.currentTarget?.dataset?.emotion);
+    pendingMedia.emotion = pendingEmotion;
+    syncReviewEmotion();
+    if (reviewEmotionPalette) reviewEmotionPalette.hidden = true;
   };
   let reviewVideoUrl = '';
   let mediaRecorder = null;
@@ -1289,6 +1323,7 @@ export default function(component) {
     if (review) review.hidden = true;
     if (reviewImageShell) reviewImageShell.hidden = true;
     if (reviewEmotionHint) reviewEmotionHint.hidden = true;
+    if (reviewEmotionPalette) reviewEmotionPalette.hidden = true;
     if (reviewImage) {
       reviewImage.hidden = true;
       reviewImage.removeAttribute('src');
@@ -1341,6 +1376,7 @@ export default function(component) {
     }
     if (reviewImageShell) reviewImageShell.hidden = false;
     if (reviewEmotionHint) reviewEmotionHint.hidden = false;
+    if (reviewEmotionPalette) reviewEmotionPalette.hidden = true;
     syncReviewEmotion();
     reviewSave.textContent = 'この写真を残す';
     reviewRetry.textContent = '撮りなおす／選びなおす';
@@ -2374,7 +2410,8 @@ export default function(component) {
   galleryVideoInput?.addEventListener('change', chooseGalleryVideo);
   reviewSave.addEventListener('click', savePendingMedia);
   reviewRetry.addEventListener('click', retryPendingMedia);
-  reviewImageShell?.addEventListener('click', cycleReviewEmotion);
+  reviewImageShell?.addEventListener('click', toggleReviewEmotionPalette);
+  for (const option of reviewEmotionOptions) option.addEventListener('click', chooseReviewEmotion);
   reviewImageShell?.addEventListener('keydown', onReviewEmotionKeydown);
   reviewFindMoments?.addEventListener('click', findGoodMoments);
 
@@ -2394,7 +2431,8 @@ export default function(component) {
     galleryVideoInput?.removeEventListener('change', chooseGalleryVideo);
     reviewSave.removeEventListener('click', savePendingMedia);
     reviewRetry.removeEventListener('click', retryPendingMedia);
-    reviewImageShell?.removeEventListener('click', cycleReviewEmotion);
+    reviewImageShell?.removeEventListener('click', toggleReviewEmotionPalette);
+    for (const option of reviewEmotionOptions) option.removeEventListener('click', chooseReviewEmotion);
     reviewImageShell?.removeEventListener('keydown', onReviewEmotionKeydown);
     reviewFindMoments?.removeEventListener('click', findGoodMoments);
     clearGoodMomentsRevealTimer();
@@ -2404,11 +2442,11 @@ export default function(component) {
 }
 """
 
-LIVE_CAMERA_COMPONENT_BUILD = "v155"
+LIVE_CAMERA_COMPONENT_BUILD = "v159"
 
 try:
     live_camera_component = st.components.v2.component(
-        "tokyo_burari_live_camera_v155",
+        "tokyo_burari_live_camera_v159",
         html=_LIVE_CAMERA_HTML,
         css=_LIVE_CAMERA_CSS,
         js=_LIVE_CAMERA_JS,
@@ -2833,47 +2871,70 @@ def _get_far_field_mic_component():
 
 
 # ============================================================
-# Photo emotion tagging (喜・怒・哀・楽)
+# Photo emotion tagging (6つの気持ち)
 # ============================================================
-PHOTO_EMOTION_ORDER = ("joy", "anger", "sadness", "fun")
+PHOTO_EMOTION_ORDER = ("cozy", "joy", "surprise", "anger", "sadness", "frustration")
 PHOTO_EMOTIONS = {
+    "cozy": {
+        "label": "ほっこりした",
+        "emoji": "🥰",
+        "color": "#F3B6A0",
+        "rgb": "243,182,160",
+        "meaning": "心があたたかくなった、愛おしい",
+    },
     "joy": {
-        "label": "喜",
+        "label": "うれしい",
         "emoji": "😊",
         "color": "#F2C94C",
         "rgb": "242,201,76",
+        "meaning": "良いことが起きた・できた",
+    },
+    "surprise": {
+        "label": "びっくり",
+        "emoji": "😲",
+        "color": "#9B7BD3",
+        "rgb": "155,123,211",
+        "meaning": "予想外・発見",
     },
     "anger": {
-        "label": "怒",
+        "label": "おこった",
         "emoji": "😠",
         "color": "#E56B6F",
         "rgb": "229,107,111",
+        "meaning": "不満・怒り",
     },
     "sadness": {
-        "label": "哀",
+        "label": "かなしい",
         "emoji": "😢",
         "color": "#6C9BD2",
         "rgb": "108,155,210",
+        "meaning": "喪失・悲しさ",
     },
-    "fun": {
-        "label": "楽",
-        "emoji": "🎉",
-        "color": "#6FBA9C",
-        "rgb": "111,186,156",
+    "frustration": {
+        "label": "くやしい",
+        "emoji": "😣",
+        "color": "#A66A8A",
+        "rgb": "166,106,138",
+        "meaning": "失敗・負け・できなかった",
     },
 }
 
 
 def normalize_photo_emotion_key(value):
-    """Normalize old/new emotion values into one of PHOTO_EMOTION_ORDER or ''."""
+    """Normalize legacy/new emotion values into the six v159 choices or ''."""
     if isinstance(value, dict):
         value = value.get("key") or value.get("emotion") or value.get("label") or value.get("emoji")
     value = str(value or "").strip()
     aliases = {
-        "joy": "joy", "喜": "joy", "😊": "joy",
-        "anger": "anger", "怒": "anger", "😠": "anger",
-        "sadness": "sadness", "sad": "sadness", "哀": "sadness", "😢": "sadness",
-        "fun": "fun", "楽": "fun", "🎉": "fun",
+        "cozy": "cozy", "ほっこり": "cozy", "ほっこりした": "cozy", "🥰": "cozy",
+        "joy": "joy", "喜": "joy", "うれしい": "joy", "嬉しい": "joy", "😊": "joy",
+        "surprise": "surprise", "びっくり": "surprise", "驚き": "surprise", "😲": "surprise",
+        "anger": "anger", "怒": "anger", "おこった": "anger", "怒った": "anger", "😠": "anger",
+        "sadness": "sadness", "sad": "sadness", "哀": "sadness", "かなしい": "sadness", "悲しい": "sadness", "😢": "sadness",
+        "frustration": "frustration", "くやしい": "frustration", "悔しい": "frustration", "😣": "frustration",
+        # v149-v158 compatibility: the former 楽/🎉 choice is folded into the
+        # closest remaining positive choice instead of discarding old records.
+        "fun": "joy", "楽": "joy", "🎉": "joy",
     }
     return aliases.get(value, "")
 
@@ -2893,8 +2954,8 @@ def photo_emotion_meta(photo_or_key):
     return meta
 
 
-def photo_emotion_record(emotion_key, source="child_tap_cycle_v150"):
-    """Return the persisted reflection_json payload for one 喜怒哀楽 choice."""
+def photo_emotion_record(emotion_key, source="child_tap_palette_v159"):
+    """Return the persisted reflection_json payload for one of the six v159 feelings."""
     emotion_key = normalize_photo_emotion_key(emotion_key)
     if not emotion_key:
         return None
@@ -2905,7 +2966,7 @@ def photo_emotion_record(emotion_key, source="child_tap_cycle_v150"):
         "emoji": meta["emoji"],
         "color": meta["color"],
         "updated_at": now_jst().isoformat(),
-        "source": str(source or "child_tap_cycle_v150"),
+        "source": str(source or "child_tap_palette_v159"),
     }
 
 
@@ -2973,9 +3034,8 @@ def _invalidate_monthly_review_for_trip(trip_id):
 def _refresh_after_photo_emotion_changes(trip_ids):
     """Refresh caches/derived diary data once after one or more emotion writes.
 
-    v158 deliberately batches the expensive follow-up work. Previously every tap
-    invalidated caches and rebuilt the diary immediately, which made the UI feel as
-    if the whole page reloaded for each step through 喜→怒→哀→楽.
+    v159 persists browser-local choices only on the next real app interaction.
+    Expensive diary/monthly refresh work is then batched once for all pending changes.
     """
     resolved = []
     seen = set()
@@ -2996,14 +3056,14 @@ def _refresh_after_photo_emotion_changes(trip_ids):
                     trip,
                     photos,
                     requested_title=str(existing.get("title") or "").strip() or None,
-                    reason="emotion_change_v158_batch",
+                    reason="emotion_change_v159_deferred",
                 )
         except Exception:
             pass
 
 
 def update_photo_emotion(photo_id, emotion_key, trip_id=None, refresh_related=True):
-    """Persist one 喜怒哀楽 tag.
+    """Persist one six-choice feeling tag.
 
     The optional refresh_related=False path is used by v158 batched UI commits so
     multiple rapid taps do not repeat diary/monthly refresh work for every tap.
@@ -3031,7 +3091,7 @@ def update_photo_emotion(photo_id, emotion_key, trip_id=None, refresh_related=Tr
         reflection = {}
 
     if emotion_key:
-        reflection["emotion"] = photo_emotion_record(emotion_key, source="child_tap_cycle_v158")
+        reflection["emotion"] = photo_emotion_record(emotion_key, source="child_tap_palette_v159")
     else:
         reflection.pop("emotion", None)
 
@@ -3087,6 +3147,131 @@ def update_photo_emotions_batch(changes, valid_photo_ids=None, trip_id=None):
 
 
 # ============================================================
+# Deferred browser emotion persistence (v159)
+# ============================================================
+# Choosing a feeling must not cause a Streamlit rerun. Browser components write a
+# compact pending payload into the current URL with history.replaceState(), which
+# does not navigate. The next real app interaction/rerun consumes it here *before*
+# the requested page action is rendered, so diary generation / keeping a moment can
+# use the newest choices without making emotion taps themselves reload the page.
+PENDING_EMOTION_QUERY_PARAM = "feel_v159"
+
+
+def _decode_pending_emotion_query(raw_value):
+    raw = str(raw_value or "").strip()
+    if not raw or len(raw) > 24000:
+        return None
+    try:
+        padded = raw + ("=" * ((4 - len(raw) % 4) % 4))
+        payload = json.loads(base64.urlsafe_b64decode(padded.encode("ascii")).decode("utf-8"))
+    except Exception:
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _query_param_scalar(name):
+    try:
+        value = st.query_params.get(name, "")
+    except Exception:
+        return ""
+    if isinstance(value, (list, tuple)):
+        value = value[-1] if value else ""
+    return str(value or "").strip()
+
+
+def consume_pending_emotion_query():
+    """Persist browser-only feeling choices on the next non-emotion app rerun.
+
+    Returns True when a pending payload was successfully consumed. Failures leave
+    the URL payload intact so a later interaction can retry instead of losing the
+    child's selections.
+    """
+    raw = _query_param_scalar(PENDING_EMOTION_QUERY_PARAM)
+    payload = _decode_pending_emotion_query(raw)
+    if not payload:
+        return False
+
+    token = str(payload.get("t") or "").strip()
+    if not token:
+        return False
+
+    # Never apply one person's browser-pending choices to another login.
+    if str(payload.get("f") or "") != str(current_family_key()) or str(payload.get("m") or "") != str(current_member_key()):
+        st.session_state["_emotion_query_ack_token"] = token
+        return False
+
+    if token == str(st.session_state.get("_emotion_query_processed_token") or ""):
+        st.session_state["_emotion_query_ack_token"] = token
+        return True
+
+    try:
+        photo_map = payload.get("p") or {}
+        photo_changes = []
+        if isinstance(photo_map, dict):
+            for photo_id, emotion in photo_map.items():
+                pid = str(photo_id or "").strip()
+                if pid:
+                    photo_changes.append({"photo_id": pid, "emotion": normalize_photo_emotion_key(emotion)})
+        if photo_changes:
+            update_photo_emotions_batch(photo_changes)
+
+        moments = payload.get("x") or {}
+        if isinstance(moments, dict):
+            for video_id, state in moments.items():
+                vid = str(video_id or "").strip()
+                if not vid or not isinstance(state, dict):
+                    continue
+                try:
+                    round_number = max(0, int(state.get("r") or 0))
+                except Exception:
+                    round_number = 0
+
+                selected_raw = state.get("s") or []
+                selected = sorted({
+                    int(value)
+                    for value in selected_raw
+                    if str(value).strip().lstrip("-").isdigit() and int(value) > 0
+                }) if isinstance(selected_raw, (list, tuple)) else []
+                st.session_state[f"_moments_tap_selected_{vid}_{round_number}"] = selected
+
+                emotion_map = state.get("e") or {}
+                changes = []
+                if isinstance(emotion_map, dict):
+                    for rank_value, emotion in emotion_map.items():
+                        try:
+                            rank = int(rank_value)
+                        except Exception:
+                            rank = 0
+                        if rank > 0:
+                            changes.append({"rank": rank, "emotion": normalize_photo_emotion_key(emotion)})
+                if not changes:
+                    continue
+
+                row = (
+                    supabase_client().table(PHOTO_TABLE)
+                    .select("*")
+                    .eq("id", vid)
+                    .eq("family_key", current_family_key())
+                    .eq("member_key", current_member_key())
+                    .limit(1)
+                    .execute()
+                ).data or []
+                video_photo = row[0] if row else None
+                if video_photo and photo_is_video(video_photo):
+                    update_video_ai_selection_emotions(video_photo, changes)
+
+        st.session_state["_emotion_query_processed_token"] = token
+        st.session_state["_emotion_query_ack_token"] = token
+        return True
+    except Exception as exc:
+        st.session_state["_emotion_sync_warning"] = (
+            "選んだ気持ちの保存を次の操作でもう一度試します。"
+        )
+        st.session_state["_emotion_sync_warning_detail"] = _safe_error_text(exc, 700)
+        return False
+
+
+# ============================================================
 # Clickable diary photo gallery
 # ============================================================
 _DIARY_GALLERY_HTML = """
@@ -3106,118 +3291,68 @@ _DIARY_GALLERY_CSS = """
   max-width: 360px;
   margin: 0 auto;
 }
-.diary-photo-wrap {
-  position: relative;
-  min-width: 0;
-}
+.diary-photo-wrap { position: relative; min-width: 0; }
 .diary-photo-card {
-  appearance: none;
-  -webkit-appearance: none;
-  position: relative;
-  width: 100%;
-  min-width: 0;
-  margin: 0;
-  padding: 5px;
-  border: 3px solid #AEB6C2;
-  background: rgba(174, 182, 194, .14);
-  border-radius: 14px;
-  box-sizing: border-box;
-  cursor: pointer;
-  touch-action: manipulation;
-  -webkit-tap-highlight-color: transparent;
-  overflow: hidden;
-  box-shadow: 0 0 0 1px rgba(174, 182, 194, .08) inset;
+  appearance: none; -webkit-appearance: none;
+  position: relative; width: 100%; min-width: 0; margin: 0; padding: 5px;
+  border: 3px solid #AEB6C2; background: rgba(174,182,194,.14);
+  border-radius: 14px; box-sizing: border-box; cursor: pointer;
+  touch-action: manipulation; -webkit-tap-highlight-color: transparent;
+  overflow: hidden; box-shadow: 0 0 0 1px rgba(174,182,194,.08) inset;
 }
-.diary-photo-card.emotion-joy {
-  border-color: #F2C94C;
-  background: rgba(242, 201, 76, .18);
-  box-shadow: 0 0 0 1px rgba(242, 201, 76, .10) inset;
-}
-.diary-photo-card.emotion-anger {
-  border-color: #E56B6F;
-  background: rgba(229, 107, 111, .16);
-  box-shadow: 0 0 0 1px rgba(229, 107, 111, .10) inset;
-}
-.diary-photo-card.emotion-sadness {
-  border-color: #6C9BD2;
-  background: rgba(108, 155, 210, .16);
-  box-shadow: 0 0 0 1px rgba(108, 155, 210, .10) inset;
-}
-.diary-photo-card.emotion-fun {
-  border-color: #6FBA9C;
-  background: rgba(111, 186, 156, .17);
-  box-shadow: 0 0 0 1px rgba(111, 186, 156, .10) inset;
-}
+.diary-photo-card.emotion-cozy { border-color:#F3B6A0; background:rgba(243,182,160,.18); box-shadow:0 0 0 1px rgba(243,182,160,.10) inset; }
+.diary-photo-card.emotion-joy { border-color:#F2C94C; background:rgba(242,201,76,.18); box-shadow:0 0 0 1px rgba(242,201,76,.10) inset; }
+.diary-photo-card.emotion-surprise { border-color:#9B7BD3; background:rgba(155,123,211,.17); box-shadow:0 0 0 1px rgba(155,123,211,.10) inset; }
+.diary-photo-card.emotion-anger { border-color:#E56B6F; background:rgba(229,107,111,.16); box-shadow:0 0 0 1px rgba(229,107,111,.10) inset; }
+.diary-photo-card.emotion-sadness { border-color:#6C9BD2; background:rgba(108,155,210,.16); box-shadow:0 0 0 1px rgba(108,155,210,.10) inset; }
+.diary-photo-card.emotion-frustration { border-color:#A66A8A; background:rgba(166,106,138,.17); box-shadow:0 0 0 1px rgba(166,106,138,.10) inset; }
 .diary-photo-card:active { transform: scale(.985); }
-.diary-photo-card img {
-  display: block;
-  width: 100%;
-  aspect-ratio: 1 / 1;
-  object-fit: cover;
-  border-radius: 9px;
-  background: rgba(128, 128, 128, .08);
-}
+.diary-photo-card img { display:block; width:100%; aspect-ratio:1/1; object-fit:cover; border-radius:9px; background:rgba(128,128,128,.08); }
 .diary-emotion-badge {
-  position: absolute;
-  right: 9px;
-  bottom: 9px;
-  z-index: 3;
-  min-width: 30px;
-  height: 30px;
-  padding: 0 4px;
-  border-radius: 999px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: rgba(255,255,255,.90);
-  border: 1.5px solid rgba(255,255,255,.96);
-  box-shadow: 0 2px 8px rgba(0,0,0,.22);
-  font-size: 21px;
-  line-height: 1;
-  pointer-events: none;
+  position:absolute; right:9px; bottom:9px; z-index:3; min-width:30px; height:30px; padding:0 4px;
+  border-radius:999px; display:flex; align-items:center; justify-content:center;
+  background:rgba(255,255,255,.90); border:1.5px solid rgba(255,255,255,.96);
+  box-shadow:0 2px 8px rgba(0,0,0,.22); font-size:21px; line-height:1; pointer-events:none;
 }
+.diary-emotion-badge[hidden] { display:none !important; }
+.diary-emotion-palette {
+  position:absolute; inset:4px; z-index:9; display:grid; grid-template-columns:repeat(3,minmax(0,1fr));
+  gap:3px; align-content:center; padding:5px; border-radius:12px;
+  background:rgba(17,24,39,.86); backdrop-filter:blur(3px); box-sizing:border-box;
+}
+.diary-emotion-palette[hidden] { display:none !important; }
+.diary-emotion-option {
+  appearance:none; -webkit-appearance:none; min-width:0; min-height:29px; margin:0; padding:3px 2px;
+  border:1px solid rgba(255,255,255,.24); border-radius:9px; background:rgba(255,255,255,.93);
+  color:#20242b; font-size:8px; line-height:1.02; font-weight:750; cursor:pointer;
+  display:flex; flex-direction:column; align-items:center; justify-content:center; gap:2px;
+  touch-action:manipulation; -webkit-tap-highlight-color:transparent;
+}
+.diary-emotion-option .emoji { font-size:15px; line-height:1; }
+.diary-emotion-option.selected { outline:2px solid #fff; outline-offset:1px; }
+.diary-emotion-clear { grid-column:1 / -1; min-height:22px; font-size:8px; opacity:.92; }
 .diary-photo-delete {
-  position: absolute;
-  top: 3px;
-  right: 3px;
-  z-index: 5;
-  width: 25px;
-  height: 25px;
-  padding: 0;
-  margin: 0;
-  border-radius: 999px;
-  border: 1.5px solid rgba(255,255,255,.92);
-  background: rgba(49,54,63,.72);
-  color: #fff;
-  font-size: 18px;
-  line-height: 20px;
-  font-weight: 700;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
-  box-shadow: 0 1px 5px rgba(0,0,0,.22);
-  touch-action: manipulation;
-  -webkit-tap-highlight-color: transparent;
+  position:absolute; top:3px; right:3px; z-index:12; width:25px; height:25px; padding:0; margin:0;
+  border-radius:999px; border:1.5px solid rgba(255,255,255,.92); background:rgba(49,54,63,.72);
+  color:#fff; font-size:18px; line-height:20px; font-weight:700; display:flex; align-items:center;
+  justify-content:center; cursor:pointer; box-shadow:0 1px 5px rgba(0,0,0,.22); touch-action:manipulation;
+  -webkit-tap-highlight-color:transparent;
 }
-.diary-photo-delete:active { transform: scale(.94); }
-.diary-photo-location {
-  margin-top: 4px;
-  font-size: 10px;
-  line-height: 1.25;
-  color: var(--st-text-color);
-  opacity: .78;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-@media (max-width: 640px) {
-  .diary-photo-grid { gap: 6px; }
-  .diary-photo-card { padding: 4px; border-radius: 12px; }
-  .diary-photo-card img { border-radius: 8px; }
-  .diary-photo-location { font-size: 9px; }
-  .diary-photo-delete { top: 2px; right: 2px; width: 23px; height: 23px; font-size: 17px; }
-  .diary-emotion-badge { right: 7px; bottom: 7px; min-width: 27px; height: 27px; font-size: 19px; }
+.diary-photo-delete:active { transform:scale(.94); }
+.diary-photo-location { margin-top:4px; font-size:10px; line-height:1.25; color:var(--st-text-color); opacity:.78; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+@media (max-width:640px) {
+  .diary-photo-grid { gap:6px; }
+  .diary-photo-card { padding:4px; border-radius:12px; }
+  .diary-photo-card img { border-radius:8px; }
+  .diary-photo-location { font-size:9px; }
+  .diary-photo-delete { top:2px; right:2px; width:23px; height:23px; font-size:17px; }
+  .diary-emotion-badge { right:7px; bottom:7px; min-width:27px; height:27px; font-size:19px; }
+  .diary-emotion-palette { inset:3px; padding:4px; gap:2px; }
+  .diary-emotion-option { min-height:28px; font-size:7px; padding:2px 1px; border-radius:7px; }
+  .diary-emotion-option .emoji { font-size:14px; }
+  .diary-photo-grid.single .diary-emotion-palette { padding:8px; gap:6px; }
+  .diary-photo-grid.single .diary-emotion-option { min-height:48px; font-size:11px; }
+  .diary-photo-grid.single .diary-emotion-option .emoji { font-size:21px; }
 }
 """
 
@@ -3232,124 +3367,171 @@ export default function(component) {
   const photos = Array.isArray(data?.photos) ? data.photos : [];
   const allowDelete = data?.allow_delete !== false;
   const allowEmotion = data?.allow_emotion !== false;
-  const order = ['', 'joy', 'anger', 'sadness', 'fun'];
-  const emoji = { joy: '😊', anger: '😠', sadness: '😢', fun: '🎉' };
-  const labels = { joy: '喜', anger: '怒', sadness: '哀', fun: '楽' };
-  const pendingEmotionChanges = new Map();
-  let emotionCommitTimer = null;
+  const pendingParam = String(data?.pending_param || 'feel_v159');
+  const familyKey = String(data?.family_key || '');
+  const memberKey = String(data?.member_key || '');
+  const order = ['cozy', 'joy', 'surprise', 'anger', 'sadness', 'frustration'];
+  const emotionMeta = {
+    cozy: { emoji:'🥰', color:'#F3B6A0', label:'ほっこりした' },
+    joy: { emoji:'😊', color:'#F2C94C', label:'うれしい' },
+    surprise: { emoji:'😲', color:'#9B7BD3', label:'びっくり' },
+    anger: { emoji:'😠', color:'#E56B6F', label:'おこった' },
+    sadness: { emoji:'😢', color:'#6C9BD2', label:'かなしい' },
+    frustration: { emoji:'😣', color:'#A66A8A', label:'くやしい' },
+  };
+  const normalizeEmotion = (value) => Object.prototype.hasOwnProperty.call(emotionMeta, String(value || '')) ? String(value || '') : '';
 
-  const normalizeEmotion = (value) => order.includes(String(value || '')) ? String(value || '') : '';
-
-  const flushEmotionChanges = () => {
-    if (emotionCommitTimer) {
-      clearTimeout(emotionCommitTimer);
-      emotionCommitTimer = null;
+  const decodePayload = (raw) => {
+    try {
+      let value = String(raw || '').replace(/-/g, '+').replace(/_/g, '/');
+      value += '='.repeat((4 - value.length % 4) % 4);
+      const binary = atob(value);
+      const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0));
+      const parsed = JSON.parse(new TextDecoder().decode(bytes));
+      return parsed && typeof parsed === 'object' ? parsed : null;
+    } catch (_) { return null; }
+  };
+  const encodePayload = (payload) => {
+    const bytes = new TextEncoder().encode(JSON.stringify(payload));
+    let binary = '';
+    for (let i = 0; i < bytes.length; i += 0x4000) {
+      binary += String.fromCharCode(...bytes.subarray(i, i + 0x4000));
     }
-    if (!pendingEmotionChanges.size) return;
-    const changes = Array.from(pendingEmotionChanges.values());
-    pendingEmotionChanges.clear();
-    setTriggerValue('emotion_batch', {
-      changes,
-      token: `${Date.now()}:${Math.random()}`,
-    });
+    return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
+  };
+  const mutatePending = (mutator) => {
+    if (!familyKey || !memberKey) return;
+    try {
+      const url = new URL(window.location.href);
+      let envelope = decodePayload(url.searchParams.get(pendingParam));
+      if (!envelope || Number(envelope.v) !== 159 || String(envelope.f || '') !== familyKey || String(envelope.m || '') !== memberKey) {
+        envelope = { v:159, f:familyKey, m:memberKey, p:{}, x:{} };
+      }
+      if (!envelope.p || typeof envelope.p !== 'object') envelope.p = {};
+      if (!envelope.x || typeof envelope.x !== 'object') envelope.x = {};
+      mutator(envelope);
+      envelope.t = `${Date.now()}_${Math.random().toString(36).slice(2)}`;
+      const encoded = encodePayload(envelope);
+      url.searchParams.set(pendingParam, encoded);
+      try { localStorage.setItem('tokyo_burari_pending_feelings_v159', encoded); } catch (_) {}
+      window.history.replaceState(window.history.state || {}, '', url.pathname + url.search + url.hash);
+    } catch (_) {}
+  };
+  const persistPhotoEmotion = (photoId, emotion) => mutatePending((envelope) => {
+    envelope.p[String(photoId)] = normalizeEmotion(emotion);
+  });
+  const discardPendingPhoto = (photoId) => mutatePending((envelope) => {
+    delete envelope.p[String(photoId)];
+  });
+
+  let openPalette = null;
+  const closePalette = () => {
+    if (openPalette) openPalette.hidden = true;
+    openPalette = null;
   };
 
-  const queueEmotionChange = (photo) => {
-    const photoId = String(photo?.id || '');
-    if (!photoId) return;
-    pendingEmotionChanges.set(photoId, {
-      photo_id: photoId,
-      emotion: normalizeEmotion(photo?.emotion),
-    });
-    if (emotionCommitTimer) clearTimeout(emotionCommitTimer);
-    // Keep rapid 喜→怒→哀→楽 taps entirely in the browser. Only the final
-    // state after the user pauses is sent to Streamlit/Supabase.
-    emotionCommitTimer = setTimeout(flushEmotionChanges, 900);
-  };
-
-  const applyEmotion = (button, badge, key) => {
-    for (const value of order.slice(1)) button.classList.remove(`emotion-${value}`);
+  const applyEmotion = (card, badge, palette, key) => {
+    for (const value of order) card.classList.remove(`emotion-${value}`);
     const normalized = normalizeEmotion(key);
-    if (normalized) button.classList.add(`emotion-${normalized}`);
-    if (normalized) {
-      badge.textContent = emoji[normalized] || '';
-      badge.hidden = false;
-      button.setAttribute('aria-label', `${labels[normalized]}。タップすると次の気持ちへ`);
-    } else {
-      badge.textContent = '';
-      badge.hidden = true;
-      button.setAttribute('aria-label', '気持ち未設定。タップすると喜になる');
+    if (normalized) card.classList.add(`emotion-${normalized}`);
+    const meta = emotionMeta[normalized] || null;
+    badge.textContent = meta ? meta.emoji : '';
+    badge.hidden = !meta;
+    card.setAttribute('aria-label', meta ? `写真の気持ち：${meta.label}。タップして変更` : '写真の気持ちは未設定。タップして選ぶ');
+    for (const option of palette.querySelectorAll('[data-emotion]')) {
+      option.classList.toggle('selected', String(option.dataset.emotion || '') === normalized);
     }
   };
 
   for (const sourcePhoto of photos) {
-    const photo = { ...sourcePhoto };
+    const photo = { ...sourcePhoto, emotion: normalizeEmotion(sourcePhoto?.emotion) };
     const wrap = document.createElement('div');
     wrap.className = 'diary-photo-wrap';
 
-    const button = document.createElement('button');
-    button.type = 'button';
-    button.className = 'diary-photo-card';
+    const card = document.createElement('div');
+    card.className = 'diary-photo-card';
+    card.setAttribute('role', 'button');
+    card.tabIndex = allowEmotion ? 0 : -1;
 
     const img = document.createElement('img');
     img.src = photo.src || '';
     img.alt = 'ぶらり旅の写真';
-    img.loading = 'lazy';
-    img.decoding = 'async';
-    img.fetchPriority = 'low';
-    button.appendChild(img);
+    img.loading = 'lazy'; img.decoding = 'async'; img.fetchPriority = 'low';
+    card.appendChild(img);
 
     const badge = document.createElement('div');
     badge.className = 'diary-emotion-badge';
-    button.appendChild(badge);
-    photo.emotion = normalizeEmotion(photo.emotion);
-    applyEmotion(button, badge, photo.emotion);
+    card.appendChild(badge);
 
     if (photo.location) {
       const location = document.createElement('div');
       location.className = 'diary-photo-location';
       location.textContent = `📍 ${photo.location}`;
-      button.appendChild(location);
+      card.appendChild(location);
     }
+
+    const palette = document.createElement('div');
+    palette.className = 'diary-emotion-palette';
+    palette.hidden = true;
+    for (const emotion of order) {
+      const meta = emotionMeta[emotion];
+      const option = document.createElement('button');
+      option.type = 'button'; option.className = 'diary-emotion-option'; option.dataset.emotion = emotion;
+      option.innerHTML = `<span class="emoji">${meta.emoji}</span><span>${meta.label}</span>`;
+      option.addEventListener('click', (event) => {
+        event.preventDefault(); event.stopPropagation();
+        photo.emotion = emotion;
+        applyEmotion(card, badge, palette, emotion);
+        persistPhotoEmotion(photo.id, emotion);
+        palette.hidden = true; openPalette = null;
+      });
+      palette.appendChild(option);
+    }
+    const clear = document.createElement('button');
+    clear.type = 'button'; clear.className = 'diary-emotion-option diary-emotion-clear'; clear.dataset.emotion = '';
+    clear.textContent = '× 未設定に戻す';
+    clear.addEventListener('click', (event) => {
+      event.preventDefault(); event.stopPropagation();
+      photo.emotion = '';
+      applyEmotion(card, badge, palette, '');
+      persistPhotoEmotion(photo.id, '');
+      palette.hidden = true; openPalette = null;
+    });
+    palette.appendChild(clear);
+    applyEmotion(card, badge, palette, photo.emotion);
 
     if (allowEmotion) {
-      button.addEventListener('click', () => {
-        const currentIndex = Math.max(0, order.indexOf(normalizeEmotion(photo.emotion)));
-        const next = order[(currentIndex + 1) % order.length];
-        photo.emotion = next;
-        // Visual feedback is synchronous and never waits for Streamlit/Supabase.
-        applyEmotion(button, badge, next);
-        queueEmotionChange(photo);
+      const toggle = (event) => {
+        event?.preventDefault?.(); event?.stopPropagation?.();
+        const opening = palette.hidden;
+        closePalette();
+        palette.hidden = !opening;
+        openPalette = opening ? palette : null;
+      };
+      card.addEventListener('click', toggle);
+      card.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter' || event.key === ' ') toggle(event);
       });
     } else {
-      button.style.cursor = 'default';
+      card.style.cursor = 'default';
     }
 
-    wrap.appendChild(button);
+    wrap.appendChild(card);
+    wrap.appendChild(palette);
 
     if (allowDelete) {
       const remove = document.createElement('button');
-      remove.type = 'button';
-      remove.className = 'diary-photo-delete';
-      remove.textContent = '×';
+      remove.type = 'button'; remove.className = 'diary-photo-delete'; remove.textContent = '×';
       remove.setAttribute('aria-label', 'この写真を削除');
       remove.addEventListener('click', (event) => {
-        event.preventDefault();
-        event.stopPropagation();
-        if (emotionCommitTimer) clearTimeout(emotionCommitTimer);
-        emotionCommitTimer = null;
-        pendingEmotionChanges.delete(String(photo.id || ''));
+        event.preventDefault(); event.stopPropagation();
+        discardPendingPhoto(photo.id);
         setTriggerValue('delete_photo_id', String(photo.id));
       });
       wrap.appendChild(remove);
     }
-
     grid.appendChild(wrap);
   }
-
-  return () => {
-    if (emotionCommitTimer) clearTimeout(emotionCommitTimer);
-  };
 }
 """
 
@@ -3365,7 +3547,7 @@ def _get_diary_gallery_component():
     _diary_gallery_component_initialized = True
     try:
         diary_gallery_component = st.components.v2.component(
-            "tokyo_burari_diary_gallery_v158",
+            "tokyo_burari_diary_gallery_v159",
             html=_DIARY_GALLERY_HTML,
             css=_DIARY_GALLERY_CSS,
             js=_DIARY_GALLERY_JS,
@@ -3373,6 +3555,62 @@ def _get_diary_gallery_component():
     except Exception:
         diary_gallery_component = None
     return diary_gallery_component
+
+
+# ============================================================
+# Pending-feeling URL cleanup bridge (v159)
+# ============================================================
+_PENDING_EMOTION_CLEANUP_JS = r"""
+export default function(component) {
+  const { data } = component;
+  const ack = String(data?.ack_token || '');
+  const param = String(data?.pending_param || 'feel_v159');
+  if (!ack) return;
+  try {
+    const url = new URL(window.location.href);
+    const raw = String(url.searchParams.get(param) || '');
+    if (!raw) return;
+    let value = raw.replace(/-/g, '+').replace(/_/g, '/');
+    value += '='.repeat((4 - value.length % 4) % 4);
+    const binary = atob(value);
+    const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0));
+    const payload = JSON.parse(new TextDecoder().decode(bytes));
+    if (String(payload?.t || '') !== ack) return;
+    url.searchParams.delete(param);
+    try {
+      const stored = String(localStorage.getItem('tokyo_burari_pending_feelings_v159') || '');
+      if (stored) {
+        let saved = stored.replace(/-/g, '+').replace(/_/g, '/');
+        saved += '='.repeat((4 - saved.length % 4) % 4);
+        const savedBinary = atob(saved);
+        const savedBytes = Uint8Array.from(savedBinary, (char) => char.charCodeAt(0));
+        const savedPayload = JSON.parse(new TextDecoder().decode(savedBytes));
+        if (String(savedPayload?.t || '') === ack) localStorage.removeItem('tokyo_burari_pending_feelings_v159');
+      }
+    } catch (_) {}
+    window.history.replaceState(window.history.state || {}, '', url.pathname + url.search + url.hash);
+  } catch (_) {}
+}
+"""
+try:
+    pending_emotion_cleanup_component = st.components.v2.component(
+        "tokyo_burari_pending_emotion_cleanup_v159",
+        js=_PENDING_EMOTION_CLEANUP_JS,
+    )
+except Exception:
+    pending_emotion_cleanup_component = None
+
+
+def render_pending_emotion_query_cleanup():
+    if pending_emotion_cleanup_component is None:
+        return
+    ack = str(st.session_state.get("_emotion_query_ack_token") or "")
+    if not ack:
+        return
+    pending_emotion_cleanup_component(
+        data={"ack_token": ack, "pending_param": PENDING_EMOTION_QUERY_PARAM},
+        key=f"pending_emotion_cleanup_v159_{ack}",
+    )
 
 
 # ============================================================
@@ -3390,6 +3628,24 @@ export default function(component) {
   const action = data?.action || 'sync';
   const navigationNode = String(data?.node || requestedPage);
   const interceptHierarchyBack = Boolean(data?.intercept_hierarchy_back) && requestedPage !== 'home';
+  const pendingFeelingParam = 'feel_v159';
+  const pendingFeelingStore = 'tokyo_burari_pending_feelings_v159';
+  const restorePendingFeelingParam = () => {
+    try {
+      const url = new URL(window.location.href);
+      if (url.searchParams.get(pendingFeelingParam)) return false;
+      const raw = String(localStorage.getItem(pendingFeelingStore) || '');
+      if (!raw) return false;
+      url.searchParams.set(pendingFeelingParam, raw);
+      window.history.replaceState(window.history.state || {}, '', url.pathname + url.search + url.hash);
+      return true;
+    } catch (_) { return false; }
+  };
+
+  const restoredPendingFeeling = restorePendingFeelingParam();
+  if (restoredPendingFeeling) {
+    queueMicrotask(() => setTriggerValue('pending_restore', `${Date.now()}:${Math.random()}`));
+  }
 
   const pageFromUrl = () => {
     try {
@@ -3450,6 +3706,9 @@ export default function(component) {
   }
 
   const onPopState = (event) => {
+    // A native browser Back can move to an older URL before Streamlit reruns.
+    // Restore browser-local pending feelings onto that history entry first.
+    restorePendingFeelingParam();
     if (interceptHierarchyBack) {
       // The phone/browser Back control must mean "one folder level up", not
       // "whatever screen happened to be visited previously". Restore the app
@@ -3475,7 +3734,7 @@ export default function(component) {
 
 try:
     browser_history_component = st.components.v2.component(
-        'tokyo_burari_browser_history_v147',
+        'tokyo_burari_browser_history_v159',
         js=_HISTORY_JS,
     )
 except Exception:
@@ -7970,7 +8229,7 @@ def update_video_ai_selection_emotions(video_photo, changes):
         found.add(rank)
         emotion_key = latest[rank]
         if emotion_key:
-            item["emotion"] = photo_emotion_record(emotion_key, source="child_tap_moments_v158")
+            item["emotion"] = photo_emotion_record(emotion_key, source="child_tap_moments_palette_v159")
         else:
             item.pop("emotion", None)
         saved_photo_id = str(item.get("saved_photo_id") or "").strip()
@@ -8262,7 +8521,7 @@ def save_video_ai_selection_as_photo(video_photo, selection_item):
     if selection_emotion:
         extra_reflection["emotion"] = photo_emotion_record(
             selection_emotion,
-            source="child_tap_moments_v158",
+            source="child_tap_moments_palette_v159",
         )
     saved = upload_photo(
         video_photo.get("trip_id"),
@@ -8696,7 +8955,7 @@ def confirm_diary_delete_dialog(trip_id, photo_count):
     title = diary_display_title(diary, trip, photos=photos)
     st.write(f"**{title}** を削除します。")
     st.warning(
-        f"この日の記録、写真 {photo_count}枚、写真につけた喜怒哀楽の記録をすべて削除します。"
+        f"この日の記録、写真 {photo_count}枚、写真につけた気持ちの記録をすべて削除します。"
         "日記が未完成の場合は、途中までの内容も削除されます。この操作は元に戻せません。"
     )
     delete_col, cancel_col = st.columns(2)
@@ -10238,12 +10497,14 @@ def render_monthly_replay_player(period_label, review, playback, photo_items):
       const burariStatus = document.getElementById('burariReplayStatus');
       const burariDefaultFrameColor = 'rgba(255,255,255,.16)';
       const burariEmotionColors = {{
+        cozy: '#F3B6A0',
         joy: '#F2C94C',
+        surprise: '#9B7BD3',
         anger: '#E56B6F',
         sadness: '#6C9BD2',
-        fun: '#6FBA9C',
+        frustration: '#A66A8A',
       }};
-      const burariEmotionIcons = {{ joy: '😊', anger: '😠', sadness: '😢', fun: '🎉' }};
+      const burariEmotionIcons = {{ cozy: '🥰', joy: '😊', surprise: '😲', anger: '😠', sadness: '😢', frustration: '😣' }};
 
       function burariShowSlide(index) {{
         if (!burariSlides.length) return;
@@ -11124,7 +11385,7 @@ def build_summary_feedback_guidance():
     lines = [
         "過去のGood/Bad評価による弱い調整:",
         "- 以下は過去の事実を今回へ持ち込むための資料ではなく、文章のまとめ方・分析の粒度・言い回しだけの弱い参考です。",
-        "- 今回の写真と本人が選んだ喜怒哀楽を最優先し、過去文の内容や固有名詞をコピーしないでください。",
+        "- 今回の写真と本人が選んだ気持ちを最優先し、過去文の内容や固有名詞をコピーしないでください。",
         "- Good例に少しだけ近い書き方を選び、Bad例に近い書き方は少しだけ避けてください。基本ルールを変えるほど強く寄せないでください。",
     ]
     if good:
@@ -11273,7 +11534,7 @@ def render_summary_feedback_controls(meta, trip_id, key_prefix, draft_state=None
 
 
 def summarize_burari_from_photos(trip, photos):
-    """Summarize one trip from still photos plus the child's explicit 喜怒哀楽 tags."""
+    """Summarize one trip from still photos plus the child's explicit six-feeling tags."""
     photos = diary_photos_only(photos)
     emotion_lines = []
     image_items = []
@@ -11310,8 +11571,8 @@ def summarize_burari_from_photos(trip, photos):
     feedback_guidance = build_summary_feedback_guidance()
     prompt = f"""
 5〜6歳の子どもの「東京ぶらり旅」1回分をまとめてください。
-入力には、その日に保存された写真と、本人が各写真をタップして選んだ喜怒哀楽があります。
-喜怒哀楽は本人による明示的な意思表示です。未設定の写真には感情を推測して付け足さないでください。
+入力には、その日に保存された写真と、本人が各写真から選んだ6つの気持ちがあります。
+6つの気持ちは本人による明示的な意思表示です。未設定の写真には感情を推測して付け足さないでください。
 
 日付: {(trip or {}).get('trip_date', '')}
 行き先メモ: {str((trip or {}).get('destination') or '').strip() or 'なし'}
@@ -11321,13 +11582,13 @@ def summarize_burari_from_photos(trip, photos):
 {feedback_guidance}
 
 出力ルール:
-- trip_summary は2〜4文。写真から客観的に確認できる対象と、本人が明示した喜怒哀楽だけを結びつけてよい。
+- trip_summary は2〜4文。写真から客観的に確認できる対象と、本人が明示した気持ちだけを結びつけてよい。
 - 写真に写っていない出来事を作らない。
 - 未設定の写真について感情・意図を推測しない。
 - reflection_summary は2〜4文。どのような写真にどの感情を付けたかという範囲で、今回の心の動きを慎重に整理する。
 - 性格診断・能力評価・将来予測・固定的な人物評価はしない。
 - 「なぜその感情だったか」は本人から説明を受けていないため、画像だけで理由を断定しない。
-- emotion_points はAIの解釈ではなく、本人が実際に選んだ「写真番号＋喜怒哀楽」を最大4件で短く列挙する。
+- emotion_points はAIの解釈ではなく、本人が実際に選んだ「写真番号＋気持ち」を最大4件で短く列挙する。
 """.strip()
 
     if image_items:
@@ -11385,7 +11646,7 @@ def render_burari_trip_summary(meta):
     st.markdown(
         f"""
         <div class="talk-card">
-          <div class="small-note">写真と本人が選んだ喜怒哀楽を一緒に見て、このぶらり旅全体をまとめています。</div>
+          <div class="small-note">写真と本人が選んだ気持ちを一緒に見て、このぶらり旅全体をまとめています。</div>
           <div class="big-text" style="margin-top:.45rem;">{html.escape(summary)}</div>
         </div>
         """,
@@ -11404,7 +11665,7 @@ def render_diary_reflection_summary(meta):
     st.markdown(
         f"""
         <div class="talk-card">
-          <div class="small-note">本人が写真ごとに選んだ喜怒哀楽をもとにした、その日の振り返りです。性格や能力の評価ではありません。</div>
+          <div class="small-note">本人が写真ごとに選んだ気持ちをもとにした、その日の振り返りです。性格や能力の評価ではありません。</div>
           <div class="big-text" style="margin-top:.45rem;">{html.escape(summary)}</div>
         </div>
         """,
@@ -11533,14 +11794,14 @@ def make_monthly_review(month_key, bundle):
         "additionalProperties": False,
     }
     evidence_bundle = build_month_inner_evidence(bundle)
-    evidence = str(evidence_bundle.get("text") or "").strip() or "喜怒哀楽の選択はまだありません。"
+    evidence = str(evidence_bundle.get("text") or "").strip() or "気持ちの選択はまだありません。"
     emotion_count = int(evidence_bundle.get("emotion_count") or 0)
     day_count = int(evidence_bundle.get("day_count") or 0)
     source = str(evidence_bundle.get("source") or "")
     source_note = (
-        "以下は、本人が写真をタップして実際に選んだ喜怒哀楽です。"
+        "以下は、本人が写真から実際に選んだ6つの気持ちです。"
         if source == "photo_emotions"
-        else "この期間には喜怒哀楽の記録がないため、旧形式の保存日記を互換用の補助材料として使います。推測は特に弱くしてください。"
+        else "この期間には気持ちの記録がないため、旧形式の保存日記を互換用の補助材料として使います。推測は特に弱くしてください。"
     )
     prompt = f"""
 「東京ぶらり旅プロジェクト」の{month_key}の記録から、本人に返す短い振り返りを作ります。
@@ -11569,7 +11830,7 @@ def make_monthly_review(month_key, bundle):
 """.strip()
     result = ask_json(prompt, "burari_monthly_review_emotions_v149", schema, 850)
     result["_insight_version"] = 3
-    result["_subjective_input_mode"] = "photo_emotion_four_choices_v149"
+    result["_subjective_input_mode"] = "photo_emotion_six_choices_v159"
     return result
 
 
@@ -11975,9 +12236,10 @@ def sync_browser_history():
             "node": navigation_node,
             "intercept_hierarchy_back": navigation_node in intercept_nodes,
         },
-        key=f"tokyo_burari_browser_history_instance_v147_{_current_ui_refresh_epoch()}",
+        key=f"tokyo_burari_browser_history_instance_v159_{_current_ui_refresh_epoch()}",
         on_page_change=lambda: None,
         on_hierarchy_back_change=lambda: None,
+        on_pending_restore_change=lambda: None,
     )
 
     hierarchy_back = getattr(result, "hierarchy_back", None)
@@ -12506,7 +12768,7 @@ def pending_diary_titles(pending_rows, used_titles=None):
 
 
 def create_and_save_diary_from_photos(trip, photos, requested_title=None, reason="manual_create"):
-    """Create and save a factual diary from photos plus the child's 喜怒哀楽 choices.
+    """Create and save a factual diary from photos plus the child's six-feeling choices.
 
     v149 intentionally makes no AI call here. The child's explicit emotion taps are
     the only subjective evidence; richer image+emotion interpretation remains an
@@ -12560,7 +12822,7 @@ def create_and_save_diary_from_photos(trip, photos, requested_title=None, reason
         "emotion_selected_photo_count": selected,
         "created_from_photo_list": True,
         "create_reason": str(reason or "manual_create"),
-        "subjective_input_mode": "photo_emotion_four_choices_v149",
+        "subjective_input_mode": "photo_emotion_six_choices_v159",
     }
     title = requested_title or diary_title_for_trip(trip, photos=photos)
     return save_diary(trip["id"], title, diary_text, {}, meta)
@@ -13029,6 +13291,7 @@ def render_pending_thumbnail_grid(trip_id, photos, max_count=None, trip=None):
                 "id": pid,
                 "src": src,
                 "talked": bool(talked),
+                "emotion": photo_emotion_key(photo),
                 "location": str(photo_location_label(photo) or ""),
                 "is_video": False,
             }
@@ -13043,7 +13306,7 @@ def render_pending_thumbnail_grid(trip_id, photos, max_count=None, trip=None):
         serial_key = f"pending_gallery_serial_{trip_id}"
         serial = int(st.session_state.get(serial_key) or 0)
         result = gallery_component(
-            data={"photos": cards},
+            data={"photos": cards, "family_key": current_family_key(), "member_key": current_member_key(), "pending_param": PENDING_EMOTION_QUERY_PARAM},
             key=f"pending_gallery_{trip_id}_{serial}_{_current_ui_refresh_epoch()}",
             on_photo_id_change=lambda: None,
             on_delete_photo_id_change=lambda: None,
@@ -13100,7 +13363,7 @@ def render_pending_thumbnail_grid(trip_id, photos, max_count=None, trip=None):
     return None
 
 def render_small_gallery(photos, max_count=None, columns=3):
-    """Render history still photos with persisted 喜怒哀楽 borders/icons."""
+    """Render history still photos with persisted feeling borders/icons."""
     subset = diary_photos_only(photos)
     if max_count is not None:
         subset = subset[:max_count]
@@ -13166,6 +13429,7 @@ def render_diary_photo_gallery(trip_id, photos, state=None):
                 "id": str(pid),
                 "src": src,
                 "talked": bool(talked),
+                "emotion": photo_emotion_key(photo),
                 "location": str(location_label or ""),
                 "is_video": False,
             }
@@ -13180,7 +13444,7 @@ def render_diary_photo_gallery(trip_id, photos, state=None):
         serial_key = f"diary_gallery_serial_{trip_id}"
         serial = int(st.session_state.get(serial_key) or 0)
         result = gallery_component(
-            data={"photos": cards},
+            data={"photos": cards, "family_key": current_family_key(), "member_key": current_member_key(), "pending_param": PENDING_EMOTION_QUERY_PARAM},
             key=f"diary_gallery_{trip_id}_{serial}_{_current_ui_refresh_epoch()}",
             on_photo_id_change=lambda: None,
             on_delete_photo_id_change=lambda: None,
@@ -13906,6 +14170,25 @@ _MOMENTS_SELECT_CSS = """
   pointer-events: none;
 }
 .moments-emotion-badge[hidden] { display: none !important; }
+.moments-emotion-palette {
+  position:absolute; inset:5px; z-index:8; display:grid; grid-template-columns:repeat(3,minmax(0,1fr));
+  gap:3px; align-content:center; padding:5px; border-radius:11px; background:rgba(17,24,39,.86);
+  backdrop-filter:blur(3px); box-sizing:border-box;
+}
+.moments-emotion-palette[hidden] { display:none !important; }
+.moments-emotion-option {
+  appearance:none; -webkit-appearance:none; min-height:29px; margin:0; padding:3px 2px;
+  border:1px solid rgba(255,255,255,.24); border-radius:9px; background:rgba(255,255,255,.94);
+  color:#20242b; font-size:10px; line-height:1.05; font-weight:760; cursor:pointer;
+  display:flex; flex-direction:column; align-items:center; justify-content:center; gap:2px;
+  touch-action:manipulation; -webkit-tap-highlight-color:transparent;
+}
+.moments-emotion-option .emoji { font-size:15px; line-height:1; }
+.moments-emotion-option.selected { outline:2px solid #fff; outline-offset:1px; }
+.moments-emotion-clear { grid-column:1 / -1; min-height:22px; font-size:8px; }
+.moments-select-card.large-card .moments-emotion-palette { padding:10px; gap:7px; }
+.moments-select-card.large-card .moments-emotion-option { min-height:58px; font-size:12px; }
+.moments-select-card.large-card .moments-emotion-option .emoji { font-size:24px; }
 .moments-select-meta {
   margin-top: 5px;
   font-size: 10px;
@@ -14048,21 +14331,23 @@ export default function(component) {
   const photos = Array.isArray(data?.photos) ? data.photos.slice(0, 3) : [];
   const disabled = Boolean(data?.disabled);
   const viewMode = String(data?.view_mode || 'list') === 'enlarge' ? 'enlarge' : 'list';
-  const selected = new Set(
-    (Array.isArray(data?.selected_ranks) ? data.selected_ranks : [])
-      .map((value) => Number(value))
-      .filter((value) => Number.isFinite(value) && value > 0)
-  );
-  const emotionOrder = ['', 'joy', 'anger', 'sadness', 'fun'];
+  const familyKey = String(data?.family_key || '');
+  const memberKey = String(data?.member_key || '');
+  const videoId = String(data?.video_id || '');
+  const roundNumber = Math.max(0, Number(data?.round_number || 0) || 0);
+  const pendingParam = String(data?.pending_param || 'feel_v159');
+  const selected = new Set((Array.isArray(data?.selected_ranks) ? data.selected_ranks : []).map(Number).filter((v) => Number.isFinite(v) && v > 0));
+  const emotionOrder = ['cozy', 'joy', 'surprise', 'anger', 'sadness', 'frustration'];
   const emotionMeta = {
-    joy: { emoji: '😊', color: '#F2C94C', label: '喜' },
-    anger: { emoji: '😠', color: '#E56B6F', label: '怒' },
-    sadness: { emoji: '😢', color: '#6C9BD2', label: '哀' },
-    fun: { emoji: '🎉', color: '#6FBA9C', label: '楽' }
+    cozy: { emoji:'🥰', color:'#F3B6A0', label:'ほっこりした' },
+    joy: { emoji:'😊', color:'#F2C94C', label:'うれしい' },
+    surprise: { emoji:'😲', color:'#9B7BD3', label:'びっくり' },
+    anger: { emoji:'😠', color:'#E56B6F', label:'おこった' },
+    sadness: { emoji:'😢', color:'#6C9BD2', label:'かなしい' },
+    frustration: { emoji:'😣', color:'#A66A8A', label:'くやしい' },
   };
   const normalizeEmotion = (value) => Object.prototype.hasOwnProperty.call(emotionMeta, String(value || '')) ? String(value || '') : '';
   const emotions = new Map();
-
   const rankFor = (photo, index) => Number(photo?.rank || (index + 1));
   for (let index = 0; index < photos.length; index += 1) {
     const rank = rankFor(photos[index], index);
@@ -14072,189 +14357,162 @@ export default function(component) {
   let activeRank = Number(data?.active_rank || 0);
   if (!validRanks.includes(activeRank)) activeRank = validRanks.length ? validRanks[0] : 0;
 
-  const pendingEmotionRanks = new Set();
-  let commitTimer = null;
-  const flushPickerCommit = () => {
-    if (commitTimer) {
-      clearTimeout(commitTimer);
-      commitTimer = null;
-    }
-    if (!pendingEmotionRanks.size) return;
-    const changes = Array.from(pendingEmotionRanks).map((rank) => ({
-      rank,
-      emotion: normalizeEmotion(emotions.get(rank)),
-    }));
-    pendingEmotionRanks.clear();
-    setTriggerValue('picker_commit', {
-      changes,
-      selected_ranks: Array.from(selected).sort((a, b) => a - b),
-      nonce: `${Date.now()}_${Math.random()}`,
-    });
+  const decodePayload = (raw) => {
+    try {
+      let value = String(raw || '').replace(/-/g, '+').replace(/_/g, '/');
+      value += '='.repeat((4 - value.length % 4) % 4);
+      const binary = atob(value);
+      const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0));
+      const parsed = JSON.parse(new TextDecoder().decode(bytes));
+      return parsed && typeof parsed === 'object' ? parsed : null;
+    } catch (_) { return null; }
   };
-  const queuePickerCommit = (rank) => {
-    pendingEmotionRanks.add(rank);
-    if (commitTimer) clearTimeout(commitTimer);
-    commitTimer = setTimeout(flushPickerCommit, 900);
+  const encodePayload = (payload) => {
+    const bytes = new TextEncoder().encode(JSON.stringify(payload));
+    let binary = '';
+    for (let i = 0; i < bytes.length; i += 0x4000) binary += String.fromCharCode(...bytes.subarray(i, i + 0x4000));
+    return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
+  };
+  const persistMomentState = (rank) => {
+    if (!familyKey || !memberKey || !videoId) return;
+    try {
+      const url = new URL(window.location.href);
+      let envelope = decodePayload(url.searchParams.get(pendingParam));
+      if (!envelope || Number(envelope.v) !== 159 || String(envelope.f || '') !== familyKey || String(envelope.m || '') !== memberKey) {
+        envelope = { v:159, f:familyKey, m:memberKey, p:{}, x:{} };
+      }
+      if (!envelope.p || typeof envelope.p !== 'object') envelope.p = {};
+      if (!envelope.x || typeof envelope.x !== 'object') envelope.x = {};
+      let state = envelope.x[videoId];
+      if (!state || typeof state !== 'object' || Number(state.r || 0) !== roundNumber) state = { r:roundNumber, e:{}, s:[] };
+      if (!state.e || typeof state.e !== 'object') state.e = {};
+      state.e[String(rank)] = normalizeEmotion(emotions.get(rank));
+      state.s = Array.from(selected).sort((a,b) => a-b);
+      envelope.x[videoId] = state;
+      envelope.t = `${Date.now()}_${Math.random().toString(36).slice(2)}`;
+      const encoded = encodePayload(envelope);
+      url.searchParams.set(pendingParam, encoded);
+      try { localStorage.setItem('tokyo_burari_pending_feelings_v159', encoded); } catch (_) {}
+      window.history.replaceState(window.history.state || {}, '', url.pathname + url.search + url.hash);
+    } catch (_) {}
   };
   const emitActive = (rank) => {
     if (Number.isFinite(rank) && rank > 0) setTriggerValue('active_rank', rank);
   };
 
+  let openPalette = null;
+  const closePalette = () => {
+    if (openPalette) openPalette.hidden = true;
+    openPalette = null;
+  };
+
   const makeCard = (photo, index, large = false) => {
     const rank = rankFor(photo, index);
-    const button = document.createElement('button');
-    button.type = 'button';
-    button.className = large ? 'moments-select-card large-card' : 'moments-select-card';
-    button.disabled = disabled;
+    const card = document.createElement('div');
+    card.className = large ? 'moments-select-card large-card' : 'moments-select-card';
+    card.setAttribute('role', 'button');
+    card.tabIndex = disabled ? -1 : 0;
+    card.setAttribute('aria-disabled', disabled ? 'true' : 'false');
 
     const imageWrap = document.createElement('div');
     imageWrap.className = 'moments-select-image-wrap';
-
     if (photo?.src) {
       const img = document.createElement('img');
-      img.src = String(photo.src);
-      img.alt = `いい瞬間 ${rank}`;
-      img.loading = large ? 'eager' : 'lazy';
-      img.decoding = 'async';
-      if (!large) img.fetchPriority = 'low';
+      img.src = String(photo.src); img.alt = `いい瞬間 ${rank}`;
+      img.loading = large ? 'eager' : 'lazy'; img.decoding = 'async'; if (!large) img.fetchPriority = 'low';
       imageWrap.appendChild(img);
     }
 
     const rankBadge = document.createElement('div');
-    rankBadge.className = 'moments-select-rank';
-    rankBadge.textContent = photo?.ai_best ? '★ AI BEST' : `#${rank}`;
+    rankBadge.className = 'moments-select-rank'; rankBadge.textContent = photo?.ai_best ? '★ AI BEST' : `#${rank}`;
     imageWrap.appendChild(rankBadge);
-
     const pickedBadge = document.createElement('div');
-    pickedBadge.className = 'moments-select-picked';
-    pickedBadge.textContent = '選択中';
-    imageWrap.appendChild(pickedBadge);
-
+    pickedBadge.className = 'moments-select-picked'; pickedBadge.textContent = '選択中'; imageWrap.appendChild(pickedBadge);
     const emotionBadge = document.createElement('div');
-    emotionBadge.className = 'moments-emotion-badge';
-    imageWrap.appendChild(emotionBadge);
+    emotionBadge.className = 'moments-emotion-badge'; imageWrap.appendChild(emotionBadge);
 
-    const meta = document.createElement('div');
-    meta.className = 'moments-select-meta';
-    meta.textContent = String(photo?.meta || '');
+    const palette = document.createElement('div');
+    palette.className = 'moments-emotion-palette'; palette.hidden = true;
+    for (const emotion of emotionOrder) {
+      const meta = emotionMeta[emotion];
+      const option = document.createElement('button');
+      option.type = 'button'; option.className = 'moments-emotion-option'; option.dataset.emotion = emotion;
+      option.innerHTML = `<span class="emoji">${meta.emoji}</span><span>${meta.label}</span>`;
+      option.addEventListener('click', (event) => {
+        event.preventDefault(); event.stopPropagation();
+        emotions.set(rank, emotion); selected.add(rank);
+        syncVisual(); persistMomentState(rank);
+        palette.hidden = true; openPalette = null;
+      });
+      palette.appendChild(option);
+    }
+    const clear = document.createElement('button');
+    clear.type = 'button'; clear.className = 'moments-emotion-option moments-emotion-clear'; clear.dataset.emotion = '';
+    clear.textContent = '× 未設定に戻す';
+    clear.addEventListener('click', (event) => {
+      event.preventDefault(); event.stopPropagation();
+      emotions.set(rank, ''); selected.delete(rank);
+      syncVisual(); persistMomentState(rank);
+      palette.hidden = true; openPalette = null;
+    });
+    palette.appendChild(clear);
+    imageWrap.appendChild(palette);
 
-    const reason = document.createElement('div');
-    reason.className = 'moments-select-reason';
-    reason.textContent = String(photo?.reason || '');
+    const metaText = document.createElement('div'); metaText.className = 'moments-select-meta'; metaText.textContent = String(photo?.meta || '');
+    const reason = document.createElement('div'); reason.className = 'moments-select-reason'; reason.textContent = String(photo?.reason || '');
 
     const syncVisual = () => {
       const emotion = normalizeEmotion(emotions.get(rank));
       const eMeta = emotionMeta[emotion] || null;
       const active = selected.has(rank);
-      button.classList.toggle('selected', active && !eMeta);
+      card.classList.toggle('selected', active && !eMeta);
       if (eMeta) {
-        button.style.borderColor = eMeta.color;
-        button.style.background = `${eMeta.color}1F`;
-        button.style.boxShadow = `0 0 0 2px ${eMeta.color}24`;
+        card.style.borderColor = eMeta.color; card.style.background = `${eMeta.color}1F`; card.style.boxShadow = `0 0 0 2px ${eMeta.color}24`;
       } else {
-        button.style.borderColor = '';
-        button.style.background = '';
-        button.style.boxShadow = '';
+        card.style.borderColor = ''; card.style.background = ''; card.style.boxShadow = '';
       }
       pickedBadge.style.display = active && !eMeta ? 'block' : 'none';
-      emotionBadge.textContent = eMeta ? eMeta.emoji : '';
-      emotionBadge.hidden = !eMeta;
-      button.setAttribute('aria-pressed', active ? 'true' : 'false');
-      button.setAttribute(
-        'aria-label',
-        eMeta
-          ? `写真${rank}の気持ち：${eMeta.label}。タップして次の気持ちへ`
-          : `写真${rank}の気持ち：未設定。タップして喜を選ぶ`
-      );
+      emotionBadge.textContent = eMeta ? eMeta.emoji : ''; emotionBadge.hidden = !eMeta;
+      card.setAttribute('aria-pressed', active ? 'true' : 'false');
+      card.setAttribute('aria-label', eMeta ? `写真${rank}の気持ち：${eMeta.label}。タップして変更` : `写真${rank}の気持ちは未設定。タップして選ぶ`);
+      for (const option of palette.querySelectorAll('[data-emotion]')) option.classList.toggle('selected', String(option.dataset.emotion || '') === emotion);
     };
-
     syncVisual();
-    button.appendChild(imageWrap);
-    button.appendChild(meta);
-    button.appendChild(reason);
+    card.appendChild(imageWrap); card.appendChild(metaText); card.appendChild(reason);
 
     if (!disabled) {
-      button.addEventListener('click', () => {
-        const current = normalizeEmotion(emotions.get(rank));
-        const currentIndex = Math.max(0, emotionOrder.indexOf(current));
-        const next = emotionOrder[(currentIndex + 1) % emotionOrder.length];
-        emotions.set(rank, next);
-        if (next) selected.add(rank);
-        else selected.delete(rank);
-        // Keep every tap local and immediate. Persist only the final state after
-        // a short pause so cycling through 喜怒哀楽 never reloads on each tap.
-        syncVisual();
-        queuePickerCommit(rank);
-      });
+      const toggle = (event) => {
+        event?.preventDefault?.(); event?.stopPropagation?.();
+        const opening = palette.hidden; closePalette(); palette.hidden = !opening; openPalette = opening ? palette : null;
+      };
+      card.addEventListener('click', toggle);
+      card.addEventListener('keydown', (event) => { if (event.key === 'Enter' || event.key === ' ') toggle(event); });
     }
-    return button;
+    return card;
   };
 
   if (viewMode === 'enlarge') {
     grid.classList.add('enlarge-mode');
-    const shell = document.createElement('div');
-    shell.className = 'moments-enlarge-shell';
-    if (!photos.length) {
-      const empty = document.createElement('div');
-      empty.className = 'moments-select-empty';
-      shell.appendChild(empty);
-      grid.appendChild(shell);
-      return;
-    }
-
-    let activeIndex = photos.findIndex((photo, index) => rankFor(photo, index) === activeRank);
-    if (activeIndex < 0) activeIndex = 0;
-    const activePhoto = photos[activeIndex];
-    activeRank = rankFor(activePhoto, activeIndex);
-
-    const nav = document.createElement('div');
-    nav.className = 'moments-enlarge-nav';
-    const prev = document.createElement('button');
-    prev.type = 'button';
-    prev.textContent = '‹';
-    prev.disabled = activeIndex <= 0;
-    prev.setAttribute('aria-label', '前の写真');
+    const shell = document.createElement('div'); shell.className = 'moments-enlarge-shell';
+    if (!photos.length) { const empty = document.createElement('div'); empty.className = 'moments-select-empty'; shell.appendChild(empty); grid.appendChild(shell); return; }
+    let activeIndex = photos.findIndex((photo, index) => rankFor(photo, index) === activeRank); if (activeIndex < 0) activeIndex = 0;
+    const activePhoto = photos[activeIndex]; activeRank = rankFor(activePhoto, activeIndex);
+    const nav = document.createElement('div'); nav.className = 'moments-enlarge-nav';
+    const prev = document.createElement('button'); prev.type='button'; prev.textContent='‹'; prev.disabled=activeIndex<=0; prev.setAttribute('aria-label','前の写真');
     if (!prev.disabled) prev.addEventListener('click', () => emitActive(rankFor(photos[activeIndex - 1], activeIndex - 1)));
-
-    const counter = document.createElement('div');
-    counter.className = 'moments-enlarge-counter';
-    counter.textContent = `${activeIndex + 1} / ${photos.length}`;
-
-    const next = document.createElement('button');
-    next.type = 'button';
-    next.textContent = '›';
-    next.disabled = activeIndex >= photos.length - 1;
-    next.setAttribute('aria-label', '次の写真');
+    const counter = document.createElement('div'); counter.className='moments-enlarge-counter'; counter.textContent=`${activeIndex + 1} / ${photos.length}`;
+    const next = document.createElement('button'); next.type='button'; next.textContent='›'; next.disabled=activeIndex>=photos.length-1; next.setAttribute('aria-label','次の写真');
     if (!next.disabled) next.addEventListener('click', () => emitActive(rankFor(photos[activeIndex + 1], activeIndex + 1)));
-
-    nav.appendChild(prev);
-    nav.appendChild(counter);
-    nav.appendChild(next);
-    shell.appendChild(nav);
-    shell.appendChild(makeCard(activePhoto, activeIndex, true));
-
-    const hint = document.createElement('div');
-    hint.className = 'moments-enlarge-hint';
-    hint.textContent = '写真をタップ：未設定 → 😊喜 → 😠怒 → 😢哀 → 🎉楽 → 未設定';
-    shell.appendChild(hint);
-    grid.appendChild(shell);
-    return;
+    nav.appendChild(prev); nav.appendChild(counter); nav.appendChild(next); shell.appendChild(nav); shell.appendChild(makeCard(activePhoto, activeIndex, true));
+    const hint = document.createElement('div'); hint.className='moments-enlarge-hint'; hint.textContent='写真をタップして、6つの気持ちから選びます。';
+    shell.appendChild(hint); grid.appendChild(shell); return;
   }
 
   for (let index = 0; index < 3; index += 1) {
     const photo = photos[index];
-    if (!photo) {
-      const empty = document.createElement('div');
-      empty.className = 'moments-select-empty';
-      grid.appendChild(empty);
-      continue;
-    }
+    if (!photo) { const empty = document.createElement('div'); empty.className='moments-select-empty'; grid.appendChild(empty); continue; }
     grid.appendChild(makeCard(photo, index, false));
   }
-
-  return () => {
-    if (commitTimer) clearTimeout(commitTimer);
-  };
 }
 """
 
@@ -14269,7 +14527,7 @@ def _get_moments_select_component():
     _moments_select_component_initialized = True
     try:
         moments_select_component = st.components.v2.component(
-            "tokyo_burari_moments_select_v158",
+            "tokyo_burari_moments_select_v159",
             html=_MOMENTS_SELECT_HTML,
             css=_MOMENTS_SELECT_CSS,
             js=_MOMENTS_SELECT_JS,
@@ -14406,12 +14664,12 @@ def _render_moments_picker(photo, index, view_mode="list"):
         return
 
     st.caption(
-        f"AIが映えを重視して最大{VIDEO_AI_MAX_SELECTIONS}枚を選んでいます。写真をタップして喜怒哀楽を付けられます。"
+        f"AIが映えを重視して最大{VIDEO_AI_MAX_SELECTIONS}枚を選んでいます。写真をタップして6つの気持ちから選べます。"
         "感情を付けた写真が残す対象になり、その結果は次回以降のAIセレクションにも軽く反映されます。"
     )
     if status == "reviewed":
         st.info(
-            "確認済みの動画も、写真をタップして喜怒哀楽を変更できます。"
+            "確認済みの動画も、写真をタップして気持ちを変更できます。"
             "すでに日記へ残した写真は自動削除せず、感情を変更した場合は保存済み写真にも同期します。"
         )
         render_reviewed_recut_button()
@@ -14483,6 +14741,11 @@ def _render_moments_picker(photo, index, view_mode="list"):
                 "active_rank": current_active_rank,
                 "view_mode": "enlarge" if view_mode == "enlarge" else "list",
                 "disabled": False,
+                "family_key": current_family_key(),
+                "member_key": current_member_key(),
+                "video_id": video_id,
+                "round_number": round_number,
+                "pending_param": PENDING_EMOTION_QUERY_PARAM,
             },
             key=f"moments_tap_picker_{video_id}_{round_number}_{serial}",
             on_selected_ranks_change=lambda: None,
@@ -14648,18 +14911,20 @@ def _render_moments_picker(photo, index, view_mode="list"):
                             st.rerun()
 
     if view_mode == "enlarge":
-        st.caption("拡大モード：左右の‹ ›で写真を切り替え、写真をタップして喜怒哀楽を選びます。感情を選んだ写真が『残す』対象になります。")
+        st.caption("拡大モード：左右の‹ ›で写真を切り替え、写真をタップして6つの気持ちから選びます。選んだ写真が「残す」対象になります。気持ちを選ぶだけではページ更新しません。")
     else:
-        st.caption("一覧モード：写真をタップするたびに 未設定 → 😊喜 → 😠怒 → 😢哀 → 🎉楽 → 未設定。感情の色が枠に表示されます。")
+        st.caption("一覧モード：写真をタップすると6つの気持ちボタンが開きます。選んだ気持ちの色が枠に表示され、気持ちを選ぶだけではページ更新しません。")
     selected_rank_set = set(selected_ranks)
     send_clicked = st.button(
-        f"選択した写真を残す（{len(selected_rank_set)}枚）",
+        "選択した写真を残す",
         type="primary",
         use_container_width=True,
-        disabled=not selected_rank_set,
+        disabled=False,
         key=f"moments_send_{video_id}_{round_number}",
     )
-    if send_clicked:
+    if send_clicked and not selected_rank_set:
+        st.warning("写真をタップして、残したい写真の気持ちを選んでください。")
+    if send_clicked and selected_rank_set:
         newly_saved = 0
         try:
             with st.spinner("選択した写真を残しています…"):
@@ -15485,12 +15750,12 @@ def render_recent_camera_photo_emotion(trip):
             delete_key_prefix="recent_camera",
         ):
             st.warning("撮影した動画のプレビューを表示できませんでした。")
-        st.caption("✨ いい瞬間は動画保存とは別にバックグラウンドで作成します。切り取った写真は、日記画面で喜怒哀楽を選べます。")
+        st.caption("✨ いい瞬間は動画保存とは別にバックグラウンドで作成します。切り取った写真は、日記画面で6つの気持ちから選べます。")
         return
 
     location_label = photo_location_label(photo)
-    st.caption("写真をタップするたびに　未設定 → 😊喜 → 😠怒 → 😢哀 → 🎉楽 → 未設定　の順で変わります。")
-    st.caption("枠色：😊喜 #F2C94C ／ 😠怒 #E56B6F ／ 😢哀 #6C9BD2 ／ 🎉楽 #6FBA9C")
+    st.caption("写真をタップすると6つの気持ちボタンが開きます。選ぶだけではページ更新しません。")
+    st.caption("🥰ほっこり #F3B6A0 ／ 😊うれしい #F2C94C ／ 😲びっくり #9B7BD3 ／ 😠おこった #E56B6F ／ 😢かなしい #6C9BD2 ／ 😣くやしい #A66A8A")
 
     path = str(photo.get("storage_path") or "")
     signed = signed_photo_url_map((path,)) if path else {}
@@ -15506,7 +15771,7 @@ def render_recent_camera_photo_emotion(trip):
         serial_key = f"recent_emotion_serial_{photo_id}"
         serial = int(st.session_state.get(serial_key) or 0)
         result = gallery_component(
-            data={"photos": [card], "single": True, "allow_delete": True, "allow_emotion": True},
+            data={"photos": [card], "single": True, "allow_delete": True, "allow_emotion": True, "family_key": current_family_key(), "member_key": current_member_key(), "pending_param": PENDING_EMOTION_QUERY_PARAM},
             key=f"recent_emotion_{photo_id}_{serial}_{_current_ui_refresh_epoch()}",
             on_emotion_batch_change=lambda: None,
             on_delete_photo_id_change=lambda: None,
@@ -15919,13 +16184,13 @@ def page_trip():
 
 
 def render_diary_emotion_gallery(trip_id, photos, trip=None, is_pending=False):
-    """Render all still photos as tappable 喜怒哀楽 cards with persistent emotion state."""
+    """Render all still photos as six-feeling cards with persistent emotion state."""
     photos = diary_photos_only(photos)
     if not photos:
         return
     st.markdown("#### この日の写真")
     counts, selected = photo_emotion_counts(photos)
-    st.caption("写真をタップするたびに　未設定 → 😊喜 → 😠怒 → 😢哀 → 🎉楽 → 未設定　の順で変わります。")
+    st.caption("写真をタップすると6つの気持ちボタンが開きます。選ぶだけではページ更新しません。")
     summary = photo_emotion_summary_text(photos)
     st.caption(f"感情選択済み：{selected} / {len(photos)}枚" + (f"　｜　{summary}" if summary else ""))
 
@@ -15952,7 +16217,7 @@ def render_diary_emotion_gallery(trip_id, photos, trip=None, is_pending=False):
         serial_key = f"diary_emotion_gallery_serial_{trip_id}_{'pending' if is_pending else 'saved'}"
         serial = int(st.session_state.get(serial_key) or 0)
         result = gallery_component(
-            data={"photos": cards, "allow_delete": True, "allow_emotion": True},
+            data={"photos": cards, "allow_delete": True, "allow_emotion": True, "family_key": current_family_key(), "member_key": current_member_key(), "pending_param": PENDING_EMOTION_QUERY_PARAM},
             key=f"diary_emotion_gallery_{trip_id}_{serial}_{_current_ui_refresh_epoch()}",
             on_emotion_batch_change=lambda: None,
             on_delete_photo_id_change=lambda: None,
@@ -16035,7 +16300,7 @@ def page_diary():
 
     page_top(
         "📖 日記",
-        "写真をタップして喜・怒・哀・楽を選び、その気持ちの記録から日記を作ります。コメント入力は使いません。",
+        "写真をタップして6つの気持ちから選び、その記録から日記を作ります。気持ちを選ぶだけではページ更新しません。コメント入力は使いません。",
     )
     notice = st.session_state.pop("_diary_notice", None)
     if notice:
@@ -16051,7 +16316,7 @@ def page_diary():
 
     if pending_rows:
         st.markdown("#### まだ日記になっていない写真")
-        st.caption("写真をタップするたびに、未設定→😊喜→😠怒→😢哀→🎉楽→未設定の順で枠色が変わります。")
+        st.caption("写真をタップすると6つの気持ちボタンが開きます。気持ちを選ぶだけではページ更新せず、次に別の操作をしたときにまとめて保存します。")
         pending_titles = pending_diary_titles(pending_rows, used_titles=saved_titles)
         for item in pending_rows:
             pending_trip = item.get("trip") or {}
@@ -16078,7 +16343,7 @@ def page_diary():
                 key=f"create_pending_diary_{pending_id}",
             ):
                 try:
-                    with st.spinner("写真と喜怒哀楽から日記を作って保存しています…"):
+                    with st.spinner("写真と選んだ気持ちから日記を作って保存しています…"):
                         create_and_save_diary_from_photos(
                             pending_trip,
                             pending_photos,
@@ -16148,7 +16413,7 @@ def page_diary():
             key=f"create_selected_diary_{trip_id}",
         ):
             try:
-                with st.spinner("写真と喜怒哀楽から日記を作って保存しています…"):
+                with st.spinner("写真と選んだ気持ちから日記を作って保存しています…"):
                     create_and_save_diary_from_photos(
                         trip,
                         photos,
@@ -16182,10 +16447,10 @@ def page_diary():
         key=f"ai_trip_summary_{trip_id}",
     ):
         try:
-            with st.spinner("写真と喜怒哀楽を見て、このぶらり旅をまとめています…"):
+            with st.spinner("写真と選んだ気持ちを見て、このぶらり旅をまとめています…"):
                 summary_result = summarize_burari_from_photos(trip, photos)
                 save_burari_ai_summary(trip_id, summary_result)
-            st.session_state["_diary_notice"] = "写真と喜怒哀楽からAIのまとめを更新しました。"
+            st.session_state["_diary_notice"] = "写真と選んだ気持ちからAIのまとめを更新しました。"
             st.rerun()
         except Exception as exc:
             st.error("AIのまとめを作れませんでした。もう一度試してください。")
@@ -16198,7 +16463,7 @@ def page_diary():
     render_diary_title_editor(trip_id, existing_title, "diary_existing")
 
     if photos and st.button(
-        "この日の写真と喜怒哀楽から、日記を作り直す",
+        "この日の写真と選んだ気持ちから、日記を作り直す",
         use_container_width=True,
         key=f"recreate_diary_from_emotions_{trip_id}",
     ):
@@ -16211,7 +16476,7 @@ def page_diary():
                     reason="diary_recreate_emotions_v149",
                 )
             st.session_state.preferred_diary_trip_id = trip_id
-            st.session_state["_diary_notice"] = "写真の喜怒哀楽をもとに日記を作り直しました。"
+            st.session_state["_diary_notice"] = "写真の気持ちをもとに日記を作り直しました。"
             st.rerun()
         except Exception as exc:
             st.error("日記を作り直せませんでした。")
@@ -16273,7 +16538,7 @@ def page_history(embedded=False):
         render_summary_feedback_controls(meta, trip_id, "history")
         emotion_points = meta.get("emotion_points", []) if isinstance(meta, dict) else []
         if emotion_points:
-            with st.expander("この振り返りのもとになった喜怒哀楽"):
+            with st.expander("この振り返りのもとになった気持ち"):
                 for point in emotion_points[:4]:
                     st.write("・" + str(point))
         else:
@@ -16361,7 +16626,7 @@ def render_monthly_ai_comments(review):
     with st.expander("保護者向けメモ"):
         st.write(review.get("parent_note", ""))
         st.caption(
-            "本人が写真ごとに選んだ喜怒哀楽の傾向を、断定しすぎない範囲で振り返っています。"
+            "本人が写真ごとに選んだ気持ちの傾向を、断定しすぎない範囲で振り返っています。"
             "性格診断・能力評価・将来予測ではありません。"
         )
 
@@ -16375,7 +16640,7 @@ def page_monthly(embedded=False):
     deleted_notice = st.session_state.pop("_monthly_video_deleted_notice", None)
     if deleted_notice:
         st.success(deleted_notice)
-    st.caption("保存した日記と写真ごとの喜怒哀楽を、まとまった期間ごとにつないで振り返ります。")
+    st.caption("保存した日記と写真ごとの気持ちを、まとまった期間ごとにつないで振り返ります。")
 
     recent = list_recent_diaries(limit=120)
     pending_rows = list_pending_photo_trips(limit=80)
@@ -16411,9 +16676,9 @@ def page_monthly(embedded=False):
         for photo in bundle.get("photos", [])
         if photo_emotion_key(photo)
     )
-    st.write(f"この期間の日記：**{completed_count}回**　／　喜怒哀楽を選んだ写真：**{emotion_selected_photo_count}枚**")
+    st.write(f"この期間の日記：**{completed_count}回**　／　気持ちを選んだ写真：**{emotion_selected_photo_count}枚**")
     if completed_count == 0 and emotion_selected_photo_count == 0:
-        st.info("この期間には、まだ振り返りに使える喜怒哀楽の記録がありません。")
+        st.info("この期間には、まだ振り返りに使える気持ちの記録がありません。")
         return
 
     saved = get_saved_monthly_review(month_key)
@@ -16426,7 +16691,7 @@ def page_monthly(embedded=False):
     if not review:
         if st.button("AIとこの期間を振り返る", type="primary", use_container_width=True):
             try:
-                with st.spinner("この期間の喜怒哀楽をつないでいます…"):
+                with st.spinner("この期間の気持ちをつないでいます…"):
                     review = make_monthly_review(month_key, bundle)
                     save_monthly_review(month_key, review)
                 st.session_state[session_key] = review
@@ -16453,7 +16718,7 @@ def page_monthly(embedded=False):
         # comment is visible in the no-music state, upgrade it once to the insight format.
         if int(review.get("_insight_version") or 0) < 3:
             try:
-                with st.spinner("写真の喜怒哀楽から、短い振り返りを作り直しています…"):
+                with st.spinner("写真の気持ちから、短い振り返りを作り直しています…"):
                     refreshed = make_monthly_review(month_key, bundle)
                     previous_playback = get_monthly_playback(review)
                     if previous_playback:
@@ -16484,7 +16749,7 @@ def page_monthly(embedded=False):
         ):
             try:
                 previous_playback = get_monthly_playback(review)
-                with st.spinner("この期間の喜怒哀楽をつないでいます…"):
+                with st.spinner("この期間の気持ちをつないでいます…"):
                     refreshed = make_monthly_review(month_key, bundle)
                     if previous_playback:
                         refreshed["_playback"] = previous_playback
@@ -16596,7 +16861,7 @@ def page_monthly(embedded=False):
         # Upgrade legacy saved summaries only when the user asks to see AI comments.
         if int(review.get("_insight_version") or 0) < 3:
             try:
-                with st.spinner("写真の喜怒哀楽から、短い振り返りを作り直しています…"):
+                with st.spinner("写真の気持ちから、短い振り返りを作り直しています…"):
                     refreshed = make_monthly_review(month_key, bundle)
                     previous_playback = get_monthly_playback(review)
                     if previous_playback:
@@ -16616,7 +16881,7 @@ def page_monthly(embedded=False):
         ):
             try:
                 previous_playback = get_monthly_playback(review)
-                with st.spinner("この期間の喜怒哀楽をつないでいます…"):
+                with st.spinner("この期間の気持ちをつないでいます…"):
                     refreshed = make_monthly_review(month_key, bundle)
                     if previous_playback:
                         refreshed["_playback"] = previous_playback
@@ -17035,7 +17300,7 @@ def page_settings():
         st.write(f"これまでの評価：**Good {good_count}件** ／ **Bad {bad_count}件**")
         st.caption(
             "次回のAIまとめでは、この個人アカウントの直近Good最大3件を少しだけ参考にし、"
-            "Bad最大2件に近い書き方を少しだけ避けます。写真と本人が選んだ喜怒哀楽、基本ルールを常に優先します。"
+            "Bad最大2件に近い書き方を少しだけ避けます。写真と本人が選んだ気持ち、基本ルールを常に優先します。"
         )
         with st.expander("現在参考にしているGood / Badを見る"):
             good_examples = feedback_status.get("good_examples") or []
@@ -17138,6 +17403,10 @@ except Exception:
 # maintenance, not startup requirements, so home/camera opens no longer wait for them.
 restore_recent_camera_session()
 
+# v159: emotion buttons are browser-only. A real button/navigation rerun reaches
+# here first, so commit the newest choices before that button's page logic executes.
+consume_pending_emotion_query()
+
 # v146: resolve browser Back/Forward before drawing any visible page.
 # Previously the bridge ran after page rendering, so a mobile Back event could first
 # queue the old page (including its bottom navigation) and only then switch to Home.
@@ -17145,6 +17414,7 @@ restore_recent_camera_session()
 # rerun. Handle history first; if it changes the page, sync_browser_history() reruns
 # before any visible UI is emitted.
 sync_browser_history()
+render_pending_emotion_query_cleanup()
 
 # v147: render the entire visible app inside one replaceable root. This is stronger
 # than a normal rerun for mobile Streamlit: after save/delete mutations the old root
@@ -17156,6 +17426,14 @@ with page_root.container():
     rollover_notice = st.session_state.pop("_rollover_notice", None)
     if rollover_notice:
         st.success(rollover_notice)
+    emotion_sync_warning = st.session_state.pop("_emotion_sync_warning", None)
+    if emotion_sync_warning:
+        st.warning(emotion_sync_warning)
+        emotion_sync_detail = st.session_state.pop("_emotion_sync_warning_detail", None)
+        if emotion_sync_detail:
+            with st.expander("保護者向け詳細"):
+                st.code(str(emotion_sync_detail))
+
     rollover_warning = st.session_state.pop("_rollover_warning", None)
     if rollover_warning:
         st.warning(rollover_warning)
