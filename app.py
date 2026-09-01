@@ -28,9 +28,9 @@ from zoneinfo import ZoneInfo
 import streamlit as st
 
 # Freshly generated update: 2026-08-31 23:49 JST
-GENERATED_UPDATE_JST = "2026-09-02T00:28:00+09:00"
+GENERATED_UPDATE_JST = "2026-09-02T00:54:39+09:00"
 
-APP_BUILD = "v162"
+APP_BUILD = "v165"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -799,14 +799,14 @@ _LIVE_CAMERA_HTML = """
     </div>
     <button id="camera-review-find-moments" class="camera-find-button" type="button" hidden>✨ いい瞬間を探す</button>
     <div id="camera-review-build" class="camera-review-build" hidden>camera v162</div>
-    <div id="camera-review-emotion-hint" class="camera-review-emotion-hint" hidden>写真下の「通常／子育て」を切り替え、写真をタップしてアイコンを選べます。</div>
+    <div id="camera-review-emotion-hint" class="camera-review-emotion-hint" hidden>写真下の「通常／こどもーど」を切り替え、写真をタップしてアイコンを選べます。</div>
     <div id="camera-review-image-shell" class="camera-review-image-shell" role="button" tabindex="0" aria-label="写真のアイコンを選ぶ" hidden>
       <img id="camera-review-image" class="camera-review-image" alt="撮影した写真の確認" />
       <span id="camera-review-emotion-badge" class="camera-review-emotion-badge" hidden></span>
     </div>
     <div id="camera-review-mode-switch" class="camera-review-mode-switch" hidden>
       <button id="camera-review-mode-normal" type="button" class="camera-review-mode-button active">🙂 通常</button>
-      <button id="camera-review-mode-parenting" type="button" class="camera-review-mode-button parenting">🌱 子育て</button>
+      <button id="camera-review-mode-parenting" type="button" class="camera-review-mode-button parenting">🌱 こどもーど</button>
     </div>
     <video id="camera-review-video" class="camera-review-video" playsinline controls hidden></video>
   </div>
@@ -1220,7 +1220,7 @@ export default function(component) {
     }
     if (reviewModeParenting) {
       reviewModeParenting.classList.toggle('active', reviewMode === 'parenting');
-      reviewModeParenting.textContent = `${parentingMeta ? parentingMeta.emoji : '🌱'} 子育て`;
+      reviewModeParenting.textContent = `${parentingMeta ? parentingMeta.emoji : '🌱'} こどもーど`;
     }
   };
   const syncReviewEmotion = () => {
@@ -1231,7 +1231,7 @@ export default function(component) {
     if (reviewImageShell) {
       reviewImageShell.style.borderColor = meta ? meta.color : '#AEB6C2';
       reviewImageShell.style.background = meta ? `${meta.color}18` : 'rgba(174,182,194,.07)';
-      reviewImageShell.setAttribute('aria-label', meta ? `${reviewMode === 'parenting' ? '子育て' : '通常'}：${meta.label}。タップして次へ` : `${reviewMode === 'parenting' ? '子育て' : '通常'}は未設定。タップして次へ`);
+      reviewImageShell.setAttribute('aria-label', meta ? `${reviewMode === 'parenting' ? 'こどもーど' : '通常'}：${meta.label}。タップして次へ` : `${reviewMode === 'parenting' ? 'こどもーど' : '通常'}は未設定。タップして次へ`);
     }
     if (reviewEmotionBadge) {
       reviewEmotionBadge.textContent = meta ? `${meta.emoji} ${meta.label}` : '';
@@ -3306,7 +3306,7 @@ def update_photo_parenting_tag(photo_id, tag_key, trip_id=None, refresh_related=
     """Persist one parent-facing child-rearing tag independently of normal emotion."""
     tag_key = normalize_parenting_tag_key(tag_key)
     if tag_key and tag_key not in PARENTING_TAGS:
-        raise ValueError("子育てアイコンの種類を確認できませんでした。")
+        raise ValueError("こどもーどアイコンの種類を確認できませんでした。")
 
     client = supabase_client()
     query = (
@@ -3319,7 +3319,7 @@ def update_photo_parenting_tag(photo_id, tag_key, trip_id=None, refresh_related=
     )
     row = (query.data or [None])[0] or {}
     if not row.get("id"):
-        raise ValueError("子育てアイコンを設定する写真が見つかりませんでした。")
+        raise ValueError("こどもーどアイコンを設定する写真が見つかりませんでした。")
     resolved_trip_id = str(trip_id or row.get("trip_id") or "")
     reflection = row.get("reflection_json") or {}
     if not isinstance(reflection, dict):
@@ -3615,9 +3615,11 @@ export default function(component) {
   const photos = Array.isArray(data?.photos) ? data.photos : [];
   const allowDelete = data?.allow_delete !== false;
   const allowEmotion = data?.allow_emotion !== false;
+  const commitTags = data?.commit_tags === true;
   const pendingParam = String(data?.pending_param || 'feel_v159');
   const familyKey = String(data?.family_key || '');
   const memberKey = String(data?.member_key || '');
+  const modeByPhoto = (data?.mode_by_photo && typeof data.mode_by_photo === 'object') ? {...data.mode_by_photo} : {};
 
   const normalOrder = ['cozy', 'joy', 'surprise', 'anger', 'sadness', 'frustration'];
   const normalMeta = {
@@ -3674,6 +3676,37 @@ export default function(component) {
   const discardPendingPhoto = (photoId) => mutatePending((envelope) => {
     delete envelope.p[String(photoId)]; delete envelope.g[String(photoId)];
   });
+
+  // v165: emotion/tag changes are committed through the component itself. This is
+  // deliberately debounced so rapid taps stay instant. Mode-only changes never emit.
+  const pendingNormal = new Map();
+  const pendingParenting = new Map();
+  let commitTimer = null;
+  const flushTagCommit = () => {
+    if (!commitTags) return;
+    if (commitTimer) { clearTimeout(commitTimer); commitTimer = null; }
+    if (!pendingNormal.size && !pendingParenting.size) return;
+    const emotionChanges = Array.from(pendingNormal, ([photo_id, emotion]) => ({photo_id, emotion}));
+    const parentingChanges = Array.from(pendingParenting, ([photo_id, parenting]) => ({photo_id, parenting}));
+    pendingNormal.clear(); pendingParenting.clear();
+    setTriggerValue('emotion_batch', {
+      emotion_changes: emotionChanges,
+      parenting_changes: parentingChanges,
+      modes: modeByPhoto,
+      token: `${Date.now()}:${Math.random()}`,
+    });
+  };
+  const queueNormalCommit = (photoId, value) => {
+    pendingNormal.set(String(photoId), normalizeNormal(value));
+    if (commitTimer) clearTimeout(commitTimer);
+    commitTimer = setTimeout(flushTagCommit, 300);
+  };
+  const queueParentingCommit = (photoId, value) => {
+    pendingParenting.set(String(photoId), normalizeParenting(value));
+    if (commitTimer) clearTimeout(commitTimer);
+    commitTimer = setTimeout(flushTagCommit, 300);
+  };
+
   const nextValue = (value, order, normalize) => {
     const cycle = ['', ...order];
     const index = Math.max(0, cycle.indexOf(normalize(value)));
@@ -3686,7 +3719,7 @@ export default function(component) {
       emotion: normalizeNormal(sourcePhoto?.emotion),
       parenting: normalizeParenting(sourcePhoto?.parenting),
     };
-    let activeMode = 'normal';
+    let activeMode = String(modeByPhoto[String(photo.id)] || '') === 'parenting' ? 'parenting' : 'normal';
     const wrap = document.createElement('div'); wrap.className = 'diary-photo-wrap';
     const card = document.createElement('div'); card.className = 'diary-photo-card'; card.setAttribute('role','button'); card.tabIndex = allowEmotion ? 0 : -1;
     const img = document.createElement('img'); img.src = photo.src || ''; img.alt = 'ぶらり旅の写真'; img.loading='lazy'; img.decoding='async'; img.fetchPriority='low'; card.appendChild(img);
@@ -3708,22 +3741,24 @@ export default function(component) {
       badge.textContent = meta ? `${meta.emoji} ${meta.label}` : ''; badge.hidden = !meta;
       const normalSelected = normalMeta[normal] || null; const parentingSelected = parentingMeta[parenting] || null;
       normalButton.textContent = `${normalSelected ? normalSelected.emoji : '🙂'} 通常`;
-      parentingButton.textContent = `${parentingSelected ? parentingSelected.emoji : '🌱'} 子育て`;
+      parentingButton.textContent = `${parentingSelected ? parentingSelected.emoji : '🌱'} こどもーど`;
       normalButton.classList.toggle('active', activeMode === 'normal'); parentingButton.classList.toggle('active', activeMode === 'parenting');
-      card.setAttribute('aria-label', meta ? `${activeMode === 'parenting' ? '子育て' : '通常'}：${meta.label}。タップして次へ` : `${activeMode === 'parenting' ? '子育て' : '通常'}は未設定。タップして次へ`);
+      card.setAttribute('aria-label', meta ? `${activeMode === 'parenting' ? 'こどもーど' : '通常'}：${meta.label}。タップして次へ` : `${activeMode === 'parenting' ? 'こどもーど' : '通常'}は未設定。タップして次へ`);
     };
     syncVisual();
 
-    normalButton.addEventListener('click', (event) => { event.preventDefault(); event.stopPropagation(); activeMode='normal'; syncVisual(); });
-    parentingButton.addEventListener('click', (event) => { event.preventDefault(); event.stopPropagation(); activeMode='parenting'; syncVisual(); });
+    normalButton.addEventListener('click', (event) => { event.preventDefault(); event.stopPropagation(); activeMode='normal'; modeByPhoto[String(photo.id)]='normal'; syncVisual(); });
+    parentingButton.addEventListener('click', (event) => { event.preventDefault(); event.stopPropagation(); activeMode='parenting'; modeByPhoto[String(photo.id)]='parenting'; syncVisual(); });
 
     if (allowEmotion) {
       const cycle = (event) => {
         event?.preventDefault?.(); event?.stopPropagation?.();
         if (activeMode === 'parenting') {
-          photo.parenting = nextValue(photo.parenting, parentingOrder, normalizeParenting); persistParenting(photo.id, photo.parenting);
+          photo.parenting = nextValue(photo.parenting, parentingOrder, normalizeParenting);
+          if (commitTags) queueParentingCommit(photo.id, photo.parenting); else persistParenting(photo.id, photo.parenting);
         } else {
-          photo.emotion = nextValue(photo.emotion, normalOrder, normalizeNormal); persistNormal(photo.id, photo.emotion);
+          photo.emotion = nextValue(photo.emotion, normalOrder, normalizeNormal);
+          if (commitTags) queueNormalCommit(photo.id, photo.emotion); else persistNormal(photo.id, photo.emotion);
         }
         syncVisual();
       };
@@ -3754,7 +3789,7 @@ def _get_diary_gallery_component():
     _diary_gallery_component_initialized = True
     try:
         diary_gallery_component = st.components.v2.component(
-            "tokyo_burari_diary_gallery_v162",
+            "tokyo_burari_diary_gallery_v165",
             html=_DIARY_GALLERY_HTML,
             css=_DIARY_GALLERY_CSS,
             js=_DIARY_GALLERY_JS,
@@ -14458,6 +14493,11 @@ _MOMENTS_SELECT_CSS = """
   width: 100%;
   box-sizing: border-box;
 }
+.moments-enlarge-viewer {
+  width: 100%;
+  min-height: 1px;
+  box-sizing: border-box;
+}
 .moments-enlarge-nav {
   display: grid;
   grid-template-columns: 52px minmax(0, 1fr) 52px;
@@ -14587,6 +14627,20 @@ export default function(component) {
   for(let i=0;i<photos.length;i+=1){ const rank=rankFor(photos[i],i); if(Number.isFinite(rank)&&rank>0){ emotions.set(rank,normalizeNormal(photos[i]?.emotion)); parenting.set(rank,normalizeParenting(photos[i]?.parenting)); } }
   const validRanks=photos.map(rankFor).filter(v=>Number.isFinite(v)&&v>0);
   let activeRank=Number(data?.active_rank||0); if(!validRanks.includes(activeRank)) activeRank=validRanks.length?validRanks[0]:0;
+  let preferredMode=String(data?.preferred_mode||'')==='parenting'?'parenting':'normal';
+  const selectionTouched=new Set();
+  let commitTimer=null;
+
+  // v164: preload/decode all three stills once. Enlarged previous/next can then
+  // switch entirely inside the browser without a Streamlit round trip.
+  for(const photo of photos){
+    const src=String(photo?.src||'');
+    if(!src)continue;
+    try{
+      const preload=new Image(); preload.decoding='async'; preload.src=src;
+      if(typeof preload.decode==='function')preload.decode().catch(()=>{});
+    }catch(_){}
+  }
 
   const decodePayload=(raw)=>{try{let v=String(raw||'').replace(/-/g,'+').replace(/_/g,'/');v+='='.repeat((4-v.length%4)%4);const b=atob(v);const bytes=Uint8Array.from(b,c=>c.charCodeAt(0));const p=JSON.parse(new TextDecoder().decode(bytes));return p&&typeof p==='object'?p:null;}catch(_){return null;}};
   const encodePayload=(payload)=>{const bytes=new TextEncoder().encode(JSON.stringify(payload));let binary='';for(let i=0;i<bytes.length;i+=0x4000)binary+=String.fromCharCode(...bytes.subarray(i,i+0x4000));return btoa(binary).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/g,'');};
@@ -14603,11 +14657,31 @@ export default function(component) {
       try{localStorage.setItem('tokyo_burari_pending_feelings_v159',encoded);}catch(_){} window.history.replaceState(window.history.state||{},'',url.pathname+url.search+url.hash);
     }catch(_){}
   };
-  const emitActive=(rank)=>{if(Number.isFinite(rank)&&rank>0)setTriggerValue('active_rank',rank);};
+  const flushPickerCommit=()=>{
+    if(commitTimer){clearTimeout(commitTimer);commitTimer=null;}
+    if(!selectionTouched.size)return;
+    const changes=Array.from(selectionTouched).map(rank=>({
+      rank,
+      emotion:normalizeNormal(emotions.get(rank)),
+      parenting:normalizeParenting(parenting.get(rank)),
+    }));
+    selectionTouched.clear();
+    setTriggerValue('picker_commit',{
+      changes,
+      selected_ranks:Array.from(selected).sort((a,b)=>a-b),
+      active_rank:activeRank,
+      preferred_mode:preferredMode,
+      nonce:`${Date.now()}:${Math.random()}`,
+    });
+  };
+  const schedulePickerCommit=()=>{
+    if(commitTimer)clearTimeout(commitTimer);
+    commitTimer=setTimeout(flushPickerCommit,300);
+  };
   const nextValue=(value,order,normalize)=>{const cycle=['',...order];const index=Math.max(0,cycle.indexOf(normalize(value)));return cycle[(index+1)%cycle.length];};
 
   const makeCard=(photo,index,large=false)=>{
-    const rank=rankFor(photo,index); let activeMode='normal';
+    const rank=rankFor(photo,index); let activeMode=preferredMode;
     const card=document.createElement('div'); card.className=large?'moments-select-card large-card':'moments-select-card'; card.setAttribute('role','button'); card.tabIndex=disabled?-1:0; card.setAttribute('aria-disabled',disabled?'true':'false');
     const imageWrap=document.createElement('div'); imageWrap.className='moments-select-image-wrap';
     if(photo?.src){const img=document.createElement('img');img.src=String(photo.src);img.alt=`いい瞬間 ${rank}`;img.loading=large?'eager':'lazy';img.decoding='async';if(!large)img.fetchPriority='low';imageWrap.appendChild(img);}
@@ -14623,19 +14697,23 @@ export default function(component) {
     const syncVisual=()=>{
       const normal=normalizeNormal(emotions.get(rank)), parent=normalizeParenting(parenting.get(rank));
       const key=activeMode==='parenting'?parent:normal, meta=activeMode==='parenting'?(parentingMeta[key]||null):(normalMeta[key]||null);
-      const active=Boolean(normal||parent); if(active)selected.add(rank);else selected.delete(rank);
+      // Keep an already-reviewed human selection visible even for older records that
+      // predate feeling tags. Once this card is edited, tags become authoritative.
+      const tagged=Boolean(normal||parent);
+      let active=selectionTouched.has(rank)?tagged:(selected.has(rank)||tagged);
+      if(active)selected.add(rank);else selected.delete(rank);
       card.classList.toggle('selected',active&&!meta);
       if(meta){card.style.borderColor=meta.color;card.style.background=`${meta.color}1F`;card.style.boxShadow=`0 0 0 2px ${meta.color}24`;}else{card.style.borderColor='';card.style.background='';card.style.boxShadow='';}
       pickedBadge.style.display=active&&!meta?'block':'none'; badge.textContent=meta?`${meta.emoji} ${meta.label}`:'';badge.hidden=!meta;
-      const nm=normalMeta[normal]||null, pm=parentingMeta[parent]||null; normalButton.textContent=`${nm?nm.emoji:'🙂'} 通常`; parentingButton.textContent=`${pm?pm.emoji:'🌱'} 子育て`;
+      const nm=normalMeta[normal]||null, pm=parentingMeta[parent]||null; normalButton.textContent=`${nm?nm.emoji:'🙂'} 通常`; parentingButton.textContent=`${pm?pm.emoji:'🌱'} こどもーど`;
       normalButton.classList.toggle('active',activeMode==='normal');parentingButton.classList.toggle('active',activeMode==='parenting');
-      card.setAttribute('aria-pressed',active?'true':'false');card.setAttribute('aria-label',meta?`${activeMode==='parenting'?'子育て':'通常'}：${meta.label}。タップして次へ`:`${activeMode==='parenting'?'子育て':'通常'}は未設定。タップして次へ`);
+      card.setAttribute('aria-pressed',active?'true':'false');card.setAttribute('aria-label',meta?`${activeMode==='parenting'?'こどもーど':'通常'}：${meta.label}。タップして次へ`:`${activeMode==='parenting'?'こどもーど':'通常'}は未設定。タップして次へ`);
     };
     syncVisual(); card.appendChild(imageWrap); card.appendChild(modeSwitch); card.appendChild(metaText); card.appendChild(reason);
-    normalButton.addEventListener('click',(event)=>{event.preventDefault();event.stopPropagation();activeMode='normal';syncVisual();});
-    parentingButton.addEventListener('click',(event)=>{event.preventDefault();event.stopPropagation();activeMode='parenting';syncVisual();});
+    normalButton.addEventListener('click',(event)=>{event.preventDefault();event.stopPropagation();activeMode='normal';preferredMode='normal';syncVisual();});
+    parentingButton.addEventListener('click',(event)=>{event.preventDefault();event.stopPropagation();activeMode='parenting';preferredMode='parenting';syncVisual();});
     if(!disabled){
-      const cycle=(event)=>{event?.preventDefault?.();event?.stopPropagation?.(); if(activeMode==='parenting')parenting.set(rank,nextValue(parenting.get(rank),parentingOrder,normalizeParenting));else emotions.set(rank,nextValue(emotions.get(rank),normalOrder,normalizeNormal)); syncVisual(); persistMomentState(rank);};
+      const cycle=(event)=>{event?.preventDefault?.();event?.stopPropagation?.(); selectionTouched.add(rank); if(activeMode==='parenting')parenting.set(rank,nextValue(parenting.get(rank),parentingOrder,normalizeParenting));else emotions.set(rank,nextValue(emotions.get(rank),normalOrder,normalizeNormal)); syncVisual(); schedulePickerCommit();};
       card.addEventListener('click',cycle);card.addEventListener('keydown',(event)=>{if(event.key==='Enter'||event.key===' ')cycle(event);});
     }
     return card;
@@ -14644,10 +14722,25 @@ export default function(component) {
   if(viewMode==='enlarge'){
     grid.classList.add('enlarge-mode');const shell=document.createElement('div');shell.className='moments-enlarge-shell';
     if(!photos.length){const empty=document.createElement('div');empty.className='moments-select-empty';shell.appendChild(empty);grid.appendChild(shell);return;}
-    let activeIndex=photos.findIndex((photo,index)=>rankFor(photo,index)===activeRank);if(activeIndex<0)activeIndex=0;const activePhoto=photos[activeIndex];activeRank=rankFor(activePhoto,activeIndex);
-    const nav=document.createElement('div');nav.className='moments-enlarge-nav';const prev=document.createElement('button');prev.type='button';prev.textContent='‹';prev.disabled=activeIndex<=0;prev.setAttribute('aria-label','前の写真');if(!prev.disabled)prev.addEventListener('click',()=>emitActive(rankFor(photos[activeIndex-1],activeIndex-1)));
-    const counter=document.createElement('div');counter.className='moments-enlarge-counter';counter.textContent=`${activeIndex+1} / ${photos.length}`;const next=document.createElement('button');next.type='button';next.textContent='›';next.disabled=activeIndex>=photos.length-1;next.setAttribute('aria-label','次の写真');if(!next.disabled)next.addEventListener('click',()=>emitActive(rankFor(photos[activeIndex+1],activeIndex+1)));
-    nav.appendChild(prev);nav.appendChild(counter);nav.appendChild(next);shell.appendChild(nav);shell.appendChild(makeCard(activePhoto,activeIndex,true));grid.appendChild(shell);return;
+    let activeIndex=photos.findIndex((photo,index)=>rankFor(photo,index)===activeRank);if(activeIndex<0)activeIndex=0;
+    const nav=document.createElement('div');nav.className='moments-enlarge-nav';
+    const prev=document.createElement('button');prev.type='button';prev.textContent='‹';prev.setAttribute('aria-label','前の写真');
+    const counter=document.createElement('div');counter.className='moments-enlarge-counter';
+    const next=document.createElement('button');next.type='button';next.textContent='›';next.setAttribute('aria-label','次の写真');
+    const viewer=document.createElement('div');viewer.className='moments-enlarge-viewer';
+    const renderActive=()=>{
+      const activePhoto=photos[activeIndex]; activeRank=rankFor(activePhoto,activeIndex);
+      counter.textContent=`${activeIndex+1} / ${photos.length}`; prev.disabled=activeIndex<=0; next.disabled=activeIndex>=photos.length-1;
+      viewer.replaceChildren(makeCard(activePhoto,activeIndex,true));
+    };
+    const move=(delta)=>{const target=Math.max(0,Math.min(photos.length-1,activeIndex+delta));if(target===activeIndex)return;activeIndex=target;renderActive();};
+    prev.addEventListener('click',(event)=>{event.preventDefault();event.stopPropagation();move(-1);});
+    next.addEventListener('click',(event)=>{event.preventDefault();event.stopPropagation();move(1);});
+    let touchStartX=null;
+    viewer.addEventListener('touchstart',(event)=>{const touch=event.touches&&event.touches[0];touchStartX=touch?touch.clientX:null;},{passive:true});
+    viewer.addEventListener('touchend',(event)=>{if(touchStartX===null)return;const touch=event.changedTouches&&event.changedTouches[0];const dx=touch?touch.clientX-touchStartX:0;touchStartX=null;if(Math.abs(dx)>=45)move(dx<0?1:-1);},{passive:true});
+    shell.tabIndex=0;shell.addEventListener('keydown',(event)=>{if(event.key==='ArrowLeft'){event.preventDefault();move(-1);}else if(event.key==='ArrowRight'){event.preventDefault();move(1);}});
+    nav.appendChild(prev);nav.appendChild(counter);nav.appendChild(next);shell.appendChild(nav);shell.appendChild(viewer);grid.appendChild(shell);renderActive();return;
   }
   for(let index=0;index<3;index+=1){const photo=photos[index];if(!photo){const empty=document.createElement('div');empty.className='moments-select-empty';grid.appendChild(empty);continue;}grid.appendChild(makeCard(photo,index,false));}
 }
@@ -14664,7 +14757,7 @@ def _get_moments_select_component():
     _moments_select_component_initialized = True
     try:
         moments_select_component = st.components.v2.component(
-            "tokyo_burari_moments_select_v162",
+            "tokyo_burari_moments_select_v165",
             html=_MOMENTS_SELECT_HTML,
             css=_MOMENTS_SELECT_CSS,
             js=_MOMENTS_SELECT_JS,
@@ -14674,6 +14767,7 @@ def _get_moments_select_component():
     return moments_select_component
 
 
+@st.fragment
 def _render_moments_picker(photo, index, view_mode="list"):
     selection_meta = photo_media_metadata(photo).get("ai_selection") or {}
     if not isinstance(selection_meta, dict):
@@ -14802,11 +14896,7 @@ def _render_moments_picker(photo, index, view_mode="list"):
 
     st.caption("写真をクリックして感情を選ぼう")
     if status == "reviewed":
-        st.info(
-            "確認済みの動画も、写真をタップして気持ちを変更できます。"
-            "すでに日記へ残した写真は自動削除せず、感情を変更した場合は保存済み写真にも同期します。"
-        )
-        render_reviewed_recut_button()
+        st.caption("選択済みの動画も、この3枚からそのまま選び直せます。")
 
     paths = tuple(str(item.get("storage_path") or "").strip() for item in items)
     try:
@@ -14862,6 +14952,7 @@ def _render_moments_picker(photo, index, view_mode="list"):
         )
 
     active_rank_key = f"_moments_enlarge_rank_{video_id}_{round_number}"
+    preferred_mode_key = f"_moments_preferred_icon_mode_{video_id}_{round_number}"
     if valid_ranks:
         current_active_rank = int(st.session_state.get(active_rank_key) or min(valid_ranks))
         if current_active_rank not in valid_ranks:
@@ -14885,6 +14976,7 @@ def _render_moments_picker(photo, index, view_mode="list"):
                 "video_id": video_id,
                 "round_number": round_number,
                 "pending_param": PENDING_EMOTION_QUERY_PARAM,
+                "preferred_mode": str(st.session_state.get(preferred_mode_key) or "normal"),
             },
             key=f"moments_tap_picker_{video_id}_{round_number}_{serial}",
             on_selected_ranks_change=lambda: None,
@@ -14898,18 +14990,24 @@ def _render_moments_picker(photo, index, view_mode="list"):
             commit_token_key = f"_moments_picker_commit_token_{video_id}_{round_number}"
             if nonce and nonce != str(st.session_state.get(commit_token_key) or ""):
                 raw_changes = picker_commit.get("changes") or []
-                changes = []
+                emotion_changes = []
+                parenting_changes = []
                 for change in raw_changes if isinstance(raw_changes, list) else []:
                     if not isinstance(change, dict):
                         continue
                     try:
-                        emotion_rank = int(change.get("rank") or 0)
+                        change_rank = int(change.get("rank") or 0)
                     except Exception:
-                        emotion_rank = 0
-                    if emotion_rank in valid_ranks:
-                        changes.append({"rank": emotion_rank, "emotion": normalize_photo_emotion_key(change.get("emotion"))})
-                if changes:
-                    update_video_ai_selection_emotions(photo, changes)
+                        change_rank = 0
+                    if change_rank in valid_ranks:
+                        emotion_changes.append({"rank": change_rank, "emotion": normalize_photo_emotion_key(change.get("emotion"))})
+                        parenting_changes.append({"rank": change_rank, "parenting": normalize_parenting_tag_key(change.get("parenting"))})
+                if emotion_changes or parenting_changes:
+                    update_video_ai_selection_tags(
+                        photo,
+                        emotion_changes=emotion_changes,
+                        parenting_changes=parenting_changes,
+                    )
                 committed_selected = picker_commit.get("selected_ranks")
                 if isinstance(committed_selected, (list, tuple)):
                     normalized_commit = sorted(
@@ -14921,6 +15019,15 @@ def _render_moments_picker(photo, index, view_mode="list"):
                     )
                     st.session_state[selection_state_key] = normalized_commit
                     selected_ranks = normalized_commit
+                try:
+                    committed_active_rank = int(picker_commit.get("active_rank") or 0)
+                except Exception:
+                    committed_active_rank = 0
+                if committed_active_rank in valid_ranks:
+                    st.session_state[active_rank_key] = committed_active_rank
+                    current_active_rank = committed_active_rank
+                committed_mode = str(picker_commit.get("preferred_mode") or "normal")
+                st.session_state[preferred_mode_key] = "parenting" if committed_mode == "parenting" else "normal"
                 st.session_state[commit_token_key] = nonce
                 should_rerun = True
 
@@ -14951,7 +15058,7 @@ def _render_moments_picker(photo, index, view_mode="list"):
 
         if should_rerun:
             st.session_state[component_serial_key] = serial + 1
-            st.rerun()
+            st.rerun(scope="fragment")
 
         selected_ranks = sorted(
             rank for rank in (st.session_state.get(selection_state_key) or [])
@@ -15052,7 +15159,7 @@ def _render_moments_picker(photo, index, view_mode="list"):
 
     selected_rank_set = set(selected_ranks)
     send_clicked = st.button(
-        "選択した写真を残す",
+        "選択を更新" if status == "reviewed" else "選択した写真を残す",
         type="primary",
         use_container_width=True,
         disabled=False,
@@ -15063,7 +15170,7 @@ def _render_moments_picker(photo, index, view_mode="list"):
     if send_clicked and selected_rank_set:
         newly_saved = 0
         try:
-            with st.spinner("選択した写真を残しています…"):
+            with st.spinner("選択を更新しています…" if status == "reviewed" else "選択した写真を残しています…"):
                 for item in items:
                     rank = int(item.get("rank") or 0)
                     if rank not in selected_rank_set:
@@ -15080,10 +15187,15 @@ def _render_moments_picker(photo, index, view_mode="list"):
                 except Exception:
                     previous_count = 0
                 st.session_state["_home_today_photo_count"] = previous_count + newly_saved
-            st.session_state["_moments_notice"] = (
-                f"選択した{len(selected_rank_set)}枚を確認しました。新しく選んだ写真は日記に残しました。"
-                "今回選んだ傾向は、今後のAIセレクションにも反映します。"
-            )
+            if status == "reviewed":
+                st.session_state["_moments_notice"] = (
+                    f"写真の選択を{len(selected_rank_set)}枚に更新しました。新しく選んだ写真があれば日記に追加しました。"
+                )
+            else:
+                st.session_state["_moments_notice"] = (
+                    f"選択した{len(selected_rank_set)}枚を確認しました。新しく選んだ写真は日記に残しました。"
+                    "今回選んだ傾向は、今後のAIセレクションにも反映します。"
+                )
             st.rerun()
         except Exception as exc:
             st.error("選択した写真を残せませんでした。")
@@ -15182,7 +15294,7 @@ def _render_moments_picker(photo, index, view_mode="list"):
                     st.code(str(exc))
 
     if status == "reviewed":
-        st.success("この動画は確認済みです。写真をタップすれば、いつでも再度選択できます。")
+        render_reviewed_recut_button()
 
 
 def _render_video_storage_repair_panel(db_video_count):
@@ -15788,6 +15900,10 @@ def page_moments():
     notice = st.session_state.pop("_moments_notice", None)
     if notice:
         st.success(notice)
+    bulk_delete_detail = st.session_state.pop("_moments_bulk_delete_error_detail", None)
+    if bulk_delete_detail:
+        with st.expander("削除できなかった動画の詳細"):
+            st.code(str(bulk_delete_detail))
 
     try:
         videos = list_member_videos_for_moments(limit=300)
@@ -15827,11 +15943,76 @@ def page_moments():
 
     if reviewed:
         st.divider()
-        with st.expander(f"確認済みの動画（{len(reviewed)}本）— 再選択できます"):
-            for idx, video in enumerate(reviewed[:30]):
-                if idx:
-                    st.divider()
-                _render_moments_picker(video, 1000 + idx, view_mode=view_mode)
+        st.markdown(f"#### 確認済み動画（{len(reviewed)}本）―再選択できます。")
+
+        bulk_delete_key = "_moments_delete_all_reviewed_confirm"
+        if not st.session_state.get(bulk_delete_key):
+            if st.button(
+                "🗑 確認済み動画を一斉削除",
+                use_container_width=True,
+                key="moments_delete_all_reviewed_begin",
+                help="確認済みの元動画をまとめて削除します。日記に残した静止画は残ります。",
+            ):
+                st.session_state[bulk_delete_key] = True
+                st.rerun(scope="app")
+        else:
+            st.warning(
+                f"確認済み動画{len(reviewed)}本をすべて削除します。"
+                "元動画・代表画像・AIの未保存切り取り画像は削除されますが、"
+                "すでに日記へ残した静止画は残ります。この操作は元に戻せません。"
+            )
+            delete_col, cancel_col = st.columns(2, gap="small")
+            with delete_col:
+                if st.button(
+                    "一斉削除する",
+                    type="primary",
+                    use_container_width=True,
+                    key="moments_delete_all_reviewed_yes",
+                ):
+                    deleted = 0
+                    failures = []
+                    with st.spinner("確認済み動画を削除しています…"):
+                        for reviewed_video in list(reviewed):
+                            try:
+                                delete_video_and_related_data(reviewed_video)
+                                deleted += 1
+                            except Exception as exc:
+                                failures.append(f"{_moments_video_title(reviewed_video)}: {_safe_error_text(exc, 240)}")
+                    st.session_state.pop(bulk_delete_key, None)
+                    st.session_state.pop("_moments_reviewed_repick_video_id", None)
+                    if failures:
+                        st.session_state["_moments_notice"] = f"確認済み動画を{deleted}本削除しました。{len(failures)}本は削除できませんでした。"
+                        st.session_state["_moments_bulk_delete_error_detail"] = "\n".join(failures[:12])
+                    else:
+                        st.session_state["_moments_notice"] = f"確認済み動画{deleted}本を一斉削除しました。日記に残した写真はそのままです。"
+                        st.session_state.pop("_moments_bulk_delete_error_detail", None)
+                    reload_current_page_after_action()
+            with cancel_col:
+                if st.button(
+                    "キャンセル",
+                    use_container_width=True,
+                    key="moments_delete_all_reviewed_no",
+                ):
+                    st.session_state.pop(bulk_delete_key, None)
+                    st.rerun(scope="app")
+
+        # v164: rendering every reviewed video at once made this page increasingly
+        # heavy. Load only the chosen reviewed video; its three stills then switch
+        # locally in enlarged mode without any Streamlit rerun.
+        reviewed_by_id = {str(video.get("id") or f"reviewed_{idx}"): video for idx, video in enumerate(reviewed)}
+        reviewed_ids = list(reviewed_by_id.keys())
+        reviewed_choice = st.selectbox(
+            "動画を選ぶ",
+            reviewed_ids,
+            format_func=lambda video_id: _moments_video_title(reviewed_by_id.get(video_id) or {}),
+            key="_moments_reviewed_repick_video_id",
+        )
+        if reviewed_choice in reviewed_by_id:
+            _render_moments_picker(
+                reviewed_by_id[reviewed_choice],
+                1000 + reviewed_ids.index(reviewed_choice),
+                view_mode=view_mode,
+            )
 
 
 
@@ -15860,6 +16041,7 @@ def render_diary_title_editor(trip_id, current_title, key_prefix):
                     st.code(str(exc))
 
 
+@st.fragment
 def render_recent_camera_photo_emotion(trip):
     """Show the latest saved media; still photos can be tagged by tapping the image."""
     trip_id = (trip or {}).get("id")
@@ -15890,7 +16072,7 @@ def render_recent_camera_photo_emotion(trip):
         return
 
     location_label = photo_location_label(photo)
-    st.caption("写真下の「通常／子育て」を切り替え、写真をタップしてアイコンを選べます。")
+    st.caption("写真下の「通常／こどもーど」を切り替え、写真をタップしてアイコンを選べます。")
     st.caption("モード切替・アイコン選択だけではページ更新しません。")
 
     path = str(photo.get("storage_path") or "")
@@ -15908,7 +16090,7 @@ def render_recent_camera_photo_emotion(trip):
         serial_key = f"recent_emotion_serial_{photo_id}"
         serial = int(st.session_state.get(serial_key) or 0)
         result = gallery_component(
-            data={"photos": [card], "single": True, "allow_delete": True, "allow_emotion": True, "family_key": current_family_key(), "member_key": current_member_key(), "pending_param": PENDING_EMOTION_QUERY_PARAM},
+            data={"photos": [card], "single": True, "allow_delete": True, "allow_emotion": True, "commit_tags": True, "mode_by_photo": st.session_state.get(f"_recent_icon_modes_{photo_id}") or {}, "family_key": current_family_key(), "member_key": current_member_key(), "pending_param": PENDING_EMOTION_QUERY_PARAM},
             key=f"recent_emotion_{photo_id}_{serial}_{_current_ui_refresh_epoch()}",
             on_emotion_batch_change=lambda: None,
             on_delete_photo_id_change=lambda: None,
@@ -15918,10 +16100,18 @@ def render_recent_camera_photo_emotion(trip):
             token = str(batch.get("token") or "")
             token_key = f"_recent_emotion_batch_token_{photo_id}"
             if token and token != str(st.session_state.get(token_key) or ""):
-                update_photo_emotions_batch(batch.get("changes") or [], valid_photo_ids=[photo_id], trip_id=trip_id)
+                emotion_changes = batch.get("emotion_changes") or batch.get("changes") or []
+                parenting_changes = batch.get("parenting_changes") or []
+                if emotion_changes:
+                    update_photo_emotions_batch(emotion_changes, valid_photo_ids=[photo_id], trip_id=trip_id)
+                if parenting_changes:
+                    update_photo_parenting_tags_batch(parenting_changes, valid_photo_ids=[photo_id], trip_id=trip_id)
+                modes = batch.get("modes")
+                if isinstance(modes, dict):
+                    st.session_state[f"_recent_icon_modes_{photo_id}"] = dict(modes)
                 st.session_state[token_key] = token
                 st.session_state[serial_key] = serial + 1
-                st.rerun()
+                st.rerun(scope="fragment")
         delete_clicked = str(getattr(result, "delete_photo_id", "") or "")
         if delete_clicked == str(photo_id):
             st.session_state[serial_key] = serial + 1
@@ -16326,6 +16516,7 @@ def page_trip():
         render_recent_camera_photo_emotion(trip)
 
 
+@st.fragment
 def render_diary_emotion_gallery(trip_id, photos, trip=None, is_pending=False):
     """Render all still photos as six-feeling cards with persistent emotion state."""
     photos = diary_photos_only(photos)
@@ -16333,7 +16524,7 @@ def render_diary_emotion_gallery(trip_id, photos, trip=None, is_pending=False):
         return
     st.markdown("#### この日の写真")
     counts, selected = photo_emotion_counts(photos)
-    st.caption("写真下の「通常／子育て」を切り替え、写真をタップしてアイコンを選べます。")
+    st.caption("写真下の「通常／こどもーど」を切り替え、写真をタップしてアイコンを選べます。")
     summary = photo_emotion_summary_text(photos)
     st.caption(f"感情選択済み：{selected} / {len(photos)}枚" + (f"　｜　{summary}" if summary else ""))
 
@@ -16361,7 +16552,7 @@ def render_diary_emotion_gallery(trip_id, photos, trip=None, is_pending=False):
         serial_key = f"diary_emotion_gallery_serial_{trip_id}_{'pending' if is_pending else 'saved'}"
         serial = int(st.session_state.get(serial_key) or 0)
         result = gallery_component(
-            data={"photos": cards, "allow_delete": True, "allow_emotion": True, "family_key": current_family_key(), "member_key": current_member_key(), "pending_param": PENDING_EMOTION_QUERY_PARAM},
+            data={"photos": cards, "allow_delete": True, "allow_emotion": True, "commit_tags": True, "mode_by_photo": st.session_state.get(f"_diary_icon_modes_{trip_id}") or {}, "family_key": current_family_key(), "member_key": current_member_key(), "pending_param": PENDING_EMOTION_QUERY_PARAM},
             key=f"diary_emotion_gallery_{trip_id}_{serial}_{_current_ui_refresh_epoch()}",
             on_emotion_batch_change=lambda: None,
             on_delete_photo_id_change=lambda: None,
@@ -16371,10 +16562,18 @@ def render_diary_emotion_gallery(trip_id, photos, trip=None, is_pending=False):
             token = str(batch.get("token") or "")
             token_key = f"_diary_emotion_batch_token_{trip_id}_{'pending' if is_pending else 'saved'}"
             if token and token != str(st.session_state.get(token_key) or ""):
-                update_photo_emotions_batch(batch.get("changes") or [], valid_photo_ids=photo_ids, trip_id=trip_id)
+                emotion_changes = batch.get("emotion_changes") or batch.get("changes") or []
+                parenting_changes = batch.get("parenting_changes") or []
+                if emotion_changes:
+                    update_photo_emotions_batch(emotion_changes, valid_photo_ids=photo_ids, trip_id=trip_id)
+                if parenting_changes:
+                    update_photo_parenting_tags_batch(parenting_changes, valid_photo_ids=photo_ids, trip_id=trip_id)
+                modes = batch.get("modes")
+                if isinstance(modes, dict):
+                    st.session_state[f"_diary_icon_modes_{trip_id}"] = dict(modes)
                 st.session_state[token_key] = token
                 st.session_state[serial_key] = serial + 1
-                st.rerun()
+                st.rerun(scope="fragment")
         delete_clicked = str(getattr(result, "delete_photo_id", "") or "")
         if delete_clicked in photo_ids:
             st.session_state[serial_key] = serial + 1
