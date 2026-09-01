@@ -28,9 +28,9 @@ from zoneinfo import ZoneInfo
 import streamlit as st
 
 # Freshly generated update: 2026-08-31 23:49 JST
-GENERATED_UPDATE_JST = "2026-09-02T01:21:52+09:00"
+GENERATED_UPDATE_JST = "2026-09-02T01:35:24+09:00"
 
-APP_BUILD = "v167"
+APP_BUILD = "v168"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -799,7 +799,7 @@ _LIVE_CAMERA_HTML = """
     </div>
     <button id="camera-review-find-moments" class="camera-find-button" type="button" hidden>✨ いい瞬間を探す</button>
     <div id="camera-review-build" class="camera-review-build" hidden>camera v162</div>
-    <div id="camera-review-emotion-hint" class="camera-review-emotion-hint" hidden>写真下の「通常／こどもーど」を切り替え、写真をタップしてアイコンを選べます。</div>
+    <div id="camera-review-emotion-hint" class="camera-review-emotion-hint" hidden>写真下の「通常／こどもーど」を切り替え、写真につけるアイコンを1つ選べます。</div>
     <div id="camera-review-image-shell" class="camera-review-image-shell" role="button" tabindex="0" aria-label="写真のアイコンを選ぶ" hidden>
       <img id="camera-review-image" class="camera-review-image" alt="撮影した写真の確認" />
       <span id="camera-review-emotion-badge" class="camera-review-emotion-badge" hidden></span>
@@ -1226,12 +1226,12 @@ export default function(component) {
   const syncReviewEmotion = () => {
     const normalKey = normalizeEmotion(pendingEmotion);
     const parentingKey = normalizeParenting(pendingParenting);
-    const key = reviewMode === 'parenting' ? parentingKey : normalKey;
-    const meta = reviewMode === 'parenting' ? (PARENTING_TAGS[key] || null) : (PHOTO_EMOTIONS[key] || null);
+    const meta = normalKey ? (PHOTO_EMOTIONS[normalKey] || null) : (parentingKey ? (PARENTING_TAGS[parentingKey] || null) : null);
+    const selectedMode = normalKey ? '通常' : (parentingKey ? 'こどもーど' : '');
     if (reviewImageShell) {
       reviewImageShell.style.borderColor = meta ? meta.color : '#AEB6C2';
       reviewImageShell.style.background = meta ? `${meta.color}18` : 'rgba(174,182,194,.07)';
-      reviewImageShell.setAttribute('aria-label', meta ? `${reviewMode === 'parenting' ? 'こどもーど' : '通常'}：${meta.label}。タップして次へ` : `${reviewMode === 'parenting' ? 'こどもーど' : '通常'}は未設定。タップして次へ`);
+      reviewImageShell.setAttribute('aria-label', meta ? `${selectedMode}：${meta.label}。タップすると現在のモードで変更します` : `${reviewMode === 'parenting' ? 'こどもーど' : '通常'}は未設定。タップして選びます`);
     }
     if (reviewEmotionBadge) {
       reviewEmotionBadge.textContent = meta ? `${meta.emoji} ${meta.label}` : '';
@@ -1246,12 +1246,16 @@ export default function(component) {
       const current = normalizeParenting(pendingParenting);
       const currentIndex = Math.max(0, PARENTING_ORDER.indexOf(current));
       pendingParenting = PARENTING_ORDER[(currentIndex + 1) % PARENTING_ORDER.length];
+      pendingEmotion = '';
       pendingMedia.parenting = pendingParenting;
+      pendingMedia.emotion = '';
     } else {
       const current = normalizeEmotion(pendingEmotion);
       const currentIndex = Math.max(0, PHOTO_EMOTION_ORDER.indexOf(current));
       pendingEmotion = PHOTO_EMOTION_ORDER[(currentIndex + 1) % PHOTO_EMOTION_ORDER.length];
+      pendingParenting = '';
       pendingMedia.emotion = pendingEmotion;
+      pendingMedia.parenting = '';
     }
     syncReviewEmotion();
   };
@@ -2493,11 +2497,11 @@ export default function(component) {
 }
 """
 
-LIVE_CAMERA_COMPONENT_BUILD = "v162"
+LIVE_CAMERA_COMPONENT_BUILD = "v168"
 
 try:
     live_camera_component = st.components.v2.component(
-        "tokyo_burari_live_camera_v162",
+        "tokyo_burari_live_camera_v168",
         html=_LIVE_CAMERA_HTML,
         css=_LIVE_CAMERA_CSS,
         js=_LIVE_CAMERA_JS,
@@ -2970,8 +2974,8 @@ PHOTO_EMOTIONS = {
     },
 }
 
-# Parent-facing tags are a separate axis from the child's normal feeling.
-# A photo can keep one value from each mode at the same time.
+# The two modes are alternative palettes for one photo tag. A photo may keep
+# either one normal feeling OR one こどもーど tag, never both at the same time.
 PARENTING_TAG_ORDER = ("effort", "challenge", "discovery", "kindness", "together", "tears")
 PARENTING_TAGS = {
     "effort": {
@@ -3069,7 +3073,7 @@ def photo_parenting_tag_meta(photo_or_key):
     return meta
 
 
-def parenting_tag_record(tag_key, source="parent_tap_cycle_v162"):
+def parenting_tag_record(tag_key, source="parent_tap_cycle_v168"):
     tag_key = normalize_parenting_tag_key(tag_key)
     if not tag_key:
         return None
@@ -3081,7 +3085,7 @@ def parenting_tag_record(tag_key, source="parent_tap_cycle_v162"):
         "color": meta["color"],
         "meaning": meta["meaning"],
         "updated_at": now_jst().isoformat(),
-        "source": str(source or "parent_tap_cycle_v162"),
+        "source": str(source or "parent_tap_cycle_v168"),
     }
 
 
@@ -3110,7 +3114,90 @@ def photo_emotion_meta(photo_or_key):
     return meta
 
 
-def photo_emotion_record(emotion_key, source="child_tap_cycle_v162"):
+ALL_PHOTO_TAG_ORDER = PHOTO_EMOTION_ORDER + PARENTING_TAG_ORDER
+
+
+def photo_selected_tag_meta(photo):
+    """Return the single visible tag across 通常 and こどもーど.
+
+    v168 makes the two modes mutually exclusive. For legacy rows that still contain
+    both fields, prefer the record with the newer updated_at timestamp; ties keep the
+    normal feeling for backward compatibility.
+    """
+    reflection = (photo or {}).get("reflection_json") or {}
+    if not isinstance(reflection, dict):
+        reflection = {}
+    emotion_record = reflection.get("emotion")
+    parenting_record = reflection.get("parenting_tag")
+    emotion_key = normalize_photo_emotion_key(emotion_record)
+    parenting_key = normalize_parenting_tag_key(parenting_record)
+
+    if emotion_key and parenting_key:
+        emotion_at = str(emotion_record.get("updated_at") or "") if isinstance(emotion_record, dict) else ""
+        parenting_at = str(parenting_record.get("updated_at") or "") if isinstance(parenting_record, dict) else ""
+        if parenting_at and (not emotion_at or parenting_at > emotion_at):
+            emotion_key = ""
+        else:
+            parenting_key = ""
+
+    if emotion_key:
+        meta = dict(PHOTO_EMOTIONS.get(emotion_key) or {})
+        meta.update({"key": emotion_key, "mode": "normal"})
+        return meta
+    if parenting_key:
+        meta = dict(PARENTING_TAGS.get(parenting_key) or {})
+        meta.update({"key": parenting_key, "mode": "parenting"})
+        return meta
+    return {"key": "", "mode": "", "label": "", "emoji": "", "color": "", "meaning": ""}
+
+
+def photo_selected_tag_key(photo):
+    return str(photo_selected_tag_meta(photo).get("key") or "")
+
+
+def photo_selected_tag_mode(photo):
+    return str(photo_selected_tag_meta(photo).get("mode") or "")
+
+
+def photo_selected_tag_values(photo):
+    meta = photo_selected_tag_meta(photo)
+    key = str(meta.get("key") or "")
+    if meta.get("mode") == "parenting":
+        return "", key
+    return key, ""
+
+
+def selection_item_tag_values(item):
+    """Resolve one tag from an AI-selected still, including legacy dual-tag rows."""
+    item = item if isinstance(item, dict) else {}
+    emotion_record = item.get("emotion")
+    parenting_record = item.get("parenting_tag")
+    emotion_key = normalize_photo_emotion_key(emotion_record)
+    parenting_key = normalize_parenting_tag_key(parenting_record)
+    if emotion_key and parenting_key:
+        emotion_at = str(emotion_record.get("updated_at") or "") if isinstance(emotion_record, dict) else ""
+        parenting_at = str(parenting_record.get("updated_at") or "") if isinstance(parenting_record, dict) else ""
+        if parenting_at and (not emotion_at or parenting_at > emotion_at):
+            emotion_key = ""
+        else:
+            parenting_key = ""
+    return emotion_key, parenting_key
+
+
+def photo_tag_meta_from_key(key):
+    key = str(key or "")
+    if key in PHOTO_EMOTIONS:
+        meta = dict(PHOTO_EMOTIONS[key])
+        meta.update({"key": key, "mode": "normal"})
+        return meta
+    if key in PARENTING_TAGS:
+        meta = dict(PARENTING_TAGS[key])
+        meta.update({"key": key, "mode": "parenting"})
+        return meta
+    return {"key": "", "mode": "", "label": "", "emoji": "", "color": "", "meaning": ""}
+
+
+def photo_emotion_record(emotion_key, source="child_tap_cycle_v168"):
     """Return the persisted reflection_json payload for one of the six v159 feelings."""
     emotion_key = normalize_photo_emotion_key(emotion_key)
     if not emotion_key:
@@ -3122,7 +3209,7 @@ def photo_emotion_record(emotion_key, source="child_tap_cycle_v162"):
         "emoji": meta["emoji"],
         "color": meta["color"],
         "updated_at": now_jst().isoformat(),
-        "source": str(source or "child_tap_cycle_v162"),
+        "source": str(source or "child_tap_cycle_v168"),
     }
 
 
@@ -3137,10 +3224,11 @@ def next_photo_emotion_key(current):
 
 
 def photo_emotion_counts(photos):
-    counts = {key: 0 for key in PHOTO_EMOTION_ORDER}
+    """Count the one selected tag per photo across both mode palettes."""
+    counts = {key: 0 for key in ALL_PHOTO_TAG_ORDER}
     selected = 0
     for photo in diary_photos_only(photos or []):
-        key = photo_emotion_key(photo)
+        key = photo_selected_tag_key(photo)
         if key in counts:
             counts[key] += 1
             selected += 1
@@ -3151,11 +3239,11 @@ def photo_emotion_summary_text(photos, include_unset=True):
     photos = diary_photos_only(photos or [])
     counts, selected = photo_emotion_counts(photos)
     parts = []
-    for key in PHOTO_EMOTION_ORDER:
+    for key in ALL_PHOTO_TAG_ORDER:
         count = int(counts.get(key) or 0)
         if not count:
             continue
-        meta = PHOTO_EMOTIONS[key]
+        meta = photo_tag_meta_from_key(key)
         parts.append(f"{meta['emoji']}{meta['label']} {count}枚")
     unset = max(0, len(photos) - selected)
     if include_unset and unset:
@@ -3247,7 +3335,8 @@ def update_photo_emotion(photo_id, emotion_key, trip_id=None, refresh_related=Tr
         reflection = {}
 
     if emotion_key:
-        reflection["emotion"] = photo_emotion_record(emotion_key, source="child_tap_cycle_v162")
+        reflection["emotion"] = photo_emotion_record(emotion_key, source="child_tap_cycle_v168")
+        reflection.pop("parenting_tag", None)
     else:
         reflection.pop("emotion", None)
 
@@ -3326,7 +3415,8 @@ def update_photo_parenting_tag(photo_id, tag_key, trip_id=None, refresh_related=
         reflection = {}
 
     if tag_key:
-        reflection["parenting_tag"] = parenting_tag_record(tag_key, source="parent_tap_cycle_v162")
+        reflection["parenting_tag"] = parenting_tag_record(tag_key, source="parent_tap_cycle_v168")
+        reflection.pop("emotion", None)
     else:
         reflection.pop("parenting_tag", None)
 
@@ -3420,18 +3510,22 @@ def update_photo_tags_combined_v166(emotion_changes=None, parenting_changes=None
         else:
             reflection = dict(reflection)
 
-        if photo_id in emotion_latest:
-            emotion_key = emotion_latest[photo_id]
-            if emotion_key:
-                reflection["emotion"] = photo_emotion_record(emotion_key, source="child_tap_batch_v166")
-            else:
-                reflection.pop("emotion", None)
+        emotion_present = photo_id in emotion_latest
+        parenting_present = photo_id in parenting_latest
+        emotion_key = emotion_latest.get(photo_id, "") if emotion_present else ""
+        tag_key = parenting_latest.get(photo_id, "") if parenting_present else ""
 
-        if photo_id in parenting_latest:
-            tag_key = parenting_latest[photo_id]
-            if tag_key:
-                reflection["parenting_tag"] = parenting_tag_record(tag_key, source="parent_tap_batch_v166")
-            else:
+        # A non-empty choice in either palette replaces the other palette's value.
+        if emotion_present and emotion_key:
+            reflection["emotion"] = photo_emotion_record(emotion_key, source="child_tap_batch_v168")
+            reflection.pop("parenting_tag", None)
+        elif parenting_present and tag_key:
+            reflection["parenting_tag"] = parenting_tag_record(tag_key, source="parent_tap_batch_v168")
+            reflection.pop("emotion", None)
+        else:
+            if emotion_present:
+                reflection.pop("emotion", None)
+            if parenting_present:
                 reflection.pop("parenting_tag", None)
 
         (
@@ -3516,9 +3610,6 @@ def consume_pending_emotion_query():
                 pid = str(photo_id or "").strip()
                 if pid:
                     photo_changes.append({"photo_id": pid, "emotion": normalize_photo_emotion_key(emotion)})
-        if photo_changes:
-            update_photo_emotions_batch(photo_changes)
-
         parenting_map = payload.get("g") or {}
         parenting_changes = []
         if isinstance(parenting_map, dict):
@@ -3752,8 +3843,12 @@ export default function(component) {
       mirrorCompat(envelope);
     } catch (_) {}
   };
-  const persistNormal = (photoId, value) => mutatePending((envelope) => { envelope.p[String(photoId)] = normalizeNormal(value); });
-  const persistParenting = (photoId, value) => mutatePending((envelope) => { envelope.g[String(photoId)] = normalizeParenting(value); });
+  const persistNormal = (photoId, value) => mutatePending((envelope) => {
+    const id=String(photoId); envelope.p[id]=normalizeNormal(value); envelope.g[id]='';
+  });
+  const persistParenting = (photoId, value) => mutatePending((envelope) => {
+    const id=String(photoId); envelope.g[id]=normalizeParenting(value); envelope.p[id]='';
+  });
   const discardPendingPhoto = (photoId) => mutatePending((envelope) => {
     delete envelope.p[String(photoId)]; delete envelope.g[String(photoId)];
   });
@@ -3772,7 +3867,10 @@ export default function(component) {
       emotion: Object.prototype.hasOwnProperty.call(pendingSnapshot.p || {}, photoId) ? normalizeNormal(pendingSnapshot.p[photoId]) : normalizeNormal(sourcePhoto?.emotion),
       parenting: Object.prototype.hasOwnProperty.call(pendingSnapshot.g || {}, photoId) ? normalizeParenting(pendingSnapshot.g[photoId]) : normalizeParenting(sourcePhoto?.parenting),
     };
-    let activeMode = String(modeByPhoto[String(photo.id)] || '') === 'parenting' ? 'parenting' : 'normal';
+    if (photo.emotion && photo.parenting) {
+      if (String(modeByPhoto[photoId] || '') === 'parenting') photo.emotion=''; else photo.parenting='';
+    }
+    let activeMode = String(modeByPhoto[String(photo.id)] || '') === 'parenting' ? 'parenting' : (photo.parenting ? 'parenting' : 'normal');
     const wrap = document.createElement('div'); wrap.className = 'diary-photo-wrap';
     const card = document.createElement('div'); card.className = 'diary-photo-card'; card.setAttribute('role','button'); card.tabIndex = allowEmotion ? 0 : -1;
     const img = document.createElement('img'); img.src = photo.src || ''; img.alt = 'ぶらり旅の写真'; img.loading='lazy'; img.decoding='async'; img.fetchPriority='low'; card.appendChild(img);
@@ -3787,8 +3885,8 @@ export default function(component) {
     const syncVisual = () => {
       for (const value of [...normalOrder, ...parentingOrder]) card.classList.remove(`emotion-${value}`);
       const normal = normalizeNormal(photo.emotion); const parenting = normalizeParenting(photo.parenting);
-      const key = activeMode === 'parenting' ? parenting : normal;
-      const meta = activeMode === 'parenting' ? (parentingMeta[key] || null) : (normalMeta[key] || null);
+      const meta = normal ? (normalMeta[normal] || null) : (parenting ? (parentingMeta[parenting] || null) : null);
+      const selectedMode = normal ? '通常' : (parenting ? 'こどもーど' : '');
       if (meta) { card.style.borderColor=meta.color; card.style.background=`${meta.color}20`; card.style.boxShadow=`0 0 0 1px ${meta.color}18 inset`; }
       else { card.style.borderColor=''; card.style.background=''; card.style.boxShadow=''; }
       badge.textContent = meta ? `${meta.emoji} ${meta.label}` : ''; badge.hidden = !meta;
@@ -3796,7 +3894,7 @@ export default function(component) {
       normalButton.textContent = `${normalSelected ? normalSelected.emoji : '🙂'} 通常`;
       parentingButton.textContent = `${parentingSelected ? parentingSelected.emoji : '🌱'} こどもーど`;
       normalButton.classList.toggle('active', activeMode === 'normal'); parentingButton.classList.toggle('active', activeMode === 'parenting');
-      card.setAttribute('aria-label', meta ? `${activeMode === 'parenting' ? 'こどもーど' : '通常'}：${meta.label}。タップして次へ` : `${activeMode === 'parenting' ? 'こどもーど' : '通常'}は未設定。タップして次へ`);
+      card.setAttribute('aria-label', meta ? `${selectedMode}：${meta.label}。タップすると現在のモードで変更します` : `${activeMode === 'parenting' ? 'こどもーど' : '通常'}は未設定。タップして選びます`);
     };
     syncVisual();
 
@@ -3808,9 +3906,11 @@ export default function(component) {
         event?.preventDefault?.(); event?.stopPropagation?.();
         if (activeMode === 'parenting') {
           photo.parenting = nextValue(photo.parenting, parentingOrder, normalizeParenting);
+          photo.emotion = '';
           persistParenting(photo.id, photo.parenting);
         } else {
           photo.emotion = nextValue(photo.emotion, normalOrder, normalizeNormal);
+          photo.parenting = '';
           persistNormal(photo.id, photo.emotion);
         }
         syncVisual();
@@ -3842,7 +3942,7 @@ def _get_diary_gallery_component():
     _diary_gallery_component_initialized = True
     try:
         diary_gallery_component = st.components.v2.component(
-            "tokyo_burari_diary_gallery_v167",
+            "tokyo_burari_diary_gallery_v168",
             html=_DIARY_GALLERY_HTML,
             css=_DIARY_GALLERY_CSS,
             js=_DIARY_GALLERY_JS,
@@ -8708,29 +8808,39 @@ def update_video_ai_selection_tags(video_photo, emotion_changes=None, parenting_
         selection = {}
     items = [item for item in (selection.get("items") or []) if isinstance(item, dict)]
     found_emotion, found_parenting = set(), set()
-    saved_emotion_sync, saved_parenting_sync = [], []
+    saved_sync = []
 
     for item in items:
         rank = int(item.get("rank") or 0)
         saved_photo_id = str(item.get("saved_photo_id") or "").strip()
-        if rank in emotion_latest:
+        emotion_present = rank in emotion_latest
+        parenting_present = rank in parenting_latest
+        if emotion_present:
             found_emotion.add(rank)
-            emotion_key = emotion_latest[rank]
-            if emotion_key:
-                item["emotion"] = photo_emotion_record(emotion_key, source="child_tap_moments_cycle_v162")
-            else:
-                item.pop("emotion", None)
-            if saved_photo_id:
-                saved_emotion_sync.append((saved_photo_id, emotion_key))
-        if rank in parenting_latest:
+        if parenting_present:
             found_parenting.add(rank)
-            parenting_key = parenting_latest[rank]
-            if parenting_key:
-                item["parenting_tag"] = parenting_tag_record(parenting_key, source="parent_tap_moments_cycle_v162")
-            else:
+        if not emotion_present and not parenting_present:
+            continue
+
+        emotion_key = emotion_latest.get(rank, "") if emotion_present else ""
+        parenting_key = parenting_latest.get(rank, "") if parenting_present else ""
+        if emotion_present and emotion_key:
+            item["emotion"] = photo_emotion_record(emotion_key, source="child_tap_moments_cycle_v168")
+            item.pop("parenting_tag", None)
+            final_emotion, final_parenting = emotion_key, ""
+        elif parenting_present and parenting_key:
+            item["parenting_tag"] = parenting_tag_record(parenting_key, source="parent_tap_moments_cycle_v168")
+            item.pop("emotion", None)
+            final_emotion, final_parenting = "", parenting_key
+        else:
+            if emotion_present:
+                item.pop("emotion", None)
+            if parenting_present:
                 item.pop("parenting_tag", None)
-            if saved_photo_id:
-                saved_parenting_sync.append((saved_photo_id, parenting_key))
+            final_emotion = normalize_photo_emotion_key(item.get("emotion"))
+            final_parenting = normalize_parenting_tag_key(item.get("parenting_tag"))
+        if saved_photo_id:
+            saved_sync.append((saved_photo_id, final_emotion, final_parenting))
 
     missing = sorted((set(emotion_latest) - found_emotion) | (set(parenting_latest) - found_parenting))
     if missing:
@@ -8743,18 +8853,14 @@ def update_video_ai_selection_tags(video_photo, emotion_changes=None, parenting_
 
     resolved_trip_id = str(fresh.get("trip_id") or "").strip()
     touched_trips = {resolved_trip_id} if resolved_trip_id else set()
-    for saved_photo_id, emotion_key in saved_emotion_sync:
+    if saved_sync:
         try:
-            update_photo_emotion(saved_photo_id, emotion_key, trip_id=resolved_trip_id or None, refresh_related=False)
+            update_photo_tags_combined_v166(
+                [{"photo_id": pid, "emotion": emotion} for pid, emotion, _ in saved_sync],
+                [{"photo_id": pid, "parenting": parenting} for pid, _, parenting in saved_sync],
+            )
         except Exception:
             pass
-    for saved_photo_id, parenting_key in saved_parenting_sync:
-        try:
-            update_photo_parenting_tag(saved_photo_id, parenting_key, trip_id=resolved_trip_id or None, refresh_related=False)
-        except Exception:
-            pass
-    if saved_emotion_sync or saved_parenting_sync:
-        _refresh_after_photo_emotion_changes(touched_trips)
 
     updated = dict(fresh)
     updated["reflection_json"] = reflection
@@ -9013,6 +9119,13 @@ def save_video_ai_selection_as_photo(video_photo, selection_item):
     location = reflection.get("location") if isinstance(reflection.get("location"), dict) else {}
     selection_emotion = normalize_photo_emotion_key(selection_item.get("emotion"))
     selection_parenting = normalize_parenting_tag_key(selection_item.get("parenting_tag"))
+    if selection_emotion and selection_parenting:
+        emotion_record = selection_item.get("emotion") if isinstance(selection_item.get("emotion"), dict) else {}
+        parenting_record = selection_item.get("parenting_tag") if isinstance(selection_item.get("parenting_tag"), dict) else {}
+        if str(parenting_record.get("updated_at") or "") > str(emotion_record.get("updated_at") or ""):
+            selection_emotion = ""
+        else:
+            selection_parenting = ""
     extra_reflection = {
         "source_video_photo_id": str(video_photo.get("id") or ""),
         "source_selection_rank": rank,
@@ -10175,7 +10288,7 @@ def _month_has_photo_input(month_key):
     client = supabase_client()
 
     def photo_has_emotion(photo):
-        return bool(photo_emotion_key(photo))
+        return bool(photo_selected_tag_key(photo))
 
     try:
         rows = (
@@ -10787,7 +10900,7 @@ def build_monthly_replay_photo_items(bundle, limit=18):
         if place:
             label_bits.append(place)
         caption = " / ".join(label_bits) or f"写真{idx}"
-        emotion = photo_emotion_meta(photo)
+        emotion = photo_selected_tag_meta(photo)
         items.append({
             "url": url,
             "caption": caption,
@@ -11011,8 +11124,14 @@ def render_monthly_replay_player(period_label, review, playback, photo_items):
         anger: '#E56B6F',
         sadness: '#6C9BD2',
         frustration: '#A66A8A',
+        effort: '#E6B84A',
+        challenge: '#F2994A',
+        discovery: '#9BC53D',
+        kindness: '#E57373',
+        together: '#4DB6AC',
+        tears: '#6C9BD2',
       }};
-      const burariEmotionIcons = {{ cozy: '🥰', joy: '😊', surprise: '😲', anger: '😠', sadness: '😢', frustration: '😣' }};
+      const burariEmotionIcons = {{ cozy: '🥰', joy: '😊', surprise: '😲', anger: '😠', sadness: '😢', frustration: '😣', effort: '⭐', challenge: '💪', discovery: '💡', kindness: '❤️', together: '🤝', tears: '😭' }};
 
       function burariShowSlide(index) {{
         if (!burariSlides.length) return;
@@ -12049,8 +12168,8 @@ def summarize_burari_from_photos(trip, photos):
     emotion_points = []
 
     for idx, photo in enumerate(photos or [], start=1):
-        key = photo_emotion_key(photo)
-        meta = PHOTO_EMOTIONS.get(key) or {}
+        meta = photo_selected_tag_meta(photo)
+        key = str(meta.get("key") or "")
         location = str(photo_location_label(photo) or "").strip()
         emotion_text = f"{meta.get('emoji','')} {meta.get('label','')}".strip() if key else "未設定"
         emotion_lines.append(f"写真{idx}（{location or '場所不明'}）: {emotion_text}")
@@ -12228,10 +12347,10 @@ def build_month_inner_evidence(bundle):
     for photo in (bundle or {}).get("photos", []):
         if not isinstance(photo, dict):
             continue
-        key = photo_emotion_key(photo)
+        meta = photo_selected_tag_meta(photo)
+        key = str(meta.get("key") or "")
         if not key:
             continue
-        meta = PHOTO_EMOTIONS.get(key) or {}
         trip = trip_map.get(str(photo.get("trip_id")), {})
         trip_date = str(trip.get("trip_date") or "").strip()
         where = str(photo_location_label(photo) or trip.get("destination") or "場所メモなし").strip()
@@ -13293,21 +13412,22 @@ def create_and_save_diary_from_photos(trip, photos, requested_title=None, reason
     emotion_points = []
     photo_emotions = []
     for index, photo in enumerate(photos, start=1):
-        key = photo_emotion_key(photo)
-        meta = PHOTO_EMOTIONS.get(key) or {}
+        meta = photo_selected_tag_meta(photo)
+        key = str(meta.get("key") or "")
         photo_emotions.append(
             {
                 "photo_id": str(photo.get("id") or ""),
                 "emotion": key,
+                "mode": str(meta.get("mode") or ""),
                 "label": meta.get("label") or "",
                 "emoji": meta.get("emoji") or "",
             }
         )
-    for key in PHOTO_EMOTION_ORDER:
+    for key in ALL_PHOTO_TAG_ORDER:
         count = int(counts.get(key) or 0)
         if not count:
             continue
-        meta = PHOTO_EMOTIONS[key]
+        meta = photo_tag_meta_from_key(key)
         phrase = f"{meta['emoji']}{meta['label']}が{count}枚"
         emotion_parts.append(phrase)
         emotion_points.append(f"{meta['emoji']} {meta['label']}：{count}枚")
@@ -13799,8 +13919,8 @@ def render_pending_thumbnail_grid(trip_id, photos, max_count=None, trip=None):
                 "id": pid,
                 "src": src,
                 "talked": bool(talked),
-                "emotion": photo_emotion_key(photo),
-                "parenting": photo_parenting_tag_key(photo),
+                "emotion": photo_selected_tag_values(photo)[0],
+                "parenting": photo_selected_tag_values(photo)[1],
                 "location": str(photo_location_label(photo) or ""),
                 "is_video": False,
             }
@@ -13891,7 +14011,7 @@ def render_small_gallery(photos, max_count=None, columns=3):
             f'<div style="font-size:10px;opacity:.65;margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">📍 {html.escape(location)}</div>'
             if location else ""
         )
-        meta = photo_emotion_meta(photo)
+        meta = photo_selected_tag_meta(photo)
         border = meta.get("color") or "#AEB6C2"
         emoji = meta.get("emoji") or ""
         badge = (
@@ -13938,8 +14058,8 @@ def render_diary_photo_gallery(trip_id, photos, state=None):
                 "id": str(pid),
                 "src": src,
                 "talked": bool(talked),
-                "emotion": photo_emotion_key(photo),
-                "parenting": photo_parenting_tag_key(photo),
+                "emotion": photo_selected_tag_values(photo)[0],
+                "parenting": photo_selected_tag_values(photo)[1],
                 "location": str(location_label or ""),
                 "is_video": False,
             }
@@ -14907,6 +15027,11 @@ export default function(component) {
     if(pendingMoment.g&&typeof pendingMoment.g==='object')for(const [rankValue,value] of Object.entries(pendingMoment.g)){const rank=Number(rankValue);if(validRanks.includes(rank))parenting.set(rank,normalizeParenting(value));}
     if(Array.isArray(pendingMoment.s)){selected.clear();for(const value of pendingMoment.s.map(Number)){if(validRanks.includes(value))selected.add(value);}}
   }
+  for(const rank of validRanks){
+    if(normalizeNormal(emotions.get(rank))&&normalizeParenting(parenting.get(rank))){
+      if(preferredMode==='parenting')emotions.set(rank,'');else parenting.set(rank,'');
+    }
+  }
 
   const writePending=(envelope)=>{
     try{
@@ -14969,9 +15094,10 @@ export default function(component) {
 
     const syncVisual=()=>{
       const normal=normalizeNormal(emotions.get(rank)), parent=normalizeParenting(parenting.get(rank));
-      const key=activeMode==='parenting'?parent:normal, meta=activeMode==='parenting'?(parentingMeta[key]||null):(normalMeta[key]||null);
+      const meta=normal?(normalMeta[normal]||null):(parent?(parentingMeta[parent]||null):null);
+      const selectedMode=normal?'通常':(parent?'こどもーど':'');
       // Keep an already-reviewed human selection visible even for older records that
-      // predate feeling tags. Once this card is edited, tags become authoritative.
+      // predate feeling tags. Once this card is edited, the one-tag rule is authoritative.
       const tagged=Boolean(normal||parent);
       let active=selectionTouched.has(rank)?tagged:(selected.has(rank)||tagged);
       if(active)selected.add(rank);else selected.delete(rank);
@@ -14980,13 +15106,13 @@ export default function(component) {
       pickedBadge.style.display=active&&!meta?'block':'none'; badge.textContent=meta?`${meta.emoji} ${meta.label}`:'';badge.hidden=!meta;
       const nm=normalMeta[normal]||null, pm=parentingMeta[parent]||null; normalButton.textContent=`${nm?nm.emoji:'🙂'} 通常`; parentingButton.textContent=`${pm?pm.emoji:'🌱'} こどもーど`;
       normalButton.classList.toggle('active',activeMode==='normal');parentingButton.classList.toggle('active',activeMode==='parenting');
-      card.setAttribute('aria-pressed',active?'true':'false');card.setAttribute('aria-label',meta?`${activeMode==='parenting'?'こどもーど':'通常'}：${meta.label}。タップして次へ`:`${activeMode==='parenting'?'こどもーど':'通常'}は未設定。タップして次へ`);
+      card.setAttribute('aria-pressed',active?'true':'false');card.setAttribute('aria-label',meta?`${selectedMode}：${meta.label}。タップすると現在のモードで変更します`:`${activeMode==='parenting'?'こどもーど':'通常'}は未設定。タップして選びます`);
     };
     syncVisual(); card.appendChild(imageWrap); card.appendChild(modeSwitch); card.appendChild(metaText); card.appendChild(reason);
     normalButton.addEventListener('click',(event)=>{event.preventDefault();event.stopPropagation();activeMode='normal';preferredMode='normal';syncVisual();});
     parentingButton.addEventListener('click',(event)=>{event.preventDefault();event.stopPropagation();activeMode='parenting';preferredMode='parenting';syncVisual();});
     if(!disabled){
-      const cycle=(event)=>{event?.preventDefault?.();event?.stopPropagation?.(); selectionTouched.add(rank); if(activeMode==='parenting')parenting.set(rank,nextValue(parenting.get(rank),parentingOrder,normalizeParenting));else emotions.set(rank,nextValue(emotions.get(rank),normalOrder,normalizeNormal)); syncVisual(); persistMomentState(rank);};
+      const cycle=(event)=>{event?.preventDefault?.();event?.stopPropagation?.(); selectionTouched.add(rank); if(activeMode==='parenting'){parenting.set(rank,nextValue(parenting.get(rank),parentingOrder,normalizeParenting));emotions.set(rank,'');}else{emotions.set(rank,nextValue(emotions.get(rank),normalOrder,normalizeNormal));parenting.set(rank,'');} syncVisual(); persistMomentState(rank);};
       card.addEventListener('click',cycle);card.addEventListener('keydown',(event)=>{if(event.key==='Enter'||event.key===' ')cycle(event);});
     }
     return card;
@@ -15030,7 +15156,7 @@ def _get_moments_select_component():
     _moments_select_component_initialized = True
     try:
         moments_select_component = st.components.v2.component(
-            "tokyo_burari_moments_select_v167",
+            "tokyo_burari_moments_select_v168",
             html=_MOMENTS_SELECT_HTML,
             css=_MOMENTS_SELECT_CSS,
             js=_MOMENTS_SELECT_JS,
@@ -15225,8 +15351,8 @@ def _render_moments_picker(photo, index, view_mode="list", next_video_action=Non
                 "rank": rank,
                 "src": url,
                 "ai_best": bool(item.get("ai_best")) or rank == 1,
-                "emotion": normalize_photo_emotion_key(item.get("emotion")),
-                "parenting": normalize_parenting_tag_key(item.get("parenting_tag")),
+                "emotion": selection_item_tag_values(item)[0],
+                "parenting": selection_item_tag_values(item)[1],
                 "meta": f"{seconds:.1f}秒・{quality}",
                 "reason": str(item.get("reason") or "").strip(),
             }
@@ -16403,7 +16529,7 @@ def render_recent_camera_photo_emotion(trip):
         return
 
     location_label = photo_location_label(photo)
-    st.caption("写真下の「通常／こどもーど」を切り替え、写真をタップしてアイコンを選べます。")
+    st.caption("写真下の「通常／こどもーど」を切り替え、写真につけるアイコンを1つ選べます。")
     st.caption("モード切替・アイコン選択だけではページ更新しません。")
 
     path = str(photo.get("storage_path") or "")
@@ -16412,8 +16538,8 @@ def render_recent_camera_photo_emotion(trip):
     card = {
         "id": str(photo_id),
         "src": src,
-        "emotion": photo_emotion_key(photo),
-        "parenting": photo_parenting_tag_key(photo),
+        "emotion": photo_selected_tag_values(photo)[0],
+        "parenting": photo_selected_tag_values(photo)[1],
         "location": str(location_label or ""),
     }
     gallery_component = _get_diary_gallery_component()
@@ -16439,7 +16565,7 @@ def render_recent_camera_photo_emotion(trip):
 
     # Fallback for runtimes without Streamlit v2 components.
     if src:
-        meta = photo_emotion_meta(photo)
+        meta = photo_selected_tag_meta(photo)
         border = meta.get("color") or "#AEB6C2"
         emoji = meta.get("emoji") or ""
         badge = (
@@ -16776,6 +16902,9 @@ def page_trip():
 
                 initial_emotion = normalize_photo_emotion_key(payload.get("emotion"))
                 initial_parenting = normalize_parenting_tag_key(payload.get("parenting"))
+                if initial_emotion and initial_parenting:
+                    # v168 clients send only one; stale clients are normalized to one as well.
+                    initial_parenting = ""
                 extra_reflection = {}
                 if initial_emotion:
                     extra_reflection["emotion"] = photo_emotion_record(
@@ -16837,7 +16966,7 @@ def render_diary_emotion_gallery(trip_id, photos, trip=None, is_pending=False):
         return
     st.markdown("#### この日の写真")
     counts, selected = photo_emotion_counts(photos)
-    st.caption("写真下の「通常／こどもーど」を切り替え、写真をタップしてアイコンを選べます。")
+    st.caption("写真下の「通常／こどもーど」を切り替え、写真につけるアイコンを1つ選べます。")
     summary = photo_emotion_summary_text(photos)
     st.caption(f"感情選択済み：{selected} / {len(photos)}枚" + (f"　｜　{summary}" if summary else ""))
 
@@ -16853,8 +16982,8 @@ def render_diary_emotion_gallery(trip_id, photos, trip=None, is_pending=False):
             {
                 "id": pid,
                 "src": photo_display_url(photo, signed, max_px=520, quality=80),
-                "emotion": photo_emotion_key(photo),
-                "parenting": photo_parenting_tag_key(photo),
+                "emotion": photo_selected_tag_values(photo)[0],
+                "parenting": photo_selected_tag_values(photo)[1],
                 "location": str(photo_location_label(photo) or ""),
             }
         )
@@ -16886,7 +17015,7 @@ def render_diary_emotion_gallery(trip_id, photos, trip=None, is_pending=False):
     for index, photo in enumerate(photos):
         with cols[index % 3]:
             src = photo_display_url(photo, signed, max_px=420, quality=76)
-            meta = photo_emotion_meta(photo)
+            meta = photo_selected_tag_meta(photo)
             border = meta.get("color") or "#AEB6C2"
             emoji = meta.get("emoji") or ""
             if src:
@@ -17312,7 +17441,7 @@ def page_monthly(embedded=False):
     emotion_selected_photo_count = sum(
         1
         for photo in bundle.get("photos", [])
-        if photo_emotion_key(photo)
+        if photo_selected_tag_key(photo)
     )
     st.write(f"この期間の日記：**{completed_count}回**　／　気持ちを選んだ写真：**{emotion_selected_photo_count}枚**")
     if completed_count == 0 and emotion_selected_photo_count == 0:
