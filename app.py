@@ -28,9 +28,9 @@ from zoneinfo import ZoneInfo
 import streamlit as st
 
 # Freshly generated update: 2026-08-31 23:49 JST
-GENERATED_UPDATE_JST = "2026-09-02T02:07:21+09:00"
+GENERATED_UPDATE_JST = "2026-09-02T02:09:57+09:00"
 
-APP_BUILD = "v172"
+APP_BUILD = "v173"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -83,8 +83,8 @@ HOME_ICON_CANDIDATES = {
     "diary_shonan_shinjuku": [os.path.join(APP_DIR, "assets", "icons", "diary_shonan_shinjuku.png")],
 }
 
-# v172: the Home video button reuses the exact Photo camera asset.
-# Only subtle motion marks are layered around it in CSS, so all camera colors stay identical.
+# v173: the Home video button reuses the exact Photo camera asset.
+# Option 5 motion marks are layered low on both sides; all camera colors stay identical.
 
 # One route choice controls the train, camera and diary together so the home screen
 # reads as one coherent visual theme. The camera/diary versions are deliberately
@@ -13041,7 +13041,7 @@ def inject_home_icon_css(review_attention=False):
     if camera_uri:
         css_chunks.append(f'.st-key-home_camera div.stButton > button::before{{background-image:url("{camera_uri}") !important;}}')
     if video_uri:
-        motion_uri = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 50'%3E%3Cg fill='none' stroke='%23564f4a' stroke-width='3.2' stroke-linecap='round' opacity='.72'%3E%3Cpath d='M9 18c-2.5 4-2.5 10 0 14'/%3E%3Cpath d='M4.5 14c-4 7-4 15 0 22'/%3E%3Cpath d='M55 18c2.5 4 2.5 10 0 14'/%3E%3Cpath d='M59.5 14c4 7 4 15 0 22'/%3E%3C/g%3E%3C/svg%3E"
+        motion_uri = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 50'%3E%3Cg fill='none' stroke='%23564f4a' stroke-width='3.2' stroke-linecap='round' opacity='.72'%3E%3Cpath d='M10 26c-2.6 3.3-2.6 8.7 0 12'/%3E%3Cpath d='M5.5 23c-3.7 5.2-3.7 12.8 0 18'/%3E%3Cpath d='M54 26c2.6 3.3 2.6 8.7 0 12'/%3E%3Cpath d='M58.5 23c3.7 5.2 3.7 12.8 0 18'/%3E%3C/g%3E%3C/svg%3E"
         css_chunks.append(
             f'.st-key-home_video div.stButton > button::before{{'
             f'background-image:url("{video_uri}"),url("{motion_uri}") !important;'
