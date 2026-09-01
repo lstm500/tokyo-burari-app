@@ -30,7 +30,7 @@ import streamlit as st
 # Freshly generated update: 2026-08-31 23:49 JST
 GENERATED_UPDATE_JST = "2026-09-01T22:33:00+09:00"
 
-APP_BUILD = "v154"
+APP_BUILD = "v155"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -679,14 +679,14 @@ try:
 except Exception:
     VIDEO_STORAGE_QUOTA_MB = 0
 
-VIDEO_MAX_SECONDS = 60
-# Recording itself stops at 60 seconds. The processing allowance is slightly larger
+VIDEO_MAX_SECONDS = 65
+# Recording itself stops at 65 seconds. The processing allowance is slightly larger
 # so MediaRecorder/onstop timing jitter never truncates otherwise valid metadata.
-VIDEO_PROCESSING_MAX_SECONDS = 70
-# A typical 60-second recording at the requested browser bitrate is around 30 MB.
+VIDEO_PROCESSING_MAX_SECONDS = 75
+# A typical 65-second recording at the requested browser bitrate is around 33 MB.
 # Reserve 32 MB before recording when an account quota is configured, while allowing
 # the actual file to be larger up to the hard 100 MB per-video ceiling below.
-VIDEO_RECORDING_RESERVE_BYTES = 32 * 1024 * 1024
+VIDEO_RECORDING_RESERVE_BYTES = 36 * 1024 * 1024
 VIDEO_MAX_BYTES = 100 * 1024 * 1024
 VIDEO_AI_MAX_SELECTIONS = 3
 # Good Moments sampling is duration-aware and capped at 20 candidate frames:
@@ -716,6 +716,7 @@ def video_ai_sample_interval_ms_for_duration(duration_ms):
     - 10 seconds or shorter: 500 ms
     - 15 seconds: 750 ms
     - 60 seconds: 3000 ms
+    - 65 seconds: 3250 ms
     - otherwise: max(500 ms, duration / 20)
     """
     try:
@@ -776,7 +777,7 @@ _LIVE_CAMERA_HTML = """
 
   <video id="live-camera-video" class="live-camera-video" playsinline autoplay muted hidden></video>
 
-  <div id="camera-recording-status" class="camera-recording-status" hidden>● 録画中 0:00 / 1:00</div>
+  <div id="camera-recording-status" class="camera-recording-status" hidden>● 録画中 0:00 / 1:05</div>
 
   <div id="camera-active-actions" class="camera-active-actions" hidden>
     <button id="live-camera-shoot" class="camera-shoot-button" type="button">● 撮影する</button>
@@ -797,7 +798,7 @@ _LIVE_CAMERA_HTML = """
       <button id="camera-review-retry" class="camera-retry-button" type="button">撮りなおす／選びなおす</button>
     </div>
     <button id="camera-review-find-moments" class="camera-find-button" type="button" hidden>✨ いい瞬間を探す</button>
-    <div id="camera-review-build" class="camera-review-build" hidden>camera v154</div>
+    <div id="camera-review-build" class="camera-review-build" hidden>camera v155</div>
     <div id="camera-review-emotion-hint" class="camera-review-emotion-hint" hidden>写真をタップ：未設定 → 😊喜 → 😠怒 → 😢哀 → 🎉楽 → 未設定</div>
     <div id="camera-review-image-shell" class="camera-review-image-shell" role="button" tabindex="0" aria-label="写真の気持ちを選ぶ" hidden>
       <img id="camera-review-image" class="camera-review-image" alt="撮影した写真の確認" />
@@ -1120,7 +1121,7 @@ export default function(component) {
   const reviewBuild = parentElement.querySelector('#camera-review-build');
   const status = parentElement.querySelector('#live-camera-status');
 
-  const VIDEO_MAX_SECONDS = 60;
+  const VIDEO_MAX_SECONDS = 65;
   const GOOD_MOMENTS_MAX_CANDIDATES = 20;
   const GOOD_MOMENTS_MIN_INTERVAL_SECONDS = 0.5;
   // v107: the browser uploads the video blob straight to a short-lived Supabase
@@ -1134,7 +1135,7 @@ export default function(component) {
   const videoMaxBytes = Math.max(0, Number(data?.video_max_bytes || 0));
   const videoAllowed = data?.video_allowed !== false && Boolean(videoUploadSignedUrl && videoUploadStoragePath);
   const videoCapacityMessage = String(
-    data?.video_capacity_message || '動画の保存容量または保存先を確認できないため、最大60秒の動画を撮影できません。'
+    data?.video_capacity_message || '動画の保存容量または保存先を確認できないため、最大65秒の動画を撮影できません。'
   );
   const unavailableSuffix = videoUnavailableReason === 'quota'
     ? '容量不足'
@@ -1472,7 +1473,7 @@ export default function(component) {
         localStorage.setItem('tokyo_burari_last_camera_open_v1', String(openedAt));
         localStorage.setItem('tokyo_burari_last_camera_mode_v1', cameraMode === 'video' ? 'video' : 'photo');
       } catch (_) {}
-      setStatus(cameraMode === 'video' ? '動画は最大60秒です。音声も一緒に記録します。' : '');
+      setStatus(cameraMode === 'video' ? '動画は最大65秒です。音声も一緒に記録します。' : '');
     } catch (err) {
       console.error(err);
       stopStream();
@@ -2403,11 +2404,11 @@ export default function(component) {
 }
 """
 
-LIVE_CAMERA_COMPONENT_BUILD = "v154"
+LIVE_CAMERA_COMPONENT_BUILD = "v155"
 
 try:
     live_camera_component = st.components.v2.component(
-        "tokyo_burari_live_camera_v154",
+        "tokyo_burari_live_camera_v155",
         html=_LIVE_CAMERA_HTML,
         css=_LIVE_CAMERA_CSS,
         js=_LIVE_CAMERA_JS,
@@ -5530,7 +5531,7 @@ def ensure_video_storage_capacity(incoming_bytes):
 
 
 def video_recording_capacity_status():
-    """Reserve enough room for one maximum 60-second recording before opening video mode."""
+    """Reserve enough room for one maximum 65-second recording before opening video mode."""
     quota = video_storage_quota_bytes()
     if quota <= 0:
         return {
@@ -5539,7 +5540,7 @@ def video_recording_capacity_status():
             "quota_bytes": 0,
             "remaining_bytes": None,
             "required_bytes": VIDEO_RECORDING_RESERVE_BYTES,
-            "message": f"動画は最大60秒です。撮影開始前に{format_storage_size(VIDEO_RECORDING_RESERVE_BYTES)}以上の空きを確認し、実際の動画は最大{format_storage_size(VIDEO_MAX_BYTES)}まで保存できます。",
+            "message": f"動画は最大65秒です。撮影開始前に{format_storage_size(VIDEO_RECORDING_RESERVE_BYTES)}以上の空きを確認し、実際の動画は最大{format_storage_size(VIDEO_MAX_BYTES)}まで保存できます。",
         }
 
     usage = current_video_storage_usage_bytes()
@@ -5547,12 +5548,12 @@ def video_recording_capacity_status():
     allowed = remaining >= VIDEO_RECORDING_RESERVE_BYTES
     if allowed:
         message = (
-            f"最大60秒の動画を撮影できます（保存処理用バッファ込み）。残り {format_storage_size(remaining)} / "
+            f"最大65秒の動画を撮影できます（保存処理用バッファ込み）。残り {format_storage_size(remaining)} / "
             f"上限 {format_storage_size(quota)}"
         )
     else:
         message = (
-            "最大60秒の動画1本分と保存処理用バッファの空き容量がありません。"
+            "最大65秒の動画1本分と保存処理用バッファの空き容量がありません。"
             f" 残り {format_storage_size(remaining)} / 上限 {format_storage_size(quota)}。"
             f"撮影開始には少なくとも {format_storage_size(VIDEO_RECORDING_RESERVE_BYTES)} の空きが必要です。"
         )
@@ -5791,7 +5792,7 @@ def register_browser_uploaded_video(
     if size_value <= 0:
         raise ValueError("動画の容量を確認できませんでした。")
     if size_value > VIDEO_MAX_BYTES:
-        raise ValueError(f"動画データが保存可能な上限 {format_storage_size(VIDEO_MAX_BYTES)} を超えています。録画時間は60秒以内でも、端末の動画形式によって容量が大きくなる場合があります。")
+        raise ValueError(f"動画データが保存可能な上限 {format_storage_size(VIDEO_MAX_BYTES)} を超えています。録画時間は65秒以内でも、端末の動画形式によって容量が大きくなる場合があります。")
     ensure_video_storage_capacity(size_value)
 
     try:
@@ -5920,14 +5921,14 @@ def upload_video(
     if not video_bytes:
         raise ValueError("動画データが空です。")
     # MediaRecorder.onstop may fire after the actual recording has already stopped.
-    # The browser caps recording at 60 seconds, so do not reject a valid video based
+    # The browser caps recording at 65 seconds, so do not reject a valid video based
     # on wall-clock delay between recorder.stop() and the onstop callback.
     duration_value = min(
         VIDEO_PROCESSING_MAX_SECONDS * 1000,
         max(0, int(duration_ms or 0)),
     )
     if len(video_bytes) > VIDEO_MAX_BYTES:
-        raise ValueError(f"動画データが保存可能な上限 {format_storage_size(VIDEO_MAX_BYTES)} を超えています。録画時間は60秒以内でも、端末の動画形式によって容量が大きくなる場合があります。")
+        raise ValueError(f"動画データが保存可能な上限 {format_storage_size(VIDEO_MAX_BYTES)} を超えています。録画時間は65秒以内でも、端末の動画形式によって容量が大きくなる場合があります。")
     ensure_video_storage_capacity(len(video_bytes))
     poster = normalize_photo(poster_bytes)
     if not poster:
@@ -15423,7 +15424,7 @@ def page_trip():
             "video_candidate_sheet_signed_url": str(video_reservation.get("candidate_sheet_signed_url") or ""),
             "video_candidate_sheet_storage_path": str(video_reservation.get("candidate_sheet_path") or ""),
         },
-        key=f"live_camera_v154_{camera_trip_key}_{st.session_state.capture_serial}_{_current_ui_refresh_epoch()}",
+        key=f"live_camera_v155_{camera_trip_key}_{st.session_state.capture_serial}_{_current_ui_refresh_epoch()}",
         on_photo_change=lambda: None,
         on_video_change=lambda: None,
         on_camera_error_change=lambda: None,
@@ -16871,7 +16872,7 @@ def page_settings():
                 "軽い手振れ補正版を作成できた場合、その補正版は動画容量に含まれます。"
             )
             if remaining_bytes < VIDEO_RECORDING_RESERVE_BYTES:
-                st.warning("60秒動画の撮影開始に必要な空きがないため、現在は動画撮影を開始できません。")
+                st.warning("65秒動画の撮影開始に必要な空きがないため、現在は動画撮影を開始できません。")
             st.progress(min(1.0, usage_bytes / quota_bytes) if quota_bytes else 0.0)
         except Exception as exc:
             st.caption("動画容量を確認できませんでした。")
@@ -16890,10 +16891,10 @@ def page_settings():
         "初回だけ、このサイトへのカメラ使用を『許可』してください。"
     )
     st.caption(
-        "動画は最大60秒です。録画を止めると確認画面を挟まず元動画を保管庫へ自動保存します。"
+        "動画は最大65秒です。録画を止めると確認画面を挟まず元動画を保管庫へ自動保存します。"
         "写真カメラ起動中は下部から保存済み写真を、動画カメラ起動中は下部から保存済み動画を選べます。"
         "動画の保存完了と『いい瞬間』作成は切り分け、いい瞬間はバックグラウンドで処理するため、その間もアプリを操作できます。"
-        "『いい瞬間』は保存済みの元動画を、10秒以下は0.5秒間隔・15秒は0.75秒間隔・60秒は3秒間隔（一般式：max(0.5秒, 動画長÷20)）で最大20枚切り出し、AI用には別の軽量コピーを使います。"
+        "『いい瞬間』は保存済みの元動画を、10秒以下は0.5秒間隔・15秒は0.75秒間隔・60秒は3秒間隔・65秒は3.25秒間隔（一般式：max(0.5秒, 動画長÷20)）で最大20枚切り出し、AI用には別の軽量コピーを使います。"
         "AIが選ぶのは最大3枚で、利用者が見る画像は元動画由来の高画質フレームのみです。切り取った写真は日記画面でタップして喜・怒・哀・楽を選べます。"
         "初回はカメラとは別に位置情報の許可も求められます。位置情報がオフ・拒否・取得不能の場合は、"
         "ホームの地名表示（未登録なら『地名：登録なし（自動取得）』）を押して入力した内容を写真の場所として使います。"
