@@ -28,9 +28,9 @@ from zoneinfo import ZoneInfo
 import streamlit as st
 
 # Freshly generated update: 2026-08-31 23:49 JST
-GENERATED_UPDATE_JST = "2026-09-01T22:33:00+09:00"
+GENERATED_UPDATE_JST = "2026-09-01T23:34:00+09:00"
 
-APP_BUILD = "v156"
+APP_BUILD = "v157"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -13230,8 +13230,9 @@ def _render_home_storage_usage_status():
               </div>
               <div style="height:6px; overflow:hidden; border-radius:999px;
                           background:rgba(128,128,128,.14); border:1px solid rgba(128,128,128,.08);">
-                <div style="width:{percent:.2f}%; height:100%; border-radius:inherit;
-                            background:var(--st-primary-color); transition:width .25s ease;"></div>
+                <div style="width:{percent:.2f}%; height:100%; min-width:{"2px" if usage_bytes > 0 else "0"};
+                            border-radius:inherit; background:#4A90E2;
+                            box-shadow:0 0 5px rgba(74,144,226,.20); transition:width .25s ease;"></div>
               </div>
             </div>
             """,
