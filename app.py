@@ -30,7 +30,7 @@ import streamlit as st
 # Freshly generated update: 2026-08-31 23:49 JST
 GENERATED_UPDATE_JST = "2026-09-01T22:33:00+09:00"
 
-APP_BUILD = "v153"
+APP_BUILD = "v154"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -772,8 +772,6 @@ _LIVE_CAMERA_HTML = """
   <div id="camera-menu" class="camera-menu">
     <button id="live-camera-start" class="camera-menu-button" type="button">📷 写真を撮る</button>
     <button id="live-video-start" class="camera-menu-button video-menu-button" type="button">🎥 動画を撮る</button>
-    <input id="gallery-photo-input" class="gallery-photo-input" type="file" accept="image/*" />
-    <label class="camera-menu-button gallery-button" for="gallery-photo-input">🖼 すでに撮った写真から選ぶ</label>
   </div>
 
   <video id="live-camera-video" class="live-camera-video" playsinline autoplay muted hidden></video>
@@ -786,13 +784,20 @@ _LIVE_CAMERA_HTML = """
     <button id="live-camera-stop" class="camera-sub-button" type="button">閉じる</button>
   </div>
 
+  <div id="camera-library-actions" class="camera-library-actions" hidden>
+    <input id="gallery-photo-input" class="gallery-media-input" type="file" accept="image/*" />
+    <label id="gallery-photo-label" class="camera-library-button photo-library-button" for="gallery-photo-input">🖼 すでに撮った写真から選ぶ</label>
+    <input id="gallery-video-input" class="gallery-media-input" type="file" accept="video/*" />
+    <label id="gallery-video-label" class="camera-library-button video-library-button" for="gallery-video-input" hidden>🎞️ すでに撮った動画から選ぶ</label>
+  </div>
+
   <div id="camera-review" class="camera-review" hidden>
     <div class="camera-review-actions">
       <button id="camera-review-save" class="camera-save-button" type="button">この写真を残す</button>
       <button id="camera-review-retry" class="camera-retry-button" type="button">撮りなおす／選びなおす</button>
     </div>
     <button id="camera-review-find-moments" class="camera-find-button" type="button" hidden>✨ いい瞬間を探す</button>
-    <div id="camera-review-build" class="camera-review-build" hidden>camera v153</div>
+    <div id="camera-review-build" class="camera-review-build" hidden>camera v154</div>
     <div id="camera-review-emotion-hint" class="camera-review-emotion-hint" hidden>写真をタップ：未設定 → 😊喜 → 😠怒 → 😢哀 → 🎉楽 → 未設定</div>
     <div id="camera-review-image-shell" class="camera-review-image-shell" role="button" tabindex="0" aria-label="写真の気持ちを選ぶ" hidden>
       <img id="camera-review-image" class="camera-review-image" alt="撮影した写真の確認" />
@@ -815,6 +820,8 @@ _LIVE_CAMERA_CSS = """
 }
 .camera-menu[hidden],
 .camera-active-actions[hidden],
+.camera-library-actions[hidden],
+.camera-library-button[hidden],
 .live-camera-video[hidden],
 .camera-review[hidden],
 .camera-review-image[hidden],
@@ -833,7 +840,46 @@ _LIVE_CAMERA_CSS = """
   gap: 10px;
   margin: 0;
 }
-.gallery-photo-input {
+.camera-library-actions {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 8px;
+  margin: 8px 0 0;
+}
+.camera-library-button {
+  width: 100%;
+  min-height: 54px;
+  box-sizing: border-box;
+  border-radius: 16px;
+  padding: 10px 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  font-size: 15px;
+  line-height: 1.25;
+  font-weight: 780;
+  cursor: pointer;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+  border: 1.6px solid rgba(128,128,128,.28);
+  background: rgba(128,128,128,.035);
+  color: var(--st-text-color);
+}
+.photo-library-button {
+  border-color: rgba(74,144,226,.55);
+  background: rgba(74,144,226,.07);
+}
+.video-library-button {
+  border-color: rgba(124,58,237,.62);
+  background: rgba(124,58,237,.08);
+}
+.camera-library-button:hover,
+.camera-library-button:focus-visible {
+  filter: brightness(1.02);
+  box-shadow: 0 0 0 3px rgba(74,144,226,.08);
+}
+.gallery-media-input {
   position: absolute;
   width: 1px;
   height: 1px;
@@ -1025,6 +1071,10 @@ _LIVE_CAMERA_CSS = """
     min-height: 62px;
     font-size: 16px;
   }
+  .camera-library-button {
+    min-height: 52px;
+    font-size: 14px;
+  }
   .camera-active-actions { grid-template-columns: 2fr 1.1fr .8fr; }
   .camera-review-actions { grid-template-columns: 3fr 1fr; }
   .camera-shoot-button,
@@ -1049,6 +1099,10 @@ export default function(component) {
   const startButton = parentElement.querySelector('#live-camera-start');
   const videoStartButton = parentElement.querySelector('#live-video-start');
   const galleryInput = parentElement.querySelector('#gallery-photo-input');
+  const galleryVideoInput = parentElement.querySelector('#gallery-video-input');
+  const galleryPhotoLabel = parentElement.querySelector('#gallery-photo-label');
+  const galleryVideoLabel = parentElement.querySelector('#gallery-video-label');
+  const libraryActions = parentElement.querySelector('#camera-library-actions');
   const activeActions = parentElement.querySelector('#camera-active-actions');
   const shootButton = parentElement.querySelector('#live-camera-shoot');
   const modeSwitchButton = parentElement.querySelector('#live-camera-mode-switch');
@@ -1167,6 +1221,15 @@ export default function(component) {
     }
   };
 
+  const syncLibraryActions = (recording = false) => {
+    const streamLive = Boolean(stream && stream.getTracks && stream.getTracks().some((track) => track.readyState === 'live'));
+    const activeVisible = Boolean(activeActions && !activeActions.hidden);
+    const shouldShow = Boolean(streamLive && activeVisible && !recording);
+    if (libraryActions) libraryActions.hidden = !shouldShow;
+    if (galleryPhotoLabel) galleryPhotoLabel.hidden = !shouldShow || cameraMode !== 'photo';
+    if (galleryVideoLabel) galleryVideoLabel.hidden = !shouldShow || cameraMode !== 'video';
+  };
+
   const setRecordingUi = (recording) => {
     if (recordingStatus) recordingStatus.hidden = !recording;
     if (!shootButton) return;
@@ -1184,6 +1247,7 @@ export default function(component) {
         : (videoAllowed ? '🎥 動画へ' : `🎥 動画へ（${unavailableSuffix}）`);
       modeSwitchButton.title = (!videoAllowed && cameraMode !== 'video') ? videoCapacityMessage : '';
     }
+    syncLibraryActions(Boolean(recording));
   };
 
   const updateRecordingClock = () => {
@@ -1249,6 +1313,7 @@ export default function(component) {
   const showMenu = () => {
     if (menu) menu.hidden = false;
     if (activeActions) activeActions.hidden = true;
+    if (libraryActions) libraryActions.hidden = true;
     if (video) video.hidden = true;
     setRecordingUi(false);
     hideReview();
@@ -1265,6 +1330,7 @@ export default function(component) {
   const showPhotoReview = (dataUrl) => {
     if (menu) menu.hidden = true;
     if (activeActions) activeActions.hidden = true;
+    if (libraryActions) libraryActions.hidden = true;
     if (video) video.hidden = true;
     hideReview();
     pendingEmotion = normalizeEmotion(pendingMedia?.emotion);
@@ -1285,6 +1351,7 @@ export default function(component) {
   const showVideoReview = (blob) => {
     if (menu) menu.hidden = true;
     if (activeActions) activeActions.hidden = true;
+    if (libraryActions) libraryActions.hidden = true;
     if (video) video.hidden = true;
     hideReview();
     reviewVideoUrl = URL.createObjectURL(blob);
@@ -1294,26 +1361,11 @@ export default function(component) {
       reviewVideo.currentTime = 0;
     }
     reviewSave.textContent = 'この動画を残す';
-    reviewRetry.textContent = '撮りなおす';
-    videoReviewGeneration += 1;
-    const reviewGeneration = videoReviewGeneration;
+    reviewRetry.textContent = '選びなおす';
     disarmGoodMomentsButton();
     if (reviewBuild) reviewBuild.hidden = false;
     if (review) review.hidden = false;
     setStatus('');
-
-    // Important: do not extract frames here. Only reveal and arm the button
-    // after the recording-stop interaction has fully ended.
-    goodMomentsRevealTimer = setTimeout(() => {
-      goodMomentsRevealTimer = null;
-      if (reviewGeneration !== videoReviewGeneration) return;
-      if (!review || review.hidden || !reviewFindMoments) return;
-      if (!pendingMedia || pendingMedia.kind !== 'video' || !pendingVideoBlob) return;
-      reviewFindMoments.dataset.armedGeneration = String(reviewGeneration);
-      reviewFindMoments.hidden = false;
-      reviewFindMoments.disabled = false;
-      reviewFindMoments.textContent = '\u2728 \u3044\u3044\u77ac\u9593\u3092\u63a2\u3059';
-    }, 700);
   };
 
   const stopActiveRecorderSilently = () => {
@@ -1456,8 +1508,7 @@ export default function(component) {
 
   const uploadRawBlobToSignedUrl = async (blob, signedUrl, contentType, label) => {
     if (!signedUrl) throw new Error(`${label || 'ファイル'}のアップロード先がありません`);
-    const payload = await blob.arrayBuffer();
-    if (!payload || !payload.byteLength) throw new Error(`${label || 'ファイル'}が空です`);
+    if (!blob || !Number(blob.size || 0)) throw new Error(`${label || 'ファイル'}が空です`);
     let lastError = null;
     for (let attempt = 0; attempt < 2; attempt += 1) {
       try {
@@ -1467,7 +1518,7 @@ export default function(component) {
             'cache-control': 'max-age=3600',
             'content-type': contentType || 'application/octet-stream'
           },
-          body: payload
+          body: blob
         });
         if (response.ok) return true;
         let detail = '';
@@ -1996,6 +2047,128 @@ export default function(component) {
     }
   };
 
+  const inferGalleryVideoMime = (file) => {
+    const direct = String(file?.type || '').split(';', 1)[0].trim().toLowerCase();
+    if (direct.startsWith('video/')) return direct;
+    const name = String(file?.name || '').toLowerCase();
+    if (name.endsWith('.mov')) return 'video/quicktime';
+    if (name.endsWith('.m4v')) return 'video/x-m4v';
+    if (name.endsWith('.webm')) return 'video/webm';
+    return 'video/mp4';
+  };
+
+  const prepareGalleryVideoFile = async (file) => {
+    if (!file || !file.size) throw new Error('動画ファイルが空です。');
+    if (videoMaxBytes > 0 && file.size > videoMaxBytes) {
+      const sizeMb = (file.size / (1024 * 1024)).toFixed(1);
+      const limitMb = (videoMaxBytes / (1024 * 1024)).toFixed(1);
+      throw new Error(`動画が大きすぎます（${sizeMb}MB）。保存可能な上限は${limitMb}MBです。`);
+    }
+    const objectUrl = URL.createObjectURL(file);
+    const probe = document.createElement('video');
+    probe.preload = 'auto';
+    probe.muted = true;
+    probe.playsInline = true;
+    probe.src = objectUrl;
+    try {
+      await new Promise((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error('動画情報の読み込みが時間切れになりました。')), 8000);
+        const ready = () => { clearTimeout(timer); resolve(); };
+        const failed = () => { clearTimeout(timer); reject(new Error('この動画形式をブラウザで読み込めませんでした。')); };
+        probe.addEventListener('loadedmetadata', ready, { once: true });
+        probe.addEventListener('error', failed, { once: true });
+      });
+      const durationSeconds = Number(probe.duration || 0);
+      if (!Number.isFinite(durationSeconds) || durationSeconds <= 0) {
+        throw new Error('動画の長さを確認できませんでした。');
+      }
+      if (durationSeconds > VIDEO_MAX_SECONDS + 0.15) {
+        throw new Error(`動画は最大${VIDEO_MAX_SECONDS}秒までです。選んだ動画は${durationSeconds.toFixed(1)}秒あります。`);
+      }
+      try {
+        if (probe.readyState < 2) {
+          await new Promise((resolve) => {
+            const timer = setTimeout(resolve, 2500);
+            probe.addEventListener('loadeddata', () => { clearTimeout(timer); resolve(); }, { once: true });
+          });
+        }
+      } catch (_) {}
+      const width = Math.max(0, Number(probe.videoWidth || 0));
+      const height = Math.max(0, Number(probe.videoHeight || 0));
+      let posterDataUrl = '';
+      try {
+        if (durationSeconds > 0.12) {
+          const target = Math.min(Math.max(0, durationSeconds - 0.05), Math.min(0.25, durationSeconds * 0.10));
+          await seekVideoFrame(probe, target);
+        }
+        if (width > 0 && height > 0) {
+          const frameCanvas = document.createElement('canvas');
+          const maxSide = 900;
+          const scale = Math.min(1, maxSide / Math.max(width, height));
+          frameCanvas.width = Math.max(1, Math.round(width * scale));
+          frameCanvas.height = Math.max(1, Math.round(height * scale));
+          const ctx = frameCanvas.getContext('2d', { alpha: false });
+          ctx.drawImage(probe, 0, 0, frameCanvas.width, frameCanvas.height);
+          const posterBlob = await new Promise((resolve) => frameCanvas.toBlob(resolve, 'image/jpeg', 0.72));
+          if (posterBlob) posterDataUrl = await blobToDataUrl(posterBlob);
+        }
+      } catch (posterErr) {
+        console.warn('gallery video poster skipped', posterErr);
+      }
+      return {
+        mime_type: inferGalleryVideoMime(file),
+        duration_ms: Math.max(1, Math.round(durationSeconds * 1000)),
+        capture_width: width,
+        capture_height: height,
+        poster_data_url: posterDataUrl,
+      };
+    } finally {
+      try { probe.pause(); } catch (_) {}
+      probe.removeAttribute('src');
+      try { probe.load(); } catch (_) {}
+      URL.revokeObjectURL(objectUrl);
+    }
+  };
+
+  const chooseGalleryVideo = async () => {
+    const file = galleryVideoInput?.files && galleryVideoInput.files[0];
+    if (!file) return;
+    try {
+      if (!videoAllowed) throw new Error(videoCapacityMessage);
+      setStatus('選んだ動画を確認しています…');
+      const prepared = await prepareGalleryVideoFile(file);
+      pendingVideoBlob = file;
+      pendingMedia = {
+        kind: 'video',
+        name: file.name || 'gallery-video',
+        source: 'video_gallery',
+        captured_at: file.lastModified ? new Date(file.lastModified).toISOString() : new Date().toISOString(),
+        mime_type: prepared.mime_type,
+        duration_ms: prepared.duration_ms,
+        poster_data_url: prepared.poster_data_url,
+        capture_width: prepared.capture_width,
+        capture_height: prepared.capture_height,
+        capture_frame_rate: 0,
+        video_bitrate_bps: 0,
+        location: {
+          ok: false,
+          error_code: 'GALLERY_VIDEO',
+          error_message: '動画フォルダから選んだ動画の撮影位置は自動取得しません。'
+        }
+      };
+      showVideoReview(file);
+      setStatus('');
+    } catch (err) {
+      console.error(err);
+      const detail = String(err?.message || '').trim();
+      const message = detail ? `動画を選べませんでした。${detail}` : '動画を選べませんでした。別の動画を選んでください。';
+      setStatus(message);
+      setTriggerValue('camera_error', { name: 'GalleryVideoError', message, detail });
+    } finally {
+      if (galleryVideoInput) galleryVideoInput.value = '';
+    }
+  };
+
   const chooseGalleryPhoto = async () => {
     const file = galleryInput.files && galleryInput.files[0];
     if (!file) return;
@@ -2078,21 +2251,73 @@ export default function(component) {
     }
   };
 
-  const savePendingMedia = () => {
+  const savePendingMedia = async () => {
     if (!pendingMedia) return;
     reviewSave.disabled = true;
     reviewRetry.disabled = true;
     const mediaToSave = pendingMedia;
-    setStatus(mediaToSave.kind === 'video' ? '動画を保存しています…' : '写真を保存しています…');
+
+    if (mediaToSave.kind === 'video') {
+      try {
+        if (!pendingVideoBlob) throw new Error('選んだ動画を確認できません。');
+        if (!videoAllowed || !videoUploadSignedUrl || !videoUploadStoragePath) throw new Error(videoCapacityMessage);
+        if (videoMaxBytes > 0 && pendingVideoBlob.size > videoMaxBytes) {
+          throw new Error('選んだ動画が現在の保存可能容量を超えています。');
+        }
+        setStatus('選んだ動画を保管庫へ送信しています…');
+        const mimeType = String(mediaToSave.mime_type || inferGalleryVideoMime(pendingVideoBlob) || 'video/mp4');
+        await uploadRawBlobToSignedUrl(pendingVideoBlob, videoUploadSignedUrl, mimeType, '動画');
+        const recordingId = (globalThis.crypto && typeof globalThis.crypto.randomUUID === 'function')
+          ? globalThis.crypto.randomUUID()
+          : `gallery_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+        const uploadedPayload = {
+          kind: 'video_uploaded',
+          recording_id: recordingId,
+          video_storage_path: videoUploadStoragePath,
+          video_size_bytes: pendingVideoBlob.size,
+          poster_data_url: String(mediaToSave.poster_data_url || ''),
+          candidate_frames: [],
+          candidate_sheet_path: '',
+          candidate_manifest: [],
+          candidate_sheet_columns: 0,
+          candidate_sheet_rows: 0,
+          mime_type: mimeType,
+          duration_ms: Number(mediaToSave.duration_ms || 0),
+          capture_width: Number(mediaToSave.capture_width || 0),
+          capture_height: Number(mediaToSave.capture_height || 0),
+          capture_frame_rate: Number(mediaToSave.capture_frame_rate || 0),
+          video_bitrate_bps: Number(mediaToSave.video_bitrate_bps || 0),
+          name: String(mediaToSave.name || 'gallery-video'),
+          source: 'video_gallery',
+          captured_at: String(mediaToSave.captured_at || new Date().toISOString()),
+          location: mediaToSave.location || { ok: false, error_code: 'GALLERY_VIDEO' },
+          auto_save: true,
+          upload_complete: true
+        };
+        if (stream) {
+          stream.getTracks().forEach((track) => track.stop());
+          stream = null;
+        }
+        setStatus('動画を保管庫へ送信しました。記録を登録しています…');
+        setTriggerValue('video', uploadedPayload);
+      } catch (err) {
+        console.error(err);
+        reviewSave.disabled = false;
+        reviewRetry.disabled = false;
+        const detail = String(err?.message || '').trim();
+        const message = detail ? `動画を保存できませんでした。${detail}` : '動画を保存できませんでした。';
+        setStatus(message);
+        setTriggerValue('camera_error', { name: 'GalleryVideoUploadError', message, detail });
+      }
+      return;
+    }
+
+    setStatus('写真を保存しています…');
     if (stream) {
       stream.getTracks().forEach((track) => track.stop());
       stream = null;
     }
-    if (mediaToSave.kind === 'video') {
-      setTriggerValue('video', mediaToSave);
-    } else {
-      setTriggerValue('photo', mediaToSave);
-    }
+    setTriggerValue('photo', mediaToSave);
   };
 
   const retryPendingMedia = async () => {
@@ -2106,8 +2331,8 @@ export default function(component) {
     setStatus('');
     hideReview();
 
-    if ((source === 'camera' || source === 'video_camera') && stream && stream.getTracks().some((track) => track.readyState === 'live')) {
-      cameraMode = source === 'video_camera' ? 'video' : 'photo';
+    if ((source === 'camera' || source === 'gallery' || source === 'video_camera' || source === 'video_gallery') && stream && stream.getTracks().some((track) => track.readyState === 'live')) {
+      cameraMode = (source === 'video_camera' || source === 'video_gallery') ? 'video' : 'photo';
       if (video.srcObject !== stream) video.srcObject = stream;
       await video.play();
       shootButton.disabled = false;
@@ -2145,6 +2370,7 @@ export default function(component) {
   shootButton.addEventListener('click', handleShoot);
   stopButton.addEventListener('click', closeCamera);
   galleryInput.addEventListener('change', chooseGalleryPhoto);
+  galleryVideoInput?.addEventListener('change', chooseGalleryVideo);
   reviewSave.addEventListener('click', savePendingMedia);
   reviewRetry.addEventListener('click', retryPendingMedia);
   reviewImageShell?.addEventListener('click', cycleReviewEmotion);
@@ -2164,6 +2390,7 @@ export default function(component) {
     shootButton.removeEventListener('click', handleShoot);
     stopButton.removeEventListener('click', closeCamera);
     galleryInput.removeEventListener('change', chooseGalleryPhoto);
+    galleryVideoInput?.removeEventListener('change', chooseGalleryVideo);
     reviewSave.removeEventListener('click', savePendingMedia);
     reviewRetry.removeEventListener('click', retryPendingMedia);
     reviewImageShell?.removeEventListener('click', cycleReviewEmotion);
@@ -2176,11 +2403,11 @@ export default function(component) {
 }
 """
 
-LIVE_CAMERA_COMPONENT_BUILD = "v153"
+LIVE_CAMERA_COMPONENT_BUILD = "v154"
 
 try:
     live_camera_component = st.components.v2.component(
-        "tokyo_burari_live_camera_v153",
+        "tokyo_burari_live_camera_v154",
         html=_LIVE_CAMERA_HTML,
         css=_LIVE_CAMERA_CSS,
         js=_LIVE_CAMERA_JS,
@@ -5575,8 +5802,8 @@ def register_browser_uploaded_video(
         poster = _video_placeholder_poster_bytes()
 
     clean_mime = str(mime_type or "video/webm").split(";", 1)[0].strip().lower()
-    if clean_mime not in {"video/mp4", "video/webm"}:
-        clean_mime = "video/webm"
+    if clean_mime not in {"video/mp4", "video/webm", "video/quicktime", "video/x-m4v"}:
+        clean_mime = "video/mp4"
     duration_value = min(VIDEO_PROCESSING_MAX_SECONDS * 1000, max(0, int(duration_ms or 0)))
     base = path.rsplit("_video.", 1)[0]
     poster_path = base + "_video.jpg"
@@ -15196,7 +15423,7 @@ def page_trip():
             "video_candidate_sheet_signed_url": str(video_reservation.get("candidate_sheet_signed_url") or ""),
             "video_candidate_sheet_storage_path": str(video_reservation.get("candidate_sheet_path") or ""),
         },
-        key=f"live_camera_v153_{camera_trip_key}_{st.session_state.capture_serial}_{_current_ui_refresh_epoch()}",
+        key=f"live_camera_v154_{camera_trip_key}_{st.session_state.capture_serial}_{_current_ui_refresh_epoch()}",
         on_photo_change=lambda: None,
         on_video_change=lambda: None,
         on_camera_error_change=lambda: None,
@@ -16664,6 +16891,7 @@ def page_settings():
     )
     st.caption(
         "動画は最大60秒です。録画を止めると確認画面を挟まず元動画を保管庫へ自動保存します。"
+        "写真カメラ起動中は下部から保存済み写真を、動画カメラ起動中は下部から保存済み動画を選べます。"
         "動画の保存完了と『いい瞬間』作成は切り分け、いい瞬間はバックグラウンドで処理するため、その間もアプリを操作できます。"
         "『いい瞬間』は保存済みの元動画を、10秒以下は0.5秒間隔・15秒は0.75秒間隔・60秒は3秒間隔（一般式：max(0.5秒, 動画長÷20)）で最大20枚切り出し、AI用には別の軽量コピーを使います。"
         "AIが選ぶのは最大3枚で、利用者が見る画像は元動画由来の高画質フレームのみです。切り取った写真は日記画面でタップして喜・怒・哀・楽を選べます。"
