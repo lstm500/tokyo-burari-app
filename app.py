@@ -28,9 +28,9 @@ from zoneinfo import ZoneInfo
 import streamlit as st
 
 # Freshly generated update: 2026-08-31 23:49 JST
-GENERATED_UPDATE_JST = "2026-09-02T01:35:24+09:00"
+GENERATED_UPDATE_JST = "2026-09-02T01:46:22+09:00"
 
-APP_BUILD = "v168"
+APP_BUILD = "v169"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -390,6 +390,8 @@ st.markdown(
       }
       .st-key-home_camera div.stButton > button,
       .st-key-home_camera button,
+      .st-key-home_video div.stButton > button,
+      .st-key-home_video button,
       .st-key-home_diary div.stButton > button,
       .st-key-home_diary button {
         border: 1.8px solid rgba(115, 165, 232, .82) !important;
@@ -398,6 +400,8 @@ st.markdown(
       }
       .st-key-home_camera div.stButton > button:hover,
       .st-key-home_camera button:hover,
+      .st-key-home_video div.stButton > button:hover,
+      .st-key-home_video button:hover,
       .st-key-home_diary div.stButton > button:hover,
       .st-key-home_diary button:hover {
         transform: translateY(-1px);
@@ -12899,13 +12903,15 @@ def ensure_today_trip():
     return trip
 
 
-def render_home_button(label, page_name, key, ensure_trip=False, open_period_review=False):
+def render_home_button(label, page_name, key, ensure_trip=False, open_period_review=False, camera_mode=None):
     if st.button(label, key=key, use_container_width=True):
         if page_name == "camera":
-            # The user's click is a valid browser gesture. Reopen the camera mode
-            # used within the last hour; otherwise keep the usual photo auto-start.
-            recent_mode = _remembered_recent_camera_mode()
-            if recent_mode == "video":
+            # Home now has separate Photo / Video buttons. When a mode is supplied,
+            # open that exact mode instead of restoring the most recently used one.
+            requested_mode = str(camera_mode or "").strip().lower()
+            if requested_mode not in {"photo", "video"}:
+                requested_mode = _remembered_recent_camera_mode() or "photo"
+            if requested_mode == "video":
                 st.session_state["_camera_auto_start_video"] = True
                 st.session_state.pop("_camera_auto_start", None)
             else:
@@ -12974,15 +12980,16 @@ def inject_home_icon_css(review_attention=False):
 
     css_chunks = [
         ".st-key-home_camera div.stButton > button::before,"
+        ".st-key-home_video div.stButton > button::before,"
         ".st-key-home_diary div.stButton > button::before,"
         ".st-key-home_review div.stButton > button::before,"
         ".st-key-home_settings div.stButton > button::before{content:'';display:block;background-repeat:no-repeat;background-position:center;background-size:contain;flex-shrink:0;margin:0 !important;}",
-        ".st-key-home_camera div.stButton > button::before,.st-key-home_diary div.stButton > button::before{width:50px;height:50px;}",
+        ".st-key-home_camera div.stButton > button::before,.st-key-home_video div.stButton > button::before,.st-key-home_diary div.stButton > button::before{width:50px;height:50px;}",
         ".st-key-home_review div.stButton > button::before,.st-key-home_settings div.stButton > button::before{width:42px;height:42px;}",
-        "@media (max-width: 640px){.st-key-home_camera div.stButton > button::before,.st-key-home_diary div.stButton > button::before{width:36px;height:36px;}.st-key-home_review div.stButton > button::before,.st-key-home_settings div.stButton > button::before{width:30px;height:30px;}}",
+        "@media (max-width: 640px){.st-key-home_camera div.stButton > button::before,.st-key-home_video div.stButton > button::before,.st-key-home_diary div.stButton > button::before{width:36px;height:36px;}.st-key-home_review div.stButton > button::before,.st-key-home_settings div.stButton > button::before{width:30px;height:30px;}}",
         f'.home-title-accent{{color:color-mix(in srgb, {accent} 80%, rgba(31, 38, 48, .96) 20%);text-shadow:0 1px 0 rgba(255,255,255,.72);}}',
-        f'.st-key-home_camera div.stButton > button,.st-key-home_diary div.stButton > button{{border-color:{accent} !important;background:linear-gradient(155deg,rgba({rgb2},.25),rgba({rgb1},.07)) !important;box-shadow:0 9px 22px rgba({rgb1},.10),0 0 0 2px rgba(255,255,255,.34) inset !important;}}',
-        f'.st-key-home_camera div.stButton > button:hover,.st-key-home_diary div.stButton > button:hover{{border-color:{accent} !important;background:linear-gradient(155deg,rgba({rgb2},.34),rgba({rgb1},.11)) !important;box-shadow:0 11px 24px rgba({rgb1},.14),0 0 0 2px rgba(255,255,255,.40) inset !important;}}',
+        f'.st-key-home_camera div.stButton > button,.st-key-home_video div.stButton > button,.st-key-home_diary div.stButton > button{{border-color:{accent} !important;background:linear-gradient(155deg,rgba({rgb2},.25),rgba({rgb1},.07)) !important;box-shadow:0 9px 22px rgba({rgb1},.10),0 0 0 2px rgba(255,255,255,.34) inset !important;}}',
+        f'.st-key-home_camera div.stButton > button:hover,.st-key-home_video div.stButton > button:hover,.st-key-home_diary div.stButton > button:hover{{border-color:{accent} !important;background:linear-gradient(155deg,rgba({rgb2},.34),rgba({rgb1},.11)) !important;box-shadow:0 11px 24px rgba({rgb1},.14),0 0 0 2px rgba(255,255,255,.40) inset !important;}}',
         f'.st-key-home_settings div.stButton > button{{border-color:rgba({rgb1},.46) !important;background:linear-gradient(155deg,rgba({rgb2},.18),rgba({rgb1},.035)) !important;box-shadow:0 8px 20px rgba({rgb1},.07),0 0 0 2px rgba(255,255,255,.30) inset !important;}}',
         f'.st-key-home_settings div.stButton > button:hover{{border-color:rgba({rgb1},.62) !important;background:linear-gradient(155deg,rgba({rgb2},.25),rgba({rgb1},.065)) !important;box-shadow:0 10px 22px rgba({rgb1},.10),0 0 0 2px rgba(255,255,255,.35) inset !important;}}',
     ]
@@ -12995,7 +13002,7 @@ def inject_home_icon_css(review_attention=False):
         ])
 
     if camera_uri:
-        css_chunks.append(f'.st-key-home_camera div.stButton > button::before{{background-image:url("{camera_uri}") !important;}}')
+        css_chunks.append(f'.st-key-home_camera div.stButton > button::before,.st-key-home_video div.stButton > button::before{{background-image:url("{camera_uri}") !important;}}')
     if diary_uri:
         css_chunks.append(f'.st-key-home_diary div.stButton > button::before{{background-image:url("{diary_uri}") !important;}}')
     if review_uri:
@@ -14333,11 +14340,12 @@ def page_home():
 
     st.markdown('<div class="home-section-label">いつもの記録</div>', unsafe_allow_html=True)
     with st.container(key="home_primary"):
-        primary_left, primary_right = st.columns(2)
-        with primary_left:
-            render_home_button("写真・動画を撮る", "camera", "home_camera")
-        with primary_right:
-            render_home_button("日記にする・見る", "diary", "home_diary")
+        capture_left, capture_right = st.columns(2)
+        with capture_left:
+            render_home_button("写真を撮る", "camera", "home_camera", camera_mode="photo")
+        with capture_right:
+            render_home_button("動画を撮る", "camera", "home_video", camera_mode="video")
+        render_home_button("日記にする・見る", "diary", "home_diary")
 
     with st.container(key="home_good_moments"):
         if st.button(
