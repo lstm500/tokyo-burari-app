@@ -28,9 +28,9 @@ from zoneinfo import ZoneInfo
 import streamlit as st
 
 # Freshly generated update: 2026-08-31 23:49 JST
-GENERATED_UPDATE_JST = "2026-09-02T00:11:12+09:00"
+GENERATED_UPDATE_JST = "2026-09-02T00:28:00+09:00"
 
-APP_BUILD = "v160"
+APP_BUILD = "v162"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -798,11 +798,15 @@ _LIVE_CAMERA_HTML = """
       <button id="camera-review-retry" class="camera-retry-button" type="button">撮りなおす／選びなおす</button>
     </div>
     <button id="camera-review-find-moments" class="camera-find-button" type="button" hidden>✨ いい瞬間を探す</button>
-    <div id="camera-review-build" class="camera-review-build" hidden>camera v159</div>
-    <div id="camera-review-emotion-hint" class="camera-review-emotion-hint" hidden>写真をタップするたびに　🥰 ほっこりした → 😊 うれしい → 😲 びっくり → 😠 おこった → 😢 かなしい → 😣 くやしい → 未設定</div>
-    <div id="camera-review-image-shell" class="camera-review-image-shell" role="button" tabindex="0" aria-label="写真の気持ちを選ぶ" hidden>
+    <div id="camera-review-build" class="camera-review-build" hidden>camera v162</div>
+    <div id="camera-review-emotion-hint" class="camera-review-emotion-hint" hidden>写真下の「通常／子育て」を切り替え、写真をタップしてアイコンを選べます。</div>
+    <div id="camera-review-image-shell" class="camera-review-image-shell" role="button" tabindex="0" aria-label="写真のアイコンを選ぶ" hidden>
       <img id="camera-review-image" class="camera-review-image" alt="撮影した写真の確認" />
       <span id="camera-review-emotion-badge" class="camera-review-emotion-badge" hidden></span>
+    </div>
+    <div id="camera-review-mode-switch" class="camera-review-mode-switch" hidden>
+      <button id="camera-review-mode-normal" type="button" class="camera-review-mode-button active">🙂 通常</button>
+      <button id="camera-review-mode-parenting" type="button" class="camera-review-mode-button parenting">🌱 子育て</button>
     </div>
     <video id="camera-review-video" class="camera-review-video" playsinline controls hidden></video>
   </div>
@@ -990,6 +994,21 @@ _LIVE_CAMERA_CSS = """
   line-height: 1.35;
   text-align: center;
 }
+.camera-review-mode-switch {
+  display:grid; grid-template-columns:1fr 1fr; gap:6px; margin:6px 0 8px;
+}
+.camera-review-mode-button {
+  appearance:none; -webkit-appearance:none; min-height:34px; margin:0; padding:6px 8px;
+  border:1.5px solid rgba(128,128,128,.24); border-radius:10px; background:rgba(128,128,128,.05);
+  color:var(--st-text-color); font-size:12px; font-weight:760; cursor:pointer;
+  touch-action:manipulation; -webkit-tap-highlight-color:transparent;
+}
+.camera-review-mode-button.active {
+  border-color:#6C9BD2; background:rgba(108,155,210,.14); box-shadow:0 0 0 1px rgba(108,155,210,.08) inset;
+}
+.camera-review-mode-button.parenting.active {
+  border-color:#6FBA9C; background:rgba(111,186,156,.14); box-shadow:0 0 0 1px rgba(111,186,156,.08) inset;
+}
 .camera-review-emotion-palette {
   display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:6px; margin:8px 0;
   padding:8px; border-radius:13px; background:rgba(128,128,128,.06);
@@ -1131,6 +1150,9 @@ export default function(component) {
   const reviewImage = parentElement.querySelector('#camera-review-image');
   const reviewEmotionBadge = parentElement.querySelector('#camera-review-emotion-badge');
   const reviewEmotionHint = parentElement.querySelector('#camera-review-emotion-hint');
+  const reviewModeSwitch = parentElement.querySelector('#camera-review-mode-switch');
+  const reviewModeNormal = parentElement.querySelector('#camera-review-mode-normal');
+  const reviewModeParenting = parentElement.querySelector('#camera-review-mode-parenting');
   const reviewVideo = parentElement.querySelector('#camera-review-video');
   const reviewSave = parentElement.querySelector('#camera-review-save');
   const reviewRetry = parentElement.querySelector('#camera-review-retry');
@@ -1175,28 +1197,62 @@ export default function(component) {
     sadness: { emoji: '😢', color: '#6C9BD2', label: 'かなしい' },
     frustration: { emoji: '😣', color: '#A66A8A', label: 'くやしい' }
   };
+  const PARENTING_ORDER = ['', 'effort', 'challenge', 'discovery', 'kindness', 'together', 'tears'];
+  const PARENTING_TAGS = {
+    effort: { emoji:'⭐', color:'#E6B84A', label:'がんばった' },
+    challenge: { emoji:'💪', color:'#F2994A', label:'ちょうせん' },
+    discovery: { emoji:'💡', color:'#9BC53D', label:'はっけん' },
+    kindness: { emoji:'❤️', color:'#E57373', label:'やさしさ' },
+    together: { emoji:'🤝', color:'#4DB6AC', label:'いっしょに' },
+    tears: { emoji:'😭', color:'#6C9BD2', label:'なみだ' }
+  };
   let pendingEmotion = '';
+  let pendingParenting = '';
+  let reviewMode = 'normal';
   const normalizeEmotion = (value) => Object.prototype.hasOwnProperty.call(PHOTO_EMOTIONS, String(value || '')) ? String(value || '') : '';
+  const normalizeParenting = (value) => Object.prototype.hasOwnProperty.call(PARENTING_TAGS, String(value || '')) ? String(value || '') : '';
+  const syncReviewModeButtons = () => {
+    const normalMeta = PHOTO_EMOTIONS[normalizeEmotion(pendingEmotion)] || null;
+    const parentingMeta = PARENTING_TAGS[normalizeParenting(pendingParenting)] || null;
+    if (reviewModeNormal) {
+      reviewModeNormal.classList.toggle('active', reviewMode === 'normal');
+      reviewModeNormal.textContent = `${normalMeta ? normalMeta.emoji : '🙂'} 通常`;
+    }
+    if (reviewModeParenting) {
+      reviewModeParenting.classList.toggle('active', reviewMode === 'parenting');
+      reviewModeParenting.textContent = `${parentingMeta ? parentingMeta.emoji : '🌱'} 子育て`;
+    }
+  };
   const syncReviewEmotion = () => {
-    const key = normalizeEmotion(pendingEmotion);
-    const meta = PHOTO_EMOTIONS[key] || null;
+    const normalKey = normalizeEmotion(pendingEmotion);
+    const parentingKey = normalizeParenting(pendingParenting);
+    const key = reviewMode === 'parenting' ? parentingKey : normalKey;
+    const meta = reviewMode === 'parenting' ? (PARENTING_TAGS[key] || null) : (PHOTO_EMOTIONS[key] || null);
     if (reviewImageShell) {
       reviewImageShell.style.borderColor = meta ? meta.color : '#AEB6C2';
       reviewImageShell.style.background = meta ? `${meta.color}18` : 'rgba(174,182,194,.07)';
-      reviewImageShell.setAttribute('aria-label', meta ? `写真の気持ち：${meta.label}。タップして次へ` : '写真の気持ちは未設定。タップするとほっこりしたになります');
+      reviewImageShell.setAttribute('aria-label', meta ? `${reviewMode === 'parenting' ? '子育て' : '通常'}：${meta.label}。タップして次へ` : `${reviewMode === 'parenting' ? '子育て' : '通常'}は未設定。タップして次へ`);
     }
     if (reviewEmotionBadge) {
       reviewEmotionBadge.textContent = meta ? `${meta.emoji} ${meta.label}` : '';
       reviewEmotionBadge.hidden = !meta;
     }
+    syncReviewModeButtons();
   };
   const cycleReviewEmotion = (event) => {
     event?.preventDefault?.(); event?.stopPropagation?.();
     if (!pendingMedia || pendingMedia.kind !== 'photo') return;
-    const current = normalizeEmotion(pendingEmotion);
-    const currentIndex = Math.max(0, PHOTO_EMOTION_ORDER.indexOf(current));
-    pendingEmotion = PHOTO_EMOTION_ORDER[(currentIndex + 1) % PHOTO_EMOTION_ORDER.length];
-    pendingMedia.emotion = pendingEmotion;
+    if (reviewMode === 'parenting') {
+      const current = normalizeParenting(pendingParenting);
+      const currentIndex = Math.max(0, PARENTING_ORDER.indexOf(current));
+      pendingParenting = PARENTING_ORDER[(currentIndex + 1) % PARENTING_ORDER.length];
+      pendingMedia.parenting = pendingParenting;
+    } else {
+      const current = normalizeEmotion(pendingEmotion);
+      const currentIndex = Math.max(0, PHOTO_EMOTION_ORDER.indexOf(current));
+      pendingEmotion = PHOTO_EMOTION_ORDER[(currentIndex + 1) % PHOTO_EMOTION_ORDER.length];
+      pendingMedia.emotion = pendingEmotion;
+    }
     syncReviewEmotion();
   };
   const onReviewEmotionKeydown = (event) => {
@@ -1313,6 +1369,9 @@ export default function(component) {
       reviewImage.removeAttribute('src');
     }
     pendingEmotion = '';
+    pendingParenting = '';
+    reviewMode = 'normal';
+    if (reviewModeSwitch) reviewModeSwitch.hidden = true;
     syncReviewEmotion();
     if (reviewVideo) {
       try { reviewVideo.pause(); } catch (_) {}
@@ -1354,12 +1413,15 @@ export default function(component) {
     if (video) video.hidden = true;
     hideReview();
     pendingEmotion = normalizeEmotion(pendingMedia?.emotion);
+    pendingParenting = normalizeParenting(pendingMedia?.parenting);
+    reviewMode = 'normal';
     if (reviewImage) {
       reviewImage.src = dataUrl;
       reviewImage.hidden = false;
     }
     if (reviewImageShell) reviewImageShell.hidden = false;
     if (reviewEmotionHint) reviewEmotionHint.hidden = false;
+    if (reviewModeSwitch) reviewModeSwitch.hidden = false;
     syncReviewEmotion();
     reviewSave.textContent = 'この写真を残す';
     reviewRetry.textContent = '撮りなおす／選びなおす';
@@ -1852,7 +1914,8 @@ export default function(component) {
         source: 'camera',
         captured_at: capturedAt,
         location,
-        emotion: ''
+        emotion: '',
+        parenting: ''
       };
       showPhotoReview(dataUrl);
       setStatus('');
@@ -2201,6 +2264,7 @@ export default function(component) {
         source: 'gallery',
         captured_at: new Date().toISOString(),
         emotion: '',
+        parenting: '',
         location: {
           ok: false,
           error_code: 'GALLERY',
@@ -2391,6 +2455,12 @@ export default function(component) {
   stopButton.addEventListener('click', closeCamera);
   galleryInput.addEventListener('change', chooseGalleryPhoto);
   galleryVideoInput?.addEventListener('change', chooseGalleryVideo);
+  if (reviewModeNormal) reviewModeNormal.addEventListener('click', (event) => {
+    event.preventDefault(); event.stopPropagation(); reviewMode = 'normal'; syncReviewEmotion();
+  });
+  if (reviewModeParenting) reviewModeParenting.addEventListener('click', (event) => {
+    event.preventDefault(); event.stopPropagation(); reviewMode = 'parenting'; syncReviewEmotion();
+  });
   reviewSave.addEventListener('click', savePendingMedia);
   reviewRetry.addEventListener('click', retryPendingMedia);
   reviewImageShell?.addEventListener('click', cycleReviewEmotion);
@@ -2423,11 +2493,11 @@ export default function(component) {
 }
 """
 
-LIVE_CAMERA_COMPONENT_BUILD = "v160"
+LIVE_CAMERA_COMPONENT_BUILD = "v162"
 
 try:
     live_camera_component = st.components.v2.component(
-        "tokyo_burari_live_camera_v160",
+        "tokyo_burari_live_camera_v162",
         html=_LIVE_CAMERA_HTML,
         css=_LIVE_CAMERA_CSS,
         js=_LIVE_CAMERA_JS,
@@ -2900,6 +2970,54 @@ PHOTO_EMOTIONS = {
     },
 }
 
+# Parent-facing tags are a separate axis from the child's normal feeling.
+# A photo can keep one value from each mode at the same time.
+PARENTING_TAG_ORDER = ("effort", "challenge", "discovery", "kindness", "together", "tears")
+PARENTING_TAGS = {
+    "effort": {
+        "label": "がんばった",
+        "emoji": "⭐",
+        "color": "#E6B84A",
+        "rgb": "230,184,74",
+        "meaning": "結果より過程を残したい",
+    },
+    "challenge": {
+        "label": "ちょうせん",
+        "emoji": "💪",
+        "color": "#F2994A",
+        "rgb": "242,153,74",
+        "meaning": "難しいこと、新しいことに挑戦した",
+    },
+    "discovery": {
+        "label": "はっけん",
+        "emoji": "💡",
+        "color": "#9BC53D",
+        "rgb": "155,197,61",
+        "meaning": "自分で気づいた、疑問を見つけた",
+    },
+    "kindness": {
+        "label": "やさしさ",
+        "emoji": "❤️",
+        "color": "#E57373",
+        "rgb": "229,115,115",
+        "meaning": "人を助けた、気遣った、譲った",
+    },
+    "together": {
+        "label": "いっしょに",
+        "emoji": "🤝",
+        "color": "#4DB6AC",
+        "rgb": "77,182,172",
+        "meaning": "友達・家族と協力した",
+    },
+    "tears": {
+        "label": "なみだ",
+        "emoji": "😭",
+        "color": "#6C9BD2",
+        "rgb": "108,155,210",
+        "meaning": "泣いた、つらかった、悔しくて涙が出た",
+    },
+}
+
 
 def normalize_photo_emotion_key(value):
     """Normalize legacy/new emotion values into the six v159 choices or ''."""
@@ -2920,6 +3038,63 @@ def normalize_photo_emotion_key(value):
     return aliases.get(value, "")
 
 
+def normalize_parenting_tag_key(value):
+    """Normalize parenting-mode values into one of the six parent-facing tags or ''."""
+    if isinstance(value, dict):
+        value = value.get("key") or value.get("tag") or value.get("label") or value.get("emoji")
+    value = str(value or "").strip()
+    aliases = {
+        "effort": "effort", "がんばった": "effort", "頑張った": "effort", "⭐": "effort",
+        "challenge": "challenge", "ちょうせん": "challenge", "挑戦": "challenge", "💪": "challenge",
+        "discovery": "discovery", "はっけん": "discovery", "発見": "discovery", "💡": "discovery",
+        "kindness": "kindness", "やさしさ": "kindness", "優しさ": "kindness", "❤️": "kindness", "❤": "kindness",
+        "together": "together", "いっしょに": "together", "一緒に": "together", "🤝": "together",
+        "tears": "tears", "なみだ": "tears", "涙": "tears", "😭": "tears",
+    }
+    return aliases.get(value, "")
+
+
+def photo_parenting_tag_key(photo):
+    reflection = (photo or {}).get("reflection_json") or {}
+    if not isinstance(reflection, dict):
+        return ""
+    return normalize_parenting_tag_key(reflection.get("parenting_tag"))
+
+
+def photo_parenting_tag_meta(photo_or_key):
+    key = photo_or_key if isinstance(photo_or_key, str) else photo_parenting_tag_key(photo_or_key)
+    key = normalize_parenting_tag_key(key)
+    meta = dict(PARENTING_TAGS.get(key) or {})
+    meta["key"] = key
+    return meta
+
+
+def parenting_tag_record(tag_key, source="parent_tap_cycle_v162"):
+    tag_key = normalize_parenting_tag_key(tag_key)
+    if not tag_key:
+        return None
+    meta = PARENTING_TAGS[tag_key]
+    return {
+        "key": tag_key,
+        "label": meta["label"],
+        "emoji": meta["emoji"],
+        "color": meta["color"],
+        "meaning": meta["meaning"],
+        "updated_at": now_jst().isoformat(),
+        "source": str(source or "parent_tap_cycle_v162"),
+    }
+
+
+def next_parenting_tag_key(current):
+    current = normalize_parenting_tag_key(current)
+    cycle = ("",) + PARENTING_TAG_ORDER
+    try:
+        index = cycle.index(current)
+    except ValueError:
+        index = 0
+    return cycle[(index + 1) % len(cycle)]
+
+
 def photo_emotion_key(photo):
     reflection = (photo or {}).get("reflection_json") or {}
     if not isinstance(reflection, dict):
@@ -2935,7 +3110,7 @@ def photo_emotion_meta(photo_or_key):
     return meta
 
 
-def photo_emotion_record(emotion_key, source="child_tap_cycle_v160"):
+def photo_emotion_record(emotion_key, source="child_tap_cycle_v162"):
     """Return the persisted reflection_json payload for one of the six v159 feelings."""
     emotion_key = normalize_photo_emotion_key(emotion_key)
     if not emotion_key:
@@ -2947,7 +3122,7 @@ def photo_emotion_record(emotion_key, source="child_tap_cycle_v160"):
         "emoji": meta["emoji"],
         "color": meta["color"],
         "updated_at": now_jst().isoformat(),
-        "source": str(source or "child_tap_cycle_v160"),
+        "source": str(source or "child_tap_cycle_v162"),
     }
 
 
@@ -3072,7 +3247,7 @@ def update_photo_emotion(photo_id, emotion_key, trip_id=None, refresh_related=Tr
         reflection = {}
 
     if emotion_key:
-        reflection["emotion"] = photo_emotion_record(emotion_key, source="child_tap_cycle_v160")
+        reflection["emotion"] = photo_emotion_record(emotion_key, source="child_tap_cycle_v162")
     else:
         reflection.pop("emotion", None)
 
@@ -3108,6 +3283,82 @@ def update_photo_emotions_batch(changes, valid_photo_ids=None, trip_id=None):
         # The supplied trip_id is authoritative for the normal diary/recent-photo
         # views. update_photo_emotion still resolves the row trip when it is absent.
         update_photo_emotion(photo_id, emotion_key, trip_id=trip_id, refresh_related=False)
+        if trip_id:
+            touched_trips.add(str(trip_id))
+    if not touched_trips:
+        try:
+            rows = (
+                supabase_client().table(PHOTO_TABLE)
+                .select("id,trip_id")
+                .in_("id", list(latest.keys()))
+                .eq("family_key", current_family_key())
+                .eq("member_key", current_member_key())
+                .execute()
+            ).data or []
+            touched_trips.update(str(row.get("trip_id") or "") for row in rows if row.get("trip_id"))
+        except Exception:
+            pass
+    _refresh_after_photo_emotion_changes(touched_trips)
+    return latest
+
+
+def update_photo_parenting_tag(photo_id, tag_key, trip_id=None, refresh_related=True):
+    """Persist one parent-facing child-rearing tag independently of normal emotion."""
+    tag_key = normalize_parenting_tag_key(tag_key)
+    if tag_key and tag_key not in PARENTING_TAGS:
+        raise ValueError("子育てアイコンの種類を確認できませんでした。")
+
+    client = supabase_client()
+    query = (
+        client.table(PHOTO_TABLE)
+        .select("id,trip_id,reflection_json")
+        .eq("id", photo_id)
+        .eq("family_key", current_family_key()).eq("member_key", current_member_key())
+        .limit(1)
+        .execute()
+    )
+    row = (query.data or [None])[0] or {}
+    if not row.get("id"):
+        raise ValueError("子育てアイコンを設定する写真が見つかりませんでした。")
+    resolved_trip_id = str(trip_id or row.get("trip_id") or "")
+    reflection = row.get("reflection_json") or {}
+    if not isinstance(reflection, dict):
+        reflection = {}
+
+    if tag_key:
+        reflection["parenting_tag"] = parenting_tag_record(tag_key, source="parent_tap_cycle_v162")
+    else:
+        reflection.pop("parenting_tag", None)
+
+    (
+        client.table(PHOTO_TABLE)
+        .update({"reflection_json": reflection})
+        .eq("id", photo_id)
+        .eq("family_key", current_family_key()).eq("member_key", current_member_key())
+        .execute()
+    )
+    if refresh_related:
+        _refresh_after_photo_emotion_changes([resolved_trip_id] if resolved_trip_id else [])
+    return tag_key
+
+
+def update_photo_parenting_tags_batch(changes, valid_photo_ids=None, trip_id=None):
+    """Persist final parenting-mode tags when the next real app interaction occurs."""
+    valid = {str(value) for value in (valid_photo_ids or []) if str(value)} if valid_photo_ids is not None else None
+    latest = {}
+    for change in changes or []:
+        if not isinstance(change, dict):
+            continue
+        photo_id = str(change.get("photo_id") or "").strip()
+        if not photo_id or (valid is not None and photo_id not in valid):
+            continue
+        latest[photo_id] = normalize_parenting_tag_key(change.get("parenting"))
+    if not latest:
+        return {}
+
+    touched_trips = set()
+    for photo_id, tag_key in latest.items():
+        update_photo_parenting_tag(photo_id, tag_key, trip_id=trip_id, refresh_related=False)
         if trip_id:
             touched_trips.add(str(trip_id))
     if not touched_trips:
@@ -3196,6 +3447,16 @@ def consume_pending_emotion_query():
         if photo_changes:
             update_photo_emotions_batch(photo_changes)
 
+        parenting_map = payload.get("g") or {}
+        parenting_changes = []
+        if isinstance(parenting_map, dict):
+            for photo_id, parenting in parenting_map.items():
+                pid = str(photo_id or "").strip()
+                if pid:
+                    parenting_changes.append({"photo_id": pid, "parenting": normalize_parenting_tag_key(parenting)})
+        if parenting_changes:
+            update_photo_parenting_tags_batch(parenting_changes)
+
         moments = payload.get("x") or {}
         if isinstance(moments, dict):
             for video_id, state in moments.items():
@@ -3225,7 +3486,18 @@ def consume_pending_emotion_query():
                             rank = 0
                         if rank > 0:
                             changes.append({"rank": rank, "emotion": normalize_photo_emotion_key(emotion)})
-                if not changes:
+
+                parenting_state_map = state.get("g") or {}
+                parenting_changes = []
+                if isinstance(parenting_state_map, dict):
+                    for rank_value, parenting in parenting_state_map.items():
+                        try:
+                            rank = int(rank_value)
+                        except Exception:
+                            rank = 0
+                        if rank > 0:
+                            parenting_changes.append({"rank": rank, "parenting": normalize_parenting_tag_key(parenting)})
+                if not changes and not parenting_changes:
                     continue
 
                 row = (
@@ -3239,7 +3511,11 @@ def consume_pending_emotion_query():
                 ).data or []
                 video_photo = row[0] if row else None
                 if video_photo and photo_is_video(video_photo):
-                    update_video_ai_selection_emotions(video_photo, changes)
+                    update_video_ai_selection_tags(
+                        video_photo,
+                        emotion_changes=changes,
+                        parenting_changes=parenting_changes,
+                    )
 
         st.session_state["_emotion_query_processed_token"] = token
         st.session_state["_emotion_query_ack_token"] = token
@@ -3296,22 +3572,17 @@ _DIARY_GALLERY_CSS = """
   box-shadow:0 2px 8px rgba(0,0,0,.22); font-size:8.5px; line-height:1; font-weight:800; white-space:nowrap; pointer-events:none;
 }
 .diary-emotion-badge[hidden] { display:none !important; }
-.diary-emotion-palette {
-  position:absolute; inset:4px; z-index:9; display:grid; grid-template-columns:repeat(3,minmax(0,1fr));
-  gap:3px; align-content:center; padding:5px; border-radius:12px;
-  background:rgba(17,24,39,.86); backdrop-filter:blur(3px); box-sizing:border-box;
+.diary-mode-switch {
+  display:grid; grid-template-columns:1fr 1fr; gap:3px; margin-top:4px; width:100%;
 }
-.diary-emotion-palette[hidden] { display:none !important; }
-.diary-emotion-option {
-  appearance:none; -webkit-appearance:none; min-width:0; min-height:29px; margin:0; padding:3px 2px;
-  border:1px solid rgba(255,255,255,.24); border-radius:9px; background:rgba(255,255,255,.93);
-  color:#20242b; font-size:8px; line-height:1.02; font-weight:750; cursor:pointer;
-  display:flex; flex-direction:column; align-items:center; justify-content:center; gap:2px;
+.diary-mode-button {
+  appearance:none; -webkit-appearance:none; min-width:0; min-height:27px; margin:0; padding:4px 3px;
+  border:1px solid rgba(128,128,128,.22); border-radius:8px; background:rgba(128,128,128,.045);
+  color:var(--st-text-color); font-size:8.5px; line-height:1; font-weight:760; cursor:pointer;
   touch-action:manipulation; -webkit-tap-highlight-color:transparent;
 }
-.diary-emotion-option .emoji { font-size:15px; line-height:1; }
-.diary-emotion-option.selected { outline:2px solid #fff; outline-offset:1px; }
-.diary-emotion-clear { grid-column:1 / -1; min-height:22px; font-size:8px; opacity:.92; }
+.diary-mode-button.active { border-color:#6C9BD2; background:rgba(108,155,210,.13); }
+.diary-mode-button.parenting.active { border-color:#6FBA9C; background:rgba(111,186,156,.14); }
 .diary-photo-delete {
   position:absolute; top:3px; right:3px; z-index:12; width:25px; height:25px; padding:0; margin:0;
   border-radius:999px; border:1.5px solid rgba(255,255,255,.92); background:rgba(49,54,63,.72);
@@ -3328,12 +3599,8 @@ _DIARY_GALLERY_CSS = """
   .diary-photo-location { font-size:9px; }
   .diary-photo-delete { top:2px; right:2px; width:23px; height:23px; font-size:17px; }
   .diary-emotion-badge { right:5px; bottom:5px; min-width:25px; height:22px; padding:0 5px; font-size:7.5px; }
-  .diary-emotion-palette { inset:3px; padding:4px; gap:2px; }
-  .diary-emotion-option { min-height:28px; font-size:7px; padding:2px 1px; border-radius:7px; }
-  .diary-emotion-option .emoji { font-size:14px; }
-  .diary-photo-grid.single .diary-emotion-palette { padding:8px; gap:6px; }
-  .diary-photo-grid.single .diary-emotion-option { min-height:48px; font-size:11px; }
-  .diary-photo-grid.single .diary-emotion-option .emoji { font-size:21px; }
+  .diary-mode-button { min-height:25px; font-size:7.5px; padding:3px 2px; }
+  .diary-photo-grid.single .diary-mode-button { min-height:34px; font-size:10px; }
 }
 """
 
@@ -3351,16 +3618,21 @@ export default function(component) {
   const pendingParam = String(data?.pending_param || 'feel_v159');
   const familyKey = String(data?.family_key || '');
   const memberKey = String(data?.member_key || '');
-  const order = ['cozy', 'joy', 'surprise', 'anger', 'sadness', 'frustration'];
-  const emotionMeta = {
-    cozy: { emoji:'🥰', color:'#F3B6A0', label:'ほっこりした' },
-    joy: { emoji:'😊', color:'#F2C94C', label:'うれしい' },
-    surprise: { emoji:'😲', color:'#9B7BD3', label:'びっくり' },
-    anger: { emoji:'😠', color:'#E56B6F', label:'おこった' },
-    sadness: { emoji:'😢', color:'#6C9BD2', label:'かなしい' },
-    frustration: { emoji:'😣', color:'#A66A8A', label:'くやしい' },
+
+  const normalOrder = ['cozy', 'joy', 'surprise', 'anger', 'sadness', 'frustration'];
+  const normalMeta = {
+    cozy:{emoji:'🥰',color:'#F3B6A0',label:'ほっこりした'}, joy:{emoji:'😊',color:'#F2C94C',label:'うれしい'},
+    surprise:{emoji:'😲',color:'#9B7BD3',label:'びっくり'}, anger:{emoji:'😠',color:'#E56B6F',label:'おこった'},
+    sadness:{emoji:'😢',color:'#6C9BD2',label:'かなしい'}, frustration:{emoji:'😣',color:'#A66A8A',label:'くやしい'}
   };
-  const normalizeEmotion = (value) => Object.prototype.hasOwnProperty.call(emotionMeta, String(value || '')) ? String(value || '') : '';
+  const parentingOrder = ['effort', 'challenge', 'discovery', 'kindness', 'together', 'tears'];
+  const parentingMeta = {
+    effort:{emoji:'⭐',color:'#E6B84A',label:'がんばった'}, challenge:{emoji:'💪',color:'#F2994A',label:'ちょうせん'},
+    discovery:{emoji:'💡',color:'#9BC53D',label:'はっけん'}, kindness:{emoji:'❤️',color:'#E57373',label:'やさしさ'},
+    together:{emoji:'🤝',color:'#4DB6AC',label:'いっしょに'}, tears:{emoji:'😭',color:'#6C9BD2',label:'なみだ'}
+  };
+  const normalizeNormal = (value) => Object.prototype.hasOwnProperty.call(normalMeta, String(value || '')) ? String(value || '') : '';
+  const normalizeParenting = (value) => Object.prototype.hasOwnProperty.call(parentingMeta, String(value || '')) ? String(value || '') : '';
 
   const decodePayload = (raw) => {
     try {
@@ -3375,9 +3647,7 @@ export default function(component) {
   const encodePayload = (payload) => {
     const bytes = new TextEncoder().encode(JSON.stringify(payload));
     let binary = '';
-    for (let i = 0; i < bytes.length; i += 0x4000) {
-      binary += String.fromCharCode(...bytes.subarray(i, i + 0x4000));
-    }
+    for (let i = 0; i < bytes.length; i += 0x4000) binary += String.fromCharCode(...bytes.subarray(i, i + 0x4000));
     return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
   };
   const mutatePending = (mutator) => {
@@ -3386,9 +3656,10 @@ export default function(component) {
       const url = new URL(window.location.href);
       let envelope = decodePayload(url.searchParams.get(pendingParam));
       if (!envelope || Number(envelope.v) !== 159 || String(envelope.f || '') !== familyKey || String(envelope.m || '') !== memberKey) {
-        envelope = { v:159, f:familyKey, m:memberKey, p:{}, x:{} };
+        envelope = {v:159,f:familyKey,m:memberKey,p:{},g:{},x:{}};
       }
       if (!envelope.p || typeof envelope.p !== 'object') envelope.p = {};
+      if (!envelope.g || typeof envelope.g !== 'object') envelope.g = {};
       if (!envelope.x || typeof envelope.x !== 'object') envelope.x = {};
       mutator(envelope);
       envelope.t = `${Date.now()}_${Math.random().toString(36).slice(2)}`;
@@ -3398,86 +3669,72 @@ export default function(component) {
       window.history.replaceState(window.history.state || {}, '', url.pathname + url.search + url.hash);
     } catch (_) {}
   };
-  const persistPhotoEmotion = (photoId, emotion) => mutatePending((envelope) => {
-    envelope.p[String(photoId)] = normalizeEmotion(emotion);
-  });
+  const persistNormal = (photoId, value) => mutatePending((envelope) => { envelope.p[String(photoId)] = normalizeNormal(value); });
+  const persistParenting = (photoId, value) => mutatePending((envelope) => { envelope.g[String(photoId)] = normalizeParenting(value); });
   const discardPendingPhoto = (photoId) => mutatePending((envelope) => {
-    delete envelope.p[String(photoId)];
+    delete envelope.p[String(photoId)]; delete envelope.g[String(photoId)];
   });
-
-  const cycleOrder = ['', ...order];
-  const nextEmotion = (value) => {
-    const current = normalizeEmotion(value);
-    const index = Math.max(0, cycleOrder.indexOf(current));
-    return cycleOrder[(index + 1) % cycleOrder.length];
-  };
-
-  const applyEmotion = (card, badge, key) => {
-    for (const value of order) card.classList.remove(`emotion-${value}`);
-    const normalized = normalizeEmotion(key);
-    if (normalized) card.classList.add(`emotion-${normalized}`);
-    const meta = emotionMeta[normalized] || null;
-    badge.textContent = meta ? `${meta.emoji} ${meta.label}` : '';
-    badge.hidden = !meta;
-    card.setAttribute('aria-label', meta ? `写真の気持ち：${meta.label}。タップして次へ` : '写真の気持ちは未設定。タップするとほっこりしたになります');
+  const nextValue = (value, order, normalize) => {
+    const cycle = ['', ...order];
+    const index = Math.max(0, cycle.indexOf(normalize(value)));
+    return cycle[(index + 1) % cycle.length];
   };
 
   for (const sourcePhoto of photos) {
-    const photo = { ...sourcePhoto, emotion: normalizeEmotion(sourcePhoto?.emotion) };
-    const wrap = document.createElement('div');
-    wrap.className = 'diary-photo-wrap';
+    const photo = {
+      ...sourcePhoto,
+      emotion: normalizeNormal(sourcePhoto?.emotion),
+      parenting: normalizeParenting(sourcePhoto?.parenting),
+    };
+    let activeMode = 'normal';
+    const wrap = document.createElement('div'); wrap.className = 'diary-photo-wrap';
+    const card = document.createElement('div'); card.className = 'diary-photo-card'; card.setAttribute('role','button'); card.tabIndex = allowEmotion ? 0 : -1;
+    const img = document.createElement('img'); img.src = photo.src || ''; img.alt = 'ぶらり旅の写真'; img.loading='lazy'; img.decoding='async'; img.fetchPriority='low'; card.appendChild(img);
+    const badge = document.createElement('div'); badge.className='diary-emotion-badge'; card.appendChild(badge);
+    if (photo.location) { const location=document.createElement('div'); location.className='diary-photo-location'; location.textContent=`📍 ${photo.location}`; card.appendChild(location); }
 
-    const card = document.createElement('div');
-    card.className = 'diary-photo-card';
-    card.setAttribute('role', 'button');
-    card.tabIndex = allowEmotion ? 0 : -1;
+    const modeSwitch = document.createElement('div'); modeSwitch.className='diary-mode-switch';
+    const normalButton = document.createElement('button'); normalButton.type='button'; normalButton.className='diary-mode-button';
+    const parentingButton = document.createElement('button'); parentingButton.type='button'; parentingButton.className='diary-mode-button parenting';
+    modeSwitch.appendChild(normalButton); modeSwitch.appendChild(parentingButton);
 
-    const img = document.createElement('img');
-    img.src = photo.src || '';
-    img.alt = 'ぶらり旅の写真';
-    img.loading = 'lazy'; img.decoding = 'async'; img.fetchPriority = 'low';
-    card.appendChild(img);
+    const syncVisual = () => {
+      for (const value of [...normalOrder, ...parentingOrder]) card.classList.remove(`emotion-${value}`);
+      const normal = normalizeNormal(photo.emotion); const parenting = normalizeParenting(photo.parenting);
+      const key = activeMode === 'parenting' ? parenting : normal;
+      const meta = activeMode === 'parenting' ? (parentingMeta[key] || null) : (normalMeta[key] || null);
+      if (meta) { card.style.borderColor=meta.color; card.style.background=`${meta.color}20`; card.style.boxShadow=`0 0 0 1px ${meta.color}18 inset`; }
+      else { card.style.borderColor=''; card.style.background=''; card.style.boxShadow=''; }
+      badge.textContent = meta ? `${meta.emoji} ${meta.label}` : ''; badge.hidden = !meta;
+      const normalSelected = normalMeta[normal] || null; const parentingSelected = parentingMeta[parenting] || null;
+      normalButton.textContent = `${normalSelected ? normalSelected.emoji : '🙂'} 通常`;
+      parentingButton.textContent = `${parentingSelected ? parentingSelected.emoji : '🌱'} 子育て`;
+      normalButton.classList.toggle('active', activeMode === 'normal'); parentingButton.classList.toggle('active', activeMode === 'parenting');
+      card.setAttribute('aria-label', meta ? `${activeMode === 'parenting' ? '子育て' : '通常'}：${meta.label}。タップして次へ` : `${activeMode === 'parenting' ? '子育て' : '通常'}は未設定。タップして次へ`);
+    };
+    syncVisual();
 
-    const badge = document.createElement('div');
-    badge.className = 'diary-emotion-badge';
-    card.appendChild(badge);
-
-    if (photo.location) {
-      const location = document.createElement('div');
-      location.className = 'diary-photo-location';
-      location.textContent = `📍 ${photo.location}`;
-      card.appendChild(location);
-    }
-
-    applyEmotion(card, badge, photo.emotion);
+    normalButton.addEventListener('click', (event) => { event.preventDefault(); event.stopPropagation(); activeMode='normal'; syncVisual(); });
+    parentingButton.addEventListener('click', (event) => { event.preventDefault(); event.stopPropagation(); activeMode='parenting'; syncVisual(); });
 
     if (allowEmotion) {
       const cycle = (event) => {
         event?.preventDefault?.(); event?.stopPropagation?.();
-        photo.emotion = nextEmotion(photo.emotion);
-        applyEmotion(card, badge, photo.emotion);
-        // Browser-only pending state: no Streamlit trigger and no page refresh here.
-        persistPhotoEmotion(photo.id, photo.emotion);
+        if (activeMode === 'parenting') {
+          photo.parenting = nextValue(photo.parenting, parentingOrder, normalizeParenting); persistParenting(photo.id, photo.parenting);
+        } else {
+          photo.emotion = nextValue(photo.emotion, normalOrder, normalizeNormal); persistNormal(photo.id, photo.emotion);
+        }
+        syncVisual();
       };
       card.addEventListener('click', cycle);
-      card.addEventListener('keydown', (event) => {
-        if (event.key === 'Enter' || event.key === ' ') cycle(event);
-      });
-    } else {
-      card.style.cursor = 'default';
-    }
+      card.addEventListener('keydown', (event) => { if (event.key === 'Enter' || event.key === ' ') cycle(event); });
+    } else card.style.cursor='default';
 
-    wrap.appendChild(card);
-
+    wrap.appendChild(card); wrap.appendChild(modeSwitch);
     if (allowDelete) {
-      const remove = document.createElement('button');
-      remove.type = 'button'; remove.className = 'diary-photo-delete'; remove.textContent = '×';
-      remove.setAttribute('aria-label', 'この写真を削除');
-      remove.addEventListener('click', (event) => {
-        event.preventDefault(); event.stopPropagation();
-        discardPendingPhoto(photo.id);
-        setTriggerValue('delete_photo_id', String(photo.id));
-      });
+      const remove=document.createElement('button'); remove.type='button'; remove.className='diary-photo-delete'; remove.textContent='×'; remove.setAttribute('aria-label','この写真を削除');
+      remove.addEventListener('click', (event) => { event.preventDefault(); event.stopPropagation(); discardPendingPhoto(photo.id); setTriggerValue('delete_photo_id', String(photo.id)); });
       wrap.appendChild(remove);
     }
     grid.appendChild(wrap);
@@ -3497,7 +3754,7 @@ def _get_diary_gallery_component():
     _diary_gallery_component_initialized = True
     try:
         diary_gallery_component = st.components.v2.component(
-            "tokyo_burari_diary_gallery_v160",
+            "tokyo_burari_diary_gallery_v162",
             html=_DIARY_GALLERY_HTML,
             css=_DIARY_GALLERY_CSS,
             js=_DIARY_GALLERY_JS,
@@ -8135,34 +8392,42 @@ def record_video_ai_human_choices(video_photo, selected_ranks):
     return updated
 
 
-def update_video_ai_selection_emotions(video_photo, changes):
-    """Persist the final emotion state for one or more AI-selected stills in one write."""
+def update_video_ai_selection_tags(video_photo, emotion_changes=None, parenting_changes=None):
+    """Persist normal/parenting tags for AI-selected stills in one video-row write."""
     if not isinstance(video_photo, dict) or not video_photo.get("id") or not photo_is_video(video_photo):
         raise ValueError("動画が見つかりません。")
 
-    latest = {}
-    for change in changes or []:
+    emotion_latest = {}
+    for change in emotion_changes or []:
         if not isinstance(change, dict):
             continue
         try:
             rank = int(change.get("rank") or 0)
         except Exception:
             rank = 0
-        if rank <= 0:
+        if rank > 0:
+            emotion_latest[rank] = normalize_photo_emotion_key(change.get("emotion"))
+
+    parenting_latest = {}
+    for change in parenting_changes or []:
+        if not isinstance(change, dict):
             continue
-        latest[rank] = normalize_photo_emotion_key(change.get("emotion"))
-    if not latest:
+        try:
+            rank = int(change.get("rank") or 0)
+        except Exception:
+            rank = 0
+        if rank > 0:
+            parenting_latest[rank] = normalize_parenting_tag_key(change.get("parenting"))
+
+    if not emotion_latest and not parenting_latest:
         return video_photo
 
     client = supabase_client()
     current = (
-        client.table(PHOTO_TABLE)
-        .select("*")
+        client.table(PHOTO_TABLE).select("*")
         .eq("id", video_photo.get("id"))
-        .eq("family_key", current_family_key())
-        .eq("member_key", current_member_key())
-        .limit(1)
-        .execute()
+        .eq("family_key", current_family_key()).eq("member_key", current_member_key())
+        .limit(1).execute()
     )
     fresh = (current.data or [None])[0] or video_photo
     reflection = dict(photo_media_metadata(fresh))
@@ -8170,45 +8435,53 @@ def update_video_ai_selection_emotions(video_photo, changes):
     if not isinstance(selection, dict):
         selection = {}
     items = [item for item in (selection.get("items") or []) if isinstance(item, dict)]
-    found = set()
-    saved_sync = []
+    found_emotion, found_parenting = set(), set()
+    saved_emotion_sync, saved_parenting_sync = [], []
+
     for item in items:
         rank = int(item.get("rank") or 0)
-        if rank not in latest:
-            continue
-        found.add(rank)
-        emotion_key = latest[rank]
-        if emotion_key:
-            item["emotion"] = photo_emotion_record(emotion_key, source="child_tap_moments_cycle_v160")
-        else:
-            item.pop("emotion", None)
         saved_photo_id = str(item.get("saved_photo_id") or "").strip()
-        if saved_photo_id:
-            saved_sync.append((saved_photo_id, emotion_key))
-    missing = sorted(set(latest) - found)
+        if rank in emotion_latest:
+            found_emotion.add(rank)
+            emotion_key = emotion_latest[rank]
+            if emotion_key:
+                item["emotion"] = photo_emotion_record(emotion_key, source="child_tap_moments_cycle_v162")
+            else:
+                item.pop("emotion", None)
+            if saved_photo_id:
+                saved_emotion_sync.append((saved_photo_id, emotion_key))
+        if rank in parenting_latest:
+            found_parenting.add(rank)
+            parenting_key = parenting_latest[rank]
+            if parenting_key:
+                item["parenting_tag"] = parenting_tag_record(parenting_key, source="parent_tap_moments_cycle_v162")
+            else:
+                item.pop("parenting_tag", None)
+            if saved_photo_id:
+                saved_parenting_sync.append((saved_photo_id, parenting_key))
+
+    missing = sorted((set(emotion_latest) - found_emotion) | (set(parenting_latest) - found_parenting))
     if missing:
-        raise ValueError("感情を設定する切り取り写真が見つかりませんでした。")
+        raise ValueError("アイコンを設定する切り取り写真が見つかりませんでした。")
 
     selection["items"] = items
     selection["updated_at"] = now_jst().isoformat()
     reflection["ai_selection"] = selection
     _write_photo_reflection(video_photo.get("id"), reflection)
 
-    touched_trips = set()
     resolved_trip_id = str(fresh.get("trip_id") or "").strip()
-    if resolved_trip_id:
-        touched_trips.add(resolved_trip_id)
-    for saved_photo_id, emotion_key in saved_sync:
+    touched_trips = {resolved_trip_id} if resolved_trip_id else set()
+    for saved_photo_id, emotion_key in saved_emotion_sync:
         try:
-            update_photo_emotion(
-                saved_photo_id,
-                emotion_key,
-                trip_id=resolved_trip_id or None,
-                refresh_related=False,
-            )
+            update_photo_emotion(saved_photo_id, emotion_key, trip_id=resolved_trip_id or None, refresh_related=False)
         except Exception:
             pass
-    if saved_sync:
+    for saved_photo_id, parenting_key in saved_parenting_sync:
+        try:
+            update_photo_parenting_tag(saved_photo_id, parenting_key, trip_id=resolved_trip_id or None, refresh_related=False)
+        except Exception:
+            pass
+    if saved_emotion_sync or saved_parenting_sync:
         _refresh_after_photo_emotion_changes(touched_trips)
 
     updated = dict(fresh)
@@ -8216,13 +8489,20 @@ def update_video_ai_selection_emotions(video_photo, changes):
     return updated
 
 
-def update_video_ai_selection_emotion(video_photo, rank, emotion_key):
-    """Backward-compatible single-item wrapper around the v158 batch writer."""
-    return update_video_ai_selection_emotions(
-        video_photo,
-        [{"rank": int(rank or 0), "emotion": emotion_key}],
-    )
+def update_video_ai_selection_emotions(video_photo, changes):
+    return update_video_ai_selection_tags(video_photo, emotion_changes=changes)
 
+
+def update_video_ai_selection_parenting_tags(video_photo, changes):
+    return update_video_ai_selection_tags(video_photo, parenting_changes=changes)
+
+
+def update_video_ai_selection_emotion(video_photo, rank, emotion_key):
+    return update_video_ai_selection_emotions(video_photo, [{"rank": int(rank or 0), "emotion": emotion_key}])
+
+
+def update_video_ai_selection_parenting_tag(video_photo, rank, tag_key):
+    return update_video_ai_selection_parenting_tags(video_photo, [{"rank": int(rank or 0), "parenting": tag_key}])
 
 def record_video_ai_no_choice(video_photo):
     """Mark a video reviewed with no stills kept, and learn a weak negative signal."""
@@ -8460,6 +8740,7 @@ def save_video_ai_selection_as_photo(video_photo, selection_item):
     reflection = photo_media_metadata(video_photo)
     location = reflection.get("location") if isinstance(reflection.get("location"), dict) else {}
     selection_emotion = normalize_photo_emotion_key(selection_item.get("emotion"))
+    selection_parenting = normalize_parenting_tag_key(selection_item.get("parenting_tag"))
     extra_reflection = {
         "source_video_photo_id": str(video_photo.get("id") or ""),
         "source_selection_rank": rank,
@@ -8471,7 +8752,12 @@ def save_video_ai_selection_as_photo(video_photo, selection_item):
     if selection_emotion:
         extra_reflection["emotion"] = photo_emotion_record(
             selection_emotion,
-            source="child_tap_moments_cycle_v160",
+            source="child_tap_moments_cycle_v162",
+        )
+    if selection_parenting:
+        extra_reflection["parenting_tag"] = parenting_tag_record(
+            selection_parenting,
+            source="parent_tap_moments_cycle_v162",
         )
     saved = upload_photo(
         video_photo.get("trip_id"),
@@ -13242,6 +13528,7 @@ def render_pending_thumbnail_grid(trip_id, photos, max_count=None, trip=None):
                 "src": src,
                 "talked": bool(talked),
                 "emotion": photo_emotion_key(photo),
+                "parenting": photo_parenting_tag_key(photo),
                 "location": str(photo_location_label(photo) or ""),
                 "is_video": False,
             }
@@ -13380,6 +13667,7 @@ def render_diary_photo_gallery(trip_id, photos, state=None):
                 "src": src,
                 "talked": bool(talked),
                 "emotion": photo_emotion_key(photo),
+                "parenting": photo_parenting_tag_key(photo),
                 "location": str(location_label or ""),
                 "is_video": False,
             }
@@ -14122,25 +14410,19 @@ _MOMENTS_SELECT_CSS = """
   pointer-events: none;
 }
 .moments-emotion-badge[hidden] { display: none !important; }
-.moments-emotion-palette {
-  position:absolute; inset:5px; z-index:8; display:grid; grid-template-columns:repeat(3,minmax(0,1fr));
-  gap:3px; align-content:center; padding:5px; border-radius:11px; background:rgba(17,24,39,.86);
-  backdrop-filter:blur(3px); box-sizing:border-box;
+.moments-mode-switch {
+  display:grid; grid-template-columns:1fr 1fr; gap:3px; margin-top:4px;
 }
-.moments-emotion-palette[hidden] { display:none !important; }
-.moments-emotion-option {
-  appearance:none; -webkit-appearance:none; min-height:29px; margin:0; padding:3px 2px;
-  border:1px solid rgba(255,255,255,.24); border-radius:9px; background:rgba(255,255,255,.94);
-  color:#20242b; font-size:10px; line-height:1.05; font-weight:760; cursor:pointer;
-  display:flex; flex-direction:column; align-items:center; justify-content:center; gap:2px;
+.moments-mode-button {
+  appearance:none; -webkit-appearance:none; min-height:26px; margin:0; padding:4px 3px;
+  border:1px solid rgba(128,128,128,.22); border-radius:8px; background:rgba(128,128,128,.045);
+  color:var(--st-text-color); font-size:8.5px; line-height:1; font-weight:760; cursor:pointer;
   touch-action:manipulation; -webkit-tap-highlight-color:transparent;
 }
-.moments-emotion-option .emoji { font-size:15px; line-height:1; }
-.moments-emotion-option.selected { outline:2px solid #fff; outline-offset:1px; }
-.moments-emotion-clear { grid-column:1 / -1; min-height:22px; font-size:8px; }
-.moments-select-card.large-card .moments-emotion-palette { padding:10px; gap:7px; }
-.moments-select-card.large-card .moments-emotion-option { min-height:58px; font-size:12px; }
-.moments-select-card.large-card .moments-emotion-option .emoji { font-size:24px; }
+.moments-mode-button.active { border-color:#6C9BD2; background:rgba(108,155,210,.13); }
+.moments-mode-button.parenting.active { border-color:#6FBA9C; background:rgba(111,186,156,.14); }
+.moments-select-card.large-card .moments-mode-switch { gap:7px; margin-top:7px; }
+.moments-select-card.large-card .moments-mode-button { min-height:40px; font-size:11px; }
 .moments-select-meta {
   margin-top: 5px;
   font-size: 10px;
@@ -14277,169 +14559,97 @@ export default function(component) {
   const { parentElement, data, setTriggerValue } = component;
   const grid = parentElement.querySelector('#moments-select-grid');
   if (!grid) return;
+  grid.replaceChildren(); grid.classList.remove('enlarge-mode');
 
-  grid.replaceChildren();
-  grid.classList.remove('enlarge-mode');
-  const photos = Array.isArray(data?.photos) ? data.photos.slice(0, 3) : [];
+  const photos = Array.isArray(data?.photos) ? data.photos.slice(0,3) : [];
   const disabled = Boolean(data?.disabled);
   const viewMode = String(data?.view_mode || 'list') === 'enlarge' ? 'enlarge' : 'list';
-  const familyKey = String(data?.family_key || '');
-  const memberKey = String(data?.member_key || '');
-  const videoId = String(data?.video_id || '');
-  const roundNumber = Math.max(0, Number(data?.round_number || 0) || 0);
-  const pendingParam = String(data?.pending_param || 'feel_v159');
-  const selected = new Set((Array.isArray(data?.selected_ranks) ? data.selected_ranks : []).map(Number).filter((v) => Number.isFinite(v) && v > 0));
-  const emotionOrder = ['cozy', 'joy', 'surprise', 'anger', 'sadness', 'frustration'];
-  const emotionMeta = {
-    cozy: { emoji:'🥰', color:'#F3B6A0', label:'ほっこりした' },
-    joy: { emoji:'😊', color:'#F2C94C', label:'うれしい' },
-    surprise: { emoji:'😲', color:'#9B7BD3', label:'びっくり' },
-    anger: { emoji:'😠', color:'#E56B6F', label:'おこった' },
-    sadness: { emoji:'😢', color:'#6C9BD2', label:'かなしい' },
-    frustration: { emoji:'😣', color:'#A66A8A', label:'くやしい' },
+  const familyKey=String(data?.family_key||''), memberKey=String(data?.member_key||''), videoId=String(data?.video_id||'');
+  const roundNumber=Math.max(0,Number(data?.round_number||0)||0), pendingParam=String(data?.pending_param||'feel_v159');
+  const selected=new Set((Array.isArray(data?.selected_ranks)?data.selected_ranks:[]).map(Number).filter(v=>Number.isFinite(v)&&v>0));
+
+  const normalOrder=['cozy','joy','surprise','anger','sadness','frustration'];
+  const normalMeta={
+    cozy:{emoji:'🥰',color:'#F3B6A0',label:'ほっこりした'},joy:{emoji:'😊',color:'#F2C94C',label:'うれしい'},
+    surprise:{emoji:'😲',color:'#9B7BD3',label:'びっくり'},anger:{emoji:'😠',color:'#E56B6F',label:'おこった'},
+    sadness:{emoji:'😢',color:'#6C9BD2',label:'かなしい'},frustration:{emoji:'😣',color:'#A66A8A',label:'くやしい'}
   };
-  const normalizeEmotion = (value) => Object.prototype.hasOwnProperty.call(emotionMeta, String(value || '')) ? String(value || '') : '';
-  const emotions = new Map();
-  const rankFor = (photo, index) => Number(photo?.rank || (index + 1));
-  for (let index = 0; index < photos.length; index += 1) {
-    const rank = rankFor(photos[index], index);
-    if (Number.isFinite(rank) && rank > 0) emotions.set(rank, normalizeEmotion(photos[index]?.emotion));
-  }
-  const validRanks = photos.map(rankFor).filter((value) => Number.isFinite(value) && value > 0);
-  let activeRank = Number(data?.active_rank || 0);
-  if (!validRanks.includes(activeRank)) activeRank = validRanks.length ? validRanks[0] : 0;
-
-  const decodePayload = (raw) => {
-    try {
-      let value = String(raw || '').replace(/-/g, '+').replace(/_/g, '/');
-      value += '='.repeat((4 - value.length % 4) % 4);
-      const binary = atob(value);
-      const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0));
-      const parsed = JSON.parse(new TextDecoder().decode(bytes));
-      return parsed && typeof parsed === 'object' ? parsed : null;
-    } catch (_) { return null; }
+  const parentingOrder=['effort','challenge','discovery','kindness','together','tears'];
+  const parentingMeta={
+    effort:{emoji:'⭐',color:'#E6B84A',label:'がんばった'},challenge:{emoji:'💪',color:'#F2994A',label:'ちょうせん'},
+    discovery:{emoji:'💡',color:'#9BC53D',label:'はっけん'},kindness:{emoji:'❤️',color:'#E57373',label:'やさしさ'},
+    together:{emoji:'🤝',color:'#4DB6AC',label:'いっしょに'},tears:{emoji:'😭',color:'#6C9BD2',label:'なみだ'}
   };
-  const encodePayload = (payload) => {
-    const bytes = new TextEncoder().encode(JSON.stringify(payload));
-    let binary = '';
-    for (let i = 0; i < bytes.length; i += 0x4000) binary += String.fromCharCode(...bytes.subarray(i, i + 0x4000));
-    return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
+  const normalizeNormal=(v)=>Object.prototype.hasOwnProperty.call(normalMeta,String(v||''))?String(v||''):'';
+  const normalizeParenting=(v)=>Object.prototype.hasOwnProperty.call(parentingMeta,String(v||''))?String(v||''):'';
+  const rankFor=(photo,index)=>Number(photo?.rank||(index+1));
+  const emotions=new Map(), parenting=new Map();
+  for(let i=0;i<photos.length;i+=1){ const rank=rankFor(photos[i],i); if(Number.isFinite(rank)&&rank>0){ emotions.set(rank,normalizeNormal(photos[i]?.emotion)); parenting.set(rank,normalizeParenting(photos[i]?.parenting)); } }
+  const validRanks=photos.map(rankFor).filter(v=>Number.isFinite(v)&&v>0);
+  let activeRank=Number(data?.active_rank||0); if(!validRanks.includes(activeRank)) activeRank=validRanks.length?validRanks[0]:0;
+
+  const decodePayload=(raw)=>{try{let v=String(raw||'').replace(/-/g,'+').replace(/_/g,'/');v+='='.repeat((4-v.length%4)%4);const b=atob(v);const bytes=Uint8Array.from(b,c=>c.charCodeAt(0));const p=JSON.parse(new TextDecoder().decode(bytes));return p&&typeof p==='object'?p:null;}catch(_){return null;}};
+  const encodePayload=(payload)=>{const bytes=new TextEncoder().encode(JSON.stringify(payload));let binary='';for(let i=0;i<bytes.length;i+=0x4000)binary+=String.fromCharCode(...bytes.subarray(i,i+0x4000));return btoa(binary).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/g,'');};
+  const persistMomentState=(rank)=>{
+    if(!familyKey||!memberKey||!videoId)return;
+    try{
+      const url=new URL(window.location.href);let envelope=decodePayload(url.searchParams.get(pendingParam));
+      if(!envelope||Number(envelope.v)!==159||String(envelope.f||'')!==familyKey||String(envelope.m||'')!==memberKey) envelope={v:159,f:familyKey,m:memberKey,p:{},g:{},x:{}};
+      if(!envelope.p||typeof envelope.p!=='object')envelope.p={}; if(!envelope.g||typeof envelope.g!=='object')envelope.g={}; if(!envelope.x||typeof envelope.x!=='object')envelope.x={};
+      let state=envelope.x[videoId]; if(!state||typeof state!=='object'||Number(state.r||0)!==roundNumber)state={r:roundNumber,e:{},g:{},s:[]};
+      if(!state.e||typeof state.e!=='object')state.e={}; if(!state.g||typeof state.g!=='object')state.g={};
+      state.e[String(rank)]=normalizeNormal(emotions.get(rank)); state.g[String(rank)]=normalizeParenting(parenting.get(rank)); state.s=Array.from(selected).sort((a,b)=>a-b); envelope.x[videoId]=state;
+      envelope.t=`${Date.now()}_${Math.random().toString(36).slice(2)}`; const encoded=encodePayload(envelope); url.searchParams.set(pendingParam,encoded);
+      try{localStorage.setItem('tokyo_burari_pending_feelings_v159',encoded);}catch(_){} window.history.replaceState(window.history.state||{},'',url.pathname+url.search+url.hash);
+    }catch(_){}
   };
-  const persistMomentState = (rank) => {
-    if (!familyKey || !memberKey || !videoId) return;
-    try {
-      const url = new URL(window.location.href);
-      let envelope = decodePayload(url.searchParams.get(pendingParam));
-      if (!envelope || Number(envelope.v) !== 159 || String(envelope.f || '') !== familyKey || String(envelope.m || '') !== memberKey) {
-        envelope = { v:159, f:familyKey, m:memberKey, p:{}, x:{} };
-      }
-      if (!envelope.p || typeof envelope.p !== 'object') envelope.p = {};
-      if (!envelope.x || typeof envelope.x !== 'object') envelope.x = {};
-      let state = envelope.x[videoId];
-      if (!state || typeof state !== 'object' || Number(state.r || 0) !== roundNumber) state = { r:roundNumber, e:{}, s:[] };
-      if (!state.e || typeof state.e !== 'object') state.e = {};
-      state.e[String(rank)] = normalizeEmotion(emotions.get(rank));
-      state.s = Array.from(selected).sort((a,b) => a-b);
-      envelope.x[videoId] = state;
-      envelope.t = `${Date.now()}_${Math.random().toString(36).slice(2)}`;
-      const encoded = encodePayload(envelope);
-      url.searchParams.set(pendingParam, encoded);
-      try { localStorage.setItem('tokyo_burari_pending_feelings_v159', encoded); } catch (_) {}
-      window.history.replaceState(window.history.state || {}, '', url.pathname + url.search + url.hash);
-    } catch (_) {}
-  };
-  const emitActive = (rank) => {
-    if (Number.isFinite(rank) && rank > 0) setTriggerValue('active_rank', rank);
-  };
+  const emitActive=(rank)=>{if(Number.isFinite(rank)&&rank>0)setTriggerValue('active_rank',rank);};
+  const nextValue=(value,order,normalize)=>{const cycle=['',...order];const index=Math.max(0,cycle.indexOf(normalize(value)));return cycle[(index+1)%cycle.length];};
 
-  const cycleOrder = ['', ...emotionOrder];
+  const makeCard=(photo,index,large=false)=>{
+    const rank=rankFor(photo,index); let activeMode='normal';
+    const card=document.createElement('div'); card.className=large?'moments-select-card large-card':'moments-select-card'; card.setAttribute('role','button'); card.tabIndex=disabled?-1:0; card.setAttribute('aria-disabled',disabled?'true':'false');
+    const imageWrap=document.createElement('div'); imageWrap.className='moments-select-image-wrap';
+    if(photo?.src){const img=document.createElement('img');img.src=String(photo.src);img.alt=`いい瞬間 ${rank}`;img.loading=large?'eager':'lazy';img.decoding='async';if(!large)img.fetchPriority='low';imageWrap.appendChild(img);}
+    const rankBadge=document.createElement('div');rankBadge.className='moments-select-rank';rankBadge.textContent=photo?.ai_best?'★ AI BEST':`#${rank}`;imageWrap.appendChild(rankBadge);
+    const pickedBadge=document.createElement('div');pickedBadge.className='moments-select-picked';pickedBadge.textContent='選択中';imageWrap.appendChild(pickedBadge);
+    const badge=document.createElement('div');badge.className='moments-emotion-badge';imageWrap.appendChild(badge);
+    const modeSwitch=document.createElement('div');modeSwitch.className='moments-mode-switch';
+    const normalButton=document.createElement('button');normalButton.type='button';normalButton.className='moments-mode-button';
+    const parentingButton=document.createElement('button');parentingButton.type='button';parentingButton.className='moments-mode-button parenting';modeSwitch.appendChild(normalButton);modeSwitch.appendChild(parentingButton);
+    const metaText=document.createElement('div');metaText.className='moments-select-meta';metaText.textContent=String(photo?.meta||'');
+    const reason=document.createElement('div');reason.className='moments-select-reason';reason.textContent=String(photo?.reason||'');
 
-  const makeCard = (photo, index, large = false) => {
-    const rank = rankFor(photo, index);
-    const card = document.createElement('div');
-    card.className = large ? 'moments-select-card large-card' : 'moments-select-card';
-    card.setAttribute('role', 'button');
-    card.tabIndex = disabled ? -1 : 0;
-    card.setAttribute('aria-disabled', disabled ? 'true' : 'false');
-
-    const imageWrap = document.createElement('div');
-    imageWrap.className = 'moments-select-image-wrap';
-    if (photo?.src) {
-      const img = document.createElement('img');
-      img.src = String(photo.src); img.alt = `いい瞬間 ${rank}`;
-      img.loading = large ? 'eager' : 'lazy'; img.decoding = 'async'; if (!large) img.fetchPriority = 'low';
-      imageWrap.appendChild(img);
-    }
-
-    const rankBadge = document.createElement('div');
-    rankBadge.className = 'moments-select-rank'; rankBadge.textContent = photo?.ai_best ? '★ AI BEST' : `#${rank}`;
-    imageWrap.appendChild(rankBadge);
-    const pickedBadge = document.createElement('div');
-    pickedBadge.className = 'moments-select-picked'; pickedBadge.textContent = '選択中'; imageWrap.appendChild(pickedBadge);
-    const emotionBadge = document.createElement('div');
-    emotionBadge.className = 'moments-emotion-badge'; imageWrap.appendChild(emotionBadge);
-
-    const metaText = document.createElement('div'); metaText.className = 'moments-select-meta'; metaText.textContent = String(photo?.meta || '');
-    const reason = document.createElement('div'); reason.className = 'moments-select-reason'; reason.textContent = String(photo?.reason || '');
-
-    const syncVisual = () => {
-      const emotion = normalizeEmotion(emotions.get(rank));
-      const eMeta = emotionMeta[emotion] || null;
-      const active = selected.has(rank);
-      card.classList.toggle('selected', active && !eMeta);
-      if (eMeta) {
-        card.style.borderColor = eMeta.color; card.style.background = `${eMeta.color}1F`; card.style.boxShadow = `0 0 0 2px ${eMeta.color}24`;
-      } else {
-        card.style.borderColor = ''; card.style.background = ''; card.style.boxShadow = '';
-      }
-      pickedBadge.style.display = active && !eMeta ? 'block' : 'none';
-      emotionBadge.textContent = eMeta ? `${eMeta.emoji} ${eMeta.label}` : ''; emotionBadge.hidden = !eMeta;
-      card.setAttribute('aria-pressed', active ? 'true' : 'false');
-      card.setAttribute('aria-label', eMeta ? `写真${rank}の気持ち：${eMeta.label}。タップして次へ` : `写真${rank}の気持ちは未設定。タップするとほっこりしたになります`);
+    const syncVisual=()=>{
+      const normal=normalizeNormal(emotions.get(rank)), parent=normalizeParenting(parenting.get(rank));
+      const key=activeMode==='parenting'?parent:normal, meta=activeMode==='parenting'?(parentingMeta[key]||null):(normalMeta[key]||null);
+      const active=Boolean(normal||parent); if(active)selected.add(rank);else selected.delete(rank);
+      card.classList.toggle('selected',active&&!meta);
+      if(meta){card.style.borderColor=meta.color;card.style.background=`${meta.color}1F`;card.style.boxShadow=`0 0 0 2px ${meta.color}24`;}else{card.style.borderColor='';card.style.background='';card.style.boxShadow='';}
+      pickedBadge.style.display=active&&!meta?'block':'none'; badge.textContent=meta?`${meta.emoji} ${meta.label}`:'';badge.hidden=!meta;
+      const nm=normalMeta[normal]||null, pm=parentingMeta[parent]||null; normalButton.textContent=`${nm?nm.emoji:'🙂'} 通常`; parentingButton.textContent=`${pm?pm.emoji:'🌱'} 子育て`;
+      normalButton.classList.toggle('active',activeMode==='normal');parentingButton.classList.toggle('active',activeMode==='parenting');
+      card.setAttribute('aria-pressed',active?'true':'false');card.setAttribute('aria-label',meta?`${activeMode==='parenting'?'子育て':'通常'}：${meta.label}。タップして次へ`:`${activeMode==='parenting'?'子育て':'通常'}は未設定。タップして次へ`);
     };
-    syncVisual();
-    card.appendChild(imageWrap); card.appendChild(metaText); card.appendChild(reason);
-
-    if (!disabled) {
-      const cycleEmotion = (event) => {
-        event?.preventDefault?.(); event?.stopPropagation?.();
-        const current = normalizeEmotion(emotions.get(rank));
-        const index = Math.max(0, cycleOrder.indexOf(current));
-        const next = cycleOrder[(index + 1) % cycleOrder.length];
-        emotions.set(rank, next);
-        if (next) selected.add(rank); else selected.delete(rank);
-        syncVisual();
-        // Keep the change entirely in browser state until another app action causes a rerun.
-        persistMomentState(rank);
-      };
-      card.addEventListener('click', cycleEmotion);
-      card.addEventListener('keydown', (event) => { if (event.key === 'Enter' || event.key === ' ') cycleEmotion(event); });
+    syncVisual(); card.appendChild(imageWrap); card.appendChild(modeSwitch); card.appendChild(metaText); card.appendChild(reason);
+    normalButton.addEventListener('click',(event)=>{event.preventDefault();event.stopPropagation();activeMode='normal';syncVisual();});
+    parentingButton.addEventListener('click',(event)=>{event.preventDefault();event.stopPropagation();activeMode='parenting';syncVisual();});
+    if(!disabled){
+      const cycle=(event)=>{event?.preventDefault?.();event?.stopPropagation?.(); if(activeMode==='parenting')parenting.set(rank,nextValue(parenting.get(rank),parentingOrder,normalizeParenting));else emotions.set(rank,nextValue(emotions.get(rank),normalOrder,normalizeNormal)); syncVisual(); persistMomentState(rank);};
+      card.addEventListener('click',cycle);card.addEventListener('keydown',(event)=>{if(event.key==='Enter'||event.key===' ')cycle(event);});
     }
     return card;
   };
 
-  if (viewMode === 'enlarge') {
-    grid.classList.add('enlarge-mode');
-    const shell = document.createElement('div'); shell.className = 'moments-enlarge-shell';
-    if (!photos.length) { const empty = document.createElement('div'); empty.className = 'moments-select-empty'; shell.appendChild(empty); grid.appendChild(shell); return; }
-    let activeIndex = photos.findIndex((photo, index) => rankFor(photo, index) === activeRank); if (activeIndex < 0) activeIndex = 0;
-    const activePhoto = photos[activeIndex]; activeRank = rankFor(activePhoto, activeIndex);
-    const nav = document.createElement('div'); nav.className = 'moments-enlarge-nav';
-    const prev = document.createElement('button'); prev.type='button'; prev.textContent='‹'; prev.disabled=activeIndex<=0; prev.setAttribute('aria-label','前の写真');
-    if (!prev.disabled) prev.addEventListener('click', () => emitActive(rankFor(photos[activeIndex - 1], activeIndex - 1)));
-    const counter = document.createElement('div'); counter.className='moments-enlarge-counter'; counter.textContent=`${activeIndex + 1} / ${photos.length}`;
-    const next = document.createElement('button'); next.type='button'; next.textContent='›'; next.disabled=activeIndex>=photos.length-1; next.setAttribute('aria-label','次の写真');
-    if (!next.disabled) next.addEventListener('click', () => emitActive(rankFor(photos[activeIndex + 1], activeIndex + 1)));
-    nav.appendChild(prev); nav.appendChild(counter); nav.appendChild(next); shell.appendChild(nav); shell.appendChild(makeCard(activePhoto, activeIndex, true));
-    const hint = document.createElement('div'); hint.className='moments-enlarge-hint'; hint.textContent='写真をタップするたびに　未設定 → 🥰 ほっこりした → 😊 うれしい → 😲 びっくり → 😠 おこった → 😢 かなしい → 😣 くやしい → 未設定';
-    shell.appendChild(hint); grid.appendChild(shell); return;
+  if(viewMode==='enlarge'){
+    grid.classList.add('enlarge-mode');const shell=document.createElement('div');shell.className='moments-enlarge-shell';
+    if(!photos.length){const empty=document.createElement('div');empty.className='moments-select-empty';shell.appendChild(empty);grid.appendChild(shell);return;}
+    let activeIndex=photos.findIndex((photo,index)=>rankFor(photo,index)===activeRank);if(activeIndex<0)activeIndex=0;const activePhoto=photos[activeIndex];activeRank=rankFor(activePhoto,activeIndex);
+    const nav=document.createElement('div');nav.className='moments-enlarge-nav';const prev=document.createElement('button');prev.type='button';prev.textContent='‹';prev.disabled=activeIndex<=0;prev.setAttribute('aria-label','前の写真');if(!prev.disabled)prev.addEventListener('click',()=>emitActive(rankFor(photos[activeIndex-1],activeIndex-1)));
+    const counter=document.createElement('div');counter.className='moments-enlarge-counter';counter.textContent=`${activeIndex+1} / ${photos.length}`;const next=document.createElement('button');next.type='button';next.textContent='›';next.disabled=activeIndex>=photos.length-1;next.setAttribute('aria-label','次の写真');if(!next.disabled)next.addEventListener('click',()=>emitActive(rankFor(photos[activeIndex+1],activeIndex+1)));
+    nav.appendChild(prev);nav.appendChild(counter);nav.appendChild(next);shell.appendChild(nav);shell.appendChild(makeCard(activePhoto,activeIndex,true));grid.appendChild(shell);return;
   }
-
-  for (let index = 0; index < 3; index += 1) {
-    const photo = photos[index];
-    if (!photo) { const empty = document.createElement('div'); empty.className='moments-select-empty'; grid.appendChild(empty); continue; }
-    grid.appendChild(makeCard(photo, index, false));
-  }
+  for(let index=0;index<3;index+=1){const photo=photos[index];if(!photo){const empty=document.createElement('div');empty.className='moments-select-empty';grid.appendChild(empty);continue;}grid.appendChild(makeCard(photo,index,false));}
 }
 """
 
@@ -14454,7 +14664,7 @@ def _get_moments_select_component():
     _moments_select_component_initialized = True
     try:
         moments_select_component = st.components.v2.component(
-            "tokyo_burari_moments_select_v160",
+            "tokyo_burari_moments_select_v162",
             html=_MOMENTS_SELECT_HTML,
             css=_MOMENTS_SELECT_CSS,
             js=_MOMENTS_SELECT_JS,
@@ -14590,10 +14800,7 @@ def _render_moments_picker(photo, index, view_mode="list"):
             st.rerun()
         return
 
-    st.caption(
-        f"AIが映えを重視して最大{VIDEO_AI_MAX_SELECTIONS}枚を選んでいます。写真をタップするたびに気持ちが変わります（未設定 → 🥰 ほっこりした → 😊 うれしい → 😲 びっくり → 😠 おこった → 😢 かなしい → 😣 くやしい → 未設定）。"
-        "感情を付けた写真が残す対象になり、その結果は次回以降のAIセレクションにも軽く反映されます。"
-    )
+    st.caption("写真をクリックして感情を選ぼう")
     if status == "reviewed":
         st.info(
             "確認済みの動画も、写真をタップして気持ちを変更できます。"
@@ -14619,7 +14826,11 @@ def _render_moments_picker(photo, index, view_mode="list"):
         st.session_state[selection_state_key] = sorted(
             int(item.get("rank") or idx + 1)
             for idx, item in enumerate(grid_items)
-            if isinstance(item, dict) and bool(item.get("human_selected"))
+            if isinstance(item, dict) and (
+                bool(item.get("human_selected"))
+                or bool(normalize_photo_emotion_key(item.get("emotion")))
+                or bool(normalize_parenting_tag_key(item.get("parenting_tag")))
+            )
         )
 
     selected_ranks = sorted(
@@ -14644,6 +14855,7 @@ def _render_moments_picker(photo, index, view_mode="list"):
                 "src": url,
                 "ai_best": bool(item.get("ai_best")) or rank == 1,
                 "emotion": normalize_photo_emotion_key(item.get("emotion")),
+                "parenting": normalize_parenting_tag_key(item.get("parenting_tag")),
                 "meta": f"{seconds:.1f}秒・{quality}",
                 "reason": str(item.get("reason") or "").strip(),
             }
@@ -14837,10 +15049,7 @@ def _render_moments_picker(photo, index, view_mode="list"):
                             st.session_state[selection_state_key] = sorted(current)
                             st.rerun()
 
-    if view_mode == "enlarge":
-        st.caption("拡大モード：左右の‹ ›で写真を切り替え、写真をタップするたびに 未設定 → 🥰 ほっこりした → 😊 うれしい → 😲 びっくり → 😠 おこった → 😢 かなしい → 😣 くやしい → 未設定 の順で変わります。気持ちが付いた写真が「残す」対象になり、気持ちを変えるだけではページ更新しません。")
-    else:
-        st.caption("一覧モード：写真をタップするたびに 未設定 → 🥰 ほっこりした → 😊 うれしい → 😲 びっくり → 😠 おこった → 😢 かなしい → 😣 くやしい → 未設定 の順で枠色とアイコンが変わります。気持ちを変えるだけではページ更新しません。")
+
     selected_rank_set = set(selected_ranks)
     send_clicked = st.button(
         "選択した写真を残す",
@@ -15681,8 +15890,8 @@ def render_recent_camera_photo_emotion(trip):
         return
 
     location_label = photo_location_label(photo)
-    st.caption("写真をタップするたびに 未設定 → 🥰 ほっこりした → 😊 うれしい → 😲 びっくり → 😠 おこった → 😢 かなしい → 😣 くやしい → 未設定 の順で変わります。気持ちを変えるだけではページ更新しません。")
-    st.caption("🥰ほっこり #F3B6A0 ／ 😊うれしい #F2C94C ／ 😲びっくり #9B7BD3 ／ 😠おこった #E56B6F ／ 😢かなしい #6C9BD2 ／ 😣くやしい #A66A8A")
+    st.caption("写真下の「通常／子育て」を切り替え、写真をタップしてアイコンを選べます。")
+    st.caption("モード切替・アイコン選択だけではページ更新しません。")
 
     path = str(photo.get("storage_path") or "")
     signed = signed_photo_url_map((path,)) if path else {}
@@ -15691,6 +15900,7 @@ def render_recent_camera_photo_emotion(trip):
         "id": str(photo_id),
         "src": src,
         "emotion": photo_emotion_key(photo),
+        "parenting": photo_parenting_tag_key(photo),
         "location": str(location_label or ""),
     }
     gallery_component = _get_diary_gallery_component()
@@ -16062,14 +16272,20 @@ def page_trip():
                 )
 
                 initial_emotion = normalize_photo_emotion_key(payload.get("emotion"))
-                extra_reflection = None
+                initial_parenting = normalize_parenting_tag_key(payload.get("parenting"))
+                extra_reflection = {}
                 if initial_emotion:
-                    extra_reflection = {
-                        "emotion": photo_emotion_record(
-                            initial_emotion,
-                            source="child_tap_camera_review_v158",
-                        )
-                    }
+                    extra_reflection["emotion"] = photo_emotion_record(
+                        initial_emotion,
+                        source="child_tap_camera_review_v162",
+                    )
+                if initial_parenting:
+                    extra_reflection["parenting_tag"] = parenting_tag_record(
+                        initial_parenting,
+                        source="parent_tap_camera_review_v162",
+                    )
+                if not extra_reflection:
+                    extra_reflection = None
 
                 with st.spinner("写真を残しています…"):
                     saved_photo = upload_photo(
@@ -16117,7 +16333,7 @@ def render_diary_emotion_gallery(trip_id, photos, trip=None, is_pending=False):
         return
     st.markdown("#### この日の写真")
     counts, selected = photo_emotion_counts(photos)
-    st.caption("写真をタップするたびに 未設定 → 🥰 ほっこりした → 😊 うれしい → 😲 びっくり → 😠 おこった → 😢 かなしい → 😣 くやしい → 未設定 の順で変わります。気持ちを変えるだけではページ更新しません。")
+    st.caption("写真下の「通常／子育て」を切り替え、写真をタップしてアイコンを選べます。")
     summary = photo_emotion_summary_text(photos)
     st.caption(f"感情選択済み：{selected} / {len(photos)}枚" + (f"　｜　{summary}" if summary else ""))
 
@@ -16134,6 +16350,7 @@ def render_diary_emotion_gallery(trip_id, photos, trip=None, is_pending=False):
                 "id": pid,
                 "src": photo_display_url(photo, signed, max_px=520, quality=80),
                 "emotion": photo_emotion_key(photo),
+                "parenting": photo_parenting_tag_key(photo),
                 "location": str(photo_location_label(photo) or ""),
             }
         )
