@@ -28,9 +28,9 @@ from zoneinfo import ZoneInfo
 import streamlit as st
 
 # Freshly generated update: 2026-08-31 23:49 JST
-GENERATED_UPDATE_JST = "2026-08-31T23:49:00+09:00"
+GENERATED_UPDATE_JST = "2026-09-01T22:33:00+09:00"
 
-APP_BUILD = "v152"
+APP_BUILD = "v153"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -679,21 +679,27 @@ try:
 except Exception:
     VIDEO_STORAGE_QUOTA_MB = 0
 
-VIDEO_MAX_SECONDS = 15
-VIDEO_PROCESSING_MAX_SECONDS = 20
-# Keep the recording time fixed at 15 seconds, but do not reject a valid phone
-# recording merely because its encoder produced a larger file than the old 8 MB cap.
-# 16 MB is only the pre-recording reserve check; the actual uploaded file may be
-# larger, up to the hard safety ceiling below (or the member's remaining quota).
-VIDEO_RECORDING_RESERVE_BYTES = 16 * 1024 * 1024
-VIDEO_MAX_BYTES = 48 * 1024 * 1024
+VIDEO_MAX_SECONDS = 60
+# Recording itself stops at 60 seconds. The processing allowance is slightly larger
+# so MediaRecorder/onstop timing jitter never truncates otherwise valid metadata.
+VIDEO_PROCESSING_MAX_SECONDS = 70
+# A typical 60-second recording at the requested browser bitrate is around 30 MB.
+# Reserve 32 MB before recording when an account quota is configured, while allowing
+# the actual file to be larger up to the hard 100 MB per-video ceiling below.
+VIDEO_RECORDING_RESERVE_BYTES = 32 * 1024 * 1024
+VIDEO_MAX_BYTES = 100 * 1024 * 1024
 VIDEO_AI_MAX_SELECTIONS = 3
-# Cost control: sample one candidate per second. A 15-second video therefore sends
-# at most about 15 frames to the vision selector instead of as many as 150.
-VIDEO_AI_SAMPLE_INTERVAL_MS = 1000
-VIDEO_AI_MAX_CANDIDATES = 15
-# With at most 15 one-second candidates, the normal path fits in one final vision
-# request; the batching code remains only as a compatibility/safety path.
+# Good Moments sampling is duration-aware and capped at 20 candidate frames:
+#   <=10 sec -> every 0.5 sec
+#   15 sec   -> every 0.75 sec
+#   60 sec   -> every 3 sec
+# General rule: max(0.5 sec, duration / 20). 0.5 sec is the fastest sampling rate.
+VIDEO_AI_MIN_SAMPLE_INTERVAL_MS = 500
+VIDEO_AI_MAX_CANDIDATES = 20
+# Compatibility alias: this is now the minimum interval, not the interval for every video.
+VIDEO_AI_SAMPLE_INTERVAL_MS = VIDEO_AI_MIN_SAMPLE_INTERVAL_MS
+# With at most 20 candidates, the normal path fits in one final vision request;
+# the batching code remains only as a compatibility/safety path for legacy pools.
 VIDEO_AI_BATCH_SIZE = 25
 VIDEO_AI_BATCH_KEEP = 6
 VIDEO_AI_BATCH_WORKERS = 3
@@ -702,12 +708,45 @@ VIDEO_AI_BATCH_WORKERS = 3
 VIDEO_AI_REQUEST_TIMEOUT_SECONDS = 30
 VIDEO_AI_STALE_SECONDS = 240
 
+
+def video_ai_sample_interval_ms_for_duration(duration_ms):
+    """Return the fixed Good Moments interval for one video, capped at 20 samples.
+
+    Rule requested by the product design:
+    - 10 seconds or shorter: 500 ms
+    - 15 seconds: 750 ms
+    - 60 seconds: 3000 ms
+    - otherwise: max(500 ms, duration / 20)
+    """
+    try:
+        raw_duration = float(duration_ms or 0)
+        duration = int(round(raw_duration)) if raw_duration > 0 else VIDEO_MAX_SECONDS * 1000
+    except Exception:
+        duration = VIDEO_MAX_SECONDS * 1000
+    duration = max(1, min(VIDEO_MAX_SECONDS * 1000, duration))
+    return max(
+        VIDEO_AI_MIN_SAMPLE_INTERVAL_MS,
+        int(math.ceil(duration / float(VIDEO_AI_MAX_CANDIDATES))),
+    )
+
+
+def video_ai_candidate_count_for_duration(duration_ms):
+    try:
+        raw_duration = float(duration_ms or 0)
+        duration = int(round(raw_duration)) if raw_duration > 0 else VIDEO_MAX_SECONDS * 1000
+    except Exception:
+        duration = VIDEO_MAX_SECONDS * 1000
+    duration = max(1, min(VIDEO_MAX_SECONDS * 1000, duration))
+    interval_ms = video_ai_sample_interval_ms_for_duration(duration)
+    return max(1, min(VIDEO_AI_MAX_CANDIDATES, int(math.ceil(duration / float(interval_ms)))))
+
+
 # Best-effort post-save video stabilization. The original recording is never
 # overwritten. A lightly stabilized MP4 proxy is created when ffmpeg/deshake is
 # available; playback and AI frame extraction prefer that proxy. Any failure falls
 # back to the original without blocking video preservation or Good Moments.
 VIDEO_STABILIZATION_VERSION = "v135_deshake_light"
-VIDEO_STABILIZATION_TIMEOUT_SECONDS = 90
+VIDEO_STABILIZATION_TIMEOUT_SECONDS = 180
 VIDEO_STABILIZATION_RX = 16
 VIDEO_STABILIZATION_RY = 16
 
@@ -739,7 +778,7 @@ _LIVE_CAMERA_HTML = """
 
   <video id="live-camera-video" class="live-camera-video" playsinline autoplay muted hidden></video>
 
-  <div id="camera-recording-status" class="camera-recording-status" hidden>● 録画中 0:00 / 0:30</div>
+  <div id="camera-recording-status" class="camera-recording-status" hidden>● 録画中 0:00 / 1:00</div>
 
   <div id="camera-active-actions" class="camera-active-actions" hidden>
     <button id="live-camera-shoot" class="camera-shoot-button" type="button">● 撮影する</button>
@@ -753,7 +792,7 @@ _LIVE_CAMERA_HTML = """
       <button id="camera-review-retry" class="camera-retry-button" type="button">撮りなおす／選びなおす</button>
     </div>
     <button id="camera-review-find-moments" class="camera-find-button" type="button" hidden>✨ いい瞬間を探す</button>
-    <div id="camera-review-build" class="camera-review-build" hidden>camera v150</div>
+    <div id="camera-review-build" class="camera-review-build" hidden>camera v153</div>
     <div id="camera-review-emotion-hint" class="camera-review-emotion-hint" hidden>写真をタップ：未設定 → 😊喜 → 😠怒 → 😢哀 → 🎉楽 → 未設定</div>
     <div id="camera-review-image-shell" class="camera-review-image-shell" role="button" tabindex="0" aria-label="写真の気持ちを選ぶ" hidden>
       <img id="camera-review-image" class="camera-review-image" alt="撮影した写真の確認" />
@@ -1027,7 +1066,9 @@ export default function(component) {
   const reviewBuild = parentElement.querySelector('#camera-review-build');
   const status = parentElement.querySelector('#live-camera-status');
 
-  const VIDEO_MAX_SECONDS = 15;
+  const VIDEO_MAX_SECONDS = 60;
+  const GOOD_MOMENTS_MAX_CANDIDATES = 20;
+  const GOOD_MOMENTS_MIN_INTERVAL_SECONDS = 0.5;
   // v107: the browser uploads the video blob straight to a short-lived Supabase
   // signed upload URL. The multi-megabyte video is never serialized through a
   // Streamlit component trigger value.
@@ -1039,7 +1080,7 @@ export default function(component) {
   const videoMaxBytes = Math.max(0, Number(data?.video_max_bytes || 0));
   const videoAllowed = data?.video_allowed !== false && Boolean(videoUploadSignedUrl && videoUploadStoragePath);
   const videoCapacityMessage = String(
-    data?.video_capacity_message || '動画の保存容量または保存先を確認できないため、最大15秒の動画を撮影できません。'
+    data?.video_capacity_message || '動画の保存容量または保存先を確認できないため、最大60秒の動画を撮影できません。'
   );
   const unavailableSuffix = videoUnavailableReason === 'quota'
     ? '容量不足'
@@ -1150,7 +1191,9 @@ export default function(component) {
     const elapsed = Math.min(VIDEO_MAX_SECONDS, Math.max(0, Math.floor((Date.now() - recordingStartedAt) / 1000)));
     const mm = Math.floor(elapsed / 60);
     const ss = String(elapsed % 60).padStart(2, '0');
-    recordingStatus.textContent = `● 録画中 ${mm}:${ss} / 0:${String(VIDEO_MAX_SECONDS).padStart(2, '0')}`;
+    const maxMm = Math.floor(VIDEO_MAX_SECONDS / 60);
+    const maxSs = String(VIDEO_MAX_SECONDS % 60).padStart(2, '0');
+    recordingStatus.textContent = `● 録画中 ${mm}:${ss} / ${maxMm}:${maxSs}`;
   };
 
   const clearGoodMomentsRevealTimer = () => {
@@ -1377,7 +1420,7 @@ export default function(component) {
         localStorage.setItem('tokyo_burari_last_camera_open_v1', String(openedAt));
         localStorage.setItem('tokyo_burari_last_camera_mode_v1', cameraMode === 'video' ? 'video' : 'photo');
       } catch (_) {}
-      setStatus(cameraMode === 'video' ? '動画は最大15秒です。音声も一緒に記録します。' : '');
+      setStatus(cameraMode === 'video' ? '動画は最大60秒です。音声も一緒に記録します。' : '');
     } catch (err) {
       console.error(err);
       stopStream();
@@ -1389,6 +1432,19 @@ export default function(component) {
         detail: (err && err.message) ? String(err.message) : ''
       });
     }
+  };
+
+  const goodMomentsSamplePlan = (durationSeconds) => {
+    const duration = Math.max(0.001, Math.min(VIDEO_MAX_SECONDS, Number(durationSeconds || 0) || VIDEO_MAX_SECONDS));
+    const intervalSeconds = Math.max(
+      GOOD_MOMENTS_MIN_INTERVAL_SECONDS,
+      duration / GOOD_MOMENTS_MAX_CANDIDATES
+    );
+    const count = Math.max(
+      1,
+      Math.min(GOOD_MOMENTS_MAX_CANDIDATES, Math.ceil(duration / intervalSeconds))
+    );
+    return { intervalSeconds, count };
   };
 
   const blobToDataUrl = (blob) => new Promise((resolve, reject) => {
@@ -1428,7 +1484,7 @@ export default function(component) {
   };
 
   const buildCandidateSheet = async (frames) => {
-    const source = Array.isArray(frames) ? frames.slice(0, 15) : [];
+    const source = Array.isArray(frames) ? frames.slice(0, GOOD_MOMENTS_MAX_CANDIDATES) : [];
     if (!source.length) return null;
     const loaded = [];
     for (const frame of source) {
@@ -1445,7 +1501,7 @@ export default function(component) {
       } catch (_) {}
     }
     if (!loaded.length) return null;
-    const columns = Math.min(15, loaded.length);
+    const columns = Math.min(10, loaded.length);
     const rows = Math.ceil(loaded.length / columns);
     const tileWidth = Math.max(1, loaded[0].image.naturalWidth || loaded[0].image.width || 320);
     const tileHeight = Math.max(1, loaded[0].image.naturalHeight || loaded[0].image.height || 180);
@@ -1485,7 +1541,7 @@ export default function(component) {
   const captureRecordingCandidateFrame = async () => {
     if (recordingCandidateBusy || !recordingStartedAt || !video.videoWidth || !video.videoHeight) return;
     if (!mediaRecorder || mediaRecorder.state !== 'recording') return;
-    if (recordingCandidateFrames.length >= 15) return;
+    if (recordingCandidateFrames.length >= GOOD_MOMENTS_MAX_CANDIDATES) return;
     recordingCandidateBusy = true;
     try {
       const frameCanvas = document.createElement('canvas');
@@ -1642,7 +1698,9 @@ export default function(component) {
       const measuredDuration = Number.isFinite(probe.duration) && probe.duration > 0
         ? probe.duration
         : Math.max(0.2, Number(durationMs || 0) / 1000);
-      const sampleCount = Math.max(1, Math.min(15, Math.ceil(measuredDuration)));
+      const samplePlan = goodMomentsSamplePlan(measuredDuration);
+      const sampleCount = samplePlan.count;
+      const sampleIntervalSeconds = samplePlan.intervalSeconds;
       const frameCanvas = document.createElement('canvas');
       const srcW = probe.videoWidth || video.videoWidth || 1280;
       const srcH = probe.videoHeight || video.videoHeight || 720;
@@ -1654,8 +1712,8 @@ export default function(component) {
       const frames = [];
 
       for (let i = 0; i < sampleCount; i += 1) {
-        // One-second timeline positions: 0, 1, 2 ... up to about 14s.
-        const seconds = Math.min(Math.max(0, measuredDuration - 0.02), i);
+        // Duration-aware timeline positions, capped at 20 samples.
+        const seconds = Math.min(Math.max(0, measuredDuration - 0.02), i * sampleIntervalSeconds);
         try {
           await seekVideoFrame(probe, Math.min(Math.max(0, measuredDuration - 0.02), seconds));
           ctx.drawImage(probe, 0, 0, frameCanvas.width, frameCanvas.height);
@@ -1828,7 +1886,7 @@ export default function(component) {
             throw new Error(`録画データが大きすぎます（${sizeMb}MB）。この時点で保存できる上限は${limitMb}MBです。`);
           }
 
-          // v139: preserve recording quality. No 1-second JPEG work runs while
+          // Preserve recording quality. No Good Moments JPEG extraction runs while
           // MediaRecorder is active. The untouched original is uploaded first; only
           // after recording has ended do we decode lightweight AI thumbnails.
           if (menu) menu.hidden = true;
@@ -1863,9 +1921,9 @@ export default function(component) {
           setStatus('動画を保管庫へ送信しています…');
           await uploadVideoBlobToSignedUrl(blob);
 
-          // v140: do not build any browser-side 1-second JPEG sheet. The saved
+          // Do not build any browser-side candidate JPEG sheet. The saved
           // original video is now the single source of truth. The server extracts
-          // native-resolution 1-second frames once, then creates separate small
+          // native-resolution duration-aware frames once, then creates separate small
           // AI copies. This removes duplicated work and avoids low-resolution paths.
           let candidateSheetPath = '';
           let candidateManifest = [];
@@ -1993,7 +2051,7 @@ export default function(component) {
         pendingVideoBlob,
         pendingMedia.duration_ms
       );
-      if (!Array.isArray(candidateFrames) || candidateFrames.length < 9) {
+      if (!Array.isArray(candidateFrames) || candidateFrames.length < 1) {
         throw new Error('not enough candidate frames');
       }
       const requestId = (globalThis.crypto && typeof globalThis.crypto.randomUUID === 'function')
@@ -2118,11 +2176,11 @@ export default function(component) {
 }
 """
 
-LIVE_CAMERA_COMPONENT_BUILD = "v150"
+LIVE_CAMERA_COMPONENT_BUILD = "v153"
 
 try:
     live_camera_component = st.components.v2.component(
-        "tokyo_burari_live_camera_v150",
+        "tokyo_burari_live_camera_v153",
         html=_LIVE_CAMERA_HTML,
         css=_LIVE_CAMERA_CSS,
         js=_LIVE_CAMERA_JS,
@@ -5245,7 +5303,7 @@ def ensure_video_storage_capacity(incoming_bytes):
 
 
 def video_recording_capacity_status():
-    """Reserve enough room for one maximum 15-second recording before opening video mode."""
+    """Reserve enough room for one maximum 60-second recording before opening video mode."""
     quota = video_storage_quota_bytes()
     if quota <= 0:
         return {
@@ -5254,7 +5312,7 @@ def video_recording_capacity_status():
             "quota_bytes": 0,
             "remaining_bytes": None,
             "required_bytes": VIDEO_RECORDING_RESERVE_BYTES,
-            "message": "動画は最大15秒です。撮影開始前に16MB以上の空きを確認し、実際の動画は端末のエンコード容量に応じて保存します。",
+            "message": f"動画は最大60秒です。撮影開始前に{format_storage_size(VIDEO_RECORDING_RESERVE_BYTES)}以上の空きを確認し、実際の動画は最大{format_storage_size(VIDEO_MAX_BYTES)}まで保存できます。",
         }
 
     usage = current_video_storage_usage_bytes()
@@ -5262,12 +5320,12 @@ def video_recording_capacity_status():
     allowed = remaining >= VIDEO_RECORDING_RESERVE_BYTES
     if allowed:
         message = (
-            f"最大15秒の動画を撮影できます（保存処理用バッファ込み）。残り {format_storage_size(remaining)} / "
+            f"最大60秒の動画を撮影できます（保存処理用バッファ込み）。残り {format_storage_size(remaining)} / "
             f"上限 {format_storage_size(quota)}"
         )
     else:
         message = (
-            "最大15秒の動画1本分と保存処理用バッファの空き容量がありません。"
+            "最大60秒の動画1本分と保存処理用バッファの空き容量がありません。"
             f" 残り {format_storage_size(remaining)} / 上限 {format_storage_size(quota)}。"
             f"撮影開始には少なくとも {format_storage_size(VIDEO_RECORDING_RESERVE_BYTES)} の空きが必要です。"
         )
@@ -5445,7 +5503,7 @@ def get_camera_video_upload_reservation(trip_id, capture_serial):
     storage_path = f"{family_key}/{member_key}/{trip_id}/{stamp}_{token}_video.video"
     signed_url = _create_signed_video_upload_url(storage_path)
     candidate_sheet_path = f"{family_key}/{member_key}/{trip_id}/{stamp}_{token}_candidates.jpg"
-    # v134: create the 1-second candidate sheet in the browser automatically.
+    # Legacy compatibility: browser candidate sheets use the duration-aware max-20 sampling rule.
     # This removes ffmpeg as a hard requirement on Streamlit Cloud while keeping
     # every captured candidate available to the vision pipeline.
     candidate_sheet_signed_url = _create_signed_video_upload_url(candidate_sheet_path)
@@ -5506,7 +5564,7 @@ def register_browser_uploaded_video(
     if size_value <= 0:
         raise ValueError("動画の容量を確認できませんでした。")
     if size_value > VIDEO_MAX_BYTES:
-        raise ValueError(f"動画データが保存可能な上限 {format_storage_size(VIDEO_MAX_BYTES)} を超えています。録画時間は15秒以内でも、端末の動画形式によって容量が大きくなる場合があります。")
+        raise ValueError(f"動画データが保存可能な上限 {format_storage_size(VIDEO_MAX_BYTES)} を超えています。録画時間は60秒以内でも、端末の動画形式によって容量が大きくなる場合があります。")
     ensure_video_storage_capacity(size_value)
 
     try:
@@ -5635,14 +5693,14 @@ def upload_video(
     if not video_bytes:
         raise ValueError("動画データが空です。")
     # MediaRecorder.onstop may fire after the actual recording has already stopped.
-    # The browser caps recording at 15 seconds, so do not reject a valid video based
+    # The browser caps recording at 60 seconds, so do not reject a valid video based
     # on wall-clock delay between recorder.stop() and the onstop callback.
     duration_value = min(
         VIDEO_PROCESSING_MAX_SECONDS * 1000,
         max(0, int(duration_ms or 0)),
     )
     if len(video_bytes) > VIDEO_MAX_BYTES:
-        raise ValueError(f"動画データが保存可能な上限 {format_storage_size(VIDEO_MAX_BYTES)} を超えています。録画時間は15秒以内でも、端末の動画形式によって容量が大きくなる場合があります。")
+        raise ValueError(f"動画データが保存可能な上限 {format_storage_size(VIDEO_MAX_BYTES)} を超えています。録画時間は60秒以内でも、端末の動画形式によって容量が大きくなる場合があります。")
     ensure_video_storage_capacity(len(video_bytes))
     poster = normalize_photo(poster_bytes)
     if not poster:
@@ -5890,11 +5948,11 @@ def choose_video_ai_frames(
     ai_client=None,
     progress_callback=None,
 ):
-    """Pick up to nine stills after AI has inspected each one-second candidate.
+    """Pick up to three stills after AI has inspected every duration-aware candidate.
 
-    v145 samples at one-second intervals to control Vision API use. With a 15-second
-    recording this is normally at most 15 frames, so the usual path sends one final
-    multi-image request. The legacy batch path remains only for oversized/older pools.
+    v153 caps Good Moments at 20 frames. Sampling is max(0.5 seconds, duration / 20),
+    so 10s -> 0.5s, 15s -> 0.75s, and 60s -> 3s. The normal path therefore fits
+    in one final multi-image request; batching remains only for legacy oversized pools.
     """
     frames = list(frame_items or [])
     if not frames:
@@ -5971,8 +6029,8 @@ def choose_video_ai_frames(
             max_output_tokens=max_output_tokens,
         )
 
-    # Stage 1 compatibility path: normally skipped because one-second sampling gives
-    # at most 15 candidates, below VIDEO_AI_BATCH_SIZE. It remains for older/larger pools.
+    # Stage 1 compatibility path: normally skipped because duration-aware sampling is capped
+    # at 20 candidates, below VIDEO_AI_BATCH_SIZE. It remains for older/larger pools.
     coarse_records = []
     if len(frames) > VIDEO_AI_BATCH_SIZE:
         batch_specs = []
@@ -5980,10 +6038,10 @@ def choose_video_ai_frames(
             batch = frames[batch_start:batch_start + VIDEO_AI_BATCH_SIZE]
             batch_keep = min(VIDEO_AI_BATCH_KEEP, len(batch))
             batch_prompt = (
-                "15秒以内の動画を1秒間隔で切り出した候補フレームの一部です。"
+                "動画長に応じた一定間隔で切り出した候補フレームの一部です。候補は最大20枚です。"
                 "このバッチ内の候補をすべて見比べ、人が写真として残したくなる強い瞬間を選んでください。\n"
                 f"最大{batch_keep}枚を選びます。単なる時間分散ではなく、映え・表情・決定的瞬間・被写体の魅力を優先してください。"
-                "似た連続フレームでは、一番良い1秒ごとの候補を優先してください。"
+                "似た連続フレームでは、その区間で最も良い候補を優先してください。"
                 "ピンぼけ、手ぶれ、目つぶり、大きな見切れ、強い白飛び/黒つぶれは避けてください。\n"
                 "評価目安：映え・写真美30%、表情や決定的瞬間30%、被写体の魅力20%、動き・物語性10%、本人の過去の好み10%。\n"
                 f"{preference_text}\n"
@@ -6076,7 +6134,7 @@ def choose_video_ai_frames(
         final_frames = frames
 
     final_prompt = (
-        "動画全体の最終フォトセレクターです。候補は1秒単位で比較されています。"
+        "動画全体の最終フォトセレクターです。候補は動画長に応じた一定間隔で最大20枚に絞って比較されています。"
         "ここでは動画全体を横断して、最終的に残したい静止画を選んでください。\n"
         f"出力は最大{VIDEO_AI_MAX_SELECTIONS}枚です。十分に良い候補があれば、最も残したい3枚を選んでください。"
         "似た写真で3枚を埋めず、動画全体から違いのある良い瞬間を優先してください。\n"
@@ -6334,8 +6392,8 @@ def store_video_ai_candidate_sheet(photo, sheet_path, manifest, columns=4, rows=
         "candidate_manifest": manifest,
         "candidate_sheet_columns": max(1, int(columns or 4)),
         "candidate_sheet_rows": max(1, int(rows or ((len(manifest) + max(1, int(columns or 4)) - 1) // max(1, int(columns or 4))))),
-        "candidate_sample_interval_ms": VIDEO_AI_SAMPLE_INTERVAL_MS,
-        "candidate_sampling_version": "browser_1s_v145",
+        "candidate_sample_interval_ms": video_ai_sample_interval_ms_for_duration((photo_media_metadata(photo).get("video_duration_ms") or VIDEO_MAX_SECONDS * 1000)),
+        "candidate_sampling_version": "browser_dynamic20_v153",
         "stage": "ai_selection",
         "round": int(previous.get("round") or 0),
         "items": list(previous.get("items") or []),
@@ -6428,7 +6486,7 @@ def _ensure_video_stabilized_copy(client, photo, family_key, member_key, force=F
     Stabilization is deliberately best-effort. The original recording remains the
     durable source of truth, and any ffmpeg/filter/quota failure is persisted as a
     non-fatal status so video saving and Good Moments can continue via the original
-    or the browser-created 1-second candidate sheet.
+    or the browser-created duration-aware candidate sheet.
     """
     if not isinstance(photo, dict) or not photo_is_video(photo):
         return photo
@@ -6649,26 +6707,19 @@ def _ensure_video_stabilized_copy(client, photo, family_key, member_key, force=F
 def _video_ai_expected_candidate_count(photo):
     metadata = photo_media_metadata(photo)
     duration_ms = max(0, int(metadata.get("video_duration_ms") or 0))
-    if duration_ms > 0:
-        duration_seconds = min(float(VIDEO_MAX_SECONDS), max(0.1, duration_ms / 1000.0))
-    else:
-        duration_seconds = float(VIDEO_MAX_SECONDS)
-    return max(
-        1,
-        min(
-            VIDEO_AI_MAX_CANDIDATES,
-            int(math.ceil((duration_seconds * 1000.0) / VIDEO_AI_SAMPLE_INTERVAL_MS)),
-        ),
-    )
+    if duration_ms <= 0:
+        duration_ms = VIDEO_MAX_SECONDS * 1000
+    duration_ms = min(VIDEO_MAX_SECONDS * 1000, duration_ms)
+    return video_ai_candidate_count_for_duration(duration_ms)
 
 
 def _background_extract_video_candidate_frames(client, photo):
-    """Extract one native-resolution candidate per second from the untouched original.
+    """Extract up to 20 native-resolution candidates from the untouched original.
 
-    v145 performs one ffmpeg pass over the saved original video at one frame per second. Each candidate keeps
-    a high-quality native-resolution JPEG for eventual user-facing output, while AI
-    receives a separate small copy. The final selected stills therefore never depend
-    on 240px/480px candidate thumbnails and do not need nine separate ffmpeg seeks.
+    v153 uses one ffmpeg pass with interval=max(0.5s, video_duration/20):
+    10s or shorter -> 0.5s, 15s -> 0.75s, 60s -> 3s. Each candidate keeps a
+    high-quality native-resolution JPEG for user-facing output, while AI receives a
+    separate small copy. The final selected stills never depend on low-res thumbnails.
     """
     video_path = photo_video_storage_path(photo)
     if not video_path:
@@ -6684,10 +6735,14 @@ def _background_extract_video_candidate_frames(client, photo):
     if not video_raw:
         raise ValueError("保存済みの元動画を読み込めませんでした。")
 
-    target_count = _video_ai_expected_candidate_count(photo)
-    fps = 1000.0 / float(VIDEO_AI_SAMPLE_INTERVAL_MS)
+    metadata = photo_media_metadata(photo)
+    duration_ms = max(0, int(metadata.get("video_duration_ms") or 0)) or (VIDEO_MAX_SECONDS * 1000)
+    duration_ms = min(VIDEO_MAX_SECONDS * 1000, duration_ms)
+    sample_interval_ms = video_ai_sample_interval_ms_for_duration(duration_ms)
+    target_count = video_ai_candidate_count_for_duration(duration_ms)
+    fps = 1000.0 / float(sample_interval_ms)
     suffix = ".mp4" if str(video_path).lower().endswith(".mp4") else ".webm"
-    with tempfile.TemporaryDirectory(prefix="burari-video-ai-v145-") as tmpdir:
+    with tempfile.TemporaryDirectory(prefix="burari-video-ai-v153-") as tmpdir:
         input_path = os.path.join(tmpdir, "original" + suffix)
         output_pattern = os.path.join(tmpdir, "frame_%03d.jpg")
         with open(input_path, "wb") as fh:
@@ -6717,11 +6772,11 @@ def _background_extract_video_candidate_frames(client, photo):
                 command,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                timeout=45,
+                timeout=120,
                 check=False,
             )
         except subprocess.TimeoutExpired as exc:
-            raise RuntimeError("元動画から高画質候補を作る処理が45秒でタイムアウトしました。") from exc
+            raise RuntimeError("元動画から高画質候補を作る処理が120秒でタイムアウトしました。") from exc
 
         files = sorted(Path(tmpdir).glob("frame_*.jpg"))[:target_count]
         if completed.returncode != 0 and not files:
@@ -6737,7 +6792,7 @@ def _background_extract_video_candidate_frames(client, photo):
             raw = frame_path.read_bytes()
             if not raw:
                 continue
-            timestamp_ms = max(0, (index - 1) * VIDEO_AI_SAMPLE_INTERVAL_MS)
+            timestamp_ms = max(0, int(round((index - 1) * sample_interval_ms)))
             frames.append(
                 {
                     "frame_id": f"F{index:03d}",
@@ -6747,7 +6802,7 @@ def _background_extract_video_candidate_frames(client, photo):
                     "image_bytes": raw,
                     # AI-only copy. This has no effect on saved-photo quality.
                     "ai_bytes": normalize_photo(raw, max_side=640, quality=74),
-                    "output_source": "original_video_native_1s_v145",
+                    "output_source": "original_video_native_dynamic_v153",
                 }
             )
         if not frames:
@@ -6780,8 +6835,8 @@ def _background_store_video_ai_candidate_bundle(client, photo, family_key, membe
             "candidate_count": len(manifest),
             "candidate_bundle_path": bundle_path,
             "candidate_sheet_path": "",
-            "candidate_sample_interval_ms": VIDEO_AI_SAMPLE_INTERVAL_MS,
-            "candidate_sampling_version": "v130",
+            "candidate_sample_interval_ms": video_ai_sample_interval_ms_for_duration((photo_media_metadata(photo).get("video_duration_ms") or VIDEO_MAX_SECONDS * 1000)),
+            "candidate_sampling_version": "dynamic20_v153",
             "round": int(previous.get("round") or 0),
             "items": list(previous.get("items") or []),
             "history": list(previous.get("history") or []),
@@ -6962,12 +7017,12 @@ def _background_store_video_ai_selection(
     if not selected_items:
         raise ValueError("AIセレクションを作成できませんでした。")
 
-    # v145 never performs a second seek/re-extraction pass. The one 1-second
+    # v153 never performs a second seek/re-extraction pass. The single duration-aware
     # ffmpeg pass already produced native-resolution source frames. Refuse anything
-    # that did not originate from that path rather than showing a blurry fallback.
+    # that did not originate from an original-video native path.
     for selected in selected_items:
         frame = selected.get("frame") or {}
-        if str(frame.get("output_source") or "") != "original_video_native_1s_v145":
+        if not str(frame.get("output_source") or "").startswith("original_video_native_"):
             raise ValueError("低解像度候補が混在しているため保存を中止しました。元動画から再処理します。")
         if not frame.get("image_bytes"):
             raise ValueError("元動画由来の高画質画像を読み込めませんでした。")
@@ -6995,7 +7050,7 @@ def _background_store_video_ai_selection(
                     "storage_path": path,
                     "frame_id": frame_id,
                     "timestamp_ms": max(0, int(frame.get("timestamp_ms") or 0)),
-                    "output_source": "original_video_native_1s_v145",
+                    "output_source": str(frame.get("output_source") or "original_video_native_dynamic_v153"),
                     "score": int(selected.get("score") or 0),
                     "primary_quality": str(selected.get("primary_quality") or "other"),
                     "reason": str(selected.get("reason") or "").strip(),
@@ -7028,7 +7083,7 @@ def _background_store_video_ai_selection(
                 "updated_at": now_jst().isoformat(),
                 "round": int(round_number),
                 "items": items,
-                "final_frame_mode": "original_native_1s_single_pass_v145",
+                "final_frame_mode": "original_native_dynamic20_single_pass_v153",
                 "high_quality_count": len(items),
                 "progress_message": "完了",
                 "last_error": "",
@@ -7104,7 +7159,7 @@ def _run_video_ai_background_job(photo_id, family_key, member_key):
     selection_meta["started_at"] = now_jst().isoformat()
     selection_meta["updated_at"] = selection_meta["started_at"]
     selection_meta["attempt"] = max(0, int(selection_meta.get("attempt") or 0)) + 1
-    selection_meta["pipeline_mode"] = "background_single_pass_1s_v145"
+    selection_meta["pipeline_mode"] = "background_single_pass_dynamic20_v153"
     selection_meta["progress_message"] = "元動画から高画質候補を準備中"
     reflection["ai_selection"] = selection_meta
     try:
@@ -7115,7 +7170,7 @@ def _run_video_ai_background_job(photo_id, family_key, member_key):
         pass
 
     try:
-        # v145 samples the untouched original once at one-second intervals in native resolution.
+        # v153 samples the untouched original once using max(0.5s, duration/20), capped at 20 frames.
         # Legacy browser sheets/low-resolution bundles are ignored for final quality.
         frames = _background_extract_video_candidate_frames(client, photo)
         if not frames:
@@ -7126,8 +7181,8 @@ def _run_video_ai_background_job(photo_id, family_key, member_key):
         selection_meta["candidate_count"] = len(frames)
         selection_meta["candidate_bundle_path"] = ""
         selection_meta["candidate_sheet_path"] = ""
-        selection_meta["candidate_sample_interval_ms"] = VIDEO_AI_SAMPLE_INTERVAL_MS
-        selection_meta["candidate_sampling_version"] = "original_native_1s_v145"
+        selection_meta["candidate_sample_interval_ms"] = video_ai_sample_interval_ms_for_duration((photo_media_metadata(photo).get("video_duration_ms") or VIDEO_MAX_SECONDS * 1000))
+        selection_meta["candidate_sampling_version"] = "original_native_dynamic20_v153"
         selection_meta["progress_message"] = "AI一次選定を開始"
         selection_meta["updated_at"] = now_jst().isoformat()
         reflection["ai_selection"] = selection_meta
@@ -7215,7 +7270,7 @@ def _run_video_ai_background_job(photo_id, family_key, member_key):
             latest_selection["last_error"] = str(exc)[:240]
             latest_selection["updated_at"] = now_jst().isoformat()
             latest_selection["stage"] = str(latest_selection.get("stage") or "pipeline")
-            latest_selection["pipeline_mode"] = "background_single_pass_1s_v145"
+            latest_selection["pipeline_mode"] = "background_single_pass_dynamic20_v153"
             latest_reflection["ai_selection"] = latest_selection
             _write_photo_reflection_for_owner(
                 photo_id, latest_reflection, family_key, member_key, client=client
@@ -7375,7 +7430,7 @@ def resume_member_video_background_jobs(limit=24, min_interval_seconds=5):
                 selection["queued_at"] = now_jst().isoformat()
                 selection["updated_at"] = selection["queued_at"]
                 selection["last_error"] = ""
-                selection["pipeline_mode"] = "background_single_pass_1s_v145"
+                selection["pipeline_mode"] = "background_single_pass_dynamic20_v153"
                 reflection = dict(photo_media_metadata(row))
                 reflection["ai_selection"] = selection
                 _write_photo_reflection_for_owner(
@@ -7395,7 +7450,7 @@ def resume_member_video_background_jobs(limit=24, min_interval_seconds=5):
                 selection["queued_at"] = str(selection.get("queued_at") or now_jst().isoformat())
                 selection["updated_at"] = now_jst().isoformat()
                 selection["last_error"] = ""
-                selection["pipeline_mode"] = "background_single_pass_1s_v145"
+                selection["pipeline_mode"] = "background_single_pass_dynamic20_v153"
                 reflection = dict(photo_media_metadata(row))
                 reflection["ai_selection"] = selection
                 _write_photo_reflection_for_owner(
@@ -7708,7 +7763,7 @@ def store_preselected_video_ai_selection(photo, selections, candidate_count=0):
 
     client = supabase_client()
     # Legacy/manual paths may carry small browser candidates. Rebuild the full
-    # 1-second native-resolution set once from the original and remap by time.
+    # duration-aware native-resolution set once from the original and remap by time.
     native_frames = _background_extract_video_candidate_frames(client, photo)
     if not native_frames:
         raise ValueError("元動画から高画質画像を作成できませんでした。")
@@ -7732,7 +7787,7 @@ def store_preselected_video_ai_selection(photo, selections, candidate_count=0):
             native = native_for_selected(selected)
             frame_id = str(native.get("frame_id") or "").strip()
             image_bytes = native.get("image_bytes")
-            if str(native.get("output_source") or "") != "original_video_native_1s_v145":
+            if not str(native.get("output_source") or "").startswith("original_video_native_"):
                 raise ValueError("元動画由来ではない画像は保存しません。")
             if not frame_id or not image_bytes:
                 raise ValueError("AIセレクション画像を元動画から読み込めませんでした。")
@@ -7749,7 +7804,7 @@ def store_preselected_video_ai_selection(photo, selections, candidate_count=0):
                     "storage_path": path,
                     "frame_id": frame_id,
                     "timestamp_ms": max(0, int(native.get("timestamp_ms") or 0)),
-                    "output_source": "original_video_native_1s_v145",
+                    "output_source": str(native.get("output_source") or "original_video_native_dynamic_v153"),
                     "score": int(selected.get("score") or 0),
                     "primary_quality": str(selected.get("primary_quality") or "other"),
                     "reason": str(selected.get("reason") or "").strip(),
@@ -7764,7 +7819,7 @@ def store_preselected_video_ai_selection(photo, selections, candidate_count=0):
             "generated_at": now_jst().isoformat(),
             "candidate_count": max(0, int(candidate_count or len(native_frames))),
             "items": items,
-            "final_frame_mode": "original_native_1s_single_pass_v145",
+            "final_frame_mode": "original_native_dynamic20_single_pass_v153",
             "high_quality_count": len(items),
         }
         _write_photo_reflection(photo["id"], reflection)
@@ -9263,33 +9318,6 @@ def _music_library_session_key():
     return f"_music_library_{current_family_key()}_{current_member_key()}"
 
 
-def normalize_replay_bpm(value):
-    """Return a usable music tempo (40-220 BPM), or 0 when unknown/disabled."""
-    try:
-        bpm = int(round(float(value or 0)))
-    except Exception:
-        return 0
-    return bpm if 40 <= bpm <= 220 else 0
-
-
-def replay_beat_interval_ms(bpm, target_ms):
-    """Choose a musically natural 1/2/4/8-beat photo interval nearest the old timing."""
-    bpm = normalize_replay_bpm(bpm)
-    target_ms = max(650, min(4000, int(target_ms or 1600)))
-    if not bpm:
-        return 0, target_ms
-    beat_ms = 60000.0 / float(bpm)
-    candidates = []
-    for beats in (1, 2, 4, 8):
-        interval = beat_ms * beats
-        if 800 <= interval <= 3200:
-            candidates.append((beats, interval))
-    if not candidates:
-        candidates = [(beats, beat_ms * beats) for beats in (1, 2, 4, 8)]
-    beats, interval = min(candidates, key=lambda pair: abs(pair[1] - target_ms))
-    return int(beats), max(650, min(4000, int(round(interval))))
-
-
 def _normalize_music_library_item(item):
     item = item if isinstance(item, dict) else {}
     url = str(item.get("youtube_url") or "").strip()
@@ -9313,8 +9341,6 @@ def _normalize_music_library_item(item):
         "author_name": str(item.get("author_name") or "").strip(),
         "start_seconds": start_seconds,
         "end_seconds": end_seconds,
-        "bpm": normalize_replay_bpm(item.get("bpm")),
-        "bpm_source": str(item.get("bpm_source") or "").strip(),
         "reason": str(item.get("reason") or "").strip(),
         "confidence": str(item.get("confidence") or "").strip(),
         "saved_at": str(item.get("saved_at") or item.get("updated_at") or "").strip(),
@@ -9431,9 +9457,7 @@ def music_library_label(item):
     start_seconds = int(item.get("start_seconds") or 0)
     end_seconds = int(item.get("end_seconds") or (start_seconds + 20))
     prefix = f"{title} / {author}" if author else title
-    bpm = normalize_replay_bpm(item.get("bpm"))
-    tempo = f" / {bpm} BPM" if bpm else ""
-    return f"{prefix}（{format_mmss(start_seconds)}〜{format_mmss(end_seconds)}{tempo}）"
+    return f"{prefix}（{format_mmss(start_seconds)}〜{format_mmss(end_seconds)}）"
 
 
 def apply_music_library_item(month_key, review, item):
@@ -9444,7 +9468,6 @@ def apply_music_library_item(month_key, review, item):
     st.session_state[state["url_key"]] = item["youtube_url"]
     st.session_state[state["start_key"]] = int(item["start_seconds"])
     st.session_state[state["end_key"]] = int(item["end_seconds"])
-    st.session_state[state["bpm_key"]] = normalize_replay_bpm(item.get("bpm"))
     st.session_state[state["reason_key"]] = str(item.get("reason") or "")
     st.session_state[state["confidence_key"]] = str(item.get("confidence") or "saved")
     st.session_state[state["title_key"]] = str(item.get("title") or "")
@@ -9455,7 +9478,6 @@ def apply_music_library_item(month_key, review, item):
     st.session_state[f"monthly_replay_applied_{month_key}"] = {
         "start_seconds": int(item["start_seconds"]),
         "end_seconds": int(item["end_seconds"]),
-        "bpm": normalize_replay_bpm(item.get("bpm")),
     }
     return playback
 
@@ -9560,9 +9582,8 @@ def guess_monthly_replay_window(youtube_url, month_key, review):
             "end_seconds": {"type": "integer"},
             "reason": {"type": "string"},
             "confidence": {"type": "string"},
-            "bpm": {"type": "integer"},
         },
-        "required": ["start_seconds", "end_seconds", "reason", "confidence", "bpm"],
+        "required": ["start_seconds", "end_seconds", "reason", "confidence"],
         "additionalProperties": False,
     }
     title = str(meta.get("title") or "").strip()
@@ -9586,8 +9607,6 @@ def guess_monthly_replay_window(youtube_url, month_key, review):
 - end_seconds は start_seconds より後にする。
 - reason は日本語で60文字以内、簡潔に。
 - confidence は low / medium / high のいずれか。
-- bpm は写真切替を曲の拍に合わせるためのテンポ推定値。タイトル・投稿者から妥当に推定できる場合は40〜220の整数、分からない場合は0。
-- bpmは音声を直接解析した値ではなく、曲情報からの推定であるため、確信がなければ0にする。
 - 実在確認できないことを断定しない。推測であることを前提に、もっとも無難な候補を1つだけ返す。
 """.strip()
     try:
@@ -9604,7 +9623,6 @@ def guess_monthly_replay_window(youtube_url, month_key, review):
     confidence = str(result.get("confidence") or "low").strip().lower()
     if confidence not in {"low", "medium", "high"}:
         confidence = "low"
-    bpm = normalize_replay_bpm(result.get("bpm"))
     return {
         "youtube_url": youtube_url,
         "video_id": parse_youtube_video_id(youtube_url),
@@ -9612,8 +9630,6 @@ def guess_monthly_replay_window(youtube_url, month_key, review):
         "author_name": author,
         "start_seconds": start,
         "end_seconds": end,
-        "bpm": bpm,
-        "bpm_source": "ai_estimate" if bpm else "unknown",
         "reason": reason,
         "confidence": confidence,
         "updated_at": now_jst().isoformat(),
@@ -9694,13 +9710,10 @@ def render_monthly_replay_player(period_label, review, playback, photo_items):
     if end_seconds <= start_seconds:
         end_seconds = start_seconds + 20
     duration_seconds = max(1, end_seconds - start_seconds)
-    # Base timing keeps the prior behavior. When a BPM is available, quantize the
-    # interval to a musically natural 1/2/4/8-beat unit and drive slide changes from
-    # YouTube's currentTime so buffering cannot slowly drift the photos off the music.
-    target_display_ms = max(900, min(2500, int(max(1, duration_seconds) * 1000 / max(1, len(photo_items)))))
-    bpm = normalize_replay_bpm((playback or {}).get("bpm"))
-    beats_per_slide, display_ms = replay_beat_interval_ms(bpm, target_display_ms)
-    tempo_sync = bool(bpm and beats_per_slide)
+    # Show every photo at least once when possible, but cap each photo at 2.5s so
+    # a small set of photos naturally loops again while a longer music segment is playing.
+    # Photo cycling is never used as the stop condition; only the music end time stops playback.
+    display_ms = max(900, min(2500, int(max(1, duration_seconds) * 1000 / max(1, len(photo_items)))))
     period_label_escaped = html.escape(str(period_label or "期間の振り返り"))
     first_caption = html.escape(str(photo_items[0].get("caption") or "")) if photo_items else ""
     payload = json.dumps(photo_items, ensure_ascii=False)
@@ -9733,6 +9746,7 @@ def render_monthly_replay_player(period_label, review, playback, photo_items):
         background: #0f172a;
         border: 6px solid rgba(255,255,255,.16);
         box-sizing: border-box;
+        transition: border-color .18s ease;
       }}
       .burari-replay-stage img {{
         width: 100%;
@@ -9844,7 +9858,7 @@ def render_monthly_replay_player(period_label, review, playback, photo_items):
           <button id="burariReplayAgain" type="button">↻ 最初から</button>
         </div>
       </div>
-      <div class="burari-replay-meta">音楽区間：{format_mmss(start_seconds)}〜{format_mmss(end_seconds)} ／ 写真 {len(photo_items)}枚{f" ／ テンポ同期：{bpm} BPM・{beats_per_slide}拍ごと" if tempo_sync else ""}</div>
+      <div class="burari-replay-meta">音楽区間：{format_mmss(start_seconds)}〜{format_mmss(end_seconds)} ／ 写真 {len(photo_items)}枚</div>
       <div class="burari-replay-player-wrap">
         <div class="burari-replay-player-label">YouTube 音楽</div>
         <div id="burariReplayPlayer"></div>
@@ -9859,13 +9873,7 @@ def render_monthly_replay_player(period_label, review, playback, photo_items):
       const burariEndSeconds = {end_seconds};
       const burariDisplayMs = {display_ms};
       const burariDurationMs = {duration_seconds * 1000};
-      const burariBpm = {bpm};
-      const burariBeatsPerSlide = {beats_per_slide};
-      const burariTempoSync = {str(tempo_sync).lower()};
-      const burariSlideSeconds = Math.max(0.2, burariDisplayMs / 1000);
       let burariIndex = 0;
-      let burariLastTempoSlot = 0;
-      let burariSlidesPrepared = false;
       let burariTimer = null;
       let burariMusicWatchTimer = null;
       let burariFallbackEndTimer = null;
@@ -9890,60 +9898,24 @@ def render_monthly_replay_player(period_label, review, playback, photo_items):
       }};
       const burariEmotionIcons = {{ joy: '😊', anger: '😠', sadness: '😢', fun: '🎉' }};
 
-      const burariPreloaded = burariSlides.map((item) => {{
-        const image = new Image();
-        if (item && item.url) image.src = String(item.url);
-        return image;
-      }});
-
-      async function burariPrepareSlides() {{
-        if (burariSlidesPrepared) return;
-        const waits = burariPreloaded.map((image) => new Promise((resolve) => {{
-          if (!image || !image.src || image.complete) {{ resolve(); return; }}
-          const done = () => resolve();
-          image.addEventListener('load', done, {{ once: true }});
-          image.addEventListener('error', done, {{ once: true }});
-        }}));
-        try {{
-          await Promise.race([
-            Promise.allSettled(waits),
-            new Promise((resolve) => setTimeout(resolve, 2500)),
-          ]);
-          const decodes = burariPreloaded.map((image) => {{
-            try {{ return image && typeof image.decode === 'function' ? image.decode().catch(() => null) : Promise.resolve(); }}
-            catch (_) {{ return Promise.resolve(); }}
-          }});
-          await Promise.race([
-            Promise.allSettled(decodes),
-            new Promise((resolve) => setTimeout(resolve, 1200)),
-          ]);
-        }} catch (_) {{}}
-        burariSlidesPrepared = true;
-      }}
-
       function burariShowSlide(index) {{
         if (!burariSlides.length) return;
         const safeIndex = ((index % burariSlides.length) + burariSlides.length) % burariSlides.length;
         const item = burariSlides[safeIndex] || {{}};
+        if (item.url) burariImg.src = item.url;
         const emotionKey = String(item.emotion || '');
         const emotionColor = burariEmotionColors[emotionKey] || String(item.emotion_color || '') || burariDefaultFrameColor;
         const emotionIcon = burariEmotionIcons[emotionKey] || String(item.emotion_emoji || '');
-        // Commit the decoded image and its emotion chrome in the same animation frame.
-        // v151 changed the border immediately while the network image could appear later;
-        // preloading + one-frame commit keeps the photo, border and emoji visually locked.
-        requestAnimationFrame(() => {{
-          if (item.url && burariImg.src !== String(item.url)) burariImg.src = String(item.url);
-          if (burariStage) burariStage.style.borderColor = emotionKey ? emotionColor : burariDefaultFrameColor;
-          if (burariEmotion) {{
-            burariEmotion.textContent = emotionIcon;
-            burariEmotion.style.display = emotionIcon ? 'flex' : 'none';
-            burariEmotion.style.borderColor = emotionKey ? emotionColor : 'rgba(255,255,255,.96)';
-            burariEmotion.setAttribute('aria-hidden', emotionIcon ? 'false' : 'true');
-            burariEmotion.title = emotionIcon ? `${{emotionIcon}} ${{item.emotion_label || ''}}` : '';
-          }}
-          burariCaption.textContent = item.caption || '';
-          burariProgress.textContent = `${{safeIndex + 1}} / ${{burariSlides.length}}`;
-        }});
+        if (burariStage) burariStage.style.borderColor = emotionKey ? emotionColor : burariDefaultFrameColor;
+        if (burariEmotion) {{
+          burariEmotion.textContent = emotionIcon;
+          burariEmotion.style.display = emotionIcon ? 'flex' : 'none';
+          burariEmotion.style.borderColor = emotionKey ? emotionColor : 'rgba(255,255,255,.96)';
+          burariEmotion.setAttribute('aria-hidden', emotionIcon ? 'false' : 'true');
+          burariEmotion.title = emotionIcon ? `${{emotionIcon}} ${{item.emotion_label || ''}}` : '';
+        }}
+        burariCaption.textContent = item.caption || '';
+        burariProgress.textContent = `${{safeIndex + 1}} / ${{burariSlides.length}}`;
       }}
 
       function burariStopTimers() {{
@@ -9997,7 +9969,6 @@ def render_monthly_replay_player(period_label, review, playback, photo_items):
         // but the slideshow should still start reliably from the user's click.
         if (burariSlideLoopStarted) return;
         burariSlideLoopStarted = true;
-        if (burariTempoSync) return;
         if (burariSlides.length > 1) {{
           burariTimer = setInterval(() => {{
             burariIndex = (burariIndex + 1) % burariSlides.length;
@@ -10022,20 +9993,11 @@ def render_monthly_replay_player(period_label, review, playback, photo_items):
           try {{
             if (!burariPlayer || typeof burariPlayer.getCurrentTime !== 'function') return;
             const current = Number(burariPlayer.getCurrentTime());
-            if (Number.isFinite(current) && burariTempoSync && burariSlides.length > 1) {{
-              const elapsed = Math.max(0, current - burariStartSeconds);
-              const slot = Math.max(0, Math.floor((elapsed + 0.035) / burariSlideSeconds));
-              if (slot > burariLastTempoSlot) {{
-                burariLastTempoSlot = slot;
-                burariIndex = slot % burariSlides.length;
-                burariShowSlide(burariIndex);
-              }}
-            }}
             if (Number.isFinite(current) && current >= burariEndSeconds - 0.12) {{
               burariStopAtEnd();
             }}
           }} catch (_) {{}}
-        }}, burariTempoSync ? 70 : 180);
+        }}, 180);
 
         // Very generous safety net for browsers that stop reporting currentTime.
         // It is intentionally much longer than the requested segment so buffering
@@ -10072,7 +10034,7 @@ def render_monthly_replay_player(period_label, review, playback, photo_items):
         burariPositionTimer = setTimeout(() => burariConfirmRequestedPosition(attempt + 1), 220);
       }}
 
-      async function burariActuallyStart() {{
+      function burariActuallyStart() {{
         if (!burariPlayerReady || !burariPlayer) {{
           burariPendingStart = true;
           if (burariStatus) burariStatus.textContent = 'YouTubeプレーヤーを準備しています…';
@@ -10083,9 +10045,6 @@ def render_monthly_replay_player(period_label, review, playback, photo_items):
         burariWaitingForRequestedPosition = true;
         burariSlideLoopStarted = false;
         burariIndex = 0;
-        burariLastTempoSlot = 0;
-        if (!burariSlidesPrepared && burariStatus) burariStatus.textContent = '写真を準備しています…';
-        await burariPrepareSlides();
         burariShowSlide(burariIndex);
         // Start the photo slideshow immediately and independently. This fixes the
         // changed-music case where YouTube plays but its PLAYING/currentTime event
@@ -10169,7 +10128,6 @@ def _monthly_replay_state(month_key, review):
     reason_key = f"monthly_replay_reason_{month_key}"
     confidence_key = f"monthly_replay_confidence_{month_key}"
     title_key = f"monthly_replay_title_{month_key}"
-    bpm_key = f"monthly_replay_bpm_{month_key}"
 
     if url_key not in st.session_state:
         st.session_state[url_key] = str(playback.get("youtube_url") or "")
@@ -10185,8 +10143,6 @@ def _monthly_replay_state(month_key, review):
         st.session_state[confidence_key] = str(playback.get("confidence") or "")
     if title_key not in st.session_state:
         st.session_state[title_key] = str(playback.get("title") or "")
-    if bpm_key not in st.session_state:
-        st.session_state[bpm_key] = normalize_replay_bpm(playback.get("bpm"))
 
     return {
         "playback": playback,
@@ -10196,7 +10152,6 @@ def _monthly_replay_state(month_key, review):
         "reason_key": reason_key,
         "confidence_key": confidence_key,
         "title_key": title_key,
-        "bpm_key": bpm_key,
     }
 
 
@@ -10210,7 +10165,6 @@ def render_monthly_music_settings(month_key, bundle, review, expanded=True):
     reason_key = state["reason_key"]
     confidence_key = state["confidence_key"]
     title_key = state["title_key"]
-    bpm_key = state["bpm_key"]
 
     with st.expander("YouTubeの音楽と再生設定", expanded=expanded):
         if photo_items:
@@ -10274,12 +10228,10 @@ def render_monthly_music_settings(month_key, bundle, review, expanded=True):
                     st.session_state[reason_key] = str(guessed.get("reason") or "")
                     st.session_state[confidence_key] = str(guessed.get("confidence") or "")
                     st.session_state[title_key] = str(guessed.get("title") or "")
-                    st.session_state[bpm_key] = normalize_replay_bpm(guessed.get("bpm"))
                     save_monthly_playback(month_key, review, guessed)
                     st.session_state[f"monthly_replay_applied_{month_key}"] = {
                         "start_seconds": int(st.session_state[start_key]),
                         "end_seconds": int(st.session_state[end_key]),
-                        "bpm": normalize_replay_bpm(st.session_state.get(bpm_key)),
                     }
                     st.session_state[f"monthly_music_settings_open_{month_key}"] = False
                     st.success(f"おすすめ区間を {format_mmss(st.session_state[start_key])}〜{format_mmss(st.session_state[end_key])} に設定しました。")
@@ -10291,19 +10243,6 @@ def render_monthly_music_settings(month_key, bundle, review, expanded=True):
 
         st.number_input("開始（秒）", min_value=0, step=1, key=start_key)
         st.number_input("終了（秒）", min_value=1, step=1, key=end_key)
-        st.number_input(
-            "曲のテンポ（BPM）",
-            min_value=0,
-            max_value=220,
-            step=1,
-            key=bpm_key,
-            help="0はテンポ同期なしです。AIのおすすめ時間では曲名等からBPMも推定します。正確に合わせたい場合は既知のBPMを手入力してください。",
-        )
-        bpm = normalize_replay_bpm(st.session_state.get(bpm_key))
-        if bpm:
-            st.caption(f"写真切替を {bpm} BPM の拍に同期します。YouTube音声そのものを解析した値ではないため、必要なら手入力で微調整してください。")
-        else:
-            st.caption("BPMが0のときは、従来どおり写真枚数と再生時間から切替間隔を決めます。")
         start_seconds = max(0, int(st.session_state.get(start_key) or 0))
         end_seconds = int(st.session_state.get(end_key) or (start_seconds + 20))
         if end_seconds <= start_seconds:
@@ -10334,8 +10273,6 @@ def render_monthly_music_settings(month_key, bundle, review, expanded=True):
                         "author_name": str(meta.get("author_name") or "").strip(),
                         "start_seconds": start_seconds,
                         "end_seconds": end_seconds,
-                        "bpm": normalize_replay_bpm(st.session_state.get(bpm_key)),
-                        "bpm_source": "manual" if normalize_replay_bpm(st.session_state.get(bpm_key)) else "unknown",
                         "reason": str(st.session_state.get(reason_key) or "").strip(),
                         "confidence": "manual",
                         "updated_at": now_jst().isoformat(),
@@ -10345,7 +10282,6 @@ def render_monthly_music_settings(month_key, bundle, review, expanded=True):
                     st.session_state[f"monthly_replay_applied_{month_key}"] = {
                         "start_seconds": start_seconds,
                         "end_seconds": end_seconds,
-                        "bpm": normalize_replay_bpm(st.session_state.get(bpm_key)),
                     }
                     st.session_state[confidence_key] = "manual"
                     st.session_state[f"monthly_music_settings_open_{month_key}"] = False
@@ -10359,7 +10295,6 @@ def render_monthly_music_settings(month_key, bundle, review, expanded=True):
                 st.session_state[reason_key] = ""
                 st.session_state[confidence_key] = ""
                 st.session_state[title_key] = ""
-                st.session_state[bpm_key] = 0
                 st.session_state.pop(f"monthly_replay_applied_{month_key}", None)
                 st.session_state[f"monthly_music_settings_open_{month_key}"] = True
                 save_monthly_playback(month_key, review, {})
@@ -10372,10 +10307,8 @@ def render_monthly_music_settings(month_key, bundle, review, expanded=True):
                 "start_seconds": int(playback.get("start_seconds") or start_seconds),
                 "end_seconds": int(playback.get("end_seconds") or end_seconds),
             }
-        applied_bpm = normalize_replay_bpm(applied.get("bpm") or playback.get("bpm") or st.session_state.get(bpm_key))
         st.caption(
             f"再生に反映中: {format_mmss(applied.get('start_seconds'))}〜{format_mmss(applied.get('end_seconds'))}"
-            + (f" ／ テンポ同期 {applied_bpm} BPM" if applied_bpm else " ／ テンポ同期なし")
         )
         if st.session_state.get(title_key):
             st.write(f"候補タイトル: **{st.session_state[title_key]}**")
@@ -10384,7 +10317,7 @@ def render_monthly_music_settings(month_key, bundle, review, expanded=True):
         if reason:
             confidence_label = {"low": "低め", "medium": "中くらい", "high": "高め", "manual": "手動"}.get(confidence, confidence)
             st.caption(f"AIメモ: {reason}（確からしさ: {confidence_label or '不明'}）")
-        st.caption("※ サビ候補とBPMはAIの推測です。YouTube音声そのものを解析していないため、曲によって外れることがあります。必要なら秒数・BPMを手で直してください。")
+        st.caption("※ サビ候補はAIの推測です。曲によって外れることがあります。必要なら秒数を手で直してください。")
 
 
 def render_monthly_time_settings(month_key, review):
@@ -10502,7 +10435,6 @@ def render_monthly_replay_section(month_key, period_label, bundle, review):
         "video_id": video_id,
         "start_seconds": applied_start,
         "end_seconds": applied_end,
-        "bpm": normalize_replay_bpm(applied.get("bpm") or playback.get("bpm") or st.session_state.get(state["bpm_key"])),
         "reason": str(st.session_state.get(state["reason_key"]) or "").strip(),
         "confidence": str(st.session_state.get(state["confidence_key"]) or "").strip(),
         "title": str(st.session_state.get(state["title_key"]) or "").strip(),
@@ -13246,14 +13178,15 @@ export default function(component) {
           probe.addEventListener('error', () => { clearTimeout(timer); reject(new Error('動画情報を読み込めません')); }, { once: true });
         });
         const duration = Number.isFinite(probe.duration) && probe.duration > 0 ? probe.duration : 1;
-        const count = Math.max(1, Math.min(150, Math.ceil(duration * 10)));
+        const intervalSeconds = Math.max(0.5, duration / 20);
+        const count = Math.max(1, Math.min(20, Math.ceil(duration / intervalSeconds)));
         const srcW = probe.videoWidth || 1280;
         const srcH = probe.videoHeight || 720;
         const maxSide = 240;
         const scale = Math.min(1, maxSide / Math.max(srcW, srcH));
         const tileW = Math.max(1, Math.round(srcW * scale));
         const tileH = Math.max(1, Math.round(srcH * scale));
-        const columns = Math.min(15, count);
+        const columns = Math.min(10, count);
         const rows = Math.ceil(count / columns);
         const sheet = document.createElement('canvas');
         sheet.width = tileW * columns;
@@ -13265,7 +13198,7 @@ export default function(component) {
         let actual = 0;
         for (let i = 0; i < count; i += 1) {
           if (cancelled) return;
-          const seconds = Math.min(Math.max(0, duration - 0.03), i / 10);
+          const seconds = Math.min(Math.max(0, duration - 0.03), i * intervalSeconds);
           try {
             await seek(probe, seconds);
             const col = actual % columns;
@@ -13403,7 +13336,7 @@ def auto_recover_one_video_candidate_sheet():
     """Automatically recover one video that needs browser-side frame extraction.
 
     This renders the recovery component without requiring a viewer button. The
-    component fetches the already-saved original video, samples it every 0.1s,
+    component fetches the already-saved original video using max(0.5s, duration/20),
     uploads one contact sheet, and triggers the normal AI pipeline.
     """
     if moments_recovery_component is None:
@@ -13910,7 +13843,7 @@ def _get_moments_select_component():
     _moments_select_component_initialized = True
     try:
         moments_select_component = st.components.v2.component(
-            "tokyo_burari_moments_select_v150",
+            "tokyo_burari_moments_select_v153",
             html=_MOMENTS_SELECT_HTML,
             css=_MOMENTS_SELECT_CSS,
             js=_MOMENTS_SELECT_JS,
@@ -13939,7 +13872,7 @@ def _render_moments_picker(photo, index, view_mode="list"):
             use_container_width=True,
             key=f"moments_reviewed_recut_{video_id}_{round_number}",
             help=(
-                "元動画から1秒間隔で再評価して、新しい『いい瞬間』候補を作ります。"
+                "元動画から動画長に応じた間隔（最大20候補）で再評価して、新しい『いい瞬間』候補を作ります。"
                 "すでに日記へ残した写真は削除しません。"
             ),
         ):
@@ -13996,7 +13929,7 @@ def _render_moments_picker(photo, index, view_mode="list"):
     if status == "processing":
         stage = str(selection_meta.get("stage") or "").strip().lower()
         if stage == "candidate_preparation":
-            st.info("保存済み動画を1秒間隔で切り出し、AI候補をバックグラウンドで準備しています。")
+            st.info("保存済み動画から動画長に応じた間隔で最大20枚を切り出し、AI候補をバックグラウンドで準備しています。")
         else:
             st.info("現在いい瞬間の切り取り中です。")
             progress_message = str(selection_meta.get("progress_message") or "").strip()
@@ -14853,7 +14786,7 @@ def page_videos():
             status = str(selection.get("status") or "").lower()
             if status == "processing":
                 stage = str(selection.get("stage") or "").strip().lower()
-                status_label = "✨ 1秒間隔で候補を準備中" if stage == "candidate_preparation" else "✨ いい瞬間を自動選定中"
+                status_label = "✨ 最大20候補を準備中" if stage == "candidate_preparation" else "✨ いい瞬間を自動選定中"
             elif status in {"", "waiting_candidates"}:
                 status_label = "✨ 自動処理を開始待ち"
             elif status == "ready":
@@ -15263,7 +15196,7 @@ def page_trip():
             "video_candidate_sheet_signed_url": str(video_reservation.get("candidate_sheet_signed_url") or ""),
             "video_candidate_sheet_storage_path": str(video_reservation.get("candidate_sheet_path") or ""),
         },
-        key=f"live_camera_v150_{camera_trip_key}_{st.session_state.capture_serial}_{_current_ui_refresh_epoch()}",
+        key=f"live_camera_v153_{camera_trip_key}_{st.session_state.capture_serial}_{_current_ui_refresh_epoch()}",
         on_photo_change=lambda: None,
         on_video_change=lambda: None,
         on_camera_error_change=lambda: None,
@@ -15378,7 +15311,7 @@ def page_trip():
                 except Exception:
                     pass
 
-                # v134: prefer the 1-second contact sheet built automatically in
+                # Legacy compatibility: prefer a browser contact sheet when one exists in
                 # the browser while/just after recording. This makes ffmpeg optional.
                 ai_status = "queued_recovery"
                 if isinstance(saved_video, dict) and saved_video.get("id"):
@@ -15422,7 +15355,7 @@ def page_trip():
                             selection["stage"] = "candidate_preparation"
                             selection["last_error"] = str(background_exc)[:240]
                             selection["updated_at"] = now_jst().isoformat()
-                            selection["pipeline_mode"] = "background_single_pass_1s_v145"
+                            selection["pipeline_mode"] = "background_single_pass_dynamic20_v153"
                             reflection["ai_selection"] = selection
                             _write_photo_reflection(saved_video["id"], reflection)
                         except Exception:
@@ -16711,7 +16644,7 @@ def page_settings():
                 "軽い手振れ補正版を作成できた場合、その補正版は動画容量に含まれます。"
             )
             if remaining_bytes < VIDEO_RECORDING_RESERVE_BYTES:
-                st.warning("15秒動画の撮影開始に必要な空きがないため、現在は動画撮影を開始できません。")
+                st.warning("60秒動画の撮影開始に必要な空きがないため、現在は動画撮影を開始できません。")
             st.progress(min(1.0, usage_bytes / quota_bytes) if quota_bytes else 0.0)
         except Exception as exc:
             st.caption("動画容量を確認できませんでした。")
@@ -16730,9 +16663,9 @@ def page_settings():
         "初回だけ、このサイトへのカメラ使用を『許可』してください。"
     )
     st.caption(
-        "動画は最大15秒です。録画を止めると確認画面を挟まず元動画を保管庫へ自動保存します。"
+        "動画は最大60秒です。録画を止めると確認画面を挟まず元動画を保管庫へ自動保存します。"
         "動画の保存完了と『いい瞬間』作成は切り分け、いい瞬間はバックグラウンドで処理するため、その間もアプリを操作できます。"
-        "『いい瞬間』は保存済みの元動画を1秒間隔で元解像度のまま1回だけ切り出し、AI用には別の軽量コピーを使います。"
+        "『いい瞬間』は保存済みの元動画を、10秒以下は0.5秒間隔・15秒は0.75秒間隔・60秒は3秒間隔（一般式：max(0.5秒, 動画長÷20)）で最大20枚切り出し、AI用には別の軽量コピーを使います。"
         "AIが選ぶのは最大3枚で、利用者が見る画像は元動画由来の高画質フレームのみです。切り取った写真は日記画面でタップして喜・怒・哀・楽を選べます。"
         "初回はカメラとは別に位置情報の許可も求められます。位置情報がオフ・拒否・取得不能の場合は、"
         "ホームの地名表示（未登録なら『地名：登録なし（自動取得）』）を押して入力した内容を写真の場所として使います。"
