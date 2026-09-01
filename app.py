@@ -28,9 +28,9 @@ from zoneinfo import ZoneInfo
 import streamlit as st
 
 # Freshly generated update: 2026-08-31 23:49 JST
-GENERATED_UPDATE_JST = "2026-09-02T01:50:55+09:00"
+GENERATED_UPDATE_JST = "2026-09-02T02:07:21+09:00"
 
-APP_BUILD = "v170"
+APP_BUILD = "v172"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -82,6 +82,9 @@ HOME_ICON_CANDIDATES = {
     "diary_sotetsu": [os.path.join(APP_DIR, "assets", "icons", "diary_sotetsu.png")],
     "diary_shonan_shinjuku": [os.path.join(APP_DIR, "assets", "icons", "diary_shonan_shinjuku.png")],
 }
+
+# v172: the Home video button reuses the exact Photo camera asset.
+# Only subtle motion marks are layered around it in CSS, so all camera colors stay identical.
 
 # One route choice controls the train, camera and diary together so the home screen
 # reads as one coherent visual theme. The camera/diary versions are deliberately
@@ -13003,6 +13006,7 @@ def _home_train_for_session():
 def inject_home_icon_css(review_attention=False):
     theme = _home_theme_for_session()
     camera_uri = _home_icon_uri(theme["camera_key"]) or _home_icon_uri("camera")
+    video_uri = camera_uri
     diary_uri = _home_icon_uri(theme["diary_key"]) or _home_icon_uri("diary")
     review_uri = _home_icon_uri("review")
     settings_uri = _home_icon_uri(theme["settings_key"]) or _home_icon_uri("settings")
@@ -13016,9 +13020,10 @@ def inject_home_icon_css(review_attention=False):
         ".st-key-home_diary div.stButton > button::before,"
         ".st-key-home_review div.stButton > button::before,"
         ".st-key-home_settings div.stButton > button::before{content:'';display:block;background-repeat:no-repeat;background-position:center;background-size:contain;flex-shrink:0;margin:0 !important;}",
-        ".st-key-home_camera div.stButton > button::before,.st-key-home_video div.stButton > button::before,.st-key-home_diary div.stButton > button::before{width:50px;height:50px;}",
+        ".st-key-home_camera div.stButton > button::before,.st-key-home_diary div.stButton > button::before{width:50px;height:50px;}",
+        ".st-key-home_video div.stButton > button::before{width:64px;height:50px;}",
         ".st-key-home_review div.stButton > button::before,.st-key-home_settings div.stButton > button::before{width:42px;height:42px;}",
-        "@media (max-width: 640px){.st-key-home_camera div.stButton > button::before,.st-key-home_video div.stButton > button::before,.st-key-home_diary div.stButton > button::before{width:36px;height:36px;}.st-key-home_review div.stButton > button::before,.st-key-home_settings div.stButton > button::before{width:30px;height:30px;}}",
+        "@media (max-width: 640px){.st-key-home_camera div.stButton > button::before,.st-key-home_diary div.stButton > button::before{width:36px;height:36px;}.st-key-home_video div.stButton > button::before{width:48px;height:36px;}.st-key-home_review div.stButton > button::before,.st-key-home_settings div.stButton > button::before{width:30px;height:30px;}}",
         f'.home-title-accent{{color:color-mix(in srgb, {accent} 80%, rgba(31, 38, 48, .96) 20%);text-shadow:0 1px 0 rgba(255,255,255,.72);}}',
         f'.st-key-home_camera div.stButton > button,.st-key-home_video div.stButton > button,.st-key-home_diary div.stButton > button{{border-color:{accent} !important;background:linear-gradient(155deg,rgba({rgb2},.25),rgba({rgb1},.07)) !important;box-shadow:0 9px 22px rgba({rgb1},.10),0 0 0 2px rgba(255,255,255,.34) inset !important;}}',
         f'.st-key-home_camera div.stButton > button:hover,.st-key-home_video div.stButton > button:hover,.st-key-home_diary div.stButton > button:hover{{border-color:{accent} !important;background:linear-gradient(155deg,rgba({rgb2},.34),rgba({rgb1},.11)) !important;box-shadow:0 11px 24px rgba({rgb1},.14),0 0 0 2px rgba(255,255,255,.40) inset !important;}}',
@@ -13034,7 +13039,20 @@ def inject_home_icon_css(review_attention=False):
         ])
 
     if camera_uri:
-        css_chunks.append(f'.st-key-home_camera div.stButton > button::before,.st-key-home_video div.stButton > button::before{{background-image:url("{camera_uri}") !important;}}')
+        css_chunks.append(f'.st-key-home_camera div.stButton > button::before{{background-image:url("{camera_uri}") !important;}}')
+    if video_uri:
+        motion_uri = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 50'%3E%3Cg fill='none' stroke='%23564f4a' stroke-width='3.2' stroke-linecap='round' opacity='.72'%3E%3Cpath d='M9 18c-2.5 4-2.5 10 0 14'/%3E%3Cpath d='M4.5 14c-4 7-4 15 0 22'/%3E%3Cpath d='M55 18c2.5 4 2.5 10 0 14'/%3E%3Cpath d='M59.5 14c4 7 4 15 0 22'/%3E%3C/g%3E%3C/svg%3E"
+        css_chunks.append(
+            f'.st-key-home_video div.stButton > button::before{{'
+            f'background-image:url("{video_uri}"),url("{motion_uri}") !important;'
+            'background-size:50px 50px,64px 50px !important;'
+            'background-position:center,center !important;'
+            'background-repeat:no-repeat,no-repeat !important;}'
+        )
+        css_chunks.append(
+            '@media (max-width:640px){.st-key-home_video div.stButton > button::before{'
+            'background-size:36px 36px,48px 36px !important;}}'
+        )
     if diary_uri:
         css_chunks.append(f'.st-key-home_diary div.stButton > button::before{{background-image:url("{diary_uri}") !important;}}')
     if review_uri:
