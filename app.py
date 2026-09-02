@@ -28,9 +28,9 @@ from zoneinfo import ZoneInfo
 import streamlit as st
 
 # Freshly generated update: 2026-08-31 23:49 JST
-GENERATED_UPDATE_JST = "2026-09-02T12:15:00+09:00"
+GENERATED_UPDATE_JST = "2026-09-03T00:37:00+09:00"
 
-APP_BUILD = "v174"
+APP_BUILD = "v175"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -159,7 +159,7 @@ HOME_TRAIN_LINES = [(theme["line_name"], key) for key, theme in HOME_ROUTE_THEME
 # Basic settings
 # ============================================================
 st.set_page_config(
-    page_title="東京ぶらり旅プロジェクト",
+    page_title="ぶらり旅",
     page_icon="📷",
     layout="centered",
     initial_sidebar_state="collapsed",
