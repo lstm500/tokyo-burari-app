@@ -28,9 +28,9 @@ from zoneinfo import ZoneInfo
 import streamlit as st
 
 # Freshly generated update: 2026-08-31 23:49 JST
-GENERATED_UPDATE_JST = "2026-09-03T00:37:00+09:00"
+GENERATED_UPDATE_JST = "2026-09-03T01:28:12+09:00"
 
-APP_BUILD = "v175"
+APP_BUILD = "v176"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -10903,7 +10903,7 @@ def guess_monthly_replay_window(youtube_url, month_key, review):
     }
 
 
-def build_monthly_replay_photo_items(bundle, limit=18):
+def _monthly_replay_selected_photos(bundle, limit=18):
     trip_map = {str(t.get("id")): t for t in (bundle or {}).get("trips", []) if isinstance(t, dict) and t.get("id")}
     photos = [p for p in (bundle or {}).get("photos", []) if isinstance(p, dict)]
     photos.sort(key=lambda p: (
@@ -10911,8 +10911,6 @@ def build_monthly_replay_photo_items(bundle, limit=18):
         str(p.get("captured_at") or ""),
         str(p.get("id") or ""),
     ))
-    if not photos:
-        return []
     if len(photos) > limit:
         step = len(photos) / float(limit)
         picked = []
@@ -10924,6 +10922,24 @@ def build_monthly_replay_photo_items(bundle, limit=18):
                 picked.append(item)
                 seen.add(key)
         photos = picked or photos[:limit]
+    return photos, trip_map
+
+
+def _monthly_replay_photo_caption(photo, trip, index):
+    label_bits = []
+    trip_date = str((trip or {}).get("trip_date") or "").strip()
+    place = str(photo_location_label(photo) or (trip or {}).get("destination") or "").strip()
+    if trip_date:
+        label_bits.append(trip_date)
+    if place:
+        label_bits.append(place)
+    return " / ".join(label_bits) or f"写真{index}"
+
+
+def build_monthly_replay_photo_items(bundle, limit=18):
+    photos, trip_map = _monthly_replay_selected_photos(bundle, limit=limit)
+    if not photos:
+        return []
     signed_map = signed_photo_url_map([str(p.get("storage_path") or "") for p in photos], expires_in=1800)
     items = []
     for idx, photo in enumerate(photos, start=1):
@@ -10931,24 +10947,247 @@ def build_monthly_replay_photo_items(bundle, limit=18):
         if not url:
             continue
         trip = trip_map.get(str(photo.get("trip_id")), {})
-        label_bits = []
-        trip_date = str(trip.get("trip_date") or "").strip()
-        place = str(photo_location_label(photo) or trip.get("destination") or "").strip()
-        if trip_date:
-            label_bits.append(trip_date)
-        if place:
-            label_bits.append(place)
-        caption = " / ".join(label_bits) or f"写真{idx}"
         emotion = photo_selected_tag_meta(photo)
         items.append({
             "url": url,
-            "caption": caption,
+            "caption": _monthly_replay_photo_caption(photo, trip, idx),
             "emotion": str(emotion.get("key") or ""),
             "emotion_label": str(emotion.get("label") or ""),
             "emotion_emoji": str(emotion.get("emoji") or ""),
             "emotion_color": str(emotion.get("color") or ""),
         })
     return items
+
+
+def monthly_family_share_info(review):
+    if not isinstance(review, dict):
+        return {}
+    share = review.get("_family_share") or {}
+    return dict(share) if isinstance(share, dict) else {}
+
+
+def monthly_family_share_is_enabled(review):
+    return bool(monthly_family_share_info(review).get("shared"))
+
+
+def build_monthly_family_share_photo_snapshot(bundle, limit=18):
+    """Store only lightweight references/labels; original photos are never copied."""
+    photos, trip_map = _monthly_replay_selected_photos(bundle, limit=limit)
+    snapshots = []
+    for idx, photo in enumerate(photos, start=1):
+        storage_path = str(photo.get("storage_path") or "").strip()
+        if not storage_path:
+            continue
+        trip = trip_map.get(str(photo.get("trip_id")), {})
+        emotion = photo_selected_tag_meta(photo)
+        snapshots.append({
+            "storage_path": storage_path,
+            "caption": _monthly_replay_photo_caption(photo, trip, idx),
+            "emotion": str(emotion.get("key") or ""),
+            "emotion_label": str(emotion.get("label") or ""),
+            "emotion_emoji": str(emotion.get("emoji") or ""),
+            "emotion_color": str(emotion.get("color") or ""),
+        })
+    return snapshots
+
+
+def build_family_shared_replay_photo_items(share):
+    share = share if isinstance(share, dict) else {}
+    snapshots = [x for x in (share.get("photos") or []) if isinstance(x, dict)]
+    paths = [str(x.get("storage_path") or "").strip() for x in snapshots]
+    paths = [x for x in paths if x]
+    if not paths:
+        return []
+    try:
+        signed_map = signed_photo_url_map(paths, expires_in=1800)
+    except Exception:
+        signed_map = {}
+    items = []
+    for snap in snapshots:
+        path = str(snap.get("storage_path") or "").strip()
+        if not path:
+            continue
+        url = str(signed_map.get(path) or "")
+        if not url:
+            try:
+                raw = download_photo(path)
+                if raw:
+                    url = "data:image/jpeg;base64," + base64.b64encode(raw).decode("ascii")
+            except Exception:
+                url = ""
+        if not url:
+            continue
+        items.append({
+            "url": url,
+            "caption": str(snap.get("caption") or ""),
+            "emotion": str(snap.get("emotion") or ""),
+            "emotion_label": str(snap.get("emotion_label") or ""),
+            "emotion_emoji": str(snap.get("emotion_emoji") or ""),
+            "emotion_color": str(snap.get("emotion_color") or ""),
+        })
+    return items
+
+
+def _monthly_family_share_payload(month_key, period_label, bundle, previous_share=None):
+    previous_share = previous_share if isinstance(previous_share, dict) else {}
+    now_value = now_jst().isoformat()
+    return {
+        "version": 1,
+        "shared": True,
+        "month_key": str(month_key or ""),
+        "period_label": str(period_label or format_month_label(month_key)),
+        "shared_by_member_key": current_member_key(),
+        "shared_by_member_name": current_member_name(),
+        "shared_at": str(previous_share.get("shared_at") or now_value),
+        "updated_at": now_value,
+        "photos": build_monthly_family_share_photo_snapshot(bundle, limit=18),
+    }
+
+
+def set_monthly_family_share(month_key, period_label, bundle, review, enabled=True):
+    updated = dict(review or {})
+    if enabled:
+        previous = monthly_family_share_info(updated)
+        payload = _monthly_family_share_payload(month_key, period_label, bundle, previous_share=previous)
+        if not payload.get("photos"):
+            raise ValueError("家族に共有できる写真がありません。")
+        updated["_family_share"] = payload
+    else:
+        updated.pop("_family_share", None)
+    save_monthly_review(month_key, updated)
+    st.session_state[f"monthly_review_{month_key}"] = updated
+    return updated
+
+
+def carry_monthly_family_share(refreshed_review, previous_review, month_key, period_label, bundle):
+    refreshed = dict(refreshed_review or {})
+    previous = monthly_family_share_info(previous_review)
+    if previous.get("shared"):
+        refreshed["_family_share"] = _monthly_family_share_payload(
+            month_key,
+            period_label,
+            bundle,
+            previous_share=previous,
+        )
+    return refreshed
+
+
+def _coerce_review_json(value):
+    if isinstance(value, dict):
+        return dict(value)
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+            return dict(parsed) if isinstance(parsed, dict) else {}
+        except Exception:
+            return {}
+    return {}
+
+
+def list_family_shared_monthly_reviews(limit=24):
+    """Shared reviews from other personal accounts in the same family container."""
+    try:
+        result = (
+            supabase_client()
+            .table(MONTHLY_TABLE)
+            .select("id,member_key,review_month,review_json,updated_at")
+            .eq("family_key", current_family_key())
+            .order("review_month", desc=True)
+            .limit(max(24, int(limit) * 4))
+            .execute()
+        )
+        rows = result.data or []
+    except Exception:
+        return []
+
+    try:
+        member_map = {
+            str(row.get("member_key") or ""): str(row.get("display_name") or row.get("member_key") or "")
+            for row in list_family_members(current_family_key())
+            if isinstance(row, dict)
+        }
+    except Exception:
+        member_map = {}
+
+    current_member = current_member_key()
+    shared_rows = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        member_key = str(row.get("member_key") or "").strip()
+        if not member_key or member_key == current_member:
+            continue
+        review = _coerce_review_json(row.get("review_json"))
+        share = monthly_family_share_info(review)
+        if not share.get("shared"):
+            continue
+        photos = [x for x in (share.get("photos") or []) if isinstance(x, dict) and str(x.get("storage_path") or "").strip()]
+        if not photos:
+            continue
+        month_key = str(share.get("month_key") or str(row.get("review_month") or "")[:7]).strip()
+        period_label = str(share.get("period_label") or (format_month_label(month_key) if month_key else "期間")).strip()
+        member_name = str(member_map.get(member_key) or share.get("shared_by_member_name") or member_key).strip()
+        shared_rows.append({
+            "id": str(row.get("id") or f"{member_key}:{month_key}"),
+            "member_key": member_key,
+            "member_name": member_name,
+            "month_key": month_key,
+            "period_label": period_label,
+            "review": review,
+            "share": share,
+            "updated_at": str(row.get("updated_at") or share.get("updated_at") or ""),
+        })
+        if len(shared_rows) >= int(limit):
+            break
+    return shared_rows
+
+
+def render_family_shared_monthly_reviews():
+    shared_rows = list_family_shared_monthly_reviews(limit=24)
+    if not shared_rows:
+        return False
+
+    st.markdown("#### 👨‍👩‍👦 家族から届いた振り返り")
+    st.caption("同じ家族IDの別アカウントが共有した振り返りです。閲覧のみできます。")
+    row_map = {row["id"]: row for row in shared_rows}
+    option_ids = list(row_map.keys())
+    selector_key = "family_shared_monthly_selector"
+    if st.session_state.get(selector_key) not in option_ids:
+        st.session_state.pop(selector_key, None)
+
+    selected_id = st.selectbox(
+        "共有された振り返り",
+        option_ids,
+        format_func=lambda rid: f"{row_map[rid]['member_name']}さん ／ {row_map[rid]['period_label']}",
+        key=selector_key,
+        label_visibility="collapsed",
+    )
+    selected = row_map.get(selected_id)
+    if not selected:
+        return True
+
+    open_key = "_family_shared_monthly_open_id"
+    is_open = str(st.session_state.get(open_key) or "") == str(selected_id)
+    button_label = "閉じる" if is_open else "▶ 家族の振り返りを見る"
+    if st.button(button_label, use_container_width=True, key="family_shared_monthly_open_button"):
+        st.session_state[open_key] = "" if is_open else str(selected_id)
+        st.rerun()
+
+    if str(st.session_state.get(open_key) or "") == str(selected_id):
+        review = selected["review"]
+        share = selected["share"]
+        playback = get_monthly_playback(review)
+        photo_items = build_family_shared_replay_photo_items(share)
+        st.markdown(f"**{selected['member_name']}さんから共有された {selected['period_label']}**")
+        if monthly_playback_is_ready(playback) and photo_items:
+            render_monthly_replay_player(selected["period_label"], review, playback, photo_items)
+        elif not photo_items:
+            st.info("共有された写真を表示できませんでした。")
+        else:
+            st.info("共有元で振り返りムービーの音楽設定が解除されています。")
+        with st.expander("✨ AIのコメントを見る"):
+            render_monthly_ai_comments(review)
+    return True
 
 
 def monthly_playback_is_ready(playback):
@@ -17640,6 +17879,11 @@ def page_monthly(embedded=False):
         st.success(deleted_notice)
     st.caption("保存した日記と写真ごとの気持ちを、まとまった期間ごとにつないで振り返ります。")
 
+    shared_visible = render_family_shared_monthly_reviews()
+    if shared_visible:
+        st.divider()
+        st.markdown("#### 自分の振り返り")
+
     recent = list_recent_diaries(limit=120)
     pending_rows = list_pending_photo_trips(limit=80)
     month_keys = []
@@ -17721,6 +17965,7 @@ def page_monthly(embedded=False):
                     previous_playback = get_monthly_playback(review)
                     if previous_playback:
                         refreshed["_playback"] = previous_playback
+                    refreshed = carry_monthly_family_share(refreshed, review, month_key, period_label, bundle)
                     save_monthly_review(month_key, refreshed)
                 st.session_state[session_key] = refreshed
                 st.rerun()
@@ -17751,6 +17996,7 @@ def page_monthly(embedded=False):
                     refreshed = make_monthly_review(month_key, bundle)
                     if previous_playback:
                         refreshed["_playback"] = previous_playback
+                    refreshed = carry_monthly_family_share(refreshed, review, month_key, period_label, bundle)
                     save_monthly_review(month_key, refreshed)
                 st.session_state[session_key] = refreshed
                 st.rerun()
@@ -17765,6 +18011,38 @@ def page_monthly(embedded=False):
     rendered = render_monthly_replay_section(month_key, period_label, bundle, review)
     if not rendered:
         st.warning("振り返りムービーを表示できませんでした。音楽または写真の設定を確認してください。")
+    else:
+        share_enabled = monthly_family_share_is_enabled(review)
+        with st.container(key="monthly_family_share_area"):
+            if share_enabled:
+                st.caption("👨‍👩‍👦 同じ家族IDの別アカウント全員に共有中です。相手側は閲覧のみできます。")
+                if st.button(
+                    "家族への共有を解除する",
+                    use_container_width=True,
+                    key=f"monthly_family_unshare_{month_key}",
+                ):
+                    try:
+                        review = set_monthly_family_share(month_key, period_label, bundle, review, enabled=False)
+                        st.success("家族への共有を解除しました。")
+                        st.rerun()
+                    except Exception as exc:
+                        st.error("家族への共有を解除できませんでした。")
+                        with st.expander("保護者向け詳細"):
+                            st.code(str(exc))
+            else:
+                if st.button(
+                    "👨‍👩‍👦 家族に共有する",
+                    use_container_width=True,
+                    key=f"monthly_family_share_{month_key}",
+                ):
+                    try:
+                        review = set_monthly_family_share(month_key, period_label, bundle, review, enabled=True)
+                        st.success("同じ家族IDの別アカウント全員に共有しました。")
+                        st.rerun()
+                    except Exception as exc:
+                        st.error("家族に共有できませんでした。")
+                        with st.expander("保護者向け詳細"):
+                            st.code(str(exc))
 
     time_settings_open_key = f"monthly_time_settings_open_{month_key}"
     if st.button(
@@ -17864,6 +18142,7 @@ def page_monthly(embedded=False):
                     previous_playback = get_monthly_playback(review)
                     if previous_playback:
                         refreshed["_playback"] = previous_playback
+                    refreshed = carry_monthly_family_share(refreshed, review, month_key, period_label, bundle)
                     save_monthly_review(month_key, refreshed)
                 st.session_state[session_key] = refreshed
                 st.rerun()
@@ -17883,6 +18162,7 @@ def page_monthly(embedded=False):
                     refreshed = make_monthly_review(month_key, bundle)
                     if previous_playback:
                         refreshed["_playback"] = previous_playback
+                    refreshed = carry_monthly_family_share(refreshed, review, month_key, period_label, bundle)
                     save_monthly_review(month_key, refreshed)
                 st.session_state[session_key] = refreshed
                 st.rerun()
