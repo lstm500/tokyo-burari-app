@@ -28,9 +28,9 @@ from zoneinfo import ZoneInfo
 import streamlit as st
 
 # Freshly generated update: 2026-08-31 23:49 JST
-GENERATED_UPDATE_JST = "2026-09-02T02:09:57+09:00"
+GENERATED_UPDATE_JST = "2026-09-02T12:15:00+09:00"
 
-APP_BUILD = "v173"
+APP_BUILD = "v174"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -14276,7 +14276,7 @@ def _render_home_storage_usage_status():
     if quota_bytes <= 0:
         st.markdown(
             """
-            <div style="margin:.62rem .10rem .08rem; opacity:.52; font-size:.68rem; text-align:center;">
+            <div style="margin:.30rem .10rem .05rem; opacity:.52; font-size:.65rem; text-align:center;">
               動画ストレージ：上限未設定
             </div>
             """,
@@ -14292,7 +14292,7 @@ def _render_home_storage_usage_status():
         quota_text = format_storage_size(quota_bytes)
         st.markdown(
             f"""
-            <div style="margin:.72rem .12rem .10rem;">
+            <div style="margin:.34rem .12rem .06rem;">
               <div style="display:flex; justify-content:space-between; gap:.75rem; align-items:center;
                           margin:0 2px 4px; font-size:.68rem; line-height:1.2; opacity:.58;">
                 <span>動画ストレージ</span>
@@ -14311,7 +14311,7 @@ def _render_home_storage_usage_status():
     except Exception:
         st.markdown(
             """
-            <div style="margin:.62rem .10rem .08rem; opacity:.46; font-size:.66rem; text-align:center;">
+            <div style="margin:.30rem .10rem .05rem; opacity:.46; font-size:.64rem; text-align:center;">
               動画ストレージ：容量を確認できませんでした
             </div>
             """,
@@ -14330,6 +14330,172 @@ def page_home():
     _sync_recent_camera_state_from_browser()
     review_attention = home_review_attention_needed()
     inject_home_icon_css(review_attention=review_attention)
+    # v174: compact the Home dashboard only on phone-sized screens. Primary actions
+    # stay large enough to tap, but low-value whitespace is reduced and paired actions
+    # are locked side-by-side so the dashboard fits in one normal phone viewport.
+    st.markdown(
+        """
+        <style>
+        @media (max-width: 640px) {
+          .home-account {
+            margin: 0 0 .12rem !important;
+            font-size: .64rem !important;
+            line-height: 1.05 !important;
+          }
+          .home-hero {
+            margin: 0 0 .28rem !important;
+            padding: .46rem .62rem .42rem !important;
+            border-radius: 16px !important;
+          }
+          .home-hero-inner { gap: .22rem !important; }
+          .home-hero-train, .home-hero-train img {
+            width: 52px !important;
+            height: 44px !important;
+          }
+          .home-eyebrow {
+            font-size: .58rem !important;
+            margin-bottom: .08rem !important;
+          }
+          .home-title {
+            font-size: 1.50rem !important;
+            line-height: 1.00 !important;
+            margin-bottom: .03rem !important;
+          }
+          .home-tagline {
+            margin-top: .12rem !important;
+            font-size: .70rem !important;
+            line-height: 1.15 !important;
+          }
+          .home-status {
+            flex-wrap: nowrap !important;
+            gap: .28rem !important;
+            margin: 0 0 .28rem !important;
+            padding: .28rem .38rem !important;
+            border-radius: 11px !important;
+            font-size: .70rem !important;
+            line-height: 1.08 !important;
+            min-width: 0 !important;
+          }
+          .home-status-badge {
+            min-height: 1.22rem !important;
+            padding: .06rem .30rem !important;
+            font-size: .61rem !important;
+          }
+          .home-status-main { white-space: nowrap !important; }
+          .home-status-sub {
+            min-width: 0 !important;
+            white-space: nowrap !important;
+            overflow: hidden !important;
+            text-overflow: ellipsis !important;
+          }
+          .home-section-label {
+            margin: .03rem 0 .12rem !important;
+            font-size: .64rem !important;
+            line-height: 1.05 !important;
+          }
+          .home-section-label[style] { margin-top: .18rem !important; }
+
+          .st-key-home_primary [data-testid="stVerticalBlock"],
+          .st-key-home_media_tools [data-testid="stVerticalBlock"],
+          .st-key-home_secondary [data-testid="stVerticalBlock"] {
+            gap: .24rem !important;
+          }
+          .st-key-home_capture_pair [data-testid="stHorizontalBlock"],
+          .st-key-home_media_tools [data-testid="stHorizontalBlock"],
+          .st-key-home_secondary [data-testid="stHorizontalBlock"] {
+            display: flex !important;
+            flex-direction: row !important;
+            flex-wrap: nowrap !important;
+            align-items: stretch !important;
+            gap: .30rem !important;
+          }
+          .st-key-home_capture_pair [data-testid="stHorizontalBlock"] > [data-testid="stColumn"],
+          .st-key-home_media_tools [data-testid="stHorizontalBlock"] > [data-testid="stColumn"],
+          .st-key-home_secondary [data-testid="stHorizontalBlock"] > [data-testid="stColumn"] {
+            flex: 1 1 0 !important;
+            width: 0 !important;
+            min-width: 0 !important;
+          }
+
+          .st-key-home_primary div.stButton > button {
+            height: 3.18rem !important;
+            min-height: 3.18rem !important;
+            max-height: 3.18rem !important;
+            border-radius: 15px !important;
+            font-size: .94rem !important;
+            line-height: 1.02 !important;
+            padding: .28rem .38rem !important;
+            column-gap: .24rem !important;
+          }
+          .st-key-home_capture_pair .st-key-home_camera div.stButton > button,
+          .st-key-home_capture_pair .st-key-home_video div.stButton > button {
+            height: 3.48rem !important;
+            min-height: 3.48rem !important;
+            max-height: 3.48rem !important;
+            font-size: .88rem !important;
+            padding-left: .20rem !important;
+            padding-right: .20rem !important;
+            column-gap: .16rem !important;
+          }
+          .st-key-home_camera div.stButton > button::before,
+          .st-key-home_diary div.stButton > button::before {
+            width: 30px !important;
+            height: 30px !important;
+          }
+          .st-key-home_video div.stButton > button::before {
+            width: 40px !important;
+            height: 30px !important;
+          }
+
+          .st-key-home_media_tools { margin-top: .18rem !important; }
+          .st-key-home_media_tools div.stButton > button {
+            height: 2.72rem !important;
+            min-height: 2.72rem !important;
+            max-height: 2.72rem !important;
+            border-radius: 14px !important;
+            font-size: .78rem !important;
+            line-height: 1.05 !important;
+            padding: .24rem .30rem !important;
+            white-space: nowrap !important;
+          }
+          .st-key-home_media_tools [data-testid="stCaptionContainer"],
+          .st-key-home_media_tools [data-testid="stCaptionContainer"] p {
+            margin: 0 !important;
+            font-size: .60rem !important;
+            line-height: 1.05 !important;
+            white-space: nowrap !important;
+          }
+
+          .st-key-home_destination { margin-top: .12rem !important; }
+          .st-key-home_destination div.stButton > button {
+            min-height: 2.02rem !important;
+            border-radius: 11px !important;
+            font-size: .68rem !important;
+            line-height: 1.04 !important;
+            padding: .24rem .36rem !important;
+          }
+
+          .st-key-home_secondary div.stButton > button {
+            height: 2.82rem !important;
+            min-height: 2.82rem !important;
+            max-height: 2.82rem !important;
+            border-radius: 14px !important;
+            font-size: .82rem !important;
+            line-height: 1.02 !important;
+            padding: .24rem .32rem !important;
+            column-gap: .18rem !important;
+          }
+          .st-key-home_review div.stButton > button::before,
+          .st-key-home_settings div.stButton > button::before {
+            width: 24px !important;
+            height: 24px !important;
+          }
+          .home-footer-note { display: none !important; }
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
     fast_family_name = str(st.session_state.get("_current_family_name") or current_family_key())
     fast_member_name = str(st.session_state.get("_current_member_name") or current_member_key())
     st.markdown(
@@ -14400,21 +14566,25 @@ def page_home():
                 render_home_button("動画を撮る", "camera", "home_video", camera_mode="video")
         render_home_button("日記にする・見る", "diary", "home_diary")
 
-    with st.container(key="home_good_moments"):
-        if st.button(
-            "✨ いい瞬間を見る",
-            key="home_good_moments_button",
-            use_container_width=True,
-        ):
-            go_page("moments")
-
-    with st.container(key="home_video_vault"):
-        if st.button(
-            "🎞️ 動画保管庫",
-            key="home_video_vault_button",
-            use_container_width=True,
-        ):
-            go_page("videos")
+    # v174: keep the two follow-up media actions on one compact row. This removes
+    # a full button-row worth of vertical scrolling on phones while preserving the
+    # same destinations and button keys.
+    with st.container(key="home_media_tools"):
+        media_left, media_right = st.columns(2, gap="small")
+        with media_left:
+            if st.button(
+                "✨ いい瞬間を見る",
+                key="home_good_moments_button",
+                use_container_width=True,
+            ):
+                go_page("moments")
+        with media_right:
+            if st.button(
+                "🎞️ 動画保管庫",
+                key="home_video_vault_button",
+                use_container_width=True,
+            ):
+                go_page("videos")
         render_home_video_count_status()
 
     # Manual fallback for cases where the phone/browser cannot provide GPS.
