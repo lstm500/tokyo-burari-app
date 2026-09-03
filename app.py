@@ -29,9 +29,9 @@ from zoneinfo import ZoneInfo
 import streamlit as st
 
 # Freshly generated update: 2026-08-31 23:49 JST
-GENERATED_UPDATE_JST = "2026-09-03T23:48:04+09:00"
+GENERATED_UPDATE_JST = "2026-09-03T23:55:38+09:00"
 
-APP_BUILD = "v181"
+APP_BUILD = "v182"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -15219,55 +15219,97 @@ def page_home():
     _sync_recent_camera_state_from_browser()
     review_attention = home_review_attention_needed()
     inject_home_icon_css(review_attention=review_attention)
-    # v181: keep the compact phone dashboard, but restore a little vertical breathing room.
-    # Paired actions stay side-by-side; only spacing and tap-target height are relaxed slightly.
+    # v182: fit the Home dashboard to the real mobile viewport instead of one fixed phone size.
+    # The content grows into available height, while preserving about 18px of visual
+    # breathing room after the Streamlit toolbar and above the bottom safe area.
     st.markdown(
         """
         <style>
         @media (max-width: 640px) {
+          :root {
+            --home-screen-height: 100vh;
+            --home-edge-gap: 18px;
+            --home-top-toolbar: 2.15rem;
+            --home-safe-top: max(var(--home-edge-gap), env(safe-area-inset-top, 0px));
+            --home-safe-bottom: max(var(--home-edge-gap), env(safe-area-inset-bottom, 0px));
+            --home-page-inline: clamp(.56rem, 2.7vw, .84rem);
+            --home-row-gap: clamp(.18rem, .62dvh, .38rem);
+            --home-col-gap: clamp(.24rem, 1.25vw, .38rem);
+            --home-available-height: calc(var(--home-screen-height) - var(--home-top-toolbar) - var(--home-safe-top) - var(--home-safe-bottom));
+          }
+          @supports (height: 100dvh) {
+            :root {
+              --home-screen-height: 100dvh;
+            }
+          }
+
+          .block-container {
+            padding-left: var(--home-page-inline) !important;
+            padding-right: var(--home-page-inline) !important;
+            padding-top: calc(var(--home-top-toolbar) + var(--home-safe-top)) !important;
+            padding-bottom: var(--home-safe-bottom) !important;
+            min-height: var(--home-screen-height) !important;
+            box-sizing: border-box !important;
+          }
+
+          .st-key-home_viewport_fit {
+            width: 100% !important;
+            max-width: 720px !important;
+            margin: 0 auto !important;
+            min-height: var(--home-available-height) !important;
+          }
+          .st-key-home_viewport_fit > [data-testid="stVerticalBlock"],
+          .st-key-home_viewport_fit > [data-testid="stVerticalBlockBorderWrapper"] > [data-testid="stVerticalBlock"] {
+            min-height: var(--home-available-height) !important;
+            display: flex !important;
+            flex-direction: column !important;
+            justify-content: space-between !important;
+            gap: var(--home-row-gap) !important;
+          }
+
           .home-account {
-            margin: 0 0 .16rem !important;
-            font-size: .64rem !important;
-            line-height: 1.05 !important;
+            margin: 0 !important;
+            font-size: clamp(.61rem, 2.55vw, .68rem) !important;
+            line-height: 1.08 !important;
           }
           .home-hero {
-            margin: 0 0 .36rem !important;
-            padding: .54rem .66rem .50rem !important;
-            border-radius: 17px !important;
+            margin: 0 !important;
+            padding: clamp(.50rem, 1.28dvh, .68rem) clamp(.62rem, 3vw, .82rem) !important;
+            border-radius: clamp(16px, 4.2vw, 19px) !important;
           }
-          .home-hero-inner { gap: .26rem !important; }
+          .home-hero-inner { gap: clamp(.24rem, 1.2vw, .36rem) !important; }
           .home-hero-train, .home-hero-train img {
-            width: 56px !important;
-            height: 48px !important;
+            width: clamp(52px, 13.8vw, 62px) !important;
+            height: clamp(45px, 11.8vw, 54px) !important;
           }
           .home-eyebrow {
-            font-size: .58rem !important;
-            margin-bottom: .10rem !important;
+            font-size: clamp(.56rem, 2.3vw, .64rem) !important;
+            margin-bottom: clamp(.08rem, .28dvh, .14rem) !important;
           }
           .home-title {
-            font-size: 1.54rem !important;
+            font-size: clamp(1.46rem, 6.7vw, 1.68rem) !important;
             line-height: 1.02 !important;
-            margin-bottom: .04rem !important;
+            margin-bottom: .03rem !important;
           }
           .home-tagline {
-            margin-top: .16rem !important;
-            font-size: .72rem !important;
+            margin-top: clamp(.12rem, .35dvh, .20rem) !important;
+            font-size: clamp(.69rem, 2.85vw, .78rem) !important;
             line-height: 1.18 !important;
           }
           .home-status {
             flex-wrap: nowrap !important;
-            gap: .32rem !important;
-            margin: 0 0 .36rem !important;
-            padding: .34rem .42rem !important;
+            gap: clamp(.26rem, 1.15vw, .38rem) !important;
+            margin: 0 !important;
+            padding: clamp(.30rem, .82dvh, .42rem) clamp(.38rem, 1.8vw, .52rem) !important;
             border-radius: 12px !important;
-            font-size: .71rem !important;
+            font-size: clamp(.68rem, 2.75vw, .76rem) !important;
             line-height: 1.12 !important;
             min-width: 0 !important;
           }
           .home-status-badge {
-            min-height: 1.30rem !important;
-            padding: .07rem .32rem !important;
-            font-size: .61rem !important;
+            min-height: clamp(1.24rem, 2.6dvh, 1.42rem) !important;
+            padding: .07rem clamp(.28rem, 1.1vw, .38rem) !important;
+            font-size: clamp(.59rem, 2.25vw, .66rem) !important;
           }
           .home-status-main { white-space: nowrap !important; }
           .home-status-sub {
@@ -15277,16 +15319,16 @@ def page_home():
             text-overflow: ellipsis !important;
           }
           .home-section-label {
-            margin: .04rem 0 .16rem !important;
-            font-size: .64rem !important;
+            margin: 0 !important;
+            font-size: clamp(.62rem, 2.4vw, .69rem) !important;
             line-height: 1.05 !important;
           }
-          .home-section-label[style] { margin-top: .24rem !important; }
+          .home-section-label[style] { margin-top: 0 !important; }
 
           .st-key-home_primary [data-testid="stVerticalBlock"],
           .st-key-home_media_tools [data-testid="stVerticalBlock"],
           .st-key-home_secondary [data-testid="stVerticalBlock"] {
-            gap: .30rem !important;
+            gap: var(--home-row-gap) !important;
           }
           .st-key-home_capture_pair [data-testid="stHorizontalBlock"],
           .st-key-home_media_tools [data-testid="stHorizontalBlock"],
@@ -15295,7 +15337,7 @@ def page_home():
             flex-direction: row !important;
             flex-wrap: nowrap !important;
             align-items: stretch !important;
-            gap: .30rem !important;
+            gap: var(--home-col-gap) !important;
           }
           .st-key-home_capture_pair [data-testid="stHorizontalBlock"] > [data-testid="stColumn"],
           .st-key-home_media_tools [data-testid="stHorizontalBlock"] > [data-testid="stColumn"],
@@ -15306,42 +15348,42 @@ def page_home():
           }
 
           .st-key-home_primary div.stButton > button {
-            height: 3.34rem !important;
-            min-height: 3.34rem !important;
-            max-height: 3.34rem !important;
-            border-radius: 15px !important;
-            font-size: .94rem !important;
+            height: clamp(3.24rem, 6.05dvh, 3.72rem) !important;
+            min-height: clamp(3.24rem, 6.05dvh, 3.72rem) !important;
+            max-height: clamp(3.24rem, 6.05dvh, 3.72rem) !important;
+            border-radius: clamp(15px, 4vw, 18px) !important;
+            font-size: clamp(.90rem, 3.55vw, 1.03rem) !important;
             line-height: 1.02 !important;
-            padding: .28rem .38rem !important;
-            column-gap: .24rem !important;
+            padding: .28rem clamp(.34rem, 1.7vw, .50rem) !important;
+            column-gap: clamp(.18rem, 1vw, .30rem) !important;
           }
           .st-key-home_capture_pair .st-key-home_camera div.stButton > button,
           .st-key-home_capture_pair .st-key-home_video div.stButton > button {
-            height: 3.64rem !important;
-            min-height: 3.64rem !important;
-            max-height: 3.64rem !important;
-            font-size: .88rem !important;
-            padding-left: .20rem !important;
-            padding-right: .20rem !important;
+            height: clamp(3.54rem, 6.65dvh, 4.02rem) !important;
+            min-height: clamp(3.54rem, 6.65dvh, 4.02rem) !important;
+            max-height: clamp(3.54rem, 6.65dvh, 4.02rem) !important;
+            font-size: clamp(.84rem, 3.35vw, .96rem) !important;
+            padding-left: clamp(.16rem, 1vw, .28rem) !important;
+            padding-right: clamp(.16rem, 1vw, .28rem) !important;
             column-gap: .16rem !important;
           }
           .st-key-home_camera div.stButton > button::before,
           .st-key-home_diary div.stButton > button::before {
-            width: 32px !important;
-            height: 32px !important;
+            width: clamp(30px, 8.6vw, 36px) !important;
+            height: clamp(30px, 8.6vw, 36px) !important;
           }
           .st-key-home_video div.stButton > button::before {
-            width: 42px !important;
-            height: 32px !important;
+            width: clamp(40px, 11.2vw, 48px) !important;
+            height: clamp(30px, 8.6vw, 36px) !important;
           }
 
-          .st-key-home_media_tools { margin-top: .24rem !important; }
+          .st-key-home_media_tools { margin-top: 0 !important; }
           .st-key-home_media_tools div.stButton > button {
-            height: 2.86rem !important;
-            min-height: 2.86rem !important;
-            max-height: 2.86rem !important;
+            height: clamp(2.70rem, 4.95dvh, 3.08rem) !important;
+            min-height: clamp(2.70rem, 4.95dvh, 3.08rem) !important;
+            max-height: clamp(2.70rem, 4.95dvh, 3.08rem) !important;
             border-radius: 14px !important;
-            font-size: .78rem !important;
+            font-size: clamp(.74rem, 2.95vw, .84rem) !important;
             line-height: 1.05 !important;
             padding: .24rem .30rem !important;
             white-space: nowrap !important;
@@ -15349,34 +15391,34 @@ def page_home():
           .st-key-home_media_tools [data-testid="stCaptionContainer"],
           .st-key-home_media_tools [data-testid="stCaptionContainer"] p {
             margin: 0 !important;
-            font-size: .60rem !important;
+            font-size: clamp(.57rem, 2.15vw, .64rem) !important;
             line-height: 1.05 !important;
             white-space: nowrap !important;
           }
 
-          .st-key-home_destination { margin-top: .18rem !important; }
+          .st-key-home_destination { margin-top: 0 !important; }
           .st-key-home_destination div.stButton > button {
-            min-height: 2.16rem !important;
+            min-height: clamp(2.08rem, 4.15dvh, 2.42rem) !important;
             border-radius: 11px !important;
-            font-size: .68rem !important;
+            font-size: clamp(.65rem, 2.55vw, .73rem) !important;
             line-height: 1.04 !important;
             padding: .28rem .38rem !important;
           }
 
           .st-key-home_secondary div.stButton > button {
-            height: 2.96rem !important;
-            min-height: 2.96rem !important;
-            max-height: 2.96rem !important;
+            height: clamp(2.84rem, 5.25dvh, 3.20rem) !important;
+            min-height: clamp(2.84rem, 5.25dvh, 3.20rem) !important;
+            max-height: clamp(2.84rem, 5.25dvh, 3.20rem) !important;
             border-radius: 14px !important;
-            font-size: .82rem !important;
+            font-size: clamp(.78rem, 3.05vw, .88rem) !important;
             line-height: 1.02 !important;
             padding: .24rem .32rem !important;
             column-gap: .18rem !important;
           }
           .st-key-home_review div.stButton > button::before,
           .st-key-home_settings div.stButton > button::before {
-            width: 26px !important;
-            height: 26px !important;
+            width: clamp(24px, 6.8vw, 30px) !important;
+            height: clamp(24px, 6.8vw, 30px) !important;
           }
           .home-footer-note { display: none !important; }
         }
@@ -15384,157 +15426,158 @@ def page_home():
         """,
         unsafe_allow_html=True,
     )
-    fast_family_name = str(st.session_state.get("_current_family_name") or current_family_key())
-    fast_member_name = str(st.session_state.get("_current_member_name") or current_member_key())
-    st.markdown(
-        f'<div class="home-account">{html.escape(fast_family_name)} ／ 個人：{html.escape(fast_member_name)}（{html.escape(current_member_key())}）</div>',
-        unsafe_allow_html=True,
-    )
-    # The hero train keeps the same track-equipped illustration, but varies by route on each new session.
-    train_line_name, train_uri = _home_train_for_session()
-    train_html = (
-        f'<div class="home-hero-train" title="{html.escape(train_line_name)}">'
-        f'<img src="{train_uri}" alt="{html.escape(train_line_name)}をイメージした電車アイコン"></div>'
-        if train_uri
-        else ""
-    )
-    st.markdown(
-        f"""
-        <div class="home-hero">
-          <div class="home-hero-inner">
-            <div class="home-hero-copy">
-              <div class="home-eyebrow">BURARI</div>
-              <div class="home-title"><span class="home-title-accent">ぶらり</span>旅</div>
-              <div class="home-tagline">思った。感じた。をそのまま残そう</div>
+    with st.container(key="home_viewport_fit"):
+        fast_family_name = str(st.session_state.get("_current_family_name") or current_family_key())
+        fast_member_name = str(st.session_state.get("_current_member_name") or current_member_key())
+        st.markdown(
+            f'<div class="home-account">{html.escape(fast_family_name)} ／ 個人：{html.escape(fast_member_name)}（{html.escape(current_member_key())}）</div>',
+            unsafe_allow_html=True,
+        )
+        # The hero train keeps the same track-equipped illustration, but varies by route on each new session.
+        train_line_name, train_uri = _home_train_for_session()
+        train_html = (
+            f'<div class="home-hero-train" title="{html.escape(train_line_name)}">'
+            f'<img src="{train_uri}" alt="{html.escape(train_line_name)}をイメージした電車アイコン"></div>'
+            if train_uri
+            else ""
+        )
+        st.markdown(
+            f"""
+            <div class="home-hero">
+              <div class="home-hero-inner">
+                <div class="home-hero-copy">
+                  <div class="home-eyebrow">BURARI</div>
+                  <div class="home-title"><span class="home-title-accent">ぶらり</span>旅</div>
+                  <div class="home-tagline">思った。感じた。をそのまま残そう</div>
+                </div>
+                {train_html}
+              </div>
             </div>
-            {train_html}
-          </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+            """,
+            unsafe_allow_html=True,
+        )
 
-    # Home is intentionally DB-free. Counts/place are updated in session immediately
-    # after a successful capture; a fresh browser session shows a neutral status until
-    # the first data action instead of delaying every launch with two network requests.
-    active = st.session_state.get("_active_trip_snapshot")
-    if not isinstance(active, dict) or active.get("trip_date") != today_iso() or active.get("status") != "active":
-        active = None
-    cached_count = st.session_state.get("_home_today_photo_count")
-    active_place = str(st.session_state.get("_home_today_place") or (active or {}).get("destination") or "").strip()
-    if cached_count is None:
-        status_main = "今日の記録"
-    else:
-        try:
-            count_value = max(0, int(cached_count))
-        except Exception:
-            count_value = 0
-        status_main = f"今日の記録 {count_value}件" if count_value else "今日はまだ記録なし"
-    status_sub = active_place or "写真を撮ると、ここに今日の記録が表示されます"
-    st.markdown(
-        f"""
-        <div class="home-status">
-          <span class="home-status-badge">今日</span>
-          <span class="home-status-main">{html.escape(status_main)}</span>
-          <span class="home-status-sub">{html.escape(status_sub)}</span>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+        # Home is intentionally DB-free. Counts/place are updated in session immediately
+        # after a successful capture; a fresh browser session shows a neutral status until
+        # the first data action instead of delaying every launch with two network requests.
+        active = st.session_state.get("_active_trip_snapshot")
+        if not isinstance(active, dict) or active.get("trip_date") != today_iso() or active.get("status") != "active":
+            active = None
+        cached_count = st.session_state.get("_home_today_photo_count")
+        active_place = str(st.session_state.get("_home_today_place") or (active or {}).get("destination") or "").strip()
+        if cached_count is None:
+            status_main = "今日の記録"
+        else:
+            try:
+                count_value = max(0, int(cached_count))
+            except Exception:
+                count_value = 0
+            status_main = f"今日の記録 {count_value}件" if count_value else "今日はまだ記録なし"
+        status_sub = active_place or "写真を撮ると、ここに今日の記録が表示されます"
+        st.markdown(
+            f"""
+            <div class="home-status">
+              <span class="home-status-badge">今日</span>
+              <span class="home-status-main">{html.escape(status_main)}</span>
+              <span class="home-status-sub">{html.escape(status_sub)}</span>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
 
-    st.markdown('<div class="home-section-label">いつもの記録</div>', unsafe_allow_html=True)
-    with st.container(key="home_primary"):
-        # v170: use a dedicated wrapper so mobile CSS can keep this pair horizontal
-        # without changing other Streamlit column layouts in the app.
-        with st.container(key="home_capture_pair"):
-            capture_left, capture_right = st.columns(2, gap="small")
-            with capture_left:
-                render_home_button("写真を撮る", "camera", "home_camera", camera_mode="photo")
-            with capture_right:
-                render_home_button("動画を撮る", "camera", "home_video", camera_mode="video")
-        render_home_button("日記にする・見る", "diary", "home_diary")
+        st.markdown('<div class="home-section-label">いつもの記録</div>', unsafe_allow_html=True)
+        with st.container(key="home_primary"):
+            # v170: use a dedicated wrapper so mobile CSS can keep this pair horizontal
+            # without changing other Streamlit column layouts in the app.
+            with st.container(key="home_capture_pair"):
+                capture_left, capture_right = st.columns(2, gap="small")
+                with capture_left:
+                    render_home_button("写真を撮る", "camera", "home_camera", camera_mode="photo")
+                with capture_right:
+                    render_home_button("動画を撮る", "camera", "home_video", camera_mode="video")
+            render_home_button("日記にする・見る", "diary", "home_diary")
 
-    # v174: keep the two follow-up media actions on one compact row. This removes
-    # a full button-row worth of vertical scrolling on phones while preserving the
-    # same destinations and button keys.
-    with st.container(key="home_media_tools"):
-        media_left, media_right = st.columns(2, gap="small")
-        with media_left:
-            if st.button(
-                "✨ いい瞬間を見る",
-                key="home_good_moments_button",
-                use_container_width=True,
-            ):
-                go_page("moments")
-        with media_right:
-            if st.button(
-                "🎞️ 動画保管庫",
-                key="home_video_vault_button",
-                use_container_width=True,
-            ):
-                go_page("videos")
-        render_home_video_count_status()
-
-    # Manual fallback for cases where the phone/browser cannot provide GPS.
-    with st.container(key="home_destination"):
-        place_button_label = f"📍 地名：{active_place}" if active_place else "📍 地名：自動取得（必要なら手入力）"
-        if st.button(place_button_label, key="home_destination_toggle", use_container_width=True):
-            st.session_state.show_home_destination_editor = not bool(
-                st.session_state.get("show_home_destination_editor")
-            )
-            st.rerun()
-
-        if st.session_state.get("show_home_destination_editor"):
-            trip = ensure_today_trip()
-            current_trip = get_trip(trip["id"]) or trip
-            current_photos = list_trip_photos(trip["id"])
-            current_place = trip_place_label(current_trip, photos=current_photos)
-            destination = st.text_input(
-                "地名",
-                value=str(current_trip.get("destination") or current_place),
-                placeholder="例：神楽坂、浅草のあたり",
-                key=f"home_destination_input_{trip['id']}",
-                label_visibility="collapsed",
-            )
-            save_col, close_col = st.columns([2, 1])
-            with save_col:
+        # v174: keep the two follow-up media actions on one compact row. This removes
+        # a full button-row worth of vertical scrolling on phones while preserving the
+        # same destinations and button keys.
+        with st.container(key="home_media_tools"):
+            media_left, media_right = st.columns(2, gap="small")
+            with media_left:
                 if st.button(
-                    "保存",
-                    type="primary",
+                    "✨ いい瞬間を見る",
+                    key="home_good_moments_button",
                     use_container_width=True,
-                    key=f"home_destination_save_{trip['id']}",
                 ):
-                    try:
-                        update_trip_destination(trip["id"], destination)
+                    go_page("moments")
+            with media_right:
+                if st.button(
+                    "🎞️ 動画保管庫",
+                    key="home_video_vault_button",
+                    use_container_width=True,
+                ):
+                    go_page("videos")
+            render_home_video_count_status()
+
+        # Manual fallback for cases where the phone/browser cannot provide GPS.
+        with st.container(key="home_destination"):
+            place_button_label = f"📍 地名：{active_place}" if active_place else "📍 地名：自動取得（必要なら手入力）"
+            if st.button(place_button_label, key="home_destination_toggle", use_container_width=True):
+                st.session_state.show_home_destination_editor = not bool(
+                    st.session_state.get("show_home_destination_editor")
+                )
+                st.rerun()
+
+            if st.session_state.get("show_home_destination_editor"):
+                trip = ensure_today_trip()
+                current_trip = get_trip(trip["id"]) or trip
+                current_photos = list_trip_photos(trip["id"])
+                current_place = trip_place_label(current_trip, photos=current_photos)
+                destination = st.text_input(
+                    "地名",
+                    value=str(current_trip.get("destination") or current_place),
+                    placeholder="例：神楽坂、浅草のあたり",
+                    key=f"home_destination_input_{trip['id']}",
+                    label_visibility="collapsed",
+                )
+                save_col, close_col = st.columns([2, 1])
+                with save_col:
+                    if st.button(
+                        "保存",
+                        type="primary",
+                        use_container_width=True,
+                        key=f"home_destination_save_{trip['id']}",
+                    ):
+                        try:
+                            update_trip_destination(trip["id"], destination)
+                            st.session_state.show_home_destination_editor = False
+                            st.rerun()
+                        except Exception as exc:
+                            st.error("地名を保存できませんでした。")
+                            with st.expander("保護者向け詳細"):
+                                st.code(str(exc))
+                with close_col:
+                    if st.button(
+                        "閉じる",
+                        use_container_width=True,
+                        key=f"home_destination_close_{trip['id']}",
+                    ):
                         st.session_state.show_home_destination_editor = False
                         st.rerun()
-                    except Exception as exc:
-                        st.error("地名を保存できませんでした。")
-                        with st.expander("保護者向け詳細"):
-                            st.code(str(exc))
-            with close_col:
-                if st.button(
-                    "閉じる",
-                    use_container_width=True,
-                    key=f"home_destination_close_{trip['id']}",
-                ):
-                    st.session_state.show_home_destination_editor = False
-                    st.rerun()
 
-    st.markdown('<div class="home-section-label" style="margin-top:.60rem;">たまに使う</div>', unsafe_allow_html=True)
-    with st.container(key="home_secondary"):
-        secondary_left, secondary_right = st.columns([1.2, 1])
-        with secondary_left:
-            review_label = "振り返り（先月あり）" if review_attention else "振り返り（たまに）"
-            render_home_button(review_label, "review", "home_review", open_period_review=review_attention)
-        with secondary_right:
-            render_home_button("設定", "settings", "home_settings")
+        st.markdown('<div class="home-section-label" style="margin-top:.60rem;">たまに使う</div>', unsafe_allow_html=True)
+        with st.container(key="home_secondary"):
+            secondary_left, secondary_right = st.columns([1.2, 1])
+            with secondary_left:
+                review_label = "振り返り（先月あり）" if review_attention else "振り返り（たまに）"
+                render_home_button(review_label, "review", "home_review", open_period_review=review_attention)
+            with secondary_right:
+                render_home_button("設定", "settings", "home_settings")
 
-    st.markdown(
-        '<div class="home-footer-note">写真・動画は0件でも大丈夫。気になったときだけ使います。</div>',
-        unsafe_allow_html=True,
-    )
-    render_home_storage_usage_status()
+        st.markdown(
+            '<div class="home-footer-note">写真・動画は0件でも大丈夫。気になったときだけ使います。</div>',
+            unsafe_allow_html=True,
+        )
+        render_home_storage_usage_status()
 
 
 
