@@ -7,6 +7,7 @@ import json
 import math
 import os
 import random
+import re
 import shutil
 import subprocess
 import tempfile
@@ -28,9 +29,9 @@ from zoneinfo import ZoneInfo
 import streamlit as st
 
 # Freshly generated update: 2026-08-31 23:49 JST
-GENERATED_UPDATE_JST = "2026-09-03T01:28:12+09:00"
+GENERATED_UPDATE_JST = "2026-09-03T22:57:00+09:00"
 
-APP_BUILD = "v176"
+APP_BUILD = "v178"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -11316,6 +11317,11 @@ def render_monthly_replay_player(period_label, review, playback, photo_items):
       #burariReplayStart {{ background: #2563eb; color: #fff; }}
       #burariReplayStop {{ background: #fee2e2; color: #991b1b; }}
       #burariReplayAgain {{ background: #e5edf8; color: #123; }}
+      .burari-replay-controls button:disabled {{
+        cursor: wait;
+        opacity: .58;
+        filter: saturate(.72);
+      }}
       .burari-replay-meta {{ text-align: center; font-size: 13px; margin-bottom: .65rem; }}
       .burari-replay-player-wrap {{
         max-width: 356px;
@@ -11358,9 +11364,9 @@ def render_monthly_replay_player(period_label, review, playback, photo_items):
           <div class="burari-replay-emotion" id="burariReplayEmotion" aria-hidden="true"></div>
         </div>
         <div class="burari-replay-controls">
-          <button id="burariReplayStart" type="button">▶ 再生</button>
+          <button id="burariReplayStart" type="button" disabled>音楽準備中…</button>
           <button id="burariReplayStop" type="button">■ 中断</button>
-          <button id="burariReplayAgain" type="button">↻ 最初から</button>
+          <button id="burariReplayAgain" type="button" disabled>↻ 最初から</button>
         </div>
       </div>
       <div class="burari-replay-meta">音楽区間：{format_mmss(start_seconds)}〜{format_mmss(end_seconds)} ／ 写真 {len(photo_items)}枚</div>
@@ -11394,6 +11400,8 @@ def render_monthly_replay_player(period_label, review, playback, photo_items):
       const burariCaption = document.getElementById('burariReplayCaption');
       const burariProgress = document.getElementById('burariReplayProgress');
       const burariStatus = document.getElementById('burariReplayStatus');
+      const burariStartButton = document.getElementById('burariReplayStart');
+      const burariAgainButton = document.getElementById('burariReplayAgain');
       const burariDefaultFrameColor = 'rgba(255,255,255,.16)';
       const burariEmotionColors = {{
         cozy: '#F3B6A0',
@@ -11410,6 +11418,24 @@ def render_monthly_replay_player(period_label, review, playback, photo_items):
         tears: '#6C9BD2',
       }};
       const burariEmotionIcons = {{ cozy: '🥰', joy: '😊', surprise: '😲', anger: '😠', sadness: '😢', frustration: '😣', effort: '⭐', challenge: '💪', discovery: '💡', kindness: '❤️', together: '🤝', tears: '😭' }};
+
+      function burariSetPlayerControlsReady(ready) {{
+        if (burariStartButton) {{
+          burariStartButton.disabled = !ready;
+          burariStartButton.textContent = ready ? '▶ 再生' : '音楽準備中…';
+        }}
+        if (burariAgainButton) burariAgainButton.disabled = !ready;
+      }}
+
+      function burariEnsureAudible() {{
+        if (!burariPlayer) return;
+        try {{
+          if (typeof burariPlayer.unMute === 'function') burariPlayer.unMute();
+        }} catch (_) {{}}
+        try {{
+          if (typeof burariPlayer.setVolume === 'function') burariPlayer.setVolume(100);
+        }} catch (_) {{}}
+      }}
 
       function burariShowSlide(index) {{
         if (!burariSlides.length) return;
@@ -11548,9 +11574,12 @@ def render_monthly_replay_player(period_label, review, playback, photo_items):
       }}
 
       function burariActuallyStart() {{
+        // Mobile browsers allow audible playback most reliably when playback starts
+        // directly from the user's tap. Do not queue an audible start before the
+        // YouTube player is ready; keep the button disabled until onReady instead.
         if (!burariPlayerReady || !burariPlayer) {{
-          burariPendingStart = true;
-          if (burariStatus) burariStatus.textContent = 'YouTubeプレーヤーを準備しています…';
+          burariPendingStart = false;
+          if (burariStatus) burariStatus.textContent = '音楽を準備しています。準備完了後に▶ 再生を押してください。';
           return;
         }}
         burariPendingStart = false;
@@ -11559,22 +11588,23 @@ def render_monthly_replay_player(period_label, review, playback, photo_items):
         burariSlideLoopStarted = false;
         burariIndex = 0;
         burariShowSlide(burariIndex);
-        // Start the photo slideshow immediately and independently. This fixes the
-        // changed-music case where YouTube plays but its PLAYING/currentTime event
-        // arrives late or not at all inside the embedded iframe.
+        // Explicitly restore audible playback in the same user gesture. This is
+        // especially important for a freshly opened family-shared replay on mobile.
+        burariEnsureAudible();
         burariStartSlideLoopOnce();
         if (burariStatus) burariStatus.textContent = `指定位置 ${{burariStartSeconds}}秒へ移動しています…`;
-        // The slideshow is intentionally independent from YouTube readiness.
-        // A separate currentTime watcher below controls the real end of playback.
         try {{
           burariPlayer.loadVideoById({{
             videoId: burariVideoId,
             startSeconds: burariStartSeconds,
             endSeconds: burariEndSeconds,
           }});
+          burariEnsureAudible();
+          if (typeof burariPlayer.playVideo === 'function') burariPlayer.playVideo();
         }} catch (_) {{
           try {{
             burariPlayer.seekTo(burariStartSeconds, true);
+            burariEnsureAudible();
             burariPlayer.playVideo();
           }} catch (_) {{}}
         }}
@@ -11593,6 +11623,7 @@ def render_monthly_replay_player(period_label, review, playback, photo_items):
           events: {{
             onReady: function() {{
               burariPlayerReady = true;
+              burariPendingStart = false;
               try {{
                 burariPlayer.cueVideoById({{
                   videoId: burariVideoId,
@@ -11600,11 +11631,13 @@ def render_monthly_replay_player(period_label, review, playback, photo_items):
                   endSeconds: burariEndSeconds,
                 }});
               }} catch (_) {{}}
-              if (burariPendingStart) burariActuallyStart();
+              burariSetPlayerControlsReady(true);
+              if (burariStatus) burariStatus.textContent = `音楽の準備ができました。▶ 再生で ${{burariStartSeconds}}秒から始まります。`;
             }},
             onStateChange: function(event) {{
               if (!window.YT) return;
               if (event.data === YT.PlayerState.PLAYING) {{
+                burariEnsureAudible();
                 if (burariWaitingForRequestedPosition) {{
                   burariConfirmRequestedPosition(0);
                 }} else if (!burariMusicWatchTimer) {{
@@ -11615,11 +11648,17 @@ def render_monthly_replay_player(period_label, review, playback, photo_items):
                 // A completed photo cycle never reaches this branch and never stops music.
                 burariStopAtEnd();
               }}
+            }},
+            onError: function() {{
+              burariSetPlayerControlsReady(false);
+              if (burariStatus) burariStatus.textContent = 'YouTube音楽を読み込めませんでした。ページを開き直してお試しください。';
             }}
           }}
         }});
       }};
 
+      burariSetPlayerControlsReady(false);
+      if (burariStatus) burariStatus.textContent = 'YouTube音楽を準備しています…';
       const burariApiScript = document.createElement('script');
       burariApiScript.src = 'https://www.youtube.com/iframe_api';
       document.head.appendChild(burariApiScript);
@@ -12074,6 +12113,410 @@ def _vision_ready_photo(image_bytes, max_side=720, quality=76):
             return out.getvalue()
     except Exception:
         return image_bytes
+
+
+AI_PHOTO_TAG_VERSION = 1
+AI_PHOTO_TAG_BATCH_SIZE = 4
+AI_PHOTO_TAG_MAX_PER_PHOTO = 12
+AI_PHOTO_TAG_MANUAL_MAX_PER_RUN = 40
+AI_PHOTO_TAG_PAGE_SIZE = 60
+
+_AI_PHOTO_TAG_ALIASES = {
+    "列車": "電車",
+    "鉄道車両": "電車",
+    "鉄道の車両": "電車",
+    "電鉄": "電車",
+    "鉄道駅": "駅",
+    "駅舎": "駅",
+    "プラットホーム": "駅ホーム",
+    "ホーム": "駅ホーム",
+    "自動車": "車",
+    "クルマ": "車",
+    "こども": "子ども",
+    "子供": "子ども",
+    "児童": "子ども",
+    "おとな": "大人",
+    "屋内": "室内",
+    "屋外空間": "屋外",
+    "飲食店": "レストラン",
+}
+_AI_PHOTO_TAG_IGNORED = {
+    "写真", "画像", "撮影", "被写体", "スナップ写真", "スナップ", "カメラ"
+}
+
+
+def normalize_ai_photo_tag(value):
+    tag = str(value or "").strip().lstrip("#＃").strip()
+    tag = re.sub(r"^[・･,，、\s]+|[・･,，、\s]+$", "", tag)
+    tag = re.sub(r"\s+", " ", tag)
+    if not tag:
+        return ""
+    tag = _AI_PHOTO_TAG_ALIASES.get(tag, tag)
+    if tag in _AI_PHOTO_TAG_IGNORED:
+        return ""
+    if len(tag) > 24:
+        return ""
+    return tag
+
+
+def normalize_ai_photo_tags(values, max_tags=AI_PHOTO_TAG_MAX_PER_PHOTO):
+    result = []
+    for value in values or []:
+        tag = normalize_ai_photo_tag(value)
+        if tag and tag not in result:
+            result.append(tag)
+        if len(result) >= int(max_tags):
+            break
+    return result
+
+
+def photo_ai_tags(photo):
+    reflection = (photo or {}).get("reflection_json") or {}
+    if not isinstance(reflection, dict):
+        return []
+    raw = reflection.get("ai_tags")
+    if isinstance(raw, dict):
+        raw = raw.get("tags") or []
+    if isinstance(raw, str):
+        raw = [part.strip() for part in re.split(r"[,，、]", raw) if part.strip()]
+    if not isinstance(raw, (list, tuple)):
+        return []
+    return normalize_ai_photo_tags(raw)
+
+
+def photo_has_ai_tags(photo):
+    return bool(photo_ai_tags(photo))
+
+
+def _taggable_still_photos(photos, only_untagged=False):
+    result = []
+    seen = set()
+    for photo in diary_photos_only(photos or []):
+        if not isinstance(photo, dict):
+            continue
+        photo_id = str(photo.get("id") or "").strip()
+        storage_path = str(photo.get("storage_path") or "").strip()
+        if not photo_id or not storage_path or photo_id in seen:
+            continue
+        if only_untagged and photo_has_ai_tags(photo):
+            continue
+        seen.add(photo_id)
+        result.append(photo)
+    return result
+
+
+def _photo_tag_schema(slots):
+    slots = [str(slot) for slot in slots if str(slot)]
+    item_schema = {
+        "type": "object",
+        "properties": {
+            "slot": {"type": "string", "enum": slots},
+            "tags": {
+                "type": "array",
+                "items": {"type": "string"},
+                "minItems": 1,
+                "maxItems": AI_PHOTO_TAG_MAX_PER_PHOTO,
+            },
+        },
+        "required": ["slot", "tags"],
+        "additionalProperties": False,
+    }
+    return {
+        "type": "object",
+        "properties": {
+            "results": {
+                "type": "array",
+                "items": item_schema,
+                "minItems": len(slots),
+                "maxItems": len(slots),
+            }
+        },
+        "required": ["results"],
+        "additionalProperties": False,
+    }
+
+
+def _photo_tag_prompt(slots):
+    slot_text = "、".join(slots)
+    return f"""
+これから最大4枚の保存写真を、写真ごとに完全に独立して観察してください。
+後で家族がタグを押して同じ内容の写真だけを一覧表示するためのタグを作ります。
+対象スロット: {slot_text}
+
+必ず守ること:
+- 各スロットをちょうど1回ずつ返す。別の写真の内容を混ぜない。
+- 写真から直接確認できる内容だけをタグにする。推測で出来事を作らない。
+- 1枚につき目安5〜12個。情報が少ない写真は無理に増やさなくてよい。
+- タグは短い日本語の名詞・名詞句。例: 電車、駅、駅ホーム、公園、遊具、食事、ケーキ、花、海、室内、屋外、散歩、買い物。
+- 重要な具体物、場所の種類、行動、乗り物、食べ物、自然物、天候・時間帯など、後から探す役に立つものを優先する。
+- 「写真」「画像」「風景が写っている」のような検索に役立たない語は付けない。
+- 同義語を重ねない。例: 電車 / 列車 / 鉄道車両を同時に付けない。
+- 人物は、見た目から直接分かる範囲で「子ども」「大人」「複数人」程度にする。
+- パパ、ママ、友達、家族、本人など、写真だけでは確認できない人物関係や個人名を推測しない。
+- 感情、性格、能力、健康状態、民族などを推測しない。
+- 店名、駅名、路線名などの固有名詞は、写真内の文字等から明確に確認できる場合だけ付ける。不確かな場合は一般的なタグにする。
+""".strip()
+
+
+def tag_untagged_photos_with_ai(photos, batch_size=AI_PHOTO_TAG_BATCH_SIZE, max_photos=None):
+    """Add observable-content AI tags to still photos, up to four images per API request."""
+    candidates = _taggable_still_photos(photos, only_untagged=True)
+    total_untagged = len(candidates)
+    if max_photos is not None:
+        candidates = candidates[:max(0, int(max_photos))]
+    if not candidates:
+        return {
+            "untagged_before": total_untagged,
+            "attempted": 0,
+            "tagged": 0,
+            "api_calls": 0,
+            "errors": [],
+        }
+
+    batch_size = max(1, min(AI_PHOTO_TAG_BATCH_SIZE, int(batch_size or AI_PHOTO_TAG_BATCH_SIZE)))
+    client = supabase_client()
+    tagged_count = 0
+    api_calls = 0
+    errors = []
+
+    for start in range(0, len(candidates), batch_size):
+        raw_batch = candidates[start:start + batch_size]
+        loaded = []
+        image_items = []
+        for index, photo in enumerate(raw_batch, start=1):
+            slot = f"F{index}"
+            try:
+                raw = download_photo(str(photo.get("storage_path") or ""))
+                if not raw:
+                    raise ValueError("写真データが空です")
+                vision_bytes = _vision_ready_photo(raw, max_side=1024, quality=82)
+                loaded.append((slot, photo))
+                image_items.append((f"【{slot}】このラベル直後の1枚だけを{slot}として解析してください。", vision_bytes))
+            except Exception as exc:
+                errors.append(f"{str(photo.get('id') or '')[:8]}: 読み込み失敗 ({exc})")
+
+        if not loaded:
+            continue
+
+        slots = [slot for slot, _ in loaded]
+        try:
+            response = ask_json_with_images(
+                _photo_tag_prompt(slots),
+                image_items,
+                "burari_photo_tags_v177",
+                _photo_tag_schema(slots),
+                max_output_tokens=max(700, 260 * len(slots)),
+            )
+            api_calls += 1
+        except Exception as exc:
+            errors.append(f"AIタグ解析失敗: {exc}")
+            continue
+
+        result_map = {}
+        for item in (response or {}).get("results", []) or []:
+            if not isinstance(item, dict):
+                continue
+            slot = str(item.get("slot") or "").strip()
+            tags = normalize_ai_photo_tags(item.get("tags") or [])
+            if slot in slots and tags:
+                result_map[slot] = tags
+
+        photo_ids = [str(photo.get("id") or "") for _, photo in loaded]
+        latest_rows = {}
+        try:
+            rows = (
+                client.table(PHOTO_TABLE)
+                .select("id,reflection_json")
+                .in_("id", photo_ids)
+                .eq("family_key", current_family_key())
+                .eq("member_key", current_member_key())
+                .execute()
+            ).data or []
+            latest_rows = {str(row.get("id") or ""): row for row in rows if isinstance(row, dict)}
+        except Exception as exc:
+            errors.append(f"タグ保存前の確認に失敗: {exc}")
+            continue
+
+        for slot, photo in loaded:
+            tags = result_map.get(slot) or []
+            if not tags:
+                errors.append(f"{str(photo.get('id') or '')[:8]}: AIから有効なタグが返りませんでした")
+                continue
+            photo_id = str(photo.get("id") or "")
+            latest = latest_rows.get(photo_id) or {}
+            reflection = latest.get("reflection_json") or {}
+            if not isinstance(reflection, dict):
+                reflection = {}
+            # If another operation already completed tagging, preserve its newer result.
+            existing = photo_ai_tags({"reflection_json": reflection})
+            if existing:
+                continue
+            reflection["ai_tags"] = {
+                "version": AI_PHOTO_TAG_VERSION,
+                "tags": tags,
+                "source": "vision_batch_4_v177",
+                "updated_at": now_jst().isoformat(),
+            }
+            try:
+                (
+                    client.table(PHOTO_TABLE)
+                    .update({"reflection_json": reflection})
+                    .eq("id", photo_id)
+                    .eq("family_key", current_family_key())
+                    .eq("member_key", current_member_key())
+                    .execute()
+                )
+                photo["reflection_json"] = reflection
+                tagged_count += 1
+            except Exception as exc:
+                errors.append(f"{photo_id[:8]}: タグ保存失敗 ({exc})")
+
+    if tagged_count:
+        _invalidate_fast_db_cache()
+    return {
+        "untagged_before": total_untagged,
+        "attempted": len(candidates),
+        "tagged": tagged_count,
+        "api_calls": api_calls,
+        "errors": errors,
+    }
+
+
+def list_member_still_photos_for_tags(max_items=5000):
+    """Load photo metadata for tag browsing without downloading image bytes."""
+    cache_key = _account_cache_key("tag_photo_library", int(max_items))
+    cached = _session_cache_get(cache_key, max_age_seconds=30)
+    if cached is not None:
+        return cached
+    page_size = 400
+    offset = 0
+    rows = []
+    client = supabase_client()
+    while offset < int(max_items):
+        chunk = (
+            client.table(PHOTO_TABLE)
+            .select("id,trip_id,storage_path,captured_at,reflection_json,signals_json")
+            .eq("family_key", current_family_key())
+            .eq("member_key", current_member_key())
+            .order("captured_at", desc=True)
+            .range(offset, min(offset + page_size - 1, int(max_items) - 1))
+            .execute()
+        ).data or []
+        rows.extend(row for row in chunk if isinstance(row, dict))
+        if len(chunk) < page_size:
+            break
+        offset += page_size
+    return _session_cache_set(cache_key, _taggable_still_photos(rows, only_untagged=False))
+
+
+def _set_photo_tag_run_notice(stats, scope_label=""):
+    stats = stats or {}
+    tagged = int(stats.get("tagged") or 0)
+    attempted = int(stats.get("attempted") or 0)
+    before = int(stats.get("untagged_before") or 0)
+    errors = list(stats.get("errors") or [])
+    remaining = max(0, before - tagged)
+    prefix = f"{scope_label}：" if scope_label else ""
+    if tagged:
+        message = f"{prefix}{tagged}枚の写真にAIタグを追加しました。"
+        if remaining:
+            message += f" 未タグは残り約{remaining}枚です。"
+        st.session_state["_photo_tag_notice"] = message
+    elif attempted:
+        st.session_state["_photo_tag_warning"] = f"{prefix}今回はタグを追加できませんでした。"
+    if errors:
+        st.session_state["_photo_tag_error_detail"] = "\n".join(errors[:20])
+
+
+def render_photo_tag_notices():
+    notice = st.session_state.pop("_photo_tag_notice", None)
+    warning = st.session_state.pop("_photo_tag_warning", None)
+    detail = st.session_state.pop("_photo_tag_error_detail", None)
+    if notice:
+        st.success(notice)
+    if warning:
+        st.warning(warning)
+    if detail:
+        with st.expander("AIタグ処理の詳細"):
+            st.code(str(detail))
+
+
+def render_ai_photo_tag_action(photos, key, scope_label="この範囲", max_photos=AI_PHOTO_TAG_MANUAL_MAX_PER_RUN):
+    taggable = _taggable_still_photos(photos, only_untagged=False)
+    untagged = [photo for photo in taggable if not photo_has_ai_tags(photo)]
+    if not taggable:
+        return False
+    if not untagged:
+        st.caption("🏷️ この範囲の写真はすべてAIタグ済みです。")
+        return False
+
+    count = len(untagged)
+    st.caption(f"AIタグ未設定：{count}枚　／　4枚ずつまとめて解析します。")
+    if count > int(max_photos):
+        st.caption(f"一度の操作では最大{int(max_photos)}枚まで処理します。残りは同じボタンでもう一度続けられます。")
+    if st.button(
+        f"🏷️ タグのない写真にタグをつける（{count}枚）",
+        use_container_width=True,
+        key=f"ai_photo_tag_action_{key}",
+    ):
+        try:
+            with st.spinner("写真を4枚ずつ見て、検索用のタグを付けています…"):
+                stats = tag_untagged_photos_with_ai(
+                    untagged,
+                    batch_size=AI_PHOTO_TAG_BATCH_SIZE,
+                    max_photos=max_photos,
+                )
+            _set_photo_tag_run_notice(stats, scope_label=scope_label)
+            st.rerun()
+        except Exception as exc:
+            st.session_state["_photo_tag_warning"] = f"{scope_label}のAIタグ付けに失敗しました。"
+            st.session_state["_photo_tag_error_detail"] = str(exc)
+            st.rerun()
+    return True
+
+
+def render_photo_tag_browser(photos, key="history_tags"):
+    taggable = _taggable_still_photos(photos, only_untagged=False)
+    counts = {}
+    tagged_photos = []
+    for photo in taggable:
+        tags = photo_ai_tags(photo)
+        if not tags:
+            continue
+        tagged_photos.append(photo)
+        for tag in tags:
+            counts[tag] = int(counts.get(tag) or 0) + 1
+    if not counts:
+        return
+
+    with st.expander("🏷️ タグ別に写真を見る", expanded=False):
+        ordered_tags = sorted(counts, key=lambda tag: (-counts[tag], tag))
+        selected_tag = st.selectbox(
+            "タグ",
+            ordered_tags,
+            format_func=lambda tag: f"{tag}（{counts.get(tag, 0)}枚）",
+            key=f"photo_tag_selector_{key}",
+        )
+        if not selected_tag:
+            return
+        matches = [photo for photo in tagged_photos if selected_tag in photo_ai_tags(photo)]
+        matches.sort(key=lambda photo: str(photo.get("captured_at") or ""), reverse=True)
+        total = len(matches)
+        st.caption(f"「{selected_tag}」の写真：{total}枚")
+        if not matches:
+            return
+        page_count = max(1, math.ceil(total / AI_PHOTO_TAG_PAGE_SIZE))
+        if page_count > 1:
+            page_number = st.selectbox(
+                "ページ",
+                list(range(1, page_count + 1)),
+                format_func=lambda value: f"{value} / {page_count}",
+                key=f"photo_tag_page_{key}_{selected_tag}",
+            )
+        else:
+            page_number = 1
+        start = (int(page_number) - 1) * AI_PHOTO_TAG_PAGE_SIZE
+        render_small_gallery(matches[start:start + AI_PHOTO_TAG_PAGE_SIZE], max_count=None, columns=3)
 
 
 SUMMARY_FEEDBACK_HISTORY_LIMIT = 12
@@ -13691,16 +14134,31 @@ def pending_diary_titles(pending_rows, used_titles=None):
 
 
 def create_and_save_diary_from_photos(trip, photos, requested_title=None, reason="manual_create"):
-    """Create and save a factual diary from photos plus the child's six-feeling choices.
+    """Create a factual diary and tag any still photos that do not yet have AI tags.
 
-    v149 intentionally makes no AI call here. The child's explicit emotion taps are
-    the only subjective evidence; richer image+emotion interpretation remains an
-    optional on-demand action via ``AIにまとめてもらう``.
+    The tag pass is observational only and is kept separate from the child's feeling
+    choices. Up to four photos share one Vision API request. Tagging is best-effort:
+    a temporary AI failure never prevents the diary itself from being saved.
     """
     trip = trip or {}
     photos = diary_photos_only(photos)
     if not trip.get("id") or not photos:
         raise ValueError("日記にする写真がありません。")
+
+    try:
+        tag_stats = tag_untagged_photos_with_ai(
+            photos,
+            batch_size=AI_PHOTO_TAG_BATCH_SIZE,
+            max_photos=None,
+        )
+        if int(tag_stats.get("tagged") or 0) > 0:
+            _set_photo_tag_run_notice(tag_stats, scope_label="この日")
+        elif tag_stats.get("errors"):
+            st.session_state["_photo_tag_warning"] = "日記は保存しますが、一部の写真にAIタグを付けられませんでした。"
+            st.session_state["_photo_tag_error_detail"] = "\n".join(list(tag_stats.get("errors") or [])[:20])
+    except Exception as exc:
+        st.session_state["_photo_tag_warning"] = "日記は保存しますが、写真のAIタグ付けは後で再実行してください。"
+        st.session_state["_photo_tag_error_detail"] = str(exc)
 
     counts, selected = photo_emotion_counts(photos)
     unset = max(0, len(photos) - selected)
@@ -17542,6 +18000,7 @@ def page_diary():
     notice = st.session_state.pop("_diary_notice", None)
     if notice:
         st.success(notice)
+    render_photo_tag_notices()
 
     recent_rows = list_recent_diaries(limit=80)
     saved_titles = [
@@ -17580,7 +18039,7 @@ def page_diary():
                 key=f"create_pending_diary_{pending_id}",
             ):
                 try:
-                    with st.spinner("写真と選んだ気持ちから日記を作って保存しています…"):
+                    with st.spinner("未タグ写真にはAIタグを付けて、日記を保存しています…"):
                         create_and_save_diary_from_photos(
                             pending_trip,
                             pending_photos,
@@ -17638,6 +18097,11 @@ def page_diary():
     existing = diary_map.get(trip_id)
 
     if photos:
+        render_ai_photo_tag_action(
+            photos,
+            key=f"diary_day_{trip_id}",
+            scope_label="この日の写真",
+        )
         render_diary_emotion_gallery(trip_id, photos, trip=trip, is_pending=False)
     else:
         st.warning("このぶらり旅には写真がありません。")
@@ -17650,7 +18114,7 @@ def page_diary():
             key=f"create_selected_diary_{trip_id}",
         ):
             try:
-                with st.spinner("写真と選んだ気持ちから日記を作って保存しています…"):
+                with st.spinner("未タグ写真にはAIタグを付けて、日記を保存しています…"):
                     create_and_save_diary_from_photos(
                         trip,
                         photos,
@@ -17705,7 +18169,7 @@ def page_diary():
         key=f"recreate_diary_from_emotions_{trip_id}",
     ):
         try:
-            with st.spinner("日記を作り直しています…"):
+            with st.spinner("未タグ写真を確認して、日記を作り直しています…"):
                 create_and_save_diary_from_photos(
                     trip,
                     photos,
@@ -17731,8 +18195,22 @@ def page_history(embedded=False):
     notice = st.session_state.pop("_diary_notice", None)
     if notice:
         st.success(notice)
+    render_photo_tag_notices()
 
     rows = list_recent_diaries()
+    if not st.session_state.get("history_detail_trip_id"):
+        try:
+            all_tag_photos = list_member_still_photos_for_tags()
+            render_ai_photo_tag_action(
+                all_tag_photos,
+                key="history_all_photos",
+                scope_label="これまでの写真",
+            )
+            render_photo_tag_browser(all_tag_photos, key="history_all_photos")
+        except Exception as exc:
+            with st.expander("写真タグ機能の詳細"):
+                st.code(str(exc))
+
     if not rows:
         st.session_state.pop("history_detail_trip_id", None)
         st.info("まだ日記はありません。")
@@ -17877,6 +18355,7 @@ def page_monthly(embedded=False):
     deleted_notice = st.session_state.pop("_monthly_video_deleted_notice", None)
     if deleted_notice:
         st.success(deleted_notice)
+    render_photo_tag_notices()
     st.caption("保存した日記と写真ごとの気持ちを、まとまった期間ごとにつないで振り返ります。")
 
     shared_visible = render_family_shared_monthly_reviews()
@@ -17919,6 +18398,11 @@ def page_monthly(embedded=False):
         if photo_selected_tag_key(photo)
     )
     st.write(f"この期間の日記：**{completed_count}回**　／　気持ちを選んだ写真：**{emotion_selected_photo_count}枚**")
+    render_ai_photo_tag_action(
+        bundle.get("photos", []),
+        key=f"monthly_{month_key}",
+        scope_label=period_label,
+    )
     if completed_count == 0 and emotion_selected_photo_count == 0:
         st.info("この期間には、まだ振り返りに使える気持ちの記録がありません。")
         return
