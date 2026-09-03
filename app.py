@@ -29,9 +29,9 @@ from zoneinfo import ZoneInfo
 import streamlit as st
 
 # Freshly generated update: 2026-08-31 23:49 JST
-GENERATED_UPDATE_JST = "2026-09-03T23:29:43+09:00"
+GENERATED_UPDATE_JST = "2026-09-03T23:48:04+09:00"
 
-APP_BUILD = "v180"
+APP_BUILD = "v181"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -15219,55 +15219,54 @@ def page_home():
     _sync_recent_camera_state_from_browser()
     review_attention = home_review_attention_needed()
     inject_home_icon_css(review_attention=review_attention)
-    # v174: compact the Home dashboard only on phone-sized screens. Primary actions
-    # stay large enough to tap, but low-value whitespace is reduced and paired actions
-    # are locked side-by-side so the dashboard fits in one normal phone viewport.
+    # v181: keep the compact phone dashboard, but restore a little vertical breathing room.
+    # Paired actions stay side-by-side; only spacing and tap-target height are relaxed slightly.
     st.markdown(
         """
         <style>
         @media (max-width: 640px) {
           .home-account {
-            margin: 0 0 .12rem !important;
+            margin: 0 0 .16rem !important;
             font-size: .64rem !important;
             line-height: 1.05 !important;
           }
           .home-hero {
-            margin: 0 0 .28rem !important;
-            padding: .46rem .62rem .42rem !important;
-            border-radius: 16px !important;
+            margin: 0 0 .36rem !important;
+            padding: .54rem .66rem .50rem !important;
+            border-radius: 17px !important;
           }
-          .home-hero-inner { gap: .22rem !important; }
+          .home-hero-inner { gap: .26rem !important; }
           .home-hero-train, .home-hero-train img {
-            width: 52px !important;
-            height: 44px !important;
+            width: 56px !important;
+            height: 48px !important;
           }
           .home-eyebrow {
             font-size: .58rem !important;
-            margin-bottom: .08rem !important;
+            margin-bottom: .10rem !important;
           }
           .home-title {
-            font-size: 1.50rem !important;
-            line-height: 1.00 !important;
-            margin-bottom: .03rem !important;
+            font-size: 1.54rem !important;
+            line-height: 1.02 !important;
+            margin-bottom: .04rem !important;
           }
           .home-tagline {
-            margin-top: .12rem !important;
-            font-size: .70rem !important;
-            line-height: 1.15 !important;
+            margin-top: .16rem !important;
+            font-size: .72rem !important;
+            line-height: 1.18 !important;
           }
           .home-status {
             flex-wrap: nowrap !important;
-            gap: .28rem !important;
-            margin: 0 0 .28rem !important;
-            padding: .28rem .38rem !important;
-            border-radius: 11px !important;
-            font-size: .70rem !important;
-            line-height: 1.08 !important;
+            gap: .32rem !important;
+            margin: 0 0 .36rem !important;
+            padding: .34rem .42rem !important;
+            border-radius: 12px !important;
+            font-size: .71rem !important;
+            line-height: 1.12 !important;
             min-width: 0 !important;
           }
           .home-status-badge {
-            min-height: 1.22rem !important;
-            padding: .06rem .30rem !important;
+            min-height: 1.30rem !important;
+            padding: .07rem .32rem !important;
             font-size: .61rem !important;
           }
           .home-status-main { white-space: nowrap !important; }
@@ -15278,16 +15277,16 @@ def page_home():
             text-overflow: ellipsis !important;
           }
           .home-section-label {
-            margin: .03rem 0 .12rem !important;
+            margin: .04rem 0 .16rem !important;
             font-size: .64rem !important;
             line-height: 1.05 !important;
           }
-          .home-section-label[style] { margin-top: .18rem !important; }
+          .home-section-label[style] { margin-top: .24rem !important; }
 
           .st-key-home_primary [data-testid="stVerticalBlock"],
           .st-key-home_media_tools [data-testid="stVerticalBlock"],
           .st-key-home_secondary [data-testid="stVerticalBlock"] {
-            gap: .24rem !important;
+            gap: .30rem !important;
           }
           .st-key-home_capture_pair [data-testid="stHorizontalBlock"],
           .st-key-home_media_tools [data-testid="stHorizontalBlock"],
@@ -15307,9 +15306,9 @@ def page_home():
           }
 
           .st-key-home_primary div.stButton > button {
-            height: 3.18rem !important;
-            min-height: 3.18rem !important;
-            max-height: 3.18rem !important;
+            height: 3.34rem !important;
+            min-height: 3.34rem !important;
+            max-height: 3.34rem !important;
             border-radius: 15px !important;
             font-size: .94rem !important;
             line-height: 1.02 !important;
@@ -15318,9 +15317,9 @@ def page_home():
           }
           .st-key-home_capture_pair .st-key-home_camera div.stButton > button,
           .st-key-home_capture_pair .st-key-home_video div.stButton > button {
-            height: 3.48rem !important;
-            min-height: 3.48rem !important;
-            max-height: 3.48rem !important;
+            height: 3.64rem !important;
+            min-height: 3.64rem !important;
+            max-height: 3.64rem !important;
             font-size: .88rem !important;
             padding-left: .20rem !important;
             padding-right: .20rem !important;
@@ -15328,19 +15327,19 @@ def page_home():
           }
           .st-key-home_camera div.stButton > button::before,
           .st-key-home_diary div.stButton > button::before {
-            width: 30px !important;
-            height: 30px !important;
+            width: 32px !important;
+            height: 32px !important;
           }
           .st-key-home_video div.stButton > button::before {
-            width: 40px !important;
-            height: 30px !important;
+            width: 42px !important;
+            height: 32px !important;
           }
 
-          .st-key-home_media_tools { margin-top: .18rem !important; }
+          .st-key-home_media_tools { margin-top: .24rem !important; }
           .st-key-home_media_tools div.stButton > button {
-            height: 2.72rem !important;
-            min-height: 2.72rem !important;
-            max-height: 2.72rem !important;
+            height: 2.86rem !important;
+            min-height: 2.86rem !important;
+            max-height: 2.86rem !important;
             border-radius: 14px !important;
             font-size: .78rem !important;
             line-height: 1.05 !important;
@@ -15355,19 +15354,19 @@ def page_home():
             white-space: nowrap !important;
           }
 
-          .st-key-home_destination { margin-top: .12rem !important; }
+          .st-key-home_destination { margin-top: .18rem !important; }
           .st-key-home_destination div.stButton > button {
-            min-height: 2.02rem !important;
+            min-height: 2.16rem !important;
             border-radius: 11px !important;
             font-size: .68rem !important;
             line-height: 1.04 !important;
-            padding: .24rem .36rem !important;
+            padding: .28rem .38rem !important;
           }
 
           .st-key-home_secondary div.stButton > button {
-            height: 2.82rem !important;
-            min-height: 2.82rem !important;
-            max-height: 2.82rem !important;
+            height: 2.96rem !important;
+            min-height: 2.96rem !important;
+            max-height: 2.96rem !important;
             border-radius: 14px !important;
             font-size: .82rem !important;
             line-height: 1.02 !important;
@@ -15376,8 +15375,8 @@ def page_home():
           }
           .st-key-home_review div.stButton > button::before,
           .st-key-home_settings div.stButton > button::before {
-            width: 24px !important;
-            height: 24px !important;
+            width: 26px !important;
+            height: 26px !important;
           }
           .home-footer-note { display: none !important; }
         }
