@@ -29,9 +29,9 @@ from zoneinfo import ZoneInfo
 import streamlit as st
 
 # Freshly generated update: 2026-08-31 23:49 JST
-GENERATED_UPDATE_JST = "2026-09-03T22:57:00+09:00"
+GENERATED_UPDATE_JST = "2026-09-03T23:20:00+09:00"
 
-APP_BUILD = "v178"
+APP_BUILD = "v179"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -3748,8 +3748,15 @@ _DIARY_GALLERY_CSS = """
 }
 .diary-photo-grid.single {
   grid-template-columns: minmax(0, 1fr);
-  max-width: 360px;
+  max-width: 620px;
   margin: 0 auto;
+}
+.diary-photo-grid.single .diary-photo-card img {
+  aspect-ratio: auto;
+  width: 100%;
+  max-height: 68vh;
+  object-fit: contain;
+  background: rgba(128,128,128,.045);
 }
 .diary-photo-wrap { position: relative; min-width: 0; }
 .diary-photo-card {
@@ -3803,6 +3810,8 @@ _DIARY_GALLERY_CSS = """
   .diary-photo-delete { top:2px; right:2px; width:23px; height:23px; font-size:17px; }
   .diary-emotion-badge { right:5px; bottom:5px; min-width:25px; height:22px; padding:0 5px; font-size:7.5px; }
   .diary-mode-button { min-height:25px; font-size:7.5px; padding:3px 2px; }
+  .diary-photo-grid.single { max-width: 100%; }
+  .diary-photo-grid.single .diary-photo-card img { max-height: 62vh; }
   .diary-photo-grid.single .diary-mode-button { min-height:34px; font-size:10px; }
 }
 """
@@ -14784,6 +14793,85 @@ def render_small_gallery(photos, max_count=None, columns=3):
             unsafe_allow_html=True,
         )
 
+def render_history_photo_viewer(photos, trip_id):
+    """Read-only saved-diary viewer with three-column and one-photo modes."""
+    photos = diary_photos_only(photos)
+    if not photos:
+        return
+
+    view_mode = "3列一覧"
+    if len(photos) > 1:
+        view_mode = st.radio(
+            "写真の表示モード",
+            ["3列一覧", "1枚ずつ拡大"],
+            horizontal=True,
+            key=f"history_photo_view_mode_{trip_id}",
+            label_visibility="collapsed",
+        )
+
+    if view_mode == "3列一覧":
+        render_small_gallery(photos, max_count=None, columns=3)
+        return
+
+    index_key = f"history_photo_enlarged_index_{trip_id}"
+    try:
+        index = int(st.session_state.get(index_key) or 0)
+    except Exception:
+        index = 0
+    index = max(0, min(index, len(photos) - 1))
+    st.session_state[index_key] = index
+
+    prev_col, count_col, next_col = st.columns([1, 1.25, 1], gap="small")
+    with prev_col:
+        if st.button(
+            "◀ 前へ",
+            use_container_width=True,
+            disabled=index <= 0,
+            key=f"history_photo_prev_{trip_id}",
+        ):
+            st.session_state[index_key] = max(0, index - 1)
+            st.rerun()
+    with count_col:
+        st.markdown(
+            f'<div style="text-align:center;padding:.55rem .2rem;font-weight:800;">{index + 1} / {len(photos)}</div>',
+            unsafe_allow_html=True,
+        )
+    with next_col:
+        if st.button(
+            "次へ ▶",
+            use_container_width=True,
+            disabled=index >= len(photos) - 1,
+            key=f"history_photo_next_{trip_id}",
+        ):
+            st.session_state[index_key] = min(len(photos) - 1, index + 1)
+            st.rerun()
+
+    photo = photos[index]
+    path = str(photo.get("storage_path") or "").strip()
+    signed = signed_photo_url_map((path,)) if path else {}
+    src = photo_display_url(photo, signed, max_px=1600, quality=92)
+    meta = photo_selected_tag_meta(photo)
+    border = meta.get("color") or "#AEB6C2"
+    emoji = meta.get("emoji") or ""
+    label = meta.get("label") or ""
+    location = str(photo_location_label(photo) or "").strip()
+    if src:
+        badge = (
+            f'<div style="position:absolute;right:10px;bottom:10px;padding:5px 9px;border-radius:999px;background:rgba(255,255,255,.92);font-size:17px;font-weight:800;box-shadow:0 2px 8px rgba(0,0,0,.20);">{html.escape(emoji)} {html.escape(label)}</div>'
+            if emoji else ""
+        )
+        st.markdown(
+            f'<div style="position:relative;width:100%;padding:5px;border:3px solid {border};border-radius:16px;background:rgba(128,128,128,.025);box-sizing:border-box;">'
+            f'<img src="{html.escape(src, quote=True)}" loading="eager" decoding="async" style="display:block;width:100%;max-height:70vh;object-fit:contain;border-radius:11px;" />{badge}</div>',
+            unsafe_allow_html=True,
+        )
+    if location:
+        st.caption(f"📍 {location}")
+    tags = photo_ai_tags(photo)
+    if tags:
+        st.caption("🏷️ " + " ／ ".join(tags[:12]))
+
+
 def render_diary_photo_gallery(trip_id, photos, state=None):
     """Show diary still photos in a three-column clickable grid."""
     photos = diary_photos_only(photos)
@@ -17888,7 +17976,7 @@ def page_trip():
 
 @st.fragment
 def render_diary_emotion_gallery(trip_id, photos, trip=None, is_pending=False):
-    """Render all still photos as six-feeling cards with persistent emotion state."""
+    """Render still photos with emotion editing and an optional saved-diary viewer mode."""
     photos = diary_photos_only(photos)
     if not photos:
         return
@@ -17898,18 +17986,67 @@ def render_diary_emotion_gallery(trip_id, photos, trip=None, is_pending=False):
     summary = photo_emotion_summary_text(photos)
     st.caption(f"感情選択済み：{selected} / {len(photos)}枚" + (f"　｜　{summary}" if summary else ""))
 
-    paths = tuple(str(photo.get("storage_path") or "") for photo in photos if photo.get("storage_path"))
+    # v179: saved diary days can be viewed either as the familiar three-column grid
+    # or one photo at a time. Pending diary photos stay in the editing-first grid.
+    view_mode = "3列一覧"
+    if not is_pending and len(photos) > 1:
+        view_mode = st.radio(
+            "写真の表示モード",
+            ["3列一覧", "1枚ずつ拡大"],
+            horizontal=True,
+            key=f"diary_saved_photo_view_mode_{trip_id}",
+            label_visibility="collapsed",
+        )
+
+    displayed_photos = photos
+    enlarged_index = 0
+    if view_mode == "1枚ずつ拡大":
+        index_key = f"diary_saved_photo_enlarged_index_{trip_id}"
+        try:
+            enlarged_index = int(st.session_state.get(index_key) or 0)
+        except Exception:
+            enlarged_index = 0
+        enlarged_index = max(0, min(enlarged_index, len(photos) - 1))
+        st.session_state[index_key] = enlarged_index
+
+        prev_col, count_col, next_col = st.columns([1, 1.25, 1], gap="small")
+        with prev_col:
+            if st.button(
+                "◀ 前へ",
+                use_container_width=True,
+                disabled=enlarged_index <= 0,
+                key=f"diary_saved_photo_prev_{trip_id}",
+            ):
+                st.session_state[index_key] = max(0, enlarged_index - 1)
+                st.rerun()
+        with count_col:
+            st.markdown(
+                f'<div style="text-align:center;padding:.55rem .2rem;font-weight:800;">{enlarged_index + 1} / {len(photos)}</div>',
+                unsafe_allow_html=True,
+            )
+        with next_col:
+            if st.button(
+                "次へ ▶",
+                use_container_width=True,
+                disabled=enlarged_index >= len(photos) - 1,
+                key=f"diary_saved_photo_next_{trip_id}",
+            ):
+                st.session_state[index_key] = min(len(photos) - 1, enlarged_index + 1)
+                st.rerun()
+        displayed_photos = [photos[enlarged_index]]
+
+    paths = tuple(str(photo.get("storage_path") or "") for photo in displayed_photos if photo.get("storage_path"))
     signed = signed_photo_url_map(paths) if paths else {}
     cards = []
     photo_ids = []
-    for photo in photos:
+    for photo in displayed_photos:
         pid = str(photo.get("id") or "")
         if not pid:
             continue
         cards.append(
             {
                 "id": pid,
-                "src": photo_display_url(photo, signed, max_px=520, quality=80),
+                "src": photo_display_url(photo, signed, max_px=1400 if view_mode == "1枚ずつ拡大" else 520, quality=90 if view_mode == "1枚ずつ拡大" else 80),
                 "emotion": photo_selected_tag_values(photo)[0],
                 "parenting": photo_selected_tag_values(photo)[1],
                 "location": str(photo_location_label(photo) or ""),
@@ -17922,8 +18059,8 @@ def render_diary_emotion_gallery(trip_id, photos, trip=None, is_pending=False):
         serial_key = f"diary_emotion_gallery_serial_{trip_id}_{'pending' if is_pending else 'saved'}"
         serial = int(st.session_state.get(serial_key) or 0)
         result = gallery_component(
-            data={"photos": cards, "allow_delete": True, "allow_emotion": True, "mode_by_photo": st.session_state.get(f"_diary_icon_modes_{trip_id}") or {}, "family_key": current_family_key(), "member_key": current_member_key(), "pending_param": PENDING_EMOTION_QUERY_PARAM},
-            key=f"diary_emotion_gallery_{trip_id}_{serial}_{_current_ui_refresh_epoch()}",
+            data={"photos": cards, "single": view_mode == "1枚ずつ拡大", "allow_delete": True, "allow_emotion": True, "mode_by_photo": st.session_state.get(f"_diary_icon_modes_{trip_id}") or {}, "family_key": current_family_key(), "member_key": current_member_key(), "pending_param": PENDING_EMOTION_QUERY_PARAM},
+            key=f"diary_emotion_gallery_{trip_id}_{serial}_{_current_ui_refresh_epoch()}_{'large' if view_mode == '1枚ずつ拡大' else 'grid'}_{enlarged_index}",
             on_delete_photo_id_change=lambda: None,
         )
         delete_clicked = str(getattr(result, "delete_photo_id", "") or "")
@@ -17939,10 +18076,11 @@ def render_diary_emotion_gallery(trip_id, photos, trip=None, is_pending=False):
         return
 
     # Fallback for old component runtimes.
-    cols = st.columns(3, gap="small")
-    for index, photo in enumerate(photos):
-        with cols[index % 3]:
-            src = photo_display_url(photo, signed, max_px=420, quality=76)
+    fallback_columns = 1 if view_mode == "1枚ずつ拡大" else 3
+    cols = st.columns(fallback_columns, gap="small")
+    for index, photo in enumerate(displayed_photos):
+        with cols[index % fallback_columns]:
+            src = photo_display_url(photo, signed, max_px=1400 if view_mode == "1枚ずつ拡大" else 420, quality=90 if view_mode == "1枚ずつ拡大" else 76)
             meta = photo_selected_tag_meta(photo)
             border = meta.get("color") or "#AEB6C2"
             emoji = meta.get("emoji") or ""
@@ -17951,15 +18089,16 @@ def render_diary_emotion_gallery(trip_id, photos, trip=None, is_pending=False):
                     f'<span style="position:absolute;right:7px;bottom:7px;background:rgba(255,255,255,.90);border-radius:999px;padding:2px 5px;font-size:19px;">{emoji}</span>'
                     if emoji else ""
                 )
+                image_style = "display:block;width:100%;max-height:68vh;object-fit:contain;border-radius:8px;" if view_mode == "1枚ずつ拡大" else "display:block;width:100%;aspect-ratio:1/1;object-fit:cover;border-radius:8px;"
                 st.markdown(
                     f'<div style="position:relative;padding:4px;border:3px solid {border};border-radius:12px;">'
-                    f'<img src="{html.escape(src, quote=True)}" loading="lazy" decoding="async" style="display:block;width:100%;aspect-ratio:1/1;object-fit:cover;border-radius:8px;" />{badge}</div>',
+                    f'<img src="{html.escape(src, quote=True)}" loading="lazy" decoding="async" style="{image_style}" />{badge}</div>',
                     unsafe_allow_html=True,
                 )
             if st.button(
                 "気持ちを次へ",
                 use_container_width=True,
-                key=f"emotion_fallback_{trip_id}_{photo.get('id')}_{'pending' if is_pending else 'saved'}",
+                key=f"emotion_fallback_{trip_id}_{photo.get('id')}_{'pending' if is_pending else 'saved'}_{'large' if view_mode == '1枚ずつ拡大' else 'grid'}",
             ):
                 update_photo_emotion(
                     photo.get("id"),
@@ -17969,7 +18108,7 @@ def render_diary_emotion_gallery(trip_id, photos, trip=None, is_pending=False):
                 st.rerun()
             if st.button(
                 "×",
-                key=f"diary_emotion_delete_{trip_id}_{photo.get('id')}_{'pending' if is_pending else 'saved'}",
+                key=f"diary_emotion_delete_{trip_id}_{photo.get('id')}_{'pending' if is_pending else 'saved'}_{'large' if view_mode == '1枚ずつ拡大' else 'grid'}",
                 help="この写真を削除",
             ):
                 confirm_photo_delete_dialog(
@@ -18237,7 +18376,7 @@ def page_history(embedded=False):
 
         st.markdown(f"### {html.escape(title)}")
         render_diary_title_editor(trip_id, daily_title, "history_detail")
-        render_small_gallery(photos, max_count=None, columns=3)
+        render_history_photo_viewer(photos, trip_id)
         st.markdown(
             f"""
             <div class="diary-card">
