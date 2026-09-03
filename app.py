@@ -29,9 +29,9 @@ from zoneinfo import ZoneInfo
 import streamlit as st
 
 # Freshly generated update: 2026-08-31 23:49 JST
-GENERATED_UPDATE_JST = "2026-09-03T23:55:38+09:00"
+GENERATED_UPDATE_JST = "2026-09-04T00:02:13+09:00"
 
-APP_BUILD = "v182"
+APP_BUILD = "v183"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -15219,97 +15219,110 @@ def page_home():
     _sync_recent_camera_state_from_browser()
     review_attention = home_review_attention_needed()
     inject_home_icon_css(review_attention=review_attention)
-    # v182: fit the Home dashboard to the real mobile viewport instead of one fixed phone size.
-    # The content grows into available height, while preserving about 18px of visual
-    # breathing room after the Streamlit toolbar and above the bottom safe area.
+    # v183: scale the Home design itself to each phone instead of only distributing
+    # unchanged controls across the viewport. Width stays nearly edge-to-edge, while
+    # button heights, icons, type, hero art and spacing all respond to visible height.
     st.markdown(
         """
         <style>
         @media (max-width: 640px) {
           :root {
-            --home-screen-height: 100vh;
+            /* Horizontal and vertical units are deliberately separate. The phone keeps
+               the same visual hierarchy, but taller screens get larger controls/art
+               rather than merely larger blank gaps. */
+            --home-wu: clamp(3.20px, 1vw, 4.55px);
+            --home-hu: clamp(3.45px, .56dvh, 5.15px);
             --home-edge-gap: 18px;
-            --home-top-toolbar: 2.15rem;
-            --home-safe-top: max(var(--home-edge-gap), env(safe-area-inset-top, 0px));
-            --home-safe-bottom: max(var(--home-edge-gap), env(safe-area-inset-bottom, 0px));
-            --home-page-inline: clamp(.56rem, 2.7vw, .84rem);
-            --home-row-gap: clamp(.18rem, .62dvh, .38rem);
-            --home-col-gap: clamp(.24rem, 1.25vw, .38rem);
-            --home-available-height: calc(var(--home-screen-height) - var(--home-top-toolbar) - var(--home-safe-top) - var(--home-safe-bottom));
+            --home-toolbar-space: 2.95rem;
+            --home-top-gap: max(var(--home-edge-gap), env(safe-area-inset-top, 0px));
+            --home-bottom-gap: max(var(--home-edge-gap), env(safe-area-inset-bottom, 0px));
+            --home-inline: clamp(6px, calc(var(--home-wu) * 1.8), 10px);
+            --home-vgap: clamp(5px, calc(var(--home-hu) * 1.45), 9px);
+            --home-hgap: clamp(5px, calc(var(--home-wu) * 1.45), 8px);
+            --home-usable-height: calc(100vh - var(--home-toolbar-space) - var(--home-top-gap) - var(--home-bottom-gap) - 1rem);
           }
           @supports (height: 100dvh) {
             :root {
-              --home-screen-height: 100dvh;
+              --home-usable-height: calc(100dvh - var(--home-toolbar-space) - var(--home-top-gap) - var(--home-bottom-gap) - 1rem);
             }
           }
 
+          /* Use almost the full phone width. Do not force the entire Streamlit page to a
+             viewport height; that was the source of the visible scroll/seek bar in v182. */
           .block-container {
-            padding-left: var(--home-page-inline) !important;
-            padding-right: var(--home-page-inline) !important;
-            padding-top: calc(var(--home-top-toolbar) + var(--home-safe-top)) !important;
-            padding-bottom: var(--home-safe-bottom) !important;
-            min-height: var(--home-screen-height) !important;
+            width: 100% !important;
+            max-width: 100% !important;
+            padding-left: var(--home-inline) !important;
+            padding-right: var(--home-inline) !important;
+            padding-top: calc(var(--home-toolbar-space) + var(--home-top-gap)) !important;
+            padding-bottom: var(--home-bottom-gap) !important;
+            min-height: 0 !important;
             box-sizing: border-box !important;
           }
 
           .st-key-home_viewport_fit {
             width: 100% !important;
-            max-width: 720px !important;
-            margin: 0 auto !important;
-            min-height: var(--home-available-height) !important;
+            max-width: none !important;
+            margin: 0 !important;
+            min-height: max(0px, var(--home-usable-height)) !important;
           }
           .st-key-home_viewport_fit > [data-testid="stVerticalBlock"],
           .st-key-home_viewport_fit > [data-testid="stVerticalBlockBorderWrapper"] > [data-testid="stVerticalBlock"] {
-            min-height: var(--home-available-height) !important;
+            min-height: max(0px, var(--home-usable-height)) !important;
             display: flex !important;
             flex-direction: column !important;
             justify-content: space-between !important;
-            gap: var(--home-row-gap) !important;
+            gap: var(--home-vgap) !important;
           }
 
           .home-account {
             margin: 0 !important;
-            font-size: clamp(.61rem, 2.55vw, .68rem) !important;
+            font-size: clamp(.61rem, calc(var(--home-hu) * 2.45), .73rem) !important;
             line-height: 1.08 !important;
           }
           .home-hero {
             margin: 0 !important;
-            padding: clamp(.50rem, 1.28dvh, .68rem) clamp(.62rem, 3vw, .82rem) !important;
-            border-radius: clamp(16px, 4.2vw, 19px) !important;
+            padding: clamp(.50rem, calc(var(--home-hu) * 2.05), .72rem)
+                     clamp(.62rem, calc(var(--home-wu) * 2.45), .88rem) !important;
+            border-radius: clamp(16px, calc(var(--home-wu) * 4.5), 20px) !important;
           }
-          .home-hero-inner { gap: clamp(.24rem, 1.2vw, .36rem) !important; }
+          .home-hero-inner { gap: clamp(.24rem, calc(var(--home-wu) * 1.25), .38rem) !important; }
           .home-hero-train, .home-hero-train img {
-            width: clamp(52px, 13.8vw, 62px) !important;
-            height: clamp(45px, 11.8vw, 54px) !important;
+            width: clamp(54px, min(calc(var(--home-wu) * 16.2), calc(var(--home-hu) * 14.2)), 72px) !important;
+            height: clamp(47px, min(calc(var(--home-wu) * 13.8), calc(var(--home-hu) * 12.5)), 63px) !important;
           }
           .home-eyebrow {
-            font-size: clamp(.56rem, 2.3vw, .64rem) !important;
-            margin-bottom: clamp(.08rem, .28dvh, .14rem) !important;
+            font-size: clamp(.56rem, calc(var(--home-hu) * 2.25), .67rem) !important;
+            margin-bottom: clamp(.08rem, calc(var(--home-hu) * .35), .16rem) !important;
           }
           .home-title {
-            font-size: clamp(1.46rem, 6.7vw, 1.68rem) !important;
+            font-size: clamp(1.45rem, calc(var(--home-hu) * 5.55), 1.82rem) !important;
             line-height: 1.02 !important;
             margin-bottom: .03rem !important;
           }
           .home-tagline {
-            margin-top: clamp(.12rem, .35dvh, .20rem) !important;
-            font-size: clamp(.69rem, 2.85vw, .78rem) !important;
+            margin-top: clamp(.12rem, calc(var(--home-hu) * .45), .22rem) !important;
+            font-size: clamp(.69rem, calc(var(--home-hu) * 2.65), .82rem) !important;
             line-height: 1.18 !important;
           }
+
           .home-status {
             flex-wrap: nowrap !important;
-            gap: clamp(.26rem, 1.15vw, .38rem) !important;
+            gap: clamp(.26rem, calc(var(--home-wu) * 1.15), .40rem) !important;
             margin: 0 !important;
-            padding: clamp(.30rem, .82dvh, .42rem) clamp(.38rem, 1.8vw, .52rem) !important;
-            border-radius: 12px !important;
-            font-size: clamp(.68rem, 2.75vw, .76rem) !important;
+            min-height: clamp(2.10rem, calc(var(--home-hu) * 8.7), 2.78rem) !important;
+            padding: clamp(.30rem, calc(var(--home-hu) * .90), .46rem)
+                     clamp(.38rem, calc(var(--home-wu) * 1.70), .56rem) !important;
+            border-radius: clamp(12px, calc(var(--home-wu) * 3.4), 15px) !important;
+            font-size: clamp(.68rem, calc(var(--home-hu) * 2.55), .79rem) !important;
             line-height: 1.12 !important;
             min-width: 0 !important;
+            box-sizing: border-box !important;
           }
           .home-status-badge {
-            min-height: clamp(1.24rem, 2.6dvh, 1.42rem) !important;
-            padding: .07rem clamp(.28rem, 1.1vw, .38rem) !important;
-            font-size: clamp(.59rem, 2.25vw, .66rem) !important;
+            min-height: clamp(1.24rem, calc(var(--home-hu) * 3.25), 1.52rem) !important;
+            padding: .07rem clamp(.28rem, calc(var(--home-wu) * 1.15), .40rem) !important;
+            font-size: clamp(.59rem, calc(var(--home-hu) * 2.18), .68rem) !important;
           }
           .home-status-main { white-space: nowrap !important; }
           .home-status-sub {
@@ -15320,7 +15333,7 @@ def page_home():
           }
           .home-section-label {
             margin: 0 !important;
-            font-size: clamp(.62rem, 2.4vw, .69rem) !important;
+            font-size: clamp(.62rem, calc(var(--home-hu) * 2.30), .72rem) !important;
             line-height: 1.05 !important;
           }
           .home-section-label[style] { margin-top: 0 !important; }
@@ -15328,7 +15341,7 @@ def page_home():
           .st-key-home_primary [data-testid="stVerticalBlock"],
           .st-key-home_media_tools [data-testid="stVerticalBlock"],
           .st-key-home_secondary [data-testid="stVerticalBlock"] {
-            gap: var(--home-row-gap) !important;
+            gap: var(--home-vgap) !important;
           }
           .st-key-home_capture_pair [data-testid="stHorizontalBlock"],
           .st-key-home_media_tools [data-testid="stHorizontalBlock"],
@@ -15337,7 +15350,7 @@ def page_home():
             flex-direction: row !important;
             flex-wrap: nowrap !important;
             align-items: stretch !important;
-            gap: var(--home-col-gap) !important;
+            gap: var(--home-hgap) !important;
           }
           .st-key-home_capture_pair [data-testid="stHorizontalBlock"] > [data-testid="stColumn"],
           .st-key-home_media_tools [data-testid="stHorizontalBlock"] > [data-testid="stColumn"],
@@ -15347,43 +15360,45 @@ def page_home():
             min-width: 0 !important;
           }
 
+          /* Primary controls now grow/shrink with visible screen height. This is the main
+             difference from v182: tall phones get visibly larger icons and buttons. */
           .st-key-home_primary div.stButton > button {
-            height: clamp(3.24rem, 6.05dvh, 3.72rem) !important;
-            min-height: clamp(3.24rem, 6.05dvh, 3.72rem) !important;
-            max-height: clamp(3.24rem, 6.05dvh, 3.72rem) !important;
-            border-radius: clamp(15px, 4vw, 18px) !important;
-            font-size: clamp(.90rem, 3.55vw, 1.03rem) !important;
+            height: clamp(3.00rem, calc(var(--home-hu) * 16.0), 5.15rem) !important;
+            min-height: clamp(3.00rem, calc(var(--home-hu) * 16.0), 5.15rem) !important;
+            max-height: clamp(3.00rem, calc(var(--home-hu) * 16.0), 5.15rem) !important;
+            border-radius: clamp(15px, calc(var(--home-wu) * 4.4), 20px) !important;
+            font-size: clamp(.90rem, calc(var(--home-hu) * 3.20), 1.10rem) !important;
             line-height: 1.02 !important;
-            padding: .28rem clamp(.34rem, 1.7vw, .50rem) !important;
-            column-gap: clamp(.18rem, 1vw, .30rem) !important;
+            padding: .28rem clamp(.34rem, calc(var(--home-wu) * 1.8), .54rem) !important;
+            column-gap: clamp(.18rem, calc(var(--home-wu) * 1.05), .32rem) !important;
           }
           .st-key-home_capture_pair .st-key-home_camera div.stButton > button,
           .st-key-home_capture_pair .st-key-home_video div.stButton > button {
-            height: clamp(3.54rem, 6.65dvh, 4.02rem) !important;
-            min-height: clamp(3.54rem, 6.65dvh, 4.02rem) !important;
-            max-height: clamp(3.54rem, 6.65dvh, 4.02rem) !important;
-            font-size: clamp(.84rem, 3.35vw, .96rem) !important;
-            padding-left: clamp(.16rem, 1vw, .28rem) !important;
-            padding-right: clamp(.16rem, 1vw, .28rem) !important;
-            column-gap: .16rem !important;
+            height: clamp(3.18rem, calc(var(--home-hu) * 17.2), 5.48rem) !important;
+            min-height: clamp(3.18rem, calc(var(--home-hu) * 17.2), 5.48rem) !important;
+            max-height: clamp(3.18rem, calc(var(--home-hu) * 17.2), 5.48rem) !important;
+            font-size: clamp(.84rem, calc(var(--home-hu) * 3.02), 1.02rem) !important;
+            padding-left: clamp(.16rem, calc(var(--home-wu) * .85), .30rem) !important;
+            padding-right: clamp(.16rem, calc(var(--home-wu) * .85), .30rem) !important;
+            column-gap: clamp(.12rem, calc(var(--home-wu) * .70), .20rem) !important;
           }
           .st-key-home_camera div.stButton > button::before,
           .st-key-home_diary div.stButton > button::before {
-            width: clamp(30px, 8.6vw, 36px) !important;
-            height: clamp(30px, 8.6vw, 36px) !important;
+            width: clamp(29px, min(calc(var(--home-wu) * 9.5), calc(var(--home-hu) * 8.4)), 43px) !important;
+            height: clamp(29px, min(calc(var(--home-wu) * 9.5), calc(var(--home-hu) * 8.4)), 43px) !important;
           }
           .st-key-home_video div.stButton > button::before {
-            width: clamp(40px, 11.2vw, 48px) !important;
-            height: clamp(30px, 8.6vw, 36px) !important;
+            width: clamp(38px, min(calc(var(--home-wu) * 12.2), calc(var(--home-hu) * 10.8)), 54px) !important;
+            height: clamp(29px, min(calc(var(--home-wu) * 9.5), calc(var(--home-hu) * 8.4)), 43px) !important;
           }
 
           .st-key-home_media_tools { margin-top: 0 !important; }
           .st-key-home_media_tools div.stButton > button {
-            height: clamp(2.70rem, 4.95dvh, 3.08rem) !important;
-            min-height: clamp(2.70rem, 4.95dvh, 3.08rem) !important;
-            max-height: clamp(2.70rem, 4.95dvh, 3.08rem) !important;
-            border-radius: 14px !important;
-            font-size: clamp(.74rem, 2.95vw, .84rem) !important;
+            height: clamp(2.62rem, calc(var(--home-hu) * 13.2), 4.25rem) !important;
+            min-height: clamp(2.62rem, calc(var(--home-hu) * 13.2), 4.25rem) !important;
+            max-height: clamp(2.62rem, calc(var(--home-hu) * 13.2), 4.25rem) !important;
+            border-radius: clamp(13px, calc(var(--home-wu) * 3.7), 17px) !important;
+            font-size: clamp(.74rem, calc(var(--home-hu) * 2.62), .88rem) !important;
             line-height: 1.05 !important;
             padding: .24rem .30rem !important;
             white-space: nowrap !important;
@@ -15391,34 +15406,34 @@ def page_home():
           .st-key-home_media_tools [data-testid="stCaptionContainer"],
           .st-key-home_media_tools [data-testid="stCaptionContainer"] p {
             margin: 0 !important;
-            font-size: clamp(.57rem, 2.15vw, .64rem) !important;
+            font-size: clamp(.57rem, calc(var(--home-hu) * 2.05), .67rem) !important;
             line-height: 1.05 !important;
             white-space: nowrap !important;
           }
 
           .st-key-home_destination { margin-top: 0 !important; }
           .st-key-home_destination div.stButton > button {
-            min-height: clamp(2.08rem, 4.15dvh, 2.42rem) !important;
-            border-radius: 11px !important;
-            font-size: clamp(.65rem, 2.55vw, .73rem) !important;
+            min-height: clamp(2.10rem, calc(var(--home-hu) * 9.7), 3.15rem) !important;
+            border-radius: clamp(11px, calc(var(--home-wu) * 3.1), 14px) !important;
+            font-size: clamp(.65rem, calc(var(--home-hu) * 2.35), .77rem) !important;
             line-height: 1.04 !important;
             padding: .28rem .38rem !important;
           }
 
           .st-key-home_secondary div.stButton > button {
-            height: clamp(2.84rem, 5.25dvh, 3.20rem) !important;
-            min-height: clamp(2.84rem, 5.25dvh, 3.20rem) !important;
-            max-height: clamp(2.84rem, 5.25dvh, 3.20rem) !important;
-            border-radius: 14px !important;
-            font-size: clamp(.78rem, 3.05vw, .88rem) !important;
+            height: clamp(2.78rem, calc(var(--home-hu) * 13.7), 4.40rem) !important;
+            min-height: clamp(2.78rem, calc(var(--home-hu) * 13.7), 4.40rem) !important;
+            max-height: clamp(2.78rem, calc(var(--home-hu) * 13.7), 4.40rem) !important;
+            border-radius: clamp(13px, calc(var(--home-wu) * 3.8), 17px) !important;
+            font-size: clamp(.78rem, calc(var(--home-hu) * 2.72), .92rem) !important;
             line-height: 1.02 !important;
             padding: .24rem .32rem !important;
-            column-gap: .18rem !important;
+            column-gap: clamp(.15rem, calc(var(--home-wu) * .75), .22rem) !important;
           }
           .st-key-home_review div.stButton > button::before,
           .st-key-home_settings div.stButton > button::before {
-            width: clamp(24px, 6.8vw, 30px) !important;
-            height: clamp(24px, 6.8vw, 30px) !important;
+            width: clamp(24px, min(calc(var(--home-wu) * 7.6), calc(var(--home-hu) * 6.6)), 34px) !important;
+            height: clamp(24px, min(calc(var(--home-wu) * 7.6), calc(var(--home-hu) * 6.6)), 34px) !important;
           }
           .home-footer-note { display: none !important; }
         }
