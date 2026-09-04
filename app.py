@@ -29,9 +29,9 @@ from zoneinfo import ZoneInfo
 import streamlit as st
 
 # Freshly generated update: 2026-08-31 23:49 JST
-GENERATED_UPDATE_JST = "2026-09-04T12:48:18+09:00"
+GENERATED_UPDATE_JST = "2026-09-04T23:48:21+09:00"
 
-APP_BUILD = "v188"
+APP_BUILD = "v189"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -16454,7 +16454,7 @@ def page_home():
 def page_nearby():
     page_top(
         "📍 近くに寄る",
-        "今いる場所の近くから、気軽に寄れるおやつと観光スポットだけを探します。行き先を決めた後の経路案内は地図アプリに任せます。",
+        "今いる場所の近くから、気軽に寄れるおやつと観光スポットだけを探します。行きたい場所が決まったら、その場で地図アプリの徒歩経路を開きます。",
     )
     st.markdown(
         """
@@ -16560,29 +16560,6 @@ def page_nearby():
     radius_label = st.radio("どのくらいまで？", list(radius_options), horizontal=True, key="nearby_radius_label")
     radius_m = radius_options[radius_label]
 
-    shortlist = _nearby_shortlist()
-    if shortlist:
-        st.markdown("### ★ 行きたい候補")
-        option_ids = [str(item.get("id")) for item in shortlist if item.get("id")]
-        by_id = {str(item.get("id")): item for item in shortlist if item.get("id")}
-        selection_key = f"nearby_shortlist_choice_{current_family_key()}_{current_member_key()}"
-        if str(st.session_state.get(selection_key) or "") not in option_ids:
-            st.session_state[selection_key] = option_ids[0]
-        selected_id = st.radio("行き先候補", option_ids, format_func=lambda pid: f"{by_id[pid].get('name','')} ／ {_nearby_distance_text(by_id[pid])}", key=selection_key, label_visibility="collapsed")
-        selected_place = by_id.get(selected_id) or {}
-        direction_url = _nearby_directions_url(selected_place)
-        route_col, remove_col = st.columns([1.45, 1])
-        with route_col:
-            if direction_url:
-                st.link_button("🗺️ この場所へ行く", direction_url, use_container_width=True)
-        with remove_col:
-            if st.button("候補から外す", use_container_width=True, key=f"nearby_remove_{hashlib.sha1(str(selected_id).encode()).hexdigest()[:10]}"):
-                _nearby_remove_shortlist(selected_id)
-                st.session_state.pop(selection_key, None)
-                st.rerun()
-        st.caption("ここから先はGoogleマップの徒歩経路に任せます。")
-        st.divider()
-
     with st.spinner("近くの候補を探しています…"):
         search_result = search_nearby_quick_stops_google(latitude, longitude, kind, subkind, radius_m) if GOOGLE_PLACES_API_KEY else None
         if not search_result or search_result.get("error"):
@@ -16602,7 +16579,7 @@ def page_nearby():
     places = list((search_result or {}).get("places") or [])[:6]
     provider = str((search_result or {}).get("provider") or "OpenStreetMap")
     st.markdown("### 今ちょっと寄るなら")
-    st.caption("候補を最大6か所。まず代表写真を1枚、気になる場所だけ開くと参考写真を3枚まで確認できます。")
+    st.caption("候補を最大6か所。代表写真を見て決めたら、その場でGoogleマップの徒歩経路を開けます。気になる場所は参考写真を3枚まで確認できます。")
     if not GOOGLE_PLACES_API_KEY:
         st.info("写真表示を使うには Streamlit Secrets に `GOOGLE_PLACES_API_KEY` を追加してください。検索自体はこのまま利用できます。")
     if not places:
@@ -16610,7 +16587,6 @@ def page_nearby():
         return
 
     preview_images = _nearby_load_preview_images(places) if provider == "Google Places" else [""] * len(places)
-    shortlist_ids = {str(item.get("id")) for item in _nearby_shortlist()}
     detail_key = f"_nearby_open_detail_{current_family_key()}_{current_member_key()}"
     open_detail = str(st.session_state.get(detail_key) or "")
 
@@ -16635,18 +16611,19 @@ def page_nearby():
             if extras:
                 st.markdown('<div class="nearby-place-sub">' + html.escape(" ／ ".join(extras)) + '</div>', unsafe_allow_html=True)
 
-            detail_col, add_col = st.columns([1, 1.3])
+            detail_col, route_col = st.columns([1, 1.45])
             with detail_col:
                 can_show = bool(place.get("photo_refs"))
                 detail_label = "写真を閉じる" if open_detail == pid else "写真を3枚見る"
                 if st.button(detail_label, use_container_width=True, disabled=not can_show, key=f"nearby_detail_{place_key}"):
                     st.session_state[detail_key] = "" if open_detail == pid else pid
                     st.rerun()
-            with add_col:
-                already = pid in shortlist_ids
-                if st.button("★ 候補に入れました" if already else "☆ 行きたい候補に入れる", use_container_width=True, disabled=already, key=f"nearby_add_{place_key}"):
-                    _nearby_add_shortlist(place)
-                    st.rerun()
+            with route_col:
+                direction_url = _nearby_directions_url(place)
+                if direction_url:
+                    st.link_button("🗺️ この場所に案内してもらう", direction_url, use_container_width=True)
+                else:
+                    st.button("🗺️ この場所に案内してもらう", use_container_width=True, disabled=True, key=f"nearby_route_disabled_{place_key}")
 
             if open_detail == pid and place.get("photo_refs"):
                 with st.spinner("参考写真を読み込んでいます…"):
