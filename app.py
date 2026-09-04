@@ -29,9 +29,9 @@ from zoneinfo import ZoneInfo
 import streamlit as st
 
 # Freshly generated update: 2026-08-31 23:49 JST
-GENERATED_UPDATE_JST = "2026-09-04T23:48:21+09:00"
+GENERATED_UPDATE_JST = "2026-09-05T00:02:25+09:00"
 
-APP_BUILD = "v189"
+APP_BUILD = "v190"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -6064,8 +6064,8 @@ def _nearby_google_photo_refs(photo_rows, limit=10):
     return refs
 
 
-def search_nearby_quick_stops_google(latitude, longitude, kind, subkind, radius_m):
-    """Use Google Places (New) when configured so results can include place photos."""
+def search_nearby_quick_stops_google(latitude, longitude, kind, subkind, radius_m, open_now_only=False):
+    """Use Google Places (New) for nearby cards with photos, live hours and ratings."""
     if not GOOGLE_PLACES_API_KEY:
         return None
     try:
@@ -6087,13 +6087,19 @@ def search_nearby_quick_stops_google(latitude, longitude, kind, subkind, radius_
             }
         },
     }
+    if bool(open_now_only):
+        body["openNow"] = True
+
     req = Request(
         "https://places.googleapis.com/v1/places:searchText",
         data=json.dumps(body, ensure_ascii=False).encode("utf-8"),
         headers={
             "Content-Type": "application/json; charset=UTF-8",
             "X-Goog-Api-Key": GOOGLE_PLACES_API_KEY,
-            "X-Goog-FieldMask": "places.id,places.displayName,places.formattedAddress,places.location,places.types,places.photos",
+            "X-Goog-FieldMask": (
+                "places.id,places.displayName,places.formattedAddress,places.location,places.types,places.photos,"
+                "places.businessStatus,places.currentOpeningHours,places.rating,places.userRatingCount"
+            ),
         },
         method="POST",
     )
@@ -6123,6 +6129,9 @@ def search_nearby_quick_stops_google(latitude, longitude, kind, subkind, radius_
             continue
         if not name:
             continue
+        business_status = str(raw.get("businessStatus") or "").strip()
+        if business_status == "CLOSED_PERMANENTLY":
+            continue
         distance_m = _nearby_haversine_m(latitude, longitude, plat, plon)
         if not math.isfinite(distance_m) or distance_m > radius_m * 1.25:
             continue
@@ -6133,7 +6142,6 @@ def search_nearby_quick_stops_google(latitude, longitude, kind, subkind, radius_
             if meal_only and not sweet_signal:
                 continue
         walk_minutes = max(1, int(math.ceil((distance_m * 1.25) / 80.0)))
-        category = "ちょっとしたおやつ" if kind == "snack" else "観光スポット"
         pseudo_tags = {"name": name}
         if kind == "snack":
             if "ice_cream_shop" in types:
@@ -6144,6 +6152,15 @@ def search_nearby_quick_stops_google(latitude, longitude, kind, subkind, radius_
                 pseudo_tags["shop"] = "confectionery"
         category = _nearby_place_label(pseudo_tags, kind)
         refs = _nearby_google_photo_refs(raw.get("photos") or [], limit=10)
+        hours = raw.get("currentOpeningHours") if isinstance(raw.get("currentOpeningHours"), dict) else {}
+        try:
+            rating = float(raw.get("rating")) if raw.get("rating") is not None else None
+        except (TypeError, ValueError):
+            rating = None
+        try:
+            rating_count = max(0, int(raw.get("userRatingCount") or 0))
+        except (TypeError, ValueError):
+            rating_count = 0
         places.append({
             "id": f"google:{raw.get('id') or hashlib.sha1((name+str(plat)+str(plon)).encode()).hexdigest()[:16]}",
             "google_place_id": str(raw.get("id") or ""),
@@ -6155,14 +6172,17 @@ def search_nearby_quick_stops_google(latitude, longitude, kind, subkind, radius_
             "distance_m": int(round(distance_m)),
             "walk_minutes": walk_minutes,
             "opening_hours": "",
+            "current_opening_hours": dict(hours),
+            "business_status": business_status,
+            "rating": rating,
+            "user_rating_count": rating_count,
             "address": str(raw.get("formattedAddress") or "").strip(),
             "priority": 0,
             "provider": "Google Places",
             "photo_refs": refs,
         })
     places.sort(key=lambda item: int(item.get("distance_m") or 0))
-    return {"places": places[:24], "error": "", "provider": "Google Places"}
-
+    return {"places": places[:24], "error": "", "provider": "Google Places", "open_now_only": bool(open_now_only)}
 
 def _nearby_google_photo_data_url(photo_ref, max_px=760):
     if not GOOGLE_PLACES_API_KEY or not isinstance(photo_ref, dict):
@@ -6224,6 +6244,122 @@ def _nearby_load_detail_images(place, limit=3):
     with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="burari-nearby-detail") as pool:
         return [item for item in pool.map(fetch, refs) if item.get("src")]
 
+
+
+def _nearby_parse_place_time(value):
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    try:
+        dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=JST)
+        return dt.astimezone(JST)
+    except Exception:
+        return None
+
+
+def _nearby_relative_time_label(value):
+    dt = _nearby_parse_place_time(value)
+    if dt is None:
+        return ""
+    today = now_jst().date()
+    if dt.date() == today:
+        prefix = ""
+    elif dt.date() == today + timedelta(days=1):
+        prefix = "明日 "
+    else:
+        prefix = f"{dt.month}/{dt.day} "
+    return prefix + dt.strftime("%H:%M")
+
+
+def _nearby_open_status(place):
+    place = place if isinstance(place, dict) else {}
+    business_status = str(place.get("business_status") or "").strip()
+    if business_status == "CLOSED_PERMANENTLY":
+        return {"label": "閉業", "css": "closed"}
+    if business_status == "CLOSED_TEMPORARILY":
+        return {"label": "臨時休業", "css": "closed"}
+    hours = place.get("current_opening_hours") or {}
+    if not isinstance(hours, dict):
+        hours = {}
+    open_now = hours.get("openNow")
+    if open_now is True:
+        label = "営業中"
+        close_text = _nearby_relative_time_label(hours.get("nextCloseTime"))
+        if close_text:
+            label += f"・{close_text}まで"
+        return {"label": label, "css": "open"}
+    if open_now is False:
+        label = "営業時間外"
+        open_text = _nearby_relative_time_label(hours.get("nextOpenTime"))
+        if open_text:
+            label += f"・{open_text}から"
+        return {"label": label, "css": "closed"}
+    return {"label": "営業時間情報なし", "css": "unknown"}
+
+
+def _nearby_rating_text(place):
+    place = place if isinstance(place, dict) else {}
+    try:
+        rating = float(place.get("rating"))
+    except (TypeError, ValueError):
+        return ""
+    if not math.isfinite(rating) or rating <= 0:
+        return ""
+    try:
+        count = max(0, int(place.get("user_rating_count") or 0))
+    except (TypeError, ValueError):
+        count = 0
+    return f"★ {rating:.1f}" + (f"（{count:,}件）" if count else "")
+
+
+def _nearby_price_level_text(value):
+    mapping = {
+        "PRICE_LEVEL_FREE": "無料",
+        "PRICE_LEVEL_INEXPENSIVE": "価格帯：お手頃",
+        "PRICE_LEVEL_MODERATE": "価格帯：標準",
+        "PRICE_LEVEL_EXPENSIVE": "価格帯：やや高め",
+        "PRICE_LEVEL_VERY_EXPENSIVE": "価格帯：高め",
+    }
+    return mapping.get(str(value or "").strip(), "")
+
+
+def _nearby_today_hours_text(hours):
+    if not isinstance(hours, dict):
+        return ""
+    descriptions = hours.get("weekdayDescriptions") or []
+    if isinstance(descriptions, list) and len(descriptions) >= 7:
+        try:
+            return str(descriptions[now_jst().weekday()] or "").strip()
+        except Exception:
+            pass
+    return ""
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def _nearby_google_place_details(place_id):
+    place_id = str(place_id or "").strip()
+    if not GOOGLE_PLACES_API_KEY or not place_id:
+        return {}
+    safe_id = quote(place_id, safe="")
+    req = Request(
+        f"https://places.googleapis.com/v1/places/{safe_id}",
+        headers={
+            "Content-Type": "application/json; charset=UTF-8",
+            "X-Goog-Api-Key": GOOGLE_PLACES_API_KEY,
+            "X-Goog-FieldMask": (
+                "id,currentOpeningHours,businessStatus,priceLevel,nationalPhoneNumber,websiteUri"
+            ),
+        },
+        method="GET",
+    )
+    try:
+        with urlopen(req, timeout=6.5) as response:
+            data = json.loads(response.read().decode("utf-8"))
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
 
 def _nearby_shortlist_safe_place(place):
     """Do not persist transient Google photo resource names in shortlist state."""
@@ -16462,6 +16598,13 @@ def page_nearby():
         .nearby-place-title { font-size:1.08rem; font-weight:850; line-height:1.25; }
         .nearby-place-meta { margin-top:.16rem; font-size:.84rem; opacity:.80; line-height:1.35; }
         .nearby-place-sub { margin-top:.15rem; font-size:.74rem; opacity:.64; line-height:1.35; }
+        .nearby-status-row { display:flex; flex-wrap:wrap; gap:6px; margin:.34rem 0 .08rem; align-items:center; }
+        .nearby-pill { display:inline-flex; align-items:center; min-height:1.72rem; padding:.18rem .52rem; border-radius:999px; font-size:.72rem; font-weight:760; line-height:1.15; }
+        .nearby-pill.open { background:rgba(38,166,91,.13); color:#167a43; border:1px solid rgba(38,166,91,.25); }
+        .nearby-pill.closed { background:rgba(221,76,76,.10); color:#b73737; border:1px solid rgba(221,76,76,.22); }
+        .nearby-pill.unknown { background:rgba(120,120,120,.09); color:rgba(55,55,55,.78); border:1px solid rgba(120,120,120,.18); }
+        .nearby-pill.rating { background:rgba(245,181,48,.12); color:#8a6410; border:1px solid rgba(224,166,41,.24); }
+        .nearby-detail-info { margin:.42rem 0 .16rem; padding:.56rem .64rem; border-radius:12px; background:rgba(128,128,128,.055); font-size:.76rem; line-height:1.55; }
         .nearby-photo-wrap { width:100%; aspect-ratio:16/9; overflow:hidden; border-radius:14px; background:rgba(128,128,128,.08); margin:.58rem 0 .52rem; }
         .nearby-photo-wrap img { width:100%; height:100%; object-fit:cover; display:block; }
         .nearby-photo-placeholder { width:100%; aspect-ratio:16/9; border-radius:14px; background:linear-gradient(145deg,rgba(247,210,172,.22),rgba(174,205,238,.18)); display:flex; align-items:center; justify-content:center; font-size:2.25rem; margin:.58rem 0 .52rem; }
@@ -16560,12 +16703,25 @@ def page_nearby():
     radius_label = st.radio("どのくらいまで？", list(radius_options), horizontal=True, key="nearby_radius_label")
     radius_m = radius_options[radius_label]
 
+    if GOOGLE_PLACES_API_KEY:
+        open_now_only = st.toggle(
+            "🟢 営業中だけ表示",
+            value=True,
+            key="nearby_open_now_only",
+            help="Google Placesに営業時間が登録されている場所のうち、現在営業中の候補だけに絞ります。",
+        )
+        st.caption("営業中だけ表示をONにすると、営業時間が未登録の場所は候補から外れることがあります。")
+    else:
+        open_now_only = False
+
     with st.spinner("近くの候補を探しています…"):
-        search_result = search_nearby_quick_stops_google(latitude, longitude, kind, subkind, radius_m) if GOOGLE_PLACES_API_KEY else None
+        search_result = search_nearby_quick_stops_google(latitude, longitude, kind, subkind, radius_m, open_now_only=open_now_only) if GOOGLE_PLACES_API_KEY else None
         if not search_result or search_result.get("error"):
             fallback = search_nearby_quick_stops(latitude, longitude, kind, subkind, radius_m)
             if search_result and search_result.get("error") and not fallback.get("error"):
                 fallback["photo_error"] = str(search_result.get("error") or "")
+                if open_now_only:
+                    fallback["open_filter_unavailable"] = True
             search_result = fallback
     error = str((search_result or {}).get("error") or "")
     if error:
@@ -16578,8 +16734,10 @@ def page_nearby():
 
     places = list((search_result or {}).get("places") or [])[:6]
     provider = str((search_result or {}).get("provider") or "OpenStreetMap")
+    if bool((search_result or {}).get("open_filter_unavailable")):
+        st.warning("Google Placesに接続できなかったため、今回は『営業中だけ』の絞り込みを外して候補を表示しています。")
     st.markdown("### 今ちょっと寄るなら")
-    st.caption("候補を最大6か所。代表写真を見て決めたら、その場でGoogleマップの徒歩経路を開けます。気になる場所は参考写真を3枚まで確認できます。")
+    st.caption("候補を最大6か所。営業状況・評価・代表写真を見て決めたら、その場でGoogleマップの徒歩経路を開けます。")
     if not GOOGLE_PLACES_API_KEY:
         st.info("写真表示を使うには Streamlit Secrets に `GOOGLE_PLACES_API_KEY` を追加してください。検索自体はこのまま利用できます。")
     if not places:
@@ -16597,6 +16755,12 @@ def page_nearby():
         with st.container(border=True):
             st.markdown(f'<div class="nearby-place-title">{index}. {html.escape(str(place.get("name") or "候補"))}</div>', unsafe_allow_html=True)
             st.markdown(f'<div class="nearby-place-meta">{html.escape(str(place.get("category") or ""))}　・　{html.escape(_nearby_distance_text(place))}</div>', unsafe_allow_html=True)
+            status = _nearby_open_status(place)
+            rating_text = _nearby_rating_text(place)
+            status_html = f'<span class="nearby-pill {html.escape(status.get("css") or "unknown")}">{html.escape(str(status.get("label") or "営業時間情報なし"))}</span>'
+            if rating_text:
+                status_html += f'<span class="nearby-pill rating">{html.escape(rating_text)}</span>'
+            st.markdown('<div class="nearby-status-row">' + status_html + '</div>', unsafe_allow_html=True)
             if preview:
                 st.markdown(f'<div class="nearby-photo-wrap"><img src="{html.escape(preview, quote=True)}" alt="{html.escape(str(place.get("name") or "候補"))}の参考写真"></div>', unsafe_allow_html=True)
             else:
@@ -16613,8 +16777,8 @@ def page_nearby():
 
             detail_col, route_col = st.columns([1, 1.45])
             with detail_col:
-                can_show = bool(place.get("photo_refs"))
-                detail_label = "写真を閉じる" if open_detail == pid else "写真を3枚見る"
+                can_show = bool(place.get("photo_refs")) or bool(place.get("google_place_id"))
+                detail_label = "詳細を閉じる" if open_detail == pid else "写真・詳細を見る"
                 if st.button(detail_label, use_container_width=True, disabled=not can_show, key=f"nearby_detail_{place_key}"):
                     st.session_state[detail_key] = "" if open_detail == pid else pid
                     st.rerun()
@@ -16625,22 +16789,44 @@ def page_nearby():
                 else:
                     st.button("🗺️ この場所に案内してもらう", use_container_width=True, disabled=True, key=f"nearby_route_disabled_{place_key}")
 
-            if open_detail == pid and place.get("photo_refs"):
-                with st.spinner("参考写真を読み込んでいます…"):
-                    detail_images = _nearby_load_detail_images(place, limit=3)
-                if detail_images:
-                    cards = []
-                    for item in detail_images:
-                        attr = str(item.get("attribution") or "").strip()
-                        attr_html = f'<div class="nearby-attribution">写真: {html.escape(attr)}</div>' if attr else '<div class="nearby-attribution">Google Places</div>'
-                        cards.append(f'<div class="nearby-detail-photo"><img src="{html.escape(item["src"], quote=True)}" alt="参考写真">{attr_html}</div>')
-                    st.markdown('<div class="nearby-detail-grid">' + ''.join(cards) + '</div>', unsafe_allow_html=True)
-                    st.caption("店舗・施設に登録された参考写真です。おやつ店では商品写真を含むことがありますが、外観・内観が混ざる場合があります。")
-                else:
-                    st.caption("この場所では追加の参考写真を取得できませんでした。")
+            if open_detail == pid:
+                detail_data = {}
+                if provider == "Google Places" and place.get("google_place_id"):
+                    with st.spinner("営業時間と詳細を確認しています…"):
+                        detail_data = _nearby_google_place_details(place.get("google_place_id"))
+                detail_hours = detail_data.get("currentOpeningHours") if isinstance(detail_data.get("currentOpeningHours"), dict) else place.get("current_opening_hours") or {}
+                today_hours = _nearby_today_hours_text(detail_hours)
+                detail_parts = []
+                if today_hours:
+                    detail_parts.append("今日の営業時間：" + today_hours)
+                price_text = _nearby_price_level_text(detail_data.get("priceLevel"))
+                if price_text:
+                    detail_parts.append(price_text)
+                phone = str(detail_data.get("nationalPhoneNumber") or "").strip()
+                if phone:
+                    detail_parts.append("電話：" + phone)
+                if detail_parts:
+                    st.markdown('<div class="nearby-detail-info">' + '<br>'.join(html.escape(x) for x in detail_parts) + '</div>', unsafe_allow_html=True)
+                website = str(detail_data.get("websiteUri") or "").strip()
+                if website:
+                    st.link_button("🌐 公式サイトを見る", website, use_container_width=True)
+
+                if place.get("photo_refs"):
+                    with st.spinner("参考写真を読み込んでいます…"):
+                        detail_images = _nearby_load_detail_images(place, limit=3)
+                    if detail_images:
+                        cards = []
+                        for item in detail_images:
+                            attr = str(item.get("attribution") or "").strip()
+                            attr_html = f'<div class="nearby-attribution">写真: {html.escape(attr)}</div>' if attr else '<div class="nearby-attribution">Google Places</div>'
+                            cards.append(f'<div class="nearby-detail-photo"><img src="{html.escape(item["src"], quote=True)}" alt="参考写真">{attr_html}</div>')
+                        st.markdown('<div class="nearby-detail-grid">' + ''.join(cards) + '</div>', unsafe_allow_html=True)
+                        st.caption("店舗・施設に登録された参考写真です。おやつ店では商品写真を含むことがありますが、外観・内観が混ざる場合があります。")
+                    else:
+                        st.caption("この場所では追加の参考写真を取得できませんでした。")
 
     if provider == "Google Places":
-        st.markdown('<div class="nearby-source-note">候補・参考写真：Google Places。写真は必要なときだけ読み込みます。</div>', unsafe_allow_html=True)
+        st.markdown('<div class="nearby-source-note">候補・写真・営業情報・評価：Google Places。電話・公式サイトなどの詳細は開いた場所だけ取得します。</div>', unsafe_allow_html=True)
     else:
         st.markdown('<div class="nearby-source-note">周辺候補：OpenStreetMap。写真APIが未設定または利用できない場合は文字情報で表示します。</div>', unsafe_allow_html=True)
 
