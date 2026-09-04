@@ -29,9 +29,9 @@ from zoneinfo import ZoneInfo
 import streamlit as st
 
 # Freshly generated update: 2026-08-31 23:49 JST
-GENERATED_UPDATE_JST = "2026-09-05T00:33:14+09:00"
+GENERATED_UPDATE_JST = "2026-09-05T00:43:05+09:00"
 
-APP_BUILD = "v195"
+APP_BUILD = "v196"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -483,6 +483,28 @@ st.markdown(
         opacity: 1;
         background: rgba(74, 144, 226, .055) !important;
         border-color: rgba(74, 144, 226, .28) !important;
+      }
+      .st-key-home_location_tools [data-testid="stHorizontalBlock"] {
+        display: flex !important;
+        flex-direction: row !important;
+        flex-wrap: nowrap !important;
+        align-items: stretch !important;
+        gap: .42rem !important;
+      }
+      .st-key-home_location_tools [data-testid="stHorizontalBlock"] > [data-testid="stColumn"] {
+        width: 0 !important;
+        min-width: 0 !important;
+      }
+      .st-key-home_location_tools [data-testid="stHorizontalBlock"] > [data-testid="stColumn"]:first-child {
+        flex: 2.35 1 0 !important;
+      }
+      .st-key-home_location_tools [data-testid="stHorizontalBlock"] > [data-testid="stColumn"]:last-child {
+        flex: .82 1 0 !important;
+      }
+      .st-key-home_location_tools .st-key-home_toilets_quick div.stButton > button {
+        white-space: nowrap !important;
+        padding-left: .28rem !important;
+        padding-right: .28rem !important;
       }
       .home-footer-note {
         margin-top: .72rem;
@@ -5816,7 +5838,7 @@ export default function(component) {
           accuracy_m: Number(position.coords.accuracy || 0),
           measured_at: new Date().toISOString()
         };
-        setStatus('現在地を取得しました。近くの候補を探します。');
+        setStatus('現在地を取得しました。条件を選んで検索できます。');
         setTriggerValue('location', payload);
         finish();
       },
@@ -6593,6 +6615,332 @@ def _nearby_distance_text(place):
     else:
         distance_text = f"{distance}m"
     return f"徒歩約{minutes}分（{distance_text}・目安）"
+
+
+# ============================================================
+# Nearby toilet search (OpenStreetMap / Overpass)
+# ============================================================
+_TOILET_DAY_CODES = ("Mo", "Tu", "We", "Th", "Fr", "Sa", "Su")
+
+
+def _toilet_expand_days(day_expr):
+    """Expand a small, common subset of OSM opening_hours weekday syntax."""
+    expr = str(day_expr or "").strip()
+    result = set()
+    if not expr:
+        return result
+    for token in [part.strip() for part in expr.split(",") if part.strip()]:
+        if "-" in token:
+            start, end = [part.strip() for part in token.split("-", 1)]
+            if start in _TOILET_DAY_CODES and end in _TOILET_DAY_CODES:
+                i = _TOILET_DAY_CODES.index(start)
+                j = _TOILET_DAY_CODES.index(end)
+                if i <= j:
+                    result.update(_TOILET_DAY_CODES[i:j + 1])
+                else:
+                    result.update(_TOILET_DAY_CODES[i:])
+                    result.update(_TOILET_DAY_CODES[:j + 1])
+        elif token in _TOILET_DAY_CODES:
+            result.add(token)
+    return result
+
+
+def _toilet_minutes(value):
+    match = re.fullmatch(r"(\d{1,2}):(\d{2})", str(value or "").strip())
+    if not match:
+        return None
+    hour = int(match.group(1))
+    minute = int(match.group(2))
+    if hour > 24 or minute > 59 or (hour == 24 and minute != 0):
+        return None
+    return hour * 60 + minute
+
+
+def _toilet_time_ranges_open(time_expr, minute_of_day):
+    parsed_any = False
+    for piece in [part.strip() for part in str(time_expr or "").split(",") if part.strip()]:
+        match = re.fullmatch(r"(\d{1,2}:\d{2})-(\d{1,2}:\d{2})", piece)
+        if not match:
+            continue
+        start = _toilet_minutes(match.group(1))
+        end = _toilet_minutes(match.group(2))
+        if start is None or end is None:
+            continue
+        parsed_any = True
+        if start == end:
+            return True, True
+        if end > start and start <= minute_of_day < end:
+            return True, True
+        if end < start and (minute_of_day >= start or minute_of_day < end):
+            return True, True
+    return parsed_any, False
+
+
+def _toilet_opening_status(opening_hours):
+    """Return a conservative current-use status for common Japanese OSM hours."""
+    raw = str(opening_hours or "").strip()
+    if not raw:
+        return {"known": False, "open_now": None, "label": "利用時間情報なし", "raw": ""}
+    normalized = raw.replace("；", ";").strip()
+    if normalized.lower() in {"24/7", "24x7"} or "24/7" in normalized:
+        return {"known": True, "open_now": True, "label": "🟢 24時間", "raw": raw}
+
+    now = now_jst()
+    today = _TOILET_DAY_CODES[now.weekday()]
+    minute_of_day = now.hour * 60 + now.minute
+    saw_explicit_day = False
+    today_rule_seen = False
+    today_parse_seen = False
+
+    for segment in [part.strip() for part in normalized.split(";") if part.strip()]:
+        if re.fullmatch(r"off|closed", segment, flags=re.I):
+            return {"known": True, "open_now": False, "label": "🔴 利用時間外", "raw": raw}
+
+        day_match = re.match(
+            r"^((?:Mo|Tu|We|Th|Fr|Sa|Su)(?:(?:-|,)(?:Mo|Tu|We|Th|Fr|Sa|Su))*)\s+(.+)$",
+            segment,
+        )
+        if day_match:
+            saw_explicit_day = True
+            days = _toilet_expand_days(day_match.group(1))
+            if today not in days:
+                continue
+            today_rule_seen = True
+            time_expr = day_match.group(2).strip()
+            if re.fullmatch(r"off|closed", time_expr, flags=re.I):
+                return {"known": True, "open_now": False, "label": "🔴 利用時間外", "raw": raw}
+            parsed, is_open = _toilet_time_ranges_open(time_expr, minute_of_day)
+            if parsed:
+                today_parse_seen = True
+                if is_open:
+                    return {"known": True, "open_now": True, "label": "🟢 利用可能", "raw": raw}
+            continue
+
+        parsed, is_open = _toilet_time_ranges_open(segment, minute_of_day)
+        if parsed:
+            if is_open:
+                return {"known": True, "open_now": True, "label": "🟢 利用可能", "raw": raw}
+            return {"known": True, "open_now": False, "label": "🔴 利用時間外", "raw": raw}
+
+    if saw_explicit_day and not today_rule_seen:
+        return {"known": True, "open_now": False, "label": "🔴 本日は時間外", "raw": raw}
+    if today_rule_seen and today_parse_seen:
+        return {"known": True, "open_now": False, "label": "🔴 利用時間外", "raw": raw}
+    return {"known": False, "open_now": None, "label": "利用時間情報なし", "raw": raw}
+
+
+def _toilet_access_info(tags, standalone=True):
+    tags = tags if isinstance(tags, dict) else {}
+    raw = str(
+        (tags.get("access") if standalone else tags.get("toilets:access"))
+        or tags.get("toilets:access")
+        or tags.get("access")
+        or ""
+    ).strip().lower()
+    if raw in {"private", "no"}:
+        return {"allowed": False, "label": "利用不可"}
+    if raw in {"customers", "customer"}:
+        return {"allowed": True, "label": "施設利用者向け"}
+    if raw in {"permissive", "public", "yes"}:
+        return {"allowed": True, "label": "一般利用可"}
+    return {"allowed": True, "label": ""}
+
+
+def _toilet_fee_info(tags, standalone=True):
+    tags = tags if isinstance(tags, dict) else {}
+    raw = str(
+        (tags.get("fee") if standalone else tags.get("toilets:fee"))
+        or tags.get("toilets:fee")
+        or tags.get("fee")
+        or ""
+    ).strip().lower()
+    if raw in {"no", "free", "0"}:
+        return {"status": "free", "label": "🆓 無料"}
+    if raw in {"yes", "pay", "paid"}:
+        return {"status": "paid", "label": "💴 有料"}
+    return {"status": "unknown", "label": "料金情報なし"}
+
+
+def _toilet_wheelchair_info(tags, standalone=True):
+    tags = tags if isinstance(tags, dict) else {}
+    raw = str(
+        (tags.get("wheelchair") if standalone else tags.get("toilets:wheelchair"))
+        or tags.get("toilets:wheelchair")
+        or ""
+    ).strip().lower()
+    if raw in {"yes", "designated"}:
+        return {"ok": True, "label": "♿ 車いす対応"}
+    if raw == "limited":
+        return {"ok": True, "label": "♿ 一部対応"}
+    if raw == "no":
+        return {"ok": False, "label": "♿ 非対応"}
+    return {"ok": None, "label": ""}
+
+
+def _toilet_baby_info(tags):
+    tags = tags if isinstance(tags, dict) else {}
+    raw = str(tags.get("changing_table") or tags.get("toilets:changing_table") or "").strip().lower()
+    if raw in {"yes", "limited"}:
+        return {"ok": True, "label": "👶 おむつ交換台あり"}
+    if raw == "no":
+        return {"ok": False, "label": "👶 交換台なし"}
+    return {"ok": None, "label": ""}
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def search_nearby_toilets(
+    latitude,
+    longitude,
+    radius_m,
+    free_preferred=True,
+    wheelchair_only=False,
+    baby_only=False,
+    usable_now_preferred=True,
+):
+    """Search standalone public toilets and facilities tagged as having toilets."""
+    try:
+        latitude = round(float(latitude), 5)
+        longitude = round(float(longitude), 5)
+        radius_m = max(200, min(2500, int(radius_m)))
+    except (TypeError, ValueError):
+        return {"places": [], "error": "現在地を確認できませんでした。", "provider": "OpenStreetMap"}
+
+    around = f"(around:{radius_m},{latitude:.6f},{longitude:.6f})"
+    query = (
+        "[out:json][timeout:9];("
+        f'nwr{around}["amenity"="toilets"];'
+        f'nwr{around}["toilets"="yes"]["railway"~"^(station|halt)$"];'
+        f'nwr{around}["toilets"="yes"]["public_transport"~"^(station|platform)$"];'
+        f'nwr{around}["toilets"="yes"]["amenity"~"^(community_centre|library|townhall|fuel|marketplace)$"];'
+        f'nwr{around}["toilets"="yes"]["tourism"~"^(museum|gallery|attraction|zoo|aquarium)$"];'
+        f'nwr{around}["toilets"="yes"]["shop"~"^(mall|department_store|supermarket|convenience)$"];'
+        f'nwr{around}["toilets"="yes"]["leisure"~"^(park|garden|sports_centre)$"];'
+        ");out center tags;"
+    )
+    payload = urlencode({"data": query}).encode("utf-8")
+    endpoints = (
+        "https://overpass-api.de/api/interpreter",
+        "https://overpass.kumi.systems/api/interpreter",
+    )
+    data = None
+    last_error = ""
+    for endpoint in endpoints:
+        req = Request(
+            endpoint,
+            data=payload,
+            headers={
+                "User-Agent": "TokyoBurariApp/1.0 (family-use toilet search)",
+                "Accept": "application/json",
+                "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+            },
+        )
+        try:
+            with urlopen(req, timeout=7.5) as response:
+                data = json.loads(response.read().decode("utf-8"))
+            if isinstance(data, dict):
+                break
+        except Exception as exc:
+            last_error = str(exc)
+            data = None
+
+    if not isinstance(data, dict):
+        return {
+            "places": [],
+            "error": "トイレ検索サービスにつながりませんでした。少し時間をおいてもう一度お試しください。",
+            "detail": last_error[:240],
+            "provider": "OpenStreetMap",
+        }
+
+    places = []
+    seen = set()
+    for element in data.get("elements") or []:
+        if not isinstance(element, dict):
+            continue
+        tags = element.get("tags") or {}
+        if not isinstance(tags, dict):
+            tags = {}
+        standalone = str(tags.get("amenity") or "") == "toilets"
+        access = _toilet_access_info(tags, standalone=standalone)
+        if not access.get("allowed"):
+            continue
+
+        center = element.get("center") if isinstance(element.get("center"), dict) else {}
+        plat = element.get("lat", center.get("lat"))
+        plon = element.get("lon", center.get("lon"))
+        try:
+            plat = float(plat)
+            plon = float(plon)
+        except (TypeError, ValueError):
+            continue
+        distance_m = _nearby_haversine_m(latitude, longitude, plat, plon)
+        if not math.isfinite(distance_m) or distance_m > radius_m * 1.12:
+            continue
+        object_key = (str(element.get("type") or "x"), str(element.get("id") or ""))
+        if object_key in seen:
+            continue
+        seen.add(object_key)
+
+        fee = _toilet_fee_info(tags, standalone=standalone)
+        wheelchair = _toilet_wheelchair_info(tags, standalone=standalone)
+        baby = _toilet_baby_info(tags)
+        opening_hours = str(tags.get("toilets:opening_hours") or tags.get("opening_hours") or "").strip()
+        opening = _toilet_opening_status(opening_hours)
+
+        # OSM fee/hour coverage is incomplete. "Preferred" filters exclude only an
+        # explicit bad match so useful nearby toilets with missing metadata remain visible.
+        if free_preferred and fee.get("status") == "paid":
+            continue
+        if wheelchair_only and wheelchair.get("ok") is not True:
+            continue
+        if baby_only and baby.get("ok") is not True:
+            continue
+        if usable_now_preferred and opening.get("known") and opening.get("open_now") is False:
+            continue
+
+        base_name = str(tags.get("name:ja") or tags.get("name") or tags.get("operator") or "").strip()
+        if standalone:
+            name = base_name or "公衆トイレ"
+            category = "公衆トイレ"
+        else:
+            name = f"{base_name} のトイレ" if base_name else "施設内トイレ"
+            category = "施設内トイレ"
+
+        addr_parts = []
+        for key in ("addr:suburb", "addr:quarter", "addr:city", "addr:street"):
+            value = str(tags.get(key) or "").strip()
+            if value and value not in addr_parts:
+                addr_parts.append(value)
+
+        walk_minutes = max(1, int(math.ceil((distance_m * 1.25) / 80.0)))
+        customer_penalty = 180 if access.get("label") == "施設利用者向け" else 0
+        places.append(
+            {
+                "id": f"osm:{object_key[0]}:{object_key[1]}",
+                "name": name,
+                "category": category,
+                "latitude": plat,
+                "longitude": plon,
+                "distance_m": int(round(distance_m)),
+                "walk_minutes": walk_minutes,
+                "fee_status": fee.get("status"),
+                "fee_label": fee.get("label"),
+                "wheelchair_ok": wheelchair.get("ok"),
+                "wheelchair_label": wheelchair.get("label"),
+                "baby_ok": baby.get("ok"),
+                "baby_label": baby.get("label"),
+                "access_label": access.get("label"),
+                "opening_hours": opening_hours,
+                "opening_known": opening.get("known"),
+                "open_now": opening.get("open_now"),
+                "opening_label": opening.get("label"),
+                "address": " ".join(addr_parts[:3]),
+                "sort_score": int(round(distance_m)) + customer_penalty,
+                "provider": "OpenStreetMap",
+            }
+        )
+
+    places.sort(key=lambda item: (int(item.get("sort_score") or 0), int(item.get("distance_m") or 0)))
+    return {"places": places[:30], "error": "", "provider": "OpenStreetMap"}
 
 def get_photo_location(photo):
     reflection = (photo or {}).get("reflection_json") or {}
@@ -14431,7 +14779,7 @@ def init_state():
 
 
 
-VALID_APP_PAGES = {"home", "camera", "videos", "moments", "diary", "review", "nearby", "settings"}
+VALID_APP_PAGES = {"home", "camera", "videos", "moments", "diary", "review", "nearby", "toilets", "settings"}
 
 
 def _current_ui_refresh_epoch():
@@ -14637,6 +14985,7 @@ def navigation_parent_node(node=None):
         "diary": "home",
         "review": "home",
         "nearby": "home",
+        "toilets": "home",
         "settings": "home",
     }
     return parents.get(str(node), "")
@@ -14720,7 +15069,7 @@ def sync_browser_history():
 
     action = st.session_state.pop("_history_action", "sync")
     navigation_node, _ = current_navigation_context()
-    # First-level pages (Camera / Videos / Moments / Diary / Review / Nearby / Settings)
+    # First-level pages (Camera / Videos / Moments / Diary / Review / Nearby / Toilets / Settings)
     # already have a real Home entry immediately behind them because go_page()
     # pushes history. Let the phone/browser Back control pop that entry normally.
     # Only deeper in-page hierarchy states need interception so Back means exactly
@@ -16592,13 +16941,21 @@ def page_home():
             render_home_video_count_status()
 
         # Manual fallback for cases where the phone/browser cannot provide GPS.
+        # v196: keep the emergency toilet shortcut beside the place control so Home stays compact.
         with st.container(key="home_destination"):
             place_button_label = f"📍 地名：{active_place}" if active_place else "📍 地名：自動取得（必要なら手入力）"
-            if st.button(place_button_label, key="home_destination_toggle", use_container_width=True):
-                st.session_state.show_home_destination_editor = not bool(
-                    st.session_state.get("show_home_destination_editor")
-                )
-                st.rerun()
+            with st.container(key="home_location_tools"):
+                place_col, toilet_col = st.columns([2.35, .82], gap="small")
+                with place_col:
+                    if st.button(place_button_label, key="home_destination_toggle", use_container_width=True):
+                        st.session_state.show_home_destination_editor = not bool(
+                            st.session_state.get("show_home_destination_editor")
+                        )
+                        st.rerun()
+                with toilet_col:
+                    with st.container(key="home_toilets_quick"):
+                        if st.button("🚻 トイレ", key="home_toilets_button", use_container_width=True):
+                            go_page("toilets")
 
             if st.session_state.get("show_home_destination_editor"):
                 trip = ensure_today_trip()
@@ -16655,6 +17012,361 @@ def page_home():
         )
         render_home_storage_usage_status()
 
+
+
+
+def page_toilets():
+    page_top(
+        "🚻 近くのトイレ",
+        "現在地の近くから、使いやすいトイレを素早く探します。最後に検索ボタンを押したときだけ周辺検索を行います。",
+    )
+    st.markdown(
+        """
+        <style>
+        .toilet-location-card {
+          margin:.10rem 0 .62rem; padding:.60rem .70rem; border-radius:14px;
+          border:1px solid rgba(74,144,226,.14); background:rgba(74,144,226,.045);
+        }
+        .toilet-location-main { font-size:.87rem; font-weight:800; line-height:1.3; }
+        .toilet-location-sub { margin-top:.14rem; font-size:.68rem; opacity:.62; line-height:1.3; }
+        .toilet-step-title { display:flex; align-items:center; gap:.36rem; margin:0 0 .36rem; font-size:.78rem; font-weight:850; line-height:1.2; }
+        .toilet-step-badge {
+          display:inline-flex; align-items:center; justify-content:center; flex:0 0 auto;
+          width:1.40rem; height:1.40rem; border-radius:999px;
+          background:rgba(74,144,226,.11); border:1px solid rgba(74,144,226,.17);
+          color:#2d6fad; font-size:.66rem; font-weight:900;
+        }
+        .toilet-step-note { margin:.30rem 0 0; font-size:.62rem; opacity:.58; line-height:1.35; }
+        .toilet-summary { margin:.46rem 0 .10rem; padding:.48rem .62rem; border-radius:12px; background:rgba(128,128,128,.055); font-size:.71rem; line-height:1.45; }
+        .toilet-search-ready { margin:.72rem 0 .20rem; padding:.74rem .80rem; border-radius:14px; border:1px dashed rgba(74,144,226,.24); background:rgba(74,144,226,.035); text-align:center; font-size:.77rem; line-height:1.45; opacity:.80; }
+        .toilet-card-title { font-size:1.03rem; font-weight:850; line-height:1.28; }
+        .toilet-card-meta { margin-top:.14rem; font-size:.80rem; opacity:.78; line-height:1.35; }
+        .toilet-card-sub { margin-top:.20rem; font-size:.70rem; opacity:.62; line-height:1.42; }
+        .toilet-pills { display:flex; flex-wrap:wrap; gap:5px; margin:.34rem 0 .18rem; }
+        .toilet-pill { display:inline-flex; align-items:center; min-height:1.62rem; padding:.16rem .46rem; border-radius:999px; font-size:.68rem; font-weight:760; line-height:1.15; background:rgba(128,128,128,.07); border:1px solid rgba(128,128,128,.14); }
+        .toilet-pill.good { background:rgba(38,166,91,.11); color:#167a43; border-color:rgba(38,166,91,.22); }
+        .toilet-pill.warn { background:rgba(235,164,52,.11); color:#8a6410; border-color:rgba(224,166,41,.22); }
+        .toilet-pill.bad { background:rgba(221,76,76,.09); color:#b73737; border-color:rgba(221,76,76,.18); }
+        .st-key-toilet_filter_panel > [data-testid="stVerticalBlock"] { gap:.46rem; }
+        .st-key-toilet_filter_row_1 [data-testid="stHorizontalBlock"],
+        .st-key-toilet_filter_row_2 [data-testid="stHorizontalBlock"],
+        .st-key-toilet_step_5 [data-testid="stHorizontalBlock"] {
+          display:flex !important; flex-direction:row !important; flex-wrap:nowrap !important; align-items:stretch !important; gap:.42rem !important;
+        }
+        .st-key-toilet_filter_row_1 [data-testid="stHorizontalBlock"] > [data-testid="stColumn"],
+        .st-key-toilet_filter_row_2 [data-testid="stHorizontalBlock"] > [data-testid="stColumn"],
+        .st-key-toilet_step_5 [data-testid="stHorizontalBlock"] > [data-testid="stColumn"] {
+          flex:1 1 0 !important; width:0 !important; min-width:0 !important;
+        }
+        .st-key-toilet_step_1, .st-key-toilet_step_2, .st-key-toilet_step_3, .st-key-toilet_step_4, .st-key-toilet_step_5 { height:100%; }
+        .st-key-toilet_step_1 div.stButton > button,
+        .st-key-toilet_step_2 div.stButton > button,
+        .st-key-toilet_step_3 div.stButton > button,
+        .st-key-toilet_step_4 div.stButton > button,
+        .st-key-toilet_step_5 div.stButton > button {
+          min-height:2.34rem; border-radius:11px; font-size:.70rem; font-weight:760; padding:.24rem .26rem; white-space:normal !important; line-height:1.15 !important;
+        }
+        .st-key-toilet_step_1 [data-testid="stVerticalBlock"], .st-key-toilet_step_2 [data-testid="stVerticalBlock"],
+        .st-key-toilet_step_3 [data-testid="stVerticalBlock"], .st-key-toilet_step_4 [data-testid="stVerticalBlock"],
+        .st-key-toilet_step_5 [data-testid="stVerticalBlock"] { gap:.28rem; }
+        .st-key-toilet_search_action div.stButton > button {
+          min-height:3.30rem !important; border-radius:16px !important; font-size:.98rem !important; font-weight:850 !important;
+        }
+        @media (max-width:640px) {
+          .toilet-step-title { font-size:.73rem; }
+          .toilet-step-badge { width:1.30rem; height:1.30rem; font-size:.61rem; }
+          .toilet-step-note { font-size:.59rem; }
+          .st-key-toilet_step_1 div.stButton > button, .st-key-toilet_step_2 div.stButton > button,
+          .st-key-toilet_step_3 div.stButton > button, .st-key-toilet_step_4 div.stButton > button,
+          .st-key-toilet_step_5 div.stButton > button { min-height:2.22rem; font-size:.65rem; padding:.22rem .18rem; }
+          .toilet-card-title { font-size:.98rem; }
+          .toilet-card-meta { font-size:.76rem; }
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    # Match the active Home route palette, just like Nearby search.
+    toilet_theme = _home_theme_for_session()
+    toilet_accent = str(toilet_theme.get("accent") or "#7EBD52")
+    toilet_rgb1 = str(toilet_theme.get("accent_rgb") or "126,189,82")
+    toilet_rgb2 = str(toilet_theme.get("accent2_rgb") or "189,235,145")
+    st.markdown(
+        """
+        <style>
+        .st-key-toilet_search_action div.stButton > button {
+          color:rgba(31,38,48,.96) !important;
+          background:linear-gradient(155deg,rgba(%s,.62),rgba(%s,.23)) !important;
+          border:1.8px solid %s !important;
+          box-shadow:0 8px 20px rgba(%s,.17),0 0 0 2px rgba(255,255,255,.36) inset !important;
+        }
+        .st-key-toilet_search_action div.stButton > button:hover {
+          background:linear-gradient(155deg,rgba(%s,.72),rgba(%s,.30)) !important;
+          border-color:%s !important;
+          box-shadow:0 10px 23px rgba(%s,.21),0 0 0 2px rgba(255,255,255,.42) inset !important;
+        }
+        </style>
+        """ % (toilet_rgb2, toilet_rgb1, toilet_accent, toilet_rgb1, toilet_rgb2, toilet_rgb1, toilet_accent, toilet_rgb1),
+        unsafe_allow_html=True,
+    )
+
+    # Reuse the already-tested browser geolocation component and location state.
+    location_component = _get_nearby_location_component()
+    if location_component is not None:
+        result = location_component(
+            data={},
+            key=f"toilet_location_v196_{current_family_key()}_{current_member_key()}",
+            on_location_change=lambda: None,
+            on_location_error_change=lambda: None,
+        )
+        location_payload = getattr(result, "location", None)
+        if isinstance(location_payload, dict):
+            token = str(location_payload.get("token") or "")
+            if token and token != str(st.session_state.get("_toilet_location_token") or ""):
+                try:
+                    lat = float(location_payload.get("latitude"))
+                    lon = float(location_payload.get("longitude"))
+                    accuracy = float(location_payload.get("accuracy_m") or 0) or None
+                except (TypeError, ValueError):
+                    lat = lon = None
+                    accuracy = None
+                if lat is not None and lon is not None:
+                    label = reverse_geocode_rough(lat, lon)
+                    st.session_state["_nearby_location"] = {
+                        "source": "gps",
+                        "latitude": lat,
+                        "longitude": lon,
+                        "accuracy_m": accuracy,
+                        "measured_at": str(location_payload.get("measured_at") or now_jst().isoformat()),
+                        "place_label": label,
+                    }
+                    st.session_state["_toilet_location_token"] = token
+        error_payload = getattr(result, "location_error", None)
+        if isinstance(error_payload, dict):
+            error_token = str(error_payload.get("token") or "")
+            if error_token and error_token != str(st.session_state.get("_toilet_location_error_token") or ""):
+                st.session_state["_toilet_location_error_token"] = error_token
+                st.session_state["_toilet_location_warning"] = str(error_payload.get("message") or "現在地を取得できませんでした。")
+    else:
+        st.info("この環境では現在地ボタンを表示できません。下の地名入力から探せます。")
+
+    warning = st.session_state.pop("_toilet_location_warning", None)
+    if warning:
+        st.warning(warning)
+
+    with st.expander("現在地が取れないときは地名から探す"):
+        manual_place = st.text_input(
+            "駅名・地名",
+            placeholder="例：上野駅、浅草、品川駅",
+            key="toilet_manual_place_text_v196",
+        )
+        if st.button("この地名を検索の中心にする", use_container_width=True, key="toilet_manual_place_button_v196"):
+            with st.spinner("場所を確認しています…"):
+                resolved = geocode_nearby_place_text(manual_place)
+            if resolved:
+                st.session_state["_nearby_location"] = resolved
+                st.session_state["_toilet_location_token"] = f"manual_{time.time_ns()}"
+                st.rerun()
+            else:
+                st.error("地名を確認できませんでした。駅名や区名を少し具体的に入力してください。")
+
+    location = st.session_state.get("_nearby_location")
+    if not isinstance(location, dict) or location.get("latitude") is None or location.get("longitude") is None:
+        st.info("まず「現在地から探す」を押してください。位置情報を使えない場合は地名から探せます。")
+        return
+
+    latitude = float(location["latitude"])
+    longitude = float(location["longitude"])
+    place_label = str(location.get("place_label") or reverse_geocode_rough(latitude, longitude) or "現在地付近")
+    accuracy = location.get("accuracy_m")
+    accuracy_text = f"GPS精度 ±{int(round(accuracy))}m" if isinstance(accuracy, (int, float)) and accuracy > 0 else ""
+    st.markdown(
+        '<div class="toilet-location-card">'
+        f'<div class="toilet-location-main">📍 {html.escape(place_label or "現在地付近")}</div>'
+        + (f'<div class="toilet-location-sub">{html.escape(accuracy_text)}</div>' if accuracy_text else "")
+        + '</div>',
+        unsafe_allow_html=True,
+    )
+
+    prefix = f"{current_family_key()}_{current_member_key()}"
+    distance_key = f"_toilet_distance_v196_{prefix}"
+    fee_key = f"_toilet_fee_v196_{prefix}"
+    wheelchair_key = f"_toilet_wheelchair_v196_{prefix}"
+    baby_key = f"_toilet_baby_v196_{prefix}"
+    open_key = f"_toilet_open_v196_{prefix}"
+    result_key = f"_toilet_search_result_v196_{prefix}"
+
+    if st.session_state.get(distance_key) not in {"5", "10", "15"}:
+        st.session_state[distance_key] = "10"
+    if st.session_state.get(fee_key) not in {"free", "all"}:
+        st.session_state[fee_key] = "free"
+    if st.session_state.get(wheelchair_key) not in {"yes", "all"}:
+        st.session_state[wheelchair_key] = "all"
+    if st.session_state.get(baby_key) not in {"yes", "all"}:
+        st.session_state[baby_key] = "all"
+    if st.session_state.get(open_key) not in {"usable", "all"}:
+        st.session_state[open_key] = "usable"
+
+    def _step_title(number, title):
+        st.markdown(
+            f'<div class="toilet-step-title"><span class="toilet-step-badge">{int(number)}</span><span>{html.escape(str(title))}</span></div>',
+            unsafe_allow_html=True,
+        )
+
+    def _choice_button(label, value, state_key, button_key, selected):
+        if st.button(label, type="primary" if selected == value else "secondary", use_container_width=True, key=button_key):
+            st.session_state[state_key] = value
+            st.rerun()
+
+    distance_mode = str(st.session_state.get(distance_key) or "10")
+    fee_mode = str(st.session_state.get(fee_key) or "free")
+    wheelchair_mode = str(st.session_state.get(wheelchair_key) or "all")
+    baby_mode = str(st.session_state.get(baby_key) or "all")
+    open_mode = str(st.session_state.get(open_key) or "usable")
+
+    with st.container(key="toilet_filter_panel"):
+        with st.container(key="toilet_filter_row_1"):
+            left, right = st.columns(2, gap="small")
+            with left:
+                with st.container(border=True, key="toilet_step_1"):
+                    _step_title(1, "距離")
+                    for label, value in (("🚶 5分", "5"), ("🚶 10分", "10"), ("🚶 15分", "15")):
+                        _choice_button(label, value, distance_key, f"toilet_distance_{value}_v196", distance_mode)
+            with right:
+                with st.container(border=True, key="toilet_step_2"):
+                    _step_title(2, "料金")
+                    _choice_button("🆓 無料優先", "free", fee_key, "toilet_fee_free_v196", fee_mode)
+                    _choice_button("料金問わない", "all", fee_key, "toilet_fee_all_v196", fee_mode)
+                    st.markdown('<div class="toilet-step-note">無料優先は、明確に有料と登録された場所を除きます。</div>', unsafe_allow_html=True)
+
+        with st.container(key="toilet_filter_row_2"):
+            left, right = st.columns(2, gap="small")
+            with left:
+                with st.container(border=True, key="toilet_step_3"):
+                    _step_title(3, "車いす")
+                    _choice_button("♿ 対応だけ", "yes", wheelchair_key, "toilet_wheelchair_yes_v196", wheelchair_mode)
+                    _choice_button("問わない", "all", wheelchair_key, "toilet_wheelchair_all_v196", wheelchair_mode)
+            with right:
+                with st.container(border=True, key="toilet_step_4"):
+                    _step_title(4, "おむつ交換")
+                    _choice_button("👶 交換台あり", "yes", baby_key, "toilet_baby_yes_v196", baby_mode)
+                    _choice_button("問わない", "all", baby_key, "toilet_baby_all_v196", baby_mode)
+
+        with st.container(border=True, key="toilet_step_5"):
+            _step_title(5, "利用時間")
+            time_left, time_right = st.columns(2, gap="small")
+            with time_left:
+                _choice_button("🟢 今使える優先", "usable", open_key, "toilet_open_usable_v196", open_mode)
+            with time_right:
+                _choice_button("時間問わない", "all", open_key, "toilet_open_all_v196", open_mode)
+            st.markdown('<div class="toilet-step-note">営業時間が登録されていないトイレは、候補を失わないため残します。</div>', unsafe_allow_html=True)
+
+        radius_map = {"5": 400, "10": 800, "15": 1200}
+        radius_m = int(radius_map.get(distance_mode, 800))
+        free_preferred = fee_mode == "free"
+        wheelchair_only = wheelchair_mode == "yes"
+        baby_only = baby_mode == "yes"
+        usable_now_preferred = open_mode == "usable"
+        summary_parts = [
+            f"徒歩{distance_mode}分くらい",
+            "無料優先" if free_preferred else "料金問わない",
+            "車いす対応" if wheelchair_only else "車いす問わない",
+            "交換台あり" if baby_only else "交換台問わない",
+            "今使える優先" if usable_now_preferred else "利用時間問わない",
+        ]
+        st.markdown('<div class="toilet-summary">' + html.escape(" ／ ".join(summary_parts)) + '</div>', unsafe_allow_html=True)
+
+        signature = json.dumps(
+            {
+                "lat": round(latitude, 5), "lon": round(longitude, 5), "radius_m": radius_m,
+                "free_preferred": free_preferred, "wheelchair_only": wheelchair_only,
+                "baby_only": baby_only, "usable_now_preferred": usable_now_preferred,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        with st.container(key="toilet_search_action"):
+            search_pressed = st.button("🚻 この条件でトイレを探す", type="primary", use_container_width=True, key="toilet_search_submit_v196")
+
+    if search_pressed:
+        with st.spinner("近くのトイレを探しています…"):
+            search_result = search_nearby_toilets(
+                latitude, longitude, radius_m,
+                free_preferred=free_preferred,
+                wheelchair_only=wheelchair_only,
+                baby_only=baby_only,
+                usable_now_preferred=usable_now_preferred,
+            )
+        st.session_state[result_key] = {
+            "signature": signature,
+            "result": search_result if isinstance(search_result, dict) else {},
+            "searched_at": now_jst().isoformat(),
+        }
+
+    saved = st.session_state.get(result_key)
+    if not isinstance(saved, dict) or str(saved.get("signature") or "") != signature:
+        previous_exists = isinstance(saved, dict) and bool(saved.get("result"))
+        message = "条件を変更しました。もう一度検索してください。" if previous_exists else "条件を選んだら、最後にトイレ検索を押してください。"
+        st.markdown(f'<div class="toilet-search-ready">{html.escape(message)}</div>', unsafe_allow_html=True)
+        return
+
+    search_result = saved.get("result") if isinstance(saved.get("result"), dict) else {}
+    error = str(search_result.get("error") or "")
+    if error:
+        st.warning(error)
+        detail = str(search_result.get("detail") or "")
+        if detail:
+            with st.expander("検索エラーの詳細"):
+                st.code(detail)
+        return
+
+    places = list(search_result.get("places") or [])[:10]
+    st.divider()
+    st.markdown("### 近いトイレ")
+    st.caption("最大10か所を近さ中心で表示します。徒歩時間は直線距離からの目安です。OpenStreetMapの登録状況により、設備・料金・利用時間の情報がない場合があります。")
+    if not places:
+        st.info("この条件ではトイレを見つけられませんでした。距離を広げるか、設備条件を『問わない』にしてもう一度検索してください。")
+        return
+
+    for index, place in enumerate(places, start=1):
+        with st.container(border=True):
+            st.markdown(f'<div class="toilet-card-title">{index}. {html.escape(str(place.get("name") or "トイレ"))}</div>', unsafe_allow_html=True)
+            st.markdown(
+                f'<div class="toilet-card-meta">{html.escape(str(place.get("category") or "トイレ"))}　・　{html.escape(_nearby_distance_text(place))}</div>',
+                unsafe_allow_html=True,
+            )
+            pills = []
+            fee_label = str(place.get("fee_label") or "")
+            if fee_label:
+                fee_css = "good" if place.get("fee_status") == "free" else ("bad" if place.get("fee_status") == "paid" else "")
+                pills.append(f'<span class="toilet-pill {fee_css}">{html.escape(fee_label)}</span>')
+            opening_label = str(place.get("opening_label") or "")
+            if opening_label:
+                open_css = "good" if place.get("open_now") is True else ("bad" if place.get("open_now") is False else "")
+                pills.append(f'<span class="toilet-pill {open_css}">{html.escape(opening_label)}</span>')
+            for label, css_name in ((place.get("wheelchair_label"), "good" if place.get("wheelchair_ok") is True else ""), (place.get("baby_label"), "good" if place.get("baby_ok") is True else "")):
+                if label:
+                    pills.append(f'<span class="toilet-pill {css_name}">{html.escape(str(label))}</span>')
+            access_label = str(place.get("access_label") or "")
+            if access_label == "施設利用者向け":
+                pills.append('<span class="toilet-pill warn">施設利用者向け</span>')
+            if pills:
+                st.markdown('<div class="toilet-pills">' + ''.join(pills) + '</div>', unsafe_allow_html=True)
+
+            details = []
+            if place.get("opening_hours"):
+                details.append("利用時間: " + str(place.get("opening_hours")))
+            if place.get("address"):
+                details.append(str(place.get("address")))
+            if details:
+                st.markdown('<div class="toilet-card-sub">' + html.escape(" ／ ".join(details)) + '</div>', unsafe_allow_html=True)
+
+            direction_url = _nearby_directions_url(place)
+            if direction_url:
+                st.link_button("🗺️ このトイレに案内してもらう", direction_url, use_container_width=True)
+
+    st.caption("トイレ候補はOpenStreetMapの公開データを利用しています。現地の利用条件・設備・営業時間が変更されている場合があります。")
 
 
 def page_nearby():
@@ -21201,6 +21913,8 @@ with page_root.container():
         page_review()
     elif page == "nearby":
         page_nearby()
+    elif page == "toilets":
+        page_toilets()
     elif page == "settings":
         page_settings()
     else:
@@ -21214,6 +21928,6 @@ with page_root.container():
         live_page = str(st.session_state.get("main_page") or "home")
         if (
             page == live_page
-            and page in {"camera", "videos", "moments", "diary", "review", "nearby", "settings"}
+            and page in {"camera", "videos", "moments", "diary", "review", "nearby", "toilets", "settings"}
         ):
             render_global_bottom_navigation(page)
