@@ -29,9 +29,9 @@ from zoneinfo import ZoneInfo
 import streamlit as st
 
 # Freshly generated update: 2026-08-31 23:49 JST
-GENERATED_UPDATE_JST = "2026-09-05T01:52:49+09:00"
+GENERATED_UPDATE_JST = "2026-09-05T02:02:25+09:00"
 
-APP_BUILD = "v205"
+APP_BUILD = "v206"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -12794,6 +12794,244 @@ def save_monthly_review(month_key, review_json):
         supabase_client().table(MONTHLY_TABLE).insert(payload).execute()
 
 
+
+# ============================================================
+# Tag-based review helpers (v206)
+# ============================================================
+# Reuse the existing monthly-review table without a schema migration. 1902 is a
+# reserved sentinel year; the 12 months map one-to-one to the 12 visible photo tags.
+# Normal calendar reviews never use these rows because their month list comes from trips.
+TAG_REVIEW_STORAGE_MONTHS = {
+    tag_key: f"1902-{index + 1:02d}"
+    for index, tag_key in enumerate(ALL_PHOTO_TAG_ORDER)
+}
+
+
+def tag_review_storage_month(tag_key):
+    tag_key = str(tag_key or "").strip()
+    if tag_key not in TAG_REVIEW_STORAGE_MONTHS:
+        raise ValueError("振り返るタグを確認できませんでした。")
+    return TAG_REVIEW_STORAGE_MONTHS[tag_key]
+
+
+def get_tag_review_source(limit=1200):
+    """Load tagged still photos across all dates for the current personal account."""
+    client = supabase_client()
+    result = (
+        client
+        .table(PHOTO_TABLE)
+        .select("id,trip_id,storage_path,captured_at,reflection_json,signals_json")
+        .eq("family_key", current_family_key()).eq("member_key", current_member_key())
+        .order("captured_at")
+        .limit(max(1, int(limit)))
+        .execute()
+    )
+    photos = []
+    for photo in result.data or []:
+        if not isinstance(photo, dict) or photo_is_video(photo):
+            continue
+        if photo_selected_tag_key(photo):
+            photos.append(photo)
+
+    trip_ids = []
+    seen_trip_ids = set()
+    for photo in photos:
+        trip_id = str(photo.get("trip_id") or "").strip()
+        if trip_id and trip_id not in seen_trip_ids:
+            seen_trip_ids.add(trip_id)
+            trip_ids.append(trip_id)
+
+    trips = []
+    for offset in range(0, len(trip_ids), 100):
+        chunk = trip_ids[offset:offset + 100]
+        if not chunk:
+            continue
+        try:
+            batch = (
+                client
+                .table(TRIP_TABLE)
+                .select("*")
+                .eq("family_key", current_family_key()).eq("member_key", current_member_key())
+                .in_("id", chunk)
+                .execute()
+            ).data or []
+            trips.extend(row for row in batch if isinstance(row, dict))
+        except Exception:
+            continue
+
+    return {"trips": trips, "diaries": [], "photos": photos}
+
+
+def tag_review_counts(source):
+    counts = {key: 0 for key in ALL_PHOTO_TAG_ORDER}
+    for photo in (source or {}).get("photos", []) or []:
+        key = photo_selected_tag_key(photo)
+        if key in counts:
+            counts[key] += 1
+    return counts
+
+
+def tag_review_bundle(source, tag_key):
+    tag_key = str(tag_key or "").strip()
+    photos = [
+        photo for photo in (source or {}).get("photos", []) or []
+        if isinstance(photo, dict) and photo_selected_tag_key(photo) == tag_key
+    ]
+    photos.sort(key=lambda photo: (str(photo.get("captured_at") or ""), str(photo.get("id") or "")))
+    trip_ids = {str(photo.get("trip_id") or "") for photo in photos if photo.get("trip_id")}
+    trips = [
+        trip for trip in (source or {}).get("trips", []) or []
+        if isinstance(trip, dict) and str(trip.get("id") or "") in trip_ids
+    ]
+    return {"trips": trips, "diaries": [], "photos": photos}
+
+
+def tag_review_stats(bundle):
+    trip_map = {
+        str(trip.get("id") or ""): trip
+        for trip in (bundle or {}).get("trips", []) or []
+        if isinstance(trip, dict)
+    }
+    dates = []
+    for photo in (bundle or {}).get("photos", []) or []:
+        trip = trip_map.get(str(photo.get("trip_id") or ""), {})
+        date_value = str((trip or {}).get("trip_date") or "").strip()
+        if not date_value:
+            captured = str(photo.get("captured_at") or "")
+            date_value = captured[:10] if len(captured) >= 10 else ""
+        if date_value:
+            dates.append(date_value)
+    unique_dates = sorted(set(dates))
+    return {
+        "photo_count": len((bundle or {}).get("photos", []) or []),
+        "day_count": len(unique_dates),
+        "first_date": unique_dates[0] if unique_dates else "",
+        "last_date": unique_dates[-1] if unique_dates else "",
+    }
+
+
+def build_tag_review_evidence(tag_key, bundle, max_lines=70):
+    meta = photo_tag_meta_from_key(tag_key)
+    trip_map = {
+        str(trip.get("id") or ""): trip
+        for trip in (bundle or {}).get("trips", []) or []
+        if isinstance(trip, dict)
+    }
+    rows = []
+    photos = list((bundle or {}).get("photos", []) or [])
+    photos.sort(key=lambda photo: (str(photo.get("captured_at") or ""), str(photo.get("id") or "")))
+    if len(photos) > max_lines:
+        step = len(photos) / float(max_lines)
+        photos = [photos[min(int(index * step), len(photos) - 1)] for index in range(max_lines)]
+    for photo in photos:
+        trip = trip_map.get(str(photo.get("trip_id") or ""), {})
+        date_value = str((trip or {}).get("trip_date") or "").strip()
+        if not date_value:
+            captured = str(photo.get("captured_at") or "")
+            date_value = captured[:10] if len(captured) >= 10 else "日付不明"
+        place = str(photo_location_label(photo) or (trip or {}).get("destination") or "").strip()
+        rows.append(f"[{date_value}] {place or '場所メモなし'}")
+    stats = tag_review_stats(bundle)
+    return {
+        "text": "\n".join(rows),
+        "photo_count": int(stats.get("photo_count") or 0),
+        "day_count": int(stats.get("day_count") or 0),
+        "first_date": str(stats.get("first_date") or ""),
+        "last_date": str(stats.get("last_date") or ""),
+        "tag_label": str(meta.get("label") or tag_key),
+        "tag_emoji": str(meta.get("emoji") or ""),
+        "tag_mode": str(meta.get("mode") or ""),
+    }
+
+
+def make_tag_review(tag_key, bundle):
+    tag_key = str(tag_key or "").strip()
+    meta = photo_tag_meta_from_key(tag_key)
+    if not meta.get("key"):
+        raise ValueError("振り返るタグを確認できませんでした。")
+    evidence = build_tag_review_evidence(tag_key, bundle)
+    schema = {
+        "type": "object",
+        "properties": {
+            "opening": {"type": "string"},
+            "findings": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "theme": {"type": "string"},
+                        "evidence": {"type": "string"},
+                        "ask_child": {"type": "string"},
+                    },
+                    "required": ["theme", "evidence", "ask_child"],
+                    "additionalProperties": False,
+                },
+            },
+            "repeated_notices": {"type": "array", "items": {"type": "string"}},
+            "wishes": {"type": "array", "items": {"type": "string"}},
+            "one_question": {"type": "string"},
+            "parent_note": {"type": "string"},
+        },
+        "required": ["opening", "findings", "repeated_notices", "wishes", "one_question", "parent_note"],
+        "additionalProperties": False,
+    }
+    mode_label = "こどもーど" if meta.get("mode") == "parenting" else "通常"
+    scope_label = f"{meta.get('emoji') or ''} {meta.get('label') or tag_key}".strip()
+    prompt = f"""
+「ぶらり旅」の写真から、タグ別の短い振り返りを作ります。対象は5〜6歳の子どもです。
+
+選んだタグ: {scope_label}
+タグの種類: {mode_label}
+このタグが付いた写真: {evidence['photo_count']}枚
+記録日数: {evidence['day_count']}日
+最初の記録日: {evidence['first_date'] or '不明'}
+最後の記録日: {evidence['last_date'] or '不明'}
+
+このタグが付いた写真の日付・場所:
+{evidence['text'] or '記録なし'}
+
+厳守:
+- このタグは写真ごとに利用者が明示的に選んだ記録として扱う。
+- なぜそのタグを付けたのか、写真に何が写っているのかは入力にないため推測しない。
+- 日付の広がり、写真枚数、同じ場所が複数回出るなど、入力から直接確認できる事実だけを使う。
+- 「{meta.get('label') or tag_key}が多いから性格が○○」のような性格・能力・将来予測をしない。
+- opening は本人向けの一言。25〜55文字程度、1文。
+- findings は最大2件。theme は12文字程度まで。evidence は事実ベースで35〜80文字程度。
+- ask_child は必要なときだけ短い問いを1件まで。不要なら空文字。
+- one_question も問いは1つまで。ask_child がある場合は原則空文字。
+- repeated_notices と wishes は互換用のため通常は空配列。
+- parent_note は保護者向けに、写真枚数・記録日数・期間を踏まえ、理由を推測していないことを1〜2文で書く。
+- 全体として簡潔にする。
+""".strip()
+    result = ask_json(prompt, "burari_tag_review_v206", schema, 850)
+    result["_insight_version"] = 4
+    result["_review_scope_type"] = "tag"
+    result["_tag_key"] = tag_key
+    result["_tag_label"] = str(meta.get("label") or tag_key)
+    result["_tag_emoji"] = str(meta.get("emoji") or "")
+    result["_scope_label"] = scope_label
+    result["_subjective_input_mode"] = "single_photo_tag_v206"
+    return result
+
+
+def get_saved_tag_review(tag_key):
+    return get_saved_monthly_review(tag_review_storage_month(tag_key))
+
+
+def save_tag_review(tag_key, review_json):
+    updated = dict(review_json or {})
+    meta = photo_tag_meta_from_key(tag_key)
+    updated["_review_scope_type"] = "tag"
+    updated["_tag_key"] = str(tag_key or "")
+    updated["_tag_label"] = str(meta.get("label") or tag_key or "")
+    updated["_tag_emoji"] = str(meta.get("emoji") or "")
+    updated["_scope_label"] = f"{meta.get('emoji') or ''} {meta.get('label') or tag_key or ''}".strip()
+    storage_month = tag_review_storage_month(tag_key)
+    save_monthly_review(storage_month, updated)
+    st.session_state[f"monthly_review_{storage_month}"] = updated
+    return updated
+
+
 # ============================================================
 # Monthly replay helpers
 # ============================================================
@@ -13089,16 +13327,17 @@ def guess_monthly_replay_window(youtube_url, month_key, review):
     }
     title = str(meta.get("title") or "").strip()
     author = str(meta.get("author_name") or "").strip()
+    scope_label = str((review or {}).get("_scope_label") or month_key).strip()
     prompt = f"""
-あなたは、月ごとの写真振り返りで使うYouTube音楽の『おすすめ区間』を提案します。
+あなたは、写真振り返りで使うYouTube音楽の『おすすめ区間』を提案します。
 目的は、アプリ内で9:16の写真スライドを見返すときに、耳に残りやすい部分を短く使うことです。
 
 入力:
-- 対象期間: {month_key}
+- 振り返り対象: {scope_label}
 - YouTube URL: {youtube_url}
 - 分かる場合のタイトル: {title or '不明'}
 - 分かる場合の投稿者: {author or '不明'}
-- その月の振り返り要点: {review_hint}
+- 振り返り要点: {review_hint}
 
 ルール:
 - できるだけサビ・フック・いちばん印象に残りやすい部分を優先する。
@@ -13454,7 +13693,10 @@ def render_monthly_replay_player(period_label, review, playback, photo_items):
     # a small set of photos naturally loops again while a longer music segment is playing.
     # Photo cycling is never used as the stop condition; only the music end time stops playback.
     display_ms = max(900, min(2500, int(max(1, duration_seconds) * 1000 / max(1, len(photo_items)))))
-    period_label_escaped = html.escape(str(period_label or "期間の振り返り"))
+    period_label_escaped = html.escape(str(period_label or "振り返り"))
+    is_tag_review = isinstance(review, dict) and str(review.get("_review_scope_type") or "") == "tag"
+    replay_kicker = "タグで振り返り" if is_tag_review else "まとめた期間の振り返り"
+    replay_alt = "タグ別の振り返り写真" if is_tag_review else "期間の振り返り写真"
     first_caption = html.escape(str(photo_items[0].get("caption") or "")) if photo_items else ""
     payload = json.dumps(photo_items, ensure_ascii=False)
     component_html = f"""
@@ -13586,9 +13828,9 @@ def render_monthly_replay_player(period_label, review, playback, photo_items):
     <div class="burari-replay-wrap">
       <div class="burari-replay-phone">
         <div class="burari-replay-stage">
-          <img id="burariReplayImage" src="{html.escape(str(photo_items[0].get('url') or ''))}" alt="期間の振り返り写真" />
+          <img id="burariReplayImage" src="{html.escape(str(photo_items[0].get('url') or ''))}" alt="{html.escape(replay_alt)}" />
           <div class="burari-replay-top">
-            <div class="burari-replay-kicker">まとめた期間の振り返り</div>
+            <div class="burari-replay-kicker">{html.escape(replay_kicker)}</div>
             <div class="burari-replay-title">{period_label_escaped}</div>
           </div>
           <div class="burari-replay-bottom">
@@ -15685,16 +15927,16 @@ def current_navigation_context():
 
     if page == "review":
         current_view = st.session_state.get("review_view_selector")
-        period_label = "🗓 期間の振り返り"
+        tag_label = "🏷️ タグ別の振り返り"
         history_label = "📚 これまでの日記"
-        if current_view == "🔍 今月の発見":
-            current_view = period_label
+        if current_view in {"🔍 今月の発見", "🗓 期間の振り返り"}:
+            current_view = tag_label
         if current_view == history_label:
             detail_trip_id = str(st.session_state.get("history_detail_trip_id") or "")
             if detail_trip_id:
                 return "review_history_detail", detail_trip_id
             return "review_history", ""
-        if current_view == period_label:
+        if current_view == tag_label:
             return "review_period", ""
         return "review", ""
 
@@ -21702,15 +21944,346 @@ def render_monthly_ai_comments(review):
 
     with st.expander("保護者向けメモ"):
         st.write(review.get("parent_note", ""))
-        st.caption(
-            "本人が写真ごとに選んだ気持ちの傾向を、断定しすぎない範囲で振り返っています。"
-            "性格診断・能力評価・将来予測ではありません。"
-        )
+        if str(review.get("_review_scope_type") or "") == "tag":
+            tag_display = str(review.get("_tag_label") or "選んだタグ")
+            st.caption(
+                f"写真に付けた『{tag_display}』タグの記録を、日付・枚数など確認できる事実の範囲で振り返っています。"
+                "性格診断・能力評価・将来予測ではありません。"
+            )
+        else:
+            st.caption(
+                "本人が写真ごとに選んだ気持ちの傾向を、断定しすぎない範囲で振り返っています。"
+                "性格診断・能力評価・将来予測ではありません。"
+            )
 
 
 # ============================================================
 # Page: Monthly review
 # ============================================================
+
+def page_tag_review(embedded=False):
+    if not embedded:
+        page_top("🏷️ タグ別の振り返り")
+    deleted_notice = st.session_state.pop("_tag_video_deleted_notice", None)
+    if deleted_notice:
+        st.success(deleted_notice)
+    render_photo_tag_notices()
+    st.caption("写真に付けた同じタグを月をまたいで集め、時系列の振り返りムービーとして見返します。")
+
+    shared_visible = render_family_shared_monthly_reviews()
+    if shared_visible:
+        st.divider()
+        st.markdown("#### 自分のタグ別振り返り")
+
+    try:
+        source = get_tag_review_source(limit=1200)
+    except Exception as exc:
+        st.error("タグ付き写真を読み込めませんでした。")
+        with st.expander("保護者向け詳細"):
+            st.code(str(exc))
+        return
+
+    counts = tag_review_counts(source)
+    available_tags = [key for key in ALL_PHOTO_TAG_ORDER if int(counts.get(key) or 0) > 0]
+    if not available_tags:
+        st.info("まだタグを付けた写真がありません。写真に『通常』または『こどもーど』のタグを付けると、ここで振り返れます。")
+        return
+
+    def _tag_option_label(key):
+        meta = photo_tag_meta_from_key(key)
+        return f"{meta.get('emoji') or ''} {meta.get('label') or key}（{int(counts.get(key) or 0)}枚）".strip()
+
+    selected_tag = st.selectbox(
+        "振り返るタグ",
+        available_tags,
+        format_func=_tag_option_label,
+        key="tag_review_selector_v206",
+    )
+    tag_meta = photo_tag_meta_from_key(selected_tag)
+    scope_label = f"{tag_meta.get('emoji') or ''} {tag_meta.get('label') or selected_tag}".strip()
+    st.markdown(f"### {html.escape(scope_label)} の振り返り")
+
+    bundle = tag_review_bundle(source, selected_tag)
+    stats = tag_review_stats(bundle)
+    photo_count = int(stats.get("photo_count") or 0)
+    day_count = int(stats.get("day_count") or 0)
+    first_date = str(stats.get("first_date") or "")
+    last_date = str(stats.get("last_date") or "")
+    range_text = ""
+    if first_date and last_date:
+        range_text = first_date if first_date == last_date else f"{first_date}〜{last_date}"
+    st.write(
+        f"このタグの写真：**{photo_count}枚**　／　記録した日：**{day_count}日**"
+        + (f"　／　{range_text}" if range_text else "")
+    )
+    if photo_count == 0:
+        st.info("このタグの写真はありません。")
+        return
+
+    storage_key = tag_review_storage_month(selected_tag)
+    saved = get_saved_tag_review(selected_tag)
+    session_key = f"monthly_review_{storage_key}"
+    if session_key not in st.session_state and saved:
+        saved_review = saved.get("review_json") or {}
+        if isinstance(saved_review, dict) and str(saved_review.get("_tag_key") or "") == str(selected_tag):
+            st.session_state[session_key] = saved_review
+    review = st.session_state.get(session_key)
+    if isinstance(review, dict) and str(review.get("_tag_key") or "") not in {"", str(selected_tag)}:
+        review = None
+        st.session_state.pop(session_key, None)
+
+    if not review:
+        if st.button("AIとこのタグを振り返る", type="primary", use_container_width=True, key=f"tag_review_create_{selected_tag}"):
+            try:
+                with st.spinner("このタグの写真を時系列につないでいます…"):
+                    review = make_tag_review(selected_tag, bundle)
+                    save_tag_review(selected_tag, review)
+                st.session_state[session_key] = review
+                st.rerun()
+            except Exception as exc:
+                st.error("タグ別の振り返りを作れませんでした。")
+                with st.expander("保護者向け詳細"):
+                    st.code(str(exc))
+        return
+
+    playback = get_monthly_playback(review)
+    music_ready = monthly_playback_is_ready(playback)
+    settings_open_key = f"monthly_music_settings_open_{storage_key}"
+    comments_open_key = f"monthly_ai_comments_open_{storage_key}"
+
+    if not music_ready:
+        if st.button(
+            "🎵 音楽をセットする",
+            type="primary",
+            use_container_width=True,
+            key=f"tag_music_setup_top_{selected_tag}",
+        ):
+            st.session_state[settings_open_key] = True
+
+        if st.session_state.get(settings_open_key):
+            render_monthly_music_settings(storage_key, bundle, review, expanded=True)
+
+        render_monthly_ai_comments(review)
+        if st.button(
+            "このタグをもう一度まとめる",
+            use_container_width=True,
+            key=f"tag_regenerate_without_music_{selected_tag}",
+        ):
+            try:
+                previous_playback = get_monthly_playback(review)
+                with st.spinner("このタグの記録をまとめ直しています…"):
+                    refreshed = make_tag_review(selected_tag, bundle)
+                    if previous_playback:
+                        refreshed["_playback"] = previous_playback
+                    refreshed = carry_monthly_family_share(refreshed, review, storage_key, scope_label, bundle)
+                    save_tag_review(selected_tag, refreshed)
+                st.session_state[session_key] = refreshed
+                st.rerun()
+            except Exception as exc:
+                st.error("タグ別の振り返りを作れませんでした。")
+                with st.expander("保護者向け詳細"):
+                    st.code(str(exc))
+        return
+
+    st.markdown("#### 振り返りムービー")
+    rendered = render_monthly_replay_section(storage_key, scope_label, bundle, review)
+    if not rendered:
+        st.warning("振り返りムービーを表示できませんでした。音楽または写真の設定を確認してください。")
+    else:
+        share_enabled = monthly_family_share_is_enabled(review)
+        with st.container(key="monthly_family_share_area"):
+            if share_enabled:
+                st.caption("👨‍👩‍👦 同じ家族IDの別アカウント全員に共有中です。相手側は閲覧のみできます。")
+                if st.button(
+                    "家族への共有を解除する",
+                    use_container_width=True,
+                    key=f"tag_family_unshare_{selected_tag}",
+                ):
+                    try:
+                        review = set_monthly_family_share(storage_key, scope_label, bundle, review, enabled=False)
+                        st.success("家族への共有を解除しました。")
+                        st.rerun()
+                    except Exception as exc:
+                        st.error("家族への共有を解除できませんでした。")
+                        with st.expander("保護者向け詳細"):
+                            st.code(str(exc))
+            else:
+                if st.button(
+                    "👨‍👩‍👦 家族に共有する",
+                    use_container_width=True,
+                    key=f"tag_family_share_{selected_tag}",
+                ):
+                    try:
+                        review = set_monthly_family_share(storage_key, scope_label, bundle, review, enabled=True)
+                        st.success("同じ家族IDの別アカウント全員に共有しました。")
+                        st.rerun()
+                    except Exception as exc:
+                        st.error("家族に共有できませんでした。")
+                        with st.expander("保護者向け詳細"):
+                            st.code(str(exc))
+
+    time_settings_open_key = f"monthly_time_settings_open_{storage_key}"
+    if st.button(
+        "⏱ 音楽を再生する時間を変更する",
+        use_container_width=True,
+        key=f"tag_change_music_time_{selected_tag}",
+    ):
+        opening_time_settings = not bool(st.session_state.get(time_settings_open_key))
+        st.session_state[time_settings_open_key] = opening_time_settings
+        if opening_time_settings:
+            st.session_state[settings_open_key] = False
+            current_playback = get_monthly_playback(review) or {}
+            applied = st.session_state.get(f"monthly_replay_applied_{storage_key}")
+            if isinstance(applied, dict):
+                raw_start = applied.get("start_seconds")
+                raw_end = applied.get("end_seconds")
+            else:
+                raw_start = current_playback.get("start_seconds")
+                raw_end = current_playback.get("end_seconds")
+            current_start = max(0, int(raw_start if raw_start is not None else 0))
+            current_end = int(raw_end if raw_end is not None else current_start + 20)
+            if current_end <= current_start:
+                current_end = current_start + 20
+            st.session_state[f"monthly_time_edit_start_{storage_key}"] = current_start
+            st.session_state[f"monthly_time_edit_end_{storage_key}"] = current_end
+
+    if st.session_state.get(time_settings_open_key):
+        render_monthly_time_settings(storage_key, review)
+
+    action_cols = st.columns(2)
+    with action_cols[0]:
+        if st.button(
+            "🎵 音楽を変更する",
+            use_container_width=True,
+            key=f"tag_change_music_{selected_tag}",
+        ):
+            st.session_state[settings_open_key] = not bool(st.session_state.get(settings_open_key))
+            if st.session_state[settings_open_key]:
+                st.session_state[time_settings_open_key] = False
+
+        if st.button(
+            "☆ この音楽を保存する",
+            use_container_width=True,
+            key=f"tag_save_current_music_{selected_tag}",
+        ):
+            try:
+                state = _monthly_replay_state(storage_key, review)
+                current_playback = dict(get_monthly_playback(review) or {})
+                current_url = str(st.session_state.get(state["url_key"]) or current_playback.get("youtube_url") or "").strip()
+                video_id = parse_youtube_video_id(current_url)
+                applied = st.session_state.get(f"monthly_replay_applied_{storage_key}")
+                if not isinstance(applied, dict):
+                    applied = {
+                        "start_seconds": int(current_playback.get("start_seconds") or st.session_state.get(state["start_key"]) or 0),
+                        "end_seconds": int(current_playback.get("end_seconds") or st.session_state.get(state["end_key"]) or 1),
+                    }
+                current_playback.update({
+                    "youtube_url": current_url,
+                    "video_id": video_id,
+                    "title": str(st.session_state.get(state["title_key"]) or current_playback.get("title") or "").strip(),
+                    "start_seconds": max(0, int(applied.get("start_seconds") or 0)),
+                    "end_seconds": int(applied.get("end_seconds") or 1),
+                    "reason": str(st.session_state.get(state["reason_key"]) or current_playback.get("reason") or "").strip(),
+                    "confidence": str(st.session_state.get(state["confidence_key"]) or current_playback.get("confidence") or "").strip(),
+                })
+                saved_item = save_music_to_library(current_playback)
+                st.success(f"『{saved_item.get('title') or 'この音楽'}』を保存しました。")
+            except Exception as exc:
+                st.error("この音楽を保存できませんでした。")
+                with st.expander("保護者向け詳細"):
+                    st.code(str(exc))
+
+    with action_cols[1]:
+        comments_open = bool(st.session_state.get(comments_open_key))
+        comments_label = "AIのコメントを閉じる" if comments_open else "✨ AIのコメントを見る"
+        with st.container(key="monthly_ai_comments_action"):
+            if st.button(
+                comments_label,
+                use_container_width=True,
+                key=f"tag_toggle_ai_comments_{selected_tag}",
+            ):
+                st.session_state[comments_open_key] = not comments_open
+                st.rerun()
+
+    if st.session_state.get(settings_open_key):
+        render_monthly_music_settings(storage_key, bundle, review, expanded=True)
+
+    if st.session_state.get(comments_open_key):
+        render_monthly_ai_comments(review)
+        if st.button(
+            "このタグをもう一度まとめる",
+            use_container_width=True,
+            key=f"tag_regenerate_with_music_{selected_tag}",
+        ):
+            try:
+                previous_playback = get_monthly_playback(review)
+                with st.spinner("このタグの記録をまとめ直しています…"):
+                    refreshed = make_tag_review(selected_tag, bundle)
+                    if previous_playback:
+                        refreshed["_playback"] = previous_playback
+                    refreshed = carry_monthly_family_share(refreshed, review, storage_key, scope_label, bundle)
+                    save_tag_review(selected_tag, refreshed)
+                st.session_state[session_key] = refreshed
+                st.rerun()
+            except Exception as exc:
+                st.error("タグ別の振り返りを作れませんでした。")
+                with st.expander("保護者向け詳細"):
+                    st.code(str(exc))
+
+    delete_video_confirm_key = f"tag_delete_video_confirm_{selected_tag}"
+    st.divider()
+    with st.container(key="monthly_delete_video_area"):
+        if st.session_state.get(delete_video_confirm_key):
+            st.warning("このタグの振り返り動画を削除します。写真・日記・AIコメント・保存済み音楽は削除されません。")
+            delete_col, cancel_col = st.columns([1.25, 1])
+            with delete_col:
+                with st.container(key="monthly_delete_video_confirm_action"):
+                    if st.button(
+                        "削除する",
+                        use_container_width=True,
+                        key=f"tag_delete_video_confirm_button_{selected_tag}",
+                    ):
+                        try:
+                            state = _monthly_replay_state(storage_key, review)
+                            save_monthly_playback(storage_key, review, {})
+                            for state_key in (
+                                state["url_key"],
+                                state["start_key"],
+                                state["end_key"],
+                                state["reason_key"],
+                                state["confidence_key"],
+                                state["title_key"],
+                                f"monthly_replay_applied_{storage_key}",
+                                settings_open_key,
+                                time_settings_open_key,
+                                delete_video_confirm_key,
+                            ):
+                                st.session_state.pop(state_key, None)
+                            st.session_state["_tag_video_deleted_notice"] = "このタグの振り返り動画を削除しました。"
+                            st.rerun()
+                        except Exception as exc:
+                            st.error("振り返り動画を削除できませんでした。")
+                            with st.expander("保護者向け詳細"):
+                                st.code(str(exc))
+            with cancel_col:
+                if st.button(
+                    "キャンセル",
+                    use_container_width=True,
+                    key=f"tag_delete_video_cancel_{selected_tag}",
+                ):
+                    st.session_state.pop(delete_video_confirm_key, None)
+                    st.rerun()
+        else:
+            with st.container(key="monthly_delete_video_action"):
+                if st.button(
+                    "🗑 この振り返り動画を削除する",
+                    use_container_width=True,
+                    key=f"tag_delete_video_{selected_tag}",
+                ):
+                    st.session_state[delete_video_confirm_key] = True
+                    st.rerun()
+
+
 def page_monthly(embedded=False):
     if not embedded:
         page_top("🗓 期間の振り返り")
@@ -22079,18 +22652,18 @@ def page_monthly(embedded=False):
 # Page: Review / Settings
 # ============================================================
 def page_review():
-    period_label = "🗓 期間の振り返り"
+    tag_label = "🏷️ タグ別の振り返り"
     history_label = "📚 これまでの日記"
     current_view = st.session_state.get("review_view_selector")
-    if current_view == "🔍 今月の発見":
-        current_view = period_label
+    if current_view in {"🔍 今月の発見", "🗓 期間の振り返り"}:
+        current_view = tag_label
         st.session_state["review_view_selector"] = current_view
-    if current_view not in {period_label, history_label}:
+    if current_view not in {tag_label, history_label}:
         current_view = None
 
     page_top(
         "🔍 振り返り",
-        "見たい振り返りを選んでください。期間のまとめと、1日ごとの日記を分けて見られます。",
+        "見たい振り返りを選んでください。タグごとの写真ムービーと、1日ごとの日記を分けて見られます。",
     )
     st.markdown(
         """
@@ -22173,14 +22746,14 @@ def page_review():
     st.markdown("#### 見たい振り返り")
     with st.container(key="review_period_choice"):
         if st.button(
-            period_label,
-            type="primary" if current_view == period_label else "secondary",
+            tag_label,
+            type="primary" if current_view == tag_label else "secondary",
             use_container_width=True,
-            key="review_choose_period",
+            key="review_choose_tag",
         ):
-            st.session_state["review_view_selector"] = period_label
+            st.session_state["review_view_selector"] = tag_label
             st.rerun()
-        st.caption("写真と音楽の振り返りムービーや、AIからの短い気づきを見る")
+        st.caption("同じタグの写真を月をまたいで集め、音楽つきの振り返りムービーで見る")
 
     with st.container(key="review_history_choice"):
         if st.button(
@@ -22193,19 +22766,17 @@ def page_review():
             st.rerun()
         st.caption("これまで作った日記を、1日ごとに読み返す")
 
-    if current_view == period_label:
+    if current_view == tag_label:
         mark_current_month_review_seen()
         st.divider()
-        page_monthly(embedded=True)
+        page_tag_review(embedded=True)
     elif current_view == history_label:
         st.divider()
         page_history(embedded=True)
     else:
         st.caption("上のどちらかを押すと内容が表示されます。")
 
-    # Keep a clear two-step exit at the very bottom of either review detail:
-    # first return to the review chooser, then the shared Home button below it.
-    if current_view in {period_label, history_label}:
+    if current_view in {tag_label, history_label}:
         with st.container(key="review_back_menu_bottom"):
             if st.button(
                 "↩ 振り返り（たまに）に戻る",
