@@ -31,7 +31,7 @@ import streamlit as st
 # Freshly generated update: 2026-08-31 23:49 JST
 GENERATED_UPDATE_JST = "2026-09-05T02:02:25+09:00"
 
-APP_BUILD = "v206"
+APP_BUILD = "v207"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -12796,42 +12796,94 @@ def save_monthly_review(month_key, review_json):
 
 
 # ============================================================
-# Tag-based review helpers (v206)
+# AI photo-tag review helpers (v207)
 # ============================================================
-# Reuse the existing monthly-review table without a schema migration. 1902 is a
-# reserved sentinel year; the 12 months map one-to-one to the 12 visible photo tags.
-# Normal calendar reviews never use these rows because their month list comes from trips.
-TAG_REVIEW_STORAGE_MONTHS = {
-    tag_key: f"1902-{index + 1:02d}"
-    for index, tag_key in enumerate(ALL_PHOTO_TAG_ORDER)
-}
+# AI content tags (for example 子ども / 大人 / 複数人 / 電車 / 食事) are
+# different from the user-selected feeling / parenting tags. Tag reviews use only
+# reflection_json.ai_tags, which are created by the existing vision tagger.
+#
+# Persist tag-specific review/music state in the existing monthly-review table so
+# no Supabase migration is required. Calendar reviews stay untouched. A private
+# historical month range (1800-1899) is reserved for dynamic AI tags; each tag gets
+# one stable month slot, with collision resolution if two hashes land together.
+AI_TAG_REVIEW_SENTINEL_START = "1800-01-01"
+AI_TAG_REVIEW_SENTINEL_END_EXCLUSIVE = "1900-01-01"
+AI_TAG_REVIEW_SENTINEL_START_YEAR = 1800
+AI_TAG_REVIEW_SENTINEL_MONTH_COUNT = 100 * 12
+AI_TAG_REVIEW_SOURCE_LIMIT = 5000
+AI_TAG_REVIEW_PRIORITY_TAGS = ("子ども", "大人", "複数人")
 
 
-def tag_review_storage_month(tag_key):
-    tag_key = str(tag_key or "").strip()
-    if tag_key not in TAG_REVIEW_STORAGE_MONTHS:
-        raise ValueError("振り返るタグを確認できませんでした。")
-    return TAG_REVIEW_STORAGE_MONTHS[tag_key]
+def _ai_tag_review_rows():
+    try:
+        rows = (
+            supabase_client()
+            .table(MONTHLY_TABLE)
+            .select("id,review_month,review_json,created_at,updated_at")
+            .eq("family_key", current_family_key())
+            .eq("member_key", current_member_key())
+            .gte("review_month", AI_TAG_REVIEW_SENTINEL_START)
+            .lt("review_month", AI_TAG_REVIEW_SENTINEL_END_EXCLUSIVE)
+            .order("review_month")
+            .execute()
+        ).data or []
+        return [row for row in rows if isinstance(row, dict)]
+    except Exception:
+        return []
 
 
-def get_tag_review_source(limit=1200):
-    """Load tagged still photos across all dates for the current personal account."""
-    client = supabase_client()
-    result = (
-        client
-        .table(PHOTO_TABLE)
-        .select("id,trip_id,storage_path,captured_at,reflection_json,signals_json")
-        .eq("family_key", current_family_key()).eq("member_key", current_member_key())
-        .order("captured_at")
-        .limit(max(1, int(limit)))
-        .execute()
-    )
-    photos = []
-    for photo in result.data or []:
-        if not isinstance(photo, dict) or photo_is_video(photo):
-            continue
-        if photo_selected_tag_key(photo):
-            photos.append(photo)
+def _ai_tag_review_key_from_row(row):
+    review = _coerce_review_json((row or {}).get("review_json"))
+    if str(review.get("_review_scope_type") or "") != "ai_tag":
+        return ""
+    return normalize_ai_photo_tag(review.get("_ai_tag_key"))
+
+
+def _ai_tag_review_storage_candidates(tag_key):
+    tag_key = normalize_ai_photo_tag(tag_key)
+    if not tag_key:
+        return []
+    digest = hashlib.sha1(tag_key.encode("utf-8")).hexdigest()
+    base = int(digest[:12], 16) % AI_TAG_REVIEW_SENTINEL_MONTH_COUNT
+    candidates = []
+    for offset in range(AI_TAG_REVIEW_SENTINEL_MONTH_COUNT):
+        index = (base + offset) % AI_TAG_REVIEW_SENTINEL_MONTH_COUNT
+        year = AI_TAG_REVIEW_SENTINEL_START_YEAR + (index // 12)
+        month = (index % 12) + 1
+        candidates.append(f"{year:04d}-{month:02d}")
+    return candidates
+
+
+def tag_review_storage_month(tag_key, create=False):
+    """Return the reserved storage month assigned to one AI image tag."""
+    tag_key = normalize_ai_photo_tag(tag_key)
+    if not tag_key:
+        raise ValueError("振り返るAIタグを確認できませんでした。")
+    rows = _ai_tag_review_rows()
+    for row in rows:
+        if _ai_tag_review_key_from_row(row) == tag_key:
+            value = str(row.get("review_month") or "")[:7]
+            if len(value) == 7:
+                return value
+    if not create:
+        return ""
+
+    occupied = {
+        str(row.get("review_month") or "")[:7]
+        for row in rows
+        if len(str(row.get("review_month") or "")) >= 7
+    }
+    for candidate in _ai_tag_review_storage_candidates(tag_key):
+        if candidate not in occupied:
+            return candidate
+    raise ValueError("AIタグ別振り返りの保存枠を確保できませんでした。")
+
+
+def get_tag_review_source(limit=AI_TAG_REVIEW_SOURCE_LIMIT):
+    """Load still photos across all dates, including AI-tagged and yet-untagged rows."""
+    photos = list_member_still_photos_for_tags(max_items=max(1, int(limit)))
+    photos = [photo for photo in photos if isinstance(photo, dict) and not photo_is_video(photo)]
+    photos.sort(key=lambda photo: (str(photo.get("captured_at") or ""), str(photo.get("id") or "")))
 
     trip_ids = []
     seen_trip_ids = set()
@@ -12842,6 +12894,7 @@ def get_tag_review_source(limit=1200):
             trip_ids.append(trip_id)
 
     trips = []
+    client = supabase_client()
     for offset in range(0, len(trip_ids), 100):
         chunk = trip_ids[offset:offset + 100]
         if not chunk:
@@ -12851,7 +12904,8 @@ def get_tag_review_source(limit=1200):
                 client
                 .table(TRIP_TABLE)
                 .select("*")
-                .eq("family_key", current_family_key()).eq("member_key", current_member_key())
+                .eq("family_key", current_family_key())
+                .eq("member_key", current_member_key())
                 .in_("id", chunk)
                 .execute()
             ).data or []
@@ -12863,19 +12917,32 @@ def get_tag_review_source(limit=1200):
 
 
 def tag_review_counts(source):
-    counts = {key: 0 for key in ALL_PHOTO_TAG_ORDER}
+    counts = {}
     for photo in (source or {}).get("photos", []) or []:
-        key = photo_selected_tag_key(photo)
-        if key in counts:
-            counts[key] += 1
+        for tag in photo_ai_tags(photo):
+            counts[tag] = int(counts.get(tag) or 0) + 1
     return counts
 
 
+def ordered_ai_review_tags(counts):
+    counts = counts if isinstance(counts, dict) else {}
+    priority = {tag: index for index, tag in enumerate(AI_TAG_REVIEW_PRIORITY_TAGS)}
+    return sorted(
+        [tag for tag, count in counts.items() if int(count or 0) > 0],
+        key=lambda tag: (
+            0 if tag in priority else 1,
+            priority.get(tag, 999),
+            -int(counts.get(tag) or 0),
+            tag,
+        ),
+    )
+
+
 def tag_review_bundle(source, tag_key):
-    tag_key = str(tag_key or "").strip()
+    tag_key = normalize_ai_photo_tag(tag_key)
     photos = [
         photo for photo in (source or {}).get("photos", []) or []
-        if isinstance(photo, dict) and photo_selected_tag_key(photo) == tag_key
+        if isinstance(photo, dict) and tag_key in photo_ai_tags(photo)
     ]
     photos.sort(key=lambda photo: (str(photo.get("captured_at") or ""), str(photo.get("id") or "")))
     trip_ids = {str(photo.get("trip_id") or "") for photo in photos if photo.get("trip_id")}
@@ -12911,26 +12978,41 @@ def tag_review_stats(bundle):
 
 
 def build_tag_review_evidence(tag_key, bundle, max_lines=70):
-    meta = photo_tag_meta_from_key(tag_key)
+    tag_key = normalize_ai_photo_tag(tag_key)
     trip_map = {
         str(trip.get("id") or ""): trip
         for trip in (bundle or {}).get("trips", []) or []
         if isinstance(trip, dict)
     }
+    related_counts = {}
     rows = []
     photos = list((bundle or {}).get("photos", []) or [])
     photos.sort(key=lambda photo: (str(photo.get("captured_at") or ""), str(photo.get("id") or "")))
-    if len(photos) > max_lines:
-        step = len(photos) / float(max_lines)
-        photos = [photos[min(int(index * step), len(photos) - 1)] for index in range(max_lines)]
+
     for photo in photos:
+        for other_tag in photo_ai_tags(photo):
+            if other_tag and other_tag != tag_key:
+                related_counts[other_tag] = int(related_counts.get(other_tag) or 0) + 1
+
+    sampled = photos
+    if len(sampled) > max_lines:
+        step = len(sampled) / float(max_lines)
+        sampled = [sampled[min(int(index * step), len(sampled) - 1)] for index in range(max_lines)]
+
+    for photo in sampled:
         trip = trip_map.get(str(photo.get("trip_id") or ""), {})
         date_value = str((trip or {}).get("trip_date") or "").strip()
         if not date_value:
             captured = str(photo.get("captured_at") or "")
             date_value = captured[:10] if len(captured) >= 10 else "日付不明"
         place = str(photo_location_label(photo) or (trip or {}).get("destination") or "").strip()
-        rows.append(f"[{date_value}] {place or '場所メモなし'}")
+        related = [tag for tag in photo_ai_tags(photo) if tag != tag_key][:5]
+        row = f"[{date_value}] {place or '場所メモなし'}"
+        if related:
+            row += " / 関連AIタグ: " + "、".join(related)
+        rows.append(row)
+
+    related_top = sorted(related_counts, key=lambda tag: (-related_counts[tag], tag))[:10]
     stats = tag_review_stats(bundle)
     return {
         "text": "\n".join(rows),
@@ -12938,17 +13020,15 @@ def build_tag_review_evidence(tag_key, bundle, max_lines=70):
         "day_count": int(stats.get("day_count") or 0),
         "first_date": str(stats.get("first_date") or ""),
         "last_date": str(stats.get("last_date") or ""),
-        "tag_label": str(meta.get("label") or tag_key),
-        "tag_emoji": str(meta.get("emoji") or ""),
-        "tag_mode": str(meta.get("mode") or ""),
+        "tag_label": tag_key,
+        "related_tags": [f"{tag}({related_counts[tag]}枚)" for tag in related_top],
     }
 
 
 def make_tag_review(tag_key, bundle):
-    tag_key = str(tag_key or "").strip()
-    meta = photo_tag_meta_from_key(tag_key)
-    if not meta.get("key"):
-        raise ValueError("振り返るタグを確認できませんでした。")
+    tag_key = normalize_ai_photo_tag(tag_key)
+    if not tag_key:
+        raise ValueError("振り返るAIタグを確認できませんでした。")
     evidence = build_tag_review_evidence(tag_key, bundle)
     schema = {
         "type": "object",
@@ -12975,58 +13055,66 @@ def make_tag_review(tag_key, bundle):
         "required": ["opening", "findings", "repeated_notices", "wishes", "one_question", "parent_note"],
         "additionalProperties": False,
     }
-    mode_label = "こどもーど" if meta.get("mode") == "parenting" else "通常"
-    scope_label = f"{meta.get('emoji') or ''} {meta.get('label') or tag_key}".strip()
+    related_text = "、".join(evidence.get("related_tags") or []) or "なし"
+    scope_label = f"🏷️ {tag_key}"
     prompt = f"""
-「ぶらり旅」の写真から、タグ別の短い振り返りを作ります。対象は5〜6歳の子どもです。
+「ぶらり旅」の保存写真から、AI画像タグ別の短い振り返りを作ります。
 
-選んだタグ: {scope_label}
-タグの種類: {mode_label}
+選んだAI画像タグ: {tag_key}
 このタグが付いた写真: {evidence['photo_count']}枚
 記録日数: {evidence['day_count']}日
 最初の記録日: {evidence['first_date'] or '不明'}
 最後の記録日: {evidence['last_date'] or '不明'}
+同じ写真に多く付いている別のAIタグ: {related_text}
 
-このタグが付いた写真の日付・場所:
+写真ごとの日付・場所・関連AIタグ:
 {evidence['text'] or '記録なし'}
 
 厳守:
-- このタグは写真ごとに利用者が明示的に選んだ記録として扱う。
-- なぜそのタグを付けたのか、写真に何が写っているのかは入力にないため推測しない。
-- 日付の広がり、写真枚数、同じ場所が複数回出るなど、入力から直接確認できる事実だけを使う。
-- 「{meta.get('label') or tag_key}が多いから性格が○○」のような性格・能力・将来予測をしない。
-- opening は本人向けの一言。25〜55文字程度、1文。
-- findings は最大2件。theme は12文字程度まで。evidence は事実ベースで35〜80文字程度。
+- 「{tag_key}」はAIが写真から見える内容を整理するために自動付与した画像タグであり、利用者本人が選んだ気持ちタグではない。
+- タグ判定を絶対的な事実として扱わず、「AIタグ上では」「写真整理上では」という範囲で扱う。
+- 子ども／大人／複数人など人物タグから、本人、親、家族、友達などの関係を推測しない。
+- 人物の性格、能力、感情、健康状態、民族などを推測しない。
+- 日付、場所、枚数、AIタグの共起など、入力から確認できる範囲だけを使う。
+- opening は本人にも読める短い一言。25〜55文字程度、1文。
+- findings は最大2件。theme は12文字程度まで。evidence は35〜80文字程度。
 - ask_child は必要なときだけ短い問いを1件まで。不要なら空文字。
 - one_question も問いは1つまで。ask_child がある場合は原則空文字。
 - repeated_notices と wishes は互換用のため通常は空配列。
-- parent_note は保護者向けに、写真枚数・記録日数・期間を踏まえ、理由を推測していないことを1〜2文で書く。
+- parent_note は保護者向けに、写真枚数・記録日数・期間・関連AIタグを簡潔に説明し、関係性や性格を推測していないことを明記する。
 - 全体として簡潔にする。
 """.strip()
-    result = ask_json(prompt, "burari_tag_review_v206", schema, 850)
-    result["_insight_version"] = 4
-    result["_review_scope_type"] = "tag"
-    result["_tag_key"] = tag_key
-    result["_tag_label"] = str(meta.get("label") or tag_key)
-    result["_tag_emoji"] = str(meta.get("emoji") or "")
+    result = ask_json(prompt, "burari_ai_photo_tag_review_v207", schema, 850)
+    result["_insight_version"] = 5
+    result["_review_scope_type"] = "ai_tag"
+    result["_ai_tag_key"] = tag_key
+    result["_tag_label"] = tag_key
     result["_scope_label"] = scope_label
-    result["_subjective_input_mode"] = "single_photo_tag_v206"
+    result["_subjective_input_mode"] = "ai_observable_photo_tags_v207"
     return result
 
 
 def get_saved_tag_review(tag_key):
-    return get_saved_monthly_review(tag_review_storage_month(tag_key))
+    tag_key = normalize_ai_photo_tag(tag_key)
+    if not tag_key:
+        return None
+    for row in _ai_tag_review_rows():
+        if _ai_tag_review_key_from_row(row) == tag_key:
+            return row
+    return None
 
 
 def save_tag_review(tag_key, review_json):
+    tag_key = normalize_ai_photo_tag(tag_key)
+    if not tag_key:
+        raise ValueError("保存するAIタグを確認できませんでした。")
     updated = dict(review_json or {})
-    meta = photo_tag_meta_from_key(tag_key)
-    updated["_review_scope_type"] = "tag"
-    updated["_tag_key"] = str(tag_key or "")
-    updated["_tag_label"] = str(meta.get("label") or tag_key or "")
-    updated["_tag_emoji"] = str(meta.get("emoji") or "")
-    updated["_scope_label"] = f"{meta.get('emoji') or ''} {meta.get('label') or tag_key or ''}".strip()
-    storage_month = tag_review_storage_month(tag_key)
+    updated["_review_scope_type"] = "ai_tag"
+    updated["_ai_tag_key"] = tag_key
+    updated["_tag_label"] = tag_key
+    updated["_scope_label"] = f"🏷️ {tag_key}"
+    storage_month = tag_review_storage_month(tag_key, create=True)
+    updated["_tag_storage_month"] = storage_month
     save_monthly_review(storage_month, updated)
     st.session_state[f"monthly_review_{storage_month}"] = updated
     return updated
@@ -13694,7 +13782,7 @@ def render_monthly_replay_player(period_label, review, playback, photo_items):
     # Photo cycling is never used as the stop condition; only the music end time stops playback.
     display_ms = max(900, min(2500, int(max(1, duration_seconds) * 1000 / max(1, len(photo_items)))))
     period_label_escaped = html.escape(str(period_label or "振り返り"))
-    is_tag_review = isinstance(review, dict) and str(review.get("_review_scope_type") or "") == "tag"
+    is_tag_review = isinstance(review, dict) and str(review.get("_review_scope_type") or "") in {"tag", "ai_tag"}
     replay_kicker = "タグで振り返り" if is_tag_review else "まとめた期間の振り返り"
     replay_alt = "タグ別の振り返り写真" if is_tag_review else "期間の振り返り写真"
     first_caption = html.escape(str(photo_items[0].get("caption") or "")) if photo_items else ""
@@ -15927,16 +16015,17 @@ def current_navigation_context():
 
     if page == "review":
         current_view = st.session_state.get("review_view_selector")
+        monthly_label = "🗓 月別の振り返り"
         tag_label = "🏷️ タグ別の振り返り"
         history_label = "📚 これまでの日記"
         if current_view in {"🔍 今月の発見", "🗓 期間の振り返り"}:
-            current_view = tag_label
+            current_view = monthly_label
         if current_view == history_label:
             detail_trip_id = str(st.session_state.get("history_detail_trip_id") or "")
             if detail_trip_id:
                 return "review_history_detail", detail_trip_id
             return "review_history", ""
-        if current_view == tag_label:
+        if current_view in {monthly_label, tag_label}:
             return "review_period", ""
         return "review", ""
 
@@ -16113,7 +16202,7 @@ def render_home_button(label, page_name, key, ensure_trip=False, open_period_rev
                 st.session_state["_camera_auto_start"] = True
                 st.session_state.pop("_camera_auto_start_video", None)
         elif page_name == "review":
-            # Always enter Review through the clear two-choice menu. The period-review
+            # Always enter Review through the clear three-choice menu. The monthly-review
             # nudge on Home is still shown, but it no longer skips past this selector.
             st.session_state.pop("review_view_selector", None)
         elif ensure_trip:
@@ -21944,7 +22033,14 @@ def render_monthly_ai_comments(review):
 
     with st.expander("保護者向けメモ"):
         st.write(review.get("parent_note", ""))
-        if str(review.get("_review_scope_type") or "") == "tag":
+        review_scope_type = str(review.get("_review_scope_type") or "")
+        if review_scope_type == "ai_tag":
+            tag_display = str(review.get("_tag_label") or review.get("_ai_tag_key") or "選んだAIタグ")
+            st.caption(
+                f"AIが写真から見える内容を整理した『{tag_display}』タグの写真を、日付・枚数など確認できる範囲で振り返っています。"
+                "人物関係・性格・能力などは推測しません。"
+            )
+        elif review_scope_type == "tag":
             tag_display = str(review.get("_tag_label") or "選んだタグ")
             st.caption(
                 f"写真に付けた『{tag_display}』タグの記録を、日付・枚数など確認できる事実の範囲で振り返っています。"
@@ -21963,44 +22059,61 @@ def render_monthly_ai_comments(review):
 
 def page_tag_review(embedded=False):
     if not embedded:
-        page_top("🏷️ タグ別の振り返り")
+        page_top("🏷️ AIタグ別の振り返り")
     deleted_notice = st.session_state.pop("_tag_video_deleted_notice", None)
     if deleted_notice:
         st.success(deleted_notice)
     render_photo_tag_notices()
-    st.caption("写真に付けた同じタグを月をまたいで集め、時系列の振り返りムービーとして見返します。")
+    st.caption(
+        "AIが写真から自動判定した『子ども』『大人』『複数人』『電車』などの画像タグごとに、"
+        "月をまたいで写真を集め、振り返りムービーとして見返します。"
+    )
 
     shared_visible = render_family_shared_monthly_reviews()
     if shared_visible:
         st.divider()
-        st.markdown("#### 自分のタグ別振り返り")
+        st.markdown("#### 自分のAIタグ別振り返り")
 
     try:
-        source = get_tag_review_source(limit=1200)
+        source = get_tag_review_source(limit=AI_TAG_REVIEW_SOURCE_LIMIT)
     except Exception as exc:
-        st.error("タグ付き写真を読み込めませんでした。")
+        st.error("写真のAIタグ情報を読み込めませんでした。")
         with st.expander("保護者向け詳細"):
             st.code(str(exc))
         return
 
-    counts = tag_review_counts(source)
-    available_tags = [key for key in ALL_PHOTO_TAG_ORDER if int(counts.get(key) or 0) > 0]
-    if not available_tags:
-        st.info("まだタグを付けた写真がありません。写真に『通常』または『こどもーど』のタグを付けると、ここで振り返れます。")
+    all_photos = list((source or {}).get("photos", []) or [])
+    if not all_photos:
+        st.info("まだ振り返りに使える写真がありません。")
         return
 
-    def _tag_option_label(key):
-        meta = photo_tag_meta_from_key(key)
-        return f"{meta.get('emoji') or ''} {meta.get('label') or key}（{int(counts.get(key) or 0)}枚）".strip()
+    # Older photos may predate automatic AI tagging. Keep the existing batch tagger
+    # available here so the tag-review library can be completed without changing
+    # emotion/parenting tags.
+    render_ai_photo_tag_action(
+        all_photos,
+        key="tag_review_all_v207",
+        scope_label="これまでの写真",
+        max_photos=AI_PHOTO_TAG_MANUAL_MAX_PER_RUN,
+    )
+
+    counts = tag_review_counts(source)
+    available_tags = ordered_ai_review_tags(counts)
+    if not available_tags:
+        st.info(
+            "まだAI画像タグが付いた写真がありません。上の『タグのない写真にタグをつける』を押すと、"
+            "写真内容から自動タグを作成できます。"
+        )
+        return
 
     selected_tag = st.selectbox(
-        "振り返るタグ",
+        "振り返るAIタグ",
         available_tags,
-        format_func=_tag_option_label,
-        key="tag_review_selector_v206",
+        format_func=lambda tag: f"{tag}（{int(counts.get(tag) or 0)}枚）",
+        key="ai_tag_review_selector_v207",
     )
-    tag_meta = photo_tag_meta_from_key(selected_tag)
-    scope_label = f"{tag_meta.get('emoji') or ''} {tag_meta.get('label') or selected_tag}".strip()
+    selected_tag = normalize_ai_photo_tag(selected_tag)
+    scope_label = f"🏷️ {selected_tag}"
     st.markdown(f"### {html.escape(scope_label)} の振り返り")
 
     bundle = tag_review_bundle(source, selected_tag)
@@ -22013,38 +22126,53 @@ def page_tag_review(embedded=False):
     if first_date and last_date:
         range_text = first_date if first_date == last_date else f"{first_date}〜{last_date}"
     st.write(
-        f"このタグの写真：**{photo_count}枚**　／　記録した日：**{day_count}日**"
+        f"このAIタグの写真：**{photo_count}枚**　／　記録した日：**{day_count}日**"
         + (f"　／　{range_text}" if range_text else "")
     )
+    st.caption(
+        "同じ写真に複数のAIタグが付くため、1枚の写真が『子ども』『複数人』など複数の振り返りに含まれることがあります。"
+    )
     if photo_count == 0:
-        st.info("このタグの写真はありません。")
+        st.info("このAIタグの写真はありません。")
         return
 
-    storage_key = tag_review_storage_month(selected_tag)
     saved = get_saved_tag_review(selected_tag)
-    session_key = f"monthly_review_{storage_key}"
+    storage_key = str((saved or {}).get("review_month") or "")[:7]
+    unsaved_token = hashlib.sha1(selected_tag.encode("utf-8")).hexdigest()[:12]
+    session_key = f"monthly_review_{storage_key}" if storage_key else f"ai_tag_review_unsaved_{unsaved_token}"
     if session_key not in st.session_state and saved:
-        saved_review = saved.get("review_json") or {}
-        if isinstance(saved_review, dict) and str(saved_review.get("_tag_key") or "") == str(selected_tag):
+        saved_review = _coerce_review_json(saved.get("review_json"))
+        if str(saved_review.get("_review_scope_type") or "") == "ai_tag" and normalize_ai_photo_tag(saved_review.get("_ai_tag_key")) == selected_tag:
             st.session_state[session_key] = saved_review
     review = st.session_state.get(session_key)
-    if isinstance(review, dict) and str(review.get("_tag_key") or "") not in {"", str(selected_tag)}:
+    if isinstance(review, dict) and normalize_ai_photo_tag(review.get("_ai_tag_key")) not in {"", selected_tag}:
         review = None
         st.session_state.pop(session_key, None)
 
     if not review:
-        if st.button("AIとこのタグを振り返る", type="primary", use_container_width=True, key=f"tag_review_create_{selected_tag}"):
+        if st.button(
+            "AIとこのタグを振り返る",
+            type="primary",
+            use_container_width=True,
+            key=f"ai_tag_review_create_{unsaved_token}",
+        ):
             try:
-                with st.spinner("このタグの写真を時系列につないでいます…"):
+                with st.spinner("このAIタグの写真を時系列につないでいます…"):
                     review = make_tag_review(selected_tag, bundle)
                     save_tag_review(selected_tag, review)
-                st.session_state[session_key] = review
                 st.rerun()
             except Exception as exc:
-                st.error("タグ別の振り返りを作れませんでした。")
+                st.error("AIタグ別の振り返りを作れませんでした。")
                 with st.expander("保護者向け詳細"):
                     st.code(str(exc))
         return
+
+    # A saved tag review always has a reserved storage month. Recover it if this
+    # page arrived from an in-session state created before the DB reread.
+    if not storage_key:
+        storage_key = str(review.get("_tag_storage_month") or "")[:7]
+    if not storage_key:
+        storage_key = tag_review_storage_month(selected_tag, create=True)
 
     playback = get_monthly_playback(review)
     music_ready = monthly_playback_is_ready(playback)
@@ -22056,7 +22184,7 @@ def page_tag_review(embedded=False):
             "🎵 音楽をセットする",
             type="primary",
             use_container_width=True,
-            key=f"tag_music_setup_top_{selected_tag}",
+            key=f"ai_tag_music_setup_top_{unsaved_token}",
         ):
             st.session_state[settings_open_key] = True
 
@@ -22065,22 +22193,22 @@ def page_tag_review(embedded=False):
 
         render_monthly_ai_comments(review)
         if st.button(
-            "このタグをもう一度まとめる",
+            "このAIタグをもう一度まとめる",
             use_container_width=True,
-            key=f"tag_regenerate_without_music_{selected_tag}",
+            key=f"ai_tag_regenerate_without_music_{unsaved_token}",
         ):
             try:
                 previous_playback = get_monthly_playback(review)
-                with st.spinner("このタグの記録をまとめ直しています…"):
+                with st.spinner("このAIタグの記録をまとめ直しています…"):
                     refreshed = make_tag_review(selected_tag, bundle)
                     if previous_playback:
                         refreshed["_playback"] = previous_playback
                     refreshed = carry_monthly_family_share(refreshed, review, storage_key, scope_label, bundle)
                     save_tag_review(selected_tag, refreshed)
-                st.session_state[session_key] = refreshed
+                st.session_state[f"monthly_review_{storage_key}"] = refreshed
                 st.rerun()
             except Exception as exc:
-                st.error("タグ別の振り返りを作れませんでした。")
+                st.error("AIタグ別の振り返りを作れませんでした。")
                 with st.expander("保護者向け詳細"):
                     st.code(str(exc))
         return
@@ -22097,7 +22225,7 @@ def page_tag_review(embedded=False):
                 if st.button(
                     "家族への共有を解除する",
                     use_container_width=True,
-                    key=f"tag_family_unshare_{selected_tag}",
+                    key=f"ai_tag_family_unshare_{unsaved_token}",
                 ):
                     try:
                         review = set_monthly_family_share(storage_key, scope_label, bundle, review, enabled=False)
@@ -22111,7 +22239,7 @@ def page_tag_review(embedded=False):
                 if st.button(
                     "👨‍👩‍👦 家族に共有する",
                     use_container_width=True,
-                    key=f"tag_family_share_{selected_tag}",
+                    key=f"ai_tag_family_share_{unsaved_token}",
                 ):
                     try:
                         review = set_monthly_family_share(storage_key, scope_label, bundle, review, enabled=True)
@@ -22126,7 +22254,7 @@ def page_tag_review(embedded=False):
     if st.button(
         "⏱ 音楽を再生する時間を変更する",
         use_container_width=True,
-        key=f"tag_change_music_time_{selected_tag}",
+        key=f"ai_tag_change_music_time_{unsaved_token}",
     ):
         opening_time_settings = not bool(st.session_state.get(time_settings_open_key))
         st.session_state[time_settings_open_key] = opening_time_settings
@@ -22155,7 +22283,7 @@ def page_tag_review(embedded=False):
         if st.button(
             "🎵 音楽を変更する",
             use_container_width=True,
-            key=f"tag_change_music_{selected_tag}",
+            key=f"ai_tag_change_music_{unsaved_token}",
         ):
             st.session_state[settings_open_key] = not bool(st.session_state.get(settings_open_key))
             if st.session_state[settings_open_key]:
@@ -22164,7 +22292,7 @@ def page_tag_review(embedded=False):
         if st.button(
             "☆ この音楽を保存する",
             use_container_width=True,
-            key=f"tag_save_current_music_{selected_tag}",
+            key=f"ai_tag_save_current_music_{unsaved_token}",
         ):
             try:
                 state = _monthly_replay_state(storage_key, review)
@@ -22200,7 +22328,7 @@ def page_tag_review(embedded=False):
             if st.button(
                 comments_label,
                 use_container_width=True,
-                key=f"tag_toggle_ai_comments_{selected_tag}",
+                key=f"ai_tag_toggle_ai_comments_{unsaved_token}",
             ):
                 st.session_state[comments_open_key] = not comments_open
                 st.rerun()
@@ -22211,37 +22339,37 @@ def page_tag_review(embedded=False):
     if st.session_state.get(comments_open_key):
         render_monthly_ai_comments(review)
         if st.button(
-            "このタグをもう一度まとめる",
+            "このAIタグをもう一度まとめる",
             use_container_width=True,
-            key=f"tag_regenerate_with_music_{selected_tag}",
+            key=f"ai_tag_regenerate_with_music_{unsaved_token}",
         ):
             try:
                 previous_playback = get_monthly_playback(review)
-                with st.spinner("このタグの記録をまとめ直しています…"):
+                with st.spinner("このAIタグの記録をまとめ直しています…"):
                     refreshed = make_tag_review(selected_tag, bundle)
                     if previous_playback:
                         refreshed["_playback"] = previous_playback
                     refreshed = carry_monthly_family_share(refreshed, review, storage_key, scope_label, bundle)
                     save_tag_review(selected_tag, refreshed)
-                st.session_state[session_key] = refreshed
+                st.session_state[f"monthly_review_{storage_key}"] = refreshed
                 st.rerun()
             except Exception as exc:
-                st.error("タグ別の振り返りを作れませんでした。")
+                st.error("AIタグ別の振り返りを作れませんでした。")
                 with st.expander("保護者向け詳細"):
                     st.code(str(exc))
 
-    delete_video_confirm_key = f"tag_delete_video_confirm_{selected_tag}"
+    delete_video_confirm_key = f"ai_tag_delete_video_confirm_{unsaved_token}"
     st.divider()
     with st.container(key="monthly_delete_video_area"):
         if st.session_state.get(delete_video_confirm_key):
-            st.warning("このタグの振り返り動画を削除します。写真・日記・AIコメント・保存済み音楽は削除されません。")
+            st.warning("このAIタグの振り返り動画を削除します。写真・日記・AIコメント・保存済み音楽は削除されません。")
             delete_col, cancel_col = st.columns([1.25, 1])
             with delete_col:
                 with st.container(key="monthly_delete_video_confirm_action"):
                     if st.button(
                         "削除する",
                         use_container_width=True,
-                        key=f"tag_delete_video_confirm_button_{selected_tag}",
+                        key=f"ai_tag_delete_video_confirm_button_{unsaved_token}",
                     ):
                         try:
                             state = _monthly_replay_state(storage_key, review)
@@ -22259,7 +22387,7 @@ def page_tag_review(embedded=False):
                                 delete_video_confirm_key,
                             ):
                                 st.session_state.pop(state_key, None)
-                            st.session_state["_tag_video_deleted_notice"] = "このタグの振り返り動画を削除しました。"
+                            st.session_state["_tag_video_deleted_notice"] = "このAIタグの振り返り動画を削除しました。"
                             st.rerun()
                         except Exception as exc:
                             st.error("振り返り動画を削除できませんでした。")
@@ -22269,7 +22397,7 @@ def page_tag_review(embedded=False):
                 if st.button(
                     "キャンセル",
                     use_container_width=True,
-                    key=f"tag_delete_video_cancel_{selected_tag}",
+                    key=f"ai_tag_delete_video_cancel_{unsaved_token}",
                 ):
                     st.session_state.pop(delete_video_confirm_key, None)
                     st.rerun()
@@ -22278,7 +22406,7 @@ def page_tag_review(embedded=False):
                 if st.button(
                     "🗑 この振り返り動画を削除する",
                     use_container_width=True,
-                    key=f"tag_delete_video_{selected_tag}",
+                    key=f"ai_tag_delete_video_{unsaved_token}",
                 ):
                     st.session_state[delete_video_confirm_key] = True
                     st.rerun()
@@ -22652,23 +22780,25 @@ def page_monthly(embedded=False):
 # Page: Review / Settings
 # ============================================================
 def page_review():
+    monthly_label = "🗓 月別の振り返り"
     tag_label = "🏷️ タグ別の振り返り"
     history_label = "📚 これまでの日記"
     current_view = st.session_state.get("review_view_selector")
     if current_view in {"🔍 今月の発見", "🗓 期間の振り返り"}:
-        current_view = tag_label
+        current_view = monthly_label
         st.session_state["review_view_selector"] = current_view
-    if current_view not in {tag_label, history_label}:
+    if current_view not in {monthly_label, tag_label, history_label}:
         current_view = None
 
     page_top(
         "🔍 振り返り",
-        "見たい振り返りを選んでください。タグごとの写真ムービーと、1日ごとの日記を分けて見られます。",
+        "月ごとの振り返り、AIが写真内容から付けたタグごとの振り返り、1日ごとの日記を分けて見られます。",
     )
     st.markdown(
         """
         <style>
-          .st-key-review_period_choice,
+          .st-key-review_monthly_choice,
+          .st-key-review_tag_choice,
           .st-key-review_history_choice {
             border: 1px solid rgba(128,128,128,.18);
             border-radius: 18px;
@@ -22676,14 +22806,16 @@ def page_review():
             margin: .18rem 0 .62rem;
             background: rgba(255,255,255,.72);
           }
-          .st-key-review_period_choice div.stButton > button,
+          .st-key-review_monthly_choice div.stButton > button,
+          .st-key-review_tag_choice div.stButton > button,
           .st-key-review_history_choice div.stButton > button {
             min-height: 3.2rem;
             font-size: 1.05rem;
             font-weight: 800;
             border-radius: 14px;
           }
-          .st-key-review_period_choice [data-testid="stCaptionContainer"],
+          .st-key-review_monthly_choice [data-testid="stCaptionContainer"],
+          .st-key-review_tag_choice [data-testid="stCaptionContainer"],
           .st-key-review_history_choice [data-testid="stCaptionContainer"] {
             margin-top: -.18rem;
             padding: 0 .18rem .06rem;
@@ -22744,39 +22876,53 @@ def page_review():
     )
 
     st.markdown("#### 見たい振り返り")
-    with st.container(key="review_period_choice"):
+    with st.container(key="review_monthly_choice"):
+        if st.button(
+            monthly_label,
+            type="primary" if current_view == monthly_label else "secondary",
+            use_container_width=True,
+            key="review_choose_monthly_v207",
+        ):
+            st.session_state["review_view_selector"] = monthly_label
+            st.rerun()
+        st.caption("従来どおり、月ごとの写真・気持ち・日記をまとめて振り返る")
+
+    with st.container(key="review_tag_choice"):
         if st.button(
             tag_label,
             type="primary" if current_view == tag_label else "secondary",
             use_container_width=True,
-            key="review_choose_tag",
+            key="review_choose_ai_tag_v207",
         ):
             st.session_state["review_view_selector"] = tag_label
             st.rerun()
-        st.caption("同じタグの写真を月をまたいで集め、音楽つきの振り返りムービーで見る")
+        st.caption("AIが写真から自動判定した『子ども』『大人』『複数人』などのタグごとに振り返る")
 
     with st.container(key="review_history_choice"):
         if st.button(
             history_label,
             type="primary" if current_view == history_label else "secondary",
             use_container_width=True,
-            key="review_choose_history",
+            key="review_choose_history_v207",
         ):
             st.session_state["review_view_selector"] = history_label
             st.rerun()
         st.caption("これまで作った日記を、1日ごとに読み返す")
 
-    if current_view == tag_label:
+    if current_view == monthly_label:
         mark_current_month_review_seen()
+        st.divider()
+        page_monthly(embedded=True)
+    elif current_view == tag_label:
         st.divider()
         page_tag_review(embedded=True)
     elif current_view == history_label:
         st.divider()
         page_history(embedded=True)
     else:
-        st.caption("上のどちらかを押すと内容が表示されます。")
+        st.caption("上のいずれかを押すと内容が表示されます。")
 
-    if current_view in {tag_label, history_label}:
+    if current_view in {monthly_label, tag_label, history_label}:
         with st.container(key="review_back_menu_bottom"):
             if st.button(
                 "↩ 振り返り（たまに）に戻る",
@@ -22785,7 +22931,6 @@ def page_review():
             ):
                 st.session_state.pop("review_view_selector", None)
                 st.rerun()
-
 
 
 def page_settings():
