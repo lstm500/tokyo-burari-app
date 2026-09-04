@@ -29,9 +29,9 @@ from zoneinfo import ZoneInfo
 import streamlit as st
 
 # Freshly generated update: 2026-08-31 23:49 JST
-GENERATED_UPDATE_JST = "2026-09-05T01:11:02+09:00"
+GENERATED_UPDATE_JST = "2026-09-05T01:21:45+09:00"
 
-APP_BUILD = "v198"
+APP_BUILD = "v199"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -4374,7 +4374,7 @@ def sync_pending_tags_from_browser_v166():
 _HISTORY_JS = r"""
 export default function(component) {
   const { data, setTriggerValue } = component;
-  const validPages = new Set(['home', 'camera', 'videos', 'moments', 'diary', 'review', 'settings']);
+  const validPages = new Set(['home', 'camera', 'videos', 'moments', 'diary', 'review', 'nearby', 'toilets', 'settings']);
   const marker = '__tokyo_burari_page__';
   const requestedPage = validPages.has(data?.page) ? data.page : 'home';
   const action = data?.action || 'sync';
@@ -4486,7 +4486,7 @@ export default function(component) {
 
 try:
     browser_history_component = st.components.v2.component(
-        'tokyo_burari_browser_history_v159',
+        'tokyo_burari_browser_history_v199',
         js=_HISTORY_JS,
     )
 except Exception:
@@ -6787,6 +6787,41 @@ def _toilet_baby_info(tags):
     return {"ok": None, "label": ""}
 
 
+def _toilet_rank_score(place, usable_now_preferred=True):
+    """Rank nearby toilets by a practical mix of current usability and distance.
+
+    No category (public/facility/office/etc.) gets an intrinsic bonus. A confirmed-open
+    toilet is preferred, unknown hours stay available with a moderate penalty, and
+    customer-only/unverified access is slightly de-prioritized. This keeps a very close
+    unknown toilet competitive while moving a nearby confirmed-open option upward.
+    """
+    place = place if isinstance(place, dict) else {}
+    try:
+        distance = max(0, int(place.get("distance_m") or 0))
+    except (TypeError, ValueError):
+        distance = 0
+
+    open_now = place.get("open_now")
+    opening_known = bool(place.get("opening_known"))
+    if open_now is True:
+        availability_penalty = 0
+    elif open_now is False and opening_known:
+        availability_penalty = 900 if usable_now_preferred else 260
+    else:
+        availability_penalty = 320 if usable_now_preferred else 60
+
+    access_label = str(place.get("access_label") or "").strip()
+    if access_label == "施設利用者向け":
+        access_penalty = 320
+    elif access_label == "利用条件未確認":
+        access_penalty = 120
+    else:
+        access_penalty = 0
+
+    floor_bonus = -45 if str(place.get("floor_label") or "").strip() == "1階情報あり" else 0
+    return max(0, distance + availability_penalty + access_penalty + floor_bonus)
+
+
 @st.cache_data(ttl=300, show_spinner=False)
 def _toilet_google_fallback(latitude, longitude, radius_m):
     """Supplement nearby toilets with Google Places facilities that report a restroom.
@@ -6945,9 +6980,9 @@ def _toilet_google_fallback(latitude, longitude, radius_m):
                     "provider": "Google Places",
                 }
             )
-    places.sort(key=lambda item: (int(item.get("sort_score") or 0), int(item.get("distance_m") or 0)))
+    places.sort(key=lambda item: (_toilet_rank_score(item, usable_now_preferred=True), int(item.get("distance_m") or 0)))
     return {
-        "places": places[:30],
+        "places": places[:40],
         "error": "" if places or not errors else "Google Placesのトイレ検索に接続できませんでした。",
         "detail": " / ".join(errors[-2:])[:220],
         "provider": "Google Places",
@@ -7216,9 +7251,15 @@ def search_nearby_toilets(
             and not (usable_now_preferred and p.get("opening_known") and p.get("open_now") is False)
         ]
 
-    # No category bonus is applied. The ranking is essentially distance plus only a
-    # small penalty when access is explicitly customer-only or still unverified.
-    filtered.sort(key=lambda item: (int(item.get("sort_score") or item.get("distance_m") or 0), int(item.get("distance_m") or 0)))
+    # No category bonus is applied. Confirmed-currently-usable toilets move upward,
+    # while distance remains important enough that a very close unknown-hours option
+    # can still beat a much farther confirmed-open one.
+    filtered.sort(
+        key=lambda item: (
+            _toilet_rank_score(item, usable_now_preferred=usable_now_preferred),
+            int(item.get("distance_m") or 0),
+        )
+    )
 
     if filtered:
         notes = []
@@ -15407,7 +15448,7 @@ def sync_browser_history():
             "node": navigation_node,
             "intercept_hierarchy_back": navigation_node in intercept_nodes,
         },
-        key=f"tokyo_burari_browser_history_instance_v159_{_current_ui_refresh_epoch()}",
+        key=f"tokyo_burari_browser_history_instance_v199_{_current_ui_refresh_epoch()}",
         on_page_change=lambda: None,
         on_hierarchy_back_change=lambda: None,
         on_pending_restore_change=lambda: None,
@@ -17435,7 +17476,7 @@ def page_toilets():
     if location_component is not None:
         result = location_component(
             data={},
-            key=f"toilet_location_v198_{current_family_key()}_{current_member_key()}",
+            key=f"toilet_location_v199_{current_family_key()}_{current_member_key()}",
             on_location_change=lambda: None,
             on_location_error_change=lambda: None,
         )
@@ -17478,9 +17519,9 @@ def page_toilets():
         manual_place = st.text_input(
             "駅名・地名",
             placeholder="例：上野駅、浅草、品川駅",
-            key="toilet_manual_place_text_v198",
+            key="toilet_manual_place_text_v199",
         )
-        if st.button("この地名を検索の中心にする", use_container_width=True, key="toilet_manual_place_button_v198"):
+        if st.button("この地名を検索の中心にする", use_container_width=True, key="toilet_manual_place_button_v199"):
             with st.spinner("場所を確認しています…"):
                 resolved = geocode_nearby_place_text(manual_place)
             if resolved:
@@ -17511,12 +17552,12 @@ def page_toilets():
         st.warning("現在地の精度が低めです。候補の位置がずれる場合は、上の『地名から探す』で駅名や地名を指定してください。")
 
     prefix = f"{current_family_key()}_{current_member_key()}"
-    distance_key = f"_toilet_distance_v198_{prefix}"
-    fee_key = f"_toilet_fee_v198_{prefix}"
-    wheelchair_key = f"_toilet_wheelchair_v198_{prefix}"
-    baby_key = f"_toilet_baby_v198_{prefix}"
-    open_key = f"_toilet_open_v198_{prefix}"
-    result_key = f"_toilet_search_result_v198_{prefix}"
+    distance_key = f"_toilet_distance_v199_{prefix}"
+    fee_key = f"_toilet_fee_v199_{prefix}"
+    wheelchair_key = f"_toilet_wheelchair_v199_{prefix}"
+    baby_key = f"_toilet_baby_v199_{prefix}"
+    open_key = f"_toilet_open_v199_{prefix}"
+    result_key = f"_toilet_search_result_v199_{prefix}"
 
     if st.session_state.get(distance_key) not in {"5", "10", "15"}:
         st.session_state[distance_key] = "10"
@@ -17553,12 +17594,12 @@ def page_toilets():
                 with st.container(border=True, key="toilet_step_1"):
                     _step_title(1, "距離")
                     for label, value in (("🚶 5分", "5"), ("🚶 10分", "10"), ("🚶 15分", "15")):
-                        _choice_button(label, value, distance_key, f"toilet_distance_{value}_v198", distance_mode)
+                        _choice_button(label, value, distance_key, f"toilet_distance_{value}_v199", distance_mode)
             with right:
                 with st.container(border=True, key="toilet_step_2"):
                     _step_title(2, "料金")
-                    _choice_button("🆓 無料優先", "free", fee_key, "toilet_fee_free_v198", fee_mode)
-                    _choice_button("料金問わない", "all", fee_key, "toilet_fee_all_v198", fee_mode)
+                    _choice_button("🆓 無料優先", "free", fee_key, "toilet_fee_free_v199", fee_mode)
+                    _choice_button("料金問わない", "all", fee_key, "toilet_fee_all_v199", fee_mode)
                     st.markdown('<div class="toilet-step-note">無料優先は、明確に有料と登録された場所を除きます。</div>', unsafe_allow_html=True)
 
         with st.container(key="toilet_filter_row_2"):
@@ -17566,21 +17607,21 @@ def page_toilets():
             with left:
                 with st.container(border=True, key="toilet_step_3"):
                     _step_title(3, "車いす")
-                    _choice_button("♿ 対応だけ", "yes", wheelchair_key, "toilet_wheelchair_yes_v198", wheelchair_mode)
-                    _choice_button("問わない", "all", wheelchair_key, "toilet_wheelchair_all_v198", wheelchair_mode)
+                    _choice_button("♿ 対応だけ", "yes", wheelchair_key, "toilet_wheelchair_yes_v199", wheelchair_mode)
+                    _choice_button("問わない", "all", wheelchair_key, "toilet_wheelchair_all_v199", wheelchair_mode)
             with right:
                 with st.container(border=True, key="toilet_step_4"):
                     _step_title(4, "おむつ交換")
-                    _choice_button("👶 交換台あり", "yes", baby_key, "toilet_baby_yes_v198", baby_mode)
-                    _choice_button("問わない", "all", baby_key, "toilet_baby_all_v198", baby_mode)
+                    _choice_button("👶 交換台あり", "yes", baby_key, "toilet_baby_yes_v199", baby_mode)
+                    _choice_button("問わない", "all", baby_key, "toilet_baby_all_v199", baby_mode)
 
         with st.container(border=True, key="toilet_step_5"):
             _step_title(5, "利用時間")
             time_left, time_right = st.columns(2, gap="small")
             with time_left:
-                _choice_button("🟢 今使える優先", "usable", open_key, "toilet_open_usable_v198", open_mode)
+                _choice_button("🟢 今使える優先", "usable", open_key, "toilet_open_usable_v199", open_mode)
             with time_right:
-                _choice_button("時間問わない", "all", open_key, "toilet_open_all_v198", open_mode)
+                _choice_button("時間問わない", "all", open_key, "toilet_open_all_v199", open_mode)
             st.markdown('<div class="toilet-step-note">営業時間が登録されていないトイレは、候補を失わないため残します。</div>', unsafe_allow_html=True)
 
         radius_map = {"5": 400, "10": 800, "15": 1200}
@@ -17608,7 +17649,7 @@ def page_toilets():
             sort_keys=True,
         )
         with st.container(key="toilet_search_action"):
-            search_pressed = st.button("🚻 この条件でトイレを探す", type="primary", use_container_width=True, key="toilet_search_submit_v198")
+            search_pressed = st.button("🚻 この条件でトイレを探す", type="primary", use_container_width=True, key="toilet_search_submit_v199")
 
     if search_pressed:
         with st.spinner("近くのトイレを探しています…"):
@@ -17650,8 +17691,8 @@ def page_toilets():
 
     places = list(search_result.get("places") or [])[:10]
     st.divider()
-    st.markdown("### 近いトイレ")
-    st.caption("最大10か所を、公衆・施設内の区別で優先せず、距離と利用しやすさを中心に表示します。徒歩時間は直線距離からの目安です。")
+    st.markdown("### 近くで使いやすいトイレ")
+    st.caption("最大10か所。公衆・施設内の種類では優先せず、現在利用できると確認できる候補を上げつつ、近さも重視して表示します。徒歩時間は直線距離からの目安です。")
     if not places:
         st.info("この条件ではトイレを見つけられませんでした。距離を広げるか、設備条件を『問わない』にしてもう一度検索してください。")
         return
