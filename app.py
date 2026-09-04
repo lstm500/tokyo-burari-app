@@ -29,9 +29,9 @@ from zoneinfo import ZoneInfo
 import streamlit as st
 
 # Freshly generated update: 2026-08-31 23:49 JST
-GENERATED_UPDATE_JST = "2026-09-05T00:50:09+09:00"
+GENERATED_UPDATE_JST = "2026-09-05T01:11:02+09:00"
 
-APP_BUILD = "v197"
+APP_BUILD = "v198"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -6789,11 +6789,12 @@ def _toilet_baby_info(tags):
 
 @st.cache_data(ttl=300, show_spinner=False)
 def _toilet_google_fallback(latitude, longitude, radius_m):
-    """Reliable fallback for public bathrooms when Overpass is busy.
+    """Supplement nearby toilets with Google Places facilities that report a restroom.
 
-    This uses the existing Google Places key only when the OpenStreetMap search
-    could not return useful results. It intentionally requests only public
-    bathrooms and keeps the result lightweight.
+    Public bathrooms and host facilities are searched in separate lightweight requests,
+    then merged and ranked together later. A host facility is included only when Google
+    explicitly returns restroom=true; office/restaurant access is still labelled as
+    unverified because Places does not say whether the restroom is before an entry gate.
     """
     if not GOOGLE_PLACES_API_KEY:
         return {"places": [], "error": "", "provider": ""}
@@ -6804,93 +6805,153 @@ def _toilet_google_fallback(latitude, longitude, radius_m):
     except (TypeError, ValueError):
         return {"places": [], "error": "現在地を確認できませんでした。", "provider": "Google Places"}
 
-    body = {
-        "includedTypes": ["public_bathroom"],
-        "maxResultCount": 20,
-        "rankPreference": "DISTANCE",
-        "locationRestriction": {
-            "circle": {
-                "center": {"latitude": latitude, "longitude": longitude},
-                "radius": radius_m,
-            }
-        },
-        "languageCode": "ja",
-        "regionCode": "JP",
-    }
-    req = Request(
-        "https://places.googleapis.com/v1/places:searchNearby",
-        data=json.dumps(body, ensure_ascii=False).encode("utf-8"),
-        headers={
-            "Content-Type": "application/json; charset=UTF-8",
-            "X-Goog-Api-Key": GOOGLE_PLACES_API_KEY,
-            "X-Goog-FieldMask": (
-                "places.id,places.displayName,places.formattedAddress,places.location,"
-                "places.types,places.businessStatus,places.currentOpeningHours"
-            ),
-        },
-        method="POST",
-    )
-    try:
-        with urlopen(req, timeout=5.0) as response:
-            data = json.loads(response.read().decode("utf-8"))
-    except Exception as exc:
-        return {
-            "places": [],
-            "error": "Google Placesのトイレ検索にも接続できませんでした。",
-            "detail": str(exc)[:180],
-            "provider": "Google Places",
+    type_groups = [
+        [
+            "public_bathroom", "train_station", "subway_station", "transit_station",
+            "shopping_mall", "department_store", "supermarket",
+        ],
+        [
+            "business_center", "corporate_office", "coworking_space", "food_court",
+            "restaurant", "cafe", "convenience_store",
+        ],
+    ]
+
+    def _request_group(included_types):
+        body = {
+            "includedTypes": list(included_types),
+            "maxResultCount": 20,
+            "rankPreference": "DISTANCE",
+            "locationRestriction": {
+                "circle": {
+                    "center": {"latitude": latitude, "longitude": longitude},
+                    "radius": radius_m,
+                }
+            },
+            "languageCode": "ja",
+            "regionCode": "JP",
         }
+        req = Request(
+            "https://places.googleapis.com/v1/places:searchNearby",
+            data=json.dumps(body, ensure_ascii=False).encode("utf-8"),
+            headers={
+                "Content-Type": "application/json; charset=UTF-8",
+                "X-Goog-Api-Key": GOOGLE_PLACES_API_KEY,
+                "X-Goog-FieldMask": (
+                    "places.id,places.displayName,places.formattedAddress,places.location,"
+                    "places.types,places.primaryType,places.businessStatus,places.currentOpeningHours,places.restroom"
+                ),
+            },
+            method="POST",
+        )
+        try:
+            with urlopen(req, timeout=5.0) as response:
+                data = json.loads(response.read().decode("utf-8"))
+            return data if isinstance(data, dict) else {}, ""
+        except Exception as exc:
+            return {}, str(exc)[:180]
+
+    results = []
+    errors = []
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [executor.submit(_request_group, group) for group in type_groups]
+        for future in futures:
+            try:
+                data, error = future.result()
+            except Exception as exc:
+                data, error = {}, str(exc)[:180]
+            results.append(data)
+            if error:
+                errors.append(error)
+
+    def _category_for_types(types):
+        types = set(types or [])
+        if "public_bathroom" in types:
+            return "公衆トイレ"
+        if types & {"shopping_mall", "department_store", "supermarket", "convenience_store"}:
+            return "商業施設内トイレ"
+        if types & {"food_court", "restaurant", "cafe"}:
+            return "飲食施設内トイレ"
+        if types & {"business_center", "corporate_office", "coworking_space"}:
+            return "オフィスビル内トイレ"
+        if types & {"train_station", "subway_station", "transit_station"}:
+            return "駅・交通施設内トイレ"
+        return "施設内トイレ"
 
     places = []
-    for raw in list((data or {}).get("places") or []):
-        if not isinstance(raw, dict):
-            continue
-        if str(raw.get("businessStatus") or "") == "CLOSED_PERMANENTLY":
-            continue
-        loc = raw.get("location") or {}
-        try:
-            plat = float(loc.get("latitude"))
-            plon = float(loc.get("longitude"))
-        except (TypeError, ValueError):
-            continue
-        distance_m = _nearby_haversine_m(latitude, longitude, plat, plon)
-        if not math.isfinite(distance_m) or distance_m > radius_m * 1.15:
-            continue
-        name_obj = raw.get("displayName") or {}
-        name = str(name_obj.get("text") if isinstance(name_obj, dict) else "").strip() or "公衆トイレ"
-        current_hours = raw.get("currentOpeningHours") if isinstance(raw.get("currentOpeningHours"), dict) else {}
-        open_now = current_hours.get("openNow") if isinstance(current_hours.get("openNow"), bool) else None
-        opening_known = open_now is not None
-        opening_label = "🟢 利用可能" if open_now is True else ("🔴 利用時間外" if open_now is False else "利用時間情報なし")
-        walk_minutes = max(1, int(math.ceil((distance_m * 1.25) / 80.0)))
-        places.append(
-            {
-                "id": f"google:{raw.get('id','')}",
-                "name": name,
-                "category": "公衆トイレ",
-                "latitude": plat,
-                "longitude": plon,
-                "distance_m": int(round(distance_m)),
-                "walk_minutes": walk_minutes,
-                "fee_status": "unknown",
-                "fee_label": "料金情報なし",
-                "wheelchair_ok": None,
-                "wheelchair_label": "",
-                "baby_ok": None,
-                "baby_label": "",
-                "access_label": "",
-                "opening_hours": "",
-                "opening_known": opening_known,
-                "open_now": open_now,
-                "opening_label": opening_label,
-                "address": str(raw.get("formattedAddress") or "").strip(),
-                "sort_score": int(round(distance_m)),
-                "provider": "Google Places",
-            }
-        )
-    places.sort(key=lambda item: int(item.get("distance_m") or 0))
-    return {"places": places[:20], "error": "", "provider": "Google Places"}
-
+    seen = set()
+    for data in results:
+        for raw in list((data or {}).get("places") or []):
+            if not isinstance(raw, dict):
+                continue
+            if str(raw.get("businessStatus") or "") == "CLOSED_PERMANENTLY":
+                continue
+            types = {str(value) for value in (raw.get("types") or []) if str(value)}
+            standalone = "public_bathroom" in types
+            if not standalone and raw.get("restroom") is not True:
+                continue
+            loc = raw.get("location") or {}
+            try:
+                plat = float(loc.get("latitude"))
+                plon = float(loc.get("longitude"))
+            except (TypeError, ValueError):
+                continue
+            distance_m = _nearby_haversine_m(latitude, longitude, plat, plon)
+            if not math.isfinite(distance_m) or distance_m > radius_m * 1.15:
+                continue
+            place_id = str(raw.get("id") or "").strip()
+            coord_key = (round(plat, 5), round(plon, 5), place_id)
+            if coord_key in seen:
+                continue
+            seen.add(coord_key)
+            name_obj = raw.get("displayName") or {}
+            base_name = str(name_obj.get("text") if isinstance(name_obj, dict) else "").strip()
+            category = _category_for_types(types)
+            if standalone:
+                name = base_name or "公衆トイレ"
+                access_label = "一般利用可"
+                access_penalty = 0
+            else:
+                name = f"{base_name} のトイレ" if base_name else category
+                access_label = "利用条件未確認"
+                access_penalty = 45
+            current_hours = raw.get("currentOpeningHours") if isinstance(raw.get("currentOpeningHours"), dict) else {}
+            open_now = current_hours.get("openNow") if isinstance(current_hours.get("openNow"), bool) else None
+            opening_known = open_now is not None
+            opening_label = "🟢 利用可能" if open_now is True else ("🔴 利用時間外" if open_now is False else "利用時間情報なし")
+            walk_minutes = max(1, int(math.ceil((distance_m * 1.25) / 80.0)))
+            places.append(
+                {
+                    "id": f"google:{place_id}",
+                    "name": name,
+                    "category": category,
+                    "latitude": plat,
+                    "longitude": plon,
+                    "distance_m": int(round(distance_m)),
+                    "walk_minutes": walk_minutes,
+                    "fee_status": "unknown",
+                    "fee_label": "料金情報なし",
+                    "wheelchair_ok": None,
+                    "wheelchair_label": "",
+                    "baby_ok": None,
+                    "baby_label": "",
+                    "access_label": access_label,
+                    "floor_label": "",
+                    "opening_hours": "",
+                    "opening_known": opening_known,
+                    "open_now": open_now,
+                    "opening_label": opening_label,
+                    "address": str(raw.get("formattedAddress") or "").strip(),
+                    "sort_score": int(round(distance_m)) + access_penalty,
+                    "provider": "Google Places",
+                }
+            )
+    places.sort(key=lambda item: (int(item.get("sort_score") or 0), int(item.get("distance_m") or 0)))
+    return {
+        "places": places[:30],
+        "error": "" if places or not errors else "Google Placesのトイレ検索に接続できませんでした。",
+        "detail": " / ".join(errors[-2:])[:220],
+        "provider": "Google Places",
+    }
 
 def _toilet_overpass_fetch(query, *, timeout=3.6, one_endpoint=False):
     """Fetch one lightweight Overpass query with fast failover.
@@ -6957,12 +7018,45 @@ def _toilet_place_from_osm_element(element, latitude, longitude, radius_m):
     opening_hours = str(tags.get("toilets:opening_hours") or tags.get("opening_hours") or "").strip()
     opening = _toilet_opening_status(opening_hours)
     base_name = str(tags.get("name:ja") or tags.get("name") or tags.get("operator") or "").strip()
+
+    amenity = str(tags.get("amenity") or "").lower()
+    shop = str(tags.get("shop") or "").lower()
+    railway = str(tags.get("railway") or "").lower()
+    public_transport = str(tags.get("public_transport") or "").lower()
+    building = str(tags.get("building") or "").lower()
+    office = str(tags.get("office") or "").lower()
+    tourism = str(tags.get("tourism") or "").lower()
+    leisure = str(tags.get("leisure") or "").lower()
+
     if standalone:
         name = base_name or "公衆トイレ"
         category = "公衆トイレ"
     else:
-        name = f"{base_name} のトイレ" if base_name else "施設内トイレ"
-        category = "施設内トイレ"
+        if railway or public_transport:
+            category = "駅・交通施設内トイレ"
+        elif shop in {"mall", "department_store", "supermarket", "convenience"}:
+            category = "商業施設内トイレ"
+        elif amenity in {"restaurant", "cafe", "fast_food", "food_court", "marketplace"}:
+            category = "飲食施設内トイレ"
+        elif office or building in {"office", "commercial", "retail", "civic", "public"}:
+            category = "オフィス・商業ビル内トイレ"
+        elif tourism or leisure or amenity in {"community_centre", "library", "townhall"}:
+            category = "施設内トイレ"
+        else:
+            category = "施設内トイレ"
+        name = f"{base_name} のトイレ" if base_name else category
+
+    access_label = str(access.get("label") or "").strip()
+    if not access_label:
+        access_label = "一般利用可" if standalone else "利用条件未確認"
+
+    level_raw = str(tags.get("toilets:level") or tags.get("level") or "").strip()
+    floor_label = ""
+    levels = {piece.strip() for piece in re.split(r"[;,]", level_raw) if piece.strip()}
+    if "0" in levels:
+        floor_label = "1階情報あり"
+    elif level_raw:
+        floor_label = f"階情報: {level_raw}"
 
     addr_parts = []
     for key in ("addr:suburb", "addr:quarter", "addr:city", "addr:street"):
@@ -6970,7 +7064,11 @@ def _toilet_place_from_osm_element(element, latitude, longitude, radius_m):
         if value and value not in addr_parts:
             addr_parts.append(value)
     walk_minutes = max(1, int(math.ceil((distance_m * 1.25) / 80.0)))
-    customer_penalty = 180 if access.get("label") == "施設利用者向け" else 0
+    access_penalty = 0
+    if access_label == "施設利用者向け":
+        access_penalty = 120
+    elif access_label == "利用条件未確認":
+        access_penalty = 45
     return {
         "id": f"osm:{element.get('type','x')}:{element.get('id','')}",
         "name": name,
@@ -6985,13 +7083,14 @@ def _toilet_place_from_osm_element(element, latitude, longitude, radius_m):
         "wheelchair_label": wheelchair.get("label"),
         "baby_ok": baby.get("ok"),
         "baby_label": baby.get("label"),
-        "access_label": access.get("label"),
+        "access_label": access_label,
+        "floor_label": floor_label,
         "opening_hours": opening_hours,
         "opening_known": opening.get("known"),
         "open_now": opening.get("open_now"),
         "opening_label": opening.get("label"),
         "address": " ".join(addr_parts[:3]),
-        "sort_score": int(round(distance_m)) + customer_penalty,
+        "sort_score": int(round(distance_m)) + access_penalty,
         "provider": "OpenStreetMap",
     }
 
@@ -7006,7 +7105,7 @@ def search_nearby_toilets(
     baby_only=False,
     usable_now_preferred=True,
 ):
-    """Fast nearby toilet search with graceful provider fallback."""
+    """Search nearby toilets without preferring public toilets over host facilities."""
     try:
         latitude = round(float(latitude), 5)
         longitude = round(float(longitude), 5)
@@ -7015,101 +7114,101 @@ def search_nearby_toilets(
         return {"places": [], "error": "現在地を確認できませんでした。", "provider": "OpenStreetMap"}
 
     around = f"(around:{radius_m},{latitude:.6f},{longitude:.6f})"
-
-    # First ask only for actual toilet objects. This is substantially lighter than
-    # the old one-shot query that also scanned every possible host facility.
     standalone_query = (
-        "[out:json][timeout:5];"
+        "[out:json][timeout:4];"
         f'nwr{around}["amenity"="toilets"];'
         "out center tags;"
     )
-    primary_data, primary_error = _toilet_overpass_fetch(standalone_query, timeout=3.6)
-    elements = list((primary_data or {}).get("elements") or []) if isinstance(primary_data, dict) else []
-    osm_available = isinstance(primary_data, dict)
-    secondary_error = ""
+    host_query = (
+        "[out:json][timeout:4];("
+        f'nwr{around}["toilets"="yes"];'
+        f'nwr{around}["toilets:access"];'
+        ");out center tags;"
+    )
 
-    # Facility toilets are useful, but they are optional. Only scan for them when
-    # the fast standalone search returned few candidates, and never let this extra
-    # scan turn a successful search into an error.
-    if osm_available and len(elements) < 5:
-        facility_query = (
-            "[out:json][timeout:4];("
-            f'nwr{around}["toilets"="yes"]["railway"~"^(station|halt)$"];'
-            f'nwr{around}["toilets"="yes"]["public_transport"~"^(station|platform)$"];'
-            f'nwr{around}["toilets"="yes"]["amenity"~"^(community_centre|library|townhall)$"];'
-            f'nwr{around}["toilets"="yes"]["tourism"~"^(museum|gallery|attraction)$"];'
-            f'nwr{around}["toilets"="yes"]["shop"~"^(mall|department_store|supermarket)$"];'
-            f'nwr{around}["toilets"="yes"]["leisure"~"^(park|garden)$"];'
-            ");out center tags;"
-        )
-        facility_data, secondary_error = _toilet_overpass_fetch(facility_query, timeout=2.8, one_endpoint=True)
-        if isinstance(facility_data, dict):
-            elements.extend(list(facility_data.get("elements") or []))
+    # Public toilets and facility toilets are queried at the same time. This avoids
+    # the previous behavior where facilities were searched only after finding very
+    # few public toilets.
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        future_standalone = executor.submit(_toilet_overpass_fetch, standalone_query, timeout=3.0)
+        future_hosts = executor.submit(_toilet_overpass_fetch, host_query, timeout=3.0)
+        try:
+            primary_data, primary_error = future_standalone.result()
+        except Exception as exc:
+            primary_data, primary_error = None, str(exc)[:180]
+        try:
+            host_data, host_error = future_hosts.result()
+        except Exception as exc:
+            host_data, host_error = None, str(exc)[:180]
+
+    osm_available = isinstance(primary_data, dict) or isinstance(host_data, dict)
+    elements = []
+    if isinstance(primary_data, dict):
+        elements.extend(list(primary_data.get("elements") or []))
+    if isinstance(host_data, dict):
+        elements.extend(list(host_data.get("elements") or []))
 
     places = []
     seen = set()
     for element in elements:
+        object_key = (str(element.get("type") or "x"), str(element.get("id") or "")) if isinstance(element, dict) else ("", "")
+        if object_key in seen:
+            continue
+        seen.add(object_key)
         place = _toilet_place_from_osm_element(element, latitude, longitude, radius_m)
-        if not place:
-            continue
-        pid = str(place.get("id") or "")
-        if not pid or pid in seen:
-            continue
-        seen.add(pid)
-        places.append(place)
+        if place:
+            places.append(place)
 
-    # If public Overpass is busy or the map has too few registered toilets, use
-    # the Google Places key that this app already supports. This prevents a public
-    # Overpass timeout from making the toilet feature unusable.
-    google_note = ""
+    # Google is a complementary source on every explicit toilet search when a key
+    # exists, because office/restaurant/shopping facilities may expose restroom data
+    # even when OSM has no toilets=yes tag for the building.
     google_error = ""
-    if len(places) < 3 and GOOGLE_PLACES_API_KEY:
+    google_added = 0
+    osm_host_count = sum(1 for item in places if str(item.get("category") or "") != "公衆トイレ")
+    need_google_facilities = (not osm_available) or osm_host_count < 4 or len(places) < 6
+    if GOOGLE_PLACES_API_KEY and need_google_facilities:
         google_result = _toilet_google_fallback(latitude, longitude, radius_m)
         google_error = str((google_result or {}).get("error") or "")
+        existing_coords = {
+            (round(float(item.get("latitude") or 0), 4), round(float(item.get("longitude") or 0), 4))
+            for item in places
+        }
         for place in list((google_result or {}).get("places") or []):
-            # Dedupe by rough coordinate because OSM and Google use unrelated IDs.
-            coord_key = (round(float(place.get("latitude") or 0), 4), round(float(place.get("longitude") or 0), 4))
-            existing_coords = {
-                (round(float(item.get("latitude") or 0), 4), round(float(item.get("longitude") or 0), 4))
-                for item in places
-            }
+            try:
+                coord_key = (round(float(place.get("latitude") or 0), 4), round(float(place.get("longitude") or 0), 4))
+            except (TypeError, ValueError):
+                continue
             if coord_key in existing_coords:
                 continue
+            existing_coords.add(coord_key)
             places.append(place)
-        if google_result and google_result.get("places"):
-            google_note = (
-                "OpenStreetMap側が混雑していたため、一部の候補をGoogle Placesで補いました。"
-                if not osm_available else
-                "OpenStreetMapの登録が少なかったため、一部の候補をGoogle Placesで補いました。"
-            )
+            google_added += 1
 
-    # Apply the user filters after providers have been merged. Unknown OSM/Google
-    # metadata is preserved for fee and opening-time preferences, while explicit
-    # bad matches are excluded. Wheelchair/changing-table filters remain strict for
-    # known OSM rows; Google fallback rows are kept only when OSM could not answer,
-    # with a clear warning in the UI.
+    # Apply user filters after all providers are merged. Unknown fee/opening metadata
+    # stays visible unless there is an explicit bad match. Equipment filters remain
+    # strict where data is known; Google candidates can be retained with a warning if
+    # no provider exposes that equipment field nearby.
     filtered = []
     equipment_filter_unavailable = False
+    any_wheelchair_yes = any(p.get("wheelchair_ok") is True for p in places)
+    any_baby_yes = any(p.get("baby_ok") is True for p in places)
     for place in places:
         if free_preferred and place.get("fee_status") == "paid":
             continue
         if usable_now_preferred and place.get("opening_known") and place.get("open_now") is False:
             continue
         if wheelchair_only and place.get("wheelchair_ok") is not True:
-            if place.get("provider") == "Google Places" and not any(p.get("wheelchair_ok") is True for p in places):
+            if place.get("provider") == "Google Places" and not any_wheelchair_yes:
                 equipment_filter_unavailable = True
             else:
                 continue
         if baby_only and place.get("baby_ok") is not True:
-            if place.get("provider") == "Google Places" and not any(p.get("baby_ok") is True for p in places):
+            if place.get("provider") == "Google Places" and not any_baby_yes:
                 equipment_filter_unavailable = True
             else:
                 continue
         filtered.append(place)
 
-    # If a strict equipment filter would otherwise produce zero results solely
-    # because the fallback provider does not expose that equipment metadata, show
-    # the fallback candidates with a warning rather than a hard service error.
     if not filtered and places and equipment_filter_unavailable:
         filtered = [
             p for p in places
@@ -7117,40 +7216,48 @@ def search_nearby_toilets(
             and not (usable_now_preferred and p.get("opening_known") and p.get("open_now") is False)
         ]
 
+    # No category bonus is applied. The ranking is essentially distance plus only a
+    # small penalty when access is explicitly customer-only or still unverified.
     filtered.sort(key=lambda item: (int(item.get("sort_score") or item.get("distance_m") or 0), int(item.get("distance_m") or 0)))
 
     if filtered:
+        notes = []
+        if not osm_available and google_added:
+            notes.append("OpenStreetMap側が混雑していたため、Google Placesの候補を表示しています。")
+        elif google_added:
+            notes.append("施設内トイレを含めるため、Google Placesの『トイレあり』情報も候補に加えています。")
         return {
             "places": filtered[:30],
             "error": "",
-            "provider": "OpenStreetMap + Google Places" if google_note else "OpenStreetMap",
-            "service_note": google_note,
+            "provider": "OpenStreetMap + Google Places" if google_added else "OpenStreetMap",
+            "service_note": " ".join(notes),
             "equipment_filter_unavailable": equipment_filter_unavailable,
             "detail": "",
         }
 
+    overpass_error = " / ".join(value for value in (primary_error, host_error) if value)
     if not osm_available and not GOOGLE_PLACES_API_KEY:
         return {
             "places": [],
             "error": "トイレ検索先が混み合っています。少し時間をおいて、もう一度検索してください。",
-            "detail": primary_error[:180],
+            "detail": overpass_error[:220],
             "provider": "OpenStreetMap",
         }
     if not osm_available and google_error:
         return {
             "places": [],
             "error": "トイレ検索先が混み合っています。少し時間をおいて、もう一度検索してください。",
-            "detail": (primary_error + " / " + google_error)[:220],
+            "detail": (overpass_error + " / " + google_error)[:240],
             "provider": "OpenStreetMap + Google Places",
         }
 
     return {
         "places": [],
         "error": "",
-        "provider": "OpenStreetMap",
+        "provider": "OpenStreetMap + Google Places" if GOOGLE_PLACES_API_KEY else "OpenStreetMap",
         "service_note": "",
         "equipment_filter_unavailable": False,
-        "detail": secondary_error[:180],
+        "detail": overpass_error[:180],
     }
 
 
@@ -17230,7 +17337,7 @@ def page_home():
 def page_toilets():
     page_top(
         "🚻 近くのトイレ",
-        "現在地の近くから、使いやすいトイレを素早く探します。最後に検索ボタンを押したときだけ周辺検索を行います。",
+        "公衆トイレ・駅・商業施設・飲食施設・オフィスビルなどをまとめて探し、近い順を中心に表示します。最後に検索ボタンを押したときだけ周辺検索を行います。",
     )
     st.markdown(
         """
@@ -17328,7 +17435,7 @@ def page_toilets():
     if location_component is not None:
         result = location_component(
             data={},
-            key=f"toilet_location_v197_{current_family_key()}_{current_member_key()}",
+            key=f"toilet_location_v198_{current_family_key()}_{current_member_key()}",
             on_location_change=lambda: None,
             on_location_error_change=lambda: None,
         )
@@ -17371,9 +17478,9 @@ def page_toilets():
         manual_place = st.text_input(
             "駅名・地名",
             placeholder="例：上野駅、浅草、品川駅",
-            key="toilet_manual_place_text_v197",
+            key="toilet_manual_place_text_v198",
         )
-        if st.button("この地名を検索の中心にする", use_container_width=True, key="toilet_manual_place_button_v197"):
+        if st.button("この地名を検索の中心にする", use_container_width=True, key="toilet_manual_place_button_v198"):
             with st.spinner("場所を確認しています…"):
                 resolved = geocode_nearby_place_text(manual_place)
             if resolved:
@@ -17404,12 +17511,12 @@ def page_toilets():
         st.warning("現在地の精度が低めです。候補の位置がずれる場合は、上の『地名から探す』で駅名や地名を指定してください。")
 
     prefix = f"{current_family_key()}_{current_member_key()}"
-    distance_key = f"_toilet_distance_v197_{prefix}"
-    fee_key = f"_toilet_fee_v197_{prefix}"
-    wheelchair_key = f"_toilet_wheelchair_v197_{prefix}"
-    baby_key = f"_toilet_baby_v197_{prefix}"
-    open_key = f"_toilet_open_v197_{prefix}"
-    result_key = f"_toilet_search_result_v197_{prefix}"
+    distance_key = f"_toilet_distance_v198_{prefix}"
+    fee_key = f"_toilet_fee_v198_{prefix}"
+    wheelchair_key = f"_toilet_wheelchair_v198_{prefix}"
+    baby_key = f"_toilet_baby_v198_{prefix}"
+    open_key = f"_toilet_open_v198_{prefix}"
+    result_key = f"_toilet_search_result_v198_{prefix}"
 
     if st.session_state.get(distance_key) not in {"5", "10", "15"}:
         st.session_state[distance_key] = "10"
@@ -17446,12 +17553,12 @@ def page_toilets():
                 with st.container(border=True, key="toilet_step_1"):
                     _step_title(1, "距離")
                     for label, value in (("🚶 5分", "5"), ("🚶 10分", "10"), ("🚶 15分", "15")):
-                        _choice_button(label, value, distance_key, f"toilet_distance_{value}_v197", distance_mode)
+                        _choice_button(label, value, distance_key, f"toilet_distance_{value}_v198", distance_mode)
             with right:
                 with st.container(border=True, key="toilet_step_2"):
                     _step_title(2, "料金")
-                    _choice_button("🆓 無料優先", "free", fee_key, "toilet_fee_free_v197", fee_mode)
-                    _choice_button("料金問わない", "all", fee_key, "toilet_fee_all_v197", fee_mode)
+                    _choice_button("🆓 無料優先", "free", fee_key, "toilet_fee_free_v198", fee_mode)
+                    _choice_button("料金問わない", "all", fee_key, "toilet_fee_all_v198", fee_mode)
                     st.markdown('<div class="toilet-step-note">無料優先は、明確に有料と登録された場所を除きます。</div>', unsafe_allow_html=True)
 
         with st.container(key="toilet_filter_row_2"):
@@ -17459,21 +17566,21 @@ def page_toilets():
             with left:
                 with st.container(border=True, key="toilet_step_3"):
                     _step_title(3, "車いす")
-                    _choice_button("♿ 対応だけ", "yes", wheelchair_key, "toilet_wheelchair_yes_v197", wheelchair_mode)
-                    _choice_button("問わない", "all", wheelchair_key, "toilet_wheelchair_all_v197", wheelchair_mode)
+                    _choice_button("♿ 対応だけ", "yes", wheelchair_key, "toilet_wheelchair_yes_v198", wheelchair_mode)
+                    _choice_button("問わない", "all", wheelchair_key, "toilet_wheelchair_all_v198", wheelchair_mode)
             with right:
                 with st.container(border=True, key="toilet_step_4"):
                     _step_title(4, "おむつ交換")
-                    _choice_button("👶 交換台あり", "yes", baby_key, "toilet_baby_yes_v197", baby_mode)
-                    _choice_button("問わない", "all", baby_key, "toilet_baby_all_v197", baby_mode)
+                    _choice_button("👶 交換台あり", "yes", baby_key, "toilet_baby_yes_v198", baby_mode)
+                    _choice_button("問わない", "all", baby_key, "toilet_baby_all_v198", baby_mode)
 
         with st.container(border=True, key="toilet_step_5"):
             _step_title(5, "利用時間")
             time_left, time_right = st.columns(2, gap="small")
             with time_left:
-                _choice_button("🟢 今使える優先", "usable", open_key, "toilet_open_usable_v197", open_mode)
+                _choice_button("🟢 今使える優先", "usable", open_key, "toilet_open_usable_v198", open_mode)
             with time_right:
-                _choice_button("時間問わない", "all", open_key, "toilet_open_all_v197", open_mode)
+                _choice_button("時間問わない", "all", open_key, "toilet_open_all_v198", open_mode)
             st.markdown('<div class="toilet-step-note">営業時間が登録されていないトイレは、候補を失わないため残します。</div>', unsafe_allow_html=True)
 
         radius_map = {"5": 400, "10": 800, "15": 1200}
@@ -17501,7 +17608,7 @@ def page_toilets():
             sort_keys=True,
         )
         with st.container(key="toilet_search_action"):
-            search_pressed = st.button("🚻 この条件でトイレを探す", type="primary", use_container_width=True, key="toilet_search_submit_v197")
+            search_pressed = st.button("🚻 この条件でトイレを探す", type="primary", use_container_width=True, key="toilet_search_submit_v198")
 
     if search_pressed:
         with st.spinner("近くのトイレを探しています…"):
@@ -17544,7 +17651,7 @@ def page_toilets():
     places = list(search_result.get("places") or [])[:10]
     st.divider()
     st.markdown("### 近いトイレ")
-    st.caption("最大10か所を近さ中心で表示します。徒歩時間は直線距離からの目安です。OpenStreetMapの登録状況により、設備・料金・利用時間の情報がない場合があります。")
+    st.caption("最大10か所を、公衆・施設内の区別で優先せず、距離と利用しやすさを中心に表示します。徒歩時間は直線距離からの目安です。")
     if not places:
         st.info("この条件ではトイレを見つけられませんでした。距離を広げるか、設備条件を『問わない』にしてもう一度検索してください。")
         return
@@ -17569,8 +17676,12 @@ def page_toilets():
                 if label:
                     pills.append(f'<span class="toilet-pill {css_name}">{html.escape(str(label))}</span>')
             access_label = str(place.get("access_label") or "")
-            if access_label == "施設利用者向け":
-                pills.append('<span class="toilet-pill warn">施設利用者向け</span>')
+            if access_label:
+                access_css = "good" if access_label == "一般利用可" else "warn"
+                pills.append(f'<span class="toilet-pill {access_css}">{html.escape(access_label)}</span>')
+            floor_label = str(place.get("floor_label") or "")
+            if floor_label:
+                pills.append(f'<span class="toilet-pill good">{html.escape(floor_label)}</span>')
             if pills:
                 st.markdown('<div class="toilet-pills">' + ''.join(pills) + '</div>', unsafe_allow_html=True)
 
@@ -17586,7 +17697,7 @@ def page_toilets():
             if direction_url:
                 st.link_button("🗺️ このトイレに案内してもらう", direction_url, use_container_width=True)
 
-    st.caption("トイレ候補はOpenStreetMapの公開データを利用しています。現地の利用条件・設備・営業時間が変更されている場合があります。")
+    st.caption("トイレ候補はOpenStreetMapと、設定済みの場合はGoogle Placesの情報を利用します。施設内トイレは入場ゲート前かどうかまで判定できない場合があるため、『利用条件未確認』の候補は現地表示も確認してください。")
 
 
 def page_nearby():
