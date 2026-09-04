@@ -29,9 +29,9 @@ from zoneinfo import ZoneInfo
 import streamlit as st
 
 # Freshly generated update: 2026-08-31 23:49 JST
-GENERATED_UPDATE_JST = "2026-09-04T12:33:48+09:00"
+GENERATED_UPDATE_JST = "2026-09-04T12:48:18+09:00"
 
-APP_BUILD = "v187"
+APP_BUILD = "v188"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -725,6 +725,7 @@ APP_TIMEZONE = secret("APP_TIMEZONE", "Asia/Tokyo")
 SUPABASE_URL = secret("SUPABASE_URL", "")
 SUPABASE_SECRET_KEY = secret("SUPABASE_SECRET_KEY", "")
 PHOTO_BUCKET = secret("PHOTO_BUCKET", "burari-photos")
+GOOGLE_PLACES_API_KEY = str(secret("GOOGLE_PLACES_API_KEY", secret("GOOGLE_MAPS_API_KEY", "")) or "").strip()
 USE_FAST_MODE = str(secret("USE_FAST_MODE", "true")).lower() in {"1", "true", "yes", "on"}
 try:
     VIDEO_STORAGE_QUOTA_MB = max(0, int(str(secret("VIDEO_STORAGE_QUOTA_MB", "0") or "0").strip()))
@@ -6020,6 +6021,217 @@ def _nearby_place_priority(tags, kind):
     return 3
 
 
+
+
+def _nearby_google_text_query(kind, subkind):
+    if kind == "snack":
+        mapping = {
+            "なんでも": "和菓子 大福 団子 たい焼き ケーキ 洋菓子 焼き菓子 アイス かき氷 スイーツ",
+            "和菓子": "和菓子 大福 団子 たい焼き どら焼き",
+            "ケーキ・焼き菓子": "ケーキ 洋菓子 焼き菓子 パティスリー ドーナツ クレープ",
+            "アイス・かき氷": "アイス ジェラート ソフトクリーム かき氷",
+        }
+        return mapping.get(str(subkind), mapping["なんでも"])
+    mapping = {
+        "なんでも": "観光スポット 公園 神社 寺 博物館 鉄道",
+        "公園": "公園 庭園 遊歩道",
+        "神社・寺": "神社 寺 寺院",
+        "博物館・施設": "博物館 美術館 見学施設",
+        "電車・乗り物": "鉄道 電車 車両 博物館 交通",
+    }
+    return mapping.get(str(subkind), mapping["なんでも"])
+
+
+def _nearby_google_photo_refs(photo_rows, limit=10):
+    refs = []
+    for row in list(photo_rows or [])[:max(1, int(limit))]:
+        if not isinstance(row, dict):
+            continue
+        name = str(row.get("name") or "").strip()
+        if not name:
+            continue
+        attribution = ""
+        attrs = row.get("authorAttributions") or []
+        if isinstance(attrs, list):
+            names = []
+            for attr in attrs[:2]:
+                if isinstance(attr, dict):
+                    label = str(attr.get("displayName") or "").strip()
+                    if label and label not in names:
+                        names.append(label)
+            attribution = " / ".join(names)
+        refs.append({"name": name, "attribution": attribution})
+    return refs
+
+
+def search_nearby_quick_stops_google(latitude, longitude, kind, subkind, radius_m):
+    """Use Google Places (New) when configured so results can include place photos."""
+    if not GOOGLE_PLACES_API_KEY:
+        return None
+    try:
+        latitude = float(latitude)
+        longitude = float(longitude)
+        radius_m = max(300, min(4000, int(radius_m)))
+    except (TypeError, ValueError):
+        return {"places": [], "error": "現在地を確認できませんでした。", "provider": "Google Places"}
+
+    body = {
+        "textQuery": _nearby_google_text_query(kind, subkind),
+        "languageCode": "ja",
+        "regionCode": "JP",
+        "maxResultCount": 20,
+        "locationBias": {
+            "circle": {
+                "center": {"latitude": latitude, "longitude": longitude},
+                "radius": float(radius_m),
+            }
+        },
+    }
+    req = Request(
+        "https://places.googleapis.com/v1/places:searchText",
+        data=json.dumps(body, ensure_ascii=False).encode("utf-8"),
+        headers={
+            "Content-Type": "application/json; charset=UTF-8",
+            "X-Goog-Api-Key": GOOGLE_PLACES_API_KEY,
+            "X-Goog-FieldMask": "places.id,places.displayName,places.formattedAddress,places.location,places.types,places.photos",
+        },
+        method="POST",
+    )
+    try:
+        with urlopen(req, timeout=7.0) as response:
+            data = json.loads(response.read().decode("utf-8"))
+    except Exception as exc:
+        return {
+            "places": [],
+            "error": "画像つき周辺検索につながりませんでした。",
+            "detail": str(exc)[:260],
+            "provider": "Google Places",
+        }
+
+    places = []
+    snack_terms = ("大福","団子","だんご","たい焼","鯛焼","和菓子","どら焼","饅頭","まんじゅう","ケーキ","洋菓子","パティスリー","焼き菓子","アイス","ジェラート","ソフトクリーム","かき氷","クレープ","ドーナツ","シュー","プリン","スイーツ")
+    dessert_types = {"bakery", "candy_store", "ice_cream_shop", "dessert_shop", "confectionery", "chocolate_shop"}
+    for raw in list((data or {}).get("places") or []):
+        if not isinstance(raw, dict):
+            continue
+        name = str(((raw.get("displayName") or {}).get("text") if isinstance(raw.get("displayName"), dict) else "") or "").strip()
+        loc = raw.get("location") or {}
+        try:
+            plat = float(loc.get("latitude"))
+            plon = float(loc.get("longitude"))
+        except (TypeError, ValueError):
+            continue
+        if not name:
+            continue
+        distance_m = _nearby_haversine_m(latitude, longitude, plat, plon)
+        if not math.isfinite(distance_m) or distance_m > radius_m * 1.25:
+            continue
+        types = {str(x) for x in (raw.get("types") or []) if str(x)}
+        if kind == "snack":
+            meal_only = bool(types.intersection({"restaurant", "fast_food_restaurant", "meal_takeaway", "bar", "pub"}))
+            sweet_signal = bool(types.intersection(dessert_types)) or any(term in name for term in snack_terms)
+            if meal_only and not sweet_signal:
+                continue
+        walk_minutes = max(1, int(math.ceil((distance_m * 1.25) / 80.0)))
+        category = "ちょっとしたおやつ" if kind == "snack" else "観光スポット"
+        pseudo_tags = {"name": name}
+        if kind == "snack":
+            if "ice_cream_shop" in types:
+                pseudo_tags["amenity"] = "ice_cream"
+            elif "bakery" in types:
+                pseudo_tags["shop"] = "bakery"
+            elif types.intersection({"candy_store", "dessert_shop", "confectionery", "chocolate_shop"}):
+                pseudo_tags["shop"] = "confectionery"
+        category = _nearby_place_label(pseudo_tags, kind)
+        refs = _nearby_google_photo_refs(raw.get("photos") or [], limit=10)
+        places.append({
+            "id": f"google:{raw.get('id') or hashlib.sha1((name+str(plat)+str(plon)).encode()).hexdigest()[:16]}",
+            "google_place_id": str(raw.get("id") or ""),
+            "name": name,
+            "kind": str(kind),
+            "category": category,
+            "latitude": plat,
+            "longitude": plon,
+            "distance_m": int(round(distance_m)),
+            "walk_minutes": walk_minutes,
+            "opening_hours": "",
+            "address": str(raw.get("formattedAddress") or "").strip(),
+            "priority": 0,
+            "provider": "Google Places",
+            "photo_refs": refs,
+        })
+    places.sort(key=lambda item: int(item.get("distance_m") or 0))
+    return {"places": places[:24], "error": "", "provider": "Google Places"}
+
+
+def _nearby_google_photo_data_url(photo_ref, max_px=760):
+    if not GOOGLE_PLACES_API_KEY or not isinstance(photo_ref, dict):
+        return ""
+    name = str(photo_ref.get("name") or "").strip()
+    if not name:
+        return ""
+    safe_name = quote(name, safe="/")
+    params = urlencode({
+        "maxWidthPx": max(320, min(1200, int(max_px))),
+        "maxHeightPx": max(240, min(900, int(max_px))),
+        "key": GOOGLE_PLACES_API_KEY,
+    })
+    req = Request(
+        f"https://places.googleapis.com/v1/{safe_name}/media?{params}",
+        headers={"User-Agent": "TokyoBurariApp/1.0", "Accept": "image/*"},
+    )
+    try:
+        with urlopen(req, timeout=7.0) as response:
+            raw = response.read()
+            content_type = str(response.headers.get("Content-Type") or "image/jpeg").split(";", 1)[0].strip()
+        if not raw or not content_type.startswith("image/"):
+            return ""
+        return f"data:{content_type};base64," + base64.b64encode(raw).decode("ascii")
+    except Exception:
+        return ""
+
+
+def _nearby_load_preview_images(places):
+    places = list(places or [])[:6]
+    jobs = []
+    for place in places:
+        refs = list((place or {}).get("photo_refs") or [])
+        jobs.append(refs[0] if refs else None)
+    results = [""] * len(jobs)
+    work = [(idx, ref) for idx, ref in enumerate(jobs) if isinstance(ref, dict)]
+    if not work:
+        return results
+    workers = max(1, min(4, len(work)))
+    def fetch(spec):
+        idx, ref = spec
+        return idx, _nearby_google_photo_data_url(ref, max_px=720)
+    with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="burari-nearby-photo") as pool:
+        for idx, data_url in pool.map(fetch, work):
+            results[idx] = data_url
+    return results
+
+
+def _nearby_load_detail_images(place, limit=3):
+    refs = list((place or {}).get("photo_refs") or [])[:max(1, int(limit))]
+    if not refs:
+        return []
+    workers = max(1, min(3, len(refs)))
+    def fetch(ref):
+        return {
+            "src": _nearby_google_photo_data_url(ref, max_px=900),
+            "attribution": str(ref.get("attribution") or ""),
+        }
+    with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="burari-nearby-detail") as pool:
+        return [item for item in pool.map(fetch, refs) if item.get("src")]
+
+
+def _nearby_shortlist_safe_place(place):
+    """Do not persist transient Google photo resource names in shortlist state."""
+    if not isinstance(place, dict):
+        return {}
+    allowed = ("id","name","kind","category","latitude","longitude","distance_m","walk_minutes","opening_hours","address","provider")
+    return {key: place.get(key) for key in allowed if key in place}
+
 @st.cache_data(ttl=600, show_spinner=False)
 def search_nearby_quick_stops(latitude, longitude, kind, subkind, radius_m):
     try:
@@ -6139,7 +6351,7 @@ def _nearby_add_shortlist(place):
     items = _nearby_shortlist()
     pid = str(place.get("id"))
     items = [item for item in items if str(item.get("id")) != pid]
-    items.append(dict(place))
+    items.append(_nearby_shortlist_safe_place(place))
     st.session_state[_nearby_shortlist_key()] = items[-6:]
 
 
@@ -16247,13 +16459,23 @@ def page_nearby():
     st.markdown(
         """
         <style>
-        .nearby-place-title { font-size:1.04rem; font-weight:850; line-height:1.25; }
-        .nearby-place-meta { margin-top:.18rem; font-size:.82rem; opacity:.78; line-height:1.4; }
-        .nearby-place-sub { margin-top:.12rem; font-size:.74rem; opacity:.62; line-height:1.35; }
+        .nearby-place-title { font-size:1.08rem; font-weight:850; line-height:1.25; }
+        .nearby-place-meta { margin-top:.16rem; font-size:.84rem; opacity:.80; line-height:1.35; }
+        .nearby-place-sub { margin-top:.15rem; font-size:.74rem; opacity:.64; line-height:1.35; }
+        .nearby-photo-wrap { width:100%; aspect-ratio:16/9; overflow:hidden; border-radius:14px; background:rgba(128,128,128,.08); margin:.58rem 0 .52rem; }
+        .nearby-photo-wrap img { width:100%; height:100%; object-fit:cover; display:block; }
+        .nearby-photo-placeholder { width:100%; aspect-ratio:16/9; border-radius:14px; background:linear-gradient(145deg,rgba(247,210,172,.22),rgba(174,205,238,.18)); display:flex; align-items:center; justify-content:center; font-size:2.25rem; margin:.58rem 0 .52rem; }
+        .nearby-detail-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:6px; margin:.45rem 0 .12rem; }
+        .nearby-detail-photo { min-width:0; }
+        .nearby-detail-photo img { display:block; width:100%; aspect-ratio:1/1; object-fit:cover; border-radius:11px; }
+        .nearby-attribution { font-size:.56rem; opacity:.52; line-height:1.2; margin-top:2px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+        .nearby-source-note { font-size:.70rem; opacity:.62; line-height:1.45; }
         @media (max-width:640px) {
-          .nearby-place-title { font-size:1rem; }
-          .nearby-place-meta { font-size:.79rem; }
+          .nearby-place-title { font-size:1.02rem; }
+          .nearby-place-meta { font-size:.80rem; }
           .nearby-place-sub { font-size:.71rem; }
+          .nearby-photo-wrap { border-radius:12px; margin:.48rem 0 .46rem; }
+          .nearby-detail-grid { gap:5px; }
         }
         </style>
         """,
@@ -16282,12 +16504,8 @@ def page_nearby():
                 if lat is not None and lon is not None:
                     label = reverse_geocode_rough(lat, lon)
                     st.session_state["_nearby_location"] = {
-                        "source": "gps",
-                        "latitude": lat,
-                        "longitude": lon,
-                        "accuracy_m": accuracy,
-                        "measured_at": str(location_payload.get("measured_at") or now_jst().isoformat()),
-                        "place_label": label,
+                        "source": "gps", "latitude": lat, "longitude": lon, "accuracy_m": accuracy,
+                        "measured_at": str(location_payload.get("measured_at") or now_jst().isoformat()), "place_label": label,
                     }
                     st.session_state["_nearby_location_token"] = token
         error_payload = getattr(result, "location_error", None)
@@ -16304,11 +16522,7 @@ def page_nearby():
         st.warning(warning)
 
     with st.expander("現在地が取れないときは地名から探す"):
-        manual_place = st.text_input(
-            "駅名・地名",
-            placeholder="例：上野駅、浅草、品川駅",
-            key="nearby_manual_place_text",
-        )
+        manual_place = st.text_input("駅名・地名", placeholder="例：上野駅、浅草、品川駅", key="nearby_manual_place_text")
         if st.button("この地名から探す", use_container_width=True, key="nearby_manual_place_button"):
             with st.spinner("場所を確認しています…"):
                 resolved = geocode_nearby_place_text(manual_place)
@@ -16334,41 +16548,16 @@ def page_nearby():
     st.caption(f"📍 検索の中心：{location_detail}")
 
     st.markdown("### 何に寄る？")
-    category_label = st.radio(
-        "何に寄る？",
-        ["🍡 おやつ", "🏛️ 観光"],
-        horizontal=True,
-        key="nearby_category",
-        label_visibility="collapsed",
-    )
+    category_label = st.radio("何に寄る？", ["🍡 おやつ", "🏛️ 観光"], horizontal=True, key="nearby_category", label_visibility="collapsed")
     kind = "snack" if category_label.startswith("🍡") else "sightseeing"
     if kind == "snack":
-        st.caption("食事のお店ではなく、大福・団子・たい焼き・ケーキ・焼き菓子・アイス・かき氷など、その場ですぐ楽しめるものを探します。")
-        subkind = st.radio(
-            "おやつの種類",
-            ["なんでも", "和菓子", "ケーキ・焼き菓子", "アイス・かき氷"],
-            horizontal=True,
-            key="nearby_snack_subkind",
-        )
+        st.caption("食事ではなく、大福・団子・たい焼き・ケーキ・焼き菓子・アイス・かき氷など、すぐ楽しめるおやつを探します。")
+        subkind = st.radio("おやつの種類", ["なんでも", "和菓子", "ケーキ・焼き菓子", "アイス・かき氷"], horizontal=True, key="nearby_snack_subkind")
     else:
-        subkind = st.radio(
-            "観光の種類",
-            ["なんでも", "公園", "神社・寺", "博物館・施設", "電車・乗り物"],
-            horizontal=True,
-            key="nearby_sight_subkind",
-        )
+        subkind = st.radio("観光の種類", ["なんでも", "公園", "神社・寺", "博物館・施設", "電車・乗り物"], horizontal=True, key="nearby_sight_subkind")
 
-    radius_options = {
-        "徒歩10分くらい": 800,
-        "徒歩20分くらい": 1600,
-        "もう少し遠く": 2500,
-    }
-    radius_label = st.radio(
-        "どのくらいまで？",
-        list(radius_options),
-        horizontal=True,
-        key="nearby_radius_label",
-    )
+    radius_options = {"徒歩10分くらい": 800, "徒歩20分くらい": 1600, "もう少し遠く": 2500}
+    radius_label = st.radio("どのくらいまで？", list(radius_options), horizontal=True, key="nearby_radius_label")
     radius_m = radius_options[radius_label]
 
     shortlist = _nearby_shortlist()
@@ -16379,33 +16568,28 @@ def page_nearby():
         selection_key = f"nearby_shortlist_choice_{current_family_key()}_{current_member_key()}"
         if str(st.session_state.get(selection_key) or "") not in option_ids:
             st.session_state[selection_key] = option_ids[0]
-        selected_id = st.radio(
-            "行き先候補",
-            option_ids,
-            format_func=lambda pid: f"{by_id[pid].get('name','')} ／ {_nearby_distance_text(by_id[pid])}",
-            key=selection_key,
-            label_visibility="collapsed",
-        )
+        selected_id = st.radio("行き先候補", option_ids, format_func=lambda pid: f"{by_id[pid].get('name','')} ／ {_nearby_distance_text(by_id[pid])}", key=selection_key, label_visibility="collapsed")
         selected_place = by_id.get(selected_id) or {}
         direction_url = _nearby_directions_url(selected_place)
         route_col, remove_col = st.columns([1.45, 1])
         with route_col:
             if direction_url:
-                st.link_button(
-                    "🗺️ この場所へ行く",
-                    direction_url,
-                    use_container_width=True,
-                )
+                st.link_button("🗺️ この場所へ行く", direction_url, use_container_width=True)
         with remove_col:
             if st.button("候補から外す", use_container_width=True, key=f"nearby_remove_{hashlib.sha1(str(selected_id).encode()).hexdigest()[:10]}"):
                 _nearby_remove_shortlist(selected_id)
                 st.session_state.pop(selection_key, None)
                 st.rerun()
-        st.caption("「この場所へ行く」を押すと、徒歩経路を指定したGoogleマップへ移ります。以降のナビは地図アプリ側で行います。")
+        st.caption("ここから先はGoogleマップの徒歩経路に任せます。")
         st.divider()
 
     with st.spinner("近くの候補を探しています…"):
-        search_result = search_nearby_quick_stops(latitude, longitude, kind, subkind, radius_m)
+        search_result = search_nearby_quick_stops_google(latitude, longitude, kind, subkind, radius_m) if GOOGLE_PLACES_API_KEY else None
+        if not search_result or search_result.get("error"):
+            fallback = search_nearby_quick_stops(latitude, longitude, kind, subkind, radius_m)
+            if search_result and search_result.get("error") and not fallback.get("error"):
+                fallback["photo_error"] = str(search_result.get("error") or "")
+            search_result = fallback
     error = str((search_result or {}).get("error") or "")
     if error:
         st.warning(error)
@@ -16416,22 +16600,33 @@ def page_nearby():
         return
 
     places = list((search_result or {}).get("places") or [])[:6]
+    provider = str((search_result or {}).get("provider") or "OpenStreetMap")
     st.markdown("### 今ちょっと寄るなら")
-    st.caption("近さを基本に、条件に合う候補を最大6か所表示します。徒歩時間は直線距離からの目安です。")
+    st.caption("候補を最大6か所。まず代表写真を1枚、気になる場所だけ開くと参考写真を3枚まで確認できます。")
+    if not GOOGLE_PLACES_API_KEY:
+        st.info("写真表示を使うには Streamlit Secrets に `GOOGLE_PLACES_API_KEY` を追加してください。検索自体はこのまま利用できます。")
     if not places:
         st.info("この条件では候補を見つけられませんでした。検索範囲を広げるか、種類を「なんでも」にしてみてください。")
         return
 
+    preview_images = _nearby_load_preview_images(places) if provider == "Google Places" else [""] * len(places)
     shortlist_ids = {str(item.get("id")) for item in _nearby_shortlist()}
+    detail_key = f"_nearby_open_detail_{current_family_key()}_{current_member_key()}"
+    open_detail = str(st.session_state.get(detail_key) or "")
+
     for index, place in enumerate(places, start=1):
         pid = str(place.get("id") or f"p{index}")
         place_key = hashlib.sha1(pid.encode("utf-8")).hexdigest()[:12]
+        preview = preview_images[index - 1] if index - 1 < len(preview_images) else ""
         with st.container(border=True):
             st.markdown(f'<div class="nearby-place-title">{index}. {html.escape(str(place.get("name") or "候補"))}</div>', unsafe_allow_html=True)
-            st.markdown(
-                f'<div class="nearby-place-meta">{html.escape(str(place.get("category") or ""))}　・　{html.escape(_nearby_distance_text(place))}</div>',
-                unsafe_allow_html=True,
-            )
+            st.markdown(f'<div class="nearby-place-meta">{html.escape(str(place.get("category") or ""))}　・　{html.escape(_nearby_distance_text(place))}</div>', unsafe_allow_html=True)
+            if preview:
+                st.markdown(f'<div class="nearby-photo-wrap"><img src="{html.escape(preview, quote=True)}" alt="{html.escape(str(place.get("name") or "候補"))}の参考写真"></div>', unsafe_allow_html=True)
+            else:
+                icon = "🍡" if kind == "snack" else "🏛️"
+                st.markdown(f'<div class="nearby-photo-placeholder">{icon}</div>', unsafe_allow_html=True)
+
             extras = []
             if place.get("opening_hours"):
                 extras.append("営業時間: " + str(place.get("opening_hours")))
@@ -16439,17 +16634,38 @@ def page_nearby():
                 extras.append(str(place.get("address")))
             if extras:
                 st.markdown('<div class="nearby-place-sub">' + html.escape(" ／ ".join(extras)) + '</div>', unsafe_allow_html=True)
-            already = pid in shortlist_ids
-            if st.button(
-                "★ 候補に入れました" if already else "☆ 行きたい候補に入れる",
-                use_container_width=True,
-                disabled=already,
-                key=f"nearby_add_{place_key}",
-            ):
-                _nearby_add_shortlist(place)
-                st.rerun()
 
-    st.caption("周辺候補はOpenStreetMapの公開データを利用しています。店舗情報の網羅性や営業時間は場所によって差があります。")
+            detail_col, add_col = st.columns([1, 1.3])
+            with detail_col:
+                can_show = bool(place.get("photo_refs"))
+                detail_label = "写真を閉じる" if open_detail == pid else "写真を3枚見る"
+                if st.button(detail_label, use_container_width=True, disabled=not can_show, key=f"nearby_detail_{place_key}"):
+                    st.session_state[detail_key] = "" if open_detail == pid else pid
+                    st.rerun()
+            with add_col:
+                already = pid in shortlist_ids
+                if st.button("★ 候補に入れました" if already else "☆ 行きたい候補に入れる", use_container_width=True, disabled=already, key=f"nearby_add_{place_key}"):
+                    _nearby_add_shortlist(place)
+                    st.rerun()
+
+            if open_detail == pid and place.get("photo_refs"):
+                with st.spinner("参考写真を読み込んでいます…"):
+                    detail_images = _nearby_load_detail_images(place, limit=3)
+                if detail_images:
+                    cards = []
+                    for item in detail_images:
+                        attr = str(item.get("attribution") or "").strip()
+                        attr_html = f'<div class="nearby-attribution">写真: {html.escape(attr)}</div>' if attr else '<div class="nearby-attribution">Google Places</div>'
+                        cards.append(f'<div class="nearby-detail-photo"><img src="{html.escape(item["src"], quote=True)}" alt="参考写真">{attr_html}</div>')
+                    st.markdown('<div class="nearby-detail-grid">' + ''.join(cards) + '</div>', unsafe_allow_html=True)
+                    st.caption("店舗・施設に登録された参考写真です。おやつ店では商品写真を含むことがありますが、外観・内観が混ざる場合があります。")
+                else:
+                    st.caption("この場所では追加の参考写真を取得できませんでした。")
+
+    if provider == "Google Places":
+        st.markdown('<div class="nearby-source-note">候補・参考写真：Google Places。写真は必要なときだけ読み込みます。</div>', unsafe_allow_html=True)
+    else:
+        st.markdown('<div class="nearby-source-note">周辺候補：OpenStreetMap。写真APIが未設定または利用できない場合は文字情報で表示します。</div>', unsafe_allow_html=True)
 
 
 _MOMENTS_RECOVERY_HTML = """
