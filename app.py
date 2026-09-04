@@ -29,9 +29,9 @@ from zoneinfo import ZoneInfo
 import streamlit as st
 
 # Freshly generated update: 2026-08-31 23:49 JST
-GENERATED_UPDATE_JST = "2026-09-05T01:40:40+09:00"
+GENERATED_UPDATE_JST = "2026-09-05T01:45:00+09:00"
 
-APP_BUILD = "v202"
+APP_BUILD = "v203"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -4376,10 +4376,12 @@ export default function(component) {
   const { data, setTriggerValue } = component;
   const validPages = new Set(['home', 'camera', 'videos', 'moments', 'diary', 'review', 'nearby', 'toilets', 'settings']);
   const marker = '__tokyo_burari_page__';
+  const guardMarker = '__tokyo_burari_first_level_guard__';
   const requestedPage = validPages.has(data?.page) ? data.page : 'home';
   const action = data?.action || 'sync';
   const navigationNode = String(data?.node || requestedPage);
   const interceptHierarchyBack = Boolean(data?.intercept_hierarchy_back) && requestedPage !== 'home';
+  const firstLevelBackToHome = requestedPage !== 'home' && navigationNode === requestedPage;
   const pendingFeelingParam = 'feel_v159';
   const pendingFeelingStore = 'tokyo_burari_pending_feelings_v159';
   const restorePendingFeelingParam = () => {
@@ -4457,6 +4459,29 @@ export default function(component) {
     queueMicrotask(() => setTriggerValue('page', currentPage));
   }
 
+  // Android/PWA can return from an external Maps app with no usable browser entry
+  // behind the current first-level screen. Add one same-page guard entry so the next
+  // native Back always fires popstate instead of closing the web app. It is armed once
+  // per first-level page and survives the trip out to Google Maps.
+  if (firstLevelBackToHome && currentPage === requestedPage) {
+    const currentState = window.history.state || {};
+    if (currentState[guardMarker] !== requestedPage) {
+      window.history.pushState(
+        { ...currentState, [marker]: requestedPage, [guardMarker]: requestedPage },
+        '',
+        urlFor(requestedPage)
+      );
+    }
+  } else if (requestedPage === 'home') {
+    const currentState = window.history.state || {};
+    if (currentState[guardMarker]) {
+      const cleanState = { ...currentState };
+      delete cleanState[guardMarker];
+      cleanState[marker] = 'home';
+      window.history.replaceState(cleanState, '', urlFor('home'));
+    }
+  }
+
   const onPopState = (event) => {
     // A native browser Back can move to an older URL before Streamlit reruns.
     // Restore browser-local pending feelings onto that history entry first.
@@ -4474,6 +4499,16 @@ export default function(component) {
       setTriggerValue('hierarchy_back', token);
       return;
     }
+    if (firstLevelBackToHome) {
+      // We have just popped the synthetic guard. Convert the revealed entry to Home
+      // before Streamlit rerenders, so Android Back never falls through and closes the app.
+      const homeState = { ...(event.state || {}) };
+      delete homeState[guardMarker];
+      homeState[marker] = 'home';
+      window.history.replaceState(homeState, '', urlFor('home'));
+      setTriggerValue('page', 'home');
+      return;
+    }
     const statePage = event.state && event.state[marker];
     const target = validPages.has(statePage) ? statePage : pageFromUrl();
     setTriggerValue('page', validPages.has(target) ? target : 'home');
@@ -4486,7 +4521,7 @@ export default function(component) {
 
 try:
     browser_history_component = st.components.v2.component(
-        'tokyo_burari_browser_history_v199',
+        'tokyo_burari_browser_history_v203',
         js=_HISTORY_JS,
     )
 except Exception:
@@ -6591,6 +6626,12 @@ def _nearby_remove_shortlist(place_id):
 
 
 def _nearby_directions_url(place):
+    """Open Google Maps on the walking-route preview screen.
+
+    Deliberately omit ``dir_action=navigate``. On phones this keeps the user on the
+    route-confirmation screen (current location -> destination) so navigation starts
+    only after the user explicitly taps the Maps navigation button.
+    """
     try:
         lat = float((place or {}).get("latitude"))
         lon = float((place or {}).get("longitude"))
@@ -6601,7 +6642,6 @@ def _nearby_directions_url(place):
             "api": "1",
             "destination": f"{lat:.7f},{lon:.7f}",
             "travelmode": "walking",
-            "dir_action": "navigate",
         }
     )
     return f"https://www.google.com/maps/dir/?{params}"
@@ -6828,6 +6868,144 @@ def _toilet_rank_key(place, usable_now_preferred=True):
 
     floor_rank = 0 if str(place.get("floor_label") or "").strip() == "1階情報あり" else 1
     return (availability_rank, distance, access_rank, floor_rank)
+
+
+def _toilet_normalized_address(value):
+    """Return a conservative address key for duplicate toilet candidates."""
+    value = str(value or "").strip().lower()
+    if not value:
+        return ""
+    value = re.sub(r"(?:日本[、,]?\s*)", "", value)
+    value = re.sub(r"〒?\s*\d{3}[-‐‑‒–—―]?\d{4}", "", value)
+    value = re.sub(r"[\s　,，、・.。/／\-‐‑‒–—―]+", "", value)
+    return value
+
+
+def _toilet_normalized_name(value):
+    value = str(value or "").strip().lower()
+    if not value:
+        return ""
+    value = re.sub(r"(?:の)?トイレ$", "", value)
+    value = re.sub(r"[\s　,，、・.。/／()（）\-‐‑‒–—―]+", "", value)
+    return value
+
+
+def _toilet_duplicate_rep_key(place):
+    """Choose the most useful representative inside one duplicate building/group."""
+    place = place if isinstance(place, dict) else {}
+    open_now = place.get("open_now")
+    opening_known = bool(place.get("opening_known"))
+    if open_now is True:
+        availability_rank = 0
+    elif open_now is False and opening_known:
+        availability_rank = 2
+    else:
+        availability_rank = 1
+
+    access_label = str(place.get("access_label") or "").strip()
+    access_rank = {
+        "一般利用可": 0,
+        "一般利用しやすい施設": 1,
+        "利用条件未確認": 2,
+        "施設利用者向け": 3,
+    }.get(access_label, 2)
+
+    category = str(place.get("category") or "")
+    if category == "公衆トイレ":
+        category_rank = 0
+    elif category in {"駅・交通施設内トイレ", "商業併設ビル内トイレ"}:
+        category_rank = 1
+    elif category == "商業施設内トイレ":
+        category_rank = 2
+    elif category == "施設内トイレ":
+        category_rank = 3
+    else:
+        category_rank = 4
+
+    metadata_count = sum(
+        1
+        for value in (
+            place.get("opening_hours"),
+            place.get("floor_label"),
+            place.get("wheelchair_label"),
+            place.get("baby_label"),
+            place.get("address"),
+        )
+        if str(value or "").strip()
+    )
+    try:
+        distance = max(0, int(place.get("distance_m") or 0))
+    except (TypeError, ValueError):
+        distance = 0
+    return (availability_rank, access_rank, category_rank, -metadata_count, distance)
+
+
+def _toilet_places_are_duplicates(left, right):
+    """Collapse multiple provider/tenant results that point to the same toilet building."""
+    left = left if isinstance(left, dict) else {}
+    right = right if isinstance(right, dict) else {}
+
+    left_address = _toilet_normalized_address(left.get("address"))
+    right_address = _toilet_normalized_address(right.get("address"))
+    # The user's primary duplicate case: different Places/tenants at the same address.
+    if left_address and right_address and left_address == right_address:
+        return True
+
+    try:
+        distance = _nearby_haversine_m(
+            float(left.get("latitude")), float(left.get("longitude")),
+            float(right.get("latitude")), float(right.get("longitude")),
+        )
+    except (TypeError, ValueError):
+        return False
+    if not math.isfinite(distance):
+        return False
+
+    # Exact/near-exact map points from OSM and Google are duplicate even when one
+    # provider has no address. Keep this radius deliberately small so separate toilets
+    # in a large station or shopping complex are not merged indiscriminately.
+    if distance <= 12.0:
+        return True
+
+    left_name = _toilet_normalized_name(left.get("name"))
+    right_name = _toilet_normalized_name(right.get("name"))
+    if left_name and right_name and left_name == right_name and distance <= 55.0:
+        return True
+    return False
+
+
+def _dedupe_toilet_places(places):
+    """Return one representative for each same-address/same-place toilet group."""
+    groups = []
+    for raw in list(places or []):
+        if not isinstance(raw, dict):
+            continue
+        place = dict(raw)
+        matched_index = None
+        for index, existing in enumerate(groups):
+            if _toilet_places_are_duplicates(existing, place):
+                matched_index = index
+                break
+        if matched_index is None:
+            groups.append(place)
+            continue
+
+        existing = groups[matched_index]
+        if _toilet_duplicate_rep_key(place) < _toilet_duplicate_rep_key(existing):
+            winner, other = place, existing
+        else:
+            winner, other = existing, place
+
+        # Fill only missing descriptive fields. Never combine conflicting opening-hour
+        # values from different tenants at the same address.
+        for field in (
+            "address", "floor_label", "wheelchair_label", "baby_label",
+            "fee_label", "category",
+        ):
+            if not str(winner.get(field) or "").strip() and str(other.get(field) or "").strip():
+                winner[field] = other.get(field)
+        groups[matched_index] = winner
+    return groups
 
 
 @st.cache_data(ttl=300, show_spinner=False)
@@ -7403,6 +7581,11 @@ def search_nearby_toilets(
             if not (free_preferred and p.get("fee_status") == "paid")
             and not (usable_now_preferred and p.get("opening_known") and p.get("open_now") is False)
         ]
+
+    # Collapse same-address / same-place duplicates after filters. Google Places can
+    # return a building and several tenants as separate Places even though they lead to
+    # the same publicly reachable restroom area.
+    filtered = _dedupe_toilet_places(filtered)
 
     # Display order is explicit: availability first (when requested), then distance,
     # then general public access. Category itself does not receive a ranking bonus.
@@ -15595,7 +15778,7 @@ def sync_browser_history():
             "node": navigation_node,
             "intercept_hierarchy_back": navigation_node in intercept_nodes,
         },
-        key=f"tokyo_burari_browser_history_instance_v199_{_current_ui_refresh_epoch()}",
+        key=f"tokyo_burari_browser_history_instance_v203_{_current_ui_refresh_epoch()}",
         on_page_change=lambda: None,
         on_hierarchy_back_change=lambda: None,
         on_pending_restore_change=lambda: None,
@@ -17891,7 +18074,7 @@ def page_toilets():
 def page_nearby():
     page_top(
         "📍 近くに寄る",
-        "条件を選んでから最後に検索します。行きたい場所が決まったら、地図アプリの徒歩経路へそのまま移れます。",
+        "条件を選んでから最後に検索します。行きたい場所が決まったら、Googleマップの徒歩経路確認画面を開きます。",
     )
     st.markdown(
         """
