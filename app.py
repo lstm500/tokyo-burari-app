@@ -29,9 +29,9 @@ from zoneinfo import ZoneInfo
 import streamlit as st
 
 # Freshly generated update: 2026-08-31 23:49 JST
-GENERATED_UPDATE_JST = "2026-09-05T00:02:25+09:00"
+GENERATED_UPDATE_JST = "2026-09-05T00:08:27+09:00"
 
-APP_BUILD = "v190"
+APP_BUILD = "v191"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -6184,6 +6184,7 @@ def search_nearby_quick_stops_google(latitude, longitude, kind, subkind, radius_
     places.sort(key=lambda item: int(item.get("distance_m") or 0))
     return {"places": places[:24], "error": "", "provider": "Google Places", "open_now_only": bool(open_now_only)}
 
+@st.cache_data(ttl=600, show_spinner=False)
 def _nearby_google_photo_data_url(photo_ref, max_px=760):
     if not GOOGLE_PLACES_API_KEY or not isinstance(photo_ref, dict):
         return ""
@@ -16590,11 +16591,28 @@ def page_home():
 def page_nearby():
     page_top(
         "📍 近くに寄る",
-        "今いる場所の近くから、気軽に寄れるおやつと観光スポットだけを探します。行きたい場所が決まったら、その場で地図アプリの徒歩経路を開きます。",
+        "条件を選んでから最後に検索します。行きたい場所が決まったら、地図アプリの徒歩経路へそのまま移れます。",
     )
     st.markdown(
         """
         <style>
+        .nearby-location-card {
+          margin:.10rem 0 .66rem; padding:.62rem .72rem; border-radius:14px;
+          border:1px solid rgba(74,144,226,.14); background:rgba(74,144,226,.045);
+        }
+        .nearby-location-main { font-size:.88rem; font-weight:800; line-height:1.3; }
+        .nearby-location-sub { margin-top:.16rem; font-size:.70rem; opacity:.62; line-height:1.3; }
+        .nearby-step-title { margin:.12rem 0 .32rem; font-size:.82rem; font-weight:850; letter-spacing:.01em; }
+        .nearby-step-note { margin:-.12rem 0 .38rem; font-size:.70rem; opacity:.62; line-height:1.42; }
+        .nearby-search-summary {
+          margin:.46rem 0 .10rem; padding:.48rem .62rem; border-radius:12px;
+          background:rgba(128,128,128,.055); font-size:.72rem; line-height:1.45;
+        }
+        .nearby-search-ready {
+          margin:.72rem 0 .20rem; padding:.78rem .82rem; border-radius:14px;
+          border:1px dashed rgba(74,144,226,.24); background:rgba(74,144,226,.035);
+          text-align:center; font-size:.78rem; line-height:1.45; opacity:.78;
+        }
         .nearby-place-title { font-size:1.08rem; font-weight:850; line-height:1.25; }
         .nearby-place-meta { margin-top:.16rem; font-size:.84rem; opacity:.80; line-height:1.35; }
         .nearby-place-sub { margin-top:.15rem; font-size:.74rem; opacity:.64; line-height:1.35; }
@@ -16613,7 +16631,27 @@ def page_nearby():
         .nearby-detail-photo img { display:block; width:100%; aspect-ratio:1/1; object-fit:cover; border-radius:11px; }
         .nearby-attribution { font-size:.56rem; opacity:.52; line-height:1.2; margin-top:2px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
         .nearby-source-note { font-size:.70rem; opacity:.62; line-height:1.45; }
+        .st-key-nearby_filter_panel {
+          margin-top:.28rem; padding:.68rem .70rem .72rem; border-radius:18px;
+          border:1px solid rgba(128,128,128,.12); background:rgba(255,255,255,.18);
+        }
+        .st-key-nearby_filter_panel [data-testid="stVerticalBlock"] { gap:.42rem; }
+        .st-key-nearby_filter_panel div.stButton > button {
+          min-height:2.62rem; border-radius:13px; font-size:.79rem; font-weight:760;
+          padding:.34rem .42rem;
+        }
+        .st-key-nearby_search_action div.stButton > button {
+          min-height:3.35rem !important; border-radius:16px !important;
+          font-size:1rem !important; font-weight:850 !important;
+        }
         @media (max-width:640px) {
+          .nearby-location-card { padding:.56rem .62rem; margin-bottom:.54rem; }
+          .nearby-location-main { font-size:.83rem; }
+          .nearby-location-sub { font-size:.66rem; }
+          .nearby-step-title { font-size:.78rem; margin-bottom:.28rem; }
+          .nearby-step-note { font-size:.67rem; }
+          .st-key-nearby_filter_panel { padding:.58rem .56rem .62rem; border-radius:16px; }
+          .st-key-nearby_filter_panel div.stButton > button { min-height:2.52rem; font-size:.75rem; padding:.28rem .30rem; }
           .nearby-place-title { font-size:1.02rem; }
           .nearby-place-meta { font-size:.80rem; }
           .nearby-place-sub { font-size:.71rem; }
@@ -16629,7 +16667,7 @@ def page_nearby():
     if location_component is not None:
         result = location_component(
             data={},
-            key=f"nearby_location_v187_{current_family_key()}_{current_member_key()}",
+            key=f"nearby_location_v191_{current_family_key()}_{current_member_key()}",
             on_location_change=lambda: None,
             on_location_error_change=lambda: None,
         )
@@ -16658,15 +16696,15 @@ def page_nearby():
                 st.session_state["_nearby_location_error_token"] = error_token
                 st.session_state["_nearby_location_warning"] = str(error_payload.get("message") or "現在地を取得できませんでした。")
     else:
-        st.info("この環境では現在地ボタンを表示できません。下の地名入力から検索できます。")
+        st.info("この環境では現在地ボタンを表示できません。下の地名入力から場所を指定できます。")
 
     warning = st.session_state.pop("_nearby_location_warning", None)
     if warning:
         st.warning(warning)
 
-    with st.expander("現在地が取れないときは地名から探す"):
+    with st.expander("現在地が取れないときは地名から指定"):
         manual_place = st.text_input("駅名・地名", placeholder="例：上野駅、浅草、品川駅", key="nearby_manual_place_text")
-        if st.button("この地名から探す", use_container_width=True, key="nearby_manual_place_button"):
+        if st.button("この地名を検索の中心にする", use_container_width=True, key="nearby_manual_place_button"):
             with st.spinner("場所を確認しています…"):
                 resolved = geocode_nearby_place_text(manual_place)
             if resolved:
@@ -16678,74 +16716,203 @@ def page_nearby():
 
     location = st.session_state.get("_nearby_location")
     if not isinstance(location, dict) or location.get("latitude") is None or location.get("longitude") is None:
-        st.info("まず「現在地から探す」を押してください。位置情報を使えない場合は地名から探せます。")
+        st.markdown('<div class="nearby-search-ready">まず「現在地から探す」を押してください。<br>位置情報を使えない場合は、上の地名入力から指定できます。</div>', unsafe_allow_html=True)
         return
 
     latitude = float(location["latitude"])
     longitude = float(location["longitude"])
     place_label = str(location.get("place_label") or reverse_geocode_rough(latitude, longitude) or "現在地付近")
     accuracy = location.get("accuracy_m")
-    location_detail = place_label or "現在地付近"
+    accuracy_text = ""
     if isinstance(accuracy, (int, float)) and accuracy > 0:
-        location_detail += f" ／ GPS精度 ±{int(round(accuracy))}m"
-    st.caption(f"📍 検索の中心：{location_detail}")
+        accuracy_text = f"GPS精度 ±{int(round(accuracy))}m"
+    st.markdown(
+        '<div class="nearby-location-card">'
+        f'<div class="nearby-location-main">📍 {html.escape(place_label or "現在地付近")}</div>'
+        + (f'<div class="nearby-location-sub">{html.escape(accuracy_text)}</div>' if accuracy_text else "")
+        + '</div>',
+        unsafe_allow_html=True,
+    )
+    if isinstance(accuracy, (int, float)) and accuracy >= 1000:
+        st.caption("位置情報の精度が低めです。候補がずれる場合は、地名から検索の中心を指定してください。")
 
-    st.markdown("### 何に寄る？")
-    category_label = st.radio("何に寄る？", ["🍡 おやつ", "🏛️ 観光"], horizontal=True, key="nearby_category", label_visibility="collapsed")
-    kind = "snack" if category_label.startswith("🍡") else "sightseeing"
-    if kind == "snack":
-        st.caption("食事ではなく、大福・団子・たい焼き・ケーキ・焼き菓子・アイス・かき氷など、すぐ楽しめるおやつを探します。")
-        subkind = st.radio("おやつの種類", ["なんでも", "和菓子", "ケーキ・焼き菓子", "アイス・かき氷"], horizontal=True, key="nearby_snack_subkind")
-    else:
-        subkind = st.radio("観光の種類", ["なんでも", "公園", "神社・寺", "博物館・施設", "電車・乗り物"], horizontal=True, key="nearby_sight_subkind")
+    kind_key = f"_nearby_filter_kind_v191_{current_family_key()}_{current_member_key()}"
+    snack_key = f"_nearby_filter_snack_v191_{current_family_key()}_{current_member_key()}"
+    sight_key = f"_nearby_filter_sight_v191_{current_family_key()}_{current_member_key()}"
+    radius_key = f"_nearby_filter_radius_v191_{current_family_key()}_{current_member_key()}"
+    result_key = f"_nearby_search_result_v191_{current_family_key()}_{current_member_key()}"
 
-    radius_options = {"徒歩10分くらい": 800, "徒歩20分くらい": 1600, "もう少し遠く": 2500}
-    radius_label = st.radio("どのくらいまで？", list(radius_options), horizontal=True, key="nearby_radius_label")
-    radius_m = radius_options[radius_label]
+    if st.session_state.get(kind_key) not in {"snack", "sightseeing"}:
+        st.session_state[kind_key] = "snack"
+    if st.session_state.get(snack_key) not in {"なんでも", "和菓子", "ケーキ・焼き菓子", "アイス・かき氷"}:
+        st.session_state[snack_key] = "なんでも"
+    if st.session_state.get(sight_key) not in {"なんでも", "公園", "神社・寺", "博物館・施設", "電車・乗り物"}:
+        st.session_state[sight_key] = "なんでも"
+    if st.session_state.get(radius_key) not in {"徒歩10分くらい", "徒歩20分くらい", "もう少し遠く"}:
+        st.session_state[radius_key] = "徒歩10分くらい"
 
-    if GOOGLE_PLACES_API_KEY:
-        open_now_only = st.toggle(
-            "🟢 営業中だけ表示",
-            value=True,
-            key="nearby_open_now_only",
-            help="Google Placesに営業時間が登録されている場所のうち、現在営業中の候補だけに絞ります。",
+    def _choice_button(label, value, state_key, button_key, selected_value):
+        if st.button(
+            label,
+            type="primary" if selected_value == value else "secondary",
+            use_container_width=True,
+            key=button_key,
+        ):
+            st.session_state[state_key] = value
+            st.rerun()
+
+    with st.container(key="nearby_filter_panel"):
+        st.markdown('<div class="nearby-step-title">1　何に寄る？</div>', unsafe_allow_html=True)
+        kind = str(st.session_state.get(kind_key) or "snack")
+        kind_cols = st.columns(2, gap="small")
+        with kind_cols[0]:
+            _choice_button("🍡 おやつ", "snack", kind_key, "nearby_kind_snack_v191", kind)
+        with kind_cols[1]:
+            _choice_button("🏛️ 観光", "sightseeing", kind_key, "nearby_kind_sight_v191", kind)
+
+        if kind == "snack":
+            st.markdown('<div class="nearby-step-note">食事ではなく、大福・たい焼き・ケーキ・焼き菓子・アイス・かき氷などを探します。</div>', unsafe_allow_html=True)
+            st.markdown('<div class="nearby-step-title">2　おやつの種類</div>', unsafe_allow_html=True)
+            subkind = str(st.session_state.get(snack_key) or "なんでも")
+            snack_options = [
+                ("おまかせ", "なんでも"),
+                ("🍡 和菓子", "和菓子"),
+                ("🍰 ケーキ・焼き菓子", "ケーキ・焼き菓子"),
+                ("🍧 アイス・かき氷", "アイス・かき氷"),
+            ]
+            for row_start in range(0, len(snack_options), 2):
+                cols = st.columns(2, gap="small")
+                for offset, (label, value) in enumerate(snack_options[row_start:row_start + 2]):
+                    with cols[offset]:
+                        _choice_button(label, value, snack_key, f"nearby_snack_{row_start+offset}_v191", subkind)
+        else:
+            st.markdown('<div class="nearby-step-note">公園・神社や寺・博物館・乗り物など、少し立ち寄れる場所を探します。</div>', unsafe_allow_html=True)
+            st.markdown('<div class="nearby-step-title">2　観光の種類</div>', unsafe_allow_html=True)
+            subkind = str(st.session_state.get(sight_key) or "なんでも")
+            sight_options = [
+                ("おまかせ", "なんでも"),
+                ("🌳 公園", "公園"),
+                ("⛩️ 神社・寺", "神社・寺"),
+                ("🏛️ 博物館・施設", "博物館・施設"),
+                ("🚃 電車・乗り物", "電車・乗り物"),
+            ]
+            for row_start in range(0, len(sight_options), 2):
+                cols = st.columns(2, gap="small")
+                row = sight_options[row_start:row_start + 2]
+                for offset, (label, value) in enumerate(row):
+                    with cols[offset]:
+                        _choice_button(label, value, sight_key, f"nearby_sight_{row_start+offset}_v191", subkind)
+
+        st.markdown('<div class="nearby-step-title">3　どのくらいまで？</div>', unsafe_allow_html=True)
+        radius_label = str(st.session_state.get(radius_key) or "徒歩10分くらい")
+        radius_options_ui = [
+            ("🚶 10分くらい", "徒歩10分くらい"),
+            ("🚶 20分くらい", "徒歩20分くらい"),
+            ("＋ もう少し遠く", "もう少し遠く"),
+        ]
+        radius_cols = st.columns(3, gap="small")
+        for idx, (label, value) in enumerate(radius_options_ui):
+            with radius_cols[idx]:
+                _choice_button(label, value, radius_key, f"nearby_radius_{idx}_v191", radius_label)
+
+        if GOOGLE_PLACES_API_KEY:
+            open_now_only = st.toggle(
+                "🟢 営業中だけ",
+                value=True,
+                key="nearby_open_now_only_v191",
+                help="営業時間が登録されている場所のうち、現在営業中の候補だけに絞ります。",
+            )
+            st.markdown('<div class="nearby-step-note">OFFにすると、営業時間外や営業時間が未登録の候補も検索対象にします。</div>', unsafe_allow_html=True)
+        else:
+            open_now_only = False
+
+        radius_map = {"徒歩10分くらい": 800, "徒歩20分くらい": 1600, "もう少し遠く": 2500}
+        radius_m = int(radius_map.get(radius_label, 800))
+        display_kind = "おやつ" if kind == "snack" else "観光"
+        open_label = "営業中のみ" if open_now_only else "営業時間で絞らない"
+        st.markdown(
+            f'<div class="nearby-search-summary">{html.escape(display_kind)}　／　{html.escape(subkind)}　／　{html.escape(radius_label)}　／　{html.escape(open_label)}</div>',
+            unsafe_allow_html=True,
         )
-        st.caption("営業中だけ表示をONにすると、営業時間が未登録の場所は候補から外れることがあります。")
-    else:
-        open_now_only = False
 
-    with st.spinner("近くの候補を探しています…"):
-        search_result = search_nearby_quick_stops_google(latitude, longitude, kind, subkind, radius_m, open_now_only=open_now_only) if GOOGLE_PLACES_API_KEY else None
-        if not search_result or search_result.get("error"):
-            fallback = search_nearby_quick_stops(latitude, longitude, kind, subkind, radius_m)
-            if search_result and search_result.get("error") and not fallback.get("error"):
-                fallback["photo_error"] = str(search_result.get("error") or "")
-                if open_now_only:
-                    fallback["open_filter_unavailable"] = True
-            search_result = fallback
-    error = str((search_result or {}).get("error") or "")
+        search_signature = json.dumps(
+            {
+                "lat": round(latitude, 5),
+                "lon": round(longitude, 5),
+                "kind": kind,
+                "subkind": subkind,
+                "radius_m": radius_m,
+                "open_now_only": bool(open_now_only),
+                "provider": "google" if GOOGLE_PLACES_API_KEY else "osm",
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+
+        with st.container(key="nearby_search_action"):
+            search_pressed = st.button(
+                "🔎 この条件で検索",
+                type="primary",
+                use_container_width=True,
+                key="nearby_search_submit_v191",
+            )
+
+    detail_key = f"_nearby_open_detail_{current_family_key()}_{current_member_key()}"
+    if search_pressed:
+        st.session_state[detail_key] = ""
+        with st.spinner("近くの候補を探しています…"):
+            search_result = search_nearby_quick_stops_google(
+                latitude, longitude, kind, subkind, radius_m, open_now_only=open_now_only
+            ) if GOOGLE_PLACES_API_KEY else None
+            if not search_result or search_result.get("error"):
+                fallback = search_nearby_quick_stops(latitude, longitude, kind, subkind, radius_m)
+                if search_result and search_result.get("error") and not fallback.get("error"):
+                    fallback["photo_error"] = str(search_result.get("error") or "")
+                    if open_now_only:
+                        fallback["open_filter_unavailable"] = True
+                search_result = fallback
+        st.session_state[result_key] = {
+            "signature": search_signature,
+            "result": search_result if isinstance(search_result, dict) else {},
+            "searched_at": now_jst().isoformat(),
+        }
+
+    saved_search = st.session_state.get(result_key)
+    if not isinstance(saved_search, dict) or str(saved_search.get("signature") or "") != search_signature:
+        previous_exists = isinstance(saved_search, dict) and bool(saved_search.get("result"))
+        message = (
+            "条件を変更しました。内容を確認して、もう一度「この条件で検索」を押してください。"
+            if previous_exists else
+            "条件を選んだら、最後に「この条件で検索」を押してください。"
+        )
+        st.markdown(f'<div class="nearby-search-ready">{html.escape(message)}</div>', unsafe_allow_html=True)
+        return
+
+    search_result = saved_search.get("result") if isinstance(saved_search.get("result"), dict) else {}
+    error = str(search_result.get("error") or "")
     if error:
         st.warning(error)
-        detail = str((search_result or {}).get("detail") or "")
+        detail = str(search_result.get("detail") or "")
         if detail:
             with st.expander("検索エラーの詳細"):
                 st.code(detail)
         return
 
-    places = list((search_result or {}).get("places") or [])[:6]
-    provider = str((search_result or {}).get("provider") or "OpenStreetMap")
-    if bool((search_result or {}).get("open_filter_unavailable")):
+    places = list(search_result.get("places") or [])[:6]
+    provider = str(search_result.get("provider") or "OpenStreetMap")
+    if bool(search_result.get("open_filter_unavailable")):
         st.warning("Google Placesに接続できなかったため、今回は『営業中だけ』の絞り込みを外して候補を表示しています。")
+
+    st.divider()
     st.markdown("### 今ちょっと寄るなら")
-    st.caption("候補を最大6か所。営業状況・評価・代表写真を見て決めたら、その場でGoogleマップの徒歩経路を開けます。")
+    st.caption("候補は最大6か所。営業状況・評価・写真を見て、行きたい場所からそのまま徒歩経路を開けます。")
     if not GOOGLE_PLACES_API_KEY:
         st.info("写真表示を使うには Streamlit Secrets に `GOOGLE_PLACES_API_KEY` を追加してください。検索自体はこのまま利用できます。")
     if not places:
-        st.info("この条件では候補を見つけられませんでした。検索範囲を広げるか、種類を「なんでも」にしてみてください。")
+        st.info("この条件では候補を見つけられませんでした。検索範囲を広げるか、種類を『おまかせ』にしてもう一度検索してください。")
         return
 
     preview_images = _nearby_load_preview_images(places) if provider == "Google Places" else [""] * len(places)
-    detail_key = f"_nearby_open_detail_{current_family_key()}_{current_member_key()}"
     open_detail = str(st.session_state.get(detail_key) or "")
 
     for index, place in enumerate(places, start=1):
@@ -16829,7 +16996,6 @@ def page_nearby():
         st.markdown('<div class="nearby-source-note">候補・写真・営業情報・評価：Google Places。電話・公式サイトなどの詳細は開いた場所だけ取得します。</div>', unsafe_allow_html=True)
     else:
         st.markdown('<div class="nearby-source-note">周辺候補：OpenStreetMap。写真APIが未設定または利用できない場合は文字情報で表示します。</div>', unsafe_allow_html=True)
-
 
 _MOMENTS_RECOVERY_HTML = """
 <div id="moments-recovery" style="font-size:14px;color:#6b7280;padding:.35rem 0;">元動画からAI候補を準備しています…</div>
