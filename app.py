@@ -29,9 +29,9 @@ from zoneinfo import ZoneInfo
 import streamlit as st
 
 # Freshly generated update: 2026-08-31 23:49 JST
-GENERATED_UPDATE_JST = "2026-09-05T01:45:00+09:00"
+GENERATED_UPDATE_JST = "2026-09-05T01:52:49+09:00"
 
-APP_BUILD = "v203"
+APP_BUILD = "v204"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -17777,27 +17777,31 @@ def page_toilets():
         unsafe_allow_html=True,
     )
 
-    # Match the active Home route palette, just like Nearby search.
-    toilet_theme = _home_theme_for_session()
-    toilet_accent = str(toilet_theme.get("accent") or "#7EBD52")
-    toilet_rgb1 = str(toilet_theme.get("accent_rgb") or "126,189,82")
-    toilet_rgb2 = str(toilet_theme.get("accent2_rgb") or "189,235,145")
+    # v204: keep the toilet-search CTA in the same calm, pale location-tool palette
+    # used elsewhere in the app instead of giving this one action a saturated route color.
     st.markdown(
         """
         <style>
         .st-key-toilet_search_action div.stButton > button {
           color:rgba(31,38,48,.96) !important;
-          background:linear-gradient(155deg,rgba(%s,.62),rgba(%s,.23)) !important;
-          border:1.8px solid %s !important;
-          box-shadow:0 8px 20px rgba(%s,.17),0 0 0 2px rgba(255,255,255,.36) inset !important;
+          background:linear-gradient(155deg,rgba(231,249,240,.99),rgba(226,245,251,.95)) !important;
+          border:1.8px solid rgba(79,169,132,.66) !important;
+          box-shadow:0 9px 22px rgba(79,169,132,.10),0 0 0 2px rgba(255,255,255,.32) inset !important;
         }
         .st-key-toilet_search_action div.stButton > button:hover {
-          background:linear-gradient(155deg,rgba(%s,.72),rgba(%s,.30)) !important;
-          border-color:%s !important;
-          box-shadow:0 10px 23px rgba(%s,.21),0 0 0 2px rgba(255,255,255,.42) inset !important;
+          color:rgba(31,38,48,.98) !important;
+          background:linear-gradient(155deg,rgba(220,247,233,1),rgba(215,241,250,.99)) !important;
+          border-color:rgba(79,169,132,.82) !important;
+          box-shadow:0 11px 24px rgba(79,169,132,.14),0 0 0 2px rgba(255,255,255,.38) inset !important;
+          filter:none !important;
+          transform:translateY(-1px);
+        }
+        .st-key-toilet_search_action div.stButton > button:active {
+          transform:translateY(0);
+          box-shadow:0 5px 14px rgba(79,169,132,.11),0 0 0 2px rgba(255,255,255,.30) inset !important;
         }
         </style>
-        """ % (toilet_rgb2, toilet_rgb1, toilet_accent, toilet_rgb1, toilet_rgb2, toilet_rgb1, toilet_accent, toilet_rgb1),
+        """,
         unsafe_allow_html=True,
     )
 
@@ -17979,7 +17983,7 @@ def page_toilets():
             sort_keys=True,
         )
         with st.container(key="toilet_search_action"):
-            search_pressed = st.button("🚻 この条件でトイレを探す", type="primary", use_container_width=True, key="toilet_search_submit_v199")
+            search_pressed = st.button("🚻 この条件でトイレを探す", type="primary", use_container_width=True, key="toilet_search_submit_v204")
 
     if search_pressed:
         with st.spinner("近くのトイレを探しています…"):
