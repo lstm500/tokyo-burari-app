@@ -29,9 +29,9 @@ from zoneinfo import ZoneInfo
 import streamlit as st
 
 # Freshly generated update: 2026-08-31 23:49 JST
-GENERATED_UPDATE_JST = "2026-09-04T00:14:57+09:00"
+GENERATED_UPDATE_JST = "2026-09-04T12:06:55+09:00"
 
-APP_BUILD = "v184"
+APP_BUILD = "v186"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -19555,6 +19555,18 @@ def page_settings():
         "割合とは別の最低品質条件として常に避けます。"
     )
     saved_moment_weights = get_video_moment_factor_settings()
+    # v186: Streamlit does not allow changing a widget's session_state value after
+    # that widget has already been instantiated in the same run. A reset therefore
+    # schedules the slider values for the start of the next rerun, before st.slider().
+    moment_reset_apply_key = (
+        f"_settings_moment_reset_apply_{current_family_key()}_{current_member_key()}"
+    )
+    reset_values = st.session_state.pop(moment_reset_apply_key, None)
+    if isinstance(reset_values, dict):
+        for factor_key in VIDEO_MOMENT_FACTOR_ORDER:
+            widget_key = f"settings_moment_factor_{current_family_key()}_{current_member_key()}_{factor_key}"
+            st.session_state[widget_key] = int(reset_values.get(factor_key) or 0)
+
     draft_moment_weights = {}
     for factor_key in VIDEO_MOMENT_FACTOR_ORDER:
         meta = VIDEO_MOMENT_FACTOR_META[factor_key]
@@ -19587,9 +19599,9 @@ def page_settings():
             key=f"settings_save_moment_factors_{current_family_key()}_{current_member_key()}",
         ):
             try:
-                saved = save_video_moment_factor_settings(draft_moment_weights)
-                for factor_key in VIDEO_MOMENT_FACTOR_ORDER:
-                    st.session_state[f"settings_moment_factor_{current_family_key()}_{current_member_key()}_{factor_key}"] = int(saved[factor_key])
+                save_video_moment_factor_settings(draft_moment_weights)
+                # The sliders already contain exactly the saved values. Do not assign
+                # their session_state keys here after widget instantiation.
                 st.session_state["_settings_notice"] = "いい瞬間の選び方を、この個人アカウント用に保存しました。"
                 st.rerun()
             except Exception as exc:
@@ -19603,8 +19615,8 @@ def page_settings():
             try:
                 defaults = default_video_moment_factor_weights()
                 save_video_moment_factor_settings(defaults)
-                for factor_key in VIDEO_MOMENT_FACTOR_ORDER:
-                    st.session_state[f"settings_moment_factor_{current_family_key()}_{current_member_key()}_{factor_key}"] = int(defaults[factor_key])
+                # Apply on the next run, before the slider widgets are instantiated.
+                st.session_state[moment_reset_apply_key] = dict(defaults)
                 st.session_state["_settings_notice"] = "いい瞬間の選び方を標準配分に戻しました。"
                 st.rerun()
             except Exception as exc:
