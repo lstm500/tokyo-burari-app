@@ -29,9 +29,9 @@ from zoneinfo import ZoneInfo
 import streamlit as st
 
 # Freshly generated update: 2026-08-31 23:49 JST
-GENERATED_UPDATE_JST = "2026-09-05T00:29:24+09:00"
+GENERATED_UPDATE_JST = "2026-09-05T00:33:14+09:00"
 
-APP_BUILD = "v194"
+APP_BUILD = "v195"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -16790,6 +16790,40 @@ def page_nearby():
         }
         </style>
         """,
+        unsafe_allow_html=True,
+    )
+
+    # v195: use the same route-theme palette as Home for the search CTA.
+    # This keeps the call-to-action prominent without introducing a one-off blue/teal color.
+    nearby_theme = _home_theme_for_session()
+    nearby_accent = str(nearby_theme.get("accent") or "#7EBD52")
+    nearby_rgb1 = str(nearby_theme.get("accent_rgb") or "126,189,82")
+    nearby_rgb2 = str(nearby_theme.get("accent2_rgb") or "189,235,145")
+    st.markdown(
+        """
+        <style>
+        .st-key-nearby_search_action div.stButton > button {
+          color:rgba(31,38,48,.96) !important;
+          background:linear-gradient(155deg,rgba(%s,.62),rgba(%s,.23)) !important;
+          border:1.8px solid %s !important;
+          box-shadow:0 8px 20px rgba(%s,.17),0 0 0 2px rgba(255,255,255,.36) inset !important;
+        }
+        .st-key-nearby_search_action div.stButton > button:hover {
+          color:rgba(31,38,48,.98) !important;
+          background:linear-gradient(155deg,rgba(%s,.72),rgba(%s,.30)) !important;
+          border-color:%s !important;
+          box-shadow:0 10px 23px rgba(%s,.21),0 0 0 2px rgba(255,255,255,.42) inset !important;
+          filter:none !important;
+        }
+        .st-key-nearby_search_action div.stButton > button:active {
+          transform:translateY(1px);
+          box-shadow:0 4px 12px rgba(%s,.17),0 0 0 2px rgba(255,255,255,.32) inset !important;
+        }
+        </style>
+        """ % (
+            nearby_rgb2, nearby_rgb1, nearby_accent, nearby_rgb1,
+            nearby_rgb2, nearby_rgb1, nearby_accent, nearby_rgb1, nearby_rgb1,
+        ),
         unsafe_allow_html=True,
     )
 
