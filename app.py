@@ -31,7 +31,7 @@ import streamlit as st
 # Freshly generated update: 2026-08-31 23:49 JST
 GENERATED_UPDATE_JST = "2026-09-05T02:02:25+09:00"
 
-APP_BUILD = "v208"
+APP_BUILD = "v209"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -13816,7 +13816,7 @@ def render_monthly_replay_player(period_label, review, playback, photo_items):
         background: #0f172a;
         border: 6px solid rgba(255,255,255,.16);
         box-sizing: border-box;
-        transition: border-color .18s ease;
+        transition: none; /* v209: switch frame color on the exact same paint as the photo */
       }}
       .burari-replay-stage img {{
         width: 100%;
@@ -13958,6 +13958,14 @@ def render_monthly_replay_player(period_label, review, playback, photo_items):
       let burariPendingStart = false;
       let burariWaitingForRequestedPosition = false;
       let burariSlideLoopStarted = false;
+      let burariSlideRequestToken = 0;
+      const burariPreloadedSlides = burariSlides.map((item) => {{
+        const preload = new Image();
+        preload.decoding = 'async';
+        const url = String((item || {{}}).url || '');
+        if (url) preload.src = url;
+        return preload;
+      }});
       const burariImg = document.getElementById('burariReplayImage');
       const burariStage = document.querySelector('.burari-replay-stage');
       const burariEmotion = document.getElementById('burariReplayEmotion');
@@ -14001,11 +14009,14 @@ def render_monthly_replay_player(period_label, review, playback, photo_items):
         }} catch (_) {{}}
       }}
 
-      function burariShowSlide(index) {{
-        if (!burariSlides.length) return;
-        const safeIndex = ((index % burariSlides.length) + burariSlides.length) % burariSlides.length;
-        const item = burariSlides[safeIndex] || {{}};
-        if (item.url) burariImg.src = item.url;
+      function burariApplySlideFrame(item, safeIndex, nextUrl) {{
+        // Change the visible photo and its frame metadata in the same browser turn.
+        // The image is already loaded/decoded before this function runs, so the old
+        // photo cannot remain visible while the new emotion frame has already changed.
+        if (nextUrl && burariImg) {{
+          burariImg.src = nextUrl;
+          burariImg.dataset.burariSlideUrl = nextUrl;
+        }}
         const emotionKey = String(item.emotion || '');
         const emotionColor = burariEmotionColors[emotionKey] || String(item.emotion_color || '') || burariDefaultFrameColor;
         const emotionIcon = burariEmotionIcons[emotionKey] || String(item.emotion_emoji || '');
@@ -14021,9 +14032,59 @@ def render_monthly_replay_player(period_label, review, playback, photo_items):
         burariProgress.textContent = `${{safeIndex + 1}} / ${{burariSlides.length}}`;
       }}
 
+      function burariShowSlide(index, afterApplied = null) {{
+        if (!burariSlides.length) return;
+        const safeIndex = ((index % burariSlides.length) + burariSlides.length) % burariSlides.length;
+        const item = burariSlides[safeIndex] || {{}};
+        const nextUrl = String(item.url || '');
+        const requestToken = ++burariSlideRequestToken;
+
+        const finish = () => {{
+          if (requestToken !== burariSlideRequestToken) return;
+          burariApplySlideFrame(item, safeIndex, nextUrl);
+          if (typeof afterApplied === 'function') afterApplied();
+        }};
+        const skip = () => {{
+          if (requestToken !== burariSlideRequestToken) return;
+          // Keep the current photo and current frame together if one source fails.
+          // Continue the slideshow instead of changing only the frame color.
+          if (typeof afterApplied === 'function') afterApplied();
+        }};
+
+        if (!nextUrl) {{
+          finish();
+          return;
+        }}
+
+        const preload = burariPreloadedSlides[safeIndex];
+        if (!preload) {{
+          skip();
+          return;
+        }}
+
+        const finishAfterDecode = () => {{
+          if (requestToken !== burariSlideRequestToken) return;
+          if (typeof preload.decode === 'function') {{
+            preload.decode().then(finish).catch(finish);
+          }} else {{
+            finish();
+          }}
+        }};
+
+        if (preload.complete && preload.naturalWidth > 0) {{
+          finishAfterDecode();
+        }} else {{
+          preload.addEventListener('load', finishAfterDecode, {{ once: true }});
+          preload.addEventListener('error', skip, {{ once: true }});
+        }}
+      }}
+
       function burariStopTimers() {{
+        // Invalidate any photo that is still preloading so it cannot change the
+        // visible image/frame after the user has stopped or restarted playback.
+        burariSlideRequestToken += 1;
         if (burariTimer) {{
-          clearInterval(burariTimer);
+          clearTimeout(burariTimer);
           burariTimer = null;
         }}
         if (burariMusicWatchTimer) {{
@@ -14066,18 +14127,24 @@ def render_monthly_replay_player(period_label, review, playback, photo_items):
         if (burariStatus) burariStatus.textContent = '中断しました。▶ 再生で指定区間の最初から再生できます。';
       }}
 
+      function burariScheduleNextSlide() {{
+        if (!burariSlideLoopStarted || burariSlides.length <= 1) return;
+        if (burariTimer) clearTimeout(burariTimer);
+        burariTimer = setTimeout(() => {{
+          if (!burariSlideLoopStarted) return;
+          burariIndex = (burariIndex + 1) % burariSlides.length;
+          // Start the next display interval only after the new photo and frame have
+          // switched together. This prevents network/decode delay from desynchronizing them.
+          burariShowSlide(burariIndex, burariScheduleNextSlide);
+        }}, burariDisplayMs);
+      }}
+
       function burariStartSlideLoopOnce() {{
         // Photo motion must not depend on YouTube's position-confirmation event.
-        // A newly changed video can take a moment to emit PLAYING/currentTime,
-        // but the slideshow should still start reliably from the user's click.
+        // Each following interval starts only after the photo and frame are applied together.
         if (burariSlideLoopStarted) return;
         burariSlideLoopStarted = true;
-        if (burariSlides.length > 1) {{
-          burariTimer = setInterval(() => {{
-            burariIndex = (burariIndex + 1) % burariSlides.length;
-            burariShowSlide(burariIndex);
-          }}, burariDisplayMs);
-        }}
+        burariScheduleNextSlide();
       }}
 
       function burariStartMusicEndWatch() {{
@@ -14151,11 +14218,12 @@ def render_monthly_replay_player(period_label, review, playback, photo_items):
         burariWaitingForRequestedPosition = true;
         burariSlideLoopStarted = false;
         burariIndex = 0;
-        burariShowSlide(burariIndex);
+        // The slide loop begins only after slide 1 is fully ready, so its photo,
+        // border color, caption and counter all share the same transition point.
+        burariShowSlide(burariIndex, burariStartSlideLoopOnce);
         // Explicitly restore audible playback in the same user gesture. This is
         // especially important for a freshly opened family-shared replay on mobile.
         burariEnsureAudible();
-        burariStartSlideLoopOnce();
         if (burariStatus) burariStatus.textContent = `指定位置 ${{burariStartSeconds}}秒へ移動しています…`;
         try {{
           burariPlayer.loadVideoById({{
