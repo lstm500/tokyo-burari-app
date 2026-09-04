@@ -29,9 +29,9 @@ from zoneinfo import ZoneInfo
 import streamlit as st
 
 # Freshly generated update: 2026-08-31 23:49 JST
-GENERATED_UPDATE_JST = "2026-09-05T00:08:27+09:00"
+GENERATED_UPDATE_JST = "2026-09-05T00:23:19+09:00"
 
-APP_BUILD = "v191"
+APP_BUILD = "v193"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -6064,7 +6064,7 @@ def _nearby_google_photo_refs(photo_rows, limit=10):
     return refs
 
 
-def search_nearby_quick_stops_google(latitude, longitude, kind, subkind, radius_m, open_now_only=False):
+def search_nearby_quick_stops_google(latitude, longitude, kind, subkind, radius_m, open_now_only=False, budget_under_1000=False):
     """Use Google Places (New) for nearby cards with photos, live hours and ratings."""
     if not GOOGLE_PLACES_API_KEY:
         return None
@@ -6098,7 +6098,8 @@ def search_nearby_quick_stops_google(latitude, longitude, kind, subkind, radius_
             "X-Goog-Api-Key": GOOGLE_PLACES_API_KEY,
             "X-Goog-FieldMask": (
                 "places.id,places.displayName,places.formattedAddress,places.location,places.types,places.photos,"
-                "places.businessStatus,places.currentOpeningHours,places.rating,places.userRatingCount"
+                "places.businessStatus,places.currentOpeningHours,places.rating,places.userRatingCount,"
+                "places.priceLevel,places.priceRange"
             ),
         },
         method="POST",
@@ -6161,6 +6162,8 @@ def search_nearby_quick_stops_google(latitude, longitude, kind, subkind, radius_
             rating_count = max(0, int(raw.get("userRatingCount") or 0))
         except (TypeError, ValueError):
             rating_count = 0
+        price_level = str(raw.get("priceLevel") or "").strip()
+        price_range = raw.get("priceRange") if isinstance(raw.get("priceRange"), dict) else {}
         places.append({
             "id": f"google:{raw.get('id') or hashlib.sha1((name+str(plat)+str(plon)).encode()).hexdigest()[:16]}",
             "google_place_id": str(raw.get("id") or ""),
@@ -6176,13 +6179,23 @@ def search_nearby_quick_stops_google(latitude, longitude, kind, subkind, radius_
             "business_status": business_status,
             "rating": rating,
             "user_rating_count": rating_count,
+            "price_level": price_level,
+            "price_range": dict(price_range),
             "address": str(raw.get("formattedAddress") or "").strip(),
             "priority": 0,
             "provider": "Google Places",
             "photo_refs": refs,
         })
+    if bool(budget_under_1000):
+        places = [item for item in places if _nearby_budget_match_1000(item)]
     places.sort(key=lambda item: int(item.get("distance_m") or 0))
-    return {"places": places[:24], "error": "", "provider": "Google Places", "open_now_only": bool(open_now_only)}
+    return {
+        "places": places[:24],
+        "error": "",
+        "provider": "Google Places",
+        "open_now_only": bool(open_now_only),
+        "budget_under_1000": bool(budget_under_1000),
+    }
 
 @st.cache_data(ttl=600, show_spinner=False)
 def _nearby_google_photo_data_url(photo_ref, max_px=760):
@@ -6326,6 +6339,71 @@ def _nearby_price_level_text(value):
     return mapping.get(str(value or "").strip(), "")
 
 
+def _nearby_money_jpy(value):
+    if not isinstance(value, dict):
+        return None
+    currency = str(value.get("currencyCode") or "").strip().upper()
+    if currency and currency != "JPY":
+        return None
+    try:
+        units = float(value.get("units") or 0)
+        nanos = float(value.get("nanos") or 0) / 1_000_000_000.0
+        amount = units + nanos
+    except (TypeError, ValueError):
+        return None
+    if amount < 0 or not math.isfinite(amount):
+        return None
+    return amount
+
+
+def _nearby_price_range_text(value):
+    if not isinstance(value, dict):
+        return ""
+    start = _nearby_money_jpy(value.get("startPrice"))
+    end = _nearby_money_jpy(value.get("endPrice"))
+    if start is None and end is None:
+        return ""
+    if start is not None and end is not None:
+        return f"価格目安：¥{int(round(start)):,}〜¥{int(round(end)):,}未満"
+    if start is not None:
+        return f"価格目安：¥{int(round(start)):,}〜"
+    return f"価格目安：¥{int(round(end)):,}未満"
+
+
+def _nearby_budget_match_1000(place):
+    """Keep places that appear usable within ¥1,000; unknown prices stay visible."""
+    place = place if isinstance(place, dict) else {}
+    price_range = place.get("price_range") or {}
+    if isinstance(price_range, dict):
+        start = _nearby_money_jpy(price_range.get("startPrice"))
+        if start is not None:
+            return start <= 1000.0
+    level = str(place.get("price_level") or "").strip()
+    if level in {"PRICE_LEVEL_FREE", "PRICE_LEVEL_INEXPENSIVE"}:
+        return True
+    if level in {"PRICE_LEVEL_MODERATE", "PRICE_LEVEL_EXPENSIVE", "PRICE_LEVEL_VERY_EXPENSIVE"}:
+        return False
+    # Many small shops and sightseeing spots have no registered price information.
+    # Do not hide them solely because Google has no price metadata.
+    return True
+
+
+def _nearby_budget_text(place):
+    place = place if isinstance(place, dict) else {}
+    range_text = _nearby_price_range_text(place.get("price_range"))
+    if range_text:
+        return "💴 " + range_text.replace("価格目安：", "")
+    level = str(place.get("price_level") or "").strip()
+    labels = {
+        "PRICE_LEVEL_FREE": "💴 無料",
+        "PRICE_LEVEL_INEXPENSIVE": "💴 お手頃",
+        "PRICE_LEVEL_MODERATE": "💴 標準",
+        "PRICE_LEVEL_EXPENSIVE": "💴 やや高め",
+        "PRICE_LEVEL_VERY_EXPENSIVE": "💴 高め",
+    }
+    return labels.get(level, "")
+
+
 def _nearby_today_hours_text(hours):
     if not isinstance(hours, dict):
         return ""
@@ -6350,7 +6428,7 @@ def _nearby_google_place_details(place_id):
             "Content-Type": "application/json; charset=UTF-8",
             "X-Goog-Api-Key": GOOGLE_PLACES_API_KEY,
             "X-Goog-FieldMask": (
-                "id,currentOpeningHours,businessStatus,priceLevel,nationalPhoneNumber,websiteUri"
+                "id,currentOpeningHours,businessStatus,priceLevel,priceRange,nationalPhoneNumber,websiteUri"
             ),
         },
         method="GET",
@@ -16602,8 +16680,17 @@ def page_nearby():
         }
         .nearby-location-main { font-size:.88rem; font-weight:800; line-height:1.3; }
         .nearby-location-sub { margin-top:.16rem; font-size:.70rem; opacity:.62; line-height:1.3; }
-        .nearby-step-title { margin:.12rem 0 .32rem; font-size:.82rem; font-weight:850; letter-spacing:.01em; }
-        .nearby-step-note { margin:-.12rem 0 .38rem; font-size:.70rem; opacity:.62; line-height:1.42; }
+        .nearby-step-title {
+          display:flex; align-items:center; gap:.38rem; margin:0 0 .40rem;
+          font-size:.80rem; font-weight:850; letter-spacing:.01em; line-height:1.2;
+        }
+        .nearby-step-badge {
+          display:inline-flex; align-items:center; justify-content:center; flex:0 0 auto;
+          width:1.45rem; height:1.45rem; border-radius:999px;
+          background:rgba(74,144,226,.12); border:1px solid rgba(74,144,226,.18);
+          color:#2d6fad; font-size:.68rem; font-weight:900;
+        }
+        .nearby-step-note { margin:.34rem 0 0; font-size:.64rem; opacity:.58; line-height:1.35; }
         .nearby-search-summary {
           margin:.46rem 0 .10rem; padding:.48rem .62rem; border-radius:12px;
           background:rgba(128,128,128,.055); font-size:.72rem; line-height:1.45;
@@ -16632,13 +16719,44 @@ def page_nearby():
         .nearby-attribution { font-size:.56rem; opacity:.52; line-height:1.2; margin-top:2px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
         .nearby-source-note { font-size:.70rem; opacity:.62; line-height:1.45; }
         .st-key-nearby_filter_panel {
-          margin-top:.28rem; padding:.68rem .70rem .72rem; border-radius:18px;
-          border:1px solid rgba(128,128,128,.12); background:rgba(255,255,255,.18);
+          margin-top:.30rem; padding:0; border:0; background:transparent;
         }
-        .st-key-nearby_filter_panel [data-testid="stVerticalBlock"] { gap:.42rem; }
-        .st-key-nearby_filter_panel div.stButton > button {
-          min-height:2.62rem; border-radius:13px; font-size:.79rem; font-weight:760;
-          padding:.34rem .42rem;
+        .st-key-nearby_filter_panel > [data-testid="stVerticalBlock"] { gap:.48rem; }
+        .st-key-nearby_filter_row_1 [data-testid="stHorizontalBlock"],
+        .st-key-nearby_filter_row_2 [data-testid="stHorizontalBlock"],
+        .st-key-nearby_filter_row_3 [data-testid="stHorizontalBlock"] {
+          display:flex !important; flex-direction:row !important; flex-wrap:nowrap !important;
+          align-items:stretch !important; gap:.48rem !important;
+        }
+        .st-key-nearby_filter_row_1 [data-testid="stHorizontalBlock"] > [data-testid="stColumn"],
+        .st-key-nearby_filter_row_2 [data-testid="stHorizontalBlock"] > [data-testid="stColumn"],
+        .st-key-nearby_filter_row_3 [data-testid="stHorizontalBlock"] > [data-testid="stColumn"] {
+          width:0 !important; min-width:0 !important;
+        }
+        .st-key-nearby_filter_row_1 [data-testid="stHorizontalBlock"] > [data-testid="stColumn"]:first-child { flex:.88 1 0 !important; }
+        .st-key-nearby_filter_row_1 [data-testid="stHorizontalBlock"] > [data-testid="stColumn"]:last-child { flex:1.12 1 0 !important; }
+        .st-key-nearby_filter_row_2 [data-testid="stHorizontalBlock"] > [data-testid="stColumn"] { flex:1 1 0 !important; }
+        .st-key-nearby_filter_row_3 [data-testid="stHorizontalBlock"] > [data-testid="stColumn"] { flex:1 1 0 !important; }
+        .st-key-nearby_step_1, .st-key-nearby_step_2,
+        .st-key-nearby_step_3, .st-key-nearby_step_4, .st-key-nearby_step_5 { height:100%; }
+        .st-key-nearby_step_1 div.stButton > button,
+        .st-key-nearby_step_2 div.stButton > button,
+        .st-key-nearby_step_3 div.stButton > button,
+        .st-key-nearby_step_4 div.stButton > button,
+        .st-key-nearby_step_5 div.stButton > button {
+          min-height:2.42rem; border-radius:12px; font-size:.73rem; font-weight:760;
+          padding:.28rem .30rem; white-space:normal !important; line-height:1.16 !important;
+        }
+        .st-key-nearby_step_1 [data-testid="stVerticalBlock"],
+        .st-key-nearby_step_2 [data-testid="stVerticalBlock"],
+        .st-key-nearby_step_3 [data-testid="stVerticalBlock"],
+        .st-key-nearby_step_4 [data-testid="stVerticalBlock"],
+        .st-key-nearby_step_5 [data-testid="stVerticalBlock"] { gap:.30rem; }
+        .st-key-nearby_step_5 [data-testid="stHorizontalBlock"] {
+          display:flex !important; flex-direction:row !important; flex-wrap:nowrap !important; gap:.38rem !important;
+        }
+        .st-key-nearby_step_5 [data-testid="stHorizontalBlock"] > [data-testid="stColumn"] {
+          flex:1 1 0 !important; width:0 !important; min-width:0 !important;
         }
         .st-key-nearby_search_action div.stButton > button {
           min-height:3.35rem !important; border-radius:16px !important;
@@ -16648,10 +16766,20 @@ def page_nearby():
           .nearby-location-card { padding:.56rem .62rem; margin-bottom:.54rem; }
           .nearby-location-main { font-size:.83rem; }
           .nearby-location-sub { font-size:.66rem; }
-          .nearby-step-title { font-size:.78rem; margin-bottom:.28rem; }
-          .nearby-step-note { font-size:.67rem; }
-          .st-key-nearby_filter_panel { padding:.58rem .56rem .62rem; border-radius:16px; }
-          .st-key-nearby_filter_panel div.stButton > button { min-height:2.52rem; font-size:.75rem; padding:.28rem .30rem; }
+          .nearby-step-title { font-size:.75rem; margin-bottom:.34rem; gap:.30rem; }
+          .nearby-step-badge { width:1.34rem; height:1.34rem; font-size:.63rem; }
+          .nearby-step-note { font-size:.61rem; }
+          .st-key-nearby_filter_panel { padding:0; }
+          .st-key-nearby_filter_row_1 [data-testid="stHorizontalBlock"],
+          .st-key-nearby_filter_row_2 [data-testid="stHorizontalBlock"],
+          .st-key-nearby_filter_row_3 [data-testid="stHorizontalBlock"] { gap:.38rem !important; }
+          .st-key-nearby_step_1 div.stButton > button,
+          .st-key-nearby_step_2 div.stButton > button,
+          .st-key-nearby_step_3 div.stButton > button,
+          .st-key-nearby_step_4 div.stButton > button,
+          .st-key-nearby_step_5 div.stButton > button {
+            min-height:2.28rem; font-size:.68rem; padding:.24rem .22rem; border-radius:11px;
+          }
           .nearby-place-title { font-size:1.02rem; }
           .nearby-place-meta { font-size:.80rem; }
           .nearby-place-sub { font-size:.71rem; }
@@ -16736,11 +16864,13 @@ def page_nearby():
     if isinstance(accuracy, (int, float)) and accuracy >= 1000:
         st.caption("位置情報の精度が低めです。候補がずれる場合は、地名から検索の中心を指定してください。")
 
-    kind_key = f"_nearby_filter_kind_v191_{current_family_key()}_{current_member_key()}"
-    snack_key = f"_nearby_filter_snack_v191_{current_family_key()}_{current_member_key()}"
-    sight_key = f"_nearby_filter_sight_v191_{current_family_key()}_{current_member_key()}"
-    radius_key = f"_nearby_filter_radius_v191_{current_family_key()}_{current_member_key()}"
-    result_key = f"_nearby_search_result_v191_{current_family_key()}_{current_member_key()}"
+    kind_key = f"_nearby_filter_kind_v193_{current_family_key()}_{current_member_key()}"
+    snack_key = f"_nearby_filter_snack_v193_{current_family_key()}_{current_member_key()}"
+    sight_key = f"_nearby_filter_sight_v193_{current_family_key()}_{current_member_key()}"
+    radius_key = f"_nearby_filter_radius_v193_{current_family_key()}_{current_member_key()}"
+    budget_key = f"_nearby_filter_budget_v193_{current_family_key()}_{current_member_key()}"
+    open_key = f"_nearby_filter_open_v193_{current_family_key()}_{current_member_key()}"
+    result_key = f"_nearby_search_result_v193_{current_family_key()}_{current_member_key()}"
 
     if st.session_state.get(kind_key) not in {"snack", "sightseeing"}:
         st.session_state[kind_key] = "snack"
@@ -16750,6 +16880,10 @@ def page_nearby():
         st.session_state[sight_key] = "なんでも"
     if st.session_state.get(radius_key) not in {"徒歩10分くらい", "徒歩20分くらい", "もう少し遠く"}:
         st.session_state[radius_key] = "徒歩10分くらい"
+    if st.session_state.get(budget_key) not in {"under1000", "all"}:
+        st.session_state[budget_key] = "under1000"
+    if st.session_state.get(open_key) not in {"open", "all"}:
+        st.session_state[open_key] = "open" if GOOGLE_PLACES_API_KEY else "all"
 
     def _choice_button(label, value, state_key, button_key, selected_value):
         if st.button(
@@ -16761,77 +16895,112 @@ def page_nearby():
             st.session_state[state_key] = value
             st.rerun()
 
+    def _step_title(number, label):
+        st.markdown(
+            f'<div class="nearby-step-title"><span class="nearby-step-badge">{int(number)}</span><span>{html.escape(str(label))}</span></div>',
+            unsafe_allow_html=True,
+        )
+
+    kind = str(st.session_state.get(kind_key) or "snack")
+    subkind = str(st.session_state.get(snack_key) or "なんでも") if kind == "snack" else str(st.session_state.get(sight_key) or "なんでも")
+    radius_label = str(st.session_state.get(radius_key) or "徒歩10分くらい")
+    budget_mode = str(st.session_state.get(budget_key) or "under1000")
+    open_mode = str(st.session_state.get(open_key) or ("open" if GOOGLE_PLACES_API_KEY else "all"))
+
     with st.container(key="nearby_filter_panel"):
-        st.markdown('<div class="nearby-step-title">1　何に寄る？</div>', unsafe_allow_html=True)
-        kind = str(st.session_state.get(kind_key) or "snack")
-        kind_cols = st.columns(2, gap="small")
-        with kind_cols[0]:
-            _choice_button("🍡 おやつ", "snack", kind_key, "nearby_kind_snack_v191", kind)
-        with kind_cols[1]:
-            _choice_button("🏛️ 観光", "sightseeing", kind_key, "nearby_kind_sight_v191", kind)
+        # 5 conditions in a two-column grid. The odd fifth condition spans both columns
+        # so the layout stays balanced instead of leaving a visibly empty card.
+        with st.container(key="nearby_filter_row_1"):
+            row1_left, row1_right = st.columns([.88, 1.12], gap="small")
 
-        if kind == "snack":
-            st.markdown('<div class="nearby-step-note">食事ではなく、大福・たい焼き・ケーキ・焼き菓子・アイス・かき氷などを探します。</div>', unsafe_allow_html=True)
-            st.markdown('<div class="nearby-step-title">2　おやつの種類</div>', unsafe_allow_html=True)
-            subkind = str(st.session_state.get(snack_key) or "なんでも")
-            snack_options = [
-                ("おまかせ", "なんでも"),
-                ("🍡 和菓子", "和菓子"),
-                ("🍰 ケーキ・焼き菓子", "ケーキ・焼き菓子"),
-                ("🍧 アイス・かき氷", "アイス・かき氷"),
-            ]
-            for row_start in range(0, len(snack_options), 2):
-                cols = st.columns(2, gap="small")
-                for offset, (label, value) in enumerate(snack_options[row_start:row_start + 2]):
-                    with cols[offset]:
-                        _choice_button(label, value, snack_key, f"nearby_snack_{row_start+offset}_v191", subkind)
-        else:
-            st.markdown('<div class="nearby-step-note">公園・神社や寺・博物館・乗り物など、少し立ち寄れる場所を探します。</div>', unsafe_allow_html=True)
-            st.markdown('<div class="nearby-step-title">2　観光の種類</div>', unsafe_allow_html=True)
-            subkind = str(st.session_state.get(sight_key) or "なんでも")
-            sight_options = [
-                ("おまかせ", "なんでも"),
-                ("🌳 公園", "公園"),
-                ("⛩️ 神社・寺", "神社・寺"),
-                ("🏛️ 博物館・施設", "博物館・施設"),
-                ("🚃 電車・乗り物", "電車・乗り物"),
-            ]
-            for row_start in range(0, len(sight_options), 2):
-                cols = st.columns(2, gap="small")
-                row = sight_options[row_start:row_start + 2]
-                for offset, (label, value) in enumerate(row):
-                    with cols[offset]:
-                        _choice_button(label, value, sight_key, f"nearby_sight_{row_start+offset}_v191", subkind)
+            with row1_left:
+                with st.container(border=True, key="nearby_step_1"):
+                    _step_title(1, "何に寄る？")
+                    _choice_button("🍡 おやつ", "snack", kind_key, "nearby_kind_snack_v193", kind)
+                    _choice_button("🏛️ 観光", "sightseeing", kind_key, "nearby_kind_sight_v193", kind)
+                    st.markdown('<div class="nearby-step-note">甘いものか、気軽な立ち寄り先。</div>', unsafe_allow_html=True)
 
-        st.markdown('<div class="nearby-step-title">3　どのくらいまで？</div>', unsafe_allow_html=True)
-        radius_label = str(st.session_state.get(radius_key) or "徒歩10分くらい")
-        radius_options_ui = [
-            ("🚶 10分くらい", "徒歩10分くらい"),
-            ("🚶 20分くらい", "徒歩20分くらい"),
-            ("＋ もう少し遠く", "もう少し遠く"),
-        ]
-        radius_cols = st.columns(3, gap="small")
-        for idx, (label, value) in enumerate(radius_options_ui):
-            with radius_cols[idx]:
-                _choice_button(label, value, radius_key, f"nearby_radius_{idx}_v191", radius_label)
+            with row1_right:
+                with st.container(border=True, key="nearby_step_2"):
+                    _step_title(2, "種類")
+                    if kind == "snack":
+                        snack_options = [
+                            ("おまかせ", "なんでも"),
+                            ("🍡 和菓子", "和菓子"),
+                            ("🍰 ケーキ・焼き菓子", "ケーキ・焼き菓子"),
+                            ("🍧 アイス・かき氷", "アイス・かき氷"),
+                        ]
+                        subkind = str(st.session_state.get(snack_key) or "なんでも")
+                        for idx, (label, value) in enumerate(snack_options):
+                            _choice_button(label, value, snack_key, f"nearby_snack_{idx}_v193", subkind)
+                    else:
+                        sight_options = [
+                            ("おまかせ", "なんでも"),
+                            ("🌳 公園", "公園"),
+                            ("⛩️ 神社・寺", "神社・寺"),
+                            ("🏛️ 博物館・施設", "博物館・施設"),
+                            ("🚃 電車・乗り物", "電車・乗り物"),
+                        ]
+                        subkind = str(st.session_state.get(sight_key) or "なんでも")
+                        for idx, (label, value) in enumerate(sight_options):
+                            _choice_button(label, value, sight_key, f"nearby_sight_{idx}_v193", subkind)
 
-        if GOOGLE_PLACES_API_KEY:
-            open_now_only = st.toggle(
-                "🟢 営業中だけ",
-                value=True,
-                key="nearby_open_now_only_v191",
-                help="営業時間が登録されている場所のうち、現在営業中の候補だけに絞ります。",
-            )
-            st.markdown('<div class="nearby-step-note">OFFにすると、営業時間外や営業時間が未登録の候補も検索対象にします。</div>', unsafe_allow_html=True)
-        else:
-            open_now_only = False
+        with st.container(key="nearby_filter_row_2"):
+            row2_left, row2_right = st.columns(2, gap="small")
+
+            with row2_left:
+                with st.container(border=True, key="nearby_step_3"):
+                    _step_title(3, "どのくらいまで？")
+                    radius_label = str(st.session_state.get(radius_key) or "徒歩10分くらい")
+                    radius_options_ui = [
+                        ("🚶 10分くらい", "徒歩10分くらい"),
+                        ("🚶 20分くらい", "徒歩20分くらい"),
+                        ("＋ もう少し遠く", "もう少し遠く"),
+                    ]
+                    for idx, (label, value) in enumerate(radius_options_ui):
+                        _choice_button(label, value, radius_key, f"nearby_radius_{idx}_v193", radius_label)
+
+            with row2_right:
+                with st.container(border=True, key="nearby_step_4"):
+                    _step_title(4, "予算")
+                    budget_mode = str(st.session_state.get(budget_key) or "under1000")
+                    _choice_button("💴 1,000円以下", "under1000", budget_key, "nearby_budget_1000_v193", budget_mode)
+                    _choice_button("○ 予算を問わない", "all", budget_key, "nearby_budget_all_v193", budget_mode)
+                    st.markdown(
+                        '<div class="nearby-step-note">価格情報がある候補は1,000円以下で絞ります。料金未登録の場所は候補に残します。</div>',
+                        unsafe_allow_html=True,
+                    )
+
+        with st.container(key="nearby_filter_row_3"):
+            with st.container(border=True, key="nearby_step_5"):
+                _step_title(5, "営業中")
+                if GOOGLE_PLACES_API_KEY:
+                    open_mode = str(st.session_state.get(open_key) or "open")
+                    open_cols = st.columns(2, gap="small")
+                    with open_cols[0]:
+                        _choice_button("🟢 営業中だけ", "open", open_key, "nearby_open_only_v193", open_mode)
+                    with open_cols[1]:
+                        _choice_button("○ 時間を問わない", "all", open_key, "nearby_open_all_v193", open_mode)
+                    st.markdown(
+                        '<div class="nearby-step-note">営業中だけにすると、営業時間が未登録の場所は候補から外れることがあります。</div>',
+                        unsafe_allow_html=True,
+                    )
+                else:
+                    open_mode = "all"
+                    st.markdown('<div class="nearby-step-note">Google Places未設定のため、営業時間では絞り込みません。</div>', unsafe_allow_html=True)
 
         radius_map = {"徒歩10分くらい": 800, "徒歩20分くらい": 1600, "もう少し遠く": 2500}
+        radius_label = str(st.session_state.get(radius_key) or "徒歩10分くらい")
         radius_m = int(radius_map.get(radius_label, 800))
+        budget_under_1000 = str(st.session_state.get(budget_key) or "under1000") == "under1000"
+        open_now_only = bool(GOOGLE_PLACES_API_KEY and str(st.session_state.get(open_key) or "open") == "open")
+        kind = str(st.session_state.get(kind_key) or "snack")
+        subkind = str(st.session_state.get(snack_key) or "なんでも") if kind == "snack" else str(st.session_state.get(sight_key) or "なんでも")
         display_kind = "おやつ" if kind == "snack" else "観光"
+        budget_label = "1,000円以下" if budget_under_1000 else "予算指定なし"
         open_label = "営業中のみ" if open_now_only else "営業時間で絞らない"
         st.markdown(
-            f'<div class="nearby-search-summary">{html.escape(display_kind)}　／　{html.escape(subkind)}　／　{html.escape(radius_label)}　／　{html.escape(open_label)}</div>',
+            f'<div class="nearby-search-summary">{html.escape(display_kind)}　／　{html.escape(subkind)}　／　{html.escape(radius_label)}　／　{html.escape(budget_label)}　／　{html.escape(open_label)}</div>',
             unsafe_allow_html=True,
         )
 
@@ -16842,6 +17011,7 @@ def page_nearby():
                 "kind": kind,
                 "subkind": subkind,
                 "radius_m": radius_m,
+                "budget_under_1000": bool(budget_under_1000),
                 "open_now_only": bool(open_now_only),
                 "provider": "google" if GOOGLE_PLACES_API_KEY else "osm",
             },
@@ -16854,7 +17024,7 @@ def page_nearby():
                 "🔎 この条件で検索",
                 type="primary",
                 use_container_width=True,
-                key="nearby_search_submit_v191",
+                key="nearby_search_submit_v193",
             )
 
     detail_key = f"_nearby_open_detail_{current_family_key()}_{current_member_key()}"
@@ -16862,7 +17032,9 @@ def page_nearby():
         st.session_state[detail_key] = ""
         with st.spinner("近くの候補を探しています…"):
             search_result = search_nearby_quick_stops_google(
-                latitude, longitude, kind, subkind, radius_m, open_now_only=open_now_only
+                latitude, longitude, kind, subkind, radius_m,
+                open_now_only=open_now_only,
+                budget_under_1000=budget_under_1000,
             ) if GOOGLE_PLACES_API_KEY else None
             if not search_result or search_result.get("error"):
                 fallback = search_nearby_quick_stops(latitude, longitude, kind, subkind, radius_m)
@@ -16870,6 +17042,8 @@ def page_nearby():
                     fallback["photo_error"] = str(search_result.get("error") or "")
                     if open_now_only:
                         fallback["open_filter_unavailable"] = True
+                    if budget_under_1000:
+                        fallback["budget_filter_unavailable"] = True
                 search_result = fallback
         st.session_state[result_key] = {
             "signature": search_signature,
@@ -16902,6 +17076,8 @@ def page_nearby():
     provider = str(search_result.get("provider") or "OpenStreetMap")
     if bool(search_result.get("open_filter_unavailable")):
         st.warning("Google Placesに接続できなかったため、今回は『営業中だけ』の絞り込みを外して候補を表示しています。")
+    if bool(search_result.get("budget_filter_unavailable")):
+        st.warning("Google Placesに接続できなかったため、今回は『1,000円以下』の価格判定を行わず候補を表示しています。")
 
     st.divider()
     st.markdown("### 今ちょっと寄るなら")
@@ -16927,6 +17103,9 @@ def page_nearby():
             status_html = f'<span class="nearby-pill {html.escape(status.get("css") or "unknown")}">{html.escape(str(status.get("label") or "営業時間情報なし"))}</span>'
             if rating_text:
                 status_html += f'<span class="nearby-pill rating">{html.escape(rating_text)}</span>'
+            budget_text = _nearby_budget_text(place)
+            if budget_text:
+                status_html += f'<span class="nearby-pill unknown">{html.escape(budget_text)}</span>'
             st.markdown('<div class="nearby-status-row">' + status_html + '</div>', unsafe_allow_html=True)
             if preview:
                 st.markdown(f'<div class="nearby-photo-wrap"><img src="{html.escape(preview, quote=True)}" alt="{html.escape(str(place.get("name") or "候補"))}の参考写真"></div>', unsafe_allow_html=True)
@@ -16966,7 +17145,7 @@ def page_nearby():
                 detail_parts = []
                 if today_hours:
                     detail_parts.append("今日の営業時間：" + today_hours)
-                price_text = _nearby_price_level_text(detail_data.get("priceLevel"))
+                price_text = _nearby_price_range_text(detail_data.get("priceRange")) or _nearby_price_level_text(detail_data.get("priceLevel"))
                 if price_text:
                     detail_parts.append(price_text)
                 phone = str(detail_data.get("nationalPhoneNumber") or "").strip()
@@ -16993,7 +17172,7 @@ def page_nearby():
                         st.caption("この場所では追加の参考写真を取得できませんでした。")
 
     if provider == "Google Places":
-        st.markdown('<div class="nearby-source-note">候補・写真・営業情報・評価：Google Places。電話・公式サイトなどの詳細は開いた場所だけ取得します。</div>', unsafe_allow_html=True)
+        st.markdown('<div class="nearby-source-note">候補・写真・営業情報・評価・価格情報：Google Places。電話・公式サイトなどの詳細は開いた場所だけ取得します。</div>', unsafe_allow_html=True)
     else:
         st.markdown('<div class="nearby-source-note">周辺候補：OpenStreetMap。写真APIが未設定または利用できない場合は文字情報で表示します。</div>', unsafe_allow_html=True)
 
