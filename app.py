@@ -31,7 +31,7 @@ import streamlit as st
 # Freshly generated update: 2026-08-31 23:49 JST
 GENERATED_UPDATE_JST = "2026-09-05T01:21:45+09:00"
 
-APP_BUILD = "v199"
+APP_BUILD = "v200"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -6787,13 +6787,14 @@ def _toilet_baby_info(tags):
     return {"ok": None, "label": ""}
 
 
-def _toilet_rank_score(place, usable_now_preferred=True):
-    """Rank nearby toilets by a practical mix of current usability and distance.
+def _toilet_rank_key(place, usable_now_preferred=True):
+    """Sort toilets by availability -> distance -> public access.
 
-    No category (public/facility/office/etc.) gets an intrinsic bonus. A confirmed-open
-    toilet is preferred, unknown hours stay available with a moderate penalty, and
-    customer-only/unverified access is slightly de-prioritized. This keeps a very close
-    unknown toilet competitive while moving a nearby confirmed-open option upward.
+    When "今使える優先" is selected, confirmed-open candidates come first, followed
+    by candidates whose opening hours are unknown. Within the same availability group,
+    physical distance is the primary order. Only after distance do we prefer toilets
+    explicitly marked as generally accessible. This keeps the requested order explicit
+    instead of blending the factors into one weighted score.
     """
     place = place if isinstance(place, dict) else {}
     try:
@@ -6803,23 +6804,28 @@ def _toilet_rank_score(place, usable_now_preferred=True):
 
     open_now = place.get("open_now")
     opening_known = bool(place.get("opening_known"))
-    if open_now is True:
-        availability_penalty = 0
-    elif open_now is False and opening_known:
-        availability_penalty = 900 if usable_now_preferred else 260
+    if usable_now_preferred:
+        if open_now is True:
+            availability_rank = 0
+        elif open_now is False and opening_known:
+            availability_rank = 2
+        else:
+            availability_rank = 1
     else:
-        availability_penalty = 320 if usable_now_preferred else 60
+        availability_rank = 0
 
     access_label = str(place.get("access_label") or "").strip()
-    if access_label == "施設利用者向け":
-        access_penalty = 320
+    if access_label == "一般利用可":
+        access_rank = 0
     elif access_label == "利用条件未確認":
-        access_penalty = 120
+        access_rank = 1
+    elif access_label == "施設利用者向け":
+        access_rank = 2
     else:
-        access_penalty = 0
+        access_rank = 1
 
-    floor_bonus = -45 if str(place.get("floor_label") or "").strip() == "1階情報あり" else 0
-    return max(0, distance + availability_penalty + access_penalty + floor_bonus)
+    floor_rank = 0 if str(place.get("floor_label") or "").strip() == "1階情報あり" else 1
+    return (availability_rank, distance, access_rank, floor_rank)
 
 
 @st.cache_data(ttl=300, show_spinner=False)
@@ -6846,8 +6852,7 @@ def _toilet_google_fallback(latitude, longitude, radius_m):
             "shopping_mall", "department_store", "supermarket",
         ],
         [
-            "business_center", "corporate_office", "coworking_space", "food_court",
-            "restaurant", "cafe", "convenience_store",
+            "food_court", "restaurant", "cafe", "convenience_store",
         ],
     ]
 
@@ -6906,8 +6911,6 @@ def _toilet_google_fallback(latitude, longitude, radius_m):
             return "商業施設内トイレ"
         if types & {"food_court", "restaurant", "cafe"}:
             return "飲食施設内トイレ"
-        if types & {"business_center", "corporate_office", "coworking_space"}:
-            return "オフィスビル内トイレ"
         if types & {"train_station", "subway_station", "transit_station"}:
             return "駅・交通施設内トイレ"
         return "施設内トイレ"
@@ -6922,6 +6925,15 @@ def _toilet_google_fallback(latitude, longitude, radius_m):
                 continue
             types = {str(value) for value in (raw.get("types") or []) if str(value)}
             standalone = "public_bathroom" in types
+            public_commercial_types = {
+                "shopping_mall", "department_store", "supermarket", "convenience_store",
+                "food_court", "restaurant", "cafe",
+            }
+            office_types = {"business_center", "corporate_office", "coworking_space"}
+            # Exclude ordinary office-only buildings. Mixed-use buildings remain eligible
+            # when Google also identifies them as a public-facing shopping/food facility.
+            if types & office_types and not (types & public_commercial_types):
+                continue
             if not standalone and raw.get("restroom") is not True:
                 continue
             loc = raw.get("location") or {}
@@ -6980,7 +6992,7 @@ def _toilet_google_fallback(latitude, longitude, radius_m):
                     "provider": "Google Places",
                 }
             )
-    places.sort(key=lambda item: (_toilet_rank_score(item, usable_now_preferred=True), int(item.get("distance_m") or 0)))
+    places.sort(key=lambda item: _toilet_rank_key(item, usable_now_preferred=True))
     return {
         "places": places[:40],
         "error": "" if places or not errors else "Google Placesのトイレ検索に接続できませんでした。",
@@ -7067,14 +7079,28 @@ def _toilet_place_from_osm_element(element, latitude, longitude, radius_m):
         name = base_name or "公衆トイレ"
         category = "公衆トイレ"
     else:
+        public_facing_host = bool(
+            railway
+            or public_transport
+            or shop
+            or building == "retail"
+            or amenity in {"restaurant", "cafe", "fast_food", "food_court", "marketplace", "community_centre", "library", "townhall"}
+            or tourism
+            or leisure
+        )
+        office_like_host = bool(office or building in {"office", "commercial"})
+        # Ordinary office buildings are not useful candidates for a family outing.
+        # Keep a mixed-use building only when the same OSM element has an explicit
+        # public-facing shopping/food/transport/facility signal.
+        if office_like_host and not public_facing_host:
+            return None
+
         if railway or public_transport:
             category = "駅・交通施設内トイレ"
-        elif shop in {"mall", "department_store", "supermarket", "convenience"}:
+        elif shop or building == "retail":
             category = "商業施設内トイレ"
         elif amenity in {"restaurant", "cafe", "fast_food", "food_court", "marketplace"}:
             category = "飲食施設内トイレ"
-        elif office or building in {"office", "commercial", "retail", "civic", "public"}:
-            category = "オフィス・商業ビル内トイレ"
         elif tourism or leisure or amenity in {"community_centre", "library", "townhall"}:
             category = "施設内トイレ"
         else:
@@ -7251,15 +7277,9 @@ def search_nearby_toilets(
             and not (usable_now_preferred and p.get("opening_known") and p.get("open_now") is False)
         ]
 
-    # No category bonus is applied. Confirmed-currently-usable toilets move upward,
-    # while distance remains important enough that a very close unknown-hours option
-    # can still beat a much farther confirmed-open one.
-    filtered.sort(
-        key=lambda item: (
-            _toilet_rank_score(item, usable_now_preferred=usable_now_preferred),
-            int(item.get("distance_m") or 0),
-        )
-    )
+    # Display order is explicit: availability first (when requested), then distance,
+    # then general public access. Category itself does not receive a ranking bonus.
+    filtered.sort(key=lambda item: _toilet_rank_key(item, usable_now_preferred=usable_now_preferred))
 
     if filtered:
         notes = []
@@ -17378,7 +17398,7 @@ def page_home():
 def page_toilets():
     page_top(
         "🚻 近くのトイレ",
-        "公衆トイレ・駅・商業施設・飲食施設・オフィスビルなどをまとめて探し、近い順を中心に表示します。最後に検索ボタンを押したときだけ周辺検索を行います。",
+        "公衆トイレ・駅・商業施設・飲食施設などをまとめて探します。今使える候補を優先し、その中では距離順、次に一般利用可を優先して表示します。一般的なオフィスビルは検索対象から外します。最後に検索ボタンを押したときだけ周辺検索を行います。",
     )
     st.markdown(
         """
@@ -17738,7 +17758,7 @@ def page_toilets():
             if direction_url:
                 st.link_button("🗺️ このトイレに案内してもらう", direction_url, use_container_width=True)
 
-    st.caption("トイレ候補はOpenStreetMapと、設定済みの場合はGoogle Placesの情報を利用します。施設内トイレは入場ゲート前かどうかまで判定できない場合があるため、『利用条件未確認』の候補は現地表示も確認してください。")
+    st.caption("トイレ候補はOpenStreetMapと、設定済みの場合はGoogle Placesの情報を利用します。一般的なオフィスビルは候補から除外します。施設内トイレは入場ゲート前かどうかまで判定できない場合があるため、『利用条件未確認』の候補は現地表示も確認してください。")
 
 
 def page_nearby():
