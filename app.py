@@ -31,7 +31,7 @@ import streamlit as st
 # Freshly generated update: 2026-08-31 23:49 JST
 GENERATED_UPDATE_JST = "2026-09-05T01:52:49+09:00"
 
-APP_BUILD = "v204"
+APP_BUILD = "v205"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -4609,19 +4609,54 @@ except Exception:
 
 
 
-def browser_auto_login_token(family_key, member_key, credential_hash):
-    """Return an opaque browser credential bound to one personal account in a family."""
+AUTO_LOGIN_TTL_SECONDS = 24 * 60 * 60
+
+
+def browser_auto_login_token(family_key, member_key, credential_hash, issued_at=None):
+    """Return a signed browser credential valid for 24 hours from explicit login.
+
+    The PIN itself is never stored in the browser.  The issued-at timestamp is covered by
+    the HMAC, so changing the timestamp in localStorage does not extend the login period.
+    Auto-login never refreshes this timestamp; only a successful manual login does.
+    """
     family_key = str(family_key or "").strip()
     member_key = str(member_key or "").strip()
     credential_hash = str(credential_hash or "").strip()
     if not family_key or not member_key or not credential_hash:
         return ""
+    try:
+        issued = int(issued_at if issued_at is not None else time.time())
+    except (TypeError, ValueError, OverflowError):
+        return ""
     signature = hmac.new(
         credential_hash.encode("utf-8"),
-        f"tokyo-burari-auto-login-v3|{family_key}|{member_key}".encode("utf-8"),
+        f"tokyo-burari-auto-login-v4|{family_key}|{member_key}|{issued}".encode("utf-8"),
         hashlib.sha256,
     ).hexdigest()
-    return f"{family_key}|{member_key}|{signature}"
+    return f"{family_key}|{member_key}|{issued}|{signature}"
+
+
+def validate_browser_auto_login_token(stored_token, credential_hash, now_ts=None):
+    """Validate signature and the fixed 24-hour lifetime of a browser login token."""
+    stored_token = str(stored_token or "").strip()
+    credential_hash = str(credential_hash or "").strip()
+    parts = stored_token.split("|")
+    if len(parts) != 4 or not credential_hash:
+        return None
+    family_key, member_key, issued_text, _ = parts
+    try:
+        issued = int(issued_text)
+        now_value = int(now_ts if now_ts is not None else time.time())
+    except (TypeError, ValueError, OverflowError):
+        return None
+    # Reject future-dated tokens beyond a small clock-skew allowance as well as expired ones.
+    age = now_value - issued
+    if age < -300 or age >= AUTO_LOGIN_TTL_SECONDS:
+        return None
+    expected = browser_auto_login_token(family_key, member_key, credential_hash, issued_at=issued)
+    if not expected or not hmac.compare_digest(stored_token, expected):
+        return None
+    return {"family_key": family_key, "member_key": member_key, "issued_at": issued}
 
 def read_browser_persistence(key, extra_data=None):
     if browser_persistence_component is None:
@@ -5303,25 +5338,31 @@ def require_family_pin():
     suppress_auto = bool(st.session_state.pop("_suppress_auto_login_once", False))
     browser_state = None if suppress_auto else read_browser_persistence("browser_auto_login_gate")
     if isinstance(browser_state, dict):
-        stored_token = str(browser_state.get("auth_token") or "")
+        stored_token = str(browser_state.get("auth_token") or "").strip()
         parts = stored_token.split("|")
-        if len(parts) == 3:
-            family_key, member_key, _ = parts
+        if len(parts) == 4:
+            family_key, member_key = parts[0], parts[1]
             try:
                 # The personal account is sufficient to validate the credential.
                 # Family display metadata is fetched lazily later only if a page shows it.
                 member = get_member_account(family_key, member_key)
             except Exception:
                 member = None
-            if member:
-                expected = browser_auto_login_token(
-                    family_key, member_key, member.get("pin_hash")
-                )
-                if expected and hmac.compare_digest(stored_token, expected):
-                    _set_authenticated_family({"family_key": family_key}, member, persist=False)
-                    st.session_state["_browser_last_camera_open_at"] = browser_state.get("last_camera_open_at") or 0
-                    st.session_state["_browser_last_camera_mode"] = str(browser_state.get("last_camera_mode") or "").strip().lower()
-                    st.rerun()
+            validated = validate_browser_auto_login_token(
+                stored_token,
+                (member or {}).get("pin_hash"),
+            ) if member else None
+            if validated:
+                _set_authenticated_family({"family_key": family_key}, member, persist=False)
+                st.session_state["_browser_last_camera_open_at"] = browser_state.get("last_camera_open_at") or 0
+                st.session_state["_browser_last_camera_mode"] = str(browser_state.get("last_camera_mode") or "").strip().lower()
+                st.rerun()
+            # A changed PIN or an expired token must not be retried on every rerun.
+            clear_browser_auto_login("browser_auto_login_invalid_v205")
+        elif stored_token:
+            # v204 and older tokens had no expiry. Invalidate them once so v205 starts
+            # the requested 24-hour policy from the next successful manual login.
+            clear_browser_auto_login("browser_auto_login_legacy_clear_v205")
 
     # Legacy no-PIN installation: only probe the legacy account when the app truly
     # has no FAMILY_PIN. Normal PIN installations skip these four network requests.
@@ -5393,6 +5434,7 @@ def require_family_pin():
     with st.container(key="login_account_card", border=True):
         st.markdown("#### ログイン")
         st.caption("家族アカウントの中の、個人アカウントでログインしてください。")
+        st.caption("一度ログインすると、このブラウザでは24時間ログイン画面を省略します。ログアウトすると自動ログインは解除されます。")
         family_key = st.text_input(
             "家族ID",
             value=str(st.session_state.get("_last_family_key") or "default"),
