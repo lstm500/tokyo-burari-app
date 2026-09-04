@@ -29,9 +29,9 @@ from zoneinfo import ZoneInfo
 import streamlit as st
 
 # Freshly generated update: 2026-08-31 23:49 JST
-GENERATED_UPDATE_JST = "2026-09-04T12:06:55+09:00"
+GENERATED_UPDATE_JST = "2026-09-04T12:33:48+09:00"
 
-APP_BUILD = "v186"
+APP_BUILD = "v187"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -437,6 +437,18 @@ st.markdown(
         transform: translateY(-1px);
         background: linear-gradient(155deg, rgba(255, 243, 215, 1), rgba(255, 232, 199, .98)) !important;
         box-shadow: 0 11px 24px rgba(238, 178, 80, .14), 0 0 0 2px rgba(255,255,255,.36) inset !important;
+      }
+      .st-key-home_nearby div.stButton > button,
+      .st-key-home_nearby button {
+        border: 1.8px solid rgba(79, 169, 132, .66) !important;
+        background: linear-gradient(155deg, rgba(231, 249, 240, .99), rgba(226, 245, 251, .95)) !important;
+        box-shadow: 0 9px 22px rgba(79, 169, 132, .10), 0 0 0 2px rgba(255,255,255,.32) inset !important;
+      }
+      .st-key-home_nearby div.stButton > button:hover,
+      .st-key-home_nearby button:hover {
+        transform: translateY(-1px);
+        background: linear-gradient(155deg, rgba(220, 247, 233, 1), rgba(215, 241, 250, .99)) !important;
+        box-shadow: 0 11px 24px rgba(79, 169, 132, .14), 0 0 0 2px rgba(255,255,255,.38) inset !important;
       }
       .st-key-home_settings div.stButton > button,
       .st-key-home_settings button {
@@ -5745,6 +5757,424 @@ def build_photo_location(raw_location, trip, capture_source="camera"):
         ),
     }
 
+
+
+# ============================================================
+# Nearby stop search (quick snack / sightseeing)
+# ============================================================
+_NEARBY_LOCATION_HTML = """
+<div class="nearby-location-box">
+  <button id="nearby-location-button" type="button">📍 現在地から探す</button>
+  <div id="nearby-location-status" aria-live="polite"></div>
+</div>
+"""
+
+_NEARBY_LOCATION_CSS = """
+.nearby-location-box { width:100%; box-sizing:border-box; }
+#nearby-location-button {
+  width:100%; min-height:52px; border-radius:16px; border:1.6px solid rgba(74,144,226,.45);
+  background:linear-gradient(145deg,rgba(234,246,255,.98),rgba(236,250,243,.96));
+  color:var(--st-text-color); font:inherit; font-weight:800; cursor:pointer;
+}
+#nearby-location-button:disabled { opacity:.60; cursor:wait; }
+#nearby-location-status { margin-top:7px; min-height:18px; font-size:12px; opacity:.72; line-height:1.35; }
+"""
+
+_NEARBY_LOCATION_JS = r"""
+export default function(component) {
+  const { parentElement, setTriggerValue } = component;
+  const button = parentElement.querySelector('#nearby-location-button');
+  const status = parentElement.querySelector('#nearby-location-status');
+  if (!button || !status) return;
+  let cancelled = false;
+  const setStatus = (value) => { status.textContent = String(value || ''); };
+  const finish = () => { if (!cancelled) button.disabled = false; };
+  const errorText = (error) => {
+    const code = Number(error?.code || 0);
+    if (code === 1) return '位置情報の利用が許可されていません。下の地名入力でも探せます。';
+    if (code === 2) return '現在地を取得できませんでした。下の地名入力でも探せます。';
+    if (code === 3) return '現在地の取得に時間がかかっています。もう一度お試しください。';
+    return '現在地を取得できませんでした。';
+  };
+  const locate = () => {
+    if (!navigator.geolocation) {
+      const message = 'このブラウザでは位置情報を取得できません。';
+      setStatus(message);
+      setTriggerValue('location_error', { token:String(Date.now()), message });
+      return;
+    }
+    button.disabled = true;
+    setStatus('現在地を確認しています…');
+    navigator.geolocation.getCurrentPosition(
+      (position) => {
+        if (cancelled) return;
+        const payload = {
+          token: `${Date.now()}_${Math.random().toString(36).slice(2)}`,
+          latitude: Number(position.coords.latitude),
+          longitude: Number(position.coords.longitude),
+          accuracy_m: Number(position.coords.accuracy || 0),
+          measured_at: new Date().toISOString()
+        };
+        setStatus('現在地を取得しました。近くの候補を探します。');
+        setTriggerValue('location', payload);
+        finish();
+      },
+      (error) => {
+        if (cancelled) return;
+        const message = errorText(error);
+        setStatus(message);
+        setTriggerValue('location_error', { token:String(Date.now()), code:Number(error?.code || 0), message });
+        finish();
+      },
+      { enableHighAccuracy:true, timeout:9000, maximumAge:60000 }
+    );
+  };
+  button.addEventListener('click', locate);
+  return () => { cancelled = true; button.removeEventListener('click', locate); };
+}
+"""
+
+nearby_location_component = None
+_nearby_location_component_initialized = False
+
+
+def _get_nearby_location_component():
+    global nearby_location_component, _nearby_location_component_initialized
+    if _nearby_location_component_initialized:
+        return nearby_location_component
+    _nearby_location_component_initialized = True
+    try:
+        nearby_location_component = st.components.v2.component(
+            "tokyo_burari_nearby_location_v187",
+            html=_NEARBY_LOCATION_HTML,
+            css=_NEARBY_LOCATION_CSS,
+            js=_NEARBY_LOCATION_JS,
+        )
+    except Exception:
+        nearby_location_component = None
+    return nearby_location_component
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def geocode_nearby_place_text(place_text):
+    query = str(place_text or "").strip()
+    if not query:
+        return None
+    params = urlencode(
+        {
+            "format": "jsonv2",
+            "q": query,
+            "limit": 1,
+            "countrycodes": "jp",
+            "accept-language": "ja",
+        }
+    )
+    req = Request(
+        f"https://nominatim.openstreetmap.org/search?{params}",
+        headers={
+            "User-Agent": "TokyoBurariApp/1.0 (family-use nearby search)",
+            "Accept": "application/json",
+        },
+    )
+    try:
+        with urlopen(req, timeout=4.5) as response:
+            data = json.loads(response.read().decode("utf-8"))
+    except Exception:
+        return None
+    row = data[0] if isinstance(data, list) and data else None
+    if not isinstance(row, dict):
+        return None
+    try:
+        latitude = float(row.get("lat"))
+        longitude = float(row.get("lon"))
+    except (TypeError, ValueError):
+        return None
+    label = str(row.get("display_name") or query).split(",")[0].strip() or query
+    return {
+        "source": "manual",
+        "latitude": latitude,
+        "longitude": longitude,
+        "accuracy_m": None,
+        "measured_at": now_jst().isoformat(),
+        "place_label": label,
+    }
+
+
+def _nearby_haversine_m(lat1, lon1, lat2, lon2):
+    try:
+        lat1, lon1, lat2, lon2 = map(float, (lat1, lon1, lat2, lon2))
+    except (TypeError, ValueError):
+        return 10 ** 9
+    radius = 6371000.0
+    p1 = math.radians(lat1)
+    p2 = math.radians(lat2)
+    dp = math.radians(lat2 - lat1)
+    dl = math.radians(lon2 - lon1)
+    a = math.sin(dp / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
+    return radius * 2 * math.atan2(math.sqrt(a), math.sqrt(max(0.0, 1.0 - a)))
+
+
+def _nearby_overpass_selectors(kind, subkind, radius, latitude, longitude):
+    around = f"(around:{int(radius)},{float(latitude):.6f},{float(longitude):.6f})"
+    snack_name = "大福|団子|だんご|たい焼|鯛焼|和菓子|どら焼|饅頭|まんじゅう|ケーキ|洋菓子|焼き菓子|菓子|スイーツ|アイス|ジェラート|ソフトクリーム|かき氷|クレープ|ドーナツ|シュークリーム|プリン"
+    if kind == "snack":
+        mapping = {
+            "なんでも": [
+                f'nwr{around}["shop"~"^(confectionery|pastry|bakery|chocolate)$"];',
+                f'nwr{around}["amenity"="ice_cream"];',
+                f'nwr{around}["cuisine"~"dessert|ice_cream|cake|japanese_sweets"];',
+                f'nwr{around}["name"~"{snack_name}"];',
+            ],
+            "和菓子": [
+                f'nwr{around}["name"~"大福|団子|だんご|たい焼|鯛焼|和菓子|どら焼|饅頭|まんじゅう|最中|羊羹"];',
+                f'nwr{around}["shop"="confectionery"]["name"~"和|餅|菓子|堂|庵"];',
+            ],
+            "ケーキ・焼き菓子": [
+                f'nwr{around}["shop"~"^(pastry|bakery|confectionery|chocolate)$"];',
+                f'nwr{around}["name"~"ケーキ|洋菓子|焼き菓子|パティスリー|ドーナツ|シュークリーム|プリン|クレープ"];',
+            ],
+            "アイス・かき氷": [
+                f'nwr{around}["amenity"="ice_cream"];',
+                f'nwr{around}["cuisine"~"ice_cream|dessert"];',
+                f'nwr{around}["name"~"アイス|ジェラート|ソフトクリーム|かき氷|氷菓"];',
+            ],
+        }
+        return mapping.get(str(subkind), mapping["なんでも"])
+
+    mapping = {
+        "なんでも": [
+            f'nwr{around}["tourism"~"^(attraction|museum|gallery|viewpoint|zoo|aquarium)$"];',
+            f'nwr{around}["leisure"~"^(park|garden)$"];',
+            f'nwr{around}["amenity"="place_of_worship"]["religion"~"^(shinto|buddhist)$"];',
+            f'nwr{around}["historic"];',
+            f'nwr{around}["name"~"鉄道|電車|列車|車両|交通|モノレール|路面電車"];',
+        ],
+        "公園": [
+            f'nwr{around}["leisure"~"^(park|garden|playground)$"];',
+        ],
+        "神社・寺": [
+            f'nwr{around}["amenity"="place_of_worship"]["religion"~"^(shinto|buddhist)$"];',
+            f'nwr{around}["historic"~"^(shrine|temple)$"];',
+        ],
+        "博物館・施設": [
+            f'nwr{around}["tourism"~"^(museum|gallery|attraction|zoo|aquarium)$"];',
+        ],
+        "電車・乗り物": [
+            f'nwr{around}["railway"~"^(station|halt)$"];',
+            f'nwr{around}["name"~"鉄道|電車|列車|車両|交通|モノレール|路面電車|鉄道博物館"];',
+        ],
+    }
+    return mapping.get(str(subkind), mapping["なんでも"])
+
+
+def _nearby_place_label(tags, kind):
+    tags = tags if isinstance(tags, dict) else {}
+    name = str(tags.get("name:ja") or tags.get("name") or "").strip()
+    if kind == "snack":
+        lowered = name.lower()
+        if "かき氷" in name:
+            return "かき氷"
+        if any(word in name for word in ("アイス", "ジェラート", "ソフトクリーム")) or tags.get("amenity") == "ice_cream":
+            return "アイス・冷たいおやつ"
+        if any(word in name for word in ("大福", "団子", "だんご", "たい焼", "鯛焼", "和菓子", "どら焼", "饅頭", "まんじゅう", "最中", "羊羹")):
+            return "和菓子"
+        if any(word in name for word in ("ケーキ", "洋菓子", "パティスリー", "シュー", "プリン", "クレープ", "ドーナツ")) or tags.get("shop") == "pastry":
+            return "ケーキ・洋菓子"
+        if tags.get("shop") == "bakery":
+            return "焼きたて・焼き菓子"
+        if tags.get("shop") in {"confectionery", "chocolate"}:
+            return "お菓子"
+        if "dessert" in str(tags.get("cuisine") or "").lower():
+            return "デザート"
+        return "ちょっとしたおやつ"
+
+    if tags.get("leisure") in {"park", "garden", "playground"}:
+        return "公園・庭園"
+    if tags.get("amenity") == "place_of_worship" or tags.get("historic") in {"shrine", "temple"}:
+        return "神社・寺"
+    if tags.get("tourism") in {"museum", "gallery"}:
+        return "博物館・施設"
+    if tags.get("tourism") in {"zoo", "aquarium"}:
+        return "見学施設"
+    if tags.get("tourism") == "viewpoint":
+        return "景色・展望"
+    if tags.get("railway") in {"station", "halt"} or any(word in name for word in ("鉄道", "電車", "列車", "車両", "交通", "モノレール")):
+        return "電車・乗り物"
+    if tags.get("historic"):
+        return "歴史スポット"
+    return "観光スポット"
+
+
+def _nearby_place_priority(tags, kind):
+    if kind != "snack":
+        return 0
+    tags = tags if isinstance(tags, dict) else {}
+    name = str(tags.get("name:ja") or tags.get("name") or "")
+    direct_terms = ("大福", "団子", "だんご", "たい焼", "鯛焼", "和菓子", "ケーキ", "洋菓子", "アイス", "ジェラート", "ソフトクリーム", "かき氷", "クレープ", "ドーナツ", "プリン")
+    if any(term in name for term in direct_terms):
+        return 0
+    if tags.get("amenity") == "ice_cream" or tags.get("shop") in {"confectionery", "pastry", "chocolate"}:
+        return 1
+    if tags.get("shop") == "bakery":
+        return 2
+    return 3
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def search_nearby_quick_stops(latitude, longitude, kind, subkind, radius_m):
+    try:
+        latitude = round(float(latitude), 5)
+        longitude = round(float(longitude), 5)
+        radius_m = max(300, min(4000, int(radius_m)))
+    except (TypeError, ValueError):
+        return {"places": [], "error": "現在地を確認できませんでした。", "provider": "OpenStreetMap"}
+
+    selectors = _nearby_overpass_selectors(kind, subkind, radius_m, latitude, longitude)
+    query = "[out:json][timeout:9];(" + "".join(selectors) + ");out center tags;"
+    payload = urlencode({"data": query}).encode("utf-8")
+    endpoints = (
+        "https://overpass-api.de/api/interpreter",
+        "https://overpass.kumi.systems/api/interpreter",
+    )
+    data = None
+    last_error = ""
+    for endpoint in endpoints:
+        req = Request(
+            endpoint,
+            data=payload,
+            headers={
+                "User-Agent": "TokyoBurariApp/1.0 (family-use nearby search)",
+                "Accept": "application/json",
+                "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+            },
+        )
+        try:
+            with urlopen(req, timeout=7.5) as response:
+                data = json.loads(response.read().decode("utf-8"))
+            if isinstance(data, dict):
+                break
+        except Exception as exc:
+            last_error = str(exc)
+            data = None
+
+    if not isinstance(data, dict):
+        return {
+            "places": [],
+            "error": "周辺検索サービスにつながりませんでした。少し時間をおいてもう一度お試しください。",
+            "detail": last_error[:240],
+            "provider": "OpenStreetMap",
+        }
+
+    places = []
+    seen = set()
+    for element in data.get("elements") or []:
+        if not isinstance(element, dict):
+            continue
+        tags = element.get("tags") or {}
+        if not isinstance(tags, dict):
+            tags = {}
+        name = str(tags.get("name:ja") or tags.get("name") or "").strip()
+        if not name:
+            continue
+        if kind == "snack" and str(tags.get("amenity") or "") in {"restaurant", "fast_food", "bar", "pub"}:
+            continue
+        center = element.get("center") if isinstance(element.get("center"), dict) else {}
+        plat = element.get("lat", center.get("lat"))
+        plon = element.get("lon", center.get("lon"))
+        try:
+            plat = float(plat)
+            plon = float(plon)
+        except (TypeError, ValueError):
+            continue
+        distance_m = _nearby_haversine_m(latitude, longitude, plat, plon)
+        if not math.isfinite(distance_m) or distance_m > radius_m * 1.15:
+            continue
+        dedupe = (name, round(plat, 4), round(plon, 4))
+        if dedupe in seen:
+            continue
+        seen.add(dedupe)
+        walk_minutes = max(1, int(math.ceil((distance_m * 1.25) / 80.0)))
+        addr_parts = []
+        for key in ("addr:suburb", "addr:quarter", "addr:city", "addr:street"):
+            value = str(tags.get(key) or "").strip()
+            if value and value not in addr_parts:
+                addr_parts.append(value)
+        place_id = f"osm:{element.get('type','x')}:{element.get('id','')}"
+        places.append(
+            {
+                "id": place_id,
+                "name": name,
+                "kind": str(kind),
+                "category": _nearby_place_label(tags, kind),
+                "latitude": plat,
+                "longitude": plon,
+                "distance_m": int(round(distance_m)),
+                "walk_minutes": walk_minutes,
+                "opening_hours": str(tags.get("opening_hours") or "").strip(),
+                "address": " ".join(addr_parts[:3]),
+                "priority": _nearby_place_priority(tags, kind),
+                "provider": "OpenStreetMap",
+            }
+        )
+
+    if kind == "snack":
+        places.sort(key=lambda item: (int(item.get("priority") or 0) * 220 + int(item.get("distance_m") or 0), int(item.get("distance_m") or 0)))
+    else:
+        places.sort(key=lambda item: int(item.get("distance_m") or 0))
+    return {"places": places[:24], "error": "", "provider": "OpenStreetMap"}
+
+
+def _nearby_shortlist_key():
+    return f"_nearby_shortlist_{current_family_key()}_{current_member_key()}"
+
+
+def _nearby_shortlist():
+    value = st.session_state.get(_nearby_shortlist_key())
+    return [dict(item) for item in value] if isinstance(value, list) else []
+
+
+def _nearby_add_shortlist(place):
+    if not isinstance(place, dict) or not place.get("id"):
+        return
+    items = _nearby_shortlist()
+    pid = str(place.get("id"))
+    items = [item for item in items if str(item.get("id")) != pid]
+    items.append(dict(place))
+    st.session_state[_nearby_shortlist_key()] = items[-6:]
+
+
+def _nearby_remove_shortlist(place_id):
+    pid = str(place_id or "")
+    st.session_state[_nearby_shortlist_key()] = [
+        item for item in _nearby_shortlist() if str(item.get("id")) != pid
+    ]
+
+
+def _nearby_directions_url(place):
+    try:
+        lat = float((place or {}).get("latitude"))
+        lon = float((place or {}).get("longitude"))
+    except (TypeError, ValueError):
+        return ""
+    params = urlencode(
+        {
+            "api": "1",
+            "destination": f"{lat:.7f},{lon:.7f}",
+            "travelmode": "walking",
+            "dir_action": "navigate",
+        }
+    )
+    return f"https://www.google.com/maps/dir/?{params}"
+
+
+def _nearby_distance_text(place):
+    distance = max(0, int((place or {}).get("distance_m") or 0))
+    minutes = max(1, int((place or {}).get("walk_minutes") or 1))
+    if distance >= 1000:
+        distance_text = f"{distance / 1000:.1f}km"
+    else:
+        distance_text = f"{distance}m"
+    return f"徒歩約{minutes}分（{distance_text}・目安）"
 
 def get_photo_location(photo):
     reflection = (photo or {}).get("reflection_json") or {}
@@ -13583,7 +14013,7 @@ def init_state():
 
 
 
-VALID_APP_PAGES = {"home", "camera", "videos", "moments", "diary", "review", "settings"}
+VALID_APP_PAGES = {"home", "camera", "videos", "moments", "diary", "review", "nearby", "settings"}
 
 
 def _current_ui_refresh_epoch():
@@ -13788,6 +14218,7 @@ def navigation_parent_node(node=None):
         "moments": "home",
         "diary": "home",
         "review": "home",
+        "nearby": "home",
         "settings": "home",
     }
     return parents.get(str(node), "")
@@ -13871,7 +14302,7 @@ def sync_browser_history():
 
     action = st.session_state.pop("_history_action", "sync")
     navigation_node, _ = current_navigation_context()
-    # First-level pages (Camera / Videos / Moments / Diary / Review / Settings)
+    # First-level pages (Camera / Videos / Moments / Diary / Review / Nearby / Settings)
     # already have a real Home entry immediately behind them because go_page()
     # pushes history. Let the phone/browser Back control pop that entry normally.
     # Only deeper in-page hierarchy states need interception so Back means exactly
@@ -15790,11 +16221,14 @@ def page_home():
 
         st.markdown('<div class="home-section-label" style="margin-top:.60rem;">たまに使う</div>', unsafe_allow_html=True)
         with st.container(key="home_secondary"):
-            secondary_left, secondary_right = st.columns([1.2, 1])
-            with secondary_left:
-                review_label = "振り返り（先月あり）" if review_attention else "振り返り（たまに）"
-                render_home_button(review_label, "review", "home_review", open_period_review=review_attention)
-            with secondary_right:
+            nearby_col, review_col, settings_col = st.columns([1.05, 1.05, .82])
+            with nearby_col:
+                render_home_button("📍 近くに寄る", "nearby", "home_nearby")
+            with review_col:
+                # The orange pulse already signals a pending monthly review, so keep the
+                # label short enough to preserve the three-column phone layout.
+                render_home_button("振り返り", "review", "home_review", open_period_review=review_attention)
+            with settings_col:
                 render_home_button("設定", "settings", "home_settings")
 
         st.markdown(
@@ -15803,6 +16237,219 @@ def page_home():
         )
         render_home_storage_usage_status()
 
+
+
+def page_nearby():
+    page_top(
+        "📍 近くに寄る",
+        "今いる場所の近くから、気軽に寄れるおやつと観光スポットだけを探します。行き先を決めた後の経路案内は地図アプリに任せます。",
+    )
+    st.markdown(
+        """
+        <style>
+        .nearby-place-title { font-size:1.04rem; font-weight:850; line-height:1.25; }
+        .nearby-place-meta { margin-top:.18rem; font-size:.82rem; opacity:.78; line-height:1.4; }
+        .nearby-place-sub { margin-top:.12rem; font-size:.74rem; opacity:.62; line-height:1.35; }
+        @media (max-width:640px) {
+          .nearby-place-title { font-size:1rem; }
+          .nearby-place-meta { font-size:.79rem; }
+          .nearby-place-sub { font-size:.71rem; }
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    location_component = _get_nearby_location_component()
+    if location_component is not None:
+        result = location_component(
+            data={},
+            key=f"nearby_location_v187_{current_family_key()}_{current_member_key()}",
+            on_location_change=lambda: None,
+            on_location_error_change=lambda: None,
+        )
+        location_payload = getattr(result, "location", None)
+        if isinstance(location_payload, dict):
+            token = str(location_payload.get("token") or "")
+            if token and token != str(st.session_state.get("_nearby_location_token") or ""):
+                try:
+                    lat = float(location_payload.get("latitude"))
+                    lon = float(location_payload.get("longitude"))
+                    accuracy = float(location_payload.get("accuracy_m") or 0) or None
+                except (TypeError, ValueError):
+                    lat = lon = None
+                    accuracy = None
+                if lat is not None and lon is not None:
+                    label = reverse_geocode_rough(lat, lon)
+                    st.session_state["_nearby_location"] = {
+                        "source": "gps",
+                        "latitude": lat,
+                        "longitude": lon,
+                        "accuracy_m": accuracy,
+                        "measured_at": str(location_payload.get("measured_at") or now_jst().isoformat()),
+                        "place_label": label,
+                    }
+                    st.session_state["_nearby_location_token"] = token
+        error_payload = getattr(result, "location_error", None)
+        if isinstance(error_payload, dict):
+            error_token = str(error_payload.get("token") or "")
+            if error_token and error_token != str(st.session_state.get("_nearby_location_error_token") or ""):
+                st.session_state["_nearby_location_error_token"] = error_token
+                st.session_state["_nearby_location_warning"] = str(error_payload.get("message") or "現在地を取得できませんでした。")
+    else:
+        st.info("この環境では現在地ボタンを表示できません。下の地名入力から検索できます。")
+
+    warning = st.session_state.pop("_nearby_location_warning", None)
+    if warning:
+        st.warning(warning)
+
+    with st.expander("現在地が取れないときは地名から探す"):
+        manual_place = st.text_input(
+            "駅名・地名",
+            placeholder="例：上野駅、浅草、品川駅",
+            key="nearby_manual_place_text",
+        )
+        if st.button("この地名から探す", use_container_width=True, key="nearby_manual_place_button"):
+            with st.spinner("場所を確認しています…"):
+                resolved = geocode_nearby_place_text(manual_place)
+            if resolved:
+                st.session_state["_nearby_location"] = resolved
+                st.session_state["_nearby_location_token"] = f"manual_{time.time_ns()}"
+                st.rerun()
+            else:
+                st.error("地名を確認できませんでした。駅名や区名を少し具体的に入力してください。")
+
+    location = st.session_state.get("_nearby_location")
+    if not isinstance(location, dict) or location.get("latitude") is None or location.get("longitude") is None:
+        st.info("まず「現在地から探す」を押してください。位置情報を使えない場合は地名から探せます。")
+        return
+
+    latitude = float(location["latitude"])
+    longitude = float(location["longitude"])
+    place_label = str(location.get("place_label") or reverse_geocode_rough(latitude, longitude) or "現在地付近")
+    accuracy = location.get("accuracy_m")
+    location_detail = place_label or "現在地付近"
+    if isinstance(accuracy, (int, float)) and accuracy > 0:
+        location_detail += f" ／ GPS精度 ±{int(round(accuracy))}m"
+    st.caption(f"📍 検索の中心：{location_detail}")
+
+    st.markdown("### 何に寄る？")
+    category_label = st.radio(
+        "何に寄る？",
+        ["🍡 おやつ", "🏛️ 観光"],
+        horizontal=True,
+        key="nearby_category",
+        label_visibility="collapsed",
+    )
+    kind = "snack" if category_label.startswith("🍡") else "sightseeing"
+    if kind == "snack":
+        st.caption("食事のお店ではなく、大福・団子・たい焼き・ケーキ・焼き菓子・アイス・かき氷など、その場ですぐ楽しめるものを探します。")
+        subkind = st.radio(
+            "おやつの種類",
+            ["なんでも", "和菓子", "ケーキ・焼き菓子", "アイス・かき氷"],
+            horizontal=True,
+            key="nearby_snack_subkind",
+        )
+    else:
+        subkind = st.radio(
+            "観光の種類",
+            ["なんでも", "公園", "神社・寺", "博物館・施設", "電車・乗り物"],
+            horizontal=True,
+            key="nearby_sight_subkind",
+        )
+
+    radius_options = {
+        "徒歩10分くらい": 800,
+        "徒歩20分くらい": 1600,
+        "もう少し遠く": 2500,
+    }
+    radius_label = st.radio(
+        "どのくらいまで？",
+        list(radius_options),
+        horizontal=True,
+        key="nearby_radius_label",
+    )
+    radius_m = radius_options[radius_label]
+
+    shortlist = _nearby_shortlist()
+    if shortlist:
+        st.markdown("### ★ 行きたい候補")
+        option_ids = [str(item.get("id")) for item in shortlist if item.get("id")]
+        by_id = {str(item.get("id")): item for item in shortlist if item.get("id")}
+        selection_key = f"nearby_shortlist_choice_{current_family_key()}_{current_member_key()}"
+        if str(st.session_state.get(selection_key) or "") not in option_ids:
+            st.session_state[selection_key] = option_ids[0]
+        selected_id = st.radio(
+            "行き先候補",
+            option_ids,
+            format_func=lambda pid: f"{by_id[pid].get('name','')} ／ {_nearby_distance_text(by_id[pid])}",
+            key=selection_key,
+            label_visibility="collapsed",
+        )
+        selected_place = by_id.get(selected_id) or {}
+        direction_url = _nearby_directions_url(selected_place)
+        route_col, remove_col = st.columns([1.45, 1])
+        with route_col:
+            if direction_url:
+                st.link_button(
+                    "🗺️ この場所へ行く",
+                    direction_url,
+                    use_container_width=True,
+                )
+        with remove_col:
+            if st.button("候補から外す", use_container_width=True, key=f"nearby_remove_{hashlib.sha1(str(selected_id).encode()).hexdigest()[:10]}"):
+                _nearby_remove_shortlist(selected_id)
+                st.session_state.pop(selection_key, None)
+                st.rerun()
+        st.caption("「この場所へ行く」を押すと、徒歩経路を指定したGoogleマップへ移ります。以降のナビは地図アプリ側で行います。")
+        st.divider()
+
+    with st.spinner("近くの候補を探しています…"):
+        search_result = search_nearby_quick_stops(latitude, longitude, kind, subkind, radius_m)
+    error = str((search_result or {}).get("error") or "")
+    if error:
+        st.warning(error)
+        detail = str((search_result or {}).get("detail") or "")
+        if detail:
+            with st.expander("検索エラーの詳細"):
+                st.code(detail)
+        return
+
+    places = list((search_result or {}).get("places") or [])[:6]
+    st.markdown("### 今ちょっと寄るなら")
+    st.caption("近さを基本に、条件に合う候補を最大6か所表示します。徒歩時間は直線距離からの目安です。")
+    if not places:
+        st.info("この条件では候補を見つけられませんでした。検索範囲を広げるか、種類を「なんでも」にしてみてください。")
+        return
+
+    shortlist_ids = {str(item.get("id")) for item in _nearby_shortlist()}
+    for index, place in enumerate(places, start=1):
+        pid = str(place.get("id") or f"p{index}")
+        place_key = hashlib.sha1(pid.encode("utf-8")).hexdigest()[:12]
+        with st.container(border=True):
+            st.markdown(f'<div class="nearby-place-title">{index}. {html.escape(str(place.get("name") or "候補"))}</div>', unsafe_allow_html=True)
+            st.markdown(
+                f'<div class="nearby-place-meta">{html.escape(str(place.get("category") or ""))}　・　{html.escape(_nearby_distance_text(place))}</div>',
+                unsafe_allow_html=True,
+            )
+            extras = []
+            if place.get("opening_hours"):
+                extras.append("営業時間: " + str(place.get("opening_hours")))
+            if place.get("address"):
+                extras.append(str(place.get("address")))
+            if extras:
+                st.markdown('<div class="nearby-place-sub">' + html.escape(" ／ ".join(extras)) + '</div>', unsafe_allow_html=True)
+            already = pid in shortlist_ids
+            if st.button(
+                "★ 候補に入れました" if already else "☆ 行きたい候補に入れる",
+                use_container_width=True,
+                disabled=already,
+                key=f"nearby_add_{place_key}",
+            ):
+                _nearby_add_shortlist(place)
+                st.rerun()
+
+    st.caption("周辺候補はOpenStreetMapの公開データを利用しています。店舗情報の網羅性や営業時間は場所によって差があります。")
 
 
 _MOMENTS_RECOVERY_HTML = """
@@ -19794,6 +20441,8 @@ with page_root.container():
         page_diary()
     elif page == "review":
         page_review()
+    elif page == "nearby":
+        page_nearby()
     elif page == "settings":
         page_settings()
     else:
@@ -19807,6 +20456,6 @@ with page_root.container():
         live_page = str(st.session_state.get("main_page") or "home")
         if (
             page == live_page
-            and page in {"camera", "videos", "moments", "diary", "review", "settings"}
+            and page in {"camera", "videos", "moments", "diary", "review", "nearby", "settings"}
         ):
             render_global_bottom_navigation(page)
