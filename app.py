@@ -29,9 +29,9 @@ from zoneinfo import ZoneInfo
 import streamlit as st
 
 # Freshly generated update: 2026-08-31 23:49 JST
-GENERATED_UPDATE_JST = "2026-09-05T01:21:45+09:00"
+GENERATED_UPDATE_JST = "2026-09-05T01:40:40+09:00"
 
-APP_BUILD = "v200"
+APP_BUILD = "v202"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -6817,12 +6817,14 @@ def _toilet_rank_key(place, usable_now_preferred=True):
     access_label = str(place.get("access_label") or "").strip()
     if access_label == "一般利用可":
         access_rank = 0
+    elif access_label == "一般利用しやすい施設":
+        access_rank = 1
     elif access_label == "利用条件未確認":
-        access_rank = 1
-    elif access_label == "施設利用者向け":
         access_rank = 2
+    elif access_label == "施設利用者向け":
+        access_rank = 3
     else:
-        access_rank = 1
+        access_rank = 2
 
     floor_rank = 0 if str(place.get("floor_label") or "").strip() == "1階情報あり" else 1
     return (availability_rank, distance, access_rank, floor_rank)
@@ -6830,12 +6832,15 @@ def _toilet_rank_key(place, usable_now_preferred=True):
 
 @st.cache_data(ttl=300, show_spinner=False)
 def _toilet_google_fallback(latitude, longitude, radius_m):
-    """Supplement nearby toilets with Google Places facilities that report a restroom.
+    """Supplement nearby toilets with Google Places, including mixed-use office buildings.
 
-    Public bathrooms and host facilities are searched in separate lightweight requests,
-    then merged and ranked together later. A host facility is included only when Google
-    explicitly returns restroom=true; office/restaurant access is still labelled as
-    unverified because Places does not say whether the restroom is before an entry gate.
+    Pure office/coworking facilities are excluded. An office/business-center candidate is
+    retained only when Google reports restroom=true *and* there is evidence that the same
+    building/complex has public-facing commercial/service uses. Evidence is deliberately
+    conservative: a public-facing type on the same Place, the same normalized address as
+    a public-facing Place, or at least two public-facing Places within 65 m. Such candidates
+    are labelled "一般利用しやすい施設", not "一般利用可", because Google does not expose
+    whether the restroom itself is outside an office security gate.
     """
     if not GOOGLE_PLACES_API_KEY:
         return {"places": [], "error": "", "provider": ""}
@@ -6846,6 +6851,8 @@ def _toilet_google_fallback(latitude, longitude, radius_m):
     except (TypeError, ValueError):
         return {"places": [], "error": "現在地を確認できませんでした。", "provider": "Google Places"}
 
+    # Keep office-like Places in a separate request so dense restaurant results do not
+    # crowd them out. They are filtered aggressively after all three result sets are merged.
     type_groups = [
         [
             "public_bathroom", "train_station", "subway_station", "transit_station",
@@ -6853,6 +6860,9 @@ def _toilet_google_fallback(latitude, longitude, radius_m):
         ],
         [
             "food_court", "restaurant", "cafe", "convenience_store",
+        ],
+        [
+            "business_center", "corporate_office", "coworking_space",
         ],
     ]
 
@@ -6892,7 +6902,7 @@ def _toilet_google_fallback(latitude, longitude, radius_m):
 
     results = []
     errors = []
-    with ThreadPoolExecutor(max_workers=2) as executor:
+    with ThreadPoolExecutor(max_workers=3) as executor:
         futures = [executor.submit(_request_group, group) for group in type_groups]
         for future in futures:
             try:
@@ -6903,13 +6913,115 @@ def _toilet_google_fallback(latitude, longitude, radius_m):
             if error:
                 errors.append(error)
 
-    def _category_for_types(types):
+    def _raw_location(raw):
+        loc = raw.get("location") if isinstance(raw, dict) else {}
+        if not isinstance(loc, dict):
+            return None
+        try:
+            return float(loc.get("latitude")), float(loc.get("longitude"))
+        except (TypeError, ValueError):
+            return None
+
+    def _normalize_address(value):
+        value = str(value or "").strip().lower()
+        # Ignore spaces and common punctuation so tenant/building address strings match.
+        return re.sub(r"[\s　,，、・\-‐‑‒–—―]+", "", value)
+
+    office_types = {"business_center", "corporate_office", "coworking_space"}
+    strong_commercial_types = {"shopping_mall", "department_store", "supermarket"}
+    public_facing_types = {
+        "shopping_mall", "department_store", "supermarket", "convenience_store",
+        "food_court", "restaurant", "cafe", "bakery", "store", "pharmacy",
+        "train_station", "subway_station", "transit_station", "public_bathroom",
+        "library", "museum", "movie_theater", "performing_arts_theater", "event_venue",
+        "hospital", "medical_center",
+    }
+
+    # Deduplicate Places returned by multiple type groups while preserving the union of types.
+    merged = {}
+    for data in results:
+        for raw in list((data or {}).get("places") or []):
+            if not isinstance(raw, dict):
+                continue
+            loc = _raw_location(raw)
+            name_obj = raw.get("displayName") or {}
+            name = str(name_obj.get("text") if isinstance(name_obj, dict) else "").strip()
+            place_id = str(raw.get("id") or "").strip()
+            if place_id:
+                key = ("id", place_id)
+            elif loc:
+                key = ("coord", round(loc[0], 5), round(loc[1], 5), name)
+            else:
+                continue
+            existing = merged.get(key)
+            if existing is None:
+                existing = dict(raw)
+                existing["types"] = list(dict.fromkeys(str(x) for x in (raw.get("types") or []) if str(x)))
+                merged[key] = existing
+                continue
+            existing_types = {str(x) for x in (existing.get("types") or []) if str(x)}
+            existing_types.update(str(x) for x in (raw.get("types") or []) if str(x))
+            existing["types"] = sorted(existing_types)
+            if raw.get("restroom") is True:
+                existing["restroom"] = True
+            for field in ("formattedAddress", "location", "currentOpeningHours", "primaryType", "businessStatus", "displayName"):
+                if not existing.get(field) and raw.get(field):
+                    existing[field] = raw.get(field)
+
+    raw_places = list(merged.values())
+
+    public_hosts = []
+    for raw in raw_places:
+        types = {str(value) for value in (raw.get("types") or []) if str(value)}
+        if not (types & public_facing_types):
+            continue
+        loc = _raw_location(raw)
+        if not loc:
+            continue
+        public_hosts.append(
+            {
+                "lat": loc[0],
+                "lon": loc[1],
+                "address": _normalize_address(raw.get("formattedAddress")),
+                "types": types,
+                "id": str(raw.get("id") or ""),
+            }
+        )
+
+    def _mixed_use_office_evidence(raw, types, plat, plon):
+        # A Place already classified as retail/food/public-facing is direct evidence.
+        if types & public_facing_types:
+            return True
+
+        # A coworking listing by itself is a tenant, not a building-level public facility.
+        if "coworking_space" in types and not (types & {"business_center", "corporate_office"}):
+            return False
+
+        address = _normalize_address(raw.get("formattedAddress"))
+        same_address = False
+        nearby_public = 0
+        own_id = str(raw.get("id") or "")
+        for host in public_hosts:
+            if own_id and host.get("id") == own_id:
+                continue
+            host_address = str(host.get("address") or "")
+            if address and host_address and address == host_address:
+                same_address = True
+                break
+            distance = _nearby_haversine_m(plat, plon, host.get("lat"), host.get("lon"))
+            if math.isfinite(distance) and distance <= 65.0:
+                nearby_public += 1
+        return same_address or nearby_public >= 2
+
+    def _category_for_types(types, mixed_use_office=False):
         types = set(types or [])
         if "public_bathroom" in types:
             return "公衆トイレ"
+        if mixed_use_office:
+            return "商業併設ビル内トイレ"
         if types & {"shopping_mall", "department_store", "supermarket", "convenience_store"}:
             return "商業施設内トイレ"
-        if types & {"food_court", "restaurant", "cafe"}:
+        if types & {"food_court", "restaurant", "cafe", "bakery"}:
             return "飲食施設内トイレ"
         if types & {"train_station", "subway_station", "transit_station"}:
             return "駅・交通施設内トイレ"
@@ -6917,86 +7029,85 @@ def _toilet_google_fallback(latitude, longitude, radius_m):
 
     places = []
     seen = set()
-    for data in results:
-        for raw in list((data or {}).get("places") or []):
-            if not isinstance(raw, dict):
+    for raw in raw_places:
+        if str(raw.get("businessStatus") or "") == "CLOSED_PERMANENTLY":
+            continue
+        types = {str(value) for value in (raw.get("types") or []) if str(value)}
+        standalone = "public_bathroom" in types
+        office_like = bool(types & office_types)
+        loc = _raw_location(raw)
+        if not loc:
+            continue
+        plat, plon = loc
+
+        # Facility toilets must be explicitly reported by Places. Office-like facilities
+        # then face a second, stricter mixed-use test before being admitted.
+        if not standalone and raw.get("restroom") is not True:
+            continue
+        mixed_use_office = False
+        if office_like:
+            mixed_use_office = _mixed_use_office_evidence(raw, types, plat, plon)
+            if not mixed_use_office:
                 continue
-            if str(raw.get("businessStatus") or "") == "CLOSED_PERMANENTLY":
-                continue
-            types = {str(value) for value in (raw.get("types") or []) if str(value)}
-            standalone = "public_bathroom" in types
-            public_commercial_types = {
-                "shopping_mall", "department_store", "supermarket", "convenience_store",
-                "food_court", "restaurant", "cafe",
-            }
-            office_types = {"business_center", "corporate_office", "coworking_space"}
-            # Exclude ordinary office-only buildings. Mixed-use buildings remain eligible
-            # when Google also identifies them as a public-facing shopping/food facility.
-            if types & office_types and not (types & public_commercial_types):
-                continue
-            if not standalone and raw.get("restroom") is not True:
-                continue
-            loc = raw.get("location") or {}
-            try:
-                plat = float(loc.get("latitude"))
-                plon = float(loc.get("longitude"))
-            except (TypeError, ValueError):
-                continue
-            distance_m = _nearby_haversine_m(latitude, longitude, plat, plon)
-            if not math.isfinite(distance_m) or distance_m > radius_m * 1.15:
-                continue
-            place_id = str(raw.get("id") or "").strip()
-            coord_key = (round(plat, 5), round(plon, 5), place_id)
-            if coord_key in seen:
-                continue
-            seen.add(coord_key)
-            name_obj = raw.get("displayName") or {}
-            base_name = str(name_obj.get("text") if isinstance(name_obj, dict) else "").strip()
-            category = _category_for_types(types)
-            if standalone:
-                name = base_name or "公衆トイレ"
-                access_label = "一般利用可"
-                access_penalty = 0
+
+        distance_m = _nearby_haversine_m(latitude, longitude, plat, plon)
+        if not math.isfinite(distance_m) or distance_m > radius_m * 1.15:
+            continue
+        place_id = str(raw.get("id") or "").strip()
+        coord_key = (round(plat, 5), round(plon, 5), place_id)
+        if coord_key in seen:
+            continue
+        seen.add(coord_key)
+        name_obj = raw.get("displayName") or {}
+        base_name = str(name_obj.get("text") if isinstance(name_obj, dict) else "").strip()
+        category = _category_for_types(types, mixed_use_office=mixed_use_office)
+        if standalone:
+            name = base_name or "公衆トイレ"
+            access_label = "一般利用可"
+        else:
+            name = f"{base_name} のトイレ" if base_name else category
+            if mixed_use_office or bool(types & strong_commercial_types):
+                access_label = "一般利用しやすい施設"
             else:
-                name = f"{base_name} のトイレ" if base_name else category
                 access_label = "利用条件未確認"
-                access_penalty = 45
-            current_hours = raw.get("currentOpeningHours") if isinstance(raw.get("currentOpeningHours"), dict) else {}
-            open_now = current_hours.get("openNow") if isinstance(current_hours.get("openNow"), bool) else None
-            opening_known = open_now is not None
-            opening_label = "🟢 利用可能" if open_now is True else ("🔴 利用時間外" if open_now is False else "利用時間情報なし")
-            walk_minutes = max(1, int(math.ceil((distance_m * 1.25) / 80.0)))
-            places.append(
-                {
-                    "id": f"google:{place_id}",
-                    "name": name,
-                    "category": category,
-                    "latitude": plat,
-                    "longitude": plon,
-                    "distance_m": int(round(distance_m)),
-                    "walk_minutes": walk_minutes,
-                    "fee_status": "unknown",
-                    "fee_label": "料金情報なし",
-                    "wheelchair_ok": None,
-                    "wheelchair_label": "",
-                    "baby_ok": None,
-                    "baby_label": "",
-                    "access_label": access_label,
-                    "floor_label": "",
-                    "opening_hours": "",
-                    "opening_known": opening_known,
-                    "open_now": open_now,
-                    "opening_label": opening_label,
-                    "address": str(raw.get("formattedAddress") or "").strip(),
-                    "sort_score": int(round(distance_m)) + access_penalty,
-                    "provider": "Google Places",
-                }
-            )
+
+        current_hours = raw.get("currentOpeningHours") if isinstance(raw.get("currentOpeningHours"), dict) else {}
+        open_now = current_hours.get("openNow") if isinstance(current_hours.get("openNow"), bool) else None
+        opening_known = open_now is not None
+        opening_label = "🟢 利用可能" if open_now is True else ("🔴 利用時間外" if open_now is False else "利用時間情報なし")
+        walk_minutes = max(1, int(math.ceil((distance_m * 1.25) / 80.0)))
+        places.append(
+            {
+                "id": f"google:{place_id}",
+                "name": name,
+                "category": category,
+                "latitude": plat,
+                "longitude": plon,
+                "distance_m": int(round(distance_m)),
+                "walk_minutes": walk_minutes,
+                "fee_status": "unknown",
+                "fee_label": "料金情報なし",
+                "wheelchair_ok": None,
+                "wheelchair_label": "",
+                "baby_ok": None,
+                "baby_label": "",
+                "access_label": access_label,
+                "floor_label": "",
+                "opening_hours": "",
+                "opening_known": opening_known,
+                "open_now": open_now,
+                "opening_label": opening_label,
+                "address": str(raw.get("formattedAddress") or "").strip(),
+                "sort_score": int(round(distance_m)),
+                "provider": "Google Places",
+                "mixed_use_evidence": bool(mixed_use_office),
+            }
+        )
     places.sort(key=lambda item: _toilet_rank_key(item, usable_now_preferred=True))
     return {
         "places": places[:40],
         "error": "" if places or not errors else "Google Placesのトイレ検索に接続できませんでした。",
-        "detail": " / ".join(errors[-2:])[:220],
+        "detail": " / ".join(errors[-3:])[:260],
         "provider": "Google Places",
     }
 
@@ -7074,34 +7185,44 @@ def _toilet_place_from_osm_element(element, latitude, longitude, radius_m):
     office = str(tags.get("office") or "").lower()
     tourism = str(tags.get("tourism") or "").lower()
     leisure = str(tags.get("leisure") or "").lower()
+    healthcare = str(tags.get("healthcare") or "").lower()
+
+    public_facing_amenities = {
+        "restaurant", "cafe", "fast_food", "food_court", "marketplace",
+        "community_centre", "library", "townhall", "arts_centre", "cinema",
+        "theatre", "clinic", "hospital", "pharmacy", "bank", "post_office",
+    }
+    public_facing_host = bool(
+        railway
+        or public_transport
+        or shop
+        or building == "retail"
+        or amenity in public_facing_amenities
+        or tourism
+        or leisure
+        or healthcare
+    )
+    office_like_host = bool(office or building in {"office", "commercial"})
+    explicit_public_access = str(access.get("label") or "").strip() == "一般利用可"
 
     if standalone:
         name = base_name or "公衆トイレ"
         category = "公衆トイレ"
     else:
-        public_facing_host = bool(
-            railway
-            or public_transport
-            or shop
-            or building == "retail"
-            or amenity in {"restaurant", "cafe", "fast_food", "food_court", "marketplace", "community_centre", "library", "townhall"}
-            or tourism
-            or leisure
-        )
-        office_like_host = bool(office or building in {"office", "commercial"})
-        # Ordinary office buildings are not useful candidates for a family outing.
-        # Keep a mixed-use building only when the same OSM element has an explicit
-        # public-facing shopping/food/transport/facility signal.
-        if office_like_host and not public_facing_host:
+        # Keep an office/commercial building only when OSM itself shows either a
+        # public-facing use or explicit public toilet access. Pure offices remain out.
+        if office_like_host and not public_facing_host and not explicit_public_access:
             return None
 
-        if railway or public_transport:
+        if office_like_host and public_facing_host:
+            category = "商業併設ビル内トイレ"
+        elif railway or public_transport:
             category = "駅・交通施設内トイレ"
         elif shop or building == "retail":
             category = "商業施設内トイレ"
-        elif amenity in {"restaurant", "cafe", "fast_food", "food_court", "marketplace"}:
+        elif amenity in {"restaurant", "cafe", "fast_food", "food_court"}:
             category = "飲食施設内トイレ"
-        elif tourism or leisure or amenity in {"community_centre", "library", "townhall"}:
+        elif tourism or leisure or healthcare or amenity in public_facing_amenities:
             category = "施設内トイレ"
         else:
             category = "施設内トイレ"
@@ -7109,7 +7230,12 @@ def _toilet_place_from_osm_element(element, latitude, longitude, radius_m):
 
     access_label = str(access.get("label") or "").strip()
     if not access_label:
-        access_label = "一般利用可" if standalone else "利用条件未確認"
+        common_area_like = bool(
+            (office_like_host and public_facing_host)
+            or building == "retail"
+            or amenity in {"marketplace", "community_centre", "library", "townhall", "arts_centre", "cinema", "theatre"}
+        )
+        access_label = "一般利用可" if standalone else ("一般利用しやすい施設" if common_area_like else "利用条件未確認")
 
     level_raw = str(tags.get("toilets:level") or tags.get("level") or "").strip()
     floor_label = ""
@@ -7225,9 +7351,10 @@ def search_nearby_toilets(
     # even when OSM has no toilets=yes tag for the building.
     google_error = ""
     google_added = 0
-    osm_host_count = sum(1 for item in places if str(item.get("category") or "") != "公衆トイレ")
-    need_google_facilities = (not osm_available) or osm_host_count < 4 or len(places) < 6
-    if GOOGLE_PLACES_API_KEY and need_google_facilities:
+    # Google is always consulted on an explicit search when configured. OSM can already
+    # have many public toilets while still missing mixed-use buildings such as station-side
+    # office/retail complexes with publicly reachable common-area toilets.
+    if GOOGLE_PLACES_API_KEY:
         google_result = _toilet_google_fallback(latitude, longitude, radius_m)
         google_error = str((google_result or {}).get("error") or "")
         existing_coords = {
@@ -17398,7 +17525,7 @@ def page_home():
 def page_toilets():
     page_top(
         "🚻 近くのトイレ",
-        "公衆トイレ・駅・商業施設・飲食施設などをまとめて探します。今使える候補を優先し、その中では距離順、次に一般利用可を優先して表示します。一般的なオフィスビルは検索対象から外します。最後に検索ボタンを押したときだけ周辺検索を行います。",
+        "公衆トイレ・駅・商業施設・飲食施設・商業機能を併設する複合ビルなどをまとめて探します。今使える候補を優先し、その中では距離順、次に一般利用可を優先して表示します。一般向け機能のない通常のオフィスは検索対象から外します。最後に検索ボタンを押したときだけ周辺検索を行います。",
     )
     st.markdown(
         """
@@ -17712,7 +17839,7 @@ def page_toilets():
     places = list(search_result.get("places") or [])[:10]
     st.divider()
     st.markdown("### 近くで使いやすいトイレ")
-    st.caption("最大10か所。公衆・施設内の種類では優先せず、現在利用できると確認できる候補を上げつつ、近さも重視して表示します。徒歩時間は直線距離からの目安です。")
+    st.caption("最大10か所。現在利用できる候補を最優先し、その中では距離順です。同程度なら『一般利用可』→『一般利用しやすい施設』→『利用条件未確認』の順に扱います。徒歩時間は直線距離からの目安です。")
     if not places:
         st.info("この条件ではトイレを見つけられませんでした。距離を広げるか、設備条件を『問わない』にしてもう一度検索してください。")
         return
@@ -17758,7 +17885,7 @@ def page_toilets():
             if direction_url:
                 st.link_button("🗺️ このトイレに案内してもらう", direction_url, use_container_width=True)
 
-    st.caption("トイレ候補はOpenStreetMapと、設定済みの場合はGoogle Placesの情報を利用します。一般的なオフィスビルは候補から除外します。施設内トイレは入場ゲート前かどうかまで判定できない場合があるため、『利用条件未確認』の候補は現地表示も確認してください。")
+    st.caption("トイレ候補はOpenStreetMapと、設定済みの場合はGoogle Placesの情報を利用します。通常のオフィスは除外しますが、商業・飲食・サービスなど一般向け機能を併設する複合ビルは候補に残します。『一般利用しやすい施設』は一般向け共用部がある可能性が高い候補ですが、トイレが入場ゲート前かまでは保証できないため現地表示も確認してください。")
 
 
 def page_nearby():
