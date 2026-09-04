@@ -29,9 +29,9 @@ from zoneinfo import ZoneInfo
 import streamlit as st
 
 # Freshly generated update: 2026-08-31 23:49 JST
-GENERATED_UPDATE_JST = "2026-09-05T02:02:25+09:00"
+GENERATED_UPDATE_JST = "2026-09-05T02:42:00+09:00"
 
-APP_BUILD = "v209"
+APP_BUILD = "v211"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -82,7 +82,26 @@ HOME_ICON_CANDIDATES = {
     "diary_chuo_sobu": [os.path.join(APP_DIR, "assets", "icons", "diary_chuo_sobu.png")],
     "diary_sotetsu": [os.path.join(APP_DIR, "assets", "icons", "diary_sotetsu.png")],
     "diary_shonan_shinjuku": [os.path.join(APP_DIR, "assets", "icons", "diary_shonan_shinjuku.png")],
+    "nearby_cake": [os.path.join(APP_DIR, "assets", "icons", "nearby_cake.png")],
+    "nearby_bun": [os.path.join(APP_DIR, "assets", "icons", "nearby_bun.png")],
+    "nearby_taiyaki": [os.path.join(APP_DIR, "assets", "icons", "nearby_taiyaki.png")],
+    "nearby_softcream": [os.path.join(APP_DIR, "assets", "icons", "nearby_softcream.png")],
+    "nearby_bread": [os.path.join(APP_DIR, "assets", "icons", "nearby_bread.png")],
+    "nearby_onigiri": [os.path.join(APP_DIR, "assets", "icons", "nearby_onigiri.png")],
+    "nearby_drink": [os.path.join(APP_DIR, "assets", "icons", "nearby_drink.png")],
+    "nearby_dango": [os.path.join(APP_DIR, "assets", "icons", "nearby_dango.png")],
 }
+# v211: Nearby food icons use the same GitHub asset-file pattern as the other Home icons.
+HOME_NEARBY_ICON_KEYS = (
+    "nearby_cake",
+    "nearby_bun",
+    "nearby_taiyaki",
+    "nearby_softcream",
+    "nearby_bread",
+    "nearby_onigiri",
+    "nearby_drink",
+    "nearby_dango",
+)
 
 # v173: the Home video button reuses the exact Photo camera asset.
 # Option 5 motion marks are layered low on both sides; all camera colors stay identical.
@@ -328,16 +347,18 @@ st.markdown(
       .st-key-home_secondary [data-testid="stHorizontalBlock"] {
         gap: .56rem;
       }
-      /* v170: Streamlit stacks columns on narrow phones by default.
-         Keep only the Photo / Video pair locked side-by-side at every width. */
-      .st-key-home_capture_pair [data-testid="stHorizontalBlock"] {
+      /* v210: Streamlit stacks columns on narrow phones by default.
+         Keep both primary Home pairs locked side-by-side at every width. */
+      .st-key-home_capture_pair [data-testid="stHorizontalBlock"],
+      .st-key-home_quick_pair [data-testid="stHorizontalBlock"] {
         display: flex !important;
         flex-direction: row !important;
         flex-wrap: nowrap !important;
         align-items: stretch !important;
         gap: .56rem !important;
       }
-      .st-key-home_capture_pair [data-testid="stHorizontalBlock"] > [data-testid="stColumn"] {
+      .st-key-home_capture_pair [data-testid="stHorizontalBlock"] > [data-testid="stColumn"],
+      .st-key-home_quick_pair [data-testid="stHorizontalBlock"] > [data-testid="stColumn"] {
         flex: 1 1 0 !important;
         width: 0 !important;
         min-width: 0 !important;
@@ -670,13 +691,15 @@ st.markdown(
         .st-key-home_secondary [data-testid="stHorizontalBlock"] {
           gap: .42rem;
         }
-        .st-key-home_capture_pair [data-testid="stHorizontalBlock"] {
+        .st-key-home_capture_pair [data-testid="stHorizontalBlock"],
+        .st-key-home_quick_pair [data-testid="stHorizontalBlock"] {
           display: flex !important;
           flex-direction: row !important;
           flex-wrap: nowrap !important;
           gap: .42rem !important;
         }
-        .st-key-home_capture_pair [data-testid="stHorizontalBlock"] > [data-testid="stColumn"] {
+        .st-key-home_capture_pair [data-testid="stHorizontalBlock"] > [data-testid="stColumn"],
+        .st-key-home_quick_pair [data-testid="stHorizontalBlock"] > [data-testid="stColumn"] {
           flex: 1 1 0 !important;
           width: 0 !important;
           min-width: 0 !important;
@@ -16320,11 +16343,24 @@ def _home_train_for_session():
     return theme["line_name"], _home_icon_uri(theme["train_key"]) or _home_icon_uri("train")
 
 
+def _home_nearby_icon_for_session():
+    """Choose one GitHub-backed food icon for Nearby and keep it stable this session."""
+    available_keys = [key for key in HOME_NEARBY_ICON_KEYS if _home_icon_uri(key)]
+    if not available_keys:
+        return ""
+    selected_key = str(st.session_state.get("_home_nearby_icon_key") or "")
+    if selected_key not in available_keys:
+        selected_key = random.choice(available_keys)
+        st.session_state["_home_nearby_icon_key"] = selected_key
+    return _home_icon_uri(selected_key)
+
+
 def inject_home_icon_css(review_attention=False):
     theme = _home_theme_for_session()
     camera_uri = _home_icon_uri(theme["camera_key"]) or _home_icon_uri("camera")
     video_uri = camera_uri
     diary_uri = _home_icon_uri(theme["diary_key"]) or _home_icon_uri("diary")
+    nearby_uri = _home_nearby_icon_for_session()
     review_uri = _home_icon_uri("review")
     settings_uri = _home_icon_uri(theme["settings_key"]) or _home_icon_uri("settings")
     accent = theme["accent"]
@@ -16335,12 +16371,13 @@ def inject_home_icon_css(review_attention=False):
         ".st-key-home_camera div.stButton > button::before,"
         ".st-key-home_video div.stButton > button::before,"
         ".st-key-home_diary div.stButton > button::before,"
+        ".st-key-home_nearby div.stButton > button::before,"
         ".st-key-home_review div.stButton > button::before,"
         ".st-key-home_settings div.stButton > button::before{content:'';display:block;background-repeat:no-repeat;background-position:center;background-size:contain;flex-shrink:0;margin:0 !important;}",
-        ".st-key-home_camera div.stButton > button::before,.st-key-home_diary div.stButton > button::before{width:50px;height:50px;}",
+        ".st-key-home_camera div.stButton > button::before,.st-key-home_diary div.stButton > button::before,.st-key-home_nearby div.stButton > button::before{width:50px;height:50px;}",
         ".st-key-home_video div.stButton > button::before{width:64px;height:50px;}",
         ".st-key-home_review div.stButton > button::before,.st-key-home_settings div.stButton > button::before{width:42px;height:42px;}",
-        "@media (max-width: 640px){.st-key-home_camera div.stButton > button::before,.st-key-home_diary div.stButton > button::before{width:36px;height:36px;}.st-key-home_video div.stButton > button::before{width:48px;height:36px;}.st-key-home_review div.stButton > button::before,.st-key-home_settings div.stButton > button::before{width:30px;height:30px;}}",
+        "@media (max-width: 640px){.st-key-home_camera div.stButton > button::before,.st-key-home_diary div.stButton > button::before,.st-key-home_nearby div.stButton > button::before{width:36px;height:36px;}.st-key-home_video div.stButton > button::before{width:48px;height:36px;}.st-key-home_review div.stButton > button::before,.st-key-home_settings div.stButton > button::before{width:30px;height:30px;}}",
         f'.home-title-accent{{color:color-mix(in srgb, {accent} 80%, rgba(31, 38, 48, .96) 20%);text-shadow:0 1px 0 rgba(255,255,255,.72);}}',
         f'.st-key-home_camera div.stButton > button,.st-key-home_video div.stButton > button,.st-key-home_diary div.stButton > button{{border-color:{accent} !important;background:linear-gradient(155deg,rgba({rgb2},.25),rgba({rgb1},.07)) !important;box-shadow:0 9px 22px rgba({rgb1},.10),0 0 0 2px rgba(255,255,255,.34) inset !important;}}',
         f'.st-key-home_camera div.stButton > button:hover,.st-key-home_video div.stButton > button:hover,.st-key-home_diary div.stButton > button:hover{{border-color:{accent} !important;background:linear-gradient(155deg,rgba({rgb2},.34),rgba({rgb1},.11)) !important;box-shadow:0 11px 24px rgba({rgb1},.14),0 0 0 2px rgba(255,255,255,.40) inset !important;}}',
@@ -16372,6 +16409,8 @@ def inject_home_icon_css(review_attention=False):
         )
     if diary_uri:
         css_chunks.append(f'.st-key-home_diary div.stButton > button::before{{background-image:url("{diary_uri}") !important;}}')
+    if nearby_uri:
+        css_chunks.append(f'.st-key-home_nearby div.stButton > button::before{{background-image:url("{nearby_uri}") !important;}}')
     if review_uri:
         css_chunks.append(f'.st-key-home_review div.stButton > button::before{{background-image:url("{review_uri}") !important;}}')
     if settings_uri:
@@ -17882,6 +17921,7 @@ def page_home():
             gap: var(--home-vgap) !important;
           }
           .st-key-home_capture_pair [data-testid="stHorizontalBlock"],
+          .st-key-home_quick_pair [data-testid="stHorizontalBlock"],
           .st-key-home_media_tools [data-testid="stHorizontalBlock"],
           .st-key-home_secondary [data-testid="stHorizontalBlock"] {
             display: flex !important;
@@ -17891,6 +17931,7 @@ def page_home():
             gap: var(--home-hgap) !important;
           }
           .st-key-home_capture_pair [data-testid="stHorizontalBlock"] > [data-testid="stColumn"],
+          .st-key-home_quick_pair [data-testid="stHorizontalBlock"] > [data-testid="stColumn"],
           .st-key-home_media_tools [data-testid="stHorizontalBlock"] > [data-testid="stColumn"],
           .st-key-home_secondary [data-testid="stHorizontalBlock"] > [data-testid="stColumn"] {
             flex: 1 1 0 !important;
@@ -17921,7 +17962,8 @@ def page_home():
             column-gap: clamp(.12rem, calc(var(--home-wu) * .70), .20rem) !important;
           }
           .st-key-home_camera div.stButton > button::before,
-          .st-key-home_diary div.stButton > button::before {
+          .st-key-home_diary div.stButton > button::before,
+          .st-key-home_nearby div.stButton > button::before {
             width: clamp(29px, min(calc(var(--home-wu) * 9.5), calc(var(--home-hu) * 8.4)), 43px) !important;
             height: clamp(29px, min(calc(var(--home-wu) * 9.5), calc(var(--home-hu) * 8.4)), 43px) !important;
           }
@@ -18040,15 +18082,19 @@ def page_home():
 
         st.markdown('<div class="home-section-label">いつもの記録</div>', unsafe_allow_html=True)
         with st.container(key="home_primary"):
-            # v170: use a dedicated wrapper so mobile CSS can keep this pair horizontal
-            # without changing other Streamlit column layouts in the app.
+            # v211: the four everyday actions remain two stable phone-friendly pairs.
             with st.container(key="home_capture_pair"):
                 capture_left, capture_right = st.columns(2, gap="small")
                 with capture_left:
                     render_home_button("写真を撮る", "camera", "home_camera", camera_mode="photo")
                 with capture_right:
                     render_home_button("動画を撮る", "camera", "home_video", camera_mode="video")
-            render_home_button("日記にする・見る", "diary", "home_diary")
+            with st.container(key="home_quick_pair"):
+                quick_left, quick_right = st.columns(2, gap="small")
+                with quick_left:
+                    render_home_button("近くに寄る", "nearby", "home_nearby")
+                with quick_right:
+                    render_home_button("日記にする・見る", "diary", "home_diary")
 
         # v174: keep the two follow-up media actions on one compact row. This removes
         # a full button-row worth of vertical scrolling on phones while preserving the
@@ -18127,12 +18173,8 @@ def page_home():
 
         st.markdown('<div class="home-section-label" style="margin-top:.60rem;">たまに使う</div>', unsafe_allow_html=True)
         with st.container(key="home_secondary"):
-            nearby_col, review_col, settings_col = st.columns([1.05, 1.05, .82])
-            with nearby_col:
-                render_home_button("📍 近くに寄る", "nearby", "home_nearby")
+            review_col, settings_col = st.columns(2, gap="small")
             with review_col:
-                # The orange pulse already signals a pending monthly review, so keep the
-                # label short enough to preserve the three-column phone layout.
                 render_home_button("振り返り", "review", "home_review", open_period_review=review_attention)
             with settings_col:
                 render_home_button("設定", "settings", "home_settings")
