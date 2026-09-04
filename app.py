@@ -31,7 +31,7 @@ import streamlit as st
 # Freshly generated update: 2026-08-31 23:49 JST
 GENERATED_UPDATE_JST = "2026-09-05T02:02:25+09:00"
 
-APP_BUILD = "v207"
+APP_BUILD = "v208"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -4374,14 +4374,14 @@ def sync_pending_tags_from_browser_v166():
 _HISTORY_JS = r"""
 export default function(component) {
   const { data, setTriggerValue } = component;
-  const validPages = new Set(['home', 'camera', 'videos', 'moments', 'diary', 'review', 'nearby', 'toilets', 'settings']);
+  const validPages = new Set(['home', 'camera', 'videos', 'moments', 'diary', 'review', 'review_monthly', 'review_tag', 'review_history', 'nearby', 'toilets', 'settings']);
   const marker = '__tokyo_burari_page__';
   const guardMarker = '__tokyo_burari_first_level_guard__';
   const requestedPage = validPages.has(data?.page) ? data.page : 'home';
   const action = data?.action || 'sync';
   const navigationNode = String(data?.node || requestedPage);
   const interceptHierarchyBack = Boolean(data?.intercept_hierarchy_back) && requestedPage !== 'home';
-  const firstLevelBackToHome = requestedPage !== 'home' && navigationNode === requestedPage;
+  const firstLevelBackToHome = requestedPage !== 'home' && navigationNode === requestedPage && !interceptHierarchyBack;
   const pendingFeelingParam = 'feel_v159';
   const pendingFeelingStore = 'tokyo_burari_pending_feelings_v159';
   const restorePendingFeelingParam = () => {
@@ -4521,7 +4521,7 @@ export default function(component) {
 
 try:
     browser_history_component = st.components.v2.component(
-        'tokyo_burari_browser_history_v203',
+        'tokyo_burari_browser_history_v208',
         js=_HISTORY_JS,
     )
 except Exception:
@@ -15841,7 +15841,7 @@ def init_state():
 
 
 
-VALID_APP_PAGES = {"home", "camera", "videos", "moments", "diary", "review", "nearby", "toilets", "settings"}
+VALID_APP_PAGES = {"home", "camera", "videos", "moments", "diary", "review", "review_monthly", "review_tag", "review_history", "nearby", "toilets", "settings"}
 
 
 def _current_ui_refresh_epoch():
@@ -16014,20 +16014,19 @@ def current_navigation_context():
         return "diary", ""
 
     if page == "review":
-        current_view = st.session_state.get("review_view_selector")
-        monthly_label = "🗓 月別の振り返り"
-        tag_label = "🏷️ タグ別の振り返り"
-        history_label = "📚 これまでの日記"
-        if current_view in {"🔍 今月の発見", "🗓 期間の振り返り"}:
-            current_view = monthly_label
-        if current_view == history_label:
-            detail_trip_id = str(st.session_state.get("history_detail_trip_id") or "")
-            if detail_trip_id:
-                return "review_history_detail", detail_trip_id
-            return "review_history", ""
-        if current_view in {monthly_label, tag_label}:
-            return "review_period", ""
         return "review", ""
+
+    if page == "review_monthly":
+        return "review_monthly", ""
+
+    if page == "review_tag":
+        return "review_tag", ""
+
+    if page == "review_history":
+        detail_trip_id = str(st.session_state.get("history_detail_trip_id") or "")
+        if detail_trip_id:
+            return "review_history_detail", detail_trip_id
+        return "review_history", ""
 
     return page if page in VALID_APP_PAGES else "home", ""
 
@@ -16041,7 +16040,8 @@ def navigation_parent_node(node=None):
         "diary_trip": "diary",
         "review_history_detail": "review_history",
         "review_history": "review",
-        "review_period": "review",
+        "review_monthly": "review",
+        "review_tag": "review",
         "camera": "home",
         "videos": "home",
         "moments": "home",
@@ -16087,11 +16087,10 @@ def navigate_to_parent():
         st.session_state["_history_action"] = "replace"
         st.rerun()
 
-    if node in {"review_history", "review_period"}:
+    if node in {"review_history", "review_monthly", "review_tag"}:
         st.session_state.pop("history_detail_trip_id", None)
         st.session_state.pop("review_view_selector", None)
-        st.session_state["_history_action"] = "replace"
-        st.rerun()
+        go_page("review", history_mode="replace")
 
     # All first-level pages have Home as their parent.
     go_page("home", history_mode="replace")
@@ -16142,7 +16141,8 @@ def sync_browser_history():
         "diary_trip",
         "review_history_detail",
         "review_history",
-        "review_period",
+        "review_monthly",
+        "review_tag",
     }
     result = browser_history_component(
         data={
@@ -16151,7 +16151,7 @@ def sync_browser_history():
             "node": navigation_node,
             "intercept_hierarchy_back": navigation_node in intercept_nodes,
         },
-        key=f"tokyo_burari_browser_history_instance_v203_{_current_ui_refresh_epoch()}",
+        key=f"tokyo_burari_browser_history_instance_v208_{_current_ui_refresh_epoch()}",
         on_page_change=lambda: None,
         on_hierarchy_back_change=lambda: None,
         on_pending_restore_change=lambda: None,
@@ -22059,14 +22059,31 @@ def render_monthly_ai_comments(review):
 
 def page_tag_review(embedded=False):
     if not embedded:
-        page_top("🏷️ AIタグ別の振り返り")
+        page_top(
+            "🏷️ タグ別の振り返り",
+            "AIが写真から自動判定したタグを選び、月をまたいだ写真を音楽付きの振り返りムービーで見返します。",
+        )
     deleted_notice = st.session_state.pop("_tag_video_deleted_notice", None)
     if deleted_notice:
         st.success(deleted_notice)
     render_photo_tag_notices()
-    st.caption(
-        "AIが写真から自動判定した『子ども』『大人』『複数人』『電車』などの画像タグごとに、"
-        "月をまたいで写真を集め、振り返りムービーとして見返します。"
+    st.markdown(
+        """
+        <div class="tag-review-hero">
+          <div class="tag-review-hero-title">写真をつないで、音楽と一緒に振り返る</div>
+          <div class="tag-review-hero-sub">AI画像タグを1つ選ぶと、そのタグの写真を月をまたいで時系列に集めます。最大18枚をつなぎ、月別振り返りと同じプレイヤーで音楽と一緒に再生できます。</div>
+        </div>
+        <style>
+          .tag-review-hero {
+            margin:.08rem 0 .82rem; padding:.78rem .84rem; border-radius:16px;
+            border:1px solid rgba(91,91,214,.18);
+            background:linear-gradient(145deg,rgba(244,244,255,.96),rgba(236,243,255,.94));
+          }
+          .tag-review-hero-title { font-size:.98rem; font-weight:850; color:#303785; line-height:1.35; }
+          .tag-review-hero-sub { margin-top:.24rem; font-size:.78rem; line-height:1.48; opacity:.78; }
+        </style>
+        """,
+        unsafe_allow_html=True,
     )
 
     shared_visible = render_family_shared_monthly_reviews()
@@ -22181,7 +22198,7 @@ def page_tag_review(embedded=False):
 
     if not music_ready:
         if st.button(
-            "🎵 音楽をセットする",
+            "🎞️ 写真＋音楽の振り返りムービーを作る",
             type="primary",
             use_container_width=True,
             key=f"ai_tag_music_setup_top_{unsaved_token}",
@@ -22414,7 +22431,11 @@ def page_tag_review(embedded=False):
 
 def page_monthly(embedded=False):
     if not embedded:
-        page_top("🗓 期間の振り返り")
+        page_top(
+            "🗓 月別の振り返り",
+            "月を選び、その月の写真・気持ち・日記をまとめて、音楽付きの振り返りムービーで見返します。",
+        )
+        mark_current_month_review_seen()
     deleted_notice = st.session_state.pop("_monthly_video_deleted_notice", None)
     if deleted_notice:
         st.success(deleted_notice)
@@ -22780,157 +22801,89 @@ def page_monthly(embedded=False):
 # Page: Review / Settings
 # ============================================================
 def page_review():
-    monthly_label = "🗓 月別の振り返り"
-    tag_label = "🏷️ タグ別の振り返り"
-    history_label = "📚 これまでの日記"
-    current_view = st.session_state.get("review_view_selector")
-    if current_view in {"🔍 今月の発見", "🗓 期間の振り返り"}:
-        current_view = monthly_label
-        st.session_state["review_view_selector"] = current_view
-    if current_view not in {monthly_label, tag_label, history_label}:
-        current_view = None
+    # v208: Review is now a compact landing screen. Monthly/tag/history content lives
+    # on dedicated app pages so opening Review never becomes one long scrolling page.
+    st.session_state.pop("review_view_selector", None)
+    st.session_state.pop("history_detail_trip_id", None)
 
     page_top(
         "🔍 振り返り",
-        "月ごとの振り返り、AIが写真内容から付けたタグごとの振り返り、1日ごとの日記を分けて見られます。",
+        "見たい振り返りを選ぶと、専用ページへ移動します。",
     )
     st.markdown(
         """
         <style>
-          .st-key-review_monthly_choice,
-          .st-key-review_tag_choice,
-          .st-key-review_history_choice {
-            border: 1px solid rgba(128,128,128,.18);
-            border-radius: 18px;
-            padding: .58rem .68rem .48rem;
-            margin: .18rem 0 .62rem;
-            background: rgba(255,255,255,.72);
+          .review-menu-note {
+            margin:.05rem 0 .72rem; padding:.62rem .72rem; border-radius:14px;
+            background:rgba(128,128,128,.055); border:1px solid rgba(128,128,128,.11);
+            font-size:.76rem; line-height:1.45; opacity:.82;
           }
-          .st-key-review_monthly_choice div.stButton > button,
-          .st-key-review_tag_choice div.stButton > button,
-          .st-key-review_history_choice div.stButton > button {
-            min-height: 3.2rem;
-            font-size: 1.05rem;
-            font-weight: 800;
-            border-radius: 14px;
+          .st-key-review_monthly_jump,
+          .st-key-review_tag_jump,
+          .st-key-review_history_jump {
+            border-radius:18px; padding:.58rem .66rem .50rem; margin:.18rem 0 .62rem;
+            border:1px solid rgba(128,128,128,.16);
+            box-shadow:0 8px 22px rgba(0,0,0,.045);
           }
-          .st-key-review_monthly_choice [data-testid="stCaptionContainer"],
-          .st-key-review_tag_choice [data-testid="stCaptionContainer"],
-          .st-key-review_history_choice [data-testid="stCaptionContainer"] {
-            margin-top: -.18rem;
-            padding: 0 .18rem .06rem;
+          .st-key-review_monthly_jump {
+            background:linear-gradient(145deg,rgba(255,249,231,.98),rgba(255,239,213,.95));
           }
-          .st-key-review_back_menu_bottom {
-            margin-top: .34rem;
-            margin-bottom: .10rem;
+          .st-key-review_tag_jump {
+            background:linear-gradient(145deg,rgba(244,244,255,.98),rgba(233,241,255,.95));
           }
-          .st-key-review_back_menu_bottom div.stButton > button {
-            min-height: 3.05rem;
-            border: 1.9px solid rgba(218,126,20,.90) !important;
-            border-radius: 14px !important;
-            background: linear-gradient(155deg, rgba(255,241,202,.99), rgba(255,218,169,.97)) !important;
-            color: #633a05 !important;
-            font-weight: 800 !important;
-            box-shadow: 0 8px 18px rgba(218,126,20,.14), 0 0 0 2px rgba(255,255,255,.34) inset !important;
+          .st-key-review_history_jump {
+            background:linear-gradient(145deg,rgba(240,250,247,.98),rgba(232,246,241,.95));
           }
-          .st-key-review_back_menu_bottom div.stButton > button:hover {
-            background: linear-gradient(155deg, rgba(255,235,187,1), rgba(255,207,142,.99)) !important;
-            border-color: rgba(197,105,10,.98) !important;
+          .st-key-review_monthly_jump div.stButton > button,
+          .st-key-review_tag_jump div.stButton > button,
+          .st-key-review_history_jump div.stButton > button {
+            min-height:3.05rem; border-radius:14px !important; font-size:1.00rem;
+            font-weight:850 !important; background:rgba(255,255,255,.78) !important;
+            border:1px solid rgba(128,128,128,.16) !important;
+            box-shadow:0 4px 12px rgba(0,0,0,.035) !important;
           }
-          .st-key-monthly_delete_video_action {
-            margin-top: .24rem;
-            margin-bottom: .12rem;
+          .st-key-review_monthly_jump [data-testid="stCaptionContainer"],
+          .st-key-review_tag_jump [data-testid="stCaptionContainer"],
+          .st-key-review_history_jump [data-testid="stCaptionContainer"] {
+            margin-top:-.10rem; padding:.02rem .16rem .02rem;
           }
-          .st-key-monthly_delete_video_action div.stButton > button,
-          .st-key-monthly_delete_video_confirm_action div.stButton > button {
-            min-height: 3.0rem;
-            border: 1.8px solid rgba(199,62,62,.82) !important;
-            border-radius: 14px !important;
-            background: linear-gradient(155deg, rgba(255,238,238,.99), rgba(255,218,218,.97)) !important;
-            color: #8b1f1f !important;
-            font-weight: 800 !important;
-            box-shadow: 0 7px 16px rgba(180,54,54,.10), 0 0 0 2px rgba(255,255,255,.30) inset !important;
-          }
-          .st-key-monthly_delete_video_action div.stButton > button:hover,
-          .st-key-monthly_delete_video_confirm_action div.stButton > button:hover {
-            background: linear-gradient(155deg, rgba(255,226,226,1), rgba(255,202,202,.99)) !important;
-            border-color: rgba(177,43,43,.96) !important;
-          }
-          .st-key-monthly_ai_comments_action div.stButton > button {
-            min-height: 3.0rem;
-            border: 1.9px solid rgba(91,91,214,.82) !important;
-            border-radius: 14px !important;
-            background: linear-gradient(155deg, rgba(235,238,255,.99), rgba(215,224,255,.98)) !important;
-            color: #303785 !important;
-            font-weight: 850 !important;
-            box-shadow: 0 8px 20px rgba(83,91,205,.16), 0 0 0 2px rgba(255,255,255,.38) inset !important;
-          }
-          .st-key-monthly_ai_comments_action div.stButton > button:hover {
-            background: linear-gradient(155deg, rgba(225,230,255,1), rgba(198,211,255,.99)) !important;
-            border-color: rgba(73,73,191,.96) !important;
-            transform: translateY(-1px);
+          .st-key-review_monthly_jump [data-testid="stCaptionContainer"] p,
+          .st-key-review_tag_jump [data-testid="stCaptionContainer"] p,
+          .st-key-review_history_jump [data-testid="stCaptionContainer"] p {
+            font-size:.74rem; line-height:1.38;
           }
         </style>
+        <div class="review-menu-note">月別とタグ別は別々に保存されます。どちらを使っても、元の写真や日記は変わりません。</div>
         """,
         unsafe_allow_html=True,
     )
 
-    st.markdown("#### 見たい振り返り")
-    with st.container(key="review_monthly_choice"):
+    with st.container(key="review_monthly_jump"):
         if st.button(
-            monthly_label,
-            type="primary" if current_view == monthly_label else "secondary",
+            "🗓 月別の振り返り",
             use_container_width=True,
-            key="review_choose_monthly_v207",
+            key="review_open_monthly_v208",
         ):
-            st.session_state["review_view_selector"] = monthly_label
-            st.rerun()
-        st.caption("従来どおり、月ごとの写真・気持ち・日記をまとめて振り返る")
+            go_page("review_monthly")
+        st.caption("月を選び、その月の写真・気持ち・日記をまとめて、写真＋音楽で見返す")
 
-    with st.container(key="review_tag_choice"):
+    with st.container(key="review_tag_jump"):
         if st.button(
-            tag_label,
-            type="primary" if current_view == tag_label else "secondary",
+            "🏷️ タグ別の振り返り",
             use_container_width=True,
-            key="review_choose_ai_tag_v207",
+            key="review_open_tag_v208",
         ):
-            st.session_state["review_view_selector"] = tag_label
-            st.rerun()
-        st.caption("AIが写真から自動判定した『子ども』『大人』『複数人』などのタグごとに振り返る")
+            go_page("review_tag")
+        st.caption("AIが自動判定した『子ども』『大人』『複数人』などを選び、月をまたいで写真＋音楽で見返す")
 
-    with st.container(key="review_history_choice"):
+    with st.container(key="review_history_jump"):
         if st.button(
-            history_label,
-            type="primary" if current_view == history_label else "secondary",
+            "📚 これまでの日記",
             use_container_width=True,
-            key="review_choose_history_v207",
+            key="review_open_history_v208",
         ):
-            st.session_state["review_view_selector"] = history_label
-            st.rerun()
-        st.caption("これまで作った日記を、1日ごとに読み返す")
-
-    if current_view == monthly_label:
-        mark_current_month_review_seen()
-        st.divider()
-        page_monthly(embedded=True)
-    elif current_view == tag_label:
-        st.divider()
-        page_tag_review(embedded=True)
-    elif current_view == history_label:
-        st.divider()
-        page_history(embedded=True)
-    else:
-        st.caption("上のいずれかを押すと内容が表示されます。")
-
-    if current_view in {monthly_label, tag_label, history_label}:
-        with st.container(key="review_back_menu_bottom"):
-            if st.button(
-                "↩ 振り返り（たまに）に戻る",
-                use_container_width=True,
-                key="review_back_to_menu_bottom",
-            ):
-                st.session_state.pop("review_view_selector", None)
-                st.rerun()
+            go_page("review_history")
+        st.caption("これまで作った日記を1日ごとに読み返す")
 
 
 def page_settings():
@@ -23375,6 +23328,12 @@ with page_root.container():
         page_diary()
     elif page == "review":
         page_review()
+    elif page == "review_monthly":
+        page_monthly(embedded=False)
+    elif page == "review_tag":
+        page_tag_review(embedded=False)
+    elif page == "review_history":
+        page_history(embedded=False)
     elif page == "nearby":
         page_nearby()
     elif page == "toilets":
@@ -23392,6 +23351,6 @@ with page_root.container():
         live_page = str(st.session_state.get("main_page") or "home")
         if (
             page == live_page
-            and page in {"camera", "videos", "moments", "diary", "review", "nearby", "toilets", "settings"}
+            and page in {"camera", "videos", "moments", "diary", "review", "review_monthly", "review_tag", "review_history", "nearby", "toilets", "settings"}
         ):
             render_global_bottom_navigation(page)
