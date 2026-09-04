@@ -29,9 +29,9 @@ from zoneinfo import ZoneInfo
 import streamlit as st
 
 # Freshly generated update: 2026-08-31 23:49 JST
-GENERATED_UPDATE_JST = "2026-09-05T00:23:19+09:00"
+GENERATED_UPDATE_JST = "2026-09-05T00:29:24+09:00"
 
-APP_BUILD = "v193"
+APP_BUILD = "v194"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -5917,30 +5917,23 @@ def _nearby_haversine_m(lat1, lon1, lat2, lon2):
 
 def _nearby_overpass_selectors(kind, subkind, radius, latitude, longitude):
     around = f"(around:{int(radius)},{float(latitude):.6f},{float(longitude):.6f})"
-    snack_name = "大福|団子|だんご|たい焼|鯛焼|和菓子|どら焼|饅頭|まんじゅう|ケーキ|洋菓子|焼き菓子|菓子|スイーツ|アイス|ジェラート|ソフトクリーム|かき氷|クレープ|ドーナツ|シュークリーム|プリン"
     if kind == "snack":
+        # v194: the snack choice is intentionally only Japanese sweets vs Western sweets.
+        # Kakigori is treated as Japanese-style sweet; ice cream/gelato are Western sweets.
         mapping = {
-            "なんでも": [
-                f'nwr{around}["shop"~"^(confectionery|pastry|bakery|chocolate)$"];',
-                f'nwr{around}["amenity"="ice_cream"];',
-                f'nwr{around}["cuisine"~"dessert|ice_cream|cake|japanese_sweets"];',
-                f'nwr{around}["name"~"{snack_name}"];',
-            ],
             "和菓子": [
-                f'nwr{around}["name"~"大福|団子|だんご|たい焼|鯛焼|和菓子|どら焼|饅頭|まんじゅう|最中|羊羹"];',
+                f'nwr{around}["name"~"大福|団子|だんご|たい焼|鯛焼|和菓子|どら焼|饅頭|まんじゅう|最中|羊羹|甘味|かき氷"];',
                 f'nwr{around}["shop"="confectionery"]["name"~"和|餅|菓子|堂|庵"];',
+                f'nwr{around}["cuisine"~"japanese_sweets"];',
             ],
-            "ケーキ・焼き菓子": [
+            "洋菓子": [
                 f'nwr{around}["shop"~"^(pastry|bakery|confectionery|chocolate)$"];',
-                f'nwr{around}["name"~"ケーキ|洋菓子|焼き菓子|パティスリー|ドーナツ|シュークリーム|プリン|クレープ"];',
-            ],
-            "アイス・かき氷": [
                 f'nwr{around}["amenity"="ice_cream"];',
-                f'nwr{around}["cuisine"~"ice_cream|dessert"];',
-                f'nwr{around}["name"~"アイス|ジェラート|ソフトクリーム|かき氷|氷菓"];',
+                f'nwr{around}["cuisine"~"dessert|ice_cream|cake"];',
+                f'nwr{around}["name"~"ケーキ|洋菓子|焼き菓子|パティスリー|ドーナツ|シュークリーム|プリン|クレープ|アイス|ジェラート|ソフトクリーム"];',
             ],
         }
-        return mapping.get(str(subkind), mapping["なんでも"])
+        return mapping.get(str(subkind), mapping["和菓子"])
 
     mapping = {
         "なんでも": [
@@ -6026,12 +6019,10 @@ def _nearby_place_priority(tags, kind):
 def _nearby_google_text_query(kind, subkind):
     if kind == "snack":
         mapping = {
-            "なんでも": "和菓子 大福 団子 たい焼き ケーキ 洋菓子 焼き菓子 アイス かき氷 スイーツ",
-            "和菓子": "和菓子 大福 団子 たい焼き どら焼き",
-            "ケーキ・焼き菓子": "ケーキ 洋菓子 焼き菓子 パティスリー ドーナツ クレープ",
-            "アイス・かき氷": "アイス ジェラート ソフトクリーム かき氷",
+            "和菓子": "和菓子 大福 団子 たい焼き どら焼き 最中 羊羹 甘味 かき氷",
+            "洋菓子": "洋菓子 ケーキ 焼き菓子 パティスリー ドーナツ クレープ シュークリーム プリン アイス ジェラート ソフトクリーム",
         }
-        return mapping.get(str(subkind), mapping["なんでも"])
+        return mapping.get(str(subkind), mapping["和菓子"])
     mapping = {
         "なんでも": "観光スポット 公園 神社 寺 博物館 鉄道",
         "公園": "公園 庭園 遊歩道",
@@ -16761,6 +16752,17 @@ def page_nearby():
         .st-key-nearby_search_action div.stButton > button {
           min-height:3.35rem !important; border-radius:16px !important;
           font-size:1rem !important; font-weight:850 !important;
+          color:#ffffff !important;
+          background:linear-gradient(135deg,#2f80ed 0%,#27a7a0 100%) !important;
+          border:1px solid rgba(47,128,237,.42) !important;
+          box-shadow:0 7px 18px rgba(47,128,237,.18) !important;
+        }
+        .st-key-nearby_search_action div.stButton > button:hover {
+          color:#ffffff !important; filter:brightness(.98);
+          border-color:rgba(47,128,237,.58) !important;
+        }
+        .st-key-nearby_search_action div.stButton > button:active {
+          transform:translateY(1px); box-shadow:0 3px 10px rgba(47,128,237,.16) !important;
         }
         @media (max-width:640px) {
           .nearby-location-card { padding:.56rem .62rem; margin-bottom:.54rem; }
@@ -16864,18 +16866,18 @@ def page_nearby():
     if isinstance(accuracy, (int, float)) and accuracy >= 1000:
         st.caption("位置情報の精度が低めです。候補がずれる場合は、地名から検索の中心を指定してください。")
 
-    kind_key = f"_nearby_filter_kind_v193_{current_family_key()}_{current_member_key()}"
-    snack_key = f"_nearby_filter_snack_v193_{current_family_key()}_{current_member_key()}"
-    sight_key = f"_nearby_filter_sight_v193_{current_family_key()}_{current_member_key()}"
-    radius_key = f"_nearby_filter_radius_v193_{current_family_key()}_{current_member_key()}"
-    budget_key = f"_nearby_filter_budget_v193_{current_family_key()}_{current_member_key()}"
-    open_key = f"_nearby_filter_open_v193_{current_family_key()}_{current_member_key()}"
-    result_key = f"_nearby_search_result_v193_{current_family_key()}_{current_member_key()}"
+    kind_key = f"_nearby_filter_kind_v194_{current_family_key()}_{current_member_key()}"
+    snack_key = f"_nearby_filter_snack_v194_{current_family_key()}_{current_member_key()}"
+    sight_key = f"_nearby_filter_sight_v194_{current_family_key()}_{current_member_key()}"
+    radius_key = f"_nearby_filter_radius_v194_{current_family_key()}_{current_member_key()}"
+    budget_key = f"_nearby_filter_budget_v194_{current_family_key()}_{current_member_key()}"
+    open_key = f"_nearby_filter_open_v194_{current_family_key()}_{current_member_key()}"
+    result_key = f"_nearby_search_result_v194_{current_family_key()}_{current_member_key()}"
 
     if st.session_state.get(kind_key) not in {"snack", "sightseeing"}:
         st.session_state[kind_key] = "snack"
-    if st.session_state.get(snack_key) not in {"なんでも", "和菓子", "ケーキ・焼き菓子", "アイス・かき氷"}:
-        st.session_state[snack_key] = "なんでも"
+    if st.session_state.get(snack_key) not in {"和菓子", "洋菓子"}:
+        st.session_state[snack_key] = "和菓子"
     if st.session_state.get(sight_key) not in {"なんでも", "公園", "神社・寺", "博物館・施設", "電車・乗り物"}:
         st.session_state[sight_key] = "なんでも"
     if st.session_state.get(radius_key) not in {"徒歩10分くらい", "徒歩20分くらい", "もう少し遠く"}:
@@ -16916,8 +16918,8 @@ def page_nearby():
             with row1_left:
                 with st.container(border=True, key="nearby_step_1"):
                     _step_title(1, "何に寄る？")
-                    _choice_button("🍡 おやつ", "snack", kind_key, "nearby_kind_snack_v193", kind)
-                    _choice_button("🏛️ 観光", "sightseeing", kind_key, "nearby_kind_sight_v193", kind)
+                    _choice_button("🍡 おやつ", "snack", kind_key, "nearby_kind_snack_v194", kind)
+                    _choice_button("🏛️ 観光", "sightseeing", kind_key, "nearby_kind_sight_v194", kind)
                     st.markdown('<div class="nearby-step-note">甘いものか、気軽な立ち寄り先。</div>', unsafe_allow_html=True)
 
             with row1_right:
@@ -16925,14 +16927,12 @@ def page_nearby():
                     _step_title(2, "種類")
                     if kind == "snack":
                         snack_options = [
-                            ("おまかせ", "なんでも"),
                             ("🍡 和菓子", "和菓子"),
-                            ("🍰 ケーキ・焼き菓子", "ケーキ・焼き菓子"),
-                            ("🍧 アイス・かき氷", "アイス・かき氷"),
+                            ("🍰 洋菓子", "洋菓子"),
                         ]
-                        subkind = str(st.session_state.get(snack_key) or "なんでも")
+                        subkind = str(st.session_state.get(snack_key) or "和菓子")
                         for idx, (label, value) in enumerate(snack_options):
-                            _choice_button(label, value, snack_key, f"nearby_snack_{idx}_v193", subkind)
+                            _choice_button(label, value, snack_key, f"nearby_snack_{idx}_v194", subkind)
                     else:
                         sight_options = [
                             ("おまかせ", "なんでも"),
@@ -16943,7 +16943,7 @@ def page_nearby():
                         ]
                         subkind = str(st.session_state.get(sight_key) or "なんでも")
                         for idx, (label, value) in enumerate(sight_options):
-                            _choice_button(label, value, sight_key, f"nearby_sight_{idx}_v193", subkind)
+                            _choice_button(label, value, sight_key, f"nearby_sight_{idx}_v194", subkind)
 
         with st.container(key="nearby_filter_row_2"):
             row2_left, row2_right = st.columns(2, gap="small")
@@ -16958,14 +16958,14 @@ def page_nearby():
                         ("＋ もう少し遠く", "もう少し遠く"),
                     ]
                     for idx, (label, value) in enumerate(radius_options_ui):
-                        _choice_button(label, value, radius_key, f"nearby_radius_{idx}_v193", radius_label)
+                        _choice_button(label, value, radius_key, f"nearby_radius_{idx}_v194", radius_label)
 
             with row2_right:
                 with st.container(border=True, key="nearby_step_4"):
                     _step_title(4, "予算")
                     budget_mode = str(st.session_state.get(budget_key) or "under1000")
-                    _choice_button("💴 1,000円以下", "under1000", budget_key, "nearby_budget_1000_v193", budget_mode)
-                    _choice_button("○ 予算を問わない", "all", budget_key, "nearby_budget_all_v193", budget_mode)
+                    _choice_button("💴 1,000円以下", "under1000", budget_key, "nearby_budget_1000_v194", budget_mode)
+                    _choice_button("○ 予算を問わない", "all", budget_key, "nearby_budget_all_v194", budget_mode)
                     st.markdown(
                         '<div class="nearby-step-note">価格情報がある候補は1,000円以下で絞ります。料金未登録の場所は候補に残します。</div>',
                         unsafe_allow_html=True,
@@ -16978,9 +16978,9 @@ def page_nearby():
                     open_mode = str(st.session_state.get(open_key) or "open")
                     open_cols = st.columns(2, gap="small")
                     with open_cols[0]:
-                        _choice_button("🟢 営業中だけ", "open", open_key, "nearby_open_only_v193", open_mode)
+                        _choice_button("🟢 営業中だけ", "open", open_key, "nearby_open_only_v194", open_mode)
                     with open_cols[1]:
-                        _choice_button("○ 時間を問わない", "all", open_key, "nearby_open_all_v193", open_mode)
+                        _choice_button("○ 時間を問わない", "all", open_key, "nearby_open_all_v194", open_mode)
                     st.markdown(
                         '<div class="nearby-step-note">営業中だけにすると、営業時間が未登録の場所は候補から外れることがあります。</div>',
                         unsafe_allow_html=True,
@@ -17024,7 +17024,7 @@ def page_nearby():
                 "🔎 この条件で検索",
                 type="primary",
                 use_container_width=True,
-                key="nearby_search_submit_v193",
+                key="nearby_search_submit_v194",
             )
 
     detail_key = f"_nearby_open_detail_{current_family_key()}_{current_member_key()}"
