@@ -30,9 +30,9 @@ from zoneinfo import ZoneInfo
 import streamlit as st
 
 # Freshly generated update: 2026-08-31 23:49 JST
-GENERATED_UPDATE_JST = "2026-09-05T12:44:00+09:00"
+GENERATED_UPDATE_JST = "2026-09-05T23:47:00+09:00"
 
-APP_BUILD = "v223"
+APP_BUILD = "v225"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -3267,6 +3267,247 @@ def photo_selected_tag_values(photo):
     return key, ""
 
 
+# ============================================================
+# Individual photo sharing inside one family account (v225)
+# ============================================================
+PHOTO_FAMILY_SHARE_KEY = "_family_photo_share"
+
+
+def photo_family_share_info(photo):
+    """Return per-photo family-share metadata stored inside reflection_json."""
+    reflection = (photo or {}).get("reflection_json") or {}
+    if not isinstance(reflection, dict):
+        return {}
+    share = reflection.get(PHOTO_FAMILY_SHARE_KEY) or {}
+    return dict(share) if isinstance(share, dict) else {}
+
+
+def photo_family_share_is_enabled(photo):
+    return bool(photo_family_share_info(photo).get("shared"))
+
+
+def _photo_family_share_tag_snapshot(reflection):
+    """Snapshot the currently visible 通常/こどもーど tag for family sharing."""
+    reflection = dict(reflection) if isinstance(reflection, dict) else {}
+    meta = photo_selected_tag_meta({"reflection_json": reflection})
+    return {
+        "key": str(meta.get("key") or ""),
+        "mode": str(meta.get("mode") or ""),
+        "label": str(meta.get("label") or ""),
+        "emoji": str(meta.get("emoji") or ""),
+        "color": str(meta.get("color") or ""),
+    }
+
+
+def _sync_photo_family_share_tag_snapshot(reflection):
+    """Keep an already-shared photo's tag metadata synchronized with its live tag."""
+    reflection = dict(reflection) if isinstance(reflection, dict) else {}
+    share = reflection.get(PHOTO_FAMILY_SHARE_KEY) or {}
+    if not isinstance(share, dict) or not share.get("shared"):
+        return reflection
+    share = dict(share)
+    share["version"] = max(2, int(share.get("version") or 0))
+    share["tag_snapshot"] = _photo_family_share_tag_snapshot(reflection)
+    share["tag_updated_at"] = now_jst().isoformat()
+    reflection[PHOTO_FAMILY_SHARE_KEY] = share
+    return reflection
+
+
+def set_photo_family_share(photo_id, enabled=True, emotion_key=None, parenting_key=None):
+    """Share/unshare one owned still photo, including its current feeling/tag.
+
+    The image is not copied.  Sharing stores a lightweight permission marker plus a
+    tag snapshot in the existing photo row.  The recipient still reads the owner's
+    live reflection_json, so later tag changes remain synchronized automatically.
+
+    ``emotion_key`` / ``parenting_key`` are optional browser-visible values.  When
+    supplied, they are persisted atomically with the share toggle so a user can tap a
+    feeling and immediately tap Share without losing the newest on-screen choice.
+    """
+    photo_id = str(photo_id or "").strip()
+    if not photo_id:
+        raise ValueError("共有する写真を確認できませんでした。")
+
+    client = supabase_client()
+    row = (
+        client.table(PHOTO_TABLE)
+        .select("id,trip_id,storage_path,reflection_json")
+        .eq("id", photo_id)
+        .eq("family_key", current_family_key())
+        .eq("member_key", current_member_key())
+        .limit(1)
+        .execute()
+    ).data or []
+    photo = row[0] if row else None
+    if not isinstance(photo, dict) or not photo.get("id"):
+        raise ValueError("現在の個人アカウントの写真が見つかりませんでした。")
+
+    reflection = photo.get("reflection_json") or {}
+    reflection = dict(reflection) if isinstance(reflection, dict) else {}
+
+    # v225: a share click carries the tag currently visible in the browser.  Apply it
+    # before the permission marker so the photo and its feeling are one atomic share.
+    browser_tag_supplied = emotion_key is not None or parenting_key is not None
+    if browser_tag_supplied:
+        resolved_emotion = normalize_photo_emotion_key(emotion_key)
+        resolved_parenting = normalize_parenting_tag_key(parenting_key)
+        if resolved_emotion:
+            reflection["emotion"] = photo_emotion_record(
+                resolved_emotion,
+                source="family_share_visible_tag_v225",
+            )
+            reflection.pop("parenting_tag", None)
+        elif resolved_parenting:
+            reflection["parenting_tag"] = parenting_tag_record(
+                resolved_parenting,
+                source="family_share_visible_tag_v225",
+            )
+            reflection.pop("emotion", None)
+        else:
+            # Both values were explicitly sent as blank: the on-screen photo is untagged.
+            reflection.pop("emotion", None)
+            reflection.pop("parenting_tag", None)
+
+    if enabled:
+        previous = reflection.get(PHOTO_FAMILY_SHARE_KEY) or {}
+        previous = previous if isinstance(previous, dict) else {}
+        now_value = now_jst().isoformat()
+        reflection[PHOTO_FAMILY_SHARE_KEY] = {
+            "version": 2,
+            "shared": True,
+            "shared_by_member_key": current_member_key(),
+            "shared_by_member_name": current_member_name(),
+            "shared_at": str(previous.get("shared_at") or now_value),
+            "updated_at": now_value,
+            "tag_updated_at": now_value,
+            "tag_snapshot": _photo_family_share_tag_snapshot(reflection),
+        }
+    else:
+        reflection.pop(PHOTO_FAMILY_SHARE_KEY, None)
+
+    (
+        client.table(PHOTO_TABLE)
+        .update({"reflection_json": reflection})
+        .eq("id", photo_id)
+        .eq("family_key", current_family_key())
+        .eq("member_key", current_member_key())
+        .execute()
+    )
+    _invalidate_fast_db_cache()
+    return bool(enabled)
+
+
+def list_family_shared_photos(limit=90):
+    """Return still photos explicitly shared by other members of the current family."""
+    try:
+        requested = max(1, min(180, int(limit)))
+    except Exception:
+        requested = 90
+    query_limit = max(180, min(800, requested * 6))
+    try:
+        rows = (
+            supabase_client()
+            .table(PHOTO_TABLE)
+            .select("*")
+            .eq("family_key", current_family_key())
+            .order("captured_at", desc=True)
+            .limit(query_limit)
+            .execute()
+        ).data or []
+    except Exception:
+        return []
+
+    try:
+        member_map = {
+            str(row.get("member_key") or ""): str(row.get("display_name") or row.get("member_key") or "")
+            for row in list_family_members(current_family_key())
+            if isinstance(row, dict)
+        }
+    except Exception:
+        member_map = {}
+
+    current_member = current_member_key()
+    shared = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        owner_key = str(row.get("member_key") or "").strip()
+        if not owner_key or owner_key == current_member:
+            continue
+        if not str(row.get("storage_path") or "").strip():
+            continue
+        reflection = row.get("reflection_json") or {}
+        if not isinstance(reflection, dict):
+            continue
+        # Original videos are not exposed as individual shared images. A still saved
+        # from Good Moments is a normal photo row and can be shared normally.
+        if str(reflection.get("media_type") or "").strip().lower() == "video":
+            continue
+        share = reflection.get(PHOTO_FAMILY_SHARE_KEY) or {}
+        if not isinstance(share, dict) or not share.get("shared"):
+            continue
+        item = dict(row)
+        item["_shared_owner_key"] = owner_key
+        item["_shared_owner_name"] = str(
+            member_map.get(owner_key)
+            or share.get("shared_by_member_name")
+            or owner_key
+        ).strip()
+        item["_shared_at"] = str(share.get("updated_at") or share.get("shared_at") or "")
+        item["_shared_tag_snapshot"] = dict(share.get("tag_snapshot") or {}) if isinstance(share.get("tag_snapshot"), dict) else {}
+        shared.append(item)
+        if len(shared) >= requested:
+            break
+    return shared
+
+
+def render_photo_family_share_notice():
+    notice = st.session_state.pop("_photo_family_share_notice", None)
+    if notice:
+        st.success(str(notice))
+
+
+def handle_photo_family_share_event(result, valid_photo_ids, serial_key=None):
+    """Persist a browser share toggle together with the exact visible feeling/tag."""
+    payload = getattr(result, "share_photo", None) if result is not None else None
+    if not isinstance(payload, dict):
+        return False
+    photo_id = str(payload.get("photo_id") or "").strip()
+    valid = {str(value) for value in (valid_photo_ids or []) if str(value)}
+    if not photo_id or photo_id not in valid:
+        return False
+    token = str(payload.get("token") or "").strip()
+    token_key = "_photo_family_share_action_token_v225"
+    if token and token == str(st.session_state.get(token_key) or ""):
+        return False
+    if token:
+        st.session_state[token_key] = token
+    enabled = bool(payload.get("enabled"))
+    emotion_value = payload.get("emotion") if "emotion" in payload else None
+    parenting_value = payload.get("parenting") if "parenting" in payload else None
+    try:
+        set_photo_family_share(
+            photo_id,
+            enabled=enabled,
+            emotion_key=emotion_value,
+            parenting_key=parenting_value,
+        )
+        st.session_state["_photo_family_share_notice"] = (
+            "この写真と選んだ感情を、同じ家族IDの別アカウントに共有しました。"
+            if enabled else
+            "この写真の家族共有を解除しました。"
+        )
+    except Exception as exc:
+        st.session_state["_photo_family_share_notice"] = f"写真の共有設定を変更できませんでした：{exc}"
+    if serial_key:
+        try:
+            st.session_state[serial_key] = int(st.session_state.get(serial_key) or 0) + 1
+        except Exception:
+            st.session_state[serial_key] = 1
+    st.rerun()
+    return True
+
+
 def selection_item_tag_values(item):
     """Resolve one tag from an AI-selected still, including legacy dual-tag rows."""
     item = item if isinstance(item, dict) else {}
@@ -3439,6 +3680,7 @@ def update_photo_emotion(photo_id, emotion_key, trip_id=None, refresh_related=Tr
         reflection.pop("parenting_tag", None)
     else:
         reflection.pop("emotion", None)
+    reflection = _sync_photo_family_share_tag_snapshot(reflection)
 
     (
         client
@@ -3519,6 +3761,7 @@ def update_photo_parenting_tag(photo_id, tag_key, trip_id=None, refresh_related=
         reflection.pop("emotion", None)
     else:
         reflection.pop("parenting_tag", None)
+    reflection = _sync_photo_family_share_tag_snapshot(reflection)
 
     (
         client.table(PHOTO_TABLE)
@@ -3627,6 +3870,7 @@ def update_photo_tags_combined_v166(emotion_changes=None, parenting_changes=None
                 reflection.pop("emotion", None)
             if parenting_present:
                 reflection.pop("parenting_tag", None)
+        reflection = _sync_photo_family_share_tag_snapshot(reflection)
 
         (
             client.table(PHOTO_TABLE)
@@ -3881,6 +4125,16 @@ _DIARY_GALLERY_CSS = """
   -webkit-tap-highlight-color:transparent;
 }
 .diary-photo-delete:active { transform:scale(.94); }
+.diary-photo-share {
+  appearance:none; -webkit-appearance:none; width:100%; min-height:29px; margin:4px 0 0; padding:4px 5px;
+  border:1px solid rgba(97,132,185,.34); border-radius:8px; background:rgba(97,132,185,.07);
+  color:var(--st-text-color); font-size:8.8px; line-height:1.15; font-weight:780; cursor:pointer;
+  touch-action:manipulation; -webkit-tap-highlight-color:transparent;
+}
+.diary-photo-share.shared { border-color:rgba(93,166,133,.58); background:rgba(93,166,133,.13); }
+.diary-photo-share:active { transform:scale(.985); }
+.diary-photo-share:disabled { opacity:.62; cursor:wait; }
+.diary-photo-shared-meta { margin-top:5px; font-size:9.5px; line-height:1.35; font-weight:730; opacity:.78; overflow-wrap:anywhere; }
 .diary-photo-location { margin-top:4px; font-size:10px; line-height:1.25; color:var(--st-text-color); opacity:.78; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 @media (max-width:640px) {
   .diary-photo-single-nav { gap:5px; margin-bottom:6px; }
@@ -3892,6 +4146,8 @@ _DIARY_GALLERY_CSS = """
   .diary-photo-card img { border-radius:8px; }
   .diary-photo-location { font-size:9px; }
   .diary-photo-delete { top:2px; right:2px; width:23px; height:23px; font-size:17px; }
+  .diary-photo-share { min-height:27px; font-size:7.7px; padding:3px 3px; }
+  .diary-photo-shared-meta { font-size:8.5px; }
   .diary-emotion-badge { right:5px; bottom:5px; min-width:25px; height:22px; padding:0 5px; font-size:7.5px; }
   .diary-mode-button { min-height:25px; font-size:7.5px; padding:3px 2px; }
   .diary-photo-grid.single { max-width: 100%; }
@@ -3916,6 +4172,7 @@ export default function(component) {
   const photos = Array.isArray(data?.photos) ? data.photos : [];
   const allowDelete = data?.allow_delete !== false;
   const allowEmotion = data?.allow_emotion !== false;
+  const allowShare = Boolean(data?.allow_share);
   const carouselKey = String(data?.carousel_key || 'default');
   const carouselStore = `tokyo_burari_diary_carousel_v180_${carouselKey}`;
   const pendingStore = 'tokyo_burari_pending_tags_v166';
@@ -4021,6 +4278,8 @@ export default function(component) {
     const badge = document.createElement('div'); badge.className='diary-emotion-badge'; card.appendChild(badge);
     if (photo.location) { const location=document.createElement('div'); location.className='diary-photo-location'; location.textContent=`📍 ${photo.location}`; card.appendChild(location); }
 
+    const sharedMeta = String(photo?.shared_meta || '').trim();
+    if (sharedMeta) { const sharedNode=document.createElement('div'); sharedNode.className='diary-photo-shared-meta'; sharedNode.textContent=sharedMeta; wrap.appendChild(sharedNode); }
     const tags = Array.isArray(photo?.tags) ? photo.tags.map((tag) => String(tag || '').trim()).filter(Boolean).slice(0, 12) : [];
     if (tags.length) { const tagNode=document.createElement('div'); tagNode.className='diary-photo-tags'; tagNode.textContent=`🏷️ ${tags.join(' ／ ')}`; wrap.appendChild(tagNode); }
 
@@ -4068,6 +4327,22 @@ export default function(component) {
 
     wrap.insertBefore(card, wrap.firstChild);
     if (allowEmotion) wrap.appendChild(modeSwitch);
+    if (allowShare) {
+      const share=document.createElement('button'); share.type='button'; share.className='diary-photo-share';
+      const syncShare=()=>{
+        const active=Boolean(photo.shared);
+        share.classList.toggle('shared', active);
+        share.textContent = active ? (single ? '✓ 家族に共有中（解除）' : '✓ 共有中') : (single ? '👨‍👩‍👦 家族に共有' : '👨‍👩‍👦 共有');
+        share.setAttribute('aria-label', active ? 'この写真の家族共有を解除する' : 'この写真を家族に共有する');
+      };
+      syncShare();
+      share.addEventListener('click', (event) => {
+        event.preventDefault(); event.stopPropagation();
+        const next=!Boolean(photo.shared); photo.shared=next; syncShare(); share.disabled=true;
+        setTriggerValue('share_photo', {photo_id:String(photo.id), enabled:next, emotion:String(photo.emotion||''), parenting:String(photo.parenting||''), token:`${Date.now()}_${Math.random().toString(36).slice(2)}`});
+      });
+      wrap.appendChild(share);
+    }
     if (allowDelete) {
       const remove=document.createElement('button'); remove.type='button'; remove.className='diary-photo-delete'; remove.textContent='×'; remove.setAttribute('aria-label','この写真を削除');
       remove.addEventListener('click', (event) => { event.preventDefault(); event.stopPropagation(); discardPendingPhoto(photo.id); setTriggerValue('delete_photo_id', String(photo.id)); });
@@ -4139,7 +4414,7 @@ def _get_diary_gallery_component():
     _diary_gallery_component_initialized = True
     try:
         diary_gallery_component = st.components.v2.component(
-            "tokyo_burari_diary_gallery_v180",
+            "tokyo_burari_diary_gallery_v225",
             html=_DIARY_GALLERY_HTML,
             css=_DIARY_GALLERY_CSS,
             js=_DIARY_GALLERY_JS,
@@ -18197,6 +18472,7 @@ def render_pending_thumbnail_grid(trip_id, photos, max_count=None, trip=None):
                 "emotion": photo_selected_tag_values(photo)[0],
                 "parenting": photo_selected_tag_values(photo)[1],
                 "location": str(photo_location_label(photo) or ""),
+                "shared": photo_family_share_is_enabled(photo),
                 "is_video": False,
             }
         )
@@ -18210,11 +18486,14 @@ def render_pending_thumbnail_grid(trip_id, photos, max_count=None, trip=None):
         serial_key = f"pending_gallery_serial_{trip_id}"
         serial = int(st.session_state.get(serial_key) or 0)
         result = gallery_component(
-            data={"photos": cards, "family_key": current_family_key(), "member_key": current_member_key(), "pending_param": PENDING_EMOTION_QUERY_PARAM},
+            data={"photos": cards, "allow_share": True, "family_key": current_family_key(), "member_key": current_member_key(), "pending_param": PENDING_EMOTION_QUERY_PARAM},
             key=f"pending_gallery_{trip_id}_{serial}_{_current_ui_refresh_epoch()}",
             on_photo_id_change=lambda: None,
             on_delete_photo_id_change=lambda: None,
+            on_share_photo_change=lambda: None,
         )
+        if handle_photo_family_share_event(result, photo_ids, serial_key=serial_key):
+            return None
         delete_clicked = str(getattr(result, "delete_photo_id", "") or "")
         if delete_clicked in photo_ids:
             st.session_state[serial_key] = serial + 1
@@ -18306,7 +18585,7 @@ def render_small_gallery(photos, max_count=None, columns=3):
         )
 
 def render_history_photo_viewer(photos, trip_id):
-    """Read-only saved-diary viewer with fast browser-local enlarged navigation."""
+    """Read-only saved-diary viewer with per-photo family sharing."""
     photos = diary_photos_only(photos)
     if not photos:
         return
@@ -18321,15 +18600,10 @@ def render_history_photo_viewer(photos, trip_id):
             label_visibility="collapsed",
         )
 
-    if view_mode == "3列一覧":
-        render_small_gallery(photos, max_count=None, columns=3)
-        return
-
-    # v180: all photo URLs are handed to one browser component once. Previous/next
-    # only changes DOM visibility, so there is no Streamlit rerun or Supabase round trip.
     paths = tuple(str(photo.get("storage_path") or "") for photo in photos if photo.get("storage_path"))
     signed = signed_photo_url_map(paths) if paths else {}
     cards = []
+    photo_ids = []
     for photo in photos:
         pid = str(photo.get("id") or "")
         if not pid:
@@ -18337,67 +18611,77 @@ def render_history_photo_viewer(photos, trip_id):
         cards.append(
             {
                 "id": pid,
-                "src": photo_display_url(photo, signed, max_px=1600, quality=92),
+                "src": photo_display_url(photo, signed, max_px=1600 if view_mode == "1枚ずつ拡大" else 520, quality=92 if view_mode == "1枚ずつ拡大" else 80),
                 "emotion": photo_selected_tag_values(photo)[0],
                 "parenting": photo_selected_tag_values(photo)[1],
                 "location": str(photo_location_label(photo) or ""),
                 "tags": photo_ai_tags(photo)[:12],
+                "shared": photo_family_share_is_enabled(photo),
             }
         )
+        photo_ids.append(pid)
 
     gallery_component = _get_diary_gallery_component()
     if gallery_component is not None and cards:
-        gallery_component(
+        serial_key = f"history_photo_share_serial_{trip_id}"
+        serial = int(st.session_state.get(serial_key) or 0)
+        result = gallery_component(
             data={
                 "photos": cards,
-                "single": True,
+                "single": view_mode == "1枚ずつ拡大",
                 "allow_delete": False,
                 "allow_emotion": False,
+                "allow_share": True,
                 "carousel_key": f"history_{trip_id}",
                 "family_key": current_family_key(),
                 "member_key": current_member_key(),
                 "pending_param": PENDING_EMOTION_QUERY_PARAM,
             },
-            key=f"history_photo_fast_v180_{trip_id}_{_current_ui_refresh_epoch()}",
+            key=f"history_photo_fast_v224_{trip_id}_{serial}_{_current_ui_refresh_epoch()}_{'large' if view_mode == '1枚ずつ拡大' else 'grid'}",
+            on_share_photo_change=lambda: None,
         )
+        if handle_photo_family_share_event(result, photo_ids, serial_key=serial_key):
+            return
         return
 
-    # Old-runtime fallback: keep the previous server-rerun navigation.
-    index_key = f"history_photo_enlarged_index_{trip_id}"
-    try:
-        index = int(st.session_state.get(index_key) or 0)
-    except Exception:
-        index = 0
-    index = max(0, min(index, len(photos) - 1))
-    st.session_state[index_key] = index
-    prev_col, count_col, next_col = st.columns([1, 1.25, 1], gap="small")
-    with prev_col:
-        if st.button("◀ 前へ", use_container_width=True, disabled=index <= 0, key=f"history_photo_prev_{trip_id}"):
-            st.session_state[index_key] = max(0, index - 1)
-            st.rerun()
-    with count_col:
-        st.markdown(f'<div style="text-align:center;padding:.55rem .2rem;font-weight:800;">{index + 1} / {len(photos)}</div>', unsafe_allow_html=True)
-    with next_col:
-        if st.button("次へ ▶", use_container_width=True, disabled=index >= len(photos) - 1, key=f"history_photo_next_{trip_id}"):
-            st.session_state[index_key] = min(len(photos) - 1, index + 1)
-            st.rerun()
-    photo = photos[index]
-    path = str(photo.get("storage_path") or "").strip()
-    single_signed = signed_photo_url_map((path,)) if path else {}
-    src = photo_display_url(photo, single_signed, max_px=1600, quality=92)
-    meta = photo_selected_tag_meta(photo)
-    border = meta.get("color") or "#AEB6C2"
-    emoji = meta.get("emoji") or ""
-    label = meta.get("label") or ""
-    location = str(photo_location_label(photo) or "").strip()
-    if src:
-        badge = f'<div style="position:absolute;right:10px;bottom:10px;padding:5px 9px;border-radius:999px;background:rgba(255,255,255,.92);font-size:17px;font-weight:800;">{html.escape(emoji)} {html.escape(label)}</div>' if emoji else ""
-        st.markdown(f'<div style="position:relative;width:100%;padding:5px;border:3px solid {border};border-radius:16px;"><img src="{html.escape(src, quote=True)}" loading="eager" decoding="async" style="display:block;width:100%;max-height:70vh;object-fit:contain;border-radius:11px;" />{badge}</div>', unsafe_allow_html=True)
-    if location:
-        st.caption(f"📍 {location}")
-    tags = photo_ai_tags(photo)
-    if tags:
-        st.caption("🏷️ " + " ／ ".join(tags[:12]))
+    # Old-runtime fallback.
+    fallback = photos
+    if view_mode == "1枚ずつ拡大":
+        index_key = f"history_photo_enlarged_index_{trip_id}"
+        try:
+            index = int(st.session_state.get(index_key) or 0)
+        except Exception:
+            index = 0
+        index = max(0, min(index, len(photos) - 1))
+        st.session_state[index_key] = index
+        prev_col, count_col, next_col = st.columns([1, 1.25, 1], gap="small")
+        with prev_col:
+            if st.button("◀ 前へ", use_container_width=True, disabled=index <= 0, key=f"history_photo_prev_{trip_id}"):
+                st.session_state[index_key] = max(0, index - 1)
+                st.rerun()
+        with count_col:
+            st.markdown(f'<div style="text-align:center;padding:.55rem .2rem;font-weight:800;">{index + 1} / {len(photos)}</div>', unsafe_allow_html=True)
+        with next_col:
+            if st.button("次へ ▶", use_container_width=True, disabled=index >= len(photos) - 1, key=f"history_photo_next_{trip_id}"):
+                st.session_state[index_key] = min(len(photos) - 1, index + 1)
+                st.rerun()
+        fallback = [photos[index]]
+
+    cols = st.columns(1 if view_mode == "1枚ずつ拡大" else 3, gap="small")
+    for idx, photo in enumerate(fallback):
+        with cols[idx % len(cols)]:
+            src = photo_display_url(photo, signed, max_px=1600 if view_mode == "1枚ずつ拡大" else 420, quality=92 if view_mode == "1枚ずつ拡大" else 76)
+            if src:
+                st.markdown(f'<img src="{html.escape(src, quote=True)}" style="display:block;width:100%;max-height:70vh;object-fit:contain;border-radius:10px;" />', unsafe_allow_html=True)
+            shared = photo_family_share_is_enabled(photo)
+            if st.button(
+                "✓ 家族に共有中（解除）" if shared else "👨‍👩‍👦 家族に共有",
+                use_container_width=True,
+                key=f"history_photo_share_fallback_{trip_id}_{photo.get('id')}_{view_mode}",
+            ):
+                set_photo_family_share(photo.get("id"), enabled=not shared)
+                st.session_state["_photo_family_share_notice"] = "この写真と選んだ感情を家族に共有しました。" if not shared else "この写真の家族共有を解除しました。"
+                st.rerun()
 
 
 def render_diary_photo_gallery(trip_id, photos, state=None):
@@ -18431,6 +18715,7 @@ def render_diary_photo_gallery(trip_id, photos, state=None):
                 "emotion": photo_selected_tag_values(photo)[0],
                 "parenting": photo_selected_tag_values(photo)[1],
                 "location": str(location_label or ""),
+                "shared": photo_family_share_is_enabled(photo),
                 "is_video": False,
             }
         )
@@ -18444,11 +18729,14 @@ def render_diary_photo_gallery(trip_id, photos, state=None):
         serial_key = f"diary_gallery_serial_{trip_id}"
         serial = int(st.session_state.get(serial_key) or 0)
         result = gallery_component(
-            data={"photos": cards, "family_key": current_family_key(), "member_key": current_member_key(), "pending_param": PENDING_EMOTION_QUERY_PARAM},
+            data={"photos": cards, "allow_share": True, "family_key": current_family_key(), "member_key": current_member_key(), "pending_param": PENDING_EMOTION_QUERY_PARAM},
             key=f"diary_gallery_{trip_id}_{serial}_{_current_ui_refresh_epoch()}",
             on_photo_id_change=lambda: None,
             on_delete_photo_id_change=lambda: None,
+            on_share_photo_change=lambda: None,
         )
+        if handle_photo_family_share_event(result, photo_ids, serial_key=serial_key):
+            return None
         delete_clicked = str(getattr(result, "delete_photo_id", "") or "")
         if delete_clicked in photo_ids:
             # Reset the component immediately so the same delete event is not emitted
@@ -22310,16 +22598,20 @@ def render_recent_camera_photo_emotion(trip):
         "emotion": photo_selected_tag_values(photo)[0],
         "parenting": photo_selected_tag_values(photo)[1],
         "location": str(location_label or ""),
+        "shared": photo_family_share_is_enabled(photo),
     }
     gallery_component = _get_diary_gallery_component()
     if gallery_component is not None:
         serial_key = f"recent_emotion_serial_{photo_id}"
         serial = int(st.session_state.get(serial_key) or 0)
         result = gallery_component(
-            data={"photos": [card], "single": True, "allow_delete": True, "allow_emotion": True, "mode_by_photo": st.session_state.get(f"_recent_icon_modes_{photo_id}") or {}, "family_key": current_family_key(), "member_key": current_member_key(), "pending_param": PENDING_EMOTION_QUERY_PARAM},
+            data={"photos": [card], "single": True, "allow_delete": True, "allow_emotion": True, "allow_share": True, "mode_by_photo": st.session_state.get(f"_recent_icon_modes_{photo_id}") or {}, "family_key": current_family_key(), "member_key": current_member_key(), "pending_param": PENDING_EMOTION_QUERY_PARAM},
             key=f"recent_emotion_{photo_id}_{serial}_{_current_ui_refresh_epoch()}",
             on_delete_photo_id_change=lambda: None,
+            on_share_photo_change=lambda: None,
         )
+        if handle_photo_family_share_event(result, [str(photo_id)], serial_key=serial_key):
+            return
         delete_clicked = str(getattr(result, "delete_photo_id", "") or "")
         if delete_clicked == str(photo_id):
             st.session_state[serial_key] = serial + 1
@@ -22361,6 +22653,7 @@ def page_trip():
     notice = st.session_state.pop("_camera_notice", None)
     if notice:
         st.success(notice)
+    render_photo_family_share_notice()
 
     if live_camera_component is None:
         st.error("ライブカメラ機能に必要なStreamlitのバージョンが古いです。requirements.txtを更新してください。")
@@ -22771,6 +23064,7 @@ def render_diary_emotion_gallery(trip_id, photos, trip=None, is_pending=False):
                 "parenting": photo_selected_tag_values(photo)[1],
                 "location": str(photo_location_label(photo) or ""),
                 "tags": photo_ai_tags(photo)[:12],
+                "shared": photo_family_share_is_enabled(photo),
             }
         )
         photo_ids.append(pid)
@@ -22780,10 +23074,13 @@ def render_diary_emotion_gallery(trip_id, photos, trip=None, is_pending=False):
         serial_key = f"diary_emotion_gallery_serial_{trip_id}_{'pending' if is_pending else 'saved'}"
         serial = int(st.session_state.get(serial_key) or 0)
         result = gallery_component(
-            data={"photos": cards, "single": view_mode == "1枚ずつ拡大", "allow_delete": True, "allow_emotion": True, "carousel_key": f"diary_saved_{trip_id}", "mode_by_photo": st.session_state.get(f"_diary_icon_modes_{trip_id}") or {}, "family_key": current_family_key(), "member_key": current_member_key(), "pending_param": PENDING_EMOTION_QUERY_PARAM},
-            key=f"diary_emotion_gallery_{trip_id}_{serial}_{_current_ui_refresh_epoch()}_{'large' if view_mode == '1枚ずつ拡大' else 'grid'}_v180",
+            data={"photos": cards, "single": view_mode == "1枚ずつ拡大", "allow_delete": True, "allow_emotion": True, "allow_share": True, "carousel_key": f"diary_saved_{trip_id}", "mode_by_photo": st.session_state.get(f"_diary_icon_modes_{trip_id}") or {}, "family_key": current_family_key(), "member_key": current_member_key(), "pending_param": PENDING_EMOTION_QUERY_PARAM},
+            key=f"diary_emotion_gallery_{trip_id}_{serial}_{_current_ui_refresh_epoch()}_{'large' if view_mode == '1枚ずつ拡大' else 'grid'}_v225",
             on_delete_photo_id_change=lambda: None,
+            on_share_photo_change=lambda: None,
         )
+        if handle_photo_family_share_event(result, photo_ids, serial_key=serial_key):
+            return
         delete_clicked = str(getattr(result, "delete_photo_id", "") or "")
         if delete_clicked in photo_ids:
             st.session_state[serial_key] = serial + 1
@@ -22847,6 +23144,15 @@ def render_diary_emotion_gallery(trip_id, photos, trip=None, is_pending=False):
                     trip_id=trip_id,
                 )
                 st.rerun()
+            shared = photo_family_share_is_enabled(photo)
+            if st.button(
+                "✓ 共有中（解除）" if shared else "👨‍👩‍👦 家族に共有",
+                use_container_width=True,
+                key=f"diary_emotion_share_{trip_id}_{photo.get('id')}_{'pending' if is_pending else 'saved'}_{'large' if view_mode == '1枚ずつ拡大' else 'grid'}",
+            ):
+                set_photo_family_share(photo.get("id"), enabled=not shared)
+                st.session_state["_photo_family_share_notice"] = "この写真と選んだ感情を家族に共有しました。" if not shared else "この写真の家族共有を解除しました。"
+                st.rerun()
             if st.button(
                 "×",
                 key=f"diary_emotion_delete_{trip_id}_{photo.get('id')}_{'pending' if is_pending else 'saved'}_{'large' if view_mode == '1枚ずつ拡大' else 'grid'}",
@@ -22859,6 +23165,91 @@ def render_diary_emotion_gallery(trip_id, photos, trip=None, is_pending=False):
                     is_pending=is_pending,
                     trip=trip,
                 )
+
+
+def render_family_shared_individual_photos():
+    """Show individual photos shared by other accounts in the same family."""
+    shared_photos = list_family_shared_photos(limit=90)
+    if not shared_photos:
+        return False
+
+    with st.expander(f"👨‍👩‍👦 家族から共有された写真（{len(shared_photos)}枚）", expanded=False):
+        st.caption("同じ家族IDの別アカウントが1枚ずつ共有した写真です。写真につけた感情・こどもーどタグも一緒に表示し、共有元で変更するとこちらにも反映します。ここでは閲覧のみできます。")
+        view_mode = "3列一覧"
+        if len(shared_photos) > 1:
+            view_mode = st.radio(
+                "共有写真の表示モード",
+                ["3列一覧", "1枚ずつ拡大"],
+                horizontal=True,
+                key="family_shared_photo_view_mode_v225",
+                label_visibility="collapsed",
+            )
+        paths = tuple(str(photo.get("storage_path") or "") for photo in shared_photos if photo.get("storage_path"))
+        signed = signed_photo_url_map(paths) if paths else {}
+        cards = []
+        for photo in shared_photos:
+            pid = str(photo.get("id") or "")
+            if not pid:
+                continue
+            owner = str(photo.get("_shared_owner_name") or photo.get("_shared_owner_key") or "家族").strip()
+            captured = str(photo.get("captured_at") or "").strip()
+            captured_label = captured[:10] if len(captured) >= 10 else captured
+            tag_meta = photo_selected_tag_meta(photo)
+            tag_text = ""
+            if tag_meta.get("key"):
+                tag_text = f"{tag_meta.get('emoji') or ''} {tag_meta.get('label') or ''}".strip()
+            meta_text = f"👨‍👩‍👦 {owner}さんから共有" + (f" ・ {captured_label}" if captured_label else "") + (f" ・ {tag_text}" if tag_text else "")
+            cards.append({
+                "id": pid,
+                "src": photo_display_url(photo, signed, max_px=1600 if view_mode == "1枚ずつ拡大" else 520, quality=92 if view_mode == "1枚ずつ拡大" else 80),
+                "emotion": photo_selected_tag_values(photo)[0],
+                "parenting": photo_selected_tag_values(photo)[1],
+                "emotion_label": str(tag_meta.get("label") or ""),
+                "emotion_emoji": str(tag_meta.get("emoji") or ""),
+                "emotion_color": str(tag_meta.get("color") or ""),
+                "location": str(photo_location_label(photo) or ""),
+                "tags": photo_ai_tags(photo)[:12],
+                "shared_meta": meta_text,
+            })
+
+        gallery_component = _get_diary_gallery_component()
+        if gallery_component is not None and cards:
+            gallery_component(
+                data={
+                    "photos": cards,
+                    "single": view_mode == "1枚ずつ拡大",
+                    "allow_delete": False,
+                    "allow_emotion": False,
+                    "allow_share": False,
+                    "carousel_key": "family_shared_individual_v225",
+                    "family_key": current_family_key(),
+                    "member_key": current_member_key(),
+                    "pending_param": PENDING_EMOTION_QUERY_PARAM,
+                },
+                key=f"family_shared_individual_photos_v225_{_current_ui_refresh_epoch()}_{'large' if view_mode == '1枚ずつ拡大' else 'grid'}",
+            )
+        else:
+            columns = 1 if view_mode == "1枚ずつ拡大" else 3
+            cols = st.columns(columns, gap="small")
+            for index, card in enumerate(cards):
+                with cols[index % columns]:
+                    if card.get("src"):
+                        border = str(card.get("emotion_color") or "#AEB6C2")
+                        emoji = str(card.get("emotion_emoji") or "")
+                        label = str(card.get("emotion_label") or "")
+                        badge = (
+                            f'<span style="position:absolute;right:9px;bottom:9px;background:rgba(255,255,255,.92);border-radius:999px;padding:4px 7px;font-size:16px;font-weight:800;">{html.escape(emoji)} {html.escape(label)}</span>'
+                            if emoji or label else ""
+                        )
+                        st.markdown(
+                            f'<div style="position:relative;padding:4px;border:3px solid {html.escape(border, quote=True)};border-radius:12px;">'
+                            f'<img src="{html.escape(str(card["src"]), quote=True)}" style="display:block;width:100%;max-height:70vh;object-fit:contain;border-radius:8px;" />{badge}</div>',
+                            unsafe_allow_html=True,
+                        )
+                    st.caption(str(card.get("shared_meta") or ""))
+                    if card.get("location"):
+                        st.caption(f"📍 {card['location']}")
+    return True
 
 
 # ============================================================
@@ -22880,7 +23271,10 @@ def page_diary():
     notice = st.session_state.pop("_diary_notice", None)
     if notice:
         st.success(notice)
+    render_photo_family_share_notice()
     render_photo_tag_notices()
+
+    render_family_shared_individual_photos()
 
     recent_rows = list_recent_diaries(limit=80)
     saved_titles = [
@@ -23075,6 +23469,7 @@ def page_history(embedded=False):
     notice = st.session_state.pop("_diary_notice", None)
     if notice:
         st.success(notice)
+    render_photo_family_share_notice()
     render_photo_tag_notices()
 
     rows = list_recent_diaries()
@@ -24243,7 +24638,7 @@ def page_settings():
     )
     st.caption(
         "ログイン、写真、日記、月ごとの振り返り、AIまとめのGood/Bad学習は個人アカウントごとに分かれます。"
-        "同じ家族の別の個人アカウントから、この個人の写真や日記は表示されません。"
+        "同じ家族の別アカウントからは原則見えません。写真ごとの『家族に共有』または振り返り共有をONにしたものだけ閲覧できます。"
     )
     with st.expander("現在の個人名を変更"):
         renamed_member = st.text_input(
