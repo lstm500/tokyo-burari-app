@@ -30,9 +30,9 @@ from zoneinfo import ZoneInfo
 import streamlit as st
 
 # Freshly generated update: 2026-08-31 23:49 JST
-GENERATED_UPDATE_JST = "2026-09-05T23:56:00+09:00"
+GENERATED_UPDATE_JST = "2026-09-06T00:39:41+09:00"
 
-APP_BUILD = "v227"
+APP_BUILD = "v228"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -18846,20 +18846,29 @@ def render_small_gallery(photos, max_count=None, columns=3):
         )
 
 def render_history_photo_viewer(photos, trip_id):
-    """Read-only saved-diary viewer with per-photo family sharing."""
+    """Read-only daily diary photo viewer with grid / one-photo-at-a-time modes."""
     photos = diary_photos_only(photos)
     if not photos:
         return
 
+    st.markdown("#### この日の写真")
     view_mode = "3列一覧"
     if len(photos) > 1:
+        mode_key = f"history_photo_view_mode_{trip_id}"
+        # v228 label migration: preserve a user's prior selection after renaming the mode.
+        if st.session_state.get(mode_key) == "1枚ずつ拡大":
+            st.session_state[mode_key] = "1枚ずつ表示"
+        st.caption("写真の表示方法")
         view_mode = st.radio(
-            "写真の表示モード",
-            ["3列一覧", "1枚ずつ拡大"],
+            "写真の表示方法",
+            ["3列一覧", "1枚ずつ表示"],
             horizontal=True,
-            key=f"history_photo_view_mode_{trip_id}",
+            key=mode_key,
             label_visibility="collapsed",
         )
+    single_mode = view_mode == "1枚ずつ表示"
+    if single_mode and len(photos) > 1:
+        st.caption("◀ 前へ／次へ ▶、または写真を左右にスワイプして切り替えられます。")
 
     paths = tuple(str(photo.get("storage_path") or "") for photo in photos if photo.get("storage_path"))
     signed = signed_photo_url_map(paths) if paths else {}
@@ -18872,7 +18881,7 @@ def render_history_photo_viewer(photos, trip_id):
         cards.append(
             {
                 "id": pid,
-                "src": photo_display_url(photo, signed, max_px=1600 if view_mode == "1枚ずつ拡大" else 520, quality=92 if view_mode == "1枚ずつ拡大" else 80),
+                "src": photo_display_url(photo, signed, max_px=1600 if single_mode else 520, quality=92 if single_mode else 80),
                 "emotion": photo_selected_tag_values(photo)[0],
                 "parenting": photo_selected_tag_values(photo)[1],
                 "location": str(photo_location_label(photo) or ""),
@@ -18889,7 +18898,7 @@ def render_history_photo_viewer(photos, trip_id):
         result = gallery_component(
             data={
                 "photos": cards,
-                "single": view_mode == "1枚ずつ拡大",
+                "single": single_mode,
                 "allow_delete": False,
                 "allow_emotion": False,
                 "allow_share": True,
@@ -18898,16 +18907,16 @@ def render_history_photo_viewer(photos, trip_id):
                 "member_key": current_member_key(),
                 "pending_param": PENDING_EMOTION_QUERY_PARAM,
             },
-            key=f"history_photo_fast_v224_{trip_id}_{serial}_{_current_ui_refresh_epoch()}_{'large' if view_mode == '1枚ずつ拡大' else 'grid'}",
+            key=f"history_photo_fast_v228_{trip_id}_{serial}_{_current_ui_refresh_epoch()}_{'single' if single_mode else 'grid'}",
             on_share_photo_change=lambda: None,
         )
         if handle_photo_family_share_event(result, photo_ids, serial_key=serial_key):
             return
         return
 
-    # Old-runtime fallback.
+    # Old-runtime fallback: preserve the same one-photo-at-a-time behavior without v2 components.
     fallback = photos
-    if view_mode == "1枚ずつ拡大":
+    if single_mode:
         index_key = f"history_photo_enlarged_index_{trip_id}"
         try:
             index = int(st.session_state.get(index_key) or 0)
@@ -18915,35 +18924,51 @@ def render_history_photo_viewer(photos, trip_id):
             index = 0
         index = max(0, min(index, len(photos) - 1))
         st.session_state[index_key] = index
-        prev_col, count_col, next_col = st.columns([1, 1.25, 1], gap="small")
-        with prev_col:
-            if st.button("◀ 前へ", use_container_width=True, disabled=index <= 0, key=f"history_photo_prev_{trip_id}"):
-                st.session_state[index_key] = max(0, index - 1)
-                st.rerun()
-        with count_col:
-            st.markdown(f'<div style="text-align:center;padding:.55rem .2rem;font-weight:800;">{index + 1} / {len(photos)}</div>', unsafe_allow_html=True)
-        with next_col:
-            if st.button("次へ ▶", use_container_width=True, disabled=index >= len(photos) - 1, key=f"history_photo_next_{trip_id}"):
-                st.session_state[index_key] = min(len(photos) - 1, index + 1)
-                st.rerun()
+        if len(photos) > 1:
+            prev_col, count_col, next_col = st.columns([1, 1.25, 1], gap="small")
+            with prev_col:
+                if st.button("◀ 前へ", use_container_width=True, disabled=index <= 0, key=f"history_photo_prev_{trip_id}"):
+                    st.session_state[index_key] = max(0, index - 1)
+                    st.rerun()
+            with count_col:
+                st.markdown(f'<div style="text-align:center;padding:.55rem .2rem;font-weight:800;">{index + 1} / {len(photos)}</div>', unsafe_allow_html=True)
+            with next_col:
+                if st.button("次へ ▶", use_container_width=True, disabled=index >= len(photos) - 1, key=f"history_photo_next_{trip_id}"):
+                    st.session_state[index_key] = min(len(photos) - 1, index + 1)
+                    st.rerun()
         fallback = [photos[index]]
 
-    cols = st.columns(1 if view_mode == "1枚ずつ拡大" else 3, gap="small")
+    cols = st.columns(1 if single_mode else 3, gap="small")
     for idx, photo in enumerate(fallback):
         with cols[idx % len(cols)]:
-            src = photo_display_url(photo, signed, max_px=1600 if view_mode == "1枚ずつ拡大" else 420, quality=92 if view_mode == "1枚ずつ拡大" else 76)
+            src = photo_display_url(photo, signed, max_px=1600 if single_mode else 420, quality=92 if single_mode else 76)
+            meta = photo_selected_tag_meta(photo)
+            border = meta.get("color") or "#AEB6C2"
+            emoji = meta.get("emoji") or ""
+            label = meta.get("label") or ""
             if src:
-                st.markdown(f'<img src="{html.escape(src, quote=True)}" style="display:block;width:100%;max-height:70vh;object-fit:contain;border-radius:10px;" />', unsafe_allow_html=True)
+                badge = (
+                    f'<span style="position:absolute;right:9px;bottom:9px;background:rgba(255,255,255,.92);border-radius:999px;padding:4px 7px;font-size:16px;font-weight:800;">{html.escape(emoji)} {html.escape(label)}</span>'
+                    if emoji or label else ""
+                )
+                image_style = "display:block;width:100%;max-height:70vh;object-fit:contain;border-radius:10px;" if single_mode else "display:block;width:100%;aspect-ratio:1/1;object-fit:cover;border-radius:10px;"
+                st.markdown(
+                    f'<div style="position:relative;padding:4px;border:3px solid {html.escape(str(border), quote=True)};border-radius:13px;">'
+                    f'<img src="{html.escape(src, quote=True)}" style="{image_style}" />{badge}</div>',
+                    unsafe_allow_html=True,
+                )
+            location = str(photo_location_label(photo) or "").strip()
+            if location:
+                st.caption(f"📍 {location}")
             shared = photo_family_share_is_enabled(photo)
             if st.button(
                 "✓ 家族に共有中（解除）" if shared else "👨‍👩‍👦 家族に共有",
                 use_container_width=True,
-                key=f"history_photo_share_fallback_{trip_id}_{photo.get('id')}_{view_mode}",
+                key=f"history_photo_share_fallback_{trip_id}_{photo.get('id')}_{'single' if single_mode else 'grid'}",
             ):
                 set_photo_family_share(photo.get("id"), enabled=not shared)
                 st.session_state["_photo_family_share_notice"] = "この写真と選んだ感情を家族に共有しました。" if not shared else "この写真の家族共有を解除しました。"
                 st.rerun()
-
 
 def render_diary_photo_gallery(trip_id, photos, state=None):
     """Show diary still photos in a three-column clickable grid."""
@@ -23297,13 +23322,20 @@ def render_diary_emotion_gallery(trip_id, photos, trip=None, is_pending=False):
     # or one photo at a time. Pending diary photos stay in the editing-first grid.
     view_mode = "3列一覧"
     if not is_pending and len(photos) > 1:
+        mode_key = f"diary_saved_photo_view_mode_{trip_id}"
+        if st.session_state.get(mode_key) == "1枚ずつ拡大":
+            st.session_state[mode_key] = "1枚ずつ表示"
+        st.caption("写真の表示方法")
         view_mode = st.radio(
-            "写真の表示モード",
-            ["3列一覧", "1枚ずつ拡大"],
+            "写真の表示方法",
+            ["3列一覧", "1枚ずつ表示"],
             horizontal=True,
-            key=f"diary_saved_photo_view_mode_{trip_id}",
+            key=mode_key,
             label_visibility="collapsed",
         )
+    single_mode = view_mode == "1枚ずつ表示"
+    if single_mode and len(photos) > 1:
+        st.caption("◀ 前へ／次へ ▶、または写真を左右にスワイプして切り替えられます。")
 
     # v180: enlarged mode keeps all photos in one browser component. The component
     # swaps the visible card locally and preloads neighboring images, avoiding a rerun
@@ -23320,7 +23352,7 @@ def render_diary_emotion_gallery(trip_id, photos, trip=None, is_pending=False):
         cards.append(
             {
                 "id": pid,
-                "src": photo_display_url(photo, signed, max_px=1400 if view_mode == "1枚ずつ拡大" else 520, quality=90 if view_mode == "1枚ずつ拡大" else 80),
+                "src": photo_display_url(photo, signed, max_px=1400 if single_mode else 520, quality=90 if single_mode else 80),
                 "emotion": photo_selected_tag_values(photo)[0],
                 "parenting": photo_selected_tag_values(photo)[1],
                 "location": str(photo_location_label(photo) or ""),
@@ -23335,8 +23367,8 @@ def render_diary_emotion_gallery(trip_id, photos, trip=None, is_pending=False):
         serial_key = f"diary_emotion_gallery_serial_{trip_id}_{'pending' if is_pending else 'saved'}"
         serial = int(st.session_state.get(serial_key) or 0)
         result = gallery_component(
-            data={"photos": cards, "single": view_mode == "1枚ずつ拡大", "allow_delete": True, "allow_emotion": True, "allow_share": True, "carousel_key": f"diary_saved_{trip_id}", "mode_by_photo": st.session_state.get(f"_diary_icon_modes_{trip_id}") or {}, "family_key": current_family_key(), "member_key": current_member_key(), "pending_param": PENDING_EMOTION_QUERY_PARAM},
-            key=f"diary_emotion_gallery_{trip_id}_{serial}_{_current_ui_refresh_epoch()}_{'large' if view_mode == '1枚ずつ拡大' else 'grid'}_v225",
+            data={"photos": cards, "single": single_mode, "allow_delete": True, "allow_emotion": True, "allow_share": True, "carousel_key": f"diary_saved_{trip_id}", "mode_by_photo": st.session_state.get(f"_diary_icon_modes_{trip_id}") or {}, "family_key": current_family_key(), "member_key": current_member_key(), "pending_param": PENDING_EMOTION_QUERY_PARAM},
+            key=f"diary_emotion_gallery_{trip_id}_{serial}_{_current_ui_refresh_epoch()}_{'large' if single_mode else 'grid'}_v228",
             on_delete_photo_id_change=lambda: None,
             on_share_photo_change=lambda: None,
         )
@@ -23356,7 +23388,7 @@ def render_diary_emotion_gallery(trip_id, photos, trip=None, is_pending=False):
 
     # Fallback for old component runtimes.
     fallback_displayed = displayed_photos
-    if view_mode == "1枚ずつ拡大" and displayed_photos:
+    if single_mode and displayed_photos:
         fallback_index_key = f"diary_saved_photo_enlarged_index_{trip_id}"
         try:
             fallback_index = int(st.session_state.get(fallback_index_key) or 0)
@@ -23375,11 +23407,11 @@ def render_diary_emotion_gallery(trip_id, photos, trip=None, is_pending=False):
                 st.session_state[fallback_index_key] = min(len(displayed_photos) - 1, fallback_index + 1)
                 st.rerun()
         fallback_displayed = [displayed_photos[fallback_index]]
-    fallback_columns = 1 if view_mode == "1枚ずつ拡大" else 3
+    fallback_columns = 1 if single_mode else 3
     cols = st.columns(fallback_columns, gap="small")
     for index, photo in enumerate(fallback_displayed):
         with cols[index % fallback_columns]:
-            src = photo_display_url(photo, signed, max_px=1400 if view_mode == "1枚ずつ拡大" else 420, quality=90 if view_mode == "1枚ずつ拡大" else 76)
+            src = photo_display_url(photo, signed, max_px=1400 if single_mode else 420, quality=90 if single_mode else 76)
             meta = photo_selected_tag_meta(photo)
             border = meta.get("color") or "#AEB6C2"
             emoji = meta.get("emoji") or ""
@@ -23388,7 +23420,7 @@ def render_diary_emotion_gallery(trip_id, photos, trip=None, is_pending=False):
                     f'<span style="position:absolute;right:7px;bottom:7px;background:rgba(255,255,255,.90);border-radius:999px;padding:2px 5px;font-size:19px;">{emoji}</span>'
                     if emoji else ""
                 )
-                image_style = "display:block;width:100%;max-height:68vh;object-fit:contain;border-radius:8px;" if view_mode == "1枚ずつ拡大" else "display:block;width:100%;aspect-ratio:1/1;object-fit:cover;border-radius:8px;"
+                image_style = "display:block;width:100%;max-height:68vh;object-fit:contain;border-radius:8px;" if single_mode else "display:block;width:100%;aspect-ratio:1/1;object-fit:cover;border-radius:8px;"
                 st.markdown(
                     f'<div style="position:relative;padding:4px;border:3px solid {border};border-radius:12px;">'
                     f'<img src="{html.escape(src, quote=True)}" loading="lazy" decoding="async" style="{image_style}" />{badge}</div>',
@@ -23397,7 +23429,7 @@ def render_diary_emotion_gallery(trip_id, photos, trip=None, is_pending=False):
             if st.button(
                 "気持ちを次へ",
                 use_container_width=True,
-                key=f"emotion_fallback_{trip_id}_{photo.get('id')}_{'pending' if is_pending else 'saved'}_{'large' if view_mode == '1枚ずつ拡大' else 'grid'}",
+                key=f"emotion_fallback_{trip_id}_{photo.get('id')}_{'pending' if is_pending else 'saved'}_{'large' if single_mode else 'grid'}",
             ):
                 update_photo_emotion(
                     photo.get("id"),
@@ -23409,14 +23441,14 @@ def render_diary_emotion_gallery(trip_id, photos, trip=None, is_pending=False):
             if st.button(
                 "✓ 共有中（解除）" if shared else "👨‍👩‍👦 家族に共有",
                 use_container_width=True,
-                key=f"diary_emotion_share_{trip_id}_{photo.get('id')}_{'pending' if is_pending else 'saved'}_{'large' if view_mode == '1枚ずつ拡大' else 'grid'}",
+                key=f"diary_emotion_share_{trip_id}_{photo.get('id')}_{'pending' if is_pending else 'saved'}_{'large' if single_mode else 'grid'}",
             ):
                 set_photo_family_share(photo.get("id"), enabled=not shared)
                 st.session_state["_photo_family_share_notice"] = "この写真と選んだ感情を家族に共有しました。" if not shared else "この写真の家族共有を解除しました。"
                 st.rerun()
             if st.button(
                 "×",
-                key=f"diary_emotion_delete_{trip_id}_{photo.get('id')}_{'pending' if is_pending else 'saved'}_{'large' if view_mode == '1枚ずつ拡大' else 'grid'}",
+                key=f"diary_emotion_delete_{trip_id}_{photo.get('id')}_{'pending' if is_pending else 'saved'}_{'large' if single_mode else 'grid'}",
                 help="この写真を削除",
             ):
                 confirm_photo_delete_dialog(
