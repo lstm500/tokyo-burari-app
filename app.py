@@ -32,7 +32,7 @@ import streamlit as st
 # Freshly generated update: 2026-08-31 23:49 JST
 GENERATED_UPDATE_JST = "2026-09-05T12:44:00+09:00"
 
-APP_BUILD = "v216"
+APP_BUILD = "v217"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -6145,7 +6145,7 @@ def _get_nearby_search_now_component():
     return nearby_search_now_component
 
 
-# v216: Toilet search uses one tap for both fresh GPS acquisition and the actual search.
+# v217: Toilet search requires a usable fresh GPS fix before the actual search.
 # It deliberately does not reuse an older GPS fix. A very accurate fix returns immediately;
 # otherwise we briefly keep the best live reading so 1-minute searches remain useful without
 # making the user wait for a long GPS lock.
@@ -6187,9 +6187,14 @@ export default function(component) {
 
   let cancelled = false;
   let watchId = null;
-  let settleTimer = null;
   let hardTimer = null;
   let best = null;
+  let searchStartedAt = 0;
+
+  const IDEAL_ACCURACY_M = 25;
+  const USABLE_ACCURACY_M = 45;
+  const USABLE_SETTLE_MS = 3000;
+  const HARD_TIMEOUT_MS = 10000;
 
   const setStatus = (value) => { status.textContent = String(value || ''); };
   const stop = () => {
@@ -6197,7 +6202,6 @@ export default function(component) {
       try { navigator.geolocation.clearWatch(watchId); } catch (_) {}
       watchId = null;
     }
-    if (settleTimer) { clearTimeout(settleTimer); settleTimer = null; }
     if (hardTimer) { clearTimeout(hardTimer); hardTimer = null; }
   };
   const unlock = () => { if (!cancelled) button.disabled = false; };
@@ -6242,6 +6246,7 @@ export default function(component) {
     }
     stop();
     best = null;
+    searchStartedAt = Date.now();
     button.disabled = true;
     setStatus('現在地を高精度で確認しています…');
 
@@ -6251,31 +6256,52 @@ export default function(component) {
         const accuracy = Number(position.coords.accuracy || Number.POSITIVE_INFINITY);
         const bestAccuracy = best ? Number(best.coords?.accuracy || Number.POSITIVE_INFINITY) : Number.POSITIVE_INFINITY;
         if (!best || accuracy < bestAccuracy) best = position;
-        const shown = Number.isFinite(accuracy) ? ` ±${Math.round(accuracy)}m` : '';
+
+        const currentBest = best ? Number(best.coords?.accuracy || Number.POSITIVE_INFINITY) : Number.POSITIVE_INFINITY;
+        const shown = Number.isFinite(currentBest) ? ` ±${Math.round(currentBest)}m` : '';
         setStatus(`現在地を高精度で確認しています…${shown}`);
 
-        // For a tiny 1-3 minute search, <=25 m is strong enough to search immediately.
-        // If the first fix is rough, wait only briefly for a better GPS/Wi-Fi fix.
-        if (accuracy > 0 && accuracy <= 25) {
+        // Toilet search covers only about 1-3 walking minutes. Never launch the
+        // search from a coarse location fix. Accept an excellent fix immediately;
+        // a merely usable fix must remain the best reading for a few seconds.
+        if (currentBest > 0 && currentBest <= IDEAL_ACCURACY_M) {
           emitBest();
           return;
         }
-        if (!settleTimer) {
-          settleTimer = setTimeout(() => { if (best) emitBest(); }, 1800);
+        if (
+          currentBest > 0 &&
+          currentBest <= USABLE_ACCURACY_M &&
+          (Date.now() - searchStartedAt) >= USABLE_SETTLE_MS
+        ) {
+          emitBest();
         }
       },
       (error) => {
         if (cancelled) return;
-        if (best) { emitBest(); return; }
+        const bestAccuracy = best ? Number(best.coords?.accuracy || Number.POSITIVE_INFINITY) : Number.POSITIVE_INFINITY;
+        if (best && bestAccuracy > 0 && bestAccuracy <= USABLE_ACCURACY_M) {
+          emitBest();
+          return;
+        }
+        if (best && Number.isFinite(bestAccuracy)) {
+          fail(`GPS精度が ±${Math.round(bestAccuracy)}m のため検索を中止しました。端末の「正確な位置情報」をONにして、もう一度お試しください。`, Number(error?.code || 2));
+          return;
+        }
         fail(errorText(error), Number(error?.code || 0));
       },
-      { enableHighAccuracy:true, timeout:5000, maximumAge:0 }
+      { enableHighAccuracy:true, timeout:HARD_TIMEOUT_MS, maximumAge:0 }
     );
 
     hardTimer = setTimeout(() => {
-      if (best) emitBest();
-      else fail('現在地を取得できませんでした。もう一度お試しください。', 3);
-    }, 5500);
+      const bestAccuracy = best ? Number(best.coords?.accuracy || Number.POSITIVE_INFINITY) : Number.POSITIVE_INFINITY;
+      if (best && bestAccuracy > 0 && bestAccuracy <= USABLE_ACCURACY_M) {
+        emitBest();
+      } else if (best && Number.isFinite(bestAccuracy)) {
+        fail(`GPS精度が ±${Math.round(bestAccuracy)}m のため検索を中止しました。端末の「正確な位置情報」をONにして、屋外または窓際で再検索してください。`, 3);
+      } else {
+        fail('現在地を高精度で取得できませんでした。端末の「正確な位置情報」をONにして、もう一度お試しください。', 3);
+      }
+    }, HARD_TIMEOUT_MS + 500);
   };
 
   button.addEventListener('click', searchNow);
@@ -6298,7 +6324,7 @@ def _get_toilet_search_now_component():
     _toilet_search_now_component_initialized = True
     try:
         toilet_search_now_component = st.components.v2.component(
-            "tokyo_burari_toilet_search_now_v216",
+            "tokyo_burari_toilet_search_now_v217",
             html=_TOILET_SEARCH_NOW_HTML,
             css=_TOILET_SEARCH_NOW_CSS,
             js=_TOILET_SEARCH_NOW_JS,
@@ -18703,9 +18729,9 @@ def page_toilets():
         manual_place = st.text_input(
             "駅名・地名",
             placeholder="例：上野駅、浅草、品川駅",
-            key="toilet_manual_place_text_v216",
+            key="toilet_manual_place_text_v217",
         )
-        if st.button("この地名を予備の検索地点にする", use_container_width=True, key="toilet_manual_place_button_v216"):
+        if st.button("この地名を予備の検索地点にする", use_container_width=True, key="toilet_manual_place_button_v217"):
             with st.spinner("場所を確認しています…"):
                 resolved = geocode_nearby_place_text(manual_place)
             if resolved:
@@ -18717,12 +18743,12 @@ def page_toilets():
                 st.error("地名を確認できませんでした。駅名や区名を少し具体的に入力してください。")
 
     prefix = f"{current_family_key()}_{current_member_key()}"
-    distance_key = f"_toilet_distance_v216_{prefix}"
+    distance_key = f"_toilet_distance_v217_{prefix}"
     fee_key = f"_toilet_fee_v199_{prefix}"
     wheelchair_key = f"_toilet_wheelchair_v199_{prefix}"
     baby_key = f"_toilet_baby_v199_{prefix}"
     open_key = f"_toilet_open_v199_{prefix}"
-    result_key = f"_toilet_search_result_v216_{prefix}"
+    result_key = f"_toilet_search_result_v217_{prefix}"
 
     if st.session_state.get(distance_key) not in {"1", "3"}:
         st.session_state[distance_key] = "3"
@@ -18759,7 +18785,7 @@ def page_toilets():
                 with st.container(border=True, key="toilet_step_1"):
                     _step_title(1, "距離")
                     for label, value in (("🚶 1分", "1"), ("🚶 3分", "3")):
-                        _choice_button(label, value, distance_key, f"toilet_distance_{value}_v216", distance_mode)
+                        _choice_button(label, value, distance_key, f"toilet_distance_{value}_v217", distance_mode)
                     st.markdown('<div class="toilet-step-note">検索時点の現在地からの近場だけを探します。</div>', unsafe_allow_html=True)
             with right:
                 with st.container(border=True, key="toilet_step_2"):
@@ -18827,7 +18853,7 @@ def page_toilets():
             if search_component is not None:
                 search_component_result = search_component(
                     data={},
-                    key=f"toilet_search_now_v216_{current_family_key()}_{current_member_key()}",
+                    key=f"toilet_search_now_v217_{current_family_key()}_{current_member_key()}",
                     on_search_location_change=lambda: None,
                     on_search_error_change=lambda: None,
                 )
@@ -18837,9 +18863,26 @@ def page_toilets():
     def _run_toilet_search(search_latitude, search_longitude, search_accuracy=None, search_source="gps"):
         search_latitude = float(search_latitude)
         search_longitude = float(search_longitude)
+        source_name = str(search_source or "gps")
+
+        # Server-side safety net: even if an old/cached browser component sends a
+        # coarse position, a 1-3 minute toilet search must never run from it.
+        if source_name == "gps":
+            try:
+                accuracy_value = float(search_accuracy)
+            except (TypeError, ValueError):
+                accuracy_value = 0.0
+            if accuracy_value <= 0 or accuracy_value > 45:
+                accuracy_label = f" ±{int(round(accuracy_value))}m" if accuracy_value > 0 else ""
+                st.session_state["_toilet_search_warning"] = (
+                    f"現在地のGPS精度{accuracy_label}では近距離検索に不十分なため、検索を中止しました。"
+                    "端末の『正確な位置情報』をONにして、もう一度検索してください。"
+                )
+                return False
+
         fresh_label = reverse_geocode_rough(search_latitude, search_longitude) or "現在地付近"
         st.session_state["_nearby_location"] = {
-            "source": str(search_source or "gps"),
+            "source": source_name,
             "latitude": search_latitude,
             "longitude": search_longitude,
             "accuracy_m": search_accuracy,
@@ -18874,18 +18917,19 @@ def page_toilets():
             "result": live_result if isinstance(live_result, dict) else {},
             "searched_at": now_jst().isoformat(),
             "search_accuracy_m": search_accuracy,
-            "search_source": str(search_source or "gps"),
+            "search_source": source_name,
         }
         if isinstance(search_accuracy, (int, float)) and search_accuracy > 0:
             st.session_state["_toilet_search_notice"] = f"検索時の現在地を取得しました（GPS精度 ±{int(round(search_accuracy))}m）。"
-        elif str(search_source or "") == "manual":
+        elif source_name == "manual":
             st.session_state["_toilet_search_notice"] = "現在地を取得できなかったため、指定した地名を中心に検索しました。"
+        return True
 
     fresh_search_payload = getattr(search_component_result, "search_location", None) if search_component_result is not None else None
     if isinstance(fresh_search_payload, dict):
         search_token = str(fresh_search_payload.get("token") or "")
-        if search_token and search_token != str(st.session_state.get("_toilet_search_location_token_v216") or ""):
-            st.session_state["_toilet_search_location_token_v216"] = search_token
+        if search_token and search_token != str(st.session_state.get("_toilet_search_location_token_v217") or ""):
+            st.session_state["_toilet_search_location_token_v217"] = search_token
             try:
                 fresh_lat = float(fresh_search_payload.get("latitude"))
                 fresh_lon = float(fresh_search_payload.get("longitude"))
@@ -18898,8 +18942,8 @@ def page_toilets():
     fresh_search_error = getattr(search_component_result, "search_error", None) if search_component_result is not None else None
     if isinstance(fresh_search_error, dict):
         error_token = str(fresh_search_error.get("token") or "")
-        if error_token and error_token != str(st.session_state.get("_toilet_search_error_token_v216") or ""):
-            st.session_state["_toilet_search_error_token_v216"] = error_token
+        if error_token and error_token != str(st.session_state.get("_toilet_search_error_token_v217") or ""):
+            st.session_state["_toilet_search_error_token_v217"] = error_token
             manual_fallback = st.session_state.get("_nearby_location")
             if (
                 isinstance(manual_fallback, dict)
