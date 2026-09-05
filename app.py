@@ -32,7 +32,7 @@ import streamlit as st
 # Freshly generated update: 2026-08-31 23:49 JST
 GENERATED_UPDATE_JST = "2026-09-05T12:44:00+09:00"
 
-APP_BUILD = "v217"
+APP_BUILD = "v219"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -5979,11 +5979,10 @@ def _get_nearby_location_component():
     return nearby_location_component
 
 
-# v214: searching Near Me must use where the phone is *at the moment of search*.
-# This button performs a fresh high-accuracy browser geolocation pass (maximumAge=0),
-# briefly samples multiple readings, keeps the best accuracy, and only then asks Python
-# to query Google Places / OSM.  It is deliberately separate from the optional preview
-# location button above, so an old session coordinate is never silently reused.
+# v218: Near-me search (especially snacks at 1/3/5 minutes) requires a fresh usable GPS fix.
+# The browser samples multiple maximumAge=0 high-accuracy readings, accepts <=25 m immediately,
+# waits briefly for <=45 m, and refuses to search from anything coarser. Python repeats the same
+# <=45 m gate so a stale or inaccurate location can never silently launch the Places/OSM search.
 _NEARBY_SEARCH_NOW_HTML = """
 <div class="nearby-search-now-box">
   <button id="nearby-search-now-button" type="button">🔎 この条件で検索</button>
@@ -6023,8 +6022,13 @@ export default function(component) {
   let cancelled = false;
   let watchId = null;
   let hardTimer = null;
-  let settleTimer = null;
   let best = null;
+  let searchStartedAt = 0;
+
+  const IDEAL_ACCURACY_M = 25;
+  const USABLE_ACCURACY_M = 45;
+  const USABLE_SETTLE_MS = 3000;
+  const HARD_TIMEOUT_MS = 10000;
 
   const setStatus = (value) => { status.textContent = String(value || ''); };
   const stopWatch = () => {
@@ -6033,7 +6037,6 @@ export default function(component) {
       watchId = null;
     }
     if (hardTimer) { clearTimeout(hardTimer); hardTimer = null; }
-    if (settleTimer) { clearTimeout(settleTimer); settleTimer = null; }
   };
   const finishButton = () => { if (!cancelled) button.disabled = false; };
   const errorText = (error) => {
@@ -6044,10 +6047,12 @@ export default function(component) {
     return '現在地を取得できませんでした。';
   };
   const emitBest = () => {
-    if (cancelled || !best) return false;
+    if (cancelled || !best?.coords) return false;
     stopWatch();
-    const accuracy = Number(best.coords?.accuracy || 0);
-    setStatus(accuracy > 0 ? `現在地を取得しました（精度 ±${Math.round(accuracy)}m）。周辺を調べます…` : '現在地を取得しました。周辺を調べます…');
+    const accuracy = Number(best.coords.accuracy || 0);
+    setStatus(accuracy > 0
+      ? `現在地を取得しました（精度 ±${Math.round(accuracy)}m）。近くのおやつ・立ち寄り先を検索しています…`
+      : '現在地を取得しました。周辺を検索しています…');
     setTriggerValue('search_location', {
       token: `${Date.now()}_${Math.random().toString(36).slice(2)}`,
       latitude: Number(best.coords.latitude),
@@ -6063,8 +6068,8 @@ export default function(component) {
     setStatus(message);
     setTriggerValue('search_error', {
       token: `${Date.now()}_${Math.random().toString(36).slice(2)}`,
-      code:Number(code || 0),
-      message:String(message || '現在地を取得できませんでした。')
+      code: Number(code || 0),
+      message: String(message || '現在地を取得できませんでした。')
     });
     finishButton();
   };
@@ -6075,44 +6080,61 @@ export default function(component) {
     }
     stopWatch();
     best = null;
+    searchStartedAt = Date.now();
     button.disabled = true;
     setStatus('検索地点を高精度で確認しています…');
 
-    // Watch briefly instead of accepting the first cached reading.  Mobile GPS often
-    // improves after the first fix; keep the most accurate reading seen for this tap.
+    // Nearby snack searches cover only about 1-5 walking minutes. Never use the
+    // first coarse mobile fix. Keep the best fresh reading and reject inaccurate GPS.
     watchId = navigator.geolocation.watchPosition(
       (position) => {
         if (cancelled || !position?.coords) return;
         const accuracy = Number(position.coords.accuracy || Number.POSITIVE_INFINITY);
         const bestAccuracy = best ? Number(best.coords?.accuracy || Number.POSITIVE_INFINITY) : Number.POSITIVE_INFINITY;
         if (!best || accuracy < bestAccuracy) best = position;
-        const shown = Number.isFinite(accuracy) ? ` ±${Math.round(accuracy)}m` : '';
-        setStatus(`現在地を確認しています…${shown}`);
 
-        // A <=25 m fix is already suitable for a 1-minute nearby search.  Otherwise
-        // allow a little extra time for GPS/Wi-Fi positioning to improve.
-        if (accuracy > 0 && accuracy <= 25) {
+        const currentBest = best ? Number(best.coords?.accuracy || Number.POSITIVE_INFINITY) : Number.POSITIVE_INFINITY;
+        const shown = Number.isFinite(currentBest) ? ` ±${Math.round(currentBest)}m` : '';
+        setStatus(`検索地点を高精度で確認しています…${shown}`);
+
+        if (currentBest > 0 && currentBest <= IDEAL_ACCURACY_M) {
           emitBest();
           return;
         }
-        if (!settleTimer) {
-          settleTimer = setTimeout(() => { if (best) emitBest(); }, 3200);
+        if (
+          currentBest > 0 &&
+          currentBest <= USABLE_ACCURACY_M &&
+          (Date.now() - searchStartedAt) >= USABLE_SETTLE_MS
+        ) {
+          emitBest();
         }
       },
       (error) => {
         if (cancelled) return;
-        if (best) {
+        const bestAccuracy = best ? Number(best.coords?.accuracy || Number.POSITIVE_INFINITY) : Number.POSITIVE_INFINITY;
+        if (best && bestAccuracy > 0 && bestAccuracy <= USABLE_ACCURACY_M) {
           emitBest();
+          return;
+        }
+        if (best && Number.isFinite(bestAccuracy)) {
+          fail(`GPS精度が ±${Math.round(bestAccuracy)}m のため検索を中止しました。端末の「正確な位置情報」をONにして、もう一度お試しください。`, Number(error?.code || 2));
           return;
         }
         fail(errorText(error), Number(error?.code || 0));
       },
-      { enableHighAccuracy:true, timeout:8500, maximumAge:0 }
+      { enableHighAccuracy:true, timeout:HARD_TIMEOUT_MS, maximumAge:0 }
     );
+
     hardTimer = setTimeout(() => {
-      if (best) emitBest();
-      else fail('現在地を取得できませんでした。もう一度お試しください。', 3);
-    }, 9000);
+      const bestAccuracy = best ? Number(best.coords?.accuracy || Number.POSITIVE_INFINITY) : Number.POSITIVE_INFINITY;
+      if (best && bestAccuracy > 0 && bestAccuracy <= USABLE_ACCURACY_M) {
+        emitBest();
+      } else if (best && Number.isFinite(bestAccuracy)) {
+        fail(`GPS精度が ±${Math.round(bestAccuracy)}m のため検索を中止しました。端末の「正確な位置情報」をONにして、屋外または窓際で再検索してください。`, 3);
+      } else {
+        fail('現在地を高精度で取得できませんでした。端末の「正確な位置情報」をONにして、もう一度お試しください。', 3);
+      }
+    }, HARD_TIMEOUT_MS + 500);
   };
 
   button.addEventListener('click', searchNow);
@@ -6135,7 +6157,7 @@ def _get_nearby_search_now_component():
     _nearby_search_now_component_initialized = True
     try:
         nearby_search_now_component = st.components.v2.component(
-            "tokyo_burari_nearby_search_now_v214",
+            "tokyo_burari_nearby_search_now_v218",
             html=_NEARBY_SEARCH_NOW_HTML,
             css=_NEARBY_SEARCH_NOW_CSS,
             js=_NEARBY_SEARCH_NOW_JS,
@@ -6332,6 +6354,196 @@ def _get_toilet_search_now_component():
     except Exception:
         toilet_search_now_component = None
     return toilet_search_now_component
+
+
+# v219: GPS diagnostics for Settings. A web app cannot silently change Android's
+# location permission or Precise Location switch, but it can measure actual browser
+# geolocation accuracy, explain whether nearby search can use it, and offer a
+# user-initiated Android Location Settings intent on compatible Android browsers.
+_GPS_SETTINGS_HTML = """
+<div class="gps-settings-box">
+  <button id="gps-settings-check" type="button">🎯 現在地の精度を確認</button>
+  <a id="gps-settings-open" href="intent:#Intent;action=android.settings.LOCATION_SOURCE_SETTINGS;end" target="_top" rel="noopener">
+    ⚙️ Androidの位置情報設定を開く
+  </a>
+  <div id="gps-settings-status" aria-live="polite"></div>
+</div>
+"""
+
+_GPS_SETTINGS_CSS = """
+.gps-settings-box { width:100%; box-sizing:border-box; }
+#gps-settings-check, #gps-settings-open {
+  width:100%; min-height:50px; box-sizing:border-box; border-radius:14px;
+  font:inherit; font-weight:800; display:flex; align-items:center; justify-content:center;
+  text-align:center; text-decoration:none; cursor:pointer;
+}
+#gps-settings-check {
+  border:1.7px solid rgba(74,144,226,.55);
+  background:linear-gradient(145deg,rgba(232,246,255,.99),rgba(235,250,245,.97));
+  color:rgba(31,38,48,.96);
+}
+#gps-settings-check:disabled { opacity:.62; cursor:wait; }
+#gps-settings-open {
+  margin-top:9px; border:1.3px solid rgba(118,128,145,.36);
+  background:rgba(248,249,251,.96); color:rgba(49,57,69,.96);
+}
+#gps-settings-status {
+  margin-top:8px; min-height:18px; font-size:12px; opacity:.76; line-height:1.45;
+}
+"""
+
+_GPS_SETTINGS_JS = r"""
+export default function(component) {
+  const { parentElement, setTriggerValue } = component;
+  const checkButton = parentElement.querySelector('#gps-settings-check');
+  const status = parentElement.querySelector('#gps-settings-status');
+  if (!checkButton || !status) return;
+
+  let cancelled = false;
+  let watchId = null;
+  let hardTimer = null;
+  let best = null;
+  let startedAt = 0;
+  let permissionState = 'unknown';
+
+  const IDEAL_ACCURACY_M = 25;
+  const USABLE_ACCURACY_M = 45;
+  const USABLE_SETTLE_MS = 3000;
+  const HARD_TIMEOUT_MS = 10000;
+
+  const setStatus = (value) => { status.textContent = String(value || ''); };
+  const stop = () => {
+    if (watchId !== null && navigator.geolocation) {
+      try { navigator.geolocation.clearWatch(watchId); } catch (_) {}
+      watchId = null;
+    }
+    if (hardTimer) { clearTimeout(hardTimer); hardTimer = null; }
+  };
+  const unlock = () => { if (!cancelled) checkButton.disabled = false; };
+
+  const readPermission = async () => {
+    permissionState = 'unknown';
+    try {
+      if (navigator.permissions?.query) {
+        const p = await navigator.permissions.query({ name: 'geolocation' });
+        permissionState = String(p?.state || 'unknown');
+      }
+    } catch (_) {}
+  };
+
+  const emitResult = () => {
+    if (cancelled || !best?.coords) return;
+    stop();
+    const accuracy = Number(best.coords.accuracy || 0);
+    const shown = accuracy > 0 ? `±${Math.round(accuracy)}m` : '不明';
+    setStatus(`確認できました：GPS精度 ${shown}`);
+    setTriggerValue('gps_result', {
+      token: `${Date.now()}_${Math.random().toString(36).slice(2)}`,
+      latitude: Number(best.coords.latitude),
+      longitude: Number(best.coords.longitude),
+      accuracy_m: accuracy,
+      permission_state: permissionState,
+      measured_at: new Date(best.timestamp || Date.now()).toISOString()
+    });
+    unlock();
+  };
+
+  const emitError = (error) => {
+    stop();
+    const code = Number(error?.code || 0);
+    let message = '現在地を取得できませんでした。';
+    if (code === 1) message = '位置情報が許可されていません。';
+    else if (code === 2) message = '端末から現在地を取得できませんでした。';
+    else if (code === 3) message = '現在地の取得が時間切れになりました。';
+    setStatus(message);
+    setTriggerValue('gps_error', {
+      token: `${Date.now()}_${Math.random().toString(36).slice(2)}`,
+      code,
+      message,
+      permission_state: permissionState,
+      measured_at: new Date().toISOString()
+    });
+    unlock();
+  };
+
+  const checkGps = async () => {
+    stop();
+    best = null;
+    startedAt = Date.now();
+    checkButton.disabled = true;
+    setStatus('高精度GPSを確認しています…');
+    await readPermission();
+
+    if (!navigator.geolocation) {
+      emitError({ code: 2 });
+      return;
+    }
+
+    watchId = navigator.geolocation.watchPosition(
+      (position) => {
+        if (cancelled || !position?.coords) return;
+        const accuracy = Number(position.coords.accuracy || Number.POSITIVE_INFINITY);
+        const bestAccuracy = best ? Number(best.coords?.accuracy || Number.POSITIVE_INFINITY) : Number.POSITIVE_INFINITY;
+        if (!best || accuracy < bestAccuracy) best = position;
+
+        const currentBest = best ? Number(best.coords?.accuracy || Number.POSITIVE_INFINITY) : Number.POSITIVE_INFINITY;
+        const shown = Number.isFinite(currentBest) ? ` ±${Math.round(currentBest)}m` : '';
+        setStatus(`高精度GPSを確認しています…${shown}`);
+
+        if (currentBest > 0 && currentBest <= IDEAL_ACCURACY_M) {
+          emitResult();
+          return;
+        }
+        if (
+          currentBest > 0 &&
+          currentBest <= USABLE_ACCURACY_M &&
+          (Date.now() - startedAt) >= USABLE_SETTLE_MS
+        ) {
+          emitResult();
+        }
+      },
+      (error) => {
+        if (cancelled) return;
+        if (best?.coords) emitResult();
+        else emitError(error);
+      },
+      { enableHighAccuracy:true, timeout:HARD_TIMEOUT_MS, maximumAge:0 }
+    );
+
+    hardTimer = setTimeout(() => {
+      if (best?.coords) emitResult();
+      else emitError({ code: 3 });
+    }, HARD_TIMEOUT_MS + 500);
+  };
+
+  checkButton.addEventListener('click', checkGps);
+  return () => {
+    cancelled = true;
+    stop();
+    checkButton.removeEventListener('click', checkGps);
+  };
+}
+"""
+
+gps_settings_component = None
+_gps_settings_component_initialized = False
+
+
+def _get_gps_settings_component():
+    global gps_settings_component, _gps_settings_component_initialized
+    if _gps_settings_component_initialized:
+        return gps_settings_component
+    _gps_settings_component_initialized = True
+    try:
+        gps_settings_component = st.components.v2.component(
+            "tokyo_burari_gps_settings_v219",
+            html=_GPS_SETTINGS_HTML,
+            css=_GPS_SETTINGS_CSS,
+            js=_GPS_SETTINGS_JS,
+        )
+    except Exception:
+        gps_settings_component = None
+    return gps_settings_component
 
 
 @st.cache_data(ttl=86400, show_spinner=False)
@@ -19514,7 +19726,7 @@ def page_nearby():
             if search_component is not None:
                 search_component_result = search_component(
                     data={},
-                    key=f"nearby_search_now_v214_{current_family_key()}_{current_member_key()}",
+                    key=f"nearby_search_now_v218_{current_family_key()}_{current_member_key()}",
                     on_search_location_change=lambda: None,
                     on_search_error_change=lambda: None,
                 )
@@ -19527,6 +19739,24 @@ def page_nearby():
     def _run_nearby_search(search_latitude, search_longitude, search_accuracy=None, search_source="gps"):
         search_latitude = float(search_latitude)
         search_longitude = float(search_longitude)
+
+        # v218: Near-me searches are intentionally small (snacks: 1/3/5 min).
+        # Never query from a coarse GPS fix even if a browser/component regression emits one.
+        if str(search_source or "gps") == "gps":
+            try:
+                accuracy_value = float(search_accuracy or 0)
+            except (TypeError, ValueError):
+                accuracy_value = 0.0
+            if accuracy_value <= 0 or accuracy_value > 45:
+                accuracy_label = f" ±{int(round(accuracy_value))}m" if accuracy_value > 0 else "不明"
+                st.session_state.pop(result_key, None)
+                st.session_state[detail_key] = ""
+                st.session_state["_nearby_search_warning"] = (
+                    f"現在地のGPS精度{accuracy_label}では近距離検索に不十分なため、検索を中止しました。"
+                    "端末の「正確な位置情報」をONにして、もう一度検索してください。"
+                )
+                return False
+
         st.session_state[detail_key] = ""
         fresh_label = reverse_geocode_rough(search_latitude, search_longitude) or "現在地付近"
         st.session_state["_nearby_location"] = {
@@ -19577,6 +19807,7 @@ def page_nearby():
             st.session_state["_nearby_search_notice"] = f"検索時の現在地を取得しました（GPS精度 ±{int(round(search_accuracy))}m）。"
         elif str(search_source or "") == "manual":
             st.session_state["_nearby_search_notice"] = "現在地を取得できなかったため、指定した地名を中心に検索しました。"
+        return True
 
     fresh_search_payload = getattr(search_component_result, "search_location", None) if search_component_result is not None else None
     if isinstance(fresh_search_payload, dict):
@@ -19612,6 +19843,8 @@ def page_nearby():
                 )
                 st.rerun()
             else:
+                st.session_state.pop(result_key, None)
+                st.session_state[detail_key] = ""
                 st.session_state["_nearby_search_warning"] = str(
                     fresh_search_error.get("message") or "現在地を取得できませんでした。もう一度お試しください。"
                 )
@@ -23642,11 +23875,109 @@ def page_settings():
     # not render the top back/Home control here. This also avoids the mobile top
     # toolbar overlap that can make the upper control hard to tap.
     st.subheader("⚙️ 設定")
-    st.caption("家族・個人アカウントと、AIの選び方を管理します。")
+    st.caption("現在地・GPS、家族・個人アカウント、AIの選び方を管理します。")
 
     settings_notice = st.session_state.pop("_settings_notice", None)
     if settings_notice:
         st.success(settings_notice)
+
+    # ------------------------------------------------------------
+    # Current location / GPS diagnostics
+    # ------------------------------------------------------------
+    st.markdown("#### 📍 現在地・GPS")
+    st.caption(
+        "トイレ・おやつなどの近距離検索に使う位置情報を、この端末で確認します。"
+        "検索にはGPS精度 ±45m以内を使用し、それより粗い位置では誤検索を防ぐため検索を開始しません。"
+    )
+
+    gps_state_key = f"_settings_gps_diagnostic_{current_family_key()}_{current_member_key()}"
+    gps_token_key = f"_settings_gps_diagnostic_token_{current_family_key()}_{current_member_key()}"
+    gps_error_token_key = f"_settings_gps_error_token_{current_family_key()}_{current_member_key()}"
+
+    gps_state = st.session_state.get(gps_state_key)
+    if isinstance(gps_state, dict):
+        state_type = str(gps_state.get("type") or "")
+        permission_state = str(gps_state.get("permission_state") or "unknown")
+        permission_label = {
+            "granted": "許可済み",
+            "prompt": "確認が必要",
+            "denied": "許可されていません",
+        }.get(permission_state, "確認できません")
+
+        if state_type == "result":
+            try:
+                gps_accuracy = float(gps_state.get("accuracy_m") or 0)
+            except (TypeError, ValueError):
+                gps_accuracy = 0.0
+            if gps_accuracy > 0 and gps_accuracy <= 25:
+                st.success(
+                    f"現在のGPS精度：±{int(round(gps_accuracy))}m　／　位置情報：{permission_label}　— 高精度です。トイレ・おやつ検索に適しています。"
+                )
+            elif gps_accuracy > 0 and gps_accuracy <= 45:
+                st.success(
+                    f"現在のGPS精度：±{int(round(gps_accuracy))}m　／　位置情報：{permission_label}　— 近距離検索に使用できます。"
+                )
+            elif gps_accuracy > 0:
+                st.warning(
+                    f"現在のGPS精度：±{int(round(gps_accuracy))}m　／　位置情報：{permission_label}　— 精度不足のため、トイレ・おやつ検索には使用しません。"
+                )
+            else:
+                st.warning(f"GPS精度を判定できませんでした。位置情報：{permission_label}")
+        elif state_type == "error":
+            st.warning(
+                f"現在地を確認できませんでした。位置情報：{permission_label}。"
+                f"{str(gps_state.get('message') or '')}"
+            )
+    else:
+        st.info("まだこの端末のGPS精度を確認していません。下のボタンで確認できます。")
+
+    gps_component = _get_gps_settings_component()
+    gps_component_result = None
+    if gps_component is not None:
+        gps_component_result = gps_component(
+            data={},
+            key=f"gps_settings_v219_{current_family_key()}_{current_member_key()}",
+            on_gps_result_change=lambda: None,
+            on_gps_error_change=lambda: None,
+        )
+    else:
+        st.info("この環境ではGPS診断ボタンを表示できません。端末の位置情報設定を確認してください。")
+
+    fresh_gps_result = getattr(gps_component_result, "gps_result", None) if gps_component_result is not None else None
+    if isinstance(fresh_gps_result, dict):
+        token = str(fresh_gps_result.get("token") or "")
+        if token and token != str(st.session_state.get(gps_token_key) or ""):
+            st.session_state[gps_token_key] = token
+            saved_payload = dict(fresh_gps_result)
+            saved_payload["type"] = "result"
+            st.session_state[gps_state_key] = saved_payload
+            st.rerun()
+
+    fresh_gps_error = getattr(gps_component_result, "gps_error", None) if gps_component_result is not None else None
+    if isinstance(fresh_gps_error, dict):
+        token = str(fresh_gps_error.get("token") or "")
+        if token and token != str(st.session_state.get(gps_error_token_key) or ""):
+            st.session_state[gps_error_token_key] = token
+            saved_payload = dict(fresh_gps_error)
+            saved_payload["type"] = "error"
+            st.session_state[gps_state_key] = saved_payload
+            st.rerun()
+
+    with st.expander("GPS精度が悪いときの設定方法"):
+        st.markdown(
+            "**Android / Chrome** では次を確認してください。  \n"
+            "1. `設定 → 位置情報 → アプリの位置情報の権限 → Chrome`  \n"
+            "2. `アプリの使用中のみ許可` を選択  \n"
+            "3. `正確な位置情報を使用` をON  \n"
+            "4. まだ精度が悪い場合は `設定 → 位置情報 → 位置情報サービス → Google 位置情報の精度` をON  \n"
+            "5. 設定後、この画面へ戻って `現在地の精度を確認` をもう一度押してください。"
+        )
+        st.caption(
+            "Androidの仕様上、Webアプリから『正確な位置情報』を強制的にONへ変更することはできません。"
+            "上の『Androidの位置情報設定を開く』は対応するAndroid環境で設定画面を開くための補助ボタンです。"
+        )
+
+    st.divider()
 
     st.markdown("#### ログイン情報を確認")
     st.write(f"家族ID：`{current_family_key()}`")
