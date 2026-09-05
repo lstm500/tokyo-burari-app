@@ -32,7 +32,7 @@ import streamlit as st
 # Freshly generated update: 2026-08-31 23:49 JST
 GENERATED_UPDATE_JST = "2026-09-05T23:56:00+09:00"
 
-APP_BUILD = "v226"
+APP_BUILD = "v227"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -1962,6 +1962,9 @@ export default function(component) {
     }
   };
 
+  // v227: every direct photo/video capture starts a fresh high-accuracy GPS fix.
+  // Do not reuse a cached position. Keep the best fix seen for a few seconds and
+  // finish early once the phone reaches useful street-level accuracy.
   const getLocationAtCapture = () => new Promise((resolve) => {
     if (!navigator.geolocation) {
       resolve({
@@ -1972,36 +1975,93 @@ export default function(component) {
       return;
     }
 
-    navigator.geolocation.getCurrentPosition(
-      (position) => {
-        resolve({
-          ok: true,
-          latitude: position.coords.latitude,
-          longitude: position.coords.longitude,
-          accuracy_m: position.coords.accuracy,
-          altitude_m: position.coords.altitude,
-          heading_deg: position.coords.heading,
-          speed_mps: position.coords.speed,
-          measured_at: new Date(position.timestamp).toISOString()
-        });
-      },
-      (error) => {
-        let code = 'POSITION_ERROR';
-        let message = '位置情報を取得できませんでした。';
-        if (error && error.code === 1) {
-          code = 'PERMISSION_DENIED';
-          message = '位置情報が許可されていません。';
-        } else if (error && error.code === 2) {
-          code = 'POSITION_UNAVAILABLE';
-          message = '端末の位置情報を利用できません。';
-        } else if (error && error.code === 3) {
-          code = 'TIMEOUT';
-          message = '位置情報の取得が時間切れになりました。';
-        }
-        resolve({ ok: false, error_code: code, error_message: message });
-      },
-      { enableHighAccuracy: true, timeout: 5000, maximumAge: 15000 }
-    );
+    const targetAccuracyM = 35;
+    const waitMs = 7000;
+    const requestedAtMs = Date.now();
+    let watchId = null;
+    let hardTimer = null;
+    let settled = false;
+    let best = null;
+    let lastError = null;
+
+    const cleanup = () => {
+      if (hardTimer) {
+        clearTimeout(hardTimer);
+        hardTimer = null;
+      }
+      if (watchId !== null) {
+        try { navigator.geolocation.clearWatch(watchId); } catch (_) {}
+        watchId = null;
+      }
+    };
+
+    const finish = (payload) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve(payload);
+    };
+
+    const errorPayload = (error) => {
+      let code = 'POSITION_ERROR';
+      let message = '位置情報を取得できませんでした。';
+      if (error && error.code === 1) {
+        code = 'PERMISSION_DENIED';
+        message = '位置情報が許可されていません。';
+      } else if (error && error.code === 2) {
+        code = 'POSITION_UNAVAILABLE';
+        message = '端末の位置情報を利用できません。';
+      } else if (error && error.code === 3) {
+        code = 'TIMEOUT';
+        message = '位置情報の取得が時間切れになりました。';
+      }
+      return { ok: false, error_code: code, error_message: message };
+    };
+
+    const positionPayload = (position) => ({
+      ok: true,
+      latitude: position.coords.latitude,
+      longitude: position.coords.longitude,
+      accuracy_m: position.coords.accuracy,
+      altitude_m: position.coords.altitude,
+      heading_deg: position.coords.heading,
+      speed_mps: position.coords.speed,
+      measured_at: new Date(position.timestamp).toISOString(),
+      requested_at: new Date(requestedAtMs).toISOString(),
+      age_ms: Math.max(0, Date.now() - Number(position.timestamp || Date.now()))
+    });
+
+    const onPosition = (position) => {
+      const candidate = positionPayload(position);
+      const accuracy = Number(candidate.accuracy_m);
+      const bestAccuracy = best ? Number(best.accuracy_m) : Number.POSITIVE_INFINITY;
+      if (!best || (Number.isFinite(accuracy) && (!Number.isFinite(bestAccuracy) || accuracy < bestAccuracy))) {
+        best = candidate;
+      }
+      if (Number.isFinite(accuracy) && accuracy <= targetAccuracyM) {
+        finish(candidate);
+      }
+    };
+
+    const onError = (error) => {
+      lastError = errorPayload(error);
+      if (error && error.code === 1) finish(lastError);
+    };
+
+    hardTimer = setTimeout(() => {
+      if (best) finish(best);
+      else finish(lastError || { ok: false, error_code: 'TIMEOUT', error_message: '位置情報の取得が時間切れになりました。' });
+    }, waitMs);
+
+    try {
+      watchId = navigator.geolocation.watchPosition(
+        onPosition,
+        onError,
+        { enableHighAccuracy: true, timeout: waitMs, maximumAge: 0 }
+      );
+    } catch (err) {
+      finish(errorPayload(err));
+    }
   });
 
   const capturePosterDataUrl = async () => {
@@ -2164,7 +2224,7 @@ export default function(component) {
     try {
       const locationPromise = getLocationAtCapture();
       const dataUrl = await capturePosterDataUrl();
-      setStatus('位置情報を確認しています…');
+      setStatus('撮影地点を高精度で取得しています…');
       const location = await locationPromise;
       pendingMedia = {
         kind: 'photo',
@@ -2796,11 +2856,11 @@ export default function(component) {
 }
 """
 
-LIVE_CAMERA_COMPONENT_BUILD = "v226"
+LIVE_CAMERA_COMPONENT_BUILD = "v227"
 
 try:
     live_camera_component = st.components.v2.component(
-        "tokyo_burari_live_camera_v226",
+        "tokyo_burari_live_camera_v227",
         html=_LIVE_CAMERA_HTML,
         css=_LIVE_CAMERA_CSS,
         js=_LIVE_CAMERA_JS,
@@ -6313,7 +6373,9 @@ def build_photo_location(raw_location, trip, capture_source="camera"):
     destination = str((trip or {}).get("destination") or "").strip()
     source = str(capture_source or "camera").strip().lower()
 
-    if source == "camera" and isinstance(raw_location, dict) and raw_location.get("ok"):
+    # Direct camera captures include both still photos (camera) and videos (video_camera).
+    # Gallery imports intentionally keep their original/no-location behavior.
+    if source in {"camera", "video_camera"} and isinstance(raw_location, dict) and raw_location.get("ok"):
         try:
             latitude = float(raw_location.get("latitude"))
             longitude = float(raw_location.get("longitude"))
