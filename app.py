@@ -29,9 +29,9 @@ from zoneinfo import ZoneInfo
 import streamlit as st
 
 # Freshly generated update: 2026-08-31 23:49 JST
-GENERATED_UPDATE_JST = "2026-09-05T12:05:00+09:00"
+GENERATED_UPDATE_JST = "2026-09-05T12:15:00+09:00"
 
-APP_BUILD = "v214"
+APP_BUILD = "v215"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -6144,6 +6144,169 @@ def _get_nearby_search_now_component():
     return nearby_search_now_component
 
 
+# v215: Toilet search uses one tap for both fresh GPS acquisition and the actual search.
+# It deliberately does not reuse an older GPS fix. A very accurate fix returns immediately;
+# otherwise we briefly keep the best live reading so 1-minute searches remain useful without
+# making the user wait for a long GPS lock.
+_TOILET_SEARCH_NOW_HTML = """
+<div class="toilet-search-now-box">
+  <button id="toilet-search-now-button" type="button">🚻 この条件でトイレを探す</button>
+  <div id="toilet-search-now-status" aria-live="polite"></div>
+</div>
+"""
+
+_TOILET_SEARCH_NOW_CSS = """
+.toilet-search-now-box { width:100%; box-sizing:border-box; }
+#toilet-search-now-button {
+  width:100%; min-height:53px; border-radius:16px;
+  color:rgba(31,38,48,.96);
+  background:linear-gradient(155deg,rgba(231,249,240,.99),rgba(226,245,251,.95));
+  border:1.8px solid rgba(79,169,132,.66);
+  box-shadow:0 9px 22px rgba(79,169,132,.10),0 0 0 2px rgba(255,255,255,.32) inset;
+  font:inherit; font-weight:850; cursor:pointer;
+}
+#toilet-search-now-button:hover {
+  background:linear-gradient(155deg,rgba(220,247,233,1),rgba(215,241,250,.99));
+  border-color:rgba(79,169,132,.82);
+  box-shadow:0 11px 24px rgba(79,169,132,.14),0 0 0 2px rgba(255,255,255,.38) inset;
+}
+#toilet-search-now-button:active { transform:translateY(1px); }
+#toilet-search-now-button:disabled { opacity:.68; cursor:wait; transform:none; }
+#toilet-search-now-status {
+  margin-top:7px; min-height:18px; font-size:12px; opacity:.72; line-height:1.35;
+}
+"""
+
+_TOILET_SEARCH_NOW_JS = r"""
+export default function(component) {
+  const { parentElement, setTriggerValue } = component;
+  const button = parentElement.querySelector('#toilet-search-now-button');
+  const status = parentElement.querySelector('#toilet-search-now-status');
+  if (!button || !status) return;
+
+  let cancelled = false;
+  let watchId = null;
+  let settleTimer = null;
+  let hardTimer = null;
+  let best = null;
+
+  const setStatus = (value) => { status.textContent = String(value || ''); };
+  const stop = () => {
+    if (watchId !== null && navigator.geolocation) {
+      try { navigator.geolocation.clearWatch(watchId); } catch (_) {}
+      watchId = null;
+    }
+    if (settleTimer) { clearTimeout(settleTimer); settleTimer = null; }
+    if (hardTimer) { clearTimeout(hardTimer); hardTimer = null; }
+  };
+  const unlock = () => { if (!cancelled) button.disabled = false; };
+  const errorText = (error) => {
+    const code = Number(error?.code || 0);
+    if (code === 1) return '位置情報の利用が許可されていません。地名指定を利用してください。';
+    if (code === 2) return '現在地を取得できませんでした。地名指定も利用できます。';
+    if (code === 3) return '現在地の取得に時間がかかりました。もう一度お試しください。';
+    return '現在地を取得できませんでした。';
+  };
+  const emitBest = () => {
+    if (cancelled || !best?.coords) return false;
+    stop();
+    const accuracy = Number(best.coords.accuracy || 0);
+    setStatus(accuracy > 0
+      ? `現在地を取得しました（精度 ±${Math.round(accuracy)}m）。トイレを検索しています…`
+      : '現在地を取得しました。トイレを検索しています…');
+    setTriggerValue('search_location', {
+      token: `${Date.now()}_${Math.random().toString(36).slice(2)}`,
+      latitude: Number(best.coords.latitude),
+      longitude: Number(best.coords.longitude),
+      accuracy_m: accuracy,
+      measured_at: new Date(best.timestamp || Date.now()).toISOString()
+    });
+    unlock();
+    return true;
+  };
+  const fail = (message, code=0) => {
+    stop();
+    setStatus(message);
+    setTriggerValue('search_error', {
+      token: `${Date.now()}_${Math.random().toString(36).slice(2)}`,
+      code: Number(code || 0),
+      message: String(message || '現在地を取得できませんでした。')
+    });
+    unlock();
+  };
+  const searchNow = () => {
+    if (!navigator.geolocation) {
+      fail('このブラウザでは位置情報を取得できません。');
+      return;
+    }
+    stop();
+    best = null;
+    button.disabled = true;
+    setStatus('現在地を高精度で確認しています…');
+
+    watchId = navigator.geolocation.watchPosition(
+      (position) => {
+        if (cancelled || !position?.coords) return;
+        const accuracy = Number(position.coords.accuracy || Number.POSITIVE_INFINITY);
+        const bestAccuracy = best ? Number(best.coords?.accuracy || Number.POSITIVE_INFINITY) : Number.POSITIVE_INFINITY;
+        if (!best || accuracy < bestAccuracy) best = position;
+        const shown = Number.isFinite(accuracy) ? ` ±${Math.round(accuracy)}m` : '';
+        setStatus(`現在地を高精度で確認しています…${shown}`);
+
+        // For a tiny 1-3 minute search, <=25 m is strong enough to search immediately.
+        // If the first fix is rough, wait only briefly for a better GPS/Wi-Fi fix.
+        if (accuracy > 0 && accuracy <= 25) {
+          emitBest();
+          return;
+        }
+        if (!settleTimer) {
+          settleTimer = setTimeout(() => { if (best) emitBest(); }, 1800);
+        }
+      },
+      (error) => {
+        if (cancelled) return;
+        if (best) { emitBest(); return; }
+        fail(errorText(error), Number(error?.code || 0));
+      },
+      { enableHighAccuracy:true, timeout:5000, maximumAge:0 }
+    );
+
+    hardTimer = setTimeout(() => {
+      if (best) emitBest();
+      else fail('現在地を取得できませんでした。もう一度お試しください。', 3);
+    }, 5500);
+  };
+
+  button.addEventListener('click', searchNow);
+  return () => {
+    cancelled = true;
+    stop();
+    button.removeEventListener('click', searchNow);
+  };
+}
+"""
+
+toilet_search_now_component = None
+_toilet_search_now_component_initialized = False
+
+
+def _get_toilet_search_now_component():
+    global toilet_search_now_component, _toilet_search_now_component_initialized
+    if _toilet_search_now_component_initialized:
+        return toilet_search_now_component
+    _toilet_search_now_component_initialized = True
+    try:
+        toilet_search_now_component = st.components.v2.component(
+            "tokyo_burari_toilet_search_now_v215",
+            html=_TOILET_SEARCH_NOW_HTML,
+            css=_TOILET_SEARCH_NOW_CSS,
+            js=_TOILET_SEARCH_NOW_JS,
+        )
+    except Exception:
+        toilet_search_now_component = None
+    return toilet_search_now_component
+
+
 @st.cache_data(ttl=86400, show_spinner=False)
 def geocode_nearby_place_text(place_text):
     query = str(place_text or "").strip()
@@ -7267,7 +7430,7 @@ def _dedupe_toilet_places(places):
     return groups
 
 
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(ttl=30, show_spinner=False)
 def _toilet_google_fallback(latitude, longitude, radius_m):
     """Supplement nearby toilets with Google Places, including mixed-use office buildings.
 
@@ -7284,7 +7447,7 @@ def _toilet_google_fallback(latitude, longitude, radius_m):
     try:
         latitude = float(latitude)
         longitude = float(longitude)
-        radius_m = max(200.0, min(2500.0, float(radius_m)))
+        radius_m = max(40.0, min(2500.0, float(radius_m)))
     except (TypeError, ValueError):
         return {"places": [], "error": "現在地を確認できませんでした。", "provider": "Google Places"}
 
@@ -7729,11 +7892,12 @@ def search_nearby_toilets(
     baby_only=False,
     usable_now_preferred=True,
 ):
-    """Search nearby toilets without preferring public toilets over host facilities."""
+    """Search very-nearby toilets, querying OSM and Google concurrently for speed."""
     try:
         latitude = round(float(latitude), 5)
         longitude = round(float(longitude), 5)
-        radius_m = max(200, min(2500, int(radius_m)))
+        # v215: 1-minute search is intentionally about 64 m, so do not expand it to 200 m.
+        radius_m = max(40, min(2500, int(radius_m)))
     except (TypeError, ValueError):
         return {"places": [], "error": "現在地を確認できませんでした。", "provider": "OpenStreetMap"}
 
@@ -7750,12 +7914,14 @@ def search_nearby_toilets(
         ");out center tags;"
     )
 
-    # Public toilets and facility toilets are queried at the same time. This avoids
-    # the previous behavior where facilities were searched only after finding very
-    # few public toilets.
-    with ThreadPoolExecutor(max_workers=2) as executor:
-        future_standalone = executor.submit(_toilet_overpass_fetch, standalone_query, timeout=3.0)
-        future_hosts = executor.submit(_toilet_overpass_fetch, host_query, timeout=3.0)
+    # v215: launch both OSM queries and the Google complement at the same time.
+    # The previous sequence could wait for OSM and only then begin Google, which made a
+    # near-me tap feel slow. This keeps total wait close to the slowest provider instead.
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        future_standalone = executor.submit(_toilet_overpass_fetch, standalone_query, timeout=2.6)
+        future_hosts = executor.submit(_toilet_overpass_fetch, host_query, timeout=2.6)
+        future_google = executor.submit(_toilet_google_fallback, latitude, longitude, radius_m) if GOOGLE_PLACES_API_KEY else None
+
         try:
             primary_data, primary_error = future_standalone.result()
         except Exception as exc:
@@ -7764,6 +7930,13 @@ def search_nearby_toilets(
             host_data, host_error = future_hosts.result()
         except Exception as exc:
             host_data, host_error = None, str(exc)[:180]
+        if future_google is not None:
+            try:
+                google_result = future_google.result()
+            except Exception as exc:
+                google_result = {"places": [], "error": str(exc)[:180], "provider": "Google Places"}
+        else:
+            google_result = None
 
     osm_available = isinstance(primary_data, dict) or isinstance(host_data, dict)
     elements = []
@@ -7783,17 +7956,9 @@ def search_nearby_toilets(
         if place:
             places.append(place)
 
-    # Google is a complementary source on every explicit toilet search when a key
-    # exists, because office/restaurant/shopping facilities may expose restroom data
-    # even when OSM has no toilets=yes tag for the building.
-    google_error = ""
+    google_error = str((google_result or {}).get("error") or "")
     google_added = 0
-    # Google is always consulted on an explicit search when configured. OSM can already
-    # have many public toilets while still missing mixed-use buildings such as station-side
-    # office/retail complexes with publicly reachable common-area toilets.
     if GOOGLE_PLACES_API_KEY:
-        google_result = _toilet_google_fallback(latitude, longitude, radius_m)
-        google_error = str((google_result or {}).get("error") or "")
         existing_coords = {
             (round(float(item.get("latitude") or 0), 4), round(float(item.get("longitude") or 0), 4))
             for item in places
@@ -7809,10 +7974,6 @@ def search_nearby_toilets(
             places.append(place)
             google_added += 1
 
-    # Apply user filters after all providers are merged. Unknown fee/opening metadata
-    # stays visible unless there is an explicit bad match. Equipment filters remain
-    # strict where data is known; Google candidates can be retained with a warning if
-    # no provider exposes that equipment field nearby.
     filtered = []
     equipment_filter_unavailable = False
     any_wheelchair_yes = any(p.get("wheelchair_ok") is True for p in places)
@@ -7841,13 +8002,7 @@ def search_nearby_toilets(
             and not (usable_now_preferred and p.get("opening_known") and p.get("open_now") is False)
         ]
 
-    # Collapse same-address / same-place duplicates after filters. Google Places can
-    # return a building and several tenants as separate Places even though they lead to
-    # the same publicly reachable restroom area.
     filtered = _dedupe_toilet_places(filtered)
-
-    # Display order is explicit: availability first (when requested), then distance,
-    # then general public access. Category itself does not receive a ranking bonus.
     filtered.sort(key=lambda item: _toilet_rank_key(item, usable_now_preferred=usable_now_preferred))
 
     if filtered:
@@ -18385,7 +18540,7 @@ def page_home():
 def page_toilets():
     page_top(
         "🚻 近くのトイレ",
-        "公衆トイレ・駅・商業施設・飲食施設・商業機能を併設する複合ビルなどをまとめて探します。今使える候補を優先し、その中では距離順、次に一般利用可を優先して表示します。一般向け機能のない通常のオフィスは検索対象から外します。最後に検索ボタンを押したときだけ周辺検索を行います。",
+        "検索ボタンを押した瞬間の現在地を高精度で取り直し、徒歩1分・3分の近場を素早く探します。今使える候補を優先し、その中では距離順、次に一般利用可を優先して表示します。",
     )
     st.markdown(
         """
@@ -18436,9 +18591,6 @@ def page_toilets():
         .st-key-toilet_step_1 [data-testid="stVerticalBlock"], .st-key-toilet_step_2 [data-testid="stVerticalBlock"],
         .st-key-toilet_step_3 [data-testid="stVerticalBlock"], .st-key-toilet_step_4 [data-testid="stVerticalBlock"],
         .st-key-toilet_step_5 [data-testid="stVerticalBlock"] { gap:.28rem; }
-        .st-key-toilet_search_action div.stButton > button {
-          min-height:3.30rem !important; border-radius:16px !important; font-size:.98rem !important; font-weight:850 !important;
-        }
         @media (max-width:640px) {
           .toilet-step-title { font-size:.73rem; }
           .toilet-step-badge { width:1.30rem; height:1.30rem; font-size:.61rem; }
@@ -18454,124 +18606,69 @@ def page_toilets():
         unsafe_allow_html=True,
     )
 
-    # v204: keep the toilet-search CTA in the same calm, pale location-tool palette
-    # used elsewhere in the app instead of giving this one action a saturated route color.
-    st.markdown(
-        """
-        <style>
-        .st-key-toilet_search_action div.stButton > button {
-          color:rgba(31,38,48,.96) !important;
-          background:linear-gradient(155deg,rgba(231,249,240,.99),rgba(226,245,251,.95)) !important;
-          border:1.8px solid rgba(79,169,132,.66) !important;
-          box-shadow:0 9px 22px rgba(79,169,132,.10),0 0 0 2px rgba(255,255,255,.32) inset !important;
-        }
-        .st-key-toilet_search_action div.stButton > button:hover {
-          color:rgba(31,38,48,.98) !important;
-          background:linear-gradient(155deg,rgba(220,247,233,1),rgba(215,241,250,.99)) !important;
-          border-color:rgba(79,169,132,.82) !important;
-          box-shadow:0 11px 24px rgba(79,169,132,.14),0 0 0 2px rgba(255,255,255,.38) inset !important;
-          filter:none !important;
-          transform:translateY(-1px);
-        }
-        .st-key-toilet_search_action div.stButton > button:active {
-          transform:translateY(0);
-          box-shadow:0 5px 14px rgba(79,169,132,.11),0 0 0 2px rgba(255,255,255,.30) inset !important;
-        }
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
+    # A prior position is shown only as context. The actual search never reuses it:
+    # tapping the search button always requests maximumAge=0 high-accuracy geolocation.
+    location = st.session_state.get("_nearby_location")
+    latitude = longitude = None
+    accuracy = None
+    if isinstance(location, dict) and location.get("latitude") is not None and location.get("longitude") is not None:
+        try:
+            latitude = float(location.get("latitude"))
+            longitude = float(location.get("longitude"))
+            accuracy = float(location.get("accuracy_m") or 0) or None
+        except (TypeError, ValueError):
+            latitude = longitude = None
+            accuracy = None
 
-    # Reuse the already-tested browser geolocation component and location state.
-    location_component = _get_nearby_location_component()
-    if location_component is not None:
-        result = location_component(
-            data={},
-            key=f"toilet_location_v199_{current_family_key()}_{current_member_key()}",
-            on_location_change=lambda: None,
-            on_location_error_change=lambda: None,
+    if latitude is not None and longitude is not None:
+        place_label = str(location.get("place_label") or reverse_geocode_rough(latitude, longitude) or "現在地付近")
+        accuracy_text = f"前回GPS精度 ±{int(round(accuracy))}m" if isinstance(accuracy, (int, float)) and accuracy > 0 else ""
+        source_text = "検索時には現在地をもう一度高精度で取得します。"
+        if str(location.get("source") or "") == "manual":
+            source_text = "地名指定を保存中です。検索時はGPSを優先し、GPS取得失敗時のみこの地点を使います。"
+        st.markdown(
+            '<div class="toilet-location-card">'
+            f'<div class="toilet-location-main">📍 {html.escape(place_label or "現在地付近")}</div>'
+            f'<div class="toilet-location-sub">{html.escape(" ／ ".join(x for x in (accuracy_text, source_text) if x))}</div>'
+            '</div>',
+            unsafe_allow_html=True,
         )
-        location_payload = getattr(result, "location", None)
-        if isinstance(location_payload, dict):
-            token = str(location_payload.get("token") or "")
-            if token and token != str(st.session_state.get("_toilet_location_token") or ""):
-                try:
-                    lat = float(location_payload.get("latitude"))
-                    lon = float(location_payload.get("longitude"))
-                    accuracy = float(location_payload.get("accuracy_m") or 0) or None
-                except (TypeError, ValueError):
-                    lat = lon = None
-                    accuracy = None
-                if lat is not None and lon is not None:
-                    label = reverse_geocode_rough(lat, lon)
-                    st.session_state["_nearby_location"] = {
-                        "source": "gps",
-                        "latitude": lat,
-                        "longitude": lon,
-                        "accuracy_m": accuracy,
-                        "measured_at": str(location_payload.get("measured_at") or now_jst().isoformat()),
-                        "place_label": label,
-                    }
-                    st.session_state["_toilet_location_token"] = token
-        error_payload = getattr(result, "location_error", None)
-        if isinstance(error_payload, dict):
-            error_token = str(error_payload.get("token") or "")
-            if error_token and error_token != str(st.session_state.get("_toilet_location_error_token") or ""):
-                st.session_state["_toilet_location_error_token"] = error_token
-                st.session_state["_toilet_location_warning"] = str(error_payload.get("message") or "現在地を取得できませんでした。")
     else:
-        st.info("この環境では現在地ボタンを表示できません。下の地名入力から探せます。")
-
-    warning = st.session_state.pop("_toilet_location_warning", None)
-    if warning:
-        st.warning(warning)
+        st.markdown(
+            '<div class="toilet-location-card">'
+            '<div class="toilet-location-main">📍 現在地は検索ボタンを押したときに取得します</div>'
+            '<div class="toilet-location-sub">高精度GPSで現在地を取り直してから、近場のトイレを検索します。</div>'
+            '</div>',
+            unsafe_allow_html=True,
+        )
 
     with st.expander("現在地が取れないときは地名から探す"):
         manual_place = st.text_input(
             "駅名・地名",
             placeholder="例：上野駅、浅草、品川駅",
-            key="toilet_manual_place_text_v199",
+            key="toilet_manual_place_text_v215",
         )
-        if st.button("この地名を検索の中心にする", use_container_width=True, key="toilet_manual_place_button_v199"):
+        if st.button("この地名を予備の検索地点にする", use_container_width=True, key="toilet_manual_place_button_v215"):
             with st.spinner("場所を確認しています…"):
                 resolved = geocode_nearby_place_text(manual_place)
             if resolved:
                 st.session_state["_nearby_location"] = resolved
                 st.session_state["_toilet_location_token"] = f"manual_{time.time_ns()}"
+                st.success("予備の検索地点を保存しました。通常は検索ボタンで取得する現在地を優先します。")
                 st.rerun()
             else:
                 st.error("地名を確認できませんでした。駅名や区名を少し具体的に入力してください。")
 
-    location = st.session_state.get("_nearby_location")
-    if not isinstance(location, dict) or location.get("latitude") is None or location.get("longitude") is None:
-        st.info("まず「現在地から探す」を押してください。位置情報を使えない場合は地名から探せます。")
-        return
-
-    latitude = float(location["latitude"])
-    longitude = float(location["longitude"])
-    place_label = str(location.get("place_label") or reverse_geocode_rough(latitude, longitude) or "現在地付近")
-    accuracy = location.get("accuracy_m")
-    accuracy_text = f"GPS精度 ±{int(round(accuracy))}m" if isinstance(accuracy, (int, float)) and accuracy > 0 else ""
-    st.markdown(
-        '<div class="toilet-location-card">'
-        f'<div class="toilet-location-main">📍 {html.escape(place_label or "現在地付近")}</div>'
-        + (f'<div class="toilet-location-sub">{html.escape(accuracy_text)}</div>' if accuracy_text else "")
-        + '</div>',
-        unsafe_allow_html=True,
-    )
-    if isinstance(accuracy, (int, float)) and accuracy >= 1000:
-        st.warning("現在地の精度が低めです。候補の位置がずれる場合は、上の『地名から探す』で駅名や地名を指定してください。")
-
     prefix = f"{current_family_key()}_{current_member_key()}"
-    distance_key = f"_toilet_distance_v199_{prefix}"
+    distance_key = f"_toilet_distance_v215_{prefix}"
     fee_key = f"_toilet_fee_v199_{prefix}"
     wheelchair_key = f"_toilet_wheelchair_v199_{prefix}"
     baby_key = f"_toilet_baby_v199_{prefix}"
     open_key = f"_toilet_open_v199_{prefix}"
-    result_key = f"_toilet_search_result_v199_{prefix}"
+    result_key = f"_toilet_search_result_v215_{prefix}"
 
-    if st.session_state.get(distance_key) not in {"5", "10", "15"}:
-        st.session_state[distance_key] = "10"
+    if st.session_state.get(distance_key) not in {"1", "3"}:
+        st.session_state[distance_key] = "3"
     if st.session_state.get(fee_key) not in {"free", "all"}:
         st.session_state[fee_key] = "free"
     if st.session_state.get(wheelchair_key) not in {"yes", "all"}:
@@ -18592,7 +18689,7 @@ def page_toilets():
             st.session_state[state_key] = value
             st.rerun()
 
-    distance_mode = str(st.session_state.get(distance_key) or "10")
+    distance_mode = str(st.session_state.get(distance_key) or "3")
     fee_mode = str(st.session_state.get(fee_key) or "free")
     wheelchair_mode = str(st.session_state.get(wheelchair_key) or "all")
     baby_mode = str(st.session_state.get(baby_key) or "all")
@@ -18604,8 +18701,9 @@ def page_toilets():
             with left:
                 with st.container(border=True, key="toilet_step_1"):
                     _step_title(1, "距離")
-                    for label, value in (("🚶 5分", "5"), ("🚶 10分", "10"), ("🚶 15分", "15")):
-                        _choice_button(label, value, distance_key, f"toilet_distance_{value}_v199", distance_mode)
+                    for label, value in (("🚶 1分", "1"), ("🚶 3分", "3")):
+                        _choice_button(label, value, distance_key, f"toilet_distance_{value}_v215", distance_mode)
+                    st.markdown('<div class="toilet-step-note">検索時点の現在地からの近場だけを探します。</div>', unsafe_allow_html=True)
             with right:
                 with st.container(border=True, key="toilet_step_2"):
                     _step_title(2, "料金")
@@ -18635,8 +18733,10 @@ def page_toilets():
                 _choice_button("時間問わない", "all", open_key, "toilet_open_all_v199", open_mode)
             st.markdown('<div class="toilet-step-note">営業時間が登録されていないトイレは、候補を失わないため残します。</div>', unsafe_allow_html=True)
 
-        radius_map = {"5": 400, "10": 800, "15": 1200}
-        radius_m = int(radius_map.get(distance_mode, 800))
+        # Same walking estimate used elsewhere: ceil(distance*1.25/80).
+        # 64 m ≈ 1 minute and 192 m ≈ 3 minutes.
+        radius_map = {"1": 64, "3": 192}
+        radius_m = int(radius_map.get(distance_mode, 192))
         free_preferred = fee_mode == "free"
         wheelchair_only = wheelchair_mode == "yes"
         baby_only = baby_mode == "yes"
@@ -18650,37 +18750,164 @@ def page_toilets():
         ]
         st.markdown('<div class="toilet-summary">' + html.escape(" ／ ".join(summary_parts)) + '</div>', unsafe_allow_html=True)
 
-        signature = json.dumps(
+        current_signature = json.dumps(
             {
-                "lat": round(latitude, 5), "lon": round(longitude, 5), "radius_m": radius_m,
-                "free_preferred": free_preferred, "wheelchair_only": wheelchair_only,
-                "baby_only": baby_only, "usable_now_preferred": usable_now_preferred,
+                "lat": round(latitude, 5) if latitude is not None else None,
+                "lon": round(longitude, 5) if longitude is not None else None,
+                "radius_m": radius_m,
+                "free_preferred": free_preferred,
+                "wheelchair_only": wheelchair_only,
+                "baby_only": baby_only,
+                "usable_now_preferred": usable_now_preferred,
             },
             ensure_ascii=False,
             sort_keys=True,
         )
-        with st.container(key="toilet_search_action"):
-            search_pressed = st.button("🚻 この条件でトイレを探す", type="primary", use_container_width=True, key="toilet_search_submit_v204")
 
-    if search_pressed:
-        with st.spinner("近くのトイレを探しています…"):
-            search_result = search_nearby_toilets(
-                latitude, longitude, radius_m,
+        with st.container(key="toilet_search_action"):
+            search_component = _get_toilet_search_now_component()
+            search_component_result = None
+            if search_component is not None:
+                search_component_result = search_component(
+                    data={},
+                    key=f"toilet_search_now_v215_{current_family_key()}_{current_member_key()}",
+                    on_search_location_change=lambda: None,
+                    on_search_error_change=lambda: None,
+                )
+            else:
+                st.info("この環境では検索時の現在地取得ボタンを表示できません。地名指定を利用してください。")
+
+    def _run_toilet_search(search_latitude, search_longitude, search_accuracy=None, search_source="gps"):
+        search_latitude = float(search_latitude)
+        search_longitude = float(search_longitude)
+        fresh_label = reverse_geocode_rough(search_latitude, search_longitude) or "現在地付近"
+        st.session_state["_nearby_location"] = {
+            "source": str(search_source or "gps"),
+            "latitude": search_latitude,
+            "longitude": search_longitude,
+            "accuracy_m": search_accuracy,
+            "measured_at": now_jst().isoformat(),
+            "place_label": fresh_label,
+        }
+        fresh_signature = json.dumps(
+            {
+                "lat": round(search_latitude, 5),
+                "lon": round(search_longitude, 5),
+                "radius_m": radius_m,
+                "free_preferred": free_preferred,
+                "wheelchair_only": wheelchair_only,
+                "baby_only": baby_only,
+                "usable_now_preferred": usable_now_preferred,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        with st.spinner("現在地の近くにあるトイレを高速検索しています…"):
+            live_result = search_nearby_toilets(
+                search_latitude,
+                search_longitude,
+                radius_m,
                 free_preferred=free_preferred,
                 wheelchair_only=wheelchair_only,
                 baby_only=baby_only,
                 usable_now_preferred=usable_now_preferred,
             )
         st.session_state[result_key] = {
-            "signature": signature,
-            "result": search_result if isinstance(search_result, dict) else {},
+            "signature": fresh_signature,
+            "result": live_result if isinstance(live_result, dict) else {},
             "searched_at": now_jst().isoformat(),
+            "search_accuracy_m": search_accuracy,
+            "search_source": str(search_source or "gps"),
         }
+        if isinstance(search_accuracy, (int, float)) and search_accuracy > 0:
+            st.session_state["_toilet_search_notice"] = f"検索時の現在地を取得しました（GPS精度 ±{int(round(search_accuracy))}m）。"
+        elif str(search_source or "") == "manual":
+            st.session_state["_toilet_search_notice"] = "現在地を取得できなかったため、指定した地名を中心に検索しました。"
+
+    fresh_search_payload = getattr(search_component_result, "search_location", None) if search_component_result is not None else None
+    if isinstance(fresh_search_payload, dict):
+        search_token = str(fresh_search_payload.get("token") or "")
+        if search_token and search_token != str(st.session_state.get("_toilet_search_location_token_v215") or ""):
+            st.session_state["_toilet_search_location_token_v215"] = search_token
+            try:
+                fresh_lat = float(fresh_search_payload.get("latitude"))
+                fresh_lon = float(fresh_search_payload.get("longitude"))
+                fresh_accuracy = float(fresh_search_payload.get("accuracy_m") or 0) or None
+                _run_toilet_search(fresh_lat, fresh_lon, fresh_accuracy, "gps")
+                st.rerun()
+            except (TypeError, ValueError):
+                st.session_state["_toilet_search_warning"] = "検索時の現在地を確認できませんでした。もう一度お試しください。"
+
+    fresh_search_error = getattr(search_component_result, "search_error", None) if search_component_result is not None else None
+    if isinstance(fresh_search_error, dict):
+        error_token = str(fresh_search_error.get("token") or "")
+        if error_token and error_token != str(st.session_state.get("_toilet_search_error_token_v215") or ""):
+            st.session_state["_toilet_search_error_token_v215"] = error_token
+            manual_fallback = st.session_state.get("_nearby_location")
+            if (
+                isinstance(manual_fallback, dict)
+                and str(manual_fallback.get("source") or "") == "manual"
+                and manual_fallback.get("latitude") is not None
+                and manual_fallback.get("longitude") is not None
+            ):
+                try:
+                    _run_toilet_search(
+                        manual_fallback.get("latitude"),
+                        manual_fallback.get("longitude"),
+                        None,
+                        "manual",
+                    )
+                    st.rerun()
+                except Exception:
+                    st.session_state["_toilet_search_warning"] = str(
+                        fresh_search_error.get("message") or "現在地を取得できませんでした。もう一度お試しください。"
+                    )
+            else:
+                st.session_state["_toilet_search_warning"] = str(
+                    fresh_search_error.get("message") or "現在地を取得できませんでした。もう一度お試しください。"
+                )
+                st.rerun()
+
+    search_notice = st.session_state.pop("_toilet_search_notice", None)
+    if search_notice:
+        st.success(search_notice)
+    search_warning = st.session_state.pop("_toilet_search_warning", None)
+    if search_warning:
+        st.warning(search_warning)
+
+    # Recompute signature from the latest search location because a successful tap updates
+    # _nearby_location before rerunning the page.
+    location = st.session_state.get("_nearby_location")
+    if isinstance(location, dict):
+        try:
+            current_lat = float(location.get("latitude")) if location.get("latitude") is not None else None
+            current_lon = float(location.get("longitude")) if location.get("longitude") is not None else None
+        except (TypeError, ValueError):
+            current_lat = current_lon = None
+    else:
+        current_lat = current_lon = None
+    current_signature = json.dumps(
+        {
+            "lat": round(current_lat, 5) if current_lat is not None else None,
+            "lon": round(current_lon, 5) if current_lon is not None else None,
+            "radius_m": radius_m,
+            "free_preferred": free_preferred,
+            "wheelchair_only": wheelchair_only,
+            "baby_only": baby_only,
+            "usable_now_preferred": usable_now_preferred,
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+    )
 
     saved = st.session_state.get(result_key)
-    if not isinstance(saved, dict) or str(saved.get("signature") or "") != signature:
+    if not isinstance(saved, dict) or str(saved.get("signature") or "") != current_signature:
         previous_exists = isinstance(saved, dict) and bool(saved.get("result"))
-        message = "条件を変更しました。もう一度検索してください。" if previous_exists else "条件を選んだら、最後にトイレ検索を押してください。"
+        message = (
+            "条件を変更しました。もう一度検索してください。"
+            if previous_exists else
+            "条件を選んで検索ボタンを押してください。押した瞬間の現在地を高精度で取得して周辺を探します。"
+        )
         st.markdown(f'<div class="toilet-search-ready">{html.escape(message)}</div>', unsafe_allow_html=True)
         return
 
@@ -18703,9 +18930,12 @@ def page_toilets():
     places = list(search_result.get("places") or [])[:10]
     st.divider()
     st.markdown("### 近くで使いやすいトイレ")
-    st.caption("最大10か所。現在利用できる候補を最優先し、その中では距離順です。同程度なら『一般利用可』→『一般利用しやすい施設』→『利用条件未確認』の順に扱います。徒歩時間は直線距離からの目安です。")
+    st.caption("最大10か所。検索時点の現在地を基準に、現在利用できる候補を最優先し、その中では距離順です。同程度なら『一般利用可』→『一般利用しやすい施設』→『利用条件未確認』の順に扱います。")
     if not places:
-        st.info("この条件ではトイレを見つけられませんでした。距離を広げるか、設備条件を『問わない』にしてもう一度検索してください。")
+        if distance_mode == "1":
+            st.info("徒歩1分の範囲では候補を見つけられませんでした。徒歩3分に広げてもう一度検索してください。")
+        else:
+            st.info("徒歩3分の範囲では候補を見つけられませんでした。設備条件を『問わない』にしてもう一度検索してください。")
         return
 
     for index, place in enumerate(places, start=1):
@@ -18749,7 +18979,7 @@ def page_toilets():
             if direction_url:
                 st.link_button("🗺️ このトイレに案内してもらう", direction_url, use_container_width=True)
 
-    st.caption("トイレ候補はOpenStreetMapと、設定済みの場合はGoogle Placesの情報を利用します。通常のオフィスは除外しますが、商業・飲食・サービスなど一般向け機能を併設する複合ビルは候補に残します。『一般利用しやすい施設』は一般向け共用部がある可能性が高い候補ですが、トイレが入場ゲート前かまでは保証できないため現地表示も確認してください。")
+    st.caption("トイレ候補はOpenStreetMapと、設定済みの場合はGoogle Placesを同時に検索します。通常のオフィスは除外し、商業・飲食・サービスなど一般向け機能を併設する複合ビルは候補に残します。")
 
 
 def page_nearby():
