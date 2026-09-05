@@ -32,7 +32,7 @@ import streamlit as st
 # Freshly generated update: 2026-08-31 23:49 JST
 GENERATED_UPDATE_JST = "2026-09-05T12:44:00+09:00"
 
-APP_BUILD = "v222"
+APP_BUILD = "v223"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -6749,7 +6749,7 @@ def _nearby_google_photo_refs(photo_rows, limit=10):
 def search_nearby_quick_stops_google(latitude, longitude, kind, subkind, radius_m, open_now_only=False, budget_under_1000=False):
     """Search Google Places around the phone's fresh GPS fix.
 
-    v222: snack discovery uses Nearby Search (New) with snack-specific place types instead of
+    v223: snack discovery uses Nearby Search (New) with snack-specific place types instead of
     a long free-text keyword string.  Generic takeaway restaurants are deliberately excluded:
     "takeaway" is a serving method, not evidence that a place is an snack shop.
     """
@@ -6874,28 +6874,57 @@ def search_nearby_quick_stops_google(latitude, longitude, kind, subkind, radius_
             "wine_bar", "sandwich_shop",
         }))
 
-    def _walking_suitability_rank(place_name, place_types, takeout_value, serves_dessert_value):
-        """0 is best for eating while walking; distance breaks ties later."""
+    def _walking_suitability_rank(place_name, place_types, primary_type_value, takeout_value, serves_dessert_value):
+        """Rank portable-snack suitability first; distance breaks ties later.
+
+        0 = clearly hand-held / snack-specialist, 1 = portable bakery/sweets,
+        2 = dessert shop with takeout potential, 3 = cafe/tea shop or weak evidence.
+        A cafe must not outrank a true street-snack shop merely because Google also
+        assigns it a secondary bakery/confectionery type.
+        """
         name_text = str(place_name or "")
         type_set = {str(x) for x in (place_types or set()) if str(x)}
-        handheld_terms = (
-            "\u5927\u798f", "\u56e3\u5b50", "\u3060\u3093\u3054", "\u305f\u3044\u713c", "\u9bdb\u713c", "\u3069\u3089\u713c",
-            "\u304a\u306f\u304e", "\u6700\u4e2d", "\u305b\u3093\u3079\u3044", "\u714e\u9905", "\u30af\u30ec\u30fc\u30d7", "\u30c9\u30fc\u30ca\u30c4",
-            "\u30a2\u30a4\u30b9", "\u30b8\u30a7\u30e9\u30fc\u30c8", "\u30bd\u30d5\u30c8\u30af\u30ea\u30fc\u30e0", "\u30ef\u30c3\u30d5\u30eb",
-            "\u30c1\u30e5\u30ed\u30b9", "\u30d1\u30f3", "\u30d9\u30fc\u30ab\u30ea\u30fc", "\u713c\u304d\u83d3\u5b50",
-            "\u30af\u30c3\u30ad\u30fc", "\u30b9\u30b3\u30fc\u30f3", "\u30de\u30d5\u30a3\u30f3", "\u30ab\u30cc\u30ec",
+        primary = str(primary_type_value or "")
+        explicit_handheld_terms = (
+            "大福", "団子", "だんご", "たい焼", "鯛焼", "どら焼", "今川焼", "大判焼",
+            "回転焼", "人形焼", "おはぎ", "最中", "せんべい", "煎餅", "クレープ",
+            "ドーナツ", "アイス", "ジェラート", "ソフトクリーム", "ワッフル",
+            "チュロス", "焼き菓子", "クッキー", "スコーン", "マフィン", "カヌレ",
         )
-        very_portable_types = {
-            "bakery", "bagel_shop", "donut_shop", "ice_cream_shop", "candy_store",
-            "chocolate_shop", "confectionery", "pastry_shop",
+        cafe_primary_types = {"cafe", "coffee_shop", "tea_house"}
+        top_portable_primary_types = {
+            "donut_shop", "ice_cream_shop", "candy_store", "chocolate_shop",
+            "confectionery", "pastry_shop",
         }
-        if any(term in name_text for term in handheld_terms) or bool(type_set.intersection(very_portable_types)):
+        bakery_primary_types = {"bakery", "bagel_shop"}
+        dessert_types = {"cake_shop", "dessert_shop", "dessert_restaurant"}
+
+        # Actual product words in the shop name are the strongest signal.
+        if any(term in name_text for term in explicit_handheld_terms):
             return 0
-        if bool(type_set.intersection({"cake_shop", "dessert_shop", "dessert_restaurant"})):
-            return 1 if takeout_value is True else 2
-        if serves_dessert_value is True and takeout_value is True:
+
+        # A cafe/coffee/tea shop stays below genuine take-away snack specialists even
+        # when Google attaches bakery or confectionery as a secondary type.
+        if primary in cafe_primary_types:
+            return 3
+
+        if primary in top_portable_primary_types:
+            return 0
+        if primary in bakery_primary_types:
             return 1
-        return 2
+        if primary in dessert_types:
+            return 1 if takeout_value is True else 2
+
+        # Secondary types are useful, but weaker than the primary business identity.
+        if type_set.intersection(top_portable_primary_types):
+            return 1
+        if type_set.intersection(bakery_primary_types):
+            return 1
+        if type_set.intersection(dessert_types):
+            return 2 if takeout_value is True else 3
+        if serves_dessert_value is True and takeout_value is True:
+            return 2
+        return 3
 
     for raw in list((data or {}).get("places") or []):
         if not isinstance(raw, dict):
@@ -6986,7 +7015,10 @@ def search_nearby_quick_stops_google(latitude, longitude, kind, subkind, radius_
                 pseudo_tags["shop"] = "bakery"
             elif types.intersection({"candy_store", "dessert_shop", "confectionery", "chocolate_shop", "cake_shop", "pastry_shop", "donut_shop"}):
                 pseudo_tags["shop"] = "confectionery"
-        category = _nearby_place_label(pseudo_tags, kind)
+        if is_snack and primary_type in cafe_types:
+            category = "カフェ・喫茶"
+        else:
+            category = _nearby_place_label(pseudo_tags, kind)
         refs = _nearby_google_photo_refs(raw.get("photos") or [], limit=10)
         try:
             rating = float(raw.get("rating")) if raw.get("rating") is not None else None
@@ -7000,7 +7032,7 @@ def search_nearby_quick_stops_google(latitude, longitude, kind, subkind, radius_
         price_range = raw.get("priceRange") if isinstance(raw.get("priceRange"), dict) else {}
         walkability_rank = 0
         if is_snack and snack_style == "\u98df\u3079\u6b69\u304d\u5411\u304d":
-            walkability_rank = _walking_suitability_rank(name, types, takeout, serves_dessert)
+            walkability_rank = _walking_suitability_rank(name, types, primary_type, takeout, serves_dessert)
         places.append({
             "id": f"google:{raw.get('id') or hashlib.sha1((name+str(plat)+str(plon)).encode()).hexdigest()[:16]}",
             "google_place_id": str(raw.get("id") or ""),
@@ -19724,7 +19756,7 @@ def page_nearby():
     radius_key = f"_nearby_filter_radius_v194_{current_family_key()}_{current_member_key()}"
     budget_key = f"_nearby_filter_budget_v194_{current_family_key()}_{current_member_key()}"
     open_key = f"_nearby_filter_open_v194_{current_family_key()}_{current_member_key()}"
-    result_key = f"_nearby_search_result_v222_{current_family_key()}_{current_member_key()}"
+    result_key = f"_nearby_search_result_v223_{current_family_key()}_{current_member_key()}"
 
     if st.session_state.get(kind_key) not in {"snack", "sightseeing"}:
         st.session_state[kind_key] = "snack"
