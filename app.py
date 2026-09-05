@@ -30,9 +30,9 @@ from zoneinfo import ZoneInfo
 import streamlit as st
 
 # Freshly generated update: 2026-08-31 23:49 JST
-GENERATED_UPDATE_JST = "2026-09-06T01:32:00+09:00"
+GENERATED_UPDATE_JST = "2026-09-06T01:42:00+09:00"
 
-APP_BUILD = "v229"
+APP_BUILD = "v230"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -18855,7 +18855,7 @@ def render_history_photo_viewer(photos, trip_id):
     # The existing browser gallery already supports previous/next and swipe in single mode.
     st.markdown("#### この日の写真")
     view_mode = "3列一覧"
-    if len(photos) > 1:
+    if len(photos) >= 1:
         mode_key = f"history_photo_view_mode_{trip_id}"
         if st.session_state.get(mode_key) == "1枚ずつ拡大":
             st.session_state[mode_key] = "1枚ずつ表示"
@@ -18863,6 +18863,7 @@ def render_history_photo_viewer(photos, trip_id):
         view_mode = st.radio(
             "写真の表示方法",
             ["3列一覧", "1枚ずつ表示"],
+            index=1 if len(photos) == 1 else 0,
             horizontal=True,
             key=mode_key,
             label_visibility="collapsed",
@@ -18908,7 +18909,7 @@ def render_history_photo_viewer(photos, trip_id):
                 "member_key": current_member_key(),
                 "pending_param": PENDING_EMOTION_QUERY_PARAM,
             },
-            key=f"history_photo_fast_v229_{trip_id}_{serial}_{_current_ui_refresh_epoch()}_{'single' if single_mode else 'grid'}",
+            key=f"history_photo_fast_v230_{trip_id}_{serial}_{_current_ui_refresh_epoch()}_{'single' if single_mode else 'grid'}",
             on_share_photo_change=lambda: None,
         )
         if handle_photo_family_share_event(result, photo_ids, serial_key=serial_key):
@@ -23306,7 +23307,7 @@ def render_diary_emotion_gallery(trip_id, photos, trip=None, is_pending=False):
     # v229: saved diary days can be viewed either as the familiar three-column grid
     # or one photo at a time. Pending diary photos stay in the editing-first grid.
     view_mode = "3列一覧"
-    if not is_pending and len(photos) > 1:
+    if not is_pending:
         mode_key = f"diary_saved_photo_view_mode_{trip_id}"
         if st.session_state.get(mode_key) == "1枚ずつ拡大":
             st.session_state[mode_key] = "1枚ずつ表示"
@@ -23314,6 +23315,7 @@ def render_diary_emotion_gallery(trip_id, photos, trip=None, is_pending=False):
         view_mode = st.radio(
             "写真の表示方法",
             ["3列一覧", "1枚ずつ表示"],
+            index=1 if len(photos) == 1 else 0,
             horizontal=True,
             key=mode_key,
             label_visibility="collapsed",
@@ -23353,7 +23355,7 @@ def render_diary_emotion_gallery(trip_id, photos, trip=None, is_pending=False):
         serial = int(st.session_state.get(serial_key) or 0)
         result = gallery_component(
             data={"photos": cards, "single": single_mode, "allow_delete": True, "allow_emotion": True, "allow_share": True, "carousel_key": f"diary_saved_{trip_id}", "mode_by_photo": st.session_state.get(f"_diary_icon_modes_{trip_id}") or {}, "family_key": current_family_key(), "member_key": current_member_key(), "pending_param": PENDING_EMOTION_QUERY_PARAM},
-            key=f"diary_emotion_gallery_{trip_id}_{serial}_{_current_ui_refresh_epoch()}_{'single' if single_mode else 'grid'}_v229",
+            key=f"diary_emotion_gallery_{trip_id}_{serial}_{_current_ui_refresh_epoch()}_{'single' if single_mode else 'grid'}_v230",
             on_delete_photo_id_change=lambda: None,
             on_share_photo_change=lambda: None,
         )
