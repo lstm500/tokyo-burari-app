@@ -29,9 +29,9 @@ from zoneinfo import ZoneInfo
 import streamlit as st
 
 # Freshly generated update: 2026-08-31 23:49 JST
-GENERATED_UPDATE_JST = "2026-09-05T11:45:00+09:00"
+GENERATED_UPDATE_JST = "2026-09-05T12:05:00+09:00"
 
-APP_BUILD = "v213"
+APP_BUILD = "v214"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -5938,7 +5938,7 @@ export default function(component) {
           accuracy_m: Number(position.coords.accuracy || 0),
           measured_at: new Date().toISOString()
         };
-        setStatus('現在地を取得しました。条件を選んで検索できます。');
+        setStatus('現在地を取得しました。検索時にも現在地を取り直します。');
         setTriggerValue('location', payload);
         finish();
       },
@@ -5949,7 +5949,7 @@ export default function(component) {
         setTriggerValue('location_error', { token:String(Date.now()), code:Number(error?.code || 0), message });
         finish();
       },
-      { enableHighAccuracy:true, timeout:9000, maximumAge:60000 }
+      { enableHighAccuracy:true, timeout:9000, maximumAge:0 }
     );
   };
   button.addEventListener('click', locate);
@@ -5976,6 +5976,172 @@ def _get_nearby_location_component():
     except Exception:
         nearby_location_component = None
     return nearby_location_component
+
+
+# v214: searching Near Me must use where the phone is *at the moment of search*.
+# This button performs a fresh high-accuracy browser geolocation pass (maximumAge=0),
+# briefly samples multiple readings, keeps the best accuracy, and only then asks Python
+# to query Google Places / OSM.  It is deliberately separate from the optional preview
+# location button above, so an old session coordinate is never silently reused.
+_NEARBY_SEARCH_NOW_HTML = """
+<div class="nearby-search-now-box">
+  <button id="nearby-search-now-button" type="button">🔎 この条件で検索</button>
+  <div id="nearby-search-now-status" aria-live="polite"></div>
+</div>
+"""
+
+_NEARBY_SEARCH_NOW_CSS = """
+.nearby-search-now-box { width:100%; box-sizing:border-box; }
+#nearby-search-now-button {
+  width:100%; min-height:52px; border-radius:14px;
+  color:rgba(31,38,48,.96);
+  background:linear-gradient(155deg,rgba(231,249,240,.99),rgba(226,245,251,.95));
+  border:1.8px solid rgba(79,169,132,.66);
+  box-shadow:0 9px 22px rgba(79,169,132,.10),0 0 0 2px rgba(255,255,255,.32) inset;
+  font:inherit; font-weight:800; cursor:pointer;
+}
+#nearby-search-now-button:hover {
+  background:linear-gradient(155deg,rgba(220,247,233,1),rgba(215,241,250,.99));
+  border-color:rgba(79,169,132,.82);
+  box-shadow:0 11px 24px rgba(79,169,132,.14),0 0 0 2px rgba(255,255,255,.38) inset;
+}
+#nearby-search-now-button:active { transform:translateY(1px); }
+#nearby-search-now-button:disabled { opacity:.68; cursor:wait; transform:none; }
+#nearby-search-now-status {
+  margin-top:7px; min-height:18px; font-size:12px; opacity:.72; line-height:1.35;
+}
+"""
+
+_NEARBY_SEARCH_NOW_JS = r"""
+export default function(component) {
+  const { parentElement, setTriggerValue } = component;
+  const button = parentElement.querySelector('#nearby-search-now-button');
+  const status = parentElement.querySelector('#nearby-search-now-status');
+  if (!button || !status) return;
+
+  let cancelled = false;
+  let watchId = null;
+  let hardTimer = null;
+  let settleTimer = null;
+  let best = null;
+
+  const setStatus = (value) => { status.textContent = String(value || ''); };
+  const stopWatch = () => {
+    if (watchId !== null && navigator.geolocation) {
+      try { navigator.geolocation.clearWatch(watchId); } catch (_) {}
+      watchId = null;
+    }
+    if (hardTimer) { clearTimeout(hardTimer); hardTimer = null; }
+    if (settleTimer) { clearTimeout(settleTimer); settleTimer = null; }
+  };
+  const finishButton = () => { if (!cancelled) button.disabled = false; };
+  const errorText = (error) => {
+    const code = Number(error?.code || 0);
+    if (code === 1) return '位置情報の利用が許可されていません。地名指定を利用してください。';
+    if (code === 2) return '現在地を取得できませんでした。地名指定も利用できます。';
+    if (code === 3) return '現在地の取得に時間がかかりました。もう一度お試しください。';
+    return '現在地を取得できませんでした。';
+  };
+  const emitBest = () => {
+    if (cancelled || !best) return false;
+    stopWatch();
+    const accuracy = Number(best.coords?.accuracy || 0);
+    setStatus(accuracy > 0 ? `現在地を取得しました（精度 ±${Math.round(accuracy)}m）。周辺を調べます…` : '現在地を取得しました。周辺を調べます…');
+    setTriggerValue('search_location', {
+      token: `${Date.now()}_${Math.random().toString(36).slice(2)}`,
+      latitude: Number(best.coords.latitude),
+      longitude: Number(best.coords.longitude),
+      accuracy_m: accuracy,
+      measured_at: new Date(best.timestamp || Date.now()).toISOString()
+    });
+    finishButton();
+    return true;
+  };
+  const fail = (message, code=0) => {
+    stopWatch();
+    setStatus(message);
+    setTriggerValue('search_error', {
+      token: `${Date.now()}_${Math.random().toString(36).slice(2)}`,
+      code:Number(code || 0),
+      message:String(message || '現在地を取得できませんでした。')
+    });
+    finishButton();
+  };
+  const searchNow = () => {
+    if (!navigator.geolocation) {
+      fail('このブラウザでは位置情報を取得できません。');
+      return;
+    }
+    stopWatch();
+    best = null;
+    button.disabled = true;
+    setStatus('検索地点を高精度で確認しています…');
+
+    // Watch briefly instead of accepting the first cached reading.  Mobile GPS often
+    // improves after the first fix; keep the most accurate reading seen for this tap.
+    watchId = navigator.geolocation.watchPosition(
+      (position) => {
+        if (cancelled || !position?.coords) return;
+        const accuracy = Number(position.coords.accuracy || Number.POSITIVE_INFINITY);
+        const bestAccuracy = best ? Number(best.coords?.accuracy || Number.POSITIVE_INFINITY) : Number.POSITIVE_INFINITY;
+        if (!best || accuracy < bestAccuracy) best = position;
+        const shown = Number.isFinite(accuracy) ? ` ±${Math.round(accuracy)}m` : '';
+        setStatus(`現在地を確認しています…${shown}`);
+
+        // A <=25 m fix is already suitable for a 1-minute nearby search.  Otherwise
+        // allow a little extra time for GPS/Wi-Fi positioning to improve.
+        if (accuracy > 0 && accuracy <= 25) {
+          emitBest();
+          return;
+        }
+        if (!settleTimer) {
+          settleTimer = setTimeout(() => { if (best) emitBest(); }, 3200);
+        }
+      },
+      (error) => {
+        if (cancelled) return;
+        if (best) {
+          emitBest();
+          return;
+        }
+        fail(errorText(error), Number(error?.code || 0));
+      },
+      { enableHighAccuracy:true, timeout:8500, maximumAge:0 }
+    );
+    hardTimer = setTimeout(() => {
+      if (best) emitBest();
+      else fail('現在地を取得できませんでした。もう一度お試しください。', 3);
+    }, 9000);
+  };
+
+  button.addEventListener('click', searchNow);
+  return () => {
+    cancelled = true;
+    stopWatch();
+    button.removeEventListener('click', searchNow);
+  };
+}
+"""
+
+nearby_search_now_component = None
+_nearby_search_now_component_initialized = False
+
+
+def _get_nearby_search_now_component():
+    global nearby_search_now_component, _nearby_search_now_component_initialized
+    if _nearby_search_now_component_initialized:
+        return nearby_search_now_component
+    _nearby_search_now_component_initialized = True
+    try:
+        nearby_search_now_component = st.components.v2.component(
+            "tokyo_burari_nearby_search_now_v214",
+            html=_NEARBY_SEARCH_NOW_HTML,
+            css=_NEARBY_SEARCH_NOW_CSS,
+            js=_NEARBY_SEARCH_NOW_JS,
+        )
+    except Exception:
+        nearby_search_now_component = None
+    return nearby_search_now_component
 
 
 @st.cache_data(ttl=86400, show_spinner=False)
@@ -6575,7 +6741,7 @@ def _nearby_shortlist_safe_place(place):
     allowed = ("id","name","kind","category","latitude","longitude","distance_m","walk_minutes","opening_hours","address","provider")
     return {key: place.get(key) for key in allowed if key in place}
 
-@st.cache_data(ttl=600, show_spinner=False)
+@st.cache_data(ttl=60, show_spinner=False)
 def search_nearby_quick_stops(latitude, longitude, kind, subkind, radius_m):
     try:
         latitude = round(float(latitude), 5)
@@ -18589,7 +18755,7 @@ def page_toilets():
 def page_nearby():
     page_top(
         "📍 近くに寄る",
-        "条件を選んでから最後に検索します。行きたい場所が決まったら、Googleマップの徒歩経路確認画面を開きます。",
+        "条件を選んで検索すると、その瞬間の現在地を高精度で取り直して周辺を調べます。行きたい場所が決まったら、Googleマップの徒歩経路確認画面を開きます。",
     )
     st.markdown(
         """
@@ -18803,26 +18969,40 @@ def page_nearby():
                 st.error("地名を確認できませんでした。駅名や区名を少し具体的に入力してください。")
 
     location = st.session_state.get("_nearby_location")
-    if not isinstance(location, dict) or location.get("latitude") is None or location.get("longitude") is None:
-        st.markdown('<div class="nearby-search-ready">まず「現在地から探す」を押してください。<br>位置情報を使えない場合は、上の地名入力から指定できます。</div>', unsafe_allow_html=True)
-        return
-
-    latitude = float(location["latitude"])
-    longitude = float(location["longitude"])
-    place_label = str(location.get("place_label") or reverse_geocode_rough(latitude, longitude) or "現在地付近")
-    accuracy = location.get("accuracy_m")
-    accuracy_text = ""
-    if isinstance(accuracy, (int, float)) and accuracy > 0:
-        accuracy_text = f"GPS精度 ±{int(round(accuracy))}m"
-    st.markdown(
-        '<div class="nearby-location-card">'
-        f'<div class="nearby-location-main">📍 {html.escape(place_label or "現在地付近")}</div>'
-        + (f'<div class="nearby-location-sub">{html.escape(accuracy_text)}</div>' if accuracy_text else "")
-        + '</div>',
-        unsafe_allow_html=True,
+    has_location = bool(
+        isinstance(location, dict)
+        and location.get("latitude") is not None
+        and location.get("longitude") is not None
     )
-    if isinstance(accuracy, (int, float)) and accuracy >= 1000:
-        st.caption("位置情報の精度が低めです。候補がずれる場合は、地名から検索の中心を指定してください。")
+    latitude = float(location["latitude"]) if has_location else None
+    longitude = float(location["longitude"]) if has_location else None
+    if has_location:
+        place_label = str(location.get("place_label") or reverse_geocode_rough(latitude, longitude) or "現在地付近")
+        accuracy = location.get("accuracy_m")
+        accuracy_text = ""
+        if isinstance(accuracy, (int, float)) and accuracy > 0:
+            accuracy_text = f"GPS精度 ±{int(round(accuracy))}m"
+        source_label = "指定地点" if str(location.get("source") or "") == "manual" else "現在地"
+        st.markdown(
+            '<div class="nearby-location-card">'
+            f'<div class="nearby-location-main">📍 {html.escape(place_label or source_label)}</div>'
+            + (f'<div class="nearby-location-sub">{html.escape(accuracy_text)}</div>' if accuracy_text else "")
+            + '<div class="nearby-location-sub">検索ボタンを押すと現在地を取り直します。</div>'
+            + '</div>',
+            unsafe_allow_html=True,
+        )
+        if isinstance(accuracy, (int, float)) and accuracy >= 1000:
+            st.caption("現在表示している位置の精度は低めです。検索時には新しい位置情報を取り直します。")
+    else:
+        place_label = ""
+        accuracy = None
+        st.markdown(
+            '<div class="nearby-location-card">'
+            '<div class="nearby-location-main">📍 検索時に現在地を取得</div>'
+            '<div class="nearby-location-sub">条件を選んで検索すると、その瞬間の位置情報を高精度で確認します。</div>'
+            '</div>',
+            unsafe_allow_html=True,
+        )
 
     kind_key = f"_nearby_filter_kind_v194_{current_family_key()}_{current_member_key()}"
     snack_key = f"_nearby_filter_snack_v194_{current_family_key()}_{current_member_key()}"
@@ -18894,7 +19074,7 @@ def page_nearby():
                         ]
                         subkind = str(st.session_state.get(snack_key) or "食べ歩き向き")
                         for idx, (label, value) in enumerate(snack_options):
-                            _choice_button(label, value, snack_key, f"nearby_snack_{idx}_v213", subkind)
+                            _choice_button(label, value, snack_key, f"nearby_snack_{idx}_v214", subkind)
                         st.markdown('<div class="nearby-step-note">テイクアウト情報や店舗の種類・商品名から判定します。</div>', unsafe_allow_html=True)
                     else:
                         sight_options = [
@@ -18929,7 +19109,7 @@ def page_nearby():
                             ("＋ もう少し遠く", "もう少し遠く"),
                         ]
                     for idx, (label, value) in enumerate(radius_options_ui):
-                        _choice_button(label, value, radius_key, f"nearby_radius_{idx}_v213", radius_label)
+                        _choice_button(label, value, radius_key, f"nearby_radius_{idx}_v214", radius_label)
 
             with row2_right:
                 with st.container(border=True, key="nearby_step_4"):
@@ -18984,8 +19164,8 @@ def page_nearby():
 
         search_signature = json.dumps(
             {
-                "lat": round(latitude, 5),
-                "lon": round(longitude, 5),
+                "lat": round(latitude, 5) if latitude is not None else None,
+                "lon": round(longitude, 5) if longitude is not None else None,
                 "kind": kind,
                 "subkind": subkind,
                 "radius_m": radius_m,
@@ -18998,36 +19178,120 @@ def page_nearby():
         )
 
         with st.container(key="nearby_search_action"):
-            search_pressed = st.button(
-                "🔎 この条件で検索",
-                type="primary",
-                use_container_width=True,
-                key="nearby_search_submit_v213",
-            )
+            search_component = _get_nearby_search_now_component()
+            search_component_result = None
+            if search_component is not None:
+                search_component_result = search_component(
+                    data={},
+                    key=f"nearby_search_now_v214_{current_family_key()}_{current_member_key()}",
+                    on_search_location_change=lambda: None,
+                    on_search_error_change=lambda: None,
+                )
+            else:
+                st.info("この環境では検索時の現在地取得ボタンを表示できません。上の地名指定を利用してください。")
+                search_component_result = None
 
     detail_key = f"_nearby_open_detail_{current_family_key()}_{current_member_key()}"
-    if search_pressed:
+
+    def _run_nearby_search(search_latitude, search_longitude, search_accuracy=None, search_source="gps"):
+        search_latitude = float(search_latitude)
+        search_longitude = float(search_longitude)
         st.session_state[detail_key] = ""
-        with st.spinner("近くの候補を探しています…"):
-            search_result = search_nearby_quick_stops_google(
-                latitude, longitude, kind, subkind, radius_m,
+        fresh_label = reverse_geocode_rough(search_latitude, search_longitude) or "現在地付近"
+        st.session_state["_nearby_location"] = {
+            "source": str(search_source or "gps"),
+            "latitude": search_latitude,
+            "longitude": search_longitude,
+            "accuracy_m": search_accuracy,
+            "measured_at": now_jst().isoformat(),
+            "place_label": fresh_label,
+        }
+        fresh_signature = json.dumps(
+            {
+                "lat": round(search_latitude, 5),
+                "lon": round(search_longitude, 5),
+                "kind": kind,
+                "subkind": subkind,
+                "radius_m": radius_m,
+                "budget_under_1000": bool(budget_under_1000),
+                "open_now_only": bool(open_now_only),
+                "provider": "google" if GOOGLE_PLACES_API_KEY else "osm",
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        with st.spinner("現在地周辺の営業情報・評価・写真を調べています…"):
+            live_result = search_nearby_quick_stops_google(
+                search_latitude, search_longitude, kind, subkind, radius_m,
                 open_now_only=open_now_only,
                 budget_under_1000=budget_under_1000,
             ) if GOOGLE_PLACES_API_KEY else None
-            if not search_result or search_result.get("error"):
-                fallback = search_nearby_quick_stops(latitude, longitude, kind, subkind, radius_m)
-                if search_result and search_result.get("error") and not fallback.get("error"):
-                    fallback["photo_error"] = str(search_result.get("error") or "")
+            if not live_result or live_result.get("error"):
+                fallback = search_nearby_quick_stops(search_latitude, search_longitude, kind, subkind, radius_m)
+                if live_result and live_result.get("error") and not fallback.get("error"):
+                    fallback["photo_error"] = str(live_result.get("error") or "")
                     if open_now_only:
                         fallback["open_filter_unavailable"] = True
                     if budget_under_1000:
                         fallback["budget_filter_unavailable"] = True
-                search_result = fallback
+                live_result = fallback
         st.session_state[result_key] = {
-            "signature": search_signature,
-            "result": search_result if isinstance(search_result, dict) else {},
+            "signature": fresh_signature,
+            "result": live_result if isinstance(live_result, dict) else {},
             "searched_at": now_jst().isoformat(),
+            "search_accuracy_m": search_accuracy,
+            "search_source": str(search_source or "gps"),
         }
+        if isinstance(search_accuracy, (int, float)) and search_accuracy > 0:
+            st.session_state["_nearby_search_notice"] = f"検索時の現在地を取得しました（GPS精度 ±{int(round(search_accuracy))}m）。"
+        elif str(search_source or "") == "manual":
+            st.session_state["_nearby_search_notice"] = "現在地を取得できなかったため、指定した地名を中心に検索しました。"
+
+    fresh_search_payload = getattr(search_component_result, "search_location", None) if search_component_result is not None else None
+    if isinstance(fresh_search_payload, dict):
+        search_token = str(fresh_search_payload.get("token") or "")
+        if search_token and search_token != str(st.session_state.get("_nearby_search_location_token") or ""):
+            st.session_state["_nearby_search_location_token"] = search_token
+            try:
+                fresh_lat = float(fresh_search_payload.get("latitude"))
+                fresh_lon = float(fresh_search_payload.get("longitude"))
+                fresh_accuracy = float(fresh_search_payload.get("accuracy_m") or 0) or None
+                _run_nearby_search(fresh_lat, fresh_lon, fresh_accuracy, "gps")
+                st.rerun()
+            except (TypeError, ValueError):
+                st.session_state["_nearby_search_warning"] = "検索時の現在地を確認できませんでした。もう一度お試しください。"
+
+    fresh_search_error = getattr(search_component_result, "search_error", None) if search_component_result is not None else None
+    if isinstance(fresh_search_error, dict):
+        error_token = str(fresh_search_error.get("token") or "")
+        if error_token and error_token != str(st.session_state.get("_nearby_search_error_token") or ""):
+            st.session_state["_nearby_search_error_token"] = error_token
+            manual_fallback = st.session_state.get("_nearby_location")
+            if (
+                isinstance(manual_fallback, dict)
+                and str(manual_fallback.get("source") or "") == "manual"
+                and manual_fallback.get("latitude") is not None
+                and manual_fallback.get("longitude") is not None
+            ):
+                _run_nearby_search(
+                    manual_fallback.get("latitude"),
+                    manual_fallback.get("longitude"),
+                    None,
+                    "manual",
+                )
+                st.rerun()
+            else:
+                st.session_state["_nearby_search_warning"] = str(
+                    fresh_search_error.get("message") or "現在地を取得できませんでした。もう一度お試しください。"
+                )
+                st.rerun()
+
+    search_notice = st.session_state.pop("_nearby_search_notice", None)
+    if search_notice:
+        st.success(search_notice)
+    search_warning = st.session_state.pop("_nearby_search_warning", None)
+    if search_warning:
+        st.warning(search_warning)
 
     saved_search = st.session_state.get(result_key)
     if not isinstance(saved_search, dict) or str(saved_search.get("signature") or "") != search_signature:
@@ -19035,7 +19299,7 @@ def page_nearby():
         message = (
             "条件を変更しました。内容を確認して、もう一度「この条件で検索」を押してください。"
             if previous_exists else
-            "条件を選んだら、最後に「この条件で検索」を押してください。"
+            "条件を選んだら「この条件で検索」を押してください。検索した瞬間の現在地を取り直して周辺を調べます。"
         )
         st.markdown(f'<div class="nearby-search-ready">{html.escape(message)}</div>', unsafe_allow_html=True)
         return
@@ -19059,7 +19323,7 @@ def page_nearby():
 
     st.divider()
     st.markdown("### 今ちょっと寄るなら")
-    st.caption("候補は最大6か所。営業状況・評価・写真を見て、行きたい場所からそのまま徒歩経路を開けます。")
+    st.caption("候補は最大6か所。検索時点の現在地を基準に、営業状況・評価・写真をその都度取得して表示します。")
     if not GOOGLE_PLACES_API_KEY:
         st.info("写真表示を使うには Streamlit Secrets に `GOOGLE_PLACES_API_KEY` を追加してください。検索自体はこのまま利用できます。")
     if not places:
@@ -19153,7 +19417,7 @@ def page_nearby():
                         st.caption("この場所では追加の参考写真を取得できませんでした。")
 
     if provider == "Google Places":
-        st.markdown('<div class="nearby-source-note">候補・写真・営業情報・評価・価格情報：Google Places。電話・公式サイトなどの詳細は開いた場所だけ取得します。</div>', unsafe_allow_html=True)
+        st.markdown('<div class="nearby-source-note">候補・写真・営業情報・評価・価格情報：Google Places。検索ボタンを押すたびに現在地を取り直し、周辺候補もその都度検索します。電話・公式サイトなどの詳細は開いた場所だけ取得します。</div>', unsafe_allow_html=True)
     else:
         st.markdown('<div class="nearby-source-note">周辺候補：OpenStreetMap。写真APIが未設定または利用できない場合は文字情報で表示します。</div>', unsafe_allow_html=True)
 
