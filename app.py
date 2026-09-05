@@ -32,7 +32,7 @@ import streamlit as st
 # Freshly generated update: 2026-08-31 23:49 JST
 GENERATED_UPDATE_JST = "2026-09-05T12:44:00+09:00"
 
-APP_BUILD = "v221"
+APP_BUILD = "v222"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -6696,14 +6696,13 @@ def _nearby_place_priority(tags, kind):
         return 0
     tags = tags if isinstance(tags, dict) else {}
     name = str(tags.get("name:ja") or tags.get("name") or "")
-    direct_terms = ("大福", "団子", "だんご", "たい焼", "鯛焼", "和菓子", "ケーキ", "洋菓子", "アイス", "ジェラート", "ソフトクリーム", "かき氷", "クレープ", "ドーナツ", "プリン")
+    direct_terms = ("\u5927\u798f", "\u56e3\u5b50", "\u3060\u3093\u3054", "\u305f\u3044\u713c", "\u9bdb\u713c", "\u548c\u83d3\u5b50", "\u30b1\u30fc\u30ad", "\u6d0b\u83d3\u5b50", "\u30a2\u30a4\u30b9", "\u30b8\u30a7\u30e9\u30fc\u30c8", "\u30bd\u30d5\u30c8\u30af\u30ea\u30fc\u30e0", "\u304b\u304d\u6c37", "\u30af\u30ec\u30fc\u30d7", "\u30c9\u30fc\u30ca\u30c4", "\u30d7\u30ea\u30f3")
+    if tags.get("amenity") == "ice_cream" or tags.get("shop") in {"bakery", "confectionery", "pastry", "chocolate"}:
+        return 0
     if any(term in name for term in direct_terms):
         return 0
-    if tags.get("amenity") == "ice_cream" or tags.get("shop") in {"confectionery", "pastry", "chocolate"}:
-        return 1
-    if tags.get("shop") == "bakery":
-        return 2
-    return 3
+    return 1
+
 
 
 
@@ -6750,7 +6749,7 @@ def _nearby_google_photo_refs(photo_rows, limit=10):
 def search_nearby_quick_stops_google(latitude, longitude, kind, subkind, radius_m, open_now_only=False, budget_under_1000=False):
     """Search Google Places around the phone's fresh GPS fix.
 
-    v221: snack discovery uses Nearby Search (New) with snack-specific place types instead of
+    v222: snack discovery uses Nearby Search (New) with snack-specific place types instead of
     a long free-text keyword string.  Generic takeaway restaurants are deliberately excluded:
     "takeaway" is a serving method, not evidence that a place is an snack shop.
     """
@@ -6875,6 +6874,29 @@ def search_nearby_quick_stops_google(latitude, longitude, kind, subkind, radius_
             "wine_bar", "sandwich_shop",
         }))
 
+    def _walking_suitability_rank(place_name, place_types, takeout_value, serves_dessert_value):
+        """0 is best for eating while walking; distance breaks ties later."""
+        name_text = str(place_name or "")
+        type_set = {str(x) for x in (place_types or set()) if str(x)}
+        handheld_terms = (
+            "\u5927\u798f", "\u56e3\u5b50", "\u3060\u3093\u3054", "\u305f\u3044\u713c", "\u9bdb\u713c", "\u3069\u3089\u713c",
+            "\u304a\u306f\u304e", "\u6700\u4e2d", "\u305b\u3093\u3079\u3044", "\u714e\u9905", "\u30af\u30ec\u30fc\u30d7", "\u30c9\u30fc\u30ca\u30c4",
+            "\u30a2\u30a4\u30b9", "\u30b8\u30a7\u30e9\u30fc\u30c8", "\u30bd\u30d5\u30c8\u30af\u30ea\u30fc\u30e0", "\u30ef\u30c3\u30d5\u30eb",
+            "\u30c1\u30e5\u30ed\u30b9", "\u30d1\u30f3", "\u30d9\u30fc\u30ab\u30ea\u30fc", "\u713c\u304d\u83d3\u5b50",
+            "\u30af\u30c3\u30ad\u30fc", "\u30b9\u30b3\u30fc\u30f3", "\u30de\u30d5\u30a3\u30f3", "\u30ab\u30cc\u30ec",
+        )
+        very_portable_types = {
+            "bakery", "bagel_shop", "donut_shop", "ice_cream_shop", "candy_store",
+            "chocolate_shop", "confectionery", "pastry_shop",
+        }
+        if any(term in name_text for term in handheld_terms) or bool(type_set.intersection(very_portable_types)):
+            return 0
+        if bool(type_set.intersection({"cake_shop", "dessert_shop", "dessert_restaurant"})):
+            return 1 if takeout_value is True else 2
+        if serves_dessert_value is True and takeout_value is True:
+            return 1
+        return 2
+
     for raw in list((data or {}).get("places") or []):
         if not isinstance(raw, dict):
             continue
@@ -6976,6 +6998,9 @@ def search_nearby_quick_stops_google(latitude, longitude, kind, subkind, radius_
             rating_count = 0
         price_level = str(raw.get("priceLevel") or "").strip()
         price_range = raw.get("priceRange") if isinstance(raw.get("priceRange"), dict) else {}
+        walkability_rank = 0
+        if is_snack and snack_style == "\u98df\u3079\u6b69\u304d\u5411\u304d":
+            walkability_rank = _walking_suitability_rank(name, types, takeout, serves_dessert)
         places.append({
             "id": f"google:{raw.get('id') or hashlib.sha1((name+str(plat)+str(plon)).encode()).hexdigest()[:16]}",
             "google_place_id": str(raw.get("id") or ""),
@@ -7002,11 +7027,18 @@ def search_nearby_quick_stops_google(latitude, longitude, kind, subkind, radius_
             "dine_in": dine_in,
             "serves_dessert": serves_dessert,
             "google_types": sorted(types),
+            "walkability_rank": walkability_rank,
         })
 
     if bool(budget_under_1000):
         places = [item for item in places if _nearby_budget_match_1000(item)]
-    places.sort(key=lambda item: int(item.get("distance_m") or 0))
+    if is_snack and snack_style == "\u98df\u3079\u6b69\u304d\u5411\u304d":
+        places.sort(key=lambda item: (
+            int(item.get("walkability_rank") or 0),
+            int(item.get("distance_m") or 0),
+        ))
+    else:
+        places.sort(key=lambda item: int(item.get("distance_m") or 0))
     return {
         "places": places[:24],
         "error": "",
@@ -7393,7 +7425,7 @@ def search_nearby_quick_stops(latitude, longitude, kind, subkind, radius_m):
         )
 
     if kind == "snack":
-        places.sort(key=lambda item: (int(item.get("priority") or 0) * 220 + int(item.get("distance_m") or 0), int(item.get("distance_m") or 0)))
+        places.sort(key=lambda item: (int(item.get("priority") or 0), int(item.get("distance_m") or 0)))
     else:
         places.sort(key=lambda item: int(item.get("distance_m") or 0))
     return {"places": places[:24], "error": "", "provider": "OpenStreetMap"}
@@ -19692,7 +19724,7 @@ def page_nearby():
     radius_key = f"_nearby_filter_radius_v194_{current_family_key()}_{current_member_key()}"
     budget_key = f"_nearby_filter_budget_v194_{current_family_key()}_{current_member_key()}"
     open_key = f"_nearby_filter_open_v194_{current_family_key()}_{current_member_key()}"
-    result_key = f"_nearby_search_result_v221_{current_family_key()}_{current_member_key()}"
+    result_key = f"_nearby_search_result_v222_{current_family_key()}_{current_member_key()}"
 
     if st.session_state.get(kind_key) not in {"snack", "sightseeing"}:
         st.session_state[kind_key] = "snack"
