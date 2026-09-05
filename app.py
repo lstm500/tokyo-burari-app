@@ -7723,20 +7723,72 @@ def search_nearby_quick_stops_google(latitude, longitude, kind, subkind, radius_
     elif bool(budget_under_1000):
         places = [item for item in places if _nearby_budget_match_1000(item)]
     if is_lunch:
-        # Requested display order: Google rating first, then review volume, then distance.
-        # Places with no rating are kept, but always follow rated places.
-        def _lunch_rating_sort_key(item):
+        # Review-count-adjusted lunch score (Bayesian weighted rating).
+        # A raw 5.0 from only a handful of reviews should not automatically outrank
+        # a well-established 4.5 with hundreds of reviews.  The local candidate mean
+        # acts as the prior, and 100 reviews is the confidence reference point.
+        valid_ratings = []
+        for item in places:
             try:
-                value = float(item.get("rating"))
-                valid = math.isfinite(value) and value > 0
+                raw_rating = float(item.get("rating"))
             except (TypeError, ValueError):
-                value = 0.0
-                valid = False
+                continue
+            if math.isfinite(raw_rating) and raw_rating > 0:
+                valid_ratings.append(raw_rating)
+        local_mean_rating = (sum(valid_ratings) / len(valid_ratings)) if valid_ratings else 4.0
+        prior_review_count = 100.0
+
+        for item in places:
+            try:
+                raw_rating = float(item.get("rating"))
+                rating_valid = math.isfinite(raw_rating) and raw_rating > 0
+            except (TypeError, ValueError):
+                raw_rating = 0.0
+                rating_valid = False
             try:
                 reviews = max(0, int(item.get("user_rating_count") or 0))
             except (TypeError, ValueError):
                 reviews = 0
-            return (0 if valid else 1, -value if valid else 0.0, -reviews, int(item.get("distance_m") or 0))
+
+            if rating_valid:
+                weighted_rating = (
+                    (reviews / (reviews + prior_review_count)) * raw_rating
+                    + (prior_review_count / (reviews + prior_review_count)) * local_mean_rating
+                )
+                item["burari_rating"] = round(float(weighted_rating), 4)
+                item["burari_rating_prior_mean"] = round(float(local_mean_rating), 4)
+                item["burari_rating_prior_reviews"] = int(prior_review_count)
+            else:
+                item["burari_rating"] = None
+                item["burari_rating_prior_mean"] = round(float(local_mean_rating), 4)
+                item["burari_rating_prior_reviews"] = int(prior_review_count)
+
+        # Display order: review-count-adjusted score, review volume, raw Google rating,
+        # then walking distance. Places without ratings remain after rated places.
+        def _lunch_rating_sort_key(item):
+            try:
+                score = float(item.get("burari_rating"))
+                score_valid = math.isfinite(score) and score > 0
+            except (TypeError, ValueError):
+                score = 0.0
+                score_valid = False
+            try:
+                reviews = max(0, int(item.get("user_rating_count") or 0))
+            except (TypeError, ValueError):
+                reviews = 0
+            try:
+                raw_rating = float(item.get("rating"))
+                raw_valid = math.isfinite(raw_rating) and raw_rating > 0
+            except (TypeError, ValueError):
+                raw_rating = 0.0
+                raw_valid = False
+            return (
+                0 if score_valid else 1,
+                -score if score_valid else 0.0,
+                -reviews,
+                -raw_rating if raw_valid else 0.0,
+                int(item.get("distance_m") or 0),
+            )
         places.sort(key=_lunch_rating_sort_key)
     elif is_snack and snack_style == "\u98df\u3079\u6b69\u304d\u5411\u304d":
         places.sort(key=lambda item: (
@@ -7752,7 +7804,7 @@ def search_nearby_quick_stops_google(latitude, longitude, kind, subkind, radius_
         "open_now_only": bool(open_now_only),
         "budget_under_1000": bool(budget_under_1000),
         "budget_limit": int(budget_limit) if is_lunch and budget_limit is not None else None,
-        "sort_mode": "rating" if is_lunch else ("walkability" if is_snack and snack_style == "食べ歩き向き" else "distance"),
+        "sort_mode": "review_weighted_rating" if is_lunch else ("walkability" if is_snack and snack_style == "食べ歩き向き" else "distance"),
         "search_mode": "nearby_types" if is_snack else "text",
         "raw_count": raw_count,
         "in_range_count": in_range_count,
@@ -7889,6 +7941,17 @@ def _nearby_rating_text(place):
     except (TypeError, ValueError):
         count = 0
     return f"★ {rating:.1f}" + (f"（{count:,}件）" if count else "")
+
+
+def _nearby_burari_rating_text(place):
+    place = place if isinstance(place, dict) else {}
+    try:
+        score = float(place.get("burari_rating"))
+    except (TypeError, ValueError):
+        return ""
+    if not math.isfinite(score) or score <= 0:
+        return ""
+    return f"ぶらり旅評価 {score:.2f}"
 
 
 def _nearby_price_level_text(value):
@@ -20819,6 +20882,7 @@ def page_nearby():
                 "budget_limit": int(budget_limit) if budget_limit is not None else None,
                 "open_now_only": bool(open_now_only),
                 "provider": "google" if GOOGLE_PLACES_API_KEY else "osm",
+                "lunch_rating_model": "bayesian_review_weighted_v1" if kind == "lunch" else None,
             },
             ensure_ascii=False,
             sort_keys=True,
@@ -20998,9 +21062,9 @@ def page_nearby():
         st.warning("Google Placesに接続できなかったため、今回は評価順ではなく距離順の代替候補です。")
 
     st.divider()
-    st.markdown("### ランチ候補（評価順）" if kind == "lunch" else "### 今ちょっと寄るなら")
+    st.markdown("### ランチ候補（口コミ補正評価順）" if kind == "lunch" else "### 今ちょっと寄るなら")
     if kind == "lunch":
-        st.caption("候補は最大6か所。Googleの評価が高い順に表示し、同評価なら口コミ件数、距離の順で並べます。")
+        st.caption("候補は最大6か所。Google評価を口コミ件数で補正した「ぶらり旅評価」順です。口コミ100件を信頼基準にし、件数が少ない評価は周辺候補の平均へ少し寄せます。")
     else:
         st.caption("候補は最大6か所。検索時点の現在地を基準に、営業状況・評価・写真をその都度取得して表示します。")
     if not GOOGLE_PLACES_API_KEY:
@@ -21026,8 +21090,13 @@ def page_nearby():
             st.markdown(f'<div class="nearby-place-meta">{html.escape(str(place.get("category") or ""))}　・　{html.escape(_nearby_distance_text(place))}</div>', unsafe_allow_html=True)
             status = _nearby_open_status(place)
             rating_text = _nearby_rating_text(place)
+            burari_rating_text = _nearby_burari_rating_text(place) if kind == "lunch" else ""
             status_html = f'<span class="nearby-pill {html.escape(status.get("css") or "unknown")}">{html.escape(str(status.get("label") or "営業時間情報なし"))}</span>'
-            if rating_text:
+            if kind == "lunch" and burari_rating_text:
+                status_html += f'<span class="nearby-pill rating">{html.escape(burari_rating_text)}</span>'
+                if rating_text:
+                    status_html += f'<span class="nearby-pill unknown">Google {html.escape(rating_text)}</span>'
+            elif rating_text:
                 status_html += f'<span class="nearby-pill rating">{html.escape(rating_text)}</span>'
             elif kind == "lunch":
                 status_html += '<span class="nearby-pill unknown">★ 評価なし</span>'
