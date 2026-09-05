@@ -17,6 +17,7 @@ import wave
 import zipfile
 import threading
 import sys
+import unicodedata
 from concurrent.futures import ThreadPoolExecutor
 from array import array
 from urllib.parse import urlencode, urlparse, parse_qs, quote
@@ -29,9 +30,9 @@ from zoneinfo import ZoneInfo
 import streamlit as st
 
 # Freshly generated update: 2026-08-31 23:49 JST
-GENERATED_UPDATE_JST = "2026-09-05T12:15:00+09:00"
+GENERATED_UPDATE_JST = "2026-09-05T12:44:00+09:00"
 
-APP_BUILD = "v215"
+APP_BUILD = "v216"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -6144,7 +6145,7 @@ def _get_nearby_search_now_component():
     return nearby_search_now_component
 
 
-# v215: Toilet search uses one tap for both fresh GPS acquisition and the actual search.
+# v216: Toilet search uses one tap for both fresh GPS acquisition and the actual search.
 # It deliberately does not reuse an older GPS fix. A very accurate fix returns immediately;
 # otherwise we briefly keep the best live reading so 1-minute searches remain useful without
 # making the user wait for a long GPS lock.
@@ -6297,7 +6298,7 @@ def _get_toilet_search_now_component():
     _toilet_search_now_component_initialized = True
     try:
         toilet_search_now_component = st.components.v2.component(
-            "tokyo_burari_toilet_search_now_v215",
+            "tokyo_burari_toilet_search_now_v216",
             html=_TOILET_SEARCH_NOW_HTML,
             css=_TOILET_SEARCH_NOW_CSS,
             js=_TOILET_SEARCH_NOW_JS,
@@ -7293,14 +7294,62 @@ def _toilet_rank_key(place, usable_now_preferred=True):
 
 
 def _toilet_normalized_address(value):
-    """Return a conservative address key for duplicate toilet candidates."""
-    value = str(value or "").strip().lower()
+    """Return a normalized full address key for duplicate toilet candidates."""
+    value = unicodedata.normalize("NFKC", str(value or "")).strip().lower()
     if not value:
         return ""
     value = re.sub(r"(?:日本[、,]?\s*)", "", value)
-    value = re.sub(r"〒?\s*\d{3}[-‐‑‒–—―]?\d{4}", "", value)
-    value = re.sub(r"[\s　,，、・.。/／\-‐‑‒–—―]+", "", value)
+    value = re.sub(r"〒?\s*\d{3}[-‐‑‒–—―−]?\d{4}", "", value)
+    value = re.sub(r"[\s　,，、・.。/／\-‐‑‒–—―−]+", "", value)
     return value
+
+
+def _toilet_address_base_key(value):
+    """Return the street-address portion, ignoring building/floor suffixes.
+
+    Google/OSM may describe the same building as, for example,
+    ``北品川5丁目6-1`` and ``北品川5丁目6-1 大崎ブライトタワー2階``.
+    For the toilet list the user wants one candidate per address, so the common
+    chome/block/lot portion is used as an additional duplicate key.
+    """
+    raw = unicodedata.normalize("NFKC", str(value or "")).strip().lower()
+    if not raw:
+        return ""
+    raw = re.sub(r"(?:日本[、,]?\s*)", "", raw)
+    raw = re.sub(r"〒?\s*\d{3}[-‐‑‒–—―−]?\d{4}", "", raw)
+    raw = re.sub(r"[\s　,，、・.。/／]+", "", raw)
+    raw = re.sub(r"[-‐‑‒–—―−]+", "-", raw)
+    # Normalize common Japanese lot-number spellings to hyphens.
+    raw = re.sub(r"(?<=\d)番地?(?=\d)", "-", raw)
+    raw = re.sub(r"(?<=\d)の(?=\d)", "-", raw)
+    raw = re.sub(r"(?<=\d)号", "", raw)
+
+    # Remove prefecture/city/ward prefixes when present so Google and OSM can
+    # still match even if one returns only the local address.
+    local = re.sub(r"^[^0-9]*?[都道府県]", "", raw, count=1)
+    for _ in range(2):
+        shortened = re.sub(r"^[^0-9]*?[市区町村]", "", local, count=1)
+        if shortened == local:
+            break
+        local = shortened
+
+    # Prefer a locality suffix independent of whether the provider includes
+    # 東京都/品川区. Example result: 北品川5丁目6-1.
+    match = re.search(
+        r"([一-龥々ヶケぁ-んァ-ヶー]+\d+丁目\d+(?:-\d+){1,2})",
+        local,
+    )
+    if match:
+        return match.group(1)
+
+    # Addresses without 丁目, e.g. 大崎1-2-3.
+    match = re.search(
+        r"([一-龥々ヶケぁ-んァ-ヶー]+\d+(?:-\d+){1,2})",
+        local,
+    )
+    if match:
+        return match.group(1)
+    return ""
 
 
 def _toilet_normalized_name(value):
@@ -7308,7 +7357,7 @@ def _toilet_normalized_name(value):
     if not value:
         return ""
     value = re.sub(r"(?:の)?トイレ$", "", value)
-    value = re.sub(r"[\s　,，、・.。/／()（）\-‐‑‒–—―]+", "", value)
+    value = re.sub(r"[\s　,，、・.。/／()（）\-‐‑‒–—―−]+", "", value)
     return value
 
 
@@ -7369,8 +7418,16 @@ def _toilet_places_are_duplicates(left, right):
 
     left_address = _toilet_normalized_address(left.get("address"))
     right_address = _toilet_normalized_address(right.get("address"))
-    # The user's primary duplicate case: different Places/tenants at the same address.
+    # Exact formatted-address matches.
     if left_address and right_address and left_address == right_address:
+        return True
+
+    # v216: also collapse address variants where one provider appends a building
+    # name, tenant name or floor. The chome/block/lot itself is the same toilet
+    # destination for this compact nearby list, so only one representative is shown.
+    left_base = _toilet_address_base_key(left.get("address"))
+    right_base = _toilet_address_base_key(right.get("address"))
+    if left_base and right_base and left_base == right_base:
         return True
 
     try:
@@ -7896,7 +7953,7 @@ def search_nearby_toilets(
     try:
         latitude = round(float(latitude), 5)
         longitude = round(float(longitude), 5)
-        # v215: 1-minute search is intentionally about 64 m, so do not expand it to 200 m.
+        # v216: 1-minute search is intentionally about 64 m, so do not expand it to 200 m.
         radius_m = max(40, min(2500, int(radius_m)))
     except (TypeError, ValueError):
         return {"places": [], "error": "現在地を確認できませんでした。", "provider": "OpenStreetMap"}
@@ -7914,7 +7971,7 @@ def search_nearby_toilets(
         ");out center tags;"
     )
 
-    # v215: launch both OSM queries and the Google complement at the same time.
+    # v216: launch both OSM queries and the Google complement at the same time.
     # The previous sequence could wait for OSM and only then begin Google, which made a
     # near-me tap feel slow. This keeps total wait close to the slowest provider instead.
     with ThreadPoolExecutor(max_workers=3) as executor:
@@ -18646,9 +18703,9 @@ def page_toilets():
         manual_place = st.text_input(
             "駅名・地名",
             placeholder="例：上野駅、浅草、品川駅",
-            key="toilet_manual_place_text_v215",
+            key="toilet_manual_place_text_v216",
         )
-        if st.button("この地名を予備の検索地点にする", use_container_width=True, key="toilet_manual_place_button_v215"):
+        if st.button("この地名を予備の検索地点にする", use_container_width=True, key="toilet_manual_place_button_v216"):
             with st.spinner("場所を確認しています…"):
                 resolved = geocode_nearby_place_text(manual_place)
             if resolved:
@@ -18660,12 +18717,12 @@ def page_toilets():
                 st.error("地名を確認できませんでした。駅名や区名を少し具体的に入力してください。")
 
     prefix = f"{current_family_key()}_{current_member_key()}"
-    distance_key = f"_toilet_distance_v215_{prefix}"
+    distance_key = f"_toilet_distance_v216_{prefix}"
     fee_key = f"_toilet_fee_v199_{prefix}"
     wheelchair_key = f"_toilet_wheelchair_v199_{prefix}"
     baby_key = f"_toilet_baby_v199_{prefix}"
     open_key = f"_toilet_open_v199_{prefix}"
-    result_key = f"_toilet_search_result_v215_{prefix}"
+    result_key = f"_toilet_search_result_v216_{prefix}"
 
     if st.session_state.get(distance_key) not in {"1", "3"}:
         st.session_state[distance_key] = "3"
@@ -18702,7 +18759,7 @@ def page_toilets():
                 with st.container(border=True, key="toilet_step_1"):
                     _step_title(1, "距離")
                     for label, value in (("🚶 1分", "1"), ("🚶 3分", "3")):
-                        _choice_button(label, value, distance_key, f"toilet_distance_{value}_v215", distance_mode)
+                        _choice_button(label, value, distance_key, f"toilet_distance_{value}_v216", distance_mode)
                     st.markdown('<div class="toilet-step-note">検索時点の現在地からの近場だけを探します。</div>', unsafe_allow_html=True)
             with right:
                 with st.container(border=True, key="toilet_step_2"):
@@ -18770,7 +18827,7 @@ def page_toilets():
             if search_component is not None:
                 search_component_result = search_component(
                     data={},
-                    key=f"toilet_search_now_v215_{current_family_key()}_{current_member_key()}",
+                    key=f"toilet_search_now_v216_{current_family_key()}_{current_member_key()}",
                     on_search_location_change=lambda: None,
                     on_search_error_change=lambda: None,
                 )
@@ -18827,8 +18884,8 @@ def page_toilets():
     fresh_search_payload = getattr(search_component_result, "search_location", None) if search_component_result is not None else None
     if isinstance(fresh_search_payload, dict):
         search_token = str(fresh_search_payload.get("token") or "")
-        if search_token and search_token != str(st.session_state.get("_toilet_search_location_token_v215") or ""):
-            st.session_state["_toilet_search_location_token_v215"] = search_token
+        if search_token and search_token != str(st.session_state.get("_toilet_search_location_token_v216") or ""):
+            st.session_state["_toilet_search_location_token_v216"] = search_token
             try:
                 fresh_lat = float(fresh_search_payload.get("latitude"))
                 fresh_lon = float(fresh_search_payload.get("longitude"))
@@ -18841,8 +18898,8 @@ def page_toilets():
     fresh_search_error = getattr(search_component_result, "search_error", None) if search_component_result is not None else None
     if isinstance(fresh_search_error, dict):
         error_token = str(fresh_search_error.get("token") or "")
-        if error_token and error_token != str(st.session_state.get("_toilet_search_error_token_v215") or ""):
-            st.session_state["_toilet_search_error_token_v215"] = error_token
+        if error_token and error_token != str(st.session_state.get("_toilet_search_error_token_v216") or ""):
+            st.session_state["_toilet_search_error_token_v216"] = error_token
             manual_fallback = st.session_state.get("_nearby_location")
             if (
                 isinstance(manual_fallback, dict)
