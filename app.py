@@ -30,9 +30,9 @@ from zoneinfo import ZoneInfo
 import streamlit as st
 
 # Freshly generated update: 2026-08-31 23:49 JST
-GENERATED_UPDATE_JST = "2026-09-06T01:42:00+09:00"
+GENERATED_UPDATE_JST = "2026-09-06T01:45:00+09:00"
 
-APP_BUILD = "v230"
+APP_BUILD = "v231"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -19595,10 +19595,156 @@ def page_home():
 
 
 
+def _render_toilet_map(search_latitude, search_longitude, places, radius_m, *, accuracy_m=None, search_source="gps"):
+    """Render toilet candidates as a Leaflet map; pin popups open walking directions."""
+    try:
+        center_lat = float(search_latitude)
+        center_lon = float(search_longitude)
+    except (TypeError, ValueError):
+        st.warning("地図の中心となる現在地を確認できませんでした。")
+        return
+
+    map_places = []
+    for index, place in enumerate(list(places or [])[:30], start=1):
+        if not isinstance(place, dict):
+            continue
+        try:
+            plat = float(place.get("latitude"))
+            plon = float(place.get("longitude"))
+        except (TypeError, ValueError):
+            continue
+        direction_url = _nearby_directions_url(place)
+        map_places.append({
+            "index": index,
+            "name": str(place.get("name") or "トイレ"),
+            "category": str(place.get("category") or "トイレ"),
+            "latitude": plat,
+            "longitude": plon,
+            "distance_m": max(0, int(place.get("distance_m") or 0)),
+            "walk_minutes": max(1, int(place.get("walk_minutes") or 1)),
+            "fee_label": str(place.get("fee_label") or ""),
+            "opening_label": str(place.get("opening_label") or ""),
+            "open_now": place.get("open_now"),
+            "wheelchair_label": str(place.get("wheelchair_label") or ""),
+            "wheelchair_ok": place.get("wheelchair_ok") is True,
+            "baby_label": str(place.get("baby_label") or ""),
+            "baby_ok": place.get("baby_ok") is True,
+            "access_label": str(place.get("access_label") or ""),
+            "floor_label": str(place.get("floor_label") or ""),
+            "opening_hours": str(place.get("opening_hours") or ""),
+            "address": str(place.get("address") or ""),
+            "provider": str(place.get("provider") or ""),
+            "route_url": str(direction_url or ""),
+        })
+
+    try:
+        accuracy_value = float(accuracy_m or 0)
+    except (TypeError, ValueError):
+        accuracy_value = 0.0
+    payload = {
+        "center": {"lat": center_lat, "lon": center_lon},
+        "radius_m": max(40, int(radius_m or 0)),
+        "accuracy_m": accuracy_value if accuracy_value > 0 else 0,
+        "search_source": str(search_source or "gps"),
+        "places": map_places,
+    }
+    payload_json = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).replace("</", "<\\/")
+
+    map_html = f'''<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no" />
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
+<style>
+html,body{{margin:0;padding:0;background:transparent;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Hiragino Sans","Yu Gothic",sans-serif;}}
+#toilet-map{{width:100%;height:540px;border-radius:16px;overflow:hidden;background:#eef3f6;border:1px solid rgba(80,100,120,.16);box-sizing:border-box;}}
+.toilet-map-error{{height:100%;display:flex;align-items:center;justify-content:center;padding:24px;box-sizing:border-box;text-align:center;color:#5b6570;font-size:14px;line-height:1.6;}}
+.leaflet-container{{font:13px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI","Hiragino Sans","Yu Gothic",sans-serif;}}
+.leaflet-popup-content-wrapper{{border-radius:14px;box-shadow:0 8px 28px rgba(0,0,0,.16);}}
+.leaflet-popup-content{{margin:12px 13px;width:min(270px,72vw)!important;}}
+.toilet-popup-title{{font-size:15px;font-weight:850;line-height:1.35;margin-bottom:3px;color:#20242a;}}
+.toilet-popup-meta{{font-size:12px;color:#5f6974;line-height:1.45;margin-bottom:6px;}}
+.toilet-popup-pills{{display:flex;flex-wrap:wrap;gap:4px;margin:6px 0;}}
+.toilet-popup-pill{{display:inline-flex;align-items:center;min-height:22px;padding:2px 7px;border-radius:999px;background:#f1f4f6;border:1px solid #e0e5e8;font-size:10px;font-weight:750;color:#4a535c;box-sizing:border-box;}}
+.toilet-popup-pill.good{{background:#e9f7ef;border-color:#c9ead6;color:#1d7446;}}
+.toilet-popup-pill.warn{{background:#fff6df;border-color:#f0dfad;color:#866315;}}
+.toilet-popup-detail{{font-size:10px;color:#68727c;line-height:1.45;margin:5px 0;word-break:break-word;}}
+.toilet-route-button{{display:flex;align-items:center;justify-content:center;width:100%;min-height:42px;margin-top:9px;padding:8px 10px;box-sizing:border-box;border-radius:11px;background:#2f80ed;color:white!important;text-decoration:none!important;font-size:13px;font-weight:850;box-shadow:0 4px 12px rgba(47,128,237,.20);}}
+.toilet-route-button:active{{transform:translateY(1px);}}
+.toilet-pin-shell{{background:transparent!important;border:0!important;}}
+.toilet-pin{{position:relative;width:34px;height:34px;border-radius:50% 50% 50% 6px;transform:rotate(-45deg);background:#28a17a;border:3px solid white;box-shadow:0 3px 9px rgba(0,0,0,.28);box-sizing:border-box;}}
+.toilet-pin.unknown{{background:#3f7ec7;}}
+.toilet-pin .pin-label{{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;transform:rotate(45deg);font-size:12px;font-weight:900;color:white;line-height:1;}}
+.current-dot{{width:18px;height:18px;border-radius:50%;background:#2f80ed;border:4px solid white;box-shadow:0 2px 9px rgba(0,0,0,.30);box-sizing:border-box;}}
+.map-legend{{position:absolute;z-index:1000;left:10px;bottom:10px;background:rgba(255,255,255,.94);border:1px solid rgba(0,0,0,.10);border-radius:10px;padding:6px 8px;box-shadow:0 3px 12px rgba(0,0,0,.10);font-size:10px;color:#4a535c;pointer-events:none;}}
+.map-legend-row{{display:flex;align-items:center;gap:5px;white-space:nowrap;}}
+.map-legend-dot{{width:9px;height:9px;border-radius:50%;display:inline-block;background:#2f80ed;}}
+.map-legend-pin{{width:9px;height:9px;border-radius:50%;display:inline-block;background:#28a17a;}}
+@media(max-width:640px){{#toilet-map{{height:500px;border-radius:14px;}}.leaflet-popup-content{{width:min(260px,74vw)!important;}}}}
+</style>
+</head>
+<body>
+<div style="position:relative"><div id="toilet-map"><div class="toilet-map-error">地図を読み込んでいます…</div></div><div class="map-legend"><div class="map-legend-row"><span class="map-legend-dot"></span>現在地</div><div class="map-legend-row"><span class="map-legend-pin"></span>トイレ候補</div></div></div>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
+<script>
+(function(){{
+  const data = {payload_json};
+  const mapNode = document.getElementById('toilet-map');
+  if (!window.L) {{
+    mapNode.innerHTML = '<div class="toilet-map-error">地図を読み込めませんでした。通信状態を確認して、もう一度ページを開いてください。</div>';
+    return;
+  }}
+  const esc = (value) => String(value == null ? '' : value).replace(/[&<>"']/g, (ch) => ({{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}}[ch]));
+  mapNode.innerHTML = '';
+  const center = [Number(data.center.lat), Number(data.center.lon)];
+  const map = L.map('toilet-map', {{zoomControl:true, attributionControl:true, preferCanvas:true}}).setView(center, 17);
+  L.tileLayer('https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png', {{maxZoom:19, attribution:'&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap</a>'}}).addTo(map);
+  const bounds = L.latLngBounds([center]);
+  L.circle(center, {{radius:Number(data.radius_m || 0), color:'#4d95e8', weight:1.5, opacity:.55, fillColor:'#4d95e8', fillOpacity:.045, dashArray:'5 5'}}).addTo(map);
+  if (Number(data.accuracy_m || 0) > 0 && String(data.search_source || '') === 'gps') {{
+    L.circle(center, {{radius:Number(data.accuracy_m), color:'#2f80ed', weight:1, opacity:.35, fillColor:'#2f80ed', fillOpacity:.07}}).addTo(map);
+  }}
+  const currentIcon = L.divIcon({{className:'', html:'<div class="current-dot"></div>', iconSize:[18,18], iconAnchor:[9,9]}});
+  L.marker(center, {{icon:currentIcon, keyboard:false, zIndexOffset:1200}}).addTo(map).bindPopup(String(data.search_source || '') === 'manual' ? '<b>検索中心</b>' : '<b>現在地</b>');
+  const pill = (label, cls='') => label ? `<span class="toilet-popup-pill ${{cls}}">${{esc(label)}}</span>` : '';
+  (data.places || []).forEach((place) => {{
+    const lat = Number(place.latitude), lon = Number(place.longitude);
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
+    bounds.extend([lat, lon]);
+    const knownOpen = place.open_now === true || place.open_now === false;
+    const pinClass = knownOpen && place.open_now === true ? '' : ' unknown';
+    const icon = L.divIcon({{className:'toilet-pin-shell', html:`<div class="toilet-pin${{pinClass}}"><span class="pin-label">${{Number(place.index)||''}}</span></div>`, iconSize:[34,42], iconAnchor:[17,38], popupAnchor:[0,-35]}});
+    const distance = Number(place.distance_m || 0);
+    const distanceText = distance >= 1000 ? `${{(distance/1000).toFixed(1)}}km` : `${{Math.round(distance)}}m`;
+    const pills = [
+      pill(place.opening_label, place.open_now === true ? 'good' : (place.open_now === false ? 'warn' : '')),
+      pill(place.fee_label, String(place.fee_label || '').includes('無料') ? 'good' : ''),
+      pill(place.access_label, String(place.access_label || '') === '一般利用可' ? 'good' : 'warn'),
+      pill(place.wheelchair_label, place.wheelchair_ok ? 'good' : ''),
+      pill(place.baby_label, place.baby_ok ? 'good' : ''),
+      pill(place.floor_label, place.floor_label ? 'good' : '')
+    ].join('');
+    const details = [];
+    if (place.opening_hours) details.push(`利用時間: ${{esc(place.opening_hours)}}`);
+    if (place.address) details.push(esc(place.address));
+    const route = place.route_url ? `<a class="toilet-route-button" href="${{esc(place.route_url)}}" target="_blank" rel="noopener noreferrer">🚶 ここへ徒歩で案内</a>` : '';
+    const popup = `<div class="toilet-popup-title">${{esc(place.name || 'トイレ')}}</div>` + `<div class="toilet-popup-meta">${{esc(place.category || 'トイレ')}} ・ 徒歩約${{Math.max(1,Number(place.walk_minutes)||1)}}分（${{distanceText}}）</div>` + (pills ? `<div class="toilet-popup-pills">${{pills}}</div>` : '') + (details.length ? `<div class="toilet-popup-detail">${{details.join(' ／ ')}}</div>` : '') + route;
+    L.marker([lat,lon], {{icon, riseOnHover:true}}).addTo(map).bindPopup(popup, {{maxWidth:300, closeButton:true}});
+  }});
+  if ((data.places || []).length) map.fitBounds(bounds, {{padding:[34,34], maxZoom:18}}); else map.setView(center, Number(data.radius_m || 0) <= 80 ? 18 : 17);
+  setTimeout(() => map.invalidateSize(), 120);
+}})();
+</script>
+</body>
+</html>'''
+    st.components.v1.html(map_html, height=550, scrolling=False)
+
+
 def page_toilets():
     page_top(
         "🚻 近くのトイレ",
-        "検索ボタンを押した瞬間の現在地を高精度で取り直し、徒歩1分・3分の近場を素早く探します。今使える候補を優先し、その中では距離順、次に一般利用可を優先して表示します。",
+        "検索ボタンを押した瞬間の現在地を高精度で取り直し、徒歩1分・3分のトイレを地図上にピン表示します。行きたいピンをタップすると、Googleマップの徒歩経路案内を開けます。",
     )
     st.markdown(
         """
@@ -19723,7 +19869,7 @@ def page_toilets():
     wheelchair_key = f"_toilet_wheelchair_v199_{prefix}"
     baby_key = f"_toilet_baby_v199_{prefix}"
     open_key = f"_toilet_open_v199_{prefix}"
-    result_key = f"_toilet_search_result_v217_{prefix}"
+    result_key = f"_toilet_search_result_v231_{prefix}"
 
     if st.session_state.get(distance_key) not in {"1", "3"}:
         st.session_state[distance_key] = "3"
@@ -19828,7 +19974,7 @@ def page_toilets():
             if search_component is not None:
                 search_component_result = search_component(
                     data={},
-                    key=f"toilet_search_now_v217_{current_family_key()}_{current_member_key()}",
+                    key=f"toilet_search_now_v231_{current_family_key()}_{current_member_key()}",
                     on_search_location_change=lambda: None,
                     on_search_error_change=lambda: None,
                 )
@@ -19903,8 +20049,8 @@ def page_toilets():
     fresh_search_payload = getattr(search_component_result, "search_location", None) if search_component_result is not None else None
     if isinstance(fresh_search_payload, dict):
         search_token = str(fresh_search_payload.get("token") or "")
-        if search_token and search_token != str(st.session_state.get("_toilet_search_location_token_v217") or ""):
-            st.session_state["_toilet_search_location_token_v217"] = search_token
+        if search_token and search_token != str(st.session_state.get("_toilet_search_location_token_v231") or ""):
+            st.session_state["_toilet_search_location_token_v231"] = search_token
             try:
                 fresh_lat = float(fresh_search_payload.get("latitude"))
                 fresh_lon = float(fresh_search_payload.get("longitude"))
@@ -19917,8 +20063,8 @@ def page_toilets():
     fresh_search_error = getattr(search_component_result, "search_error", None) if search_component_result is not None else None
     if isinstance(fresh_search_error, dict):
         error_token = str(fresh_search_error.get("token") or "")
-        if error_token and error_token != str(st.session_state.get("_toilet_search_error_token_v217") or ""):
-            st.session_state["_toilet_search_error_token_v217"] = error_token
+        if error_token and error_token != str(st.session_state.get("_toilet_search_error_token_v231") or ""):
+            st.session_state["_toilet_search_error_token_v231"] = error_token
             manual_fallback = st.session_state.get("_nearby_location")
             if (
                 isinstance(manual_fallback, dict)
@@ -20003,10 +20149,16 @@ def page_toilets():
     if bool(search_result.get("equipment_filter_unavailable")):
         st.warning("Google Placesの補完候補では、車いす対応・おむつ交換台の設備情報を判定できない場所があります。現地表示もあわせて確認してください。")
 
-    places = list(search_result.get("places") or [])[:10]
+    places = list(search_result.get("places") or [])[:30]
     st.divider()
-    st.markdown("### 近くで使いやすいトイレ")
-    st.caption("最大10か所。検索時点の現在地を基準に、現在利用できる候補を最優先し、その中では距離順です。同程度なら『一般利用可』→『一般利用しやすい施設』→『利用条件未確認』の順に扱います。")
+    st.markdown("### 地図からトイレを選ぶ")
+    st.caption("現在地は青い点、トイレ候補は番号付きピンです。ピンをタップし、『ここへ徒歩で案内』を押すとGoogleマップの徒歩経路案内を開きます。")
+
+    map_accuracy = saved.get("search_accuracy_m") if isinstance(saved, dict) else None
+    map_source = saved.get("search_source") if isinstance(saved, dict) else "gps"
+    if current_lat is not None and current_lon is not None:
+        _render_toilet_map(current_lat, current_lon, places, radius_m, accuracy_m=map_accuracy, search_source=map_source)
+
     if not places:
         if distance_mode == "1":
             st.info("徒歩1分の範囲では候補を見つけられませんでした。徒歩3分に広げてもう一度検索してください。")
@@ -20014,48 +20166,7 @@ def page_toilets():
             st.info("徒歩3分の範囲では候補を見つけられませんでした。設備条件を『問わない』にしてもう一度検索してください。")
         return
 
-    for index, place in enumerate(places, start=1):
-        with st.container(border=True):
-            st.markdown(f'<div class="toilet-card-title">{index}. {html.escape(str(place.get("name") or "トイレ"))}</div>', unsafe_allow_html=True)
-            st.markdown(
-                f'<div class="toilet-card-meta">{html.escape(str(place.get("category") or "トイレ"))}　・　{html.escape(_nearby_distance_text(place))}</div>',
-                unsafe_allow_html=True,
-            )
-            pills = []
-            fee_label = str(place.get("fee_label") or "")
-            if fee_label:
-                fee_css = "good" if place.get("fee_status") == "free" else ("bad" if place.get("fee_status") == "paid" else "")
-                pills.append(f'<span class="toilet-pill {fee_css}">{html.escape(fee_label)}</span>')
-            opening_label = str(place.get("opening_label") or "")
-            if opening_label:
-                open_css = "good" if place.get("open_now") is True else ("bad" if place.get("open_now") is False else "")
-                pills.append(f'<span class="toilet-pill {open_css}">{html.escape(opening_label)}</span>')
-            for label, css_name in ((place.get("wheelchair_label"), "good" if place.get("wheelchair_ok") is True else ""), (place.get("baby_label"), "good" if place.get("baby_ok") is True else "")):
-                if label:
-                    pills.append(f'<span class="toilet-pill {css_name}">{html.escape(str(label))}</span>')
-            access_label = str(place.get("access_label") or "")
-            if access_label:
-                access_css = "good" if access_label == "一般利用可" else "warn"
-                pills.append(f'<span class="toilet-pill {access_css}">{html.escape(access_label)}</span>')
-            floor_label = str(place.get("floor_label") or "")
-            if floor_label:
-                pills.append(f'<span class="toilet-pill good">{html.escape(floor_label)}</span>')
-            if pills:
-                st.markdown('<div class="toilet-pills">' + ''.join(pills) + '</div>', unsafe_allow_html=True)
-
-            details = []
-            if place.get("opening_hours"):
-                details.append("利用時間: " + str(place.get("opening_hours")))
-            if place.get("address"):
-                details.append(str(place.get("address")))
-            if details:
-                st.markdown('<div class="toilet-card-sub">' + html.escape(" ／ ".join(details)) + '</div>', unsafe_allow_html=True)
-
-            direction_url = _nearby_directions_url(place)
-            if direction_url:
-                st.link_button("🗺️ このトイレに案内してもらう", direction_url, use_container_width=True)
-
-    st.caption("トイレ候補はOpenStreetMapと、設定済みの場合はGoogle Placesを同時に検索します。通常のオフィスは除外し、商業・飲食・サービスなど一般向け機能を併設する複合ビルは候補に残します。")
+    st.caption(f"地図に{len(places)}か所を表示しています。候補はOpenStreetMapと、設定済みの場合はGoogle Placesを同時に検索しています。")
 
 
 def page_nearby():
