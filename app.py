@@ -30,9 +30,9 @@ from zoneinfo import ZoneInfo
 import streamlit as st
 
 # Freshly generated update: 2026-08-31 23:49 JST
-GENERATED_UPDATE_JST = "2026-09-05T23:47:00+09:00"
+GENERATED_UPDATE_JST = "2026-09-05T23:56:00+09:00"
 
-APP_BUILD = "v225"
+APP_BUILD = "v226"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -881,6 +881,7 @@ _LIVE_CAMERA_HTML = """
 
   <div id="camera-active-actions" class="camera-active-actions" hidden>
     <button id="live-camera-shoot" class="camera-shoot-button" type="button">● 撮影する</button>
+    <button id="live-camera-facing-switch" class="camera-facing-button" type="button" aria-label="内側カメラに切り替える">🤳 内側</button>
     <button id="live-camera-mode-switch" class="camera-mode-switch-button" type="button">🎥 動画へ</button>
     <button id="live-camera-stop" class="camera-sub-button" type="button">閉じる</button>
   </div>
@@ -898,7 +899,7 @@ _LIVE_CAMERA_HTML = """
       <button id="camera-review-retry" class="camera-retry-button" type="button">撮りなおす／選びなおす</button>
     </div>
     <button id="camera-review-find-moments" class="camera-find-button" type="button" hidden>✨ いい瞬間を探す</button>
-    <div id="camera-review-build" class="camera-review-build" hidden>camera v162</div>
+    <div id="camera-review-build" class="camera-review-build" hidden>camera v226</div>
     <div id="camera-review-emotion-hint" class="camera-review-emotion-hint" hidden>写真下の「通常／こどもーど」を切り替え、写真につけるアイコンを1つ選べます。</div>
     <div id="camera-review-image-shell" class="camera-review-image-shell" role="button" tabindex="0" aria-label="写真のアイコンを選ぶ" hidden>
       <img id="camera-review-image" class="camera-review-image" alt="撮影した写真の確認" />
@@ -995,6 +996,7 @@ _LIVE_CAMERA_CSS = """
 .camera-menu-button,
 .gallery-button,
 .camera-shoot-button,
+.camera-facing-button,
 .camera-mode-switch-button,
 .camera-sub-button,
 .camera-save-button,
@@ -1040,6 +1042,38 @@ _LIVE_CAMERA_CSS = """
   border-radius: 16px;
   background: #000;
   margin: 0;
+}
+/* v226: selfie preview is mirrored like a normal phone camera.
+   Captured files keep the camera sensor's original orientation. */
+.live-camera-video.front-facing {
+  transform: scaleX(-1);
+}
+/* v226: when the handset is physically landscape, show a true wide preview
+   instead of keeping the old portrait 3:4 viewport. JS supplies a height/width
+   based on the device's short edge so controls remain reachable without a long scroll. */
+.live-camera-wrap.camera-landscape .live-camera-video {
+  width: min(100%, var(--camera-landscape-preview-width, 640px));
+  height: var(--camera-landscape-preview-height, 340px);
+  max-height: none;
+  aspect-ratio: auto;
+  object-fit: cover;
+  margin-left: auto;
+  margin-right: auto;
+}
+.live-camera-wrap.camera-landscape .camera-review-image,
+.live-camera-wrap.camera-landscape .camera-review-video {
+  width: min(100%, var(--camera-landscape-preview-width, 640px));
+  height: var(--camera-landscape-preview-height, 340px);
+  max-height: none;
+  aspect-ratio: auto;
+  object-fit: contain;
+  margin-left: auto;
+  margin-right: auto;
+}
+.live-camera-wrap.camera-landscape .camera-review-image-shell {
+  width: min(100%, calc(var(--camera-landscape-preview-width, 640px) + 8px));
+  margin-left: auto;
+  margin-right: auto;
 }
 .camera-review-image-shell {
   position: relative;
@@ -1129,7 +1163,7 @@ _LIVE_CAMERA_CSS = """
   display: grid;
   gap: 8px;
 }
-.camera-active-actions { grid-template-columns: 2.2fr 1.2fr .8fr; }
+.camera-active-actions { grid-template-columns: 2.15fr .95fr 1.15fr .75fr; }
 .camera-review-actions { grid-template-columns: 3fr 1fr; }
 .camera-active-actions { margin: 8px 0 0 0; }
 .camera-review-actions { margin: 0 0 8px 0; }
@@ -1186,6 +1220,7 @@ _LIVE_CAMERA_CSS = """
   border-color: #166534;
   background: #15803d;
 }
+.camera-facing-button,
 .camera-mode-switch-button,
 .camera-sub-button,
 .camera-retry-button {
@@ -1212,9 +1247,10 @@ _LIVE_CAMERA_CSS = """
     min-height: 52px;
     font-size: 14px;
   }
-  .camera-active-actions { grid-template-columns: 2fr 1.1fr .8fr; }
+  .camera-active-actions { grid-template-columns: 1.85fr .92fr 1.08fr .72fr; gap: 6px; }
   .camera-review-actions { grid-template-columns: 3fr 1fr; }
   .camera-shoot-button,
+  .camera-facing-button,
   .camera-mode-switch-button,
   .camera-sub-button,
   .camera-save-button,
@@ -1225,11 +1261,55 @@ _LIVE_CAMERA_CSS = """
     padding-right: 8px;
   }
 }
+.live-camera-wrap.camera-landscape .camera-active-actions {
+  grid-template-columns: 2fr .95fr 1.05fr .72fr;
+  gap: 6px;
+  margin-top: 6px;
+}
+.live-camera-wrap.camera-landscape .camera-shoot-button,
+.live-camera-wrap.camera-landscape .camera-facing-button,
+.live-camera-wrap.camera-landscape .camera-mode-switch-button,
+.live-camera-wrap.camera-landscape .camera-sub-button {
+  min-height: 44px;
+  font-size: 12px;
+  padding: 6px 5px;
+  border-radius: 12px;
+}
+.live-camera-wrap.camera-landscape .camera-library-button {
+  min-height: 42px;
+  font-size: 12px;
+  padding: 6px 9px;
+  border-radius: 12px;
+}
+.live-camera-wrap.camera-landscape .camera-recording-status,
+.live-camera-wrap.camera-landscape .camera-status {
+  margin-top: 5px;
+  padding: 5px 8px;
+  font-size: 11px;
+}
+.live-camera-wrap.camera-landscape .camera-review-actions {
+  gap: 6px;
+}
+.live-camera-wrap.camera-landscape .camera-save-button,
+.live-camera-wrap.camera-landscape .camera-retry-button {
+  min-height: 44px;
+  font-size: 12px;
+  border-radius: 12px;
+}
+.live-camera-wrap.camera-landscape .camera-review-emotion-hint {
+  margin: 2px 0 5px;
+  padding: 5px 7px;
+  font-size: 10px;
+}
+.live-camera-wrap.camera-landscape .camera-review-mode-switch {
+  margin: 4px 0 5px;
+}
 """
 
 _LIVE_CAMERA_JS = r"""
 export default function(component) {
   const { parentElement, setTriggerValue, data } = component;
+  const wrap = parentElement.querySelector('.live-camera-wrap');
   const video = parentElement.querySelector('#live-camera-video');
   const canvas = parentElement.querySelector('#live-camera-canvas');
   const menu = parentElement.querySelector('#camera-menu');
@@ -1242,6 +1322,7 @@ export default function(component) {
   const libraryActions = parentElement.querySelector('#camera-library-actions');
   const activeActions = parentElement.querySelector('#camera-active-actions');
   const shootButton = parentElement.querySelector('#live-camera-shoot');
+  const facingSwitchButton = parentElement.querySelector('#live-camera-facing-switch');
   const modeSwitchButton = parentElement.querySelector('#live-camera-mode-switch');
   const stopButton = parentElement.querySelector('#live-camera-stop');
   const recordingStatus = parentElement.querySelector('#camera-recording-status');
@@ -1286,6 +1367,68 @@ export default function(component) {
   }
   let stream = null;
   let cameraMode = 'photo';
+  let cameraFacing = 'environment';
+  try {
+    const savedFacing = String(localStorage.getItem('tokyo_burari_camera_facing_v226') || '');
+    if (savedFacing === 'user' || savedFacing === 'environment') cameraFacing = savedFacing;
+  } catch (_) {}
+
+  const isDeviceLandscape = () => {
+    try {
+      const type = String(globalThis.screen?.orientation?.type || '');
+      if (type.startsWith('landscape')) return true;
+      if (type.startsWith('portrait')) return false;
+    } catch (_) {}
+    try { return Boolean(window.matchMedia && window.matchMedia('(orientation: landscape)').matches); } catch (_) {}
+    return false;
+  };
+  const syncOrientationUi = () => {
+    const landscape = isDeviceLandscape();
+    if (wrap) {
+      wrap.classList.toggle('camera-landscape', landscape);
+      if (landscape) {
+        let shortEdge = 420;
+        try {
+          const sw = Number(globalThis.screen?.width || 0);
+          const sh = Number(globalThis.screen?.height || 0);
+          if (sw > 0 && sh > 0) shortEdge = Math.min(sw, sh);
+          else if (window.visualViewport) shortEdge = Math.min(Number(window.visualViewport.width || 0), Number(window.visualViewport.height || 0)) || shortEdge;
+        } catch (_) {}
+        const previewHeight = Math.max(190, Math.min(420, Math.round(shortEdge * 0.72)));
+        const previewWidth = Math.round(previewHeight * 16 / 9);
+        wrap.style.setProperty('--camera-landscape-preview-height', `${previewHeight}px`);
+        wrap.style.setProperty('--camera-landscape-preview-width', `${previewWidth}px`);
+      } else {
+        wrap.style.removeProperty('--camera-landscape-preview-height');
+        wrap.style.removeProperty('--camera-landscape-preview-width');
+      }
+    }
+  };
+  const syncFacingUi = () => {
+    const front = cameraFacing === 'user';
+    if (video) video.classList.toggle('front-facing', front);
+    if (facingSwitchButton) {
+      facingSwitchButton.textContent = front ? '📷 外側' : '🤳 内側';
+      facingSwitchButton.setAttribute('aria-label', front ? '外側カメラに切り替える' : '内側カメラに切り替える');
+      facingSwitchButton.title = front ? '外側カメラに切り替える' : '内側カメラに切り替える';
+    }
+  };
+  const persistCameraFacing = () => {
+    try { localStorage.setItem('tokyo_burari_camera_facing_v226', cameraFacing); } catch (_) {}
+  };
+  const preferredVideoConstraints = () => {
+    const landscape = isDeviceLandscape();
+    return {
+      facingMode: { ideal: cameraFacing },
+      width: { ideal: landscape ? 1920 : 1080 },
+      height: { ideal: landscape ? 1080 : 1920 },
+      frameRate: { ideal: 30, max: 30 },
+      aspectRatio: { ideal: landscape ? (16 / 9) : (9 / 16) }
+    };
+  };
+  syncOrientationUi();
+  syncFacingUi();
+
   let pendingMedia = null;
   let pendingVideoBlob = null;
   const PHOTO_EMOTION_ORDER = ['', 'cozy', 'joy', 'surprise', 'anger', 'sadness', 'frustration'];
@@ -1420,6 +1563,7 @@ export default function(component) {
       shootButton.classList.remove('recording');
       shootButton.textContent = cameraMode === 'video' ? '● 録画を開始' : '● 写真を撮る';
     }
+    if (facingSwitchButton) facingSwitchButton.disabled = Boolean(recording);
     if (modeSwitchButton) {
       modeSwitchButton.disabled = Boolean(recording) || (cameraMode !== 'video' && !videoAllowed);
       modeSwitchButton.textContent = cameraMode === 'video'
@@ -1494,6 +1638,7 @@ export default function(component) {
   };
 
   const showMenu = () => {
+    if (wrap) { wrap.classList.remove('camera-live'); wrap.classList.remove('camera-reviewing'); }
     if (menu) menu.hidden = false;
     if (activeActions) activeActions.hidden = true;
     if (libraryActions) libraryActions.hidden = true;
@@ -1503,6 +1648,9 @@ export default function(component) {
   };
 
   const showCameraActions = () => {
+    syncOrientationUi();
+    syncFacingUi();
+    if (wrap) { wrap.classList.add('camera-live'); wrap.classList.remove('camera-reviewing'); }
     if (menu) menu.hidden = true;
     if (activeActions) activeActions.hidden = false;
     if (video) video.hidden = false;
@@ -1511,6 +1659,8 @@ export default function(component) {
   };
 
   const showPhotoReview = (dataUrl) => {
+    syncOrientationUi();
+    if (wrap) { wrap.classList.remove('camera-live'); wrap.classList.add('camera-reviewing'); }
     if (menu) menu.hidden = true;
     if (activeActions) activeActions.hidden = true;
     if (libraryActions) libraryActions.hidden = true;
@@ -1535,6 +1685,8 @@ export default function(component) {
   };
 
   const showVideoReview = (blob) => {
+    syncOrientationUi();
+    if (wrap) { wrap.classList.remove('camera-live'); wrap.classList.add('camera-reviewing'); }
     if (menu) menu.hidden = true;
     if (activeActions) activeActions.hidden = true;
     if (libraryActions) libraryActions.hidden = true;
@@ -1624,16 +1776,19 @@ export default function(component) {
           noiseSuppression: true,
           autoGainControl: true
         } : false,
-        video: {
-          facingMode: { ideal: 'environment' },
-          width: { ideal: 1920 },
-          height: { ideal: 1080 },
-          frameRate: { ideal: 30, max: 30 },
-          aspectRatio: { ideal: 1.7777777778 }
-        }
+        video: preferredVideoConstraints()
       });
       video.srcObject = stream;
       await video.play();
+      try {
+        const cameraTrack = stream.getVideoTracks && stream.getVideoTracks()[0];
+        const settings = (cameraTrack && cameraTrack.getSettings) ? cameraTrack.getSettings() : {};
+        const actualFacing = String(settings?.facingMode || '');
+        if (actualFacing === 'user' || actualFacing === 'environment') cameraFacing = actualFacing;
+      } catch (_) {}
+      persistCameraFacing();
+      syncOrientationUi();
+      syncFacingUi();
       // Prefer the phone/browser's own stabilization when it exposes a compatible
       // media-track constraint. Unknown constraints are never forced, so devices
       // without this capability continue normally.
@@ -1658,7 +1813,7 @@ export default function(component) {
         localStorage.setItem('tokyo_burari_last_camera_open_v1', String(openedAt));
         localStorage.setItem('tokyo_burari_last_camera_mode_v1', cameraMode === 'video' ? 'video' : 'photo');
       } catch (_) {}
-      setStatus(cameraMode === 'video' ? '動画は最大65秒です。音声も一緒に記録します。' : '');
+      setStatus(cameraMode === 'video' ? `動画は最大65秒です。音声も一緒に記録します。${cameraFacing === 'user' ? ' 内側カメラ使用中。' : ''}` : (cameraFacing === 'user' ? '内側カメラ使用中です。' : ''));
     } catch (err) {
       console.error(err);
       stopStream();
@@ -2016,6 +2171,8 @@ export default function(component) {
         data_url: dataUrl,
         name: 'camera.jpg',
         source: 'camera',
+        camera_facing: cameraFacing,
+        capture_orientation: isDeviceLandscape() ? 'landscape' : 'portrait',
         captured_at: capturedAt,
         location,
         emotion: '',
@@ -2190,6 +2347,8 @@ export default function(component) {
             video_bitrate_bps: Number((recorder && recorder.videoBitsPerSecond) || requestedVideoBitrate || 0),
             name: finalType.includes('mp4') ? 'camera.mp4' : 'camera.webm',
             source: 'video_camera',
+            camera_facing: cameraFacing,
+            capture_orientation: isDeviceLandscape() ? 'landscape' : 'portrait',
             captured_at: recordingCapturedAt || new Date().toISOString(),
             location,
             auto_save: true,
@@ -2549,11 +2708,43 @@ export default function(component) {
     startCamera(cameraMode === 'video' ? 'photo' : 'video');
   };
 
+  const switchCameraFacing = () => {
+    if (mediaRecorder && mediaRecorder.state === 'recording') return;
+    cameraFacing = cameraFacing === 'user' ? 'environment' : 'user';
+    persistCameraFacing();
+    syncFacingUi();
+    setStatus(cameraFacing === 'user' ? '内側カメラに切り替えています…' : '外側カメラに切り替えています…');
+    startCamera(cameraMode);
+  };
+
+  let orientationConstraintTimer = null;
+  const handleOrientationChange = () => {
+    syncOrientationUi();
+    if (orientationConstraintTimer) clearTimeout(orientationConstraintTimer);
+    orientationConstraintTimer = setTimeout(async () => {
+      orientationConstraintTimer = null;
+      if (!stream || (mediaRecorder && mediaRecorder.state === 'recording')) return;
+      try {
+        const track = stream.getVideoTracks && stream.getVideoTracks()[0];
+        if (track && track.applyConstraints) {
+          await track.applyConstraints(preferredVideoConstraints());
+          syncOrientationUi();
+          syncFacingUi();
+        }
+      } catch (err) {
+        // Some mobile browsers lock capture dimensions after getUserMedia().
+        // Keep the live preview usable; the next camera open will request the new orientation.
+        console.warn('camera orientation constraint update unavailable', err);
+      }
+    }, 180);
+  };
+
   const startPhotoCamera = () => startCamera('photo');
   const startVideoCamera = () => startCamera('video');
 
   startButton.addEventListener('click', startPhotoCamera);
   videoStartButton.addEventListener('click', startVideoCamera);
+  facingSwitchButton?.addEventListener('click', switchCameraFacing);
   modeSwitchButton.addEventListener('click', switchCameraMode);
   shootButton.addEventListener('click', handleShoot);
   stopButton.addEventListener('click', closeCamera);
@@ -2570,6 +2761,9 @@ export default function(component) {
   reviewImageShell?.addEventListener('click', cycleReviewEmotion);
   reviewImageShell?.addEventListener('keydown', onReviewEmotionKeydown);
   reviewFindMoments?.addEventListener('click', findGoodMoments);
+  window.addEventListener('orientationchange', handleOrientationChange);
+  window.addEventListener('resize', handleOrientationChange);
+  try { globalThis.screen?.orientation?.addEventListener?.('change', handleOrientationChange); } catch (_) {}
 
   if (data?.auto_start_mode === 'video') {
     queueMicrotask(() => startCamera('video'));
@@ -2580,6 +2774,7 @@ export default function(component) {
   return () => {
     startButton.removeEventListener('click', startPhotoCamera);
     videoStartButton.removeEventListener('click', startVideoCamera);
+    facingSwitchButton?.removeEventListener('click', switchCameraFacing);
     modeSwitchButton.removeEventListener('click', switchCameraMode);
     shootButton.removeEventListener('click', handleShoot);
     stopButton.removeEventListener('click', closeCamera);
@@ -2590,6 +2785,10 @@ export default function(component) {
     reviewImageShell?.removeEventListener('click', cycleReviewEmotion);
     reviewImageShell?.removeEventListener('keydown', onReviewEmotionKeydown);
     reviewFindMoments?.removeEventListener('click', findGoodMoments);
+    window.removeEventListener('orientationchange', handleOrientationChange);
+    window.removeEventListener('resize', handleOrientationChange);
+    try { globalThis.screen?.orientation?.removeEventListener?.('change', handleOrientationChange); } catch (_) {}
+    if (orientationConstraintTimer) { clearTimeout(orientationConstraintTimer); orientationConstraintTimer = null; }
     clearGoodMomentsRevealTimer();
     stopStream();
     hideReview();
@@ -2597,11 +2796,11 @@ export default function(component) {
 }
 """
 
-LIVE_CAMERA_COMPONENT_BUILD = "v168"
+LIVE_CAMERA_COMPONENT_BUILD = "v226"
 
 try:
     live_camera_component = st.components.v2.component(
-        "tokyo_burari_live_camera_v168",
+        "tokyo_burari_live_camera_v226",
         html=_LIVE_CAMERA_HTML,
         css=_LIVE_CAMERA_CSS,
         js=_LIVE_CAMERA_JS,
@@ -22729,7 +22928,7 @@ def page_trip():
             "video_candidate_sheet_signed_url": str(video_reservation.get("candidate_sheet_signed_url") or ""),
             "video_candidate_sheet_storage_path": str(video_reservation.get("candidate_sheet_path") or ""),
         },
-        key=f"live_camera_v155_{camera_trip_key}_{st.session_state.capture_serial}_{_current_ui_refresh_epoch()}",
+        key=f"live_camera_v226_{camera_trip_key}_{st.session_state.capture_serial}_{_current_ui_refresh_epoch()}",
         on_photo_change=lambda: None,
         on_video_change=lambda: None,
         on_camera_error_change=lambda: None,
