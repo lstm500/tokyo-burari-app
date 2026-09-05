@@ -32,7 +32,7 @@ import streamlit as st
 # Freshly generated update: 2026-08-31 23:49 JST
 GENERATED_UPDATE_JST = "2026-09-05T12:44:00+09:00"
 
-APP_BUILD = "v219"
+APP_BUILD = "v220"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -6748,7 +6748,13 @@ def _nearby_google_photo_refs(photo_rows, limit=10):
 
 
 def search_nearby_quick_stops_google(latitude, longitude, kind, subkind, radius_m, open_now_only=False, budget_under_1000=False):
-    """Use Google Places (New) for nearby cards with photos, live hours and ratings."""
+    """Search Google Places around the phone's fresh GPS fix.
+
+    v220: snack discovery uses Nearby Search (New) with explicit place types instead of
+    a long free-text keyword string.  The old Text Search query was too restrictive in
+    dense areas (for example Gotanda) because Google first interpreted a keyword soup
+    and this function then filtered the already-small result set a second time.
+    """
     if not GOOGLE_PLACES_API_KEY:
         return None
     try:
@@ -6758,32 +6764,70 @@ def search_nearby_quick_stops_google(latitude, longitude, kind, subkind, radius_
     except (TypeError, ValueError):
         return {"places": [], "error": "現在地を確認できませんでした。", "provider": "Google Places"}
 
-    body = {
-        "textQuery": _nearby_google_text_query(kind, subkind),
-        "languageCode": "ja",
-        "regionCode": "JP",
-        "maxResultCount": 20,
-        "locationBias": {
-            "circle": {
-                "center": {"latitude": latitude, "longitude": longitude},
-                "radius": float(radius_m),
-            }
-        },
-    }
-    if bool(open_now_only):
-        body["openNow"] = True
+    is_snack = str(kind) == "snack"
+    snack_style = str(subkind or "食べ歩き向き")
 
+    # For snacks, Nearby Search is a better fit than Text Search: it asks Google for
+    # concrete nearby business types and ranks them by distance.  Search a slightly
+    # larger discovery circle, then enforce the user's selected radius below.
+    if is_snack:
+        if snack_style == "店内中心":
+            included_types = [
+                "cafe", "coffee_shop", "tea_house", "dessert_restaurant",
+                "dessert_shop", "cake_shop", "ice_cream_shop", "pastry_shop",
+                "confectionery", "bakery", "donut_shop",
+            ]
+        else:
+            included_types = [
+                "bakery", "bagel_shop", "cake_shop", "candy_store",
+                "chocolate_shop", "confectionery", "dessert_shop", "donut_shop",
+                "ice_cream_shop", "pastry_shop", "snack_bar", "coffee_stand",
+                "juice_shop", "meal_takeaway", "cafe", "coffee_shop", "tea_house",
+            ]
+        discovery_radius = min(50000.0, max(float(radius_m) + 35.0, float(radius_m) * 1.25))
+        body = {
+            "includedTypes": included_types,
+            "maxResultCount": 20,
+            "rankPreference": "DISTANCE",
+            "languageCode": "ja",
+            "regionCode": "JP",
+            "locationRestriction": {
+                "circle": {
+                    "center": {"latitude": latitude, "longitude": longitude},
+                    "radius": discovery_radius,
+                }
+            },
+        }
+        endpoint = "https://places.googleapis.com/v1/places:searchNearby"
+    else:
+        body = {
+            "textQuery": _nearby_google_text_query(kind, subkind),
+            "languageCode": "ja",
+            "regionCode": "JP",
+            "maxResultCount": 20,
+            "locationBias": {
+                "circle": {
+                    "center": {"latitude": latitude, "longitude": longitude},
+                    "radius": float(radius_m),
+                }
+            },
+        }
+        if bool(open_now_only):
+            body["openNow"] = True
+        endpoint = "https://places.googleapis.com/v1/places:searchText"
+
+    field_mask = (
+        "places.id,places.displayName,places.formattedAddress,places.location,places.types,places.primaryType,"
+        "places.photos,places.businessStatus,places.currentOpeningHours,places.rating,places.userRatingCount,"
+        "places.priceLevel,places.priceRange,places.takeout,places.dineIn,places.servesDessert"
+    )
     req = Request(
-        "https://places.googleapis.com/v1/places:searchText",
+        endpoint,
         data=json.dumps(body, ensure_ascii=False).encode("utf-8"),
         headers={
             "Content-Type": "application/json; charset=UTF-8",
             "X-Goog-Api-Key": GOOGLE_PLACES_API_KEY,
-            "X-Goog-FieldMask": (
-                "places.id,places.displayName,places.formattedAddress,places.location,places.types,places.photos,"
-                "places.businessStatus,places.currentOpeningHours,places.rating,places.userRatingCount,"
-                "places.priceLevel,places.priceRange,places.takeout,places.dineIn"
-            ),
+            "X-Goog-FieldMask": field_mask,
         },
         method="POST",
     )
@@ -6799,13 +6843,30 @@ def search_nearby_quick_stops_google(latitude, longitude, kind, subkind, radius_
         }
 
     places = []
-    snack_terms = ("大福","団子","だんご","たい焼","鯛焼","どら焼","饅頭","まんじゅう","ケーキ","パティスリー","焼き菓子","アイス","ジェラート","ソフトクリーム","かき氷","クレープ","ドーナツ","シュー","プリン","スイーツ","パン","ベーカリー","おにぎり","肉まん","中華まん")
-    portable_terms = ("大福","団子","だんご","たい焼","鯛焼","どら焼","饅頭","まんじゅう","クレープ","ドーナツ","アイス","ジェラート","ソフトクリーム","パン","ベーカリー","焼き菓子","おにぎり","肉まん","中華まん","テイクアウト")
-    dessert_types = {"bakery", "candy_store", "ice_cream_shop", "dessert_shop", "confectionery", "chocolate_shop"}
-    portable_types = {"bakery", "candy_store", "ice_cream_shop", "confectionery", "chocolate_shop", "meal_takeaway"}
+    raw_count = 0
+    in_range_count = 0
+    snack_candidate_count = 0
+    open_candidate_count = 0
+
+    snack_terms = (
+        "大福", "団子", "だんご", "たい焼", "鯛焼", "どら焼", "饅頭", "まんじゅう",
+        "おはぎ", "最中", "羊羹", "せんべい", "煎餅", "和菓子", "洋菓子", "ケーキ",
+        "パティスリー", "焼き菓子", "クッキー", "スコーン", "マフィン", "カヌレ", "タルト",
+        "アイス", "ジェラート", "ソフトクリーム", "かき氷", "クレープ", "ドーナツ", "シュー",
+        "プリン", "スイーツ", "パン", "ベーカリー", "チョコ", "ワッフル", "チュロス",
+    )
+    portable_name_terms = snack_terms + ("おにぎり", "肉まん", "中華まん", "テイクアウト")
+    strong_snack_types = {
+        "bakery", "bagel_shop", "cake_shop", "candy_store", "chocolate_shop",
+        "confectionery", "dessert_shop", "donut_shop", "ice_cream_shop", "pastry_shop",
+        "snack_bar", "coffee_stand",
+    }
+    sitdown_types = {"cafe", "coffee_shop", "tea_house", "dessert_restaurant", "dessert_shop"}
+
     for raw in list((data or {}).get("places") or []):
         if not isinstance(raw, dict):
             continue
+        raw_count += 1
         name = str(((raw.get("displayName") or {}).get("text") if isinstance(raw.get("displayName"), dict) else "") or "").strip()
         loc = raw.get("location") or {}
         try:
@@ -6818,37 +6879,72 @@ def search_nearby_quick_stops_google(latitude, longitude, kind, subkind, radius_
         business_status = str(raw.get("businessStatus") or "").strip()
         if business_status == "CLOSED_PERMANENTLY":
             continue
+
         distance_m = _nearby_haversine_m(latitude, longitude, plat, plon)
-        distance_limit = float(radius_m) if kind == "snack" else float(radius_m) * 1.25
+        distance_limit = float(radius_m) if is_snack else float(radius_m) * 1.25
         if not math.isfinite(distance_m) or distance_m > distance_limit:
             continue
+        in_range_count += 1
+
         types = {str(x) for x in (raw.get("types") or []) if str(x)}
-        if kind == "snack":
-            meal_only = bool(types.intersection({"restaurant", "fast_food_restaurant", "bar", "pub"}))
-            snack_signal = bool(types.intersection(dessert_types | {"cafe", "coffee_shop", "meal_takeaway"})) or any(term in name for term in snack_terms)
-            if meal_only and not snack_signal:
+        primary_type = str(raw.get("primaryType") or "")
+        if primary_type:
+            types.add(primary_type)
+
+        takeout = raw.get("takeout") if isinstance(raw.get("takeout"), bool) else None
+        dine_in = raw.get("dineIn") if isinstance(raw.get("dineIn"), bool) else None
+        serves_dessert = raw.get("servesDessert") if isinstance(raw.get("servesDessert"), bool) else None
+        hours = raw.get("currentOpeningHours") if isinstance(raw.get("currentOpeningHours"), dict) else {}
+
+        if is_snack:
+            direct_name_signal = any(term in name for term in snack_terms)
+            snack_signal = bool(types.intersection(strong_snack_types)) or serves_dessert is True or direct_name_signal
+            # A cafe/tea shop is allowed only when Google explicitly signals dessert/takeout
+            # or its name itself clearly identifies a snack.  This avoids filling results
+            # with ordinary coffee shops while still finding crepes/cakes sold by cafes.
+            if not snack_signal and not (takeout is True and bool(types.intersection({"cafe", "coffee_shop", "tea_house", "meal_takeaway"}))):
                 continue
-            takeout = raw.get("takeout") if isinstance(raw.get("takeout"), bool) else None
-            dine_in = raw.get("dineIn") if isinstance(raw.get("dineIn"), bool) else None
-            portable_signal = bool(takeout is True or types.intersection(portable_types) or any(term in name for term in portable_terms))
-            if str(subkind) == "食べ歩き向き" and not portable_signal:
-                continue
-            if str(subkind) == "店内中心":
-                sitdown_signal = bool(dine_in is True or types.intersection({"cafe", "coffee_shop", "dessert_shop"}) or any(term in name for term in ("カフェ", "喫茶", "甘味", "ケーキ", "パティスリー", "デザート")))
-                if not sitdown_signal or (takeout is True and not bool(types.intersection({"cafe", "coffee_shop"}))):
+
+            if snack_style == "食べ歩き向き":
+                portable_signal = (
+                    takeout is True
+                    or bool(types.intersection(strong_snack_types))
+                    or any(term in name for term in portable_name_terms)
+                    or (serves_dessert is True and bool(types.intersection({"cafe", "coffee_shop", "tea_house", "meal_takeaway"})))
+                )
+                if not portable_signal:
                     continue
+            else:
+                sitdown_signal = (
+                    dine_in is True
+                    or bool(types.intersection(sitdown_types))
+                    or any(term in name for term in ("カフェ", "喫茶", "甘味", "ケーキ", "パティスリー", "デザート"))
+                )
+                if not sitdown_signal:
+                    continue
+            snack_candidate_count += 1
+
+            # Nearby Search (New) does not have an openNow request parameter.  Apply
+            # the user's "営業中だけ" choice using Google's currentOpeningHours result.
+            if bool(open_now_only):
+                if hours.get("openNow") is not True:
+                    continue
+            open_candidate_count += 1
+        else:
+            if bool(open_now_only) and hours.get("openNow") is False:
+                continue
+
         walk_minutes = max(1, int(math.ceil((distance_m * 1.25) / 80.0)))
         pseudo_tags = {"name": name}
-        if kind == "snack":
+        if is_snack:
             if "ice_cream_shop" in types:
                 pseudo_tags["amenity"] = "ice_cream"
-            elif "bakery" in types:
+            elif "bakery" in types or "bagel_shop" in types:
                 pseudo_tags["shop"] = "bakery"
-            elif types.intersection({"candy_store", "dessert_shop", "confectionery", "chocolate_shop"}):
+            elif types.intersection({"candy_store", "dessert_shop", "confectionery", "chocolate_shop", "cake_shop", "pastry_shop", "donut_shop"}):
                 pseudo_tags["shop"] = "confectionery"
         category = _nearby_place_label(pseudo_tags, kind)
         refs = _nearby_google_photo_refs(raw.get("photos") or [], limit=10)
-        hours = raw.get("currentOpeningHours") if isinstance(raw.get("currentOpeningHours"), dict) else {}
         try:
             rating = float(raw.get("rating")) if raw.get("rating") is not None else None
         except (TypeError, ValueError):
@@ -6880,8 +6976,13 @@ def search_nearby_quick_stops_google(latitude, longitude, kind, subkind, radius_
             "priority": 0,
             "provider": "Google Places",
             "photo_refs": refs,
-            "snack_style": str(subkind) if kind == "snack" else "",
+            "snack_style": snack_style if is_snack else "",
+            "takeout": takeout,
+            "dine_in": dine_in,
+            "serves_dessert": serves_dessert,
+            "google_types": sorted(types),
         })
+
     if bool(budget_under_1000):
         places = [item for item in places if _nearby_budget_match_1000(item)]
     places.sort(key=lambda item: int(item.get("distance_m") or 0))
@@ -6891,6 +6992,11 @@ def search_nearby_quick_stops_google(latitude, longitude, kind, subkind, radius_
         "provider": "Google Places",
         "open_now_only": bool(open_now_only),
         "budget_under_1000": bool(budget_under_1000),
+        "search_mode": "nearby_types" if is_snack else "text",
+        "raw_count": raw_count,
+        "in_range_count": in_range_count,
+        "snack_candidate_count": snack_candidate_count,
+        "open_candidate_count": open_candidate_count,
     }
 
 @st.cache_data(ttl=600, show_spinner=False)
@@ -19553,7 +19659,7 @@ def page_nearby():
     radius_key = f"_nearby_filter_radius_v194_{current_family_key()}_{current_member_key()}"
     budget_key = f"_nearby_filter_budget_v194_{current_family_key()}_{current_member_key()}"
     open_key = f"_nearby_filter_open_v194_{current_family_key()}_{current_member_key()}"
-    result_key = f"_nearby_search_result_v194_{current_family_key()}_{current_member_key()}"
+    result_key = f"_nearby_search_result_v220_{current_family_key()}_{current_member_key()}"
 
     if st.session_state.get(kind_key) not in {"snack", "sightseeing"}:
         st.session_state[kind_key] = "snack"
