@@ -20662,7 +20662,7 @@ def page_nearby():
     budget_key = f"_nearby_filter_budget_v232_{current_family_key()}_{current_member_key()}"
     lunch_budget_key = f"_nearby_filter_lunch_budget_v232_{current_family_key()}_{current_member_key()}"
     open_key = f"_nearby_filter_open_v232_{current_family_key()}_{current_member_key()}"
-    result_key = f"_nearby_search_result_v232_{current_family_key()}_{current_member_key()}"
+    result_key = f"_nearby_search_result_v234_{current_family_key()}_{current_member_key()}"
 
     if st.session_state.get(kind_key) not in {"snack", "sightseeing", "lunch"}:
         st.session_state[kind_key] = "snack"
@@ -20871,10 +20871,11 @@ def page_nearby():
             unsafe_allow_html=True,
         )
 
+        # v234: Search-result validity is based on the selected filters only.
+        # GPS is deliberately refreshed when Search is pressed, so comparing the
+        # pre-search and post-search coordinates would falsely mark the search stale.
         search_signature = json.dumps(
             {
-                "lat": round(latitude, 5) if latitude is not None else None,
-                "lon": round(longitude, 5) if longitude is not None else None,
                 "kind": kind,
                 "subkind": subkind,
                 "radius_m": radius_m,
@@ -20894,7 +20895,7 @@ def page_nearby():
             if search_component is not None:
                 search_component_result = search_component(
                     data={},
-                    key=f"nearby_search_now_v218_{current_family_key()}_{current_member_key()}",
+                    key=f"nearby_search_now_v234_{current_family_key()}_{current_member_key()}",
                     on_search_location_change=lambda: None,
                     on_search_error_change=lambda: None,
                 )
@@ -20935,21 +20936,9 @@ def page_nearby():
             "measured_at": now_jst().isoformat(),
             "place_label": fresh_label,
         }
-        fresh_signature = json.dumps(
-            {
-                "lat": round(search_latitude, 5),
-                "lon": round(search_longitude, 5),
-                "kind": kind,
-                "subkind": subkind,
-                "radius_m": radius_m,
-                "budget_under_1000": bool(budget_under_1000),
-                "budget_limit": int(budget_limit) if budget_limit is not None else None,
-                "open_now_only": bool(open_now_only),
-                "provider": "google" if GOOGLE_PLACES_API_KEY else "osm",
-            },
-            ensure_ascii=False,
-            sort_keys=True,
-        )
+        # Store exactly the filter signature active when Search was pressed.
+        # The newly measured GPS coordinates are stored separately in _nearby_location.
+        fresh_signature = search_signature
         with st.spinner("現在地周辺の営業情報・評価・写真を調べています…"):
             live_result = search_nearby_quick_stops_google(
                 search_latitude, search_longitude, kind, subkind, radius_m,
