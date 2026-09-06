@@ -32,7 +32,7 @@ import streamlit as st
 # Freshly generated update: 2026-08-31 23:49 JST
 GENERATED_UPDATE_JST = "2026-09-06T12:00:00+09:00"
 
-APP_BUILD = "v262"
+APP_BUILD = "v263"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -25980,6 +25980,15 @@ html,body{{margin:0;padding:0;background:transparent;font-family:-apple-system,B
 
 
 _MEMORY_MAP_VIEW_HTML = """
+<div class="memory-map-controls-v263">
+  <div class="memory-map-control-title-v263">表示する範囲</div>
+  <div class="memory-map-control-row-v263" role="group" aria-label="思い出マップの表示範囲">
+    <button type="button" class="memory-radius-control-v263" data-radius="1000" disabled>1km</button>
+    <button type="button" class="memory-radius-control-v263" data-radius="3000" disabled>3km</button>
+    <button type="button" class="memory-radius-control-v263" data-radius="10000" disabled>10km</button>
+    <button type="button" id="memory-refresh-center-v263" class="memory-refresh-center-v263" disabled>↻ この中心で再取得</button>
+  </div>
+</div>
 <div class="memory-map-component-v260">
   <div id="memory-map-v260" class="memory-map-v260"><div class="memory-map-loading-v260">思い出の地図を読み込んでいます…</div></div>
   <div class="memory-legend-v260" aria-hidden="true">
@@ -25990,6 +25999,15 @@ _MEMORY_MAP_VIEW_HTML = """
 """
 
 _MEMORY_MAP_VIEW_CSS = r"""
+.memory-map-controls-v263 { width:100%; box-sizing:border-box; margin:0 0 10px; }
+.memory-map-control-title-v263 { font-size:14px; font-weight:760; line-height:1.35; margin:0 0 7px; color:var(--st-text-color); }
+.memory-map-control-row-v263 { display:grid; grid-template-columns:minmax(48px,.62fr) minmax(48px,.62fr) minmax(54px,.72fr) minmax(118px,1.75fr); gap:6px; align-items:stretch; width:100%; box-sizing:border-box; }
+.memory-map-control-row-v263 button { min-width:0; min-height:42px; border-radius:12px; font:inherit; cursor:pointer; box-sizing:border-box; touch-action:manipulation; }
+.memory-radius-control-v263 { border:1.5px solid rgba(115,125,135,.30); background:rgba(255,255,255,.94); color:var(--st-text-color); font-size:13px; font-weight:760; }
+.memory-radius-control-v263.active { border-color:#f05a5a; background:rgba(240,90,90,.08); color:var(--st-text-color); box-shadow:inset 0 0 0 1px rgba(240,90,90,.10); }
+.memory-refresh-center-v263 { border:1.5px solid rgba(74,144,226,.42); background:rgba(74,144,226,.08); color:var(--st-text-color); font-size:11px; font-weight:820; line-height:1.25; padding:5px 7px; }
+.memory-map-control-row-v263 button:disabled { opacity:.52; cursor:wait; }
+@media(max-width:380px){ .memory-map-control-row-v263 { grid-template-columns:46px 46px 50px minmax(110px,1fr); gap:5px; } .memory-refresh-center-v263 { font-size:10px; padding:4px; } }
 .memory-map-component-v260 { position:relative; width:100%; box-sizing:border-box; }
 .memory-map-v260 { width:100%; height:570px; border-radius:16px; overflow:hidden; background:#eef3f6; border:1px solid rgba(80,100,120,.14); box-sizing:border-box; }
 /* v261: critical Leaflet layout rules are kept locally so the map cannot render as
@@ -26051,17 +26069,36 @@ export default function(component) {
   const { parentElement, setTriggerValue, data } = component;
   const node = parentElement.querySelector('#memory-map-v260');
   const centerLabel = parentElement.querySelector('#memory-center-label-v260');
-  if (!node) return;
+  const radiusButtons = Array.from(parentElement.querySelectorAll('.memory-radius-control-v263'));
+  const refreshButton = parentElement.querySelector('#memory-refresh-center-v263');
+  if (!node || !refreshButton || !radiusButtons.length) return;
 
-  try { parentElement.__memoryMapCleanupV260?.(); } catch (_) {}
+  try { parentElement.__memoryMapCleanupV263?.(); } catch (_) {}
   let cancelled = false;
   let map = null;
+  let sending = false;
   const cleanupFns = [];
   const payload = (data && typeof data === 'object') ? data : {};
+  const allowedRadii = [1000, 3000, 10000];
+  let selectedRadius = allowedRadii.includes(Number(payload.radius_m)) ? Number(payload.radius_m) : 3000;
 
   const esc = (v) => String(v == null ? '' : v).replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   const centerSource = String(payload.center_source || 'gps');
   if (centerLabel) centerLabel.textContent = centerSource === 'gps' ? '現在地' : '検索中心';
+
+  const updateRadiusButtons = () => {
+    radiusButtons.forEach((button) => {
+      button.classList.toggle('active', Number(button.dataset.radius || 0) === selectedRadius);
+      button.setAttribute('aria-pressed', Number(button.dataset.radius || 0) === selectedRadius ? 'true' : 'false');
+    });
+  };
+  updateRadiusButtons();
+
+  const setControlsDisabled = (disabled) => {
+    radiusButtons.forEach((button) => { button.disabled = Boolean(disabled); });
+    refreshButton.disabled = Boolean(disabled);
+  };
+  setControlsDisabled(true);
 
   const leafletCssReady = () => {
     try {
@@ -26115,6 +26152,22 @@ export default function(component) {
     document.head.appendChild(script);
   });
 
+  const sendRefresh = () => {
+    if (cancelled || !map || sending) return;
+    const centerNow = map.getCenter?.();
+    const lat = Number(centerNow?.lat), lon = Number(centerNow?.lng);
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
+    sending = true;
+    setControlsDisabled(true);
+    refreshButton.textContent = '取得中…';
+    setTriggerValue('map_refresh', {
+      token: `${Date.now()}_${Math.random().toString(36).slice(2)}`,
+      latitude: lat,
+      longitude: lon,
+      radius_m: selectedRadius
+    });
+  };
+
   const render = async () => {
     try {
       const [_, L] = await Promise.all([ensureLeafletCss(), ensureLeaflet()]);
@@ -26122,7 +26175,7 @@ export default function(component) {
       const center = [Number(payload?.center?.lat), Number(payload?.center?.lon)];
       if (!Number.isFinite(center[0]) || !Number.isFinite(center[1])) throw new Error('Invalid center');
       node.innerHTML = '';
-      const radiusM = Math.max(1000, Number(payload.radius_m || 3000));
+      const radiusM = selectedRadius;
       const zoom = radiusM <= 1200 ? 15 : (radiusM <= 4000 ? 13 : 11);
       map = L.map(node, {zoomControl:true, attributionControl:true, preferCanvas:true}).setView(center, zoom);
       L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {maxZoom:19, attribution:'&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap</a>'}).addTo(map);
@@ -26171,97 +26224,31 @@ export default function(component) {
         }));
       });
 
-      map.on('click', (ev) => {
-        const lat = Number(ev?.latlng?.lat), lon = Number(ev?.latlng?.lng);
-        if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
-
-        const allowed = [1000, 3000, 10000];
-        let selected = allowed.includes(Number(radiusM)) ? Number(radiusM) : 3000;
-
-        // Build the popup as real DOM and bind handlers before opening it.
-        // v260/v261 queried map.getPopup(), but Leaflet Map does not expose getPopup();
-        // that exception meant the Yes/No/radius handlers were never attached on mobile.
-        const contentRoot = document.createElement('div');
-        contentRoot.className = 'memory-search-popup-v260';
-
-        const title = document.createElement('div');
-        title.className = 'memory-search-title-v260';
-        title.appendChild(document.createTextNode('この場所から周囲 '));
-        const kmLabel = document.createElement('span');
-        kmLabel.className = 'memory-search-km-v260';
-        kmLabel.textContent = `${selected / 1000}km`;
-        title.appendChild(kmLabel);
-        title.appendChild(document.createTextNode(' の思い出データを取得しますか？'));
-        contentRoot.appendChild(title);
-
-        const radiusWrap = document.createElement('div');
-        radiusWrap.className = 'memory-search-radius-v260';
-        const radiusButtons = [];
-        allowed.forEach((r) => {
-          const button = document.createElement('button');
-          button.type = 'button';
-          button.className = 'memory-search-radius-button-v260' + (r === selected ? ' active' : '');
-          button.dataset.radius = String(r);
-          button.textContent = `${r / 1000}km`;
-          button.addEventListener('click', (event) => {
-            event.preventDefault();
-            event.stopPropagation();
-            selected = r;
-            radiusButtons.forEach((b) => b.classList.toggle('active', b === button));
-            kmLabel.textContent = `${selected / 1000}km`;
-          });
-          radiusButtons.push(button);
-          radiusWrap.appendChild(button);
-        });
-        contentRoot.appendChild(radiusWrap);
-
-        const actions = document.createElement('div');
-        actions.className = 'memory-search-actions-v260';
-        const noButton = document.createElement('button');
-        noButton.type = 'button';
-        noButton.className = 'memory-search-no-v260';
-        noButton.textContent = 'いいえ';
-        const yesButton = document.createElement('button');
-        yesButton.type = 'button';
-        yesButton.className = 'memory-search-yes-v260';
-        yesButton.textContent = 'はい';
-        actions.appendChild(noButton);
-        actions.appendChild(yesButton);
-        contentRoot.appendChild(actions);
-
-        const note = document.createElement('div');
-        note.className = 'memory-search-note-v260';
-        note.textContent = '「はい」で、この地点を中心に軽量な位置インデックスを再検索してピンを置き直します。';
-        contentRoot.appendChild(note);
-
-        const popup = L.popup({maxWidth:310, closeButton:true, autoPan:true})
-          .setLatLng([lat, lon])
-          .setContent(contentRoot);
-
-        noButton.addEventListener('click', (event) => {
+      radiusButtons.forEach((button) => {
+        const onRadius = (event) => {
           event.preventDefault();
           event.stopPropagation();
-          try { map.closePopup(popup); } catch (_) { try { map.closePopup(); } catch (_) {} }
-        });
-
-        yesButton.addEventListener('click', (event) => {
-          event.preventDefault();
-          event.stopPropagation();
-          yesButton.disabled = true;
-          yesButton.textContent = '取得中…';
-          setTriggerValue('map_search', {
-            token: `${Date.now()}_${Math.random().toString(36).slice(2)}`,
-            latitude: lat,
-            longitude: lon,
-            radius_m: selected
-          });
-        });
-
-        popup.openOn(map);
+          const nextRadius = Number(button.dataset.radius || 0);
+          if (!allowedRadii.includes(nextRadius)) return;
+          selectedRadius = nextRadius;
+          updateRadiusButtons();
+          sendRefresh();
+        };
+        button.addEventListener('click', onRadius);
+        cleanupFns.push(() => button.removeEventListener('click', onRadius));
       });
+      const onRefresh = (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        sendRefresh();
+      };
+      refreshButton.addEventListener('click', onRefresh);
+      cleanupFns.push(() => refreshButton.removeEventListener('click', onRefresh));
 
+      setControlsDisabled(false);
       setTimeout(() => { if (!cancelled && map) map.invalidateSize(); }, 120);
     } catch (err) {
+      setControlsDisabled(true);
       if (!cancelled) node.innerHTML = '<div class="memory-map-loading-v260">地図を読み込めませんでした。通信状態を確認して、もう一度ページを開いてください。</div>';
     }
   };
@@ -26273,7 +26260,7 @@ export default function(component) {
     try { if (map) map.remove(); } catch (_) {}
     map = null;
   };
-  parentElement.__memoryMapCleanupV260 = cleanup;
+  parentElement.__memoryMapCleanupV263 = cleanup;
   return cleanup;
 }
 """
@@ -26289,7 +26276,7 @@ def _get_memory_map_view_component():
     _memory_map_view_component_initialized = True
     try:
         memory_map_view_component = st.components.v2.component(
-            "tokyo_burari_memory_map_view_v262",
+            "tokyo_burari_memory_map_view_v263",
             html=_MEMORY_MAP_VIEW_HTML,
             css=_MEMORY_MAP_VIEW_CSS,
             js=_MEMORY_MAP_VIEW_JS,
@@ -26300,11 +26287,10 @@ def _get_memory_map_view_component():
 
 
 def _render_memory_map(center_lat, center_lon, radius_m, *, accuracy_m=None, center_source="gps"):
-    """Render the interactive memories map and return (prepared_payload, map_search_event).
+    """Render the memories map and return (prepared_payload, center_refresh_event).
 
-    The map click only sends latitude/longitude/radius back to Streamlit.  The server then
-    re-filters the compact cached GPS index for that new center, so tapping around the map
-    stays light and never downloads every photo.
+    The browser keeps map panning local. Only the explicit center-refresh button (or a
+    radius button) sends the visible map center back to Streamlit, keeping interaction light.
     """
     prepared = _memory_map_payload(center_lat, center_lon, radius_m)
     try:
@@ -26325,11 +26311,11 @@ def _render_memory_map(center_lat, center_lon, radius_m, *, accuracy_m=None, cen
         return legacy_prepared, None
     result = component(
         data=payload,
-        key=f"memory_map_view_component_v262_{current_family_key()}_{current_member_key()}",
-        on_map_search_change=lambda: None,
+        key=f"memory_map_view_component_v263_{current_family_key()}_{current_member_key()}",
+        on_map_refresh_change=lambda: None,
     )
-    map_search = getattr(result, "map_search", None)
-    return prepared, map_search
+    map_refresh = getattr(result, "map_refresh", None)
+    return prepared, map_refresh
 
 
 def page_memory_map():
@@ -26337,11 +26323,11 @@ def page_memory_map():
         "🗺️ 思い出マップ",
         "日記からではなく、いまいる場所の地図から、以前ここで何を見て・経験したかをたどります。",
     )
-    st.caption("地図を開いたときだけ位置情報と軽量メタデータを読み込みます。地図の好きな場所をタップすると、その地点を中心に思い出を再検索できます。写真本体はピンを開いたときだけ表示します。")
+    st.caption("地図を動かして見たい場所を中央に置き、『この中心で再取得』を押すと、その地点の周辺に思い出のピンを立て直します。写真本体はピンを開いたときだけ表示します。")
 
     location_key = f"_memory_map_location_v259_{current_family_key()}_{current_member_key()}"
     token_key = f"_memory_map_location_token_v259_{current_family_key()}_{current_member_key()}"
-    map_search_token_key = f"_memory_map_search_token_v262_{current_family_key()}_{current_member_key()}"
+    map_refresh_token_key = f"_memory_map_refresh_token_v263_{current_family_key()}_{current_member_key()}"
     location = st.session_state.get(location_key)
     if not isinstance(location, dict):
         nearby = st.session_state.get("_nearby_location")
@@ -26408,17 +26394,10 @@ def page_memory_map():
     current_radius_label = str(st.session_state.get(radius_key) or "3km")
     if current_radius_label not in radius_choices:
         current_radius_label = "3km"
-    selected_radius = st.radio(
-        "表示する範囲",
-        list(radius_choices.keys()),
-        index=list(radius_choices.keys()).index(current_radius_label),
-        horizontal=True,
-        key=radius_key,
-    )
-    radius_m = int(radius_choices.get(str(selected_radius), MEMORY_MAP_DEFAULT_RADIUS_M))
+    radius_m = int(radius_choices.get(current_radius_label, MEMORY_MAP_DEFAULT_RADIUS_M))
 
     with st.spinner("近くの思い出を地図に置いています…"):
-        prepared, map_search = _render_memory_map(
+        prepared, map_refresh = _render_memory_map(
             center_lat,
             center_lon,
             radius_m,
@@ -26426,33 +26405,33 @@ def page_memory_map():
             center_source=center_source,
         )
 
-    if isinstance(map_search, dict):
-        map_token = str(map_search.get("token") or "")
-        if map_token and map_token != str(st.session_state.get(map_search_token_key) or ""):
+    if isinstance(map_refresh, dict):
+        refresh_token = str(map_refresh.get("token") or "")
+        if refresh_token and refresh_token != str(st.session_state.get(map_refresh_token_key) or ""):
             try:
-                tapped_lat = float(map_search.get("latitude"))
-                tapped_lon = float(map_search.get("longitude"))
-                tapped_radius = int(map_search.get("radius_m") or radius_m)
+                visible_center_lat = float(map_refresh.get("latitude"))
+                visible_center_lon = float(map_refresh.get("longitude"))
+                requested_radius = int(map_refresh.get("radius_m") or radius_m)
             except (TypeError, ValueError):
-                tapped_lat = tapped_lon = None
-                tapped_radius = radius_m
+                visible_center_lat = visible_center_lon = None
+                requested_radius = radius_m
             allowed_radii = {1000: "1km", 3000: "3km", 10000: "10km"}
             if (
-                tapped_lat is not None
-                and tapped_lon is not None
-                and math.isfinite(tapped_lat)
-                and math.isfinite(tapped_lon)
-                and tapped_radius in allowed_radii
+                visible_center_lat is not None
+                and visible_center_lon is not None
+                and math.isfinite(visible_center_lat)
+                and math.isfinite(visible_center_lon)
+                and requested_radius in allowed_radii
             ):
-                st.session_state[map_search_token_key] = map_token
-                st.session_state[radius_key] = allowed_radii[tapped_radius]
+                st.session_state[map_refresh_token_key] = refresh_token
+                st.session_state[radius_key] = allowed_radii[requested_radius]
                 st.session_state[location_key] = {
                     "source": "map",
-                    "latitude": tapped_lat,
-                    "longitude": tapped_lon,
+                    "latitude": visible_center_lat,
+                    "longitude": visible_center_lon,
                     "accuracy_m": None,
                     "measured_at": now_jst().isoformat(),
-                    "place_label": reverse_geocode_rough(tapped_lat, tapped_lon) or "地図で選んだ場所",
+                    "place_label": reverse_geocode_rough(visible_center_lat, visible_center_lon) or "地図の中心",
                 }
                 st.rerun()
 
