@@ -32,7 +32,7 @@ import streamlit as st
 # Freshly generated update: 2026-08-31 23:49 JST
 GENERATED_UPDATE_JST = "2026-09-06T12:00:00+09:00"
 
-APP_BUILD = "v249"
+APP_BUILD = "v250"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -812,14 +812,11 @@ VIDEO_AI_STALE_SECONDS = 240
 
 
 def video_ai_sample_interval_ms_for_duration(duration_ms):
-    """Return the fixed Good Moments interval for one video, capped at 20 samples.
+    """Return a duration-aware Good Moments interval, capped at 20 samples.
 
-    Rule requested by the product design:
-    - 10 seconds or shorter: 500 ms
-    - 15 seconds: 750 ms
-    - 60 seconds: 3000 ms
-    - 65 seconds: 3250 ms
-    - otherwise: max(500 ms, duration / 20)
+    Normal videos keep the existing rule (0.5 s minimum, duration/20 for longer
+    clips). Very short clips are sampled more densely only when necessary so there
+    are still six distinct timestamps available for the required six Good Moments.
     """
     try:
         raw_duration = float(duration_ms or 0)
@@ -827,10 +824,13 @@ def video_ai_sample_interval_ms_for_duration(duration_ms):
     except Exception:
         duration = VIDEO_MAX_SECONDS * 1000
     duration = max(1, min(VIDEO_MAX_SECONDS * 1000, duration))
-    return max(
+    normal_interval = max(
         VIDEO_AI_MIN_SAMPLE_INTERVAL_MS,
         int(math.ceil(duration / float(VIDEO_AI_MAX_CANDIDATES))),
     )
+    if duration < VIDEO_AI_MIN_SAMPLE_INTERVAL_MS * VIDEO_AI_MAX_SELECTIONS:
+        return max(80, int(math.ceil(duration / float(VIDEO_AI_MAX_SELECTIONS))))
+    return normal_interval
 
 
 def video_ai_candidate_count_for_duration(duration_ms):
@@ -841,7 +841,8 @@ def video_ai_candidate_count_for_duration(duration_ms):
         duration = VIDEO_MAX_SECONDS * 1000
     duration = max(1, min(VIDEO_MAX_SECONDS * 1000, duration))
     interval_ms = video_ai_sample_interval_ms_for_duration(duration)
-    return max(1, min(VIDEO_AI_MAX_CANDIDATES, int(math.ceil(duration / float(interval_ms)))))
+    calculated = int(math.ceil(duration / float(interval_ms)))
+    return max(VIDEO_AI_MAX_SELECTIONS, min(VIDEO_AI_MAX_CANDIDATES, calculated))
 
 
 # Best-effort post-save video stabilization. The original recording is never
@@ -1529,21 +1530,19 @@ export default function(component) {
     try { localStorage.setItem('tokyo_burari_camera_facing_v226', cameraFacing); } catch (_) {}
   };
   const preferredVideoConstraints = () => {
-    // v249: use the camera/browser's native hardware path as much as possible.
-    // Only request a preferred portrait resolution; no forced aspectRatio, crop,
-    // max dimension, canvas stream, or post-start video reconfiguration is used.
-    // The browser is free to choose the closest camera-supported native mode.
+    // v250 smooth-motion path. Do not invent or force an aspect ratio: the phone
+    // camera/browser chooses one of its native ratios. For video, prefer a lighter
+    // 720p-class sensor mode and 60 fps; devices that only support 30 fps naturally
+    // fall back to their closest native mode without any post-start reconfiguration.
     if (cameraMode === 'video') {
       return {
         facingMode: { ideal: cameraFacing },
-        width: { ideal: 1080 },
-        height: { ideal: 1920 },
-        frameRate: { ideal: 30, max: 30 }
+        height: { ideal: 1280 },
+        frameRate: { ideal: 60, max: 60 }
       };
     }
     return {
       facingMode: { ideal: cameraFacing },
-      width: { ideal: 1200 },
       height: { ideal: 1600 },
       frameRate: { ideal: 30, max: 30 }
     };
@@ -1911,11 +1910,10 @@ export default function(component) {
     setStatus(cameraMode === 'video' ? 'カメラとマイクの使用を許可してください…' : 'カメラの使用を許可してください…');
     try {
       stream = await navigator.mediaDevices.getUserMedia({
-        audio: cameraMode === 'video' ? {
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true
-        } : false,
+        // Raw/native microphone path is intentionally preferred in video mode.
+        // Echo cancellation/noise suppression/AGC can consume significant CPU on
+        // Android while the camera encoder is also active and may cause preview drops.
+        audio: cameraMode === 'video' ? true : false,
         video: preferredVideoConstraints()
       });
       video.srcObject = stream;
@@ -1931,6 +1929,9 @@ export default function(component) {
       syncNativeCameraFrame();
       try {
         const cameraTrack = stream.getVideoTracks && stream.getVideoTracks()[0];
+        if (cameraMode === 'video' && cameraTrack && 'contentHint' in cameraTrack) {
+          try { cameraTrack.contentHint = 'motion'; } catch (_) {}
+        }
         const settings = (cameraTrack && cameraTrack.getSettings) ? cameraTrack.getSettings() : {};
         const actualFacing = String(settings?.facingMode || '');
         if (actualFacing === 'user' || actualFacing === 'environment') cameraFacing = actualFacing;
@@ -2436,15 +2437,17 @@ export default function(component) {
     const captureWidth = Math.max(0, Number(captureSettings?.width || video.videoWidth || 0));
     const captureHeight = Math.max(0, Number(captureSettings?.height || video.videoHeight || 0));
     const captureFrameRate = Math.max(0, Number(captureSettings?.frameRate || 0));
-    // Let the browser choose the encoder bitrate/profile. On phones this is much
-    // more likely to stay on the hardware-accelerated MediaRecorder path than an
-    // app-forced bitrate, especially when the actual camera mode differs by device.
+    if (captureTrack && 'contentHint' in captureTrack) {
+      try { captureTrack.contentHint = 'motion'; } catch (_) {}
+    }
+    // Browser-default MediaRecorder is tried first so Android/Chrome can choose its
+    // most efficient hardware encoder. Explicit MIME selection is only a fallback.
     const requestedVideoBitrate = 0;
     try {
       try {
-        mediaRecorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
-      } catch (_) {
         mediaRecorder = new MediaRecorder(stream);
+      } catch (_) {
+        mediaRecorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
       }
       mediaRecorder.ondataavailable = (event) => {
         if (event.data && event.data.size > 0) recordedChunks.push(event.data);
@@ -2574,9 +2577,10 @@ export default function(component) {
         }
       };
 
-      // Large chunks reduce main-thread event traffic during the actual capture.
-      // The video remains the untouched MediaRecorder stream; no frame extraction runs now.
-      mediaRecorder.start(2000);
+      // v250: no timeslice. Let MediaRecorder buffer natively and emit the Blob when
+      // recording stops. This removes periodic dataavailable events from the JS main
+      // thread during capture and gives the live camera preview the highest priority.
+      mediaRecorder.start();
       recordingStartedAt = Date.now();
       setRecordingUi(true);
       updateRecordingClock();
@@ -11430,7 +11434,8 @@ def choose_video_ai_frames(
     final_prompt = (
         "動画全体の最終フォトセレクターです。候補は動画長に応じた一定間隔で最大20枚に絞って比較されています。"
         "ここでは動画全体を横断して、最終的に残したい静止画を選んでください。\n"
-        f"出力は最大{VIDEO_AI_MAX_SELECTIONS}枚です。十分に良い候補があれば、最も残したい6枚を選んでください。"
+        f"候補が{VIDEO_AI_MAX_SELECTIONS}枚以上ある場合は、必ず{VIDEO_AI_MAX_SELECTIONS}枚を選んでください。"
+        "静止した動画などで似た候補が多くても、動画内の時間位置を分散させて6枚をそろえてください。"
         "似た写真で3枚を埋めず、動画全体から違いのある良い瞬間を優先してください。\n"
         f"{factor_text}\n"
         "各項目は設定された割合に従って評価し、特定の項目を固定的に優先しないでください。"
@@ -11514,6 +11519,60 @@ def choose_video_ai_frames(
 
     if not selected:
         raise ValueError("AIセレクションを作成できませんでした。")
+
+    # v250: every video should surface six Good Moments. Models may occasionally
+    # return fewer than requested, or near-duplicate filtering may remove some.
+    # First backfill from AI-ranked but unused frame IDs, then spread remaining
+    # picks across time. Every backfill frame was still part of the AI-reviewed set.
+    if len(selected) < VIDEO_AI_MAX_SELECTIONS:
+        ranked_by_id = {
+            str(item.get("frame_id") or ""): item
+            for item in ranked
+            if isinstance(item, dict) and str(item.get("frame_id") or "")
+        }
+        selected_timestamps = [
+            max(0, int((item.get("frame") or {}).get("timestamp_ms") or 0))
+            for item in selected
+        ]
+        remaining = [
+            frame for frame in final_frames
+            if str(frame.get("frame_id") or "") not in used_ids
+        ]
+
+        def backfill_priority(frame):
+            frame_id = str(frame.get("frame_id") or "")
+            ai_item = ranked_by_id.get(frame_id) or {}
+            ai_rank = max(1, int(ai_item.get("rank") or 999))
+            ai_score = max(0, min(100, int(ai_item.get("score") or 0)))
+            ts = max(0, int(frame.get("timestamp_ms") or 0))
+            if selected_timestamps:
+                spread = min(abs(ts - existing) for existing in selected_timestamps)
+            else:
+                spread = ts
+            return (frame_id in ranked_by_id, ai_score, spread, -ai_rank)
+
+        while remaining and len(selected) < VIDEO_AI_MAX_SELECTIONS:
+            frame = max(remaining, key=backfill_priority)
+            remaining.remove(frame)
+            frame_id = str(frame.get("frame_id") or "")
+            ai_item = ranked_by_id.get(frame_id) or {}
+            frame_hash = _image_dhash64(frame.get("ai_bytes") or frame.get("image_bytes"))
+            selected.append(
+                {
+                    "frame": frame,
+                    "score": max(0, min(100, int(ai_item.get("score") or 0))),
+                    "primary_quality": str(ai_item.get("primary_quality") or "other"),
+                    "reason": (str(ai_item.get("reason") or "").strip()[:100]
+                               or "動画全体の時間バランスを保つため選定"),
+                    "hash": frame_hash,
+                }
+            )
+            used_ids.add(frame_id)
+            used_hashes.append(frame_hash)
+            selected_timestamps.append(max(0, int(frame.get("timestamp_ms") or 0)))
+
+    if len(selected) < VIDEO_AI_MAX_SELECTIONS:
+        raise ValueError(f"AIセレクションを{VIDEO_AI_MAX_SELECTIONS}枚そろえられませんでした。")
     return selected[:VIDEO_AI_MAX_SELECTIONS]
 
 def _video_selection_base_path(photo):
