@@ -899,7 +899,7 @@ _LIVE_CAMERA_HTML = """
       <button id="camera-review-retry" class="camera-retry-button" type="button">撮りなおす／選びなおす</button>
     </div>
     <button id="camera-review-find-moments" class="camera-find-button" type="button" hidden>✨ いい瞬間を探す</button>
-    <div id="camera-review-build" class="camera-review-build" hidden>camera v237</div>
+    <div id="camera-review-build" class="camera-review-build" hidden>camera v238</div>
     <div id="camera-review-emotion-hint" class="camera-review-emotion-hint" hidden>写真下の「通常／こどもーど」を切り替え、写真につけるアイコンを1つ選べます。</div>
     <div id="camera-review-image-shell" class="camera-review-image-shell" role="button" tabindex="0" aria-label="写真のアイコンを選ぶ" hidden>
       <img id="camera-review-image" class="camera-review-image" alt="撮影した写真の確認" />
@@ -1034,29 +1034,30 @@ _LIVE_CAMERA_CSS = """
 .live-camera-video,
 .camera-review-image,
 .camera-review-video {
-  width: 100%;
-  max-height: 58dvh;
+  width: min(94%, 430px);
+  max-width: 100%;
+  max-height: 54dvh;
   aspect-ratio: 3 / 4;
   object-fit: contain;
   box-sizing: border-box;
   border-radius: 16px;
   background: #000;
-  margin: 0;
+  margin: 0 auto;
 }
-/* v232: show the whole camera frame instead of filling the 3:4 box by cropping it.
-   This makes the live framing match the saved photo and avoids the overly close look. */
+/* v232/v238: show the whole camera frame instead of filling the 3:4 box by cropping it.
+   The portrait preview is also slightly reduced in on-screen size so it reads less close-up. */
 .live-camera-video {
   object-fit: contain;
 }
-/* v237: video is a portrait-first 9:16 experience.
-   Use the phone width instead of deriving a narrow frame from viewport height.
+/* v238: video remains a portrait-first 9:16 experience.
+   Keep the preview clearly portrait, but slightly smaller than full width so the frame feels less cramped.
    Some Android cameras expose a landscape sensor stream even while the phone is
    held vertically, so cover the portrait viewport rather than letterboxing it.
    Photo mode remains orientation-aware and may switch to the landscape rules below. */
 .live-camera-wrap.camera-video-mode .live-camera-video,
 .live-camera-wrap.camera-video-mode .camera-review-video {
   display: block;
-  width: min(100%, 480px);
+  width: min(92vw, 420px);
   height: auto;
   max-width: 100%;
   max-height: none;
@@ -1489,8 +1490,12 @@ export default function(component) {
       const zoomCaps = caps.zoom;
       if (!zoomCaps) return;
       const minZoom = Number(zoomCaps.min);
+      const maxZoom = Number(zoomCaps.max);
       if (!Number.isFinite(minZoom) || minZoom <= 0) return;
-      await track.applyConstraints({ advanced: [{ zoom: minZoom }] });
+      const targetZoom = Number.isFinite(maxZoom) && maxZoom > 0
+        ? Math.max(minZoom, Math.min(maxZoom, minZoom))
+        : minZoom;
+      await track.applyConstraints({ advanced: [{ zoom: targetZoom }] });
     } catch (err) {
       // Zoom is optional in getUserMedia. Devices that do not expose it keep their native view.
       console.warn('minimum camera zoom unavailable', err);
@@ -1894,6 +1899,10 @@ export default function(component) {
         } catch (portraitConstraintErr) {
           console.warn('portrait video constraint unavailable', portraitConstraintErr);
         }
+        // Re-apply the widest zoom after portrait constraints. Some Android devices
+        // reset zoom when aspect ratio constraints are updated, which makes the
+        // saved image feel too close.
+        await applyWidestAvailableZoom();
       }
       try {
         const cameraTrack = stream.getVideoTracks && stream.getVideoTracks()[0];
