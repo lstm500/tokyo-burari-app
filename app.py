@@ -32,7 +32,7 @@ import streamlit as st
 # Freshly generated update: 2026-08-31 23:49 JST
 GENERATED_UPDATE_JST = "2026-09-06T12:00:00+09:00"
 
-APP_BUILD = "v254"
+APP_BUILD = "v255"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -1530,18 +1530,17 @@ export default function(component) {
     try { localStorage.setItem('tokyo_burari_camera_facing_v226', cameraFacing); } catch (_) {}
   };
   const preferredVideoConstraints = () => {
-    // v253: return to the older hardware-friendly recording profile.  The app does
-    // not invent a new aspect ratio; it only caps video at a normal 1080p-class
-    // camera profile and 30fps so Android Chrome does not silently choose an
-    // unnecessarily heavy sensor mode (for example 4K) that can make preview and
-    // recorded motion stutter. The browser still selects an actual camera-supported
-    // mode with the phone camera's own ratio.
+    // v255: prioritize frame rate over resolution because recorded video is mainly
+    // used as the source for Good Moments still extraction. Request up to 60fps at
+    // a lighter 720p-class portrait stream. These are only ideal/max constraints:
+    // Android/Chrome can fall back to a lower camera-supported frame rate or size.
+    // No custom aspectRatio is imposed; the phone camera selects a native mode.
     if (cameraMode === 'video') {
       return {
         facingMode: { ideal: cameraFacing },
-        width: { ideal: 1080, max: 1920 },
-        height: { ideal: 1920, max: 1920 },
-        frameRate: { ideal: 30, max: 30 }
+        width: { ideal: 720, max: 1080 },
+        height: { ideal: 1280, max: 1920 },
+        frameRate: { ideal: 60, max: 60 }
       };
     }
     return {
@@ -1911,33 +1910,19 @@ export default function(component) {
     setStatus(cameraMode === 'video' ? 'カメラとマイクの使用を許可してください…' : 'カメラの使用を許可してください…');
     try {
       stream = await navigator.mediaDevices.getUserMedia({
-        audio: cameraMode === 'video' ? {
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true
-        } : false,
+        // v255: keep audio capture simple while recording at high frame rate.
+        // Avoid real-time voice DSP so camera/encoder resources get priority.
+        audio: cameraMode === 'video' ? true : false,
         video: preferredVideoConstraints()
       });
       video.srcObject = stream;
       await video.play();
-      // v253: photos may still use the existing portrait/zoom helper. Video is not
-      // resized after opening. The only optional video adjustment is the same native
-      // hardware stabilization request used by the older smoother camera pipeline.
+      // v255: do not apply any additional video constraints after the stream opens.
+      // Reconfiguring stabilization/zoom can cause a camera pipeline restart on some
+      // Android devices. Photo mode keeps its existing helpers.
       if (cameraMode === 'photo') {
         await applyNativePortraitConstraint();
         await applyWidestAvailableZoom();
-      } else {
-        try {
-          const supported = (navigator.mediaDevices && navigator.mediaDevices.getSupportedConstraints)
-            ? navigator.mediaDevices.getSupportedConstraints()
-            : {};
-          const track = stream.getVideoTracks && stream.getVideoTracks()[0];
-          if (track && track.applyConstraints && supported && supported.imageStabilization) {
-            await track.applyConstraints({ advanced: [{ imageStabilization: true }] });
-          }
-        } catch (stabilizationErr) {
-          console.warn('camera hardware stabilization unavailable', stabilizationErr);
-        }
       }
       syncNativeCameraFrame();
       try {
@@ -2440,9 +2425,12 @@ export default function(component) {
     const captureHeight = Math.max(0, Number(captureSettings?.height || video.videoHeight || 0));
     const captureFrameRate = Math.max(0, Number(captureSettings?.frameRate || 0));
     const capturePixels = captureWidth * captureHeight;
-    const requestedVideoBitrate = capturePixels >= 1700000
-      ? 3600000
-      : (capturePixels >= 800000 ? 2800000 : 2000000);
+    // v255: a little more bitrate for 50-60fps so extracted stills retain detail,
+    // while the lighter 720p-class stream keeps encoder load below 1080p/60.
+    const highFps = captureFrameRate >= 50;
+    const requestedVideoBitrate = highFps
+      ? (capturePixels >= 800000 ? 4500000 : 3600000)
+      : (capturePixels >= 1700000 ? 3600000 : (capturePixels >= 800000 ? 2800000 : 2000000));
     try {
       const options = {
         videoBitsPerSecond: requestedVideoBitrate,
@@ -2582,11 +2570,11 @@ export default function(component) {
         }
       };
 
-      mediaRecorder.start(500);
+      mediaRecorder.start(1000);
       recordingStartedAt = Date.now();
       setRecordingUi(true);
       updateRecordingClock();
-      recordingTimer = setInterval(updateRecordingClock, 250);
+      recordingTimer = setInterval(updateRecordingClock, 500);
       // v139 quality-first recording: do not generate JPEG candidates while the
       // MediaRecorder encoder is running. Candidate extraction starts after stop.
       recordingMaxTimer = setTimeout(stopVideoRecording, VIDEO_RECORD_MAX_SECONDS * 1000);
@@ -7453,7 +7441,9 @@ NEARBY_LUNCH_GENRES = (
     "おまかせ",
     "和食・定食",
     "寿司・海鮮",
-    "肉料理",
+    "焼肉・ホルモン",
+    "焼き鳥・鶏料理",
+    "ステーキ・ハンバーグ",
     "麺類",
     "中華・韓国",
     "イタリアン・フレンチ",
@@ -7468,7 +7458,9 @@ NEARBY_LUNCH_GROUP_MEMBERS = {
     "おまかせ": ("おまかせ",),
     "和食・定食": ("和食", "定食・食堂", "とんかつ", "天ぷら", "うなぎ", "お好み焼き・もんじゃ"),
     "寿司・海鮮": ("寿司", "海鮮"),
-    "肉料理": ("焼肉・ホルモン", "焼き鳥・鳥料理", "ステーキ・ハンバーグ"),
+    "焼肉・ホルモン": ("焼肉・ホルモン",),
+    "焼き鳥・鶏料理": ("焼き鳥・鳥料理",),
+    "ステーキ・ハンバーグ": ("ステーキ・ハンバーグ",),
     "麺類": ("そば", "うどん", "ラーメン・つけ麺"),
     "中華・韓国": ("中華料理", "韓国料理"),
     "イタリアン・フレンチ": ("イタリアン", "フレンチ"),
