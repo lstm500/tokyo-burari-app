@@ -32,7 +32,7 @@ import streamlit as st
 # Freshly generated update: 2026-08-31 23:49 JST
 GENERATED_UPDATE_JST = "2026-09-06T12:00:00+09:00"
 
-APP_BUILD = "v261"
+APP_BUILD = "v262"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -26174,37 +26174,90 @@ export default function(component) {
       map.on('click', (ev) => {
         const lat = Number(ev?.latlng?.lat), lon = Number(ev?.latlng?.lng);
         if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
-        const allowed = [1000,3000,10000];
+
+        const allowed = [1000, 3000, 10000];
         let selected = allowed.includes(Number(radiusM)) ? Number(radiusM) : 3000;
-        const radiusButtons = allowed.map((r) => `<button type="button" class="memory-search-radius-button-v260${r === selected ? ' active' : ''}" data-radius="${r}">${r/1000}km</button>`).join('');
-        const content = `<div class="memory-search-popup-v260"><div class="memory-search-title-v260">この場所から周囲 <span class="memory-search-km-v260">${selected/1000}km</span> の思い出データを取得しますか？</div><div class="memory-search-radius-v260">${radiusButtons}</div><div class="memory-search-actions-v260"><button type="button" class="memory-search-no-v260">いいえ</button><button type="button" class="memory-search-yes-v260">はい</button></div><div class="memory-search-note-v260">「はい」で、この地点を中心に軽量な位置インデックスを再検索してピンを置き直します。</div></div>`;
-        L.popup({maxWidth:310, closeButton:true, autoPan:true}).setLatLng([lat,lon]).setContent(content).openOn(map);
-        setTimeout(() => {
-          if (cancelled || !map) return;
-          const popupRoot = map.getPopup()?.getElement?.();
-          if (!popupRoot) return;
-          const kmLabel = popupRoot.querySelector('.memory-search-km-v260');
-          popupRoot.querySelectorAll('.memory-search-radius-button-v260').forEach((btn) => btn.addEventListener('click', (event) => {
-            event.preventDefault(); event.stopPropagation();
-            const next = Number(btn.dataset.radius || 0);
-            if (!allowed.includes(next)) return;
-            selected = next;
-            popupRoot.querySelectorAll('.memory-search-radius-button-v260').forEach((b) => b.classList.toggle('active', b === btn));
-            if (kmLabel) kmLabel.textContent = `${selected/1000}km`;
-          }));
-          popupRoot.querySelector('.memory-search-no-v260')?.addEventListener('click', (event) => {
-            event.preventDefault(); event.stopPropagation(); map.closePopup();
+
+        // Build the popup as real DOM and bind handlers before opening it.
+        // v260/v261 queried map.getPopup(), but Leaflet Map does not expose getPopup();
+        // that exception meant the Yes/No/radius handlers were never attached on mobile.
+        const contentRoot = document.createElement('div');
+        contentRoot.className = 'memory-search-popup-v260';
+
+        const title = document.createElement('div');
+        title.className = 'memory-search-title-v260';
+        title.appendChild(document.createTextNode('この場所から周囲 '));
+        const kmLabel = document.createElement('span');
+        kmLabel.className = 'memory-search-km-v260';
+        kmLabel.textContent = `${selected / 1000}km`;
+        title.appendChild(kmLabel);
+        title.appendChild(document.createTextNode(' の思い出データを取得しますか？'));
+        contentRoot.appendChild(title);
+
+        const radiusWrap = document.createElement('div');
+        radiusWrap.className = 'memory-search-radius-v260';
+        const radiusButtons = [];
+        allowed.forEach((r) => {
+          const button = document.createElement('button');
+          button.type = 'button';
+          button.className = 'memory-search-radius-button-v260' + (r === selected ? ' active' : '');
+          button.dataset.radius = String(r);
+          button.textContent = `${r / 1000}km`;
+          button.addEventListener('click', (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            selected = r;
+            radiusButtons.forEach((b) => b.classList.toggle('active', b === button));
+            kmLabel.textContent = `${selected / 1000}km`;
           });
-          popupRoot.querySelector('.memory-search-yes-v260')?.addEventListener('click', (event) => {
-            event.preventDefault(); event.stopPropagation();
-            setTriggerValue('map_search', {
-              token: `${Date.now()}_${Math.random().toString(36).slice(2)}`,
-              latitude: lat,
-              longitude: lon,
-              radius_m: selected
-            });
+          radiusButtons.push(button);
+          radiusWrap.appendChild(button);
+        });
+        contentRoot.appendChild(radiusWrap);
+
+        const actions = document.createElement('div');
+        actions.className = 'memory-search-actions-v260';
+        const noButton = document.createElement('button');
+        noButton.type = 'button';
+        noButton.className = 'memory-search-no-v260';
+        noButton.textContent = 'いいえ';
+        const yesButton = document.createElement('button');
+        yesButton.type = 'button';
+        yesButton.className = 'memory-search-yes-v260';
+        yesButton.textContent = 'はい';
+        actions.appendChild(noButton);
+        actions.appendChild(yesButton);
+        contentRoot.appendChild(actions);
+
+        const note = document.createElement('div');
+        note.className = 'memory-search-note-v260';
+        note.textContent = '「はい」で、この地点を中心に軽量な位置インデックスを再検索してピンを置き直します。';
+        contentRoot.appendChild(note);
+
+        const popup = L.popup({maxWidth:310, closeButton:true, autoPan:true})
+          .setLatLng([lat, lon])
+          .setContent(contentRoot);
+
+        noButton.addEventListener('click', (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          try { map.closePopup(popup); } catch (_) { try { map.closePopup(); } catch (_) {} }
+        });
+
+        yesButton.addEventListener('click', (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          yesButton.disabled = true;
+          yesButton.textContent = '取得中…';
+          setTriggerValue('map_search', {
+            token: `${Date.now()}_${Math.random().toString(36).slice(2)}`,
+            latitude: lat,
+            longitude: lon,
+            radius_m: selected
           });
-        }, 0);
+        });
+
+        popup.openOn(map);
       });
 
       setTimeout(() => { if (!cancelled && map) map.invalidateSize(); }, 120);
@@ -26236,7 +26289,7 @@ def _get_memory_map_view_component():
     _memory_map_view_component_initialized = True
     try:
         memory_map_view_component = st.components.v2.component(
-            "tokyo_burari_memory_map_view_v261",
+            "tokyo_burari_memory_map_view_v262",
             html=_MEMORY_MAP_VIEW_HTML,
             css=_MEMORY_MAP_VIEW_CSS,
             js=_MEMORY_MAP_VIEW_JS,
@@ -26272,7 +26325,7 @@ def _render_memory_map(center_lat, center_lon, radius_m, *, accuracy_m=None, cen
         return legacy_prepared, None
     result = component(
         data=payload,
-        key=f"memory_map_view_component_v261_{current_family_key()}_{current_member_key()}",
+        key=f"memory_map_view_component_v262_{current_family_key()}_{current_member_key()}",
         on_map_search_change=lambda: None,
     )
     map_search = getattr(result, "map_search", None)
@@ -26288,7 +26341,7 @@ def page_memory_map():
 
     location_key = f"_memory_map_location_v259_{current_family_key()}_{current_member_key()}"
     token_key = f"_memory_map_location_token_v259_{current_family_key()}_{current_member_key()}"
-    map_search_token_key = f"_memory_map_search_token_v260_{current_family_key()}_{current_member_key()}"
+    map_search_token_key = f"_memory_map_search_token_v262_{current_family_key()}_{current_member_key()}"
     location = st.session_state.get(location_key)
     if not isinstance(location, dict):
         nearby = st.session_state.get("_nearby_location")
