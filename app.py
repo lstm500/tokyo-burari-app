@@ -32,7 +32,7 @@ import streamlit as st
 # Freshly generated update: 2026-08-31 23:49 JST
 GENERATED_UPDATE_JST = "2026-09-06T12:00:00+09:00"
 
-APP_BUILD = "v258"
+APP_BUILD = "v259"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -5058,7 +5058,7 @@ def sync_pending_tags_from_browser_v166():
 _HISTORY_JS = r"""
 export default function(component) {
   const { data, setTriggerValue } = component;
-  const validPages = new Set(['home', 'camera', 'videos', 'moments', 'diary', 'review', 'review_monthly', 'review_tag', 'review_history', 'nearby', 'toilets', 'settings']);
+  const validPages = new Set(['home', 'camera', 'videos', 'moments', 'diary', 'review', 'review_map', 'review_monthly', 'review_tag', 'review_history', 'nearby', 'toilets', 'settings']);
   const marker = '__tokyo_burari_page__';
   const guardMarker = '__tokyo_burari_first_level_guard__';
   const requestedPage = validPages.has(data?.page) ? data.page : 'home';
@@ -9695,6 +9695,42 @@ def photo_location_preview(location):
     return "📍 位置情報を取得できませんでした。ホームの地名表示を押して手入力できます。"
 
 
+MEMORY_MAP_SIGNAL_KEY = "memory_map_v1"
+
+
+def build_memory_map_signal(location, *, media_type="photo", capture_source="camera"):
+    """Small GPS-only map index stored in signals_json for fast map browsing.
+
+    The full capture metadata stays in reflection_json.  This compact duplicate lets
+    the memories map load thousands of rows without pulling video AI metadata or
+    conversations into the map query.
+    """
+    if not isinstance(location, dict) or str(location.get("source") or "") != "gps":
+        return {}
+    try:
+        latitude = float(location.get("latitude"))
+        longitude = float(location.get("longitude"))
+    except (TypeError, ValueError):
+        return {}
+    if not (math.isfinite(latitude) and math.isfinite(longitude)):
+        return {}
+    accuracy = location.get("accuracy_m")
+    try:
+        accuracy = round(float(accuracy), 1) if accuracy is not None else None
+    except (TypeError, ValueError):
+        accuracy = None
+    return {
+        "version": 1,
+        "latitude": round(latitude, 6),
+        "longitude": round(longitude, 6),
+        "accuracy_m": accuracy,
+        "place_label": str(location.get("place_label") or "").strip()[:120],
+        "measured_at": str(location.get("measured_at") or "").strip(),
+        "media_type": "video" if str(media_type or "").lower() == "video" else "photo",
+        "capture_source": str(capture_source or "camera").strip()[:40],
+    }
+
+
 def trip_place_label(trip, photos=None):
     """Return the best coarse place name already registered for a trip."""
     trip = trip or {}
@@ -10157,6 +10193,12 @@ def upload_photo(trip_id, image_bytes, location=None, captured_at=None, capture_
         for key, value in extra_reflection.items():
             if key not in {"capture_source", "location", "media_type", "video_storage_path"}:
                 reflection[str(key)] = value
+    map_signal = build_memory_map_signal(
+        location,
+        media_type="photo",
+        capture_source=capture_source,
+    )
+    signals_payload = {MEMORY_MAP_SIGNAL_KEY: map_signal} if map_signal else {}
 
     storage_saved = False
     try:
@@ -10181,13 +10223,17 @@ def upload_photo(trip_id, image_bytes, location=None, captured_at=None, capture_
                     "storage_path": path,
                     "captured_at": str(captured_at or now_jst().isoformat()),
                     "reflection_json": reflection,
-                    "signals_json": {},
+                    "signals_json": signals_payload,
                 }
             )
             .execute()
         )
         download_photo.clear()
         _invalidate_fast_db_cache()
+        try:
+            _memory_map_rows_light.clear()
+        except Exception:
+            pass
         return (result.data or [None])[0]
     except Exception as exc:
         if storage_saved:
@@ -10461,7 +10507,7 @@ def current_video_storage_usage_bytes():
     while True:
         rows = (
             client.table(PHOTO_TABLE)
-            .select("reflection_json")
+            .select("reflection_json,signals_json")
             .eq("family_key", current_family_key()).eq("member_key", current_member_key())
             .range(offset, offset + page_size - 1)
             .execute()
@@ -10820,6 +10866,12 @@ def register_browser_uploaded_video(
             "last_error": "",
         },
     }
+    map_signal = build_memory_map_signal(
+        location,
+        media_type="video",
+        capture_source=capture_source,
+    )
+    signals_payload = {MEMORY_MAP_SIGNAL_KEY: map_signal} if map_signal else {}
     try:
         client.storage.from_(PHOTO_BUCKET).upload(
             path=poster_path,
@@ -10837,7 +10889,7 @@ def register_browser_uploaded_video(
                     "storage_path": poster_path,
                     "captured_at": str(captured_at or now_jst().isoformat()),
                     "reflection_json": reflection,
-                    "signals_json": {},
+                    "signals_json": signals_payload,
                 }
             )
             .execute()
@@ -10864,13 +10916,17 @@ def register_browser_uploaded_video(
         download_photo.clear()
         signed_photo_url_map.clear()
         _invalidate_fast_db_cache()
+        try:
+            _memory_map_rows_light.clear()
+        except Exception:
+            pass
         if not saved_row:
             saved_row = {
                 "trip_id": trip_id,
                 "storage_path": poster_path,
                 "captured_at": str(captured_at or now_jst().isoformat()),
                 "reflection_json": reflection,
-                "signals_json": {},
+                "signals_json": signals_payload,
             }
         return saved_row
     except Exception:
@@ -10952,6 +11008,12 @@ def upload_video(
             "last_error": "",
         },
     }
+    map_signal = build_memory_map_signal(
+        location,
+        media_type="video",
+        capture_source=capture_source,
+    )
+    signals_payload = {MEMORY_MAP_SIGNAL_KEY: map_signal} if map_signal else {}
 
     try:
         client.storage.from_(PHOTO_BUCKET).upload(
@@ -10978,7 +11040,7 @@ def upload_video(
                     "storage_path": poster_path,
                     "captured_at": str(captured_at or now_jst().isoformat()),
                     "reflection_json": reflection,
-                    "signals_json": {},
+                    "signals_json": signals_payload,
                 }
             )
             .execute()
@@ -11009,6 +11071,10 @@ def upload_video(
         download_photo.clear()
         signed_photo_url_map.clear()
         _invalidate_fast_db_cache()
+        try:
+            _memory_map_rows_light.clear()
+        except Exception:
+            pass
         if not saved_row:
             # The INSERT request completed without raising. Preserve the uploaded
             # files and let the next normal list refresh recover the DB row rather
@@ -11018,7 +11084,7 @@ def upload_video(
                 "storage_path": poster_path,
                 "captured_at": str(captured_at or now_jst().isoformat()),
                 "reflection_json": reflection,
-                "signals_json": {},
+                "signals_json": signals_payload,
             }
         return saved_row
     except Exception as exc:
@@ -13718,10 +13784,18 @@ def update_photo_reflection(photo_id, conversation, signals, done=None):
     if done is not None:
         reflection["conversation_done"] = bool(done)
 
+    existing_signals = row.get("signals_json") or {}
+    if not isinstance(existing_signals, dict):
+        existing_signals = {}
+    next_signals = dict(signals or {}) if isinstance(signals, dict) else {}
+    # Preserve the compact GPS map index when conversation analysis updates signals.
+    if MEMORY_MAP_SIGNAL_KEY in existing_signals and MEMORY_MAP_SIGNAL_KEY not in next_signals:
+        next_signals[MEMORY_MAP_SIGNAL_KEY] = existing_signals[MEMORY_MAP_SIGNAL_KEY]
+
     (
         client
         .table(PHOTO_TABLE)
-        .update({"reflection_json": reflection, "signals_json": signals or {}})
+        .update({"reflection_json": reflection, "signals_json": next_signals})
         .eq("id", photo_id)
         .eq("family_key", current_family_key()).eq("member_key", current_member_key())
         .execute()
@@ -17977,7 +18051,7 @@ def init_state():
 
 
 
-VALID_APP_PAGES = {"home", "camera", "videos", "moments", "diary", "review", "review_monthly", "review_tag", "review_history", "nearby", "toilets", "settings"}
+VALID_APP_PAGES = {"home", "camera", "videos", "moments", "diary", "review", "review_map", "review_monthly", "review_tag", "review_history", "nearby", "toilets", "settings"}
 
 
 def _current_ui_refresh_epoch():
@@ -18152,6 +18226,9 @@ def current_navigation_context():
     if page == "review":
         return "review", ""
 
+    if page == "review_map":
+        return "review_map", ""
+
     if page == "review_monthly":
         return "review_monthly", ""
 
@@ -18176,6 +18253,7 @@ def navigation_parent_node(node=None):
         "diary_trip": "diary",
         "review_history_detail": "review_history",
         "review_history": "review",
+        "review_map": "review",
         "review_monthly": "review",
         "review_tag": "review",
         "camera": "home",
@@ -18223,7 +18301,7 @@ def navigate_to_parent():
         st.session_state["_history_action"] = "replace"
         st.rerun()
 
-    if node in {"review_history", "review_monthly", "review_tag"}:
+    if node in {"review_history", "review_map", "review_monthly", "review_tag"}:
         st.session_state.pop("history_detail_trip_id", None)
         st.session_state.pop("review_view_selector", None)
         go_page("review", history_mode="replace")
@@ -18277,6 +18355,7 @@ def sync_browser_history():
         "diary_trip",
         "review_history_detail",
         "review_history",
+        "review_map",
         "review_monthly",
         "review_tag",
     }
@@ -25552,6 +25631,447 @@ def page_monthly(embedded=False):
 
 
 # ============================================================
+# Memories map: map-first autobiographical browsing
+# ============================================================
+MEMORY_MAP_DEFAULT_RADIUS_M = 3000
+MEMORY_MAP_LIGHT_ROW_LIMIT = 1800
+MEMORY_MAP_LEGACY_ROW_LIMIT = 320
+MEMORY_MAP_MAX_VISIBLE_ITEMS = 90
+MEMORY_MAP_CLUSTER_RADIUS_M = 55
+
+
+_MEMORY_MAP_LOCATION_HTML = """
+<div class="memory-map-location-box">
+  <button id="memory-map-location-button" type="button">📍 いまいる場所の近くの思い出を見る</button>
+  <div id="memory-map-location-status" aria-live="polite"></div>
+</div>
+"""
+
+_MEMORY_MAP_LOCATION_CSS = """
+.memory-map-location-box { width:100%; box-sizing:border-box; }
+#memory-map-location-button {
+  width:100%; min-height:50px; border-radius:15px; border:1.5px solid rgba(74,144,226,.36);
+  background:rgba(74,144,226,.07); color:var(--st-text-color); font:inherit; font-weight:820; cursor:pointer;
+}
+#memory-map-location-button:disabled { opacity:.58; cursor:wait; }
+#memory-map-location-status { margin-top:6px; min-height:17px; font-size:12px; opacity:.70; line-height:1.35; }
+"""
+
+_MEMORY_MAP_LOCATION_JS = r"""
+export default function(component) {
+  const { parentElement, setTriggerValue } = component;
+  const button = parentElement.querySelector('#memory-map-location-button');
+  const status = parentElement.querySelector('#memory-map-location-status');
+  if (!button || !status) return;
+  let cancelled = false;
+  const finish = () => { if (!cancelled) button.disabled = false; };
+  const setStatus = (value) => { status.textContent = String(value || ''); };
+  const locate = () => {
+    if (!navigator.geolocation) {
+      const message = 'このブラウザでは現在地を取得できません。';
+      setStatus(message);
+      setTriggerValue('location_error', {token:String(Date.now()), message});
+      return;
+    }
+    button.disabled = true;
+    setStatus('現在地を確認しています…');
+    navigator.geolocation.getCurrentPosition(
+      (position) => {
+        if (cancelled) return;
+        setTriggerValue('location', {
+          token: `${Date.now()}_${Math.random().toString(36).slice(2)}`,
+          latitude: Number(position.coords.latitude),
+          longitude: Number(position.coords.longitude),
+          accuracy_m: Number(position.coords.accuracy || 0),
+          measured_at: new Date(position.timestamp || Date.now()).toISOString()
+        });
+        setStatus('現在地を取得しました。');
+        finish();
+      },
+      (error) => {
+        if (cancelled) return;
+        const code = Number(error?.code || 0);
+        const message = code === 1
+          ? '位置情報の利用が許可されていません。'
+          : (code === 3 ? '現在地の取得に時間がかかっています。もう一度お試しください。' : '現在地を取得できませんでした。');
+        setStatus(message);
+        setTriggerValue('location_error', {token:String(Date.now()), code, message});
+        finish();
+      },
+      {enableHighAccuracy:true, timeout:9000, maximumAge:0}
+    );
+  };
+  button.addEventListener('click', locate);
+  return () => { cancelled = true; button.removeEventListener('click', locate); };
+}
+"""
+
+memory_map_location_component = None
+_memory_map_location_component_initialized = False
+
+
+def _get_memory_map_location_component():
+    global memory_map_location_component, _memory_map_location_component_initialized
+    if _memory_map_location_component_initialized:
+        return memory_map_location_component
+    _memory_map_location_component_initialized = True
+    try:
+        memory_map_location_component = st.components.v2.component(
+            "tokyo_burari_memory_map_location_v259",
+            html=_MEMORY_MAP_LOCATION_HTML,
+            css=_MEMORY_MAP_LOCATION_CSS,
+            js=_MEMORY_MAP_LOCATION_JS,
+        )
+    except Exception:
+        memory_map_location_component = None
+    return memory_map_location_component
+
+
+@st.cache_data(ttl=90, show_spinner=False)
+def _memory_map_rows_light(family_key, member_key, max_rows=MEMORY_MAP_LIGHT_ROW_LIMIT, legacy_rows=MEMORY_MAP_LEGACY_ROW_LIMIT):
+    """Load a compact map index; legacy reflection_json is read only for a small recent window."""
+    client = supabase_client()
+    rows = (
+        client.table(PHOTO_TABLE)
+        .select("id,trip_id,storage_path,captured_at,signals_json")
+        .eq("family_key", str(family_key)).eq("member_key", str(member_key))
+        .order("captured_at", desc=True)
+        .limit(max(100, int(max_rows)))
+        .execute()
+    ).data or []
+
+    indexed = []
+    indexed_ids = set()
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        signals = row.get("signals_json") or {}
+        if not isinstance(signals, dict):
+            continue
+        meta = signals.get(MEMORY_MAP_SIGNAL_KEY) or {}
+        if not isinstance(meta, dict):
+            continue
+        try:
+            lat = float(meta.get("latitude"))
+            lon = float(meta.get("longitude"))
+        except (TypeError, ValueError):
+            continue
+        if not (math.isfinite(lat) and math.isfinite(lon)):
+            continue
+        item = dict(row)
+        item["_map_meta"] = dict(meta)
+        indexed.append(item)
+        indexed_ids.add(str(row.get("id") or ""))
+
+    # Existing v227+ captures already contain GPS in reflection_json. Read only a
+    # bounded recent window so the map remains light while old records still appear.
+    legacy = (
+        client.table(PHOTO_TABLE)
+        .select("id,trip_id,storage_path,captured_at,reflection_json")
+        .eq("family_key", str(family_key)).eq("member_key", str(member_key))
+        .order("captured_at", desc=True)
+        .limit(max(0, int(legacy_rows)))
+        .execute()
+    ).data or []
+    for row in legacy:
+        if not isinstance(row, dict):
+            continue
+        rid = str(row.get("id") or "")
+        if rid and rid in indexed_ids:
+            continue
+        reflection = row.get("reflection_json") or {}
+        if not isinstance(reflection, dict):
+            continue
+        location = reflection.get("location") or {}
+        if not isinstance(location, dict) or str(location.get("source") or "") != "gps":
+            continue
+        meta = build_memory_map_signal(
+            location,
+            media_type="video" if str(reflection.get("media_type") or "").lower() == "video" else "photo",
+            capture_source=str(reflection.get("capture_source") or "camera"),
+        )
+        if not meta:
+            continue
+        item = dict(row)
+        item["_map_meta"] = meta
+        indexed.append(item)
+        if rid:
+            indexed_ids.add(rid)
+    return indexed
+
+
+def _memory_map_nearby_items(center_lat, center_lon, radius_m):
+    rows = _memory_map_rows_light(current_family_key(), current_member_key())
+    candidates = []
+    for row in rows:
+        meta = row.get("_map_meta") or {}
+        try:
+            lat = float(meta.get("latitude"))
+            lon = float(meta.get("longitude"))
+        except (TypeError, ValueError):
+            continue
+        distance = _nearby_haversine_m(center_lat, center_lon, lat, lon)
+        if not math.isfinite(distance) or distance > float(radius_m):
+            continue
+        candidates.append({
+            "id": str(row.get("id") or ""),
+            "storage_path": str(row.get("storage_path") or ""),
+            "captured_at": str(row.get("captured_at") or ""),
+            "latitude": lat,
+            "longitude": lon,
+            "distance_m": float(distance),
+            "place_label": str(meta.get("place_label") or "").strip(),
+            "media_type": "video" if str(meta.get("media_type") or "").lower() == "video" else "photo",
+            "capture_source": str(meta.get("capture_source") or ""),
+        })
+    candidates.sort(key=lambda x: (float(x.get("distance_m") or 0), str(x.get("captured_at") or "")))
+    return candidates[:MEMORY_MAP_MAX_VISIBLE_ITEMS]
+
+
+def _cluster_memory_map_items(items, cluster_radius_m=MEMORY_MAP_CLUSTER_RADIUS_M):
+    groups = []
+    for item in list(items or []):
+        lat = float(item.get("latitude"))
+        lon = float(item.get("longitude"))
+        chosen = None
+        for group in groups:
+            if _nearby_haversine_m(lat, lon, group["latitude"], group["longitude"]) <= float(cluster_radius_m):
+                chosen = group
+                break
+        if chosen is None:
+            chosen = {"latitude": lat, "longitude": lon, "items": []}
+            groups.append(chosen)
+        chosen["items"].append(item)
+        count = len(chosen["items"])
+        chosen["latitude"] = ((chosen["latitude"] * (count - 1)) + lat) / count
+        chosen["longitude"] = ((chosen["longitude"] * (count - 1)) + lon) / count
+    groups.sort(key=lambda g: min(float(x.get("distance_m") or 0) for x in g.get("items") or [{}]))
+    return groups[:42]
+
+
+def _memory_map_payload(center_lat, center_lon, radius_m):
+    items = _memory_map_nearby_items(center_lat, center_lon, radius_m)
+    groups = _cluster_memory_map_items(items)
+    preview_paths = []
+    for group in groups:
+        sorted_items = sorted(group.get("items") or [], key=lambda x: str(x.get("captured_at") or ""), reverse=True)
+        group["items"] = sorted_items
+        for item in sorted_items[:6]:
+            path = str(item.get("storage_path") or "")
+            if path:
+                preview_paths.append(path)
+    signed = signed_photo_url_map(tuple(preview_paths), expires_in=1200) if preview_paths else {}
+
+    payload_groups = []
+    for index, group in enumerate(groups, start=1):
+        group_items = list(group.get("items") or [])
+        visible = []
+        for item in group_items[:6]:
+            path = str(item.get("storage_path") or "")
+            captured = str(item.get("captured_at") or "")
+            visible.append({
+                "id": str(item.get("id") or ""),
+                "src": str(signed.get(path) or ""),
+                "date": captured[:10],
+                "time": captured[11:16] if len(captured) >= 16 else "",
+                "place": str(item.get("place_label") or ""),
+                "media_type": str(item.get("media_type") or "photo"),
+            })
+        place_labels = [str(x.get("place_label") or "").strip() for x in group_items if str(x.get("place_label") or "").strip()]
+        place = place_labels[0] if place_labels else "このあたりの思い出"
+        payload_groups.append({
+            "index": index,
+            "latitude": round(float(group.get("latitude")), 6),
+            "longitude": round(float(group.get("longitude")), 6),
+            "count": len(group_items),
+            "place": place,
+            "items": visible,
+        })
+    return {"groups": payload_groups, "item_count": len(items)}
+
+
+def _render_memory_map(center_lat, center_lon, radius_m, *, accuracy_m=None):
+    prepared = _memory_map_payload(center_lat, center_lon, radius_m)
+    try:
+        accuracy_value = max(0.0, float(accuracy_m or 0))
+    except (TypeError, ValueError):
+        accuracy_value = 0.0
+    payload = {
+        "center": {"lat": float(center_lat), "lon": float(center_lon)},
+        "radius_m": int(radius_m),
+        "accuracy_m": accuracy_value,
+        "groups": prepared.get("groups") or [],
+        "item_count": int(prepared.get("item_count") or 0),
+    }
+    payload_json = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).replace("</", "<\\/")
+    map_html = f'''<!doctype html>
+<html lang="ja"><head><meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no" />
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
+<style>
+html,body{{margin:0;padding:0;background:transparent;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Hiragino Sans","Yu Gothic",sans-serif;}}
+#memory-map{{width:100%;height:570px;border-radius:16px;overflow:hidden;background:#eef3f6;border:1px solid rgba(80,100,120,.14);box-sizing:border-box;}}
+.memory-map-error{{height:100%;display:flex;align-items:center;justify-content:center;padding:24px;text-align:center;color:#5b6570;font-size:14px;line-height:1.6;box-sizing:border-box;}}
+.memory-current{{width:18px;height:18px;border-radius:50%;background:#2f80ed;border:4px solid white;box-shadow:0 2px 9px rgba(0,0,0,.30);}}
+.memory-pin-shell{{background:transparent!important;border:0!important;}}
+.memory-pin{{width:36px;height:36px;border-radius:50% 50% 50% 7px;transform:rotate(-45deg);background:#db7659;border:3px solid white;box-shadow:0 3px 10px rgba(0,0,0,.25);box-sizing:border-box;position:relative;}}
+.memory-pin span{{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;transform:rotate(45deg);font-size:12px;font-weight:900;color:white;}}
+.leaflet-popup-content-wrapper{{border-radius:15px;box-shadow:0 9px 28px rgba(0,0,0,.17);}}
+.leaflet-popup-content{{margin:11px 12px;width:min(286px,76vw)!important;}}
+.memory-popup-place{{font-size:14px;font-weight:850;color:#23272d;line-height:1.35;margin-bottom:3px;}}
+.memory-popup-meta{{font-size:11px;color:#69737e;margin-bottom:8px;}}
+.memory-main-wrap{{position:relative;width:100%;aspect-ratio:4/3;border-radius:11px;overflow:hidden;background:#edf0f2;}}
+.memory-main{{display:block;width:100%;height:100%;object-fit:cover;}}
+.memory-main-badge{{position:absolute;right:7px;top:7px;padding:3px 7px;border-radius:999px;background:rgba(20,24,28,.72);color:#fff;font-size:10px;font-weight:800;}}
+.memory-main-caption{{font-size:10px;color:#67717c;line-height:1.35;margin:5px 0 0;min-height:14px;}}
+.memory-thumbs{{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:4px;margin-top:7px;}}
+.memory-thumb{{border:0;padding:0;background:transparent;aspect-ratio:1/1;border-radius:7px;overflow:hidden;cursor:pointer;outline-offset:2px;}}
+.memory-thumb img{{width:100%;height:100%;object-fit:cover;display:block;}}
+.memory-more{{font-size:10px;color:#6f7881;margin-top:6px;}}
+.memory-legend{{position:absolute;z-index:1000;left:10px;bottom:10px;background:rgba(255,255,255,.94);border:1px solid rgba(0,0,0,.10);border-radius:10px;padding:6px 8px;box-shadow:0 3px 12px rgba(0,0,0,.10);font-size:10px;color:#4a535c;pointer-events:none;}}
+.memory-legend-row{{display:flex;align-items:center;gap:5px;white-space:nowrap;}}
+.memory-legend-dot{{width:9px;height:9px;border-radius:50%;background:#2f80ed;display:inline-block;}}
+.memory-legend-pin{{width:9px;height:9px;border-radius:50%;background:#db7659;display:inline-block;}}
+@media(max-width:640px){{#memory-map{{height:530px;border-radius:14px;}}.leaflet-popup-content{{width:min(276px,78vw)!important;}}}}
+</style></head><body>
+<div style="position:relative"><div id="memory-map"><div class="memory-map-error">思い出の地図を読み込んでいます…</div></div><div class="memory-legend"><div class="memory-legend-row"><span class="memory-legend-dot"></span>現在地</div><div class="memory-legend-row"><span class="memory-legend-pin"></span>思い出</div></div></div>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
+<script>
+(function(){{
+ const data={payload_json}; const node=document.getElementById('memory-map');
+ if(!window.L){{node.innerHTML='<div class="memory-map-error">地図を読み込めませんでした。通信状態を確認して、もう一度ページを開いてください。</div>';return;}}
+ const esc=(v)=>String(v==null?'':v).replace(/[&<>"']/g,(c)=>({{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}}[c]));
+ node.innerHTML=''; const center=[Number(data.center.lat),Number(data.center.lon)];
+ const zoom=Number(data.radius_m)<=1200?15:(Number(data.radius_m)<=4000?13:11);
+ const map=L.map('memory-map',{{zoomControl:true,attributionControl:true,preferCanvas:true}}).setView(center,zoom);
+ L.tileLayer('https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png',{{maxZoom:19,attribution:'&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap</a>'}}).addTo(map);
+ L.circle(center,{{radius:Number(data.radius_m||0),color:'#6d9fd7',weight:1.2,opacity:.46,fillColor:'#6d9fd7',fillOpacity:.035,dashArray:'5 6'}}).addTo(map);
+ if(Number(data.accuracy_m||0)>0) L.circle(center,{{radius:Number(data.accuracy_m),color:'#2f80ed',weight:1,opacity:.28,fillColor:'#2f80ed',fillOpacity:.06}}).addTo(map);
+ const currentIcon=L.divIcon({{className:'',html:'<div class="memory-current"></div>',iconSize:[18,18],iconAnchor:[9,9]}});
+ L.marker(center,{{icon:currentIcon,keyboard:false,zIndexOffset:1200}}).addTo(map).bindPopup('<b>現在地</b>');
+ const popupHtml=(g)=>{{
+   const items=Array.isArray(g.items)?g.items:[]; const first=items[0]||{{}};
+   const mediaBadge=first.media_type==='video'?'<span class="memory-main-badge">動画</span>':'';
+   const main=first.src?`<div class="memory-main-wrap"><img class="memory-main" src="${{esc(first.src)}}" loading="lazy" decoding="async" />${{mediaBadge}}</div>`:'<div class="memory-main-wrap"></div>';
+   const caption=`${{esc(first.date||'')}}${{first.time?' '+esc(first.time):''}}${{first.media_type==='video'?' ・ 動画':''}}`;
+   const thumbs=items.length>1?`<div class="memory-thumbs">${{items.map((it)=>it.src?`<button class="memory-thumb" type="button" data-src="${{esc(it.src)}}" data-date="${{esc(it.date||'')}}" data-time="${{esc(it.time||'')}}" data-media="${{esc(it.media_type||'photo')}}" aria-label="${{esc(it.date||'思い出')}}"><img src="${{esc(it.src)}}" loading="lazy" decoding="async" /></button>`:'').join('')}}</div>`:'';
+   const more=Number(g.count||0)>items.length?`<div class="memory-more">ほか ${{Number(g.count)-items.length}} 件の思い出があります</div>`:'';
+   return `<div class="memory-popup-place">${{esc(g.place||'このあたりの思い出')}}</div><div class="memory-popup-meta">${{Number(g.count||0)}}件の思い出</div>${{main}}<div class="memory-main-caption">${{caption}}</div>${{thumbs}}${{more}}`;
+ }};
+ (data.groups||[]).forEach((g)=>{{
+   const lat=Number(g.latitude),lon=Number(g.longitude); if(!Number.isFinite(lat)||!Number.isFinite(lon))return;
+   const icon=L.divIcon({{className:'memory-pin-shell',html:`<div class="memory-pin"><span>${{Number(g.count||1)}}</span></div>`,iconSize:[36,44],iconAnchor:[18,40],popupAnchor:[0,-36]}});
+   L.marker([lat,lon],{{icon,riseOnHover:true}}).addTo(map).bindPopup(popupHtml(g),{{maxWidth:310,closeButton:true}});
+ }});
+ map.on('popupopen',(ev)=>{{
+   const root=ev.popup && ev.popup.getElement ? ev.popup.getElement() : null; if(!root)return;
+   const main=root.querySelector('.memory-main'); const caption=root.querySelector('.memory-main-caption'); const wrap=root.querySelector('.memory-main-wrap');
+   root.querySelectorAll('.memory-thumb').forEach((btn)=>btn.addEventListener('click',()=>{{
+     if(main) main.src=String(btn.dataset.src||'');
+     if(caption) caption.textContent=`${{btn.dataset.date||''}}${{btn.dataset.time?' '+btn.dataset.time:''}}${{btn.dataset.media==='video'?' ・ 動画':''}}`;
+     if(wrap){{let badge=wrap.querySelector('.memory-main-badge'); if(btn.dataset.media==='video'){{if(!badge){{badge=document.createElement('span');badge.className='memory-main-badge';wrap.appendChild(badge);}}badge.textContent='動画';}}else if(badge)badge.remove();}}
+   }}));
+ }});
+ setTimeout(()=>map.invalidateSize(),120);
+}})();
+</script></body></html>'''
+    st.components.v1.html(map_html, height=580, scrolling=False)
+    return prepared
+
+
+def page_memory_map():
+    page_top(
+        "🗺️ 思い出マップ",
+        "日記からではなく、いまいる場所の地図から、以前ここで何を見て・経験したかをたどります。",
+    )
+    st.caption("地図を開いたときだけ位置情報と軽量メタデータを読み込みます。写真本体はピンを開いたときだけ表示します。")
+
+    location_key = f"_memory_map_location_v259_{current_family_key()}_{current_member_key()}"
+    token_key = f"_memory_map_location_token_v259_{current_family_key()}_{current_member_key()}"
+    location = st.session_state.get(location_key)
+    if not isinstance(location, dict):
+        nearby = st.session_state.get("_nearby_location")
+        if isinstance(nearby, dict) and nearby.get("latitude") is not None and nearby.get("longitude") is not None:
+            location = dict(nearby)
+
+    component = _get_memory_map_location_component()
+    if component is not None:
+        result = component(
+            data={},
+            key=f"memory_map_location_component_v259_{current_family_key()}_{current_member_key()}_{_current_ui_refresh_epoch()}",
+            on_location_change=lambda: None,
+            on_location_error_change=lambda: None,
+        )
+        payload = getattr(result, "location", None)
+        if isinstance(payload, dict):
+            token = str(payload.get("token") or "")
+            if token and token != str(st.session_state.get(token_key) or ""):
+                try:
+                    lat = float(payload.get("latitude")); lon = float(payload.get("longitude"))
+                    accuracy = float(payload.get("accuracy_m") or 0) or None
+                    st.session_state[token_key] = token
+                    st.session_state[location_key] = {
+                        "source": "gps",
+                        "latitude": lat,
+                        "longitude": lon,
+                        "accuracy_m": accuracy,
+                        "measured_at": str(payload.get("measured_at") or now_jst().isoformat()),
+                        "place_label": reverse_geocode_rough(lat, lon) or "現在地付近",
+                    }
+                    st.rerun()
+                except (TypeError, ValueError):
+                    pass
+        error = getattr(result, "location_error", None)
+        if isinstance(error, dict) and error.get("message"):
+            st.warning(str(error.get("message")))
+    else:
+        st.info("この環境では現在地取得ボタンを表示できません。")
+
+    location = st.session_state.get(location_key) if isinstance(st.session_state.get(location_key), dict) else location
+    if not isinstance(location, dict) or location.get("latitude") is None or location.get("longitude") is None:
+        st.info("上のボタンで現在地を取得すると、その周辺に残っている思い出を地図に表示します。")
+        return
+
+    try:
+        center_lat = float(location.get("latitude")); center_lon = float(location.get("longitude"))
+        accuracy = float(location.get("accuracy_m") or 0) or None
+    except (TypeError, ValueError):
+        st.warning("現在地を確認できませんでした。もう一度取得してください。")
+        return
+
+    place_label = str(location.get("place_label") or reverse_geocode_rough(center_lat, center_lon) or "現在地付近")
+    accuracy_text = f"GPS精度 ±{int(round(accuracy))}m" if isinstance(accuracy, (int, float)) and accuracy > 0 else ""
+    st.markdown(
+        f'<div style="margin:.08rem 0 .48rem;padding:.48rem .62rem;border-radius:12px;background:rgba(74,144,226,.05);border:1px solid rgba(74,144,226,.12);font-size:.75rem;line-height:1.4;"><b>📍 {html.escape(place_label)}</b>'
+        + (f'<div style="font-size:.65rem;opacity:.65;margin-top:.08rem;">{html.escape(accuracy_text)}</div>' if accuracy_text else "")
+        + '</div>',
+        unsafe_allow_html=True,
+    )
+
+    radius_key = f"_memory_map_radius_v259_{current_family_key()}_{current_member_key()}"
+    radius_choices = {"1km": 1000, "3km": 3000, "10km": 10000}
+    current_radius_label = str(st.session_state.get(radius_key) or "3km")
+    if current_radius_label not in radius_choices:
+        current_radius_label = "3km"
+    selected_radius = st.radio(
+        "表示する範囲",
+        list(radius_choices.keys()),
+        index=list(radius_choices.keys()).index(current_radius_label),
+        horizontal=True,
+        key=radius_key,
+    )
+    radius_m = int(radius_choices.get(str(selected_radius), MEMORY_MAP_DEFAULT_RADIUS_M))
+
+    with st.spinner("近くの思い出を地図に置いています…"):
+        prepared = _render_memory_map(center_lat, center_lon, radius_m, accuracy_m=accuracy)
+    count = int((prepared or {}).get("item_count") or 0)
+    if count:
+        st.caption(f"この範囲で {count} 件の写真・動画の記録を見つけました。近い撮影地点は1つのピンにまとめています。")
+    else:
+        st.caption("この範囲には、GPS付きの思い出がまだありません。これから撮る写真・動画は自動的に地図へ追加されます。")
+
+
+# ============================================================
 # Page: Review / Settings
 # ============================================================
 def page_review():
@@ -25572,12 +26092,16 @@ def page_review():
             background:rgba(128,128,128,.055); border:1px solid rgba(128,128,128,.11);
             font-size:.76rem; line-height:1.45; opacity:.82;
           }
+          .st-key-review_map_jump,
           .st-key-review_monthly_jump,
           .st-key-review_tag_jump,
           .st-key-review_history_jump {
             border-radius:18px; padding:.58rem .66rem .50rem; margin:.18rem 0 .62rem;
             border:1px solid rgba(128,128,128,.16);
             box-shadow:0 8px 22px rgba(0,0,0,.045);
+          }
+          .st-key-review_map_jump {
+            background:linear-gradient(145deg,rgba(239,248,255,.98),rgba(232,245,249,.95));
           }
           .st-key-review_monthly_jump {
             background:linear-gradient(145deg,rgba(255,249,231,.98),rgba(255,239,213,.95));
@@ -25588,6 +26112,7 @@ def page_review():
           .st-key-review_history_jump {
             background:linear-gradient(145deg,rgba(240,250,247,.98),rgba(232,246,241,.95));
           }
+          .st-key-review_map_jump div.stButton > button,
           .st-key-review_monthly_jump div.stButton > button,
           .st-key-review_tag_jump div.stButton > button,
           .st-key-review_history_jump div.stButton > button {
@@ -25596,21 +26121,32 @@ def page_review():
             border:1px solid rgba(128,128,128,.16) !important;
             box-shadow:0 4px 12px rgba(0,0,0,.035) !important;
           }
+          .st-key-review_map_jump [data-testid="stCaptionContainer"],
           .st-key-review_monthly_jump [data-testid="stCaptionContainer"],
           .st-key-review_tag_jump [data-testid="stCaptionContainer"],
           .st-key-review_history_jump [data-testid="stCaptionContainer"] {
             margin-top:-.10rem; padding:.02rem .16rem .02rem;
           }
+          .st-key-review_map_jump [data-testid="stCaptionContainer"] p,
           .st-key-review_monthly_jump [data-testid="stCaptionContainer"] p,
           .st-key-review_tag_jump [data-testid="stCaptionContainer"] p,
           .st-key-review_history_jump [data-testid="stCaptionContainer"] p {
             font-size:.74rem; line-height:1.38;
           }
         </style>
-        <div class="review-menu-note">月別とタグ別は別々に保存されます。どちらを使っても、元の写真や日記は変わりません。</div>
+        <div class="review-menu-note">思い出マップは日記単位ではなく、撮影地点から過去をたどります。月別・タグ別・日記表示も元の写真は変えません。</div>
         """,
         unsafe_allow_html=True,
     )
+
+    with st.container(key="review_map_jump"):
+        if st.button(
+            "🗺️ 思い出マップ",
+            use_container_width=True,
+            key="review_open_map_v259",
+        ):
+            go_page("review_map")
+        st.caption("いまいる場所の近くで、以前どんな写真・動画を残したかを地図のピンからたどる")
 
     with st.container(key="review_monthly_jump"):
         if st.button(
@@ -26180,6 +26716,8 @@ with page_root.container():
         page_diary()
     elif page == "review":
         page_review()
+    elif page == "review_map":
+        page_memory_map()
     elif page == "review_monthly":
         page_monthly(embedded=False)
     elif page == "review_tag":
@@ -26203,6 +26741,6 @@ with page_root.container():
         live_page = str(st.session_state.get("main_page") or "home")
         if (
             page == live_page
-            and page in {"camera", "videos", "moments", "diary", "review", "review_monthly", "review_tag", "review_history", "nearby", "toilets", "settings"}
+            and page in {"camera", "videos", "moments", "diary", "review", "review_map", "review_monthly", "review_tag", "review_history", "nearby", "toilets", "settings"}
         ):
             render_global_bottom_navigation(page)
