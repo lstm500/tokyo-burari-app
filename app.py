@@ -32,7 +32,7 @@ import streamlit as st
 # Freshly generated update: 2026-08-31 23:49 JST
 GENERATED_UPDATE_JST = "2026-09-06T12:00:00+09:00"
 
-APP_BUILD = "v267"
+APP_BUILD = "v268"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -26000,6 +26000,8 @@ _MEMORY_MAP_VIEW_HTML = """
     <div id="memory-pin-preview-meta-v267" class="memory-pin-preview-meta-v267"></div>
     <div class="memory-pin-preview-image-wrap-v267">
       <img id="memory-pin-preview-image-v267" class="memory-pin-preview-image-v267" alt="思い出の写真" />
+      <button type="button" id="memory-pin-preview-prev-v268" class="memory-pin-preview-nav-v268 memory-pin-preview-prev-v268" aria-label="前の写真" hidden>◀</button>
+      <button type="button" id="memory-pin-preview-next-v268" class="memory-pin-preview-nav-v268 memory-pin-preview-next-v268" aria-label="次の写真" hidden>▶</button>
       <div id="memory-pin-preview-badge-v267" class="memory-pin-preview-badge-v267" hidden>動画</div>
       <div id="memory-pin-preview-empty-v267" class="memory-pin-preview-empty-v267" hidden>写真を表示できませんでした</div>
     </div>
@@ -26073,6 +26075,13 @@ _MEMORY_MAP_VIEW_CSS = r"""
 .memory-pin-preview-meta-v267 { padding-right:34px; font-size:11px; color:#69737e; margin-bottom:7px; }
 .memory-pin-preview-image-wrap-v267 { position:relative; width:100%; aspect-ratio:4/3; border-radius:11px; overflow:hidden; background:#edf0f2; }
 .memory-pin-preview-image-v267 { display:block; width:100%; height:100%; object-fit:cover; }
+/* v268: small previous/next controls live on the left/right edges of the photo.
+   They only switch already-loaded preview items, so no Streamlit rerun is needed. */
+.memory-pin-preview-nav-v268 { position:absolute; z-index:4; top:50%; transform:translateY(-50%); width:30px; height:36px; padding:0; border:1px solid rgba(255,255,255,.82); border-radius:999px; background:rgba(20,24,28,.58); color:#fff; box-shadow:0 2px 8px rgba(0,0,0,.20); font-size:14px; line-height:34px; text-align:center; font-weight:800; cursor:pointer; touch-action:manipulation; -webkit-tap-highlight-color:transparent; }
+.memory-pin-preview-nav-v268[hidden] { display:none!important; }
+.memory-pin-preview-prev-v268 { left:6px; }
+.memory-pin-preview-next-v268 { right:6px; }
+.memory-pin-preview-nav-v268:active { background:rgba(20,24,28,.78); transform:translateY(-50%) scale(.96); }
 .memory-pin-preview-badge-v267 { position:absolute; right:7px; top:7px; padding:3px 7px; border-radius:999px; background:rgba(20,24,28,.72); color:#fff; font-size:10px; font-weight:800; }
 .memory-pin-preview-empty-v267 { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; padding:14px; text-align:center; color:#6f7881; font-size:11px; line-height:1.45; }
 .memory-pin-preview-badge-v267[hidden], .memory-pin-preview-empty-v267[hidden] { display:none!important; }
@@ -26110,16 +26119,20 @@ export default function(component) {
   const previewPlace = parentElement.querySelector('#memory-pin-preview-place-v267');
   const previewMeta = parentElement.querySelector('#memory-pin-preview-meta-v267');
   const previewImage = parentElement.querySelector('#memory-pin-preview-image-v267');
+  const previewPrev = parentElement.querySelector('#memory-pin-preview-prev-v268');
+  const previewNext = parentElement.querySelector('#memory-pin-preview-next-v268');
   const previewBadge = parentElement.querySelector('#memory-pin-preview-badge-v267');
   const previewEmpty = parentElement.querySelector('#memory-pin-preview-empty-v267');
   const previewCaption = parentElement.querySelector('#memory-pin-preview-caption-v267');
   const previewThumbs = parentElement.querySelector('#memory-pin-preview-thumbs-v267');
-  if (!node || !preview || !previewClose || !previewImage) return;
+  if (!node || !preview || !previewClose || !previewImage || !previewPrev || !previewNext) return;
 
-  try { parentElement.__memoryMapCleanupV267?.(); } catch (_) {}
+  try { parentElement.__memoryMapCleanupV268?.(); } catch (_) {}
   let cancelled = false;
   let map = null;
   let centerSyncTimer = null;
+  let previewItems = [];
+  let previewIndex = 0;
   const cleanupFns = [];
   const payload = (data && typeof data === 'object') ? data : {};
   const selectedRadius = [1000, 3000, 10000].includes(Number(payload.radius_m)) ? Number(payload.radius_m) : 3000;
@@ -26128,6 +26141,10 @@ export default function(component) {
 
   const hidePreview = () => {
     preview.hidden = true;
+    previewItems = [];
+    previewIndex = 0;
+    previewPrev.hidden = true;
+    previewNext.hidden = true;
     previewImage.removeAttribute('src');
     if (previewThumbs) previewThumbs.replaceChildren();
   };
@@ -26139,6 +26156,7 @@ export default function(component) {
       previewThumbs.querySelectorAll('.memory-pin-preview-thumb-v267').forEach((button) =>
         button.classList.toggle('active', button === activeButton)
       );
+      try { activeButton?.scrollIntoView?.({block:'nearest', inline:'nearest', behavior:'smooth'}); } catch (_) {}
     }
     if (src) {
       previewImage.hidden = false;
@@ -26158,20 +26176,45 @@ export default function(component) {
     if (previewBadge) previewBadge.hidden = entry.media_type !== 'video';
   };
 
+  const syncPreviewNav = () => {
+    const canMove = previewItems.length > 1;
+    previewPrev.hidden = !canMove;
+    previewNext.hidden = !canMove;
+  };
+
+  const setPreviewIndex = (nextIndex) => {
+    if (!previewItems.length) {
+      previewIndex = 0;
+      syncPreviewNav();
+      setPreviewItem({}, null);
+      return;
+    }
+    const length = previewItems.length;
+    previewIndex = ((Number(nextIndex || 0) % length) + length) % length;
+    const activeButton = previewThumbs
+      ? previewThumbs.querySelector(`.memory-pin-preview-thumb-v267[data-preview-index="${previewIndex}"]`)
+      : null;
+    setPreviewItem(previewItems[previewIndex], activeButton);
+    syncPreviewNav();
+  };
+
   const showPreview = (group) => {
     if (cancelled) return;
     const g = (group && typeof group === 'object') ? group : {};
     const items = Array.isArray(g.items) ? g.items : [];
-    const first = items.find((item) => item && item.src) || items[0] || {};
+    // Keep only entries that can actually be shown. The first one is the embedded
+    // lightweight preview from v266; the rest reuse the already-present preview URLs.
+    previewItems = items.filter((item) => item && item.src);
+    previewIndex = 0;
     if (previewPlace) previewPlace.textContent = String(g.place || 'このあたりの思い出');
     if (previewMeta) previewMeta.textContent = `${Math.max(1, Number(g.count || items.length || 1))}件の思い出`;
     if (previewThumbs) {
       previewThumbs.replaceChildren();
-      items.forEach((item, index) => {
-        if (!item || !item.src) return;
+      previewItems.forEach((item, index) => {
         const button = document.createElement('button');
         button.type = 'button';
         button.className = 'memory-pin-preview-thumb-v267';
+        button.dataset.previewIndex = String(index);
         button.setAttribute('aria-label', `${item.date || '思い出'}を表示`);
         const img = document.createElement('img');
         img.alt = '';
@@ -26181,15 +26224,27 @@ export default function(component) {
         button.appendChild(img);
         button.addEventListener('click', (event) => {
           event.preventDefault(); event.stopPropagation();
-          setPreviewItem(item, button);
+          setPreviewIndex(index);
         });
         previewThumbs.appendChild(button);
-        if ((item === first || (!first.src && index === 0))) button.classList.add('active');
       });
     }
-    setPreviewItem(first, previewThumbs ? previewThumbs.querySelector('.memory-pin-preview-thumb-v267.active') : null);
+    setPreviewIndex(0);
     preview.hidden = false;
   };
+
+  const onPreviewPrev = (event) => {
+    event.preventDefault(); event.stopPropagation();
+    setPreviewIndex(previewIndex - 1);
+  };
+  const onPreviewNext = (event) => {
+    event.preventDefault(); event.stopPropagation();
+    setPreviewIndex(previewIndex + 1);
+  };
+  previewPrev.addEventListener('click', onPreviewPrev);
+  previewNext.addEventListener('click', onPreviewNext);
+  cleanupFns.push(() => previewPrev.removeEventListener('click', onPreviewPrev));
+  cleanupFns.push(() => previewNext.removeEventListener('click', onPreviewNext));
 
   const onPreviewClose = (event) => {
     event.preventDefault(); event.stopPropagation(); hidePreview();
@@ -26337,7 +26392,7 @@ export default function(component) {
     try { if (map) map.remove(); } catch (_) {}
     map = null;
   };
-  parentElement.__memoryMapCleanupV267 = cleanup;
+  parentElement.__memoryMapCleanupV268 = cleanup;
   return cleanup;
 }
 """
@@ -26352,7 +26407,7 @@ def _get_memory_map_view_component():
     _memory_map_view_component_initialized = True
     try:
         memory_map_view_component = st.components.v2.component(
-            "tokyo_burari_memory_map_view_v267",
+            "tokyo_burari_memory_map_view_v268",
             html=_MEMORY_MAP_VIEW_HTML,
             css=_MEMORY_MAP_VIEW_CSS,
             js=_MEMORY_MAP_VIEW_JS,
@@ -26387,7 +26442,7 @@ def _render_memory_map(center_lat, center_lon, radius_m, *, accuracy_m=None, cen
         return legacy_prepared, None
     component(
         data=payload,
-        key=f"memory_map_view_component_v267_{current_family_key()}_{current_member_key()}",
+        key=f"memory_map_view_component_v268_{current_family_key()}_{current_member_key()}",
     )
     return prepared, None
 
