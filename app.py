@@ -32,7 +32,7 @@ import streamlit as st
 # Freshly generated update: 2026-08-31 23:49 JST
 GENERATED_UPDATE_JST = "2026-09-06T12:00:00+09:00"
 
-APP_BUILD = "v252"
+APP_BUILD = "v254"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -903,7 +903,7 @@ _LIVE_CAMERA_HTML = """
       <button id="camera-review-retry" class="camera-retry-button" type="button">撮りなおす／選びなおす</button>
     </div>
     <button id="camera-review-find-moments" class="camera-find-button" type="button" hidden>✨ いい瞬間を探す</button>
-    <div id="camera-review-build" class="camera-review-build" hidden>camera v252</div>
+    <div id="camera-review-build" class="camera-review-build" hidden>camera v253</div>
     <div id="camera-review-emotion-hint" class="camera-review-emotion-hint" hidden>写真下の「通常／こどもーど」を切り替え、写真につけるアイコンを1つ選べます。</div>
     <div id="camera-review-image-shell" class="camera-review-image-shell" role="button" tabindex="0" aria-label="写真のアイコンを選ぶ" hidden>
       <img id="camera-review-image" class="camera-review-image" alt="撮影した写真の確認" />
@@ -1530,14 +1530,18 @@ export default function(component) {
     try { localStorage.setItem('tokyo_burari_camera_facing_v226', cameraFacing); } catch (_) {}
   };
   const preferredVideoConstraints = () => {
-    // v252: for video, stop forcing resolution/aspect ratio entirely. Let the
-    // phone/browser choose its native hardware camera profile and only prefer 30fps.
-    // This avoids the post-v246 resize/constraint path that can make Android preview
-    // and recording visibly stutter. Photos keep the higher-resolution preference.
+    // v253: return to the older hardware-friendly recording profile.  The app does
+    // not invent a new aspect ratio; it only caps video at a normal 1080p-class
+    // camera profile and 30fps so Android Chrome does not silently choose an
+    // unnecessarily heavy sensor mode (for example 4K) that can make preview and
+    // recorded motion stutter. The browser still selects an actual camera-supported
+    // mode with the phone camera's own ratio.
     if (cameraMode === 'video') {
       return {
         facingMode: { ideal: cameraFacing },
-        frameRate: { ideal: 30 }
+        width: { ideal: 1080, max: 1920 },
+        height: { ideal: 1920, max: 1920 },
+        frameRate: { ideal: 30, max: 30 }
       };
     }
     return {
@@ -1907,19 +1911,33 @@ export default function(component) {
     setStatus(cameraMode === 'video' ? 'カメラとマイクの使用を許可してください…' : 'カメラの使用を許可してください…');
     try {
       stream = await navigator.mediaDevices.getUserMedia({
-        // v252: ordinary camera video does not need voice-call DSP. Using the
-        // browser's native microphone stream reduces real-time processing load.
-        audio: cameraMode === 'video' ? true : false,
+        audio: cameraMode === 'video' ? {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true
+        } : false,
         video: preferredVideoConstraints()
       });
       video.srcObject = stream;
       await video.play();
-      // v252: video uses the camera stream exactly as the phone/browser opened it.
-      // Do not re-apply width/height/aspect/zoom constraints after play(); those
-      // reconfiguration steps were the main difference from the older smoother path.
+      // v253: photos may still use the existing portrait/zoom helper. Video is not
+      // resized after opening. The only optional video adjustment is the same native
+      // hardware stabilization request used by the older smoother camera pipeline.
       if (cameraMode === 'photo') {
         await applyNativePortraitConstraint();
         await applyWidestAvailableZoom();
+      } else {
+        try {
+          const supported = (navigator.mediaDevices && navigator.mediaDevices.getSupportedConstraints)
+            ? navigator.mediaDevices.getSupportedConstraints()
+            : {};
+          const track = stream.getVideoTracks && stream.getVideoTracks()[0];
+          if (track && track.applyConstraints && supported && supported.imageStabilization) {
+            await track.applyConstraints({ advanced: [{ imageStabilization: true }] });
+          }
+        } catch (stabilizationErr) {
+          console.warn('camera hardware stabilization unavailable', stabilizationErr);
+        }
       }
       syncNativeCameraFrame();
       try {
@@ -2423,8 +2441,8 @@ export default function(component) {
     const captureFrameRate = Math.max(0, Number(captureSettings?.frameRate || 0));
     const capturePixels = captureWidth * captureHeight;
     const requestedVideoBitrate = capturePixels >= 1700000
-      ? 3000000
-      : (capturePixels >= 800000 ? 2200000 : 1800000);
+      ? 3600000
+      : (capturePixels >= 800000 ? 2800000 : 2000000);
     try {
       const options = {
         videoBitsPerSecond: requestedVideoBitrate,
@@ -2564,11 +2582,11 @@ export default function(component) {
         }
       };
 
-      mediaRecorder.start(1000);
+      mediaRecorder.start(500);
       recordingStartedAt = Date.now();
       setRecordingUi(true);
       updateRecordingClock();
-      recordingTimer = setInterval(updateRecordingClock, 500);
+      recordingTimer = setInterval(updateRecordingClock, 250);
       // v139 quality-first recording: do not generate JPEG candidates while the
       // MediaRecorder encoder is running. Candidate extraction starts after stop.
       recordingMaxTimer = setTimeout(stopVideoRecording, VIDEO_RECORD_MAX_SECONDS * 1000);
@@ -7486,6 +7504,24 @@ NEARBY_LUNCH_ATOMIC_QUERIES = {
     "カフェ・喫茶店": "カフェ 喫茶店 ランチ",
 }
 
+# Exact Google Places types are used in addition to the original free-text query.
+# The UI remains grouped, but each original category is still evaluated separately.
+# Nearby Search is especially important for restaurants whose proper name does not
+# contain cuisine words (for example Radicare), which free-text ranking can miss.
+NEARBY_LUNCH_ATOMIC_PLACE_TYPES = {
+    "寿司": ("sushi_restaurant",),
+    "海鮮": ("seafood_restaurant",),
+    "焼肉・ホルモン": ("barbecue_restaurant",),
+    "ラーメン・つけ麺": ("ramen_restaurant",),
+    "中華料理": ("chinese_restaurant",),
+    "韓国料理": ("korean_restaurant",),
+    "イタリアン": ("italian_restaurant", "pizza_restaurant"),
+    "フレンチ": ("french_restaurant",),
+    "ハンバーガー": ("hamburger_restaurant",),
+    "アジア・エスニック": ("thai_restaurant", "vietnamese_restaurant", "indian_restaurant"),
+    "カフェ・喫茶店": ("cafe", "coffee_shop"),
+}
+
 def _nearby_lunch_atomic_query_specs(subkind):
     group = str(subkind or "おまかせ")
     members = NEARBY_LUNCH_GROUP_MEMBERS.get(group) or ("おまかせ",)
@@ -7632,11 +7668,17 @@ def search_nearby_quick_stops_google(latitude, longitude, kind, subkind, radius_
 
         def _run_text_search(spec):
             genre_label, query_text = spec
+            genre_label = str(genre_label)
+            collected = []
+            errors = []
+
+            # 1) Original fine-grained Tabelog-style category as a free-text search.
+            # Keep this path because several Japanese categories have no exact Google type.
             request_body = {
                 "textQuery": str(query_text),
                 "languageCode": "ja",
                 "regionCode": "JP",
-                "maxResultCount": 12 if is_lunch else 20,
+                "maxResultCount": 20 if is_lunch else 20,
                 "locationBias": {
                     "circle": {
                         "center": {"latitude": latitude, "longitude": longitude},
@@ -7659,14 +7701,67 @@ def search_nearby_quick_stops_google(latitude, longitude, kind, subkind, radius_
             try:
                 with urlopen(request, timeout=7.0) as response:
                     payload = json.loads(response.read().decode("utf-8"))
-                return {"genre": str(genre_label), "data": payload, "error": ""}
+                collected.extend(list(payload.get("places") or []))
             except Exception as exc:
-                return {"genre": str(genre_label), "data": {}, "error": str(exc)[:260]}
+                errors.append("text:" + str(exc)[:180])
+
+            # 2) Supplement with exact Google cuisine types using a hard radius.
+            # This catches restaurants whose name contains no cuisine keyword and avoids
+            # free-text relevance ranking dropping a valid nearby restaurant.
+            place_types = tuple(NEARBY_LUNCH_ATOMIC_PLACE_TYPES.get(genre_label) or ()) if is_lunch else ()
+            if place_types:
+                nearby_body = {
+                    "includedTypes": list(place_types),
+                    "maxResultCount": 20,
+                    "rankPreference": "DISTANCE",
+                    "languageCode": "ja",
+                    "regionCode": "JP",
+                    "locationRestriction": {
+                        "circle": {
+                            "center": {"latitude": latitude, "longitude": longitude},
+                            "radius": float(radius_m),
+                        }
+                    },
+                }
+                nearby_request = Request(
+                    "https://places.googleapis.com/v1/places:searchNearby",
+                    data=json.dumps(nearby_body, ensure_ascii=False).encode("utf-8"),
+                    headers={
+                        "Content-Type": "application/json; charset=UTF-8",
+                        "X-Goog-Api-Key": GOOGLE_PLACES_API_KEY,
+                        "X-Goog-FieldMask": field_mask,
+                    },
+                    method="POST",
+                )
+                try:
+                    with urlopen(nearby_request, timeout=7.0) as response:
+                        nearby_payload = json.loads(response.read().decode("utf-8"))
+                    collected.extend(list(nearby_payload.get("places") or []))
+                except Exception as exc:
+                    # A type-specific supplement failing must not erase the working text results.
+                    errors.append("type:" + str(exc)[:180])
+
+            deduped = {}
+            for raw in collected:
+                if not isinstance(raw, dict):
+                    continue
+                pid = str(raw.get("id") or "").strip()
+                if pid:
+                    key = "id:" + pid
+                else:
+                    display = raw.get("displayName") if isinstance(raw.get("displayName"), dict) else {}
+                    loc = raw.get("location") if isinstance(raw.get("location"), dict) else {}
+                    key = f"fallback:{str(display.get('text') or '').strip().lower()}:{loc.get('latitude')}:{loc.get('longitude')}"
+                if key not in deduped:
+                    deduped[key] = raw
+            if deduped:
+                return {"genre": genre_label, "data": {"places": list(deduped.values())}, "error": ""}
+            return {"genre": genre_label, "data": {}, "error": " / ".join(errors)[:260] or "no results"}
 
         if len(query_specs) <= 1:
             query_results = [_run_text_search(query_specs[0])]
         else:
-            worker_count = max(1, min(4, len(query_specs)))
+            worker_count = max(1, min(6, len(query_specs)))
             with ThreadPoolExecutor(max_workers=worker_count) as executor:
                 query_results = list(executor.map(_run_text_search, query_specs))
 
@@ -8025,7 +8120,7 @@ def search_nearby_quick_stops_google(latitude, longitude, kind, subkind, radius_
         "budget_under_1000": bool(budget_under_1000),
         "budget_limit": int(budget_limit) if is_lunch and budget_limit is not None else None,
         "sort_mode": "review_weighted_rating" if is_lunch else ("walkability" if is_snack and snack_style == "食べ歩き向き" else "distance"),
-        "search_mode": "nearby_types" if is_snack else ("atomic_text" if is_lunch else "text"),
+        "search_mode": "nearby_types" if is_snack else ("atomic_text_plus_types" if is_lunch else "text"),
         "lunch_query_count": int(lunch_query_count) if is_lunch else 0,
         "lunch_atomic_genres": list(lunch_atomic_genres) if is_lunch else [],
         "raw_count": raw_count,
@@ -20947,6 +21042,7 @@ def page_nearby():
     budget_key = f"_nearby_filter_budget_v232_{current_family_key()}_{current_member_key()}"
     lunch_budget_key = f"_nearby_filter_lunch_budget_v232_{current_family_key()}_{current_member_key()}"
     open_key = f"_nearby_filter_open_v232_{current_family_key()}_{current_member_key()}"
+    lunch_open_key = f"_nearby_filter_lunch_open_v253_{current_family_key()}_{current_member_key()}"
     result_key = f"_nearby_search_result_v234_{current_family_key()}_{current_member_key()}"
 
     if st.session_state.get(kind_key) not in {"snack", "sightseeing", "lunch"}:
@@ -20958,12 +21054,18 @@ def page_nearby():
     if st.session_state.get(lunch_key) not in set(NEARBY_LUNCH_GENRES):
         st.session_state[lunch_key] = "おまかせ"
     current_kind_for_radius = str(st.session_state.get(kind_key) or "snack")
+    lunch_defaults_migration_key = f"_nearby_lunch_defaults_v254_{current_family_key()}_{current_member_key()}"
+    if not st.session_state.get(lunch_defaults_migration_key):
+        if current_kind_for_radius == "lunch":
+            st.session_state[radius_key] = "徒歩10分くらい"
+        st.session_state[lunch_open_key] = "open" if GOOGLE_PLACES_API_KEY else "all"
+        st.session_state[lunch_defaults_migration_key] = True
     if current_kind_for_radius == "snack":
         if st.session_state.get(radius_key) not in {"徒歩1分くらい", "徒歩3分くらい", "徒歩5分くらい"}:
             st.session_state[radius_key] = "徒歩3分くらい"
     elif current_kind_for_radius == "lunch":
         if st.session_state.get(radius_key) not in {"徒歩5分くらい", "徒歩10分くらい", "徒歩20分くらい"}:
-            st.session_state[radius_key] = "徒歩5分くらい"
+            st.session_state[radius_key] = "徒歩10分くらい"
     elif st.session_state.get(radius_key) not in {"徒歩10分くらい", "徒歩20分くらい", "もう少し遠く"}:
         st.session_state[radius_key] = "徒歩10分くらい"
     if st.session_state.get(budget_key) not in {"under1000", "all"}:
@@ -20972,6 +21074,8 @@ def page_nearby():
         st.session_state[lunch_budget_key] = "2000"
     if st.session_state.get(open_key) not in {"open", "all"}:
         st.session_state[open_key] = "open" if GOOGLE_PLACES_API_KEY else "all"
+    if st.session_state.get(lunch_open_key) not in {"open", "all"}:
+        st.session_state[lunch_open_key] = "open"
 
     def _choice_button(label, value, state_key, button_key, selected_value):
         if st.button(
@@ -20996,11 +21100,13 @@ def page_nearby():
         subkind = str(st.session_state.get(lunch_key) or "おまかせ")
     else:
         subkind = str(st.session_state.get(sight_key) or "なんでも")
-    default_radius = "徒歩3分くらい" if kind == "snack" else ("徒歩5分くらい" if kind == "lunch" else "徒歩10分くらい")
+    default_radius = "徒歩3分くらい" if kind == "snack" else ("徒歩10分くらい" if kind == "lunch" else "徒歩10分くらい")
     radius_label = str(st.session_state.get(radius_key) or default_radius)
     budget_mode = str(st.session_state.get(budget_key) or "under1000")
     lunch_budget_mode = str(st.session_state.get(lunch_budget_key) or "2000")
-    open_mode = str(st.session_state.get(open_key) or ("open" if GOOGLE_PLACES_API_KEY else "all"))
+    active_open_key = lunch_open_key if kind == "lunch" else open_key
+    open_default = "open" if GOOGLE_PLACES_API_KEY else "all"
+    open_mode = str(st.session_state.get(active_open_key) or open_default)
 
     with st.container(key="nearby_filter_panel"):
         # 5 conditions in a two-column grid. The odd fifth condition spans both columns
@@ -21042,7 +21148,7 @@ def page_nearby():
                             st.session_state[lunch_key] = selected_lunch_genre
                             st.rerun()
                         subkind = str(selected_lunch_genre)
-                        st.markdown('<div class="nearby-step-note">表示は10分類ですが、検索は内訳のジャンルごとに個別判定して候補をまとめます。</div>', unsafe_allow_html=True)
+                        st.markdown('<div class="nearby-step-note">表示は10分類ですが、元のジャンルごとに個別検索し、Googleの料理タイプ検索も併用して候補をまとめます。</div>', unsafe_allow_html=True)
                     else:
                         sight_options = [
                             ("おまかせ", "なんでも"),
@@ -21069,7 +21175,7 @@ def page_nearby():
                             ("🚶 5分", "徒歩5分くらい"),
                         ]
                     elif kind == "lunch":
-                        radius_label = str(st.session_state.get(radius_key) or "徒歩5分くらい")
+                        radius_label = str(st.session_state.get(radius_key) or "徒歩10分くらい")
                         radius_options_ui = [
                             ("🚶 5分", "徒歩5分くらい"),
                             ("🚶 10分", "徒歩10分くらい"),
@@ -21110,12 +21216,14 @@ def page_nearby():
             with st.container(border=True, key="nearby_step_5"):
                 _step_title(5, "営業中")
                 if GOOGLE_PLACES_API_KEY:
-                    open_mode = str(st.session_state.get(open_key) or "open")
+                    active_open_key = lunch_open_key if kind == "lunch" else open_key
+                    open_default = "open"
+                    open_mode = str(st.session_state.get(active_open_key) or open_default)
                     open_cols = st.columns(2, gap="small")
                     with open_cols[0]:
-                        _choice_button("🟢 営業中だけ", "open", open_key, "nearby_open_only_v194", open_mode)
+                        _choice_button("🟢 営業中だけ", "open", active_open_key, f"nearby_open_only_v253_{kind}", open_mode)
                     with open_cols[1]:
-                        _choice_button("○ 時間を問わない", "all", open_key, "nearby_open_all_v194", open_mode)
+                        _choice_button("○ 時間を問わない", "all", active_open_key, f"nearby_open_all_v253_{kind}", open_mode)
                     st.markdown(
                         '<div class="nearby-step-note">営業中だけにすると、営業時間が未登録の場所は候補から外れることがあります。</div>',
                         unsafe_allow_html=True,
@@ -21134,7 +21242,7 @@ def page_nearby():
         elif kind == "lunch":
             # Same walking estimate: 320m≈5min, 640m≈10min, 1280m≈20min.
             radius_map = {"徒歩5分くらい": 320, "徒歩10分くらい": 640, "徒歩20分くらい": 1280}
-            radius_label = str(st.session_state.get(radius_key) or "徒歩5分くらい")
+            radius_label = str(st.session_state.get(radius_key) or "徒歩10分くらい")
             radius_m = int(radius_map.get(radius_label, 320))
         else:
             radius_map = {"徒歩10分くらい": 800, "徒歩20分くらい": 1600, "もう少し遠く": 2500}
@@ -21142,7 +21250,9 @@ def page_nearby():
             radius_m = int(radius_map.get(radius_label, 800))
         budget_under_1000 = bool(kind != "lunch" and str(st.session_state.get(budget_key) or "under1000") == "under1000")
         budget_limit = int(str(st.session_state.get(lunch_budget_key) or "2000")) if kind == "lunch" else None
-        open_now_only = bool(GOOGLE_PLACES_API_KEY and str(st.session_state.get(open_key) or "open") == "open")
+        active_open_key = lunch_open_key if kind == "lunch" else open_key
+        open_default = "open"
+        open_now_only = bool(GOOGLE_PLACES_API_KEY and str(st.session_state.get(active_open_key) or open_default) == "open")
         if kind == "snack":
             subkind = str(st.session_state.get(snack_key) or "食べ歩き向き")
         elif kind == "lunch":
@@ -21170,6 +21280,7 @@ def page_nearby():
                 "open_now_only": bool(open_now_only),
                 "provider": "google" if GOOGLE_PLACES_API_KEY else "osm",
                 "lunch_rating_model": "bayesian_review_weighted_v1" if kind == "lunch" else None,
+                "lunch_search_engine": "atomic_text_plus_types_v253" if kind == "lunch" else None,
             },
             ensure_ascii=False,
             sort_keys=True,
