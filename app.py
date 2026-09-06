@@ -32,7 +32,7 @@ import streamlit as st
 # Freshly generated update: 2026-08-31 23:49 JST
 GENERATED_UPDATE_JST = "2026-09-06T12:00:00+09:00"
 
-APP_BUILD = "v236"
+APP_BUILD = "v237"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -899,7 +899,7 @@ _LIVE_CAMERA_HTML = """
       <button id="camera-review-retry" class="camera-retry-button" type="button">撮りなおす／選びなおす</button>
     </div>
     <button id="camera-review-find-moments" class="camera-find-button" type="button" hidden>✨ いい瞬間を探す</button>
-    <div id="camera-review-build" class="camera-review-build" hidden>camera v238</div>
+    <div id="camera-review-build" class="camera-review-build" hidden>camera v237</div>
     <div id="camera-review-emotion-hint" class="camera-review-emotion-hint" hidden>写真下の「通常／こどもーど」を切り替え、写真につけるアイコンを1つ選べます。</div>
     <div id="camera-review-image-shell" class="camera-review-image-shell" role="button" tabindex="0" aria-label="写真のアイコンを選ぶ" hidden>
       <img id="camera-review-image" class="camera-review-image" alt="撮影した写真の確認" />
@@ -1034,39 +1034,33 @@ _LIVE_CAMERA_CSS = """
 .live-camera-video,
 .camera-review-image,
 .camera-review-video {
-  width: min(94%, 430px);
-  max-width: 100%;
-  max-height: 54dvh;
+  width: 100%;
+  max-height: 58dvh;
   aspect-ratio: 3 / 4;
   object-fit: contain;
   box-sizing: border-box;
   border-radius: 16px;
   background: #000;
-  margin: 0 auto;
+  margin: 0;
 }
-/* v232/v238: show the whole camera frame instead of filling the 3:4 box by cropping it.
-   The portrait preview is also slightly reduced in on-screen size so it reads less close-up. */
+/* v232: show the whole camera frame instead of filling the 3:4 box by cropping it.
+   This makes the live framing match the saved photo and avoids the overly close look. */
 .live-camera-video {
   object-fit: contain;
 }
-/* v238: video remains a portrait-first 9:16 experience.
-   Keep the preview clearly portrait, but slightly smaller than full width so the frame feels less cramped.
-   Some Android cameras expose a landscape sensor stream even while the phone is
-   held vertically, so cover the portrait viewport rather than letterboxing it.
-   Photo mode remains orientation-aware and may switch to the landscape rules below. */
+/* v237: video capture stays portrait even if the handset is rotated.
+   The portrait preview uses the camera sensor's wider 3:4 field instead of a
+   tightly cropped 9:16 stream, so subjects do not appear unnecessarily close. */
 .live-camera-wrap.camera-video-mode .live-camera-video,
 .live-camera-wrap.camera-video-mode .camera-review-video {
-  display: block;
-  width: min(92vw, 420px);
-  height: auto;
+  width: auto;
+  height: min(48dvh, 620px);
   max-width: 100%;
-  max-height: none;
-  aspect-ratio: 9 / 16;
-  object-fit: cover;
-  object-position: center center;
+  max-height: 48dvh;
+  aspect-ratio: 3 / 4;
+  object-fit: contain;
   margin-left: auto;
   margin-right: auto;
-  background: #000;
 }
 /* v226: selfie preview is mirrored like a normal phone camera.
    Captured files keep the camera sensor's original orientation. */
@@ -1272,6 +1266,18 @@ _LIVE_CAMERA_CSS = """
     min-height: 52px;
     font-size: 14px;
   }
+  /* v237: keep the shutter controls visible on a phone without scrolling. */
+  .live-camera-video,
+  .camera-review-image,
+  .camera-review-video {
+    max-height: 42dvh;
+  }
+  .live-camera-wrap.camera-video-mode .live-camera-video,
+  .live-camera-wrap.camera-video-mode .camera-review-video {
+    height: min(42dvh, 520px);
+    max-height: 42dvh;
+    aspect-ratio: 3 / 4;
+  }
   .camera-active-actions { grid-template-columns: 1.85fr .92fr 1.08fr .72fr; gap: 6px; }
   .camera-review-actions { grid-template-columns: 3fr 1fr; }
   .camera-shoot-button,
@@ -1408,7 +1414,7 @@ export default function(component) {
     return false;
   };
   const syncOrientationUi = () => {
-    // v236: landscape layout is a photo-only feature. Video is always portrait.
+    // v237: landscape layout is a photo-only feature. Video stays portrait.
     const videoMode = cameraMode === 'video';
     const landscape = !videoMode && isDeviceLandscape();
     if (wrap) {
@@ -1447,38 +1453,26 @@ export default function(component) {
   const preferredVideoConstraints = () => {
     const landscape = isDeviceLandscape();
     const photoMode = cameraMode !== 'video';
-    // v237: photos follow the handset orientation. Video always asks the browser
-    // for a portrait 9:16 track. resizeMode=crop-and-scale lets compatible mobile
-    // browsers crop a landscape-native camera sensor into a true portrait stream
-    // instead of returning a wide frame with black bars. Unsupported constraints
-    // are ignored by the browser.
+    // v237: photos follow the handset orientation. Video stays portrait but
+    // requests the wider native-style 3:4 field instead of 9:16 center-cropping.
+    // This keeps more of the scene in frame and reduces the overly-close look.
     const width = photoMode
       ? (landscape ? 1600 : 1200)
-      : 1080;
+      : 1200;
     const height = photoMode
       ? (landscape ? 1200 : 1600)
-      : 1920;
+      : 1600;
     const aspectRatio = photoMode
       ? (landscape ? (4 / 3) : (3 / 4))
-      : (9 / 16);
-    const constraints = {
+      : (3 / 4);
+    return {
       facingMode: { ideal: cameraFacing },
       width: { ideal: width },
       height: { ideal: height },
       frameRate: { ideal: 30, max: 30 },
-      aspectRatio: { ideal: aspectRatio }
+      aspectRatio: { ideal: aspectRatio },
+      resizeMode: { ideal: 'none' }
     };
-    if (!photoMode) {
-      try {
-        const supported = (navigator.mediaDevices && navigator.mediaDevices.getSupportedConstraints)
-          ? navigator.mediaDevices.getSupportedConstraints()
-          : {};
-        if (supported && supported.resizeMode) {
-          constraints.resizeMode = { ideal: 'crop-and-scale' };
-        }
-      } catch (_) {}
-    }
-    return constraints;
   };
 
   const applyWidestAvailableZoom = async () => {
@@ -1490,12 +1484,8 @@ export default function(component) {
       const zoomCaps = caps.zoom;
       if (!zoomCaps) return;
       const minZoom = Number(zoomCaps.min);
-      const maxZoom = Number(zoomCaps.max);
       if (!Number.isFinite(minZoom) || minZoom <= 0) return;
-      const targetZoom = Number.isFinite(maxZoom) && maxZoom > 0
-        ? Math.max(minZoom, Math.min(maxZoom, minZoom))
-        : minZoom;
-      await track.applyConstraints({ advanced: [{ zoom: targetZoom }] });
+      await track.applyConstraints({ advanced: [{ zoom: minZoom }] });
     } catch (err) {
       // Zoom is optional in getUserMedia. Devices that do not expose it keep their native view.
       console.warn('minimum camera zoom unavailable', err);
@@ -1593,11 +1583,6 @@ export default function(component) {
   let recordingCandidateBusy = false;
   let recordingCandidateFrames = [];
   let recordingCancelled = false;
-  // v237: when a mobile browser still exposes a non-9:16 sensor track, record a
-  // center-cropped portrait canvas stream while keeping the original microphone.
-  let portraitRecorderCanvas = null;
-  let portraitRecorderCanvasStream = null;
-  let portraitRecorderRaf = 0;
   // Good-moments search is a separate review action. The button remains hidden
   // briefly after recording stops, so the stop gesture cannot fall through to it.
   let videoReviewGeneration = 0;
@@ -1622,20 +1607,6 @@ export default function(component) {
       clearInterval(recordingCandidateTimer);
       recordingCandidateTimer = null;
     }
-  };
-
-  const cleanupPortraitRecorderStream = () => {
-    if (portraitRecorderRaf) {
-      try { cancelAnimationFrame(portraitRecorderRaf); } catch (_) {}
-      portraitRecorderRaf = 0;
-    }
-    if (portraitRecorderCanvasStream) {
-      try {
-        portraitRecorderCanvasStream.getVideoTracks().forEach((track) => track.stop());
-      } catch (_) {}
-      portraitRecorderCanvasStream = null;
-    }
-    portraitRecorderCanvas = null;
   };
 
   const syncLibraryActions = (recording = false) => {
@@ -1876,34 +1847,6 @@ export default function(component) {
       await video.play();
       // v232: start from the widest zoom level the browser/device exposes.
       await applyWidestAvailableZoom();
-      // v237: reinforce portrait video after the camera opens. Some Android
-      // implementations only honor resizeMode/aspect ratio on applyConstraints.
-      // This is best-effort; failure never prevents recording.
-      if (cameraMode === 'video') {
-        try {
-          const track = stream.getVideoTracks && stream.getVideoTracks()[0];
-          const supported = (navigator.mediaDevices && navigator.mediaDevices.getSupportedConstraints)
-            ? navigator.mediaDevices.getSupportedConstraints()
-            : {};
-          if (track && track.applyConstraints) {
-            const portraitConstraints = {
-              width: { ideal: 1080 },
-              height: { ideal: 1920 },
-              aspectRatio: { ideal: 9 / 16 }
-            };
-            if (supported && supported.resizeMode) {
-              portraitConstraints.resizeMode = { ideal: 'crop-and-scale' };
-            }
-            await track.applyConstraints(portraitConstraints);
-          }
-        } catch (portraitConstraintErr) {
-          console.warn('portrait video constraint unavailable', portraitConstraintErr);
-        }
-        // Re-apply the widest zoom after portrait constraints. Some Android devices
-        // reset zoom when aspect ratio constraints are updated, which makes the
-        // saved image feel too close.
-        await applyWidestAvailableZoom();
-      }
       try {
         const cameraTrack = stream.getVideoTracks && stream.getVideoTracks()[0];
         const settings = (cameraTrack && cameraTrack.getSettings) ? cameraTrack.getSettings() : {};
@@ -2206,31 +2149,18 @@ export default function(component) {
   };
 
 
-  const portraitCropRect = (srcW, srcH) => {
-    const width = Math.max(1, Number(srcW || 1));
-    const height = Math.max(1, Number(srcH || 1));
-    const targetAspect = 9 / 16;
-    const sourceAspect = width / height;
-    if (sourceAspect > targetAspect) {
-      const cropWidth = height * targetAspect;
-      return { sx: (width - cropWidth) / 2, sy: 0, sw: cropWidth, sh: height };
-    }
-    const cropHeight = width / targetAspect;
-    return { sx: 0, sy: (height - cropHeight) / 2, sw: width, sh: cropHeight };
-  };
-
   const captureVideoPosterDataUrl = async () => {
     if (!video.videoWidth || !video.videoHeight) throw new Error('video frame unavailable');
     const srcW = video.videoWidth;
     const srcH = video.videoHeight;
-    const crop = portraitCropRect(srcW, srcH);
-    const maxHeight = 900;
-    const height = Math.max(2, Math.min(maxHeight, Math.round(crop.sh)));
-    const width = Math.max(2, Math.round(height * 9 / 16));
+    const maxSide = 900;
+    const scale = Math.min(1, maxSide / Math.max(srcW, srcH));
+    const width = Math.max(1, Math.round(srcW * scale));
+    const height = Math.max(1, Math.round(srcH * scale));
     canvas.width = width;
     canvas.height = height;
     const ctx = canvas.getContext('2d', { alpha: false });
-    ctx.drawImage(video, crop.sx, crop.sy, crop.sw, crop.sh, 0, 0, width, height);
+    ctx.drawImage(video, 0, 0, width, height);
     const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', 0.72));
     if (!blob) throw new Error('video poster conversion failed');
     return await blobToDataUrl(blob);
@@ -2401,86 +2331,6 @@ export default function(component) {
     return '';
   };
 
-  const buildPortraitRecordingStream = () => {
-    const sourceTrack = stream && stream.getVideoTracks ? stream.getVideoTracks()[0] : null;
-    const settings = (sourceTrack && sourceTrack.getSettings) ? sourceTrack.getSettings() : {};
-    const sourceW = Math.max(1, Number(settings?.width || video.videoWidth || 1));
-    const sourceH = Math.max(1, Number(settings?.height || video.videoHeight || 1));
-    const sourceFps = Math.max(1, Math.min(30, Number(settings?.frameRate || 30)));
-    const sourceAspect = sourceW / sourceH;
-    const targetAspect = 9 / 16;
-
-    // If the browser really supplied a portrait 9:16 camera track, preserve that
-    // native track and avoid an unnecessary second encode path.
-    if (sourceH > sourceW && Math.abs(sourceAspect - targetAspect) <= 0.035) {
-      return {
-        recordingStream: stream,
-        width: sourceW,
-        height: sourceH,
-        frameRate: sourceFps,
-        portraitComposited: false
-      };
-    }
-
-    try {
-      if (typeof MediaStream === 'undefined' || typeof document === 'undefined') throw new Error('MediaStream unavailable');
-      const recorderCanvas = document.createElement('canvas');
-      if (!recorderCanvas || typeof recorderCanvas.captureStream !== 'function') throw new Error('canvas captureStream unavailable');
-
-      // Do not upscale a wide sensor feed just to reach nominal 1080x1920. Keep
-      // the available vertical detail and crop its center to exact 9:16.
-      let outputHeight = Math.min(1920, Math.max(360, Math.floor(sourceH / 2) * 2));
-      let outputWidth = Math.max(202, Math.floor((outputHeight * 9 / 16) / 2) * 2);
-      if (outputWidth > sourceW) {
-        outputWidth = Math.max(202, Math.floor(sourceW / 2) * 2);
-        outputHeight = Math.max(360, Math.floor((outputWidth * 16 / 9) / 2) * 2);
-      }
-      recorderCanvas.width = outputWidth;
-      recorderCanvas.height = outputHeight;
-      const ctx = recorderCanvas.getContext('2d', { alpha: false, desynchronized: true });
-      if (!ctx) throw new Error('portrait recorder canvas unavailable');
-
-      const drawFrame = () => {
-        try {
-          const frameW = Math.max(1, Number(video.videoWidth || sourceW));
-          const frameH = Math.max(1, Number(video.videoHeight || sourceH));
-          const crop = portraitCropRect(frameW, frameH);
-          ctx.drawImage(video, crop.sx, crop.sy, crop.sw, crop.sh, 0, 0, outputWidth, outputHeight);
-        } catch (_) {}
-        portraitRecorderRaf = requestAnimationFrame(drawFrame);
-      };
-      drawFrame();
-
-      const canvasStream = recorderCanvas.captureStream(sourceFps);
-      const canvasVideoTrack = canvasStream.getVideoTracks && canvasStream.getVideoTracks()[0];
-      if (!canvasVideoTrack) throw new Error('portrait video track unavailable');
-      try { canvasVideoTrack.contentHint = 'motion'; } catch (_) {}
-
-      const recordingStream = new MediaStream();
-      recordingStream.addTrack(canvasVideoTrack);
-      stream.getAudioTracks().forEach((track) => recordingStream.addTrack(track));
-      portraitRecorderCanvas = recorderCanvas;
-      portraitRecorderCanvasStream = canvasStream;
-      return {
-        recordingStream,
-        width: outputWidth,
-        height: outputHeight,
-        frameRate: sourceFps,
-        portraitComposited: true
-      };
-    } catch (portraitErr) {
-      cleanupPortraitRecorderStream();
-      console.warn('portrait recorder fallback unavailable', portraitErr);
-      return {
-        recordingStream: stream,
-        width: sourceW,
-        height: sourceH,
-        frameRate: sourceFps,
-        portraitComposited: false
-      };
-    }
-  };
-
   const stopVideoRecording = () => {
     clearRecordingTimers();
     if (mediaRecorder && mediaRecorder.state !== 'inactive') {
@@ -2504,12 +2354,11 @@ export default function(component) {
     recordingCapturedAt = new Date().toISOString();
     recordingLocationPromise = getLocationAtCapture();
     const mimeType = chooseRecorderMimeType();
-    cleanupPortraitRecorderStream();
-    const portraitRecording = buildPortraitRecordingStream();
-    const recordingStream = portraitRecording.recordingStream || stream;
-    const captureWidth = Math.max(0, Number(portraitRecording.width || video.videoWidth || 0));
-    const captureHeight = Math.max(0, Number(portraitRecording.height || video.videoHeight || 0));
-    const captureFrameRate = Math.max(0, Number(portraitRecording.frameRate || 0));
+    const captureTrack = stream.getVideoTracks && stream.getVideoTracks()[0];
+    const captureSettings = (captureTrack && captureTrack.getSettings) ? captureTrack.getSettings() : {};
+    const captureWidth = Math.max(0, Number(captureSettings?.width || video.videoWidth || 0));
+    const captureHeight = Math.max(0, Number(captureSettings?.height || video.videoHeight || 0));
+    const captureFrameRate = Math.max(0, Number(captureSettings?.frameRate || 0));
     const capturePixels = captureWidth * captureHeight;
     const requestedVideoBitrate = capturePixels >= 1700000
       ? 3600000
@@ -2521,9 +2370,9 @@ export default function(component) {
       };
       if (mimeType) options.mimeType = mimeType;
       try {
-        mediaRecorder = new MediaRecorder(recordingStream, options);
+        mediaRecorder = new MediaRecorder(stream, options);
       } catch (_) {
-        mediaRecorder = new MediaRecorder(recordingStream, mimeType ? { mimeType } : undefined);
+        mediaRecorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
       }
       mediaRecorder.ondataavailable = (event) => {
         if (event.data && event.data.size > 0) recordedChunks.push(event.data);
@@ -2531,7 +2380,6 @@ export default function(component) {
       mediaRecorder.onerror = (event) => {
         console.error(event);
         clearRecordingTimers();
-        cleanupPortraitRecorderStream();
         setRecordingUi(false);
         const message = '動画の録画中にエラーが発生しました。もう一度お試しください。';
         setStatus(message);
@@ -2546,7 +2394,6 @@ export default function(component) {
           recordedChunks = [];
           recordingCandidateFrames = [];
           recordingCancelled = false;
-          cleanupPortraitRecorderStream();
           return;
         }
         try {
@@ -2554,7 +2401,6 @@ export default function(component) {
           const finalType = (recorder && recorder.mimeType) || mimeType || 'video/webm';
           const blob = new Blob(recordedChunks, { type: finalType });
           recordedChunks = [];
-          cleanupPortraitRecorderStream();
           if (!blob.size) throw new Error('recorded video is empty');
           if (videoMaxBytes > 0 && blob.size > videoMaxBytes) {
             const sizeMb = (blob.size / (1024 * 1024)).toFixed(1);
@@ -2625,12 +2471,11 @@ export default function(component) {
             capture_width: captureWidth,
             capture_height: captureHeight,
             capture_frame_rate: captureFrameRate,
-            portrait_composited: Boolean(portraitRecording.portraitComposited),
             video_bitrate_bps: Number((recorder && recorder.videoBitsPerSecond) || requestedVideoBitrate || 0),
             name: finalType.includes('mp4') ? 'camera.mp4' : 'camera.webm',
             source: 'video_camera',
             camera_facing: cameraFacing,
-            capture_orientation: 'portrait',
+            capture_orientation: isDeviceLandscape() ? 'landscape' : 'portrait',
             captured_at: recordingCapturedAt || new Date().toISOString(),
             location,
             auto_save: true,
@@ -2668,7 +2513,6 @@ export default function(component) {
       setStatus('');
     } catch (err) {
       console.error(err);
-      cleanupPortraitRecorderStream();
       setRecordingUi(false);
       const message = 'この端末では動画録画を開始できませんでした。ブラウザを最新版にしてください。';
       setStatus(message);
@@ -3079,11 +2923,11 @@ export default function(component) {
 }
 """
 
-LIVE_CAMERA_COMPONENT_BUILD = "v236"
+LIVE_CAMERA_COMPONENT_BUILD = "v237"
 
 try:
     live_camera_component = st.components.v2.component(
-        "tokyo_burari_live_camera_v236",
+        "tokyo_burari_live_camera_v237",
         html=_LIVE_CAMERA_HTML,
         css=_LIVE_CAMERA_CSS,
         js=_LIVE_CAMERA_JS,
@@ -23647,7 +23491,7 @@ def page_trip():
             "video_candidate_sheet_signed_url": str(video_reservation.get("candidate_sheet_signed_url") or ""),
             "video_candidate_sheet_storage_path": str(video_reservation.get("candidate_sheet_path") or ""),
         },
-        key=f"live_camera_v226_{camera_trip_key}_{st.session_state.capture_serial}_{_current_ui_refresh_epoch()}",
+        key=f"live_camera_v237_{camera_trip_key}_{st.session_state.capture_serial}_{_current_ui_refresh_epoch()}",
         on_photo_change=lambda: None,
         on_video_change=lambda: None,
         on_camera_error_change=lambda: None,
