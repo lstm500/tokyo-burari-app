@@ -32,7 +32,7 @@ import streamlit as st
 # Freshly generated update: 2026-08-31 23:49 JST
 GENERATED_UPDATE_JST = "2026-09-06T12:00:00+09:00"
 
-APP_BUILD = "v246"
+APP_BUILD = "v247"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -778,13 +778,16 @@ try:
 except Exception:
     VIDEO_STORAGE_QUOTA_MB = 0
 
-VIDEO_MAX_SECONDS = 65
-# Recording itself stops at 65 seconds. The processing allowance is slightly larger
-# so MediaRecorder/onstop timing jitter never truncates otherwise valid metadata.
+VIDEO_RECORD_MAX_SECONDS = 60
+VIDEO_IMPORT_MAX_SECONDS = 65
+# Compatibility/storage limit: imported phone videos can be slightly over 60 seconds,
+# so processing and stored-video workflows continue to accept up to 65 seconds.
+VIDEO_MAX_SECONDS = VIDEO_IMPORT_MAX_SECONDS
+# Processing allowance is slightly larger so metadata/container timing never truncates
+# a valid imported video near the 65-second storage limit.
 VIDEO_PROCESSING_MAX_SECONDS = 75
-# A typical 65-second recording at the requested browser bitrate is around 33 MB.
-# Reserve 32 MB before recording when an account quota is configured, while allowing
-# the actual file to be larger up to the hard 100 MB per-video ceiling below.
+# A typical 60-second in-app recording fits comfortably within this reserve. Keep a
+# conservative margin because browser/device bitrates vary.
 VIDEO_RECORDING_RESERVE_BYTES = 36 * 1024 * 1024
 VIDEO_MAX_BYTES = 100 * 1024 * 1024
 VIDEO_AI_MAX_SELECTIONS = 6
@@ -877,7 +880,7 @@ _LIVE_CAMERA_HTML = """
 
   <video id="live-camera-video" class="live-camera-video" playsinline autoplay muted hidden></video>
 
-  <div id="camera-recording-status" class="camera-recording-status" hidden>● 録画中 0:00 / 1:05</div>
+  <div id="camera-recording-status" class="camera-recording-status" hidden>● 録画中 0:00 / 1:00</div>
 
   <div id="camera-active-actions" class="camera-active-actions" hidden>
     <button id="live-camera-shoot" class="camera-shoot-button" type="button">● 撮影する</button>
@@ -899,7 +902,7 @@ _LIVE_CAMERA_HTML = """
       <button id="camera-review-retry" class="camera-retry-button" type="button">撮りなおす／選びなおす</button>
     </div>
     <button id="camera-review-find-moments" class="camera-find-button" type="button" hidden>✨ いい瞬間を探す</button>
-    <div id="camera-review-build" class="camera-review-build" hidden>camera v246</div>
+    <div id="camera-review-build" class="camera-review-build" hidden>camera v247</div>
     <div id="camera-review-emotion-hint" class="camera-review-emotion-hint" hidden>写真下の「通常／こどもーど」を切り替え、写真につけるアイコンを1つ選べます。</div>
     <div id="camera-review-image-shell" class="camera-review-image-shell" role="button" tabindex="0" aria-label="写真のアイコンを選ぶ" hidden>
       <img id="camera-review-image" class="camera-review-image" alt="撮影した写真の確認" />
@@ -1376,7 +1379,8 @@ export default function(component) {
   const reviewBuild = parentElement.querySelector('#camera-review-build');
   const status = parentElement.querySelector('#live-camera-status');
 
-  const VIDEO_MAX_SECONDS = 65;
+  const VIDEO_RECORD_MAX_SECONDS = 60;
+  const VIDEO_IMPORT_MAX_SECONDS = 65;
   const GOOD_MOMENTS_MAX_CANDIDATES = 20;
   const GOOD_MOMENTS_MIN_INTERVAL_SECONDS = 0.5;
   // v107: the browser uploads the video blob straight to a short-lived Supabase
@@ -1390,7 +1394,7 @@ export default function(component) {
   const videoMaxBytes = Math.max(0, Number(data?.video_max_bytes || 0));
   const videoAllowed = data?.video_allowed !== false && Boolean(videoUploadSignedUrl && videoUploadStoragePath);
   const videoCapacityMessage = String(
-    data?.video_capacity_message || '動画の保存容量または保存先を確認できないため、最大65秒の動画を撮影できません。'
+    data?.video_capacity_message || '動画の保存容量または保存先を確認できないため、最大60秒の動画を撮影できません。'
   );
   const unavailableSuffix = videoUnavailableReason === 'quota'
     ? '容量不足'
@@ -1700,11 +1704,11 @@ export default function(component) {
 
   const updateRecordingClock = () => {
     if (!recordingStatus || !recordingStartedAt) return;
-    const elapsed = Math.min(VIDEO_MAX_SECONDS, Math.max(0, Math.floor((Date.now() - recordingStartedAt) / 1000)));
+    const elapsed = Math.min(VIDEO_RECORD_MAX_SECONDS, Math.max(0, Math.floor((Date.now() - recordingStartedAt) / 1000)));
     const mm = Math.floor(elapsed / 60);
     const ss = String(elapsed % 60).padStart(2, '0');
-    const maxMm = Math.floor(VIDEO_MAX_SECONDS / 60);
-    const maxSs = String(VIDEO_MAX_SECONDS % 60).padStart(2, '0');
+    const maxMm = Math.floor(VIDEO_RECORD_MAX_SECONDS / 60);
+    const maxSs = String(VIDEO_RECORD_MAX_SECONDS % 60).padStart(2, '0');
     recordingStatus.textContent = `● 録画中 ${mm}:${ss} / ${maxMm}:${maxSs}`;
   };
 
@@ -1944,7 +1948,7 @@ export default function(component) {
         localStorage.setItem('tokyo_burari_last_camera_open_v1', String(openedAt));
         localStorage.setItem('tokyo_burari_last_camera_mode_v1', cameraMode === 'video' ? 'video' : 'photo');
       } catch (_) {}
-      setStatus(cameraMode === 'video' ? `動画は最大65秒です。音声も一緒に記録します。${cameraFacing === 'user' ? ' 内側カメラ使用中。' : ''}` : (cameraFacing === 'user' ? '内側カメラ使用中です。' : ''));
+      setStatus(cameraMode === 'video' ? `動画は最大60秒です。音声も一緒に記録します。${cameraFacing === 'user' ? ' 内側カメラ使用中。' : ''}` : (cameraFacing === 'user' ? '内側カメラ使用中です。' : ''));
     } catch (err) {
       console.error(err);
       stopStream();
@@ -1959,7 +1963,7 @@ export default function(component) {
   };
 
   const goodMomentsSamplePlan = (durationSeconds) => {
-    const duration = Math.max(0.001, Math.min(VIDEO_MAX_SECONDS, Number(durationSeconds || 0) || VIDEO_MAX_SECONDS));
+    const duration = Math.max(0.001, Math.min(VIDEO_IMPORT_MAX_SECONDS, Number(durationSeconds || 0) || VIDEO_IMPORT_MAX_SECONDS));
     const intervalSeconds = Math.max(
       GOOD_MOMENTS_MIN_INTERVAL_SECONDS,
       duration / GOOD_MOMENTS_MAX_CANDIDATES
@@ -2573,7 +2577,7 @@ export default function(component) {
       recordingTimer = setInterval(updateRecordingClock, 250);
       // v139 quality-first recording: do not generate JPEG candidates while the
       // MediaRecorder encoder is running. Candidate extraction starts after stop.
-      recordingMaxTimer = setTimeout(stopVideoRecording, VIDEO_MAX_SECONDS * 1000);
+      recordingMaxTimer = setTimeout(stopVideoRecording, VIDEO_RECORD_MAX_SECONDS * 1000);
       setStatus('');
     } catch (err) {
       console.error(err);
@@ -2619,8 +2623,8 @@ export default function(component) {
       if (!Number.isFinite(durationSeconds) || durationSeconds <= 0) {
         throw new Error('動画の長さを確認できませんでした。');
       }
-      if (durationSeconds > VIDEO_MAX_SECONDS + 0.15) {
-        throw new Error(`動画は最大${VIDEO_MAX_SECONDS}秒までです。選んだ動画は${durationSeconds.toFixed(1)}秒あります。`);
+      if (durationSeconds > VIDEO_IMPORT_MAX_SECONDS + 0.15) {
+        throw new Error(`取り込める動画は最大${VIDEO_IMPORT_MAX_SECONDS}秒までです。選んだ動画は${durationSeconds.toFixed(1)}秒あります。`);
       }
       try {
         if (probe.readyState < 2) {
@@ -7290,29 +7294,42 @@ def _nearby_overpass_selectors(kind, subkind, radius, latitude, longitude):
         # because ratings and price data are required for the requested ranking/filtering.
         cuisine_map = {
             "おまかせ": [f'nwr{around}["amenity"~"^(restaurant|fast_food|food_court|cafe)$"];'],
-            "和食": [f'nwr{around}["cuisine"~"japanese"];', f'nwr{around}["name"~"和食|割烹|食堂|定食"];'],
-            "定食・食堂": [f'nwr{around}["name"~"定食|食堂|めし|御膳"];'],
-            "寿司": [f'nwr{around}["cuisine"~"sushi"];', f'nwr{around}["name"~"寿司|鮨|すし"];'],
-            "海鮮": [f'nwr{around}["name"~"海鮮|魚介|刺身|漁港|丼"];'],
-            "焼肉・ホルモン": [f'nwr{around}["cuisine"~"korean_barbecue|yakiniku"];', f'nwr{around}["name"~"焼肉|焼き肉|ホルモン"];'],
-            "焼き鳥・鳥料理": [f'nwr{around}["name"~"焼鳥|焼き鳥|鳥料理|鶏料理"];'],
-            "ステーキ・ハンバーグ": [f'nwr{around}["cuisine"~"steak_house"];', f'nwr{around}["name"~"ステーキ|ハンバーグ"];'],
-            "とんかつ": [f'nwr{around}["name"~"とんかつ|トンカツ|豚カツ"];'],
-            "天ぷら": [f'nwr{around}["name"~"天ぷら|天麩羅|天丼"];'],
-            "うなぎ": [f'nwr{around}["name"~"うなぎ|鰻"];'],
-            "そば": [f'nwr{around}["cuisine"~"soba"];', f'nwr{around}["name"~"そば|蕎麦"];'],
-            "うどん": [f'nwr{around}["cuisine"~"udon"];', f'nwr{around}["name"~"うどん|饂飩"];'],
-            "ラーメン・つけ麺": [f'nwr{around}["cuisine"~"ramen"];', f'nwr{around}["name"~"ラーメン|らーめん|中華そば|つけ麺"];'],
-            "カレー": [f'nwr{around}["cuisine"~"curry"];', f'nwr{around}["name"~"カレー|カリー"];'],
-            "中華料理": [f'nwr{around}["cuisine"~"chinese"];', f'nwr{around}["name"~"中華|中国料理|餃子"];'],
-            "韓国料理": [f'nwr{around}["cuisine"~"korean"];', f'nwr{around}["name"~"韓国料理|韓国食堂|ビビンバ|スンドゥブ"];'],
-            "イタリアン": [f'nwr{around}["cuisine"~"italian|pizza"];', f'nwr{around}["name"~"イタリアン|ピッツァ|ピザ|パスタ"];'],
-            "フレンチ": [f'nwr{around}["cuisine"~"french"];', f'nwr{around}["name"~"フレンチ|ビストロ"];'],
-            "洋食": [f'nwr{around}["name"~"洋食|オムライス|グリル"];'],
-            "ハンバーガー": [f'nwr{around}["cuisine"~"burger"];', f'nwr{around}["name"~"バーガー|ハンバーガー"];'],
-            "お好み焼き・もんじゃ": [f'nwr{around}["name"~"お好み焼|もんじゃ|鉄板焼"];'],
-            "アジア・エスニック": [f'nwr{around}["cuisine"~"thai|vietnamese|indian|nepalese|indonesian|malaysian"];'],
-            "カフェ・喫茶店": [f'nwr{around}["amenity"="cafe"];', f'nwr{around}["name"~"カフェ|喫茶"];'],
+            "和食・定食": [
+                f'nwr{around}["cuisine"~"japanese"];',
+                f'nwr{around}["name"~"和食|割烹|食堂|定食|御膳|とんかつ|トンカツ|天ぷら|天麩羅|天丼|うなぎ|鰻|お好み焼|もんじゃ|鉄板焼"];',
+            ],
+            "寿司・海鮮": [
+                f'nwr{around}["cuisine"~"sushi"];',
+                f'nwr{around}["name"~"寿司|鮨|すし|海鮮|魚介|刺身|漁港|海鮮丼"];',
+            ],
+            "肉料理": [
+                f'nwr{around}["cuisine"~"korean_barbecue|yakiniku|steak_house"];',
+                f'nwr{around}["name"~"焼肉|焼き肉|ホルモン|焼鳥|焼き鳥|鳥料理|鶏料理|ステーキ|ハンバーグ"];',
+            ],
+            "麺類": [
+                f'nwr{around}["cuisine"~"soba|udon|ramen"];',
+                f'nwr{around}["name"~"そば|蕎麦|うどん|饂飩|ラーメン|らーめん|中華そば|つけ麺"];',
+            ],
+            "中華・韓国": [
+                f'nwr{around}["cuisine"~"chinese|korean"];',
+                f'nwr{around}["name"~"中華|中国料理|餃子|韓国料理|韓国食堂|ビビンバ|スンドゥブ"];',
+            ],
+            "イタリアン・フレンチ": [
+                f'nwr{around}["cuisine"~"italian|pizza|french"];',
+                f'nwr{around}["name"~"イタリアン|ピッツァ|ピザ|パスタ|フレンチ|ビストロ"];',
+            ],
+            "洋食・ハンバーガー": [
+                f'nwr{around}["cuisine"~"burger"];',
+                f'nwr{around}["name"~"洋食|オムライス|グリル|バーガー|ハンバーガー"];',
+            ],
+            "カレー・エスニック": [
+                f'nwr{around}["cuisine"~"curry|thai|vietnamese|indian|nepalese|indonesian|malaysian"];',
+                f'nwr{around}["name"~"カレー|カリー|タイ料理|ベトナム料理|インド料理|ネパール料理"];',
+            ],
+            "カフェ・軽食": [
+                f'nwr{around}["amenity"="cafe"];',
+                f'nwr{around}["name"~"カフェ|喫茶|サンドイッチ|ベーカリー|軽食"];',
+            ],
         }
         return cuisine_map.get(str(subkind), cuisine_map["おまかせ"])
 
@@ -7422,58 +7439,30 @@ def _nearby_place_priority(tags, kind):
 
 NEARBY_LUNCH_GENRES = (
     "おまかせ",
-    "和食",
-    "定食・食堂",
-    "寿司",
-    "海鮮",
-    "焼肉・ホルモン",
-    "焼き鳥・鳥料理",
-    "ステーキ・ハンバーグ",
-    "とんかつ",
-    "天ぷら",
-    "うなぎ",
-    "そば",
-    "うどん",
-    "ラーメン・つけ麺",
-    "カレー",
-    "中華料理",
-    "韓国料理",
-    "イタリアン",
-    "フレンチ",
-    "洋食",
-    "ハンバーガー",
-    "お好み焼き・もんじゃ",
-    "アジア・エスニック",
-    "カフェ・喫茶店",
+    "和食・定食",
+    "寿司・海鮮",
+    "肉料理",
+    "麺類",
+    "中華・韓国",
+    "イタリアン・フレンチ",
+    "洋食・ハンバーガー",
+    "カレー・エスニック",
+    "カフェ・軽食",
 )
 
 
 def _nearby_lunch_text_query(subkind):
     mapping = {
         "おまかせ": "ランチ レストラン",
-        "和食": "和食 ランチ",
-        "定食・食堂": "定食 食堂 ランチ",
-        "寿司": "寿司 鮨 ランチ",
-        "海鮮": "海鮮 魚介 刺身 ランチ",
-        "焼肉・ホルモン": "焼肉 ホルモン ランチ",
-        "焼き鳥・鳥料理": "焼き鳥 鳥料理 鶏料理 ランチ",
-        "ステーキ・ハンバーグ": "ステーキ ハンバーグ ランチ",
-        "とんかつ": "とんかつ ランチ",
-        "天ぷら": "天ぷら 天丼 ランチ",
-        "うなぎ": "うなぎ 鰻 ランチ",
-        "そば": "そば 蕎麦 ランチ",
-        "うどん": "うどん ランチ",
-        "ラーメン・つけ麺": "ラーメン つけ麺 ランチ",
-        "カレー": "カレー ランチ",
-        "中華料理": "中華料理 ランチ",
-        "韓国料理": "韓国料理 ランチ",
-        "イタリアン": "イタリアン パスタ ピザ ランチ",
-        "フレンチ": "フレンチ ビストロ ランチ",
-        "洋食": "洋食 オムライス ランチ",
-        "ハンバーガー": "ハンバーガー ランチ",
-        "お好み焼き・もんじゃ": "お好み焼き もんじゃ ランチ",
-        "アジア・エスニック": "タイ ベトナム インド エスニック ランチ",
-        "カフェ・喫茶店": "カフェ 喫茶店 ランチ",
+        "和食・定食": "和食 定食 食堂 とんかつ 天ぷら 天丼 うなぎ 鰻 お好み焼き もんじゃ ランチ",
+        "寿司・海鮮": "寿司 鮨 海鮮 魚介 刺身 ランチ",
+        "肉料理": "焼肉 ホルモン 焼き鳥 鳥料理 鶏料理 ステーキ ハンバーグ ランチ",
+        "麺類": "そば 蕎麦 うどん ラーメン つけ麺 ランチ",
+        "中華・韓国": "中華料理 韓国料理 餃子 ビビンバ スンドゥブ ランチ",
+        "イタリアン・フレンチ": "イタリアン パスタ ピザ フレンチ ビストロ ランチ",
+        "洋食・ハンバーガー": "洋食 オムライス グリル ハンバーガー ランチ",
+        "カレー・エスニック": "カレー タイ ベトナム インド ネパール エスニック ランチ",
+        "カフェ・軽食": "カフェ 喫茶店 サンドイッチ ベーカリー 軽食 ランチ",
     }
     return mapping.get(str(subkind), mapping["おまかせ"])
 
@@ -10284,7 +10273,7 @@ def ensure_video_storage_capacity(incoming_bytes):
 
 
 def video_recording_capacity_status():
-    """Reserve enough room for one maximum 65-second recording before opening video mode."""
+    """Reserve enough room for one maximum 60-second in-app recording before opening video mode."""
     quota = video_storage_quota_bytes()
     if quota <= 0:
         return {
@@ -10293,7 +10282,7 @@ def video_recording_capacity_status():
             "quota_bytes": 0,
             "remaining_bytes": None,
             "required_bytes": VIDEO_RECORDING_RESERVE_BYTES,
-            "message": f"動画は最大65秒です。撮影開始前に{format_storage_size(VIDEO_RECORDING_RESERVE_BYTES)}以上の空きを確認し、実際の動画は最大{format_storage_size(VIDEO_MAX_BYTES)}まで保存できます。",
+            "message": f"動画は最大60秒です。撮影開始前に{format_storage_size(VIDEO_RECORDING_RESERVE_BYTES)}以上の空きを確認し、実際の動画は最大{format_storage_size(VIDEO_MAX_BYTES)}まで保存できます。",
         }
 
     usage = current_video_storage_usage_bytes()
@@ -10301,12 +10290,12 @@ def video_recording_capacity_status():
     allowed = remaining >= VIDEO_RECORDING_RESERVE_BYTES
     if allowed:
         message = (
-            f"最大65秒の動画を撮影できます（保存処理用バッファ込み）。残り {format_storage_size(remaining)} / "
+            f"最大60秒の動画を撮影できます（保存処理用バッファ込み）。残り {format_storage_size(remaining)} / "
             f"上限 {format_storage_size(quota)}"
         )
     else:
         message = (
-            "最大65秒の動画1本分と保存処理用バッファの空き容量がありません。"
+            "最大60秒の動画1本分と保存処理用バッファの空き容量がありません。"
             f" 残り {format_storage_size(remaining)} / 上限 {format_storage_size(quota)}。"
             f"撮影開始には少なくとも {format_storage_size(VIDEO_RECORDING_RESERVE_BYTES)} の空きが必要です。"
         )
@@ -10545,7 +10534,7 @@ def register_browser_uploaded_video(
     if size_value <= 0:
         raise ValueError("動画の容量を確認できませんでした。")
     if size_value > VIDEO_MAX_BYTES:
-        raise ValueError(f"動画データが保存可能な上限 {format_storage_size(VIDEO_MAX_BYTES)} を超えています。録画時間は65秒以内でも、端末の動画形式によって容量が大きくなる場合があります。")
+        raise ValueError(f"動画データが保存可能な上限 {format_storage_size(VIDEO_MAX_BYTES)} を超えています。アプリ内撮影は60秒、外部動画の取り込みは最大65秒までですが、端末の動画形式によって容量が大きくなる場合があります。")
     ensure_video_storage_capacity(size_value)
 
     try:
@@ -10674,14 +10663,14 @@ def upload_video(
     if not video_bytes:
         raise ValueError("動画データが空です。")
     # MediaRecorder.onstop may fire after the actual recording has already stopped.
-    # The browser caps recording at 65 seconds, so do not reject a valid video based
-    # on wall-clock delay between recorder.stop() and the onstop callback.
+    # The browser caps in-app recording at 60 seconds. Keep the wider processing
+    # allowance because imported videos may be slightly over 60 seconds, up to 65.
     duration_value = min(
         VIDEO_PROCESSING_MAX_SECONDS * 1000,
         max(0, int(duration_ms or 0)),
     )
     if len(video_bytes) > VIDEO_MAX_BYTES:
-        raise ValueError(f"動画データが保存可能な上限 {format_storage_size(VIDEO_MAX_BYTES)} を超えています。録画時間は65秒以内でも、端末の動画形式によって容量が大きくなる場合があります。")
+        raise ValueError(f"動画データが保存可能な上限 {format_storage_size(VIDEO_MAX_BYTES)} を超えています。アプリ内撮影は60秒、外部動画の取り込みは最大65秒までですが、端末の動画形式によって容量が大きくなる場合があります。")
     ensure_video_storage_capacity(len(video_bytes))
     poster = normalize_photo(poster_bytes)
     if not poster:
@@ -20879,7 +20868,7 @@ def page_nearby():
                             st.session_state[lunch_key] = selected_lunch_genre
                             st.rerun()
                         subkind = str(selected_lunch_genre)
-                        st.markdown('<div class="nearby-step-note">食べログなどでよく使われる大分類を中心に選べます。</div>', unsafe_allow_html=True)
+                        st.markdown('<div class="nearby-step-note">近いジャンルをまとめた10分類から選べます。</div>', unsafe_allow_html=True)
                     else:
                         sight_options = [
                             ("おまかせ", "なんでも"),
@@ -25727,7 +25716,7 @@ def page_settings():
                 "軽い手振れ補正版を作成できた場合、その補正版は動画容量に含まれます。"
             )
             if remaining_bytes < VIDEO_RECORDING_RESERVE_BYTES:
-                st.warning("65秒動画の撮影開始に必要な空きがないため、現在は動画撮影を開始できません。")
+                st.warning("60秒動画の撮影開始に必要な空きがないため、現在は動画撮影を開始できません。")
             st.progress(min(1.0, usage_bytes / quota_bytes) if quota_bytes else 0.0)
         except Exception as exc:
             st.caption("動画容量を確認できませんでした。")
@@ -25746,10 +25735,10 @@ def page_settings():
         "初回だけ、このサイトへのカメラ使用を『許可』してください。"
     )
     st.caption(
-        "動画は最大65秒です。録画を止めると確認画面を挟まず元動画を保管庫へ自動保存します。"
+        "アプリ内の動画撮影は最大60秒です。録画を止めると確認画面を挟まず元動画を保管庫へ自動保存します。"
         "写真カメラ起動中は下部から保存済み写真を、動画カメラ起動中は下部から保存済み動画を選べます。"
         "動画の保存完了と『いい瞬間』作成は切り分け、いい瞬間はバックグラウンドで処理するため、その間もアプリを操作できます。"
-        "『いい瞬間』は保存済みの元動画を、10秒以下は0.5秒間隔・15秒は0.75秒間隔・60秒は3秒間隔・65秒は3.25秒間隔（一般式：max(0.5秒, 動画長÷20)）で最大20枚切り出し、AI用には別の軽量コピーを使います。"
+        "外部から取り込む動画は、60秒を少し超えるファイルへのバッファとして最大65秒まで保存できます。『いい瞬間』は保存済みの元動画を、10秒以下は0.5秒間隔・15秒は0.75秒間隔・60秒は3秒間隔・65秒は3.25秒間隔（一般式：max(0.5秒, 動画長÷20)）で最大20枚切り出し、AI用には別の軽量コピーを使います。"
         "AIが選ぶのは最大6枚で、利用者が見る画像は元動画由来の高画質フレームのみです。切り取った写真は日記画面でタップするたびに6つの気持ちを切り替えられます。"
         "初回はカメラとは別に位置情報の許可も求められます。位置情報がオフ・拒否・取得不能の場合は、"
         "ホームの地名表示（未登録なら『地名：登録なし（自動取得）』）を押して入力した内容を写真の場所として使います。"
