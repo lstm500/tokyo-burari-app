@@ -32,7 +32,7 @@ import streamlit as st
 # Freshly generated update: 2026-08-31 23:49 JST
 GENERATED_UPDATE_JST = "2026-09-06T12:00:00+09:00"
 
-APP_BUILD = "v265"
+APP_BUILD = "v266"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -25870,14 +25870,17 @@ def _memory_map_payload(center_lat, center_lon, radius_m):
             path = str(item.get("storage_path") or "")
             captured = str(item.get("captured_at") or "")
             preview_src = str(signed.get(path) or "")
-            # v265: a pin must always have a visible lead photo. Signed URLs stay the
-            # lightweight default; only the first photo of a pin falls back to one
-            # cached thumbnail if Storage signing happens to fail for that path.
-            if not preview_src and item_index == 0 and path:
+            # v266: the first image for every pin is embedded as a small JPEG data URL.
+            # A signed Storage URL can be created successfully on the server yet still be
+            # blocked/fail inside a mobile Streamlit component.  The popup itself is only
+            # about 280px wide, so a cached 320px preview is enough and keeps the map light.
+            if item_index == 0 and path:
                 try:
-                    preview_src = thumbnail_photo_data_url(path, max_px=560, quality=78)
+                    embedded_preview = thumbnail_photo_data_url(path, max_px=320, quality=70)
                 except Exception:
-                    preview_src = ""
+                    embedded_preview = ""
+                if embedded_preview:
+                    preview_src = embedded_preview
             visible.append({
                 "id": str(item.get("id") or ""),
                 "src": preview_src,
@@ -26040,6 +26043,7 @@ _MEMORY_MAP_VIEW_CSS = r"""
 .memory-popup-meta-v260 { font-size:11px; color:#69737e; margin-bottom:8px; }
 .memory-main-wrap-v260 { position:relative; width:100%; aspect-ratio:4/3; border-radius:11px; overflow:hidden; background:#edf0f2; }
 .memory-main-v260 { display:block; width:100%; height:100%; object-fit:cover; }
+.memory-main-unavailable-v266 { width:100%; height:100%; display:flex; align-items:center; justify-content:center; padding:14px; box-sizing:border-box; text-align:center; color:#6f7881; font-size:11px; line-height:1.45; }
 .memory-main-badge-v260 { position:absolute; right:7px; top:7px; padding:3px 7px; border-radius:999px; background:rgba(20,24,28,.72); color:#fff; font-size:10px; font-weight:800; }
 .memory-main-caption-v260 { font-size:10px; color:#67717c; line-height:1.35; margin:5px 0 0; min-height:14px; }
 .memory-thumbs-v260 { display:grid; grid-template-columns:repeat(6,minmax(0,1fr)); gap:4px; margin-top:7px; }
@@ -26071,7 +26075,7 @@ export default function(component) {
   const centerLabel = parentElement.querySelector('#memory-center-label-v260');
   if (!node) return;
 
-  try { parentElement.__memoryMapCleanupV265?.(); } catch (_) {}
+  try { parentElement.__memoryMapCleanupV266?.(); } catch (_) {}
   let cancelled = false;
   let map = null;
   let centerSyncTimer = null;
@@ -26179,7 +26183,7 @@ export default function(component) {
         const items = Array.isArray(g.items) ? g.items : [];
         const first = items[0] || {};
         const mediaBadge = first.media_type === 'video' ? '<span class="memory-main-badge-v260">動画</span>' : '';
-        const main = first.src ? `<div class="memory-main-wrap-v260"><img class="memory-main-v260" data-src="${esc(first.src)}" alt="思い出の写真" />${mediaBadge}</div>` : '<div class="memory-main-wrap-v260"></div>';
+        const main = first.src ? `<div class="memory-main-wrap-v260"><img class="memory-main-v260" src="${esc(first.src)}" alt="思い出の写真" loading="eager" decoding="async" fetchpriority="high" />${mediaBadge}</div>` : '<div class="memory-main-wrap-v260"><div class="memory-main-unavailable-v266">写真を読み込めませんでした</div></div>';
         const caption = `${esc(first.date || '')}${first.time ? ' ' + esc(first.time) : ''}${first.media_type === 'video' ? ' ・ 動画' : ''}`;
         const thumbs = items.length > 1 ? `<div class="memory-thumbs-v260">${items.map((it) => it.src ? `<button class="memory-thumb-v260" type="button" data-src="${esc(it.src)}" data-date="${esc(it.date || '')}" data-time="${esc(it.time || '')}" data-media="${esc(it.media_type || 'photo')}" aria-label="${esc(it.date || '思い出')}"><img data-src="${esc(it.src)}" alt="" /></button>` : '').join('')}</div>` : '';
         const more = Number(g.count || 0) > items.length ? `<div class="memory-more-v260">ほか ${Number(g.count) - items.length} 件の思い出があります</div>` : '';
@@ -26199,20 +26203,16 @@ export default function(component) {
         const main = root.querySelector('.memory-main-v260');
         const caption = root.querySelector('.memory-main-caption-v260');
         const wrap = root.querySelector('.memory-main-wrap-v260');
-        // v265: Leaflet popups are created only when opened. Explicitly attach the
-        // image URLs at popup-open time instead of relying on browser lazy-loading
-        // inside Leaflet's transformed popup pane (which can stay blank on Android).
-        const hydrateImage = (img, highPriority=false) => {
-          if (!img) return;
+        // v266: the lead photo is already an embedded data URL, so it needs no network
+        // request when the pin opens. Additional thumbnails keep the lighter signed-URL
+        // path and are attached only when this popup is actually opened.
+        root.querySelectorAll('.memory-thumb-v260 img').forEach((img) => {
           const src = String(img.dataset?.src || '');
           if (!src) return;
           img.loading = 'eager';
           img.decoding = 'async';
-          if (highPriority) img.fetchPriority = 'high';
           if (img.getAttribute('src') !== src) img.setAttribute('src', src);
-        };
-        hydrateImage(main, true);
-        root.querySelectorAll('.memory-thumb-v260 img').forEach((img) => hydrateImage(img, false));
+        });
         root.querySelectorAll('.memory-thumb-v260').forEach((btn) => btn.addEventListener('click', (event) => {
           event.preventDefault(); event.stopPropagation();
           if (main) main.src = String(btn.dataset.src || '');
@@ -26258,7 +26258,7 @@ def _get_memory_map_view_component():
     _memory_map_view_component_initialized = True
     try:
         memory_map_view_component = st.components.v2.component(
-            "tokyo_burari_memory_map_view_v265",
+            "tokyo_burari_memory_map_view_v266",
             html=_MEMORY_MAP_VIEW_HTML,
             css=_MEMORY_MAP_VIEW_CSS,
             js=_MEMORY_MAP_VIEW_JS,
@@ -26293,7 +26293,7 @@ def _render_memory_map(center_lat, center_lon, radius_m, *, accuracy_m=None, cen
         return legacy_prepared, None
     component(
         data=payload,
-        key=f"memory_map_view_component_v265_{current_family_key()}_{current_member_key()}",
+        key=f"memory_map_view_component_v266_{current_family_key()}_{current_member_key()}",
     )
     return prepared, None
 
