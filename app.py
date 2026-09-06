@@ -32,7 +32,7 @@ import streamlit as st
 # Freshly generated update: 2026-08-31 23:49 JST
 GENERATED_UPDATE_JST = "2026-09-06T12:00:00+09:00"
 
-APP_BUILD = "v239"
+APP_BUILD = "v240"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -1048,16 +1048,16 @@ _LIVE_CAMERA_CSS = """
 .live-camera-video {
   object-fit: contain;
 }
-/* v239: video capture stays portrait even if the handset is rotated.
-   The portrait preview uses the camera sensor's wider 3:4 field instead of a
-   tightly cropped 9:16 stream, so subjects do not appear unnecessarily close. */
+/* v240: video capture stays portrait even if the handset is rotated.
+   Match the preview to a normal smartphone portrait shape (9:16), while still
+   using object-fit: contain so the live view does not crop in too aggressively. */
 .live-camera-wrap.camera-video-mode .live-camera-video,
 .live-camera-wrap.camera-video-mode .camera-review-video {
   width: auto;
-  height: min(48dvh, 620px);
+  height: min(56dvh, 700px);
   max-width: 100%;
-  max-height: 48dvh;
-  aspect-ratio: 3 / 4;
+  max-height: 56dvh;
+  aspect-ratio: 9 / 16;
   object-fit: contain;
   margin-left: auto;
   margin-right: auto;
@@ -1266,19 +1266,19 @@ _LIVE_CAMERA_CSS = """
     min-height: 52px;
     font-size: 14px;
   }
-  /* v239: enlarge the phone preview a little from v238.
-     The previous 42dvh cap kept the shutter visible but made the camera frame feel too small.
-     Use a moderate 47dvh cap so the subject is easier to frame while the controls still remain tappable. */
+  /* v240: the previous phone preview still felt too small.
+     Increase the usable preview area again, but keep the controls reachable.
+     Video specifically uses a phone-like portrait 9:16 frame. */
   .live-camera-video,
   .camera-review-image,
   .camera-review-video {
-    max-height: 47dvh;
+    max-height: 56dvh;
   }
   .live-camera-wrap.camera-video-mode .live-camera-video,
   .live-camera-wrap.camera-video-mode .camera-review-video {
-    height: min(47dvh, 560px);
-    max-height: 47dvh;
-    aspect-ratio: 3 / 4;
+    height: min(56dvh, 640px);
+    max-height: 56dvh;
+    aspect-ratio: 9 / 16;
   }
   .camera-active-actions { grid-template-columns: 1.85fr .92fr 1.08fr .72fr; gap: 6px; }
   .camera-review-actions { grid-template-columns: 3fr 1fr; }
@@ -1455,18 +1455,17 @@ export default function(component) {
   const preferredVideoConstraints = () => {
     const landscape = isDeviceLandscape();
     const photoMode = cameraMode !== 'video';
-    // v237: photos follow the handset orientation. Video stays portrait but
-    // requests the wider native-style 3:4 field instead of 9:16 center-cropping.
-    // This keeps more of the scene in frame and reduces the overly-close look.
+    // v240: photos follow the handset orientation. Video remains portrait and
+    // now targets a standard phone-like 9:16 shape, as requested.
     const width = photoMode
       ? (landscape ? 1600 : 1200)
-      : 1200;
+      : 1080;
     const height = photoMode
       ? (landscape ? 1200 : 1600)
-      : 1600;
+      : 1920;
     const aspectRatio = photoMode
       ? (landscape ? (4 / 3) : (3 / 4))
-      : (3 / 4);
+      : (9 / 16);
     return {
       facingMode: { ideal: cameraFacing },
       width: { ideal: width },
