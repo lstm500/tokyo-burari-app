@@ -30,9 +30,9 @@ from zoneinfo import ZoneInfo
 import streamlit as st
 
 # Freshly generated update: 2026-08-31 23:49 JST
-GENERATED_UPDATE_JST = "2026-09-06T01:45:00+09:00"
+GENERATED_UPDATE_JST = "2026-09-06T12:00:00+09:00"
 
-APP_BUILD = "v231"
+APP_BUILD = "v232"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -899,7 +899,7 @@ _LIVE_CAMERA_HTML = """
       <button id="camera-review-retry" class="camera-retry-button" type="button">撮りなおす／選びなおす</button>
     </div>
     <button id="camera-review-find-moments" class="camera-find-button" type="button" hidden>✨ いい瞬間を探す</button>
-    <div id="camera-review-build" class="camera-review-build" hidden>camera v226</div>
+    <div id="camera-review-build" class="camera-review-build" hidden>camera v232</div>
     <div id="camera-review-emotion-hint" class="camera-review-emotion-hint" hidden>写真下の「通常／こどもーど」を切り替え、写真につけるアイコンを1つ選べます。</div>
     <div id="camera-review-image-shell" class="camera-review-image-shell" role="button" tabindex="0" aria-label="写真のアイコンを選ぶ" hidden>
       <img id="camera-review-image" class="camera-review-image" alt="撮影した写真の確認" />
@@ -1037,11 +1037,16 @@ _LIVE_CAMERA_CSS = """
   width: 100%;
   max-height: 58dvh;
   aspect-ratio: 3 / 4;
-  object-fit: cover;
+  object-fit: contain;
   box-sizing: border-box;
   border-radius: 16px;
   background: #000;
   margin: 0;
+}
+/* v232: show the whole camera frame instead of filling the 3:4 box by cropping it.
+   This makes the live framing match the saved photo and avoids the overly close look. */
+.live-camera-video {
+  object-fit: contain;
 }
 /* v226: selfie preview is mirrored like a normal phone camera.
    Captured files keep the camera sensor's original orientation. */
@@ -1056,7 +1061,7 @@ _LIVE_CAMERA_CSS = """
   height: var(--camera-landscape-preview-height, 340px);
   max-height: none;
   aspect-ratio: auto;
-  object-fit: cover;
+  object-fit: contain;
   margin-left: auto;
   margin-right: auto;
 }
@@ -1418,13 +1423,42 @@ export default function(component) {
   };
   const preferredVideoConstraints = () => {
     const landscape = isDeviceLandscape();
+    const photoMode = cameraMode !== 'video';
+    // Photos use the sensor-friendly 4:3 frame so more of the scene fits in view.
+    // Video keeps 16:9, which is the expected playback shape.
+    const width = photoMode
+      ? (landscape ? 1600 : 1200)
+      : (landscape ? 1920 : 1080);
+    const height = photoMode
+      ? (landscape ? 1200 : 1600)
+      : (landscape ? 1080 : 1920);
+    const aspectRatio = photoMode
+      ? (landscape ? (4 / 3) : (3 / 4))
+      : (landscape ? (16 / 9) : (9 / 16));
     return {
       facingMode: { ideal: cameraFacing },
-      width: { ideal: landscape ? 1920 : 1080 },
-      height: { ideal: landscape ? 1080 : 1920 },
+      width: { ideal: width },
+      height: { ideal: height },
       frameRate: { ideal: 30, max: 30 },
-      aspectRatio: { ideal: landscape ? (16 / 9) : (9 / 16) }
+      aspectRatio: { ideal: aspectRatio }
     };
+  };
+
+  const applyWidestAvailableZoom = async () => {
+    if (!stream) return;
+    try {
+      const track = stream.getVideoTracks && stream.getVideoTracks()[0];
+      if (!track || !track.applyConstraints || !track.getCapabilities) return;
+      const caps = track.getCapabilities() || {};
+      const zoomCaps = caps.zoom;
+      if (!zoomCaps) return;
+      const minZoom = Number(zoomCaps.min);
+      if (!Number.isFinite(minZoom) || minZoom <= 0) return;
+      await track.applyConstraints({ advanced: [{ zoom: minZoom }] });
+    } catch (err) {
+      // Zoom is optional in getUserMedia. Devices that do not expose it keep their native view.
+      console.warn('minimum camera zoom unavailable', err);
+    }
   };
   syncOrientationUi();
   syncFacingUi();
@@ -1780,6 +1814,8 @@ export default function(component) {
       });
       video.srcObject = stream;
       await video.play();
+      // v232: start from the widest zoom level the browser/device exposes.
+      await applyWidestAvailableZoom();
       try {
         const cameraTrack = stream.getVideoTracks && stream.getVideoTracks()[0];
         const settings = (cameraTrack && cameraTrack.getSettings) ? cameraTrack.getSettings() : {};
@@ -2856,11 +2892,11 @@ export default function(component) {
 }
 """
 
-LIVE_CAMERA_COMPONENT_BUILD = "v227"
+LIVE_CAMERA_COMPONENT_BUILD = "v232"
 
 try:
     live_camera_component = st.components.v2.component(
-        "tokyo_burari_live_camera_v227",
+        "tokyo_burari_live_camera_v232",
         html=_LIVE_CAMERA_HTML,
         css=_LIVE_CAMERA_CSS,
         js=_LIVE_CAMERA_JS,
@@ -6587,7 +6623,7 @@ export default function(component) {
     stopWatch();
     const accuracy = Number(best.coords.accuracy || 0);
     setStatus(accuracy > 0
-      ? `現在地を取得しました（精度 ±${Math.round(accuracy)}m）。近くのお店・立ち寄り先を検索しています…`
+      ? `現在地を取得しました（精度 ±${Math.round(accuracy)}m）。近くのおやつ・立ち寄り先を検索しています…`
       : '現在地を取得しました。周辺を検索しています…');
     setTriggerValue('search_location', {
       token: `${Date.now()}_${Math.random().toString(36).slice(2)}`,
@@ -7163,37 +7199,6 @@ def _nearby_overpass_selectors(kind, subkind, radius, latitude, longitude):
         }
         return mapping.get(str(subkind), mapping["食べ歩き向き"])
 
-    if kind == "lunch":
-        # Lunch fallback for OpenStreetMap. Google Places remains the primary source
-        # because ratings and price data are required for the requested ranking/filtering.
-        cuisine_map = {
-            "おまかせ": [f'nwr{around}["amenity"~"^(restaurant|fast_food|food_court|cafe)$"];'],
-            "和食": [f'nwr{around}["cuisine"~"japanese"];', f'nwr{around}["name"~"和食|割烹|食堂|定食"];'],
-            "定食・食堂": [f'nwr{around}["name"~"定食|食堂|めし|御膳"];'],
-            "寿司": [f'nwr{around}["cuisine"~"sushi"];', f'nwr{around}["name"~"寿司|鮨|すし"];'],
-            "海鮮": [f'nwr{around}["name"~"海鮮|魚介|刺身|漁港|丼"];'],
-            "焼肉・ホルモン": [f'nwr{around}["cuisine"~"korean_barbecue|yakiniku"];', f'nwr{around}["name"~"焼肉|焼き肉|ホルモン"];'],
-            "焼き鳥・鳥料理": [f'nwr{around}["name"~"焼鳥|焼き鳥|鳥料理|鶏料理"];'],
-            "ステーキ・ハンバーグ": [f'nwr{around}["cuisine"~"steak_house"];', f'nwr{around}["name"~"ステーキ|ハンバーグ"];'],
-            "とんかつ": [f'nwr{around}["name"~"とんかつ|トンカツ|豚カツ"];'],
-            "天ぷら": [f'nwr{around}["name"~"天ぷら|天麩羅|天丼"];'],
-            "うなぎ": [f'nwr{around}["name"~"うなぎ|鰻"];'],
-            "そば": [f'nwr{around}["cuisine"~"soba"];', f'nwr{around}["name"~"そば|蕎麦"];'],
-            "うどん": [f'nwr{around}["cuisine"~"udon"];', f'nwr{around}["name"~"うどん|饂飩"];'],
-            "ラーメン・つけ麺": [f'nwr{around}["cuisine"~"ramen"];', f'nwr{around}["name"~"ラーメン|らーめん|中華そば|つけ麺"];'],
-            "カレー": [f'nwr{around}["cuisine"~"curry"];', f'nwr{around}["name"~"カレー|カリー"];'],
-            "中華料理": [f'nwr{around}["cuisine"~"chinese"];', f'nwr{around}["name"~"中華|中国料理|餃子"];'],
-            "韓国料理": [f'nwr{around}["cuisine"~"korean"];', f'nwr{around}["name"~"韓国料理|韓国食堂|ビビンバ|スンドゥブ"];'],
-            "イタリアン": [f'nwr{around}["cuisine"~"italian|pizza"];', f'nwr{around}["name"~"イタリアン|ピッツァ|ピザ|パスタ"];'],
-            "フレンチ": [f'nwr{around}["cuisine"~"french"];', f'nwr{around}["name"~"フレンチ|ビストロ"];'],
-            "洋食": [f'nwr{around}["name"~"洋食|オムライス|グリル"];'],
-            "ハンバーガー": [f'nwr{around}["cuisine"~"burger"];', f'nwr{around}["name"~"バーガー|ハンバーガー"];'],
-            "お好み焼き・もんじゃ": [f'nwr{around}["name"~"お好み焼|もんじゃ|鉄板焼"];'],
-            "アジア・エスニック": [f'nwr{around}["cuisine"~"thai|vietnamese|indian|nepalese|indonesian|malaysian"];'],
-            "カフェ・喫茶店": [f'nwr{around}["amenity"="cafe"];', f'nwr{around}["name"~"カフェ|喫茶"];'],
-        }
-        return cuisine_map.get(str(subkind), cuisine_map["おまかせ"])
-
     mapping = {
         "なんでも": [
             f'nwr{around}["tourism"~"^(attraction|museum|gallery|viewpoint|zoo|aquarium)$"];',
@@ -7241,30 +7246,6 @@ def _nearby_place_label(tags, kind):
             return "デザート"
         return "ちょっとしたおやつ"
 
-    if kind == "lunch":
-        cuisine = str(tags.get("cuisine") or "").lower()
-        if "sushi" in cuisine:
-            return "寿司"
-        if "ramen" in cuisine:
-            return "ラーメン・つけ麺"
-        if "soba" in cuisine:
-            return "そば"
-        if "udon" in cuisine:
-            return "うどん"
-        if "curry" in cuisine:
-            return "カレー"
-        if "chinese" in cuisine:
-            return "中華料理"
-        if "korean" in cuisine:
-            return "韓国料理"
-        if "italian" in cuisine or "pizza" in cuisine:
-            return "イタリアン"
-        if "french" in cuisine:
-            return "フレンチ"
-        if "burger" in cuisine:
-            return "ハンバーガー"
-        return "ランチ"
-
     if tags.get("leisure") in {"park", "garden", "playground"}:
         return "公園・庭園"
     if tags.get("amenity") == "place_of_worship" or tags.get("historic") in {"shrine", "temple"}:
@@ -7298,64 +7279,6 @@ def _nearby_place_priority(tags, kind):
 
 
 
-NEARBY_LUNCH_GENRES = (
-    "おまかせ",
-    "和食",
-    "定食・食堂",
-    "寿司",
-    "海鮮",
-    "焼肉・ホルモン",
-    "焼き鳥・鳥料理",
-    "ステーキ・ハンバーグ",
-    "とんかつ",
-    "天ぷら",
-    "うなぎ",
-    "そば",
-    "うどん",
-    "ラーメン・つけ麺",
-    "カレー",
-    "中華料理",
-    "韓国料理",
-    "イタリアン",
-    "フレンチ",
-    "洋食",
-    "ハンバーガー",
-    "お好み焼き・もんじゃ",
-    "アジア・エスニック",
-    "カフェ・喫茶店",
-)
-
-
-def _nearby_lunch_text_query(subkind):
-    mapping = {
-        "おまかせ": "ランチ レストラン",
-        "和食": "和食 ランチ",
-        "定食・食堂": "定食 食堂 ランチ",
-        "寿司": "寿司 鮨 ランチ",
-        "海鮮": "海鮮 魚介 刺身 ランチ",
-        "焼肉・ホルモン": "焼肉 ホルモン ランチ",
-        "焼き鳥・鳥料理": "焼き鳥 鳥料理 鶏料理 ランチ",
-        "ステーキ・ハンバーグ": "ステーキ ハンバーグ ランチ",
-        "とんかつ": "とんかつ ランチ",
-        "天ぷら": "天ぷら 天丼 ランチ",
-        "うなぎ": "うなぎ 鰻 ランチ",
-        "そば": "そば 蕎麦 ランチ",
-        "うどん": "うどん ランチ",
-        "ラーメン・つけ麺": "ラーメン つけ麺 ランチ",
-        "カレー": "カレー ランチ",
-        "中華料理": "中華料理 ランチ",
-        "韓国料理": "韓国料理 ランチ",
-        "イタリアン": "イタリアン パスタ ピザ ランチ",
-        "フレンチ": "フレンチ ビストロ ランチ",
-        "洋食": "洋食 オムライス ランチ",
-        "ハンバーガー": "ハンバーガー ランチ",
-        "お好み焼き・もんじゃ": "お好み焼き もんじゃ ランチ",
-        "アジア・エスニック": "タイ ベトナム インド エスニック ランチ",
-        "カフェ・喫茶店": "カフェ 喫茶店 ランチ",
-    }
-    return mapping.get(str(subkind), mapping["おまかせ"])
-
-
 def _nearby_google_text_query(kind, subkind):
     if kind == "snack":
         mapping = {
@@ -7363,8 +7286,6 @@ def _nearby_google_text_query(kind, subkind):
             "店内中心": "カフェ 喫茶店 スイーツ デザート ケーキ 甘味処 プリン かき氷",
         }
         return mapping.get(str(subkind), mapping["食べ歩き向き"])
-    if kind == "lunch":
-        return _nearby_lunch_text_query(subkind)
     mapping = {
         "なんでも": "観光スポット 公園 神社 寺 博物館 鉄道",
         "公園": "公園 庭園 遊歩道",
@@ -7397,7 +7318,7 @@ def _nearby_google_photo_refs(photo_rows, limit=10):
     return refs
 
 
-def search_nearby_quick_stops_google(latitude, longitude, kind, subkind, radius_m, open_now_only=False, budget_under_1000=False, budget_limit=None):
+def search_nearby_quick_stops_google(latitude, longitude, kind, subkind, radius_m, open_now_only=False, budget_under_1000=False):
     """Search Google Places around the phone's fresh GPS fix.
 
     v223: snack discovery uses Nearby Search (New) with snack-specific place types instead of
@@ -7414,9 +7335,7 @@ def search_nearby_quick_stops_google(latitude, longitude, kind, subkind, radius_
         return {"places": [], "error": "現在地を確認できませんでした。", "provider": "Google Places"}
 
     is_snack = str(kind) == "snack"
-    is_lunch = str(kind) == "lunch"
     snack_style = str(subkind or "食べ歩き向き")
-    lunch_genre = str(subkind or "おまかせ") if is_lunch else ""
 
     # For snacks, Nearby Search is a better fit than Text Search: it asks Google for
     # concrete nearby business types and ranks them by distance.  Search a slightly
@@ -7597,7 +7516,7 @@ def search_nearby_quick_stops_google(latitude, longitude, kind, subkind, radius_
             continue
 
         distance_m = _nearby_haversine_m(latitude, longitude, plat, plon)
-        distance_limit = float(radius_m) if (is_snack or is_lunch) else float(radius_m) * 1.25
+        distance_limit = float(radius_m) if is_snack else float(radius_m) * 1.25
         if not math.isfinite(distance_m) or distance_m > distance_limit:
             continue
         in_range_count += 1
@@ -7670,8 +7589,6 @@ def search_nearby_quick_stops_google(latitude, longitude, kind, subkind, radius_
                 pseudo_tags["shop"] = "confectionery"
         if is_snack and primary_type in cafe_types:
             category = "カフェ・喫茶"
-        elif is_lunch:
-            category = lunch_genre if lunch_genre != "おまかせ" else "ランチ"
         else:
             category = _nearby_place_label(pseudo_tags, kind)
         refs = _nearby_google_photo_refs(raw.get("photos") or [], limit=10)
@@ -7710,7 +7627,6 @@ def search_nearby_quick_stops_google(latitude, longitude, kind, subkind, radius_
             "provider": "Google Places",
             "photo_refs": refs,
             "snack_style": snack_style if is_snack else "",
-            "lunch_genre": lunch_genre if is_lunch else "",
             "takeout": takeout,
             "dine_in": dine_in,
             "serves_dessert": serves_dessert,
@@ -7718,79 +7634,9 @@ def search_nearby_quick_stops_google(latitude, longitude, kind, subkind, radius_
             "walkability_rank": walkability_rank,
         })
 
-    if is_lunch and budget_limit is not None:
-        places = [item for item in places if _nearby_budget_match_limit(item, budget_limit)]
-    elif bool(budget_under_1000):
+    if bool(budget_under_1000):
         places = [item for item in places if _nearby_budget_match_1000(item)]
-    if is_lunch:
-        # Review-count-adjusted lunch score (Bayesian weighted rating).
-        # A raw 5.0 from only a handful of reviews should not automatically outrank
-        # a well-established 4.5 with hundreds of reviews.  The local candidate mean
-        # acts as the prior, and 100 reviews is the confidence reference point.
-        valid_ratings = []
-        for item in places:
-            try:
-                raw_rating = float(item.get("rating"))
-            except (TypeError, ValueError):
-                continue
-            if math.isfinite(raw_rating) and raw_rating > 0:
-                valid_ratings.append(raw_rating)
-        local_mean_rating = (sum(valid_ratings) / len(valid_ratings)) if valid_ratings else 4.0
-        prior_review_count = 100.0
-
-        for item in places:
-            try:
-                raw_rating = float(item.get("rating"))
-                rating_valid = math.isfinite(raw_rating) and raw_rating > 0
-            except (TypeError, ValueError):
-                raw_rating = 0.0
-                rating_valid = False
-            try:
-                reviews = max(0, int(item.get("user_rating_count") or 0))
-            except (TypeError, ValueError):
-                reviews = 0
-
-            if rating_valid:
-                weighted_rating = (
-                    (reviews / (reviews + prior_review_count)) * raw_rating
-                    + (prior_review_count / (reviews + prior_review_count)) * local_mean_rating
-                )
-                item["burari_rating"] = round(float(weighted_rating), 4)
-                item["burari_rating_prior_mean"] = round(float(local_mean_rating), 4)
-                item["burari_rating_prior_reviews"] = int(prior_review_count)
-            else:
-                item["burari_rating"] = None
-                item["burari_rating_prior_mean"] = round(float(local_mean_rating), 4)
-                item["burari_rating_prior_reviews"] = int(prior_review_count)
-
-        # Display order: review-count-adjusted score, review volume, raw Google rating,
-        # then walking distance. Places without ratings remain after rated places.
-        def _lunch_rating_sort_key(item):
-            try:
-                score = float(item.get("burari_rating"))
-                score_valid = math.isfinite(score) and score > 0
-            except (TypeError, ValueError):
-                score = 0.0
-                score_valid = False
-            try:
-                reviews = max(0, int(item.get("user_rating_count") or 0))
-            except (TypeError, ValueError):
-                reviews = 0
-            try:
-                raw_rating = float(item.get("rating"))
-                raw_valid = math.isfinite(raw_rating) and raw_rating > 0
-            except (TypeError, ValueError):
-                raw_rating = 0.0
-                raw_valid = False
-            return (
-                0 if score_valid else 1,
-                -score if score_valid else 0.0,
-                -reviews,
-                -raw_rating if raw_valid else 0.0,
-                int(item.get("distance_m") or 0),
-            )
-        places.sort(key=_lunch_rating_sort_key)
-    elif is_snack and snack_style == "\u98df\u3079\u6b69\u304d\u5411\u304d":
+    if is_snack and snack_style == "\u98df\u3079\u6b69\u304d\u5411\u304d":
         places.sort(key=lambda item: (
             int(item.get("walkability_rank") or 0),
             int(item.get("distance_m") or 0),
@@ -7803,8 +7649,6 @@ def search_nearby_quick_stops_google(latitude, longitude, kind, subkind, radius_
         "provider": "Google Places",
         "open_now_only": bool(open_now_only),
         "budget_under_1000": bool(budget_under_1000),
-        "budget_limit": int(budget_limit) if is_lunch and budget_limit is not None else None,
-        "sort_mode": "review_weighted_rating" if is_lunch else ("walkability" if is_snack and snack_style == "食べ歩き向き" else "distance"),
         "search_mode": "nearby_types" if is_snack else "text",
         "raw_count": raw_count,
         "in_range_count": in_range_count,
@@ -7943,17 +7787,6 @@ def _nearby_rating_text(place):
     return f"★ {rating:.1f}" + (f"（{count:,}件）" if count else "")
 
 
-def _nearby_burari_rating_text(place):
-    place = place if isinstance(place, dict) else {}
-    try:
-        score = float(place.get("burari_rating"))
-    except (TypeError, ValueError):
-        return ""
-    if not math.isfinite(score) or score <= 0:
-        return ""
-    return f"ぶらり旅評価 {score:.2f}"
-
-
 def _nearby_price_level_text(value):
     mapping = {
         "PRICE_LEVEL_FREE": "無料",
@@ -7996,44 +7829,22 @@ def _nearby_price_range_text(value):
     return f"価格目安：¥{int(round(end)):,}未満"
 
 
-def _nearby_budget_match_limit(place, budget_limit):
-    """Keep places that appear usable within the selected budget.
-
-    Google price metadata is incomplete for many Japanese restaurants. Known prices are
-    filtered; unknown prices remain visible so a good nearby option is not silently lost.
-    """
+def _nearby_budget_match_1000(place):
+    """Keep places that appear usable within ¥1,000; unknown prices stay visible."""
     place = place if isinstance(place, dict) else {}
-    try:
-        limit = int(budget_limit)
-    except (TypeError, ValueError):
-        return True
-    if limit not in {1000, 2000, 5000}:
-        return True
-
     price_range = place.get("price_range") or {}
     if isinstance(price_range, dict):
         start = _nearby_money_jpy(price_range.get("startPrice"))
         if start is not None:
-            return start <= float(limit)
-
+            return start <= 1000.0
     level = str(place.get("price_level") or "").strip()
-    allowed_by_limit = {
-        1000: {"PRICE_LEVEL_FREE", "PRICE_LEVEL_INEXPENSIVE"},
-        2000: {"PRICE_LEVEL_FREE", "PRICE_LEVEL_INEXPENSIVE", "PRICE_LEVEL_MODERATE"},
-        5000: {"PRICE_LEVEL_FREE", "PRICE_LEVEL_INEXPENSIVE", "PRICE_LEVEL_MODERATE", "PRICE_LEVEL_EXPENSIVE"},
-    }
-    known_levels = {
-        "PRICE_LEVEL_FREE", "PRICE_LEVEL_INEXPENSIVE", "PRICE_LEVEL_MODERATE",
-        "PRICE_LEVEL_EXPENSIVE", "PRICE_LEVEL_VERY_EXPENSIVE",
-    }
-    if level in known_levels:
-        return level in allowed_by_limit[limit]
+    if level in {"PRICE_LEVEL_FREE", "PRICE_LEVEL_INEXPENSIVE"}:
+        return True
+    if level in {"PRICE_LEVEL_MODERATE", "PRICE_LEVEL_EXPENSIVE", "PRICE_LEVEL_VERY_EXPENSIVE"}:
+        return False
+    # Many small shops and sightseeing spots have no registered price information.
+    # Do not hide them solely because Google has no price metadata.
     return True
-
-
-def _nearby_budget_match_1000(place):
-    """Backward-compatible ¥1,000 filter for snack/sightseeing mode."""
-    return _nearby_budget_match_limit(place, 1000)
 
 
 def _nearby_budget_text(place):
@@ -8177,10 +7988,6 @@ def search_nearby_quick_stops(latitude, longitude, kind, subkind, radius_m):
                 sitdown_signal = amenity == "cafe" or str(tags.get("cuisine") or "").lower() in {"dessert", "cake", "coffee_shop", "japanese_sweets"} or direct_snack
                 if not sitdown_signal:
                     continue
-        elif kind == "lunch":
-            amenity = str(tags.get("amenity") or "")
-            if amenity not in {"restaurant", "fast_food", "food_court", "cafe"} and not str(tags.get("cuisine") or "").strip():
-                continue
         center = element.get("center") if isinstance(element.get("center"), dict) else {}
         plat = element.get("lat", center.get("lat"))
         plon = element.get("lon", center.get("lon"))
@@ -8190,7 +7997,7 @@ def search_nearby_quick_stops(latitude, longitude, kind, subkind, radius_m):
         except (TypeError, ValueError):
             continue
         distance_m = _nearby_haversine_m(latitude, longitude, plat, plon)
-        distance_limit = float(radius_m) if kind in {"snack", "lunch"} else float(radius_m) * 1.15
+        distance_limit = float(radius_m) if kind == "snack" else float(radius_m) * 1.15
         if not math.isfinite(distance_m) or distance_m > distance_limit:
             continue
         dedupe = (name, round(plat, 4), round(plon, 4))
@@ -8224,7 +8031,6 @@ def search_nearby_quick_stops(latitude, longitude, kind, subkind, radius_m):
     if kind == "snack":
         places.sort(key=lambda item: (int(item.get("priority") or 0), int(item.get("distance_m") or 0)))
     else:
-        # OSM does not provide Google-style ratings; lunch fallback is distance ordered.
         places.sort(key=lambda item: int(item.get("distance_m") or 0))
     return {"places": places[:24], "error": "", "provider": "OpenStreetMap"}
 
@@ -20402,7 +20208,7 @@ def page_toilets():
 def page_nearby():
     page_top(
         "📍 近くに寄る",
-        "おやつ・ランチ・観光から条件を選ぶと、その瞬間の現在地を高精度で取り直して周辺を調べます。行きたい場所が決まったら、Googleマップの徒歩経路確認画面を開きます。",
+        "条件を選んで検索すると、その瞬間の現在地を高精度で取り直して周辺を調べます。行きたい場所が決まったら、Googleマップの徒歩経路確認画面を開きます。",
     )
     st.markdown(
         """
@@ -20479,9 +20285,6 @@ def page_nearby():
         .st-key-nearby_step_5 div.stButton > button {
           min-height:2.42rem; border-radius:12px; font-size:.73rem; font-weight:760;
           padding:.28rem .30rem; white-space:normal !important; line-height:1.16 !important;
-        }
-        .st-key-nearby_step_2 [data-baseweb="select"] > div {
-          min-height:2.42rem; border-radius:12px; font-size:.73rem;
         }
         .st-key-nearby_step_1 [data-testid="stVerticalBlock"],
         .st-key-nearby_step_2 [data-testid="stVerticalBlock"],
@@ -20654,37 +20457,28 @@ def page_nearby():
             unsafe_allow_html=True,
         )
 
-    kind_key = f"_nearby_filter_kind_v232_{current_family_key()}_{current_member_key()}"
-    snack_key = f"_nearby_filter_snack_v232_{current_family_key()}_{current_member_key()}"
-    sight_key = f"_nearby_filter_sight_v232_{current_family_key()}_{current_member_key()}"
-    lunch_key = f"_nearby_filter_lunch_v232_{current_family_key()}_{current_member_key()}"
-    radius_key = f"_nearby_filter_radius_v232_{current_family_key()}_{current_member_key()}"
-    budget_key = f"_nearby_filter_budget_v232_{current_family_key()}_{current_member_key()}"
-    lunch_budget_key = f"_nearby_filter_lunch_budget_v232_{current_family_key()}_{current_member_key()}"
-    open_key = f"_nearby_filter_open_v232_{current_family_key()}_{current_member_key()}"
-    result_key = f"_nearby_search_result_v234_{current_family_key()}_{current_member_key()}"
+    kind_key = f"_nearby_filter_kind_v194_{current_family_key()}_{current_member_key()}"
+    snack_key = f"_nearby_filter_snack_v194_{current_family_key()}_{current_member_key()}"
+    sight_key = f"_nearby_filter_sight_v194_{current_family_key()}_{current_member_key()}"
+    radius_key = f"_nearby_filter_radius_v194_{current_family_key()}_{current_member_key()}"
+    budget_key = f"_nearby_filter_budget_v194_{current_family_key()}_{current_member_key()}"
+    open_key = f"_nearby_filter_open_v194_{current_family_key()}_{current_member_key()}"
+    result_key = f"_nearby_search_result_v223_{current_family_key()}_{current_member_key()}"
 
-    if st.session_state.get(kind_key) not in {"snack", "sightseeing", "lunch"}:
+    if st.session_state.get(kind_key) not in {"snack", "sightseeing"}:
         st.session_state[kind_key] = "snack"
     if st.session_state.get(snack_key) not in {"食べ歩き向き", "店内中心"}:
         st.session_state[snack_key] = "食べ歩き向き"
     if st.session_state.get(sight_key) not in {"なんでも", "公園", "神社・寺", "博物館・施設", "電車・乗り物"}:
         st.session_state[sight_key] = "なんでも"
-    if st.session_state.get(lunch_key) not in set(NEARBY_LUNCH_GENRES):
-        st.session_state[lunch_key] = "おまかせ"
     current_kind_for_radius = str(st.session_state.get(kind_key) or "snack")
     if current_kind_for_radius == "snack":
         if st.session_state.get(radius_key) not in {"徒歩1分くらい", "徒歩3分くらい", "徒歩5分くらい"}:
             st.session_state[radius_key] = "徒歩3分くらい"
-    elif current_kind_for_radius == "lunch":
-        if st.session_state.get(radius_key) not in {"徒歩5分くらい", "徒歩10分くらい"}:
-            st.session_state[radius_key] = "徒歩5分くらい"
     elif st.session_state.get(radius_key) not in {"徒歩10分くらい", "徒歩20分くらい", "もう少し遠く"}:
         st.session_state[radius_key] = "徒歩10分くらい"
     if st.session_state.get(budget_key) not in {"under1000", "all"}:
         st.session_state[budget_key] = "under1000"
-    if str(st.session_state.get(lunch_budget_key) or "") not in {"1000", "2000", "5000"}:
-        st.session_state[lunch_budget_key] = "2000"
     if st.session_state.get(open_key) not in {"open", "all"}:
         st.session_state[open_key] = "open" if GOOGLE_PLACES_API_KEY else "all"
 
@@ -20705,16 +20499,9 @@ def page_nearby():
         )
 
     kind = str(st.session_state.get(kind_key) or "snack")
-    if kind == "snack":
-        subkind = str(st.session_state.get(snack_key) or "食べ歩き向き")
-    elif kind == "lunch":
-        subkind = str(st.session_state.get(lunch_key) or "おまかせ")
-    else:
-        subkind = str(st.session_state.get(sight_key) or "なんでも")
-    default_radius = "徒歩3分くらい" if kind == "snack" else ("徒歩5分くらい" if kind == "lunch" else "徒歩10分くらい")
-    radius_label = str(st.session_state.get(radius_key) or default_radius)
+    subkind = str(st.session_state.get(snack_key) or "食べ歩き向き") if kind == "snack" else str(st.session_state.get(sight_key) or "なんでも")
+    radius_label = str(st.session_state.get(radius_key) or ("徒歩3分くらい" if kind == "snack" else "徒歩10分くらい"))
     budget_mode = str(st.session_state.get(budget_key) or "under1000")
-    lunch_budget_mode = str(st.session_state.get(lunch_budget_key) or "2000")
     open_mode = str(st.session_state.get(open_key) or ("open" if GOOGLE_PLACES_API_KEY else "all"))
 
     with st.container(key="nearby_filter_panel"):
@@ -20726,14 +20513,13 @@ def page_nearby():
             with row1_left:
                 with st.container(border=True, key="nearby_step_1"):
                     _step_title(1, "何に寄る？")
-                    _choice_button("🍡 おやつ", "snack", kind_key, "nearby_kind_snack_v232", kind)
-                    _choice_button("🍽️ ランチ", "lunch", kind_key, "nearby_kind_lunch_v232", kind)
-                    _choice_button("🏛️ 観光", "sightseeing", kind_key, "nearby_kind_sight_v232", kind)
-                    st.markdown('<div class="nearby-step-note">おやつ・ランチ・気軽な立ち寄り先。</div>', unsafe_allow_html=True)
+                    _choice_button("🍡 おやつ", "snack", kind_key, "nearby_kind_snack_v194", kind)
+                    _choice_button("🏛️ 観光", "sightseeing", kind_key, "nearby_kind_sight_v194", kind)
+                    st.markdown('<div class="nearby-step-note">甘いものか、気軽な立ち寄り先。</div>', unsafe_allow_html=True)
 
             with row1_right:
                 with st.container(border=True, key="nearby_step_2"):
-                    _step_title(2, "食べ方" if kind == "snack" else ("ジャンル" if kind == "lunch" else "種類"))
+                    _step_title(2, "食べ方" if kind == "snack" else "種類")
                     if kind == "snack":
                         snack_options = [
                             ("🚶 食べ歩き向き", "食べ歩き向き"),
@@ -20741,23 +20527,8 @@ def page_nearby():
                         ]
                         subkind = str(st.session_state.get(snack_key) or "食べ歩き向き")
                         for idx, (label, value) in enumerate(snack_options):
-                            _choice_button(label, value, snack_key, f"nearby_snack_{idx}_v232", subkind)
+                            _choice_button(label, value, snack_key, f"nearby_snack_{idx}_v214", subkind)
                         st.markdown('<div class="nearby-step-note">テイクアウト情報や店舗の種類・商品名から判定します。</div>', unsafe_allow_html=True)
-                    elif kind == "lunch":
-                        current_lunch_genre = str(st.session_state.get(lunch_key) or "おまかせ")
-                        lunch_index = list(NEARBY_LUNCH_GENRES).index(current_lunch_genre) if current_lunch_genre in NEARBY_LUNCH_GENRES else 0
-                        selected_lunch_genre = st.selectbox(
-                            "ランチのジャンル",
-                            options=list(NEARBY_LUNCH_GENRES),
-                            index=lunch_index,
-                            key=f"nearby_lunch_genre_select_v232_{current_family_key()}_{current_member_key()}",
-                            label_visibility="collapsed",
-                        )
-                        if selected_lunch_genre != current_lunch_genre:
-                            st.session_state[lunch_key] = selected_lunch_genre
-                            st.rerun()
-                        subkind = str(selected_lunch_genre)
-                        st.markdown('<div class="nearby-step-note">食べログなどでよく使われる大分類を中心に選べます。</div>', unsafe_allow_html=True)
                     else:
                         sight_options = [
                             ("おまかせ", "なんでも"),
@@ -20783,12 +20554,6 @@ def page_nearby():
                             ("🚶 3分", "徒歩3分くらい"),
                             ("🚶 5分", "徒歩5分くらい"),
                         ]
-                    elif kind == "lunch":
-                        radius_label = str(st.session_state.get(radius_key) or "徒歩5分くらい")
-                        radius_options_ui = [
-                            ("🚶 5分", "徒歩5分くらい"),
-                            ("🚶 10分", "徒歩10分くらい"),
-                        ]
                     else:
                         radius_label = str(st.session_state.get(radius_key) or "徒歩10分くらい")
                         radius_options_ui = [
@@ -20797,28 +20562,18 @@ def page_nearby():
                             ("＋ もう少し遠く", "もう少し遠く"),
                         ]
                     for idx, (label, value) in enumerate(radius_options_ui):
-                        _choice_button(label, value, radius_key, f"nearby_radius_{idx}_v232", radius_label)
+                        _choice_button(label, value, radius_key, f"nearby_radius_{idx}_v214", radius_label)
 
             with row2_right:
                 with st.container(border=True, key="nearby_step_4"):
                     _step_title(4, "予算")
-                    if kind == "lunch":
-                        lunch_budget_mode = str(st.session_state.get(lunch_budget_key) or "2000")
-                        _choice_button("💴 1,000円", "1000", lunch_budget_key, "nearby_lunch_budget_1000_v232", lunch_budget_mode)
-                        _choice_button("💴 2,000円", "2000", lunch_budget_key, "nearby_lunch_budget_2000_v232", lunch_budget_mode)
-                        _choice_button("💴 5,000円", "5000", lunch_budget_key, "nearby_lunch_budget_5000_v232", lunch_budget_mode)
-                        st.markdown(
-                            '<div class="nearby-step-note">選んだ金額以内を目安に絞ります。価格未登録の店は候補から落とさず残します。</div>',
-                            unsafe_allow_html=True,
-                        )
-                    else:
-                        budget_mode = str(st.session_state.get(budget_key) or "under1000")
-                        _choice_button("💴 1,000円以下", "under1000", budget_key, "nearby_budget_1000_v232", budget_mode)
-                        _choice_button("○ 予算を問わない", "all", budget_key, "nearby_budget_all_v232", budget_mode)
-                        st.markdown(
-                            '<div class="nearby-step-note">価格情報がある候補は1,000円以下で絞ります。料金未登録の場所は候補に残します。</div>',
-                            unsafe_allow_html=True,
-                        )
+                    budget_mode = str(st.session_state.get(budget_key) or "under1000")
+                    _choice_button("💴 1,000円以下", "under1000", budget_key, "nearby_budget_1000_v194", budget_mode)
+                    _choice_button("○ 予算を問わない", "all", budget_key, "nearby_budget_all_v194", budget_mode)
+                    st.markdown(
+                        '<div class="nearby-step-note">価格情報がある候補は1,000円以下で絞ります。料金未登録の場所は候補に残します。</div>',
+                        unsafe_allow_html=True,
+                    )
 
         with st.container(key="nearby_filter_row_3"):
             with st.container(border=True, key="nearby_step_5"):
@@ -20845,45 +20600,31 @@ def page_nearby():
             radius_map = {"徒歩1分くらい": 64, "徒歩3分くらい": 192, "徒歩5分くらい": 320}
             radius_label = str(st.session_state.get(radius_key) or "徒歩3分くらい")
             radius_m = int(radius_map.get(radius_label, 192))
-        elif kind == "lunch":
-            # Same walking estimate: 320m≈5min, 640m≈10min.
-            radius_map = {"徒歩5分くらい": 320, "徒歩10分くらい": 640}
-            radius_label = str(st.session_state.get(radius_key) or "徒歩5分くらい")
-            radius_m = int(radius_map.get(radius_label, 320))
         else:
             radius_map = {"徒歩10分くらい": 800, "徒歩20分くらい": 1600, "もう少し遠く": 2500}
             radius_label = str(st.session_state.get(radius_key) or "徒歩10分くらい")
             radius_m = int(radius_map.get(radius_label, 800))
-        budget_under_1000 = bool(kind != "lunch" and str(st.session_state.get(budget_key) or "under1000") == "under1000")
-        budget_limit = int(str(st.session_state.get(lunch_budget_key) or "2000")) if kind == "lunch" else None
+        budget_under_1000 = str(st.session_state.get(budget_key) or "under1000") == "under1000"
         open_now_only = bool(GOOGLE_PLACES_API_KEY and str(st.session_state.get(open_key) or "open") == "open")
-        if kind == "snack":
-            subkind = str(st.session_state.get(snack_key) or "食べ歩き向き")
-        elif kind == "lunch":
-            subkind = str(st.session_state.get(lunch_key) or "おまかせ")
-        else:
-            subkind = str(st.session_state.get(sight_key) or "なんでも")
-        display_kind = "おやつ" if kind == "snack" else ("ランチ" if kind == "lunch" else "観光")
-        budget_label = f"{budget_limit:,}円以内目安" if kind == "lunch" and budget_limit else ("1,000円以下" if budget_under_1000 else "予算指定なし")
+        subkind = str(st.session_state.get(snack_key) or "食べ歩き向き") if kind == "snack" else str(st.session_state.get(sight_key) or "なんでも")
+        display_kind = "おやつ" if kind == "snack" else "観光"
+        budget_label = "1,000円以下" if budget_under_1000 else "予算指定なし"
         open_label = "営業中のみ" if open_now_only else "営業時間で絞らない"
         st.markdown(
             f'<div class="nearby-search-summary">{html.escape(display_kind)}　／　{html.escape(subkind)}　／　{html.escape(radius_label)}　／　{html.escape(budget_label)}　／　{html.escape(open_label)}</div>',
             unsafe_allow_html=True,
         )
 
-        # v234: Search-result validity is based on the selected filters only.
-        # GPS is deliberately refreshed when Search is pressed, so comparing the
-        # pre-search and post-search coordinates would falsely mark the search stale.
         search_signature = json.dumps(
             {
+                "lat": round(latitude, 5) if latitude is not None else None,
+                "lon": round(longitude, 5) if longitude is not None else None,
                 "kind": kind,
                 "subkind": subkind,
                 "radius_m": radius_m,
                 "budget_under_1000": bool(budget_under_1000),
-                "budget_limit": int(budget_limit) if budget_limit is not None else None,
                 "open_now_only": bool(open_now_only),
                 "provider": "google" if GOOGLE_PLACES_API_KEY else "osm",
-                "lunch_rating_model": "bayesian_review_weighted_v1" if kind == "lunch" else None,
             },
             ensure_ascii=False,
             sort_keys=True,
@@ -20895,7 +20636,7 @@ def page_nearby():
             if search_component is not None:
                 search_component_result = search_component(
                     data={},
-                    key=f"nearby_search_now_v234_{current_family_key()}_{current_member_key()}",
+                    key=f"nearby_search_now_v218_{current_family_key()}_{current_member_key()}",
                     on_search_location_change=lambda: None,
                     on_search_error_change=lambda: None,
                 )
@@ -20936,28 +20677,34 @@ def page_nearby():
             "measured_at": now_jst().isoformat(),
             "place_label": fresh_label,
         }
-        # Store exactly the filter signature active when Search was pressed.
-        # The newly measured GPS coordinates are stored separately in _nearby_location.
-        fresh_signature = search_signature
+        fresh_signature = json.dumps(
+            {
+                "lat": round(search_latitude, 5),
+                "lon": round(search_longitude, 5),
+                "kind": kind,
+                "subkind": subkind,
+                "radius_m": radius_m,
+                "budget_under_1000": bool(budget_under_1000),
+                "open_now_only": bool(open_now_only),
+                "provider": "google" if GOOGLE_PLACES_API_KEY else "osm",
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
         with st.spinner("現在地周辺の営業情報・評価・写真を調べています…"):
             live_result = search_nearby_quick_stops_google(
                 search_latitude, search_longitude, kind, subkind, radius_m,
                 open_now_only=open_now_only,
                 budget_under_1000=budget_under_1000,
-                budget_limit=budget_limit,
             ) if GOOGLE_PLACES_API_KEY else None
             if not live_result or live_result.get("error"):
                 fallback = search_nearby_quick_stops(search_latitude, search_longitude, kind, subkind, radius_m)
-                if not fallback.get("error"):
-                    google_unavailable = not GOOGLE_PLACES_API_KEY or bool(live_result and live_result.get("error"))
-                    if live_result and live_result.get("error"):
-                        fallback["photo_error"] = str(live_result.get("error") or "")
-                    if google_unavailable and open_now_only:
+                if live_result and live_result.get("error") and not fallback.get("error"):
+                    fallback["photo_error"] = str(live_result.get("error") or "")
+                    if open_now_only:
                         fallback["open_filter_unavailable"] = True
-                    if google_unavailable and (budget_under_1000 or budget_limit is not None):
+                    if budget_under_1000:
                         fallback["budget_filter_unavailable"] = True
-                    if google_unavailable and kind == "lunch":
-                        fallback["rating_sort_unavailable"] = True
                 live_result = fallback
         st.session_state[result_key] = {
             "signature": fresh_signature,
@@ -21046,23 +20793,16 @@ def page_nearby():
     if bool(search_result.get("open_filter_unavailable")):
         st.warning("Google Placesに接続できなかったため、今回は『営業中だけ』の絞り込みを外して候補を表示しています。")
     if bool(search_result.get("budget_filter_unavailable")):
-        st.warning("Google Placesに接続できなかったため、今回は価格条件の判定を行わず候補を表示しています。")
-    if bool(search_result.get("rating_sort_unavailable")):
-        st.warning("Google Placesに接続できなかったため、今回は評価順ではなく距離順の代替候補です。")
+        st.warning("Google Placesに接続できなかったため、今回は『1,000円以下』の価格判定を行わず候補を表示しています。")
 
     st.divider()
-    st.markdown("### ランチ候補（口コミ補正評価順）" if kind == "lunch" else "### 今ちょっと寄るなら")
-    if kind == "lunch":
-        st.caption("候補は最大6か所。Google評価を口コミ件数で補正した「ぶらり旅評価」順です。口コミ100件を信頼基準にし、件数が少ない評価は周辺候補の平均へ少し寄せます。")
-    else:
-        st.caption("候補は最大6か所。検索時点の現在地を基準に、営業状況・評価・写真をその都度取得して表示します。")
+    st.markdown("### 今ちょっと寄るなら")
+    st.caption("候補は最大6か所。検索時点の現在地を基準に、営業状況・評価・写真をその都度取得して表示します。")
     if not GOOGLE_PLACES_API_KEY:
         st.info("写真表示を使うには Streamlit Secrets に `GOOGLE_PLACES_API_KEY` を追加してください。検索自体はこのまま利用できます。")
     if not places:
         if kind == "snack":
             st.info("この条件では候補を見つけられませんでした。徒歩3分・5分へ広げるか、『食べ歩き向き／店内中心』を切り替えてもう一度検索してください。")
-        elif kind == "lunch":
-            st.info("この条件ではランチ候補を見つけられませんでした。徒歩10分に広げる、予算を上げる、またはジャンルを『おまかせ』にしてもう一度検索してください。")
         else:
             st.info("この条件では候補を見つけられませんでした。検索範囲を広げるか、種類を『おまかせ』にしてもう一度検索してください。")
         return
@@ -21079,26 +20819,17 @@ def page_nearby():
             st.markdown(f'<div class="nearby-place-meta">{html.escape(str(place.get("category") or ""))}　・　{html.escape(_nearby_distance_text(place))}</div>', unsafe_allow_html=True)
             status = _nearby_open_status(place)
             rating_text = _nearby_rating_text(place)
-            burari_rating_text = _nearby_burari_rating_text(place) if kind == "lunch" else ""
             status_html = f'<span class="nearby-pill {html.escape(status.get("css") or "unknown")}">{html.escape(str(status.get("label") or "営業時間情報なし"))}</span>'
-            if kind == "lunch" and burari_rating_text:
-                status_html += f'<span class="nearby-pill rating">{html.escape(burari_rating_text)}</span>'
-                if rating_text:
-                    status_html += f'<span class="nearby-pill unknown">Google {html.escape(rating_text)}</span>'
-            elif rating_text:
+            if rating_text:
                 status_html += f'<span class="nearby-pill rating">{html.escape(rating_text)}</span>'
-            elif kind == "lunch":
-                status_html += '<span class="nearby-pill unknown">★ 評価なし</span>'
             budget_text = _nearby_budget_text(place)
             if budget_text:
                 status_html += f'<span class="nearby-pill unknown">{html.escape(budget_text)}</span>'
-            elif kind == "lunch":
-                status_html += '<span class="nearby-pill unknown">💴 価格情報なし</span>'
             st.markdown('<div class="nearby-status-row">' + status_html + '</div>', unsafe_allow_html=True)
             if preview:
                 st.markdown(f'<div class="nearby-photo-wrap"><img src="{html.escape(preview, quote=True)}" alt="{html.escape(str(place.get("name") or "候補"))}の参考写真"></div>', unsafe_allow_html=True)
             else:
-                icon = "🍡" if kind == "snack" else ("🍽️" if kind == "lunch" else "🏛️")
+                icon = "🍡" if kind == "snack" else "🏛️"
                 st.markdown(f'<div class="nearby-photo-placeholder">{icon}</div>', unsafe_allow_html=True)
 
             extras = []
@@ -21155,19 +20886,12 @@ def page_nearby():
                             attr_html = f'<div class="nearby-attribution">写真: {html.escape(attr)}</div>' if attr else '<div class="nearby-attribution">Google Places</div>'
                             cards.append(f'<div class="nearby-detail-photo"><img src="{html.escape(item["src"], quote=True)}" alt="参考写真">{attr_html}</div>')
                         st.markdown('<div class="nearby-detail-grid">' + ''.join(cards) + '</div>', unsafe_allow_html=True)
-                        if kind == "lunch":
-                            st.caption("店舗に登録された参考写真です。料理写真を含むことがありますが、外観・内観が混ざる場合があります。")
-                        else:
-                            st.caption("店舗・施設に登録された参考写真です。おやつ店では商品写真を含むことがありますが、外観・内観が混ざる場合があります。")
+                        st.caption("店舗・施設に登録された参考写真です。おやつ店では商品写真を含むことがありますが、外観・内観が混ざる場合があります。")
                     else:
                         st.caption("この場所では追加の参考写真を取得できませんでした。")
 
     if provider == "Google Places":
-        source_text = "候補・写真・営業情報・評価・価格情報：Google Places。"
-        if kind == "lunch":
-            source_text += "ランチは評価順で表示します。"
-        source_text += "検索ボタンを押すたびに現在地を取り直し、周辺候補もその都度検索します。電話・公式サイトなどの詳細は開いた場所だけ取得します。"
-        st.markdown('<div class="nearby-source-note">' + html.escape(source_text) + '</div>', unsafe_allow_html=True)
+        st.markdown('<div class="nearby-source-note">候補・写真・営業情報・評価・価格情報：Google Places。検索ボタンを押すたびに現在地を取り直し、周辺候補もその都度検索します。電話・公式サイトなどの詳細は開いた場所だけ取得します。</div>', unsafe_allow_html=True)
     else:
         st.markdown('<div class="nearby-source-note">周辺候補：OpenStreetMap。写真APIが未設定または利用できない場合は文字情報で表示します。</div>', unsafe_allow_html=True)
 
