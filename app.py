@@ -32,7 +32,7 @@ import streamlit as st
 # Freshly generated update: 2026-08-31 23:49 JST
 GENERATED_UPDATE_JST = "2026-09-06T12:00:00+09:00"
 
-APP_BUILD = "v259"
+APP_BUILD = "v260"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -25890,7 +25890,7 @@ def _memory_map_payload(center_lat, center_lon, radius_m):
     return {"groups": payload_groups, "item_count": len(items)}
 
 
-def _render_memory_map(center_lat, center_lon, radius_m, *, accuracy_m=None):
+def _render_memory_map_static_v259(center_lat, center_lon, radius_m, *, accuracy_m=None):
     prepared = _memory_map_payload(center_lat, center_lon, radius_m)
     try:
         accuracy_value = max(0.0, float(accuracy_m or 0))
@@ -25979,15 +25979,279 @@ html,body{{margin:0;padding:0;background:transparent;font-family:-apple-system,B
     return prepared
 
 
+_MEMORY_MAP_VIEW_HTML = """
+<div class="memory-map-component-v260">
+  <div id="memory-map-v260" class="memory-map-v260"><div class="memory-map-loading-v260">思い出の地図を読み込んでいます…</div></div>
+  <div class="memory-legend-v260" aria-hidden="true">
+    <div><span class="memory-legend-center-v260"></span><span id="memory-center-label-v260">検索中心</span></div>
+    <div><span class="memory-legend-pin-v260"></span>思い出</div>
+  </div>
+</div>
+"""
+
+_MEMORY_MAP_VIEW_CSS = r"""
+.memory-map-component-v260 { position:relative; width:100%; box-sizing:border-box; }
+.memory-map-v260 { width:100%; height:570px; border-radius:16px; overflow:hidden; background:#eef3f6; border:1px solid rgba(80,100,120,.14); box-sizing:border-box; }
+.memory-map-loading-v260 { height:100%; display:flex; align-items:center; justify-content:center; padding:24px; text-align:center; color:#5b6570; font-size:14px; line-height:1.6; box-sizing:border-box; }
+.memory-current-v260 { width:18px; height:18px; border-radius:50%; background:#2f80ed; border:4px solid white; box-shadow:0 2px 9px rgba(0,0,0,.30); }
+.memory-pin-shell-v260 { background:transparent!important; border:0!important; }
+.memory-pin-v260 { width:36px; height:36px; border-radius:50% 50% 50% 7px; transform:rotate(-45deg); background:#db7659; border:3px solid white; box-shadow:0 3px 10px rgba(0,0,0,.25); box-sizing:border-box; position:relative; }
+.memory-pin-v260 span { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; transform:rotate(45deg); font-size:12px; font-weight:900; color:white; }
+.memory-map-component-v260 .leaflet-popup-content-wrapper { border-radius:15px; box-shadow:0 9px 28px rgba(0,0,0,.17); }
+.memory-map-component-v260 .leaflet-popup-content { margin:11px 12px; width:min(286px,76vw)!important; }
+.memory-popup-place-v260 { font-size:14px; font-weight:850; color:#23272d; line-height:1.35; margin-bottom:3px; }
+.memory-popup-meta-v260 { font-size:11px; color:#69737e; margin-bottom:8px; }
+.memory-main-wrap-v260 { position:relative; width:100%; aspect-ratio:4/3; border-radius:11px; overflow:hidden; background:#edf0f2; }
+.memory-main-v260 { display:block; width:100%; height:100%; object-fit:cover; }
+.memory-main-badge-v260 { position:absolute; right:7px; top:7px; padding:3px 7px; border-radius:999px; background:rgba(20,24,28,.72); color:#fff; font-size:10px; font-weight:800; }
+.memory-main-caption-v260 { font-size:10px; color:#67717c; line-height:1.35; margin:5px 0 0; min-height:14px; }
+.memory-thumbs-v260 { display:grid; grid-template-columns:repeat(6,minmax(0,1fr)); gap:4px; margin-top:7px; }
+.memory-thumb-v260 { border:0; padding:0; background:transparent; aspect-ratio:1/1; border-radius:7px; overflow:hidden; cursor:pointer; outline-offset:2px; }
+.memory-thumb-v260 img { width:100%; height:100%; object-fit:cover; display:block; }
+.memory-more-v260 { font-size:10px; color:#6f7881; margin-top:6px; }
+.memory-legend-v260 { position:absolute; z-index:1000; left:10px; bottom:10px; background:rgba(255,255,255,.94); border:1px solid rgba(0,0,0,.10); border-radius:10px; padding:6px 8px; box-shadow:0 3px 12px rgba(0,0,0,.10); font-size:10px; color:#4a535c; pointer-events:none; }
+.memory-legend-v260 > div { display:flex; align-items:center; gap:5px; white-space:nowrap; }
+.memory-legend-center-v260,.memory-legend-pin-v260 { width:9px; height:9px; border-radius:50%; display:inline-block; }
+.memory-legend-center-v260 { background:#2f80ed; }
+.memory-legend-pin-v260 { background:#db7659; }
+.memory-search-popup-v260 { color:#24292f; min-width:220px; }
+.memory-search-title-v260 { font-size:13px; font-weight:850; line-height:1.45; margin-bottom:7px; }
+.memory-search-radius-v260 { display:flex; gap:5px; margin:6px 0 9px; }
+.memory-search-radius-v260 button { flex:1; min-height:34px; border:1px solid #d7dce1; border-radius:9px; background:#fff; color:#3b424a; font-size:11px; font-weight:800; cursor:pointer; }
+.memory-search-radius-v260 button.active { background:#eaf3ff; border-color:#75a7e0; color:#275d9b; }
+.memory-search-actions-v260 { display:grid; grid-template-columns:1fr 1fr; gap:7px; }
+.memory-search-actions-v260 button { min-height:38px; border-radius:10px; font-size:12px; font-weight:850; cursor:pointer; }
+.memory-search-no-v260 { border:1px solid #d7dce1; background:#f7f8f9; color:#434b54; }
+.memory-search-yes-v260 { border:1px solid #3c83d2; background:#3c83d2; color:#fff; }
+.memory-search-note-v260 { font-size:10px; line-height:1.4; color:#75808b; margin-top:6px; }
+@media(max-width:640px){ .memory-map-v260{height:530px;border-radius:14px;} .memory-map-component-v260 .leaflet-popup-content{width:min(276px,78vw)!important;} }
+"""
+
+_MEMORY_MAP_VIEW_JS = r"""
+export default function(component) {
+  const { parentElement, setTriggerValue, data } = component;
+  const node = parentElement.querySelector('#memory-map-v260');
+  const centerLabel = parentElement.querySelector('#memory-center-label-v260');
+  if (!node) return;
+
+  try { parentElement.__memoryMapCleanupV260?.(); } catch (_) {}
+  let cancelled = false;
+  let map = null;
+  const cleanupFns = [];
+  const payload = (data && typeof data === 'object') ? data : {};
+
+  const esc = (v) => String(v == null ? '' : v).replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  const centerSource = String(payload.center_source || 'gps');
+  if (centerLabel) centerLabel.textContent = centerSource === 'gps' ? '現在地' : '検索中心';
+
+  const ensureLeafletCss = () => {
+    if (document.getElementById('tokyo-burari-leaflet-css-v260')) return;
+    const link = document.createElement('link');
+    link.id = 'tokyo-burari-leaflet-css-v260';
+    link.rel = 'stylesheet';
+    link.href = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.css';
+    link.crossOrigin = '';
+    document.head.appendChild(link);
+  };
+
+  const ensureLeaflet = () => new Promise((resolve, reject) => {
+    if (globalThis.L) { resolve(globalThis.L); return; }
+    ensureLeafletCss();
+    let script = document.getElementById('tokyo-burari-leaflet-js-v260');
+    if (script) {
+      const started = Date.now();
+      const timer = setInterval(() => {
+        if (cancelled) { clearInterval(timer); return; }
+        if (globalThis.L) { clearInterval(timer); resolve(globalThis.L); return; }
+        if (Date.now() - started > 8000) { clearInterval(timer); reject(new Error('Leaflet load timeout')); }
+      }, 80);
+      cleanupFns.push(() => clearInterval(timer));
+      return;
+    }
+    script = document.createElement('script');
+    script.id = 'tokyo-burari-leaflet-js-v260';
+    script.src = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js';
+    script.crossOrigin = '';
+    script.onload = () => globalThis.L ? resolve(globalThis.L) : reject(new Error('Leaflet unavailable'));
+    script.onerror = () => reject(new Error('Leaflet load failed'));
+    document.head.appendChild(script);
+  });
+
+  const render = async () => {
+    try {
+      const L = await ensureLeaflet();
+      if (cancelled) return;
+      ensureLeafletCss();
+      const center = [Number(payload?.center?.lat), Number(payload?.center?.lon)];
+      if (!Number.isFinite(center[0]) || !Number.isFinite(center[1])) throw new Error('Invalid center');
+      node.innerHTML = '';
+      const radiusM = Math.max(1000, Number(payload.radius_m || 3000));
+      const zoom = radiusM <= 1200 ? 15 : (radiusM <= 4000 ? 13 : 11);
+      map = L.map(node, {zoomControl:true, attributionControl:true, preferCanvas:true}).setView(center, zoom);
+      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {maxZoom:19, attribution:'&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap</a>'}).addTo(map);
+      L.circle(center, {radius:radiusM, color:'#6d9fd7', weight:1.2, opacity:.46, fillColor:'#6d9fd7', fillOpacity:.035, dashArray:'5 6'}).addTo(map);
+      if (Number(payload.accuracy_m || 0) > 0 && centerSource === 'gps') {
+        L.circle(center, {radius:Number(payload.accuracy_m), color:'#2f80ed', weight:1, opacity:.28, fillColor:'#2f80ed', fillOpacity:.06}).addTo(map);
+      }
+      const currentIcon = L.divIcon({className:'', html:'<div class="memory-current-v260"></div>', iconSize:[18,18], iconAnchor:[9,9]});
+      L.marker(center, {icon:currentIcon, keyboard:false, zIndexOffset:1200, bubblingMouseEvents:false}).addTo(map).bindPopup(centerSource === 'gps' ? '<b>現在地</b>' : '<b>検索中心</b>');
+
+      const memoryPopupHtml = (g) => {
+        const items = Array.isArray(g.items) ? g.items : [];
+        const first = items[0] || {};
+        const mediaBadge = first.media_type === 'video' ? '<span class="memory-main-badge-v260">動画</span>' : '';
+        const main = first.src ? `<div class="memory-main-wrap-v260"><img class="memory-main-v260" src="${esc(first.src)}" loading="lazy" decoding="async" />${mediaBadge}</div>` : '<div class="memory-main-wrap-v260"></div>';
+        const caption = `${esc(first.date || '')}${first.time ? ' ' + esc(first.time) : ''}${first.media_type === 'video' ? ' ・ 動画' : ''}`;
+        const thumbs = items.length > 1 ? `<div class="memory-thumbs-v260">${items.map((it) => it.src ? `<button class="memory-thumb-v260" type="button" data-src="${esc(it.src)}" data-date="${esc(it.date || '')}" data-time="${esc(it.time || '')}" data-media="${esc(it.media_type || 'photo')}" aria-label="${esc(it.date || '思い出')}"><img src="${esc(it.src)}" loading="lazy" decoding="async" /></button>` : '').join('')}</div>` : '';
+        const more = Number(g.count || 0) > items.length ? `<div class="memory-more-v260">ほか ${Number(g.count) - items.length} 件の思い出があります</div>` : '';
+        return `<div class="memory-popup-place-v260">${esc(g.place || 'このあたりの思い出')}</div><div class="memory-popup-meta-v260">${Number(g.count || 0)}件の思い出</div>${main}<div class="memory-main-caption-v260">${caption}</div>${thumbs}${more}`;
+      };
+
+      (payload.groups || []).forEach((g) => {
+        const lat = Number(g.latitude), lon = Number(g.longitude);
+        if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
+        const icon = L.divIcon({className:'memory-pin-shell-v260', html:`<div class="memory-pin-v260"><span>${Number(g.count || 1)}</span></div>`, iconSize:[36,44], iconAnchor:[18,40], popupAnchor:[0,-36]});
+        L.marker([lat,lon], {icon, riseOnHover:true, bubblingMouseEvents:false}).addTo(map).bindPopup(memoryPopupHtml(g), {maxWidth:310, closeButton:true});
+      });
+
+      map.on('popupopen', (ev) => {
+        const root = ev.popup && ev.popup.getElement ? ev.popup.getElement() : null;
+        if (!root) return;
+        const main = root.querySelector('.memory-main-v260');
+        const caption = root.querySelector('.memory-main-caption-v260');
+        const wrap = root.querySelector('.memory-main-wrap-v260');
+        root.querySelectorAll('.memory-thumb-v260').forEach((btn) => btn.addEventListener('click', (event) => {
+          event.preventDefault(); event.stopPropagation();
+          if (main) main.src = String(btn.dataset.src || '');
+          if (caption) caption.textContent = `${btn.dataset.date || ''}${btn.dataset.time ? ' ' + btn.dataset.time : ''}${btn.dataset.media === 'video' ? ' ・ 動画' : ''}`;
+          if (wrap) {
+            let badge = wrap.querySelector('.memory-main-badge-v260');
+            if (btn.dataset.media === 'video') {
+              if (!badge) { badge = document.createElement('span'); badge.className = 'memory-main-badge-v260'; wrap.appendChild(badge); }
+              badge.textContent = '動画';
+            } else if (badge) badge.remove();
+          }
+        }));
+      });
+
+      map.on('click', (ev) => {
+        const lat = Number(ev?.latlng?.lat), lon = Number(ev?.latlng?.lng);
+        if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
+        const allowed = [1000,3000,10000];
+        let selected = allowed.includes(Number(radiusM)) ? Number(radiusM) : 3000;
+        const radiusButtons = allowed.map((r) => `<button type="button" class="memory-search-radius-button-v260${r === selected ? ' active' : ''}" data-radius="${r}">${r/1000}km</button>`).join('');
+        const content = `<div class="memory-search-popup-v260"><div class="memory-search-title-v260">この場所から周囲 <span class="memory-search-km-v260">${selected/1000}km</span> の思い出データを取得しますか？</div><div class="memory-search-radius-v260">${radiusButtons}</div><div class="memory-search-actions-v260"><button type="button" class="memory-search-no-v260">いいえ</button><button type="button" class="memory-search-yes-v260">はい</button></div><div class="memory-search-note-v260">「はい」で、この地点を中心に軽量な位置インデックスを再検索してピンを置き直します。</div></div>`;
+        L.popup({maxWidth:310, closeButton:true, autoPan:true}).setLatLng([lat,lon]).setContent(content).openOn(map);
+        setTimeout(() => {
+          if (cancelled || !map) return;
+          const popupRoot = map.getPopup()?.getElement?.();
+          if (!popupRoot) return;
+          const kmLabel = popupRoot.querySelector('.memory-search-km-v260');
+          popupRoot.querySelectorAll('.memory-search-radius-button-v260').forEach((btn) => btn.addEventListener('click', (event) => {
+            event.preventDefault(); event.stopPropagation();
+            const next = Number(btn.dataset.radius || 0);
+            if (!allowed.includes(next)) return;
+            selected = next;
+            popupRoot.querySelectorAll('.memory-search-radius-button-v260').forEach((b) => b.classList.toggle('active', b === btn));
+            if (kmLabel) kmLabel.textContent = `${selected/1000}km`;
+          }));
+          popupRoot.querySelector('.memory-search-no-v260')?.addEventListener('click', (event) => {
+            event.preventDefault(); event.stopPropagation(); map.closePopup();
+          });
+          popupRoot.querySelector('.memory-search-yes-v260')?.addEventListener('click', (event) => {
+            event.preventDefault(); event.stopPropagation();
+            setTriggerValue('map_search', {
+              token: `${Date.now()}_${Math.random().toString(36).slice(2)}`,
+              latitude: lat,
+              longitude: lon,
+              radius_m: selected
+            });
+          });
+        }, 0);
+      });
+
+      setTimeout(() => { if (!cancelled && map) map.invalidateSize(); }, 120);
+    } catch (err) {
+      if (!cancelled) node.innerHTML = '<div class="memory-map-loading-v260">地図を読み込めませんでした。通信状態を確認して、もう一度ページを開いてください。</div>';
+    }
+  };
+
+  render();
+  const cleanup = () => {
+    cancelled = true;
+    cleanupFns.forEach((fn) => { try { fn(); } catch (_) {} });
+    try { if (map) map.remove(); } catch (_) {}
+    map = null;
+  };
+  parentElement.__memoryMapCleanupV260 = cleanup;
+  return cleanup;
+}
+"""
+
+memory_map_view_component = None
+_memory_map_view_component_initialized = False
+
+
+def _get_memory_map_view_component():
+    global memory_map_view_component, _memory_map_view_component_initialized
+    if _memory_map_view_component_initialized:
+        return memory_map_view_component
+    _memory_map_view_component_initialized = True
+    try:
+        memory_map_view_component = st.components.v2.component(
+            "tokyo_burari_memory_map_view_v260",
+            html=_MEMORY_MAP_VIEW_HTML,
+            css=_MEMORY_MAP_VIEW_CSS,
+            js=_MEMORY_MAP_VIEW_JS,
+        )
+    except Exception:
+        memory_map_view_component = None
+    return memory_map_view_component
+
+
+def _render_memory_map(center_lat, center_lon, radius_m, *, accuracy_m=None, center_source="gps"):
+    """Render the interactive memories map and return (prepared_payload, map_search_event).
+
+    The map click only sends latitude/longitude/radius back to Streamlit.  The server then
+    re-filters the compact cached GPS index for that new center, so tapping around the map
+    stays light and never downloads every photo.
+    """
+    prepared = _memory_map_payload(center_lat, center_lon, radius_m)
+    try:
+        accuracy_value = max(0.0, float(accuracy_m or 0))
+    except (TypeError, ValueError):
+        accuracy_value = 0.0
+    payload = {
+        "center": {"lat": float(center_lat), "lon": float(center_lon)},
+        "center_source": "gps" if str(center_source or "") == "gps" else "map",
+        "radius_m": int(radius_m),
+        "accuracy_m": accuracy_value,
+        "groups": prepared.get("groups") or [],
+        "item_count": int(prepared.get("item_count") or 0),
+    }
+    component = _get_memory_map_view_component()
+    if component is None:
+        legacy_prepared = _render_memory_map_static_v259(center_lat, center_lon, radius_m, accuracy_m=accuracy_m)
+        return legacy_prepared, None
+    result = component(
+        data=payload,
+        key=f"memory_map_view_component_v260_{current_family_key()}_{current_member_key()}",
+        on_map_search_change=lambda: None,
+    )
+    map_search = getattr(result, "map_search", None)
+    return prepared, map_search
+
+
 def page_memory_map():
     page_top(
         "🗺️ 思い出マップ",
         "日記からではなく、いまいる場所の地図から、以前ここで何を見て・経験したかをたどります。",
     )
-    st.caption("地図を開いたときだけ位置情報と軽量メタデータを読み込みます。写真本体はピンを開いたときだけ表示します。")
+    st.caption("地図を開いたときだけ位置情報と軽量メタデータを読み込みます。地図の好きな場所をタップすると、その地点を中心に思い出を再検索できます。写真本体はピンを開いたときだけ表示します。")
 
     location_key = f"_memory_map_location_v259_{current_family_key()}_{current_member_key()}"
     token_key = f"_memory_map_location_token_v259_{current_family_key()}_{current_member_key()}"
+    map_search_token_key = f"_memory_map_search_token_v260_{current_family_key()}_{current_member_key()}"
     location = st.session_state.get(location_key)
     if not isinstance(location, dict):
         nearby = st.session_state.get("_nearby_location")
@@ -26039,10 +26303,11 @@ def page_memory_map():
         st.warning("現在地を確認できませんでした。もう一度取得してください。")
         return
 
-    place_label = str(location.get("place_label") or reverse_geocode_rough(center_lat, center_lon) or "現在地付近")
-    accuracy_text = f"GPS精度 ±{int(round(accuracy))}m" if isinstance(accuracy, (int, float)) and accuracy > 0 else ""
+    center_source = str(location.get("source") or "gps")
+    place_label = str(location.get("place_label") or reverse_geocode_rough(center_lat, center_lon) or ("現在地付近" if center_source == "gps" else "地図で選んだ場所"))
+    accuracy_text = f"GPS精度 ±{int(round(accuracy))}m" if center_source == "gps" and isinstance(accuracy, (int, float)) and accuracy > 0 else ""
     st.markdown(
-        f'<div style="margin:.08rem 0 .48rem;padding:.48rem .62rem;border-radius:12px;background:rgba(74,144,226,.05);border:1px solid rgba(74,144,226,.12);font-size:.75rem;line-height:1.4;"><b>📍 {html.escape(place_label)}</b>'
+        f'<div style="margin:.08rem 0 .48rem;padding:.48rem .62rem;border-radius:12px;background:rgba(74,144,226,.05);border:1px solid rgba(74,144,226,.12);font-size:.75rem;line-height:1.4;"><b>{"📍" if center_source == "gps" else "🗺️"} {html.escape(place_label)}</b>'
         + (f'<div style="font-size:.65rem;opacity:.65;margin-top:.08rem;">{html.escape(accuracy_text)}</div>' if accuracy_text else "")
         + '</div>',
         unsafe_allow_html=True,
@@ -26063,7 +26328,44 @@ def page_memory_map():
     radius_m = int(radius_choices.get(str(selected_radius), MEMORY_MAP_DEFAULT_RADIUS_M))
 
     with st.spinner("近くの思い出を地図に置いています…"):
-        prepared = _render_memory_map(center_lat, center_lon, radius_m, accuracy_m=accuracy)
+        prepared, map_search = _render_memory_map(
+            center_lat,
+            center_lon,
+            radius_m,
+            accuracy_m=accuracy,
+            center_source=center_source,
+        )
+
+    if isinstance(map_search, dict):
+        map_token = str(map_search.get("token") or "")
+        if map_token and map_token != str(st.session_state.get(map_search_token_key) or ""):
+            try:
+                tapped_lat = float(map_search.get("latitude"))
+                tapped_lon = float(map_search.get("longitude"))
+                tapped_radius = int(map_search.get("radius_m") or radius_m)
+            except (TypeError, ValueError):
+                tapped_lat = tapped_lon = None
+                tapped_radius = radius_m
+            allowed_radii = {1000: "1km", 3000: "3km", 10000: "10km"}
+            if (
+                tapped_lat is not None
+                and tapped_lon is not None
+                and math.isfinite(tapped_lat)
+                and math.isfinite(tapped_lon)
+                and tapped_radius in allowed_radii
+            ):
+                st.session_state[map_search_token_key] = map_token
+                st.session_state[radius_key] = allowed_radii[tapped_radius]
+                st.session_state[location_key] = {
+                    "source": "map",
+                    "latitude": tapped_lat,
+                    "longitude": tapped_lon,
+                    "accuracy_m": None,
+                    "measured_at": now_jst().isoformat(),
+                    "place_label": reverse_geocode_rough(tapped_lat, tapped_lon) or "地図で選んだ場所",
+                }
+                st.rerun()
+
     count = int((prepared or {}).get("item_count") or 0)
     if count:
         st.caption(f"この範囲で {count} 件の写真・動画の記録を見つけました。近い撮影地点は1つのピンにまとめています。")
