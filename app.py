@@ -32,7 +32,7 @@ import streamlit as st
 # Freshly generated update: 2026-08-31 23:49 JST
 GENERATED_UPDATE_JST = "2026-09-06T12:00:00+09:00"
 
-APP_BUILD = "v264"
+APP_BUILD = "v265"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -25866,12 +25866,21 @@ def _memory_map_payload(center_lat, center_lon, radius_m):
     for index, group in enumerate(groups, start=1):
         group_items = list(group.get("items") or [])
         visible = []
-        for item in group_items[:6]:
+        for item_index, item in enumerate(group_items[:6]):
             path = str(item.get("storage_path") or "")
             captured = str(item.get("captured_at") or "")
+            preview_src = str(signed.get(path) or "")
+            # v265: a pin must always have a visible lead photo. Signed URLs stay the
+            # lightweight default; only the first photo of a pin falls back to one
+            # cached thumbnail if Storage signing happens to fail for that path.
+            if not preview_src and item_index == 0 and path:
+                try:
+                    preview_src = thumbnail_photo_data_url(path, max_px=560, quality=78)
+                except Exception:
+                    preview_src = ""
             visible.append({
                 "id": str(item.get("id") or ""),
-                "src": str(signed.get(path) or ""),
+                "src": preview_src,
                 "date": captured[:10],
                 "time": captured[11:16] if len(captured) >= 16 else "",
                 "place": str(item.get("place_label") or ""),
@@ -26062,7 +26071,7 @@ export default function(component) {
   const centerLabel = parentElement.querySelector('#memory-center-label-v260');
   if (!node) return;
 
-  try { parentElement.__memoryMapCleanupV264?.(); } catch (_) {}
+  try { parentElement.__memoryMapCleanupV265?.(); } catch (_) {}
   let cancelled = false;
   let map = null;
   let centerSyncTimer = null;
@@ -26170,9 +26179,9 @@ export default function(component) {
         const items = Array.isArray(g.items) ? g.items : [];
         const first = items[0] || {};
         const mediaBadge = first.media_type === 'video' ? '<span class="memory-main-badge-v260">動画</span>' : '';
-        const main = first.src ? `<div class="memory-main-wrap-v260"><img class="memory-main-v260" src="${esc(first.src)}" loading="lazy" decoding="async" />${mediaBadge}</div>` : '<div class="memory-main-wrap-v260"></div>';
+        const main = first.src ? `<div class="memory-main-wrap-v260"><img class="memory-main-v260" data-src="${esc(first.src)}" alt="思い出の写真" />${mediaBadge}</div>` : '<div class="memory-main-wrap-v260"></div>';
         const caption = `${esc(first.date || '')}${first.time ? ' ' + esc(first.time) : ''}${first.media_type === 'video' ? ' ・ 動画' : ''}`;
-        const thumbs = items.length > 1 ? `<div class="memory-thumbs-v260">${items.map((it) => it.src ? `<button class="memory-thumb-v260" type="button" data-src="${esc(it.src)}" data-date="${esc(it.date || '')}" data-time="${esc(it.time || '')}" data-media="${esc(it.media_type || 'photo')}" aria-label="${esc(it.date || '思い出')}"><img src="${esc(it.src)}" loading="lazy" decoding="async" /></button>` : '').join('')}</div>` : '';
+        const thumbs = items.length > 1 ? `<div class="memory-thumbs-v260">${items.map((it) => it.src ? `<button class="memory-thumb-v260" type="button" data-src="${esc(it.src)}" data-date="${esc(it.date || '')}" data-time="${esc(it.time || '')}" data-media="${esc(it.media_type || 'photo')}" aria-label="${esc(it.date || '思い出')}"><img data-src="${esc(it.src)}" alt="" /></button>` : '').join('')}</div>` : '';
         const more = Number(g.count || 0) > items.length ? `<div class="memory-more-v260">ほか ${Number(g.count) - items.length} 件の思い出があります</div>` : '';
         return `<div class="memory-popup-place-v260">${esc(g.place || 'このあたりの思い出')}</div><div class="memory-popup-meta-v260">${Number(g.count || 0)}件の思い出</div>${main}<div class="memory-main-caption-v260">${caption}</div>${thumbs}${more}`;
       };
@@ -26190,6 +26199,20 @@ export default function(component) {
         const main = root.querySelector('.memory-main-v260');
         const caption = root.querySelector('.memory-main-caption-v260');
         const wrap = root.querySelector('.memory-main-wrap-v260');
+        // v265: Leaflet popups are created only when opened. Explicitly attach the
+        // image URLs at popup-open time instead of relying on browser lazy-loading
+        // inside Leaflet's transformed popup pane (which can stay blank on Android).
+        const hydrateImage = (img, highPriority=false) => {
+          if (!img) return;
+          const src = String(img.dataset?.src || '');
+          if (!src) return;
+          img.loading = 'eager';
+          img.decoding = 'async';
+          if (highPriority) img.fetchPriority = 'high';
+          if (img.getAttribute('src') !== src) img.setAttribute('src', src);
+        };
+        hydrateImage(main, true);
+        root.querySelectorAll('.memory-thumb-v260 img').forEach((img) => hydrateImage(img, false));
         root.querySelectorAll('.memory-thumb-v260').forEach((btn) => btn.addEventListener('click', (event) => {
           event.preventDefault(); event.stopPropagation();
           if (main) main.src = String(btn.dataset.src || '');
@@ -26219,7 +26242,7 @@ export default function(component) {
     try { if (map) map.remove(); } catch (_) {}
     map = null;
   };
-  parentElement.__memoryMapCleanupV264 = cleanup;
+  parentElement.__memoryMapCleanupV265 = cleanup;
   return cleanup;
 }
 """
@@ -26235,7 +26258,7 @@ def _get_memory_map_view_component():
     _memory_map_view_component_initialized = True
     try:
         memory_map_view_component = st.components.v2.component(
-            "tokyo_burari_memory_map_view_v264",
+            "tokyo_burari_memory_map_view_v265",
             html=_MEMORY_MAP_VIEW_HTML,
             css=_MEMORY_MAP_VIEW_CSS,
             js=_MEMORY_MAP_VIEW_JS,
@@ -26270,7 +26293,7 @@ def _render_memory_map(center_lat, center_lon, radius_m, *, accuracy_m=None, cen
         return legacy_prepared, None
     component(
         data=payload,
-        key=f"memory_map_view_component_v264_{current_family_key()}_{current_member_key()}",
+        key=f"memory_map_view_component_v265_{current_family_key()}_{current_member_key()}",
     )
     return prepared, None
 
