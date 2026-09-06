@@ -32,7 +32,7 @@ import streamlit as st
 # Freshly generated update: 2026-08-31 23:49 JST
 GENERATED_UPDATE_JST = "2026-09-06T12:00:00+09:00"
 
-APP_BUILD = "v255"
+APP_BUILD = "v258"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -7456,44 +7456,63 @@ NEARBY_LUNCH_GENRES = (
 # categories one by one. This avoids a long multi-keyword query acting too narrowly.
 NEARBY_LUNCH_GROUP_MEMBERS = {
     "おまかせ": ("おまかせ",),
-    "和食・定食": ("和食", "定食・食堂", "とんかつ", "天ぷら", "うなぎ", "お好み焼き・もんじゃ"),
+    "和食・定食": ("和食", "定食", "食堂", "とんかつ", "天ぷら", "うなぎ", "お好み焼き", "もんじゃ"),
     "寿司・海鮮": ("寿司", "海鮮"),
-    "焼肉・ホルモン": ("焼肉・ホルモン",),
-    "焼き鳥・鶏料理": ("焼き鳥・鳥料理",),
-    "ステーキ・ハンバーグ": ("ステーキ・ハンバーグ",),
-    "麺類": ("そば", "うどん", "ラーメン・つけ麺"),
+    "焼肉・ホルモン": ("焼肉", "ホルモン"),
+    "焼き鳥・鶏料理": ("焼き鳥", "鶏料理"),
+    "ステーキ・ハンバーグ": ("ステーキ", "ハンバーグ"),
+    "麺類": ("そば", "うどん", "ラーメン", "つけ麺"),
     "中華・韓国": ("中華料理", "韓国料理"),
     "イタリアン・フレンチ": ("イタリアン", "フレンチ"),
     "洋食・ハンバーガー": ("洋食", "ハンバーガー"),
-    "カレー・エスニック": ("カレー", "アジア・エスニック"),
-    "カフェ・軽食": ("カフェ・喫茶店",),
+    "カレー・エスニック": ("カレー", "タイ料理", "ベトナム料理", "インド料理", "アジア料理"),
+    "カフェ・軽食": ("カフェ", "喫茶店", "軽食"),
 }
 
 NEARBY_LUNCH_ATOMIC_QUERIES = {
     "おまかせ": "ランチ レストラン",
-    "和食": "和食 ランチ",
-    "定食・食堂": "定食 食堂 ランチ",
-    "寿司": "寿司 鮨 ランチ",
-    "海鮮": "海鮮 魚介 刺身 ランチ",
-    "焼肉・ホルモン": "焼肉 ホルモン ランチ",
-    "焼き鳥・鳥料理": "焼き鳥 鳥料理 鶏料理 ランチ",
-    "ステーキ・ハンバーグ": "ステーキ ハンバーグ ランチ",
-    "とんかつ": "とんかつ ランチ",
-    "天ぷら": "天ぷら 天丼 ランチ",
-    "うなぎ": "うなぎ 鰻 ランチ",
-    "そば": "そば 蕎麦 ランチ",
-    "うどん": "うどん ランチ",
-    "ラーメン・つけ麺": "ラーメン つけ麺 ランチ",
-    "カレー": "カレー ランチ",
-    "中華料理": "中華料理 ランチ",
-    "韓国料理": "韓国料理 ランチ",
-    "イタリアン": "イタリアン パスタ ピザ ランチ",
-    "フレンチ": "フレンチ ビストロ ランチ",
-    "洋食": "洋食 オムライス ランチ",
-    "ハンバーガー": "ハンバーガー ランチ",
-    "お好み焼き・もんじゃ": "お好み焼き もんじゃ ランチ",
-    "アジア・エスニック": "タイ ベトナム インド エスニック ランチ",
-    "カフェ・喫茶店": "カフェ 喫茶店 ランチ",
+    "和食": "和食",
+    "定食": "定食",
+    "食堂": "食堂",
+    "寿司": "寿司 鮨",
+    "海鮮": "海鮮 魚介 刺身",
+    "焼肉": "焼肉",
+    "ホルモン": "ホルモン",
+    "焼き鳥": "焼き鳥 やきとり",
+    "鶏料理": "鶏料理 鳥料理",
+    "ステーキ": "ステーキ",
+    "ハンバーグ": "ハンバーグ",
+    "とんかつ": "とんかつ",
+    "天ぷら": "天ぷら 天丼",
+    "うなぎ": "うなぎ 鰻",
+    "お好み焼き": "お好み焼き",
+    "もんじゃ": "もんじゃ焼き もんじゃ",
+    "そば": "そば 蕎麦",
+    "うどん": "うどん",
+    "ラーメン": "ラーメン",
+    "つけ麺": "つけ麺",
+    "カレー": "カレー",
+    "中華料理": "中華料理",
+    "韓国料理": "韓国料理",
+    "イタリアン": "イタリアン パスタ ピザ",
+    "フレンチ": "フレンチ ビストロ",
+    "洋食": "洋食",
+    "ハンバーガー": "ハンバーガー",
+    "タイ料理": "タイ料理",
+    "ベトナム料理": "ベトナム料理",
+    "インド料理": "インド料理",
+    "アジア料理": "アジア料理 エスニック",
+    "カフェ": "カフェ",
+    "喫茶店": "喫茶店",
+    "軽食": "軽食 サンドイッチ ベーカリー",
+    # Compatibility for older saved state / callers.
+    "焼肉・ホルモン": "焼肉 ホルモン",
+    "焼き鳥・鳥料理": "焼き鳥 鳥料理",
+    "ステーキ・ハンバーグ": "ステーキ ハンバーグ",
+    "ラーメン・つけ麺": "ラーメン つけ麺",
+    "お好み焼き・もんじゃ": "お好み焼き もんじゃ",
+    "アジア・エスニック": "アジア料理 エスニック",
+    "カフェ・喫茶店": "カフェ 喫茶店",
 }
 
 # Exact Google Places types are used in addition to the original free-text query.
@@ -7501,17 +7520,41 @@ NEARBY_LUNCH_ATOMIC_QUERIES = {
 # Nearby Search is especially important for restaurants whose proper name does not
 # contain cuisine words (for example Radicare), which free-text ranking can miss.
 NEARBY_LUNCH_ATOMIC_PLACE_TYPES = {
+    "おまかせ": ("restaurant",),
+    "和食": ("japanese_restaurant",),
     "寿司": ("sushi_restaurant",),
     "海鮮": ("seafood_restaurant",),
-    "焼肉・ホルモン": ("barbecue_restaurant",),
-    "ラーメン・つけ麺": ("ramen_restaurant",),
-    "中華料理": ("chinese_restaurant",),
+    "焼肉": ("yakiniku_restaurant", "korean_barbecue_restaurant", "barbecue_restaurant"),
+    "ホルモン": ("yakiniku_restaurant", "korean_barbecue_restaurant", "barbecue_restaurant"),
+    "焼き鳥": ("yakitori_restaurant", "chicken_restaurant", "japanese_izakaya_restaurant"),
+    "鶏料理": ("chicken_restaurant", "yakitori_restaurant"),
+    "ステーキ": ("steak_house",),
+    "とんかつ": ("tonkatsu_restaurant",),
+    "そば": ("noodle_shop",),
+    "うどん": ("noodle_shop",),
+    "ラーメン": ("ramen_restaurant", "noodle_shop"),
+    "つけ麺": ("ramen_restaurant", "noodle_shop"),
+    "中華料理": ("chinese_restaurant", "chinese_noodle_restaurant", "cantonese_restaurant", "dim_sum_restaurant", "dumpling_restaurant"),
     "韓国料理": ("korean_restaurant",),
     "イタリアン": ("italian_restaurant", "pizza_restaurant"),
-    "フレンチ": ("french_restaurant",),
+    "フレンチ": ("french_restaurant", "bistro"),
+    "洋食": ("western_restaurant",),
     "ハンバーガー": ("hamburger_restaurant",),
-    "アジア・エスニック": ("thai_restaurant", "vietnamese_restaurant", "indian_restaurant"),
-    "カフェ・喫茶店": ("cafe", "coffee_shop"),
+    "カレー": ("japanese_curry_restaurant",),
+    "タイ料理": ("thai_restaurant",),
+    "ベトナム料理": ("vietnamese_restaurant",),
+    "インド料理": ("indian_restaurant",),
+    "アジア料理": ("asian_restaurant", "asian_fusion_restaurant"),
+    "カフェ": ("cafe", "coffee_shop"),
+    "喫茶店": ("cafe", "coffee_shop", "tea_house"),
+    "軽食": ("sandwich_shop", "snack_bar", "bakery"),
+    # Compatibility for older saved state / callers.
+    "焼肉・ホルモン": ("yakiniku_restaurant", "korean_barbecue_restaurant", "barbecue_restaurant"),
+    "焼き鳥・鳥料理": ("yakitori_restaurant", "chicken_restaurant"),
+    "ステーキ・ハンバーグ": ("steak_house", "western_restaurant"),
+    "ラーメン・つけ麺": ("ramen_restaurant", "noodle_shop"),
+    "アジア・エスニック": ("thai_restaurant", "vietnamese_restaurant", "indian_restaurant", "asian_restaurant"),
+    "カフェ・喫茶店": ("cafe", "coffee_shop", "tea_house"),
 }
 
 def _nearby_lunch_atomic_query_specs(subkind):
@@ -7597,7 +7640,7 @@ def search_nearby_quick_stops_google(latitude, longitude, kind, subkind, radius_
     # results are merged/deduplicated before distance, budget and rating evaluation.
     field_mask = (
         "places.id,places.displayName,places.formattedAddress,places.location,places.types,places.primaryType,"
-        "places.photos,places.businessStatus,places.currentOpeningHours,places.rating,places.userRatingCount,"
+        "places.googleMapsTypeLabel,places.photos,places.businessStatus,places.currentOpeningHours,places.rating,places.userRatingCount,"
         "places.priceLevel,places.priceRange,places.takeout,places.dineIn,places.servesDessert"
     )
 
@@ -8022,6 +8065,7 @@ def search_nearby_quick_stops_google(latitude, longitude, kind, subkind, radius_
             "dine_in": dine_in,
             "serves_dessert": serves_dessert,
             "google_types": sorted(types),
+            "google_maps_type_label": str(raw.get("googleMapsTypeLabel") or "").strip(),
             "walkability_rank": walkability_rank,
         })
 
@@ -11314,7 +11358,7 @@ def choose_video_ai_frames(
     ai_client=None,
     progress_callback=None,
 ):
-    """Pick up to three stills after AI has inspected every duration-aware candidate.
+    """Pick exactly six stills when six candidates are available after AI inspection.
 
     v153 caps Good Moments at 20 frames. Sampling is max(0.5 seconds, duration / 20),
     so 10s -> 0.5s, 15s -> 0.75s, and 60s -> 3s. The normal path therefore fits
@@ -11327,7 +11371,7 @@ def choose_video_ai_frames(
     excluded = {str(x) for x in (excluded_frame_ids or []) if str(x)}
     available = [frame for frame in frames if str(frame.get("frame_id") or "") not in excluded]
     # A reroll should avoid the previous set when enough candidates remain.
-    if len(available) >= 3:
+    if len(available) >= VIDEO_AI_MAX_SELECTIONS:
         frames = available
 
     quality_values = ["expression", "action", "beauty", "subject", "story", "other"]
@@ -11838,6 +11882,7 @@ def mark_video_ai_waiting_candidates(photo, message=""):
             "updated_at": now_jst().isoformat(),
             "last_error": str(message or "")[:240],
             "items": list(previous.get("items") or []),
+            "selection_target_count": VIDEO_AI_MAX_SELECTIONS,
         }
     )
     reflection["ai_selection"] = previous
@@ -12436,8 +12481,8 @@ def _background_store_video_ai_selection(
     if not base:
         raise ValueError("動画の保存先を確認できませんでした。")
     selected_items = list(selections or [])[:VIDEO_AI_MAX_SELECTIONS]
-    if not selected_items:
-        raise ValueError("AIセレクションを作成できませんでした。")
+    if len(selected_items) < VIDEO_AI_MAX_SELECTIONS:
+        raise ValueError(f"AIセレクションを{VIDEO_AI_MAX_SELECTIONS}枚そろえられませんでした。")
 
     # v153 never performs a second seek/re-extraction pass. The single duration-aware
     # ffmpeg pass already produced native-resolution source frames. Refuse anything
@@ -12507,6 +12552,7 @@ def _background_store_video_ai_selection(
                 "items": items,
                 "final_frame_mode": "original_native_dynamic20_single_pass_v153",
                 "high_quality_count": len(items),
+                "selection_target_count": VIDEO_AI_MAX_SELECTIONS,
                 "progress_message": "完了",
                 "last_error": "",
             }
@@ -12779,7 +12825,10 @@ def launch_video_ai_background_job(photo):
     if not isinstance(selection, dict):
         selection = {}
     status = str(selection.get("status") or "").strip().lower()
-    if status in {"ready", "reviewed"} and video_ai_selection_items(fresh):
+    existing_items = video_ai_selection_items(fresh)
+    if status == "reviewed":
+        return False
+    if status == "ready" and len(existing_items) >= VIDEO_AI_MAX_SELECTIONS:
         return False
 
     registry = _video_ai_job_registry()
@@ -12832,11 +12881,35 @@ def resume_member_video_background_jobs(limit=24, min_interval_seconds=5):
         if not isinstance(selection, dict):
             selection = {}
         status = str(selection.get("status") or "").strip().lower()
-        has_items = bool(video_ai_selection_items(row))
+        selection_items = video_ai_selection_items(row)
+        has_items = bool(selection_items)
+        has_full_six = len(selection_items) >= VIDEO_AI_MAX_SELECTIONS
         photo_id = str(row.get("id") or "")
 
-        if status in {"ready", "reviewed"} and has_items:
+        if status == "reviewed":
             continue
+        if status == "ready" and has_full_six:
+            continue
+        if status == "ready" and has_items and not has_full_six:
+            try:
+                selection["status"] = "waiting_candidates"
+                selection["stage"] = "candidate_preparation"
+                selection["queued_at"] = now_jst().isoformat()
+                selection["updated_at"] = selection["queued_at"]
+                selection["selection_target_count"] = VIDEO_AI_MAX_SELECTIONS
+                selection["last_error"] = ""
+                reflection = dict(photo_media_metadata(row))
+                reflection["ai_selection"] = selection
+                _write_photo_reflection_for_owner(
+                    row.get("id"), reflection,
+                    row.get("family_key") or current_family_key(),
+                    row.get("member_key") or current_member_key(),
+                )
+                row = dict(row)
+                row["reflection_json"] = reflection
+                status = "waiting_candidates"
+            except Exception:
+                continue
         if _video_ai_job_is_running(photo_id):
             continue
         if status == "processing" and not video_ai_processing_is_stale(selection):
@@ -13303,6 +13376,7 @@ def store_preselected_video_ai_selection(photo, selections, candidate_count=0):
             "items": items,
             "final_frame_mode": "original_native_dynamic20_single_pass_v153",
             "high_quality_count": len(items),
+            "selection_target_count": VIDEO_AI_MAX_SELECTIONS,
         }
         _write_photo_reflection(photo["id"], reflection)
         updated = dict(photo)
@@ -13317,7 +13391,7 @@ def store_preselected_video_ai_selection(photo, selections, candidate_count=0):
         raise
 
 def store_video_ai_selection(photo, frame_items):
-    """Run AI selection, store nine JPEG derivatives, and attach them to the video row."""
+    """Run AI selection, store six JPEG derivatives, and attach them to the video row."""
     selections = choose_video_ai_frames(frame_items)
     return store_preselected_video_ai_selection(
         photo,
@@ -18391,12 +18465,12 @@ def inject_home_icon_css(review_attention=False):
         st.markdown("<style>" + "\n".join(css_chunks) + "</style>", unsafe_allow_html=True)
 
 def render_global_bottom_navigation(page_name):
-    """Render hierarchy Back/Home only for the page that is still active.
+    """Render one stable Back/Home navigation tree for the active page.
 
-    Browser Back and component callbacks can update ``main_page`` during the same
-    Streamlit interaction. Never append navigation controls for a page that has
-    already been replaced; otherwise old Home/Back buttons can visually linger
-    above the newly rendered Home screen on mobile.
+    Keep navigation widget keys stable across reruns and hierarchy changes within the same page. Epoch/node-specific keys caused
+    some mobile browsers to retain faded copies of old Back/Home controls while a
+    new page was mounting. Stable keys let Streamlit reconcile the same DOM nodes
+    in place, which removes the ghost UI without adding polling or extra components.
     """
     live_page = str(st.session_state.get("main_page") or "home")
     if live_page != str(page_name):
@@ -18405,18 +18479,18 @@ def render_global_bottom_navigation(page_name):
     if node == "home":
         return
     st.divider()
-    with st.container(key=f"global_parent_nav_{page_name}_{node}_{_current_ui_refresh_epoch()}"):
+    with st.container(key=f"global_parent_nav_{page_name}"):
         if st.button(
             "← 1つ前に戻る",
             use_container_width=True,
-            key=f"global_parent_back_{page_name}_{node}_{_current_ui_refresh_epoch()}",
+            key=f"global_parent_back_{page_name}",
         ):
             navigate_to_parent()
-    with st.container(key=f"global_home_nav_{page_name}_{node}_{_current_ui_refresh_epoch()}"):
+    with st.container(key=f"global_home_nav_{page_name}"):
         if st.button(
             "トップページに戻る",
             use_container_width=True,
-            key=f"global_bottom_home_{page_name}_{node}_{_current_ui_refresh_epoch()}",
+            key=f"global_bottom_home_{page_name}",
         ):
             go_page("home", history_mode="replace")
 
@@ -18424,7 +18498,7 @@ def render_global_bottom_navigation(page_name):
 def page_top(title, caption=""):
     c1, c2 = st.columns([1, 5], vertical_alignment="center")
     with c1:
-        if st.button("←", key=f"parent_back_{title}_{_current_ui_refresh_epoch()}", help="1つ前の階層に戻る", use_container_width=True):
+        if st.button("←", key=f"parent_back_{title}", help="1つ前の階層に戻る", use_container_width=True):
             navigate_to_parent()
     with c2:
         st.subheader(title)
@@ -21140,7 +21214,7 @@ def page_nearby():
                             st.session_state[lunch_key] = selected_lunch_genre
                             st.rerun()
                         subkind = str(selected_lunch_genre)
-                        st.markdown('<div class="nearby-step-note">表示は10分類ですが、元のジャンルごとに個別検索し、Googleの料理タイプ検索も併用して候補をまとめます。</div>', unsafe_allow_html=True)
+                        st.markdown('<div class="nearby-step-note">表示はまとめた分類ですが、元ジャンルを個別検索し、Googleの料理タイプ検索も併用して候補をまとめます。</div>', unsafe_allow_html=True)
                     else:
                         sight_options = [
                             ("おまかせ", "なんでも"),
@@ -21272,7 +21346,7 @@ def page_nearby():
                 "open_now_only": bool(open_now_only),
                 "provider": "google" if GOOGLE_PLACES_API_KEY else "osm",
                 "lunch_rating_model": "bayesian_review_weighted_v1" if kind == "lunch" else None,
-                "lunch_search_engine": "atomic_text_plus_types_v253" if kind == "lunch" else None,
+                "lunch_search_engine": "atomic_text_plus_types_v258_all_atomic" if kind == "lunch" else None,
             },
             ensure_ascii=False,
             sort_keys=True,
@@ -26122,10 +26196,10 @@ with page_root.container():
         st.session_state["main_page"] = "home"
         st.rerun(scope="app")
 
-    # Keep navigation inside the same replaceable root. Home intentionally renders
-    # no navigation controls at all, so a previous page's Back/Home buttons are
-    # removed together with that page rather than reconciled independently.
-    with st.container(key=f"global_bottom_navigation_slot_v147_{_current_ui_refresh_epoch()}"):
+    # Keep one stable navigation slot inside the replaceable page root. Stable
+    # widget/container keys avoid leaving faint duplicate Back/Home controls on
+    # mobile after page changes, while requiring no extra JavaScript or polling.
+    with st.container(key="global_bottom_navigation_slot_v256"):
         live_page = str(st.session_state.get("main_page") or "home")
         if (
             page == live_page
