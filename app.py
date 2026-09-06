@@ -32,7 +32,7 @@ import streamlit as st
 # Freshly generated update: 2026-08-31 23:49 JST
 GENERATED_UPDATE_JST = "2026-09-06T12:00:00+09:00"
 
-APP_BUILD = "v266"
+APP_BUILD = "v267"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -25994,6 +25994,18 @@ html,body{{margin:0;padding:0;background:transparent;font-family:-apple-system,B
 _MEMORY_MAP_VIEW_HTML = """
 <div class="memory-map-component-v260">
   <div id="memory-map-v260" class="memory-map-v260"><div class="memory-map-loading-v260">思い出の地図を読み込んでいます…</div></div>
+  <div id="memory-pin-preview-v267" class="memory-pin-preview-v267" hidden>
+    <button type="button" id="memory-pin-preview-close-v267" class="memory-pin-preview-close-v267" aria-label="写真を閉じる">×</button>
+    <div id="memory-pin-preview-place-v267" class="memory-pin-preview-place-v267"></div>
+    <div id="memory-pin-preview-meta-v267" class="memory-pin-preview-meta-v267"></div>
+    <div class="memory-pin-preview-image-wrap-v267">
+      <img id="memory-pin-preview-image-v267" class="memory-pin-preview-image-v267" alt="思い出の写真" />
+      <div id="memory-pin-preview-badge-v267" class="memory-pin-preview-badge-v267" hidden>動画</div>
+      <div id="memory-pin-preview-empty-v267" class="memory-pin-preview-empty-v267" hidden>写真を表示できませんでした</div>
+    </div>
+    <div id="memory-pin-preview-caption-v267" class="memory-pin-preview-caption-v267"></div>
+    <div id="memory-pin-preview-thumbs-v267" class="memory-pin-preview-thumbs-v267"></div>
+  </div>
   <div class="memory-legend-v260" aria-hidden="true">
     <div><span class="memory-legend-center-v260"></span><span id="memory-center-label-v260">検索中心</span></div>
     <div><span class="memory-legend-pin-v260"></span>思い出</div>
@@ -26050,6 +26062,26 @@ _MEMORY_MAP_VIEW_CSS = r"""
 .memory-thumb-v260 { border:0; padding:0; background:transparent; aspect-ratio:1/1; border-radius:7px; overflow:hidden; cursor:pointer; outline-offset:2px; }
 .memory-thumb-v260 img { width:100%; height:100%; object-fit:cover; display:block; }
 .memory-more-v260 { font-size:10px; color:#6f7881; margin-top:6px; }
+/* v267: do not rely on Leaflet popup rendering for memory photos. A compact card is
+   drawn directly over the map when a numbered pin is tapped/clicked. */
+.memory-map-component-v260 .memory-pin-shell-v260,
+.memory-map-component-v260 .memory-pin-v260 { pointer-events:auto!important; cursor:pointer!important; touch-action:manipulation; }
+.memory-pin-preview-v267 { position:absolute; z-index:1400; top:10px; right:10px; width:min(292px,calc(100% - 72px)); box-sizing:border-box; padding:10px; border-radius:15px; background:rgba(255,255,255,.97); border:1px solid rgba(35,45,55,.13); box-shadow:0 9px 28px rgba(0,0,0,.22); color:#23272d; }
+.memory-pin-preview-v267[hidden] { display:none!important; }
+.memory-pin-preview-close-v267 { position:absolute; z-index:2; right:7px; top:7px; width:30px; height:30px; border:0; border-radius:999px; background:rgba(20,24,28,.72); color:#fff; font-size:20px; line-height:28px; font-weight:700; cursor:pointer; touch-action:manipulation; }
+.memory-pin-preview-place-v267 { padding-right:34px; font-size:14px; font-weight:850; line-height:1.35; margin-bottom:2px; }
+.memory-pin-preview-meta-v267 { padding-right:34px; font-size:11px; color:#69737e; margin-bottom:7px; }
+.memory-pin-preview-image-wrap-v267 { position:relative; width:100%; aspect-ratio:4/3; border-radius:11px; overflow:hidden; background:#edf0f2; }
+.memory-pin-preview-image-v267 { display:block; width:100%; height:100%; object-fit:cover; }
+.memory-pin-preview-badge-v267 { position:absolute; right:7px; top:7px; padding:3px 7px; border-radius:999px; background:rgba(20,24,28,.72); color:#fff; font-size:10px; font-weight:800; }
+.memory-pin-preview-empty-v267 { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; padding:14px; text-align:center; color:#6f7881; font-size:11px; line-height:1.45; }
+.memory-pin-preview-badge-v267[hidden], .memory-pin-preview-empty-v267[hidden] { display:none!important; }
+.memory-pin-preview-caption-v267 { min-height:14px; margin-top:5px; font-size:10px; line-height:1.35; color:#67717c; }
+.memory-pin-preview-thumbs-v267 { display:flex; gap:5px; overflow-x:auto; padding-top:6px; scrollbar-width:none; }
+.memory-pin-preview-thumbs-v267::-webkit-scrollbar { display:none; }
+.memory-pin-preview-thumb-v267 { flex:0 0 42px; width:42px; height:42px; padding:0; border:2px solid transparent; border-radius:8px; overflow:hidden; background:#edf0f2; cursor:pointer; touch-action:manipulation; }
+.memory-pin-preview-thumb-v267.active { border-color:#db7659; }
+.memory-pin-preview-thumb-v267 img { display:block; width:100%; height:100%; object-fit:cover; }
 .memory-legend-v260 { position:absolute; z-index:1000; left:10px; bottom:10px; background:rgba(255,255,255,.94); border:1px solid rgba(0,0,0,.10); border-radius:10px; padding:6px 8px; box-shadow:0 3px 12px rgba(0,0,0,.10); font-size:10px; color:#4a535c; pointer-events:none; }
 .memory-legend-v260 > div { display:flex; align-items:center; gap:5px; white-space:nowrap; }
 .memory-legend-center-v260,.memory-legend-pin-v260 { width:9px; height:9px; border-radius:50%; display:inline-block; }
@@ -26065,7 +26097,7 @@ _MEMORY_MAP_VIEW_CSS = r"""
 .memory-search-no-v260 { border:1px solid #d7dce1; background:#f7f8f9; color:#434b54; }
 .memory-search-yes-v260 { border:1px solid #3c83d2; background:#3c83d2; color:#fff; }
 .memory-search-note-v260 { font-size:10px; line-height:1.4; color:#75808b; margin-top:6px; }
-@media(max-width:640px){ .memory-map-v260{height:530px;border-radius:14px;} .memory-map-component-v260 .leaflet-popup-content{width:min(276px,78vw)!important;} }
+@media(max-width:640px){ .memory-map-v260{height:530px;border-radius:14px;} .memory-map-component-v260 .leaflet-popup-content{width:min(276px,78vw)!important;} .memory-pin-preview-v267{top:8px;right:8px;width:min(286px,calc(100% - 64px));padding:9px;} }
 """
 
 _MEMORY_MAP_VIEW_JS = r"""
@@ -26073,19 +26105,97 @@ export default function(component) {
   const { parentElement, data } = component;
   const node = parentElement.querySelector('#memory-map-v260');
   const centerLabel = parentElement.querySelector('#memory-center-label-v260');
-  if (!node) return;
+  const preview = parentElement.querySelector('#memory-pin-preview-v267');
+  const previewClose = parentElement.querySelector('#memory-pin-preview-close-v267');
+  const previewPlace = parentElement.querySelector('#memory-pin-preview-place-v267');
+  const previewMeta = parentElement.querySelector('#memory-pin-preview-meta-v267');
+  const previewImage = parentElement.querySelector('#memory-pin-preview-image-v267');
+  const previewBadge = parentElement.querySelector('#memory-pin-preview-badge-v267');
+  const previewEmpty = parentElement.querySelector('#memory-pin-preview-empty-v267');
+  const previewCaption = parentElement.querySelector('#memory-pin-preview-caption-v267');
+  const previewThumbs = parentElement.querySelector('#memory-pin-preview-thumbs-v267');
+  if (!node || !preview || !previewClose || !previewImage) return;
 
-  try { parentElement.__memoryMapCleanupV266?.(); } catch (_) {}
+  try { parentElement.__memoryMapCleanupV267?.(); } catch (_) {}
   let cancelled = false;
   let map = null;
   let centerSyncTimer = null;
   const cleanupFns = [];
   const payload = (data && typeof data === 'object') ? data : {};
   const selectedRadius = [1000, 3000, 10000].includes(Number(payload.radius_m)) ? Number(payload.radius_m) : 3000;
-
-  const esc = (v) => String(v == null ? '' : v).replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   const centerSource = String(payload.center_source || 'gps');
   if (centerLabel) centerLabel.textContent = centerSource === 'gps' ? '現在地' : '検索中心';
+
+  const hidePreview = () => {
+    preview.hidden = true;
+    previewImage.removeAttribute('src');
+    if (previewThumbs) previewThumbs.replaceChildren();
+  };
+
+  const setPreviewItem = (item, activeButton=null) => {
+    const entry = (item && typeof item === 'object') ? item : {};
+    const src = String(entry.src || '');
+    if (previewThumbs) {
+      previewThumbs.querySelectorAll('.memory-pin-preview-thumb-v267').forEach((button) =>
+        button.classList.toggle('active', button === activeButton)
+      );
+    }
+    if (src) {
+      previewImage.hidden = false;
+      previewImage.loading = 'eager';
+      previewImage.decoding = 'async';
+      previewImage.fetchPriority = 'high';
+      previewImage.src = src;
+      if (previewEmpty) previewEmpty.hidden = true;
+    } else {
+      previewImage.hidden = true;
+      previewImage.removeAttribute('src');
+      if (previewEmpty) previewEmpty.hidden = false;
+    }
+    if (previewCaption) {
+      previewCaption.textContent = `${entry.date || ''}${entry.time ? ' ' + entry.time : ''}${entry.media_type === 'video' ? ' ・ 動画' : ''}`;
+    }
+    if (previewBadge) previewBadge.hidden = entry.media_type !== 'video';
+  };
+
+  const showPreview = (group) => {
+    if (cancelled) return;
+    const g = (group && typeof group === 'object') ? group : {};
+    const items = Array.isArray(g.items) ? g.items : [];
+    const first = items.find((item) => item && item.src) || items[0] || {};
+    if (previewPlace) previewPlace.textContent = String(g.place || 'このあたりの思い出');
+    if (previewMeta) previewMeta.textContent = `${Math.max(1, Number(g.count || items.length || 1))}件の思い出`;
+    if (previewThumbs) {
+      previewThumbs.replaceChildren();
+      items.forEach((item, index) => {
+        if (!item || !item.src) return;
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'memory-pin-preview-thumb-v267';
+        button.setAttribute('aria-label', `${item.date || '思い出'}を表示`);
+        const img = document.createElement('img');
+        img.alt = '';
+        img.loading = 'eager';
+        img.decoding = 'async';
+        img.src = String(item.src || '');
+        button.appendChild(img);
+        button.addEventListener('click', (event) => {
+          event.preventDefault(); event.stopPropagation();
+          setPreviewItem(item, button);
+        });
+        previewThumbs.appendChild(button);
+        if ((item === first || (!first.src && index === 0))) button.classList.add('active');
+      });
+    }
+    setPreviewItem(first, previewThumbs ? previewThumbs.querySelector('.memory-pin-preview-thumb-v267.active') : null);
+    preview.hidden = false;
+  };
+
+  const onPreviewClose = (event) => {
+    event.preventDefault(); event.stopPropagation(); hidePreview();
+  };
+  previewClose.addEventListener('click', onPreviewClose);
+  cleanupFns.push(() => previewClose.removeEventListener('click', onPreviewClose));
 
   const persistVisibleCenter = () => {
     if (cancelled || !map) return;
@@ -26111,9 +26221,7 @@ export default function(component) {
       return Array.from(document.styleSheets || []).some((sheet) =>
         String(sheet?.href || '').includes('/leaflet@1.9.4/dist/leaflet.css')
       );
-    } catch (_) {
-      return false;
-    }
+    } catch (_) { return false; }
   };
 
   const ensureLeafletCss = () => new Promise((resolve) => {
@@ -26169,62 +26277,49 @@ export default function(component) {
       const zoom = radiusM <= 1200 ? 15 : (radiusM <= 4000 ? 13 : 11);
       map = L.map(node, {zoomControl:true, attributionControl:true, preferCanvas:true}).setView(center, zoom);
       map.on('moveend', scheduleCenterSync);
-      cleanupFns.push(() => { try { map?.off('moveend', scheduleCenterSync); } catch (_) {} });
+      map.on('movestart', hidePreview);
+      cleanupFns.push(() => { try { map?.off('moveend', scheduleCenterSync); map?.off('movestart', hidePreview); } catch (_) {} });
       scheduleCenterSync();
       L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {maxZoom:19, attribution:'&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap</a>'}).addTo(map);
-      L.circle(center, {radius:radiusM, color:'#6d9fd7', weight:1.2, opacity:.46, fillColor:'#6d9fd7', fillOpacity:.035, dashArray:'5 6'}).addTo(map);
+      L.circle(center, {radius:radiusM, color:'#6d9fd7', weight:1.2, opacity:.46, fillColor:'#6d9fd7', fillOpacity:.035, dashArray:'5 6', interactive:false}).addTo(map);
       if (Number(payload.accuracy_m || 0) > 0 && centerSource === 'gps') {
-        L.circle(center, {radius:Number(payload.accuracy_m), color:'#2f80ed', weight:1, opacity:.28, fillColor:'#2f80ed', fillOpacity:.06}).addTo(map);
+        L.circle(center, {radius:Number(payload.accuracy_m), color:'#2f80ed', weight:1, opacity:.28, fillColor:'#2f80ed', fillOpacity:.06, interactive:false}).addTo(map);
       }
       const currentIcon = L.divIcon({className:'', html:'<div class="memory-current-v260"></div>', iconSize:[18,18], iconAnchor:[9,9]});
-      L.marker(center, {icon:currentIcon, keyboard:false, zIndexOffset:1200, bubblingMouseEvents:false}).addTo(map).bindPopup(centerSource === 'gps' ? '<b>現在地</b>' : '<b>検索中心</b>');
-
-      const memoryPopupHtml = (g) => {
-        const items = Array.isArray(g.items) ? g.items : [];
-        const first = items[0] || {};
-        const mediaBadge = first.media_type === 'video' ? '<span class="memory-main-badge-v260">動画</span>' : '';
-        const main = first.src ? `<div class="memory-main-wrap-v260"><img class="memory-main-v260" src="${esc(first.src)}" alt="思い出の写真" loading="eager" decoding="async" fetchpriority="high" />${mediaBadge}</div>` : '<div class="memory-main-wrap-v260"><div class="memory-main-unavailable-v266">写真を読み込めませんでした</div></div>';
-        const caption = `${esc(first.date || '')}${first.time ? ' ' + esc(first.time) : ''}${first.media_type === 'video' ? ' ・ 動画' : ''}`;
-        const thumbs = items.length > 1 ? `<div class="memory-thumbs-v260">${items.map((it) => it.src ? `<button class="memory-thumb-v260" type="button" data-src="${esc(it.src)}" data-date="${esc(it.date || '')}" data-time="${esc(it.time || '')}" data-media="${esc(it.media_type || 'photo')}" aria-label="${esc(it.date || '思い出')}"><img data-src="${esc(it.src)}" alt="" /></button>` : '').join('')}</div>` : '';
-        const more = Number(g.count || 0) > items.length ? `<div class="memory-more-v260">ほか ${Number(g.count) - items.length} 件の思い出があります</div>` : '';
-        return `<div class="memory-popup-place-v260">${esc(g.place || 'このあたりの思い出')}</div><div class="memory-popup-meta-v260">${Number(g.count || 0)}件の思い出</div>${main}<div class="memory-main-caption-v260">${caption}</div>${thumbs}${more}`;
-      };
+      L.marker(center, {icon:currentIcon, keyboard:false, zIndexOffset:1200, interactive:false}).addTo(map);
 
       (payload.groups || []).forEach((g) => {
         const lat = Number(g.latitude), lon = Number(g.longitude);
         if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
-        const icon = L.divIcon({className:'memory-pin-shell-v260', html:`<div class="memory-pin-v260"><span>${Number(g.count || 1)}</span></div>`, iconSize:[36,44], iconAnchor:[18,40], popupAnchor:[0,-36]});
-        L.marker([lat,lon], {icon, riseOnHover:true, bubblingMouseEvents:false}).addTo(map).bindPopup(memoryPopupHtml(g), {maxWidth:310, closeButton:true});
-      });
-
-      map.on('popupopen', (ev) => {
-        const root = ev.popup && ev.popup.getElement ? ev.popup.getElement() : null;
-        if (!root) return;
-        const main = root.querySelector('.memory-main-v260');
-        const caption = root.querySelector('.memory-main-caption-v260');
-        const wrap = root.querySelector('.memory-main-wrap-v260');
-        // v266: the lead photo is already an embedded data URL, so it needs no network
-        // request when the pin opens. Additional thumbnails keep the lighter signed-URL
-        // path and are attached only when this popup is actually opened.
-        root.querySelectorAll('.memory-thumb-v260 img').forEach((img) => {
-          const src = String(img.dataset?.src || '');
-          if (!src) return;
-          img.loading = 'eager';
-          img.decoding = 'async';
-          if (img.getAttribute('src') !== src) img.setAttribute('src', src);
+        const icon = L.divIcon({className:'memory-pin-shell-v260', html:`<div class="memory-pin-v260"><span>${Number(g.count || 1)}</span></div>`, iconSize:[36,44], iconAnchor:[18,40]});
+        const marker = L.marker([lat,lon], {icon, riseOnHover:true, interactive:true, keyboard:true, bubblingMouseEvents:false});
+        const activate = (event) => {
+          try { if (event?.originalEvent) L.DomEvent.stop(event.originalEvent); } catch (_) {}
+          showPreview(g);
+        };
+        marker.on('click', activate);
+        marker.on('keypress', activate);
+        marker.on('add', () => {
+          const element = marker.getElement?.();
+          if (!element || element.__memoryPinV267) return;
+          element.__memoryPinV267 = true;
+          element.style.pointerEvents = 'auto';
+          element.style.touchAction = 'manipulation';
+          element.style.cursor = 'pointer';
+          element.setAttribute('role', 'button');
+          element.setAttribute('aria-label', `${Math.max(1, Number(g.count || 1))}件の思い出を表示`);
+          const onPointerUp = (event) => {
+            if (event.button != null && event.button !== 0) return;
+            event.preventDefault(); event.stopPropagation(); showPreview(g);
+          };
+          const onTouchEnd = (event) => {
+            if (event.cancelable) event.preventDefault();
+            event.stopPropagation(); showPreview(g);
+          };
+          element.addEventListener('pointerup', onPointerUp);
+          element.addEventListener('touchend', onTouchEnd, {passive:false});
         });
-        root.querySelectorAll('.memory-thumb-v260').forEach((btn) => btn.addEventListener('click', (event) => {
-          event.preventDefault(); event.stopPropagation();
-          if (main) main.src = String(btn.dataset.src || '');
-          if (caption) caption.textContent = `${btn.dataset.date || ''}${btn.dataset.time ? ' ' + btn.dataset.time : ''}${btn.dataset.media === 'video' ? ' ・ 動画' : ''}`;
-          if (wrap) {
-            let badge = wrap.querySelector('.memory-main-badge-v260');
-            if (btn.dataset.media === 'video') {
-              if (!badge) { badge = document.createElement('span'); badge.className = 'memory-main-badge-v260'; wrap.appendChild(badge); }
-              badge.textContent = '動画';
-            } else if (badge) badge.remove();
-          }
-        }));
+        marker.addTo(map);
       });
 
       scheduleCenterSync();
@@ -26242,11 +26337,10 @@ export default function(component) {
     try { if (map) map.remove(); } catch (_) {}
     map = null;
   };
-  parentElement.__memoryMapCleanupV265 = cleanup;
+  parentElement.__memoryMapCleanupV267 = cleanup;
   return cleanup;
 }
 """
-
 memory_map_view_component = None
 _memory_map_view_component_initialized = False
 
@@ -26258,7 +26352,7 @@ def _get_memory_map_view_component():
     _memory_map_view_component_initialized = True
     try:
         memory_map_view_component = st.components.v2.component(
-            "tokyo_burari_memory_map_view_v266",
+            "tokyo_burari_memory_map_view_v267",
             html=_MEMORY_MAP_VIEW_HTML,
             css=_MEMORY_MAP_VIEW_CSS,
             js=_MEMORY_MAP_VIEW_JS,
@@ -26293,7 +26387,7 @@ def _render_memory_map(center_lat, center_lon, radius_m, *, accuracy_m=None, cen
         return legacy_prepared, None
     component(
         data=payload,
-        key=f"memory_map_view_component_v266_{current_family_key()}_{current_member_key()}",
+        key=f"memory_map_view_component_v267_{current_family_key()}_{current_member_key()}",
     )
     return prepared, None
 
