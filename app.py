@@ -32,7 +32,7 @@ import streamlit as st
 # Freshly generated update: 2026-08-31 23:49 JST
 GENERATED_UPDATE_JST = "2026-09-06T12:00:00+09:00"
 
-APP_BUILD = "v237"
+APP_BUILD = "v239"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -899,7 +899,7 @@ _LIVE_CAMERA_HTML = """
       <button id="camera-review-retry" class="camera-retry-button" type="button">撮りなおす／選びなおす</button>
     </div>
     <button id="camera-review-find-moments" class="camera-find-button" type="button" hidden>✨ いい瞬間を探す</button>
-    <div id="camera-review-build" class="camera-review-build" hidden>camera v237</div>
+    <div id="camera-review-build" class="camera-review-build" hidden>camera v239</div>
     <div id="camera-review-emotion-hint" class="camera-review-emotion-hint" hidden>写真下の「通常／こどもーど」を切り替え、写真につけるアイコンを1つ選べます。</div>
     <div id="camera-review-image-shell" class="camera-review-image-shell" role="button" tabindex="0" aria-label="写真のアイコンを選ぶ" hidden>
       <img id="camera-review-image" class="camera-review-image" alt="撮影した写真の確認" />
@@ -1048,7 +1048,7 @@ _LIVE_CAMERA_CSS = """
 .live-camera-video {
   object-fit: contain;
 }
-/* v237: video capture stays portrait even if the handset is rotated.
+/* v239: video capture stays portrait even if the handset is rotated.
    The portrait preview uses the camera sensor's wider 3:4 field instead of a
    tightly cropped 9:16 stream, so subjects do not appear unnecessarily close. */
 .live-camera-wrap.camera-video-mode .live-camera-video,
@@ -1266,16 +1266,18 @@ _LIVE_CAMERA_CSS = """
     min-height: 52px;
     font-size: 14px;
   }
-  /* v237: keep the shutter controls visible on a phone without scrolling. */
+  /* v239: enlarge the phone preview a little from v238.
+     The previous 42dvh cap kept the shutter visible but made the camera frame feel too small.
+     Use a moderate 47dvh cap so the subject is easier to frame while the controls still remain tappable. */
   .live-camera-video,
   .camera-review-image,
   .camera-review-video {
-    max-height: 42dvh;
+    max-height: 47dvh;
   }
   .live-camera-wrap.camera-video-mode .live-camera-video,
   .live-camera-wrap.camera-video-mode .camera-review-video {
-    height: min(42dvh, 520px);
-    max-height: 42dvh;
+    height: min(47dvh, 560px);
+    max-height: 47dvh;
     aspect-ratio: 3 / 4;
   }
   .camera-active-actions { grid-template-columns: 1.85fr .92fr 1.08fr .72fr; gap: 6px; }
