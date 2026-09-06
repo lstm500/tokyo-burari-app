@@ -32,7 +32,7 @@ import streamlit as st
 # Freshly generated update: 2026-08-31 23:49 JST
 GENERATED_UPDATE_JST = "2026-09-06T12:00:00+09:00"
 
-APP_BUILD = "v250"
+APP_BUILD = "v251"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -814,9 +814,9 @@ VIDEO_AI_STALE_SECONDS = 240
 def video_ai_sample_interval_ms_for_duration(duration_ms):
     """Return a duration-aware Good Moments interval, capped at 20 samples.
 
-    Normal videos keep the existing rule (0.5 s minimum, duration/20 for longer
-    clips). Very short clips are sampled more densely only when necessary so there
-    are still six distinct timestamps available for the required six Good Moments.
+    Keep the established v248 sampling rule for normal clips. Only very short clips
+    are sampled more densely so there are enough distinct timestamps to present six
+    Good Moments when possible. This runs after recording and does not affect capture.
     """
     try:
         raw_duration = float(duration_ms or 0)
@@ -903,7 +903,7 @@ _LIVE_CAMERA_HTML = """
       <button id="camera-review-retry" class="camera-retry-button" type="button">撮りなおす／選びなおす</button>
     </div>
     <button id="camera-review-find-moments" class="camera-find-button" type="button" hidden>✨ いい瞬間を探す</button>
-    <div id="camera-review-build" class="camera-review-build" hidden>camera v249</div>
+    <div id="camera-review-build" class="camera-review-build" hidden>camera v251</div>
     <div id="camera-review-emotion-hint" class="camera-review-emotion-hint" hidden>写真下の「通常／こどもーど」を切り替え、写真につけるアイコンを1つ選べます。</div>
     <div id="camera-review-image-shell" class="camera-review-image-shell" role="button" tabindex="0" aria-label="写真のアイコンを選ぶ" hidden>
       <img id="camera-review-image" class="camera-review-image" alt="撮影した写真の確認" />
@@ -1530,20 +1530,13 @@ export default function(component) {
     try { localStorage.setItem('tokyo_burari_camera_facing_v226', cameraFacing); } catch (_) {}
   };
   const preferredVideoConstraints = () => {
-    // v250 smooth-motion path. Do not invent or force an aspect ratio: the phone
-    // camera/browser chooses one of its native ratios. For video, prefer a lighter
-    // 720p-class sensor mode and 60 fps; devices that only support 30 fps naturally
-    // fall back to their closest native mode without any post-start reconfiguration.
-    if (cameraMode === 'video') {
-      return {
-        facingMode: { ideal: cameraFacing },
-        height: { ideal: 1280 },
-        frameRate: { ideal: 60, max: 60 }
-      };
-    }
+    // Keep the phone camera's own supported ratio. For video, prefer a lighter
+    // 720/1280-class stream so MediaRecorder does not overload mobile hardware.
+    // Photos keep the higher-resolution request. No app-defined aspect ratio is used.
+    const isVideoMode = cameraMode === 'video';
     return {
       facingMode: { ideal: cameraFacing },
-      height: { ideal: 1600 },
+      height: isVideoMode ? { ideal: 1280, max: 1280 } : { ideal: 1600 },
       frameRate: { ideal: 30, max: 30 }
     };
   };
@@ -1650,7 +1643,6 @@ export default function(component) {
   let recordingStartedAt = 0;
   let recordingCapturedAt = '';
   let recordingLocationPromise = null;
-  let videoLocationPrefetchPromise = null;
   let recordingTimer = null;
   let recordingMaxTimer = null;
   let recordingCandidateTimer = null;
@@ -1910,28 +1902,24 @@ export default function(component) {
     setStatus(cameraMode === 'video' ? 'カメラとマイクの使用を許可してください…' : 'カメラの使用を許可してください…');
     try {
       stream = await navigator.mediaDevices.getUserMedia({
-        // Raw/native microphone path is intentionally preferred in video mode.
-        // Echo cancellation/noise suppression/AGC can consume significant CPU on
-        // Android while the camera encoder is also active and may cause preview drops.
-        audio: cameraMode === 'video' ? true : false,
+        audio: cameraMode === 'video' ? {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true
+        } : false,
         video: preferredVideoConstraints()
       });
       video.srcObject = stream;
       await video.play();
-      // v249: video recording must stay on the direct camera stream. Do not call
-      // applyConstraints() after opening video mode because some Android devices then
-      // fall back to a software-scaled stream and drop frames while MediaRecorder runs.
-      // Photo mode can still normalize the returned native ratio as before.
-      if (cameraMode === 'photo') {
-        await applyNativePortraitConstraint();
-        await applyWidestAvailableZoom();
-      }
+      // v246: read the ratio actually returned by the phone camera. If the browser
+      // exposes that same native ratio in landscape dimensions, transpose only its
+      // orientation for this portrait-only UI.
+      await applyNativePortraitConstraint();
+      // v232: start from the widest zoom level the browser/device exposes.
+      await applyWidestAvailableZoom();
       syncNativeCameraFrame();
       try {
         const cameraTrack = stream.getVideoTracks && stream.getVideoTracks()[0];
-        if (cameraMode === 'video' && cameraTrack && 'contentHint' in cameraTrack) {
-          try { cameraTrack.contentHint = 'motion'; } catch (_) {}
-        }
         const settings = (cameraTrack && cameraTrack.getSettings) ? cameraTrack.getSettings() : {};
         const actualFacing = String(settings?.facingMode || '');
         if (actualFacing === 'user' || actualFacing === 'environment') cameraFacing = actualFacing;
@@ -1945,13 +1933,6 @@ export default function(component) {
       shootButton.disabled = false;
       shootButton.textContent = cameraMode === 'video' ? '● 録画を開始' : '● 写真を撮る';
       showCameraActions();
-      // Start the high-accuracy location fix while the user is framing the shot,
-      // rather than starting GPS work at the exact moment recording begins.
-      if (cameraMode === 'video') {
-        try { videoLocationPrefetchPromise = getLocationAtCapture(); } catch (_) { videoLocationPrefetchPromise = null; }
-      } else {
-        videoLocationPrefetchPromise = null;
-      }
       try {
         const openedAt = Date.now();
         localStorage.setItem('tokyo_burari_last_camera_open_v1', String(openedAt));
@@ -2376,7 +2357,7 @@ export default function(component) {
         name: 'camera.jpg',
         source: 'camera',
         camera_facing: cameraFacing,
-        capture_orientation: 'portrait',
+        capture_orientation: isDeviceLandscape() ? 'landscape' : 'portrait',
         captured_at: capturedAt,
         location,
         emotion: '',
@@ -2429,23 +2410,25 @@ export default function(component) {
     recordingCandidateBusy = false;
     recordingCancelled = false;
     recordingCapturedAt = new Date().toISOString();
-    recordingLocationPromise = videoLocationPrefetchPromise || getLocationAtCapture();
-    videoLocationPrefetchPromise = null;
+    recordingLocationPromise = getLocationAtCapture();
     const mimeType = chooseRecorderMimeType();
     const captureTrack = stream.getVideoTracks && stream.getVideoTracks()[0];
     const captureSettings = (captureTrack && captureTrack.getSettings) ? captureTrack.getSettings() : {};
     const captureWidth = Math.max(0, Number(captureSettings?.width || video.videoWidth || 0));
     const captureHeight = Math.max(0, Number(captureSettings?.height || video.videoHeight || 0));
     const captureFrameRate = Math.max(0, Number(captureSettings?.frameRate || 0));
-    if (captureTrack && 'contentHint' in captureTrack) {
-      try { captureTrack.contentHint = 'motion'; } catch (_) {}
-    }
-    // Browser-default MediaRecorder is tried first so Android/Chrome can choose its
-    // most efficient hardware encoder. Explicit MIME selection is only a fallback.
-    const requestedVideoBitrate = 0;
+    const capturePixels = captureWidth * captureHeight;
+    const requestedVideoBitrate = capturePixels >= 1700000
+      ? 3000000
+      : (capturePixels >= 800000 ? 2200000 : 1800000);
     try {
+      const options = {
+        videoBitsPerSecond: requestedVideoBitrate,
+        audioBitsPerSecond: 96000
+      };
+      if (mimeType) options.mimeType = mimeType;
       try {
-        mediaRecorder = new MediaRecorder(stream);
+        mediaRecorder = new MediaRecorder(stream, options);
       } catch (_) {
         mediaRecorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
       }
@@ -2550,7 +2533,7 @@ export default function(component) {
             name: finalType.includes('mp4') ? 'camera.mp4' : 'camera.webm',
             source: 'video_camera',
             camera_facing: cameraFacing,
-            capture_orientation: 'portrait',
+            capture_orientation: isDeviceLandscape() ? 'landscape' : 'portrait',
             captured_at: recordingCapturedAt || new Date().toISOString(),
             location,
             auto_save: true,
@@ -2577,14 +2560,11 @@ export default function(component) {
         }
       };
 
-      // v250: no timeslice. Let MediaRecorder buffer natively and emit the Blob when
-      // recording stops. This removes periodic dataavailable events from the JS main
-      // thread during capture and gives the live camera preview the highest priority.
-      mediaRecorder.start();
+      mediaRecorder.start(1000);
       recordingStartedAt = Date.now();
       setRecordingUi(true);
       updateRecordingClock();
-      recordingTimer = setInterval(updateRecordingClock, 1000);
+      recordingTimer = setInterval(updateRecordingClock, 500);
       // v139 quality-first recording: do not generate JPEG candidates while the
       // MediaRecorder encoder is running. Candidate extraction starts after stop.
       recordingMaxTimer = setTimeout(stopVideoRecording, VIDEO_RECORD_MAX_SECONDS * 1000);
@@ -11435,8 +11415,8 @@ def choose_video_ai_frames(
         "動画全体の最終フォトセレクターです。候補は動画長に応じた一定間隔で最大20枚に絞って比較されています。"
         "ここでは動画全体を横断して、最終的に残したい静止画を選んでください。\n"
         f"候補が{VIDEO_AI_MAX_SELECTIONS}枚以上ある場合は、必ず{VIDEO_AI_MAX_SELECTIONS}枚を選んでください。"
-        "静止した動画などで似た候補が多くても、動画内の時間位置を分散させて6枚をそろえてください。"
-        "似た写真で3枚を埋めず、動画全体から違いのある良い瞬間を優先してください。\n"
+        "似た候補が多い場合も、動画内の時間位置を分散させて6枚をそろえてください。"
+        "動画全体から違いのある良い瞬間を優先してください。\n"
         f"{factor_text}\n"
         "各項目は設定された割合に従って評価し、特定の項目を固定的に優先しないでください。"
         "連続したほぼ同じ写真を複数選ばず、写真集として見たときにも変化がある組み合わせにしてください。\n"
@@ -11520,10 +11500,9 @@ def choose_video_ai_frames(
     if not selected:
         raise ValueError("AIセレクションを作成できませんでした。")
 
-    # v250: every video should surface six Good Moments. Models may occasionally
-    # return fewer than requested, or near-duplicate filtering may remove some.
-    # First backfill from AI-ranked but unused frame IDs, then spread remaining
-    # picks across time. Every backfill frame was still part of the AI-reviewed set.
+    # v251: surface six Good Moments per video without touching the recording path.
+    # If the model returns fewer than six, fill from AI-reviewed candidates while
+    # preferring high scores and timestamps that are far from already-selected frames.
     if len(selected) < VIDEO_AI_MAX_SELECTIONS:
         ranked_by_id = {
             str(item.get("frame_id") or ""): item
@@ -11545,10 +11524,7 @@ def choose_video_ai_frames(
             ai_rank = max(1, int(ai_item.get("rank") or 999))
             ai_score = max(0, min(100, int(ai_item.get("score") or 0)))
             ts = max(0, int(frame.get("timestamp_ms") or 0))
-            if selected_timestamps:
-                spread = min(abs(ts - existing) for existing in selected_timestamps)
-            else:
-                spread = ts
+            spread = min((abs(ts - existing) for existing in selected_timestamps), default=ts)
             return (frame_id in ranked_by_id, ai_score, spread, -ai_rank)
 
         while remaining and len(selected) < VIDEO_AI_MAX_SELECTIONS:
@@ -11571,8 +11547,6 @@ def choose_video_ai_frames(
             used_hashes.append(frame_hash)
             selected_timestamps.append(max(0, int(frame.get("timestamp_ms") or 0)))
 
-    if len(selected) < VIDEO_AI_MAX_SELECTIONS:
-        raise ValueError(f"AIセレクションを{VIDEO_AI_MAX_SELECTIONS}枚そろえられませんでした。")
     return selected[:VIDEO_AI_MAX_SELECTIONS]
 
 def _video_selection_base_path(photo):
@@ -19754,6 +19728,18 @@ def page_home():
             }
           }
 
+          /* v251: one normal vertical scroller on Home. Prevent nested/sideways
+             scroll containers from creating a second scrollbar or preserving a bad
+             scroll position after returning from another page. */
+          html, body { overflow-x: hidden !important; }
+          [data-testid="stAppViewContainer"] { overflow: hidden !important; }
+          section[data-testid="stMain"], [data-testid="stMain"] {
+            overflow-y: auto !important;
+            overflow-x: hidden !important;
+            height: 100dvh !important;
+            max-height: 100dvh !important;
+            overscroll-behavior-y: contain !important;
+          }
           /* Use almost the full phone width. Do not force the entire Streamlit page to a
              viewport height; that was the source of the visible scroll/seek bar in v182. */
           .block-container {
@@ -19771,15 +19757,17 @@ def page_home():
             width: 100% !important;
             max-width: none !important;
             margin: 0 !important;
-            min-height: max(0px, var(--home-usable-height)) !important;
+            min-height: 0 !important;
+            overflow: visible !important;
           }
           .st-key-home_viewport_fit > [data-testid="stVerticalBlock"],
           .st-key-home_viewport_fit > [data-testid="stVerticalBlockBorderWrapper"] > [data-testid="stVerticalBlock"] {
-            min-height: max(0px, var(--home-usable-height)) !important;
+            min-height: 0 !important;
             display: flex !important;
             flex-direction: column !important;
-            justify-content: space-between !important;
+            justify-content: flex-start !important;
             gap: var(--home-vgap) !important;
+            overflow: visible !important;
           }
 
           .home-account {
@@ -22117,7 +22105,7 @@ export default function(component) {
   }
   if(saveSelectionButton){
     saveSelectionButton.hidden=disabled||!Boolean(data?.show_save_button!==false);
-    saveSelectionButton.textContent=String(data?.save_label||'選択した写真を残す');
+    saveSelectionButton.textContent=String(data?.save_label||'感情をつけた写真を残す');
     saveSelectionButton.onclick=(event)=>{event.preventDefault();event.stopPropagation();emitAction('save_selection');};
   }
 
@@ -22127,7 +22115,7 @@ export default function(component) {
     const rank=rankFor(photo,index); let activeMode=preferredMode;
     const card=document.createElement('div'); card.className=large?'moments-select-card large-card':'moments-select-card'; card.setAttribute('role','button'); card.tabIndex=disabled?-1:0; card.setAttribute('aria-disabled',disabled?'true':'false');
     const imageWrap=document.createElement('div'); imageWrap.className='moments-select-image-wrap';
-    if(photo?.src){const img=document.createElement('img');img.src=String(photo.src);img.alt=`いい瞬間 ${rank}`;img.loading=large?'eager':'lazy';img.decoding='async';if(!large)img.fetchPriority='low';imageWrap.appendChild(img);}
+    if(photo?.src){const img=document.createElement('img');img.src=String(photo.src);img.alt=`いい瞬間 ${rank}`;img.loading='eager';img.decoding='async';img.fetchPriority=large?'high':'high';imageWrap.appendChild(img);}
     const rankBadge=document.createElement('div');rankBadge.className='moments-select-rank';rankBadge.textContent=photo?.ai_best?'★ AI BEST':`#${rank}`;imageWrap.appendChild(rankBadge);
     const pickedBadge=document.createElement('div');pickedBadge.className='moments-select-picked';pickedBadge.textContent='選択中';imageWrap.appendChild(pickedBadge);
     const badge=document.createElement('div');badge.className='moments-emotion-badge';imageWrap.appendChild(badge);
@@ -22379,14 +22367,20 @@ def _render_moments_picker(photo, index, view_mode="list", next_video_action=Non
         # original signed frame, so enlarged mode could decode several full-resolution
         # stills per video and crash a mobile browser. Use a cached thumbnail first.
         url = ""
-        try:
-            url = thumbnail_photo_data_url(
-                path,
-                max_px=760 if view_mode == "enlarge" else 420,
-                quality=82 if view_mode == "enlarge" else 78,
-            )
-        except Exception:
-            url = ""
+        if view_mode != "enlarge":
+            # v251 list mode: one batch signing call, then let the browser fetch the
+            # six frames in parallel. This removes six sequential Storage downloads
+            # and six PIL resizes from the first-render critical path.
+            url = str(signed_map.get(path) or "")
+        if not url:
+            try:
+                url = thumbnail_photo_data_url(
+                    path,
+                    max_px=760 if view_mode == "enlarge" else 360,
+                    quality=82 if view_mode == "enlarge" else 72,
+                )
+            except Exception:
+                url = ""
         if not url:
             url = str(signed_map.get(path) or "")
         quality = _video_selection_quality_label(item.get("primary_quality"))
@@ -22432,7 +22426,7 @@ def _render_moments_picker(photo, index, view_mode="list", next_video_action=Non
                 "preferred_mode": str(st.session_state.get(preferred_mode_key) or "normal"),
                 "show_next_video": bool(next_cfg),
                 "next_label": str(next_cfg.get("label") or "次の動画の写真へ →"),
-                "save_label": "選択を更新" if status == "reviewed" else "選択した写真を残す",
+                "save_label": "選択を更新" if status == "reviewed" else "感情をつけた写真を残す",
                 "show_save_button": True,
             },
             key=f"moments_tap_picker_{video_id}_{round_number}_{serial}",
@@ -22636,7 +22630,7 @@ def _render_moments_picker(photo, index, view_mode="list", next_video_action=Non
     selected_rank_set = set(selected_ranks)
     if picker_component is None:
         send_clicked = st.button(
-            "選択を更新" if status == "reviewed" else "選択した写真を残す",
+            "選択を更新" if status == "reviewed" else "感情をつけた写真を残す",
             type="primary",
             use_container_width=True,
             disabled=False,
