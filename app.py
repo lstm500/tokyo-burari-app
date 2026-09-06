@@ -32,7 +32,7 @@ import streamlit as st
 # Freshly generated update: 2026-08-31 23:49 JST
 GENERATED_UPDATE_JST = "2026-09-06T12:00:00+09:00"
 
-APP_BUILD = "v251"
+APP_BUILD = "v252"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -903,7 +903,7 @@ _LIVE_CAMERA_HTML = """
       <button id="camera-review-retry" class="camera-retry-button" type="button">撮りなおす／選びなおす</button>
     </div>
     <button id="camera-review-find-moments" class="camera-find-button" type="button" hidden>✨ いい瞬間を探す</button>
-    <div id="camera-review-build" class="camera-review-build" hidden>camera v251</div>
+    <div id="camera-review-build" class="camera-review-build" hidden>camera v252</div>
     <div id="camera-review-emotion-hint" class="camera-review-emotion-hint" hidden>写真下の「通常／こどもーど」を切り替え、写真につけるアイコンを1つ選べます。</div>
     <div id="camera-review-image-shell" class="camera-review-image-shell" role="button" tabindex="0" aria-label="写真のアイコンを選ぶ" hidden>
       <img id="camera-review-image" class="camera-review-image" alt="撮影した写真の確認" />
@@ -1530,14 +1530,19 @@ export default function(component) {
     try { localStorage.setItem('tokyo_burari_camera_facing_v226', cameraFacing); } catch (_) {}
   };
   const preferredVideoConstraints = () => {
-    // Keep the phone camera's own supported ratio. For video, prefer a lighter
-    // 720/1280-class stream so MediaRecorder does not overload mobile hardware.
-    // Photos keep the higher-resolution request. No app-defined aspect ratio is used.
-    const isVideoMode = cameraMode === 'video';
+    // v252: for video, stop forcing resolution/aspect ratio entirely. Let the
+    // phone/browser choose its native hardware camera profile and only prefer 30fps.
+    // This avoids the post-v246 resize/constraint path that can make Android preview
+    // and recording visibly stutter. Photos keep the higher-resolution preference.
+    if (cameraMode === 'video') {
+      return {
+        facingMode: { ideal: cameraFacing },
+        frameRate: { ideal: 30 }
+      };
+    }
     return {
       facingMode: { ideal: cameraFacing },
-      height: isVideoMode ? { ideal: 1280, max: 1280 } : { ideal: 1600 },
-      frameRate: { ideal: 30, max: 30 }
+      height: { ideal: 1600 }
     };
   };
 
@@ -1902,21 +1907,20 @@ export default function(component) {
     setStatus(cameraMode === 'video' ? 'カメラとマイクの使用を許可してください…' : 'カメラの使用を許可してください…');
     try {
       stream = await navigator.mediaDevices.getUserMedia({
-        audio: cameraMode === 'video' ? {
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true
-        } : false,
+        // v252: ordinary camera video does not need voice-call DSP. Using the
+        // browser's native microphone stream reduces real-time processing load.
+        audio: cameraMode === 'video' ? true : false,
         video: preferredVideoConstraints()
       });
       video.srcObject = stream;
       await video.play();
-      // v246: read the ratio actually returned by the phone camera. If the browser
-      // exposes that same native ratio in landscape dimensions, transpose only its
-      // orientation for this portrait-only UI.
-      await applyNativePortraitConstraint();
-      // v232: start from the widest zoom level the browser/device exposes.
-      await applyWidestAvailableZoom();
+      // v252: video uses the camera stream exactly as the phone/browser opened it.
+      // Do not re-apply width/height/aspect/zoom constraints after play(); those
+      // reconfiguration steps were the main difference from the older smoother path.
+      if (cameraMode === 'photo') {
+        await applyNativePortraitConstraint();
+        await applyWidestAvailableZoom();
+      }
       syncNativeCameraFrame();
       try {
         const cameraTrack = stream.getVideoTracks && stream.getVideoTracks()[0];
@@ -20958,7 +20962,7 @@ def page_nearby():
         if st.session_state.get(radius_key) not in {"徒歩1分くらい", "徒歩3分くらい", "徒歩5分くらい"}:
             st.session_state[radius_key] = "徒歩3分くらい"
     elif current_kind_for_radius == "lunch":
-        if st.session_state.get(radius_key) not in {"徒歩5分くらい", "徒歩10分くらい"}:
+        if st.session_state.get(radius_key) not in {"徒歩5分くらい", "徒歩10分くらい", "徒歩20分くらい"}:
             st.session_state[radius_key] = "徒歩5分くらい"
     elif st.session_state.get(radius_key) not in {"徒歩10分くらい", "徒歩20分くらい", "もう少し遠く"}:
         st.session_state[radius_key] = "徒歩10分くらい"
@@ -21069,6 +21073,7 @@ def page_nearby():
                         radius_options_ui = [
                             ("🚶 5分", "徒歩5分くらい"),
                             ("🚶 10分", "徒歩10分くらい"),
+                            ("🚶 20分", "徒歩20分くらい"),
                         ]
                     else:
                         radius_label = str(st.session_state.get(radius_key) or "徒歩10分くらい")
@@ -21127,8 +21132,8 @@ def page_nearby():
             radius_label = str(st.session_state.get(radius_key) or "徒歩3分くらい")
             radius_m = int(radius_map.get(radius_label, 192))
         elif kind == "lunch":
-            # Same walking estimate: 320m≈5min, 640m≈10min.
-            radius_map = {"徒歩5分くらい": 320, "徒歩10分くらい": 640}
+            # Same walking estimate: 320m≈5min, 640m≈10min, 1280m≈20min.
+            radius_map = {"徒歩5分くらい": 320, "徒歩10分くらい": 640, "徒歩20分くらい": 1280}
             radius_label = str(st.session_state.get(radius_key) or "徒歩5分くらい")
             radius_m = int(radius_map.get(radius_label, 320))
         else:
