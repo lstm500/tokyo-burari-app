@@ -32,7 +32,7 @@ import streamlit as st
 # Freshly generated update: 2026-08-31 23:49 JST
 GENERATED_UPDATE_JST = "2026-09-06T12:00:00+09:00"
 
-APP_BUILD = "v260"
+APP_BUILD = "v261"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -25992,6 +25992,25 @@ _MEMORY_MAP_VIEW_HTML = """
 _MEMORY_MAP_VIEW_CSS = r"""
 .memory-map-component-v260 { position:relative; width:100%; box-sizing:border-box; }
 .memory-map-v260 { width:100%; height:570px; border-radius:16px; overflow:hidden; background:#eef3f6; border:1px solid rgba(80,100,120,.14); box-sizing:border-box; }
+/* v261: critical Leaflet layout rules are kept locally so the map cannot render as
+   a vertical collage of 256px OSM tiles while the external Leaflet CSS is still loading. */
+.memory-map-component-v260 .leaflet-pane,
+.memory-map-component-v260 .leaflet-tile,
+.memory-map-component-v260 .leaflet-marker-icon,
+.memory-map-component-v260 .leaflet-marker-shadow,
+.memory-map-component-v260 .leaflet-tile-container,
+.memory-map-component-v260 .leaflet-pane > svg,
+.memory-map-component-v260 .leaflet-pane > canvas,
+.memory-map-component-v260 .leaflet-zoom-box,
+.memory-map-component-v260 .leaflet-image-layer,
+.memory-map-component-v260 .leaflet-layer { position:absolute; left:0; top:0; }
+.memory-map-component-v260 .leaflet-container { overflow:hidden; -webkit-tap-highlight-color:transparent; }
+.memory-map-component-v260 .leaflet-tile { width:256px; height:256px; max-width:none!important; max-height:none!important; user-select:none; -webkit-user-drag:none; }
+.memory-map-component-v260 .leaflet-marker-icon,
+.memory-map-component-v260 .leaflet-marker-shadow { max-width:none!important; max-height:none!important; user-select:none; -webkit-user-drag:none; }
+.memory-map-component-v260 .leaflet-tile { visibility:hidden; }
+.memory-map-component-v260 .leaflet-tile-loaded { visibility:inherit; }
+.memory-map-component-v260 .leaflet-zoom-animated { transform-origin:0 0; }
 .memory-map-loading-v260 { height:100%; display:flex; align-items:center; justify-content:center; padding:24px; text-align:center; color:#5b6570; font-size:14px; line-height:1.6; box-sizing:border-box; }
 .memory-current-v260 { width:18px; height:18px; border-radius:50%; background:#2f80ed; border:4px solid white; box-shadow:0 2px 9px rgba(0,0,0,.30); }
 .memory-pin-shell-v260 { background:transparent!important; border:0!important; }
@@ -26044,19 +26063,38 @@ export default function(component) {
   const centerSource = String(payload.center_source || 'gps');
   if (centerLabel) centerLabel.textContent = centerSource === 'gps' ? '現在地' : '検索中心';
 
-  const ensureLeafletCss = () => {
-    if (document.getElementById('tokyo-burari-leaflet-css-v260')) return;
-    const link = document.createElement('link');
-    link.id = 'tokyo-burari-leaflet-css-v260';
-    link.rel = 'stylesheet';
-    link.href = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.css';
-    link.crossOrigin = '';
-    document.head.appendChild(link);
+  const leafletCssReady = () => {
+    try {
+      return Array.from(document.styleSheets || []).some((sheet) =>
+        String(sheet?.href || '').includes('/leaflet@1.9.4/dist/leaflet.css')
+      );
+    } catch (_) {
+      return false;
+    }
   };
+
+  const ensureLeafletCss = () => new Promise((resolve) => {
+    let link = document.getElementById('tokyo-burari-leaflet-css-v261');
+    if (leafletCssReady()) { resolve(); return; }
+    if (!link) {
+      link = document.createElement('link');
+      link.id = 'tokyo-burari-leaflet-css-v261';
+      link.rel = 'stylesheet';
+      link.href = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.css';
+      link.crossOrigin = '';
+      document.head.appendChild(link);
+    }
+    let settled = false;
+    const finish = () => { if (!settled) { settled = true; resolve(); } };
+    link.addEventListener('load', finish, {once:true});
+    link.addEventListener('error', finish, {once:true});
+    const timer = setInterval(() => { if (leafletCssReady()) { clearInterval(timer); finish(); } }, 50);
+    cleanupFns.push(() => clearInterval(timer));
+    setTimeout(() => { clearInterval(timer); finish(); }, 1800);
+  });
 
   const ensureLeaflet = () => new Promise((resolve, reject) => {
     if (globalThis.L) { resolve(globalThis.L); return; }
-    ensureLeafletCss();
     let script = document.getElementById('tokyo-burari-leaflet-js-v260');
     if (script) {
       const started = Date.now();
@@ -26079,9 +26117,8 @@ export default function(component) {
 
   const render = async () => {
     try {
-      const L = await ensureLeaflet();
+      const [_, L] = await Promise.all([ensureLeafletCss(), ensureLeaflet()]);
       if (cancelled) return;
-      ensureLeafletCss();
       const center = [Number(payload?.center?.lat), Number(payload?.center?.lon)];
       if (!Number.isFinite(center[0]) || !Number.isFinite(center[1])) throw new Error('Invalid center');
       node.innerHTML = '';
@@ -26199,7 +26236,7 @@ def _get_memory_map_view_component():
     _memory_map_view_component_initialized = True
     try:
         memory_map_view_component = st.components.v2.component(
-            "tokyo_burari_memory_map_view_v260",
+            "tokyo_burari_memory_map_view_v261",
             html=_MEMORY_MAP_VIEW_HTML,
             css=_MEMORY_MAP_VIEW_CSS,
             js=_MEMORY_MAP_VIEW_JS,
@@ -26235,7 +26272,7 @@ def _render_memory_map(center_lat, center_lon, radius_m, *, accuracy_m=None, cen
         return legacy_prepared, None
     result = component(
         data=payload,
-        key=f"memory_map_view_component_v260_{current_family_key()}_{current_member_key()}",
+        key=f"memory_map_view_component_v261_{current_family_key()}_{current_member_key()}",
         on_map_search_change=lambda: None,
     )
     map_search = getattr(result, "map_search", None)
