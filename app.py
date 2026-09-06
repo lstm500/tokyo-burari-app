@@ -32,7 +32,7 @@ import streamlit as st
 # Freshly generated update: 2026-08-31 23:49 JST
 GENERATED_UPDATE_JST = "2026-09-06T12:00:00+09:00"
 
-APP_BUILD = "v247"
+APP_BUILD = "v248"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -902,7 +902,7 @@ _LIVE_CAMERA_HTML = """
       <button id="camera-review-retry" class="camera-retry-button" type="button">撮りなおす／選びなおす</button>
     </div>
     <button id="camera-review-find-moments" class="camera-find-button" type="button" hidden>✨ いい瞬間を探す</button>
-    <div id="camera-review-build" class="camera-review-build" hidden>camera v247</div>
+    <div id="camera-review-build" class="camera-review-build" hidden>camera v248</div>
     <div id="camera-review-emotion-hint" class="camera-review-emotion-hint" hidden>写真下の「通常／こどもーど」を切り替え、写真につけるアイコンを1つ選べます。</div>
     <div id="camera-review-image-shell" class="camera-review-image-shell" role="button" tabindex="0" aria-label="写真のアイコンを選ぶ" hidden>
       <img id="camera-review-image" class="camera-review-image" alt="撮影した写真の確認" />
@@ -1529,11 +1529,13 @@ export default function(component) {
     try { localStorage.setItem('tokyo_burari_camera_facing_v226', cameraFacing); } catch (_) {}
   };
   const preferredVideoConstraints = () => {
-    // Do not request an app-defined aspect ratio. The browser/phone camera chooses
-    // its own supported stream ratio; we read that ratio after the stream opens.
+    // Keep the phone camera's own supported ratio. For video, prefer a lighter
+    // 720/1280-class stream so MediaRecorder does not overload mobile hardware.
+    // Photos keep the higher-resolution request. No app-defined aspect ratio is used.
+    const isVideoMode = cameraMode === 'video';
     return {
       facingMode: { ideal: cameraFacing },
-      height: { ideal: cameraMode === 'video' ? 1920 : 1600 },
+      height: isVideoMode ? { ideal: 1280, max: 1280 } : { ideal: 1600 },
       frameRate: { ideal: 30, max: 30 }
     };
   };
@@ -1924,22 +1926,9 @@ export default function(component) {
       persistCameraFacing();
       syncOrientationUi();
       syncFacingUi();
-      // Prefer the phone/browser's own stabilization when it exposes a compatible
-      // media-track constraint. Unknown constraints are never forced, so devices
-      // without this capability continue normally.
-      if (cameraMode === 'video') {
-        try {
-          const supported = (navigator.mediaDevices && navigator.mediaDevices.getSupportedConstraints)
-            ? navigator.mediaDevices.getSupportedConstraints()
-            : {};
-          const track = stream.getVideoTracks && stream.getVideoTracks()[0];
-          if (track && track.applyConstraints && supported && supported.imageStabilization) {
-            await track.applyConstraints({ advanced: [{ imageStabilization: true }] });
-          }
-        } catch (stabilizationErr) {
-          console.warn('camera hardware stabilization unavailable', stabilizationErr);
-        }
-      }
+      // v248 smooth-recording path: do not add an extra stabilization constraint.
+      // The phone camera/browser may still use its own default stabilization, but the
+      // app avoids requesting additional processing while recording.
       shootButton.disabled = false;
       shootButton.textContent = cameraMode === 'video' ? '● 録画を開始' : '● 写真を撮る';
       showCameraActions();
@@ -2429,8 +2418,8 @@ export default function(component) {
     const captureFrameRate = Math.max(0, Number(captureSettings?.frameRate || 0));
     const capturePixels = captureWidth * captureHeight;
     const requestedVideoBitrate = capturePixels >= 1700000
-      ? 3600000
-      : (capturePixels >= 800000 ? 2800000 : 2000000);
+      ? 3000000
+      : (capturePixels >= 800000 ? 2200000 : 1800000);
     try {
       const options = {
         videoBitsPerSecond: requestedVideoBitrate,
@@ -2570,11 +2559,11 @@ export default function(component) {
         }
       };
 
-      mediaRecorder.start(500);
+      mediaRecorder.start(1000);
       recordingStartedAt = Date.now();
       setRecordingUi(true);
       updateRecordingClock();
-      recordingTimer = setInterval(updateRecordingClock, 250);
+      recordingTimer = setInterval(updateRecordingClock, 500);
       // v139 quality-first recording: do not generate JPEG candidates while the
       // MediaRecorder encoder is running. Candidate extraction starts after stop.
       recordingMaxTimer = setTimeout(stopVideoRecording, VIDEO_RECORD_MAX_SECONDS * 1000);
@@ -7450,21 +7439,62 @@ NEARBY_LUNCH_GENRES = (
     "カフェ・軽食",
 )
 
+# UI is grouped, but Google Places is searched using the original fine-grained
+# categories one by one. This avoids a long multi-keyword query acting too narrowly.
+NEARBY_LUNCH_GROUP_MEMBERS = {
+    "おまかせ": ("おまかせ",),
+    "和食・定食": ("和食", "定食・食堂", "とんかつ", "天ぷら", "うなぎ", "お好み焼き・もんじゃ"),
+    "寿司・海鮮": ("寿司", "海鮮"),
+    "肉料理": ("焼肉・ホルモン", "焼き鳥・鳥料理", "ステーキ・ハンバーグ"),
+    "麺類": ("そば", "うどん", "ラーメン・つけ麺"),
+    "中華・韓国": ("中華料理", "韓国料理"),
+    "イタリアン・フレンチ": ("イタリアン", "フレンチ"),
+    "洋食・ハンバーガー": ("洋食", "ハンバーガー"),
+    "カレー・エスニック": ("カレー", "アジア・エスニック"),
+    "カフェ・軽食": ("カフェ・喫茶店",),
+}
+
+NEARBY_LUNCH_ATOMIC_QUERIES = {
+    "おまかせ": "ランチ レストラン",
+    "和食": "和食 ランチ",
+    "定食・食堂": "定食 食堂 ランチ",
+    "寿司": "寿司 鮨 ランチ",
+    "海鮮": "海鮮 魚介 刺身 ランチ",
+    "焼肉・ホルモン": "焼肉 ホルモン ランチ",
+    "焼き鳥・鳥料理": "焼き鳥 鳥料理 鶏料理 ランチ",
+    "ステーキ・ハンバーグ": "ステーキ ハンバーグ ランチ",
+    "とんかつ": "とんかつ ランチ",
+    "天ぷら": "天ぷら 天丼 ランチ",
+    "うなぎ": "うなぎ 鰻 ランチ",
+    "そば": "そば 蕎麦 ランチ",
+    "うどん": "うどん ランチ",
+    "ラーメン・つけ麺": "ラーメン つけ麺 ランチ",
+    "カレー": "カレー ランチ",
+    "中華料理": "中華料理 ランチ",
+    "韓国料理": "韓国料理 ランチ",
+    "イタリアン": "イタリアン パスタ ピザ ランチ",
+    "フレンチ": "フレンチ ビストロ ランチ",
+    "洋食": "洋食 オムライス ランチ",
+    "ハンバーガー": "ハンバーガー ランチ",
+    "お好み焼き・もんじゃ": "お好み焼き もんじゃ ランチ",
+    "アジア・エスニック": "タイ ベトナム インド エスニック ランチ",
+    "カフェ・喫茶店": "カフェ 喫茶店 ランチ",
+}
+
+def _nearby_lunch_atomic_query_specs(subkind):
+    group = str(subkind or "おまかせ")
+    members = NEARBY_LUNCH_GROUP_MEMBERS.get(group) or ("おまかせ",)
+    specs = []
+    for member in members:
+        query = NEARBY_LUNCH_ATOMIC_QUERIES.get(member)
+        if query:
+            specs.append((member, query))
+    return specs or [("おまかせ", NEARBY_LUNCH_ATOMIC_QUERIES["おまかせ"])]
 
 def _nearby_lunch_text_query(subkind):
-    mapping = {
-        "おまかせ": "ランチ レストラン",
-        "和食・定食": "和食 定食 食堂 とんかつ 天ぷら 天丼 うなぎ 鰻 お好み焼き もんじゃ ランチ",
-        "寿司・海鮮": "寿司 鮨 海鮮 魚介 刺身 ランチ",
-        "肉料理": "焼肉 ホルモン 焼き鳥 鳥料理 鶏料理 ステーキ ハンバーグ ランチ",
-        "麺類": "そば 蕎麦 うどん ラーメン つけ麺 ランチ",
-        "中華・韓国": "中華料理 韓国料理 餃子 ビビンバ スンドゥブ ランチ",
-        "イタリアン・フレンチ": "イタリアン パスタ ピザ フレンチ ビストロ ランチ",
-        "洋食・ハンバーガー": "洋食 オムライス グリル ハンバーガー ランチ",
-        "カレー・エスニック": "カレー タイ ベトナム インド ネパール エスニック ランチ",
-        "カフェ・軽食": "カフェ 喫茶店 サンドイッチ ベーカリー 軽食 ランチ",
-    }
-    return mapping.get(str(subkind), mapping["おまかせ"])
+    # Compatibility helper used outside the multi-query lunch path.
+    specs = _nearby_lunch_atomic_query_specs(subkind)
+    return specs[0][1]
 
 
 def _nearby_google_text_query(kind, subkind):
@@ -7529,12 +7559,16 @@ def search_nearby_quick_stops_google(latitude, longitude, kind, subkind, radius_
     snack_style = str(subkind or "食べ歩き向き")
     lunch_genre = str(subkind or "おまかせ") if is_lunch else ""
 
-    # For snacks, Nearby Search is a better fit than Text Search: it asks Google for
-    # concrete nearby business types and ranks them by distance.  Search a slightly
-    # larger discovery circle, then enforce the user's selected radius below.
+    # For snacks, Nearby Search is a better fit than Text Search. Lunch keeps the
+    # compact UI groups, but each original genre is searched independently and the
+    # results are merged/deduplicated before distance, budget and rating evaluation.
+    field_mask = (
+        "places.id,places.displayName,places.formattedAddress,places.location,places.types,places.primaryType,"
+        "places.photos,places.businessStatus,places.currentOpeningHours,places.rating,places.userRatingCount,"
+        "places.priceLevel,places.priceRange,places.takeout,places.dineIn,places.servesDessert"
+    )
+
     if is_snack:
-        # Important: do not use generic food categories such as meal_takeaway.
-        # A shop must first be snack/dessert-oriented; portability is judged afterwards.
         if snack_style == "店内中心":
             included_types = [
                 "cafe", "coffee_shop", "tea_house", "dessert_restaurant",
@@ -7563,48 +7597,111 @@ def search_nearby_quick_stops_google(latitude, longitude, kind, subkind, radius_
             },
         }
         endpoint = "https://places.googleapis.com/v1/places:searchNearby"
-    else:
-        body = {
-            "textQuery": _nearby_google_text_query(kind, subkind),
-            "languageCode": "ja",
-            "regionCode": "JP",
-            "maxResultCount": 20,
-            "locationBias": {
-                "circle": {
-                    "center": {"latitude": latitude, "longitude": longitude},
-                    "radius": float(radius_m),
-                }
+        req = Request(
+            endpoint,
+            data=json.dumps(body, ensure_ascii=False).encode("utf-8"),
+            headers={
+                "Content-Type": "application/json; charset=UTF-8",
+                "X-Goog-Api-Key": GOOGLE_PLACES_API_KEY,
+                "X-Goog-FieldMask": field_mask,
             },
-        }
-        if bool(open_now_only):
-            body["openNow"] = True
-        endpoint = "https://places.googleapis.com/v1/places:searchText"
+            method="POST",
+        )
+        try:
+            with urlopen(req, timeout=7.0) as response:
+                data = json.loads(response.read().decode("utf-8"))
+        except Exception as exc:
+            return {
+                "places": [],
+                "error": "画像つき周辺検索につながりませんでした。",
+                "detail": str(exc)[:260],
+                "provider": "Google Places",
+            }
+        lunch_query_count = 0
+        lunch_atomic_genres = []
+    else:
+        if is_lunch:
+            query_specs = _nearby_lunch_atomic_query_specs(lunch_genre)
+        else:
+            query_specs = [(str(subkind or ""), _nearby_google_text_query(kind, subkind))]
 
-    field_mask = (
-        "places.id,places.displayName,places.formattedAddress,places.location,places.types,places.primaryType,"
-        "places.photos,places.businessStatus,places.currentOpeningHours,places.rating,places.userRatingCount,"
-        "places.priceLevel,places.priceRange,places.takeout,places.dineIn,places.servesDessert"
-    )
-    req = Request(
-        endpoint,
-        data=json.dumps(body, ensure_ascii=False).encode("utf-8"),
-        headers={
-            "Content-Type": "application/json; charset=UTF-8",
-            "X-Goog-Api-Key": GOOGLE_PLACES_API_KEY,
-            "X-Goog-FieldMask": field_mask,
-        },
-        method="POST",
-    )
-    try:
-        with urlopen(req, timeout=7.0) as response:
-            data = json.loads(response.read().decode("utf-8"))
-    except Exception as exc:
-        return {
-            "places": [],
-            "error": "画像つき周辺検索につながりませんでした。",
-            "detail": str(exc)[:260],
-            "provider": "Google Places",
-        }
+        def _run_text_search(spec):
+            genre_label, query_text = spec
+            request_body = {
+                "textQuery": str(query_text),
+                "languageCode": "ja",
+                "regionCode": "JP",
+                "maxResultCount": 12 if is_lunch else 20,
+                "locationBias": {
+                    "circle": {
+                        "center": {"latitude": latitude, "longitude": longitude},
+                        "radius": float(radius_m),
+                    }
+                },
+            }
+            if bool(open_now_only):
+                request_body["openNow"] = True
+            request = Request(
+                "https://places.googleapis.com/v1/places:searchText",
+                data=json.dumps(request_body, ensure_ascii=False).encode("utf-8"),
+                headers={
+                    "Content-Type": "application/json; charset=UTF-8",
+                    "X-Goog-Api-Key": GOOGLE_PLACES_API_KEY,
+                    "X-Goog-FieldMask": field_mask,
+                },
+                method="POST",
+            )
+            try:
+                with urlopen(request, timeout=7.0) as response:
+                    payload = json.loads(response.read().decode("utf-8"))
+                return {"genre": str(genre_label), "data": payload, "error": ""}
+            except Exception as exc:
+                return {"genre": str(genre_label), "data": {}, "error": str(exc)[:260]}
+
+        if len(query_specs) <= 1:
+            query_results = [_run_text_search(query_specs[0])]
+        else:
+            worker_count = max(1, min(4, len(query_specs)))
+            with ThreadPoolExecutor(max_workers=worker_count) as executor:
+                query_results = list(executor.map(_run_text_search, query_specs))
+
+        successful = [row for row in query_results if isinstance(row, dict) and not row.get("error")]
+        if not successful:
+            details = " / ".join(str(row.get("error") or "") for row in query_results if isinstance(row, dict) and row.get("error"))
+            return {
+                "places": [],
+                "error": "画像つき周辺検索につながりませんでした。",
+                "detail": details[:260],
+                "provider": "Google Places",
+            }
+
+        merged_places = {}
+        for search_result in successful:
+            genre_label = str(search_result.get("genre") or "")
+            payload = search_result.get("data") if isinstance(search_result.get("data"), dict) else {}
+            for raw in list(payload.get("places") or []):
+                if not isinstance(raw, dict):
+                    continue
+                place_id = str(raw.get("id") or "").strip()
+                if place_id:
+                    merge_key = "id:" + place_id
+                else:
+                    display = raw.get("displayName") if isinstance(raw.get("displayName"), dict) else {}
+                    name_key = str(display.get("text") or "").strip().lower()
+                    loc = raw.get("location") if isinstance(raw.get("location"), dict) else {}
+                    merge_key = f"fallback:{name_key}:{loc.get('latitude')}:{loc.get('longitude')}"
+                if merge_key not in merged_places:
+                    merged_places[merge_key] = dict(raw)
+                    if is_lunch:
+                        merged_places[merge_key]["_matched_lunch_atomic_genres"] = []
+                if is_lunch and genre_label:
+                    labels = merged_places[merge_key].setdefault("_matched_lunch_atomic_genres", [])
+                    if genre_label not in labels:
+                        labels.append(genre_label)
+
+        data = {"places": list(merged_places.values())}
+        lunch_query_count = len(query_specs) if is_lunch else 0
+        lunch_atomic_genres = [str(spec[0]) for spec in query_specs] if is_lunch else []
 
     places = []
     raw_count = 0
@@ -7779,10 +7876,16 @@ def search_nearby_quick_stops_google(latitude, longitude, kind, subkind, radius_
                 pseudo_tags["shop"] = "bakery"
             elif types.intersection({"candy_store", "dessert_shop", "confectionery", "chocolate_shop", "cake_shop", "pastry_shop", "donut_shop"}):
                 pseudo_tags["shop"] = "confectionery"
+        matched_lunch_atomic_genres = [
+            str(x) for x in (raw.get("_matched_lunch_atomic_genres") or []) if str(x).strip()
+        ] if is_lunch else []
         if is_snack and primary_type in cafe_types:
             category = "カフェ・喫茶"
         elif is_lunch:
-            category = lunch_genre if lunch_genre != "おまかせ" else "ランチ"
+            if matched_lunch_atomic_genres and matched_lunch_atomic_genres != ["おまかせ"]:
+                category = "・".join(matched_lunch_atomic_genres[:2])
+            else:
+                category = lunch_genre if lunch_genre != "おまかせ" else "ランチ"
         else:
             category = _nearby_place_label(pseudo_tags, kind)
         refs = _nearby_google_photo_refs(raw.get("photos") or [], limit=10)
@@ -7822,6 +7925,7 @@ def search_nearby_quick_stops_google(latitude, longitude, kind, subkind, radius_
             "photo_refs": refs,
             "snack_style": snack_style if is_snack else "",
             "lunch_genre": lunch_genre if is_lunch else "",
+            "lunch_atomic_genres": matched_lunch_atomic_genres if is_lunch else [],
             "takeout": takeout,
             "dine_in": dine_in,
             "serves_dessert": serves_dessert,
@@ -7916,7 +8020,9 @@ def search_nearby_quick_stops_google(latitude, longitude, kind, subkind, radius_
         "budget_under_1000": bool(budget_under_1000),
         "budget_limit": int(budget_limit) if is_lunch and budget_limit is not None else None,
         "sort_mode": "review_weighted_rating" if is_lunch else ("walkability" if is_snack and snack_style == "食べ歩き向き" else "distance"),
-        "search_mode": "nearby_types" if is_snack else "text",
+        "search_mode": "nearby_types" if is_snack else ("atomic_text" if is_lunch else "text"),
+        "lunch_query_count": int(lunch_query_count) if is_lunch else 0,
+        "lunch_atomic_genres": list(lunch_atomic_genres) if is_lunch else [],
         "raw_count": raw_count,
         "in_range_count": in_range_count,
         "snack_candidate_count": snack_candidate_count,
@@ -20868,7 +20974,7 @@ def page_nearby():
                             st.session_state[lunch_key] = selected_lunch_genre
                             st.rerun()
                         subkind = str(selected_lunch_genre)
-                        st.markdown('<div class="nearby-step-note">近いジャンルをまとめた10分類から選べます。</div>', unsafe_allow_html=True)
+                        st.markdown('<div class="nearby-step-note">表示は10分類ですが、検索は内訳のジャンルごとに個別判定して候補をまとめます。</div>', unsafe_allow_html=True)
                     else:
                         sight_options = [
                             ("おまかせ", "なんでも"),
