@@ -32,7 +32,7 @@ import streamlit as st
 # Freshly generated update: 2026-08-31 23:49 JST
 GENERATED_UPDATE_JST = "2026-09-06T12:00:00+09:00"
 
-APP_BUILD = "v268"
+APP_BUILD = "v269"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -24612,8 +24612,18 @@ def page_diary():
         format_func=lambda x: label_map.get(str(x), str(x)),
         key=f"diary_trip_selector_{selector_serial}",
     )
+
+    # v269: Diary can also be revisited from place rather than date. Reuse the
+    # existing lightweight Memory Map instead of duplicating map/photo loading here.
+    if st.button(
+        "🗺️ 地図から振り返る",
+        use_container_width=True,
+        key="diary_open_memory_map_v269",
+    ):
+        go_page("review_map")
+
     if trip_id is None:
-        st.caption("振り返る日を選ぶと、そのぶらり旅の日記と写真を表示します。")
+        st.caption("振り返る日を選ぶと、そのぶらり旅の日記と写真を表示します。地図からは、場所を起点に過去の写真・動画を振り返れます。")
         return
 
     trip_id = str(trip_id)
