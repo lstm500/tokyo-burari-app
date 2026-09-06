@@ -32,7 +32,7 @@ import streamlit as st
 # Freshly generated update: 2026-08-31 23:49 JST
 GENERATED_UPDATE_JST = "2026-09-06T12:00:00+09:00"
 
-APP_BUILD = "v269"
+APP_BUILD = "v270"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -9752,13 +9752,99 @@ def trip_place_label(trip, photos=None):
     return ""
 
 
-def diary_title_for_trip(trip, photos=None):
-    """Build the diary title from a manual destination, otherwise the first photo GPS label."""
-    trip = trip or {}
-    destination = str(trip.get("destination") or "").strip()
-    if destination:
-        return f"ぶらり旅（{destination}）"
+def _short_diary_place_base(value):
+    """Turn a coarse map label into a short diary-title place name."""
+    text = re.sub(r"\s+", "", str(value or "").strip())
+    if not text or text == "位置情報あり":
+        return ""
+    text = re.sub(r"(?:付近|周辺)$", "", text)
+    # Nominatim often returns neighbourhoods such as 北品川五丁目. For a diary title,
+    # keep the memorable area name and drop only the block/chome detail.
+    text = re.sub(r"[一二三四五六七八九十百0-9０-９]+丁目(?:.*)?$", "", text)
+    text = re.sub(r"(?:[-‐‑‒–—ー−][0-9０-９]+)+$", "", text)
+    return text.strip(" ・,，")[:18]
 
+
+def _diary_place_from_all_photo_locations(photos):
+    """Choose one short representative area from all GPS-tagged photos for the day.
+
+    The old title path always inherited the first photo's place. This version uses every
+    GPS point: a clear repeated area wins; otherwise the geographic centre is reverse-
+    geocoded once. The result is intentionally coarse and ends in 周辺.
+    """
+    records = []
+    fallback_labels = {}
+    for photo in photos or []:
+        location = get_photo_location(photo)
+        if not isinstance(location, dict):
+            continue
+        base = _short_diary_place_base(location.get("place_label"))
+        if base:
+            fallback_labels[base] = int(fallback_labels.get(base) or 0) + 1
+        if str(location.get("source") or "") != "gps":
+            continue
+        try:
+            lat = float(location.get("latitude"))
+            lon = float(location.get("longitude"))
+        except (TypeError, ValueError):
+            continue
+        if not (math.isfinite(lat) and math.isfinite(lon)):
+            continue
+        records.append({"latitude": lat, "longitude": lon, "base": base})
+
+    if records:
+        count = len(records)
+        center_lat = sum(x["latitude"] for x in records) / count
+        center_lon = sum(x["longitude"] for x in records) / count
+
+        label_stats = {}
+        for item in records:
+            base = item.get("base") or ""
+            if not base:
+                continue
+            stat = label_stats.setdefault(base, {"count": 0, "lat": 0.0, "lon": 0.0})
+            stat["count"] += 1
+            stat["lat"] += item["latitude"]
+            stat["lon"] += item["longitude"]
+
+        if label_stats:
+            ranked = []
+            for base, stat in label_stats.items():
+                stat_count = int(stat.get("count") or 0)
+                avg_lat = float(stat.get("lat") or 0.0) / max(1, stat_count)
+                avg_lon = float(stat.get("lon") or 0.0) / max(1, stat_count)
+                # Local equirectangular distance is sufficient for choosing a title label.
+                dx = (avg_lon - center_lon) * math.cos(math.radians(center_lat))
+                dy = avg_lat - center_lat
+                distance_score = (dx * dx) + (dy * dy)
+                ranked.append((base, stat_count, distance_score))
+            ranked.sort(key=lambda x: (-x[1], x[2], len(x[0]), x[0]))
+            top_base, top_count, _ = ranked[0]
+            second_count = ranked[1][1] if len(ranked) > 1 else 0
+            # Use a persisted place directly only when the day's photos clearly cluster
+            # there. Otherwise geocode the centre so a two/three-location day is not
+            # named after whichever photo happened to be first.
+            if len(ranked) == 1 or (top_count >= 2 and (top_count > second_count or top_count * 2 >= count)):
+                return f"{top_base}周辺"
+
+        center_place = _short_diary_place_base(reverse_geocode_rough(center_lat, center_lon))
+        if center_place:
+            return f"{center_place}周辺"
+
+        if label_stats:
+            return f"{ranked[0][0]}周辺"
+
+    # GPS may be unavailable for imported/legacy photos. In that case, still aggregate
+    # the place labels from all photos instead of taking the first one.
+    if fallback_labels:
+        base = sorted(fallback_labels.items(), key=lambda x: (-x[1], len(x[0]), x[0]))[0][0]
+        return f"{base}周辺"
+    return ""
+
+
+def diary_title_for_trip(trip, photos=None):
+    """Build an automatic diary title from all photo locations for that day."""
+    trip = trip or {}
     trip_id = trip.get("id")
     if photos is None and trip_id:
         try:
@@ -9766,26 +9852,15 @@ def diary_title_for_trip(trip, photos=None):
         except Exception:
             photos = []
 
-    # When no place was entered manually, use the same place label shown on the
-    # first photo in the diary UI. This keeps the title consistent with the visible
-    # "📍 place" caption even if older saved rows used a slightly different source tag.
-    if photos:
-        first_photo = photos[0]
-        place = str(photo_location_label(first_photo) or "").strip()
-        if place and place != "位置情報あり":
-            return f"ぶらり旅（{place}）"
+    # Prefer the day's actual photo GPS distribution over the trip destination or the
+    # first photo. This makes the title describe where the day's memories were centred.
+    place = _diary_place_from_all_photo_locations(photos or [])
+    if place:
+        return f"ぶらり旅（{place}）"
 
-        # If GPS coordinates exist but the coarse label was not persisted, try the
-        # reverse geocoder once more before falling back to an unregistered title.
-        first_location = get_photo_location(first_photo)
-        if isinstance(first_location, dict):
-            lat = first_location.get("latitude")
-            lon = first_location.get("longitude")
-            if lat is not None and lon is not None:
-                place = str(reverse_geocode_rough(lat, lon) or "").strip()
-                if place:
-                    return f"ぶらり旅（{place}）"
-
+    destination = _short_diary_place_base(trip.get("destination"))
+    if destination:
+        return f"ぶらり旅（{destination}周辺）"
     return "ぶらり旅（場所未登録）"
 
 
@@ -16859,7 +16934,7 @@ AIが新しい出来事や感情を足してはいけません。
 - コメントがない写真について、写真の内容・出来事・感情を推測して文章を作らない。写真枚数そのものは事実として書いてよい。
 - 本人のコメントが1つもない場合は、写真を残した事実と「コメントはまだない」ことだけを短く書く。
 - 大人っぽい抽象語へ変換しすぎない。
-- title はシステム側で「ぶらり旅（地名）」に固定するため、内容は diary に集中する。
+- title はシステム側で、当日にまとめられた写真全体の位置情報から短い代表地名を選び「ぶらり旅（○○周辺）」にするため、内容は diary に集中する。
 - reflection_summary は保護者向けに、本人が入力・発話したコメントを第一の根拠として分析する。単なる発言の言い換えではなく、その日に何へ興味・注意が向いていたか、どのように比べたり理由を考えたりしていたかなど、コメントから自然に読み取れる部分だけを2〜4文程度で簡潔にまとめる。
 - 疑問やWant（どうしたい・こうなってほしい等）は必須項目ではない。本人が明示していなくても、それまでの本人コメントの流れからかなり自然に推測できる場合は、「〜を気にしていたようです」「〜したい方向がうかがえます」のように推測だと分かる弱い表現で書いてよい。
 - 疑問やWantをコメントから自然に読み取れない場合は、その項目自体に触れない。「疑問は見られない」「Wantは確認できない」「判断材料がない」など、欠けている項目をわざわざ報告しない。項目を網羅しようとしない。
