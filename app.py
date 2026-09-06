@@ -32,7 +32,7 @@ import streamlit as st
 # Freshly generated update: 2026-08-31 23:49 JST
 GENERATED_UPDATE_JST = "2026-09-06T12:00:00+09:00"
 
-APP_BUILD = "v243"
+APP_BUILD = "v246"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -899,7 +899,7 @@ _LIVE_CAMERA_HTML = """
       <button id="camera-review-retry" class="camera-retry-button" type="button">撮りなおす／選びなおす</button>
     </div>
     <button id="camera-review-find-moments" class="camera-find-button" type="button" hidden>✨ いい瞬間を探す</button>
-    <div id="camera-review-build" class="camera-review-build" hidden>camera v243</div>
+    <div id="camera-review-build" class="camera-review-build" hidden>camera v246</div>
     <div id="camera-review-emotion-hint" class="camera-review-emotion-hint" hidden>写真下の「通常／こどもーど」を切り替え、写真につけるアイコンを1つ選べます。</div>
     <div id="camera-review-image-shell" class="camera-review-image-shell" role="button" tabindex="0" aria-label="写真のアイコンを選ぶ" hidden>
       <img id="camera-review-image" class="camera-review-image" alt="撮影した写真の確認" />
@@ -1035,29 +1035,32 @@ _LIVE_CAMERA_CSS = """
 .camera-review-image,
 .camera-review-video {
   display: block;
-  width: 100%;
-  height: auto;
+  width: var(--camera-preview-width, 100%);
+  height: var(--camera-preview-height, auto);
+  max-width: 100%;
   max-height: 72dvh;
+  aspect-ratio: var(--camera-preview-aspect-ratio, auto);
   box-sizing: border-box;
   border-radius: 16px;
   background: #000;
   margin: 0 auto;
-  object-fit: contain;
+  object-fit: cover;
 }
-/* v243: do not force a synthetic frame ratio. Use the native aspect ratio that
-   the built-in phone camera stream actually provides, for both photo and video. */
+/* v246: no app-defined camera ratio. The preview ratio is populated only after
+   reading the actual dimensions returned by the phone camera stream. */
 .live-camera-video {
-  object-fit: contain;
+  object-fit: cover;
 }
 .live-camera-wrap.camera-video-mode .live-camera-video,
 .live-camera-wrap.camera-video-mode .camera-review-video,
 .live-camera-wrap.camera-photo-mode .live-camera-video,
 .live-camera-wrap.camera-photo-mode .camera-review-image {
-  width: 100%;
-  height: auto;
+  width: var(--camera-preview-width, 100%);
+  height: var(--camera-preview-height, auto);
   max-width: 100%;
   max-height: 72dvh;
-  object-fit: contain;
+  aspect-ratio: var(--camera-preview-aspect-ratio, auto);
+  object-fit: cover;
   margin-left: auto;
   margin-right: auto;
 }
@@ -1265,19 +1268,19 @@ _LIVE_CAMERA_CSS = """
     min-height: 52px;
     font-size: 14px;
   }
-  /* v243: let the preview and review use the built-in camera's native ratio. */
+  /* v246: mobile uses only the ratio reported by the active phone camera. */
   .live-camera-video,
   .camera-review-image,
   .camera-review-video {
     max-height: 72dvh;
-    height: auto;
+    aspect-ratio: var(--camera-preview-aspect-ratio, auto);
   }
   .live-camera-wrap.camera-video-mode .live-camera-video,
   .live-camera-wrap.camera-video-mode .camera-review-video,
   .live-camera-wrap.camera-photo-mode .live-camera-video,
   .live-camera-wrap.camera-photo-mode .camera-review-image {
     max-height: 72dvh;
-    height: auto;
+    aspect-ratio: var(--camera-preview-aspect-ratio, auto);
   }
   .camera-active-actions { grid-template-columns: 1.85fr .92fr 1.08fr .72fr; gap: 6px; }
   .camera-review-actions { grid-template-columns: 3fr 1fr; }
@@ -1414,32 +1417,99 @@ export default function(component) {
     try { return Boolean(window.matchMedia && window.matchMedia('(orientation: landscape)').matches); } catch (_) {}
     return false;
   };
+  let nativeCameraPortraitRatio = 0;
+  let nativeCameraShortEdge = 0;
+  let nativeCameraLongEdge = 0;
+  const readNativeCameraDimensions = () => {
+    let width = 0;
+    let height = 0;
+    try {
+      const track = stream && stream.getVideoTracks ? stream.getVideoTracks()[0] : null;
+      const settings = (track && track.getSettings) ? track.getSettings() : {};
+      width = Math.max(0, Number(settings?.width || 0));
+      height = Math.max(0, Number(settings?.height || 0));
+    } catch (_) {}
+    if (!(width > 0 && height > 0)) {
+      width = Math.max(0, Number(video?.videoWidth || 0));
+      height = Math.max(0, Number(video?.videoHeight || 0));
+    }
+    return { width, height };
+  };
+  const syncNativeCameraFrame = () => {
+    if (!wrap) return;
+    const dims = readNativeCameraDimensions();
+    if (!(dims.width > 0 && dims.height > 0)) return;
+    const shortEdge = Math.min(dims.width, dims.height);
+    const longEdge = Math.max(dims.width, dims.height);
+    if (!(shortEdge > 0 && longEdge > 0)) return;
+    nativeCameraShortEdge = shortEdge;
+    nativeCameraLongEdge = longEdge;
+    nativeCameraPortraitRatio = shortEdge / longEdge;
+    wrap.style.setProperty('--camera-preview-aspect-ratio', `${shortEdge} / ${longEdge}`);
+
+    let availableWidth = 0;
+    try { availableWidth = Math.max(0, Number(wrap.getBoundingClientRect()?.width || 0)); } catch (_) {}
+    if (!(availableWidth > 0)) {
+      try { availableWidth = Math.max(0, Number(parentElement?.getBoundingClientRect()?.width || 0)); } catch (_) {}
+    }
+    if (!(availableWidth > 0)) availableWidth = shortEdge;
+    let viewportHeight = 800;
+    try {
+      viewportHeight = Math.max(320, Number(window.visualViewport?.height || window.innerHeight || 800));
+    } catch (_) {}
+    const maxPreviewHeight = Math.min(760, viewportHeight * 0.72);
+    let previewWidth = availableWidth;
+    let previewHeight = previewWidth / nativeCameraPortraitRatio;
+    if (previewHeight > maxPreviewHeight) {
+      previewHeight = maxPreviewHeight;
+      previewWidth = previewHeight * nativeCameraPortraitRatio;
+    }
+    wrap.style.setProperty('--camera-preview-width', `${Math.max(1, Math.floor(previewWidth))}px`);
+    wrap.style.setProperty('--camera-preview-height', `${Math.max(1, Math.floor(previewHeight))}px`);
+  };
+  const applyNativePortraitConstraint = async () => {
+    if (!stream) return;
+    const dims = readNativeCameraDimensions();
+    if (!(dims.width > 0 && dims.height > 0)) {
+      syncNativeCameraFrame();
+      return;
+    }
+    const shortEdge = Math.min(dims.width, dims.height);
+    const longEdge = Math.max(dims.width, dims.height);
+    const portraitRatio = shortEdge / longEdge;
+    nativeCameraShortEdge = shortEdge;
+    nativeCameraLongEdge = longEdge;
+    nativeCameraPortraitRatio = portraitRatio;
+    // If the browser exposes the camera stream in landscape dimensions while the
+    // app is portrait-only, request the reciprocal orientation of that exact same
+    // camera ratio. No new 3:4, 9:16, 4:5, etc. ratio is invented here.
+    if (dims.width > dims.height) {
+      try {
+        const track = stream.getVideoTracks && stream.getVideoTracks()[0];
+        if (track && track.applyConstraints) {
+          await track.applyConstraints({
+            width: { ideal: shortEdge },
+            height: { ideal: longEdge },
+            aspectRatio: { ideal: portraitRatio }
+          });
+        }
+      } catch (err) {
+        console.warn('native portrait camera ratio could not be applied', err);
+      }
+    }
+    syncNativeCameraFrame();
+  };
   const syncOrientationUi = () => {
-    // v243: photo/video mode classes are kept, but the visible ratio now follows
-    // the actual built-in camera stream instead of a hard-coded frame.
+    // v246: landscape mode is removed. Mode changes never invent a camera ratio.
     const videoMode = cameraMode === 'video';
     const photoMode = !videoMode;
-    const landscape = !videoMode && isDeviceLandscape();
     if (wrap) {
       wrap.classList.toggle('camera-video-mode', videoMode);
       wrap.classList.toggle('camera-photo-mode', photoMode);
-      wrap.classList.toggle('camera-landscape', landscape);
-      if (landscape) {
-        let shortEdge = 420;
-        try {
-          const sw = Number(globalThis.screen?.width || 0);
-          const sh = Number(globalThis.screen?.height || 0);
-          if (sw > 0 && sh > 0) shortEdge = Math.min(sw, sh);
-          else if (window.visualViewport) shortEdge = Math.min(Number(window.visualViewport.width || 0), Number(window.visualViewport.height || 0)) || shortEdge;
-        } catch (_) {}
-        const previewHeight = Math.max(190, Math.min(420, Math.round(shortEdge * 0.72)));
-        const previewWidth = Math.round(previewHeight * 16 / 9);
-        wrap.style.setProperty('--camera-landscape-preview-height', `${previewHeight}px`);
-        wrap.style.setProperty('--camera-landscape-preview-width', `${previewWidth}px`);
-      } else {
-        wrap.style.removeProperty('--camera-landscape-preview-height');
-        wrap.style.removeProperty('--camera-landscape-preview-width');
-      }
+      wrap.classList.remove('camera-landscape');
+      wrap.style.removeProperty('--camera-landscape-preview-height');
+      wrap.style.removeProperty('--camera-landscape-preview-width');
+      syncNativeCameraFrame();
     }
   };
   const syncFacingUi = () => {
@@ -1455,20 +1525,11 @@ export default function(component) {
     try { localStorage.setItem('tokyo_burari_camera_facing_v226', cameraFacing); } catch (_) {}
   };
   const preferredVideoConstraints = () => {
-    const landscape = isDeviceLandscape();
-    const photoMode = cameraMode !== 'video';
-    // v243: ask for high-quality dimensions, but do not force an artificial
-    // aspect ratio. Let the phone camera keep its native ratio.
-    const width = photoMode
-      ? (landscape ? 1600 : 1200)
-      : 1080;
-    const height = photoMode
-      ? (landscape ? 1200 : 1600)
-      : 1920;
+    // Do not request an app-defined aspect ratio. The browser/phone camera chooses
+    // its own supported stream ratio; we read that ratio after the stream opens.
     return {
       facingMode: { ideal: cameraFacing },
-      width: { ideal: width },
-      height: { ideal: height },
+      height: { ideal: cameraMode === 'video' ? 1920 : 1600 },
       frameRate: { ideal: 30, max: 30 }
     };
   };
@@ -1843,8 +1904,13 @@ export default function(component) {
       });
       video.srcObject = stream;
       await video.play();
+      // v246: read the ratio actually returned by the phone camera. If the browser
+      // exposes that same native ratio in landscape dimensions, transpose only its
+      // orientation for this portrait-only UI.
+      await applyNativePortraitConstraint();
       // v232: start from the widest zoom level the browser/device exposes.
       await applyWidestAvailableZoom();
+      syncNativeCameraFrame();
       try {
         const cameraTrack = stream.getVideoTracks && stream.getVideoTracks()[0];
         const settings = (cameraTrack && cameraTrack.getSettings) ? cameraTrack.getSettings() : {};
@@ -2844,23 +2910,14 @@ export default function(component) {
 
   let orientationConstraintTimer = null;
   const handleOrientationChange = () => {
+    // Horizontal camera mode is intentionally disabled. A viewport resize only
+    // recalculates the size of the same native-ratio portrait frame.
     syncOrientationUi();
     if (orientationConstraintTimer) clearTimeout(orientationConstraintTimer);
-    orientationConstraintTimer = setTimeout(async () => {
+    orientationConstraintTimer = setTimeout(() => {
       orientationConstraintTimer = null;
-      if (!stream || (mediaRecorder && mediaRecorder.state === 'recording')) return;
-      try {
-        const track = stream.getVideoTracks && stream.getVideoTracks()[0];
-        if (track && track.applyConstraints) {
-          await track.applyConstraints(preferredVideoConstraints());
-          syncOrientationUi();
-          syncFacingUi();
-        }
-      } catch (err) {
-        // Some mobile browsers lock capture dimensions after getUserMedia().
-        // Photo mode will retry its new orientation on the next open; video remains portrait.
-        console.warn('camera orientation constraint update unavailable', err);
-      }
+      syncNativeCameraFrame();
+      syncFacingUi();
     }, 180);
   };
 
