@@ -32,7 +32,7 @@ import streamlit as st
 # Freshly generated update: 2026-08-31 23:49 JST
 GENERATED_UPDATE_JST = "2026-09-06T12:00:00+09:00"
 
-APP_BUILD = "v242"
+APP_BUILD = "v243"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -899,7 +899,7 @@ _LIVE_CAMERA_HTML = """
       <button id="camera-review-retry" class="camera-retry-button" type="button">撮りなおす／選びなおす</button>
     </div>
     <button id="camera-review-find-moments" class="camera-find-button" type="button" hidden>✨ いい瞬間を探す</button>
-    <div id="camera-review-build" class="camera-review-build" hidden>camera v239</div>
+    <div id="camera-review-build" class="camera-review-build" hidden>camera v243</div>
     <div id="camera-review-emotion-hint" class="camera-review-emotion-hint" hidden>写真下の「通常／こどもーど」を切り替え、写真につけるアイコンを1つ選べます。</div>
     <div id="camera-review-image-shell" class="camera-review-image-shell" role="button" tabindex="0" aria-label="写真のアイコンを選ぶ" hidden>
       <img id="camera-review-image" class="camera-review-image" alt="撮影した写真の確認" />
@@ -1034,30 +1034,30 @@ _LIVE_CAMERA_CSS = """
 .live-camera-video,
 .camera-review-image,
 .camera-review-video {
+  display: block;
   width: 100%;
+  height: auto;
   max-height: 72dvh;
-  aspect-ratio: 4 / 5;
-  object-fit: cover;
   box-sizing: border-box;
   border-radius: 16px;
   background: #000;
   margin: 0 auto;
+  object-fit: contain;
 }
-/* v242: use the same taller portrait frame for both photo and video, matching
-   the large orange single-photo card more closely and filling the frame edge-to-edge. */
+/* v243: do not force a synthetic frame ratio. Use the native aspect ratio that
+   the built-in phone camera stream actually provides, for both photo and video. */
 .live-camera-video {
-  object-fit: cover;
+  object-fit: contain;
 }
 .live-camera-wrap.camera-video-mode .live-camera-video,
 .live-camera-wrap.camera-video-mode .camera-review-video,
 .live-camera-wrap.camera-photo-mode .live-camera-video,
 .live-camera-wrap.camera-photo-mode .camera-review-image {
   width: 100%;
-  height: min(72dvh, 760px);
+  height: auto;
   max-width: 100%;
   max-height: 72dvh;
-  aspect-ratio: 4 / 5;
-  object-fit: cover;
+  object-fit: contain;
   margin-left: auto;
   margin-right: auto;
 }
@@ -1265,21 +1265,19 @@ _LIVE_CAMERA_CSS = """
     min-height: 52px;
     font-size: 14px;
   }
-  /* v242: match the camera box to the tall orange single-photo viewer and
-     make both photo and video fill the visible frame. */
+  /* v243: let the preview and review use the built-in camera's native ratio. */
   .live-camera-video,
   .camera-review-image,
   .camera-review-video {
     max-height: 72dvh;
-    aspect-ratio: 4 / 5;
+    height: auto;
   }
   .live-camera-wrap.camera-video-mode .live-camera-video,
   .live-camera-wrap.camera-video-mode .camera-review-video,
   .live-camera-wrap.camera-photo-mode .live-camera-video,
   .live-camera-wrap.camera-photo-mode .camera-review-image {
-    height: min(72dvh, 760px);
     max-height: 72dvh;
-    aspect-ratio: 4 / 5;
+    height: auto;
   }
   .camera-active-actions { grid-template-columns: 1.85fr .92fr 1.08fr .72fr; gap: 6px; }
   .camera-review-actions { grid-template-columns: 3fr 1fr; }
@@ -1417,8 +1415,10 @@ export default function(component) {
     return false;
   };
   const syncOrientationUi = () => {
-    // v237: landscape layout is a photo-only feature. Video stays portrait.
+    // v243: photo/video mode classes are kept, but the visible ratio now follows
+    // the actual built-in camera stream instead of a hard-coded frame.
     const videoMode = cameraMode === 'video';
+    const photoMode = !videoMode;
     const landscape = !videoMode && isDeviceLandscape();
     if (wrap) {
       wrap.classList.toggle('camera-video-mode', videoMode);
@@ -1457,25 +1457,19 @@ export default function(component) {
   const preferredVideoConstraints = () => {
     const landscape = isDeviceLandscape();
     const photoMode = cameraMode !== 'video';
-    // v242: match both photo and video to the same tall portrait capture box.
-    // Portrait uses a 4:5 frame similar to the orange single-photo viewer.
+    // v243: ask for high-quality dimensions, but do not force an artificial
+    // aspect ratio. Let the phone camera keep its native ratio.
     const width = photoMode
-      ? (landscape ? 1500 : 1200)
-      : 1200;
+      ? (landscape ? 1600 : 1200)
+      : 1080;
     const height = photoMode
-      ? (landscape ? 1200 : 1500)
-      : 1500;
-    const aspectRatio = photoMode
-      ? (landscape ? (5 / 4) : (4 / 5))
-      : (4 / 5);
-    const resizeMode = 'crop-and-scale';
+      ? (landscape ? 1200 : 1600)
+      : 1920;
     return {
       facingMode: { ideal: cameraFacing },
       width: { ideal: width },
       height: { ideal: height },
-      frameRate: { ideal: 30, max: 30 },
-      aspectRatio: { ideal: aspectRatio },
-      resizeMode: { ideal: resizeMode }
+      frameRate: { ideal: 30, max: 30 }
     };
   };
 
