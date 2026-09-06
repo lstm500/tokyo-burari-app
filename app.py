@@ -32,7 +32,7 @@ import streamlit as st
 # Freshly generated update: 2026-08-31 23:49 JST
 GENERATED_UPDATE_JST = "2026-09-06T12:00:00+09:00"
 
-APP_BUILD = "v248"
+APP_BUILD = "v249"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -902,7 +902,7 @@ _LIVE_CAMERA_HTML = """
       <button id="camera-review-retry" class="camera-retry-button" type="button">撮りなおす／選びなおす</button>
     </div>
     <button id="camera-review-find-moments" class="camera-find-button" type="button" hidden>✨ いい瞬間を探す</button>
-    <div id="camera-review-build" class="camera-review-build" hidden>camera v248</div>
+    <div id="camera-review-build" class="camera-review-build" hidden>camera v249</div>
     <div id="camera-review-emotion-hint" class="camera-review-emotion-hint" hidden>写真下の「通常／こどもーど」を切り替え、写真につけるアイコンを1つ選べます。</div>
     <div id="camera-review-image-shell" class="camera-review-image-shell" role="button" tabindex="0" aria-label="写真のアイコンを選ぶ" hidden>
       <img id="camera-review-image" class="camera-review-image" alt="撮影した写真の確認" />
@@ -1529,13 +1529,22 @@ export default function(component) {
     try { localStorage.setItem('tokyo_burari_camera_facing_v226', cameraFacing); } catch (_) {}
   };
   const preferredVideoConstraints = () => {
-    // Keep the phone camera's own supported ratio. For video, prefer a lighter
-    // 720/1280-class stream so MediaRecorder does not overload mobile hardware.
-    // Photos keep the higher-resolution request. No app-defined aspect ratio is used.
-    const isVideoMode = cameraMode === 'video';
+    // v249: use the camera/browser's native hardware path as much as possible.
+    // Only request a preferred portrait resolution; no forced aspectRatio, crop,
+    // max dimension, canvas stream, or post-start video reconfiguration is used.
+    // The browser is free to choose the closest camera-supported native mode.
+    if (cameraMode === 'video') {
+      return {
+        facingMode: { ideal: cameraFacing },
+        width: { ideal: 1080 },
+        height: { ideal: 1920 },
+        frameRate: { ideal: 30, max: 30 }
+      };
+    }
     return {
       facingMode: { ideal: cameraFacing },
-      height: isVideoMode ? { ideal: 1280, max: 1280 } : { ideal: 1600 },
+      width: { ideal: 1200 },
+      height: { ideal: 1600 },
       frameRate: { ideal: 30, max: 30 }
     };
   };
@@ -1642,6 +1651,7 @@ export default function(component) {
   let recordingStartedAt = 0;
   let recordingCapturedAt = '';
   let recordingLocationPromise = null;
+  let videoLocationPrefetchPromise = null;
   let recordingTimer = null;
   let recordingMaxTimer = null;
   let recordingCandidateTimer = null;
@@ -1910,12 +1920,14 @@ export default function(component) {
       });
       video.srcObject = stream;
       await video.play();
-      // v246: read the ratio actually returned by the phone camera. If the browser
-      // exposes that same native ratio in landscape dimensions, transpose only its
-      // orientation for this portrait-only UI.
-      await applyNativePortraitConstraint();
-      // v232: start from the widest zoom level the browser/device exposes.
-      await applyWidestAvailableZoom();
+      // v249: video recording must stay on the direct camera stream. Do not call
+      // applyConstraints() after opening video mode because some Android devices then
+      // fall back to a software-scaled stream and drop frames while MediaRecorder runs.
+      // Photo mode can still normalize the returned native ratio as before.
+      if (cameraMode === 'photo') {
+        await applyNativePortraitConstraint();
+        await applyWidestAvailableZoom();
+      }
       syncNativeCameraFrame();
       try {
         const cameraTrack = stream.getVideoTracks && stream.getVideoTracks()[0];
@@ -1932,6 +1944,13 @@ export default function(component) {
       shootButton.disabled = false;
       shootButton.textContent = cameraMode === 'video' ? '● 録画を開始' : '● 写真を撮る';
       showCameraActions();
+      // Start the high-accuracy location fix while the user is framing the shot,
+      // rather than starting GPS work at the exact moment recording begins.
+      if (cameraMode === 'video') {
+        try { videoLocationPrefetchPromise = getLocationAtCapture(); } catch (_) { videoLocationPrefetchPromise = null; }
+      } else {
+        videoLocationPrefetchPromise = null;
+      }
       try {
         const openedAt = Date.now();
         localStorage.setItem('tokyo_burari_last_camera_open_v1', String(openedAt));
@@ -2356,7 +2375,7 @@ export default function(component) {
         name: 'camera.jpg',
         source: 'camera',
         camera_facing: cameraFacing,
-        capture_orientation: isDeviceLandscape() ? 'landscape' : 'portrait',
+        capture_orientation: 'portrait',
         captured_at: capturedAt,
         location,
         emotion: '',
@@ -2409,27 +2428,23 @@ export default function(component) {
     recordingCandidateBusy = false;
     recordingCancelled = false;
     recordingCapturedAt = new Date().toISOString();
-    recordingLocationPromise = getLocationAtCapture();
+    recordingLocationPromise = videoLocationPrefetchPromise || getLocationAtCapture();
+    videoLocationPrefetchPromise = null;
     const mimeType = chooseRecorderMimeType();
     const captureTrack = stream.getVideoTracks && stream.getVideoTracks()[0];
     const captureSettings = (captureTrack && captureTrack.getSettings) ? captureTrack.getSettings() : {};
     const captureWidth = Math.max(0, Number(captureSettings?.width || video.videoWidth || 0));
     const captureHeight = Math.max(0, Number(captureSettings?.height || video.videoHeight || 0));
     const captureFrameRate = Math.max(0, Number(captureSettings?.frameRate || 0));
-    const capturePixels = captureWidth * captureHeight;
-    const requestedVideoBitrate = capturePixels >= 1700000
-      ? 3000000
-      : (capturePixels >= 800000 ? 2200000 : 1800000);
+    // Let the browser choose the encoder bitrate/profile. On phones this is much
+    // more likely to stay on the hardware-accelerated MediaRecorder path than an
+    // app-forced bitrate, especially when the actual camera mode differs by device.
+    const requestedVideoBitrate = 0;
     try {
-      const options = {
-        videoBitsPerSecond: requestedVideoBitrate,
-        audioBitsPerSecond: 96000
-      };
-      if (mimeType) options.mimeType = mimeType;
       try {
-        mediaRecorder = new MediaRecorder(stream, options);
-      } catch (_) {
         mediaRecorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+      } catch (_) {
+        mediaRecorder = new MediaRecorder(stream);
       }
       mediaRecorder.ondataavailable = (event) => {
         if (event.data && event.data.size > 0) recordedChunks.push(event.data);
@@ -2532,7 +2547,7 @@ export default function(component) {
             name: finalType.includes('mp4') ? 'camera.mp4' : 'camera.webm',
             source: 'video_camera',
             camera_facing: cameraFacing,
-            capture_orientation: isDeviceLandscape() ? 'landscape' : 'portrait',
+            capture_orientation: 'portrait',
             captured_at: recordingCapturedAt || new Date().toISOString(),
             location,
             auto_save: true,
@@ -2559,11 +2574,13 @@ export default function(component) {
         }
       };
 
-      mediaRecorder.start(1000);
+      // Large chunks reduce main-thread event traffic during the actual capture.
+      // The video remains the untouched MediaRecorder stream; no frame extraction runs now.
+      mediaRecorder.start(2000);
       recordingStartedAt = Date.now();
       setRecordingUi(true);
       updateRecordingClock();
-      recordingTimer = setInterval(updateRecordingClock, 500);
+      recordingTimer = setInterval(updateRecordingClock, 1000);
       // v139 quality-first recording: do not generate JPEG candidates while the
       // MediaRecorder encoder is running. Candidate extraction starts after stop.
       recordingMaxTimer = setTimeout(stopVideoRecording, VIDEO_RECORD_MAX_SECONDS * 1000);
