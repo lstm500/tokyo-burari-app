@@ -32,7 +32,7 @@ import streamlit as st
 # Freshly generated update: 2026-08-31 23:49 JST
 GENERATED_UPDATE_JST = "2026-09-06T12:00:00+09:00"
 
-APP_BUILD = "v240"
+APP_BUILD = "v242"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -1035,30 +1035,29 @@ _LIVE_CAMERA_CSS = """
 .camera-review-image,
 .camera-review-video {
   width: 100%;
-  max-height: 58dvh;
-  aspect-ratio: 3 / 4;
-  object-fit: contain;
+  max-height: 72dvh;
+  aspect-ratio: 4 / 5;
+  object-fit: cover;
   box-sizing: border-box;
   border-radius: 16px;
   background: #000;
-  margin: 0;
+  margin: 0 auto;
 }
-/* v232: show the whole camera frame instead of filling the 3:4 box by cropping it.
-   This makes the live framing match the saved photo and avoids the overly close look. */
+/* v242: use the same taller portrait frame for both photo and video, matching
+   the large orange single-photo card more closely and filling the frame edge-to-edge. */
 .live-camera-video {
-  object-fit: contain;
+  object-fit: cover;
 }
-/* v240: video capture stays portrait even if the handset is rotated.
-   Match the preview to a normal smartphone portrait shape (9:16), while still
-   using object-fit: contain so the live view does not crop in too aggressively. */
 .live-camera-wrap.camera-video-mode .live-camera-video,
-.live-camera-wrap.camera-video-mode .camera-review-video {
-  width: auto;
-  height: min(56dvh, 700px);
+.live-camera-wrap.camera-video-mode .camera-review-video,
+.live-camera-wrap.camera-photo-mode .live-camera-video,
+.live-camera-wrap.camera-photo-mode .camera-review-image {
+  width: 100%;
+  height: min(72dvh, 760px);
   max-width: 100%;
-  max-height: 56dvh;
-  aspect-ratio: 9 / 16;
-  object-fit: contain;
+  max-height: 72dvh;
+  aspect-ratio: 4 / 5;
+  object-fit: cover;
   margin-left: auto;
   margin-right: auto;
 }
@@ -1266,19 +1265,21 @@ _LIVE_CAMERA_CSS = """
     min-height: 52px;
     font-size: 14px;
   }
-  /* v240: the previous phone preview still felt too small.
-     Increase the usable preview area again, but keep the controls reachable.
-     Video specifically uses a phone-like portrait 9:16 frame. */
+  /* v242: match the camera box to the tall orange single-photo viewer and
+     make both photo and video fill the visible frame. */
   .live-camera-video,
   .camera-review-image,
   .camera-review-video {
-    max-height: 56dvh;
+    max-height: 72dvh;
+    aspect-ratio: 4 / 5;
   }
   .live-camera-wrap.camera-video-mode .live-camera-video,
-  .live-camera-wrap.camera-video-mode .camera-review-video {
-    height: min(56dvh, 640px);
-    max-height: 56dvh;
-    aspect-ratio: 9 / 16;
+  .live-camera-wrap.camera-video-mode .camera-review-video,
+  .live-camera-wrap.camera-photo-mode .live-camera-video,
+  .live-camera-wrap.camera-photo-mode .camera-review-image {
+    height: min(72dvh, 760px);
+    max-height: 72dvh;
+    aspect-ratio: 4 / 5;
   }
   .camera-active-actions { grid-template-columns: 1.85fr .92fr 1.08fr .72fr; gap: 6px; }
   .camera-review-actions { grid-template-columns: 3fr 1fr; }
@@ -1421,6 +1422,7 @@ export default function(component) {
     const landscape = !videoMode && isDeviceLandscape();
     if (wrap) {
       wrap.classList.toggle('camera-video-mode', videoMode);
+      wrap.classList.toggle('camera-photo-mode', photoMode);
       wrap.classList.toggle('camera-landscape', landscape);
       if (landscape) {
         let shortEdge = 420;
@@ -1455,24 +1457,25 @@ export default function(component) {
   const preferredVideoConstraints = () => {
     const landscape = isDeviceLandscape();
     const photoMode = cameraMode !== 'video';
-    // v240: photos follow the handset orientation. Video remains portrait and
-    // now targets a standard phone-like 9:16 shape, as requested.
+    // v242: match both photo and video to the same tall portrait capture box.
+    // Portrait uses a 4:5 frame similar to the orange single-photo viewer.
     const width = photoMode
-      ? (landscape ? 1600 : 1200)
-      : 1080;
+      ? (landscape ? 1500 : 1200)
+      : 1200;
     const height = photoMode
-      ? (landscape ? 1200 : 1600)
-      : 1920;
+      ? (landscape ? 1200 : 1500)
+      : 1500;
     const aspectRatio = photoMode
-      ? (landscape ? (4 / 3) : (3 / 4))
-      : (9 / 16);
+      ? (landscape ? (5 / 4) : (4 / 5))
+      : (4 / 5);
+    const resizeMode = 'crop-and-scale';
     return {
       facingMode: { ideal: cameraFacing },
       width: { ideal: width },
       height: { ideal: height },
       frameRate: { ideal: 30, max: 30 },
       aspectRatio: { ideal: aspectRatio },
-      resizeMode: { ideal: 'none' }
+      resizeMode: { ideal: resizeMode }
     };
   };
 
@@ -21629,12 +21632,12 @@ _MOMENTS_SELECT_CSS = """
 }
 .moments-mode-button {
   appearance:none; -webkit-appearance:none; min-height:26px; margin:0; padding:4px 3px;
-  border:1px solid rgba(128,128,128,.22); border-radius:8px; background:rgba(128,128,128,.045);
-  color:var(--st-text-color); font-size:8.5px; line-height:1; font-weight:760; cursor:pointer;
+  border:1px solid #D1D5DB; border-radius:8px; background:#FFFFFF;
+  color:#111827 !important; font-size:8.5px; line-height:1; font-weight:760; cursor:pointer;
   touch-action:manipulation; -webkit-tap-highlight-color:transparent;
 }
-.moments-mode-button.active { border-color:#6C9BD2; background:rgba(108,155,210,.13); }
-.moments-mode-button.parenting.active { border-color:#6FBA9C; background:rgba(111,186,156,.14); }
+.moments-mode-button.active { border-color:#6C9BD2; background:#DBEAFE; color:#1E3A8A !important; }
+.moments-mode-button.parenting.active { border-color:#6FBA9C; background:#DCFCE7; color:#166534 !important; }
 .moments-select-card.large-card .moments-mode-switch { gap:7px; margin-top:7px; }
 .moments-select-card.large-card .moments-mode-button { min-height:40px; font-size:11px; }
 .moments-select-meta {
@@ -21759,10 +21762,10 @@ _MOMENTS_SELECT_CSS = """
   -webkit-tap-highlight-color:transparent; box-sizing:border-box;
 }
 .moments-action-button.primary {
-  border:1px solid rgba(128,128,128,.18); background:var(--primary-color); color:#fff;
+  border:1px solid #2563EB; background:#2563EB; color:#FFFFFF !important;
 }
 .moments-action-button.secondary {
-  border:1px solid rgba(128,128,128,.28); background:rgba(128,128,128,.07); color:var(--st-text-color);
+  border:1px solid #D1D5DB; background:#F3F4F6; color:#111827 !important;
 }
 .moments-action-button:active { transform:scale(.99); }
 .moments-action-button[hidden] { display:none !important; }
@@ -22339,7 +22342,7 @@ def _render_moments_picker(photo, index, view_mode="list", next_video_action=Non
                 st.markdown(
                     f'<div style="padding:5px;border:3px solid {border};border-radius:16px;background:#111;">'
                     f'<img src="{html.escape(str(active_card["src"]), quote=True)}" '
-                    'style="display:block;width:100%;max-height:640px;aspect-ratio:4/5;object-fit:contain;border-radius:11px;" />'
+                    'style="display:block;width:100%;max-height:760px;aspect-ratio:4/5;object-fit:cover;border-radius:11px;" />'
                     '</div>',
                     unsafe_allow_html=True,
                 )
