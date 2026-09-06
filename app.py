@@ -899,7 +899,7 @@ _LIVE_CAMERA_HTML = """
       <button id="camera-review-retry" class="camera-retry-button" type="button">撮りなおす／選びなおす</button>
     </div>
     <button id="camera-review-find-moments" class="camera-find-button" type="button" hidden>✨ いい瞬間を探す</button>
-    <div id="camera-review-build" class="camera-review-build" hidden>camera v232</div>
+    <div id="camera-review-build" class="camera-review-build" hidden>camera v235</div>
     <div id="camera-review-emotion-hint" class="camera-review-emotion-hint" hidden>写真下の「通常／こどもーど」を切り替え、写真につけるアイコンを1つ選べます。</div>
     <div id="camera-review-image-shell" class="camera-review-image-shell" role="button" tabindex="0" aria-label="写真のアイコンを選ぶ" hidden>
       <img id="camera-review-image" class="camera-review-image" alt="撮影した写真の確認" />
@@ -1047,6 +1047,19 @@ _LIVE_CAMERA_CSS = """
    This makes the live framing match the saved photo and avoids the overly close look. */
 .live-camera-video {
   object-fit: contain;
+}
+/* v235: video capture stays portrait even if the handset is rotated.
+   Photo mode may still switch to the landscape preview below. */
+.live-camera-wrap.camera-video-mode .live-camera-video,
+.live-camera-wrap.camera-video-mode .camera-review-video {
+  width: auto;
+  height: min(58dvh, 720px);
+  max-width: 100%;
+  max-height: 58dvh;
+  aspect-ratio: 9 / 16;
+  object-fit: contain;
+  margin-left: auto;
+  margin-right: auto;
 }
 /* v226: selfie preview is mirrored like a normal phone camera.
    Captured files keep the camera sensor's original orientation. */
@@ -1388,8 +1401,11 @@ export default function(component) {
     return false;
   };
   const syncOrientationUi = () => {
-    const landscape = isDeviceLandscape();
+    // v235: landscape layout is a photo-only feature. Video is always portrait.
+    const videoMode = cameraMode === 'video';
+    const landscape = !videoMode && isDeviceLandscape();
     if (wrap) {
+      wrap.classList.toggle('camera-video-mode', videoMode);
       wrap.classList.toggle('camera-landscape', landscape);
       if (landscape) {
         let shortEdge = 420;
@@ -1424,17 +1440,17 @@ export default function(component) {
   const preferredVideoConstraints = () => {
     const landscape = isDeviceLandscape();
     const photoMode = cameraMode !== 'video';
-    // Photos use the sensor-friendly 4:3 frame so more of the scene fits in view.
-    // Video keeps 16:9, which is the expected playback shape.
+    // v235: photos follow the handset orientation, but video always requests
+    // a portrait 9:16 stream. Rotating the handset must not switch video to 16:9.
     const width = photoMode
       ? (landscape ? 1600 : 1200)
-      : (landscape ? 1920 : 1080);
+      : 1080;
     const height = photoMode
       ? (landscape ? 1200 : 1600)
-      : (landscape ? 1080 : 1920);
+      : 1920;
     const aspectRatio = photoMode
       ? (landscape ? (4 / 3) : (3 / 4))
-      : (landscape ? (16 / 9) : (9 / 16));
+      : (9 / 16);
     return {
       facingMode: { ideal: cameraFacing },
       width: { ideal: width },
@@ -2829,7 +2845,7 @@ export default function(component) {
         }
       } catch (err) {
         // Some mobile browsers lock capture dimensions after getUserMedia().
-        // Keep the live preview usable; the next camera open will request the new orientation.
+        // Photo mode will retry its new orientation on the next open; video remains portrait.
         console.warn('camera orientation constraint update unavailable', err);
       }
     }, 180);
