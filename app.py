@@ -32,7 +32,7 @@ import streamlit as st
 # Freshly generated update: 2026-08-31 23:49 JST
 GENERATED_UPDATE_JST = "2026-09-08T01:15:00+09:00"
 
-APP_BUILD = "v281"
+APP_BUILD = "v282"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -900,7 +900,7 @@ GPS_TRACK_STATION_ARRIVAL_FINAL_RADIUS_M = 110.0
 GPS_TRACK_STATION_ARRIVAL_SEGMENT_RADIUS_M = 80.0
 GPS_TRACK_STATION_ARRIVAL_MIN_TOTAL_WALK_M = 180.0
 GPS_TRACK_STATION_ARRIVAL_MIN_SEGMENT_WALK_M = 300.0
-GPS_TRACK_STATION_GLOW_RADIUS_M = 135.0
+GPS_TRACK_STATION_GLOW_RADIUS_M = 280.0
 GPS_TRACK_RENDER_POINT_LIMIT = 60000
 
 
@@ -27582,12 +27582,12 @@ html,body{{margin:0;padding:0;background:#0b1012;font-family:-apple-system,Blink
 #project-map .leaflet-tile{{width:256px;height:256px;max-width:none!important;max-height:none!important;user-select:none;-webkit-user-drag:none;}}
 .project-station-label{{background:rgba(7,16,13,.9);border:1px solid rgba(151,255,187,.72);color:#effff4;border-radius:9px;padding:3px 7px;box-shadow:0 0 16px rgba(88,255,139,.42);font-size:11px;font-weight:800;}}
 .project-station-label:before{{display:none;}}
-.project-arrived-label{{background:rgba(5,20,11,.94);border:1px solid rgba(205,255,218,.9);color:#f5fff7;box-shadow:0 0 10px rgba(82,255,129,.72),0 0 24px rgba(82,255,129,.38);font-size:12px;font-weight:900;}}
+.project-arrived-label{{background:rgba(4,22,10,.96);border:2px solid rgba(224,255,232,.96);color:#ffffff;box-shadow:0 0 12px rgba(82,255,129,.92),0 0 30px rgba(82,255,129,.58);font-size:13px;font-weight:950;}}
 .project-arrived-label:before{{display:none;}}
 .project-arrival-badge{{position:absolute;z-index:1000;right:10px;top:10px;max-width:70%;display:none;background:rgba(5,20,11,.9);border:1px solid rgba(190,255,207,.62);color:#f0fff4;border-radius:12px;padding:7px 10px;font-size:11px;font-weight:850;line-height:1.35;box-shadow:0 0 18px rgba(80,255,126,.28);pointer-events:none;}}
 .project-legend{{position:absolute;z-index:1000;left:10px;bottom:10px;background:rgba(4,12,9,.84);border:1px solid rgba(151,255,187,.24);color:#e9fff0;border-radius:11px;padding:7px 9px;font-size:10px;line-height:1.45;box-shadow:0 4px 16px rgba(0,0,0,.28);pointer-events:none;}}
-.project-legend-line{{display:inline-block;width:20px;height:3px;background:#9cffb3;box-shadow:0 0 8px #54ff87;border-radius:99px;margin-right:6px;vertical-align:middle;}}
-.project-legend-station{{display:inline-block;width:12px;height:12px;border:2px solid #effff3;background:#58ff8b;box-shadow:0 0 8px #58ff8b,0 0 16px rgba(88,255,139,.9);border-radius:50%;margin-right:6px;vertical-align:middle;}}
+.project-legend-line{{display:inline-block;width:20px;height:3px;background:#8ce6a2;box-shadow:0 0 5px rgba(72,230,112,.55);border-radius:99px;margin-right:6px;vertical-align:middle;}}
+.project-legend-station{{display:inline-block;width:14px;height:14px;border:2px solid #ffffff;background:#58ff8b;box-shadow:0 0 10px #58ff8b,0 0 24px rgba(88,255,139,.98),0 0 38px rgba(88,255,139,.62);border-radius:50%;margin-right:6px;vertical-align:middle;}}
 @media(max-width:640px){{#project-map{{height:570px;border-radius:15px;}}.project-arrival-badge{{max-width:74%;font-size:10.5px;}}}}
 </style></head><body>
 <div style="position:relative"><div id="project-map"></div><div id="project-arrival-badge" class="project-arrival-badge"></div><div class="project-legend"><div><span class="project-legend-line"></span>歩いた道</div><div><span class="project-legend-station"></span>辿り着いた駅</div></div></div>
@@ -27602,9 +27602,10 @@ html,body{{margin:0;padding:0;background:#0b1012;font-family:-apple-system,Blink
  if(all.length){{ const bounds=L.latLngBounds(all); map.fitBounds(bounds,{{padding:[28,28],maxZoom:16}}); }} else map.setView([35.6812,139.7671],11);
  (data.segments||[]).forEach((seg)=>{{
    if(!Array.isArray(seg)||seg.length<2)return;
-   L.polyline(seg,{{color:'#36ff76',weight:13,opacity:.13,lineCap:'round',lineJoin:'round',interactive:false}}).addTo(map);
-   L.polyline(seg,{{color:'#61ff8e',weight:7,opacity:.28,lineCap:'round',lineJoin:'round',interactive:false}}).addTo(map);
-   L.polyline(seg,{{color:'#a5ffbd',weight:3.2,opacity:.96,lineCap:'round',lineJoin:'round',interactive:false}}).addTo(map);
+   // Keep the walking trace visible but subordinate to a reached station.
+   L.polyline(seg,{{color:'#2bea63',weight:10,opacity:.075,lineCap:'round',lineJoin:'round',interactive:false}}).addTo(map);
+   L.polyline(seg,{{color:'#4cf27b',weight:5.5,opacity:.16,lineCap:'round',lineJoin:'round',interactive:false}}).addTo(map);
+   L.polyline(seg,{{color:'#99f5b0',weight:2.5,opacity:.72,lineCap:'round',lineJoin:'round',interactive:false}}).addTo(map);
  }});
  const rad=(v)=>Number(v)*Math.PI/180;
  const distanceM=(a,b)=>{{
@@ -27656,12 +27657,14 @@ html,body{{margin:0;padding:0;background:#0b1012;font-family:-apple-system,Blink
    const verdict=(typeof s.arrived==='boolean')?{{arrived:s.arrived,distance_m:Number(s.distance_m)||Infinity,near_m:Number(s.distance_m)||Infinity}}:classifyStation(lat,lon);
    if(verdict.arrived){{
      arrivedStations.push({{name,lat,lon,distance_m:Number(verdict.distance_m)||0}});
-     // Three quiet, static halos cover roughly the whole station area without a
-     // continuous animation loop, keeping mobile rendering light.
-     L.circle([lat,lon],{{radius:glowRadius,color:'#39ff72',weight:1,opacity:.10,fillColor:'#36ff70',fillOpacity:.045,interactive:false}}).addTo(map);
-     L.circle([lat,lon],{{radius:glowRadius*.72,color:'#67ff91',weight:3,opacity:.28,fillColor:'#57ff85',fillOpacity:.085,interactive:false}}).addTo(map);
-     L.circle([lat,lon],{{radius:glowRadius*.43,color:'#b7ffc8',weight:4,opacity:.50,fillColor:'#81ffa1',fillOpacity:.15,interactive:false}}).addTo(map);
-     const m=L.circleMarker([lat,lon],{{radius:8,color:'#f5fff7',weight:2.4,opacity:1,fillColor:'#58ff88',fillOpacity:1}}).addTo(map);
+     // A reached station must dominate the map visually.  Use broad, static
+     // concentric fills instead of animation so the entire station district is
+     // obvious even when the map is zoomed out, while keeping mobile rendering light.
+     L.circle([lat,lon],{{radius:glowRadius,color:'#24ff67',weight:2,opacity:.30,fillColor:'#20ff61',fillOpacity:.075,interactive:false}}).addTo(map);
+     L.circle([lat,lon],{{radius:glowRadius*.76,color:'#3cff75',weight:3.5,opacity:.50,fillColor:'#32ff70',fillOpacity:.13,interactive:false}}).addTo(map);
+     L.circle([lat,lon],{{radius:glowRadius*.54,color:'#71ff96',weight:4.5,opacity:.72,fillColor:'#58ff86',fillOpacity:.22,interactive:false}}).addTo(map);
+     L.circle([lat,lon],{{radius:glowRadius*.32,color:'#c8ffd4',weight:5.5,opacity:.96,fillColor:'#83ffa2',fillOpacity:.34,interactive:false}}).addTo(map);
+     const m=L.circleMarker([lat,lon],{{radius:11,color:'#ffffff',weight:3.2,opacity:1,fillColor:'#5dff8d',fillOpacity:1}}).addTo(map);
      m.bindTooltip(`到着：${{name}}`,{{permanent:true,direction:'top',offset:[0,-9],className:'project-arrived-label'}});
    }} else if(Number(verdict.near_m)<=Number(data.station_near_radius_m||600)){{
      const m=L.circleMarker([lat,lon],{{radius:3.8,color:'#b9ffd0',weight:1.1,opacity:.36,fillColor:'#62ff92',fillOpacity:.16}}).addTo(map);
