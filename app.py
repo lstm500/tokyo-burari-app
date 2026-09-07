@@ -32,7 +32,7 @@ import streamlit as st
 # Freshly generated update: 2026-08-31 23:49 JST
 GENERATED_UPDATE_JST = "2026-09-07T23:40:00+09:00"
 
-APP_BUILD = "v277-diag"
+APP_BUILD = "v278"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -771,6 +771,13 @@ APP_TIMEZONE = secret("APP_TIMEZONE", "Asia/Tokyo")
 SUPABASE_URL = secret("SUPABASE_URL", "")
 SUPABASE_SECRET_KEY = secret("SUPABASE_SECRET_KEY", "")
 PHOTO_BUCKET = secret("PHOTO_BUCKET", "burari-photos")
+# GPS trace data may share the photo bucket. That bucket can be configured to allow
+# only image/video MIME types, so application/json can be rejected with HTTP 415.
+# A dedicated GPS_TRACK_BUCKET may be supplied later; the default stays fully
+# backward-compatible and stores the JSON bytes in PHOTO_BUCKET using an allowed
+# metadata MIME type. The bytes are still UTF-8 JSON and are parsed as JSON on read.
+GPS_TRACK_BUCKET = str(secret("GPS_TRACK_BUCKET", PHOTO_BUCKET) or PHOTO_BUCKET).strip() or PHOTO_BUCKET
+GPS_TRACK_STORAGE_MIME = "application/json" if GPS_TRACK_BUCKET != PHOTO_BUCKET else "image/jpeg"
 GOOGLE_PLACES_API_KEY = str(secret("GOOGLE_PLACES_API_KEY", secret("GOOGLE_MAPS_API_KEY", "")) or "").strip()
 USE_FAST_MODE = str(secret("USE_FAST_MODE", "true")).lower() in {"1", "true", "yes", "on"}
 try:
@@ -27077,7 +27084,7 @@ def _get_gps_tracker_component_v271():
     _gps_tracker_component_v271_initialized = True
     try:
         gps_tracker_component_v271 = st.components.v2.component(
-            "tokyo_burari_always_gps_v277_diag",
+            "tokyo_burari_always_gps_v278",
             html=_GPS_TRACKER_HTML,
             css=_GPS_TRACKER_CSS,
             js=_GPS_TRACKER_JS,
@@ -27141,7 +27148,7 @@ def _coerce_track_point_v271(raw):
 def _read_track_month_uncached_v271(month_key, family_key=None, member_key=None):
     path = _gps_track_month_path(month_key, family_key, member_key)
     try:
-        raw = supabase_client().storage.from_(PHOTO_BUCKET).download(path)
+        raw = supabase_client().storage.from_(GPS_TRACK_BUCKET).download(path)
     except Exception:
         return []
     try:
@@ -27166,7 +27173,7 @@ def _read_track_month_cached_v271(family_key, member_key, month_key):
 
 @st.cache_data(ttl=45, max_entries=32, show_spinner=False)
 def _list_track_month_keys_v271(family_key, member_key):
-    bucket = supabase_client().storage.from_(PHOTO_BUCKET)
+    bucket = supabase_client().storage.from_(GPS_TRACK_BUCKET)
     folder = _gps_track_prefix(family_key, member_key)
     rows = []
     try:
@@ -27212,15 +27219,15 @@ def _upsert_track_month_v271(month_key, incoming_points):
     }
     blob = json.dumps(document, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
     path = _gps_track_month_path(month_key, family, member)
-    bucket = supabase_client().storage.from_(PHOTO_BUCKET)
-    options = {"content-type": "application/json", "cache-control": "0", "upsert": "true"}
+    bucket = supabase_client().storage.from_(GPS_TRACK_BUCKET)
+    options = {"content-type": GPS_TRACK_STORAGE_MIME, "cache-control": "0", "upsert": "true"}
     first_error = None
     try:
         bucket.upload(path=path, file=blob, file_options=options)
     except Exception as exc:
         first_error = exc
         try:
-            bucket.update(path=path, file=blob, file_options={"content-type": "application/json", "cache-control": "0"})
+            bucket.update(path=path, file=blob, file_options={"content-type": GPS_TRACK_STORAGE_MIME, "cache-control": "0"})
         except Exception:
             # Very old storage SDKs can lack upsert/update support. Replace only as
             # the final compatibility fallback; accepted points are still retained in
@@ -27230,7 +27237,7 @@ def _upsert_track_month_v271(month_key, incoming_points):
             except Exception:
                 pass
             try:
-                bucket.upload(path=path, file=blob, file_options={"content-type": "application/json", "cache-control": "0"})
+                bucket.upload(path=path, file=blob, file_options={"content-type": GPS_TRACK_STORAGE_MIME, "cache-control": "0"})
             except Exception:
                 raise first_error
     return len(points)
@@ -27273,7 +27280,7 @@ def run_always_on_gps_tracker_v271():
     allow_flush = page != "camera"
     force_flush = page == "review_project"
     ack_key = f"_gps_track_ack_v271_{current_family_key()}_{current_member_key()}"
-    diag_key = f"_gps_track_diag_v277_{current_family_key()}_{current_member_key()}"
+    diag_key = f"_gps_track_diag_v278_{current_family_key()}_{current_member_key()}"
     native_mode = str(_query_param_scalar("native_android") or "").strip() == "1"
     native_bridge_token = str(_query_param_scalar("native_bridge_token") or "").strip()[:200] if native_mode else ""
     result = component(
@@ -27292,7 +27299,7 @@ def run_always_on_gps_tracker_v271():
             "ack_ms": int(st.session_state.get(ack_key) or 0),
             "server_diag": dict(st.session_state.get(diag_key) or {}),
         },
-        key=f"always_on_gps_tracker_v277_diag_{current_family_key()}_{current_member_key()}",
+        key=f"always_on_gps_tracker_v278_{current_family_key()}_{current_member_key()}",
         on_track_batch_change=lambda: None,
     )
     batch = getattr(result, "track_batch", None)
