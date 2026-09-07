@@ -30,9 +30,9 @@ from zoneinfo import ZoneInfo
 import streamlit as st
 
 # Freshly generated update: 2026-08-31 23:49 JST
-GENERATED_UPDATE_JST = "2026-09-08T08:02:00+09:00"
+GENERATED_UPDATE_JST = "2026-09-08T08:12:00+09:00"
 
-APP_BUILD = "v291"
+APP_BUILD = "v292"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -934,6 +934,18 @@ GPS_TRACK_STATION_VISION_MIN_HALF_LENGTH_M = 58.0
 GPS_TRACK_STATION_VISION_MAX_HALF_LENGTH_M = 145.0
 GPS_TRACK_STATION_VISION_MIN_HALF_WIDTH_M = 18.0
 GPS_TRACK_STATION_VISION_MAX_HALF_WIDTH_M = 52.0
+
+# v292: once the image-based station footprint has been inferred successfully, persist
+# the exact numeric polygon and fit parameters in Supabase Storage. Subsequent renders
+# read those numbers first and do not download/inspect map tiles again. The cache is
+# global because a railway station's physical footprint is not user-specific.
+STATION_ZONE_CACHE_SCHEMA_VERSION = 1
+STATION_ZONE_CACHE_DIR = "_station_zones/v1"
+STATION_ZONE_CACHE_MAX_POINTS = 96
+STATION_ZONE_CACHE_READ_TTL_SECONDS = 3600
+# Keep empty in normal operation. A future targeted station correction can list a name
+# here to bypass the stored zone once and overwrite it with a newly inferred geometry.
+STATION_ZONE_FORCE_REBUILD_NAMES = set()
 
 
 # ============================================================
@@ -28329,9 +28341,188 @@ def _project_station_image_corridor_v291(name, lat, lon):
         return fallback
 
 
-def _project_osaki_forced_debug_v291(points):
+def _station_zone_cache_key_v292(name, lat, lon):
+    """Stable station identity. Rounded anchor tolerates tiny OSM coordinate changes."""
+    normalized = unicodedata.normalize("NFKC", str(name or "駅")).strip()
+    normalized = re.sub(r"\s+", "", normalized) or "駅"
+    try:
+        lat = round(float(lat), 2)
+        lon = round(float(lon), 2)
+    except (TypeError, ValueError):
+        lat = 0.0
+        lon = 0.0
+    raw = f"{normalized}|{lat:.2f}|{lon:.2f}".encode("utf-8")
+    return hashlib.sha1(raw).hexdigest()[:24]
+
+
+def _station_zone_cache_path_v292(name, lat, lon):
+    return f"{STATION_ZONE_CACHE_DIR}/{_station_zone_cache_key_v292(name, lat, lon)}.json"
+
+
+def _coerce_station_zone_record_v292(payload):
+    if not isinstance(payload, dict):
+        return None
+    if int(payload.get("schema_version") or 0) != int(STATION_ZONE_CACHE_SCHEMA_VERSION):
+        return None
+    zone = []
+    for raw in (payload.get("arrival_zone") or [])[:STATION_ZONE_CACHE_MAX_POINTS]:
+        if not isinstance(raw, (list, tuple)) or len(raw) < 2:
+            continue
+        try:
+            lat = float(raw[0]); lon = float(raw[1])
+        except (TypeError, ValueError):
+            continue
+        if not (math.isfinite(lat) and math.isfinite(lon) and -90 <= lat <= 90 and -180 <= lon <= 180):
+            continue
+        zone.append([round(lat, 7), round(lon, 7)])
+    if len(zone) < 3:
+        return None
+
+    out = {
+        "arrival_zone": zone,
+        "physical_shapes": [],
+        "source": str(payload.get("source") or "stored_numeric_station_zone")[:120],
+        "method": str(payload.get("method") or "stored_numeric_station_zone")[:160],
+        "station_name": str(payload.get("station_name") or "駅")[:120],
+        "generated_at": str(payload.get("generated_at") or "")[:80],
+        "geometry_hash": str(payload.get("geometry_hash") or "")[:64],
+        "estimator_build": str(payload.get("estimator_build") or "")[:40],
+    }
+    for key in ("half_length_m", "half_width_m", "axis_deg", "vision_score", "vision_threshold", "vision_peak", "vision_baseline"):
+        value = payload.get(key)
+        if value is None:
+            out[key] = None
+            continue
+        try:
+            value = float(value)
+            out[key] = round(value, 4) if math.isfinite(value) else None
+        except (TypeError, ValueError):
+            out[key] = None
+    try:
+        out["tile_zoom"] = int(payload.get("tile_zoom")) if payload.get("tile_zoom") is not None else None
+    except (TypeError, ValueError):
+        out["tile_zoom"] = None
+    for key in ("raw_platform_count", "selected_platform_count", "platform_point_count", "track_point_count"):
+        try:
+            out[key] = max(0, int(payload.get(key) or 0))
+        except (TypeError, ValueError):
+            out[key] = 0
+    return out
+
+
+@st.cache_data(ttl=STATION_ZONE_CACHE_READ_TTL_SECONDS, max_entries=256, show_spinner=False)
+def _read_station_zone_record_v292(path):
+    try:
+        raw = supabase_client().storage.from_(GPS_TRACK_BUCKET).download(str(path))
+    except Exception:
+        return None
+    try:
+        payload = json.loads(bytes(raw).decode("utf-8"))
+    except Exception:
+        return None
+    return _coerce_station_zone_record_v292(payload)
+
+
+def _save_station_zone_record_v292(name, lat, lon, footprint):
+    """Persist exact inferred geometry. Only successful image inference is frozen."""
+    if not isinstance(footprint, dict):
+        return False
+    method = str(footprint.get("method") or "")
+    zone = footprint.get("arrival_zone") or []
+    if not method.startswith("map_image_station_anchor") or len(zone) < 3:
+        return False
+
+    clean_zone = []
+    for raw in zone[:STATION_ZONE_CACHE_MAX_POINTS]:
+        if not isinstance(raw, (list, tuple)) or len(raw) < 2:
+            continue
+        try:
+            p_lat = float(raw[0]); p_lon = float(raw[1])
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(p_lat) and math.isfinite(p_lon):
+            clean_zone.append([round(p_lat, 7), round(p_lon, 7)])
+    if len(clean_zone) < 3:
+        return False
+
+    geometry_raw = json.dumps(clean_zone, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    document = {
+        "schema_version": int(STATION_ZONE_CACHE_SCHEMA_VERSION),
+        "station_name": str(name or "駅")[:120],
+        "anchor_lat": round(float(lat), 7),
+        "anchor_lon": round(float(lon), 7),
+        "arrival_zone": clean_zone,
+        "half_length_m": footprint.get("half_length_m"),
+        "half_width_m": footprint.get("half_width_m"),
+        "axis_deg": footprint.get("axis_deg"),
+        "vision_score": footprint.get("vision_score"),
+        "vision_threshold": footprint.get("vision_threshold"),
+        "vision_peak": footprint.get("vision_peak"),
+        "vision_baseline": footprint.get("vision_baseline"),
+        "tile_zoom": footprint.get("tile_zoom"),
+        "raw_platform_count": footprint.get("raw_platform_count", 0),
+        "selected_platform_count": footprint.get("selected_platform_count", 0),
+        "platform_point_count": footprint.get("platform_point_count", 0),
+        "track_point_count": footprint.get("track_point_count", 0),
+        "source": str(footprint.get("source") or "map_image_rail_density")[:120],
+        "method": method[:160],
+        "estimator_build": "v291-map-image-rail-density",
+        "generated_at": now_jst().isoformat(),
+        "geometry_hash": hashlib.sha1(geometry_raw).hexdigest(),
+    }
+    blob = json.dumps(document, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    path = _station_zone_cache_path_v292(name, lat, lon)
+    bucket = supabase_client().storage.from_(GPS_TRACK_BUCKET)
+    options = {"content-type": GPS_TRACK_STORAGE_MIME, "cache-control": "3600", "upsert": "true"}
+    first_error = None
+    try:
+        bucket.upload(path=path, file=blob, file_options=options)
+    except Exception as exc:
+        first_error = exc
+        try:
+            bucket.update(path=path, file=blob, file_options={"content-type": GPS_TRACK_STORAGE_MIME, "cache-control": "3600"})
+        except Exception:
+            try:
+                bucket.remove([path])
+            except Exception:
+                pass
+            try:
+                bucket.upload(path=path, file=blob, file_options={"content-type": GPS_TRACK_STORAGE_MIME, "cache-control": "3600"})
+            except Exception:
+                if first_error:
+                    raise first_error
+                raise
+    _read_station_zone_record_v292.clear()
+    return True
+
+
+def _project_station_image_corridor_persisted_v292(name, lat, lon):
+    """Read the frozen numeric zone first; infer from map pixels only on first success."""
+    path = _station_zone_cache_path_v292(name, lat, lon)
+    normalized_name = re.sub(r"\s+", "", unicodedata.normalize("NFKC", str(name or "駅")))
+    force_rebuild = normalized_name in STATION_ZONE_FORCE_REBUILD_NAMES
+    saved = None if force_rebuild else _read_station_zone_record_v292(path)
+    if isinstance(saved, dict) and len(saved.get("arrival_zone") or []) >= 3:
+        result = dict(saved)
+        result["source"] = "stored_numeric_station_zone"
+        result["zone_cache_status"] = "loaded"
+        result["zone_cache_key"] = _station_zone_cache_key_v292(name, lat, lon)
+        return result
+
+    inferred = dict(_project_station_image_corridor_v291(name, lat, lon) or {})
+    inferred["zone_cache_status"] = "not_saved"
+    inferred["zone_cache_key"] = _station_zone_cache_key_v292(name, lat, lon)
+    try:
+        if _save_station_zone_record_v292(name, lat, lon, inferred):
+            inferred["zone_cache_status"] = "saved"
+    except Exception:
+        inferred["zone_cache_status"] = "save_failed"
+    return inferred
+
+
+def _project_osaki_forced_debug_v292(points):
     lat=35.61939; lon=139.72849
-    fp=_project_station_image_corridor_v291("大崎駅",lat,lon)
+    fp=_project_station_image_corridor_persisted_v292("大崎駅",lat,lon)
     zone=fp.get("arrival_zone") if isinstance(fp,dict) else []
     arrived=_project_track_enters_station_zone_v290(points,zone,lat,lon)
     center_best=float("inf")
@@ -28349,10 +28540,12 @@ def _project_osaki_forced_debug_v291(points):
             "method":fp.get("method",""),"vision_score":fp.get("vision_score",0.0),
             "vision_threshold":fp.get("vision_threshold"),"vision_peak":fp.get("vision_peak"),
             "vision_baseline":fp.get("vision_baseline"),"tile_zoom":fp.get("tile_zoom"),
+            "zone_cache_status":fp.get("zone_cache_status",""),"zone_cache_key":fp.get("zone_cache_key",""),
+            "geometry_hash":fp.get("geometry_hash",""),"generated_at":fp.get("generated_at",""),
             "debug_osaki":True,"forced_debug":True}
 
 
-def _render_burari_project_map_v291(points, segments, stations):
+def _render_burari_project_map_v292(points, segments, stations):
     if not points:
         return
     payload = {
@@ -28434,10 +28627,12 @@ html,body{{margin:0;padding:0;background:#0b1012;font-family:-apple-system,Blink
    const state=Boolean(s.arrived)?'到着判定あり':'未到着';
    const len=(Number(s.half_length_m||0)*2).toFixed(0), wid=(Number(s.half_width_m||0)*2).toFixed(0), deg=Number(s.axis_deg||0).toFixed(0);
    const method=String(s.method||''); const score=Number(s.vision_score||0);
-   const methodLabel=method.startsWith('map_image_station_anchor')?'地図画像・線路密度':(method.startsWith('map_image_failed')?'画像解析失敗→ホーム補助':'ホーム補助');
+   const methodLabel=method.startsWith('map_image_station_anchor')?'地図画像・線路密度':(String(s.footprint_source||'')==='stored_numeric_station_zone'?'保存済み数値':(method.startsWith('map_image_failed')?'画像解析失敗→ホーム補助':'ホーム補助'));
+   const cache=String(s.zone_cache_status||'');
+   const cacheLabel=cache==='loaded'?'保存済み範囲を再現':(cache==='saved'?'初回推定→数値保存済み':(cache==='save_failed'?'数値保存失敗':'未保存'));
    const icon=L.divIcon({{className:'project-arrived-station-icon',html:'<div style="background:#ff3535;border-color:#fff;box-shadow:0 0 10px #ff2020,0 0 26px rgba(255,32,32,.9)"></div>',iconSize:[18,18],iconAnchor:[9,9]}});
    const marker=L.marker([Number(s.lat),Number(s.lon)],{{icon,interactive:false}}).addTo(map);
-   marker.bindTooltip(`大崎駅 判定範囲（画像推定・調整中）<br>${{state}} / 約${{len}}m × ${{wid}}m / 軸${{deg}}°<br>${{methodLabel}} / 信頼${{score.toFixed(2)}}`,{{permanent:true,direction:'top',offset:[0,-12],className:'project-osaki-debug-label'}});
+   marker.bindTooltip(`大崎駅 判定範囲（画像推定・調整中）<br>${{state}} / 約${{len}}m × ${{wid}}m / 軸${{deg}}°<br>${{methodLabel}} / 信頼${{score.toFixed(2)}}<br>${{cacheLabel}}`,{{permanent:true,direction:'top',offset:[0,-12],className:'project-osaki-debug-label'}});
  }};
  const renderedStationKeys=new Set();
  const stationKey=(name,lat,lon)=>`${{String(name||'駅').replace(/\\s+/g,'')}}:${{lat.toFixed(4)}}:${{lon.toFixed(4)}}`;
@@ -28496,12 +28691,12 @@ def page_burari_project():
             n = n[:-1]
         return n == "大崎"
     stations = [row for row in stations if not _is_osaki_row(row)]
-    stations.append(_project_osaki_forced_debug_v291(map_points))
-    _render_burari_project_map_v291(map_points, segments, stations)
+    stations.append(_project_osaki_forced_debug_v292(map_points))
+    _render_burari_project_map_v292(map_points, segments, stations)
     st.caption(
-        "【v291 大崎駅・画像推定調整中】大崎駅だけ、地図画像そのものから線路らしい暗い線を抽出し、"
-        "駅位置の周辺で線路束が太く・密になる区間を探して赤い駅判定範囲を作ります。"
-        "赤枠へ歩行GPSが1点でも入れば大崎駅到着です。範囲が理想形に合うまで赤表示を残します。"
+        "【v292 大崎駅・画像推定＋数値保存】初回だけ地図画像から線路密度を解析して駅判定範囲を作り、"
+        "完成した赤枠の緯度・経度ポリゴン、長さ、幅、軸角度などをSupabaseへ数値保存します。"
+        "次回以降は保存済み数値を読み込んで同じ範囲を再現するため、地図画像の再解析は行いません。"
     )
 
 
