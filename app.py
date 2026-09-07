@@ -32,7 +32,7 @@ import streamlit as st
 # Freshly generated update: 2026-08-31 23:49 JST
 GENERATED_UPDATE_JST = "2026-09-08T01:15:00+09:00"
 
-APP_BUILD = "v280"
+APP_BUILD = "v281"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -892,8 +892,15 @@ GPS_TRACK_BATCH_MAX_POINTS = 180
 GPS_TRACK_WALK_MAX_SPEED_MPS = 4.5
 GPS_TRACK_SEGMENT_MAX_GAP_SECONDS = 180.0
 GPS_TRACK_SEGMENT_MAX_JUMP_M = 180.0
+# Station arrival is intentionally stricter than simple proximity.
+# A station is considered reached only when a walking run actually ends near it.
 GPS_TRACK_STATION_VISITED_RADIUS_M = 140.0
 GPS_TRACK_STATION_NEAR_RADIUS_M = 600.0
+GPS_TRACK_STATION_ARRIVAL_FINAL_RADIUS_M = 110.0
+GPS_TRACK_STATION_ARRIVAL_SEGMENT_RADIUS_M = 80.0
+GPS_TRACK_STATION_ARRIVAL_MIN_TOTAL_WALK_M = 180.0
+GPS_TRACK_STATION_ARRIVAL_MIN_SEGMENT_WALK_M = 300.0
+GPS_TRACK_STATION_GLOW_RADIUS_M = 135.0
 GPS_TRACK_RENDER_POINT_LIMIT = 60000
 
 
@@ -27555,6 +27562,11 @@ def _render_burari_project_map_v271(points, segments, stations):
         "points": [[round(float(p["lat"]), 7), round(float(p["lon"]), 7)] for p in points],
         "segments": segments,
         "stations": stations,
+        "arrival_final_radius_m": GPS_TRACK_STATION_ARRIVAL_FINAL_RADIUS_M,
+        "arrival_segment_radius_m": GPS_TRACK_STATION_ARRIVAL_SEGMENT_RADIUS_M,
+        "arrival_min_total_walk_m": GPS_TRACK_STATION_ARRIVAL_MIN_TOTAL_WALK_M,
+        "arrival_min_segment_walk_m": GPS_TRACK_STATION_ARRIVAL_MIN_SEGMENT_WALK_M,
+        "station_glow_radius_m": GPS_TRACK_STATION_GLOW_RADIUS_M,
     }
     payload_json = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).replace("</", "<\\/")
     map_html = f"""<!doctype html>
@@ -27568,18 +27580,21 @@ html,body{{margin:0;padding:0;background:#0b1012;font-family:-apple-system,Blink
 #project-map .leaflet-pane,#project-map .leaflet-tile,#project-map .leaflet-marker-icon,#project-map .leaflet-marker-shadow,#project-map .leaflet-tile-container,#project-map .leaflet-pane>svg,#project-map .leaflet-pane>canvas,#project-map .leaflet-zoom-box,#project-map .leaflet-image-layer,#project-map .leaflet-layer{{position:absolute;left:0;top:0;}}
 #project-map.leaflet-container{{overflow:hidden;-webkit-tap-highlight-color:transparent;}}
 #project-map .leaflet-tile{{width:256px;height:256px;max-width:none!important;max-height:none!important;user-select:none;-webkit-user-drag:none;}}
-.project-station-label{{background:rgba(7,16,13,.86);border:1px solid rgba(151,255,187,.62);color:#d9ffe6;border-radius:8px;padding:2px 6px;box-shadow:0 0 12px rgba(88,255,139,.25);font-size:11px;font-weight:800;}}
+.project-station-label{{background:rgba(7,16,13,.9);border:1px solid rgba(151,255,187,.72);color:#effff4;border-radius:9px;padding:3px 7px;box-shadow:0 0 16px rgba(88,255,139,.42);font-size:11px;font-weight:800;}}
 .project-station-label:before{{display:none;}}
+.project-arrived-label{{background:rgba(5,20,11,.94);border:1px solid rgba(205,255,218,.9);color:#f5fff7;box-shadow:0 0 10px rgba(82,255,129,.72),0 0 24px rgba(82,255,129,.38);font-size:12px;font-weight:900;}}
+.project-arrived-label:before{{display:none;}}
+.project-arrival-badge{{position:absolute;z-index:1000;right:10px;top:10px;max-width:70%;display:none;background:rgba(5,20,11,.9);border:1px solid rgba(190,255,207,.62);color:#f0fff4;border-radius:12px;padding:7px 10px;font-size:11px;font-weight:850;line-height:1.35;box-shadow:0 0 18px rgba(80,255,126,.28);pointer-events:none;}}
 .project-legend{{position:absolute;z-index:1000;left:10px;bottom:10px;background:rgba(4,12,9,.84);border:1px solid rgba(151,255,187,.24);color:#e9fff0;border-radius:11px;padding:7px 9px;font-size:10px;line-height:1.45;box-shadow:0 4px 16px rgba(0,0,0,.28);pointer-events:none;}}
 .project-legend-line{{display:inline-block;width:20px;height:3px;background:#9cffb3;box-shadow:0 0 8px #54ff87;border-radius:99px;margin-right:6px;vertical-align:middle;}}
-.project-legend-station{{display:inline-block;width:10px;height:10px;border:2px solid #dcffe6;background:#58ff8b;box-shadow:0 0 10px #58ff8b;border-radius:50%;margin-right:6px;vertical-align:middle;}}
-@media(max-width:640px){{#project-map{{height:570px;border-radius:15px;}}}}
+.project-legend-station{{display:inline-block;width:12px;height:12px;border:2px solid #effff3;background:#58ff8b;box-shadow:0 0 8px #58ff8b,0 0 16px rgba(88,255,139,.9);border-radius:50%;margin-right:6px;vertical-align:middle;}}
+@media(max-width:640px){{#project-map{{height:570px;border-radius:15px;}}.project-arrival-badge{{max-width:74%;font-size:10.5px;}}}}
 </style></head><body>
-<div style="position:relative"><div id="project-map"></div><div class="project-legend"><div><span class="project-legend-line"></span>歩いた道</div><div><span class="project-legend-station"></span>到達した駅</div></div></div>
+<div style="position:relative"><div id="project-map"></div><div id="project-arrival-badge" class="project-arrival-badge"></div><div class="project-legend"><div><span class="project-legend-line"></span>歩いた道</div><div><span class="project-legend-station"></span>辿り着いた駅</div></div></div>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
 <script>
 (function(){{
- const data={payload_json}; const node=document.getElementById('project-map');
+ const data={payload_json}; const node=document.getElementById('project-map'); const arrivalBadge=document.getElementById('project-arrival-badge');
  if(!window.L){{node.innerHTML='<div style="color:#dbe7df;padding:24px">地図を読み込めませんでした。</div>';return;}}
  const map=L.map('project-map',{{zoomControl:true,attributionControl:true,preferCanvas:true}});
  L.tileLayer('https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png',{{maxZoom:19,attribution:'&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap</a>'}}).addTo(map);
@@ -27591,24 +27606,74 @@ html,body{{margin:0;padding:0;background:#0b1012;font-family:-apple-system,Blink
    L.polyline(seg,{{color:'#61ff8e',weight:7,opacity:.28,lineCap:'round',lineJoin:'round',interactive:false}}).addTo(map);
    L.polyline(seg,{{color:'#a5ffbd',weight:3.2,opacity:.96,lineCap:'round',lineJoin:'round',interactive:false}}).addTo(map);
  }});
- const addStation=(s)=>{{
-   const lat=Number(s.lat),lon=Number(s.lon); if(!Number.isFinite(lat)||!Number.isFinite(lon))return;
-   if(s.visited){{
-     L.circleMarker([lat,lon],{{radius:16,color:'#7dff9f',weight:2,opacity:.32,fillColor:'#4cff7a',fillOpacity:.07,interactive:false}}).addTo(map);
-     const m=L.circleMarker([lat,lon],{{radius:7,color:'#f0fff4',weight:2.2,opacity:1,fillColor:'#58ff88',fillOpacity:.98}}).addTo(map);
-     m.bindTooltip(String(s.name||'駅'),{{permanent:true,direction:'top',offset:[0,-8],className:'project-station-label'}});
-   }} else {{
-     const m=L.circleMarker([lat,lon],{{radius:4.5,color:'#b9ffd0',weight:1.3,opacity:.52,fillColor:'#62ff92',fillOpacity:.24}}).addTo(map);
-     m.bindTooltip(String(s.name||'駅'),{{direction:'top',className:'project-station-label'}});
-   }}
- }};
- (data.stations||[]).forEach(addStation);
  const rad=(v)=>Number(v)*Math.PI/180;
  const distanceM=(a,b)=>{{
    const R=6371000,dLat=rad(Number(b[0])-Number(a[0])),dLon=rad(Number(b[1])-Number(a[1]));
    const lat1=rad(a[0]),lat2=rad(b[0]);
    const h=Math.sin(dLat/2)**2+Math.cos(lat1)*Math.cos(lat2)*Math.sin(dLon/2)**2;
    return 2*R*Math.asin(Math.min(1,Math.sqrt(Math.max(0,h))));
+ }};
+ const segmentLength=(seg)=>{{
+   let total=0; if(!Array.isArray(seg))return total;
+   for(let i=1;i<seg.length;i++){{total+=distanceM(seg[i-1],seg[i]);}}
+   return total;
+ }};
+ const cleanSegments=(data.segments||[]).filter((seg)=>Array.isArray(seg)&&seg.length>=2);
+ const segmentMetrics=cleanSegments.map((seg)=>({{seg,len:segmentLength(seg),start:seg[0],end:seg[seg.length-1]}}));
+ const totalWalk=segmentMetrics.reduce((sum,row)=>sum+row.len,0);
+ const finalEnd=segmentMetrics.length?segmentMetrics[segmentMetrics.length-1].end:null;
+ const finalRadius=Math.max(30,Number(data.arrival_final_radius_m)||110);
+ const segmentRadius=Math.max(25,Number(data.arrival_segment_radius_m)||80);
+ const minTotal=Math.max(50,Number(data.arrival_min_total_walk_m)||180);
+ const minSegment=Math.max(80,Number(data.arrival_min_segment_walk_m)||300);
+ const glowRadius=Math.max(70,Number(data.station_glow_radius_m)||135);
+ const classifyStation=(lat,lon)=>{{
+   const station=[lat,lon]; let bestTrack=Infinity,bestEnd=Infinity,bestSegmentLen=0;
+   for(const row of segmentMetrics){{
+     const endD=distanceM(row.end,station);
+     if(endD<bestEnd){{bestEnd=endD;bestSegmentLen=row.len;}}
+     for(const p of row.seg){{const d=distanceM(p,station);if(d<bestTrack)bestTrack=d;}}
+   }}
+   // Primary rule: the latest walking endpoint is close to the station and the
+   // whole recorded outing contains a meaningful walk. This survives GPS gaps
+   // that may split one outing into several short visual segments.
+   if(finalEnd&&totalWalk>=minTotal&&distanceM(finalEnd,station)<=finalRadius){{
+     return {{arrived:true,reason:'final',distance_m:distanceM(finalEnd,station),near_m:bestTrack}};
+   }}
+   // Historical rule: an earlier continuous walking segment itself must be long
+   // enough and terminate much closer to the station. Merely passing beside a
+   // station is therefore not treated as an arrival.
+   if(bestSegmentLen>=minSegment&&bestEnd<=segmentRadius){{
+     return {{arrived:true,reason:'segment',distance_m:bestEnd,near_m:bestTrack}};
+   }}
+   return {{arrived:false,reason:'near',distance_m:bestEnd,near_m:bestTrack}};
+ }};
+ const renderedStationKeys=new Set(); const arrivedStations=[];
+ const stationKey=(name,lat,lon)=>`${{String(name||'駅').replace(/\\s+/g,'')}}:${{lat.toFixed(4)}}:${{lon.toFixed(4)}}`;
+ const addStation=(s)=>{{
+   const lat=Number(s.lat),lon=Number(s.lon); if(!Number.isFinite(lat)||!Number.isFinite(lon))return;
+   const name=String(s.name||'駅'); const key=stationKey(name,lat,lon); if(renderedStationKeys.has(key))return; renderedStationKeys.add(key);
+   const verdict=(typeof s.arrived==='boolean')?{{arrived:s.arrived,distance_m:Number(s.distance_m)||Infinity,near_m:Number(s.distance_m)||Infinity}}:classifyStation(lat,lon);
+   if(verdict.arrived){{
+     arrivedStations.push({{name,lat,lon,distance_m:Number(verdict.distance_m)||0}});
+     // Three quiet, static halos cover roughly the whole station area without a
+     // continuous animation loop, keeping mobile rendering light.
+     L.circle([lat,lon],{{radius:glowRadius,color:'#39ff72',weight:1,opacity:.10,fillColor:'#36ff70',fillOpacity:.045,interactive:false}}).addTo(map);
+     L.circle([lat,lon],{{radius:glowRadius*.72,color:'#67ff91',weight:3,opacity:.28,fillColor:'#57ff85',fillOpacity:.085,interactive:false}}).addTo(map);
+     L.circle([lat,lon],{{radius:glowRadius*.43,color:'#b7ffc8',weight:4,opacity:.50,fillColor:'#81ffa1',fillOpacity:.15,interactive:false}}).addTo(map);
+     const m=L.circleMarker([lat,lon],{{radius:8,color:'#f5fff7',weight:2.4,opacity:1,fillColor:'#58ff88',fillOpacity:1}}).addTo(map);
+     m.bindTooltip(`到着：${{name}}`,{{permanent:true,direction:'top',offset:[0,-9],className:'project-arrived-label'}});
+   }} else if(Number(verdict.near_m)<=Number(data.station_near_radius_m||600)){{
+     const m=L.circleMarker([lat,lon],{{radius:3.8,color:'#b9ffd0',weight:1.1,opacity:.36,fillColor:'#62ff92',fillOpacity:.16}}).addTo(map);
+     m.bindTooltip(name,{{direction:'top',className:'project-station-label'}});
+   }}
+ }};
+ (data.stations||[]).forEach(addStation);
+ const updateArrivalBadge=()=>{{
+   if(!arrivalBadge)return;
+   const names=[...new Set(arrivedStations.sort((a,b)=>a.distance_m-b.distance_m).map((s)=>s.name))];
+   if(names.length){{arrivalBadge.textContent=`到着判定：${{names.slice(0,3).join('・')}}`;arrivalBadge.style.display='block';}}
+   else{{arrivalBadge.style.display='none';}}
  }};
  const loadStations=async()=>{{
    if(!all.length)return;
@@ -27621,7 +27686,7 @@ html,body{{margin:0;padding:0;background:#0b1012;font-family:-apple-system,Blink
    const endpoints=['https://overpass-api.de/api/interpreter','https://overpass.kumi.systems/api/interpreter'];
    let payload=null;
    for(const endpoint of endpoints){{
-     const ctrl=new AbortController(); const timer=setTimeout(()=>ctrl.abort(),3500);
+     const ctrl=new AbortController(); const timer=setTimeout(()=>ctrl.abort(),3800);
      try{{
        const response=await fetch(endpoint,{{method:'POST',headers:{{'Content-Type':'application/x-www-form-urlencoded; charset=UTF-8'}},body,signal:ctrl.signal}});
        if(response.ok){{payload=await response.json();clearTimeout(timer);break;}}
@@ -27629,14 +27694,23 @@ html,body{{margin:0;padding:0;background:#0b1012;font-family:-apple-system,Blink
    }}
    if(!payload||!Array.isArray(payload.elements))return;
    const sample=all.filter((_,i)=>i%20===0); if(all.length&&sample[sample.length-1]!==all[all.length-1])sample.push(all[all.length-1]);
-   const seen=new Set();
+   const candidates=[];
    payload.elements.forEach((row)=>{{
      const lat=Number(row?.lat),lon=Number(row?.lon); if(!Number.isFinite(lat)||!Number.isFinite(lon))return;
-     const tags=row?.tags||{{}}; const name=String(tags['name:ja']||tags.name||'駅');
-     const key=`${{name}}:${{lat.toFixed(5)}}:${{lon.toFixed(5)}}`; if(seen.has(key))return; seen.add(key);
-     let best=Infinity; for(const p of sample){{best=Math.min(best,distanceM([lat,lon],p));if(best<=140)break;}}
-     if(best<=600)addStation({{name,lat,lon,visited:best<=140}});
+     const tags=row?.tags||{{}}; const name=String(tags['name:ja']||tags.name||'駅').trim();
+     let best=Infinity; for(const p of sample){{best=Math.min(best,distanceM([lat,lon],p));if(best<=segmentRadius)break;}}
+     if(best<=600)candidates.push({{name,lat,lon,best}});
    }});
+   // Merge duplicate OSM nodes for the same interchange. Prefer the node closest
+   // to the recorded walk so labels and halos do not stack on top of each other.
+   candidates.sort((a,b)=>a.best-b.best);
+   const accepted=[];
+   for(const c of candidates){{
+     const normalized=c.name.replace(/\\s+/g,'');
+     const duplicate=accepted.some((x)=>x.name.replace(/\\s+/g,'')===normalized&&distanceM([x.lat,x.lon],[c.lat,c.lon])<180);
+     if(!duplicate)accepted.push(c);
+   }}
+   accepted.forEach(addStation); updateArrivalBadge();
  }};
  setTimeout(()=>{{map.invalidateSize();loadStations();}},120);
 }})();
@@ -27668,7 +27742,10 @@ def page_burari_project():
     with stat_cols[2]:
         st.metric("歩行区間", f"{len(segments)} 本")
     _render_burari_project_map_v271(walk_points or points[-1:], segments, [])
-    st.caption("駅情報は地図表示後にブラウザ側で軽く取得し、歩いた軌跡の近くにある駅のうち到達した駅を強く発光表示します。")
+    st.caption(
+        "駅情報は地図表示後に軽く取得します。駅の近くを通っただけでは到着扱いにせず、"
+        "徒歩区間の終点が駅の近くにあり、直前まで十分な徒歩移動がある場合に「辿り着いた駅」と判定します。"
+    )
 
 
 # ============================================================
