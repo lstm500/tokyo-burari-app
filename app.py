@@ -32,7 +32,7 @@ import streamlit as st
 # Freshly generated update: 2026-08-31 23:49 JST
 GENERATED_UPDATE_JST = "2026-09-07T23:40:00+09:00"
 
-APP_BUILD = "v275"
+APP_BUILD = "v276"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -26749,20 +26749,81 @@ export default function(component) {
   })();
   const directNativeBridge = Boolean(nativeBridge);
 
-  const readNativeRows = () => {
-    if (!directNativeBridge) return [];
+  // v276: Streamlit components can run in an isolated frame where Android's
+  // addJavascriptInterface object is not visible. The Android host now installs a
+  // top-level postMessage relay. Keep the direct path when available, otherwise use
+  // that relay. The same native token is validated inside Android before any row is
+  // returned or acknowledged.
+  const relayTypeRequest = 'burari-native-gps-request-v5';
+  const relayTypeResponse = 'burari-native-gps-response-v5';
+  const relayPending = new Map();
+  let relayCounter = 0;
+  const onRelayMessage = (event) => {
     try {
-      const raw = nativeBridge.pendingPoints(nativeBridgeToken, Math.min(500, batchMax));
-      const rows = safeParse(raw, []);
-      return Array.isArray(rows)
-        ? rows.filter((p) => p && p.id && Number.isFinite(Number(p.ts_ms)) && Number.isFinite(Number(p.lat)) && Number.isFinite(Number(p.lon)))
-        : [];
-    } catch (_) { return []; }
+      const payload = event?.data;
+      if (!payload || payload.type !== relayTypeResponse) return;
+      const requestId = String(payload.request_id || '');
+      if (!requestId || !relayPending.has(requestId)) return;
+      const entry = relayPending.get(requestId);
+      relayPending.delete(requestId);
+      clearTimeout(entry.timer);
+      entry.resolve(payload);
+    } catch (_) {}
+  };
+  window.addEventListener('message', onRelayMessage);
+
+  const relayRequest = (action, payload={}) => {
+    if (!nativeMode || !nativeBridgeToken) return Promise.resolve(null);
+    return new Promise((resolve) => {
+      const requestId = `gps-${Date.now()}-${++relayCounter}-${Math.random().toString(36).slice(2)}`;
+      const timer = setTimeout(() => {
+        relayPending.delete(requestId);
+        resolve(null);
+      }, 2500);
+      relayPending.set(requestId, {resolve, timer});
+      try {
+        const target = (window.parent && window.parent !== window) ? window.parent : window;
+        target.postMessage({
+          type: relayTypeRequest,
+          request_id: requestId,
+          action: String(action || ''),
+          token: nativeBridgeToken,
+          ...payload,
+        }, '*');
+      } catch (_) {
+        clearTimeout(timer);
+        relayPending.delete(requestId);
+        resolve(null);
+      }
+    });
   };
 
-  const acknowledgeNative = () => {
-    if (!directNativeBridge || !(ackMs > 0)) return;
-    try { nativeBridge.acknowledgeThrough(nativeBridgeToken, String(Math.floor(ackMs))); } catch (_) {}
+  const relayNativeBridge = Boolean(nativeMode && nativeBridgeToken && !directNativeBridge);
+  const nativeBridgeAvailable = directNativeBridge || relayNativeBridge;
+
+  const normalizeNativeRows = (rows) => Array.isArray(rows)
+    ? rows.filter((p) => p && p.id && Number.isFinite(Number(p.ts_ms)) && Number.isFinite(Number(p.lat)) && Number.isFinite(Number(p.lon)))
+    : [];
+
+  const readNativeRows = async () => {
+    if (directNativeBridge) {
+      try {
+        const raw = nativeBridge.pendingPoints(nativeBridgeToken, Math.min(500, batchMax));
+        return normalizeNativeRows(safeParse(raw, []));
+      } catch (_) { return []; }
+    }
+    if (!relayNativeBridge) return [];
+    const reply = await relayRequest('pending', {limit: Math.min(500, batchMax)});
+    return normalizeNativeRows(safeParse(reply?.rows_json, []));
+  };
+
+  const acknowledgeNative = async () => {
+    if (!(ackMs > 0) || !nativeBridgeAvailable) return;
+    if (directNativeBridge) {
+      try { nativeBridge.acknowledgeThrough(nativeBridgeToken, String(Math.floor(ackMs))); } catch (_) {}
+      return;
+    }
+    await relayRequest('ack', {ts_ms: String(Math.floor(ackMs))});
   };
 
   // A cloud acknowledgement is the only event allowed to mark native SQLite rows as
@@ -26770,23 +26831,29 @@ export default function(component) {
   // them into top-level WebView localStorage.
   acknowledgeNative();
 
-  const maybeFlushNative = () => {
-    if (cancelled || !allowFlush || !directNativeBridge) return;
-    const rows = readNativeRows();
-    if (!rows.length) return;
-    const batch = rows.slice(0, batchMax);
-    const last = batch[batch.length - 1] || {};
-    const token = `native-v3|${batch[0]?.id || ''}|${last?.id || ''}|${batch.length}`;
-    const now = Date.now();
-    if (nativeSentToken === token && now - nativeSentAt < 120000) return;
-    nativeSentToken = token;
-    nativeSentAt = now;
-    setTriggerValue('track_batch', {
-      token,
-      points: batch,
-      max_ts_ms: Number(last?.ts_ms || 0),
-      source: 'android_direct_bridge_v3',
-    });
+  let nativeFlushBusy = false;
+  const maybeFlushNative = async () => {
+    if (cancelled || !allowFlush || !nativeBridgeAvailable || nativeFlushBusy) return;
+    nativeFlushBusy = true;
+    try {
+      const rows = await readNativeRows();
+      if (!rows.length || cancelled) return;
+      const batch = rows.slice(0, batchMax);
+      const last = batch[batch.length - 1] || {};
+      const token = `native-v5|${batch[0]?.id || ''}|${last?.id || ''}|${batch.length}`;
+      const now = Date.now();
+      if (nativeSentToken === token && now - nativeSentAt < 120000) return;
+      nativeSentToken = token;
+      nativeSentAt = now;
+      setTriggerValue('track_batch', {
+        token,
+        points: batch,
+        max_ts_ms: Number(last?.ts_ms || 0),
+        source: directNativeBridge ? 'android_direct_bridge_v3' : 'android_parent_relay_v5',
+      });
+    } finally {
+      nativeFlushBusy = false;
+    }
   };
 
   const readPending = () => {
@@ -26820,7 +26887,7 @@ export default function(component) {
   // Compatibility fallback for the first Android bridge and normal browser mode.
   // v275 direct-native mode bypasses localStorage completely.
   const activePendingMarkerKey = 'tokyo_burari_gps_v274:active_pending_key';
-  if (!directNativeBridge) {
+  if (!nativeBridgeAvailable) {
     try {
       if (localStorage.getItem(pendingKey) === null) localStorage.setItem(pendingKey, '[]');
       if (nativeMode) localStorage.setItem(activePendingMarkerKey, pendingKey);
@@ -26828,7 +26895,7 @@ export default function(component) {
   }
 
   const adoptNativePendingRows = () => {
-    if (!nativeMode || directNativeBridge) return;
+    if (!nativeMode || nativeBridgeAvailable) return;
     try {
       const currentRows = readPending();
       const byId = new Map();
@@ -26853,7 +26920,7 @@ export default function(component) {
   };
 
   let pending = [];
-  if (!directNativeBridge) {
+  if (!nativeBridgeAvailable) {
     adoptNativePendingRows();
     pending = readPending();
     if (ackMs > 0 && pending.length) {
@@ -26874,7 +26941,7 @@ export default function(component) {
   };
 
   const maybeFlush = (forced=false) => {
-    if (cancelled || !allowFlush || directNativeBridge) return;
+    if (cancelled || !allowFlush || nativeBridgeAvailable) return;
     adoptNativePendingRows();
     pending = readPending();
     if (!pending.length) return;
@@ -26945,9 +27012,9 @@ export default function(component) {
 
   if (!nativeMode) startWatch();
   if (allowFlush) {
-    if (directNativeBridge) {
-      flushTimer = setInterval(maybeFlushNative, 3000);
-      setTimeout(maybeFlushNative, 600);
+    if (nativeBridgeAvailable) {
+      flushTimer = setInterval(() => { void maybeFlushNative(); }, 3000);
+      setTimeout(() => { void maybeFlushNative(); }, 600);
     } else {
       const flushPollMs = nativeMode ? 3000 : 30000;
       flushTimer = setInterval(() => maybeFlush(false), flushPollMs);
@@ -26960,6 +27027,9 @@ export default function(component) {
   return () => {
     cancelled = true;
     document.removeEventListener('visibilitychange', onVisibility);
+    window.removeEventListener('message', onRelayMessage);
+    for (const entry of relayPending.values()) { try { clearTimeout(entry.timer); entry.resolve(null); } catch (_) {} }
+    relayPending.clear();
     if (flushTimer) clearInterval(flushTimer);
     if (watchId !== null) {
       try { navigator.geolocation.clearWatch(watchId); } catch (_) {}
@@ -26980,7 +27050,7 @@ def _get_gps_tracker_component_v271():
     _gps_tracker_component_v271_initialized = True
     try:
         gps_tracker_component_v271 = st.components.v2.component(
-            "tokyo_burari_always_gps_v275",
+            "tokyo_burari_always_gps_v276",
             html=_GPS_TRACKER_HTML,
             css=_GPS_TRACKER_CSS,
             js=_GPS_TRACKER_JS,
@@ -27193,7 +27263,7 @@ def run_always_on_gps_tracker_v271():
             "force_flush": force_flush,
             "ack_ms": int(st.session_state.get(ack_key) or 0),
         },
-        key=f"always_on_gps_tracker_v275_{current_family_key()}_{current_member_key()}",
+        key=f"always_on_gps_tracker_v276_{current_family_key()}_{current_member_key()}",
         on_track_batch_change=lambda: None,
     )
     batch = getattr(result, "track_batch", None)
