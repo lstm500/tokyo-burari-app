@@ -30,9 +30,9 @@ from zoneinfo import ZoneInfo
 import streamlit as st
 
 # Freshly generated update: 2026-08-31 23:49 JST
-GENERATED_UPDATE_JST = "2026-09-07T23:40:00+09:00"
+GENERATED_UPDATE_JST = "2026-09-08T01:15:00+09:00"
 
-APP_BUILD = "v279"
+APP_BUILD = "v280"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -193,6 +193,16 @@ st.markdown(
         max-width: 760px;
         padding-top: 1rem;
         padding-bottom: 5rem;
+      }
+      /* v280: Never show the previous page as a faded ghost while Streamlit reruns.
+         Streamlit marks superseded DOM blocks with data-stale=true. Keep their
+         layout slot for reconciliation, but make them fully invisible/non-clickable. */
+      [data-stale="true"] {
+        opacity: 0 !important;
+        visibility: hidden !important;
+        pointer-events: none !important;
+        transition: none !important;
+        animation: none !important;
       }
       div.stButton > button {
         min-height: 3.2rem;
@@ -18382,8 +18392,63 @@ def _return_diary_photo_to_gallery(trip_id):
         st.session_state.pop(f"reflection_state_{trip_id}", None)
 
 
-def navigate_to_parent():
-    """Move one level up in the fixed app hierarchy, never by visit history."""
+def _set_page_state(page_name, history_mode="push"):
+    """Change route state without starting a second Streamlit rerun.
+
+    Widget callbacks run before the normal rerun body. Using this helper from
+    navigation buttons means one tap causes one rerun instead of the old
+    button-rerun + st.rerun pair. This materially reduces mobile page latency and
+    the window in which Streamlit can display stale DOM from the previous page.
+    """
+    target = page_name if page_name in VALID_APP_PAGES else "home"
+    current = str(st.session_state.get("main_page") or "home")
+    if current == target:
+        return
+
+    if target == "diary" and current == "home":
+        reset_diary_navigation_for_home_entry()
+    elif target == "diary":
+        st.session_state.preferred_diary_trip_id = None
+        st.session_state["_diary_selector_serial"] = int(
+            st.session_state.get("_diary_selector_serial") or 0
+        ) + 1
+        for key in list(st.session_state.keys()):
+            if str(key).startswith("diary_trip_selector_"):
+                st.session_state.pop(key, None)
+
+    st.session_state["main_page"] = target
+    st.session_state["_history_action"] = (
+        history_mode if history_mode in {"push", "replace"} else "push"
+    )
+    # Keep component keys stable across ordinary route changes so the browser can
+    # reconcile the page without remounting every persistent bridge.
+    st.session_state.pop("_browser_hierarchy_back_token", None)
+
+
+def _go_page_callback(page_name, history_mode="push"):
+    """Streamlit button callback for one-rerun page navigation."""
+    _set_page_state(page_name, history_mode=history_mode)
+
+
+def _home_nav_callback(page_name, camera_mode=None):
+    """Home navigation callback; prepares camera/review state before the rerun."""
+    if page_name == "camera":
+        requested_mode = str(camera_mode or "").strip().lower()
+        if requested_mode not in {"photo", "video"}:
+            requested_mode = _remembered_recent_camera_mode() or "photo"
+        if requested_mode == "video":
+            st.session_state["_camera_auto_start_video"] = True
+            st.session_state.pop("_camera_auto_start", None)
+        else:
+            st.session_state["_camera_auto_start"] = True
+            st.session_state.pop("_camera_auto_start_video", None)
+    elif page_name == "review":
+        st.session_state.pop("review_view_selector", None)
+    _set_page_state(page_name, history_mode="push")
+
+
+def _navigate_to_parent_state_only():
+    """Apply one hierarchy-up action without explicitly triggering a rerun."""
     node, object_id = current_navigation_context()
     if node == "home":
         return
@@ -18391,48 +18456,57 @@ def navigate_to_parent():
     if node == "diary_photo":
         _return_diary_photo_to_gallery(object_id)
         st.session_state["_history_action"] = "replace"
-        st.rerun()
+        return
 
     if node == "diary_trip":
         reset_diary_navigation_for_home_entry()
         st.session_state["_history_action"] = "replace"
-        st.rerun()
+        return
 
     if node == "review_history_detail":
         st.session_state.pop("history_detail_trip_id", None)
         st.session_state["_history_action"] = "replace"
-        st.rerun()
+        return
 
     if node in {"review_history", "review_map", "review_project", "review_monthly", "review_tag"}:
         st.session_state.pop("history_detail_trip_id", None)
         st.session_state.pop("review_view_selector", None)
-        go_page("review", history_mode="replace")
+        _set_page_state("review", history_mode="replace")
+        return
 
-    # All first-level pages have Home as their parent.
-    go_page("home", history_mode="replace")
+    _set_page_state("home", history_mode="replace")
+
+
+def _navigate_to_parent_callback():
+    """Button callback form of Back navigation; the widget rerun renders the result."""
+    _navigate_to_parent_state_only()
+
+
+def navigate_to_parent():
+    """Imperative Back helper for browser-history/component events."""
+    _navigate_to_parent_state_only()
+    st.rerun(scope="app")
 
 
 def go_page(page_name, history_mode="push"):
-    target = page_name if page_name in VALID_APP_PAGES else "home"
-    current = st.session_state.get("main_page")
-    if current != target:
-        # Home -> Diary must always open the same neutral Diary landing page, not
-        # the photo/trip the user happened to have open before returning Home.
-        if target == "diary" and current == "home":
-            reset_diary_navigation_for_home_entry()
-        elif target == "diary":
-            st.session_state.preferred_diary_trip_id = None
-            st.session_state["_diary_selector_serial"] = int(
-                st.session_state.get("_diary_selector_serial") or 0
-            ) + 1
-            for key in list(st.session_state.keys()):
-                if str(key).startswith("diary_trip_selector_"):
-                    st.session_state.pop(key, None)
-        st.session_state["main_page"] = target
-        st.session_state["_history_action"] = (
-            history_mode if history_mode in {"push", "replace"} else "push"
-        )
-    st.rerun()
+    """Imperative route helper for non-widget flows.
+
+    Navigation buttons should use _go_page_callback/_home_nav_callback so a tap
+    needs only one rerun. This helper remains for browser/component events where
+    the route changes after the script has already started.
+    """
+    _set_page_state(page_name, history_mode=history_mode)
+    st.rerun(scope="app")
+
+def _history_home_callback():
+    st.session_state.pop("history_detail_trip_id", None)
+    _set_page_state("home", history_mode="replace")
+
+
+def _toggle_home_destination_editor():
+    st.session_state.show_home_destination_editor = not bool(
+        st.session_state.get("show_home_destination_editor")
+    )
 
 
 def sync_browser_history():
@@ -18506,26 +18580,16 @@ def ensure_today_trip():
 
 
 def render_home_button(label, page_name, key, ensure_trip=False, open_period_review=False, camera_mode=None):
-    if st.button(label, key=key, use_container_width=True):
-        if page_name == "camera":
-            # Home now has separate Photo / Video buttons. When a mode is supplied,
-            # open that exact mode instead of restoring the most recently used one.
-            requested_mode = str(camera_mode or "").strip().lower()
-            if requested_mode not in {"photo", "video"}:
-                requested_mode = _remembered_recent_camera_mode() or "photo"
-            if requested_mode == "video":
-                st.session_state["_camera_auto_start_video"] = True
-                st.session_state.pop("_camera_auto_start", None)
-            else:
-                st.session_state["_camera_auto_start"] = True
-                st.session_state.pop("_camera_auto_start_video", None)
-        elif page_name == "review":
-            # Always enter Review through the clear three-choice menu. The monthly-review
-            # nudge on Home is still shown, but it no longer skips past this selector.
-            st.session_state.pop("review_view_selector", None)
-        elif ensure_trip:
-            ensure_today_trip()
-        go_page(page_name)
+    # v280: use a callback so the target page is selected before Streamlit starts
+    # the rerun. This avoids rendering the old page once more and then rerunning a
+    # second time solely to change routes.
+    st.button(
+        label,
+        key=key,
+        use_container_width=True,
+        on_click=_home_nav_callback,
+        args=(page_name, camera_mode),
+    )
 
 
 @st.cache_data(show_spinner=False)
@@ -18662,26 +18726,32 @@ def render_global_bottom_navigation(page_name):
         return
     st.divider()
     with st.container(key=f"global_parent_nav_{page_name}"):
-        if st.button(
+        st.button(
             "← 1つ前に戻る",
             use_container_width=True,
             key=f"global_parent_back_{page_name}",
-        ):
-            navigate_to_parent()
+            on_click=_navigate_to_parent_callback,
+        )
     with st.container(key=f"global_home_nav_{page_name}"):
-        if st.button(
+        st.button(
             "トップページに戻る",
             use_container_width=True,
             key=f"global_bottom_home_{page_name}",
-        ):
-            go_page("home", history_mode="replace")
+            on_click=_go_page_callback,
+            args=("home", "replace"),
+        )
 
 
 def page_top(title, caption=""):
     c1, c2 = st.columns([1, 5], vertical_alignment="center")
     with c1:
-        if st.button("←", key=f"parent_back_{title}", help="1つ前の階層に戻る", use_container_width=True):
-            navigate_to_parent()
+        st.button(
+            "←",
+            key=f"parent_back_{title}",
+            help="1つ前の階層に戻る",
+            use_container_width=True,
+            on_click=_navigate_to_parent_callback,
+        )
     with c2:
         st.subheader(title)
     if caption:
@@ -20367,19 +20437,21 @@ def page_home():
         with st.container(key="home_media_tools"):
             media_left, media_right = st.columns(2, gap="small")
             with media_left:
-                if st.button(
+                st.button(
                     "✨ いい瞬間を見る",
                     key="home_good_moments_button",
                     use_container_width=True,
-                ):
-                    go_page("moments")
+                    on_click=_go_page_callback,
+                    args=("moments", "push"),
+                )
             with media_right:
-                if st.button(
+                st.button(
                     "🎞️ 動画保管庫",
                     key="home_video_vault_button",
                     use_container_width=True,
-                ):
-                    go_page("videos")
+                    on_click=_go_page_callback,
+                    args=("videos", "push"),
+                )
             render_home_video_count_status()
 
         # Manual fallback for cases where the phone/browser cannot provide GPS.
@@ -20389,15 +20461,21 @@ def page_home():
             with st.container(key="home_location_tools"):
                 place_col, toilet_col = st.columns([2.35, .82], gap="small")
                 with place_col:
-                    if st.button(place_button_label, key="home_destination_toggle", use_container_width=True):
-                        st.session_state.show_home_destination_editor = not bool(
-                            st.session_state.get("show_home_destination_editor")
-                        )
-                        st.rerun()
+                    st.button(
+                        place_button_label,
+                        key="home_destination_toggle",
+                        use_container_width=True,
+                        on_click=_toggle_home_destination_editor,
+                    )
                 with toilet_col:
                     with st.container(key="home_toilets_quick"):
-                        if st.button("🚻 トイレ", key="home_toilets_button", use_container_width=True):
-                            go_page("toilets")
+                        st.button(
+                            "🚻 トイレ",
+                            key="home_toilets_button",
+                            use_container_width=True,
+                            on_click=_go_page_callback,
+                            args=("toilets", "push"),
+                        )
 
             if st.session_state.get("show_home_destination_editor"):
                 trip = ensure_today_trip()
@@ -24718,12 +24796,13 @@ def page_diary():
 
     # v269: Diary can also be revisited from place rather than date. Reuse the
     # existing lightweight Memory Map instead of duplicating map/photo loading here.
-    if st.button(
+    st.button(
         "🗺️ 地図から振り返る",
         use_container_width=True,
         key="diary_open_memory_map_v269",
-    ):
-        go_page("review_map")
+        on_click=_go_page_callback,
+        args=("review_map", "push"),
+    )
 
     if trip_id is None:
         st.caption("振り返る日を選ぶと、そのぶらり旅の日記と写真を表示します。地図からは、場所を起点に過去の写真・動画を振り返れます。")
@@ -24917,13 +24996,12 @@ def page_history(embedded=False):
                     st.rerun()
         with home_col:
             with st.container(key="history_home_nav"):
-                if st.button(
+                st.button(
                     "トップ画面に戻る",
                     use_container_width=True,
                     key=f"history_home_{trip_id}",
-                ):
-                    st.session_state.pop("history_detail_trip_id", None)
-                    go_page("home")
+                    on_click=_history_home_callback,
+                )
 
         if st.button(
             "🗑 この日記を削除",
@@ -27669,48 +27747,53 @@ def page_review():
     )
 
     with st.container(key="review_map_jump"):
-        if st.button(
+        st.button(
             "🗺️ 思い出マップ",
             use_container_width=True,
             key="review_open_map_v259",
-        ):
-            go_page("review_map")
+            on_click=_go_page_callback,
+            args=("review_map", "push"),
+        )
         st.caption("いまいる場所の近くで、以前どんな写真・動画を残したかを地図のピンからたどる")
 
     with st.container(key="review_project_jump"):
-        if st.button(
+        st.button(
             "✨ ぶらり旅プロジェクト",
             use_container_width=True,
             key="review_open_project_v271",
-        ):
-            go_page("review_project")
+            on_click=_go_page_callback,
+            args=("review_project", "push"),
+        )
         st.caption("スマホを持って歩いた道を蓄光テープのように光らせ、到達した駅を特別に表示する")
 
     with st.container(key="review_monthly_jump"):
-        if st.button(
+        st.button(
             "🗓 月別の振り返り",
             use_container_width=True,
             key="review_open_monthly_v208",
-        ):
-            go_page("review_monthly")
+            on_click=_go_page_callback,
+            args=("review_monthly", "push"),
+        )
         st.caption("月を選び、その月の写真・気持ち・日記をまとめて、写真＋音楽で見返す")
 
     with st.container(key="review_tag_jump"):
-        if st.button(
+        st.button(
             "🏷️ タグ別の振り返り",
             use_container_width=True,
             key="review_open_tag_v208",
-        ):
-            go_page("review_tag")
+            on_click=_go_page_callback,
+            args=("review_tag", "push"),
+        )
         st.caption("AIが自動判定した『子ども』『大人』『複数人』などを選び、月をまたいで写真＋音楽で見返す")
 
     with st.container(key="review_history_jump"):
-        if st.button(
+        st.button(
             "📚 これまでの日記",
             use_container_width=True,
             key="review_open_history_v208",
-        ):
-            go_page("review_history")
+            on_click=_go_page_callback,
+            args=("review_history", "push"),
+        )
         st.caption("これまで作った日記を1日ごとに読み返す")
 
 
@@ -28190,8 +28273,14 @@ init_state()
 # v145: video preservation and Good Moments are separated. This call only submits
 # unfinished post-save jobs to the background executor and returns immediately, so
 # Home, Back, Camera and the next recording remain usable while AI is working.
+# v280: page navigation must stay cheap. Discover/resume unfinished video AI jobs
+# at most once every 30 seconds per session instead of on every widget rerun.
 try:
-    resume_member_video_background_jobs()
+    _bg_resume_now = time.monotonic()
+    _bg_resume_last = float(st.session_state.get("_bg_video_resume_last_monotonic") or 0.0)
+    if (_bg_resume_now - _bg_resume_last) >= 30.0:
+        st.session_state["_bg_video_resume_last_monotonic"] = _bg_resume_now
+        resume_member_video_background_jobs()
 except Exception:
     pass
 # v145 does not use browser-side low-resolution candidate recovery. If native
@@ -28220,13 +28309,11 @@ render_pending_emotion_query_cleanup()
 # Camera pages never flush, so GPS tracking cannot trigger a rerun during recording.
 run_always_on_gps_tracker_v271()
 
-# v147: render the entire visible app inside one replaceable root. This is stronger
-# than a normal rerun for mobile Streamlit: after save/delete mutations the old root
-# is replaced as a unit, so controls from a removed video/photo card cannot remain
-# faintly visible in the vacated space. The UI epoch additionally remounts custom
-# components that hold browser-side state.
-page_root = st.empty()
-with page_root.container():
+# v280: keep the whole visible page under one keyed root so its top-level identity
+# does not shift between Home/Review/Camera/etc. Streamlit can then reconcile the
+# target page in-place. Together with one-rerun callbacks and hiding data-stale DOM,
+# this prevents the previous page from remaining as a faint duplicate during route changes.
+with st.container(key="app_page_root_v280"):
     rollover_notice = st.session_state.pop("_rollover_notice", None)
     if rollover_notice:
         st.success(rollover_notice)
