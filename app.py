@@ -32,7 +32,7 @@ import streamlit as st
 # Freshly generated update: 2026-08-31 23:49 JST
 GENERATED_UPDATE_JST = "2026-09-07T09:10:00+09:00"
 
-APP_BUILD = "v272"
+APP_BUILD = "v273"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -26759,6 +26759,16 @@ export default function(component) {
   };
   const sessionId = getSessionId();
 
+  // v273: in Android native mode the WebView bridge looks for this exact
+  // per-account pending key before it can transfer points from the native SQLite
+  // database.  Create the empty queue eagerly so the two sides can complete their
+  // handshake even when no browser-GPS point has ever been written.
+  try {
+    if (localStorage.getItem(pendingKey) === null) {
+      localStorage.setItem(pendingKey, '[]');
+    }
+  } catch (_) {}
+
   let pending = readPending();
   if (ackMs > 0 && pending.length) {
     pending = pending.filter((p) => Number(p.ts_ms || 0) > ackMs);
@@ -26847,8 +26857,12 @@ export default function(component) {
 
   if (!nativeMode) startWatch();
   if (allowFlush) {
-    flushTimer = setInterval(() => maybeFlush(false), 30000);
-    setTimeout(() => maybeFlush(Boolean(forceFlush)), 300);
+    // Native Android points can be injected into localStorage just after the
+    // component mounts. Poll the tiny local queue more often in native mode so
+    // opening the project page flushes recovered points within a few seconds.
+    const flushPollMs = nativeMode ? 3000 : 30000;
+    flushTimer = setInterval(() => maybeFlush(false), flushPollMs);
+    setTimeout(() => maybeFlush(Boolean(forceFlush)), nativeMode ? 1200 : 300);
   }
   const onVisibility = () => { if (!nativeMode && !document.hidden) startWatch(); };
   document.addEventListener('visibilitychange', onVisibility);
