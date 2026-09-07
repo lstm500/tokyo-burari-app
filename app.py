@@ -32,7 +32,7 @@ import streamlit as st
 # Freshly generated update: 2026-08-31 23:49 JST
 GENERATED_UPDATE_JST = "2026-09-08T02:05:00+09:00"
 
-APP_BUILD = "v285"
+APP_BUILD = "v286"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -27742,14 +27742,24 @@ def _project_stations_near_track_v271(points):
             or center_best <= 150.0
         )
         best = min(center_best, geometry_best)
+        station_name = str(station.get("name") or "駅")
+        normalized_station_name = re.sub(r"\s+", "", station_name)
+        if normalized_station_name.endswith("駅"):
+            normalized_station_name = normalized_station_name[:-1]
+        debug_osaki = normalized_station_name == "大崎"
         output.append({
-            "name": str(station.get("name") or "駅"),
+            "name": station_name,
             "lat": round(float(station["lat"]), 7),
             "lon": round(float(station["lon"]), 7),
             "visited": arrived,
             "arrived": arrived,
             "distance_m": round(best, 1),
-            "structure": structure if arrived else [],
+            "center_distance_m": round(center_best, 1),
+            "geometry_distance_m": round(geometry_best, 1) if math.isfinite(geometry_best) else None,
+            # v286 diagnostic exception: retain Osaki structure even when arrival=False so
+            # the exact current judgement zone can be painted red on the map.
+            "structure": structure if (arrived or debug_osaki) else [],
+            "debug_osaki": debug_osaki,
         })
 
     output.sort(key=lambda x: (not bool(x.get("arrived")), float(x.get("distance_m") or 999999), str(x.get("name") or "")))
@@ -27776,6 +27786,9 @@ def _project_stations_near_track_v271(points):
                     kept["structure"] = row.get("structure")
                 kept["arrived"] = bool(kept.get("arrived") or row.get("arrived"))
                 kept["visited"] = bool(kept.get("visited") or row.get("visited"))
+                kept["debug_osaki"] = bool(kept.get("debug_osaki") or row.get("debug_osaki"))
+                if kept.get("geometry_distance_m") is None and row.get("geometry_distance_m") is not None:
+                    kept["geometry_distance_m"] = row.get("geometry_distance_m")
                 break
         if not duplicate:
             merged.append(row)
@@ -27790,6 +27803,11 @@ def _render_burari_project_map_v271(points, segments, stations):
         "segments": segments,
         "stations": stations,
         "station_near_radius_m": GPS_TRACK_STATION_NEAR_RADIUS_M,
+        # v286 diagnostic values. Red Osaki overlay mirrors the currently active
+        # arrival test: structure + 220m, plus the unconditional 150m center rule.
+        "station_structure_buffer_m": GPS_TRACK_STATION_STRUCTURE_BUFFER_M,
+        "station_center_fallback_radius_m": GPS_TRACK_STATION_CENTER_FALLBACK_RADIUS_M,
+        "station_center_always_radius_m": 150.0,
     }
     payload_json = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).replace("</", "<\\/")
     map_html = f"""<!doctype html>
@@ -27813,9 +27831,12 @@ html,body{{margin:0;padding:0;background:#0b1012;font-family:-apple-system,Blink
 .project-legend{{position:absolute;z-index:1000;left:10px;bottom:10px;background:rgba(4,12,9,.84);border:1px solid rgba(151,255,187,.24);color:#e9fff0;border-radius:11px;padding:7px 9px;font-size:10px;line-height:1.45;box-shadow:0 4px 16px rgba(0,0,0,.28);pointer-events:none;}}
 .project-legend-line{{display:inline-block;width:20px;height:3px;background:#8ce6a2;box-shadow:0 0 5px rgba(72,230,112,.55);border-radius:99px;margin-right:6px;vertical-align:middle;}}
 .project-legend-station{{display:inline-block;width:24px;height:9px;border:2px solid #eaffef;background:rgba(83,255,126,.56);box-shadow:0 0 7px #58ff8b,0 0 18px rgba(88,255,139,.92);border-radius:3px;margin-right:6px;vertical-align:middle;}}
+.project-legend-debug{{display:inline-block;width:24px;height:9px;border:2px solid #ffb0b0;background:rgba(255,42,42,.30);box-shadow:0 0 7px #ff3b3b,0 0 18px rgba(255,48,48,.66);border-radius:3px;margin-right:6px;vertical-align:middle;}}
+.project-osaki-debug-label{{background:rgba(74,0,0,.92);border:2px solid rgba(255,185,185,.96);color:#fff;border-radius:9px;padding:4px 7px;box-shadow:0 0 12px rgba(255,36,36,.88),0 0 28px rgba(255,36,36,.46);font-size:11px;font-weight:900;}}
+.project-osaki-debug-label:before{{display:none;}}
 @media(max-width:640px){{#project-map{{height:570px;border-radius:15px;}}.project-arrival-badge{{max-width:74%;font-size:10.5px;}}}}
 </style></head><body>
-<div style="position:relative"><div id="project-map"></div><div id="project-arrival-badge" class="project-arrival-badge"></div><div class="project-legend"><div><span class="project-legend-line"></span>歩いた道</div><div><span class="project-legend-station"></span>辿り着いた駅</div></div></div>
+<div style="position:relative"><div id="project-map"></div><div id="project-arrival-badge" class="project-arrival-badge"></div><div class="project-legend"><div><span class="project-legend-line"></span>歩いた道</div><div><span class="project-legend-station"></span>辿り着いた駅</div><div><span class="project-legend-debug"></span>大崎駅・現在の判定範囲（診断）</div></div></div>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
 <script>
 (function(){{
@@ -27876,6 +27897,60 @@ html,body{{margin:0;padding:0;background:#0b1012;font-family:-apple-system,Blink
    const marker=L.marker([Number(s.lat),Number(s.lon)],{{icon,interactive:false}}).addTo(map);
    marker.bindTooltip(`到着：${{String(s.name||'駅')}}`,{{permanent:true,direction:'top',offset:[0,-12],className:'project-arrived-label'}});
  }};
+ const osakiDebugLayers=[];
+ const metersToPixelsAt=(lat,lon,meters)=>{{
+   const c=Math.max(.15,Math.cos(rad(lat))); const dLon=Number(meters)/(111320*c);
+   const a=map.latLngToLayerPoint([lat,lon]); const b=map.latLngToLayerPoint([lat,lon+dLon]);
+   return Math.max(1,Math.abs(Number(b.x)-Number(a.x)));
+ }};
+ const drawOsakiJudgementRange=(s)=>{{
+   const lat=Number(s.lat),lon=Number(s.lon); if(!Number.isFinite(lat)||!Number.isFinite(lon))return;
+   const shapes=(Array.isArray(s.structure)?s.structure:[]).filter((x)=>x&&Array.isArray(x.coords)&&x.coords.length>=2);
+   const structureBufferM=Number(data.station_structure_buffer_m||220);
+   const centerAlwaysM=Number(data.station_center_always_radius_m||150);
+   const centerFallbackM=Number(data.station_center_fallback_radius_m||320);
+   const styleBufferedLayer=(layer,scale,opacity)=>{{
+     const px=metersToPixelsAt(lat,lon,structureBufferM);
+     layer.setStyle({{weight:Math.max(2,2*px*scale),opacity:opacity}});
+   }};
+   if(shapes.length){{
+     shapes.forEach((shape)=>{{
+       const c=shape.coords;if(!Array.isArray(c)||c.length<2)return;
+       const makeLayer=(scale,opacity,fillOpacity)=>{{
+         let layer;
+         if(shape.kind==='polygon') layer=L.polygon(c,{{color:'#ff2525',weight:2,opacity,fillColor:'#ff3030',fillOpacity,interactive:false,lineJoin:'round'}}).addTo(map);
+         else layer=L.polyline(c,{{color:'#ff2525',weight:2,opacity,interactive:false,lineCap:'round',lineJoin:'round'}}).addTo(map);
+         styleBufferedLayer(layer,scale,opacity); osakiDebugLayers.push({{layer,scale,opacity}});
+       }};
+       // The outer red band ends at the same 220m metric distance used by Python.
+       makeLayer(1.0,.22,shape.kind==='polygon'?.11:0);
+       makeLayer(.68,.15,shape.kind==='polygon'?.07:0);
+       const core=shape.kind==='polygon'
+         ? L.polygon(c,{{color:'#ffb0b0',weight:2.2,opacity:.88,fill:false,interactive:false}}).addTo(map)
+         : L.polyline(c,{{color:'#ffb0b0',weight:2.2,opacity:.88,lineCap:'round',lineJoin:'round',interactive:false}}).addTo(map);
+     }});
+     // This 150m circle is also part of the current v285 arrival logic even when
+     // station structure exists, so show it explicitly rather than hiding it.
+     L.circle([lat,lon],{{radius:centerAlwaysM,color:'#ffb4b4',weight:1.6,opacity:.88,dashArray:'7 5',fillColor:'#ff3030',fillOpacity:.035,interactive:false}}).addTo(map);
+   }}else{{
+     // When no station geometry was obtained, v285 falls back to the station center.
+     L.circle([lat,lon],{{radius:centerFallbackM,color:'#ff3030',weight:3,opacity:.85,dashArray:'8 5',fillColor:'#ff3030',fillOpacity:.13,interactive:false}}).addTo(map);
+   }}
+   const debugIcon=L.divIcon({{className:'project-arrived-station-icon',html:'<div style="background:#ff3838;border-color:#fff;box-shadow:0 0 10px #ff1f1f,0 0 26px rgba(255,30,30,.9)"></div>',iconSize:[18,18],iconAnchor:[9,9]}});
+   const dm=L.marker([lat,lon],{{icon:debugIcon,interactive:false}}).addTo(map);
+   const gd=(s.geometry_distance_m===null||s.geometry_distance_m===undefined)?'取得なし':`${{Number(s.geometry_distance_m).toFixed(0)}}m`;
+   const cd=(s.center_distance_m===null||s.center_distance_m===undefined)?'不明':`${{Number(s.center_distance_m).toFixed(0)}}m`;
+   dm.bindTooltip(`診断：大崎駅の判定範囲<br>構造まで ${{gd}} / 中心まで ${{cd}}`,{{permanent:true,direction:'top',offset:[0,-12],className:'project-osaki-debug-label'}});
+ }};
+ map.on('zoomend',()=>{{
+   (osakiDebugLayers||[]).forEach((entry)=>{{
+     try{{
+       const s=(data.stations||[]).find((x)=>x&&x.debug_osaki); if(!s)return;
+       const px=metersToPixelsAt(Number(s.lat),Number(s.lon),Number(data.station_structure_buffer_m||220));
+       entry.layer.setStyle({{weight:Math.max(2,2*px*Number(entry.scale||1)),opacity:Number(entry.opacity||.2)}});
+     }}catch(_e){{}}
+   }});
+ }});
  const renderedStationKeys=new Set();
  const stationKey=(name,lat,lon)=>`${{String(name||'駅').replace(/\\s+/g,'')}}:${{lat.toFixed(4)}}:${{lon.toFixed(4)}}`;
  const addStation=(s)=>{{
@@ -27886,6 +27961,9 @@ html,body{{margin:0;padding:0;background:#0b1012;font-family:-apple-system,Blink
      const m=L.circleMarker([lat,lon],{{radius:3.2,color:'#b9ffd0',weight:1,opacity:.28,fillColor:'#62ff92',fillOpacity:.10}}).addTo(map);
      m.bindTooltip(name,{{direction:'top',className:'project-station-label'}});
    }}
+   // v286 temporary diagnostic: Osaki only. Draw the current judgement area red
+   // regardless of whether the normal arrival test currently passes.
+   if(Boolean(s.debug_osaki)) drawOsakiJudgementRange(s);
  }};
  (data.stations||[]).forEach(addStation);
  if(arrivalBadge){{
@@ -27925,8 +28003,9 @@ def page_burari_project():
     stations = _project_stations_near_track_v271(map_points)
     _render_burari_project_map_v271(map_points, segments, stations)
     st.caption(
-        "駅の到着判定は甘めです。OpenStreetMapの駅舎・ホーム・駅周辺の鉄道構造から実際の駅エリアを作り、"
-        "その形を広めに拡張した範囲へ歩行GPSが1度でも入れば到着扱いにします。地図上の発光も円ではなく駅構造に沿って表示します。"
+        "【v286診断表示】大崎駅だけ、現在の到着判定に使っている範囲を赤色で表示しています。"
+        "駅構造が取得できた場合は『駅構造から220m以内』＋『駅中心から150m以内』が赤色の判定範囲です。"
+        "これは原因確認用の一時表示で、他の駅には適用しません。"
     )
 
 
