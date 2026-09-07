@@ -30,9 +30,9 @@ from zoneinfo import ZoneInfo
 import streamlit as st
 
 # Freshly generated update: 2026-08-31 23:49 JST
-GENERATED_UPDATE_JST = "2026-09-07T09:10:00+09:00"
+GENERATED_UPDATE_JST = "2026-09-07T23:40:00+09:00"
 
-APP_BUILD = "v274"
+APP_BUILD = "v275"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -26709,6 +26709,7 @@ export default function(component) {
   const family = String(data?.family_key || '');
   const member = String(data?.member_key || '');
   const nativeMode = Boolean(data?.native_mode);
+  const nativeBridgeToken = String(data?.native_bridge_token || '');
   if (!family || !member || (!nativeMode && !navigator.geolocation)) return;
 
   const keyBase = `tokyo_burari_gps_v271:${family}:${member}`;
@@ -26727,10 +26728,67 @@ export default function(component) {
   let cancelled = false;
   let watchId = null;
   let flushTimer = null;
+  let nativeSentToken = '';
+  let nativeSentAt = 0;
 
   const safeParse = (raw, fallback) => {
     try { const value = JSON.parse(String(raw || '')); return value ?? fallback; } catch (_) { return fallback; }
   };
+
+  // v275: Android's JavaScript interface is injected by the native WebView into all
+  // frames. Unlike the old localStorage hand-off, this does not depend on Streamlit
+  // component/frame storage sharing. The token prevents unrelated frames from reading
+  // GPS rows even though Android exposes JavaScript interfaces to every WebView frame.
+  const nativeBridge = (() => {
+    if (!nativeMode || !nativeBridgeToken) return null;
+    try {
+      const candidate = globalThis.BurariGps || window.BurariGps || null;
+      if (!candidate || typeof candidate.pendingPoints !== 'function' || typeof candidate.acknowledgeThrough !== 'function') return null;
+      return candidate;
+    } catch (_) { return null; }
+  })();
+  const directNativeBridge = Boolean(nativeBridge);
+
+  const readNativeRows = () => {
+    if (!directNativeBridge) return [];
+    try {
+      const raw = nativeBridge.pendingPoints(nativeBridgeToken, Math.min(500, batchMax));
+      const rows = safeParse(raw, []);
+      return Array.isArray(rows)
+        ? rows.filter((p) => p && p.id && Number.isFinite(Number(p.ts_ms)) && Number.isFinite(Number(p.lat)) && Number.isFinite(Number(p.lon)))
+        : [];
+    } catch (_) { return []; }
+  };
+
+  const acknowledgeNative = () => {
+    if (!directNativeBridge || !(ackMs > 0)) return;
+    try { nativeBridge.acknowledgeThrough(nativeBridgeToken, String(Math.floor(ackMs))); } catch (_) {}
+  };
+
+  // A cloud acknowledgement is the only event allowed to mark native SQLite rows as
+  // bridged. This fixes the first APK, which marked rows bridged after merely copying
+  // them into top-level WebView localStorage.
+  acknowledgeNative();
+
+  const maybeFlushNative = () => {
+    if (cancelled || !allowFlush || !directNativeBridge) return;
+    const rows = readNativeRows();
+    if (!rows.length) return;
+    const batch = rows.slice(0, batchMax);
+    const last = batch[batch.length - 1] || {};
+    const token = `native-v3|${batch[0]?.id || ''}|${last?.id || ''}|${batch.length}`;
+    const now = Date.now();
+    if (nativeSentToken === token && now - nativeSentAt < 120000) return;
+    nativeSentToken = token;
+    nativeSentAt = now;
+    setTriggerValue('track_batch', {
+      token,
+      points: batch,
+      max_ts_ms: Number(last?.ts_ms || 0),
+      source: 'android_direct_bridge_v3',
+    });
+  };
+
   const readPending = () => {
     const rows = safeParse(localStorage.getItem(pendingKey), []);
     return Array.isArray(rows) ? rows.filter((x) => x && Number.isFinite(Number(x.ts_ms))) : [];
@@ -26759,28 +26817,22 @@ export default function(component) {
   };
   const sessionId = getSessionId();
 
-  // v274: Android's native bridge in the first APK can only see browser localStorage
-  // and may inject points into the first legacy per-account pending key it finds.
-  // Keep the current account queue alive and recover android_native points from any
-  // sibling v271 pending queue into the currently logged-in family/member queue.
-  // Rows are copied (not deleted) and de-duplicated by id; ackMs prevents already
-  // cloud-synced rows from being re-adopted after acknowledgement.
+  // Compatibility fallback for the first Android bridge and normal browser mode.
+  // v275 direct-native mode bypasses localStorage completely.
   const activePendingMarkerKey = 'tokyo_burari_gps_v274:active_pending_key';
-  try {
-    if (localStorage.getItem(pendingKey) === null) {
-      localStorage.setItem(pendingKey, '[]');
-    }
-    if (nativeMode) localStorage.setItem(activePendingMarkerKey, pendingKey);
-  } catch (_) {}
+  if (!directNativeBridge) {
+    try {
+      if (localStorage.getItem(pendingKey) === null) localStorage.setItem(pendingKey, '[]');
+      if (nativeMode) localStorage.setItem(activePendingMarkerKey, pendingKey);
+    } catch (_) {}
+  }
 
   const adoptNativePendingRows = () => {
-    if (!nativeMode) return;
+    if (!nativeMode || directNativeBridge) return;
     try {
       const currentRows = readPending();
       const byId = new Map();
-      currentRows.forEach((p) => {
-        if (p && p.id) byId.set(String(p.id), p);
-      });
+      currentRows.forEach((p) => { if (p && p.id) byId.set(String(p.id), p); });
       for (let i = 0; i < localStorage.length; i++) {
         const k = localStorage.key(i);
         if (!k || k === pendingKey || !k.startsWith('tokyo_burari_gps_v271:') || !k.endsWith(':pending')) continue;
@@ -26800,11 +26852,14 @@ export default function(component) {
     } catch (_) {}
   };
 
-  adoptNativePendingRows();
-  let pending = readPending();
-  if (ackMs > 0 && pending.length) {
-    pending = pending.filter((p) => Number(p.ts_ms || 0) > ackMs);
-    writePending(pending);
+  let pending = [];
+  if (!directNativeBridge) {
+    adoptNativePendingRows();
+    pending = readPending();
+    if (ackMs > 0 && pending.length) {
+      pending = pending.filter((p) => Number(p.ts_ms || 0) > ackMs);
+      writePending(pending);
+    }
   }
 
   const rad = (v) => Number(v) * Math.PI / 180;
@@ -26819,7 +26874,7 @@ export default function(component) {
   };
 
   const maybeFlush = (forced=false) => {
-    if (cancelled || !allowFlush) return;
+    if (cancelled || !allowFlush || directNativeBridge) return;
     adoptNativePendingRows();
     pending = readPending();
     if (!pending.length) return;
@@ -26890,12 +26945,14 @@ export default function(component) {
 
   if (!nativeMode) startWatch();
   if (allowFlush) {
-    // Native Android points can be injected into localStorage just after the
-    // component mounts. Poll the tiny local queue more often in native mode so
-    // opening the project page flushes recovered points within a few seconds.
-    const flushPollMs = nativeMode ? 3000 : 30000;
-    flushTimer = setInterval(() => maybeFlush(false), flushPollMs);
-    setTimeout(() => maybeFlush(Boolean(forceFlush)), nativeMode ? 1200 : 300);
+    if (directNativeBridge) {
+      flushTimer = setInterval(maybeFlushNative, 3000);
+      setTimeout(maybeFlushNative, 600);
+    } else {
+      const flushPollMs = nativeMode ? 3000 : 30000;
+      flushTimer = setInterval(() => maybeFlush(false), flushPollMs);
+      setTimeout(() => maybeFlush(Boolean(forceFlush)), nativeMode ? 1200 : 300);
+    }
   }
   const onVisibility = () => { if (!nativeMode && !document.hidden) startWatch(); };
   document.addEventListener('visibilitychange', onVisibility);
@@ -26923,7 +26980,7 @@ def _get_gps_tracker_component_v271():
     _gps_tracker_component_v271_initialized = True
     try:
         gps_tracker_component_v271 = st.components.v2.component(
-            "tokyo_burari_always_gps_v272",
+            "tokyo_burari_always_gps_v275",
             html=_GPS_TRACKER_HTML,
             css=_GPS_TRACKER_CSS,
             js=_GPS_TRACKER_JS,
@@ -27120,9 +27177,11 @@ def run_always_on_gps_tracker_v271():
     force_flush = page == "review_project"
     ack_key = f"_gps_track_ack_v271_{current_family_key()}_{current_member_key()}"
     native_mode = str(_query_param_scalar("native_android") or "").strip() == "1"
+    native_bridge_token = str(_query_param_scalar("native_bridge_token") or "").strip()[:200] if native_mode else ""
     result = component(
         data={
             "native_mode": native_mode,
+            "native_bridge_token": native_bridge_token,
             "family_key": current_family_key(),
             "member_key": current_member_key(),
             "min_distance_m": GPS_TRACK_MIN_DISTANCE_M,
@@ -27134,7 +27193,7 @@ def run_always_on_gps_tracker_v271():
             "force_flush": force_flush,
             "ack_ms": int(st.session_state.get(ack_key) or 0),
         },
-        key=f"always_on_gps_tracker_v272_{current_family_key()}_{current_member_key()}",
+        key=f"always_on_gps_tracker_v275_{current_family_key()}_{current_member_key()}",
         on_track_batch_change=lambda: None,
     )
     batch = getattr(result, "track_batch", None)
