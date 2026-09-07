@@ -32,7 +32,7 @@ import streamlit as st
 # Freshly generated update: 2026-08-31 23:49 JST
 GENERATED_UPDATE_JST = "2026-09-07T23:40:00+09:00"
 
-APP_BUILD = "v278"
+APP_BUILD = "v279"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -771,11 +771,10 @@ APP_TIMEZONE = secret("APP_TIMEZONE", "Asia/Tokyo")
 SUPABASE_URL = secret("SUPABASE_URL", "")
 SUPABASE_SECRET_KEY = secret("SUPABASE_SECRET_KEY", "")
 PHOTO_BUCKET = secret("PHOTO_BUCKET", "burari-photos")
-# GPS trace data may share the photo bucket. That bucket can be configured to allow
-# only image/video MIME types, so application/json can be rejected with HTTP 415.
-# A dedicated GPS_TRACK_BUCKET may be supplied later; the default stays fully
-# backward-compatible and stores the JSON bytes in PHOTO_BUCKET using an allowed
-# metadata MIME type. The bytes are still UTF-8 JSON and are parsed as JSON on read.
+# GPS trace data may share the photo bucket. Some deployments restrict that bucket
+# to image/video MIME types, so JSON bytes are stored with an allowed metadata MIME
+# when sharing PHOTO_BUCKET. The payload itself remains UTF-8 JSON and is decoded as
+# JSON on read. Set GPS_TRACK_BUCKET to a dedicated bucket to use application/json.
 GPS_TRACK_BUCKET = str(secret("GPS_TRACK_BUCKET", PHOTO_BUCKET) or PHOTO_BUCKET).strip() or PHOTO_BUCKET
 GPS_TRACK_STORAGE_MIME = "application/json" if GPS_TRACK_BUCKET != PHOTO_BUCKET else "image/jpeg"
 GOOGLE_PLACES_API_KEY = str(secret("GOOGLE_PLACES_API_KEY", secret("GOOGLE_MAPS_API_KEY", "")) or "").strip()
@@ -26737,21 +26736,6 @@ export default function(component) {
   let flushTimer = null;
   let nativeSentToken = '';
   let nativeSentAt = 0;
-  const gpsDiag = (message) => {
-    try { console.log(`[BURARI_GPS][COMP] ${message}`); } catch (_) {}
-  };
-  const frameInfo = (() => {
-    try {
-      let depth = 0, w = window;
-      while (w.parent && w.parent !== w && depth < 8) { depth += 1; w = w.parent; }
-      return `depth=${depth} parent_is_top=${window.parent === window.top} self_is_top=${window === window.top}`;
-    } catch (_) { return 'depth=unknown'; }
-  })();
-  gpsDiag(`boot nativeMode=${nativeMode} token_present=${Boolean(nativeBridgeToken)} token_len=${nativeBridgeToken.length} allowFlush=${allowFlush} forceFlush=${forceFlush} ackMs=${ackMs} ${frameInfo}`);
-  try {
-    const serverDiag = data?.server_diag || {};
-    if (serverDiag && Object.keys(serverDiag).length) gpsDiag(`server diag stage=${String(serverDiag.stage || '')} count=${Number(serverDiag.count || 0)} ack=${Number(serverDiag.ack_ms || 0)} error=${String(serverDiag.error || '')}`);
-  } catch (_) {}
 
   const safeParse = (raw, fallback) => {
     try { const value = JSON.parse(String(raw || '')); return value ?? fallback; } catch (_) { return fallback; }
@@ -26770,7 +26754,6 @@ export default function(component) {
     } catch (_) { return null; }
   })();
   const directNativeBridge = Boolean(nativeBridge);
-  gpsDiag(`direct bridge available=${directNativeBridge}`);
 
   // v276: Streamlit components can run in an isolated frame where Android's
   // addJavascriptInterface object is not visible. The Android host now installs a
@@ -26790,7 +26773,6 @@ export default function(component) {
       const entry = relayPending.get(requestId);
       relayPending.delete(requestId);
       clearTimeout(entry.timer);
-      gpsDiag(`relay response id=${requestId} action=${String(payload.action || '')} error=${String(payload.error || '')} pending=${Number(payload.pending_count || 0)} version=${Number(payload.bridge_version || 0)}`);
       entry.resolve(payload);
     } catch (_) {}
   };
@@ -26802,13 +26784,11 @@ export default function(component) {
       const requestId = `gps-${Date.now()}-${++relayCounter}-${Math.random().toString(36).slice(2)}`;
       const timer = setTimeout(() => {
         relayPending.delete(requestId);
-        gpsDiag(`relay timeout id=${requestId} action=${String(action || '')}`);
         resolve(null);
       }, 2500);
       relayPending.set(requestId, {resolve, timer});
       try {
         const target = (window.parent && window.parent !== window) ? window.parent : window;
-        gpsDiag(`relay send id=${requestId} action=${String(action || '')} target_is_parent=${target === window.parent} parent_is_top=${window.parent === window.top}`);
         target.postMessage({
           type: relayTypeRequest,
           request_id: requestId,
@@ -26826,7 +26806,6 @@ export default function(component) {
 
   const relayNativeBridge = Boolean(nativeMode && nativeBridgeToken && !directNativeBridge);
   const nativeBridgeAvailable = directNativeBridge || relayNativeBridge;
-  gpsDiag(`bridge mode direct=${directNativeBridge} relay=${relayNativeBridge} available=${nativeBridgeAvailable}`);
 
   const normalizeNativeRows = (rows) => Array.isArray(rows)
     ? rows.filter((p) => p && p.id && Number.isFinite(Number(p.ts_ms)) && Number.isFinite(Number(p.lat)) && Number.isFinite(Number(p.lon)))
@@ -26836,16 +26815,12 @@ export default function(component) {
     if (directNativeBridge) {
       try {
         const raw = nativeBridge.pendingPoints(nativeBridgeToken, Math.min(500, batchMax));
-        const rows = normalizeNativeRows(safeParse(raw, []));
-        gpsDiag(`direct pending rows=${rows.length}`);
-        return rows;
-      } catch (error) { gpsDiag(`direct pending error=${String((error && error.message) || error)}`); return []; }
+        return normalizeNativeRows(safeParse(raw, []));
+      } catch (_) { return []; }
     }
     if (!relayNativeBridge) return [];
     const reply = await relayRequest('pending', {limit: Math.min(500, batchMax)});
-    const rows = normalizeNativeRows(safeParse(reply?.rows_json, []));
-    gpsDiag(`relay pending reply=${Boolean(reply)} rows=${rows.length} error=${String(reply?.error || '')}`);
-    return rows;
+    return normalizeNativeRows(safeParse(reply?.rows_json, []));
   };
 
   const acknowledgeNative = async () => {
@@ -26860,7 +26835,6 @@ export default function(component) {
   // A cloud acknowledgement is the only event allowed to mark native SQLite rows as
   // bridged. This fixes the first APK, which marked rows bridged after merely copying
   // them into top-level WebView localStorage.
-  if (ackMs > 0) gpsDiag(`cloud ack present ackMs=${ackMs}; requesting native ack`);
   acknowledgeNative();
 
   let nativeFlushBusy = false;
@@ -26869,7 +26843,6 @@ export default function(component) {
     nativeFlushBusy = true;
     try {
       const rows = await readNativeRows();
-      gpsDiag(`flush poll rows=${rows.length} cancelled=${cancelled}`);
       if (!rows.length || cancelled) return;
       const batch = rows.slice(0, batchMax);
       const last = batch[batch.length - 1] || {};
@@ -26878,7 +26851,6 @@ export default function(component) {
       if (nativeSentToken === token && now - nativeSentAt < 120000) return;
       nativeSentToken = token;
       nativeSentAt = now;
-      gpsDiag(`emit track_batch count=${batch.length} max_ts_ms=${Number(last?.ts_ms || 0)} source=${directNativeBridge ? 'direct' : 'relay'}`);
       setTriggerValue('track_batch', {
         token,
         points: batch,
@@ -27084,7 +27056,7 @@ def _get_gps_tracker_component_v271():
     _gps_tracker_component_v271_initialized = True
     try:
         gps_tracker_component_v271 = st.components.v2.component(
-            "tokyo_burari_always_gps_v278",
+            "tokyo_burari_always_gps_v279",
             html=_GPS_TRACKER_HTML,
             css=_GPS_TRACKER_CSS,
             js=_GPS_TRACKER_JS,
@@ -27280,7 +27252,6 @@ def run_always_on_gps_tracker_v271():
     allow_flush = page != "camera"
     force_flush = page == "review_project"
     ack_key = f"_gps_track_ack_v271_{current_family_key()}_{current_member_key()}"
-    diag_key = f"_gps_track_diag_v278_{current_family_key()}_{current_member_key()}"
     native_mode = str(_query_param_scalar("native_android") or "").strip() == "1"
     native_bridge_token = str(_query_param_scalar("native_bridge_token") or "").strip()[:200] if native_mode else ""
     result = component(
@@ -27297,9 +27268,8 @@ def run_always_on_gps_tracker_v271():
             "allow_flush": allow_flush,
             "force_flush": force_flush,
             "ack_ms": int(st.session_state.get(ack_key) or 0),
-            "server_diag": dict(st.session_state.get(diag_key) or {}),
         },
-        key=f"always_on_gps_tracker_v278_{current_family_key()}_{current_member_key()}",
+        key=f"always_on_gps_tracker_v279_{current_family_key()}_{current_member_key()}",
         on_track_batch_change=lambda: None,
     )
     batch = getattr(result, "track_batch", None)
@@ -27309,31 +27279,13 @@ def run_always_on_gps_tracker_v271():
     token_key = f"_gps_track_batch_token_v271_{current_family_key()}_{current_member_key()}"
     if token and token == str(st.session_state.get(token_key) or ""):
         return
-    st.session_state[diag_key] = {
-        "stage": "batch_received",
-        "count": len(batch.get("points") or []),
-        "ack_ms": int(st.session_state.get(ack_key) or 0),
-        "error": "",
-    }
     try:
         ack_ms = save_gps_track_batch_v271(batch)
-    except Exception as exc:
-        st.session_state[diag_key] = {
-            "stage": "save_error",
-            "count": len(batch.get("points") or []),
-            "ack_ms": 0,
-            "error": f"{type(exc).__name__}: {exc}"[:300],
-        }
+    except Exception:
         return
     if ack_ms > 0:
         st.session_state[token_key] = token
         st.session_state[ack_key] = max(int(st.session_state.get(ack_key) or 0), int(ack_ms))
-        st.session_state[diag_key] = {
-            "stage": "cloud_saved",
-            "count": len(batch.get("points") or []),
-            "ack_ms": int(ack_ms),
-            "error": "",
-        }
         # Deliver the acknowledgement immediately so browser localStorage can discard
         # the cloud-synced points. Batches are rare (about 300m / 3min), and camera
         # pages never flush, so this does not interfere with recording smoothness.
