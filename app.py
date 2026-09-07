@@ -32,7 +32,7 @@ import streamlit as st
 # Freshly generated update: 2026-08-31 23:49 JST
 GENERATED_UPDATE_JST = "2026-09-08T02:18:00+09:00"
 
-APP_BUILD = "v289"
+APP_BUILD = "v290"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -892,19 +892,29 @@ GPS_TRACK_BATCH_MAX_POINTS = 180
 GPS_TRACK_WALK_MAX_SPEED_MPS = 4.5
 GPS_TRACK_SEGMENT_MAX_GAP_SECONDS = 180.0
 GPS_TRACK_SEGMENT_MAX_JUMP_M = 180.0
-# v289: define each station as an elongated railway-station corridor rather than a
-# circle or a convex hull of every public-transport feature nearby. Railway platforms
-# define the station body; railway tracks define its long axis. One historical walking
-# GPS point entering the corridor is enough for arrival. Osaki remains red until approved.
+# v290: platform-first / parallel-cluster / robust-capsule station footprint.
+# The previous v289 let every nearby rail line determine the station axis; at junctions
+# such as Osaki that can rotate the footprint away from the platforms. v290 treats each
+# railway=platform geometry as an individual long object, clusters mutually parallel
+# platforms, picks the dominant cluster close to the station, derives the axis from the
+# platform directions (not the surrounding rail fan), then sizes a rounded capsule from
+# robust platform extents. Tracks are used only if useful platform geometry is absent.
+# Any historical walking GPS point entering the capsule counts as arrival. Osaki stays red
+# until the diagnostic outline visually matches the desired station footprint.
 GPS_TRACK_STATION_NEAR_RADIUS_M = 900.0
-GPS_TRACK_STATION_CORRIDOR_QUERY_RADIUS_M = 360.0
-GPS_TRACK_STATION_TRACK_AXIS_RADIUS_M = 265.0
-GPS_TRACK_STATION_CORRIDOR_MIN_HALF_LENGTH_M = 155.0
-GPS_TRACK_STATION_CORRIDOR_MAX_HALF_LENGTH_M = 235.0
-GPS_TRACK_STATION_CORRIDOR_LONGITUDINAL_PAD_M = 38.0
-GPS_TRACK_STATION_CORRIDOR_MIN_HALF_WIDTH_M = 52.0
-GPS_TRACK_STATION_CORRIDOR_MAX_HALF_WIDTH_M = 88.0
-GPS_TRACK_STATION_CORRIDOR_LATERAL_PAD_M = 24.0
+GPS_TRACK_STATION_CORRIDOR_QUERY_RADIUS_M = 340.0
+GPS_TRACK_STATION_TRACK_AXIS_RADIUS_M = 230.0
+GPS_TRACK_STATION_PLATFORM_MAX_CENTER_M = 245.0
+GPS_TRACK_STATION_PLATFORM_MIN_LENGTH_M = 28.0
+GPS_TRACK_STATION_PLATFORM_CLUSTER_ANGLE_DEG = 17.0
+GPS_TRACK_STATION_PLATFORM_LONG_PAD_M = 10.0
+GPS_TRACK_STATION_PLATFORM_SIDE_PAD_M = 10.0
+GPS_TRACK_STATION_PLATFORM_MIN_HALF_LENGTH_M = 68.0
+GPS_TRACK_STATION_PLATFORM_MAX_HALF_LENGTH_M = 240.0
+GPS_TRACK_STATION_PLATFORM_MIN_HALF_WIDTH_M = 24.0
+GPS_TRACK_STATION_PLATFORM_MAX_HALF_WIDTH_M = 68.0
+GPS_TRACK_STATION_TRACK_FALLBACK_HALF_LENGTH_M = 125.0
+GPS_TRACK_STATION_TRACK_FALLBACK_HALF_WIDTH_M = 42.0
 GPS_TRACK_RENDER_POINT_LIMIT = 60000
 
 
@@ -27582,46 +27592,141 @@ def _project_percentile_v289(values, q):
     return vals[lo]*(1-frac) + vals[hi]*frac
 
 
-def _project_station_axis_v289(points):
+def _project_station_axis_v290(points):
+    """Principal axis for one geometry only; never mix unrelated rail branches here."""
     pts = [(float(x), float(y)) for x, y in (points or [])]
     if len(pts) < 2:
         return (0.0, 1.0)
-    mx = sum(p[0] for p in pts)/len(pts); my = sum(p[1] for p in pts)/len(pts)
-    xx = sum((p[0]-mx)**2 for p in pts)/len(pts)
-    yy = sum((p[1]-my)**2 for p in pts)/len(pts)
-    xy = sum((p[0]-mx)*(p[1]-my) for p in pts)/len(pts)
-    angle = 0.5 * math.atan2(2.0*xy, xx-yy)
+    mx = sum(p[0] for p in pts) / len(pts)
+    my = sum(p[1] for p in pts) / len(pts)
+    xx = sum((p[0] - mx) ** 2 for p in pts) / len(pts)
+    yy = sum((p[1] - my) ** 2 for p in pts) / len(pts)
+    xy = sum((p[0] - mx) * (p[1] - my) for p in pts) / len(pts)
+    angle = 0.5 * math.atan2(2.0 * xy, xx - yy)
     ux, uy = math.cos(angle), math.sin(angle)
     if uy < 0 or (abs(uy) < 1e-9 and ux < 0):
         ux, uy = -ux, -uy
     return ux, uy
 
 
-def _project_station_capsule_v289(u0, u1, v0, half_width, ux, uy):
+def _project_angle_pi_v290(angle):
+    a = float(angle) % math.pi
+    return a + math.pi if a < 0 else a
+
+
+def _project_angle_diff_pi_v290(a, b):
+    d = abs((_project_angle_pi_v290(a) - _project_angle_pi_v290(b)) % math.pi)
+    return min(d, math.pi - d)
+
+
+def _project_weighted_parallel_axis_v290(descriptors):
+    """Circular mean for 180-degree axes using doubled angles."""
+    if not descriptors:
+        return (0.0, 1.0, math.pi / 2.0)
+    s = 0.0
+    c = 0.0
+    for d in descriptors:
+        a = float(d.get("angle") or 0.0)
+        w = max(1.0, float(d.get("weight") or d.get("length_m") or 1.0))
+        s += w * math.sin(2.0 * a)
+        c += w * math.cos(2.0 * a)
+    a = 0.5 * math.atan2(s, c)
+    if a < 0:
+        a += math.pi
+    ux, uy = math.cos(a), math.sin(a)
+    if uy < 0 or (abs(uy) < 1e-9 and ux < 0):
+        ux, uy = -ux, -uy
+        a = (a + math.pi) % math.pi
+    return ux, uy, a
+
+
+def _project_path_descriptor_v290(points, station_x=0.0, station_y=0.0):
+    pts = [(float(x), float(y)) for x, y in (points or [])]
+    if len(pts) < 2:
+        return None
+    ux, uy = _project_station_axis_v290(pts)
+    vx, vy = -uy, ux
+    us = [x * ux + y * uy for x, y in pts]
+    vs = [x * vx + y * vy for x, y in pts]
+    u0 = _project_percentile_v289(us, 0.03)
+    u1 = _project_percentile_v289(us, 0.97)
+    v0 = _project_percentile_v289(vs, 0.10)
+    v1 = _project_percentile_v289(vs, 0.90)
+    length_m = max(0.0, u1 - u0)
+    width_m = max(0.0, v1 - v0)
+    mid_u = (u0 + u1) / 2.0
+    mid_v = (v0 + v1) / 2.0
+    cx = mid_u * ux + mid_v * vx
+    cy = mid_u * uy + mid_v * vy
+    center_m = math.hypot(cx - float(station_x), cy - float(station_y))
+    angle = math.atan2(uy, ux) % math.pi
+    return {
+        "points": pts,
+        "angle": angle,
+        "ux": ux,
+        "uy": uy,
+        "length_m": length_m,
+        "width_m": width_m,
+        "cx": cx,
+        "cy": cy,
+        "center_m": center_m,
+        # Long platforms close to the station dominate, but a single huge outlier cannot win alone.
+        "weight": max(1.0, min(260.0, length_m)) / (1.0 + (center_m / 190.0) ** 2),
+    }
+
+
+def _project_dominant_parallel_cluster_v290(descriptors, angle_tolerance_deg):
+    desc = [d for d in (descriptors or []) if isinstance(d, dict)]
+    if not desc:
+        return []
+    tol = math.radians(float(angle_tolerance_deg))
+    best = []
+    best_score = -1.0
+    for seed in desc:
+        cluster = [d for d in desc if _project_angle_diff_pi_v290(d["angle"], seed["angle"]) <= tol]
+        if not cluster:
+            continue
+        total_weight = sum(float(d.get("weight") or 0.0) for d in cluster)
+        total_length = sum(min(260.0, float(d.get("length_m") or 0.0)) for d in cluster)
+        # Multiple parallel platforms are much stronger evidence than a single branch line.
+        score = total_weight + 0.22 * total_length + 18.0 * min(8, len(cluster))
+        if score > best_score:
+            best_score = score
+            best = cluster
+    if not best:
+        return []
+    # One refinement around the weighted cluster direction removes borderline branch lines.
+    _ux, _uy, mean_angle = _project_weighted_parallel_axis_v290(best)
+    refined = [d for d in best if _project_angle_diff_pi_v290(d["angle"], mean_angle) <= tol * 0.82]
+    return refined or best
+
+
+def _project_station_capsule_v290(u0, u1, v0, half_width, ux, uy):
     vx, vy = -uy, ux
     endpoints = [
-        (u0*ux + v0*vx, u0*uy + v0*vy),
-        (u1*ux + v0*vx, u1*uy + v0*vy),
+        (u0 * ux + v0 * vx, u0 * uy + v0 * vy),
+        (u1 * ux + v0 * vx, u1 * uy + v0 * vy),
     ]
     cloud = []
     r = max(1.0, float(half_width))
     for cx, cy in endpoints:
-        for i in range(24):
-            a = 2.0*math.pi*i/24.0
-            cloud.append((cx + r*math.cos(a), cy + r*math.sin(a)))
+        for i in range(32):
+            a = 2.0 * math.pi * i / 32.0
+            cloud.append((cx + r * math.cos(a), cy + r * math.sin(a)))
     return _project_convex_hull_xy_v289(cloud)
 
 
-def _project_point_in_polygon_xy_v289(x, y, polygon):
+def _project_point_in_polygon_xy_v290(x, y, polygon):
     if len(polygon or []) < 3:
         return False
     inside = False
-    j = len(polygon)-1
+    j = len(polygon) - 1
     for i in range(len(polygon)):
-        xi, yi = polygon[i]; xj, yj = polygon[j]
+        xi, yi = polygon[i]
+        xj, yj = polygon[j]
         if ((yi > y) != (yj > y)):
-            denom = (yj-yi) if abs(yj-yi) > 1e-12 else 1e-12
-            at_x = (xj-xi)*(y-yi)/denom + xi
+            denom = (yj - yi) if abs(yj - yi) > 1e-12 else 1e-12
+            at_x = (xj - xi) * (y - yi) / denom + xi
             if x < at_x:
                 inside = not inside
         j = i
@@ -27629,12 +27734,14 @@ def _project_point_in_polygon_xy_v289(x, y, polygon):
 
 
 @st.cache_data(ttl=86400, max_entries=96, show_spinner=False)
-def _project_station_corridor_v289(name, lat, lon):
-    """Build a rail-aligned station corridor from railway-only OSM features."""
+def _project_station_corridor_v290(name, lat, lon):
+    """Platform-first parallel-cluster robust capsule. Tracks are fallback only."""
     try:
-        lat = float(lat); lon = float(lon)
+        lat = float(lat)
+        lon = float(lon)
     except (TypeError, ValueError):
         return {"arrival_zone": [], "physical_shapes": [], "source": "none"}
+
     area_r = int(GPS_TRACK_STATION_CORRIDOR_QUERY_RADIUS_M)
     track_r = int(GPS_TRACK_STATION_TRACK_AXIS_RADIUS_M)
     query = f"""[out:json][timeout:10];
@@ -27650,7 +27757,10 @@ def _project_station_corridor_v289(name, lat, lon):
 out geom center tags;"""
     data, _error = _toilet_overpass_fetch(query, timeout=7.0)
     elements = data.get("elements") if isinstance(data, dict) else []
-    platform_xy, physical_xy, track_xy, physical_shapes = [], [], [], []
+
+    platform_paths = []
+    track_paths = []
+    other_shapes = []
 
     def parsed_path(raw):
         out = []
@@ -27658,10 +27768,11 @@ out geom center tags;"""
             if not isinstance(node, dict):
                 continue
             try:
-                y = float(node.get("lat")); x = float(node.get("lon"))
+                y = float(node.get("lat"))
+                x = float(node.get("lon"))
             except (TypeError, ValueError):
                 continue
-            out.append([round(y,7), round(x,7)])
+            out.append([round(y, 7), round(x, 7)])
         return out
 
     def local_path(path, radius_m):
@@ -27680,8 +27791,9 @@ out geom center tags;"""
         tags = row.get("tags") if isinstance(row.get("tags"), dict) else {}
         railway = str(tags.get("railway") or "")
         building = str(tags.get("building") or "")
-        is_track = railway in {"rail","subway","light_rail","monorail"}
-        role = "track" if is_track else ("platform" if railway == "platform" else ("building" if building == "train_station" else "station"))
+        is_track = railway in {"rail", "subway", "light_rail", "monorail"}
+        is_platform = railway == "platform"
+        role = "track" if is_track else ("platform" if is_platform else ("building" if building == "train_station" else "station"))
         raw_paths = []
         if isinstance(row.get("geometry"), list):
             raw_paths.append(row.get("geometry"))
@@ -27692,63 +27804,145 @@ out geom center tags;"""
         for raw in raw_paths:
             path = parsed_path(raw)
             if is_track:
-                path = local_path(path, track_r)
-                for p in path:
-                    track_xy.append(_project_station_xy_v289(p[0],p[1],lat,lon))
+                path = _project_station_path_simplify_v289(local_path(path, track_r), 120)
+                if len(path) >= 2:
+                    track_paths.append(path)
                 continue
-            path = _project_station_path_simplify_v289(local_path(path, area_r))
+            path = _project_station_path_simplify_v289(local_path(path, area_r), 140)
             if len(path) < 2:
                 continue
-            closed = len(path) >= 4 and _nearby_haversine_m(path[0][0],path[0][1],path[-1][0],path[-1][1]) <= 8.0
-            physical_shapes.append({"kind":"polygon" if closed else "line","role":role,"coords":path})
-            for p in path:
-                xy = _project_station_xy_v289(p[0],p[1],lat,lon)
-                physical_xy.append(xy)
-                if role == "platform":
-                    platform_xy.append(xy)
+            closed = len(path) >= 4 and _nearby_haversine_m(path[0][0], path[0][1], path[-1][0], path[-1][1]) <= 8.0
+            shape = {"kind": "polygon" if closed else "line", "role": role, "coords": path}
+            if is_platform:
+                platform_paths.append(path)
+            else:
+                other_shapes.append(shape)
 
-    axis_basis = track_xy if len(track_xy) >= 6 else (platform_xy if len(platform_xy) >= 2 else physical_xy)
-    ux, uy = _project_station_axis_v289(axis_basis)
-    vx, vy = -uy, ux
-    extent_basis = platform_xy if len(platform_xy) >= 4 else physical_xy
-    if extent_basis:
-        us = [x*ux+y*uy for x,y in extent_basis]
-        vs = [x*vx+y*vy for x,y in extent_basis]
-        u_lo = _project_percentile_v289(us,0.04); u_hi = _project_percentile_v289(us,0.96)
-        mid_u = max(-45.0,min(45.0,(u_lo+u_hi)/2.0))
-        half_len = max(float(GPS_TRACK_STATION_CORRIDOR_MIN_HALF_LENGTH_M), min(float(GPS_TRACK_STATION_CORRIDOR_MAX_HALF_LENGTH_M), (u_hi-u_lo)/2.0 + float(GPS_TRACK_STATION_CORRIDOR_LONGITUDINAL_PAD_M)))
-        v_mid = max(-35.0,min(35.0,_project_percentile_v289(vs,0.50)))
-        abs_v = [abs(v-v_mid) for v in vs]
-        half_w = max(float(GPS_TRACK_STATION_CORRIDOR_MIN_HALF_WIDTH_M), min(float(GPS_TRACK_STATION_CORRIDOR_MAX_HALF_WIDTH_M), _project_percentile_v289(abs_v,0.92) + float(GPS_TRACK_STATION_CORRIDOR_LATERAL_PAD_M)))
-        source = "rail_platform_corridor" if len(platform_xy) >= 4 else "rail_physical_corridor"
+    platform_desc = []
+    for path in platform_paths:
+        pts = [_project_station_xy_v289(p[0], p[1], lat, lon) for p in path]
+        d = _project_path_descriptor_v290(pts)
+        if not d:
+            continue
+        if d["length_m"] < float(GPS_TRACK_STATION_PLATFORM_MIN_LENGTH_M):
+            continue
+        if d["center_m"] > float(GPS_TRACK_STATION_PLATFORM_MAX_CENTER_M):
+            continue
+        d["path"] = path
+        platform_desc.append(d)
+
+    selected = _project_dominant_parallel_cluster_v290(
+        platform_desc, GPS_TRACK_STATION_PLATFORM_CLUSTER_ANGLE_DEG
+    )
+
+    source = "platform_parallel_cluster"
+    basis_points = []
+    selected_shapes = []
+    raw_platform_count = len(platform_desc)
+    selected_platform_count = len(selected)
+
+    if selected:
+        ux, uy, axis_angle = _project_weighted_parallel_axis_v290(selected)
+        selected_ids = {id(d) for d in selected}
+        for d in selected:
+            basis_points.extend(d["points"])
+            p = d.get("path") or []
+            if len(p) >= 2:
+                closed = len(p) >= 4 and _nearby_haversine_m(p[0][0], p[0][1], p[-1][0], p[-1][1]) <= 8.0
+                selected_shapes.append({"kind": "polygon" if closed else "line", "role": "platform", "coords": p})
     else:
-        mid_u = 0.0; v_mid = 0.0
-        half_len = float(GPS_TRACK_STATION_CORRIDOR_MIN_HALF_LENGTH_M)
-        half_w = float(GPS_TRACK_STATION_CORRIDOR_MIN_HALF_WIDTH_M)
-        source = "rail_axis_fallback"
-    corridor_xy = _project_station_capsule_v289(mid_u-half_len, mid_u+half_len, v_mid, half_w, ux, uy)
-    arrival_zone = [_project_station_latlon_v289(x,y,lat,lon) for x,y in corridor_xy]
-    axis_deg = (math.degrees(math.atan2(uy,ux))+360.0)%180.0
-    return {"arrival_zone":arrival_zone,"physical_shapes":physical_shapes[:36],"source":source,
-            "half_length_m":round(half_len,1),"half_width_m":round(half_w,1),"axis_deg":round(axis_deg,1),
-            "platform_point_count":len(platform_xy),"track_point_count":len(track_xy)}
+        # Fallback: cluster each rail path separately. Never PCA all nearby rails together.
+        track_desc = []
+        for path in track_paths:
+            pts = [_project_station_xy_v289(p[0], p[1], lat, lon) for p in path]
+            d = _project_path_descriptor_v290(pts)
+            if not d or d["length_m"] < 35.0 or d["center_m"] > float(GPS_TRACK_STATION_TRACK_AXIS_RADIUS_M):
+                continue
+            d["path"] = path
+            track_desc.append(d)
+        selected_tracks = _project_dominant_parallel_cluster_v290(track_desc, 13.0)
+        if selected_tracks:
+            ux, uy, axis_angle = _project_weighted_parallel_axis_v290(selected_tracks)
+            source = "parallel_track_fallback"
+            # Use only a short central portion to avoid following rail branches far from the station.
+            for d in selected_tracks:
+                basis_points.extend(d["points"])
+        else:
+            ux, uy, axis_angle = (0.0, 1.0, math.pi / 2.0)
+            source = "axis_fallback"
+
+    vx, vy = -uy, ux
+    if basis_points and selected:
+        us = [x * ux + y * uy for x, y in basis_points]
+        vs = [x * vx + y * vy for x, y in basis_points]
+        u_lo = _project_percentile_v289(us, 0.04) - float(GPS_TRACK_STATION_PLATFORM_LONG_PAD_M)
+        u_hi = _project_percentile_v289(us, 0.96) + float(GPS_TRACK_STATION_PLATFORM_LONG_PAD_M)
+        v_lo = _project_percentile_v289(vs, 0.04) - float(GPS_TRACK_STATION_PLATFORM_SIDE_PAD_M)
+        v_hi = _project_percentile_v289(vs, 0.96) + float(GPS_TRACK_STATION_PLATFORM_SIDE_PAD_M)
+        mid_u = (u_lo + u_hi) / 2.0
+        v_mid = (v_lo + v_hi) / 2.0
+        half_len = max(
+            float(GPS_TRACK_STATION_PLATFORM_MIN_HALF_LENGTH_M),
+            min(float(GPS_TRACK_STATION_PLATFORM_MAX_HALF_LENGTH_M), (u_hi - u_lo) / 2.0),
+        )
+        half_w = max(
+            float(GPS_TRACK_STATION_PLATFORM_MIN_HALF_WIDTH_M),
+            min(float(GPS_TRACK_STATION_PLATFORM_MAX_HALF_WIDTH_M), (v_hi - v_lo) / 2.0),
+        )
+        u0 = mid_u - half_len
+        u1 = mid_u + half_len
+    elif basis_points:
+        us = [x * ux + y * uy for x, y in basis_points]
+        vs = [x * vx + y * vy for x, y in basis_points]
+        # Rail fallback is deliberately conservative: short, narrow, and centered near the station.
+        mid_u = max(-25.0, min(25.0, _project_percentile_v289(us, 0.50)))
+        v_mid = max(-22.0, min(22.0, _project_percentile_v289(vs, 0.50)))
+        half_len = float(GPS_TRACK_STATION_TRACK_FALLBACK_HALF_LENGTH_M)
+        half_w = float(GPS_TRACK_STATION_TRACK_FALLBACK_HALF_WIDTH_M)
+        u0 = mid_u - half_len
+        u1 = mid_u + half_len
+    else:
+        mid_u = 0.0
+        v_mid = 0.0
+        half_len = float(GPS_TRACK_STATION_TRACK_FALLBACK_HALF_LENGTH_M)
+        half_w = float(GPS_TRACK_STATION_TRACK_FALLBACK_HALF_WIDTH_M)
+        u0 = -half_len
+        u1 = half_len
+
+    corridor_xy = _project_station_capsule_v290(u0, u1, v_mid, half_w, ux, uy)
+    arrival_zone = [_project_station_latlon_v289(x, y, lat, lon) for x, y in corridor_xy]
+    axis_deg = (math.degrees(math.atan2(uy, ux)) + 360.0) % 180.0
+    physical_shapes = selected_shapes + other_shapes[:12]
+    return {
+        "arrival_zone": arrival_zone,
+        "physical_shapes": physical_shapes[:36],
+        "source": source,
+        "half_length_m": round(half_len, 1),
+        "half_width_m": round(half_w, 1),
+        "axis_deg": round(axis_deg, 1),
+        "platform_point_count": sum(len(d.get("points") or []) for d in selected),
+        "track_point_count": sum(len(p) for p in track_paths),
+        "raw_platform_count": raw_platform_count,
+        "selected_platform_count": selected_platform_count,
+        "method": "platform_parallel_cluster_robust_capsule",
+    }
 
 
-def _project_track_enters_station_zone_v289(points, zone, lat0, lon0):
+def _project_track_enters_station_zone_v290(points, zone, lat0, lon0):
     if len(zone or []) < 3:
         return False
-    poly = [_project_station_xy_v289(p[0],p[1],lat0,lon0) for p in zone]
+    poly = [_project_station_xy_v289(p[0], p[1], lat0, lon0) for p in zone]
     for point in points or []:
         try:
-            px,py = _project_station_xy_v289(float(point["lat"]),float(point["lon"]),lat0,lon0)
+            px, py = _project_station_xy_v289(float(point["lat"]), float(point["lon"]), lat0, lon0)
         except Exception:
             continue
-        if _project_point_in_polygon_xy_v289(px,py,poly):
+        if _project_point_in_polygon_xy_v290(px, py, poly):
             return True
     return False
 
 
-def _project_stations_near_track_v289(points):
+def _project_stations_near_track_v290(points):
     if not points:
         return []
     lats=[float(p["lat"]) for p in points]; lons=[float(p["lon"]) for p in points]
@@ -27765,9 +27959,9 @@ def _project_stations_near_track_v289(points):
                 continue
         if center_best > GPS_TRACK_STATION_NEAR_RADIUS_M:
             continue
-        fp=_project_station_corridor_v289(str(station.get("name") or "駅"),float(station["lat"]),float(station["lon"]))
+        fp=_project_station_corridor_v290(str(station.get("name") or "駅"),float(station["lat"]),float(station["lon"]))
         zone=fp.get("arrival_zone") if isinstance(fp,dict) else []
-        arrived=_project_track_enters_station_zone_v289(points,zone,float(station["lat"]),float(station["lon"]))
+        arrived=_project_track_enters_station_zone_v290(points,zone,float(station["lat"]),float(station["lon"]))
         name=str(station.get("name") or "駅"); normalized=re.sub(r"\s+","",name)
         if normalized.endswith("駅"):
             normalized=normalized[:-1]
@@ -27779,7 +27973,8 @@ def _project_stations_near_track_v289(points):
                        "footprint_source":str(fp.get("source") or "none"),"half_length_m":fp.get("half_length_m"),
                        "half_width_m":fp.get("half_width_m"),"axis_deg":fp.get("axis_deg"),
                        "platform_point_count":fp.get("platform_point_count",0),"track_point_count":fp.get("track_point_count",0),
-                       "debug_osaki":debug_osaki})
+                       "raw_platform_count":fp.get("raw_platform_count",0),"selected_platform_count":fp.get("selected_platform_count",0),
+                       "method":fp.get("method",""),"debug_osaki":debug_osaki})
     output.sort(key=lambda x:(not bool(x.get("arrived")),float(x.get("distance_m") or 999999),str(x.get("name") or "")))
     merged=[]
     for row in output:
@@ -27805,11 +28000,11 @@ def _project_stations_near_track_v289(points):
     return merged[:120]
 
 
-def _project_osaki_forced_debug_v289(points):
+def _project_osaki_forced_debug_v290(points):
     lat=35.61939; lon=139.72849
-    fp=_project_station_corridor_v289("大崎駅",lat,lon)
+    fp=_project_station_corridor_v290("大崎駅",lat,lon)
     zone=fp.get("arrival_zone") if isinstance(fp,dict) else []
-    arrived=_project_track_enters_station_zone_v289(points,zone,lat,lon)
+    arrived=_project_track_enters_station_zone_v290(points,zone,lat,lon)
     center_best=float("inf")
     for point in points or []:
         try:
@@ -27821,10 +28016,11 @@ def _project_osaki_forced_debug_v289(points):
             "footprint_source":str(fp.get("source") or "none"),"half_length_m":fp.get("half_length_m"),
             "half_width_m":fp.get("half_width_m"),"axis_deg":fp.get("axis_deg"),
             "platform_point_count":fp.get("platform_point_count",0),"track_point_count":fp.get("track_point_count",0),
-            "debug_osaki":True,"forced_debug":True}
+            "raw_platform_count":fp.get("raw_platform_count",0),"selected_platform_count":fp.get("selected_platform_count",0),
+            "method":fp.get("method",""),"debug_osaki":True,"forced_debug":True}
 
 
-def _render_burari_project_map_v289(points, segments, stations):
+def _render_burari_project_map_v290(points, segments, stations):
     if not points:
         return
     payload = {
@@ -27905,9 +28101,10 @@ html,body{{margin:0;padding:0;background:#0b1012;font-family:-apple-system,Blink
    }}
    const state=Boolean(s.arrived)?'到着判定あり':'未到着';
    const len=(Number(s.half_length_m||0)*2).toFixed(0), wid=(Number(s.half_width_m||0)*2).toFixed(0), deg=Number(s.axis_deg||0).toFixed(0);
+   const sel=Number(s.selected_platform_count||0), raw=Number(s.raw_platform_count||0);
    const icon=L.divIcon({{className:'project-arrived-station-icon',html:'<div style="background:#ff3535;border-color:#fff;box-shadow:0 0 10px #ff2020,0 0 26px rgba(255,32,32,.9)"></div>',iconSize:[18,18],iconAnchor:[9,9]}});
    const marker=L.marker([Number(s.lat),Number(s.lon)],{{icon,interactive:false}}).addTo(map);
-   marker.bindTooltip(`大崎駅 判定範囲（調整中）<br>${{state}} / 約${{len}}m × ${{wid}}m / 軸${{deg}}°`,{{permanent:true,direction:'top',offset:[0,-12],className:'project-osaki-debug-label'}});
+   marker.bindTooltip(`大崎駅 判定範囲（調整中）<br>${{state}} / 約${{len}}m × ${{wid}}m / 軸${{deg}}° / ホーム${{sel}}/${{raw}}`,{{permanent:true,direction:'top',offset:[0,-12],className:'project-osaki-debug-label'}});
  }};
  const renderedStationKeys=new Set();
  const stationKey=(name,lat,lon)=>`${{String(name||'駅').replace(/\\s+/g,'')}}:${{lat.toFixed(4)}}:${{lon.toFixed(4)}}`;
@@ -27958,7 +28155,7 @@ def page_burari_project():
     with stat_cols[2]:
         st.metric("歩行区間", f"{len(segments)} 本")
     map_points = walk_points or points[-1:]
-    stations = _project_stations_near_track_v289(map_points)
+    stations = _project_stations_near_track_v290(map_points)
     # Keep Osaki diagnostic independent from normal station discovery until approved.
     def _is_osaki_row(row):
         n = re.sub(r"\s+", "", str((row or {}).get("name") or ""))
@@ -27966,11 +28163,11 @@ def page_burari_project():
             n = n[:-1]
         return n == "大崎"
     stations = [row for row in stations if not _is_osaki_row(row)]
-    stations.append(_project_osaki_forced_debug_v289(map_points))
-    _render_burari_project_map_v289(map_points, segments, stations)
+    stations.append(_project_osaki_forced_debug_v290(map_points))
+    _render_burari_project_map_v290(map_points, segments, stations)
     st.caption(
-        "【v289 大崎駅調整中】大崎駅だけ、現在プログラムが駅とみなす範囲を常に赤枠で表示します。"
-        "円ではなく、鉄道ホームの長さと周辺線路の向きから作った細長い駅構内コリドーです。"
+        "【v290 大崎駅調整中】大崎駅だけ、現在プログラムが駅とみなす範囲を常に赤枠で表示します。"
+        "周辺線路全体ではなく、各ホームの長手方向を個別に測り、平行なホーム群だけを選んで駅軸・長さ・幅を決める方式です。"
         "この赤枠へ歩行GPSが1点でも入れば大崎駅到着です。範囲が合うまで赤表示を残します。"
     )
 
