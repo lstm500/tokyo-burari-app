@@ -30,9 +30,9 @@ from zoneinfo import ZoneInfo
 import streamlit as st
 
 # Freshly generated update: 2026-08-31 23:49 JST
-GENERATED_UPDATE_JST = "2026-09-08T02:05:00+09:00"
+GENERATED_UPDATE_JST = "2026-09-08T02:18:00+09:00"
 
-APP_BUILD = "v288"
+APP_BUILD = "v289"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -892,19 +892,19 @@ GPS_TRACK_BATCH_MAX_POINTS = 180
 GPS_TRACK_WALK_MAX_SPEED_MPS = 4.5
 GPS_TRACK_SEGMENT_MAX_GAP_SECONDS = 180.0
 GPS_TRACK_SEGMENT_MAX_JUMP_M = 180.0
-# v288: station arrival is based on a station-shaped footprint, not a circle around
-# a station point and not a huge buffer around arbitrary railway tracks.  We build a
-# footprint from OSM platforms / station buildings / station areas, expand that real
-# footprint modestly to include concourses and gates, then count a station as reached
-# when any historical walking GPS point enters the footprint.  If OSM physical-area
-# data is sparse, a short local rail corridor is used only as a fallback shape.
+# v289: define each station as an elongated railway-station corridor rather than a
+# circle or a convex hull of every public-transport feature nearby. Railway platforms
+# define the station body; railway tracks define its long axis. One historical walking
+# GPS point entering the corridor is enough for arrival. Osaki remains red until approved.
 GPS_TRACK_STATION_NEAR_RADIUS_M = 900.0
-GPS_TRACK_STATION_FOOTPRINT_QUERY_RADIUS_M = 340.0
-GPS_TRACK_STATION_PHYSICAL_MAX_DISTANCE_M = 285.0
-GPS_TRACK_STATION_TRACK_FALLBACK_RADIUS_M = 210.0
-GPS_TRACK_STATION_FOOTPRINT_BUFFER_M = 70.0
-GPS_TRACK_STATION_FALLBACK_AXIS_HALF_LENGTH_M = 135.0
-GPS_TRACK_STATION_FALLBACK_HALF_WIDTH_M = 65.0
+GPS_TRACK_STATION_CORRIDOR_QUERY_RADIUS_M = 360.0
+GPS_TRACK_STATION_TRACK_AXIS_RADIUS_M = 265.0
+GPS_TRACK_STATION_CORRIDOR_MIN_HALF_LENGTH_M = 155.0
+GPS_TRACK_STATION_CORRIDOR_MAX_HALF_LENGTH_M = 235.0
+GPS_TRACK_STATION_CORRIDOR_LONGITUDINAL_PAD_M = 38.0
+GPS_TRACK_STATION_CORRIDOR_MIN_HALF_WIDTH_M = 52.0
+GPS_TRACK_STATION_CORRIDOR_MAX_HALF_WIDTH_M = 88.0
+GPS_TRACK_STATION_CORRIDOR_LATERAL_PAD_M = 24.0
 GPS_TRACK_RENDER_POINT_LIMIT = 60000
 
 
@@ -27526,7 +27526,7 @@ out center tags;"""
     return stations
 
 
-def _project_station_path_simplify_v288(coords, max_points=160):
+def _project_station_path_simplify_v289(coords, max_points=160):
     coords = list(coords or [])
     if len(coords) <= int(max_points):
         return coords
@@ -27537,26 +27537,24 @@ def _project_station_path_simplify_v288(coords, max_points=160):
     return out
 
 
-def _project_station_xy_v288(lat, lon, lat0, lon0):
+def _project_station_xy_v289(lat, lon, lat0, lon0):
     sy = 111320.0
     sx = 111320.0 * max(0.2, math.cos(math.radians(float(lat0))))
     return ((float(lon) - float(lon0)) * sx, (float(lat) - float(lat0)) * sy)
 
 
-def _project_station_latlon_v288(x, y, lat0, lon0):
+def _project_station_latlon_v289(x, y, lat0, lon0):
     sy = 111320.0
     sx = 111320.0 * max(0.2, math.cos(math.radians(float(lat0))))
     return [round(float(lat0) + float(y) / sy, 7), round(float(lon0) + float(x) / sx, 7)]
 
 
-def _project_convex_hull_xy_v288(points):
+def _project_convex_hull_xy_v289(points):
     pts = sorted(set((round(float(x), 4), round(float(y), 4)) for x, y in (points or [])))
     if len(pts) <= 1:
         return pts
-
     def cross(o, a, b):
-        return (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
-
+        return (a[0]-o[0])*(b[1]-o[1]) - (a[1]-o[1])*(b[0]-o[0])
     lower = []
     for p in pts:
         while len(lower) >= 2 and cross(lower[-2], lower[-1], p) <= 0:
@@ -27570,106 +27568,89 @@ def _project_convex_hull_xy_v288(points):
     return lower[:-1] + upper[:-1]
 
 
-def _project_buffer_hull_xy_v288(points, buffer_m):
-    """Approximate a metric buffer around a convex footprint without heavy GIS deps."""
-    hull = _project_convex_hull_xy_v288(points)
-    if not hull:
-        return []
-    expanded = []
-    steps = 16
-    radius = max(1.0, float(buffer_m))
-    for x, y in hull:
-        for i in range(steps):
-            angle = (2.0 * math.pi * i) / steps
-            expanded.append((x + radius * math.cos(angle), y + radius * math.sin(angle)))
-    return _project_convex_hull_xy_v288(expanded)
+def _project_percentile_v289(values, q):
+    vals = sorted(float(v) for v in (values or []))
+    if not vals:
+        return 0.0
+    if len(vals) == 1:
+        return vals[0]
+    pos = max(0.0, min(1.0, float(q))) * (len(vals)-1)
+    lo = int(math.floor(pos)); hi = int(math.ceil(pos))
+    if lo == hi:
+        return vals[lo]
+    frac = pos - lo
+    return vals[lo]*(1-frac) + vals[hi]*frac
 
 
-def _project_point_in_polygon_xy_v288(x, y, polygon):
+def _project_station_axis_v289(points):
+    pts = [(float(x), float(y)) for x, y in (points or [])]
+    if len(pts) < 2:
+        return (0.0, 1.0)
+    mx = sum(p[0] for p in pts)/len(pts); my = sum(p[1] for p in pts)/len(pts)
+    xx = sum((p[0]-mx)**2 for p in pts)/len(pts)
+    yy = sum((p[1]-my)**2 for p in pts)/len(pts)
+    xy = sum((p[0]-mx)*(p[1]-my) for p in pts)/len(pts)
+    angle = 0.5 * math.atan2(2.0*xy, xx-yy)
+    ux, uy = math.cos(angle), math.sin(angle)
+    if uy < 0 or (abs(uy) < 1e-9 and ux < 0):
+        ux, uy = -ux, -uy
+    return ux, uy
+
+
+def _project_station_capsule_v289(u0, u1, v0, half_width, ux, uy):
+    vx, vy = -uy, ux
+    endpoints = [
+        (u0*ux + v0*vx, u0*uy + v0*vy),
+        (u1*ux + v0*vx, u1*uy + v0*vy),
+    ]
+    cloud = []
+    r = max(1.0, float(half_width))
+    for cx, cy in endpoints:
+        for i in range(24):
+            a = 2.0*math.pi*i/24.0
+            cloud.append((cx + r*math.cos(a), cy + r*math.sin(a)))
+    return _project_convex_hull_xy_v289(cloud)
+
+
+def _project_point_in_polygon_xy_v289(x, y, polygon):
     if len(polygon or []) < 3:
         return False
     inside = False
-    j = len(polygon) - 1
+    j = len(polygon)-1
     for i in range(len(polygon)):
-        xi, yi = polygon[i]
-        xj, yj = polygon[j]
+        xi, yi = polygon[i]; xj, yj = polygon[j]
         if ((yi > y) != (yj > y)):
-            denom = (yj - yi) if abs(yj - yi) > 1e-12 else 1e-12
-            at_x = (xj - xi) * (y - yi) / denom + xi
+            denom = (yj-yi) if abs(yj-yi) > 1e-12 else 1e-12
+            at_x = (xj-xi)*(y-yi)/denom + xi
             if x < at_x:
                 inside = not inside
         j = i
     return inside
 
 
-def _project_station_axis_fallback_xy_v288(track_points):
-    """Build an elongated station corridor when platform/area geometry is unavailable."""
-    pts = [(float(x), float(y)) for x, y in (track_points or [])]
-    if len(pts) >= 2:
-        mx = sum(p[0] for p in pts) / len(pts)
-        my = sum(p[1] for p in pts) / len(pts)
-        xx = sum((p[0] - mx) ** 2 for p in pts) / len(pts)
-        yy = sum((p[1] - my) ** 2 for p in pts) / len(pts)
-        xy = sum((p[0] - mx) * (p[1] - my) for p in pts) / len(pts)
-        angle = 0.5 * math.atan2(2.0 * xy, xx - yy)
-        ux, uy = math.cos(angle), math.sin(angle)
-        projections = [(p[0] * ux + p[1] * uy) for p in pts]
-        u0, u1 = min(projections), max(projections)
-        mid = (u0 + u1) / 2.0
-        half_len = max(float(GPS_TRACK_STATION_FALLBACK_AXIS_HALF_LENGTH_M), min(220.0, (u1 - u0) / 2.0 + 25.0))
-        cx = mx
-        cy = my
-        # Recenter along the dominant axis so one outlying rail segment cannot drag the zone.
-        current_mid = cx * ux + cy * uy
-        cx += (mid - current_mid) * ux
-        cy += (mid - current_mid) * uy
-    else:
-        # Rare last resort: an elongated north-south footprint, still never a circle.
-        ux, uy = 0.0, 1.0
-        cx = cy = 0.0
-        half_len = float(GPS_TRACK_STATION_FALLBACK_AXIS_HALF_LENGTH_M)
-    vx, vy = -uy, ux
-    half_w = float(GPS_TRACK_STATION_FALLBACK_HALF_WIDTH_M)
-    return [
-        (cx - ux * half_len - vx * half_w, cy - uy * half_len - vy * half_w),
-        (cx + ux * half_len - vx * half_w, cy + uy * half_len - vy * half_w),
-        (cx + ux * half_len + vx * half_w, cy + uy * half_len + vy * half_w),
-        (cx - ux * half_len + vx * half_w, cy - uy * half_len + vy * half_w),
-    ]
-
-
 @st.cache_data(ttl=86400, max_entries=96, show_spinner=False)
-def _project_station_footprint_v288(name, lat, lon):
-    """Build one station-shaped arrival zone from OSM physical station features."""
+def _project_station_corridor_v289(name, lat, lon):
+    """Build a rail-aligned station corridor from railway-only OSM features."""
     try:
         lat = float(lat); lon = float(lon)
     except (TypeError, ValueError):
         return {"arrival_zone": [], "physical_shapes": [], "source": "none"}
-
-    area_r = int(GPS_TRACK_STATION_FOOTPRINT_QUERY_RADIUS_M)
-    track_r = int(GPS_TRACK_STATION_TRACK_FALLBACK_RADIUS_M)
+    area_r = int(GPS_TRACK_STATION_CORRIDOR_QUERY_RADIUS_M)
+    track_r = int(GPS_TRACK_STATION_TRACK_AXIS_RADIUS_M)
     query = f"""[out:json][timeout:10];
 (
   way(around:{area_r},{lat:.7f},{lon:.7f})["railway"="platform"];
   relation(around:{area_r},{lat:.7f},{lon:.7f})["railway"="platform"];
-  way(around:{area_r},{lat:.7f},{lon:.7f})["public_transport"="platform"];
-  relation(around:{area_r},{lat:.7f},{lon:.7f})["public_transport"="platform"];
   way(around:{area_r},{lat:.7f},{lon:.7f})["building"="train_station"];
   relation(around:{area_r},{lat:.7f},{lon:.7f})["building"="train_station"];
   way(around:{area_r},{lat:.7f},{lon:.7f})["railway"="station"];
   relation(around:{area_r},{lat:.7f},{lon:.7f})["railway"="station"];
-  way(around:{area_r},{lat:.7f},{lon:.7f})["public_transport"="station"];
-  relation(around:{area_r},{lat:.7f},{lon:.7f})["public_transport"="station"];
   way(around:{track_r},{lat:.7f},{lon:.7f})["railway"~"^(rail|subway|light_rail|monorail)$"];
 );
 out geom center tags;"""
     data, _error = _toilet_overpass_fetch(query, timeout=7.0)
     elements = data.get("elements") if isinstance(data, dict) else []
-    physical_shapes = []
-    physical_xy = []
-    track_xy = []
-    max_physical = float(GPS_TRACK_STATION_PHYSICAL_MAX_DISTANCE_M)
-    max_track = float(GPS_TRACK_STATION_TRACK_FALLBACK_RADIUS_M)
+    platform_xy, physical_xy, track_xy, physical_shapes = [], [], [], []
 
     def parsed_path(raw):
         out = []
@@ -27680,32 +27661,27 @@ out geom center tags;"""
                 y = float(node.get("lat")); x = float(node.get("lon"))
             except (TypeError, ValueError):
                 continue
-            out.append([round(y, 7), round(x, 7)])
+            out.append([round(y,7), round(x,7)])
         return out
 
-    def keep_local_path(path, max_distance):
-        local = []
+    def local_path(path, radius_m):
+        out = []
         for p in path or []:
             try:
-                if _nearby_haversine_m(lat, lon, float(p[0]), float(p[1])) <= float(max_distance):
-                    local.append(p)
+                if _nearby_haversine_m(lat, lon, float(p[0]), float(p[1])) <= float(radius_m):
+                    out.append(p)
             except Exception:
                 continue
-        return local
+        return out
 
     for row in elements or []:
         if not isinstance(row, dict):
             continue
         tags = row.get("tags") if isinstance(row.get("tags"), dict) else {}
         railway = str(tags.get("railway") or "")
-        public_transport = str(tags.get("public_transport") or "")
         building = str(tags.get("building") or "")
-        is_track = railway in {"rail", "subway", "light_rail", "monorail"}
-        role = "track" if is_track else (
-            "platform" if railway == "platform" or public_transport == "platform" else (
-                "building" if building == "train_station" else "station"
-            )
-        )
+        is_track = railway in {"rail","subway","light_rail","monorail"}
+        role = "track" if is_track else ("platform" if railway == "platform" else ("building" if building == "train_station" else "station"))
         raw_paths = []
         if isinstance(row.get("geometry"), list):
             raw_paths.append(row.get("geometry"))
@@ -27716,139 +27692,139 @@ out geom center tags;"""
         for raw in raw_paths:
             path = parsed_path(raw)
             if is_track:
-                path = keep_local_path(path, max_track)
+                path = local_path(path, track_r)
                 for p in path:
-                    track_xy.append(_project_station_xy_v288(p[0], p[1], lat, lon))
+                    track_xy.append(_project_station_xy_v289(p[0],p[1],lat,lon))
                 continue
-            # A physical feature must actually come reasonably close to this station point.
-            if not path:
-                continue
-            nearest = min((_nearby_haversine_m(lat, lon, p[0], p[1]) for p in path), default=999999.0)
-            if nearest > max_physical:
-                continue
-            path = keep_local_path(path, max_physical + 55.0)
-            path = _project_station_path_simplify_v288(path)
+            path = _project_station_path_simplify_v289(local_path(path, area_r))
             if len(path) < 2:
                 continue
-            closed = len(path) >= 4 and _nearby_haversine_m(path[0][0], path[0][1], path[-1][0], path[-1][1]) <= 8.0
-            physical_shapes.append({"kind": "polygon" if closed else "line", "role": role, "coords": path})
+            closed = len(path) >= 4 and _nearby_haversine_m(path[0][0],path[0][1],path[-1][0],path[-1][1]) <= 8.0
+            physical_shapes.append({"kind":"polygon" if closed else "line","role":role,"coords":path})
             for p in path:
-                physical_xy.append(_project_station_xy_v288(p[0], p[1], lat, lon))
+                xy = _project_station_xy_v289(p[0],p[1],lat,lon)
+                physical_xy.append(xy)
+                if role == "platform":
+                    platform_xy.append(xy)
 
-    # Prefer the real station surfaces. Tracks are only a fallback axis/corridor and never
-    # enlarge a healthy station footprint hundreds of metres down the railway line.
-    source = "osm_physical"
-    basis_xy = physical_xy
-    if len(_project_convex_hull_xy_v288(basis_xy)) < 2:
-        source = "local_track_fallback"
-        basis_xy = track_xy
-    if len(_project_convex_hull_xy_v288(basis_xy)) >= 2:
-        buffered_xy = _project_buffer_hull_xy_v288(basis_xy, GPS_TRACK_STATION_FOOTPRINT_BUFFER_M)
+    axis_basis = track_xy if len(track_xy) >= 6 else (platform_xy if len(platform_xy) >= 2 else physical_xy)
+    ux, uy = _project_station_axis_v289(axis_basis)
+    vx, vy = -uy, ux
+    extent_basis = platform_xy if len(platform_xy) >= 4 else physical_xy
+    if extent_basis:
+        us = [x*ux+y*uy for x,y in extent_basis]
+        vs = [x*vx+y*vy for x,y in extent_basis]
+        u_lo = _project_percentile_v289(us,0.04); u_hi = _project_percentile_v289(us,0.96)
+        mid_u = max(-45.0,min(45.0,(u_lo+u_hi)/2.0))
+        half_len = max(float(GPS_TRACK_STATION_CORRIDOR_MIN_HALF_LENGTH_M), min(float(GPS_TRACK_STATION_CORRIDOR_MAX_HALF_LENGTH_M), (u_hi-u_lo)/2.0 + float(GPS_TRACK_STATION_CORRIDOR_LONGITUDINAL_PAD_M)))
+        v_mid = max(-35.0,min(35.0,_project_percentile_v289(vs,0.50)))
+        abs_v = [abs(v-v_mid) for v in vs]
+        half_w = max(float(GPS_TRACK_STATION_CORRIDOR_MIN_HALF_WIDTH_M), min(float(GPS_TRACK_STATION_CORRIDOR_MAX_HALF_WIDTH_M), _project_percentile_v289(abs_v,0.92) + float(GPS_TRACK_STATION_CORRIDOR_LATERAL_PAD_M)))
+        source = "rail_platform_corridor" if len(platform_xy) >= 4 else "rail_physical_corridor"
     else:
-        source = "axis_fallback"
-        axis_poly = _project_station_axis_fallback_xy_v288(track_xy)
-        buffered_xy = _project_buffer_hull_xy_v288(axis_poly, 18.0)
+        mid_u = 0.0; v_mid = 0.0
+        half_len = float(GPS_TRACK_STATION_CORRIDOR_MIN_HALF_LENGTH_M)
+        half_w = float(GPS_TRACK_STATION_CORRIDOR_MIN_HALF_WIDTH_M)
+        source = "rail_axis_fallback"
+    corridor_xy = _project_station_capsule_v289(mid_u-half_len, mid_u+half_len, v_mid, half_w, ux, uy)
+    arrival_zone = [_project_station_latlon_v289(x,y,lat,lon) for x,y in corridor_xy]
+    axis_deg = (math.degrees(math.atan2(uy,ux))+360.0)%180.0
+    return {"arrival_zone":arrival_zone,"physical_shapes":physical_shapes[:36],"source":source,
+            "half_length_m":round(half_len,1),"half_width_m":round(half_w,1),"axis_deg":round(axis_deg,1),
+            "platform_point_count":len(platform_xy),"track_point_count":len(track_xy)}
 
-    arrival_zone = [_project_station_latlon_v288(x, y, lat, lon) for x, y in buffered_xy]
-    return {
-        "arrival_zone": arrival_zone,
-        "physical_shapes": physical_shapes[:48],
-        "source": source,
-        "physical_shape_count": len(physical_shapes),
-    }
 
-
-def _project_track_enters_station_zone_v288(points, zone, lat0, lon0):
+def _project_track_enters_station_zone_v289(points, zone, lat0, lon0):
     if len(zone or []) < 3:
         return False
-    polygon_xy = [_project_station_xy_v288(p[0], p[1], lat0, lon0) for p in zone]
+    poly = [_project_station_xy_v289(p[0],p[1],lat0,lon0) for p in zone]
     for point in points or []:
         try:
-            px, py = _project_station_xy_v288(float(point["lat"]), float(point["lon"]), lat0, lon0)
+            px,py = _project_station_xy_v289(float(point["lat"]),float(point["lon"]),lat0,lon0)
         except Exception:
             continue
-        if _project_point_in_polygon_xy_v288(px, py, polygon_xy):
+        if _project_point_in_polygon_xy_v289(px,py,poly):
             return True
     return False
 
 
-def _project_stations_near_track_v288(points):
+def _project_stations_near_track_v289(points):
     if not points:
         return []
-    lats = [float(p["lat"]) for p in points]; lons = [float(p["lon"]) for p in points]
-    south, north = min(lats), max(lats); west, east = min(lons), max(lons)
-    pad_lat = 0.014
-    mid_lat = (south + north) / 2.0
-    pad_lon = 0.014 / max(0.35, math.cos(math.radians(mid_lat)))
-    stations = _project_station_candidates_v271(
-        round(south - pad_lat, 3), round(west - pad_lon, 3),
-        round(north + pad_lat, 3), round(east + pad_lon, 3),
-    )
-    output = []
+    lats=[float(p["lat"]) for p in points]; lons=[float(p["lon"]) for p in points]
+    south,north=min(lats),max(lats); west,east=min(lons),max(lons)
+    pad_lat=0.014; mid_lat=(south+north)/2.0; pad_lon=0.014/max(0.35,math.cos(math.radians(mid_lat)))
+    stations=_project_station_candidates_v271(round(south-pad_lat,3),round(west-pad_lon,3),round(north+pad_lat,3),round(east+pad_lon,3))
+    output=[]
     for station in stations or []:
-        center_best = float("inf")
+        center_best=float("inf")
         for point in points:
             try:
-                center_best = min(center_best, _nearby_haversine_m(
-                    float(station["lat"]), float(station["lon"]),
-                    float(point["lat"]), float(point["lon"]),
-                ))
+                center_best=min(center_best,_nearby_haversine_m(float(station["lat"]),float(station["lon"]),float(point["lat"]),float(point["lon"])))
             except Exception:
                 continue
         if center_best > GPS_TRACK_STATION_NEAR_RADIUS_M:
             continue
-        footprint = _project_station_footprint_v288(
-            str(station.get("name") or "駅"), float(station["lat"]), float(station["lon"])
-        )
-        zone = footprint.get("arrival_zone") if isinstance(footprint, dict) else []
-        arrived = _project_track_enters_station_zone_v288(
-            points, zone, float(station["lat"]), float(station["lon"])
-        )
-        output.append({
-            "name": str(station.get("name") or "駅"),
-            "lat": round(float(station["lat"]), 7),
-            "lon": round(float(station["lon"]), 7),
-            "visited": bool(arrived),
-            "arrived": bool(arrived),
-            "distance_m": round(center_best, 1),
-            "arrival_zone": zone if arrived else [],
-            "physical_shapes": footprint.get("physical_shapes", []) if arrived else [],
-            "footprint_source": str(footprint.get("source") or "none"),
-        })
-
-    output.sort(key=lambda x: (not bool(x.get("arrived")), float(x.get("distance_m") or 999999), str(x.get("name") or "")))
-    merged = []
-    for row in output:
-        normalized = re.sub(r"\s+", "", str(row.get("name") or "駅"))
+        fp=_project_station_corridor_v289(str(station.get("name") or "駅"),float(station["lat"]),float(station["lon"]))
+        zone=fp.get("arrival_zone") if isinstance(fp,dict) else []
+        arrived=_project_track_enters_station_zone_v289(points,zone,float(station["lat"]),float(station["lon"]))
+        name=str(station.get("name") or "駅"); normalized=re.sub(r"\s+","",name)
         if normalized.endswith("駅"):
-            normalized = normalized[:-1]
-        duplicate = False
+            normalized=normalized[:-1]
+        debug_osaki=normalized=="大崎"
+        output.append({"name":name,"lat":round(float(station["lat"]),7),"lon":round(float(station["lon"]),7),
+                       "visited":bool(arrived),"arrived":bool(arrived),"distance_m":round(center_best,1),
+                       "arrival_zone":zone if (arrived or debug_osaki) else [],
+                       "physical_shapes":fp.get("physical_shapes",[]) if arrived else [],
+                       "footprint_source":str(fp.get("source") or "none"),"half_length_m":fp.get("half_length_m"),
+                       "half_width_m":fp.get("half_width_m"),"axis_deg":fp.get("axis_deg"),
+                       "platform_point_count":fp.get("platform_point_count",0),"track_point_count":fp.get("track_point_count",0),
+                       "debug_osaki":debug_osaki})
+    output.sort(key=lambda x:(not bool(x.get("arrived")),float(x.get("distance_m") or 999999),str(x.get("name") or "")))
+    merged=[]
+    for row in output:
+        norm=re.sub(r"\s+","",str(row.get("name") or "駅")); norm=norm[:-1] if norm.endswith("駅") else norm
+        dup=False
         for kept in merged:
-            kept_name = re.sub(r"\s+", "", str(kept.get("name") or "駅"))
-            if kept_name.endswith("駅"):
-                kept_name = kept_name[:-1]
-            if kept_name != normalized:
+            kn=re.sub(r"\s+","",str(kept.get("name") or "駅")); kn=kn[:-1] if kn.endswith("駅") else kn
+            if kn != norm:
                 continue
             try:
-                center_gap = _nearby_haversine_m(float(row["lat"]), float(row["lon"]), float(kept["lat"]), float(kept["lon"]))
+                gap=_nearby_haversine_m(float(row["lat"]),float(row["lon"]),float(kept["lat"]),float(kept["lon"]))
             except Exception:
-                center_gap = 999999.0
-            if center_gap < 260.0:
-                duplicate = True
+                gap=999999.0
+            if gap < 260.0:
+                dup=True
                 if bool(row.get("arrived")) and not bool(kept.get("arrived")):
                     kept.update(row)
-                elif bool(row.get("arrived")) and bool(kept.get("arrived")):
-                    if not kept.get("arrival_zone") and row.get("arrival_zone"):
-                        kept["arrival_zone"] = row.get("arrival_zone")
-                    if not kept.get("physical_shapes") and row.get("physical_shapes"):
-                        kept["physical_shapes"] = row.get("physical_shapes")
+                elif bool(row.get("debug_osaki")) and not bool(kept.get("debug_osaki")):
+                    kept.update(row)
                 break
-        if not duplicate:
+        if not dup:
             merged.append(row)
     return merged[:120]
 
 
-def _render_burari_project_map_v288(points, segments, stations):
+def _project_osaki_forced_debug_v289(points):
+    lat=35.61939; lon=139.72849
+    fp=_project_station_corridor_v289("大崎駅",lat,lon)
+    zone=fp.get("arrival_zone") if isinstance(fp,dict) else []
+    arrived=_project_track_enters_station_zone_v289(points,zone,lat,lon)
+    center_best=float("inf")
+    for point in points or []:
+        try:
+            center_best=min(center_best,_nearby_haversine_m(lat,lon,float(point["lat"]),float(point["lon"])))
+        except Exception:
+            continue
+    return {"name":"大崎駅","lat":lat,"lon":lon,"visited":bool(arrived),"arrived":bool(arrived),
+            "distance_m":round(center_best,1) if math.isfinite(center_best) else None,"arrival_zone":zone,"physical_shapes":[],
+            "footprint_source":str(fp.get("source") or "none"),"half_length_m":fp.get("half_length_m"),
+            "half_width_m":fp.get("half_width_m"),"axis_deg":fp.get("axis_deg"),
+            "platform_point_count":fp.get("platform_point_count",0),"track_point_count":fp.get("track_point_count",0),
+            "debug_osaki":True,"forced_debug":True}
+
+
+def _render_burari_project_map_v289(points, segments, stations):
     if not points:
         return
     payload = {
@@ -27879,9 +27855,12 @@ html,body{{margin:0;padding:0;background:#0b1012;font-family:-apple-system,Blink
 .project-legend{{position:absolute;z-index:1000;left:10px;bottom:10px;background:rgba(4,12,9,.84);border:1px solid rgba(151,255,187,.24);color:#e9fff0;border-radius:11px;padding:7px 9px;font-size:10px;line-height:1.45;box-shadow:0 4px 16px rgba(0,0,0,.28);pointer-events:none;}}
 .project-legend-line{{display:inline-block;width:20px;height:3px;background:#7fd994;box-shadow:0 0 4px rgba(72,220,108,.42);border-radius:99px;margin-right:6px;vertical-align:middle;}}
 .project-legend-station{{display:inline-block;width:24px;height:10px;border:2px solid #f0fff3;background:rgba(72,255,119,.68);box-shadow:0 0 9px #58ff8b,0 0 22px rgba(88,255,139,.98);border-radius:4px;margin-right:6px;vertical-align:middle;}}
+.project-legend-debug{{display:inline-block;width:24px;height:10px;border:2px solid #ffb0b0;background:rgba(255,45,45,.10);box-shadow:0 0 8px #ff3434,0 0 22px rgba(255,45,45,.72);border-radius:4px;margin-right:6px;vertical-align:middle;}}
+.project-osaki-debug-label{{background:rgba(66,0,0,.94);border:2px solid rgba(255,190,190,.98);color:#fff;border-radius:9px;padding:4px 7px;box-shadow:0 0 12px rgba(255,45,45,.85),0 0 28px rgba(255,45,45,.42);font-size:11px;font-weight:900;}}
+.project-osaki-debug-label:before{{display:none;}}
 @media(max-width:640px){{#project-map{{height:570px;border-radius:15px;}}.project-arrival-badge{{max-width:76%;font-size:10.5px;}}}}
 </style></head><body>
-<div style="position:relative"><div id="project-map"></div><div id="project-arrival-badge" class="project-arrival-badge"></div><div class="project-legend"><div><span class="project-legend-line"></span>歩いた道</div><div><span class="project-legend-station"></span>辿り着いた駅</div></div></div>
+<div style="position:relative"><div id="project-map"></div><div id="project-arrival-badge" class="project-arrival-badge"></div><div class="project-legend"><div><span class="project-legend-line"></span>歩いた道</div><div><span class="project-legend-station"></span>辿り着いた駅</div><div><span class="project-legend-debug"></span>大崎駅 判定範囲（調整中）</div></div></div>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
 <script>
 (function(){{
@@ -27917,13 +27896,30 @@ html,body{{margin:0;padding:0;background:#0b1012;font-family:-apple-system,Blink
    const marker=L.marker([Number(s.lat),Number(s.lon)],{{icon,interactive:false}}).addTo(map);
    marker.bindTooltip(`到着：${{String(s.name||'駅')}}`,{{permanent:true,direction:'top',offset:[0,-12],className:'project-arrived-label'}});
  }};
+ const drawOsakiDebug=(s)=>{{
+   const zone=(Array.isArray(s.arrival_zone)?s.arrival_zone:[]).filter((p)=>Array.isArray(p)&&p.length>=2);
+   if(zone.length>=3){{
+     L.polygon(zone,{{color:'#ff2020',weight:18,opacity:.10,fillColor:'#ff3030',fillOpacity:.025,interactive:false,lineJoin:'round'}}).addTo(map);
+     L.polygon(zone,{{color:'#ff3939',weight:8,opacity:.45,fillColor:'#ff3030',fillOpacity:.045,interactive:false,lineJoin:'round'}}).addTo(map);
+     L.polygon(zone,{{color:'#ffd0d0',weight:3.0,opacity:.99,fillColor:'#ff3030',fillOpacity:.025,interactive:false,lineJoin:'round'}}).addTo(map);
+   }}
+   const state=Boolean(s.arrived)?'到着判定あり':'未到着';
+   const len=(Number(s.half_length_m||0)*2).toFixed(0), wid=(Number(s.half_width_m||0)*2).toFixed(0), deg=Number(s.axis_deg||0).toFixed(0);
+   const icon=L.divIcon({{className:'project-arrived-station-icon',html:'<div style="background:#ff3535;border-color:#fff;box-shadow:0 0 10px #ff2020,0 0 26px rgba(255,32,32,.9)"></div>',iconSize:[18,18],iconAnchor:[9,9]}});
+   const marker=L.marker([Number(s.lat),Number(s.lon)],{{icon,interactive:false}}).addTo(map);
+   marker.bindTooltip(`大崎駅 判定範囲（調整中）<br>${{state}} / 約${{len}}m × ${{wid}}m / 軸${{deg}}°`,{{permanent:true,direction:'top',offset:[0,-12],className:'project-osaki-debug-label'}});
+ }};
  const renderedStationKeys=new Set();
  const stationKey=(name,lat,lon)=>`${{String(name||'駅').replace(/\\s+/g,'')}}:${{lat.toFixed(4)}}:${{lon.toFixed(4)}}`;
  (data.stations||[]).forEach((s)=>{{
    const lat=Number(s.lat),lon=Number(s.lon); if(!Number.isFinite(lat)||!Number.isFinite(lon))return;
    const name=String(s.name||'駅'); const key=stationKey(name,lat,lon); if(renderedStationKeys.has(key))return; renderedStationKeys.add(key);
-   if(Boolean(s.arrived)){{arrivedStations.push({{name,lat,lon,distance_m:Number(s.distance_m)||0}});drawArrivedStation(s);}}
-   else if(Number(s.distance_m)<=Number(data.station_near_radius_m||900)){{
+   if(Boolean(s.debug_osaki)){{
+     if(Boolean(s.arrived)) arrivedStations.push({{name,lat,lon,distance_m:Number(s.distance_m)||0}});
+     drawOsakiDebug(s);
+   }} else if(Boolean(s.arrived)){{
+     arrivedStations.push({{name,lat,lon,distance_m:Number(s.distance_m)||0}}); drawArrivedStation(s);
+   }} else if(Number(s.distance_m)<=Number(data.station_near_radius_m||900)){{
      const m=L.circleMarker([lat,lon],{{radius:3.0,color:'#b9ffd0',weight:1,opacity:.22,fillColor:'#62ff92',fillOpacity:.07}}).addTo(map);
      m.bindTooltip(name,{{direction:'top',className:'project-station-label'}});
    }}
@@ -27962,12 +27958,20 @@ def page_burari_project():
     with stat_cols[2]:
         st.metric("歩行区間", f"{len(segments)} 本")
     map_points = walk_points or points[-1:]
-    stations = _project_stations_near_track_v288(map_points)
-    _render_burari_project_map_v288(map_points, segments, stations)
+    stations = _project_stations_near_track_v289(map_points)
+    # Keep Osaki diagnostic independent from normal station discovery until approved.
+    def _is_osaki_row(row):
+        n = re.sub(r"\s+", "", str((row or {}).get("name") or ""))
+        if n.endswith("駅"):
+            n = n[:-1]
+        return n == "大崎"
+    stations = [row for row in stations if not _is_osaki_row(row)]
+    stations.append(_project_osaki_forced_debug_v289(map_points))
+    _render_burari_project_map_v289(map_points, segments, stations)
     st.caption(
-        "駅の到着判定は、駅中心からの円ではなく、OpenStreetMapのホーム・駅舎・駅エリアから駅の外形を作り、"
-        "改札・コンコースのGPSずれを考慮して外側へ約70m広げた『駅型の判定範囲』を使います。"
-        "歩行GPSがその範囲へ1点でも入れば到着です。線路は駅形状データが不足した場合の向き・形の補助にだけ使います。"
+        "【v289 大崎駅調整中】大崎駅だけ、現在プログラムが駅とみなす範囲を常に赤枠で表示します。"
+        "円ではなく、鉄道ホームの長さと周辺線路の向きから作った細長い駅構内コリドーです。"
+        "この赤枠へ歩行GPSが1点でも入れば大崎駅到着です。範囲が合うまで赤表示を残します。"
     )
 
 
