@@ -30,9 +30,9 @@ from zoneinfo import ZoneInfo
 import streamlit as st
 
 # Freshly generated update: 2026-08-31 23:49 JST
-GENERATED_UPDATE_JST = "2026-09-08T02:18:00+09:00"
+GENERATED_UPDATE_JST = "2026-09-08T08:02:00+09:00"
 
-APP_BUILD = "v290"
+APP_BUILD = "v291"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -916,6 +916,24 @@ GPS_TRACK_STATION_PLATFORM_MAX_HALF_WIDTH_M = 68.0
 GPS_TRACK_STATION_TRACK_FALLBACK_HALF_LENGTH_M = 125.0
 GPS_TRACK_STATION_TRACK_FALLBACK_HALF_WIDTH_M = 42.0
 GPS_TRACK_RENDER_POINT_LIMIT = 60000
+
+# v291 Osaki diagnostic: infer the station footprint from the same raster map the
+# user sees.  The OSM station point is only an anchor.  We fetch a small cached
+# standard-map mosaic, detect low-saturation dark linear pixels, measure where the
+# rail bundle becomes locally dense/thick, and fit a rail-aligned rounded capsule.
+# Until the outline is visually approved, Osaki is always shown in red.
+GPS_TRACK_STATION_VISION_ZOOM = 17
+GPS_TRACK_STATION_VISION_TILE_RADIUS = 1
+GPS_TRACK_STATION_VISION_RADIUS_M = 245.0
+GPS_TRACK_STATION_VISION_U_LIMIT_M = 235.0
+GPS_TRACK_STATION_VISION_V_LIMIT_M = 135.0
+GPS_TRACK_STATION_VISION_BIN_M = 6.0
+GPS_TRACK_STATION_VISION_LONG_PAD_M = 8.0
+GPS_TRACK_STATION_VISION_SIDE_PAD_M = 7.0
+GPS_TRACK_STATION_VISION_MIN_HALF_LENGTH_M = 58.0
+GPS_TRACK_STATION_VISION_MAX_HALF_LENGTH_M = 145.0
+GPS_TRACK_STATION_VISION_MIN_HALF_WIDTH_M = 18.0
+GPS_TRACK_STATION_VISION_MAX_HALF_WIDTH_M = 52.0
 
 
 # ============================================================
@@ -28000,9 +28018,320 @@ def _project_stations_near_track_v290(points):
     return merged[:120]
 
 
-def _project_osaki_forced_debug_v290(points):
+
+def _project_slippy_global_pixel_v291(lat, lon, zoom):
+    """Web-Mercator global pixel coordinate for the standard 256px OSM tile grid."""
+    lat = max(-85.05112878, min(85.05112878, float(lat)))
+    lon = max(-180.0, min(180.0, float(lon)))
+    scale = float((1 << int(zoom)) * 256)
+    x = (lon + 180.0) / 360.0 * scale
+    lat_r = math.radians(lat)
+    y = (1.0 - math.asinh(math.tan(lat_r)) / math.pi) / 2.0 * scale
+    return x, y
+
+
+@st.cache_data(ttl=86400, max_entries=16, show_spinner=False)
+def _project_osm_station_mosaic_v291(lat, lon, zoom=GPS_TRACK_STATION_VISION_ZOOM, tile_radius=GPS_TRACK_STATION_VISION_TILE_RADIUS):
+    """Fetch a tiny cached OSM raster mosaic around one station for visual inference."""
+    try:
+        from PIL import Image
+        lat = float(lat); lon = float(lon); zoom = int(zoom); tile_radius = int(tile_radius)
+        gx, gy = _project_slippy_global_pixel_v291(lat, lon, zoom)
+        tx = int(math.floor(gx / 256.0)); ty = int(math.floor(gy / 256.0))
+        left = tx - tile_radius; top = ty - tile_radius
+        size_tiles = tile_radius * 2 + 1
+        jobs = []
+        for yy in range(top, top + size_tiles):
+            for xx in range(left, left + size_tiles):
+                jobs.append((xx, yy))
+
+        def fetch_one(pair):
+            xx, yy = pair
+            n = 1 << zoom
+            if yy < 0 or yy >= n:
+                return pair, None
+            wrapped_x = xx % n
+            url = f"https://tile.openstreetmap.org/{zoom}/{wrapped_x}/{yy}.png"
+            req = Request(url, headers={
+                "User-Agent": "TokyoBurariStationVision/1.0",
+                "Accept": "image/png,image/*;q=0.8,*/*;q=0.5",
+            })
+            try:
+                with urlopen(req, timeout=5.5) as resp:
+                    return pair, resp.read()
+            except Exception:
+                return pair, None
+
+        fetched = {}
+        with ThreadPoolExecutor(max_workers=min(6, len(jobs))) as pool:
+            for pair, raw in pool.map(fetch_one, jobs):
+                fetched[pair] = raw
+        if any(not fetched.get(pair) for pair in jobs):
+            return {"ok": False, "error": "tile_fetch_failed"}
+
+        mosaic = Image.new("RGB", (size_tiles * 256, size_tiles * 256), (242, 242, 242))
+        for xx, yy in jobs:
+            raw = fetched.get((xx, yy))
+            with Image.open(io.BytesIO(raw)) as tile:
+                tile = tile.convert("RGB")
+                mosaic.paste(tile, ((xx - left) * 256, (yy - top) * 256))
+        out = io.BytesIO()
+        mosaic.save(out, format="PNG", optimize=False)
+        center_x = gx - float(left * 256)
+        center_y = gy - float(top * 256)
+        mpp = 156543.03392804097 * math.cos(math.radians(lat)) / float(1 << zoom)
+        return {
+            "ok": True,
+            "png": out.getvalue(),
+            "center_x": round(center_x, 4),
+            "center_y": round(center_y, 4),
+            "meters_per_pixel": float(mpp),
+            "zoom": zoom,
+            "width": mosaic.width,
+            "height": mosaic.height,
+        }
+    except Exception as exc:
+        return {"ok": False, "error": f"mosaic:{type(exc).__name__}"}
+
+
+def _project_smooth_profile_v291(values, radius=2):
+    values = [float(v) for v in (values or [])]
+    if not values:
+        return []
+    r = max(0, int(radius))
+    if r <= 0:
+        return values
+    out = []
+    for i in range(len(values)):
+        a = max(0, i-r); b = min(len(values), i+r+1)
+        out.append(sum(values[a:b]) / max(1, b-a))
+    return out
+
+
+def _project_station_image_corridor_v291(name, lat, lon):
+    """Infer a station capsule from raster rail density/thickening around a known station point."""
+    try:
+        from PIL import Image, ImageFilter
+        lat = float(lat); lon = float(lon)
+    except Exception:
+        return {"arrival_zone": [], "source": "vision_import_failed", "method": "map_image_rail_density"}
+
+    mosaic = _project_osm_station_mosaic_v291(lat, lon)
+    if not isinstance(mosaic, dict) or not mosaic.get("ok") or not mosaic.get("png"):
+        fallback = _project_station_corridor_v290(name, lat, lon)
+        fallback = dict(fallback or {})
+        fallback["source"] = "vision_tile_failed_platform_fallback"
+        fallback["method"] = "map_image_failed_platform_fallback"
+        fallback["vision_score"] = 0.0
+        fallback["vision_threshold"] = None
+        return fallback
+
+    try:
+        with Image.open(io.BytesIO(mosaic["png"])) as src:
+            img = src.convert("RGB")
+        hsv = img.convert("HSV")
+        rgb_data = list(img.getdata())
+        hsv_data = list(hsv.getdata())
+        # Pixel score: railways on the standard map are predominantly neutral/dark gray.
+        # Pure black label cores are down-weighted; pale roads/background are discarded.
+        raw_mask = bytearray(len(rgb_data))
+        for i, ((r, g, b), (_h, sat, val)) in enumerate(zip(rgb_data, hsv_data)):
+            spread = max(r, g, b) - min(r, g, b)
+            # Standard OSM rail strokes are neutral medium/dark grays.  Roads/building
+            # fills are generally lighter; label cores are much darker.  Weight the
+            # railway-like middle band most strongly and keep a softer antialias band.
+            if sat <= 50 and spread <= 24 and 52 <= val <= 162:
+                darkness = max(0, 168 - int(val))
+                raw_mask[i] = min(255, 122 + darkness)
+            elif sat <= 74 and spread <= 38 and 44 <= val <= 176:
+                darkness = max(0, 176 - int(val))
+                raw_mask[i] = min(168, 58 + darkness // 2)
+            elif sat <= 44 and spread <= 20 and 34 <= val < 44:
+                raw_mask[i] = 28
+            else:
+                raw_mask[i] = 0
+        mask = Image.frombytes("L", img.size, bytes(raw_mask))
+        density = mask.filter(ImageFilter.GaussianBlur(radius=4.2))
+        dens = density.load()
+        cx = float(mosaic["center_x"]); cy = float(mosaic["center_y"])
+        mpp = float(mosaic["meters_per_pixel"])
+        radius_m = float(GPS_TRACK_STATION_VISION_RADIUS_M)
+        radius_px = radius_m / max(0.05, mpp)
+
+        # Estimate an adaptive high-density threshold in the local station window.
+        sampled = []
+        step = 3
+        x0 = max(0, int(cx-radius_px)); x1 = min(img.width-1, int(cx+radius_px))
+        y0 = max(0, int(cy-radius_px)); y1 = min(img.height-1, int(cy+radius_px))
+        r2 = radius_px * radius_px
+        for py in range(y0, y1+1, step):
+            dy = py-cy
+            for px in range(x0, x1+1, step):
+                dx = px-cx
+                if dx*dx + dy*dy <= r2:
+                    sampled.append(int(dens[px, py]))
+        if len(sampled) < 80:
+            raise ValueError("too_few_density_samples")
+        p78 = _project_percentile_v289(sampled, 0.78)
+        p88 = _project_percentile_v289(sampled, 0.88)
+        threshold = max(18.0, min(92.0, p78 + 0.32 * max(0.0, p88-p78)))
+
+        # Weighted covariance of dense neutral pixels gives the dominant rail-bundle axis.
+        pts = []
+        for py in range(y0, y1+1, 2):
+            ym = -(py-cy) * mpp
+            for px in range(x0, x1+1, 2):
+                score = float(dens[px, py])
+                if score < threshold:
+                    continue
+                xm = (px-cx) * mpp
+                rr = math.hypot(xm, ym)
+                if rr > radius_m:
+                    continue
+                radial = max(0.20, 1.0 - (rr / radius_m) ** 1.7)
+                w = max(1.0, score-threshold+5.0) * radial
+                pts.append((xm, ym, w, score))
+        if len(pts) < 60:
+            raise ValueError("too_few_rail_pixels")
+        sw = sum(p[2] for p in pts)
+        mx = sum(p[0]*p[2] for p in pts)/sw
+        my = sum(p[1]*p[2] for p in pts)/sw
+        xx = sum((p[0]-mx)**2*p[2] for p in pts)/sw
+        yy = sum((p[1]-my)**2*p[2] for p in pts)/sw
+        xy = sum((p[0]-mx)*(p[1]-my)*p[2] for p in pts)/sw
+        angle = 0.5 * math.atan2(2.0*xy, xx-yy)
+        ux, uy = math.cos(angle), math.sin(angle)
+        if uy < 0 or (abs(uy) < 1e-9 and ux < 0):
+            ux, uy = -ux, -uy
+        vx, vy = -uy, ux
+
+        # Reproject dense pixels to station coordinates and measure how thick the rail bundle
+        # is in successive slices.  This directly implements "where the tracks get thicker".
+        u_limit = float(GPS_TRACK_STATION_VISION_U_LIMIT_M)
+        v_limit = float(GPS_TRACK_STATION_VISION_V_LIMIT_M)
+        bin_m = float(GPS_TRACK_STATION_VISION_BIN_M)
+        bin_count = int(math.ceil((2.0*u_limit)/bin_m)) + 1
+        slice_vs = [[] for _ in range(bin_count)]
+        slice_weight = [0.0 for _ in range(bin_count)]
+        projected = []
+        for x, y, w, score in pts:
+            u = x*ux + y*uy
+            v = x*vx + y*vy
+            if abs(u) > u_limit or abs(v) > v_limit:
+                continue
+            bi = int((u + u_limit) / bin_m)
+            if 0 <= bi < bin_count:
+                slice_vs[bi].append(v)
+                slice_weight[bi] += max(1.0, score-threshold+3.0)
+                projected.append((u, v, score))
+
+        width_profile = []
+        count_profile = []
+        for vals, weight in zip(slice_vs, slice_weight):
+            if len(vals) >= 4:
+                span = _project_percentile_v289(vals, 0.88) - _project_percentile_v289(vals, 0.12)
+            else:
+                span = 0.0
+            width_profile.append(max(0.0, min(2.0*v_limit, span)))
+            count_profile.append(float(weight))
+        swidth = _project_smooth_profile_v291(width_profile, 2)
+        scount = _project_smooth_profile_v291(count_profile, 2)
+        if not swidth or max(scount, default=0.0) <= 0:
+            raise ValueError("empty_profiles")
+        max_count = max(scount) or 1.0
+        max_width = max(swidth) or 1.0
+        thick_score = [0.64*(c/max_count) + 0.36*(w/max_width) for c, w in zip(scount, swidth)]
+        thick_score = _project_smooth_profile_v291(thick_score, 1)
+
+        # Seed from the strongest thickening near the station anchor, not from remote roads.
+        centers_u = [-u_limit + (i+0.5)*bin_m for i in range(bin_count)]
+        near_idx = [i for i,u in enumerate(centers_u) if abs(u) <= 105.0]
+        seed = max(near_idx, key=lambda i: thick_score[i]) if near_idx else max(range(bin_count), key=lambda i: thick_score[i])
+        peak = thick_score[seed]
+        outer = [thick_score[i] for i,u in enumerate(centers_u) if 155.0 <= abs(u) <= u_limit]
+        baseline = _project_percentile_v289(outer, 0.50) if outer else _project_percentile_v289(thick_score, 0.35)
+        cut = max(0.24, min(0.72, baseline + 0.34*max(0.0, peak-baseline), peak*0.43))
+
+        left_i = right_i = seed
+        misses = 0
+        i = seed-1
+        while i >= 0:
+            if thick_score[i] >= cut:
+                left_i = i; misses = 0
+            else:
+                misses += 1
+                if misses >= 2:
+                    break
+            i -= 1
+        misses = 0
+        i = seed+1
+        while i < bin_count:
+            if thick_score[i] >= cut:
+                right_i = i; misses = 0
+            else:
+                misses += 1
+                if misses >= 2:
+                    break
+            i += 1
+
+        u0 = centers_u[left_i] - bin_m/2.0 - float(GPS_TRACK_STATION_VISION_LONG_PAD_M)
+        u1 = centers_u[right_i] + bin_m/2.0 + float(GPS_TRACK_STATION_VISION_LONG_PAD_M)
+        # If the adaptive slice is too short/long, expand/clip around its measured midpoint.
+        mid_u = (u0+u1)/2.0
+        half_len = max(float(GPS_TRACK_STATION_VISION_MIN_HALF_LENGTH_M), min(float(GPS_TRACK_STATION_VISION_MAX_HALF_LENGTH_M), (u1-u0)/2.0))
+        u0 = mid_u-half_len; u1 = mid_u+half_len
+
+        station_vs = [v for u,v,_score in projected if (u0-8.0) <= u <= (u1+8.0)]
+        if len(station_vs) >= 16:
+            v_lo = _project_percentile_v289(station_vs, 0.10)
+            v_hi = _project_percentile_v289(station_vs, 0.90)
+            v_mid = (v_lo+v_hi)/2.0
+            half_w = (v_hi-v_lo)/2.0 + float(GPS_TRACK_STATION_VISION_SIDE_PAD_M)
+        else:
+            v_mid = 0.0
+            half_w = float(GPS_TRACK_STATION_VISION_MIN_HALF_WIDTH_M)
+        half_w = max(float(GPS_TRACK_STATION_VISION_MIN_HALF_WIDTH_M), min(float(GPS_TRACK_STATION_VISION_MAX_HALF_WIDTH_M), half_w))
+
+        # Prevent labels/buildings from shifting the fitted station far away from the OSM anchor.
+        mid_u = max(-52.0, min(52.0, mid_u))
+        v_mid = max(-42.0, min(42.0, v_mid))
+        u0 = mid_u-half_len; u1 = mid_u+half_len
+        capsule_xy = _project_station_capsule_v290(u0, u1, v_mid, half_w, ux, uy)
+        zone = [_project_station_latlon_v289(x, y, lat, lon) for x, y in capsule_xy]
+        axis_deg = (math.degrees(math.atan2(uy, ux)) + 360.0) % 180.0
+        contrast = max(0.0, peak-baseline)
+        vision_score = max(0.0, min(1.0, 0.62*peak + 0.38*contrast))
+        return {
+            "arrival_zone": zone,
+            "physical_shapes": [],
+            "source": "map_image_rail_density",
+            "method": "map_image_station_anchor_plus_rail_bundle_thickening",
+            "half_length_m": round(half_len, 1),
+            "half_width_m": round(half_w, 1),
+            "axis_deg": round(axis_deg, 1),
+            "vision_score": round(vision_score, 3),
+            "vision_threshold": round(float(threshold), 1),
+            "vision_peak": round(float(peak), 3),
+            "vision_baseline": round(float(baseline), 3),
+            "tile_zoom": int(mosaic.get("zoom") or GPS_TRACK_STATION_VISION_ZOOM),
+            "raw_platform_count": 0,
+            "selected_platform_count": 0,
+            "platform_point_count": 0,
+            "track_point_count": len(pts),
+        }
+    except Exception as exc:
+        fallback = _project_station_corridor_v290(name, lat, lon)
+        fallback = dict(fallback or {})
+        fallback["source"] = "vision_analysis_failed_platform_fallback"
+        fallback["method"] = f"map_image_failed:{type(exc).__name__}"
+        fallback["vision_score"] = 0.0
+        fallback["vision_threshold"] = None
+        return fallback
+
+
+def _project_osaki_forced_debug_v291(points):
     lat=35.61939; lon=139.72849
-    fp=_project_station_corridor_v290("大崎駅",lat,lon)
+    fp=_project_station_image_corridor_v291("大崎駅",lat,lon)
     zone=fp.get("arrival_zone") if isinstance(fp,dict) else []
     arrived=_project_track_enters_station_zone_v290(points,zone,lat,lon)
     center_best=float("inf")
@@ -28017,10 +28346,13 @@ def _project_osaki_forced_debug_v290(points):
             "half_width_m":fp.get("half_width_m"),"axis_deg":fp.get("axis_deg"),
             "platform_point_count":fp.get("platform_point_count",0),"track_point_count":fp.get("track_point_count",0),
             "raw_platform_count":fp.get("raw_platform_count",0),"selected_platform_count":fp.get("selected_platform_count",0),
-            "method":fp.get("method",""),"debug_osaki":True,"forced_debug":True}
+            "method":fp.get("method",""),"vision_score":fp.get("vision_score",0.0),
+            "vision_threshold":fp.get("vision_threshold"),"vision_peak":fp.get("vision_peak"),
+            "vision_baseline":fp.get("vision_baseline"),"tile_zoom":fp.get("tile_zoom"),
+            "debug_osaki":True,"forced_debug":True}
 
 
-def _render_burari_project_map_v290(points, segments, stations):
+def _render_burari_project_map_v291(points, segments, stations):
     if not points:
         return
     payload = {
@@ -28101,10 +28433,11 @@ html,body{{margin:0;padding:0;background:#0b1012;font-family:-apple-system,Blink
    }}
    const state=Boolean(s.arrived)?'到着判定あり':'未到着';
    const len=(Number(s.half_length_m||0)*2).toFixed(0), wid=(Number(s.half_width_m||0)*2).toFixed(0), deg=Number(s.axis_deg||0).toFixed(0);
-   const sel=Number(s.selected_platform_count||0), raw=Number(s.raw_platform_count||0);
+   const method=String(s.method||''); const score=Number(s.vision_score||0);
+   const methodLabel=method.startsWith('map_image_station_anchor')?'地図画像・線路密度':(method.startsWith('map_image_failed')?'画像解析失敗→ホーム補助':'ホーム補助');
    const icon=L.divIcon({{className:'project-arrived-station-icon',html:'<div style="background:#ff3535;border-color:#fff;box-shadow:0 0 10px #ff2020,0 0 26px rgba(255,32,32,.9)"></div>',iconSize:[18,18],iconAnchor:[9,9]}});
    const marker=L.marker([Number(s.lat),Number(s.lon)],{{icon,interactive:false}}).addTo(map);
-   marker.bindTooltip(`大崎駅 判定範囲（調整中）<br>${{state}} / 約${{len}}m × ${{wid}}m / 軸${{deg}}° / ホーム${{sel}}/${{raw}}`,{{permanent:true,direction:'top',offset:[0,-12],className:'project-osaki-debug-label'}});
+   marker.bindTooltip(`大崎駅 判定範囲（画像推定・調整中）<br>${{state}} / 約${{len}}m × ${{wid}}m / 軸${{deg}}°<br>${{methodLabel}} / 信頼${{score.toFixed(2)}}`,{{permanent:true,direction:'top',offset:[0,-12],className:'project-osaki-debug-label'}});
  }};
  const renderedStationKeys=new Set();
  const stationKey=(name,lat,lon)=>`${{String(name||'駅').replace(/\\s+/g,'')}}:${{lat.toFixed(4)}}:${{lon.toFixed(4)}}`;
@@ -28163,12 +28496,12 @@ def page_burari_project():
             n = n[:-1]
         return n == "大崎"
     stations = [row for row in stations if not _is_osaki_row(row)]
-    stations.append(_project_osaki_forced_debug_v290(map_points))
-    _render_burari_project_map_v290(map_points, segments, stations)
+    stations.append(_project_osaki_forced_debug_v291(map_points))
+    _render_burari_project_map_v291(map_points, segments, stations)
     st.caption(
-        "【v290 大崎駅調整中】大崎駅だけ、現在プログラムが駅とみなす範囲を常に赤枠で表示します。"
-        "周辺線路全体ではなく、各ホームの長手方向を個別に測り、平行なホーム群だけを選んで駅軸・長さ・幅を決める方式です。"
-        "この赤枠へ歩行GPSが1点でも入れば大崎駅到着です。範囲が合うまで赤表示を残します。"
+        "【v291 大崎駅・画像推定調整中】大崎駅だけ、地図画像そのものから線路らしい暗い線を抽出し、"
+        "駅位置の周辺で線路束が太く・密になる区間を探して赤い駅判定範囲を作ります。"
+        "赤枠へ歩行GPSが1点でも入れば大崎駅到着です。範囲が理想形に合うまで赤表示を残します。"
     )
 
 
