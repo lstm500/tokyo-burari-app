@@ -30,9 +30,9 @@ from zoneinfo import ZoneInfo
 import streamlit as st
 
 # Freshly generated update: 2026-08-31 23:49 JST
-GENERATED_UPDATE_JST = "2026-09-06T12:00:00+09:00"
+GENERATED_UPDATE_JST = "2026-09-07T09:10:00+09:00"
 
-APP_BUILD = "v270"
+APP_BUILD = "v272"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -862,6 +862,23 @@ MUSIC_LIBRARY_REVIEW_DATE = "1900-01-01"
 VIDEO_MOMENT_SETTINGS_REVIEW_DATE = "1900-01-02"
 FAMILY_TABLE = "burari_families"
 MEMBER_TABLE = "burari_members"
+
+# v271: lightweight always-on walking trace. Browser GPS is sampled continuously while
+# the web app is alive, but a point is accepted only after roughly 10m of movement.
+# Accepted points are written to browser localStorage immediately and cloud-synced in
+# batches so normal app use and video capture are not interrupted by frequent reruns.
+GPS_TRACK_STORAGE_DIR = "_gps_tracks_v271"
+GPS_TRACK_MIN_DISTANCE_M = 10.0
+GPS_TRACK_MAX_ACCURACY_M = 45.0
+GPS_TRACK_FLUSH_POINT_COUNT = 30
+GPS_TRACK_FLUSH_INTERVAL_MS = 180000
+GPS_TRACK_BATCH_MAX_POINTS = 180
+GPS_TRACK_WALK_MAX_SPEED_MPS = 4.5
+GPS_TRACK_SEGMENT_MAX_GAP_SECONDS = 180.0
+GPS_TRACK_SEGMENT_MAX_JUMP_M = 180.0
+GPS_TRACK_STATION_VISITED_RADIUS_M = 140.0
+GPS_TRACK_STATION_NEAR_RADIUS_M = 600.0
+GPS_TRACK_RENDER_POINT_LIMIT = 60000
 
 
 # ============================================================
@@ -5058,7 +5075,7 @@ def sync_pending_tags_from_browser_v166():
 _HISTORY_JS = r"""
 export default function(component) {
   const { data, setTriggerValue } = component;
-  const validPages = new Set(['home', 'camera', 'videos', 'moments', 'diary', 'review', 'review_map', 'review_monthly', 'review_tag', 'review_history', 'nearby', 'toilets', 'settings']);
+  const validPages = new Set(['home', 'camera', 'videos', 'moments', 'diary', 'review', 'review_map', 'review_project', 'review_monthly', 'review_tag', 'review_history', 'nearby', 'toilets', 'settings']);
   const marker = '__tokyo_burari_page__';
   const guardMarker = '__tokyo_burari_first_level_guard__';
   const requestedPage = validPages.has(data?.page) ? data.page : 'home';
@@ -18126,7 +18143,7 @@ def init_state():
 
 
 
-VALID_APP_PAGES = {"home", "camera", "videos", "moments", "diary", "review", "review_map", "review_monthly", "review_tag", "review_history", "nearby", "toilets", "settings"}
+VALID_APP_PAGES = {"home", "camera", "videos", "moments", "diary", "review", "review_map", "review_project", "review_monthly", "review_tag", "review_history", "nearby", "toilets", "settings"}
 
 
 def _current_ui_refresh_epoch():
@@ -18304,6 +18321,9 @@ def current_navigation_context():
     if page == "review_map":
         return "review_map", ""
 
+    if page == "review_project":
+        return "review_project", ""
+
     if page == "review_monthly":
         return "review_monthly", ""
 
@@ -18329,6 +18349,7 @@ def navigation_parent_node(node=None):
         "review_history_detail": "review_history",
         "review_history": "review",
         "review_map": "review",
+        "review_project": "review",
         "review_monthly": "review",
         "review_tag": "review",
         "camera": "home",
@@ -18376,7 +18397,7 @@ def navigate_to_parent():
         st.session_state["_history_action"] = "replace"
         st.rerun()
 
-    if node in {"review_history", "review_map", "review_monthly", "review_tag"}:
+    if node in {"review_history", "review_map", "review_project", "review_monthly", "review_tag"}:
         st.session_state.pop("history_detail_trip_id", None)
         st.session_state.pop("review_view_selector", None)
         go_page("review", history_mode="replace")
@@ -18431,6 +18452,7 @@ def sync_browser_history():
         "review_history_detail",
         "review_history",
         "review_map",
+        "review_project",
         "review_monthly",
         "review_tag",
     }
@@ -26671,6 +26693,725 @@ def page_memory_map():
 
 
 # ============================================================
+# v271: always-on GPS trace + Burari Project map
+# ============================================================
+_GPS_TRACKER_HTML = """
+<div id="burari-gps-tracker-v271" aria-hidden="true"></div>
+"""
+
+_GPS_TRACKER_CSS = """
+#burari-gps-tracker-v271 { display:none !important; width:0 !important; height:0 !important; overflow:hidden !important; }
+"""
+
+_GPS_TRACKER_JS = r"""
+export default function(component) {
+  const { data, setTriggerValue } = component;
+  const family = String(data?.family_key || '');
+  const member = String(data?.member_key || '');
+  const nativeMode = Boolean(data?.native_mode);
+  if (!family || !member || (!nativeMode && !navigator.geolocation)) return;
+
+  const keyBase = `tokyo_burari_gps_v271:${family}:${member}`;
+  const pendingKey = `${keyBase}:pending`;
+  const lastKey = `${keyBase}:last`;
+  const sentKey = `${keyBase}:sent`;
+  const sessionKey = 'tokyo_burari_gps_session_v271';
+  const minDistanceM = Math.max(5, Number(data?.min_distance_m || 10));
+  const maxAccuracyM = Math.max(20, Number(data?.max_accuracy_m || 60));
+  const flushCount = Math.max(10, Number(data?.flush_point_count || 30));
+  const flushIntervalMs = Math.max(60000, Number(data?.flush_interval_ms || 180000));
+  const batchMax = Math.max(30, Number(data?.batch_max_points || 180));
+  const allowFlush = Boolean(data?.allow_flush);
+  const forceFlush = Boolean(data?.force_flush);
+  const ackMs = Number(data?.ack_ms || 0);
+  let cancelled = false;
+  let watchId = null;
+  let flushTimer = null;
+
+  const safeParse = (raw, fallback) => {
+    try { const value = JSON.parse(String(raw || '')); return value ?? fallback; } catch (_) { return fallback; }
+  };
+  const readPending = () => {
+    const rows = safeParse(localStorage.getItem(pendingKey), []);
+    return Array.isArray(rows) ? rows.filter((x) => x && Number.isFinite(Number(x.ts_ms))) : [];
+  };
+  const writePending = (rows) => {
+    try { localStorage.setItem(pendingKey, JSON.stringify(Array.isArray(rows) ? rows : [])); } catch (_) {}
+  };
+  const readLast = () => {
+    const value = safeParse(localStorage.getItem(lastKey), null);
+    return value && Number.isFinite(Number(value.lat)) && Number.isFinite(Number(value.lon)) ? value : null;
+  };
+  const writeLast = (value) => {
+    try { localStorage.setItem(lastKey, JSON.stringify(value || null)); } catch (_) {}
+  };
+  const getSessionId = () => {
+    try {
+      let value = String(sessionStorage.getItem(sessionKey) || '');
+      if (!value) {
+        value = (globalThis.crypto?.randomUUID?.() || `${Date.now()}_${Math.random().toString(36).slice(2)}`);
+        sessionStorage.setItem(sessionKey, value);
+      }
+      return value;
+    } catch (_) {
+      return `${Date.now()}_${Math.random().toString(36).slice(2)}`;
+    }
+  };
+  const sessionId = getSessionId();
+
+  let pending = readPending();
+  if (ackMs > 0 && pending.length) {
+    pending = pending.filter((p) => Number(p.ts_ms || 0) > ackMs);
+    writePending(pending);
+  }
+
+  const rad = (v) => Number(v) * Math.PI / 180;
+  const distanceM = (a, b) => {
+    if (!a || !b) return Infinity;
+    const R = 6371000;
+    const dLat = rad(Number(b.lat) - Number(a.lat));
+    const dLon = rad(Number(b.lon) - Number(a.lon));
+    const lat1 = rad(a.lat), lat2 = rad(b.lat);
+    const h = Math.sin(dLat/2)**2 + Math.cos(lat1)*Math.cos(lat2)*Math.sin(dLon/2)**2;
+    return 2 * R * Math.asin(Math.min(1, Math.sqrt(Math.max(0, h))));
+  };
+
+  const maybeFlush = (forced=false) => {
+    if (cancelled || !allowFlush) return;
+    pending = readPending();
+    if (!pending.length) return;
+    const now = Date.now();
+    const sent = safeParse(localStorage.getItem(sentKey), {});
+    const oldest = Number(pending[0]?.ts_ms || now);
+    const dueByCount = pending.length >= flushCount;
+    const dueByTime = now - oldest >= flushIntervalMs;
+    if (!(forced || forceFlush || dueByCount || dueByTime)) return;
+
+    const batch = pending.slice(0, batchMax);
+    const last = batch[batch.length - 1] || {};
+    const token = `${batch[0]?.id || ''}|${last?.id || ''}|${batch.length}`;
+    if (String(sent?.token || '') === token && now - Number(sent?.at || 0) < 120000) return;
+    try { localStorage.setItem(sentKey, JSON.stringify({token, at:now})); } catch (_) {}
+    setTriggerValue('track_batch', {
+      token,
+      points: batch,
+      max_ts_ms: Number(last?.ts_ms || 0),
+    });
+  };
+
+  const acceptPosition = (position) => {
+    if (cancelled || !position?.coords) return;
+    const lat = Number(position.coords.latitude);
+    const lon = Number(position.coords.longitude);
+    const accuracy = Number(position.coords.accuracy || 0);
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
+    if (Number.isFinite(accuracy) && accuracy > maxAccuracyM) return;
+
+    const tsMs = Number(position.timestamp || Date.now());
+    const previous = readLast();
+    if (previous && String(previous.session_id || '') === sessionId && distanceM(previous, {lat, lon}) < minDistanceM) return;
+
+    const speedRaw = Number(position.coords.speed);
+    const headingRaw = Number(position.coords.heading);
+    const point = {
+      id: `${Math.round(tsMs)}_${lat.toFixed(6)}_${lon.toFixed(6)}`,
+      ts_ms: Math.round(tsMs),
+      lat: Number(lat.toFixed(7)),
+      lon: Number(lon.toFixed(7)),
+      accuracy_m: Number.isFinite(accuracy) ? Number(accuracy.toFixed(1)) : null,
+      speed_mps: Number.isFinite(speedRaw) && speedRaw >= 0 ? Number(speedRaw.toFixed(2)) : null,
+      heading: Number.isFinite(headingRaw) ? Number(headingRaw.toFixed(1)) : null,
+      session_id: sessionId,
+      source: 'browser_watch',
+    };
+
+    pending = readPending();
+    if (!pending.some((p) => String(p?.id || '') === point.id)) pending.push(point);
+    pending.sort((a,b) => Number(a.ts_ms || 0) - Number(b.ts_ms || 0));
+    writePending(pending);
+    writeLast({lat:point.lat, lon:point.lon, ts_ms:point.ts_ms, session_id:sessionId});
+    maybeFlush(false);
+  };
+
+  const onError = () => {};
+  const startWatch = () => {
+    if (cancelled || watchId !== null) return;
+    try {
+      watchId = navigator.geolocation.watchPosition(
+        acceptPosition,
+        onError,
+        {enableHighAccuracy:true, maximumAge:5000, timeout:20000}
+      );
+    } catch (_) { watchId = null; }
+  };
+
+  if (!nativeMode) startWatch();
+  if (allowFlush) {
+    flushTimer = setInterval(() => maybeFlush(false), 30000);
+    setTimeout(() => maybeFlush(Boolean(forceFlush)), 300);
+  }
+  const onVisibility = () => { if (!nativeMode && !document.hidden) startWatch(); };
+  document.addEventListener('visibilitychange', onVisibility);
+
+  return () => {
+    cancelled = true;
+    document.removeEventListener('visibilitychange', onVisibility);
+    if (flushTimer) clearInterval(flushTimer);
+    if (watchId !== null) {
+      try { navigator.geolocation.clearWatch(watchId); } catch (_) {}
+      watchId = null;
+    }
+  };
+}
+"""
+
+gps_tracker_component_v271 = None
+_gps_tracker_component_v271_initialized = False
+
+
+def _get_gps_tracker_component_v271():
+    global gps_tracker_component_v271, _gps_tracker_component_v271_initialized
+    if _gps_tracker_component_v271_initialized:
+        return gps_tracker_component_v271
+    _gps_tracker_component_v271_initialized = True
+    try:
+        gps_tracker_component_v271 = st.components.v2.component(
+            "tokyo_burari_always_gps_v272",
+            html=_GPS_TRACKER_HTML,
+            css=_GPS_TRACKER_CSS,
+            js=_GPS_TRACKER_JS,
+        )
+    except Exception:
+        gps_tracker_component_v271 = None
+    return gps_tracker_component_v271
+
+
+def _gps_track_prefix(family_key=None, member_key=None):
+    family = str(family_key or current_family_key()).strip("/")
+    member = str(member_key or current_member_key()).strip("/")
+    return f"{family}/{member}/{GPS_TRACK_STORAGE_DIR}".strip("/")
+
+
+def _gps_track_month_path(month_key, family_key=None, member_key=None):
+    safe_month = re.sub(r"[^0-9-]", "", str(month_key or ""))[:7] or now_jst().strftime("%Y-%m")
+    return f"{_gps_track_prefix(family_key, member_key)}/{safe_month}.json"
+
+
+def _coerce_track_point_v271(raw):
+    if not isinstance(raw, dict):
+        return None
+    try:
+        lat = float(raw.get("lat")); lon = float(raw.get("lon")); ts_ms = int(float(raw.get("ts_ms")))
+    except (TypeError, ValueError):
+        return None
+    if not (math.isfinite(lat) and math.isfinite(lon) and -90 <= lat <= 90 and -180 <= lon <= 180 and ts_ms > 0):
+        return None
+    try:
+        accuracy = float(raw.get("accuracy_m")) if raw.get("accuracy_m") is not None else None
+    except (TypeError, ValueError):
+        accuracy = None
+    if accuracy is not None and (not math.isfinite(accuracy) or accuracy > max(120.0, GPS_TRACK_MAX_ACCURACY_M * 2.0)):
+        return None
+    try:
+        speed = float(raw.get("speed_mps")) if raw.get("speed_mps") is not None else None
+    except (TypeError, ValueError):
+        speed = None
+    try:
+        heading = float(raw.get("heading")) if raw.get("heading") is not None else None
+    except (TypeError, ValueError):
+        heading = None
+    pid = str(raw.get("id") or f"{ts_ms}_{lat:.6f}_{lon:.6f}")[:120]
+    source = str(raw.get("source") or "browser_watch").strip().lower()[:40]
+    if source not in {"browser_watch", "android_native", "timeline_import"}:
+        source = "browser_watch"
+    return {
+        "id": pid,
+        "ts_ms": ts_ms,
+        "lat": round(lat, 7),
+        "lon": round(lon, 7),
+        "accuracy_m": round(accuracy, 1) if isinstance(accuracy, float) and math.isfinite(accuracy) else None,
+        "speed_mps": round(speed, 2) if isinstance(speed, float) and math.isfinite(speed) and speed >= 0 else None,
+        "heading": round(heading, 1) if isinstance(heading, float) and math.isfinite(heading) else None,
+        "session_id": str(raw.get("session_id") or "")[:120],
+        "source": source,
+    }
+
+
+def _read_track_month_uncached_v271(month_key, family_key=None, member_key=None):
+    path = _gps_track_month_path(month_key, family_key, member_key)
+    try:
+        raw = supabase_client().storage.from_(PHOTO_BUCKET).download(path)
+    except Exception:
+        return []
+    try:
+        payload = json.loads(bytes(raw).decode("utf-8"))
+    except Exception:
+        return []
+    rows = payload.get("points") if isinstance(payload, dict) else payload
+    if not isinstance(rows, list):
+        return []
+    output = []
+    for row in rows:
+        point = _coerce_track_point_v271(row)
+        if point:
+            output.append(point)
+    return output
+
+
+@st.cache_data(ttl=45, max_entries=160, show_spinner=False)
+def _read_track_month_cached_v271(family_key, member_key, month_key):
+    return _read_track_month_uncached_v271(month_key, family_key, member_key)
+
+
+@st.cache_data(ttl=45, max_entries=32, show_spinner=False)
+def _list_track_month_keys_v271(family_key, member_key):
+    bucket = supabase_client().storage.from_(PHOTO_BUCKET)
+    folder = _gps_track_prefix(family_key, member_key)
+    rows = []
+    try:
+        response = bucket.list(folder, {"limit": 1000, "offset": 0, "sortBy": {"column": "name", "order": "asc"}})
+    except TypeError:
+        try:
+            response = bucket.list(path=folder, options={"limit": 1000, "offset": 0, "sortBy": {"column": "name", "order": "asc"}})
+        except Exception:
+            response = []
+    except Exception:
+        response = []
+    try:
+        rows = _coerce_storage_list_rows(response)
+    except Exception:
+        rows = response if isinstance(response, list) else []
+    months = []
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        name = str(row.get("name") or "")
+        match = re.fullmatch(r"(\d{4}-\d{2})\.json", name)
+        if match:
+            months.append(match.group(1))
+    return tuple(sorted(set(months)))
+
+
+def _upsert_track_month_v271(month_key, incoming_points):
+    family = current_family_key(); member = current_member_key()
+    existing = _read_track_month_uncached_v271(month_key, family, member)
+    merged = {str(row.get("id") or ""): row for row in existing if row.get("id")}
+    for raw in incoming_points or []:
+        point = _coerce_track_point_v271(raw)
+        if point:
+            merged[point["id"]] = point
+    points = sorted(merged.values(), key=lambda x: (int(x.get("ts_ms") or 0), str(x.get("id") or "")))
+    document = {
+        "version": 1,
+        "month": str(month_key),
+        "family_key": str(family),
+        "member_key": str(member),
+        "updated_at": now_jst().isoformat(),
+        "points": points,
+    }
+    blob = json.dumps(document, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    path = _gps_track_month_path(month_key, family, member)
+    bucket = supabase_client().storage.from_(PHOTO_BUCKET)
+    options = {"content-type": "application/json", "cache-control": "0", "upsert": "true"}
+    first_error = None
+    try:
+        bucket.upload(path=path, file=blob, file_options=options)
+    except Exception as exc:
+        first_error = exc
+        try:
+            bucket.update(path=path, file=blob, file_options={"content-type": "application/json", "cache-control": "0"})
+        except Exception:
+            # Very old storage SDKs can lack upsert/update support. Replace only as
+            # the final compatibility fallback; accepted points are still retained in
+            # browser localStorage until the server acknowledges this batch.
+            try:
+                bucket.remove([path])
+            except Exception:
+                pass
+            try:
+                bucket.upload(path=path, file=blob, file_options={"content-type": "application/json", "cache-control": "0"})
+            except Exception:
+                raise first_error
+    return len(points)
+
+
+def save_gps_track_batch_v271(batch):
+    if not isinstance(batch, dict):
+        return 0
+    raw_points = batch.get("points") or []
+    if not isinstance(raw_points, list):
+        return 0
+    cleaned = []
+    for raw in raw_points[:GPS_TRACK_BATCH_MAX_POINTS]:
+        point = _coerce_track_point_v271(raw)
+        if point:
+            cleaned.append(point)
+    if not cleaned:
+        return 0
+    by_month = {}
+    for point in cleaned:
+        try:
+            dt = datetime.fromtimestamp(float(point["ts_ms"]) / 1000.0, ZoneInfo(APP_TIMEZONE))
+        except Exception:
+            continue
+        by_month.setdefault(dt.strftime("%Y-%m"), []).append(point)
+    for month_key, rows in by_month.items():
+        _upsert_track_month_v271(month_key, rows)
+    _read_track_month_cached_v271.clear()
+    _list_track_month_keys_v271.clear()
+    return max(int(p.get("ts_ms") or 0) for p in cleaned)
+
+
+def run_always_on_gps_tracker_v271():
+    component = _get_gps_tracker_component_v271()
+    if component is None:
+        return
+    page = str(st.session_state.get("main_page") or "home")
+    # Never cause a Streamlit rerun while the live camera is active. Points are still
+    # accepted every 10m into localStorage and sync on the next non-camera page.
+    allow_flush = page != "camera"
+    force_flush = page == "review_project"
+    ack_key = f"_gps_track_ack_v271_{current_family_key()}_{current_member_key()}"
+    native_mode = str(_query_param_scalar("native_android") or "").strip() == "1"
+    result = component(
+        data={
+            "native_mode": native_mode,
+            "family_key": current_family_key(),
+            "member_key": current_member_key(),
+            "min_distance_m": GPS_TRACK_MIN_DISTANCE_M,
+            "max_accuracy_m": GPS_TRACK_MAX_ACCURACY_M,
+            "flush_point_count": GPS_TRACK_FLUSH_POINT_COUNT,
+            "flush_interval_ms": GPS_TRACK_FLUSH_INTERVAL_MS,
+            "batch_max_points": GPS_TRACK_BATCH_MAX_POINTS,
+            "allow_flush": allow_flush,
+            "force_flush": force_flush,
+            "ack_ms": int(st.session_state.get(ack_key) or 0),
+        },
+        key=f"always_on_gps_tracker_v272_{current_family_key()}_{current_member_key()}",
+        on_track_batch_change=lambda: None,
+    )
+    batch = getattr(result, "track_batch", None)
+    if not isinstance(batch, dict) or not batch.get("points"):
+        return
+    token = str(batch.get("token") or "")
+    token_key = f"_gps_track_batch_token_v271_{current_family_key()}_{current_member_key()}"
+    if token and token == str(st.session_state.get(token_key) or ""):
+        return
+    try:
+        ack_ms = save_gps_track_batch_v271(batch)
+    except Exception:
+        return
+    if ack_ms > 0:
+        st.session_state[token_key] = token
+        st.session_state[ack_key] = max(int(st.session_state.get(ack_key) or 0), int(ack_ms))
+        # Deliver the acknowledgement immediately so browser localStorage can discard
+        # the cloud-synced points. Batches are rare (about 300m / 3min), and camera
+        # pages never flush, so this does not interfere with recording smoothness.
+        st.rerun(scope="app")
+
+
+def _load_all_project_track_points_v271():
+    family = current_family_key(); member = current_member_key()
+    months = list(_list_track_month_keys_v271(family, member))
+    if not months:
+        return []
+    worker_count = max(1, min(6, len(months)))
+    def load_one(month_key):
+        return _read_track_month_cached_v271(family, member, month_key)
+    if worker_count == 1:
+        groups = [load_one(months[0])]
+    else:
+        with ThreadPoolExecutor(max_workers=worker_count) as executor:
+            groups = list(executor.map(load_one, months))
+    points = []
+    for rows in groups:
+        points.extend(row for row in (rows or []) if isinstance(row, dict))
+    points.sort(key=lambda x: (int(x.get("ts_ms") or 0), str(x.get("id") or "")))
+    if len(points) > GPS_TRACK_RENDER_POINT_LIMIT:
+        # Preserve every raw 10m point in storage. Only the display payload is thinned
+        # when history becomes extremely large so the mobile map stays responsive.
+        step = max(1, int(math.ceil(len(points) / float(GPS_TRACK_RENDER_POINT_LIMIT))))
+        sampled = points[::step]
+        if points and (not sampled or sampled[-1].get("id") != points[-1].get("id")):
+            sampled.append(points[-1])
+        return sampled
+    return points
+
+
+def _project_walk_segments_v271(points):
+    segments = []
+    current = []
+    prev = None
+    for point in points or []:
+        if not isinstance(point, dict):
+            continue
+        if prev is None:
+            prev = point
+            continue
+        try:
+            dt = max(0.001, (float(point.get("ts_ms")) - float(prev.get("ts_ms"))) / 1000.0)
+            dist = _nearby_haversine_m(float(prev["lat"]), float(prev["lon"]), float(point["lat"]), float(point["lon"]))
+        except Exception:
+            prev = point
+            current = []
+            continue
+        reported_speed = point.get("speed_mps")
+        try:
+            reported_speed = float(reported_speed) if reported_speed is not None else None
+        except (TypeError, ValueError):
+            reported_speed = None
+        estimated_speed = dist / dt if dt > 0 else 999.0
+        effective_speed = max(reported_speed, estimated_speed) if reported_speed is not None and reported_speed >= 0 else estimated_speed
+        same_session = bool(str(point.get("session_id") or "")) and str(point.get("session_id") or "") == str(prev.get("session_id") or "")
+        walk_like = (
+            same_session
+            and dt <= GPS_TRACK_SEGMENT_MAX_GAP_SECONDS
+            and dist <= GPS_TRACK_SEGMENT_MAX_JUMP_M
+            and effective_speed <= GPS_TRACK_WALK_MAX_SPEED_MPS
+        )
+        if walk_like:
+            if not current:
+                current = [[round(float(prev["lat"]), 7), round(float(prev["lon"]), 7)]]
+            current.append([round(float(point["lat"]), 7), round(float(point["lon"]), 7)])
+        else:
+            if len(current) >= 2:
+                segments.append(current)
+            current = []
+        prev = point
+    if len(current) >= 2:
+        segments.append(current)
+    return segments
+
+
+def _project_walk_distance_m_v271(segments):
+    total = 0.0
+    for segment in segments or []:
+        for a, b in zip(segment, segment[1:]):
+            try:
+                total += _nearby_haversine_m(float(a[0]), float(a[1]), float(b[0]), float(b[1]))
+            except Exception:
+                pass
+    return total
+
+
+def _project_walk_points_v271(segments):
+    points = []
+    seen = set()
+    for segment in segments or []:
+        for pair in segment or []:
+            try:
+                lat = round(float(pair[0]), 7); lon = round(float(pair[1]), 7)
+            except Exception:
+                continue
+            key = (lat, lon)
+            if key in seen:
+                continue
+            seen.add(key)
+            points.append({"id": f"{lat:.7f}_{lon:.7f}", "lat": lat, "lon": lon})
+    return points
+
+
+@st.cache_data(ttl=86400, max_entries=24, show_spinner=False)
+def _project_station_candidates_v271(south, west, north, east):
+    try:
+        south = max(-90.0, float(south)); north = min(90.0, float(north))
+        west = max(-180.0, float(west)); east = min(180.0, float(east))
+    except (TypeError, ValueError):
+        return []
+    query = f"""[out:json][timeout:8];
+(
+  node["railway"~"^(station|halt)$"]({south:.5f},{west:.5f},{north:.5f},{east:.5f});
+  node["public_transport"="station"]({south:.5f},{west:.5f},{north:.5f},{east:.5f});
+);
+out body;"""
+    data, _error = _toilet_overpass_fetch(query, timeout=5.5)
+    elements = data.get("elements") if isinstance(data, dict) else []
+    stations = []
+    seen = set()
+    for row in elements or []:
+        if not isinstance(row, dict):
+            continue
+        tags = row.get("tags") if isinstance(row.get("tags"), dict) else {}
+        name = str(tags.get("name:ja") or tags.get("name") or "駅").strip()
+        try:
+            lat = float(row.get("lat")); lon = float(row.get("lon"))
+        except (TypeError, ValueError):
+            continue
+        key = (name, round(lat, 5), round(lon, 5))
+        if key in seen:
+            continue
+        seen.add(key)
+        stations.append({"name": name, "lat": lat, "lon": lon})
+    return stations
+
+
+def _project_stations_near_track_v271(points):
+    if not points:
+        return []
+    lats = [float(p["lat"]) for p in points]; lons = [float(p["lon"]) for p in points]
+    south, north = min(lats), max(lats); west, east = min(lons), max(lons)
+    # About 1km padding; enough to expose nearby stations without filling the map
+    # with unrelated labels.
+    pad_lat = 0.012
+    mid_lat = (south + north) / 2.0
+    pad_lon = 0.012 / max(0.35, math.cos(math.radians(mid_lat)))
+    stations = _project_station_candidates_v271(
+        round(south - pad_lat, 3), round(west - pad_lon, 3),
+        round(north + pad_lat, 3), round(east + pad_lon, 3),
+    )
+    # A 20-point stride is at most roughly 200m because raw points are accepted at
+    # 10m. It keeps station filtering cheap while retaining enough spatial detail.
+    sampled = list(points[::20]) or list(points[:1])
+    if points and sampled[-1].get("id") != points[-1].get("id"):
+        sampled.append(points[-1])
+    output = []
+    for station in stations or []:
+        best = float("inf")
+        for point in sampled:
+            try:
+                d = _nearby_haversine_m(float(station["lat"]), float(station["lon"]), float(point["lat"]), float(point["lon"]))
+            except Exception:
+                continue
+            if d < best:
+                best = d
+            if best <= GPS_TRACK_STATION_VISITED_RADIUS_M:
+                break
+        if best <= GPS_TRACK_STATION_NEAR_RADIUS_M:
+            output.append({
+                "name": str(station.get("name") or "駅"),
+                "lat": round(float(station["lat"]), 7),
+                "lon": round(float(station["lon"]), 7),
+                "visited": bool(best <= GPS_TRACK_STATION_VISITED_RADIUS_M),
+                "distance_m": round(best, 1),
+            })
+    output.sort(key=lambda x: (not bool(x.get("visited")), float(x.get("distance_m") or 999999), str(x.get("name") or "")))
+    return output[:180]
+
+
+def _render_burari_project_map_v271(points, segments, stations):
+    if not points:
+        return
+    payload = {
+        "points": [[round(float(p["lat"]), 7), round(float(p["lon"]), 7)] for p in points],
+        "segments": segments,
+        "stations": stations,
+    }
+    payload_json = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).replace("</", "<\\/")
+    map_html = f"""<!doctype html>
+<html lang="ja"><head><meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no" />
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
+<style>
+html,body{{margin:0;padding:0;background:#0b1012;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Hiragino Sans","Yu Gothic",sans-serif;}}
+#project-map{{width:100%;height:630px;border-radius:18px;overflow:hidden;background:#0b1012;border:1px solid rgba(130,255,170,.18);box-sizing:border-box;}}
+#project-map .leaflet-tile-pane{{filter:brightness(.42) contrast(1.18) saturate(.58);}}
+#project-map .leaflet-pane,#project-map .leaflet-tile,#project-map .leaflet-marker-icon,#project-map .leaflet-marker-shadow,#project-map .leaflet-tile-container,#project-map .leaflet-pane>svg,#project-map .leaflet-pane>canvas,#project-map .leaflet-zoom-box,#project-map .leaflet-image-layer,#project-map .leaflet-layer{{position:absolute;left:0;top:0;}}
+#project-map.leaflet-container{{overflow:hidden;-webkit-tap-highlight-color:transparent;}}
+#project-map .leaflet-tile{{width:256px;height:256px;max-width:none!important;max-height:none!important;user-select:none;-webkit-user-drag:none;}}
+.project-station-label{{background:rgba(7,16,13,.86);border:1px solid rgba(151,255,187,.62);color:#d9ffe6;border-radius:8px;padding:2px 6px;box-shadow:0 0 12px rgba(88,255,139,.25);font-size:11px;font-weight:800;}}
+.project-station-label:before{{display:none;}}
+.project-legend{{position:absolute;z-index:1000;left:10px;bottom:10px;background:rgba(4,12,9,.84);border:1px solid rgba(151,255,187,.24);color:#e9fff0;border-radius:11px;padding:7px 9px;font-size:10px;line-height:1.45;box-shadow:0 4px 16px rgba(0,0,0,.28);pointer-events:none;}}
+.project-legend-line{{display:inline-block;width:20px;height:3px;background:#9cffb3;box-shadow:0 0 8px #54ff87;border-radius:99px;margin-right:6px;vertical-align:middle;}}
+.project-legend-station{{display:inline-block;width:10px;height:10px;border:2px solid #dcffe6;background:#58ff8b;box-shadow:0 0 10px #58ff8b;border-radius:50%;margin-right:6px;vertical-align:middle;}}
+@media(max-width:640px){{#project-map{{height:570px;border-radius:15px;}}}}
+</style></head><body>
+<div style="position:relative"><div id="project-map"></div><div class="project-legend"><div><span class="project-legend-line"></span>歩いた道</div><div><span class="project-legend-station"></span>到達した駅</div></div></div>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
+<script>
+(function(){{
+ const data={payload_json}; const node=document.getElementById('project-map');
+ if(!window.L){{node.innerHTML='<div style="color:#dbe7df;padding:24px">地図を読み込めませんでした。</div>';return;}}
+ const map=L.map('project-map',{{zoomControl:true,attributionControl:true,preferCanvas:true}});
+ L.tileLayer('https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png',{{maxZoom:19,attribution:'&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap</a>'}}).addTo(map);
+ const all=(data.points||[]).filter((p)=>Array.isArray(p)&&p.length>=2);
+ if(all.length){{ const bounds=L.latLngBounds(all); map.fitBounds(bounds,{{padding:[28,28],maxZoom:16}}); }} else map.setView([35.6812,139.7671],11);
+ (data.segments||[]).forEach((seg)=>{{
+   if(!Array.isArray(seg)||seg.length<2)return;
+   L.polyline(seg,{{color:'#36ff76',weight:13,opacity:.13,lineCap:'round',lineJoin:'round',interactive:false}}).addTo(map);
+   L.polyline(seg,{{color:'#61ff8e',weight:7,opacity:.28,lineCap:'round',lineJoin:'round',interactive:false}}).addTo(map);
+   L.polyline(seg,{{color:'#a5ffbd',weight:3.2,opacity:.96,lineCap:'round',lineJoin:'round',interactive:false}}).addTo(map);
+ }});
+ const addStation=(s)=>{{
+   const lat=Number(s.lat),lon=Number(s.lon); if(!Number.isFinite(lat)||!Number.isFinite(lon))return;
+   if(s.visited){{
+     L.circleMarker([lat,lon],{{radius:16,color:'#7dff9f',weight:2,opacity:.32,fillColor:'#4cff7a',fillOpacity:.07,interactive:false}}).addTo(map);
+     const m=L.circleMarker([lat,lon],{{radius:7,color:'#f0fff4',weight:2.2,opacity:1,fillColor:'#58ff88',fillOpacity:.98}}).addTo(map);
+     m.bindTooltip(String(s.name||'駅'),{{permanent:true,direction:'top',offset:[0,-8],className:'project-station-label'}});
+   }} else {{
+     const m=L.circleMarker([lat,lon],{{radius:4.5,color:'#b9ffd0',weight:1.3,opacity:.52,fillColor:'#62ff92',fillOpacity:.24}}).addTo(map);
+     m.bindTooltip(String(s.name||'駅'),{{direction:'top',className:'project-station-label'}});
+   }}
+ }};
+ (data.stations||[]).forEach(addStation);
+ const rad=(v)=>Number(v)*Math.PI/180;
+ const distanceM=(a,b)=>{{
+   const R=6371000,dLat=rad(Number(b[0])-Number(a[0])),dLon=rad(Number(b[1])-Number(a[1]));
+   const lat1=rad(a[0]),lat2=rad(b[0]);
+   const h=Math.sin(dLat/2)**2+Math.cos(lat1)*Math.cos(lat2)*Math.sin(dLon/2)**2;
+   return 2*R*Math.asin(Math.min(1,Math.sqrt(Math.max(0,h))));
+ }};
+ const loadStations=async()=>{{
+   if(!all.length)return;
+   let south=90,north=-90,west=180,east=-180;
+   all.forEach((p)=>{{south=Math.min(south,Number(p[0]));north=Math.max(north,Number(p[0]));west=Math.min(west,Number(p[1]));east=Math.max(east,Number(p[1]));}});
+   const mid=(south+north)/2,padLat=.012,padLon=.012/Math.max(.35,Math.cos(rad(mid)));
+   south-=padLat;north+=padLat;west-=padLon;east+=padLon;
+   const query=`[out:json][timeout:8];(node["railway"~"^(station|halt)$"](${{south.toFixed(5)}},${{west.toFixed(5)}},${{north.toFixed(5)}},${{east.toFixed(5)}});node["public_transport"="station"](${{south.toFixed(5)}},${{west.toFixed(5)}},${{north.toFixed(5)}},${{east.toFixed(5)}}););out body;`;
+   const body=new URLSearchParams({{data:query}}).toString();
+   const endpoints=['https://overpass-api.de/api/interpreter','https://overpass.kumi.systems/api/interpreter'];
+   let payload=null;
+   for(const endpoint of endpoints){{
+     const ctrl=new AbortController(); const timer=setTimeout(()=>ctrl.abort(),3500);
+     try{{
+       const response=await fetch(endpoint,{{method:'POST',headers:{{'Content-Type':'application/x-www-form-urlencoded; charset=UTF-8'}},body,signal:ctrl.signal}});
+       if(response.ok){{payload=await response.json();clearTimeout(timer);break;}}
+     }}catch(_){{}}finally{{clearTimeout(timer);}}
+   }}
+   if(!payload||!Array.isArray(payload.elements))return;
+   const sample=all.filter((_,i)=>i%20===0); if(all.length&&sample[sample.length-1]!==all[all.length-1])sample.push(all[all.length-1]);
+   const seen=new Set();
+   payload.elements.forEach((row)=>{{
+     const lat=Number(row?.lat),lon=Number(row?.lon); if(!Number.isFinite(lat)||!Number.isFinite(lon))return;
+     const tags=row?.tags||{{}}; const name=String(tags['name:ja']||tags.name||'駅');
+     const key=`${{name}}:${{lat.toFixed(5)}}:${{lon.toFixed(5)}}`; if(seen.has(key))return; seen.add(key);
+     let best=Infinity; for(const p of sample){{best=Math.min(best,distanceM([lat,lon],p));if(best<=140)break;}}
+     if(best<=600)addStation({{name,lat,lon,visited:best<=140}});
+   }});
+ }};
+ setTimeout(()=>{{map.invalidateSize();loadStations();}},120);
+}})();
+</script></body></html>"""
+    st.components.v1.html(map_html, height=650, scrolling=False)
+
+
+def page_burari_project():
+    page_top(
+        "✨ ぶらり旅プロジェクト",
+        "スマホを持って実際に歩いた道が少しずつ光っていく、自分だけの東京の地図です。",
+    )
+    st.caption(
+        "位置情報を許可している間は、アプリを開いているとGPSを自動記録します。約10m動くごとに1点を端末へ保存し、まとめて軽く同期します。"
+        "電車・車など歩行より速い移動は地図の発光線から自動的に外します。"
+    )
+    points = _load_all_project_track_points_v271()
+    if not points:
+        st.info("まだ歩行データがありません。位置情報を許可した状態で、ぶらり旅を開いて歩くと自動的に記録が始まります。")
+        return
+    segments = _project_walk_segments_v271(points)
+    walk_points = _project_walk_points_v271(segments)
+    walk_m = _project_walk_distance_m_v271(segments)
+    stat_cols = st.columns(3, gap="small")
+    with stat_cols[0]:
+        st.metric("歩いた距離", f"{walk_m/1000:.1f} km")
+    with stat_cols[1]:
+        st.metric("GPS記録", f"{len(points):,} 点")
+    with stat_cols[2]:
+        st.metric("歩行区間", f"{len(segments)} 本")
+    _render_burari_project_map_v271(walk_points or points[-1:], segments, [])
+    st.caption("駅情報は地図表示後にブラウザ側で軽く取得し、歩いた軌跡の近くにある駅のうち到達した駅を強く発光表示します。")
+
+
+# ============================================================
 # Page: Review / Settings
 # ============================================================
 def page_review():
@@ -26692,6 +27433,7 @@ def page_review():
             font-size:.76rem; line-height:1.45; opacity:.82;
           }
           .st-key-review_map_jump,
+          .st-key-review_project_jump,
           .st-key-review_monthly_jump,
           .st-key-review_tag_jump,
           .st-key-review_history_jump {
@@ -26701,6 +27443,9 @@ def page_review():
           }
           .st-key-review_map_jump {
             background:linear-gradient(145deg,rgba(239,248,255,.98),rgba(232,245,249,.95));
+          }
+          .st-key-review_project_jump {
+            background:linear-gradient(145deg,rgba(229,251,239,.98),rgba(221,246,233,.95));
           }
           .st-key-review_monthly_jump {
             background:linear-gradient(145deg,rgba(255,249,231,.98),rgba(255,239,213,.95));
@@ -26712,6 +27457,7 @@ def page_review():
             background:linear-gradient(145deg,rgba(240,250,247,.98),rgba(232,246,241,.95));
           }
           .st-key-review_map_jump div.stButton > button,
+          .st-key-review_project_jump div.stButton > button,
           .st-key-review_monthly_jump div.stButton > button,
           .st-key-review_tag_jump div.stButton > button,
           .st-key-review_history_jump div.stButton > button {
@@ -26721,12 +27467,14 @@ def page_review():
             box-shadow:0 4px 12px rgba(0,0,0,.035) !important;
           }
           .st-key-review_map_jump [data-testid="stCaptionContainer"],
+          .st-key-review_project_jump [data-testid="stCaptionContainer"],
           .st-key-review_monthly_jump [data-testid="stCaptionContainer"],
           .st-key-review_tag_jump [data-testid="stCaptionContainer"],
           .st-key-review_history_jump [data-testid="stCaptionContainer"] {
             margin-top:-.10rem; padding:.02rem .16rem .02rem;
           }
           .st-key-review_map_jump [data-testid="stCaptionContainer"] p,
+          .st-key-review_project_jump [data-testid="stCaptionContainer"] p,
           .st-key-review_monthly_jump [data-testid="stCaptionContainer"] p,
           .st-key-review_tag_jump [data-testid="stCaptionContainer"] p,
           .st-key-review_history_jump [data-testid="stCaptionContainer"] p {
@@ -26746,6 +27494,15 @@ def page_review():
         ):
             go_page("review_map")
         st.caption("いまいる場所の近くで、以前どんな写真・動画を残したかを地図のピンからたどる")
+
+    with st.container(key="review_project_jump"):
+        if st.button(
+            "✨ ぶらり旅プロジェクト",
+            use_container_width=True,
+            key="review_open_project_v271",
+        ):
+            go_page("review_project")
+        st.caption("スマホを持って歩いた道を蓄光テープのように光らせ、到達した駅を特別に表示する")
 
     with st.container(key="review_monthly_jump"):
         if st.button(
@@ -27276,6 +28033,11 @@ consume_pending_emotion_query()
 sync_browser_history()
 render_pending_emotion_query_cleanup()
 
+# v271: keep one lightweight browser GPS watcher alive across app pages. It records
+# accepted 10m points locally immediately and cloud-syncs only in coarse batches.
+# Camera pages never flush, so GPS tracking cannot trigger a rerun during recording.
+run_always_on_gps_tracker_v271()
+
 # v147: render the entire visible app inside one replaceable root. This is stronger
 # than a normal rerun for mobile Streamlit: after save/delete mutations the old root
 # is replaced as a unit, so controls from a removed video/photo card cannot remain
@@ -27317,6 +28079,8 @@ with page_root.container():
         page_review()
     elif page == "review_map":
         page_memory_map()
+    elif page == "review_project":
+        page_burari_project()
     elif page == "review_monthly":
         page_monthly(embedded=False)
     elif page == "review_tag":
@@ -27340,6 +28104,6 @@ with page_root.container():
         live_page = str(st.session_state.get("main_page") or "home")
         if (
             page == live_page
-            and page in {"camera", "videos", "moments", "diary", "review", "review_map", "review_monthly", "review_tag", "review_history", "nearby", "toilets", "settings"}
+            and page in {"camera", "videos", "moments", "diary", "review", "review_map", "review_project", "review_monthly", "review_tag", "review_history", "nearby", "toilets", "settings"}
         ):
             render_global_bottom_navigation(page)
