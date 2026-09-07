@@ -30,9 +30,9 @@ from zoneinfo import ZoneInfo
 import streamlit as st
 
 # Freshly generated update: 2026-08-31 23:49 JST
-GENERATED_UPDATE_JST = "2026-09-08T01:15:00+09:00"
+GENERATED_UPDATE_JST = "2026-09-08T01:46:00+09:00"
 
-APP_BUILD = "v282"
+APP_BUILD = "v283"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -892,15 +892,18 @@ GPS_TRACK_BATCH_MAX_POINTS = 180
 GPS_TRACK_WALK_MAX_SPEED_MPS = 4.5
 GPS_TRACK_SEGMENT_MAX_GAP_SECONDS = 180.0
 GPS_TRACK_SEGMENT_MAX_JUMP_M = 180.0
-# Station arrival is intentionally stricter than simple proximity.
-# A station is considered reached only when a walking run actually ends near it.
-GPS_TRACK_STATION_VISITED_RADIUS_M = 140.0
-GPS_TRACK_STATION_NEAR_RADIUS_M = 600.0
-GPS_TRACK_STATION_ARRIVAL_FINAL_RADIUS_M = 110.0
-GPS_TRACK_STATION_ARRIVAL_SEGMENT_RADIUS_M = 80.0
-GPS_TRACK_STATION_ARRIVAL_MIN_TOTAL_WALK_M = 180.0
-GPS_TRACK_STATION_ARRIVAL_MIN_SEGMENT_WALK_M = 300.0
-GPS_TRACK_STATION_GLOW_RADIUS_M = 280.0
+# v283: station arrival must tolerate GPS drift around large/indoor stations.
+# Reaching a ticket gate can stop reliable GPS before the final recorded point lands on
+# the OSM station center, so the renderer also accepts a cluster of late-route points
+# inside a broad station approach zone. Passing a station early in a trip is still not
+# enough: the contact must occur near the end of the recorded walk.
+GPS_TRACK_STATION_VISITED_RADIUS_M = 190.0
+GPS_TRACK_STATION_NEAR_RADIUS_M = 700.0
+GPS_TRACK_STATION_ARRIVAL_FINAL_RADIUS_M = 220.0
+GPS_TRACK_STATION_ARRIVAL_SEGMENT_RADIUS_M = 180.0
+GPS_TRACK_STATION_ARRIVAL_MIN_TOTAL_WALK_M = 120.0
+GPS_TRACK_STATION_ARRIVAL_MIN_SEGMENT_WALK_M = 120.0
+GPS_TRACK_STATION_GLOW_RADIUS_M = 360.0
 GPS_TRACK_RENDER_POINT_LIMIT = 60000
 
 
@@ -27602,10 +27605,11 @@ html,body{{margin:0;padding:0;background:#0b1012;font-family:-apple-system,Blink
  if(all.length){{ const bounds=L.latLngBounds(all); map.fitBounds(bounds,{{padding:[28,28],maxZoom:16}}); }} else map.setView([35.6812,139.7671],11);
  (data.segments||[]).forEach((seg)=>{{
    if(!Array.isArray(seg)||seg.length<2)return;
-   // Keep the walking trace visible but subordinate to a reached station.
-   L.polyline(seg,{{color:'#2bea63',weight:10,opacity:.075,lineCap:'round',lineJoin:'round',interactive:false}}).addTo(map);
-   L.polyline(seg,{{color:'#4cf27b',weight:5.5,opacity:.16,lineCap:'round',lineJoin:'round',interactive:false}}).addTo(map);
-   L.polyline(seg,{{color:'#99f5b0',weight:2.5,opacity:.72,lineCap:'round',lineJoin:'round',interactive:false}}).addTo(map);
+   // v283: the walked route remains readable, but a reached station must be
+   // substantially brighter and wider than the route itself.
+   L.polyline(seg,{{color:'#1edb58',weight:9,opacity:.045,lineCap:'round',lineJoin:'round',interactive:false}}).addTo(map);
+   L.polyline(seg,{{color:'#45e875',weight:5,opacity:.11,lineCap:'round',lineJoin:'round',interactive:false}}).addTo(map);
+   L.polyline(seg,{{color:'#93eaa8',weight:2.3,opacity:.56,lineCap:'round',lineJoin:'round',interactive:false}}).addTo(map);
  }});
  const rad=(v)=>Number(v)*Math.PI/180;
  const distanceM=(a,b)=>{{
@@ -27635,15 +27639,34 @@ html,body{{margin:0;padding:0;background:#0b1012;font-family:-apple-system,Blink
      if(endD<bestEnd){{bestEnd=endD;bestSegmentLen=row.len;}}
      for(const p of row.seg){{const d=distanceM(p,station);if(d<bestTrack)bestTrack=d;}}
    }}
-   // Primary rule: the latest walking endpoint is close to the station and the
-   // whole recorded outing contains a meaningful walk. This survives GPS gaps
-   // that may split one outing into several short visual segments.
+
+   // v283 gate-arrival rule. Indoor stations frequently lose or scatter GPS before
+   // the final point reaches the OSM station center. Look at the final 40% of recorded
+   // walking points and accept a station when that late approach contains a real
+   // cluster inside the station zone. This does not count a station passed only near
+   // the beginning or middle of the trip.
+   const tailStart=Math.max(0,Math.floor(all.length*.60));
+   const tail=all.slice(tailStart);
+   let lateBest=Infinity,lateInside=0;
+   const lateRadius=Math.max(finalRadius,220);
+   for(const p of tail){{
+     const d=distanceM(p,station);
+     if(d<lateBest)lateBest=d;
+     if(d<=lateRadius)lateInside+=1;
+   }}
+
+   // Direct final-point arrival.
    if(finalEnd&&totalWalk>=minTotal&&distanceM(finalEnd,station)<=finalRadius){{
      return {{arrived:true,reason:'final',distance_m:distanceM(finalEnd,station),near_m:bestTrack}};
    }}
-   // Historical rule: an earlier continuous walking segment itself must be long
-   // enough and terminate much closer to the station. Merely passing beside a
-   // station is therefore not treated as an arrival.
+   // Ticket-gate / indoor arrival: either two late points in the approach zone, or
+   // one very close late point. The second form covers GPS stopping immediately
+   // after entering the station.
+   if(totalWalk>=minTotal&&((lateInside>=2&&lateBest<=lateRadius)||(lateBest<=Math.min(145,lateRadius)))){{
+     return {{arrived:true,reason:'gate',distance_m:lateBest,near_m:bestTrack}};
+   }}
+   // Earlier segment endpoint arrival remains available for old stored routes that
+   // were split by GPS gaps, but the endpoint must still be inside the station zone.
    if(bestSegmentLen>=minSegment&&bestEnd<=segmentRadius){{
      return {{arrived:true,reason:'segment',distance_m:bestEnd,near_m:bestTrack}};
    }}
@@ -27657,15 +27680,16 @@ html,body{{margin:0;padding:0;background:#0b1012;font-family:-apple-system,Blink
    const verdict=(typeof s.arrived==='boolean')?{{arrived:s.arrived,distance_m:Number(s.distance_m)||Infinity,near_m:Number(s.distance_m)||Infinity}}:classifyStation(lat,lon);
    if(verdict.arrived){{
      arrivedStations.push({{name,lat,lon,distance_m:Number(verdict.distance_m)||0}});
-     // A reached station must dominate the map visually.  Use broad, static
-     // concentric fills instead of animation so the entire station district is
-     // obvious even when the map is zoomed out, while keeping mobile rendering light.
-     L.circle([lat,lon],{{radius:glowRadius,color:'#24ff67',weight:2,opacity:.30,fillColor:'#20ff61',fillOpacity:.075,interactive:false}}).addTo(map);
-     L.circle([lat,lon],{{radius:glowRadius*.76,color:'#3cff75',weight:3.5,opacity:.50,fillColor:'#32ff70',fillOpacity:.13,interactive:false}}).addTo(map);
-     L.circle([lat,lon],{{radius:glowRadius*.54,color:'#71ff96',weight:4.5,opacity:.72,fillColor:'#58ff86',fillOpacity:.22,interactive:false}}).addTo(map);
-     L.circle([lat,lon],{{radius:glowRadius*.32,color:'#c8ffd4',weight:5.5,opacity:.96,fillColor:'#83ffa2',fillOpacity:.34,interactive:false}}).addTo(map);
-     const m=L.circleMarker([lat,lon],{{radius:11,color:'#ffffff',weight:3.2,opacity:1,fillColor:'#5dff8d',fillOpacity:1}}).addTo(map);
-     m.bindTooltip(`到着：${{name}}`,{{permanent:true,direction:'top',offset:[0,-9],className:'project-arrived-label'}});
+     // v283: a reached station is a bright AREA, not a point. Five broad static
+     // layers cover the station precinct and remain unmistakable at a distant zoom.
+     // Static SVG circles are cheaper than pulsing animation on mobile.
+     L.circle([lat,lon],{{radius:glowRadius,color:'#18ff5b',weight:3,opacity:.38,fillColor:'#18ff5b',fillOpacity:.12,interactive:false}}).addTo(map);
+     L.circle([lat,lon],{{radius:glowRadius*.82,color:'#39ff76',weight:4,opacity:.58,fillColor:'#32ff70',fillOpacity:.19,interactive:false}}).addTo(map);
+     L.circle([lat,lon],{{radius:glowRadius*.62,color:'#72ff9a',weight:5,opacity:.78,fillColor:'#58ff86',fillOpacity:.29,interactive:false}}).addTo(map);
+     L.circle([lat,lon],{{radius:glowRadius*.42,color:'#c4ffd4',weight:6,opacity:.96,fillColor:'#87ffa7',fillOpacity:.43,interactive:false}}).addTo(map);
+     L.circle([lat,lon],{{radius:glowRadius*.23,color:'#ffffff',weight:7,opacity:1,fillColor:'#baffc9',fillOpacity:.60,interactive:false}}).addTo(map);
+     const m=L.circleMarker([lat,lon],{{radius:14,color:'#ffffff',weight:4,opacity:1,fillColor:'#54ff87',fillOpacity:1}}).addTo(map);
+     m.bindTooltip(`到着：${{name}}`,{{permanent:true,direction:'top',offset:[0,-11],className:'project-arrived-label'}});
    }} else if(Number(verdict.near_m)<=Number(data.station_near_radius_m||600)){{
      const m=L.circleMarker([lat,lon],{{radius:3.8,color:'#b9ffd0',weight:1.1,opacity:.36,fillColor:'#62ff92',fillOpacity:.16}}).addTo(map);
      m.bindTooltip(name,{{direction:'top',className:'project-station-label'}});
@@ -27746,8 +27770,8 @@ def page_burari_project():
         st.metric("歩行区間", f"{len(segments)} 本")
     _render_burari_project_map_v271(walk_points or points[-1:], segments, [])
     st.caption(
-        "駅情報は地図表示後に軽く取得します。駅の近くを通っただけでは到着扱いにせず、"
-        "徒歩区間の終点が駅の近くにあり、直前まで十分な徒歩移動がある場合に「辿り着いた駅」と判定します。"
+        "駅情報は地図表示後に軽く取得します。駅構内ではGPSがずれたり途切れたりするため、"
+        "最終地点だけでなく、歩行終盤に駅エリアへ複数回入った場合も「辿り着いた駅」と判定します。"
     )
 
 
