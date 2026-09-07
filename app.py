@@ -32,7 +32,7 @@ import streamlit as st
 # Freshly generated update: 2026-08-31 23:49 JST
 GENERATED_UPDATE_JST = "2026-09-07T09:10:00+09:00"
 
-APP_BUILD = "v273"
+APP_BUILD = "v274"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -26759,16 +26759,48 @@ export default function(component) {
   };
   const sessionId = getSessionId();
 
-  // v273: in Android native mode the WebView bridge looks for this exact
-  // per-account pending key before it can transfer points from the native SQLite
-  // database.  Create the empty queue eagerly so the two sides can complete their
-  // handshake even when no browser-GPS point has ever been written.
+  // v274: Android's native bridge in the first APK can only see browser localStorage
+  // and may inject points into the first legacy per-account pending key it finds.
+  // Keep the current account queue alive and recover android_native points from any
+  // sibling v271 pending queue into the currently logged-in family/member queue.
+  // Rows are copied (not deleted) and de-duplicated by id; ackMs prevents already
+  // cloud-synced rows from being re-adopted after acknowledgement.
+  const activePendingMarkerKey = 'tokyo_burari_gps_v274:active_pending_key';
   try {
     if (localStorage.getItem(pendingKey) === null) {
       localStorage.setItem(pendingKey, '[]');
     }
+    if (nativeMode) localStorage.setItem(activePendingMarkerKey, pendingKey);
   } catch (_) {}
 
+  const adoptNativePendingRows = () => {
+    if (!nativeMode) return;
+    try {
+      const currentRows = readPending();
+      const byId = new Map();
+      currentRows.forEach((p) => {
+        if (p && p.id) byId.set(String(p.id), p);
+      });
+      for (let i = 0; i < localStorage.length; i++) {
+        const k = localStorage.key(i);
+        if (!k || k === pendingKey || !k.startsWith('tokyo_burari_gps_v271:') || !k.endsWith(':pending')) continue;
+        const rows = safeParse(localStorage.getItem(k), []);
+        if (!Array.isArray(rows)) continue;
+        rows.forEach((p) => {
+          if (!p || String(p.source || '') !== 'android_native' || !p.id) return;
+          const ts = Number(p.ts_ms || 0);
+          if (!Number.isFinite(ts) || ts <= ackMs) return;
+          byId.set(String(p.id), p);
+        });
+      }
+      const merged = Array.from(byId.values()).sort((a,b) => Number(a.ts_ms||0)-Number(b.ts_ms||0));
+      if (merged.length !== currentRows.length || merged.some((p, idx) => String(p?.id || '') !== String(currentRows[idx]?.id || ''))) {
+        writePending(merged);
+      }
+    } catch (_) {}
+  };
+
+  adoptNativePendingRows();
   let pending = readPending();
   if (ackMs > 0 && pending.length) {
     pending = pending.filter((p) => Number(p.ts_ms || 0) > ackMs);
@@ -26788,6 +26820,7 @@ export default function(component) {
 
   const maybeFlush = (forced=false) => {
     if (cancelled || !allowFlush) return;
+    adoptNativePendingRows();
     pending = readPending();
     if (!pending.length) return;
     const now = Date.now();
