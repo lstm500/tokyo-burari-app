@@ -32,7 +32,7 @@ import streamlit as st
 # Freshly generated update: 2026-08-31 23:49 JST
 GENERATED_UPDATE_JST = "2026-09-08T18:48:00+09:00"
 
-APP_BUILD = "v307"
+APP_BUILD = "v308"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -29101,6 +29101,10 @@ PHOTO_LEGACY_NEW_STATIONS_V307 = {
     "大手町駅": (35.684801, 139.766086),
     "二重橋前駅": (35.680300, 139.761800),
     "日比谷駅": (35.674350, 139.759970),
+    # extra visible inner anchors seen around the center-right branches
+    "赤坂駅": (35.672028, 139.736861),
+    "六本木駅": (35.662836, 139.731445),
+    "広尾駅": (35.652149, 139.722851),
 }
 
 PHOTO_LEGACY_NEW_YAMANOTE_V307 = PHOTO_LEGACY_YAMANOTE_V296
@@ -29125,10 +29129,13 @@ PHOTO_LEGACY_NEW_ROUTE_SEQUENCES_V307 = (
     # Central government district.
     ("四ツ谷駅", "麹町駅", "半蔵門駅", "永田町駅"),
     ("青山一丁目駅", "赤坂見附駅", "永田町駅", "国会議事堂前駅", "溜池山王駅"),
+    ("青山一丁目駅", "赤坂見附駅", "赤坂駅", "溜池山王駅"),
     ("溜池山王駅", "虎ノ門駅", "霞ケ関駅", "桜田門駅", "日比谷駅"),
     ("東京駅", "大手町駅", "二重橋前駅", "日比谷駅"),
     ("新橋駅", "霞ケ関駅", "日比谷駅"),
     # Roppongi / Azabu / Shiba / Shirokane branches.
+    ("乃木坂駅", "六本木駅", "麻布十番駅"),
+    ("六本木駅", "広尾駅", "恵比寿駅"),
     ("六本木一丁目駅", "神谷町駅", "虎ノ門駅"),
     ("六本木一丁目駅", "麻布十番駅", "赤羽橋駅", "芝公園駅", "三田駅", "田町駅"),
     ("麻布十番駅", "白金高輪駅", "白金台駅", "目黒駅"),
@@ -30825,6 +30832,53 @@ def _photo_legacy_segments_from_state_v305(state):
     return ordered
 
 
+def _photo_legacy_direct_pair_segment_v308(a_name, b_name):
+    stations = _photo_legacy_active_stations_v307()
+    a = stations.get(str(a_name or ""))
+    b = stations.get(str(b_name or ""))
+    if not a or not b:
+        return []
+    try:
+        return [
+            [round(float(a[0]), 7), round(float(a[1]), 7)],
+            [round(float(b[0]), 7), round(float(b[1]), 7)],
+        ]
+    except Exception:
+        return []
+
+
+def _photo_legacy_display_segments_v308(state):
+    """Show the full photographed network immediately.
+
+    Any station-pair already resolved by the bounded v306 router keeps its road-shaped
+    geometry. Unresolved pairs are still drawn as direct seed links so every photographed
+    past route is lit from the first render.
+    """
+    if not _photo_legacy_enabled_v296():
+        return []
+    pairs = (state or {}).get("pairs") if isinstance(state, dict) else {}
+    if not isinstance(pairs, dict):
+        pairs = {}
+    ordered = []
+    seen = set()
+    for pair_def in _photo_legacy_pair_defs_v305():
+        row = pairs.get(pair_def["key"])
+        if isinstance(row, dict) and row.get("status") == "done":
+            seg = _photo_legacy_coerce_segment_v300(row.get("segment") or [])
+        else:
+            seg = _photo_legacy_direct_pair_segment_v308(pair_def["a"], pair_def["b"])
+        seg = _project_clean_segment_v298(seg)
+        if len(seg) < 2:
+            continue
+        sig = tuple((round(float(p[0]), 6), round(float(p[1]), 6)) for p in seg)
+        rev = tuple(reversed(sig))
+        if sig in seen or rev in seen:
+            continue
+        seen.add(sig)
+        ordered.append(seg)
+    return ordered
+
+
 def _photo_legacy_v306_is_final_failed(row):
     return (
         isinstance(row, dict)
@@ -30961,8 +31015,9 @@ def _photo_legacy_prepare_routes_v305():
     state["complete"] = pending_after == 0
     state["pairs"] = pairs
     saved_ok = _save_photo_legacy_route_state_v305(state)
-    segments = _photo_legacy_segments_from_state_v305(state)
-    return segments, {
+    routed_segments = _photo_legacy_segments_from_state_v305(state)
+    display_segments = _photo_legacy_display_segments_v308(state)
+    return display_segments, {
         "mode": "complete" if pending_after == 0 else "partial",
         "done": done_count,
         "success": done_count,
@@ -30971,6 +31026,8 @@ def _photo_legacy_prepare_routes_v305():
         "pending": pending_after,
         "saved": bool(saved_ok),
         "engine": PHOTO_LEGACY_ROUTE_ENGINE_V306,
+        "routed_segments": len(routed_segments),
+        "display_segments": len(display_segments),
     }
 
 
@@ -31043,7 +31100,7 @@ def page_burari_project():
     photo_segments = []
     if photo_seed_enabled:
         route_status = st.empty()
-        route_status.info("初回のみ、写真から読み取った過去ルートを歩行者用の道路に合わせています。1回の処理量を制限し、長時間の自動ループは行いません。")
+        route_status.info("写真から読み取った過去ルートは、まず全区間を地図上で光らせたうえで、順次歩行者用の道路形状へ合わせています。")
         photo_segments, photo_route_meta = _photo_legacy_prepare_routes_v305()
         route_done = int(photo_route_meta.get("done") or 0)
         route_total = int(photo_route_meta.get("total") or 0)
@@ -31051,14 +31108,14 @@ def page_burari_project():
         route_pending = int(photo_route_meta.get("pending") or 0)
         if route_failed > 0:
             route_status.warning(
-                f"過去ルート：{route_done} / {route_total} 区間を道路に合わせて保存しました。未取得は {route_failed} 区間です。地図は取得済み区間をそのまま表示します。"
+                f"過去ルート：全 {route_total} 区間を地図に表示しています。うち {route_done} 区間は道路形状に合わせて保存済み、未取得は {route_failed} 区間です。"
             )
             if st.button("未取得の過去ルートだけ再試行", use_container_width=True, key="retry_photo_route_v307"):
                 _photo_legacy_reset_failed_v306()
                 st.rerun()
         elif route_pending > 0:
             route_status.info(
-                f"過去ルート：{route_done} / {route_total} 区間を保存しました。残り {route_pending} 区間は必要なときだけ続けて補完できます。"
+                f"過去ルート：全 {route_total} 区間を地図に表示しています。うち {route_done} 区間は道路形状に合わせて保存済みで、残り {route_pending} 区間は必要なときだけ続けて補完できます。"
             )
             if st.button("残りの過去ルートを続けて補完", use_container_width=True, key="continue_photo_route_v307"):
                 st.rerun()
