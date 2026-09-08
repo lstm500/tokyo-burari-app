@@ -32,7 +32,7 @@ import streamlit as st
 # Freshly generated update: 2026-08-31 23:49 JST
 GENERATED_UPDATE_JST = "2026-09-08T18:48:00+09:00"
 
-APP_BUILD = "v311"
+APP_BUILD = "v314"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -5167,22 +5167,23 @@ def sync_pending_tags_from_browser_v166():
 # ============================================================
 # Browser history bridge
 # ============================================================
-# Streamlit session-state navigation does not create browser history entries by
-# itself. This small component mirrors each app screen into window.history so
-# Chrome/Safari back and forward buttons move between app screens first.
+# Streamlit session-state navigation does not create native Android/PWA back-stack
+# entries. This bridge keeps one protected app entry above a Home base and converts
+# every physical Back press into exactly one app-hierarchy step.
 _HISTORY_JS = r"""
 export default function(component) {
   const { data, setTriggerValue } = component;
   const validPages = new Set(['home', 'camera', 'videos', 'moments', 'diary', 'review', 'review_map', 'review_project', 'review_monthly', 'review_tag', 'review_history', 'nearby', 'toilets', 'settings']);
   const marker = '__tokyo_burari_page__';
-  const guardMarker = '__tokyo_burari_first_level_guard__';
+  const nodeMarker = '__tokyo_burari_node_v314__';
+  const bridgeMarker = '__tokyo_burari_history_bridge_v314__';
+  const guardMarker = '__tokyo_burari_history_guard_v314__';
+  const bridgeVersion = 'v314';
   const requestedPage = validPages.has(data?.page) ? data.page : 'home';
-  const action = data?.action || 'sync';
   const navigationNode = String(data?.node || requestedPage);
-  const interceptHierarchyBack = Boolean(data?.intercept_hierarchy_back) && requestedPage !== 'home';
-  const firstLevelBackToHome = requestedPage !== 'home' && navigationNode === requestedPage && !interceptHierarchyBack;
   const pendingFeelingParam = 'feel_v159';
   const pendingFeelingStore = 'tokyo_burari_pending_feelings_v159';
+
   const restorePendingFeelingParam = () => {
     try {
       const url = new URL(window.location.href);
@@ -5200,117 +5201,82 @@ export default function(component) {
     queueMicrotask(() => setTriggerValue('pending_restore', `${Date.now()}:${Math.random()}`));
   }
 
-  const pageFromUrl = () => {
-    try {
-      const value = new URL(window.location.href).searchParams.get('view');
-      return validPages.has(value) ? value : 'home';
-    } catch (_) {
-      return 'home';
-    }
-  };
-
-  const pageFromHistory = () => {
-    const value = window.history.state && window.history.state[marker];
-    return validPages.has(value) ? value : pageFromUrl();
-  };
-
   const urlFor = (page) => {
     const url = new URL(window.location.href);
-    if (page === 'home') {
-      url.searchParams.delete('view');
-    } else {
-      url.searchParams.set('view', page);
-    }
+    if (page === 'home') url.searchParams.delete('view');
+    else url.searchParams.set('view', page);
     return url.pathname + url.search + url.hash;
   };
 
-  let currentPage = pageFromHistory();
-  const state = window.history.state || {};
+  const homeBaseState = (source) => ({
+    ...(source || {}),
+    [marker]: 'home',
+    [nodeMarker]: 'home',
+    [bridgeMarker]: bridgeVersion,
+    [guardMarker]: false,
+  });
 
-  // Mark the entry used to open the app as the app's home/current entry.
-  if (!validPages.has(state[marker])) {
-    const initialPage = pageFromUrl();
-    window.history.replaceState(
-      { ...state, [marker]: initialPage },
-      '',
-      urlFor(initialPage)
-    );
-    currentPage = initialPage;
-  }
+  const guardState = (source, page, node) => ({
+    ...(source || {}),
+    [marker]: page,
+    [nodeMarker]: node,
+    [bridgeMarker]: bridgeVersion,
+    [guardMarker]: true,
+  });
 
-  if (action === 'push' && currentPage !== requestedPage) {
+  // Keep exactly one protected app entry above a Home base entry. Deeper app
+  // navigation replaces that protected entry instead of growing browser history.
+  // Android Back therefore always lands on the Home base first, where we can
+  // immediately restore the current app entry and ask Python for exactly one
+  // hierarchy-up action.
+  let state = window.history.state || {};
+  if (state[bridgeMarker] !== bridgeVersion) {
+    const base = homeBaseState(state);
+    window.history.replaceState(base, '', urlFor('home'));
     window.history.pushState(
-      { ...(window.history.state || {}), [marker]: requestedPage },
+      guardState(base, requestedPage, navigationNode),
       '',
       urlFor(requestedPage)
     );
-    currentPage = requestedPage;
-  } else if (action === 'replace' && currentPage !== requestedPage) {
+  } else if (state[guardMarker]) {
     window.history.replaceState(
-      { ...(window.history.state || {}), [marker]: requestedPage },
+      guardState(state, requestedPage, navigationNode),
       '',
       urlFor(requestedPage)
     );
-    currentPage = requestedPage;
-  } else if (action === 'sync' && currentPage !== requestedPage) {
-    // This covers a page reload or a browser-restored tab whose URL/history
-    // already points at an internal app screen.
-    queueMicrotask(() => setTriggerValue('page', currentPage));
-  }
-
-  // Android/PWA can return from an external Maps app with no usable browser entry
-  // behind the current first-level screen. Add one same-page guard entry so the next
-  // native Back always fires popstate instead of closing the web app. It is armed once
-  // per first-level page and survives the trip out to Google Maps.
-  if (firstLevelBackToHome && currentPage === requestedPage) {
-    const currentState = window.history.state || {};
-    if (currentState[guardMarker] !== requestedPage) {
-      window.history.pushState(
-        { ...currentState, [marker]: requestedPage, [guardMarker]: requestedPage },
-        '',
-        urlFor(requestedPage)
-      );
-    }
-  } else if (requestedPage === 'home') {
-    const currentState = window.history.state || {};
-    if (currentState[guardMarker]) {
-      const cleanState = { ...currentState };
-      delete cleanState[guardMarker];
-      cleanState[marker] = 'home';
-      window.history.replaceState(cleanState, '', urlFor('home'));
-    }
+  } else {
+    // A prior Back may have exposed the base while Streamlit was rerendering.
+    // Recreate the protected entry before the user can leave the app.
+    const base = homeBaseState(state);
+    window.history.replaceState(base, '', urlFor('home'));
+    window.history.pushState(
+      guardState(base, requestedPage, navigationNode),
+      '',
+      urlFor(requestedPage)
+    );
   }
 
   const onPopState = (event) => {
-    // A native browser Back can move to an older URL before Streamlit reruns.
-    // Restore browser-local pending feelings onto that history entry first.
     restorePendingFeelingParam();
-    if (interceptHierarchyBack) {
-      // The phone/browser Back control must mean "one folder level up", not
-      // "whatever screen happened to be visited previously". Restore the app
-      // entry immediately, then let Python apply the fixed parent mapping.
-      window.history.pushState(
-        { ...(window.history.state || {}), [marker]: requestedPage },
-        '',
-        urlFor(requestedPage)
-      );
-      const token = `${navigationNode}:${Date.now()}:${Math.random()}`;
-      setTriggerValue('hierarchy_back', token);
-      return;
-    }
-    if (firstLevelBackToHome) {
-      // We have just popped the synthetic guard. Convert the revealed entry to Home
-      // before Streamlit rerenders, so Android Back never falls through and closes the app.
-      const homeState = { ...(event.state || {}) };
-      delete homeState[guardMarker];
-      homeState[marker] = 'home';
-      window.history.replaceState(homeState, '', urlFor('home'));
-      setTriggerValue('page', 'home');
-      return;
-    }
-    const statePage = event.state && event.state[marker];
-    const target = validPages.has(statePage) ? statePage : pageFromUrl();
-    setTriggerValue('page', validPages.has(target) ? target : 'home');
+
+    // Normalize whatever entry Back revealed into the app's Home base, then put
+    // the current protected entry back immediately. This prevents Android/PWA
+    // Back from minimizing or hiding the app before Streamlit handles the action.
+    const base = homeBaseState(event.state || {});
+    window.history.replaceState(base, '', urlFor('home'));
+    window.history.pushState(
+      guardState(base, requestedPage, navigationNode),
+      '',
+      urlFor(requestedPage)
+    );
+
+    // Home has no parent layer. Keep the app visible on Home rather than falling
+    // through to the browser/launcher. Every non-Home screen asks Python to move
+    // exactly one fixed hierarchy level upward.
+    if (navigationNode === 'home' || requestedPage === 'home') return;
+
+    const token = `${navigationNode}:${Date.now()}:${Math.random()}`;
+    setTriggerValue('hierarchy_back', token);
   };
 
   window.addEventListener('popstate', onPopState);
@@ -5320,7 +5286,7 @@ export default function(component) {
 
 try:
     browser_history_component = st.components.v2.component(
-        'tokyo_burari_browser_history_v208',
+        'tokyo_burari_browser_history_v314',
         js=_HISTORY_JS,
     )
 except Exception:
@@ -10950,11 +10916,11 @@ def get_camera_video_upload_reservation(trip_id, capture_serial):
     # Safari and WebM on Chromium. Storage metadata carries the real MIME type.
     storage_path = f"{family_key}/{member_key}/{trip_id}/{stamp}_{token}_video.video"
     signed_url = _create_signed_video_upload_url(storage_path)
-    candidate_sheet_path = f"{family_key}/{member_key}/{trip_id}/{stamp}_{token}_candidates.jpg"
-    # Legacy compatibility: browser candidate sheets use the duration-aware max-20 sampling rule.
-    # This removes ffmpeg as a hard requirement on Streamlit Cloud while keeping
-    # every captured candidate available to the vision pipeline.
-    candidate_sheet_signed_url = _create_signed_video_upload_url(candidate_sheet_path)
+    # v314: browser-side candidate sheets are no longer produced (v145+ uses the
+    # saved original video as the only source for Good Moments). Avoid minting a
+    # second unused signed URL every time Camera opens.
+    candidate_sheet_path = ""
+    candidate_sheet_signed_url = ""
     reservation = {
         "trip_id": str(trip_id),
         "family_key": str(family_key),
@@ -18265,7 +18231,8 @@ def reload_current_page_after_action(notice_key=None, notice_text=None):
         page = "home"
     st.session_state["main_page"] = page
     st.session_state["_ui_refresh_epoch"] = _current_ui_refresh_epoch() + 1
-    st.session_state.pop("_browser_hierarchy_back_token", None)
+    # Keep the last browser Back token across reruns so an already-consumed
+    # component event can never be applied twice.
     # This is a refresh of the current page, not a navigation event. Do not add or
     # replace browser history just because a photo/video was saved or deleted.
     st.session_state.pop("_history_action", None)
@@ -18502,9 +18469,9 @@ def _set_page_state(page_name, history_mode="push"):
     st.session_state["_history_action"] = (
         history_mode if history_mode in {"push", "replace"} else "push"
     )
-    # Keep component keys stable across ordinary route changes so the browser can
-    # reconcile the page without remounting every persistent bridge.
-    st.session_state.pop("_browser_hierarchy_back_token", None)
+    # Keep the last browser Back token across route changes. A v2 component can
+    # briefly expose the previous trigger value after rerender; retaining the token
+    # prevents one physical Back press from being applied twice.
 
 
 def _go_page_callback(page_name, history_mode="push"):
@@ -18603,30 +18570,13 @@ def sync_browser_history():
 
     action = st.session_state.pop("_history_action", "sync")
     navigation_node, _ = current_navigation_context()
-    # First-level pages (Camera / Videos / Moments / Diary / Review / Nearby / Toilets / Settings)
-    # already have a real Home entry immediately behind them because go_page()
-    # pushes history. Let the phone/browser Back control pop that entry normally.
-    # Only deeper in-page hierarchy states need interception so Back means exactly
-    # one app level rather than jumping all the way to Home.
-    intercept_nodes = {
-        "diary_photo",
-        "diary_trip",
-        "review_history_detail",
-        "review_history",
-        "review_map",
-        "review_project",
-        "review_monthly",
-        "review_tag",
-    }
     result = browser_history_component(
         data={
             "page": page,
             "action": action,
             "node": navigation_node,
-            "intercept_hierarchy_back": navigation_node in intercept_nodes,
         },
-        key=f"tokyo_burari_browser_history_instance_v208_{_current_ui_refresh_epoch()}",
-        on_page_change=lambda: None,
+        key=f"tokyo_burari_browser_history_instance_v314_{_current_ui_refresh_epoch()}",
         on_hierarchy_back_change=lambda: None,
         on_pending_restore_change=lambda: None,
     )
@@ -18638,13 +18588,6 @@ def sync_browser_history():
             st.session_state["_browser_hierarchy_back_token"] = token
             navigate_to_parent()
 
-    browser_page = getattr(result, "page", None)
-    if browser_page in VALID_APP_PAGES and browser_page != page:
-        st.session_state["main_page"] = browser_page
-        # A browser Back/Forward event has already changed window.history. Do not
-        # push a new entry while reflecting that event back into Streamlit.
-        st.session_state.pop("_history_action", None)
-        st.rerun()
 
 
 def ensure_today_trip():
@@ -20058,7 +20001,7 @@ def open_diary_photo_talk(trip_id, photo_id, state):
 # ============================================================
 # Page: Home
 # ============================================================
-@st.cache_data(ttl=3, max_entries=64, show_spinner=False)
+@st.cache_data(ttl=20, max_entries=64, show_spinner=False)
 def _home_video_counts_cached(family_key, member_key):
     """Return (saved videos, videos not yet accepted as diary stills)."""
     rows = (
@@ -20134,7 +20077,7 @@ def _render_home_video_count_status():
 
 
 if hasattr(st, "fragment"):
-    render_home_video_count_status = st.fragment(run_every="5s")(_render_home_video_count_status)
+    render_home_video_count_status = st.fragment(run_every="20s")(_render_home_video_count_status)
 else:
     render_home_video_count_status = _render_home_video_count_status
 
@@ -20189,7 +20132,7 @@ def _render_home_storage_usage_status():
 
 
 if hasattr(st, "fragment"):
-    render_home_storage_usage_status = st.fragment(run_every="15s")(_render_home_storage_usage_status)
+    render_home_storage_usage_status = st.fragment(run_every="60s")(_render_home_storage_usage_status)
 else:
     render_home_storage_usage_status = _render_home_storage_usage_status
 
@@ -24153,8 +24096,12 @@ def render_recent_camera_photo_emotion(trip):
 # Page: Trip / camera
 # ============================================================
 def page_trip():
-    if st.button("←", key="camera_back_parent", help="1つ前の階層に戻る"):
-        navigate_to_parent()
+    st.button(
+        "←",
+        key="camera_back_parent",
+        help="1つ前の階層に戻る",
+        on_click=_navigate_to_parent_callback,
+    )
 
     notice = st.session_state.pop("_camera_notice", None)
     if notice:
@@ -25069,13 +25016,12 @@ def page_history(embedded=False):
         back_col, home_col = st.columns(2)
         with back_col:
             with st.container(key="history_back_nav"):
-                if st.button(
+                st.button(
                     "← 前の画面に戻る",
                     use_container_width=True,
                     key=f"history_back_{trip_id}",
-                ):
-                    st.session_state.pop("history_detail_trip_id", None)
-                    st.rerun()
+                    on_click=_navigate_to_parent_callback,
+                )
         with home_col:
             with st.container(key="history_home_nav"):
                 st.button(
@@ -30547,21 +30493,18 @@ html,body{{margin:0;padding:0;background:#0b1012;font-family:-apple-system,Blink
  const all=(data.points||[]).filter((p)=>Array.isArray(p)&&p.length>=2);
  if(all.length){{const bounds=L.latLngBounds(all);map.fitBounds(bounds,{{padding:[28,28],maxZoom:16}});}}else map.setView([35.6812,139.7671],11);
 
- // Native GPS route remains green.
- (data.segments||[]).forEach((seg)=>{{
-   if(!Array.isArray(seg)||seg.length<2)return;
-   L.polyline(seg,{{color:'#13e95b',weight:13,opacity:.055,lineCap:'round',lineJoin:'round',interactive:false}}).addTo(map);
-   L.polyline(seg,{{color:'#39f374',weight:7.2,opacity:.16,lineCap:'round',lineJoin:'round',interactive:false}}).addTo(map);
-   L.polyline(seg,{{color:'#9dffb6',weight:2.8,opacity:.82,lineCap:'round',lineJoin:'round',interactive:false}}).addTo(map);
- }});
-
- // Photo-restored historical route also uses the normal fluorescent green glow.
- (data.photo_segments||[]).forEach((seg)=>{{
-   if(!Array.isArray(seg)||seg.length<2)return;
-   L.polyline(seg,{{color:'#13e95b',weight:13,opacity:.055,lineCap:'round',lineJoin:'round',interactive:false}}).addTo(map);
-   L.polyline(seg,{{color:'#39f374',weight:7.2,opacity:.16,lineCap:'round',lineJoin:'round',interactive:false}}).addTo(map);
-   L.polyline(seg,{{color:'#9dffb6',weight:2.8,opacity:.82,lineCap:'round',lineJoin:'round',interactive:false}}).addTo(map);
- }});
+ // Draw many disconnected route sections as one multi-polyline per glow pass.
+ // This keeps the exact fluorescent appearance while cutting hundreds of Leaflet
+ // layer objects down to at most six.
+ const drawGreenRouteBatch=(raw)=>{{
+   const segments=(raw||[]).filter((seg)=>Array.isArray(seg)&&seg.length>=2);
+   if(!segments.length)return;
+   L.polyline(segments,{{color:'#13e95b',weight:13,opacity:.055,lineCap:'round',lineJoin:'round',interactive:false}}).addTo(map);
+   L.polyline(segments,{{color:'#39f374',weight:7.2,opacity:.16,lineCap:'round',lineJoin:'round',interactive:false}}).addTo(map);
+   L.polyline(segments,{{color:'#9dffb6',weight:2.8,opacity:.82,lineCap:'round',lineJoin:'round',interactive:false}}).addTo(map);
+ }};
+ drawGreenRouteBatch(data.segments);
+ drawGreenRouteBatch(data.photo_segments);
 
  const drawArrivedStation=(s)=>{{
    const zone=(Array.isArray(s.arrival_zone)?s.arrival_zone:[]).filter((p)=>Array.isArray(p)&&p.length>=2);
@@ -31145,6 +31088,51 @@ def _photo_legacy_prepare_routes_v305():
     }
 
 
+
+def _photo_legacy_load_frozen_routes_v314():
+    """Read the accepted historical import without doing any more route reconstruction."""
+    if not _photo_legacy_enabled_v296():
+        return []
+    family = str(current_family_key() or "")
+    member = str(current_member_key() or "")
+    state = _read_photo_legacy_route_state_v305(family, member) or {}
+    # Preserve exactly the accepted display behavior: saved road geometry where it
+    # exists and the fixed imported pair geometry for any unresolved legacy row.
+    return _photo_legacy_display_segments_v308(state)
+
+
+def _project_walk_bundle_v314(points):
+    """Session-cache the pure GPS-to-walk transforms used by the project map."""
+    points = list(points or [])
+    if not points:
+        return [], [], 0.0
+    first = points[0] if isinstance(points[0], dict) else {}
+    last = points[-1] if isinstance(points[-1], dict) else {}
+    signature = (
+        len(points),
+        int(first.get("ts_ms") or 0),
+        int(last.get("ts_ms") or 0),
+        str(last.get("id") or ""),
+    )
+    cached = st.session_state.get("_project_walk_bundle_v314")
+    if isinstance(cached, dict) and cached.get("signature") == signature:
+        return (
+            list(cached.get("segments") or []),
+            list(cached.get("walk_points") or []),
+            float(cached.get("walk_m") or 0.0),
+        )
+    segments = _project_walk_segments_v271(points)
+    walk_points = _project_walk_points_v271(segments)
+    walk_m = _project_walk_distance_m_v271(segments)
+    st.session_state["_project_walk_bundle_v314"] = {
+        "signature": signature,
+        "segments": segments,
+        "walk_points": walk_points,
+        "walk_m": float(walk_m),
+    }
+    return segments, walk_points, float(walk_m)
+
+
 def page_burari_project():
     # v299: keep the project page compact on phones.  Native Streamlit metrics stack
     # vertically on narrow screens, so use one fixed three-cell summary row instead.
@@ -31185,9 +31173,7 @@ def page_burari_project():
     if not points and not photo_seed_enabled:
         st.info("まだ歩行データがありません。位置情報を許可した状態で、ぶらり旅を開いて歩くと自動的に記録が始まります。")
         return
-    segments = _project_walk_segments_v271(points) if points else []
-    walk_points = _project_walk_points_v271(segments) if segments else []
-    walk_m = _project_walk_distance_m_v271(segments) if segments else 0.0
+    segments, walk_points, walk_m = _project_walk_bundle_v314(points)
     st.markdown(
         f"""
         <div class="burari-project-summary-v297">
@@ -31211,35 +31197,10 @@ def page_burari_project():
     display_points = list(map_points or []) + _photo_legacy_map_points_v296()
     stations = _merge_photo_legacy_stations_v296(stations)
 
-    photo_segments = []
-    if photo_seed_enabled:
-        route_status = st.empty()
-        profile_label = _photo_legacy_profile_v307()
-        expected_photo_pairs = len(_photo_legacy_pair_defs_v305())
-        route_status.info(
-            f"写真由来の過去データを読み込み済み：{expected_photo_pairs}区間。"
-            "緑線＋水色線を1区間ずつ道路へ合わせています。"
-        )
-        photo_segments, photo_route_meta = _photo_legacy_prepare_routes_v305()
-        route_done = int(photo_route_meta.get("done") or 0)
-        route_total = int(photo_route_meta.get("total") or 0)
-        route_failed = int(photo_route_meta.get("failed") or 0)
-        route_pending = int(photo_route_meta.get("pending") or 0)
-        if route_failed > 0:
-            route_status.warning(
-                f"過去ルート：全 {route_total} 区間を地図に表示しています。うち {route_done} 区間は道路形状に合わせて保存済み、未取得は {route_failed} 区間です。"
-            )
-            if st.button("未取得の過去ルートだけ再試行", use_container_width=True, key="retry_photo_route_v307"):
-                _photo_legacy_reset_failed_v306()
-                st.rerun()
-        elif route_pending > 0:
-            route_status.info(
-                f"過去ルート：全 {route_total} 区間を地図に表示しています。うち {route_done} 区間は道路形状に合わせて保存済みで、残り {route_pending} 区間も今回できるだけ続けて補完します。"
-            )
-            if st.button("残りの過去ルートを続けて補完", use_container_width=True, key="continue_photo_route_v307"):
-                st.rerun()
-        else:
-            route_status.empty()
+    # Historical image import is complete. From v314 onward it is read-only and
+    # never runs routing/retry work during ordinary app use. New walking data remains
+    # the unchanged high-accuracy GPS stream.
+    photo_segments = _photo_legacy_load_frozen_routes_v314() if photo_seed_enabled else []
     display_segments = list(segments or [])
 
     _render_burari_project_map_v295(display_points, display_segments, stations, photo_segments=photo_segments)
@@ -31856,9 +31817,13 @@ init_state()
 # v280: page navigation must stay cheap. Discover/resume unfinished video AI jobs
 # at most once every 30 seconds per session instead of on every widget rerun.
 try:
+    _bg_resume_page = str(st.session_state.get("main_page") or "home")
     _bg_resume_now = time.monotonic()
     _bg_resume_last = float(st.session_state.get("_bg_video_resume_last_monotonic") or 0.0)
-    if (_bg_resume_now - _bg_resume_last) >= 30.0:
+    # This is crash/restart recovery only; active jobs already run in the background.
+    # Restrict the scan to media-facing pages and at most once per minute so random
+    # navigation never blocks on a recovery query.
+    if _bg_resume_page in {"home", "videos", "moments"} and (_bg_resume_now - _bg_resume_last) >= 60.0:
         st.session_state["_bg_video_resume_last_monotonic"] = _bg_resume_now
         resume_member_video_background_jobs()
 except Exception:
