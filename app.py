@@ -30,9 +30,9 @@ from zoneinfo import ZoneInfo
 import streamlit as st
 
 # Freshly generated update: 2026-08-31 23:49 JST
-GENERATED_UPDATE_JST = "2026-09-08T18:03:00+09:00"
+GENERATED_UPDATE_JST = "2026-09-08T18:48:00+09:00"
 
-APP_BUILD = "v306"
+APP_BUILD = "v307"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -28992,30 +28992,284 @@ PHOTO_LEGACY_BIG_STATIONS_V296 = {
     "東京駅", "秋葉原駅", "上野駅", "池袋駅", "新宿駅", "渋谷駅", "大崎駅", "品川駅",
 }
 
+# ============================================================
+# v307: second wall-map seed (1818.jpg + 1820.jpg)
+# ============================================================
+# The bright photo identifies station/place labels; the dark photo identifies the
+# fluorescent walked links.  Keep this seed separate from the existing "main" seed.
+# If PHOTO_LEGACY_NEW_TARGET_MEMBER_V307 is not supplied as a secret, the first
+# non-main member in the family that opens the project claims this seed once.
+PHOTO_LEGACY_NEW_PROFILE_V307 = "wallmap_1818_1820_v307"
+PHOTO_LEGACY_NEW_TARGET_MEMBER_V307 = str(secret("PHOTO_LEGACY_NEW_TARGET_MEMBER_V307", "") or "").strip()
+PHOTO_LEGACY_SEED_ASSIGNMENT_DIR_V307 = "_photo_seed_assignments/v307"
+
+# Outer Yamanote loop plus the inner fluorescent links that can be read from the
+# two supplied wall-map photographs.  Coordinates are station/stop anchor points;
+# actual historical paths are road-matched by the bounded v306 router below.
+PHOTO_LEGACY_NEW_STATIONS_V307 = {
+    # Yamanote loop
+    "東京駅": (35.681236, 139.767125),
+    "神田駅": (35.691690, 139.770883),
+    "秋葉原駅": (35.698353, 139.773114),
+    "御徒町駅": (35.707438, 139.774632),
+    "上野駅": (35.713768, 139.777254),
+    "鶯谷駅": (35.721457, 139.778048),
+    "日暮里駅": (35.727772, 139.770987),
+    "西日暮里駅": (35.732135, 139.766787),
+    "田端駅": (35.738062, 139.760860),
+    "駒込駅": (35.736489, 139.746875),
+    "巣鴨駅": (35.733492, 139.739345),
+    "大塚駅": (35.731401, 139.728662),
+    "池袋駅": (35.729503, 139.710900),
+    "目白駅": (35.721204, 139.706587),
+    "高田馬場駅": (35.712677, 139.703715),
+    "新大久保駅": (35.701306, 139.700044),
+    "新宿駅": (35.690921, 139.700258),
+    "代々木駅": (35.683061, 139.702042),
+    "原宿駅": (35.670168, 139.702687),
+    "渋谷駅": (35.658034, 139.701636),
+    "恵比寿駅": (35.646690, 139.710106),
+    "目黒駅": (35.633998, 139.715828),
+    "五反田駅": (35.626446, 139.723444),
+    "大崎駅": (35.619700, 139.728553),
+    "品川駅": (35.628471, 139.738760),
+    "高輪ゲートウェイ駅": (35.635472, 139.740689),
+    "田町駅": (35.645736, 139.747575),
+    "浜松町駅": (35.655646, 139.756749),
+    "新橋駅": (35.666195, 139.758587),
+    "有楽町駅": (35.675069, 139.763328),
+
+    # Chuo/Sobu corridor and western inner links visible in the new photos
+    "大久保駅": (35.700784, 139.697239),
+    "千駄ケ谷駅": (35.681195, 139.711103),
+    "信濃町駅": (35.680030, 139.720365),
+    "四ツ谷駅": (35.686014, 139.730667),
+    "市ケ谷駅": (35.691013, 139.735557),
+    "飯田橋駅": (35.702065, 139.745015),
+    "水道橋駅": (35.702073, 139.753670),
+    "御茶ノ水駅": (35.699352, 139.765269),
+    "新宿西口駅": (35.693291, 139.699152),
+    "新宿三丁目駅": (35.690616, 139.706271),
+    "北参道駅": (35.678487, 139.705510),
+    "明治神宮前駅": (35.668497, 139.705367),
+    "表参道駅": (35.665247, 139.712314),
+    "外苑前駅": (35.670527, 139.717857),
+    "青山一丁目駅": (35.672765, 139.724159),
+    "乃木坂駅": (35.666572, 139.726215),
+    "国立競技場駅": (35.679678, 139.714166),
+    "四谷三丁目駅": (35.687958, 139.720103),
+    "曙橋駅": (35.692402, 139.722881),
+
+    # North/central inner links
+    "雑司が谷駅": (35.720233, 139.714795),
+    "鬼子母神前": (35.720344, 139.714975),
+    "学習院下": (35.716350, 139.712520),
+    "面影橋": (35.713040, 139.714032),
+    "早稲田（都電）": (35.711290, 139.718900),
+    "早稲田駅": (35.705723, 139.721319),
+    "神楽坂駅": (35.703790, 139.734546),
+    "新大塚駅": (35.725690, 139.729971),
+    "茗荷谷駅": (35.716989, 139.737184),
+    "後楽園駅": (35.707898, 139.751864),
+    "春日駅": (35.708250, 139.753600),
+    "千石駅": (35.727960, 139.744700),
+    "白山駅": (35.721350, 139.752130),
+    "新御茶ノ水駅": (35.698072, 139.766014),
+    "末広町駅": (35.702970, 139.771710),
+    "上野広小路駅": (35.707660, 139.773140),
+
+    # Central/southern inner links
+    "麹町駅": (35.684006, 139.737613),
+    "半蔵門駅": (35.685703, 139.741630),
+    "赤坂見附駅": (35.677021, 139.737047),
+    "永田町駅": (35.678757, 139.740258),
+    "国会議事堂前駅": (35.673750, 139.745410),
+    "溜池山王駅": (35.673620, 139.741420),
+    "虎ノ門駅": (35.670300, 139.749020),
+    "霞ケ関駅": (35.673810, 139.750130),
+    "桜田門駅": (35.677420, 139.751930),
+    "六本木一丁目駅": (35.665600, 139.739000),
+    "神谷町駅": (35.662810, 139.745070),
+    "麻布十番駅": (35.654680, 139.737050),
+    "赤羽橋駅": (35.655160, 139.743560),
+    "芝公園駅": (35.654120, 139.749660),
+    "三田駅": (35.648170, 139.748810),
+    "泉岳寺駅": (35.638740, 139.740000),
+    "白金高輪駅": (35.642880, 139.734100),
+    "白金台駅": (35.637920, 139.726130),
+    "大門駅": (35.656750, 139.754640),
+    "大手町駅": (35.684801, 139.766086),
+    "二重橋前駅": (35.680300, 139.761800),
+    "日比谷駅": (35.674350, 139.759970),
+}
+
+PHOTO_LEGACY_NEW_YAMANOTE_V307 = PHOTO_LEGACY_YAMANOTE_V296
+PHOTO_LEGACY_NEW_ROUTE_SEQUENCES_V307 = (
+    PHOTO_LEGACY_NEW_YAMANOTE_V307,
+    # The green Chuo/Sobu strip in the dark photograph.
+    ("大久保駅", "新宿駅", "代々木駅", "千駄ケ谷駅", "信濃町駅", "四ツ谷駅", "市ケ谷駅", "飯田橋駅", "水道橋駅", "御茶ノ水駅", "秋葉原駅"),
+    # Mejiro -> Waseda tram/metro chain.
+    ("目白駅", "雑司が谷駅", "鬼子母神前", "学習院下", "面影橋", "早稲田（都電）", "早稲田駅", "神楽坂駅", "飯田橋駅"),
+    # Otsuka / Bunkyo branches.
+    ("大塚駅", "新大塚駅", "茗荷谷駅", "後楽園駅", "春日駅", "水道橋駅"),
+    ("巣鴨駅", "千石駅", "白山駅", "春日駅"),
+    # Shinjuku / Harajuku / Aoyama branches.
+    ("新宿西口駅", "新宿駅", "新宿三丁目駅", "北参道駅", "明治神宮前駅", "原宿駅"),
+    ("原宿駅", "明治神宮前駅", "表参道駅", "外苑前駅", "青山一丁目駅", "国立競技場駅", "千駄ケ谷駅"),
+    ("表参道駅", "乃木坂駅", "六本木一丁目駅"),
+    ("四谷三丁目駅", "四ツ谷駅"),
+    ("四谷三丁目駅", "曙橋駅", "市ケ谷駅"),
+    # Chiyoda / Marunouchi-side links.
+    ("御茶ノ水駅", "新御茶ノ水駅", "大手町駅", "二重橋前駅", "日比谷駅", "有楽町駅"),
+    ("秋葉原駅", "末広町駅", "上野広小路駅", "御徒町駅"),
+    # Central government district.
+    ("四ツ谷駅", "麹町駅", "半蔵門駅", "永田町駅"),
+    ("青山一丁目駅", "赤坂見附駅", "永田町駅", "国会議事堂前駅", "溜池山王駅"),
+    ("溜池山王駅", "虎ノ門駅", "霞ケ関駅", "桜田門駅", "日比谷駅"),
+    ("東京駅", "大手町駅", "二重橋前駅", "日比谷駅"),
+    ("新橋駅", "霞ケ関駅", "日比谷駅"),
+    # Roppongi / Azabu / Shiba / Shirokane branches.
+    ("六本木一丁目駅", "神谷町駅", "虎ノ門駅"),
+    ("六本木一丁目駅", "麻布十番駅", "赤羽橋駅", "芝公園駅", "三田駅", "田町駅"),
+    ("麻布十番駅", "白金高輪駅", "白金台駅", "目黒駅"),
+    ("三田駅", "泉岳寺駅", "高輪ゲートウェイ駅", "品川駅"),
+    ("浜松町駅", "大門駅", "芝公園駅"),
+)
+
+PHOTO_LEGACY_NEW_BIG_STATIONS_V307 = {
+    "東京駅", "秋葉原駅", "上野駅", "池袋駅", "新宿駅", "渋谷駅", "大崎駅", "品川駅",
+    "大手町駅", "飯田橋駅", "御茶ノ水駅",
+}
+
+
+def _photo_legacy_seed_assignment_path_v307(family_key=None):
+    family = re.sub(r"[^a-zA-Z0-9_.-]+", "_", str(family_key or current_family_key() or "family").strip() or "family")
+    return f"{PHOTO_LEGACY_SEED_ASSIGNMENT_DIR_V307}/{family}.json"
+
+
+@st.cache_data(ttl=60, max_entries=32, show_spinner=False)
+def _read_photo_legacy_seed_assignment_v307(family_key):
+    path = _photo_legacy_seed_assignment_path_v307(family_key)
+    try:
+        raw = supabase_client().storage.from_(GPS_TRACK_BUCKET).download(path)
+        payload = json.loads(bytes(raw).decode("utf-8"))
+    except Exception:
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    if str(payload.get("profile") or "") != PHOTO_LEGACY_NEW_PROFILE_V307:
+        return {}
+    return payload
+
+
+def _claim_photo_legacy_seed_v307(family_key, member_key):
+    family_key = str(family_key or "").strip()
+    member_key = str(member_key or "").strip()
+    if not family_key or not member_key or member_key == PHOTO_LEGACY_MAIN_MEMBER_V296:
+        return False
+    existing = _read_photo_legacy_seed_assignment_v307(family_key)
+    assigned = str(existing.get("member_key") or "").strip() if isinstance(existing, dict) else ""
+    if assigned:
+        return assigned == member_key
+    payload = {
+        "profile": PHOTO_LEGACY_NEW_PROFILE_V307,
+        "family_key": family_key,
+        "member_key": member_key,
+        "claimed_at_jst": now_jst().isoformat(),
+        "source_images": ["1818.jpg", "1820.jpg"],
+    }
+    blob = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    path = _photo_legacy_seed_assignment_path_v307(family_key)
+    bucket = supabase_client().storage.from_(GPS_TRACK_BUCKET)
+    options = {"content-type": GPS_TRACK_STORAGE_MIME, "cache-control": "60", "upsert": "true"}
+    try:
+        bucket.upload(path=path, file=blob, file_options=options)
+    except Exception:
+        try:
+            bucket.update(path=path, file=blob, file_options={"content-type": GPS_TRACK_STORAGE_MIME, "cache-control": "60"})
+        except Exception:
+            # Keep the current session usable even if the assignment file cannot be saved;
+            # do not let a storage hiccup block the historical map itself.
+            return True
+    try:
+        _read_photo_legacy_seed_assignment_v307.clear()
+    except Exception:
+        pass
+    return True
+
+
+def _photo_legacy_profile_v307():
+    try:
+        family = str(current_family_key() or "").strip()
+        member = str(current_member_key() or "").strip()
+    except Exception:
+        return ""
+    if not member:
+        return ""
+    if member == PHOTO_LEGACY_MAIN_MEMBER_V296:
+        return "legacy_main_v296"
+    if PHOTO_LEGACY_NEW_TARGET_MEMBER_V307:
+        return PHOTO_LEGACY_NEW_PROFILE_V307 if member == PHOTO_LEGACY_NEW_TARGET_MEMBER_V307 else ""
+    cache_key = f"_photo_legacy_profile_v307_{family}_{member}"
+    cached = st.session_state.get(cache_key)
+    if cached in {PHOTO_LEGACY_NEW_PROFILE_V307, "disabled"}:
+        return "" if cached == "disabled" else cached
+    assignment = _read_photo_legacy_seed_assignment_v307(family)
+    assigned = str(assignment.get("member_key") or "").strip() if isinstance(assignment, dict) else ""
+    if assigned:
+        result = PHOTO_LEGACY_NEW_PROFILE_V307 if assigned == member else ""
+        st.session_state[cache_key] = result or "disabled"
+        return result
+    if _claim_photo_legacy_seed_v307(family, member):
+        st.session_state[cache_key] = PHOTO_LEGACY_NEW_PROFILE_V307
+        return PHOTO_LEGACY_NEW_PROFILE_V307
+    st.session_state[cache_key] = "disabled"
+    return ""
+
+
+def _photo_legacy_active_stations_v307():
+    profile = _photo_legacy_profile_v307()
+    if profile == PHOTO_LEGACY_NEW_PROFILE_V307:
+        return PHOTO_LEGACY_NEW_STATIONS_V307
+    if profile == "legacy_main_v296":
+        return PHOTO_LEGACY_STATIONS_V296
+    return {}
+
+
+def _photo_legacy_active_sequences_v307():
+    profile = _photo_legacy_profile_v307()
+    if profile == PHOTO_LEGACY_NEW_PROFILE_V307:
+        return PHOTO_LEGACY_NEW_ROUTE_SEQUENCES_V307
+    if profile == "legacy_main_v296":
+        return PHOTO_LEGACY_ROUTE_SEQUENCES_V296
+    return ()
+
+
+def _photo_legacy_active_big_stations_v307():
+    return PHOTO_LEGACY_NEW_BIG_STATIONS_V307 if _photo_legacy_profile_v307() == PHOTO_LEGACY_NEW_PROFILE_V307 else PHOTO_LEGACY_BIG_STATIONS_V296
+
 
 def _photo_legacy_enabled_v296():
-    try:
-        return str(current_member_key() or "").strip() == PHOTO_LEGACY_MAIN_MEMBER_V296
-    except Exception:
-        return False
+    return bool(_photo_legacy_profile_v307())
 
 
 def _photo_legacy_station_axis_v296(name):
-    """Return a stable unit axis from the photographed route graph, preferring Yamanote."""
+    """Return a stable unit axis from the active photographed route graph."""
     name = str(name or "")
-    sequences = PHOTO_LEGACY_ROUTE_SEQUENCES_V296
+    sequences = _photo_legacy_active_sequences_v307()
+    stations = _photo_legacy_active_stations_v307()
     for seq in sequences:
         indexes = [i for i, item in enumerate(seq) if item == name]
         if not indexes:
             continue
         i = indexes[0]
-        cur = PHOTO_LEGACY_STATIONS_V296.get(name)
+        cur = stations.get(name)
         if cur is None:
             break
         prev_name = seq[i - 1] if i > 0 else None
         next_name = seq[i + 1] if i + 1 < len(seq) else None
-        # The Yamanote sequence repeats Tokyo at both ends; use the circular neighbors.
-        if seq is PHOTO_LEGACY_YAMANOTE_V296:
+        # Any sequence that repeats its first station at the end is circular.
+        if len(seq) >= 3 and seq[0] == seq[-1]:
             unique = seq[:-1]
             try:
                 j = unique.index(name)
@@ -29023,8 +29277,8 @@ def _photo_legacy_station_axis_v296(name):
                 next_name = unique[(j + 1) % len(unique)]
             except ValueError:
                 pass
-        p0 = PHOTO_LEGACY_STATIONS_V296.get(prev_name) if prev_name else None
-        p1 = PHOTO_LEGACY_STATIONS_V296.get(next_name) if next_name else None
+        p0 = stations.get(prev_name) if prev_name else None
+        p1 = stations.get(next_name) if next_name else None
         lat0, lon0 = cur
         coslat = max(0.2, math.cos(math.radians(lat0)))
         if p0 is not None and p1 is not None:
@@ -29066,8 +29320,9 @@ def _photo_legacy_convex_hull_v296(points):
 def _photo_legacy_station_zone_v296(name, lat, lon):
     """Compact rail-aligned capsule used only when no better persisted station zone exists."""
     ux, uy = _photo_legacy_station_axis_v296(name)
-    half_len = PHOTO_LEGACY_BIG_STATION_HALF_LENGTH_M_V296 if name in PHOTO_LEGACY_BIG_STATIONS_V296 else PHOTO_LEGACY_STATION_HALF_LENGTH_M_V296
-    half_w = PHOTO_LEGACY_BIG_STATION_HALF_WIDTH_M_V296 if name in PHOTO_LEGACY_BIG_STATIONS_V296 else PHOTO_LEGACY_STATION_HALF_WIDTH_M_V296
+    big_stations = _photo_legacy_active_big_stations_v307()
+    half_len = PHOTO_LEGACY_BIG_STATION_HALF_LENGTH_M_V296 if name in big_stations else PHOTO_LEGACY_STATION_HALF_LENGTH_M_V296
+    half_w = PHOTO_LEGACY_BIG_STATION_HALF_WIDTH_M_V296 if name in big_stations else PHOTO_LEGACY_STATION_HALF_WIDTH_M_V296
     cloud = []
     for sign in (-1.0, 1.0):
         cx, cy = sign * half_len * ux, sign * half_len * uy
@@ -29087,11 +29342,12 @@ def _photo_legacy_station_zone_v296(name, lat, lon):
 def _photo_legacy_segments_v296():
     if not _photo_legacy_enabled_v296():
         return []
+    stations = _photo_legacy_active_stations_v307()
     out = []
-    for seq in PHOTO_LEGACY_ROUTE_SEQUENCES_V296:
+    for seq in _photo_legacy_active_sequences_v307():
         pts = []
         for name in seq:
-            coord = PHOTO_LEGACY_STATIONS_V296.get(name)
+            coord = stations.get(name)
             if coord is None:
                 continue
             pts.append([round(float(coord[0]), 7), round(float(coord[1]), 7)])
@@ -29709,7 +29965,7 @@ def _photo_legacy_map_points_v296():
         return []
     return [
         {"lat": round(float(lat), 7), "lon": round(float(lon), 7)}
-        for lat, lon in PHOTO_LEGACY_STATIONS_V296.values()
+        for lat, lon in _photo_legacy_active_stations_v307().values()
     ]
 
 
@@ -29721,7 +29977,7 @@ def _merge_photo_legacy_stations_v296(rows):
     by_name = {}
     for row in base_rows:
         by_name.setdefault(_station_name_base_v293(row.get("name")), row)
-    for name, (lat, lon) in PHOTO_LEGACY_STATIONS_V296.items():
+    for name, (lat, lon) in _photo_legacy_active_stations_v307().items():
         base = _station_name_base_v293(name)
         existing = by_name.get(base)
         if existing is not None:
@@ -30226,17 +30482,19 @@ PHOTO_LEGACY_ROUTE_MAX_WAYPOINTS_V306 = 7
 PHOTO_LEGACY_ROUTE_REQUEST_TIMEOUT_V306 = 6.0
 PHOTO_LEGACY_ROUTE_CHUNK_WORKERS_V306 = 3
 PHOTO_LEGACY_ROUTE_PAIR_WORKERS_V306 = 4
-PHOTO_LEGACY_ROUTE_PAIR_FALLBACK_LIMIT_V306 = 12
+PHOTO_LEGACY_ROUTE_PAIR_FALLBACK_LIMIT_V306 = 6
+PHOTO_LEGACY_ROUTE_CHUNK_LIMIT_V307 = 6
 PHOTO_LEGACY_ROUTE_FINAL_ENDPOINT_GAP_M_V306 = 320.0
 
 
 def _photo_legacy_pair_defs_v305():
     rows = []
     seen = set()
-    for seq_idx, seq in enumerate(PHOTO_LEGACY_ROUTE_SEQUENCES_V296):
+    stations = _photo_legacy_active_stations_v307()
+    for seq_idx, seq in enumerate(_photo_legacy_active_sequences_v307()):
         names = [str(v or "") for v in (seq or [])]
         for pair_idx, (a, b) in enumerate(zip(names[:-1], names[1:])):
-            if not PHOTO_LEGACY_STATIONS_V296.get(a) or not PHOTO_LEGACY_STATIONS_V296.get(b):
+            if not stations.get(a) or not stations.get(b):
                 continue
             key = f"{seq_idx}:{pair_idx}:{a}>{b}"
             if key in seen:
@@ -30257,6 +30515,7 @@ def _photo_legacy_default_state_v305():
         "family_key": str(current_family_key() or ""),
         "member_key": str(current_member_key() or ""),
         "source": PHOTO_LEGACY_ROUTE_ENGINE_V306,
+        "seed_profile": _photo_legacy_profile_v307(),
         "complete": False,
         "pairs": {},
     }
@@ -30286,6 +30545,7 @@ def _save_photo_legacy_route_state_v305(state):
     state["family_key"] = str(current_family_key() or "")
     state["member_key"] = str(current_member_key() or "")
     state["source"] = PHOTO_LEGACY_ROUTE_ENGINE_V306
+    state["seed_profile"] = _photo_legacy_profile_v307()
     if not isinstance(state.get("pairs"), dict):
         state["pairs"] = {}
     blob = json.dumps(state, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
@@ -30327,12 +30587,13 @@ def _photo_legacy_path_length_m_v306(points):
 
 
 def _photo_legacy_route_request_names_v306(names):
-    clean_names = [str(name or "") for name in (names or []) if PHOTO_LEGACY_STATIONS_V296.get(name) is not None]
+    stations = _photo_legacy_active_stations_v307()
+    clean_names = [str(name or "") for name in (names or []) if stations.get(name) is not None]
     if len(clean_names) < 2:
         return {"ok": False, "points": [], "waypoints": [], "error": "not_enough_waypoints"}
     coords = []
     for name in clean_names:
-        lat, lon = PHOTO_LEGACY_STATIONS_V296[name]
+        lat, lon = stations[name]
         coords.append((float(lat), float(lon)))
     coord_text = ";".join(f"{lon:.6f},{lat:.6f}" for lat, lon in coords)
     params = urlencode({
@@ -30405,8 +30666,9 @@ def _photo_legacy_route_request_names_v306(names):
 def _photo_legacy_chunk_defs_v306():
     pair_by_pos = {(row["seq_idx"], row["pair_idx"]): row for row in _photo_legacy_pair_defs_v305()}
     chunks = []
-    for seq_idx, seq in enumerate(PHOTO_LEGACY_ROUTE_SEQUENCES_V296):
-        names = [str(name or "") for name in (seq or []) if PHOTO_LEGACY_STATIONS_V296.get(name) is not None]
+    stations = _photo_legacy_active_stations_v307()
+    for seq_idx, seq in enumerate(_photo_legacy_active_sequences_v307()):
+        names = [str(name or "") for name in (seq or []) if stations.get(name) is not None]
         if len(names) < 2:
             continue
         start = 0
@@ -30460,7 +30722,7 @@ def _photo_legacy_split_chunk_v306(chunk, routed):
         return {}
     targets = list((routed or {}).get("waypoints") or [])
     if len(targets) != len(names):
-        targets = [PHOTO_LEGACY_STATIONS_V296.get(name) for name in names]
+        targets = [_photo_legacy_active_stations_v307().get(name) for name in names]
     indices = []
     cursor = 0
     for i, target in enumerate(targets):
@@ -30620,6 +30882,9 @@ def _photo_legacy_prepare_routes_v305():
             chunk for chunk in _photo_legacy_chunk_defs_v306()
             if any(pair_def["key"] in pending_keys for pair_def in chunk.get("pairs") or [])
         ]
+        # v307: the second photographed map has many more links. Process only a fixed
+        # number of multi-stop chunks per page load; the Continue button advances the rest.
+        chunks = chunks[:max(1, int(PHOTO_LEGACY_ROUTE_CHUNK_LIMIT_V307))]
 
         chunk_results = []
         if chunks:
@@ -30742,13 +31007,16 @@ def page_burari_project():
         unsafe_allow_html=True,
     )
     page_top("✨ ぶらり旅プロジェクト", "")
+    # Resolve the one-time wall-map profile before the no-GPS guard. This lets a new
+    # account receive its historical seed even when it has not recorded live GPS yet.
+    photo_seed_enabled = _photo_legacy_enabled_v296()
     points = _load_all_project_track_points_v271()
-    if not points:
+    if not points and not photo_seed_enabled:
         st.info("まだ歩行データがありません。位置情報を許可した状態で、ぶらり旅を開いて歩くと自動的に記録が始まります。")
         return
-    segments = _project_walk_segments_v271(points)
-    walk_points = _project_walk_points_v271(segments)
-    walk_m = _project_walk_distance_m_v271(segments)
+    segments = _project_walk_segments_v271(points) if points else []
+    walk_points = _project_walk_points_v271(segments) if segments else []
+    walk_m = _project_walk_distance_m_v271(segments) if segments else 0.0
     st.markdown(
         f"""
         <div class="burari-project-summary-v297">
@@ -30759,20 +31027,23 @@ def page_burari_project():
         """,
         unsafe_allow_html=True,
     )
-    map_points = walk_points or points[-1:]
+    map_points = walk_points or (points[-1:] if points else [])
 
-    station_status = st.empty()
-    station_status.info("新しい歩行データから到着駅を確認しています。地図は確認完了後に表示します。")
-    stations, station_meta = _project_station_preflight_v293(points, map_points)
-    station_status.empty()
+    if points:
+        station_status = st.empty()
+        station_status.info("新しい歩行データから到着駅を確認しています。地図は確認完了後に表示します。")
+        stations, station_meta = _project_station_preflight_v293(points, map_points)
+        station_status.empty()
+    else:
+        stations, station_meta = [], {"mode": "photo_seed_only"}
 
     display_points = list(map_points or []) + _photo_legacy_map_points_v296()
     stations = _merge_photo_legacy_stations_v296(stations)
 
     photo_segments = []
-    if _photo_legacy_enabled_v296():
+    if photo_seed_enabled:
         route_status = st.empty()
-        route_status.info("初回のみ、過去ルートを歩行者用の道路に合わせています。通信が不調でも処理を際限なく繰り返さない方式に変更しています。")
+        route_status.info("初回のみ、写真から読み取った過去ルートを歩行者用の道路に合わせています。1回の処理量を制限し、長時間の自動ループは行いません。")
         photo_segments, photo_route_meta = _photo_legacy_prepare_routes_v305()
         route_done = int(photo_route_meta.get("done") or 0)
         route_total = int(photo_route_meta.get("total") or 0)
@@ -30782,14 +31053,14 @@ def page_burari_project():
             route_status.warning(
                 f"過去ルート：{route_done} / {route_total} 区間を道路に合わせて保存しました。未取得は {route_failed} 区間です。地図は取得済み区間をそのまま表示します。"
             )
-            if st.button("未取得の過去ルートだけ再試行", use_container_width=True, key="retry_photo_route_v306"):
+            if st.button("未取得の過去ルートだけ再試行", use_container_width=True, key="retry_photo_route_v307"):
                 _photo_legacy_reset_failed_v306()
                 st.rerun()
         elif route_pending > 0:
             route_status.info(
                 f"過去ルート：{route_done} / {route_total} 区間を保存しました。残り {route_pending} 区間は必要なときだけ続けて補完できます。"
             )
-            if st.button("残りの過去ルートを続けて補完", use_container_width=True, key="continue_photo_route_v306"):
+            if st.button("残りの過去ルートを続けて補完", use_container_width=True, key="continue_photo_route_v307"):
                 st.rerun()
         else:
             route_status.empty()
