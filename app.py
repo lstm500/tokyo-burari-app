@@ -32,7 +32,7 @@ import streamlit as st
 # Freshly generated update: 2026-08-31 23:49 JST
 GENERATED_UPDATE_JST = "2026-09-08T18:48:00+09:00"
 
-APP_BUILD = "v315"
+APP_BUILD = "v316"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -30607,7 +30607,7 @@ html,body{{margin:0;padding:0;background:#0b1012;font-family:-apple-system,Blink
    L.polyline(seg,{{color:'#9dffb6',weight:2.8,opacity:.82,lineCap:'round',lineJoin:'round',interactive:false}}).addTo(map);
  }});
 
- // Photo-restored historical route is rendered in red while this validation pass is active.
+ // Photo-restored historical route is rendered with the original glowing green style.
  (data.photo_segments||[]).forEach((seg)=>{{
    if(!Array.isArray(seg)||seg.length<2)return;
    L.polyline(seg,{{color:'#ff3b2f',weight:14,opacity:.060,lineCap:'round',lineJoin:'round',interactive:false}}).addTo(map);
