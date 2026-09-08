@@ -961,6 +961,17 @@ STATION_SCAN_CELL_DEGREES = 0.0045
 STATION_PREFLIGHT_DISCOVERY_PAD_M = 1050.0
 STATION_PREFLIGHT_INFER_CENTER_RADIUS_M = 430.0
 
+# v299: one-off road correction only for photo-derived historical routes.  A lightweight
+# foot-route inference keeps the glowing path on streets instead of drawing long
+# straight chords between sparse GPS or historical seed points.  Results are cached
+# per chunk so reopening the map is usually fast after the first inference.
+PROJECT_ROUTE_SNAP_READ_TTL_SECONDS_V299 = 86400 * 30
+PROJECT_ROUTE_SNAP_MIN_ANCHOR_SPACING_M_V299 = 26.0
+PROJECT_ROUTE_SNAP_MAX_ANCHORS_V299 = 44
+PROJECT_ROUTE_SNAP_MAX_CHUNK_POINTS_V299 = 10
+PROJECT_ROUTE_SNAP_MIN_SEGMENT_M_V299 = 18.0
+PROJECT_ROUTE_SNAP_JOIN_TOLERANCE_M_V299 = 18.0
+PROJECT_ROUTE_SNAP_MAX_WORKERS_V299 = 3
 
 
 # ============================================================
@@ -29265,10 +29276,255 @@ def _project_station_preflight_v293(raw_points, map_points):
     }
 
 
+
+
+def _project_clean_segment_v298(segment):
+    cleaned = []
+    prev = None
+    for pair in segment or []:
+        if not isinstance(pair, (list, tuple)) or len(pair) < 2:
+            continue
+        try:
+            lat = round(float(pair[0]), 7); lon = round(float(pair[1]), 7)
+        except Exception:
+            continue
+        if not (math.isfinite(lat) and math.isfinite(lon)):
+            continue
+        if prev is not None:
+            try:
+                if _nearby_haversine_m(prev[0], prev[1], lat, lon) < 1.2:
+                    continue
+            except Exception:
+                pass
+        cleaned.append([lat, lon])
+        prev = [lat, lon]
+    return cleaned
+
+
+def _project_segment_total_m_v298(segment):
+    total = 0.0
+    prev = None
+    for pair in _project_clean_segment_v298(segment):
+        if prev is not None:
+            try:
+                total += _nearby_haversine_m(prev[0], prev[1], pair[0], pair[1])
+            except Exception:
+                pass
+        prev = pair
+    return total
+
+
+def _project_route_anchor_points_v298(segment):
+    pts = _project_clean_segment_v298(segment)
+    if len(pts) <= 2:
+        return pts
+    out = [pts[0]]
+    last = pts[0]
+    for idx, point in enumerate(pts[1:-1], start=1):
+        keep = False
+        try:
+            if _nearby_haversine_m(last[0], last[1], point[0], point[1]) >= float(PROJECT_ROUTE_SNAP_MIN_ANCHOR_SPACING_M_V299):
+                keep = True
+        except Exception:
+            keep = True
+        if not keep and len(out) >= 1 and idx + 1 < len(pts):
+            prev = out[-1]
+            nxt = pts[idx + 1]
+            try:
+                ax = point[1] - prev[1]; ay = point[0] - prev[0]
+                bx = nxt[1] - point[1]; by = nxt[0] - point[0]
+                na = math.hypot(ax, ay); nb = math.hypot(bx, by)
+                if na > 1e-12 and nb > 1e-12:
+                    cosine = max(-1.0, min(1.0, (ax * bx + ay * by) / (na * nb)))
+                    turn_deg = math.degrees(math.acos(cosine))
+                    if turn_deg >= 18.0:
+                        keep = True
+            except Exception:
+                pass
+        if keep:
+            out.append(point)
+            last = point
+    if _nearby_haversine_m(out[-1][0], out[-1][1], pts[-1][0], pts[-1][1]) >= 1.2:
+        out.append(pts[-1])
+    else:
+        out[-1] = pts[-1]
+    if len(out) <= int(PROJECT_ROUTE_SNAP_MAX_ANCHORS_V299):
+        return out
+    keep_indices = {0, len(out) - 1}
+    step = (len(out) - 1) / float(PROJECT_ROUTE_SNAP_MAX_ANCHORS_V299 - 1)
+    for i in range(1, PROJECT_ROUTE_SNAP_MAX_ANCHORS_V299 - 1):
+        keep_indices.add(int(round(i * step)))
+    return [out[i] for i in sorted(i for i in keep_indices if 0 <= i < len(out))]
+
+
+def _project_route_chunk_key_v298(points):
+    clean = _project_clean_segment_v298(points)
+    return ';'.join(f"{p[0]:.6f},{p[1]:.6f}" for p in clean)
+
+
+@st.cache_data(ttl=PROJECT_ROUTE_SNAP_READ_TTL_SECONDS_V299, max_entries=2048, show_spinner=False)
+def _project_osrm_route_chunk_v298(chunk_key):
+    if not isinstance(chunk_key, str) or ';' not in chunk_key:
+        return []
+    raw_points = []
+    for token in chunk_key.split(';'):
+        token = token.strip()
+        if not token or ',' not in token:
+            continue
+        lat_s, lon_s = token.split(',', 1)
+        try:
+            lat = float(lat_s); lon = float(lon_s)
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(lat) and math.isfinite(lon):
+            raw_points.append([round(lat, 6), round(lon, 6)])
+    if len(raw_points) < 2:
+        return []
+    coords = ';'.join(f"{lon:.6f},{lat:.6f}" for lat, lon in raw_points)
+    url = f"https://router.project-osrm.org/route/v1/foot/{coords}"
+    params = {
+        'overview': 'full',
+        'geometries': 'geojson',
+        'steps': 'false',
+        'continue_straight': 'true',
+    }
+    headers = {'User-Agent': 'TokyoBurariRoadSnapV298/1.0'}
+    try:
+        response = requests.get(url, params=params, headers=headers, timeout=7.0)
+        response.raise_for_status()
+        payload = response.json()
+    except Exception:
+        return []
+    routes = payload.get('routes') if isinstance(payload, dict) else None
+    if not isinstance(routes, list) or not routes:
+        return []
+    geometry = routes[0].get('geometry') if isinstance(routes[0], dict) else None
+    coords_out = geometry.get('coordinates') if isinstance(geometry, dict) else None
+    snapped = []
+    prev = None
+    for raw in coords_out or []:
+        if not isinstance(raw, (list, tuple)) or len(raw) < 2:
+            continue
+        try:
+            lon = float(raw[0]); lat = float(raw[1])
+        except (TypeError, ValueError):
+            continue
+        if not (math.isfinite(lat) and math.isfinite(lon)):
+            continue
+        point = [round(lat, 7), round(lon, 7)]
+        if prev is not None:
+            try:
+                if _nearby_haversine_m(prev[0], prev[1], point[0], point[1]) < 0.7:
+                    continue
+            except Exception:
+                pass
+        snapped.append(point)
+        prev = point
+    return snapped
+
+
+def _project_chunk_points_v298(points, max_points=10):
+    clean = _project_clean_segment_v298(points)
+    if len(clean) < 2:
+        return []
+    limit = max(2, int(max_points or 2))
+    if len(clean) <= limit:
+        return [clean]
+    chunks = []
+    start = 0
+    while start < len(clean) - 1:
+        end = min(len(clean), start + limit)
+        chunk = clean[start:end]
+        if len(chunk) >= 2:
+            chunks.append(chunk)
+        if end >= len(clean):
+            break
+        start = end - 1
+    return chunks
+
+
+def _project_join_paths_v298(paths):
+    joined = []
+    prev = None
+    for path in paths or []:
+        clean = _project_clean_segment_v298(path)
+        if len(clean) < 2:
+            continue
+        if joined and clean:
+            try:
+                gap = _nearby_haversine_m(joined[-1][0], joined[-1][1], clean[0][0], clean[0][1])
+            except Exception:
+                gap = float('inf')
+            if gap <= float(PROJECT_ROUTE_SNAP_JOIN_TOLERANCE_M_V299):
+                clean = clean[1:]
+        for point in clean:
+            if prev is not None:
+                try:
+                    if _nearby_haversine_m(prev[0], prev[1], point[0], point[1]) < 0.7:
+                        continue
+                except Exception:
+                    pass
+            joined.append(point)
+            prev = point
+    return joined
+
+
+def _project_snap_segment_to_roads_v298(segment):
+    clean = _project_clean_segment_v298(segment)
+    if len(clean) < 2:
+        return clean
+    if _project_segment_total_m_v298(clean) < float(PROJECT_ROUTE_SNAP_MIN_SEGMENT_M_V299):
+        return clean
+    anchors = _project_route_anchor_points_v298(clean)
+    if len(anchors) < 2:
+        return clean
+    snapped_paths = []
+    success_count = 0
+    for chunk in _project_chunk_points_v298(anchors, PROJECT_ROUTE_SNAP_MAX_CHUNK_POINTS_V299):
+        key = _project_route_chunk_key_v298(chunk)
+        snapped = _project_osrm_route_chunk_v298(key)
+        if len(snapped) >= 2:
+            snapped_paths.append(snapped)
+            success_count += 1
+        else:
+            snapped_paths.append(chunk)
+    joined = _project_join_paths_v298(snapped_paths)
+    if len(joined) < 2:
+        return clean
+    try:
+        start_gap = _nearby_haversine_m(joined[0][0], joined[0][1], clean[0][0], clean[0][1])
+        end_gap = _nearby_haversine_m(joined[-1][0], joined[-1][1], clean[-1][0], clean[-1][1])
+    except Exception:
+        start_gap = end_gap = 0.0
+    if success_count <= 0 or start_gap > 120.0 or end_gap > 120.0:
+        return clean
+    return joined
+
+
+def _project_snap_display_segments_v298(segments):
+    rows = [list(seg) for seg in (segments or []) if isinstance(seg, list) and len(seg) >= 2]
+    if not rows:
+        return []
+    worker_count = max(1, min(int(PROJECT_ROUTE_SNAP_MAX_WORKERS_V299), len(rows)))
+    if worker_count == 1:
+        return [_project_snap_segment_to_roads_v298(seg) for seg in rows]
+    indexed = list(enumerate(rows))
+    out = [None] * len(indexed)
+    with ThreadPoolExecutor(max_workers=worker_count) as executor:
+        future_map = {executor.submit(_project_snap_segment_to_roads_v298, seg): idx for idx, seg in indexed}
+        for future, idx in [(f, future_map[f]) for f in future_map]:
+            try:
+                out[idx] = future.result()
+            except Exception:
+                out[idx] = rows[idx]
+    return [seg for seg in out if isinstance(seg, list) and len(seg) >= 2]
+
+
 def _render_burari_project_map_v295(points, segments, stations):
     """Render a deliberately minimal project map.
 
-    v295 keeps station discovery/persistence from v293 and the minimal map UI from v294.
+    v299 keeps the minimal map UI from v295. Only the photo-derived historical seed
+    is road-snapped; ordinary GPS walking segments are rendered unchanged.
     Reached-station glow is narrowed to the former Osaki diagnostic footprint style so it
     stays compact when zoomed out. Osaki now renders exactly like every other reached station.
     """
@@ -29335,7 +29591,7 @@ html,body{{margin:0;padding:0;background:#0b1012;font-family:-apple-system,Blink
     st.components.v1.html(map_html, height=500, scrolling=False)
 
 def page_burari_project():
-    # v297: keep the project page compact on phones.  Native Streamlit metrics stack
+    # v299: keep the project page compact on phones.  Native Streamlit metrics stack
     # vertically on narrow screens, so use one fixed three-cell summary row instead.
     st.markdown(
         """
@@ -29398,9 +29654,19 @@ def page_burari_project():
     # The station/route seed is fixed numeric geometry, so this adds no image analysis or
     # network work when the map is reopened.
     legacy_segments = _photo_legacy_segments_v296()
-    display_segments = list(segments or []) + list(legacy_segments or [])
     display_points = list(map_points or []) + _photo_legacy_map_points_v296()
     stations = _merge_photo_legacy_stations_v296(stations)
+
+    # v299: road snapping is a one-off correction ONLY for the historical routes
+    # reconstructed from the user's wall-map photos.  Normal/future GPS walks keep
+    # their recorded geometry exactly as before; they are never routed or re-inferred.
+    snapped_legacy_segments = []
+    if legacy_segments:
+        route_status = st.empty()
+        route_status.info("過去写真から復元したルートだけ、実際の道路に沿う形へ整えています。")
+        snapped_legacy_segments = _project_snap_display_segments_v298(legacy_segments)
+        route_status.empty()
+    display_segments = list(segments or []) + list(snapped_legacy_segments or legacy_segments or [])
 
     _render_burari_project_map_v295(display_points, display_segments, stations)
 
