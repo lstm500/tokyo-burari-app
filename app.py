@@ -32,7 +32,7 @@ import streamlit as st
 # Freshly generated update: 2026-08-31 23:49 JST
 GENERATED_UPDATE_JST = "2026-09-08T08:12:00+09:00"
 
-APP_BUILD = "v294"
+APP_BUILD = "v295"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -29020,12 +29020,12 @@ def _project_station_preflight_v293(raw_points, map_points):
     }
 
 
-def _render_burari_project_map_v294(points, segments, stations):
+def _render_burari_project_map_v295(points, segments, stations):
     """Render a deliberately minimal project map.
 
-    v294 keeps station discovery/persistence from v293, but removes station names,
-    comments, badges and diamond markers from the map.  Only walked-route glow,
-    reached-station area glow, and the temporary red Osaki diagnostic outline remain.
+    v295 keeps station discovery/persistence from v293 and the minimal map UI from v294.
+    Reached-station glow is narrowed to the former Osaki diagnostic footprint style so it
+    stays compact when zoomed out. Osaki now renders exactly like every other reached station.
     """
     if not points:
         return
@@ -29070,26 +29070,18 @@ html,body{{margin:0;padding:0;background:#0b1012;font-family:-apple-system,Blink
  const drawArrivedStation=(s)=>{{
    const zone=(Array.isArray(s.arrival_zone)?s.arrival_zone:[]).filter((p)=>Array.isArray(p)&&p.length>=2);
    if(zone.length<3)return;
-   L.polygon(zone,{{color:'#16ff58',weight:34,opacity:.11,fillColor:'#16ff58',fillOpacity:.10,interactive:false,lineJoin:'round'}}).addTo(map);
-   L.polygon(zone,{{color:'#43ff78',weight:18,opacity:.38,fillColor:'#2aff67',fillOpacity:.24,interactive:false,lineJoin:'round'}}).addTo(map);
-   L.polygon(zone,{{color:'#e5ffe9',weight:5.8,opacity:1.0,fillColor:'#68ff91',fillOpacity:.42,interactive:false,lineJoin:'round'}}).addTo(map);
+   L.polygon(zone,{{color:'#16ff58',weight:18,opacity:.10,fillColor:'#16ff58',fillOpacity:.055,interactive:false,lineJoin:'round'}}).addTo(map);
+   L.polygon(zone,{{color:'#43ff78',weight:8,opacity:.50,fillColor:'#2aff67',fillOpacity:.13,interactive:false,lineJoin:'round'}}).addTo(map);
+   L.polygon(zone,{{color:'#e5ffe9',weight:3.0,opacity:.99,fillColor:'#68ff91',fillOpacity:.24,interactive:false,lineJoin:'round'}}).addTo(map);
  }};
 
- // Osaki stays red while its station boundary is being tuned.  No text or marker is shown.
- const drawOsakiDebug=(s)=>{{
-   const zone=(Array.isArray(s.arrival_zone)?s.arrival_zone:[]).filter((p)=>Array.isArray(p)&&p.length>=2);
-   if(zone.length<3)return;
-   L.polygon(zone,{{color:'#ff2020',weight:18,opacity:.10,fillColor:'#ff3030',fillOpacity:.018,interactive:false,lineJoin:'round'}}).addTo(map);
-   L.polygon(zone,{{color:'#ff3b3b',weight:8,opacity:.50,fillColor:'#ff3030',fillOpacity:.030,interactive:false,lineJoin:'round'}}).addTo(map);
-   L.polygon(zone,{{color:'#ffd3d3',weight:3.0,opacity:.99,fillColor:'#ff3030',fillOpacity:.018,interactive:false,lineJoin:'round'}}).addTo(map);
- }};
+ // All reached stations, including Osaki, use the same compact green glow.
 
  const renderedStationKeys=new Set();
  const stationKey=(name,lat,lon)=>`${{String(name||'駅').replace(/\\s+/g,'')}}:${{lat.toFixed(4)}}:${{lon.toFixed(4)}}`;
  (data.stations||[]).forEach((s)=>{{
    const lat=Number(s.lat),lon=Number(s.lon); if(!Number.isFinite(lat)||!Number.isFinite(lon))return;
    const key=stationKey(String(s.name||'駅'),lat,lon); if(renderedStationKeys.has(key))return; renderedStationKeys.add(key);
-   if(Boolean(s.debug_osaki)){{drawOsakiDebug(s);return;}}
    if(Boolean(s.arrived))drawArrivedStation(s);
  }});
  setTimeout(()=>map.invalidateSize(),120);
@@ -29130,7 +29122,7 @@ def page_burari_project():
     stations, station_meta = _project_station_preflight_v293(points, map_points)
     station_status.empty()
 
-    _render_burari_project_map_v294(map_points, segments, stations)
+    _render_burari_project_map_v295(map_points, segments, stations)
 
 
 # ============================================================
