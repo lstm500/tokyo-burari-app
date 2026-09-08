@@ -32,7 +32,7 @@ import streamlit as st
 # Freshly generated update: 2026-08-31 23:49 JST
 GENERATED_UPDATE_JST = "2026-09-08T08:12:00+09:00"
 
-APP_BUILD = "v295"
+APP_BUILD = "v297"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -28898,6 +28898,240 @@ def _station_row_from_footprint_v293(station, footprint, map_points, debug_osaki
     }
 
 
+
+# ============================================================
+# v296: one-time historical wall-map seed for the main account
+# ============================================================
+# The Android GPS database only knows trips recorded after native tracking was installed.
+# The user's earlier wall map contains older completed walks.  For member "main" only,
+# preserve those photo-derived walks as fixed numeric geometry so they are cheap and stable
+# on every subsequent render.  The photo supports two unambiguous continuous corridors:
+#   1) the full Yamanote loop, and
+#   2) the Nakano -> Akihabara Chuo/Sobu corridor.
+# These are intentionally numerical/static after this import; no image analysis is repeated.
+PHOTO_LEGACY_MAIN_MEMBER_V296 = "main"
+PHOTO_LEGACY_STATION_HALF_LENGTH_M_V296 = 62.0
+PHOTO_LEGACY_STATION_HALF_WIDTH_M_V296 = 27.0
+PHOTO_LEGACY_BIG_STATION_HALF_LENGTH_M_V296 = 92.0
+PHOTO_LEGACY_BIG_STATION_HALF_WIDTH_M_V296 = 38.0
+
+PHOTO_LEGACY_STATIONS_V296 = {
+    # Yamanote loop
+    "東京駅": (35.681236, 139.767125),
+    "神田駅": (35.691690, 139.770883),
+    "秋葉原駅": (35.698353, 139.773114),
+    "御徒町駅": (35.707438, 139.774632),
+    "上野駅": (35.713768, 139.777254),
+    "鶯谷駅": (35.721457, 139.778048),
+    "日暮里駅": (35.727772, 139.770987),
+    "西日暮里駅": (35.732135, 139.766787),
+    "田端駅": (35.738062, 139.760860),
+    "駒込駅": (35.736489, 139.746875),
+    "巣鴨駅": (35.733492, 139.739345),
+    "大塚駅": (35.731401, 139.728662),
+    "池袋駅": (35.729503, 139.710900),
+    "目白駅": (35.721204, 139.706587),
+    "高田馬場駅": (35.712677, 139.703715),
+    "新大久保駅": (35.701306, 139.700044),
+    "新宿駅": (35.690921, 139.700258),
+    "代々木駅": (35.683061, 139.702042),
+    "原宿駅": (35.670168, 139.702687),
+    "渋谷駅": (35.658034, 139.701636),
+    "恵比寿駅": (35.646690, 139.710106),
+    "目黒駅": (35.633998, 139.715828),
+    "五反田駅": (35.626446, 139.723444),
+    "大崎駅": (35.619700, 139.728553),
+    "品川駅": (35.628471, 139.738760),
+    "高輪ゲートウェイ駅": (35.635472, 139.740689),
+    "田町駅": (35.645736, 139.747575),
+    "浜松町駅": (35.655646, 139.756749),
+    "新橋駅": (35.666195, 139.758587),
+    "有楽町駅": (35.675069, 139.763328),
+    # Chuo/Sobu corridor visible on the historical wall map
+    "中野駅": (35.705765, 139.665835),
+    "東中野駅": (35.706032, 139.685616),
+    "大久保駅": (35.700784, 139.697239),
+    "千駄ケ谷駅": (35.681195, 139.711103),
+    "信濃町駅": (35.680030, 139.720365),
+    "四ツ谷駅": (35.686014, 139.730667),
+    "市ケ谷駅": (35.691013, 139.735557),
+    "飯田橋駅": (35.702065, 139.745015),
+    "水道橋駅": (35.702073, 139.753670),
+    "御茶ノ水駅": (35.699352, 139.765269),
+}
+
+PHOTO_LEGACY_YAMANOTE_V296 = (
+    "東京駅", "神田駅", "秋葉原駅", "御徒町駅", "上野駅", "鶯谷駅", "日暮里駅",
+    "西日暮里駅", "田端駅", "駒込駅", "巣鴨駅", "大塚駅", "池袋駅", "目白駅",
+    "高田馬場駅", "新大久保駅", "新宿駅", "代々木駅", "原宿駅", "渋谷駅", "恵比寿駅",
+    "目黒駅", "五反田駅", "大崎駅", "品川駅", "高輪ゲートウェイ駅", "田町駅",
+    "浜松町駅", "新橋駅", "有楽町駅", "東京駅",
+)
+PHOTO_LEGACY_CHUO_SOBU_V296 = (
+    "中野駅", "東中野駅", "大久保駅", "新宿駅", "代々木駅", "千駄ケ谷駅", "信濃町駅",
+    "四ツ谷駅", "市ケ谷駅", "飯田橋駅", "水道橋駅", "御茶ノ水駅", "秋葉原駅",
+)
+PHOTO_LEGACY_ROUTE_SEQUENCES_V296 = (PHOTO_LEGACY_YAMANOTE_V296, PHOTO_LEGACY_CHUO_SOBU_V296)
+PHOTO_LEGACY_BIG_STATIONS_V296 = {
+    "東京駅", "秋葉原駅", "上野駅", "池袋駅", "新宿駅", "渋谷駅", "大崎駅", "品川駅",
+}
+
+
+def _photo_legacy_enabled_v296():
+    try:
+        return str(current_member_key() or "").strip() == PHOTO_LEGACY_MAIN_MEMBER_V296
+    except Exception:
+        return False
+
+
+def _photo_legacy_station_axis_v296(name):
+    """Return a stable unit axis from the photographed route graph, preferring Yamanote."""
+    name = str(name or "")
+    sequences = PHOTO_LEGACY_ROUTE_SEQUENCES_V296
+    for seq in sequences:
+        indexes = [i for i, item in enumerate(seq) if item == name]
+        if not indexes:
+            continue
+        i = indexes[0]
+        cur = PHOTO_LEGACY_STATIONS_V296.get(name)
+        if cur is None:
+            break
+        prev_name = seq[i - 1] if i > 0 else None
+        next_name = seq[i + 1] if i + 1 < len(seq) else None
+        # The Yamanote sequence repeats Tokyo at both ends; use the circular neighbors.
+        if seq is PHOTO_LEGACY_YAMANOTE_V296:
+            unique = seq[:-1]
+            try:
+                j = unique.index(name)
+                prev_name = unique[(j - 1) % len(unique)]
+                next_name = unique[(j + 1) % len(unique)]
+            except ValueError:
+                pass
+        p0 = PHOTO_LEGACY_STATIONS_V296.get(prev_name) if prev_name else None
+        p1 = PHOTO_LEGACY_STATIONS_V296.get(next_name) if next_name else None
+        lat0, lon0 = cur
+        coslat = max(0.2, math.cos(math.radians(lat0)))
+        if p0 is not None and p1 is not None:
+            dx = (float(p1[1]) - float(p0[1])) * 111320.0 * coslat
+            dy = (float(p1[0]) - float(p0[0])) * 111320.0
+        elif p1 is not None:
+            dx = (float(p1[1]) - lon0) * 111320.0 * coslat
+            dy = (float(p1[0]) - lat0) * 111320.0
+        elif p0 is not None:
+            dx = (lon0 - float(p0[1])) * 111320.0 * coslat
+            dy = (lat0 - float(p0[0])) * 111320.0
+        else:
+            dx, dy = 0.0, 1.0
+        norm = math.hypot(dx, dy)
+        if norm > 1e-6:
+            return dx / norm, dy / norm
+    return 0.0, 1.0
+
+
+def _photo_legacy_convex_hull_v296(points):
+    pts = sorted(set((round(float(x), 6), round(float(y), 6)) for x, y in (points or [])))
+    if len(pts) <= 1:
+        return pts
+    def cross(o, a, b):
+        return (a[0]-o[0])*(b[1]-o[1]) - (a[1]-o[1])*(b[0]-o[0])
+    lower = []
+    for p in pts:
+        while len(lower) >= 2 and cross(lower[-2], lower[-1], p) <= 0:
+            lower.pop()
+        lower.append(p)
+    upper = []
+    for p in reversed(pts):
+        while len(upper) >= 2 and cross(upper[-2], upper[-1], p) <= 0:
+            upper.pop()
+        upper.append(p)
+    return lower[:-1] + upper[:-1]
+
+
+def _photo_legacy_station_zone_v296(name, lat, lon):
+    """Compact rail-aligned capsule used only when no better persisted station zone exists."""
+    ux, uy = _photo_legacy_station_axis_v296(name)
+    half_len = PHOTO_LEGACY_BIG_STATION_HALF_LENGTH_M_V296 if name in PHOTO_LEGACY_BIG_STATIONS_V296 else PHOTO_LEGACY_STATION_HALF_LENGTH_M_V296
+    half_w = PHOTO_LEGACY_BIG_STATION_HALF_WIDTH_M_V296 if name in PHOTO_LEGACY_BIG_STATIONS_V296 else PHOTO_LEGACY_STATION_HALF_WIDTH_M_V296
+    cloud = []
+    for sign in (-1.0, 1.0):
+        cx, cy = sign * half_len * ux, sign * half_len * uy
+        for i in range(18):
+            a = 2.0 * math.pi * i / 18.0
+            cloud.append((cx + half_w * math.cos(a), cy + half_w * math.sin(a)))
+    hull = _photo_legacy_convex_hull_v296(cloud)
+    coslat = max(0.2, math.cos(math.radians(float(lat))))
+    out = []
+    for x, y in hull:
+        p_lat = float(lat) + y / 111320.0
+        p_lon = float(lon) + x / (111320.0 * coslat)
+        out.append([round(p_lat, 7), round(p_lon, 7)])
+    return out
+
+
+def _photo_legacy_segments_v296():
+    if not _photo_legacy_enabled_v296():
+        return []
+    out = []
+    for seq in PHOTO_LEGACY_ROUTE_SEQUENCES_V296:
+        pts = []
+        for name in seq:
+            coord = PHOTO_LEGACY_STATIONS_V296.get(name)
+            if coord is None:
+                continue
+            pts.append([round(float(coord[0]), 7), round(float(coord[1]), 7)])
+        if len(pts) >= 2:
+            out.append(pts)
+    return out
+
+
+def _photo_legacy_map_points_v296():
+    if not _photo_legacy_enabled_v296():
+        return []
+    return [
+        {"lat": round(float(lat), 7), "lon": round(float(lon), 7)}
+        for lat, lon in PHOTO_LEGACY_STATIONS_V296.values()
+    ]
+
+
+def _merge_photo_legacy_stations_v296(rows):
+    """Mark the photographed historical stations reached without re-running image inference."""
+    base_rows = [dict(r) for r in (rows or []) if isinstance(r, dict)]
+    if not _photo_legacy_enabled_v296():
+        return _merge_station_rows_v293(base_rows)
+    by_name = {}
+    for row in base_rows:
+        by_name.setdefault(_station_name_base_v293(row.get("name")), row)
+    for name, (lat, lon) in PHOTO_LEGACY_STATIONS_V296.items():
+        base = _station_name_base_v293(name)
+        existing = by_name.get(base)
+        if existing is not None:
+            existing["arrived"] = True
+            existing["visited"] = True
+            if len(existing.get("arrival_zone") or []) < 3:
+                existing["arrival_zone"] = _photo_legacy_station_zone_v296(name, lat, lon)
+                existing["footprint_source"] = "historical_wall_photo_numeric_seed"
+                existing["method"] = "historical_wall_photo_station_capsule_v296"
+                existing["zone_cache_status"] = "static_numeric_seed"
+            continue
+        row = {
+            "name": name,
+            "lat": round(float(lat), 7),
+            "lon": round(float(lon), 7),
+            "visited": True,
+            "arrived": True,
+            "distance_m": 0.0,
+            "arrival_zone": _photo_legacy_station_zone_v296(name, lat, lon),
+            "physical_shapes": [],
+            "footprint_source": "historical_wall_photo_numeric_seed",
+            "method": "historical_wall_photo_station_capsule_v296",
+            "zone_cache_status": "static_numeric_seed",
+            "zone_cache_key": _station_row_key_v293(name, lat, lon),
+            "debug_osaki": False,
+        }
+        base_rows.append(row)
+        by_name[base] = row
+    return _merge_station_rows_v293(base_rows)
+
 def _project_station_preflight_v293(raw_points, map_points):
     """Resolve only new station work before Leaflet is mounted, then persist the result."""
     family = current_family_key(); member = current_member_key()
@@ -28920,7 +29154,18 @@ def _project_station_preflight_v293(raw_points, map_points):
             if math.isfinite(best):
                 row["distance_m"] = round(best, 1)
             row["zone_cache_status"] = "visit_state_loaded"
-        return _merge_station_rows_v293(known_rows), {
+        merged_loaded = _merge_photo_legacy_stations_v296(_merge_station_rows_v293(known_rows))
+        # If this is the first v296 visit, freeze the photo-derived numeric station rows into
+        # the same per-user station state. Subsequent opens need no historical image work.
+        if len(merged_loaded) > len(_merge_station_rows_v293(known_rows)):
+            try:
+                _save_station_visit_state_v293(
+                    family, member, checked_ts, len(raw_points or []),
+                    sorted(set(str(x) for x in (state.get("scan_cells") or []) if str(x))), merged_loaded,
+                )
+            except Exception:
+                pass
+        return merged_loaded, {
             "mode": "loaded", "new_gps": 0, "new_cells": 0, "saved": True,
         }
 
@@ -29005,7 +29250,7 @@ def _project_station_preflight_v293(raw_points, map_points):
         if isinstance(osaki, dict):
             rows_by_key[osaki_key] = osaki
 
-    rows = _merge_station_rows_v293(list(rows_by_key.values()))
+    rows = _merge_photo_legacy_stations_v296(_merge_station_rows_v293(list(rows_by_key.values())))
     saved = False
     try:
         _save_station_visit_state_v293(
@@ -29041,12 +29286,12 @@ def _render_burari_project_map_v295(points, segments, stations):
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
 <style>
 html,body{{margin:0;padding:0;background:#0b1012;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Hiragino Sans","Yu Gothic",sans-serif;}}
-#project-map{{width:100%;height:630px;border-radius:18px;overflow:hidden;background:#0b1012;border:1px solid rgba(130,255,170,.18);box-sizing:border-box;}}
+#project-map{{width:100%;height:500px;border-radius:16px;overflow:hidden;background:#0b1012;border:1px solid rgba(130,255,170,.18);box-sizing:border-box;}}
 #project-map .leaflet-tile-pane{{filter:brightness(.42) contrast(1.18) saturate(.58);}}
 #project-map .leaflet-pane,#project-map .leaflet-tile,#project-map .leaflet-marker-icon,#project-map .leaflet-marker-shadow,#project-map .leaflet-tile-container,#project-map .leaflet-pane>svg,#project-map .leaflet-pane>canvas,#project-map .leaflet-zoom-box,#project-map .leaflet-image-layer,#project-map .leaflet-layer{{position:absolute;left:0;top:0;}}
 #project-map.leaflet-container{{overflow:hidden;-webkit-tap-highlight-color:transparent;}}
 #project-map .leaflet-tile{{width:256px;height:256px;max-width:none!important;max-height:none!important;user-select:none;-webkit-user-drag:none;}}
-@media(max-width:640px){{#project-map{{height:570px;border-radius:15px;}}}}
+@media(max-width:640px){{#project-map{{height:500px;border-radius:14px;}}}}
 </style></head><body>
 <div style="position:relative"><div id="project-map"></div></div>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
@@ -29087,13 +29332,41 @@ html,body{{margin:0;padding:0;background:#0b1012;font-family:-apple-system,Blink
  setTimeout(()=>map.invalidateSize(),120);
 }})();
 </script></body></html>"""
-    st.components.v1.html(map_html, height=650, scrolling=False)
+    st.components.v1.html(map_html, height=500, scrolling=False)
 
 def page_burari_project():
-    # v296: keep the map near the top of the phone screen. Streamlit columns stack on
-    # narrow screens, so the three large st.metric blocks are replaced by one compact
-    # horizontal summary strip. Explanatory copy moves below the map.
-    page_top("✨ ぶらり旅プロジェクト")
+    # v297: keep the project page compact on phones.  Native Streamlit metrics stack
+    # vertically on narrow screens, so use one fixed three-cell summary row instead.
+    st.markdown(
+        """
+        <style>
+          .burari-project-summary-v297 {
+            display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:6px;
+            margin:.20rem 0 .45rem; width:100%;
+          }
+          .burari-project-stat-v297 {
+            min-width:0; padding:6px 7px 7px; border-radius:12px;
+            background:rgba(128,128,128,.045); border:1px solid rgba(128,128,128,.14);
+            line-height:1.08; box-sizing:border-box;
+          }
+          .burari-project-stat-label-v297 {
+            display:block; font-size:.64rem; opacity:.68; margin-bottom:4px; white-space:nowrap;
+            overflow:hidden; text-overflow:ellipsis;
+          }
+          .burari-project-stat-value-v297 {
+            display:block; font-size:1.02rem; font-weight:800; letter-spacing:-.02em; white-space:nowrap;
+          }
+          @media (max-width:640px) {
+            .burari-project-summary-v297 { gap:5px; margin:.10rem 0 .34rem; }
+            .burari-project-stat-v297 { padding:5px 6px 6px; border-radius:10px; }
+            .burari-project-stat-label-v297 { font-size:.58rem; margin-bottom:3px; }
+            .burari-project-stat-value-v297 { font-size:.90rem; }
+          }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+    page_top("✨ ぶらり旅プロジェクト", "")
     points = _load_all_project_track_points_v271()
     if not points:
         st.info("まだ歩行データがありません。位置情報を許可した状態で、ぶらり旅を開いて歩くと自動的に記録が始まります。")
@@ -29101,36 +29374,12 @@ def page_burari_project():
     segments = _project_walk_segments_v271(points)
     walk_points = _project_walk_points_v271(segments)
     walk_m = _project_walk_distance_m_v271(segments)
-
     st.markdown(
         f"""
-        <style>
-          .burari-project-stats {{
-            display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:6px;
-            margin:-.12rem 0 .42rem;
-          }}
-          .burari-project-stat {{
-            min-width:0; padding:.42rem .48rem .38rem; border-radius:12px;
-            background:rgba(127,127,127,.055); border:1px solid rgba(127,127,127,.12);
-          }}
-          .burari-project-stat-label {{
-            font-size:.67rem; line-height:1.05; opacity:.66; white-space:nowrap;
-          }}
-          .burari-project-stat-value {{
-            margin-top:.16rem; font-size:1.14rem; line-height:1.05; font-weight:760;
-            letter-spacing:-.015em; white-space:nowrap;
-          }}
-          @media(max-width:640px) {{
-            .burari-project-stats {{gap:4px; margin:-.18rem 0 .34rem;}}
-            .burari-project-stat {{padding:.34rem .34rem .31rem; border-radius:10px;}}
-            .burari-project-stat-label {{font-size:.60rem;}}
-            .burari-project-stat-value {{font-size:1.00rem; margin-top:.12rem;}}
-          }}
-        </style>
-        <div class="burari-project-stats">
-          <div class="burari-project-stat"><div class="burari-project-stat-label">歩いた距離</div><div class="burari-project-stat-value">{walk_m/1000:.1f} km</div></div>
-          <div class="burari-project-stat"><div class="burari-project-stat-label">GPS記録</div><div class="burari-project-stat-value">{len(points):,} 点</div></div>
-          <div class="burari-project-stat"><div class="burari-project-stat-label">歩行区間</div><div class="burari-project-stat-value">{len(segments)} 本</div></div>
+        <div class="burari-project-summary-v297">
+          <div class="burari-project-stat-v297"><span class="burari-project-stat-label-v297">歩いた距離</span><span class="burari-project-stat-value-v297">{walk_m/1000:.1f} km</span></div>
+          <div class="burari-project-stat-v297"><span class="burari-project-stat-label-v297">GPS記録</span><span class="burari-project-stat-value-v297">{len(points):,} 点</span></div>
+          <div class="burari-project-stat-v297"><span class="burari-project-stat-label-v297">歩行区間</span><span class="burari-project-stat-value-v297">{len(segments)} 本</span></div>
         </div>
         """,
         unsafe_allow_html=True,
@@ -29138,18 +29387,27 @@ def page_burari_project():
     map_points = walk_points or points[-1:]
 
     # v293 preflight: finish station discovery / first-time inference / numeric-state save
-    # before Leaflet is mounted. The map itself is rendered once with a complete payload.
+    # before Leaflet is mounted.  The map itself is rendered once with a complete payload,
+    # so station work cannot blank or replace an already visible map mid-run.
     station_status = st.empty()
     station_status.info("新しい歩行データから到着駅を確認しています。地図は確認完了後に表示します。")
     stations, station_meta = _project_station_preflight_v293(points, map_points)
     station_status.empty()
 
-    _render_burari_project_map_v295(map_points, segments, stations)
+    # v296: combine native GPS walks with the historical wall-map seed for main.
+    # The station/route seed is fixed numeric geometry, so this adds no image analysis or
+    # network work when the map is reopened.
+    legacy_segments = _photo_legacy_segments_v296()
+    display_segments = list(segments or []) + list(legacy_segments or [])
+    display_points = list(map_points or []) + _photo_legacy_map_points_v296()
+    stations = _merge_photo_legacy_stations_v296(stations)
 
-    with st.expander("記録の仕組み"):
+    _render_burari_project_map_v295(display_points, display_segments, stations)
+
+    # Keep explanatory text below the map so it never pushes the map below the first phone viewport.
+    with st.expander("記録の仕組み", expanded=False):
         st.caption(
-            "位置情報を許可している間は、アプリを開いているとGPSを自動記録します。"
-            "約10m動くごとに1点を端末へ保存し、まとめて軽く同期します。"
+            "位置情報を許可している間はGPSを自動記録し、約10m動くごとに1点を端末へ保存してまとめて同期します。"
             "電車・車など歩行より速い移動は地図の発光線から自動的に外します。"
         )
 
