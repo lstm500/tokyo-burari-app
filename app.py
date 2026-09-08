@@ -29235,6 +29235,296 @@ def _photo_legacy_prepare_routes_v300():
         return built, {'mode': 'built', 'saved': True}
     return _photo_legacy_segments_v296(), {'mode': 'fallback', 'saved': False}
 
+PHOTO_LEGACY_ROUTE_CACHE_SCHEMA_V301 = "photo_route_cache_v301"
+PHOTO_LEGACY_ROUTE_SERVICE_URLS_V301 = (
+    "https://router.project-osrm.org/route/v1/foot",
+)
+PHOTO_LEGACY_ROUTE_CANDIDATE_WORKERS_V301 = 6
+PHOTO_LEGACY_ROUTE_ENDPOINT_OFFSET_M_V301 = 80.0
+PHOTO_LEGACY_ROUTE_ENDPOINT_ANGLE_DELTAS_V301 = (0.0, 38.0, -38.0, 78.0, -78.0, 138.0, -138.0)
+PHOTO_LEGACY_ROUTE_ACCEPTABLE_ENDPOINT_GAP_M_V301 = 210.0
+PHOTO_LEGACY_ROUTE_ACCEPTABLE_RATIO_MIN_V301 = 0.92
+PHOTO_LEGACY_ROUTE_ACCEPTABLE_RATIO_MAX_V301 = 4.8
+
+
+def _photo_legacy_route_cache_path_v301():
+    family = re.sub(r"[^a-zA-Z0-9_.-]+", "_", str(current_family_key() or "family").strip() or "family")
+    member = re.sub(r"[^a-zA-Z0-9_.-]+", "_", str(current_member_key() or "member").strip() or "member")
+    return os.path.join(APP_DIR, PHOTO_LEGACY_ROUTE_CACHE_DIR_V300, f"{family}__{member}.json")
+
+
+def _read_photo_legacy_route_cache_v301():
+    if not _photo_legacy_enabled_v296():
+        return []
+    path = _photo_legacy_route_cache_path_v301()
+    try:
+        if not os.path.exists(path):
+            return []
+        with open(path, 'r', encoding='utf-8') as f:
+            payload = json.load(f)
+    except Exception:
+        return []
+    if not isinstance(payload, dict):
+        return []
+    if str(payload.get('schema') or '') != PHOTO_LEGACY_ROUTE_CACHE_SCHEMA_V301:
+        return []
+    return _photo_legacy_coerce_segments_v300(payload.get('segments') or [])
+
+
+def _save_photo_legacy_route_cache_v301(segments):
+    clean_segments = _photo_legacy_coerce_segments_v300(segments)
+    if not clean_segments:
+        return False
+    path = _photo_legacy_route_cache_path_v301()
+    tmp = f"{path}.tmp"
+    payload = {
+        'schema': PHOTO_LEGACY_ROUTE_CACHE_SCHEMA_V301,
+        'saved_at_jst': datetime.now(ZoneInfo('Asia/Tokyo')).isoformat(),
+        'family_key': str(current_family_key() or ''),
+        'member_key': str(current_member_key() or ''),
+        'segments': clean_segments,
+    }
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(tmp, 'w', encoding='utf-8') as f:
+            json.dump(payload, f, ensure_ascii=False, separators=(',', ':'))
+        os.replace(tmp, path)
+        return True
+    except Exception:
+        try:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+        except Exception:
+            pass
+        return False
+
+
+def _photo_legacy_heading_rad_v301(lat0, lon0, lat1, lon1):
+    avg_lat = math.radians((float(lat0) + float(lat1)) / 2.0)
+    east = math.radians(float(lon1) - float(lon0)) * math.cos(avg_lat)
+    north = math.radians(float(lat1) - float(lat0))
+    return math.atan2(east, north)
+
+
+def _photo_legacy_offset_point_v301(lat, lon, heading_rad, distance_m):
+    lat = float(lat)
+    lon = float(lon)
+    distance_m = float(distance_m)
+    north_m = math.cos(float(heading_rad)) * distance_m
+    east_m = math.sin(float(heading_rad)) * distance_m
+    dlat = (north_m / 6378137.0) * (180.0 / math.pi)
+    dlon = (east_m / (6378137.0 * max(0.12, math.cos(math.radians(lat))))) * (180.0 / math.pi)
+    return [round(lat + dlat, 7), round(lon + dlon, 7)]
+
+
+def _photo_legacy_access_candidates_v301(lat, lon, target_lat, target_lon):
+    base_lat = float(lat)
+    base_lon = float(lon)
+    heading = _photo_legacy_heading_rad_v301(base_lat, base_lon, target_lat, target_lon)
+    out = [{
+        'point': [round(base_lat, 7), round(base_lon, 7)],
+        'offset_m': 0.0,
+        'angle_delta_deg': 0.0,
+        'source': 'station_center',
+    }]
+    seen = {(round(base_lat, 7), round(base_lon, 7))}
+    for delta in PHOTO_LEGACY_ROUTE_ENDPOINT_ANGLE_DELTAS_V301:
+        pt = _photo_legacy_offset_point_v301(base_lat, base_lon, heading + math.radians(delta), PHOTO_LEGACY_ROUTE_ENDPOINT_OFFSET_M_V301)
+        key = (pt[0], pt[1])
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append({
+            'point': pt,
+            'offset_m': float(PHOTO_LEGACY_ROUTE_ENDPOINT_OFFSET_M_V301),
+            'angle_delta_deg': float(delta),
+            'source': 'station_exit_probe',
+        })
+    return out
+
+
+def _photo_legacy_route_request_v301(start_point, end_point):
+    if not (isinstance(start_point, (list, tuple)) and isinstance(end_point, (list, tuple)) and len(start_point) >= 2 and len(end_point) >= 2):
+        return None
+    try:
+        s_lat = float(start_point[0]); s_lon = float(start_point[1])
+        e_lat = float(end_point[0]); e_lon = float(end_point[1])
+    except Exception:
+        return None
+    if not all(math.isfinite(v) for v in (s_lat, s_lon, e_lat, e_lon)):
+        return None
+    coords = f"{s_lon:.6f},{s_lat:.6f};{e_lon:.6f},{e_lat:.6f}"
+    headers = {'User-Agent': 'TokyoBurariPhotoRoadSnapV301/1.0'}
+    params = {
+        'overview': 'full',
+        'geometries': 'geojson',
+        'steps': 'false',
+        'alternatives': 'false',
+        'continue_straight': 'true',
+    }
+    for base_url in PHOTO_LEGACY_ROUTE_SERVICE_URLS_V301:
+        try:
+            response = requests.get(f"{base_url}/{coords}", params=params, headers=headers, timeout=8.0)
+            response.raise_for_status()
+            payload = response.json()
+        except Exception:
+            continue
+        routes = payload.get('routes') if isinstance(payload, dict) else None
+        if not isinstance(routes, list) or not routes:
+            continue
+        first = routes[0] if isinstance(routes[0], dict) else {}
+        geometry = first.get('geometry') if isinstance(first, dict) else None
+        coords_out = geometry.get('coordinates') if isinstance(geometry, dict) else None
+        snapped = []
+        prev = None
+        for raw in coords_out or []:
+            if not isinstance(raw, (list, tuple)) or len(raw) < 2:
+                continue
+            try:
+                lon = float(raw[0]); lat = float(raw[1])
+            except Exception:
+                continue
+            if not (math.isfinite(lat) and math.isfinite(lon)):
+                continue
+            pt = [round(lat, 7), round(lon, 7)]
+            if prev is not None:
+                try:
+                    if _nearby_haversine_m(prev[0], prev[1], pt[0], pt[1]) < 0.7:
+                        continue
+                except Exception:
+                    pass
+            snapped.append(pt)
+            prev = pt
+        if len(snapped) >= 2:
+            return {
+                'points': snapped,
+                'distance_m': float(first.get('distance') or 0.0),
+                'duration_s': float(first.get('duration') or 0.0),
+                'provider': base_url,
+            }
+    return None
+
+
+def _photo_legacy_station_pair_score_v301(route, station_a, station_b, cand_a, cand_b):
+    if not isinstance(route, dict):
+        return float('inf')
+    points = _photo_legacy_coerce_segment_v300(route.get('points') or [])
+    if len(points) < 2:
+        return float('inf')
+    a_lat, a_lon = float(station_a[0]), float(station_a[1])
+    b_lat, b_lon = float(station_b[0]), float(station_b[1])
+    try:
+        start_gap = _nearby_haversine_m(points[0][0], points[0][1], a_lat, a_lon)
+        end_gap = _nearby_haversine_m(points[-1][0], points[-1][1], b_lat, b_lon)
+        straight_m = _nearby_haversine_m(a_lat, a_lon, b_lat, b_lon)
+    except Exception:
+        return float('inf')
+    distance_m = max(0.0, float(route.get('distance_m') or 0.0))
+    if straight_m < 1.0:
+        straight_m = 1.0
+    ratio = distance_m / straight_m if distance_m > 0 else 0.0
+    if ratio < PHOTO_LEGACY_ROUTE_ACCEPTABLE_RATIO_MIN_V301 or ratio > PHOTO_LEGACY_ROUTE_ACCEPTABLE_RATIO_MAX_V301:
+        return float('inf')
+    if start_gap > PHOTO_LEGACY_ROUTE_ACCEPTABLE_ENDPOINT_GAP_M_V301 or end_gap > PHOTO_LEGACY_ROUTE_ACCEPTABLE_ENDPOINT_GAP_M_V301:
+        return float('inf')
+    access_penalty = float(cand_a.get('offset_m') or 0.0) + float(cand_b.get('offset_m') or 0.0)
+    angle_penalty = (abs(float(cand_a.get('angle_delta_deg') or 0.0)) + abs(float(cand_b.get('angle_delta_deg') or 0.0))) * 0.18
+    route_detail_bonus = -min(len(points), 180) * 0.06
+    ratio_target = 1.18 if straight_m < 500.0 else 1.28
+    ratio_penalty = abs(ratio - ratio_target) * 180.0
+    return start_gap * 0.95 + end_gap * 0.95 + access_penalty * 0.72 + angle_penalty + ratio_penalty + route_detail_bonus
+
+
+def _photo_legacy_pair_route_v301(name_a, name_b):
+    coord_a = PHOTO_LEGACY_STATIONS_V296.get(name_a)
+    coord_b = PHOTO_LEGACY_STATIONS_V296.get(name_b)
+    if coord_a is None or coord_b is None:
+        return []
+    station_a = (float(coord_a[0]), float(coord_a[1]))
+    station_b = (float(coord_b[0]), float(coord_b[1]))
+
+    direct = _photo_legacy_route_request_v301(station_a, station_b)
+    if direct is not None:
+        direct_score = _photo_legacy_station_pair_score_v301(direct, station_a, station_b, {'offset_m': 0.0, 'angle_delta_deg': 0.0}, {'offset_m': 0.0, 'angle_delta_deg': 0.0})
+        if math.isfinite(direct_score):
+            return _photo_legacy_coerce_segment_v300(direct.get('points') or [])
+
+    start_candidates = _photo_legacy_access_candidates_v301(station_a[0], station_a[1], station_b[0], station_b[1])
+    end_candidates = _photo_legacy_access_candidates_v301(station_b[0], station_b[1], station_a[0], station_a[1])
+    candidate_jobs = []
+    for cand_a in start_candidates:
+        for cand_b in end_candidates:
+            candidate_jobs.append((cand_a, cand_b))
+
+    best_points = []
+    best_score = float('inf')
+
+    def _job(job):
+        cand_a, cand_b = job
+        route = _photo_legacy_route_request_v301(cand_a.get('point'), cand_b.get('point'))
+        score = _photo_legacy_station_pair_score_v301(route, station_a, station_b, cand_a, cand_b)
+        return score, route
+
+    max_workers = max(1, min(int(PHOTO_LEGACY_ROUTE_CANDIDATE_WORKERS_V301), len(candidate_jobs)))
+    if max_workers <= 1:
+        for job in candidate_jobs:
+            try:
+                score, route = _job(job)
+            except Exception:
+                continue
+            if math.isfinite(score) and score < best_score:
+                best_score = score
+                best_points = _photo_legacy_coerce_segment_v300(route.get('points') or []) if isinstance(route, dict) else []
+    else:
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = [executor.submit(_job, job) for job in candidate_jobs]
+            for future in futures:
+                try:
+                    score, route = future.result()
+                except Exception:
+                    continue
+                if math.isfinite(score) and score < best_score:
+                    best_score = score
+                    best_points = _photo_legacy_coerce_segment_v300(route.get('points') or []) if isinstance(route, dict) else []
+
+    if len(best_points) >= 2:
+        return best_points
+    if direct is not None:
+        return _photo_legacy_coerce_segment_v300(direct.get('points') or [])
+    return []
+
+
+def _photo_legacy_build_routes_v301():
+    if not _photo_legacy_enabled_v296():
+        return []
+    out = []
+    for seq in PHOTO_LEGACY_ROUTE_SEQUENCES_V296:
+        parts = []
+        names = [str(name or '') for name in seq]
+        for name_a, name_b in zip(names[:-1], names[1:]):
+            part = _photo_legacy_pair_route_v301(name_a, name_b)
+            if len(part) >= 2:
+                parts.append(part)
+        joined = _project_join_paths_v298(parts)
+        joined = _photo_legacy_coerce_segment_v300(joined)
+        if len(joined) >= 2:
+            out.append(joined)
+    return out
+
+
+def _photo_legacy_prepare_routes_v301():
+    if not _photo_legacy_enabled_v296():
+        return [], {'mode': 'disabled', 'saved': False}
+    saved = _read_photo_legacy_route_cache_v301()
+    if saved:
+        return saved, {'mode': 'loaded', 'saved': True}
+    built = _photo_legacy_build_routes_v301()
+    if built:
+        _save_photo_legacy_route_cache_v301(built)
+        return built, {'mode': 'built', 'saved': True}
+    # Accuracy-first: do not persist straight fallback segments.
+    return [], {'mode': 'unresolved', 'saved': False}
+
 
 def _photo_legacy_map_points_v296():
     if not _photo_legacy_enabled_v296():
@@ -29809,8 +30099,8 @@ def page_burari_project():
     photo_segments = []
     if _photo_legacy_enabled_v296():
         route_status = st.empty()
-        route_status.info("過去写真から復元した道を、道路に沿うルートへ整えて保存しています。")
-        photo_segments, photo_route_meta = _photo_legacy_prepare_routes_v300()
+        route_status.info("初回のみ、過去写真の駅どうしを道路に沿う実ルートへ高精度で推定し、保存しています。少し時間がかかることがあります。")
+        photo_segments, photo_route_meta = _photo_legacy_prepare_routes_v301()
         route_status.empty()
     display_segments = list(segments or [])
 
