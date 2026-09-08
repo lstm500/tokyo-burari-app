@@ -30,9 +30,9 @@ from zoneinfo import ZoneInfo
 import streamlit as st
 
 # Freshly generated update: 2026-08-31 23:49 JST
-GENERATED_UPDATE_JST = "2026-09-08T13:05:00+09:00"
+GENERATED_UPDATE_JST = "2026-09-08T13:55:00+09:00"
 
-APP_BUILD = "v300"
+APP_BUILD = "v302"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -29526,6 +29526,184 @@ def _photo_legacy_prepare_routes_v301():
     return [], {'mode': 'unresolved', 'saved': False}
 
 
+
+PHOTO_LEGACY_ROUTE_SCHEMA_V302 = "photo_legacy_pedestrian_graph_v302"
+PHOTO_LEGACY_ROUTE_STORAGE_FILE_V302 = "photo_legacy_pedestrian_routes_v302.json"
+PHOTO_LEGACY_ROUTE_OSRM_FOOT_BASE_V302 = "https://routing.openstreetmap.de/routed-foot/route/v1/driving"
+PHOTO_LEGACY_ROUTE_MAX_WAYPOINTS_V302 = 8
+PHOTO_LEGACY_ROUTE_REQUEST_TIMEOUT_V302 = 12.0
+PHOTO_LEGACY_ROUTE_RETRY_COUNT_V302 = 2
+
+
+def _photo_legacy_route_storage_path_v302():
+    return f"{_gps_track_prefix()}/{PHOTO_LEGACY_ROUTE_STORAGE_FILE_V302}"
+
+
+def _photo_legacy_route_document_v302(segments):
+    clean_segments = _photo_legacy_coerce_segments_v300(segments)
+    return {
+        "schema": PHOTO_LEGACY_ROUTE_SCHEMA_V302,
+        "saved_at_jst": now_jst().isoformat(),
+        "family_key": str(current_family_key() or ""),
+        "member_key": str(current_member_key() or ""),
+        "source": "osm_pedestrian_road_graph",
+        "routing_endpoint": "routing.openstreetmap.de/routed-foot",
+        "segments": clean_segments,
+    }
+
+
+@st.cache_data(ttl=3600, max_entries=24, show_spinner=False)
+def _read_photo_legacy_route_cache_v302(family_key, member_key):
+    path = f"{_gps_track_prefix(family_key, member_key)}/{PHOTO_LEGACY_ROUTE_STORAGE_FILE_V302}"
+    try:
+        raw = supabase_client().storage.from_(GPS_TRACK_BUCKET).download(path)
+    except Exception:
+        return []
+    try:
+        payload = json.loads(bytes(raw).decode("utf-8"))
+    except Exception:
+        return []
+    if not isinstance(payload, dict) or str(payload.get("schema") or "") != PHOTO_LEGACY_ROUTE_SCHEMA_V302:
+        return []
+    return _photo_legacy_coerce_segments_v300(payload.get("segments") or [])
+
+
+def _save_photo_legacy_route_cache_v302(segments):
+    document = _photo_legacy_route_document_v302(segments)
+    clean_segments = document.get("segments") or []
+    if not clean_segments:
+        return False
+    blob = json.dumps(document, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    path = _photo_legacy_route_storage_path_v302()
+    bucket = supabase_client().storage.from_(GPS_TRACK_BUCKET)
+    options = {"content-type": GPS_TRACK_STORAGE_MIME, "cache-control": "3600", "upsert": "true"}
+    try:
+        bucket.upload(path=path, file=blob, file_options=options)
+    except Exception:
+        try:
+            bucket.update(path=path, file=blob, file_options={"content-type": GPS_TRACK_STORAGE_MIME, "cache-control": "3600"})
+        except Exception:
+            try:
+                bucket.remove([path])
+            except Exception:
+                pass
+            try:
+                bucket.upload(path=path, file=blob, file_options={"content-type": GPS_TRACK_STORAGE_MIME, "cache-control": "3600"})
+            except Exception:
+                return False
+    _read_photo_legacy_route_cache_v302.clear()
+    return True
+
+
+def _photo_legacy_route_chunk_names_v302(sequence, max_waypoints=None):
+    names = [str(name or "") for name in (sequence or []) if PHOTO_LEGACY_STATIONS_V296.get(name) is not None]
+    if len(names) < 2:
+        return []
+    limit = max(2, int(max_waypoints or PHOTO_LEGACY_ROUTE_MAX_WAYPOINTS_V302))
+    chunks = []
+    start = 0
+    while start < len(names) - 1:
+        end = min(len(names), start + limit)
+        chunk = names[start:end]
+        if len(chunk) >= 2:
+            chunks.append(chunk)
+        if end >= len(names):
+            break
+        start = end - 1
+    return chunks
+
+
+def _photo_legacy_route_request_names_v302(names):
+    coords = []
+    for name in names or []:
+        coord = PHOTO_LEGACY_STATIONS_V296.get(name)
+        if coord is None:
+            continue
+        coords.append((float(coord[0]), float(coord[1])))
+    if len(coords) < 2:
+        return []
+    coord_text = ";".join(f"{lon:.6f},{lat:.6f}" for lat, lon in coords)
+    url = f"{PHOTO_LEGACY_ROUTE_OSRM_FOOT_BASE_V302}/{coord_text}"
+    params = {
+        "overview": "full",
+        "geometries": "geojson",
+        "steps": "false",
+        "alternatives": "false",
+        "continue_straight": "true",
+    }
+    headers = {"User-Agent": "TokyoBurariHistoricalPhotoRouteV302/1.0"}
+    last_payload = None
+    for _ in range(max(1, int(PHOTO_LEGACY_ROUTE_RETRY_COUNT_V302))):
+        try:
+            response = requests.get(url, params=params, headers=headers, timeout=float(PHOTO_LEGACY_ROUTE_REQUEST_TIMEOUT_V302))
+            response.raise_for_status()
+            payload = response.json()
+            last_payload = payload
+        except Exception:
+            continue
+        routes = payload.get("routes") if isinstance(payload, dict) else None
+        if not isinstance(routes, list) or not routes:
+            continue
+        geometry = routes[0].get("geometry") if isinstance(routes[0], dict) else None
+        raw_coords = geometry.get("coordinates") if isinstance(geometry, dict) else None
+        out = []
+        prev = None
+        for raw in raw_coords or []:
+            if not isinstance(raw, (list, tuple)) or len(raw) < 2:
+                continue
+            try:
+                lon = float(raw[0]); lat = float(raw[1])
+            except Exception:
+                continue
+            if not (math.isfinite(lat) and math.isfinite(lon)):
+                continue
+            point = [round(lat, 7), round(lon, 7)]
+            if prev is not None:
+                try:
+                    if _nearby_haversine_m(prev[0], prev[1], point[0], point[1]) < 0.7:
+                        continue
+                except Exception:
+                    pass
+            out.append(point)
+            prev = point
+        if len(out) >= 2:
+            return out
+    return []
+
+
+def _photo_legacy_build_routes_v302():
+    if not _photo_legacy_enabled_v296():
+        return []
+    routes = []
+    for sequence in PHOTO_LEGACY_ROUTE_SEQUENCES_V296:
+        parts = []
+        for chunk_names in _photo_legacy_route_chunk_names_v302(sequence):
+            part = _photo_legacy_route_request_names_v302(chunk_names)
+            if len(part) >= 2:
+                parts.append(part)
+        joined = _project_join_paths_v298(parts)
+        joined = _photo_legacy_coerce_segment_v300(joined)
+        if len(joined) >= 2:
+            routes.append(joined)
+    return routes
+
+
+def _photo_legacy_prepare_routes_v303():
+    if not _photo_legacy_enabled_v296():
+        return [], {"mode": "disabled", "saved": False}
+    family = str(current_family_key() or "")
+    member = str(current_member_key() or "")
+    saved = _read_photo_legacy_route_cache_v302(family, member)
+    if saved:
+        return saved, {"mode": "loaded", "saved": True}
+    built = _photo_legacy_build_routes_v302()
+    if built:
+        saved_ok = _save_photo_legacy_route_cache_v302(built)
+        return built, {"mode": "built", "saved": bool(saved_ok)}
+    # Accuracy-first: never draw a station-to-station straight chord as a fallback.
+    return [], {"mode": "unresolved", "saved": False}
+
+
 def _photo_legacy_map_points_v296():
     if not _photo_legacy_enabled_v296():
         return []
@@ -30099,8 +30277,8 @@ def page_burari_project():
     photo_segments = []
     if _photo_legacy_enabled_v296():
         route_status = st.empty()
-        route_status.info("初回のみ、過去写真の駅どうしを道路に沿う実ルートへ高精度で推定し、保存しています。少し時間がかかることがあります。")
-        photo_segments, photo_route_meta = _photo_legacy_prepare_routes_v301()
+        route_status.info("初回のみ、過去写真で光っている各区間を1つずつ確認し、歩行者用の実道路ネットワークへ照合して道路に沿うルートを作成・保存しています。少し時間がかかることがあります。")
+        photo_segments, photo_route_meta = _photo_legacy_prepare_routes_v303()
         route_status.empty()
     display_segments = list(segments or [])
 
@@ -30819,3 +30997,112 @@ with st.container(key="app_page_root_v280"):
             and page in {"camera", "videos", "moments", "diary", "review", "review_map", "review_project", "review_monthly", "review_tag", "review_history", "nearby", "toilets", "settings"}
         ):
             render_global_bottom_navigation(page)
+
+# ================= v303: pairwise first-pass reconstruction of every glowing non-station section =================
+PHOTO_LEGACY_ROUTE_SCHEMA_V303 = "photo_legacy_pairwise_segments_v303"
+PHOTO_LEGACY_ROUTE_STORAGE_FILE_V303 = "photo_legacy_pairwise_segments_v303.json"
+
+
+def _photo_legacy_route_storage_path_v303():
+    return f"{_gps_track_prefix()}/{PHOTO_LEGACY_ROUTE_STORAGE_FILE_V303}"
+
+
+def _photo_legacy_route_document_v303(segments):
+    clean_segments = _photo_legacy_coerce_segments_v300(segments)
+    return {
+        "schema": PHOTO_LEGACY_ROUTE_SCHEMA_V303,
+        "saved_at_jst": now_jst().isoformat(),
+        "family_key": str(current_family_key() or ""),
+        "member_key": str(current_member_key() or ""),
+        "source": "pairwise_station_section_pedestrian_inference",
+        "segments": clean_segments,
+    }
+
+
+@st.cache_data(ttl=3600, max_entries=24, show_spinner=False)
+def _read_photo_legacy_route_cache_v303(family_key, member_key):
+    path = f"{_gps_track_prefix(family_key, member_key)}/{PHOTO_LEGACY_ROUTE_STORAGE_FILE_V303}"
+    try:
+        raw = supabase_client().storage.from_(GPS_TRACK_BUCKET).download(path)
+    except Exception:
+        return []
+    try:
+        payload = json.loads(bytes(raw).decode("utf-8"))
+    except Exception:
+        return []
+    if not isinstance(payload, dict) or str(payload.get("schema") or "") != PHOTO_LEGACY_ROUTE_SCHEMA_V303:
+        return []
+    return _photo_legacy_coerce_segments_v300(payload.get("segments") or [])
+
+
+def _save_photo_legacy_route_cache_v303(segments):
+    document = _photo_legacy_route_document_v303(segments)
+    clean_segments = document.get("segments") or []
+    if not clean_segments:
+        return False
+    blob = json.dumps(document, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    path = _photo_legacy_route_storage_path_v303()
+    bucket = supabase_client().storage.from_(GPS_TRACK_BUCKET)
+    options = {"content-type": GPS_TRACK_STORAGE_MIME, "cache-control": "3600", "upsert": "true"}
+    try:
+        bucket.upload(path=path, file=blob, file_options=options)
+    except Exception:
+        try:
+            bucket.update(path=path, file=blob, file_options={"content-type": GPS_TRACK_STORAGE_MIME, "cache-control": "3600"})
+        except Exception:
+            try:
+                bucket.remove([path])
+            except Exception:
+                pass
+            try:
+                bucket.upload(path=path, file=blob, file_options={"content-type": GPS_TRACK_STORAGE_MIME, "cache-control": "3600"})
+            except Exception:
+                return False
+    _read_photo_legacy_route_cache_v303.clear()
+    return True
+
+
+def _photo_legacy_build_routes_v303():
+    """Reconstruct every glowing non-station section pairwise.
+
+    v302 grouped many stations into one request, which could leave a surviving straight chord when
+    one long request degraded. v303 restores a first-pass section-by-section build: every adjacent
+    glowing station pair is inferred independently via the v301 pedestrian access-point search, and
+    only successful edges are joined. Missing edges remain blank rather than becoming a straight line.
+    """
+    if not _photo_legacy_enabled_v296():
+        return []
+    all_segments = []
+    for seq in PHOTO_LEGACY_ROUTE_SEQUENCES_V296:
+        names = [str(name or "") for name in (seq or [])]
+        current_parts = []
+        for name_a, name_b in zip(names[:-1], names[1:]):
+            part = _photo_legacy_pair_route_v301(name_a, name_b)
+            if len(part) >= 2:
+                current_parts.append(part)
+                continue
+            joined = _project_join_paths_v298(current_parts)
+            joined = _photo_legacy_coerce_segment_v300(joined)
+            if len(joined) >= 2:
+                all_segments.append(joined)
+            current_parts = []
+        joined = _project_join_paths_v298(current_parts)
+        joined = _photo_legacy_coerce_segment_v300(joined)
+        if len(joined) >= 2:
+            all_segments.append(joined)
+    return all_segments
+
+
+def _photo_legacy_prepare_routes_v303():
+    if not _photo_legacy_enabled_v296():
+        return [], {"mode": "disabled", "saved": False}
+    family = str(current_family_key() or "")
+    member = str(current_member_key() or "")
+    saved = _read_photo_legacy_route_cache_v303(family, member)
+    if saved:
+        return saved, {"mode": "loaded", "saved": True}
+    built = _photo_legacy_build_routes_v303()
+    if built:
+        saved_ok = _save_photo_legacy_route_cache_v303(built)
+        return built, {"mode": "built", "saved": bool(saved_ok)}
+    return [], {"mode": "unresolved", "saved": False}
