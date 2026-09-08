@@ -32,7 +32,7 @@ import streamlit as st
 # Freshly generated update: 2026-08-31 23:49 JST
 GENERATED_UPDATE_JST = "2026-09-08T08:12:00+09:00"
 
-APP_BUILD = "v292"
+APP_BUILD = "v293"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -946,6 +946,21 @@ STATION_ZONE_CACHE_READ_TTL_SECONDS = 3600
 # Keep empty in normal operation. A future targeted station correction can list a name
 # here to bypass the stored zone once and overwrite it with a newly inferred geometry.
 STATION_ZONE_FORCE_REBUILD_NAMES = set()
+
+# v293: keep station discovery/inference off the map render path.  A small per-user
+# state file remembers which map cells were already scanned, every station geometry
+# already prepared for display, and how far through the GPS history the preflight has
+# checked.  When no new GPS history exists, the map can be rebuilt from one saved JSON
+# document without Overpass requests, map-tile image analysis, or repeated station fitting.
+STATION_VISIT_STATE_SCHEMA_VERSION = 1
+STATION_VISIT_STATE_DIR = "_station_visit_state/v1"
+STATION_VISIT_STATE_READ_TTL_SECONDS = 90
+STATION_VISIT_STATE_MAX_STATIONS = 240
+STATION_VISIT_STATE_MAX_SCAN_CELLS = 4096
+STATION_SCAN_CELL_DEGREES = 0.0045
+STATION_PREFLIGHT_DISCOVERY_PAD_M = 1050.0
+STATION_PREFLIGHT_INFER_CENTER_RADIUS_M = 430.0
+
 
 
 # ============================================================
@@ -28545,6 +28560,466 @@ def _project_osaki_forced_debug_v292(points):
             "debug_osaki":True,"forced_debug":True}
 
 
+
+def _station_visit_state_key_v293(family_key, member_key):
+    raw = f"{str(family_key or 'default').strip()}|{str(member_key or 'main').strip()}".encode("utf-8")
+    return hashlib.sha1(raw).hexdigest()[:28]
+
+
+def _station_visit_state_path_v293(family_key, member_key):
+    return f"{STATION_VISIT_STATE_DIR}/{_station_visit_state_key_v293(family_key, member_key)}.json"
+
+
+def _station_name_base_v293(name):
+    normalized = re.sub(r"\s+", "", unicodedata.normalize("NFKC", str(name or "駅"))).strip()
+    if normalized.endswith("駅"):
+        normalized = normalized[:-1]
+    return normalized or "駅"
+
+
+def _station_row_key_v293(name, lat, lon):
+    # Reuse the global geometry identity so the per-user visit state and the global
+    # numeric station-zone cache refer to the same physical station.
+    return _station_zone_cache_key_v292(name, lat, lon)
+
+
+def _station_scan_cell_v293(lat, lon):
+    step = float(STATION_SCAN_CELL_DEGREES)
+    try:
+        lat = float(lat); lon = float(lon)
+    except (TypeError, ValueError):
+        return ""
+    if not (math.isfinite(lat) and math.isfinite(lon)):
+        return ""
+    return f"{int(math.floor((lat + 90.0) / step))}:{int(math.floor((lon + 180.0) / step))}"
+
+
+def _clean_station_zone_v293(zone):
+    clean = []
+    for raw in (zone or [])[:STATION_ZONE_CACHE_MAX_POINTS]:
+        if not isinstance(raw, (list, tuple)) or len(raw) < 2:
+            continue
+        try:
+            lat = float(raw[0]); lon = float(raw[1])
+        except (TypeError, ValueError):
+            continue
+        if not (math.isfinite(lat) and math.isfinite(lon) and -90 <= lat <= 90 and -180 <= lon <= 180):
+            continue
+        clean.append([round(lat, 7), round(lon, 7)])
+    return clean
+
+
+def _coerce_station_state_row_v293(raw):
+    if not isinstance(raw, dict):
+        return None
+    try:
+        lat = float(raw.get("lat")); lon = float(raw.get("lon"))
+    except (TypeError, ValueError):
+        return None
+    if not (math.isfinite(lat) and math.isfinite(lon) and -90 <= lat <= 90 and -180 <= lon <= 180):
+        return None
+    name = str(raw.get("name") or "駅")[:120]
+    row = {
+        "name": name,
+        "lat": round(lat, 7),
+        "lon": round(lon, 7),
+        "visited": bool(raw.get("arrived") or raw.get("visited")),
+        "arrived": bool(raw.get("arrived") or raw.get("visited")),
+        "distance_m": None,
+        "arrival_zone": _clean_station_zone_v293(raw.get("arrival_zone")),
+        "physical_shapes": [],
+        "footprint_source": str(raw.get("footprint_source") or raw.get("source") or "saved_station_state")[:120],
+        "method": str(raw.get("method") or "")[:160],
+        "debug_osaki": bool(raw.get("debug_osaki")),
+        "zone_cache_status": str(raw.get("zone_cache_status") or "state_loaded")[:40],
+        "zone_cache_key": str(raw.get("zone_cache_key") or _station_row_key_v293(name, lat, lon))[:64],
+    }
+    value = raw.get("distance_m")
+    try:
+        value = float(value) if value is not None else None
+        row["distance_m"] = round(value, 1) if value is not None and math.isfinite(value) else None
+    except (TypeError, ValueError):
+        row["distance_m"] = None
+    for key in ("half_length_m", "half_width_m", "axis_deg", "vision_score", "vision_threshold", "vision_peak", "vision_baseline"):
+        value = raw.get(key)
+        try:
+            value = float(value) if value is not None else None
+            row[key] = round(value, 4) if value is not None and math.isfinite(value) else None
+        except (TypeError, ValueError):
+            row[key] = None
+    for key in ("raw_platform_count", "selected_platform_count", "platform_point_count", "track_point_count"):
+        try:
+            row[key] = max(0, int(raw.get(key) or 0))
+        except (TypeError, ValueError):
+            row[key] = 0
+    return row
+
+
+def _station_state_row_document_v293(row):
+    normalized = _coerce_station_state_row_v293(row)
+    if not normalized:
+        return None
+    return {
+        "name": normalized["name"],
+        "lat": normalized["lat"],
+        "lon": normalized["lon"],
+        "arrived": bool(normalized["arrived"]),
+        "distance_m": normalized.get("distance_m"),
+        "arrival_zone": normalized.get("arrival_zone") or [],
+        "footprint_source": normalized.get("footprint_source") or "",
+        "method": normalized.get("method") or "",
+        "half_length_m": normalized.get("half_length_m"),
+        "half_width_m": normalized.get("half_width_m"),
+        "axis_deg": normalized.get("axis_deg"),
+        "vision_score": normalized.get("vision_score"),
+        "vision_threshold": normalized.get("vision_threshold"),
+        "vision_peak": normalized.get("vision_peak"),
+        "vision_baseline": normalized.get("vision_baseline"),
+        "raw_platform_count": normalized.get("raw_platform_count", 0),
+        "selected_platform_count": normalized.get("selected_platform_count", 0),
+        "platform_point_count": normalized.get("platform_point_count", 0),
+        "track_point_count": normalized.get("track_point_count", 0),
+        "debug_osaki": bool(normalized.get("debug_osaki")),
+        "zone_cache_status": normalized.get("zone_cache_status") or "",
+        "zone_cache_key": normalized.get("zone_cache_key") or "",
+    }
+
+
+@st.cache_data(ttl=STATION_VISIT_STATE_READ_TTL_SECONDS, max_entries=32, show_spinner=False)
+def _read_station_visit_state_v293(family_key, member_key):
+    path = _station_visit_state_path_v293(family_key, member_key)
+    try:
+        raw = supabase_client().storage.from_(GPS_TRACK_BUCKET).download(path)
+        payload = json.loads(bytes(raw).decode("utf-8"))
+    except Exception:
+        return None
+    if not isinstance(payload, dict) or int(payload.get("schema_version") or 0) != int(STATION_VISIT_STATE_SCHEMA_VERSION):
+        return None
+    stations = []
+    for item in (payload.get("stations") or [])[:STATION_VISIT_STATE_MAX_STATIONS]:
+        row = _coerce_station_state_row_v293(item)
+        if row:
+            stations.append(row)
+    cells = []
+    seen_cells = set()
+    for cell in (payload.get("scan_cells") or [])[:STATION_VISIT_STATE_MAX_SCAN_CELLS]:
+        cell = str(cell or "")[:64]
+        if cell and cell not in seen_cells:
+            seen_cells.add(cell); cells.append(cell)
+    try:
+        checked = max(0, int(payload.get("checked_through_ts_ms") or 0))
+    except (TypeError, ValueError):
+        checked = 0
+    try:
+        gps_count = max(0, int(payload.get("gps_point_count") or 0))
+    except (TypeError, ValueError):
+        gps_count = 0
+    return {
+        "checked_through_ts_ms": checked,
+        "gps_point_count": gps_count,
+        "scan_cells": cells,
+        "stations": stations,
+        "saved_at": str(payload.get("saved_at") or "")[:80],
+    }
+
+
+def _save_station_visit_state_v293(family_key, member_key, checked_through_ts_ms, gps_point_count, scan_cells, stations):
+    rows = []
+    for row in (stations or [])[:STATION_VISIT_STATE_MAX_STATIONS]:
+        item = _station_state_row_document_v293(row)
+        if item:
+            rows.append(item)
+    document = {
+        "schema_version": int(STATION_VISIT_STATE_SCHEMA_VERSION),
+        "checked_through_ts_ms": max(0, int(checked_through_ts_ms or 0)),
+        "gps_point_count": max(0, int(gps_point_count or 0)),
+        "scan_cells": list(dict.fromkeys(str(x) for x in (scan_cells or []) if str(x)))[:STATION_VISIT_STATE_MAX_SCAN_CELLS],
+        "stations": rows,
+        "saved_at": now_jst().isoformat(),
+        "app_build": "v293",
+    }
+    blob = json.dumps(document, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    path = _station_visit_state_path_v293(family_key, member_key)
+    bucket = supabase_client().storage.from_(GPS_TRACK_BUCKET)
+    options = {"content-type": GPS_TRACK_STORAGE_MIME, "cache-control": "120", "upsert": "true"}
+    try:
+        bucket.upload(path=path, file=blob, file_options=options)
+    except Exception:
+        try:
+            bucket.update(path=path, file=blob, file_options={"content-type": GPS_TRACK_STORAGE_MIME, "cache-control": "120"})
+        except Exception:
+            try:
+                bucket.remove([path])
+            except Exception:
+                pass
+            bucket.upload(path=path, file=blob, file_options={"content-type": GPS_TRACK_STORAGE_MIME, "cache-control": "120"})
+    _read_station_visit_state_v293.clear()
+    return True
+
+
+def _project_walk_raw_points_v293(points):
+    """Return raw GPS rows that participate in a walk-like edge, preserving ts_ms."""
+    output = []
+    seen = set()
+    prev = None
+    for point in points or []:
+        if not isinstance(point, dict):
+            continue
+        if prev is None:
+            prev = point
+            continue
+        try:
+            dt = max(0.001, (float(point.get("ts_ms")) - float(prev.get("ts_ms"))) / 1000.0)
+            dist = _nearby_haversine_m(float(prev["lat"]), float(prev["lon"]), float(point["lat"]), float(point["lon"]))
+        except Exception:
+            prev = point
+            continue
+        reported_speed = point.get("speed_mps")
+        try:
+            reported_speed = float(reported_speed) if reported_speed is not None else None
+        except (TypeError, ValueError):
+            reported_speed = None
+        estimated_speed = dist / dt if dt > 0 else 999.0
+        effective_speed = max(reported_speed, estimated_speed) if reported_speed is not None and reported_speed >= 0 else estimated_speed
+        same_session = bool(str(point.get("session_id") or "")) and str(point.get("session_id") or "") == str(prev.get("session_id") or "")
+        walk_like = (
+            same_session
+            and dt <= GPS_TRACK_SEGMENT_MAX_GAP_SECONDS
+            and dist <= GPS_TRACK_SEGMENT_MAX_JUMP_M
+            and effective_speed <= GPS_TRACK_WALK_MAX_SPEED_MPS
+        )
+        if walk_like:
+            for row in (prev, point):
+                key = str(row.get("id") or f"{row.get('ts_ms')}|{row.get('lat')}|{row.get('lon')}")
+                if key not in seen:
+                    seen.add(key); output.append(row)
+        prev = point
+    return output
+
+
+def _station_center_best_distance_v293(station, points):
+    best = float("inf")
+    try:
+        s_lat = float(station.get("lat")); s_lon = float(station.get("lon"))
+    except Exception:
+        return best
+    for point in points or []:
+        try:
+            best = min(best, _nearby_haversine_m(s_lat, s_lon, float(point["lat"]), float(point["lon"])))
+        except Exception:
+            continue
+    return best
+
+
+def _station_candidates_for_points_v293(points):
+    if not points:
+        return []
+    try:
+        lats = [float(p["lat"]) for p in points]
+        lons = [float(p["lon"]) for p in points]
+    except Exception:
+        return []
+    south, north = min(lats), max(lats); west, east = min(lons), max(lons)
+    pad_lat = float(STATION_PREFLIGHT_DISCOVERY_PAD_M) / 111320.0
+    mid_lat = (south + north) / 2.0
+    pad_lon = pad_lat / max(0.35, math.cos(math.radians(mid_lat)))
+    return _project_station_candidates_v271(
+        round(south - pad_lat, 4), round(west - pad_lon, 4),
+        round(north + pad_lat, 4), round(east + pad_lon, 4),
+    )
+
+
+def _merge_station_rows_v293(rows):
+    ordered = sorted(
+        (r for r in (rows or []) if isinstance(r, dict)),
+        key=lambda x: (not bool(x.get("arrived")), float(x.get("distance_m") if x.get("distance_m") is not None else 999999.0), str(x.get("name") or "")),
+    )
+    merged = []
+    for row in ordered:
+        name_base = _station_name_base_v293(row.get("name"))
+        duplicate = None
+        for kept in merged:
+            if _station_name_base_v293(kept.get("name")) != name_base:
+                continue
+            try:
+                gap = _nearby_haversine_m(float(row["lat"]), float(row["lon"]), float(kept["lat"]), float(kept["lon"]))
+            except Exception:
+                gap = 999999.0
+            if gap < 260.0:
+                duplicate = kept
+                break
+        if duplicate is None:
+            merged.append(dict(row)); continue
+        prefer = False
+        if bool(row.get("debug_osaki")) and not bool(duplicate.get("debug_osaki")):
+            prefer = True
+        elif bool(row.get("arrived")) and not bool(duplicate.get("arrived")):
+            prefer = True
+        elif len(row.get("arrival_zone") or []) >= 3 and len(duplicate.get("arrival_zone") or []) < 3:
+            prefer = True
+        if prefer:
+            duplicate.clear(); duplicate.update(dict(row))
+        else:
+            duplicate["arrived"] = bool(duplicate.get("arrived") or row.get("arrived"))
+            duplicate["visited"] = bool(duplicate.get("arrived"))
+            candidates = [v for v in (duplicate.get("distance_m"), row.get("distance_m")) if v is not None]
+            if candidates:
+                duplicate["distance_m"] = min(float(v) for v in candidates)
+    return merged[:STATION_VISIT_STATE_MAX_STATIONS]
+
+
+def _station_row_from_footprint_v293(station, footprint, map_points, debug_osaki=False):
+    name = str(station.get("name") or "駅")
+    lat = float(station["lat"]); lon = float(station["lon"])
+    fp = dict(footprint or {})
+    zone = _clean_station_zone_v293(fp.get("arrival_zone"))
+    arrived = _project_track_enters_station_zone_v290(map_points, zone, lat, lon) if len(zone) >= 3 else False
+    best = _station_center_best_distance_v293({"lat": lat, "lon": lon}, map_points)
+    return {
+        "name": name,
+        "lat": round(lat, 7), "lon": round(lon, 7),
+        "visited": bool(arrived), "arrived": bool(arrived),
+        "distance_m": round(best, 1) if math.isfinite(best) else None,
+        # Keep a prepared zone even before arrival.  This lets later GPS points be tested
+        # locally without repeating image analysis.
+        "arrival_zone": zone,
+        "physical_shapes": [],
+        "footprint_source": str(fp.get("source") or "none")[:120],
+        "method": str(fp.get("method") or "")[:160],
+        "half_length_m": fp.get("half_length_m"), "half_width_m": fp.get("half_width_m"),
+        "axis_deg": fp.get("axis_deg"), "vision_score": fp.get("vision_score"),
+        "vision_threshold": fp.get("vision_threshold"), "vision_peak": fp.get("vision_peak"),
+        "vision_baseline": fp.get("vision_baseline"),
+        "platform_point_count": fp.get("platform_point_count", 0), "track_point_count": fp.get("track_point_count", 0),
+        "raw_platform_count": fp.get("raw_platform_count", 0), "selected_platform_count": fp.get("selected_platform_count", 0),
+        "zone_cache_status": str(fp.get("zone_cache_status") or "")[:40],
+        "zone_cache_key": str(fp.get("zone_cache_key") or _station_row_key_v293(name, lat, lon))[:64],
+        "debug_osaki": bool(debug_osaki),
+    }
+
+
+def _project_station_preflight_v293(raw_points, map_points):
+    """Resolve only new station work before Leaflet is mounted, then persist the result."""
+    family = current_family_key(); member = current_member_key()
+    state = _read_station_visit_state_v293(family, member) or {
+        "checked_through_ts_ms": 0, "gps_point_count": 0, "scan_cells": [], "stations": []
+    }
+    try:
+        latest_ts = max((int(p.get("ts_ms") or 0) for p in (raw_points or []) if isinstance(p, dict)), default=0)
+    except Exception:
+        latest_ts = 0
+    checked_ts = max(0, int(state.get("checked_through_ts_ms") or 0))
+    known_rows = [_coerce_station_state_row_v293(r) for r in (state.get("stations") or [])]
+    known_rows = [r for r in known_rows if r]
+
+    # Fast path: no GPS point newer than the saved state.  No Overpass, no raster tile
+    # download, no station fitting.  This is the normal path when revisiting the map.
+    if known_rows and latest_ts <= checked_ts:
+        for row in known_rows:
+            best = _station_center_best_distance_v293(row, map_points)
+            if math.isfinite(best):
+                row["distance_m"] = round(best, 1)
+            row["zone_cache_status"] = "visit_state_loaded"
+        return _merge_station_rows_v293(known_rows), {
+            "mode": "loaded", "new_gps": 0, "new_cells": 0, "saved": True,
+        }
+
+    walk_raw = _project_walk_raw_points_v293(raw_points)
+    if checked_ts > 0:
+        new_walk_raw = [p for p in walk_raw if int(p.get("ts_ms") or 0) > checked_ts]
+    else:
+        new_walk_raw = list(walk_raw)
+    scanned = set(str(x) for x in (state.get("scan_cells") or []) if str(x))
+    new_cells = []
+    scan_points = []
+    for p in new_walk_raw:
+        cell = _station_scan_cell_v293(p.get("lat"), p.get("lon"))
+        if cell and cell not in scanned:
+            new_cells.append(cell); scan_points.append(p)
+
+    rows_by_key = {}
+    for row in known_rows:
+        rows_by_key[_station_row_key_v293(row.get("name"), row.get("lat"), row.get("lon"))] = row
+
+    # Cheap local re-check against already prepared numeric polygons.  This catches a new
+    # arrival within an already scanned neighborhood without any network request.
+    if new_walk_raw:
+        new_walk_simple = [{"lat": p.get("lat"), "lon": p.get("lon")} for p in new_walk_raw]
+        for row in rows_by_key.values():
+            zone = row.get("arrival_zone") or []
+            if len(zone) >= 3 and not bool(row.get("arrived")):
+                try:
+                    if _project_track_enters_station_zone_v290(new_walk_simple, zone, float(row["lat"]), float(row["lon"])):
+                        row["arrived"] = True; row["visited"] = True
+                except Exception:
+                    pass
+            best = _station_center_best_distance_v293(row, map_points)
+            if math.isfinite(best):
+                row["distance_m"] = round(best, 1)
+
+    # Discover station anchors only when the walker enters a map cell never scanned before.
+    # One bounding-box query covers all new cells in this run.
+    if scan_points:
+        candidates = _station_candidates_for_points_v293(scan_points)
+        for station in candidates or []:
+            try:
+                name = str(station.get("name") or "駅")
+                lat = float(station["lat"]); lon = float(station["lon"])
+            except Exception:
+                continue
+            # Osaki remains a fixed diagnostic anchor until its red outline is approved.
+            if _station_name_base_v293(name) == "大崎":
+                continue
+            best = _station_center_best_distance_v293({"lat": lat, "lon": lon}, map_points)
+            if best > GPS_TRACK_STATION_NEAR_RADIUS_M:
+                continue
+            key = _station_row_key_v293(name, lat, lon)
+            existing = rows_by_key.get(key)
+            if existing is not None:
+                if math.isfinite(best): existing["distance_m"] = round(best, 1)
+                continue
+            # Image inference is reserved for stations that the GPS actually approached.
+            # Distant candidates remain lightweight markers and can be inferred later if
+            # the route gets closer.
+            if best <= float(STATION_PREFLIGHT_INFER_CENTER_RADIUS_M):
+                fp = _project_station_image_corridor_persisted_v292(name, lat, lon)
+                row = _station_row_from_footprint_v293(station, fp, map_points, debug_osaki=False)
+            else:
+                row = {
+                    "name": name, "lat": round(lat, 7), "lon": round(lon, 7),
+                    "visited": False, "arrived": False, "distance_m": round(best, 1) if math.isfinite(best) else None,
+                    "arrival_zone": [], "physical_shapes": [], "footprint_source": "anchor_only",
+                    "method": "anchor_only_not_inferred", "debug_osaki": False,
+                    "zone_cache_status": "not_needed_yet", "zone_cache_key": key,
+                }
+            rows_by_key[key] = row
+        scanned.update(new_cells)
+
+    # Osaki uses the image-derived diagnostic geometry, but only when this user's route is
+    # close enough to Osaki or an Osaki row already exists in saved state.
+    osaki_lat = 35.61939; osaki_lon = 139.72849
+    osaki_key = _station_row_key_v293("大崎駅", osaki_lat, osaki_lon)
+    osaki_best = _station_center_best_distance_v293({"lat": osaki_lat, "lon": osaki_lon}, map_points)
+    if osaki_key in rows_by_key or osaki_best <= GPS_TRACK_STATION_NEAR_RADIUS_M:
+        osaki = _project_osaki_forced_debug_v292(map_points)
+        if isinstance(osaki, dict):
+            rows_by_key[osaki_key] = osaki
+
+    rows = _merge_station_rows_v293(list(rows_by_key.values()))
+    saved = False
+    try:
+        _save_station_visit_state_v293(
+            family, member, latest_ts, len(raw_points or []),
+            sorted(scanned), rows,
+        )
+        saved = True
+    except Exception:
+        saved = False
+    return rows, {
+        "mode": "updated", "new_gps": len(new_walk_raw), "new_cells": len(set(new_cells)), "saved": saved,
+    }
+
+
 def _render_burari_project_map_v292(points, segments, stations):
     if not points:
         return
@@ -28683,20 +29158,29 @@ def page_burari_project():
     with stat_cols[2]:
         st.metric("歩行区間", f"{len(segments)} 本")
     map_points = walk_points or points[-1:]
-    stations = _project_stations_near_track_v290(map_points)
-    # Keep Osaki diagnostic independent from normal station discovery until approved.
-    def _is_osaki_row(row):
-        n = re.sub(r"\s+", "", str((row or {}).get("name") or ""))
-        if n.endswith("駅"):
-            n = n[:-1]
-        return n == "大崎"
-    stations = [row for row in stations if not _is_osaki_row(row)]
-    stations.append(_project_osaki_forced_debug_v292(map_points))
+
+    # v293 preflight: finish station discovery / first-time inference / numeric-state save
+    # before Leaflet is mounted.  The map itself is rendered once with a complete payload,
+    # so station work cannot blank or replace an already visible map mid-run.
+    station_status = st.empty()
+    station_status.info("新しい歩行データから到着駅を確認しています。地図は確認完了後に表示します。")
+    stations, station_meta = _project_station_preflight_v293(points, map_points)
+    station_status.empty()
+
     _render_burari_project_map_v292(map_points, segments, stations)
+    if station_meta.get("mode") == "loaded":
+        st.caption("駅情報は前回保存した数値データから復元しました。駅の再推定・地図画像解析は行っていません。")
+    elif station_meta.get("saved"):
+        st.caption(
+            f"新しい歩行データを確認し、駅情報を更新して保存しました（新規確認GPS {int(station_meta.get('new_gps') or 0)}点）。"
+            "次回はこの保存済み情報を先に読み込んで地図を表示します。"
+        )
+    else:
+        st.caption("駅情報の確認は完了しましたが、次回用データの保存に失敗しました。地図表示自体には影響しません。")
     st.caption(
-        "【v292 大崎駅・画像推定＋数値保存】初回だけ地図画像から線路密度を解析して駅判定範囲を作り、"
-        "完成した赤枠の緯度・経度ポリゴン、長さ、幅、軸角度などをSupabaseへ数値保存します。"
-        "次回以降は保存済み数値を読み込んで同じ範囲を再現するため、地図画像の再解析は行いません。"
+        "【v293 駅判定プリフライト】新しいGPSがある場合だけ、未確認エリアの駅候補を地図表示前に確認します。"
+        "初めて近づいた駅だけ画像から範囲を推定し、緯度・経度ポリゴン等を数値保存します。"
+        "同じエリア・同じ駅は次回以降その保存値を利用するため、重い推定処理を繰り返しません。"
     )
 
 
