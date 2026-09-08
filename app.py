@@ -32,7 +32,7 @@ import streamlit as st
 # Freshly generated update: 2026-08-31 23:49 JST
 GENERATED_UPDATE_JST = "2026-09-08T18:48:00+09:00"
 
-APP_BUILD = "v316"
+APP_BUILD = "v317"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -806,7 +806,7 @@ VIDEO_PROCESSING_MAX_SECONDS = 75
 # conservative margin because browser/device bitrates vary.
 VIDEO_RECORDING_RESERVE_BYTES = 36 * 1024 * 1024
 VIDEO_MAX_BYTES = 100 * 1024 * 1024
-VIDEO_AI_MAX_SELECTIONS = 6
+VIDEO_AI_MAX_SELECTIONS = 6  # いい瞬間の切り抜き枚数
 # Good Moments sampling is duration-aware and capped at 20 candidate frames:
 #   <=10 sec -> every 0.5 sec
 #   15 sec   -> every 0.75 sec
