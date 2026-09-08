@@ -32,7 +32,7 @@ import streamlit as st
 # Freshly generated update: 2026-08-31 23:49 JST
 GENERATED_UPDATE_JST = "2026-09-08T08:12:00+09:00"
 
-APP_BUILD = "v293"
+APP_BUILD = "v294"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -29020,14 +29020,19 @@ def _project_station_preflight_v293(raw_points, map_points):
     }
 
 
-def _render_burari_project_map_v292(points, segments, stations):
+def _render_burari_project_map_v294(points, segments, stations):
+    """Render a deliberately minimal project map.
+
+    v294 keeps station discovery/persistence from v293, but removes station names,
+    comments, badges and diamond markers from the map.  Only walked-route glow,
+    reached-station area glow, and the temporary red Osaki diagnostic outline remain.
+    """
     if not points:
         return
     payload = {
         "points": [[round(float(p["lat"]), 7), round(float(p["lon"]), 7)] for p in points],
         "segments": segments,
         "stations": stations,
-        "station_near_radius_m": GPS_TRACK_STATION_NEAR_RADIUS_M,
     }
     payload_json = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).replace("</", "<\\/")
     map_html = f"""<!doctype html>
@@ -29041,98 +29046,56 @@ html,body{{margin:0;padding:0;background:#0b1012;font-family:-apple-system,Blink
 #project-map .leaflet-pane,#project-map .leaflet-tile,#project-map .leaflet-marker-icon,#project-map .leaflet-marker-shadow,#project-map .leaflet-tile-container,#project-map .leaflet-pane>svg,#project-map .leaflet-pane>canvas,#project-map .leaflet-zoom-box,#project-map .leaflet-image-layer,#project-map .leaflet-layer{{position:absolute;left:0;top:0;}}
 #project-map.leaflet-container{{overflow:hidden;-webkit-tap-highlight-color:transparent;}}
 #project-map .leaflet-tile{{width:256px;height:256px;max-width:none!important;max-height:none!important;user-select:none;-webkit-user-drag:none;}}
-.project-station-label{{background:rgba(7,16,13,.9);border:1px solid rgba(151,255,187,.72);color:#effff4;border-radius:9px;padding:3px 7px;box-shadow:0 0 16px rgba(88,255,139,.42);font-size:11px;font-weight:800;}}
-.project-station-label:before{{display:none;}}
-.project-arrived-label{{background:rgba(4,22,10,.96);border:2px solid rgba(232,255,237,.98);color:#fff;border-radius:10px;padding:4px 8px;box-shadow:0 0 14px rgba(72,255,122,.96),0 0 34px rgba(72,255,122,.68);font-size:13px;font-weight:950;}}
-.project-arrived-label:before{{display:none;}}
-.project-arrived-station-icon{{background:transparent!important;border:0!important;}}
-.project-arrived-station-icon>div{{width:18px;height:18px;transform:rotate(45deg);background:#e5ffe9;border:3px solid #fff;border-radius:3px;box-shadow:0 0 10px #64ff8b,0 0 28px #42ff76,0 0 50px rgba(50,255,112,.9);}}
-.project-arrival-badge{{position:absolute;z-index:1000;right:10px;top:10px;max-width:72%;display:none;background:rgba(5,20,11,.92);border:1px solid rgba(190,255,207,.7);color:#f0fff4;border-radius:12px;padding:7px 10px;font-size:11px;font-weight:850;line-height:1.35;box-shadow:0 0 18px rgba(80,255,126,.32);pointer-events:none;}}
-.project-legend{{position:absolute;z-index:1000;left:10px;bottom:10px;background:rgba(4,12,9,.84);border:1px solid rgba(151,255,187,.24);color:#e9fff0;border-radius:11px;padding:7px 9px;font-size:10px;line-height:1.45;box-shadow:0 4px 16px rgba(0,0,0,.28);pointer-events:none;}}
-.project-legend-line{{display:inline-block;width:20px;height:3px;background:#7fd994;box-shadow:0 0 4px rgba(72,220,108,.42);border-radius:99px;margin-right:6px;vertical-align:middle;}}
-.project-legend-station{{display:inline-block;width:24px;height:10px;border:2px solid #f0fff3;background:rgba(72,255,119,.68);box-shadow:0 0 9px #58ff8b,0 0 22px rgba(88,255,139,.98);border-radius:4px;margin-right:6px;vertical-align:middle;}}
-.project-legend-debug{{display:inline-block;width:24px;height:10px;border:2px solid #ffb0b0;background:rgba(255,45,45,.10);box-shadow:0 0 8px #ff3434,0 0 22px rgba(255,45,45,.72);border-radius:4px;margin-right:6px;vertical-align:middle;}}
-.project-osaki-debug-label{{background:rgba(66,0,0,.94);border:2px solid rgba(255,190,190,.98);color:#fff;border-radius:9px;padding:4px 7px;box-shadow:0 0 12px rgba(255,45,45,.85),0 0 28px rgba(255,45,45,.42);font-size:11px;font-weight:900;}}
-.project-osaki-debug-label:before{{display:none;}}
-@media(max-width:640px){{#project-map{{height:570px;border-radius:15px;}}.project-arrival-badge{{max-width:76%;font-size:10.5px;}}}}
+@media(max-width:640px){{#project-map{{height:570px;border-radius:15px;}}}}
 </style></head><body>
-<div style="position:relative"><div id="project-map"></div><div id="project-arrival-badge" class="project-arrival-badge"></div><div class="project-legend"><div><span class="project-legend-line"></span>歩いた道</div><div><span class="project-legend-station"></span>辿り着いた駅</div><div><span class="project-legend-debug"></span>大崎駅 判定範囲（調整中）</div></div></div>
+<div style="position:relative"><div id="project-map"></div></div>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
 <script>
 (function(){{
- const data={payload_json}; const node=document.getElementById('project-map'); const arrivalBadge=document.getElementById('project-arrival-badge');
+ const data={payload_json}; const node=document.getElementById('project-map');
  if(!window.L){{node.innerHTML='<div style="color:#dbe7df;padding:24px">地図を読み込めませんでした。</div>';return;}}
  const map=L.map('project-map',{{zoomControl:true,attributionControl:true,preferCanvas:true}});
  L.tileLayer('https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png',{{maxZoom:19,attribution:'&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap</a>'}}).addTo(map);
  const all=(data.points||[]).filter((p)=>Array.isArray(p)&&p.length>=2);
  if(all.length){{const bounds=L.latLngBounds(all);map.fitBounds(bounds,{{padding:[28,28],maxZoom:16}});}}else map.setView([35.6812,139.7671],11);
+
+ // Walked route: brighter than v293, but still clearly weaker than a reached station.
  (data.segments||[]).forEach((seg)=>{{
    if(!Array.isArray(seg)||seg.length<2)return;
-   L.polyline(seg,{{color:'#1edb58',weight:8,opacity:.022,lineCap:'round',lineJoin:'round',interactive:false}}).addTo(map);
-   L.polyline(seg,{{color:'#45e875',weight:4.2,opacity:.065,lineCap:'round',lineJoin:'round',interactive:false}}).addTo(map);
-   L.polyline(seg,{{color:'#8ddda0',weight:2.0,opacity:.40,lineCap:'round',lineJoin:'round',interactive:false}}).addTo(map);
+   L.polyline(seg,{{color:'#13e95b',weight:13,opacity:.055,lineCap:'round',lineJoin:'round',interactive:false}}).addTo(map);
+   L.polyline(seg,{{color:'#39f374',weight:7.2,opacity:.16,lineCap:'round',lineJoin:'round',interactive:false}}).addTo(map);
+   L.polyline(seg,{{color:'#9dffb6',weight:2.8,opacity:.82,lineCap:'round',lineJoin:'round',interactive:false}}).addTo(map);
  }});
- const arrivedStations=[];
+
  const drawArrivedStation=(s)=>{{
    const zone=(Array.isArray(s.arrival_zone)?s.arrival_zone:[]).filter((p)=>Array.isArray(p)&&p.length>=2);
-   if(zone.length>=3){{
-     L.polygon(zone,{{color:'#19ff5f',weight:30,opacity:.08,fillColor:'#16ff58',fillOpacity:.08,interactive:false,lineJoin:'round'}}).addTo(map);
-     L.polygon(zone,{{color:'#42ff78',weight:16,opacity:.30,fillColor:'#2aff67',fillOpacity:.20,interactive:false,lineJoin:'round'}}).addTo(map);
-     L.polygon(zone,{{color:'#d9ffe2',weight:5.2,opacity:.99,fillColor:'#63ff8d',fillOpacity:.40,interactive:false,lineJoin:'round'}}).addTo(map);
-   }}
-   (Array.isArray(s.physical_shapes)?s.physical_shapes:[]).forEach((shape)=>{{
-     const c=shape&&Array.isArray(shape.coords)?shape.coords:[]; if(c.length<2)return;
-     if(shape.kind==='polygon'){{
-       L.polygon(c,{{color:'#eaffee',weight:2.2,opacity:.90,fillColor:'#86ffa3',fillOpacity:.16,interactive:false}}).addTo(map);
-     }}else{{
-       L.polyline(c,{{color:'#eaffee',weight:2.2,opacity:.82,lineCap:'round',lineJoin:'round',interactive:false}}).addTo(map);
-     }}
-   }});
-   const icon=L.divIcon({{className:'project-arrived-station-icon',html:'<div></div>',iconSize:[18,18],iconAnchor:[9,9]}});
-   const marker=L.marker([Number(s.lat),Number(s.lon)],{{icon,interactive:false}}).addTo(map);
-   marker.bindTooltip(`到着：${{String(s.name||'駅')}}`,{{permanent:true,direction:'top',offset:[0,-12],className:'project-arrived-label'}});
+   if(zone.length<3)return;
+   L.polygon(zone,{{color:'#16ff58',weight:34,opacity:.11,fillColor:'#16ff58',fillOpacity:.10,interactive:false,lineJoin:'round'}}).addTo(map);
+   L.polygon(zone,{{color:'#43ff78',weight:18,opacity:.38,fillColor:'#2aff67',fillOpacity:.24,interactive:false,lineJoin:'round'}}).addTo(map);
+   L.polygon(zone,{{color:'#e5ffe9',weight:5.8,opacity:1.0,fillColor:'#68ff91',fillOpacity:.42,interactive:false,lineJoin:'round'}}).addTo(map);
  }};
+
+ // Osaki stays red while its station boundary is being tuned.  No text or marker is shown.
  const drawOsakiDebug=(s)=>{{
    const zone=(Array.isArray(s.arrival_zone)?s.arrival_zone:[]).filter((p)=>Array.isArray(p)&&p.length>=2);
-   if(zone.length>=3){{
-     L.polygon(zone,{{color:'#ff2020',weight:18,opacity:.10,fillColor:'#ff3030',fillOpacity:.025,interactive:false,lineJoin:'round'}}).addTo(map);
-     L.polygon(zone,{{color:'#ff3939',weight:8,opacity:.45,fillColor:'#ff3030',fillOpacity:.045,interactive:false,lineJoin:'round'}}).addTo(map);
-     L.polygon(zone,{{color:'#ffd0d0',weight:3.0,opacity:.99,fillColor:'#ff3030',fillOpacity:.025,interactive:false,lineJoin:'round'}}).addTo(map);
-   }}
-   const state=Boolean(s.arrived)?'到着判定あり':'未到着';
-   const len=(Number(s.half_length_m||0)*2).toFixed(0), wid=(Number(s.half_width_m||0)*2).toFixed(0), deg=Number(s.axis_deg||0).toFixed(0);
-   const method=String(s.method||''); const score=Number(s.vision_score||0);
-   const methodLabel=method.startsWith('map_image_station_anchor')?'地図画像・線路密度':(String(s.footprint_source||'')==='stored_numeric_station_zone'?'保存済み数値':(method.startsWith('map_image_failed')?'画像解析失敗→ホーム補助':'ホーム補助'));
-   const cache=String(s.zone_cache_status||'');
-   const cacheLabel=cache==='loaded'?'保存済み範囲を再現':(cache==='saved'?'初回推定→数値保存済み':(cache==='save_failed'?'数値保存失敗':'未保存'));
-   const icon=L.divIcon({{className:'project-arrived-station-icon',html:'<div style="background:#ff3535;border-color:#fff;box-shadow:0 0 10px #ff2020,0 0 26px rgba(255,32,32,.9)"></div>',iconSize:[18,18],iconAnchor:[9,9]}});
-   const marker=L.marker([Number(s.lat),Number(s.lon)],{{icon,interactive:false}}).addTo(map);
-   marker.bindTooltip(`大崎駅 判定範囲（画像推定・調整中）<br>${{state}} / 約${{len}}m × ${{wid}}m / 軸${{deg}}°<br>${{methodLabel}} / 信頼${{score.toFixed(2)}}<br>${{cacheLabel}}`,{{permanent:true,direction:'top',offset:[0,-12],className:'project-osaki-debug-label'}});
+   if(zone.length<3)return;
+   L.polygon(zone,{{color:'#ff2020',weight:18,opacity:.10,fillColor:'#ff3030',fillOpacity:.018,interactive:false,lineJoin:'round'}}).addTo(map);
+   L.polygon(zone,{{color:'#ff3b3b',weight:8,opacity:.50,fillColor:'#ff3030',fillOpacity:.030,interactive:false,lineJoin:'round'}}).addTo(map);
+   L.polygon(zone,{{color:'#ffd3d3',weight:3.0,opacity:.99,fillColor:'#ff3030',fillOpacity:.018,interactive:false,lineJoin:'round'}}).addTo(map);
  }};
+
  const renderedStationKeys=new Set();
  const stationKey=(name,lat,lon)=>`${{String(name||'駅').replace(/\\s+/g,'')}}:${{lat.toFixed(4)}}:${{lon.toFixed(4)}}`;
  (data.stations||[]).forEach((s)=>{{
    const lat=Number(s.lat),lon=Number(s.lon); if(!Number.isFinite(lat)||!Number.isFinite(lon))return;
-   const name=String(s.name||'駅'); const key=stationKey(name,lat,lon); if(renderedStationKeys.has(key))return; renderedStationKeys.add(key);
-   if(Boolean(s.debug_osaki)){{
-     if(Boolean(s.arrived)) arrivedStations.push({{name,lat,lon,distance_m:Number(s.distance_m)||0}});
-     drawOsakiDebug(s);
-   }} else if(Boolean(s.arrived)){{
-     arrivedStations.push({{name,lat,lon,distance_m:Number(s.distance_m)||0}}); drawArrivedStation(s);
-   }} else if(Number(s.distance_m)<=Number(data.station_near_radius_m||900)){{
-     const m=L.circleMarker([lat,lon],{{radius:3.0,color:'#b9ffd0',weight:1,opacity:.22,fillColor:'#62ff92',fillOpacity:.07}}).addTo(map);
-     m.bindTooltip(name,{{direction:'top',className:'project-station-label'}});
-   }}
+   const key=stationKey(String(s.name||'駅'),lat,lon); if(renderedStationKeys.has(key))return; renderedStationKeys.add(key);
+   if(Boolean(s.debug_osaki)){{drawOsakiDebug(s);return;}}
+   if(Boolean(s.arrived))drawArrivedStation(s);
  }});
- if(arrivalBadge){{
-   const names=[...new Set(arrivedStations.sort((a,b)=>a.distance_m-b.distance_m).map((s)=>s.name))];
-   if(names.length){{arrivalBadge.textContent=`到着判定：${{names.slice(0,3).join('・')}}`;arrivalBadge.style.display='block';}}
- }}
  setTimeout(()=>map.invalidateSize(),120);
 }})();
 </script></body></html>"""
     st.components.v1.html(map_html, height=650, scrolling=False)
-
 
 def page_burari_project():
     page_top(
@@ -29167,21 +29130,7 @@ def page_burari_project():
     stations, station_meta = _project_station_preflight_v293(points, map_points)
     station_status.empty()
 
-    _render_burari_project_map_v292(map_points, segments, stations)
-    if station_meta.get("mode") == "loaded":
-        st.caption("駅情報は前回保存した数値データから復元しました。駅の再推定・地図画像解析は行っていません。")
-    elif station_meta.get("saved"):
-        st.caption(
-            f"新しい歩行データを確認し、駅情報を更新して保存しました（新規確認GPS {int(station_meta.get('new_gps') or 0)}点）。"
-            "次回はこの保存済み情報を先に読み込んで地図を表示します。"
-        )
-    else:
-        st.caption("駅情報の確認は完了しましたが、次回用データの保存に失敗しました。地図表示自体には影響しません。")
-    st.caption(
-        "【v293 駅判定プリフライト】新しいGPSがある場合だけ、未確認エリアの駅候補を地図表示前に確認します。"
-        "初めて近づいた駅だけ画像から範囲を推定し、緯度・経度ポリゴン等を数値保存します。"
-        "同じエリア・同じ駅は次回以降その保存値を利用するため、重い推定処理を繰り返しません。"
-    )
+    _render_burari_project_map_v294(map_points, segments, stations)
 
 
 # ============================================================
