@@ -32,7 +32,7 @@ import streamlit as st
 # Freshly generated update: 2026-08-31 23:49 JST
 GENERATED_UPDATE_JST = "2026-09-08T18:48:00+09:00"
 
-APP_BUILD = "v310"
+APP_BUILD = "v311"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -28999,7 +28999,7 @@ PHOTO_LEGACY_BIG_STATIONS_V296 = {
 # fluorescent walked links.  Keep this seed separate from the existing "main" seed.
 # If PHOTO_LEGACY_NEW_TARGET_MEMBER_V307 is not supplied as a secret, the first
 # non-main member in the family that opens the project claims this seed once.
-PHOTO_LEGACY_NEW_PROFILE_V307 = "wallmap_1818_1820_v310"
+PHOTO_LEGACY_NEW_PROFILE_V307 = "wallmap_1818_1820_v311"
 PHOTO_LEGACY_NEW_TARGET_MEMBER_V307 = str(secret("PHOTO_LEGACY_NEW_TARGET_MEMBER_V307", "") or "").strip()
 PHOTO_LEGACY_SEED_ASSIGNMENT_DIR_V307 = "_photo_seed_assignments/v307"
 
@@ -29252,6 +29252,24 @@ PHOTO_LEGACY_NEW_ACTIVE_STATIONS_V309 = {
     if name in PHOTO_LEGACY_FIXED_STATION_NAMES_V309
 }
 
+# v311: main already had the older wall-map seed.  Merge it with the new 86-pair
+# wall-map network instead of choosing one or the other.  The only original main
+# sections not already present in the 86-pair network are the west Chuo/Sobu links.
+PHOTO_LEGACY_MAIN_EXTRA_PAIRS_V311 = (
+    ("中野駅", "東中野駅"),
+    ("東中野駅", "大久保駅"),
+    ("大久保駅", "新宿駅"),
+)
+PHOTO_LEGACY_MAIN_COMBINED_STATIONS_V311 = dict(PHOTO_LEGACY_STATIONS_V296)
+PHOTO_LEGACY_MAIN_COMBINED_STATIONS_V311.update(PHOTO_LEGACY_NEW_ACTIVE_STATIONS_V309)
+PHOTO_LEGACY_MAIN_COMBINED_SEQUENCES_V311 = (
+    tuple(PHOTO_LEGACY_NEW_ROUTE_SEQUENCES_V307)
+    + tuple(PHOTO_LEGACY_MAIN_EXTRA_PAIRS_V311)
+)
+PHOTO_LEGACY_MAIN_COMBINED_BIG_STATIONS_V311 = (
+    set(PHOTO_LEGACY_BIG_STATIONS_V296) | set(PHOTO_LEGACY_NEW_BIG_STATIONS_V307)
+)
+
 def _photo_legacy_seed_assignment_path_v307(family_key=None):
     family = re.sub(r"[^a-zA-Z0-9_.-]+", "_", str(family_key or current_family_key() or "family").strip() or "family")
     return f"{PHOTO_LEGACY_SEED_ASSIGNMENT_DIR_V307}/{family}.json"
@@ -29309,12 +29327,10 @@ def _claim_photo_legacy_seed_v307(family_key, member_key):
 
 
 def _photo_legacy_profile_v307():
-    """Apply the wall-map seed deterministically to every non-main account.
+    """Use the new photographed network for every account, including main.
 
-    v310 removes the one-time family assignment gate because it was the main reason the
-    photographed historical routes appeared unchanged on some accounts. The main account
-    keeps its original legacy profile; every other member always receives the detailed
-    wall-map seed immediately.
+    The main account receives a merged profile so its older Nakano -> Shinjuku history
+    is preserved while the newly read green/cyan wall-map routes are added.
     """
     try:
         member = str(current_member_key() or "").strip()
@@ -29323,30 +29339,35 @@ def _photo_legacy_profile_v307():
     if not member:
         return ""
     if member == PHOTO_LEGACY_MAIN_MEMBER_V296:
-        return "legacy_main_v296"
+        return "legacy_main_plus_wallmap_v311"
     return PHOTO_LEGACY_NEW_PROFILE_V307
 
 
 def _photo_legacy_active_stations_v307():
     profile = _photo_legacy_profile_v307()
+    if profile == "legacy_main_plus_wallmap_v311":
+        return PHOTO_LEGACY_MAIN_COMBINED_STATIONS_V311
     if profile == PHOTO_LEGACY_NEW_PROFILE_V307:
         return PHOTO_LEGACY_NEW_ACTIVE_STATIONS_V309
-    if profile == "legacy_main_v296":
-        return PHOTO_LEGACY_STATIONS_V296
     return {}
 
 
 def _photo_legacy_active_sequences_v307():
     profile = _photo_legacy_profile_v307()
+    if profile == "legacy_main_plus_wallmap_v311":
+        return PHOTO_LEGACY_MAIN_COMBINED_SEQUENCES_V311
     if profile == PHOTO_LEGACY_NEW_PROFILE_V307:
         return PHOTO_LEGACY_NEW_ROUTE_SEQUENCES_V307
-    if profile == "legacy_main_v296":
-        return PHOTO_LEGACY_ROUTE_SEQUENCES_V296
     return ()
 
 
 def _photo_legacy_active_big_stations_v307():
-    return PHOTO_LEGACY_NEW_BIG_STATIONS_V307 if _photo_legacy_profile_v307() == PHOTO_LEGACY_NEW_PROFILE_V307 else PHOTO_LEGACY_BIG_STATIONS_V296
+    profile = _photo_legacy_profile_v307()
+    if profile == "legacy_main_plus_wallmap_v311":
+        return PHOTO_LEGACY_MAIN_COMBINED_BIG_STATIONS_V311
+    if profile == PHOTO_LEGACY_NEW_PROFILE_V307:
+        return PHOTO_LEGACY_NEW_BIG_STATIONS_V307
+    return set()
 
 
 def _photo_legacy_enabled_v296():
@@ -30574,9 +30595,9 @@ html,body{{margin:0;padding:0;background:#0b1012;font-family:-apple-system,Blink
 #       and falls back only for unresolved pairs. Existing successful v305 pieces are
 #       kept. No straight station-to-station fallback is drawn.
 # ============================================================
-PHOTO_LEGACY_ROUTE_SCHEMA_V305 = "photo_legacy_fixed_86_pairs_v310"
-PHOTO_LEGACY_ROUTE_STORAGE_FILE_V305 = "photo_legacy_fixed_86_pairs_v310.json"
-PHOTO_LEGACY_ROUTE_ENGINE_V306 = "v310_full_detailed_foot_router"
+PHOTO_LEGACY_ROUTE_SCHEMA_V305 = "photo_legacy_main_plus_wallmap_v311"
+PHOTO_LEGACY_ROUTE_STORAGE_FILE_V305 = "photo_legacy_main_plus_wallmap_v311.json"
+PHOTO_LEGACY_ROUTE_ENGINE_V306 = "v311_main_plus_wallmap_detailed_router"
 PHOTO_LEGACY_ROUTE_FOOT_BASE_V306 = "https://routing.openstreetmap.de/routed-foot/route/v1/driving"
 PHOTO_LEGACY_ROUTE_MAX_WAYPOINTS_V306 = 7
 PHOTO_LEGACY_ROUTE_REQUEST_TIMEOUT_V306 = 10.0
@@ -31193,7 +31214,12 @@ def page_burari_project():
     photo_segments = []
     if photo_seed_enabled:
         route_status = st.empty()
-        route_status.info("写真の緑線＋水色線から確定した86区間を、1区間ずつ丁寧に道路へ合わせています。時間がかかっても、できるだけ今回の表示内で最後まで補完します。")
+        profile_label = _photo_legacy_profile_v307()
+        expected_photo_pairs = len(_photo_legacy_pair_defs_v305())
+        route_status.info(
+            f"写真由来の過去データを読み込み済み：{expected_photo_pairs}区間。"
+            "緑線＋水色線を1区間ずつ道路へ合わせています。"
+        )
         photo_segments, photo_route_meta = _photo_legacy_prepare_routes_v305()
         route_done = int(photo_route_meta.get("done") or 0)
         route_total = int(photo_route_meta.get("total") or 0)
