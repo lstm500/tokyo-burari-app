@@ -32,7 +32,7 @@ import streamlit as st
 # Freshly generated update: 2026-08-31 23:49 JST
 GENERATED_UPDATE_JST = "2026-09-08T18:48:00+09:00"
 
-APP_BUILD = "v312"
+APP_BUILD = "v313"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -1523,6 +1523,8 @@ export default function(component) {
   let stream = null;
   let cameraMode = 'photo';
   let cameraFacing = 'environment';
+  // v313: remember the actual lens so photo/video use the same physical camera.
+  let preferredCameraDeviceId = null;
   try {
     const savedFacing = String(localStorage.getItem('tokyo_burari_camera_facing_v226') || '');
     if (savedFacing === 'user' || savedFacing === 'environment') cameraFacing = savedFacing;
@@ -1645,23 +1647,18 @@ export default function(component) {
     try { localStorage.setItem('tokyo_burari_camera_facing_v226', cameraFacing); } catch (_) {}
   };
   const preferredVideoConstraints = () => {
-    // v255: prioritize frame rate over resolution because recorded video is mainly
-    // used as the source for Good Moments still extraction. Request up to 60fps at
-    // a lighter 720p-class portrait stream. These are only ideal/max constraints:
-    // Android/Chrome can fall back to a lower camera-supported frame rate or size.
-    // No custom aspectRatio is imposed; the phone camera selects a native mode.
-    if (cameraMode === 'video') {
-      return {
-        facingMode: { ideal: cameraFacing },
-        width: { ideal: 720, max: 1080 },
-        height: { ideal: 1280, max: 1920 },
-        frameRate: { ideal: 60, max: 60 }
-      };
-    }
-    return {
+    // v313: photo and video deliberately request the same camera geometry.
+    // Different resolution/FPS requests can make Android switch lenses or crop the
+    // sensor differently, which looks like a different zoom. Keep one common request.
+    const constraints = {
       facingMode: { ideal: cameraFacing },
       height: { ideal: 1600 }
     };
+    if (preferredCameraDeviceId) {
+      constraints.deviceId = { exact: preferredCameraDeviceId };
+      delete constraints.facingMode;
+    }
+    return constraints;
   };
 
   const applyWidestAvailableZoom = async () => {
@@ -1991,14 +1988,12 @@ export default function(component) {
   const errorMessage = (err, mode = cameraMode) => {
     const name = (err && err.name) ? err.name : '';
     if (name === 'NotAllowedError' || name === 'PermissionDeniedError') {
-      return mode === 'video'
-        ? 'カメラまたはマイクが許可されていません。ブラウザのサイト設定でカメラとマイクを「許可」にしてください。'
-        : 'カメラが許可されていません。ブラウザのサイト設定でカメラを「許可」にして、このページを再読み込みしてください。';
+      return 'カメラが許可されていません。ブラウザのサイト設定でカメラを「許可」にして、このページを再読み込みしてください。';
     }
     if (name === 'NotFoundError' || name === 'DevicesNotFoundError') return '利用できるカメラが見つかりませんでした。';
     if (name === 'NotReadableError' || name === 'TrackStartError') return 'カメラを開けませんでした。ほかのアプリがカメラを使っていないか確認してください。';
     if (name === 'SecurityError') return 'ブラウザのセキュリティ設定でカメラがブロックされています。';
-    return 'カメラを開けませんでした。ブラウザのカメラ・マイク権限を確認してください。';
+    return 'カメラを開けませんでした。ブラウザのカメラ権限を確認してください。';
   };
 
   const startCamera = async (mode = 'photo') => {
@@ -2022,28 +2017,21 @@ export default function(component) {
       return;
     }
 
-    setStatus(cameraMode === 'video' ? 'カメラとマイクの使用を確認しています…' : 'カメラの使用を確認しています…');
+    setStatus('カメラの使用を確認しています…');
     try {
-      // v312: microphone failure must never make the camera unusable. Photo mode
-      // always asks for video only. Video mode first tries camera+microphone and,
-      // if audio acquisition fails for any reason, immediately retries video-only.
-      let videoOpenedWithoutAudio = false;
-      if (cameraMode === 'video') {
-        try {
-          stream = await navigator.mediaDevices.getUserMedia({
-            audio: true,
-            video: preferredVideoConstraints()
-          });
-        } catch (audioErr) {
-          console.warn('camera+microphone open failed; retrying video-only', audioErr);
-          setStatus('マイクを利用できないため、音声なしでカメラを開いています…');
-          stream = await navigator.mediaDevices.getUserMedia({
-            audio: false,
-            video: preferredVideoConstraints()
-          });
-          videoOpenedWithoutAudio = true;
-        }
-      } else {
+      // v313: microphone is intentionally never requested. Photo and video use
+      // exactly the same camera request, the same portrait normalization and the
+      // same minimum hardware zoom so their field of view matches.
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          audio: false,
+          video: preferredVideoConstraints()
+        });
+      } catch (firstErr) {
+        // If a remembered device id is no longer valid, fall back to the requested
+        // facing camera once and remember the newly opened physical lens below.
+        if (!preferredCameraDeviceId) throw firstErr;
+        preferredCameraDeviceId = null;
         stream = await navigator.mediaDevices.getUserMedia({
           audio: false,
           video: preferredVideoConstraints()
@@ -2051,19 +2039,16 @@ export default function(component) {
       }
       video.srcObject = stream;
       await video.play();
-      // v255: do not apply any additional video constraints after the stream opens.
-      // Reconfiguring stabilization/zoom can cause a camera pipeline restart on some
-      // Android devices. Photo mode keeps its existing helpers.
-      if (cameraMode === 'photo') {
-        await applyNativePortraitConstraint();
-        await applyWidestAvailableZoom();
-      }
+      await applyNativePortraitConstraint();
+      await applyWidestAvailableZoom();
       syncNativeCameraFrame();
       try {
         const cameraTrack = stream.getVideoTracks && stream.getVideoTracks()[0];
         const settings = (cameraTrack && cameraTrack.getSettings) ? cameraTrack.getSettings() : {};
         const actualFacing = String(settings?.facingMode || '');
         if (actualFacing === 'user' || actualFacing === 'environment') cameraFacing = actualFacing;
+        const actualDeviceId = String(settings?.deviceId || '');
+        if (actualDeviceId) preferredCameraDeviceId = actualDeviceId;
       } catch (_) {}
       persistCameraFacing();
       syncOrientationUi();
@@ -2079,11 +2064,8 @@ export default function(component) {
         localStorage.setItem('tokyo_burari_last_camera_open_v1', String(openedAt));
         localStorage.setItem('tokyo_burari_last_camera_mode_v1', cameraMode === 'video' ? 'video' : 'photo');
       } catch (_) {}
-      const hasLiveAudio = !!(stream && stream.getAudioTracks && stream.getAudioTracks().some((track) => track.readyState === 'live'));
       if (cameraMode === 'video') {
-        setStatus(hasLiveAudio && !videoOpenedWithoutAudio
-          ? `動画は最大60秒です。音声も一緒に記録します。${cameraFacing === 'user' ? ' 内側カメラ使用中。' : ''}`
-          : `動画は最大60秒です。マイクを利用できないため音声なしで記録します。${cameraFacing === 'user' ? ' 内側カメラ使用中。' : ''}`);
+        setStatus(`動画は最大60秒です。${cameraFacing === 'user' ? ' 内側カメラ使用中。' : ''}`);
       } else {
         setStatus(cameraFacing === 'user' ? '内側カメラ使用中です。' : '');
       }
@@ -3047,6 +3029,7 @@ export default function(component) {
   const switchCameraFacing = () => {
     if (mediaRecorder && mediaRecorder.state === 'recording') return;
     cameraFacing = cameraFacing === 'user' ? 'environment' : 'user';
+    preferredCameraDeviceId = null;
     persistCameraFacing();
     syncFacingUi();
     setStatus(cameraFacing === 'user' ? '内側カメラに切り替えています…' : '外側カメラに切り替えています…');
@@ -24261,7 +24244,7 @@ def page_trip():
             "video_candidate_sheet_signed_url": str(video_reservation.get("candidate_sheet_signed_url") or ""),
             "video_candidate_sheet_storage_path": str(video_reservation.get("candidate_sheet_path") or ""),
         },
-        key=f"live_camera_v312_{camera_trip_key}_{st.session_state.capture_serial}_{_current_ui_refresh_epoch()}",
+        key=f"live_camera_v313_{camera_trip_key}_{st.session_state.capture_serial}_{_current_ui_refresh_epoch()}",
         on_photo_change=lambda: None,
         on_video_change=lambda: None,
         on_camera_error_change=lambda: None,
