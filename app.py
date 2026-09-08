@@ -29046,7 +29046,7 @@ html,body{{margin:0;padding:0;background:#0b1012;font-family:-apple-system,Blink
 #project-map .leaflet-pane,#project-map .leaflet-tile,#project-map .leaflet-marker-icon,#project-map .leaflet-marker-shadow,#project-map .leaflet-tile-container,#project-map .leaflet-pane>svg,#project-map .leaflet-pane>canvas,#project-map .leaflet-zoom-box,#project-map .leaflet-image-layer,#project-map .leaflet-layer{{position:absolute;left:0;top:0;}}
 #project-map.leaflet-container{{overflow:hidden;-webkit-tap-highlight-color:transparent;}}
 #project-map .leaflet-tile{{width:256px;height:256px;max-width:none!important;max-height:none!important;user-select:none;-webkit-user-drag:none;}}
-@media(max-width:640px){{#project-map{{height:500px;border-radius:15px;}}}}
+@media(max-width:640px){{#project-map{{height:570px;border-radius:15px;}}}}
 </style></head><body>
 <div style="position:relative"><div id="project-map"></div></div>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
@@ -29087,7 +29087,7 @@ html,body{{margin:0;padding:0;background:#0b1012;font-family:-apple-system,Blink
  setTimeout(()=>map.invalidateSize(),120);
 }})();
 </script></body></html>"""
-    st.components.v1.html(map_html, height=520, scrolling=False)
+    st.components.v1.html(map_html, height=650, scrolling=False)
 
 def page_burari_project():
     # v296: keep the map near the top of the phone screen. Streamlit columns stack on
