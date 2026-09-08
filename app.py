@@ -32,7 +32,7 @@ import streamlit as st
 # Freshly generated update: 2026-08-31 23:49 JST
 GENERATED_UPDATE_JST = "2026-09-08T18:48:00+09:00"
 
-APP_BUILD = "v314"
+APP_BUILD = "v315"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -30649,10 +30649,10 @@ html,body{{margin:0;padding:0;background:#0b1012;font-family:-apple-system,Blink
 # ============================================================
 PHOTO_LEGACY_ROUTE_SCHEMA_V305 = "photo_legacy_main_plus_wallmap_v311"
 PHOTO_LEGACY_ROUTE_STORAGE_FILE_V305 = "photo_legacy_main_plus_wallmap_v311.json"
-PHOTO_LEGACY_ROUTE_ENGINE_V306 = "v311_main_plus_wallmap_detailed_router"
+PHOTO_LEGACY_ROUTE_ENGINE_V306 = "v315_sequential_pair_router"
 PHOTO_LEGACY_ROUTE_FOOT_BASE_V306 = "https://routing.openstreetmap.de/routed-foot/route/v1/driving"
 PHOTO_LEGACY_ROUTE_MAX_WAYPOINTS_V306 = 7
-PHOTO_LEGACY_ROUTE_REQUEST_TIMEOUT_V306 = 10.0
+PHOTO_LEGACY_ROUTE_REQUEST_TIMEOUT_V306 = 12.0
 PHOTO_LEGACY_ROUTE_CHUNK_WORKERS_V306 = 2
 PHOTO_LEGACY_ROUTE_PAIR_WORKERS_V306 = 2
 PHOTO_LEGACY_ROUTE_PAIR_FALLBACK_LIMIT_V306 = 999
@@ -31074,6 +31074,14 @@ def _photo_legacy_reset_failed_v306():
 
 
 def _photo_legacy_prepare_routes_v305():
+    """Resolve photographed historical routes strictly one station-pair at a time.
+
+    v315 intentionally avoids the previous bulk/chunk execution. Each pair is attempted
+    separately, immediately persisted, and reflected in an on-screen progress indicator.
+    Existing successful rows are preserved. Failed rows from older engines are retried;
+    rows that fail under this v315 engine remain final failures until the user explicitly
+    retries them.
+    """
     if not _photo_legacy_enabled_v296():
         return [], {"mode": "disabled", "done": 0, "success": 0, "failed": 0, "total": 0, "pending": 0}
 
@@ -31084,87 +31092,86 @@ def _photo_legacy_prepare_routes_v305():
         state = _photo_legacy_default_state_v305()
     pairs = state.setdefault("pairs", {})
     definitions = _photo_legacy_pair_defs_v305()
+    total = len(definitions)
 
-    # Preserve already successful v305 results. Old failed/retry rows are retried once by
-    # the bounded v306 engine; failures produced by v306 itself are not looped forever.
-    pending_defs = []
+    # Reuse completed geometry. Old-engine failures are work items again; only a failure
+    # produced by the current v315 engine is considered final for this pass.
+    work = []
     for row in definitions:
         item = pairs.get(row["key"])
         if isinstance(item, dict) and item.get("status") == "done":
             continue
         if _photo_legacy_v306_is_final_failed(item):
             continue
-        pending_defs.append(row)
+        work.append(row)
 
-    if pending_defs:
-        pending_keys = {row["key"] for row in pending_defs}
-        chunks = [
-            chunk for chunk in _photo_legacy_chunk_defs_v306()
-            if any(pair_def["key"] in pending_keys for pair_def in chunk.get("pairs") or [])
-        ]
-        # v307: the second photographed map has many more links. Process only a fixed
-        # number of multi-stop chunks per page load; the Continue button advances the rest.
-        chunks = chunks[:max(1, int(PHOTO_LEGACY_ROUTE_CHUNK_LIMIT_V307))]
+    initial_done = sum(
+        1 for row in definitions
+        if isinstance(pairs.get(row["key"]), dict) and pairs.get(row["key"], {}).get("status") == "done"
+    )
+    progress_slot = st.empty()
+    progress_bar = st.progress((initial_done / total) if total else 1.0)
 
-        chunk_results = []
-        if chunks:
-            worker_count = max(1, min(int(PHOTO_LEGACY_ROUTE_CHUNK_WORKERS_V306), len(chunks)))
-            with ThreadPoolExecutor(max_workers=worker_count) as executor:
-                future_map = {
-                    executor.submit(_photo_legacy_route_request_names_v306, chunk["names"]): chunk
-                    for chunk in chunks
+    # Three attempts per pair are deliberate. The public pedestrian router occasionally
+    # times out; retrying the same single pair is safer than launching many requests.
+    max_attempts = 3
+    for work_index, pair_def in enumerate(work, start=1):
+        current_done = sum(
+            1 for row in definitions
+            if isinstance(pairs.get(row["key"]), dict) and pairs.get(row["key"], {}).get("status") == "done"
+        )
+        a_name = str(pair_def.get("a") or "")
+        b_name = str(pair_def.get("b") or "")
+        result = None
+        for attempt in range(1, max_attempts + 1):
+            progress_slot.info(
+                f"道路を確認中：{current_done + 1} / {total} 区間　{a_name} → {b_name}　"
+                f"（試行 {attempt}/{max_attempts}）"
+            )
+            try:
+                candidate = _photo_legacy_pair_route_v306(pair_def)
+            except Exception as exc:
+                candidate = {
+                    "status": "failed",
+                    "segment": [],
+                    "a": a_name,
+                    "b": b_name,
+                    "attempts": attempt,
+                    "updated_at_jst": now_jst().isoformat(),
+                    "method": "pair_osm_foot_route",
+                    "engine": PHOTO_LEGACY_ROUTE_ENGINE_V306,
+                    "reason": type(exc).__name__,
                 }
-                for future, chunk in list((future, future_map[future]) for future in future_map):
-                    try:
-                        routed = future.result()
-                    except Exception as exc:
-                        routed = {"ok": False, "error": type(exc).__name__}
-                    chunk_results.append((chunk, routed))
+            candidate = dict(candidate or {})
+            candidate["attempts"] = attempt
+            candidate["engine"] = PHOTO_LEGACY_ROUTE_ENGINE_V306
+            candidate["updated_at_jst"] = now_jst().isoformat()
+            result = candidate
+            if candidate.get("status") == "done" and len(candidate.get("segment") or []) >= 2:
+                break
 
-        for chunk, routed in chunk_results:
-            if not isinstance(routed, dict) or not routed.get("ok"):
-                continue
-            split_rows = _photo_legacy_split_chunk_v306(chunk, routed)
-            for key, result in split_rows.items():
-                existing = pairs.get(key)
-                if isinstance(existing, dict) and existing.get("status") == "done":
-                    continue
-                pairs[key] = result
-
-        unresolved = []
-        for row in pending_defs:
-            item = pairs.get(row["key"])
-            if isinstance(item, dict) and item.get("status") == "done":
-                continue
-            unresolved.append(row)
-
-        if unresolved:
-            # Bound the slow fallback work per page load. The multi-stop requests above
-            # normally resolve most sections at once; if the public router is unhealthy,
-            # do not fan out all remaining station pairs and freeze the Streamlit page.
-            unresolved = unresolved[:max(1, int(PHOTO_LEGACY_ROUTE_PAIR_FALLBACK_LIMIT_V306))]
-            worker_count = max(1, min(int(PHOTO_LEGACY_ROUTE_PAIR_WORKERS_V306), len(unresolved)))
-            with ThreadPoolExecutor(max_workers=worker_count) as executor:
-                future_map = {executor.submit(_photo_legacy_pair_route_v306, row): row for row in unresolved}
-                for future, row in list((future, future_map[future]) for future in future_map):
-                    try:
-                        result = future.result()
-                    except Exception as exc:
-                        result = {
-                            "status": "failed",
-                            "segment": [],
-                            "a": row["a"],
-                            "b": row["b"],
-                            "attempts": 1,
-                            "updated_at_jst": now_jst().isoformat(),
-                            "method": "pair_osm_foot_route",
-                            "engine": PHOTO_LEGACY_ROUTE_ENGINE_V306,
-                            "reason": type(exc).__name__,
-                        }
-                    pairs[row["key"]] = result
-
+        if not isinstance(result, dict):
+            result = {
+                "status": "failed", "segment": [], "a": a_name, "b": b_name,
+                "attempts": max_attempts, "updated_at_jst": now_jst().isoformat(),
+                "method": "pair_osm_foot_route", "engine": PHOTO_LEGACY_ROUTE_ENGINE_V306,
+                "reason": "unknown_failure",
+            }
+        result["a"] = a_name
+        result["b"] = b_name
+        if result.get("status") != "done":
+            result["status"] = "failed"
+        pairs[pair_def["key"]] = result
         state["pairs"] = pairs
         state["engine"] = PHOTO_LEGACY_ROUTE_ENGINE_V306
+        state["complete"] = False
+        _save_photo_legacy_route_state_v305(state)
+
+        current_done = sum(
+            1 for row in definitions
+            if isinstance(pairs.get(row["key"]), dict) and pairs.get(row["key"], {}).get("status") == "done"
+        )
+        progress_bar.progress((current_done / total) if total else 1.0)
 
     done_count = 0
     failed_count = 0
@@ -31180,7 +31187,17 @@ def _photo_legacy_prepare_routes_v305():
 
     state["complete"] = pending_after == 0
     state["pairs"] = pairs
+    state["engine"] = PHOTO_LEGACY_ROUTE_ENGINE_V306
     saved_ok = _save_photo_legacy_route_state_v305(state)
+    progress_bar.progress(1.0 if total else 1.0)
+    if failed_count:
+        progress_slot.warning(
+            f"道路確認が終了しました。{done_count}/{total} 区間を道路形状で保存済み、"
+            f"{failed_count} 区間は今回取得できませんでした。"
+        )
+    else:
+        progress_slot.success(f"道路確認が終了しました。{done_count}/{total} 区間を道路形状で保存しました。")
+
     routed_segments = _photo_legacy_segments_from_state_v305(state)
     display_segments = _photo_legacy_display_segments_v308(state)
     return display_segments, {
@@ -31188,7 +31205,7 @@ def _photo_legacy_prepare_routes_v305():
         "done": done_count,
         "success": done_count,
         "failed": failed_count,
-        "total": len(definitions),
+        "total": total,
         "pending": pending_after,
         "saved": bool(saved_ok),
         "engine": PHOTO_LEGACY_ROUTE_ENGINE_V306,
@@ -31270,7 +31287,7 @@ def page_burari_project():
         expected_photo_pairs = len(_photo_legacy_pair_defs_v305())
         route_status.info(
             f"写真由来の過去データを読み込み済み：{expected_photo_pairs}区間。"
-            "緑線＋水色線を1区間ずつ道路へ合わせています。"
+            "緑線＋水色線を本当に1区間ずつ道路へ合わせ、各区間の完了直後に保存します。"
         )
         photo_segments, photo_route_meta = _photo_legacy_prepare_routes_v305()
         route_done = int(photo_route_meta.get("done") or 0)
