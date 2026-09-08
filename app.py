@@ -32,7 +32,7 @@ import streamlit as st
 # Freshly generated update: 2026-08-31 23:49 JST
 GENERATED_UPDATE_JST = "2026-09-08T18:48:00+09:00"
 
-APP_BUILD = "v309"
+APP_BUILD = "v310"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -28999,7 +28999,7 @@ PHOTO_LEGACY_BIG_STATIONS_V296 = {
 # fluorescent walked links.  Keep this seed separate from the existing "main" seed.
 # If PHOTO_LEGACY_NEW_TARGET_MEMBER_V307 is not supplied as a secret, the first
 # non-main member in the family that opens the project claims this seed once.
-PHOTO_LEGACY_NEW_PROFILE_V307 = "wallmap_1818_1820_v307"
+PHOTO_LEGACY_NEW_PROFILE_V307 = "wallmap_1818_1820_v310"
 PHOTO_LEGACY_NEW_TARGET_MEMBER_V307 = str(secret("PHOTO_LEGACY_NEW_TARGET_MEMBER_V307", "") or "").strip()
 PHOTO_LEGACY_SEED_ASSIGNMENT_DIR_V307 = "_photo_seed_assignments/v307"
 
@@ -29309,8 +29309,14 @@ def _claim_photo_legacy_seed_v307(family_key, member_key):
 
 
 def _photo_legacy_profile_v307():
+    """Apply the wall-map seed deterministically to every non-main account.
+
+    v310 removes the one-time family assignment gate because it was the main reason the
+    photographed historical routes appeared unchanged on some accounts. The main account
+    keeps its original legacy profile; every other member always receives the detailed
+    wall-map seed immediately.
+    """
     try:
-        family = str(current_family_key() or "").strip()
         member = str(current_member_key() or "").strip()
     except Exception:
         return ""
@@ -29318,23 +29324,7 @@ def _photo_legacy_profile_v307():
         return ""
     if member == PHOTO_LEGACY_MAIN_MEMBER_V296:
         return "legacy_main_v296"
-    if PHOTO_LEGACY_NEW_TARGET_MEMBER_V307:
-        return PHOTO_LEGACY_NEW_PROFILE_V307 if member == PHOTO_LEGACY_NEW_TARGET_MEMBER_V307 else ""
-    cache_key = f"_photo_legacy_profile_v307_{family}_{member}"
-    cached = st.session_state.get(cache_key)
-    if cached in {PHOTO_LEGACY_NEW_PROFILE_V307, "disabled"}:
-        return "" if cached == "disabled" else cached
-    assignment = _read_photo_legacy_seed_assignment_v307(family)
-    assigned = str(assignment.get("member_key") or "").strip() if isinstance(assignment, dict) else ""
-    if assigned:
-        result = PHOTO_LEGACY_NEW_PROFILE_V307 if assigned == member else ""
-        st.session_state[cache_key] = result or "disabled"
-        return result
-    if _claim_photo_legacy_seed_v307(family, member):
-        st.session_state[cache_key] = PHOTO_LEGACY_NEW_PROFILE_V307
-        return PHOTO_LEGACY_NEW_PROFILE_V307
-    st.session_state[cache_key] = "disabled"
-    return ""
+    return PHOTO_LEGACY_NEW_PROFILE_V307
 
 
 def _photo_legacy_active_stations_v307():
@@ -30584,16 +30574,16 @@ html,body{{margin:0;padding:0;background:#0b1012;font-family:-apple-system,Blink
 #       and falls back only for unresolved pairs. Existing successful v305 pieces are
 #       kept. No straight station-to-station fallback is drawn.
 # ============================================================
-PHOTO_LEGACY_ROUTE_SCHEMA_V305 = "photo_legacy_fixed_86_pairs_v309"
-PHOTO_LEGACY_ROUTE_STORAGE_FILE_V305 = "photo_legacy_fixed_86_pairs_v309.json"
-PHOTO_LEGACY_ROUTE_ENGINE_V306 = "v306_bounded_chunked_foot_router"
+PHOTO_LEGACY_ROUTE_SCHEMA_V305 = "photo_legacy_fixed_86_pairs_v310"
+PHOTO_LEGACY_ROUTE_STORAGE_FILE_V305 = "photo_legacy_fixed_86_pairs_v310.json"
+PHOTO_LEGACY_ROUTE_ENGINE_V306 = "v310_full_detailed_foot_router"
 PHOTO_LEGACY_ROUTE_FOOT_BASE_V306 = "https://routing.openstreetmap.de/routed-foot/route/v1/driving"
 PHOTO_LEGACY_ROUTE_MAX_WAYPOINTS_V306 = 7
-PHOTO_LEGACY_ROUTE_REQUEST_TIMEOUT_V306 = 6.0
-PHOTO_LEGACY_ROUTE_CHUNK_WORKERS_V306 = 3
-PHOTO_LEGACY_ROUTE_PAIR_WORKERS_V306 = 4
-PHOTO_LEGACY_ROUTE_PAIR_FALLBACK_LIMIT_V306 = 6
-PHOTO_LEGACY_ROUTE_CHUNK_LIMIT_V307 = 6
+PHOTO_LEGACY_ROUTE_REQUEST_TIMEOUT_V306 = 10.0
+PHOTO_LEGACY_ROUTE_CHUNK_WORKERS_V306 = 2
+PHOTO_LEGACY_ROUTE_PAIR_WORKERS_V306 = 2
+PHOTO_LEGACY_ROUTE_PAIR_FALLBACK_LIMIT_V306 = 999
+PHOTO_LEGACY_ROUTE_CHUNK_LIMIT_V307 = 999
 PHOTO_LEGACY_ROUTE_FINAL_ENDPOINT_GAP_M_V306 = 320.0
 
 
@@ -31203,7 +31193,7 @@ def page_burari_project():
     photo_segments = []
     if photo_seed_enabled:
         route_status = st.empty()
-        route_status.info("写真の緑線＋水色線から確定した86区間を、まずすべて地図上で光らせ、順次歩行者用の道路形状へ合わせています。")
+        route_status.info("写真の緑線＋水色線から確定した86区間を、1区間ずつ丁寧に道路へ合わせています。時間がかかっても、できるだけ今回の表示内で最後まで補完します。")
         photo_segments, photo_route_meta = _photo_legacy_prepare_routes_v305()
         route_done = int(photo_route_meta.get("done") or 0)
         route_total = int(photo_route_meta.get("total") or 0)
@@ -31218,7 +31208,7 @@ def page_burari_project():
                 st.rerun()
         elif route_pending > 0:
             route_status.info(
-                f"過去ルート：全 {route_total} 区間を地図に表示しています。うち {route_done} 区間は道路形状に合わせて保存済みで、残り {route_pending} 区間は必要なときだけ続けて補完できます。"
+                f"過去ルート：全 {route_total} 区間を地図に表示しています。うち {route_done} 区間は道路形状に合わせて保存済みで、残り {route_pending} 区間も今回できるだけ続けて補完します。"
             )
             if st.button("残りの過去ルートを続けて補完", use_container_width=True, key="continue_photo_route_v307"):
                 st.rerun()
