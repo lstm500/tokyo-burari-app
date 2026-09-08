@@ -30555,12 +30555,12 @@ html,body{{margin:0;padding:0;background:#0b1012;font-family:-apple-system,Blink
    L.polyline(seg,{{color:'#9dffb6',weight:2.8,opacity:.82,lineCap:'round',lineJoin:'round',interactive:false}}).addTo(map);
  }});
 
- // Photo-restored historical route is rendered in red while this validation pass is active.
+ // Photo-restored historical route also uses the normal fluorescent green glow.
  (data.photo_segments||[]).forEach((seg)=>{{
    if(!Array.isArray(seg)||seg.length<2)return;
-   L.polyline(seg,{{color:'#ff3b2f',weight:14,opacity:.060,lineCap:'round',lineJoin:'round',interactive:false}}).addTo(map);
-   L.polyline(seg,{{color:'#ff665c',weight:8.0,opacity:.18,lineCap:'round',lineJoin:'round',interactive:false}}).addTo(map);
-   L.polyline(seg,{{color:'#ffe0dc',weight:3.0,opacity:.97,lineCap:'round',lineJoin:'round',interactive:false}}).addTo(map);
+   L.polyline(seg,{{color:'#13e95b',weight:13,opacity:.055,lineCap:'round',lineJoin:'round',interactive:false}}).addTo(map);
+   L.polyline(seg,{{color:'#39f374',weight:7.2,opacity:.16,lineCap:'round',lineJoin:'round',interactive:false}}).addTo(map);
+   L.polyline(seg,{{color:'#9dffb6',weight:2.8,opacity:.82,lineCap:'round',lineJoin:'round',interactive:false}}).addTo(map);
  }});
 
  const drawArrivedStation=(s)=>{{
