@@ -27537,6 +27537,174 @@ def _project_walk_points_v271(segments):
     return points
 
 
+SPECIAL_WALL_ROUTE_TARGET_FAMILY_V296 = "default"
+SPECIAL_WALL_ROUTE_TARGET_MEMBER_V296 = "main"
+SPECIAL_WALL_ROUTE_ID_PREFIX_V296 = "wallmap_special_v296"
+SPECIAL_WALL_ROUTE_STEP_M_V296 = 42.0
+SPECIAL_WALL_ROUTE_SPEED_MPS_V296 = 1.8
+
+
+def _special_wall_route_station_sequences_v296():
+    """Routes inferred from the user's physical wall map photo.
+
+    Only the clearly readable highlighted paths are preloaded: a Yamanote-style loop
+    and the Shinjuku→Akihabara Chuo/Sobu segment.
+    """
+    return [
+        (
+            "yamanote_loop",
+            [
+                (35.712285, 139.703782),  # 高田馬場
+                (35.721204, 139.706587),  # 目白
+                (35.728926, 139.710380),  # 池袋
+                (35.731412, 139.728300),  # 大塚
+                (35.733492, 139.739345),  # 巣鴨
+                (35.736489, 139.746875),  # 駒込
+                (35.737781, 139.760860),  # 田端
+                (35.732135, 139.766787),  # 西日暮里
+                (35.727772, 139.770987),  # 日暮里
+                (35.720582, 139.778085),  # 鶯谷
+                (35.713768, 139.777254),  # 上野
+                (35.707438, 139.774632),  # 御徒町
+                (35.698683, 139.773130),  # 秋葉原
+                (35.691691, 139.770883),  # 神田
+                (35.681236, 139.767125),  # 東京
+                (35.675069, 139.763328),  # 有楽町
+                (35.666293, 139.758455),  # 新橋
+                (35.655646, 139.757600),  # 浜松町
+                (35.645736, 139.747575),  # 田町
+                (35.635500, 139.740400),  # 高輪ゲートウェイ
+                (35.628471, 139.738760),  # 品川
+                (35.619700, 139.728553),  # 大崎
+                (35.626446, 139.723444),  # 五反田
+                (35.633998, 139.715828),  # 目黒
+                (35.646685, 139.710067),  # 恵比寿
+                (35.658034, 139.701636),  # 渋谷
+                (35.670168, 139.702687),  # 原宿
+                (35.683061, 139.702042),  # 代々木
+                (35.690921, 139.700258),  # 新宿
+                (35.701306, 139.700044),  # 新大久保
+                (35.712285, 139.703782),  # 高田馬場
+            ],
+        ),
+        (
+            "sobu_shinjuku_akihabara",
+            [
+                (35.690921, 139.700258),  # 新宿
+                (35.683061, 139.702042),  # 代々木
+                (35.681195, 139.711411),  # 千駄ヶ谷
+                (35.680037, 139.720604),  # 信濃町
+                (35.686041, 139.730525),  # 四ツ谷
+                (35.691030, 139.735718),  # 市ケ谷
+                (35.702071, 139.745433),  # 飯田橋
+                (35.702030, 139.753953),  # 水道橋
+                (35.699329, 139.765319),  # 御茶ノ水
+                (35.698683, 139.773130),  # 秋葉原
+            ],
+        ),
+    ]
+
+
+def _interpolate_route_points_v296(coords, session_id, start_dt):
+    if not isinstance(start_dt, datetime):
+        start_dt = now_jst()
+    coords = [pair for pair in (coords or []) if isinstance(pair, (list, tuple)) and len(pair) >= 2]
+    if len(coords) < 2:
+        return []
+    output = []
+    ts_ms = int(start_dt.timestamp() * 1000)
+    dt_ms = max(12000, int((SPECIAL_WALL_ROUTE_STEP_M_V296 / max(0.8, SPECIAL_WALL_ROUTE_SPEED_MPS_V296)) * 1000))
+
+    first_lat = round(float(coords[0][0]), 7)
+    first_lon = round(float(coords[0][1]), 7)
+    output.append({
+        "id": f"{SPECIAL_WALL_ROUTE_ID_PREFIX_V296}_{session_id}_0",
+        "ts_ms": ts_ms,
+        "lat": first_lat,
+        "lon": first_lon,
+        "accuracy_m": 5.0,
+        "speed_mps": SPECIAL_WALL_ROUTE_SPEED_MPS_V296,
+        "heading": None,
+        "session_id": session_id,
+        "source": "timeline_import",
+    })
+    point_index = 1
+    for (lat1, lon1), (lat2, lon2) in zip(coords, coords[1:]):
+        try:
+            lat1 = float(lat1); lon1 = float(lon1); lat2 = float(lat2); lon2 = float(lon2)
+        except Exception:
+            continue
+        dist_m = _nearby_haversine_m(lat1, lon1, lat2, lon2)
+        steps = max(1, int(math.ceil(dist_m / SPECIAL_WALL_ROUTE_STEP_M_V296)))
+        for step in range(1, steps + 1):
+            frac = step / float(steps)
+            lat = round(lat1 + (lat2 - lat1) * frac, 7)
+            lon = round(lon1 + (lon2 - lon1) * frac, 7)
+            ts_ms += dt_ms
+            output.append({
+                "id": f"{SPECIAL_WALL_ROUTE_ID_PREFIX_V296}_{session_id}_{point_index}",
+                "ts_ms": ts_ms,
+                "lat": lat,
+                "lon": lon,
+                "accuracy_m": 5.0,
+                "speed_mps": SPECIAL_WALL_ROUTE_SPEED_MPS_V296,
+                "heading": None,
+                "session_id": session_id,
+                "source": "timeline_import",
+            })
+            point_index += 1
+    return output
+
+
+def _build_special_wall_route_points_v296():
+    base_dt = datetime(2026, 9, 1, 9, 0, tzinfo=ZoneInfo(APP_TIMEZONE))
+    output = []
+    offset_minutes = 0
+    for route_key, coords in _special_wall_route_station_sequences_v296():
+        session_id = f"{SPECIAL_WALL_ROUTE_ID_PREFIX_V296}_{route_key}"
+        route_dt = base_dt + timedelta(minutes=offset_minutes)
+        output.extend(_interpolate_route_points_v296(coords, session_id, route_dt))
+        approx_km = 0.0
+        for (lat1, lon1), (lat2, lon2) in zip(coords, coords[1:]):
+            try:
+                approx_km += _nearby_haversine_m(float(lat1), float(lon1), float(lat2), float(lon2)) / 1000.0
+            except Exception:
+                pass
+        offset_minutes += max(40, int(math.ceil((approx_km * 1000.0) / max(0.8, SPECIAL_WALL_ROUTE_SPEED_MPS_V296) / 60.0)) + 20)
+    return output
+
+
+def _special_wall_route_already_seeded_v296(family_key=None, member_key=None):
+    family = str(family_key or current_family_key())
+    member = str(member_key or current_member_key())
+    months = _list_track_month_keys_v271(family, member)
+    for month_key in months or []:
+        rows = _read_track_month_cached_v271(family, member, month_key)
+        count = 0
+        for row in rows or []:
+            if str(row.get("id") or "").startswith(SPECIAL_WALL_ROUTE_ID_PREFIX_V296):
+                count += 1
+                if count >= 30:
+                    return True
+    return False
+
+
+def _ensure_special_wall_route_seeded_v296():
+    family = str(current_family_key() or "")
+    member = str(current_member_key() or "")
+    if family != SPECIAL_WALL_ROUTE_TARGET_FAMILY_V296 or member != SPECIAL_WALL_ROUTE_TARGET_MEMBER_V296:
+        return False
+    if _special_wall_route_already_seeded_v296(family, member):
+        return False
+    points = _build_special_wall_route_points_v296()
+    if not points:
+        return False
+    save_gps_track_batch_v271({"points": points})
+    _read_track_month_cached_v271.clear()
+    _list_track_month_keys_v271.clear()
+    return True
+
+
 @st.cache_data(ttl=86400, max_entries=24, show_spinner=False)
 def _project_station_candidates_v271(south, west, north, east):
     """Railway stations only.  Bus terminals must never become reached stations."""
@@ -29184,6 +29352,10 @@ def page_burari_project():
         """,
         unsafe_allow_html=True,
     )
+    seeded_special_wall_route = _ensure_special_wall_route_seeded_v296()
+    if seeded_special_wall_route:
+        st.success("壁の路線図から読み取れたルートを、mainアカウントのぶらり旅に特別反映しました。")
+
     points = _load_all_project_track_points_v271()
     if not points:
         st.info("まだ歩行データがありません。位置情報を許可した状態で、ぶらり旅を開いて歩くと自動的に記録が始まります。")
