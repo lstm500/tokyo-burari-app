@@ -30,9 +30,9 @@ from zoneinfo import ZoneInfo
 import streamlit as st
 
 # Freshly generated update: 2026-08-31 23:49 JST
-GENERATED_UPDATE_JST = "2026-09-08T08:12:00+09:00"
+GENERATED_UPDATE_JST = "2026-09-08T13:05:00+09:00"
 
-APP_BUILD = "v297"
+APP_BUILD = "v300"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -972,6 +972,11 @@ PROJECT_ROUTE_SNAP_MAX_CHUNK_POINTS_V299 = 10
 PROJECT_ROUTE_SNAP_MIN_SEGMENT_M_V299 = 18.0
 PROJECT_ROUTE_SNAP_JOIN_TOLERANCE_M_V299 = 18.0
 PROJECT_ROUTE_SNAP_MAX_WORKERS_V299 = 3
+
+PHOTO_LEGACY_ROUTE_CACHE_DIR_V300 = "_photo_routes/v1"
+PHOTO_LEGACY_ROUTE_CACHE_SCHEMA_V300 = "photo_legacy_pairwise_osrm_v300"
+PHOTO_LEGACY_ROUTE_RENDER_DEBUG_RED_V300 = True
+
 
 
 # ============================================================
@@ -29095,6 +29100,142 @@ def _photo_legacy_segments_v296():
     return out
 
 
+def _photo_legacy_route_cache_path_v300():
+    family = re.sub(r"[^a-zA-Z0-9_.-]+", "_", str(current_family_key() or "family").strip() or "family")
+    member = re.sub(r"[^a-zA-Z0-9_.-]+", "_", str(current_member_key() or "member").strip() or "member")
+    return os.path.join(APP_DIR, PHOTO_LEGACY_ROUTE_CACHE_DIR_V300, f"{family}__{member}.json")
+
+
+def _photo_legacy_coerce_segment_v300(segment):
+    clean = []
+    prev = None
+    for pair in segment or []:
+        if not isinstance(pair, (list, tuple)) or len(pair) < 2:
+            continue
+        try:
+            lat = round(float(pair[0]), 7)
+            lon = round(float(pair[1]), 7)
+        except Exception:
+            continue
+        if not (math.isfinite(lat) and math.isfinite(lon)):
+            continue
+        if prev is not None:
+            try:
+                if _nearby_haversine_m(prev[0], prev[1], lat, lon) < 0.8:
+                    continue
+            except Exception:
+                pass
+        clean.append([lat, lon])
+        prev = [lat, lon]
+    return clean if len(clean) >= 2 else []
+
+
+def _photo_legacy_coerce_segments_v300(segments):
+    out = []
+    for seg in segments or []:
+        clean = _photo_legacy_coerce_segment_v300(seg)
+        if len(clean) >= 2:
+            out.append(clean)
+    return out
+
+
+def _read_photo_legacy_route_cache_v300():
+    if not _photo_legacy_enabled_v296():
+        return []
+    path = _photo_legacy_route_cache_path_v300()
+    try:
+        if not os.path.exists(path):
+            return []
+        with open(path, 'r', encoding='utf-8') as f:
+            payload = json.load(f)
+    except Exception:
+        return []
+    if not isinstance(payload, dict):
+        return []
+    if str(payload.get('schema') or '') != PHOTO_LEGACY_ROUTE_CACHE_SCHEMA_V300:
+        return []
+    return _photo_legacy_coerce_segments_v300(payload.get('segments') or [])
+
+
+def _save_photo_legacy_route_cache_v300(segments):
+    clean_segments = _photo_legacy_coerce_segments_v300(segments)
+    if not clean_segments:
+        return False
+    path = _photo_legacy_route_cache_path_v300()
+    tmp = f"{path}.tmp"
+    payload = {
+        'schema': PHOTO_LEGACY_ROUTE_CACHE_SCHEMA_V300,
+        'saved_at_jst': datetime.now(ZoneInfo('Asia/Tokyo')).isoformat(),
+        'family_key': str(current_family_key() or ''),
+        'member_key': str(current_member_key() or ''),
+        'segments': clean_segments,
+    }
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(tmp, 'w', encoding='utf-8') as f:
+            json.dump(payload, f, ensure_ascii=False, separators=(',', ':'))
+        os.replace(tmp, path)
+        return True
+    except Exception:
+        try:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+        except Exception:
+            pass
+        return False
+
+
+def _photo_legacy_pair_route_v300(name_a, name_b):
+    coord_a = PHOTO_LEGACY_STATIONS_V296.get(name_a)
+    coord_b = PHOTO_LEGACY_STATIONS_V296.get(name_b)
+    if coord_a is None or coord_b is None:
+        return []
+    lat0, lon0 = float(coord_a[0]), float(coord_a[1])
+    lat1, lon1 = float(coord_b[0]), float(coord_b[1])
+    key = f"{lat0:.6f},{lon0:.6f};{lat1:.6f},{lon1:.6f}"
+    routed = _project_osrm_route_chunk_v298(key)
+    if len(routed) >= 2:
+        try:
+            start_gap = _nearby_haversine_m(routed[0][0], routed[0][1], lat0, lon0)
+            end_gap = _nearby_haversine_m(routed[-1][0], routed[-1][1], lat1, lon1)
+        except Exception:
+            start_gap = end_gap = 0.0
+        if start_gap <= 180.0 and end_gap <= 180.0:
+            return _photo_legacy_coerce_segment_v300(routed)
+    return [[round(lat0, 7), round(lon0, 7)], [round(lat1, 7), round(lon1, 7)]]
+
+
+def _photo_legacy_build_routes_v300():
+    if not _photo_legacy_enabled_v296():
+        return []
+    out = []
+    for seq in PHOTO_LEGACY_ROUTE_SEQUENCES_V296:
+        parts = []
+        names = [str(name or '') for name in seq]
+        for name_a, name_b in zip(names[:-1], names[1:]):
+            part = _photo_legacy_pair_route_v300(name_a, name_b)
+            if len(part) >= 2:
+                parts.append(part)
+        joined = _project_join_paths_v298(parts)
+        joined = _photo_legacy_coerce_segment_v300(joined)
+        if len(joined) >= 2:
+            out.append(joined)
+    return out
+
+
+def _photo_legacy_prepare_routes_v300():
+    if not _photo_legacy_enabled_v296():
+        return [], {'mode': 'disabled', 'saved': False}
+    saved = _read_photo_legacy_route_cache_v300()
+    if saved:
+        return saved, {'mode': 'loaded', 'saved': True}
+    built = _photo_legacy_build_routes_v300()
+    if built:
+        _save_photo_legacy_route_cache_v300(built)
+        return built, {'mode': 'built', 'saved': True}
+    return _photo_legacy_segments_v296(), {'mode': 'fallback', 'saved': False}
+
+
 def _photo_legacy_map_points_v296():
     if not _photo_legacy_enabled_v296():
         return []
@@ -29520,7 +29661,7 @@ def _project_snap_display_segments_v298(segments):
     return [seg for seg in out if isinstance(seg, list) and len(seg) >= 2]
 
 
-def _render_burari_project_map_v295(points, segments, stations):
+def _render_burari_project_map_v295(points, segments, stations, photo_segments=None):
     """Render a deliberately minimal project map.
 
     v299 keeps the minimal map UI from v295. Only the photo-derived historical seed
@@ -29533,6 +29674,7 @@ def _render_burari_project_map_v295(points, segments, stations):
     payload = {
         "points": [[round(float(p["lat"]), 7), round(float(p["lon"]), 7)] for p in points],
         "segments": segments,
+        "photo_segments": photo_segments or [],
         "stations": stations,
     }
     payload_json = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).replace("</", "<\\/")
@@ -29560,12 +29702,20 @@ html,body{{margin:0;padding:0;background:#0b1012;font-family:-apple-system,Blink
  const all=(data.points||[]).filter((p)=>Array.isArray(p)&&p.length>=2);
  if(all.length){{const bounds=L.latLngBounds(all);map.fitBounds(bounds,{{padding:[28,28],maxZoom:16}});}}else map.setView([35.6812,139.7671],11);
 
- // Walked route: brighter than v293, but still clearly weaker than a reached station.
+ // Native GPS route remains green.
  (data.segments||[]).forEach((seg)=>{{
    if(!Array.isArray(seg)||seg.length<2)return;
    L.polyline(seg,{{color:'#13e95b',weight:13,opacity:.055,lineCap:'round',lineJoin:'round',interactive:false}}).addTo(map);
    L.polyline(seg,{{color:'#39f374',weight:7.2,opacity:.16,lineCap:'round',lineJoin:'round',interactive:false}}).addTo(map);
    L.polyline(seg,{{color:'#9dffb6',weight:2.8,opacity:.82,lineCap:'round',lineJoin:'round',interactive:false}}).addTo(map);
+ }});
+
+ // Photo-restored historical route is rendered in red while this validation pass is active.
+ (data.photo_segments||[]).forEach((seg)=>{{
+   if(!Array.isArray(seg)||seg.length<2)return;
+   L.polyline(seg,{{color:'#ff3b2f',weight:14,opacity:.060,lineCap:'round',lineJoin:'round',interactive:false}}).addTo(map);
+   L.polyline(seg,{{color:'#ff665c',weight:8.0,opacity:.18,lineCap:'round',lineJoin:'round',interactive:false}}).addTo(map);
+   L.polyline(seg,{{color:'#ffe0dc',weight:3.0,opacity:.97,lineCap:'round',lineJoin:'round',interactive:false}}).addTo(map);
  }});
 
  const drawArrivedStation=(s)=>{{
@@ -29650,25 +29800,21 @@ def page_burari_project():
     stations, station_meta = _project_station_preflight_v293(points, map_points)
     station_status.empty()
 
-    # v296: combine native GPS walks with the historical wall-map seed for main.
-    # The station/route seed is fixed numeric geometry, so this adds no image analysis or
-    # network work when the map is reopened.
-    legacy_segments = _photo_legacy_segments_v296()
+    # v300: keep the historical wall-map seed separate from normal GPS records.
+    # Only this photo-derived history is road-inferred, persisted once, and then loaded
+    # numerically on later visits.  Ordinary GPS geometry is never changed.
     display_points = list(map_points or []) + _photo_legacy_map_points_v296()
     stations = _merge_photo_legacy_stations_v296(stations)
 
-    # v299: road snapping is a one-off correction ONLY for the historical routes
-    # reconstructed from the user's wall-map photos.  Normal/future GPS walks keep
-    # their recorded geometry exactly as before; they are never routed or re-inferred.
-    snapped_legacy_segments = []
-    if legacy_segments:
+    photo_segments = []
+    if _photo_legacy_enabled_v296():
         route_status = st.empty()
-        route_status.info("過去写真から復元したルートだけ、実際の道路に沿う形へ整えています。")
-        snapped_legacy_segments = _project_snap_display_segments_v298(legacy_segments)
+        route_status.info("過去写真から復元した道を、道路に沿うルートへ整えて保存しています。")
+        photo_segments, photo_route_meta = _photo_legacy_prepare_routes_v300()
         route_status.empty()
-    display_segments = list(segments or []) + list(snapped_legacy_segments or legacy_segments or [])
+    display_segments = list(segments or [])
 
-    _render_burari_project_map_v295(display_points, display_segments, stations)
+    _render_burari_project_map_v295(display_points, display_segments, stations, photo_segments=photo_segments)
 
     # Keep explanatory text below the map so it never pushes the map below the first phone viewport.
     with st.expander("記録の仕組み", expanded=False):
