@@ -32,7 +32,7 @@ import streamlit as st
 # Freshly generated update: 2026-08-31 23:49 JST
 GENERATED_UPDATE_JST = "2026-09-08T18:48:00+09:00"
 
-APP_BUILD = "v311"
+APP_BUILD = "v312"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -2022,14 +2022,33 @@ export default function(component) {
       return;
     }
 
-    setStatus(cameraMode === 'video' ? 'カメラとマイクの使用を許可してください…' : 'カメラの使用を許可してください…');
+    setStatus(cameraMode === 'video' ? 'カメラとマイクの使用を確認しています…' : 'カメラの使用を確認しています…');
     try {
-      stream = await navigator.mediaDevices.getUserMedia({
-        // v255: keep audio capture simple while recording at high frame rate.
-        // Avoid real-time voice DSP so camera/encoder resources get priority.
-        audio: cameraMode === 'video' ? true : false,
-        video: preferredVideoConstraints()
-      });
+      // v312: microphone failure must never make the camera unusable. Photo mode
+      // always asks for video only. Video mode first tries camera+microphone and,
+      // if audio acquisition fails for any reason, immediately retries video-only.
+      let videoOpenedWithoutAudio = false;
+      if (cameraMode === 'video') {
+        try {
+          stream = await navigator.mediaDevices.getUserMedia({
+            audio: true,
+            video: preferredVideoConstraints()
+          });
+        } catch (audioErr) {
+          console.warn('camera+microphone open failed; retrying video-only', audioErr);
+          setStatus('マイクを利用できないため、音声なしでカメラを開いています…');
+          stream = await navigator.mediaDevices.getUserMedia({
+            audio: false,
+            video: preferredVideoConstraints()
+          });
+          videoOpenedWithoutAudio = true;
+        }
+      } else {
+        stream = await navigator.mediaDevices.getUserMedia({
+          audio: false,
+          video: preferredVideoConstraints()
+        });
+      }
       video.srcObject = stream;
       await video.play();
       // v255: do not apply any additional video constraints after the stream opens.
@@ -2060,7 +2079,14 @@ export default function(component) {
         localStorage.setItem('tokyo_burari_last_camera_open_v1', String(openedAt));
         localStorage.setItem('tokyo_burari_last_camera_mode_v1', cameraMode === 'video' ? 'video' : 'photo');
       } catch (_) {}
-      setStatus(cameraMode === 'video' ? `動画は最大60秒です。音声も一緒に記録します。${cameraFacing === 'user' ? ' 内側カメラ使用中。' : ''}` : (cameraFacing === 'user' ? '内側カメラ使用中です。' : ''));
+      const hasLiveAudio = !!(stream && stream.getAudioTracks && stream.getAudioTracks().some((track) => track.readyState === 'live'));
+      if (cameraMode === 'video') {
+        setStatus(hasLiveAudio && !videoOpenedWithoutAudio
+          ? `動画は最大60秒です。音声も一緒に記録します。${cameraFacing === 'user' ? ' 内側カメラ使用中。' : ''}`
+          : `動画は最大60秒です。マイクを利用できないため音声なしで記録します。${cameraFacing === 'user' ? ' 内側カメラ使用中。' : ''}`);
+      } else {
+        setStatus(cameraFacing === 'user' ? '内側カメラ使用中です。' : '');
+      }
     } catch (err) {
       console.error(err);
       stopStream();
@@ -2496,11 +2522,16 @@ export default function(component) {
     }
   };
 
-  const chooseRecorderMimeType = () => {
-    const candidates = [
+  const chooseRecorderMimeType = (hasAudio = true) => {
+    const candidates = hasAudio ? [
       'video/mp4;codecs=h264,aac',
       'video/mp4',
       'video/webm;codecs=vp8,opus',
+      'video/webm'
+    ] : [
+      'video/mp4;codecs=h264',
+      'video/mp4',
+      'video/webm;codecs=vp8',
       'video/webm'
     ];
     for (const type of candidates) {
@@ -2520,12 +2551,7 @@ export default function(component) {
 
   const startVideoRecording = async () => {
     if (!stream || !video.videoWidth || !video.videoHeight) return;
-    if (!stream.getAudioTracks().length) {
-      const message = '動画用のマイクを利用できません。カメラとマイクの権限を確認してください。';
-      setStatus(message);
-      setTriggerValue('camera_error', { name: 'MicrophoneUnavailable', message });
-      return;
-    }
+    const hasAudio = !!(stream.getAudioTracks && stream.getAudioTracks().some((track) => track.readyState === 'live'));
 
     recordedChunks = [];
     recordingCandidateFrames = [];
@@ -2533,7 +2559,7 @@ export default function(component) {
     recordingCancelled = false;
     recordingCapturedAt = new Date().toISOString();
     recordingLocationPromise = getLocationAtCapture();
-    const mimeType = chooseRecorderMimeType();
+    const mimeType = chooseRecorderMimeType(hasAudio);
     const captureTrack = stream.getVideoTracks && stream.getVideoTracks()[0];
     const captureSettings = (captureTrack && captureTrack.getSettings) ? captureTrack.getSettings() : {};
     const captureWidth = Math.max(0, Number(captureSettings?.width || video.videoWidth || 0));
@@ -2548,9 +2574,9 @@ export default function(component) {
       : (capturePixels >= 1700000 ? 3600000 : (capturePixels >= 800000 ? 2800000 : 2000000));
     try {
       const options = {
-        videoBitsPerSecond: requestedVideoBitrate,
-        audioBitsPerSecond: 96000
+        videoBitsPerSecond: requestedVideoBitrate
       };
+      if (hasAudio) options.audioBitsPerSecond = 96000;
       if (mimeType) options.mimeType = mimeType;
       try {
         mediaRecorder = new MediaRecorder(stream, options);
@@ -2693,7 +2719,7 @@ export default function(component) {
       // v139 quality-first recording: do not generate JPEG candidates while the
       // MediaRecorder encoder is running. Candidate extraction starts after stop.
       recordingMaxTimer = setTimeout(stopVideoRecording, VIDEO_RECORD_MAX_SECONDS * 1000);
-      setStatus('');
+      setStatus(hasAudio ? '' : '音声なしで動画を録画しています。');
     } catch (err) {
       console.error(err);
       setRecordingUi(false);
@@ -24235,7 +24261,7 @@ def page_trip():
             "video_candidate_sheet_signed_url": str(video_reservation.get("candidate_sheet_signed_url") or ""),
             "video_candidate_sheet_storage_path": str(video_reservation.get("candidate_sheet_path") or ""),
         },
-        key=f"live_camera_v237_{camera_trip_key}_{st.session_state.capture_serial}_{_current_ui_refresh_epoch()}",
+        key=f"live_camera_v312_{camera_trip_key}_{st.session_state.capture_serial}_{_current_ui_refresh_epoch()}",
         on_photo_change=lambda: None,
         on_video_change=lambda: None,
         on_camera_error_change=lambda: None,
