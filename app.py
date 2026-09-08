@@ -29041,12 +29041,12 @@ def _render_burari_project_map_v295(points, segments, stations):
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
 <style>
 html,body{{margin:0;padding:0;background:#0b1012;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Hiragino Sans","Yu Gothic",sans-serif;}}
-#project-map{{width:100%;height:630px;border-radius:18px;overflow:hidden;background:#0b1012;border:1px solid rgba(130,255,170,.18);box-sizing:border-box;}}
+#project-map{{width:100%;height:485px;border-radius:18px;overflow:hidden;background:#0b1012;border:1px solid rgba(130,255,170,.18);box-sizing:border-box;}}
 #project-map .leaflet-tile-pane{{filter:brightness(.42) contrast(1.18) saturate(.58);}}
 #project-map .leaflet-pane,#project-map .leaflet-tile,#project-map .leaflet-marker-icon,#project-map .leaflet-marker-shadow,#project-map .leaflet-tile-container,#project-map .leaflet-pane>svg,#project-map .leaflet-pane>canvas,#project-map .leaflet-zoom-box,#project-map .leaflet-image-layer,#project-map .leaflet-layer{{position:absolute;left:0;top:0;}}
 #project-map.leaflet-container{{overflow:hidden;-webkit-tap-highlight-color:transparent;}}
 #project-map .leaflet-tile{{width:256px;height:256px;max-width:none!important;max-height:none!important;user-select:none;-webkit-user-drag:none;}}
-@media(max-width:640px){{#project-map{{height:570px;border-radius:15px;}}}}
+@media(max-width:640px){{#project-map{{height:455px;border-radius:15px;}}}}
 </style></head><body>
 <div style="position:relative"><div id="project-map"></div></div>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
@@ -29087,16 +29087,102 @@ html,body{{margin:0;padding:0;background:#0b1012;font-family:-apple-system,Blink
  setTimeout(()=>map.invalidateSize(),120);
 }})();
 </script></body></html>"""
-    st.components.v1.html(map_html, height=650, scrolling=False)
+    st.components.v1.html(map_html, height=500, scrolling=False)
 
 def page_burari_project():
-    page_top(
-        "✨ ぶらり旅プロジェクト",
-        "スマホを持って実際に歩いた道が少しずつ光っていく、自分だけの東京の地図です。",
+    st.markdown(
+        """
+        <style>
+          .st-key-burari_project_parent_back {
+            margin: -.10rem 0 .12rem 0;
+            width: 3.0rem;
+          }
+          .st-key-burari_project_parent_back div.stButton > button {
+            min-height: 2.20rem !important;
+            height: 2.20rem !important;
+            width: 3.0rem !important;
+            padding: 0 !important;
+            border-radius: 12px !important;
+            font-size: 1.02rem !important;
+          }
+          .burari-project-head {
+            margin: 0 0 .22rem 0;
+          }
+          .burari-project-title {
+            margin: 0;
+            font-size: 1.52rem;
+            line-height: 1.20;
+            font-weight: 800;
+            letter-spacing: .01em;
+          }
+          .burari-project-subtitle {
+            margin: .24rem 0 .48rem 0;
+            font-size: .78rem;
+            line-height: 1.38;
+            opacity: .66;
+          }
+          .burari-project-stats {
+            display: grid;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: .36rem;
+            margin: .08rem 0 .46rem 0;
+          }
+          .burari-project-stat {
+            min-width: 0;
+            padding: .38rem .42rem .34rem;
+            border: 1px solid rgba(128,128,128,.16);
+            border-radius: 12px;
+            background: rgba(128,128,128,.045);
+          }
+          .burari-project-stat-label {
+            display: block;
+            margin-bottom: .05rem;
+            font-size: .64rem;
+            line-height: 1.15;
+            opacity: .62;
+            white-space: nowrap;
+          }
+          .burari-project-stat-value {
+            display: block;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            font-size: .98rem;
+            line-height: 1.18;
+            font-weight: 760;
+          }
+          .burari-project-note {
+            margin: .16rem 0 0 0;
+            font-size: .72rem;
+            line-height: 1.45;
+            opacity: .64;
+          }
+          @media (max-width: 640px) {
+            .burari-project-title { font-size: 1.34rem; }
+            .burari-project-subtitle { font-size: .72rem; margin-bottom: .38rem; }
+            .burari-project-stats { gap: .28rem; margin-bottom: .34rem; }
+            .burari-project-stat { padding: .30rem .30rem .28rem; border-radius: 10px; }
+            .burari-project-stat-label { font-size: .58rem; }
+            .burari-project-stat-value { font-size: .86rem; }
+          }
+        </style>
+        """,
+        unsafe_allow_html=True,
     )
-    st.caption(
-        "位置情報を許可している間は、アプリを開いているとGPSを自動記録します。約10m動くごとに1点を端末へ保存し、まとめて軽く同期します。"
-        "電車・車など歩行より速い移動は地図の発光線から自動的に外します。"
+    st.button(
+        "←",
+        key="burari_project_parent_back",
+        help="1つ前の階層に戻る",
+        on_click=_navigate_to_parent_callback,
+    )
+    st.markdown(
+        """
+        <div class="burari-project-head">
+          <div class="burari-project-title">✨ ぶらり旅プロジェクト</div>
+          <div class="burari-project-subtitle">歩いた道が少しずつ光っていく、自分だけの東京の地図です。</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
     )
     points = _load_all_project_track_points_v271()
     if not points:
@@ -29105,24 +29191,37 @@ def page_burari_project():
     segments = _project_walk_segments_v271(points)
     walk_points = _project_walk_points_v271(segments)
     walk_m = _project_walk_distance_m_v271(segments)
-    stat_cols = st.columns(3, gap="small")
-    with stat_cols[0]:
-        st.metric("歩いた距離", f"{walk_m/1000:.1f} km")
-    with stat_cols[1]:
-        st.metric("GPS記録", f"{len(points):,} 点")
-    with stat_cols[2]:
-        st.metric("歩行区間", f"{len(segments)} 本")
+    stats_html = f"""
+        <div class="burari-project-stats">
+          <div class="burari-project-stat">
+            <span class="burari-project-stat-label">歩いた距離</span>
+            <span class="burari-project-stat-value">{walk_m/1000:.1f} km</span>
+          </div>
+          <div class="burari-project-stat">
+            <span class="burari-project-stat-label">GPS記録</span>
+            <span class="burari-project-stat-value">{len(points):,} 点</span>
+          </div>
+          <div class="burari-project-stat">
+            <span class="burari-project-stat-label">歩行区間</span>
+            <span class="burari-project-stat-value">{len(segments)} 本</span>
+          </div>
+        </div>
+    """
+    st.markdown(stats_html, unsafe_allow_html=True)
     map_points = walk_points or points[-1:]
 
-    # v293 preflight: finish station discovery / first-time inference / numeric-state save
-    # before Leaflet is mounted.  The map itself is rendered once with a complete payload,
-    # so station work cannot blank or replace an already visible map mid-run.
     station_status = st.empty()
-    station_status.info("新しい歩行データから到着駅を確認しています。地図は確認完了後に表示します。")
+    station_status.caption("新しい歩行データから到着駅を確認中…")
     stations, station_meta = _project_station_preflight_v293(points, map_points)
     station_status.empty()
 
     _render_burari_project_map_v295(map_points, segments, stations)
+
+    with st.expander("記録の仕組み", expanded=False):
+        st.caption(
+            "位置情報を許可している間は、アプリを開いているとGPSを自動記録します。約10m動くごとに1点を端末へ保存し、まとめて軽く同期します。"
+            "電車・車など歩行より速い移動は地図の発光線から自動的に外します。"
+        )
 
 
 # ============================================================
