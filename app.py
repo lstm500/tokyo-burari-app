@@ -32,7 +32,7 @@ import streamlit as st
 # Freshly generated update: 2026-08-31 23:49 JST
 GENERATED_UPDATE_JST = "2026-09-08T18:48:00+09:00"
 
-APP_BUILD = "v317"
+APP_BUILD = "v311"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -806,7 +806,7 @@ VIDEO_PROCESSING_MAX_SECONDS = 75
 # conservative margin because browser/device bitrates vary.
 VIDEO_RECORDING_RESERVE_BYTES = 36 * 1024 * 1024
 VIDEO_MAX_BYTES = 100 * 1024 * 1024
-VIDEO_AI_MAX_SELECTIONS = 6  # いい瞬間の切り抜き枚数
+VIDEO_AI_MAX_SELECTIONS = 6
 # Good Moments sampling is duration-aware and capped at 20 candidate frames:
 #   <=10 sec -> every 0.5 sec
 #   15 sec   -> every 0.75 sec
@@ -1523,8 +1523,6 @@ export default function(component) {
   let stream = null;
   let cameraMode = 'photo';
   let cameraFacing = 'environment';
-  // v313: remember the actual lens so photo/video use the same physical camera.
-  let preferredCameraDeviceId = null;
   try {
     const savedFacing = String(localStorage.getItem('tokyo_burari_camera_facing_v226') || '');
     if (savedFacing === 'user' || savedFacing === 'environment') cameraFacing = savedFacing;
@@ -1647,54 +1645,23 @@ export default function(component) {
     try { localStorage.setItem('tokyo_burari_camera_facing_v226', cameraFacing); } catch (_) {}
   };
   const preferredVideoConstraints = () => {
-    // v314 keeps photo/video on the same physical camera geometry. Frame-rate is
-    // raised only after the stream opens so Android is less likely to switch lenses
-    // or change the field of view while satisfying the initial getUserMedia request.
-    const constraints = {
+    // v255: prioritize frame rate over resolution because recorded video is mainly
+    // used as the source for Good Moments still extraction. Request up to 60fps at
+    // a lighter 720p-class portrait stream. These are only ideal/max constraints:
+    // Android/Chrome can fall back to a lower camera-supported frame rate or size.
+    // No custom aspectRatio is imposed; the phone camera selects a native mode.
+    if (cameraMode === 'video') {
+      return {
+        facingMode: { ideal: cameraFacing },
+        width: { ideal: 720, max: 1080 },
+        height: { ideal: 1280, max: 1920 },
+        frameRate: { ideal: 60, max: 60 }
+      };
+    }
+    return {
       facingMode: { ideal: cameraFacing },
       height: { ideal: 1600 }
     };
-    if (preferredCameraDeviceId) {
-      constraints.deviceId = { exact: preferredCameraDeviceId };
-      delete constraints.facingMode;
-    }
-    return constraints;
-  };
-
-  const applyHighVideoFrameRate = async () => {
-    if (!stream || cameraMode !== 'video') return 0;
-    try {
-      const track = stream.getVideoTracks && stream.getVideoTracks()[0];
-      if (!track || !track.applyConstraints) return 0;
-      let capMax = 0;
-      try {
-        const caps = track.getCapabilities ? (track.getCapabilities() || {}) : {};
-        const frameCaps = caps.frameRate;
-        if (frameCaps && Number.isFinite(Number(frameCaps.max))) capMax = Number(frameCaps.max);
-      } catch (_) {}
-
-      // Prefer 90fps when the camera/browser reports support; otherwise use 60fps.
-      // If capabilities are not exposed, 60fps is the safest high-frame-rate request.
-      const targets = [];
-      if (capMax >= 89) targets.push(90);
-      if (capMax >= 59 || !capMax) targets.push(60);
-      if (capMax > 0 && capMax < 59) targets.push(Math.max(30, Math.floor(capMax)));
-      if (!targets.length) targets.push(60);
-
-      for (const target of [...new Set(targets)]) {
-        try {
-          await track.applyConstraints({ frameRate: { ideal: target, max: target } });
-          const settings = track.getSettings ? (track.getSettings() || {}) : {};
-          const actual = Number(settings.frameRate || 0);
-          if (actual >= 50 || target < 60) return actual || target;
-        } catch (_) {}
-      }
-      const settings = track.getSettings ? (track.getSettings() || {}) : {};
-      return Number(settings.frameRate || 0);
-    } catch (err) {
-      console.warn('high frame rate unavailable', err);
-      return 0;
-    }
   };
 
   const applyWidestAvailableZoom = async () => {
@@ -2024,12 +1991,14 @@ export default function(component) {
   const errorMessage = (err, mode = cameraMode) => {
     const name = (err && err.name) ? err.name : '';
     if (name === 'NotAllowedError' || name === 'PermissionDeniedError') {
-      return 'カメラが許可されていません。ブラウザのサイト設定でカメラを「許可」にして、このページを再読み込みしてください。';
+      return mode === 'video'
+        ? 'カメラまたはマイクが許可されていません。ブラウザのサイト設定でカメラとマイクを「許可」にしてください。'
+        : 'カメラが許可されていません。ブラウザのサイト設定でカメラを「許可」にして、このページを再読み込みしてください。';
     }
     if (name === 'NotFoundError' || name === 'DevicesNotFoundError') return '利用できるカメラが見つかりませんでした。';
     if (name === 'NotReadableError' || name === 'TrackStartError') return 'カメラを開けませんでした。ほかのアプリがカメラを使っていないか確認してください。';
     if (name === 'SecurityError') return 'ブラウザのセキュリティ設定でカメラがブロックされています。';
-    return 'カメラを開けませんでした。ブラウザのカメラ権限を確認してください。';
+    return 'カメラを開けませんでした。ブラウザのカメラ・マイク権限を確認してください。';
   };
 
   const startCamera = async (mode = 'photo') => {
@@ -2053,41 +2022,29 @@ export default function(component) {
       return;
     }
 
-    setStatus('カメラの使用を確認しています…');
+    setStatus(cameraMode === 'video' ? 'カメラとマイクの使用を許可してください…' : 'カメラの使用を許可してください…');
     try {
-      // v313: microphone is intentionally never requested. Photo and video use
-      // exactly the same camera request, the same portrait normalization and the
-      // same minimum hardware zoom so their field of view matches.
-      try {
-        stream = await navigator.mediaDevices.getUserMedia({
-          audio: false,
-          video: preferredVideoConstraints()
-        });
-      } catch (firstErr) {
-        // If a remembered device id is no longer valid, fall back to the requested
-        // facing camera once and remember the newly opened physical lens below.
-        if (!preferredCameraDeviceId) throw firstErr;
-        preferredCameraDeviceId = null;
-        stream = await navigator.mediaDevices.getUserMedia({
-          audio: false,
-          video: preferredVideoConstraints()
-        });
-      }
+      stream = await navigator.mediaDevices.getUserMedia({
+        // v255: keep audio capture simple while recording at high frame rate.
+        // Avoid real-time voice DSP so camera/encoder resources get priority.
+        audio: cameraMode === 'video' ? true : false,
+        video: preferredVideoConstraints()
+      });
       video.srcObject = stream;
       await video.play();
-      await applyNativePortraitConstraint();
-      // v314: request 90fps where supported, otherwise 60fps. Re-apply minimum
-      // hardware zoom afterwards so the video keeps the same field of view as photo.
-      const appliedVideoFps = await applyHighVideoFrameRate();
-      await applyWidestAvailableZoom();
+      // v255: do not apply any additional video constraints after the stream opens.
+      // Reconfiguring stabilization/zoom can cause a camera pipeline restart on some
+      // Android devices. Photo mode keeps its existing helpers.
+      if (cameraMode === 'photo') {
+        await applyNativePortraitConstraint();
+        await applyWidestAvailableZoom();
+      }
       syncNativeCameraFrame();
       try {
         const cameraTrack = stream.getVideoTracks && stream.getVideoTracks()[0];
         const settings = (cameraTrack && cameraTrack.getSettings) ? cameraTrack.getSettings() : {};
         const actualFacing = String(settings?.facingMode || '');
         if (actualFacing === 'user' || actualFacing === 'environment') cameraFacing = actualFacing;
-        const actualDeviceId = String(settings?.deviceId || '');
-        if (actualDeviceId) preferredCameraDeviceId = actualDeviceId;
       } catch (_) {}
       persistCameraFacing();
       syncOrientationUi();
@@ -2103,12 +2060,7 @@ export default function(component) {
         localStorage.setItem('tokyo_burari_last_camera_open_v1', String(openedAt));
         localStorage.setItem('tokyo_burari_last_camera_mode_v1', cameraMode === 'video' ? 'video' : 'photo');
       } catch (_) {}
-      if (cameraMode === 'video') {
-        const fpsLabel = Number(appliedVideoFps || 0) >= 80 ? '90fps' : (Number(appliedVideoFps || 0) >= 50 ? '60fps' : '高フレームレート');
-        setStatus(`動画は最大60秒です。${fpsLabel}で撮影します。${cameraFacing === 'user' ? ' 内側カメラ使用中。' : ''}`);
-      } else {
-        setStatus(cameraFacing === 'user' ? '内側カメラ使用中です。' : '');
-      }
+      setStatus(cameraMode === 'video' ? `動画は最大60秒です。音声も一緒に記録します。${cameraFacing === 'user' ? ' 内側カメラ使用中。' : ''}` : (cameraFacing === 'user' ? '内側カメラ使用中です。' : ''));
     } catch (err) {
       console.error(err);
       stopStream();
@@ -2544,16 +2496,11 @@ export default function(component) {
     }
   };
 
-  const chooseRecorderMimeType = (hasAudio = true) => {
-    const candidates = hasAudio ? [
+  const chooseRecorderMimeType = () => {
+    const candidates = [
       'video/mp4;codecs=h264,aac',
       'video/mp4',
       'video/webm;codecs=vp8,opus',
-      'video/webm'
-    ] : [
-      'video/mp4;codecs=h264',
-      'video/mp4',
-      'video/webm;codecs=vp8',
       'video/webm'
     ];
     for (const type of candidates) {
@@ -2573,7 +2520,12 @@ export default function(component) {
 
   const startVideoRecording = async () => {
     if (!stream || !video.videoWidth || !video.videoHeight) return;
-    const hasAudio = !!(stream.getAudioTracks && stream.getAudioTracks().some((track) => track.readyState === 'live'));
+    if (!stream.getAudioTracks().length) {
+      const message = '動画用のマイクを利用できません。カメラとマイクの権限を確認してください。';
+      setStatus(message);
+      setTriggerValue('camera_error', { name: 'MicrophoneUnavailable', message });
+      return;
+    }
 
     recordedChunks = [];
     recordingCandidateFrames = [];
@@ -2581,27 +2533,24 @@ export default function(component) {
     recordingCancelled = false;
     recordingCapturedAt = new Date().toISOString();
     recordingLocationPromise = getLocationAtCapture();
-    const mimeType = chooseRecorderMimeType(hasAudio);
+    const mimeType = chooseRecorderMimeType();
     const captureTrack = stream.getVideoTracks && stream.getVideoTracks()[0];
     const captureSettings = (captureTrack && captureTrack.getSettings) ? captureTrack.getSettings() : {};
     const captureWidth = Math.max(0, Number(captureSettings?.width || video.videoWidth || 0));
     const captureHeight = Math.max(0, Number(captureSettings?.height || video.videoHeight || 0));
     const captureFrameRate = Math.max(0, Number(captureSettings?.frameRate || 0));
     const capturePixels = captureWidth * captureHeight;
-    // v314: keep enough bitrate for 60/90fps so motion does not become blocky.
-    // The source camera frame rate still depends on the hardware/browser capability.
-    const veryHighFps = captureFrameRate >= 80;
+    // v255: a little more bitrate for 50-60fps so extracted stills retain detail,
+    // while the lighter 720p-class stream keeps encoder load below 1080p/60.
     const highFps = captureFrameRate >= 50;
-    const requestedVideoBitrate = veryHighFps
-      ? (capturePixels >= 800000 ? 7000000 : 5600000)
-      : (highFps
-          ? (capturePixels >= 800000 ? 5200000 : 4200000)
-          : (capturePixels >= 1700000 ? 3600000 : (capturePixels >= 800000 ? 2800000 : 2000000)));
+    const requestedVideoBitrate = highFps
+      ? (capturePixels >= 800000 ? 4500000 : 3600000)
+      : (capturePixels >= 1700000 ? 3600000 : (capturePixels >= 800000 ? 2800000 : 2000000));
     try {
       const options = {
-        videoBitsPerSecond: requestedVideoBitrate
+        videoBitsPerSecond: requestedVideoBitrate,
+        audioBitsPerSecond: 96000
       };
-      if (hasAudio) options.audioBitsPerSecond = 96000;
       if (mimeType) options.mimeType = mimeType;
       try {
         mediaRecorder = new MediaRecorder(stream, options);
@@ -2744,7 +2693,7 @@ export default function(component) {
       // v139 quality-first recording: do not generate JPEG candidates while the
       // MediaRecorder encoder is running. Candidate extraction starts after stop.
       recordingMaxTimer = setTimeout(stopVideoRecording, VIDEO_RECORD_MAX_SECONDS * 1000);
-      setStatus(hasAudio ? '' : '音声なしで動画を録画しています。');
+      setStatus('');
     } catch (err) {
       console.error(err);
       setRecordingUi(false);
@@ -3072,7 +3021,6 @@ export default function(component) {
   const switchCameraFacing = () => {
     if (mediaRecorder && mediaRecorder.state === 'recording') return;
     cameraFacing = cameraFacing === 'user' ? 'environment' : 'user';
-    preferredCameraDeviceId = null;
     persistCameraFacing();
     syncFacingUi();
     setStatus(cameraFacing === 'user' ? '内側カメラに切り替えています…' : '外側カメラに切り替えています…');
@@ -22582,7 +22530,7 @@ export default function(component) {
   if (!grid) return;
   grid.replaceChildren(); grid.classList.remove('enlarge-mode');
 
-  const photos = Array.isArray(data?.photos) ? data.photos.slice(0,3) : [];
+  const photos = Array.isArray(data?.photos) ? data.photos.slice(0,6) : [];
   const disabled = Boolean(data?.disabled);
   const viewMode = String(data?.view_mode || 'list') === 'enlarge' ? 'enlarge' : 'list';
   const familyKey=String(data?.family_key||''), memberKey=String(data?.member_key||''), videoId=String(data?.video_id||'');
@@ -22750,7 +22698,7 @@ export default function(component) {
     shell.tabIndex=0;shell.addEventListener('keydown',(event)=>{if(event.key==='ArrowLeft'){event.preventDefault();move(-1);}else if(event.key==='ArrowRight'){event.preventDefault();move(1);}});
     nav.appendChild(prev);nav.appendChild(counter);nav.appendChild(next);shell.appendChild(nav);shell.appendChild(viewer);grid.appendChild(shell);renderActive();return;
   }
-  for(let index=0;index<3;index+=1){const photo=photos[index];if(!photo){const empty=document.createElement('div');empty.className='moments-select-empty';grid.appendChild(empty);continue;}grid.appendChild(makeCard(photo,index,false));}
+  for(let index=0;index<6;index+=1){const photo=photos[index];if(!photo){const empty=document.createElement('div');empty.className='moments-select-empty';grid.appendChild(empty);continue;}grid.appendChild(makeCard(photo,index,false));}
 }
 """
 
@@ -22765,7 +22713,7 @@ def _get_moments_select_component():
     _moments_select_component_initialized = True
     try:
         moments_select_component = st.components.v2.component(
-            "tokyo_burari_moments_select_v168",
+            "tokyo_burari_moments_select_v169",
             html=_MOMENTS_SELECT_HTML,
             css=_MOMENTS_SELECT_CSS,
             js=_MOMENTS_SELECT_JS,
@@ -24287,7 +24235,7 @@ def page_trip():
             "video_candidate_sheet_signed_url": str(video_reservation.get("candidate_sheet_signed_url") or ""),
             "video_candidate_sheet_storage_path": str(video_reservation.get("candidate_sheet_path") or ""),
         },
-        key=f"live_camera_v313_{camera_trip_key}_{st.session_state.capture_serial}_{_current_ui_refresh_epoch()}",
+        key=f"live_camera_v237_{camera_trip_key}_{st.session_state.capture_serial}_{_current_ui_refresh_epoch()}",
         on_photo_change=lambda: None,
         on_video_change=lambda: None,
         on_camera_error_change=lambda: None,
@@ -30607,7 +30555,7 @@ html,body{{margin:0;padding:0;background:#0b1012;font-family:-apple-system,Blink
    L.polyline(seg,{{color:'#9dffb6',weight:2.8,opacity:.82,lineCap:'round',lineJoin:'round',interactive:false}}).addTo(map);
  }});
 
- // Photo-restored historical route is rendered with the original glowing green style.
+ // Photo-restored historical route is rendered in red while this validation pass is active.
  (data.photo_segments||[]).forEach((seg)=>{{
    if(!Array.isArray(seg)||seg.length<2)return;
    L.polyline(seg,{{color:'#ff3b2f',weight:14,opacity:.060,lineCap:'round',lineJoin:'round',interactive:false}}).addTo(map);
@@ -30649,10 +30597,10 @@ html,body{{margin:0;padding:0;background:#0b1012;font-family:-apple-system,Blink
 # ============================================================
 PHOTO_LEGACY_ROUTE_SCHEMA_V305 = "photo_legacy_main_plus_wallmap_v311"
 PHOTO_LEGACY_ROUTE_STORAGE_FILE_V305 = "photo_legacy_main_plus_wallmap_v311.json"
-PHOTO_LEGACY_ROUTE_ENGINE_V306 = "v315_sequential_pair_router"
+PHOTO_LEGACY_ROUTE_ENGINE_V306 = "v311_main_plus_wallmap_detailed_router"
 PHOTO_LEGACY_ROUTE_FOOT_BASE_V306 = "https://routing.openstreetmap.de/routed-foot/route/v1/driving"
 PHOTO_LEGACY_ROUTE_MAX_WAYPOINTS_V306 = 7
-PHOTO_LEGACY_ROUTE_REQUEST_TIMEOUT_V306 = 12.0
+PHOTO_LEGACY_ROUTE_REQUEST_TIMEOUT_V306 = 10.0
 PHOTO_LEGACY_ROUTE_CHUNK_WORKERS_V306 = 2
 PHOTO_LEGACY_ROUTE_PAIR_WORKERS_V306 = 2
 PHOTO_LEGACY_ROUTE_PAIR_FALLBACK_LIMIT_V306 = 999
@@ -31074,14 +31022,6 @@ def _photo_legacy_reset_failed_v306():
 
 
 def _photo_legacy_prepare_routes_v305():
-    """Resolve photographed historical routes strictly one station-pair at a time.
-
-    v315 intentionally avoids the previous bulk/chunk execution. Each pair is attempted
-    separately, immediately persisted, and reflected in an on-screen progress indicator.
-    Existing successful rows are preserved. Failed rows from older engines are retried;
-    rows that fail under this v315 engine remain final failures until the user explicitly
-    retries them.
-    """
     if not _photo_legacy_enabled_v296():
         return [], {"mode": "disabled", "done": 0, "success": 0, "failed": 0, "total": 0, "pending": 0}
 
@@ -31092,86 +31032,87 @@ def _photo_legacy_prepare_routes_v305():
         state = _photo_legacy_default_state_v305()
     pairs = state.setdefault("pairs", {})
     definitions = _photo_legacy_pair_defs_v305()
-    total = len(definitions)
 
-    # Reuse completed geometry. Old-engine failures are work items again; only a failure
-    # produced by the current v315 engine is considered final for this pass.
-    work = []
+    # Preserve already successful v305 results. Old failed/retry rows are retried once by
+    # the bounded v306 engine; failures produced by v306 itself are not looped forever.
+    pending_defs = []
     for row in definitions:
         item = pairs.get(row["key"])
         if isinstance(item, dict) and item.get("status") == "done":
             continue
         if _photo_legacy_v306_is_final_failed(item):
             continue
-        work.append(row)
+        pending_defs.append(row)
 
-    initial_done = sum(
-        1 for row in definitions
-        if isinstance(pairs.get(row["key"]), dict) and pairs.get(row["key"], {}).get("status") == "done"
-    )
-    progress_slot = st.empty()
-    progress_bar = st.progress((initial_done / total) if total else 1.0)
+    if pending_defs:
+        pending_keys = {row["key"] for row in pending_defs}
+        chunks = [
+            chunk for chunk in _photo_legacy_chunk_defs_v306()
+            if any(pair_def["key"] in pending_keys for pair_def in chunk.get("pairs") or [])
+        ]
+        # v307: the second photographed map has many more links. Process only a fixed
+        # number of multi-stop chunks per page load; the Continue button advances the rest.
+        chunks = chunks[:max(1, int(PHOTO_LEGACY_ROUTE_CHUNK_LIMIT_V307))]
 
-    # Three attempts per pair are deliberate. The public pedestrian router occasionally
-    # times out; retrying the same single pair is safer than launching many requests.
-    max_attempts = 3
-    for work_index, pair_def in enumerate(work, start=1):
-        current_done = sum(
-            1 for row in definitions
-            if isinstance(pairs.get(row["key"]), dict) and pairs.get(row["key"], {}).get("status") == "done"
-        )
-        a_name = str(pair_def.get("a") or "")
-        b_name = str(pair_def.get("b") or "")
-        result = None
-        for attempt in range(1, max_attempts + 1):
-            progress_slot.info(
-                f"道路を確認中：{current_done + 1} / {total} 区間　{a_name} → {b_name}　"
-                f"（試行 {attempt}/{max_attempts}）"
-            )
-            try:
-                candidate = _photo_legacy_pair_route_v306(pair_def)
-            except Exception as exc:
-                candidate = {
-                    "status": "failed",
-                    "segment": [],
-                    "a": a_name,
-                    "b": b_name,
-                    "attempts": attempt,
-                    "updated_at_jst": now_jst().isoformat(),
-                    "method": "pair_osm_foot_route",
-                    "engine": PHOTO_LEGACY_ROUTE_ENGINE_V306,
-                    "reason": type(exc).__name__,
+        chunk_results = []
+        if chunks:
+            worker_count = max(1, min(int(PHOTO_LEGACY_ROUTE_CHUNK_WORKERS_V306), len(chunks)))
+            with ThreadPoolExecutor(max_workers=worker_count) as executor:
+                future_map = {
+                    executor.submit(_photo_legacy_route_request_names_v306, chunk["names"]): chunk
+                    for chunk in chunks
                 }
-            candidate = dict(candidate or {})
-            candidate["attempts"] = attempt
-            candidate["engine"] = PHOTO_LEGACY_ROUTE_ENGINE_V306
-            candidate["updated_at_jst"] = now_jst().isoformat()
-            result = candidate
-            if candidate.get("status") == "done" and len(candidate.get("segment") or []) >= 2:
-                break
+                for future, chunk in list((future, future_map[future]) for future in future_map):
+                    try:
+                        routed = future.result()
+                    except Exception as exc:
+                        routed = {"ok": False, "error": type(exc).__name__}
+                    chunk_results.append((chunk, routed))
 
-        if not isinstance(result, dict):
-            result = {
-                "status": "failed", "segment": [], "a": a_name, "b": b_name,
-                "attempts": max_attempts, "updated_at_jst": now_jst().isoformat(),
-                "method": "pair_osm_foot_route", "engine": PHOTO_LEGACY_ROUTE_ENGINE_V306,
-                "reason": "unknown_failure",
-            }
-        result["a"] = a_name
-        result["b"] = b_name
-        if result.get("status") != "done":
-            result["status"] = "failed"
-        pairs[pair_def["key"]] = result
+        for chunk, routed in chunk_results:
+            if not isinstance(routed, dict) or not routed.get("ok"):
+                continue
+            split_rows = _photo_legacy_split_chunk_v306(chunk, routed)
+            for key, result in split_rows.items():
+                existing = pairs.get(key)
+                if isinstance(existing, dict) and existing.get("status") == "done":
+                    continue
+                pairs[key] = result
+
+        unresolved = []
+        for row in pending_defs:
+            item = pairs.get(row["key"])
+            if isinstance(item, dict) and item.get("status") == "done":
+                continue
+            unresolved.append(row)
+
+        if unresolved:
+            # Bound the slow fallback work per page load. The multi-stop requests above
+            # normally resolve most sections at once; if the public router is unhealthy,
+            # do not fan out all remaining station pairs and freeze the Streamlit page.
+            unresolved = unresolved[:max(1, int(PHOTO_LEGACY_ROUTE_PAIR_FALLBACK_LIMIT_V306))]
+            worker_count = max(1, min(int(PHOTO_LEGACY_ROUTE_PAIR_WORKERS_V306), len(unresolved)))
+            with ThreadPoolExecutor(max_workers=worker_count) as executor:
+                future_map = {executor.submit(_photo_legacy_pair_route_v306, row): row for row in unresolved}
+                for future, row in list((future, future_map[future]) for future in future_map):
+                    try:
+                        result = future.result()
+                    except Exception as exc:
+                        result = {
+                            "status": "failed",
+                            "segment": [],
+                            "a": row["a"],
+                            "b": row["b"],
+                            "attempts": 1,
+                            "updated_at_jst": now_jst().isoformat(),
+                            "method": "pair_osm_foot_route",
+                            "engine": PHOTO_LEGACY_ROUTE_ENGINE_V306,
+                            "reason": type(exc).__name__,
+                        }
+                    pairs[row["key"]] = result
+
         state["pairs"] = pairs
         state["engine"] = PHOTO_LEGACY_ROUTE_ENGINE_V306
-        state["complete"] = False
-        _save_photo_legacy_route_state_v305(state)
-
-        current_done = sum(
-            1 for row in definitions
-            if isinstance(pairs.get(row["key"]), dict) and pairs.get(row["key"], {}).get("status") == "done"
-        )
-        progress_bar.progress((current_done / total) if total else 1.0)
 
     done_count = 0
     failed_count = 0
@@ -31187,17 +31128,7 @@ def _photo_legacy_prepare_routes_v305():
 
     state["complete"] = pending_after == 0
     state["pairs"] = pairs
-    state["engine"] = PHOTO_LEGACY_ROUTE_ENGINE_V306
     saved_ok = _save_photo_legacy_route_state_v305(state)
-    progress_bar.progress(1.0 if total else 1.0)
-    if failed_count:
-        progress_slot.warning(
-            f"道路確認が終了しました。{done_count}/{total} 区間を道路形状で保存済み、"
-            f"{failed_count} 区間は今回取得できませんでした。"
-        )
-    else:
-        progress_slot.success(f"道路確認が終了しました。{done_count}/{total} 区間を道路形状で保存しました。")
-
     routed_segments = _photo_legacy_segments_from_state_v305(state)
     display_segments = _photo_legacy_display_segments_v308(state)
     return display_segments, {
@@ -31205,7 +31136,7 @@ def _photo_legacy_prepare_routes_v305():
         "done": done_count,
         "success": done_count,
         "failed": failed_count,
-        "total": total,
+        "total": len(definitions),
         "pending": pending_after,
         "saved": bool(saved_ok),
         "engine": PHOTO_LEGACY_ROUTE_ENGINE_V306,
@@ -31287,7 +31218,7 @@ def page_burari_project():
         expected_photo_pairs = len(_photo_legacy_pair_defs_v305())
         route_status.info(
             f"写真由来の過去データを読み込み済み：{expected_photo_pairs}区間。"
-            "緑線＋水色線を本当に1区間ずつ道路へ合わせ、各区間の完了直後に保存します。"
+            "緑線＋水色線を1区間ずつ道路へ合わせています。"
         )
         photo_segments, photo_route_meta = _photo_legacy_prepare_routes_v305()
         route_done = int(photo_route_meta.get("done") or 0)
