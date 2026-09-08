@@ -32,7 +32,7 @@ import streamlit as st
 # Freshly generated update: 2026-08-31 23:49 JST
 GENERATED_UPDATE_JST = "2026-09-08T18:48:00+09:00"
 
-APP_BUILD = "v313"
+APP_BUILD = "v314"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -1647,9 +1647,9 @@ export default function(component) {
     try { localStorage.setItem('tokyo_burari_camera_facing_v226', cameraFacing); } catch (_) {}
   };
   const preferredVideoConstraints = () => {
-    // v313: photo and video deliberately request the same camera geometry.
-    // Different resolution/FPS requests can make Android switch lenses or crop the
-    // sensor differently, which looks like a different zoom. Keep one common request.
+    // v314 keeps photo/video on the same physical camera geometry. Frame-rate is
+    // raised only after the stream opens so Android is less likely to switch lenses
+    // or change the field of view while satisfying the initial getUserMedia request.
     const constraints = {
       facingMode: { ideal: cameraFacing },
       height: { ideal: 1600 }
@@ -1659,6 +1659,42 @@ export default function(component) {
       delete constraints.facingMode;
     }
     return constraints;
+  };
+
+  const applyHighVideoFrameRate = async () => {
+    if (!stream || cameraMode !== 'video') return 0;
+    try {
+      const track = stream.getVideoTracks && stream.getVideoTracks()[0];
+      if (!track || !track.applyConstraints) return 0;
+      let capMax = 0;
+      try {
+        const caps = track.getCapabilities ? (track.getCapabilities() || {}) : {};
+        const frameCaps = caps.frameRate;
+        if (frameCaps && Number.isFinite(Number(frameCaps.max))) capMax = Number(frameCaps.max);
+      } catch (_) {}
+
+      // Prefer 90fps when the camera/browser reports support; otherwise use 60fps.
+      // If capabilities are not exposed, 60fps is the safest high-frame-rate request.
+      const targets = [];
+      if (capMax >= 89) targets.push(90);
+      if (capMax >= 59 || !capMax) targets.push(60);
+      if (capMax > 0 && capMax < 59) targets.push(Math.max(30, Math.floor(capMax)));
+      if (!targets.length) targets.push(60);
+
+      for (const target of [...new Set(targets)]) {
+        try {
+          await track.applyConstraints({ frameRate: { ideal: target, max: target } });
+          const settings = track.getSettings ? (track.getSettings() || {}) : {};
+          const actual = Number(settings.frameRate || 0);
+          if (actual >= 50 || target < 60) return actual || target;
+        } catch (_) {}
+      }
+      const settings = track.getSettings ? (track.getSettings() || {}) : {};
+      return Number(settings.frameRate || 0);
+    } catch (err) {
+      console.warn('high frame rate unavailable', err);
+      return 0;
+    }
   };
 
   const applyWidestAvailableZoom = async () => {
@@ -2040,6 +2076,9 @@ export default function(component) {
       video.srcObject = stream;
       await video.play();
       await applyNativePortraitConstraint();
+      // v314: request 90fps where supported, otherwise 60fps. Re-apply minimum
+      // hardware zoom afterwards so the video keeps the same field of view as photo.
+      const appliedVideoFps = await applyHighVideoFrameRate();
       await applyWidestAvailableZoom();
       syncNativeCameraFrame();
       try {
@@ -2065,7 +2104,8 @@ export default function(component) {
         localStorage.setItem('tokyo_burari_last_camera_mode_v1', cameraMode === 'video' ? 'video' : 'photo');
       } catch (_) {}
       if (cameraMode === 'video') {
-        setStatus(`動画は最大60秒です。${cameraFacing === 'user' ? ' 内側カメラ使用中。' : ''}`);
+        const fpsLabel = Number(appliedVideoFps || 0) >= 80 ? '90fps' : (Number(appliedVideoFps || 0) >= 50 ? '60fps' : '高フレームレート');
+        setStatus(`動画は最大60秒です。${fpsLabel}で撮影します。${cameraFacing === 'user' ? ' 内側カメラ使用中。' : ''}`);
       } else {
         setStatus(cameraFacing === 'user' ? '内側カメラ使用中です。' : '');
       }
@@ -2548,12 +2588,15 @@ export default function(component) {
     const captureHeight = Math.max(0, Number(captureSettings?.height || video.videoHeight || 0));
     const captureFrameRate = Math.max(0, Number(captureSettings?.frameRate || 0));
     const capturePixels = captureWidth * captureHeight;
-    // v255: a little more bitrate for 50-60fps so extracted stills retain detail,
-    // while the lighter 720p-class stream keeps encoder load below 1080p/60.
+    // v314: keep enough bitrate for 60/90fps so motion does not become blocky.
+    // The source camera frame rate still depends on the hardware/browser capability.
+    const veryHighFps = captureFrameRate >= 80;
     const highFps = captureFrameRate >= 50;
-    const requestedVideoBitrate = highFps
-      ? (capturePixels >= 800000 ? 4500000 : 3600000)
-      : (capturePixels >= 1700000 ? 3600000 : (capturePixels >= 800000 ? 2800000 : 2000000));
+    const requestedVideoBitrate = veryHighFps
+      ? (capturePixels >= 800000 ? 7000000 : 5600000)
+      : (highFps
+          ? (capturePixels >= 800000 ? 5200000 : 4200000)
+          : (capturePixels >= 1700000 ? 3600000 : (capturePixels >= 800000 ? 2800000 : 2000000)));
     try {
       const options = {
         videoBitsPerSecond: requestedVideoBitrate
