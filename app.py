@@ -30,9 +30,9 @@ from zoneinfo import ZoneInfo
 import streamlit as st
 
 # Freshly generated update: 2026-08-31 23:49 JST
-GENERATED_UPDATE_JST = "2026-09-08T13:55:00+09:00"
+GENERATED_UPDATE_JST = "2026-09-08T14:45:00+09:00"
 
-APP_BUILD = "v302"
+APP_BUILD = "v305"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -30209,23 +30209,28 @@ html,body{{margin:0;padding:0;background:#0b1012;font-family:-apple-system,Blink
     st.components.v1.html(map_html, height=500, scrolling=False)
 
 # ============================================================
-# v304: one-time, section-by-section historical photo route reconstruction
-#       using the actual OSM pedestrian road graph plus high-zoom raster road
-#       recognition. This NEVER changes ordinary GPS-recorded walk geometry.
+# v305: one-time, section-by-section historical photo route reconstruction
+#       with exhaustive retry for every still-green historical section.
+#       It imports any already-good v304 results, then reprocesses only the
+#       missing sections using a denser pedestrian graph search plus raster
+#       road scoring. This NEVER changes ordinary GPS-recorded walk geometry.
 # ============================================================
-PHOTO_LEGACY_ROUTE_SCHEMA_V304 = "photo_legacy_image_verified_roads_v304"
-PHOTO_LEGACY_ROUTE_STORAGE_FILE_V304 = "photo_legacy_image_verified_roads_v304.json"
-PHOTO_LEGACY_ROUTE_BATCH_SIZE_V304 = 5
-PHOTO_LEGACY_ROUTE_GRAPH_MARGIN_MIN_M_V304 = 360.0
-PHOTO_LEGACY_ROUTE_GRAPH_MARGIN_MAX_M_V304 = 760.0
-PHOTO_LEGACY_ROUTE_GRAPH_TIMEOUT_V304 = 14.0
-PHOTO_LEGACY_ROUTE_TILE_ZOOM_V304 = 18
-PHOTO_LEGACY_ROUTE_TILE_SAMPLE_LIMIT_V304 = 64
-PHOTO_LEGACY_ROUTE_NODE_SNAP_LIMIT_M_V304 = 260.0
-PHOTO_LEGACY_ROUTE_NODE_CANDIDATES_V304 = 12
+PHOTO_LEGACY_ROUTE_SCHEMA_V305 = "photo_legacy_image_verified_roads_v305"
+PHOTO_LEGACY_ROUTE_STORAGE_FILE_V305 = "photo_legacy_image_verified_roads_v305.json"
+PHOTO_LEGACY_ROUTE_BATCH_SIZE_V305 = 6
+PHOTO_LEGACY_ROUTE_GRAPH_MARGIN_MIN_M_V305 = 420.0
+PHOTO_LEGACY_ROUTE_GRAPH_MARGIN_MAX_M_V305 = 920.0
+PHOTO_LEGACY_ROUTE_GRAPH_TIMEOUT_V305 = 18.0
+PHOTO_LEGACY_ROUTE_TILE_SAMPLE_LIMIT_V305 = 84
+PHOTO_LEGACY_ROUTE_NODE_SNAP_LIMIT_M_V305 = 420.0
+PHOTO_LEGACY_ROUTE_NODE_CANDIDATES_V305 = 22
+PHOTO_LEGACY_ROUTE_MAX_START_END_COMBOS_V305 = 36
+PHOTO_LEGACY_ROUTE_MAX_RETRIES_PER_PAIR_V305 = 3
+PHOTO_LEGACY_ROUTE_ACCEPT_IMAGE_SCORE_V305 = 0.18
+PHOTO_LEGACY_ROUTE_ACCEPT_RATIO_V305 = 6.0
 
 
-def _photo_legacy_pair_defs_v304():
+def _photo_legacy_pair_defs_v305():
     rows = []
     seen = set()
     for seq_idx, seq in enumerate(PHOTO_LEGACY_ROUTE_SEQUENCES_V296):
@@ -30241,49 +30246,49 @@ def _photo_legacy_pair_defs_v304():
     return rows
 
 
-def _photo_legacy_route_storage_path_v304(family_key=None, member_key=None):
-    return f"{_gps_track_prefix(family_key, member_key)}/{PHOTO_LEGACY_ROUTE_STORAGE_FILE_V304}"
+def _photo_legacy_route_storage_path_v305(family_key=None, member_key=None):
+    return f"{_gps_track_prefix(family_key, member_key)}/{PHOTO_LEGACY_ROUTE_STORAGE_FILE_V305}"
 
 
-def _photo_legacy_default_state_v304():
+def _photo_legacy_default_state_v305():
     return {
-        "schema": PHOTO_LEGACY_ROUTE_SCHEMA_V304,
+        "schema": PHOTO_LEGACY_ROUTE_SCHEMA_V305,
         "saved_at_jst": now_jst().isoformat(),
         "family_key": str(current_family_key() or ""),
         "member_key": str(current_member_key() or ""),
-        "source": "per_section_osm_highway_graph_plus_high_zoom_raster_validation",
+        "source": "per_section_osm_highway_graph_plus_high_zoom_raster_validation_full_coverage",
         "complete": False,
         "pairs": {},
     }
 
 
 @st.cache_data(ttl=180, max_entries=24, show_spinner=False)
-def _read_photo_legacy_route_state_v304(family_key, member_key):
-    path = _photo_legacy_route_storage_path_v304(family_key, member_key)
+def _read_photo_legacy_route_state_v305(family_key, member_key):
+    path = _photo_legacy_route_storage_path_v305(family_key, member_key)
     try:
         raw = supabase_client().storage.from_(GPS_TRACK_BUCKET).download(path)
         payload = json.loads(bytes(raw).decode("utf-8"))
     except Exception:
         return {}
-    if not isinstance(payload, dict) or str(payload.get("schema") or "") != PHOTO_LEGACY_ROUTE_SCHEMA_V304:
+    if not isinstance(payload, dict) or str(payload.get("schema") or "") != PHOTO_LEGACY_ROUTE_SCHEMA_V305:
         return {}
     if not isinstance(payload.get("pairs"), dict):
         payload["pairs"] = {}
     return payload
 
 
-def _save_photo_legacy_route_state_v304(state):
+def _save_photo_legacy_route_state_v305(state):
     if not isinstance(state, dict):
         return False
     state = dict(state)
-    state["schema"] = PHOTO_LEGACY_ROUTE_SCHEMA_V304
+    state["schema"] = PHOTO_LEGACY_ROUTE_SCHEMA_V305
     state["saved_at_jst"] = now_jst().isoformat()
     state["family_key"] = str(current_family_key() or "")
     state["member_key"] = str(current_member_key() or "")
     if not isinstance(state.get("pairs"), dict):
         state["pairs"] = {}
     blob = json.dumps(state, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-    path = _photo_legacy_route_storage_path_v304()
+    path = _photo_legacy_route_storage_path_v305()
     bucket = supabase_client().storage.from_(GPS_TRACK_BUCKET)
     options = {"content-type": GPS_TRACK_STORAGE_MIME, "cache-control": "300", "upsert": "true"}
     try:
@@ -30300,17 +30305,17 @@ def _save_photo_legacy_route_state_v304(state):
                 bucket.upload(path=path, file=blob, file_options={"content-type": GPS_TRACK_STORAGE_MIME, "cache-control": "300"})
             except Exception:
                 return False
-    _read_photo_legacy_route_state_v304.clear()
+    _read_photo_legacy_route_state_v305.clear()
     return True
 
 
-def _photo_legacy_highway_allowed_v304(tags):
+def _photo_legacy_highway_allowed_v305(tags):
     if not isinstance(tags, dict):
         return False
     highway = str(tags.get("highway") or "").strip().lower()
     if not highway:
         return False
-    if highway in {"motorway", "motorway_link", "trunk", "trunk_link", "raceway", "construction", "proposed", "platform"}:
+    if highway in {"motorway", "motorway_link", "trunk", "trunk_link", "raceway", "construction", "proposed"}:
         return False
     if str(tags.get("access") or "").lower() in {"private", "no"}:
         return False
@@ -30319,48 +30324,63 @@ def _photo_legacy_highway_allowed_v304(tags):
     return True
 
 
-def _photo_legacy_highway_factor_v304(tags, profile):
-    highway = str((tags or {}).get("highway") or "").lower()
+def _photo_legacy_highway_factor_v305(tags, profile):
+    tags = tags or {}
+    highway = str(tags.get("highway") or "").lower()
     base = {
-        "pedestrian": 0.78,
-        "footway": 0.80,
-        "living_street": 0.86,
-        "path": 0.90,
-        "steps": 1.00,
-        "residential": 0.98,
-        "service": 1.00,
-        "unclassified": 1.05,
-        "tertiary": 1.14,
-        "tertiary_link": 1.16,
-        "secondary": 1.28,
-        "secondary_link": 1.32,
-        "primary": 1.52,
-        "primary_link": 1.58,
-        "track": 1.36,
-    }.get(highway, 1.18)
-    if str((tags or {}).get("sidewalk") or "").lower() in {"both", "left", "right", "yes"}:
-        base *= 0.90
-    if str((tags or {}).get("lit") or "").lower() == "yes":
+        "pedestrian": 0.70,
+        "footway": 0.74,
+        "living_street": 0.82,
+        "path": 0.88,
+        "steps": 1.05,
+        "residential": 0.94,
+        "service": 0.98,
+        "unclassified": 1.02,
+        "tertiary": 1.10,
+        "tertiary_link": 1.12,
+        "secondary": 1.22,
+        "secondary_link": 1.28,
+        "primary": 1.42,
+        "primary_link": 1.50,
+        "track": 1.25,
+        "platform": 0.92,
+    }.get(highway, 1.12)
+    sidewalk = str(tags.get("sidewalk") or "").lower()
+    if sidewalk in {"both", "left", "right", "yes"}:
+        base *= 0.88
+    if str(tags.get("lit") or "").lower() == "yes":
+        base *= 0.98
+    if str(tags.get("tunnel") or "").lower() == "yes":
+        base *= 1.03
+    if str(tags.get("covered") or "").lower() == "yes":
         base *= 0.98
     if profile == "shortest":
-        return 1.0 + (base - 1.0) * 0.28
+        return max(0.52, 1.0 + (base - 1.0) * 0.20)
     if profile == "small_streets":
-        if highway in {"primary", "primary_link", "secondary", "secondary_link"}:
-            base *= 1.28
-        if highway in {"pedestrian", "footway", "living_street", "residential", "service"}:
+        if highway in {"primary", "primary_link", "secondary", "secondary_link", "tertiary", "tertiary_link"}:
+            base *= 1.25
+        if highway in {"pedestrian", "footway", "living_street", "path", "residential", "service", "platform"}:
+            base *= 0.84
+    elif profile == "walk_pref":
+        if highway in {"pedestrian", "footway", "living_street", "path", "platform"}:
             base *= 0.88
-    return max(0.55, float(base))
+    elif profile == "balanced":
+        if highway in {"primary", "primary_link"}:
+            base *= 1.10
+        if highway in {"residential", "service", "pedestrian", "footway", "living_street"}:
+            base *= 0.94
+    return max(0.52, float(base))
 
 
-@st.cache_data(ttl=86400 * 7, max_entries=160, show_spinner=False)
-def _photo_legacy_fetch_graph_v304(lat0, lon0, lat1, lon1):
+@st.cache_data(ttl=86400 * 7, max_entries=200, show_spinner=False)
+def _photo_legacy_fetch_graph_v305(lat0, lon0, lat1, lon1):
     try:
         lat0 = float(lat0); lon0 = float(lon0); lat1 = float(lat1); lon1 = float(lon1)
         straight = _nearby_haversine_m(lat0, lon0, lat1, lon1)
     except Exception:
         return {"ok": False, "error": "bad_coords"}
-    margin_m = max(PHOTO_LEGACY_ROUTE_GRAPH_MARGIN_MIN_M_V304,
-                   min(PHOTO_LEGACY_ROUTE_GRAPH_MARGIN_MAX_M_V304, straight * 0.42))
+    margin_m = max(PHOTO_LEGACY_ROUTE_GRAPH_MARGIN_MIN_M_V305,
+                   min(PHOTO_LEGACY_ROUTE_GRAPH_MARGIN_MAX_M_V305, straight * 0.58))
     mid_lat = (lat0 + lat1) / 2.0
     dlat = margin_m / 111320.0
     dlon = margin_m / (111320.0 * max(0.22, math.cos(math.radians(mid_lat))))
@@ -30369,11 +30389,11 @@ def _photo_legacy_fetch_graph_v304(lat0, lon0, lat1, lon1):
     west = min(lon0, lon1) - dlon
     east = max(lon0, lon1) + dlon
     query = (
-        "[out:json][timeout:25];\n(\n"
-        f"  way[\"highway\"]({south:.7f},{west:.7f},{north:.7f},{east:.7f});\n"
+        "[out:json][timeout:35];\n(\n"
+        f'  way["highway"]({south:.7f},{west:.7f},{north:.7f},{east:.7f});\n'
         ");\nout body;\n>;\nout skel qt;"
     )
-    data, error = _toilet_overpass_fetch(query, timeout=PHOTO_LEGACY_ROUTE_GRAPH_TIMEOUT_V304)
+    data, error = _toilet_overpass_fetch(query, timeout=PHOTO_LEGACY_ROUTE_GRAPH_TIMEOUT_V305)
     if not isinstance(data, dict):
         return {"ok": False, "error": str(error or "overpass_failed")[:180]}
     elements = data.get("elements") or []
@@ -30389,7 +30409,7 @@ def _photo_legacy_fetch_graph_v304(lat0, lon0, lat1, lon1):
                 pass
         elif el.get("type") == "way":
             tags = el.get("tags") or {}
-            if _photo_legacy_highway_allowed_v304(tags):
+            if _photo_legacy_highway_allowed_v305(tags):
                 ids = []
                 for value in (el.get("nodes") or []):
                     try:
@@ -30403,13 +30423,13 @@ def _photo_legacy_fetch_graph_v304(lat0, lon0, lat1, lon1):
     return {"ok": True, "nodes": nodes, "ways": ways, "bbox": [south, west, north, east]}
 
 
-def _photo_legacy_graph_adjacency_v304(graph, profile):
+def _photo_legacy_graph_adjacency_v305(graph, profile):
     nodes = graph.get("nodes") or {}
     adjacency = {}
     for way in graph.get("ways") or []:
         ids = way.get("nodes") or []
         tags = way.get("tags") or {}
-        factor = _photo_legacy_highway_factor_v304(tags, profile)
+        factor = _photo_legacy_highway_factor_v305(tags, profile)
         for a, b in zip(ids[:-1], ids[1:]):
             pa = nodes.get(a); pb = nodes.get(b)
             if pa is None or pb is None:
@@ -30418,7 +30438,7 @@ def _photo_legacy_graph_adjacency_v304(graph, profile):
                 dist = _nearby_haversine_m(pa[0], pa[1], pb[0], pb[1])
             except Exception:
                 continue
-            if not (0.5 <= dist <= 450.0):
+            if not (0.5 <= dist <= 500.0):
                 continue
             cost = float(dist) * factor
             adjacency.setdefault(a, []).append((b, cost))
@@ -30426,66 +30446,51 @@ def _photo_legacy_graph_adjacency_v304(graph, profile):
     return adjacency
 
 
-def _photo_legacy_nearest_nodes_v304(nodes, lat, lon, limit=None):
-    limit = max(1, int(limit or PHOTO_LEGACY_ROUTE_NODE_CANDIDATES_V304))
+def _photo_legacy_nearest_nodes_v305(nodes, lat, lon, limit=None, snap_limit_m=None):
+    limit = max(1, int(limit or PHOTO_LEGACY_ROUTE_NODE_CANDIDATES_V305))
+    snap_limit_m = float(snap_limit_m or PHOTO_LEGACY_ROUTE_NODE_SNAP_LIMIT_M_V305)
     rows = []
     for node_id, pt in (nodes or {}).items():
         try:
             dist = _nearby_haversine_m(float(lat), float(lon), float(pt[0]), float(pt[1]))
         except Exception:
             continue
-        if dist <= PHOTO_LEGACY_ROUTE_NODE_SNAP_LIMIT_M_V304:
+        if dist <= snap_limit_m:
             rows.append((float(dist), node_id))
     rows.sort(key=lambda x: x[0])
     return rows[:limit]
 
 
-def _photo_legacy_dijkstra_v304(graph, start, end, profile):
+def _photo_legacy_dijkstra_specific_v305(graph, adjacency, start_node, end_node, profile):
     import heapq
     nodes = graph.get("nodes") or {}
-    adjacency = _photo_legacy_graph_adjacency_v304(graph, profile)
-    starts = _photo_legacy_nearest_nodes_v304(nodes, start[0], start[1])
-    ends = _photo_legacy_nearest_nodes_v304(nodes, end[0], end[1])
-    if not starts or not ends:
+    if start_node not in nodes or end_node not in nodes:
         return []
-    end_cost = {node_id: dist * 1.15 for dist, node_id in ends}
-    heap = []
-    best = {}
+    heap = [(0.0, start_node)]
+    best = {start_node: 0.0}
     prev = {}
-    for dist, node_id in starts:
-        initial = dist * 1.15
-        if initial < best.get(node_id, float("inf")):
-            best[node_id] = initial
-            heapq.heappush(heap, (initial, node_id))
-    final_node = None
-    final_total = float("inf")
     visited = 0
     while heap:
         cost, node_id = heapq.heappop(heap)
         if cost != best.get(node_id):
             continue
         visited += 1
-        if node_id in end_cost:
-            total = cost + end_cost[node_id]
-            if total < final_total:
-                final_total = total
-                final_node = node_id
-        if final_node is not None and cost > final_total:
+        if node_id == end_node:
             break
-        if visited > 18000:
+        if visited > 60000:
             break
         for nxt, edge_cost in adjacency.get(node_id, ()):
             nc = cost + edge_cost
-            if nc + 1e-9 < best.get(nxt, float("inf")):
+            if nc + 1e-9 < best.get(nxt, float('inf')):
                 best[nxt] = nc
                 prev[nxt] = node_id
                 heapq.heappush(heap, (nc, nxt))
-    if final_node is None:
+    if end_node not in best:
         return []
-    ids = [final_node]
+    ids = [end_node]
     while ids[-1] in prev:
         ids.append(prev[ids[-1]])
-        if len(ids) > 25000:
+        if len(ids) > 30000:
             return []
     ids.reverse()
     out = []
@@ -30497,232 +30502,236 @@ def _photo_legacy_dijkstra_v304(graph, start, end, profile):
     return _photo_legacy_coerce_segment_v300(out)
 
 
-@st.cache_data(ttl=86400 * 14, max_entries=4096, show_spinner=False)
-def _photo_legacy_osm_tile_v304(zoom, x, y):
+def _photo_legacy_osrm_pair_path_v305(name_a, name_b):
     try:
-        zoom = int(zoom); x = int(x); y = int(y)
-        n = 1 << zoom
-        if y < 0 or y >= n:
-            return b""
-        x %= n
-        req = Request(
-            f"https://tile.openstreetmap.org/{zoom}/{x}/{y}.png",
-            headers={"User-Agent": "TokyoBurariPhotoRouteVisionV304/1.0", "Accept": "image/png,image/*"},
-        )
-        with urlopen(req, timeout=6.5) as response:
-            return response.read()
+        return _photo_legacy_route_request_names_v302([name_a, name_b])
     except Exception:
-        return b""
+        return []
 
 
-def _photo_legacy_resample_route_v304(points, max_samples=None):
-    clean = _photo_legacy_coerce_segment_v300(points)
-    if len(clean) < 2:
-        return clean
-    limit = max(8, int(max_samples or PHOTO_LEGACY_ROUTE_TILE_SAMPLE_LIMIT_V304))
-    cumulative = [0.0]
-    for a, b in zip(clean[:-1], clean[1:]):
-        try:
-            d = _nearby_haversine_m(a[0], a[1], b[0], b[1])
-        except Exception:
-            d = 0.0
-        cumulative.append(cumulative[-1] + max(0.0, d))
-    total = cumulative[-1]
-    if total <= 1.0:
-        return clean[:limit]
-    count = min(limit, max(8, int(total / 38.0) + 1))
-    targets = [total * i / float(max(1, count - 1)) for i in range(count)]
-    out = []
-    seg_idx = 0
-    for target in targets:
-        while seg_idx + 1 < len(cumulative) and cumulative[seg_idx + 1] < target:
-            seg_idx += 1
-        if seg_idx + 1 >= len(clean):
-            out.append(clean[-1])
-            continue
-        span = cumulative[seg_idx + 1] - cumulative[seg_idx]
-        t = 0.0 if span <= 1e-9 else (target - cumulative[seg_idx]) / span
-        a = clean[seg_idx]; b = clean[seg_idx + 1]
-        out.append([round(a[0] + (b[0] - a[0]) * t, 7), round(a[1] + (b[1] - a[1]) * t, 7)])
-    return out
-
-
-def _photo_legacy_road_pixel_score_v304(rgb):
-    try:
-        r, g, b = [int(v) for v in rgb[:3]]
-    except Exception:
-        return 0.0
-    spread = max(r, g, b) - min(r, g, b)
-    mean = (r + g + b) / 3.0
-    if mean >= 242 and spread <= 18:
-        return 1.0
-    if mean >= 228 and spread <= 30:
-        return 0.90
-    if mean >= 210 and spread <= 44:
-        return 0.72
-    if r >= 220 and g >= 190 and b >= 166 and mean >= 205:
-        return 0.60
-    if mean >= 190 and spread <= 52:
-        return 0.42
-    return 0.0
-
-
-def _photo_legacy_route_image_score_v304(points):
-    try:
-        from PIL import Image
-    except Exception:
-        return 0.0
-    samples = _photo_legacy_resample_route_v304(points)
-    if len(samples) < 2:
-        return 0.0
-    zoom = int(PHOTO_LEGACY_ROUTE_TILE_ZOOM_V304)
-    sample_meta = []
-    tile_keys = set()
-    for lat, lon in samples:
-        gx, gy = _project_slippy_global_pixel_v291(lat, lon, zoom)
-        tx = int(math.floor(gx / 256.0)); ty = int(math.floor(gy / 256.0))
-        px = int(round(gx - tx * 256.0)); py = int(round(gy - ty * 256.0))
-        sample_meta.append((tx, ty, px, py))
-        tile_keys.add((tx, ty))
-    tile_images = {}
-    def _load_tile(pair):
-        raw = _photo_legacy_osm_tile_v304(zoom, pair[0], pair[1])
-        if not raw:
-            return pair, None
-        try:
-            with Image.open(io.BytesIO(raw)) as im:
-                return pair, im.convert("RGB").copy()
-        except Exception:
-            return pair, None
-    with ThreadPoolExecutor(max_workers=min(6, max(1, len(tile_keys)))) as pool:
-        for key, image in pool.map(_load_tile, list(tile_keys)):
-            if image is not None:
-                tile_images[key] = image
-    scores = []
-    for tx, ty, px, py in sample_meta:
-        image = tile_images.get((tx, ty))
-        if image is None:
-            continue
-        local = []
-        for dy in range(-4, 5, 2):
-            for dx in range(-4, 5, 2):
-                xx = max(0, min(255, px + dx)); yy = max(0, min(255, py + dy))
-                local.append(_photo_legacy_road_pixel_score_v304(image.getpixel((xx, yy))))
-        local.sort(reverse=True)
-        take = local[:max(1, min(6, len(local)))]
-        scores.append(sum(take) / len(take))
-    if not scores:
-        return 0.0
-    scores.sort()
-    trim = max(0, int(len(scores) * 0.10))
-    usable = scores[trim:len(scores)-trim] if len(scores) - 2 * trim >= 3 else scores
-    return round(sum(usable) / max(1, len(usable)), 4)
-
-
-def _photo_legacy_path_length_m_v304(points):
-    total = 0.0
-    clean = _photo_legacy_coerce_segment_v300(points)
-    for a, b in zip(clean[:-1], clean[1:]):
-        try:
-            total += _nearby_haversine_m(a[0], a[1], b[0], b[1])
-        except Exception:
-            pass
-    return total
-
-
-def _photo_legacy_infer_pair_v304(name_a, name_b):
+def _photo_legacy_candidate_rows_v305(graph, name_a, name_b):
     a = PHOTO_LEGACY_STATIONS_V296.get(name_a)
     b = PHOTO_LEGACY_STATIONS_V296.get(name_b)
     if a is None or b is None:
-        return {"status": "failed", "segment": [], "reason": "missing_station"}
-    graph = _photo_legacy_fetch_graph_v304(float(a[0]), float(a[1]), float(b[0]), float(b[1]))
-    if not isinstance(graph, dict) or not graph.get("ok"):
-        return {"status": "failed", "segment": [], "reason": str((graph or {}).get("error") or "graph_failed")[:120]}
+        return []
+    nodes = graph.get('nodes') or {}
+    straight_m = max(1.0, _nearby_haversine_m(float(a[0]), float(a[1]), float(b[0]), float(b[1])))
+    start_nodes = _photo_legacy_nearest_nodes_v305(nodes, a[0], a[1])
+    end_nodes = _photo_legacy_nearest_nodes_v305(nodes, b[0], b[1])
+    pair_candidates = []
+    for sd, s in start_nodes:
+        for ed, e in end_nodes:
+            pair_candidates.append((float(sd + ed), float(sd), float(ed), s, e))
+    pair_candidates.sort(key=lambda row: row[0])
+    pair_candidates = pair_candidates[:max(1, int(PHOTO_LEGACY_ROUTE_MAX_START_END_COMBOS_V305))]
     candidates = []
-    for profile in ("walk_pref", "small_streets", "shortest"):
-        path = _photo_legacy_dijkstra_v304(graph, a, b, profile)
-        if len(path) < 2:
-            continue
-        image_score = _photo_legacy_route_image_score_v304(path)
-        length_m = _photo_legacy_path_length_m_v304(path)
-        try:
-            straight_m = max(1.0, _nearby_haversine_m(float(a[0]), float(a[1]), float(b[0]), float(b[1])))
-        except Exception:
-            straight_m = max(1.0, length_m)
+    seen_hashes = set()
+    for profile in ('walk_pref', 'small_streets', 'balanced', 'shortest'):
+        adjacency = _photo_legacy_graph_adjacency_v305(graph, profile)
+        for _, start_gap, end_gap, s, e in pair_candidates:
+            path = _photo_legacy_dijkstra_specific_v305(graph, adjacency, s, e, profile)
+            if len(path) < 2:
+                continue
+            signature = (profile, tuple(path[0]), tuple(path[-1]), len(path), round(_photo_legacy_path_length_m_v304(path), 1))
+            if signature in seen_hashes:
+                continue
+            seen_hashes.add(signature)
+            image_score = _photo_legacy_route_image_score_v304(path)
+            length_m = _photo_legacy_path_length_m_v304(path)
+            ratio = length_m / straight_m if straight_m > 0 else 9.9
+            gap_penalty = (float(start_gap) + float(end_gap)) / 4200.0
+            ratio_penalty = max(0.0, ratio - 1.45) * 0.08
+            score = float(image_score) - gap_penalty - ratio_penalty
+            candidates.append({
+                'profile': profile,
+                'path': path,
+                'image_score': round(float(image_score), 4),
+                'length_m': round(float(length_m), 1),
+                'ratio': round(float(ratio), 3),
+                'start_gap_m': round(float(start_gap), 1),
+                'end_gap_m': round(float(end_gap), 1),
+                'score': round(float(score), 5),
+                'source': 'pedestrian_graph',
+            })
+    osrm_path = _photo_legacy_osrm_pair_path_v305(name_a, name_b)
+    if len(osrm_path) >= 2:
+        image_score = _photo_legacy_route_image_score_v304(osrm_path)
+        length_m = _photo_legacy_path_length_m_v304(osrm_path)
         ratio = length_m / straight_m if straight_m > 0 else 9.9
-        final_score = float(image_score) - max(0.0, ratio - 1.35) * 0.075
+        score = float(image_score) - max(0.0, ratio - 1.45) * 0.08
         candidates.append({
-            "profile": profile,
-            "path": path,
-            "image_score": image_score,
-            "length_m": round(length_m, 1),
-            "ratio": round(ratio, 3),
-            "score": final_score,
+            'profile': 'osrm_direct',
+            'path': osrm_path,
+            'image_score': round(float(image_score), 4),
+            'length_m': round(float(length_m), 1),
+            'ratio': round(float(ratio), 3),
+            'start_gap_m': 0.0,
+            'end_gap_m': 0.0,
+            'score': round(float(score), 5),
+            'source': 'osrm_foot',
         })
+    candidates.sort(key=lambda r: (-float(r.get('score') or -999), float(r.get('length_m') or 1e12)))
+    return candidates
+
+
+def _photo_legacy_infer_pair_v305(name_a, name_b):
+    a = PHOTO_LEGACY_STATIONS_V296.get(name_a)
+    b = PHOTO_LEGACY_STATIONS_V296.get(name_b)
+    if a is None or b is None:
+        return {'status': 'failed', 'segment': [], 'reason': 'missing_station'}
+    graph = _photo_legacy_fetch_graph_v305(float(a[0]), float(a[1]), float(b[0]), float(b[1]))
+    if not isinstance(graph, dict) or not graph.get('ok'):
+        # Last-resort OSRM-only attempt.
+        fallback = _photo_legacy_osrm_pair_path_v305(name_a, name_b)
+        if len(fallback) >= 2:
+            return {
+                'status': 'done',
+                'segment': fallback,
+                'profile': 'osrm_direct_only',
+                'image_score': _photo_legacy_route_image_score_v304(fallback),
+                'length_m': round(_photo_legacy_path_length_m_v304(fallback), 1),
+                'route_ratio': None,
+                'method': 'osrm_foot_last_resort',
+            }
+        return {'status': 'failed', 'segment': [], 'reason': str((graph or {}).get('error') or 'graph_failed')[:120]}
+    candidates = _photo_legacy_candidate_rows_v305(graph, name_a, name_b)
     if not candidates:
-        return {"status": "failed", "segment": [], "reason": "no_graph_path"}
-    candidates.sort(key=lambda r: (-float(r.get("score") or -999), float(r.get("length_m") or 1e12)))
+        return {'status': 'failed', 'segment': [], 'reason': 'no_candidate_path'}
     best = candidates[0]
     return {
-        "status": "done",
-        "segment": best.get("path") or [],
-        "profile": best.get("profile"),
-        "image_score": best.get("image_score"),
-        "length_m": best.get("length_m"),
-        "route_ratio": best.get("ratio"),
-        "method": "osm_highway_graph_plus_osm_raster_road_recognition",
+        'status': 'done',
+        'segment': best.get('path') or [],
+        'profile': best.get('profile'),
+        'image_score': best.get('image_score'),
+        'length_m': best.get('length_m'),
+        'route_ratio': best.get('ratio'),
+        'start_gap_m': best.get('start_gap_m'),
+        'end_gap_m': best.get('end_gap_m'),
+        'method': 'pedestrian_graph_with_raster_scoring' if best.get('source') == 'pedestrian_graph' else 'osrm_foot_with_raster_scoring',
     }
 
 
-def _photo_legacy_segments_from_state_v304(state):
-    pairs = (state or {}).get("pairs") if isinstance(state, dict) else {}
+def _photo_legacy_segments_from_state_v305(state):
+    pairs = (state or {}).get('pairs') if isinstance(state, dict) else {}
     if not isinstance(pairs, dict):
         return []
     ordered = []
-    for pair_def in _photo_legacy_pair_defs_v304():
-        row = pairs.get(pair_def["key"])
-        if not isinstance(row, dict) or row.get("status") != "done":
+    for pair_def in _photo_legacy_pair_defs_v305():
+        row = pairs.get(pair_def['key'])
+        if not isinstance(row, dict) or row.get('status') != 'done':
             continue
-        seg = _photo_legacy_coerce_segment_v300(row.get("segment") or [])
+        seg = _photo_legacy_coerce_segment_v300(row.get('segment') or [])
         if len(seg) >= 2:
             ordered.append(seg)
     return ordered
 
 
-def _photo_legacy_prepare_routes_v304():
+def _photo_legacy_import_v304_into_v305(state):
+    if not isinstance(state, dict):
+        state = _photo_legacy_default_state_v305()
+    try:
+        prior = _read_photo_legacy_route_state_v304(str(current_family_key() or ''), str(current_member_key() or ''))
+    except Exception:
+        prior = {}
+    prior_pairs = prior.get('pairs') if isinstance(prior, dict) else {}
+    if not isinstance(prior_pairs, dict):
+        return state
+    pairs = state.setdefault('pairs', {})
+    changed = False
+    for pair_def in _photo_legacy_pair_defs_v305():
+        key = pair_def['key']
+        existing = pairs.get(key)
+        if isinstance(existing, dict) and existing.get('status') == 'done':
+            continue
+        old = prior_pairs.get(key)
+        if isinstance(old, dict) and old.get('status') == 'done':
+            seg = _photo_legacy_coerce_segment_v300(old.get('segment') or [])
+            if len(seg) >= 2:
+                imported = dict(old)
+                imported['segment'] = seg
+                imported['imported_from'] = 'v304'
+                imported['updated_at_jst'] = now_jst().isoformat()
+                pairs[key] = imported
+                changed = True
+    if changed:
+        state['pairs'] = pairs
+    return state
+
+
+def _photo_legacy_prepare_routes_v305():
     if not _photo_legacy_enabled_v296():
-        return [], {"mode": "disabled", "done": 0, "success": 0, "total": 0, "pending": 0}
-    family = str(current_family_key() or "")
-    member = str(current_member_key() or "")
-    state = _read_photo_legacy_route_state_v304(family, member)
+        return [], {'mode': 'disabled', 'done': 0, 'success': 0, 'total': 0, 'pending': 0}
+    family = str(current_family_key() or '')
+    member = str(current_member_key() or '')
+    state = _read_photo_legacy_route_state_v305(family, member)
     if not state:
-        state = _photo_legacy_default_state_v304()
-    pairs = state.setdefault("pairs", {})
-    definitions = _photo_legacy_pair_defs_v304()
-    pending = [row for row in definitions if row["key"] not in pairs]
-    batch = pending[:max(1, int(PHOTO_LEGACY_ROUTE_BATCH_SIZE_V304))]
+        state = _photo_legacy_default_state_v305()
+    state = _photo_legacy_import_v304_into_v305(state)
+    pairs = state.setdefault('pairs', {})
+    definitions = _photo_legacy_pair_defs_v305()
+    pending = []
+    for row in definitions:
+        item = pairs.get(row['key'])
+        if isinstance(item, dict) and item.get('status') == 'done':
+            continue
+        pending.append(row)
+    batch = pending[:max(1, int(PHOTO_LEGACY_ROUTE_BATCH_SIZE_V305))]
     for pair_def in batch:
-        result = _photo_legacy_infer_pair_v304(pair_def["a"], pair_def["b"])
+        existing = pairs.get(pair_def['key']) or {}
+        attempts = int(existing.get('attempts') or 0) + 1 if isinstance(existing, dict) else 1
+        result = _photo_legacy_infer_pair_v305(pair_def['a'], pair_def['b'])
         result = dict(result or {})
-        result["a"] = pair_def["a"]
-        result["b"] = pair_def["b"]
-        result["updated_at_jst"] = now_jst().isoformat()
-        pairs[pair_def["key"]] = result
-        state["pairs"] = pairs
-        _save_photo_legacy_route_state_v304(state)
-    pending_after = [row for row in definitions if row["key"] not in pairs]
-    state["complete"] = not pending_after
-    _save_photo_legacy_route_state_v304(state)
-    segments = _photo_legacy_segments_from_state_v304(state)
-    done_count = len(definitions) - len(pending_after)
-    success_count = sum(1 for row in pairs.values() if isinstance(row, dict) and row.get("status") == "done")
+        result['a'] = pair_def['a']
+        result['b'] = pair_def['b']
+        result['attempts'] = attempts
+        result['updated_at_jst'] = now_jst().isoformat()
+        if result.get('status') != 'done' and attempts < int(PHOTO_LEGACY_ROUTE_MAX_RETRIES_PER_PAIR_V305):
+            # keep it pending for the next rerun
+            result['status'] = 'retry_pending'
+        elif result.get('status') != 'done':
+            fallback = _photo_legacy_osrm_pair_path_v305(pair_def['a'], pair_def['b'])
+            if len(fallback) >= 2:
+                result = {
+                    'status': 'done',
+                    'segment': fallback,
+                    'profile': 'osrm_direct_forced',
+                    'image_score': _photo_legacy_route_image_score_v304(fallback),
+                    'length_m': round(_photo_legacy_path_length_m_v304(fallback), 1),
+                    'route_ratio': None,
+                    'a': pair_def['a'],
+                    'b': pair_def['b'],
+                    'attempts': attempts,
+                    'updated_at_jst': now_jst().isoformat(),
+                    'method': 'osrm_foot_forced_after_retries',
+                }
+            else:
+                result['status'] = 'failed'
+        pairs[pair_def['key']] = result
+        state['pairs'] = pairs
+        _save_photo_legacy_route_state_v305(state)
+    pending_after = []
+    for row in definitions:
+        item = pairs.get(row['key'])
+        if isinstance(item, dict) and item.get('status') == 'done':
+            continue
+        if isinstance(item, dict) and item.get('status') == 'failed':
+            continue
+        pending_after.append(row)
+    state['complete'] = not pending_after
+    _save_photo_legacy_route_state_v305(state)
+    segments = _photo_legacy_segments_from_state_v305(state)
+    done_count = sum(1 for row in definitions if isinstance(pairs.get(row['key']), dict) and pairs.get(row['key'], {}).get('status') == 'done')
+    success_count = done_count
+    failed_count = sum(1 for row in definitions if isinstance(pairs.get(row['key']), dict) and pairs.get(row['key'], {}).get('status') == 'failed')
     return segments, {
-        "mode": "complete" if not pending_after else "building",
-        "done": done_count,
-        "success": success_count,
-        "total": len(definitions),
-        "pending": len(pending_after),
+        'mode': 'complete' if not pending_after else 'building',
+        'done': done_count,
+        'success': success_count,
+        'failed': failed_count,
+        'total': len(definitions),
+        'pending': len(pending_after),
     }
+
 
 def page_burari_project():
     # v299: keep the project page compact on phones.  Native Streamlit metrics stack
@@ -30776,37 +30785,36 @@ def page_burari_project():
     )
     map_points = walk_points or points[-1:]
 
-    # v293 preflight: finish station discovery / first-time inference / numeric-state save
-    # before Leaflet is mounted.  The map itself is rendered once with a complete payload,
-    # so station work cannot blank or replace an already visible map mid-run.
     station_status = st.empty()
     station_status.info("新しい歩行データから到着駅を確認しています。地図は確認完了後に表示します。")
     stations, station_meta = _project_station_preflight_v293(points, map_points)
     station_status.empty()
 
-    # v300: keep the historical wall-map seed separate from normal GPS records.
-    # Only this photo-derived history is road-inferred, persisted once, and then loaded
-    # numerically on later visits.  Ordinary GPS geometry is never changed.
     display_points = list(map_points or []) + _photo_legacy_map_points_v296()
     stations = _merge_photo_legacy_stations_v296(stations)
 
     photo_segments = []
     if _photo_legacy_enabled_v296():
         route_status = st.empty()
-        route_status.info("初回のみ、過去写真で光っている駅間を1区間ずつ高倍率地図で道路認識し、実道路ネットワーク上へ修正して保存しています。")
-        photo_segments, photo_route_meta = _photo_legacy_prepare_routes_v304()
-        if int(photo_route_meta.get("pending") or 0) > 0:
+        route_status.info("初回のみ、緑だけ残っている過去ルート区間を順番に道路推定し、赤線として保存しています。")
+        photo_segments, photo_route_meta = _photo_legacy_prepare_routes_v305()
+        if int(photo_route_meta.get('pending') or 0) > 0:
             route_status.info(
-                f"過去ルートを道路認識中：{int(photo_route_meta.get('done') or 0)} / {int(photo_route_meta.get('total') or 0)} 区間。自動で続けます。"
+                f"過去ルートを道路認識中：{int(photo_route_meta.get('done') or 0)} / {int(photo_route_meta.get('total') or 0)} 区間。赤線がない区間を続けて補完しています。"
             )
             time.sleep(0.20)
-            st.rerun(scope="app")
+            st.rerun(scope='app')
+        elif int(photo_route_meta.get('failed') or 0) > 0:
+            route_status.warning(
+                f"道路推定できなかった区間が {int(photo_route_meta.get('failed') or 0)} 件あります。表示中の赤線は保存済みです。"
+            )
+        else:
+            route_status.empty()
         route_status.empty()
     display_segments = list(segments or [])
 
     _render_burari_project_map_v295(display_points, display_segments, stations, photo_segments=photo_segments)
 
-    # Keep explanatory text below the map so it never pushes the map below the first phone viewport.
     with st.expander("記録の仕組み", expanded=False):
         st.caption(
             "位置情報を許可している間はGPSを自動記録し、約10m動くごとに1点を端末へ保存してまとめて同期します。"
