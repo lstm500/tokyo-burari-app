@@ -32,7 +32,7 @@ import streamlit as st
 # Freshly generated update: 2026-08-31 23:49 JST
 GENERATED_UPDATE_JST = "2026-09-08T18:48:00+09:00"
 
-APP_BUILD = "v308"
+APP_BUILD = "v309"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -29149,6 +29149,109 @@ PHOTO_LEGACY_NEW_BIG_STATIONS_V307 = {
 }
 
 
+# ============================================================
+# v309: fixed photographed route list approved from 1818.jpg + 1820.jpg
+# ============================================================
+# Both green and cyan/light-blue connections are historical walked routes.
+# This list is intentionally explicit: only these 86 photographed station/place
+# pairs drive the new-account historical seed. Routing may refine the geometry,
+# but it must not add/remove photographed connections implicitly.
+PHOTO_LEGACY_FIXED_ROUTE_PAIRS_V309 = (
+    ('池袋駅', '目白駅'),  # 1
+    ('目白駅', '高田馬場駅'),  # 2
+    ('高田馬場駅', '新大久保駅'),  # 3
+    ('新大久保駅', '新宿駅'),  # 4
+    ('新宿駅', '代々木駅'),  # 5
+    ('代々木駅', '原宿駅'),  # 6
+    ('原宿駅', '渋谷駅'),  # 7
+    ('渋谷駅', '恵比寿駅'),  # 8
+    ('恵比寿駅', '目黒駅'),  # 9
+    ('目黒駅', '五反田駅'),  # 10
+    ('五反田駅', '大崎駅'),  # 11
+    ('大崎駅', '品川駅'),  # 12
+    ('品川駅', '高輪ゲートウェイ駅'),  # 13
+    ('高輪ゲートウェイ駅', '田町駅'),  # 14
+    ('田町駅', '浜松町駅'),  # 15
+    ('浜松町駅', '新橋駅'),  # 16
+    ('新橋駅', '有楽町駅'),  # 17
+    ('有楽町駅', '東京駅'),  # 18
+    ('東京駅', '神田駅'),  # 19
+    ('神田駅', '秋葉原駅'),  # 20
+    ('秋葉原駅', '御徒町駅'),  # 21
+    ('御徒町駅', '上野駅'),  # 22
+    ('上野駅', '鶯谷駅'),  # 23
+    ('鶯谷駅', '日暮里駅'),  # 24
+    ('日暮里駅', '西日暮里駅'),  # 25
+    ('西日暮里駅', '田端駅'),  # 26
+    ('田端駅', '駒込駅'),  # 27
+    ('駒込駅', '巣鴨駅'),  # 28
+    ('巣鴨駅', '大塚駅'),  # 29
+    ('大塚駅', '池袋駅'),  # 30
+    ('目白駅', '雑司が谷駅'),  # 31
+    ('雑司が谷駅', '鬼子母神前'),  # 32
+    ('鬼子母神前', '学習院下'),  # 33
+    ('学習院下', '面影橋'),  # 34
+    ('面影橋', '早稲田（都電）'),  # 35
+    ('早稲田（都電）', '早稲田駅'),  # 36
+    ('新宿駅', '新宿三丁目駅'),  # 37
+    ('代々木駅', '北参道駅'),  # 38
+    ('北参道駅', '千駄ケ谷駅'),  # 39
+    ('千駄ケ谷駅', '信濃町駅'),  # 40
+    ('信濃町駅', '四ツ谷駅'),  # 41
+    ('四ツ谷駅', '市ケ谷駅'),  # 42
+    ('市ケ谷駅', '飯田橋駅'),  # 43
+    ('飯田橋駅', '水道橋駅'),  # 44
+    ('水道橋駅', '御茶ノ水駅'),  # 45
+    ('御茶ノ水駅', '秋葉原駅'),  # 46
+    ('大塚駅', '新大塚駅'),  # 47
+    ('新大塚駅', '茗荷谷駅'),  # 48
+    ('茗荷谷駅', '後楽園駅'),  # 49
+    ('後楽園駅', '春日駅'),  # 50
+    ('春日駅', '白山駅'),  # 51
+    ('白山駅', '千石駅'),  # 52
+    ('巣鴨駅', '千石駅'),  # 53
+    ('原宿駅', '明治神宮前駅'),  # 54
+    ('明治神宮前駅', '表参道駅'),  # 55
+    ('表参道駅', '外苑前駅'),  # 56
+    ('外苑前駅', '青山一丁目駅'),  # 57
+    ('青山一丁目駅', '乃木坂駅'),  # 58
+    ('青山一丁目駅', '赤坂見附駅'),  # 59
+    ('赤坂見附駅', '永田町駅'),  # 60
+    ('永田町駅', '半蔵門駅'),  # 61
+    ('永田町駅', '国会議事堂前駅'),  # 62
+    ('国会議事堂前駅', '溜池山王駅'),  # 63
+    ('溜池山王駅', '虎ノ門駅'),  # 64
+    ('虎ノ門駅', '霞ケ関駅'),  # 65
+    ('霞ケ関駅', '日比谷駅'),  # 66
+    ('青山一丁目駅', '六本木一丁目駅'),  # 67
+    ('六本木一丁目駅', '麻布十番駅'),  # 68
+    ('麻布十番駅', '白金高輪駅'),  # 69
+    ('白金高輪駅', '白金台駅'),  # 70
+    ('白金台駅', '目黒駅'),  # 71
+    ('麻布十番駅', '赤羽橋駅'),  # 72
+    ('赤羽橋駅', '芝公園駅'),  # 73
+    ('芝公園駅', '大門駅'),  # 74
+    ('東京駅', '大手町駅'),  # 75
+    ('大手町駅', '二重橋前駅'),  # 76
+    ('二重橋前駅', '日比谷駅'),  # 77
+    ('日比谷駅', '有楽町駅'),  # 78
+    ('新橋駅', '大門駅'),  # 79
+    ('神田駅', '大手町駅'),  # 80
+    ('東京駅', '日比谷駅'),  # 81
+    ('御茶ノ水駅', '新御茶ノ水駅'),  # 82
+    ('御茶ノ水駅', '末広町駅'),  # 83
+    ('末広町駅', '秋葉原駅'),  # 84
+    ('上野駅', '上野広小路駅'),  # 85
+    ('上野広小路駅', '御徒町駅'),  # 86
+)
+PHOTO_LEGACY_FIXED_ROUTE_PAIR_COUNT_V309 = len(PHOTO_LEGACY_FIXED_ROUTE_PAIRS_V309)
+PHOTO_LEGACY_NEW_ROUTE_SEQUENCES_V307 = tuple((a, b) for a, b in PHOTO_LEGACY_FIXED_ROUTE_PAIRS_V309)
+PHOTO_LEGACY_FIXED_STATION_NAMES_V309 = frozenset(name for pair in PHOTO_LEGACY_FIXED_ROUTE_PAIRS_V309 for name in pair)
+PHOTO_LEGACY_NEW_ACTIVE_STATIONS_V309 = {
+    name: coord for name, coord in PHOTO_LEGACY_NEW_STATIONS_V307.items()
+    if name in PHOTO_LEGACY_FIXED_STATION_NAMES_V309
+}
+
 def _photo_legacy_seed_assignment_path_v307(family_key=None):
     family = re.sub(r"[^a-zA-Z0-9_.-]+", "_", str(family_key or current_family_key() or "family").strip() or "family")
     return f"{PHOTO_LEGACY_SEED_ASSIGNMENT_DIR_V307}/{family}.json"
@@ -29237,7 +29340,7 @@ def _photo_legacy_profile_v307():
 def _photo_legacy_active_stations_v307():
     profile = _photo_legacy_profile_v307()
     if profile == PHOTO_LEGACY_NEW_PROFILE_V307:
-        return PHOTO_LEGACY_NEW_STATIONS_V307
+        return PHOTO_LEGACY_NEW_ACTIVE_STATIONS_V309
     if profile == "legacy_main_v296":
         return PHOTO_LEGACY_STATIONS_V296
     return {}
@@ -30481,8 +30584,8 @@ html,body{{margin:0;padding:0;background:#0b1012;font-family:-apple-system,Blink
 #       and falls back only for unresolved pairs. Existing successful v305 pieces are
 #       kept. No straight station-to-station fallback is drawn.
 # ============================================================
-PHOTO_LEGACY_ROUTE_SCHEMA_V305 = "photo_legacy_image_verified_roads_v305"
-PHOTO_LEGACY_ROUTE_STORAGE_FILE_V305 = "photo_legacy_image_verified_roads_v305.json"
+PHOTO_LEGACY_ROUTE_SCHEMA_V305 = "photo_legacy_fixed_86_pairs_v309"
+PHOTO_LEGACY_ROUTE_STORAGE_FILE_V305 = "photo_legacy_fixed_86_pairs_v309.json"
 PHOTO_LEGACY_ROUTE_ENGINE_V306 = "v306_bounded_chunked_foot_router"
 PHOTO_LEGACY_ROUTE_FOOT_BASE_V306 = "https://routing.openstreetmap.de/routed-foot/route/v1/driving"
 PHOTO_LEGACY_ROUTE_MAX_WAYPOINTS_V306 = 7
@@ -31100,7 +31203,7 @@ def page_burari_project():
     photo_segments = []
     if photo_seed_enabled:
         route_status = st.empty()
-        route_status.info("写真から読み取った過去ルートは、まず全区間を地図上で光らせたうえで、順次歩行者用の道路形状へ合わせています。")
+        route_status.info("写真の緑線＋水色線から確定した86区間を、まずすべて地図上で光らせ、順次歩行者用の道路形状へ合わせています。")
         photo_segments, photo_route_meta = _photo_legacy_prepare_routes_v305()
         route_done = int(photo_route_meta.get("done") or 0)
         route_total = int(photo_route_meta.get("total") or 0)
