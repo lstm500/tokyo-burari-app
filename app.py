@@ -32,7 +32,7 @@ import streamlit as st
 # Freshly generated update: 2026-08-31 23:49 JST
 GENERATED_UPDATE_JST = "2026-09-08T18:48:00+09:00"
 
-APP_BUILD = "v333"
+APP_BUILD = "v335"
 # v331: multi-tag photo selections can go straight to a music replay and be saved as a stable in-app movie snapshot.
 # v330: tag-review movies support one or multiple AI tags; selection is action-only.
 
@@ -16520,10 +16520,12 @@ def render_monthly_replay_player(period_label, review, playback, photo_items):
     if end_seconds <= start_seconds:
         end_seconds = start_seconds + 20
     duration_seconds = max(1, end_seconds - start_seconds)
-    # Show every photo at least once when possible, but cap each photo at 2.5s so
-    # a small set of photos naturally loops again while a longer music segment is playing.
-    # Photo cycling is never used as the stop condition; only the music end time stops playback.
-    display_ms = max(900, min(2500, int(max(1, duration_seconds) * 1000 / max(1, len(photo_items)))))
+    # v335: recalculate the photo cadence for the currently auditioned music segment,
+    # but never switch faster than one photo every 2 seconds.  A/B/C can still produce
+    # different cadences when the music interval is long enough.  If the selected music
+    # is too short to show every photo at 2 seconds each, playback stops with the music
+    # rather than accelerating the slideshow below this readability floor.
+    display_ms = max(2000, int(round(duration_seconds * 1000.0 / max(1, len(photo_items)))))
     period_label_escaped = html.escape(str(period_label or "振り返り"))
     is_tag_review = isinstance(review, dict) and str(review.get("_review_scope_type") or "") in {"tag", "ai_tag"}
     replay_kicker = "タグで振り返り" if is_tag_review else "まとめた期間の振り返り"
