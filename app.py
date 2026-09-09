@@ -32,7 +32,8 @@ import streamlit as st
 # Freshly generated update: 2026-08-31 23:49 JST
 GENERATED_UPDATE_JST = "2026-09-08T18:48:00+09:00"
 
-APP_BUILD = "v330"
+APP_BUILD = "v331"
+# v331: multi-tag photo selections can go straight to a music replay and be saved as a stable in-app movie snapshot.
 # v330: tag-review movies support one or multiple AI tags; selection is action-only.
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
@@ -15679,6 +15680,123 @@ def save_tag_review(tag_key, review_json):
     return updated
 
 
+def make_tag_movie_draft_review(tag_keys, bundle, match_mode="any"):
+    """Create a lightweight saved scope so a tag selection can go straight to movie setup.
+
+    No AI call is made here. The user can add AI comments later as an optional action.
+    """
+    tags = _normalize_tag_review_selection(tag_keys)
+    if not tags:
+        raise ValueError("振り返るAIタグを確認できませんでした。")
+    mode = "all" if str(match_mode or "").lower() == "all" and len(tags) > 1 else "any"
+    scope_key = tag_review_scope_key(tags, mode)
+    stats = tag_review_stats(bundle)
+    return {
+        "opening": "",
+        "findings": [],
+        "repeated_notices": [],
+        "wishes": [],
+        "one_question": "",
+        "parent_note": "",
+        "_insight_version": 6,
+        "_review_scope_type": "ai_tag",
+        "_ai_tag_key": scope_key,
+        "_ai_tag_scope_key": scope_key,
+        "_ai_tag_keys": tags,
+        "_ai_tag_match_mode": mode,
+        "_tag_label": "・".join(tags),
+        "_scope_label": tag_review_scope_label(tags, mode),
+        "_subjective_input_mode": "ai_observable_photo_tags_v330",
+        "_tag_movie_draft": True,
+        "_tag_movie_photo_count": int(stats.get("photo_count") or 0),
+    }
+
+
+def tag_review_has_ai_content(review):
+    if not isinstance(review, dict):
+        return False
+    if str(review.get("opening") or "").strip():
+        return True
+    if any(isinstance(item, dict) and (str(item.get("theme") or "").strip() or str(item.get("evidence") or "").strip()) for item in (review.get("findings") or [])):
+        return True
+    if str(review.get("one_question") or "").strip() or str(review.get("parent_note") or "").strip():
+        return True
+    return False
+
+
+def carry_tag_movie_state(refreshed, previous):
+    refreshed = dict(refreshed or {})
+    previous = previous if isinstance(previous, dict) else {}
+    for key in (
+        "_playback",
+        "_tag_movie_photo_ids",
+        "_tag_movie_photo_count",
+        "_tag_movie_saved",
+        "_tag_movie_saved_at",
+        "_tag_movie_draft",
+    ):
+        if key in previous:
+            refreshed[key] = previous[key]
+    return refreshed
+
+
+def tag_movie_snapshot_photo_ids(bundle):
+    ids = []
+    seen = set()
+    for photo in (bundle or {}).get("photos", []) or []:
+        if not isinstance(photo, dict):
+            continue
+        photo_id = str(photo.get("id") or "").strip()
+        if photo_id and photo_id not in seen:
+            seen.add(photo_id)
+            ids.append(photo_id)
+    return ids
+
+
+def tag_movie_bundle_from_snapshot(bundle, review):
+    """Use the photo set captured when a tag movie was saved, if one exists."""
+    review = review if isinstance(review, dict) else {}
+    saved_ids = [str(value or "").strip() for value in (review.get("_tag_movie_photo_ids") or [])]
+    saved_ids = [value for value in saved_ids if value]
+    if not saved_ids:
+        return bundle
+    wanted = set(saved_ids)
+    photos = [
+        photo for photo in (bundle or {}).get("photos", []) or []
+        if isinstance(photo, dict) and str(photo.get("id") or "").strip() in wanted
+    ]
+    # Keep the original saved order even if the live tag query order changes.
+    order = {photo_id: index for index, photo_id in enumerate(saved_ids)}
+    photos.sort(key=lambda photo: order.get(str(photo.get("id") or "").strip(), len(order)))
+    trip_ids = {str(photo.get("trip_id") or "") for photo in photos if photo.get("trip_id")}
+    trips = [
+        trip for trip in (bundle or {}).get("trips", []) or []
+        if isinstance(trip, dict) and str(trip.get("id") or "") in trip_ids
+    ]
+    return {"trips": trips, "diaries": [], "photos": photos}
+
+
+def save_tag_replay_movie(scope_key, review, bundle):
+    """Persist one exact tag-movie snapshot: photo set + current music/playback window."""
+    latest = dict(review or {})
+    storage_key = str(latest.get("_tag_storage_month") or tag_review_storage_month(scope_key, create=True))[:7]
+    session_review = st.session_state.get(f"monthly_review_{storage_key}")
+    if isinstance(session_review, dict):
+        latest = dict(session_review)
+    playback = get_monthly_playback(latest)
+    if not monthly_playback_is_ready(playback):
+        raise ValueError("先に音楽と再生時間を設定してください。")
+    photo_ids = tag_movie_snapshot_photo_ids(bundle)
+    if not photo_ids:
+        raise ValueError("保存する写真を確認できませんでした。")
+    latest["_tag_movie_photo_ids"] = photo_ids
+    latest["_tag_movie_photo_count"] = len(photo_ids)
+    latest["_tag_movie_saved"] = True
+    latest["_tag_movie_saved_at"] = now_jst().isoformat()
+    latest["_tag_movie_draft"] = False
+    return save_tag_review(scope_key, latest)
+
+
 # ============================================================
 # Monthly replay helpers
 # ============================================================
@@ -15695,6 +15813,11 @@ def save_monthly_playback(month_key, review, playback):
         updated["_playback"] = dict(playback)
     else:
         updated.pop("_playback", None)
+    if str(updated.get("_review_scope_type") or "") == "ai_tag":
+        # Music/time changes are persisted for editing, but the user explicitly saves
+        # the finished tag movie snapshot after confirming the result.
+        updated["_tag_movie_saved"] = False
+        updated.pop("_tag_movie_saved_at", None)
     save_monthly_review(month_key, updated)
     st.session_state[f"monthly_review_{month_key}"] = updated
     return updated
@@ -25756,12 +25879,15 @@ def page_tag_review(embedded=False):
     deleted_notice = st.session_state.pop("_tag_video_deleted_notice", None)
     if deleted_notice:
         st.success(deleted_notice)
+    saved_movie_notice = st.session_state.pop("_tag_movie_saved_notice", None)
+    if saved_movie_notice:
+        st.success(saved_movie_notice)
     render_photo_tag_notices()
     st.markdown(
         """
         <div class="tag-review-hero">
           <div class="tag-review-hero-title">写真をつないで、音楽と一緒に振り返る</div>
-          <div class="tag-review-hero-sub">AI画像タグを1つ選ぶと、そのタグの写真を月をまたいで時系列にすべて集めます。写真枚数に上限を設けず、月別振り返りと同じプレイヤーで音楽と一緒に再生できます。</div>
+          <div class="tag-review-hero-sub">AI画像タグを1つ以上選び、条件に合う写真を月をまたいで時系列にすべて集めます。選んだ写真は音楽付きの振り返りムービーにして、同じ写真・音楽・再生時間の組み合わせで保存できます。</div>
         </div>
         <style>
           .tag-review-hero {
@@ -25919,9 +26045,31 @@ def page_tag_review(embedded=False):
             st.session_state.pop(session_key, None)
 
     if not review:
+        st.markdown("#### 次にすること")
+        st.caption("対象写真が決まったので、そのまま音楽付きムービーを作れます。AIコメントは任意です。")
         if st.button(
-            "AIと選んだタグを振り返る",
+            "🎞️ 選んだ写真で音楽つきムービーを作る",
             type="primary",
+            use_container_width=True,
+            key=f"ai_tag_movie_create_direct_{unsaved_token}",
+        ):
+            try:
+                draft = make_tag_movie_draft_review(selected_tags, bundle, match_mode)
+                saved_draft = save_tag_review(scope_key, draft)
+                draft_storage_key = str(saved_draft.get("_tag_storage_month") or "")[:7]
+                if draft_storage_key:
+                    st.session_state[f"monthly_music_settings_open_{draft_storage_key}"] = True
+                st.session_state[f"_tag_movie_setup_notice_{unsaved_token}"] = (
+                    f"対象写真 {photo_count}枚を使います。音楽と再生時間を選んでムービーを作成してください。"
+                )
+                st.rerun()
+            except Exception as exc:
+                st.error("振り返りムービーの準備ができませんでした。")
+                with st.expander("保護者向け詳細"):
+                    st.code(str(exc))
+
+        if st.button(
+            "✨ AIと選んだタグも振り返る",
             use_container_width=True,
             key=f"ai_tag_review_create_{unsaved_token}",
         ):
@@ -25943,50 +26091,100 @@ def page_tag_review(embedded=False):
     if not storage_key:
         storage_key = tag_review_storage_month(scope_key, create=True)
 
+    snapshot_source = source if (review or {}).get("_tag_movie_photo_ids") else bundle
+    movie_bundle = tag_movie_bundle_from_snapshot(snapshot_source, review)
+    has_ai_review = tag_review_has_ai_content(review)
+    setup_notice = st.session_state.pop(f"_tag_movie_setup_notice_{unsaved_token}", None)
+    if setup_notice:
+        st.success(setup_notice)
+
     playback = get_monthly_playback(review)
     music_ready = monthly_playback_is_ready(playback)
     settings_open_key = f"monthly_music_settings_open_{storage_key}"
     comments_open_key = f"monthly_ai_comments_open_{storage_key}"
 
     if not music_ready:
-        if st.button(
-            "🎞️ 写真＋音楽の振り返りムービーを作る",
-            type="primary",
-            use_container_width=True,
-            key=f"ai_tag_music_setup_top_{unsaved_token}",
-        ):
-            st.session_state[settings_open_key] = True
+        if not st.session_state.get(settings_open_key):
+            if st.button(
+                "🎞️ 写真＋音楽の振り返りムービーを作る",
+                type="primary",
+                use_container_width=True,
+                key=f"ai_tag_music_setup_top_{unsaved_token}",
+            ):
+                st.session_state[settings_open_key] = True
 
         if st.session_state.get(settings_open_key):
-            render_monthly_music_settings(storage_key, bundle, review, expanded=True)
+            render_monthly_music_settings(storage_key, movie_bundle, review, expanded=True)
 
-        render_monthly_ai_comments(review)
-        if st.button(
-            "このタグ条件をもう一度まとめる",
-            use_container_width=True,
-            key=f"ai_tag_regenerate_without_music_{unsaved_token}",
-        ):
-            try:
-                previous_playback = get_monthly_playback(review)
-                with st.spinner("このタグ条件の記録をまとめ直しています…"):
-                    refreshed = make_tag_review(selected_tags, bundle, match_mode)
-                    if previous_playback:
-                        refreshed["_playback"] = previous_playback
-                    refreshed = carry_monthly_family_share(refreshed, review, storage_key, scope_label, bundle)
-                    save_tag_review(scope_key, refreshed)
-                st.session_state[f"monthly_review_{storage_key}"] = refreshed
-                st.rerun()
-            except Exception as exc:
-                st.error("選んだタグの振り返りを作れませんでした。")
-                with st.expander("保護者向け詳細"):
-                    st.code(str(exc))
+        if has_ai_review:
+            render_monthly_ai_comments(review)
+            if st.button(
+                "このタグ条件をもう一度まとめる",
+                use_container_width=True,
+                key=f"ai_tag_regenerate_without_music_{unsaved_token}",
+            ):
+                try:
+                    previous_playback = get_monthly_playback(review)
+                    with st.spinner("このタグ条件の記録をまとめ直しています…"):
+                        refreshed = make_tag_review(selected_tags, bundle, match_mode)
+                        if previous_playback:
+                            refreshed["_playback"] = previous_playback
+                        refreshed = carry_tag_movie_state(refreshed, review)
+                        refreshed = carry_monthly_family_share(refreshed, review, storage_key, scope_label, movie_bundle)
+                        save_tag_review(scope_key, refreshed)
+                    st.session_state[f"monthly_review_{storage_key}"] = refreshed
+                    st.rerun()
+                except Exception as exc:
+                    st.error("選んだタグの振り返りを作れませんでした。")
+                    with st.expander("保護者向け詳細"):
+                        st.code(str(exc))
+        else:
+            st.caption("AIコメントは任意です。ムービーだけ作る場合はこのままで大丈夫です。")
+            if st.button(
+                "✨ AIコメントも作る",
+                use_container_width=True,
+                key=f"ai_tag_add_ai_without_music_{unsaved_token}",
+            ):
+                try:
+                    with st.spinner("選んだAIタグの写真を振り返っています…"):
+                        refreshed = make_tag_review(selected_tags, bundle, match_mode)
+                        refreshed = carry_tag_movie_state(refreshed, review)
+                        save_tag_review(scope_key, refreshed)
+                    st.rerun()
+                except Exception as exc:
+                    st.error("AIコメントを作れませんでした。")
+                    with st.expander("保護者向け詳細"):
+                        st.code(str(exc))
         return
 
     st.markdown("#### 振り返りムービー")
-    rendered = render_monthly_replay_section(storage_key, scope_label, bundle, review)
+    rendered = render_monthly_replay_section(storage_key, scope_label, movie_bundle, review)
     if not rendered:
         st.warning("振り返りムービーを表示できませんでした。音楽または写真の設定を確認してください。")
     else:
+        saved_movie = bool(review.get("_tag_movie_saved"))
+        saved_count = int(review.get("_tag_movie_photo_count") or len((movie_bundle or {}).get("photos", []) or []))
+        if saved_movie:
+            st.success(f"💾 この振り返りムービーは保存済みです（写真 {saved_count}枚）。")
+            st.caption("同じタグの組み合わせを選ぶと、保存した写真・音楽・再生時間で再び開けます。")
+        else:
+            st.caption("内容を確認したら保存してください。保存時点の写真・音楽・再生時間をセットで残します。")
+            if st.button(
+                "💾 この振り返りムービーを保存",
+                type="primary",
+                use_container_width=True,
+                key=f"ai_tag_save_movie_{unsaved_token}",
+            ):
+                try:
+                    saved_review = save_tag_replay_movie(scope_key, review, movie_bundle)
+                    st.session_state[f"monthly_review_{storage_key}"] = saved_review
+                    st.session_state["_tag_movie_saved_notice"] = "振り返りムービーを保存しました。"
+                    st.rerun()
+                except Exception as exc:
+                    st.error("振り返りムービーを保存できませんでした。")
+                    with st.expander("保護者向け詳細"):
+                        st.code(str(exc))
+
         share_enabled = monthly_family_share_is_enabled(review)
         with st.container(key="monthly_family_share_area"):
             if share_enabled:
@@ -25997,7 +26195,7 @@ def page_tag_review(embedded=False):
                     key=f"ai_tag_family_unshare_{unsaved_token}",
                 ):
                     try:
-                        review = set_monthly_family_share(storage_key, scope_label, bundle, review, enabled=False)
+                        review = set_monthly_family_share(storage_key, scope_label, movie_bundle, review, enabled=False)
                         st.success("家族への共有を解除しました。")
                         st.rerun()
                     except Exception as exc:
@@ -26011,7 +26209,7 @@ def page_tag_review(embedded=False):
                     key=f"ai_tag_family_share_{unsaved_token}",
                 ):
                     try:
-                        review = set_monthly_family_share(storage_key, scope_label, bundle, review, enabled=True)
+                        review = set_monthly_family_share(storage_key, scope_label, movie_bundle, review, enabled=True)
                         st.success("同じ家族IDの別アカウント全員に共有しました。")
                         st.rerun()
                     except Exception as exc:
@@ -26096,20 +26294,38 @@ def page_tag_review(embedded=False):
 
     with action_cols[1]:
         comments_open = bool(st.session_state.get(comments_open_key))
-        comments_label = "AIのコメントを閉じる" if comments_open else "✨ AIのコメントを見る"
         with st.container(key="monthly_ai_comments_action"):
-            if st.button(
-                comments_label,
-                use_container_width=True,
-                key=f"ai_tag_toggle_ai_comments_{unsaved_token}",
-            ):
-                st.session_state[comments_open_key] = not comments_open
-                st.rerun()
+            if has_ai_review:
+                comments_label = "AIのコメントを閉じる" if comments_open else "✨ AIのコメントを見る"
+                if st.button(
+                    comments_label,
+                    use_container_width=True,
+                    key=f"ai_tag_toggle_ai_comments_{unsaved_token}",
+                ):
+                    st.session_state[comments_open_key] = not comments_open
+                    st.rerun()
+            else:
+                if st.button(
+                    "✨ AIコメントも作る",
+                    use_container_width=True,
+                    key=f"ai_tag_add_ai_with_music_{unsaved_token}",
+                ):
+                    try:
+                        with st.spinner("選んだAIタグの写真を振り返っています…"):
+                            refreshed = make_tag_review(selected_tags, bundle, match_mode)
+                            refreshed = carry_tag_movie_state(refreshed, review)
+                            save_tag_review(scope_key, refreshed)
+                        st.session_state[comments_open_key] = True
+                        st.rerun()
+                    except Exception as exc:
+                        st.error("AIコメントを作れませんでした。")
+                        with st.expander("保護者向け詳細"):
+                            st.code(str(exc))
 
     if st.session_state.get(settings_open_key):
-        render_monthly_music_settings(storage_key, bundle, review, expanded=True)
+        render_monthly_music_settings(storage_key, movie_bundle, review, expanded=True)
 
-    if st.session_state.get(comments_open_key):
+    if has_ai_review and st.session_state.get(comments_open_key):
         render_monthly_ai_comments(review)
         if st.button(
             "このタグ条件をもう一度まとめる",
@@ -26122,7 +26338,8 @@ def page_tag_review(embedded=False):
                     refreshed = make_tag_review(selected_tags, bundle, match_mode)
                     if previous_playback:
                         refreshed["_playback"] = previous_playback
-                    refreshed = carry_monthly_family_share(refreshed, review, storage_key, scope_label, bundle)
+                    refreshed = carry_tag_movie_state(refreshed, review)
+                    refreshed = carry_monthly_family_share(refreshed, review, storage_key, scope_label, movie_bundle)
                     save_tag_review(scope_key, refreshed)
                 st.session_state[f"monthly_review_{storage_key}"] = refreshed
                 st.rerun()
@@ -26135,7 +26352,7 @@ def page_tag_review(embedded=False):
     st.divider()
     with st.container(key="monthly_delete_video_area"):
         if st.session_state.get(delete_video_confirm_key):
-            st.warning("このAIタグの振り返り動画を削除します。写真・日記・AIコメント・保存済み音楽は削除されません。")
+            st.warning("このタグ条件の振り返りムービーを削除します。元の写真・日記・AIコメント・保存済み音楽プリセットは削除されません。")
             delete_col, cancel_col = st.columns([1.25, 1])
             with delete_col:
                 with st.container(key="monthly_delete_video_confirm_action"):
@@ -26146,7 +26363,13 @@ def page_tag_review(embedded=False):
                     ):
                         try:
                             state = _monthly_replay_state(storage_key, review)
-                            save_monthly_playback(storage_key, review, {})
+                            cleaned_review = dict(st.session_state.get(f"monthly_review_{storage_key}") or review or {})
+                            cleaned_review.pop("_playback", None)
+                            cleaned_review.pop("_tag_movie_photo_ids", None)
+                            cleaned_review.pop("_tag_movie_saved_at", None)
+                            cleaned_review["_tag_movie_saved"] = False
+                            cleaned_review["_tag_movie_draft"] = False
+                            save_tag_review(scope_key, cleaned_review)
                             for state_key in (
                                 state["url_key"],
                                 state["start_key"],
@@ -26160,7 +26383,7 @@ def page_tag_review(embedded=False):
                                 delete_video_confirm_key,
                             ):
                                 st.session_state.pop(state_key, None)
-                            st.session_state["_tag_video_deleted_notice"] = "このAIタグの振り返り動画を削除しました。"
+                            st.session_state["_tag_video_deleted_notice"] = "このタグ条件の振り返りムービーを削除しました。"
                             st.rerun()
                         except Exception as exc:
                             st.error("振り返り動画を削除できませんでした。")
