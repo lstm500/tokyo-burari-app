@@ -32,7 +32,7 @@ import streamlit as st
 # Freshly generated update: 2026-08-31 23:49 JST
 GENERATED_UPDATE_JST = "2026-09-08T18:48:00+09:00"
 
-APP_BUILD = "v340"
+APP_BUILD = "v341"
 # v331: multi-tag photo selections can go straight to a music replay and be saved as a stable in-app movie snapshot.
 # v330: tag-review movies support one or multiple AI tags; selection is action-only.
 
@@ -5498,6 +5498,7 @@ export default function(component) {
   const accountKey = String(data?.account_key || '');
   const reviewSeenKey = accountKey ? `tokyo_burari_review_seen_v1:${accountKey}` : '';
   const reviewCheckKey = accountKey ? `tokyo_burari_review_check_v1:${accountKey}` : '';
+  const sharedMovieSeenKey = accountKey ? `tokyo_burari_shared_movie_seen_v1:${accountKey}` : '';
   const instanceKey = String(data?.instance_key || 'default');
   const runtime = registry.get(instanceKey) || { lastState: '', lastError: '' };
   registry.set(instanceKey, runtime);
@@ -5512,6 +5513,9 @@ export default function(component) {
     }
     if (reviewCheckKey && data?.store_review_check && typeof data.store_review_check === 'object') {
       localStorage.setItem(reviewCheckKey, JSON.stringify(data.store_review_check));
+    }
+    if (sharedMovieSeenKey && data?.mark_shared_movie_seen_at) {
+      localStorage.setItem(sharedMovieSeenKey, String(data.mark_shared_movie_seen_at));
     }
 
     let reviewCheck = null;
@@ -5529,9 +5533,10 @@ export default function(component) {
       last_camera_mode: localStorage.getItem(cameraModeKey) || '',
       review_seen_month: reviewSeenKey ? (localStorage.getItem(reviewSeenKey) || '') : '',
       review_check: reviewCheck,
+      shared_movie_seen_at: sharedMovieSeenKey ? (localStorage.getItem(sharedMovieSeenKey) || '') : '',
     };
     const serialized = JSON.stringify(state);
-    if (runtime.lastState !== serialized) {
+    if (!data?.write_only && runtime.lastState !== serialized) {
       runtime.lastState = serialized;
       runtime.lastError = '';
       queueMicrotask(() => setTriggerValue('browser_state', state));
@@ -5669,6 +5674,60 @@ def write_browser_review_check(check_payload):
         on_browser_state_change=lambda: None,
         on_browser_error_change=lambda: None,
     )
+
+
+def write_browser_shared_movie_seen(seen_at):
+    """Persist the newest family-shared movie timestamp for this personal account."""
+    seen_at = str(seen_at or "").strip()
+    if browser_persistence_component is None or not seen_at:
+        return
+    account_key = _browser_review_account_key()
+    key_hash = hashlib.sha1(account_key.encode("utf-8")).hexdigest()[:12]
+    marker_hash = hashlib.sha1(seen_at.encode("utf-8")).hexdigest()[:10]
+    browser_persistence_component(
+        data={
+            "instance_key": f"browser_shared_movie_seen_{key_hash}_{marker_hash}",
+            "account_key": account_key,
+            "mark_shared_movie_seen_at": seen_at,
+            "write_only": True,
+        },
+        key=f"browser_shared_movie_seen_{key_hash}_{marker_hash}",
+        on_browser_state_change=lambda: None,
+        on_browser_error_change=lambda: None,
+    )
+
+
+def _shared_movie_time_value(value):
+    """Comparable timestamp for ISO strings used by family-share notifications."""
+    raw = str(value or "").strip()
+    if not raw:
+        return 0.0
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=ZoneInfo(APP_TIMEZONE))
+        return float(parsed.timestamp())
+    except Exception:
+        return 0.0
+
+
+def mark_family_shared_movie_seen(seen_at):
+    """Mark a shared movie as seen in-session, then persist on the next render."""
+    seen_at = str(seen_at or "").strip()
+    if not seen_at:
+        return
+    current = str(st.session_state.get("_family_shared_movie_seen_at") or "").strip()
+    if _shared_movie_time_value(seen_at) >= _shared_movie_time_value(current):
+        st.session_state["_family_shared_movie_seen_at"] = seen_at
+        st.session_state["_family_shared_movie_seen_pending_at"] = seen_at
+    st.session_state.pop("_home_shared_movie_check_v341", None)
+
+
+def flush_family_shared_movie_seen_marker():
+    """Write a pending read marker without forcing another explicit app rerun."""
+    pending = str(st.session_state.pop("_family_shared_movie_seen_pending_at", "") or "").strip()
+    if pending:
+        write_browser_shared_movie_seen(pending)
 
 
 def write_browser_auto_login(token, key="browser_auto_login_store"):
@@ -15114,7 +15173,10 @@ def _month_has_photo_input(month_key):
         return any(photo_has_emotion(photo) for photo in photos)
 
 
-def home_review_attention_needed():
+_BROWSER_STATE_UNSET = object()
+
+
+def home_review_attention_needed(browser_state=_BROWSER_STATE_UNSET):
     """Nudge once each month when the immediately preceding month has photo input."""
     current_month = now_jst().strftime("%Y-%m")
     prior_month = previous_month_key(current_month)
@@ -15129,7 +15191,8 @@ def home_review_attention_needed():
     ):
         return bool(session_check.get("has_previous_content"))
 
-    browser_state = read_browser_review_state()
+    if browser_state is _BROWSER_STATE_UNSET:
+        browser_state = read_browser_review_state()
     if isinstance(browser_state, dict):
         if str(browser_state.get("review_seen_month") or "") == current_month:
             st.session_state["_review_seen_month"] = current_month
@@ -16400,8 +16463,11 @@ def list_family_shared_monthly_reviews(limit=24):
             .table(MONTHLY_TABLE)
             .select("id,member_key,review_month,review_json,updated_at")
             .eq("family_key", current_family_key())
-            .order("review_month", desc=True)
-            .limit(max(24, int(limit) * 4))
+            # Tag-review movies live in 1800-1899 sentinel months, so review_month
+            # cannot be used to find the most recently shared movie. updated_at keeps
+            # newly shared tag/monthly movies near the front without loading the table.
+            .order("updated_at", desc=True)
+            .limit(max(36, int(limit) * 6))
             .execute()
         )
         rows = result.data or []
@@ -16445,12 +16511,148 @@ def list_family_shared_monthly_reviews(limit=24):
             "share": share,
             "updated_at": str(row.get("updated_at") or share.get("updated_at") or ""),
         })
-        if len(shared_rows) >= int(limit):
-            break
-    return shared_rows
+    shared_rows.sort(
+        key=lambda item: (
+            _shared_movie_time_value((item.get("share") or {}).get("shared_at")),
+            _shared_movie_time_value(item.get("updated_at")),
+            str(item.get("id") or ""),
+        ),
+        reverse=True,
+    )
+    return shared_rows[:max(1, int(limit))]
+
+
+def _family_shared_movie_notice_at(row):
+    row = row if isinstance(row, dict) else {}
+    share = row.get("share") or {}
+    return str((share or {}).get("shared_at") or row.get("updated_at") or "").strip()
+
+
+def home_family_shared_movie_notice(browser_state=None):
+    """Return a compact NEW-movie notice, with no polling and a short session cache."""
+    # Preserve Home's fast first paint: wait for the existing localStorage component's
+    # cheap first response before doing the one lightweight family-share query.
+    if browser_persistence_component is not None and not isinstance(browser_state, dict):
+        return None
+
+    family_key = current_family_key()
+    member_key = current_member_key()
+    now_value = time.time()
+    cache = st.session_state.get("_home_shared_movie_check_v341")
+    if (
+        isinstance(cache, dict)
+        and str(cache.get("family_key") or "") == family_key
+        and str(cache.get("member_key") or "") == member_key
+        and now_value - float(cache.get("checked_at") or 0) < 20.0
+    ):
+        rows = list(cache.get("rows") or [])
+    else:
+        rows = list_family_shared_monthly_reviews(limit=12)
+        st.session_state["_home_shared_movie_check_v341"] = {
+            "family_key": family_key,
+            "member_key": member_key,
+            "checked_at": now_value,
+            "rows": rows,
+        }
+
+    if not rows:
+        return None
+
+    browser_seen = str((browser_state or {}).get("shared_movie_seen_at") or "").strip() if isinstance(browser_state, dict) else ""
+    session_seen = str(st.session_state.get("_family_shared_movie_seen_at") or "").strip()
+    seen_at = browser_seen
+    if _shared_movie_time_value(session_seen) > _shared_movie_time_value(seen_at):
+        seen_at = session_seen
+    seen_value = _shared_movie_time_value(seen_at)
+
+    new_rows = [
+        row for row in rows
+        if _shared_movie_time_value(_family_shared_movie_notice_at(row)) > seen_value
+    ]
+    if not new_rows:
+        return None
+
+    new_rows.sort(key=lambda row: _shared_movie_time_value(_family_shared_movie_notice_at(row)), reverse=True)
+    latest = new_rows[0]
+    newest_all = max(rows, key=lambda row: _shared_movie_time_value(_family_shared_movie_notice_at(row)))
+    review = latest.get("review") or {}
+    target_page = "review_tag" if str(review.get("_review_scope_type") or "") == "ai_tag" else "review_monthly"
+    return {
+        "count": len(new_rows),
+        "id": str(latest.get("id") or ""),
+        "member_name": str(latest.get("member_name") or "家族"),
+        "period_label": str(latest.get("period_label") or "振り返り"),
+        "target_page": target_page,
+        "mark_seen_at": _family_shared_movie_notice_at(newest_all),
+    }
+
+
+def _open_family_shared_movie_from_home_callback(shared_id, seen_at, target_page="review_monthly"):
+    shared_id = str(shared_id or "").strip()
+    if shared_id:
+        st.session_state["family_shared_monthly_selector"] = shared_id
+        st.session_state["_family_shared_monthly_open_id"] = shared_id
+    mark_family_shared_movie_seen(seen_at)
+    _set_page_state(str(target_page or "review_monthly"), history_mode="push")
+
+
+def render_home_family_shared_movie_notice(notice):
+    if not isinstance(notice, dict) or not notice.get("id"):
+        return
+    count = max(1, int(notice.get("count") or 1))
+    member_name = html.escape(str(notice.get("member_name") or "家族"))
+    period_label = html.escape(str(notice.get("period_label") or "振り返り"))
+    count_text = f"新着 {count}件" if count > 1 else "NEW"
+    st.markdown(
+        f"""
+        <style>
+          .home-shared-movie-card {{
+            margin:.08rem 0 .18rem; padding:.66rem .72rem; border-radius:16px;
+            border:2px solid rgba(236,92,112,.66);
+            background:linear-gradient(135deg,rgba(255,238,242,.99),rgba(244,238,255,.99));
+            box-shadow:0 9px 24px rgba(184,77,120,.12);
+          }}
+          .home-shared-movie-kicker {{display:flex;align-items:center;gap:.38rem;font-size:.68rem;font-weight:900;color:#A63A5B;letter-spacing:.04em;}}
+          .home-shared-movie-badge {{display:inline-flex;align-items:center;min-height:1.34rem;padding:.08rem .42rem;border-radius:999px;background:#E94F72;color:white;font-size:.62rem;font-weight:950;}}
+          .home-shared-movie-title {{margin-top:.22rem;font-size:.90rem;line-height:1.28;font-weight:900;color:#432C45;}}
+          .home-shared-movie-sub {{margin-top:.12rem;font-size:.72rem;line-height:1.35;color:rgba(67,44,69,.72);}}
+          .st-key-home_shared_movie_notice div.stButton > button {{
+            min-height:2.55rem !important;border:2px solid rgba(222,74,103,.72) !important;
+            border-radius:14px !important;background:linear-gradient(135deg,#FFF7F9,#F7F1FF) !important;
+            font-weight:900 !important;color:#633048 !important;box-shadow:0 6px 18px rgba(184,77,120,.10) !important;
+          }}
+          @media (max-width:640px) {{
+            .home-shared-movie-card {{padding:.54rem .62rem;border-radius:14px;}}
+            .home-shared-movie-title {{font-size:.84rem;}}
+            .home-shared-movie-sub {{font-size:.68rem;}}
+            .st-key-home_shared_movie_notice div.stButton > button {{min-height:2.35rem !important;font-size:.82rem !important;}}
+          }}
+        </style>
+        <div class="home-shared-movie-card">
+          <div class="home-shared-movie-kicker"><span class="home-shared-movie-badge">{count_text}</span> 🎬 ムービーが届きました</div>
+          <div class="home-shared-movie-title">{member_name}さんから振り返りムービーが共有されています</div>
+          <div class="home-shared-movie-sub">最新：{period_label}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    with st.container(key="home_shared_movie_notice"):
+        st.button(
+            "🎬 届いたムービーを見る",
+            type="primary",
+            use_container_width=True,
+            key="home_shared_movie_open_v341",
+            on_click=_open_family_shared_movie_from_home_callback,
+            args=(
+                str(notice.get("id") or ""),
+                str(notice.get("mark_seen_at") or ""),
+                str(notice.get("target_page") or "review_monthly"),
+            ),
+        )
 
 
 def render_family_shared_monthly_reviews():
+    flush_family_shared_movie_seen_marker()
     shared_rows = list_family_shared_monthly_reviews(limit=24)
     if not shared_rows:
         return False
@@ -16478,6 +16680,8 @@ def render_family_shared_monthly_reviews():
     is_open = str(st.session_state.get(open_key) or "") == str(selected_id)
     button_label = "閉じる" if is_open else "▶ 家族の振り返りを見る"
     if st.button(button_label, use_container_width=True, key="family_shared_monthly_open_button"):
+        if not is_open:
+            mark_family_shared_movie_seen(_family_shared_movie_notice_at(selected))
         st.session_state[open_key] = "" if is_open else str(selected_id)
         st.rerun()
 
@@ -20885,8 +21089,12 @@ else:
 def page_home():
     # Keep the recent photo/video camera mode fresh using browser-local storage only.
     _sync_recent_camera_state_from_browser()
-    review_attention = home_review_attention_needed()
-    inject_home_icon_css(review_attention=review_attention)
+    # Reuse one localStorage read for both the monthly reminder and shared-movie NEW marker.
+    # This avoids instantiating the same browser-state widget twice in one Streamlit run.
+    browser_home_state = read_browser_review_state()
+    review_attention = home_review_attention_needed(browser_state=browser_home_state)
+    shared_movie_notice = home_family_shared_movie_notice(browser_home_state)
+    inject_home_icon_css(review_attention=review_attention or bool(shared_movie_notice))
     # v183: scale the Home design itself to each phone instead of only distributing
     # unchanged controls across the viewport. Width stays nearly edge-to-edge, while
     # button heights, icons, type, hero art and spacing all respond to visible height.
@@ -21157,7 +21365,12 @@ def page_home():
             unsafe_allow_html=True,
         )
 
-        # Home is intentionally DB-free. Counts/place are updated in session immediately
+        if shared_movie_notice:
+            render_home_family_shared_movie_notice(shared_movie_notice)
+
+        # Home avoids recurring DB work. The shared-movie check above runs only after
+        # localStorage is ready and is session-cached for 20 seconds; it never polls.
+        # Counts/place are updated in session immediately
         # after a successful capture; a fresh browser session shows a neutral status until
         # the first data action instead of delaying every launch with two network requests.
         active = st.session_state.get("_active_trip_snapshot")
