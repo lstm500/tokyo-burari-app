@@ -32,7 +32,7 @@ import streamlit as st
 # Freshly generated update: 2026-08-31 23:49 JST
 GENERATED_UPDATE_JST = "2026-09-08T18:48:00+09:00"
 
-APP_BUILD = "v331"
+APP_BUILD = "v332"
 # v331: multi-tag photo selections can go straight to a music replay and be saved as a stable in-app movie snapshot.
 # v330: tag-review movies support one or multiple AI tags; selection is action-only.
 
@@ -27767,12 +27767,20 @@ export default function(component) {
   const batchMax = Math.max(30, Number(data?.batch_max_points || 180));
   const allowFlush = Boolean(data?.allow_flush);
   const forceFlush = Boolean(data?.force_flush);
+  // v332: never let background GPS cloud sync interrupt a person who is actively
+  // using the app. GPS recording itself continues locally; only the Streamlit-bound
+  // cloud flush is deferred until the app has stayed hidden/backgrounded.
+  const backgroundOnlyFlush = Boolean(data?.background_only_flush);
   const ackMs = Number(data?.ack_ms || 0);
   let cancelled = false;
   let watchId = null;
   let flushTimer = null;
+  let hiddenFlushTimer = null;
   let nativeSentToken = '';
   let nativeSentAt = 0;
+  const uiIsVisible = () => {
+    try { return document.visibilityState !== 'hidden' && !document.hidden; } catch (_) { return true; }
+  };
 
   const safeParse = (raw, fallback) => {
     try { const value = JSON.parse(String(raw || '')); return value ?? fallback; } catch (_) { return fallback; }
@@ -27875,24 +27883,35 @@ export default function(component) {
   acknowledgeNative();
 
   let nativeFlushBusy = false;
-  const maybeFlushNative = async () => {
+  const maybeFlushNative = async (forced=false) => {
     if (cancelled || !allowFlush || !nativeBridgeAvailable || nativeFlushBusy) return;
+    // A component trigger causes a Streamlit app rerun. While the UI is visible,
+    // never emit that trigger; leave the native SQLite rows pending instead.
+    if (backgroundOnlyFlush && uiIsVisible()) return;
     nativeFlushBusy = true;
     try {
       const rows = await readNativeRows();
       if (!rows.length || cancelled) return;
+      const now = Date.now();
+      const oldest = Number(rows[0]?.ts_ms || now);
+      const dueByCount = rows.length >= flushCount;
+      const dueByTime = now - oldest >= flushIntervalMs;
+      if (!(forced || forceFlush || dueByCount || dueByTime)) return;
       const batch = rows.slice(0, batchMax);
       const last = batch[batch.length - 1] || {};
       const token = `native-v5|${batch[0]?.id || ''}|${last?.id || ''}|${batch.length}`;
-      const now = Date.now();
-      if (nativeSentToken === token && now - nativeSentAt < 120000) return;
+      const sent = safeParse(localStorage.getItem(sentKey), {});
+      if ((nativeSentToken === token && now - nativeSentAt < 120000) ||
+          (String(sent?.token || '') === token && now - Number(sent?.at || 0) < 120000)) return;
       nativeSentToken = token;
       nativeSentAt = now;
+      try { localStorage.setItem(sentKey, JSON.stringify({token, at:now})); } catch (_) {}
       setTriggerValue('track_batch', {
         token,
         points: batch,
         max_ts_ms: Number(last?.ts_ms || 0),
         source: directNativeBridge ? 'android_direct_bridge_v3' : 'android_parent_relay_v5',
+        background_sync: true,
       });
     } finally {
       nativeFlushBusy = false;
@@ -27985,6 +28004,7 @@ export default function(component) {
 
   const maybeFlush = (forced=false) => {
     if (cancelled || !allowFlush || nativeBridgeAvailable) return;
+    if (backgroundOnlyFlush && uiIsVisible()) return;
     adoptNativePendingRows();
     pending = readPending();
     if (!pending.length) return;
@@ -28004,6 +28024,7 @@ export default function(component) {
       token,
       points: batch,
       max_ts_ms: Number(last?.ts_ms || 0),
+      background_sync: true,
     });
   };
 
@@ -28054,17 +28075,44 @@ export default function(component) {
   };
 
   if (!nativeMode) startWatch();
+
+  const scheduleHiddenFlush = () => {
+    if (!allowFlush) return;
+    if (hiddenFlushTimer) clearTimeout(hiddenFlushTimer);
+    // Wait until the app has remained in the background for a short period. This
+    // avoids a rerun during quick task switching or while the user is still touching UI.
+    hiddenFlushTimer = setTimeout(() => {
+      hiddenFlushTimer = null;
+      if (cancelled || !document.hidden) return;
+      if (nativeBridgeAvailable) {
+        void maybeFlushNative(true);
+      } else {
+        maybeFlush(true);
+      }
+    }, 2200);
+  };
+
   if (allowFlush) {
     if (nativeBridgeAvailable) {
-      flushTimer = setInterval(() => { void maybeFlushNative(); }, 3000);
-      setTimeout(() => { void maybeFlushNative(); }, 600);
+      flushTimer = setInterval(() => { void maybeFlushNative(false); }, 3000);
+      if (!backgroundOnlyFlush) setTimeout(() => { void maybeFlushNative(false); }, 600);
     } else {
       const flushPollMs = nativeMode ? 3000 : 30000;
       flushTimer = setInterval(() => maybeFlush(false), flushPollMs);
-      setTimeout(() => maybeFlush(Boolean(forceFlush)), nativeMode ? 1200 : 300);
+      if (!backgroundOnlyFlush) setTimeout(() => maybeFlush(Boolean(forceFlush)), nativeMode ? 1200 : 300);
     }
+    if (backgroundOnlyFlush && document.hidden) scheduleHiddenFlush();
   }
-  const onVisibility = () => { if (!nativeMode && !document.hidden) startWatch(); };
+
+  const onVisibility = () => {
+    if (!nativeMode && !document.hidden) startWatch();
+    if (document.hidden) {
+      scheduleHiddenFlush();
+    } else if (hiddenFlushTimer) {
+      clearTimeout(hiddenFlushTimer);
+      hiddenFlushTimer = null;
+    }
+  };
   document.addEventListener('visibilitychange', onVisibility);
 
   return () => {
@@ -28074,6 +28122,7 @@ export default function(component) {
     for (const entry of relayPending.values()) { try { clearTimeout(entry.timer); entry.resolve(null); } catch (_) {} }
     relayPending.clear();
     if (flushTimer) clearInterval(flushTimer);
+    if (hiddenFlushTimer) clearTimeout(hiddenFlushTimer);
     if (watchId !== null) {
       try { navigator.geolocation.clearWatch(watchId); } catch (_) {}
       watchId = null;
@@ -28284,10 +28333,13 @@ def run_always_on_gps_tracker_v271():
     if component is None:
         return
     page = str(st.session_state.get("main_page") or "home")
-    # Never cause a Streamlit rerun while the live camera is active. Points are still
-    # accepted every 10m into localStorage and sync on the next non-camera page.
+    # v332: high-accuracy GPS recording remains active, but its cloud sync must never
+    # interrupt visible smartphone operation. Camera remains a hard no-flush page; on
+    # all other pages the JS component may flush only after the app is backgrounded.
+    # Nearby/toilet search use their own fresh-GPS request and do not depend on this flush.
     allow_flush = page != "camera"
     force_flush = page == "review_project"
+    background_only_flush = True
     ack_key = f"_gps_track_ack_v271_{current_family_key()}_{current_member_key()}"
     native_mode = str(_query_param_scalar("native_android") or "").strip() == "1"
     native_bridge_token = str(_query_param_scalar("native_bridge_token") or "").strip()[:200] if native_mode else ""
@@ -28304,6 +28356,7 @@ def run_always_on_gps_tracker_v271():
             "batch_max_points": GPS_TRACK_BATCH_MAX_POINTS,
             "allow_flush": allow_flush,
             "force_flush": force_flush,
+            "background_only_flush": background_only_flush,
             "ack_ms": int(st.session_state.get(ack_key) or 0),
         },
         key=f"always_on_gps_tracker_v279_{current_family_key()}_{current_member_key()}",
@@ -28323,10 +28376,9 @@ def run_always_on_gps_tracker_v271():
     if ack_ms > 0:
         st.session_state[token_key] = token
         st.session_state[ack_key] = max(int(st.session_state.get(ack_key) or 0), int(ack_ms))
-        # Deliver the acknowledgement immediately so browser localStorage can discard
-        # the cloud-synced points. Batches are rare (about 300m / 3min), and camera
-        # pages never flush, so this does not interfere with recording smoothness.
-        st.rerun(scope="app")
+        # v332: do not force a second app rerun just to deliver the acknowledgement.
+        # The next natural app interaction supplies ack_ms to the component. Until then,
+        # the durable sent-token prevents an immediate duplicate upload.
 
 
 def _load_all_project_track_points_v271():
@@ -32793,9 +32845,9 @@ render_pending_emotion_query_cleanup()
 # real work is already blocking the UI.
 inject_lightweight_train_loading_v326()
 
-# v271: keep one lightweight browser GPS watcher alive across app pages. It records
-# accepted 10m points locally immediately and cloud-syncs only in coarse batches.
-# Camera pages never flush, so GPS tracking cannot trigger a rerun during recording.
+# v332: keep the high-accuracy GPS watcher alive across app pages, but never let its
+# cloud sync trigger a Streamlit rerun while the smartphone UI is visible. Accepted
+# points remain local/native immediately and are flushed after the app is backgrounded.
 run_always_on_gps_tracker_v271()
 
 # v280: keep the whole visible page under one keyed root so its top-level identity
