@@ -32,7 +32,7 @@ import streamlit as st
 # Freshly generated update: 2026-08-31 23:49 JST
 GENERATED_UPDATE_JST = "2026-09-08T18:48:00+09:00"
 
-APP_BUILD = "v338"
+APP_BUILD = "v339"
 # v331: multi-tag photo selections can go straight to a music replay and be saved as a stable in-app movie snapshot.
 # v330: tag-review movies support one or multiple AI tags; selection is action-only.
 
@@ -16524,11 +16524,11 @@ def render_monthly_replay_player(period_label, review, playback, photo_items):
         end_seconds = start_seconds + 20
     duration_seconds = max(1, end_seconds - start_seconds)
     # v335: recalculate the photo cadence for the currently auditioned music segment,
-    # but never switch faster than one photo every 2 seconds.  A/B/C can still produce
+    # but never switch faster than one photo every 3 seconds.  A/B/C can still produce
     # different cadences when the music interval is long enough.  If the selected music
-    # is too short to show every photo at 2 seconds each, playback stops with the music
+    # is too short to show every photo at 3 seconds each, playback stops with the music
     # rather than accelerating the slideshow below this readability floor.
-    display_ms = max(2000, int(round(duration_seconds * 1000.0 / max(1, len(photo_items)))))
+    display_ms = max(3000, int(round(duration_seconds * 1000.0 / max(1, len(photo_items)))))
     period_label_escaped = html.escape(str(period_label or "振り返り"))
     is_tag_review = isinstance(review, dict) and str(review.get("_review_scope_type") or "") in {"tag", "ai_tag"}
     replay_kicker = "タグで振り返り" if is_tag_review else "まとめた期間の振り返り"
@@ -16717,7 +16717,7 @@ def render_monthly_replay_player(period_label, review, playback, photo_items):
       let burariSlideLoopStarted = false;
       let burariSlideRequestToken = 0;
       // v337: replay has no photo-count ceiling, so keep only the current/next decode
-      // window alive. With the 2-second minimum slide interval there is enough time to
+      // window alive. With the 3-second minimum slide interval there is enough time to
       // preload one image ahead; retaining more full decoded photos needlessly increases
       // Android WebView memory/GPU pressure and can make an iframe render white.
       const burariPreloadedSlides = new Map();
