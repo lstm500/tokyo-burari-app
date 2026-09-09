@@ -32,7 +32,7 @@ import streamlit as st
 # Freshly generated update: 2026-08-31 23:49 JST
 GENERATED_UPDATE_JST = "2026-09-08T18:48:00+09:00"
 
-APP_BUILD = "v336"
+APP_BUILD = "v338"
 # v331: multi-tag photo selections can go straight to a music replay and be saved as a stable in-app movie snapshot.
 # v330: tag-review movies support one or multiple AI tags; selection is action-only.
 
@@ -196,15 +196,17 @@ st.markdown(
         padding-top: 1rem;
         padding-bottom: 5rem;
       }
-      /* v280: Never show the previous page as a faded ghost while Streamlit reruns.
-         Streamlit marks superseded DOM blocks with data-stale=true. Keep their
-         layout slot for reconciliation, but make them fully invisible/non-clickable. */
+      /* v337: Do not blank the screen while Streamlit reconciles a rerun.
+         Streamlit marks the outgoing DOM with data-stale=true before the replacement
+         is ready. v280 forced those blocks to opacity:0/visibility:hidden, which
+         created the large white holes seen on Android during replay and other reruns.
+         Keep the outgoing pixels visible until the new DOM is ready, but make them
+         non-interactive so a stale button cannot be tapped twice. */
       [data-stale="true"] {
-        opacity: 0 !important;
-        visibility: hidden !important;
+        opacity: 1 !important;
+        visibility: visible !important;
         pointer-events: none !important;
         transition: none !important;
-        animation: none !important;
       }
       div.stButton > button {
         min-height: 3.2rem;
@@ -789,6 +791,7 @@ PHOTO_BUCKET = secret("PHOTO_BUCKET", "burari-photos")
 # JSON on read. Set GPS_TRACK_BUCKET to a dedicated bucket to use application/json.
 GPS_TRACK_BUCKET = str(secret("GPS_TRACK_BUCKET", PHOTO_BUCKET) or PHOTO_BUCKET).strip() or PHOTO_BUCKET
 GPS_TRACK_STORAGE_MIME = "application/json" if GPS_TRACK_BUCKET != PHOTO_BUCKET else "image/jpeg"
+GPS_NATIVE_TRACK_TABLE_V338 = "burari_gps_track_points_v338"
 GOOGLE_PLACES_API_KEY = str(secret("GOOGLE_PLACES_API_KEY", secret("GOOGLE_MAPS_API_KEY", "")) or "").strip()
 USE_FAST_MODE = str(secret("USE_FAST_MODE", "true")).lower() in {"1", "true", "yes", "on"}
 try:
@@ -16706,15 +16709,25 @@ def render_monthly_replay_player(period_label, review, playback, photo_items):
       let burariMusicWatchTimer = null;
       let burariFallbackEndTimer = null;
       let burariPositionTimer = null;
+      let burariActivityHeartbeat = null;
       let burariPlayer = null;
       let burariPlayerReady = false;
       let burariPendingStart = false;
       let burariWaitingForRequestedPosition = false;
       let burariSlideLoopStarted = false;
       let burariSlideRequestToken = 0;
-      // v325: no fixed photo ceiling.  Do not preload every image at page open;
-      // create image objects only for the current/next slides so large histories stay light.
+      // v337: replay has no photo-count ceiling, so keep only the current/next decode
+      // window alive. With the 2-second minimum slide interval there is enough time to
+      // preload one image ahead; retaining more full decoded photos needlessly increases
+      // Android WebView memory/GPU pressure and can make an iframe render white.
       const burariPreloadedSlides = new Map();
+      function burariReleasePreload(key) {{
+        const old = burariPreloadedSlides.get(key);
+        burariPreloadedSlides.delete(key);
+        if (!old) return;
+        try {{ old.onload = null; old.onerror = null; }} catch (_) {{}}
+        try {{ old.src = ''; }} catch (_) {{}}
+      }}
       function burariPreloadSlide(index) {{
         if (!burariSlides.length) return null;
         const safeIndex = ((index % burariSlides.length) + burariSlides.length) % burariSlides.length;
@@ -16726,14 +16739,9 @@ def render_monthly_replay_player(period_label, review, playback, photo_items):
         preload.decoding = 'async';
         preload.src = url;
         burariPreloadedSlides.set(safeIndex, preload);
-        // Keep only a small rolling window in memory. The visible <img> retains its own source.
-        if (burariPreloadedSlides.size > 6) {{
-          for (const key of Array.from(burariPreloadedSlides.keys())) {{
-            if (key !== safeIndex && key !== ((safeIndex + 1) % burariSlides.length) && key !== ((safeIndex + 2) % burariSlides.length)) {{
-              burariPreloadedSlides.delete(key);
-              if (burariPreloadedSlides.size <= 4) break;
-            }}
-          }}
+        const keep = new Set([safeIndex, ((safeIndex + 1) % burariSlides.length)]);
+        for (const key of Array.from(burariPreloadedSlides.keys())) {{
+          if (!keep.has(key)) burariReleasePreload(key);
         }}
         return preload;
       }}
@@ -16814,7 +16822,6 @@ def render_monthly_replay_player(period_label, review, playback, photo_items):
           if (requestToken !== burariSlideRequestToken) return;
           burariApplySlideFrame(item, safeIndex, nextUrl);
           if (burariSlides.length > 1) burariPreloadSlide(safeIndex + 1);
-          if (burariSlides.length > 2) burariPreloadSlide(safeIndex + 2);
           if (typeof afterApplied === 'function') afterApplied();
         }};
         const skip = () => {{
@@ -16871,6 +16878,10 @@ def render_monthly_replay_player(period_label, review, playback, photo_items):
         if (burariPositionTimer) {{
           clearTimeout(burariPositionTimer);
           burariPositionTimer = null;
+        }}
+        if (burariActivityHeartbeat) {{
+          clearInterval(burariActivityHeartbeat);
+          burariActivityHeartbeat = null;
         }}
       }}
 
@@ -17043,6 +17054,13 @@ def render_monthly_replay_player(period_label, review, playback, photo_items):
               if (!window.YT) return;
               if (event.data === YT.PlayerState.PLAYING) {{
                 burariEnsureAudible();
+                // Active replay is active app use even when the user is not tapping the
+                // screen. Refresh the local five-minute guard periodically so the GPS
+                // bridge cannot start a Streamlit sync in the middle of playback.
+                burariMarkUserActivity();
+                if (!burariActivityHeartbeat) {{
+                  burariActivityHeartbeat = setInterval(burariMarkUserActivity, 30000);
+                }}
                 if (burariWaitingForRequestedPosition) {{
                   burariConfirmRequestedPosition(0);
                 }} else if (!burariMusicWatchTimer) {{
@@ -28495,6 +28513,14 @@ def save_gps_track_batch_v271(batch):
 
 
 def run_always_on_gps_tracker_v271():
+    # v338: Android native GPS is fully detached from Streamlit. The foreground Android
+    # service records points into SQLite and WorkManager uploads them directly through the
+    # narrow GPS sync endpoint. Never mount the Streamlit GPS bridge in Android mode: a
+    # component value change would rerun the visible app and can interrupt replay/search UI.
+    native_mode = str(_query_param_scalar("native_android") or "").strip() == "1"
+    if native_mode:
+        return
+
     component = _get_gps_tracker_component_v271()
     if component is None:
         return
@@ -28509,8 +28535,9 @@ def run_always_on_gps_tracker_v271():
     activity_guard_enabled = True
     activity_grace_ms = 5 * 60 * 1000
     ack_key = f"_gps_track_ack_v271_{current_family_key()}_{current_member_key()}"
-    native_mode = str(_query_param_scalar("native_android") or "").strip() == "1"
-    native_bridge_token = str(_query_param_scalar("native_bridge_token") or "").strip()[:200] if native_mode else ""
+    # Android returned above. This component is now browser/PWA fallback only.
+    native_mode = False
+    native_bridge_token = ""
     result = component(
         data={
             "native_mode": native_mode,
@@ -28550,26 +28577,83 @@ def run_always_on_gps_tracker_v271():
         # the durable sent-token prevents an immediate duplicate upload.
 
 
+@st.cache_data(ttl=15, max_entries=24, show_spinner=False)
+def _read_native_track_points_v338(family_key, member_key):
+    """Read Android-native GPS rows without involving a browser component.
+
+    v338 writes new Android points to a dedicated Supabase table through a background
+    Edge Function. Legacy monthly Storage JSON remains readable, so existing history is
+    preserved and both sources are merged below. Missing-table/deployment states simply
+    return no native rows, allowing the web app to remain usable during rollout.
+    """
+    family = str(family_key or "").strip()
+    member = str(member_key or "").strip()
+    if not family or not member:
+        return []
+    rows = []
+    page_size = 1000
+    # Keep retrieval bounded; the final merged render is sampled to the existing map limit.
+    max_rows = max(5000, int(GPS_TRACK_RENDER_POINT_LIMIT) * 3)
+    offset = 0
+    try:
+        client = supabase_client()
+        while offset < max_rows:
+            end = min(max_rows, offset + page_size) - 1
+            result = (
+                client.table(GPS_NATIVE_TRACK_TABLE_V338)
+                .select("id,ts_ms,lat,lon,accuracy_m,speed_mps,heading,session_id,source")
+                .eq("family_key", family)
+                .eq("member_key", member)
+                .order("ts_ms")
+                .range(offset, end)
+                .execute()
+            )
+            batch = list(getattr(result, "data", None) or [])
+            if not batch:
+                break
+            for raw in batch:
+                point = _coerce_track_point_v271(raw)
+                if point:
+                    rows.append(point)
+            if len(batch) < page_size:
+                break
+            offset += page_size
+    except Exception:
+        # The SQL migration/Edge Function may not be deployed yet. Legacy history must
+        # continue to work instead of making the whole review page fail.
+        return []
+    return rows
+
+
 def _load_all_project_track_points_v271():
     family = current_family_key(); member = current_member_key()
     months = list(_list_track_month_keys_v271(family, member))
-    if not months:
-        return []
-    worker_count = max(1, min(6, len(months)))
-    def load_one(month_key):
-        return _read_track_month_cached_v271(family, member, month_key)
-    if worker_count == 1:
-        groups = [load_one(months[0])]
-    else:
-        with ThreadPoolExecutor(max_workers=worker_count) as executor:
-            groups = list(executor.map(load_one, months))
-    points = []
+    groups = []
+    if months:
+        worker_count = max(1, min(6, len(months)))
+        def load_one(month_key):
+            return _read_track_month_cached_v271(family, member, month_key)
+        if worker_count == 1:
+            groups = [load_one(months[0])]
+        else:
+            with ThreadPoolExecutor(max_workers=worker_count) as executor:
+                groups = list(executor.map(load_one, months))
+
+    # v338 native rows are already cloud-saved by Android WorkManager; reading them here
+    # is a normal review-page query and never talks back to the device or triggers GPS sync.
+    native_rows = _read_native_track_points_v338(family, member)
+    merged = {}
     for rows in groups:
-        points.extend(row for row in (rows or []) if isinstance(row, dict))
-    points.sort(key=lambda x: (int(x.get("ts_ms") or 0), str(x.get("id") or "")))
+        for row in rows or []:
+            if isinstance(row, dict) and row.get("id"):
+                merged[str(row.get("id"))] = row
+    for row in native_rows or []:
+        if isinstance(row, dict) and row.get("id"):
+            merged[str(row.get("id"))] = row
+
+    points = sorted(merged.values(), key=lambda x: (int(x.get("ts_ms") or 0), str(x.get("id") or "")))
     if len(points) > GPS_TRACK_RENDER_POINT_LIMIT:
-        # Preserve every raw 10m point in storage. Only the display payload is thinned
-        # when history becomes extremely large so the mobile map stays responsive.
+        # Preserve every raw point in its source. Only the map payload is thinned.
         step = max(1, int(math.ceil(len(points) / float(GPS_TRACK_RENDER_POINT_LIMIT))))
         sampled = points[::step]
         if points and (not sampled or sampled[-1].get("id") != points[-1].get("id")):
@@ -33009,20 +33093,19 @@ consume_pending_emotion_query()
 sync_browser_history()
 render_pending_emotion_query_cleanup()
 
-# v336: loading remains lightweight; settings are action-only forms, Near Me keeps the v320 client UI, and GPS cloud-sync triggers are guarded for 5 minutes after user activity. It performs
+# v338: loading remains lightweight; stale Streamlit DOM stays visible during reconciliation. Android GPS is native-background only and never emits Streamlit GPS events. It performs
 # no network request and has no artificial minimum display time; it exists only while
 # real work is already blocking the UI.
 inject_lightweight_train_loading_v326()
 
-# v332: keep the high-accuracy GPS watcher alive across app pages, but never let its
-# cloud sync trigger a Streamlit rerun while the smartphone UI is visible. Accepted
-# points remain local/native immediately and are flushed after the app is backgrounded.
+# v338: browser/PWA keeps the legacy watcher. Android returns immediately inside this
+# function because its foreground GPS service + WorkManager own recording/sync entirely.
 run_always_on_gps_tracker_v271()
 
-# v280: keep the whole visible page under one keyed root so its top-level identity
-# does not shift between Home/Review/Camera/etc. Streamlit can then reconcile the
-# target page in-place. Together with one-rerun callbacks and hiding data-stale DOM,
-# this prevents the previous page from remaining as a faint duplicate during route changes.
+# v337: keep the whole visible page under one keyed root so its top-level identity
+# does not shift between Home/Review/Camera/etc. During reconciliation the outgoing
+# data-stale DOM remains visible but non-interactive until its replacement is ready,
+# preventing the large white gaps caused by the old global stale-hiding rule.
 with st.container(key="app_page_root_v280"):
     rollover_notice = st.session_state.pop("_rollover_notice", None)
     if rollover_notice:
