@@ -32,7 +32,7 @@ import streamlit as st
 # Freshly generated update: 2026-08-31 23:49 JST
 GENERATED_UPDATE_JST = "2026-09-08T18:48:00+09:00"
 
-APP_BUILD = "v325"
+APP_BUILD = "v327"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -16864,6 +16864,12 @@ def _monthly_replay_state(month_key, review):
 
 
 def render_monthly_music_settings(month_key, bundle, review, expanded=True):
+    """Music/replay settings with action-only server communication.
+
+    All text/select/number controls live inside Streamlit forms. Changing a field or
+    tapping +/- does not rerun the app; values are sent only by an explicit action
+    such as Use, Guess, Apply, or Clear.
+    """
     photo_items = build_monthly_replay_photo_items(bundle)
     state = _monthly_replay_state(month_key, review)
     playback = state["playback"]
@@ -16873,6 +16879,14 @@ def render_monthly_music_settings(month_key, bundle, review, expanded=True):
     reason_key = state["reason_key"]
     confidence_key = state["confidence_key"]
     title_key = state["title_key"]
+
+    # Apply values scheduled by a previous submit before the widgets are instantiated.
+    pending_override_key = f"_monthly_music_form_override_{month_key}"
+    pending_override = st.session_state.pop(pending_override_key, None)
+    if isinstance(pending_override, dict):
+        for state_key, value in pending_override.items():
+            if state_key:
+                st.session_state[state_key] = value
 
     with st.expander("YouTubeの音楽と再生設定", expanded=expanded):
         if photo_items:
@@ -16884,22 +16898,28 @@ def render_monthly_music_settings(month_key, bundle, review, expanded=True):
             saved_music = get_saved_music_library()
         except Exception:
             saved_music = []
+
         if saved_music:
             st.markdown("**保存した音楽から選ぶ**")
             saved_choice_key = f"monthly_saved_music_choice_{month_key}"
-            selected_index = st.selectbox(
-                "保存した音楽",
-                options=list(range(len(saved_music))),
-                format_func=lambda idx: music_library_label(saved_music[idx]),
-                key=saved_choice_key,
-                label_visibility="collapsed",
-            )
-            if st.button(
-                "この音楽を使う",
-                type="primary",
-                use_container_width=True,
-                key=f"monthly_use_saved_music_{month_key}",
+            with st.form(
+                key=f"monthly_saved_music_form_{month_key}",
+                clear_on_submit=False,
+                border=False,
             ):
+                selected_index = st.selectbox(
+                    "保存した音楽",
+                    options=list(range(len(saved_music))),
+                    format_func=lambda idx: music_library_label(saved_music[idx]),
+                    key=saved_choice_key,
+                    label_visibility="collapsed",
+                )
+                use_saved_clicked = st.form_submit_button(
+                    "この音楽を使う",
+                    type="primary",
+                    use_container_width=True,
+                )
+            if use_saved_clicked:
                 try:
                     selected = saved_music[int(selected_index)]
                     apply_music_library_item(month_key, review, selected)
@@ -16912,102 +16932,122 @@ def render_monthly_music_settings(month_key, bundle, review, expanded=True):
                         st.code(str(exc))
             st.divider()
 
-        st.text_input(
-            "YouTube URL",
-            key=url_key,
-            placeholder="https://www.youtube.com/watch?v=...",
-        )
-        current_url = str(st.session_state.get(url_key) or "").strip()
-        video_id = parse_youtube_video_id(current_url)
-        if current_url and not video_id:
-            st.warning("YouTube URLの形式を読み取れませんでした。通常の共有URLか埋め込みURLを入れてください。")
-        elif video_id:
-            st.caption(f"再生対象: {youtube_watch_url(video_id)}")
+        # One form owns URL + playback interval. No server rerun occurs while editing.
+        with st.form(
+            key=f"monthly_music_edit_form_{month_key}",
+            clear_on_submit=False,
+            border=False,
+        ):
+            current_url = st.text_input(
+                "YouTube URL",
+                key=url_key,
+                placeholder="https://www.youtube.com/watch?v=...",
+            )
+            video_id = parse_youtube_video_id(current_url)
+            if current_url and not video_id:
+                st.warning("YouTube URLの形式を読み取れませんでした。通常の共有URLか埋め込みURLを入れてください。")
+            elif video_id:
+                st.caption(f"再生対象: {youtube_watch_url(video_id)}")
 
-        if st.button("AIにおすすめ時間を推測", use_container_width=True, key=f"guess_monthly_replay_{month_key}"):
+            start_seconds = max(0, int(st.number_input("開始（秒）", min_value=0, step=1, key=start_key)))
+            end_seconds = int(st.number_input("終了（秒）", min_value=1, step=1, key=end_key))
+            display_end = end_seconds if end_seconds > start_seconds else start_seconds + 20
+            st.caption(f"入力中の区間: {format_mmss(start_seconds)}〜{format_mmss(display_end)}")
+            if end_seconds <= start_seconds:
+                st.caption("終了が開始以下の場合、反映時に開始から20秒後へ自動調整します。")
+
+            action_cols = st.columns([1.15, 1.35, 1.0])
+            with action_cols[0]:
+                guess_clicked = st.form_submit_button(
+                    "AIにおすすめ時間を推測",
+                    use_container_width=True,
+                )
+            with action_cols[1]:
+                apply_clicked = st.form_submit_button(
+                    "この時間を再生に反映",
+                    type="primary",
+                    use_container_width=True,
+                )
+            with action_cols[2]:
+                clear_clicked = st.form_submit_button(
+                    "再生設定を消す",
+                    use_container_width=True,
+                )
+
+        # Only an explicit submit reaches server-side/network work.
+        if guess_clicked:
             if not video_id:
                 st.error("先に有効なYouTube URLを入力してください。")
             else:
                 try:
                     with st.spinner("AIがサビ候補を推測しています…"):
                         guessed = guess_monthly_replay_window(current_url, month_key, review)
-                    st.session_state[start_key] = int(guessed.get("start_seconds") or 48)
-                    st.session_state[end_key] = int(guessed.get("end_seconds") or 68)
-                    st.session_state[reason_key] = str(guessed.get("reason") or "")
-                    st.session_state[confidence_key] = str(guessed.get("confidence") or "")
-                    st.session_state[title_key] = str(guessed.get("title") or "")
+                    guessed_start = int(guessed.get("start_seconds") or 48)
+                    guessed_end = int(guessed.get("end_seconds") or 68)
+                    st.session_state[pending_override_key] = {
+                        start_key: guessed_start,
+                        end_key: guessed_end,
+                        reason_key: str(guessed.get("reason") or ""),
+                        confidence_key: str(guessed.get("confidence") or ""),
+                        title_key: str(guessed.get("title") or ""),
+                    }
                     save_monthly_playback(month_key, review, guessed)
                     st.session_state[f"monthly_replay_applied_{month_key}"] = {
-                        "start_seconds": int(st.session_state[start_key]),
-                        "end_seconds": int(st.session_state[end_key]),
+                        "start_seconds": guessed_start,
+                        "end_seconds": guessed_end,
                     }
                     st.session_state[f"monthly_music_settings_open_{month_key}"] = False
-                    st.success(f"おすすめ区間を {format_mmss(st.session_state[start_key])}〜{format_mmss(st.session_state[end_key])} に設定しました。")
+                    st.success(f"おすすめ区間を {format_mmss(guessed_start)}〜{format_mmss(guessed_end)} に設定しました。")
                     st.rerun()
                 except Exception as exc:
                     st.error("おすすめ時間を推測できませんでした。")
                     with st.expander("保護者向け詳細"):
                         st.code(str(exc))
 
-        st.number_input("開始（秒）", min_value=0, step=1, key=start_key)
-        st.number_input("終了（秒）", min_value=1, step=1, key=end_key)
-        start_seconds = max(0, int(st.session_state.get(start_key) or 0))
-        end_seconds = int(st.session_state.get(end_key) or (start_seconds + 20))
-        if end_seconds <= start_seconds:
-            st.warning("終了は開始より後にしてください。保存時に自動調整されます。")
-        st.caption(f"入力中の区間: {format_mmss(start_seconds)}〜{format_mmss(max(end_seconds, start_seconds + 1))}")
-
-        apply_cols = st.columns([1.4, 1])
-        with apply_cols[0]:
-            if st.button(
-                "この時間を再生に反映",
-                type="primary",
-                use_container_width=True,
-                key=f"apply_monthly_replay_time_{month_key}",
-            ):
-                if not video_id:
-                    st.error("先に有効なYouTube URLを入力してください。")
-                else:
-                    start_seconds = max(0, int(st.session_state.get(start_key) or 0))
-                    end_seconds = int(st.session_state.get(end_key) or (start_seconds + 20))
-                    if end_seconds <= start_seconds:
-                        end_seconds = start_seconds + 20
-                        st.session_state[end_key] = end_seconds
-                    meta = fetch_youtube_oembed(current_url)
-                    applied_payload = {
-                        "youtube_url": current_url,
-                        "video_id": video_id,
-                        "title": str(meta.get("title") or st.session_state.get(title_key) or "").strip(),
-                        "author_name": str(meta.get("author_name") or "").strip(),
-                        "start_seconds": start_seconds,
-                        "end_seconds": end_seconds,
-                        "reason": str(st.session_state.get(reason_key) or "").strip(),
-                        "confidence": "manual",
-                        "updated_at": now_jst().isoformat(),
-                        "source": "manual",
-                    }
-                    save_monthly_playback(month_key, review, applied_payload)
-                    st.session_state[f"monthly_replay_applied_{month_key}"] = {
-                        "start_seconds": start_seconds,
-                        "end_seconds": end_seconds,
-                    }
-                    st.session_state[confidence_key] = "manual"
-                    st.session_state[f"monthly_music_settings_open_{month_key}"] = False
-                    st.success(f"{format_mmss(start_seconds)}〜{format_mmss(end_seconds)} を再生に反映しました。")
-                    st.rerun()
-        with apply_cols[1]:
-            if st.button("再生設定を消す", use_container_width=True, key=f"clear_monthly_replay_{month_key}"):
-                st.session_state[url_key] = ""
-                st.session_state[start_key] = 48
-                st.session_state[end_key] = 68
-                st.session_state[reason_key] = ""
-                st.session_state[confidence_key] = ""
-                st.session_state[title_key] = ""
-                st.session_state.pop(f"monthly_replay_applied_{month_key}", None)
-                st.session_state[f"monthly_music_settings_open_{month_key}"] = True
-                save_monthly_playback(month_key, review, {})
-                st.success("この期間の再生設定を消しました。")
+        if apply_clicked:
+            if not video_id:
+                st.error("先に有効なYouTube URLを入力してください。")
+            else:
+                if end_seconds <= start_seconds:
+                    end_seconds = start_seconds + 20
+                    st.session_state[pending_override_key] = {end_key: end_seconds}
+                meta = fetch_youtube_oembed(current_url)
+                applied_payload = {
+                    "youtube_url": current_url,
+                    "video_id": video_id,
+                    "title": str(meta.get("title") or st.session_state.get(title_key) or "").strip(),
+                    "author_name": str(meta.get("author_name") or "").strip(),
+                    "start_seconds": start_seconds,
+                    "end_seconds": end_seconds,
+                    "reason": str(st.session_state.get(reason_key) or "").strip(),
+                    "confidence": "manual",
+                    "updated_at": now_jst().isoformat(),
+                    "source": "manual",
+                }
+                save_monthly_playback(month_key, review, applied_payload)
+                st.session_state[f"monthly_replay_applied_{month_key}"] = {
+                    "start_seconds": start_seconds,
+                    "end_seconds": end_seconds,
+                }
+                st.session_state[confidence_key] = "manual"
+                st.session_state[f"monthly_music_settings_open_{month_key}"] = False
+                st.success(f"{format_mmss(start_seconds)}〜{format_mmss(end_seconds)} を再生に反映しました。")
                 st.rerun()
+
+        if clear_clicked:
+            st.session_state[pending_override_key] = {
+                url_key: "",
+                start_key: 48,
+                end_key: 68,
+                reason_key: "",
+                confidence_key: "",
+                title_key: "",
+            }
+            st.session_state.pop(f"monthly_replay_applied_{month_key}", None)
+            st.session_state[f"monthly_music_settings_open_{month_key}"] = True
+            save_monthly_playback(month_key, review, {})
+            st.success("この期間の再生設定を消しました。")
+            st.rerun()
 
         applied = st.session_state.get(f"monthly_replay_applied_{month_key}")
         if not isinstance(applied, dict):
@@ -17025,16 +17065,10 @@ def render_monthly_music_settings(month_key, bundle, review, expanded=True):
         if reason:
             confidence_label = {"low": "低め", "medium": "中くらい", "high": "高め", "manual": "手動"}.get(confidence, confidence)
             st.caption(f"AIメモ: {reason}（確からしさ: {confidence_label or '不明'}）")
-        st.caption("※ サビ候補はAIの推測です。曲によって外れることがあります。必要なら秒数を手で直してください。")
-
+        st.caption("※ 入力変更だけでは通信しません。AI推測・反映・削除のボタンを押したときだけ処理します。")
 
 def render_monthly_time_settings(month_key, review):
-    """Edit only the current music's playback window.
-
-    The time editor intentionally uses dedicated widget keys. This prevents stale
-    values from the full music-settings form from overriding the interval that is
-    actually applied to the replay.
-    """
+    """Edit only the current music playback window without rerunning on +/- taps."""
     state = _monthly_replay_state(month_key, review)
     playback = get_monthly_playback(review) or state["playback"]
     current_url = str(st.session_state.get(state["url_key"]) or playback.get("youtube_url") or "").strip()
@@ -17046,8 +17080,6 @@ def render_monthly_time_settings(month_key, review):
     edit_start_key = f"monthly_time_edit_start_{month_key}"
     edit_end_key = f"monthly_time_edit_end_{month_key}"
 
-    # If this view was restored without going through the open button, initialize
-    # it from the interval currently used by the replay.
     applied = st.session_state.get(f"monthly_replay_applied_{month_key}")
     if isinstance(applied, dict):
         current_start = max(0, int(applied.get("start_seconds") if applied.get("start_seconds") is not None else 0))
@@ -17068,20 +17100,23 @@ def render_monthly_time_settings(month_key, review):
     with st.container(border=True):
         st.markdown("**音楽を再生する時間**")
         st.caption(f"現在の再生設定：{format_mmss(current_start)}〜{format_mmss(current_end)}")
-        st.number_input("開始（秒）", min_value=0, step=1, key=edit_start_key)
-        st.number_input("終了（秒）", min_value=1, step=1, key=edit_end_key)
-        start_seconds = max(0, int(st.session_state.get(edit_start_key) or 0))
-        end_seconds = int(st.session_state.get(edit_end_key) or (start_seconds + 20))
-        if end_seconds <= start_seconds:
-            st.warning("終了は開始より後にしてください。反映時は開始から20秒後に自動調整します。")
-        display_end = end_seconds if end_seconds > start_seconds else start_seconds + 20
-        st.caption(f"変更後：{format_mmss(start_seconds)}〜{format_mmss(display_end)}")
-        if st.button(
-            "この時間を再生に反映",
-            type="primary",
-            use_container_width=True,
-            key=f"apply_monthly_time_only_{month_key}",
+        with st.form(
+            key=f"monthly_time_only_form_{month_key}",
+            clear_on_submit=False,
+            border=False,
         ):
+            start_seconds = max(0, int(st.number_input("開始（秒）", min_value=0, step=1, key=edit_start_key)))
+            end_seconds = int(st.number_input("終了（秒）", min_value=1, step=1, key=edit_end_key))
+            display_end = end_seconds if end_seconds > start_seconds else start_seconds + 20
+            st.caption(f"入力値：{format_mmss(start_seconds)}〜{format_mmss(display_end)}")
+            st.caption("＋／－を押している間は通信しません。")
+            apply_clicked = st.form_submit_button(
+                "この時間を再生に反映",
+                type="primary",
+                use_container_width=True,
+            )
+
+        if apply_clicked:
             if end_seconds <= start_seconds:
                 end_seconds = start_seconds + 20
 
@@ -17100,8 +17135,6 @@ def render_monthly_time_settings(month_key, review):
             })
             save_monthly_playback(month_key, review, updated)
 
-            # Keep every replay source in sync so the next rerun immediately uses
-            # the newly entered interval.
             st.session_state[state["start_key"]] = start_seconds
             st.session_state[state["end_key"]] = end_seconds
             st.session_state[state["confidence_key"]] = "manual"
@@ -17112,7 +17145,6 @@ def render_monthly_time_settings(month_key, review):
             st.session_state[f"monthly_time_settings_open_{month_key}"] = False
             st.success(f"{format_mmss(start_seconds)}〜{format_mmss(end_seconds)} に変更しました。")
             st.rerun()
-
 
 def render_monthly_replay_section(month_key, period_label, bundle, review):
     photo_items = build_monthly_replay_photo_items(bundle)
@@ -18944,111 +18976,93 @@ def _home_train_for_session():
 
 
 
-def inject_lightweight_train_loading_v324():
-    """Render a zero-network, CSS-only loading overlay that reuses the current Home train."""
+def inject_lightweight_train_loading_v326():
+    """Render a zero-network loader; the Home train crosses right-to-left with no added wait."""
     try:
         line_name, train_uri = _home_train_for_session()
     except Exception:
         line_name, train_uri = "ぶらり旅", ""
     safe_name = html.escape(str(line_name or "ぶらり旅"))
-    # The train asset is already bundled with the app. A data URI avoids an extra HTTP
-    # request and the motion is transform-only CSS, so the loader never adds API work,
-    # polling, timers on the Python side, or a minimum artificial wait.
+    # Reuse the already-bundled Home icon as a data URI. The animation is CSS transform-only:
+    # no extra fetch, polling, Python timer, image decode pipeline, or artificial minimum wait.
     safe_uri = str(train_uri or "").replace('"', '%22').replace("'", "%27")
     train_css = f'url("{safe_uri}")' if safe_uri else 'none'
     st.markdown(
         f"""
-        <style id="burari-loading-style-v324">
+        <style id="burari-loading-style-v326">
         :root {{ --burari-loader-train-image: {train_css}; }}
 
-        #burari-global-loader-v324 {{
+        #burari-global-loader-v326 {{
           position:fixed; inset:0; z-index:2147483000; display:flex; align-items:center; justify-content:center;
           background:rgba(250,253,251,.965); opacity:0; visibility:hidden; pointer-events:none;
-          transition:opacity 70ms linear, visibility 0s linear 70ms;
+          transition:opacity 55ms linear, visibility 0s linear 55ms;
         }}
-        #burari-global-loader-v324.burari-active {{
-          opacity:1; visibility:visible; pointer-events:all; transition:opacity 70ms linear;
+        #burari-global-loader-v326.burari-active {{
+          opacity:1; visibility:visible; pointer-events:all; transition:opacity 55ms linear;
         }}
-        .burari-loader-stage-v324 {{
-          position:relative; width:min(88vw,460px); height:190px; display:flex; justify-content:center;
+        .burari-loader-stage-v326 {{
+          position:relative; width:100vw; height:154px; overflow:hidden;
         }}
-        .burari-loader-track-v324 {{
-          position:absolute; left:50%; top:104px; transform:translateX(-50%); width:min(84vw,430px); height:31px;
-          border-radius:12px;
-          background:
-            linear-gradient(rgba(89,104,112,.78),rgba(89,104,112,.78)) 0 5px/100% 3px no-repeat,
-            linear-gradient(rgba(89,104,112,.78),rgba(89,104,112,.78)) 0 23px/100% 3px no-repeat,
-            repeating-linear-gradient(90deg,transparent 0 12px,rgba(118,126,130,.58) 12px 17px,transparent 17px 29px);
-          opacity:.82;
-        }}
-        .burari-loader-train-v324 {{
-          position:absolute; left:50%; top:28px; margin-left:-53px; width:106px; height:82px;
+        .burari-loader-train-v326 {{
+          position:absolute; left:100vw; top:18px; width:106px; height:82px;
           background-image:var(--burari-loader-train-image); background-repeat:no-repeat; background-position:center; background-size:contain;
           filter:drop-shadow(0 7px 9px rgba(35,76,49,.10));
-          animation:burari-loader-run-v324 1.65s ease-in-out infinite alternate; animation-play-state:paused;
+          animation:burari-loader-run-v326 2.05s linear infinite; animation-play-state:paused;
           will-change:transform;
         }}
-        #burari-global-loader-v324.burari-active .burari-loader-train-v324 {{ animation-play-state:running; }}
-        .burari-loader-message-v324 {{
-          position:absolute; top:148px; left:10px; right:10px; text-align:center; font-size:14px; font-weight:800;
+        #burari-global-loader-v326.burari-active .burari-loader-train-v326 {{ animation-play-state:running; }}
+        .burari-loader-message-v326 {{
+          position:absolute; top:116px; left:12px; right:12px; text-align:center; font-size:14px; font-weight:800;
           line-height:1.45; color:rgba(38,53,46,.82); letter-spacing:.01em;
         }}
-        @keyframes burari-loader-run-v324 {{ from {{ transform:translate3d(-128px,0,0); }} to {{ transform:translate3d(128px,0,0); }} }}
+        /* Move only right -> left. At the left edge, the next iteration jumps to the right edge. */
+        @keyframes burari-loader-run-v326 {{
+          from {{ transform:translate3d(0,0,0); }}
+          to {{ transform:translate3d(calc(-100vw - 126px),0,0); }}
+        }}
 
-        /* Re-skin Streamlit's own blocking spinners. This replaces only the visual layer;
-           it never delays or changes the underlying work. */
+        /* Streamlit's server-side blocking spinner uses the same light visual treatment.
+           It disappears automatically when the underlying Python work exits. */
         div[data-testid="stSpinner"] {{
           position:fixed !important; inset:0 !important; z-index:2147482999 !important; margin:0 !important;
           width:100vw !important; height:100dvh !important; max-width:none !important; max-height:none !important;
           display:flex !important; align-items:center !important; justify-content:center !important;
-          background:rgba(250,253,251,.965) !important; pointer-events:all !important;
+          background:rgba(250,253,251,.965) !important; pointer-events:all !important; overflow:hidden !important;
         }}
-        div[data-testid="stSpinner"]::after {{
-          content:""; position:absolute; left:50%; top:calc(50% + 18px); transform:translate(-50%,-50%);
-          width:min(84vw,430px); height:31px; border-radius:12px; z-index:1;
-          background:
-            linear-gradient(rgba(89,104,112,.78),rgba(89,104,112,.78)) 0 5px/100% 3px no-repeat,
-            linear-gradient(rgba(89,104,112,.78),rgba(89,104,112,.78)) 0 23px/100% 3px no-repeat,
-            repeating-linear-gradient(90deg,transparent 0 12px,rgba(118,126,130,.58) 12px 17px,transparent 17px 29px);
-          opacity:.82;
-        }}
+        div[data-testid="stSpinner"]::after {{ display:none !important; content:none !important; }}
         div[data-testid="stSpinner"]::before {{
-          content:""; position:absolute; left:50%; top:calc(50% - 58px); margin-left:-53px; width:106px; height:82px; z-index:2;
+          content:""; position:absolute; left:100vw; top:calc(50% - 72px); width:106px; height:82px; z-index:2;
           background-image:var(--burari-loader-train-image); background-repeat:no-repeat; background-position:center; background-size:contain;
           filter:drop-shadow(0 7px 9px rgba(35,76,49,.10));
-          animation:burari-loader-run-v324 1.65s ease-in-out infinite alternate; will-change:transform;
+          animation:burari-loader-run-v326 2.05s linear infinite; will-change:transform;
         }}
         div[data-testid="stSpinner"] > div {{
-          position:absolute !important; top:calc(50% + 79px) !important; left:12px !important; right:12px !important;
+          position:absolute !important; top:calc(50% + 58px) !important; left:12px !important; right:12px !important;
           width:auto !important; margin:0 !important; justify-content:center !important; text-align:center !important;
           color:rgba(38,53,46,.82) !important; font-size:14px !important; font-weight:800 !important; z-index:3 !important;
         }}
         div[data-testid="stSpinner"] svg {{ display:none !important; }}
 
         @media(max-width:640px) {{
-          .burari-loader-stage-v324 {{ height:176px; }}
-          .burari-loader-track-v324 {{ top:96px; width:min(88vw,360px); }}
-          .burari-loader-train-v324 {{ top:24px; width:96px; height:74px; margin-left:-48px; }}
-          .burari-loader-message-v324 {{ top:140px; font-size:13px; }}
-          @keyframes burari-loader-run-v324 {{ from {{ transform:translate3d(-104px,0,0); }} to {{ transform:translate3d(104px,0,0); }} }}
-          div[data-testid="stSpinner"]::after {{ width:min(88vw,360px); }}
-          div[data-testid="stSpinner"]::before {{ width:96px; height:74px; margin-left:-48px; }}
+          .burari-loader-stage-v326 {{ height:146px; }}
+          .burari-loader-train-v326 {{ top:16px; width:96px; height:74px; }}
+          .burari-loader-message-v326 {{ top:108px; font-size:13px; }}
+          div[data-testid="stSpinner"]::before {{ width:96px; height:74px; top:calc(50% - 68px); }}
+          div[data-testid="stSpinner"] > div {{ top:calc(50% + 52px) !important; font-size:13px !important; }}
         }}
         @media(prefers-reduced-motion:reduce) {{
-          .burari-loader-train-v324, div[data-testid="stSpinner"]::before {{ animation-duration:3.4s; animation-timing-function:linear; }}
+          .burari-loader-train-v326, div[data-testid="stSpinner"]::before {{ animation-duration:3.4s; }}
         }}
         </style>
-        <div id="burari-global-loader-v324" aria-live="polite" aria-label="{safe_name}のローディング表示">
-          <div class="burari-loader-stage-v324">
-            <div class="burari-loader-track-v324" aria-hidden="true"></div>
-            <div class="burari-loader-train-v324" aria-hidden="true"></div>
-            <div id="burari-global-loader-message-v324" class="burari-loader-message-v324">読み込み中…</div>
+        <div id="burari-global-loader-v326" aria-live="polite" aria-label="{safe_name}のローディング表示">
+          <div class="burari-loader-stage-v326">
+            <div class="burari-loader-train-v326" aria-hidden="true"></div>
+            <div id="burari-global-loader-message-v326" class="burari-loader-message-v326">読み込み中…</div>
           </div>
         </div>
         """,
         unsafe_allow_html=True,
     )
-
 
 def _home_nearby_icon_for_session():
     """Choose one GitHub-backed food icon for Nearby and keep it stable this session."""
@@ -20898,37 +20912,38 @@ def page_home():
                 current_trip = get_trip(trip["id"]) or trip
                 current_photos = list_trip_photos(trip["id"])
                 current_place = trip_place_label(current_trip, photos=current_photos)
-                destination = st.text_input(
-                    "地名",
-                    value=str(current_trip.get("destination") or current_place),
-                    placeholder="例：神楽坂、浅草のあたり",
-                    key=f"home_destination_input_{trip['id']}",
-                    label_visibility="collapsed",
-                )
-                save_col, close_col = st.columns([2, 1])
-                with save_col:
-                    if st.button(
-                        "保存",
-                        type="primary",
-                        use_container_width=True,
-                        key=f"home_destination_save_{trip['id']}",
-                    ):
-                        try:
-                            update_trip_destination(trip["id"], destination)
-                            st.session_state.show_home_destination_editor = False
-                            st.rerun()
-                        except Exception as exc:
-                            st.error("地名を保存できませんでした。")
-                            with st.expander("保護者向け詳細"):
-                                st.code(str(exc))
-                with close_col:
-                    if st.button(
-                        "閉じる",
-                        use_container_width=True,
-                        key=f"home_destination_close_{trip['id']}",
-                    ):
+                with st.form(f"home_destination_form_v327_{trip['id']}", clear_on_submit=False, border=False):
+                    destination = st.text_input(
+                        "地名",
+                        value=str(current_trip.get("destination") or current_place),
+                        placeholder="例：神楽坂、浅草のあたり",
+                        key=f"home_destination_input_{trip['id']}",
+                        label_visibility="collapsed",
+                    )
+                    save_col, close_col = st.columns([2, 1])
+                    with save_col:
+                        save_destination_clicked = st.form_submit_button(
+                            "保存",
+                            type="primary",
+                            use_container_width=True,
+                        )
+                    with close_col:
+                        close_destination_clicked = st.form_submit_button(
+                            "閉じる",
+                            use_container_width=True,
+                        )
+                if save_destination_clicked:
+                    try:
+                        update_trip_destination(trip["id"], destination)
                         st.session_state.show_home_destination_editor = False
                         st.rerun()
+                    except Exception as exc:
+                        st.error("地名を保存できませんでした。")
+                        with st.expander("保護者向け詳細"):
+                            st.code(str(exc))
+                if close_destination_clicked:
+                    st.session_state.show_home_destination_editor = False
+                    st.rerun()
 
         st.markdown('<div class="home-section-label" style="margin-top:.60rem;">たまに使う</div>', unsafe_allow_html=True)
         with st.container(key="home_secondary"):
@@ -21151,22 +21166,6 @@ export default function(component) {
   let hardTimer = null;
   let best = null;
   let startedAt = 0;
-  let loaderDoc = parentElement?.ownerDocument || document;
-  try {
-    const parentDoc = window.parent && window.parent.document ? window.parent.document : null;
-    if (parentDoc && parentDoc.getElementById('burari-global-loader-v324')) loaderDoc = parentDoc;
-  } catch (_) {}
-  const showTrainLoader = (message) => {
-    const overlay = loaderDoc.getElementById('burari-global-loader-v324');
-    if (!overlay) return;
-    const msg = loaderDoc.getElementById('burari-global-loader-message-v324');
-    if (msg) msg.textContent = String(message || '読み込み中…');
-    overlay.classList.add('burari-active');
-  };
-  const hideTrainLoader = () => {
-    const overlay = loaderDoc.getElementById('burari-global-loader-v324');
-    if (overlay) overlay.classList.remove('burari-active');
-  };
 
   const setOptions = (el, rows, wanted) => {
     el.innerHTML = '';
@@ -21249,9 +21248,7 @@ export default function(component) {
     if (cancelled || !best?.coords) return;
     stop();
     const accuracy = Number(best.coords.accuracy || 0);
-    const doneMessage = `現在地を取得しました（精度 ±${Math.round(accuracy)}m）。検索しています…`;
-    status.textContent = doneMessage;
-    showTrainLoader(doneMessage);
+    status.textContent = `現在地を取得しました（精度 ±${Math.round(accuracy)}m）。検索しています…`;
     setTriggerValue('search_location', {
       token: `${Date.now()}_${Math.random().toString(36).slice(2)}`,
       latitude: Number(best.coords.latitude), longitude: Number(best.coords.longitude),
@@ -21262,7 +21259,6 @@ export default function(component) {
   };
   const fail = (message, code=0) => {
     stop(); status.textContent = String(message || '現在地を取得できませんでした。');
-    hideTrainLoader();
     setTriggerValue('search_error', {token:`${Date.now()}_${Math.random().toString(36).slice(2)}`, code:Number(code||0), message:String(message||''), filters:gather()});
     unlock();
   };
@@ -21270,7 +21266,6 @@ export default function(component) {
     if (!navigator.geolocation) { fail('この端末では位置情報を取得できません。'); return; }
     stop(); best = null; startedAt = Date.now(); button.disabled = true;
     status.textContent = '検索地点を高精度GPSで確認しています…';
-    showTrainLoader('検索地点を高精度GPSで確認しています…');
     watchId = navigator.geolocation.watchPosition((position) => {
       if (cancelled || !position?.coords) return;
       const accuracy = Number(position.coords.accuracy || Number.POSITIVE_INFINITY);
@@ -21278,7 +21273,6 @@ export default function(component) {
       if (!best || accuracy < bestAccuracy) best = position;
       const currentBest = best ? Number(best.coords?.accuracy || Number.POSITIVE_INFINITY) : Number.POSITIVE_INFINITY;
       status.textContent = Number.isFinite(currentBest) ? `検索地点を高精度GPSで確認しています… ±${Math.round(currentBest)}m` : '検索地点を高精度GPSで確認しています…';
-      showTrainLoader(status.textContent);
       if (currentBest > 0 && currentBest <= 25) { emitBest(); return; }
       if (currentBest > 0 && currentBest <= 45 && (Date.now() - startedAt) >= 1200) emitBest();
     }, (error) => {
@@ -21296,7 +21290,7 @@ export default function(component) {
     }, 10500);
   };
   button.addEventListener('click', searchNow);
-  return () => { cancelled = true; stop(); hideTrainLoader(); button.removeEventListener('click', searchNow); };
+  return () => { cancelled = true; stop(); button.removeEventListener('click', searchNow); };
 }
 """
 
@@ -21310,7 +21304,7 @@ def _get_nearby_batch_search_component_v320():
     _nearby_batch_search_component_initialized_v320 = True
     try:
         _nearby_batch_search_component_v320 = st.components.v2.component(
-            "tokyo_burari_nearby_batch_search_v324",
+            "tokyo_burari_nearby_batch_search_v327_v320ui",
             html=_NEARBY_BATCH_SEARCH_HTML_V320,
             css=_NEARBY_BATCH_SEARCH_CSS_V320,
             js=_NEARBY_BATCH_SEARCH_JS_V320,
@@ -21370,17 +21364,23 @@ export default function(component) {
   let loaderDoc = parentElement?.ownerDocument || document;
   try {
     const parentDoc = window.parent && window.parent.document ? window.parent.document : null;
-    if (parentDoc && parentDoc.getElementById('burari-global-loader-v324')) loaderDoc = parentDoc;
+    if (parentDoc && parentDoc.getElementById('burari-global-loader-v326')) loaderDoc = parentDoc;
   } catch (_) {}
+  let loaderFailSafeTimer = null;
   const showTrainLoader = (message) => {
-    const overlay = loaderDoc.getElementById('burari-global-loader-v324');
+    const overlay = loaderDoc.getElementById('burari-global-loader-v326');
     if (!overlay) return;
-    const msg = loaderDoc.getElementById('burari-global-loader-message-v324');
+    const msg = loaderDoc.getElementById('burari-global-loader-message-v326');
     if (msg) msg.textContent = String(message || '読み込み中…');
     overlay.classList.add('burari-active');
+    if (loaderFailSafeTimer) clearTimeout(loaderFailSafeTimer);
+    // GPS itself has a 10.5s hard timeout. This is only a last-resort visual unlock,
+    // not a search timeout and it does not alter the underlying request.
+    loaderFailSafeTimer = setTimeout(() => { overlay.classList.remove('burari-active'); }, 13000);
   };
   const hideTrainLoader = () => {
-    const overlay = loaderDoc.getElementById('burari-global-loader-v324');
+    if (loaderFailSafeTimer) { clearTimeout(loaderFailSafeTimer); loaderFailSafeTimer = null; }
+    const overlay = loaderDoc.getElementById('burari-global-loader-v326');
     if (overlay) overlay.classList.remove('burari-active');
   };
   const gather = () => ({
@@ -21393,7 +21393,7 @@ export default function(component) {
   [distanceEl,feeEl,wheelEl,babyEl,openEl].forEach(el=>el.addEventListener('change',updateSummary)); updateSummary();
   const stop=()=>{if(watchId!==null&&navigator.geolocation){try{navigator.geolocation.clearWatch(watchId)}catch(_){ }watchId=null}if(hardTimer){clearTimeout(hardTimer);hardTimer=null}};
   const unlock=()=>{if(!cancelled)button.disabled=false};
-  const emitBest=()=>{if(cancelled||!best?.coords)return;stop();const accuracy=Number(best.coords.accuracy||0);status.textContent=`現在地を取得しました（精度 ±${Math.round(accuracy)}m）。トイレを検索しています…`;showTrainLoader(status.textContent);setTriggerValue('search_location',{token:`${Date.now()}_${Math.random().toString(36).slice(2)}`,latitude:Number(best.coords.latitude),longitude:Number(best.coords.longitude),accuracy_m:accuracy,measured_at:new Date(best.timestamp||Date.now()).toISOString(),filters:gather()});unlock()};
+  const emitBest=()=>{if(cancelled||!best?.coords)return;stop();const accuracy=Number(best.coords.accuracy||0);status.textContent=`現在地を取得しました（精度 ±${Math.round(accuracy)}m）。トイレを検索しています…`;hideTrainLoader();setTriggerValue('search_location',{token:`${Date.now()}_${Math.random().toString(36).slice(2)}`,latitude:Number(best.coords.latitude),longitude:Number(best.coords.longitude),accuracy_m:accuracy,measured_at:new Date(best.timestamp||Date.now()).toISOString(),filters:gather()});unlock()};
   const fail=(message,code=0)=>{stop();status.textContent=String(message||'現在地を取得できませんでした。');hideTrainLoader();setTriggerValue('search_error',{token:`${Date.now()}_${Math.random().toString(36).slice(2)}`,code:Number(code||0),message:String(message||''),filters:gather()});unlock()};
   const searchNow=()=>{if(!navigator.geolocation){fail('この端末では位置情報を取得できません。');return}stop();best=null;startedAt=Date.now();button.disabled=true;status.textContent='現在地を高精度GPSで確認しています…';showTrainLoader(status.textContent);watchId=navigator.geolocation.watchPosition((position)=>{if(cancelled||!position?.coords)return;const accuracy=Number(position.coords.accuracy||Number.POSITIVE_INFINITY);const bestAccuracy=best?Number(best.coords?.accuracy||Number.POSITIVE_INFINITY):Number.POSITIVE_INFINITY;if(!best||accuracy<bestAccuracy)best=position;const currentBest=best?Number(best.coords?.accuracy||Number.POSITIVE_INFINITY):Number.POSITIVE_INFINITY;status.textContent=Number.isFinite(currentBest)?`現在地を高精度GPSで確認しています… ±${Math.round(currentBest)}m`:'現在地を高精度GPSで確認しています…';showTrainLoader(status.textContent);if(currentBest>0&&currentBest<=25){emitBest();return}if(currentBest>0&&currentBest<=45&&(Date.now()-startedAt)>=1200)emitBest()},(error)=>{const bestAccuracy=best?Number(best.coords?.accuracy||Number.POSITIVE_INFINITY):Number.POSITIVE_INFINITY;if(best&&bestAccuracy>0&&bestAccuracy<=45){emitBest();return}const code=Number(error?.code||0);const msg=code===1?'位置情報の利用が許可されていません。':code===3?'現在地の取得に時間がかかりました。':'現在地を取得できませんでした。';fail(msg,code)},{enableHighAccuracy:true,timeout:10000,maximumAge:0});hardTimer=setTimeout(()=>{const bestAccuracy=best?Number(best.coords?.accuracy||Number.POSITIVE_INFINITY):Number.POSITIVE_INFINITY;if(best&&bestAccuracy>0&&bestAccuracy<=45)emitBest();else if(best&&Number.isFinite(bestAccuracy))fail(`GPS精度が ±${Math.round(bestAccuracy)}m のため検索を中止しました。`,3);else fail('現在地を高精度で取得できませんでした。',3)},10500)};
   button.addEventListener('click',searchNow);return()=>{cancelled=true;stop();hideTrainLoader();button.removeEventListener('click',searchNow)};
@@ -21410,7 +21410,7 @@ def _get_toilet_batch_search_component_v320():
     _toilet_batch_search_component_initialized_v320 = True
     try:
         _toilet_batch_search_component_v320 = st.components.v2.component(
-            "tokyo_burari_toilet_batch_search_v324",
+            "tokyo_burari_toilet_batch_search_v326",
             html=_TOILET_BATCH_SEARCH_HTML_V320,
             css=_TOILET_BATCH_SEARCH_CSS_V320,
             js=_TOILET_BATCH_SEARCH_JS_V320,
@@ -24493,16 +24493,14 @@ def page_moments():
 
 def render_diary_title_editor(trip_id, current_title, key_prefix):
     with st.expander("タイトルを変更"):
-        edited_title = st.text_input(
-            "日記タイトル",
-            value=str(current_title or ""),
-            key=f"{key_prefix}_title_input_{trip_id}",
-        )
-        if st.button(
-            "タイトルを保存",
-            use_container_width=True,
-            key=f"{key_prefix}_title_save_{trip_id}",
-        ):
+        with st.form(f"{key_prefix}_title_form_v327_{trip_id}", clear_on_submit=False, border=False):
+            edited_title = st.text_input(
+                "日記タイトル",
+                value=str(current_title or ""),
+                key=f"{key_prefix}_title_input_{trip_id}",
+            )
+            save_title_clicked = st.form_submit_button("タイトルを保存", use_container_width=True)
+        if save_title_clicked:
             try:
                 saved_title = update_diary_title(trip_id, edited_title)
                 # Preserve the diary being viewed while the selectbox is rebuilt with
@@ -31966,17 +31964,18 @@ def page_settings():
         "思い当たるあいことばが合っているか確認するか、ログイン中に新しいあいことばへ再設定できます。"
     )
 
-    check_pin = st.text_input(
-        "確認したいあいことば",
-        type="password",
-        key="settings_check_current_member_pin",
-        placeholder="思い当たるあいことばを入力",
-    )
-    if st.button(
-        "このあいことばで合っているか確認",
-        use_container_width=True,
-        key="settings_verify_current_member_pin",
-    ):
+    with st.form("settings_verify_pin_form_v327", clear_on_submit=False, border=False):
+        check_pin = st.text_input(
+            "確認したいあいことば",
+            type="password",
+            key="settings_check_current_member_pin",
+            placeholder="思い当たるあいことばを入力",
+        )
+        verify_pin_clicked = st.form_submit_button(
+            "このあいことばで合っているか確認",
+            use_container_width=True,
+        )
+    if verify_pin_clicked:
         if verify_current_member_pin(check_pin):
             st.success("このあいことばで合っています。")
         else:
@@ -31984,21 +31983,19 @@ def page_settings():
 
     with st.expander("あいことばを変更・再設定"):
         st.caption("現在のあいことばを忘れていても、ログイン中であれば新しく設定できます。")
-        new_pin = st.text_input(
-            "新しいあいことば",
-            type="password",
-            key="settings_new_member_pin",
-        )
-        new_pin_confirm = st.text_input(
-            "新しいあいことば（確認）",
-            type="password",
-            key="settings_new_member_pin_confirm",
-        )
-        if st.button(
-            "新しいあいことばに変更",
-            use_container_width=True,
-            key="settings_change_member_pin",
-        ):
+        with st.form("settings_change_pin_form_v327", clear_on_submit=False, border=False):
+            new_pin = st.text_input(
+                "新しいあいことば",
+                type="password",
+                key="settings_new_member_pin",
+            )
+            new_pin_confirm = st.text_input(
+                "新しいあいことば（確認）",
+                type="password",
+                key="settings_new_member_pin_confirm",
+            )
+            change_pin_clicked = st.form_submit_button("新しいあいことばに変更", use_container_width=True)
+        if change_pin_clicked:
             try:
                 if new_pin != new_pin_confirm:
                     raise ValueError("確認用のあいことばが一致していません。")
@@ -32022,12 +32019,14 @@ def page_settings():
         "同じ家族の別アカウントからは原則見えません。写真ごとの『家族に共有』または振り返り共有をONにしたものだけ閲覧できます。"
     )
     with st.expander("現在の個人名を変更"):
-        renamed_member = st.text_input(
-            "個人名",
-            value=current_member_name(),
-            key="rename_current_member_name",
-        )
-        if st.button("個人名を保存", use_container_width=True, key="save_current_member_name"):
+        with st.form("settings_rename_member_form_v327", clear_on_submit=False, border=False):
+            renamed_member = st.text_input(
+                "個人名",
+                value=current_member_name(),
+                key="rename_current_member_name",
+            )
+            rename_member_clicked = st.form_submit_button("個人名を保存", use_container_width=True)
+        if rename_member_clicked:
             try:
                 saved_name = update_current_member_name(renamed_member)
                 st.session_state["_settings_notice"] = f"個人名を『{saved_name}』に変更しました。"
@@ -32036,10 +32035,12 @@ def page_settings():
                 st.error(str(exc))
 
     with st.expander("この家族に個人アカウントを追加"):
-        new_member_name = st.text_input("個人名", placeholder="例：大嘉、父、母", key="new_member_display_name")
-        new_member_key = st.text_input("個人ID", placeholder="例：taiga", key="new_member_key")
-        new_member_pin = st.text_input("個人のあいことば", type="password", key="new_member_pin")
-        if st.button("個人アカウントを作成", use_container_width=True, key="create_member_account_button"):
+        with st.form("settings_add_member_form_v327", clear_on_submit=False, border=False):
+            new_member_name = st.text_input("個人名", placeholder="例：大嘉、父、母", key="new_member_display_name")
+            new_member_key = st.text_input("個人ID", placeholder="例：taiga", key="new_member_key")
+            new_member_pin = st.text_input("個人のあいことば", type="password", key="new_member_pin")
+            create_member_clicked = st.form_submit_button("個人アカウントを作成", use_container_width=True)
+        if create_member_clicked:
             try:
                 created = create_member_account(new_member_key, new_member_name, new_member_pin)
                 st.session_state["_settings_notice"] = (
@@ -32068,12 +32069,14 @@ def page_settings():
     st.write(f"家族：**{current_family_name()}**　（家族ID：`{current_family_key()}`）")
     st.caption("家族アカウントは個人アカウントをまとめる入れ物です。写真や日記の所有者は個人アカウントです。")
     with st.expander("現在の家族名を変更"):
-        renamed_family = st.text_input(
-            "家族名",
-            value=current_family_name(),
-            key="rename_current_family_name",
-        )
-        if st.button("家族名を保存", use_container_width=True, key="save_current_family_name"):
+        with st.form("settings_rename_family_form_v327", clear_on_submit=False, border=False):
+            renamed_family = st.text_input(
+                "家族名",
+                value=current_family_name(),
+                key="rename_current_family_name",
+            )
+            rename_family_clicked = st.form_submit_button("家族名を保存", use_container_width=True)
+        if rename_family_clicked:
             try:
                 saved_name = update_current_family_name(renamed_family)
                 st.session_state["_settings_notice"] = f"家族名を『{saved_name}』に変更しました。"
@@ -32083,12 +32086,14 @@ def page_settings():
 
     with st.expander("新しい家族アカウントを作る"):
         st.caption("新しい家族には、最初の個人アカウントも同時に作ります。")
-        new_family_name = st.text_input("家族名", placeholder="例：原田家", key="new_family_display_name")
-        new_family_key = st.text_input("家族ID", placeholder="例：harada2", key="new_family_key")
-        first_member_name = st.text_input("最初の個人名", placeholder="例：父", key="new_family_first_member_name")
-        first_member_key = st.text_input("最初の個人ID", placeholder="例：father", key="new_family_first_member_key")
-        first_member_pin = st.text_input("最初の個人のあいことば", type="password", key="new_family_first_member_pin")
-        if st.button("家族＋個人アカウントを作成", use_container_width=True, key="create_family_account_button"):
+        with st.form("settings_create_family_form_v327", clear_on_submit=False, border=False):
+            new_family_name = st.text_input("家族名", placeholder="例：原田家", key="new_family_display_name")
+            new_family_key = st.text_input("家族ID", placeholder="例：harada2", key="new_family_key")
+            first_member_name = st.text_input("最初の個人名", placeholder="例：父", key="new_family_first_member_name")
+            first_member_key = st.text_input("最初の個人ID", placeholder="例：father", key="new_family_first_member_key")
+            first_member_pin = st.text_input("最初の個人のあいことば", type="password", key="new_family_first_member_pin")
+            create_family_clicked = st.form_submit_button("家族＋個人アカウントを作成", use_container_width=True)
+        if create_family_clicked:
             try:
                 created = create_family_account(
                     new_family_key,
@@ -32111,13 +32116,15 @@ def page_settings():
         photos = list_trip_photos(active["id"])
         st.markdown("#### 今日のぶらり旅")
         st.write(f"日付：**{active.get('trip_date', '')}**　／　写真：**{len(photos)}枚**")
-        destination = st.text_input(
-            "行き先メモ（任意）",
-            value=str(active.get("destination") or ""),
-            placeholder="例：神楽坂、浅草のあたり",
-            key=f"settings_destination_{active['id']}",
-        )
-        if st.button("行き先メモを保存", use_container_width=True):
+        with st.form(f"settings_destination_form_v327_{active['id']}", clear_on_submit=False, border=False):
+            destination = st.text_input(
+                "行き先メモ（任意）",
+                value=str(active.get("destination") or ""),
+                placeholder="例：神楽坂、浅草のあたり",
+                key=f"settings_destination_{active['id']}",
+            )
+            save_destination_clicked = st.form_submit_button("行き先メモを保存", use_container_width=True)
+        if save_destination_clicked:
             try:
                 update_trip_destination(active["id"], destination)
                 st.success("保存しました。")
@@ -32162,60 +32169,61 @@ def page_settings():
             widget_key = f"settings_moment_factor_{current_family_key()}_{current_member_key()}_{factor_key}"
             st.session_state[widget_key] = int(reset_values.get(factor_key) or 0)
 
-    draft_moment_weights = {}
-    for factor_key in VIDEO_MOMENT_FACTOR_ORDER:
-        meta = VIDEO_MOMENT_FACTOR_META[factor_key]
-        widget_key = f"settings_moment_factor_{current_family_key()}_{current_member_key()}_{factor_key}"
-        if widget_key not in st.session_state:
-            st.session_state[widget_key] = int(saved_moment_weights.get(factor_key) or 0)
-        draft_moment_weights[factor_key] = st.slider(
-            meta["label"],
-            min_value=0,
-            max_value=100,
-            step=5,
-            key=widget_key,
-            help=meta["description"],
-        )
-        st.caption(meta["description"])
+    with st.form(
+        key=f"settings_moment_factor_form_v327_{current_family_key()}_{current_member_key()}",
+        clear_on_submit=False,
+        border=False,
+    ):
+        draft_moment_weights = {}
+        for factor_key in VIDEO_MOMENT_FACTOR_ORDER:
+            meta = VIDEO_MOMENT_FACTOR_META[factor_key]
+            widget_key = f"settings_moment_factor_{current_family_key()}_{current_member_key()}_{factor_key}"
+            if widget_key not in st.session_state:
+                st.session_state[widget_key] = int(saved_moment_weights.get(factor_key) or 0)
+            draft_moment_weights[factor_key] = st.slider(
+                meta["label"],
+                min_value=0,
+                max_value=100,
+                step=5,
+                key=widget_key,
+                help=meta["description"],
+            )
+            st.caption(meta["description"])
+
+        st.caption("スライダーを動かしている間は通信しません。保存時に6項目の合計が100%か確認します。")
+        factor_save_col, factor_reset_col = st.columns(2, gap="small")
+        with factor_save_col:
+            factor_save_clicked = st.form_submit_button(
+                "この割合を保存",
+                type="primary",
+                use_container_width=True,
+            )
+        with factor_reset_col:
+            factor_reset_clicked = st.form_submit_button(
+                "標準配分に戻す",
+                use_container_width=True,
+            )
 
     factor_total = sum(int(v or 0) for v in draft_moment_weights.values())
-    if factor_total == 100:
-        st.success("合計 100%")
-    else:
-        st.warning(f"現在の合計は {factor_total}% です。100%になるよう調整してください。")
-
-    factor_save_col, factor_reset_col = st.columns(2, gap="small")
-    with factor_save_col:
-        if st.button(
-            "この割合を保存",
-            type="primary",
-            use_container_width=True,
-            disabled=factor_total != 100,
-            key=f"settings_save_moment_factors_{current_family_key()}_{current_member_key()}",
-        ):
+    if factor_save_clicked:
+        if factor_total != 100:
+            st.error(f"現在の合計は {factor_total}% です。100%になるよう調整してから保存してください。")
+        else:
             try:
                 save_video_moment_factor_settings(draft_moment_weights)
-                # The sliders already contain exactly the saved values. Do not assign
-                # their session_state keys here after widget instantiation.
                 st.session_state["_settings_notice"] = "いい瞬間の選び方を、この個人アカウント用に保存しました。"
                 st.rerun()
             except Exception as exc:
                 st.error(str(exc))
-    with factor_reset_col:
-        if st.button(
-            "標準配分に戻す",
-            use_container_width=True,
-            key=f"settings_reset_moment_factors_{current_family_key()}_{current_member_key()}",
-        ):
-            try:
-                defaults = default_video_moment_factor_weights()
-                save_video_moment_factor_settings(defaults)
-                # Apply on the next run, before the slider widgets are instantiated.
-                st.session_state[moment_reset_apply_key] = dict(defaults)
-                st.session_state["_settings_notice"] = "いい瞬間の選び方を標準配分に戻しました。"
-                st.rerun()
-            except Exception as exc:
-                st.error(str(exc))
+    if factor_reset_clicked:
+        try:
+            defaults = default_video_moment_factor_weights()
+            save_video_moment_factor_settings(defaults)
+            st.session_state[moment_reset_apply_key] = dict(defaults)
+            st.session_state["_settings_notice"] = "いい瞬間の選び方を標準配分に戻しました。"
+            st.rerun()
+        except Exception as exc:
+            st.error(str(exc))
 
     st.caption(
         "標準配分：表情・決定的瞬間30% ／ 写真映え30% ／ 被写体の魅力20% ／ "
@@ -32356,10 +32364,10 @@ consume_pending_emotion_query()
 sync_browser_history()
 render_pending_emotion_query_cleanup()
 
-# v324: one CSS-only loading layer reuses the Home train and long rails. It performs
+# v327: loading remains lightweight; settings are action-only forms, and Near Me restores the v320 client UI. It performs
 # no network request and has no artificial minimum display time; it exists only while
 # real work is already blocking the UI.
-inject_lightweight_train_loading_v324()
+inject_lightweight_train_loading_v326()
 
 # v271: keep one lightweight browser GPS watcher alive across app pages. It records
 # accepted 10m points locally immediately and cloud-syncs only in coarse batches.
