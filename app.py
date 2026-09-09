@@ -32,7 +32,7 @@ import streamlit as st
 # Freshly generated update: 2026-08-31 23:49 JST
 GENERATED_UPDATE_JST = "2026-09-08T18:48:00+09:00"
 
-APP_BUILD = "v323"
+APP_BUILD = "v325"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -15953,7 +15953,13 @@ def guess_monthly_replay_window(youtube_url, month_key, review):
     }
 
 
-def _monthly_replay_selected_photos(bundle, limit=18):
+def _monthly_replay_selected_photos(bundle, limit=None):
+    """Return replay photos in chronological order.
+
+    v325: replay movies no longer impose a fixed photo-count ceiling.  ``limit`` is
+    retained only for backward compatibility with any old caller; normal replay paths
+    pass no limit and therefore include every available photo.
+    """
     trip_map = {str(t.get("id")): t for t in (bundle or {}).get("trips", []) if isinstance(t, dict) and t.get("id")}
     photos = [p for p in (bundle or {}).get("photos", []) if isinstance(p, dict)]
     photos.sort(key=lambda p: (
@@ -15961,17 +15967,22 @@ def _monthly_replay_selected_photos(bundle, limit=18):
         str(p.get("captured_at") or ""),
         str(p.get("id") or ""),
     ))
-    if len(photos) > limit:
-        step = len(photos) / float(limit)
-        picked = []
-        seen = set()
-        for idx in range(limit):
-            item = photos[min(int(idx * step), len(photos) - 1)]
-            key = str(item.get("id") or idx)
-            if key not in seen:
-                picked.append(item)
-                seen.add(key)
-        photos = picked or photos[:limit]
+    if limit is not None:
+        try:
+            limit_value = int(limit)
+        except (TypeError, ValueError):
+            limit_value = 0
+        if limit_value > 0 and len(photos) > limit_value:
+            step = len(photos) / float(limit_value)
+            picked = []
+            seen = set()
+            for idx in range(limit_value):
+                item = photos[min(int(idx * step), len(photos) - 1)]
+                key = str(item.get("id") or idx)
+                if key not in seen:
+                    picked.append(item)
+                    seen.add(key)
+            photos = picked or photos[:limit_value]
     return photos, trip_map
 
 
@@ -15986,11 +15997,16 @@ def _monthly_replay_photo_caption(photo, trip, index):
     return " / ".join(label_bits) or f"写真{index}"
 
 
-def build_monthly_replay_photo_items(bundle, limit=18):
+def build_monthly_replay_photo_items(bundle, limit=None):
     photos, trip_map = _monthly_replay_selected_photos(bundle, limit=limit)
     if not photos:
         return []
-    signed_map = signed_photo_url_map([str(p.get("storage_path") or "") for p in photos], expires_in=1800)
+    paths = [str(p.get("storage_path") or "").strip() for p in photos]
+    paths = [path for path in paths if path]
+    signed_map = {}
+    # v325: process signing in bounded batches while keeping the total photo count unlimited.
+    for start in range(0, len(paths), 200):
+        signed_map.update(signed_photo_url_map(paths[start:start + 200], expires_in=1800))
     items = []
     for idx, photo in enumerate(photos, start=1):
         url = photo_display_url(photo, signed_map=signed_map, max_px=1080, quality=86)
@@ -16020,7 +16036,7 @@ def monthly_family_share_is_enabled(review):
     return bool(monthly_family_share_info(review).get("shared"))
 
 
-def build_monthly_family_share_photo_snapshot(bundle, limit=18):
+def build_monthly_family_share_photo_snapshot(bundle, limit=None):
     """Store only lightweight references/labels; original photos are never copied."""
     photos, trip_map = _monthly_replay_selected_photos(bundle, limit=limit)
     snapshots = []
@@ -16090,7 +16106,7 @@ def _monthly_family_share_payload(month_key, period_label, bundle, previous_shar
         "shared_by_member_name": current_member_name(),
         "shared_at": str(previous_share.get("shared_at") or now_value),
         "updated_at": now_value,
-        "photos": build_monthly_family_share_photo_snapshot(bundle, limit=18),
+        "photos": build_monthly_family_share_photo_snapshot(bundle),
     }
 
 
@@ -16447,13 +16463,31 @@ def render_monthly_replay_player(period_label, review, playback, photo_items):
       let burariWaitingForRequestedPosition = false;
       let burariSlideLoopStarted = false;
       let burariSlideRequestToken = 0;
-      const burariPreloadedSlides = burariSlides.map((item) => {{
+      // v325: no fixed photo ceiling.  Do not preload every image at page open;
+      // create image objects only for the current/next slides so large histories stay light.
+      const burariPreloadedSlides = new Map();
+      function burariPreloadSlide(index) {{
+        if (!burariSlides.length) return null;
+        const safeIndex = ((index % burariSlides.length) + burariSlides.length) % burariSlides.length;
+        if (burariPreloadedSlides.has(safeIndex)) return burariPreloadedSlides.get(safeIndex);
+        const item = burariSlides[safeIndex] || {{}};
+        const url = String(item.url || '');
+        if (!url) return null;
         const preload = new Image();
         preload.decoding = 'async';
-        const url = String((item || {{}}).url || '');
-        if (url) preload.src = url;
+        preload.src = url;
+        burariPreloadedSlides.set(safeIndex, preload);
+        // Keep only a small rolling window in memory. The visible <img> retains its own source.
+        if (burariPreloadedSlides.size > 6) {{
+          for (const key of Array.from(burariPreloadedSlides.keys())) {{
+            if (key !== safeIndex && key !== ((safeIndex + 1) % burariSlides.length) && key !== ((safeIndex + 2) % burariSlides.length)) {{
+              burariPreloadedSlides.delete(key);
+              if (burariPreloadedSlides.size <= 4) break;
+            }}
+          }}
+        }}
         return preload;
-      }});
+      }}
       const burariImg = document.getElementById('burariReplayImage');
       const burariStage = document.querySelector('.burari-replay-stage');
       const burariEmotion = document.getElementById('burariReplayEmotion');
@@ -16530,6 +16564,8 @@ def render_monthly_replay_player(period_label, review, playback, photo_items):
         const finish = () => {{
           if (requestToken !== burariSlideRequestToken) return;
           burariApplySlideFrame(item, safeIndex, nextUrl);
+          if (burariSlides.length > 1) burariPreloadSlide(safeIndex + 1);
+          if (burariSlides.length > 2) burariPreloadSlide(safeIndex + 2);
           if (typeof afterApplied === 'function') afterApplied();
         }};
         const skip = () => {{
@@ -16544,7 +16580,7 @@ def render_monthly_replay_player(period_label, review, playback, photo_items):
           return;
         }}
 
-        const preload = burariPreloadedSlides[safeIndex];
+        const preload = burariPreloadSlide(safeIndex);
         if (!preload) {{
           skip();
           return;
@@ -16828,7 +16864,7 @@ def _monthly_replay_state(month_key, review):
 
 
 def render_monthly_music_settings(month_key, bundle, review, expanded=True):
-    photo_items = build_monthly_replay_photo_items(bundle, limit=18)
+    photo_items = build_monthly_replay_photo_items(bundle)
     state = _monthly_replay_state(month_key, review)
     playback = state["playback"]
     url_key = state["url_key"]
@@ -17079,7 +17115,7 @@ def render_monthly_time_settings(month_key, review):
 
 
 def render_monthly_replay_section(month_key, period_label, bundle, review):
-    photo_items = build_monthly_replay_photo_items(bundle, limit=18)
+    photo_items = build_monthly_replay_photo_items(bundle)
     if not photo_items:
         st.info("この期間には再生に使える写真がありません。")
         return False
@@ -18905,6 +18941,113 @@ def _home_train_for_session():
     """Backward-compatible helper returning the selected route name and train image."""
     theme = _home_theme_for_session()
     return theme["line_name"], _home_icon_uri(theme["train_key"]) or _home_icon_uri("train")
+
+
+
+def inject_lightweight_train_loading_v324():
+    """Render a zero-network, CSS-only loading overlay that reuses the current Home train."""
+    try:
+        line_name, train_uri = _home_train_for_session()
+    except Exception:
+        line_name, train_uri = "ぶらり旅", ""
+    safe_name = html.escape(str(line_name or "ぶらり旅"))
+    # The train asset is already bundled with the app. A data URI avoids an extra HTTP
+    # request and the motion is transform-only CSS, so the loader never adds API work,
+    # polling, timers on the Python side, or a minimum artificial wait.
+    safe_uri = str(train_uri or "").replace('"', '%22').replace("'", "%27")
+    train_css = f'url("{safe_uri}")' if safe_uri else 'none'
+    st.markdown(
+        f"""
+        <style id="burari-loading-style-v324">
+        :root {{ --burari-loader-train-image: {train_css}; }}
+
+        #burari-global-loader-v324 {{
+          position:fixed; inset:0; z-index:2147483000; display:flex; align-items:center; justify-content:center;
+          background:rgba(250,253,251,.965); opacity:0; visibility:hidden; pointer-events:none;
+          transition:opacity 70ms linear, visibility 0s linear 70ms;
+        }}
+        #burari-global-loader-v324.burari-active {{
+          opacity:1; visibility:visible; pointer-events:all; transition:opacity 70ms linear;
+        }}
+        .burari-loader-stage-v324 {{
+          position:relative; width:min(88vw,460px); height:190px; display:flex; justify-content:center;
+        }}
+        .burari-loader-track-v324 {{
+          position:absolute; left:50%; top:104px; transform:translateX(-50%); width:min(84vw,430px); height:31px;
+          border-radius:12px;
+          background:
+            linear-gradient(rgba(89,104,112,.78),rgba(89,104,112,.78)) 0 5px/100% 3px no-repeat,
+            linear-gradient(rgba(89,104,112,.78),rgba(89,104,112,.78)) 0 23px/100% 3px no-repeat,
+            repeating-linear-gradient(90deg,transparent 0 12px,rgba(118,126,130,.58) 12px 17px,transparent 17px 29px);
+          opacity:.82;
+        }}
+        .burari-loader-train-v324 {{
+          position:absolute; left:50%; top:28px; margin-left:-53px; width:106px; height:82px;
+          background-image:var(--burari-loader-train-image); background-repeat:no-repeat; background-position:center; background-size:contain;
+          filter:drop-shadow(0 7px 9px rgba(35,76,49,.10));
+          animation:burari-loader-run-v324 1.65s ease-in-out infinite alternate; animation-play-state:paused;
+          will-change:transform;
+        }}
+        #burari-global-loader-v324.burari-active .burari-loader-train-v324 {{ animation-play-state:running; }}
+        .burari-loader-message-v324 {{
+          position:absolute; top:148px; left:10px; right:10px; text-align:center; font-size:14px; font-weight:800;
+          line-height:1.45; color:rgba(38,53,46,.82); letter-spacing:.01em;
+        }}
+        @keyframes burari-loader-run-v324 {{ from {{ transform:translate3d(-128px,0,0); }} to {{ transform:translate3d(128px,0,0); }} }}
+
+        /* Re-skin Streamlit's own blocking spinners. This replaces only the visual layer;
+           it never delays or changes the underlying work. */
+        div[data-testid="stSpinner"] {{
+          position:fixed !important; inset:0 !important; z-index:2147482999 !important; margin:0 !important;
+          width:100vw !important; height:100dvh !important; max-width:none !important; max-height:none !important;
+          display:flex !important; align-items:center !important; justify-content:center !important;
+          background:rgba(250,253,251,.965) !important; pointer-events:all !important;
+        }}
+        div[data-testid="stSpinner"]::after {{
+          content:""; position:absolute; left:50%; top:calc(50% + 18px); transform:translate(-50%,-50%);
+          width:min(84vw,430px); height:31px; border-radius:12px; z-index:1;
+          background:
+            linear-gradient(rgba(89,104,112,.78),rgba(89,104,112,.78)) 0 5px/100% 3px no-repeat,
+            linear-gradient(rgba(89,104,112,.78),rgba(89,104,112,.78)) 0 23px/100% 3px no-repeat,
+            repeating-linear-gradient(90deg,transparent 0 12px,rgba(118,126,130,.58) 12px 17px,transparent 17px 29px);
+          opacity:.82;
+        }}
+        div[data-testid="stSpinner"]::before {{
+          content:""; position:absolute; left:50%; top:calc(50% - 58px); margin-left:-53px; width:106px; height:82px; z-index:2;
+          background-image:var(--burari-loader-train-image); background-repeat:no-repeat; background-position:center; background-size:contain;
+          filter:drop-shadow(0 7px 9px rgba(35,76,49,.10));
+          animation:burari-loader-run-v324 1.65s ease-in-out infinite alternate; will-change:transform;
+        }}
+        div[data-testid="stSpinner"] > div {{
+          position:absolute !important; top:calc(50% + 79px) !important; left:12px !important; right:12px !important;
+          width:auto !important; margin:0 !important; justify-content:center !important; text-align:center !important;
+          color:rgba(38,53,46,.82) !important; font-size:14px !important; font-weight:800 !important; z-index:3 !important;
+        }}
+        div[data-testid="stSpinner"] svg {{ display:none !important; }}
+
+        @media(max-width:640px) {{
+          .burari-loader-stage-v324 {{ height:176px; }}
+          .burari-loader-track-v324 {{ top:96px; width:min(88vw,360px); }}
+          .burari-loader-train-v324 {{ top:24px; width:96px; height:74px; margin-left:-48px; }}
+          .burari-loader-message-v324 {{ top:140px; font-size:13px; }}
+          @keyframes burari-loader-run-v324 {{ from {{ transform:translate3d(-104px,0,0); }} to {{ transform:translate3d(104px,0,0); }} }}
+          div[data-testid="stSpinner"]::after {{ width:min(88vw,360px); }}
+          div[data-testid="stSpinner"]::before {{ width:96px; height:74px; margin-left:-48px; }}
+        }}
+        @media(prefers-reduced-motion:reduce) {{
+          .burari-loader-train-v324, div[data-testid="stSpinner"]::before {{ animation-duration:3.4s; animation-timing-function:linear; }}
+        }}
+        </style>
+        <div id="burari-global-loader-v324" aria-live="polite" aria-label="{safe_name}のローディング表示">
+          <div class="burari-loader-stage-v324">
+            <div class="burari-loader-track-v324" aria-hidden="true"></div>
+            <div class="burari-loader-train-v324" aria-hidden="true"></div>
+            <div id="burari-global-loader-message-v324" class="burari-loader-message-v324">読み込み中…</div>
+          </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 def _home_nearby_icon_for_session():
@@ -21008,6 +21151,22 @@ export default function(component) {
   let hardTimer = null;
   let best = null;
   let startedAt = 0;
+  let loaderDoc = parentElement?.ownerDocument || document;
+  try {
+    const parentDoc = window.parent && window.parent.document ? window.parent.document : null;
+    if (parentDoc && parentDoc.getElementById('burari-global-loader-v324')) loaderDoc = parentDoc;
+  } catch (_) {}
+  const showTrainLoader = (message) => {
+    const overlay = loaderDoc.getElementById('burari-global-loader-v324');
+    if (!overlay) return;
+    const msg = loaderDoc.getElementById('burari-global-loader-message-v324');
+    if (msg) msg.textContent = String(message || '読み込み中…');
+    overlay.classList.add('burari-active');
+  };
+  const hideTrainLoader = () => {
+    const overlay = loaderDoc.getElementById('burari-global-loader-v324');
+    if (overlay) overlay.classList.remove('burari-active');
+  };
 
   const setOptions = (el, rows, wanted) => {
     el.innerHTML = '';
@@ -21090,7 +21249,9 @@ export default function(component) {
     if (cancelled || !best?.coords) return;
     stop();
     const accuracy = Number(best.coords.accuracy || 0);
-    status.textContent = `現在地を取得しました（精度 ±${Math.round(accuracy)}m）。検索しています…`;
+    const doneMessage = `現在地を取得しました（精度 ±${Math.round(accuracy)}m）。検索しています…`;
+    status.textContent = doneMessage;
+    showTrainLoader(doneMessage);
     setTriggerValue('search_location', {
       token: `${Date.now()}_${Math.random().toString(36).slice(2)}`,
       latitude: Number(best.coords.latitude), longitude: Number(best.coords.longitude),
@@ -21101,6 +21262,7 @@ export default function(component) {
   };
   const fail = (message, code=0) => {
     stop(); status.textContent = String(message || '現在地を取得できませんでした。');
+    hideTrainLoader();
     setTriggerValue('search_error', {token:`${Date.now()}_${Math.random().toString(36).slice(2)}`, code:Number(code||0), message:String(message||''), filters:gather()});
     unlock();
   };
@@ -21108,6 +21270,7 @@ export default function(component) {
     if (!navigator.geolocation) { fail('この端末では位置情報を取得できません。'); return; }
     stop(); best = null; startedAt = Date.now(); button.disabled = true;
     status.textContent = '検索地点を高精度GPSで確認しています…';
+    showTrainLoader('検索地点を高精度GPSで確認しています…');
     watchId = navigator.geolocation.watchPosition((position) => {
       if (cancelled || !position?.coords) return;
       const accuracy = Number(position.coords.accuracy || Number.POSITIVE_INFINITY);
@@ -21115,6 +21278,7 @@ export default function(component) {
       if (!best || accuracy < bestAccuracy) best = position;
       const currentBest = best ? Number(best.coords?.accuracy || Number.POSITIVE_INFINITY) : Number.POSITIVE_INFINITY;
       status.textContent = Number.isFinite(currentBest) ? `検索地点を高精度GPSで確認しています… ±${Math.round(currentBest)}m` : '検索地点を高精度GPSで確認しています…';
+      showTrainLoader(status.textContent);
       if (currentBest > 0 && currentBest <= 25) { emitBest(); return; }
       if (currentBest > 0 && currentBest <= 45 && (Date.now() - startedAt) >= 1200) emitBest();
     }, (error) => {
@@ -21132,7 +21296,7 @@ export default function(component) {
     }, 10500);
   };
   button.addEventListener('click', searchNow);
-  return () => { cancelled = true; stop(); button.removeEventListener('click', searchNow); };
+  return () => { cancelled = true; stop(); hideTrainLoader(); button.removeEventListener('click', searchNow); };
 }
 """
 
@@ -21146,7 +21310,7 @@ def _get_nearby_batch_search_component_v320():
     _nearby_batch_search_component_initialized_v320 = True
     try:
         _nearby_batch_search_component_v320 = st.components.v2.component(
-            "tokyo_burari_nearby_batch_search_v320",
+            "tokyo_burari_nearby_batch_search_v324",
             html=_NEARBY_BATCH_SEARCH_HTML_V320,
             css=_NEARBY_BATCH_SEARCH_CSS_V320,
             js=_NEARBY_BATCH_SEARCH_JS_V320,
@@ -21203,6 +21367,22 @@ export default function(component) {
   if (['yes','all'].includes(String(initial.baby||''))) babyEl.value = String(initial.baby);
   if (['usable','all'].includes(String(initial.open||''))) openEl.value = String(initial.open);
   let cancelled=false, watchId=null, hardTimer=null, best=null, startedAt=0;
+  let loaderDoc = parentElement?.ownerDocument || document;
+  try {
+    const parentDoc = window.parent && window.parent.document ? window.parent.document : null;
+    if (parentDoc && parentDoc.getElementById('burari-global-loader-v324')) loaderDoc = parentDoc;
+  } catch (_) {}
+  const showTrainLoader = (message) => {
+    const overlay = loaderDoc.getElementById('burari-global-loader-v324');
+    if (!overlay) return;
+    const msg = loaderDoc.getElementById('burari-global-loader-message-v324');
+    if (msg) msg.textContent = String(message || '読み込み中…');
+    overlay.classList.add('burari-active');
+  };
+  const hideTrainLoader = () => {
+    const overlay = loaderDoc.getElementById('burari-global-loader-v324');
+    if (overlay) overlay.classList.remove('burari-active');
+  };
   const gather = () => ({
     distance: distanceEl.value || '3', fee: feeEl.value || 'free',
     wheelchair: wheelEl.value || 'all', baby: babyEl.value || 'all', open: openEl.value || 'usable'
@@ -21213,10 +21393,10 @@ export default function(component) {
   [distanceEl,feeEl,wheelEl,babyEl,openEl].forEach(el=>el.addEventListener('change',updateSummary)); updateSummary();
   const stop=()=>{if(watchId!==null&&navigator.geolocation){try{navigator.geolocation.clearWatch(watchId)}catch(_){ }watchId=null}if(hardTimer){clearTimeout(hardTimer);hardTimer=null}};
   const unlock=()=>{if(!cancelled)button.disabled=false};
-  const emitBest=()=>{if(cancelled||!best?.coords)return;stop();const accuracy=Number(best.coords.accuracy||0);status.textContent=`現在地を取得しました（精度 ±${Math.round(accuracy)}m）。トイレを検索しています…`;setTriggerValue('search_location',{token:`${Date.now()}_${Math.random().toString(36).slice(2)}`,latitude:Number(best.coords.latitude),longitude:Number(best.coords.longitude),accuracy_m:accuracy,measured_at:new Date(best.timestamp||Date.now()).toISOString(),filters:gather()});unlock()};
-  const fail=(message,code=0)=>{stop();status.textContent=String(message||'現在地を取得できませんでした。');setTriggerValue('search_error',{token:`${Date.now()}_${Math.random().toString(36).slice(2)}`,code:Number(code||0),message:String(message||''),filters:gather()});unlock()};
-  const searchNow=()=>{if(!navigator.geolocation){fail('この端末では位置情報を取得できません。');return}stop();best=null;startedAt=Date.now();button.disabled=true;status.textContent='現在地を高精度GPSで確認しています…';watchId=navigator.geolocation.watchPosition((position)=>{if(cancelled||!position?.coords)return;const accuracy=Number(position.coords.accuracy||Number.POSITIVE_INFINITY);const bestAccuracy=best?Number(best.coords?.accuracy||Number.POSITIVE_INFINITY):Number.POSITIVE_INFINITY;if(!best||accuracy<bestAccuracy)best=position;const currentBest=best?Number(best.coords?.accuracy||Number.POSITIVE_INFINITY):Number.POSITIVE_INFINITY;status.textContent=Number.isFinite(currentBest)?`現在地を高精度GPSで確認しています… ±${Math.round(currentBest)}m`:'現在地を高精度GPSで確認しています…';if(currentBest>0&&currentBest<=25){emitBest();return}if(currentBest>0&&currentBest<=45&&(Date.now()-startedAt)>=1200)emitBest()},(error)=>{const bestAccuracy=best?Number(best.coords?.accuracy||Number.POSITIVE_INFINITY):Number.POSITIVE_INFINITY;if(best&&bestAccuracy>0&&bestAccuracy<=45){emitBest();return}const code=Number(error?.code||0);const msg=code===1?'位置情報の利用が許可されていません。':code===3?'現在地の取得に時間がかかりました。':'現在地を取得できませんでした。';fail(msg,code)},{enableHighAccuracy:true,timeout:10000,maximumAge:0});hardTimer=setTimeout(()=>{const bestAccuracy=best?Number(best.coords?.accuracy||Number.POSITIVE_INFINITY):Number.POSITIVE_INFINITY;if(best&&bestAccuracy>0&&bestAccuracy<=45)emitBest();else if(best&&Number.isFinite(bestAccuracy))fail(`GPS精度が ±${Math.round(bestAccuracy)}m のため検索を中止しました。`,3);else fail('現在地を高精度で取得できませんでした。',3)},10500)};
-  button.addEventListener('click',searchNow);return()=>{cancelled=true;stop();button.removeEventListener('click',searchNow)};
+  const emitBest=()=>{if(cancelled||!best?.coords)return;stop();const accuracy=Number(best.coords.accuracy||0);status.textContent=`現在地を取得しました（精度 ±${Math.round(accuracy)}m）。トイレを検索しています…`;showTrainLoader(status.textContent);setTriggerValue('search_location',{token:`${Date.now()}_${Math.random().toString(36).slice(2)}`,latitude:Number(best.coords.latitude),longitude:Number(best.coords.longitude),accuracy_m:accuracy,measured_at:new Date(best.timestamp||Date.now()).toISOString(),filters:gather()});unlock()};
+  const fail=(message,code=0)=>{stop();status.textContent=String(message||'現在地を取得できませんでした。');hideTrainLoader();setTriggerValue('search_error',{token:`${Date.now()}_${Math.random().toString(36).slice(2)}`,code:Number(code||0),message:String(message||''),filters:gather()});unlock()};
+  const searchNow=()=>{if(!navigator.geolocation){fail('この端末では位置情報を取得できません。');return}stop();best=null;startedAt=Date.now();button.disabled=true;status.textContent='現在地を高精度GPSで確認しています…';showTrainLoader(status.textContent);watchId=navigator.geolocation.watchPosition((position)=>{if(cancelled||!position?.coords)return;const accuracy=Number(position.coords.accuracy||Number.POSITIVE_INFINITY);const bestAccuracy=best?Number(best.coords?.accuracy||Number.POSITIVE_INFINITY):Number.POSITIVE_INFINITY;if(!best||accuracy<bestAccuracy)best=position;const currentBest=best?Number(best.coords?.accuracy||Number.POSITIVE_INFINITY):Number.POSITIVE_INFINITY;status.textContent=Number.isFinite(currentBest)?`現在地を高精度GPSで確認しています… ±${Math.round(currentBest)}m`:'現在地を高精度GPSで確認しています…';showTrainLoader(status.textContent);if(currentBest>0&&currentBest<=25){emitBest();return}if(currentBest>0&&currentBest<=45&&(Date.now()-startedAt)>=1200)emitBest()},(error)=>{const bestAccuracy=best?Number(best.coords?.accuracy||Number.POSITIVE_INFINITY):Number.POSITIVE_INFINITY;if(best&&bestAccuracy>0&&bestAccuracy<=45){emitBest();return}const code=Number(error?.code||0);const msg=code===1?'位置情報の利用が許可されていません。':code===3?'現在地の取得に時間がかかりました。':'現在地を取得できませんでした。';fail(msg,code)},{enableHighAccuracy:true,timeout:10000,maximumAge:0});hardTimer=setTimeout(()=>{const bestAccuracy=best?Number(best.coords?.accuracy||Number.POSITIVE_INFINITY):Number.POSITIVE_INFINITY;if(best&&bestAccuracy>0&&bestAccuracy<=45)emitBest();else if(best&&Number.isFinite(bestAccuracy))fail(`GPS精度が ±${Math.round(bestAccuracy)}m のため検索を中止しました。`,3);else fail('現在地を高精度で取得できませんでした。',3)},10500)};
+  button.addEventListener('click',searchNow);return()=>{cancelled=true;stop();hideTrainLoader();button.removeEventListener('click',searchNow)};
 }
 """
 
@@ -21230,7 +21410,7 @@ def _get_toilet_batch_search_component_v320():
     _toilet_batch_search_component_initialized_v320 = True
     try:
         _toilet_batch_search_component_v320 = st.components.v2.component(
-            "tokyo_burari_toilet_batch_search_v320",
+            "tokyo_burari_toilet_batch_search_v324",
             html=_TOILET_BATCH_SEARCH_HTML_V320,
             css=_TOILET_BATCH_SEARCH_CSS_V320,
             js=_TOILET_BATCH_SEARCH_JS_V320,
@@ -25452,7 +25632,7 @@ def page_tag_review(embedded=False):
         """
         <div class="tag-review-hero">
           <div class="tag-review-hero-title">写真をつないで、音楽と一緒に振り返る</div>
-          <div class="tag-review-hero-sub">AI画像タグを1つ選ぶと、そのタグの写真を月をまたいで時系列に集めます。最大18枚をつなぎ、月別振り返りと同じプレイヤーで音楽と一緒に再生できます。</div>
+          <div class="tag-review-hero-sub">AI画像タグを1つ選ぶと、そのタグの写真を月をまたいで時系列にすべて集めます。写真枚数に上限を設けず、月別振り返りと同じプレイヤーで音楽と一緒に再生できます。</div>
         </div>
         <style>
           .tag-review-hero {
@@ -32175,6 +32355,11 @@ consume_pending_emotion_query()
 # before any visible UI is emitted.
 sync_browser_history()
 render_pending_emotion_query_cleanup()
+
+# v324: one CSS-only loading layer reuses the Home train and long rails. It performs
+# no network request and has no artificial minimum display time; it exists only while
+# real work is already blocking the UI.
+inject_lightweight_train_loading_v324()
 
 # v271: keep one lightweight browser GPS watcher alive across app pages. It records
 # accepted 10m points locally immediately and cloud-syncs only in coarse batches.
