@@ -32,7 +32,7 @@ import streamlit as st
 # Freshly generated update: 2026-08-31 23:49 JST
 GENERATED_UPDATE_JST = "2026-09-08T18:48:00+09:00"
 
-APP_BUILD = "v335"
+APP_BUILD = "v336"
 # v331: multi-tag photo selections can go straight to a music replay and be saved as a stable in-app movie snapshot.
 # v330: tag-review movies support one or multiple AI tags; selection is action-only.
 
@@ -16689,6 +16689,14 @@ def render_monthly_replay_player(period_label, review, playback, photo_items):
     <script>
       const burariSlides = {payload};
       const burariVideoId = {json.dumps(video_id)};
+      const burariMarkUserActivity = () => {{
+        const at = Date.now();
+        try {{ localStorage.setItem('tokyo_burari_last_user_activity_v336', String(at)); }} catch (_) {{}}
+        try {{ window.parent.postMessage({{type:'burari-user-activity-v336', at}}, '*'); }} catch (_) {{}}
+      }};
+      document.addEventListener('pointerdown', burariMarkUserActivity, {{capture:true, passive:true}});
+      document.addEventListener('touchstart', burariMarkUserActivity, {{capture:true, passive:true}});
+      document.addEventListener('keydown', burariMarkUserActivity, true);
       const burariStartSeconds = {start_seconds};
       const burariEndSeconds = {end_seconds};
       const burariDisplayMs = {display_ms};
@@ -21492,6 +21500,15 @@ _NEARBY_BATCH_SEARCH_JS_V320 = r"""
 
 export default function(component) {
   const { parentElement, setTriggerValue, data } = component;
+  const markUserActivity = () => {
+    const at = Date.now();
+    try { localStorage.setItem('tokyo_burari_last_user_activity_v336', String(at)); } catch (_) {}
+    try { window.parent.postMessage({type:'burari-user-activity-v336', at}, '*'); } catch (_) {}
+  };
+  parentElement?.addEventListener('pointerdown', markUserActivity, {capture:true, passive:true});
+  parentElement?.addEventListener('touchstart', markUserActivity, {capture:true, passive:true});
+  parentElement?.addEventListener('keydown', markUserActivity, true);
+  parentElement?.addEventListener('wheel', markUserActivity, {capture:true, passive:true});
   const kindArea = parentElement.querySelector('#nb-kind-area');
   const subArea = parentElement.querySelector('#nb-sub-area');
   const radiusArea = parentElement.querySelector('#nb-radius-area');
@@ -21604,7 +21621,7 @@ export default function(component) {
   const fail=(message,code=0)=>{stop();status.textContent=String(message||'現在地を取得できませんでした。');setTriggerValue('search_error',{token:`${Date.now()}_${Math.random().toString(36).slice(2)}`,code:Number(code||0),message:String(message||''),filters:gather()});unlock()};
   const searchNow=()=>{if(!navigator.geolocation){fail('この端末では位置情報を取得できません。');return}stop();best=null;startedAt=Date.now();button.disabled=true;status.textContent='検索地点を高精度GPSで確認しています…';watchId=navigator.geolocation.watchPosition((position)=>{if(cancelled||!position?.coords)return;const accuracy=Number(position.coords.accuracy||Number.POSITIVE_INFINITY);const bestAccuracy=best?Number(best.coords?.accuracy||Number.POSITIVE_INFINITY):Number.POSITIVE_INFINITY;if(!best||accuracy<bestAccuracy)best=position;const currentBest=best?Number(best.coords?.accuracy||Number.POSITIVE_INFINITY):Number.POSITIVE_INFINITY;status.textContent=Number.isFinite(currentBest)?`検索地点を高精度GPSで確認しています… ±${Math.round(currentBest)}m`:'検索地点を高精度GPSで確認しています…';if(currentBest>0&&currentBest<=25){emitBest();return}if(currentBest>0&&currentBest<=45&&(Date.now()-startedAt)>=1200)emitBest()},(error)=>{const bestAccuracy=best?Number(best.coords?.accuracy||Number.POSITIVE_INFINITY):Number.POSITIVE_INFINITY;if(best&&bestAccuracy>0&&bestAccuracy<=45){emitBest();return}const code=Number(error?.code||0);const msg=code===1?'位置情報の利用が許可されていません。':code===3?'現在地の取得に時間がかかりました。':'現在地を取得できませんでした。';fail(msg,code)},{enableHighAccuracy:true,timeout:10000,maximumAge:0});hardTimer=setTimeout(()=>{const bestAccuracy=best?Number(best.coords?.accuracy||Number.POSITIVE_INFINITY):Number.POSITIVE_INFINITY;if(best&&bestAccuracy>0&&bestAccuracy<=45)emitBest();else if(best&&Number.isFinite(bestAccuracy))fail(`GPS精度が ±${Math.round(bestAccuracy)}m のため検索を中止しました。`,3);else fail('現在地を高精度で取得できませんでした。',3)},10500)};
   button.addEventListener('click',searchNow);
-  return()=>{cancelled=true;stop();button.removeEventListener('click',searchNow)};
+  return()=>{cancelled=true;stop();button.removeEventListener('click',searchNow);try{parentElement?.removeEventListener('pointerdown',markUserActivity,{capture:true,passive:true})}catch(_){}try{parentElement?.removeEventListener('touchstart',markUserActivity,{capture:true,passive:true})}catch(_){}try{parentElement?.removeEventListener('keydown',markUserActivity,true)}catch(_){}try{parentElement?.removeEventListener('wheel',markUserActivity,{capture:true,passive:true})}catch(_){}};
 }
 """
 
@@ -21697,6 +21714,15 @@ _TOILET_BATCH_SEARCH_JS_V320 = r"""
 
 export default function(component) {
   const { parentElement, setTriggerValue, data } = component;
+  const markUserActivity = () => {
+    const at = Date.now();
+    try { localStorage.setItem('tokyo_burari_last_user_activity_v336', String(at)); } catch (_) {}
+    try { window.parent.postMessage({type:'burari-user-activity-v336', at}, '*'); } catch (_) {}
+  };
+  parentElement?.addEventListener('pointerdown', markUserActivity, {capture:true, passive:true});
+  parentElement?.addEventListener('touchstart', markUserActivity, {capture:true, passive:true});
+  parentElement?.addEventListener('keydown', markUserActivity, true);
+  parentElement?.addEventListener('wheel', markUserActivity, {capture:true, passive:true});
   const distanceArea=parentElement.querySelector('#tb-distance-area'), feeArea=parentElement.querySelector('#tb-fee-area'), wheelArea=parentElement.querySelector('#tb-wheel-area'), babyArea=parentElement.querySelector('#tb-baby-area'), openArea=parentElement.querySelector('#tb-open-area');
   const summary=parentElement.querySelector('#tb-summary'), button=parentElement.querySelector('#tb-search'), status=parentElement.querySelector('#tb-status');
   if(!distanceArea||!feeArea||!wheelArea||!babyArea||!openArea||!summary||!button||!status)return;
@@ -21724,7 +21750,7 @@ export default function(component) {
   const emitBest=()=>{if(cancelled||!best?.coords)return;stop();const accuracy=Number(best.coords.accuracy||0);status.textContent=`現在地を取得しました（精度 ±${Math.round(accuracy)}m）。トイレを検索しています…`;hideTrainLoader();setTriggerValue('search_location',{token:`${Date.now()}_${Math.random().toString(36).slice(2)}`,latitude:Number(best.coords.latitude),longitude:Number(best.coords.longitude),accuracy_m:accuracy,measured_at:new Date(best.timestamp||Date.now()).toISOString(),filters:gather()});unlock()};
   const fail=(message,code=0)=>{stop();status.textContent=String(message||'現在地を取得できませんでした。');hideTrainLoader();setTriggerValue('search_error',{token:`${Date.now()}_${Math.random().toString(36).slice(2)}`,code:Number(code||0),message:String(message||''),filters:gather()});unlock()};
   const searchNow=()=>{if(!navigator.geolocation){fail('この端末では位置情報を取得できません。');return}stop();best=null;startedAt=Date.now();button.disabled=true;status.textContent='現在地を高精度GPSで確認しています…';showTrainLoader(status.textContent);watchId=navigator.geolocation.watchPosition((position)=>{if(cancelled||!position?.coords)return;const accuracy=Number(position.coords.accuracy||Number.POSITIVE_INFINITY);const bestAccuracy=best?Number(best.coords?.accuracy||Number.POSITIVE_INFINITY):Number.POSITIVE_INFINITY;if(!best||accuracy<bestAccuracy)best=position;const currentBest=best?Number(best.coords?.accuracy||Number.POSITIVE_INFINITY):Number.POSITIVE_INFINITY;status.textContent=Number.isFinite(currentBest)?`現在地を高精度GPSで確認しています… ±${Math.round(currentBest)}m`:'現在地を高精度GPSで確認しています…';showTrainLoader(status.textContent);if(currentBest>0&&currentBest<=25){emitBest();return}if(currentBest>0&&currentBest<=45&&(Date.now()-startedAt)>=1200)emitBest()},(error)=>{const bestAccuracy=best?Number(best.coords?.accuracy||Number.POSITIVE_INFINITY):Number.POSITIVE_INFINITY;if(best&&bestAccuracy>0&&bestAccuracy<=45){emitBest();return}const code=Number(error?.code||0);const msg=code===1?'位置情報の利用が許可されていません。':code===3?'現在地の取得に時間がかかりました。':'現在地を取得できませんでした。';fail(msg,code)},{enableHighAccuracy:true,timeout:10000,maximumAge:0});hardTimer=setTimeout(()=>{const bestAccuracy=best?Number(best.coords?.accuracy||Number.POSITIVE_INFINITY):Number.POSITIVE_INFINITY;if(best&&bestAccuracy>0&&bestAccuracy<=45)emitBest();else if(best&&Number.isFinite(bestAccuracy))fail(`GPS精度が ±${Math.round(bestAccuracy)}m のため検索を中止しました。`,3);else fail('現在地を高精度で取得できませんでした。',3)},10500)};
-  button.addEventListener('click',searchNow);return()=>{cancelled=true;stop();hideTrainLoader();button.removeEventListener('click',searchNow)};
+  button.addEventListener('click',searchNow);return()=>{cancelled=true;stop();hideTrainLoader();button.removeEventListener('click',searchNow);try{parentElement?.removeEventListener('pointerdown',markUserActivity,{capture:true,passive:true})}catch(_){}try{parentElement?.removeEventListener('touchstart',markUserActivity,{capture:true,passive:true})}catch(_){}try{parentElement?.removeEventListener('keydown',markUserActivity,true)}catch(_){}try{parentElement?.removeEventListener('wheel',markUserActivity,{capture:true,passive:true})}catch(_){}};
 }
 """
 
@@ -27855,20 +27881,88 @@ export default function(component) {
   const batchMax = Math.max(30, Number(data?.batch_max_points || 180));
   const allowFlush = Boolean(data?.allow_flush);
   const forceFlush = Boolean(data?.force_flush);
-  // v332: never let background GPS cloud sync interrupt a person who is actively
-  // using the app. GPS recording itself continues locally; only the Streamlit-bound
-  // cloud flush is deferred until the app has stayed hidden/backgrounded.
-  const backgroundOnlyFlush = Boolean(data?.background_only_flush);
+  // v336: user-activity guard. Any confirmed tap/touch/key/wheel action postpones the
+  // Streamlit-bound GPS cloud flush for five minutes. GPS recording itself continues
+  // locally during the guard window. After five minutes of no interaction, syncing is
+  // allowed even while the app remains open. This avoids the old WebView visibility
+  // heuristic that could misclassify YouTube playback and recreate the page as white.
+  const activityGuardEnabled = Boolean(data?.activity_guard_enabled);
+  const activityGraceMs = Math.max(60000, Number(data?.activity_grace_ms || 300000));
+  const activityKey = 'tokyo_burari_last_user_activity_v336';
   const ackMs = Number(data?.ack_ms || 0);
   let cancelled = false;
   let watchId = null;
   let flushTimer = null;
-  let hiddenFlushTimer = null;
   let nativeSentToken = '';
   let nativeSentAt = 0;
-  const uiIsVisible = () => {
-    try { return document.visibilityState !== 'hidden' && !document.hidden; } catch (_) { return true; }
+  let lastUserActivityMemory = Date.now();
+  const activityBindings = [];
+
+  const readLastUserActivity = () => {
+    let stored = 0;
+    try { stored = Number(localStorage.getItem(activityKey) || 0); } catch (_) {}
+    return Math.max(Number(lastUserActivityMemory || 0), Number.isFinite(stored) ? stored : 0);
   };
+  const markUserActivity = (at=Date.now()) => {
+    const value = Number(at || Date.now());
+    const safeValue = Number.isFinite(value) && value > 0 ? value : Date.now();
+    lastUserActivityMemory = Math.max(lastUserActivityMemory, safeValue);
+    try { localStorage.setItem(activityKey, String(lastUserActivityMemory)); } catch (_) {}
+  };
+  const userRecentlyActive = () => {
+    if (!activityGuardEnabled) return false;
+    const last = readLastUserActivity();
+    return last > 0 && (Date.now() - last) < activityGraceMs;
+  };
+  const bindActivity = (target, type, options) => {
+    if (!target || typeof target.addEventListener !== 'function') return;
+    try {
+      target.addEventListener(type, markUserActivity, options);
+      activityBindings.push([target, type, options]);
+    } catch (_) {}
+  };
+  const installActivityListeners = () => {
+    const seen = new Set();
+    const bindTarget = (target) => {
+      if (!target || seen.has(target)) return;
+      seen.add(target);
+      bindActivity(target, 'pointerdown', {capture:true, passive:true});
+      bindActivity(target, 'touchstart', {capture:true, passive:true});
+      bindActivity(target, 'mousedown', {capture:true, passive:true});
+      bindActivity(target, 'keydown', true);
+      bindActivity(target, 'wheel', {capture:true, passive:true});
+    };
+    bindTarget(window);
+    bindTarget(document);
+    // st.components can be isolated, so also listen on the parent/top page whenever the
+    // browser permits it. Failure is harmless; page reruns and component-local activity
+    // still refresh the same five-minute timestamp.
+    try {
+      if (window.parent && window.parent !== window) {
+        bindTarget(window.parent);
+        bindTarget(window.parent.document);
+      }
+    } catch (_) {}
+    try {
+      if (window.top && window.top !== window && window.top !== window.parent) {
+        bindTarget(window.top);
+        bindTarget(window.top.document);
+      }
+    } catch (_) {}
+  };
+  const onActivityMessage = (event) => {
+    try {
+      const payload = event?.data;
+      if (!payload || payload.type !== 'burari-user-activity-v336') return;
+      markUserActivity(Number(payload.at || Date.now()));
+    } catch (_) {}
+  };
+  // Treat mounting/refreshing the visible app as activity, then extend the window on each
+  // real interaction. If the user does nothing for five minutes, the guard naturally expires.
+  markUserActivity();
+  installActivityListeners();
+  window.addEventListener('message', onActivityMessage);
+  try { if (window.parent && window.parent !== window) window.parent.addEventListener('message', onActivityMessage); } catch (_) {}
 
   const safeParse = (raw, fallback) => {
     try { const value = JSON.parse(String(raw || '')); return value ?? fallback; } catch (_) { return fallback; }
@@ -27975,7 +28069,7 @@ export default function(component) {
     if (cancelled || !allowFlush || !nativeBridgeAvailable || nativeFlushBusy) return;
     // A component trigger causes a Streamlit app rerun. While the UI is visible,
     // never emit that trigger; leave the native SQLite rows pending instead.
-    if (backgroundOnlyFlush && uiIsVisible()) return;
+    if (userRecentlyActive()) return;
     nativeFlushBusy = true;
     try {
       const rows = await readNativeRows();
@@ -28092,7 +28186,7 @@ export default function(component) {
 
   const maybeFlush = (forced=false) => {
     if (cancelled || !allowFlush || nativeBridgeAvailable) return;
-    if (backgroundOnlyFlush && uiIsVisible()) return;
+    if (userRecentlyActive()) return;
     adoptNativePendingRows();
     pending = readPending();
     if (!pending.length) return;
@@ -28164,42 +28258,22 @@ export default function(component) {
 
   if (!nativeMode) startWatch();
 
-  const scheduleHiddenFlush = () => {
-    if (!allowFlush) return;
-    if (hiddenFlushTimer) clearTimeout(hiddenFlushTimer);
-    // Wait until the app has remained in the background for a short period. This
-    // avoids a rerun during quick task switching or while the user is still touching UI.
-    hiddenFlushTimer = setTimeout(() => {
-      hiddenFlushTimer = null;
-      if (cancelled || !document.hidden) return;
-      if (nativeBridgeAvailable) {
-        void maybeFlushNative(true);
-      } else {
-        maybeFlush(true);
-      }
-    }, 2200);
-  };
-
   if (allowFlush) {
     if (nativeBridgeAvailable) {
+      // Check cheaply every few seconds. The five-minute activity guard above prevents
+      // any Streamlit trigger while the user is active; once idle long enough, the next
+      // poll may sync pending points even though the app is still open.
       flushTimer = setInterval(() => { void maybeFlushNative(false); }, 3000);
-      if (!backgroundOnlyFlush) setTimeout(() => { void maybeFlushNative(false); }, 600);
+      setTimeout(() => { void maybeFlushNative(Boolean(forceFlush)); }, 600);
     } else {
       const flushPollMs = nativeMode ? 3000 : 30000;
       flushTimer = setInterval(() => maybeFlush(false), flushPollMs);
-      if (!backgroundOnlyFlush) setTimeout(() => maybeFlush(Boolean(forceFlush)), nativeMode ? 1200 : 300);
+      setTimeout(() => maybeFlush(Boolean(forceFlush)), nativeMode ? 1200 : 300);
     }
-    if (backgroundOnlyFlush && document.hidden) scheduleHiddenFlush();
   }
 
   const onVisibility = () => {
     if (!nativeMode && !document.hidden) startWatch();
-    if (document.hidden) {
-      scheduleHiddenFlush();
-    } else if (hiddenFlushTimer) {
-      clearTimeout(hiddenFlushTimer);
-      hiddenFlushTimer = null;
-    }
   };
   document.addEventListener('visibilitychange', onVisibility);
 
@@ -28207,10 +28281,14 @@ export default function(component) {
     cancelled = true;
     document.removeEventListener('visibilitychange', onVisibility);
     window.removeEventListener('message', onRelayMessage);
+    window.removeEventListener('message', onActivityMessage);
+    try { if (window.parent && window.parent !== window) window.parent.removeEventListener('message', onActivityMessage); } catch (_) {}
+    for (const [target, type, options] of activityBindings) {
+      try { target.removeEventListener(type, markUserActivity, options); } catch (_) {}
+    }
     for (const entry of relayPending.values()) { try { clearTimeout(entry.timer); entry.resolve(null); } catch (_) {} }
     relayPending.clear();
     if (flushTimer) clearInterval(flushTimer);
-    if (hiddenFlushTimer) clearTimeout(hiddenFlushTimer);
     if (watchId !== null) {
       try { navigator.geolocation.clearWatch(watchId); } catch (_) {}
       watchId = null;
@@ -28421,13 +28499,15 @@ def run_always_on_gps_tracker_v271():
     if component is None:
         return
     page = str(st.session_state.get("main_page") or "home")
-    # v332: high-accuracy GPS recording remains active, but its cloud sync must never
-    # interrupt visible smartphone operation. Camera remains a hard no-flush page; on
-    # all other pages the JS component may flush only after the app is backgrounded.
-    # Nearby/toilet search use their own fresh-GPS request and do not depend on this flush.
+    # v336: high-accuracy GPS recording remains active, but the cloud-sync trigger is
+    # suppressed for five minutes after the latest confirmed user interaction. After
+    # five minutes of inactivity it may sync even while the app stays open. Camera remains
+    # a hard no-flush page. Nearby/toilet search use their own fresh-GPS request and are
+    # independent of this always-on tracking sync.
     allow_flush = page != "camera"
     force_flush = page == "review_project"
-    background_only_flush = True
+    activity_guard_enabled = True
+    activity_grace_ms = 5 * 60 * 1000
     ack_key = f"_gps_track_ack_v271_{current_family_key()}_{current_member_key()}"
     native_mode = str(_query_param_scalar("native_android") or "").strip() == "1"
     native_bridge_token = str(_query_param_scalar("native_bridge_token") or "").strip()[:200] if native_mode else ""
@@ -28444,7 +28524,8 @@ def run_always_on_gps_tracker_v271():
             "batch_max_points": GPS_TRACK_BATCH_MAX_POINTS,
             "allow_flush": allow_flush,
             "force_flush": force_flush,
-            "background_only_flush": background_only_flush,
+            "activity_guard_enabled": activity_guard_enabled,
+            "activity_grace_ms": activity_grace_ms,
             "ack_ms": int(st.session_state.get(ack_key) or 0),
         },
         key=f"always_on_gps_tracker_v279_{current_family_key()}_{current_member_key()}",
@@ -32928,7 +33009,7 @@ consume_pending_emotion_query()
 sync_browser_history()
 render_pending_emotion_query_cleanup()
 
-# v327: loading remains lightweight; settings are action-only forms, and Near Me restores the v320 client UI. It performs
+# v336: loading remains lightweight; settings are action-only forms, Near Me keeps the v320 client UI, and GPS cloud-sync triggers are guarded for 5 minutes after user activity. It performs
 # no network request and has no artificial minimum display time; it exists only while
 # real work is already blocking the UI.
 inject_lightweight_train_loading_v326()
