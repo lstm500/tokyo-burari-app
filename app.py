@@ -32,7 +32,7 @@ import streamlit as st
 # Freshly generated update: 2026-08-31 23:49 JST
 GENERATED_UPDATE_JST = "2026-09-08T18:48:00+09:00"
 
-APP_BUILD = "v314"
+APP_BUILD = "v319"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -806,7 +806,7 @@ VIDEO_PROCESSING_MAX_SECONDS = 75
 # conservative margin because browser/device bitrates vary.
 VIDEO_RECORDING_RESERVE_BYTES = 36 * 1024 * 1024
 VIDEO_MAX_BYTES = 100 * 1024 * 1024
-VIDEO_AI_MAX_SELECTIONS = 6
+VIDEO_AI_MAX_SELECTIONS = 6  # いい瞬間の切り抜き枚数
 # Good Moments sampling is duration-aware and capped at 20 candidate frames:
 #   <=10 sec -> every 0.5 sec
 #   15 sec   -> every 0.75 sec
@@ -1523,6 +1523,8 @@ export default function(component) {
   let stream = null;
   let cameraMode = 'photo';
   let cameraFacing = 'environment';
+  // v313: remember the actual lens so photo/video use the same physical camera.
+  let preferredCameraDeviceId = null;
   try {
     const savedFacing = String(localStorage.getItem('tokyo_burari_camera_facing_v226') || '');
     if (savedFacing === 'user' || savedFacing === 'environment') cameraFacing = savedFacing;
@@ -1645,23 +1647,54 @@ export default function(component) {
     try { localStorage.setItem('tokyo_burari_camera_facing_v226', cameraFacing); } catch (_) {}
   };
   const preferredVideoConstraints = () => {
-    // v255: prioritize frame rate over resolution because recorded video is mainly
-    // used as the source for Good Moments still extraction. Request up to 60fps at
-    // a lighter 720p-class portrait stream. These are only ideal/max constraints:
-    // Android/Chrome can fall back to a lower camera-supported frame rate or size.
-    // No custom aspectRatio is imposed; the phone camera selects a native mode.
-    if (cameraMode === 'video') {
-      return {
-        facingMode: { ideal: cameraFacing },
-        width: { ideal: 720, max: 1080 },
-        height: { ideal: 1280, max: 1920 },
-        frameRate: { ideal: 60, max: 60 }
-      };
-    }
-    return {
+    // v314 keeps photo/video on the same physical camera geometry. Frame-rate is
+    // raised only after the stream opens so Android is less likely to switch lenses
+    // or change the field of view while satisfying the initial getUserMedia request.
+    const constraints = {
       facingMode: { ideal: cameraFacing },
       height: { ideal: 1600 }
     };
+    if (preferredCameraDeviceId) {
+      constraints.deviceId = { exact: preferredCameraDeviceId };
+      delete constraints.facingMode;
+    }
+    return constraints;
+  };
+
+  const applyHighVideoFrameRate = async () => {
+    if (!stream || cameraMode !== 'video') return 0;
+    try {
+      const track = stream.getVideoTracks && stream.getVideoTracks()[0];
+      if (!track || !track.applyConstraints) return 0;
+      let capMax = 0;
+      try {
+        const caps = track.getCapabilities ? (track.getCapabilities() || {}) : {};
+        const frameCaps = caps.frameRate;
+        if (frameCaps && Number.isFinite(Number(frameCaps.max))) capMax = Number(frameCaps.max);
+      } catch (_) {}
+
+      // Prefer 90fps when the camera/browser reports support; otherwise use 60fps.
+      // If capabilities are not exposed, 60fps is the safest high-frame-rate request.
+      const targets = [];
+      if (capMax >= 89) targets.push(90);
+      if (capMax >= 59 || !capMax) targets.push(60);
+      if (capMax > 0 && capMax < 59) targets.push(Math.max(30, Math.floor(capMax)));
+      if (!targets.length) targets.push(60);
+
+      for (const target of [...new Set(targets)]) {
+        try {
+          await track.applyConstraints({ frameRate: { ideal: target, max: target } });
+          const settings = track.getSettings ? (track.getSettings() || {}) : {};
+          const actual = Number(settings.frameRate || 0);
+          if (actual >= 50 || target < 60) return actual || target;
+        } catch (_) {}
+      }
+      const settings = track.getSettings ? (track.getSettings() || {}) : {};
+      return Number(settings.frameRate || 0);
+    } catch (err) {
+      console.warn('high frame rate unavailable', err);
+      return 0;
+    }
   };
 
   const applyWidestAvailableZoom = async () => {
@@ -1991,14 +2024,12 @@ export default function(component) {
   const errorMessage = (err, mode = cameraMode) => {
     const name = (err && err.name) ? err.name : '';
     if (name === 'NotAllowedError' || name === 'PermissionDeniedError') {
-      return mode === 'video'
-        ? 'カメラまたはマイクが許可されていません。ブラウザのサイト設定でカメラとマイクを「許可」にしてください。'
-        : 'カメラが許可されていません。ブラウザのサイト設定でカメラを「許可」にして、このページを再読み込みしてください。';
+      return 'カメラが許可されていません。ブラウザのサイト設定でカメラを「許可」にして、このページを再読み込みしてください。';
     }
     if (name === 'NotFoundError' || name === 'DevicesNotFoundError') return '利用できるカメラが見つかりませんでした。';
     if (name === 'NotReadableError' || name === 'TrackStartError') return 'カメラを開けませんでした。ほかのアプリがカメラを使っていないか確認してください。';
     if (name === 'SecurityError') return 'ブラウザのセキュリティ設定でカメラがブロックされています。';
-    return 'カメラを開けませんでした。ブラウザのカメラ・マイク権限を確認してください。';
+    return 'カメラを開けませんでした。ブラウザのカメラ権限を確認してください。';
   };
 
   const startCamera = async (mode = 'photo') => {
@@ -2022,29 +2053,41 @@ export default function(component) {
       return;
     }
 
-    setStatus(cameraMode === 'video' ? 'カメラとマイクの使用を許可してください…' : 'カメラの使用を許可してください…');
+    setStatus('カメラの使用を確認しています…');
     try {
-      stream = await navigator.mediaDevices.getUserMedia({
-        // v255: keep audio capture simple while recording at high frame rate.
-        // Avoid real-time voice DSP so camera/encoder resources get priority.
-        audio: cameraMode === 'video' ? true : false,
-        video: preferredVideoConstraints()
-      });
+      // v313: microphone is intentionally never requested. Photo and video use
+      // exactly the same camera request, the same portrait normalization and the
+      // same minimum hardware zoom so their field of view matches.
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          audio: false,
+          video: preferredVideoConstraints()
+        });
+      } catch (firstErr) {
+        // If a remembered device id is no longer valid, fall back to the requested
+        // facing camera once and remember the newly opened physical lens below.
+        if (!preferredCameraDeviceId) throw firstErr;
+        preferredCameraDeviceId = null;
+        stream = await navigator.mediaDevices.getUserMedia({
+          audio: false,
+          video: preferredVideoConstraints()
+        });
+      }
       video.srcObject = stream;
       await video.play();
-      // v255: do not apply any additional video constraints after the stream opens.
-      // Reconfiguring stabilization/zoom can cause a camera pipeline restart on some
-      // Android devices. Photo mode keeps its existing helpers.
-      if (cameraMode === 'photo') {
-        await applyNativePortraitConstraint();
-        await applyWidestAvailableZoom();
-      }
+      await applyNativePortraitConstraint();
+      // v314: request 90fps where supported, otherwise 60fps. Re-apply minimum
+      // hardware zoom afterwards so the video keeps the same field of view as photo.
+      const appliedVideoFps = await applyHighVideoFrameRate();
+      await applyWidestAvailableZoom();
       syncNativeCameraFrame();
       try {
         const cameraTrack = stream.getVideoTracks && stream.getVideoTracks()[0];
         const settings = (cameraTrack && cameraTrack.getSettings) ? cameraTrack.getSettings() : {};
         const actualFacing = String(settings?.facingMode || '');
         if (actualFacing === 'user' || actualFacing === 'environment') cameraFacing = actualFacing;
+        const actualDeviceId = String(settings?.deviceId || '');
+        if (actualDeviceId) preferredCameraDeviceId = actualDeviceId;
       } catch (_) {}
       persistCameraFacing();
       syncOrientationUi();
@@ -2060,7 +2103,12 @@ export default function(component) {
         localStorage.setItem('tokyo_burari_last_camera_open_v1', String(openedAt));
         localStorage.setItem('tokyo_burari_last_camera_mode_v1', cameraMode === 'video' ? 'video' : 'photo');
       } catch (_) {}
-      setStatus(cameraMode === 'video' ? `動画は最大60秒です。音声も一緒に記録します。${cameraFacing === 'user' ? ' 内側カメラ使用中。' : ''}` : (cameraFacing === 'user' ? '内側カメラ使用中です。' : ''));
+      if (cameraMode === 'video') {
+        const fpsLabel = Number(appliedVideoFps || 0) >= 80 ? '90fps' : (Number(appliedVideoFps || 0) >= 50 ? '60fps' : '高フレームレート');
+        setStatus(`動画は最大60秒です。${fpsLabel}で撮影します。${cameraFacing === 'user' ? ' 内側カメラ使用中。' : ''}`);
+      } else {
+        setStatus(cameraFacing === 'user' ? '内側カメラ使用中です。' : '');
+      }
     } catch (err) {
       console.error(err);
       stopStream();
@@ -2496,11 +2544,16 @@ export default function(component) {
     }
   };
 
-  const chooseRecorderMimeType = () => {
-    const candidates = [
+  const chooseRecorderMimeType = (hasAudio = true) => {
+    const candidates = hasAudio ? [
       'video/mp4;codecs=h264,aac',
       'video/mp4',
       'video/webm;codecs=vp8,opus',
+      'video/webm'
+    ] : [
+      'video/mp4;codecs=h264',
+      'video/mp4',
+      'video/webm;codecs=vp8',
       'video/webm'
     ];
     for (const type of candidates) {
@@ -2520,12 +2573,7 @@ export default function(component) {
 
   const startVideoRecording = async () => {
     if (!stream || !video.videoWidth || !video.videoHeight) return;
-    if (!stream.getAudioTracks().length) {
-      const message = '動画用のマイクを利用できません。カメラとマイクの権限を確認してください。';
-      setStatus(message);
-      setTriggerValue('camera_error', { name: 'MicrophoneUnavailable', message });
-      return;
-    }
+    const hasAudio = !!(stream.getAudioTracks && stream.getAudioTracks().some((track) => track.readyState === 'live'));
 
     recordedChunks = [];
     recordingCandidateFrames = [];
@@ -2533,24 +2581,27 @@ export default function(component) {
     recordingCancelled = false;
     recordingCapturedAt = new Date().toISOString();
     recordingLocationPromise = getLocationAtCapture();
-    const mimeType = chooseRecorderMimeType();
+    const mimeType = chooseRecorderMimeType(hasAudio);
     const captureTrack = stream.getVideoTracks && stream.getVideoTracks()[0];
     const captureSettings = (captureTrack && captureTrack.getSettings) ? captureTrack.getSettings() : {};
     const captureWidth = Math.max(0, Number(captureSettings?.width || video.videoWidth || 0));
     const captureHeight = Math.max(0, Number(captureSettings?.height || video.videoHeight || 0));
     const captureFrameRate = Math.max(0, Number(captureSettings?.frameRate || 0));
     const capturePixels = captureWidth * captureHeight;
-    // v255: a little more bitrate for 50-60fps so extracted stills retain detail,
-    // while the lighter 720p-class stream keeps encoder load below 1080p/60.
+    // v314: keep enough bitrate for 60/90fps so motion does not become blocky.
+    // The source camera frame rate still depends on the hardware/browser capability.
+    const veryHighFps = captureFrameRate >= 80;
     const highFps = captureFrameRate >= 50;
-    const requestedVideoBitrate = highFps
-      ? (capturePixels >= 800000 ? 4500000 : 3600000)
-      : (capturePixels >= 1700000 ? 3600000 : (capturePixels >= 800000 ? 2800000 : 2000000));
+    const requestedVideoBitrate = veryHighFps
+      ? (capturePixels >= 800000 ? 7000000 : 5600000)
+      : (highFps
+          ? (capturePixels >= 800000 ? 5200000 : 4200000)
+          : (capturePixels >= 1700000 ? 3600000 : (capturePixels >= 800000 ? 2800000 : 2000000)));
     try {
       const options = {
-        videoBitsPerSecond: requestedVideoBitrate,
-        audioBitsPerSecond: 96000
+        videoBitsPerSecond: requestedVideoBitrate
       };
+      if (hasAudio) options.audioBitsPerSecond = 96000;
       if (mimeType) options.mimeType = mimeType;
       try {
         mediaRecorder = new MediaRecorder(stream, options);
@@ -2693,7 +2744,7 @@ export default function(component) {
       // v139 quality-first recording: do not generate JPEG candidates while the
       // MediaRecorder encoder is running. Candidate extraction starts after stop.
       recordingMaxTimer = setTimeout(stopVideoRecording, VIDEO_RECORD_MAX_SECONDS * 1000);
-      setStatus('');
+      setStatus(hasAudio ? '' : '音声なしで動画を録画しています。');
     } catch (err) {
       console.error(err);
       setRecordingUi(false);
@@ -3021,6 +3072,7 @@ export default function(component) {
   const switchCameraFacing = () => {
     if (mediaRecorder && mediaRecorder.state === 'recording') return;
     cameraFacing = cameraFacing === 'user' ? 'environment' : 'user';
+    preferredCameraDeviceId = null;
     persistCameraFacing();
     syncFacingUi();
     setStatus(cameraFacing === 'user' ? '内側カメラに切り替えています…' : '外側カメラに切り替えています…');
@@ -5167,23 +5219,22 @@ def sync_pending_tags_from_browser_v166():
 # ============================================================
 # Browser history bridge
 # ============================================================
-# Streamlit session-state navigation does not create native Android/PWA back-stack
-# entries. This bridge keeps one protected app entry above a Home base and converts
-# every physical Back press into exactly one app-hierarchy step.
+# Streamlit session-state navigation does not create browser history entries by
+# itself. This small component mirrors each app screen into window.history so
+# Chrome/Safari back and forward buttons move between app screens first.
 _HISTORY_JS = r"""
 export default function(component) {
   const { data, setTriggerValue } = component;
   const validPages = new Set(['home', 'camera', 'videos', 'moments', 'diary', 'review', 'review_map', 'review_project', 'review_monthly', 'review_tag', 'review_history', 'nearby', 'toilets', 'settings']);
   const marker = '__tokyo_burari_page__';
-  const nodeMarker = '__tokyo_burari_node_v314__';
-  const bridgeMarker = '__tokyo_burari_history_bridge_v314__';
-  const guardMarker = '__tokyo_burari_history_guard_v314__';
-  const bridgeVersion = 'v314';
+  const guardMarker = '__tokyo_burari_first_level_guard__';
   const requestedPage = validPages.has(data?.page) ? data.page : 'home';
+  const action = data?.action || 'sync';
   const navigationNode = String(data?.node || requestedPage);
+  const interceptHierarchyBack = Boolean(data?.intercept_hierarchy_back) && requestedPage !== 'home';
+  const firstLevelBackToHome = requestedPage !== 'home' && navigationNode === requestedPage && !interceptHierarchyBack;
   const pendingFeelingParam = 'feel_v159';
   const pendingFeelingStore = 'tokyo_burari_pending_feelings_v159';
-
   const restorePendingFeelingParam = () => {
     try {
       const url = new URL(window.location.href);
@@ -5201,82 +5252,117 @@ export default function(component) {
     queueMicrotask(() => setTriggerValue('pending_restore', `${Date.now()}:${Math.random()}`));
   }
 
+  const pageFromUrl = () => {
+    try {
+      const value = new URL(window.location.href).searchParams.get('view');
+      return validPages.has(value) ? value : 'home';
+    } catch (_) {
+      return 'home';
+    }
+  };
+
+  const pageFromHistory = () => {
+    const value = window.history.state && window.history.state[marker];
+    return validPages.has(value) ? value : pageFromUrl();
+  };
+
   const urlFor = (page) => {
     const url = new URL(window.location.href);
-    if (page === 'home') url.searchParams.delete('view');
-    else url.searchParams.set('view', page);
+    if (page === 'home') {
+      url.searchParams.delete('view');
+    } else {
+      url.searchParams.set('view', page);
+    }
     return url.pathname + url.search + url.hash;
   };
 
-  const homeBaseState = (source) => ({
-    ...(source || {}),
-    [marker]: 'home',
-    [nodeMarker]: 'home',
-    [bridgeMarker]: bridgeVersion,
-    [guardMarker]: false,
-  });
+  let currentPage = pageFromHistory();
+  const state = window.history.state || {};
 
-  const guardState = (source, page, node) => ({
-    ...(source || {}),
-    [marker]: page,
-    [nodeMarker]: node,
-    [bridgeMarker]: bridgeVersion,
-    [guardMarker]: true,
-  });
-
-  // Keep exactly one protected app entry above a Home base entry. Deeper app
-  // navigation replaces that protected entry instead of growing browser history.
-  // Android Back therefore always lands on the Home base first, where we can
-  // immediately restore the current app entry and ask Python for exactly one
-  // hierarchy-up action.
-  let state = window.history.state || {};
-  if (state[bridgeMarker] !== bridgeVersion) {
-    const base = homeBaseState(state);
-    window.history.replaceState(base, '', urlFor('home'));
-    window.history.pushState(
-      guardState(base, requestedPage, navigationNode),
-      '',
-      urlFor(requestedPage)
-    );
-  } else if (state[guardMarker]) {
+  // Mark the entry used to open the app as the app's home/current entry.
+  if (!validPages.has(state[marker])) {
+    const initialPage = pageFromUrl();
     window.history.replaceState(
-      guardState(state, requestedPage, navigationNode),
+      { ...state, [marker]: initialPage },
       '',
-      urlFor(requestedPage)
+      urlFor(initialPage)
     );
-  } else {
-    // A prior Back may have exposed the base while Streamlit was rerendering.
-    // Recreate the protected entry before the user can leave the app.
-    const base = homeBaseState(state);
-    window.history.replaceState(base, '', urlFor('home'));
+    currentPage = initialPage;
+  }
+
+  if (action === 'push' && currentPage !== requestedPage) {
     window.history.pushState(
-      guardState(base, requestedPage, navigationNode),
+      { ...(window.history.state || {}), [marker]: requestedPage },
       '',
       urlFor(requestedPage)
     );
+    currentPage = requestedPage;
+  } else if (action === 'replace' && currentPage !== requestedPage) {
+    window.history.replaceState(
+      { ...(window.history.state || {}), [marker]: requestedPage },
+      '',
+      urlFor(requestedPage)
+    );
+    currentPage = requestedPage;
+  } else if (action === 'sync' && currentPage !== requestedPage) {
+    // This covers a page reload or a browser-restored tab whose URL/history
+    // already points at an internal app screen.
+    queueMicrotask(() => setTriggerValue('page', currentPage));
+  }
+
+  // Android/PWA can return from an external Maps app with no usable browser entry
+  // behind the current first-level screen. Add one same-page guard entry so the next
+  // native Back always fires popstate instead of closing the web app. It is armed once
+  // per first-level page and survives the trip out to Google Maps.
+  if (firstLevelBackToHome && currentPage === requestedPage) {
+    const currentState = window.history.state || {};
+    if (currentState[guardMarker] !== requestedPage) {
+      window.history.pushState(
+        { ...currentState, [marker]: requestedPage, [guardMarker]: requestedPage },
+        '',
+        urlFor(requestedPage)
+      );
+    }
+  } else if (requestedPage === 'home') {
+    const currentState = window.history.state || {};
+    if (currentState[guardMarker]) {
+      const cleanState = { ...currentState };
+      delete cleanState[guardMarker];
+      cleanState[marker] = 'home';
+      window.history.replaceState(cleanState, '', urlFor('home'));
+    }
   }
 
   const onPopState = (event) => {
+    // A native browser Back can move to an older URL before Streamlit reruns.
+    // Restore browser-local pending feelings onto that history entry first.
     restorePendingFeelingParam();
-
-    // Normalize whatever entry Back revealed into the app's Home base, then put
-    // the current protected entry back immediately. This prevents Android/PWA
-    // Back from minimizing or hiding the app before Streamlit handles the action.
-    const base = homeBaseState(event.state || {});
-    window.history.replaceState(base, '', urlFor('home'));
-    window.history.pushState(
-      guardState(base, requestedPage, navigationNode),
-      '',
-      urlFor(requestedPage)
-    );
-
-    // Home has no parent layer. Keep the app visible on Home rather than falling
-    // through to the browser/launcher. Every non-Home screen asks Python to move
-    // exactly one fixed hierarchy level upward.
-    if (navigationNode === 'home' || requestedPage === 'home') return;
-
-    const token = `${navigationNode}:${Date.now()}:${Math.random()}`;
-    setTriggerValue('hierarchy_back', token);
+    if (interceptHierarchyBack) {
+      // The phone/browser Back control must mean "one folder level up", not
+      // "whatever screen happened to be visited previously". Restore the app
+      // entry immediately, then let Python apply the fixed parent mapping.
+      window.history.pushState(
+        { ...(window.history.state || {}), [marker]: requestedPage },
+        '',
+        urlFor(requestedPage)
+      );
+      const token = `${navigationNode}:${Date.now()}:${Math.random()}`;
+      setTriggerValue('hierarchy_back', token);
+      return;
+    }
+    if (firstLevelBackToHome) {
+      // We have just popped the synthetic guard. Convert the revealed entry to Home
+      // before Streamlit rerenders, so Android Back never falls through and closes the app.
+      const homeState = { ...(event.state || {}) };
+      delete homeState[guardMarker];
+      homeState[marker] = 'home';
+      window.history.replaceState(homeState, '', urlFor('home'));
+      setTriggerValue('page', 'home');
+      return;
+    }
+    const statePage = event.state && event.state[marker];
+    const target = validPages.has(statePage) ? statePage : pageFromUrl();
+    setTriggerValue('page', validPages.has(target) ? target : 'home');
   };
 
   window.addEventListener('popstate', onPopState);
@@ -5286,7 +5372,7 @@ export default function(component) {
 
 try:
     browser_history_component = st.components.v2.component(
-        'tokyo_burari_browser_history_v314',
+        'tokyo_burari_browser_history_v208',
         js=_HISTORY_JS,
     )
 except Exception:
@@ -6770,7 +6856,7 @@ export default function(component) {
 
   const IDEAL_ACCURACY_M = 25;
   const USABLE_ACCURACY_M = 45;
-  const USABLE_SETTLE_MS = 3000;
+  const USABLE_SETTLE_MS = 1200;
   const HARD_TIMEOUT_MS = 10000;
 
   const setStatus = (value) => { status.textContent = String(value || ''); };
@@ -6900,7 +6986,7 @@ def _get_nearby_search_now_component():
     _nearby_search_now_component_initialized = True
     try:
         nearby_search_now_component = st.components.v2.component(
-            "tokyo_burari_nearby_search_now_v218",
+            "tokyo_burari_nearby_search_now_v319",
             html=_NEARBY_SEARCH_NOW_HTML,
             css=_NEARBY_SEARCH_NOW_CSS,
             js=_NEARBY_SEARCH_NOW_JS,
@@ -6958,7 +7044,7 @@ export default function(component) {
 
   const IDEAL_ACCURACY_M = 25;
   const USABLE_ACCURACY_M = 45;
-  const USABLE_SETTLE_MS = 3000;
+  const USABLE_SETTLE_MS = 1200;
   const HARD_TIMEOUT_MS = 10000;
 
   const setStatus = (value) => { status.textContent = String(value || ''); };
@@ -7089,7 +7175,7 @@ def _get_toilet_search_now_component():
     _toilet_search_now_component_initialized = True
     try:
         toilet_search_now_component = st.components.v2.component(
-            "tokyo_burari_toilet_search_now_v217",
+            "tokyo_burari_toilet_search_now_v319",
             html=_TOILET_SEARCH_NOW_HTML,
             css=_TOILET_SEARCH_NOW_CSS,
             js=_TOILET_SEARCH_NOW_JS,
@@ -7785,16 +7871,16 @@ def search_nearby_quick_stops_google(latitude, longitude, kind, subkind, radius_
         def _run_text_search(spec):
             genre_label, query_text = spec
             genre_label = str(genre_label)
-            collected = []
             errors = []
 
-            # 1) Original fine-grained Tabelog-style category as a free-text search.
-            # Keep this path because several Japanese categories have no exact Google type.
+            # v319: preserve the same two Google lookups, but run them concurrently.
+            # This keeps the fine-grained text search + exact place-type coverage while
+            # avoiding the old serial wait (text request, then type request) for every genre.
             request_body = {
                 "textQuery": str(query_text),
                 "languageCode": "ja",
                 "regionCode": "JP",
-                "maxResultCount": 20 if is_lunch else 20,
+                "maxResultCount": 20,
                 "locationBias": {
                     "circle": {
                         "center": {"latitude": latitude, "longitude": longitude},
@@ -7804,7 +7890,7 @@ def search_nearby_quick_stops_google(latitude, longitude, kind, subkind, radius_
             }
             if bool(open_now_only):
                 request_body["openNow"] = True
-            request = Request(
+            text_request = Request(
                 "https://places.googleapis.com/v1/places:searchText",
                 data=json.dumps(request_body, ensure_ascii=False).encode("utf-8"),
                 headers={
@@ -7814,17 +7900,9 @@ def search_nearby_quick_stops_google(latitude, longitude, kind, subkind, radius_
                 },
                 method="POST",
             )
-            try:
-                with urlopen(request, timeout=7.0) as response:
-                    payload = json.loads(response.read().decode("utf-8"))
-                collected.extend(list(payload.get("places") or []))
-            except Exception as exc:
-                errors.append("text:" + str(exc)[:180])
 
-            # 2) Supplement with exact Google cuisine types using a hard radius.
-            # This catches restaurants whose name contains no cuisine keyword and avoids
-            # free-text relevance ranking dropping a valid nearby restaurant.
             place_types = tuple(NEARBY_LUNCH_ATOMIC_PLACE_TYPES.get(genre_label) or ()) if is_lunch else ()
+            nearby_request = None
             if place_types:
                 nearby_body = {
                     "includedTypes": list(place_types),
@@ -7849,13 +7927,32 @@ def search_nearby_quick_stops_google(latitude, longitude, kind, subkind, radius_
                     },
                     method="POST",
                 )
+
+            def _fetch(req, label):
                 try:
-                    with urlopen(nearby_request, timeout=7.0) as response:
-                        nearby_payload = json.loads(response.read().decode("utf-8"))
-                    collected.extend(list(nearby_payload.get("places") or []))
+                    with urlopen(req, timeout=6.0) as response:
+                        payload = json.loads(response.read().decode("utf-8"))
+                    return label, list((payload or {}).get("places") or []), ""
                 except Exception as exc:
-                    # A type-specific supplement failing must not erase the working text results.
-                    errors.append("type:" + str(exc)[:180])
+                    return label, [], str(exc)[:180]
+
+            jobs = [("text", text_request)]
+            if nearby_request is not None:
+                jobs.append(("type", nearby_request))
+            collected = []
+            if len(jobs) == 1:
+                label, rows, error = _fetch(jobs[0][1], jobs[0][0])
+                collected.extend(rows)
+                if error:
+                    errors.append(label + ":" + error)
+            else:
+                with ThreadPoolExecutor(max_workers=2) as pair_pool:
+                    futures = [pair_pool.submit(_fetch, req, label) for label, req in jobs]
+                    for future in futures:
+                        label, rows, error = future.result()
+                        collected.extend(rows)
+                        if error:
+                            errors.append(label + ":" + error)
 
             deduped = {}
             for raw in collected:
@@ -7877,7 +7974,7 @@ def search_nearby_quick_stops_google(latitude, longitude, kind, subkind, radius_
         if len(query_specs) <= 1:
             query_results = [_run_text_search(query_specs[0])]
         else:
-            worker_count = max(1, min(6, len(query_specs)))
+            worker_count = max(1, min(4, len(query_specs)))
             with ThreadPoolExecutor(max_workers=worker_count) as executor:
                 query_results = list(executor.map(_run_text_search, query_specs))
 
@@ -8264,7 +8361,7 @@ def _nearby_google_photo_data_url(photo_ref, max_px=760):
         headers={"User-Agent": "TokyoBurariApp/1.0", "Accept": "image/*"},
     )
     try:
-        with urlopen(req, timeout=7.0) as response:
+        with urlopen(req, timeout=3.8) as response:
             raw = response.read()
             content_type = str(response.headers.get("Content-Type") or "image/jpeg").split(";", 1)[0].strip()
         if not raw or not content_type.startswith("image/"):
@@ -8284,10 +8381,10 @@ def _nearby_load_preview_images(places):
     work = [(idx, ref) for idx, ref in enumerate(jobs) if isinstance(ref, dict)]
     if not work:
         return results
-    workers = max(1, min(4, len(work)))
+    workers = max(1, min(6, len(work)))
     def fetch(spec):
         idx, ref = spec
-        return idx, _nearby_google_photo_data_url(ref, max_px=720)
+        return idx, _nearby_google_photo_data_url(ref, max_px=520)
     with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="burari-nearby-photo") as pool:
         for idx, data_url in pool.map(fetch, work):
             results[idx] = data_url
@@ -10916,11 +11013,11 @@ def get_camera_video_upload_reservation(trip_id, capture_serial):
     # Safari and WebM on Chromium. Storage metadata carries the real MIME type.
     storage_path = f"{family_key}/{member_key}/{trip_id}/{stamp}_{token}_video.video"
     signed_url = _create_signed_video_upload_url(storage_path)
-    # v314: browser-side candidate sheets are no longer produced (v145+ uses the
-    # saved original video as the only source for Good Moments). Avoid minting a
-    # second unused signed URL every time Camera opens.
-    candidate_sheet_path = ""
-    candidate_sheet_signed_url = ""
+    candidate_sheet_path = f"{family_key}/{member_key}/{trip_id}/{stamp}_{token}_candidates.jpg"
+    # Legacy compatibility: browser candidate sheets use the duration-aware max-20 sampling rule.
+    # This removes ffmpeg as a hard requirement on Streamlit Cloud while keeping
+    # every captured candidate available to the vision pipeline.
+    candidate_sheet_signed_url = _create_signed_video_upload_url(candidate_sheet_path)
     reservation = {
         "trip_id": str(trip_id),
         "family_key": str(family_key),
@@ -18231,8 +18328,7 @@ def reload_current_page_after_action(notice_key=None, notice_text=None):
         page = "home"
     st.session_state["main_page"] = page
     st.session_state["_ui_refresh_epoch"] = _current_ui_refresh_epoch() + 1
-    # Keep the last browser Back token across reruns so an already-consumed
-    # component event can never be applied twice.
+    st.session_state.pop("_browser_hierarchy_back_token", None)
     # This is a refresh of the current page, not a navigation event. Do not add or
     # replace browser history just because a photo/video was saved or deleted.
     st.session_state.pop("_history_action", None)
@@ -18469,9 +18565,9 @@ def _set_page_state(page_name, history_mode="push"):
     st.session_state["_history_action"] = (
         history_mode if history_mode in {"push", "replace"} else "push"
     )
-    # Keep the last browser Back token across route changes. A v2 component can
-    # briefly expose the previous trigger value after rerender; retaining the token
-    # prevents one physical Back press from being applied twice.
+    # Keep component keys stable across ordinary route changes so the browser can
+    # reconcile the page without remounting every persistent bridge.
+    st.session_state.pop("_browser_hierarchy_back_token", None)
 
 
 def _go_page_callback(page_name, history_mode="push"):
@@ -18570,13 +18666,30 @@ def sync_browser_history():
 
     action = st.session_state.pop("_history_action", "sync")
     navigation_node, _ = current_navigation_context()
+    # First-level pages (Camera / Videos / Moments / Diary / Review / Nearby / Toilets / Settings)
+    # already have a real Home entry immediately behind them because go_page()
+    # pushes history. Let the phone/browser Back control pop that entry normally.
+    # Only deeper in-page hierarchy states need interception so Back means exactly
+    # one app level rather than jumping all the way to Home.
+    intercept_nodes = {
+        "diary_photo",
+        "diary_trip",
+        "review_history_detail",
+        "review_history",
+        "review_map",
+        "review_project",
+        "review_monthly",
+        "review_tag",
+    }
     result = browser_history_component(
         data={
             "page": page,
             "action": action,
             "node": navigation_node,
+            "intercept_hierarchy_back": navigation_node in intercept_nodes,
         },
-        key=f"tokyo_burari_browser_history_instance_v314_{_current_ui_refresh_epoch()}",
+        key=f"tokyo_burari_browser_history_instance_v208_{_current_ui_refresh_epoch()}",
+        on_page_change=lambda: None,
         on_hierarchy_back_change=lambda: None,
         on_pending_restore_change=lambda: None,
     )
@@ -18588,6 +18701,13 @@ def sync_browser_history():
             st.session_state["_browser_hierarchy_back_token"] = token
             navigate_to_parent()
 
+    browser_page = getattr(result, "page", None)
+    if browser_page in VALID_APP_PAGES and browser_page != page:
+        st.session_state["main_page"] = browser_page
+        # A browser Back/Forward event has already changed window.history. Do not
+        # push a new entry while reflecting that event back into Streamlit.
+        st.session_state.pop("_history_action", None)
+        st.rerun()
 
 
 def ensure_today_trip():
@@ -20001,7 +20121,7 @@ def open_diary_photo_talk(trip_id, photo_id, state):
 # ============================================================
 # Page: Home
 # ============================================================
-@st.cache_data(ttl=20, max_entries=64, show_spinner=False)
+@st.cache_data(ttl=3, max_entries=64, show_spinner=False)
 def _home_video_counts_cached(family_key, member_key):
     """Return (saved videos, videos not yet accepted as diary stills)."""
     rows = (
@@ -20077,7 +20197,7 @@ def _render_home_video_count_status():
 
 
 if hasattr(st, "fragment"):
-    render_home_video_count_status = st.fragment(run_every="20s")(_render_home_video_count_status)
+    render_home_video_count_status = st.fragment(run_every="5s")(_render_home_video_count_status)
 else:
     render_home_video_count_status = _render_home_video_count_status
 
@@ -20132,7 +20252,7 @@ def _render_home_storage_usage_status():
 
 
 if hasattr(st, "fragment"):
-    render_home_storage_usage_status = st.fragment(run_every="60s")(_render_home_storage_usage_status)
+    render_home_storage_usage_status = st.fragment(run_every="15s")(_render_home_storage_usage_status)
 else:
     render_home_storage_usage_status = _render_home_storage_usage_status
 
@@ -20935,7 +21055,7 @@ def page_toilets():
             if search_component is not None:
                 search_component_result = search_component(
                     data={},
-                    key=f"toilet_search_now_v231_{current_family_key()}_{current_member_key()}",
+                    key=f"toilet_search_now_v319_{current_family_key()}_{current_member_key()}",
                     on_search_location_change=lambda: None,
                     on_search_error_change=lambda: None,
                 )
@@ -20962,15 +21082,11 @@ def page_toilets():
                 )
                 return False
 
-        fresh_label = reverse_geocode_rough(search_latitude, search_longitude) or "現在地付近"
-        st.session_state["_nearby_location"] = {
-            "source": source_name,
-            "latitude": search_latitude,
-            "longitude": search_longitude,
-            "accuracy_m": search_accuracy,
-            "measured_at": now_jst().isoformat(),
-            "place_label": fresh_label,
-        }
+        # v319: place-name lookup is independent from the toilet provider query.
+        # Run only the reverse-geocode call in parallel, so it no longer adds up to
+        # 3.5 seconds before the real search begins. GPS coordinates are unchanged.
+        label_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="burari-toilet-label")
+        label_future = label_pool.submit(reverse_geocode_rough, search_latitude, search_longitude)
         fresh_signature = json.dumps(
             {
                 "lat": round(search_latitude, 5),
@@ -20994,6 +21110,20 @@ def page_toilets():
                 baby_only=baby_only,
                 usable_now_preferred=usable_now_preferred,
             )
+        try:
+            fresh_label = str(label_future.result(timeout=0.15) or "").strip() or "現在地付近"
+        except Exception:
+            fresh_label = "現在地付近"
+        finally:
+            label_pool.shutdown(wait=False, cancel_futures=True)
+        st.session_state["_nearby_location"] = {
+            "source": source_name,
+            "latitude": search_latitude,
+            "longitude": search_longitude,
+            "accuracy_m": search_accuracy,
+            "measured_at": now_jst().isoformat(),
+            "place_label": fresh_label,
+        }
         st.session_state[result_key] = {
             "signature": fresh_signature,
             "result": live_result if isinstance(live_result, dict) else {},
@@ -21643,7 +21773,7 @@ def page_nearby():
             if search_component is not None:
                 search_component_result = search_component(
                     data={},
-                    key=f"nearby_search_now_v234_{current_family_key()}_{current_member_key()}",
+                    key=f"nearby_search_now_v319_{current_family_key()}_{current_member_key()}",
                     on_search_location_change=lambda: None,
                     on_search_error_change=lambda: None,
                 )
@@ -21675,19 +21805,14 @@ def page_nearby():
                 return False
 
         st.session_state[detail_key] = ""
-        fresh_label = reverse_geocode_rough(search_latitude, search_longitude) or "現在地付近"
-        st.session_state["_nearby_location"] = {
-            "source": str(search_source or "gps"),
-            "latitude": search_latitude,
-            "longitude": search_longitude,
-            "accuracy_m": search_accuracy,
-            "measured_at": now_jst().isoformat(),
-            "place_label": fresh_label,
-        }
+        # v319: reverse geocoding runs beside the provider lookup instead of before it.
+        # The fresh high-accuracy GPS coordinate is still the sole basis of the search.
+        label_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="burari-nearby-label")
+        label_future = label_pool.submit(reverse_geocode_rough, search_latitude, search_longitude)
         # Store exactly the filter signature active when Search was pressed.
         # The newly measured GPS coordinates are stored separately in _nearby_location.
         fresh_signature = search_signature
-        with st.spinner("現在地周辺の営業情報・評価・写真を調べています…"):
+        with st.spinner("高精度GPSを基準に周辺候補を高速検索しています…"):
             live_result = search_nearby_quick_stops_google(
                 search_latitude, search_longitude, kind, subkind, radius_m,
                 open_now_only=open_now_only,
@@ -21707,6 +21832,20 @@ def page_nearby():
                     if google_unavailable and kind == "lunch":
                         fallback["rating_sort_unavailable"] = True
                 live_result = fallback
+        try:
+            fresh_label = str(label_future.result(timeout=0.15) or "").strip() or "現在地付近"
+        except Exception:
+            fresh_label = "現在地付近"
+        finally:
+            label_pool.shutdown(wait=False, cancel_futures=True)
+        st.session_state["_nearby_location"] = {
+            "source": str(search_source or "gps"),
+            "latitude": search_latitude,
+            "longitude": search_longitude,
+            "accuracy_m": search_accuracy,
+            "measured_at": now_jst().isoformat(),
+            "place_label": fresh_label,
+        }
         st.session_state[result_key] = {
             "signature": fresh_signature,
             "result": live_result if isinstance(live_result, dict) else {},
@@ -22473,7 +22612,7 @@ export default function(component) {
   if (!grid) return;
   grid.replaceChildren(); grid.classList.remove('enlarge-mode');
 
-  const photos = Array.isArray(data?.photos) ? data.photos.slice(0,6) : [];
+  const photos = Array.isArray(data?.photos) ? data.photos.slice(0,3) : [];
   const disabled = Boolean(data?.disabled);
   const viewMode = String(data?.view_mode || 'list') === 'enlarge' ? 'enlarge' : 'list';
   const familyKey=String(data?.family_key||''), memberKey=String(data?.member_key||''), videoId=String(data?.video_id||'');
@@ -22641,7 +22780,7 @@ export default function(component) {
     shell.tabIndex=0;shell.addEventListener('keydown',(event)=>{if(event.key==='ArrowLeft'){event.preventDefault();move(-1);}else if(event.key==='ArrowRight'){event.preventDefault();move(1);}});
     nav.appendChild(prev);nav.appendChild(counter);nav.appendChild(next);shell.appendChild(nav);shell.appendChild(viewer);grid.appendChild(shell);renderActive();return;
   }
-  for(let index=0;index<6;index+=1){const photo=photos[index];if(!photo){const empty=document.createElement('div');empty.className='moments-select-empty';grid.appendChild(empty);continue;}grid.appendChild(makeCard(photo,index,false));}
+  for(let index=0;index<3;index+=1){const photo=photos[index];if(!photo){const empty=document.createElement('div');empty.className='moments-select-empty';grid.appendChild(empty);continue;}grid.appendChild(makeCard(photo,index,false));}
 }
 """
 
@@ -22656,7 +22795,7 @@ def _get_moments_select_component():
     _moments_select_component_initialized = True
     try:
         moments_select_component = st.components.v2.component(
-            "tokyo_burari_moments_select_v169",
+            "tokyo_burari_moments_select_v168",
             html=_MOMENTS_SELECT_HTML,
             css=_MOMENTS_SELECT_CSS,
             js=_MOMENTS_SELECT_JS,
@@ -24096,12 +24235,8 @@ def render_recent_camera_photo_emotion(trip):
 # Page: Trip / camera
 # ============================================================
 def page_trip():
-    st.button(
-        "←",
-        key="camera_back_parent",
-        help="1つ前の階層に戻る",
-        on_click=_navigate_to_parent_callback,
-    )
+    if st.button("←", key="camera_back_parent", help="1つ前の階層に戻る"):
+        navigate_to_parent()
 
     notice = st.session_state.pop("_camera_notice", None)
     if notice:
@@ -24182,7 +24317,7 @@ def page_trip():
             "video_candidate_sheet_signed_url": str(video_reservation.get("candidate_sheet_signed_url") or ""),
             "video_candidate_sheet_storage_path": str(video_reservation.get("candidate_sheet_path") or ""),
         },
-        key=f"live_camera_v237_{camera_trip_key}_{st.session_state.capture_serial}_{_current_ui_refresh_epoch()}",
+        key=f"live_camera_v313_{camera_trip_key}_{st.session_state.capture_serial}_{_current_ui_refresh_epoch()}",
         on_photo_change=lambda: None,
         on_video_change=lambda: None,
         on_camera_error_change=lambda: None,
@@ -25016,12 +25151,13 @@ def page_history(embedded=False):
         back_col, home_col = st.columns(2)
         with back_col:
             with st.container(key="history_back_nav"):
-                st.button(
+                if st.button(
                     "← 前の画面に戻る",
                     use_container_width=True,
                     key=f"history_back_{trip_id}",
-                    on_click=_navigate_to_parent_callback,
-                )
+                ):
+                    st.session_state.pop("history_detail_trip_id", None)
+                    st.rerun()
         with home_col:
             with st.container(key="history_home_nav"):
                 st.button(
@@ -30493,18 +30629,21 @@ html,body{{margin:0;padding:0;background:#0b1012;font-family:-apple-system,Blink
  const all=(data.points||[]).filter((p)=>Array.isArray(p)&&p.length>=2);
  if(all.length){{const bounds=L.latLngBounds(all);map.fitBounds(bounds,{{padding:[28,28],maxZoom:16}});}}else map.setView([35.6812,139.7671],11);
 
- // Draw many disconnected route sections as one multi-polyline per glow pass.
- // This keeps the exact fluorescent appearance while cutting hundreds of Leaflet
- // layer objects down to at most six.
- const drawGreenRouteBatch=(raw)=>{{
-   const segments=(raw||[]).filter((seg)=>Array.isArray(seg)&&seg.length>=2);
-   if(!segments.length)return;
-   L.polyline(segments,{{color:'#13e95b',weight:13,opacity:.055,lineCap:'round',lineJoin:'round',interactive:false}}).addTo(map);
-   L.polyline(segments,{{color:'#39f374',weight:7.2,opacity:.16,lineCap:'round',lineJoin:'round',interactive:false}}).addTo(map);
-   L.polyline(segments,{{color:'#9dffb6',weight:2.8,opacity:.82,lineCap:'round',lineJoin:'round',interactive:false}}).addTo(map);
- }};
- drawGreenRouteBatch(data.segments);
- drawGreenRouteBatch(data.photo_segments);
+ // Native GPS route remains green.
+ (data.segments||[]).forEach((seg)=>{{
+   if(!Array.isArray(seg)||seg.length<2)return;
+   L.polyline(seg,{{color:'#13e95b',weight:13,opacity:.055,lineCap:'round',lineJoin:'round',interactive:false}}).addTo(map);
+   L.polyline(seg,{{color:'#39f374',weight:7.2,opacity:.16,lineCap:'round',lineJoin:'round',interactive:false}}).addTo(map);
+   L.polyline(seg,{{color:'#9dffb6',weight:2.8,opacity:.82,lineCap:'round',lineJoin:'round',interactive:false}}).addTo(map);
+ }});
+
+ // Photo-restored historical route is rendered with the original glowing green style.
+ (data.photo_segments||[]).forEach((seg)=>{{
+   if(!Array.isArray(seg)||seg.length<2)return;
+   L.polyline(seg,{{color:'#ff3b2f',weight:14,opacity:.060,lineCap:'round',lineJoin:'round',interactive:false}}).addTo(map);
+   L.polyline(seg,{{color:'#ff665c',weight:8.0,opacity:.18,lineCap:'round',lineJoin:'round',interactive:false}}).addTo(map);
+   L.polyline(seg,{{color:'#ffe0dc',weight:3.0,opacity:.97,lineCap:'round',lineJoin:'round',interactive:false}}).addTo(map);
+ }});
 
  const drawArrivedStation=(s)=>{{
    const zone=(Array.isArray(s.arrival_zone)?s.arrival_zone:[]).filter((p)=>Array.isArray(p)&&p.length>=2);
@@ -30540,10 +30679,10 @@ html,body{{margin:0;padding:0;background:#0b1012;font-family:-apple-system,Blink
 # ============================================================
 PHOTO_LEGACY_ROUTE_SCHEMA_V305 = "photo_legacy_main_plus_wallmap_v311"
 PHOTO_LEGACY_ROUTE_STORAGE_FILE_V305 = "photo_legacy_main_plus_wallmap_v311.json"
-PHOTO_LEGACY_ROUTE_ENGINE_V306 = "v311_main_plus_wallmap_detailed_router"
+PHOTO_LEGACY_ROUTE_ENGINE_V306 = "v315_sequential_pair_router"
 PHOTO_LEGACY_ROUTE_FOOT_BASE_V306 = "https://routing.openstreetmap.de/routed-foot/route/v1/driving"
 PHOTO_LEGACY_ROUTE_MAX_WAYPOINTS_V306 = 7
-PHOTO_LEGACY_ROUTE_REQUEST_TIMEOUT_V306 = 10.0
+PHOTO_LEGACY_ROUTE_REQUEST_TIMEOUT_V306 = 12.0
 PHOTO_LEGACY_ROUTE_CHUNK_WORKERS_V306 = 2
 PHOTO_LEGACY_ROUTE_PAIR_WORKERS_V306 = 2
 PHOTO_LEGACY_ROUTE_PAIR_FALLBACK_LIMIT_V306 = 999
@@ -30965,6 +31104,14 @@ def _photo_legacy_reset_failed_v306():
 
 
 def _photo_legacy_prepare_routes_v305():
+    """Resolve photographed historical routes strictly one station-pair at a time.
+
+    v315 intentionally avoids the previous bulk/chunk execution. Each pair is attempted
+    separately, immediately persisted, and reflected in an on-screen progress indicator.
+    Existing successful rows are preserved. Failed rows from older engines are retried;
+    rows that fail under this v315 engine remain final failures until the user explicitly
+    retries them.
+    """
     if not _photo_legacy_enabled_v296():
         return [], {"mode": "disabled", "done": 0, "success": 0, "failed": 0, "total": 0, "pending": 0}
 
@@ -30975,87 +31122,86 @@ def _photo_legacy_prepare_routes_v305():
         state = _photo_legacy_default_state_v305()
     pairs = state.setdefault("pairs", {})
     definitions = _photo_legacy_pair_defs_v305()
+    total = len(definitions)
 
-    # Preserve already successful v305 results. Old failed/retry rows are retried once by
-    # the bounded v306 engine; failures produced by v306 itself are not looped forever.
-    pending_defs = []
+    # Reuse completed geometry. Old-engine failures are work items again; only a failure
+    # produced by the current v315 engine is considered final for this pass.
+    work = []
     for row in definitions:
         item = pairs.get(row["key"])
         if isinstance(item, dict) and item.get("status") == "done":
             continue
         if _photo_legacy_v306_is_final_failed(item):
             continue
-        pending_defs.append(row)
+        work.append(row)
 
-    if pending_defs:
-        pending_keys = {row["key"] for row in pending_defs}
-        chunks = [
-            chunk for chunk in _photo_legacy_chunk_defs_v306()
-            if any(pair_def["key"] in pending_keys for pair_def in chunk.get("pairs") or [])
-        ]
-        # v307: the second photographed map has many more links. Process only a fixed
-        # number of multi-stop chunks per page load; the Continue button advances the rest.
-        chunks = chunks[:max(1, int(PHOTO_LEGACY_ROUTE_CHUNK_LIMIT_V307))]
+    initial_done = sum(
+        1 for row in definitions
+        if isinstance(pairs.get(row["key"]), dict) and pairs.get(row["key"], {}).get("status") == "done"
+    )
+    progress_slot = st.empty()
+    progress_bar = st.progress((initial_done / total) if total else 1.0)
 
-        chunk_results = []
-        if chunks:
-            worker_count = max(1, min(int(PHOTO_LEGACY_ROUTE_CHUNK_WORKERS_V306), len(chunks)))
-            with ThreadPoolExecutor(max_workers=worker_count) as executor:
-                future_map = {
-                    executor.submit(_photo_legacy_route_request_names_v306, chunk["names"]): chunk
-                    for chunk in chunks
+    # Three attempts per pair are deliberate. The public pedestrian router occasionally
+    # times out; retrying the same single pair is safer than launching many requests.
+    max_attempts = 3
+    for work_index, pair_def in enumerate(work, start=1):
+        current_done = sum(
+            1 for row in definitions
+            if isinstance(pairs.get(row["key"]), dict) and pairs.get(row["key"], {}).get("status") == "done"
+        )
+        a_name = str(pair_def.get("a") or "")
+        b_name = str(pair_def.get("b") or "")
+        result = None
+        for attempt in range(1, max_attempts + 1):
+            progress_slot.info(
+                f"道路を確認中：{current_done + 1} / {total} 区間　{a_name} → {b_name}　"
+                f"（試行 {attempt}/{max_attempts}）"
+            )
+            try:
+                candidate = _photo_legacy_pair_route_v306(pair_def)
+            except Exception as exc:
+                candidate = {
+                    "status": "failed",
+                    "segment": [],
+                    "a": a_name,
+                    "b": b_name,
+                    "attempts": attempt,
+                    "updated_at_jst": now_jst().isoformat(),
+                    "method": "pair_osm_foot_route",
+                    "engine": PHOTO_LEGACY_ROUTE_ENGINE_V306,
+                    "reason": type(exc).__name__,
                 }
-                for future, chunk in list((future, future_map[future]) for future in future_map):
-                    try:
-                        routed = future.result()
-                    except Exception as exc:
-                        routed = {"ok": False, "error": type(exc).__name__}
-                    chunk_results.append((chunk, routed))
+            candidate = dict(candidate or {})
+            candidate["attempts"] = attempt
+            candidate["engine"] = PHOTO_LEGACY_ROUTE_ENGINE_V306
+            candidate["updated_at_jst"] = now_jst().isoformat()
+            result = candidate
+            if candidate.get("status") == "done" and len(candidate.get("segment") or []) >= 2:
+                break
 
-        for chunk, routed in chunk_results:
-            if not isinstance(routed, dict) or not routed.get("ok"):
-                continue
-            split_rows = _photo_legacy_split_chunk_v306(chunk, routed)
-            for key, result in split_rows.items():
-                existing = pairs.get(key)
-                if isinstance(existing, dict) and existing.get("status") == "done":
-                    continue
-                pairs[key] = result
-
-        unresolved = []
-        for row in pending_defs:
-            item = pairs.get(row["key"])
-            if isinstance(item, dict) and item.get("status") == "done":
-                continue
-            unresolved.append(row)
-
-        if unresolved:
-            # Bound the slow fallback work per page load. The multi-stop requests above
-            # normally resolve most sections at once; if the public router is unhealthy,
-            # do not fan out all remaining station pairs and freeze the Streamlit page.
-            unresolved = unresolved[:max(1, int(PHOTO_LEGACY_ROUTE_PAIR_FALLBACK_LIMIT_V306))]
-            worker_count = max(1, min(int(PHOTO_LEGACY_ROUTE_PAIR_WORKERS_V306), len(unresolved)))
-            with ThreadPoolExecutor(max_workers=worker_count) as executor:
-                future_map = {executor.submit(_photo_legacy_pair_route_v306, row): row for row in unresolved}
-                for future, row in list((future, future_map[future]) for future in future_map):
-                    try:
-                        result = future.result()
-                    except Exception as exc:
-                        result = {
-                            "status": "failed",
-                            "segment": [],
-                            "a": row["a"],
-                            "b": row["b"],
-                            "attempts": 1,
-                            "updated_at_jst": now_jst().isoformat(),
-                            "method": "pair_osm_foot_route",
-                            "engine": PHOTO_LEGACY_ROUTE_ENGINE_V306,
-                            "reason": type(exc).__name__,
-                        }
-                    pairs[row["key"]] = result
-
+        if not isinstance(result, dict):
+            result = {
+                "status": "failed", "segment": [], "a": a_name, "b": b_name,
+                "attempts": max_attempts, "updated_at_jst": now_jst().isoformat(),
+                "method": "pair_osm_foot_route", "engine": PHOTO_LEGACY_ROUTE_ENGINE_V306,
+                "reason": "unknown_failure",
+            }
+        result["a"] = a_name
+        result["b"] = b_name
+        if result.get("status") != "done":
+            result["status"] = "failed"
+        pairs[pair_def["key"]] = result
         state["pairs"] = pairs
         state["engine"] = PHOTO_LEGACY_ROUTE_ENGINE_V306
+        state["complete"] = False
+        _save_photo_legacy_route_state_v305(state)
+
+        current_done = sum(
+            1 for row in definitions
+            if isinstance(pairs.get(row["key"]), dict) and pairs.get(row["key"], {}).get("status") == "done"
+        )
+        progress_bar.progress((current_done / total) if total else 1.0)
 
     done_count = 0
     failed_count = 0
@@ -31071,7 +31217,17 @@ def _photo_legacy_prepare_routes_v305():
 
     state["complete"] = pending_after == 0
     state["pairs"] = pairs
+    state["engine"] = PHOTO_LEGACY_ROUTE_ENGINE_V306
     saved_ok = _save_photo_legacy_route_state_v305(state)
+    progress_bar.progress(1.0 if total else 1.0)
+    if failed_count:
+        progress_slot.warning(
+            f"道路確認が終了しました。{done_count}/{total} 区間を道路形状で保存済み、"
+            f"{failed_count} 区間は今回取得できませんでした。"
+        )
+    else:
+        progress_slot.success(f"道路確認が終了しました。{done_count}/{total} 区間を道路形状で保存しました。")
+
     routed_segments = _photo_legacy_segments_from_state_v305(state)
     display_segments = _photo_legacy_display_segments_v308(state)
     return display_segments, {
@@ -31079,58 +31235,13 @@ def _photo_legacy_prepare_routes_v305():
         "done": done_count,
         "success": done_count,
         "failed": failed_count,
-        "total": len(definitions),
+        "total": total,
         "pending": pending_after,
         "saved": bool(saved_ok),
         "engine": PHOTO_LEGACY_ROUTE_ENGINE_V306,
         "routed_segments": len(routed_segments),
         "display_segments": len(display_segments),
     }
-
-
-
-def _photo_legacy_load_frozen_routes_v314():
-    """Read the accepted historical import without doing any more route reconstruction."""
-    if not _photo_legacy_enabled_v296():
-        return []
-    family = str(current_family_key() or "")
-    member = str(current_member_key() or "")
-    state = _read_photo_legacy_route_state_v305(family, member) or {}
-    # Preserve exactly the accepted display behavior: saved road geometry where it
-    # exists and the fixed imported pair geometry for any unresolved legacy row.
-    return _photo_legacy_display_segments_v308(state)
-
-
-def _project_walk_bundle_v314(points):
-    """Session-cache the pure GPS-to-walk transforms used by the project map."""
-    points = list(points or [])
-    if not points:
-        return [], [], 0.0
-    first = points[0] if isinstance(points[0], dict) else {}
-    last = points[-1] if isinstance(points[-1], dict) else {}
-    signature = (
-        len(points),
-        int(first.get("ts_ms") or 0),
-        int(last.get("ts_ms") or 0),
-        str(last.get("id") or ""),
-    )
-    cached = st.session_state.get("_project_walk_bundle_v314")
-    if isinstance(cached, dict) and cached.get("signature") == signature:
-        return (
-            list(cached.get("segments") or []),
-            list(cached.get("walk_points") or []),
-            float(cached.get("walk_m") or 0.0),
-        )
-    segments = _project_walk_segments_v271(points)
-    walk_points = _project_walk_points_v271(segments)
-    walk_m = _project_walk_distance_m_v271(segments)
-    st.session_state["_project_walk_bundle_v314"] = {
-        "signature": signature,
-        "segments": segments,
-        "walk_points": walk_points,
-        "walk_m": float(walk_m),
-    }
-    return segments, walk_points, float(walk_m)
 
 
 def page_burari_project():
@@ -31173,7 +31284,9 @@ def page_burari_project():
     if not points and not photo_seed_enabled:
         st.info("まだ歩行データがありません。位置情報を許可した状態で、ぶらり旅を開いて歩くと自動的に記録が始まります。")
         return
-    segments, walk_points, walk_m = _project_walk_bundle_v314(points)
+    segments = _project_walk_segments_v271(points) if points else []
+    walk_points = _project_walk_points_v271(segments) if segments else []
+    walk_m = _project_walk_distance_m_v271(segments) if segments else 0.0
     st.markdown(
         f"""
         <div class="burari-project-summary-v297">
@@ -31197,10 +31310,35 @@ def page_burari_project():
     display_points = list(map_points or []) + _photo_legacy_map_points_v296()
     stations = _merge_photo_legacy_stations_v296(stations)
 
-    # Historical image import is complete. From v314 onward it is read-only and
-    # never runs routing/retry work during ordinary app use. New walking data remains
-    # the unchanged high-accuracy GPS stream.
-    photo_segments = _photo_legacy_load_frozen_routes_v314() if photo_seed_enabled else []
+    photo_segments = []
+    if photo_seed_enabled:
+        route_status = st.empty()
+        profile_label = _photo_legacy_profile_v307()
+        expected_photo_pairs = len(_photo_legacy_pair_defs_v305())
+        route_status.info(
+            f"写真由来の過去データを読み込み済み：{expected_photo_pairs}区間。"
+            "緑線＋水色線を本当に1区間ずつ道路へ合わせ、各区間の完了直後に保存します。"
+        )
+        photo_segments, photo_route_meta = _photo_legacy_prepare_routes_v305()
+        route_done = int(photo_route_meta.get("done") or 0)
+        route_total = int(photo_route_meta.get("total") or 0)
+        route_failed = int(photo_route_meta.get("failed") or 0)
+        route_pending = int(photo_route_meta.get("pending") or 0)
+        if route_failed > 0:
+            route_status.warning(
+                f"過去ルート：全 {route_total} 区間を地図に表示しています。うち {route_done} 区間は道路形状に合わせて保存済み、未取得は {route_failed} 区間です。"
+            )
+            if st.button("未取得の過去ルートだけ再試行", use_container_width=True, key="retry_photo_route_v307"):
+                _photo_legacy_reset_failed_v306()
+                st.rerun()
+        elif route_pending > 0:
+            route_status.info(
+                f"過去ルート：全 {route_total} 区間を地図に表示しています。うち {route_done} 区間は道路形状に合わせて保存済みで、残り {route_pending} 区間も今回できるだけ続けて補完します。"
+            )
+            if st.button("残りの過去ルートを続けて補完", use_container_width=True, key="continue_photo_route_v307"):
+                st.rerun()
+        else:
+            route_status.empty()
     display_segments = list(segments or [])
 
     _render_burari_project_map_v295(display_points, display_segments, stations, photo_segments=photo_segments)
@@ -31817,13 +31955,9 @@ init_state()
 # v280: page navigation must stay cheap. Discover/resume unfinished video AI jobs
 # at most once every 30 seconds per session instead of on every widget rerun.
 try:
-    _bg_resume_page = str(st.session_state.get("main_page") or "home")
     _bg_resume_now = time.monotonic()
     _bg_resume_last = float(st.session_state.get("_bg_video_resume_last_monotonic") or 0.0)
-    # This is crash/restart recovery only; active jobs already run in the background.
-    # Restrict the scan to media-facing pages and at most once per minute so random
-    # navigation never blocks on a recovery query.
-    if _bg_resume_page in {"home", "videos", "moments"} and (_bg_resume_now - _bg_resume_last) >= 60.0:
+    if (_bg_resume_now - _bg_resume_last) >= 30.0:
         st.session_state["_bg_video_resume_last_monotonic"] = _bg_resume_now
         resume_member_video_background_jobs()
 except Exception:
