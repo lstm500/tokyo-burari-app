@@ -32,7 +32,7 @@ import streamlit as st
 # Freshly generated update: 2026-08-31 23:49 JST
 GENERATED_UPDATE_JST = "2026-09-08T18:48:00+09:00"
 
-APP_BUILD = "v339"
+APP_BUILD = "v340"
 # v331: multi-tag photo selections can go straight to a music replay and be saved as a stable in-app movie snapshot.
 # v330: tag-review movies support one or multiple AI tags; selection is action-only.
 
@@ -17334,11 +17334,18 @@ def render_monthly_music_settings(month_key, bundle, review, expanded=True):
                     "start_seconds": start_seconds,
                     "end_seconds": end_seconds,
                 }
-                st.session_state[url_key] = current_url
-                st.session_state[start_key] = start_seconds
-                st.session_state[end_key] = end_seconds
-                st.session_state[title_key] = applied_payload["title"]
-                st.session_state[confidence_key] = applied_payload["confidence"]
+                # Do not write widget-backed keys after those widgets were instantiated
+                # in this run. Streamlit raises StreamlitWidgetAlreadyInstantiatedError.
+                # Queue the values and apply them at the top of the next rerun, before
+                # the form widgets are created.
+                st.session_state[pending_override_key] = {
+                    url_key: current_url,
+                    start_key: start_seconds,
+                    end_key: end_seconds,
+                    title_key: applied_payload["title"],
+                    confidence_key: applied_payload["confidence"],
+                    reason_key: applied_payload["reason"],
+                }
                 st.session_state[f"monthly_music_settings_open_{month_key}"] = False
                 st.success(
                     f"{format_mmss(start_seconds)}〜{format_mmss(end_seconds)} でムービーをプレビューしています。"
