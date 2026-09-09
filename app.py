@@ -32,7 +32,7 @@ import streamlit as st
 # Freshly generated update: 2026-08-31 23:49 JST
 GENERATED_UPDATE_JST = "2026-09-08T18:48:00+09:00"
 
-APP_BUILD = "v332"
+APP_BUILD = "v333"
 # v331: multi-tag photo selections can go straight to a music replay and be saved as a stable in-app movie snapshot.
 # v330: tag-review movies support one or multiple AI tags; selection is action-only.
 
@@ -15783,9 +15783,10 @@ def save_tag_replay_movie(scope_key, review, bundle):
     session_review = st.session_state.get(f"monthly_review_{storage_key}")
     if isinstance(session_review, dict):
         latest = dict(session_review)
-    playback = get_monthly_playback(latest)
+    playback = get_active_monthly_playback(storage_key, latest)
     if not monthly_playback_is_ready(playback):
         raise ValueError("先に音楽と再生時間を設定してください。")
+    latest["_playback"] = dict(playback)
     photo_ids = tag_movie_snapshot_photo_ids(bundle)
     if not photo_ids:
         raise ValueError("保存する写真を確認できませんでした。")
@@ -15794,7 +15795,9 @@ def save_tag_replay_movie(scope_key, review, bundle):
     latest["_tag_movie_saved"] = True
     latest["_tag_movie_saved_at"] = now_jst().isoformat()
     latest["_tag_movie_draft"] = False
-    return save_tag_review(scope_key, latest)
+    saved = save_tag_review(scope_key, latest)
+    discard_monthly_preview_playback(storage_key)
+    return saved
 
 
 # ============================================================
@@ -15808,19 +15811,48 @@ def get_monthly_playback(review):
 
 
 def save_monthly_playback(month_key, review, playback):
+    """Persist a replay association only when the caller explicitly wants persistence."""
     updated = dict(review or {})
     if isinstance(playback, dict) and playback:
         updated["_playback"] = dict(playback)
     else:
         updated.pop("_playback", None)
     if str(updated.get("_review_scope_type") or "") == "ai_tag":
-        # Music/time changes are persisted for editing, but the user explicitly saves
-        # the finished tag movie snapshot after confirming the result.
         updated["_tag_movie_saved"] = False
         updated.pop("_tag_movie_saved_at", None)
     save_monthly_review(month_key, updated)
     st.session_state[f"monthly_review_{month_key}"] = updated
     return updated
+
+
+def _monthly_preview_playback_key(month_key):
+    return f"_monthly_preview_playback_v333_{month_key}"
+
+
+def get_active_monthly_playback(month_key, review):
+    """Return the session-only audition setting when present, else the saved setting."""
+    key = _monthly_preview_playback_key(month_key)
+    if key in st.session_state:
+        value = st.session_state.get(key)
+        return dict(value) if isinstance(value, dict) else {}
+    return get_monthly_playback(review)
+
+
+def set_monthly_preview_playback(month_key, playback):
+    """Keep the current movie/music experiment in session only; never write the review DB."""
+    value = dict(playback) if isinstance(playback, dict) and playback else {}
+    st.session_state[_monthly_preview_playback_key(month_key)] = value
+    st.session_state[f"_monthly_preview_playback_dirty_v333_{month_key}"] = True
+    return value
+
+
+def discard_monthly_preview_playback(month_key):
+    st.session_state.pop(_monthly_preview_playback_key(month_key), None)
+    st.session_state.pop(f"_monthly_preview_playback_dirty_v333_{month_key}", None)
+
+
+def monthly_preview_playback_is_active(month_key):
+    return _monthly_preview_playback_key(month_key) in st.session_state
 
 
 def _music_library_session_key():
@@ -15993,8 +16025,10 @@ def apply_music_library_item(month_key, review, item):
     st.session_state[state["title_key"]] = str(item.get("title") or "")
     playback = dict(item)
     playback["updated_at"] = now_jst().isoformat()
-    playback["source"] = "saved_library"
-    save_monthly_playback(month_key, review, playback)
+    playback["source"] = "saved_library_preview"
+    # v333: selecting saved music only changes the current audition. The movie/review
+    # is not persisted until an explicit movie-save action is used.
+    set_monthly_preview_playback(month_key, playback)
     st.session_state[f"monthly_replay_applied_{month_key}"] = {
         "start_seconds": int(item["start_seconds"]),
         "end_seconds": int(item["end_seconds"]),
@@ -17034,7 +17068,7 @@ def render_monthly_replay_player(period_label, review, playback, photo_items):
 
 
 def _monthly_replay_state(month_key, review):
-    playback = get_monthly_playback(review)
+    playback = get_active_monthly_playback(month_key, review)
     url_key = f"monthly_replay_url_{month_key}"
     start_key = f"monthly_replay_start_{month_key}"
     end_key = f"monthly_replay_end_{month_key}"
@@ -17093,6 +17127,7 @@ def render_monthly_music_settings(month_key, bundle, review, expanded=True):
                 st.session_state[state_key] = value
 
     st.markdown("### 🎬 振り返りムービーを作る")
+    st.info("ここではムービーを保存せず、同じ写真のまま音楽を何度でも試せます。気に入った音楽だけ保存できます。")
     if photo_items:
         st.caption(f"写真 {len(photo_items)}枚を、選んだ音楽に合わせて順番に再生します。")
     else:
@@ -17126,7 +17161,7 @@ def render_monthly_music_settings(month_key, bundle, review, expanded=True):
                         f"{format_mmss(selected_preview.get('end_seconds'))}"
                     )
                 use_saved_clicked = st.form_submit_button(
-                    "🎬 この保存設定で振り返りムービーを作る",
+                    "🎬 この音楽でムービーを試す（保存しない）",
                     type="primary",
                     use_container_width=True,
                 )
@@ -17145,7 +17180,8 @@ def render_monthly_music_settings(month_key, bundle, review, expanded=True):
                     st.session_state[f"monthly_music_settings_open_{month_key}"] = False
                     st.success(
                         f"『{selected.get('title') or '保存した音楽'}』を "
-                        f"{format_mmss(selected.get('start_seconds'))}〜{format_mmss(selected.get('end_seconds'))} で設定しました。"
+                        f"{format_mmss(selected.get('start_seconds'))}〜{format_mmss(selected.get('end_seconds'))} でプレビューに反映しました。"
+                        "ムービーは保存していません。"
                     )
                     st.rerun()
                 except Exception as exc:
@@ -17188,19 +17224,24 @@ def render_monthly_music_settings(month_key, bundle, review, expanded=True):
             if end_seconds <= start_seconds:
                 st.caption("終了が開始以下の場合は、作成時に開始から20秒後へ自動調整します。")
 
-            st.markdown("**③ ムービーに反映**")
+            st.markdown("**③ ムービーで試す**")
             apply_clicked = st.form_submit_button(
-                "🎬 この内容で振り返りムービーを作る",
+                "🎬 この音楽でムービーを試す（保存しない）",
                 type="primary",
                 use_container_width=True,
             )
-            helper_cols = st.columns(2)
+            helper_cols = st.columns(3)
             with helper_cols[0]:
                 guess_clicked = st.form_submit_button(
-                    "✨ AIにおすすめ時間を出してもらう",
+                    "✨ AIにおすすめ時間",
                     use_container_width=True,
                 )
             with helper_cols[1]:
+                save_music_only_clicked = st.form_submit_button(
+                    "☆ 音楽だけ保存",
+                    use_container_width=True,
+                )
+            with helper_cols[2]:
                 clear_clicked = st.form_submit_button(
                     "設定をリセット",
                     use_container_width=True,
@@ -17227,7 +17268,7 @@ def render_monthly_music_settings(month_key, bundle, review, expanded=True):
                     st.session_state[f"monthly_music_settings_open_{month_key}"] = True
                     st.session_state[f"_monthly_music_guess_notice_{month_key}"] = (
                         f"AIの候補は {format_mmss(guessed_start)}〜{format_mmss(guessed_end)} です。"
-                        "確認後に『この内容で振り返りムービーを作る』を押してください。"
+                        "確認後に『この音楽でムービーを試す（保存しない）』を押してください。"
                     )
                     st.rerun()
                 except Exception as exc:
@@ -17260,7 +17301,7 @@ def render_monthly_music_settings(month_key, bundle, review, expanded=True):
                     "updated_at": now_jst().isoformat(),
                     "source": "ai_suggested_confirmed" if previous_confidence in {"low", "medium", "high"} else "manual",
                 }
-                save_monthly_playback(month_key, review, applied_payload)
+                set_monthly_preview_playback(month_key, applied_payload)
                 st.session_state[f"monthly_replay_applied_{month_key}"] = {
                     "start_seconds": start_seconds,
                     "end_seconds": end_seconds,
@@ -17272,9 +17313,40 @@ def render_monthly_music_settings(month_key, bundle, review, expanded=True):
                 st.session_state[confidence_key] = applied_payload["confidence"]
                 st.session_state[f"monthly_music_settings_open_{month_key}"] = False
                 st.success(
-                    f"{format_mmss(start_seconds)}〜{format_mmss(end_seconds)} で振り返りムービーを作成しました。"
+                    f"{format_mmss(start_seconds)}〜{format_mmss(end_seconds)} でムービーをプレビューしています。"
+                    "ムービーは保存していません。"
                 )
                 st.rerun()
+
+        if save_music_only_clicked:
+            if not video_id:
+                st.error("先に有効なYouTube URLを入力してください。")
+            else:
+                try:
+                    save_end = end_seconds if end_seconds > start_seconds else start_seconds + 20
+                    meta = fetch_youtube_oembed(current_url)
+                    music_payload = {
+                        "youtube_url": current_url,
+                        "video_id": video_id,
+                        "title": str(meta.get("title") or st.session_state.get(title_key) or "").strip(),
+                        "author_name": str(meta.get("author_name") or "").strip(),
+                        "start_seconds": start_seconds,
+                        "end_seconds": save_end,
+                        "reason": str(st.session_state.get(reason_key) or "").strip(),
+                        "confidence": str(st.session_state.get(confidence_key) or "manual").strip() or "manual",
+                        "updated_at": now_jst().isoformat(),
+                        "source": "music_only_saved_from_audition",
+                    }
+                    saved_item = save_music_to_library(music_payload)
+                    st.success(
+                        f"『{saved_item.get('title') or 'この音楽'}』を "
+                        f"{format_mmss(saved_item.get('start_seconds'))}〜{format_mmss(saved_item.get('end_seconds'))} で音楽だけ保存しました。"
+                        "ムービーは保存していません。"
+                    )
+                except Exception as exc:
+                    st.error("音楽だけを保存できませんでした。")
+                    with st.expander("保護者向け詳細"):
+                        st.code(str(exc))
 
         if clear_clicked:
             st.session_state[pending_override_key] = {
@@ -17287,23 +17359,23 @@ def render_monthly_music_settings(month_key, bundle, review, expanded=True):
             }
             st.session_state.pop(f"monthly_replay_applied_{month_key}", None)
             st.session_state[f"monthly_music_settings_open_{month_key}"] = True
-            save_monthly_playback(month_key, review, {})
-            st.success("音楽と再生時間の設定をリセットしました。")
+            set_monthly_preview_playback(month_key, {})
+            st.success("操作中の音楽設定をリセットしました。保存済みのムービーや音楽は変更していません。")
             st.rerun()
 
-    current_playback = get_monthly_playback(review) or playback or {}
+    current_playback = get_active_monthly_playback(month_key, review) or playback or {}
     if monthly_playback_is_ready(current_playback):
         st.caption(
             "現在のムービー設定："
             f"{current_playback.get('title') or 'YouTube音楽'} ／ "
             f"{format_mmss(current_playback.get('start_seconds'))}〜{format_mmss(current_playback.get('end_seconds'))}"
         )
-    st.caption("※ 選択・入力・＋／－操作だけでは通信しません。作成・保存・AI推測などのボタンを押したときだけ通信します。")
+    st.caption("※ 選択・入力・＋／－操作だけでは通信しません。ムービー試写は操作中だけです。『音楽だけ保存』は音楽＋再生時間だけを保存し、ムービーは保存しません。")
 
 def render_monthly_time_settings(month_key, review):
     """Edit only the current music playback window without rerunning on +/- taps."""
     state = _monthly_replay_state(month_key, review)
-    playback = get_monthly_playback(review) or state["playback"]
+    playback = get_active_monthly_playback(month_key, review) or state["playback"]
     current_url = str(st.session_state.get(state["url_key"]) or playback.get("youtube_url") or "").strip()
     video_id = str(playback.get("video_id") or "").strip() or parse_youtube_video_id(current_url)
     if not video_id:
@@ -17366,7 +17438,7 @@ def render_monthly_time_settings(month_key, review):
                 "updated_at": now_jst().isoformat(),
                 "source": "manual_time",
             })
-            save_monthly_playback(month_key, review, updated)
+            set_monthly_preview_playback(month_key, updated)
 
             st.session_state[state["start_key"]] = start_seconds
             st.session_state[state["end_key"]] = end_seconds
@@ -17376,7 +17448,7 @@ def render_monthly_time_settings(month_key, review):
                 "end_seconds": end_seconds,
             }
             st.session_state[f"monthly_time_settings_open_{month_key}"] = False
-            st.success(f"{format_mmss(start_seconds)}〜{format_mmss(end_seconds)} に変更しました。")
+            st.success(f"{format_mmss(start_seconds)}〜{format_mmss(end_seconds)} を操作中のムービーに反映しました。ムービーは保存していません。")
             st.rerun()
 
 def render_monthly_replay_section(month_key, period_label, bundle, review):
@@ -26055,8 +26127,12 @@ def page_tag_review(embedded=False):
         ):
             try:
                 draft = make_tag_movie_draft_review(selected_tags, bundle, match_mode)
-                saved_draft = save_tag_review(scope_key, draft)
-                draft_storage_key = str(saved_draft.get("_tag_storage_month") or "")[:7]
+                draft_storage_key = tag_review_storage_month(scope_key, create=True)
+                draft["_tag_storage_month"] = draft_storage_key
+                # v333: the movie draft itself stays only in this Streamlit session.
+                # Nothing is written to the review table until the user explicitly saves
+                # the movie (or separately chooses to create/save AI comments).
+                st.session_state[session_key] = draft
                 if draft_storage_key:
                     st.session_state[f"monthly_music_settings_open_{draft_storage_key}"] = True
                 st.session_state[f"_tag_movie_setup_notice_{unsaved_token}"] = (
@@ -26098,7 +26174,7 @@ def page_tag_review(embedded=False):
     if setup_notice:
         st.success(setup_notice)
 
-    playback = get_monthly_playback(review)
+    playback = get_active_monthly_playback(storage_key, review)
     music_ready = monthly_playback_is_ready(playback)
     settings_open_key = f"monthly_music_settings_open_{storage_key}"
     comments_open_key = f"monthly_ai_comments_open_{storage_key}"
@@ -26164,13 +26240,19 @@ def page_tag_review(embedded=False):
     else:
         saved_movie = bool(review.get("_tag_movie_saved"))
         saved_count = int(review.get("_tag_movie_photo_count") or len((movie_bundle or {}).get("photos", []) or []))
-        if saved_movie:
+        audition_active = monthly_preview_playback_is_active(storage_key)
+        if saved_movie and not audition_active:
             st.success(f"💾 この振り返りムービーは保存済みです（写真 {saved_count}枚）。")
             st.caption("同じタグの組み合わせを選ぶと、保存した写真・音楽・再生時間で再び開けます。")
         else:
-            st.caption("内容を確認したら保存してください。保存時点の写真・音楽・再生時間をセットで残します。")
+            if saved_movie and audition_active:
+                st.info("現在は保存済みムービーとは別の音楽を一時的に試しています。この試写はまだ保存していません。")
+                save_label = "💾 この試している内容でムービーを更新保存"
+            else:
+                st.caption("現在は操作中の試写です。音楽だけ保存してもムービーは保存されません。")
+                save_label = "💾 この振り返りムービーを保存"
             if st.button(
-                "💾 この振り返りムービーを保存",
+                save_label,
                 type="primary",
                 use_container_width=True,
                 key=f"ai_tag_save_movie_{unsaved_token}",
@@ -26227,7 +26309,7 @@ def page_tag_review(embedded=False):
         st.session_state[time_settings_open_key] = opening_time_settings
         if opening_time_settings:
             st.session_state[settings_open_key] = False
-            current_playback = get_monthly_playback(review) or {}
+            current_playback = get_active_monthly_playback(storage_key, review) or {}
             applied = st.session_state.get(f"monthly_replay_applied_{storage_key}")
             if isinstance(applied, dict):
                 raw_start = applied.get("start_seconds")
@@ -26257,13 +26339,13 @@ def page_tag_review(embedded=False):
                 st.session_state[time_settings_open_key] = False
 
         if st.button(
-            "☆ この音楽＋再生時間を保存する",
+            "☆ この音楽だけ保存",
             use_container_width=True,
             key=f"ai_tag_save_current_music_{unsaved_token}",
         ):
             try:
                 state = _monthly_replay_state(storage_key, review)
-                current_playback = dict(get_monthly_playback(review) or {})
+                current_playback = dict(get_active_monthly_playback(storage_key, review) or {})
                 current_url = str(st.session_state.get(state["url_key"]) or current_playback.get("youtube_url") or "").strip()
                 video_id = parse_youtube_video_id(current_url)
                 applied = st.session_state.get(f"monthly_replay_applied_{storage_key}")
@@ -26285,7 +26367,7 @@ def page_tag_review(embedded=False):
                 st.success(
                     f"『{saved_item.get('title') or 'この音楽'}』＋ "
                     f"{format_mmss(saved_item.get('start_seconds'))}〜{format_mmss(saved_item.get('end_seconds'))} を保存しました。"
-                    "次の振り返りでも同じ再生時間で使えます。"
+                    "再生時間も一緒に保存しました。ムービーは保存していません。"
                 )
             except Exception as exc:
                 st.error("この音楽を保存できませんでした。")
@@ -26370,6 +26452,7 @@ def page_tag_review(embedded=False):
                             cleaned_review["_tag_movie_saved"] = False
                             cleaned_review["_tag_movie_draft"] = False
                             save_tag_review(scope_key, cleaned_review)
+                            discard_monthly_preview_playback(storage_key)
                             for state_key in (
                                 state["url_key"],
                                 state["start_key"],
@@ -26497,7 +26580,7 @@ def page_monthly(embedded=False):
     st.session_state.pop(f"monthly_audio_{month_key}", None)
     st.session_state.pop(f"monthly_audio_pending_{month_key}", None)
 
-    playback = get_monthly_playback(review)
+    playback = get_active_monthly_playback(month_key, review)
     music_ready = monthly_playback_is_ready(playback)
     settings_open_key = f"monthly_music_settings_open_{month_key}"
     comments_open_key = f"monthly_ai_comments_open_{month_key}"
@@ -26555,6 +26638,8 @@ def page_monthly(embedded=False):
 
     # Once music is configured, the movie becomes the main content.
     st.markdown("#### 振り返りムービー")
+    if monthly_preview_playback_is_active(month_key):
+        st.info("このムービーは操作中の試写です。音楽を変えても保存済みの振り返りは変更しません。気に入った音楽だけ保存できます。")
     rendered = render_monthly_replay_section(month_key, period_label, bundle, review)
     if not rendered:
         st.warning("振り返りムービーを表示できませんでした。音楽または写真の設定を確認してください。")
@@ -26604,7 +26689,7 @@ def page_monthly(embedded=False):
 
             # Every time the editor is opened, preload the interval that is actually
             # being used by the current replay rather than any older form value.
-            current_playback = get_monthly_playback(review) or {}
+            current_playback = get_active_monthly_playback(month_key, review) or {}
             applied = st.session_state.get(f"monthly_replay_applied_{month_key}")
             if isinstance(applied, dict):
                 raw_start = applied.get("start_seconds")
@@ -26634,13 +26719,13 @@ def page_monthly(embedded=False):
                 st.session_state[time_settings_open_key] = False
 
         if st.button(
-            "☆ この音楽＋再生時間を保存する",
+            "☆ この音楽だけ保存",
             use_container_width=True,
             key=f"monthly_save_current_music_{month_key}",
         ):
             try:
                 state = _monthly_replay_state(month_key, review)
-                current_playback = dict(get_monthly_playback(review) or {})
+                current_playback = dict(get_active_monthly_playback(month_key, review) or {})
                 current_url = str(st.session_state.get(state["url_key"]) or current_playback.get("youtube_url") or "").strip()
                 video_id = parse_youtube_video_id(current_url)
                 applied = st.session_state.get(f"monthly_replay_applied_{month_key}")
@@ -26662,7 +26747,7 @@ def page_monthly(embedded=False):
                 st.success(
                     f"『{saved_item.get('title') or 'この音楽'}』＋ "
                     f"{format_mmss(saved_item.get('start_seconds'))}〜{format_mmss(saved_item.get('end_seconds'))} を保存しました。"
-                    "次の振り返りでも同じ再生時間で使えます。"
+                    "再生時間も一緒に保存しました。ムービーは保存していません。"
                 )
             except Exception as exc:
                 st.error("この音楽を保存できませんでした。")
@@ -26742,6 +26827,7 @@ def page_monthly(embedded=False):
                         try:
                             state = _monthly_replay_state(month_key, review)
                             save_monthly_playback(month_key, review, {})
+                            discard_monthly_preview_playback(month_key)
                             for state_key in (
                                 state["url_key"],
                                 state["start_key"],
