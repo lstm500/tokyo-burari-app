@@ -32,7 +32,8 @@ import streamlit as st
 # Freshly generated update: 2026-08-31 23:49 JST
 GENERATED_UPDATE_JST = "2026-09-08T18:48:00+09:00"
 
-APP_BUILD = "v328"
+APP_BUILD = "v330"
+# v330: tag-review movies support one or multiple AI tags; selection is action-only.
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -15324,7 +15325,9 @@ def _ai_tag_review_key_from_row(row):
     review = _coerce_review_json((row or {}).get("review_json"))
     if str(review.get("_review_scope_type") or "") != "ai_tag":
         return ""
-    return normalize_ai_photo_tag(review.get("_ai_tag_key"))
+    # v330: multi-tag reviews use a stable synthetic scope key while old single-tag
+    # reviews keep their original tag key, so existing saved reviews remain readable.
+    return normalize_ai_photo_tag(review.get("_ai_tag_scope_key") or review.get("_ai_tag_key"))
 
 
 def _ai_tag_review_storage_candidates(tag_key):
@@ -15426,12 +15429,53 @@ def ordered_ai_review_tags(counts):
     )
 
 
-def tag_review_bundle(source, tag_key):
-    tag_key = normalize_ai_photo_tag(tag_key)
-    photos = [
-        photo for photo in (source or {}).get("photos", []) or []
-        if isinstance(photo, dict) and tag_key in photo_ai_tags(photo)
-    ]
+def _normalize_tag_review_selection(values):
+    if isinstance(values, str):
+        values = [values]
+    result = []
+    for value in values or []:
+        tag = normalize_ai_photo_tag(value)
+        if tag and tag not in result:
+            result.append(tag)
+    return result[:20]
+
+
+def tag_review_scope_key(tag_keys, match_mode="any"):
+    tags = _normalize_tag_review_selection(tag_keys)
+    if not tags:
+        return ""
+    mode = "all" if str(match_mode or "").lower() == "all" and len(tags) > 1 else "any"
+    # Preserve the old storage key for a single tag so all existing reviews continue to open.
+    if len(tags) == 1:
+        return tags[0]
+    canonical = mode + "|" + "|".join(sorted(tags))
+    return "multi_" + hashlib.sha1(canonical.encode("utf-8")).hexdigest()[:16]
+
+
+def tag_review_scope_label(tag_keys, match_mode="any"):
+    tags = _normalize_tag_review_selection(tag_keys)
+    if not tags:
+        return "🏷️ AIタグ"
+    if len(tags) == 1:
+        return f"🏷️ {tags[0]}"
+    if str(match_mode or "").lower() == "all":
+        return "🏷️ " + " ＋ ".join(tags)
+    return "🏷️ " + " ／ ".join(tags)
+
+
+def tag_review_bundle(source, tag_key, match_mode="any"):
+    tags = _normalize_tag_review_selection(tag_key)
+    selected = set(tags)
+    mode = "all" if str(match_mode or "").lower() == "all" and len(tags) > 1 else "any"
+    photos = []
+    for photo in (source or {}).get("photos", []) or []:
+        if not isinstance(photo, dict):
+            continue
+        photo_tags = set(photo_ai_tags(photo))
+        matched = selected.issubset(photo_tags) if mode == "all" else bool(selected.intersection(photo_tags))
+        if matched:
+            photos.append(photo)
+    # Each source photo is traversed once, so a photo carrying several selected tags is never duplicated.
     photos.sort(key=lambda photo: (str(photo.get("captured_at") or ""), str(photo.get("id") or "")))
     trip_ids = {str(photo.get("trip_id") or "") for photo in photos if photo.get("trip_id")}
     trips = [
@@ -15465,8 +15509,9 @@ def tag_review_stats(bundle):
     }
 
 
-def build_tag_review_evidence(tag_key, bundle, max_lines=70):
-    tag_key = normalize_ai_photo_tag(tag_key)
+def build_tag_review_evidence(tag_key, bundle, max_lines=70, match_mode="any"):
+    tags = _normalize_tag_review_selection(tag_key)
+    selected = set(tags)
     trip_map = {
         str(trip.get("id") or ""): trip
         for trip in (bundle or {}).get("trips", []) or []
@@ -15479,7 +15524,7 @@ def build_tag_review_evidence(tag_key, bundle, max_lines=70):
 
     for photo in photos:
         for other_tag in photo_ai_tags(photo):
-            if other_tag and other_tag != tag_key:
+            if other_tag and other_tag not in selected:
                 related_counts[other_tag] = int(related_counts.get(other_tag) or 0) + 1
 
     sampled = photos
@@ -15494,8 +15539,12 @@ def build_tag_review_evidence(tag_key, bundle, max_lines=70):
             captured = str(photo.get("captured_at") or "")
             date_value = captured[:10] if len(captured) >= 10 else "日付不明"
         place = str(photo_location_label(photo) or (trip or {}).get("destination") or "").strip()
-        related = [tag for tag in photo_ai_tags(photo) if tag != tag_key][:5]
+        photo_tags = photo_ai_tags(photo)
+        selected_here = [tag for tag in photo_tags if tag in selected]
+        related = [tag for tag in photo_tags if tag not in selected][:5]
         row = f"[{date_value}] {place or '場所メモなし'}"
+        if selected_here:
+            row += " / 選択タグ: " + "、".join(selected_here)
         if related:
             row += " / 関連AIタグ: " + "、".join(related)
         rows.append(row)
@@ -15508,16 +15557,18 @@ def build_tag_review_evidence(tag_key, bundle, max_lines=70):
         "day_count": int(stats.get("day_count") or 0),
         "first_date": str(stats.get("first_date") or ""),
         "last_date": str(stats.get("last_date") or ""),
-        "tag_label": tag_key,
+        "tag_label": "、".join(tags),
         "related_tags": [f"{tag}({related_counts[tag]}枚)" for tag in related_top],
     }
 
 
-def make_tag_review(tag_key, bundle):
-    tag_key = normalize_ai_photo_tag(tag_key)
-    if not tag_key:
+def make_tag_review(tag_key, bundle, match_mode="any"):
+    tags = _normalize_tag_review_selection(tag_key)
+    if not tags:
         raise ValueError("振り返るAIタグを確認できませんでした。")
-    evidence = build_tag_review_evidence(tag_key, bundle)
+    mode = "all" if str(match_mode or "").lower() == "all" and len(tags) > 1 else "any"
+    scope_key = tag_review_scope_key(tags, mode)
+    evidence = build_tag_review_evidence(tags, bundle, match_mode=mode)
     schema = {
         "type": "object",
         "properties": {
@@ -15544,22 +15595,26 @@ def make_tag_review(tag_key, bundle):
         "additionalProperties": False,
     }
     related_text = "、".join(evidence.get("related_tags") or []) or "なし"
-    scope_label = f"🏷️ {tag_key}"
+    scope_label = tag_review_scope_label(tags, mode)
+    tag_text = "、".join(tags)
+    rule_text = "選んだタグをすべて含む写真" if mode == "all" and len(tags) > 1 else "選んだタグのどれか1つ以上を含む写真"
     prompt = f"""
 「ぶらり旅」の保存写真から、AI画像タグ別の短い振り返りを作ります。
 
-選んだAI画像タグ: {tag_key}
-このタグが付いた写真: {evidence['photo_count']}枚
+選んだAI画像タグ: {tag_text}
+写真のまとめ方: {rule_text}
+対象写真: {evidence['photo_count']}枚
 記録日数: {evidence['day_count']}日
 最初の記録日: {evidence['first_date'] or '不明'}
 最後の記録日: {evidence['last_date'] or '不明'}
 同じ写真に多く付いている別のAIタグ: {related_text}
 
-写真ごとの日付・場所・関連AIタグ:
+写真ごとの日付・場所・選択タグ・関連AIタグ:
 {evidence['text'] or '記録なし'}
 
 厳守:
-- 「{tag_key}」はAIが写真から見える内容を整理するために自動付与した画像タグであり、利用者本人が選んだ気持ちタグではない。
+- 選択した「{tag_text}」はAIが写真から見える内容を整理するために自動付与した画像タグであり、利用者本人が選んだ気持ちタグではない。
+- 複数タグを選んだ場合も、タグ同士の関係や因果を推測しない。
 - タグ判定を絶対的な事実として扱わず、「AIタグ上では」「写真整理上では」という範囲で扱う。
 - 子ども／大人／複数人など人物タグから、本人、親、家族、友達などの関係を推測しない。
 - 人物の性格、能力、感情、健康状態、民族などを推測しない。
@@ -15569,20 +15624,25 @@ def make_tag_review(tag_key, bundle):
 - ask_child は必要なときだけ短い問いを1件まで。不要なら空文字。
 - one_question も問いは1つまで。ask_child がある場合は原則空文字。
 - repeated_notices と wishes は互換用のため通常は空配列。
-- parent_note は保護者向けに、写真枚数・記録日数・期間・関連AIタグを簡潔に説明し、関係性や性格を推測していないことを明記する。
+- parent_note は保護者向けに、写真枚数・記録日数・期間・選択したAIタグを簡潔に説明し、関係性や性格を推測していないことを明記する。
 - 全体として簡潔にする。
 """.strip()
-    result = ask_json(prompt, "burari_ai_photo_tag_review_v207", schema, 850)
-    result["_insight_version"] = 5
+    result = ask_json(prompt, "burari_ai_photo_tag_review_v330", schema, 850)
+    result["_insight_version"] = 6
     result["_review_scope_type"] = "ai_tag"
-    result["_ai_tag_key"] = tag_key
-    result["_tag_label"] = tag_key
+    result["_ai_tag_key"] = scope_key
+    result["_ai_tag_scope_key"] = scope_key
+    result["_ai_tag_keys"] = tags
+    result["_ai_tag_match_mode"] = mode
+    result["_tag_label"] = "・".join(tags)
     result["_scope_label"] = scope_label
-    result["_subjective_input_mode"] = "ai_observable_photo_tags_v207"
+    result["_subjective_input_mode"] = "ai_observable_photo_tags_v330"
     return result
 
 
 def get_saved_tag_review(tag_key):
+    if isinstance(tag_key, (list, tuple, set)):
+        tag_key = tag_review_scope_key(tag_key)
     tag_key = normalize_ai_photo_tag(tag_key)
     if not tag_key:
         return None
@@ -15593,14 +15653,25 @@ def get_saved_tag_review(tag_key):
 
 
 def save_tag_review(tag_key, review_json):
+    if isinstance(tag_key, (list, tuple, set)):
+        mode = str((review_json or {}).get("_ai_tag_match_mode") or "any")
+        tag_key = tag_review_scope_key(tag_key, mode)
     tag_key = normalize_ai_photo_tag(tag_key)
     if not tag_key:
         raise ValueError("保存するAIタグを確認できませんでした。")
     updated = dict(review_json or {})
+    selected_tags = _normalize_tag_review_selection(updated.get("_ai_tag_keys") or [])
+    mode = "all" if str(updated.get("_ai_tag_match_mode") or "").lower() == "all" and len(selected_tags) > 1 else "any"
+    label = str(updated.get("_tag_label") or ("・".join(selected_tags) if selected_tags else tag_key)).strip()
+    scope_label = str(updated.get("_scope_label") or tag_review_scope_label(selected_tags or [label], mode)).strip()
     updated["_review_scope_type"] = "ai_tag"
     updated["_ai_tag_key"] = tag_key
-    updated["_tag_label"] = tag_key
-    updated["_scope_label"] = f"🏷️ {tag_key}"
+    updated["_ai_tag_scope_key"] = tag_key
+    if selected_tags:
+        updated["_ai_tag_keys"] = selected_tags
+        updated["_ai_tag_match_mode"] = mode
+    updated["_tag_label"] = label
+    updated["_scope_label"] = scope_label
     storage_month = tag_review_storage_month(tag_key, create=True)
     updated["_tag_storage_month"] = storage_month
     save_monthly_review(storage_month, updated)
@@ -21155,181 +21226,188 @@ html,body{{margin:0;padding:0;background:transparent;font-family:-apple-system,B
 # one payload containing all filters plus a fresh high-accuracy GPS fix.
 # ============================================================
 _NEARBY_BATCH_SEARCH_HTML_V320 = r"""
-<div class="burari-batch-card">
-  <div class="burari-batch-grid">
-    <label><span>1　何に寄る？</span><select id="nb-kind"></select></label>
-    <label><span id="nb-sub-label">2　条件</span><select id="nb-sub"></select></label>
-    <label><span>3　どのくらいまで？</span><select id="nb-radius"></select></label>
-    <label><span>4　予算</span><select id="nb-budget"></select></label>
-    <label class="burari-wide"><span>5　営業時間</span><select id="nb-open"></select></label>
+
+<div class="legacy-search-shell legacy-nearby-shell">
+  <div class="legacy-two-col legacy-top-row">
+    <section class="legacy-step-card">
+      <div class="legacy-step-title"><span class="legacy-step-badge">1</span><span>何に寄る？</span></div>
+      <div id="nb-kind-area" class="legacy-choice-stack"></div>
+      <div class="legacy-note">おやつ・ランチ・気軽な立ち寄り先。</div>
+    </section>
+    <section class="legacy-step-card">
+      <div class="legacy-step-title"><span class="legacy-step-badge">2</span><span id="nb-sub-label">条件</span></div>
+      <div id="nb-sub-area" class="legacy-choice-stack"></div>
+      <div id="nb-sub-note" class="legacy-note"></div>
+    </section>
   </div>
-  <div id="nb-summary" class="burari-batch-summary"></div>
-  <button id="nb-search" type="button">🔎 この条件で検索</button>
-  <div id="nb-status" class="burari-batch-status" aria-live="polite"></div>
+  <div class="legacy-two-col">
+    <section class="legacy-step-card">
+      <div class="legacy-step-title"><span class="legacy-step-badge">3</span><span>どのくらいまで？</span></div>
+      <div id="nb-radius-area" class="legacy-choice-stack"></div>
+    </section>
+    <section class="legacy-step-card">
+      <div class="legacy-step-title"><span class="legacy-step-badge">4</span><span>予算</span></div>
+      <div id="nb-budget-area" class="legacy-choice-stack"></div>
+      <div id="nb-budget-note" class="legacy-note"></div>
+    </section>
+  </div>
+  <section class="legacy-step-card legacy-wide-card">
+    <div class="legacy-step-title"><span class="legacy-step-badge">5</span><span>営業中</span></div>
+    <div id="nb-open-area" class="legacy-choice-row"></div>
+    <div id="nb-open-note" class="legacy-note"></div>
+  </section>
+  <div id="nb-summary" class="legacy-summary"></div>
+  <button id="nb-search" class="legacy-search-button" type="button">🔎 この条件で検索</button>
+  <div id="nb-status" class="legacy-status" aria-live="polite"></div>
 </div>
 """
 
 _NEARBY_BATCH_SEARCH_CSS_V320 = r"""
-.burari-batch-card{width:100%;box-sizing:border-box;font-family:inherit}
-.burari-batch-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
-.burari-batch-grid label{display:flex;flex-direction:column;gap:6px;padding:10px;border:1px solid rgba(80,120,150,.14);border-radius:14px;background:rgba(255,255,255,.82);box-sizing:border-box;min-width:0}
-.burari-batch-grid label>span{font-size:12px;font-weight:800;line-height:1.25;color:rgba(31,38,48,.86)}
-.burari-batch-grid select{width:100%;min-height:42px;border-radius:11px;border:1px solid rgba(80,110,130,.22);background:#fff;padding:7px 9px;font-size:13px;color:#202732;box-sizing:border-box}
-.burari-wide{grid-column:1/-1}
-.burari-batch-summary{margin:10px 0 8px;padding:9px 11px;border-radius:11px;background:rgba(128,128,128,.055);font-size:12px;line-height:1.45;color:rgba(31,38,48,.76)}
-#nb-search{width:100%;min-height:54px;border-radius:16px;border:1.8px solid rgba(79,169,132,.66);background:linear-gradient(155deg,rgba(231,249,240,.99),rgba(226,245,251,.95));font:inherit;font-size:16px;font-weight:850;color:rgba(31,38,48,.96);box-shadow:0 9px 22px rgba(79,169,132,.10);cursor:pointer}
-#nb-search:disabled{opacity:.65;cursor:wait}
-.burari-batch-status{min-height:20px;margin-top:7px;font-size:12px;line-height:1.35;color:rgba(31,38,48,.66)}
-@media(max-width:640px){.burari-batch-grid{gap:7px}.burari-batch-grid label{padding:8px}.burari-batch-grid select{font-size:12px;min-height:40px}.burari-batch-grid label>span{font-size:11px}}
+
+.legacy-search-shell{width:100%;box-sizing:border-box;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Hiragino Sans","Yu Gothic",sans-serif;color:rgba(31,38,48,.96)}
+.legacy-two-col{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px;align-items:stretch}
+.legacy-top-row{grid-template-columns:.88fr 1.12fr}
+.legacy-step-card{box-sizing:border-box;border:1px solid rgba(80,120,150,.18);border-radius:15px;background:rgba(255,255,255,.92);padding:12px;min-width:0}
+.legacy-wide-card{margin-bottom:10px}
+.legacy-step-title{display:flex;align-items:center;gap:8px;margin:0 0 10px;font-size:15px;font-weight:850;line-height:1.2}
+.legacy-step-badge{display:inline-flex;align-items:center;justify-content:center;flex:0 0 auto;width:27px;height:27px;border-radius:999px;background:#edf6ff;border:1px solid rgba(74,144,226,.16);color:#3379aa;font-size:12px;font-weight:900}
+.legacy-choice-stack{display:flex;flex-direction:column;gap:10px}
+.legacy-choice-row{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.legacy-choice{appearance:none;-webkit-appearance:none;width:100%;min-height:58px;box-sizing:border-box;border-radius:15px;border:1px solid rgba(88,96,108,.24);background:#fff;color:rgba(31,38,48,.95);font:inherit;font-size:16px;font-weight:650;line-height:1.2;padding:9px 10px;cursor:pointer;touch-action:manipulation;-webkit-tap-highlight-color:transparent;box-shadow:0 1px 1px rgba(0,0,0,.015)}
+.legacy-choice.active{background:#ff4b4b;border-color:#ff4b4b;color:#fff;box-shadow:0 4px 10px rgba(255,75,75,.15)}
+.legacy-choice:active{transform:translateY(1px)}
+.legacy-select{width:100%;min-height:58px;border-radius:14px;border:0;background:#f1f2f7;color:rgba(31,38,48,.96);padding:0 42px 0 14px;font:inherit;font-size:16px;font-weight:650;box-sizing:border-box}
+.legacy-note{margin-top:11px;font-size:12px;line-height:1.45;color:rgba(31,38,48,.57)}
+.legacy-summary{margin:12px 0 10px;padding:12px 13px;border-radius:13px;background:rgba(128,128,128,.055);font-size:13px;line-height:1.45;color:rgba(31,38,48,.78)}
+.legacy-search-button{width:100%;min-height:60px;border-radius:17px;border:2px solid rgba(79,169,132,.58);background:linear-gradient(155deg,rgba(231,249,240,.99),rgba(226,245,251,.95));font:inherit;font-size:18px;font-weight:850;color:rgba(31,38,48,.96);box-shadow:0 8px 18px rgba(79,169,132,.08);cursor:pointer;touch-action:manipulation}
+.legacy-search-button:disabled{opacity:.62;cursor:wait}
+.legacy-status{min-height:21px;margin-top:8px;font-size:12px;line-height:1.4;color:rgba(31,38,48,.64)}
+@media(max-width:640px){
+  .legacy-two-col{gap:8px;margin-bottom:8px}.legacy-top-row{grid-template-columns:.88fr 1.12fr}
+  .legacy-step-card{padding:10px;border-radius:14px}.legacy-step-title{font-size:13px;gap:6px;margin-bottom:8px}
+  .legacy-step-badge{width:24px;height:24px;font-size:11px}.legacy-choice-stack{gap:8px}.legacy-choice-row{gap:8px}
+  .legacy-choice{min-height:52px;border-radius:13px;font-size:14px;padding:8px 6px}.legacy-select{min-height:52px;font-size:14px}
+  .legacy-note{font-size:10.5px;margin-top:9px}.legacy-summary{font-size:12px;padding:10px 11px}.legacy-search-button{min-height:58px;font-size:17px}
+}
 """
 
 _NEARBY_BATCH_SEARCH_JS_V320 = r"""
+
 export default function(component) {
   const { parentElement, setTriggerValue, data } = component;
-  const kindEl = parentElement.querySelector('#nb-kind');
-  const subEl = parentElement.querySelector('#nb-sub');
-  const radiusEl = parentElement.querySelector('#nb-radius');
-  const budgetEl = parentElement.querySelector('#nb-budget');
-  const openEl = parentElement.querySelector('#nb-open');
+  const kindArea = parentElement.querySelector('#nb-kind-area');
+  const subArea = parentElement.querySelector('#nb-sub-area');
+  const radiusArea = parentElement.querySelector('#nb-radius-area');
+  const budgetArea = parentElement.querySelector('#nb-budget-area');
+  const openArea = parentElement.querySelector('#nb-open-area');
   const subLabel = parentElement.querySelector('#nb-sub-label');
+  const subNote = parentElement.querySelector('#nb-sub-note');
+  const budgetNote = parentElement.querySelector('#nb-budget-note');
+  const openNote = parentElement.querySelector('#nb-open-note');
   const summary = parentElement.querySelector('#nb-summary');
   const button = parentElement.querySelector('#nb-search');
   const status = parentElement.querySelector('#nb-status');
-  if (!kindEl || !subEl || !radiusEl || !budgetEl || !openEl || !button || !status) return;
+  if (!kindArea || !subArea || !radiusArea || !budgetArea || !openArea || !button || !status) return;
 
   const initial = (data && data.initial && typeof data.initial === 'object') ? data.initial : {};
   const lunchGenres = Array.isArray(data?.lunch_genres) && data.lunch_genres.length ? data.lunch_genres.map(String) : ['おまかせ'];
   const googleEnabled = !!data?.google_enabled;
-  let cancelled = false;
-  let watchId = null;
-  let hardTimer = null;
-  let best = null;
-  let startedAt = 0;
+  const validKind = ['snack','lunch','sightseeing'].includes(String(initial.kind||'')) ? String(initial.kind) : 'snack';
 
-  const setOptions = (el, rows, wanted) => {
-    el.innerHTML = '';
-    for (const [label, value] of rows) {
-      const opt = document.createElement('option');
-      opt.value = String(value); opt.textContent = String(label); el.appendChild(opt);
-    }
-    if (wanted !== undefined && wanted !== null && rows.some(r => String(r[1]) === String(wanted))) el.value = String(wanted);
+  const defaults = {
+    snack: {subkind:'食べ歩き向き', radius_m:192, budget:'under1000', open:googleEnabled?'open':'all'},
+    lunch: {subkind:'おまかせ', radius_m:640, budget:'2000', open:googleEnabled?'open':'all'},
+    sightseeing: {subkind:'なんでも', radius_m:800, budget:'under1000', open:googleEnabled?'open':'all'}
   };
-  setOptions(kindEl, [['🍡 おやつ','snack'],['🍽️ ランチ','lunch'],['🏛️ 観光','sightseeing']], initial.kind || 'snack');
+  const perKind = JSON.parse(JSON.stringify(defaults));
+  perKind[validKind].subkind = String(initial.subkind || perKind[validKind].subkind);
+  perKind[validKind].radius_m = Number(initial.radius_m || perKind[validKind].radius_m);
+  perKind[validKind].budget = validKind === 'lunch'
+    ? String(initial.budget_limit != null ? initial.budget_limit : perKind[validKind].budget)
+    : (initial.budget_under_1000 === false ? 'all' : 'under1000');
+  perKind[validKind].open = googleEnabled && initial.open_now_only !== false ? 'open' : 'all';
+  let kind = validKind;
+  let cancelled = false, watchId = null, hardTimer = null, best = null, startedAt = 0;
 
-  const desiredForKind = (kind) => {
-    if (kind === String(initial.kind || '')) {
-      return {sub: initial.subkind, radius: initial.radius_m, budget: initial.budget_limit != null ? String(initial.budget_limit) : (initial.budget_under_1000 ? 'under1000' : 'all'), open: initial.open_now_only ? 'open' : 'all'};
-    }
-    if (kind === 'snack') return {sub:'食べ歩き向き',radius:'192',budget:'under1000',open:googleEnabled?'open':'all'};
-    if (kind === 'lunch') return {sub:'おまかせ',radius:'640',budget:'2000',open:googleEnabled?'open':'all'};
-    return {sub:'なんでも',radius:'800',budget:'all',open:googleEnabled?'open':'all'};
+  const makeChoice = (label, value, selected, onClick) => {
+    const b = document.createElement('button');
+    b.type = 'button'; b.className = 'legacy-choice' + (String(value) === String(selected) ? ' active' : '');
+    b.textContent = String(label); b.dataset.value = String(value);
+    b.addEventListener('click', () => onClick(String(value)));
+    return b;
+  };
+  const fillChoices = (root, rows, selected, onPick) => {
+    root.innerHTML = '';
+    rows.forEach(([label,value]) => root.appendChild(makeChoice(label,value,selected,onPick)));
   };
 
-  const refresh = () => {
-    const kind = kindEl.value || 'snack';
-    const wanted = desiredForKind(kind);
+  const render = () => {
+    const cfg = perKind[kind];
+    fillChoices(kindArea, [['🍡 おやつ','snack'],['🍽️ ランチ','lunch'],['🏛️ 観光','sightseeing']], kind, (v) => { kind=v; render(); });
+
     if (kind === 'snack') {
-      subLabel.textContent = '2　食べ方';
-      setOptions(subEl, [['🚶 食べ歩き向き','食べ歩き向き'],['🪑 店内中心','店内中心']], subEl.dataset.kind === kind ? subEl.value : wanted.sub);
-      setOptions(radiusEl, [['🚶 1分','64'],['🚶 3分','192'],['🚶 5分','320']], radiusEl.dataset.kind === kind ? radiusEl.value : String(wanted.radius));
-      setOptions(budgetEl, [['💴 1,000円以下','under1000'],['予算を問わない','all']], budgetEl.dataset.kind === kind ? budgetEl.value : wanted.budget);
+      subLabel.textContent = '食べ方';
+      fillChoices(subArea, [['🚶 食べ歩き向き','食べ歩き向き'],['🪑 店内中心','店内中心']], cfg.subkind, (v)=>{cfg.subkind=v;render();});
+      subNote.textContent = 'テイクアウト情報や店舗の種類・商品名から判定します。';
+      fillChoices(radiusArea, [['🚶 1分',64],['🚶 3分',192],['🚶 5分',320]], cfg.radius_m, (v)=>{cfg.radius_m=Number(v);render();});
+      fillChoices(budgetArea, [['💴 1,000円以下','under1000'],['○ 予算を問わない','all']], cfg.budget, (v)=>{cfg.budget=v;render();});
+      budgetNote.textContent = '価格情報がある候補は1,000円以下で絞ります。料金未登録の場所は候補に残します。';
     } else if (kind === 'lunch') {
-      subLabel.textContent = '2　ジャンル';
-      setOptions(subEl, lunchGenres.map(x => [x,x]), subEl.dataset.kind === kind ? subEl.value : wanted.sub);
-      setOptions(radiusEl, [['🚶 5分','320'],['🚶 10分','640'],['🚶 20分','1280']], radiusEl.dataset.kind === kind ? radiusEl.value : String(wanted.radius));
-      setOptions(budgetEl, [['💴 1,000円','1000'],['💴 2,000円','2000'],['💴 5,000円','5000']], budgetEl.dataset.kind === kind ? budgetEl.value : wanted.budget);
+      subLabel.textContent = 'ジャンル';
+      subArea.innerHTML = '';
+      const select = document.createElement('select'); select.className='legacy-select'; select.setAttribute('aria-label','ランチのジャンル');
+      lunchGenres.forEach((g)=>{ const opt=document.createElement('option'); opt.value=g; opt.textContent=g; select.appendChild(opt); });
+      if (lunchGenres.includes(cfg.subkind)) select.value=cfg.subkind; else {cfg.subkind=lunchGenres[0]||'おまかせ'; select.value=cfg.subkind;}
+      select.addEventListener('change',()=>{cfg.subkind=String(select.value||'おまかせ');updateSummary();}); subArea.appendChild(select);
+      subNote.textContent = '表示はまとめた分類ですが、元ジャンルを個別検索し、Googleの料理タイプ検索も併用して候補をまとめます。';
+      fillChoices(radiusArea, [['🚶 5分',320],['🚶 10分',640],['🚶 20分',1280]], cfg.radius_m, (v)=>{cfg.radius_m=Number(v);render();});
+      fillChoices(budgetArea, [['💴 1,000円','1000'],['💴 2,000円','2000'],['💴 5,000円','5000']], cfg.budget, (v)=>{cfg.budget=v;render();});
+      budgetNote.textContent = '選んだ金額以内を目安に絞ります。価格未登録の店は候補から落とさず残します。';
     } else {
-      subLabel.textContent = '2　種類';
-      setOptions(subEl, [['おまかせ','なんでも'],['🌳 公園','公園'],['⛩️ 神社・寺','神社・寺'],['🏛️ 博物館・施設','博物館・施設'],['🚃 電車・乗り物','電車・乗り物']], subEl.dataset.kind === kind ? subEl.value : wanted.sub);
-      setOptions(radiusEl, [['🚶 10分','800'],['🚶 20分','1600'],['＋ もう少し遠く','2500']], radiusEl.dataset.kind === kind ? radiusEl.value : String(wanted.radius));
-      setOptions(budgetEl, [['💴 1,000円以下','under1000'],['予算を問わない','all']], budgetEl.dataset.kind === kind ? budgetEl.value : wanted.budget);
+      subLabel.textContent = '種類';
+      fillChoices(subArea, [['おまかせ','なんでも'],['🌳 公園','公園'],['⛩️ 神社・寺','神社・寺'],['🏛️ 博物館・施設','博物館・施設'],['🚃 電車・乗り物','電車・乗り物']], cfg.subkind, (v)=>{cfg.subkind=v;render();});
+      subNote.textContent = '気軽に寄れる場所から選びます。';
+      fillChoices(radiusArea, [['🚶 10分くらい',800],['🚶 20分くらい',1600],['＋ もう少し遠く',2500]], cfg.radius_m, (v)=>{cfg.radius_m=Number(v);render();});
+      fillChoices(budgetArea, [['💴 1,000円以下','under1000'],['○ 予算を問わない','all']], cfg.budget, (v)=>{cfg.budget=v;render();});
+      budgetNote.textContent = '料金未登録の場所は候補に残します。';
     }
-    subEl.dataset.kind = kind; radiusEl.dataset.kind = kind; budgetEl.dataset.kind = kind;
-    setOptions(openEl, googleEnabled ? [['🟢 営業中だけ','open'],['時間を問わない','all']] : [['営業時間で絞らない','all']], openEl.dataset.ready ? openEl.value : wanted.open);
-    openEl.dataset.ready = '1';
+
+    if (googleEnabled) {
+      fillChoices(openArea, [['🟢 営業中だけ','open'],['○ 時間を問わない','all']], cfg.open, (v)=>{cfg.open=v;render();});
+      openNote.textContent = '営業中だけにすると、営業時間が未登録の場所は候補から外れることがあります。';
+    } else {
+      cfg.open='all'; openArea.innerHTML='<div class="legacy-note" style="margin:0">Google Places未設定のため、営業時間では絞り込みません。</div>'; openNote.textContent='';
+    }
     updateSummary();
   };
 
   const gather = () => {
-    const kind = kindEl.value || 'snack';
-    const radiusM = Number(radiusEl.value || 0);
-    const budgetValue = budgetEl.value || 'all';
+    const cfg = perKind[kind];
     return {
       kind,
-      subkind: subEl.value || (kind === 'lunch' ? 'おまかせ' : (kind === 'snack' ? '食べ歩き向き' : 'なんでも')),
-      radius_m: radiusM,
-      budget_under_1000: kind !== 'lunch' && budgetValue === 'under1000',
-      budget_limit: kind === 'lunch' ? Number(budgetValue || 2000) : null,
-      open_now_only: googleEnabled && openEl.value === 'open'
+      subkind: String(cfg.subkind || (kind==='lunch'?'おまかせ':kind==='snack'?'食べ歩き向き':'なんでも')),
+      radius_m: Number(cfg.radius_m || (kind==='snack'?192:kind==='lunch'?640:800)),
+      budget_under_1000: kind !== 'lunch' && cfg.budget === 'under1000',
+      budget_limit: kind === 'lunch' ? Number(cfg.budget || 2000) : null,
+      open_now_only: googleEnabled && cfg.open === 'open'
     };
   };
-  const updateSummary = () => {
-    const f = gather();
-    const kindLabel = f.kind === 'snack' ? 'おやつ' : (f.kind === 'lunch' ? 'ランチ' : '観光');
-    const mins = f.radius_m <= 64 ? '徒歩1分' : f.radius_m <= 192 ? '徒歩3分' : f.radius_m <= 320 ? '徒歩5分' : f.radius_m <= 640 ? '徒歩10分' : f.radius_m <= 1280 ? '徒歩20分' : f.radius_m <= 1600 ? '徒歩20分' : 'もう少し遠く';
-    const budget = f.kind === 'lunch' ? `${Number(f.budget_limit||0).toLocaleString()}円以内目安` : (f.budget_under_1000 ? '1,000円以下' : '予算指定なし');
-    summary.textContent = `${kindLabel} ／ ${f.subkind} ／ ${mins} ／ ${budget} ／ ${f.open_now_only ? '営業中のみ' : '営業時間で絞らない'}`;
-  };
+  function updateSummary(){
+    const f=gather();
+    const kindLabel=f.kind==='snack'?'おやつ':f.kind==='lunch'?'ランチ':'観光';
+    const mins=f.radius_m<=64?'徒歩1分':f.radius_m<=192?'徒歩3分':f.radius_m<=320?'徒歩5分':f.radius_m<=640?'徒歩10分':f.radius_m<=1280?'徒歩20分':f.radius_m<=1600?'徒歩20分':'もう少し遠く';
+    const budget=f.kind==='lunch'?`${Number(f.budget_limit||0).toLocaleString()}円以内目安`:(f.budget_under_1000?'1,000円以下':'予算指定なし');
+    summary.textContent=`${kindLabel}　／　${f.subkind}　／　${mins}くらい　／　${budget}　／　${f.open_now_only?'営業中のみ':'営業時間で絞らない'}`;
+  }
+  render();
 
-  kindEl.addEventListener('change', refresh);
-  subEl.addEventListener('change', updateSummary);
-  radiusEl.addEventListener('change', updateSummary);
-  budgetEl.addEventListener('change', updateSummary);
-  openEl.addEventListener('change', updateSummary);
-  refresh();
-
-  const stop = () => {
-    if (watchId !== null && navigator.geolocation) { try { navigator.geolocation.clearWatch(watchId); } catch (_) {} watchId = null; }
-    if (hardTimer) { clearTimeout(hardTimer); hardTimer = null; }
-  };
-  const unlock = () => { if (!cancelled) button.disabled = false; };
-  const emitBest = () => {
-    if (cancelled || !best?.coords) return;
-    stop();
-    const accuracy = Number(best.coords.accuracy || 0);
-    status.textContent = `現在地を取得しました（精度 ±${Math.round(accuracy)}m）。検索しています…`;
-    setTriggerValue('search_location', {
-      token: `${Date.now()}_${Math.random().toString(36).slice(2)}`,
-      latitude: Number(best.coords.latitude), longitude: Number(best.coords.longitude),
-      accuracy_m: accuracy, measured_at: new Date(best.timestamp || Date.now()).toISOString(),
-      filters: gather()
-    });
-    unlock();
-  };
-  const fail = (message, code=0) => {
-    stop(); status.textContent = String(message || '現在地を取得できませんでした。');
-    setTriggerValue('search_error', {token:`${Date.now()}_${Math.random().toString(36).slice(2)}`, code:Number(code||0), message:String(message||''), filters:gather()});
-    unlock();
-  };
-  const searchNow = () => {
-    if (!navigator.geolocation) { fail('この端末では位置情報を取得できません。'); return; }
-    stop(); best = null; startedAt = Date.now(); button.disabled = true;
-    status.textContent = '検索地点を高精度GPSで確認しています…';
-    watchId = navigator.geolocation.watchPosition((position) => {
-      if (cancelled || !position?.coords) return;
-      const accuracy = Number(position.coords.accuracy || Number.POSITIVE_INFINITY);
-      const bestAccuracy = best ? Number(best.coords?.accuracy || Number.POSITIVE_INFINITY) : Number.POSITIVE_INFINITY;
-      if (!best || accuracy < bestAccuracy) best = position;
-      const currentBest = best ? Number(best.coords?.accuracy || Number.POSITIVE_INFINITY) : Number.POSITIVE_INFINITY;
-      status.textContent = Number.isFinite(currentBest) ? `検索地点を高精度GPSで確認しています… ±${Math.round(currentBest)}m` : '検索地点を高精度GPSで確認しています…';
-      if (currentBest > 0 && currentBest <= 25) { emitBest(); return; }
-      if (currentBest > 0 && currentBest <= 45 && (Date.now() - startedAt) >= 1200) emitBest();
-    }, (error) => {
-      const bestAccuracy = best ? Number(best.coords?.accuracy || Number.POSITIVE_INFINITY) : Number.POSITIVE_INFINITY;
-      if (best && bestAccuracy > 0 && bestAccuracy <= 45) { emitBest(); return; }
-      const code = Number(error?.code || 0);
-      const msg = code === 1 ? '位置情報の利用が許可されていません。' : code === 3 ? '現在地の取得に時間がかかりました。' : '現在地を取得できませんでした。';
-      fail(msg, code);
-    }, {enableHighAccuracy:true, timeout:10000, maximumAge:0});
-    hardTimer = setTimeout(() => {
-      const bestAccuracy = best ? Number(best.coords?.accuracy || Number.POSITIVE_INFINITY) : Number.POSITIVE_INFINITY;
-      if (best && bestAccuracy > 0 && bestAccuracy <= 45) emitBest();
-      else if (best && Number.isFinite(bestAccuracy)) fail(`GPS精度が ±${Math.round(bestAccuracy)}m のため検索を中止しました。`, 3);
-      else fail('現在地を高精度で取得できませんでした。', 3);
-    }, 10500);
-  };
-  button.addEventListener('click', searchNow);
-  return () => { cancelled = true; stop(); button.removeEventListener('click', searchNow); };
+  const stop=()=>{if(watchId!==null&&navigator.geolocation){try{navigator.geolocation.clearWatch(watchId)}catch(_){}watchId=null}if(hardTimer){clearTimeout(hardTimer);hardTimer=null}};
+  const unlock=()=>{if(!cancelled)button.disabled=false};
+  const emitBest=()=>{if(cancelled||!best?.coords)return;stop();const accuracy=Number(best.coords.accuracy||0);status.textContent=`現在地を取得しました（精度 ±${Math.round(accuracy)}m）。検索しています…`;setTriggerValue('search_location',{token:`${Date.now()}_${Math.random().toString(36).slice(2)}`,latitude:Number(best.coords.latitude),longitude:Number(best.coords.longitude),accuracy_m:accuracy,measured_at:new Date(best.timestamp||Date.now()).toISOString(),filters:gather()});unlock()};
+  const fail=(message,code=0)=>{stop();status.textContent=String(message||'現在地を取得できませんでした。');setTriggerValue('search_error',{token:`${Date.now()}_${Math.random().toString(36).slice(2)}`,code:Number(code||0),message:String(message||''),filters:gather()});unlock()};
+  const searchNow=()=>{if(!navigator.geolocation){fail('この端末では位置情報を取得できません。');return}stop();best=null;startedAt=Date.now();button.disabled=true;status.textContent='検索地点を高精度GPSで確認しています…';watchId=navigator.geolocation.watchPosition((position)=>{if(cancelled||!position?.coords)return;const accuracy=Number(position.coords.accuracy||Number.POSITIVE_INFINITY);const bestAccuracy=best?Number(best.coords?.accuracy||Number.POSITIVE_INFINITY):Number.POSITIVE_INFINITY;if(!best||accuracy<bestAccuracy)best=position;const currentBest=best?Number(best.coords?.accuracy||Number.POSITIVE_INFINITY):Number.POSITIVE_INFINITY;status.textContent=Number.isFinite(currentBest)?`検索地点を高精度GPSで確認しています… ±${Math.round(currentBest)}m`:'検索地点を高精度GPSで確認しています…';if(currentBest>0&&currentBest<=25){emitBest();return}if(currentBest>0&&currentBest<=45&&(Date.now()-startedAt)>=1200)emitBest()},(error)=>{const bestAccuracy=best?Number(best.coords?.accuracy||Number.POSITIVE_INFINITY):Number.POSITIVE_INFINITY;if(best&&bestAccuracy>0&&bestAccuracy<=45){emitBest();return}const code=Number(error?.code||0);const msg=code===1?'位置情報の利用が許可されていません。':code===3?'現在地の取得に時間がかかりました。':'現在地を取得できませんでした。';fail(msg,code)},{enableHighAccuracy:true,timeout:10000,maximumAge:0});hardTimer=setTimeout(()=>{const bestAccuracy=best?Number(best.coords?.accuracy||Number.POSITIVE_INFINITY):Number.POSITIVE_INFINITY;if(best&&bestAccuracy>0&&bestAccuracy<=45)emitBest();else if(best&&Number.isFinite(bestAccuracy))fail(`GPS精度が ±${Math.round(bestAccuracy)}m のため検索を中止しました。`,3);else fail('現在地を高精度で取得できませんでした。',3)},10500)};
+  button.addEventListener('click',searchNow);
+  return()=>{cancelled=true;stop();button.removeEventListener('click',searchNow)};
 }
 """
 
@@ -21343,7 +21421,7 @@ def _get_nearby_batch_search_component_v320():
     _nearby_batch_search_component_initialized_v320 = True
     try:
         _nearby_batch_search_component_v320 = st.components.v2.component(
-            "tokyo_burari_nearby_batch_search_v327_v320ui",
+            "tokyo_burari_nearby_batch_search_v329_legacyui",
             html=_NEARBY_BATCH_SEARCH_HTML_V320,
             css=_NEARBY_BATCH_SEARCH_CSS_V320,
             js=_NEARBY_BATCH_SEARCH_JS_V320,
@@ -21354,83 +21432,97 @@ def _get_nearby_batch_search_component_v320():
 
 
 _TOILET_BATCH_SEARCH_HTML_V320 = r"""
-<div class="burari-toilet-batch-card">
-  <div class="burari-toilet-grid">
-    <label><span>1　距離</span><select id="tb-distance"><option value="1">🚶 1分</option><option value="3">🚶 3分</option></select></label>
-    <label><span>2　料金</span><select id="tb-fee"><option value="free">🆓 無料優先</option><option value="all">料金問わない</option></select></label>
-    <label><span>3　車いす</span><select id="tb-wheel"><option value="all">問わない</option><option value="yes">♿ 対応だけ</option></select></label>
-    <label><span>4　おむつ交換</span><select id="tb-baby"><option value="all">問わない</option><option value="yes">👶 交換台あり</option></select></label>
-    <label class="burari-toilet-wide"><span>5　利用時間</span><select id="tb-open"><option value="usable">🟢 今使える優先</option><option value="all">時間問わない</option></select></label>
+
+<div class="legacy-search-shell legacy-toilet-shell">
+  <div class="legacy-two-col">
+    <section class="legacy-step-card">
+      <div class="legacy-step-title"><span class="legacy-step-badge">1</span><span>距離</span></div>
+      <div id="tb-distance-area" class="legacy-choice-stack"></div>
+      <div class="legacy-note">検索時点の現在地からの近場だけを探します。</div>
+    </section>
+    <section class="legacy-step-card">
+      <div class="legacy-step-title"><span class="legacy-step-badge">2</span><span>料金</span></div>
+      <div id="tb-fee-area" class="legacy-choice-stack"></div>
+      <div class="legacy-note">無料優先は、明確に有料と登録された場所を除きます。</div>
+    </section>
   </div>
-  <div id="tb-summary" class="burari-toilet-summary"></div>
-  <button id="tb-search" type="button">🚻 この条件でトイレを探す</button>
-  <div id="tb-status" class="burari-toilet-status" aria-live="polite"></div>
+  <div class="legacy-two-col">
+    <section class="legacy-step-card">
+      <div class="legacy-step-title"><span class="legacy-step-badge">3</span><span>車いす</span></div>
+      <div id="tb-wheel-area" class="legacy-choice-stack"></div>
+    </section>
+    <section class="legacy-step-card">
+      <div class="legacy-step-title"><span class="legacy-step-badge">4</span><span>おむつ交換</span></div>
+      <div id="tb-baby-area" class="legacy-choice-stack"></div>
+    </section>
+  </div>
+  <section class="legacy-step-card legacy-wide-card">
+    <div class="legacy-step-title"><span class="legacy-step-badge">5</span><span>利用時間</span></div>
+    <div id="tb-open-area" class="legacy-choice-row"></div>
+    <div class="legacy-note">営業時間が登録されていないトイレは、候補を失わないため残します。</div>
+  </section>
+  <div id="tb-summary" class="legacy-summary"></div>
+  <button id="tb-search" class="legacy-search-button" type="button">🚻 この条件でトイレを探す</button>
+  <div id="tb-status" class="legacy-status" aria-live="polite"></div>
 </div>
 """
 
 _TOILET_BATCH_SEARCH_CSS_V320 = r"""
-.burari-toilet-batch-card{width:100%;box-sizing:border-box;font-family:inherit}
-.burari-toilet-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
-.burari-toilet-grid label{display:flex;flex-direction:column;gap:6px;padding:10px;border:1px solid rgba(80,120,150,.14);border-radius:14px;background:rgba(255,255,255,.82);box-sizing:border-box;min-width:0}
-.burari-toilet-grid label>span{font-size:12px;font-weight:800;color:rgba(31,38,48,.86)}
-.burari-toilet-grid select{width:100%;min-height:42px;border-radius:11px;border:1px solid rgba(80,110,130,.22);background:#fff;padding:7px 9px;font-size:13px;color:#202732;box-sizing:border-box}
-.burari-toilet-wide{grid-column:1/-1}
-.burari-toilet-summary{margin:10px 0 8px;padding:9px 11px;border-radius:11px;background:rgba(128,128,128,.055);font-size:12px;line-height:1.45;color:rgba(31,38,48,.76)}
-#tb-search{width:100%;min-height:54px;border-radius:16px;border:1.8px solid rgba(79,169,132,.66);background:linear-gradient(155deg,rgba(231,249,240,.99),rgba(226,245,251,.95));font:inherit;font-size:16px;font-weight:850;color:rgba(31,38,48,.96);box-shadow:0 9px 22px rgba(79,169,132,.10);cursor:pointer}
-#tb-search:disabled{opacity:.65;cursor:wait}.burari-toilet-status{min-height:20px;margin-top:7px;font-size:12px;line-height:1.35;color:rgba(31,38,48,.66)}
-@media(max-width:640px){.burari-toilet-grid{gap:7px}.burari-toilet-grid label{padding:8px}.burari-toilet-grid select{font-size:12px;min-height:40px}.burari-toilet-grid label>span{font-size:11px}}
+
+.legacy-search-shell{width:100%;box-sizing:border-box;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Hiragino Sans","Yu Gothic",sans-serif;color:rgba(31,38,48,.96)}
+.legacy-two-col{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px;align-items:stretch}
+.legacy-top-row{grid-template-columns:.88fr 1.12fr}
+.legacy-step-card{box-sizing:border-box;border:1px solid rgba(80,120,150,.18);border-radius:15px;background:rgba(255,255,255,.92);padding:12px;min-width:0}
+.legacy-wide-card{margin-bottom:10px}
+.legacy-step-title{display:flex;align-items:center;gap:8px;margin:0 0 10px;font-size:15px;font-weight:850;line-height:1.2}
+.legacy-step-badge{display:inline-flex;align-items:center;justify-content:center;flex:0 0 auto;width:27px;height:27px;border-radius:999px;background:#edf6ff;border:1px solid rgba(74,144,226,.16);color:#3379aa;font-size:12px;font-weight:900}
+.legacy-choice-stack{display:flex;flex-direction:column;gap:10px}
+.legacy-choice-row{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.legacy-choice{appearance:none;-webkit-appearance:none;width:100%;min-height:58px;box-sizing:border-box;border-radius:15px;border:1px solid rgba(88,96,108,.24);background:#fff;color:rgba(31,38,48,.95);font:inherit;font-size:16px;font-weight:650;line-height:1.2;padding:9px 10px;cursor:pointer;touch-action:manipulation;-webkit-tap-highlight-color:transparent;box-shadow:0 1px 1px rgba(0,0,0,.015)}
+.legacy-choice.active{background:#ff4b4b;border-color:#ff4b4b;color:#fff;box-shadow:0 4px 10px rgba(255,75,75,.15)}
+.legacy-choice:active{transform:translateY(1px)}
+.legacy-select{width:100%;min-height:58px;border-radius:14px;border:0;background:#f1f2f7;color:rgba(31,38,48,.96);padding:0 42px 0 14px;font:inherit;font-size:16px;font-weight:650;box-sizing:border-box}
+.legacy-note{margin-top:11px;font-size:12px;line-height:1.45;color:rgba(31,38,48,.57)}
+.legacy-summary{margin:12px 0 10px;padding:12px 13px;border-radius:13px;background:rgba(128,128,128,.055);font-size:13px;line-height:1.45;color:rgba(31,38,48,.78)}
+.legacy-search-button{width:100%;min-height:60px;border-radius:17px;border:2px solid rgba(79,169,132,.58);background:linear-gradient(155deg,rgba(231,249,240,.99),rgba(226,245,251,.95));font:inherit;font-size:18px;font-weight:850;color:rgba(31,38,48,.96);box-shadow:0 8px 18px rgba(79,169,132,.08);cursor:pointer;touch-action:manipulation}
+.legacy-search-button:disabled{opacity:.62;cursor:wait}
+.legacy-status{min-height:21px;margin-top:8px;font-size:12px;line-height:1.4;color:rgba(31,38,48,.64)}
+@media(max-width:640px){
+  .legacy-two-col{gap:8px;margin-bottom:8px}.legacy-top-row{grid-template-columns:.88fr 1.12fr}
+  .legacy-step-card{padding:10px;border-radius:14px}.legacy-step-title{font-size:13px;gap:6px;margin-bottom:8px}
+  .legacy-step-badge{width:24px;height:24px;font-size:11px}.legacy-choice-stack{gap:8px}.legacy-choice-row{gap:8px}
+  .legacy-choice{min-height:52px;border-radius:13px;font-size:14px;padding:8px 6px}.legacy-select{min-height:52px;font-size:14px}
+  .legacy-note{font-size:10.5px;margin-top:9px}.legacy-summary{font-size:12px;padding:10px 11px}.legacy-search-button{min-height:58px;font-size:17px}
+}
 """
 
 _TOILET_BATCH_SEARCH_JS_V320 = r"""
+
 export default function(component) {
   const { parentElement, setTriggerValue, data } = component;
-  const distanceEl = parentElement.querySelector('#tb-distance');
-  const feeEl = parentElement.querySelector('#tb-fee');
-  const wheelEl = parentElement.querySelector('#tb-wheel');
-  const babyEl = parentElement.querySelector('#tb-baby');
-  const openEl = parentElement.querySelector('#tb-open');
-  const summary = parentElement.querySelector('#tb-summary');
-  const button = parentElement.querySelector('#tb-search');
-  const status = parentElement.querySelector('#tb-status');
-  if (!distanceEl || !feeEl || !wheelEl || !babyEl || !openEl || !button || !status) return;
-  const initial = (data && data.initial && typeof data.initial === 'object') ? data.initial : {};
-  if (['1','3'].includes(String(initial.distance||''))) distanceEl.value = String(initial.distance);
-  if (['free','all'].includes(String(initial.fee||''))) feeEl.value = String(initial.fee);
-  if (['yes','all'].includes(String(initial.wheelchair||''))) wheelEl.value = String(initial.wheelchair);
-  if (['yes','all'].includes(String(initial.baby||''))) babyEl.value = String(initial.baby);
-  if (['usable','all'].includes(String(initial.open||''))) openEl.value = String(initial.open);
-  let cancelled=false, watchId=null, hardTimer=null, best=null, startedAt=0;
-  let loaderDoc = parentElement?.ownerDocument || document;
-  try {
-    const parentDoc = window.parent && window.parent.document ? window.parent.document : null;
-    if (parentDoc && parentDoc.getElementById('burari-global-loader-v326')) loaderDoc = parentDoc;
-  } catch (_) {}
-  let loaderFailSafeTimer = null;
-  const showTrainLoader = (message) => {
-    const overlay = loaderDoc.getElementById('burari-global-loader-v326');
-    if (!overlay) return;
-    const msg = loaderDoc.getElementById('burari-global-loader-message-v326');
-    if (msg) msg.textContent = String(message || '読み込み中…');
-    overlay.classList.add('burari-active');
-    if (loaderFailSafeTimer) clearTimeout(loaderFailSafeTimer);
-    // GPS itself has a 10.5s hard timeout. This is only a last-resort visual unlock,
-    // not a search timeout and it does not alter the underlying request.
-    loaderFailSafeTimer = setTimeout(() => { overlay.classList.remove('burari-active'); }, 13000);
+  const distanceArea=parentElement.querySelector('#tb-distance-area'), feeArea=parentElement.querySelector('#tb-fee-area'), wheelArea=parentElement.querySelector('#tb-wheel-area'), babyArea=parentElement.querySelector('#tb-baby-area'), openArea=parentElement.querySelector('#tb-open-area');
+  const summary=parentElement.querySelector('#tb-summary'), button=parentElement.querySelector('#tb-search'), status=parentElement.querySelector('#tb-status');
+  if(!distanceArea||!feeArea||!wheelArea||!babyArea||!openArea||!summary||!button||!status)return;
+  const initial=(data&&data.initial&&typeof data.initial==='object')?data.initial:{};
+  const state={
+    distance:['1','3'].includes(String(initial.distance||''))?String(initial.distance):'3',
+    fee:['free','all'].includes(String(initial.fee||''))?String(initial.fee):'free',
+    wheelchair:['yes','all'].includes(String(initial.wheelchair||''))?String(initial.wheelchair):'all',
+    baby:['yes','all'].includes(String(initial.baby||''))?String(initial.baby):'all',
+    open:['usable','all'].includes(String(initial.open||''))?String(initial.open):'usable'
   };
-  const hideTrainLoader = () => {
-    if (loaderFailSafeTimer) { clearTimeout(loaderFailSafeTimer); loaderFailSafeTimer = null; }
-    const overlay = loaderDoc.getElementById('burari-global-loader-v326');
-    if (overlay) overlay.classList.remove('burari-active');
-  };
-  const gather = () => ({
-    distance: distanceEl.value || '3', fee: feeEl.value || 'free',
-    wheelchair: wheelEl.value || 'all', baby: babyEl.value || 'all', open: openEl.value || 'usable'
-  });
-  const updateSummary = () => {
-    const f=gather(); summary.textContent=`徒歩${f.distance}分くらい ／ ${f.fee==='free'?'無料優先':'料金問わない'} ／ ${f.wheelchair==='yes'?'車いす対応':'車いす問わない'} ／ ${f.baby==='yes'?'交換台あり':'交換台問わない'} ／ ${f.open==='usable'?'今使える優先':'利用時間問わない'}`;
-  };
-  [distanceEl,feeEl,wheelEl,babyEl,openEl].forEach(el=>el.addEventListener('change',updateSummary)); updateSummary();
-  const stop=()=>{if(watchId!==null&&navigator.geolocation){try{navigator.geolocation.clearWatch(watchId)}catch(_){ }watchId=null}if(hardTimer){clearTimeout(hardTimer);hardTimer=null}};
+  let cancelled=false,watchId=null,hardTimer=null,best=null,startedAt=0;
+  let loaderDoc=parentElement?.ownerDocument||document;try{const parentDoc=window.parent&&window.parent.document?window.parent.document:null;if(parentDoc&&parentDoc.getElementById('burari-global-loader-v326'))loaderDoc=parentDoc}catch(_){}
+  let loaderFailSafeTimer=null;
+  const showTrainLoader=(message)=>{const overlay=loaderDoc.getElementById('burari-global-loader-v326');if(!overlay)return;const msg=loaderDoc.getElementById('burari-global-loader-message-v326');if(msg)msg.textContent=String(message||'読み込み中…');overlay.classList.add('burari-active');if(loaderFailSafeTimer)clearTimeout(loaderFailSafeTimer);loaderFailSafeTimer=setTimeout(()=>{overlay.classList.remove('burari-active')},13000)};
+  const hideTrainLoader=()=>{if(loaderFailSafeTimer){clearTimeout(loaderFailSafeTimer);loaderFailSafeTimer=null}const overlay=loaderDoc.getElementById('burari-global-loader-v326');if(overlay)overlay.classList.remove('burari-active')};
+  const makeChoice=(label,value,selected,onClick)=>{const b=document.createElement('button');b.type='button';b.className='legacy-choice'+(String(value)===String(selected)?' active':'');b.textContent=String(label);b.addEventListener('click',()=>onClick(String(value)));return b};
+  const fill=(root,rows,selected,key)=>{root.innerHTML='';rows.forEach(([label,value])=>root.appendChild(makeChoice(label,value,selected,(v)=>{state[key]=v;render()})))};
+  const gather=()=>({distance:state.distance,fee:state.fee,wheelchair:state.wheelchair,baby:state.baby,open:state.open});
+  const updateSummary=()=>{const f=gather();summary.textContent=`徒歩${f.distance}分くらい　／　${f.fee==='free'?'無料優先':'料金問わない'}　／　${f.wheelchair==='yes'?'車いす対応':'車いす問わない'}　／　${f.baby==='yes'?'交換台あり':'交換台問わない'}　／　${f.open==='usable'?'今使える優先':'利用時間問わない'}`};
+  const render=()=>{fill(distanceArea,[['🚶 1分','1'],['🚶 3分','3']],state.distance,'distance');fill(feeArea,[['🆓 無料優先','free'],['料金問わない','all']],state.fee,'fee');fill(wheelArea,[['♿ 対応だけ','yes'],['問わない','all']],state.wheelchair,'wheelchair');fill(babyArea,[['👶 交換台あり','yes'],['問わない','all']],state.baby,'baby');fill(openArea,[['🟢 今使える優先','usable'],['時間問わない','all']],state.open,'open');updateSummary()};
+  render();
+  const stop=()=>{if(watchId!==null&&navigator.geolocation){try{navigator.geolocation.clearWatch(watchId)}catch(_){}watchId=null}if(hardTimer){clearTimeout(hardTimer);hardTimer=null}};
   const unlock=()=>{if(!cancelled)button.disabled=false};
   const emitBest=()=>{if(cancelled||!best?.coords)return;stop();const accuracy=Number(best.coords.accuracy||0);status.textContent=`現在地を取得しました（精度 ±${Math.round(accuracy)}m）。トイレを検索しています…`;hideTrainLoader();setTriggerValue('search_location',{token:`${Date.now()}_${Math.random().toString(36).slice(2)}`,latitude:Number(best.coords.latitude),longitude:Number(best.coords.longitude),accuracy_m:accuracy,measured_at:new Date(best.timestamp||Date.now()).toISOString(),filters:gather()});unlock()};
   const fail=(message,code=0)=>{stop();status.textContent=String(message||'現在地を取得できませんでした。');hideTrainLoader();setTriggerValue('search_error',{token:`${Date.now()}_${Math.random().toString(36).slice(2)}`,code:Number(code||0),message:String(message||''),filters:gather()});unlock()};
@@ -21449,7 +21541,7 @@ def _get_toilet_batch_search_component_v320():
     _toilet_batch_search_component_initialized_v320 = True
     try:
         _toilet_batch_search_component_v320 = st.components.v2.component(
-            "tokyo_burari_toilet_batch_search_v326",
+            "tokyo_burari_toilet_batch_search_v329_legacyui",
             html=_TOILET_BATCH_SEARCH_HTML_V320,
             css=_TOILET_BATCH_SEARCH_CSS_V320,
             js=_TOILET_BATCH_SEARCH_JS_V320,
@@ -21647,7 +21739,7 @@ def page_toilets():
     if search_component is not None:
         search_component_result = search_component(
             data={"initial": {"distance": distance_mode, "fee": fee_mode, "wheelchair": wheelchair_mode, "baby": baby_mode, "open": open_mode}},
-            key=f"toilet_batch_search_v320_{prefix}",
+            key=f"toilet_batch_search_v329_{prefix}",
             on_search_location_change=lambda: None,
             on_search_error_change=lambda: None,
         )
@@ -22154,7 +22246,7 @@ def page_nearby():
     if search_component is not None:
         search_component_result = search_component(
             data={"initial": current_cfg, "lunch_genres": list(NEARBY_LUNCH_GENRES), "google_enabled": bool(GOOGLE_PLACES_API_KEY)},
-            key=f"nearby_batch_search_v320_{prefix}",
+            key=f"nearby_batch_search_v329_{prefix}",
             on_search_location_change=lambda: None,
             on_search_error_change=lambda: None,
         )
@@ -25721,17 +25813,76 @@ def page_tag_review(embedded=False):
         )
         return
 
-    selected_tag = st.selectbox(
-        "振り返るAIタグ",
-        available_tags,
-        format_func=lambda tag: f"{tag}（{int(counts.get(tag) or 0)}枚）",
-        key="ai_tag_review_selector_v207",
-    )
-    selected_tag = normalize_ai_photo_tag(selected_tag)
-    scope_label = f"🏷️ {selected_tag}"
-    st.markdown(f"### {html.escape(scope_label)} の振り返り")
+    # v330: choose one or more tags locally inside a form. Changing selections does
+    # not rerun/communicate; only the explicit apply button updates the active review scope.
+    active_tags_key = "_ai_tag_review_active_tags_v330"
+    active_mode_key = "_ai_tag_review_match_mode_v330"
+    active_tags = [
+        tag for tag in _normalize_tag_review_selection(st.session_state.get(active_tags_key) or [])
+        if tag in available_tags
+    ]
+    if not active_tags:
+        active_tags = [available_tags[0]]
+        st.session_state[active_tags_key] = list(active_tags)
+    active_mode = str(st.session_state.get(active_mode_key) or "any").lower()
+    if active_mode not in {"any", "all"}:
+        active_mode = "any"
+        st.session_state[active_mode_key] = active_mode
 
-    bundle = tag_review_bundle(source, selected_tag)
+    with st.form("ai_tag_review_selection_form_v330", clear_on_submit=False, border=True):
+        st.markdown("**振り返るAIタグを選ぶ**")
+        chosen_tags = st.multiselect(
+            "AIタグ（複数選択できます）",
+            available_tags,
+            default=active_tags,
+            format_func=lambda tag: f"{tag}（{int(counts.get(tag) or 0)}枚）",
+            key="ai_tag_review_multiselect_v330",
+        )
+        match_label = st.radio(
+            "複数タグのまとめ方",
+            ["どれか1つでも含む", "すべて含む"],
+            index=1 if active_mode == "all" else 0,
+            horizontal=True,
+            key="ai_tag_review_match_mode_form_v330",
+        )
+        st.caption("タグを選んでいる間は通信しません。下のボタンを押したときだけ反映します。")
+        apply_tag_selection = st.form_submit_button(
+            "このタグで振り返る",
+            type="primary",
+            use_container_width=True,
+        )
+
+    if apply_tag_selection:
+        cleaned_tags = [tag for tag in _normalize_tag_review_selection(chosen_tags) if tag in available_tags]
+        if not cleaned_tags:
+            st.error("振り返るAIタグを1つ以上選んでください。")
+        else:
+            st.session_state[active_tags_key] = cleaned_tags
+            st.session_state[active_mode_key] = "all" if match_label == "すべて含む" and len(cleaned_tags) > 1 else "any"
+            st.rerun()
+
+    selected_tags = [
+        tag for tag in _normalize_tag_review_selection(st.session_state.get(active_tags_key) or active_tags)
+        if tag in available_tags
+    ]
+    if not selected_tags:
+        selected_tags = [available_tags[0]]
+    match_mode = str(st.session_state.get(active_mode_key) or "any").lower()
+    if len(selected_tags) <= 1:
+        match_mode = "any"
+    elif match_mode not in {"any", "all"}:
+        match_mode = "any"
+
+    scope_key = tag_review_scope_key(selected_tags, match_mode)
+    scope_label = tag_review_scope_label(selected_tags, match_mode)
+    st.markdown(f"### {html.escape(scope_label)} の振り返り")
+    if len(selected_tags) > 1:
+        st.caption(
+            "対象：選んだタグをすべて含む写真" if match_mode == "all"
+            else "対象：選んだタグのどれか1つ以上を含む写真（同じ写真は1回だけ使います）"
+        )
+
+    bundle = tag_review_bundle(source, selected_tags, match_mode)
     stats = tag_review_stats(bundle)
     photo_count = int(stats.get("photo_count") or 0)
     day_count = int(stats.get("day_count") or 0)
@@ -25741,43 +25892,46 @@ def page_tag_review(embedded=False):
     if first_date and last_date:
         range_text = first_date if first_date == last_date else f"{first_date}〜{last_date}"
     st.write(
-        f"このAIタグの写真：**{photo_count}枚**　／　記録した日：**{day_count}日**"
+        f"対象写真：**{photo_count}枚**　／　記録した日：**{day_count}日**"
         + (f"　／　{range_text}" if range_text else "")
     )
     st.caption(
-        "同じ写真に複数のAIタグが付くため、1枚の写真が『子ども』『複数人』など複数の振り返りに含まれることがあります。"
+        "同じ写真に複数のAIタグが付いていても、1つの振り返りムービー内では同じ写真を重複して入れません。"
     )
     if photo_count == 0:
-        st.info("このAIタグの写真はありません。")
+        st.info("このタグ条件に該当する写真はありません。")
         return
 
-    saved = get_saved_tag_review(selected_tag)
+    saved = get_saved_tag_review(scope_key)
     storage_key = str((saved or {}).get("review_month") or "")[:7]
-    unsaved_token = hashlib.sha1(selected_tag.encode("utf-8")).hexdigest()[:12]
+    unsaved_token = hashlib.sha1(scope_key.encode("utf-8")).hexdigest()[:12]
     session_key = f"monthly_review_{storage_key}" if storage_key else f"ai_tag_review_unsaved_{unsaved_token}"
     if session_key not in st.session_state and saved:
         saved_review = _coerce_review_json(saved.get("review_json"))
-        if str(saved_review.get("_review_scope_type") or "") == "ai_tag" and normalize_ai_photo_tag(saved_review.get("_ai_tag_key")) == selected_tag:
+        saved_scope_key = normalize_ai_photo_tag(saved_review.get("_ai_tag_scope_key") or saved_review.get("_ai_tag_key"))
+        if str(saved_review.get("_review_scope_type") or "") == "ai_tag" and saved_scope_key == scope_key:
             st.session_state[session_key] = saved_review
     review = st.session_state.get(session_key)
-    if isinstance(review, dict) and normalize_ai_photo_tag(review.get("_ai_tag_key")) not in {"", selected_tag}:
-        review = None
-        st.session_state.pop(session_key, None)
+    if isinstance(review, dict):
+        review_scope_key = normalize_ai_photo_tag(review.get("_ai_tag_scope_key") or review.get("_ai_tag_key"))
+        if review_scope_key not in {"", scope_key}:
+            review = None
+            st.session_state.pop(session_key, None)
 
     if not review:
         if st.button(
-            "AIとこのタグを振り返る",
+            "AIと選んだタグを振り返る",
             type="primary",
             use_container_width=True,
             key=f"ai_tag_review_create_{unsaved_token}",
         ):
             try:
-                with st.spinner("このAIタグの写真を時系列につないでいます…"):
-                    review = make_tag_review(selected_tag, bundle)
-                    save_tag_review(selected_tag, review)
+                with st.spinner("選んだAIタグの写真を時系列につないでいます…"):
+                    review = make_tag_review(selected_tags, bundle, match_mode)
+                    save_tag_review(scope_key, review)
                 st.rerun()
             except Exception as exc:
-                st.error("AIタグ別の振り返りを作れませんでした。")
+                st.error("選んだタグの振り返りを作れませんでした。")
                 with st.expander("保護者向け詳細"):
                     st.code(str(exc))
         return
@@ -25787,7 +25941,7 @@ def page_tag_review(embedded=False):
     if not storage_key:
         storage_key = str(review.get("_tag_storage_month") or "")[:7]
     if not storage_key:
-        storage_key = tag_review_storage_month(selected_tag, create=True)
+        storage_key = tag_review_storage_month(scope_key, create=True)
 
     playback = get_monthly_playback(review)
     music_ready = monthly_playback_is_ready(playback)
@@ -25808,22 +25962,22 @@ def page_tag_review(embedded=False):
 
         render_monthly_ai_comments(review)
         if st.button(
-            "このAIタグをもう一度まとめる",
+            "このタグ条件をもう一度まとめる",
             use_container_width=True,
             key=f"ai_tag_regenerate_without_music_{unsaved_token}",
         ):
             try:
                 previous_playback = get_monthly_playback(review)
-                with st.spinner("このAIタグの記録をまとめ直しています…"):
-                    refreshed = make_tag_review(selected_tag, bundle)
+                with st.spinner("このタグ条件の記録をまとめ直しています…"):
+                    refreshed = make_tag_review(selected_tags, bundle, match_mode)
                     if previous_playback:
                         refreshed["_playback"] = previous_playback
                     refreshed = carry_monthly_family_share(refreshed, review, storage_key, scope_label, bundle)
-                    save_tag_review(selected_tag, refreshed)
+                    save_tag_review(scope_key, refreshed)
                 st.session_state[f"monthly_review_{storage_key}"] = refreshed
                 st.rerun()
             except Exception as exc:
-                st.error("AIタグ別の振り返りを作れませんでした。")
+                st.error("選んだタグの振り返りを作れませんでした。")
                 with st.expander("保護者向け詳細"):
                     st.code(str(exc))
         return
@@ -25958,22 +26112,22 @@ def page_tag_review(embedded=False):
     if st.session_state.get(comments_open_key):
         render_monthly_ai_comments(review)
         if st.button(
-            "このAIタグをもう一度まとめる",
+            "このタグ条件をもう一度まとめる",
             use_container_width=True,
             key=f"ai_tag_regenerate_with_music_{unsaved_token}",
         ):
             try:
                 previous_playback = get_monthly_playback(review)
-                with st.spinner("このAIタグの記録をまとめ直しています…"):
-                    refreshed = make_tag_review(selected_tag, bundle)
+                with st.spinner("このタグ条件の記録をまとめ直しています…"):
+                    refreshed = make_tag_review(selected_tags, bundle, match_mode)
                     if previous_playback:
                         refreshed["_playback"] = previous_playback
                     refreshed = carry_monthly_family_share(refreshed, review, storage_key, scope_label, bundle)
-                    save_tag_review(selected_tag, refreshed)
+                    save_tag_review(scope_key, refreshed)
                 st.session_state[f"monthly_review_{storage_key}"] = refreshed
                 st.rerun()
             except Exception as exc:
-                st.error("AIタグ別の振り返りを作れませんでした。")
+                st.error("選んだタグの振り返りを作れませんでした。")
                 with st.expander("保護者向け詳細"):
                     st.code(str(exc))
 
