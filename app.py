@@ -32,7 +32,7 @@ import streamlit as st
 # Freshly generated update: 2026-08-31 23:49 JST
 GENERATED_UPDATE_JST = "2026-09-08T18:48:00+09:00"
 
-APP_BUILD = "v321"
+APP_BUILD = "v323"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -1718,6 +1718,17 @@ export default function(component) {
 
   let pendingMedia = null;
   let pendingVideoBlob = null;
+  // v323: gallery photos are shown from a local object URL immediately.
+  // Full-size decoding/resizing for save runs asynchronously so choosing a photo
+  // does not leave the screen looking frozen while a 12-50MP phone image is decoded.
+  let pendingPhotoPreparePromise = null;
+  let pendingPhotoPreviewUrl = '';
+  let pendingPhotoLoadGeneration = 0;
+  const revokePendingPhotoPreviewUrl = () => {
+    if (!pendingPhotoPreviewUrl) return;
+    try { URL.revokeObjectURL(pendingPhotoPreviewUrl); } catch (_) {}
+    pendingPhotoPreviewUrl = '';
+  };
   const PHOTO_EMOTION_ORDER = ['', 'cozy', 'joy', 'surprise', 'anger', 'sadness', 'frustration'];
   const PHOTO_EMOTIONS = {
     cozy: { emoji: '🥰', color: '#F3B6A0', label: 'ほっこりした' },
@@ -1896,6 +1907,7 @@ export default function(component) {
 
   const hideReview = () => {
     disarmGoodMomentsButton();
+    revokePendingPhotoPreviewUrl();
     if (review) review.hidden = true;
     if (reviewImageShell) reviewImageShell.hidden = true;
     if (reviewEmotionHint) reviewEmotionHint.hidden = true;
@@ -2018,6 +2030,9 @@ export default function(component) {
     }
     pendingMedia = null;
     pendingVideoBlob = null;
+    pendingPhotoLoadGeneration += 1;
+    pendingPhotoPreparePromise = null;
+    revokePendingPhotoPreviewUrl();
     showMenu();
   };
 
@@ -2486,29 +2501,64 @@ export default function(component) {
   };
 
   const prepareImageFile = async (file) => {
-    const url = URL.createObjectURL(file);
+    // Keep the saved-photo quality target (max 1600px / JPEG 0.86), but prefer
+    // createImageBitmap + OffscreenCanvas so decoding/resizing can happen away from
+    // the most visible UI path on modern Android WebView/Chrome.
+    let bitmap = null;
+    let fallbackUrl = '';
+    let source = null;
     try {
-      const img = await new Promise((resolve, reject) => {
-        const node = new Image();
-        node.onload = () => resolve(node);
-        node.onerror = reject;
-        node.src = url;
-      });
-      const srcW = img.naturalWidth || img.width;
-      const srcH = img.naturalHeight || img.height;
+      if (typeof globalThis.createImageBitmap === 'function') {
+        try {
+          bitmap = await globalThis.createImageBitmap(file, { imageOrientation: 'from-image' });
+          source = bitmap;
+        } catch (err) {
+          console.warn('createImageBitmap unavailable for this photo; using Image fallback', err);
+        }
+      }
+      if (!source) {
+        fallbackUrl = URL.createObjectURL(file);
+        source = await new Promise((resolve, reject) => {
+          const node = new Image();
+          node.decoding = 'async';
+          node.onload = () => resolve(node);
+          node.onerror = reject;
+          node.src = fallbackUrl;
+        });
+      }
+
+      const srcW = Number(source.width || source.naturalWidth || 0);
+      const srcH = Number(source.height || source.naturalHeight || 0);
+      if (!(srcW > 0 && srcH > 0)) throw new Error('invalid image dimensions');
       const maxSide = 1600;
       const scale = Math.min(1, maxSide / Math.max(srcW, srcH));
       const width = Math.max(1, Math.round(srcW * scale));
       const height = Math.max(1, Math.round(srcH * scale));
-      canvas.width = width;
-      canvas.height = height;
-      const ctx = canvas.getContext('2d', { alpha: false });
-      ctx.drawImage(img, 0, 0, width, height);
-      const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', 0.86));
+
+      let blob = null;
+      if (typeof globalThis.OffscreenCanvas === 'function') {
+        try {
+          const offscreen = new globalThis.OffscreenCanvas(width, height);
+          const ctx = offscreen.getContext('2d', { alpha: false, desynchronized: true });
+          ctx.drawImage(source, 0, 0, width, height);
+          blob = await offscreen.convertToBlob({ type: 'image/jpeg', quality: 0.86 });
+        } catch (err) {
+          console.warn('OffscreenCanvas conversion unavailable; using DOM canvas', err);
+        }
+      }
+      if (!blob) {
+        const workCanvas = document.createElement('canvas');
+        workCanvas.width = width;
+        workCanvas.height = height;
+        const ctx = workCanvas.getContext('2d', { alpha: false });
+        ctx.drawImage(source, 0, 0, width, height);
+        blob = await new Promise((resolve) => workCanvas.toBlob(resolve, 'image/jpeg', 0.86));
+      }
       if (!blob) throw new Error('image conversion failed');
       return await blobToDataUrl(blob);
     } finally {
-      URL.revokeObjectURL(url);
+      if (bitmap && typeof bitmap.close === 'function') { try { bitmap.close(); } catch (_) {} }
+      if (fallbackUrl) { try { URL.revokeObjectURL(fallbackUrl); } catch (_) {} }
     }
   };
 
@@ -2879,14 +2929,18 @@ export default function(component) {
   const chooseGalleryPhoto = async () => {
     const file = galleryInput.files && galleryInput.files[0];
     if (!file) return;
+    const generation = ++pendingPhotoLoadGeneration;
+    let previewUrl = '';
     try {
-      const dataUrl = await prepareImageFile(file);
+      // Display the exact local photo immediately. Do not wait for full-resolution decode,
+      // 1600px resize and JPEG serialization before the user sees the review screen.
+      previewUrl = URL.createObjectURL(file);
       pendingMedia = {
         kind: 'photo',
-        data_url: dataUrl,
+        data_url: '',
         name: file.name || 'gallery.jpg',
         source: 'gallery',
-        captured_at: new Date().toISOString(),
+        captured_at: file.lastModified ? new Date(file.lastModified).toISOString() : new Date().toISOString(),
         emotion: '',
         parenting: '',
         location: {
@@ -2895,10 +2949,27 @@ export default function(component) {
           error_message: '写真フォルダから選んだ画像の撮影位置は自動取得しません。'
         }
       };
-      showPhotoReview(dataUrl);
-      setStatus('');
+      showPhotoReview(previewUrl);
+      // showPhotoReview() starts by hiding the previous review, so register the new
+      // object URL only after that call. It will then be revoked on retry/close.
+      pendingPhotoPreviewUrl = previewUrl;
+      previewUrl = '';
+      setStatus('写真を表示しました。保存用データを準備しています…');
+
+      pendingPhotoPreparePromise = prepareImageFile(file).then((dataUrl) => {
+        if (generation !== pendingPhotoLoadGeneration) return '';
+        if (pendingMedia && pendingMedia.kind === 'photo' && pendingMedia.source === 'gallery') {
+          pendingMedia.data_url = dataUrl;
+          setStatus('');
+        }
+        return dataUrl;
+      });
+      // Avoid an unhandled rejection if the user immediately navigates away. Save/retry
+      // still receives the same promise and can report the error when relevant.
+      pendingPhotoPreparePromise.catch(() => {});
     } catch (err) {
       console.error(err);
+      if (previewUrl) { try { URL.revokeObjectURL(previewUrl); } catch (_) {} }
       const message = '写真を読み込めませんでした。別の写真を選んでください。';
       setStatus(message);
       setTriggerValue('camera_error', { name: 'GalleryError', message });
@@ -3020,12 +3091,28 @@ export default function(component) {
       return;
     }
 
-    setStatus('写真を保存しています…');
-    if (stream) {
-      stream.getTracks().forEach((track) => track.stop());
-      stream = null;
+    try {
+      if (mediaToSave.kind === 'photo' && mediaToSave.source === 'gallery' && !mediaToSave.data_url && pendingPhotoPreparePromise) {
+        setStatus('写真を保存する準備をしています…');
+        const preparedDataUrl = await pendingPhotoPreparePromise;
+        if (!preparedDataUrl) throw new Error('gallery image preparation cancelled');
+        mediaToSave.data_url = preparedDataUrl;
+      }
+      if (!mediaToSave.data_url) throw new Error('写真データを準備できませんでした。');
+      setStatus('写真を保存しています…');
+      if (stream) {
+        stream.getTracks().forEach((track) => track.stop());
+        stream = null;
+      }
+      setTriggerValue('photo', mediaToSave);
+    } catch (err) {
+      console.error(err);
+      reviewSave.disabled = false;
+      reviewRetry.disabled = false;
+      const message = '写真を保存する準備ができませんでした。もう一度選びなおしてください。';
+      setStatus(message);
+      setTriggerValue('camera_error', { name: 'GalleryPhotoPrepareError', message });
     }
-    setTriggerValue('photo', mediaToSave);
   };
 
   const retryPendingMedia = async () => {
@@ -3033,6 +3120,9 @@ export default function(component) {
     const source = pendingMedia.source;
     pendingMedia = null;
     pendingVideoBlob = null;
+    pendingPhotoLoadGeneration += 1;
+    pendingPhotoPreparePromise = null;
+    revokePendingPhotoPreviewUrl();
     reviewSave.disabled = false;
     reviewRetry.disabled = false;
     disarmGoodMomentsButton();
@@ -3133,6 +3223,9 @@ export default function(component) {
     stopButton.removeEventListener('click', closeCamera);
     galleryInput.removeEventListener('change', chooseGalleryPhoto);
     galleryVideoInput?.removeEventListener('change', chooseGalleryVideo);
+    pendingPhotoLoadGeneration += 1;
+    pendingPhotoPreparePromise = null;
+    revokePendingPhotoPreviewUrl();
     reviewSave.removeEventListener('click', savePendingMedia);
     reviewRetry.removeEventListener('click', retryPendingMedia);
     reviewImageShell?.removeEventListener('click', cycleReviewEmotion);
@@ -17142,7 +17235,7 @@ def _vision_ready_photo(image_bytes, max_side=720, quality=76):
         return image_bytes
 
 
-AI_PHOTO_TAG_VERSION = 1
+AI_PHOTO_TAG_VERSION = 2
 AI_PHOTO_TAG_BATCH_SIZE = 4
 AI_PHOTO_TAG_MAX_PER_PHOTO = 12
 AI_PHOTO_TAG_MANUAL_MAX_PER_RUN = 40
@@ -17166,6 +17259,9 @@ _AI_PHOTO_TAG_ALIASES = {
     "屋内": "室内",
     "屋外空間": "屋外",
     "飲食店": "レストラン",
+    "東京電車プロジェクト": "電車プロジェクト",
+    "鉄道プロジェクト": "電車プロジェクト",
+    "駅プロジェクト": "電車プロジェクト",
 }
 _AI_PHOTO_TAG_IGNORED = {
     "写真", "画像", "撮影", "被写体", "スナップ写真", "スナップ", "カメラ"
@@ -17211,8 +17307,28 @@ def photo_ai_tags(photo):
     return normalize_ai_photo_tags(raw)
 
 
+def photo_ai_tag_version(photo):
+    reflection = (photo or {}).get("reflection_json") or {}
+    if not isinstance(reflection, dict):
+        return 0
+    raw = reflection.get("ai_tags")
+    if not isinstance(raw, dict):
+        return 0
+    try:
+        return max(0, int(raw.get("version") or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
 def photo_has_ai_tags(photo):
     return bool(photo_ai_tags(photo))
+
+
+def photo_needs_ai_tagging(photo):
+    # v322: version 2 adds the special train-project judgment. Existing v1 tags are
+    # rechecked only when the normal tag action/diary flow reaches the photo, so no
+    # background bulk scan or extra communication is introduced.
+    return (not photo_has_ai_tags(photo)) or photo_ai_tag_version(photo) < AI_PHOTO_TAG_VERSION
 
 
 def _taggable_still_photos(photos, only_untagged=False):
@@ -17225,7 +17341,7 @@ def _taggable_still_photos(photos, only_untagged=False):
         storage_path = str(photo.get("storage_path") or "").strip()
         if not photo_id or not storage_path or photo_id in seen:
             continue
-        if only_untagged and photo_has_ai_tags(photo):
+        if only_untagged and not photo_needs_ai_tagging(photo):
             continue
         seen.add(photo_id)
         result.append(photo)
@@ -17244,8 +17360,9 @@ def _photo_tag_schema(slots):
                 "minItems": 1,
                 "maxItems": AI_PHOTO_TAG_MAX_PER_PHOTO,
             },
+            "train_project": {"type": "boolean"},
         },
-        "required": ["slot", "tags"],
+        "required": ["slot", "tags", "train_project"],
         "additionalProperties": False,
     }
     return {
@@ -17282,6 +17399,9 @@ def _photo_tag_prompt(slots):
 - パパ、ママ、友達、家族、本人など、写真だけでは確認できない人物関係や個人名を推測しない。
 - 感情、性格、能力、健康状態、民族などを推測しない。
 - 店名、駅名、路線名などの固有名詞は、写真内の文字等から明確に確認できる場合だけ付ける。不確かな場合は一般的なタグにする。
+- 駅名標、ホームの駅名看板、駅入口の駅名表示、駅構内の案内板などで「駅名そのもの」が写真から明確に読める場合は、train_project を true にする。
+- train_project=true の写真では、読めた駅名も可能ならタグに含める（例: 新宿駅）。駅名が読めない、単に線路・ホーム・電車が写っているだけの場合は、この条件だけを理由に train_project=true にしない。
+- 「電車プロジェクト」はアプリ側で自動付与する専用タグなので、tags 内に無理に書かなくてよい。
 """.strip()
 
 
@@ -17316,7 +17436,7 @@ def tag_untagged_photos_with_ai(photos, batch_size=AI_PHOTO_TAG_BATCH_SIZE, max_
                 raw = download_photo(str(photo.get("storage_path") or ""))
                 if not raw:
                     raise ValueError("写真データが空です")
-                vision_bytes = _vision_ready_photo(raw, max_side=1024, quality=82)
+                vision_bytes = _vision_ready_photo(raw, max_side=1280, quality=84)
                 loaded.append((slot, photo))
                 image_items.append((f"【{slot}】このラベル直後の1枚だけを{slot}として解析してください。", vision_bytes))
             except Exception as exc:
@@ -17330,7 +17450,7 @@ def tag_untagged_photos_with_ai(photos, batch_size=AI_PHOTO_TAG_BATCH_SIZE, max_
             response = ask_json_with_images(
                 _photo_tag_prompt(slots),
                 image_items,
-                "burari_photo_tags_v177",
+                "burari_photo_tags_v322_train_project",
                 _photo_tag_schema(slots),
                 max_output_tokens=max(700, 260 * len(slots)),
             )
@@ -17345,6 +17465,9 @@ def tag_untagged_photos_with_ai(photos, batch_size=AI_PHOTO_TAG_BATCH_SIZE, max_
                 continue
             slot = str(item.get("slot") or "").strip()
             tags = normalize_ai_photo_tags(item.get("tags") or [])
+            if bool(item.get("train_project")):
+                # Keep the dedicated project tag even when the normal tag list is already full.
+                tags = normalize_ai_photo_tags(["電車プロジェクト"] + [tag for tag in tags if tag != "電車プロジェクト"])
             if slot in slots and tags:
                 result_map[slot] = tags
 
@@ -17374,14 +17497,19 @@ def tag_untagged_photos_with_ai(photos, batch_size=AI_PHOTO_TAG_BATCH_SIZE, max_
             reflection = latest.get("reflection_json") or {}
             if not isinstance(reflection, dict):
                 reflection = {}
-            # If another operation already completed tagging, preserve its newer result.
-            existing = photo_ai_tags({"reflection_json": reflection})
-            if existing:
+            # Preserve a newer/current result written by another operation. v1 results are
+            # upgraded to v2 so station-name signs can receive the train-project tag.
+            existing_photo = {"reflection_json": reflection}
+            existing = photo_ai_tags(existing_photo)
+            existing_version = photo_ai_tag_version(existing_photo)
+            if existing and existing_version >= AI_PHOTO_TAG_VERSION:
                 continue
+            if existing:
+                tags = normalize_ai_photo_tags(tags + [tag for tag in existing if tag not in tags])
             reflection["ai_tags"] = {
                 "version": AI_PHOTO_TAG_VERSION,
                 "tags": tags,
-                "source": "vision_batch_4_v177",
+                "source": "vision_batch_4_v322_train_project",
                 "updated_at": now_jst().isoformat(),
             }
             try:
@@ -17445,9 +17573,9 @@ def _set_photo_tag_run_notice(stats, scope_label=""):
     remaining = max(0, before - tagged)
     prefix = f"{scope_label}：" if scope_label else ""
     if tagged:
-        message = f"{prefix}{tagged}枚の写真にAIタグを追加しました。"
+        message = f"{prefix}{tagged}枚の写真のAIタグを追加・更新しました。"
         if remaining:
-            message += f" 未タグは残り約{remaining}枚です。"
+            message += f" 未設定・更新待ちは残り約{remaining}枚です。"
         st.session_state["_photo_tag_notice"] = message
     elif attempted:
         st.session_state["_photo_tag_warning"] = f"{prefix}今回はタグを追加できませんでした。"
@@ -17470,26 +17598,26 @@ def render_photo_tag_notices():
 
 def render_ai_photo_tag_action(photos, key, scope_label="この範囲", max_photos=AI_PHOTO_TAG_MANUAL_MAX_PER_RUN):
     taggable = _taggable_still_photos(photos, only_untagged=False)
-    untagged = [photo for photo in taggable if not photo_has_ai_tags(photo)]
+    pending = [photo for photo in taggable if photo_needs_ai_tagging(photo)]
     if not taggable:
         return False
-    if not untagged:
-        st.caption("🏷️ この範囲の写真はすべてAIタグ済みです。")
+    if not pending:
+        st.caption("🏷️ この範囲の写真は最新のAIタグ判定済みです。")
         return False
 
-    count = len(untagged)
-    st.caption(f"AIタグ未設定：{count}枚　／　4枚ずつまとめて解析します。")
+    count = len(pending)
+    st.caption(f"AIタグ未設定・更新対象：{count}枚　／　4枚ずつまとめて解析します。")
     if count > int(max_photos):
         st.caption(f"一度の操作では最大{int(max_photos)}枚まで処理します。残りは同じボタンでもう一度続けられます。")
     if st.button(
-        f"🏷️ タグのない写真にタグをつける（{count}枚）",
+        f"🏷️ AIタグを付ける・更新する（{count}枚）",
         use_container_width=True,
         key=f"ai_photo_tag_action_{key}",
     ):
         try:
-            with st.spinner("写真を4枚ずつ見て、検索用のタグを付けています…"):
+            with st.spinner("写真を4枚ずつ見て、駅名表示を含む検索用タグを判定しています…"):
                 stats = tag_untagged_photos_with_ai(
-                    untagged,
+                    pending,
                     batch_size=AI_PHOTO_TAG_BATCH_SIZE,
                     max_photos=max_photos,
                 )
