@@ -32,7 +32,7 @@ import streamlit as st
 # Freshly generated update: 2026-08-31 23:49 JST
 GENERATED_UPDATE_JST = "2026-09-08T18:48:00+09:00"
 
-APP_BUILD = "v319"
+APP_BUILD = "v321"
 
 # Cold-start priority: home and camera UI should not import AI/image/database clients
 # until a feature actually needs them. Streamlit itself is the only eager app dependency.
@@ -20822,6 +20822,296 @@ html,body{{margin:0;padding:0;background:transparent;font-family:-apple-system,B
     st.components.v1.html(map_html, height=550, scrolling=False)
 
 
+
+# ============================================================
+# v320: Batch-only nearby/toilet filter UI.
+# All option changes remain inside the browser component and do not trigger
+# Streamlit reruns or any provider/network search. Only the Search button emits
+# one payload containing all filters plus a fresh high-accuracy GPS fix.
+# ============================================================
+_NEARBY_BATCH_SEARCH_HTML_V320 = r"""
+<div class="burari-batch-card">
+  <div class="burari-batch-grid">
+    <label><span>1　何に寄る？</span><select id="nb-kind"></select></label>
+    <label><span id="nb-sub-label">2　条件</span><select id="nb-sub"></select></label>
+    <label><span>3　どのくらいまで？</span><select id="nb-radius"></select></label>
+    <label><span>4　予算</span><select id="nb-budget"></select></label>
+    <label class="burari-wide"><span>5　営業時間</span><select id="nb-open"></select></label>
+  </div>
+  <div id="nb-summary" class="burari-batch-summary"></div>
+  <button id="nb-search" type="button">🔎 この条件で検索</button>
+  <div id="nb-status" class="burari-batch-status" aria-live="polite"></div>
+</div>
+"""
+
+_NEARBY_BATCH_SEARCH_CSS_V320 = r"""
+.burari-batch-card{width:100%;box-sizing:border-box;font-family:inherit}
+.burari-batch-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.burari-batch-grid label{display:flex;flex-direction:column;gap:6px;padding:10px;border:1px solid rgba(80,120,150,.14);border-radius:14px;background:rgba(255,255,255,.82);box-sizing:border-box;min-width:0}
+.burari-batch-grid label>span{font-size:12px;font-weight:800;line-height:1.25;color:rgba(31,38,48,.86)}
+.burari-batch-grid select{width:100%;min-height:42px;border-radius:11px;border:1px solid rgba(80,110,130,.22);background:#fff;padding:7px 9px;font-size:13px;color:#202732;box-sizing:border-box}
+.burari-wide{grid-column:1/-1}
+.burari-batch-summary{margin:10px 0 8px;padding:9px 11px;border-radius:11px;background:rgba(128,128,128,.055);font-size:12px;line-height:1.45;color:rgba(31,38,48,.76)}
+#nb-search{width:100%;min-height:54px;border-radius:16px;border:1.8px solid rgba(79,169,132,.66);background:linear-gradient(155deg,rgba(231,249,240,.99),rgba(226,245,251,.95));font:inherit;font-size:16px;font-weight:850;color:rgba(31,38,48,.96);box-shadow:0 9px 22px rgba(79,169,132,.10);cursor:pointer}
+#nb-search:disabled{opacity:.65;cursor:wait}
+.burari-batch-status{min-height:20px;margin-top:7px;font-size:12px;line-height:1.35;color:rgba(31,38,48,.66)}
+@media(max-width:640px){.burari-batch-grid{gap:7px}.burari-batch-grid label{padding:8px}.burari-batch-grid select{font-size:12px;min-height:40px}.burari-batch-grid label>span{font-size:11px}}
+"""
+
+_NEARBY_BATCH_SEARCH_JS_V320 = r"""
+export default function(component) {
+  const { parentElement, setTriggerValue, data } = component;
+  const kindEl = parentElement.querySelector('#nb-kind');
+  const subEl = parentElement.querySelector('#nb-sub');
+  const radiusEl = parentElement.querySelector('#nb-radius');
+  const budgetEl = parentElement.querySelector('#nb-budget');
+  const openEl = parentElement.querySelector('#nb-open');
+  const subLabel = parentElement.querySelector('#nb-sub-label');
+  const summary = parentElement.querySelector('#nb-summary');
+  const button = parentElement.querySelector('#nb-search');
+  const status = parentElement.querySelector('#nb-status');
+  if (!kindEl || !subEl || !radiusEl || !budgetEl || !openEl || !button || !status) return;
+
+  const initial = (data && data.initial && typeof data.initial === 'object') ? data.initial : {};
+  const lunchGenres = Array.isArray(data?.lunch_genres) && data.lunch_genres.length ? data.lunch_genres.map(String) : ['おまかせ'];
+  const googleEnabled = !!data?.google_enabled;
+  let cancelled = false;
+  let watchId = null;
+  let hardTimer = null;
+  let best = null;
+  let startedAt = 0;
+
+  const setOptions = (el, rows, wanted) => {
+    el.innerHTML = '';
+    for (const [label, value] of rows) {
+      const opt = document.createElement('option');
+      opt.value = String(value); opt.textContent = String(label); el.appendChild(opt);
+    }
+    if (wanted !== undefined && wanted !== null && rows.some(r => String(r[1]) === String(wanted))) el.value = String(wanted);
+  };
+  setOptions(kindEl, [['🍡 おやつ','snack'],['🍽️ ランチ','lunch'],['🏛️ 観光','sightseeing']], initial.kind || 'snack');
+
+  const desiredForKind = (kind) => {
+    if (kind === String(initial.kind || '')) {
+      return {sub: initial.subkind, radius: initial.radius_m, budget: initial.budget_limit != null ? String(initial.budget_limit) : (initial.budget_under_1000 ? 'under1000' : 'all'), open: initial.open_now_only ? 'open' : 'all'};
+    }
+    if (kind === 'snack') return {sub:'食べ歩き向き',radius:'192',budget:'under1000',open:googleEnabled?'open':'all'};
+    if (kind === 'lunch') return {sub:'おまかせ',radius:'640',budget:'2000',open:googleEnabled?'open':'all'};
+    return {sub:'なんでも',radius:'800',budget:'all',open:googleEnabled?'open':'all'};
+  };
+
+  const refresh = () => {
+    const kind = kindEl.value || 'snack';
+    const wanted = desiredForKind(kind);
+    if (kind === 'snack') {
+      subLabel.textContent = '2　食べ方';
+      setOptions(subEl, [['🚶 食べ歩き向き','食べ歩き向き'],['🪑 店内中心','店内中心']], subEl.dataset.kind === kind ? subEl.value : wanted.sub);
+      setOptions(radiusEl, [['🚶 1分','64'],['🚶 3分','192'],['🚶 5分','320']], radiusEl.dataset.kind === kind ? radiusEl.value : String(wanted.radius));
+      setOptions(budgetEl, [['💴 1,000円以下','under1000'],['予算を問わない','all']], budgetEl.dataset.kind === kind ? budgetEl.value : wanted.budget);
+    } else if (kind === 'lunch') {
+      subLabel.textContent = '2　ジャンル';
+      setOptions(subEl, lunchGenres.map(x => [x,x]), subEl.dataset.kind === kind ? subEl.value : wanted.sub);
+      setOptions(radiusEl, [['🚶 5分','320'],['🚶 10分','640'],['🚶 20分','1280']], radiusEl.dataset.kind === kind ? radiusEl.value : String(wanted.radius));
+      setOptions(budgetEl, [['💴 1,000円','1000'],['💴 2,000円','2000'],['💴 5,000円','5000']], budgetEl.dataset.kind === kind ? budgetEl.value : wanted.budget);
+    } else {
+      subLabel.textContent = '2　種類';
+      setOptions(subEl, [['おまかせ','なんでも'],['🌳 公園','公園'],['⛩️ 神社・寺','神社・寺'],['🏛️ 博物館・施設','博物館・施設'],['🚃 電車・乗り物','電車・乗り物']], subEl.dataset.kind === kind ? subEl.value : wanted.sub);
+      setOptions(radiusEl, [['🚶 10分','800'],['🚶 20分','1600'],['＋ もう少し遠く','2500']], radiusEl.dataset.kind === kind ? radiusEl.value : String(wanted.radius));
+      setOptions(budgetEl, [['💴 1,000円以下','under1000'],['予算を問わない','all']], budgetEl.dataset.kind === kind ? budgetEl.value : wanted.budget);
+    }
+    subEl.dataset.kind = kind; radiusEl.dataset.kind = kind; budgetEl.dataset.kind = kind;
+    setOptions(openEl, googleEnabled ? [['🟢 営業中だけ','open'],['時間を問わない','all']] : [['営業時間で絞らない','all']], openEl.dataset.ready ? openEl.value : wanted.open);
+    openEl.dataset.ready = '1';
+    updateSummary();
+  };
+
+  const gather = () => {
+    const kind = kindEl.value || 'snack';
+    const radiusM = Number(radiusEl.value || 0);
+    const budgetValue = budgetEl.value || 'all';
+    return {
+      kind,
+      subkind: subEl.value || (kind === 'lunch' ? 'おまかせ' : (kind === 'snack' ? '食べ歩き向き' : 'なんでも')),
+      radius_m: radiusM,
+      budget_under_1000: kind !== 'lunch' && budgetValue === 'under1000',
+      budget_limit: kind === 'lunch' ? Number(budgetValue || 2000) : null,
+      open_now_only: googleEnabled && openEl.value === 'open'
+    };
+  };
+  const updateSummary = () => {
+    const f = gather();
+    const kindLabel = f.kind === 'snack' ? 'おやつ' : (f.kind === 'lunch' ? 'ランチ' : '観光');
+    const mins = f.radius_m <= 64 ? '徒歩1分' : f.radius_m <= 192 ? '徒歩3分' : f.radius_m <= 320 ? '徒歩5分' : f.radius_m <= 640 ? '徒歩10分' : f.radius_m <= 1280 ? '徒歩20分' : f.radius_m <= 1600 ? '徒歩20分' : 'もう少し遠く';
+    const budget = f.kind === 'lunch' ? `${Number(f.budget_limit||0).toLocaleString()}円以内目安` : (f.budget_under_1000 ? '1,000円以下' : '予算指定なし');
+    summary.textContent = `${kindLabel} ／ ${f.subkind} ／ ${mins} ／ ${budget} ／ ${f.open_now_only ? '営業中のみ' : '営業時間で絞らない'}`;
+  };
+
+  kindEl.addEventListener('change', refresh);
+  subEl.addEventListener('change', updateSummary);
+  radiusEl.addEventListener('change', updateSummary);
+  budgetEl.addEventListener('change', updateSummary);
+  openEl.addEventListener('change', updateSummary);
+  refresh();
+
+  const stop = () => {
+    if (watchId !== null && navigator.geolocation) { try { navigator.geolocation.clearWatch(watchId); } catch (_) {} watchId = null; }
+    if (hardTimer) { clearTimeout(hardTimer); hardTimer = null; }
+  };
+  const unlock = () => { if (!cancelled) button.disabled = false; };
+  const emitBest = () => {
+    if (cancelled || !best?.coords) return;
+    stop();
+    const accuracy = Number(best.coords.accuracy || 0);
+    status.textContent = `現在地を取得しました（精度 ±${Math.round(accuracy)}m）。検索しています…`;
+    setTriggerValue('search_location', {
+      token: `${Date.now()}_${Math.random().toString(36).slice(2)}`,
+      latitude: Number(best.coords.latitude), longitude: Number(best.coords.longitude),
+      accuracy_m: accuracy, measured_at: new Date(best.timestamp || Date.now()).toISOString(),
+      filters: gather()
+    });
+    unlock();
+  };
+  const fail = (message, code=0) => {
+    stop(); status.textContent = String(message || '現在地を取得できませんでした。');
+    setTriggerValue('search_error', {token:`${Date.now()}_${Math.random().toString(36).slice(2)}`, code:Number(code||0), message:String(message||''), filters:gather()});
+    unlock();
+  };
+  const searchNow = () => {
+    if (!navigator.geolocation) { fail('この端末では位置情報を取得できません。'); return; }
+    stop(); best = null; startedAt = Date.now(); button.disabled = true;
+    status.textContent = '検索地点を高精度GPSで確認しています…';
+    watchId = navigator.geolocation.watchPosition((position) => {
+      if (cancelled || !position?.coords) return;
+      const accuracy = Number(position.coords.accuracy || Number.POSITIVE_INFINITY);
+      const bestAccuracy = best ? Number(best.coords?.accuracy || Number.POSITIVE_INFINITY) : Number.POSITIVE_INFINITY;
+      if (!best || accuracy < bestAccuracy) best = position;
+      const currentBest = best ? Number(best.coords?.accuracy || Number.POSITIVE_INFINITY) : Number.POSITIVE_INFINITY;
+      status.textContent = Number.isFinite(currentBest) ? `検索地点を高精度GPSで確認しています… ±${Math.round(currentBest)}m` : '検索地点を高精度GPSで確認しています…';
+      if (currentBest > 0 && currentBest <= 25) { emitBest(); return; }
+      if (currentBest > 0 && currentBest <= 45 && (Date.now() - startedAt) >= 1200) emitBest();
+    }, (error) => {
+      const bestAccuracy = best ? Number(best.coords?.accuracy || Number.POSITIVE_INFINITY) : Number.POSITIVE_INFINITY;
+      if (best && bestAccuracy > 0 && bestAccuracy <= 45) { emitBest(); return; }
+      const code = Number(error?.code || 0);
+      const msg = code === 1 ? '位置情報の利用が許可されていません。' : code === 3 ? '現在地の取得に時間がかかりました。' : '現在地を取得できませんでした。';
+      fail(msg, code);
+    }, {enableHighAccuracy:true, timeout:10000, maximumAge:0});
+    hardTimer = setTimeout(() => {
+      const bestAccuracy = best ? Number(best.coords?.accuracy || Number.POSITIVE_INFINITY) : Number.POSITIVE_INFINITY;
+      if (best && bestAccuracy > 0 && bestAccuracy <= 45) emitBest();
+      else if (best && Number.isFinite(bestAccuracy)) fail(`GPS精度が ±${Math.round(bestAccuracy)}m のため検索を中止しました。`, 3);
+      else fail('現在地を高精度で取得できませんでした。', 3);
+    }, 10500);
+  };
+  button.addEventListener('click', searchNow);
+  return () => { cancelled = true; stop(); button.removeEventListener('click', searchNow); };
+}
+"""
+
+_nearby_batch_search_component_v320 = None
+_nearby_batch_search_component_initialized_v320 = False
+
+def _get_nearby_batch_search_component_v320():
+    global _nearby_batch_search_component_v320, _nearby_batch_search_component_initialized_v320
+    if _nearby_batch_search_component_initialized_v320:
+        return _nearby_batch_search_component_v320
+    _nearby_batch_search_component_initialized_v320 = True
+    try:
+        _nearby_batch_search_component_v320 = st.components.v2.component(
+            "tokyo_burari_nearby_batch_search_v320",
+            html=_NEARBY_BATCH_SEARCH_HTML_V320,
+            css=_NEARBY_BATCH_SEARCH_CSS_V320,
+            js=_NEARBY_BATCH_SEARCH_JS_V320,
+        )
+    except Exception:
+        _nearby_batch_search_component_v320 = None
+    return _nearby_batch_search_component_v320
+
+
+_TOILET_BATCH_SEARCH_HTML_V320 = r"""
+<div class="burari-toilet-batch-card">
+  <div class="burari-toilet-grid">
+    <label><span>1　距離</span><select id="tb-distance"><option value="1">🚶 1分</option><option value="3">🚶 3分</option></select></label>
+    <label><span>2　料金</span><select id="tb-fee"><option value="free">🆓 無料優先</option><option value="all">料金問わない</option></select></label>
+    <label><span>3　車いす</span><select id="tb-wheel"><option value="all">問わない</option><option value="yes">♿ 対応だけ</option></select></label>
+    <label><span>4　おむつ交換</span><select id="tb-baby"><option value="all">問わない</option><option value="yes">👶 交換台あり</option></select></label>
+    <label class="burari-toilet-wide"><span>5　利用時間</span><select id="tb-open"><option value="usable">🟢 今使える優先</option><option value="all">時間問わない</option></select></label>
+  </div>
+  <div id="tb-summary" class="burari-toilet-summary"></div>
+  <button id="tb-search" type="button">🚻 この条件でトイレを探す</button>
+  <div id="tb-status" class="burari-toilet-status" aria-live="polite"></div>
+</div>
+"""
+
+_TOILET_BATCH_SEARCH_CSS_V320 = r"""
+.burari-toilet-batch-card{width:100%;box-sizing:border-box;font-family:inherit}
+.burari-toilet-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.burari-toilet-grid label{display:flex;flex-direction:column;gap:6px;padding:10px;border:1px solid rgba(80,120,150,.14);border-radius:14px;background:rgba(255,255,255,.82);box-sizing:border-box;min-width:0}
+.burari-toilet-grid label>span{font-size:12px;font-weight:800;color:rgba(31,38,48,.86)}
+.burari-toilet-grid select{width:100%;min-height:42px;border-radius:11px;border:1px solid rgba(80,110,130,.22);background:#fff;padding:7px 9px;font-size:13px;color:#202732;box-sizing:border-box}
+.burari-toilet-wide{grid-column:1/-1}
+.burari-toilet-summary{margin:10px 0 8px;padding:9px 11px;border-radius:11px;background:rgba(128,128,128,.055);font-size:12px;line-height:1.45;color:rgba(31,38,48,.76)}
+#tb-search{width:100%;min-height:54px;border-radius:16px;border:1.8px solid rgba(79,169,132,.66);background:linear-gradient(155deg,rgba(231,249,240,.99),rgba(226,245,251,.95));font:inherit;font-size:16px;font-weight:850;color:rgba(31,38,48,.96);box-shadow:0 9px 22px rgba(79,169,132,.10);cursor:pointer}
+#tb-search:disabled{opacity:.65;cursor:wait}.burari-toilet-status{min-height:20px;margin-top:7px;font-size:12px;line-height:1.35;color:rgba(31,38,48,.66)}
+@media(max-width:640px){.burari-toilet-grid{gap:7px}.burari-toilet-grid label{padding:8px}.burari-toilet-grid select{font-size:12px;min-height:40px}.burari-toilet-grid label>span{font-size:11px}}
+"""
+
+_TOILET_BATCH_SEARCH_JS_V320 = r"""
+export default function(component) {
+  const { parentElement, setTriggerValue, data } = component;
+  const distanceEl = parentElement.querySelector('#tb-distance');
+  const feeEl = parentElement.querySelector('#tb-fee');
+  const wheelEl = parentElement.querySelector('#tb-wheel');
+  const babyEl = parentElement.querySelector('#tb-baby');
+  const openEl = parentElement.querySelector('#tb-open');
+  const summary = parentElement.querySelector('#tb-summary');
+  const button = parentElement.querySelector('#tb-search');
+  const status = parentElement.querySelector('#tb-status');
+  if (!distanceEl || !feeEl || !wheelEl || !babyEl || !openEl || !button || !status) return;
+  const initial = (data && data.initial && typeof data.initial === 'object') ? data.initial : {};
+  if (['1','3'].includes(String(initial.distance||''))) distanceEl.value = String(initial.distance);
+  if (['free','all'].includes(String(initial.fee||''))) feeEl.value = String(initial.fee);
+  if (['yes','all'].includes(String(initial.wheelchair||''))) wheelEl.value = String(initial.wheelchair);
+  if (['yes','all'].includes(String(initial.baby||''))) babyEl.value = String(initial.baby);
+  if (['usable','all'].includes(String(initial.open||''))) openEl.value = String(initial.open);
+  let cancelled=false, watchId=null, hardTimer=null, best=null, startedAt=0;
+  const gather = () => ({
+    distance: distanceEl.value || '3', fee: feeEl.value || 'free',
+    wheelchair: wheelEl.value || 'all', baby: babyEl.value || 'all', open: openEl.value || 'usable'
+  });
+  const updateSummary = () => {
+    const f=gather(); summary.textContent=`徒歩${f.distance}分くらい ／ ${f.fee==='free'?'無料優先':'料金問わない'} ／ ${f.wheelchair==='yes'?'車いす対応':'車いす問わない'} ／ ${f.baby==='yes'?'交換台あり':'交換台問わない'} ／ ${f.open==='usable'?'今使える優先':'利用時間問わない'}`;
+  };
+  [distanceEl,feeEl,wheelEl,babyEl,openEl].forEach(el=>el.addEventListener('change',updateSummary)); updateSummary();
+  const stop=()=>{if(watchId!==null&&navigator.geolocation){try{navigator.geolocation.clearWatch(watchId)}catch(_){ }watchId=null}if(hardTimer){clearTimeout(hardTimer);hardTimer=null}};
+  const unlock=()=>{if(!cancelled)button.disabled=false};
+  const emitBest=()=>{if(cancelled||!best?.coords)return;stop();const accuracy=Number(best.coords.accuracy||0);status.textContent=`現在地を取得しました（精度 ±${Math.round(accuracy)}m）。トイレを検索しています…`;setTriggerValue('search_location',{token:`${Date.now()}_${Math.random().toString(36).slice(2)}`,latitude:Number(best.coords.latitude),longitude:Number(best.coords.longitude),accuracy_m:accuracy,measured_at:new Date(best.timestamp||Date.now()).toISOString(),filters:gather()});unlock()};
+  const fail=(message,code=0)=>{stop();status.textContent=String(message||'現在地を取得できませんでした。');setTriggerValue('search_error',{token:`${Date.now()}_${Math.random().toString(36).slice(2)}`,code:Number(code||0),message:String(message||''),filters:gather()});unlock()};
+  const searchNow=()=>{if(!navigator.geolocation){fail('この端末では位置情報を取得できません。');return}stop();best=null;startedAt=Date.now();button.disabled=true;status.textContent='現在地を高精度GPSで確認しています…';watchId=navigator.geolocation.watchPosition((position)=>{if(cancelled||!position?.coords)return;const accuracy=Number(position.coords.accuracy||Number.POSITIVE_INFINITY);const bestAccuracy=best?Number(best.coords?.accuracy||Number.POSITIVE_INFINITY):Number.POSITIVE_INFINITY;if(!best||accuracy<bestAccuracy)best=position;const currentBest=best?Number(best.coords?.accuracy||Number.POSITIVE_INFINITY):Number.POSITIVE_INFINITY;status.textContent=Number.isFinite(currentBest)?`現在地を高精度GPSで確認しています… ±${Math.round(currentBest)}m`:'現在地を高精度GPSで確認しています…';if(currentBest>0&&currentBest<=25){emitBest();return}if(currentBest>0&&currentBest<=45&&(Date.now()-startedAt)>=1200)emitBest()},(error)=>{const bestAccuracy=best?Number(best.coords?.accuracy||Number.POSITIVE_INFINITY):Number.POSITIVE_INFINITY;if(best&&bestAccuracy>0&&bestAccuracy<=45){emitBest();return}const code=Number(error?.code||0);const msg=code===1?'位置情報の利用が許可されていません。':code===3?'現在地の取得に時間がかかりました。':'現在地を取得できませんでした。';fail(msg,code)},{enableHighAccuracy:true,timeout:10000,maximumAge:0});hardTimer=setTimeout(()=>{const bestAccuracy=best?Number(best.coords?.accuracy||Number.POSITIVE_INFINITY):Number.POSITIVE_INFINITY;if(best&&bestAccuracy>0&&bestAccuracy<=45)emitBest();else if(best&&Number.isFinite(bestAccuracy))fail(`GPS精度が ±${Math.round(bestAccuracy)}m のため検索を中止しました。`,3);else fail('現在地を高精度で取得できませんでした。',3)},10500)};
+  button.addEventListener('click',searchNow);return()=>{cancelled=true;stop();button.removeEventListener('click',searchNow)};
+}
+"""
+
+_toilet_batch_search_component_v320 = None
+_toilet_batch_search_component_initialized_v320 = False
+
+def _get_toilet_batch_search_component_v320():
+    global _toilet_batch_search_component_v320, _toilet_batch_search_component_initialized_v320
+    if _toilet_batch_search_component_initialized_v320:
+        return _toilet_batch_search_component_v320
+    _toilet_batch_search_component_initialized_v320 = True
+    try:
+        _toilet_batch_search_component_v320 = st.components.v2.component(
+            "tokyo_burari_toilet_batch_search_v320",
+            html=_TOILET_BATCH_SEARCH_HTML_V320,
+            css=_TOILET_BATCH_SEARCH_CSS_V320,
+            js=_TOILET_BATCH_SEARCH_JS_V320,
+        )
+    except Exception:
+        _toilet_batch_search_component_v320 = None
+    return _toilet_batch_search_component_v320
+
+
 def page_toilets():
     page_top(
         "🚻 近くのトイレ",
@@ -20891,8 +21181,8 @@ def page_toilets():
         unsafe_allow_html=True,
     )
 
-    # A prior position is shown only as context. The actual search never reuses it:
-    # tapping the search button always requests maximumAge=0 high-accuracy geolocation.
+    # v320: show only the last committed search point. Do not geocode or request GPS
+    # while the user is merely changing filters.
     location = st.session_state.get("_nearby_location")
     latitude = longitude = None
     accuracy = None
@@ -20906,166 +21196,127 @@ def page_toilets():
             accuracy = None
 
     if latitude is not None and longitude is not None:
-        place_label = str(location.get("place_label") or reverse_geocode_rough(latitude, longitude) or "現在地付近")
+        place_label = str((location or {}).get("place_label") or "前回の検索地点")
         accuracy_text = f"前回GPS精度 ±{int(round(accuracy))}m" if isinstance(accuracy, (int, float)) and accuracy > 0 else ""
-        source_text = "検索時には現在地をもう一度高精度で取得します。"
-        if str(location.get("source") or "") == "manual":
-            source_text = "地名指定を保存中です。検索時はGPSを優先し、GPS取得失敗時のみこの地点を使います。"
         st.markdown(
             '<div class="toilet-location-card">'
-            f'<div class="toilet-location-main">📍 {html.escape(place_label or "現在地付近")}</div>'
-            f'<div class="toilet-location-sub">{html.escape(" ／ ".join(x for x in (accuracy_text, source_text) if x))}</div>'
+            f'<div class="toilet-location-main">📍 {html.escape(place_label)}</div>'
+            f'<div class="toilet-location-sub">{html.escape(" ／ ".join(x for x in (accuracy_text, "検索ボタンを押したときだけ現在地を高精度で取り直します。") if x))}</div>'
             '</div>',
             unsafe_allow_html=True,
         )
     else:
         st.markdown(
-            '<div class="toilet-location-card">'
-            '<div class="toilet-location-main">📍 現在地は検索ボタンを押したときに取得します</div>'
-            '<div class="toilet-location-sub">高精度GPSで現在地を取り直してから、近場のトイレを検索します。</div>'
-            '</div>',
+            '<div class="toilet-location-card"><div class="toilet-location-main">📍 現在地は検索ボタンを押したときに取得します</div>'
+            '<div class="toilet-location-sub">条件変更中は通信せず、検索時だけ高精度GPSと周辺検索を実行します。</div></div>',
             unsafe_allow_html=True,
         )
 
     with st.expander("現在地が取れないときは地名から探す"):
-        manual_place = st.text_input(
-            "駅名・地名",
-            placeholder="例：上野駅、浅草、品川駅",
-            key="toilet_manual_place_text_v217",
-        )
-        if st.button("この地名を予備の検索地点にする", use_container_width=True, key="toilet_manual_place_button_v217"):
+        with st.form("toilet_manual_place_form_v320", clear_on_submit=False):
+            manual_place = st.text_input("駅名・地名", placeholder="例：上野駅、浅草、品川駅", key="toilet_manual_place_text_v320")
+            manual_submit = st.form_submit_button("この地名を予備の検索地点にする", use_container_width=True)
+        if manual_submit:
             with st.spinner("場所を確認しています…"):
                 resolved = geocode_nearby_place_text(manual_place)
             if resolved:
                 st.session_state["_nearby_location"] = resolved
-                st.session_state["_toilet_location_token"] = f"manual_{time.time_ns()}"
                 st.success("予備の検索地点を保存しました。通常は検索ボタンで取得する現在地を優先します。")
                 st.rerun()
             else:
                 st.error("地名を確認できませんでした。駅名や区名を少し具体的に入力してください。")
 
     prefix = f"{current_family_key()}_{current_member_key()}"
-    distance_key = f"_toilet_distance_v217_{prefix}"
-    fee_key = f"_toilet_fee_v199_{prefix}"
-    wheelchair_key = f"_toilet_wheelchair_v199_{prefix}"
-    baby_key = f"_toilet_baby_v199_{prefix}"
-    open_key = f"_toilet_open_v199_{prefix}"
-    result_key = f"_toilet_search_result_v231_{prefix}"
+    distance_key = f"_toilet_distance_v320_{prefix}"
+    fee_key = f"_toilet_fee_v320_{prefix}"
+    wheelchair_key = f"_toilet_wheelchair_v320_{prefix}"
+    baby_key = f"_toilet_baby_v320_{prefix}"
+    open_key = f"_toilet_open_v320_{prefix}"
+    result_key = f"_toilet_search_result_v320_{prefix}"
 
-    if st.session_state.get(distance_key) not in {"1", "3"}:
-        st.session_state[distance_key] = "3"
-    if st.session_state.get(fee_key) not in {"free", "all"}:
-        st.session_state[fee_key] = "free"
-    if st.session_state.get(wheelchair_key) not in {"yes", "all"}:
-        st.session_state[wheelchair_key] = "all"
-    if st.session_state.get(baby_key) not in {"yes", "all"}:
-        st.session_state[baby_key] = "all"
-    if st.session_state.get(open_key) not in {"usable", "all"}:
-        st.session_state[open_key] = "usable"
-
-    def _step_title(number, title):
-        st.markdown(
-            f'<div class="toilet-step-title"><span class="toilet-step-badge">{int(number)}</span><span>{html.escape(str(title))}</span></div>',
-            unsafe_allow_html=True,
-        )
-
-    def _choice_button(label, value, state_key, button_key, selected):
-        if st.button(label, type="primary" if selected == value else "secondary", use_container_width=True, key=button_key):
-            st.session_state[state_key] = value
-            st.rerun()
+    if st.session_state.get(distance_key) not in {"1", "3"}: st.session_state[distance_key] = "3"
+    if st.session_state.get(fee_key) not in {"free", "all"}: st.session_state[fee_key] = "free"
+    if st.session_state.get(wheelchair_key) not in {"yes", "all"}: st.session_state[wheelchair_key] = "all"
+    if st.session_state.get(baby_key) not in {"yes", "all"}: st.session_state[baby_key] = "all"
+    if st.session_state.get(open_key) not in {"usable", "all"}: st.session_state[open_key] = "usable"
 
     distance_mode = str(st.session_state.get(distance_key) or "3")
     fee_mode = str(st.session_state.get(fee_key) or "free")
     wheelchair_mode = str(st.session_state.get(wheelchair_key) or "all")
     baby_mode = str(st.session_state.get(baby_key) or "all")
     open_mode = str(st.session_state.get(open_key) or "usable")
+    radius_m = 64 if distance_mode == "1" else 192
+    free_preferred = fee_mode == "free"
+    wheelchair_only = wheelchair_mode == "yes"
+    baby_only = baby_mode == "yes"
+    usable_now_preferred = open_mode == "usable"
 
-    with st.container(key="toilet_filter_panel"):
-        with st.container(key="toilet_filter_row_1"):
-            left, right = st.columns(2, gap="small")
-            with left:
-                with st.container(border=True, key="toilet_step_1"):
-                    _step_title(1, "距離")
-                    for label, value in (("🚶 1分", "1"), ("🚶 3分", "3")):
-                        _choice_button(label, value, distance_key, f"toilet_distance_{value}_v217", distance_mode)
-                    st.markdown('<div class="toilet-step-note">検索時点の現在地からの近場だけを探します。</div>', unsafe_allow_html=True)
-            with right:
-                with st.container(border=True, key="toilet_step_2"):
-                    _step_title(2, "料金")
-                    _choice_button("🆓 無料優先", "free", fee_key, "toilet_fee_free_v199", fee_mode)
-                    _choice_button("料金問わない", "all", fee_key, "toilet_fee_all_v199", fee_mode)
-                    st.markdown('<div class="toilet-step-note">無料優先は、明確に有料と登録された場所を除きます。</div>', unsafe_allow_html=True)
+    def _toilet_signature_v320(lat, lon, cfg):
+        return json.dumps({
+            "lat": round(float(lat), 5) if lat is not None else None,
+            "lon": round(float(lon), 5) if lon is not None else None,
+            "radius_m": int(cfg["radius_m"]),
+            "free_preferred": bool(cfg["free_preferred"]),
+            "wheelchair_only": bool(cfg["wheelchair_only"]),
+            "baby_only": bool(cfg["baby_only"]),
+            "usable_now_preferred": bool(cfg["usable_now_preferred"]),
+        }, ensure_ascii=False, sort_keys=True)
 
-        with st.container(key="toilet_filter_row_2"):
-            left, right = st.columns(2, gap="small")
-            with left:
-                with st.container(border=True, key="toilet_step_3"):
-                    _step_title(3, "車いす")
-                    _choice_button("♿ 対応だけ", "yes", wheelchair_key, "toilet_wheelchair_yes_v199", wheelchair_mode)
-                    _choice_button("問わない", "all", wheelchair_key, "toilet_wheelchair_all_v199", wheelchair_mode)
-            with right:
-                with st.container(border=True, key="toilet_step_4"):
-                    _step_title(4, "おむつ交換")
-                    _choice_button("👶 交換台あり", "yes", baby_key, "toilet_baby_yes_v199", baby_mode)
-                    _choice_button("問わない", "all", baby_key, "toilet_baby_all_v199", baby_mode)
+    def _commit_toilet_filters_v320(filters):
+        filters = filters if isinstance(filters, dict) else {}
+        distance = str(filters.get("distance") or "3")
+        if distance not in {"1", "3"}: distance = "3"
+        fee = str(filters.get("fee") or "free")
+        if fee not in {"free", "all"}: fee = "free"
+        wheel = str(filters.get("wheelchair") or "all")
+        if wheel not in {"yes", "all"}: wheel = "all"
+        baby = str(filters.get("baby") or "all")
+        if baby not in {"yes", "all"}: baby = "all"
+        open_value = str(filters.get("open") or "usable")
+        if open_value not in {"usable", "all"}: open_value = "usable"
+        st.session_state[distance_key] = distance
+        st.session_state[fee_key] = fee
+        st.session_state[wheelchair_key] = wheel
+        st.session_state[baby_key] = baby
+        st.session_state[open_key] = open_value
+        return {
+            "distance_mode": distance,
+            "radius_m": 64 if distance == "1" else 192,
+            "free_preferred": fee == "free",
+            "wheelchair_only": wheel == "yes",
+            "baby_only": baby == "yes",
+            "usable_now_preferred": open_value == "usable",
+        }
 
-        with st.container(border=True, key="toilet_step_5"):
-            _step_title(5, "利用時間")
-            time_left, time_right = st.columns(2, gap="small")
-            with time_left:
-                _choice_button("🟢 今使える優先", "usable", open_key, "toilet_open_usable_v199", open_mode)
-            with time_right:
-                _choice_button("時間問わない", "all", open_key, "toilet_open_all_v199", open_mode)
-            st.markdown('<div class="toilet-step-note">営業時間が登録されていないトイレは、候補を失わないため残します。</div>', unsafe_allow_html=True)
+    current_cfg = {
+        "distance_mode": distance_mode, "radius_m": radius_m,
+        "free_preferred": free_preferred, "wheelchair_only": wheelchair_only,
+        "baby_only": baby_only, "usable_now_preferred": usable_now_preferred,
+    }
+    current_signature = _toilet_signature_v320(latitude, longitude, current_cfg)
 
-        # Same walking estimate used elsewhere: ceil(distance*1.25/80).
-        # 64 m ≈ 1 minute and 192 m ≈ 3 minutes.
-        radius_map = {"1": 64, "3": 192}
-        radius_m = int(radius_map.get(distance_mode, 192))
-        free_preferred = fee_mode == "free"
-        wheelchair_only = wheelchair_mode == "yes"
-        baby_only = baby_mode == "yes"
-        usable_now_preferred = open_mode == "usable"
-        summary_parts = [
-            f"徒歩{distance_mode}分くらい",
-            "無料優先" if free_preferred else "料金問わない",
-            "車いす対応" if wheelchair_only else "車いす問わない",
-            "交換台あり" if baby_only else "交換台問わない",
-            "今使える優先" if usable_now_preferred else "利用時間問わない",
-        ]
-        st.markdown('<div class="toilet-summary">' + html.escape(" ／ ".join(summary_parts)) + '</div>', unsafe_allow_html=True)
-
-        current_signature = json.dumps(
-            {
-                "lat": round(latitude, 5) if latitude is not None else None,
-                "lon": round(longitude, 5) if longitude is not None else None,
-                "radius_m": radius_m,
-                "free_preferred": free_preferred,
-                "wheelchair_only": wheelchair_only,
-                "baby_only": baby_only,
-                "usable_now_preferred": usable_now_preferred,
-            },
-            ensure_ascii=False,
-            sort_keys=True,
+    search_component_result = None
+    search_component = _get_toilet_batch_search_component_v320()
+    if search_component is not None:
+        search_component_result = search_component(
+            data={"initial": {"distance": distance_mode, "fee": fee_mode, "wheelchair": wheelchair_mode, "baby": baby_mode, "open": open_mode}},
+            key=f"toilet_batch_search_v320_{prefix}",
+            on_search_location_change=lambda: None,
+            on_search_error_change=lambda: None,
         )
+    else:
+        st.info("この環境では検索ボタンを表示できません。地名指定を利用してください。")
 
-        with st.container(key="toilet_search_action"):
-            search_component = _get_toilet_search_now_component()
-            search_component_result = None
-            if search_component is not None:
-                search_component_result = search_component(
-                    data={},
-                    key=f"toilet_search_now_v319_{current_family_key()}_{current_member_key()}",
-                    on_search_location_change=lambda: None,
-                    on_search_error_change=lambda: None,
-                )
-            else:
-                st.info("この環境では検索時の現在地取得ボタンを表示できません。地名指定を利用してください。")
-
-    def _run_toilet_search(search_latitude, search_longitude, search_accuracy=None, search_source="gps"):
+    def _run_toilet_search(search_latitude, search_longitude, search_accuracy=None, search_source="gps", search_config=None):
         search_latitude = float(search_latitude)
         search_longitude = float(search_longitude)
         source_name = str(search_source or "gps")
+        cfg = dict(search_config or current_cfg)
+        radius_m = int(cfg.get("radius_m") or 192)
+        free_preferred = bool(cfg.get("free_preferred"))
+        wheelchair_only = bool(cfg.get("wheelchair_only"))
+        baby_only = bool(cfg.get("baby_only"))
+        usable_now_preferred = bool(cfg.get("usable_now_preferred"))
 
         # Server-side safety net: even if an old/cached browser component sends a
         # coarse position, a 1-3 minute toilet search must never run from it.
@@ -21087,19 +21338,7 @@ def page_toilets():
         # 3.5 seconds before the real search begins. GPS coordinates are unchanged.
         label_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="burari-toilet-label")
         label_future = label_pool.submit(reverse_geocode_rough, search_latitude, search_longitude)
-        fresh_signature = json.dumps(
-            {
-                "lat": round(search_latitude, 5),
-                "lon": round(search_longitude, 5),
-                "radius_m": radius_m,
-                "free_preferred": free_preferred,
-                "wheelchair_only": wheelchair_only,
-                "baby_only": baby_only,
-                "usable_now_preferred": usable_now_preferred,
-            },
-            ensure_ascii=False,
-            sort_keys=True,
-        )
+        fresh_signature = _toilet_signature_v320(search_latitude, search_longitude, cfg)
         with st.spinner("現在地の近くにあるトイレを高速検索しています…"):
             live_result = search_nearby_toilets(
                 search_latitude,
@@ -21146,7 +21385,8 @@ def page_toilets():
                 fresh_lat = float(fresh_search_payload.get("latitude"))
                 fresh_lon = float(fresh_search_payload.get("longitude"))
                 fresh_accuracy = float(fresh_search_payload.get("accuracy_m") or 0) or None
-                _run_toilet_search(fresh_lat, fresh_lon, fresh_accuracy, "gps")
+                request_cfg = _commit_toilet_filters_v320(fresh_search_payload.get("filters"))
+                _run_toilet_search(fresh_lat, fresh_lon, fresh_accuracy, "gps", search_config=request_cfg)
                 st.rerun()
             except (TypeError, ValueError):
                 st.session_state["_toilet_search_warning"] = "検索時の現在地を確認できませんでした。もう一度お試しください。"
@@ -21164,11 +21404,13 @@ def page_toilets():
                 and manual_fallback.get("longitude") is not None
             ):
                 try:
+                    request_cfg = _commit_toilet_filters_v320(fresh_search_error.get("filters"))
                     _run_toilet_search(
                         manual_fallback.get("latitude"),
                         manual_fallback.get("longitude"),
                         None,
                         "manual",
+                        search_config=request_cfg,
                     )
                     st.rerun()
                 except Exception:
@@ -21188,8 +21430,7 @@ def page_toilets():
     if search_warning:
         st.warning(search_warning)
 
-    # Recompute signature from the latest search location because a successful tap updates
-    # _nearby_location before rerunning the page.
+    # Recompute from the last committed search filters only. Local UI changes do not rerun Streamlit.
     location = st.session_state.get("_nearby_location")
     if isinstance(location, dict):
         try:
@@ -21199,19 +21440,16 @@ def page_toilets():
             current_lat = current_lon = None
     else:
         current_lat = current_lon = None
-    current_signature = json.dumps(
-        {
-            "lat": round(current_lat, 5) if current_lat is not None else None,
-            "lon": round(current_lon, 5) if current_lon is not None else None,
-            "radius_m": radius_m,
-            "free_preferred": free_preferred,
-            "wheelchair_only": wheelchair_only,
-            "baby_only": baby_only,
-            "usable_now_preferred": usable_now_preferred,
-        },
-        ensure_ascii=False,
-        sort_keys=True,
-    )
+    distance_mode = str(st.session_state.get(distance_key) or "3")
+    radius_m = 64 if distance_mode == "1" else 192
+    current_cfg = {
+        "distance_mode": distance_mode, "radius_m": radius_m,
+        "free_preferred": str(st.session_state.get(fee_key) or "free") == "free",
+        "wheelchair_only": str(st.session_state.get(wheelchair_key) or "all") == "yes",
+        "baby_only": str(st.session_state.get(baby_key) or "all") == "yes",
+        "usable_now_preferred": str(st.session_state.get(open_key) or "usable") == "usable",
+    }
+    current_signature = _toilet_signature_v320(current_lat, current_lon, current_cfg)
 
     saved = st.session_state.get(result_key)
     if not isinstance(saved, dict) or str(saved.get("signature") or "") != current_signature:
@@ -21428,364 +21666,167 @@ def page_nearby():
         unsafe_allow_html=True,
     )
 
-    location_component = _get_nearby_location_component()
-    if location_component is not None:
-        result = location_component(
-            data={},
-            key=f"nearby_location_v191_{current_family_key()}_{current_member_key()}",
-            on_location_change=lambda: None,
-            on_location_error_change=lambda: None,
+    # v320: no GPS, reverse geocoding, provider lookup, or Streamlit rerun occurs
+    # while the user changes filters. All filter interactions stay inside one browser component.
+    location = st.session_state.get("_nearby_location")
+    has_location = bool(isinstance(location, dict) and location.get("latitude") is not None and location.get("longitude") is not None)
+    latitude = float(location["latitude"]) if has_location else None
+    longitude = float(location["longitude"]) if has_location else None
+    if has_location:
+        place_label = str(location.get("place_label") or "前回の検索地点")
+        accuracy = location.get("accuracy_m")
+        accuracy_text = f"GPS精度 ±{int(round(accuracy))}m" if isinstance(accuracy, (int, float)) and accuracy > 0 else ""
+        st.markdown(
+            '<div class="nearby-location-card">'
+            f'<div class="nearby-location-main">📍 {html.escape(place_label)}</div>'
+            + (f'<div class="nearby-location-sub">{html.escape(accuracy_text)}</div>' if accuracy_text else "")
+            + '<div class="nearby-location-sub">条件変更中は通信せず、検索ボタンを押したときだけ現在地を取り直します。</div></div>',
+            unsafe_allow_html=True,
         )
-        location_payload = getattr(result, "location", None)
-        if isinstance(location_payload, dict):
-            token = str(location_payload.get("token") or "")
-            if token and token != str(st.session_state.get("_nearby_location_token") or ""):
-                try:
-                    lat = float(location_payload.get("latitude"))
-                    lon = float(location_payload.get("longitude"))
-                    accuracy = float(location_payload.get("accuracy_m") or 0) or None
-                except (TypeError, ValueError):
-                    lat = lon = None
-                    accuracy = None
-                if lat is not None and lon is not None:
-                    label = reverse_geocode_rough(lat, lon)
-                    st.session_state["_nearby_location"] = {
-                        "source": "gps", "latitude": lat, "longitude": lon, "accuracy_m": accuracy,
-                        "measured_at": str(location_payload.get("measured_at") or now_jst().isoformat()), "place_label": label,
-                    }
-                    st.session_state["_nearby_location_token"] = token
-        error_payload = getattr(result, "location_error", None)
-        if isinstance(error_payload, dict):
-            error_token = str(error_payload.get("token") or "")
-            if error_token and error_token != str(st.session_state.get("_nearby_location_error_token") or ""):
-                st.session_state["_nearby_location_error_token"] = error_token
-                st.session_state["_nearby_location_warning"] = str(error_payload.get("message") or "現在地を取得できませんでした。")
     else:
-        st.info("この環境では現在地ボタンを表示できません。下の地名入力から場所を指定できます。")
-
-    warning = st.session_state.pop("_nearby_location_warning", None)
-    if warning:
-        st.warning(warning)
+        st.markdown(
+            '<div class="nearby-location-card"><div class="nearby-location-main">📍 検索時に現在地を取得</div>'
+            '<div class="nearby-location-sub">条件変更中は通信せず、検索時だけ高精度GPSと周辺検索を実行します。</div></div>',
+            unsafe_allow_html=True,
+        )
 
     with st.expander("現在地が取れないときは地名から指定"):
-        manual_place = st.text_input("駅名・地名", placeholder="例：上野駅、浅草、品川駅", key="nearby_manual_place_text")
-        if st.button("この地名を検索の中心にする", use_container_width=True, key="nearby_manual_place_button"):
+        with st.form("nearby_manual_place_form_v320", clear_on_submit=False):
+            manual_place = st.text_input("駅名・地名", placeholder="例：上野駅、浅草、品川駅", key="nearby_manual_place_text_v320")
+            manual_submit = st.form_submit_button("この地名を検索の中心にする", use_container_width=True)
+        if manual_submit:
             with st.spinner("場所を確認しています…"):
                 resolved = geocode_nearby_place_text(manual_place)
             if resolved:
                 st.session_state["_nearby_location"] = resolved
-                st.session_state["_nearby_location_token"] = f"manual_{time.time_ns()}"
                 st.rerun()
             else:
                 st.error("地名を確認できませんでした。駅名や区名を少し具体的に入力してください。")
 
-    location = st.session_state.get("_nearby_location")
-    has_location = bool(
-        isinstance(location, dict)
-        and location.get("latitude") is not None
-        and location.get("longitude") is not None
-    )
-    latitude = float(location["latitude"]) if has_location else None
-    longitude = float(location["longitude"]) if has_location else None
-    if has_location:
-        place_label = str(location.get("place_label") or reverse_geocode_rough(latitude, longitude) or "現在地付近")
-        accuracy = location.get("accuracy_m")
-        accuracy_text = ""
-        if isinstance(accuracy, (int, float)) and accuracy > 0:
-            accuracy_text = f"GPS精度 ±{int(round(accuracy))}m"
-        source_label = "指定地点" if str(location.get("source") or "") == "manual" else "現在地"
-        st.markdown(
-            '<div class="nearby-location-card">'
-            f'<div class="nearby-location-main">📍 {html.escape(place_label or source_label)}</div>'
-            + (f'<div class="nearby-location-sub">{html.escape(accuracy_text)}</div>' if accuracy_text else "")
-            + '<div class="nearby-location-sub">検索ボタンを押すと現在地を取り直します。</div>'
-            + '</div>',
-            unsafe_allow_html=True,
-        )
-        if isinstance(accuracy, (int, float)) and accuracy >= 1000:
-            st.caption("現在表示している位置の精度は低めです。検索時には新しい位置情報を取り直します。")
-    else:
-        place_label = ""
-        accuracy = None
-        st.markdown(
-            '<div class="nearby-location-card">'
-            '<div class="nearby-location-main">📍 検索時に現在地を取得</div>'
-            '<div class="nearby-location-sub">条件を選んで検索すると、その瞬間の位置情報を高精度で確認します。</div>'
-            '</div>',
-            unsafe_allow_html=True,
-        )
+    prefix = f"{current_family_key()}_{current_member_key()}"
+    kind_key = f"_nearby_filter_kind_v320_{prefix}"
+    snack_key = f"_nearby_filter_snack_v320_{prefix}"
+    sight_key = f"_nearby_filter_sight_v320_{prefix}"
+    lunch_key = f"_nearby_filter_lunch_v320_{prefix}"
+    radius_key = f"_nearby_filter_radius_v320_{prefix}"
+    budget_key = f"_nearby_filter_budget_v320_{prefix}"
+    lunch_budget_key = f"_nearby_filter_lunch_budget_v320_{prefix}"
+    open_key = f"_nearby_filter_open_v320_{prefix}"
+    lunch_open_key = f"_nearby_filter_lunch_open_v320_{prefix}"
+    result_key = f"_nearby_search_result_v320_{prefix}"
 
-    kind_key = f"_nearby_filter_kind_v232_{current_family_key()}_{current_member_key()}"
-    snack_key = f"_nearby_filter_snack_v232_{current_family_key()}_{current_member_key()}"
-    sight_key = f"_nearby_filter_sight_v232_{current_family_key()}_{current_member_key()}"
-    lunch_key = f"_nearby_filter_lunch_v232_{current_family_key()}_{current_member_key()}"
-    radius_key = f"_nearby_filter_radius_v232_{current_family_key()}_{current_member_key()}"
-    budget_key = f"_nearby_filter_budget_v232_{current_family_key()}_{current_member_key()}"
-    lunch_budget_key = f"_nearby_filter_lunch_budget_v232_{current_family_key()}_{current_member_key()}"
-    open_key = f"_nearby_filter_open_v232_{current_family_key()}_{current_member_key()}"
-    lunch_open_key = f"_nearby_filter_lunch_open_v253_{current_family_key()}_{current_member_key()}"
-    result_key = f"_nearby_search_result_v234_{current_family_key()}_{current_member_key()}"
-
-    if st.session_state.get(kind_key) not in {"snack", "sightseeing", "lunch"}:
-        st.session_state[kind_key] = "snack"
-    if st.session_state.get(snack_key) not in {"食べ歩き向き", "店内中心"}:
-        st.session_state[snack_key] = "食べ歩き向き"
-    if st.session_state.get(sight_key) not in {"なんでも", "公園", "神社・寺", "博物館・施設", "電車・乗り物"}:
-        st.session_state[sight_key] = "なんでも"
-    if st.session_state.get(lunch_key) not in set(NEARBY_LUNCH_GENRES):
-        st.session_state[lunch_key] = "おまかせ"
-    current_kind_for_radius = str(st.session_state.get(kind_key) or "snack")
-    lunch_defaults_migration_key = f"_nearby_lunch_defaults_v254_{current_family_key()}_{current_member_key()}"
-    if not st.session_state.get(lunch_defaults_migration_key):
-        if current_kind_for_radius == "lunch":
-            st.session_state[radius_key] = "徒歩10分くらい"
-        st.session_state[lunch_open_key] = "open" if GOOGLE_PLACES_API_KEY else "all"
-        st.session_state[lunch_defaults_migration_key] = True
-    if current_kind_for_radius == "snack":
-        if st.session_state.get(radius_key) not in {"徒歩1分くらい", "徒歩3分くらい", "徒歩5分くらい"}:
-            st.session_state[radius_key] = "徒歩3分くらい"
-    elif current_kind_for_radius == "lunch":
-        if st.session_state.get(radius_key) not in {"徒歩5分くらい", "徒歩10分くらい", "徒歩20分くらい"}:
-            st.session_state[radius_key] = "徒歩10分くらい"
-    elif st.session_state.get(radius_key) not in {"徒歩10分くらい", "徒歩20分くらい", "もう少し遠く"}:
-        st.session_state[radius_key] = "徒歩10分くらい"
-    if st.session_state.get(budget_key) not in {"under1000", "all"}:
-        st.session_state[budget_key] = "under1000"
-    if str(st.session_state.get(lunch_budget_key) or "") not in {"1000", "2000", "5000"}:
-        st.session_state[lunch_budget_key] = "2000"
-    if st.session_state.get(open_key) not in {"open", "all"}:
-        st.session_state[open_key] = "open" if GOOGLE_PLACES_API_KEY else "all"
-    if st.session_state.get(lunch_open_key) not in {"open", "all"}:
-        st.session_state[lunch_open_key] = "open"
-
-    def _choice_button(label, value, state_key, button_key, selected_value):
-        if st.button(
-            label,
-            type="primary" if selected_value == value else "secondary",
-            use_container_width=True,
-            key=button_key,
-        ):
-            st.session_state[state_key] = value
-            st.rerun()
-
-    def _step_title(number, label):
-        st.markdown(
-            f'<div class="nearby-step-title"><span class="nearby-step-badge">{int(number)}</span><span>{html.escape(str(label))}</span></div>',
-            unsafe_allow_html=True,
-        )
+    if st.session_state.get(kind_key) not in {"snack", "sightseeing", "lunch"}: st.session_state[kind_key] = "snack"
+    if st.session_state.get(snack_key) not in {"食べ歩き向き", "店内中心"}: st.session_state[snack_key] = "食べ歩き向き"
+    if st.session_state.get(sight_key) not in {"なんでも", "公園", "神社・寺", "博物館・施設", "電車・乗り物"}: st.session_state[sight_key] = "なんでも"
+    if st.session_state.get(lunch_key) not in set(NEARBY_LUNCH_GENRES): st.session_state[lunch_key] = "おまかせ"
+    if st.session_state.get(budget_key) not in {"under1000", "all"}: st.session_state[budget_key] = "under1000"
+    if str(st.session_state.get(lunch_budget_key) or "") not in {"1000", "2000", "5000"}: st.session_state[lunch_budget_key] = "2000"
+    if st.session_state.get(open_key) not in {"open", "all"}: st.session_state[open_key] = "open" if GOOGLE_PLACES_API_KEY else "all"
+    if st.session_state.get(lunch_open_key) not in {"open", "all"}: st.session_state[lunch_open_key] = "open" if GOOGLE_PLACES_API_KEY else "all"
 
     kind = str(st.session_state.get(kind_key) or "snack")
     if kind == "snack":
         subkind = str(st.session_state.get(snack_key) or "食べ歩き向き")
+        valid_radii = {64: "徒歩1分くらい", 192: "徒歩3分くらい", 320: "徒歩5分くらい"}
+        default_radius_m = 192
     elif kind == "lunch":
         subkind = str(st.session_state.get(lunch_key) or "おまかせ")
+        valid_radii = {320: "徒歩5分くらい", 640: "徒歩10分くらい", 1280: "徒歩20分くらい"}
+        default_radius_m = 640
     else:
         subkind = str(st.session_state.get(sight_key) or "なんでも")
-    default_radius = "徒歩3分くらい" if kind == "snack" else ("徒歩10分くらい" if kind == "lunch" else "徒歩10分くらい")
-    radius_label = str(st.session_state.get(radius_key) or default_radius)
-    budget_mode = str(st.session_state.get(budget_key) or "under1000")
-    lunch_budget_mode = str(st.session_state.get(lunch_budget_key) or "2000")
+        valid_radii = {800: "徒歩10分くらい", 1600: "徒歩20分くらい", 2500: "もう少し遠く"}
+        default_radius_m = 800
+    try:
+        radius_m = int(st.session_state.get(radius_key) or default_radius_m)
+    except Exception:
+        radius_m = default_radius_m
+    if radius_m not in valid_radii: radius_m = default_radius_m
+    st.session_state[radius_key] = radius_m
+    radius_label = valid_radii[radius_m]
+    budget_under_1000 = bool(kind != "lunch" and str(st.session_state.get(budget_key) or "under1000") == "under1000")
+    budget_limit = int(str(st.session_state.get(lunch_budget_key) or "2000")) if kind == "lunch" else None
     active_open_key = lunch_open_key if kind == "lunch" else open_key
-    open_default = "open" if GOOGLE_PLACES_API_KEY else "all"
-    open_mode = str(st.session_state.get(active_open_key) or open_default)
+    open_now_only = bool(GOOGLE_PLACES_API_KEY and str(st.session_state.get(active_open_key) or "all") == "open")
 
-    with st.container(key="nearby_filter_panel"):
-        # 5 conditions in a two-column grid. The odd fifth condition spans both columns
-        # so the layout stays balanced instead of leaving a visibly empty card.
-        with st.container(key="nearby_filter_row_1"):
-            row1_left, row1_right = st.columns([.88, 1.12], gap="small")
+    def _nearby_signature_v320(cfg):
+        return json.dumps({
+            "kind": cfg["kind"], "subkind": cfg["subkind"], "radius_m": int(cfg["radius_m"]),
+            "budget_under_1000": bool(cfg["budget_under_1000"]),
+            "budget_limit": int(cfg["budget_limit"]) if cfg.get("budget_limit") is not None else None,
+            "open_now_only": bool(cfg["open_now_only"]),
+            "provider": "google" if GOOGLE_PLACES_API_KEY else "osm",
+            "lunch_rating_model": "bayesian_review_weighted_v1" if cfg["kind"] == "lunch" else None,
+            "lunch_search_engine": "atomic_text_plus_types_v258_all_atomic" if cfg["kind"] == "lunch" else None,
+        }, ensure_ascii=False, sort_keys=True)
 
-            with row1_left:
-                with st.container(border=True, key="nearby_step_1"):
-                    _step_title(1, "何に寄る？")
-                    _choice_button("🍡 おやつ", "snack", kind_key, "nearby_kind_snack_v232", kind)
-                    _choice_button("🍽️ ランチ", "lunch", kind_key, "nearby_kind_lunch_v232", kind)
-                    _choice_button("🏛️ 観光", "sightseeing", kind_key, "nearby_kind_sight_v232", kind)
-                    st.markdown('<div class="nearby-step-note">おやつ・ランチ・気軽な立ち寄り先。</div>', unsafe_allow_html=True)
-
-            with row1_right:
-                with st.container(border=True, key="nearby_step_2"):
-                    _step_title(2, "食べ方" if kind == "snack" else ("ジャンル" if kind == "lunch" else "種類"))
-                    if kind == "snack":
-                        snack_options = [
-                            ("🚶 食べ歩き向き", "食べ歩き向き"),
-                            ("🪑 店内中心", "店内中心"),
-                        ]
-                        subkind = str(st.session_state.get(snack_key) or "食べ歩き向き")
-                        for idx, (label, value) in enumerate(snack_options):
-                            _choice_button(label, value, snack_key, f"nearby_snack_{idx}_v232", subkind)
-                        st.markdown('<div class="nearby-step-note">テイクアウト情報や店舗の種類・商品名から判定します。</div>', unsafe_allow_html=True)
-                    elif kind == "lunch":
-                        current_lunch_genre = str(st.session_state.get(lunch_key) or "おまかせ")
-                        lunch_index = list(NEARBY_LUNCH_GENRES).index(current_lunch_genre) if current_lunch_genre in NEARBY_LUNCH_GENRES else 0
-                        selected_lunch_genre = st.selectbox(
-                            "ランチのジャンル",
-                            options=list(NEARBY_LUNCH_GENRES),
-                            index=lunch_index,
-                            key=f"nearby_lunch_genre_select_v232_{current_family_key()}_{current_member_key()}",
-                            label_visibility="collapsed",
-                        )
-                        if selected_lunch_genre != current_lunch_genre:
-                            st.session_state[lunch_key] = selected_lunch_genre
-                            st.rerun()
-                        subkind = str(selected_lunch_genre)
-                        st.markdown('<div class="nearby-step-note">表示はまとめた分類ですが、元ジャンルを個別検索し、Googleの料理タイプ検索も併用して候補をまとめます。</div>', unsafe_allow_html=True)
-                    else:
-                        sight_options = [
-                            ("おまかせ", "なんでも"),
-                            ("🌳 公園", "公園"),
-                            ("⛩️ 神社・寺", "神社・寺"),
-                            ("🏛️ 博物館・施設", "博物館・施設"),
-                            ("🚃 電車・乗り物", "電車・乗り物"),
-                        ]
-                        subkind = str(st.session_state.get(sight_key) or "なんでも")
-                        for idx, (label, value) in enumerate(sight_options):
-                            _choice_button(label, value, sight_key, f"nearby_sight_{idx}_v194", subkind)
-
-        with st.container(key="nearby_filter_row_2"):
-            row2_left, row2_right = st.columns(2, gap="small")
-
-            with row2_left:
-                with st.container(border=True, key="nearby_step_3"):
-                    _step_title(3, "どのくらいまで？")
-                    if kind == "snack":
-                        radius_label = str(st.session_state.get(radius_key) or "徒歩3分くらい")
-                        radius_options_ui = [
-                            ("🚶 1分", "徒歩1分くらい"),
-                            ("🚶 3分", "徒歩3分くらい"),
-                            ("🚶 5分", "徒歩5分くらい"),
-                        ]
-                    elif kind == "lunch":
-                        radius_label = str(st.session_state.get(radius_key) or "徒歩10分くらい")
-                        radius_options_ui = [
-                            ("🚶 5分", "徒歩5分くらい"),
-                            ("🚶 10分", "徒歩10分くらい"),
-                            ("🚶 20分", "徒歩20分くらい"),
-                        ]
-                    else:
-                        radius_label = str(st.session_state.get(radius_key) or "徒歩10分くらい")
-                        radius_options_ui = [
-                            ("🚶 10分くらい", "徒歩10分くらい"),
-                            ("🚶 20分くらい", "徒歩20分くらい"),
-                            ("＋ もう少し遠く", "もう少し遠く"),
-                        ]
-                    for idx, (label, value) in enumerate(radius_options_ui):
-                        _choice_button(label, value, radius_key, f"nearby_radius_{idx}_v232", radius_label)
-
-            with row2_right:
-                with st.container(border=True, key="nearby_step_4"):
-                    _step_title(4, "予算")
-                    if kind == "lunch":
-                        lunch_budget_mode = str(st.session_state.get(lunch_budget_key) or "2000")
-                        _choice_button("💴 1,000円", "1000", lunch_budget_key, "nearby_lunch_budget_1000_v232", lunch_budget_mode)
-                        _choice_button("💴 2,000円", "2000", lunch_budget_key, "nearby_lunch_budget_2000_v232", lunch_budget_mode)
-                        _choice_button("💴 5,000円", "5000", lunch_budget_key, "nearby_lunch_budget_5000_v232", lunch_budget_mode)
-                        st.markdown(
-                            '<div class="nearby-step-note">選んだ金額以内を目安に絞ります。価格未登録の店は候補から落とさず残します。</div>',
-                            unsafe_allow_html=True,
-                        )
-                    else:
-                        budget_mode = str(st.session_state.get(budget_key) or "under1000")
-                        _choice_button("💴 1,000円以下", "under1000", budget_key, "nearby_budget_1000_v232", budget_mode)
-                        _choice_button("○ 予算を問わない", "all", budget_key, "nearby_budget_all_v232", budget_mode)
-                        st.markdown(
-                            '<div class="nearby-step-note">価格情報がある候補は1,000円以下で絞ります。料金未登録の場所は候補に残します。</div>',
-                            unsafe_allow_html=True,
-                        )
-
-        with st.container(key="nearby_filter_row_3"):
-            with st.container(border=True, key="nearby_step_5"):
-                _step_title(5, "営業中")
-                if GOOGLE_PLACES_API_KEY:
-                    active_open_key = lunch_open_key if kind == "lunch" else open_key
-                    open_default = "open"
-                    open_mode = str(st.session_state.get(active_open_key) or open_default)
-                    open_cols = st.columns(2, gap="small")
-                    with open_cols[0]:
-                        _choice_button("🟢 営業中だけ", "open", active_open_key, f"nearby_open_only_v253_{kind}", open_mode)
-                    with open_cols[1]:
-                        _choice_button("○ 時間を問わない", "all", active_open_key, f"nearby_open_all_v253_{kind}", open_mode)
-                    st.markdown(
-                        '<div class="nearby-step-note">営業中だけにすると、営業時間が未登録の場所は候補から外れることがあります。</div>',
-                        unsafe_allow_html=True,
-                    )
-                else:
-                    open_mode = "all"
-                    st.markdown('<div class="nearby-step-note">Google Places未設定のため、営業時間では絞り込みません。</div>', unsafe_allow_html=True)
-
-        kind = str(st.session_state.get(kind_key) or "snack")
-        if kind == "snack":
-            # Straight-line radii correspond to the app's walking estimate
-            # ceil(distance * 1.25 / 80): 64m≈1min, 192m≈3min, 320m≈5min.
-            radius_map = {"徒歩1分くらい": 64, "徒歩3分くらい": 192, "徒歩5分くらい": 320}
-            radius_label = str(st.session_state.get(radius_key) or "徒歩3分くらい")
-            radius_m = int(radius_map.get(radius_label, 192))
-        elif kind == "lunch":
-            # Same walking estimate: 320m≈5min, 640m≈10min, 1280m≈20min.
-            radius_map = {"徒歩5分くらい": 320, "徒歩10分くらい": 640, "徒歩20分くらい": 1280}
-            radius_label = str(st.session_state.get(radius_key) or "徒歩10分くらい")
-            radius_m = int(radius_map.get(radius_label, 320))
+    def _commit_nearby_filters_v320(filters):
+        filters = filters if isinstance(filters, dict) else {}
+        request_kind = str(filters.get("kind") or "snack")
+        if request_kind not in {"snack", "lunch", "sightseeing"}: request_kind = "snack"
+        request_sub = str(filters.get("subkind") or "")
+        if request_kind == "snack":
+            if request_sub not in {"食べ歩き向き", "店内中心"}: request_sub = "食べ歩き向き"
+            allowed = {64, 192, 320}; default_r = 192
+            st.session_state[snack_key] = request_sub
+        elif request_kind == "lunch":
+            if request_sub not in set(NEARBY_LUNCH_GENRES): request_sub = "おまかせ"
+            allowed = {320, 640, 1280}; default_r = 640
+            st.session_state[lunch_key] = request_sub
         else:
-            radius_map = {"徒歩10分くらい": 800, "徒歩20分くらい": 1600, "もう少し遠く": 2500}
-            radius_label = str(st.session_state.get(radius_key) or "徒歩10分くらい")
-            radius_m = int(radius_map.get(radius_label, 800))
-        budget_under_1000 = bool(kind != "lunch" and str(st.session_state.get(budget_key) or "under1000") == "under1000")
-        budget_limit = int(str(st.session_state.get(lunch_budget_key) or "2000")) if kind == "lunch" else None
-        active_open_key = lunch_open_key if kind == "lunch" else open_key
-        open_default = "open"
-        open_now_only = bool(GOOGLE_PLACES_API_KEY and str(st.session_state.get(active_open_key) or open_default) == "open")
-        if kind == "snack":
-            subkind = str(st.session_state.get(snack_key) or "食べ歩き向き")
-        elif kind == "lunch":
-            subkind = str(st.session_state.get(lunch_key) or "おまかせ")
+            if request_sub not in {"なんでも", "公園", "神社・寺", "博物館・施設", "電車・乗り物"}: request_sub = "なんでも"
+            allowed = {800, 1600, 2500}; default_r = 800
+            st.session_state[sight_key] = request_sub
+        try: request_radius = int(filters.get("radius_m") or default_r)
+        except Exception: request_radius = default_r
+        if request_radius not in allowed: request_radius = default_r
+        request_budget_under = bool(filters.get("budget_under_1000")) if request_kind != "lunch" else False
+        try: request_budget_limit = int(filters.get("budget_limit") or 2000) if request_kind == "lunch" else None
+        except Exception: request_budget_limit = 2000 if request_kind == "lunch" else None
+        if request_kind == "lunch" and request_budget_limit not in {1000, 2000, 5000}: request_budget_limit = 2000
+        request_open = bool(GOOGLE_PLACES_API_KEY and filters.get("open_now_only"))
+        st.session_state[kind_key] = request_kind
+        st.session_state[radius_key] = request_radius
+        if request_kind == "lunch":
+            st.session_state[lunch_budget_key] = str(request_budget_limit)
+            st.session_state[lunch_open_key] = "open" if request_open else "all"
         else:
-            subkind = str(st.session_state.get(sight_key) or "なんでも")
-        display_kind = "おやつ" if kind == "snack" else ("ランチ" if kind == "lunch" else "観光")
-        budget_label = f"{budget_limit:,}円以内目安" if kind == "lunch" and budget_limit else ("1,000円以下" if budget_under_1000 else "予算指定なし")
-        open_label = "営業中のみ" if open_now_only else "営業時間で絞らない"
-        st.markdown(
-            f'<div class="nearby-search-summary">{html.escape(display_kind)}　／　{html.escape(subkind)}　／　{html.escape(radius_label)}　／　{html.escape(budget_label)}　／　{html.escape(open_label)}</div>',
-            unsafe_allow_html=True,
-        )
+            st.session_state[budget_key] = "under1000" if request_budget_under else "all"
+            st.session_state[open_key] = "open" if request_open else "all"
+        return {"kind": request_kind, "subkind": request_sub, "radius_m": request_radius,
+                "budget_under_1000": request_budget_under, "budget_limit": request_budget_limit,
+                "open_now_only": request_open}
 
-        # v234: Search-result validity is based on the selected filters only.
-        # GPS is deliberately refreshed when Search is pressed, so comparing the
-        # pre-search and post-search coordinates would falsely mark the search stale.
-        search_signature = json.dumps(
-            {
-                "kind": kind,
-                "subkind": subkind,
-                "radius_m": radius_m,
-                "budget_under_1000": bool(budget_under_1000),
-                "budget_limit": int(budget_limit) if budget_limit is not None else None,
-                "open_now_only": bool(open_now_only),
-                "provider": "google" if GOOGLE_PLACES_API_KEY else "osm",
-                "lunch_rating_model": "bayesian_review_weighted_v1" if kind == "lunch" else None,
-                "lunch_search_engine": "atomic_text_plus_types_v258_all_atomic" if kind == "lunch" else None,
-            },
-            ensure_ascii=False,
-            sort_keys=True,
-        )
+    current_cfg = {"kind": kind, "subkind": subkind, "radius_m": radius_m,
+                   "budget_under_1000": budget_under_1000, "budget_limit": budget_limit,
+                   "open_now_only": open_now_only}
+    search_signature = _nearby_signature_v320(current_cfg)
 
-        with st.container(key="nearby_search_action"):
-            search_component = _get_nearby_search_now_component()
-            search_component_result = None
-            if search_component is not None:
-                search_component_result = search_component(
-                    data={},
-                    key=f"nearby_search_now_v319_{current_family_key()}_{current_member_key()}",
-                    on_search_location_change=lambda: None,
-                    on_search_error_change=lambda: None,
-                )
-            else:
-                st.info("この環境では検索時の現在地取得ボタンを表示できません。上の地名指定を利用してください。")
-                search_component_result = None
+    search_component_result = None
+    search_component = _get_nearby_batch_search_component_v320()
+    if search_component is not None:
+        search_component_result = search_component(
+            data={"initial": current_cfg, "lunch_genres": list(NEARBY_LUNCH_GENRES), "google_enabled": bool(GOOGLE_PLACES_API_KEY)},
+            key=f"nearby_batch_search_v320_{prefix}",
+            on_search_location_change=lambda: None,
+            on_search_error_change=lambda: None,
+        )
+    else:
+        st.info("この環境では検索ボタンを表示できません。上の地名指定を利用してください。")
 
     detail_key = f"_nearby_open_detail_{current_family_key()}_{current_member_key()}"
 
-    def _run_nearby_search(search_latitude, search_longitude, search_accuracy=None, search_source="gps"):
+    def _run_nearby_search(search_latitude, search_longitude, search_accuracy=None, search_source="gps", search_config=None):
         search_latitude = float(search_latitude)
         search_longitude = float(search_longitude)
+        cfg = dict(search_config or current_cfg)
+        kind = str(cfg.get("kind") or "snack")
+        subkind = str(cfg.get("subkind") or "")
+        radius_m = int(cfg.get("radius_m") or 192)
+        budget_under_1000 = bool(cfg.get("budget_under_1000"))
+        budget_limit = cfg.get("budget_limit")
+        budget_limit = int(budget_limit) if budget_limit is not None else None
+        open_now_only = bool(cfg.get("open_now_only"))
 
         # v218: Near-me searches are intentionally small (snacks: 1/3/5 min).
         # Never query from a coarse GPS fix even if a browser/component regression emits one.
@@ -21811,7 +21852,7 @@ def page_nearby():
         label_future = label_pool.submit(reverse_geocode_rough, search_latitude, search_longitude)
         # Store exactly the filter signature active when Search was pressed.
         # The newly measured GPS coordinates are stored separately in _nearby_location.
-        fresh_signature = search_signature
+        fresh_signature = _nearby_signature_v320(cfg)
         with st.spinner("高精度GPSを基準に周辺候補を高速検索しています…"):
             live_result = search_nearby_quick_stops_google(
                 search_latitude, search_longitude, kind, subkind, radius_m,
@@ -21868,7 +21909,8 @@ def page_nearby():
                 fresh_lat = float(fresh_search_payload.get("latitude"))
                 fresh_lon = float(fresh_search_payload.get("longitude"))
                 fresh_accuracy = float(fresh_search_payload.get("accuracy_m") or 0) or None
-                _run_nearby_search(fresh_lat, fresh_lon, fresh_accuracy, "gps")
+                request_cfg = _commit_nearby_filters_v320(fresh_search_payload.get("filters"))
+                _run_nearby_search(fresh_lat, fresh_lon, fresh_accuracy, "gps", search_config=request_cfg)
                 st.rerun()
             except (TypeError, ValueError):
                 st.session_state["_nearby_search_warning"] = "検索時の現在地を確認できませんでした。もう一度お試しください。"
@@ -21885,11 +21927,13 @@ def page_nearby():
                 and manual_fallback.get("latitude") is not None
                 and manual_fallback.get("longitude") is not None
             ):
+                request_cfg = _commit_nearby_filters_v320(fresh_search_error.get("filters"))
                 _run_nearby_search(
                     manual_fallback.get("latitude"),
                     manual_fallback.get("longitude"),
                     None,
                     "manual",
+                    search_config=request_cfg,
                 )
                 st.rerun()
             else:
@@ -21906,6 +21950,27 @@ def page_nearby():
     search_warning = st.session_state.pop("_nearby_search_warning", None)
     if search_warning:
         st.warning(search_warning)
+
+    # Use only filters committed by the last Search press. Browser-side edits do not invalidate results until searched.
+    kind = str(st.session_state.get(kind_key) or "snack")
+    if kind == "snack":
+        subkind = str(st.session_state.get(snack_key) or "食べ歩き向き")
+        allowed_r = {64,192,320}; default_r = 192
+    elif kind == "lunch":
+        subkind = str(st.session_state.get(lunch_key) or "おまかせ")
+        allowed_r = {320,640,1280}; default_r = 640
+    else:
+        subkind = str(st.session_state.get(sight_key) or "なんでも")
+        allowed_r = {800,1600,2500}; default_r = 800
+    try: radius_m = int(st.session_state.get(radius_key) or default_r)
+    except Exception: radius_m = default_r
+    if radius_m not in allowed_r: radius_m = default_r
+    budget_under_1000 = bool(kind != "lunch" and str(st.session_state.get(budget_key) or "under1000") == "under1000")
+    budget_limit = int(str(st.session_state.get(lunch_budget_key) or "2000")) if kind == "lunch" else None
+    active_open_key = lunch_open_key if kind == "lunch" else open_key
+    open_now_only = bool(GOOGLE_PLACES_API_KEY and str(st.session_state.get(active_open_key) or "all") == "open")
+    current_cfg = {"kind":kind,"subkind":subkind,"radius_m":radius_m,"budget_under_1000":budget_under_1000,"budget_limit":budget_limit,"open_now_only":open_now_only}
+    search_signature = _nearby_signature_v320(current_cfg)
 
     saved_search = st.session_state.get(result_key)
     if not isinstance(saved_search, dict) or str(saved_search.get("signature") or "") != search_signature:
@@ -30640,9 +30705,9 @@ html,body{{margin:0;padding:0;background:#0b1012;font-family:-apple-system,Blink
  // Photo-restored historical route is rendered with the original glowing green style.
  (data.photo_segments||[]).forEach((seg)=>{{
    if(!Array.isArray(seg)||seg.length<2)return;
-   L.polyline(seg,{{color:'#ff3b2f',weight:14,opacity:.060,lineCap:'round',lineJoin:'round',interactive:false}}).addTo(map);
-   L.polyline(seg,{{color:'#ff665c',weight:8.0,opacity:.18,lineCap:'round',lineJoin:'round',interactive:false}}).addTo(map);
-   L.polyline(seg,{{color:'#ffe0dc',weight:3.0,opacity:.97,lineCap:'round',lineJoin:'round',interactive:false}}).addTo(map);
+   L.polyline(seg,{{color:'#13e95b',weight:14,opacity:.060,lineCap:'round',lineJoin:'round',interactive:false}}).addTo(map);
+   L.polyline(seg,{{color:'#39f374',weight:8.0,opacity:.18,lineCap:'round',lineJoin:'round',interactive:false}}).addTo(map);
+   L.polyline(seg,{{color:'#9dffb6',weight:3.0,opacity:.97,lineCap:'round',lineJoin:'round',interactive:false}}).addTo(map);
  }});
 
  const drawArrivedStation=(s)=>{{
