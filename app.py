@@ -33,9 +33,10 @@ from zoneinfo import ZoneInfo
 import streamlit as st
 
 # Freshly generated update: 2026-08-31 23:49 JST
-GENERATED_UPDATE_JST = "2026-09-11T00:24:48+09:00"
+GENERATED_UPDATE_JST = "2026-09-11T01:38:00+09:00"
 
-APP_BUILD = "v391"
+APP_BUILD = "v392"
+# v392: replay always refreshes each photo's current feeling/tag; final destructive confirm buttons are red.
 # v391: voice-aware replay timing; duck music slightly, hold each voice photo until speech ends, show all photos once.
 # v389: improve light-tap responsiveness on mobile/Android WebView.
 # v383: interaction performance pass - no periodic Home polling, lazy heavy components, deferred recovery scans.
@@ -242,6 +243,30 @@ st.markdown(
         div.stButton > button {
           min-height: 3.35rem;
         }
+      }
+      /* v392: keep delete entry points neutral; color only the final destructive confirmation. */
+      [class*="st-key-video_delete_yes_"] div.stButton > button,
+      [class*="st-key-video_grid_delete_yes_"] div.stButton > button,
+      [class*="st-key-dialog_delete_yes_"] div.stButton > button,
+      [class*="st-key-dialog_photo_delete_yes_"] div.stButton > button,
+      [class*="st-key-ai_tag_delete_video_confirm_button_"] div.stButton > button,
+      [class*="st-key-monthly_delete_video_confirm_button_"] div.stButton > button,
+      [class*="st-key-moments_delete_all_reviewed_yes_"] div.stButton > button {
+        background: #D64545 !important;
+        border-color: #D64545 !important;
+        color: #FFFFFF !important;
+        box-shadow: 0 5px 14px rgba(214,69,69,.18) !important;
+      }
+      [class*="st-key-video_delete_yes_"] div.stButton > button:hover,
+      [class*="st-key-video_grid_delete_yes_"] div.stButton > button:hover,
+      [class*="st-key-dialog_delete_yes_"] div.stButton > button:hover,
+      [class*="st-key-dialog_photo_delete_yes_"] div.stButton > button:hover,
+      [class*="st-key-ai_tag_delete_video_confirm_button_"] div.stButton > button:hover,
+      [class*="st-key-monthly_delete_video_confirm_button_"] div.stButton > button:hover,
+      [class*="st-key-moments_delete_all_reviewed_yes_"] div.stButton > button:hover {
+        background: #C83B3B !important;
+        border-color: #C83B3B !important;
+        color: #FFFFFF !important;
       }
       .hero-card, .photo-card, .diary-card, .monthly-card, .talk-card {
         border: 1px solid rgba(128,128,128,.22);
@@ -18142,8 +18167,55 @@ def _monthly_replay_photo_caption(photo, trip, index):
     return " / ".join(label_bits) or f"写真{index}"
 
 
+def _refresh_replay_photo_current_state(photos, owner_member_key=None):
+    """Overlay the latest persisted reflection_json onto replay photos.
+
+    The saved movie decides which photos and their order. The border/emoji must instead
+    follow the feeling/tag currently attached to each photo.
+    """
+    base = [dict(photo) for photo in (photos or []) if isinstance(photo, dict)]
+    ids = []
+    seen = set()
+    for photo in base:
+        photo_id = str(photo.get("id") or "").strip()
+        if photo_id and photo_id not in seen:
+            seen.add(photo_id)
+            ids.append(photo_id)
+    if not ids:
+        return base
+
+    member_key = str(owner_member_key or current_member_key() or "").strip()
+    if not member_key:
+        return base
+    latest_by_id = {}
+    try:
+        client = supabase_client()
+        for offset in range(0, len(ids), 100):
+            chunk = ids[offset:offset + 100]
+            rows = (
+                client.table(PHOTO_TABLE)
+                .select("id,reflection_json")
+                .eq("family_key", current_family_key())
+                .eq("member_key", member_key)
+                .in_("id", chunk)
+                .execute()
+            ).data or []
+            for row in rows:
+                if isinstance(row, dict) and row.get("id"):
+                    latest_by_id[str(row.get("id"))] = row
+    except Exception:
+        return base
+
+    for photo in base:
+        latest = latest_by_id.get(str(photo.get("id") or ""))
+        if latest and isinstance(latest.get("reflection_json"), dict):
+            photo["reflection_json"] = latest.get("reflection_json")
+    return base
+
+
 def build_monthly_replay_photo_items(bundle, limit=None):
     photos, trip_map = _monthly_replay_selected_photos(bundle, limit=limit)
+    photos = _refresh_replay_photo_current_state(photos)
     if not photos:
         return []
     paths = [str(p.get("storage_path") or "").strip() for p in photos]
@@ -18637,6 +18709,7 @@ def build_monthly_family_share_photo_snapshot(bundle, limit=None):
         emotion = photo_selected_tag_meta(photo)
         voice_meta = photo_voice_note_meta(photo)
         snapshots.append({
+            "photo_id": str(photo.get("id") or ""),
             "storage_path": storage_path,
             "caption": _monthly_replay_photo_caption(photo, trip, idx),
             "emotion": str(emotion.get("key") or ""),
@@ -18651,7 +18724,82 @@ def build_monthly_family_share_photo_snapshot(bundle, limit=None):
 
 def build_family_shared_replay_photo_items(share):
     share = share if isinstance(share, dict) else {}
-    snapshots = [x for x in (share.get("photos") or []) if isinstance(x, dict)]
+    snapshots = [dict(x) for x in (share.get("photos") or []) if isinstance(x, dict)]
+
+    # v392: shared movies preserve the saved photo order, while their visible feeling
+    # follows the owner's current photo state. Old snapshots without photo_id are
+    # resolved by storage_path.
+    owner_member_key = str(share.get("shared_by_member_key") or "").strip()
+    if owner_member_key and snapshots:
+        latest_by_id = {}
+        latest_by_path = {}
+        try:
+            client = supabase_client()
+            ids = list(dict.fromkeys(
+                str(x.get("photo_id") or "").strip() for x in snapshots
+                if str(x.get("photo_id") or "").strip()
+            ))
+            for offset in range(0, len(ids), 100):
+                chunk = ids[offset:offset + 100]
+                if not chunk:
+                    continue
+                rows = (
+                    client.table(PHOTO_TABLE)
+                    .select("id,storage_path,reflection_json")
+                    .eq("family_key", current_family_key())
+                    .eq("member_key", owner_member_key)
+                    .in_("id", chunk)
+                    .execute()
+                ).data or []
+                for row in rows:
+                    if not isinstance(row, dict):
+                        continue
+                    if row.get("id"):
+                        latest_by_id[str(row.get("id"))] = row
+                    if row.get("storage_path"):
+                        latest_by_path[str(row.get("storage_path"))] = row
+
+            unresolved_paths = []
+            for snap in snapshots:
+                pid = str(snap.get("photo_id") or "").strip()
+                path = str(snap.get("storage_path") or "").strip()
+                if path and pid not in latest_by_id and path not in latest_by_path:
+                    unresolved_paths.append(path)
+            unresolved_paths = list(dict.fromkeys(unresolved_paths))
+            for offset in range(0, len(unresolved_paths), 80):
+                chunk = unresolved_paths[offset:offset + 80]
+                if not chunk:
+                    continue
+                rows = (
+                    client.table(PHOTO_TABLE)
+                    .select("id,storage_path,reflection_json")
+                    .eq("family_key", current_family_key())
+                    .eq("member_key", owner_member_key)
+                    .in_("storage_path", chunk)
+                    .execute()
+                ).data or []
+                for row in rows:
+                    if not isinstance(row, dict):
+                        continue
+                    if row.get("id"):
+                        latest_by_id[str(row.get("id"))] = row
+                    if row.get("storage_path"):
+                        latest_by_path[str(row.get("storage_path"))] = row
+
+            for snap in snapshots:
+                pid = str(snap.get("photo_id") or "").strip()
+                path = str(snap.get("storage_path") or "").strip()
+                live = latest_by_id.get(pid) or latest_by_path.get(path)
+                if not live:
+                    continue
+                emotion = photo_selected_tag_meta(live)
+                snap["emotion"] = str(emotion.get("key") or "")
+                snap["emotion_label"] = str(emotion.get("label") or "")
+                snap["emotion_emoji"] = str(emotion.get("emoji") or "")
+                snap["emotion_color"] = str(emotion.get("color") or "")
+        except Exception:
+            pass
+
     paths = [str(x.get("storage_path") or "").strip() for x in snapshots]
     paths = [x for x in paths if x]
     if not paths:
@@ -19264,12 +19412,21 @@ _REPLAY_MOVIE_LIBRARY_CSS_V357 = r"""
 .replay-movie-delete-confirm-v380 .confirm-delete {
   min-height: 34px;
   border-radius: 10px;
-  border: 0;
+  border: 1px solid #D64545;
+  background: #D64545;
+  color: #FFFFFF;
   font: inherit;
   font-size: 11.5px;
   font-weight: 800;
   cursor: pointer;
+  box-shadow: 0 4px 12px rgba(214,69,69,.18);
 }
+.replay-movie-delete-confirm-v380 .confirm-delete:active:not(:disabled) {
+  background: #C83B3B;
+  border-color: #C83B3B;
+  transform: translateY(1px);
+}
+.replay-movie-delete-confirm-v380 .confirm-delete:disabled { opacity:.55; cursor:wait; }
 .replay-movie-delete-confirm-v380 .cancel-delete {
   min-height: 34px;
   border-radius: 10px;
