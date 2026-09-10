@@ -30,9 +30,9 @@ from zoneinfo import ZoneInfo
 import streamlit as st
 
 # Freshly generated update: 2026-08-31 23:49 JST
-GENERATED_UPDATE_JST = "2026-09-10T13:38:00+09:00"
+GENERATED_UPDATE_JST = "2026-09-10T13:45:00+09:00"
 
-APP_BUILD = "v360"
+APP_BUILD = "v361"
 # v331: multi-tag photo selections can go straight to a music replay and be saved as a stable in-app movie snapshot.
 # v330: tag-review movies support one or multiple AI tags; selection is action-only.
 
@@ -25918,7 +25918,7 @@ def _get_moments_select_component():
 
 
 @st.fragment
-def _render_moments_picker(photo, index, view_mode="list", next_video_action=None):
+def _render_moments_picker(photo, index, view_mode=None, next_video_action=None):
     selection_meta = photo_media_metadata(photo).get("ai_selection") or {}
     if not isinstance(selection_meta, dict):
         selection_meta = {}
@@ -25957,6 +25957,21 @@ def _render_moments_picker(photo, index, view_mode="list", next_video_action=Non
                     st.code(str(exc))
 
     st.markdown(f"#### {html.escape(title)}")
+    # v361: each source video owns its own list/enlarged preference. Because this
+    # renderer is a Streamlit fragment, changing the switch reruns only this video.
+    per_video_mode_key = f"_moments_view_mode_label_v361_{video_id}"
+    previous_mode = str(st.session_state.get(per_video_mode_key) or "").strip()
+    if previous_mode not in {"一覧モード", "拡大モード"}:
+        st.session_state[per_video_mode_key] = "一覧モード"
+    st.caption("この動画の写真表示")
+    mode_label = st.radio(
+        "この動画の表示モード",
+        ["一覧モード", "拡大モード"],
+        horizontal=True,
+        key=per_video_mode_key,
+        label_visibility="collapsed",
+    )
+    view_mode = "enlarge" if mode_label == "拡大モード" else "list"
     capture_meta = photo_media_metadata(photo).get("video_capture") or {}
     if isinstance(capture_meta, dict):
         width = max(0, int(capture_meta.get("width") or 0))
@@ -27046,40 +27061,10 @@ def page_moments():
         "動画ごとにAIが選んだ瞬間を確認し、気に入った写真だけ日記へ送れます。",
     )
 
-    # v148: keep the display-mode switch in one fixed location directly below
-    # the page Back/title area. The mode is page-wide, while each video's selected
-    # ranks are shared between list and enlarged views.
-    with st.container(key="moments_view_mode_bar"):
-        mode_label = st.radio(
-            "表示モード",
-            ["一覧モード", "拡大モード"],
-            horizontal=True,
-            key="_moments_view_mode_label",
-            label_visibility="collapsed",
-        )
-    st.markdown(
-        """
-        <style>
-        .st-key-moments_view_mode_bar {
-          margin: .05rem 0 .55rem;
-          padding: .28rem .42rem;
-          border: 1px solid rgba(128,128,128,.20);
-          border-radius: 14px;
-          background: color-mix(in srgb, var(--background-color, #fff) 94%, rgba(128,128,128,.06) 6%);
-        }
-        .st-key-moments_view_mode_bar [role="radiogroup"] {
-          justify-content: center;
-          gap: .35rem;
-        }
-        .st-key-moments_view_mode_bar label {
-          min-height: 42px;
-          align-items: center;
-        }
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
-    view_mode = "enlarge" if mode_label == "拡大モード" else "list"
+    # v361: there is no page-wide display-mode switch. Each video owns its own
+    # list/enlarged setting inside _render_moments_picker. Remove the legacy global
+    # value so an older session cannot unexpectedly affect the current page.
+    st.session_state.pop("_moments_view_mode_label", None)
 
     notice = st.session_state.pop("_moments_notice", None)
     if notice:
@@ -27118,32 +27103,13 @@ def page_moments():
 
     display_videos = pending + ready
     if display_videos:
-        if view_mode == "enlarge":
-            # v166: enlarged mode keeps only one source video mounted at a time.
-            # This prevents many video players + large still components from building
-            # up in the DOM and exhausting mobile browser memory.
-            active_key = "_moments_enlarge_unreviewed_index_v166"
-            try:
-                active_index = int(st.session_state.get(active_key) or 0)
-            except Exception:
-                active_index = 0
-            active_index = max(0, min(active_index, len(display_videos) - 1))
-            st.session_state[active_key] = active_index
-            _render_moments_picker(display_videos[active_index], active_index, view_mode=view_mode)
-            if len(display_videos) > 1:
-                next_index = (active_index + 1) % len(display_videos)
-                if st.button(
-                    f"次の未確認動画へ →（{next_index + 1}/{len(display_videos)}）",
-                    use_container_width=True,
-                    key=f"moments_next_unreviewed_v166_{active_index}",
-                ):
-                    st.session_state[active_key] = next_index
-                    st.rerun(scope="app")
-        else:
-            for idx, video in enumerate(display_videos):
-                if idx:
-                    st.divider()
-                _render_moments_picker(video, idx, view_mode=view_mode)
+        # v361: keep the page itself in a light multi-video list. Each picker is a
+        # fragment with its own display mode, so enlarging one video does not remount
+        # or change the other videos.
+        for idx, video in enumerate(display_videos):
+            if idx:
+                st.divider()
+            _render_moments_picker(video, idx)
     else:
         st.info("未確認のAIセレクションはありません。")
 
@@ -27224,7 +27190,6 @@ def page_moments():
         _render_moments_picker(
             reviewed[reviewed_index],
             1000 + reviewed_index,
-            view_mode=view_mode,
             next_video_action=next_cfg,
         )
 
