@@ -30,9 +30,9 @@ from zoneinfo import ZoneInfo
 import streamlit as st
 
 # Freshly generated update: 2026-08-31 23:49 JST
-GENERATED_UPDATE_JST = "2026-09-10T12:30:00+09:00"
+GENERATED_UPDATE_JST = "2026-09-10T12:47:00+09:00"
 
-APP_BUILD = "v356"
+APP_BUILD = "v357"
 # v331: multi-tag photo selections can go straight to a music replay and be saved as a stable in-app movie snapshot.
 # v330: tag-review movies support one or multiple AI tags; selection is action-only.
 
@@ -17685,29 +17685,272 @@ def delete_owned_replay_movie(row_id):
     return review
 
 
-def render_own_replay_movie_library():
-    """Show saved replay movies below 'これまでの日記' with a compact 2x2 action grid."""
-    st.markdown("#### 🎞 作ったムービー")
-    st.caption("これまで作ったムービーの一覧です。見る・削除・家族への共有／解除をここで操作できます。")
-    st.markdown(
-        """
-        <style>
-          div[class*="st-key-review_movie_view_"] button,
-          div[class*="st-key-review_movie_share_"] button,
-          div[class*="st-key-review_movie_delete_"] button,
-          div[class*="st-key-review_movie_unshare_"] button {
-            min-height: 32px !important;
-            padding: .28rem .38rem !important;
-            font-size: .78rem !important;
-            line-height: 1.1 !important;
-            border-radius: 9px !important;
-          }
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
+_REPLAY_MOVIE_LIBRARY_HTML_V357 = r"""
+<div class="replay-movie-library-v357">
+  <div id="replay-movie-list-v357" class="replay-movie-list-v357"></div>
+</div>
+"""
 
-    notice = st.session_state.pop("_replay_movie_library_notice_v356", None)
+_REPLAY_MOVIE_LIBRARY_CSS_V357 = r"""
+.replay-movie-library-v357 {
+  width: 100%;
+  box-sizing: border-box;
+  font-family: inherit;
+  color: inherit;
+}
+.replay-movie-list-v357 {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  width: 100%;
+  box-sizing: border-box;
+}
+.replay-movie-card-v357 {
+  box-sizing: border-box;
+  width: 100%;
+  padding: 10px 11px 11px;
+  border: 1px solid rgba(120, 120, 120, .18);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, .015);
+}
+.replay-movie-title-row-v357 {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+}
+.replay-movie-title-v357 {
+  min-width: 0;
+  flex: 1 1 auto;
+  font-size: 15px;
+  line-height: 1.35;
+  font-weight: 760;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.replay-movie-status-v357 {
+  flex: 0 0 auto;
+  font-size: 11px;
+  line-height: 1;
+  padding: 5px 7px;
+  border-radius: 999px;
+  border: 1px solid rgba(120, 120, 120, .18);
+  white-space: nowrap;
+}
+.replay-movie-status-v357.shared {
+  background: rgba(66, 176, 101, .12);
+  border-color: rgba(66, 176, 101, .26);
+}
+.replay-movie-meta-v357 {
+  margin-top: 5px;
+  font-size: 11px;
+  line-height: 1.45;
+  opacity: .68;
+  overflow-wrap: anywhere;
+}
+.replay-movie-actions-v357 {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 6px;
+  margin-top: 9px;
+  width: 100%;
+}
+.replay-movie-action-v357 {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  min-height: 34px;
+  padding: 6px 8px;
+  border-radius: 9px;
+  border: 1px solid rgba(120, 120, 120, .24);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 1.15;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+.replay-movie-action-v357:active:not(:disabled) {
+  transform: translateY(1px);
+}
+.replay-movie-action-v357:disabled {
+  opacity: .32;
+  cursor: default;
+}
+.replay-movie-action-v357.delete {
+  border-color: rgba(194, 82, 82, .25);
+}
+.replay-movie-more-v357 {
+  width: 100%;
+  min-height: 34px;
+  margin-top: 1px;
+  border-radius: 10px;
+  border: 1px solid rgba(120, 120, 120, .18);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+@media (max-width: 420px) {
+  .replay-movie-card-v357 { padding: 9px 10px 10px; border-radius: 13px; }
+  .replay-movie-title-v357 { font-size: 14px; }
+  .replay-movie-action-v357 { min-height: 33px; font-size: 11.5px; }
+}
+"""
+
+_REPLAY_MOVIE_LIBRARY_JS_V357 = r"""
+export default function(component) {
+  const { parentElement, data, setTriggerValue } = component;
+  const list = parentElement.querySelector('#replay-movie-list-v357');
+  if (!list) return;
+
+  const movies = Array.isArray(data?.movies) ? data.movies : [];
+  const pageSize = Math.max(6, Number(data?.page_size || 12));
+  let visibleCount = Math.min(pageSize, movies.length);
+  let disposed = false;
+
+  const send = (action, rowId) => {
+    if (disposed || !rowId) return;
+    setTriggerValue('action', {
+      action: String(action || ''),
+      row_id: String(rowId),
+      token: `${Date.now()}_${Math.random().toString(36).slice(2)}`
+    });
+  };
+
+  const button = (label, action, rowId, disabled, extraClass='') => {
+    const el = document.createElement('button');
+    el.type = 'button';
+    el.className = `replay-movie-action-v357 ${extraClass}`.trim();
+    el.textContent = label;
+    el.disabled = Boolean(disabled);
+    el.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      if (el.disabled) return;
+      if (action === 'delete') {
+        const ok = globalThis.confirm('このムービーを削除しますか？\n元の写真・日記・AIコメント・保存済み音楽は削除されません。');
+        if (!ok) return;
+      }
+      el.disabled = true;
+      send(action, rowId);
+    });
+    return el;
+  };
+
+  const render = () => {
+    list.replaceChildren();
+    const fragment = document.createDocumentFragment();
+    movies.slice(0, visibleCount).forEach((movie) => {
+      const rowId = String(movie?.id || '');
+      const shared = Boolean(movie?.shared);
+
+      const card = document.createElement('section');
+      card.className = 'replay-movie-card-v357';
+
+      const titleRow = document.createElement('div');
+      titleRow.className = 'replay-movie-title-row-v357';
+      const title = document.createElement('div');
+      title.className = 'replay-movie-title-v357';
+      title.textContent = String(movie?.title || '振り返りムービー');
+      const status = document.createElement('span');
+      status.className = `replay-movie-status-v357${shared ? ' shared' : ''}`;
+      status.textContent = shared ? '● 共有中' : '未共有';
+      titleRow.append(title, status);
+
+      const meta = document.createElement('div');
+      meta.className = 'replay-movie-meta-v357';
+      meta.textContent = String(movie?.meta || '');
+
+      const actions = document.createElement('div');
+      actions.className = 'replay-movie-actions-v357';
+      // Fixed CSS grid, not Streamlit columns: never collapses from 2x2 to four rows on phones.
+      actions.append(
+        button('▶ 見る', 'view', rowId, false),
+        button('共有', 'share', rowId, shared),
+        button('🗑 削除', 'delete', rowId, false, 'delete'),
+        button('解除', 'unshare', rowId, !shared)
+      );
+
+      card.append(titleRow, meta, actions);
+      fragment.appendChild(card);
+    });
+
+    if (visibleCount < movies.length) {
+      const more = document.createElement('button');
+      more.type = 'button';
+      more.className = 'replay-movie-more-v357';
+      const remaining = movies.length - visibleCount;
+      more.textContent = `さらに表示（残り ${remaining}件）`;
+      more.addEventListener('click', () => {
+        visibleCount = Math.min(movies.length, visibleCount + pageSize);
+        render();
+      });
+      fragment.appendChild(more);
+    }
+    list.appendChild(fragment);
+  };
+
+  render();
+  return () => { disposed = true; };
+}
+"""
+
+_replay_movie_library_component_v357 = None
+_replay_movie_library_component_initialized_v357 = False
+
+
+def _get_replay_movie_library_component_v357():
+    """Register the compact movie list only when Review is actually opened."""
+    global _replay_movie_library_component_v357, _replay_movie_library_component_initialized_v357
+    if _replay_movie_library_component_initialized_v357:
+        return _replay_movie_library_component_v357
+    _replay_movie_library_component_initialized_v357 = True
+    try:
+        _replay_movie_library_component_v357 = st.components.v2.component(
+            "tokyo_burari_replay_movie_library_v357",
+            html=_REPLAY_MOVIE_LIBRARY_HTML_V357,
+            css=_REPLAY_MOVIE_LIBRARY_CSS_V357,
+            js=_REPLAY_MOVIE_LIBRARY_JS_V357,
+        )
+    except Exception:
+        _replay_movie_library_component_v357 = None
+    return _replay_movie_library_component_v357
+
+
+def _movie_library_action_token_is_new_v357(payload):
+    token = str((payload or {}).get("token") or "").strip() if isinstance(payload, dict) else ""
+    if not token:
+        return True
+    key = "_replay_movie_library_action_token_v357"
+    if token == str(st.session_state.get(key) or ""):
+        return False
+    st.session_state[key] = token
+    return True
+
+
+def _refresh_after_movie_library_navigation_v357():
+    """Force a clean mobile DOM remount when leaving the long movie list."""
+    st.session_state["_ui_refresh_epoch"] = _current_ui_refresh_epoch() + 1
+    st.session_state.pop("_browser_hierarchy_back_token", None)
+
+
+def render_own_replay_movie_library():
+    """Lightweight, isolated movie list below 'これまでの日記'.
+
+    v357 intentionally renders the whole list inside one v2 component. Its 2x2 grid CSS is
+    component-scoped, so it cannot leak into Home/Monthly/Tag pages after navigation. It
+    also avoids mounting four Streamlit widgets per movie, which materially reduces mobile
+    DOM size and page churn. No photos, MP4 bytes, or YouTube players are loaded here.
+    """
+    st.markdown("#### 🎞 作ったムービー")
+    st.caption("これまで作ったムービーです。ここでは動画本体を読み込まず、一覧だけ軽く表示します。")
+
+    notice = st.session_state.pop("_replay_movie_library_notice_v357", None)
     if notice:
         st.success(str(notice))
 
@@ -17723,8 +17966,12 @@ def render_own_replay_movie_library():
         st.caption("まだ保存済みのムービーはありません。")
         return
 
+    component_rows = []
+    row_map = {}
     for index, item in enumerate(rows, start=1):
         row_id = str(item.get("id") or "").strip()
+        if not row_id:
+            continue
         period_label = str(item.get("period_label") or "振り返りムービー").strip()
         movie_type = str(item.get("movie_type") or "振り返り").strip()
         shared = bool(item.get("shared"))
@@ -17733,112 +17980,88 @@ def render_own_replay_movie_library():
         music_title = str(playback.get("title") or "YouTube音楽").strip()
         start_seconds = max(0, int(playback.get("start_seconds") or 0))
         end_seconds = int(playback.get("end_seconds") or (start_seconds + 1))
-        key_token = hashlib.sha1((row_id or f"{period_label}:{index}").encode("utf-8")).hexdigest()[:12]
-        delete_confirm_key = f"_review_movie_delete_confirm_v356_{key_token}"
+        detail_parts = [movie_type, music_title, f"{format_mmss(start_seconds)}〜{format_mmss(end_seconds)}"]
+        if saved_label:
+            detail_parts.append(saved_label)
+        component_rows.append({
+            "id": row_id,
+            "title": period_label,
+            "meta": " ／ ".join(detail_parts),
+            "shared": shared,
+        })
+        row_map[row_id] = item
 
-        with st.container(border=True, key=f"review_movie_card_{key_token}"):
-            status = "🟢 共有中" if shared else "⚪ 未共有"
-            st.markdown(f"**{html.escape(period_label)}**　{status}")
-            detail = f"{movie_type} ／ {html.escape(music_title)} ／ {format_mmss(start_seconds)}〜{format_mmss(end_seconds)}"
-            if saved_label:
-                detail += f" ／ {saved_label}"
-            st.caption(detail)
+    if not component_rows:
+        st.caption("まだ保存済みのムービーはありません。")
+        return
 
-            top_left, top_right = st.columns(2, gap="small")
-            with top_left:
-                view_clicked = st.button(
-                    "▶ 見る",
-                    use_container_width=True,
-                    key=f"review_movie_view_{key_token}",
-                )
-            with top_right:
-                share_clicked = st.button(
-                    "共有",
-                    use_container_width=True,
-                    disabled=shared,
-                    key=f"review_movie_share_{key_token}",
-                )
-
-            bottom_left, bottom_right = st.columns(2, gap="small")
-            with bottom_left:
-                delete_clicked = st.button(
-                    "🗑 削除",
-                    use_container_width=True,
-                    key=f"review_movie_delete_{key_token}",
-                )
-            with bottom_right:
-                unshare_clicked = st.button(
-                    "解除",
-                    use_container_width=True,
-                    disabled=not shared,
-                    key=f"review_movie_unshare_{key_token}",
-                )
-
-            if view_clicked:
-                try:
+    component = _get_replay_movie_library_component_v357()
+    if component is None:
+        # Very old/unsupported Streamlit runtimes get a deliberately small native fallback.
+        # Do not inject global CSS here; keeping the fallback plain is safer than risking a
+        # style leak onto another page.
+        for item in rows[:12]:
+            row_id = str(item.get("id") or "").strip()
+            if not row_id:
+                continue
+            period_label = str(item.get("period_label") or "振り返りムービー").strip()
+            shared = bool(item.get("shared"))
+            with st.container(border=True):
+                st.markdown(f"**{html.escape(period_label)}**　{'● 共有中' if shared else '未共有'}")
+                if st.button("▶ 見る", key=f"review_movie_fallback_view_v357_{row_id}", use_container_width=True):
                     open_owned_replay_movie_from_library(item)
-                    st.rerun()
-                except Exception as exc:
-                    st.error("ムービーを開けませんでした。")
-                    with st.expander("保護者向け詳細"):
-                        st.code(str(exc))
+                    _refresh_after_movie_library_navigation_v357()
+                    st.rerun(scope="app")
+        if len(rows) > 12:
+            st.caption("この端末では先頭12件を表示しています。")
+        return
 
-            if share_clicked:
-                try:
-                    set_owned_replay_movie_share(row_id, enabled=True)
-                    st.session_state["_replay_movie_library_notice_v356"] = f"「{period_label}」を家族に共有しました。"
-                    st.rerun()
-                except Exception as exc:
-                    st.error("家族に共有できませんでした。")
-                    with st.expander("保護者向け詳細"):
-                        st.code(str(exc))
+    serial = int(st.session_state.get("_replay_movie_library_serial_v357") or 0)
+    result = component(
+        data={"movies": component_rows, "page_size": 12},
+        key=f"replay_movie_library_v357_{serial}_{_current_ui_refresh_epoch()}",
+        on_action_change=lambda: None,
+    )
+    action_payload = getattr(result, "action", None) if result is not None else None
+    if not isinstance(action_payload, dict) or not _movie_library_action_token_is_new_v357(action_payload):
+        return
 
-            if unshare_clicked:
-                try:
-                    set_owned_replay_movie_share(row_id, enabled=False)
-                    st.session_state["_replay_movie_library_notice_v356"] = f"「{period_label}」の家族共有を解除しました。"
-                    st.rerun()
-                except Exception as exc:
-                    st.error("共有を解除できませんでした。")
-                    with st.expander("保護者向け詳細"):
-                        st.code(str(exc))
+    row_id = str(action_payload.get("row_id") or "").strip()
+    action = str(action_payload.get("action") or "").strip().lower()
+    item = row_map.get(row_id)
+    if not item:
+        return
+    period_label = str(item.get("period_label") or "振り返りムービー").strip()
 
-            if delete_clicked:
-                st.session_state[delete_confirm_key] = True
-                st.rerun()
-
-            if st.session_state.get(delete_confirm_key):
-                delete_note = "共有中のムービーは共有も同時に解除されます。" if shared else ""
-                st.warning(
-                    "このムービーを削除します。元の写真・日記・AIコメント・保存済み音楽は削除されません。"
-                    + delete_note
-                )
-                confirm_col, cancel_col = st.columns(2, gap="small")
-                with confirm_col:
-                    confirm_delete = st.button(
-                        "削除する",
-                        use_container_width=True,
-                        key=f"review_movie_delete_confirm_{key_token}",
-                    )
-                with cancel_col:
-                    cancel_delete = st.button(
-                        "キャンセル",
-                        use_container_width=True,
-                        key=f"review_movie_delete_cancel_{key_token}",
-                    )
-                if confirm_delete:
-                    try:
-                        delete_owned_replay_movie(row_id)
-                        st.session_state.pop(delete_confirm_key, None)
-                        st.session_state["_replay_movie_library_notice_v356"] = f"「{period_label}」を削除しました。"
-                        st.rerun()
-                    except Exception as exc:
-                        st.error("ムービーを削除できませんでした。")
-                        with st.expander("保護者向け詳細"):
-                            st.code(str(exc))
-                if cancel_delete:
-                    st.session_state.pop(delete_confirm_key, None)
-                    st.rerun()
+    try:
+        if action == "view":
+            open_owned_replay_movie_from_library(item)
+            _refresh_after_movie_library_navigation_v357()
+            st.rerun(scope="app")
+            return
+        if action == "share":
+            set_owned_replay_movie_share(row_id, enabled=True)
+            st.session_state["_replay_movie_library_notice_v357"] = f"「{period_label}」を家族に共有しました。"
+            st.session_state["_replay_movie_library_serial_v357"] = serial + 1
+            reload_current_page_after_action()
+            return
+        if action == "unshare":
+            set_owned_replay_movie_share(row_id, enabled=False)
+            st.session_state["_replay_movie_library_notice_v357"] = f"「{period_label}」の家族共有を解除しました。"
+            st.session_state["_replay_movie_library_serial_v357"] = serial + 1
+            reload_current_page_after_action()
+            return
+        if action == "delete":
+            delete_owned_replay_movie(row_id)
+            st.session_state["_replay_movie_library_notice_v357"] = f"「{period_label}」を削除しました。"
+            st.session_state["_replay_movie_library_serial_v357"] = serial + 1
+            reload_current_page_after_action()
+            return
+    except Exception as exc:
+        action_label = {"view": "開く", "share": "共有", "unshare": "共有解除", "delete": "削除"}.get(action, "操作")
+        st.error(f"ムービーを{action_label}できませんでした。")
+        with st.expander("保護者向け詳細"):
+            st.code(str(exc))
 
 def render_own_shared_replay_movies():
     """Compatibility alias for v354 callers."""
