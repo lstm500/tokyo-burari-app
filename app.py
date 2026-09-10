@@ -35,7 +35,7 @@ import streamlit as st
 # Freshly generated update: 2026-08-31 23:49 JST
 GENERATED_UPDATE_JST = "2026-09-11T00:24:48+09:00"
 
-APP_BUILD = "v385"
+APP_BUILD = "v386"
 # v383: interaction performance pass - no periodic Home polling, lazy heavy components, deferred recovery scans.
 # v331: multi-tag photo selections can go straight to a music replay and be saved as a stable in-app movie snapshot.
 # v330: tag-review movies support one or multiple AI tags; selection is action-only.
@@ -5905,7 +5905,7 @@ def sync_pending_tags_from_browser_v166():
 _HISTORY_JS = r"""
 export default function(component) {
   const { data, setTriggerValue } = component;
-  const validPages = new Set(['home', 'camera', 'videos', 'moments', 'diary', 'review', 'review_map', 'review_project', 'review_monthly', 'review_tag', 'review_history', 'nearby', 'toilets', 'settings', 'settings_moments']);
+  const validPages = new Set(['home', 'camera', 'videos', 'moments', 'diary', 'review', 'review_map', 'review_project', 'review_monthly', 'review_tag', 'review_history', 'nearby', 'toilets', 'settings', 'settings_moments', 'settings_moments_definition', 'settings_location', 'settings_account']);
   const marker = '__tokyo_burari_page__';
   const guardMarker = '__tokyo_burari_first_level_guard__';
   const requestedPage = validPages.has(data?.page) ? data.page : 'home';
@@ -12384,11 +12384,11 @@ def upload_video(
 
 def _video_selection_quality_label(value):
     labels = {
-        "expression": "表情",
-        "action": "躍動感",
-        "beauty": "映え・写真美",
-        "subject": "被写体の魅力",
-        "story": "印象的な瞬間",
+        "expression": "表情・感情",
+        "action": "決定的瞬間・動き",
+        "beauty": "構図・見やすさ",
+        "subject": "発見・被写体",
+        "story": "記憶・物語性",
         "other": "総合",
     }
     return labels.get(str(value or "").strip().lower(), "総合")
@@ -12448,34 +12448,34 @@ VIDEO_MOMENT_FACTOR_ORDER = (
 )
 VIDEO_MOMENT_FACTOR_META = {
     "expression": {
-        "label": "表情・決定的瞬間",
-        "description": "自然な笑顔、目線、感情が伝わる一瞬、決定的なタイミング",
-        "default": 30,
+        "label": "表情・感情",
+        "description": "笑顔だけでなく、驚き・集中・夢中など、その人の感情が自然に伝わる瞬間",
+        "default": 25,
     },
     "beauty": {
-        "label": "写真映え",
-        "description": "構図・光・色・背景との分離など、一枚の写真としての美しさ",
-        "default": 30,
+        "label": "構図・見やすさ",
+        "description": "主役が分かりやすく、光・構図・背景のまとまりがよい一枚",
+        "default": 15,
     },
     "subject": {
-        "label": "被写体の魅力",
-        "description": "人物・乗り物・景色など、その写真の主役が魅力的に見えること",
-        "default": 20,
+        "label": "発見・被写体の面白さ",
+        "description": "人物・乗り物・景色・出来事など、思わず残したくなる発見や主役の面白さ",
+        "default": 10,
     },
     "action": {
-        "label": "躍動感",
-        "description": "走る・跳ぶ・振り向くなど、動きの勢いやライブ感",
-        "default": 5,
+        "label": "決定的瞬間・動き",
+        "description": "走る・跳ぶ・振り向く・何かが起きる瞬間など、タイミングと動きの強さ",
+        "default": 20,
     },
     "story": {
-        "label": "物語性・その日のらしさ",
-        "description": "前後の出来事を想像でき、その日の記憶として残したくなること",
-        "default": 5,
+        "label": "記憶・物語性",
+        "description": "その日の出来事や前後の流れを思い出しやすく、あとから見返したくなる一枚",
+        "default": 10,
     },
     "preference": {
-        "label": "お気に入り写真の傾向",
-        "description": "★お気に入りにした写真のAIタグ傾向と、実際に残した写真との近さ",
-        "default": 10,
+        "label": "タグ別お気に入り傾向",
+        "description": "★お気に入り写真で繰り返し選ばれるAIタグと、そのタグのお気に入り率から学習した本人の好み",
+        "default": 20,
     },
 }
 
@@ -12521,7 +12521,7 @@ def _normalize_video_moment_factor_weights(value):
 def _video_moment_factor_settings_session_key(family_key=None, member_key=None):
     family_key = str(family_key or current_family_key()).strip()
     member_key = str(member_key or current_member_key()).strip()
-    return f"_video_moment_factor_settings_{family_key}_{member_key}"
+    return f"_video_moment_factor_settings_v2_{family_key}_{member_key}"
 
 
 def _load_video_moment_factor_settings_for_owner(client, family_key, member_key):
@@ -12541,7 +12541,18 @@ def _load_video_moment_factor_settings_for_owner(client, family_key, member_key)
         review_json = row.get("review_json") or {}
         if not isinstance(review_json, dict):
             return defaults
-        return _normalize_video_moment_factor_weights(review_json.get("factor_weights"))
+        stored_weights = _normalize_video_moment_factor_weights(review_json.get("factor_weights"))
+        legacy_defaults_v385 = {
+            "expression": 30, "beauty": 30, "subject": 20,
+            "action": 5, "story": 5, "preference": 10,
+        }
+        try:
+            settings_version = int(review_json.get("version") or 1)
+        except Exception:
+            settings_version = 1
+        if settings_version < 2 and stored_weights == legacy_defaults_v385:
+            return defaults
+        return stored_weights
     except Exception:
         return defaults
 
@@ -12590,7 +12601,7 @@ def save_video_moment_factor_settings(weights):
         "review_month": VIDEO_MOMENT_SETTINGS_REVIEW_DATE,
         "review_json": {
             "_record_type": "video_moment_factor_settings",
-            "version": 1,
+            "version": 2,
             "factor_weights": normalized_input,
             "updated_at": now_value,
         },
@@ -12654,11 +12665,11 @@ def _video_preference_prompt_text(preference_context):
         )
 
     label_map = {
-        "expression": "表情・決定的瞬間",
-        "action": "躍動感",
-        "beauty": "写真映え",
-        "subject": "被写体の魅力",
-        "story": "物語性・その日のらしさ",
+        "expression": "表情・感情",
+        "action": "決定的瞬間・動き",
+        "beauty": "構図・見やすさ",
+        "subject": "発見・被写体の面白さ",
+        "story": "記憶・物語性",
         "other": "総合",
     }
     liked_parts = []
@@ -22411,7 +22422,7 @@ def init_state():
 
 
 
-VALID_APP_PAGES = {"home", "camera", "videos", "moments", "diary", "review", "review_map", "review_project", "review_monthly", "review_tag", "review_history", "nearby", "toilets", "settings", "settings_moments"}
+VALID_APP_PAGES = {"home", "camera", "videos", "moments", "diary", "review", "review_map", "review_project", "review_monthly", "review_tag", "review_history", "nearby", "toilets", "settings", "settings_moments", "settings_moments_definition", "settings_location", "settings_account"}
 
 
 def _current_ui_refresh_epoch():
@@ -22629,6 +22640,9 @@ def navigation_parent_node(node=None):
         "toilets": "home",
         "settings": "home",
         "settings_moments": "settings",
+        "settings_moments_definition": "settings_moments",
+        "settings_location": "settings",
+        "settings_account": "settings",
     }
     return parents.get(str(node), "")
 
@@ -22727,7 +22741,11 @@ def _navigate_to_parent_state_only():
         _set_page_state("review", history_mode="replace")
         return
 
-    if node == "settings_moments":
+    if node == "settings_moments_definition":
+        _set_page_state("settings_moments", history_mode="replace")
+        return
+
+    if node in {"settings_moments", "settings_location", "settings_account"}:
         _set_page_state("settings", history_mode="replace")
         return
 
@@ -22793,6 +22811,9 @@ def sync_browser_history():
         "review_monthly",
         "review_tag",
         "settings_moments",
+        "settings_moments_definition",
+        "settings_location",
+        "settings_account",
     }
     result = browser_history_component(
         data={
@@ -36962,11 +36983,32 @@ def page_review():
 
 
 
-def page_good_moments_settings():
+def page_good_moments_menu():
+    page_top("✨ いい瞬間の設定をする")
+    st.caption(
+        "動画からどの写真を『いい瞬間』として残すかを設定します。"
+        "★お気に入り写真のAIタグ傾向は自動で学習されます。"
+    )
+    st.button(
+        "✨ いい瞬間の定義",
+        type="primary",
+        use_container_width=True,
+        key="settings_open_good_moments_definition_v386",
+        on_click=_go_page_callback,
+        args=("settings_moments_definition", "push"),
+    )
+    st.caption("表情、決定的瞬間、構図、発見、記憶、お気に入り傾向の重みを個別に調整します。")
+    st.info(
+        "お気に入り傾向は、単に多く写っているタグではなく、"
+        "『そのタグの写真がお気に入りになった割合』と『複数のお気に入りで繰り返し現れるか』を使って学習します。"
+    )
+
+
+def page_good_moments_definition():
     page_top("✨ いい瞬間の定義")
     st.caption(
-        "この個人アカウントで、動画から切り抜く『いい瞬間』を定義します。"
-        "★お気に入りにした写真のAIタグ傾向も自動で学習し、次回以降の選定に反映します。"
+        "この個人アカウントで、動画から切り抜く『いい瞬間』の評価配分を設定します。"
+        "横スライダーは使わず、数値を直接入力する方式です。"
     )
     st.caption(
         "ピンぼけ・強い手ぶれ・目つぶり・大きな見切れ・強い白飛び/黒つぶれは、"
@@ -36979,45 +37021,41 @@ def page_good_moments_settings():
 
     saved_moment_weights = get_video_moment_factor_settings()
     moment_reset_apply_key = (
-        f"_settings_moment_reset_apply_{current_family_key()}_{current_member_key()}"
+        f"_settings_moment_reset_apply_v386_{current_family_key()}_{current_member_key()}"
     )
     reset_values = st.session_state.pop(moment_reset_apply_key, None)
     if isinstance(reset_values, dict):
         for factor_key in VIDEO_MOMENT_FACTOR_ORDER:
-            widget_key = f"settings_moment_factor_{current_family_key()}_{current_member_key()}_{factor_key}"
+            widget_key = f"settings_moment_factor_v386_{current_family_key()}_{current_member_key()}_{factor_key}"
             st.session_state[widget_key] = int(reset_values.get(factor_key) or 0)
 
+    st.info(
+        "合計は100%に合わせなくて大丈夫です。OKを押すと、入力した比率を保ったまま自動で100%へ按分します。"
+    )
+
     with st.form(
-        key=f"settings_moment_factor_form_v385_{current_family_key()}_{current_member_key()}",
+        key=f"settings_moment_factor_form_v386_{current_family_key()}_{current_member_key()}",
         clear_on_submit=False,
         border=False,
     ):
         draft_moment_weights = {}
         for factor_key in VIDEO_MOMENT_FACTOR_ORDER:
             meta = VIDEO_MOMENT_FACTOR_META[factor_key]
-            widget_key = f"settings_moment_factor_{current_family_key()}_{current_member_key()}_{factor_key}"
+            widget_key = f"settings_moment_factor_v386_{current_family_key()}_{current_member_key()}_{factor_key}"
             if widget_key not in st.session_state:
                 st.session_state[widget_key] = int(saved_moment_weights.get(factor_key) or 0)
-            draft_moment_weights[factor_key] = st.slider(
-                meta["label"],
+            st.markdown(f"**{meta['label']}**")
+            st.caption(meta["description"])
+            draft_moment_weights[factor_key] = st.number_input(
+                f"{meta['label']}の配分（%）",
                 min_value=0,
                 max_value=100,
                 step=1,
                 key=widget_key,
-                help=meta["description"],
+                label_visibility="collapsed",
             )
-            st.caption(meta["description"])
 
-        factor_total = sum(int(v or 0) for v in draft_moment_weights.values())
-        if factor_total == 100:
-            st.caption("現在の合計：100%")
-        elif factor_total > 0:
-            st.caption(
-                f"現在の合計：{factor_total}%　→　OKを押すと、この比率を保ったまま全体を按分して100%にします。"
-            )
-        else:
-            st.caption("現在の合計：0%　→　OKを押すと標準配分を100%として保存します。")
-
+        st.caption("入力合計が100%でなくても、そのままOKを押せます。")
         factor_save_col, factor_reset_col = st.columns(2, gap="small")
         with factor_save_col:
             factor_save_clicked = st.form_submit_button(
@@ -37035,7 +37073,6 @@ def page_good_moments_settings():
         try:
             original_total = sum(int(v or 0) for v in draft_moment_weights.values())
             saved = save_video_moment_factor_settings(draft_moment_weights)
-            # Apply the exact normalized integers to the sliders on the next render.
             st.session_state[moment_reset_apply_key] = dict(saved)
             if original_total == 100:
                 message = "いい瞬間の定義を保存しました。"
@@ -37059,40 +37096,19 @@ def page_good_moments_settings():
             st.error(str(exc))
 
     st.caption(
-        "標準配分：表情・決定的瞬間30% ／ 写真映え30% ／ 被写体の魅力20% ／ "
-        "躍動感5% ／ 物語性・その日のらしさ5% ／ お気に入り写真の傾向10%"
+        "標準配分：表情・感情25% ／ 決定的瞬間・動き20% ／ 構図・見やすさ15% ／ "
+        "発見・被写体の面白さ10% ／ 記憶・物語性10% ／ タグ別お気に入り傾向20%"
     )
     st.info(
-        "★お気に入りの学習では、写真ごとのAIタグについて『そのタグの写真のうち、どれくらいをお気に入りにしたか』と"
-        "『何枚のお気に入りで繰り返し現れたか』を見ます。単発のタグだけで選定が偏らないよう補正します。"
+        "従来の『表情・決定的瞬間』は性質が異なるため分離しました。"
+        "また『写真映え』をやや弱め、本人のお気に入り傾向を20%にして、"
+        "一般的な写真の美しさだけでなく『本人が実際に残したい写真』へ寄る定義にしています。"
     )
 
-def page_settings():
-    # Settings already has the shared full-width Home button at the bottom, so do
-    # not render the top back/Home control here. This also avoids the mobile top
-    # toolbar overlap that can make the upper control hard to tap.
-    st.subheader("⚙️ 設定")
-    st.caption("現在地・GPS、家族・個人アカウント、AIの選び方を管理します。")
+def page_settings_location():
+    page_top("📍 位置情報を確認")
+    st.caption("現在地の精度確認とAndroidの位置情報設定を、この画面にまとめています。")
 
-    settings_notice = st.session_state.pop("_settings_notice", None)
-    if settings_notice:
-        st.success(settings_notice)
-
-    with st.container(key="settings_good_moments_entry_v385"):
-        st.button(
-            "✨ いい瞬間の設定をする",
-            use_container_width=True,
-            key="settings_open_good_moments_v385",
-            on_click=_go_page_callback,
-            args=("settings_moments", "push"),
-        )
-        st.caption("動画から切り抜く『いい瞬間』の定義と評価割合を設定します。")
-
-    st.divider()
-
-    # ------------------------------------------------------------
-    # Current location / GPS diagnostics
-    # ------------------------------------------------------------
     st.markdown("#### 📍 現在地・GPS")
     st.caption(
         "トイレ・おやつなどの近距離検索に使う位置情報を、この端末で確認します。"
@@ -37186,7 +37202,13 @@ def page_settings():
             "上の『Androidの位置情報設定を開く』は対応するAndroid環境で設定画面を開くための補助ボタンです。"
         )
 
-    st.divider()
+
+def page_settings_account():
+    page_top("👤 アカウントを確認")
+    st.caption("ログイン情報、個人アカウント、家族アカウントをこの画面にまとめています。")
+    settings_notice = st.session_state.pop("_settings_notice", None)
+    if settings_notice:
+        st.success(settings_notice)
 
     st.markdown("#### ログイン情報を確認")
     st.write(f"家族ID：`{current_family_key()}`")
@@ -37343,40 +37365,33 @@ def page_settings():
                 st.error(str(exc))
 
     st.divider()
-    active = get_active_trip_fast(max_age_seconds=20) if st.session_state.active_trip_id else None
-    if active and active.get("status") == "active" and active.get("trip_date") == today_iso():
-        photos = list_trip_photos(active["id"])
-        st.markdown("#### 今日のぶらり旅")
-        st.write(f"日付：**{active.get('trip_date', '')}**　／　写真：**{len(photos)}枚**")
-        with st.form(f"settings_destination_form_v327_{active['id']}", clear_on_submit=False, border=False):
-            destination = st.text_input(
-                "行き先メモ（任意）",
-                value=str(active.get("destination") or ""),
-                placeholder="例：神楽坂、浅草のあたり",
-                key=f"settings_destination_{active['id']}",
-            )
-            save_destination_clicked = st.form_submit_button("行き先メモを保存", use_container_width=True)
-        if save_destination_clicked:
-            try:
-                update_trip_destination(active["id"], destination)
-                st.success("保存しました。")
-            except Exception as exc:
-                st.error("保存できませんでした。")
-                with st.expander("保護者向け詳細"):
-                    st.code(str(exc))
+    st.markdown("#### 自動ログイン")
+    st.caption("この端末では、一度個人アカウントへログインすると次回から同じ個人で自動ログインします。")
+    if st.button("この端末の自動ログインを解除", use_container_width=True, key="settings_clear_auto_login"):
+        clear_browser_auto_login()
+        st.success("この端末の自動ログインを解除しました。次回は個人IDとあいことばが必要です。")
 
-        if photos and st.button("この旅を区切って日記へ", type="primary", use_container_width=True):
-            try:
-                finish_trip(active["id"])
-                st.session_state.preferred_diary_trip_id = active["id"]
-                st.session_state.active_trip_id = None
-                st.session_state["_next_page"] = "diary"
-                st.rerun()
-            except Exception as exc:
-                st.error("旅を区切れませんでした。")
-                with st.expander("保護者向け詳細"):
-                    st.code(str(exc))
-    # v184: starting a trip is no longer a Settings action. Home/Camera is the entry point.
+
+def page_settings():
+    # Main Settings is intentionally short on mobile. Detailed GPS/account tools live
+    # one level deeper so the frequently used Good Moments control stays prominent.
+    st.subheader("⚙️ 設定")
+    st.caption("よく使う設定を上に、確認系の設定を下にまとめています。")
+
+    settings_notice = st.session_state.pop("_settings_notice", None)
+    if settings_notice:
+        st.success(settings_notice)
+
+    with st.container(key="settings_good_moments_entry_v386"):
+        st.button(
+            "✨ いい瞬間の設定をする",
+            type="primary",
+            use_container_width=True,
+            key="settings_open_good_moments_v386",
+            on_click=_go_page_callback,
+            args=("settings_moments", "push"),
+        )
+        st.caption("動画から残す写真の選び方と、タグ別のお気に入り傾向の反映を設定します。")
 
     st.divider()
     st.markdown("#### AIまとめの調整")
@@ -37414,44 +37429,6 @@ def page_settings():
         confirm_summary_feedback_reset_dialog()
 
     st.divider()
-    st.markdown("#### 自動ログイン")
-    st.caption("この端末では、一度個人アカウントへログインすると次回から同じ個人で自動ログインします。")
-    if st.button("この端末の自動ログインを解除", use_container_width=True, key="settings_clear_auto_login"):
-        clear_browser_auto_login()
-        st.success("この端末の自動ログインを解除しました。次回は個人IDとあいことばが必要です。")
-
-    st.divider()
-    st.markdown("#### 動画の保存容量")
-    quota_bytes = video_storage_quota_bytes()
-    st.caption(f"現在の設定値：VIDEO_STORAGE_QUOTA_MB = {VIDEO_STORAGE_QUOTA_MB}")
-    if quota_bytes > 0:
-        try:
-            usage_bytes = current_video_storage_usage_bytes()
-            remaining_bytes = max(0, quota_bytes - usage_bytes)
-            st.write(
-                f"この個人アカウント：**{format_storage_size(usage_bytes)} / {format_storage_size(quota_bytes)}**"
-            )
-            st.caption(
-                f"残り：{format_storage_size(remaining_bytes)}。"
-                f"撮影開始前に {format_storage_size(VIDEO_RECORDING_RESERVE_BYTES)} 以上の空きがあるか確認します。"
-                f"実際の1本あたり保存上限は {format_storage_size(VIDEO_MAX_BYTES)} です。"
-                "AIセレクションの静止画・候補ZIPはこの動画容量には含めません。"
-                "軽い手振れ補正版を作成できた場合、その補正版は動画容量に含まれます。"
-            )
-            if remaining_bytes < VIDEO_RECORDING_RESERVE_BYTES:
-                st.warning("60秒動画の撮影開始に必要な空きがないため、現在は動画撮影を開始できません。")
-            st.progress(min(1.0, usage_bytes / quota_bytes) if quota_bytes else 0.0)
-        except Exception as exc:
-            st.caption("動画容量を確認できませんでした。")
-            with st.expander("保護者向け詳細"):
-                st.code(str(exc))
-    else:
-        st.caption(
-            "1人あたりの動画総容量はまだ未設定です。Streamlit Secrets の "
-            "VIDEO_STORAGE_QUOTA_MB に上限MBを設定すると自動で制限します。"
-        )
-
-    st.divider()
     st.markdown("#### カメラについて")
     st.write(
         "『カメラで撮る』画面では、ブラウザのライブカメラを直接開いて撮影します。"
@@ -37470,6 +37447,26 @@ def page_settings():
     st.divider()
     st.markdown("#### プロジェクトの考え方")
     st.caption("写真の枚数を課題にはしません。本人が気になったものを残し、写真ごとに選んだ6つの気持ちを一緒に振り返ります。")
+
+    st.divider()
+    st.markdown("#### 確認・管理")
+    st.caption("位置情報とアカウントの詳細は、必要なときだけ開けるよう後ろにまとめました。")
+    st.button(
+        "📍 位置情報を確認",
+        use_container_width=True,
+        key="settings_open_location_v386",
+        on_click=_go_page_callback,
+        args=("settings_location", "push"),
+    )
+    st.button(
+        "👤 アカウントを確認",
+        use_container_width=True,
+        key="settings_open_account_v386",
+        on_click=_go_page_callback,
+        args=("settings_account", "push"),
+    )
+
+    st.divider()
     st.caption(f"アプリビルド：{APP_BUILD}")
 
 # ============================================================
@@ -37575,7 +37572,13 @@ with st.container(key="app_page_root_v280"):
     elif page == "settings":
         page_settings()
     elif page == "settings_moments":
-        page_good_moments_settings()
+        page_good_moments_menu()
+    elif page == "settings_moments_definition":
+        page_good_moments_definition()
+    elif page == "settings_location":
+        page_settings_location()
+    elif page == "settings_account":
+        page_settings_account()
     else:
         st.session_state["main_page"] = "home"
         st.rerun(scope="app")
@@ -37587,6 +37590,6 @@ with st.container(key="app_page_root_v280"):
         live_page = str(st.session_state.get("main_page") or "home")
         if (
             page == live_page
-            and page in {"camera", "videos", "moments", "diary", "review", "review_map", "review_project", "review_monthly", "review_tag", "review_history", "nearby", "toilets", "settings", "settings_moments"}
+            and page in {"camera", "videos", "moments", "diary", "review", "review_map", "review_project", "review_monthly", "review_tag", "review_history", "nearby", "toilets", "settings", "settings_moments", "settings_moments_definition", "settings_location", "settings_account"}
         ):
             render_global_bottom_navigation(page)
