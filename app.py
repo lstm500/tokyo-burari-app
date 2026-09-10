@@ -30,9 +30,9 @@ from zoneinfo import ZoneInfo
 import streamlit as st
 
 # Freshly generated update: 2026-08-31 23:49 JST
-GENERATED_UPDATE_JST = "2026-09-10T11:35:00+09:00"
+GENERATED_UPDATE_JST = "2026-09-10T12:50:00+09:00"
 
-APP_BUILD = "v350"
+APP_BUILD = "v352"
 # v331: multi-tag photo selections can go straight to a music replay and be saved as a stable in-app movie snapshot.
 # v330: tag-review movies support one or multiple AI tags; selection is action-only.
 
@@ -3918,6 +3918,107 @@ def photo_selected_tag_values(photo):
 
 
 # ============================================================
+# Per-photo favorite marker (v352)
+# ============================================================
+PHOTO_FAVORITE_KEY = "_favorite"
+
+
+def photo_favorite_info(photo):
+    reflection = (photo or {}).get("reflection_json") or {}
+    if not isinstance(reflection, dict):
+        return {}
+    value = reflection.get(PHOTO_FAVORITE_KEY)
+    if isinstance(value, dict):
+        return dict(value)
+    if isinstance(value, bool):
+        return {"favorite": bool(value)}
+    return {}
+
+
+def photo_favorite_is_enabled(photo):
+    return bool(photo_favorite_info(photo).get("favorite"))
+
+
+def set_photo_favorite(photo_id, enabled=True):
+    """Persist one owned still photo as favorite without touching other metadata."""
+    photo_id = str(photo_id or "").strip()
+    if not photo_id:
+        raise ValueError("お気に入りにする写真を確認できませんでした。")
+
+    client = supabase_client()
+    rows = (
+        client.table(PHOTO_TABLE)
+        .select("id,reflection_json")
+        .eq("id", photo_id)
+        .eq("family_key", current_family_key())
+        .eq("member_key", current_member_key())
+        .limit(1)
+        .execute()
+    ).data or []
+    row = rows[0] if rows else None
+    if not isinstance(row, dict) or not row.get("id"):
+        raise ValueError("現在の個人アカウントの写真が見つかりませんでした。")
+
+    reflection = row.get("reflection_json") or {}
+    reflection = dict(reflection) if isinstance(reflection, dict) else {}
+    if enabled:
+        reflection[PHOTO_FAVORITE_KEY] = {
+            "version": 1,
+            "favorite": True,
+            "updated_at": now_jst().isoformat(),
+        }
+    else:
+        reflection.pop(PHOTO_FAVORITE_KEY, None)
+
+    (
+        client.table(PHOTO_TABLE)
+        .update({"reflection_json": reflection})
+        .eq("id", photo_id)
+        .eq("family_key", current_family_key())
+        .eq("member_key", current_member_key())
+        .execute()
+    )
+    signed_photo_url_map.clear()
+    _invalidate_fast_db_cache()
+    return bool(enabled)
+
+
+def handle_photo_favorite_event(result, valid_photo_ids, serial_key=None):
+    payload = getattr(result, "favorite_photo", None) if result is not None else None
+    if not isinstance(payload, dict):
+        return False
+    photo_id = str(payload.get("photo_id") or "").strip()
+    valid = {str(value) for value in (valid_photo_ids or []) if str(value)}
+    if not photo_id or photo_id not in valid:
+        return False
+    token = str(payload.get("token") or "").strip()
+    token_key = "_photo_favorite_action_token_v352"
+    if token and token == str(st.session_state.get(token_key) or ""):
+        return False
+    if token:
+        st.session_state[token_key] = token
+    enabled = bool(payload.get("enabled"))
+    try:
+        set_photo_favorite(photo_id, enabled=enabled)
+        st.session_state["_photo_favorite_notice"] = "★ お気に入りに追加しました。" if enabled else "お気に入りを解除しました。"
+    except Exception as exc:
+        st.session_state["_photo_favorite_notice"] = f"お気に入り設定を変更できませんでした：{exc}"
+    if serial_key:
+        try:
+            st.session_state[serial_key] = int(st.session_state.get(serial_key) or 0) + 1
+        except Exception:
+            st.session_state[serial_key] = 1
+    st.rerun()
+    return True
+
+
+def render_photo_favorite_notice():
+    notice = st.session_state.pop("_photo_favorite_notice", None)
+    if notice:
+        st.success(str(notice))
+
+
+# ============================================================
 # Individual photo sharing inside one family account (v225)
 # ============================================================
 PHOTO_FAMILY_SHARE_KEY = "_family_photo_share"
@@ -4775,6 +4876,17 @@ _DIARY_GALLERY_CSS = """
   -webkit-tap-highlight-color:transparent;
 }
 .diary-photo-delete:active { transform:scale(.94); }
+.diary-photo-favorite {
+  appearance:none; -webkit-appearance:none; position:absolute; top:7px; left:7px; z-index:11;
+  width:30px; height:30px; padding:0; margin:0; border-radius:999px;
+  border:1.5px solid rgba(255,255,255,.92); background:rgba(35,40,50,.58);
+  color:#fff; display:flex; align-items:center; justify-content:center;
+  font-size:19px; line-height:1; font-weight:800; cursor:pointer;
+  box-shadow:0 1px 6px rgba(0,0,0,.24); touch-action:manipulation; -webkit-tap-highlight-color:transparent;
+}
+.diary-photo-favorite.active { color:#FFD54A; background:rgba(35,40,50,.72); }
+.diary-photo-favorite.indicator-only { pointer-events:none; cursor:default; }
+.diary-photo-favorite:active { transform:scale(.94); }
 .diary-photo-share {
   appearance:none; -webkit-appearance:none; width:100%; min-height:29px; margin:4px 0 0; padding:4px 5px;
   border:1px solid rgba(97,132,185,.34); border-radius:8px; background:rgba(97,132,185,.07);
@@ -4804,6 +4916,7 @@ _DIARY_GALLERY_CSS = """
   .diary-photo-card img { border-radius:8px; }
   .diary-photo-location { font-size:9px; }
   .diary-photo-delete { top:2px; right:2px; width:23px; height:23px; font-size:17px; }
+  .diary-photo-favorite { top:5px; left:5px; width:27px; height:27px; font-size:17px; }
   .diary-photo-share { min-height:27px; font-size:7.7px; padding:3px 3px; }
   .diary-photo-voice { min-height:32px; font-size:9px; padding:5px 6px; }
   .diary-photo-shared-meta { font-size:8.5px; }
@@ -4833,6 +4946,7 @@ export default function(component) {
   const allowEmotion = data?.allow_emotion !== false;
   const allowShare = Boolean(data?.allow_share);
   const allowVoice = Boolean(data?.allow_voice);
+  const allowFavorite = Boolean(data?.allow_favorite);
   const carouselKey = String(data?.carousel_key || 'default');
   const carouselStore = `tokyo_burari_diary_carousel_v180_${carouselKey}`;
   const pendingStore = 'tokyo_burari_pending_tags_v166';
@@ -5016,6 +5130,33 @@ export default function(component) {
         setTriggerValue('voice_photo_id', String(photo.id));
       });
       wrap.appendChild(voice);
+    }
+    if (Boolean(photo.favorite) || (single && allowFavorite)) {
+      const favorite=document.createElement('button');
+      favorite.type='button';
+      favorite.className='diary-photo-favorite';
+      const syncFavorite=()=>{
+        const active=Boolean(photo.favorite);
+        favorite.classList.toggle('active', active);
+        favorite.textContent = active ? '★' : '☆';
+        favorite.setAttribute('aria-pressed', active ? 'true' : 'false');
+        favorite.setAttribute('aria-label', active ? 'お気に入りを解除する' : 'お気に入りに追加する');
+      };
+      syncFavorite();
+      if (single && allowFavorite) {
+        favorite.addEventListener('click', (event) => {
+          event.preventDefault(); event.stopPropagation();
+          const next=!Boolean(photo.favorite);
+          photo.favorite=next;
+          syncFavorite();
+          favorite.disabled=true;
+          setTriggerValue('favorite_photo', {photo_id:String(photo.id), enabled:next, token:`${Date.now()}_${Math.random().toString(36).slice(2)}`});
+        });
+      } else {
+        favorite.classList.add('indicator-only');
+        favorite.tabIndex=-1;
+      }
+      card.appendChild(favorite);
     }
     if (allowDelete) {
       const remove=document.createElement('button'); remove.type='button'; remove.className='diary-photo-delete'; remove.textContent='×'; remove.setAttribute('aria-label','この写真を削除');
@@ -16529,6 +16670,7 @@ def build_monthly_replay_photo_items(bundle, limit=None):
             "emotion_label": str(emotion.get("label") or ""),
             "emotion_emoji": str(emotion.get("emoji") or ""),
             "emotion_color": str(emotion.get("color") or ""),
+            "favorite": photo_favorite_is_enabled(photo),
             "has_voice": bool(voice_path),
             "voice_url": str(voice_signed_map.get(voice_path) or ""),
             "voice_transcript": str(voice_meta.get("transcript") or ""),
@@ -16604,15 +16746,26 @@ def _replay_photo_candidates(bundle, max_candidates=None):
     max_candidates = max(1, int(max_candidates))
     if max_candidates >= len(photos):
         return photos, trip_map
-    step = len(photos) / float(max_candidates)
-    picked = []
-    seen = set()
-    for idx in range(max_candidates):
-        photo = photos[min(int(idx * step), len(photos) - 1)]
-        key = str(photo.get("id") or idx)
-        if key not in seen:
-            seen.add(key)
-            picked.append(photo)
+
+    favorites = [photo for photo in photos if photo_favorite_is_enabled(photo)]
+    favorite_ids = {str(photo.get("id") or "") for photo in favorites if str(photo.get("id") or "")}
+    remaining_slots = max(0, max_candidates - len(favorites))
+    nonfavorites = [photo for photo in photos if str(photo.get("id") or "") not in favorite_ids]
+
+    picked_nonfavorites = []
+    if remaining_slots > 0 and nonfavorites:
+        step = len(nonfavorites) / float(remaining_slots)
+        seen = set()
+        for idx in range(remaining_slots):
+            photo = nonfavorites[min(int(idx * step), len(nonfavorites) - 1)]
+            key = str(photo.get("id") or idx)
+            if key not in seen:
+                seen.add(key)
+                picked_nonfavorites.append(photo)
+
+    keep_ids = {str(photo.get("id") or "") for photo in favorites + picked_nonfavorites}
+    # Return in the original chronological order while guaranteeing every favorite.
+    picked = [photo for photo in photos if str(photo.get("id") or "") in keep_ids]
     return picked or photos[:max_candidates], trip_map
 
 
@@ -16638,15 +16791,21 @@ def generate_replay_photo_curation(scope_key, period_label, bundle, max_candidat
     all_photos, _ = _monthly_replay_selected_photos(bundle)
     total_source_count = len(all_photos)
     if total_source_count <= 0:
-        payload = {"active": False, "selected_photo_ids": [], "picks": [], "source_count": 0, "target_count": 0}
+        payload = {"active": False, "selected_photo_ids": [], "picks": [], "source_count": 0, "target_count": 0, "favorite_count": 0}
         st.session_state[replay_photo_curation_state_key(scope_key)] = payload
         return payload
 
-    target_selected = int(max_selected or replay_photo_curation_target_count(total_source_count) or 1)
+    favorite_photos = [photo for photo in all_photos if photo_favorite_is_enabled(photo)]
+    favorite_ids = [str(photo.get("id") or "") for photo in favorite_photos if str(photo.get("id") or "")]
+    favorite_id_set = set(favorite_ids)
+    base_target = int(max_selected or replay_photo_curation_target_count(total_source_count) or 1)
+    # Favorites are never discarded. If they exceed one third, favorites take priority.
+    target_selected = max(base_target, len(favorite_ids))
+    target_selected = min(target_selected, total_source_count)
     candidate_limit = int(max_candidates or replay_photo_curation_candidate_limit(total_source_count, target_selected) or total_source_count)
     candidate_photos, trip_map = _replay_photo_candidates(bundle, max_candidates=candidate_limit)
     if not candidate_photos:
-        payload = {"active": False, "selected_photo_ids": [], "picks": [], "source_count": total_source_count, "target_count": target_selected}
+        payload = {"active": False, "selected_photo_ids": [], "picks": [], "source_count": total_source_count, "target_count": target_selected, "favorite_count": len(favorite_ids)}
         st.session_state[replay_photo_curation_state_key(scope_key)] = payload
         return payload
 
@@ -16666,40 +16825,68 @@ def generate_replay_photo_curation(scope_key, period_label, bundle, max_candidat
         raw = _vision_ready_photo(raw, max_side=640, quality=72)
         trip = trip_map.get(str(photo.get("trip_id")), {})
         caption = _monthly_replay_photo_caption(photo, trip, idx)
+        photo_id = str(photo.get("id") or "")
+        is_favorite = photo_id in favorite_id_set
         candidate_meta.append({
             "candidate_index": idx,
-            "photo_id": str(photo.get("id") or ""),
+            "photo_id": photo_id,
             "caption": caption,
+            "favorite": is_favorite,
         })
         valid_photos.append(photo)
-        image_items.append((f"候補{idx}: {caption}", raw))
+        favorite_label = " ★お気に入り（採用確定）" if is_favorite else ""
+        image_items.append((f"候補{idx}{favorite_label}: {caption}", raw))
 
     if not valid_photos:
-        payload = {"active": False, "selected_photo_ids": [], "picks": [], "source_count": total_source_count, "target_count": target_selected}
+        payload = {"active": False, "selected_photo_ids": [], "picks": [], "source_count": total_source_count, "target_count": target_selected, "favorite_count": len(favorite_ids)}
         st.session_state[replay_photo_curation_state_key(scope_key)] = payload
         return payload
 
-    target_selected = min(target_selected, len(valid_photos))
-    prompt_lines = [
-        "東京ぶらり旅の振り返りムービー用に、候補写真の中から見返す価値が高い写真を厳選してください。",
-        "子どもの写真として、映りがよく、感情が伝わり、成長や未来を感じる写真を優先してください。",
-        "厳選基準は次の3つです。",
-        "1. カメラ目線で、本人がはっきり映り、感情表現がしっかりしている写真。",
-        "2. カメラ目線ではなく、何かに夢中になっていたり、頑張っている最中が伝わる写真。",
-        "3. 人と人との絆や関わりが感じられる写真。",
-        "どの基準でも、単なる記念写真より、自分で考えている・挑戦している・やりきった・関わり合っているなど、この子の成長や未来が感じられる写真を高く評価してください。",
-        "ピンぼけ、被写体が小さすぎる、暗すぎる、表情や行動が読み取りにくい、ほぼ同じ場面の重複写真は優先度を下げてください。",
-        f"候補は全部で{len(candidate_meta)}枚です。1〜{len(candidate_meta)}の候補番号で答えてください。",
-        f"最終的には元枚数の約1/3になるようにしたいので、この候補群からは合計{target_selected}枚を目安に選んでください。できるだけ{target_selected}枚ちょうど選んでください。",
-        "3つの基準が極端に偏りすぎないようにしつつ、最終的には総合的に最も良い写真を優先してください。",
-        "似た写真を重複して選ばず、時系列も偏りすぎないようにしてください。",
-        "category は 1〜3 の整数、score は 1〜100 の整数、reason は短く簡潔にしてください。",
-    ]
-    result = ask_json_with_images("\n".join(prompt_lines), image_items, "curate_replay_photos", PHOTO_CURATION_SCHEMA, 1200)
+    valid_ids = {str(photo.get("id") or "") for photo in valid_photos}
+    favorite_ids = [pid for pid in favorite_ids if pid in valid_ids]
+    favorite_id_set = set(favorite_ids)
+    target_selected = min(max(target_selected, len(favorite_ids)), len(valid_photos))
+    additional_needed = max(0, target_selected - len(favorite_ids))
+
+    result = {"picks": []}
+    if additional_needed > 0:
+        prompt_lines = [
+            "東京ぶらり旅の振り返りムービー用に、候補写真の中から見返す価値が高い写真を厳選してください。",
+            "子どもの写真として、映りがよく、感情が伝わり、成長や未来を感じる写真を優先してください。",
+            "厳選基準は次の3つです。",
+            "1. カメラ目線で、本人がはっきり映り、感情表現がしっかりしている写真。",
+            "2. カメラ目線ではなく、何かに夢中になっていたり、頑張っている最中が伝わる写真。",
+            "3. 人と人との絆や関わりが感じられる写真。",
+            "どの基準でも、単なる記念写真より、自分で考えている・挑戦している・やりきった・関わり合っているなど、この子の成長や未来が感じられる写真を高く評価してください。",
+            "ピンぼけ、被写体が小さすぎる、暗すぎる、表情や行動が読み取りにくい、ほぼ同じ場面の重複写真は優先度を下げてください。",
+            "★お気に入りと表示された写真はユーザー指定で採用確定です。追加選抜ではお気に入り写真を選ばず、それ以外から選んでください。",
+            f"候補は全部で{len(candidate_meta)}枚です。1〜{len(candidate_meta)}の候補番号で答えてください。",
+            f"お気に入り{len(favorite_ids)}枚はすでに採用済みです。残り{additional_needed}枚を選び、合計がおおむね元枚数の1/3になるようにしてください。",
+            "3つの基準が極端に偏りすぎないようにしつつ、最終的には総合的に最も良い写真を優先してください。",
+            "似た写真を重複して選ばず、時系列も偏りすぎないようにしてください。",
+            "category は 1〜3 の整数、score は 1〜100 の整数、reason は短く簡潔にしてください。",
+        ]
+        result = ask_json_with_images("\n".join(prompt_lines), image_items, "curate_replay_photos", PHOTO_CURATION_SCHEMA, 1200)
 
     by_index = {meta["candidate_index"]: meta for meta in candidate_meta}
     picks = []
     seen_ids = set()
+
+    # Favorite photos are inserted first and cannot be removed by the AI ranking.
+    for meta in candidate_meta:
+        photo_id = str(meta.get("photo_id") or "")
+        if not photo_id or photo_id not in favorite_id_set or photo_id in seen_ids:
+            continue
+        picks.append({
+            "candidate_index": int(meta.get("candidate_index") or 0),
+            "photo_id": photo_id,
+            "category": 4,
+            "score": 100,
+            "reason": "お気に入りに登録",
+            "caption": str(meta.get("caption") or ""),
+        })
+        seen_ids.add(photo_id)
+
     raw_picks = [pick for pick in (result.get("picks") or []) if isinstance(pick, dict)]
     try:
         raw_picks = sorted(raw_picks, key=lambda x: int(x.get("score") or 0), reverse=True)
@@ -16714,7 +16901,7 @@ def generate_replay_photo_curation(scope_key, period_label, bundle, max_candidat
         if not meta:
             continue
         photo_id = str(meta.get("photo_id") or "")
-        if not photo_id or photo_id in seen_ids:
+        if not photo_id or photo_id in seen_ids or photo_id in favorite_id_set:
             continue
         try:
             category = int(pick.get("category") or 0)
@@ -16741,27 +16928,27 @@ def generate_replay_photo_curation(scope_key, period_label, bundle, max_candidat
 
     if len(picks) < target_selected:
         fallback_ids = _fallback_replay_curation(valid_photos, max_selected=target_selected)
-        existing = {str(item.get("photo_id") or "") for item in picks}
         for photo_id in fallback_ids:
-            if str(photo_id) in existing:
+            photo_id = str(photo_id or "")
+            if not photo_id or photo_id in seen_ids:
                 continue
-            meta = next((m for m in candidate_meta if str(m.get("photo_id") or "") == str(photo_id)), None)
+            meta = next((m for m in candidate_meta if str(m.get("photo_id") or "") == photo_id), None)
             if not meta:
                 continue
             picks.append({
                 "candidate_index": int(meta.get("candidate_index") or 0),
-                "photo_id": str(photo_id),
+                "photo_id": photo_id,
                 "category": 2,
                 "score": 60,
                 "reason": "自動補完",
                 "caption": str(meta.get("caption") or ""),
             })
-            existing.add(str(photo_id))
+            seen_ids.add(photo_id)
             if len(picks) >= target_selected:
                 break
 
-    order_map = {str(photo.get("id") or ""): idx for idx, photo in enumerate(candidate_photos)}
-    ordered_picks = sorted(picks, key=lambda x: order_map.get(str(x.get("photo_id") or ""), 10**9))
+    all_order = {str(photo.get("id") or ""): idx for idx, photo in enumerate(all_photos)}
+    ordered_picks = sorted(picks, key=lambda x: all_order.get(str(x.get("photo_id") or ""), 10**9))
     selected_photo_ids = [p.get("photo_id") for p in ordered_picks if p.get("photo_id")]
     payload = {
         "active": bool(selected_photo_ids),
@@ -16772,6 +16959,7 @@ def generate_replay_photo_curation(scope_key, period_label, bundle, max_candidat
         "candidate_count": len(candidate_photos),
         "source_count": total_source_count,
         "target_count": target_selected,
+        "favorite_count": len(favorite_ids),
     }
     st.session_state[replay_photo_curation_state_key(scope_key)] = payload
     return payload
@@ -16783,6 +16971,12 @@ def apply_replay_photo_curation(scope_key, all_photo_items):
     if not state.get("active") or not selected_ids:
         return list(all_photo_items or []), {}
     selected_set = set(selected_ids)
+    # A favorite added after an earlier curation run must still appear immediately.
+    for item in (all_photo_items or []):
+        if isinstance(item, dict) and bool(item.get("favorite")):
+            photo_id = str(item.get("photo_id") or "").strip()
+            if photo_id:
+                selected_set.add(photo_id)
     curated = [item for item in (all_photo_items or []) if str(item.get("photo_id") or "") in selected_set]
     return curated or list(all_photo_items or []), state
 
@@ -16794,7 +16988,7 @@ def render_replay_photo_curation_controls(scope_key, period_label, bundle, all_p
     target_count = replay_photo_curation_target_count(total_count)
     with st.container(border=True):
         st.markdown("#### ✨ 写真厳選モード")
-        st.caption("基準：①カメラ目線で感情が伝わる ②夢中・頑張り中 ③人との絆 ＋ 映りの良さ・成長感・未来感を優先")
+        st.caption("基準：①カメラ目線で感情が伝わる ②夢中・頑張り中 ③人との絆 ＋ 映りの良さ・成長感・未来感を優先。★お気に入りは必ず入れます。")
         if state.get("active") and active_count:
             st.success(f"厳選中です。{total_count}枚から {active_count}枚を表示しています。")
         else:
@@ -16841,7 +17035,7 @@ def render_replay_photo_curation_controls(scope_key, period_label, bundle, all_p
         picks = [x for x in (state.get("picks") or []) if isinstance(x, dict)]
         if picks:
             with st.expander("厳選した写真の理由を見る"):
-                category_names = {1: "① カメラ目線", 2: "② 夢中・頑張り中", 3: "③ 絆"}
+                category_names = {1: "① カメラ目線", 2: "② 夢中・頑張り中", 3: "③ 絆", 4: "★ お気に入り"}
                 for idx, pick in enumerate(picks, start=1):
                     label = category_names.get(int(pick.get("category") or 0), "② 夢中・頑張り中")
                     reason = str(pick.get("reason") or "").strip() or "-"
@@ -21770,6 +21964,7 @@ def render_history_photo_viewer(photos, trip_id):
     # v229: make the display-mode control explicit on each saved daily diary.
     # The existing browser gallery already supports previous/next and swipe in single mode.
     st.markdown("#### この日の写真")
+    render_photo_favorite_notice()
     view_mode = "3列一覧"
     if len(photos) >= 1:
         mode_key = f"history_photo_view_mode_{trip_id}"
@@ -21805,6 +22000,7 @@ def render_history_photo_viewer(photos, trip_id):
                 "location": str(photo_location_label(photo) or ""),
                 "tags": photo_ai_tags(photo)[:12],
                 "shared": photo_family_share_is_enabled(photo),
+                "favorite": photo_favorite_is_enabled(photo),
                 "has_voice": bool(photo_voice_note_storage_path(photo)),
             }
         )
@@ -21822,16 +22018,20 @@ def render_history_photo_viewer(photos, trip_id):
                 "allow_emotion": False,
                 "allow_share": True,
                 "allow_voice": single_mode,
+                "allow_favorite": single_mode,
                 "carousel_key": f"history_{trip_id}",
                 "family_key": current_family_key(),
                 "member_key": current_member_key(),
                 "pending_param": PENDING_EMOTION_QUERY_PARAM,
             },
-            key=f"history_photo_fast_v350_{trip_id}_{serial}_{_current_ui_refresh_epoch()}_{'single' if single_mode else 'grid'}",
+            key=f"history_photo_fast_v352_{trip_id}_{serial}_{_current_ui_refresh_epoch()}_{'single' if single_mode else 'grid'}",
             on_share_photo_change=lambda: None,
             on_voice_photo_id_change=lambda: None,
+            on_favorite_photo_change=lambda: None,
         )
         if handle_photo_family_share_event(result, photo_ids, serial_key=serial_key):
+            return
+        if handle_photo_favorite_event(result, photo_ids, serial_key=serial_key):
             return
         voice_target_key = f"_history_voice_photo_target_{trip_id}"
         voice_clicked = str(getattr(result, "voice_photo_id", "") or "")
@@ -21875,7 +22075,24 @@ def render_history_photo_viewer(photos, trip_id):
         with cols[idx % len(cols)]:
             src = photo_display_url(photo, signed, max_px=1600 if single_mode else 420, quality=92 if single_mode else 76)
             if src:
-                st.markdown(f'<img src="{html.escape(src, quote=True)}" style="display:block;width:100%;max-height:70vh;object-fit:contain;border-radius:10px;" />', unsafe_allow_html=True)
+                favorite = photo_favorite_is_enabled(photo)
+                star = "★" if favorite else "☆"
+                star_color = "#FFD54A" if favorite else "#FFFFFF"
+                st.markdown(
+                    f'<div style="position:relative;"><img src="{html.escape(src, quote=True)}" style="display:block;width:100%;max-height:70vh;object-fit:contain;border-radius:10px;" />'
+                    f'<span style="position:absolute;left:8px;top:8px;font-size:22px;color:{star_color};text-shadow:0 1px 4px rgba(0,0,0,.65);">{star}</span></div>',
+                    unsafe_allow_html=True,
+                )
+            if single_mode:
+                favorite = photo_favorite_is_enabled(photo)
+                if st.button(
+                    "★ お気に入りを解除" if favorite else "☆ お気に入りに追加",
+                    use_container_width=True,
+                    key=f"history_photo_favorite_fallback_{trip_id}_{photo.get('id')}",
+                ):
+                    set_photo_favorite(photo.get("id"), enabled=not favorite)
+                    st.session_state["_photo_favorite_notice"] = "★ お気に入りに追加しました。" if not favorite else "お気に入りを解除しました。"
+                    st.rerun()
             shared = photo_family_share_is_enabled(photo)
             if st.button(
                 "✓ 家族に共有中（解除）" if shared else "👨‍👩‍👦 家族に共有",
@@ -26627,6 +26844,7 @@ def render_diary_emotion_gallery(trip_id, photos, trip=None, is_pending=False):
     if not photos:
         return
     st.markdown("#### この日の写真")
+    render_photo_favorite_notice()
     counts, selected = photo_emotion_counts(photos)
     st.caption("写真下の「通常／こどもーど」を切り替え、写真につけるアイコンを1つ選べます。")
     summary = photo_emotion_summary_text(photos)
@@ -26673,6 +26891,7 @@ def render_diary_emotion_gallery(trip_id, photos, trip=None, is_pending=False):
                 "location": str(photo_location_label(photo) or ""),
                 "tags": photo_ai_tags(photo)[:12],
                 "shared": photo_family_share_is_enabled(photo),
+                "favorite": photo_favorite_is_enabled(photo),
                 "has_voice": bool(photo_voice_note_storage_path(photo)),
             }
         )
@@ -26683,13 +26902,16 @@ def render_diary_emotion_gallery(trip_id, photos, trip=None, is_pending=False):
         serial_key = f"diary_emotion_gallery_serial_{trip_id}_{'pending' if is_pending else 'saved'}"
         serial = int(st.session_state.get(serial_key) or 0)
         result = gallery_component(
-            data={"photos": cards, "single": single_mode, "allow_delete": True, "allow_emotion": True, "allow_share": True, "allow_voice": bool(single_mode and not is_pending), "carousel_key": f"diary_saved_{trip_id}", "mode_by_photo": st.session_state.get(f"_diary_icon_modes_{trip_id}") or {}, "family_key": current_family_key(), "member_key": current_member_key(), "pending_param": PENDING_EMOTION_QUERY_PARAM},
-            key=f"diary_emotion_gallery_{trip_id}_{serial}_{_current_ui_refresh_epoch()}_{'single' if single_mode else 'grid'}_v350",
+            data={"photos": cards, "single": single_mode, "allow_delete": True, "allow_emotion": True, "allow_share": True, "allow_voice": bool(single_mode and not is_pending), "allow_favorite": bool(single_mode and not is_pending), "carousel_key": f"diary_saved_{trip_id}", "mode_by_photo": st.session_state.get(f"_diary_icon_modes_{trip_id}") or {}, "family_key": current_family_key(), "member_key": current_member_key(), "pending_param": PENDING_EMOTION_QUERY_PARAM},
+            key=f"diary_emotion_gallery_{trip_id}_{serial}_{_current_ui_refresh_epoch()}_{'single' if single_mode else 'grid'}_v352",
             on_delete_photo_id_change=lambda: None,
             on_share_photo_change=lambda: None,
             on_voice_photo_id_change=lambda: None,
+            on_favorite_photo_change=lambda: None,
         )
         if handle_photo_family_share_event(result, photo_ids, serial_key=serial_key):
+            return
+        if handle_photo_favorite_event(result, photo_ids, serial_key=serial_key):
             return
         delete_clicked = str(getattr(result, "delete_photo_id", "") or "")
         if delete_clicked in photo_ids:
@@ -26752,11 +26974,27 @@ def render_diary_emotion_gallery(trip_id, photos, trip=None, is_pending=False):
                     if emoji else ""
                 )
                 image_style = "display:block;width:100%;max-height:68vh;object-fit:contain;border-radius:8px;" if single_mode else "display:block;width:100%;aspect-ratio:1/1;object-fit:cover;border-radius:8px;"
+                favorite = photo_favorite_is_enabled(photo)
+                star = "★" if favorite else ("☆" if single_mode and not is_pending else "")
+                favorite_badge = (
+                    f'<span style="position:absolute;left:8px;top:8px;font-size:22px;color:{"#FFD54A" if favorite else "#FFFFFF"};text-shadow:0 1px 4px rgba(0,0,0,.65);">{star}</span>'
+                    if star else ""
+                )
                 st.markdown(
                     f'<div style="position:relative;padding:4px;border:3px solid {border};border-radius:12px;">'
-                    f'<img src="{html.escape(src, quote=True)}" loading="lazy" decoding="async" style="{image_style}" />{badge}</div>',
+                    f'<img src="{html.escape(src, quote=True)}" loading="lazy" decoding="async" style="{image_style}" />{badge}{favorite_badge}</div>',
                     unsafe_allow_html=True,
                 )
+            if single_mode and not is_pending:
+                favorite = photo_favorite_is_enabled(photo)
+                if st.button(
+                    "★ お気に入りを解除" if favorite else "☆ お気に入りに追加",
+                    use_container_width=True,
+                    key=f"diary_favorite_fallback_{trip_id}_{photo.get('id')}",
+                ):
+                    set_photo_favorite(photo.get("id"), enabled=not favorite)
+                    st.session_state["_photo_favorite_notice"] = "★ お気に入りに追加しました。" if not favorite else "お気に入りを解除しました。"
+                    st.rerun()
             if st.button(
                 "気持ちを次へ",
                 use_container_width=True,
