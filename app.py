@@ -34,7 +34,7 @@ import streamlit as st
 # Freshly generated update: 2026-08-31 23:49 JST
 GENERATED_UPDATE_JST = "2026-09-10T19:50:00+09:00"
 
-APP_BUILD = "v375"
+APP_BUILD = "v376"
 # v331: multi-tag photo selections can go straight to a music replay and be saved as a stable in-app movie snapshot.
 # v330: tag-review movies support one or multiple AI tags; selection is action-only.
 
@@ -14817,11 +14817,24 @@ def video_ai_voice_candidate_meta(photo):
 
 
 VIDEO_VOICE_CANDIDATE_COUNT = 6
-VIDEO_VOICE_SNIPPET_SECONDS = 2.0
+VIDEO_VOICE_SNIPPET_SECONDS = 5.0
+VIDEO_VOICE_CANDIDATE_SCHEMA_VERSION = 2
 
 
 def video_ai_voice_candidate_items(photo):
     meta = video_ai_voice_candidate_meta(photo)
+    try:
+        schema_version = int(meta.get("schema_version") or 1)
+    except Exception:
+        schema_version = 1
+    try:
+        snippet_seconds = float(meta.get("snippet_seconds") or 0.0)
+    except Exception:
+        snippet_seconds = 0.0
+    # v376: the old candidate set used fixed ~2 second clips. Treat it as stale so
+    # existing videos can be regenerated with natural phrase boundaries up to ~5 sec.
+    if schema_version < VIDEO_VOICE_CANDIDATE_SCHEMA_VERSION or snippet_seconds < 4.5:
+        return []
     items = meta.get("items") or []
     if not isinstance(items, list):
         return []
@@ -14914,16 +14927,102 @@ def _extract_video_voice_candidate_specs(video_raw, candidate_count=VIDEO_VOICE_
 
     ranked_windows = sorted(windows, key=lambda item: (item["score"], item["rms"]), reverse=True)
     picks = []
-    min_spacing = max(1.2, clip_seconds * 0.72)
+    min_spacing = max(1.5, min(3.0, float(clip_seconds) * 0.52))
+
+    rms_values = sorted(float(window.get("rms") or 0.0) for window in windows if float(window.get("rms") or 0.0) > 0)
+    median_rms = rms_values[len(rms_values) // 2] if rms_values else 0.0
+    p35_rms = rms_values[min(len(rms_values) - 1, int((len(rms_values) - 1) * 0.35))] if rms_values else 0.0
+    # A pause is intentionally relative to this video's own noise floor. Two consecutive
+    # 0.2 sec quiet windows are treated as a natural phrase boundary when possible.
+    pause_rms = max(55.0, p35_rms * 1.12, median_rms * 0.56)
+    pause_run = 2
+    max_clip = max(1.0, float(clip_seconds or VIDEO_VOICE_SNIPPET_SECONDS))
+    min_clip = min(1.2, max_clip)
+
+    def _natural_bounds(center_sec):
+        if not windows:
+            start_sec = max(0.0, center_sec - 0.4)
+            end_sec = min(total_duration, start_sec + max_clip)
+            return start_sec, max(min_clip, end_sec - start_sec)
+
+        center_index = min(
+            range(len(windows)),
+            key=lambda idx: abs(float(windows[idx].get("center_sec") or 0.0) - center_sec),
+        )
+        half_limit = max_clip / 2.0
+        earliest = max(0.0, center_sec - half_limit)
+        latest = min(total_duration, center_sec + half_limit)
+
+        start_sec = max(0.0, center_sec - 0.38)
+        quiet_count = 0
+        for idx in range(center_index - 1, -1, -1):
+            item = windows[idx]
+            item_center = float(item.get("center_sec") or 0.0)
+            if item_center < earliest:
+                break
+            if float(item.get("rms") or 0.0) <= pause_rms:
+                quiet_count += 1
+                if quiet_count >= pause_run:
+                    # Start just after the quiet run, with a tiny pre-roll so consonants are not clipped.
+                    boundary = float(windows[min(center_index, idx + pause_run)].get("center_sec") or item_center)
+                    start_sec = max(0.0, boundary - (window_seconds * 0.62))
+                    break
+            else:
+                quiet_count = 0
+                start_sec = max(0.0, item_center - (window_seconds * 0.55))
+
+        end_sec = min(total_duration, center_sec + 0.75)
+        quiet_count = 0
+        for idx in range(center_index + 1, len(windows)):
+            item = windows[idx]
+            item_center = float(item.get("center_sec") or 0.0)
+            if item_center > latest:
+                break
+            if float(item.get("rms") or 0.0) <= pause_rms:
+                quiet_count += 1
+                if quiet_count >= pause_run:
+                    # End at the beginning of the quiet run; add a small tail for a natural finish.
+                    first_quiet_idx = max(center_index + 1, idx - pause_run + 1)
+                    boundary = float(windows[first_quiet_idx].get("center_sec") or item_center)
+                    end_sec = min(total_duration, boundary + (window_seconds * 0.35))
+                    break
+            else:
+                quiet_count = 0
+                end_sec = min(total_duration, item_center + (window_seconds * 0.62))
+
+        # If no clean pause is found, cap the segment around the interesting peak rather
+        # than forcing every candidate to exactly five seconds.
+        if end_sec - start_sec > max_clip:
+            desired_start = center_sec - min(1.15, max_clip * 0.34)
+            start_sec = max(0.0, min(desired_start, total_duration - max_clip))
+            end_sec = min(total_duration, start_sec + max_clip)
+
+        if end_sec - start_sec < min_clip:
+            missing = min_clip - (end_sec - start_sec)
+            start_sec = max(0.0, start_sec - missing * 0.45)
+            end_sec = min(total_duration, end_sec + missing * 0.55)
+            if end_sec - start_sec < min_clip:
+                start_sec = max(0.0, end_sec - min_clip)
+
+        duration_sec = min(max_clip, max(0.6, end_sec - start_sec))
+        if start_sec + duration_sec > total_duration:
+            start_sec = max(0.0, total_duration - duration_sec)
+        return start_sec, duration_sec
 
     def _try_add(candidate):
         center_sec = float(candidate.get("center_sec") or 0.0)
         if any(abs(center_sec - existing["center_sec"]) < min_spacing for existing in picks):
             return False
-        start_sec = max(0.0, min(total_duration, center_sec - 0.45))
-        duration_sec = min(float(clip_seconds), max(0.6, total_duration - start_sec))
-        if start_sec + duration_sec > total_duration:
-            start_sec = max(0.0, total_duration - duration_sec)
+        start_sec, duration_sec = _natural_bounds(center_sec)
+        end_sec = start_sec + duration_sec
+        # Avoid returning several almost-identical snippets around one utterance.
+        for existing in picks:
+            existing_start = float(existing.get("start_sec") or 0.0)
+            existing_end = existing_start + float(existing.get("duration_sec") or 0.0)
+            overlap = max(0.0, min(end_sec, existing_end) - max(start_sec, existing_start))
+            shorter = max(0.2, min(duration_sec, existing_end - existing_start))
+            if overlap / shorter >= 0.58:
+                return False
         picks.append(
             {
                 "center_sec": center_sec,
@@ -15047,7 +15146,7 @@ def generate_video_ai_voice_candidates(photo, force=False):
                 try:
                     audio_copy = io.BytesIO(raw)
                     audio_copy.name = f"voice_candidate_{rank:02d}.m4a"
-                    transcript = transcribe_audio(audio_copy, context="東京ぶらり旅の動画から切り出した2秒以内の短い音声候補です。")
+                    transcript = transcribe_audio(audio_copy, context="東京ぶらり旅の動画から切り出した、話し声の切れ目を優先した最大5秒程度の短い音声候補です。")
                 except Exception:
                     transcript = ""
                 items.append(
@@ -15070,9 +15169,11 @@ def generate_video_ai_voice_candidates(photo, force=False):
         items = sorted(items, key=lambda item: int(item.get("rank") or 99))[:VIDEO_VOICE_CANDIDATE_COUNT]
         selection["voice_candidates"] = {
             "status": "ready",
+            "schema_version": VIDEO_VOICE_CANDIDATE_SCHEMA_VERSION,
             "generated_at": now_jst().isoformat(),
             "candidate_count": len(items),
             "snippet_seconds": VIDEO_VOICE_SNIPPET_SECONDS,
+            "boundary_mode": "natural_pause",
             "items": items,
         }
         selection["updated_at"] = now_jst().isoformat()
@@ -27388,7 +27489,7 @@ def _render_moments_picker(photo, index, view_mode=None, next_video_action=None)
                     '</div>',
                     unsafe_allow_html=True,
                 )
-            st.caption("プレビュー：この写真の表示中に、選んだ最大2秒の声が自動再生されます。")
+            st.caption("プレビュー：この写真の表示中に、選んだ声が自動再生されます。声は最大5秒程度で、できるだけ話し声の切れ目までで終わります。")
 
             if not voice_candidates:
                 st.info("まだこの動画の声候補を作っていません。")
@@ -27397,7 +27498,7 @@ def _render_moments_picker(photo, index, view_mode=None, next_video_action=None)
                     type="primary",
                     use_container_width=True,
                     key=f"moments_voice_generate_{video_id}_{round_number}_{target_rank}",
-                    help="元動画の音声から、印象的な短い声の候補を最大6個作ります。",
+                    help="元動画の音声から、印象的な声を最大6個探します。1候補は最大5秒程度で、できるだけ話し声の切れ目で区切ります。",
                 ):
                     try:
                         with st.spinner("動画の中から印象的な声を探しています…"):
