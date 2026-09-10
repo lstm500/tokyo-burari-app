@@ -35,7 +35,7 @@ import streamlit as st
 # Freshly generated update: 2026-08-31 23:49 JST
 GENERATED_UPDATE_JST = "2026-09-11T00:24:48+09:00"
 
-APP_BUILD = "v384"
+APP_BUILD = "v385"
 # v383: interaction performance pass - no periodic Home polling, lazy heavy components, deferred recovery scans.
 # v331: multi-tag photo selections can go straight to a music replay and be saved as a stable in-app movie snapshot.
 # v330: tag-review movies support one or multiple AI tags; selection is action-only.
@@ -5905,7 +5905,7 @@ def sync_pending_tags_from_browser_v166():
 _HISTORY_JS = r"""
 export default function(component) {
   const { data, setTriggerValue } = component;
-  const validPages = new Set(['home', 'camera', 'videos', 'moments', 'diary', 'review', 'review_map', 'review_project', 'review_monthly', 'review_tag', 'review_history', 'nearby', 'toilets', 'settings']);
+  const validPages = new Set(['home', 'camera', 'videos', 'moments', 'diary', 'review', 'review_map', 'review_project', 'review_monthly', 'review_tag', 'review_history', 'nearby', 'toilets', 'settings', 'settings_moments']);
   const marker = '__tokyo_burari_page__';
   const guardMarker = '__tokyo_burari_first_level_guard__';
   const requestedPage = validPages.has(data?.page) ? data.page : 'home';
@@ -12473,8 +12473,8 @@ VIDEO_MOMENT_FACTOR_META = {
         "default": 5,
     },
     "preference": {
-        "label": "過去に残した写真の好み",
-        "description": "これまで本人が実際に残した『いい瞬間』の傾向との近さ",
+        "label": "お気に入り写真の傾向",
+        "description": "★お気に入りにした写真のAIタグ傾向と、実際に残した写真との近さ",
         "default": 10,
     },
 }
@@ -12559,15 +12559,18 @@ def get_video_moment_factor_settings(force=False):
 
 
 def save_video_moment_factor_settings(weights):
-    """Persist the current member's six factor percentages in the existing monthly table."""
-    normalized_input = {}
+    """Persist the current member's factors after proportionally normalizing them to 100%."""
+    raw_input = {}
     for key in VIDEO_MOMENT_FACTOR_ORDER:
         try:
-            normalized_input[key] = max(0, min(100, int(round(float((weights or {}).get(key, 0))))))
+            raw_input[key] = max(0, min(100, int(round(float((weights or {}).get(key, 0))))))
         except Exception:
-            normalized_input[key] = 0
-    if sum(normalized_input.values()) != 100:
-        raise ValueError("割合の合計を100%にしてください。")
+            raw_input[key] = 0
+
+    # v385: pressing OK always produces a valid 100-point distribution.  When the
+    # entered total is not 100, preserve the relative balance and scale all factors
+    # proportionally.  A completely zeroed form falls back to the standard balance.
+    normalized_input = _normalize_video_moment_factor_weights(raw_input)
 
     client = supabase_client()
     existing = (
@@ -12633,15 +12636,20 @@ def _video_preference_prompt_text(preference_context):
     weights = _normalize_video_moment_factor_weights(context.get("factor_weights"))
     preference_weight = int(weights.get("preference") or 0)
     if preference_weight <= 0:
-        return "この個人設定では『過去に残した写真の好み』は0%なので、過去の選択履歴は順位付けに使わないでください。"
+        return "この個人設定では『お気に入り写真の傾向』は0%なので、過去のお気に入り・選択履歴は順位付けに使わないでください。"
 
     liked = context.get("quality_counts") or {}
     rejected = context.get("rejected_quality_counts") or {}
+    tag_tendencies = [
+        item for item in (context.get("favorite_tag_tendencies") or [])
+        if isinstance(item, dict) and str(item.get("tag") or "").strip()
+    ]
+    favorite_photo_count = max(0, int(context.get("favorite_photo_count") or 0))
     liked_count = sum(max(0, int(v or 0)) for v in liked.values()) if isinstance(liked, dict) else 0
     rejected_count = sum(max(0, int(v or 0)) for v in rejected.values()) if isinstance(rejected, dict) else 0
-    if not liked_count and not rejected_count:
+    if not tag_tendencies and not liked_count and not rejected_count:
         return (
-            f"過去の好みの配分は{preference_weight}%ですが、まだ本人の選択履歴が少ないため、"
+            f"『お気に入り写真の傾向』の配分は{preference_weight}%ですが、まだ本人のお気に入り・選択履歴が少ないため、"
             "その分は他の設定ファクターへ相対的に振り分けてください。"
         )
 
@@ -12670,14 +12678,31 @@ def _video_preference_prompt_text(preference_context):
         if int(value or 0) > 0:
             rejected_parts.append(f"{label_map.get(str(key), str(key))}:{int(value)}")
 
-    text = f"過去の選択履歴は、設定された{preference_weight}%の範囲だけで参考にしてください。"
+    text = (
+        f"『お気に入り写真の傾向』は評価全体の{preference_weight}%です。"
+        "★お気に入りは本人が『残したい』と明示した写真なので、AIタグの出現傾向をこの個人にとっての『いい瞬間』の具体的な定義として参考にしてください。"
+    )
+    if tag_tendencies:
+        tag_parts = []
+        for item in tag_tendencies[:8]:
+            tag = str(item.get("tag") or "").strip()
+            favorite_count = max(0, int(item.get("favorite_count") or 0))
+            total_count = max(1, int(item.get("total_count") or 1))
+            rate = max(0.0, min(1.0, float(item.get("favorite_rate") or 0)))
+            tag_parts.append(f"{tag}:お気に入り{favorite_count}/{total_count}枚({int(round(rate * 100))}%)")
+        text += " タグ別のお気に入り傾向=" + "、".join(tag_parts) + "。"
+        if favorite_photo_count:
+            text += f" お気に入り写真は直近参照範囲で{favorite_photo_count}枚あります。"
+        text += (
+            " 同じタグが写っているだけで機械的に採用せず、その対象・場面が魅力的に現れた瞬間を優先してください。"
+            "タグ名が候補に直接一致しなくても、参考画像と似た被写体・関係性・場面なら傾向として扱ってください。"
+        )
     if liked_parts:
-        text += " 選ばれた傾向=" + "、".join(liked_parts[:5]) + "。"
+        text += " 過去に実際に残した動画静止画の傾向=" + "、".join(liked_parts[:5]) + "。"
     if rejected_parts:
         text += " 『取り直す』でまとめて却下された傾向=" + "、".join(rejected_parts[:5]) + "。"
-    text += " 履歴に過剰適合せず、その動画固有の良い瞬間も残してください。"
+    text += " 履歴へ過剰適合せず、その動画固有の新しい良い瞬間も残してください。"
     return text
-
 
 def _video_photogenic_fallback_score(image_bytes):
     """Cheap visual-quality score used only if the AI response cannot be used."""
@@ -12762,7 +12787,7 @@ def choose_video_ai_frames(
     if int(factor_weights.get("preference") or 0) > 0:
         for idx, image_bytes in enumerate(context.get("reference_images") or [], start=1):
             if image_bytes:
-                reference_items.append((f"過去に本人が選んだ好みの参考画像 {idx}", image_bytes))
+                reference_items.append((f"本人のお気に入り・過去に残した参考画像 {idx}", image_bytes))
 
     def call_selector(candidate_frames, prompt, name, max_items, max_output_tokens=1500):
         image_items = list(reference_items)
@@ -13716,8 +13741,81 @@ def store_video_ai_candidate_bundle(photo, frame_items):
     return updated
 
 
-def _load_video_ai_preference_context_for_owner(client, family_key, member_key, max_rows=80):
-    """Build lightweight per-person preferences from photos they actually chose."""
+def _favorite_tag_tendencies_from_rows(rows, max_tags=8):
+    """Summarize which AI tags are disproportionately common among ★ favorites."""
+    total_tag_counts = {}
+    favorite_tag_counts = {}
+    tagged_photo_count = 0
+    favorite_photo_count = 0
+    favorite_tagged_photo_count = 0
+
+    for row in rows or []:
+        if not isinstance(row, dict) or photo_is_video(row):
+            continue
+        tags = [
+            tag for tag in photo_ai_tags(row)
+            if tag and tag != PHOTO_FAVORITE_TAG
+        ]
+        # One photo counts at most once for a given tag.
+        tags = list(dict.fromkeys(tags))
+        if tags:
+            tagged_photo_count += 1
+        is_favorite = photo_favorite_is_enabled(row)
+        if is_favorite:
+            favorite_photo_count += 1
+            if tags:
+                favorite_tagged_photo_count += 1
+        for tag in tags:
+            total_tag_counts[tag] = int(total_tag_counts.get(tag) or 0) + 1
+            if is_favorite:
+                favorite_tag_counts[tag] = int(favorite_tag_counts.get(tag) or 0) + 1
+
+    if not favorite_tag_counts:
+        return {
+            "items": [],
+            "favorite_photo_count": favorite_photo_count,
+            "tagged_photo_count": tagged_photo_count,
+            "favorite_tagged_photo_count": favorite_tagged_photo_count,
+        }
+
+    baseline = (favorite_tagged_photo_count / tagged_photo_count) if tagged_photo_count else 0.0
+    ranked = []
+    for tag, favorite_count in favorite_tag_counts.items():
+        total_count = max(1, int(total_tag_counts.get(tag) or 0))
+        rate = favorite_count / total_count
+        # Prefer repeated evidence and a high favorite rate, while preventing one-off
+        # tags from overpowering stable tendencies.  Lift is capped for robustness.
+        lift = (rate / baseline) if baseline > 0 else rate
+        score = float(favorite_count) * (0.6 + rate) * min(3.0, max(0.5, lift))
+        ranked.append({
+            "tag": str(tag),
+            "favorite_count": int(favorite_count),
+            "total_count": int(total_count),
+            "favorite_rate": round(float(rate), 4),
+            "lift": round(float(lift), 3),
+            "score": round(float(score), 4),
+        })
+
+    ranked.sort(
+        key=lambda item: (
+            -float(item.get("score") or 0),
+            -int(item.get("favorite_count") or 0),
+            -float(item.get("favorite_rate") or 0),
+            str(item.get("tag") or ""),
+        )
+    )
+    for item in ranked:
+        item.pop("score", None)
+    return {
+        "items": ranked[:max(1, int(max_tags))],
+        "favorite_photo_count": favorite_photo_count,
+        "tagged_photo_count": tagged_photo_count,
+        "favorite_tagged_photo_count": favorite_tagged_photo_count,
+    }
+
+
+def _load_video_ai_preference_context_for_owner(client, family_key, member_key, max_rows=240):
+    """Build per-person Good Moments preferences, led by ★ favorite tag tendencies."""
     rows = (
         client
         .table(PHOTO_TABLE)
@@ -13732,10 +13830,21 @@ def _load_video_ai_preference_context_for_owner(client, family_key, member_key, 
     quality_counts = {}
     rejected_quality_counts = {}
     reference_paths = []
+    favorite_reference_paths = []
+    favorite_tag_context = _favorite_tag_tendencies_from_rows(rows, max_tags=8)
+
     for row in rows:
         reflection = row.get("reflection_json") or {}
         if not isinstance(reflection, dict):
             continue
+
+        # v385: ★ favorites are the clearest durable statement of what this person
+        # wants to keep.  Put favorite stills first in the visual references and use
+        # their AI tags to define the personal meaning of a "good moment".
+        if not photo_is_video(row) and photo_favorite_is_enabled(row):
+            favorite_path = str(row.get("storage_path") or "").strip()
+            if favorite_path and favorite_path not in favorite_reference_paths:
+                favorite_reference_paths.append(favorite_path)
 
         # Durable learning signal: a still explicitly sent to the diary remains
         # useful even if the source video is later deleted.
@@ -13771,7 +13880,13 @@ def _load_video_ai_preference_context_for_owner(client, family_key, member_key, 
                 rejected_quality_counts[quality] = int(rejected_quality_counts.get(quality, 0)) + 1
 
     reference_images = []
-    for path in reference_paths[:4]:
+    # Favorites come first.  Fall back to earlier manually selected video stills so
+    # accounts with few favorites retain the existing learning behavior.
+    ordered_reference_paths = []
+    for path in favorite_reference_paths + reference_paths:
+        if path and path not in ordered_reference_paths:
+            ordered_reference_paths.append(path)
+    for path in ordered_reference_paths[:4]:
         try:
             raw = _storage_bytes(client.storage.from_(PHOTO_BUCKET).download(path))
             if raw:
@@ -13786,6 +13901,9 @@ def _load_video_ai_preference_context_for_owner(client, family_key, member_key, 
         "quality_counts": quality_counts,
         "rejected_quality_counts": rejected_quality_counts,
         "reference_images": reference_images,
+        "favorite_tag_tendencies": list(favorite_tag_context.get("items") or []),
+        "favorite_photo_count": int(favorite_tag_context.get("favorite_photo_count") or 0),
+        "favorite_tagged_photo_count": int(favorite_tag_context.get("favorite_tagged_photo_count") or 0),
         "factor_weights": factor_weights,
     }
 
@@ -14293,6 +14411,12 @@ def _run_video_ai_background_job(photo_id, family_key, member_key):
         )
         selection_meta["factor_weights"] = dict(
             _normalize_video_moment_factor_weights(preference.get("factor_weights"))
+        )
+        selection_meta["favorite_tag_tendencies"] = list(
+            preference.get("favorite_tag_tendencies") or []
+        )[:8]
+        selection_meta["favorite_photo_count"] = max(
+            0, int(preference.get("favorite_photo_count") or 0)
         )
         history = selection_meta.get("history") or []
         excluded_ids = []
@@ -22287,7 +22411,7 @@ def init_state():
 
 
 
-VALID_APP_PAGES = {"home", "camera", "videos", "moments", "diary", "review", "review_map", "review_project", "review_monthly", "review_tag", "review_history", "nearby", "toilets", "settings"}
+VALID_APP_PAGES = {"home", "camera", "videos", "moments", "diary", "review", "review_map", "review_project", "review_monthly", "review_tag", "review_history", "nearby", "toilets", "settings", "settings_moments"}
 
 
 def _current_ui_refresh_epoch():
@@ -22504,6 +22628,7 @@ def navigation_parent_node(node=None):
         "nearby": "home",
         "toilets": "home",
         "settings": "home",
+        "settings_moments": "settings",
     }
     return parents.get(str(node), "")
 
@@ -22602,6 +22727,10 @@ def _navigate_to_parent_state_only():
         _set_page_state("review", history_mode="replace")
         return
 
+    if node == "settings_moments":
+        _set_page_state("settings", history_mode="replace")
+        return
+
     _set_page_state("home", history_mode="replace")
 
 
@@ -22663,6 +22792,7 @@ def sync_browser_history():
         "review_project",
         "review_monthly",
         "review_tag",
+        "settings_moments",
     }
     result = browser_history_component(
         data={
@@ -36831,6 +36961,112 @@ def page_review():
     render_own_replay_movie_library()
 
 
+
+def page_good_moments_settings():
+    page_top("✨ いい瞬間の定義")
+    st.caption(
+        "この個人アカウントで、動画から切り抜く『いい瞬間』を定義します。"
+        "★お気に入りにした写真のAIタグ傾向も自動で学習し、次回以降の選定に反映します。"
+    )
+    st.caption(
+        "ピンぼけ・強い手ぶれ・目つぶり・大きな見切れ・強い白飛び/黒つぶれは、"
+        "割合とは別の最低品質条件として常に避けます。"
+    )
+
+    notice = st.session_state.pop("_good_moments_settings_notice", None)
+    if notice:
+        st.success(str(notice))
+
+    saved_moment_weights = get_video_moment_factor_settings()
+    moment_reset_apply_key = (
+        f"_settings_moment_reset_apply_{current_family_key()}_{current_member_key()}"
+    )
+    reset_values = st.session_state.pop(moment_reset_apply_key, None)
+    if isinstance(reset_values, dict):
+        for factor_key in VIDEO_MOMENT_FACTOR_ORDER:
+            widget_key = f"settings_moment_factor_{current_family_key()}_{current_member_key()}_{factor_key}"
+            st.session_state[widget_key] = int(reset_values.get(factor_key) or 0)
+
+    with st.form(
+        key=f"settings_moment_factor_form_v385_{current_family_key()}_{current_member_key()}",
+        clear_on_submit=False,
+        border=False,
+    ):
+        draft_moment_weights = {}
+        for factor_key in VIDEO_MOMENT_FACTOR_ORDER:
+            meta = VIDEO_MOMENT_FACTOR_META[factor_key]
+            widget_key = f"settings_moment_factor_{current_family_key()}_{current_member_key()}_{factor_key}"
+            if widget_key not in st.session_state:
+                st.session_state[widget_key] = int(saved_moment_weights.get(factor_key) or 0)
+            draft_moment_weights[factor_key] = st.slider(
+                meta["label"],
+                min_value=0,
+                max_value=100,
+                step=1,
+                key=widget_key,
+                help=meta["description"],
+            )
+            st.caption(meta["description"])
+
+        factor_total = sum(int(v or 0) for v in draft_moment_weights.values())
+        if factor_total == 100:
+            st.caption("現在の合計：100%")
+        elif factor_total > 0:
+            st.caption(
+                f"現在の合計：{factor_total}%　→　OKを押すと、この比率を保ったまま全体を按分して100%にします。"
+            )
+        else:
+            st.caption("現在の合計：0%　→　OKを押すと標準配分を100%として保存します。")
+
+        factor_save_col, factor_reset_col = st.columns(2, gap="small")
+        with factor_save_col:
+            factor_save_clicked = st.form_submit_button(
+                "OK",
+                type="primary",
+                use_container_width=True,
+            )
+        with factor_reset_col:
+            factor_reset_clicked = st.form_submit_button(
+                "標準配分に戻す",
+                use_container_width=True,
+            )
+
+    if factor_save_clicked:
+        try:
+            original_total = sum(int(v or 0) for v in draft_moment_weights.values())
+            saved = save_video_moment_factor_settings(draft_moment_weights)
+            # Apply the exact normalized integers to the sliders on the next render.
+            st.session_state[moment_reset_apply_key] = dict(saved)
+            if original_total == 100:
+                message = "いい瞬間の定義を保存しました。"
+            elif original_total > 0:
+                message = f"合計{original_total}%の比率を按分し、100%として保存しました。"
+            else:
+                message = "合計が0%だったため、標準配分を100%として保存しました。"
+            st.session_state["_good_moments_settings_notice"] = message
+            st.rerun()
+        except Exception as exc:
+            st.error(str(exc))
+
+    if factor_reset_clicked:
+        try:
+            defaults = default_video_moment_factor_weights()
+            saved = save_video_moment_factor_settings(defaults)
+            st.session_state[moment_reset_apply_key] = dict(saved)
+            st.session_state["_good_moments_settings_notice"] = "いい瞬間の定義を標準配分に戻しました。"
+            st.rerun()
+        except Exception as exc:
+            st.error(str(exc))
+
+    st.caption(
+        "標準配分：表情・決定的瞬間30% ／ 写真映え30% ／ 被写体の魅力20% ／ "
+        "躍動感5% ／ 物語性・その日のらしさ5% ／ お気に入り写真の傾向10%"
+    )
+    st.info(
+        "★お気に入りの学習では、写真ごとのAIタグについて『そのタグの写真のうち、どれくらいをお気に入りにしたか』と"
+        "『何枚のお気に入りで繰り返し現れたか』を見ます。単発のタグだけで選定が偏らないよう補正します。"
+    )
+
 def page_settings():
     # Settings already has the shared full-width Home button at the bottom, so do
     # not render the top back/Home control here. This also avoids the mobile top
@@ -36841,6 +37077,18 @@ def page_settings():
     settings_notice = st.session_state.pop("_settings_notice", None)
     if settings_notice:
         st.success(settings_notice)
+
+    with st.container(key="settings_good_moments_entry_v385"):
+        st.button(
+            "✨ いい瞬間の設定をする",
+            use_container_width=True,
+            key="settings_open_good_moments_v385",
+            on_click=_go_page_callback,
+            args=("settings_moments", "push"),
+        )
+        st.caption("動画から切り抜く『いい瞬間』の定義と評価割合を設定します。")
+
+    st.divider()
 
     # ------------------------------------------------------------
     # Current location / GPS diagnostics
@@ -37131,90 +37379,6 @@ def page_settings():
     # v184: starting a trip is no longer a Settings action. Home/Camera is the entry point.
 
     st.divider()
-    st.markdown("#### ✨ いい瞬間の選び方")
-    st.caption(
-        "動画から切り抜く『いい瞬間』の評価割合を、この個人アカウント専用に設定します。"
-        "6項目の合計を100%にしてください。"
-    )
-    st.caption(
-        "ピンぼけ・強い手ぶれ・目つぶり・大きな見切れ・強い白飛び/黒つぶれは、"
-        "割合とは別の最低品質条件として常に避けます。"
-    )
-    saved_moment_weights = get_video_moment_factor_settings()
-    # v186: Streamlit does not allow changing a widget's session_state value after
-    # that widget has already been instantiated in the same run. A reset therefore
-    # schedules the slider values for the start of the next rerun, before st.slider().
-    moment_reset_apply_key = (
-        f"_settings_moment_reset_apply_{current_family_key()}_{current_member_key()}"
-    )
-    reset_values = st.session_state.pop(moment_reset_apply_key, None)
-    if isinstance(reset_values, dict):
-        for factor_key in VIDEO_MOMENT_FACTOR_ORDER:
-            widget_key = f"settings_moment_factor_{current_family_key()}_{current_member_key()}_{factor_key}"
-            st.session_state[widget_key] = int(reset_values.get(factor_key) or 0)
-
-    with st.form(
-        key=f"settings_moment_factor_form_v327_{current_family_key()}_{current_member_key()}",
-        clear_on_submit=False,
-        border=False,
-    ):
-        draft_moment_weights = {}
-        for factor_key in VIDEO_MOMENT_FACTOR_ORDER:
-            meta = VIDEO_MOMENT_FACTOR_META[factor_key]
-            widget_key = f"settings_moment_factor_{current_family_key()}_{current_member_key()}_{factor_key}"
-            if widget_key not in st.session_state:
-                st.session_state[widget_key] = int(saved_moment_weights.get(factor_key) or 0)
-            draft_moment_weights[factor_key] = st.slider(
-                meta["label"],
-                min_value=0,
-                max_value=100,
-                step=5,
-                key=widget_key,
-                help=meta["description"],
-            )
-            st.caption(meta["description"])
-
-        st.caption("スライダーを動かしている間は通信しません。保存時に6項目の合計が100%か確認します。")
-        factor_save_col, factor_reset_col = st.columns(2, gap="small")
-        with factor_save_col:
-            factor_save_clicked = st.form_submit_button(
-                "この割合を保存",
-                type="primary",
-                use_container_width=True,
-            )
-        with factor_reset_col:
-            factor_reset_clicked = st.form_submit_button(
-                "標準配分に戻す",
-                use_container_width=True,
-            )
-
-    factor_total = sum(int(v or 0) for v in draft_moment_weights.values())
-    if factor_save_clicked:
-        if factor_total != 100:
-            st.error(f"現在の合計は {factor_total}% です。100%になるよう調整してから保存してください。")
-        else:
-            try:
-                save_video_moment_factor_settings(draft_moment_weights)
-                st.session_state["_settings_notice"] = "いい瞬間の選び方を、この個人アカウント用に保存しました。"
-                st.rerun()
-            except Exception as exc:
-                st.error(str(exc))
-    if factor_reset_clicked:
-        try:
-            defaults = default_video_moment_factor_weights()
-            save_video_moment_factor_settings(defaults)
-            st.session_state[moment_reset_apply_key] = dict(defaults)
-            st.session_state["_settings_notice"] = "いい瞬間の選び方を標準配分に戻しました。"
-            st.rerun()
-        except Exception as exc:
-            st.error(str(exc))
-
-    st.caption(
-        "標準配分：表情・決定的瞬間30% ／ 写真映え30% ／ 被写体の魅力20% ／ "
-        "躍動感5% ／ 物語性・その日のらしさ5% ／ 過去に残した写真の好み10%"
-    )
-
-    st.divider()
     st.markdown("#### AIまとめの調整")
     feedback_status = get_summary_feedback_status()
     good_count = int(feedback_status.get("good_count") or 0)
@@ -37410,6 +37574,8 @@ with st.container(key="app_page_root_v280"):
         page_toilets()
     elif page == "settings":
         page_settings()
+    elif page == "settings_moments":
+        page_good_moments_settings()
     else:
         st.session_state["main_page"] = "home"
         st.rerun(scope="app")
@@ -37421,6 +37587,6 @@ with st.container(key="app_page_root_v280"):
         live_page = str(st.session_state.get("main_page") or "home")
         if (
             page == live_page
-            and page in {"camera", "videos", "moments", "diary", "review", "review_map", "review_project", "review_monthly", "review_tag", "review_history", "nearby", "toilets", "settings"}
+            and page in {"camera", "videos", "moments", "diary", "review", "review_map", "review_project", "review_monthly", "review_tag", "review_history", "nearby", "toilets", "settings", "settings_moments"}
         ):
             render_global_bottom_navigation(page)
