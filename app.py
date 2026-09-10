@@ -13311,6 +13311,111 @@ def _video_ai_job_registry():
     return {"lock": threading.Lock(), "futures": {}}
 
 
+
+def _normalize_video_frame_photo_bytes(image_bytes, *, quality=90, max_long=1600):
+    """Make landscape video stills feel closer inside the app.
+
+    For wide frames, build a tighter portrait-friendly crop instead of preserving the
+    full distant landscape. The crop search is intentionally lightweight: it samples a
+    small number of zoom levels and positions, then scores each crop with image entropy,
+    contrast, and a gentle center/lower-center bias.
+    """
+    from PIL import Image, ImageOps, ImageStat
+
+    if not image_bytes:
+        return b""
+    try:
+        with Image.open(io.BytesIO(image_bytes)) as src:
+            src = ImageOps.exif_transpose(src).convert("RGB")
+            resampling = getattr(getattr(Image, "Resampling", Image), "LANCZOS")
+            w, h = src.size
+            if w <= 0 or h <= 0:
+                return bytes(image_bytes)
+
+            result = src
+            # Only tighten clearly horizontal images. Portrait/square photos stay natural.
+            if w > int(h * 1.10):
+                target_ratio = 4.0 / 5.0  # portrait-friendly crop for the app's photo UI
+                gray = src.convert("L")
+                best_box = None
+                best_score = None
+                wide_ratio = w / float(max(1, h))
+                # Wider videos get a little more zoom to avoid the "too far away" feeling.
+                zoom_levels = (0.96, 0.88, 0.80) if wide_ratio < 1.55 else (0.92, 0.84, 0.76)
+
+                for frac in zoom_levels:
+                    crop_h = max(240, min(h, int(round(h * frac))))
+                    crop_w = int(round(crop_h * target_ratio))
+                    if crop_w > w:
+                        crop_w = w
+                        crop_h = int(round(crop_w / target_ratio))
+                    if crop_w <= 0 or crop_h <= 0 or crop_w > w or crop_h > h:
+                        continue
+
+                    max_left = max(0, w - crop_w)
+                    max_top = max(0, h - crop_h)
+
+                    # Candidate centers: prefer the center, but allow moderate left/right shifts.
+                    center_positions = [0.50, 0.38, 0.62, 0.26, 0.74]
+                    vertical_positions = [0.54, 0.48, 0.60]
+
+                    if max_left == 0:
+                        left_candidates = [0]
+                    else:
+                        left_candidates = []
+                        for rel in center_positions:
+                            left = int(round((w * rel) - crop_w / 2.0))
+                            left_candidates.append(max(0, min(max_left, left)))
+                        left_candidates = list(dict.fromkeys(left_candidates))
+
+                    if max_top == 0:
+                        top_candidates = [0]
+                    else:
+                        top_candidates = []
+                        for rel in vertical_positions:
+                            top = int(round((h * rel) - crop_h / 2.0))
+                            top_candidates.append(max(0, min(max_top, top)))
+                        top_candidates = list(dict.fromkeys(top_candidates))
+
+                    for left in left_candidates:
+                        for top in top_candidates:
+                            right = left + crop_w
+                            bottom = top + crop_h
+                            region = gray.crop((left, top, right, bottom))
+                            entropy = float(region.entropy())
+                            try:
+                                contrast = float(ImageStat.Stat(region).stddev[0])
+                            except Exception:
+                                contrast = 0.0
+                            cx = left + crop_w / 2.0
+                            cy = top + crop_h / 2.0
+                            dx = abs(cx - (w / 2.0)) / max(1.0, w / 2.0)
+                            dy = abs(cy - (h * 0.55)) / max(1.0, h / 2.0)
+                            center_bonus = max(0.0, 1.0 - dx * 0.80 - dy * 0.55)
+                            zoom_bonus = max(0.0, (1.0 - frac) * 4.0)
+                            score = entropy + (contrast * 0.09) + center_bonus + zoom_bonus
+                            if best_score is None or score > best_score:
+                                best_score = score
+                                best_box = (left, top, right, bottom)
+
+                if best_box is not None:
+                    result = src.crop(best_box)
+
+            long_edge = max(result.width, result.height)
+            if max_long and long_edge > int(max_long):
+                scale = float(max_long) / float(long_edge)
+                result = result.resize(
+                    (max(1, int(round(result.width * scale))), max(1, int(round(result.height * scale)))),
+                    resampling,
+                )
+
+            out = io.BytesIO()
+            result.save(out, format="JPEG", quality=max(82, int(quality or 90)), optimize=True)
+            return out.getvalue()
+    except Exception:
+        return bytes(image_bytes)
+
+
 def _background_store_video_ai_selection(
     client,
     photo,
@@ -13348,10 +13453,11 @@ def _background_store_video_ai_selection(
             image_bytes = frame.get("image_bytes")
             if not frame_id or not image_bytes:
                 raise ValueError("元動画由来の高画質画像を読み込めませんでした。")
+            processed_bytes = _normalize_video_frame_photo_bytes(image_bytes) or image_bytes
             path = f"{base}_ai_r{int(round_number):02d}_{job_token}_{rank:02d}.jpg"
             client.storage.from_(PHOTO_BUCKET).upload(
                 path=path,
-                file=image_bytes,
+                file=processed_bytes,
                 file_options={"content-type": "image/jpeg", "cache-control": "3600"},
             )
             uploaded_paths.append(path)
@@ -14190,10 +14296,11 @@ def store_preselected_video_ai_selection(photo, selections, candidate_count=0):
                 raise ValueError("元動画由来ではない画像は保存しません。")
             if not frame_id or not image_bytes:
                 raise ValueError("AIセレクション画像を元動画から読み込めませんでした。")
+            processed_bytes = _normalize_video_frame_photo_bytes(image_bytes) or image_bytes
             path = f"{base}_ai_{rank:02d}.jpg"
             client.storage.from_(PHOTO_BUCKET).upload(
                 path=path,
-                file=image_bytes,
+                file=processed_bytes,
                 file_options={"content-type": "image/jpeg", "cache-control": "3600"},
             )
             uploaded_paths.append(path)
@@ -14300,7 +14407,8 @@ def save_video_ai_selection_as_photo(video_photo, selection_item):
     source_path = str(selection_item.get("storage_path") or "").strip()
     if not source_path or rank <= 0:
         raise ValueError("保存する画像を確認できませんでした。")
-    raw = download_photo(source_path)
+    original_raw = download_photo(source_path)
+    raw = _normalize_video_frame_photo_bytes(original_raw) or original_raw
     reflection = photo_media_metadata(video_photo)
     location = reflection.get("location") if isinstance(reflection.get("location"), dict) else {}
     selection_emotion = normalize_photo_emotion_key(selection_item.get("emotion"))
@@ -18295,7 +18403,12 @@ def _replay_export_frame_jpeg(image_bytes, width=720, height=1280):
     if not image_bytes:
         return b""
     try:
-        with Image.open(io.BytesIO(image_bytes)) as src:
+        prepared = _normalize_video_frame_photo_bytes(
+            image_bytes,
+            quality=88,
+            max_long=max(int(width), int(height)),
+        ) or image_bytes
+        with Image.open(io.BytesIO(prepared)) as src:
             src = ImageOps.exif_transpose(src).convert("RGB")
             resampling = getattr(getattr(Image, "Resampling", Image), "LANCZOS")
 
@@ -22235,7 +22348,7 @@ def show_video_library_dialog(video_photo, title, caption):
 
 
 def render_video_ai_selection(photo, key_prefix="video_selection", allow_save=True):
-    """Render the nine AI-selected stills in a uniform 3x3 grid."""
+    """Render the AI-selected stills in a uniform grid."""
     if not photo_is_video(photo):
         return
     selection_meta = photo_media_metadata(photo).get("ai_selection") or {}
