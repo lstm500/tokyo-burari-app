@@ -33,9 +33,10 @@ from zoneinfo import ZoneInfo
 import streamlit as st
 
 # Freshly generated update: 2026-08-31 23:49 JST
-GENERATED_UPDATE_JST = "2026-09-11T02:05:00+09:00"
+GENERATED_UPDATE_JST = "2026-09-11T02:26:00+09:00"
 
-APP_BUILD = "v393"
+APP_BUILD = "v394"
+# v394: replay photos keep their saved composition without enlargement/crop; playback button clearly shows active state.
 # v393: replay uses the exact diary-visible normal/parenting tag state and flushes pending browser tags before review playback.
 # v392: replay always refreshes each photo's current feeling/tag; final destructive confirm buttons are red.
 # v391: voice-aware replay timing; duck music slightly, hold each voice photo until speech ends, show all photos once.
@@ -20054,49 +20055,35 @@ def _replay_export_image_bytes(item):
 
 
 def _replay_export_frame_jpeg(image_bytes, width=720, height=1280):
-    """Build a cinematic 9:16 frame without requiring Japanese system fonts."""
-    from PIL import Image, ImageEnhance, ImageFilter, ImageOps
+    """Place the saved photo on a 9:16 movie canvas without cropping or upscaling it."""
+    from PIL import Image, ImageOps
 
     if not image_bytes:
         return b""
     try:
-        prepared = _normalize_video_frame_photo_bytes(
-            image_bytes,
-            quality=88,
-            max_long=max(int(width), int(height)),
-        ) or image_bytes
-        with Image.open(io.BytesIO(prepared)) as src:
+        with Image.open(io.BytesIO(image_bytes)) as src:
             src = ImageOps.exif_transpose(src).convert("RGB")
+            if src.width <= 0 or src.height <= 0:
+                return b""
+
+            canvas_w = max(1, int(width))
+            canvas_h = max(1, int(height))
             resampling = getattr(getattr(Image, "Resampling", Image), "LANCZOS")
 
-            # Soft blurred background lets landscape photos remain fully visible instead of
-            # being aggressively cropped to 9:16.
-            background = ImageOps.fit(src, (int(width), int(height)), method=resampling)
-            background = background.filter(ImageFilter.GaussianBlur(radius=max(10, int(width * 0.025))))
-            background = ImageEnhance.Brightness(background).enhance(0.58)
-            background = ImageEnhance.Color(background).enhance(0.82)
-
+            # v394: never enlarge a stored photo and never crop it to the 9:16 frame.
+            # Only photos that are physically larger than the movie canvas are reduced
+            # proportionally so the whole saved image remains visible.
             foreground = src.copy()
-            foreground.thumbnail((int(width * 0.93), int(height * 0.90)), resampling)
-            x = (int(width) - foreground.width) // 2
-            y = (int(height) - foreground.height) // 2
+            if foreground.width > canvas_w or foreground.height > canvas_h:
+                foreground.thumbnail((canvas_w, canvas_h), resampling)
 
-            # A low-cost soft shadow gives the photo a film-card feel while keeping the
-            # original picture unchanged.
-            shadow = Image.new("RGBA", (int(width), int(height)), (0, 0, 0, 0))
-            card = Image.new("RGBA", foreground.size, (0, 0, 0, 0))
-            card.paste(foreground.convert("RGBA"), (0, 0))
-            alpha = Image.new("L", foreground.size, 222)
-            shadow_blob = Image.new("RGBA", foreground.size, (0, 0, 0, 150))
-            shadow_blob.putalpha(alpha.filter(ImageFilter.GaussianBlur(radius=10)))
-            shadow.alpha_composite(shadow_blob, (x, min(int(height) - foreground.height, y + 12)))
+            frame = Image.new("RGB", (canvas_w, canvas_h), (15, 23, 42))
+            x = (canvas_w - foreground.width) // 2
+            y = (canvas_h - foreground.height) // 2
+            frame.paste(foreground, (x, y))
 
-            frame = background.convert("RGBA")
-            frame.alpha_composite(shadow)
-            frame.alpha_composite(card, (x, y))
-            frame = frame.convert("RGB")
             out = io.BytesIO()
-            frame.save(out, format="JPEG", quality=88, optimize=True)
+            frame.save(out, format="JPEG", quality=90, optimize=True)
             return out.getvalue()
     except Exception:
         return b""
@@ -20106,8 +20093,8 @@ def build_replay_visual_mp4(photo_items, display_ms, duration_seconds):
     """Create a phone-ready visual MP4 only after an explicit export button press.
 
     YouTube audio is deliberately not extracted from the embedded player.  The exported
-    file therefore contains the same photo order/pacing and cinematic framing, but no
-    YouTube audio track.
+    file therefore contains the same photo order/pacing while keeping each saved photo
+    fully visible without crop/upscale, but no YouTube audio track.
     """
     ffmpeg = _ffmpeg_executable()
     if not ffmpeg:
@@ -20295,12 +20282,18 @@ def render_monthly_replay_player(period_label, review, playback, photo_items, cu
         border: 6px solid rgba(255,255,255,.16);
         box-sizing: border-box;
         transition: none; /* v209: switch frame color on the exact same paint as the photo */
+        display: flex;
+        align-items: center;
+        justify-content: center;
       }}
       .burari-replay-stage img {{
-        width: 100%;
-        height: 100%;
-        object-fit: cover;
+        width: auto;
+        height: auto;
+        max-width: 100%;
+        max-height: 100%;
+        object-fit: contain;
         display: block;
+        flex: 0 0 auto;
       }}
       .burari-replay-top {{
         position: absolute;
@@ -20375,13 +20368,23 @@ def render_monthly_replay_player(period_label, review, playback, photo_items, cu
         white-space: nowrap;
         cursor: pointer;
       }}
-      #burariReplayStart {{ background: #2563eb; color: #fff; }}
+      #burariReplayStart {{ background: #2563eb; color: #fff; transition: background .16s ease, box-shadow .16s ease; }}
+      #burariReplayStart.is-playing {{
+        background: #16a34a;
+        color: #fff;
+        box-shadow: 0 0 0 3px rgba(22,163,74,.18), 0 5px 14px rgba(22,163,74,.22);
+      }}
       #burariReplayStop {{ background: #fee2e2; color: #991b1b; }}
       #burariReplayAgain {{ background: #e5edf8; color: #123; }}
       .burari-replay-controls button:disabled {{
         cursor: wait;
         opacity: .58;
         filter: saturate(.72);
+      }}
+      #burariReplayStart.is-playing:disabled {{
+        cursor: default;
+        opacity: 1;
+        filter: none;
       }}
       .burari-replay-meta {{ text-align: center; font-size: 13px; margin-bottom: .65rem; }}
       .burari-replay-player-wrap {{
@@ -20525,8 +20528,11 @@ def render_monthly_replay_player(period_label, review, playback, photo_items, cu
 
       function burariSetPlayerControlsReady(ready) {{
         if (burariStartButton) {{
-          burariStartButton.disabled = !ready;
-          burariStartButton.textContent = ready ? '▶ 再生' : '準備中…';
+          const playing = Boolean(burariReplayPlaybackActive);
+          burariStartButton.classList.toggle('is-playing', playing);
+          burariStartButton.disabled = playing || !ready;
+          burariStartButton.textContent = playing ? '● 再生中' : (ready ? '▶ 再生' : '準備中…');
+          burariStartButton.setAttribute('aria-pressed', playing ? 'true' : 'false');
         }}
         if (burariAgainButton) burariAgainButton.disabled = !ready;
       }}
@@ -20786,6 +20792,7 @@ def render_monthly_replay_player(period_label, review, playback, photo_items, cu
           }}
         }} catch (_) {{}}
         burariSetMusicVoiceDucking(false);
+        burariUpdatePlayerControlsReady();
         if (burariStatus) burariStatus.textContent = '再生が終わりました。';
       }}
 
@@ -20808,6 +20815,7 @@ def render_monthly_replay_player(period_label, review, playback, photo_items, cu
           }}
         }} catch (_) {{}}
         burariSetMusicVoiceDucking(false);
+        burariUpdatePlayerControlsReady();
         if (burariStatus) burariStatus.textContent = '中断しました。';
       }}
 
@@ -20955,6 +20963,7 @@ def render_monthly_replay_player(period_label, review, playback, photo_items, cu
         burariPendingStart = false;
         burariStopTimers();
         burariReplayPlaybackActive = true;
+        burariUpdatePlayerControlsReady();
         burariWaitingForRequestedPosition = true;
         burariSlideLoopStarted = false;
         burariSlideSequenceComplete = false;
@@ -21037,6 +21046,8 @@ def render_monthly_replay_player(period_label, review, playback, photo_items, cu
             }},
             onError: function() {{
               burariPlayerReady = false;
+              burariReplayPlaybackActive = false;
+              burariSetMusicVoiceDucking(false);
               burariSetPlayerControlsReady(false);
               if (burariStatus) burariStatus.textContent = 'YouTube音楽を読み込めませんでした。ページを開き直してお試しください。';
             }}
