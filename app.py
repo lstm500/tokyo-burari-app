@@ -35,7 +35,7 @@ import streamlit as st
 # Freshly generated update: 2026-08-31 23:49 JST
 GENERATED_UPDATE_JST = "2026-09-11T00:24:48+09:00"
 
-APP_BUILD = "v389"
+APP_BUILD = "v390"
 # v389: improve light-tap responsiveness on mobile/Android WebView.
 # v383: interaction performance pass - no periodic Home polling, lazy heavy components, deferred recovery scans.
 # v331: multi-tag photo selections can go straight to a music replay and be saved as a stable in-app movie snapshot.
@@ -5368,6 +5368,9 @@ export default function(component) {
   const allowShare = Boolean(data?.allow_share);
   const allowVoice = Boolean(data?.allow_voice);
   const allowFavorite = Boolean(data?.allow_favorite);
+  // v390: saved-diary enlarged mode can automatically play the short voice
+  // attached to the photo that is currently visible. Grid mode never autoplay.
+  const autoplayVoice = Boolean(data?.autoplay_voice) && single;
   const carouselKey = String(data?.carousel_key || 'default');
   const carouselStore = `tokyo_burari_diary_carousel_v180_${carouselKey}`;
   const pendingStore = 'tokyo_burari_pending_tags_v166';
@@ -5376,6 +5379,62 @@ export default function(component) {
   const familyKey = String(data?.family_key || '');
   const memberKey = String(data?.member_key || '');
   const modeByPhoto = (data?.mode_by_photo && typeof data.mode_by_photo === 'object') ? {...data.mode_by_photo} : {};
+
+  let activeVoiceAudio = null;
+  let voiceUnlockHandler = null;
+  const clearVoiceUnlock = () => {
+    if (!voiceUnlockHandler) return;
+    try { parentElement.removeEventListener('click', voiceUnlockHandler, false); } catch (_) {}
+    try { parentElement.removeEventListener('touchend', voiceUnlockHandler, false); } catch (_) {}
+    voiceUnlockHandler = null;
+  };
+  const stopActiveVoice = () => {
+    if (!activeVoiceAudio) return;
+    try { activeVoiceAudio.pause(); } catch (_) {}
+    try { activeVoiceAudio.currentTime = 0; } catch (_) {}
+    activeVoiceAudio = null;
+  };
+  const installVoiceUnlock = () => {
+    if (voiceUnlockHandler || !autoplayVoice) return;
+    voiceUnlockHandler = () => {
+      clearVoiceUnlock();
+      const voiceUrl = String(photos[currentIndex]?.voice_url || '').trim();
+      if (!voiceUrl) return;
+      stopActiveVoice();
+      const audio = new Audio(voiceUrl);
+      audio.preload = 'auto';
+      audio.setAttribute('playsinline', '');
+      activeVoiceAudio = audio;
+      try {
+        const pending = audio.play();
+        if (pending && typeof pending.catch === 'function') pending.catch(() => {});
+      } catch (_) {}
+    };
+    // Android/Chrome can block unmuted autoplay until a user gesture. If that
+    // happens, the next ordinary tap or swipe unlocks and plays the visible photo.
+    parentElement.addEventListener('click', voiceUnlockHandler, {once:true});
+    parentElement.addEventListener('touchend', voiceUnlockHandler, {once:true, passive:true});
+  };
+  const playVoiceAt = (index) => {
+    clearVoiceUnlock();
+    stopActiveVoice();
+    if (!autoplayVoice || index < 0 || index >= photos.length) return;
+    const voiceUrl = String(photos[index]?.voice_url || '').trim();
+    if (!voiceUrl) return;
+    const audio = new Audio(voiceUrl);
+    audio.preload = 'auto';
+    audio.autoplay = true;
+    audio.setAttribute('playsinline', '');
+    activeVoiceAudio = audio;
+    try {
+      const pending = audio.play();
+      if (pending && typeof pending.catch === 'function') {
+        pending.catch(() => { if (activeVoiceAudio === audio) installVoiceUnlock(); });
+      }
+    } catch (_) {
+      if (activeVoiceAudio === audio) installVoiceUnlock();
+    }
+  };
 
   if (singleNav) singleNav.hidden = !(single && photos.length > 1);
 
@@ -5616,6 +5675,7 @@ export default function(component) {
     preloadAt(currentIndex - 1);
     preloadAt(currentIndex + 1);
     preloadAt(currentIndex + 2);
+    playVoiceAt(currentIndex);
   };
 
   if (single) {
@@ -5635,6 +5695,11 @@ export default function(component) {
   } else {
     wraps.forEach((wrap) => { wrap.hidden = false; });
   }
+
+  return () => {
+    clearVoiceUnlock();
+    stopActiveVoice();
+  };
 }
 """
 
@@ -5650,7 +5715,7 @@ def _get_diary_gallery_component():
     _diary_gallery_component_initialized = True
     try:
         diary_gallery_component = st.components.v2.component(
-            "tokyo_burari_diary_gallery_v350",
+            "tokyo_burari_diary_gallery_v390",
             html=_DIARY_GALLERY_HTML,
             css=_DIARY_GALLERY_CSS,
             js=_DIARY_GALLERY_JS,
@@ -24289,7 +24354,9 @@ def render_history_photo_viewer(photos, trip_id):
     if single_mode and len(photos) > 1:
         st.caption("◀ 前へ／次へ ▶、または写真を左右にスワイプして切り替えられます。")
 
-    paths = tuple(str(photo.get("storage_path") or "") for photo in photos if photo.get("storage_path"))
+    photo_paths = tuple(str(photo.get("storage_path") or "") for photo in photos if photo.get("storage_path"))
+    voice_paths = tuple(photo_voice_note_storage_path(photo) for photo in photos if single_mode and photo_voice_note_storage_path(photo))
+    paths = tuple(dict.fromkeys((*photo_paths, *voice_paths)))
     signed = signed_photo_url_map(paths) if paths else {}
     cards = []
     photo_ids = []
@@ -24297,6 +24364,7 @@ def render_history_photo_viewer(photos, trip_id):
         pid = str(photo.get("id") or "")
         if not pid:
             continue
+        voice_path = photo_voice_note_storage_path(photo)
         cards.append(
             {
                 "id": pid,
@@ -24307,7 +24375,8 @@ def render_history_photo_viewer(photos, trip_id):
                 "tags": photo_ai_tags(photo)[:12],
                 "shared": photo_family_share_is_enabled(photo),
                 "favorite": photo_favorite_is_enabled(photo),
-                "has_voice": bool(photo_voice_note_storage_path(photo)),
+                "has_voice": bool(voice_path),
+                "voice_url": str(signed.get(voice_path) or "") if single_mode and voice_path else "",
             }
         )
         photo_ids.append(pid)
@@ -24325,6 +24394,7 @@ def render_history_photo_viewer(photos, trip_id):
                 "allow_share": True,
                 "allow_voice": single_mode,
                 "allow_favorite": single_mode,
+                "autoplay_voice": single_mode,
                 "carousel_key": f"history_{trip_id}",
                 "family_key": current_family_key(),
                 "member_key": current_member_key(),
@@ -29601,7 +29671,13 @@ def render_diary_emotion_gallery(trip_id, photos, trip=None, is_pending=False):
     # swaps the visible card locally and preloads neighboring images, avoiding a rerun
     # for every Previous/Next tap.
     displayed_photos = photos
-    paths = tuple(str(photo.get("storage_path") or "") for photo in displayed_photos if photo.get("storage_path"))
+    photo_paths = tuple(str(photo.get("storage_path") or "") for photo in displayed_photos if photo.get("storage_path"))
+    voice_paths = tuple(
+        photo_voice_note_storage_path(photo)
+        for photo in displayed_photos
+        if single_mode and not is_pending and photo_voice_note_storage_path(photo)
+    )
+    paths = tuple(dict.fromkeys((*photo_paths, *voice_paths)))
     signed = signed_photo_url_map(paths) if paths else {}
     cards = []
     photo_ids = []
@@ -29609,6 +29685,7 @@ def render_diary_emotion_gallery(trip_id, photos, trip=None, is_pending=False):
         pid = str(photo.get("id") or "")
         if not pid:
             continue
+        voice_path = photo_voice_note_storage_path(photo)
         cards.append(
             {
                 "id": pid,
@@ -29619,7 +29696,8 @@ def render_diary_emotion_gallery(trip_id, photos, trip=None, is_pending=False):
                 "tags": photo_ai_tags(photo)[:12],
                 "shared": photo_family_share_is_enabled(photo),
                 "favorite": photo_favorite_is_enabled(photo),
-                "has_voice": bool(photo_voice_note_storage_path(photo)),
+                "has_voice": bool(voice_path),
+                "voice_url": str(signed.get(voice_path) or "") if single_mode and not is_pending and voice_path else "",
             }
         )
         photo_ids.append(pid)
@@ -29629,7 +29707,7 @@ def render_diary_emotion_gallery(trip_id, photos, trip=None, is_pending=False):
         serial_key = f"diary_emotion_gallery_serial_{trip_id}_{'pending' if is_pending else 'saved'}"
         serial = int(st.session_state.get(serial_key) or 0)
         result = gallery_component(
-            data={"photos": cards, "single": single_mode, "allow_delete": True, "allow_emotion": True, "allow_share": True, "allow_voice": bool(single_mode and not is_pending), "allow_favorite": bool(single_mode and not is_pending), "carousel_key": f"diary_saved_{trip_id}", "mode_by_photo": st.session_state.get(f"_diary_icon_modes_{trip_id}") or {}, "family_key": current_family_key(), "member_key": current_member_key(), "pending_param": PENDING_EMOTION_QUERY_PARAM},
+            data={"photos": cards, "single": single_mode, "allow_delete": True, "allow_emotion": True, "allow_share": True, "allow_voice": bool(single_mode and not is_pending), "allow_favorite": bool(single_mode and not is_pending), "autoplay_voice": bool(single_mode and not is_pending), "carousel_key": f"diary_saved_{trip_id}", "mode_by_photo": st.session_state.get(f"_diary_icon_modes_{trip_id}") or {}, "family_key": current_family_key(), "member_key": current_member_key(), "pending_param": PENDING_EMOTION_QUERY_PARAM},
             key=f"diary_emotion_gallery_{trip_id}_{serial}_{_current_ui_refresh_epoch()}_{'single' if single_mode else 'grid'}_v365",
             on_delete_photo_id_change=lambda: None,
             on_share_photo_change=lambda: None,
