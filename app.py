@@ -30,9 +30,9 @@ from zoneinfo import ZoneInfo
 import streamlit as st
 
 # Freshly generated update: 2026-08-31 23:49 JST
-GENERATED_UPDATE_JST = "2026-09-10T12:50:00+09:00"
+GENERATED_UPDATE_JST = "2026-09-10T13:10:00+09:00"
 
-APP_BUILD = "v352"
+APP_BUILD = "v353"
 # v331: multi-tag photo selections can go straight to a music replay and be saved as a stable in-app movie snapshot.
 # v330: tag-review movies support one or multiple AI tags; selection is action-only.
 
@@ -3921,6 +3921,7 @@ def photo_selected_tag_values(photo):
 # Per-photo favorite marker (v352)
 # ============================================================
 PHOTO_FAVORITE_KEY = "_favorite"
+PHOTO_FAVORITE_TAG = "お気に入り"
 
 
 def photo_favorite_info(photo):
@@ -3940,7 +3941,7 @@ def photo_favorite_is_enabled(photo):
 
 
 def set_photo_favorite(photo_id, enabled=True):
-    """Persist one owned still photo as favorite without touching other metadata."""
+    """Persist favorite state and keep the searchable 「お気に入り」 tag in sync."""
     photo_id = str(photo_id or "").strip()
     if not photo_id:
         raise ValueError("お気に入りにする写真を確認できませんでした。")
@@ -3961,14 +3962,47 @@ def set_photo_favorite(photo_id, enabled=True):
 
     reflection = row.get("reflection_json") or {}
     reflection = dict(reflection) if isinstance(reflection, dict) else {}
+    updated_at = now_jst().isoformat()
     if enabled:
         reflection[PHOTO_FAVORITE_KEY] = {
             "version": 1,
             "favorite": True,
-            "updated_at": now_jst().isoformat(),
+            "updated_at": updated_at,
         }
     else:
         reflection.pop(PHOTO_FAVORITE_KEY, None)
+
+    # v353: 「お気に入り」 is a real searchable tag as well as a star marker.
+    # Preserve existing AI tags and their version/source. A favorite may have one
+    # additional manual tag beyond the normal AI-tag limit so no content tag is lost.
+    raw_ai = reflection.get("ai_tags")
+    ai_meta = dict(raw_ai) if isinstance(raw_ai, dict) else {}
+    raw_tags = ai_meta.get("tags") if isinstance(raw_ai, dict) else raw_ai
+    if isinstance(raw_tags, str):
+        raw_tags = [part.strip() for part in re.split(r"[,，、]", raw_tags) if part.strip()]
+    if not isinstance(raw_tags, (list, tuple)):
+        raw_tags = []
+    content_tags = [
+        tag for tag in normalize_ai_photo_tags(raw_tags, max_tags=AI_PHOTO_TAG_MAX_PER_PHOTO + 1)
+        if tag != PHOTO_FAVORITE_TAG
+    ][:AI_PHOTO_TAG_MAX_PER_PHOTO]
+    synced_tags = ([PHOTO_FAVORITE_TAG] + content_tags) if enabled else content_tags
+
+    if synced_tags:
+        if not ai_meta:
+            # Version 0 keeps an otherwise-untagged favorite eligible for normal AI tagging.
+            ai_meta = {"version": 0, "source": "manual_favorite_v353"}
+        ai_meta["tags"] = synced_tags
+        ai_meta["updated_at"] = updated_at
+        ai_meta["favorite_tag_synced"] = bool(enabled)
+        reflection["ai_tags"] = ai_meta
+    elif isinstance(raw_ai, dict) and any(key in ai_meta for key in ("version", "source")):
+        ai_meta["tags"] = []
+        ai_meta["updated_at"] = updated_at
+        ai_meta["favorite_tag_synced"] = False
+        reflection["ai_tags"] = ai_meta
+    else:
+        reflection.pop("ai_tags", None)
 
     (
         client.table(PHOTO_TABLE)
@@ -19027,8 +19061,18 @@ def photo_ai_tags(photo):
     if isinstance(raw, str):
         raw = [part.strip() for part in re.split(r"[,，、]", raw) if part.strip()]
     if not isinstance(raw, (list, tuple)):
-        return []
-    return normalize_ai_photo_tags(raw)
+        raw = []
+
+    # v353 compatibility: favorites saved in v352 already have _favorite but no
+    # physical favorite tag. Surface them immediately as 「お気に入り」 in every
+    # tag browser, while all new favorite toggles also persist the tag to ai_tags.
+    content_tags = [
+        tag for tag in normalize_ai_photo_tags(raw, max_tags=AI_PHOTO_TAG_MAX_PER_PHOTO + 1)
+        if tag != PHOTO_FAVORITE_TAG
+    ][:AI_PHOTO_TAG_MAX_PER_PHOTO]
+    if photo_favorite_is_enabled(photo):
+        return [PHOTO_FAVORITE_TAG] + content_tags
+    return content_tags
 
 
 def photo_ai_tag_version(photo):
@@ -19229,12 +19273,16 @@ def tag_untagged_photos_with_ai(photos, batch_size=AI_PHOTO_TAG_BATCH_SIZE, max_
             if existing and existing_version >= AI_PHOTO_TAG_VERSION:
                 continue
             if existing:
-                tags = normalize_ai_photo_tags(tags + [tag for tag in existing if tag not in tags])
+                existing_content = [tag for tag in existing if tag != PHOTO_FAVORITE_TAG]
+                tags = normalize_ai_photo_tags(tags + [tag for tag in existing_content if tag not in tags])
+            if photo_favorite_is_enabled(existing_photo):
+                tags = [PHOTO_FAVORITE_TAG] + [tag for tag in tags if tag != PHOTO_FAVORITE_TAG]
             reflection["ai_tags"] = {
                 "version": AI_PHOTO_TAG_VERSION,
                 "tags": tags,
                 "source": "vision_batch_4_v322_train_project",
                 "updated_at": now_jst().isoformat(),
+                "favorite_tag_synced": bool(photo_favorite_is_enabled(existing_photo)),
             }
             try:
                 (
