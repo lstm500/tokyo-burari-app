@@ -33,9 +33,10 @@ from zoneinfo import ZoneInfo
 import streamlit as st
 
 # Freshly generated update: 2026-08-31 23:49 JST
-GENERATED_UPDATE_JST = "2026-09-11T01:38:00+09:00"
+GENERATED_UPDATE_JST = "2026-09-11T02:05:00+09:00"
 
-APP_BUILD = "v392"
+APP_BUILD = "v393"
+# v393: replay uses the exact diary-visible normal/parenting tag state and flushes pending browser tags before review playback.
 # v392: replay always refreshes each photo's current feeling/tag; final destructive confirm buttons are red.
 # v391: voice-aware replay timing; duck music slightly, hold each voice photo until speech ends, show all photos once.
 # v389: improve light-tap responsiveness on mobile/Android WebView.
@@ -4330,6 +4331,29 @@ def photo_selected_tag_values(photo):
     return key, ""
 
 
+def photo_diary_visible_tag_payload(photo):
+    """Return exactly the tag state used by the saved-diary photo gallery."""
+    emotion_key, parenting_key = photo_selected_tag_values(photo)
+    if emotion_key:
+        meta = photo_emotion_meta(emotion_key)
+        mode = "normal"
+    elif parenting_key:
+        meta = photo_parenting_tag_meta(parenting_key)
+        mode = "parenting"
+    else:
+        meta = {"key": "", "label": "", "emoji": "", "color": ""}
+        mode = ""
+    return {
+        "emotion": str(emotion_key or ""),
+        "parenting": str(parenting_key or ""),
+        "mode": mode,
+        "key": str(meta.get("key") or ""),
+        "label": str(meta.get("label") or ""),
+        "emoji": str(meta.get("emoji") or ""),
+        "color": str(meta.get("color") or ""),
+    }
+
+
 # ============================================================
 # Per-photo favorite marker (v352)
 # ============================================================
@@ -5224,6 +5248,10 @@ def consume_pending_emotion_query():
 
         st.session_state["_emotion_query_processed_token"] = token
         st.session_state["_emotion_query_ack_token"] = token
+        # v393: the v159 URL mirror and v166 localStorage envelope carry the same token.
+        # Acknowledge both so the fallback bridge never writes the same diary tag twice.
+        st.session_state["_pending_tag_v166_processed_token"] = token
+        st.session_state["_pending_tag_v166_ack_token"] = token
         return True
     except Exception as exc:
         st.session_state["_emotion_sync_warning"] = (
@@ -5983,6 +6011,9 @@ def _apply_pending_tag_payload_v166(payload):
 
         st.session_state["_pending_tag_v166_processed_token"] = token
         st.session_state["_pending_tag_v166_ack_token"] = token
+        # Keep the URL mirror in lock-step with the localStorage bridge.
+        st.session_state["_emotion_query_processed_token"] = token
+        st.session_state["_emotion_query_ack_token"] = token
         return True
     except Exception as exc:
         st.session_state["_emotion_sync_warning"] = "選んだアイコンの保存を次の操作でもう一度試します。"
@@ -18168,47 +18199,85 @@ def _monthly_replay_photo_caption(photo, trip, index):
 
 
 def _refresh_replay_photo_current_state(photos, owner_member_key=None):
-    """Overlay the latest persisted reflection_json onto replay photos.
+    """Overlay the latest persisted photo state before building replay frames.
 
-    The saved movie decides which photos and their order. The border/emoji must instead
-    follow the feeling/tag currently attached to each photo.
+    Photo order still comes from the saved/current replay bundle.  Feeling display must
+    match the diary gallery, so old snapshots are resolved by photo id first and by the
+    original storage path when an id is missing.
     """
     base = [dict(photo) for photo in (photos or []) if isinstance(photo, dict)]
-    ids = []
-    seen = set()
-    for photo in base:
-        photo_id = str(photo.get("id") or "").strip()
-        if photo_id and photo_id not in seen:
-            seen.add(photo_id)
-            ids.append(photo_id)
-    if not ids:
+    ids = list(dict.fromkeys(
+        str(photo.get("id") or "").strip() for photo in base
+        if str(photo.get("id") or "").strip()
+    ))
+    paths = list(dict.fromkeys(
+        str(photo.get("storage_path") or "").strip() for photo in base
+        if str(photo.get("storage_path") or "").strip()
+    ))
+    if not ids and not paths:
         return base
 
     member_key = str(owner_member_key or current_member_key() or "").strip()
     if not member_key:
         return base
     latest_by_id = {}
+    latest_by_path = {}
     try:
         client = supabase_client()
         for offset in range(0, len(ids), 100):
             chunk = ids[offset:offset + 100]
+            if not chunk:
+                continue
             rows = (
                 client.table(PHOTO_TABLE)
-                .select("id,reflection_json")
+                .select("id,storage_path,reflection_json")
                 .eq("family_key", current_family_key())
                 .eq("member_key", member_key)
                 .in_("id", chunk)
                 .execute()
             ).data or []
             for row in rows:
-                if isinstance(row, dict) and row.get("id"):
+                if not isinstance(row, dict):
+                    continue
+                if row.get("id"):
                     latest_by_id[str(row.get("id"))] = row
+                if row.get("storage_path"):
+                    latest_by_path[str(row.get("storage_path"))] = row
+
+        unresolved_paths = [
+            path for path in paths if path not in latest_by_path
+        ]
+        for offset in range(0, len(unresolved_paths), 80):
+            chunk = unresolved_paths[offset:offset + 80]
+            if not chunk:
+                continue
+            rows = (
+                client.table(PHOTO_TABLE)
+                .select("id,storage_path,reflection_json")
+                .eq("family_key", current_family_key())
+                .eq("member_key", member_key)
+                .in_("storage_path", chunk)
+                .execute()
+            ).data or []
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                if row.get("id"):
+                    latest_by_id[str(row.get("id"))] = row
+                if row.get("storage_path"):
+                    latest_by_path[str(row.get("storage_path"))] = row
     except Exception:
         return base
 
     for photo in base:
-        latest = latest_by_id.get(str(photo.get("id") or ""))
-        if latest and isinstance(latest.get("reflection_json"), dict):
+        photo_id = str(photo.get("id") or "").strip()
+        storage_path = str(photo.get("storage_path") or "").strip()
+        latest = latest_by_id.get(photo_id) or latest_by_path.get(storage_path)
+        if not latest:
+            continue
+        if latest.get("id") and not photo_id:
+            photo["id"] = str(latest.get("id"))
+        if isinstance(latest.get("reflection_json"), dict):
             photo["reflection_json"] = latest.get("reflection_json")
     return base
 
@@ -18235,7 +18304,7 @@ def build_monthly_replay_photo_items(bundle, limit=None):
         if not url:
             continue
         trip = trip_map.get(str(photo.get("trip_id")), {})
-        emotion = photo_selected_tag_meta(photo)
+        visible_tag = photo_diary_visible_tag_payload(photo)
         voice_meta = photo_voice_note_meta(photo)
         voice_path = str(voice_meta.get("storage_path") or "").strip()
         items.append({
@@ -18244,10 +18313,13 @@ def build_monthly_replay_photo_items(bundle, limit=None):
             "captured_at": str(photo.get("captured_at") or ""),
             "url": url,
             "caption": _monthly_replay_photo_caption(photo, trip, idx),
-            "emotion": str(emotion.get("key") or ""),
-            "emotion_label": str(emotion.get("label") or ""),
-            "emotion_emoji": str(emotion.get("emoji") or ""),
-            "emotion_color": str(emotion.get("color") or ""),
+            # Keep the same two mutually-exclusive keys the diary gallery receives.
+            "emotion": str(visible_tag.get("emotion") or ""),
+            "parenting": str(visible_tag.get("parenting") or ""),
+            "emotion_mode": str(visible_tag.get("mode") or ""),
+            "emotion_label": str(visible_tag.get("label") or ""),
+            "emotion_emoji": str(visible_tag.get("emoji") or ""),
+            "emotion_color": str(visible_tag.get("color") or ""),
             "favorite": photo_favorite_is_enabled(photo),
             "has_voice": bool(voice_path),
             "voice_url": str(voice_signed_map.get(voice_path) or ""),
@@ -18706,16 +18778,18 @@ def build_monthly_family_share_photo_snapshot(bundle, limit=None):
         if not storage_path:
             continue
         trip = trip_map.get(str(photo.get("trip_id")), {})
-        emotion = photo_selected_tag_meta(photo)
+        visible_tag = photo_diary_visible_tag_payload(photo)
         voice_meta = photo_voice_note_meta(photo)
         snapshots.append({
             "photo_id": str(photo.get("id") or ""),
             "storage_path": storage_path,
             "caption": _monthly_replay_photo_caption(photo, trip, idx),
-            "emotion": str(emotion.get("key") or ""),
-            "emotion_label": str(emotion.get("label") or ""),
-            "emotion_emoji": str(emotion.get("emoji") or ""),
-            "emotion_color": str(emotion.get("color") or ""),
+            "emotion": str(visible_tag.get("emotion") or ""),
+            "parenting": str(visible_tag.get("parenting") or ""),
+            "emotion_mode": str(visible_tag.get("mode") or ""),
+            "emotion_label": str(visible_tag.get("label") or ""),
+            "emotion_emoji": str(visible_tag.get("emoji") or ""),
+            "emotion_color": str(visible_tag.get("color") or ""),
             "voice_storage_path": str(voice_meta.get("storage_path") or ""),
             "voice_transcript": str(voice_meta.get("transcript") or ""),
         })
@@ -18792,11 +18866,13 @@ def build_family_shared_replay_photo_items(share):
                 live = latest_by_id.get(pid) or latest_by_path.get(path)
                 if not live:
                     continue
-                emotion = photo_selected_tag_meta(live)
-                snap["emotion"] = str(emotion.get("key") or "")
-                snap["emotion_label"] = str(emotion.get("label") or "")
-                snap["emotion_emoji"] = str(emotion.get("emoji") or "")
-                snap["emotion_color"] = str(emotion.get("color") or "")
+                visible_tag = photo_diary_visible_tag_payload(live)
+                snap["emotion"] = str(visible_tag.get("emotion") or "")
+                snap["parenting"] = str(visible_tag.get("parenting") or "")
+                snap["emotion_mode"] = str(visible_tag.get("mode") or "")
+                snap["emotion_label"] = str(visible_tag.get("label") or "")
+                snap["emotion_emoji"] = str(visible_tag.get("emoji") or "")
+                snap["emotion_color"] = str(visible_tag.get("color") or "")
         except Exception:
             pass
 
@@ -18834,6 +18910,8 @@ def build_family_shared_replay_photo_items(share):
             "url": url,
             "caption": str(snap.get("caption") or ""),
             "emotion": str(snap.get("emotion") or ""),
+            "parenting": str(snap.get("parenting") or ""),
+            "emotion_mode": str(snap.get("emotion_mode") or ""),
             "emotion_label": str(snap.get("emotion_label") or ""),
             "emotion_emoji": str(snap.get("emotion_emoji") or ""),
             "emotion_color": str(snap.get("emotion_color") or ""),
@@ -20177,6 +20255,16 @@ def render_monthly_replay_player(period_label, review, playback, photo_items, cu
     replay_alt = "タグ別の振り返り写真" if is_tag_review else "期間の振り返り写真"
     first_caption = html.escape(str(photo_items[0].get("caption") or "")) if photo_items else ""
     payload = json.dumps(photo_items, ensure_ascii=False)
+    # v393: generate replay visual metadata from the same dictionaries as the diary
+    # feeling buttons. This prevents the two UIs from drifting when labels/icons evolve.
+    replay_normal_meta = json.dumps(
+        {key: {"label": value.get("label", ""), "emoji": value.get("emoji", ""), "color": value.get("color", "")} for key, value in PHOTO_EMOTIONS.items()},
+        ensure_ascii=False,
+    )
+    replay_parenting_meta = json.dumps(
+        {key: {"label": value.get("label", ""), "emoji": value.get("emoji", ""), "color": value.get("color", "")} for key, value in PARENTING_TAGS.items()},
+        ensure_ascii=False,
+    )
     component_html = f"""
     <style>
       .burari-replay-wrap {{
@@ -20431,21 +20519,9 @@ def render_monthly_replay_player(period_label, review, playback, photo_items, cu
       const burariAgainButton = document.getElementById('burariReplayAgain');
       const burariVoiceButton = document.getElementById('burariReplayVoiceButton');
       const burariDefaultFrameColor = 'rgba(255,255,255,.16)';
-      const burariEmotionColors = {{
-        cozy: '#F3B6A0',
-        joy: '#F2C94C',
-        surprise: '#9B7BD3',
-        anger: '#E56B6F',
-        sadness: '#6C9BD2',
-        frustration: '#A66A8A',
-        effort: '#E6B84A',
-        challenge: '#F2994A',
-        discovery: '#9BC53D',
-        kindness: '#E57373',
-        together: '#4DB6AC',
-        tears: '#6C9BD2',
-      }};
-      const burariEmotionIcons = {{ cozy: '🥰', joy: '😊', surprise: '😲', anger: '😠', sadness: '😢', frustration: '😣', effort: '⭐', challenge: '💪', discovery: '💡', kindness: '❤️', together: '🤝', tears: '😭' }};
+      // Exact same definitions as the diary's 通常 / こどもーど buttons.
+      const burariNormalEmotionMeta = {replay_normal_meta};
+      const burariParentingEmotionMeta = {replay_parenting_meta};
 
       function burariSetPlayerControlsReady(ready) {{
         if (burariStartButton) {{
@@ -20552,16 +20628,28 @@ def render_monthly_replay_player(period_label, review, playback, photo_items, cu
           burariImg.src = nextUrl;
           burariImg.dataset.burariSlideUrl = nextUrl;
         }}
-        const emotionKey = String(item.emotion || '');
-        const emotionColor = burariEmotionColors[emotionKey] || String(item.emotion_color || '') || burariDefaultFrameColor;
-        const emotionIcon = burariEmotionIcons[emotionKey] || String(item.emotion_emoji || '');
-        if (burariStage) burariStage.style.borderColor = emotionKey ? emotionColor : burariDefaultFrameColor;
+        const rawEmotionKey = String(item.emotion || '');
+        const rawParentingKey = String(item.parenting || '');
+        const normalKey = Object.prototype.hasOwnProperty.call(burariNormalEmotionMeta, rawEmotionKey) ? rawEmotionKey : '';
+        // Backward compatibility: old replay/share snapshots stored a こどもーど key in
+        // the generic `emotion` field. New payloads keep the same split as the diary.
+        const parentingKey = Object.prototype.hasOwnProperty.call(burariParentingEmotionMeta, rawParentingKey)
+          ? rawParentingKey
+          : (!normalKey && Object.prototype.hasOwnProperty.call(burariParentingEmotionMeta, rawEmotionKey) ? rawEmotionKey : '');
+        const visibleKey = normalKey || parentingKey;
+        const visibleMeta = normalKey
+          ? (burariNormalEmotionMeta[normalKey] || null)
+          : (parentingKey ? (burariParentingEmotionMeta[parentingKey] || null) : null);
+        const emotionColor = String(visibleMeta?.color || item.emotion_color || '') || burariDefaultFrameColor;
+        const emotionIcon = String(visibleMeta?.emoji || item.emotion_emoji || '');
+        const emotionLabel = String(visibleMeta?.label || item.emotion_label || '');
+        if (burariStage) burariStage.style.borderColor = visibleKey ? emotionColor : burariDefaultFrameColor;
         if (burariEmotion) {{
           burariEmotion.textContent = emotionIcon;
           burariEmotion.style.display = emotionIcon ? 'flex' : 'none';
-          burariEmotion.style.borderColor = emotionKey ? emotionColor : 'rgba(255,255,255,.96)';
+          burariEmotion.style.borderColor = visibleKey ? emotionColor : 'rgba(255,255,255,.96)';
           burariEmotion.setAttribute('aria-hidden', emotionIcon ? 'false' : 'true');
-          burariEmotion.title = emotionIcon ? `${{emotionIcon}} ${{item.emotion_label || ''}}` : '';
+          burariEmotion.title = emotionIcon ? `${{emotionIcon}} ${{emotionLabel}}` : '';
         }}
         // Voice is optional metadata. A voice UI failure must never stop the slideshow.
         try {{
@@ -38098,6 +38186,16 @@ restore_recent_camera_session()
 # older tab open. v167 mirrors browser-only choices into this URL payload with
 # history.replaceState, so the next real app action can persist them without any tap-time communication.
 consume_pending_emotion_query()
+
+# v393: diary feeling taps are intentionally browser-local until a real app action.
+# The v166 bridge is the reliable fallback when a WebView does not expose the URL mirror
+# to Streamlit. Flush it before review/movie pages build their photo payloads.
+try:
+    _pending_tag_sync_page_v393 = str(st.session_state.get("main_page") or "home")
+    if _pending_tag_sync_page_v393 in {"diary", "moments", "review", "review_monthly", "review_tag", "review_history"}:
+        sync_pending_tags_from_browser_v166()
+except Exception:
+    pass
 
 # v146: resolve browser Back/Forward before drawing any visible page.
 # Previously the bridge ran after page rendering, so a mobile Back event could first
