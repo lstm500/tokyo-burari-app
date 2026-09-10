@@ -32,7 +32,7 @@ import streamlit as st
 # Freshly generated update: 2026-08-31 23:49 JST
 GENERATED_UPDATE_JST = "2026-09-10T09:05:00+09:00"
 
-APP_BUILD = "v347"
+APP_BUILD = "v348"
 # v331: multi-tag photo selections can go straight to a music replay and be saved as a stable in-app movie snapshot.
 # v330: tag-review movies support one or multiple AI tags; selection is action-only.
 
@@ -17386,7 +17386,13 @@ def _replay_download_file_name(period_label):
 
 
 def render_replay_download_controls(period_label, playback, photo_items, display_ms, duration_seconds):
-    """Render explicit-action MP4 export controls without doing background work."""
+    """One-tap deferred MP4 generation + download.
+
+    Streamlit 1.63 supports a callable as download_button(data=...). The callable is
+    executed only after the user taps the button, so the page does not pre-render a
+    movie and there is no separate "create" step. On Android, MainActivity v348 handles
+    the resulting WebView download with DownloadManager and writes it to Downloads.
+    """
     playback = playback if isinstance(playback, dict) else {}
     identity_parts = [
         str(period_label or ""),
@@ -17395,46 +17401,36 @@ def render_replay_download_controls(period_label, playback, photo_items, display
         str(playback.get("end_seconds") or ""),
         str(len(photo_items or [])),
     ]
+    export_items = []
     for item in (photo_items or []):
         if isinstance(item, dict):
+            copied = dict(item)
+            # Deferred download generation runs outside the Streamlit ScriptRunContext.
+            # Use the already-created signed HTTPS URL instead of calling Supabase/
+            # Streamlit cache helpers from that worker thread.
+            copied["storage_path"] = ""
+            export_items.append(copied)
             identity_parts.append(str(item.get("photo_id") or item.get("storage_path") or item.get("url") or "")[:220])
     widget_id = hashlib.sha1("|".join(identity_parts).encode("utf-8")).hexdigest()[:16]
-    # Keep only the latest generated MP4 in session memory. Several long movies should
-    # not accumulate tens of MB each while the app stays open.
-    state_key = "_replay_export_latest_mp4_v347"
+    export_display_ms = int(display_ms or 3000)
+    export_duration_seconds = float(duration_seconds or 1)
+
+    def build_movie_for_download():
+        return build_replay_visual_mp4(export_items, export_display_ms, export_duration_seconds)
 
     st.markdown("#### ⬇ スマホに保存")
-    st.caption("保存用MP4は、ボタンを押した時だけ作成します。普段のムービー再生や画面操作は重くしません。")
-    if st.button(
-        "⬇ スマホ保存用MP4を作る",
+    st.caption("下のボタン1つでMP4を作成し、そのまま保存を開始します。作成には数秒〜数十秒かかることがあります。")
+    st.download_button(
+        "⬇ MP4を作成してスマホに保存",
+        data=build_movie_for_download,
+        file_name=_replay_download_file_name(period_label),
+        mime="video/mp4",
+        type="primary",
         use_container_width=True,
-        key=f"replay_export_build_{widget_id}",
-    ):
-        try:
-            with st.spinner("スマホ保存用の縦型MP4を作っています…"):
-                movie_bytes = build_replay_visual_mp4(photo_items, display_ms, duration_seconds)
-            st.session_state[state_key] = {
-                "widget_id": widget_id,
-                "bytes": movie_bytes,
-                "name": _replay_download_file_name(period_label),
-            }
-        except Exception as exc:
-            st.session_state.pop(state_key, None)
-            st.error("スマホ保存用の動画を作成できませんでした。")
-            with st.expander("保護者向け詳細"):
-                st.code(str(exc))
-
-    export = st.session_state.get(state_key)
-    if isinstance(export, dict) and export.get("widget_id") == widget_id and export.get("bytes"):
-        st.download_button(
-            "⬇ MP4をスマホに保存",
-            data=export["bytes"],
-            file_name=str(export.get("name") or "burari_replay.mp4"),
-            mime="video/mp4",
-            use_container_width=True,
-            key=f"replay_export_download_{widget_id}",
-        )
-        st.caption("YouTubeプレーヤーの音声はMP4へ直接取り出さないため、保存動画は映像のみです。音楽入り保存は、利用できる音源ファイルを登録する方式なら追加できます。")
+        on_click="ignore",
+        key=f"replay_export_one_tap_{widget_id}",
+    )
+    st.caption("Androidアプリ版では端末の「ダウンロード」フォルダへ保存します。YouTube音声はMP4には含まれません。")
 
 
 
