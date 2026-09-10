@@ -32,9 +32,9 @@ from zoneinfo import ZoneInfo
 import streamlit as st
 
 # Freshly generated update: 2026-08-31 23:49 JST
-GENERATED_UPDATE_JST = "2026-09-10T23:55:00+09:00"
+GENERATED_UPDATE_JST = "2026-09-10T23:59:00+09:00"
 
-APP_BUILD = "v379"
+APP_BUILD = "v381"
 # v331: multi-tag photo selections can go straight to a music replay and be saved as a stable in-app movie snapshot.
 # v330: tag-review movies support one or multiple AI tags; selection is action-only.
 
@@ -1829,6 +1829,10 @@ export default function(component) {
   let recordingCandidateBusy = false;
   let recordingCandidateFrames = [];
   let recordingCancelled = false;
+  // v381: Android WebView can return a live microphone track whose actual capture
+  // level is extremely low. Keep a per-recording Web Audio gain/compressor graph so
+  // the encoded video receives a usable speech level without monitoring to speakers.
+  let recordingAudioPipeline = null;
   // Good-moments search is a separate review action. The button remains hidden
   // briefly after recording stops, so the stop gesture cannot fall through to it.
   let videoReviewGeneration = 0;
@@ -2027,6 +2031,7 @@ export default function(component) {
     mediaRecorder = null;
     recordedChunks = [];
     recordingStartedAt = 0;
+    void closeRecordingAudioPipeline();
     setRecordingUi(false);
   };
 
@@ -2126,10 +2131,14 @@ export default function(component) {
         return await navigator.mediaDevices.getUserMedia({
           video: constraints,
           audio: {
-            echoCancellation: { ideal: true },
-            noiseSuppression: { ideal: true },
+            channelCount: { ideal: 1 },
+            sampleRate: { ideal: 48000 },
             autoGainControl: { ideal: true },
-            channelCount: { ideal: 1 }
+            // The camera preview is muted, so aggressive echo/noise processing is not
+            // needed here. On some Android WebView builds these processors suppress
+            // distant/quiet speech too strongly before MediaRecorder sees the samples.
+            noiseSuppression: { ideal: false },
+            echoCancellation: { ideal: false }
           }
         });
       };
@@ -2793,6 +2802,112 @@ export default function(component) {
     return '';
   };
 
+  const closeRecordingAudioPipeline = async () => {
+    const pipeline = recordingAudioPipeline;
+    recordingAudioPipeline = null;
+    if (!pipeline) return;
+    try { if (pipeline.timer) clearInterval(pipeline.timer); } catch (_) {}
+    try { pipeline.source && pipeline.source.disconnect(); } catch (_) {}
+    try { pipeline.highpass && pipeline.highpass.disconnect(); } catch (_) {}
+    try { pipeline.analyser && pipeline.analyser.disconnect(); } catch (_) {}
+    try { pipeline.gainNode && pipeline.gainNode.disconnect(); } catch (_) {}
+    try { pipeline.compressor && pipeline.compressor.disconnect(); } catch (_) {}
+    try {
+      if (pipeline.destination && pipeline.destination.stream) {
+        pipeline.destination.stream.getTracks().forEach((track) => { try { track.stop(); } catch (_) {} });
+      }
+    } catch (_) {}
+    if (pipeline.audioContext) {
+      try { await pipeline.audioContext.close(); } catch (_) {}
+    }
+  };
+
+  const buildVideoRecorderStream = async (hasAudio) => {
+    const videoTracks = stream && stream.getVideoTracks
+      ? stream.getVideoTracks().filter((track) => track.readyState === 'live')
+      : [];
+    if (!hasAudio) return new MediaStream(videoTracks);
+
+    const rawAudioTrack = stream && stream.getAudioTracks
+      ? stream.getAudioTracks().find((track) => track.readyState === 'live' && track.enabled !== false)
+      : null;
+    if (!rawAudioTrack) return new MediaStream(videoTracks);
+
+    // `autoGainControl: ideal` is only a request and may be ignored by WebView/device.
+    // Process the actual samples before encoding, using the same far-field strategy as
+    // the app's standalone voice recorder: high-pass -> adaptive gain -> compressor.
+    const AudioContextCtor = window.AudioContext || window.webkitAudioContext;
+    if (!AudioContextCtor) return new MediaStream([...videoTracks, rawAudioTrack]);
+
+    try {
+      await closeRecordingAudioPipeline();
+      let audioContext;
+      try { audioContext = new AudioContextCtor({ sampleRate: 48000 }); }
+      catch (_) { audioContext = new AudioContextCtor(); }
+      await audioContext.resume();
+
+      const sourceStream = new MediaStream([rawAudioTrack]);
+      const source = audioContext.createMediaStreamSource(sourceStream);
+      const highpass = audioContext.createBiquadFilter();
+      highpass.type = 'highpass';
+      highpass.frequency.value = 80;
+      highpass.Q.value = 0.7;
+
+      const analyser = audioContext.createAnalyser();
+      analyser.fftSize = 2048;
+      analyser.smoothingTimeConstant = 0.65;
+
+      const gainNode = audioContext.createGain();
+      gainNode.gain.value = 2.8;
+
+      const compressor = audioContext.createDynamicsCompressor();
+      compressor.threshold.value = -18;
+      compressor.knee.value = 24;
+      compressor.ratio.value = 4;
+      compressor.attack.value = 0.003;
+      compressor.release.value = 0.25;
+
+      const destination = audioContext.createMediaStreamDestination();
+      source.connect(highpass);
+      highpass.connect(analyser);
+      highpass.connect(gainNode);
+      gainNode.connect(compressor);
+      compressor.connect(destination);
+      // Intentionally do NOT connect to audioContext.destination: recording only,
+      // with no speaker monitoring/feedback.
+
+      const values = new Float32Array(analyser.fftSize);
+      const timer = setInterval(() => {
+        try {
+          analyser.getFloatTimeDomainData(values);
+          let sum = 0;
+          for (let i = 0; i < values.length; i += 1) sum += values[i] * values[i];
+          const rms = Math.sqrt(sum / Math.max(1, values.length));
+          let targetGain = 1.35;
+          if (rms < 0.006) targetGain = 4.8;
+          else if (rms < 0.012) targetGain = 4.1;
+          else if (rms < 0.025) targetGain = 3.2;
+          else if (rms < 0.05) targetGain = 2.2;
+          gainNode.gain.setTargetAtTime(targetGain, audioContext.currentTime, 0.12);
+        } catch (_) {}
+      }, 100);
+
+      recordingAudioPipeline = {
+        audioContext, source, highpass, analyser, gainNode, compressor, destination, timer
+      };
+      const processedTrack = destination.stream.getAudioTracks()[0];
+      if (!processedTrack || processedTrack.readyState !== 'live') {
+        await closeRecordingAudioPipeline();
+        return new MediaStream([...videoTracks, rawAudioTrack]);
+      }
+      return new MediaStream([...videoTracks, processedTrack]);
+    } catch (err) {
+      console.warn('video audio gain pipeline unavailable; using raw microphone', err);
+      await closeRecordingAudioPipeline();
+      return new MediaStream([...videoTracks, rawAudioTrack]);
+    }
+  };
+
   const stopVideoRecording = () => {
     clearRecordingTimers();
     if (mediaRecorder && mediaRecorder.state !== 'inactive') {
@@ -2838,20 +2953,13 @@ export default function(component) {
       };
       if (hasAudio) options.audioBitsPerSecond = 96000;
       if (mimeType) options.mimeType = mimeType;
+      // v381: MediaRecorder receives a processed audio track. This changes actual sample
+      // amplitude; audioBitsPerSecond only controls encoding rate and cannot make a quiet
+      // microphone louder.
+      const recorderStream = await buildVideoRecorderStream(hasAudio);
       try {
-        // Snapshot the live tracks into a fresh stream at recorder construction time.
-        // Chromium/WebView is less reliable when a track is appended to a stream that
-        // was already attached to a playing <video> element.
-        const recorderStream = new MediaStream([
-          ...(stream.getVideoTracks ? stream.getVideoTracks().filter((track) => track.readyState === 'live') : []),
-          ...(stream.getAudioTracks ? stream.getAudioTracks().filter((track) => track.readyState === 'live' && track.enabled !== false) : [])
-        ]);
         mediaRecorder = new MediaRecorder(recorderStream, options);
       } catch (_) {
-        const recorderStream = new MediaStream([
-          ...(stream.getVideoTracks ? stream.getVideoTracks().filter((track) => track.readyState === 'live') : []),
-          ...(stream.getAudioTracks ? stream.getAudioTracks().filter((track) => track.readyState === 'live' && track.enabled !== false) : [])
-        ]);
         mediaRecorder = new MediaRecorder(recorderStream, mimeType ? { mimeType } : undefined);
       }
       mediaRecorder.ondataavailable = (event) => {
@@ -2860,6 +2968,7 @@ export default function(component) {
       mediaRecorder.onerror = (event) => {
         console.error(event);
         clearRecordingTimers();
+        void closeRecordingAudioPipeline();
         setRecordingUi(false);
         const message = '動画の録画中にエラーが発生しました。もう一度お試しください。';
         setStatus(message);
@@ -2881,6 +2990,8 @@ export default function(component) {
           const finalType = (recorder && recorder.mimeType) || mimeType || 'video/webm';
           const blob = new Blob(recordedChunks, { type: finalType });
           recordedChunks = [];
+          // Recorder has emitted its final data; the processing graph can now be released.
+          await closeRecordingAudioPipeline();
           if (!blob.size) throw new Error('recorded video is empty');
           if (videoMaxBytes > 0 && blob.size > videoMaxBytes) {
             const sizeMb = (blob.size / (1024 * 1024)).toFixed(1);
@@ -2979,6 +3090,7 @@ export default function(component) {
           setStatus(message);
           setTriggerValue('camera_error', { name: 'VideoPrepareError', message, detail });
         } finally {
+          await closeRecordingAudioPipeline();
           recordingStartedAt = 0;
           recordingLocationPromise = null;
         }
@@ -2995,6 +3107,7 @@ export default function(component) {
       setStatus(hasAudio ? '' : '音声なしで動画を録画しています。');
     } catch (err) {
       console.error(err);
+      await closeRecordingAudioPipeline();
       setRecordingUi(false);
       const message = 'この端末では動画録画を開始できませんでした。ブラウザを最新版にしてください。';
       setStatus(message);
@@ -3440,7 +3553,7 @@ export default function(component) {
 }
 """
 
-LIVE_CAMERA_COMPONENT_BUILD = "v237"
+LIVE_CAMERA_COMPONENT_BUILD = "v238"
 
 try:
     live_camera_component = st.components.v2.component(
@@ -15851,15 +15964,11 @@ def confirm_diary_delete_dialog(trip_id, photo_count):
     photos = list_trip_photos(trip_id)
     diary = get_diary_for_trip(trip_id)
     title = diary_display_title(diary, trip, photos=photos)
-    st.write(f"**{title}** を削除します。")
-    st.warning(
-        f"この日の記録、写真 {photo_count}枚、写真につけた気持ちの記録をすべて削除します。"
-        "日記が未完成の場合は、途中までの内容も削除されます。この操作は元に戻せません。"
-    )
-    delete_col, cancel_col = st.columns(2)
+    st.markdown(f"**{title}**")
+    delete_col, cancel_col = st.columns([1.35, 0.85], gap="small")
     with delete_col:
         if st.button(
-            "削除する",
+            "日記を削除",
             type="primary",
             use_container_width=True,
             key=f"dialog_delete_yes_{trip_id}",
@@ -15876,7 +15985,7 @@ def confirm_diary_delete_dialog(trip_id, photo_count):
                     st.code(str(exc))
     with cancel_col:
         if st.button(
-            "キャンセル",
+            "やめる",
             use_container_width=True,
             key=f"dialog_delete_no_{trip_id}",
         ):
@@ -16121,21 +16230,18 @@ def render_video_delete_controls(video_photo, key_prefix):
 
     if not st.session_state.get(state_key):
         if st.button(
-            "この動画を削除する",
+            "🗑 この動画を削除",
             use_container_width=True,
             key=f"video_delete_begin_{safe_prefix}_{photo_id}",
         ):
             st.session_state[state_key] = True
+            st.rerun()
 
     if st.session_state.get(state_key):
-        st.warning(
-            "この動画を削除します。元動画、代表画像、AIの候補・未保存の切り取り画像も削除されます。"
-            "すでに日記へ送った写真は残ります。この操作は元に戻せません。"
-        )
-        delete_col, cancel_col = st.columns(2, gap="small")
+        delete_col, cancel_col = st.columns([1.35, 0.85], gap="small")
         with delete_col:
             if st.button(
-                "削除を実行",
+                "動画を削除",
                 type="primary",
                 use_container_width=True,
                 key=f"video_delete_yes_{safe_prefix}_{photo_id}",
@@ -16150,7 +16256,7 @@ def render_video_delete_controls(video_photo, key_prefix):
                         st.code(str(exc))
         with cancel_col:
             if st.button(
-                "キャンセル",
+                "やめる",
                 use_container_width=True,
                 key=f"video_delete_no_{safe_prefix}_{photo_id}",
             ):
@@ -16171,14 +16277,10 @@ def show_video_delete_dialog(video_photo):
         return
 
     st.markdown(f"**{html.escape(_moments_video_title(video_photo))}**")
-    st.warning(
-        "この動画を削除します。元動画、代表画像、AIの候補・未保存の切り取り画像も削除されます。"
-        "すでに日記へ残した静止画は削除しません。この操作は元に戻せません。"
-    )
-    yes_col, no_col = st.columns(2, gap="small")
+    yes_col, no_col = st.columns([1.35, 0.85], gap="small")
     with yes_col:
         if st.button(
-            "削除する",
+            "動画を削除",
             type="primary",
             use_container_width=True,
             key=f"video_grid_delete_yes_{photo_id}",
@@ -16192,7 +16294,7 @@ def show_video_delete_dialog(video_photo):
                     st.code(str(exc))
     with no_col:
         if st.button(
-            "キャンセル",
+            "やめる",
             use_container_width=True,
             key=f"video_grid_delete_no_{photo_id}",
         ):
@@ -16351,30 +16453,11 @@ def confirm_photo_delete_dialog(trip_id, photo_id, photos=None, is_pending=False
         return
 
     photo_number = photo_ids.index(photo_id) + 1
-    st.write(f"**写真 {photo_number} / {len(photo_ids)}** を削除します。")
-    if len(photo_ids) == 1:
-        if is_pending:
-            st.warning(
-                "この画像は、まだ日記になっていないこのぶらり旅の最後の1枚です。"
-                "削除すると写真が0枚になるため、この未日記の記録も自動的に削除します。"
-            )
-        else:
-            st.warning(
-                "この画像はこの日記の最後の1枚です。画像とコメントを削除すると、"
-                "画像が0枚になるため、この日記も自動的に削除します。"
-            )
-    else:
-        if is_pending:
-            st.warning("この画像と、この画像について話したコメントを削除します。")
-        else:
-            st.warning(
-                "この画像と、この画像について話したコメントを削除します。"
-                "保存済みの日記本文そのものは残ります。"
-            )
-    delete_col, cancel_col = st.columns(2)
+    st.markdown(f"**写真 {photo_number} / {len(photo_ids)}**")
+    delete_col, cancel_col = st.columns([1.35, 0.85], gap="small")
     with delete_col:
         if st.button(
-            "削除する",
+            "画像を削除",
             type="primary",
             use_container_width=True,
             key=f"dialog_photo_delete_yes_{trip_id}_{photo_id}",
@@ -16401,7 +16484,7 @@ def confirm_photo_delete_dialog(trip_id, photo_id, photos=None, is_pending=False
                     st.code(str(exc))
     with cancel_col:
         if st.button(
-            "キャンセル",
+            "やめる",
             use_container_width=True,
             key=f"dialog_photo_delete_no_{trip_id}_{photo_id}",
         ):
@@ -18866,6 +18949,32 @@ _REPLAY_MOVIE_LIBRARY_CSS_V357 = r"""
 .replay-movie-action-v357.delete {
   border-color: rgba(194, 82, 82, .25);
 }
+.replay-movie-delete-confirm-v380 {
+  display: grid;
+  grid-template-columns: 1.35fr .85fr;
+  gap: 6px;
+  margin-top: 6px;
+}
+.replay-movie-delete-confirm-v380 .confirm-delete {
+  min-height: 34px;
+  border-radius: 10px;
+  border: 0;
+  font: inherit;
+  font-size: 11.5px;
+  font-weight: 800;
+  cursor: pointer;
+}
+.replay-movie-delete-confirm-v380 .cancel-delete {
+  min-height: 34px;
+  border-radius: 10px;
+  border: 1px solid rgba(120, 120, 120, .22);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 11.5px;
+  font-weight: 700;
+  cursor: pointer;
+}
 .replay-movie-more-v357 {
   width: 100%;
   min-height: 34px;
@@ -18895,6 +19004,7 @@ export default function(component) {
   const pageSize = Math.max(6, Number(data?.page_size || 12));
   let visibleCount = Math.min(pageSize, movies.length);
   let disposed = false;
+  let pendingDeleteRowId = '';
 
   const send = (action, rowId) => {
     if (disposed || !rowId) return;
@@ -18916,8 +19026,9 @@ export default function(component) {
       event.stopPropagation();
       if (el.disabled) return;
       if (action === 'delete') {
-        const ok = globalThis.confirm('このムービーを削除しますか？\n元の写真・日記・AIコメント・保存済み音楽は削除されません。');
-        if (!ok) return;
+        pendingDeleteRowId = String(rowId);
+        render();
+        return;
       }
       el.disabled = true;
       send(action, rowId);
@@ -18960,6 +19071,36 @@ export default function(component) {
       );
 
       card.append(titleRow, meta, actions);
+
+      if (pendingDeleteRowId === rowId) {
+        const confirmRow = document.createElement('div');
+        confirmRow.className = 'replay-movie-delete-confirm-v380';
+
+        const confirmDelete = document.createElement('button');
+        confirmDelete.type = 'button';
+        confirmDelete.className = 'confirm-delete';
+        confirmDelete.textContent = 'ムービーを削除';
+        confirmDelete.addEventListener('click', (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          confirmDelete.disabled = true;
+          send('delete', rowId);
+        });
+
+        const cancelDelete = document.createElement('button');
+        cancelDelete.type = 'button';
+        cancelDelete.className = 'cancel-delete';
+        cancelDelete.textContent = 'やめる';
+        cancelDelete.addEventListener('click', (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          pendingDeleteRowId = '';
+          render();
+        });
+
+        confirmRow.append(confirmDelete, cancelDelete);
+        card.appendChild(confirmRow);
+      }
       fragment.appendChild(card);
     });
 
@@ -27789,12 +27930,7 @@ def _render_moments_picker(photo, index, view_mode=None, next_video_action=None)
                 st.rerun()
 
         if st.session_state.get(delete_without_keep_key):
-            st.warning(
-                "候補写真を1枚も残さず、この元動画も削除します。"
-                "すでに別操作で日記へ保存済みの静止画がある場合、その静止画は残ります。"
-                "この操作は元に戻せません。"
-            )
-            delete_col, cancel_col = st.columns(2, gap="small")
+            delete_col, cancel_col = st.columns([1.35, 0.85], gap="small")
             with delete_col:
                 if st.button(
                     "動画を削除する",
@@ -27817,7 +27953,7 @@ def _render_moments_picker(photo, index, view_mode=None, next_video_action=None)
                             st.code(str(exc))
             with cancel_col:
                 if st.button(
-                    "キャンセル",
+                    "やめる",
                     use_container_width=True,
                     key=f"moments_delete_without_keep_no_{video_id}_{round_number}",
                 ):
@@ -27918,8 +28054,7 @@ def _render_video_storage_repair_panel(db_video_count):
 
         confirm_key = "_confirm_remove_orphan_videos"
         if st.session_state.get(confirm_key):
-            st.error(f"DB未登録の孤立動画 {orphan_count}本をSupabase Storageから削除します。")
-            delete_col, cancel_col = st.columns(2)
+            delete_col, cancel_col = st.columns([1.35, 0.85], gap="small")
             with delete_col:
                 if st.button("孤立動画を削除する", type="primary", use_container_width=True, key="remove_orphan_videos_execute"):
                     try:
@@ -27933,7 +28068,7 @@ def _render_video_storage_repair_panel(db_video_count):
                         st.error("孤立動画を削除できませんでした。")
                         st.code(_safe_error_text(exc, 700))
             with cancel_col:
-                if st.button("キャンセル", use_container_width=True, key="remove_orphan_videos_cancel"):
+                if st.button("やめる", use_container_width=True, key="remove_orphan_videos_cancel"):
                     st.session_state.pop(confirm_key, None)
                     st.rerun()
         else:
@@ -28483,12 +28618,7 @@ def page_moments():
                 st.session_state[bulk_delete_key] = True
                 st.rerun(scope="app")
         else:
-            st.warning(
-                f"確認済み動画{len(reviewed)}本をすべて削除します。"
-                "元動画・代表画像・AIの未保存切り取り画像は削除されますが、"
-                "すでに日記へ残した静止画は残ります。この操作は元に戻せません。"
-            )
-            delete_col, cancel_col = st.columns(2, gap="small")
+            delete_col, cancel_col = st.columns([1.35, 0.85], gap="small")
             with delete_col:
                 if st.button(
                     "一斉削除する",
@@ -28516,7 +28646,7 @@ def page_moments():
                     reload_current_page_after_action()
             with cancel_col:
                 if st.button(
-                    "キャンセル",
+                    "やめる",
                     use_container_width=True,
                     key="moments_delete_all_reviewed_no",
                 ):
@@ -30226,8 +30356,7 @@ def page_tag_review(embedded=False):
     st.divider()
     with st.container(key="monthly_delete_video_area"):
         if st.session_state.get(delete_video_confirm_key):
-            st.warning("このタグ条件の振り返りムービーを削除します。元の写真・日記・AIコメント・保存済み音楽プリセットは削除されません。")
-            delete_col, cancel_col = st.columns([1.25, 1])
+            delete_col, cancel_col = st.columns([1.35, 0.85], gap="small")
             with delete_col:
                 with st.container(key="monthly_delete_video_confirm_action"):
                     if st.button(
@@ -30266,7 +30395,7 @@ def page_tag_review(embedded=False):
                                 st.code(str(exc))
             with cancel_col:
                 if st.button(
-                    "キャンセル",
+                    "やめる",
                     use_container_width=True,
                     key=f"ai_tag_delete_video_cancel_{unsaved_token}",
                 ):
@@ -30607,8 +30736,7 @@ def page_monthly(embedded=False):
     st.divider()
     with st.container(key="monthly_delete_video_area"):
         if st.session_state.get(delete_video_confirm_key):
-            st.warning("この期間の振り返り動画を削除します。写真・日記・AIコメント・保存済み音楽は削除されません。")
-            delete_col, cancel_col = st.columns([1.25, 1])
+            delete_col, cancel_col = st.columns([1.35, 0.85], gap="small")
             with delete_col:
                 with st.container(key="monthly_delete_video_confirm_action"):
                     if st.button(
@@ -30641,7 +30769,7 @@ def page_monthly(embedded=False):
                                 st.code(str(exc))
             with cancel_col:
                 if st.button(
-                    "キャンセル",
+                    "やめる",
                     use_container_width=True,
                     key=f"monthly_delete_video_cancel_{month_key}",
                 ):
