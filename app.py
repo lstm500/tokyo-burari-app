@@ -30,9 +30,9 @@ from zoneinfo import ZoneInfo
 import streamlit as st
 
 # Freshly generated update: 2026-08-31 23:49 JST
-GENERATED_UPDATE_JST = "2026-09-10T09:05:00+09:00"
+GENERATED_UPDATE_JST = "2026-09-10T11:35:00+09:00"
 
-APP_BUILD = "v348"
+APP_BUILD = "v350"
 # v331: multi-tag photo selections can go straight to a music replay and be saved as a stable in-app movie snapshot.
 # v330: tag-review movies support one or multiple AI tags; selection is action-only.
 
@@ -4784,6 +4784,14 @@ _DIARY_GALLERY_CSS = """
 .diary-photo-share.shared { border-color:rgba(93,166,133,.58); background:rgba(93,166,133,.13); }
 .diary-photo-share:active { transform:scale(.985); }
 .diary-photo-share:disabled { opacity:.62; cursor:wait; }
+.diary-photo-voice {
+  appearance:none; -webkit-appearance:none; width:100%; min-height:34px; margin:6px 0 0; padding:6px 8px;
+  border:1px solid rgba(111,134,170,.36); border-radius:9px; background:rgba(111,134,170,.08);
+  color:var(--st-text-color); font-size:10px; line-height:1.15; font-weight:800; cursor:pointer;
+  touch-action:manipulation; -webkit-tap-highlight-color:transparent;
+}
+.diary-photo-voice.has-voice { border-color:rgba(93,166,133,.58); background:rgba(93,166,133,.13); }
+.diary-photo-voice:active { transform:scale(.985); }
 .diary-photo-shared-meta { margin-top:5px; font-size:9.5px; line-height:1.35; font-weight:730; opacity:.78; overflow-wrap:anywhere; }
 .diary-photo-location { margin-top:4px; font-size:10px; line-height:1.25; color:var(--st-text-color); opacity:.78; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 @media (max-width:640px) {
@@ -4797,6 +4805,7 @@ _DIARY_GALLERY_CSS = """
   .diary-photo-location { font-size:9px; }
   .diary-photo-delete { top:2px; right:2px; width:23px; height:23px; font-size:17px; }
   .diary-photo-share { min-height:27px; font-size:7.7px; padding:3px 3px; }
+  .diary-photo-voice { min-height:32px; font-size:9px; padding:5px 6px; }
   .diary-photo-shared-meta { font-size:8.5px; }
   .diary-emotion-badge { right:5px; bottom:5px; min-width:25px; height:22px; padding:0 5px; font-size:7.5px; }
   .diary-mode-button { min-height:25px; font-size:7.5px; padding:3px 2px; }
@@ -4823,6 +4832,7 @@ export default function(component) {
   const allowDelete = data?.allow_delete !== false;
   const allowEmotion = data?.allow_emotion !== false;
   const allowShare = Boolean(data?.allow_share);
+  const allowVoice = Boolean(data?.allow_voice);
   const carouselKey = String(data?.carousel_key || 'default');
   const carouselStore = `tokyo_burari_diary_carousel_v180_${carouselKey}`;
   const pendingStore = 'tokyo_burari_pending_tags_v166';
@@ -4993,6 +5003,20 @@ export default function(component) {
       });
       wrap.appendChild(share);
     }
+    if (single && allowVoice) {
+      const voice=document.createElement('button');
+      voice.type='button';
+      voice.className='diary-photo-voice';
+      const hasVoice=Boolean(photo.has_voice);
+      voice.classList.toggle('has-voice', hasVoice);
+      voice.textContent = hasVoice ? '🎙 声あり・確認／変更' : '🎙 この写真に声を残す';
+      voice.setAttribute('aria-label', hasVoice ? 'この写真の声を確認または変更する' : 'この写真に声を残す');
+      voice.addEventListener('click', (event) => {
+        event.preventDefault(); event.stopPropagation();
+        setTriggerValue('voice_photo_id', String(photo.id));
+      });
+      wrap.appendChild(voice);
+    }
     if (allowDelete) {
       const remove=document.createElement('button'); remove.type='button'; remove.className='diary-photo-delete'; remove.textContent='×'; remove.setAttribute('aria-label','この写真を削除');
       remove.addEventListener('click', (event) => { event.preventDefault(); event.stopPropagation(); discardPendingPhoto(photo.id); setTriggerValue('delete_photo_id', String(photo.id)); });
@@ -5064,7 +5088,7 @@ def _get_diary_gallery_component():
     _diary_gallery_component_initialized = True
     try:
         diary_gallery_component = st.components.v2.component(
-            "tokyo_burari_diary_gallery_v225",
+            "tokyo_burari_diary_gallery_v350",
             html=_DIARY_GALLERY_HTML,
             css=_DIARY_GALLERY_CSS,
             js=_DIARY_GALLERY_JS,
@@ -17503,19 +17527,15 @@ def render_monthly_replay_player(period_label, review, playback, photo_items, cu
         end_seconds = start_seconds + 20
     duration_seconds = max(1, end_seconds - start_seconds)
     # v335: recalculate the photo cadence for the currently auditioned music segment,
-    # but never switch faster than one photo every 3 seconds.  A/B/C can still produce
-    # different cadences when the music interval is long enough.  If the selected music
+    # but never switch faster than one photo every 3 seconds. A/B/C can still produce
+    # different cadences when the music interval is long enough. If the selected music
     # is too short to show every photo at 3 seconds each, playback stops with the music
     # rather than accelerating the slideshow below this readability floor.
-    # v345: a curated movie intentionally contains fewer photos. Dividing the whole
-    # music duration by that reduced count made one curated photo remain on screen for
-    # a very long time, which looked like the slideshow had frozen. In curation mode
-    # advance every 3 seconds and loop the curated set until the music finishes.
-    # Normal replay keeps the existing music-length-aware cadence with the same 3s floor.
-    if curated_mode:
-        display_ms = 3000
-    else:
-        display_ms = max(3000, int(round(duration_seconds * 1000.0 / max(1, len(photo_items)))))
+    # v351: apply the exact same music-length-aware cadence to curated movies too.
+    # The curation flow still uses the reduced curated photo set, but the slide timing
+    # now stretches or shrinks with the chosen music window while preserving the 3s floor.
+    display_ms = max(3000, int(round(duration_seconds * 1000.0 / max(1, len(photo_items)))))
+    slide_seconds_text = f"{display_ms / 1000:.1f}".rstrip("0").rstrip(".")
     period_label_escaped = html.escape(str(period_label or "振り返り"))
     is_tag_review = isinstance(review, dict) and str(review.get("_review_scope_type") or "") in {"tag", "ai_tag"}
     replay_kicker = "タグで振り返り" if is_tag_review else "まとめた期間の振り返り"
@@ -17688,7 +17708,7 @@ def render_monthly_replay_player(period_label, review, playback, photo_items, cu
           <button id="burariReplayAgain" type="button" disabled>↻ 最初から</button>
         </div>
       </div>
-      <div class="burari-replay-meta">音楽区間：{format_mmss(start_seconds)}〜{format_mmss(end_seconds)} ／ 写真 {len(photo_items)}枚{" ／ 厳選モード：3秒/枚" if curated_mode else ""}</div>
+      <div class="burari-replay-meta">音楽区間：{format_mmss(start_seconds)}〜{format_mmss(end_seconds)} ／ 写真 {len(photo_items)}枚{" ／ 厳選モード：自動調整（最低3秒 / 現在 " + slide_seconds_text + "秒/枚）" if curated_mode else ""}</div>
       <div class="burari-replay-player-wrap">
         <div class="burari-replay-player-label">YouTube 音楽</div>
         <div id="burariReplayPlayer"></div>
@@ -18621,10 +18641,7 @@ def render_monthly_replay_section(month_key, period_label, bundle, review):
         curated_mode=bool(curation_state.get("active")),
     )
 
-    raw_photos, _ = _monthly_replay_selected_photos(bundle)
-    photo_row_map = {str(photo.get("id") or ""): photo for photo in (raw_photos or []) if str(photo.get("id") or "").strip()}
     render_replay_photo_curation_controls(month_key, period_label, bundle, all_photo_items)
-    render_replay_voice_embed_section(month_key, all_photo_items, photo_row_map)
     return True
 
 
@@ -21651,6 +21668,99 @@ def render_small_gallery(photos, max_count=None, columns=3):
             unsafe_allow_html=True,
         )
 
+def render_diary_single_photo_voice_editor(trip_id, photo, target_state_key, context_key):
+    """Attach or replace one short real voice note from a saved diary single-photo view."""
+    photo = photo if isinstance(photo, dict) else {}
+    photo_id = str(photo.get("id") or "").strip()
+    if not photo_id:
+        return
+
+    with st.container(border=True):
+        st.markdown("##### 🎙 この写真に声を残す")
+        st.caption("この写真にひもづく短い声を保存します。保存した声は振り返りムービーでもこの写真に付帯します。")
+
+        voice_meta = photo_voice_note_meta(photo)
+        voice_path = str(voice_meta.get("storage_path") or "").strip()
+        if voice_path:
+            try:
+                signed = signed_photo_url_map((voice_path,), expires_in=1800)
+                voice_url = str(signed.get(voice_path) or "")
+            except Exception:
+                voice_url = ""
+            if voice_url:
+                st.audio(voice_url)
+            transcript = str(voice_meta.get("transcript") or "").strip()
+            if transcript:
+                st.caption(f"文字起こし: {transcript}")
+
+        audio_file = far_field_audio_input(
+            "この写真に声を録音",
+            key=f"diary_voice_input_{context_key}_{photo_id}",
+        )
+        if audio_file is not None:
+            try:
+                audio_file.seek(0)
+                preview = audio_file.read()
+                audio_file.seek(0)
+            except Exception:
+                preview = None
+            if preview:
+                st.audio(preview)
+
+        left, right = st.columns(2, gap="small")
+        with left:
+            if st.button(
+                "この写真に声を保存",
+                key=f"diary_voice_save_{context_key}_{photo_id}",
+                type="primary",
+                use_container_width=True,
+            ):
+                if audio_file is None:
+                    st.error("先に声を録音してください。")
+                else:
+                    try:
+                        with st.spinner("声を保存しています…"):
+                            save_photo_voice_note(photo_id, audio_file, auto_transcribe=True)
+                        st.success("この写真に声を保存しました。")
+                        st.rerun()
+                    except Exception as exc:
+                        st.error("声を保存できませんでした。")
+                        with st.expander("保護者向け詳細"):
+                            st.code(str(exc))
+        with right:
+            if voice_path:
+                if st.button(
+                    "保存済みの声を削除",
+                    key=f"diary_voice_delete_{context_key}_{photo_id}",
+                    use_container_width=True,
+                ):
+                    try:
+                        delete_photo_voice_note(photo_id)
+                        st.success("この写真の声を削除しました。")
+                        st.rerun()
+                    except Exception as exc:
+                        st.error("声を削除できませんでした。")
+                        with st.expander("保護者向け詳細"):
+                            st.code(str(exc))
+            else:
+                if st.button(
+                    "閉じる",
+                    key=f"diary_voice_close_{context_key}_{photo_id}",
+                    use_container_width=True,
+                ):
+                    st.session_state.pop(target_state_key, None)
+                    st.rerun()
+
+        if voice_path:
+            if st.button(
+                "声の編集を閉じる",
+                key=f"diary_voice_close_existing_{context_key}_{photo_id}",
+                use_container_width=True,
+            ):
+                st.session_state.pop(target_state_key, None)
+                st.rerun()
+
+
 def render_history_photo_viewer(photos, trip_id):
     """Read-only daily diary viewer with grid / one-photo-at-a-time modes."""
     photos = diary_photos_only(photos)
@@ -21695,6 +21805,7 @@ def render_history_photo_viewer(photos, trip_id):
                 "location": str(photo_location_label(photo) or ""),
                 "tags": photo_ai_tags(photo)[:12],
                 "shared": photo_family_share_is_enabled(photo),
+                "has_voice": bool(photo_voice_note_storage_path(photo)),
             }
         )
         photo_ids.append(pid)
@@ -21710,16 +21821,30 @@ def render_history_photo_viewer(photos, trip_id):
                 "allow_delete": False,
                 "allow_emotion": False,
                 "allow_share": True,
+                "allow_voice": single_mode,
                 "carousel_key": f"history_{trip_id}",
                 "family_key": current_family_key(),
                 "member_key": current_member_key(),
                 "pending_param": PENDING_EMOTION_QUERY_PARAM,
             },
-            key=f"history_photo_fast_v230_{trip_id}_{serial}_{_current_ui_refresh_epoch()}_{'single' if single_mode else 'grid'}",
+            key=f"history_photo_fast_v350_{trip_id}_{serial}_{_current_ui_refresh_epoch()}_{'single' if single_mode else 'grid'}",
             on_share_photo_change=lambda: None,
+            on_voice_photo_id_change=lambda: None,
         )
         if handle_photo_family_share_event(result, photo_ids, serial_key=serial_key):
             return
+        voice_target_key = f"_history_voice_photo_target_{trip_id}"
+        voice_clicked = str(getattr(result, "voice_photo_id", "") or "")
+        if single_mode and voice_clicked in photo_ids:
+            st.session_state[voice_target_key] = voice_clicked
+            st.session_state[serial_key] = serial + 1
+        voice_target = str(st.session_state.get(voice_target_key) or "")
+        if single_mode and voice_target in photo_ids:
+            target_photo = next((photo for photo in photos if str(photo.get("id") or "") == voice_target), None)
+            if target_photo:
+                render_diary_single_photo_voice_editor(trip_id, target_photo, voice_target_key, f"history_{trip_id}")
+        elif not single_mode:
+            st.session_state.pop(voice_target_key, None)
         return
 
     # Old-runtime fallback: keep the same one-photo-at-a-time behavior without the v2 component.
@@ -21760,6 +21885,12 @@ def render_history_photo_viewer(photos, trip_id):
                 set_photo_family_share(photo.get("id"), enabled=not shared)
                 st.session_state["_photo_family_share_notice"] = "この写真と選んだ感情を家族に共有しました。" if not shared else "この写真の家族共有を解除しました。"
                 st.rerun()
+
+
+    if single_mode and fallback:
+        voice_target_key = f"_history_voice_photo_target_{trip_id}"
+        st.session_state[voice_target_key] = str(fallback[0].get("id") or "")
+        render_diary_single_photo_voice_editor(trip_id, fallback[0], voice_target_key, f"history_fallback_{trip_id}")
 
 
 def render_diary_photo_gallery(trip_id, photos, state=None):
@@ -26542,6 +26673,7 @@ def render_diary_emotion_gallery(trip_id, photos, trip=None, is_pending=False):
                 "location": str(photo_location_label(photo) or ""),
                 "tags": photo_ai_tags(photo)[:12],
                 "shared": photo_family_share_is_enabled(photo),
+                "has_voice": bool(photo_voice_note_storage_path(photo)),
             }
         )
         photo_ids.append(pid)
@@ -26551,10 +26683,11 @@ def render_diary_emotion_gallery(trip_id, photos, trip=None, is_pending=False):
         serial_key = f"diary_emotion_gallery_serial_{trip_id}_{'pending' if is_pending else 'saved'}"
         serial = int(st.session_state.get(serial_key) or 0)
         result = gallery_component(
-            data={"photos": cards, "single": single_mode, "allow_delete": True, "allow_emotion": True, "allow_share": True, "carousel_key": f"diary_saved_{trip_id}", "mode_by_photo": st.session_state.get(f"_diary_icon_modes_{trip_id}") or {}, "family_key": current_family_key(), "member_key": current_member_key(), "pending_param": PENDING_EMOTION_QUERY_PARAM},
-            key=f"diary_emotion_gallery_{trip_id}_{serial}_{_current_ui_refresh_epoch()}_{'single' if single_mode else 'grid'}_v230",
+            data={"photos": cards, "single": single_mode, "allow_delete": True, "allow_emotion": True, "allow_share": True, "allow_voice": bool(single_mode and not is_pending), "carousel_key": f"diary_saved_{trip_id}", "mode_by_photo": st.session_state.get(f"_diary_icon_modes_{trip_id}") or {}, "family_key": current_family_key(), "member_key": current_member_key(), "pending_param": PENDING_EMOTION_QUERY_PARAM},
+            key=f"diary_emotion_gallery_{trip_id}_{serial}_{_current_ui_refresh_epoch()}_{'single' if single_mode else 'grid'}_v350",
             on_delete_photo_id_change=lambda: None,
             on_share_photo_change=lambda: None,
+            on_voice_photo_id_change=lambda: None,
         )
         if handle_photo_family_share_event(result, photo_ids, serial_key=serial_key):
             return
@@ -26568,6 +26701,20 @@ def render_diary_emotion_gallery(trip_id, photos, trip=None, is_pending=False):
                 is_pending=is_pending,
                 trip=trip,
             )
+            return
+
+        voice_target_key = f"_diary_saved_voice_photo_target_{trip_id}"
+        voice_clicked = str(getattr(result, "voice_photo_id", "") or "")
+        if single_mode and not is_pending and voice_clicked in photo_ids:
+            st.session_state[voice_target_key] = voice_clicked
+            st.session_state[serial_key] = serial + 1
+        voice_target = str(st.session_state.get(voice_target_key) or "")
+        if single_mode and not is_pending and voice_target in photo_ids:
+            target_photo = next((photo for photo in displayed_photos if str(photo.get("id") or "") == voice_target), None)
+            if target_photo:
+                render_diary_single_photo_voice_editor(trip_id, target_photo, voice_target_key, f"diary_saved_{trip_id}")
+        elif not single_mode or is_pending:
+            st.session_state.pop(voice_target_key, None)
         return
 
     # Fallback for old component runtimes.
@@ -26642,6 +26789,12 @@ def render_diary_emotion_gallery(trip_id, photos, trip=None, is_pending=False):
                     is_pending=is_pending,
                     trip=trip,
                 )
+
+
+    if single_mode and not is_pending and fallback_displayed:
+        voice_target_key = f"_diary_saved_voice_photo_target_{trip_id}"
+        st.session_state[voice_target_key] = str(fallback_displayed[0].get("id") or "")
+        render_diary_single_photo_voice_editor(trip_id, fallback_displayed[0], voice_target_key, f"diary_saved_fallback_{trip_id}")
 
 
 def render_family_shared_individual_photos():
