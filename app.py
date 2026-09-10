@@ -34,7 +34,7 @@ import streamlit as st
 # Freshly generated update: 2026-08-31 23:49 JST
 GENERATED_UPDATE_JST = "2026-09-10T19:50:00+09:00"
 
-APP_BUILD = "v376"
+APP_BUILD = "v377"
 # v331: multi-tag photo selections can go straight to a music replay and be saved as a stable in-app movie snapshot.
 # v330: tag-review movies support one or multiple AI tags; selection is action-only.
 
@@ -14818,7 +14818,7 @@ def video_ai_voice_candidate_meta(photo):
 
 VIDEO_VOICE_CANDIDATE_COUNT = 6
 VIDEO_VOICE_SNIPPET_SECONDS = 5.0
-VIDEO_VOICE_CANDIDATE_SCHEMA_VERSION = 2
+VIDEO_VOICE_CANDIDATE_SCHEMA_VERSION = 3
 
 
 def video_ai_voice_candidate_items(photo):
@@ -14831,8 +14831,8 @@ def video_ai_voice_candidate_items(photo):
         snippet_seconds = float(meta.get("snippet_seconds") or 0.0)
     except Exception:
         snippet_seconds = 0.0
-    # v376: the old candidate set used fixed ~2 second clips. Treat it as stale so
-    # existing videos can be regenerated with natural phrase boundaries up to ~5 sec.
+    # v377: regenerate older candidate sets because the previous natural-boundary
+    # detector often stopped at a short 0.4-second pause and produced ~1-second clips.
     if schema_version < VIDEO_VOICE_CANDIDATE_SCHEMA_VERSION or snippet_seconds < 4.5:
         return []
     items = meta.get("items") or []
@@ -14935,9 +14935,12 @@ def _extract_video_voice_candidate_specs(video_raw, candidate_count=VIDEO_VOICE_
     # A pause is intentionally relative to this video's own noise floor. Two consecutive
     # 0.2 sec quiet windows are treated as a natural phrase boundary when possible.
     pause_rms = max(55.0, p35_rms * 1.12, median_rms * 0.56)
-    pause_run = 2
+    # v377: a 0.4-second dip was too easy to mistake for the end of a phrase.
+    # Require a clearer pause and keep enough context around the memorable voice.
+    pause_run = 3
     max_clip = max(1.0, float(clip_seconds or VIDEO_VOICE_SNIPPET_SECONDS))
-    min_clip = min(1.2, max_clip)
+    min_clip = min(2.6, max_clip)
+    preferred_clip = min(4.2, max_clip)
 
     def _natural_bounds(center_sec):
         if not windows:
@@ -14953,7 +14956,7 @@ def _extract_video_voice_candidate_specs(video_raw, candidate_count=VIDEO_VOICE_
         earliest = max(0.0, center_sec - half_limit)
         latest = min(total_duration, center_sec + half_limit)
 
-        start_sec = max(0.0, center_sec - 0.38)
+        start_sec = max(0.0, center_sec - 1.05)
         quiet_count = 0
         for idx in range(center_index - 1, -1, -1):
             item = windows[idx]
@@ -14971,7 +14974,7 @@ def _extract_video_voice_candidate_specs(video_raw, candidate_count=VIDEO_VOICE_
                 quiet_count = 0
                 start_sec = max(0.0, item_center - (window_seconds * 0.55))
 
-        end_sec = min(total_duration, center_sec + 0.75)
+        end_sec = min(total_duration, center_sec + 1.55)
         quiet_count = 0
         for idx in range(center_index + 1, len(windows)):
             item = windows[idx]
@@ -14997,14 +15000,19 @@ def _extract_video_voice_candidate_specs(video_raw, candidate_count=VIDEO_VOICE_
             start_sec = max(0.0, min(desired_start, total_duration - max_clip))
             end_sec = min(total_duration, start_sec + max_clip)
 
-        if end_sec - start_sec < min_clip:
-            missing = min_clip - (end_sec - start_sec)
-            start_sec = max(0.0, start_sec - missing * 0.45)
-            end_sec = min(total_duration, end_sec + missing * 0.55)
+        current_duration = end_sec - start_sec
+        if current_duration < min_clip:
+            # Preserve a short utterance, but include enough context before/after it so
+            # the clip does not feel like a one-word fragment. Prefer extending after
+            # the peak because the end of a spoken phrase often carries the meaning.
+            desired_duration = min(max_clip, max(min_clip, preferred_clip))
+            desired_start = center_sec - min(1.15, desired_duration * 0.32)
+            start_sec = max(0.0, desired_start)
+            end_sec = min(total_duration, start_sec + desired_duration)
             if end_sec - start_sec < min_clip:
                 start_sec = max(0.0, end_sec - min_clip)
 
-        duration_sec = min(max_clip, max(0.6, end_sec - start_sec))
+        duration_sec = min(max_clip, max(min_clip if total_duration >= min_clip else 0.6, end_sec - start_sec))
         if start_sec + duration_sec > total_duration:
             start_sec = max(0.0, total_duration - duration_sec)
         return start_sec, duration_sec
