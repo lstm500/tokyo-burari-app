@@ -35,7 +35,8 @@ import streamlit as st
 # Freshly generated update: 2026-08-31 23:49 JST
 GENERATED_UPDATE_JST = "2026-09-11T00:24:48+09:00"
 
-APP_BUILD = "v387"
+APP_BUILD = "v389"
+# v389: improve light-tap responsiveness on mobile/Android WebView.
 # v383: interaction performance pass - no periodic Home polling, lazy heavy components, deferred recovery scans.
 # v331: multi-tag photo selections can go straight to a music replay and be saved as a stable in-app movie snapshot.
 # v330: tag-review movies support one or multiple AI tags; selection is action-only.
@@ -212,11 +213,34 @@ st.markdown(
         pointer-events: none !important;
         transition: none !important;
       }
+      /* v389: mobile tap response. Android WebView can turn a light tap into a
+         scroll/selection gesture unless controls explicitly opt into manipulation.
+         Apply this to Streamlit controls globally without changing their visual size. */
+      button,
+      [role="button"],
+      input[type="button"],
+      input[type="submit"],
+      a[role="button"] {
+        touch-action: manipulation !important;
+        -webkit-tap-highlight-color: rgba(74, 144, 226, .14);
+      }
+      button:not(:disabled),
+      [role="button"]:not([aria-disabled="true"]) {
+        -webkit-user-select: none;
+        user-select: none;
+        -webkit-touch-callout: none;
+      }
       div.stButton > button {
         min-height: 3.2rem;
         border-radius: 16px;
         font-size: 1.03rem;
         font-weight: 650;
+        touch-action: manipulation !important;
+      }
+      @media (pointer: coarse) {
+        div.stButton > button {
+          min-height: 3.35rem;
+        }
       }
       .hero-card, .photo-card, .diary-card, .monthly-card, .talk-card {
         border: 1px solid rgba(128,128,128,.22);
@@ -20117,8 +20141,8 @@ def render_monthly_replay_player(period_label, review, playback, photo_items, cu
         try {{ localStorage.setItem('tokyo_burari_last_user_activity_v336', String(at)); }} catch (_) {{}}
         try {{ window.parent.postMessage({{type:'burari-user-activity-v336', at}}, '*'); }} catch (_) {{}}
       }};
-      document.addEventListener('pointerdown', burariMarkUserActivity, {{capture:true, passive:true}});
-      document.addEventListener('touchstart', burariMarkUserActivity, {{capture:true, passive:true}});
+      const burariActivityPressEvent = ('PointerEvent' in window) ? 'pointerdown' : 'touchstart';
+      document.addEventListener(burariActivityPressEvent, burariMarkUserActivity, {{capture:true, passive:true}});
       document.addEventListener('keydown', burariMarkUserActivity, true);
       const burariStartSeconds = {start_seconds};
       const burariEndSeconds = {end_seconds};
@@ -25283,13 +25307,16 @@ _NEARBY_BATCH_SEARCH_JS_V320 = r"""
 
 export default function(component) {
   const { parentElement, setTriggerValue, data } = component;
+  let lastActivityEmitAt = 0;
   const markUserActivity = () => {
     const at = Date.now();
+    if ((at - lastActivityEmitAt) < 900) return;
+    lastActivityEmitAt = at;
     try { localStorage.setItem('tokyo_burari_last_user_activity_v336', String(at)); } catch (_) {}
     try { window.parent.postMessage({type:'burari-user-activity-v336', at}, '*'); } catch (_) {}
   };
-  parentElement?.addEventListener('pointerdown', markUserActivity, {capture:true, passive:true});
-  parentElement?.addEventListener('touchstart', markUserActivity, {capture:true, passive:true});
+  const activityPressEvent = ('PointerEvent' in window) ? 'pointerdown' : 'touchstart';
+  parentElement?.addEventListener(activityPressEvent, markUserActivity, {capture:true, passive:true});
   parentElement?.addEventListener('keydown', markUserActivity, true);
   parentElement?.addEventListener('wheel', markUserActivity, {capture:true, passive:true});
   const kindArea = parentElement.querySelector('#nb-kind-area');
@@ -25404,7 +25431,7 @@ export default function(component) {
   const fail=(message,code=0)=>{stop();status.textContent=String(message||'現在地を取得できませんでした。');setTriggerValue('search_error',{token:`${Date.now()}_${Math.random().toString(36).slice(2)}`,code:Number(code||0),message:String(message||''),filters:gather()});unlock()};
   const searchNow=()=>{if(!navigator.geolocation){fail('この端末では位置情報を取得できません。');return}stop();best=null;startedAt=Date.now();button.disabled=true;status.textContent='検索地点を高精度GPSで確認しています…';watchId=navigator.geolocation.watchPosition((position)=>{if(cancelled||!position?.coords)return;const accuracy=Number(position.coords.accuracy||Number.POSITIVE_INFINITY);const bestAccuracy=best?Number(best.coords?.accuracy||Number.POSITIVE_INFINITY):Number.POSITIVE_INFINITY;if(!best||accuracy<bestAccuracy)best=position;const currentBest=best?Number(best.coords?.accuracy||Number.POSITIVE_INFINITY):Number.POSITIVE_INFINITY;status.textContent=Number.isFinite(currentBest)?`検索地点を高精度GPSで確認しています… ±${Math.round(currentBest)}m`:'検索地点を高精度GPSで確認しています…';if(currentBest>0&&currentBest<=25){emitBest();return}if(currentBest>0&&currentBest<=45&&(Date.now()-startedAt)>=1200)emitBest()},(error)=>{const bestAccuracy=best?Number(best.coords?.accuracy||Number.POSITIVE_INFINITY):Number.POSITIVE_INFINITY;if(best&&bestAccuracy>0&&bestAccuracy<=45){emitBest();return}const code=Number(error?.code||0);const msg=code===1?'位置情報の利用が許可されていません。':code===3?'現在地の取得に時間がかかりました。':'現在地を取得できませんでした。';fail(msg,code)},{enableHighAccuracy:true,timeout:10000,maximumAge:0});hardTimer=setTimeout(()=>{const bestAccuracy=best?Number(best.coords?.accuracy||Number.POSITIVE_INFINITY):Number.POSITIVE_INFINITY;if(best&&bestAccuracy>0&&bestAccuracy<=45)emitBest();else if(best&&Number.isFinite(bestAccuracy))fail(`GPS精度が ±${Math.round(bestAccuracy)}m のため検索を中止しました。`,3);else fail('現在地を高精度で取得できませんでした。',3)},10500)};
   button.addEventListener('click',searchNow);
-  return()=>{cancelled=true;stop();button.removeEventListener('click',searchNow);try{parentElement?.removeEventListener('pointerdown',markUserActivity,{capture:true,passive:true})}catch(_){}try{parentElement?.removeEventListener('touchstart',markUserActivity,{capture:true,passive:true})}catch(_){}try{parentElement?.removeEventListener('keydown',markUserActivity,true)}catch(_){}try{parentElement?.removeEventListener('wheel',markUserActivity,{capture:true,passive:true})}catch(_){}};
+  return()=>{cancelled=true;stop();button.removeEventListener('click',searchNow);try{parentElement?.removeEventListener(activityPressEvent,markUserActivity,{capture:true,passive:true})}catch(_){}try{parentElement?.removeEventListener('keydown',markUserActivity,true)}catch(_){}try{parentElement?.removeEventListener('wheel',markUserActivity,{capture:true,passive:true})}catch(_){}};
 }
 """
 
@@ -25497,13 +25524,16 @@ _TOILET_BATCH_SEARCH_JS_V320 = r"""
 
 export default function(component) {
   const { parentElement, setTriggerValue, data } = component;
+  let lastActivityEmitAt = 0;
   const markUserActivity = () => {
     const at = Date.now();
+    if ((at - lastActivityEmitAt) < 900) return;
+    lastActivityEmitAt = at;
     try { localStorage.setItem('tokyo_burari_last_user_activity_v336', String(at)); } catch (_) {}
     try { window.parent.postMessage({type:'burari-user-activity-v336', at}, '*'); } catch (_) {}
   };
-  parentElement?.addEventListener('pointerdown', markUserActivity, {capture:true, passive:true});
-  parentElement?.addEventListener('touchstart', markUserActivity, {capture:true, passive:true});
+  const activityPressEvent = ('PointerEvent' in window) ? 'pointerdown' : 'touchstart';
+  parentElement?.addEventListener(activityPressEvent, markUserActivity, {capture:true, passive:true});
   parentElement?.addEventListener('keydown', markUserActivity, true);
   parentElement?.addEventListener('wheel', markUserActivity, {capture:true, passive:true});
   const distanceArea=parentElement.querySelector('#tb-distance-area'), feeArea=parentElement.querySelector('#tb-fee-area'), wheelArea=parentElement.querySelector('#tb-wheel-area'), babyArea=parentElement.querySelector('#tb-baby-area'), openArea=parentElement.querySelector('#tb-open-area');
@@ -25533,7 +25563,7 @@ export default function(component) {
   const emitBest=()=>{if(cancelled||!best?.coords)return;stop();const accuracy=Number(best.coords.accuracy||0);status.textContent=`現在地を取得しました（精度 ±${Math.round(accuracy)}m）。トイレを検索しています…`;hideTrainLoader();setTriggerValue('search_location',{token:`${Date.now()}_${Math.random().toString(36).slice(2)}`,latitude:Number(best.coords.latitude),longitude:Number(best.coords.longitude),accuracy_m:accuracy,measured_at:new Date(best.timestamp||Date.now()).toISOString(),filters:gather()});unlock()};
   const fail=(message,code=0)=>{stop();status.textContent=String(message||'現在地を取得できませんでした。');hideTrainLoader();setTriggerValue('search_error',{token:`${Date.now()}_${Math.random().toString(36).slice(2)}`,code:Number(code||0),message:String(message||''),filters:gather()});unlock()};
   const searchNow=()=>{if(!navigator.geolocation){fail('この端末では位置情報を取得できません。');return}stop();best=null;startedAt=Date.now();button.disabled=true;status.textContent='現在地を高精度GPSで確認しています…';showTrainLoader(status.textContent);watchId=navigator.geolocation.watchPosition((position)=>{if(cancelled||!position?.coords)return;const accuracy=Number(position.coords.accuracy||Number.POSITIVE_INFINITY);const bestAccuracy=best?Number(best.coords?.accuracy||Number.POSITIVE_INFINITY):Number.POSITIVE_INFINITY;if(!best||accuracy<bestAccuracy)best=position;const currentBest=best?Number(best.coords?.accuracy||Number.POSITIVE_INFINITY):Number.POSITIVE_INFINITY;status.textContent=Number.isFinite(currentBest)?`現在地を高精度GPSで確認しています… ±${Math.round(currentBest)}m`:'現在地を高精度GPSで確認しています…';showTrainLoader(status.textContent);if(currentBest>0&&currentBest<=25){emitBest();return}if(currentBest>0&&currentBest<=45&&(Date.now()-startedAt)>=1200)emitBest()},(error)=>{const bestAccuracy=best?Number(best.coords?.accuracy||Number.POSITIVE_INFINITY):Number.POSITIVE_INFINITY;if(best&&bestAccuracy>0&&bestAccuracy<=45){emitBest();return}const code=Number(error?.code||0);const msg=code===1?'位置情報の利用が許可されていません。':code===3?'現在地の取得に時間がかかりました。':'現在地を取得できませんでした。';fail(msg,code)},{enableHighAccuracy:true,timeout:10000,maximumAge:0});hardTimer=setTimeout(()=>{const bestAccuracy=best?Number(best.coords?.accuracy||Number.POSITIVE_INFINITY):Number.POSITIVE_INFINITY;if(best&&bestAccuracy>0&&bestAccuracy<=45)emitBest();else if(best&&Number.isFinite(bestAccuracy))fail(`GPS精度が ±${Math.round(bestAccuracy)}m のため検索を中止しました。`,3);else fail('現在地を高精度で取得できませんでした。',3)},10500)};
-  button.addEventListener('click',searchNow);return()=>{cancelled=true;stop();hideTrainLoader();button.removeEventListener('click',searchNow);try{parentElement?.removeEventListener('pointerdown',markUserActivity,{capture:true,passive:true})}catch(_){}try{parentElement?.removeEventListener('touchstart',markUserActivity,{capture:true,passive:true})}catch(_){}try{parentElement?.removeEventListener('keydown',markUserActivity,true)}catch(_){}try{parentElement?.removeEventListener('wheel',markUserActivity,{capture:true,passive:true})}catch(_){}};
+  button.addEventListener('click',searchNow);return()=>{cancelled=true;stop();hideTrainLoader();button.removeEventListener('click',searchNow);try{parentElement?.removeEventListener(activityPressEvent,markUserActivity,{capture:true,passive:true})}catch(_){}try{parentElement?.removeEventListener('keydown',markUserActivity,true)}catch(_){}try{parentElement?.removeEventListener('wheel',markUserActivity,{capture:true,passive:true})}catch(_){}};
 }
 """
 
@@ -27535,7 +27565,7 @@ def _get_moments_voice_component():
     _moments_voice_component_initialized = True
     try:
         moments_voice_component = st.components.v2.component(
-            "tokyo_burari_moments_voice_v387",
+            "tokyo_burari_moments_voice_v388",
             html=_MOMENTS_VOICE_HTML,
             css=_MOMENTS_VOICE_CSS,
             js=_MOMENTS_VOICE_JS,
@@ -27577,6 +27607,10 @@ def _render_moments_voice_workspace(
     st.markdown("#### 🎙 写真に声を合わせる")
     voice_candidates = video_ai_voice_candidate_items(photo)
     if not voice_candidates:
+        # v388: one tap on the photo's voice button must be enough. If this video's
+        # candidates have never been made (or an old schema invalidated them), create
+        # them automatically as soon as the voice workspace opens. Existing candidates
+        # are reused by generate_video_ai_voice_candidates(force=False).
         photo_src = str(target_card.get("src") or "")
         if photo_src:
             st.markdown(
@@ -27585,29 +27619,35 @@ def _render_moments_voice_workspace(
                 '</div>',
                 unsafe_allow_html=True,
             )
-        st.caption("この写真を見ながら、元動画から声候補を作ります。")
-        if st.button(
-            "🎙 声候補を探す",
-            type="primary",
-            use_container_width=True,
-            key=f"moments_voice_generate_v387_{video_id}_{round_number}_{target_rank}",
-        ):
-            try:
-                with st.spinner("動画の中から印象的な声を探しています…"):
-                    generate_video_ai_voice_candidates(photo, force=True)
-                st.session_state[voice_panel_open_key] = True
-                st.session_state[voice_panel_target_key] = target_rank
-                st.session_state[active_rank_key] = target_rank
-                st.rerun()
-            except Exception as exc:
-                st.error("印象的な声を作成できませんでした。")
-                with st.expander("保護者向け詳細"):
-                    st.code(str(exc))
-        if st.button("戻る", use_container_width=True, key=f"moments_voice_no_candidates_back_v387_{video_id}_{target_rank}"):
-            st.session_state.pop(voice_panel_open_key, None)
-            st.session_state.pop(voice_panel_target_key, None)
-            st.session_state.pop(voice_candidate_choice_key, None)
+        try:
+            with st.spinner("この写真に合わせる声候補を作っています…"):
+                generated_photo = generate_video_ai_voice_candidates(photo, force=False)
+            if isinstance(generated_photo, dict):
+                photo = generated_photo
+            st.session_state[voice_panel_open_key] = True
+            st.session_state[voice_panel_target_key] = target_rank
+            st.session_state[active_rank_key] = target_rank
             st.rerun()
+        except Exception as exc:
+            st.error("声候補を作成できませんでした。")
+            st.caption("通常は写真の🎙を1回押すだけで声候補を作成します。失敗した場合だけ再試行してください。")
+            retry_col, back_col = st.columns([1.35, .75], gap="small")
+            with retry_col:
+                if st.button(
+                    "もう一度作る",
+                    type="primary",
+                    use_container_width=True,
+                    key=f"moments_voice_retry_v388_{video_id}_{round_number}_{target_rank}",
+                ):
+                    st.rerun()
+            with back_col:
+                if st.button("戻る", use_container_width=True, key=f"moments_voice_no_candidates_back_v388_{video_id}_{target_rank}"):
+                    st.session_state.pop(voice_panel_open_key, None)
+                    st.session_state.pop(voice_panel_target_key, None)
+                    st.session_state.pop(voice_candidate_choice_key, None)
+                    st.rerun()
+            with st.expander("保護者向け詳細"):
+                st.code(str(exc))
         return True
 
     voice_paths = tuple(
@@ -27646,7 +27686,7 @@ def _render_moments_voice_workspace(
                 "current_voice_rank": current_voice_rank,
                 "candidates": candidates,
             },
-            key=f"moments_voice_workspace_v387_{video_id}_{round_number}_{target_rank}",
+            key=f"moments_voice_workspace_v388_{video_id}_{round_number}_{target_rank}",
             on_voice_action_change=lambda: None,
         )
         action = getattr(result, "voice_action", None)
@@ -32128,6 +32168,7 @@ export default function(component) {
   let nativeSentToken = '';
   let nativeSentAt = 0;
   let lastUserActivityMemory = Date.now();
+  let lastActivityPersistAt = 0;
   const activityBindings = [];
 
   const readLastUserActivity = () => {
@@ -32135,10 +32176,16 @@ export default function(component) {
     try { stored = Number(localStorage.getItem(activityKey) || 0); } catch (_) {}
     return Math.max(Number(lastUserActivityMemory || 0), Number.isFinite(stored) ? stored : 0);
   };
+  // v389: localStorage is synchronous in Android WebView. A single physical tap can
+  // generate pointerdown + touchstart + mousedown and used to write several times on
+  // the UI thread. Keep the in-memory timestamp exact but persist at most once/second.
   const markUserActivity = (at=Date.now()) => {
-    const value = Number(at || Date.now());
+    const raw = (typeof at === 'number') ? at : Date.now();
+    const value = Number(raw || Date.now());
     const safeValue = Number.isFinite(value) && value > 0 ? value : Date.now();
     lastUserActivityMemory = Math.max(lastUserActivityMemory, safeValue);
+    if ((safeValue - lastActivityPersistAt) < 1000) return;
+    lastActivityPersistAt = safeValue;
     try { localStorage.setItem(activityKey, String(lastUserActivityMemory)); } catch (_) {}
   };
   const userRecentlyActive = () => {
@@ -32158,26 +32205,28 @@ export default function(component) {
     const bindTarget = (target) => {
       if (!target || seen.has(target)) return;
       seen.add(target);
-      bindActivity(target, 'pointerdown', {capture:true, passive:true});
-      bindActivity(target, 'touchstart', {capture:true, passive:true});
-      bindActivity(target, 'mousedown', {capture:true, passive:true});
+      // v389: listen to one primary press event only. Pointer-enabled Android/Chrome
+      // already covers touch and mouse; registering all three multiplied work per tap.
+      if ('PointerEvent' in window) {
+        bindActivity(target, 'pointerdown', {capture:true, passive:true});
+      } else {
+        bindActivity(target, 'touchstart', {capture:true, passive:true});
+        bindActivity(target, 'mousedown', {capture:true, passive:true});
+      }
       bindActivity(target, 'keydown', true);
       bindActivity(target, 'wheel', {capture:true, passive:true});
     };
-    bindTarget(window);
+    // Document capture already sees the page's presses; binding both window and document
+    // duplicated the same physical tap. Add parent/top documents only when they differ.
     bindTarget(document);
-    // st.components can be isolated, so also listen on the parent/top page whenever the
-    // browser permits it. Failure is harmless; page reruns and component-local activity
-    // still refresh the same five-minute timestamp.
     try {
-      if (window.parent && window.parent !== window) {
-        bindTarget(window.parent);
+      if (window.parent && window.parent !== window && window.parent.document !== document) {
         bindTarget(window.parent.document);
       }
     } catch (_) {}
     try {
-      if (window.top && window.top !== window && window.top !== window.parent) {
-        bindTarget(window.top);
+      if (window.top && window.top !== window && window.top.document !== document &&
+          (!window.parent || window.top.document !== window.parent.document)) {
         bindTarget(window.top.document);
       }
     } catch (_) {}
