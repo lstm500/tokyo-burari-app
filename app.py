@@ -32,9 +32,9 @@ from zoneinfo import ZoneInfo
 import streamlit as st
 
 # Freshly generated update: 2026-08-31 23:49 JST
-GENERATED_UPDATE_JST = "2026-09-10T18:20:00+09:00"
+GENERATED_UPDATE_JST = "2026-09-10T19:50:00+09:00"
 
-APP_BUILD = "v374"
+APP_BUILD = "v375"
 # v331: multi-tag photo selections can go straight to a music replay and be saved as a stable in-app movie snapshot.
 # v330: tag-review movies support one or multiple AI tags; selection is action-only.
 
@@ -13801,111 +13801,39 @@ def _focus_box_from_people(src_image, target_ratio):
 
 
 def _normalize_video_frame_photo_bytes(image_bytes, *, quality=90, max_long=1600):
-    """Make landscape video stills feel closer inside the app.
+    """Preserve the original video-frame composition and resolution whenever possible.
 
-    The crop is now human-aware. When one person is visible, it keeps that person
-    larger in frame. When two people are visible, it prefers a crop that keeps both
-    people together and preserves the space between them so the relationship/moment is
-    easier to feel. If local detection fails, it falls back to the previous lightweight
-    entropy-based crop search.
+    v375 disables the landscape-video close-up / portrait crop introduced in v358-v363.
+    Cropping and digital enlargement made 16:9 source video stills look softer, especially
+    with 1280x720 material. For native-size frames at or below max_long, return the original
+    bytes unchanged so there is no additional crop, enlargement, resize, or JPEG generation
+    loss. Only oversized frames are reduced to max_long for storage/performance safety.
     """
-    from PIL import Image, ImageOps, ImageStat
+    from PIL import Image, ImageOps
 
     if not image_bytes:
         return b""
     try:
         with Image.open(io.BytesIO(image_bytes)) as src:
-            src = ImageOps.exif_transpose(src).convert("RGB")
-            resampling = getattr(getattr(Image, "Resampling", Image), "LANCZOS")
+            src = ImageOps.exif_transpose(src)
             w, h = src.size
             if w <= 0 or h <= 0:
                 return bytes(image_bytes)
 
-            result = src
-            # Only tighten clearly horizontal images. Portrait/square photos stay natural.
-            if w > int(h * 1.10):
-                target_ratio = 4.0 / 5.0  # portrait-friendly crop for the app's photo UI
+            long_edge = max(w, h)
+            if not max_long or long_edge <= int(max_long):
+                # Keep the exact source JPEG/PNG bytes. This avoids another lossy encode.
+                return bytes(image_bytes)
 
-                # First choice: human-aware crop that keeps one person large or two people together.
-                focus_crop = _focus_box_from_people(src, target_ratio)
-                if focus_crop is not None:
-                    result = src.crop(focus_crop)
-                else:
-                    gray = src.convert("L")
-                    best_box = None
-                    best_score = None
-                    wide_ratio = w / float(max(1, h))
-                    # Wider videos get a little more zoom to avoid the "too far away" feeling.
-                    zoom_levels = (0.96, 0.88, 0.80) if wide_ratio < 1.55 else (0.92, 0.84, 0.76)
-
-                    for frac in zoom_levels:
-                        crop_h = max(240, min(h, int(round(h * frac))))
-                        crop_w = int(round(crop_h * target_ratio))
-                        if crop_w > w:
-                            crop_w = w
-                            crop_h = int(round(crop_w / target_ratio))
-                        if crop_w <= 0 or crop_h <= 0 or crop_w > w or crop_h > h:
-                            continue
-
-                        max_left = max(0, w - crop_w)
-                        max_top = max(0, h - crop_h)
-
-                        # Candidate centers: prefer the center, but allow moderate left/right shifts.
-                        center_positions = [0.50, 0.38, 0.62, 0.26, 0.74]
-                        vertical_positions = [0.54, 0.48, 0.60]
-
-                        if max_left == 0:
-                            left_candidates = [0]
-                        else:
-                            left_candidates = []
-                            for rel in center_positions:
-                                left = int(round((w * rel) - crop_w / 2.0))
-                                left_candidates.append(max(0, min(max_left, left)))
-                            left_candidates = list(dict.fromkeys(left_candidates))
-
-                        if max_top == 0:
-                            top_candidates = [0]
-                        else:
-                            top_candidates = []
-                            for rel in vertical_positions:
-                                top = int(round((h * rel) - crop_h / 2.0))
-                                top_candidates.append(max(0, min(max_top, top)))
-                            top_candidates = list(dict.fromkeys(top_candidates))
-
-                        for left in left_candidates:
-                            for top in top_candidates:
-                                right = left + crop_w
-                                bottom = top + crop_h
-                                region = gray.crop((left, top, right, bottom))
-                                entropy = float(region.entropy())
-                                try:
-                                    contrast = float(ImageStat.Stat(region).stddev[0])
-                                except Exception:
-                                    contrast = 0.0
-                                cx = left + crop_w / 2.0
-                                cy = top + crop_h / 2.0
-                                dx = abs(cx - (w / 2.0)) / max(1.0, w / 2.0)
-                                dy = abs(cy - (h * 0.55)) / max(1.0, h / 2.0)
-                                center_bonus = max(0.0, 1.0 - dx * 0.80 - dy * 0.55)
-                                zoom_bonus = max(0.0, (1.0 - frac) * 4.0)
-                                score = entropy + (contrast * 0.09) + center_bonus + zoom_bonus
-                                if best_score is None or score > best_score:
-                                    best_score = score
-                                    best_box = (left, top, right, bottom)
-
-                    if best_box is not None:
-                        result = src.crop(best_box)
-
-            long_edge = max(result.width, result.height)
-            if max_long and long_edge > int(max_long):
-                scale = float(max_long) / float(long_edge)
-                result = result.resize(
-                    (max(1, int(round(result.width * scale))), max(1, int(round(result.height * scale)))),
-                    resampling,
-                )
-
+            src = src.convert("RGB")
+            resampling = getattr(getattr(Image, "Resampling", Image), "LANCZOS")
+            scale = float(max_long) / float(long_edge)
+            resized = src.resize(
+                (max(1, int(round(w * scale))), max(1, int(round(h * scale)))),
+                resampling,
+            )
             out = io.BytesIO()
-            result.save(out, format="JPEG", quality=max(82, int(quality or 90)), optimize=True)
+            resized.save(out, format="JPEG", quality=max(90, int(quality or 90)), optimize=True)
             return out.getvalue()
     except Exception:
         return bytes(image_bytes)
