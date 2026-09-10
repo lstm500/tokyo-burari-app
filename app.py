@@ -32,9 +32,9 @@ from zoneinfo import ZoneInfo
 import streamlit as st
 
 # Freshly generated update: 2026-08-31 23:49 JST
-GENERATED_UPDATE_JST = "2026-09-10T20:10:00+09:00"
+GENERATED_UPDATE_JST = "2026-09-10T23:55:00+09:00"
 
-APP_BUILD = "v378"
+APP_BUILD = "v379"
 # v331: multi-tag photo selections can go straight to a music replay and be saved as a stable in-app movie snapshot.
 # v330: tag-review movies support one or multiple AI tags; selection is action-only.
 
@@ -2112,19 +2112,59 @@ export default function(component) {
     let localCameraStream = null;
     let localAudioStream = null;
     try {
-      // v373: always acquire the camera first with audio:false. This restores the
-      // proven photo path and avoids a microphone-start failure taking the camera down.
+      // v379: photos remain camera-only. For video, request camera + microphone in
+      // the SAME getUserMedia call so Android WebView/Chromium creates one native A/V
+      // capture session. The previous v373 path opened the camera first and added a
+      // separately acquired microphone track afterwards; on this Android/WebView that
+      // track could report readyState=live while MediaRecorder still produced silence.
       const requestCameraOnly = async () => {
         const constraints = preferredVideoConstraints();
         return await navigator.mediaDevices.getUserMedia({ audio: false, video: constraints });
       };
+      const requestVideoWithAudio = async () => {
+        const constraints = preferredVideoConstraints();
+        return await navigator.mediaDevices.getUserMedia({
+          video: constraints,
+          audio: {
+            echoCancellation: { ideal: true },
+            noiseSuppression: { ideal: true },
+            autoGainControl: { ideal: true },
+            channelCount: { ideal: 1 }
+          }
+        });
+      };
 
-      try {
-        localCameraStream = await requestCameraOnly();
-      } catch (firstErr) {
-        if (!preferredCameraDeviceId) throw firstErr;
-        preferredCameraDeviceId = null;
-        localCameraStream = await requestCameraOnly();
+      let combinedAvError = null;
+      if (requestedMode === 'video') {
+        try {
+          localCameraStream = await requestVideoWithAudio();
+        } catch (firstErr) {
+          combinedAvError = firstErr;
+          // A stale preferred camera id can make the combined request fail. Retry once
+          // with the browser's current default device before falling back to camera-only.
+          if (preferredCameraDeviceId) {
+            preferredCameraDeviceId = null;
+            try {
+              localCameraStream = await requestVideoWithAudio();
+              combinedAvError = null;
+            } catch (retryErr) {
+              combinedAvError = retryErr;
+            }
+          }
+          if (!localCameraStream) {
+            // Keep silent recording available as a last-resort path. Microphone-only
+            // acquisition below will get one more chance before the UI says audio is off.
+            localCameraStream = await requestCameraOnly();
+          }
+        }
+      } else {
+        try {
+          localCameraStream = await requestCameraOnly();
+        } catch (firstErr) {
+          if (!preferredCameraDeviceId) throw firstErr;
+          preferredCameraDeviceId = null;
+          localCameraStream = await requestCameraOnly();
+        }
       }
       if (!stillCurrent()) {
         stopMediaStream(localCameraStream);
@@ -2169,52 +2209,58 @@ export default function(component) {
       showCameraActions();
 
       let audioReady = requestedMode !== 'video';
-      let audioError = null;
+      let audioError = requestedMode === 'video' ? combinedAvError : null;
       if (requestedMode === 'video') {
-        setStatus('カメラを開きました。マイクを接続しています…');
-
-        // Acquire microphone separately. Some Android/WebView devices fail when video
-        // and audio are requested in one getUserMedia call even though each source works.
-        // Start with the least restrictive request, then retry once after the permission/
-        // audio-service state has had time to settle.
-        const requestMicrophoneOnly = async () => {
-          return await navigator.mediaDevices.getUserMedia({ video: false, audio: true });
-        };
-        for (let attempt = 0; attempt < 2 && stillCurrent(); attempt += 1) {
-          try {
-            if (attempt > 0) await pause(450);
-            localAudioStream = await requestMicrophoneOnly();
-            const audioTrack = localAudioStream && localAudioStream.getAudioTracks
-              ? localAudioStream.getAudioTracks().find((track) => track.readyState === 'live')
-              : null;
-            if (!audioTrack) throw new Error('audio track is unavailable');
-            if (!stillCurrent()) {
+        // Preferred v379 path: the audio track already belongs to the same native media
+        // stream as the camera. This is materially more reliable for Android WebView
+        // MediaRecorder than adding a microphone track after the video stream is live.
+        let audioTrack = stream && stream.getAudioTracks
+          ? stream.getAudioTracks().find((track) => track.readyState === 'live')
+          : null;
+        if (audioTrack) {
+          try { audioTrack.enabled = true; } catch (_) {}
+          audioReady = true;
+          audioError = null;
+        } else {
+          setStatus('カメラを開きました。マイクを再接続しています…');
+          const requestMicrophoneOnly = async () => {
+            return await navigator.mediaDevices.getUserMedia({ video: false, audio: true });
+          };
+          for (let attempt = 0; attempt < 2 && stillCurrent(); attempt += 1) {
+            try {
+              if (attempt > 0) await pause(450);
+              localAudioStream = await requestMicrophoneOnly();
+              audioTrack = localAudioStream && localAudioStream.getAudioTracks
+                ? localAudioStream.getAudioTracks().find((track) => track.readyState === 'live')
+                : null;
+              if (!audioTrack) throw new Error('audio track is unavailable');
+              if (!stillCurrent()) {
+                stopMediaStream(localAudioStream);
+                return;
+              }
+              try { audioTrack.enabled = true; } catch (_) {}
+              // Build a NEW combined MediaStream instead of mutating the already-playing
+              // camera stream. This gives MediaRecorder a stable A/V track set from birth.
+              const videoTracks = stream && stream.getVideoTracks ? stream.getVideoTracks() : [];
+              const combinedStream = new MediaStream([...videoTracks, audioTrack]);
+              stream = combinedStream;
+              video.srcObject = stream;
+              try { await video.play(); } catch (_) {}
+              // Stop only extra tracks; the audio track retained in combinedStream stays live.
+              try {
+                localAudioStream.getTracks().forEach((track) => {
+                  if (track !== audioTrack) { try { track.stop(); } catch (_) {} }
+                });
+              } catch (_) {}
+              localAudioStream = null;
+              audioReady = true;
+              audioError = null;
+              break;
+            } catch (micErr) {
+              audioError = micErr;
               stopMediaStream(localAudioStream);
-              return;
+              localAudioStream = null;
             }
-            try {
-              await audioTrack.applyConstraints({
-                echoCancellation: { ideal: true },
-                noiseSuppression: { ideal: true },
-                autoGainControl: { ideal: true },
-                channelCount: { ideal: 1 }
-              });
-            } catch (_) {}
-            stream.addTrack(audioTrack);
-            // Stop only extra tracks; the track added to `stream` must remain live.
-            try {
-              localAudioStream.getTracks().forEach((track) => {
-                if (track !== audioTrack) { try { track.stop(); } catch (_) {} }
-              });
-            } catch (_) {}
-            localAudioStream = null;
-            audioReady = true;
-            audioError = null;
-            break;
-          } catch (micErr) {
-            audioError = micErr;
-            stopMediaStream(localAudioStream);
-            localAudioStream = null;
           }
         }
       }
@@ -2756,7 +2802,10 @@ export default function(component) {
 
   const startVideoRecording = async () => {
     if (!stream || !video.videoWidth || !video.videoHeight) return;
-    const hasAudio = !!(stream.getAudioTracks && stream.getAudioTracks().some((track) => track.readyState === 'live'));
+    const hasAudio = !!(stream.getAudioTracks && stream.getAudioTracks().some((track) => {
+      try { track.enabled = true; } catch (_) {}
+      return track.readyState === 'live' && track.enabled !== false;
+    }));
     // v374: the button label already tells the user when the microphone is unavailable.
     // Do not block recording in that state. MediaRecorder can safely record the live
     // camera stream without an audio track; chooseRecorderMimeType(false) selects a
@@ -2790,9 +2839,20 @@ export default function(component) {
       if (hasAudio) options.audioBitsPerSecond = 96000;
       if (mimeType) options.mimeType = mimeType;
       try {
-        mediaRecorder = new MediaRecorder(stream, options);
+        // Snapshot the live tracks into a fresh stream at recorder construction time.
+        // Chromium/WebView is less reliable when a track is appended to a stream that
+        // was already attached to a playing <video> element.
+        const recorderStream = new MediaStream([
+          ...(stream.getVideoTracks ? stream.getVideoTracks().filter((track) => track.readyState === 'live') : []),
+          ...(stream.getAudioTracks ? stream.getAudioTracks().filter((track) => track.readyState === 'live' && track.enabled !== false) : [])
+        ]);
+        mediaRecorder = new MediaRecorder(recorderStream, options);
       } catch (_) {
-        mediaRecorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+        const recorderStream = new MediaStream([
+          ...(stream.getVideoTracks ? stream.getVideoTracks().filter((track) => track.readyState === 'live') : []),
+          ...(stream.getAudioTracks ? stream.getAudioTracks().filter((track) => track.readyState === 'live' && track.enabled !== false) : [])
+        ]);
+        mediaRecorder = new MediaRecorder(recorderStream, mimeType ? { mimeType } : undefined);
       }
       mediaRecorder.ondataavailable = (event) => {
         if (event.data && event.data.size > 0) recordedChunks.push(event.data);
