@@ -16549,9 +16549,36 @@ def clear_replay_photo_curation(scope_key):
     st.session_state.pop(replay_photo_curation_state_key(scope_key), None)
 
 
-def _replay_photo_candidates(bundle, max_candidates=24):
+def replay_photo_curation_target_count(total_count):
+    total = max(0, int(total_count or 0))
+    if total <= 0:
+        return 0
+    if total <= 5:
+        return 1
+    if total <= 8:
+        return 2
+    return max(1, int(round(total / 3.0)))
+
+
+def replay_photo_curation_candidate_limit(total_count, target_count):
+    total = max(0, int(total_count or 0))
+    target = max(0, int(target_count or 0))
+    if total <= 0:
+        return 0
+    if total <= 36:
+        return total
+    # Keep the AI input bounded while still letting it compare a broad enough slice
+    # to approximate the requested "about one-third" reduction.
+    desired = max(36, target * 3)
+    return min(total, max(36, min(desired, 72)))
+
+
+def _replay_photo_candidates(bundle, max_candidates=None):
     photos, trip_map = _monthly_replay_selected_photos(bundle)
-    if len(photos) <= max_candidates:
+    if not max_candidates or len(photos) <= max_candidates:
+        return photos, trip_map
+    max_candidates = max(1, int(max_candidates))
+    if max_candidates >= len(photos):
         return photos, trip_map
     step = len(photos) / float(max_candidates)
     picked = []
@@ -16568,6 +16595,7 @@ def _replay_photo_candidates(bundle, max_candidates=24):
 def _fallback_replay_curation(photos, max_selected=12):
     if not photos:
         return []
+    max_selected = max(1, int(max_selected or 1))
     if len(photos) <= max_selected:
         return [str(photo.get("id") or "") for photo in photos if photo.get("id")]
     step = len(photos) / float(max_selected)
@@ -16582,10 +16610,19 @@ def _fallback_replay_curation(photos, max_selected=12):
     return picked
 
 
-def generate_replay_photo_curation(scope_key, period_label, bundle, max_candidates=24, max_selected=12):
-    candidate_photos, trip_map = _replay_photo_candidates(bundle, max_candidates=max_candidates)
+def generate_replay_photo_curation(scope_key, period_label, bundle, max_candidates=None, max_selected=None):
+    all_photos, _ = _monthly_replay_selected_photos(bundle)
+    total_source_count = len(all_photos)
+    if total_source_count <= 0:
+        payload = {"active": False, "selected_photo_ids": [], "picks": [], "source_count": 0, "target_count": 0}
+        st.session_state[replay_photo_curation_state_key(scope_key)] = payload
+        return payload
+
+    target_selected = int(max_selected or replay_photo_curation_target_count(total_source_count) or 1)
+    candidate_limit = int(max_candidates or replay_photo_curation_candidate_limit(total_source_count, target_selected) or total_source_count)
+    candidate_photos, trip_map = _replay_photo_candidates(bundle, max_candidates=candidate_limit)
     if not candidate_photos:
-        payload = {"active": False, "selected_photo_ids": [], "picks": []}
+        payload = {"active": False, "selected_photo_ids": [], "picks": [], "source_count": total_source_count, "target_count": target_selected}
         st.session_state[replay_photo_curation_state_key(scope_key)] = payload
         return payload
 
@@ -16614,29 +16651,37 @@ def generate_replay_photo_curation(scope_key, period_label, bundle, max_candidat
         image_items.append((f"候補{idx}: {caption}", raw))
 
     if not valid_photos:
-        payload = {"active": False, "selected_photo_ids": [], "picks": []}
+        payload = {"active": False, "selected_photo_ids": [], "picks": [], "source_count": total_source_count, "target_count": target_selected}
         st.session_state[replay_photo_curation_state_key(scope_key)] = payload
         return payload
 
+    target_selected = min(target_selected, len(valid_photos))
     prompt_lines = [
         "東京ぶらり旅の振り返りムービー用に、候補写真の中から見返す価値が高い写真を厳選してください。",
+        "子どもの写真として、映りがよく、感情が伝わり、成長や未来を感じる写真を優先してください。",
         "厳選基準は次の3つです。",
         "1. カメラ目線で、本人がはっきり映り、感情表現がしっかりしている写真。",
         "2. カメラ目線ではなく、何かに夢中になっていたり、頑張っている最中が伝わる写真。",
         "3. 人と人との絆や関わりが感じられる写真。",
+        "どの基準でも、単なる記念写真より、自分で考えている・挑戦している・やりきった・関わり合っているなど、この子の成長や未来が感じられる写真を高く評価してください。",
+        "ピンぼけ、被写体が小さすぎる、暗すぎる、表情や行動が読み取りにくい、ほぼ同じ場面の重複写真は優先度を下げてください。",
         f"候補は全部で{len(candidate_meta)}枚です。1〜{len(candidate_meta)}の候補番号で答えてください。",
-        f"3つの基準が偏りすぎないように、合計最大{max_selected}枚を選んでください。各基準から最低1枚は入るよう意識してください。",
+        f"最終的には元枚数の約1/3になるようにしたいので、この候補群からは合計{target_selected}枚を目安に選んでください。できるだけ{target_selected}枚ちょうど選んでください。",
+        "3つの基準が極端に偏りすぎないようにしつつ、最終的には総合的に最も良い写真を優先してください。",
         "似た写真を重複して選ばず、時系列も偏りすぎないようにしてください。",
-        "score は 1〜100 の整数、reason は短く簡潔にしてください。",
+        "category は 1〜3 の整数、score は 1〜100 の整数、reason は短く簡潔にしてください。",
     ]
     result = ask_json_with_images("\n".join(prompt_lines), image_items, "curate_replay_photos", PHOTO_CURATION_SCHEMA, 1200)
 
     by_index = {meta["candidate_index"]: meta for meta in candidate_meta}
     picks = []
     seen_ids = set()
-    for pick in (result.get("picks") or []):
-        if not isinstance(pick, dict):
-            continue
+    raw_picks = [pick for pick in (result.get("picks") or []) if isinstance(pick, dict)]
+    try:
+        raw_picks = sorted(raw_picks, key=lambda x: int(x.get("score") or 0), reverse=True)
+    except Exception:
+        pass
+    for pick in raw_picks:
         try:
             candidate_index = int(pick.get("candidate_index"))
         except Exception:
@@ -16667,13 +16712,15 @@ def generate_replay_photo_curation(scope_key, period_label, bundle, max_candidat
             "caption": str(meta.get("caption") or ""),
         })
         seen_ids.add(photo_id)
-        if len(picks) >= max_selected:
+        if len(picks) >= target_selected:
             break
 
-    if len(picks) < min(3, len(valid_photos)):
-        fallback_ids = _fallback_replay_curation(valid_photos, max_selected=max_selected)
-        picks = []
+    if len(picks) < target_selected:
+        fallback_ids = _fallback_replay_curation(valid_photos, max_selected=target_selected)
+        existing = {str(item.get("photo_id") or "") for item in picks}
         for photo_id in fallback_ids:
+            if str(photo_id) in existing:
+                continue
             meta = next((m for m in candidate_meta if str(m.get("photo_id") or "") == str(photo_id)), None)
             if not meta:
                 continue
@@ -16685,16 +16732,22 @@ def generate_replay_photo_curation(scope_key, period_label, bundle, max_candidat
                 "reason": "自動補完",
                 "caption": str(meta.get("caption") or ""),
             })
+            existing.add(str(photo_id))
+            if len(picks) >= target_selected:
+                break
 
     order_map = {str(photo.get("id") or ""): idx for idx, photo in enumerate(candidate_photos)}
-    selected_photo_ids = [p.get("photo_id") for p in sorted(picks, key=lambda x: order_map.get(str(x.get("photo_id") or ""), 10**9)) if p.get("photo_id")]
+    ordered_picks = sorted(picks, key=lambda x: order_map.get(str(x.get("photo_id") or ""), 10**9))
+    selected_photo_ids = [p.get("photo_id") for p in ordered_picks if p.get("photo_id")]
     payload = {
         "active": bool(selected_photo_ids),
         "period_label": str(period_label or ""),
         "selected_photo_ids": selected_photo_ids,
-        "picks": picks,
+        "picks": ordered_picks,
         "generated_at": now_jst().isoformat(),
         "candidate_count": len(candidate_photos),
+        "source_count": total_source_count,
+        "target_count": target_selected,
     }
     st.session_state[replay_photo_curation_state_key(scope_key)] = payload
     return payload
@@ -16714,20 +16767,24 @@ def render_replay_photo_curation_controls(scope_key, period_label, bundle, all_p
     state = get_replay_photo_curation(scope_key)
     active_count = len(state.get("selected_photo_ids") or [])
     total_count = len(all_photo_items or [])
+    target_count = replay_photo_curation_target_count(total_count)
     with st.container(border=True):
         st.markdown("#### ✨ 写真厳選モード")
-        st.caption("基準：①カメラ目線で感情が伝わる ②夢中・頑張り中 ③人との絆が感じられる")
+        st.caption("基準：①カメラ目線で感情が伝わる ②夢中・頑張り中 ③人との絆 ＋ 映りの良さ・成長感・未来感を優先")
         if state.get("active") and active_count:
             st.success(f"厳選中です。{total_count}枚から {active_count}枚を表示しています。")
         else:
-            st.info("AIがムービー向きの写真を厳選して、見返しやすい枚数にしぼります。")
+            if target_count > 0:
+                st.info(f"AIがムービー向きの写真を厳選し、{total_count}枚の中から約1/3の {target_count}枚前後にしぼります。")
+            else:
+                st.info("AIがムービー向きの写真を厳選して、見返しやすい枚数にしぼります。")
 
         cols = st.columns(3)
         with cols[0]:
             if st.button("✨ 写真厳選モードにする", key=f"replay_curation_on_{scope_key}", type="primary", use_container_width=True):
                 try:
                     with st.spinner("写真を厳選しています…"):
-                        payload = generate_replay_photo_curation(scope_key, period_label, bundle)
+                        payload = generate_replay_photo_curation(scope_key, period_label, bundle, max_selected=target_count)
                     count = len(payload.get("selected_photo_ids") or [])
                     if count:
                         st.success(f"{count}枚を厳選しました。")
@@ -16742,7 +16799,7 @@ def render_replay_photo_curation_controls(scope_key, period_label, bundle, all_p
             if st.button("↻ もう一度厳選", key=f"replay_curation_retry_{scope_key}", use_container_width=True, disabled=not bool(all_photo_items)):
                 try:
                     with st.spinner("写真を厳選しています…"):
-                        payload = generate_replay_photo_curation(scope_key, period_label, bundle)
+                        payload = generate_replay_photo_curation(scope_key, period_label, bundle, max_selected=target_count)
                     count = len(payload.get("selected_photo_ids") or [])
                     if count:
                         st.success(f"{count}枚を選び直しました。")
