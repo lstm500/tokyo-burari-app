@@ -32,9 +32,9 @@ from zoneinfo import ZoneInfo
 import streamlit as st
 
 # Freshly generated update: 2026-08-31 23:49 JST
-GENERATED_UPDATE_JST = "2026-09-10T18:05:00+09:00"
+GENERATED_UPDATE_JST = "2026-09-10T18:20:00+09:00"
 
-APP_BUILD = "v373"
+APP_BUILD = "v374"
 # v331: multi-tag photo selections can go straight to a music replay and be saved as a stable in-app movie snapshot.
 # v330: tag-review movies support one or multiple AI tags; selection is action-only.
 
@@ -2238,12 +2238,10 @@ export default function(component) {
         } else {
           const detail = audioError && audioError.message ? String(audioError.message).replace(/\s+/g, ' ').trim().slice(0, 180) : '';
           const message = 'カメラは使用できますが、マイクを開始できませんでした。今回は音声なしでも録画できます。音声付きにする場合は、端末の「ぶらり旅」のマイク権限を許可してから動画を開き直してください。';
+          // Microphone failure is non-fatal in v374. Keep the camera component alive
+          // and avoid a Streamlit rerun here; the red button remains usable as
+          // "音声なしで録画". A rerun at this point could reset a working camera preview.
           setStatus(message);
-          setTriggerValue('camera_error', {
-            name: (audioError && audioError.name) ? audioError.name : 'MicrophoneStartError',
-            message,
-            detail
-          });
         }
       } else {
         setStatus(cameraFacing === 'user' ? '内側カメラ使用中です。' : '');
@@ -2759,13 +2757,10 @@ export default function(component) {
   const startVideoRecording = async () => {
     if (!stream || !video.videoWidth || !video.videoHeight) return;
     const hasAudio = !!(stream.getAudioTracks && stream.getAudioTracks().some((track) => track.readyState === 'live'));
-    if (!hasAudio) {
-      const message = '音声付き動画にするため、マイクの許可が必要です。マイクを許可してから動画を開き直してください。';
-      setStatus(message);
-      setTriggerValue('camera_error', { name: 'MicrophoneTrackMissing', message });
-      return;
-    }
-
+    // v374: the button label already tells the user when the microphone is unavailable.
+    // Do not block recording in that state. MediaRecorder can safely record the live
+    // camera stream without an audio track; chooseRecorderMimeType(false) selects a
+    // video-only format and the saved metadata records has_audio=false.
     recordedChunks = [];
     recordingCandidateFrames = [];
     recordingCandidateBusy = false;
@@ -3389,7 +3384,7 @@ LIVE_CAMERA_COMPONENT_BUILD = "v237"
 
 try:
     live_camera_component = st.components.v2.component(
-        "tokyo_burari_live_camera_v237",
+        "tokyo_burari_live_camera_v374",
         html=_LIVE_CAMERA_HTML,
         css=_LIVE_CAMERA_CSS,
         js=_LIVE_CAMERA_JS,
@@ -28633,7 +28628,7 @@ def page_trip():
             "video_candidate_sheet_signed_url": str(video_reservation.get("candidate_sheet_signed_url") or ""),
             "video_candidate_sheet_storage_path": str(video_reservation.get("candidate_sheet_path") or ""),
         },
-        key=f"live_camera_v313_{camera_trip_key}_{st.session_state.capture_serial}_{_current_ui_refresh_epoch()}",
+        key=f"live_camera_v374_{camera_trip_key}_{st.session_state.capture_serial}_{_current_ui_refresh_epoch()}",
         on_photo_change=lambda: None,
         on_video_change=lambda: None,
         on_camera_error_change=lambda: None,
