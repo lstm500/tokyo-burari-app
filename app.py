@@ -1,4 +1,5 @@
 import base64
+import functools
 import hashlib
 import hmac
 import html
@@ -30,9 +31,9 @@ from zoneinfo import ZoneInfo
 import streamlit as st
 
 # Freshly generated update: 2026-08-31 23:49 JST
-GENERATED_UPDATE_JST = "2026-09-10T14:10:00+09:00"
+GENERATED_UPDATE_JST = "2026-09-10T14:18:00+09:00"
 
-APP_BUILD = "v363"
+APP_BUILD = "v364"
 # v331: multi-tag photo selections can go straight to a music replay and be saved as a stable in-app movie snapshot.
 # v330: tag-review movies support one or multiple AI tags; selection is action-only.
 
