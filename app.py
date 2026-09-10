@@ -30,9 +30,9 @@ from zoneinfo import ZoneInfo
 import streamlit as st
 
 # Freshly generated update: 2026-08-31 23:49 JST
-GENERATED_UPDATE_JST = "2026-09-10T12:22:00+09:00"
+GENERATED_UPDATE_JST = "2026-09-10T12:30:00+09:00"
 
-APP_BUILD = "v355"
+APP_BUILD = "v356"
 # v331: multi-tag photo selections can go straight to a music replay and be saved as a stable in-app movie snapshot.
 # v330: tag-review movies support one or multiple AI tags; selection is action-only.
 
@@ -17587,12 +17587,127 @@ def _shared_movie_list_time_label(value):
         return raw.replace("T", " ")[:16]
 
 
-def render_own_replay_movie_library():
-    """Show every saved replay movie below 'これまでの日記' with compact share controls."""
-    st.markdown("#### 🎞 作ったムービー")
-    st.caption("これまで作ったムービーの一覧です。共有中かどうかをここで確認し、そのまま共有・解除できます。")
+def open_owned_replay_movie_from_library(item):
+    """Open one saved movie from the Review movie library on its normal detail page."""
+    item = item if isinstance(item, dict) else {}
+    month_key = str(item.get("month_key") or "").strip()[:7]
+    review = dict(item.get("review") or {}) if isinstance(item.get("review"), dict) else {}
+    if not month_key or not review:
+        raise ValueError("開くムービーの情報を確認できませんでした。")
 
-    notice = st.session_state.pop("_replay_movie_library_notice_v355", None)
+    st.session_state[f"monthly_review_{month_key}"] = review
+    scope_type = str(review.get("_review_scope_type") or "").strip().lower()
+    if scope_type in {"tag", "ai_tag"}:
+        tags = _normalize_tag_review_selection(review.get("_ai_tag_keys") or [])
+        if not tags:
+            fallback_tag = normalize_ai_photo_tag(review.get("_tag_label") or review.get("_ai_tag_key") or "")
+            if fallback_tag:
+                tags = [fallback_tag]
+        if not tags:
+            raise ValueError("このタグ別ムービーのタグ条件を確認できませんでした。")
+        mode = str(review.get("_ai_tag_match_mode") or "any").lower()
+        if mode not in {"any", "all"} or len(tags) <= 1:
+            mode = "any"
+        st.session_state["_ai_tag_review_active_tags_v330"] = list(tags)
+        st.session_state["_ai_tag_review_match_mode_v330"] = mode
+        _set_page_state("review_tag", history_mode="push")
+        return
+
+    st.session_state["monthly_selector"] = month_key
+    _set_page_state("review_monthly", history_mode="push")
+
+
+def delete_owned_replay_movie(row_id):
+    """Delete only the saved replay association; keep source photos/diaries/AI review."""
+    row_id = str(row_id or "").strip()
+    if not row_id:
+        raise ValueError("削除するムービーを確認できませんでした。")
+
+    client = supabase_client()
+    result = (
+        client.table(MONTHLY_TABLE)
+        .select("id,review_month,review_json")
+        .eq("id", row_id)
+        .eq("family_key", current_family_key())
+        .eq("member_key", current_member_key())
+        .limit(1)
+        .execute()
+    )
+    row = (result.data or [None])[0]
+    if not isinstance(row, dict) or not row.get("id"):
+        raise ValueError("削除するムービーが見つかりませんでした。")
+
+    month_key = str(row.get("review_month") or "")[:7]
+    review = _coerce_review_json(row.get("review_json"))
+    scope_type = str(review.get("_review_scope_type") or "").strip().lower()
+
+    # A movie shared with family must stop being visible to recipients when deleted.
+    review.pop("_family_share", None)
+    review.pop("_playback", None)
+    if scope_type in {"tag", "ai_tag"}:
+        review.pop("_tag_movie_photo_ids", None)
+        review.pop("_tag_movie_saved_at", None)
+        review["_tag_movie_saved"] = False
+        review["_tag_movie_draft"] = False
+
+    now_value = now_jst().isoformat()
+    (
+        client.table(MONTHLY_TABLE)
+        .update({"review_json": review, "updated_at": now_value})
+        .eq("id", row_id)
+        .eq("family_key", current_family_key())
+        .eq("member_key", current_member_key())
+        .execute()
+    )
+
+    if month_key:
+        st.session_state[f"monthly_review_{month_key}"] = review
+        discard_monthly_preview_playback(month_key)
+        try:
+            clear_replay_photo_curation(month_key)
+        except Exception:
+            pass
+        state = _monthly_replay_state(month_key, review)
+        for state_key in (
+            state.get("url_key"),
+            state.get("start_key"),
+            state.get("end_key"),
+            state.get("reason_key"),
+            state.get("confidence_key"),
+            state.get("title_key"),
+            f"monthly_replay_applied_{month_key}",
+            f"monthly_music_settings_open_{month_key}",
+            f"monthly_time_settings_open_{month_key}",
+        ):
+            if state_key:
+                st.session_state.pop(state_key, None)
+    st.session_state.pop("_home_shared_movie_check_v341", None)
+    return review
+
+
+def render_own_replay_movie_library():
+    """Show saved replay movies below 'これまでの日記' with a compact 2x2 action grid."""
+    st.markdown("#### 🎞 作ったムービー")
+    st.caption("これまで作ったムービーの一覧です。見る・削除・家族への共有／解除をここで操作できます。")
+    st.markdown(
+        """
+        <style>
+          div[class*="st-key-review_movie_view_"] button,
+          div[class*="st-key-review_movie_share_"] button,
+          div[class*="st-key-review_movie_delete_"] button,
+          div[class*="st-key-review_movie_unshare_"] button {
+            min-height: 32px !important;
+            padding: .28rem .38rem !important;
+            font-size: .78rem !important;
+            line-height: 1.1 !important;
+            border-radius: 9px !important;
+          }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    notice = st.session_state.pop("_replay_movie_library_notice_v356", None)
     if notice:
         st.success(str(notice))
 
@@ -17619,23 +17734,39 @@ def render_own_replay_movie_library():
         start_seconds = max(0, int(playback.get("start_seconds") or 0))
         end_seconds = int(playback.get("end_seconds") or (start_seconds + 1))
         key_token = hashlib.sha1((row_id or f"{period_label}:{index}").encode("utf-8")).hexdigest()[:12]
+        delete_confirm_key = f"_review_movie_delete_confirm_v356_{key_token}"
 
         with st.container(border=True, key=f"review_movie_card_{key_token}"):
-            info_col, action_col = st.columns([4.2, 1.25], gap="small", vertical_alignment="center")
-            with info_col:
-                status = "🟢 共有中" if shared else "⚪ 未共有"
-                st.markdown(f"**{html.escape(period_label)}**　{status}")
-                detail = f"{movie_type} ／ {html.escape(music_title)} ／ {format_mmss(start_seconds)}〜{format_mmss(end_seconds)}"
-                if saved_label:
-                    detail += f" ／ {saved_label}"
-                st.caption(detail)
-            with action_col:
+            status = "🟢 共有中" if shared else "⚪ 未共有"
+            st.markdown(f"**{html.escape(period_label)}**　{status}")
+            detail = f"{movie_type} ／ {html.escape(music_title)} ／ {format_mmss(start_seconds)}〜{format_mmss(end_seconds)}"
+            if saved_label:
+                detail += f" ／ {saved_label}"
+            st.caption(detail)
+
+            top_left, top_right = st.columns(2, gap="small")
+            with top_left:
+                view_clicked = st.button(
+                    "▶ 見る",
+                    use_container_width=True,
+                    key=f"review_movie_view_{key_token}",
+                )
+            with top_right:
                 share_clicked = st.button(
                     "共有",
                     use_container_width=True,
                     disabled=shared,
                     key=f"review_movie_share_{key_token}",
                 )
+
+            bottom_left, bottom_right = st.columns(2, gap="small")
+            with bottom_left:
+                delete_clicked = st.button(
+                    "🗑 削除",
+                    use_container_width=True,
+                    key=f"review_movie_delete_{key_token}",
+                )
+            with bottom_right:
                 unshare_clicked = st.button(
                     "解除",
                     use_container_width=True,
@@ -17643,25 +17774,71 @@ def render_own_replay_movie_library():
                     key=f"review_movie_unshare_{key_token}",
                 )
 
+            if view_clicked:
+                try:
+                    open_owned_replay_movie_from_library(item)
+                    st.rerun()
+                except Exception as exc:
+                    st.error("ムービーを開けませんでした。")
+                    with st.expander("保護者向け詳細"):
+                        st.code(str(exc))
+
             if share_clicked:
                 try:
                     set_owned_replay_movie_share(row_id, enabled=True)
-                    st.session_state["_replay_movie_library_notice_v355"] = f"「{period_label}」を家族に共有しました。"
+                    st.session_state["_replay_movie_library_notice_v356"] = f"「{period_label}」を家族に共有しました。"
                     st.rerun()
                 except Exception as exc:
                     st.error("家族に共有できませんでした。")
                     with st.expander("保護者向け詳細"):
                         st.code(str(exc))
+
             if unshare_clicked:
                 try:
                     set_owned_replay_movie_share(row_id, enabled=False)
-                    st.session_state["_replay_movie_library_notice_v355"] = f"「{period_label}」の家族共有を解除しました。"
+                    st.session_state["_replay_movie_library_notice_v356"] = f"「{period_label}」の家族共有を解除しました。"
                     st.rerun()
                 except Exception as exc:
                     st.error("共有を解除できませんでした。")
                     with st.expander("保護者向け詳細"):
                         st.code(str(exc))
 
+            if delete_clicked:
+                st.session_state[delete_confirm_key] = True
+                st.rerun()
+
+            if st.session_state.get(delete_confirm_key):
+                delete_note = "共有中のムービーは共有も同時に解除されます。" if shared else ""
+                st.warning(
+                    "このムービーを削除します。元の写真・日記・AIコメント・保存済み音楽は削除されません。"
+                    + delete_note
+                )
+                confirm_col, cancel_col = st.columns(2, gap="small")
+                with confirm_col:
+                    confirm_delete = st.button(
+                        "削除する",
+                        use_container_width=True,
+                        key=f"review_movie_delete_confirm_{key_token}",
+                    )
+                with cancel_col:
+                    cancel_delete = st.button(
+                        "キャンセル",
+                        use_container_width=True,
+                        key=f"review_movie_delete_cancel_{key_token}",
+                    )
+                if confirm_delete:
+                    try:
+                        delete_owned_replay_movie(row_id)
+                        st.session_state.pop(delete_confirm_key, None)
+                        st.session_state["_replay_movie_library_notice_v356"] = f"「{period_label}」を削除しました。"
+                        st.rerun()
+                    except Exception as exc:
+                        st.error("ムービーを削除できませんでした。")
+                        with st.expander("保護者向け詳細"):
+                            st.code(str(exc))
+                if cancel_delete:
+                    st.session_state.pop(delete_confirm_key, None)
+                    st.rerun()
 
 def render_own_shared_replay_movies():
     """Compatibility alias for v354 callers."""
