@@ -30,9 +30,9 @@ from zoneinfo import ZoneInfo
 import streamlit as st
 
 # Freshly generated update: 2026-08-31 23:49 JST
-GENERATED_UPDATE_JST = "2026-09-10T13:10:00+09:00"
+GENERATED_UPDATE_JST = "2026-09-10T12:22:00+09:00"
 
-APP_BUILD = "v353"
+APP_BUILD = "v355"
 # v331: multi-tag photo selections can go straight to a music replay and be saved as a stable in-app movie snapshot.
 # v330: tag-review movies support one or multiple AI tags; selection is action-only.
 
@@ -17347,6 +17347,326 @@ def list_family_shared_monthly_reviews(limit=24):
     return shared_rows[:max(1, int(limit))]
 
 
+def _owned_replay_movie_period_label(review, month_key):
+    review = review if isinstance(review, dict) else {}
+    scope_type = str(review.get("_review_scope_type") or "").strip().lower()
+    if scope_type in {"tag", "ai_tag"}:
+        label = str(review.get("_scope_label") or review.get("_tag_label") or "").strip()
+        if label:
+            return label
+        tags = _normalize_tag_review_selection(review.get("_ai_tag_keys") or [])
+        if tags:
+            mode = str(review.get("_ai_tag_match_mode") or "any").lower()
+            return tag_review_scope_label(tags, mode)
+        return "タグ別の振り返り"
+    return format_month_label(month_key) if month_key else "月別の振り返り"
+
+
+def list_own_replay_movies(limit=120):
+    """Return all saved/created replay movies for the signed-in personal account.
+
+    Monthly movies are rows with a persisted playback window. AI-tag movies are shown
+    only after the user has explicitly saved the movie snapshot. Drafts and settings
+    records are intentionally excluded.
+    """
+    requested = max(1, min(300, int(limit or 120)))
+    result = (
+        supabase_client()
+        .table(MONTHLY_TABLE)
+        .select("id,review_month,review_json,created_at,updated_at")
+        .eq("family_key", current_family_key())
+        .eq("member_key", current_member_key())
+        .order("updated_at", desc=True)
+        .limit(max(180, requested * 4))
+        .execute()
+    )
+    rows = result.data or []
+    movies = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        review = _coerce_review_json(row.get("review_json"))
+        if not review:
+            continue
+        record_type = str(review.get("_record_type") or "").strip().lower()
+        if record_type in {"music_library", "video_moment_factor_settings"}:
+            continue
+
+        playback = get_monthly_playback(review)
+        if not monthly_playback_is_ready(playback):
+            continue
+
+        month_key = str(row.get("review_month") or "")[:7]
+        scope_type = str(review.get("_review_scope_type") or "").strip().lower()
+        is_tag = scope_type in {"tag", "ai_tag"}
+        if is_tag and not bool(review.get("_tag_movie_saved")):
+            continue
+
+        share = monthly_family_share_info(review)
+        shared = bool(share.get("shared"))
+        period_label = _owned_replay_movie_period_label(review, month_key)
+        photo_count = 0
+        if is_tag:
+            try:
+                photo_count = max(0, int(review.get("_tag_movie_photo_count") or 0))
+            except Exception:
+                photo_count = 0
+        if not photo_count and shared:
+            photo_count = len([x for x in (share.get("photos") or []) if isinstance(x, dict)])
+
+        movies.append({
+            "id": str(row.get("id") or ""),
+            "month_key": month_key,
+            "period_label": period_label or "振り返りムービー",
+            "movie_type": "タグ別" if is_tag else "月別",
+            "photo_count": photo_count,
+            "shared": shared,
+            "shared_at": str(share.get("shared_at") or ""),
+            "saved_at": str(review.get("_tag_movie_saved_at") or row.get("updated_at") or row.get("created_at") or ""),
+            "updated_at": str(row.get("updated_at") or ""),
+            "playback": playback,
+            "review": review,
+            "share": share,
+        })
+
+    movies.sort(
+        key=lambda item: (
+            _shared_movie_time_value(item.get("saved_at") or item.get("updated_at")),
+            str(item.get("id") or ""),
+        ),
+        reverse=True,
+    )
+    return movies[:requested]
+
+
+def _bundle_from_owned_photo_ids(photo_ids):
+    """Rebuild a saved movie bundle from owned photo ids without rerunning AI tagging."""
+    ordered_ids = []
+    seen = set()
+    for value in photo_ids or []:
+        photo_id = str(value or "").strip()
+        if photo_id and photo_id not in seen:
+            seen.add(photo_id)
+            ordered_ids.append(photo_id)
+    if not ordered_ids:
+        return {"trips": [], "diaries": [], "photos": []}
+
+    client = supabase_client()
+    rows = []
+    for offset in range(0, len(ordered_ids), 100):
+        chunk = ordered_ids[offset:offset + 100]
+        batch = (
+            client.table(PHOTO_TABLE)
+            .select("id,trip_id,storage_path,captured_at,reflection_json,signals_json")
+            .eq("family_key", current_family_key())
+            .eq("member_key", current_member_key())
+            .in_("id", chunk)
+            .execute()
+        ).data or []
+        rows.extend(row for row in batch if isinstance(row, dict))
+
+    by_id = {str(row.get("id") or ""): row for row in rows}
+    photos = [by_id[photo_id] for photo_id in ordered_ids if photo_id in by_id]
+    trip_ids = []
+    trip_seen = set()
+    for photo in photos:
+        trip_id = str(photo.get("trip_id") or "").strip()
+        if trip_id and trip_id not in trip_seen:
+            trip_seen.add(trip_id)
+            trip_ids.append(trip_id)
+
+    trips = []
+    for offset in range(0, len(trip_ids), 100):
+        chunk = trip_ids[offset:offset + 100]
+        if not chunk:
+            continue
+        batch = (
+            client.table(TRIP_TABLE)
+            .select("*")
+            .eq("family_key", current_family_key())
+            .eq("member_key", current_member_key())
+            .in_("id", chunk)
+            .execute()
+        ).data or []
+        trips.extend(row for row in batch if isinstance(row, dict))
+    return {"trips": trips, "diaries": [], "photos": photos}
+
+
+def _owned_replay_movie_bundle(month_key, review):
+    """Load the photo bundle used when toggling family sharing from the movie library."""
+    review = review if isinstance(review, dict) else {}
+    scope_type = str(review.get("_review_scope_type") or "").strip().lower()
+    if scope_type in {"tag", "ai_tag"}:
+        saved_ids = [str(value or "").strip() for value in (review.get("_tag_movie_photo_ids") or [])]
+        saved_ids = [value for value in saved_ids if value]
+        if saved_ids:
+            return _bundle_from_owned_photo_ids(saved_ids)
+
+        tags = _normalize_tag_review_selection(review.get("_ai_tag_keys") or [])
+        if not tags:
+            raise ValueError("このタグ別ムービーの写真条件を確認できませんでした。")
+        match_mode = str(review.get("_ai_tag_match_mode") or "any").lower()
+        source = get_tag_review_source()
+        bundle = tag_review_bundle(source, tags, match_mode)
+        return tag_movie_bundle_from_snapshot(bundle, review)
+
+    if not month_key:
+        raise ValueError("この月別ムービーの対象月を確認できませんでした。")
+    return get_month_bundle(month_key)
+
+
+def set_owned_replay_movie_share(row_id, enabled=True):
+    """Toggle family sharing for one saved movie from the Review movie library."""
+    row_id = str(row_id or "").strip()
+    if not row_id:
+        raise ValueError("共有設定を変更するムービーを確認できませんでした。")
+
+    client = supabase_client()
+    result = (
+        client.table(MONTHLY_TABLE)
+        .select("id,review_month,review_json")
+        .eq("id", row_id)
+        .eq("family_key", current_family_key())
+        .eq("member_key", current_member_key())
+        .limit(1)
+        .execute()
+    )
+    row = (result.data or [None])[0]
+    if not isinstance(row, dict) or not row.get("id"):
+        raise ValueError("対象のムービーが見つかりませんでした。")
+
+    month_key = str(row.get("review_month") or "")[:7]
+    review = _coerce_review_json(row.get("review_json"))
+    playback = get_monthly_playback(review)
+    if not monthly_playback_is_ready(playback):
+        raise ValueError("保存済みのムービー設定を確認できませんでした。")
+
+    if enabled:
+        if str(review.get("_review_scope_type") or "").strip().lower() in {"tag", "ai_tag"} and not bool(review.get("_tag_movie_saved")):
+            raise ValueError("このタグ別ムービーはまだ保存されていません。")
+        bundle = _owned_replay_movie_bundle(month_key, review)
+        period_label = _owned_replay_movie_period_label(review, month_key)
+        previous = monthly_family_share_info(review)
+        payload = _monthly_family_share_payload(month_key, period_label, bundle, previous_share=previous)
+        if not payload.get("photos"):
+            raise ValueError("家族に共有できる写真がありません。")
+        review["_family_share"] = payload
+    else:
+        review.pop("_family_share", None)
+
+    now_value = now_jst().isoformat()
+    (
+        client.table(MONTHLY_TABLE)
+        .update({"review_json": review, "updated_at": now_value})
+        .eq("id", row_id)
+        .eq("family_key", current_family_key())
+        .eq("member_key", current_member_key())
+        .execute()
+    )
+    if month_key:
+        st.session_state[f"monthly_review_{month_key}"] = review
+    st.session_state.pop("_home_shared_movie_check_v341", None)
+    return review
+
+
+def unshare_owned_replay_movie(row_id):
+    """Backward-compatible helper retained for existing callers."""
+    return set_owned_replay_movie_share(row_id, enabled=False)
+
+
+def _shared_movie_list_time_label(value):
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=ZoneInfo(APP_TIMEZONE))
+        return parsed.astimezone(ZoneInfo(APP_TIMEZONE)).strftime("%Y/%m/%d %H:%M")
+    except Exception:
+        return raw.replace("T", " ")[:16]
+
+
+def render_own_replay_movie_library():
+    """Show every saved replay movie below 'これまでの日記' with compact share controls."""
+    st.markdown("#### 🎞 作ったムービー")
+    st.caption("これまで作ったムービーの一覧です。共有中かどうかをここで確認し、そのまま共有・解除できます。")
+
+    notice = st.session_state.pop("_replay_movie_library_notice_v355", None)
+    if notice:
+        st.success(str(notice))
+
+    try:
+        rows = list_own_replay_movies(limit=120)
+    except Exception as exc:
+        st.warning("作ったムービーの一覧を読み込めませんでした。")
+        with st.expander("保護者向け詳細"):
+            st.code(str(exc))
+        return
+
+    if not rows:
+        st.caption("まだ保存済みのムービーはありません。")
+        return
+
+    for index, item in enumerate(rows, start=1):
+        row_id = str(item.get("id") or "").strip()
+        period_label = str(item.get("period_label") or "振り返りムービー").strip()
+        movie_type = str(item.get("movie_type") or "振り返り").strip()
+        shared = bool(item.get("shared"))
+        playback = item.get("playback") if isinstance(item.get("playback"), dict) else {}
+        saved_label = _shared_movie_list_time_label(item.get("saved_at") or item.get("updated_at"))
+        music_title = str(playback.get("title") or "YouTube音楽").strip()
+        start_seconds = max(0, int(playback.get("start_seconds") or 0))
+        end_seconds = int(playback.get("end_seconds") or (start_seconds + 1))
+        key_token = hashlib.sha1((row_id or f"{period_label}:{index}").encode("utf-8")).hexdigest()[:12]
+
+        with st.container(border=True, key=f"review_movie_card_{key_token}"):
+            info_col, action_col = st.columns([4.2, 1.25], gap="small", vertical_alignment="center")
+            with info_col:
+                status = "🟢 共有中" if shared else "⚪ 未共有"
+                st.markdown(f"**{html.escape(period_label)}**　{status}")
+                detail = f"{movie_type} ／ {html.escape(music_title)} ／ {format_mmss(start_seconds)}〜{format_mmss(end_seconds)}"
+                if saved_label:
+                    detail += f" ／ {saved_label}"
+                st.caption(detail)
+            with action_col:
+                share_clicked = st.button(
+                    "共有",
+                    use_container_width=True,
+                    disabled=shared,
+                    key=f"review_movie_share_{key_token}",
+                )
+                unshare_clicked = st.button(
+                    "解除",
+                    use_container_width=True,
+                    disabled=not shared,
+                    key=f"review_movie_unshare_{key_token}",
+                )
+
+            if share_clicked:
+                try:
+                    set_owned_replay_movie_share(row_id, enabled=True)
+                    st.session_state["_replay_movie_library_notice_v355"] = f"「{period_label}」を家族に共有しました。"
+                    st.rerun()
+                except Exception as exc:
+                    st.error("家族に共有できませんでした。")
+                    with st.expander("保護者向け詳細"):
+                        st.code(str(exc))
+            if unshare_clicked:
+                try:
+                    set_owned_replay_movie_share(row_id, enabled=False)
+                    st.session_state["_replay_movie_library_notice_v355"] = f"「{period_label}」の家族共有を解除しました。"
+                    st.rerun()
+                except Exception as exc:
+                    st.error("共有を解除できませんでした。")
+                    with st.expander("保護者向け詳細"):
+                        st.code(str(exc))
+
+
+def render_own_shared_replay_movies():
+    """Compatibility alias for v354 callers."""
+    render_own_replay_movie_library()
+
 def _family_shared_movie_notice_at(row):
     row = row if isinstance(row, dict) else {}
     share = row.get("share") or {}
@@ -34151,6 +34471,8 @@ def page_review():
             args=("review_history", "push"),
         )
         st.caption("これまで作った日記を1日ごとに読み返す")
+
+    render_own_replay_movie_library()
 
 
 def page_settings():
