@@ -32,9 +32,9 @@ from zoneinfo import ZoneInfo
 import streamlit as st
 
 # Freshly generated update: 2026-08-31 23:49 JST
-GENERATED_UPDATE_JST = "2026-09-10T23:59:00+09:00"
+GENERATED_UPDATE_JST = "2026-09-11T00:08:00+09:00"
 
-APP_BUILD = "v381"
+APP_BUILD = "v382"
 # v331: multi-tag photo selections can go straight to a music replay and be saved as a stable in-app movie snapshot.
 # v330: tag-review movies support one or multiple AI tags; selection is action-only.
 
@@ -2134,13 +2134,34 @@ export default function(component) {
             channelCount: { ideal: 1 },
             sampleRate: { ideal: 48000 },
             autoGainControl: { ideal: true },
-            // The camera preview is muted, so aggressive echo/noise processing is not
-            // needed here. On some Android WebView builds these processors suppress
-            // distant/quiet speech too strongly before MediaRecorder sees the samples.
+            // Keep ambient/distant sound intact. A phone/browser may otherwise treat
+            // a quiet child or a nearby external speaker as noise/echo and remove it.
             noiseSuppression: { ideal: false },
-            echoCancellation: { ideal: false }
+            echoCancellation: { ideal: false },
+            voiceIsolation: { ideal: false }
           }
         });
+      };
+
+      // v382: getUserMedia "ideal" values can be ignored by Android WebView. Re-apply
+      // the far-field choices independently to the live track so one unsupported setting
+      // cannot cancel all of the others. Every call is best-effort and never blocks video.
+      const tuneFarFieldAudioTrack = async (track) => {
+        if (!track || !track.applyConstraints) return;
+        let supported = {};
+        try { supported = navigator.mediaDevices.getSupportedConstraints?.() || {}; } catch (_) {}
+        if (supported.autoGainControl) {
+          try { await track.applyConstraints({ autoGainControl: true }); } catch (_) {}
+        }
+        if (supported.noiseSuppression) {
+          try { await track.applyConstraints({ noiseSuppression: false }); } catch (_) {}
+        }
+        if (supported.echoCancellation) {
+          try { await track.applyConstraints({ echoCancellation: false }); } catch (_) {}
+        }
+        if (supported.voiceIsolation) {
+          try { await track.applyConstraints({ voiceIsolation: false }); } catch (_) {}
+        }
       };
 
       let combinedAvError = null;
@@ -2228,12 +2249,23 @@ export default function(component) {
           : null;
         if (audioTrack) {
           try { audioTrack.enabled = true; } catch (_) {}
+          await tuneFarFieldAudioTrack(audioTrack);
           audioReady = true;
           audioError = null;
         } else {
           setStatus('カメラを開きました。マイクを再接続しています…');
           const requestMicrophoneOnly = async () => {
-            return await navigator.mediaDevices.getUserMedia({ video: false, audio: true });
+            return await navigator.mediaDevices.getUserMedia({
+              video: false,
+              audio: {
+                channelCount: { ideal: 1 },
+                sampleRate: { ideal: 48000 },
+                autoGainControl: { ideal: true },
+                noiseSuppression: { ideal: false },
+                echoCancellation: { ideal: false },
+                voiceIsolation: { ideal: false }
+              }
+            });
           };
           for (let attempt = 0; attempt < 2 && stillCurrent(); attempt += 1) {
             try {
@@ -2248,6 +2280,7 @@ export default function(component) {
                 return;
               }
               try { audioTrack.enabled = true; } catch (_) {}
+              await tuneFarFieldAudioTrack(audioTrack);
               // Build a NEW combined MediaStream instead of mutating the already-playing
               // camera stream. This gives MediaRecorder a stable A/V track set from birth.
               const videoTracks = stream && stream.getVideoTracks ? stream.getVideoTracks() : [];
@@ -2833,9 +2866,9 @@ export default function(component) {
       : null;
     if (!rawAudioTrack) return new MediaStream(videoTracks);
 
-    // `autoGainControl: ideal` is only a request and may be ignored by WebView/device.
-    // Process the actual samples before encoding, using the same far-field strategy as
-    // the app's standalone voice recorder: high-pass -> adaptive gain -> compressor.
+    // `autoGainControl` can still be weak even when the track reports it as enabled.
+    // v382 therefore uses a stronger far-field adaptive gain before encoding. Very quiet
+    // sound can be lifted substantially, while the compressor protects nearby/loud speech.
     const AudioContextCtor = window.AudioContext || window.webkitAudioContext;
     if (!AudioContextCtor) return new MediaStream([...videoTracks, rawAudioTrack]);
 
@@ -2850,22 +2883,24 @@ export default function(component) {
       const source = audioContext.createMediaStreamSource(sourceStream);
       const highpass = audioContext.createBiquadFilter();
       highpass.type = 'highpass';
-      highpass.frequency.value = 80;
+      highpass.frequency.value = 70;
       highpass.Q.value = 0.7;
 
       const analyser = audioContext.createAnalyser();
       analyser.fftSize = 2048;
-      analyser.smoothingTimeConstant = 0.65;
+      analyser.smoothingTimeConstant = 0.60;
 
       const gainNode = audioContext.createGain();
-      gainNode.gain.value = 2.8;
+      // Start noticeably above unity so the first words are not lost before the
+      // adaptive meter has collected enough samples.
+      gainNode.gain.value = 6.0;
 
       const compressor = audioContext.createDynamicsCompressor();
-      compressor.threshold.value = -18;
+      compressor.threshold.value = -20;
       compressor.knee.value = 24;
-      compressor.ratio.value = 4;
+      compressor.ratio.value = 5;
       compressor.attack.value = 0.003;
-      compressor.release.value = 0.25;
+      compressor.release.value = 0.30;
 
       const destination = audioContext.createMediaStreamDestination();
       source.connect(highpass);
@@ -2883,12 +2918,16 @@ export default function(component) {
           let sum = 0;
           for (let i = 0; i < values.length; i += 1) sum += values[i] * values[i];
           const rms = Math.sqrt(sum / Math.max(1, values.length));
-          let targetGain = 1.35;
-          if (rms < 0.006) targetGain = 4.8;
-          else if (rms < 0.012) targetGain = 4.1;
-          else if (rms < 0.025) targetGain = 3.2;
-          else if (rms < 0.05) targetGain = 2.2;
-          gainNode.gain.setTargetAtTime(targetGain, audioContext.currentTime, 0.12);
+          // v382 far-field AGC: aim quiet material at roughly -20 dBFS. The previous
+          // 4.8x ceiling was enough for nearby loud speech but not for a quiet external
+          // speaker around 50 cm away on the affected Android device. Cap at 16x so
+          // room noise does not become unbounded; loud input quickly falls back near 1x.
+          const safeRms = Math.max(0.0008, rms);
+          let targetGain = Math.min(16.0, Math.max(1.15, 0.10 / safeRms));
+          if (rms >= 0.10) targetGain = 1.05;
+          else if (rms >= 0.07) targetGain = Math.min(targetGain, 1.45);
+          else if (rms >= 0.05) targetGain = Math.min(targetGain, 2.0);
+          gainNode.gain.setTargetAtTime(targetGain, audioContext.currentTime, 0.16);
         } catch (_) {}
       }, 100);
 
@@ -2953,7 +2992,7 @@ export default function(component) {
       };
       if (hasAudio) options.audioBitsPerSecond = 96000;
       if (mimeType) options.mimeType = mimeType;
-      // v381: MediaRecorder receives a processed audio track. This changes actual sample
+      // v382: MediaRecorder receives a stronger far-field processed audio track. This changes actual sample
       // amplitude; audioBitsPerSecond only controls encoding rate and cannot make a quiet
       // microphone louder.
       const recorderStream = await buildVideoRecorderStream(hasAudio);
