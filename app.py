@@ -12,6 +12,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import audioop
 import time
 import uuid
 import wave
@@ -31,9 +32,9 @@ from zoneinfo import ZoneInfo
 import streamlit as st
 
 # Freshly generated update: 2026-08-31 23:49 JST
-GENERATED_UPDATE_JST = "2026-09-10T14:18:00+09:00"
+GENERATED_UPDATE_JST = "2026-09-10T15:25:00+09:00"
 
-APP_BUILD = "v364"
+APP_BUILD = "v366"
 # v331: multi-tag photo selections can go straight to a music replay and be saved as a stable in-app movie snapshot.
 # v330: tag-review movies support one or multiple AI tags; selection is action-only.
 
@@ -10883,6 +10884,96 @@ def photo_voice_note_storage_path(photo):
     return str(photo_voice_note_meta(photo).get("storage_path") or "").strip()
 
 
+def save_photo_voice_note_bytes(photo_id, raw, filename="voice_note.m4a", content_type="audio/mp4", transcript="", auto_transcribe=False):
+    if not photo_id:
+        raise ValueError("写真が見つかりません。")
+    if not raw:
+        raise ValueError("録音データが空です。")
+
+    client = supabase_client()
+    current = (
+        client
+        .table(PHOTO_TABLE)
+        .select("id,reflection_json")
+        .eq("id", photo_id)
+        .eq("family_key", current_family_key()).eq("member_key", current_member_key())
+        .limit(1)
+        .execute()
+    )
+    row = (current.data or [None])[0] or {}
+    if not row:
+        raise ValueError("写真が見つかりません。")
+
+    reflection = row.get("reflection_json") or {}
+    if not isinstance(reflection, dict):
+        reflection = {}
+    existing_path = str(photo_voice_note_meta(row).get("storage_path") or "").strip()
+
+    _, extension = _audio_storage_format(filename)
+    stamp = now_jst().strftime("%Y%m%d_%H%M%S_%f")
+    storage_path = f"{current_family_key()}/{current_member_key()}/voice_notes/{photo_id}/{stamp}_{uuid.uuid4().hex[:8]}.{extension}"
+
+    final_transcript = str(transcript or "").strip()
+    uploaded = False
+    try:
+        client.storage.from_(PHOTO_BUCKET).upload(
+            path=storage_path,
+            file=raw,
+            file_options={
+                "content-type": str(content_type or "audio/mp4"),
+                "cache-control": "3600",
+            },
+        )
+        uploaded = True
+
+        if auto_transcribe and not final_transcript:
+            try:
+                audio_copy = io.BytesIO(raw)
+                audio_copy.name = filename or f"voice_note.{extension}"
+                final_transcript = transcribe_audio(audio_copy, context="東京ぶらり旅の写真にひもづく短い声メモです。")
+            except Exception:
+                final_transcript = ""
+
+        reflection["voice_note"] = {
+            "storage_path": storage_path,
+            "mime_type": str(content_type or "audio/mp4"),
+            "file_name": filename or f"voice_note.{extension}",
+            "uploaded_at": now_jst().isoformat(),
+            "transcript": final_transcript,
+        }
+
+        (
+            client
+            .table(PHOTO_TABLE)
+            .update({"reflection_json": reflection})
+            .eq("id", photo_id)
+            .eq("family_key", current_family_key()).eq("member_key", current_member_key())
+            .execute()
+        )
+
+        if existing_path and existing_path != storage_path:
+            try:
+                client.storage.from_(PHOTO_BUCKET).remove([existing_path])
+            except Exception:
+                pass
+
+        download_photo.clear()
+        signed_photo_url_map.clear()
+        _invalidate_fast_db_cache()
+        try:
+            _memory_map_rows_light.clear()
+        except Exception:
+            pass
+        return reflection["voice_note"]
+    except Exception as exc:
+        if uploaded:
+            try:
+                client.storage.from_(PHOTO_BUCKET).remove([storage_path])
+            except Exception:
+                pass
+        raise RuntimeError(f"声メモの保存でエラーが発生しました: {exc}") from exc
+
+
 def save_photo_voice_note(photo_id, audio_file, auto_transcribe=True):
     if not photo_id:
         raise ValueError("写真が見つかりません。")
@@ -14627,6 +14718,360 @@ def video_ai_selection_items(photo):
     return sorted(clean, key=lambda item: int(item.get("rank") or 99))[:VIDEO_AI_MAX_SELECTIONS]
 
 
+def video_ai_voice_candidate_meta(photo):
+    selection = photo_media_metadata(photo).get("ai_selection") or {}
+    if not isinstance(selection, dict):
+        return {}
+    meta = selection.get("voice_candidates") or {}
+    return dict(meta) if isinstance(meta, dict) else {}
+
+
+VIDEO_VOICE_CANDIDATE_COUNT = 6
+VIDEO_VOICE_SNIPPET_SECONDS = 2.0
+
+
+def video_ai_voice_candidate_items(photo):
+    meta = video_ai_voice_candidate_meta(photo)
+    items = meta.get("items") or []
+    if not isinstance(items, list):
+        return []
+    clean = [
+        item for item in items
+        if isinstance(item, dict) and str(item.get("storage_path") or "").strip()
+    ]
+    return sorted(clean, key=lambda item: int(item.get("rank") or 99))[:VIDEO_VOICE_CANDIDATE_COUNT]
+
+
+def _extract_video_voice_candidate_specs(video_raw, candidate_count=VIDEO_VOICE_CANDIDATE_COUNT, clip_seconds=VIDEO_VOICE_SNIPPET_SECONDS):
+    ffmpeg = _ffmpeg_executable()
+    if not ffmpeg:
+        raise RuntimeError("この実行環境では音声候補抽出用のffmpegを利用できません。")
+    if not video_raw:
+        raise ValueError("動画データを読み込めませんでした。")
+
+    with tempfile.TemporaryDirectory(prefix="burari_voice_pick_") as td:
+        input_path = os.path.join(td, "input_video.mp4")
+        wav_path = os.path.join(td, "audio_mono.wav")
+        Path(input_path).write_bytes(video_raw)
+        proc = subprocess.run(
+            [
+                ffmpeg, "-hide_banner", "-loglevel", "error", "-y",
+                "-i", input_path,
+                "-vn", "-ac", "1", "-ar", "16000", "-sample_fmt", "s16",
+                wav_path,
+            ],
+            capture_output=True,
+            text=True,
+        )
+        if proc.returncode != 0 or not os.path.exists(wav_path) or os.path.getsize(wav_path) <= 128:
+            detail = (proc.stderr or proc.stdout or "").strip()
+            raise RuntimeError("動画から音声を取り出せませんでした。動画に声が入っていない可能性があります。" + (f"\n{detail}" if detail else ""))
+
+        with wave.open(wav_path, "rb") as wf:
+            channels = int(wf.getnchannels() or 1)
+            sample_width = int(wf.getsampwidth() or 2)
+            frame_rate = int(wf.getframerate() or 16000)
+            frame_count = int(wf.getnframes() or 0)
+            pcm = wf.readframes(frame_count)
+
+    if sample_width != 2:
+        raise RuntimeError("音声解析に必要な16bit音声へ変換できませんでした。")
+    if channels <= 0 or frame_rate <= 0 or frame_count <= 0 or not pcm:
+        raise ValueError("動画の音声長を確認できませんでした。")
+
+    total_duration = frame_count / float(frame_rate)
+    samples = array('h')
+    samples.frombytes(pcm)
+    if sys.byteorder == 'big':
+        samples.byteswap()
+    if not samples:
+        raise ValueError("音声データが空でした。")
+
+    window_seconds = 0.20
+    window_samples = max(1, int(frame_rate * window_seconds))
+    min_chunk_samples = max(1, window_samples // 2)
+    windows = []
+    for start_index in range(0, len(samples), window_samples):
+        chunk = samples[start_index:start_index + window_samples]
+        if len(chunk) < min_chunk_samples:
+            continue
+        chunk_bytes = chunk.tobytes()
+        rms = float(audioop.rms(chunk_bytes, 2))
+        if rms <= 0:
+            continue
+        sign_changes = 0
+        prev = int(chunk[0])
+        for value in chunk[1:]:
+            cur = int(value)
+            if (prev <= 0 < cur) or (prev >= 0 > cur):
+                sign_changes += 1
+            prev = cur
+        zcr = sign_changes / max(1, len(chunk) - 1)
+        speech_boost = 0.75 + min(0.75, zcr * 18.0)
+        score = rms * speech_boost
+        center_sec = (start_index + (len(chunk) / 2.0)) / float(frame_rate)
+        windows.append({"center_sec": center_sec, "rms": rms, "zcr": zcr, "score": score})
+
+    if not windows:
+        raise ValueError("音声の候補を見つけられませんでした。")
+
+    score_values = sorted(window["score"] for window in windows)
+    median = score_values[len(score_values) // 2]
+    p75 = score_values[min(len(score_values) - 1, int((len(score_values) - 1) * 0.75))]
+    peak = score_values[-1]
+    mean_score = sum(score_values) / max(1, len(score_values))
+    threshold = max(90.0, median * 1.45, p75 * 0.92, mean_score * 1.10, peak * 0.18)
+
+    ranked_windows = sorted(windows, key=lambda item: (item["score"], item["rms"]), reverse=True)
+    picks = []
+    min_spacing = max(1.2, clip_seconds * 0.72)
+
+    def _try_add(candidate):
+        center_sec = float(candidate.get("center_sec") or 0.0)
+        if any(abs(center_sec - existing["center_sec"]) < min_spacing for existing in picks):
+            return False
+        start_sec = max(0.0, min(total_duration, center_sec - 0.45))
+        duration_sec = min(float(clip_seconds), max(0.6, total_duration - start_sec))
+        if start_sec + duration_sec > total_duration:
+            start_sec = max(0.0, total_duration - duration_sec)
+        picks.append(
+            {
+                "center_sec": center_sec,
+                "start_sec": start_sec,
+                "duration_sec": duration_sec,
+                "score": float(candidate.get("score") or 0.0),
+            }
+        )
+        return True
+
+    for candidate in ranked_windows:
+        if float(candidate.get("score") or 0.0) < threshold:
+            continue
+        _try_add(candidate)
+        if len(picks) >= max(1, int(candidate_count or 6)):
+            break
+
+    if len(picks) < max(1, int(candidate_count or 6)):
+        for candidate in ranked_windows:
+            _try_add(candidate)
+            if len(picks) >= max(1, int(candidate_count or 6)):
+                break
+
+    if not picks:
+        raise ValueError("動画の中から目立つ声を見つけられませんでした。")
+
+    picks.sort(key=lambda item: item["start_sec"])
+    return [
+        {
+            "rank": rank,
+            "start_sec": float(item["start_sec"]),
+            "duration_sec": float(item["duration_sec"]),
+            "score": float(item["score"]),
+            "timestamp_ms": int(round(float(item["start_sec"]) * 1000)),
+        }
+        for rank, item in enumerate(picks[:max(1, int(candidate_count or 6))], start=1)
+    ]
+
+
+def generate_video_ai_voice_candidates(photo, force=False):
+    if not isinstance(photo, dict) or not photo.get("id") or not photo_is_video(photo):
+        raise ValueError("動画が見つかりません。")
+
+    client = supabase_client()
+    current = (
+        client.table(PHOTO_TABLE).select("*")
+        .eq("id", photo.get("id"))
+        .eq("family_key", current_family_key()).eq("member_key", current_member_key())
+        .limit(1).execute()
+    )
+    fresh = (current.data or [None])[0] or photo
+    existing = video_ai_voice_candidate_items(fresh)
+    if existing and not force:
+        return fresh
+
+    video_path = photo_video_storage_path(fresh)
+    if not video_path:
+        raise ValueError("元動画の保存先を確認できませんでした。")
+    video_raw = _storage_bytes(client.storage.from_(PHOTO_BUCKET).download(video_path))
+    if not video_raw:
+        raise ValueError("元動画を読み込めませんでした。")
+
+    specs = _extract_video_voice_candidate_specs(video_raw)
+    if not specs:
+        raise ValueError("声の候補を作成できませんでした。")
+
+    ffmpeg = _ffmpeg_executable()
+    if not ffmpeg:
+        raise RuntimeError("この実行環境では音声候補抽出用のffmpegを利用できません。")
+
+    reflection = dict(photo_media_metadata(fresh))
+    selection = reflection.get("ai_selection") or {}
+    if not isinstance(selection, dict):
+        selection = {}
+    previous_voice_meta = selection.get("voice_candidates") or {}
+    old_paths = [
+        str(item.get("storage_path") or "").strip()
+        for item in (previous_voice_meta.get("items") or [])
+        if isinstance(item, dict) and str(item.get("storage_path") or "").strip()
+    ]
+
+    base = _video_selection_base_path(fresh)
+    stamp = now_jst().strftime("%Y%m%d_%H%M%S")
+    uploaded_paths = []
+    items = []
+    try:
+        with tempfile.TemporaryDirectory(prefix="burari_voice_extract_") as td:
+            input_path = os.path.join(td, "input_video.mp4")
+            Path(input_path).write_bytes(video_raw)
+            for spec in specs:
+                rank = int(spec.get("rank") or 0)
+                if rank <= 0:
+                    continue
+                local_out = os.path.join(td, f"voice_{rank:02d}.m4a")
+                proc = subprocess.run(
+                    [
+                        ffmpeg, "-hide_banner", "-loglevel", "error", "-y",
+                        "-ss", f"{float(spec.get('start_sec') or 0.0):.3f}",
+                        "-t", f"{float(spec.get('duration_sec') or VIDEO_VOICE_SNIPPET_SECONDS):.3f}",
+                        "-i", input_path,
+                        "-vn", "-ac", "1",
+                        "-c:a", "aac", "-b:a", "96k",
+                        "-movflags", "+faststart",
+                        local_out,
+                    ],
+                    capture_output=True,
+                    text=True,
+                )
+                if proc.returncode != 0 or not os.path.exists(local_out) or os.path.getsize(local_out) <= 64:
+                    continue
+                raw = Path(local_out).read_bytes()
+                storage_path = f"{base}_voice_{stamp}_{rank:02d}.m4a"
+                client.storage.from_(PHOTO_BUCKET).upload(
+                    path=storage_path,
+                    file=raw,
+                    file_options={"content-type": "audio/mp4", "cache-control": "3600"},
+                )
+                uploaded_paths.append(storage_path)
+                transcript = ""
+                try:
+                    audio_copy = io.BytesIO(raw)
+                    audio_copy.name = f"voice_candidate_{rank:02d}.m4a"
+                    transcript = transcribe_audio(audio_copy, context="東京ぶらり旅の動画から切り出した2秒以内の短い音声候補です。")
+                except Exception:
+                    transcript = ""
+                items.append(
+                    {
+                        "rank": rank,
+                        "storage_path": storage_path,
+                        "mime_type": "audio/mp4",
+                        "file_name": f"voice_candidate_{rank:02d}.m4a",
+                        "timestamp_ms": int(spec.get("timestamp_ms") or 0),
+                        "duration_ms": int(round(float(spec.get("duration_sec") or VIDEO_VOICE_SNIPPET_SECONDS) * 1000)),
+                        "score": int(round(float(spec.get("score") or 0.0))),
+                        "transcript": transcript,
+                    }
+                )
+
+        if not items:
+            raise ValueError("声の候補を1つも保存できませんでした。")
+
+        items = sorted(items, key=lambda item: int(item.get("rank") or 99))[:VIDEO_VOICE_CANDIDATE_COUNT]
+        selection["voice_candidates"] = {
+            "status": "ready",
+            "generated_at": now_jst().isoformat(),
+            "candidate_count": len(items),
+            "snippet_seconds": VIDEO_VOICE_SNIPPET_SECONDS,
+            "items": items,
+        }
+        selection["updated_at"] = now_jst().isoformat()
+        reflection["ai_selection"] = selection
+        _write_photo_reflection(fresh.get("id"), reflection)
+
+        if old_paths:
+            try:
+                client.storage.from_(PHOTO_BUCKET).remove(old_paths)
+            except Exception:
+                pass
+
+        updated = dict(fresh)
+        updated["reflection_json"] = reflection
+        return updated
+    except Exception:
+        if uploaded_paths:
+            try:
+                client.storage.from_(PHOTO_BUCKET).remove(uploaded_paths)
+            except Exception:
+                pass
+        raise
+
+
+def update_video_ai_selection_voice_choice(video_photo, rank, candidate_rank):
+    if not isinstance(video_photo, dict) or not video_photo.get("id") or not photo_is_video(video_photo):
+        raise ValueError("動画が見つかりません。")
+    rank = int(rank or 0)
+    candidate_rank = int(candidate_rank or 0)
+    if rank <= 0:
+        raise ValueError("声を付ける写真が見つかりません。")
+
+    client = supabase_client()
+    current = (
+        client.table(PHOTO_TABLE).select("*")
+        .eq("id", video_photo.get("id"))
+        .eq("family_key", current_family_key()).eq("member_key", current_member_key())
+        .limit(1).execute()
+    )
+    fresh = (current.data or [None])[0] or video_photo
+    reflection = dict(photo_media_metadata(fresh))
+    selection = reflection.get("ai_selection") or {}
+    if not isinstance(selection, dict):
+        selection = {}
+    items = [item for item in (selection.get("items") or []) if isinstance(item, dict)]
+    voice_candidates = {int(item.get("rank") or 0): item for item in video_ai_voice_candidate_items(fresh)}
+    if candidate_rank > 0 and candidate_rank not in voice_candidates:
+        raise ValueError("選んだ声の候補が見つかりませんでした。")
+
+    target_item = None
+    saved_photo_id = ""
+    for item in items:
+        if int(item.get("rank") or 0) != rank:
+            continue
+        target_item = item
+        saved_photo_id = str(item.get("saved_photo_id") or "").strip()
+        if candidate_rank > 0:
+            item["voice_candidate_rank"] = candidate_rank
+            item["voice_candidate_updated_at"] = now_jst().isoformat()
+        else:
+            item.pop("voice_candidate_rank", None)
+            item.pop("voice_candidate_updated_at", None)
+        break
+    if target_item is None:
+        raise ValueError("対象の写真が見つかりませんでした。")
+
+    selection["items"] = items
+    selection["updated_at"] = now_jst().isoformat()
+    reflection["ai_selection"] = selection
+    _write_photo_reflection(fresh.get("id"), reflection)
+
+    if saved_photo_id:
+        if candidate_rank > 0:
+            chosen = voice_candidates.get(candidate_rank) or {}
+            raw = download_photo(str(chosen.get("storage_path") or ""))
+            save_photo_voice_note_bytes(
+                saved_photo_id,
+                raw,
+                filename=str(chosen.get("file_name") or f"voice_candidate_{candidate_rank:02d}.m4a"),
+                content_type=str(chosen.get("mime_type") or "audio/mp4"),
+                transcript=str(chosen.get("transcript") or ""),
+                auto_transcribe=not bool(str(chosen.get("transcript") or "").strip()),
+            )
+        else:
+            delete_photo_voice_note(saved_photo_id)
+
+    updated = dict(fresh)
+    updated["reflection_json"] = reflection
+    return updated
+
+
 def _selection_capture_time(photo, timestamp_ms):
     raw = str((photo or {}).get("captured_at") or "").strip()
     if not raw:
@@ -14717,6 +15162,33 @@ def save_video_ai_selection_as_photo(video_photo, selection_item):
     selection["items"] = items
     current_reflection["ai_selection"] = selection
     _write_photo_reflection(video_photo.get("id"), current_reflection)
+
+    try:
+        voice_candidate_rank = int(selection_item.get("voice_candidate_rank") or 0)
+    except Exception:
+        voice_candidate_rank = 0
+    if voice_candidate_rank > 0:
+        try:
+            updated_video_photo = dict(video_photo)
+            updated_video_photo["reflection_json"] = current_reflection
+            voice_candidates = {
+                int(candidate.get("rank") or 0): candidate
+                for candidate in video_ai_voice_candidate_items(updated_video_photo)
+            }
+            chosen = voice_candidates.get(voice_candidate_rank) or {}
+            chosen_path = str(chosen.get("storage_path") or "").strip()
+            if chosen_path:
+                raw_voice = download_photo(chosen_path)
+                save_photo_voice_note_bytes(
+                    saved_id,
+                    raw_voice,
+                    filename=str(chosen.get("file_name") or f"voice_candidate_{voice_candidate_rank:02d}.m4a"),
+                    content_type=str(chosen.get("mime_type") or "audio/mp4"),
+                    transcript=str(chosen.get("transcript") or ""),
+                    auto_transcribe=not bool(str(chosen.get("transcript") or "").strip()),
+                )
+        except Exception:
+            pass
     return saved_id
 
 
@@ -26646,6 +27118,106 @@ def _render_moments_picker(photo, index, view_mode=None, next_video_action=None)
 
 
     selected_rank_set = set(selected_ranks)
+
+    st.markdown("##### 🎙 印象的な声（任意）")
+    st.caption("動画の中から最大2秒の声を6個まで用意できます。写真ごとに1つ選ぶと、その写真を日記に残すときに声も一緒に保存します。")
+
+    voice_candidates = video_ai_voice_candidate_items(photo)
+    voice_target_ranks = sorted(rank for rank in valid_ranks if rank > 0)
+    if not voice_candidates:
+        if st.button(
+            "🎙 印象的な声を6個探す",
+            use_container_width=True,
+            key=f"moments_voice_generate_{video_id}_{round_number}",
+            help="元動画の音声から、印象的な短い声の候補を最大6個作ります。",
+        ):
+            try:
+                with st.spinner("動画の中から印象的な声を探しています…"):
+                    generate_video_ai_voice_candidates(photo, force=True)
+                st.session_state["_moments_notice"] = "印象的な声の候補を作成しました。写真ごとに好きな声を選べます。"
+                st.rerun()
+            except Exception as exc:
+                st.error("印象的な声を作成できませんでした。")
+                with st.expander("保護者向け詳細"):
+                    st.code(str(exc))
+    else:
+        voice_url_map = {}
+        try:
+            voice_paths = tuple(str(item.get("storage_path") or "").strip() for item in voice_candidates if str(item.get("storage_path") or "").strip())
+            voice_url_map = signed_photo_url_map(voice_paths, expires_in=1800) if voice_paths else {}
+        except Exception:
+            voice_url_map = {}
+
+        rank_to_item = {int(item.get("rank") or 0): item for item in items if isinstance(item, dict)}
+        target_default = current_active_rank if current_active_rank in voice_target_ranks else (voice_target_ranks[0] if voice_target_ranks else 0)
+        target_rank = st.selectbox(
+            "声をつける写真",
+            options=voice_target_ranks,
+            index=(voice_target_ranks.index(target_default) if target_default in voice_target_ranks else 0),
+            format_func=lambda rank: f"写真 {rank}",
+            key=f"moments_voice_target_{video_id}_{round_number}",
+            disabled=not bool(voice_target_ranks),
+        ) if voice_target_ranks else 0
+        target_item = rank_to_item.get(int(target_rank or 0), {})
+        current_voice_rank = int(target_item.get("voice_candidate_rank") or 0) if isinstance(target_item, dict) else 0
+        saved_photo_id = str(target_item.get("saved_photo_id") or "").strip() if isinstance(target_item, dict) else ""
+        if target_rank:
+            status_text = f"写真 {target_rank} にまだ声は付いていません。"
+            if current_voice_rank > 0:
+                status_text = f"写真 {target_rank} には候補 {current_voice_rank} を付ける設定です。"
+                if saved_photo_id:
+                    status_text += " 保存済み写真にもすぐ反映します。"
+            st.caption(status_text)
+
+            if current_voice_rank > 0:
+                if st.button(
+                    "この写真の声を外す",
+                    use_container_width=True,
+                    key=f"moments_voice_clear_{video_id}_{round_number}_{target_rank}",
+                ):
+                    try:
+                        update_video_ai_selection_voice_choice(photo, target_rank, 0)
+                        st.session_state["_moments_notice"] = f"写真 {target_rank} の声を外しました。"
+                        st.rerun()
+                    except Exception as exc:
+                        st.error("写真の声を外せませんでした。")
+                        with st.expander("保護者向け詳細"):
+                            st.code(str(exc))
+
+        for voice in voice_candidates:
+            candidate_rank = int(voice.get("rank") or 0)
+            candidate_url = str(voice_url_map.get(str(voice.get("storage_path") or "")) or "")
+            transcript = str(voice.get("transcript") or "").strip()
+            timestamp_ms = max(0, int(voice.get("timestamp_ms") or 0))
+            duration_ms = max(0, int(voice.get("duration_ms") or 0))
+            label = f"候補 {candidate_rank} ・ {timestamp_ms / 1000:.1f}秒付近 ・ {duration_ms / 1000:.1f}秒"
+            with st.container(border=True):
+                st.markdown(f"**{label}**")
+                if transcript:
+                    st.caption(f"聞こえた内容: {transcript}")
+                else:
+                    st.caption("聞こえた内容: 文字起こしなし")
+                if candidate_url:
+                    st.audio(candidate_url)
+                button_label = "選択中" if (target_rank and current_voice_rank == candidate_rank) else "この声をこの写真につける"
+                if st.button(
+                    button_label,
+                    use_container_width=True,
+                    key=f"moments_voice_pick_{video_id}_{round_number}_{target_rank}_{candidate_rank}",
+                    disabled=(not target_rank or (current_voice_rank == candidate_rank)),
+                ):
+                    try:
+                        update_video_ai_selection_voice_choice(photo, target_rank, candidate_rank)
+                        st.session_state["_moments_notice"] = (
+                            f"写真 {target_rank} に候補 {candidate_rank} の声を付けました。"
+                            + (" 保存済み写真にも反映しました。" if saved_photo_id else "")
+                        )
+                        st.rerun()
+                    except Exception as exc:
+                        st.error("声を写真に設定できませんでした。")
+                        with st.expander("保護者向け詳細"):
+                            st.code(str(exc))
+
     if picker_component is None:
         send_clicked = st.button(
             "選択を更新" if status == "reviewed" else "感情をつけた写真を残す",
@@ -27981,10 +28553,24 @@ def render_diary_emotion_gallery(trip_id, photos, trip=None, is_pending=False):
     summary = photo_emotion_summary_text(photos)
     st.caption(f"感情選択済み：{selected} / {len(photos)}枚" + (f"　｜　{summary}" if summary else ""))
 
-    # v229: saved diary days can be viewed either as the familiar three-column grid
-    # or one photo at a time. Pending diary photos stay in the editing-first grid.
-    view_mode = "3列一覧"
-    if not is_pending:
+    # v365: both saved diaries and the pre-diary "この日の写真" view can switch
+    # between a compact grid and one-photo enlarged mode. Pending photos keep their
+    # editing controls; only the presentation changes.
+    if is_pending:
+        mode_key = f"diary_pending_photo_view_mode_v365_{trip_id}"
+        current_mode = str(st.session_state.get(mode_key) or "").strip()
+        if current_mode not in {"一覧モード", "拡大モード"}:
+            st.session_state[mode_key] = "一覧モード"
+        st.caption("写真の表示方法")
+        view_mode = st.radio(
+            "写真の表示方法",
+            ["一覧モード", "拡大モード"],
+            horizontal=True,
+            key=mode_key,
+            label_visibility="collapsed",
+        )
+        single_mode = view_mode == "拡大モード"
+    else:
         mode_key = f"diary_saved_photo_view_mode_{trip_id}"
         if st.session_state.get(mode_key) == "1枚ずつ拡大":
             st.session_state[mode_key] = "1枚ずつ表示"
@@ -27997,7 +28583,7 @@ def render_diary_emotion_gallery(trip_id, photos, trip=None, is_pending=False):
             key=mode_key,
             label_visibility="collapsed",
         )
-    single_mode = view_mode == "1枚ずつ表示"
+        single_mode = view_mode == "1枚ずつ表示"
     if single_mode and len(photos) > 1:
         st.caption("◀ 前へ／次へ ▶、または写真を左右にスワイプして切り替えられます。")
 
@@ -28034,7 +28620,7 @@ def render_diary_emotion_gallery(trip_id, photos, trip=None, is_pending=False):
         serial = int(st.session_state.get(serial_key) or 0)
         result = gallery_component(
             data={"photos": cards, "single": single_mode, "allow_delete": True, "allow_emotion": True, "allow_share": True, "allow_voice": bool(single_mode and not is_pending), "allow_favorite": bool(single_mode and not is_pending), "carousel_key": f"diary_saved_{trip_id}", "mode_by_photo": st.session_state.get(f"_diary_icon_modes_{trip_id}") or {}, "family_key": current_family_key(), "member_key": current_member_key(), "pending_param": PENDING_EMOTION_QUERY_PARAM},
-            key=f"diary_emotion_gallery_{trip_id}_{serial}_{_current_ui_refresh_epoch()}_{'single' if single_mode else 'grid'}_v352",
+            key=f"diary_emotion_gallery_{trip_id}_{serial}_{_current_ui_refresh_epoch()}_{'single' if single_mode else 'grid'}_v365",
             on_delete_photo_id_change=lambda: None,
             on_share_photo_change=lambda: None,
             on_voice_photo_id_change=lambda: None,
