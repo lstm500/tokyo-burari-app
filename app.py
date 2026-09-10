@@ -30,9 +30,9 @@ from zoneinfo import ZoneInfo
 import streamlit as st
 
 # Freshly generated update: 2026-08-31 23:49 JST
-GENERATED_UPDATE_JST = "2026-09-08T18:48:00+09:00"
+GENERATED_UPDATE_JST = "2026-09-10T08:20:00+09:00"
 
-APP_BUILD = "v341"
+APP_BUILD = "v343"
 # v331: multi-tag photo selections can go straight to a music replay and be saved as a stable in-app movie snapshot.
 # v330: tag-review movies support one or multiple AI tags; selection is action-only.
 
@@ -10565,6 +10565,9 @@ def photo_all_storage_paths(photo):
     stabilized_path = photo_stabilized_video_storage_path(photo)
     if stabilized_path and stabilized_path not in paths:
         paths.append(stabilized_path)
+    voice_path = photo_voice_note_storage_path(photo)
+    if voice_path and voice_path not in paths:
+        paths.append(voice_path)
     for item in video_ai_selection_items(photo):
         selection_path = str(item.get("storage_path") or "").strip()
         if selection_path and selection_path not in paths:
@@ -10652,6 +10655,172 @@ def upload_photo(trip_id, image_bytes, location=None, captured_at=None, capture_
             except Exception:
                 pass
         raise RuntimeError(f"写真保存処理でエラーが発生しました: {exc}") from exc
+
+
+
+def _audio_storage_format(filename):
+    name = str(filename or "").strip().lower()
+    if name.endswith(".m4a") or name.endswith(".mp4"):
+        return "audio/mp4", "m4a"
+    if name.endswith(".ogg"):
+        return "audio/ogg", "ogg"
+    if name.endswith(".wav"):
+        return "audio/wav", "wav"
+    if name.endswith(".mp3"):
+        return "audio/mpeg", "mp3"
+    return "audio/webm", "webm"
+
+
+def photo_voice_note_meta(photo):
+    reflection = (photo or {}).get("reflection_json") or {}
+    if not isinstance(reflection, dict):
+        return {}
+    meta = reflection.get("voice_note") or {}
+    return dict(meta) if isinstance(meta, dict) else {}
+
+
+def photo_voice_note_storage_path(photo):
+    return str(photo_voice_note_meta(photo).get("storage_path") or "").strip()
+
+
+def save_photo_voice_note(photo_id, audio_file, auto_transcribe=True):
+    if not photo_id:
+        raise ValueError("写真が見つかりません。")
+    if audio_file is None:
+        raise ValueError("先に声を録音してください。")
+
+    try:
+        audio_file.seek(0)
+        raw = audio_file.read()
+        audio_file.seek(0)
+    except Exception as exc:
+        raise ValueError("録音データを読み込めませんでした。") from exc
+    if not raw:
+        raise ValueError("録音データが空です。")
+
+    client = supabase_client()
+    current = (
+        client
+        .table(PHOTO_TABLE)
+        .select("id,reflection_json")
+        .eq("id", photo_id)
+        .eq("family_key", current_family_key()).eq("member_key", current_member_key())
+        .limit(1)
+        .execute()
+    )
+    row = (current.data or [None])[0] or {}
+    if not row:
+        raise ValueError("写真が見つかりません。")
+
+    reflection = row.get("reflection_json") or {}
+    if not isinstance(reflection, dict):
+        reflection = {}
+    existing_path = str(photo_voice_note_meta(row).get("storage_path") or "").strip()
+
+    content_type, extension = _audio_storage_format(getattr(audio_file, "name", "voice_note.webm"))
+    stamp = now_jst().strftime("%Y%m%d_%H%M%S_%f")
+    storage_path = f"{current_family_key()}/{current_member_key()}/voice_notes/{photo_id}/{stamp}_{uuid.uuid4().hex[:8]}.{extension}"
+
+    transcript = ""
+    uploaded = False
+    try:
+        client.storage.from_(PHOTO_BUCKET).upload(
+            path=storage_path,
+            file=raw,
+            file_options={
+                "content-type": content_type,
+                "cache-control": "3600",
+            },
+        )
+        uploaded = True
+
+        if auto_transcribe:
+            try:
+                audio_copy = io.BytesIO(raw)
+                audio_copy.name = getattr(audio_file, "name", f"voice_note.{extension}") or f"voice_note.{extension}"
+                transcript = transcribe_audio(audio_copy, context="東京ぶらり旅の写真にひもづく短い声メモです。")
+            except Exception:
+                transcript = ""
+
+        reflection["voice_note"] = {
+            "storage_path": storage_path,
+            "mime_type": content_type,
+            "file_name": getattr(audio_file, "name", f"voice_note.{extension}") or f"voice_note.{extension}",
+            "uploaded_at": now_jst().isoformat(),
+            "transcript": transcript,
+        }
+
+        (
+            client
+            .table(PHOTO_TABLE)
+            .update({"reflection_json": reflection})
+            .eq("id", photo_id)
+            .eq("family_key", current_family_key()).eq("member_key", current_member_key())
+            .execute()
+        )
+
+        if existing_path and existing_path != storage_path:
+            try:
+                client.storage.from_(PHOTO_BUCKET).remove([existing_path])
+            except Exception:
+                pass
+
+        download_photo.clear()
+        signed_photo_url_map.clear()
+        _invalidate_fast_db_cache()
+        try:
+            _memory_map_rows_light.clear()
+        except Exception:
+            pass
+        return reflection["voice_note"]
+    except Exception as exc:
+        if uploaded:
+            try:
+                client.storage.from_(PHOTO_BUCKET).remove([storage_path])
+            except Exception:
+                pass
+        raise RuntimeError(f"声メモの保存でエラーが発生しました: {exc}") from exc
+
+
+def delete_photo_voice_note(photo_id):
+    if not photo_id:
+        return
+    client = supabase_client()
+    current = (
+        client
+        .table(PHOTO_TABLE)
+        .select("id,reflection_json")
+        .eq("id", photo_id)
+        .eq("family_key", current_family_key()).eq("member_key", current_member_key())
+        .limit(1)
+        .execute()
+    )
+    row = (current.data or [None])[0] or {}
+    if not row:
+        return
+    reflection = row.get("reflection_json") or {}
+    if not isinstance(reflection, dict):
+        reflection = {}
+    meta = reflection.get("voice_note") or {}
+    path = str(meta.get("storage_path") or "").strip() if isinstance(meta, dict) else ""
+    if "voice_note" in reflection:
+        reflection.pop("voice_note", None)
+    (
+        client
+        .table(PHOTO_TABLE)
+        .update({"reflection_json": reflection})
+        .eq("id", photo_id)
+        .eq("family_key", current_family_key()).eq("member_key", current_member_key())
+        .execute()
+    )
+    if path:
+        try:
+            client.storage.from_(PHOTO_BUCKET).remove([path])
+        except Exception:
+            pass
+    download_photo.clear()
+    signed_photo_url_map.clear()
+    _invalidate_fast_db_cache()
 
 
 def video_storage_quota_bytes():
@@ -16308,10 +16477,15 @@ def build_monthly_replay_photo_items(bundle, limit=None):
         return []
     paths = [str(p.get("storage_path") or "").strip() for p in photos]
     paths = [path for path in paths if path]
+    voice_paths = [photo_voice_note_storage_path(photo) for photo in photos]
+    voice_paths = [path for path in voice_paths if path]
     signed_map = {}
+    voice_signed_map = {}
     # v325: process signing in bounded batches while keeping the total photo count unlimited.
     for start in range(0, len(paths), 200):
         signed_map.update(signed_photo_url_map(paths[start:start + 200], expires_in=1800))
+    for start in range(0, len(voice_paths), 200):
+        voice_signed_map.update(signed_photo_url_map(voice_paths[start:start + 200], expires_in=1800))
     items = []
     for idx, photo in enumerate(photos, start=1):
         url = photo_display_url(photo, signed_map=signed_map, max_px=1080, quality=86)
@@ -16319,15 +16493,344 @@ def build_monthly_replay_photo_items(bundle, limit=None):
             continue
         trip = trip_map.get(str(photo.get("trip_id")), {})
         emotion = photo_selected_tag_meta(photo)
+        voice_meta = photo_voice_note_meta(photo)
+        voice_path = str(voice_meta.get("storage_path") or "").strip()
         items.append({
+            "photo_id": str(photo.get("id") or ""),
+            "storage_path": str(photo.get("storage_path") or ""),
+            "captured_at": str(photo.get("captured_at") or ""),
             "url": url,
             "caption": _monthly_replay_photo_caption(photo, trip, idx),
             "emotion": str(emotion.get("key") or ""),
             "emotion_label": str(emotion.get("label") or ""),
             "emotion_emoji": str(emotion.get("emoji") or ""),
             "emotion_color": str(emotion.get("color") or ""),
+            "has_voice": bool(voice_path),
+            "voice_url": str(voice_signed_map.get(voice_path) or ""),
+            "voice_transcript": str(voice_meta.get("transcript") or ""),
         })
     return items
+
+
+
+PHOTO_CURATION_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "picks": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "candidate_index": {"type": "integer"},
+                    "category": {"type": "integer"},
+                    "score": {"type": "integer"},
+                    "reason": {"type": "string"},
+                },
+                "required": ["candidate_index", "category", "score", "reason"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    "required": ["picks"],
+    "additionalProperties": False,
+}
+
+
+def replay_photo_curation_state_key(scope_key):
+    return f"_replay_photo_curation_{scope_key}"
+
+
+def get_replay_photo_curation(scope_key):
+    value = st.session_state.get(replay_photo_curation_state_key(scope_key))
+    return value if isinstance(value, dict) else {}
+
+
+def clear_replay_photo_curation(scope_key):
+    st.session_state.pop(replay_photo_curation_state_key(scope_key), None)
+
+
+def _replay_photo_candidates(bundle, max_candidates=24):
+    photos, trip_map = _monthly_replay_selected_photos(bundle)
+    if len(photos) <= max_candidates:
+        return photos, trip_map
+    step = len(photos) / float(max_candidates)
+    picked = []
+    seen = set()
+    for idx in range(max_candidates):
+        photo = photos[min(int(idx * step), len(photos) - 1)]
+        key = str(photo.get("id") or idx)
+        if key not in seen:
+            seen.add(key)
+            picked.append(photo)
+    return picked or photos[:max_candidates], trip_map
+
+
+def _fallback_replay_curation(photos, max_selected=12):
+    if not photos:
+        return []
+    if len(photos) <= max_selected:
+        return [str(photo.get("id") or "") for photo in photos if photo.get("id")]
+    step = len(photos) / float(max_selected)
+    picked = []
+    seen = set()
+    for idx in range(max_selected):
+        photo = photos[min(int(idx * step), len(photos) - 1)]
+        key = str(photo.get("id") or "")
+        if key and key not in seen:
+            seen.add(key)
+            picked.append(key)
+    return picked
+
+
+def generate_replay_photo_curation(scope_key, period_label, bundle, max_candidates=24, max_selected=12):
+    candidate_photos, trip_map = _replay_photo_candidates(bundle, max_candidates=max_candidates)
+    if not candidate_photos:
+        payload = {"active": False, "selected_photo_ids": [], "picks": []}
+        st.session_state[replay_photo_curation_state_key(scope_key)] = payload
+        return payload
+
+    image_items = []
+    candidate_meta = []
+    valid_photos = []
+    for idx, photo in enumerate(candidate_photos, start=1):
+        path = str(photo.get("storage_path") or "").strip()
+        if not path:
+            continue
+        try:
+            raw = download_photo(path)
+        except Exception:
+            raw = b""
+        if not raw:
+            continue
+        raw = _vision_ready_photo(raw, max_side=640, quality=72)
+        trip = trip_map.get(str(photo.get("trip_id")), {})
+        caption = _monthly_replay_photo_caption(photo, trip, idx)
+        candidate_meta.append({
+            "candidate_index": idx,
+            "photo_id": str(photo.get("id") or ""),
+            "caption": caption,
+        })
+        valid_photos.append(photo)
+        image_items.append((f"候補{idx}: {caption}", raw))
+
+    if not valid_photos:
+        payload = {"active": False, "selected_photo_ids": [], "picks": []}
+        st.session_state[replay_photo_curation_state_key(scope_key)] = payload
+        return payload
+
+    prompt_lines = [
+        "東京ぶらり旅の振り返りムービー用に、候補写真の中から見返す価値が高い写真を厳選してください。",
+        "厳選基準は次の3つです。",
+        "1. カメラ目線で、本人がはっきり映り、感情表現がしっかりしている写真。",
+        "2. カメラ目線ではなく、何かに夢中になっていたり、頑張っている最中が伝わる写真。",
+        "3. 人と人との絆や関わりが感じられる写真。",
+        f"候補は全部で{len(candidate_meta)}枚です。1〜{len(candidate_meta)}の候補番号で答えてください。",
+        f"3つの基準が偏りすぎないように、合計最大{max_selected}枚を選んでください。各基準から最低1枚は入るよう意識してください。",
+        "似た写真を重複して選ばず、時系列も偏りすぎないようにしてください。",
+        "score は 1〜100 の整数、reason は短く簡潔にしてください。",
+    ]
+    result = ask_json_with_images("\n".join(prompt_lines), image_items, "curate_replay_photos", PHOTO_CURATION_SCHEMA, 1200)
+
+    by_index = {meta["candidate_index"]: meta for meta in candidate_meta}
+    picks = []
+    seen_ids = set()
+    for pick in (result.get("picks") or []):
+        if not isinstance(pick, dict):
+            continue
+        try:
+            candidate_index = int(pick.get("candidate_index"))
+        except Exception:
+            continue
+        meta = by_index.get(candidate_index)
+        if not meta:
+            continue
+        photo_id = str(meta.get("photo_id") or "")
+        if not photo_id or photo_id in seen_ids:
+            continue
+        try:
+            category = int(pick.get("category") or 0)
+        except Exception:
+            category = 0
+        if category not in {1, 2, 3}:
+            category = 2
+        try:
+            score = int(pick.get("score") or 0)
+        except Exception:
+            score = 0
+        score = max(0, min(100, score))
+        picks.append({
+            "candidate_index": candidate_index,
+            "photo_id": photo_id,
+            "category": category,
+            "score": score,
+            "reason": str(pick.get("reason") or "").strip(),
+            "caption": str(meta.get("caption") or ""),
+        })
+        seen_ids.add(photo_id)
+        if len(picks) >= max_selected:
+            break
+
+    if len(picks) < min(3, len(valid_photos)):
+        fallback_ids = _fallback_replay_curation(valid_photos, max_selected=max_selected)
+        picks = []
+        for photo_id in fallback_ids:
+            meta = next((m for m in candidate_meta if str(m.get("photo_id") or "") == str(photo_id)), None)
+            if not meta:
+                continue
+            picks.append({
+                "candidate_index": int(meta.get("candidate_index") or 0),
+                "photo_id": str(photo_id),
+                "category": 2,
+                "score": 60,
+                "reason": "自動補完",
+                "caption": str(meta.get("caption") or ""),
+            })
+
+    order_map = {str(photo.get("id") or ""): idx for idx, photo in enumerate(candidate_photos)}
+    selected_photo_ids = [p.get("photo_id") for p in sorted(picks, key=lambda x: order_map.get(str(x.get("photo_id") or ""), 10**9)) if p.get("photo_id")]
+    payload = {
+        "active": bool(selected_photo_ids),
+        "period_label": str(period_label or ""),
+        "selected_photo_ids": selected_photo_ids,
+        "picks": picks,
+        "generated_at": now_jst().isoformat(),
+        "candidate_count": len(candidate_photos),
+    }
+    st.session_state[replay_photo_curation_state_key(scope_key)] = payload
+    return payload
+
+
+def apply_replay_photo_curation(scope_key, all_photo_items):
+    state = get_replay_photo_curation(scope_key)
+    selected_ids = [str(x) for x in (state.get("selected_photo_ids") or []) if str(x or "").strip()]
+    if not state.get("active") or not selected_ids:
+        return list(all_photo_items or []), {}
+    selected_set = set(selected_ids)
+    curated = [item for item in (all_photo_items or []) if str(item.get("photo_id") or "") in selected_set]
+    return curated or list(all_photo_items or []), state
+
+
+def render_replay_photo_curation_controls(scope_key, period_label, bundle, all_photo_items):
+    state = get_replay_photo_curation(scope_key)
+    active_count = len(state.get("selected_photo_ids") or [])
+    total_count = len(all_photo_items or [])
+    with st.container(border=True):
+        st.markdown("#### ✨ 写真厳選モード")
+        st.caption("基準：①カメラ目線で感情が伝わる ②夢中・頑張り中 ③人との絆が感じられる")
+        if state.get("active") and active_count:
+            st.success(f"厳選中です。{total_count}枚から {active_count}枚を表示しています。")
+        else:
+            st.info("AIがムービー向きの写真を厳選して、見返しやすい枚数にしぼります。")
+
+        cols = st.columns(3)
+        with cols[0]:
+            if st.button("✨ 写真厳選モードにする", key=f"replay_curation_on_{scope_key}", type="primary", use_container_width=True):
+                try:
+                    with st.spinner("写真を厳選しています…"):
+                        payload = generate_replay_photo_curation(scope_key, period_label, bundle)
+                    count = len(payload.get("selected_photo_ids") or [])
+                    if count:
+                        st.success(f"{count}枚を厳選しました。")
+                    else:
+                        st.warning("厳選できる写真が見つかりませんでした。")
+                    st.rerun()
+                except Exception as exc:
+                    st.error("写真を厳選できませんでした。")
+                    with st.expander("保護者向け詳細"):
+                        st.code(str(exc))
+        with cols[1]:
+            if st.button("↻ もう一度厳選", key=f"replay_curation_retry_{scope_key}", use_container_width=True, disabled=not bool(all_photo_items)):
+                try:
+                    with st.spinner("写真を厳選しています…"):
+                        payload = generate_replay_photo_curation(scope_key, period_label, bundle)
+                    count = len(payload.get("selected_photo_ids") or [])
+                    if count:
+                        st.success(f"{count}枚を選び直しました。")
+                    st.rerun()
+                except Exception as exc:
+                    st.error("写真を厳選できませんでした。")
+                    with st.expander("保護者向け詳細"):
+                        st.code(str(exc))
+        with cols[2]:
+            if st.button("すべての写真に戻す", key=f"replay_curation_clear_{scope_key}", use_container_width=True, disabled=not bool(state.get("active"))):
+                clear_replay_photo_curation(scope_key)
+                st.success("通常表示に戻しました。")
+                st.rerun()
+
+        picks = [x for x in (state.get("picks") or []) if isinstance(x, dict)]
+        if picks:
+            with st.expander("厳選した写真の理由を見る"):
+                category_names = {1: "① カメラ目線", 2: "② 夢中・頑張り中", 3: "③ 絆"}
+                for idx, pick in enumerate(picks, start=1):
+                    label = category_names.get(int(pick.get("category") or 0), "② 夢中・頑張り中")
+                    reason = str(pick.get("reason") or "").strip() or "-"
+                    caption = str(pick.get("caption") or "").strip()
+                    st.markdown(f"- {idx}. {label} / {caption} / 理由: {reason}")
+
+
+def render_replay_voice_embed_section(scope_key, photo_items, photo_row_map):
+    options = [str(item.get("photo_id") or "") for item in (photo_items or []) if str(item.get("photo_id") or "").strip()]
+    if not options:
+        return
+    with st.container(border=True):
+        st.markdown("#### 🎙 写真に声を埋め込む")
+        st.caption("写真ごとに短い声メモを登録できます。保存した写真はムービーで🎙マークが出て、そこから再生できます。")
+
+        select_key = f"replay_voice_photo_{scope_key}"
+        selected_photo_id = st.selectbox(
+            "声をつける写真",
+            options=options,
+            format_func=lambda pid: next((f"{idx + 1}. {item.get('caption') or '写真'}" for idx, item in enumerate(photo_items) if str(item.get('photo_id') or '') == str(pid)), str(pid)),
+            key=select_key,
+        )
+        selected_photo = photo_row_map.get(str(selected_photo_id), {})
+        voice_meta = photo_voice_note_meta(selected_photo)
+        voice_path = str(voice_meta.get("storage_path") or "").strip()
+        if voice_path:
+            try:
+                signed = signed_photo_url_map((voice_path,), expires_in=1800)
+                voice_url = str(signed.get(voice_path) or "")
+            except Exception:
+                voice_url = ""
+            if voice_url:
+                st.audio(voice_url)
+            transcript = str(voice_meta.get("transcript") or "").strip()
+            if transcript:
+                st.caption(f"文字起こし: {transcript}")
+            if st.button("この写真の声を削除", key=f"replay_voice_delete_{scope_key}_{selected_photo_id}", use_container_width=True):
+                try:
+                    delete_photo_voice_note(selected_photo_id)
+                    st.success("声メモを削除しました。")
+                    st.rerun()
+                except Exception as exc:
+                    st.error("声メモを削除できませんでした。")
+                    with st.expander("保護者向け詳細"):
+                        st.code(str(exc))
+
+        audio_file = far_field_audio_input("この写真に声を録音", key=f"replay_voice_input_{scope_key}_{selected_photo_id}")
+        if audio_file is not None:
+            try:
+                audio_file.seek(0)
+                preview = audio_file.read()
+                audio_file.seek(0)
+            except Exception:
+                preview = None
+            if preview:
+                st.audio(preview)
+
+        if st.button("この写真に声を保存", key=f"replay_voice_save_{scope_key}_{selected_photo_id}", type="primary", use_container_width=True):
+            if audio_file is None:
+                st.error("先に声を録音してください。")
+            else:
+                try:
+                    with st.spinner("声メモを保存しています…"):
+                        save_photo_voice_note(selected_photo_id, audio_file, auto_transcribe=True)
+                    st.success("声メモを保存しました。")
+                    st.rerun()
+                except Exception as exc:
+                    st.error("声メモを保存できませんでした。")
+                    with st.expander("保護者向け詳細"):
+                        st.code(str(exc))
 
 
 def monthly_family_share_info(review):
@@ -16351,6 +16854,7 @@ def build_monthly_family_share_photo_snapshot(bundle, limit=None):
             continue
         trip = trip_map.get(str(photo.get("trip_id")), {})
         emotion = photo_selected_tag_meta(photo)
+        voice_meta = photo_voice_note_meta(photo)
         snapshots.append({
             "storage_path": storage_path,
             "caption": _monthly_replay_photo_caption(photo, trip, idx),
@@ -16358,6 +16862,8 @@ def build_monthly_family_share_photo_snapshot(bundle, limit=None):
             "emotion_label": str(emotion.get("label") or ""),
             "emotion_emoji": str(emotion.get("emoji") or ""),
             "emotion_color": str(emotion.get("color") or ""),
+            "voice_storage_path": str(voice_meta.get("storage_path") or ""),
+            "voice_transcript": str(voice_meta.get("transcript") or ""),
         })
     return snapshots
 
@@ -16369,10 +16875,16 @@ def build_family_shared_replay_photo_items(share):
     paths = [x for x in paths if x]
     if not paths:
         return []
+    voice_paths = [str(x.get("voice_storage_path") or "").strip() for x in snapshots]
+    voice_paths = [x for x in voice_paths if x]
     try:
         signed_map = signed_photo_url_map(paths, expires_in=1800)
     except Exception:
         signed_map = {}
+    try:
+        voice_signed_map = signed_photo_url_map(voice_paths, expires_in=1800) if voice_paths else {}
+    except Exception:
+        voice_signed_map = {}
     items = []
     for snap in snapshots:
         path = str(snap.get("storage_path") or "").strip()
@@ -16388,6 +16900,7 @@ def build_family_shared_replay_photo_items(share):
                 url = ""
         if not url:
             continue
+        voice_path = str(snap.get("voice_storage_path") or "").strip()
         items.append({
             "url": url,
             "caption": str(snap.get("caption") or ""),
@@ -16395,6 +16908,9 @@ def build_family_shared_replay_photo_items(share):
             "emotion_label": str(snap.get("emotion_label") or ""),
             "emotion_emoji": str(snap.get("emotion_emoji") or ""),
             "emotion_color": str(snap.get("emotion_color") or ""),
+            "has_voice": bool(voice_path),
+            "voice_url": str(voice_signed_map.get(voice_path) or ""),
+            "voice_transcript": str(snap.get("voice_transcript") or ""),
         })
     return items
 
@@ -16818,6 +17334,25 @@ def render_monthly_replay_player(period_label, review, playback, photo_items):
         line-height: 1;
         pointer-events: none;
       }}
+      .burari-replay-voice-button {{
+        position: absolute;
+        left: 13px;
+        bottom: 13px;
+        z-index: 7;
+        display: none;
+        align-items: center;
+        justify-content: center;
+        gap: .25rem;
+        border: 0;
+        border-radius: 999px;
+        padding: .46rem .7rem;
+        background: rgba(17,24,39,.86);
+        color: #fff;
+        font-size: 12px;
+        font-weight: 750;
+        box-shadow: 0 2px 10px rgba(0,0,0,.26);
+        cursor: pointer;
+      }}
       .burari-replay-controls {{ display: flex; gap: .42rem; margin-top: .72rem; }}
       .burari-replay-controls button {{
         flex: 1;
@@ -16877,6 +17412,7 @@ def render_monthly_replay_player(period_label, review, playback, photo_items):
             <div class="burari-replay-caption" id="burariReplayCaption">{first_caption}</div>
             <div class="burari-replay-progress" id="burariReplayProgress">1 / {len(photo_items)}</div>
           </div>
+          <button class="burari-replay-voice-button" id="burariReplayVoiceButton" type="button">🎙 声</button>
           <div class="burari-replay-emotion" id="burariReplayEmotion" aria-hidden="true"></div>
         </div>
         <div class="burari-replay-controls">
@@ -16909,6 +17445,10 @@ def render_monthly_replay_player(period_label, review, playback, photo_items):
       const burariDisplayMs = {display_ms};
       const burariDurationMs = {duration_seconds * 1000};
       let burariIndex = 0;
+      let burariCurrentVoiceUrl = '';
+      let burariCurrentVoiceLabel = '';
+      let burariVoiceAudio = null;
+      let burariResumeAfterVoice = false;
       let burariTimer = null;
       let burariMusicWatchTimer = null;
       let burariFallbackEndTimer = null;
@@ -16996,6 +17536,10 @@ def render_monthly_replay_player(period_label, review, playback, photo_items):
         // Change the visible photo and its frame metadata in the same browser turn.
         // The image is already loaded/decoded before this function runs, so the old
         // photo cannot remain visible while the new emotion frame has already changed.
+        if (burariVoiceAudio && !burariVoiceAudio.paused) {{
+          try {{ burariVoiceAudio.pause(); burariVoiceAudio.currentTime = 0; }} catch (_) {{}}
+          burariResumeAfterVoice = false;
+        }}
         if (nextUrl && burariImg) {{
           burariImg.src = nextUrl;
           burariImg.dataset.burariSlideUrl = nextUrl;
@@ -17010,6 +17554,12 @@ def render_monthly_replay_player(period_label, review, playback, photo_items):
           burariEmotion.style.borderColor = emotionKey ? emotionColor : 'rgba(255,255,255,.96)';
           burariEmotion.setAttribute('aria-hidden', emotionIcon ? 'false' : 'true');
           burariEmotion.title = emotionIcon ? `${{emotionIcon}} ${{item.emotion_label || ''}}` : '';
+        }}
+        burariCurrentVoiceUrl = String(item.voice_url || '');
+        burariCurrentVoiceLabel = String(item.voice_transcript || item.caption || 'この写真の声');
+        if (burariVoiceButton) {{
+          burariVoiceButton.style.display = burariCurrentVoiceUrl ? 'inline-flex' : 'none';
+          burariVoiceButton.title = burariCurrentVoiceUrl ? 'この写真の声を聞く' : '';
         }}
         burariCaption.textContent = item.caption || '';
         burariProgress.textContent = `${{safeIndex + 1}} / ${{burariSlides.length}}`;
@@ -17112,7 +17662,54 @@ def render_monthly_replay_player(period_label, review, playback, photo_items):
             burariPlayer.pauseVideo();
           }}
         }} catch (_) {{}}
+        try {{
+          if (burariVoiceAudio) {{
+            burariVoiceAudio.pause();
+            burariVoiceAudio.currentTime = 0;
+          }}
+        }} catch (_) {{}}
         if (burariStatus) burariStatus.textContent = '中断しました。▶ 再生で指定区間の最初から再生できます。';
+      }}
+
+      function burariPlayCurrentVoice() {{
+        if (!burariCurrentVoiceUrl) return;
+        if (!burariVoiceAudio) {{
+          burariVoiceAudio = new Audio();
+          burariVoiceAudio.preload = 'auto';
+          burariVoiceAudio.addEventListener('ended', () => {{
+            if (burariResumeAfterVoice) {{
+              try {{
+                if (burariPlayer && typeof burariPlayer.playVideo === 'function') burariPlayer.playVideo();
+              }} catch (_) {{}}
+            }}
+            burariResumeAfterVoice = false;
+            if (burariStatus) burariStatus.textContent = `写真の声を聞き終わりました。`;
+          }});
+        }}
+        burariResumeAfterVoice = false;
+        try {{
+          if (window.YT && burariPlayer && typeof burariPlayer.getPlayerState === 'function') {{
+            const state = burariPlayer.getPlayerState();
+            if (state === YT.PlayerState.PLAYING) {{
+              burariResumeAfterVoice = true;
+              burariPlayer.pauseVideo();
+            }}
+          }}
+        }} catch (_) {{}}
+        try {{
+          burariVoiceAudio.pause();
+          burariVoiceAudio.currentTime = 0;
+        }} catch (_) {{}}
+        burariVoiceAudio.src = burariCurrentVoiceUrl;
+        const playPromise = burariVoiceAudio.play();
+        if (playPromise && typeof playPromise.then === 'function') {{
+          playPromise.then(() => {{
+            if (burariStatus) burariStatus.textContent = 'この写真の声を再生しています。';
+          }}).catch(() => {{
+            if (burariStatus) burariStatus.textContent = '声を再生できませんでした。';
+            burariResumeAfterVoice = false;
+          }});
+        }}
       }}
 
       function burariScheduleNextSlide() {{
@@ -17293,6 +17890,7 @@ def render_monthly_replay_player(period_label, review, playback, photo_items):
       document.getElementById('burariReplayStart').addEventListener('click', burariActuallyStart);
       document.getElementById('burariReplayStop').addEventListener('click', burariInterrupt);
       document.getElementById('burariReplayAgain').addEventListener('click', burariActuallyStart);
+      if (burariVoiceButton) burariVoiceButton.addEventListener('click', burariPlayCurrentVoice);
       burariShowSlide(0);
     </script>
     """
@@ -17691,10 +18289,14 @@ def render_monthly_time_settings(month_key, review):
             st.rerun()
 
 def render_monthly_replay_section(month_key, period_label, bundle, review):
-    photo_items = build_monthly_replay_photo_items(bundle)
-    if not photo_items:
+    all_photo_items = build_monthly_replay_photo_items(bundle)
+    if not all_photo_items:
         st.info("この期間には再生に使える写真がありません。")
         return False
+
+    photo_items, curation_state = apply_replay_photo_curation(month_key, all_photo_items)
+    if curation_state.get("active") and photo_items:
+        st.caption(f"写真厳選モード：{len(all_photo_items)}枚のうち {len(photo_items)}枚を表示中")
 
     state = _monthly_replay_state(month_key, review)
     playback = state["playback"]
@@ -17724,6 +18326,11 @@ def render_monthly_replay_section(month_key, period_label, bundle, review):
         "title": str(st.session_state.get(state["title_key"]) or "").strip(),
     }
     render_monthly_replay_player(period_label, review, effective_playback, photo_items)
+
+    raw_photos, _ = _monthly_replay_selected_photos(bundle)
+    photo_row_map = {str(photo.get("id") or ""): photo for photo in (raw_photos or []) if str(photo.get("id") or "").strip()}
+    render_replay_photo_curation_controls(month_key, period_label, bundle, all_photo_items)
+    render_replay_voice_embed_section(month_key, all_photo_items, photo_row_map)
     return True
 
 
