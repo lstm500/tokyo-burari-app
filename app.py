@@ -32,7 +32,7 @@ import streamlit as st
 # Freshly generated update: 2026-08-31 23:49 JST
 GENERATED_UPDATE_JST = "2026-09-10T09:05:00+09:00"
 
-APP_BUILD = "v346"
+APP_BUILD = "v347"
 # v331: multi-tag photo selections can go straight to a music replay and be saved as a stable in-app movie snapshot.
 # v330: tag-review movies support one or multiple AI tags; selection is action-only.
 
@@ -17232,6 +17232,212 @@ def monthly_playback_is_ready(playback):
     return end_seconds > start_seconds
 
 
+def _replay_export_image_bytes(item):
+    """Return original photo bytes for an explicit replay export request."""
+    item = item if isinstance(item, dict) else {}
+    storage_path = str(item.get("storage_path") or "").strip()
+    if storage_path:
+        try:
+            raw = download_photo(storage_path)
+            if raw:
+                return bytes(raw)
+        except Exception:
+            pass
+    url = str(item.get("url") or "").strip()
+    if url.startswith("data:image/") and "," in url:
+        try:
+            return base64.b64decode(url.split(",", 1)[1])
+        except Exception:
+            return b""
+    if url.startswith("https://") or url.startswith("http://"):
+        try:
+            req = Request(url, headers={"User-Agent": "TokyoBurariReplayExport/1.0"})
+            with urlopen(req, timeout=15.0) as response:
+                return response.read()
+        except Exception:
+            return b""
+    return b""
+
+
+def _replay_export_frame_jpeg(image_bytes, width=720, height=1280):
+    """Build a cinematic 9:16 frame without requiring Japanese system fonts."""
+    from PIL import Image, ImageEnhance, ImageFilter, ImageOps
+
+    if not image_bytes:
+        return b""
+    try:
+        with Image.open(io.BytesIO(image_bytes)) as src:
+            src = ImageOps.exif_transpose(src).convert("RGB")
+            resampling = getattr(getattr(Image, "Resampling", Image), "LANCZOS")
+
+            # Soft blurred background lets landscape photos remain fully visible instead of
+            # being aggressively cropped to 9:16.
+            background = ImageOps.fit(src, (int(width), int(height)), method=resampling)
+            background = background.filter(ImageFilter.GaussianBlur(radius=max(10, int(width * 0.025))))
+            background = ImageEnhance.Brightness(background).enhance(0.58)
+            background = ImageEnhance.Color(background).enhance(0.82)
+
+            foreground = src.copy()
+            foreground.thumbnail((int(width * 0.93), int(height * 0.90)), resampling)
+            x = (int(width) - foreground.width) // 2
+            y = (int(height) - foreground.height) // 2
+
+            # A low-cost soft shadow gives the photo a film-card feel while keeping the
+            # original picture unchanged.
+            shadow = Image.new("RGBA", (int(width), int(height)), (0, 0, 0, 0))
+            card = Image.new("RGBA", foreground.size, (0, 0, 0, 0))
+            card.paste(foreground.convert("RGBA"), (0, 0))
+            alpha = Image.new("L", foreground.size, 222)
+            shadow_blob = Image.new("RGBA", foreground.size, (0, 0, 0, 150))
+            shadow_blob.putalpha(alpha.filter(ImageFilter.GaussianBlur(radius=10)))
+            shadow.alpha_composite(shadow_blob, (x, min(int(height) - foreground.height, y + 12)))
+
+            frame = background.convert("RGBA")
+            frame.alpha_composite(shadow)
+            frame.alpha_composite(card, (x, y))
+            frame = frame.convert("RGB")
+            out = io.BytesIO()
+            frame.save(out, format="JPEG", quality=88, optimize=True)
+            return out.getvalue()
+    except Exception:
+        return b""
+
+
+def build_replay_visual_mp4(photo_items, display_ms, duration_seconds):
+    """Create a phone-ready visual MP4 only after an explicit export button press.
+
+    YouTube audio is deliberately not extracted from the embedded player.  The exported
+    file therefore contains the same photo order/pacing and cinematic framing, but no
+    YouTube audio track.
+    """
+    ffmpeg = _ffmpeg_executable()
+    if not ffmpeg:
+        raise RuntimeError("この実行環境ではMP4作成用のffmpegを利用できません。")
+    items = [dict(x) for x in (photo_items or []) if isinstance(x, dict)]
+    if not items:
+        raise ValueError("保存できる写真がありません。")
+
+    cadence_seconds = max(3.0, float(display_ms or 3000) / 1000.0)
+    total_seconds = max(1.0, float(duration_seconds or cadence_seconds))
+
+    # Match the live replay: the photo list can loop, and music duration decides when the
+    # sequence ends. The minimum is still three seconds per photo.
+    sequence = []
+    remaining = total_seconds
+    index = 0
+    while remaining > 0.02:
+        segment = min(cadence_seconds, remaining)
+        sequence.append((index % len(items), max(0.04, segment)))
+        remaining -= segment
+        index += 1
+        if index > 4000:  # defensive only; ordinary replay segments are far smaller
+            break
+
+    with tempfile.TemporaryDirectory(prefix="burari_replay_export_") as temp_dir:
+        temp_dir = Path(temp_dir)
+        frame_paths = {}
+        for item_index in sorted({idx for idx, _duration in sequence}):
+            raw = _replay_export_image_bytes(items[item_index])
+            frame = _replay_export_frame_jpeg(raw)
+            if not frame:
+                raise RuntimeError(f"写真 {item_index + 1} を動画用に読み込めませんでした。")
+            frame_path = temp_dir / f"frame_{item_index:04d}.jpg"
+            frame_path.write_bytes(frame)
+            frame_paths[item_index] = frame_path
+
+        concat_path = temp_dir / "slides.txt"
+        concat_lines = []
+        for item_index, segment_duration in sequence:
+            frame_path = str(frame_paths[item_index]).replace("'", "'\\''")
+            concat_lines.append(f"file '{frame_path}'")
+            concat_lines.append(f"duration {segment_duration:.4f}")
+        # concat demuxer applies the last duration reliably when the final file is repeated.
+        last_index = sequence[-1][0]
+        last_path = str(frame_paths[last_index]).replace("'", "'\\''")
+        concat_lines.append(f"file '{last_path}'")
+        concat_path.write_text("\n".join(concat_lines) + "\n", encoding="utf-8")
+
+        output_path = temp_dir / "burari_replay.mp4"
+        fade_out_start = max(0.0, total_seconds - min(0.75, total_seconds / 3.0))
+        video_filter = (
+            "fps=24,format=yuv420p,"
+            f"fade=t=in:st=0:d={min(0.55, total_seconds / 3.0):.3f},"
+            f"fade=t=out:st={fade_out_start:.3f}:d={max(0.15, total_seconds - fade_out_start):.3f}"
+        )
+        cmd = [
+            ffmpeg, "-hide_banner", "-loglevel", "error", "-y",
+            "-f", "concat", "-safe", "0", "-i", str(concat_path),
+            "-vf", video_filter,
+            "-t", f"{total_seconds:.3f}",
+            "-an", "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
+            "-movflags", "+faststart", "-pix_fmt", "yuv420p", str(output_path),
+        ]
+        completed = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=max(45, int(total_seconds * 4 + 30)))
+        if completed.returncode != 0 or not output_path.exists() or output_path.stat().st_size < 1024:
+            detail = completed.stderr.decode("utf-8", errors="ignore")[-500:]
+            raise RuntimeError("MP4を作成できませんでした。" + (f" {detail}" if detail else ""))
+        return output_path.read_bytes()
+
+
+def _replay_download_file_name(period_label):
+    base = re.sub(r'[\\/:*?"<>|]+', "_", str(period_label or "振り返り")).strip(" ._")
+    base = base[:48] or "振り返り"
+    return f"ぶらり旅_{base}.mp4"
+
+
+def render_replay_download_controls(period_label, playback, photo_items, display_ms, duration_seconds):
+    """Render explicit-action MP4 export controls without doing background work."""
+    playback = playback if isinstance(playback, dict) else {}
+    identity_parts = [
+        str(period_label or ""),
+        str(playback.get("video_id") or playback.get("youtube_url") or ""),
+        str(playback.get("start_seconds") or ""),
+        str(playback.get("end_seconds") or ""),
+        str(len(photo_items or [])),
+    ]
+    for item in (photo_items or []):
+        if isinstance(item, dict):
+            identity_parts.append(str(item.get("photo_id") or item.get("storage_path") or item.get("url") or "")[:220])
+    widget_id = hashlib.sha1("|".join(identity_parts).encode("utf-8")).hexdigest()[:16]
+    # Keep only the latest generated MP4 in session memory. Several long movies should
+    # not accumulate tens of MB each while the app stays open.
+    state_key = "_replay_export_latest_mp4_v347"
+
+    st.markdown("#### ⬇ スマホに保存")
+    st.caption("保存用MP4は、ボタンを押した時だけ作成します。普段のムービー再生や画面操作は重くしません。")
+    if st.button(
+        "⬇ スマホ保存用MP4を作る",
+        use_container_width=True,
+        key=f"replay_export_build_{widget_id}",
+    ):
+        try:
+            with st.spinner("スマホ保存用の縦型MP4を作っています…"):
+                movie_bytes = build_replay_visual_mp4(photo_items, display_ms, duration_seconds)
+            st.session_state[state_key] = {
+                "widget_id": widget_id,
+                "bytes": movie_bytes,
+                "name": _replay_download_file_name(period_label),
+            }
+        except Exception as exc:
+            st.session_state.pop(state_key, None)
+            st.error("スマホ保存用の動画を作成できませんでした。")
+            with st.expander("保護者向け詳細"):
+                st.code(str(exc))
+
+    export = st.session_state.get(state_key)
+    if isinstance(export, dict) and export.get("widget_id") == widget_id and export.get("bytes"):
+        st.download_button(
+            "⬇ MP4をスマホに保存",
+            data=export["bytes"],
+            file_name=str(export.get("name") or "burari_replay.mp4"),
+            mime="video/mp4",
+            use_container_width=True,
+            key=f"replay_export_download_{widget_id}",
+        )
+        st.caption("YouTubeプレーヤーの音声はMP4へ直接取り出さないため、保存動画は映像のみです。音楽入り保存は、利用できる音源ファイルを登録する方式なら追加できます。")
+
+
+
 def render_monthly_replay_player(period_label, review, playback, photo_items, curated_mode=False):
     if not photo_items:
         return
@@ -17920,6 +18126,13 @@ def render_monthly_replay_player(period_label, review, playback, photo_items, cu
     </script>
     """
     st.components.v1.html(component_html, height=1180, scrolling=False)
+    render_replay_download_controls(
+        period_label,
+        playback,
+        photo_items,
+        display_ms,
+        duration_seconds,
+    )
 
 
 def _monthly_replay_state(month_key, review):
