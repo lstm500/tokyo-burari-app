@@ -26,15 +26,17 @@ from urllib.parse import urlencode, urlparse, parse_qs, quote
 from urllib.request import Request, urlopen
 from urllib.error import HTTPError
 from datetime import date, datetime, timedelta
+from bisect import bisect_left
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import streamlit as st
 
 # Freshly generated update: 2026-08-31 23:49 JST
-GENERATED_UPDATE_JST = "2026-09-11T00:08:00+09:00"
+GENERATED_UPDATE_JST = "2026-09-11T00:24:48+09:00"
 
-APP_BUILD = "v382"
+APP_BUILD = "v384"
+# v383: interaction performance pass - no periodic Home polling, lazy heavy components, deferred recovery scans.
 # v331: multi-tag photo selections can go straight to a music replay and be saved as a stable in-app movie snapshot.
 # v330: tag-review movies support one or multiple AI tags; selection is action-only.
 
@@ -902,8 +904,13 @@ GPS_TRACK_SEGMENT_MAX_JUMP_M = 180.0
 # v372: dense-city GPS can wander tens of meters while a person is standing still.
 # Keep raw points for audit/history, but use a stricter quality/noise gate for the glowing walk line.
 GPS_TRACK_RENDER_MAX_ACCURACY_M = 45.0
-GPS_TRACK_RENDER_BASE_NOISE_M = 10.0
-GPS_TRACK_RENDER_MAX_NOISE_M = 32.0
+# v384: display-only cleanup. Dense-city fixes with ~15-30m accuracy can alternate
+# between Android-native GPS and the legacy browser watcher, producing false zigzags
+# and radial "spider-web" lines near stations. Raw stored points are never deleted.
+GPS_TRACK_RENDER_BASE_NOISE_M = 12.0
+GPS_TRACK_RENDER_MAX_NOISE_M = 42.0
+GPS_TRACK_RENDER_SOURCE_OVERLAP_WINDOW_MS_V384 = 8000
+GPS_TRACK_RENDER_SOURCE_OVERLAP_DISTANCE_M_V384 = 120.0
 # v290: platform-first / parallel-cluster / robust-capsule station footprint.
 # The previous v289 let every nearby rail line determine the station axis; at junctions
 # such as Osaki that can rotate the footprint away from the platforms. v290 treats each
@@ -3594,15 +3601,26 @@ export default function(component) {
 
 LIVE_CAMERA_COMPONENT_BUILD = "v238"
 
-try:
-    live_camera_component = st.components.v2.component(
-        "tokyo_burari_live_camera_v374",
-        html=_LIVE_CAMERA_HTML,
-        css=_LIVE_CAMERA_CSS,
-        js=_LIVE_CAMERA_JS,
-    )
-except Exception:
-    live_camera_component = None
+# v383: this bundle is large. Register it only on the Camera page so unrelated
+# Streamlit reruns do not pay the camera component setup cost.
+live_camera_component = None
+_live_camera_component_initialized = False
+
+def _get_live_camera_component():
+    global live_camera_component, _live_camera_component_initialized
+    if _live_camera_component_initialized:
+        return live_camera_component
+    _live_camera_component_initialized = True
+    try:
+        live_camera_component = st.components.v2.component(
+            "tokyo_burari_live_camera_v374",
+            html=_LIVE_CAMERA_HTML,
+            css=_LIVE_CAMERA_CSS,
+            js=_LIVE_CAMERA_JS,
+        )
+    except Exception:
+        live_camera_component = None
+    return live_camera_component
 
 
 # ============================================================
@@ -5658,22 +5676,32 @@ export default function(component) {
   } catch (_) {}
 }
 """
-try:
-    pending_emotion_cleanup_component = st.components.v2.component(
-        "tokyo_burari_pending_emotion_cleanup_v159",
-        js=_PENDING_EMOTION_CLEANUP_JS,
-    )
-except Exception:
-    pending_emotion_cleanup_component = None
+pending_emotion_cleanup_component = None
+_pending_emotion_cleanup_component_initialized = False
+
+def _get_pending_emotion_cleanup_component():
+    global pending_emotion_cleanup_component, _pending_emotion_cleanup_component_initialized
+    if _pending_emotion_cleanup_component_initialized:
+        return pending_emotion_cleanup_component
+    _pending_emotion_cleanup_component_initialized = True
+    try:
+        pending_emotion_cleanup_component = st.components.v2.component(
+            "tokyo_burari_pending_emotion_cleanup_v159",
+            js=_PENDING_EMOTION_CLEANUP_JS,
+        )
+    except Exception:
+        pending_emotion_cleanup_component = None
+    return pending_emotion_cleanup_component
 
 
 def render_pending_emotion_query_cleanup():
-    if pending_emotion_cleanup_component is None:
-        return
     ack = str(st.session_state.get("_emotion_query_ack_token") or "")
     if not ack:
         return
-    pending_emotion_cleanup_component(
+    component = _get_pending_emotion_cleanup_component()
+    if component is None:
+        return
+    component(
         data={"ack_token": ack, "pending_param": PENDING_EMOTION_QUERY_PARAM},
         key=f"pending_emotion_cleanup_v159_{ack}",
     )
@@ -5734,13 +5762,22 @@ export default function(component) {
 }
 """
 
-try:
-    pending_tag_sync_component_v166 = st.components.v2.component(
-        "tokyo_burari_pending_tag_sync_v166",
-        js=_PENDING_TAG_SYNC_JS,
-    )
-except Exception:
-    pending_tag_sync_component_v166 = None
+pending_tag_sync_component_v166 = None
+_pending_tag_sync_component_v166_initialized = False
+
+def _get_pending_tag_sync_component_v166():
+    global pending_tag_sync_component_v166, _pending_tag_sync_component_v166_initialized
+    if _pending_tag_sync_component_v166_initialized:
+        return pending_tag_sync_component_v166
+    _pending_tag_sync_component_v166_initialized = True
+    try:
+        pending_tag_sync_component_v166 = st.components.v2.component(
+            "tokyo_burari_pending_tag_sync_v166",
+            js=_PENDING_TAG_SYNC_JS,
+        )
+    except Exception:
+        pending_tag_sync_component_v166 = None
+    return pending_tag_sync_component_v166
 
 
 def _apply_pending_tag_payload_v166(payload):
@@ -5840,9 +5877,10 @@ def _apply_pending_tag_payload_v166(payload):
 
 def sync_pending_tags_from_browser_v166():
     """Flush browser-local photo/video tags only when some real app rerun occurs."""
-    if pending_tag_sync_component_v166 is None:
+    component = _get_pending_tag_sync_component_v166()
+    if component is None:
         return False
-    result = pending_tag_sync_component_v166(
+    result = component(
         data={
             "family_key": current_family_key(),
             "member_key": current_member_key(),
@@ -11719,14 +11757,18 @@ def test_video_storage_upload_destination():
     return True
 
 
-def current_video_storage_usage_bytes():
+def current_video_storage_usage_bytes(max_age_seconds=30):
     """Actual video bytes for the signed-in person, including stabilized proxies.
 
     Storage listing is preferred so orphan video objects also count toward the per-person
     quota. If listing is unavailable, DB metadata provides a conservative fallback.
     """
     cache_key = _account_cache_key("video_storage_usage")
-    cached = _session_cache_get(cache_key, max_age_seconds=30)
+    try:
+        cache_age = max(5, int(max_age_seconds or 30))
+    except Exception:
+        cache_age = 30
+    cached = _session_cache_get(cache_key, max_age_seconds=cache_age)
     if cached is not None:
         try:
             return max(0, int(cached))
@@ -19351,7 +19393,7 @@ def home_family_shared_movie_notice(browser_state=None):
         isinstance(cache, dict)
         and str(cache.get("family_key") or "") == family_key
         and str(cache.get("member_key") or "") == member_key
-        and now_value - float(cache.get("checked_at") or 0) < 20.0
+        and now_value - float(cache.get("checked_at") or 0) < 180.0
     ):
         rows = list(cache.get("rows") or [])
     else:
@@ -24305,7 +24347,7 @@ def open_diary_photo_talk(trip_id, photo_id, state):
 # ============================================================
 # Page: Home
 # ============================================================
-@st.cache_data(ttl=3, max_entries=64, show_spinner=False)
+@st.cache_data(ttl=60, max_entries=64, show_spinner=False)
 def _home_video_counts_cached(family_key, member_key):
     """Return (saved videos, videos not yet accepted as diary stills)."""
     rows = (
@@ -24380,10 +24422,9 @@ def _render_home_video_count_status():
         st.caption("保存済み本数を確認できませんでした。")
 
 
-if hasattr(st, "fragment"):
-    render_home_video_count_status = st.fragment(run_every="5s")(_render_home_video_count_status)
-else:
-    render_home_video_count_status = _render_home_video_count_status
+# v383: do not rerun Home every 5 seconds. Natural interactions plus explicit cache
+# invalidation after video mutations keep these counters current without UI churn.
+render_home_video_count_status = _render_home_video_count_status
 
 
 def _render_home_storage_usage_status():
@@ -24401,7 +24442,7 @@ def _render_home_storage_usage_status():
         return
 
     try:
-        usage_bytes = current_video_storage_usage_bytes()
+        usage_bytes = current_video_storage_usage_bytes(max_age_seconds=300)
         ratio = min(1.0, max(0.0, float(usage_bytes) / float(quota_bytes))) if quota_bytes else 0.0
         percent = ratio * 100.0
         usage_text = format_storage_size(usage_bytes)
@@ -24435,10 +24476,8 @@ def _render_home_storage_usage_status():
         )
 
 
-if hasattr(st, "fragment"):
-    render_home_storage_usage_status = st.fragment(run_every="15s")(_render_home_storage_usage_status)
-else:
-    render_home_storage_usage_status = _render_home_storage_usage_status
+# v383: storage enumeration can be expensive. Never poll it every 15 seconds.
+render_home_storage_usage_status = _render_home_storage_usage_status
 
 
 def page_home():
@@ -28842,7 +28881,8 @@ def page_trip():
         st.success(notice)
     render_photo_family_share_notice()
 
-    if live_camera_component is None:
+    camera_component = _get_live_camera_component()
+    if camera_component is None:
         st.error("ライブカメラ機能に必要なStreamlitのバージョンが古いです。requirements.txtを更新してください。")
         return
 
@@ -28903,7 +28943,7 @@ def page_trip():
             browser_video_max_bytes = min(VIDEO_MAX_BYTES, max(0, int(remaining_for_recording)))
         except Exception:
             browser_video_max_bytes = VIDEO_MAX_BYTES
-    result = live_camera_component(
+    result = camera_component(
         data={
             "auto_start": auto_start,
             "auto_start_mode": "video" if auto_start_video else ("photo" if auto_start else ""),
@@ -32594,6 +32634,82 @@ def _load_all_project_track_points_v271():
     return points
 
 
+def _project_render_source_dedupe_v384(points):
+    """Prefer one GPS stream when Android/native and browser fixes overlap in time.
+
+    Native Android tracking and the older browser watcher can both be present in history.
+    If those streams are interleaved, sorting only by timestamp makes the rendered route
+    jump back and forth between two slightly different fixes. Keep every raw row in storage,
+    but suppress a browser fix for rendering when a reasonably accurate Android fix exists
+    at almost the same time and place.
+    """
+    rows = [row for row in (points or []) if isinstance(row, dict)]
+    if not rows:
+        return []
+    rows = sorted(rows, key=lambda row: (int(row.get("ts_ms") or 0), str(row.get("id") or "")))
+    native = []
+    for row in rows:
+        if str(row.get("source") or "").strip().lower() != "android_native":
+            continue
+        try:
+            ts_ms = int(float(row.get("ts_ms") or 0))
+            lat = float(row.get("lat")); lon = float(row.get("lon"))
+            accuracy = float(row.get("accuracy_m")) if row.get("accuracy_m") is not None else None
+        except (TypeError, ValueError):
+            continue
+        if ts_ms <= 0 or not (math.isfinite(lat) and math.isfinite(lon)):
+            continue
+        if accuracy is not None and (not math.isfinite(accuracy) or accuracy > GPS_TRACK_RENDER_MAX_ACCURACY_M):
+            continue
+        native.append((ts_ms, row))
+    if not native:
+        return rows
+
+    native_times = [item[0] for item in native]
+    output = []
+    for row in rows:
+        source = str(row.get("source") or "").strip().lower()
+        if source != "browser_watch":
+            output.append(row)
+            continue
+        try:
+            ts_ms = int(float(row.get("ts_ms") or 0))
+            lat = float(row.get("lat")); lon = float(row.get("lon"))
+            browser_accuracy = float(row.get("accuracy_m")) if row.get("accuracy_m") is not None else None
+        except (TypeError, ValueError):
+            output.append(row)
+            continue
+        index = bisect_left(native_times, ts_ms)
+        suppress = False
+        for candidate_index in (index - 1, index, index + 1):
+            if candidate_index < 0 or candidate_index >= len(native):
+                continue
+            native_ts, native_row = native[candidate_index]
+            if abs(native_ts - ts_ms) > GPS_TRACK_RENDER_SOURCE_OVERLAP_WINDOW_MS_V384:
+                continue
+            try:
+                nlat = float(native_row.get("lat")); nlon = float(native_row.get("lon"))
+                dist = _nearby_haversine_m(lat, lon, nlat, nlon)
+                native_accuracy = float(native_row.get("accuracy_m")) if native_row.get("accuracy_m") is not None else None
+            except (TypeError, ValueError):
+                continue
+            if dist > GPS_TRACK_RENDER_SOURCE_OVERLAP_DISTANCE_M_V384:
+                continue
+            # Preserve a materially more accurate browser fix; otherwise native GPS is
+            # the canonical stream for the overlapping instant.
+            if (
+                browser_accuracy is not None
+                and native_accuracy is not None
+                and browser_accuracy + 10.0 < native_accuracy
+            ):
+                continue
+            suppress = True
+            break
+        if not suppress:
+            output.append(row)
+    return output
+
+
 def _project_clean_track_points_v372(points):
     """Return render-safe GPS points while preserving the raw source data unchanged.
 
@@ -32605,7 +32721,7 @@ def _project_clean_track_points_v372(points):
     3) remove short out-and-back spikes whose middle fix is visibly less reliable.
     """
     clean = []
-    for raw in points or []:
+    for raw in _project_render_source_dedupe_v384(points):
         if not isinstance(raw, dict):
             continue
         try:
@@ -32645,15 +32761,25 @@ def _project_clean_track_points_v372(points):
         )
         noise_floor = max(
             GPS_TRACK_RENDER_BASE_NOISE_M,
-            min(GPS_TRACK_RENDER_MAX_NOISE_M, accuracy_radius * 0.58),
+            min(GPS_TRACK_RENDER_MAX_NOISE_M, accuracy_radius * 0.90),
         )
         estimated_speed = dist / dt if dt > 0 else 999.0
         same_session = bool(str(point.get("session_id") or "")) and str(point.get("session_id") or "") == str(prev.get("session_id") or "")
+        point_source = str(point.get("source") or "").strip().lower()
+        prev_source = str(prev.get("source") or "").strip().lower()
+        same_source = bool(point_source) and point_source == prev_source
+        stream_contiguous = same_session or (same_source and dt <= 60.0)
+        try:
+            reported_speed = float(point.get("speed_mps")) if point.get("speed_mps") is not None else None
+        except (TypeError, ValueError):
+            reported_speed = None
 
-        # Within one active GPS session, small slow changes inside the current error
-        # radius are much more likely to be GPS wander than actual walking. If the new
-        # fix is materially more accurate, replace the anchor instead of drawing to it.
-        if same_session and dist < noise_floor and estimated_speed <= 1.35:
+        # v384: session ids can change after an app/WebView restart. For display noise
+        # rejection, a short continuation from the same GPS source is still one stream.
+        # Use most of the reported accuracy radius: a 15-25m urban wobble should not be
+        # interpreted as a walked side street merely because the fix moved 10m.
+        slow_or_stationary = estimated_speed <= 1.80 or (reported_speed is not None and reported_speed <= 0.90)
+        if stream_contiguous and dist < noise_floor and slow_or_stationary:
             if accuracy is not None and (prev_accuracy is None or accuracy + 4.0 < prev_accuracy):
                 clean[-1] = point
             continue
@@ -32691,14 +32817,18 @@ def _project_clean_track_points_v372(points):
                 bool(str(a.get("session_id") or ""))
                 and str(a.get("session_id") or "") == str(b.get("session_id") or "") == str(c.get("session_id") or "")
             )
+            source_a = str(a.get("source") or "").strip().lower()
+            same_source = bool(source_a) and source_a == str(b.get("source") or "").strip().lower() == str(c.get("source") or "").strip().lower()
+            same_stream = same_session or (same_source and 0 < total_dt <= 90.0)
             middle_worse = b_acc >= max(18.0, min(a_acc, c_acc) + 5.0)
+            obvious_return_spike = ab >= 34.0 and bc >= 34.0 and ac <= 13.0
             spike = (
-                same_session
-                and 0 < total_dt <= 75.0
+                same_stream
+                and 0 < total_dt <= 90.0
                 and ab >= max(18.0, b_acc * 0.65)
                 and bc >= max(18.0, b_acc * 0.65)
                 and ac <= max(14.0, min(ab, bc) * 0.38)
-                and middle_worse
+                and (middle_worse or obvious_return_spike)
             )
             if spike:
                 continue
@@ -32732,12 +32862,18 @@ def _project_walk_segments_v271(points):
             reported_speed = None
         estimated_speed = dist / dt if dt > 0 else 999.0
         same_session = bool(str(point.get("session_id") or "")) and str(point.get("session_id") or "") == str(prev.get("session_id") or "")
-        # A mobile browser can create a new session after a page/app restart even while
-        # the user is still walking. Join only short, physically plausible boundaries.
+        point_source = str(point.get("source") or "").strip().lower()
+        prev_source = str(prev.get("source") or "").strip().lower()
+        same_source = bool(point_source) and point_source == prev_source
+        # v384: never bridge Android-native and browser GPS into one line. They can be
+        # concurrent measurements of the same walk with different offsets, which was the
+        # main source of the radial/zigzag history around large stations such as Osaki.
+        # A true app restart may still reconnect when it remains on the same GPS source.
         short_session_restart = (
             not same_session
-            and dt <= 90.0
-            and dist <= 120.0
+            and same_source
+            and dt <= 75.0
+            and dist <= 90.0
             and estimated_speed <= GPS_TRACK_WALK_MAX_SPEED_MPS
         )
         # Android/browser reported speed occasionally spikes while coordinates themselves
@@ -36562,7 +36698,7 @@ def page_burari_project():
     with st.expander("記録の仕組み", expanded=False):
         st.caption(
             "位置情報を許可している間はGPSを自動記録し、移動距離とGPS精度を見ながら端末へ保存してまとめて同期します。"
-            "電車・車など歩行より速い移動に加え、精度の悪い点・停止中のGPS揺れ・短い往復スパイクは発光線から自動的に外します。"
+            "電車・車など歩行より速い移動に加え、精度の悪い点・停止中のGPS揺れ・短い往復スパイク・同時刻のGPS重複は発光線から自動的に外します。"
             "元のGPS記録自体は削除せず、地図表示だけを安定化します。プロジェクト地図を開いたときは端末に残っている直近GPSを優先して同期します。"
         )
 
@@ -37178,17 +37314,17 @@ def page_settings():
 verify_setup()
 require_family_pin()
 init_state()
-# v145: video preservation and Good Moments are separated. This call only submits
-# unfinished post-save jobs to the background executor and returns immediately, so
-# Home, Back, Camera and the next recording remain usable while AI is working.
-# v280: page navigation must stay cheap. Discover/resume unfinished video AI jobs
-# at most once every 30 seconds per session instead of on every widget rerun.
+# v383: newly saved videos launch their AI job immediately. Full recovery scans are
+# only for interrupted/stale jobs, so keep them off unrelated button reruns and run
+# them lazily on video-related pages.
 try:
-    _bg_resume_now = time.monotonic()
-    _bg_resume_last = float(st.session_state.get("_bg_video_resume_last_monotonic") or 0.0)
-    if (_bg_resume_now - _bg_resume_last) >= 30.0:
-        st.session_state["_bg_video_resume_last_monotonic"] = _bg_resume_now
-        resume_member_video_background_jobs()
+    _bg_resume_page = str(st.session_state.get("main_page") or "home")
+    if _bg_resume_page in {"videos", "moments"}:
+        _bg_resume_now = time.monotonic()
+        _bg_resume_last = float(st.session_state.get("_bg_video_resume_last_monotonic") or 0.0)
+        if (_bg_resume_now - _bg_resume_last) >= 90.0:
+            st.session_state["_bg_video_resume_last_monotonic"] = _bg_resume_now
+            resume_member_video_background_jobs(min_interval_seconds=90)
 except Exception:
     pass
 # v145 does not use browser-side low-resolution candidate recovery. If native
