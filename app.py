@@ -32,9 +32,9 @@ from zoneinfo import ZoneInfo
 import streamlit as st
 
 # Freshly generated update: 2026-08-31 23:49 JST
-GENERATED_UPDATE_JST = "2026-09-10T15:25:00+09:00"
+GENERATED_UPDATE_JST = "2026-09-10T14:26:00+09:00"
 
-APP_BUILD = "v366"
+APP_BUILD = "v368"
 # v331: multi-tag photo selections can go straight to a music replay and be saved as a stable in-app movie snapshot.
 # v330: tag-review movies support one or multiple AI tags; selection is action-only.
 
@@ -2045,13 +2045,20 @@ export default function(component) {
 
   const errorMessage = (err, mode = cameraMode) => {
     const name = (err && err.name) ? err.name : '';
+    const videoMode = String(mode || '') === 'video';
     if (name === 'NotAllowedError' || name === 'PermissionDeniedError') {
-      return 'カメラが許可されていません。ブラウザのサイト設定でカメラを「許可」にして、このページを再読み込みしてください。';
+      return videoMode
+        ? '動画撮影にはカメラとマイクの許可が必要です。端末またはブラウザの権限設定でカメラ・マイクを「許可」にして、このページを再読み込みしてください。'
+        : 'カメラが許可されていません。ブラウザのサイト設定でカメラを「許可」にして、このページを再読み込みしてください。';
     }
-    if (name === 'NotFoundError' || name === 'DevicesNotFoundError') return '利用できるカメラが見つかりませんでした。';
-    if (name === 'NotReadableError' || name === 'TrackStartError') return 'カメラを開けませんでした。ほかのアプリがカメラを使っていないか確認してください。';
-    if (name === 'SecurityError') return 'ブラウザのセキュリティ設定でカメラがブロックされています。';
-    return 'カメラを開けませんでした。ブラウザのカメラ権限を確認してください。';
+    if (name === 'NotFoundError' || name === 'DevicesNotFoundError') {
+      return videoMode ? '利用できるカメラまたはマイクが見つかりませんでした。' : '利用できるカメラが見つかりませんでした。';
+    }
+    if (name === 'NotReadableError' || name === 'TrackStartError') {
+      return videoMode ? 'カメラまたはマイクを開けませんでした。ほかのアプリが使用していないか確認してください。' : 'カメラを開けませんでした。ほかのアプリがカメラを使っていないか確認してください。';
+    }
+    if (name === 'SecurityError') return videoMode ? 'セキュリティ設定でカメラまたはマイクがブロックされています。' : 'ブラウザのセキュリティ設定でカメラがブロックされています。';
+    return videoMode ? '動画撮影用のカメラまたはマイクを開けませんでした。権限設定を確認してください。' : 'カメラを開けませんでした。ブラウザのカメラ権限を確認してください。';
   };
 
   const startCamera = async (mode = 'photo') => {
@@ -2075,25 +2082,50 @@ export default function(component) {
       return;
     }
 
-    setStatus('カメラの使用を確認しています…');
+    setStatus(requestedMode === 'video' ? 'カメラとマイクの使用を確認しています…' : 'カメラの使用を確認しています…');
     try {
-      // v313: microphone is intentionally never requested. Photo and video use
-      // exactly the same camera request, the same portrait normalization and the
-      // same minimum hardware zoom so their field of view matches.
+      // v367: photos still request camera only. Video requests camera + microphone
+      // together so the original saved video contains its real sound. Audio processing
+      // is requested as "ideal" only; if a browser rejects those optional constraints,
+      // retry with a plain audio:true request instead of silently saving a mute video.
+      const requestCurrentCameraStream = async () => {
+        const videoConstraints = preferredVideoConstraints();
+        if (cameraMode !== 'video') {
+          return await navigator.mediaDevices.getUserMedia({
+            audio: false,
+            video: videoConstraints
+          });
+        }
+        const preferredAudio = {
+          echoCancellation: { ideal: true },
+          noiseSuppression: { ideal: true },
+          autoGainControl: { ideal: true },
+          channelCount: { ideal: 1 }
+        };
+        try {
+          return await navigator.mediaDevices.getUserMedia({
+            audio: preferredAudio,
+            video: videoConstraints
+          });
+        } catch (audioConstraintErr) {
+          const errorName = String(audioConstraintErr?.name || '');
+          if (errorName !== 'OverconstrainedError' && errorName !== 'ConstraintNotSatisfiedError' && errorName !== 'TypeError') {
+            throw audioConstraintErr;
+          }
+          return await navigator.mediaDevices.getUserMedia({
+            audio: true,
+            video: videoConstraints
+          });
+        }
+      };
       try {
-        stream = await navigator.mediaDevices.getUserMedia({
-          audio: false,
-          video: preferredVideoConstraints()
-        });
+        stream = await requestCurrentCameraStream();
       } catch (firstErr) {
-        // If a remembered device id is no longer valid, fall back to the requested
-        // facing camera once and remember the newly opened physical lens below.
+        // If a remembered camera device id is no longer valid, retry once with the
+        // requested facing camera. Video still keeps microphone audio enabled.
         if (!preferredCameraDeviceId) throw firstErr;
         preferredCameraDeviceId = null;
-        stream = await navigator.mediaDevices.getUserMedia({
-          audio: false,
-          video: preferredVideoConstraints()
-        });
+        stream = await requestCurrentCameraStream();
       }
       video.srcObject = stream;
       await video.play();
@@ -2127,7 +2159,7 @@ export default function(component) {
       } catch (_) {}
       if (cameraMode === 'video') {
         const fpsLabel = Number(appliedVideoFps || 0) >= 80 ? '90fps' : (Number(appliedVideoFps || 0) >= 50 ? '60fps' : '高フレームレート');
-        setStatus(`動画は最大60秒です。${fpsLabel}で撮影します。${cameraFacing === 'user' ? ' 内側カメラ使用中。' : ''}`);
+        setStatus(`動画は最大60秒です。${fpsLabel}・音声付きで撮影します。${cameraFacing === 'user' ? ' 内側カメラ使用中。' : ''}`);
       } else {
         setStatus(cameraFacing === 'user' ? '内側カメラ使用中です。' : '');
       }
@@ -2631,6 +2663,12 @@ export default function(component) {
   const startVideoRecording = async () => {
     if (!stream || !video.videoWidth || !video.videoHeight) return;
     const hasAudio = !!(stream.getAudioTracks && stream.getAudioTracks().some((track) => track.readyState === 'live'));
+    if (!hasAudio) {
+      const message = '音声付き動画にするため、マイクの許可が必要です。マイクを許可してから動画を開き直してください。';
+      setStatus(message);
+      setTriggerValue('camera_error', { name: 'MicrophoneTrackMissing', message });
+      return;
+    }
 
     recordedChunks = [];
     recordingCandidateFrames = [];
@@ -2763,6 +2801,8 @@ export default function(component) {
             capture_height: captureHeight,
             capture_frame_rate: captureFrameRate,
             video_bitrate_bps: Number((recorder && recorder.videoBitsPerSecond) || requestedVideoBitrate || 0),
+            has_audio: hasAudio,
+            audio_bitrate_bps: Number((recorder && recorder.audioBitsPerSecond) || (hasAudio ? 96000 : 0) || 0),
             name: finalType.includes('mp4') ? 'camera.mp4' : 'camera.webm',
             source: 'video_camera',
             camera_facing: cameraFacing,
@@ -10872,6 +10912,28 @@ def _audio_storage_format(filename):
     return "audio/webm", "webm"
 
 
+def _voice_storage_upload_mime(logical_mime, filename=""):
+    """Return a bucket-compatible metadata MIME for audio bytes.
+
+    PHOTO_BUCKET is shared with photos/videos and some deployments only allow
+    image/* and video/*.  Audio-only MP4/WebM/Ogg containers are therefore stored
+    with their video-container MIME while reflection metadata keeps the logical
+    audio MIME for playback and transcription.
+    """
+    mime = str(logical_mime or "").split(";", 1)[0].strip().lower()
+    name = str(filename or "").strip().lower()
+    if mime in {"audio/mp4", "audio/x-m4a", "audio/m4a"} or name.endswith((".m4a", ".mp4")):
+        return "video/mp4"
+    if mime in {"audio/webm"} or name.endswith(".webm"):
+        return "video/webm"
+    if mime in {"audio/ogg", "application/ogg"} or name.endswith(".ogg"):
+        return "video/ogg"
+    # Rare fallback formats are short user voice notes. Keep a video/* metadata MIME
+    # so the shared bucket accepts the object; the original logical MIME is retained
+    # separately in reflection_json.
+    return "video/mp4"
+
+
 def photo_voice_note_meta(photo):
     reflection = (photo or {}).get("reflection_json") or {}
     if not isinstance(reflection, dict):
@@ -10909,7 +10971,9 @@ def save_photo_voice_note_bytes(photo_id, raw, filename="voice_note.m4a", conten
         reflection = {}
     existing_path = str(photo_voice_note_meta(row).get("storage_path") or "").strip()
 
+    logical_content_type = str(content_type or "audio/mp4").split(";", 1)[0].strip().lower() or "audio/mp4"
     _, extension = _audio_storage_format(filename)
+    storage_content_type = _voice_storage_upload_mime(logical_content_type, filename)
     stamp = now_jst().strftime("%Y%m%d_%H%M%S_%f")
     storage_path = f"{current_family_key()}/{current_member_key()}/voice_notes/{photo_id}/{stamp}_{uuid.uuid4().hex[:8]}.{extension}"
 
@@ -10920,7 +10984,7 @@ def save_photo_voice_note_bytes(photo_id, raw, filename="voice_note.m4a", conten
             path=storage_path,
             file=raw,
             file_options={
-                "content-type": str(content_type or "audio/mp4"),
+                "content-type": storage_content_type,
                 "cache-control": "3600",
             },
         )
@@ -10936,7 +11000,8 @@ def save_photo_voice_note_bytes(photo_id, raw, filename="voice_note.m4a", conten
 
         reflection["voice_note"] = {
             "storage_path": storage_path,
-            "mime_type": str(content_type or "audio/mp4"),
+            "mime_type": logical_content_type,
+            "storage_mime_type": storage_content_type,
             "file_name": filename or f"voice_note.{extension}",
             "uploaded_at": now_jst().isoformat(),
             "transcript": final_transcript,
@@ -11009,6 +11074,7 @@ def save_photo_voice_note(photo_id, audio_file, auto_transcribe=True):
     existing_path = str(photo_voice_note_meta(row).get("storage_path") or "").strip()
 
     content_type, extension = _audio_storage_format(getattr(audio_file, "name", "voice_note.webm"))
+    storage_content_type = _voice_storage_upload_mime(content_type, getattr(audio_file, "name", "voice_note.webm"))
     stamp = now_jst().strftime("%Y%m%d_%H%M%S_%f")
     storage_path = f"{current_family_key()}/{current_member_key()}/voice_notes/{photo_id}/{stamp}_{uuid.uuid4().hex[:8]}.{extension}"
 
@@ -11019,7 +11085,7 @@ def save_photo_voice_note(photo_id, audio_file, auto_transcribe=True):
             path=storage_path,
             file=raw,
             file_options={
-                "content-type": content_type,
+                "content-type": storage_content_type,
                 "cache-control": "3600",
             },
         )
@@ -11036,6 +11102,7 @@ def save_photo_voice_note(photo_id, audio_file, auto_transcribe=True):
         reflection["voice_note"] = {
             "storage_path": storage_path,
             "mime_type": content_type,
+            "storage_mime_type": storage_content_type,
             "file_name": getattr(audio_file, "name", f"voice_note.{extension}") or f"voice_note.{extension}",
             "uploaded_at": now_jst().isoformat(),
             "transcript": transcript,
@@ -11676,6 +11743,8 @@ def register_browser_uploaded_video(
     capture_height=0,
     capture_frame_rate=0,
     video_bitrate_bps=0,
+    has_audio=None,
+    audio_bitrate_bps=0,
 ):
     """Register a video already uploaded by the browser to a signed Storage path."""
     active_snapshot = get_active_trip_fast(max_age_seconds=20) if st.session_state.get("active_trip_id") else None
@@ -11724,7 +11793,9 @@ def register_browser_uploaded_video(
             "height": max(0, int(capture_height or 0)),
             "frame_rate": max(0.0, float(capture_frame_rate or 0)),
             "video_bitrate_bps": max(0, int(video_bitrate_bps or 0)),
-            "quality_pipeline": "v145_native_1s_background",
+            "has_audio": None if has_audio is None else bool(has_audio),
+            "audio_bitrate_bps": max(0, int(audio_bitrate_bps or 0)),
+            "quality_pipeline": "v367_native_audio_enabled",
         },
         "video_stabilization": {
             "version": VIDEO_STABILIZATION_VERSION,
@@ -14946,10 +15017,11 @@ def generate_video_ai_voice_candidates(photo, force=False):
                     continue
                 raw = Path(local_out).read_bytes()
                 storage_path = f"{base}_voice_{stamp}_{rank:02d}.m4a"
+                storage_mime_type = _voice_storage_upload_mime("audio/mp4", f"voice_candidate_{rank:02d}.m4a")
                 client.storage.from_(PHOTO_BUCKET).upload(
                     path=storage_path,
                     file=raw,
-                    file_options={"content-type": "audio/mp4", "cache-control": "3600"},
+                    file_options={"content-type": storage_mime_type, "cache-control": "3600"},
                 )
                 uploaded_paths.append(storage_path)
                 transcript = ""
@@ -14964,6 +15036,7 @@ def generate_video_ai_voice_candidates(photo, force=False):
                         "rank": rank,
                         "storage_path": storage_path,
                         "mime_type": "audio/mp4",
+                        "storage_mime_type": storage_mime_type,
                         "file_name": f"voice_candidate_{rank:02d}.m4a",
                         "timestamp_ms": int(spec.get("timestamp_ms") or 0),
                         "duration_ms": int(round(float(spec.get("duration_sec") or VIDEO_VOICE_SNIPPET_SECONDS) * 1000)),
@@ -28353,6 +28426,8 @@ def page_trip():
                         capture_height=video_payload.get("capture_height"),
                         capture_frame_rate=video_payload.get("capture_frame_rate"),
                         video_bitrate_bps=video_payload.get("video_bitrate_bps"),
+                        has_audio=video_payload.get("has_audio"),
+                        audio_bitrate_bps=video_payload.get("audio_bitrate_bps"),
                     )
 
                 video_saved = True
