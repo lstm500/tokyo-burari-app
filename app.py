@@ -32,9 +32,9 @@ from zoneinfo import ZoneInfo
 import streamlit as st
 
 # Freshly generated update: 2026-08-31 23:49 JST
-GENERATED_UPDATE_JST = "2026-09-10T17:35:00+09:00"
+GENERATED_UPDATE_JST = "2026-09-10T18:05:00+09:00"
 
-APP_BUILD = "v371"
+APP_BUILD = "v372"
 # v331: multi-tag photo selections can go straight to a music replay and be saved as a stable in-app movie snapshot.
 # v330: tag-review movies support one or multiple AI tags; selection is action-only.
 
@@ -899,6 +899,11 @@ GPS_TRACK_BATCH_MAX_POINTS = 180
 GPS_TRACK_WALK_MAX_SPEED_MPS = 4.5
 GPS_TRACK_SEGMENT_MAX_GAP_SECONDS = 180.0
 GPS_TRACK_SEGMENT_MAX_JUMP_M = 180.0
+# v372: dense-city GPS can wander tens of meters while a person is standing still.
+# Keep raw points for audit/history, but use a stricter quality/noise gate for the glowing walk line.
+GPS_TRACK_RENDER_MAX_ACCURACY_M = 45.0
+GPS_TRACK_RENDER_BASE_NOISE_M = 10.0
+GPS_TRACK_RENDER_MAX_NOISE_M = 32.0
 # v290: platform-first / parallel-cluster / robust-capsule station footprint.
 # The previous v289 let every nearby rail line determine the station axis; at junctions
 # such as Osaki that can rotate the footprint away from the platforms. v290 treats each
@@ -31774,7 +31779,24 @@ export default function(component) {
 
     const tsMs = Number(position.timestamp || Date.now());
     const previous = readLast();
-    if (previous && String(previous.session_id || '') === sessionId && distanceM(previous, {lat, lon}) < minDistanceM) return;
+    if (previous && String(previous.session_id || '') === sessionId) {
+      const movedM = distanceM(previous, {lat, lon});
+      const prevAccuracy = Number(previous.accuracy_m);
+      const qualityRadius = Math.max(
+        Number.isFinite(accuracy) ? accuracy : 0,
+        Number.isFinite(prevAccuracy) ? prevAccuracy : 0
+      );
+      // v372: a 10m coordinate change is not real movement when the GPS itself is only
+      // accurate to 20-40m. Require movement to clear part of the current error radius.
+      const noiseFloorM = Math.max(minDistanceM, Math.min(32, qualityRadius * 0.58));
+      if (movedM < noiseFloorM) {
+        // Keep the better stationary fix as the comparison anchor without recording a new line point.
+        if (Number.isFinite(accuracy) && (!Number.isFinite(prevAccuracy) || accuracy + 4 < prevAccuracy)) {
+          writeLast({lat:Number(lat.toFixed(7)), lon:Number(lon.toFixed(7)), ts_ms:Math.round(tsMs), session_id:sessionId, accuracy_m:Number(accuracy.toFixed(1))});
+        }
+        return;
+      }
+    }
 
     const speedRaw = Number(position.coords.speed);
     const headingRaw = Number(position.coords.heading);
@@ -31794,7 +31816,7 @@ export default function(component) {
     if (!pending.some((p) => String(p?.id || '') === point.id)) pending.push(point);
     pending.sort((a,b) => Number(a.ts_ms || 0) - Number(b.ts_ms || 0));
     writePending(pending);
-    writeLast({lat:point.lat, lon:point.lon, ts_ms:point.ts_ms, session_id:sessionId});
+    writeLast({lat:point.lat, lon:point.lon, ts_ms:point.ts_ms, session_id:sessionId, accuracy_m:point.accuracy_m});
     maybeFlush(false);
   };
 
@@ -32200,11 +32222,125 @@ def _load_all_project_track_points_v271():
     return points
 
 
+def _project_clean_track_points_v372(points):
+    """Return render-safe GPS points while preserving the raw source data unchanged.
+
+    Urban GPS drift can move a stationary fix by 10-50m. Pairwise speed checks alone
+    mistakenly interpret that drift as slow walking and draw a spider-web. This filter
+    applies three conservative rules before the glowing route is built:
+    1) discard low-accuracy fixes from the route line,
+    2) ignore movements smaller than the reported GPS error radius, and
+    3) remove short out-and-back spikes whose middle fix is visibly less reliable.
+    """
+    clean = []
+    for raw in points or []:
+        if not isinstance(raw, dict):
+            continue
+        try:
+            lat = float(raw.get("lat")); lon = float(raw.get("lon")); ts_ms = int(float(raw.get("ts_ms") or 0))
+        except (TypeError, ValueError):
+            continue
+        if not (math.isfinite(lat) and math.isfinite(lon) and ts_ms > 0):
+            continue
+        try:
+            accuracy = float(raw.get("accuracy_m")) if raw.get("accuracy_m") is not None else None
+        except (TypeError, ValueError):
+            accuracy = None
+        if accuracy is not None and (not math.isfinite(accuracy) or accuracy > GPS_TRACK_RENDER_MAX_ACCURACY_M):
+            # A poor fix is kept in storage but must not pull the visible walking line away.
+            continue
+
+        point = dict(raw)
+        if not clean:
+            clean.append(point)
+            continue
+
+        prev = clean[-1]
+        try:
+            dt = max(0.001, (float(point.get("ts_ms")) - float(prev.get("ts_ms"))) / 1000.0)
+            dist = _nearby_haversine_m(float(prev["lat"]), float(prev["lon"]), lat, lon)
+        except Exception:
+            clean.append(point)
+            continue
+
+        try:
+            prev_accuracy = float(prev.get("accuracy_m")) if prev.get("accuracy_m") is not None else None
+        except (TypeError, ValueError):
+            prev_accuracy = None
+        accuracy_radius = max(
+            float(accuracy) if accuracy is not None else 0.0,
+            float(prev_accuracy) if prev_accuracy is not None else 0.0,
+        )
+        noise_floor = max(
+            GPS_TRACK_RENDER_BASE_NOISE_M,
+            min(GPS_TRACK_RENDER_MAX_NOISE_M, accuracy_radius * 0.58),
+        )
+        estimated_speed = dist / dt if dt > 0 else 999.0
+        same_session = bool(str(point.get("session_id") or "")) and str(point.get("session_id") or "") == str(prev.get("session_id") or "")
+
+        # Within one active GPS session, small slow changes inside the current error
+        # radius are much more likely to be GPS wander than actual walking. If the new
+        # fix is materially more accurate, replace the anchor instead of drawing to it.
+        if same_session and dist < noise_floor and estimated_speed <= 1.35:
+            if accuracy is not None and (prev_accuracy is None or accuracy + 4.0 < prev_accuracy):
+                clean[-1] = point
+            continue
+        clean.append(point)
+
+    if len(clean) < 3:
+        return clean
+
+    # Remove classic GPS spikes A -> B -> C where B jumps away and the next good fix
+    # comes almost back to A. Restrict this to short windows and a worse middle accuracy
+    # so genuine out-and-back walking is not broadly erased.
+    for _pass in range(2):
+        if len(clean) < 3:
+            break
+        reduced = [clean[0]]
+        for idx in range(1, len(clean) - 1):
+            a = reduced[-1]
+            b = clean[idx]
+            c = clean[idx + 1]
+            try:
+                total_dt = (float(c.get("ts_ms")) - float(a.get("ts_ms"))) / 1000.0
+                ab = _nearby_haversine_m(float(a["lat"]), float(a["lon"]), float(b["lat"]), float(b["lon"]))
+                bc = _nearby_haversine_m(float(b["lat"]), float(b["lon"]), float(c["lat"]), float(c["lon"]))
+                ac = _nearby_haversine_m(float(a["lat"]), float(a["lon"]), float(c["lat"]), float(c["lon"]))
+            except Exception:
+                reduced.append(b)
+                continue
+            try:
+                a_acc = float(a.get("accuracy_m")) if a.get("accuracy_m") is not None else 18.0
+                b_acc = float(b.get("accuracy_m")) if b.get("accuracy_m") is not None else 18.0
+                c_acc = float(c.get("accuracy_m")) if c.get("accuracy_m") is not None else 18.0
+            except (TypeError, ValueError):
+                a_acc = b_acc = c_acc = 18.0
+            same_session = (
+                bool(str(a.get("session_id") or ""))
+                and str(a.get("session_id") or "") == str(b.get("session_id") or "") == str(c.get("session_id") or "")
+            )
+            middle_worse = b_acc >= max(18.0, min(a_acc, c_acc) + 5.0)
+            spike = (
+                same_session
+                and 0 < total_dt <= 75.0
+                and ab >= max(18.0, b_acc * 0.65)
+                and bc >= max(18.0, b_acc * 0.65)
+                and ac <= max(14.0, min(ab, bc) * 0.38)
+                and middle_worse
+            )
+            if spike:
+                continue
+            reduced.append(b)
+        reduced.append(clean[-1])
+        clean = reduced
+    return clean
+
+
 def _project_walk_segments_v271(points):
     segments = []
     current = []
     prev = None
-    for point in points or []:
+    for point in _project_clean_track_points_v372(points):
         if not isinstance(point, dict):
             continue
         if prev is None:
@@ -33510,11 +33646,11 @@ def _save_station_visit_state_v293(family_key, member_key, checked_through_ts_ms
 
 
 def _project_walk_raw_points_v293(points):
-    """Return raw GPS rows that participate in a walk-like edge, preserving ts_ms."""
+    """Return render-safe GPS rows that participate in a walk-like edge, preserving ts_ms."""
     output = []
     seen = set()
     prev = None
-    for point in points or []:
+    for point in _project_clean_track_points_v372(points):
         if not isinstance(point, dict):
             continue
         if prev is None:
@@ -36053,8 +36189,9 @@ def page_burari_project():
 
     with st.expander("記録の仕組み", expanded=False):
         st.caption(
-            "位置情報を許可している間はGPSを自動記録し、約10m動くごとに1点を端末へ保存してまとめて同期します。"
-            "電車・車など歩行より速い移動は地図の発光線から自動的に外します。プロジェクト地図を開いたときは、端末に残っている直近GPSを優先して同期します。"
+            "位置情報を許可している間はGPSを自動記録し、移動距離とGPS精度を見ながら端末へ保存してまとめて同期します。"
+            "電車・車など歩行より速い移動に加え、精度の悪い点・停止中のGPS揺れ・短い往復スパイクは発光線から自動的に外します。"
+            "元のGPS記録自体は削除せず、地図表示だけを安定化します。プロジェクト地図を開いたときは端末に残っている直近GPSを優先して同期します。"
         )
 
 
