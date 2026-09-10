@@ -30,9 +30,9 @@ from zoneinfo import ZoneInfo
 import streamlit as st
 
 # Freshly generated update: 2026-08-31 23:49 JST
-GENERATED_UPDATE_JST = "2026-09-10T08:20:00+09:00"
+GENERATED_UPDATE_JST = "2026-09-10T09:05:00+09:00"
 
-APP_BUILD = "v343"
+APP_BUILD = "v346"
 # v331: multi-tag photo selections can go straight to a music replay and be saved as a stable in-app movie snapshot.
 # v330: tag-review movies support one or multiple AI tags; selection is action-only.
 
@@ -17232,7 +17232,7 @@ def monthly_playback_is_ready(playback):
     return end_seconds > start_seconds
 
 
-def render_monthly_replay_player(period_label, review, playback, photo_items):
+def render_monthly_replay_player(period_label, review, playback, photo_items, curated_mode=False):
     if not photo_items:
         return
     video_id = str((playback or {}).get("video_id") or "").strip() or parse_youtube_video_id((playback or {}).get("youtube_url"))
@@ -17248,7 +17248,15 @@ def render_monthly_replay_player(period_label, review, playback, photo_items):
     # different cadences when the music interval is long enough.  If the selected music
     # is too short to show every photo at 3 seconds each, playback stops with the music
     # rather than accelerating the slideshow below this readability floor.
-    display_ms = max(3000, int(round(duration_seconds * 1000.0 / max(1, len(photo_items)))))
+    # v345: a curated movie intentionally contains fewer photos. Dividing the whole
+    # music duration by that reduced count made one curated photo remain on screen for
+    # a very long time, which looked like the slideshow had frozen. In curation mode
+    # advance every 3 seconds and loop the curated set until the music finishes.
+    # Normal replay keeps the existing music-length-aware cadence with the same 3s floor.
+    if curated_mode:
+        display_ms = 3000
+    else:
+        display_ms = max(3000, int(round(duration_seconds * 1000.0 / max(1, len(photo_items)))))
     period_label_escaped = html.escape(str(period_label or "振り返り"))
     is_tag_review = isinstance(review, dict) and str(review.get("_review_scope_type") or "") in {"tag", "ai_tag"}
     replay_kicker = "タグで振り返り" if is_tag_review else "まとめた期間の振り返り"
@@ -17421,7 +17429,7 @@ def render_monthly_replay_player(period_label, review, playback, photo_items):
           <button id="burariReplayAgain" type="button" disabled>↻ 最初から</button>
         </div>
       </div>
-      <div class="burari-replay-meta">音楽区間：{format_mmss(start_seconds)}〜{format_mmss(end_seconds)} ／ 写真 {len(photo_items)}枚</div>
+      <div class="burari-replay-meta">音楽区間：{format_mmss(start_seconds)}〜{format_mmss(end_seconds)} ／ 写真 {len(photo_items)}枚{" ／ 厳選モード：3秒/枚" if curated_mode else ""}</div>
       <div class="burari-replay-player-wrap">
         <div class="burari-replay-player-label">YouTube 音楽</div>
         <div id="burariReplayPlayer"></div>
@@ -17497,6 +17505,7 @@ def render_monthly_replay_player(period_label, review, playback, photo_items):
       const burariStatus = document.getElementById('burariReplayStatus');
       const burariStartButton = document.getElementById('burariReplayStart');
       const burariAgainButton = document.getElementById('burariReplayAgain');
+      const burariVoiceButton = document.getElementById('burariReplayVoiceButton');
       const burariDefaultFrameColor = 'rgba(255,255,255,.16)';
       const burariEmotionColors = {{
         cozy: '#F3B6A0',
@@ -17555,11 +17564,16 @@ def render_monthly_replay_player(period_label, review, playback, photo_items):
           burariEmotion.setAttribute('aria-hidden', emotionIcon ? 'false' : 'true');
           burariEmotion.title = emotionIcon ? `${{emotionIcon}} ${{item.emotion_label || ''}}` : '';
         }}
-        burariCurrentVoiceUrl = String(item.voice_url || '');
-        burariCurrentVoiceLabel = String(item.voice_transcript || item.caption || 'この写真の声');
-        if (burariVoiceButton) {{
-          burariVoiceButton.style.display = burariCurrentVoiceUrl ? 'inline-flex' : 'none';
-          burariVoiceButton.title = burariCurrentVoiceUrl ? 'この写真の声を聞く' : '';
+        // Voice is optional metadata. A voice UI failure must never stop the slideshow.
+        try {{
+          burariCurrentVoiceUrl = String(item.voice_url || '');
+          burariCurrentVoiceLabel = String(item.voice_transcript || item.caption || 'この写真の声');
+          if (burariVoiceButton) {{
+            burariVoiceButton.style.display = burariCurrentVoiceUrl ? 'inline-flex' : 'none';
+            burariVoiceButton.title = burariCurrentVoiceUrl ? 'この写真の声を聞く' : '';
+          }}
+        }} catch (_) {{
+          burariCurrentVoiceUrl = '';
         }}
         burariCaption.textContent = item.caption || '';
         burariProgress.textContent = `${{safeIndex + 1}} / ${{burariSlides.length}}`;
@@ -17571,19 +17585,25 @@ def render_monthly_replay_player(period_label, review, playback, photo_items):
         const item = burariSlides[safeIndex] || {{}};
         const nextUrl = String(item.url || '');
         const requestToken = ++burariSlideRequestToken;
+        let settled = false;
+        let safetyTimer = null;
 
-        const finish = () => {{
-          if (requestToken !== burariSlideRequestToken) return;
-          burariApplySlideFrame(item, safeIndex, nextUrl);
-          if (burariSlides.length > 1) burariPreloadSlide(safeIndex + 1);
-          if (typeof afterApplied === 'function') afterApplied();
+        const completeOnce = (applyFrame) => {{
+          if (settled || requestToken !== burariSlideRequestToken) return;
+          settled = true;
+          if (safetyTimer) {{ clearTimeout(safetyTimer); safetyTimer = null; }}
+          // The scheduler must continue even if optional caption/emotion/voice UI fails.
+          try {{
+            if (applyFrame) burariApplySlideFrame(item, safeIndex, nextUrl);
+            if (burariSlides.length > 1) burariPreloadSlide(safeIndex + 1);
+          }} catch (error) {{
+            console.warn('Burari replay frame update failed; continuing slideshow.', error);
+          }} finally {{
+            if (typeof afterApplied === 'function') afterApplied();
+          }}
         }};
-        const skip = () => {{
-          if (requestToken !== burariSlideRequestToken) return;
-          // Keep the current photo and current frame together if one source fails.
-          // Continue the slideshow instead of changing only the frame color.
-          if (typeof afterApplied === 'function') afterApplied();
-        }};
+        const finish = () => completeOnce(true);
+        const skip = () => completeOnce(false);
 
         if (!nextUrl) {{
           finish();
@@ -17596,8 +17616,13 @@ def render_monthly_replay_player(period_label, review, playback, photo_items):
           return;
         }}
 
+        // Android WebView can occasionally leave an Image decode/load promise pending.
+        // Never let that stop the slideshow timer permanently: after 2.2s, apply the URL
+        // directly and continue to the next 3-second interval.
+        safetyTimer = setTimeout(() => finish(), 2200);
+
         const finishAfterDecode = () => {{
-          if (requestToken !== burariSlideRequestToken) return;
+          if (settled || requestToken !== burariSlideRequestToken) return;
           if (typeof preload.decode === 'function') {{
             preload.decode().then(finish).catch(finish);
           }} else {{
@@ -18325,7 +18350,10 @@ def render_monthly_replay_section(month_key, period_label, bundle, review):
         "confidence": str(st.session_state.get(state["confidence_key"]) or "").strip(),
         "title": str(st.session_state.get(state["title_key"]) or "").strip(),
     }
-    render_monthly_replay_player(period_label, review, effective_playback, photo_items)
+    render_monthly_replay_player(
+        period_label, review, effective_playback, photo_items,
+        curated_mode=bool(curation_state.get("active")),
+    )
 
     raw_photos, _ = _monthly_replay_selected_photos(bundle)
     photo_row_map = {str(photo.get("id") or ""): photo for photo in (raw_photos or []) if str(photo.get("id") or "").strip()}
@@ -20128,7 +20156,7 @@ def _home_train_for_session():
 
 
 def inject_lightweight_train_loading_v326():
-    """Render a zero-network loader; the Home train crosses right-to-left with no added wait."""
+    """Render a zero-network loader; the train follows its illustrated rail angle with a gentle joint-click sway."""
     try:
         line_name, train_uri = _home_train_for_session()
     except Exception:
@@ -20158,7 +20186,8 @@ def inject_lightweight_train_loading_v326():
           position:absolute; left:100vw; top:18px; width:106px; height:82px;
           background-image:var(--burari-loader-train-image); background-repeat:no-repeat; background-position:center; background-size:contain;
           filter:drop-shadow(0 7px 9px rgba(35,76,49,.10));
-          animation:burari-loader-run-v326 2.05s linear infinite; animation-play-state:paused;
+          animation:burari-loader-run-v326 3.85s linear infinite; animation-play-state:paused;
+          transform-origin:50% 72%;
           will-change:transform;
         }}
         #burari-global-loader-v326.burari-active .burari-loader-train-v326 {{ animation-play-state:running; }}
@@ -20166,10 +20195,26 @@ def inject_lightweight_train_loading_v326():
           position:absolute; top:116px; left:12px; right:12px; text-align:center; font-size:14px; font-weight:800;
           line-height:1.45; color:rgba(38,53,46,.82); letter-spacing:.01em;
         }}
-        /* Move only right -> left. At the left edge, the next iteration jumps to the right edge. */
+        /* v344: the illustration's rails recede toward the upper-right. Move along that
+           perspective instead of sliding sideways, with a small joint-click sway. */
         @keyframes burari-loader-run-v326 {{
-          from {{ transform:translate3d(0,0,0); }}
-          to {{ transform:translate3d(calc(-100vw - 126px),0,0); }}
+          0%   {{ transform:translate3d(0,-22px,0) rotate(-1deg); }}
+          6%   {{ transform:translate3d(calc(-6vw - 8px),-17px,0) rotate(.8deg); }}
+          12%  {{ transform:translate3d(calc(-12vw - 15px),-19px,0) rotate(-.6deg); }}
+          18%  {{ transform:translate3d(calc(-18vw - 23px),-13px,0) rotate(.7deg); }}
+          25%  {{ transform:translate3d(calc(-25vw - 32px),-11px,0) rotate(-.7deg); }}
+          31%  {{ transform:translate3d(calc(-31vw - 39px),-5px,0) rotate(.7deg); }}
+          37%  {{ transform:translate3d(calc(-37vw - 47px),-7px,0) rotate(-.6deg); }}
+          43%  {{ transform:translate3d(calc(-43vw - 54px),-1px,0) rotate(.7deg); }}
+          50%  {{ transform:translate3d(calc(-50vw - 63px),1px,0) rotate(-.7deg); }}
+          56%  {{ transform:translate3d(calc(-56vw - 71px),7px,0) rotate(.7deg); }}
+          62%  {{ transform:translate3d(calc(-62vw - 78px),5px,0) rotate(-.6deg); }}
+          68%  {{ transform:translate3d(calc(-68vw - 86px),11px,0) rotate(.7deg); }}
+          75%  {{ transform:translate3d(calc(-75vw - 95px),13px,0) rotate(-.7deg); }}
+          81%  {{ transform:translate3d(calc(-81vw - 102px),19px,0) rotate(.7deg); }}
+          87%  {{ transform:translate3d(calc(-87vw - 110px),17px,0) rotate(-.6deg); }}
+          93%  {{ transform:translate3d(calc(-93vw - 117px),23px,0) rotate(.6deg); }}
+          100% {{ transform:translate3d(calc(-100vw - 126px),26px,0) rotate(-.8deg); }}
         }}
 
         /* Streamlit's server-side blocking spinner uses the same light visual treatment.
@@ -20185,7 +20230,7 @@ def inject_lightweight_train_loading_v326():
           content:""; position:absolute; left:100vw; top:calc(50% - 72px); width:106px; height:82px; z-index:2;
           background-image:var(--burari-loader-train-image); background-repeat:no-repeat; background-position:center; background-size:contain;
           filter:drop-shadow(0 7px 9px rgba(35,76,49,.10));
-          animation:burari-loader-run-v326 2.05s linear infinite; will-change:transform;
+          animation:burari-loader-run-v326 3.85s linear infinite; transform-origin:50% 72%; will-change:transform;
         }}
         div[data-testid="stSpinner"] > div {{
           position:absolute !important; top:calc(50% + 58px) !important; left:12px !important; right:12px !important;
@@ -20202,7 +20247,7 @@ def inject_lightweight_train_loading_v326():
           div[data-testid="stSpinner"] > div {{ top:calc(50% + 52px) !important; font-size:13px !important; }}
         }}
         @media(prefers-reduced-motion:reduce) {{
-          .burari-loader-train-v326, div[data-testid="stSpinner"]::before {{ animation-duration:3.4s; }}
+          .burari-loader-train-v326, div[data-testid="stSpinner"]::before {{ animation-duration:5.2s; }}
         }}
         </style>
         <div id="burari-global-loader-v326" aria-live="polite" aria-label="{safe_name}のローディング表示">
