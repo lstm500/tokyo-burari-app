@@ -32,9 +32,9 @@ from zoneinfo import ZoneInfo
 import streamlit as st
 
 # Freshly generated update: 2026-08-31 23:49 JST
-GENERATED_UPDATE_JST = "2026-09-10T16:39:00+09:00"
+GENERATED_UPDATE_JST = "2026-09-10T17:35:00+09:00"
 
-APP_BUILD = "v370"
+APP_BUILD = "v371"
 # v331: multi-tag photo selections can go straight to a music replay and be saved as a stable in-app movie snapshot.
 # v330: tag-review movies support one or multiple AI tags; selection is action-only.
 
@@ -31623,7 +31623,7 @@ export default function(component) {
     if (cancelled || !allowFlush || !nativeBridgeAvailable || nativeFlushBusy) return;
     // A component trigger causes a Streamlit app rerun. While the UI is visible,
     // never emit that trigger; leave the native SQLite rows pending instead.
-    if (userRecentlyActive()) return;
+    if (userRecentlyActive() && !(forced || forceFlush)) return;
     nativeFlushBusy = true;
     try {
       const rows = await readNativeRows();
@@ -31740,7 +31740,7 @@ export default function(component) {
 
   const maybeFlush = (forced=false) => {
     if (cancelled || !allowFlush || nativeBridgeAvailable) return;
-    if (userRecentlyActive()) return;
+    if (userRecentlyActive() && !(forced || forceFlush)) return;
     adoptNativePendingRows();
     pending = readPending();
     if (!pending.length) return;
@@ -32049,12 +32049,14 @@ def save_gps_track_batch_v271(batch):
 
 
 def run_always_on_gps_tracker_v271():
-    # v338: Android native GPS is fully detached from Streamlit. The foreground Android
-    # service records points into SQLite and WorkManager uploads them directly through the
-    # narrow GPS sync endpoint. Never mount the Streamlit GPS bridge in Android mode: a
-    # component value change would rerun the visible app and can interrupt replay/search UI.
-    native_mode = str(_query_param_scalar("native_android") or "").strip() == "1"
-    if native_mode:
+    # v371: only the v338+ wrapper explicitly advertising native_gps_background=1 may
+    # suppress the browser watcher. Older Android wrappers also set native_android=1 but
+    # do not own the v338 SQLite/WorkManager pipeline; returning for those wrappers made
+    # walking history silently stop. They now fall back to the same high-accuracy browser
+    # watcher used by Chrome/PWA.
+    native_android = str(_query_param_scalar("native_android") or "").strip() == "1"
+    native_background = str(_query_param_scalar("native_gps_background") or "").strip() == "1"
+    if native_android and native_background:
         return
 
     component = _get_gps_tracker_component_v271()
@@ -32221,13 +32223,29 @@ def _project_walk_segments_v271(points):
         except (TypeError, ValueError):
             reported_speed = None
         estimated_speed = dist / dt if dt > 0 else 999.0
-        effective_speed = max(reported_speed, estimated_speed) if reported_speed is not None and reported_speed >= 0 else estimated_speed
         same_session = bool(str(point.get("session_id") or "")) and str(point.get("session_id") or "") == str(prev.get("session_id") or "")
+        # A mobile browser can create a new session after a page/app restart even while
+        # the user is still walking. Join only short, physically plausible boundaries.
+        short_session_restart = (
+            not same_session
+            and dt <= 90.0
+            and dist <= 120.0
+            and estimated_speed <= GPS_TRACK_WALK_MAX_SPEED_MPS
+        )
+        # Android/browser reported speed occasionally spikes while coordinates themselves
+        # remain walk-like. Do not discard a valid 10m trace only because one speed field
+        # is noisy. A very high reported speed still rejects a large movement.
+        implausibly_fast_report = (
+            reported_speed is not None
+            and reported_speed > 8.0
+            and dist > 30.0
+        )
         walk_like = (
-            same_session
+            (same_session or short_session_restart)
             and dt <= GPS_TRACK_SEGMENT_MAX_GAP_SECONDS
             and dist <= GPS_TRACK_SEGMENT_MAX_JUMP_M
-            and effective_speed <= GPS_TRACK_WALK_MAX_SPEED_MPS
+            and estimated_speed <= GPS_TRACK_WALK_MAX_SPEED_MPS
+            and not implausibly_fast_report
         )
         if walk_like:
             if not current:
@@ -35224,7 +35242,7 @@ def _project_snap_display_segments_v298(segments):
     return [seg for seg in out if isinstance(seg, list) and len(seg) >= 2]
 
 
-def _render_burari_project_map_v295(points, segments, stations, photo_segments=None):
+def _render_burari_project_map_v295(points, segments, stations, photo_segments=None, latest_point=None):
     """Render a deliberately minimal project map.
 
     v299 keeps the minimal map UI from v295. Only the photo-derived historical seed
@@ -35234,11 +35252,24 @@ def _render_burari_project_map_v295(points, segments, stations, photo_segments=N
     """
     if not points:
         return
+    latest_payload = None
+    if isinstance(latest_point, dict):
+        try:
+            latest_payload = {
+                "lat": round(float(latest_point.get("lat")), 7),
+                "lon": round(float(latest_point.get("lon")), 7),
+                "ts_ms": int(latest_point.get("ts_ms") or 0),
+                "accuracy_m": float(latest_point.get("accuracy_m")) if latest_point.get("accuracy_m") is not None else None,
+                "source": str(latest_point.get("source") or ""),
+            }
+        except Exception:
+            latest_payload = None
     payload = {
         "points": [[round(float(p["lat"]), 7), round(float(p["lon"]), 7)] for p in points],
         "segments": segments,
         "photo_segments": photo_segments or [],
         "stations": stations,
+        "latest_point": latest_payload,
     }
     payload_json = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).replace("</", "<\\/")
     map_html = f"""<!doctype html>
@@ -35280,6 +35311,18 @@ html,body{{margin:0;padding:0;background:#0b1012;font-family:-apple-system,Blink
    L.polyline(seg,{{color:'#39f374',weight:8.0,opacity:.18,lineCap:'round',lineJoin:'round',interactive:false}}).addTo(map);
    L.polyline(seg,{{color:'#9dffb6',weight:3.0,opacity:.97,lineCap:'round',lineJoin:'round',interactive:false}}).addTo(map);
  }});
+
+ // v371: always show the newest GPS fix independently from walking-segment filtering.
+ // This makes it obvious whether the project map has received the current outing yet.
+ const latest=data.latest_point||null;
+ if(latest){{
+   const lat=Number(latest.lat),lon=Number(latest.lon);
+   if(Number.isFinite(lat)&&Number.isFinite(lon)){{
+     L.circleMarker([lat,lon],{{radius:14,color:'#6ee7ff',weight:2,opacity:.38,fillColor:'#38d9ff',fillOpacity:.10,interactive:false}}).addTo(map);
+     L.circleMarker([lat,lon],{{radius:6,color:'#e9fbff',weight:2.4,opacity:1,fillColor:'#2dcdf3',fillOpacity:1}})
+       .bindTooltip('最新GPS',{{direction:'top',offset:[0,-7],opacity:.92}}).addTo(map);
+   }}
+ }}
 
  const drawArrivedStation=(s)=>{{
    const zone=(Array.isArray(s.arrival_zone)?s.arrival_zone:[]).filter((p)=>Array.isArray(p)&&p.length>=2);
@@ -35933,7 +35976,36 @@ def page_burari_project():
         """,
         unsafe_allow_html=True,
     )
-    map_points = walk_points or (points[-1:] if points else [])
+    latest_point = points[-1] if points else None
+    map_points = list(walk_points or [])
+    # v371: segment filtering must never hide the latest GPS position. The newest raw
+    # point is included in map bounds even if it is the first point of a fresh session.
+    if latest_point:
+        latest_key = (round(float(latest_point.get("lat") or 0), 7), round(float(latest_point.get("lon") or 0), 7))
+        if not any(
+            (round(float(row.get("lat") or 0), 7), round(float(row.get("lon") or 0), 7)) == latest_key
+            for row in map_points if isinstance(row, dict)
+        ):
+            map_points.append(latest_point)
+
+        try:
+            latest_dt = datetime.fromtimestamp(float(latest_point.get("ts_ms") or 0) / 1000.0, ZoneInfo(APP_TIMEZONE))
+            age_seconds = max(0.0, (now_jst() - latest_dt).total_seconds())
+            source_label = {
+                "browser_watch": "ブラウザGPS",
+                "android_native": "Android GPS",
+                "timeline_import": "過去取込",
+            }.get(str(latest_point.get("source") or ""), "GPS")
+            accuracy = latest_point.get("accuracy_m")
+            accuracy_text = f" / 精度 約{float(accuracy):.0f}m" if accuracy is not None else ""
+            if age_seconds <= 180:
+                st.success(f"最新GPS：{latest_dt.strftime('%H:%M:%S')}（{source_label}{accuracy_text}）まで反映済み")
+            elif age_seconds <= 900:
+                st.warning(f"最新GPS：{latest_dt.strftime('%H:%M:%S')}（約{int(age_seconds // 60)}分前）。直近の歩行データを同期中です。")
+            else:
+                st.warning(f"最新GPSが約{int(age_seconds // 60)}分前で止まっています。現在の歩行がまだ同期されていない可能性があります。")
+        except Exception:
+            pass
 
     if points:
         station_status = st.empty()
@@ -35977,12 +36049,12 @@ def page_burari_project():
             route_status.empty()
     display_segments = list(segments or [])
 
-    _render_burari_project_map_v295(display_points, display_segments, stations, photo_segments=photo_segments)
+    _render_burari_project_map_v295(display_points, display_segments, stations, photo_segments=photo_segments, latest_point=latest_point)
 
     with st.expander("記録の仕組み", expanded=False):
         st.caption(
             "位置情報を許可している間はGPSを自動記録し、約10m動くごとに1点を端末へ保存してまとめて同期します。"
-            "電車・車など歩行より速い移動は地図の発光線から自動的に外します。"
+            "電車・車など歩行より速い移動は地図の発光線から自動的に外します。プロジェクト地図を開いたときは、端末に残っている直近GPSを優先して同期します。"
         )
 
 
