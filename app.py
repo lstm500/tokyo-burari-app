@@ -25724,7 +25724,7 @@ export default function(component) {
   if (!grid) return;
   grid.replaceChildren(); grid.classList.remove('enlarge-mode');
 
-  const photos = Array.isArray(data?.photos) ? data.photos.slice(0,3) : [];
+  const photos = Array.isArray(data?.photos) ? data.photos.slice(0,6) : [];
   const disabled = Boolean(data?.disabled);
   const viewMode = String(data?.view_mode || 'list') === 'enlarge' ? 'enlarge' : 'list';
   const familyKey=String(data?.family_key||''), memberKey=String(data?.member_key||''), videoId=String(data?.video_id||'');
@@ -25907,7 +25907,7 @@ def _get_moments_select_component():
     _moments_select_component_initialized = True
     try:
         moments_select_component = st.components.v2.component(
-            "tokyo_burari_moments_select_v168",
+            "tokyo_burari_moments_select_v359",
             html=_MOMENTS_SELECT_HTML,
             css=_MOMENTS_SELECT_CSS,
             js=_MOMENTS_SELECT_JS,
