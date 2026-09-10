@@ -32,9 +32,9 @@ from zoneinfo import ZoneInfo
 import streamlit as st
 
 # Freshly generated update: 2026-08-31 23:49 JST
-GENERATED_UPDATE_JST = "2026-09-10T19:50:00+09:00"
+GENERATED_UPDATE_JST = "2026-09-10T20:10:00+09:00"
 
-APP_BUILD = "v377"
+APP_BUILD = "v378"
 # v331: multi-tag photo selections can go straight to a music replay and be saved as a stable in-app movie snapshot.
 # v330: tag-review movies support one or multiple AI tags; selection is action-only.
 
@@ -26857,7 +26857,7 @@ export default function(component) {
     voiceButton.type='button';voiceButton.className='moments-voice-open-button';
     const voiceRank=Math.max(0,Number(photo?.voice_candidate_rank||0)||0);
     voiceButton.classList.toggle('has-voice',voiceRank>0);
-    voiceButton.textContent=large?(voiceRank>0?'🎙 声あり':'🎙 声を選ぶ'):'🎙';
+    voiceButton.textContent=large?(voiceRank>0?`🎙 声${voiceRank}・変更`:'🎙 声を選ぶ'):'🎙';
     voiceButton.title=voiceRank>0?`声候補 ${voiceRank} を設定中。タップして変更`:'この写真に動画の声をつける';
     voiceButton.setAttribute('aria-label',voiceButton.title);
     voiceButton.addEventListener('click',(event)=>{
@@ -26963,7 +26963,7 @@ def _get_moments_select_component():
     _moments_select_component_initialized = True
     try:
         moments_select_component = st.components.v2.component(
-            "tokyo_burari_moments_select_v370",
+            "tokyo_burari_moments_select_v378",
             html=_MOMENTS_SELECT_HTML,
             css=_MOMENTS_SELECT_CSS,
             js=_MOMENTS_SELECT_JS,
@@ -27462,20 +27462,24 @@ def _render_moments_picker(photo, index, view_mode=None, next_video_action=None)
         st.session_state[active_rank_key] = target_rank
 
         rank_to_item = {int(item.get("rank") or 0): item for item in items if isinstance(item, dict)}
-        rank_to_card = {int(card.get("rank") or 0): card for card in cards if isinstance(card, dict)}
         target_item = rank_to_item.get(target_rank, {})
-        target_card = rank_to_card.get(target_rank, {})
         try:
             current_voice_rank = int((target_item or {}).get("voice_candidate_rank") or 0)
         except Exception:
             current_voice_rank = 0
         saved_photo_id = str((target_item or {}).get("saved_photo_id") or "").strip()
 
+        # v378: keep the actual photo only in the gallery above. The old voice panel
+        # repeated the same photo immediately below the voice button, which made it look
+        # like a second photo had opened. This panel now focuses only on choosing/listening.
         with st.container(border=True):
             header_col, close_col = st.columns([5, 1], gap="small")
             with header_col:
-                st.markdown(f"##### 🎙 写真 {target_rank} の声を選ぶ")
-                st.caption("この写真が振り返りムービーで表示されたときに再生する声を選びます。")
+                st.markdown(f"##### 🎙 写真 {target_rank} に付ける声")
+                if current_voice_rank > 0:
+                    st.caption(f"現在：声{current_voice_rank}　／　上に表示中の写真へ付ける声を変更できます。")
+                else:
+                    st.caption("上に表示中の写真へ付ける声を選びます。写真はここでは重ねて表示しません。")
             with close_col:
                 if st.button(
                     "×",
@@ -27483,30 +27487,20 @@ def _render_moments_picker(photo, index, view_mode=None, next_video_action=None)
                     help="声の選択を閉じる",
                     use_container_width=True,
                 ):
+                    st.session_state[active_rank_key] = target_rank
                     st.session_state.pop(voice_panel_open_key, None)
                     st.session_state.pop(voice_panel_target_key, None)
                     st.session_state.pop(voice_candidate_choice_key, None)
                     st.rerun()
 
-            preview_url = str((target_card or {}).get("src") or "").strip()
-            if preview_url:
-                st.markdown(
-                    '<div style="width:100%;max-width:560px;margin:0 auto 10px;overflow:hidden;border-radius:14px;background:#111;">'
-                    f'<img src="{html.escape(preview_url, quote=True)}" alt="写真 {target_rank} プレビュー" '
-                    'style="display:block;width:100%;max-height:520px;aspect-ratio:4/5;object-fit:contain;" />'
-                    '</div>',
-                    unsafe_allow_html=True,
-                )
-            st.caption("プレビュー：この写真の表示中に、選んだ声が自動再生されます。声は最大5秒程度で、できるだけ話し声の切れ目までで終わります。")
-
             if not voice_candidates:
-                st.info("まだこの動画の声候補を作っていません。")
+                st.info("この動画の声候補はまだ作られていません。")
                 if st.button(
                     "🎙 印象的な声を6個探す",
                     type="primary",
                     use_container_width=True,
                     key=f"moments_voice_generate_{video_id}_{round_number}_{target_rank}",
-                    help="元動画の音声から、印象的な声を最大6個探します。1候補は最大5秒程度で、できるだけ話し声の切れ目で区切ります。",
+                    help="元動画の音声から、最大5秒程度の印象的な声を最大6個探します。",
                 ):
                     try:
                         with st.spinner("動画の中から印象的な声を探しています…"):
@@ -27542,58 +27536,86 @@ def _render_moments_picker(photo, index, view_mode=None, next_video_action=None)
                         stored_choice = 0
                     default_choice = current_voice_rank if current_voice_rank in candidate_ranks else candidate_ranks[0]
                     if stored_choice not in candidate_ranks:
+                        stored_choice = default_choice
                         st.session_state[voice_candidate_choice_key] = default_choice
 
-                    candidate_rank = st.radio(
-                        "声候補",
-                        options=candidate_ranks,
-                        horizontal=True,
-                        format_func=lambda value: f"声{value}",
-                        key=voice_candidate_choice_key,
-                    )
-                    chosen_voice = voice_by_rank.get(int(candidate_rank or 0), {})
+                    st.caption("声をタップして聞き比べてください。選んだ声だけ下にプレイヤーを表示します。")
+
+                    # Compact 2-column candidate buttons are easier to use on a phone than
+                    # the old horizontal radio row and do not load six audio players at once.
+                    for row_start in range(0, len(candidate_ranks), 2):
+                        cols = st.columns(2, gap="small")
+                        for col_index, candidate_value in enumerate(candidate_ranks[row_start:row_start + 2]):
+                            candidate_meta = voice_by_rank.get(candidate_value, {})
+                            duration_ms = max(0, int(candidate_meta.get("duration_ms") or 0))
+                            duration_text = f"{duration_ms / 1000:.1f}秒" if duration_ms else "再生"
+                            is_choice = int(st.session_state.get(voice_candidate_choice_key) or 0) == candidate_value
+                            button_label = f"{'✓ ' if is_choice else ''}声{candidate_value}・{duration_text}"
+                            with cols[col_index]:
+                                if st.button(
+                                    button_label,
+                                    type="primary" if is_choice else "secondary",
+                                    use_container_width=True,
+                                    key=f"moments_voice_candidate_{video_id}_{round_number}_{target_rank}_{candidate_value}",
+                                ):
+                                    st.session_state[voice_candidate_choice_key] = candidate_value
+                                    st.session_state[active_rank_key] = target_rank
+                                    st.rerun()
+
+                    try:
+                        candidate_rank = int(st.session_state.get(voice_candidate_choice_key) or default_choice)
+                    except Exception:
+                        candidate_rank = default_choice
+                    if candidate_rank not in candidate_ranks:
+                        candidate_rank = default_choice
+                        st.session_state[voice_candidate_choice_key] = default_choice
+
+                    chosen_voice = voice_by_rank.get(candidate_rank, {})
                     candidate_url = str(voice_url_map.get(str(chosen_voice.get("storage_path") or "")) or "")
                     transcript = str(chosen_voice.get("transcript") or "").strip()
                     timestamp_ms = max(0, int(chosen_voice.get("timestamp_ms") or 0))
                     duration_ms = max(0, int(chosen_voice.get("duration_ms") or 0))
 
-                    preview_meta = f"動画 {timestamp_ms / 1000:.1f}秒付近 / {duration_ms / 1000:.1f}秒"
-                    if current_voice_rank == int(candidate_rank or 0):
-                        preview_meta += " / 現在設定中"
-                    st.caption(preview_meta)
-                    if transcript:
-                        st.caption(f"聞こえた内容：{transcript}")
-                    if candidate_url:
-                        st.audio(candidate_url)
-                    else:
-                        st.warning("この声を再生できませんでした。")
+                    with st.container(border=True):
+                        status_badge = "　現在設定中" if current_voice_rank == candidate_rank else ""
+                        st.markdown(f"**▶ 声{candidate_rank}を確認{status_badge}**")
+                        st.caption(f"動画 {timestamp_ms / 1000:.1f}秒付近　・　{duration_ms / 1000:.1f}秒")
+                        if candidate_url:
+                            st.audio(candidate_url)
+                        else:
+                            st.warning("この声を再生できませんでした。")
+                        if transcript:
+                            st.caption(f"聞こえた内容：{transcript}")
 
-                    apply_col, back_col = st.columns(2, gap="small")
+                    apply_col, close_action_col = st.columns([3, 2], gap="small")
                     with apply_col:
+                        apply_label = "この声に決定" if current_voice_rank != candidate_rank else "この声のまま戻る"
                         if st.button(
-                            "この声を付ける",
+                            apply_label,
                             type="primary",
                             use_container_width=True,
                             key=f"moments_voice_apply_{video_id}_{round_number}_{target_rank}_{candidate_rank}",
                         ):
                             try:
-                                update_video_ai_selection_voice_choice(photo, target_rank, candidate_rank)
+                                if current_voice_rank != candidate_rank:
+                                    update_video_ai_selection_voice_choice(photo, target_rank, candidate_rank)
                                 st.session_state[active_rank_key] = target_rank
                                 st.session_state.pop(voice_panel_open_key, None)
                                 st.session_state.pop(voice_panel_target_key, None)
                                 st.session_state.pop(voice_candidate_choice_key, None)
-                                st.session_state["_moments_notice"] = (
-                                    f"写真 {target_rank} に声{candidate_rank}を付けました。"
-                                    + (" 保存済み写真にも反映しました。" if saved_photo_id else "")
-                                )
+                                if current_voice_rank != candidate_rank:
+                                    st.session_state["_moments_notice"] = (
+                                        f"写真 {target_rank} に声{candidate_rank}を付けました。"
+                                        + (" 保存済み写真にも反映しました。" if saved_photo_id else "")
+                                    )
                                 st.rerun()
                             except Exception as exc:
                                 st.error("声を写真に設定できませんでした。")
                                 with st.expander("保護者向け詳細"):
                                     st.code(str(exc))
-                    with back_col:
+                    with close_action_col:
                         if st.button(
-                            "写真に戻る",
+                            "変更せず戻る",
                             use_container_width=True,
                             key=f"moments_voice_back_{video_id}_{round_number}_{target_rank}",
                         ):
@@ -27605,7 +27627,7 @@ def _render_moments_picker(photo, index, view_mode=None, next_video_action=None)
 
                     if current_voice_rank > 0:
                         if st.button(
-                            "この写真から声を外す",
+                            "声の設定を外す",
                             use_container_width=True,
                             key=f"moments_voice_clear_{video_id}_{round_number}_{target_rank}",
                         ):
