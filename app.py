@@ -30,9 +30,9 @@ from zoneinfo import ZoneInfo
 import streamlit as st
 
 # Freshly generated update: 2026-08-31 23:49 JST
-GENERATED_UPDATE_JST = "2026-09-10T13:45:00+09:00"
+GENERATED_UPDATE_JST = "2026-09-10T14:10:00+09:00"
 
-APP_BUILD = "v361"
+APP_BUILD = "v363"
 # v331: multi-tag photo selections can go straight to a music replay and be saved as a stable in-app movie snapshot.
 # v330: tag-review movies support one or multiple AI tags; selection is action-only.
 
@@ -13312,13 +13312,248 @@ def _video_ai_job_registry():
 
 
 
+def _get_focus_detection_models():
+    """Lazy-load lightweight local detectors for video-frame cropping."""
+    try:
+        import cv2
+    except Exception:
+        return None, None
+    face_cascade = None
+    hog = None
+    try:
+        cascade_path = getattr(getattr(cv2, "data", None), "haarcascades", "") + "haarcascade_frontalface_default.xml"
+        if cascade_path:
+            candidate = cv2.CascadeClassifier(cascade_path)
+            if candidate is not None and not candidate.empty():
+                face_cascade = candidate
+    except Exception:
+        face_cascade = None
+    try:
+        hog = cv2.HOGDescriptor()
+        hog.setSVMDetector(cv2.HOGDescriptor_getDefaultPeopleDetector())
+    except Exception:
+        hog = None
+    return face_cascade, hog
+
+
+@functools.lru_cache(maxsize=1)
+def _cached_focus_detection_models():
+    return _get_focus_detection_models()
+
+
+def _clamp_box(left, top, right, bottom, width, height):
+    left = int(max(0, min(width - 1, round(left))))
+    top = int(max(0, min(height - 1, round(top))))
+    right = int(max(left + 1, min(width, round(right))))
+    bottom = int(max(top + 1, min(height, round(bottom))))
+    return left, top, right, bottom
+
+
+def _fit_focus_box_to_ratio(focus_box, image_size, target_ratio, *, min_height=240):
+    """Expand a focus box to a target aspect ratio while staying inside the image."""
+    width, height = image_size
+    fx1, fy1, fx2, fy2 = focus_box
+    focus_w = max(1.0, float(fx2 - fx1))
+    focus_h = max(1.0, float(fy2 - fy1))
+    crop_h = max(float(min_height), focus_h)
+    crop_w = crop_h * float(target_ratio)
+    if crop_w < focus_w:
+        crop_w = focus_w
+        crop_h = crop_w / float(target_ratio)
+    if crop_h < focus_h:
+        crop_h = focus_h
+        crop_w = crop_h * float(target_ratio)
+    crop_w = min(float(width), crop_w)
+    crop_h = min(float(height), crop_h)
+    cx = (fx1 + fx2) / 2.0
+    cy = (fy1 + fy2) / 2.0
+    left = cx - crop_w / 2.0
+    top = cy - crop_h / 2.0
+    left = max(0.0, min(float(width) - crop_w, left))
+    top = max(0.0, min(float(height) - crop_h, top))
+    return _clamp_box(left, top, left + crop_w, top + crop_h, width, height)
+
+
+def _estimate_person_focus_boxes(src_image):
+    """Return lightweight person-focus boxes in original coordinates.
+
+    Face detection is attempted first. If that finds fewer than two people, a compact
+    HOG person detector is used as a fallback. The returned boxes are expanded to upper-
+    body regions so that crops keep relationship cues, not just faces.
+    """
+    try:
+        import cv2
+        import numpy as np
+    except Exception:
+        return []
+
+    face_cascade, hog = _cached_focus_detection_models()
+    if face_cascade is None and hog is None:
+        return []
+
+    arr = np.array(src_image.convert("RGB"))
+    if arr.size == 0:
+        return []
+    h, w = arr.shape[:2]
+    if h <= 0 or w <= 0:
+        return []
+
+    max_side = max(w, h)
+    scale = 1.0
+    if max_side > 960:
+        scale = 960.0 / float(max_side)
+        arr_small = cv2.resize(arr, (max(1, int(round(w * scale))), max(1, int(round(h * scale)))), interpolation=cv2.INTER_AREA)
+    else:
+        arr_small = arr
+    sh, sw = arr_small.shape[:2]
+    gray = cv2.cvtColor(arr_small, cv2.COLOR_RGB2GRAY)
+
+    detections = []
+
+    # 1) faces → expand to include head, shoulders, and hands area.
+    if face_cascade is not None:
+        try:
+            faces = face_cascade.detectMultiScale(
+                gray,
+                scaleFactor=1.08,
+                minNeighbors=4,
+                minSize=(24, 24),
+                flags=getattr(cv2, "CASCADE_SCALE_IMAGE", 0),
+            )
+        except Exception:
+            faces = []
+        for (x, y, fw, fh) in faces:
+            bx1 = x - 1.15 * fw
+            by1 = y - 0.60 * fh
+            bx2 = x + 2.15 * fw
+            by2 = y + 3.80 * fh
+            bx1, by1, bx2, by2 = _clamp_box(bx1 / scale, by1 / scale, bx2 / scale, by2 / scale, w, h)
+            detections.append({
+                "kind": "face",
+                "score": float(fw * fh),
+                "box": (bx1, by1, bx2, by2),
+                "center": ((bx1 + bx2) / 2.0, (by1 + by2) / 2.0),
+            })
+
+    # 2) fallback person detector for non-face/side/back poses.
+    if len(detections) < 2 and hog is not None:
+        try:
+            rects, weights = hog.detectMultiScale(
+                arr_small,
+                winStride=(8, 8),
+                padding=(8, 8),
+                scale=1.05,
+            )
+        except Exception:
+            rects, weights = [], []
+        for idx, (x, y, pw, ph) in enumerate(rects):
+            weight = float(weights[idx]) if idx < len(weights) else 0.0
+            # Ignore tiny / weak detections.
+            if pw < 28 or ph < 56 or weight < 0.05:
+                continue
+            bx1 = x - 0.08 * pw
+            by1 = y - 0.08 * ph
+            bx2 = x + 1.08 * pw
+            by2 = y + 1.02 * ph
+            bx1, by1, bx2, by2 = _clamp_box(bx1 / scale, by1 / scale, bx2 / scale, by2 / scale, w, h)
+            detections.append({
+                "kind": "person",
+                "score": float((pw * ph) * max(0.25, weight + 0.5)),
+                "box": (bx1, by1, bx2, by2),
+                "center": ((bx1 + bx2) / 2.0, (by1 + by2) / 2.0),
+            })
+
+    if not detections:
+        return []
+
+    # Light dedupe: keep the stronger region when two boxes overlap heavily.
+    detections.sort(key=lambda item: item["score"], reverse=True)
+    selected = []
+    for item in detections:
+        x1, y1, x2, y2 = item["box"]
+        area = max(1.0, float((x2 - x1) * (y2 - y1)))
+        keep = True
+        for chosen in selected:
+            ax1, ay1, ax2, ay2 = chosen["box"]
+            inter_w = max(0.0, min(x2, ax2) - max(x1, ax1))
+            inter_h = max(0.0, min(y2, ay2) - max(y1, ay1))
+            inter = inter_w * inter_h
+            if inter <= 0:
+                continue
+            other_area = max(1.0, float((ax2 - ax1) * (ay2 - ay1)))
+            overlap = inter / min(area, other_area)
+            if overlap >= 0.55:
+                keep = False
+                break
+        if keep:
+            selected.append(item)
+        if len(selected) >= 4:
+            break
+    return selected
+
+
+def _focus_box_from_people(src_image, target_ratio):
+    people = _estimate_person_focus_boxes(src_image)
+    if not people:
+        return None
+    w, h = src_image.size
+
+    if len(people) >= 2:
+        # Choose the pair that best preserves the relationship between two visible people:
+        # big enough, not duplicates, and with meaningful spacing between them.
+        best_pair = None
+        best_pair_score = None
+        for i in range(len(people)):
+            for j in range(i + 1, len(people)):
+                a = people[i]
+                b = people[j]
+                ax1, ay1, ax2, ay2 = a["box"]
+                bx1, by1, bx2, by2 = b["box"]
+                union_w = max(ax2, bx2) - min(ax1, bx1)
+                union_h = max(ay2, by2) - min(ay1, by1)
+                if union_w <= 0 or union_h <= 0:
+                    continue
+                center_gap = abs(a["center"][0] - b["center"][0])
+                vertical_gap = abs(a["center"][1] - b["center"][1])
+                size_score = a["score"] + b["score"]
+                relation_bonus = min(union_w, w * 0.92) * 0.015 + min(center_gap, w * 0.5) * 0.018
+                alignment_bonus = max(0.0, (h * 0.30) - vertical_gap) * 0.02
+                pair_score = size_score + relation_bonus + alignment_bonus
+                if best_pair_score is None or pair_score > best_pair_score:
+                    best_pair_score = pair_score
+                    best_pair = (a, b)
+        if best_pair is not None:
+            a, b = best_pair
+            x1 = min(a["box"][0], b["box"][0])
+            y1 = min(a["box"][1], b["box"][1])
+            x2 = max(a["box"][2], b["box"][2])
+            y2 = max(a["box"][3], b["box"][3])
+            union_w = x2 - x1
+            union_h = y2 - y1
+            # Keep the space between the two people and a bit of context around them.
+            margin_x = max(w * 0.03, union_w * 0.16)
+            margin_top = max(h * 0.02, union_h * 0.10)
+            margin_bottom = max(h * 0.04, union_h * 0.18)
+            focus_box = _clamp_box(x1 - margin_x, y1 - margin_top, x2 + margin_x, y2 + margin_bottom, w, h)
+            return _fit_focus_box_to_ratio(focus_box, (w, h), target_ratio, min_height=max(240, int(round(union_h * 1.05))))
+
+    # One prominent person: keep them larger and slightly below center so action / hands remain visible.
+    main = people[0]["box"]
+    x1, y1, x2, y2 = main
+    pw = x2 - x1
+    ph = y2 - y1
+    focus_box = _clamp_box(x1 - 0.10 * pw, y1 - 0.06 * ph, x2 + 0.10 * pw, y2 + 0.12 * ph, w, h)
+    return _fit_focus_box_to_ratio(focus_box, (w, h), target_ratio, min_height=max(240, int(round(ph * 1.02))))
+
+
 def _normalize_video_frame_photo_bytes(image_bytes, *, quality=90, max_long=1600):
     """Make landscape video stills feel closer inside the app.
 
-    For wide frames, build a tighter portrait-friendly crop instead of preserving the
-    full distant landscape. The crop search is intentionally lightweight: it samples a
-    small number of zoom levels and positions, then scores each crop with image entropy,
-    contrast, and a gentle center/lower-center bias.
+    The crop is now human-aware. When one person is visible, it keeps that person
+    larger in frame. When two people are visible, it prefers a crop that keeps both
+    people together and preserves the space between them so the relationship/moment is
+    easier to feel. If local detection fails, it falls back to the previous lightweight
+    entropy-based crop search.
     """
     from PIL import Image, ImageOps, ImageStat
 
@@ -13336,70 +13571,76 @@ def _normalize_video_frame_photo_bytes(image_bytes, *, quality=90, max_long=1600
             # Only tighten clearly horizontal images. Portrait/square photos stay natural.
             if w > int(h * 1.10):
                 target_ratio = 4.0 / 5.0  # portrait-friendly crop for the app's photo UI
-                gray = src.convert("L")
-                best_box = None
-                best_score = None
-                wide_ratio = w / float(max(1, h))
-                # Wider videos get a little more zoom to avoid the "too far away" feeling.
-                zoom_levels = (0.96, 0.88, 0.80) if wide_ratio < 1.55 else (0.92, 0.84, 0.76)
 
-                for frac in zoom_levels:
-                    crop_h = max(240, min(h, int(round(h * frac))))
-                    crop_w = int(round(crop_h * target_ratio))
-                    if crop_w > w:
-                        crop_w = w
-                        crop_h = int(round(crop_w / target_ratio))
-                    if crop_w <= 0 or crop_h <= 0 or crop_w > w or crop_h > h:
-                        continue
+                # First choice: human-aware crop that keeps one person large or two people together.
+                focus_crop = _focus_box_from_people(src, target_ratio)
+                if focus_crop is not None:
+                    result = src.crop(focus_crop)
+                else:
+                    gray = src.convert("L")
+                    best_box = None
+                    best_score = None
+                    wide_ratio = w / float(max(1, h))
+                    # Wider videos get a little more zoom to avoid the "too far away" feeling.
+                    zoom_levels = (0.96, 0.88, 0.80) if wide_ratio < 1.55 else (0.92, 0.84, 0.76)
 
-                    max_left = max(0, w - crop_w)
-                    max_top = max(0, h - crop_h)
+                    for frac in zoom_levels:
+                        crop_h = max(240, min(h, int(round(h * frac))))
+                        crop_w = int(round(crop_h * target_ratio))
+                        if crop_w > w:
+                            crop_w = w
+                            crop_h = int(round(crop_w / target_ratio))
+                        if crop_w <= 0 or crop_h <= 0 or crop_w > w or crop_h > h:
+                            continue
 
-                    # Candidate centers: prefer the center, but allow moderate left/right shifts.
-                    center_positions = [0.50, 0.38, 0.62, 0.26, 0.74]
-                    vertical_positions = [0.54, 0.48, 0.60]
+                        max_left = max(0, w - crop_w)
+                        max_top = max(0, h - crop_h)
 
-                    if max_left == 0:
-                        left_candidates = [0]
-                    else:
-                        left_candidates = []
-                        for rel in center_positions:
-                            left = int(round((w * rel) - crop_w / 2.0))
-                            left_candidates.append(max(0, min(max_left, left)))
-                        left_candidates = list(dict.fromkeys(left_candidates))
+                        # Candidate centers: prefer the center, but allow moderate left/right shifts.
+                        center_positions = [0.50, 0.38, 0.62, 0.26, 0.74]
+                        vertical_positions = [0.54, 0.48, 0.60]
 
-                    if max_top == 0:
-                        top_candidates = [0]
-                    else:
-                        top_candidates = []
-                        for rel in vertical_positions:
-                            top = int(round((h * rel) - crop_h / 2.0))
-                            top_candidates.append(max(0, min(max_top, top)))
-                        top_candidates = list(dict.fromkeys(top_candidates))
+                        if max_left == 0:
+                            left_candidates = [0]
+                        else:
+                            left_candidates = []
+                            for rel in center_positions:
+                                left = int(round((w * rel) - crop_w / 2.0))
+                                left_candidates.append(max(0, min(max_left, left)))
+                            left_candidates = list(dict.fromkeys(left_candidates))
 
-                    for left in left_candidates:
-                        for top in top_candidates:
-                            right = left + crop_w
-                            bottom = top + crop_h
-                            region = gray.crop((left, top, right, bottom))
-                            entropy = float(region.entropy())
-                            try:
-                                contrast = float(ImageStat.Stat(region).stddev[0])
-                            except Exception:
-                                contrast = 0.0
-                            cx = left + crop_w / 2.0
-                            cy = top + crop_h / 2.0
-                            dx = abs(cx - (w / 2.0)) / max(1.0, w / 2.0)
-                            dy = abs(cy - (h * 0.55)) / max(1.0, h / 2.0)
-                            center_bonus = max(0.0, 1.0 - dx * 0.80 - dy * 0.55)
-                            zoom_bonus = max(0.0, (1.0 - frac) * 4.0)
-                            score = entropy + (contrast * 0.09) + center_bonus + zoom_bonus
-                            if best_score is None or score > best_score:
-                                best_score = score
-                                best_box = (left, top, right, bottom)
+                        if max_top == 0:
+                            top_candidates = [0]
+                        else:
+                            top_candidates = []
+                            for rel in vertical_positions:
+                                top = int(round((h * rel) - crop_h / 2.0))
+                                top_candidates.append(max(0, min(max_top, top)))
+                            top_candidates = list(dict.fromkeys(top_candidates))
 
-                if best_box is not None:
-                    result = src.crop(best_box)
+                        for left in left_candidates:
+                            for top in top_candidates:
+                                right = left + crop_w
+                                bottom = top + crop_h
+                                region = gray.crop((left, top, right, bottom))
+                                entropy = float(region.entropy())
+                                try:
+                                    contrast = float(ImageStat.Stat(region).stddev[0])
+                                except Exception:
+                                    contrast = 0.0
+                                cx = left + crop_w / 2.0
+                                cy = top + crop_h / 2.0
+                                dx = abs(cx - (w / 2.0)) / max(1.0, w / 2.0)
+                                dy = abs(cy - (h * 0.55)) / max(1.0, h / 2.0)
+                                center_bonus = max(0.0, 1.0 - dx * 0.80 - dy * 0.55)
+                                zoom_bonus = max(0.0, (1.0 - frac) * 4.0)
+                                score = entropy + (contrast * 0.09) + center_bonus + zoom_bonus
+                                if best_score is None or score > best_score:
+                                    best_score = score
+                                    best_box = (left, top, right, bottom)
+
+                    if best_box is not None:
+                        result = src.crop(best_box)
 
             long_edge = max(result.width, result.height)
             if max_long and long_edge > int(max_long):
@@ -25448,12 +25689,31 @@ def _moments_video_title(photo):
 
 
 _MOMENTS_SELECT_HTML = """
+<div class="moments-view-toggle" role="group" aria-label="この動画の写真表示">
+  <button id="moments-view-list" class="moments-view-button" type="button">一覧モード</button>
+  <button id="moments-view-enlarge" class="moments-view-button" type="button">拡大モード</button>
+</div>
 <div id="moments-select-grid" class="moments-select-grid"></div>
 <button id="moments-next-video" class="moments-action-button secondary" type="button" hidden></button>
 <button id="moments-save-selection" class="moments-action-button primary" type="button" hidden></button>
 """
 
 _MOMENTS_SELECT_CSS = """
+.moments-view-toggle {
+  width:100%; display:grid; grid-template-columns:1fr 1fr; gap:6px;
+  margin:0 0 7px; box-sizing:border-box;
+}
+.moments-view-button {
+  appearance:none; -webkit-appearance:none; min-height:34px; margin:0; padding:6px 8px;
+  border:1px solid rgba(128,128,128,.24); border-radius:10px;
+  background:rgba(128,128,128,.045); color:var(--st-text-color);
+  font-size:12px; font-weight:800; cursor:pointer; touch-action:manipulation;
+  -webkit-tap-highlight-color:transparent;
+}
+.moments-view-button.active {
+  border-color:#6C9BD2; background:rgba(108,155,210,.14); color:var(--st-text-color);
+}
+.moments-view-button:active { transform:scale(.99); }
 .moments-select-grid {
   width: 100%;
   display: grid;
@@ -25722,13 +25982,22 @@ export default function(component) {
   const { parentElement, data, setTriggerValue } = component;
   const grid = parentElement.querySelector('#moments-select-grid');
   if (!grid) return;
-  grid.replaceChildren(); grid.classList.remove('enlarge-mode');
 
   const photos = Array.isArray(data?.photos) ? data.photos.slice(0,6) : [];
   const disabled = Boolean(data?.disabled);
-  const viewMode = String(data?.view_mode || 'list') === 'enlarge' ? 'enlarge' : 'list';
   const familyKey=String(data?.family_key||''), memberKey=String(data?.member_key||''), videoId=String(data?.video_id||'');
   const roundNumber=Math.max(0,Number(data?.round_number||0)||0);
+  const listViewButton=parentElement.querySelector('#moments-view-list');
+  const enlargeViewButton=parentElement.querySelector('#moments-view-enlarge');
+  const viewStoreKey=videoId?`tokyo_burari_moments_view_mode_v362_${videoId}`:'';
+  let viewMode='list';
+  try {
+    const savedMode=viewStoreKey?String(localStorage.getItem(viewStoreKey)||''):'';
+    if(savedMode==='enlarge'||savedMode==='list')viewMode=savedMode;
+    else if(String(data?.view_mode||'')==='enlarge')viewMode='enlarge';
+  } catch (_) {
+    viewMode=String(data?.view_mode||'')==='enlarge'?'enlarge':'list';
+  }
   const pendingStore='tokyo_burari_pending_tags_v166';
   const pendingParam=String(data?.pending_param||'feel_v159');
   const compatStore='tokyo_burari_pending_feelings_v159';
@@ -25833,7 +26102,7 @@ export default function(component) {
     const rank=rankFor(photo,index); let activeMode=preferredMode;
     const card=document.createElement('div'); card.className=large?'moments-select-card large-card':'moments-select-card'; card.setAttribute('role','button'); card.tabIndex=disabled?-1:0; card.setAttribute('aria-disabled',disabled?'true':'false');
     const imageWrap=document.createElement('div'); imageWrap.className='moments-select-image-wrap';
-    if(photo?.src){const img=document.createElement('img');img.src=String(photo.src);img.alt=`いい瞬間 ${rank}`;img.loading='eager';img.decoding='async';img.fetchPriority=large?'high':'high';imageWrap.appendChild(img);}
+    if(photo?.src){const img=document.createElement('img');img.src=String(photo.src);img.alt=`いい瞬間 ${rank}`;img.loading=large?'eager':'lazy';img.decoding='async';img.fetchPriority=large?'high':'auto';imageWrap.appendChild(img);}
     const rankBadge=document.createElement('div');rankBadge.className='moments-select-rank';rankBadge.textContent=photo?.ai_best?'★ AI BEST':`#${rank}`;imageWrap.appendChild(rankBadge);
     const pickedBadge=document.createElement('div');pickedBadge.className='moments-select-picked';pickedBadge.textContent='選択中';imageWrap.appendChild(pickedBadge);
     const badge=document.createElement('div');badge.className='moments-emotion-badge';imageWrap.appendChild(badge);
@@ -25869,30 +26138,57 @@ export default function(component) {
     return card;
   };
 
-  if(viewMode==='enlarge'){
-    grid.classList.add('enlarge-mode');const shell=document.createElement('div');shell.className='moments-enlarge-shell';
-    if(!photos.length){const empty=document.createElement('div');empty.className='moments-select-empty';shell.appendChild(empty);grid.appendChild(shell);return;}
-    let activeIndex=photos.findIndex((photo,index)=>rankFor(photo,index)===activeRank);if(activeIndex<0)activeIndex=0;
-    const nav=document.createElement('div');nav.className='moments-enlarge-nav';
-    const prev=document.createElement('button');prev.type='button';prev.textContent='‹';prev.setAttribute('aria-label','前の写真');
-    const counter=document.createElement('div');counter.className='moments-enlarge-counter';
-    const next=document.createElement('button');next.type='button';next.textContent='›';next.setAttribute('aria-label','次の写真');
-    const viewer=document.createElement('div');viewer.className='moments-enlarge-viewer';
-    const renderActive=()=>{
-      const activePhoto=photos[activeIndex]; activeRank=rankFor(activePhoto,activeIndex);
-      counter.textContent=`${activeIndex+1} / ${photos.length}`; prev.disabled=activeIndex<=0; next.disabled=activeIndex>=photos.length-1;
-      viewer.replaceChildren(makeCard(activePhoto,activeIndex,true));
-    };
-    const move=(delta)=>{const target=Math.max(0,Math.min(photos.length-1,activeIndex+delta));if(target===activeIndex)return;activeIndex=target;renderActive();};
-    prev.addEventListener('click',(event)=>{event.preventDefault();event.stopPropagation();move(-1);});
-    next.addEventListener('click',(event)=>{event.preventDefault();event.stopPropagation();move(1);});
-    let touchStartX=null;
-    viewer.addEventListener('touchstart',(event)=>{const touch=event.touches&&event.touches[0];touchStartX=touch?touch.clientX:null;},{passive:true});
-    viewer.addEventListener('touchend',(event)=>{if(touchStartX===null)return;const touch=event.changedTouches&&event.changedTouches[0];const dx=touch?touch.clientX-touchStartX:0;touchStartX=null;if(Math.abs(dx)>=45)move(dx<0?1:-1);},{passive:true});
-    shell.tabIndex=0;shell.addEventListener('keydown',(event)=>{if(event.key==='ArrowLeft'){event.preventDefault();move(-1);}else if(event.key==='ArrowRight'){event.preventDefault();move(1);}});
-    nav.appendChild(prev);nav.appendChild(counter);nav.appendChild(next);shell.appendChild(nav);shell.appendChild(viewer);grid.appendChild(shell);renderActive();return;
-  }
-  for(let index=0;index<photos.length;index+=1){const photo=photos[index];if(!photo)continue;grid.appendChild(makeCard(photo,index,false));}
+  const syncViewButtons=()=>{
+    if(listViewButton)listViewButton.classList.toggle('active',viewMode==='list');
+    if(enlargeViewButton)enlargeViewButton.classList.toggle('active',viewMode==='enlarge');
+  };
+
+  const renderGallery=()=>{
+    grid.replaceChildren();
+    grid.classList.toggle('enlarge-mode',viewMode==='enlarge');
+    if(viewMode==='enlarge'){
+      const shell=document.createElement('div');shell.className='moments-enlarge-shell';
+      if(!photos.length){const empty=document.createElement('div');empty.className='moments-select-empty';shell.appendChild(empty);grid.appendChild(shell);return;}
+      let activeIndex=photos.findIndex((photo,index)=>rankFor(photo,index)===activeRank);if(activeIndex<0)activeIndex=0;
+      const nav=document.createElement('div');nav.className='moments-enlarge-nav';
+      const prev=document.createElement('button');prev.type='button';prev.textContent='‹';prev.setAttribute('aria-label','前の写真');
+      const counter=document.createElement('div');counter.className='moments-enlarge-counter';
+      const next=document.createElement('button');next.type='button';next.textContent='›';next.setAttribute('aria-label','次の写真');
+      const viewer=document.createElement('div');viewer.className='moments-enlarge-viewer';
+      const renderActive=()=>{
+        const activePhoto=photos[activeIndex]; activeRank=rankFor(activePhoto,activeIndex);
+        counter.textContent=`${activeIndex+1} / ${photos.length}`; prev.disabled=activeIndex<=0; next.disabled=activeIndex>=photos.length-1;
+        viewer.replaceChildren(makeCard(activePhoto,activeIndex,true));
+        // Warm only the adjacent frame; never decode all six large images at once.
+        for(const neighborIndex of [activeIndex-1,activeIndex+1]){
+          const neighbor=photos[neighborIndex];
+          if(neighbor?.src){try{const prefetch=new Image();prefetch.decoding='async';prefetch.src=String(neighbor.src);}catch(_){}}
+        }
+      };
+      const move=(delta)=>{const target=Math.max(0,Math.min(photos.length-1,activeIndex+delta));if(target===activeIndex)return;activeIndex=target;renderActive();};
+      prev.addEventListener('click',(event)=>{event.preventDefault();event.stopPropagation();move(-1);});
+      next.addEventListener('click',(event)=>{event.preventDefault();event.stopPropagation();move(1);});
+      let touchStartX=null;
+      viewer.addEventListener('touchstart',(event)=>{const touch=event.touches&&event.touches[0];touchStartX=touch?touch.clientX:null;},{passive:true});
+      viewer.addEventListener('touchend',(event)=>{if(touchStartX===null)return;const touch=event.changedTouches&&event.changedTouches[0];const dx=touch?touch.clientX-touchStartX:0;touchStartX=null;if(Math.abs(dx)>=45)move(dx<0?1:-1);},{passive:true});
+      shell.tabIndex=0;shell.addEventListener('keydown',(event)=>{if(event.key==='ArrowLeft'){event.preventDefault();move(-1);}else if(event.key==='ArrowRight'){event.preventDefault();move(1);}});
+      nav.appendChild(prev);nav.appendChild(counter);nav.appendChild(next);shell.appendChild(nav);shell.appendChild(viewer);grid.appendChild(shell);renderActive();return;
+    }
+    for(let index=0;index<photos.length;index+=1){const photo=photos[index];if(!photo)continue;grid.appendChild(makeCard(photo,index,false));}
+  };
+
+  const setViewMode=(nextMode)=>{
+    const normalized=nextMode==='enlarge'?'enlarge':'list';
+    if(viewMode===normalized)return;
+    viewMode=normalized;
+    try{if(viewStoreKey)localStorage.setItem(viewStoreKey,viewMode);}catch(_){}
+    syncViewButtons();
+    renderGallery();
+  };
+  if(listViewButton)listViewButton.onclick=(event)=>{event.preventDefault();event.stopPropagation();setViewMode('list');};
+  if(enlargeViewButton)enlargeViewButton.onclick=(event)=>{event.preventDefault();event.stopPropagation();setViewMode('enlarge');};
+  syncViewButtons();
+  renderGallery();
 }
 """
 
@@ -25907,7 +26203,7 @@ def _get_moments_select_component():
     _moments_select_component_initialized = True
     try:
         moments_select_component = st.components.v2.component(
-            "tokyo_burari_moments_select_v360",
+            "tokyo_burari_moments_select_v362",
             html=_MOMENTS_SELECT_HTML,
             css=_MOMENTS_SELECT_CSS,
             js=_MOMENTS_SELECT_JS,
@@ -25957,21 +26253,10 @@ def _render_moments_picker(photo, index, view_mode=None, next_video_action=None)
                     st.code(str(exc))
 
     st.markdown(f"#### {html.escape(title)}")
-    # v361: each source video owns its own list/enlarged preference. Because this
-    # renderer is a Streamlit fragment, changing the switch reruns only this video.
-    per_video_mode_key = f"_moments_view_mode_label_v361_{video_id}"
-    previous_mode = str(st.session_state.get(per_video_mode_key) or "").strip()
-    if previous_mode not in {"一覧モード", "拡大モード"}:
-        st.session_state[per_video_mode_key] = "一覧モード"
-    st.caption("この動画の写真表示")
-    mode_label = st.radio(
-        "この動画の表示モード",
-        ["一覧モード", "拡大モード"],
-        horizontal=True,
-        key=per_video_mode_key,
-        label_visibility="collapsed",
-    )
-    view_mode = "enlarge" if mode_label == "拡大モード" else "list"
+    # v362: the list/enlarged switch is rendered inside this video's browser component.
+    # Changing modes is now client-side only: no Streamlit rerun, no Storage re-signing,
+    # and no server-side thumbnail generation just to enlarge a photo.
+    view_mode = "list"
     capture_meta = photo_media_metadata(photo).get("video_capture") or {}
     if isinstance(capture_meta, dict):
         width = max(0, int(capture_meta.get("width") or 0))
@@ -26096,26 +26381,15 @@ def _render_moments_picker(photo, index, view_mode=None, next_video_action=None)
     for item_index, item in enumerate(grid_items):
         rank = int(item.get("rank") or item_index + 1)
         path = str(item.get("storage_path") or "").strip()
-        # v166: keep picker images bounded in memory. The old path preferred the
-        # original signed frame, so enlarged mode could decode several full-resolution
-        # stills per video and crash a mobile browser. Use a cached thumbnail first.
-        url = ""
-        if view_mode != "enlarge":
-            # v251 list mode: one batch signing call, then let the browser fetch the
-            # six frames in parallel. This removes six sequential Storage downloads
-            # and six PIL resizes from the first-render critical path.
-            url = str(signed_map.get(path) or "")
+        # v362: use one batch-signed URL for both list and enlarged modes. The
+        # browser component mounts only one large image in enlarged mode, so there is
+        # no reason to download + resize all six files on the server before switching.
+        url = str(signed_map.get(path) or "")
         if not url:
             try:
-                url = thumbnail_photo_data_url(
-                    path,
-                    max_px=760 if view_mode == "enlarge" else 360,
-                    quality=82 if view_mode == "enlarge" else 72,
-                )
+                url = thumbnail_photo_data_url(path, max_px=420, quality=74)
             except Exception:
                 url = ""
-        if not url:
-            url = str(signed_map.get(path) or "")
         quality = _video_selection_quality_label(item.get("primary_quality"))
         seconds = max(0, int(item.get("timestamp_ms") or 0)) / 1000
         cards.append(
@@ -26141,6 +26415,16 @@ def _render_moments_picker(photo, index, view_mode=None, next_video_action=None)
         current_active_rank = 0
 
     picker_component = _get_moments_select_component()
+    if picker_component is None:
+        fallback_mode_key = f"_moments_view_mode_fallback_v362_{video_id}"
+        fallback_mode_label = st.radio(
+            "この動画の写真表示",
+            ["一覧モード", "拡大モード"],
+            horizontal=True,
+            key=fallback_mode_key,
+            label_visibility="collapsed",
+        )
+        view_mode = "enlarge" if fallback_mode_label == "拡大モード" else "list"
     if picker_component is not None:
         serial = int(st.session_state.get(component_serial_key) or 0)
         next_cfg = next_video_action if isinstance(next_video_action, dict) else {}
@@ -26149,7 +26433,7 @@ def _render_moments_picker(photo, index, view_mode=None, next_video_action=None)
                 "photos": cards,
                 "selected_ranks": selected_ranks,
                 "active_rank": current_active_rank,
-                "view_mode": "enlarge" if view_mode == "enlarge" else "list",
+                "view_mode": "list",
                 "disabled": False,
                 "family_key": current_family_key(),
                 "member_key": current_member_key(),
