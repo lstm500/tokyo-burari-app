@@ -30,9 +30,9 @@ from zoneinfo import ZoneInfo
 import streamlit as st
 
 # Freshly generated update: 2026-08-31 23:49 JST
-GENERATED_UPDATE_JST = "2026-09-10T12:47:00+09:00"
+GENERATED_UPDATE_JST = "2026-09-10T13:38:00+09:00"
 
-APP_BUILD = "v357"
+APP_BUILD = "v360"
 # v331: multi-tag photo selections can go straight to a music replay and be saved as a stable in-app movie snapshot.
 # v330: tag-review movies support one or multiple AI tags; selection is action-only.
 
@@ -25892,7 +25892,7 @@ export default function(component) {
     shell.tabIndex=0;shell.addEventListener('keydown',(event)=>{if(event.key==='ArrowLeft'){event.preventDefault();move(-1);}else if(event.key==='ArrowRight'){event.preventDefault();move(1);}});
     nav.appendChild(prev);nav.appendChild(counter);nav.appendChild(next);shell.appendChild(nav);shell.appendChild(viewer);grid.appendChild(shell);renderActive();return;
   }
-  for(let index=0;index<3;index+=1){const photo=photos[index];if(!photo){const empty=document.createElement('div');empty.className='moments-select-empty';grid.appendChild(empty);continue;}grid.appendChild(makeCard(photo,index,false));}
+  for(let index=0;index<photos.length;index+=1){const photo=photos[index];if(!photo)continue;grid.appendChild(makeCard(photo,index,false));}
 }
 """
 
@@ -25907,7 +25907,7 @@ def _get_moments_select_component():
     _moments_select_component_initialized = True
     try:
         moments_select_component = st.components.v2.component(
-            "tokyo_burari_moments_select_v359",
+            "tokyo_burari_moments_select_v360",
             html=_MOMENTS_SELECT_HTML,
             css=_MOMENTS_SELECT_CSS,
             js=_MOMENTS_SELECT_JS,
