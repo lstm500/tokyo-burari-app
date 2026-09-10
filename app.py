@@ -34,7 +34,7 @@ import streamlit as st
 # Freshly generated update: 2026-08-31 23:49 JST
 GENERATED_UPDATE_JST = "2026-09-10T18:05:00+09:00"
 
-APP_BUILD = "v372"
+APP_BUILD = "v373"
 # v331: multi-tag photo selections can go straight to a music replay and be saved as a stable in-app movie snapshot.
 # v330: tag-review movies support one or multiple AI tags; selection is action-only.
 
@@ -1533,6 +1533,7 @@ export default function(component) {
     videoStartButton.title = videoCapacityMessage;
   }
   let stream = null;
+  let cameraStartGeneration = 0;
   let cameraMode = 'photo';
   let cameraFacing = 'environment';
   // v313: remember the actual lens so photo/video use the same physical camera.
@@ -2029,14 +2030,19 @@ export default function(component) {
     setRecordingUi(false);
   };
 
-  const stopStream = () => {
+  const stopMediaStream = (targetStream) => {
+    if (!targetStream) return;
+    try { targetStream.getTracks().forEach((track) => { try { track.stop(); } catch (_) {} }); } catch (_) {}
+  };
+
+  const clearCurrentCameraStream = () => {
     stopActiveRecorderSilently();
     if (stream) {
-      stream.getTracks().forEach((track) => track.stop());
+      stopMediaStream(stream);
       stream = null;
     }
     if (video) {
-      video.pause();
+      try { video.pause(); } catch (_) {}
       video.srcObject = null;
       video.hidden = true;
     }
@@ -2046,6 +2052,13 @@ export default function(component) {
     pendingPhotoPreparePromise = null;
     revokePendingPhotoPreviewUrl();
     showMenu();
+  };
+
+  const stopStream = () => {
+    // Invalidate every in-flight camera/microphone start before releasing the current stream.
+    // This prevents an older failed video+mic request from tearing down a newer photo preview.
+    cameraStartGeneration += 1;
+    clearCurrentCameraStream();
   };
 
   const errorMessage = (err, mode = cameraMode) => {
@@ -2072,74 +2085,76 @@ export default function(component) {
       setStatus(videoCapacityMessage);
       return;
     }
-    stopStream();
+
+    // Each open request owns a generation token. A slow/failed older request is not
+    // allowed to stop or overwrite a camera that the user opened afterwards.
+    const generation = ++cameraStartGeneration;
+    clearCurrentCameraStream();
     cameraMode = requestedMode;
+
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
       const message = 'このブラウザでは直接カメラを開けません。ChromeまたはSafariの最新版で開いてください。';
       setStatus(message);
       setTriggerValue('camera_error', { name: 'Unsupported', message });
       return;
     }
-    if (cameraMode === 'video' && typeof MediaRecorder === 'undefined') {
+    if (requestedMode === 'video' && typeof MediaRecorder === 'undefined') {
       const message = 'このブラウザでは動画録画に対応していません。ChromeまたはSafariの最新版で開いてください。';
       setStatus(message);
       setTriggerValue('camera_error', { name: 'MediaRecorderUnsupported', message });
       return;
     }
 
-    setStatus(requestedMode === 'video' ? 'カメラとマイクの使用を確認しています…' : 'カメラの使用を確認しています…');
+    const stillCurrent = () => generation === cameraStartGeneration;
+    const pause = (ms) => new Promise((resolve) => setTimeout(resolve, Math.max(0, Number(ms) || 0)));
+    setStatus(requestedMode === 'video' ? 'カメラを開いています…' : 'カメラの使用を確認しています…');
+
+    let localCameraStream = null;
+    let localAudioStream = null;
     try {
-      // v367: photos still request camera only. Video requests camera + microphone
-      // together so the original saved video contains its real sound. Audio processing
-      // is requested as "ideal" only; if a browser rejects those optional constraints,
-      // retry with a plain audio:true request instead of silently saving a mute video.
-      const requestCurrentCameraStream = async () => {
-        const videoConstraints = preferredVideoConstraints();
-        if (cameraMode !== 'video') {
-          return await navigator.mediaDevices.getUserMedia({
-            audio: false,
-            video: videoConstraints
-          });
-        }
-        const preferredAudio = {
-          echoCancellation: { ideal: true },
-          noiseSuppression: { ideal: true },
-          autoGainControl: { ideal: true },
-          channelCount: { ideal: 1 }
-        };
-        try {
-          return await navigator.mediaDevices.getUserMedia({
-            audio: preferredAudio,
-            video: videoConstraints
-          });
-        } catch (audioConstraintErr) {
-          const errorName = String(audioConstraintErr?.name || '');
-          if (errorName !== 'OverconstrainedError' && errorName !== 'ConstraintNotSatisfiedError' && errorName !== 'TypeError') {
-            throw audioConstraintErr;
-          }
-          return await navigator.mediaDevices.getUserMedia({
-            audio: true,
-            video: videoConstraints
-          });
-        }
+      // v373: always acquire the camera first with audio:false. This restores the
+      // proven photo path and avoids a microphone-start failure taking the camera down.
+      const requestCameraOnly = async () => {
+        const constraints = preferredVideoConstraints();
+        return await navigator.mediaDevices.getUserMedia({ audio: false, video: constraints });
       };
+
       try {
-        stream = await requestCurrentCameraStream();
+        localCameraStream = await requestCameraOnly();
       } catch (firstErr) {
-        // If a remembered camera device id is no longer valid, retry once with the
-        // requested facing camera. Video still keeps microphone audio enabled.
         if (!preferredCameraDeviceId) throw firstErr;
         preferredCameraDeviceId = null;
-        stream = await requestCurrentCameraStream();
+        localCameraStream = await requestCameraOnly();
       }
+      if (!stillCurrent()) {
+        stopMediaStream(localCameraStream);
+        return;
+      }
+
+      stream = localCameraStream;
       video.srcObject = stream;
-      await video.play();
+      try {
+        await video.play();
+      } catch (playErr) {
+        if (!stillCurrent()) return;
+        throw playErr;
+      }
+      if (!stillCurrent()) {
+        if (stream === localCameraStream) stream = null;
+        stopMediaStream(localCameraStream);
+        return;
+      }
+
       await applyNativePortraitConstraint();
+      if (!stillCurrent()) return;
       // v314: request 90fps where supported, otherwise 60fps. Re-apply minimum
       // hardware zoom afterwards so the video keeps the same field of view as photo.
       const appliedVideoFps = await applyHighVideoFrameRate();
+      if (!stillCurrent()) return;
       await applyWidestAvailableZoom();
+      if (!stillCurrent()) return;
       syncNativeCameraFrame();
+
       try {
         const cameraTrack = stream.getVideoTracks && stream.getVideoTracks()[0];
         const settings = (cameraTrack && cameraTrack.getSettings) ? cameraTrack.getSettings() : {};
@@ -2151,27 +2166,103 @@ export default function(component) {
       persistCameraFacing();
       syncOrientationUi();
       syncFacingUi();
-      // v248 smooth-recording path: do not add an extra stabilization constraint.
-      // The phone camera/browser may still use its own default stabilization, but the
-      // app avoids requesting additional processing while recording.
-      shootButton.disabled = false;
-      shootButton.textContent = cameraMode === 'video' ? '● 録画を開始' : '● 写真を撮る';
       showCameraActions();
+
+      let audioReady = requestedMode !== 'video';
+      let audioError = null;
+      if (requestedMode === 'video') {
+        setStatus('カメラを開きました。マイクを接続しています…');
+
+        // Acquire microphone separately. Some Android/WebView devices fail when video
+        // and audio are requested in one getUserMedia call even though each source works.
+        // Start with the least restrictive request, then retry once after the permission/
+        // audio-service state has had time to settle.
+        const requestMicrophoneOnly = async () => {
+          return await navigator.mediaDevices.getUserMedia({ video: false, audio: true });
+        };
+        for (let attempt = 0; attempt < 2 && stillCurrent(); attempt += 1) {
+          try {
+            if (attempt > 0) await pause(450);
+            localAudioStream = await requestMicrophoneOnly();
+            const audioTrack = localAudioStream && localAudioStream.getAudioTracks
+              ? localAudioStream.getAudioTracks().find((track) => track.readyState === 'live')
+              : null;
+            if (!audioTrack) throw new Error('audio track is unavailable');
+            if (!stillCurrent()) {
+              stopMediaStream(localAudioStream);
+              return;
+            }
+            try {
+              await audioTrack.applyConstraints({
+                echoCancellation: { ideal: true },
+                noiseSuppression: { ideal: true },
+                autoGainControl: { ideal: true },
+                channelCount: { ideal: 1 }
+              });
+            } catch (_) {}
+            stream.addTrack(audioTrack);
+            // Stop only extra tracks; the track added to `stream` must remain live.
+            try {
+              localAudioStream.getTracks().forEach((track) => {
+                if (track !== audioTrack) { try { track.stop(); } catch (_) {} }
+              });
+            } catch (_) {}
+            localAudioStream = null;
+            audioReady = true;
+            audioError = null;
+            break;
+          } catch (micErr) {
+            audioError = micErr;
+            stopMediaStream(localAudioStream);
+            localAudioStream = null;
+          }
+        }
+      }
+
+      if (!stillCurrent()) return;
+      shootButton.disabled = false;
+      shootButton.textContent = requestedMode === 'video'
+        ? (audioReady ? '● 録画を開始' : '● 音声なしで録画')
+        : '● 写真を撮る';
+
       try {
         const openedAt = Date.now();
         localStorage.setItem('tokyo_burari_last_camera_open_v1', String(openedAt));
-        localStorage.setItem('tokyo_burari_last_camera_mode_v1', cameraMode === 'video' ? 'video' : 'photo');
+        localStorage.setItem('tokyo_burari_last_camera_mode_v1', requestedMode);
       } catch (_) {}
-      if (cameraMode === 'video') {
+
+      if (requestedMode === 'video') {
         const fpsLabel = Number(appliedVideoFps || 0) >= 80 ? '90fps' : (Number(appliedVideoFps || 0) >= 50 ? '60fps' : '高フレームレート');
-        setStatus(`動画は最大60秒です。${fpsLabel}・音声付きで撮影します。${cameraFacing === 'user' ? ' 内側カメラ使用中。' : ''}`);
+        if (audioReady) {
+          setStatus(`動画は最大60秒です。${fpsLabel}・音声付きで撮影します。${cameraFacing === 'user' ? ' 内側カメラ使用中。' : ''}`);
+        } else {
+          const detail = audioError && audioError.message ? String(audioError.message).replace(/\s+/g, ' ').trim().slice(0, 180) : '';
+          const message = 'カメラは使用できますが、マイクを開始できませんでした。今回は音声なしでも録画できます。音声付きにする場合は、端末の「ぶらり旅」のマイク権限を許可してから動画を開き直してください。';
+          setStatus(message);
+          setTriggerValue('camera_error', {
+            name: (audioError && audioError.name) ? audioError.name : 'MicrophoneStartError',
+            message,
+            detail
+          });
+        }
       } else {
         setStatus(cameraFacing === 'user' ? '内側カメラ使用中です。' : '');
       }
     } catch (err) {
       console.error(err);
-      stopStream();
-      const message = errorMessage(err, cameraMode);
+      stopMediaStream(localAudioStream);
+      // Only the request that is still current may tear down its own camera. An older
+      // rejected play()/getUserMedia() promise must not break a newer photo/video request.
+      if (!stillCurrent()) {
+        if (localCameraStream && stream !== localCameraStream) stopMediaStream(localCameraStream);
+        return;
+      }
+      if (stream === localCameraStream) {
+        clearCurrentCameraStream();
+      } else {
+        stopMediaStream(localCameraStream);
+      }
+      const message = errorMessage(err, requestedMode);
       setStatus(message);
       setTriggerValue('camera_error', {
         name: (err && err.name) ? err.name : 'CameraError',
