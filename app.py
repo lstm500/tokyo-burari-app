@@ -35,7 +35,8 @@ import streamlit as st
 # Freshly generated update: 2026-08-31 23:49 JST
 GENERATED_UPDATE_JST = "2026-09-11T02:26:00+09:00"
 
-APP_BUILD = "v394"
+APP_BUILD = "v395"
+# v395: replay photo order is shuffled for every playback/export while every selected photo is still shown once.
 # v394: replay photos keep their saved composition without enlargement/crop; playback button clearly shows active state.
 # v393: replay uses the exact diary-visible normal/parenting tag state and flushes pending browser tags before review playback.
 # v392: replay always refreshes each photo's current feeling/tag; final destructive confirm buttons are red.
@@ -20093,8 +20094,8 @@ def build_replay_visual_mp4(photo_items, display_ms, duration_seconds):
     """Create a phone-ready visual MP4 only after an explicit export button press.
 
     YouTube audio is deliberately not extracted from the embedded player.  The exported
-    file therefore contains the same photo order/pacing while keeping each saved photo
-    fully visible without crop/upscale, but no YouTube audio track.
+    file therefore keeps the live replay's random-order concept and minimum pacing while
+    keeping each saved photo fully visible without crop/upscale, but no YouTube audio track.
     """
     ffmpeg = _ffmpeg_executable()
     if not ffmpeg:
@@ -20103,21 +20104,17 @@ def build_replay_visual_mp4(photo_items, display_ms, duration_seconds):
     if not items:
         raise ValueError("保存できる写真がありません。")
 
-    cadence_seconds = max(3.0, float(display_ms or 3000) / 1000.0)
-    total_seconds = max(1.0, float(duration_seconds or cadence_seconds))
-
-    # Match the live replay: the photo list can loop, and music duration decides when the
-    # sequence ends. The minimum is still three seconds per photo.
-    sequence = []
-    remaining = total_seconds
-    index = 0
-    while remaining > 0.02:
-        segment = min(cadence_seconds, remaining)
-        sequence.append((index % len(items), max(0.04, segment)))
-        remaining -= segment
-        index += 1
-        if index > 4000:  # defensive only; ordinary replay segments are far smaller
-            break
+    # v395: exported replay uses the same random-order concept as live playback.
+    # Shuffle once per export, show every selected photo exactly once, and preserve
+    # the existing 3-second minimum even when the chosen music window is shorter.
+    random.shuffle(items)
+    requested_seconds = max(1.0, float(duration_seconds or 1.0))
+    total_seconds = max(requested_seconds, 3.0 * len(items))
+    cadence_seconds = max(3.0, total_seconds / max(1, len(items)))
+    sequence = [(index, cadence_seconds) for index in range(len(items))]
+    if sequence:
+        used_before_last = cadence_seconds * max(0, len(sequence) - 1)
+        sequence[-1] = (sequence[-1][0], max(3.0, total_seconds - used_before_last))
 
     with tempfile.TemporaryDirectory(prefix="burari_replay_export_") as temp_dir:
         temp_dir = Path(temp_dir)
@@ -20439,11 +20436,12 @@ def render_monthly_replay_player(period_label, review, playback, photo_items, cu
         <div class="burari-replay-player-label">YouTube 音楽</div>
         <div id="burariReplayPlayer"></div>
       </div>
-      <div class="burari-replay-status" id="burariReplayStatus">再生すると写真を順番に最後まで表示します。音声付き写真は声が終わるまで切り替えません。</div>
+      <div class="burari-replay-status" id="burariReplayStatus">再生するたびに写真をランダムに並べ、すべて1回ずつ表示します。音声付き写真は声が終わるまで切り替えません。</div>
       <div class="burari-replay-note">YouTubeの仕様上、再生中の公式プレーヤーは完全には隠さず、最小限の大きさで表示します。</div>
     </div>
     <script>
-      const burariSlides = {payload};
+      let burariSlides = {payload};
+      let burariLastPlaybackOrderSignature = '';
       const burariVideoId = {json.dumps(video_id)};
       const burariMarkUserActivity = () => {{
         const at = Date.now();
@@ -20495,6 +20493,41 @@ def render_monthly_replay_player(period_label, review, playback, photo_items, cu
         try {{ old.onload = null; old.onerror = null; }} catch (_) {{}}
         try {{ old.src = ''; }} catch (_) {{}}
       }}
+      function burariClearPreloadedSlides() {{
+        for (const key of Array.from(burariPreloadedSlides.keys())) burariReleasePreload(key);
+      }}
+
+      function burariSlideIdentity(item, fallbackIndex) {{
+        const value = item || {{}};
+        return String(value.photo_id || value.storage_path || value.url || fallbackIndex);
+      }}
+
+      function burariShuffleSlidesForPlayback() {{
+        if (burariSlides.length <= 1) return;
+        const paired = burariSlides.map((slide, index) => ({{
+          slide,
+          duration: Math.max(3000, Number(burariSlideDurationsMs[index]) || burariDisplayMs || 3000),
+        }}));
+        burariClearPreloadedSlides();
+        for (let index = paired.length - 1; index > 0; index -= 1) {{
+          const target = Math.floor(Math.random() * (index + 1));
+          const tmp = paired[index];
+          paired[index] = paired[target];
+          paired[target] = tmp;
+        }}
+        let signature = paired.map((entry, index) => burariSlideIdentity(entry.slide, index)).join('|');
+        // Avoid showing the exact same order on two consecutive replays.
+        if (signature === burariLastPlaybackOrderSignature && paired.length > 1) {{
+          const tmp = paired[0];
+          paired[0] = paired[1];
+          paired[1] = tmp;
+          signature = paired.map((entry, index) => burariSlideIdentity(entry.slide, index)).join('|');
+        }}
+        burariSlides = paired.map((entry) => entry.slide);
+        burariSlideDurationsMs = paired.map((entry) => entry.duration);
+        burariLastPlaybackOrderSignature = signature;
+      }}
+
       function burariPreloadSlide(index) {{
         if (!burariSlides.length) return null;
         const safeIndex = ((index % burariSlides.length) + burariSlides.length) % burariSlides.length;
@@ -20962,6 +20995,7 @@ def render_monthly_replay_player(period_label, review, playback, photo_items, cu
         }}
         burariPendingStart = false;
         burariStopTimers();
+        burariShuffleSlidesForPlayback();
         burariReplayPlaybackActive = true;
         burariUpdatePlayerControlsReady();
         burariWaitingForRequestedPosition = true;
