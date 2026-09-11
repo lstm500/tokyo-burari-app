@@ -33,9 +33,10 @@ from zoneinfo import ZoneInfo
 import streamlit as st
 
 # Freshly generated update: 2026-08-31 23:49 JST
-GENERATED_UPDATE_JST = "2026-09-11T13:59:00+09:00"
+GENERATED_UPDATE_JST = "2026-09-11T14:00:00+09:00"
 
-APP_BUILD = "v398"
+APP_BUILD = "v399"
+# v399: replay foreground/audio-route recovery for Android WebView/Bluetooth; rebuild media objects after background interruption.
 # v398: replay audio unlock hardening for Android/WebView; music starts from the explicit tap and voice audio is primed for later auto-play.
 # v397: saved tag movies keep their tag conditions and refresh matching photos when reopened, including family-shared playback.
 # v396: Diary adds a compact all-photo library, including photos from trips that do not have a diary yet.
@@ -20523,6 +20524,10 @@ def render_monthly_replay_player(period_label, review, playback, photo_items, cu
       let burariActivityHeartbeat = null;
       let burariPlayer = null;
       let burariPlayerReady = false;
+      let burariPlayerGeneration = 0;
+      let burariMediaNeedsRecovery = false;
+      let burariWasHiddenWhilePlaying = false;
+      let burariPlayerRebuildTimer = null;
       let burariPendingStart = false;
       let burariWaitingForRequestedPosition = false;
       let burariSlideLoopStarted = false;
@@ -20645,19 +20650,73 @@ def render_monthly_replay_player(period_label, review, playback, photo_items, cu
         burariSetMusicVoiceDucking(burariVoiceDuckingActive);
       }}
 
-      function burariPrimeMediaFromGesture() {{
+      function burariDisposeVoiceAudio() {{
+        const audio = burariVoiceAudio;
+        burariVoiceAudio = null;
+        if (!audio) return;
+        try {{ audio.pause(); }} catch (_) {{}}
+        try {{ audio.currentTime = 0; }} catch (_) {{}}
+        try {{ audio.removeAttribute('src'); audio.load(); }} catch (_) {{}}
+      }}
+
+      function burariCreateVoiceAudio() {{
+        burariDisposeVoiceAudio();
+        const audio = new Audio();
+        audio.preload = 'auto';
+        audio.setAttribute('playsinline', '');
+        audio.muted = false;
+        audio.volume = 1;
+        audio.addEventListener('ended', () => {{
+          if (burariVoiceAudio !== audio) return;
+          burariSetMusicVoiceDucking(false);
+          if (burariStatus && burariReplayPlaybackActive) burariStatus.textContent = '再生中';
+          if (burariSlideAdvancePending) {{
+            burariAdvanceSlideOrFinish();
+          }} else {{
+            burariMaybeFinishReplay();
+          }}
+        }});
+        audio.addEventListener('error', () => {{
+          if (burariVoiceAudio !== audio) return;
+          burariSetMusicVoiceDucking(false);
+          burariMediaNeedsRecovery = true;
+        }});
+        burariVoiceAudio = audio;
+        return audio;
+      }}
+
+      function burariResetAudioContext() {{
+        const oldContext = burariAudioContext;
+        burariAudioContext = null;
+        if (!oldContext) return;
+        try {{
+          if (oldContext.state !== 'closed' && typeof oldContext.close === 'function') {{
+            const closing = oldContext.close();
+            if (closing && typeof closing.catch === 'function') closing.catch(() => {{}});
+          }}
+        }} catch (_) {{}}
+      }}
+
+      function burariPrimeMediaFromGesture(startMusic = true) {{
         // Run only from the user's ▶ tap. Android WebView can otherwise treat later
         // voice playback or a delayed YouTube start as autoplay and keep it silent.
         try {{
           const AudioContextClass = window.AudioContext || window.webkitAudioContext;
           if (AudioContextClass) {{
-            if (!burariAudioContext) burariAudioContext = new AudioContextClass();
-            if (burariAudioContext && burariAudioContext.state === 'suspended') {{
+            if (burariMediaNeedsRecovery || !burariAudioContext || ['closed', 'interrupted'].includes(String(burariAudioContext.state || ''))) {{
+              burariResetAudioContext();
+              burariAudioContext = new AudioContextClass();
+            }}
+            if (burariAudioContext && burariAudioContext.state !== 'running' && typeof burariAudioContext.resume === 'function') {{
               const resumed = burariAudioContext.resume();
               if (resumed && typeof resumed.catch === 'function') resumed.catch(() => {{}});
             }}
           }}
         }} catch (_) {{}}
+        // Recreate the real voice element inside the new user gesture. Android may leave
+        // the previous HTMLMediaElement attached to the old Bluetooth/audio route after
+        // a WebView background pause even though play() still resolves.
+        burariCreateVoiceAudio();
         try {{
           const unlockAudio = new Audio(burariSilentUnlockSrc);
           unlockAudio.preload = 'auto';
@@ -20678,9 +20737,11 @@ def render_monthly_replay_player(period_label, review, playback, photo_items, cu
           if (iframe) iframe.setAttribute('allow', 'autoplay; encrypted-media; picture-in-picture; fullscreen');
         }} catch (_) {{}}
         burariEnsureAudible();
-        try {{
-          if (typeof burariPlayer.playVideo === 'function') burariPlayer.playVideo();
-        }} catch (_) {{}}
+        if (startMusic) {{
+          try {{
+            if (typeof burariPlayer.playVideo === 'function') burariPlayer.playVideo();
+          }} catch (_) {{}}
+        }}
       }}
 
       function burariReassertMusicAudio() {{
@@ -20992,20 +21053,8 @@ def render_monthly_replay_player(period_label, review, playback, photo_items, cu
 
       function burariPlayCurrentVoice(autoTriggered = false) {{
         if (!burariCurrentVoiceUrl) return;
-        if (!burariVoiceAudio) {{
-          burariVoiceAudio = new Audio();
-          burariVoiceAudio.preload = 'auto';
-          burariVoiceAudio.setAttribute('playsinline', '');
-          burariVoiceAudio.addEventListener('ended', () => {{
-            burariSetMusicVoiceDucking(false);
-            if (burariStatus && burariReplayPlaybackActive) burariStatus.textContent = '再生中';
-            if (burariSlideAdvancePending) {{
-              burariAdvanceSlideOrFinish();
-            }} else {{
-              burariMaybeFinishReplay();
-            }}
-          }});
-        }}
+        if (!burariVoiceAudio) burariCreateVoiceAudio();
+        if (!burariVoiceAudio) return;
         try {{
           burariVoiceAudio.pause();
           burariVoiceAudio.currentTime = 0;
@@ -21023,7 +21072,9 @@ def render_monthly_replay_player(period_label, review, playback, photo_items, cu
               : '🎙 声を再生中';
           }}).catch(() => {{
             burariSetMusicVoiceDucking(false);
-            if (burariStatus) burariStatus.textContent = '🎙を押すと声を再生できます。';
+            burariMediaNeedsRecovery = true;
+            burariDisposeVoiceAudio();
+            if (burariStatus) burariStatus.textContent = '音声出力を再接続します。もう一度再生してください。';
           }});
         }}
       }}
@@ -21101,7 +21152,10 @@ def render_monthly_replay_player(period_label, review, playback, photo_items, cu
         // YouTube player is ready; keep the button disabled until onReady instead.
         if (!burariPlayerReady || !burariPlayer) {{
           burariPendingStart = false;
-          if (burariStatus) burariStatus.textContent = '音楽を準備しています。準備完了後に▶ 再生を押してください。';
+          if (burariMediaNeedsRecovery) burariHandleMediaForeground();
+          if (burariStatus) burariStatus.textContent = burariMediaNeedsRecovery
+            ? '音声を再接続しています。準備後に▶ 再生してください。'
+            : '音楽を準備しています。準備完了後に▶ 再生を押してください。';
           return;
         }}
         burariPendingStart = false;
@@ -21124,6 +21178,8 @@ def render_monthly_replay_player(period_label, review, playback, photo_items, cu
             burariVoiceAudio.currentTime = 0;
           }}
         }} catch (_) {{}}
+        burariMediaNeedsRecovery = false;
+        burariWasHiddenWhilePlaying = false;
         burariSetMusicVoiceDucking(false);
         // Apply slide 1 synchronously. If it has a voice, that voice begins in the same
         // user gesture as ▶ 再生 instead of after an Image.decode()/timer boundary.
@@ -21151,7 +21207,32 @@ def render_monthly_replay_player(period_label, review, playback, photo_items, cu
         setTimeout(burariReassertMusicAudio, 700);
       }}
 
-      window.onYouTubeIframeAPIReady = function() {{
+      function burariFreshPlayerMount() {{
+        const current = document.getElementById('burariReplayPlayer');
+        const wrap = document.querySelector('.burari-replay-player-wrap');
+        const parent = (current && current.parentNode) ? current.parentNode : wrap;
+        try {{ if (burariPlayer && typeof burariPlayer.destroy === 'function') burariPlayer.destroy(); }} catch (_) {{}}
+        burariPlayer = null;
+        try {{
+          const leftover = document.getElementById('burariReplayPlayer');
+          if (leftover && leftover.parentNode) leftover.parentNode.removeChild(leftover);
+        }} catch (_) {{}}
+        if (!parent) return false;
+        const mount = document.createElement('div');
+        mount.id = 'burariReplayPlayer';
+        parent.appendChild(mount);
+        return true;
+      }}
+
+      function burariCreateYouTubePlayer(rebuild = false) {{
+        if (!window.YT || typeof YT.Player !== 'function') return false;
+        const generation = ++burariPlayerGeneration;
+        burariPlayerReady = false;
+        burariPendingStart = false;
+        burariSetPlayerControlsReady(false);
+        if (rebuild || burariPlayer) {{
+          if (!burariFreshPlayerMount()) return false;
+        }}
         burariPlayer = new YT.Player('burariReplayPlayer', {{
           width: '100%',
           height: '200',
@@ -21162,7 +21243,9 @@ def render_monthly_replay_player(period_label, review, playback, photo_items, cu
             modestbranding: 1,
           }},
           events: {{
-            onReady: function() {{
+            onReady: function(event) {{
+              if (generation !== burariPlayerGeneration) return;
+              burariPlayer = event && event.target ? event.target : burariPlayer;
               burariPlayerReady = true;
               burariPendingStart = false;
               try {{
@@ -21176,16 +21259,17 @@ def render_monthly_replay_player(period_label, review, playback, photo_items, cu
                 }});
               }} catch (_) {{}}
               burariUpdatePlayerControlsReady();
-              if (burariStatus) burariStatus.textContent = burariTimingReady ? '▶ 再生できます。' : '写真を準備しています…';
+              if (burariStatus) {{
+                burariStatus.textContent = burariTimingReady
+                  ? (burariMediaNeedsRecovery ? '音声を再接続しました。▶ 再生してください。' : '▶ 再生できます。')
+                  : '写真を準備しています…';
+              }}
             }},
             onStateChange: function(event) {{
-              if (!window.YT) return;
+              if (generation !== burariPlayerGeneration || !window.YT) return;
               if (event.data === YT.PlayerState.PLAYING) {{
                 burariEnsureAudible();
                 setTimeout(burariReassertMusicAudio, 120);
-                // Active replay is active app use even when the user is not tapping the
-                // screen. Refresh the local five-minute guard periodically so the GPS
-                // bridge cannot start a Streamlit sync in the middle of playback.
                 burariMarkUserActivity();
                 if (!burariActivityHeartbeat) {{
                   burariActivityHeartbeat = setInterval(burariMarkUserActivity, 30000);
@@ -21201,14 +21285,65 @@ def render_monthly_replay_player(period_label, review, playback, photo_items, cu
               }}
             }},
             onError: function() {{
+              if (generation !== burariPlayerGeneration) return;
               burariPlayerReady = false;
               burariReplayPlaybackActive = false;
+              burariMediaNeedsRecovery = true;
               burariSetMusicVoiceDucking(false);
               burariSetPlayerControlsReady(false);
-              if (burariStatus) burariStatus.textContent = 'YouTube音楽を読み込めませんでした。ページを開き直してお試しください。';
+              if (burariStatus) burariStatus.textContent = '音楽の接続を再準備しています。';
             }}
           }}
         }});
+        return true;
+      }}
+
+      function burariHandleMediaBackground() {{
+        const wasPlaying = Boolean(burariReplayPlaybackActive);
+        burariWasHiddenWhilePlaying = burariWasHiddenWhilePlaying || wasPlaying;
+        burariMediaNeedsRecovery = true;
+        burariStopTimers();
+        burariReplayPlaybackActive = false;
+        burariPendingStart = false;
+        burariWaitingForRequestedPosition = false;
+        burariSlideLoopStarted = false;
+        burariSlideAdvancePending = false;
+        try {{ if (burariPlayer && typeof burariPlayer.pauseVideo === 'function') burariPlayer.pauseVideo(); }} catch (_) {{}}
+        burariDisposeVoiceAudio();
+        burariSetMusicVoiceDucking(false);
+        burariResetAudioContext();
+        burariPlayerReady = false;
+        burariUpdatePlayerControlsReady();
+      }}
+
+      function burariHandleMediaForeground() {{
+        if (!burariMediaNeedsRecovery || document.hidden) return;
+        if (burariPlayerRebuildTimer) clearTimeout(burariPlayerRebuildTimer);
+        if (burariStatus) burariStatus.textContent = 'Bluetooth・音声出力を再接続しています…';
+        burariPlayerReady = false;
+        burariUpdatePlayerControlsReady();
+        burariPlayerRebuildTimer = setTimeout(() => {{
+          burariPlayerRebuildTimer = null;
+          if (document.hidden) return;
+          if (window.YT && typeof YT.Player === 'function') {{
+            burariCreateYouTubePlayer(true);
+          }}
+        }}, 120);
+      }}
+
+      const burariVisibilityHandler = () => {{
+        if (document.hidden) burariHandleMediaBackground();
+        else burariHandleMediaForeground();
+      }};
+      document.addEventListener('visibilitychange', burariVisibilityHandler);
+      window.addEventListener('pagehide', burariHandleMediaBackground);
+      window.addEventListener('pageshow', burariHandleMediaForeground);
+      window.addEventListener('focus', burariHandleMediaForeground);
+      try {{ document.addEventListener('freeze', burariHandleMediaBackground); }} catch (_) {{}}
+      try {{ document.addEventListener('resume', burariHandleMediaForeground); }} catch (_) {{}}
+
+      window.onYouTubeIframeAPIReady = function() {{
+        burariCreateYouTubePlayer(false);
       }};
 
       burariSetPlayerControlsReady(false);
@@ -21226,6 +21361,8 @@ def render_monthly_replay_player(period_label, review, playback, photo_items, cu
           clearTimeout(burariVoiceAutoTimer);
           burariVoiceAutoTimer = null;
         }}
+        burariPrimeMediaFromGesture(false);
+        burariMediaNeedsRecovery = false;
         burariPlayCurrentVoice(false);
       }});
       burariShowSlide(0);
