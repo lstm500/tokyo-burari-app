@@ -33,9 +33,12 @@ from zoneinfo import ZoneInfo
 import streamlit as st
 
 # Freshly generated update: 2026-08-31 23:49 JST
-GENERATED_UPDATE_JST = "2026-09-11T02:26:00+09:00"
+GENERATED_UPDATE_JST = "2026-09-11T13:59:00+09:00"
 
-APP_BUILD = "v395"
+APP_BUILD = "v398"
+# v398: replay audio unlock hardening for Android/WebView; music starts from the explicit tap and voice audio is primed for later auto-play.
+# v397: saved tag movies keep their tag conditions and refresh matching photos when reopened, including family-shared playback.
+# v396: Diary adds a compact all-photo library, including photos from trips that do not have a diary yet.
 # v395: replay photo order is shuffled for every playback/export while every selected photo is still shown once.
 # v394: replay photos keep their saved composition without enlargement/crop; playback button clearly shows active state.
 # v393: replay uses the exact diary-visible normal/parenting tag state and flushes pending browser tags before review playback.
@@ -5334,6 +5337,11 @@ _DIARY_GALLERY_CSS = """
   box-shadow:0 2px 8px rgba(0,0,0,.22); font-size:8.5px; line-height:1; font-weight:800; white-space:nowrap; pointer-events:none;
 }
 .diary-emotion-badge[hidden] { display:none !important; }
+.diary-photo-status-badge {
+  position:absolute; right:7px; top:7px; z-index:4; padding:4px 7px; border-radius:999px;
+  background:rgba(17,24,39,.76); color:#fff; font-size:9px; line-height:1; font-weight:850;
+  box-shadow:0 1px 6px rgba(0,0,0,.20); pointer-events:none; white-space:nowrap;
+}
 .diary-mode-switch {
   display:grid; grid-template-columns:1fr 1fr; gap:3px; margin-top:4px; width:100%;
 }
@@ -5586,6 +5594,8 @@ export default function(component) {
     const card = document.createElement('div'); card.className = 'diary-photo-card'; card.setAttribute('role','button'); card.tabIndex = allowEmotion ? 0 : -1;
     const img = document.createElement('img'); img.src = photo.src || ''; img.alt = 'ぶらり旅の写真'; img.loading='lazy'; img.decoding='async'; img.fetchPriority='low'; card.appendChild(img);
     const badge = document.createElement('div'); badge.className='diary-emotion-badge'; card.appendChild(badge);
+    const statusLabel=String(photo?.status_label||'').trim();
+    if(statusLabel){const status=document.createElement('div');status.className='diary-photo-status-badge';status.textContent=statusLabel;card.appendChild(status);}
     if (photo.location) { const location=document.createElement('div'); location.className='diary-photo-location'; location.textContent=`📍 ${photo.location}`; card.appendChild(location); }
 
     const sharedMeta = String(photo?.shared_meta || '').trim();
@@ -17138,9 +17148,10 @@ def format_month_label(month_key):
         return str(month_key)
 
 
-def get_month_bundle(month_key):
+def get_month_bundle_for_member(month_key, member_key=None):
     start, end = month_bounds(month_key)
     client = supabase_client()
+    member_value = str(member_key or current_member_key())
     try:
         rows = (
             client
@@ -17149,7 +17160,7 @@ def get_month_bundle(month_key):
                 f"*,{DIARY_TABLE}(*),"
                 f"{PHOTO_TABLE}(id,trip_id,storage_path,captured_at,reflection_json,signals_json)"
             )
-            .eq("family_key", current_family_key()).eq("member_key", current_member_key())
+            .eq("family_key", current_family_key()).eq("member_key", member_value)
             .gte("trip_date", start)
             .lt("trip_date", end)
             .order("trip_date")
@@ -17177,7 +17188,7 @@ def get_month_bundle(month_key):
         client
         .table(TRIP_TABLE)
         .select("*")
-        .eq("family_key", current_family_key()).eq("member_key", current_member_key())
+        .eq("family_key", current_family_key()).eq("member_key", member_value)
         .gte("trip_date", start)
         .lt("trip_date", end)
         .order("trip_date")
@@ -17191,7 +17202,7 @@ def get_month_bundle(month_key):
         client
         .table(DIARY_TABLE)
         .select("*")
-        .eq("family_key", current_family_key()).eq("member_key", current_member_key())
+        .eq("family_key", current_family_key()).eq("member_key", member_value)
         .in_("trip_id", trip_ids)
         .execute()
     )
@@ -17199,7 +17210,7 @@ def get_month_bundle(month_key):
         client
         .table(PHOTO_TABLE)
         .select("id,trip_id,storage_path,captured_at,reflection_json,signals_json")
-        .eq("family_key", current_family_key()).eq("member_key", current_member_key())
+        .eq("family_key", current_family_key()).eq("member_key", member_value)
         .in_("trip_id", trip_ids)
         .order("captured_at")
         .execute()
@@ -17209,6 +17220,10 @@ def get_month_bundle(month_key):
         "diaries": diaries_result.data or [],
         "photos": photos_result.data or [],
     }
+
+
+def get_month_bundle(month_key):
+    return get_month_bundle_for_member(month_key, current_member_key())
 
 def get_saved_monthly_review(month_key):
     first_day, _ = month_bounds(month_key)
@@ -17698,10 +17713,18 @@ def carry_tag_movie_state(refreshed, previous):
         "_tag_movie_saved",
         "_tag_movie_saved_at",
         "_tag_movie_draft",
+        "_tag_movie_dynamic",
     ):
         if key in previous:
             refreshed[key] = previous[key]
     return refreshed
+
+
+def tag_movie_is_dynamic(review):
+    review = review if isinstance(review, dict) else {}
+    if "_tag_movie_dynamic" in review:
+        return bool(review.get("_tag_movie_dynamic"))
+    return str(review.get("_review_scope_type") or "").strip().lower() == "ai_tag"
 
 
 def tag_movie_snapshot_photo_ids(bundle):
@@ -17718,8 +17741,10 @@ def tag_movie_snapshot_photo_ids(bundle):
 
 
 def tag_movie_bundle_from_snapshot(bundle, review):
-    """Use the photo set captured when a tag movie was saved, if one exists."""
+    """Return the current live tag-movie photo set unless this review explicitly uses a frozen snapshot."""
     review = review if isinstance(review, dict) else {}
+    if tag_movie_is_dynamic(review):
+        return bundle
     saved_ids = [str(value or "").strip() for value in (review.get("_tag_movie_photo_ids") or [])]
     saved_ids = [value for value in saved_ids if value]
     if not saved_ids:
@@ -17741,7 +17766,7 @@ def tag_movie_bundle_from_snapshot(bundle, review):
 
 
 def save_tag_replay_movie(scope_key, review, bundle):
-    """Persist one exact tag-movie snapshot: photo set + current music/playback window."""
+    """Persist a tag-movie rule: current playback plus the tag conditions. Matching photos refresh automatically."""
     latest = dict(review or {})
     storage_key = str(latest.get("_tag_storage_month") or tag_review_storage_month(scope_key, create=True))[:7]
     session_review = st.session_state.get(f"monthly_review_{storage_key}")
@@ -17756,6 +17781,7 @@ def save_tag_replay_movie(scope_key, review, bundle):
         raise ValueError("保存する写真を確認できませんでした。")
     latest["_tag_movie_photo_ids"] = photo_ids
     latest["_tag_movie_photo_count"] = len(photo_ids)
+    latest["_tag_movie_dynamic"] = True
     latest["_tag_movie_saved"] = True
     latest["_tag_movie_saved_at"] = now_jst().isoformat()
     latest["_tag_movie_draft"] = False
@@ -17784,6 +17810,7 @@ def save_monthly_playback(month_key, review, playback):
     if str(updated.get("_review_scope_type") or "") == "ai_tag":
         updated["_tag_movie_saved"] = False
         updated.pop("_tag_movie_saved_at", None)
+        updated.pop("_tag_movie_dynamic", None)
     save_monthly_review(month_key, updated)
     st.session_state[f"monthly_review_{month_key}"] = updated
     return updated
@@ -18800,12 +18827,30 @@ def build_monthly_family_share_photo_snapshot(bundle, limit=None):
 
 def build_family_shared_replay_photo_items(share):
     share = share if isinstance(share, dict) else {}
-    snapshots = [dict(x) for x in (share.get("photos") or []) if isinstance(x, dict)]
-
-    # v392: shared movies preserve the saved photo order, while their visible feeling
-    # follows the owner's current photo state. Old snapshots without photo_id are
-    # resolved by storage_path.
     owner_member_key = str(share.get("shared_by_member_key") or "").strip()
+
+    snapshots = []
+    dynamic_ai_tag = (
+        owner_member_key
+        and bool(share.get("dynamic"))
+        and str(share.get("scope_type") or "").strip().lower() == "ai_tag"
+        and str(share.get("month_key") or "").strip()
+    )
+    if dynamic_ai_tag:
+        try:
+            month_key = str(share.get("month_key") or "").strip()[:7]
+            tags = _normalize_tag_review_selection(share.get("ai_tag_keys") or [])
+            match_mode = str(share.get("ai_tag_match_mode") or "any").lower()
+            owner_bundle = get_month_bundle_for_member(month_key, owner_member_key)
+            live_bundle = tag_review_bundle(owner_bundle, tags, match_mode=match_mode)
+            snapshots = build_monthly_family_share_photo_snapshot(live_bundle)
+        except Exception:
+            snapshots = []
+    if not snapshots:
+        snapshots = [dict(x) for x in (share.get("photos") or []) if isinstance(x, dict)]
+
+    # v397: shared tag movies can now refresh from the owner's latest matching photos.
+    # For snapshot/fallback items, their visible feeling still follows the owner's current photo state.
     if owner_member_key and snapshots:
         latest_by_id = {}
         latest_by_path = {}
@@ -18924,11 +18969,12 @@ def build_family_shared_replay_photo_items(share):
     return items
 
 
-def _monthly_family_share_payload(month_key, period_label, bundle, previous_share=None):
+def _monthly_family_share_payload(month_key, period_label, bundle, previous_share=None, review=None):
     previous_share = previous_share if isinstance(previous_share, dict) else {}
+    review = review if isinstance(review, dict) else {}
     now_value = now_jst().isoformat()
     return {
-        "version": 1,
+        "version": 2,
         "shared": True,
         "month_key": str(month_key or ""),
         "period_label": str(period_label or format_month_label(month_key)),
@@ -18936,6 +18982,10 @@ def _monthly_family_share_payload(month_key, period_label, bundle, previous_shar
         "shared_by_member_name": current_member_name(),
         "shared_at": str(previous_share.get("shared_at") or now_value),
         "updated_at": now_value,
+        "scope_type": str(review.get("_review_scope_type") or ""),
+        "dynamic": bool(tag_movie_is_dynamic(review)),
+        "ai_tag_keys": _normalize_tag_review_selection(review.get("_ai_tag_keys") or []),
+        "ai_tag_match_mode": str(review.get("_ai_tag_match_mode") or "any").lower(),
         "photos": build_monthly_family_share_photo_snapshot(bundle),
     }
 
@@ -18944,7 +18994,7 @@ def set_monthly_family_share(month_key, period_label, bundle, review, enabled=Tr
     updated = dict(review or {})
     if enabled:
         previous = monthly_family_share_info(updated)
-        payload = _monthly_family_share_payload(month_key, period_label, bundle, previous_share=previous)
+        payload = _monthly_family_share_payload(month_key, period_label, bundle, previous_share=previous, review=review)
         if not payload.get("photos"):
             raise ValueError("家族に共有できる写真がありません。")
         updated["_family_share"] = payload
@@ -18964,6 +19014,7 @@ def carry_monthly_family_share(refreshed_review, previous_review, month_key, per
             period_label,
             bundle,
             previous_share=previous,
+            review=refreshed,
         )
     return refreshed
 
@@ -20456,11 +20507,13 @@ def render_monthly_replay_player(period_label, review, playback, photo_items, cu
       const burariDisplayMs = {display_ms};
       const burariDurationMs = {duration_seconds * 1000};
       const burariVoiceDuckVolume = 85;
+      const burariSilentUnlockSrc = 'data:audio/wav;base64,UklGRmQBAABXQVZFZm10IBAAAAABAAEAQB8AAIA+AAACABAAZGF0YUABAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==';
       let burariIndex = 0;
       let burariCurrentVoiceUrl = '';
       let burariCurrentVoiceLabel = '';
       let burariVoiceAudio = null;
       let burariVoiceDuckingActive = false;
+      let burariAudioContext = null;
       let burariVoiceAutoTimer = null;
       let burariReplayPlaybackActive = false;
       let burariTimer = null;
@@ -20592,6 +20645,55 @@ def render_monthly_replay_player(period_label, review, playback, photo_items, cu
         burariSetMusicVoiceDucking(burariVoiceDuckingActive);
       }}
 
+      function burariPrimeMediaFromGesture() {{
+        // Run only from the user's ▶ tap. Android WebView can otherwise treat later
+        // voice playback or a delayed YouTube start as autoplay and keep it silent.
+        try {{
+          const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+          if (AudioContextClass) {{
+            if (!burariAudioContext) burariAudioContext = new AudioContextClass();
+            if (burariAudioContext && burariAudioContext.state === 'suspended') {{
+              const resumed = burariAudioContext.resume();
+              if (resumed && typeof resumed.catch === 'function') resumed.catch(() => {{}});
+            }}
+          }}
+        }} catch (_) {{}}
+        try {{
+          const unlockAudio = new Audio(burariSilentUnlockSrc);
+          unlockAudio.preload = 'auto';
+          unlockAudio.setAttribute('playsinline', '');
+          unlockAudio.muted = false;
+          unlockAudio.volume = 1;
+          const unlocked = unlockAudio.play();
+          if (unlocked && typeof unlocked.then === 'function') {{
+            unlocked.then(() => {{
+              try {{ unlockAudio.pause(); }} catch (_) {{}}
+              try {{ unlockAudio.removeAttribute('src'); unlockAudio.load(); }} catch (_) {{}}
+            }}).catch(() => {{}});
+          }}
+        }} catch (_) {{}}
+        if (!burariPlayer) return;
+        try {{
+          const iframe = typeof burariPlayer.getIframe === 'function' ? burariPlayer.getIframe() : null;
+          if (iframe) iframe.setAttribute('allow', 'autoplay; encrypted-media; picture-in-picture; fullscreen');
+        }} catch (_) {{}}
+        burariEnsureAudible();
+        try {{
+          if (typeof burariPlayer.playVideo === 'function') burariPlayer.playVideo();
+        }} catch (_) {{}}
+      }}
+
+      function burariReassertMusicAudio() {{
+        if (!burariReplayPlaybackActive || !burariPlayer) return;
+        burariEnsureAudible();
+        try {{
+          const state = typeof burariPlayer.getPlayerState === 'function' ? burariPlayer.getPlayerState() : null;
+          if (window.YT && state !== YT.PlayerState.PLAYING && typeof burariPlayer.playVideo === 'function') {{
+            burariPlayer.playVideo();
+          }}
+        }} catch (_) {{}}
+      }}
+
       function burariProbeVoiceDurationMs(url) {{
         const source = String(url || '').trim();
         if (!source) return Promise.resolve(0);
@@ -20651,7 +20753,7 @@ def render_monthly_replay_player(period_label, review, playback, photo_items, cu
         burariUpdatePlayerControlsReady();
       }}
 
-      function burariApplySlideFrame(item, safeIndex, nextUrl) {{
+      function burariApplySlideFrame(item, safeIndex, nextUrl, immediateVoice = false) {{
         if (burariVoiceAutoTimer) {{
           clearTimeout(burariVoiceAutoTimer);
           burariVoiceAutoTimer = null;
@@ -20706,12 +20808,18 @@ def render_monthly_replay_player(period_label, review, playback, photo_items, cu
         // autoplay, so mobile browsers still receive a user gesture from ▶ 再生 first.
         if (burariReplayPlaybackActive && burariCurrentVoiceUrl) {{
           const voiceUrlForThisSlide = burariCurrentVoiceUrl;
-          burariVoiceAutoTimer = setTimeout(() => {{
-            burariVoiceAutoTimer = null;
-            if (!burariReplayPlaybackActive) return;
-            if (String(burariCurrentVoiceUrl || '') !== voiceUrlForThisSlide) return;
+          if (immediateVoice) {{
+            // First slide starts inside the same user gesture as ▶ 再生 so mobile/WebView
+            // cannot classify its voice as unrelated autoplay.
             burariPlayCurrentVoice(true);
-          }}, 180);
+          }} else {{
+            burariVoiceAutoTimer = setTimeout(() => {{
+              burariVoiceAutoTimer = null;
+              if (!burariReplayPlaybackActive) return;
+              if (String(burariCurrentVoiceUrl || '') !== voiceUrlForThisSlide) return;
+              burariPlayCurrentVoice(true);
+            }}, 120);
+          }}
         }}
         burariCaption.textContent = item.caption || '';
         burariProgress.textContent = `${{safeIndex + 1}} / ${{burariSlides.length}}`;
@@ -20903,6 +21011,9 @@ def render_monthly_replay_player(period_label, review, playback, photo_items, cu
           burariVoiceAudio.currentTime = 0;
         }} catch (_) {{}}
         burariVoiceAudio.src = burariCurrentVoiceUrl;
+        burariVoiceAudio.muted = false;
+        burariVoiceAudio.volume = 1;
+        try {{ burariVoiceAudio.load(); }} catch (_) {{}}
         burariSetMusicVoiceDucking(true);
         const playPromise = burariVoiceAudio.play();
         if (playPromise && typeof playPromise.then === 'function') {{
@@ -20994,6 +21105,9 @@ def render_monthly_replay_player(period_label, review, playback, photo_items, cu
           return;
         }}
         burariPendingStart = false;
+        // Prime both HTML audio and the YouTube player while the ▶ tap still owns a
+        // transient user activation. This is the critical Android/WebView audio path.
+        burariPrimeMediaFromGesture();
         burariStopTimers();
         burariShuffleSlidesForPlayback();
         burariReplayPlaybackActive = true;
@@ -21011,27 +21125,30 @@ def render_monthly_replay_player(period_label, review, playback, photo_items, cu
           }}
         }} catch (_) {{}}
         burariSetMusicVoiceDucking(false);
-        // The slide loop begins only after slide 1 is fully ready, so its photo,
-        // border color, caption and counter all share the same transition point.
-        burariShowSlide(burariIndex, burariStartSlideLoopOnce);
-        // Explicitly restore audible playback in the same user gesture. This is
-        // especially important for a freshly opened family-shared replay on mobile.
+        // Apply slide 1 synchronously. If it has a voice, that voice begins in the same
+        // user gesture as ▶ 再生 instead of after an Image.decode()/timer boundary.
+        const firstItem = burariSlides[burariIndex] || {{}};
+        const firstUrl = String(firstItem.url || '');
+        try {{
+          burariApplySlideFrame(firstItem, burariIndex, firstUrl, true);
+          if (burariSlides.length > 1) burariPreloadSlide(1);
+        }} catch (_) {{}}
+        burariStartSlideLoopOnce();
+
+        // The video is already cued in onReady. Do not call loadVideoById here: on
+        // Android WebView that asynchronous load can outlive the tap and start muted.
+        // Start the cued player directly from the user's tap, then seek and reassert sound.
         burariEnsureAudible();
         if (burariStatus) burariStatus.textContent = `指定位置 ${{burariStartSeconds}}秒へ移動しています…`;
         try {{
-          burariPlayer.loadVideoById({{
-            videoId: burariVideoId,
-            startSeconds: burariStartSeconds,
-          }});
+          if (typeof burariPlayer.playVideo === 'function') burariPlayer.playVideo();
+          if (typeof burariPlayer.seekTo === 'function') burariPlayer.seekTo(burariStartSeconds, true);
           burariEnsureAudible();
           if (typeof burariPlayer.playVideo === 'function') burariPlayer.playVideo();
-        }} catch (_) {{
-          try {{
-            burariPlayer.seekTo(burariStartSeconds, true);
-            burariEnsureAudible();
-            burariPlayer.playVideo();
-          }} catch (_) {{}}
-        }}
+        }} catch (_) {{}}
+        setTimeout(burariReassertMusicAudio, 80);
+        setTimeout(burariReassertMusicAudio, 260);
+        setTimeout(burariReassertMusicAudio, 700);
       }}
 
       window.onYouTubeIframeAPIReady = function() {{
@@ -21049,6 +21166,10 @@ def render_monthly_replay_player(period_label, review, playback, photo_items, cu
               burariPlayerReady = true;
               burariPendingStart = false;
               try {{
+                const iframe = typeof burariPlayer.getIframe === 'function' ? burariPlayer.getIframe() : null;
+                if (iframe) iframe.setAttribute('allow', 'autoplay; encrypted-media; picture-in-picture; fullscreen');
+              }} catch (_) {{}}
+              try {{
                 burariPlayer.cueVideoById({{
                   videoId: burariVideoId,
                   startSeconds: burariStartSeconds,
@@ -21061,6 +21182,7 @@ def render_monthly_replay_player(period_label, review, playback, photo_items, cu
               if (!window.YT) return;
               if (event.data === YT.PlayerState.PLAYING) {{
                 burariEnsureAudible();
+                setTimeout(burariReassertMusicAudio, 120);
                 // Active replay is active app use even when the user is not tapping the
                 // screen. Refresh the local five-minute guard periodically so the GPS
                 // bridge cannot start a Streamlit sync in the middle of playback.
@@ -30304,6 +30426,141 @@ def render_family_shared_individual_photos():
 # ============================================================
 # Page: Diary (photo emotion tagging)
 # ============================================================
+def _set_diary_view_mode_v396(mode):
+    mode = str(mode or "diary")
+    st.session_state["diary_view_mode_v396"] = mode if mode in {"diary", "photos"} else "diary"
+
+
+def _set_diary_photo_library_mode_v396(mode):
+    mode = str(mode or "grid")
+    st.session_state["diary_photo_library_mode_v396"] = mode if mode in {"grid", "single"} else "grid"
+
+
+def _increase_diary_photo_library_limit_v396():
+    current = max(60, int(st.session_state.get("diary_photo_library_limit_v396") or 90))
+    st.session_state["diary_photo_library_limit_v396"] = min(1500, current + 90)
+
+
+def render_diary_all_photo_library_v396():
+    """Browse saved still photos across diary and not-yet-diary trips in one place."""
+    limit = max(60, min(1500, int(st.session_state.get("diary_photo_library_limit_v396") or 90)))
+    st.session_state["diary_photo_library_limit_v396"] = limit
+    rows = list_member_still_photos_for_tags(max_items=limit + 1)
+    has_more = len(rows) > limit
+    photos = rows[:limit]
+    if not photos:
+        st.info("まだ写真がありません。")
+        return
+
+    trip_ids = list(dict.fromkeys(str(photo.get("trip_id") or "") for photo in photos if photo.get("trip_id")))
+    try:
+        diary_map = diaries_for_trip_ids(trip_ids)
+    except Exception:
+        diary_map = {}
+    pending_count = sum(1 for photo in photos if str(photo.get("trip_id") or "") not in diary_map)
+
+    st.markdown(
+        f'<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin:.12rem 0 .45rem;">'
+        f'<strong style="font-size:.98rem;">🖼 写真 {len(photos)}枚</strong>'
+        + (f'<span style="font-size:.72rem;font-weight:800;padding:4px 8px;border-radius:999px;background:rgba(17,24,39,.08);">未日記 {pending_count}</span>' if pending_count else '')
+        + '</div>',
+        unsafe_allow_html=True,
+    )
+
+    display_mode = str(st.session_state.get("diary_photo_library_mode_v396") or "grid")
+    if display_mode not in {"grid", "single"}:
+        display_mode = "grid"
+        st.session_state["diary_photo_library_mode_v396"] = display_mode
+    mode_left, mode_right = st.columns(2, gap="small")
+    with mode_left:
+        st.button(
+            "▦ 一覧",
+            type="primary" if display_mode == "grid" else "secondary",
+            use_container_width=True,
+            key="diary_photo_library_grid_v396",
+            on_click=_set_diary_photo_library_mode_v396,
+            args=("grid",),
+        )
+    with mode_right:
+        st.button(
+            "▣ 拡大",
+            type="primary" if display_mode == "single" else "secondary",
+            use_container_width=True,
+            key="diary_photo_library_single_v396",
+            on_click=_set_diary_photo_library_mode_v396,
+            args=("single",),
+        )
+
+    single_mode = display_mode == "single"
+    paths = tuple(str(photo.get("storage_path") or "").strip() for photo in photos if str(photo.get("storage_path") or "").strip())
+    try:
+        signed = signed_photo_url_map(paths, expires_in=1800) if paths else {}
+    except Exception:
+        signed = {}
+
+    cards = []
+    for photo in photos:
+        photo_id = str(photo.get("id") or "").strip()
+        if not photo_id:
+            continue
+        trip_id = str(photo.get("trip_id") or "").strip()
+        cards.append({
+            "id": photo_id,
+            "src": photo_display_url(photo, signed, max_px=1600 if single_mode else 560, quality=92 if single_mode else 80),
+            "emotion": photo_selected_tag_values(photo)[0],
+            "parenting": photo_selected_tag_values(photo)[1],
+            "location": str(photo_location_label(photo) or "") if single_mode else "",
+            "tags": photo_ai_tags(photo)[:12] if single_mode else [],
+            "favorite": photo_favorite_is_enabled(photo),
+            "status_label": "未日記" if trip_id not in diary_map else "",
+        })
+
+    gallery_component = _get_diary_gallery_component()
+    if gallery_component is not None and cards:
+        gallery_component(
+            data={
+                "photos": cards,
+                "single": single_mode,
+                "allow_delete": False,
+                "allow_emotion": False,
+                "allow_share": False,
+                "allow_voice": False,
+                "allow_favorite": False,
+                "carousel_key": "diary_all_photos_v396",
+                "family_key": current_family_key(),
+                "member_key": current_member_key(),
+                "pending_param": PENDING_EMOTION_QUERY_PARAM,
+            },
+            key=f"diary_all_photo_library_v396_{limit}_{'single' if single_mode else 'grid'}_{_current_ui_refresh_epoch()}",
+        )
+    else:
+        columns = 1 if single_mode else 3
+        cols = st.columns(columns, gap="small")
+        for index, card in enumerate(cards):
+            with cols[index % columns]:
+                src = str(card.get("src") or "")
+                if not src:
+                    continue
+                status = str(card.get("status_label") or "")
+                badge = (
+                    '<span style="position:absolute;right:6px;top:6px;padding:3px 6px;border-radius:999px;background:rgba(17,24,39,.76);color:#fff;font-size:9px;font-weight:800;">未日記</span>'
+                    if status else ""
+                )
+                image_style = "width:100%;max-height:70vh;object-fit:contain;" if single_mode else "width:100%;aspect-ratio:1/1;object-fit:cover;"
+                st.markdown(
+                    f'<div style="position:relative;"><img src="{html.escape(src, quote=True)}" style="display:block;{image_style}border-radius:10px;" />{badge}</div>',
+                    unsafe_allow_html=True,
+                )
+
+    if has_more and limit < 1500:
+        st.button(
+            "＋ さらに表示",
+            use_container_width=True,
+            key=f"diary_photo_library_more_v396_{limit}",
+            on_click=_increase_diary_photo_library_limit_v396,
+        )
+
+
 def page_diary():
     # Remove transient state from the retired comment/conversation UI. Historical
     # data stays in Supabase for compatibility, but v149 never asks for comments.
@@ -30322,6 +30579,34 @@ def page_diary():
         st.success(notice)
     render_photo_family_share_notice()
     render_photo_tag_notices()
+
+    diary_view_mode = str(st.session_state.get("diary_view_mode_v396") or "diary")
+    if diary_view_mode not in {"diary", "photos"}:
+        diary_view_mode = "diary"
+        st.session_state["diary_view_mode_v396"] = diary_view_mode
+    diary_tab, photo_tab = st.columns(2, gap="small")
+    with diary_tab:
+        st.button(
+            "📖 日記",
+            type="primary" if diary_view_mode == "diary" else "secondary",
+            use_container_width=True,
+            key="diary_view_diary_v396",
+            on_click=_set_diary_view_mode_v396,
+            args=("diary",),
+        )
+    with photo_tab:
+        st.button(
+            "🖼 写真一覧",
+            type="primary" if diary_view_mode == "photos" else "secondary",
+            use_container_width=True,
+            key="diary_view_photos_v396",
+            on_click=_set_diary_view_mode_v396,
+            args=("photos",),
+        )
+
+    if diary_view_mode == "photos":
+        render_diary_all_photo_library_v396()
+        return
 
     render_family_shared_individual_photos()
 
@@ -30923,8 +31208,7 @@ def page_tag_review(embedded=False):
     if not storage_key:
         storage_key = tag_review_storage_month(scope_key, create=True)
 
-    snapshot_source = source if (review or {}).get("_tag_movie_photo_ids") else bundle
-    movie_bundle = tag_movie_bundle_from_snapshot(snapshot_source, review)
+    movie_bundle = tag_movie_bundle_from_snapshot(bundle, review)
     has_ai_review = tag_review_has_ai_content(review)
     setup_notice = st.session_state.pop(f"_tag_movie_setup_notice_{unsaved_token}", None)
     if setup_notice:
@@ -30995,11 +31279,17 @@ def page_tag_review(embedded=False):
         st.warning("振り返りムービーを表示できませんでした。音楽または写真の設定を確認してください。")
     else:
         saved_movie = bool(review.get("_tag_movie_saved"))
-        saved_count = int(review.get("_tag_movie_photo_count") or len((movie_bundle or {}).get("photos", []) or []))
+        if saved_movie and tag_movie_is_dynamic(review):
+            saved_count = len((movie_bundle or {}).get("photos", []) or [])
+        else:
+            saved_count = int(review.get("_tag_movie_photo_count") or len((movie_bundle or {}).get("photos", []) or []))
         audition_active = monthly_preview_playback_is_active(storage_key)
         if saved_movie and not audition_active:
             st.success(f"💾 この振り返りムービーは保存済みです（写真 {saved_count}枚）。")
-            st.caption("同じタグの組み合わせを選ぶと、保存した写真・音楽・再生時間で再び開けます。")
+            if tag_movie_is_dynamic(review):
+                st.caption("同じタグの新しい写真が増えると、次に開いたとき自動でムービーに加わります。")
+            else:
+                st.caption("同じタグの組み合わせを選ぶと、保存した写真・音楽・再生時間で再び開けます。")
         else:
             if saved_movie and audition_active:
                 st.info("現在は保存済みムービーとは別の音楽を一時的に試しています。この試写はまだ保存していません。")
@@ -31204,6 +31494,7 @@ def page_tag_review(embedded=False):
                             cleaned_review.pop("_playback", None)
                             cleaned_review.pop("_tag_movie_photo_ids", None)
                             cleaned_review.pop("_tag_movie_saved_at", None)
+                            cleaned_review.pop("_tag_movie_dynamic", None)
                             cleaned_review["_tag_movie_saved"] = False
                             cleaned_review["_tag_movie_draft"] = False
                             save_tag_review(scope_key, cleaned_review)
