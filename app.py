@@ -35,7 +35,9 @@ import streamlit as st
 # Freshly generated update: 2026-08-31 23:49 JST
 GENERATED_UPDATE_JST = "2026-09-12T10:30:00+09:00"
 
-APP_BUILD = "v392"
+APP_BUILD = "v393"
+# v393: prevent clipped labels on narrow phones; Home uses shorter compact labels
+# and Field Notes presents its four choices as a readable 2x2 grid.
 # v392: keep the auto-location run guard on the rendered text element because the
 # Bidi component parent is a query-capable root, not an HTMLElement.
 # v391: make the field-note auto-location component compatible with Android WebView.
@@ -25332,6 +25334,11 @@ def page_home():
             padding: .24rem .30rem !important;
             white-space: nowrap !important;
           }
+          .st-key-home_media_tools div.stButton > button p {
+            margin:0 !important; min-width:0 !important; max-width:100% !important;
+            white-space:nowrap !important; overflow:visible !important; text-overflow:clip !important;
+            word-break:keep-all !important;
+          }
           .st-key-home_media_tools [data-testid="stCaptionContainer"],
           .st-key-home_media_tools [data-testid="stCaptionContainer"] p {
             margin: 0 !important;
@@ -25379,11 +25386,18 @@ def page_home():
             background:linear-gradient(145deg,rgba(237,242,255,.90),rgba(246,244,255,.82));
           }
           .st-key-home_next_prompt_v390 div.stButton > button {
-            min-height:2.32rem !important; padding:.28rem .54rem !important;
+            min-height:2.32rem !important; height:auto !important; max-height:none !important;
+            padding:.34rem .54rem !important;
             border-radius:11px !important; border:0 !important;
             background:rgba(255,255,255,.72) !important; color:inherit !important;
             font-size:.70rem !important; line-height:1.20 !important; font-weight:780 !important;
             box-shadow:none !important; justify-content:flex-start !important; text-align:left !important;
+            white-space:normal !important; overflow:visible !important; overflow-wrap:anywhere !important;
+          }
+          .st-key-home_next_prompt_v390 div.stButton > button p {
+            margin:0 !important; min-width:0 !important; max-width:100% !important;
+            white-space:normal !important; overflow:visible !important; text-overflow:clip !important;
+            overflow-wrap:anywhere !important;
           }
         </style>
         """,
@@ -25506,7 +25520,7 @@ def page_home():
                 )
             with media_left:
                 st.button(
-                    "✨ いい瞬間を見る",
+                    "✨ いい瞬間",
                     key="home_good_moments_button",
                     use_container_width=True,
                     on_click=_go_page_callback,
@@ -26117,15 +26131,20 @@ def page_field_notes():
           .field-note-hero-title-v390 { font-size:1.04rem; font-weight:850; line-height:1.28; }
           .field-note-hero-sub-v390 { margin-top:.25rem; font-size:.73rem; line-height:1.48; opacity:.68; }
           .st-key-field_note_kind_row_v390 [data-testid="stHorizontalBlock"] {
-            display:flex !important; flex-direction:row !important; flex-wrap:nowrap !important; gap:6px !important;
+            display:flex !important; flex-direction:row !important; flex-wrap:nowrap !important; gap:8px !important;
           }
           .st-key-field_note_kind_row_v390 [data-testid="stHorizontalBlock"] > [data-testid="stColumn"] {
             flex:1 1 0 !important; width:0 !important; min-width:0 !important;
           }
           .st-key-field_note_kind_row_v390 div.stButton > button {
-            width:100% !important; min-height:2.58rem !important; padding:.18rem .10rem !important;
-            border-radius:12px !important; font-size:clamp(.58rem,2.75vw,.73rem) !important;
-            line-height:1.05 !important; white-space:nowrap !important;
+            width:100% !important; min-height:2.72rem !important; padding:.24rem .26rem !important;
+            border-radius:13px !important; font-size:clamp(.74rem,3.4vw,.88rem) !important;
+            line-height:1.08 !important; white-space:normal !important; overflow:visible !important;
+          }
+          .st-key-field_note_kind_row_v390 div.stButton > button p {
+            margin:0 !important; min-width:0 !important; max-width:100% !important;
+            white-space:normal !important; overflow:visible !important; text-overflow:clip !important;
+            overflow-wrap:anywhere !important;
           }
           .field-note-entry-v390 {
             margin:.55rem 0 .22rem; padding:.72rem .76rem .64rem; border-radius:17px;
@@ -26222,18 +26241,19 @@ def page_field_notes():
     )
 
     with st.container(key="field_note_kind_row_v390"):
-        kind_cols = st.columns(4, gap="small")
-        for kind_col, option_kind in zip(kind_cols, FIELD_NOTE_KINDS.keys()):
-            option = FIELD_NOTE_KINDS[option_kind]
-            with kind_col:
-                st.button(
-                    f"{option['emoji']} {option['label']}",
-                    type="primary" if option_kind == kind else "secondary",
-                    use_container_width=True,
-                    key=f"field_note_choose_{option_kind}_v390",
-                    on_click=_select_field_note_kind_callback,
-                    args=(option_kind,),
-                )
+        for option_kinds in (("curiosity", "difficulty"), ("good", "next")):
+            kind_cols = st.columns(2, gap="small")
+            for kind_col, option_kind in zip(kind_cols, option_kinds):
+                option = FIELD_NOTE_KINDS[option_kind]
+                with kind_col:
+                    st.button(
+                        f"{option['emoji']} {option['label']}",
+                        type="primary" if option_kind == kind else "secondary",
+                        use_container_width=True,
+                        key=f"field_note_choose_{option_kind}_v390",
+                        on_click=_select_field_note_kind_callback,
+                        args=(option_kind,),
+                    )
 
     selected = FIELD_NOTE_KINDS[kind]
     st.markdown(
