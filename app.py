@@ -35,7 +35,8 @@ import streamlit as st
 # Freshly generated update: 2026-08-31 23:49 JST
 GENERATED_UPDATE_JST = "2026-09-12T10:30:00+09:00"
 
-APP_BUILD = "v390"
+APP_BUILD = "v391"
+# v391: make the field-note auto-location component compatible with Android WebView.
 # v390: add compact field-note capture and a persistent "next time" loop.
 # v389: improve light-tap responsiveness on mobile/Android WebView.
 # v383: interaction performance pass - no periodic Home polling, lazy heavy components, deferred recovery scans.
@@ -7596,8 +7597,8 @@ _FIELD_NOTE_LOCATION_JS = r"""
 export default function(component) {
   const { parentElement, setTriggerValue } = component;
   const text = parentElement.querySelector('#field-note-location-text-v390');
-  if (!text || parentElement.dataset.locating === '1') return;
-  parentElement.dataset.locating = '1';
+  if (!text || parentElement.getAttribute('data-burari-locating-v390') === '1') return;
+  parentElement.setAttribute('data-burari-locating-v390', '1');
   if (!navigator.geolocation) {
     text.textContent = '現在地なしでも保存できます';
     return;
@@ -7631,7 +7632,7 @@ def _get_field_note_location_component_v390():
     field_note_location_component_initialized_v390 = True
     try:
         field_note_location_component_v390 = st.components.v2.component(
-            "tokyo_burari_field_note_location_v390",
+            "tokyo_burari_field_note_location_v391",
             html=_FIELD_NOTE_LOCATION_HTML,
             css=_FIELD_NOTE_LOCATION_CSS,
             js=_FIELD_NOTE_LOCATION_JS,
@@ -26247,7 +26248,7 @@ def page_field_notes():
     if location_component is not None:
         location_result = location_component(
             data={},
-            key=f"field_note_location_instance_v390_{_current_ui_refresh_epoch()}",
+            key=f"field_note_location_instance_v391_{_current_ui_refresh_epoch()}",
             on_location_change=lambda: None,
         )
         live_location = getattr(location_result, "location", None)
