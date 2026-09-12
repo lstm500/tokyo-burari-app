@@ -35,7 +35,7 @@ import streamlit as st
 # Freshly generated update: 2026-08-31 23:49 JST
 GENERATED_UPDATE_JST = "2026-09-12T10:30:00+09:00"
 
-APP_BUILD = "v396"
+APP_BUILD = "v397"
 # v393: prevent clipped labels on narrow phones; Home uses shorter compact labels
 # and Field Notes presents its four choices as a readable 2x2 grid.
 # v392: keep the auto-location run guard on the rendered text element because the
@@ -1399,23 +1399,12 @@ _LIVE_CAMERA_CSS = """
   border-color: #b91c1c;
   background: #dc2626;
 }
-/* v396: make the current capture mode unmistakable on the main shutter.
-   The wrapper mode class changes locally in JavaScript, so this responds
-   immediately without waiting for a Streamlit rerun. */
-.live-camera-wrap.camera-photo-mode .camera-shoot-button:not(.recording) {
+/* v397: keep the normal shutter colour until it is actually pressed. */
+.camera-shoot-button.photo-capturing {
   border-color: #1f6fd1;
   background: linear-gradient(145deg, #4aa8ff, #2878df);
   box-shadow: 0 3px 10px rgba(31, 111, 209, .28), 0 0 0 3px rgba(74, 168, 255, .13);
-}
-.live-camera-wrap.camera-video-mode .camera-shoot-button:not(.recording) {
-  border-color: #d83443;
-  background: linear-gradient(145deg, #ff626a, #e63f4c);
-  box-shadow: 0 3px 10px rgba(216, 52, 67, .28), 0 0 0 3px rgba(255, 98, 106, .13);
-}
-.live-camera-wrap.camera-video-mode .camera-shoot-button.recording {
-  border-color: #991b1b;
-  background: linear-gradient(145deg, #dc2626, #a91414);
-  box-shadow: 0 3px 10px rgba(153, 27, 27, .34), 0 0 0 4px rgba(220, 38, 38, .16);
+  transform: translateY(1px) scale(.975);
 }
 .camera-save-button {
   border: 2px solid #15803d;
@@ -1926,6 +1915,8 @@ export default function(component) {
   let recordingCandidateBusy = false;
   let recordingCandidateFrames = [];
   let recordingCancelled = false;
+  let photoCaptureBusy = false;
+  let photoPressResetTimer = null;
   // v381: Android WebView can return a live microphone track whose actual capture
   // level is extremely low. Keep a per-recording Web Audio gain/compressor graph so
   // the encoded video receives a usable speech level without monitoring to speakers.
@@ -1965,9 +1956,23 @@ export default function(component) {
     if (galleryVideoLabel) galleryVideoLabel.hidden = !shouldShow || cameraMode !== 'video';
   };
 
+  const setPhotoCapturingUi = (capturing) => {
+    if (!shootButton) return;
+    shootButton.classList.toggle('photo-capturing', Boolean(capturing));
+    if (capturing) {
+      shootButton.textContent = '● 撮影中';
+    } else if (cameraMode === 'photo') {
+      shootButton.textContent = '● 写真を撮る';
+    }
+  };
+
   const setRecordingUi = (recording) => {
     if (recordingStatus) recordingStatus.hidden = !recording;
     if (!shootButton) return;
+    if (!recording) {
+      photoCaptureBusy = false;
+      setPhotoCapturingUi(false);
+    }
     if (recording) {
       shootButton.textContent = '■ 録画を止める';
       shootButton.classList.add('recording');
@@ -2910,10 +2915,18 @@ export default function(component) {
   };
 
   const takePhoto = async () => {
-    if (!stream || !video.videoWidth || !video.videoHeight) return;
+    if (photoCaptureBusy) return;
+    if (!stream || !video.videoWidth || !video.videoHeight) {
+      setPhotoCapturingUi(false);
+      return;
+    }
+    photoCaptureBusy = true;
+    setPhotoCapturingUi(true);
     shootButton.disabled = true;
     const capturedAt = new Date().toISOString();
     try {
+      // Yield one frame so Android paints the pressed state before image encoding.
+      await new Promise((resolve) => requestAnimationFrame(() => resolve()));
       const locationPromise = consumeCaptureLocation();
       const dataUrl = await capturePosterDataUrl();
       pendingMedia = {
@@ -2930,6 +2943,8 @@ export default function(component) {
         parenting: ''
       };
       showPhotoReview(dataUrl);
+      photoCaptureBusy = false;
+      setPhotoCapturingUi(false);
       setStatus('');
       const capturedMedia = pendingMedia;
       locationPromise.then((location) => {
@@ -2937,6 +2952,8 @@ export default function(component) {
       }).catch(() => {});
     } catch (err) {
       console.error(err);
+      photoCaptureBusy = false;
+      setPhotoCapturingUi(false);
       shootButton.disabled = false;
       const message = '撮影した画像を作れませんでした。もう一度お試しください。';
       setStatus(message);
@@ -3641,6 +3658,23 @@ export default function(component) {
     }
   };
 
+  const showImmediatePhotoPress = () => {
+    if (cameraMode !== 'photo' || photoCaptureBusy || shootButton.disabled) return;
+    if (photoPressResetTimer) {
+      clearTimeout(photoPressResetTimer);
+      photoPressResetTimer = null;
+    }
+    setPhotoCapturingUi(true);
+  };
+
+  const safelyResetPhotoPress = () => {
+    if (photoPressResetTimer) clearTimeout(photoPressResetTimer);
+    photoPressResetTimer = setTimeout(() => {
+      photoPressResetTimer = null;
+      if (!photoCaptureBusy) setPhotoCapturingUi(false);
+    }, 180);
+  };
+
   const switchCameraMode = () => {
     if (mediaRecorder && mediaRecorder.state === 'recording') return;
     startCamera(cameraMode === 'video' ? 'photo' : 'video');
@@ -3676,6 +3710,9 @@ export default function(component) {
   videoStartButton.addEventListener('click', startVideoCamera);
   facingSwitchButton?.addEventListener('click', switchCameraFacing);
   modeSwitchButton.addEventListener('click', switchCameraMode);
+  shootButton.addEventListener('pointerdown', showImmediatePhotoPress, { passive: true });
+  shootButton.addEventListener('pointerup', safelyResetPhotoPress, { passive: true });
+  shootButton.addEventListener('pointercancel', safelyResetPhotoPress, { passive: true });
   shootButton.addEventListener('click', handleShoot);
   stopButton.addEventListener('click', closeCamera);
   galleryInput.addEventListener('change', chooseGalleryPhoto);
@@ -3706,6 +3743,9 @@ export default function(component) {
     videoStartButton.removeEventListener('click', startVideoCamera);
     facingSwitchButton?.removeEventListener('click', switchCameraFacing);
     modeSwitchButton.removeEventListener('click', switchCameraMode);
+    shootButton.removeEventListener('pointerdown', showImmediatePhotoPress);
+    shootButton.removeEventListener('pointerup', safelyResetPhotoPress);
+    shootButton.removeEventListener('pointercancel', safelyResetPhotoPress);
     shootButton.removeEventListener('click', handleShoot);
     stopButton.removeEventListener('click', closeCamera);
     galleryInput.removeEventListener('change', chooseGalleryPhoto);
@@ -3722,6 +3762,7 @@ export default function(component) {
     window.removeEventListener('resize', handleOrientationChange);
     try { globalThis.screen?.orientation?.removeEventListener?.('change', handleOrientationChange); } catch (_) {}
     if (orientationConstraintTimer) { clearTimeout(orientationConstraintTimer); orientationConstraintTimer = null; }
+    if (photoPressResetTimer) { clearTimeout(photoPressResetTimer); photoPressResetTimer = null; }
     clearGoodMomentsRevealTimer();
     stopStream();
     hideReview();
@@ -3729,7 +3770,7 @@ export default function(component) {
 }
 """
 
-LIVE_CAMERA_COMPONENT_BUILD = "v396"
+LIVE_CAMERA_COMPONENT_BUILD = "v397"
 
 # v383: this bundle is large. Register it only on the Camera page so unrelated
 # Streamlit reruns do not pay the camera component setup cost.
@@ -3743,7 +3784,7 @@ def _get_live_camera_component():
     _live_camera_component_initialized = True
     try:
         live_camera_component = st.components.v2.component(
-            "tokyo_burari_live_camera_v396",
+            "tokyo_burari_live_camera_v397",
             html=_LIVE_CAMERA_HTML,
             css=_LIVE_CAMERA_CSS,
             js=_LIVE_CAMERA_JS,
