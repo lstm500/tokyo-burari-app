@@ -35,7 +35,7 @@ import streamlit as st
 # Freshly generated update: 2026-08-31 23:49 JST
 GENERATED_UPDATE_JST = "2026-09-12T10:30:00+09:00"
 
-APP_BUILD = "v397"
+APP_BUILD = "v399"
 # v393: prevent clipped labels on narrow phones; Home uses shorter compact labels
 # and Field Notes presents its four choices as a readable 2x2 grid.
 # v392: keep the auto-location run guard on the rendered text element because the
@@ -1233,6 +1233,12 @@ _LIVE_CAMERA_CSS = """
   margin-left: auto;
   margin-right: auto;
 }
+/* v398: show the complete native video frame. `cover` cropped the edges and
+   made people look closer than the camera stream actually was. */
+.live-camera-wrap.camera-video-mode .live-camera-video,
+.live-camera-wrap.camera-video-mode .camera-review-video {
+  object-fit: contain;
+}
 /* v226: selfie preview is mirrored like a normal phone camera.
    Captured files keep the camera sensor's original orientation. */
 .live-camera-video.front-facing {
@@ -1753,6 +1759,10 @@ export default function(component) {
       facingMode: { ideal: cameraFacing },
       height: { ideal: 1600 }
     };
+    try {
+      const supported = navigator.mediaDevices?.getSupportedConstraints?.() || {};
+      if (supported.resizeMode) constraints.resizeMode = { ideal: 'none' };
+    } catch (_) {}
     if (preferredCameraDeviceId) {
       constraints.deviceId = { exact: preferredCameraDeviceId };
       delete constraints.facingMode;
@@ -1772,10 +1782,9 @@ export default function(component) {
         if (frameCaps && Number.isFinite(Number(frameCaps.max))) capMax = Number(frameCaps.max);
       } catch (_) {}
 
-      // Prefer 90fps when the camera/browser reports support; otherwise use 60fps.
-      // If capabilities are not exposed, 60fps is the safest high-frame-rate request.
+      // v398: 60fps keeps motion smooth while avoiding the extra sensor crop and
+      // startup negotiation cost that many phones introduce in their 90fps mode.
       const targets = [];
-      if (capMax >= 89) targets.push(90);
       if (capMax >= 59 || !capMax) targets.push(60);
       if (capMax > 0 && capMax < 59) targets.push(Math.max(30, Math.floor(capMax)));
       if (!targets.length) targets.push(60);
@@ -2326,10 +2335,20 @@ export default function(component) {
         return;
       }
 
+      // Reveal video as soon as its first frame plays. The remaining tuning runs
+      // with the preview visible instead of leaving the screen waiting.
+      if (requestedMode === 'video') {
+        syncOrientationUi();
+        syncFacingUi();
+        showCameraActions();
+        shootButton.disabled = true;
+        shootButton.textContent = '● 準備中';
+        setStatus('録画の準備をしています…');
+      }
+
       await applyNativePortraitConstraint();
       if (!stillCurrent()) return;
-      // v314: request 90fps where supported, otherwise 60fps. Re-apply minimum
-      // hardware zoom afterwards so the video keeps the same field of view as photo.
+      // Request smooth 60fps and then explicitly restore the widest hardware zoom.
       const appliedVideoFps = await applyHighVideoFrameRate();
       if (!stillCurrent()) return;
       await applyWidestAvailableZoom();
@@ -2347,7 +2366,7 @@ export default function(component) {
       persistCameraFacing();
       syncOrientationUi();
       syncFacingUi();
-      showCameraActions();
+      if (requestedMode !== 'video') showCameraActions();
 
       let audioReady = requestedMode !== 'video';
       let audioError = requestedMode === 'video' ? combinedAvError : null;
@@ -2431,7 +2450,7 @@ export default function(component) {
       } catch (_) {}
 
       if (requestedMode === 'video') {
-        const fpsLabel = Number(appliedVideoFps || 0) >= 80 ? '90fps' : (Number(appliedVideoFps || 0) >= 50 ? '60fps' : '高フレームレート');
+        const fpsLabel = Number(appliedVideoFps || 0) >= 50 ? '60fps' : '端末対応フレームレート';
         if (audioReady) {
           setStatus(`動画は最大60秒です。${fpsLabel}・音声付きで撮影します。${cameraFacing === 'user' ? ' 内側カメラ使用中。' : ''}`);
         } else {
@@ -3770,7 +3789,7 @@ export default function(component) {
 }
 """
 
-LIVE_CAMERA_COMPONENT_BUILD = "v397"
+LIVE_CAMERA_COMPONENT_BUILD = "v399"
 
 # v383: this bundle is large. Register it only on the Camera page so unrelated
 # Streamlit reruns do not pay the camera component setup cost.
@@ -3784,7 +3803,7 @@ def _get_live_camera_component():
     _live_camera_component_initialized = True
     try:
         live_camera_component = st.components.v2.component(
-            "tokyo_burari_live_camera_v397",
+            "tokyo_burari_live_camera_v399",
             html=_LIVE_CAMERA_HTML,
             css=_LIVE_CAMERA_CSS,
             js=_LIVE_CAMERA_JS,
@@ -12190,7 +12209,9 @@ def video_recording_capacity_status():
             "message": f"動画は最大60秒です。撮影開始前に{format_storage_size(VIDEO_RECORDING_RESERVE_BYTES)}以上の空きを確認し、実際の動画は最大{format_storage_size(VIDEO_MAX_BYTES)}まで保存できます。",
         }
 
-    usage = current_video_storage_usage_bytes()
+    # Upload/delete operations invalidate this cache. Reusing it here avoids a
+    # remote storage rescan whenever the video camera is opened again.
+    usage = current_video_storage_usage_bytes(max_age_seconds=300)
     remaining = max(0, quota - usage)
     allowed = remaining >= VIDEO_RECORDING_RESERVE_BYTES
     if allowed:
@@ -14879,6 +14900,14 @@ def _video_ai_job_done(photo_id, future, registry):
                 registry["futures"].pop(str(photo_id), None)
     except Exception:
         pass
+    # The job finishes outside the Streamlit UI thread. Clear only the small home
+    # count cache so the next normal screen update cannot reuse "processing".
+    try:
+        cached_counter = globals().get("_home_video_counts_cached")
+        if cached_counter is not None and hasattr(cached_counter, "clear"):
+            cached_counter.clear()
+    except Exception:
+        pass
 
 
 def launch_video_ai_background_job(photo):
@@ -15530,6 +15559,23 @@ def video_ai_selection_items(photo):
         return []
     clean = [item for item in items if isinstance(item, dict) and str(item.get("storage_path") or "").strip()]
     return sorted(clean, key=lambda item: int(item.get("rank") or 99))[:VIDEO_AI_MAX_SELECTIONS]
+
+
+def video_ai_effective_status(photo):
+    """Prefer a durable completed result over a stale processing label."""
+    selection = photo_media_metadata(photo).get("ai_selection") or {}
+    if not isinstance(selection, dict):
+        return ""
+    status = str(selection.get("status") or "").strip().lower()
+    progress = str(selection.get("progress_message") or "").strip().lower()
+    items = video_ai_selection_items(photo)
+    if (
+        status in {"processing", "waiting_candidates", "waiting_browser_candidates", ""}
+        and len(items) >= VIDEO_AI_MAX_SELECTIONS
+        and progress in {"完了", "complete", "completed"}
+    ):
+        return "ready"
+    return status
 
 
 def video_ai_voice_candidate_meta(photo):
@@ -25233,7 +25279,7 @@ def open_diary_photo_talk(trip_id, photo_id, state):
 # ============================================================
 # Page: Home
 # ============================================================
-@st.cache_data(ttl=60, max_entries=64, show_spinner=False)
+@st.cache_data(ttl=10, max_entries=64, show_spinner=False)
 def _home_video_counts_cached(family_key, member_key):
     """Return (saved videos, videos not yet accepted as diary stills)."""
     rows = (
@@ -25260,7 +25306,7 @@ def _home_video_counts_cached(family_key, member_key):
         # "瞬間切り取り前" is a processing count, not a review count. Once
         # AI has actually produced a usable selection (ready/reviewed), this
         # video is no longer waiting for cutting even if the user has not opened it.
-        status = str(selection.get("status") or "").strip().lower()
+        status = video_ai_effective_status(row)
         has_selection = bool(video_ai_selection_items(row))
         if not (status in {"ready", "reviewed"} and has_selection):
             before_clip_count += 1
@@ -28764,7 +28810,7 @@ def _render_moments_picker(photo, index, view_mode=None, next_video_action=None)
     selection_meta = photo_media_metadata(photo).get("ai_selection") or {}
     if not isinstance(selection_meta, dict):
         selection_meta = {}
-    status = str(selection_meta.get("status") or "").strip().lower()
+    status = video_ai_effective_status(photo)
     title = _moments_video_title(photo)
     video_id = str(photo.get("id") or "")
     round_number = int(selection_meta.get("round") or 0)
@@ -29755,7 +29801,7 @@ def page_videos():
         selection = metadata.get("ai_selection") or {}
         status_label = ""
         if isinstance(selection, dict):
-            status = str(selection.get("status") or "").lower()
+            status = video_ai_effective_status(video_row)
             if status == "processing":
                 stage = str(selection.get("stage") or "").strip().lower()
                 status_label = "✨ 最大20候補を準備中" if stage == "candidate_preparation" else "✨ いい瞬間を自動選定中"
@@ -29909,7 +29955,7 @@ def page_moments():
         selection = photo_media_metadata(video).get("ai_selection") or {}
         if not isinstance(selection, dict):
             selection = {}
-        status = str(selection.get("status") or "").lower()
+        status = video_ai_effective_status(video)
         if status == "reviewed":
             reviewed.append(video)
         elif status == "ready" and video_ai_selection_items(video):
