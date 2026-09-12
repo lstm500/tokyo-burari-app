@@ -35,7 +35,7 @@ import streamlit as st
 # Freshly generated update: 2026-08-31 23:49 JST
 GENERATED_UPDATE_JST = "2026-09-12T10:30:00+09:00"
 
-APP_BUILD = "v395"
+APP_BUILD = "v396"
 # v393: prevent clipped labels on narrow phones; Home uses shorter compact labels
 # and Field Notes presents its four choices as a readable 2x2 grid.
 # v392: keep the auto-location run guard on the rendered text element because the
@@ -1398,6 +1398,24 @@ _LIVE_CAMERA_CSS = """
 .camera-shoot-button.recording {
   border-color: #b91c1c;
   background: #dc2626;
+}
+/* v396: make the current capture mode unmistakable on the main shutter.
+   The wrapper mode class changes locally in JavaScript, so this responds
+   immediately without waiting for a Streamlit rerun. */
+.live-camera-wrap.camera-photo-mode .camera-shoot-button:not(.recording) {
+  border-color: #1f6fd1;
+  background: linear-gradient(145deg, #4aa8ff, #2878df);
+  box-shadow: 0 3px 10px rgba(31, 111, 209, .28), 0 0 0 3px rgba(74, 168, 255, .13);
+}
+.live-camera-wrap.camera-video-mode .camera-shoot-button:not(.recording) {
+  border-color: #d83443;
+  background: linear-gradient(145deg, #ff626a, #e63f4c);
+  box-shadow: 0 3px 10px rgba(216, 52, 67, .28), 0 0 0 3px rgba(255, 98, 106, .13);
+}
+.live-camera-wrap.camera-video-mode .camera-shoot-button.recording {
+  border-color: #991b1b;
+  background: linear-gradient(145deg, #dc2626, #a91414);
+  box-shadow: 0 3px 10px rgba(153, 27, 27, .34), 0 0 0 4px rgba(220, 38, 38, .16);
 }
 .camera-save-button {
   border: 2px solid #15803d;
@@ -3711,7 +3729,7 @@ export default function(component) {
 }
 """
 
-LIVE_CAMERA_COMPONENT_BUILD = "v394"
+LIVE_CAMERA_COMPONENT_BUILD = "v396"
 
 # v383: this bundle is large. Register it only on the Camera page so unrelated
 # Streamlit reruns do not pay the camera component setup cost.
@@ -3725,7 +3743,7 @@ def _get_live_camera_component():
     _live_camera_component_initialized = True
     try:
         live_camera_component = st.components.v2.component(
-            "tokyo_burari_live_camera_v374",
+            "tokyo_burari_live_camera_v396",
             html=_LIVE_CAMERA_HTML,
             css=_LIVE_CAMERA_CSS,
             js=_LIVE_CAMERA_JS,
