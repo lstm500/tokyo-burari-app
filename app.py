@@ -35,7 +35,7 @@ import streamlit as st
 # Freshly generated update: 2026-08-31 23:49 JST
 GENERATED_UPDATE_JST = "2026-09-12T10:30:00+09:00"
 
-APP_BUILD = "v393"
+APP_BUILD = "v394"
 # v393: prevent clipped labels on narrow phones; Home uses shorter compact labels
 # and Field Notes presents its four choices as a readable 2x2 grid.
 # v392: keep the auto-location run guard on the rendered text element because the
@@ -1557,6 +1557,7 @@ export default function(component) {
   const candidateSheetSignedUrl = String(data?.video_candidate_sheet_signed_url || '');
   const candidateSheetStoragePath = String(data?.video_candidate_sheet_storage_path || '');
   const videoUnavailableReason = String(data?.video_unavailable_reason || '');
+  const videoPrepareAvailable = Boolean(data?.video_prepare_available);
   const videoMaxBytes = Math.max(0, Number(data?.video_max_bytes || 0));
   const videoAllowed = data?.video_allowed !== false && Boolean(videoUploadSignedUrl && videoUploadStoragePath);
   const videoCapacityMessage = String(
@@ -1566,12 +1567,13 @@ export default function(component) {
     ? '容量不足'
     : (videoUnavailableReason === 'storage_setup' ? '保存先エラー' : '利用不可');
   if (!videoAllowed && videoStartButton) {
-    videoStartButton.disabled = true;
-    videoStartButton.textContent = `🎥 動画を撮る（${unavailableSuffix}）`;
-    videoStartButton.title = videoCapacityMessage;
+    videoStartButton.disabled = !videoPrepareAvailable;
+    videoStartButton.textContent = videoPrepareAvailable ? '🎥 動画を撮る' : `🎥 動画を撮る（${unavailableSuffix}）`;
+    videoStartButton.title = videoPrepareAvailable ? '動画を使うときだけ保存先を準備します。' : videoCapacityMessage;
   }
   let stream = null;
   let cameraStartGeneration = 0;
+  let videoPrepareRequested = false;
   let cameraMode = 'photo';
   let cameraFacing = 'environment';
   // v313: remember the actual lens so photo/video use the same physical camera.
@@ -1918,11 +1920,11 @@ export default function(component) {
     }
     if (facingSwitchButton) facingSwitchButton.disabled = Boolean(recording);
     if (modeSwitchButton) {
-      modeSwitchButton.disabled = Boolean(recording) || (cameraMode !== 'video' && !videoAllowed);
+      modeSwitchButton.disabled = Boolean(recording) || (cameraMode !== 'video' && !videoAllowed && !videoPrepareAvailable);
       modeSwitchButton.textContent = cameraMode === 'video'
         ? '📷 写真へ'
-        : (videoAllowed ? '🎥 動画へ' : `🎥 動画へ（${unavailableSuffix}）`);
-      modeSwitchButton.title = (!videoAllowed && cameraMode !== 'video') ? videoCapacityMessage : '';
+        : ((videoAllowed || videoPrepareAvailable) ? '🎥 動画へ' : `🎥 動画へ（${unavailableSuffix}）`);
+      modeSwitchButton.title = (!videoAllowed && !videoPrepareAvailable && cameraMode !== 'video') ? videoCapacityMessage : '';
     }
     syncLibraryActions(Boolean(recording));
   };
@@ -2010,6 +2012,7 @@ export default function(component) {
     if (video) video.hidden = false;
     hideReview();
     setRecordingUi(false);
+    primeCaptureLocation();
   };
 
   const showPhotoReview = (dataUrl) => {
@@ -2125,6 +2128,14 @@ export default function(component) {
   const startCamera = async (mode = 'photo') => {
     const requestedMode = mode === 'video' ? 'video' : 'photo';
     if (requestedMode === 'video' && !videoAllowed) {
+      if (videoPrepareAvailable && !videoPrepareRequested) {
+        videoPrepareRequested = true;
+        if (videoStartButton) videoStartButton.disabled = true;
+        if (modeSwitchButton) modeSwitchButton.disabled = true;
+        setStatus('動画の保存先を準備しています…');
+        setTriggerValue('video_prepare', { requested_at: Date.now() });
+        return;
+      }
       setStatus(videoCapacityMessage);
       return;
     }
@@ -2534,6 +2545,9 @@ export default function(component) {
   // v227: every direct photo/video capture starts a fresh high-accuracy GPS fix.
   // Do not reuse a cached position. Keep the best fix seen for a few seconds and
   // finish early once the phone reaches useful street-level accuracy.
+  let prefetchedLocationPromise = null;
+  let prefetchedLocationStartedAt = 0;
+
   const getLocationAtCapture = () => new Promise((resolve) => {
     if (!navigator.geolocation) {
       resolve({
@@ -2544,8 +2558,10 @@ export default function(component) {
       return;
     }
 
-    const targetAccuracyM = 35;
-    const waitMs = 7000;
+    // Android's native tracker keeps GPS warm. Reuse a fresh fix and cap browser
+    // waiting so location acquisition never holds the camera screen for 7 seconds.
+    const targetAccuracyM = 45;
+    const waitMs = 2500;
     const requestedAtMs = Date.now();
     let watchId = null;
     let hardTimer = null;
@@ -2626,12 +2642,27 @@ export default function(component) {
       watchId = navigator.geolocation.watchPosition(
         onPosition,
         onError,
-        { enableHighAccuracy: true, timeout: waitMs, maximumAge: 0 }
+        { enableHighAccuracy: true, timeout: waitMs, maximumAge: 5000 }
       );
     } catch (err) {
       finish(errorPayload(err));
     }
   });
+
+  const primeCaptureLocation = () => {
+    const age = Date.now() - Number(prefetchedLocationStartedAt || 0);
+    if (prefetchedLocationPromise && age >= 0 && age <= 6000) return prefetchedLocationPromise;
+    prefetchedLocationStartedAt = Date.now();
+    prefetchedLocationPromise = getLocationAtCapture();
+    return prefetchedLocationPromise;
+  };
+
+  const consumeCaptureLocation = () => {
+    const current = primeCaptureLocation();
+    prefetchedLocationPromise = null;
+    prefetchedLocationStartedAt = 0;
+    return current;
+  };
 
   const capturePosterDataUrl = async () => {
     if (!video.videoWidth || !video.videoHeight) throw new Error('video frame unavailable');
@@ -2826,10 +2857,8 @@ export default function(component) {
     shootButton.disabled = true;
     const capturedAt = new Date().toISOString();
     try {
-      const locationPromise = getLocationAtCapture();
+      const locationPromise = consumeCaptureLocation();
       const dataUrl = await capturePosterDataUrl();
-      setStatus('撮影地点を高精度で取得しています…');
-      const location = await locationPromise;
       pendingMedia = {
         kind: 'photo',
         data_url: dataUrl,
@@ -2838,12 +2867,17 @@ export default function(component) {
         camera_facing: cameraFacing,
         capture_orientation: isDeviceLandscape() ? 'landscape' : 'portrait',
         captured_at: capturedAt,
-        location,
+        location: { ok: false, error_code: 'LOCATION_PENDING' },
+        location_promise: locationPromise,
         emotion: '',
         parenting: ''
       };
       showPhotoReview(dataUrl);
       setStatus('');
+      const capturedMedia = pendingMedia;
+      locationPromise.then((location) => {
+        if (pendingMedia === capturedMedia && location) capturedMedia.location = location;
+      }).catch(() => {});
     } catch (err) {
       console.error(err);
       shootButton.disabled = false;
@@ -3487,6 +3521,14 @@ export default function(component) {
         mediaToSave.data_url = preparedDataUrl;
       }
       if (!mediaToSave.data_url) throw new Error('写真データを準備できませんでした。');
+      if (mediaToSave.location_promise) {
+        setStatus('撮影地点を確認しています…');
+        try {
+          const resolvedLocation = await mediaToSave.location_promise;
+          if (resolvedLocation) mediaToSave.location = resolvedLocation;
+        } catch (_) {}
+        delete mediaToSave.location_promise;
+      }
       setStatus('写真を保存しています…');
       if (stream) {
         stream.getTracks().forEach((track) => track.stop());
@@ -3630,7 +3672,7 @@ export default function(component) {
 }
 """
 
-LIVE_CAMERA_COMPONENT_BUILD = "v238"
+LIVE_CAMERA_COMPONENT_BUILD = "v394"
 
 # v383: this bundle is large. Register it only on the Camera page so unrelated
 # Streamlit reruns do not pay the camera component setup cost.
@@ -7432,7 +7474,7 @@ def reverse_geocode_rough(latitude, longitude):
 
 
 def build_photo_location(raw_location, trip, capture_source="camera"):
-    """Normalize browser GPS and fall back to the trip's manual destination."""
+    """Normalize browser GPS without blocking media save on reverse geocoding."""
     destination = str((trip or {}).get("destination") or "").strip()
     source = str(capture_source or "camera").strip().lower()
 
@@ -7452,7 +7494,9 @@ def build_photo_location(raw_location, trip, capture_source="camera"):
             except (TypeError, ValueError):
                 accuracy = None
 
-            place_label = reverse_geocode_rough(latitude, longitude)
+            # Exact coordinates are saved immediately. The readable place name is
+            # added after save so a slow map service cannot freeze the camera UI.
+            place_label = str(raw_location.get("place_label") or destination).strip()
             return {
                 "source": "gps",
                 "latitude": latitude,
@@ -7460,7 +7504,7 @@ def build_photo_location(raw_location, trip, capture_source="camera"):
                 "accuracy_m": accuracy,
                 "measured_at": raw_location.get("measured_at"),
                 "place_label": place_label,
-                "place_provider": "OpenStreetMap Nominatim" if place_label else "",
+                "place_provider": str(raw_location.get("place_provider") or ("manual_destination" if place_label else "")),
             }
 
     if destination:
@@ -7479,6 +7523,78 @@ def build_photo_location(raw_location, trip, capture_source="camera"):
             raw_location.get("error_code") if isinstance(raw_location, dict) else ""
         ),
     }
+
+
+@st.cache_resource(show_spinner=False)
+def _photo_place_enrichment_executor_v394():
+    return ThreadPoolExecutor(max_workers=2, thread_name_prefix="burari-photo-place")
+
+
+def _photo_place_enrichment_worker_v394(photo_id, family_key, member_key, latitude, longitude):
+    """Add a coarse place name after save; failure never affects the media record."""
+    try:
+        label = reverse_geocode_rough(float(latitude), float(longitude))
+        if not label:
+            return
+        from supabase import create_client as _create_client
+        client = _create_client(SUPABASE_URL, SUPABASE_SECRET_KEY)
+        rows = (
+            client.table(PHOTO_TABLE)
+            .select("reflection_json")
+            .eq("id", photo_id)
+            .eq("family_key", family_key)
+            .eq("member_key", member_key)
+            .limit(1)
+            .execute()
+        ).data or []
+        if not rows:
+            return
+        reflection = rows[0].get("reflection_json") or {}
+        if not isinstance(reflection, dict):
+            reflection = {}
+        location = reflection.get("location") or {}
+        if not isinstance(location, dict) or str(location.get("source") or "") != "gps":
+            return
+        if str(location.get("place_label") or "").strip():
+            return
+        updated_location = dict(location)
+        updated_location["place_label"] = label
+        updated_location["place_provider"] = "OpenStreetMap Nominatim"
+        updated_reflection = dict(reflection)
+        updated_reflection["location"] = updated_location
+        (
+            client.table(PHOTO_TABLE)
+            .update({"reflection_json": updated_reflection})
+            .eq("id", photo_id)
+            .eq("family_key", family_key)
+            .eq("member_key", member_key)
+            .execute()
+        )
+    except Exception:
+        return
+
+
+def launch_photo_place_enrichment_v394(photo, location):
+    if not isinstance(photo, dict) or not photo.get("id") or not isinstance(location, dict):
+        return
+    if str(location.get("source") or "") != "gps" or str(location.get("place_label") or "").strip():
+        return
+    try:
+        latitude = float(location.get("latitude"))
+        longitude = float(location.get("longitude"))
+    except (TypeError, ValueError):
+        return
+    try:
+        _photo_place_enrichment_executor_v394().submit(
+            _photo_place_enrichment_worker_v394,
+            str(photo["id"]),
+            str(current_family_key()),
+            str(current_member_key()),
+            latitude,
+            longitude,
+        )
+    except Exception:
+        pass
 
 
 
@@ -11043,6 +11159,26 @@ def normalize_photo(raw_bytes, max_side=1600, quality=84):
         return out.getvalue()
 
 
+def normalize_camera_photo_v394(raw_bytes, capture_source="camera"):
+    """Reuse a safe browser-prepared JPEG instead of recompressing it twice."""
+    source = str(capture_source or "").strip().lower()
+    if source in {"camera", "gallery"} and raw_bytes[:2] == b"\xff\xd8":
+        try:
+            from PIL import Image
+            with Image.open(io.BytesIO(raw_bytes)) as img:
+                width, height = img.size
+                orientation = int((img.getexif() or {}).get(274, 1) or 1)
+                if (
+                    str(img.format or "").upper() == "JPEG"
+                    and max(int(width), int(height)) <= 1600
+                    and orientation == 1
+                ):
+                    return bytes(raw_bytes)
+        except Exception:
+            pass
+    return normalize_photo(raw_bytes)
+
+
 @st.cache_data(ttl=1800, max_entries=96, show_spinner=False)
 def download_photo(storage_path):
     return supabase_client().storage.from_(PHOTO_BUCKET).download(storage_path)
@@ -11265,13 +11401,13 @@ def photo_all_storage_paths(photo):
 
 
 def upload_photo(trip_id, image_bytes, location=None, captured_at=None, capture_source="camera", extra_reflection=None):
-    active_snapshot = get_active_trip_fast(max_age_seconds=20) if st.session_state.get("active_trip_id") else None
+    active_snapshot = get_active_trip_fast(max_age_seconds=3600) if st.session_state.get("active_trip_id") else None
     if not active_snapshot or str(active_snapshot.get("id") or "") != str(trip_id):
         if not get_trip(trip_id):
             raise ValueError("現在の個人アカウントのぶらり旅が見つかりません。")
     # Keep Storage upload as a raw binary body. In particular, do not send an
     # x-upsert header for new files.
-    compressed = normalize_photo(image_bytes)
+    compressed = normalize_camera_photo_v394(image_bytes, capture_source=capture_source)
     if not compressed:
         raise ValueError("写真データが空です。")
 
@@ -11328,7 +11464,9 @@ def upload_photo(trip_id, image_bytes, location=None, captured_at=None, capture_
             _memory_map_rows_light.clear()
         except Exception:
             pass
-        return (result.data or [None])[0]
+        saved_row = (result.data or [None])[0]
+        launch_photo_place_enrichment_v394(saved_row, location)
+        return saved_row
     except Exception as exc:
         if storage_saved:
             try:
@@ -12141,11 +12279,10 @@ def get_camera_video_upload_reservation(trip_id, capture_serial):
     # Safari and WebM on Chromium. Storage metadata carries the real MIME type.
     storage_path = f"{family_key}/{member_key}/{trip_id}/{stamp}_{token}_video.video"
     signed_url = _create_signed_video_upload_url(storage_path)
-    candidate_sheet_path = f"{family_key}/{member_key}/{trip_id}/{stamp}_{token}_candidates.jpg"
-    # Legacy compatibility: browser candidate sheets use the duration-aware max-20 sampling rule.
-    # This removes ffmpeg as a hard requirement on Streamlit Cloud while keeping
-    # every captured candidate available to the vision pipeline.
-    candidate_sheet_signed_url = _create_signed_video_upload_url(candidate_sheet_path)
+    # The existing background job extracts candidates from the saved original.
+    # Avoid creating a second unused signed URL before opening the video camera.
+    candidate_sheet_path = ""
+    candidate_sheet_signed_url = ""
     reservation = {
         "trip_id": str(trip_id),
         "family_key": str(family_key),
@@ -12191,7 +12328,7 @@ def register_browser_uploaded_video(
     audio_bitrate_bps=0,
 ):
     """Register a video already uploaded by the browser to a signed Storage path."""
-    active_snapshot = get_active_trip_fast(max_age_seconds=20) if st.session_state.get("active_trip_id") else None
+    active_snapshot = get_active_trip_fast(max_age_seconds=3600) if st.session_state.get("active_trip_id") else None
     if not active_snapshot or str(active_snapshot.get("id") or "") != str(trip_id):
         if not get_trip(trip_id):
             raise ValueError("現在の個人アカウントのぶらり旅が見つかりません。")
@@ -12209,7 +12346,7 @@ def register_browser_uploaded_video(
     ensure_video_storage_capacity(size_value)
 
     try:
-        poster = normalize_photo(poster_bytes) if poster_bytes else _video_placeholder_poster_bytes()
+        poster = normalize_camera_photo_v394(poster_bytes, capture_source="camera") if poster_bytes else _video_placeholder_poster_bytes()
     except Exception:
         poster = _video_placeholder_poster_bytes()
     if not poster:
@@ -12313,6 +12450,7 @@ def register_browser_uploaded_video(
                 "reflection_json": reflection,
                 "signals_json": signals_payload,
             }
+        launch_photo_place_enrichment_v394(saved_row, location)
         return saved_row
     except Exception:
         if poster_uploaded:
@@ -12338,7 +12476,7 @@ def upload_video(
     The JPEG remains the row's storage_path so all existing diary/monthly photo flows
     keep working. The original video path is stored in reflection_json.
     """
-    active_snapshot = get_active_trip_fast(max_age_seconds=20) if st.session_state.get("active_trip_id") else None
+    active_snapshot = get_active_trip_fast(max_age_seconds=3600) if st.session_state.get("active_trip_id") else None
     if not active_snapshot or str(active_snapshot.get("id") or "") != str(trip_id):
         if not get_trip(trip_id):
             raise ValueError("現在の個人アカウントのぶらり旅が見つかりません。")
@@ -23179,6 +23317,7 @@ def _home_nav_callback(page_name, camera_mode=None):
         requested_mode = str(camera_mode or "").strip().lower()
         if requested_mode not in {"photo", "video"}:
             requested_mode = _remembered_recent_camera_mode() or "photo"
+        st.session_state["_camera_entry_mode_v394"] = requested_mode
         if requested_mode == "video":
             st.session_state["_camera_auto_start_video"] = True
             st.session_state.pop("_camera_auto_start", None)
@@ -23338,7 +23477,7 @@ def sync_browser_history():
 
 
 def ensure_today_trip():
-    trip = get_active_trip_fast(max_age_seconds=20) if st.session_state.active_trip_id else None
+    trip = get_active_trip_fast(max_age_seconds=3600) if st.session_state.active_trip_id else None
     if trip and trip.get("status") == "active" and trip.get("trip_date") == today_iso():
         return trip
     trip = get_today_active_trip()
@@ -29948,40 +30087,43 @@ def page_trip():
         st.error("ライブカメラ機能に必要なStreamlitのバージョンが古いです。requirements.txtを更新してください。")
         return
 
-    # Video mode is gated before recording begins. Capacity and Storage-upload
-    # preparation are deliberately reported as separate states: a failure to mint
-    # an upload destination must never be mislabeled as "capacity shortage".
-    video_unavailable_reason = ""
-    try:
-        video_capacity = video_recording_capacity_status()
-    except Exception as exc:
-        video_capacity = {
-            "allowed": False,
-            "message": "動画の保存容量を確認できないため、動画撮影を一時停止しています。",
-        }
-        video_unavailable_reason = "capacity_check"
-        with st.expander("動画容量チェックの詳細"):
-            st.code(str(exc))
-
-    if not bool(video_capacity.get("allowed")):
-        if not video_unavailable_reason:
-            video_unavailable_reason = "quota"
-        st.warning(str(video_capacity.get("message") or "動画の保存容量が不足しています。"))
-
     auto_start = bool(st.session_state.pop("_camera_auto_start", False))
     auto_start_video = bool(st.session_state.pop("_camera_auto_start_video", False))
+    prepare_video_now = bool(st.session_state.pop("_camera_prepare_video_v394", False))
+    entry_mode = str(st.session_state.get("_camera_entry_mode_v394") or "photo")
+    needs_video_setup = bool(auto_start_video or prepare_video_now or entry_mode == "video")
     active_snapshot = st.session_state.get("_active_trip_snapshot")
     if not isinstance(active_snapshot, dict) or active_snapshot.get("trip_date") != today_iso() or active_snapshot.get("status") != "active":
         active_snapshot = None
 
-    # v107: reserve a short-lived signed Storage upload destination before video
-    # recording. The browser can then PUT the Blob straight to Supabase and only
-    # return compact metadata to Streamlit.
+    # Photo mode avoids every video-only network call. Video capacity and its signed
+    # upload destination are prepared only after the user requests video.
+    video_capacity = {
+        "allowed": False,
+        "message": "動画を選んだときに保存先を準備します。",
+        "remaining_bytes": None,
+    }
+    video_unavailable_reason = "prepare_on_demand"
     video_reservation = {}
-    video_allowed = bool(video_capacity.get("allowed"))
-    video_capacity_message = str(video_capacity.get("message") or "")
+    video_allowed = False
+    video_capacity_message = str(video_capacity["message"])
     camera_trip = active_snapshot
-    if video_allowed:
+    if needs_video_setup:
+        try:
+            video_capacity = video_recording_capacity_status()
+            video_allowed = bool(video_capacity.get("allowed"))
+            video_capacity_message = str(video_capacity.get("message") or "")
+            if not video_allowed:
+                video_unavailable_reason = "quota"
+                st.warning(video_capacity_message or "動画の保存容量が不足しています。")
+        except Exception as exc:
+            video_allowed = False
+            video_unavailable_reason = "capacity_check"
+            video_capacity_message = "動画の保存容量を確認できないため、動画撮影を一時停止しています。"
+            with st.expander("動画容量チェックの詳細"):
+                st.code(str(exc))
+
+    if needs_video_setup and video_allowed:
         try:
             camera_trip = camera_trip or ensure_today_trip()
             video_reservation = get_camera_video_upload_reservation(
@@ -30010,6 +30152,7 @@ def page_trip():
             "auto_start": auto_start,
             "auto_start_mode": "video" if auto_start_video else ("photo" if auto_start else ""),
             "video_allowed": video_allowed,
+            "video_prepare_available": not needs_video_setup,
             "video_capacity_message": video_capacity_message,
             "video_unavailable_reason": video_unavailable_reason,
             "video_max_bytes": browser_video_max_bytes,
@@ -30018,15 +30161,26 @@ def page_trip():
             "video_candidate_sheet_signed_url": str(video_reservation.get("candidate_sheet_signed_url") or ""),
             "video_candidate_sheet_storage_path": str(video_reservation.get("candidate_sheet_path") or ""),
         },
-        key=f"live_camera_v374_{camera_trip_key}_{st.session_state.capture_serial}_{_current_ui_refresh_epoch()}",
+        key=f"live_camera_v394_{camera_trip_key}_{st.session_state.capture_serial}_{_current_ui_refresh_epoch()}",
         on_photo_change=lambda: None,
         on_video_change=lambda: None,
+        on_video_prepare_change=lambda: None,
         on_camera_error_change=lambda: None,
     )
 
     payload = getattr(result, "photo", None)
     video_payload = getattr(result, "video", None)
+    video_prepare = getattr(result, "video_prepare", None)
     camera_error = getattr(result, "camera_error", None)
+
+    if isinstance(video_prepare, dict):
+        request_token = str(video_prepare.get("requested_at") or "")
+        if request_token and request_token != str(st.session_state.get("_camera_video_prepare_token_v394") or ""):
+            st.session_state["_camera_video_prepare_token_v394"] = request_token
+            st.session_state["_camera_prepare_video_v394"] = True
+            st.session_state["_camera_auto_start_video"] = True
+            st.session_state["_camera_entry_mode_v394"] = "video"
+            st.rerun(scope="app")
 
     if camera_error:
         message = camera_error.get("message") if isinstance(camera_error, dict) else str(camera_error)
@@ -30130,6 +30284,7 @@ def page_trip():
                 st.session_state[digest_key] = digest
                 if isinstance(saved_video, dict) and saved_video.get("id"):
                     st.session_state[f"_camera_recent_photo_{trip['id']}"] = saved_video["id"]
+                    st.session_state[f"_camera_show_recent_v394_{trip['id']}"] = False
                 try:
                     _home_video_counts_cached.clear()
                 except Exception:
@@ -30198,6 +30353,7 @@ def page_trip():
                 clear_camera_video_upload_reservation()
                 st.session_state["_browser_last_camera_open_at"] = time.time() * 1000.0
                 st.session_state["_browser_last_camera_mode"] = "video"
+                st.session_state["_camera_entry_mode_v394"] = "photo"
                 st.session_state.capture_serial += 1
                 if ai_status in {"queued", "queued_recovery"}:
                     notice = "動画を保管庫に保存しました。いい瞬間はバックグラウンドで作成します。操作を続けられます。"
@@ -30285,6 +30441,7 @@ def page_trip():
                 st.session_state[digest_key] = digest
                 if isinstance(saved_photo, dict) and saved_photo.get("id"):
                     st.session_state[f"_camera_recent_photo_{trip['id']}"] = saved_photo["id"]
+                    st.session_state[f"_camera_show_recent_v394_{trip['id']}"] = False
 
                 previous_count = st.session_state.get("_home_today_photo_count")
                 try:
@@ -30298,6 +30455,7 @@ def page_trip():
 
                 st.session_state["_browser_last_camera_open_at"] = time.time() * 1000.0
                 st.session_state["_browser_last_camera_mode"] = "photo"
+                st.session_state["_camera_entry_mode_v394"] = "photo"
                 st.session_state.capture_serial += 1
                 st.session_state["_camera_notice"] = "写真を保存しました。"
                 reload_current_page_after_action()
@@ -30308,7 +30466,16 @@ def page_trip():
 
     trip = st.session_state.get("_active_trip_snapshot")
     if isinstance(trip, dict) and trip.get("id"):
-        render_recent_camera_photo_emotion(trip)
+        recent_id = st.session_state.get(f"_camera_recent_photo_{trip['id']}")
+        if recent_id:
+            if st.button(
+                "今保存した写真・動画を確認",
+                use_container_width=True,
+                key=f"camera_show_recent_v394_{recent_id}",
+            ):
+                st.session_state[f"_camera_show_recent_v394_{trip['id']}"] = True
+            if st.session_state.get(f"_camera_show_recent_v394_{trip['id']}"):
+                render_recent_camera_photo_emotion(trip)
 
 
 @st.fragment
