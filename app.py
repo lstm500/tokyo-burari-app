@@ -35,7 +35,7 @@ import streamlit as st
 # Freshly generated update: 2026-08-31 23:49 JST
 GENERATED_UPDATE_JST = "2026-09-12T10:30:00+09:00"
 
-APP_BUILD = "v400"
+APP_BUILD = "v401"
 # v393: prevent clipped labels on narrow phones; Home uses shorter compact labels
 # and Field Notes presents its four choices as a readable 2x2 grid.
 # v392: keep the auto-location run guard on the rendered text element because the
@@ -257,6 +257,24 @@ st.markdown(
         border-color: #b92f3e !important;
         background: linear-gradient(145deg, #e45a68, #c83b49) !important;
         color: #fff !important;
+      }
+      /* v401: Settings uses one calm red family instead of one isolated primary
+         button followed by unrelated neutral buttons. */
+      [class*="st-key-settings_"] div.stButton > button:not(:disabled) {
+        border-color: #d94855 !important;
+        background: linear-gradient(145deg, #f06a73, #dc4855) !important;
+        color: #fff !important;
+        box-shadow: 0 5px 14px rgba(205, 63, 77, .20), 0 0 0 2px rgba(255,255,255,.14) inset !important;
+      }
+      [class*="st-key-settings_"] div.stButton > button:not(:disabled) p {
+        color: #fff !important;
+      }
+      [class*="st-key-settings_"] div.stButton > button:not(:disabled):active {
+        border-color: #9f2734 !important;
+        background: linear-gradient(145deg, #c83a47, #a92836) !important;
+        color: #fff !important;
+        filter: none !important;
+        box-shadow: 0 2px 7px rgba(146, 31, 45, .30), 0 0 0 3px rgba(217,72,85,.18) !important;
       }
       div.stButton > button {
         min-height: 3.2rem;
@@ -7927,8 +7945,15 @@ _NEARBY_SEARCH_NOW_CSS = """
   border-color:rgba(79,169,132,.82);
   box-shadow:0 11px 24px rgba(79,169,132,.14),0 0 0 2px rgba(255,255,255,.38) inset;
 }
-#nearby-search-now-button:active { transform:translateY(1px); }
-#nearby-search-now-button:disabled { opacity:.68; cursor:wait; transform:none; }
+#nearby-search-now-button:active,
+#nearby-search-now-button.searching {
+  color:#fff;
+  background:linear-gradient(145deg,#39a77d,#238765);
+  border-color:#20795b;
+  box-shadow:0 2px 8px rgba(32,121,91,.30),0 0 0 3px rgba(57,167,125,.18);
+  transform:translateY(1px) scale(.975);
+}
+#nearby-search-now-button:disabled { opacity:1; cursor:wait; }
 #nearby-search-now-status {
   margin-top:7px; min-height:18px; font-size:12px; opacity:.72; line-height:1.35;
 }
@@ -7960,7 +7985,12 @@ export default function(component) {
     }
     if (hardTimer) { clearTimeout(hardTimer); hardTimer = null; }
   };
-  const finishButton = () => { if (!cancelled) button.disabled = false; };
+  const finishButton = () => {
+    if (cancelled) return;
+    button.disabled = false;
+    button.classList.remove('searching');
+    button.textContent = '🔎 この条件で検索';
+  };
   const errorText = (error) => {
     const code = Number(error?.code || 0);
     if (code === 1) return '位置情報の利用が許可されていません。地名指定を利用してください。';
@@ -7982,7 +8012,6 @@ export default function(component) {
       accuracy_m: accuracy,
       measured_at: new Date(best.timestamp || Date.now()).toISOString()
     });
-    finishButton();
     return true;
   };
   const fail = (message, code=0) => {
@@ -8003,6 +8032,8 @@ export default function(component) {
     stopWatch();
     best = null;
     searchStartedAt = Date.now();
+    button.classList.add('searching');
+    button.textContent = '🔎 検索中…';
     button.disabled = true;
     setStatus('検索地点を高精度で確認しています…');
 
@@ -8079,7 +8110,7 @@ def _get_nearby_search_now_component():
     _nearby_search_now_component_initialized = True
     try:
         nearby_search_now_component = st.components.v2.component(
-            "tokyo_burari_nearby_search_now_v319",
+            "tokyo_burari_nearby_search_now_v401",
             html=_NEARBY_SEARCH_NOW_HTML,
             css=_NEARBY_SEARCH_NOW_CSS,
             js=_NEARBY_SEARCH_NOW_JS,
@@ -8115,8 +8146,15 @@ _TOILET_SEARCH_NOW_CSS = """
   border-color:rgba(79,169,132,.82);
   box-shadow:0 11px 24px rgba(79,169,132,.14),0 0 0 2px rgba(255,255,255,.38) inset;
 }
-#toilet-search-now-button:active { transform:translateY(1px); }
-#toilet-search-now-button:disabled { opacity:.68; cursor:wait; transform:none; }
+#toilet-search-now-button:active,
+#toilet-search-now-button.searching {
+  color:#fff;
+  background:linear-gradient(145deg,#39a77d,#238765);
+  border-color:#20795b;
+  box-shadow:0 2px 8px rgba(32,121,91,.30),0 0 0 3px rgba(57,167,125,.18);
+  transform:translateY(1px) scale(.975);
+}
+#toilet-search-now-button:disabled { opacity:1; cursor:wait; }
 #toilet-search-now-status {
   margin-top:7px; min-height:18px; font-size:12px; opacity:.72; line-height:1.35;
 }
@@ -8148,7 +8186,12 @@ export default function(component) {
     }
     if (hardTimer) { clearTimeout(hardTimer); hardTimer = null; }
   };
-  const unlock = () => { if (!cancelled) button.disabled = false; };
+  const unlock = () => {
+    if (cancelled) return;
+    button.disabled = false;
+    button.classList.remove('searching');
+    button.textContent = '🚻 この条件でトイレを探す';
+  };
   const errorText = (error) => {
     const code = Number(error?.code || 0);
     if (code === 1) return '位置情報の利用が許可されていません。地名指定を利用してください。';
@@ -8170,7 +8213,6 @@ export default function(component) {
       accuracy_m: accuracy,
       measured_at: new Date(best.timestamp || Date.now()).toISOString()
     });
-    unlock();
     return true;
   };
   const fail = (message, code=0) => {
@@ -8191,6 +8233,8 @@ export default function(component) {
     stop();
     best = null;
     searchStartedAt = Date.now();
+    button.classList.add('searching');
+    button.textContent = '🚻 検索中…';
     button.disabled = true;
     setStatus('現在地を高精度で確認しています…');
 
@@ -8268,7 +8312,7 @@ def _get_toilet_search_now_component():
     _toilet_search_now_component_initialized = True
     try:
         toilet_search_now_component = st.components.v2.component(
-            "tokyo_burari_toilet_search_now_v319",
+            "tokyo_burari_toilet_search_now_v401",
             html=_TOILET_SEARCH_NOW_HTML,
             css=_TOILET_SEARCH_NOW_CSS,
             js=_TOILET_SEARCH_NOW_JS,
@@ -26136,12 +26180,13 @@ _NEARBY_BATCH_SEARCH_CSS_V320 = r"""
 .legacy-choice-row{display:grid;grid-template-columns:1fr 1fr;gap:10px}
 .legacy-choice{appearance:none;-webkit-appearance:none;width:100%;min-height:58px;box-sizing:border-box;border-radius:15px;border:1px solid rgba(88,96,108,.24);background:#fff;color:rgba(31,38,48,.95);font:inherit;font-size:16px;font-weight:650;line-height:1.2;padding:9px 10px;cursor:pointer;touch-action:manipulation;-webkit-tap-highlight-color:transparent;box-shadow:0 1px 1px rgba(0,0,0,.015)}
 .legacy-choice.active{background:#ff4b4b;border-color:#ff4b4b;color:#fff;box-shadow:0 4px 10px rgba(255,75,75,.15)}
-.legacy-choice:active{transform:translateY(1px)}
+.legacy-choice:active{background:#d63f4c;border-color:#bd3440;color:#fff;box-shadow:0 2px 7px rgba(189,52,64,.24);transform:translateY(1px) scale(.975)}
 .legacy-select{width:100%;min-height:58px;border-radius:14px;border:0;background:#f1f2f7;color:rgba(31,38,48,.96);padding:0 42px 0 14px;font:inherit;font-size:16px;font-weight:650;box-sizing:border-box}
 .legacy-note{margin-top:11px;font-size:12px;line-height:1.45;color:rgba(31,38,48,.57)}
 .legacy-summary{margin:12px 0 10px;padding:12px 13px;border-radius:13px;background:rgba(128,128,128,.055);font-size:13px;line-height:1.45;color:rgba(31,38,48,.78)}
 .legacy-search-button{width:100%;min-height:60px;border-radius:17px;border:2px solid rgba(79,169,132,.58);background:linear-gradient(155deg,rgba(231,249,240,.99),rgba(226,245,251,.95));font:inherit;font-size:18px;font-weight:850;color:rgba(31,38,48,.96);box-shadow:0 8px 18px rgba(79,169,132,.08);cursor:pointer;touch-action:manipulation}
-.legacy-search-button:disabled{opacity:.62;cursor:wait}
+.legacy-search-button:active,.legacy-search-button.searching{color:#fff;background:linear-gradient(145deg,#39a77d,#238765);border-color:#20795b;box-shadow:0 2px 8px rgba(32,121,91,.30),0 0 0 3px rgba(57,167,125,.18);transform:translateY(1px) scale(.975)}
+.legacy-search-button:disabled{opacity:1;cursor:wait}
 .legacy-status{min-height:21px;margin-top:8px;font-size:12px;line-height:1.4;color:rgba(31,38,48,.64)}
 @media(max-width:640px){
   .legacy-two-col{gap:8px;margin-bottom:8px}.legacy-top-row{grid-template-columns:.88fr 1.12fr}
@@ -26275,10 +26320,10 @@ export default function(component) {
   render();
 
   const stop=()=>{if(watchId!==null&&navigator.geolocation){try{navigator.geolocation.clearWatch(watchId)}catch(_){}watchId=null}if(hardTimer){clearTimeout(hardTimer);hardTimer=null}};
-  const unlock=()=>{if(!cancelled)button.disabled=false};
-  const emitBest=()=>{if(cancelled||!best?.coords)return;stop();const accuracy=Number(best.coords.accuracy||0);status.textContent=`現在地を取得しました（精度 ±${Math.round(accuracy)}m）。検索しています…`;setTriggerValue('search_location',{token:`${Date.now()}_${Math.random().toString(36).slice(2)}`,latitude:Number(best.coords.latitude),longitude:Number(best.coords.longitude),accuracy_m:accuracy,measured_at:new Date(best.timestamp||Date.now()).toISOString(),filters:gather()});unlock()};
+  const unlock=()=>{if(!cancelled){button.disabled=false;button.classList.remove('searching');button.textContent='🔎 この条件で検索'}};
+  const emitBest=()=>{if(cancelled||!best?.coords)return;stop();const accuracy=Number(best.coords.accuracy||0);status.textContent=`現在地を取得しました（精度 ±${Math.round(accuracy)}m）。検索しています…`;setTriggerValue('search_location',{token:`${Date.now()}_${Math.random().toString(36).slice(2)}`,latitude:Number(best.coords.latitude),longitude:Number(best.coords.longitude),accuracy_m:accuracy,measured_at:new Date(best.timestamp||Date.now()).toISOString(),filters:gather()})};
   const fail=(message,code=0)=>{stop();status.textContent=String(message||'現在地を取得できませんでした。');setTriggerValue('search_error',{token:`${Date.now()}_${Math.random().toString(36).slice(2)}`,code:Number(code||0),message:String(message||''),filters:gather()});unlock()};
-  const searchNow=()=>{if(!navigator.geolocation){fail('この端末では位置情報を取得できません。');return}stop();best=null;startedAt=Date.now();button.disabled=true;status.textContent='検索地点を高精度GPSで確認しています…';watchId=navigator.geolocation.watchPosition((position)=>{if(cancelled||!position?.coords)return;const accuracy=Number(position.coords.accuracy||Number.POSITIVE_INFINITY);const bestAccuracy=best?Number(best.coords?.accuracy||Number.POSITIVE_INFINITY):Number.POSITIVE_INFINITY;if(!best||accuracy<bestAccuracy)best=position;const currentBest=best?Number(best.coords?.accuracy||Number.POSITIVE_INFINITY):Number.POSITIVE_INFINITY;status.textContent=Number.isFinite(currentBest)?`検索地点を高精度GPSで確認しています… ±${Math.round(currentBest)}m`:'検索地点を高精度GPSで確認しています…';if(currentBest>0&&currentBest<=25){emitBest();return}if(currentBest>0&&currentBest<=45&&(Date.now()-startedAt)>=1200)emitBest()},(error)=>{const bestAccuracy=best?Number(best.coords?.accuracy||Number.POSITIVE_INFINITY):Number.POSITIVE_INFINITY;if(best&&bestAccuracy>0&&bestAccuracy<=45){emitBest();return}const code=Number(error?.code||0);const msg=code===1?'位置情報の利用が許可されていません。':code===3?'現在地の取得に時間がかかりました。':'現在地を取得できませんでした。';fail(msg,code)},{enableHighAccuracy:true,timeout:10000,maximumAge:0});hardTimer=setTimeout(()=>{const bestAccuracy=best?Number(best.coords?.accuracy||Number.POSITIVE_INFINITY):Number.POSITIVE_INFINITY;if(best&&bestAccuracy>0&&bestAccuracy<=45)emitBest();else if(best&&Number.isFinite(bestAccuracy))fail(`GPS精度が ±${Math.round(bestAccuracy)}m のため検索を中止しました。`,3);else fail('現在地を高精度で取得できませんでした。',3)},10500)};
+  const searchNow=()=>{if(!navigator.geolocation){fail('この端末では位置情報を取得できません。');return}stop();best=null;startedAt=Date.now();button.classList.add('searching');button.textContent='🔎 検索中…';button.disabled=true;status.textContent='検索地点を高精度GPSで確認しています…';watchId=navigator.geolocation.watchPosition((position)=>{if(cancelled||!position?.coords)return;const accuracy=Number(position.coords.accuracy||Number.POSITIVE_INFINITY);const bestAccuracy=best?Number(best.coords?.accuracy||Number.POSITIVE_INFINITY):Number.POSITIVE_INFINITY;if(!best||accuracy<bestAccuracy)best=position;const currentBest=best?Number(best.coords?.accuracy||Number.POSITIVE_INFINITY):Number.POSITIVE_INFINITY;status.textContent=Number.isFinite(currentBest)?`検索地点を高精度GPSで確認しています… ±${Math.round(currentBest)}m`:'検索地点を高精度GPSで確認しています…';if(currentBest>0&&currentBest<=25){emitBest();return}if(currentBest>0&&currentBest<=45&&(Date.now()-startedAt)>=1200)emitBest()},(error)=>{const bestAccuracy=best?Number(best.coords?.accuracy||Number.POSITIVE_INFINITY):Number.POSITIVE_INFINITY;if(best&&bestAccuracy>0&&bestAccuracy<=45){emitBest();return}const code=Number(error?.code||0);const msg=code===1?'位置情報の利用が許可されていません。':code===3?'現在地の取得に時間がかかりました。':'現在地を取得できませんでした。';fail(msg,code)},{enableHighAccuracy:true,timeout:10000,maximumAge:0});hardTimer=setTimeout(()=>{const bestAccuracy=best?Number(best.coords?.accuracy||Number.POSITIVE_INFINITY):Number.POSITIVE_INFINITY;if(best&&bestAccuracy>0&&bestAccuracy<=45)emitBest();else if(best&&Number.isFinite(bestAccuracy))fail(`GPS精度が ±${Math.round(bestAccuracy)}m のため検索を中止しました。`,3);else fail('現在地を高精度で取得できませんでした。',3)},10500)};
   button.addEventListener('click',searchNow);
   return()=>{cancelled=true;stop();button.removeEventListener('click',searchNow);try{parentElement?.removeEventListener(activityPressEvent,markUserActivity,{capture:true,passive:true})}catch(_){}try{parentElement?.removeEventListener('keydown',markUserActivity,true)}catch(_){}try{parentElement?.removeEventListener('wheel',markUserActivity,{capture:true,passive:true})}catch(_){}};
 }
@@ -26294,7 +26339,7 @@ def _get_nearby_batch_search_component_v320():
     _nearby_batch_search_component_initialized_v320 = True
     try:
         _nearby_batch_search_component_v320 = st.components.v2.component(
-            "tokyo_burari_nearby_batch_search_v329_legacyui",
+            "tokyo_burari_nearby_batch_search_v401",
             html=_NEARBY_BATCH_SEARCH_HTML_V320,
             css=_NEARBY_BATCH_SEARCH_CSS_V320,
             js=_NEARBY_BATCH_SEARCH_JS_V320,
@@ -26353,12 +26398,13 @@ _TOILET_BATCH_SEARCH_CSS_V320 = r"""
 .legacy-choice-row{display:grid;grid-template-columns:1fr 1fr;gap:10px}
 .legacy-choice{appearance:none;-webkit-appearance:none;width:100%;min-height:58px;box-sizing:border-box;border-radius:15px;border:1px solid rgba(88,96,108,.24);background:#fff;color:rgba(31,38,48,.95);font:inherit;font-size:16px;font-weight:650;line-height:1.2;padding:9px 10px;cursor:pointer;touch-action:manipulation;-webkit-tap-highlight-color:transparent;box-shadow:0 1px 1px rgba(0,0,0,.015)}
 .legacy-choice.active{background:#ff4b4b;border-color:#ff4b4b;color:#fff;box-shadow:0 4px 10px rgba(255,75,75,.15)}
-.legacy-choice:active{transform:translateY(1px)}
+.legacy-choice:active{background:#d63f4c;border-color:#bd3440;color:#fff;box-shadow:0 2px 7px rgba(189,52,64,.24);transform:translateY(1px) scale(.975)}
 .legacy-select{width:100%;min-height:58px;border-radius:14px;border:0;background:#f1f2f7;color:rgba(31,38,48,.96);padding:0 42px 0 14px;font:inherit;font-size:16px;font-weight:650;box-sizing:border-box}
 .legacy-note{margin-top:11px;font-size:12px;line-height:1.45;color:rgba(31,38,48,.57)}
 .legacy-summary{margin:12px 0 10px;padding:12px 13px;border-radius:13px;background:rgba(128,128,128,.055);font-size:13px;line-height:1.45;color:rgba(31,38,48,.78)}
 .legacy-search-button{width:100%;min-height:60px;border-radius:17px;border:2px solid rgba(79,169,132,.58);background:linear-gradient(155deg,rgba(231,249,240,.99),rgba(226,245,251,.95));font:inherit;font-size:18px;font-weight:850;color:rgba(31,38,48,.96);box-shadow:0 8px 18px rgba(79,169,132,.08);cursor:pointer;touch-action:manipulation}
-.legacy-search-button:disabled{opacity:.62;cursor:wait}
+.legacy-search-button:active,.legacy-search-button.searching{color:#fff;background:linear-gradient(145deg,#39a77d,#238765);border-color:#20795b;box-shadow:0 2px 8px rgba(32,121,91,.30),0 0 0 3px rgba(57,167,125,.18);transform:translateY(1px) scale(.975)}
+.legacy-search-button:disabled{opacity:1;cursor:wait}
 .legacy-status{min-height:21px;margin-top:8px;font-size:12px;line-height:1.4;color:rgba(31,38,48,.64)}
 @media(max-width:640px){
   .legacy-two-col{gap:8px;margin-bottom:8px}.legacy-top-row{grid-template-columns:.88fr 1.12fr}
@@ -26408,10 +26454,10 @@ export default function(component) {
   const render=()=>{fill(distanceArea,[['🚶 1分','1'],['🚶 3分','3']],state.distance,'distance');fill(feeArea,[['🆓 無料優先','free'],['料金問わない','all']],state.fee,'fee');fill(wheelArea,[['♿ 対応だけ','yes'],['問わない','all']],state.wheelchair,'wheelchair');fill(babyArea,[['👶 交換台あり','yes'],['問わない','all']],state.baby,'baby');fill(openArea,[['🟢 今使える優先','usable'],['時間問わない','all']],state.open,'open');updateSummary()};
   render();
   const stop=()=>{if(watchId!==null&&navigator.geolocation){try{navigator.geolocation.clearWatch(watchId)}catch(_){}watchId=null}if(hardTimer){clearTimeout(hardTimer);hardTimer=null}};
-  const unlock=()=>{if(!cancelled)button.disabled=false};
-  const emitBest=()=>{if(cancelled||!best?.coords)return;stop();const accuracy=Number(best.coords.accuracy||0);status.textContent=`現在地を取得しました（精度 ±${Math.round(accuracy)}m）。トイレを検索しています…`;hideTrainLoader();setTriggerValue('search_location',{token:`${Date.now()}_${Math.random().toString(36).slice(2)}`,latitude:Number(best.coords.latitude),longitude:Number(best.coords.longitude),accuracy_m:accuracy,measured_at:new Date(best.timestamp||Date.now()).toISOString(),filters:gather()});unlock()};
+  const unlock=()=>{if(!cancelled){button.disabled=false;button.classList.remove('searching');button.textContent='🚻 この条件でトイレを探す'}};
+  const emitBest=()=>{if(cancelled||!best?.coords)return;stop();const accuracy=Number(best.coords.accuracy||0);status.textContent=`現在地を取得しました（精度 ±${Math.round(accuracy)}m）。トイレを検索しています…`;hideTrainLoader();setTriggerValue('search_location',{token:`${Date.now()}_${Math.random().toString(36).slice(2)}`,latitude:Number(best.coords.latitude),longitude:Number(best.coords.longitude),accuracy_m:accuracy,measured_at:new Date(best.timestamp||Date.now()).toISOString(),filters:gather()})};
   const fail=(message,code=0)=>{stop();status.textContent=String(message||'現在地を取得できませんでした。');hideTrainLoader();setTriggerValue('search_error',{token:`${Date.now()}_${Math.random().toString(36).slice(2)}`,code:Number(code||0),message:String(message||''),filters:gather()});unlock()};
-  const searchNow=()=>{if(!navigator.geolocation){fail('この端末では位置情報を取得できません。');return}stop();best=null;startedAt=Date.now();button.disabled=true;status.textContent='現在地を高精度GPSで確認しています…';showTrainLoader(status.textContent);watchId=navigator.geolocation.watchPosition((position)=>{if(cancelled||!position?.coords)return;const accuracy=Number(position.coords.accuracy||Number.POSITIVE_INFINITY);const bestAccuracy=best?Number(best.coords?.accuracy||Number.POSITIVE_INFINITY):Number.POSITIVE_INFINITY;if(!best||accuracy<bestAccuracy)best=position;const currentBest=best?Number(best.coords?.accuracy||Number.POSITIVE_INFINITY):Number.POSITIVE_INFINITY;status.textContent=Number.isFinite(currentBest)?`現在地を高精度GPSで確認しています… ±${Math.round(currentBest)}m`:'現在地を高精度GPSで確認しています…';showTrainLoader(status.textContent);if(currentBest>0&&currentBest<=25){emitBest();return}if(currentBest>0&&currentBest<=45&&(Date.now()-startedAt)>=1200)emitBest()},(error)=>{const bestAccuracy=best?Number(best.coords?.accuracy||Number.POSITIVE_INFINITY):Number.POSITIVE_INFINITY;if(best&&bestAccuracy>0&&bestAccuracy<=45){emitBest();return}const code=Number(error?.code||0);const msg=code===1?'位置情報の利用が許可されていません。':code===3?'現在地の取得に時間がかかりました。':'現在地を取得できませんでした。';fail(msg,code)},{enableHighAccuracy:true,timeout:10000,maximumAge:0});hardTimer=setTimeout(()=>{const bestAccuracy=best?Number(best.coords?.accuracy||Number.POSITIVE_INFINITY):Number.POSITIVE_INFINITY;if(best&&bestAccuracy>0&&bestAccuracy<=45)emitBest();else if(best&&Number.isFinite(bestAccuracy))fail(`GPS精度が ±${Math.round(bestAccuracy)}m のため検索を中止しました。`,3);else fail('現在地を高精度で取得できませんでした。',3)},10500)};
+  const searchNow=()=>{if(!navigator.geolocation){fail('この端末では位置情報を取得できません。');return}stop();best=null;startedAt=Date.now();button.classList.add('searching');button.textContent='🚻 検索中…';button.disabled=true;status.textContent='現在地を高精度GPSで確認しています…';showTrainLoader(status.textContent);watchId=navigator.geolocation.watchPosition((position)=>{if(cancelled||!position?.coords)return;const accuracy=Number(position.coords.accuracy||Number.POSITIVE_INFINITY);const bestAccuracy=best?Number(best.coords?.accuracy||Number.POSITIVE_INFINITY):Number.POSITIVE_INFINITY;if(!best||accuracy<bestAccuracy)best=position;const currentBest=best?Number(best.coords?.accuracy||Number.POSITIVE_INFINITY):Number.POSITIVE_INFINITY;status.textContent=Number.isFinite(currentBest)?`現在地を高精度GPSで確認しています… ±${Math.round(currentBest)}m`:'現在地を高精度GPSで確認しています…';showTrainLoader(status.textContent);if(currentBest>0&&currentBest<=25){emitBest();return}if(currentBest>0&&currentBest<=45&&(Date.now()-startedAt)>=1200)emitBest()},(error)=>{const bestAccuracy=best?Number(best.coords?.accuracy||Number.POSITIVE_INFINITY):Number.POSITIVE_INFINITY;if(best&&bestAccuracy>0&&bestAccuracy<=45){emitBest();return}const code=Number(error?.code||0);const msg=code===1?'位置情報の利用が許可されていません。':code===3?'現在地の取得に時間がかかりました。':'現在地を取得できませんでした。';fail(msg,code)},{enableHighAccuracy:true,timeout:10000,maximumAge:0});hardTimer=setTimeout(()=>{const bestAccuracy=best?Number(best.coords?.accuracy||Number.POSITIVE_INFINITY):Number.POSITIVE_INFINITY;if(best&&bestAccuracy>0&&bestAccuracy<=45)emitBest();else if(best&&Number.isFinite(bestAccuracy))fail(`GPS精度が ±${Math.round(bestAccuracy)}m のため検索を中止しました。`,3);else fail('現在地を高精度で取得できませんでした。',3)},10500)};
   button.addEventListener('click',searchNow);return()=>{cancelled=true;stop();hideTrainLoader();button.removeEventListener('click',searchNow);try{parentElement?.removeEventListener(activityPressEvent,markUserActivity,{capture:true,passive:true})}catch(_){}try{parentElement?.removeEventListener('keydown',markUserActivity,true)}catch(_){}try{parentElement?.removeEventListener('wheel',markUserActivity,{capture:true,passive:true})}catch(_){}};
 }
 """
@@ -26426,7 +26472,7 @@ def _get_toilet_batch_search_component_v320():
     _toilet_batch_search_component_initialized_v320 = True
     try:
         _toilet_batch_search_component_v320 = st.components.v2.component(
-            "tokyo_burari_toilet_batch_search_v329_legacyui",
+            "tokyo_burari_toilet_batch_search_v401",
             html=_TOILET_BATCH_SEARCH_HTML_V320,
             css=_TOILET_BATCH_SEARCH_CSS_V320,
             js=_TOILET_BATCH_SEARCH_JS_V320,
