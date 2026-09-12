@@ -35,7 +35,7 @@ import streamlit as st
 # Freshly generated update: 2026-08-31 23:49 JST
 GENERATED_UPDATE_JST = "2026-09-12T10:30:00+09:00"
 
-APP_BUILD = "v401"
+APP_BUILD = "v402"
 # v393: prevent clipped labels on narrow phones; Home uses shorter compact labels
 # and Field Notes presents its four choices as a readable 2x2 grid.
 # v392: keep the auto-location run guard on the rendered text element because the
@@ -1436,6 +1436,14 @@ _LIVE_CAMERA_CSS = """
   font-size: 14px;
   font-weight: 800;
 }
+.live-camera-wrap.camera-recording-active .camera-active-actions {
+  grid-template-columns: 1fr;
+}
+.live-camera-wrap.camera-recording-active .camera-facing-button,
+.live-camera-wrap.camera-recording-active .camera-mode-switch-button,
+.live-camera-wrap.camera-recording-active .camera-sub-button {
+  display: none !important;
+}
 .camera-shoot-button {
   border: 2px solid var(--st-primary-color);
   background: var(--st-primary-color);
@@ -2018,12 +2026,13 @@ export default function(component) {
   const setRecordingUi = (recording) => {
     if (recordingStatus) recordingStatus.hidden = !recording;
     if (!shootButton) return;
+    if (wrap) wrap.classList.toggle('camera-recording-active', Boolean(recording));
     if (!recording) {
       photoCaptureBusy = false;
       setPhotoCapturingUi(false);
     }
     if (recording) {
-      shootButton.textContent = '■ 録画を止める';
+      shootButton.textContent = '■ 撮影終了';
       shootButton.classList.add('recording');
     } else {
       shootButton.classList.remove('recording');
@@ -3829,7 +3838,7 @@ export default function(component) {
 }
 """
 
-LIVE_CAMERA_COMPONENT_BUILD = "v399"
+LIVE_CAMERA_COMPONENT_BUILD = "v402"
 
 # v383: this bundle is large. Register it only on the Camera page so unrelated
 # Streamlit reruns do not pay the camera component setup cost.
@@ -3843,7 +3852,7 @@ def _get_live_camera_component():
     _live_camera_component_initialized = True
     try:
         live_camera_component = st.components.v2.component(
-            "tokyo_burari_live_camera_v399",
+            "tokyo_burari_live_camera_v402",
             html=_LIVE_CAMERA_HTML,
             css=_LIVE_CAMERA_CSS,
             js=_LIVE_CAMERA_JS,
