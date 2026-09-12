@@ -35,7 +35,7 @@ import streamlit as st
 # Freshly generated update: 2026-08-31 23:49 JST
 GENERATED_UPDATE_JST = "2026-09-12T10:30:00+09:00"
 
-APP_BUILD = "v394"
+APP_BUILD = "v395"
 # v393: prevent clipped labels on narrow phones; Home uses shorter compact labels
 # and Field Notes presents its four choices as a readable 2x2 grid.
 # v392: keep the auto-location run guard on the rendered text element because the
@@ -1507,6 +1507,45 @@ _LIVE_CAMERA_CSS = """
 }
 .live-camera-wrap.camera-landscape .camera-review-mode-switch {
   margin: 4px 0 5px;
+}
+
+/* v395: acknowledge the finger-down immediately, before camera permission or a
+   Streamlit rerun can finish. Focus keeps the colour visible during startup. */
+.camera-menu-button,
+.camera-shoot-button,
+.camera-save-button,
+.camera-retry-button,
+.camera-mode-switch-button,
+.camera-facing-button,
+.camera-sub-button {
+  transition: transform 55ms ease-out, background 55ms linear, box-shadow 55ms linear !important;
+  will-change: transform;
+  touch-action: manipulation;
+}
+.camera-menu-button:not(.video-menu-button):active,
+.camera-menu-button:not(.video-menu-button):focus {
+  color: #fff !important;
+  border-color: #1f6fd1 !important;
+  background: linear-gradient(145deg,#4aa8ff,#2878df) !important;
+  box-shadow: 0 2px 7px rgba(31,111,209,.30),0 0 0 3px rgba(74,168,255,.22) !important;
+  transform: translateY(1px) scale(.975) !important;
+}
+.video-menu-button:active,
+.video-menu-button:focus {
+  color: #fff !important;
+  border-color: #6d28d9 !important;
+  background: linear-gradient(145deg,#9a67f5,#7134d2) !important;
+  box-shadow: 0 2px 7px rgba(109,40,217,.30),0 0 0 3px rgba(154,103,245,.22) !important;
+  transform: translateY(1px) scale(.975) !important;
+}
+.camera-shoot-button:active,
+.camera-save-button:active,
+.camera-retry-button:active,
+.camera-mode-switch-button:active,
+.camera-facing-button:active,
+.camera-sub-button:active {
+  filter: brightness(.90) saturate(1.16);
+  transform: translateY(1px) scale(.975) !important;
 }
 """
 
@@ -23691,6 +23730,11 @@ def inject_home_icon_css(review_attention=False):
         f'.st-key-home_camera div.stButton > button:hover,.st-key-home_video div.stButton > button:hover,.st-key-home_diary div.stButton > button:hover{{border-color:{accent} !important;background:linear-gradient(155deg,rgba({rgb2},.34),rgba({rgb1},.11)) !important;box-shadow:0 11px 24px rgba({rgb1},.14),0 0 0 2px rgba(255,255,255,.40) inset !important;}}',
         f'.st-key-home_settings div.stButton > button{{border-color:rgba({rgb1},.46) !important;background:linear-gradient(155deg,rgba({rgb2},.18),rgba({rgb1},.035)) !important;box-shadow:0 8px 20px rgba({rgb1},.07),0 0 0 2px rgba(255,255,255,.30) inset !important;}}',
         f'.st-key-home_settings div.stButton > button:hover{{border-color:rgba({rgb1},.62) !important;background:linear-gradient(155deg,rgba({rgb2},.25),rgba({rgb1},.065)) !important;box-shadow:0 10px 22px rgba({rgb1},.10),0 0 0 2px rgba(255,255,255,.35) inset !important;}}',
+        '.st-key-home_camera div.stButton > button,.st-key-home_video div.stButton > button{touch-action:manipulation !important;-webkit-tap-highlight-color:transparent !important;transition:transform 55ms ease-out,background 55ms linear,box-shadow 55ms linear,color 55ms linear !important;will-change:transform;}',
+        '.st-key-home_camera div.stButton > button:active,.st-key-home_camera div.stButton > button:focus{color:#fff !important;border-color:#1F6FD1 !important;background:linear-gradient(145deg,#4AA8FF,#2878DF) !important;box-shadow:0 2px 7px rgba(31,111,209,.30),0 0 0 3px rgba(74,168,255,.22) !important;transform:translateY(1px) scale(.975) !important;}',
+        '.st-key-home_video div.stButton > button:active,.st-key-home_video div.stButton > button:focus{color:#fff !important;border-color:#6D28D9 !important;background:linear-gradient(145deg,#9A67F5,#7134D2) !important;box-shadow:0 2px 7px rgba(109,40,217,.30),0 0 0 3px rgba(154,103,245,.22) !important;transform:translateY(1px) scale(.975) !important;}',
+        '.st-key-home_camera div.stButton > button:active p,.st-key-home_camera div.stButton > button:focus p,.st-key-home_video div.stButton > button:active p,.st-key-home_video div.stButton > button:focus p{color:#fff !important;}',
+        '@media (prefers-reduced-motion:reduce){.st-key-home_camera div.stButton > button,.st-key-home_video div.stButton > button{transition:none !important;}}',
     ]
     if review_attention:
         css_chunks.extend([
