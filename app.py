@@ -35,7 +35,7 @@ import streamlit as st
 # Freshly generated update: 2026-08-31 23:49 JST
 GENERATED_UPDATE_JST = "2026-09-12T10:30:00+09:00"
 
-APP_BUILD = "v399"
+APP_BUILD = "v400"
 # v393: prevent clipped labels on narrow phones; Home uses shorter compact labels
 # and Field Notes presents its four choices as a readable 2x2 grid.
 # v392: keep the auto-location run guard on the rendered text element because the
@@ -235,6 +235,28 @@ st.markdown(
         -webkit-user-select: none;
         user-select: none;
         -webkit-touch-callout: none;
+        transition: transform 55ms ease-out, filter 55ms linear, box-shadow 55ms linear !important;
+        will-change: transform, filter;
+      }
+      /* v400: every ordinary control acknowledges finger-down immediately while
+         preserving its own page/theme colour at rest. */
+      button:not(:disabled):active,
+      [role="button"]:not([aria-disabled="true"]):active,
+      input[type="button"]:not(:disabled):active,
+      input[type="submit"]:not(:disabled):active,
+      a[role="button"]:active {
+        filter: brightness(.78) saturate(1.24) !important;
+        transform: translateY(1px) scale(.975) !important;
+      }
+      [class*="st-key-video_delete_begin_moments_"] div.stButton > button {
+        border-color: rgba(205, 83, 96, .68) !important;
+        background: linear-gradient(145deg, rgba(255, 239, 240, .98), rgba(255, 224, 228, .94)) !important;
+        color: #9f2432 !important;
+      }
+      [class*="st-key-video_delete_yes_moments_"] div.stButton > button {
+        border-color: #b92f3e !important;
+        background: linear-gradient(145deg, #e45a68, #c83b49) !important;
+        color: #fff !important;
       }
       div.stButton > button {
         min-height: 3.2rem;
@@ -16815,7 +16837,13 @@ def delete_video_and_related_data(video_photo):
     return result
 
 
-def render_video_delete_controls(video_photo, key_prefix):
+def render_video_delete_controls(
+    video_photo,
+    key_prefix,
+    begin_label="🗑 この動画を削除",
+    confirm_label="動画を削除",
+    success_message="動画を削除しました。",
+):
     """Show a two-step delete control directly below any displayed saved video."""
     if not isinstance(video_photo, dict) or not photo_is_video(video_photo):
         return
@@ -16827,7 +16855,7 @@ def render_video_delete_controls(video_photo, key_prefix):
 
     if not st.session_state.get(state_key):
         if st.button(
-            "🗑 この動画を削除",
+            str(begin_label or "🗑 この動画を削除"),
             use_container_width=True,
             key=f"video_delete_begin_{safe_prefix}_{photo_id}",
         ):
@@ -16838,7 +16866,7 @@ def render_video_delete_controls(video_photo, key_prefix):
         delete_col, cancel_col = st.columns([1.35, 0.85], gap="small")
         with delete_col:
             if st.button(
-                "動画を削除",
+                str(confirm_label or "動画を削除"),
                 type="primary",
                 use_container_width=True,
                 key=f"video_delete_yes_{safe_prefix}_{photo_id}",
@@ -16846,7 +16874,10 @@ def render_video_delete_controls(video_photo, key_prefix):
                 try:
                     delete_video_and_related_data(video_photo)
                     st.session_state.pop(state_key, None)
-                    reload_current_page_after_action("_video_delete_notice", "動画を削除しました。")
+                    reload_current_page_after_action(
+                        "_video_delete_notice",
+                        str(success_message or "動画を削除しました。"),
+                    )
                 except Exception as exc:
                     st.error("動画を削除できませんでした。")
                     with st.expander("保護者向け詳細"):
@@ -30023,6 +30054,15 @@ def page_moments():
                     st.error("確認済みにできませんでした。")
                     with st.expander("保護者向け詳細"):
                         st.code(str(exc))
+
+            st.caption("候補写真も元動画も不要な場合はこちらです。")
+            render_video_delete_controls(
+                current_video,
+                f"moments_ready_delete_{current_video.get('id')}",
+                begin_label="🗑 いい瞬間を残さず動画を削除",
+                confirm_label="写真を残さず削除",
+                success_message="候補写真を残さず、動画を削除しました。",
+            )
         else:
             st.info("確認できる写真は現在ありません。AIの切り取り処理が終わるとここに表示されます。")
 
@@ -30034,6 +30074,13 @@ def page_moments():
                     status = str((selection or {}).get("status") or "").lower()
                     label = "処理中" if status != "error" else "エラー"
                     st.write(f"{idx}. {_moments_video_title(video)}　— {label}")
+                    render_video_delete_controls(
+                        video,
+                        f"moments_pending_delete_{video.get('id')}_{idx}",
+                        begin_label="🗑 この動画を削除",
+                        confirm_label="処理を止めて削除",
+                        success_message="切り抜き処理を止め、動画を削除しました。",
+                    )
                 if st.button("状態を更新", use_container_width=True, key="moments_pending_refresh_v387"):
                     st.rerun()
         return
@@ -30069,6 +30116,13 @@ def page_moments():
         current_reviewed = reviewed[reviewed_index]
         st.caption(_moments_video_title(current_reviewed))
         _render_moments_picker(current_reviewed, 1000 + reviewed_index)
+        render_video_delete_controls(
+            current_reviewed,
+            f"moments_reviewed_delete_{current_reviewed.get('id')}",
+            begin_label="🗑 この元動画を削除",
+            confirm_label="元動画を削除",
+            success_message="元動画を削除しました。日記に残した写真はそのままです。",
+        )
 
         st.divider()
         with st.expander("確認済み動画の整理"):
