@@ -35,7 +35,10 @@ import streamlit as st
 # Freshly generated update: 2026-09-13 JST
 GENERATED_UPDATE_JST = "2026-09-13T01:09:00+09:00"
 
-APP_BUILD = "v407"
+APP_BUILD = "v408"
+# v408: While a photo voice is playing, actively keep the YouTube iframe playing
+# at 80%. Android WebView may pause the iframe when the HTML voice player starts;
+# detect that state immediately and restore BGM during—not after—the voice.
 # v407: Replay requests Android media focus at playback start and again after the
 # WebView returns from background. Restore YouTube/photo voice playback and the
 # current headphone route without restarting the replay from the beginning.
@@ -21064,6 +21067,7 @@ def render_monthly_replay_player(period_label, review, playback, photo_items, cu
       let burariVoicePlaybackActive = false;
       let burariSlideAdvancePending = false;
       let burariVoiceSafetyTimer = null;
+      let burariVoiceBgmKeepAliveTimer = null;
       const burariNormalMusicVolume = 100;
       const burariVoiceMusicVolume = 80;
       let burariVoiceAutoTimer = null;
@@ -21159,6 +21163,45 @@ def render_monthly_replay_player(period_label, review, playback, photo_items, cu
         burariSetMusicVolume(burariVoicePlaybackActive ? burariVoiceMusicVolume : burariNormalMusicVolume);
       }}
 
+      function burariStopVoiceBgmKeepAlive() {{
+        if (burariVoiceBgmKeepAliveTimer) {{
+          clearInterval(burariVoiceBgmKeepAliveTimer);
+          burariVoiceBgmKeepAliveTimer = null;
+        }}
+      }}
+
+      function burariKeepBgmDuringVoice() {{
+        if (!burariVoicePlaybackActive || !burariReplayPlaybackActive || !burariPlayerReady || !burariPlayer) {{
+          burariStopVoiceBgmKeepAlive();
+          return;
+        }}
+        const restoreBgm = () => {{
+          if (!burariVoicePlaybackActive || !burariReplayPlaybackActive || document.hidden) return;
+          try {{
+            const state = (typeof burariPlayer.getPlayerState === 'function')
+              ? burariPlayer.getPlayerState()
+              : null;
+            const volume = (typeof burariPlayer.getVolume === 'function')
+              ? Number(burariPlayer.getVolume())
+              : -1;
+            if (volume !== burariVoiceMusicVolume) burariSetMusicVolume(burariVoiceMusicVolume);
+            const shouldRestart = !window.YT ||
+              state === YT.PlayerState.PAUSED ||
+              state === YT.PlayerState.CUED ||
+              state === YT.PlayerState.UNSTARTED;
+            if (shouldRestart && typeof burariPlayer.playVideo === 'function') {{
+              burariRequestNativeAudioFocus();
+              burariPlayer.playVideo();
+              burariSetMusicVolume(burariVoiceMusicVolume);
+            }}
+          }} catch (_) {{}}
+        }};
+        restoreBgm();
+        if (!burariVoiceBgmKeepAliveTimer) {{
+          burariVoiceBgmKeepAliveTimer = setInterval(restoreBgm, 280);
+        }}
+      }}
+
       function burariRestoreReplayAfterForeground() {{
         if (!burariReplayPlaybackActive || !burariPlayerReady || !burariPlayer) return;
         const now = Date.now();
@@ -21229,6 +21272,7 @@ def render_monthly_replay_player(period_label, review, playback, photo_items, cu
       }}
 
       function burariFinishVoice(statusText = '写真の声を聞き終わりました。', resumeMusic = true) {{
+        burariStopVoiceBgmKeepAlive();
         if (burariVoiceSafetyTimer) {{
           clearTimeout(burariVoiceSafetyTimer);
           burariVoiceSafetyTimer = null;
@@ -21402,6 +21446,7 @@ def render_monthly_replay_player(period_label, review, playback, photo_items, cu
           clearInterval(burariActivityHeartbeat);
           burariActivityHeartbeat = null;
         }}
+        burariStopVoiceBgmKeepAlive();
         if (burariForegroundRestoreTimer) {{
           clearTimeout(burariForegroundRestoreTimer);
           burariForegroundRestoreTimer = null;
@@ -21471,8 +21516,12 @@ def render_monthly_replay_player(period_label, review, playback, photo_items, cu
         }} catch (_) {{}}
         burariVoiceAudio.src = burariCurrentVoiceUrl;
         const playPromise = burariVoiceAudio.play();
+        // The voice player can make Android WebView pause YouTube a fraction of a
+        // second later. Start monitoring now so BGM is restored while voice continues.
+        burariKeepBgmDuringVoice();
         if (playPromise && typeof playPromise.then === 'function') {{
           playPromise.then(() => {{
+            burariKeepBgmDuringVoice();
             if (burariStatus) burariStatus.textContent = autoTriggered
               ? '写真に付いた声を自動再生しています。'
               : 'この写真の声を再生しています。';
@@ -21645,6 +21694,12 @@ def render_monthly_replay_player(period_label, review, playback, photo_items, cu
                   burariConfirmRequestedPosition(0);
                 }} else if (!burariMusicWatchTimer) {{
                   burariStartMusicEndWatch();
+                }}
+              }} else if (event.data === YT.PlayerState.PAUSED) {{
+                // Starting a photo voice can cause an Android WebView media-session
+                // pause. This is not a user stop: immediately keep BGM at 80%.
+                if (burariReplayPlaybackActive && burariVoicePlaybackActive && !document.hidden) {{
+                  burariKeepBgmDuringVoice();
                 }}
               }} else if (event.data === YT.PlayerState.ENDED) {{
                 // ENDED is a YouTube-side end signal (requested segment or source video).
