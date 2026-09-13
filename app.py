@@ -33,9 +33,16 @@ from zoneinfo import ZoneInfo
 import streamlit as st
 
 # Freshly generated update: 2026-09-13 JST
-GENERATED_UPDATE_JST = "2026-09-13T14:45:00+09:00"
+GENERATED_UPDATE_JST = "2026-09-13T20:14:00+09:00"
 
-APP_BUILD = "v412"
+APP_BUILD = "v416"
+# v416: Add GPS-confirmed evening tourism review around 20:00, dedicated deep link, and local comment saving.
+# Restore Android discovery deep-link compatibility alongside the v413 external Maps bridge.
+# v415: Move the Settings heading to the top of the page and separate it from the setting controls with a divider.
+# v414: Raise the saved/imported video size limit from 100MB to 150MB without changing time limits.
+# v413: Route actions use a token-protected Android external-app bridge so Google Maps
+# opens outside the embedded WebView. Nearby, notification results, and toilet-map popups
+# all use the same native route path; browser/PWA keeps an external-tab fallback.
 # v412: On every fresh entry, Good Moments opens the newest unreviewed video first.
 # Route buttons now navigate from the top-level app context through a v2 launcher;
 # toilet-map popup route taps relay to the same launcher instead of relying on iframe
@@ -909,7 +916,7 @@ VIDEO_PROCESSING_MAX_SECONDS = 75
 # A typical 60-second in-app recording fits comfortably within this reserve. Keep a
 # conservative margin because browser/device bitrates vary.
 VIDEO_RECORDING_RESERVE_BYTES = 36 * 1024 * 1024
-VIDEO_MAX_BYTES = 100 * 1024 * 1024
+VIDEO_MAX_BYTES = 150 * 1024 * 1024
 VIDEO_AI_MAX_SELECTIONS = 6  # いい瞬間の切り抜き枚数
 # Good Moments sampling is duration-aware and capped at 20 candidate frames:
 #   <=10 sec -> every 0.5 sec
@@ -6241,7 +6248,7 @@ def sync_pending_tags_from_browser_v166():
 _HISTORY_JS = r"""
 export default function(component) {
   const { data, setTriggerValue } = component;
-  const validPages = new Set(['home', 'camera', 'videos', 'moments', 'diary', 'review', 'review_map', 'review_project', 'review_monthly', 'review_tag', 'review_history', 'nearby', 'discovery_results', 'toilets', 'settings', 'settings_moments', 'settings_moments_definition', 'settings_location', 'settings_account']);
+  const validPages = new Set(['home', 'camera', 'videos', 'moments', 'diary', 'review', 'review_map', 'review_project', 'review_monthly', 'review_tag', 'review_history', 'nearby', 'discovery_results', 'evening_review', 'toilets', 'settings', 'settings_moments', 'settings_moments_definition', 'settings_location', 'settings_account']);
   const marker = '__tokyo_burari_page__';
   const guardMarker = '__tokyo_burari_first_level_guard__';
   const requestedPage = validPages.has(data?.page) ? data.page : 'home';
@@ -10171,29 +10178,63 @@ export default function(component) {
   const button = parentElement.querySelector('#burari-route-launch-v412');
   const listenerOnly = Boolean(data?.listener_only);
   const ownUrl = String(data?.url || '');
-  const messageType = 'tokyo-burari-open-route-v412';
+  const nativeBridgeToken = String(data?.native_bridge_token || '');
+  const legacyMessageType = 'tokyo-burari-open-route-v412';
+  const nativeMessageType = 'burari-native-external-request-v1';
 
   const safeRouteUrl = (value) => {
     try {
       const parsed = new URL(String(value || ''), window.location.href);
       if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') return '';
-      if (!/(^|\.)google\.com$/i.test(parsed.hostname) && !/(^|\.)maps\.google\.com$/i.test(parsed.hostname)) return '';
+      const host = String(parsed.hostname || '').toLowerCase();
+      if (!(host === 'google.com' || host.endsWith('.google.com'))) return '';
+      if (!String(parsed.pathname || '').startsWith('/maps/dir')) return '';
       return parsed.href;
     } catch (_) { return ''; }
+  };
+
+  const askAndroidToOpenRoute = (url) => {
+    if (!nativeBridgeToken) return false;
+    // addJavascriptInterface is normally visible in every WebView frame. Use it first.
+    try {
+      const bridge = globalThis.BurariExternal || window.BurariExternal || null;
+      if (bridge && typeof bridge.openRoute === 'function') {
+        bridge.openRoute(nativeBridgeToken, url);
+        return true;
+      }
+    } catch (_) {}
+    // Streamlit can isolate component frames. The Android host installs this relay on
+    // the trusted top page, so the request still reaches ACTION_VIEW without navigating
+    // this iframe/WebView to google.com.
+    try {
+      const target = (window.parent && window.parent !== window) ? window.parent : window;
+      target.postMessage({
+        type: nativeMessageType,
+        request_id: `route-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+        action: 'open_route',
+        token: nativeBridgeToken,
+        url,
+      }, '*');
+      return true;
+    } catch (_) { return false; }
   };
 
   const openRoute = (value) => {
     const url = safeRouteUrl(value);
     if (!url) return;
-    // Assign the current top-level browsing context. Android's WebView client sees this
-    // as a main-frame navigation and can hand the Google Maps URL to the Maps app.
-    try { window.location.assign(url); return; } catch (_) {}
-    try { window.location.href = url; } catch (_) {}
+    if (askAndroidToOpenRoute(url)) return;
+    // Browser/PWA fallback only. Never use same-frame navigation for the Android app,
+    // because Google Maps can reject an embedded WebView with ERR_BLOCKED_BY_RESPONSE.
+    try {
+      const opened = window.open(url, '_blank', 'noopener,noreferrer');
+      if (opened) return;
+    } catch (_) {}
+    try { window.top.location.href = url; } catch (_) {}
   };
 
   const onMessage = (event) => {
     const payload = event?.data;
-    if (!payload || payload.type !== messageType) return;
+    if (!payload || payload.type !== legacyMessageType) return;
     openRoute(payload.url);
   };
   window.addEventListener('message', onMessage);
@@ -10247,7 +10288,12 @@ def render_route_launcher_v412(place, *, label="🗺️ この場所に案内し
     component = _get_route_launcher_component_v412()
     if component is not None:
         component(
-            data={"url": url, "label": label, "listener_only": False},
+            data={
+                "url": url,
+                "label": label,
+                "listener_only": False,
+                "native_bridge_token": str(_query_param_scalar("native_bridge_token") or ""),
+            },
             key=key,
         )
     else:
@@ -10268,7 +10314,7 @@ def render_route_message_listener_v412(*, key="route_listener_v412"):
     """Listen for route requests from sandboxed map iframes and navigate the main app."""
     component = _get_route_launcher_component_v412()
     if component is not None:
-        component(data={"listener_only": True}, key=key)
+        component(data={"listener_only": True, "native_bridge_token": str(_query_param_scalar("native_bridge_token") or "")}, key=key)
 
 
 def _nearby_distance_text(place):
@@ -23899,7 +23945,185 @@ def consume_auto_discovery_deep_link():
 
 
 
-VALID_APP_PAGES = {"home", "camera", "videos", "moments", "diary", "review", "review_map", "review_project", "review_monthly", "review_tag", "review_history", "nearby", "discovery_results", "toilets", "field_notes", "settings", "settings_moments", "settings_moments_definition", "settings_location", "settings_account"}
+def consume_evening_review_deep_link():
+    """Open the GPS-confirmed evening tourism review sent by Android."""
+    try:
+        encoded = str(st.query_params.get("evening_review_places", "") or "").strip()
+        day_from_url = str(st.query_params.get("evening_review_day", "") or "").strip()
+    except Exception:
+        return False
+    if not encoded:
+        return False
+    consumed_key = f"{day_from_url}:{hashlib.sha1(encoded.encode('utf-8')).hexdigest()[:16]}"
+    if consumed_key == str(st.session_state.get("_evening_review_consumed_key_v416") or ""):
+        return False
+    try:
+        if len(encoded) > 48_000:
+            raise ValueError("evening review payload too large")
+        padded = encoded + ("=" * ((4 - len(encoded) % 4) % 4))
+        payload = json.loads(base64.urlsafe_b64decode(padded.encode("ascii")).decode("utf-8"))
+        if not isinstance(payload, dict):
+            raise ValueError("invalid evening review payload")
+        day_key = str(day_from_url or payload.get("day") or "").strip()[:10]
+        safe_places = []
+        for raw in list(payload.get("places") or [])[:6]:
+            if not isinstance(raw, dict):
+                continue
+            event_id = str(raw.get("event_id") or "").strip()[:160]
+            name = str(raw.get("name") or "").strip()[:120]
+            if not event_id or not name:
+                continue
+            lat = float(raw.get("lat"))
+            lon = float(raw.get("lon"))
+            if not (-90 <= lat <= 90 and -180 <= lon <= 180):
+                continue
+            try:
+                visited_at_ms = max(0, int(raw.get("visited_at_ms") or 0))
+            except Exception:
+                visited_at_ms = 0
+            safe_places.append({
+                "event_id": event_id,
+                "place_id": str(raw.get("place_id") or "")[:180],
+                "name": name,
+                "lat": lat,
+                "lon": lon,
+                "category": str(raw.get("category") or "")[:80],
+                "experience_axis": str(raw.get("experience_axis") or "")[:80],
+                "visited_at_ms": visited_at_ms,
+                "comment": str(raw.get("comment") or "")[:1200],
+            })
+        if not safe_places:
+            raise ValueError("no reviewed visit candidates")
+        st.session_state["_evening_review_result_v416"] = {
+            "day": day_key,
+            "places": safe_places,
+        }
+        st.session_state["_evening_review_consumed_key_v416"] = consumed_key
+        st.session_state["main_page"] = "evening_review"
+        st.session_state["_history_action"] = "replace"
+        return True
+    except Exception:
+        st.session_state["_evening_review_open_error_v416"] = (
+            "今日の立ち寄り記録を読み込めませんでした。アプリを開き直してお試しください。"
+        )
+        return False
+
+
+def _render_evening_review_native_save_v416(event_id, comment, key):
+    token = str(_query_param_scalar("native_bridge_token") or "")
+    if not token:
+        st.warning("このコメントの保存はAndroid版ぶらり旅で利用できます。")
+        return
+    payload = {
+        "type": "burari-native-review-request-v1",
+        "request_id": uuid.uuid4().hex,
+        "action": "save_comment",
+        "token": token,
+        "event_id": str(event_id or ""),
+        "comment": str(comment or "")[:1200],
+    }
+    request_json = json.dumps(payload, ensure_ascii=False).replace("</", "<\\/")
+    component_html = f"""
+    <div id="status" style="font-family:system-ui,-apple-system,sans-serif;font-size:13px;color:#556;min-height:24px;padding:2px 0;">保存しています…</div>
+    <script>
+    (() => {{
+      const request = {request_json};
+      const status = document.getElementById('status');
+      let finished = false;
+      const done = (ok, text) => {{
+        if (finished) return;
+        finished = true;
+        status.textContent = text;
+        status.style.color = ok ? '#27734a' : '#a34a3d';
+        window.removeEventListener('message', onMessage);
+      }};
+      const onMessage = (event) => {{
+        const data = event && event.data;
+        if (!data || data.type !== 'burari-native-review-response-v1' || String(data.request_id || '') !== String(request.request_id || '')) return;
+        done(Number(data.result || 0) === 1, Number(data.result || 0) === 1 ? '保存しました。' : '保存できませんでした。もう一度お試しください。');
+      }};
+      window.addEventListener('message', onMessage);
+      try {{ window.parent.postMessage(request, '*'); }} catch (_) {{ done(false, '保存できませんでした。'); }}
+      setTimeout(() => {{ if (!finished) done(false, '保存の確認に時間がかかっています。もう一度お試しください。'); }}, 2600);
+    }})();
+    </script>
+    """
+    st.components.v1.html(component_html, height=34, scrolling=False)
+
+
+def page_evening_review():
+    result = st.session_state.get("_evening_review_result_v416")
+    if not isinstance(result, dict):
+        page_top("🌙 今日のぶらり旅", "今日の立ち寄り記録を確認できませんでした。")
+        st.info("夜の振り返り通知から開くと、今日立ち寄った可能性が高い場所が表示されます。")
+        return
+
+    places = [p for p in list(result.get("places") or []) if isinstance(p, dict)]
+    page_top(
+        "🌙 今日のぶらり旅",
+        "今日立ち寄った可能性が高い場所を、ひとことだけ振り返ります。",
+    )
+    st.caption(
+        "GPSで観光候補の近くに入り、約3分以上その周辺にいた記録を『立ち寄り』として扱っています。"
+        "近くを通っただけの候補は、この振り返りには出しません。"
+    )
+    if not places:
+        st.info("今日は振り返る立ち寄り場所がありません。")
+        return
+
+    saved_comments = st.session_state.setdefault("_evening_review_saved_comments_v416", {})
+    for index, place in enumerate(places, start=1):
+        event_id = str(place.get("event_id") or "").strip()
+        name = str(place.get("name") or "立ち寄った場所").strip()
+        key_token = hashlib.sha1(event_id.encode("utf-8")).hexdigest()[:12]
+        with st.container(border=True):
+            st.markdown(f"### {index}. {html.escape(name)}")
+            meta = []
+            category = str(place.get("category") or "").strip()
+            if category:
+                meta.append(category)
+            try:
+                visited_ms = int(place.get("visited_at_ms") or 0)
+                if visited_ms > 0:
+                    visited_dt = datetime.fromtimestamp(visited_ms / 1000.0, tz=ZoneInfo(APP_TIMEZONE))
+                    meta.append(visited_dt.strftime("%H:%Mごろ"))
+            except Exception:
+                pass
+            if meta:
+                st.caption(" ／ ".join(meta))
+            st.caption("どんなところだった？ また行きたい？ 気になったことは？ ひとつだけでも大丈夫です。")
+
+            initial_comment = str(saved_comments.get(event_id) or place.get("comment") or "")[:1200]
+            field_key = f"evening_review_comment_v416_{key_token}"
+            if field_key not in st.session_state:
+                st.session_state[field_key] = initial_comment
+            comment = st.text_area(
+                "ひとこと",
+                key=field_key,
+                height=82,
+                max_chars=1200,
+                placeholder="例：大きな門が気になった。また見に行きたい。",
+            )
+            if st.button(
+                "このひとことを保存",
+                use_container_width=True,
+                key=f"evening_review_save_v416_{key_token}",
+            ):
+                clean = str(comment or "").strip()
+                if not clean:
+                    st.warning("ひとこと書いてから保存してください。")
+                else:
+                    saved_comments[event_id] = clean
+                    place["comment"] = clean
+                    _render_evening_review_native_save_v416(
+                        event_id,
+                        clean,
+                        key=f"evening_review_native_save_v416_{key_token}",
+                    )
+
+    st.caption("何も思いつかなければ、無理にコメントを残す必要はありません。")
+
+VALID_APP_PAGES = {"home", "camera", "videos", "moments", "diary", "review", "review_map", "review_project", "review_monthly", "review_tag", "review_history", "nearby", "discovery_results", "evening_review", "toilets", "field_notes", "settings", "settings_moments", "settings_moments_definition", "settings_location", "settings_account"}
 
 
 def _current_ui_refresh_epoch():
@@ -23976,7 +24200,7 @@ def _sync_recent_camera_state_from_browser(key="home_recent_camera_state_v126"):
 
 def restore_recent_camera_session():
     """Reopen a recently used photo/video camera in the same mode."""
-    if str(st.session_state.get("main_page") or "") == "discovery_results":
+    if str(st.session_state.get("main_page") or "") in {"discovery_results", "evening_review"}:
         return
     if st.session_state.get("_recent_camera_restore_checked", False):
         return
@@ -24117,6 +24341,7 @@ def navigation_parent_node(node=None):
         "review": "home",
         "nearby": "home",
         "discovery_results": "home",
+        "evening_review": "home",
         "toilets": "home",
         "field_notes": "home",
         "settings": "home",
@@ -26689,6 +26914,7 @@ def _render_toilet_map(search_latitude, search_longitude, places, radius_m, *, a
         "radius_m": max(40, int(radius_m or 0)),
         "accuracy_m": accuracy_value if accuracy_value > 0 else 0,
         "search_source": str(search_source or "gps"),
+        "native_bridge_token": str(_query_param_scalar("native_bridge_token") or ""),
         "places": map_places,
     }
     payload_json = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).replace("</", "<\\/")
@@ -26775,14 +27001,49 @@ html,body{{margin:0;padding:0;background:transparent;font-family:-apple-system,B
     const popup = `<div class="toilet-popup-title">${{esc(place.name || 'トイレ')}}</div>` + `<div class="toilet-popup-meta">${{esc(place.category || 'トイレ')}} ・ 徒歩約${{Math.max(1,Number(place.walk_minutes)||1)}}分（${{distanceText}}）</div>` + (pills ? `<div class="toilet-popup-pills">${{pills}}</div>` : '') + (details.length ? `<div class="toilet-popup-detail">${{details.join(' ／ ')}}</div>` : '') + route;
     L.marker([lat,lon], {{icon, riseOnHover:true}}).addTo(map).bindPopup(popup, {{maxWidth:300, closeButton:true}});
   }});
+  const safeRouteUrl = (value) => {{
+    try {{
+      const parsed = new URL(String(value || ''), window.location.href);
+      const host = String(parsed.hostname || '').toLowerCase();
+      if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') return '';
+      if (!(host === 'google.com' || host.endsWith('.google.com'))) return '';
+      if (!String(parsed.pathname || '').startsWith('/maps/dir')) return '';
+      return parsed.href;
+    }} catch (_) {{ return ''; }}
+  }};
+  const openRoute = (value) => {{
+    const routeUrl = safeRouteUrl(value);
+    if (!routeUrl) return;
+    const token = String(data.native_bridge_token || '');
+    if (token) {{
+      try {{
+        const bridge = globalThis.BurariExternal || window.BurariExternal || null;
+        if (bridge && typeof bridge.openRoute === 'function') {{
+          bridge.openRoute(token, routeUrl);
+          return;
+        }}
+      }} catch (_) {{}}
+      try {{
+        window.parent.postMessage({{
+          type:'burari-native-external-request-v1',
+          request_id:`toilet-route-${{Date.now()}}-${{Math.random().toString(36).slice(2)}}`,
+          action:'open_route', token, url:routeUrl
+        }}, '*');
+        return;
+      }} catch (_) {{}}
+    }}
+    try {{
+      const opened = window.open(routeUrl, '_blank', 'noopener,noreferrer');
+      if (opened) return;
+    }} catch (_) {{}}
+    try {{ window.top.location.href = routeUrl; }} catch (_) {{}}
+  }};
   mapNode.addEventListener('click', (event) => {{
     const routeButton = event.target && event.target.closest ? event.target.closest('.toilet-route-button') : null;
     if (!routeButton) return;
     event.preventDefault();
     event.stopPropagation();
-    const routeUrl = String(routeButton.getAttribute('data-route-url') || '');
-    if (!routeUrl) return;
-    try {{ window.parent.postMessage({{type:'tokyo-burari-open-route-v412', url:routeUrl}}, '*'); }} catch (_) {{}}
+    openRoute(String(routeButton.getAttribute('data-route-url') || ''));
   }});
   if ((data.places || []).length) map.fitBounds(bounds, {{padding:[34,34], maxZoom:18}}); else map.setView(center, Number(data.radius_m || 0) <= 80 ? 18 : 17);
   setTimeout(() => map.invalidateSize(), 120);
@@ -27760,8 +28021,7 @@ def page_toilets():
 
     map_accuracy = saved.get("search_accuracy_m") if isinstance(saved, dict) else None
     map_source = saved.get("search_source") if isinstance(saved, dict) else "gps"
-    # v412: receive route taps from the sandboxed Leaflet popup in the top-level app.
-    render_route_message_listener_v412(key=f"toilet_route_listener_v412_{current_signature}")
+    # v413: the Leaflet iframe sends route requests directly to the Android external-app relay.
     if current_lat is not None and current_lon is not None:
         _render_toilet_map(current_lat, current_lon, places, radius_m, accuracy_m=map_accuracy, search_source=map_source)
 
@@ -39695,8 +39955,11 @@ def page_settings_account():
 
 
 def page_settings():
-    # v387: Good Moments is the primary setting and sits above the general Settings
-    # heading. The rest of the page stays intentionally compact on a phone.
+    # v415: The page title comes first so the user immediately knows this is Settings.
+    # A divider separates the heading from the individual setting controls.
+    st.markdown("### ⚙️ 設定")
+    st.divider()
+
     settings_notice = st.session_state.pop("_settings_notice", None)
     if settings_notice:
         st.success(settings_notice)
@@ -39711,8 +39974,6 @@ def page_settings():
             args=("settings_moments", "push"),
         )
         st.caption("動画から残す写真の選び方と、タグ別のお気に入り傾向の反映を設定します。")
-
-    st.markdown("### ⚙️ 設定")
 
     st.markdown("#### AIまとめの調整")
     feedback_status = get_summary_feedback_status()
@@ -39790,9 +40051,10 @@ def page_settings():
 verify_setup()
 require_family_pin()
 init_state()
-# Notification launches must win over camera-session restoration and open the
-# already-completed automatic search result directly.
-consume_auto_discovery_deep_link()
+# Notification launches must win over camera-session restoration. Evening review
+# has priority; ordinary automatic-discovery notifications keep their dedicated page.
+if not consume_evening_review_deep_link():
+    consume_auto_discovery_deep_link()
 # v383: newly saved videos launch their AI job immediately. Full recovery scans are
 # only for interrupted/stale jobs, so keep them off unrelated button reruns and run
 # them lazily on video-related pages.
@@ -39852,6 +40114,10 @@ with st.container(key="app_page_root_v280"):
             with st.expander("保護者向け詳細"):
                 st.code(str(emotion_sync_detail))
 
+    evening_review_open_error = st.session_state.pop("_evening_review_open_error_v416", None)
+    if evening_review_open_error:
+        st.warning(evening_review_open_error)
+
     discovery_open_error = st.session_state.pop("_auto_discovery_open_error", None)
     if discovery_open_error:
         st.warning(discovery_open_error)
@@ -39891,6 +40157,8 @@ with st.container(key="app_page_root_v280"):
         page_nearby()
     elif page == "discovery_results":
         page_discovery_results()
+    elif page == "evening_review":
+        page_evening_review()
     elif page == "toilets":
         page_toilets()
     elif page == "field_notes":
@@ -39916,6 +40184,6 @@ with st.container(key="app_page_root_v280"):
         live_page = str(st.session_state.get("main_page") or "home")
         if (
             page == live_page
-            and page in {"camera", "videos", "moments", "diary", "review", "review_map", "review_project", "review_monthly", "review_tag", "review_history", "nearby", "discovery_results", "toilets", "field_notes", "settings", "settings_moments", "settings_moments_definition", "settings_location", "settings_account"}
+            and page in {"camera", "videos", "moments", "diary", "review", "review_map", "review_project", "review_monthly", "review_tag", "review_history", "nearby", "discovery_results", "evening_review", "toilets", "field_notes", "settings", "settings_moments", "settings_moments_definition", "settings_location", "settings_account"}
         ):
             render_global_bottom_navigation(page)
