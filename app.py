@@ -33,9 +33,10 @@ from zoneinfo import ZoneInfo
 import streamlit as st
 
 # Freshly generated update: 2026-09-13 JST
-GENERATED_UPDATE_JST = "2026-09-14T00:46:00+09:00"
+GENERATED_UPDATE_JST = "2026-09-14T00:58:00+09:00"
 
-APP_BUILD = "v419"
+APP_BUILD = "v420"
+# v420: All-photo library uses a fixed three-column grid in list mode and exactly one photo in enlarged mode, including on narrow phones.
 # v419: All-photo library now supports explicit list/enlarged modes with Previous/Next navigation and direct enlargement from the grid.
 # v418: Add an all-photo library entry from Diary so every saved still photo can be browsed in one chronological gallery.
 # v416: Add GPS-confirmed evening tourism review around 20:00, dedicated deep link, and local comment saving.
@@ -5702,6 +5703,7 @@ export default function(component) {
   const allowVoice = Boolean(data?.allow_voice);
   const allowVoicePreview = Boolean(data?.allow_voice_preview);
   const allowFavorite = Boolean(data?.allow_favorite);
+  const openOnClick = Boolean(data?.open_on_click);
   const carouselKey = String(data?.carousel_key || 'default');
   const carouselStore = `tokyo_burari_diary_carousel_v180_${carouselKey}`;
   const pendingStore = 'tokyo_burari_pending_tags_v166';
@@ -5802,7 +5804,7 @@ export default function(component) {
     }
     let activeMode = String(modeByPhoto[String(photo.id)] || '') === 'parenting' ? 'parenting' : (photo.parenting ? 'parenting' : 'normal');
     const wrap = document.createElement('div'); wrap.className = 'diary-photo-wrap';
-    const card = document.createElement('div'); card.className = 'diary-photo-card'; card.setAttribute('role','button'); card.tabIndex = allowEmotion ? 0 : -1;
+    const card = document.createElement('div'); card.className = 'diary-photo-card'; card.setAttribute('role','button'); card.tabIndex = (allowEmotion || openOnClick) ? 0 : -1;
     const img = document.createElement('img'); img.src = photo.src || ''; img.alt = 'ぶらり旅の写真'; img.loading='lazy'; img.decoding='async'; img.fetchPriority='low'; card.appendChild(img);
     const badge = document.createElement('div'); badge.className='diary-emotion-badge'; card.appendChild(badge);
     if (photo.location) { const location=document.createElement('div'); location.className='diary-photo-location'; location.textContent=`📍 ${photo.location}`; card.appendChild(location); }
@@ -5852,6 +5854,14 @@ export default function(component) {
       };
       card.addEventListener('click', cycle);
       card.addEventListener('keydown', (event) => { if (event.key === 'Enter' || event.key === ' ') cycle(event); });
+    } else if (openOnClick) {
+      const openPhoto = (event) => {
+        event?.preventDefault?.(); event?.stopPropagation?.();
+        setTriggerValue('photo_id', String(photo.id || ''));
+      };
+      card.style.cursor='pointer';
+      card.addEventListener('click', openPhoto);
+      card.addEventListener('keydown', (event) => { if (event.key === 'Enter' || event.key === ' ') openPhoto(event); });
     } else card.style.cursor='default';
 
     wrap.insertBefore(card, wrap.firstChild);
@@ -32417,6 +32427,47 @@ def show_photo_library_dialog_v418(photo, photo_number, total_count):
             st.caption(f"文字起こし: {transcript}")
 
 
+def render_photo_library_single_v420(photo, photo_number, total_count):
+    """Render exactly one saved photo inline for the enlarged library mode."""
+    photo = photo if isinstance(photo, dict) else {}
+    path = str(photo.get("storage_path") or "").strip()
+    try:
+        signed = signed_photo_url_map((path,), expires_in=1800) if path else {}
+    except Exception:
+        signed = {}
+    src = photo_display_url(photo, signed, max_px=1800, quality=94)
+    if src:
+        st.image(src, use_container_width=True)
+    else:
+        st.warning("この写真を表示できませんでした。")
+
+    st.caption(f"{photo_number} / {total_count}　・　{_photo_library_captured_label_v418(photo.get('captured_at'))}")
+    location = str(photo_location_label(photo) or "").strip()
+    if location:
+        st.caption(f"📍 {location}")
+
+    emotion_meta = photo_selected_tag_meta(photo)
+    emotion_label = str(emotion_meta.get("label") or "").strip()
+    emotion_emoji = str(emotion_meta.get("emoji") or "").strip()
+    if emotion_label or emotion_emoji:
+        st.caption(f"{emotion_emoji} {emotion_label}".strip())
+
+    voice_meta = photo_voice_note_meta(photo)
+    voice_path = str(voice_meta.get("storage_path") or "").strip()
+    if voice_path:
+        try:
+            voice_signed = signed_photo_url_map((voice_path,), expires_in=1800)
+            voice_url = str(voice_signed.get(voice_path) or "")
+        except Exception:
+            voice_url = ""
+        if voice_url:
+            st.markdown("##### 🎙 この写真の声")
+            st.audio(voice_url)
+        transcript = str(voice_meta.get("transcript") or "").strip()
+        if transcript:
+            st.caption(f"文字起こし: {transcript}")
+
+
 def page_photo_library_v418():
     page_top(
         "🖼️ これまで撮った写真",
@@ -32490,7 +32541,7 @@ def page_photo_library_v418():
                 st.session_state[index_key] = min(len(photos) - 1, enlarged_index + 1)
                 st.rerun()
 
-        show_photo_library_dialog_v418(photos[enlarged_index], enlarged_index + 1, len(photos))
+        render_photo_library_single_v420(photos[enlarged_index], enlarged_index + 1, len(photos))
         return
 
     per_page = 30
@@ -32511,43 +32562,89 @@ def page_photo_library_v418():
     except Exception:
         signed = {}
 
-    for row_start in range(0, len(visible), 3):
-        cols = st.columns(3, gap="small")
-        for offset in range(3):
-            local_index = row_start + offset
-            if local_index >= len(visible):
-                continue
-            photo = visible[local_index]
-            absolute_index = start + local_index
-            photo_id = str(photo.get("id") or absolute_index)
-            with cols[offset]:
-                src = photo_display_url(photo, signed, max_px=520, quality=80)
-                if src:
-                    meta = photo_selected_tag_meta(photo)
-                    border = str(meta.get("color") or "#AEB6C2")
-                    emoji = str(meta.get("emoji") or "")
-                    voice_badge = "🎙" if photo_voice_note_storage_path(photo) else ""
-                    badges = " ".join(x for x in (emoji, voice_badge) if x)
-                    badge_html = (
-                        f'<span style="position:absolute;right:6px;bottom:6px;background:rgba(255,255,255,.92);'
-                        f'border-radius:999px;padding:2px 5px;font-size:16px;box-shadow:0 2px 6px rgba(0,0,0,.18);">{html.escape(badges)}</span>'
-                        if badges else ""
-                    )
-                    st.markdown(
-                        f'<div style="position:relative;padding:3px;border:3px solid {html.escape(border, quote=True)};border-radius:11px;">'
-                        f'<img src="{html.escape(src, quote=True)}" loading="lazy" decoding="async" '
-                        f'style="display:block;width:100%;aspect-ratio:1/1;object-fit:cover;border-radius:7px;" />{badge_html}</div>',
-                        unsafe_allow_html=True,
-                    )
-                st.caption(_photo_library_captured_label_v418(photo.get("captured_at")))
-                if st.button(
-                    "拡大",
-                    use_container_width=True,
-                    key=f"all_photo_open_v419_{current_page}_{photo_id}",
-                ):
-                    st.session_state[index_key] = absolute_index
-                    st.session_state[mode_key] = "拡大モード"
-                    st.rerun()
+    cards = []
+    photo_ids = []
+    for local_index, photo in enumerate(visible):
+        photo_id = str(photo.get("id") or (start + local_index))
+        captured_label = _photo_library_captured_label_v418(photo.get("captured_at"))
+        has_voice = bool(photo_voice_note_storage_path(photo))
+        cards.append({
+            "id": photo_id,
+            "src": photo_display_url(photo, signed, max_px=520, quality=80),
+            "emotion": photo_selected_tag_values(photo)[0],
+            "parenting": photo_selected_tag_values(photo)[1],
+            "location": str(photo_location_label(photo) or ""),
+            "tags": photo_ai_tags(photo)[:12],
+            "favorite": photo_favorite_is_enabled(photo),
+            "has_voice": has_voice,
+            "shared_meta": f"{captured_label}{' ・ 🎙 声あり' if has_voice else ''}",
+        })
+        photo_ids.append(photo_id)
+
+    gallery_component = _get_diary_gallery_component()
+    if gallery_component is not None and cards:
+        result = gallery_component(
+            data={
+                "photos": cards,
+                "single": False,
+                "allow_delete": False,
+                "allow_emotion": False,
+                "allow_share": False,
+                "allow_voice": False,
+                "allow_voice_preview": False,
+                "allow_favorite": False,
+                "open_on_click": True,
+                "carousel_key": f"all_photo_library_page_{current_page}_v420",
+                "family_key": current_family_key(),
+                "member_key": current_member_key(),
+                "pending_param": PENDING_EMOTION_QUERY_PARAM,
+            },
+            key=f"all_photo_library_grid_v420_{current_page}_{_current_ui_refresh_epoch()}",
+            on_photo_id_change=lambda: None,
+        )
+        clicked = str(getattr(result, "photo_id", "") or "")
+        if clicked in photo_ids:
+            st.session_state[index_key] = start + photo_ids.index(clicked)
+            st.session_state[mode_key] = "拡大モード"
+            st.rerun()
+    else:
+        # Fallback for older component runtimes. Keep three columns where supported.
+        for row_start in range(0, len(visible), 3):
+            cols = st.columns(3, gap="small")
+            for offset in range(3):
+                local_index = row_start + offset
+                if local_index >= len(visible):
+                    continue
+                photo = visible[local_index]
+                absolute_index = start + local_index
+                photo_id = str(photo.get("id") or absolute_index)
+                with cols[offset]:
+                    src = photo_display_url(photo, signed, max_px=520, quality=80)
+                    if src:
+                        meta = photo_selected_tag_meta(photo)
+                        border = str(meta.get("color") or "#AEB6C2")
+                        emoji = str(meta.get("emoji") or "")
+                        voice_badge = "🎙" if photo_voice_note_storage_path(photo) else ""
+                        badges = " ".join(x for x in (emoji, voice_badge) if x)
+                        badge_html = (
+                            f'<span style="position:absolute;right:6px;bottom:6px;background:rgba(255,255,255,.92);'
+                            f'border-radius:999px;padding:2px 5px;font-size:16px;box-shadow:0 2px 6px rgba(0,0,0,.18);">{html.escape(badges)}</span>'
+                            if badges else ""
+                        )
+                        st.markdown(
+                            f'<div style="position:relative;padding:3px;border:3px solid {html.escape(border, quote=True)};border-radius:11px;">'
+                            f'<img src="{html.escape(src, quote=True)}" loading="lazy" decoding="async" '
+                            f'style="display:block;width:100%;aspect-ratio:1/1;object-fit:cover;border-radius:7px;" />{badge_html}</div>',
+                            unsafe_allow_html=True,
+                        )
+                    if st.button(
+                        "拡大",
+                        use_container_width=True,
+                        key=f"all_photo_open_fallback_v420_{current_page}_{photo_id}",
+                    ):
+                        st.session_state[index_key] = absolute_index
+                        st.session_state[mode_key] = "拡大モード"
+                        st.rerun()
 
     if page_count > 1:
         st.caption(f"{current_page + 1} / {page_count}ページ　（1ページ最大30枚）")
