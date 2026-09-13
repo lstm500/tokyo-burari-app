@@ -33,9 +33,10 @@ from zoneinfo import ZoneInfo
 import streamlit as st
 
 # Freshly generated update: 2026-09-14 JST
-GENERATED_UPDATE_JST = "2026-09-14T01:05:00+09:00"
+GENERATED_UPDATE_JST = "2026-09-14T01:20:00+09:00"
 
-APP_BUILD = "v421"
+APP_BUILD = "v422"
+# v422: Add multi-select batch deletion to the Video Vault with explicit final confirmation and retained single-video deletion.
 # v421: Expand both photo-tag palettes from 6 to 10 choices. Normal adds のほほん / 美味しい / きれい / 複雑; こどもーど adds むーん / ピース / 教えて / キリッ with distinct colors.
 # v420: All-photo library uses a fixed three-column grid in list mode and exactly one photo in enlarged mode, including on narrow phones.
 # v419: All-photo library now supports explicit list/enlarged modes with Previous/Next navigation and direct enlargement from the grid.
@@ -17634,6 +17635,150 @@ def show_video_delete_dialog(video_photo):
             st.rerun()
 
 
+
+def render_video_batch_delete_controls(videos):
+    """Allow multiple saved videos to be selected and deleted in one confirmed action."""
+    rows = [row for row in list(videos or []) if isinstance(row, dict) and photo_is_video(row)]
+    if not rows:
+        return
+
+    open_key = "_video_batch_delete_open"
+    selected_key = "_video_batch_delete_selected_ids"
+    confirm_key = "_video_batch_delete_confirm"
+
+    valid_ids = [str(row.get("id") or "").strip() for row in rows]
+    valid_ids = [value for value in valid_ids if value]
+    row_by_id = {str(row.get("id") or "").strip(): row for row in rows if str(row.get("id") or "").strip()}
+
+    # Drop stale selections when the underlying vault changed after a deletion.
+    stored = st.session_state.get(selected_key)
+    if isinstance(stored, list):
+        cleaned = [str(value) for value in stored if str(value) in row_by_id]
+        if cleaned != stored:
+            st.session_state[selected_key] = cleaned
+    elif stored is not None:
+        st.session_state[selected_key] = []
+
+    if not st.session_state.get(open_key):
+        if st.button(
+            "🗑 動画をまとめて削除",
+            use_container_width=True,
+            key="video_batch_delete_open_button",
+        ):
+            st.session_state[open_key] = True
+            st.session_state.pop(confirm_key, None)
+            st.rerun()
+        return
+
+    with st.container(border=True):
+        st.markdown("#### 🗑 動画をまとめて削除")
+        st.caption("削除する動画を複数選んでください。削除前にもう一度確認します。")
+
+        all_col, clear_col, close_col = st.columns(3, gap="small")
+        with all_col:
+            if st.button("すべて選択", use_container_width=True, key="video_batch_select_all"):
+                st.session_state[selected_key] = list(valid_ids)
+                st.session_state.pop(confirm_key, None)
+                st.rerun()
+        with clear_col:
+            if st.button("選択解除", use_container_width=True, key="video_batch_clear_all"):
+                st.session_state[selected_key] = []
+                st.session_state.pop(confirm_key, None)
+                st.rerun()
+        with close_col:
+            if st.button("閉じる", use_container_width=True, key="video_batch_close"):
+                st.session_state.pop(open_key, None)
+                st.session_state.pop(selected_key, None)
+                st.session_state.pop(confirm_key, None)
+                st.rerun()
+
+        def _batch_video_label(video_id):
+            row = row_by_id.get(str(video_id)) or {}
+            metadata = photo_media_metadata(row)
+            parts = [_moments_video_title(row)]
+            duration_ms = max(0, int(metadata.get("video_duration_ms") or 0))
+            size_value = max(0, int(metadata.get("video_size_bytes") or 0))
+            if duration_ms:
+                parts.append(f"{max(1, round(duration_ms / 1000))}秒")
+            if size_value:
+                parts.append(format_storage_size(size_value))
+            return " ／ ".join(part for part in parts if part)
+
+        selected_ids = st.multiselect(
+            "削除する動画",
+            options=valid_ids,
+            format_func=_batch_video_label,
+            key=selected_key,
+            placeholder="動画を選択",
+        )
+        selected_rows = [row_by_id[value] for value in selected_ids if value in row_by_id]
+        selected_size = sum(
+            max(0, int(photo_media_metadata(row).get("video_size_bytes") or 0))
+            for row in selected_rows
+        )
+        if selected_rows:
+            st.caption(f"選択中：{len(selected_rows)}本 ／ 約 {format_storage_size(selected_size)}")
+        else:
+            st.caption("まだ動画を選択していません。")
+
+        if not st.session_state.get(confirm_key):
+            if st.button(
+                f"選んだ動画を削除する（{len(selected_rows)}本）",
+                type="primary",
+                use_container_width=True,
+                disabled=not selected_rows,
+                key="video_batch_delete_prepare",
+            ):
+                st.session_state[confirm_key] = True
+                st.rerun()
+            return
+
+        st.warning(
+            f"選択した{len(selected_rows)}本の元動画を削除します。"
+            "削除した動画は動画保管庫から元に戻せません。"
+        )
+        yes_col, no_col = st.columns([1.35, 0.85], gap="small")
+        with yes_col:
+            if st.button(
+                f"{len(selected_rows)}本を削除",
+                type="primary",
+                use_container_width=True,
+                disabled=not selected_rows,
+                key="video_batch_delete_execute",
+            ):
+                deleted_count = 0
+                failures = []
+                for row in list(selected_rows):
+                    try:
+                        delete_video_and_related_data(row)
+                        deleted_count += 1
+                    except Exception as exc:
+                        failures.append((_moments_video_title(row), str(exc)))
+
+                st.session_state.pop(open_key, None)
+                st.session_state.pop(selected_key, None)
+                st.session_state.pop(confirm_key, None)
+                st.session_state.pop("_video_library_grid_page", None)
+                st.session_state["_video_library_grid_serial"] = int(
+                    st.session_state.get("_video_library_grid_serial") or 0
+                ) + 1
+
+                if failures:
+                    notice = f"{deleted_count}本を削除しました。{len(failures)}本は削除できませんでした。"
+                    st.session_state["_video_batch_delete_failures"] = failures
+                else:
+                    notice = f"選択した動画を{deleted_count}本削除しました。"
+                    st.session_state.pop("_video_batch_delete_failures", None)
+                reload_current_page_after_action("_video_delete_notice", notice)
+        with no_col:
+            if st.button(
+                "やめる",
+                use_container_width=True,
+                key="video_batch_delete_cancel",
+            ):
+                st.session_state.pop(confirm_key, None)
+                st.rerun()
+
 def reset_photo_conversation(trip_id, photo_id):
     """Clear only the conversation/signals for one photo while keeping the image."""
     client = supabase_client()
@@ -31269,6 +31414,15 @@ def page_videos():
     if not videos:
         st.info("DBに登録された動画はありません。上の「Storage実体を確認」で、未登録の動画が残っていないか確認できます。")
         return
+
+    batch_failures = st.session_state.pop("_video_batch_delete_failures", None)
+    if batch_failures:
+        with st.expander("削除できなかった動画の詳細"):
+            for title, detail in list(batch_failures):
+                st.write(f"・{title}")
+                st.code(detail)
+
+    render_video_batch_delete_controls(videos)
 
     # Nine videos per page keeps the vault as an exact 3×3 grid on both desktop
     # and mobile. The custom component never collapses the three columns.
