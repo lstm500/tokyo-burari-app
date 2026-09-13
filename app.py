@@ -33,9 +33,13 @@ from zoneinfo import ZoneInfo
 import streamlit as st
 
 # Freshly generated update: 2026-09-13 JST
-GENERATED_UPDATE_JST = "2026-09-13T01:09:00+09:00"
+GENERATED_UPDATE_JST = "2026-09-13T11:00:21+09:00"
 
-APP_BUILD = "v408"
+APP_BUILD = "v410"
+# v410: Notification-opened discovery results now provide working walking-route
+# links plus on-demand Google details and up to three place photos per candidate.
+# v409: Release search controls when fresh results return, discard stale component
+# state, and route map links through the top-level WebView so Android can open Maps.
 # v408: While a photo voice is playing, actively keep the YouTube iframe playing
 # at 80%. Android WebView may pause the iframe when the HTML voice player starts;
 # detect that state immediately and restore BGM during—not after—the voice.
@@ -8036,6 +8040,7 @@ export default function(component) {
       accuracy_m: accuracy,
       measured_at: new Date(best.timestamp || Date.now()).toISOString()
     });
+    finishButton();
     return true;
   };
   const fail = (message, code=0) => {
@@ -8237,6 +8242,7 @@ export default function(component) {
       accuracy_m: accuracy,
       measured_at: new Date(best.timestamp || Date.now()).toISOString()
     });
+    unlock();
     return true;
   };
   const fail = (message, code=0) => {
@@ -9780,6 +9786,93 @@ def _nearby_google_place_details(place_id):
     except Exception:
         return {}
 
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _auto_discovery_google_match(place_name, latitude, longitude):
+    """Resolve an Android/OSM discovery candidate to Google only on detail open."""
+    if not GOOGLE_PLACES_API_KEY:
+        return {}
+    try:
+        latitude = float(latitude)
+        longitude = float(longitude)
+    except (TypeError, ValueError):
+        return {}
+    place_name = str(place_name or "").strip()
+    if not place_name:
+        return {}
+    body = json.dumps({
+        "textQuery": place_name,
+        "languageCode": "ja",
+        "maxResultCount": 5,
+        "locationBias": {
+            "circle": {
+                "center": {"latitude": latitude, "longitude": longitude},
+                "radius": 350.0,
+            }
+        },
+    }, ensure_ascii=False).encode("utf-8")
+    req = Request(
+        "https://places.googleapis.com/v1/places:searchText",
+        data=body,
+        headers={
+            "Content-Type": "application/json; charset=UTF-8",
+            "X-Goog-Api-Key": GOOGLE_PLACES_API_KEY,
+            "X-Goog-FieldMask": (
+                "places.id,places.displayName,places.formattedAddress,places.location,places.photos,"
+                "places.currentOpeningHours,places.businessStatus,places.rating,places.userRatingCount"
+            ),
+        },
+        method="POST",
+    )
+    try:
+        with urlopen(req, timeout=6.0) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except Exception:
+        return {}
+
+    def name_key(value):
+        normalized = unicodedata.normalize("NFKC", str(value or "")).casefold()
+        return re.sub(r"[^0-9a-z\u3040-\u30ff\u3400-\u9fff]+", "", normalized)
+
+    target_key = name_key(place_name)
+    ranked = []
+    for raw in list(payload.get("places") or []):
+        if not isinstance(raw, dict) or str(raw.get("businessStatus") or "") == "CLOSED_PERMANENTLY":
+            continue
+        location = raw.get("location") if isinstance(raw.get("location"), dict) else {}
+        try:
+            candidate_lat = float(location.get("latitude"))
+            candidate_lon = float(location.get("longitude"))
+            distance_m = _nearby_haversine_m(latitude, longitude, candidate_lat, candidate_lon)
+        except (TypeError, ValueError):
+            continue
+        if not math.isfinite(distance_m) or distance_m > 900:
+            continue
+        display = raw.get("displayName") if isinstance(raw.get("displayName"), dict) else {}
+        candidate_name = str(display.get("text") or "").strip()
+        candidate_key = name_key(candidate_name)
+        name_score = 10000 if candidate_key == target_key else 0
+        if target_key and candidate_key and (target_key in candidate_key or candidate_key in target_key):
+            name_score = max(name_score, 6000)
+        ranked.append((name_score - min(5000.0, distance_m), raw, candidate_name, candidate_lat, candidate_lon))
+    if not ranked:
+        return {}
+    _, raw, candidate_name, candidate_lat, candidate_lon = max(ranked, key=lambda item: item[0])
+    return {
+        "id": f"google:{raw.get('id') or ''}",
+        "google_place_id": str(raw.get("id") or ""),
+        "name": candidate_name or place_name,
+        "latitude": candidate_lat,
+        "longitude": candidate_lon,
+        "address": str(raw.get("formattedAddress") or "").strip(),
+        "provider": "Google Places",
+        "business_status": str(raw.get("businessStatus") or ""),
+        "current_opening_hours": dict(raw.get("currentOpeningHours") or {}),
+        "rating": raw.get("rating"),
+        "user_rating_count": raw.get("userRatingCount"),
+        "photo_refs": _nearby_google_photo_refs(raw.get("photos") or [], limit=3),
+    }
+
 def _nearby_shortlist_safe_place(place):
     """Do not persist transient Google photo resource names in shortlist state."""
     if not isinstance(place, dict):
@@ -9955,8 +10048,9 @@ def _nearby_directions_url(place):
     only after the user explicitly taps the Maps navigation button.
     """
     try:
-        lat = float((place or {}).get("latitude"))
-        lon = float((place or {}).get("longitude"))
+        row = place or {}
+        lat = float(row.get("latitude") if row.get("latitude") is not None else row.get("lat"))
+        lon = float(row.get("longitude") if row.get("longitude") is not None else row.get("lon"))
     except (TypeError, ValueError):
         return ""
     params = urlencode(
@@ -26456,7 +26550,7 @@ html,body{{margin:0;padding:0;background:transparent;font-family:-apple-system,B
     const details = [];
     if (place.opening_hours) details.push(`利用時間: ${{esc(place.opening_hours)}}`);
     if (place.address) details.push(esc(place.address));
-    const route = place.route_url ? `<a class="toilet-route-button" href="${{esc(place.route_url)}}" target="_blank" rel="noopener noreferrer">🚶 ここへ徒歩で案内</a>` : '';
+    const route = place.route_url ? `<a class="toilet-route-button" href="${{esc(place.route_url)}}" target="_top" rel="noopener noreferrer">🚶 ここへ徒歩で案内</a>` : '';
     const popup = `<div class="toilet-popup-title">${{esc(place.name || 'トイレ')}}</div>` + `<div class="toilet-popup-meta">${{esc(place.category || 'トイレ')}} ・ 徒歩約${{Math.max(1,Number(place.walk_minutes)||1)}}分（${{distanceText}}）</div>` + (pills ? `<div class="toilet-popup-pills">${{pills}}</div>` : '') + (details.length ? `<div class="toilet-popup-detail">${{details.join(' ／ ')}}</div>` : '') + route;
     L.marker([lat,lon], {{icon, riseOnHover:true}}).addTo(map).bindPopup(popup, {{maxWidth:300, closeButton:true}});
   }});
@@ -26670,6 +26764,7 @@ export default function(component) {
   const emitBest=()=>{if(cancelled||!best?.coords)return;stop();const accuracy=Number(best.coords.accuracy||0);status.textContent=`現在地を取得しました（精度 ±${Math.round(accuracy)}m）。検索しています…`;setTriggerValue('search_location',{token:`${Date.now()}_${Math.random().toString(36).slice(2)}`,latitude:Number(best.coords.latitude),longitude:Number(best.coords.longitude),accuracy_m:accuracy,measured_at:new Date(best.timestamp||Date.now()).toISOString(),filters:gather()})};
   const fail=(message,code=0)=>{stop();status.textContent=String(message||'現在地を取得できませんでした。');setTriggerValue('search_error',{token:`${Date.now()}_${Math.random().toString(36).slice(2)}`,code:Number(code||0),message:String(message||''),filters:gather()});unlock()};
   const searchNow=()=>{if(!navigator.geolocation){fail('この端末では位置情報を取得できません。');return}stop();best=null;startedAt=Date.now();button.classList.add('searching');button.textContent='🔎 検索中…';button.disabled=true;status.textContent='検索地点を高精度GPSで確認しています…';watchId=navigator.geolocation.watchPosition((position)=>{if(cancelled||!position?.coords)return;const accuracy=Number(position.coords.accuracy||Number.POSITIVE_INFINITY);const bestAccuracy=best?Number(best.coords?.accuracy||Number.POSITIVE_INFINITY):Number.POSITIVE_INFINITY;if(!best||accuracy<bestAccuracy)best=position;const currentBest=best?Number(best.coords?.accuracy||Number.POSITIVE_INFINITY):Number.POSITIVE_INFINITY;status.textContent=Number.isFinite(currentBest)?`検索地点を高精度GPSで確認しています… ±${Math.round(currentBest)}m`:'検索地点を高精度GPSで確認しています…';if(currentBest>0&&currentBest<=25){emitBest();return}if(currentBest>0&&currentBest<=45&&(Date.now()-startedAt)>=1200)emitBest()},(error)=>{const bestAccuracy=best?Number(best.coords?.accuracy||Number.POSITIVE_INFINITY):Number.POSITIVE_INFINITY;if(best&&bestAccuracy>0&&bestAccuracy<=45){emitBest();return}const code=Number(error?.code||0);const msg=code===1?'位置情報の利用が許可されていません。':code===3?'現在地の取得に時間がかかりました。':'現在地を取得できませんでした。';fail(msg,code)},{enableHighAccuracy:true,timeout:10000,maximumAge:0});hardTimer=setTimeout(()=>{const bestAccuracy=best?Number(best.coords?.accuracy||Number.POSITIVE_INFINITY):Number.POSITIVE_INFINITY;if(best&&bestAccuracy>0&&bestAccuracy<=45)emitBest();else if(best&&Number.isFinite(bestAccuracy))fail(`GPS精度が ±${Math.round(bestAccuracy)}m のため検索を中止しました。`,3);else fail('現在地を高精度で取得できませんでした。',3)},10500)};
+  unlock();
   button.addEventListener('click',searchNow);
   return()=>{cancelled=true;stop();button.removeEventListener('click',searchNow);try{parentElement?.removeEventListener(activityPressEvent,markUserActivity,{capture:true,passive:true})}catch(_){}try{parentElement?.removeEventListener('keydown',markUserActivity,true)}catch(_){}try{parentElement?.removeEventListener('wheel',markUserActivity,{capture:true,passive:true})}catch(_){}};
 }
@@ -26685,7 +26780,7 @@ def _get_nearby_batch_search_component_v320():
     _nearby_batch_search_component_initialized_v320 = True
     try:
         _nearby_batch_search_component_v320 = st.components.v2.component(
-            "tokyo_burari_nearby_batch_search_v401",
+            "tokyo_burari_nearby_batch_search_v409",
             html=_NEARBY_BATCH_SEARCH_HTML_V320,
             css=_NEARBY_BATCH_SEARCH_CSS_V320,
             js=_NEARBY_BATCH_SEARCH_JS_V320,
@@ -26804,6 +26899,7 @@ export default function(component) {
   const emitBest=()=>{if(cancelled||!best?.coords)return;stop();const accuracy=Number(best.coords.accuracy||0);status.textContent=`現在地を取得しました（精度 ±${Math.round(accuracy)}m）。トイレを検索しています…`;hideTrainLoader();setTriggerValue('search_location',{token:`${Date.now()}_${Math.random().toString(36).slice(2)}`,latitude:Number(best.coords.latitude),longitude:Number(best.coords.longitude),accuracy_m:accuracy,measured_at:new Date(best.timestamp||Date.now()).toISOString(),filters:gather()})};
   const fail=(message,code=0)=>{stop();status.textContent=String(message||'現在地を取得できませんでした。');hideTrainLoader();setTriggerValue('search_error',{token:`${Date.now()}_${Math.random().toString(36).slice(2)}`,code:Number(code||0),message:String(message||''),filters:gather()});unlock()};
   const searchNow=()=>{if(!navigator.geolocation){fail('この端末では位置情報を取得できません。');return}stop();best=null;startedAt=Date.now();button.classList.add('searching');button.textContent='🚻 検索中…';button.disabled=true;status.textContent='現在地を高精度GPSで確認しています…';showTrainLoader(status.textContent);watchId=navigator.geolocation.watchPosition((position)=>{if(cancelled||!position?.coords)return;const accuracy=Number(position.coords.accuracy||Number.POSITIVE_INFINITY);const bestAccuracy=best?Number(best.coords?.accuracy||Number.POSITIVE_INFINITY):Number.POSITIVE_INFINITY;if(!best||accuracy<bestAccuracy)best=position;const currentBest=best?Number(best.coords?.accuracy||Number.POSITIVE_INFINITY):Number.POSITIVE_INFINITY;status.textContent=Number.isFinite(currentBest)?`現在地を高精度GPSで確認しています… ±${Math.round(currentBest)}m`:'現在地を高精度GPSで確認しています…';showTrainLoader(status.textContent);if(currentBest>0&&currentBest<=25){emitBest();return}if(currentBest>0&&currentBest<=45&&(Date.now()-startedAt)>=1200)emitBest()},(error)=>{const bestAccuracy=best?Number(best.coords?.accuracy||Number.POSITIVE_INFINITY):Number.POSITIVE_INFINITY;if(best&&bestAccuracy>0&&bestAccuracy<=45){emitBest();return}const code=Number(error?.code||0);const msg=code===1?'位置情報の利用が許可されていません。':code===3?'現在地の取得に時間がかかりました。':'現在地を取得できませんでした。';fail(msg,code)},{enableHighAccuracy:true,timeout:10000,maximumAge:0});hardTimer=setTimeout(()=>{const bestAccuracy=best?Number(best.coords?.accuracy||Number.POSITIVE_INFINITY):Number.POSITIVE_INFINITY;if(best&&bestAccuracy>0&&bestAccuracy<=45)emitBest();else if(best&&Number.isFinite(bestAccuracy))fail(`GPS精度が ±${Math.round(bestAccuracy)}m のため検索を中止しました。`,3);else fail('現在地を高精度で取得できませんでした。',3)},10500)};
+  unlock();
   button.addEventListener('click',searchNow);return()=>{cancelled=true;stop();hideTrainLoader();button.removeEventListener('click',searchNow);try{parentElement?.removeEventListener(activityPressEvent,markUserActivity,{capture:true,passive:true})}catch(_){}try{parentElement?.removeEventListener('keydown',markUserActivity,true)}catch(_){}try{parentElement?.removeEventListener('wheel',markUserActivity,{capture:true,passive:true})}catch(_){}};
 }
 """
@@ -26818,7 +26914,7 @@ def _get_toilet_batch_search_component_v320():
     _toilet_batch_search_component_initialized_v320 = True
     try:
         _toilet_batch_search_component_v320 = st.components.v2.component(
-            "tokyo_burari_toilet_batch_search_v401",
+            "tokyo_burari_toilet_batch_search_v409",
             html=_TOILET_BATCH_SEARCH_HTML_V320,
             css=_TOILET_BATCH_SEARCH_CSS_V320,
             js=_TOILET_BATCH_SEARCH_JS_V320,
@@ -27245,9 +27341,11 @@ def page_toilets():
     search_component_result = None
     search_component = _get_toilet_batch_search_component_v320()
     if search_component is not None:
+        previous_result = st.session_state.get(result_key)
+        completion_token = str(previous_result.get("searched_at") or "") if isinstance(previous_result, dict) else ""
         search_component_result = search_component(
-            data={"initial": {"distance": distance_mode, "fee": fee_mode, "wheelchair": wheelchair_mode, "baby": baby_mode, "open": open_mode}},
-            key=f"toilet_batch_search_v329_{prefix}",
+            data={"initial": {"distance": distance_mode, "fee": fee_mode, "wheelchair": wheelchair_mode, "baby": baby_mode, "open": open_mode}, "completion_token": completion_token},
+            key=f"toilet_batch_search_v409_{prefix}",
             on_search_location_change=lambda: None,
             on_search_error_change=lambda: None,
         )
@@ -27471,6 +27569,17 @@ def page_discovery_results():
         .auto-discovery-meta{margin-top:.20rem;font-size:.78rem;opacity:.72;line-height:1.4}
         .auto-discovery-axis{display:inline-flex;margin-top:.38rem;padding:.20rem .52rem;border-radius:999px;
           background:rgba(73,169,132,.11);border:1px solid rgba(73,169,132,.20);font-size:.69rem;font-weight:760}
+        .auto-discovery-detail{margin:.52rem 0 .34rem;padding:.54rem .62rem;border-radius:12px;
+          background:rgba(128,128,128,.055);font-size:.73rem;line-height:1.48}
+        .auto-discovery-photo-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px;margin:.48rem 0 .12rem}
+        .auto-discovery-photo{min-width:0}
+        .auto-discovery-photo img{display:block;width:100%;aspect-ratio:1/1;object-fit:cover;border-radius:11px}
+        .auto-discovery-photo-credit{margin-top:2px;font-size:.50rem;opacity:.50;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+        .auto-discovery-route-link{display:flex;align-items:center;justify-content:center;width:100%;min-height:2.75rem;
+          box-sizing:border-box;padding:.42rem .45rem;border-radius:12px;border:1px solid rgba(47,128,237,.42);
+          background:rgba(47,128,237,.09);color:#235fa8!important;text-decoration:none!important;text-align:center;
+          font-size:.75rem;font-weight:800;line-height:1.22}
+        .auto-discovery-route-link:active{background:rgba(47,128,237,.22);transform:translateY(1px)}
         [class*="st-key-auto_discovery_route_"] div.stLinkButton>a{min-height:2.85rem;border-radius:13px;font-weight:820;
           color:#fff!important;background:#ff4b4b!important;border-color:#ff4b4b!important}
         [class*="st-key-auto_discovery_route_"] div.stLinkButton>a:active{background:#c93443!important;border-color:#b82e3c!important;
@@ -27499,6 +27608,9 @@ def page_discovery_results():
         unsafe_allow_html=True,
     )
 
+    event_id = str(result.get("event_id") or "")
+    detail_state_key = "_auto_discovery_open_detail_v410"
+    open_detail = str(st.session_state.get(detail_state_key) or "")
     places = list(result.get("places") or [])[:6]
     for index, place in enumerate(places, start=1):
         with st.container(border=True):
@@ -27513,10 +27625,66 @@ def page_discovery_results():
                 + (f'<div class="auto-discovery-axis">{html.escape(axis)}</div>' if axis else ""),
                 unsafe_allow_html=True,
             )
-            direction_url = _nearby_directions_url(place)
-            with st.container(key=f"auto_discovery_route_{index}"):
+            place_identity = f"{event_id}:{place.get('id') or index}"
+            place_key = hashlib.sha1(place_identity.encode("utf-8")).hexdigest()[:12]
+            is_open = open_detail == place_identity
+            route_col, detail_col = st.columns(2)
+            with route_col:
+                direction_url = _nearby_directions_url(place)
                 if direction_url:
-                    st.link_button("🗺️ この場所までの道を見る", direction_url, use_container_width=True)
+                    st.markdown(
+                        f'<a class="auto-discovery-route-link" href="{html.escape(direction_url, quote=True)}" target="_top" rel="noopener noreferrer">🗺️ 地図で案内</a>',
+                        unsafe_allow_html=True,
+                    )
+            with detail_col:
+                detail_label = "詳細を閉じる" if is_open else "写真・詳細を見る"
+                if st.button(detail_label, use_container_width=True, key=f"auto_discovery_detail_v410_{place_key}"):
+                    st.session_state[detail_state_key] = "" if is_open else place_identity
+                    st.rerun()
+
+            if is_open:
+                try:
+                    place_lat = float(place.get("lat") if place.get("lat") is not None else place.get("latitude"))
+                    place_lon = float(place.get("lon") if place.get("lon") is not None else place.get("longitude"))
+                except (TypeError, ValueError):
+                    place_lat = place_lon = None
+                with st.spinner("写真と詳細を確認しています…"):
+                    google_place = _auto_discovery_google_match(name, place_lat, place_lon) if place_lat is not None else {}
+                if google_place:
+                    detail_parts = []
+                    if google_place.get("address"):
+                        detail_parts.append(str(google_place.get("address")))
+                    hours = google_place.get("current_opening_hours") if isinstance(google_place.get("current_opening_hours"), dict) else {}
+                    if hours.get("openNow") is True:
+                        detail_parts.append("現在営業中")
+                    elif hours.get("openNow") is False:
+                        detail_parts.append("現在営業時間外")
+                    rating = google_place.get("rating")
+                    rating_count = google_place.get("user_rating_count")
+                    if rating is not None:
+                        rating_text = f"Google ★{float(rating):.1f}"
+                        if rating_count:
+                            rating_text += f"（{int(rating_count)}件）"
+                        detail_parts.append(rating_text)
+                    if detail_parts:
+                        st.markdown(
+                            '<div class="auto-discovery-detail">' + html.escape(" ／ ".join(detail_parts)) + '</div>',
+                            unsafe_allow_html=True,
+                        )
+                    images = _nearby_load_detail_images(google_place, limit=3)
+                    if images:
+                        cards = []
+                        for image_item in images[:3]:
+                            attribution = str(image_item.get("attribution") or "Google Places")
+                            cards.append(
+                                f'<div class="auto-discovery-photo"><img src="{html.escape(str(image_item.get("src") or ""), quote=True)}" alt="{html.escape(name)}の参考写真">'
+                                f'<div class="auto-discovery-photo-credit">写真: {html.escape(attribution)}</div></div>'
+                            )
+                        st.markdown('<div class="auto-discovery-photo-grid">' + "".join(cards) + '</div>', unsafe_allow_html=True)
+                    else:
+                        st.caption("この場所の写真は取得できませんでした。")
+                else:
+                    st.caption("この場所の写真・詳細は取得できませんでした。地図から確認できます。")
 
     st.caption("候補は通知が作られた時点の検索結果です。営業状況は現地表示や地図で確認してください。")
 
@@ -27573,6 +27741,14 @@ def page_nearby():
         .nearby-detail-photo img { display:block; width:100%; aspect-ratio:1/1; object-fit:cover; border-radius:11px; }
         .nearby-attribution { font-size:.56rem; opacity:.52; line-height:1.2; margin-top:2px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
         .nearby-source-note { font-size:.70rem; opacity:.62; line-height:1.45; }
+        .nearby-route-link {
+          display:flex; align-items:center; justify-content:center; width:100%; min-height:2.75rem;
+          box-sizing:border-box; padding:.42rem .56rem; border-radius:12px;
+          border:1px solid rgba(47,128,237,.42); background:rgba(47,128,237,.09);
+          color:#235fa8 !important; text-decoration:none !important; text-align:center;
+          font-size:.80rem; font-weight:800; line-height:1.25;
+        }
+        .nearby-route-link:active { background:rgba(47,128,237,.22); transform:translateY(1px); }
         .st-key-nearby_filter_panel {
           margin-top:.30rem; padding:0; border:0; background:transparent;
         }
@@ -27828,9 +28004,11 @@ def page_nearby():
     search_component_result = None
     search_component = _get_nearby_batch_search_component_v320()
     if search_component is not None:
+        previous_result = st.session_state.get(result_key)
+        completion_token = str(previous_result.get("searched_at") or "") if isinstance(previous_result, dict) else ""
         search_component_result = search_component(
-            data={"initial": current_cfg, "lunch_genres": list(NEARBY_LUNCH_GENRES), "google_enabled": bool(GOOGLE_PLACES_API_KEY)},
-            key=f"nearby_batch_search_v329_{prefix}",
+            data={"initial": current_cfg, "lunch_genres": list(NEARBY_LUNCH_GENRES), "google_enabled": bool(GOOGLE_PLACES_API_KEY), "completion_token": completion_token},
+            key=f"nearby_batch_search_v409_{prefix}",
             on_search_location_change=lambda: None,
             on_search_error_change=lambda: None,
         )
@@ -28094,7 +28272,10 @@ def page_nearby():
             with route_col:
                 direction_url = _nearby_directions_url(place)
                 if direction_url:
-                    st.link_button("🗺️ この場所に案内してもらう", direction_url, use_container_width=True)
+                    st.markdown(
+                        f'<a class="nearby-route-link" href="{html.escape(direction_url, quote=True)}" target="_top" rel="noopener noreferrer">🗺️ この場所に案内してもらう</a>',
+                        unsafe_allow_html=True,
+                    )
                 else:
                     st.button("🗺️ この場所に案内してもらう", use_container_width=True, disabled=True, key=f"nearby_route_disabled_{place_key}")
 
