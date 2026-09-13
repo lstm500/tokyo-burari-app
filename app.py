@@ -33,9 +33,10 @@ from zoneinfo import ZoneInfo
 import streamlit as st
 
 # Freshly generated update: 2026-09-14 JST
-GENERATED_UPDATE_JST = "2026-09-14T01:20:00+09:00"
+GENERATED_UPDATE_JST = "2026-09-14T01:17:16+09:00"
 
-APP_BUILD = "v422"
+APP_BUILD = "v423"
+# v423: Make the all-photos buttons red and show an orange disabled deleting-state button during batch video deletion.
 # v422: Add multi-select batch deletion to the Video Vault with explicit final confirmation and retained single-video deletion.
 # v421: Expand both photo-tag palettes from 6 to 10 choices. Normal adds のほほん / 美味しい / きれい / 複雑; こどもーど adds むーん / ピース / 教えて / キリッ with distinct colors.
 # v420: All-photo library uses a fixed three-column grid in list mode and exactly one photo in enlarged mode, including on narrow phones.
@@ -295,6 +296,31 @@ st.markdown(
       [class*="st-key-video_delete_yes_moments_"] div.stButton > button {
         border-color: #b92f3e !important;
         background: linear-gradient(145deg, #e45a68, #c83b49) !important;
+        color: #fff !important;
+      }
+      /* v423: keep the all-photos entry point visually aligned with the app's red action buttons. */
+      [class*="st-key-camera_open_all_photos_v418"] div.stButton > button,
+      [class*="st-key-diary_open_all_photos_v418"] div.stButton > button {
+        border-color: #d94855 !important;
+        background: linear-gradient(145deg, #f06a73, #dc4855) !important;
+        color: #fff !important;
+        box-shadow: 0 5px 14px rgba(205, 63, 77, .20), 0 0 0 2px rgba(255,255,255,.14) inset !important;
+      }
+      [class*="st-key-camera_open_all_photos_v418"] div.stButton > button p,
+      [class*="st-key-diary_open_all_photos_v418"] div.stButton > button p {
+        color: #fff !important;
+      }
+      /* v423: while the destructive batch operation is running, replace the red
+         confirmation button with a clearly different orange, disabled progress state. */
+      [class*="st-key-video_batch_delete_running"] div.stButton > button:disabled {
+        opacity: 1 !important;
+        border-color: #b45309 !important;
+        background: linear-gradient(145deg, #f59e0b, #d97706) !important;
+        color: #fff !important;
+        cursor: wait !important;
+        box-shadow: 0 4px 12px rgba(180, 83, 9, .24), 0 0 0 2px rgba(255,255,255,.14) inset !important;
+      }
+      [class*="st-key-video_batch_delete_running"] div.stButton > button:disabled p {
         color: #fff !important;
       }
       /* v401: Settings uses one calm red family instead of one isolated primary
@@ -17645,6 +17671,7 @@ def render_video_batch_delete_controls(videos):
     open_key = "_video_batch_delete_open"
     selected_key = "_video_batch_delete_selected_ids"
     confirm_key = "_video_batch_delete_confirm"
+    running_key = "_video_batch_delete_running_ids"
 
     valid_ids = [str(row.get("id") or "").strip() for row in rows]
     valid_ids = [value for value in valid_ids if value]
@@ -17660,6 +17687,7 @@ def render_video_batch_delete_controls(videos):
         st.session_state[selected_key] = []
 
     if not st.session_state.get(open_key):
+        st.session_state.pop(running_key, None)
         if st.button(
             "🗑 動画をまとめて削除",
             use_container_width=True,
@@ -17667,11 +17695,61 @@ def render_video_batch_delete_controls(videos):
         ):
             st.session_state[open_key] = True
             st.session_state.pop(confirm_key, None)
+            st.session_state.pop(running_key, None)
             st.rerun()
         return
 
     with st.container(border=True):
         st.markdown("#### 🗑 動画をまとめて削除")
+
+        running_ids = st.session_state.get(running_key)
+        if isinstance(running_ids, list) and running_ids:
+            running_rows = [row_by_id[value] for value in running_ids if value in row_by_id]
+            st.caption("選択した動画を削除しています。完了するまでそのままお待ちください。")
+            running_yes_col, running_no_col = st.columns([1.35, 0.85], gap="small")
+            with running_yes_col:
+                st.button(
+                    f"削除中…（{len(running_rows)}本）",
+                    type="primary",
+                    use_container_width=True,
+                    disabled=True,
+                    key="video_batch_delete_running",
+                )
+            with running_no_col:
+                st.button(
+                    "処理中",
+                    use_container_width=True,
+                    disabled=True,
+                    key="video_batch_delete_running_wait",
+                )
+
+            deleted_count = 0
+            failures = []
+            for row in list(running_rows):
+                try:
+                    delete_video_and_related_data(row)
+                    deleted_count += 1
+                except Exception as exc:
+                    failures.append((_moments_video_title(row), str(exc)))
+
+            st.session_state.pop(open_key, None)
+            st.session_state.pop(selected_key, None)
+            st.session_state.pop(confirm_key, None)
+            st.session_state.pop(running_key, None)
+            st.session_state.pop("_video_library_grid_page", None)
+            st.session_state["_video_library_grid_serial"] = int(
+                st.session_state.get("_video_library_grid_serial") or 0
+            ) + 1
+
+            if failures:
+                notice = f"{deleted_count}本を削除しました。{len(failures)}本は削除できませんでした。"
+                st.session_state["_video_batch_delete_failures"] = failures
+            else:
+                notice = f"選択した動画を{deleted_count}本削除しました。"
+                st.session_state.pop("_video_batch_delete_failures", None)
+            reload_current_page_after_action("_video_delete_notice", notice)
+            return
+
         st.caption("削除する動画を複数選んでください。削除前にもう一度確認します。")
 
         all_col, clear_col, close_col = st.columns(3, gap="small")
@@ -17690,6 +17768,7 @@ def render_video_batch_delete_controls(videos):
                 st.session_state.pop(open_key, None)
                 st.session_state.pop(selected_key, None)
                 st.session_state.pop(confirm_key, None)
+                st.session_state.pop(running_key, None)
                 st.rerun()
 
         def _batch_video_label(video_id):
@@ -17746,30 +17825,15 @@ def render_video_batch_delete_controls(videos):
                 disabled=not selected_rows,
                 key="video_batch_delete_execute",
             ):
-                deleted_count = 0
-                failures = []
-                for row in list(selected_rows):
-                    try:
-                        delete_video_and_related_data(row)
-                        deleted_count += 1
-                    except Exception as exc:
-                        failures.append((_moments_video_title(row), str(exc)))
-
-                st.session_state.pop(open_key, None)
-                st.session_state.pop(selected_key, None)
-                st.session_state.pop(confirm_key, None)
-                st.session_state.pop("_video_library_grid_page", None)
-                st.session_state["_video_library_grid_serial"] = int(
-                    st.session_state.get("_video_library_grid_serial") or 0
-                ) + 1
-
-                if failures:
-                    notice = f"{deleted_count}本を削除しました。{len(failures)}本は削除できませんでした。"
-                    st.session_state["_video_batch_delete_failures"] = failures
-                else:
-                    notice = f"選択した動画を{deleted_count}本削除しました。"
-                    st.session_state.pop("_video_batch_delete_failures", None)
-                reload_current_page_after_action("_video_delete_notice", notice)
+                # v423: switch to a dedicated progress-state rerun before performing
+                # network/storage deletion so Android immediately shows the new label
+                # and colour and the destructive button cannot be pressed twice.
+                st.session_state[running_key] = [
+                    str(row.get("id") or "").strip()
+                    for row in selected_rows
+                    if str(row.get("id") or "").strip()
+                ]
+                st.rerun()
         with no_col:
             if st.button(
                 "やめる",
@@ -17777,6 +17841,7 @@ def render_video_batch_delete_controls(videos):
                 key="video_batch_delete_cancel",
             ):
                 st.session_state.pop(confirm_key, None)
+                st.session_state.pop(running_key, None)
                 st.rerun()
 
 def reset_photo_conversation(trip_id, photo_id):
@@ -32308,6 +32373,7 @@ def page_trip():
 
     st.button(
         "🖼️ これまで撮った写真の一覧を見る",
+        type="primary",
         use_container_width=True,
         key="camera_open_all_photos_v418",
         on_click=_open_photo_library_callback_v418,
@@ -32940,6 +33006,7 @@ def page_diary():
 
     st.button(
         "🖼️ これまで撮った写真の一覧を見る",
+        type="primary",
         use_container_width=True,
         key="diary_open_all_photos_v418",
         on_click=_open_photo_library_callback_v418,
