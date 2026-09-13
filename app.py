@@ -33,9 +33,10 @@ from zoneinfo import ZoneInfo
 import streamlit as st
 
 # Freshly generated update: 2026-09-14 JST
-GENERATED_UPDATE_JST = "2026-09-14T01:17:16+09:00"
+GENERATED_UPDATE_JST = "2026-09-14T01:31:04+09:00"
 
-APP_BUILD = "v423"
+APP_BUILD = "v424"
+# v424: Allow the shared お気に入り tag to be toggled from every enlarged own-photo view.
 # v423: Make the all-photos buttons red and show an orange disabled deleting-state button during batch video deletion.
 # v422: Add multi-select batch deletion to the Video Vault with explicit final confirmation and retained single-video deletion.
 # v421: Expand both photo-tag palettes from 6 to 10 choices. Normal adds のほほん / 美味しい / きれい / 複雑; こどもーど adds むーん / ピース / 教えて / キリッ with distinct colors.
@@ -4845,7 +4846,7 @@ def handle_photo_favorite_event(result, valid_photo_ids, serial_key=None):
     enabled = bool(payload.get("enabled"))
     try:
         set_photo_favorite(photo_id, enabled=enabled)
-        st.session_state["_photo_favorite_notice"] = "★ お気に入りに追加しました。" if enabled else "お気に入りを解除しました。"
+        st.session_state["_photo_favorite_notice"] = "★ お気に入りタグに登録しました。" if enabled else "お気に入りタグを解除しました。"
     except Exception as exc:
         st.session_state["_photo_favorite_notice"] = f"お気に入り設定を変更できませんでした：{exc}"
     if serial_key:
@@ -4861,6 +4862,29 @@ def render_photo_favorite_notice():
     notice = st.session_state.pop("_photo_favorite_notice", None)
     if notice:
         st.success(str(notice))
+
+
+def render_enlarged_photo_favorite_control(photo, key_prefix):
+    """Show the shared favorite-tag toggle for one enlarged photo owned by this member."""
+    photo = photo if isinstance(photo, dict) else {}
+    photo_id = str(photo.get("id") or "").strip()
+    if not photo_id:
+        return
+    favorite = photo_favorite_is_enabled(photo)
+    label = "★ お気に入りタグを解除" if favorite else "☆ お気に入りタグに登録"
+    if st.button(
+        label,
+        use_container_width=True,
+        key=f"{key_prefix}_{photo_id}_{'on' if favorite else 'off'}",
+    ):
+        try:
+            set_photo_favorite(photo_id, enabled=not favorite)
+            st.session_state["_photo_favorite_notice"] = (
+                "★ お気に入りタグに登録しました。" if not favorite else "お気に入りタグを解除しました。"
+            )
+        except Exception as exc:
+            st.session_state["_photo_favorite_notice"] = f"お気に入り設定を変更できませんでした：{exc}"
+        st.rerun()
 
 
 # ============================================================
@@ -26645,12 +26669,12 @@ def render_history_photo_viewer(photos, trip_id):
             if single_mode:
                 favorite = photo_favorite_is_enabled(photo)
                 if st.button(
-                    "★ お気に入りを解除" if favorite else "☆ お気に入りに追加",
+                    "★ お気に入りタグを解除" if favorite else "☆ お気に入りタグに登録",
                     use_container_width=True,
                     key=f"history_photo_favorite_fallback_{trip_id}_{photo.get('id')}",
                 ):
                     set_photo_favorite(photo.get("id"), enabled=not favorite)
-                    st.session_state["_photo_favorite_notice"] = "★ お気に入りに追加しました。" if not favorite else "お気に入りを解除しました。"
+                    st.session_state["_photo_favorite_notice"] = "★ お気に入りタグに登録しました。" if not favorite else "お気に入りタグを解除しました。"
                     st.rerun()
             shared = photo_family_share_is_enabled(photo)
             if st.button(
@@ -31914,18 +31938,22 @@ def render_recent_camera_photo_emotion(trip):
         "parenting": photo_selected_tag_values(photo)[1],
         "location": str(location_label or ""),
         "shared": photo_family_share_is_enabled(photo),
+        "favorite": photo_favorite_is_enabled(photo),
     }
     gallery_component = _get_diary_gallery_component()
     if gallery_component is not None:
         serial_key = f"recent_emotion_serial_{photo_id}"
         serial = int(st.session_state.get(serial_key) or 0)
         result = gallery_component(
-            data={"photos": [card], "single": True, "allow_delete": True, "allow_emotion": True, "allow_share": True, "mode_by_photo": st.session_state.get(f"_recent_icon_modes_{photo_id}") or {}, "family_key": current_family_key(), "member_key": current_member_key(), "pending_param": PENDING_EMOTION_QUERY_PARAM},
+            data={"photos": [card], "single": True, "allow_delete": True, "allow_emotion": True, "allow_share": True, "allow_favorite": True, "mode_by_photo": st.session_state.get(f"_recent_icon_modes_{photo_id}") or {}, "family_key": current_family_key(), "member_key": current_member_key(), "pending_param": PENDING_EMOTION_QUERY_PARAM},
             key=f"recent_emotion_{photo_id}_{serial}_{_current_ui_refresh_epoch()}",
             on_delete_photo_id_change=lambda: None,
             on_share_photo_change=lambda: None,
+            on_favorite_photo_change=lambda: None,
         )
         if handle_photo_family_share_event(result, [str(photo_id)], serial_key=serial_key):
+            return
+        if handle_photo_favorite_event(result, [str(photo_id)], serial_key=serial_key):
             return
         delete_clicked = str(getattr(result, "delete_photo_id", "") or "")
         if delete_clicked == str(photo_id):
@@ -31953,6 +31981,7 @@ def render_recent_camera_photo_emotion(trip):
             f'<img src="{html.escape(src, quote=True)}" style="display:block;width:100%;aspect-ratio:1/1;object-fit:cover;border-radius:9px;" />{badge}</div>',
             unsafe_allow_html=True,
         )
+    render_enlarged_photo_favorite_control(photo, f"recent_photo_favorite_v424_{trip_id}")
     if st.button("写真の気持ちを次へ", use_container_width=True, key=f"recent_emotion_fallback_{photo_id}"):
         update_photo_emotion(photo_id, next_photo_emotion_key(photo_emotion_key(photo)), trip_id=trip_id)
         st.rerun()
@@ -31969,6 +31998,7 @@ def page_trip():
     if notice:
         st.success(notice)
     render_photo_family_share_notice()
+    render_photo_favorite_notice()
 
     camera_component = _get_live_camera_component()
     if camera_component is None:
@@ -32466,7 +32496,7 @@ def render_diary_emotion_gallery(trip_id, photos, trip=None, is_pending=False):
         serial_key = f"diary_emotion_gallery_serial_{trip_id}_{'pending' if is_pending else 'saved'}"
         serial = int(st.session_state.get(serial_key) or 0)
         result = gallery_component(
-            data={"photos": cards, "single": single_mode, "allow_delete": True, "allow_emotion": True, "allow_share": True, "allow_voice": bool(single_mode and not is_pending), "allow_voice_preview": bool(single_mode), "allow_favorite": bool(single_mode and not is_pending), "carousel_key": f"diary_saved_{trip_id}", "mode_by_photo": st.session_state.get(f"_diary_icon_modes_{trip_id}") or {}, "family_key": current_family_key(), "member_key": current_member_key(), "pending_param": PENDING_EMOTION_QUERY_PARAM},
+            data={"photos": cards, "single": single_mode, "allow_delete": True, "allow_emotion": True, "allow_share": True, "allow_voice": bool(single_mode and not is_pending), "allow_voice_preview": bool(single_mode), "allow_favorite": bool(single_mode), "carousel_key": f"diary_saved_{trip_id}", "mode_by_photo": st.session_state.get(f"_diary_icon_modes_{trip_id}") or {}, "family_key": current_family_key(), "member_key": current_member_key(), "pending_param": PENDING_EMOTION_QUERY_PARAM},
             key=f"diary_emotion_gallery_{trip_id}_{serial}_{_current_ui_refresh_epoch()}_{'single' if single_mode else 'grid'}_v365",
             on_delete_photo_id_change=lambda: None,
             on_share_photo_change=lambda: None,
@@ -32539,7 +32569,7 @@ def render_diary_emotion_gallery(trip_id, photos, trip=None, is_pending=False):
                 )
                 image_style = "display:block;width:100%;max-height:68vh;object-fit:contain;border-radius:8px;" if single_mode else "display:block;width:100%;aspect-ratio:1/1;object-fit:cover;border-radius:8px;"
                 favorite = photo_favorite_is_enabled(photo)
-                star = "★" if favorite else ("☆" if single_mode and not is_pending else "")
+                star = "★" if favorite else ("☆" if single_mode else "")
                 favorite_badge = (
                     f'<span style="position:absolute;left:8px;top:8px;font-size:22px;color:{"#FFD54A" if favorite else "#FFFFFF"};text-shadow:0 1px 4px rgba(0,0,0,.65);">{star}</span>'
                     if star else ""
@@ -32549,10 +32579,10 @@ def render_diary_emotion_gallery(trip_id, photos, trip=None, is_pending=False):
                     f'<img src="{html.escape(src, quote=True)}" loading="lazy" decoding="async" style="{image_style}" />{badge}{favorite_badge}</div>',
                     unsafe_allow_html=True,
                 )
-            if single_mode and not is_pending:
+            if single_mode:
                 favorite = photo_favorite_is_enabled(photo)
                 if st.button(
-                    "★ お気に入りを解除" if favorite else "☆ お気に入りに追加",
+                    "★ お気に入りタグを解除" if favorite else "☆ お気に入りタグに登録",
                     use_container_width=True,
                     key=f"diary_favorite_fallback_{trip_id}_{photo.get('id')}",
                 ):
@@ -32724,6 +32754,8 @@ def show_photo_library_dialog_v418(photo, photo_number, total_count):
     if emotion_label or emotion_emoji:
         st.caption(f"{emotion_emoji} {emotion_label}".strip())
 
+    render_enlarged_photo_favorite_control(photo, "photo_library_dialog_favorite_v424")
+
     voice_meta = photo_voice_note_meta(photo)
     voice_path = str(voice_meta.get("storage_path") or "").strip()
     if voice_path:
@@ -32765,6 +32797,8 @@ def render_photo_library_single_v420(photo, photo_number, total_count):
     if emotion_label or emotion_emoji:
         st.caption(f"{emotion_emoji} {emotion_label}".strip())
 
+    render_enlarged_photo_favorite_control(photo, "photo_library_single_favorite_v424")
+
     voice_meta = photo_voice_note_meta(photo)
     voice_path = str(voice_meta.get("storage_path") or "").strip()
     if voice_path:
@@ -32786,6 +32820,7 @@ def page_photo_library_v418():
         "🖼️ これまで撮った写真",
         "この個人アカウントに保存している写真を、一覧または拡大して見られます。",
     )
+    render_photo_favorite_notice()
     try:
         photos = list_member_still_photos_for_tags(max_items=5000)
     except Exception as exc:
