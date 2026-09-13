@@ -32,10 +32,11 @@ from zoneinfo import ZoneInfo
 
 import streamlit as st
 
-# Freshly generated update: 2026-09-13 JST
-GENERATED_UPDATE_JST = "2026-09-14T00:58:00+09:00"
+# Freshly generated update: 2026-09-14 JST
+GENERATED_UPDATE_JST = "2026-09-14T01:05:00+09:00"
 
-APP_BUILD = "v420"
+APP_BUILD = "v421"
+# v421: Expand both photo-tag palettes from 6 to 10 choices. Normal adds のほほん / 美味しい / きれい / 複雑; こどもーど adds むーん / ピース / 教えて / キリッ with distinct colors.
 # v420: All-photo library uses a fixed three-column grid in list mode and exactly one photo in enlarged mode, including on narrow phones.
 # v419: All-photo library now supports explicit list/enlarged modes with Previous/Next navigation and direct enlargement from the grid.
 # v418: Add an all-photo library entry from Diary so every saved still photo can be browsed in one chronological gallery.
@@ -1922,23 +1923,31 @@ export default function(component) {
     try { URL.revokeObjectURL(pendingPhotoPreviewUrl); } catch (_) {}
     pendingPhotoPreviewUrl = '';
   };
-  const PHOTO_EMOTION_ORDER = ['', 'cozy', 'joy', 'surprise', 'anger', 'sadness', 'frustration'];
+  const PHOTO_EMOTION_ORDER = ['', 'cozy', 'joy', 'surprise', 'anger', 'sadness', 'frustration', 'relaxed', 'delicious', 'beautiful', 'mixed'];
   const PHOTO_EMOTIONS = {
     cozy: { emoji: '🥰', color: '#F3B6A0', label: 'ほっこりした' },
     joy: { emoji: '😊', color: '#F2C94C', label: 'うれしい' },
     surprise: { emoji: '😲', color: '#9B7BD3', label: 'びっくり' },
     anger: { emoji: '😠', color: '#E56B6F', label: 'おこった' },
     sadness: { emoji: '😢', color: '#6C9BD2', label: 'かなしい' },
-    frustration: { emoji: '😣', color: '#A66A8A', label: 'くやしい' }
+    frustration: { emoji: '😣', color: '#A66A8A', label: 'くやしい' },
+    relaxed: { emoji: '😌', color: '#9BCDB8', label: 'のほほん' },
+    delicious: { emoji: '😋', color: '#F2A65A', label: '美味しい' },
+    beautiful: { emoji: '✨', color: '#6EC5D8', label: 'きれい' },
+    mixed: { emoji: '😵‍💫', color: '#8D86A8', label: '複雑' }
   };
-  const PARENTING_ORDER = ['', 'effort', 'challenge', 'discovery', 'kindness', 'together', 'tears'];
+  const PARENTING_ORDER = ['', 'effort', 'challenge', 'discovery', 'kindness', 'together', 'tears', 'hmm', 'peace', 'teach_me', 'sharp'];
   const PARENTING_TAGS = {
     effort: { emoji:'⭐', color:'#E6B84A', label:'がんばった' },
     challenge: { emoji:'💪', color:'#F2994A', label:'ちょうせん' },
     discovery: { emoji:'💡', color:'#9BC53D', label:'はっけん' },
     kindness: { emoji:'❤️', color:'#E57373', label:'やさしさ' },
     together: { emoji:'🤝', color:'#4DB6AC', label:'いっしょに' },
-    tears: { emoji:'😭', color:'#6C9BD2', label:'なみだ' }
+    tears: { emoji:'😭', color:'#6C9BD2', label:'なみだ' },
+    hmm: { emoji:'🤔', color:'#8E7CC3', label:'むーん' },
+    peace: { emoji:'✌️', color:'#5BBF9F', label:'ピース' },
+    teach_me: { emoji:'🙋', color:'#4C9BE8', label:'教えて' },
+    sharp: { emoji:'🫡', color:'#53657D', label:'キリッ' }
   };
   let pendingEmotion = '';
   let pendingParenting = '';
@@ -4387,9 +4396,9 @@ def _get_far_field_mic_component():
 
 
 # ============================================================
-# Photo emotion tagging (6つの気持ち)
+# Photo emotion tagging (通常10種類 + こどもーど10種類)
 # ============================================================
-PHOTO_EMOTION_ORDER = ("cozy", "joy", "surprise", "anger", "sadness", "frustration")
+PHOTO_EMOTION_ORDER = ("cozy", "joy", "surprise", "anger", "sadness", "frustration", "relaxed", "delicious", "beautiful", "mixed")
 PHOTO_EMOTIONS = {
     "cozy": {
         "label": "ほっこりした",
@@ -4433,11 +4442,39 @@ PHOTO_EMOTIONS = {
         "rgb": "166,106,138",
         "meaning": "失敗・負け・できなかった",
     },
+    "relaxed": {
+        "label": "のほほん",
+        "emoji": "😌",
+        "color": "#9BCDB8",
+        "rgb": "155,205,184",
+        "meaning": "のんびり、安心して力が抜けた気持ち",
+    },
+    "delicious": {
+        "label": "美味しい",
+        "emoji": "😋",
+        "color": "#F2A65A",
+        "rgb": "242,166,90",
+        "meaning": "食べたり飲んだりして、おいしいと感じた",
+    },
+    "beautiful": {
+        "label": "きれい",
+        "emoji": "✨",
+        "color": "#6EC5D8",
+        "rgb": "110,197,216",
+        "meaning": "景色・色・形などをきれいだと感じた",
+    },
+    "mixed": {
+        "label": "複雑",
+        "emoji": "😵‍💫",
+        "color": "#8D86A8",
+        "rgb": "141,134,168",
+        "meaning": "一つに決めにくい、いくつかの気持ちが混ざっている",
+    },
 }
 
 # The two modes are alternative palettes for one photo tag. A photo may keep
 # either one normal feeling OR one こどもーど tag, never both at the same time.
-PARENTING_TAG_ORDER = ("effort", "challenge", "discovery", "kindness", "together", "tears")
+PARENTING_TAG_ORDER = ("effort", "challenge", "discovery", "kindness", "together", "tears", "hmm", "peace", "teach_me", "sharp")
 PARENTING_TAGS = {
     "effort": {
         "label": "がんばった",
@@ -4481,11 +4518,39 @@ PARENTING_TAGS = {
         "rgb": "108,155,210",
         "meaning": "泣いた、つらかった、悔しくて涙が出た",
     },
+    "hmm": {
+        "label": "むーん",
+        "emoji": "🤔",
+        "color": "#8E7CC3",
+        "rgb": "142,124,195",
+        "meaning": "考え込んだ、迷った、どうしようかなと思った",
+    },
+    "peace": {
+        "label": "ピース",
+        "emoji": "✌️",
+        "color": "#5BBF9F",
+        "rgb": "91,191,159",
+        "meaning": "できた、やった、いい感じという気持ちを表した",
+    },
+    "teach_me": {
+        "label": "教えて",
+        "emoji": "🙋",
+        "color": "#4C9BE8",
+        "rgb": "76,155,232",
+        "meaning": "もっと知りたい、人に聞きたい、教えてほしいと思った",
+    },
+    "sharp": {
+        "label": "キリッ",
+        "emoji": "🫡",
+        "color": "#53657D",
+        "rgb": "83,101,125",
+        "meaning": "集中した、真剣になった、気持ちを切り替えた",
+    },
 }
 
 
 def normalize_photo_emotion_key(value):
-    """Normalize legacy/new emotion values into the six v159 choices or ''."""
+    """Normalize legacy/new emotion values into the current normal-mode choices or ''."""
     if isinstance(value, dict):
         value = value.get("key") or value.get("emotion") or value.get("label") or value.get("emoji")
     value = str(value or "").strip()
@@ -4496,6 +4561,10 @@ def normalize_photo_emotion_key(value):
         "anger": "anger", "怒": "anger", "おこった": "anger", "怒った": "anger", "😠": "anger",
         "sadness": "sadness", "sad": "sadness", "哀": "sadness", "かなしい": "sadness", "悲しい": "sadness", "😢": "sadness",
         "frustration": "frustration", "くやしい": "frustration", "悔しい": "frustration", "😣": "frustration",
+        "relaxed": "relaxed", "のほほん": "relaxed", "😌": "relaxed",
+        "delicious": "delicious", "美味しい": "delicious", "おいしい": "delicious", "😋": "delicious",
+        "beautiful": "beautiful", "きれい": "beautiful", "綺麗": "beautiful", "✨": "beautiful",
+        "mixed": "mixed", "複雑": "mixed", "複雑な気持ち": "mixed", "😵‍💫": "mixed",
         # v149-v158 compatibility: the former 楽/🎉 choice is folded into the
         # closest remaining positive choice instead of discarding old records.
         "fun": "joy", "楽": "joy", "🎉": "joy",
@@ -4504,7 +4573,7 @@ def normalize_photo_emotion_key(value):
 
 
 def normalize_parenting_tag_key(value):
-    """Normalize parenting-mode values into one of the six parent-facing tags or ''."""
+    """Normalize parenting-mode values into one of the current こどもーど tags or ''."""
     if isinstance(value, dict):
         value = value.get("key") or value.get("tag") or value.get("label") or value.get("emoji")
     value = str(value or "").strip()
@@ -4515,6 +4584,10 @@ def normalize_parenting_tag_key(value):
         "kindness": "kindness", "やさしさ": "kindness", "優しさ": "kindness", "❤️": "kindness", "❤": "kindness",
         "together": "together", "いっしょに": "together", "一緒に": "together", "🤝": "together",
         "tears": "tears", "なみだ": "tears", "涙": "tears", "😭": "tears",
+        "hmm": "hmm", "むーん": "hmm", "ムーン": "hmm", "🤔": "hmm",
+        "peace": "peace", "ピース": "peace", "✌️": "peace", "✌": "peace",
+        "teach_me": "teach_me", "教えて": "teach_me", "🙋": "teach_me",
+        "sharp": "sharp", "キリッ": "sharp", "きりっ": "sharp", "🫡": "sharp",
     }
     return aliases.get(value, "")
 
@@ -5035,7 +5108,7 @@ def photo_tag_meta_from_key(key):
 
 
 def photo_emotion_record(emotion_key, source="child_tap_cycle_v168"):
-    """Return the persisted reflection_json payload for one of the six v159 feelings."""
+    """Return the persisted reflection_json payload for one current normal-mode feeling."""
     emotion_key = normalize_photo_emotion_key(emotion_key)
     if not emotion_key:
         return None
@@ -5593,6 +5666,10 @@ _DIARY_GALLERY_CSS = """
 .diary-photo-card.emotion-anger { border-color:#E56B6F; background:rgba(229,107,111,.16); box-shadow:0 0 0 1px rgba(229,107,111,.10) inset; }
 .diary-photo-card.emotion-sadness { border-color:#6C9BD2; background:rgba(108,155,210,.16); box-shadow:0 0 0 1px rgba(108,155,210,.10) inset; }
 .diary-photo-card.emotion-frustration { border-color:#A66A8A; background:rgba(166,106,138,.17); box-shadow:0 0 0 1px rgba(166,106,138,.10) inset; }
+.diary-photo-card.emotion-relaxed { border-color:#9BCDB8; background:rgba(155,205,184,.18); box-shadow:0 0 0 1px rgba(155,205,184,.10) inset; }
+.diary-photo-card.emotion-delicious { border-color:#F2A65A; background:rgba(242,166,90,.18); box-shadow:0 0 0 1px rgba(242,166,90,.10) inset; }
+.diary-photo-card.emotion-beautiful { border-color:#6EC5D8; background:rgba(110,197,216,.18); box-shadow:0 0 0 1px rgba(110,197,216,.10) inset; }
+.diary-photo-card.emotion-mixed { border-color:#8D86A8; background:rgba(141,134,168,.18); box-shadow:0 0 0 1px rgba(141,134,168,.10) inset; }
 .diary-photo-card:active { transform: scale(.985); }
 .diary-photo-card img { display:block; width:100%; aspect-ratio:1/1; object-fit:cover; border-radius:9px; background:rgba(128,128,128,.08); }
 .diary-emotion-badge {
@@ -5715,17 +5792,21 @@ export default function(component) {
 
   if (singleNav) singleNav.hidden = !(single && photos.length > 1);
 
-  const normalOrder = ['cozy', 'joy', 'surprise', 'anger', 'sadness', 'frustration'];
+  const normalOrder = ['cozy', 'joy', 'surprise', 'anger', 'sadness', 'frustration', 'relaxed', 'delicious', 'beautiful', 'mixed'];
   const normalMeta = {
     cozy:{emoji:'🥰',color:'#F3B6A0',label:'ほっこりした'}, joy:{emoji:'😊',color:'#F2C94C',label:'うれしい'},
     surprise:{emoji:'😲',color:'#9B7BD3',label:'びっくり'}, anger:{emoji:'😠',color:'#E56B6F',label:'おこった'},
-    sadness:{emoji:'😢',color:'#6C9BD2',label:'かなしい'}, frustration:{emoji:'😣',color:'#A66A8A',label:'くやしい'}
+    sadness:{emoji:'😢',color:'#6C9BD2',label:'かなしい'}, frustration:{emoji:'😣',color:'#A66A8A',label:'くやしい'},
+    relaxed:{emoji:'😌',color:'#9BCDB8',label:'のほほん'}, delicious:{emoji:'😋',color:'#F2A65A',label:'美味しい'},
+    beautiful:{emoji:'✨',color:'#6EC5D8',label:'きれい'}, mixed:{emoji:'😵‍💫',color:'#8D86A8',label:'複雑'}
   };
-  const parentingOrder = ['effort', 'challenge', 'discovery', 'kindness', 'together', 'tears'];
+  const parentingOrder = ['effort', 'challenge', 'discovery', 'kindness', 'together', 'tears', 'hmm', 'peace', 'teach_me', 'sharp'];
   const parentingMeta = {
     effort:{emoji:'⭐',color:'#E6B84A',label:'がんばった'}, challenge:{emoji:'💪',color:'#F2994A',label:'ちょうせん'},
     discovery:{emoji:'💡',color:'#9BC53D',label:'はっけん'}, kindness:{emoji:'❤️',color:'#E57373',label:'やさしさ'},
-    together:{emoji:'🤝',color:'#4DB6AC',label:'いっしょに'}, tears:{emoji:'😭',color:'#6C9BD2',label:'なみだ'}
+    together:{emoji:'🤝',color:'#4DB6AC',label:'いっしょに'}, tears:{emoji:'😭',color:'#6C9BD2',label:'なみだ'},
+    hmm:{emoji:'🤔',color:'#8E7CC3',label:'むーん'}, peace:{emoji:'✌️',color:'#5BBF9F',label:'ピース'},
+    teach_me:{emoji:'🙋',color:'#4C9BE8',label:'教えて'}, sharp:{emoji:'🫡',color:'#53657D',label:'キリッ'}
   };
   const normalizeNormal = (value) => Object.prototype.hasOwnProperty.call(normalMeta, String(value || '')) ? String(value || '') : '';
   const normalizeParenting = (value) => Object.prototype.hasOwnProperty.call(parentingMeta, String(value || '')) ? String(value || '') : '';
@@ -21688,14 +21769,22 @@ def render_monthly_replay_player(period_label, review, playback, photo_items, cu
         anger: '#E56B6F',
         sadness: '#6C9BD2',
         frustration: '#A66A8A',
+        relaxed: '#9BCDB8',
+        delicious: '#F2A65A',
+        beautiful: '#6EC5D8',
+        mixed: '#8D86A8',
         effort: '#E6B84A',
         challenge: '#F2994A',
         discovery: '#9BC53D',
         kindness: '#E57373',
         together: '#4DB6AC',
         tears: '#6C9BD2',
+        hmm: '#8E7CC3',
+        peace: '#5BBF9F',
+        teach_me: '#4C9BE8',
+        sharp: '#53657D',
       }};
-      const burariEmotionIcons = {{ cozy: '🥰', joy: '😊', surprise: '😲', anger: '😠', sadness: '😢', frustration: '😣', effort: '⭐', challenge: '💪', discovery: '💡', kindness: '❤️', together: '🤝', tears: '😭' }};
+      const burariEmotionIcons = {{ cozy: '🥰', joy: '😊', surprise: '😲', anger: '😠', sadness: '😢', frustration: '😣', relaxed: '😌', delicious: '😋', beautiful: '✨', mixed: '😵‍💫', effort: '⭐', challenge: '💪', discovery: '💡', kindness: '❤️', together: '🤝', tears: '😭', hmm: '🤔', peace: '✌️', teach_me: '🙋', sharp: '🫡' }};
 
       function burariSetPlayerControlsReady(ready) {{
         if (burariStartButton) {{
@@ -23735,8 +23824,8 @@ def summarize_burari_from_photos(trip, photos):
     feedback_guidance = build_summary_feedback_guidance()
     prompt = f"""
 5〜6歳の子どもの「東京ぶらり旅」1回分をまとめてください。
-入力には、その日に保存された写真と、本人が各写真から選んだ6つの気持ちがあります。
-6つの気持ちは本人による明示的な意思表示です。未設定の写真には感情を推測して付け足さないでください。
+入力には、その日に保存された写真と、本人が各写真から選んだ通常／こどもーどのアイコンがあります。
+選ばれたアイコンは本人による明示的な意思表示です。未設定の写真には感情や意味を推測して付け足さないでください。
 
 日付: {(trip or {}).get('trip_date', '')}
 行き先メモ: {str((trip or {}).get('destination') or '').strip() or 'なし'}
@@ -23968,7 +24057,7 @@ def make_monthly_review(month_key, bundle):
     day_count = int(evidence_bundle.get("day_count") or 0)
     source = str(evidence_bundle.get("source") or "")
     source_note = (
-        "以下は、本人が写真から実際に選んだ6つの気持ちです。"
+        "以下は、本人が写真から実際に選んだ通常／こどもーどのアイコンです。"
         if source == "photo_emotions"
         else "この期間には気持ちの記録がないため、旧形式の保存日記を互換用の補助材料として使います。推測は特に弱くしてください。"
     )
@@ -23984,7 +24073,7 @@ def make_monthly_review(month_key, bundle):
 {evidence}
 
 厳守:
-- 6つの気持ち（ほっこりした・うれしい・びっくり・おこった・かなしい・くやしい）は本人による明示的な選択として扱う。
+- 通常10種類（ほっこりした・うれしい・びっくり・おこった・かなしい・くやしい・のほほん・美味しい・きれい・複雑）と、こどもーど10種類（がんばった・ちょうせん・はっけん・やさしさ・いっしょに・なみだ・むーん・ピース・教えて・キリッ）は本人による明示的な選択として扱う。
 - なぜその感情を選んだかは入力されていないため、理由を作らない。
 - 写真内容がこの入力には含まれないので、「何を見て喜んだ」など具体物を推測しない。
 - 複数日に同じ感情が出ている場合は「この期間はうれしいを選ぶ写真が多かったね」のような事実ベースの傾向は書いてよい。
@@ -23999,7 +24088,7 @@ def make_monthly_review(month_key, bundle):
 """.strip()
     result = ask_json(prompt, "burari_monthly_review_emotions_v149", schema, 850)
     result["_insight_version"] = 3
-    result["_subjective_input_mode"] = "photo_emotion_six_choices_v159"
+    result["_subjective_input_mode"] = "photo_tag_twenty_choices_v421"
     return result
 
 
@@ -29656,17 +29745,21 @@ export default function(component) {
   const nextVideoButton=parentElement.querySelector('#moments-next-video');
   const saveSelectionButton=parentElement.querySelector('#moments-save-selection');
 
-  const normalOrder=['cozy','joy','surprise','anger','sadness','frustration'];
+  const normalOrder=['cozy','joy','surprise','anger','sadness','frustration','relaxed','delicious','beautiful','mixed'];
   const normalMeta={
     cozy:{emoji:'🥰',color:'#F3B6A0',label:'ほっこりした'},joy:{emoji:'😊',color:'#F2C94C',label:'うれしい'},
     surprise:{emoji:'😲',color:'#9B7BD3',label:'びっくり'},anger:{emoji:'😠',color:'#E56B6F',label:'おこった'},
-    sadness:{emoji:'😢',color:'#6C9BD2',label:'かなしい'},frustration:{emoji:'😣',color:'#A66A8A',label:'くやしい'}
+    sadness:{emoji:'😢',color:'#6C9BD2',label:'かなしい'},frustration:{emoji:'😣',color:'#A66A8A',label:'くやしい'},
+    relaxed:{emoji:'😌',color:'#9BCDB8',label:'のほほん'},delicious:{emoji:'😋',color:'#F2A65A',label:'美味しい'},
+    beautiful:{emoji:'✨',color:'#6EC5D8',label:'きれい'},mixed:{emoji:'😵‍💫',color:'#8D86A8',label:'複雑'}
   };
-  const parentingOrder=['effort','challenge','discovery','kindness','together','tears'];
+  const parentingOrder=['effort','challenge','discovery','kindness','together','tears','hmm','peace','teach_me','sharp'];
   const parentingMeta={
     effort:{emoji:'⭐',color:'#E6B84A',label:'がんばった'},challenge:{emoji:'💪',color:'#F2994A',label:'ちょうせん'},
     discovery:{emoji:'💡',color:'#9BC53D',label:'はっけん'},kindness:{emoji:'❤️',color:'#E57373',label:'やさしさ'},
-    together:{emoji:'🤝',color:'#4DB6AC',label:'いっしょに'},tears:{emoji:'😭',color:'#6C9BD2',label:'なみだ'}
+    together:{emoji:'🤝',color:'#4DB6AC',label:'いっしょに'},tears:{emoji:'😭',color:'#6C9BD2',label:'なみだ'},
+    hmm:{emoji:'🤔',color:'#8E7CC3',label:'むーん'},peace:{emoji:'✌️',color:'#5BBF9F',label:'ピース'},
+    teach_me:{emoji:'🙋',color:'#4C9BE8',label:'教えて'},sharp:{emoji:'🫡',color:'#53657D',label:'キリッ'}
   };
   const normalizeNormal=(v)=>Object.prototype.hasOwnProperty.call(normalMeta,String(v||''))?String(v||''):'';
   const normalizeParenting=(v)=>Object.prototype.hasOwnProperty.call(parentingMeta,String(v||''))?String(v||''):'';
@@ -31585,7 +31678,7 @@ def render_recent_camera_photo_emotion(trip):
             delete_key_prefix="recent_camera",
         ):
             st.warning("撮影した動画のプレビューを表示できませんでした。")
-        st.caption("✨ いい瞬間は動画保存とは別にバックグラウンドで作成します。切り取った写真は、日記画面でタップするたびに6つの気持ちを切り替えられます。")
+        st.caption("✨ いい瞬間は動画保存とは別にバックグラウンドで作成します。切り取った写真は、日記画面でタップするたびに通常10種類／こどもーど10種類のアイコンを切り替えられます。")
         return
 
     location_label = photo_location_label(photo)
@@ -32683,7 +32776,7 @@ def page_diary():
 
     page_top(
         "📖 日記",
-        "写真をタップするたびに6つの気持ちを切り替え、その記録から日記を作ります。気持ちを変えるだけではページ更新しません。コメント入力は使いません。",
+        "写真をタップするたびに通常10種類／こどもーど10種類のアイコンを切り替え、その記録から日記を作ります。アイコンを変えるだけではページ更新しません。コメント入力は使いません。",
     )
     notice = st.session_state.pop("_diary_notice", None)
     if notice:
