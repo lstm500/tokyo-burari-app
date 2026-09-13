@@ -33,9 +33,11 @@ from zoneinfo import ZoneInfo
 import streamlit as st
 
 # Freshly generated update: 2026-09-13 JST
-GENERATED_UPDATE_JST = "2026-09-13T11:00:21+09:00"
+GENERATED_UPDATE_JST = "2026-09-13T12:05:25+09:00"
 
-APP_BUILD = "v410"
+APP_BUILD = "v411"
+# v411: Release camera canvases, decoded previews, video Blob references, streams,
+# recorder callbacks and audio graphs promptly after each save/upload cycle.
 # v410: Notification-opened discovery results now provide working walking-route
 # links plus on-demand Google details and up to three place photos per candidate.
 # v409: Release search controls when fresh results return, discard stale component
@@ -2220,8 +2222,7 @@ export default function(component) {
     try { targetStream.getTracks().forEach((track) => { try { track.stop(); } catch (_) {} }); } catch (_) {}
   };
 
-  const clearCurrentCameraStream = () => {
-    stopActiveRecorderSilently();
+  const releaseLiveCameraForUpload = () => {
     if (stream) {
       stopMediaStream(stream);
       stream = null;
@@ -2231,6 +2232,20 @@ export default function(component) {
       video.srcObject = null;
       video.hidden = true;
     }
+  };
+
+  const releaseSubmittedReviewMedia = () => {
+    pendingMedia = null;
+    pendingVideoBlob = null;
+    pendingPhotoLoadGeneration += 1;
+    pendingPhotoPreparePromise = null;
+    revokePendingPhotoPreviewUrl();
+    hideReview();
+  };
+
+  const clearCurrentCameraStream = () => {
+    stopActiveRecorderSilently();
+    releaseLiveCameraForUpload();
     pendingMedia = null;
     pendingVideoBlob = null;
     pendingPhotoLoadGeneration += 1;
@@ -2813,6 +2828,15 @@ export default function(component) {
     return current;
   };
 
+  const releaseCaptureCanvas = () => {
+    try {
+      const context = canvas.getContext('2d');
+      if (context) context.clearRect(0, 0, canvas.width, canvas.height);
+    } catch (_) {}
+    // Resetting dimensions releases the backing pixel buffer immediately on WebView.
+    try { canvas.width = 1; canvas.height = 1; } catch (_) {}
+  };
+
   const capturePosterDataUrl = async () => {
     if (!video.videoWidth || !video.videoHeight) throw new Error('video frame unavailable');
     const srcW = video.videoWidth;
@@ -2826,7 +2850,11 @@ export default function(component) {
     const ctx = canvas.getContext('2d', { alpha: false });
     ctx.drawImage(video, 0, 0, width, height);
     const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', 0.86));
-    if (!blob) throw new Error('canvas conversion failed');
+    if (!blob) {
+      releaseCaptureCanvas();
+      throw new Error('canvas conversion failed');
+    }
+    releaseCaptureCanvas();
     return await blobToDataUrl(blob);
   };
 
@@ -2844,7 +2872,11 @@ export default function(component) {
     const ctx = canvas.getContext('2d', { alpha: false });
     ctx.drawImage(video, 0, 0, width, height);
     const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', 0.72));
-    if (!blob) throw new Error('video poster conversion failed');
+    if (!blob) {
+      releaseCaptureCanvas();
+      throw new Error('video poster conversion failed');
+    }
+    releaseCaptureCanvas();
     return await blobToDataUrl(blob);
   };
 
@@ -2877,6 +2909,7 @@ export default function(component) {
   const extractVideoCandidateFrames = async (blob, durationMs) => {
     const objectUrl = URL.createObjectURL(blob);
     const probe = document.createElement('video');
+    let frameCanvas = null;
     probe.preload = 'auto';
     probe.muted = true;
     probe.playsInline = true;
@@ -2902,7 +2935,7 @@ export default function(component) {
       const samplePlan = goodMomentsSamplePlan(measuredDuration);
       const sampleCount = samplePlan.count;
       const sampleIntervalSeconds = samplePlan.intervalSeconds;
-      const frameCanvas = document.createElement('canvas');
+      frameCanvas = document.createElement('canvas');
       const srcW = probe.videoWidth || video.videoWidth || 1280;
       const srcH = probe.videoHeight || video.videoHeight || 720;
       const maxSide = 240;
@@ -2936,6 +2969,15 @@ export default function(component) {
       probe.removeAttribute('src');
       try { probe.load(); } catch (_) {}
       URL.revokeObjectURL(objectUrl);
+      if (frameCanvas) {
+        try {
+          const context = frameCanvas.getContext('2d');
+          if (context) context.clearRect(0, 0, frameCanvas.width, frameCanvas.height);
+          frameCanvas.width = 1;
+          frameCanvas.height = 1;
+        } catch (_) {}
+        frameCanvas = null;
+      }
     }
   };
 
@@ -2946,6 +2988,8 @@ export default function(component) {
     let bitmap = null;
     let fallbackUrl = '';
     let source = null;
+    let offscreen = null;
+    let workCanvas = null;
     try {
       if (typeof globalThis.createImageBitmap === 'function') {
         try {
@@ -2977,7 +3021,7 @@ export default function(component) {
       let blob = null;
       if (typeof globalThis.OffscreenCanvas === 'function') {
         try {
-          const offscreen = new globalThis.OffscreenCanvas(width, height);
+          offscreen = new globalThis.OffscreenCanvas(width, height);
           const ctx = offscreen.getContext('2d', { alpha: false, desynchronized: true });
           ctx.drawImage(source, 0, 0, width, height);
           blob = await offscreen.convertToBlob({ type: 'image/jpeg', quality: 0.86 });
@@ -2986,7 +3030,7 @@ export default function(component) {
         }
       }
       if (!blob) {
-        const workCanvas = document.createElement('canvas');
+        workCanvas = document.createElement('canvas');
         workCanvas.width = width;
         workCanvas.height = height;
         const ctx = workCanvas.getContext('2d', { alpha: false });
@@ -2998,6 +3042,15 @@ export default function(component) {
     } finally {
       if (bitmap && typeof bitmap.close === 'function') { try { bitmap.close(); } catch (_) {} }
       if (fallbackUrl) { try { URL.revokeObjectURL(fallbackUrl); } catch (_) {} }
+      if (workCanvas) {
+        try { workCanvas.width = 1; workCanvas.height = 1; } catch (_) {}
+        workCanvas = null;
+      }
+      if (offscreen) {
+        try { offscreen.width = 1; offscreen.height = 1; } catch (_) {}
+        offscreen = null;
+      }
+      source = null;
     }
   };
 
@@ -3240,7 +3293,19 @@ export default function(component) {
       mediaRecorder.onerror = (event) => {
         console.error(event);
         clearRecordingTimers();
+        const failedRecorder = mediaRecorder;
+        recordingCancelled = true;
+        mediaRecorder = null;
+        if (failedRecorder) {
+          failedRecorder.ondataavailable = null;
+          failedRecorder.onerror = null;
+          failedRecorder.onstop = null;
+          try { if (failedRecorder.state !== 'inactive') failedRecorder.stop(); } catch (_) {}
+        }
+        recordedChunks = [];
+        recordingCandidateFrames = [];
         void closeRecordingAudioPipeline();
+        releaseLiveCameraForUpload();
         setRecordingUi(false);
         const message = '動画の録画中にエラーが発生しました。もう一度お試しください。';
         setStatus(message);
@@ -3255,6 +3320,11 @@ export default function(component) {
           recordedChunks = [];
           recordingCandidateFrames = [];
           recordingCancelled = false;
+          if (recorder) {
+            recorder.ondataavailable = null;
+            recorder.onerror = null;
+            recorder.onstop = null;
+          }
           return;
         }
         try {
@@ -3300,6 +3370,10 @@ export default function(component) {
           } catch (locationErr) {
             console.warn('video location skipped', locationErr);
           }
+
+          // Poster and capture location are ready. Release camera decoder/sensor buffers
+          // before holding the large recorded Blob during network upload.
+          releaseLiveCameraForUpload();
 
           // Upload the original first. The trigger payload sent to Streamlit contains
           // only metadata and small JPEG stills, never the multi-megabyte video itself.
@@ -3347,10 +3421,6 @@ export default function(component) {
             upload_complete: true
           };
 
-          if (stream) {
-            stream.getTracks().forEach((track) => track.stop());
-            stream = null;
-          }
           setStatus('動画を保管庫へ送信しました。記録を登録しています…');
           setTriggerValue('video', mediaToSave);
         } catch (err) {
@@ -3363,6 +3433,14 @@ export default function(component) {
           setTriggerValue('camera_error', { name: 'VideoPrepareError', message, detail });
         } finally {
           await closeRecordingAudioPipeline();
+          if (recorder) {
+            recorder.ondataavailable = null;
+            recorder.onerror = null;
+            recorder.onstop = null;
+          }
+          recordedChunks = [];
+          recordingCandidateFrames = [];
+          releaseCaptureCanvas();
           recordingStartedAt = 0;
           recordingLocationPromise = null;
         }
@@ -3628,6 +3706,7 @@ export default function(component) {
         }
         setStatus('選んだ動画を保管庫へ送信しています…');
         const mimeType = String(mediaToSave.mime_type || inferGalleryVideoMime(pendingVideoBlob) || 'video/mp4');
+        releaseLiveCameraForUpload();
         await uploadRawBlobToSignedUrl(pendingVideoBlob, videoUploadSignedUrl, mimeType, '動画');
         const recordingId = (globalThis.crypto && typeof globalThis.crypto.randomUUID === 'function')
           ? globalThis.crypto.randomUUID()
@@ -3656,12 +3735,9 @@ export default function(component) {
           auto_save: true,
           upload_complete: true
         };
-        if (stream) {
-          stream.getTracks().forEach((track) => track.stop());
-          stream = null;
-        }
         setStatus('動画を保管庫へ送信しました。記録を登録しています…');
         setTriggerValue('video', uploadedPayload);
+        releaseSubmittedReviewMedia();
       } catch (err) {
         console.error(err);
         reviewSave.disabled = false;
@@ -3691,11 +3767,9 @@ export default function(component) {
         delete mediaToSave.location_promise;
       }
       setStatus('写真を保存しています…');
-      if (stream) {
-        stream.getTracks().forEach((track) => track.stop());
-        stream = null;
-      }
+      releaseLiveCameraForUpload();
       setTriggerValue('photo', mediaToSave);
+      releaseSubmittedReviewMedia();
     } catch (err) {
       console.error(err);
       reviewSave.disabled = false;
@@ -3857,7 +3931,7 @@ export default function(component) {
 }
 """
 
-LIVE_CAMERA_COMPONENT_BUILD = "v402"
+LIVE_CAMERA_COMPONENT_BUILD = "v411"
 
 # v383: this bundle is large. Register it only on the Camera page so unrelated
 # Streamlit reruns do not pay the camera component setup cost.
@@ -3871,7 +3945,7 @@ def _get_live_camera_component():
     _live_camera_component_initialized = True
     try:
         live_camera_component = st.components.v2.component(
-            "tokyo_burari_live_camera_v402",
+            "tokyo_burari_live_camera_v411",
             html=_LIVE_CAMERA_HTML,
             css=_LIVE_CAMERA_CSS,
             js=_LIVE_CAMERA_JS,
@@ -31013,7 +31087,7 @@ def page_trip():
             "video_candidate_sheet_signed_url": str(video_reservation.get("candidate_sheet_signed_url") or ""),
             "video_candidate_sheet_storage_path": str(video_reservation.get("candidate_sheet_path") or ""),
         },
-        key=f"live_camera_v394_{camera_trip_key}_{st.session_state.capture_serial}_{_current_ui_refresh_epoch()}",
+        key=f"live_camera_v411_{camera_trip_key}_{st.session_state.capture_serial}_{_current_ui_refresh_epoch()}",
         on_photo_change=lambda: None,
         on_video_change=lambda: None,
         on_video_prepare_change=lambda: None,
@@ -31212,6 +31286,10 @@ def page_trip():
                 else:
                     notice = "動画を保管庫に保存しました。いい瞬間を自動で作成しました。"
                 st.session_state["_camera_notice"] = notice
+                poster_raw = b""
+                if isinstance(video_payload, dict):
+                    video_payload["poster_data_url"] = ""
+                    video_payload["candidate_frames"] = []
                 reload_current_page_after_action()
         except Exception as exc:
             if video_saved:
@@ -31310,6 +31388,8 @@ def page_trip():
                 st.session_state["_camera_entry_mode_v394"] = "photo"
                 st.session_state.capture_serial += 1
                 st.session_state["_camera_notice"] = "写真を保存しました。"
+                raw = b""
+                payload["data_url"] = ""
                 reload_current_page_after_action()
         except Exception as exc:
             st.error("写真を保存できませんでした。")
