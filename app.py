@@ -35,7 +35,8 @@ import streamlit as st
 # Freshly generated update: 2026-09-13 JST
 GENERATED_UPDATE_JST = "2026-09-13T01:09:00+09:00"
 
-APP_BUILD = "v404"
+APP_BUILD = "v405"
+# v405: Keep YouTube BGM at 80% while a photo voice is playing.
 # v404: Replay photo voices duck YouTube BGM instead of intentionally stopping it.
 # Restore/restart the BGM after voice ended/error/abort even when Android WebView
 # paused YouTube first, and hold the current photo until its voice has finished.
@@ -20963,7 +20964,7 @@ def render_monthly_replay_player(period_label, review, playback, photo_items, cu
       let burariSlideAdvancePending = false;
       let burariVoiceSafetyTimer = null;
       const burariNormalMusicVolume = 100;
-      const burariVoiceMusicVolume = 28;
+      const burariVoiceMusicVolume = 80;
       let burariVoiceAutoTimer = null;
       let burariReplayPlaybackActive = false;
       let burariTimer = null;
