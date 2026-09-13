@@ -35,7 +35,8 @@ import streamlit as st
 # Freshly generated update: 2026-09-13 JST
 GENERATED_UPDATE_JST = "2026-09-14T00:40:00+09:00"
 
-APP_BUILD = "v417"
+APP_BUILD = "v418"
+# v418: Add an all-photo library entry from Diary so every saved still photo can be browsed in one chronological gallery.
 # v416: Add GPS-confirmed evening tourism review around 20:00, dedicated deep link, and local comment saving.
 # Restore Android discovery deep-link compatibility alongside the v413 external Maps bridge.
 # v417: Keep Good Moments emotion/voice metadata synchronized with saved diary photos.
@@ -24319,7 +24320,7 @@ def page_evening_review():
 
     st.caption("何も思いつかなければ、無理にコメントを残す必要はありません。")
 
-VALID_APP_PAGES = {"home", "camera", "videos", "moments", "diary", "review", "review_map", "review_project", "review_monthly", "review_tag", "review_history", "nearby", "discovery_results", "evening_review", "toilets", "field_notes", "settings", "settings_moments", "settings_moments_definition", "settings_location", "settings_account"}
+VALID_APP_PAGES = {"home", "camera", "videos", "moments", "diary", "photos", "review", "review_map", "review_project", "review_monthly", "review_tag", "review_history", "nearby", "discovery_results", "evening_review", "toilets", "field_notes", "settings", "settings_moments", "settings_moments_definition", "settings_location", "settings_account"}
 
 
 def _current_ui_refresh_epoch():
@@ -24534,6 +24535,7 @@ def navigation_parent_node(node=None):
         "videos": "home",
         "moments": "home",
         "diary": "home",
+        "photos": "diary",
         "review": "home",
         "nearby": "home",
         "discovery_results": "home",
@@ -24610,6 +24612,16 @@ def _go_page_callback(page_name, history_mode="push"):
     _set_page_state(page_name, history_mode=history_mode)
 
 
+def _open_photo_library_callback_v418(return_page="diary"):
+    """Open the all-photo library and remember which screen should be one level up."""
+    return_page = str(return_page or "diary")
+    if return_page not in {"camera", "diary", "home"}:
+        return_page = "diary"
+    st.session_state["_photo_library_return_page_v418"] = return_page
+    st.session_state["_all_photo_library_page_v418"] = 0
+    _set_page_state("photos", history_mode="push")
+
+
 def _home_nav_callback(page_name, camera_mode=None):
     """Home navigation callback; prepares camera/review state before the rerun."""
     if page_name == "camera":
@@ -24659,6 +24671,13 @@ def _navigate_to_parent_state_only():
     if node == "diary_trip":
         reset_diary_navigation_for_home_entry()
         st.session_state["_history_action"] = "replace"
+        return
+
+    if node == "photos":
+        return_page = str(st.session_state.get("_photo_library_return_page_v418") or "diary")
+        if return_page not in {"camera", "diary", "home"}:
+            return_page = "diary"
+        _set_page_state(return_page, history_mode="replace")
         return
 
     if node == "review_history_detail":
@@ -24735,6 +24754,7 @@ def sync_browser_history():
     intercept_nodes = {
         "diary_photo",
         "diary_trip",
+        "photos",
         "review_history_detail",
         "review_history",
         "review_map",
@@ -32026,6 +32046,14 @@ def page_trip():
             if st.session_state.get(f"_camera_show_recent_v394_{trip['id']}"):
                 render_recent_camera_photo_emotion(trip)
 
+    st.button(
+        "🖼️ これまで撮った写真の一覧を見る",
+        use_container_width=True,
+        key="camera_open_all_photos_v418",
+        on_click=_open_photo_library_callback_v418,
+        args=("camera",),
+    )
+
 
 @st.fragment
 def render_diary_emotion_gallery(trip_id, photos, trip=None, is_pending=False):
@@ -32331,6 +32359,163 @@ def render_family_shared_individual_photos():
 
 
 # ============================================================
+# Page: All saved photos
+# ============================================================
+def _photo_library_captured_label_v418(value):
+    text = str(value or "").strip()
+    if not text:
+        return "日時不明"
+    try:
+        dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=ZoneInfo(APP_TIMEZONE))
+        else:
+            dt = dt.astimezone(ZoneInfo(APP_TIMEZONE))
+        return dt.strftime("%Y/%m/%d %H:%M")
+    except Exception:
+        return text[:16].replace("T", " ")
+
+
+@st.dialog("写真を見る")
+def show_photo_library_dialog_v418(photo, photo_number, total_count):
+    photo = photo if isinstance(photo, dict) else {}
+    path = str(photo.get("storage_path") or "").strip()
+    signed = signed_photo_url_map((path,), expires_in=1800) if path else {}
+    src = photo_display_url(photo, signed, max_px=1800, quality=94)
+    if src:
+        st.image(src, use_container_width=True)
+    else:
+        st.warning("この写真を表示できませんでした。")
+
+    st.caption(f"{photo_number} / {total_count}　・　{_photo_library_captured_label_v418(photo.get('captured_at'))}")
+    location = str(photo_location_label(photo) or "").strip()
+    if location:
+        st.caption(f"📍 {location}")
+
+    emotion_meta = photo_selected_tag_meta(photo)
+    emotion_label = str(emotion_meta.get("label") or "").strip()
+    emotion_emoji = str(emotion_meta.get("emoji") or "").strip()
+    if emotion_label or emotion_emoji:
+        st.caption(f"{emotion_emoji} {emotion_label}".strip())
+
+    voice_meta = photo_voice_note_meta(photo)
+    voice_path = str(voice_meta.get("storage_path") or "").strip()
+    if voice_path:
+        try:
+            voice_signed = signed_photo_url_map((voice_path,), expires_in=1800)
+            voice_url = str(voice_signed.get(voice_path) or "")
+        except Exception:
+            voice_url = ""
+        if voice_url:
+            st.markdown("##### 🎙 この写真の声")
+            st.audio(voice_url)
+        transcript = str(voice_meta.get("transcript") or "").strip()
+        if transcript:
+            st.caption(f"文字起こし: {transcript}")
+
+
+def page_photo_library_v418():
+    page_top(
+        "🖼️ これまで撮った写真",
+        "この個人アカウントに保存している写真を、新しい順に一覧で見られます。",
+    )
+    try:
+        photos = list_member_still_photos_for_tags(max_items=5000)
+    except Exception as exc:
+        st.error("写真の一覧を読み込めませんでした。")
+        with st.expander("保護者向け詳細"):
+            st.code(str(exc))
+        return
+
+    photos = [photo for photo in photos if isinstance(photo, dict) and not photo_is_video(photo)]
+    photos.sort(
+        key=lambda photo: (str(photo.get("captured_at") or ""), str(photo.get("id") or "")),
+        reverse=True,
+    )
+    if not photos:
+        st.info("まだ保存されている写真はありません。")
+        return
+
+    st.caption(f"保存している写真：{len(photos)}枚")
+
+    per_page = 30
+    page_count = max(1, math.ceil(len(photos) / per_page))
+    page_key = "_all_photo_library_page_v418"
+    try:
+        current_page = int(st.session_state.get(page_key) or 0)
+    except Exception:
+        current_page = 0
+    current_page = max(0, min(current_page, page_count - 1))
+    st.session_state[page_key] = current_page
+
+    start = current_page * per_page
+    visible = photos[start:start + per_page]
+    paths = tuple(str(photo.get("storage_path") or "") for photo in visible if photo.get("storage_path"))
+    try:
+        signed = signed_photo_url_map(paths, expires_in=1800) if paths else {}
+    except Exception:
+        signed = {}
+
+    for row_start in range(0, len(visible), 3):
+        cols = st.columns(3, gap="small")
+        for offset in range(3):
+            local_index = row_start + offset
+            if local_index >= len(visible):
+                continue
+            photo = visible[local_index]
+            absolute_index = start + local_index
+            photo_id = str(photo.get("id") or absolute_index)
+            with cols[offset]:
+                src = photo_display_url(photo, signed, max_px=520, quality=80)
+                if src:
+                    meta = photo_selected_tag_meta(photo)
+                    border = str(meta.get("color") or "#AEB6C2")
+                    emoji = str(meta.get("emoji") or "")
+                    voice_badge = "🎙" if photo_voice_note_storage_path(photo) else ""
+                    badges = " ".join(x for x in (emoji, voice_badge) if x)
+                    badge_html = (
+                        f'<span style="position:absolute;right:6px;bottom:6px;background:rgba(255,255,255,.92);'
+                        f'border-radius:999px;padding:2px 5px;font-size:16px;box-shadow:0 2px 6px rgba(0,0,0,.18);">{html.escape(badges)}</span>'
+                        if badges else ""
+                    )
+                    st.markdown(
+                        f'<div style="position:relative;padding:3px;border:3px solid {html.escape(border, quote=True)};border-radius:11px;">'
+                        f'<img src="{html.escape(src, quote=True)}" loading="lazy" decoding="async" '
+                        f'style="display:block;width:100%;aspect-ratio:1/1;object-fit:cover;border-radius:7px;" />{badge_html}</div>',
+                        unsafe_allow_html=True,
+                    )
+                st.caption(_photo_library_captured_label_v418(photo.get("captured_at")))
+                if st.button(
+                    "見る",
+                    use_container_width=True,
+                    key=f"all_photo_open_v418_{current_page}_{photo_id}",
+                ):
+                    show_photo_library_dialog_v418(photo, absolute_index + 1, len(photos))
+
+    if page_count > 1:
+        st.caption(f"{current_page + 1} / {page_count}ページ　（1ページ最大30枚）")
+        prev_col, next_col = st.columns(2, gap="small")
+        with prev_col:
+            if st.button(
+                "← 前の写真",
+                use_container_width=True,
+                disabled=current_page <= 0,
+                key=f"all_photo_prev_v418_{current_page}",
+            ):
+                st.session_state[page_key] = max(0, current_page - 1)
+                st.rerun()
+        with next_col:
+            if st.button(
+                "次の写真 →",
+                use_container_width=True,
+                disabled=current_page >= page_count - 1,
+                key=f"all_photo_next_v418_{current_page}",
+            ):
+                st.session_state[page_key] = min(page_count - 1, current_page + 1)
+                st.rerun()
+
+
+# ============================================================
 # Page: Diary (photo emotion tagging)
 # ============================================================
 def page_diary():
@@ -32351,6 +32536,14 @@ def page_diary():
         st.success(notice)
     render_photo_family_share_notice()
     render_photo_tag_notices()
+
+    st.button(
+        "🖼️ これまで撮った写真の一覧を見る",
+        use_container_width=True,
+        key="diary_open_all_photos_v418",
+        on_click=_open_photo_library_callback_v418,
+        args=("diary",),
+    )
 
     render_family_shared_individual_photos()
 
@@ -40350,6 +40543,8 @@ with st.container(key="app_page_root_v280"):
         page_moments()
     elif page == "diary":
         page_diary()
+    elif page == "photos":
+        page_photo_library_v418()
     elif page == "review":
         page_review()
     elif page == "review_map":
@@ -40393,6 +40588,6 @@ with st.container(key="app_page_root_v280"):
         live_page = str(st.session_state.get("main_page") or "home")
         if (
             page == live_page
-            and page in {"camera", "videos", "moments", "diary", "review", "review_map", "review_project", "review_monthly", "review_tag", "review_history", "nearby", "discovery_results", "evening_review", "toilets", "field_notes", "settings", "settings_moments", "settings_moments_definition", "settings_location", "settings_account"}
+            and page in {"camera", "videos", "moments", "diary", "photos", "review", "review_map", "review_project", "review_monthly", "review_tag", "review_history", "nearby", "discovery_results", "evening_review", "toilets", "field_notes", "settings", "settings_moments", "settings_moments_definition", "settings_location", "settings_account"}
         ):
             render_global_bottom_navigation(page)
