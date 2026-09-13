@@ -35,7 +35,10 @@ import streamlit as st
 # Freshly generated update: 2026-09-13 JST
 GENERATED_UPDATE_JST = "2026-09-13T01:09:00+09:00"
 
-APP_BUILD = "v405"
+APP_BUILD = "v406"
+# v406: Saved tag movies use live tag membership, and both tag/month movies
+# refresh their photo membership when reopened. A stale curation is cleared when
+# its source gains or loses photos so newly eligible photos cannot stay hidden.
 # v405: Keep YouTube BGM at 80% while a photo voice is playing.
 # v404: Replay photo voices duck YouTube BGM instead of intentionally stopping it.
 # Restore/restart the BGM after voice ended/error/abort even when Android WebView
@@ -18021,6 +18024,8 @@ def carry_tag_movie_state(refreshed, previous):
         "_tag_movie_saved",
         "_tag_movie_saved_at",
         "_tag_movie_draft",
+        "_tag_movie_membership_mode",
+        "_tag_movie_membership_updated_at",
     ):
         if key in previous:
             refreshed[key] = previous[key]
@@ -18041,30 +18046,18 @@ def tag_movie_snapshot_photo_ids(bundle):
 
 
 def tag_movie_bundle_from_snapshot(bundle, review):
-    """Use the photo set captured when a tag movie was saved, if one exists."""
-    review = review if isinstance(review, dict) else {}
-    saved_ids = [str(value or "").strip() for value in (review.get("_tag_movie_photo_ids") or [])]
-    saved_ids = [value for value in saved_ids if value]
-    if not saved_ids:
-        return bundle
-    wanted = set(saved_ids)
-    photos = [
-        photo for photo in (bundle or {}).get("photos", []) or []
-        if isinstance(photo, dict) and str(photo.get("id") or "").strip() in wanted
-    ]
-    # Keep the original saved order even if the live tag query order changes.
-    order = {photo_id: index for index, photo_id in enumerate(saved_ids)}
-    photos.sort(key=lambda photo: order.get(str(photo.get("id") or "").strip(), len(order)))
-    trip_ids = {str(photo.get("trip_id") or "") for photo in photos if photo.get("trip_id")}
-    trips = [
-        trip for trip in (bundle or {}).get("trips", []) or []
-        if isinstance(trip, dict) and str(trip.get("id") or "") in trip_ids
-    ]
-    return {"trips": trips, "diaries": [], "photos": photos}
+    """Return the latest photos matching the saved tag condition.
+
+    Older builds stored ``_tag_movie_photo_ids`` as a fixed snapshot. From v406
+    those IDs are only a membership cache: the tag condition is authoritative, so
+    photos tagged later are included automatically and photos that no longer match
+    are removed the next time the movie is opened.
+    """
+    return bundle
 
 
 def save_tag_replay_movie(scope_key, review, bundle):
-    """Persist one exact tag-movie snapshot: photo set + current music/playback window."""
+    """Persist a dynamic tag movie: tag condition + current music/playback window."""
     latest = dict(review or {})
     storage_key = str(latest.get("_tag_storage_month") or tag_review_storage_month(scope_key, create=True))[:7]
     session_review = st.session_state.get(f"monthly_review_{storage_key}")
@@ -18079,12 +18072,70 @@ def save_tag_replay_movie(scope_key, review, bundle):
         raise ValueError("保存する写真を確認できませんでした。")
     latest["_tag_movie_photo_ids"] = photo_ids
     latest["_tag_movie_photo_count"] = len(photo_ids)
+    latest["_tag_movie_membership_mode"] = "dynamic"
+    latest["_tag_movie_membership_updated_at"] = now_jst().isoformat()
     latest["_tag_movie_saved"] = True
     latest["_tag_movie_saved_at"] = now_jst().isoformat()
     latest["_tag_movie_draft"] = False
     saved = save_tag_review(scope_key, latest)
     discard_monthly_preview_playback(storage_key)
     return saved
+
+
+def sync_dynamic_tag_movie_membership(scope_key, review, bundle):
+    """Refresh a saved tag movie from its live tag condition, without user action."""
+    current = dict(review or {})
+    if not current.get("_tag_movie_saved"):
+        return current
+    photo_ids = tag_movie_snapshot_photo_ids(bundle)
+    old_ids = [str(value or "").strip() for value in (current.get("_tag_movie_photo_ids") or [])]
+    old_ids = [value for value in old_ids if value]
+    if old_ids == photo_ids and current.get("_tag_movie_membership_mode") == "dynamic":
+        return current
+    current["_tag_movie_photo_ids"] = photo_ids
+    current["_tag_movie_photo_count"] = len(photo_ids)
+    current["_tag_movie_membership_mode"] = "dynamic"
+    current["_tag_movie_membership_updated_at"] = now_jst().isoformat()
+    if monthly_family_share_is_enabled(current):
+        previous = monthly_family_share_info(current)
+        current["_family_share"] = _monthly_family_share_payload(
+            str(current.get("_tag_storage_month") or "")[:7],
+            str(current.get("_scope_label") or current.get("_tag_label") or "AIタグ別振り返り"),
+            bundle,
+            previous_share=previous,
+        )
+    saved = save_tag_review(scope_key, current)
+    storage_key = str(saved.get("_tag_storage_month") or "")[:7]
+    if storage_key:
+        st.session_state[f"monthly_review_{storage_key}"] = saved
+    return saved
+
+
+def sync_dynamic_month_movie_membership(month_key, period_label, review, bundle):
+    """Keep an existing month movie attached to every current photo in that month."""
+    current = dict(review or {})
+    if not monthly_playback_is_ready(get_monthly_playback(current)):
+        return current
+    photo_ids = tag_movie_snapshot_photo_ids(bundle)
+    old_ids = [str(value or "").strip() for value in (current.get("_monthly_movie_photo_ids") or [])]
+    old_ids = [value for value in old_ids if value]
+    if old_ids == photo_ids and current.get("_monthly_movie_membership_mode") == "dynamic":
+        return current
+    current["_monthly_movie_photo_ids"] = photo_ids
+    current["_monthly_movie_photo_count"] = len(photo_ids)
+    current["_monthly_movie_membership_mode"] = "dynamic"
+    current["_monthly_movie_membership_updated_at"] = now_jst().isoformat()
+    if monthly_family_share_is_enabled(current):
+        previous = monthly_family_share_info(current)
+        current["_family_share"] = _monthly_family_share_payload(
+            month_key,
+            period_label,
+            bundle,
+            previous_share=previous,
+        )
+    save_monthly_review(month_key, current)
+    st.session_state[f"monthly_review_{month_key}"] = current
+    return current
 
 
 # ============================================================
@@ -18104,6 +18155,11 @@ def save_monthly_playback(month_key, review, playback):
         updated["_playback"] = dict(playback)
     else:
         updated.pop("_playback", None)
+        if str(updated.get("_review_scope_type") or "") != "ai_tag":
+            updated.pop("_monthly_movie_photo_ids", None)
+            updated.pop("_monthly_movie_photo_count", None)
+            updated.pop("_monthly_movie_membership_mode", None)
+            updated.pop("_monthly_movie_membership_updated_at", None)
     if str(updated.get("_review_scope_type") or "") == "ai_tag":
         updated["_tag_movie_saved"] = False
         updated.pop("_tag_movie_saved_at", None)
@@ -19207,6 +19263,7 @@ def generate_replay_photo_curation(scope_key, period_label, bundle, max_candidat
         "source_count": total_source_count,
         "target_count": target_selected,
         "favorite_count": len(favorite_ids),
+        "source_photo_ids": [str(photo.get("id") or "") for photo in all_photos if str(photo.get("id") or "")],
     }
     st.session_state[replay_photo_curation_state_key(scope_key)] = payload
     return payload
@@ -19216,6 +19273,25 @@ def apply_replay_photo_curation(scope_key, all_photo_items):
     state = get_replay_photo_curation(scope_key)
     selected_ids = [str(x) for x in (state.get("selected_photo_ids") or []) if str(x or "").strip()]
     if not state.get("active") or not selected_ids:
+        return list(all_photo_items or []), {}
+    # A curation was calculated from a particular source set. If photos were later
+    # added/removed (including through a new AI tag), discard the stale subset so
+    # every newly eligible photo appears without requiring another button press.
+    current_count = len(all_photo_items or [])
+    try:
+        source_count = int(state.get("source_count") or 0)
+    except (TypeError, ValueError):
+        source_count = 0
+    current_ids = [
+        str(item.get("photo_id") or "").strip()
+        for item in (all_photo_items or [])
+        if isinstance(item, dict) and str(item.get("photo_id") or "").strip()
+    ]
+    source_ids = [str(value or "").strip() for value in (state.get("source_photo_ids") or [])]
+    source_ids = [value for value in source_ids if value]
+    source_changed = source_ids != current_ids if source_ids else source_count != current_count
+    if source_changed:
+        clear_replay_photo_curation(scope_key)
         return list(all_photo_items or []), {}
     selected_set = set(selected_ids)
     # A favorite added after an earlier curation run must still appear immediately.
@@ -19579,7 +19655,7 @@ def list_own_replay_movies(limit=120):
     """Return all saved/created replay movies for the signed-in personal account.
 
     Monthly movies are rows with a persisted playback window. AI-tag movies are shown
-    only after the user has explicitly saved the movie snapshot. Drafts and settings
+    only after the user has explicitly saved the dynamic movie. Drafts and settings
     records are intentionally excluded.
     """
     requested = max(1, min(300, int(limit or 120)))
@@ -19710,11 +19786,6 @@ def _owned_replay_movie_bundle(month_key, review):
     review = review if isinstance(review, dict) else {}
     scope_type = str(review.get("_review_scope_type") or "").strip().lower()
     if scope_type in {"tag", "ai_tag"}:
-        saved_ids = [str(value or "").strip() for value in (review.get("_tag_movie_photo_ids") or [])]
-        saved_ids = [value for value in saved_ids if value]
-        if saved_ids:
-            return _bundle_from_owned_photo_ids(saved_ids)
-
         tags = _normalize_tag_review_selection(review.get("_ai_tag_keys") or [])
         if not tags:
             raise ValueError("このタグ別ムービーの写真条件を確認できませんでした。")
@@ -19859,6 +19930,8 @@ def delete_owned_replay_movie(row_id):
     review.pop("_playback", None)
     if scope_type in {"tag", "ai_tag"}:
         review.pop("_tag_movie_photo_ids", None)
+        review.pop("_tag_movie_membership_mode", None)
+        review.pop("_tag_movie_membership_updated_at", None)
         review.pop("_tag_movie_saved_at", None)
         review["_tag_movie_saved"] = False
         review["_tag_movie_draft"] = False
@@ -31621,7 +31694,7 @@ def page_tag_review(embedded=False):
         """
         <div class="tag-review-hero">
           <div class="tag-review-hero-title">写真をつないで、音楽と一緒に振り返る</div>
-          <div class="tag-review-hero-sub">AI画像タグを1つ以上選び、条件に合う写真を月をまたいで時系列にすべて集めます。選んだ写真は音楽付きの振り返りムービーにして、同じ写真・音楽・再生時間の組み合わせで保存できます。</div>
+          <div class="tag-review-hero-sub">AI画像タグを1つ以上選び、条件に合う写真を月をまたいで時系列にすべて集めます。音楽と再生時間を保存すると、後から同じタグが付いた写真も自動で加わります。</div>
         </div>
         <style>
           .tag-review-hero {
@@ -31829,8 +31902,15 @@ def page_tag_review(embedded=False):
     if not storage_key:
         storage_key = tag_review_storage_month(scope_key, create=True)
 
-    snapshot_source = source if (review or {}).get("_tag_movie_photo_ids") else bundle
-    movie_bundle = tag_movie_bundle_from_snapshot(snapshot_source, review)
+    # v406: a saved tag movie is a live tag query, not a frozen photo snapshot.
+    movie_bundle = tag_movie_bundle_from_snapshot(bundle, review)
+    if review.get("_tag_movie_saved"):
+        try:
+            review = sync_dynamic_tag_movie_membership(scope_key, review, movie_bundle)
+            st.session_state[session_key] = review
+        except Exception:
+            # The live bundle is still safe to display if the metadata refresh fails.
+            pass
     has_ai_review = tag_review_has_ai_content(review)
     setup_notice = st.session_state.pop(f"_tag_movie_setup_notice_{unsaved_token}", None)
     if setup_notice:
@@ -31901,11 +31981,11 @@ def page_tag_review(embedded=False):
         st.warning("振り返りムービーを表示できませんでした。音楽または写真の設定を確認してください。")
     else:
         saved_movie = bool(review.get("_tag_movie_saved"))
-        saved_count = int(review.get("_tag_movie_photo_count") or len((movie_bundle or {}).get("photos", []) or []))
+        saved_count = len((movie_bundle or {}).get("photos", []) or [])
         audition_active = monthly_preview_playback_is_active(storage_key)
         if saved_movie and not audition_active:
             st.success(f"💾 この振り返りムービーは保存済みです（写真 {saved_count}枚）。")
-            st.caption("同じタグの組み合わせを選ぶと、保存した写真・音楽・再生時間で再び開けます。")
+            st.caption("同じタグの組み合わせを選ぶと、後からタグが付いた写真も自動で加えて開きます。")
         else:
             if saved_movie and audition_active:
                 st.info("現在は保存済みムービーとは別の音楽を一時的に試しています。この試写はまだ保存していません。")
@@ -32109,6 +32189,9 @@ def page_tag_review(embedded=False):
                             cleaned_review = dict(st.session_state.get(f"monthly_review_{storage_key}") or review or {})
                             cleaned_review.pop("_playback", None)
                             cleaned_review.pop("_tag_movie_photo_ids", None)
+                            cleaned_review.pop("_tag_movie_photo_count", None)
+                            cleaned_review.pop("_tag_movie_membership_mode", None)
+                            cleaned_review.pop("_tag_movie_membership_updated_at", None)
                             cleaned_review.pop("_tag_movie_saved_at", None)
                             cleaned_review["_tag_movie_saved"] = False
                             cleaned_review["_tag_movie_draft"] = False
@@ -32240,6 +32323,17 @@ def page_monthly(embedded=False):
     # Period reviews are text-only unless the user starts the YouTube replay.
     st.session_state.pop(f"monthly_audio_{month_key}", None)
     st.session_state.pop(f"monthly_audio_pending_{month_key}", None)
+
+    # v406: opening an existing month movie refreshes its membership from the whole
+    # selected calendar month. This is a cheap ID comparison and writes only when
+    # photos have actually changed, so a movie made mid-month grows automatically.
+    try:
+        review = sync_dynamic_month_movie_membership(month_key, period_label, review, bundle)
+        st.session_state[session_key] = review
+    except Exception:
+        # Rendering already uses the live bundle, so a metadata write failure must not
+        # hide newly added photos from the owner.
+        pass
 
     playback = get_active_monthly_playback(month_key, review)
     music_ready = monthly_playback_is_ready(playback)
