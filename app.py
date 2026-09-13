@@ -33,9 +33,11 @@ from zoneinfo import ZoneInfo
 import streamlit as st
 
 # Freshly generated update: 2026-09-14 JST
-GENERATED_UPDATE_JST = "2026-09-14T01:31:04+09:00"
+GENERATED_UPDATE_JST = "2026-09-14T01:45:30+09:00"
 
-APP_BUILD = "v424"
+APP_BUILD = "v426"
+# v426: Recalculate replay timing on every play so the current photo set reaches the final photo. Silent photos stay at least 2.5s; voiced photos remain visible until their voice ends, extending runtime only when mathematically necessary.
+# v425: Bring the all-photo library in line with diary photo controls: emotion selection, family share, delete, and an interactive favorite star at the photo top-left, while keeping enlarged-view favorites across own-photo screens.
 # v424: Allow the shared お気に入り tag to be toggled from every enlarged own-photo view.
 # v423: Make the all-photos buttons red and show an orange disabled deleting-state button during batch video deletion.
 # v422: Add multi-select batch deletion to the Video Vault with explicit final confirmation and retained single-video deletion.
@@ -5769,6 +5771,13 @@ _DIARY_GALLERY_CSS = """
 .diary-photo-share.shared { border-color:rgba(93,166,133,.58); background:rgba(93,166,133,.13); }
 .diary-photo-share:active { transform:scale(.985); }
 .diary-photo-share:disabled { opacity:.62; cursor:wait; }
+.diary-photo-open {
+  appearance:none; -webkit-appearance:none; width:100%; min-height:29px; margin:4px 0 0; padding:4px 5px;
+  border:1px solid rgba(128,128,128,.26); border-radius:8px; background:rgba(128,128,128,.055);
+  color:var(--st-text-color); font-size:8.8px; line-height:1.15; font-weight:780; cursor:pointer;
+  touch-action:manipulation; -webkit-tap-highlight-color:transparent;
+}
+.diary-photo-open:active { transform:scale(.985); }
 .diary-photo-voice {
   appearance:none; -webkit-appearance:none; width:100%; min-height:34px; margin:6px 0 0; padding:6px 8px;
   border:1px solid rgba(111,134,170,.36); border-radius:9px; background:rgba(111,134,170,.08);
@@ -5798,6 +5807,7 @@ _DIARY_GALLERY_CSS = """
   .diary-photo-delete { top:2px; right:2px; width:23px; height:23px; font-size:17px; }
   .diary-photo-favorite { top:5px; left:5px; width:27px; height:27px; font-size:17px; }
   .diary-photo-share { min-height:27px; font-size:7.7px; padding:3px 3px; }
+  .diary-photo-open { min-height:27px; font-size:7.7px; padding:3px 3px; }
   .diary-photo-voice { min-height:32px; font-size:9px; padding:5px 6px; }
   .diary-photo-voice-preview { padding:6px 7px; }
   .diary-photo-voice-preview-title { font-size:9px; }
@@ -5998,6 +6008,18 @@ export default function(component) {
 
     wrap.insertBefore(card, wrap.firstChild);
     if (allowEmotion) wrap.appendChild(modeSwitch);
+    if (openOnClick && allowEmotion) {
+      const openButton=document.createElement('button');
+      openButton.type='button';
+      openButton.className='diary-photo-open';
+      openButton.textContent='🔍 拡大';
+      openButton.setAttribute('aria-label','この写真を拡大して見る');
+      openButton.addEventListener('click', (event) => {
+        event.preventDefault(); event.stopPropagation();
+        setTriggerValue('photo_id', String(photo.id || ''));
+      });
+      wrap.appendChild(openButton);
+    }
     if (allowShare) {
       const share=document.createElement('button'); share.type='button'; share.className='diary-photo-share';
       const syncShare=()=>{
@@ -6045,7 +6067,7 @@ export default function(component) {
       });
       wrap.appendChild(voice);
     }
-    if (Boolean(photo.favorite) || (single && allowFavorite)) {
+    if (Boolean(photo.favorite) || allowFavorite) {
       const favorite=document.createElement('button');
       favorite.type='button';
       favorite.className='diary-photo-favorite';
@@ -6057,7 +6079,7 @@ export default function(component) {
         favorite.setAttribute('aria-label', active ? 'お気に入りを解除する' : 'お気に入りに追加する');
       };
       syncFavorite();
-      if (single && allowFavorite) {
+      if (allowFavorite) {
         favorite.addEventListener('click', (event) => {
           event.preventDefault(); event.stopPropagation();
           const next=!Boolean(photo.favorite);
@@ -6143,7 +6165,7 @@ def _get_diary_gallery_component():
     _diary_gallery_component_initialized = True
     try:
         diary_gallery_component = st.components.v2.component(
-            "tokyo_burari_diary_gallery_v350",
+            "tokyo_burari_diary_gallery_v425",
             html=_DIARY_GALLERY_HTML,
             css=_DIARY_GALLERY_CSS,
             js=_DIARY_GALLERY_JS,
@@ -21572,21 +21594,14 @@ def build_replay_visual_mp4(photo_items, display_ms, duration_seconds):
     if not items:
         raise ValueError("保存できる写真がありません。")
 
-    cadence_seconds = max(3.0, float(display_ms or 3000) / 1000.0)
-    total_seconds = max(1.0, float(duration_seconds or cadence_seconds))
-
-    # Match the live replay: the photo list can loop, and music duration decides when the
-    # sequence ends. The minimum is still three seconds per photo.
-    sequence = []
-    remaining = total_seconds
-    index = 0
-    while remaining > 0.02:
-        segment = min(cadence_seconds, remaining)
-        sequence.append((index % len(items), max(0.04, segment)))
-        remaining -= segment
-        index += 1
-        if index > 4000:  # defensive only; ordinary replay segments are far smaller
-            break
+    cadence_seconds = max(2.5, float(display_ms or 2500) / 1000.0)
+    configured_seconds = max(1.0, float(duration_seconds or cadence_seconds))
+    # v426: visual exports follow the live player's single-pass rule. Every current photo
+    # appears exactly once, the last photo is always reached, and no still is shorter than
+    # 2.5 seconds. (Voice audio itself is not embedded in this visual-only MP4.)
+    total_seconds = max(configured_seconds, 2.5 * len(items))
+    cadence_seconds = max(2.5, total_seconds / max(1, len(items)))
+    sequence = [(idx, cadence_seconds) for idx in range(len(items))]
 
     with tempfile.TemporaryDirectory(prefix="burari_replay_export_") as temp_dir:
         temp_dir = Path(temp_dir)
@@ -21700,16 +21715,12 @@ def render_monthly_replay_player(period_label, review, playback, photo_items, cu
     if end_seconds <= start_seconds:
         end_seconds = start_seconds + 20
     duration_seconds = max(1, end_seconds - start_seconds)
-    # v335: recalculate the photo cadence for the currently auditioned music segment,
-    # but never switch faster than one photo every 3 seconds. A/B/C can still produce
-    # different cadences when the music interval is long enough. If the selected music
-    # is too short to show every photo at 3 seconds each, playback stops with the music
-    # rather than accelerating the slideshow below this readability floor.
-    # v351: apply the exact same music-length-aware cadence to curated movies too.
-    # The curation flow still uses the reduced curated photo set, but the slide timing
-    # now stretches or shrinks with the chosen music window while preserving the 3s floor.
-    display_ms = max(3000, int(round(duration_seconds * 1000.0 / max(1, len(photo_items)))))
-    slide_seconds_text = f"{display_ms / 1000:.1f}".rstrip("0").rstrip(".")
+    # v426: use the current photo count as the initial cadence, with a 2.5-second
+    # readability floor. The browser recalculates the remaining cadence on every play
+    # and after every overlong photo voice. If the configured music window is too short
+    # to reach the last photo at that floor, only runtime playback is extended; the
+    # user's saved music start/end settings are not changed.
+    display_ms = max(2500, int(round(duration_seconds * 1000.0 / max(1, len(photo_items)))))
     period_label_escaped = html.escape(str(period_label or "振り返り"))
     is_tag_review = isinstance(review, dict) and str(review.get("_review_scope_type") or "") in {"tag", "ai_tag"}
     replay_kicker = "タグで振り返り" if is_tag_review else "まとめた期間の振り返り"
@@ -21883,12 +21894,12 @@ def render_monthly_replay_player(period_label, review, playback, photo_items, cu
           <button id="burariReplayAgain" type="button" disabled>↻ 最初から</button>
         </div>
       </div>
-      <div class="burari-replay-meta">音楽区間：{format_mmss(start_seconds)}〜{format_mmss(end_seconds)} ／ 写真 {len(photo_items)}枚{" ／ 厳選モード：自動調整（最低3秒 / 現在 " + slide_seconds_text + "秒/枚）" if curated_mode else ""}</div>
+      <div class="burari-replay-meta">音楽区間：{format_mmss(start_seconds)}〜{format_mmss(end_seconds)} ／ 写真 {len(photo_items)}枚 ／ 再生ごとに自動調整（最低2.5秒・声付きは声が終わるまで）</div>
       <div class="burari-replay-player-wrap">
         <div class="burari-replay-player-label">YouTube 音楽</div>
         <div id="burariReplayPlayer"></div>
       </div>
-      <div class="burari-replay-status" id="burariReplayStatus">再生すると {format_mmss(start_seconds)} から始まり、{format_mmss(end_seconds)} まで写真を繰り返します。</div>
+      <div class="burari-replay-status" id="burariReplayStatus">再生時に現在の写真枚数から表示時間を計算し、最後の写真まで1回ずつ再生します。</div>
       <div class="burari-replay-note">YouTubeの仕様上、再生中の公式プレーヤーは完全には隠さず、最小限の大きさで表示します。</div>
     </div>
     <script>
@@ -21928,8 +21939,11 @@ def render_monthly_replay_player(period_label, review, playback, photo_items, cu
       document.addEventListener('keydown', burariMarkUserActivity, true);
       const burariStartSeconds = {start_seconds};
       const burariEndSeconds = {end_seconds};
-      const burariDisplayMs = {display_ms};
-      const burariDurationMs = {duration_seconds * 1000};
+      const burariMinimumDisplayMs = 2500;
+      const burariConfiguredDurationMs = {duration_seconds * 1000};
+      let burariRuntimeEndSeconds = burariEndSeconds;
+      let burariSequenceComplete = false;
+      let burariMusicSourceEnded = false;
       let burariIndex = 0;
       let burariCurrentVoiceUrl = '';
       let burariCurrentVoiceLabel = '';
@@ -22093,7 +22107,8 @@ def render_monthly_replay_player(period_label, review, playback, photo_items, cu
           if (!burariReplayPlaybackActive || document.hidden) return;
           let current = -1;
           try {{ current = Number(burariPlayer.getCurrentTime()); }} catch (_) {{}}
-          if (Number.isFinite(current) && current >= burariEndSeconds - 0.12) {{
+          if (Number.isFinite(current) && current >= burariRuntimeEndSeconds - 0.12 &&
+              burariSequenceComplete && !burariVoicePlaybackActive) {{
             burariStopAtEnd();
             return;
           }}
@@ -22142,11 +22157,67 @@ def render_monthly_replay_player(period_label, review, playback, photo_items, cu
         }}
       }}
 
-      function burariAdvanceSlideNow() {{
-        if (!burariSlideLoopStarted || burariSlides.length <= 1) return;
+      function burariPlaybackClockSeconds() {{
+        // Before YouTube has reached the requested start position, use the requested
+        // start as the replay clock. Otherwise the player may still report 0 and make
+        // the first still much too long.
+        if (burariWaitingForRequestedPosition) return burariStartSeconds;
+        try {{
+          const current = Number(burariPlayer && burariPlayer.getCurrentTime ? burariPlayer.getCurrentTime() : NaN);
+          if (Number.isFinite(current)) return current;
+        }} catch (_) {{}}
+        return burariStartSeconds;
+      }}
+
+      function burariPlannedDisplayMsForIndex(index) {{
+        if (!burariSlides.length) return burariMinimumDisplayMs;
+        const safeIndex = Math.max(0, Math.min(Number(index) || 0, burariSlides.length - 1));
+        const currentSeconds = burariPlaybackClockSeconds();
+        const slidesRemaining = Math.max(1, burariSlides.length - safeIndex);
+        const minimumRemainingSeconds = slidesRemaining * (burariMinimumDisplayMs / 1000);
+        const requiredEnd = currentSeconds + minimumRemainingSeconds;
+        // If the configured music window cannot fit every remaining photo at 2.5s,
+        // extend only the runtime playback window. The saved music setting is untouched.
+        if (burariRuntimeEndSeconds < requiredEnd) burariRuntimeEndSeconds = requiredEnd;
+        const remainingMs = Math.max(
+          burariMinimumDisplayMs * slidesRemaining,
+          (burariRuntimeEndSeconds - currentSeconds) * 1000
+        );
+        return Math.max(burariMinimumDisplayMs, Math.floor(remainingMs / slidesRemaining));
+      }}
+
+      function burariMaybeFinishReplay() {{
+        if (!burariReplayPlaybackActive || !burariSequenceComplete || burariVoicePlaybackActive) return;
+        if (burariMusicSourceEnded) {{
+          burariStopAtEnd();
+          return;
+        }}
+        const current = burariPlaybackClockSeconds();
+        if (Number.isFinite(current) && current >= burariRuntimeEndSeconds - 0.12) burariStopAtEnd();
+      }}
+
+      function burariCompleteCurrentSlide() {{
+        if (!burariSlideLoopStarted || !burariSlides.length) return;
         burariSlideAdvancePending = false;
-        burariIndex = (burariIndex + 1) % burariSlides.length;
-        // Start the next display interval only after the new photo and frame switch together.
+        if (burariIndex >= burariSlides.length - 1) {{
+          burariSequenceComplete = true;
+          burariMaybeFinishReplay();
+          return;
+        }}
+        burariAdvanceSlideNow();
+      }}
+
+      function burariAdvanceSlideNow() {{
+        if (!burariSlideLoopStarted || !burariSlides.length || burariSequenceComplete) return;
+        burariSlideAdvancePending = false;
+        const nextIndex = burariIndex + 1;
+        if (nextIndex >= burariSlides.length) {{
+          burariSequenceComplete = true;
+          burariMaybeFinishReplay();
+          return;
+        }}
+        burariIndex = nextIndex;
+        // Start each interval only after the next photo/frame is actually applied.
         burariShowSlide(burariIndex, burariScheduleNextSlide);
       }}
 
@@ -22166,15 +22237,16 @@ def render_monthly_replay_player(period_label, review, playback, photo_items, cu
           try {{
             if (burariPlayer && typeof burariPlayer.getCurrentTime === 'function') {{
               const current = Number(burariPlayer.getCurrentTime());
-              if (Number.isFinite(current) && current < burariEndSeconds - 0.12 &&
-                  typeof burariPlayer.playVideo === 'function') {{
+              if (Number.isFinite(current) && current < burariRuntimeEndSeconds - 0.12 &&
+                  !burariMusicSourceEnded && typeof burariPlayer.playVideo === 'function') {{
                 burariPlayer.playVideo();
               }}
             }}
           }} catch (_) {{}}
         }}
         if (burariStatus && statusText) burariStatus.textContent = statusText;
-        if (burariSlideAdvancePending && burariSlideLoopStarted) burariAdvanceSlideNow();
+        if (burariSlideAdvancePending && burariSlideLoopStarted) burariCompleteCurrentSlide();
+        else burariMaybeFinishReplay();
       }}
 
       function burariStopVoice(resumeMusic = true) {{
@@ -22254,7 +22326,7 @@ def render_monthly_replay_player(period_label, review, playback, photo_items, cu
           // The scheduler must continue even if optional caption/emotion/voice UI fails.
           try {{
             if (applyFrame) burariApplySlideFrame(item, safeIndex, nextUrl);
-            if (burariSlides.length > 1) burariPreloadSlide(safeIndex + 1);
+            if (safeIndex + 1 < burariSlides.length) burariPreloadSlide(safeIndex + 1);
           }} catch (error) {{
             console.warn('Burari replay frame update failed; continuing slideshow.', error);
           }} finally {{
@@ -22277,7 +22349,7 @@ def render_monthly_replay_player(period_label, review, playback, photo_items, cu
 
         // Android WebView can occasionally leave an Image decode/load promise pending.
         // Never let that stop the slideshow timer permanently: after 2.2s, apply the URL
-        // directly and continue to the next 3-second interval.
+        // directly and continue to the next scheduled interval.
         safetyTimer = setTimeout(() => finish(), 2200);
 
         const finishAfterDecode = () => {{
@@ -22345,7 +22417,7 @@ def render_monthly_replay_player(period_label, review, playback, photo_items, cu
         }} catch (_) {{}}
         burariSlideAdvancePending = false;
         burariStopVoice(false);
-        if (burariStatus) burariStatus.textContent = `終了：${{burariEndSeconds}}秒で停止しました。`;
+        if (burariStatus) burariStatus.textContent = '終了：最後の写真まで再生しました。';
       }}
 
       function burariInterrupt() {{
@@ -22411,33 +22483,35 @@ def render_monthly_replay_player(period_label, review, playback, photo_items, cu
       }}
 
       function burariScheduleNextSlide() {{
-        if (!burariSlideLoopStarted || burariSlides.length <= 1) return;
+        if (!burariSlideLoopStarted || !burariSlides.length || burariSequenceComplete) return;
         if (burariTimer) clearTimeout(burariTimer);
+        const plannedMs = burariPlannedDisplayMsForIndex(burariIndex);
+        if (burariStatus && burariReplayPlaybackActive) {{
+          const seconds = Math.max(2.5, plannedMs / 1000);
+          burariStatus.textContent = `再生中：${{burariIndex + 1}} / ${{burariSlides.length}}（この写真 約${{seconds.toFixed(1)}}秒）`;
+        }}
         burariTimer = setTimeout(() => {{
-          if (!burariSlideLoopStarted) return;
+          if (!burariSlideLoopStarted || burariSequenceComplete) return;
           burariTimer = null;
-          // A photo with voice stays on screen until that voice has ended. If its
-          // normal interval already elapsed, advance immediately after voice cleanup.
+          // A voice-bearing photo never changes while its voice is still playing.
+          // When the planned still interval has elapsed, advance as soon as voice ends.
           if (burariVoicePlaybackActive) {{
             burariSlideAdvancePending = true;
             return;
           }}
-          burariAdvanceSlideNow();
-        }}, burariDisplayMs);
+          burariCompleteCurrentSlide();
+        }}, plannedMs);
       }}
 
       function burariStartSlideLoopOnce() {{
-        // Photo motion must not depend on YouTube's position-confirmation event.
-        // Each following interval starts only after the photo and frame are applied together.
         if (burariSlideLoopStarted) return;
         burariSlideLoopStarted = true;
         burariScheduleNextSlide();
       }}
 
       function burariStartMusicEndWatch() {{
-        // The photo list may loop any number of times. It must never decide when the
-        // music stops. Watch YouTube's real playback position and stop only when the
-        // requested end second is actually reached.
+        // v426: runtime end is recalculated while the one-pass photo sequence runs.
+        // Never stop at the saved end time before the last photo (or its voice) finishes.
         if (burariMusicWatchTimer) {{
           clearInterval(burariMusicWatchTimer);
           burariMusicWatchTimer = null;
@@ -22450,22 +22524,26 @@ def render_monthly_replay_player(period_label, review, playback, photo_items, cu
           try {{
             if (!burariPlayer || typeof burariPlayer.getCurrentTime !== 'function') return;
             const current = Number(burariPlayer.getCurrentTime());
-            if (Number.isFinite(current) && current >= burariEndSeconds - 0.12) {{
-              burariStopAtEnd();
+            if (!Number.isFinite(current)) return;
+            if (current >= burariRuntimeEndSeconds - 0.12) {{
+              if (burariSequenceComplete && !burariVoicePlaybackActive) {{
+                burariStopAtEnd();
+              }} else {{
+                // The configured clip is too short for the remaining minimum still
+                // times or a voice is still playing. Extend runtime only, not settings.
+                burariRuntimeEndSeconds = Math.max(burariRuntimeEndSeconds, current + 1.0);
+              }}
             }}
           }} catch (_) {{}}
         }}, 180);
 
-        // Very generous safety net for browsers that stop reporting currentTime.
-        // It is intentionally much longer than the requested segment so buffering
-        // cannot make the slideshow/music stop early.
-        const fallbackMs = Math.max(15000, burariDurationMs * 3 + 10000);
+        // Safety net only. It must not cut a long/large replay before its last photo.
+        const fallbackMs = Math.max(
+          120000,
+          burariConfiguredDurationMs * 4 + burariSlides.length * burariMinimumDisplayMs * 3
+        );
         burariFallbackEndTimer = setTimeout(() => {{
-          let current = -1;
-          try {{ current = Number(burariPlayer && burariPlayer.getCurrentTime ? burariPlayer.getCurrentTime() : -1); }} catch (_) {{}}
-          if (!Number.isFinite(current) || current >= burariEndSeconds - 0.5) {{
-            burariStopAtEnd();
-          }}
+          if (burariSequenceComplete && !burariVoicePlaybackActive) burariStopAtEnd();
         }}, fallbackMs);
       }}
 
@@ -22477,14 +22555,14 @@ def render_monthly_replay_player(period_label, review, playback, photo_items, cu
         if (closeEnough) {{
           burariWaitingForRequestedPosition = false;
           burariStartMusicEndWatch();
-          if (burariStatus) burariStatus.textContent = `再生中：${{burariStartSeconds}}秒 → ${{burariEndSeconds}}秒`;
+          if (burariStatus) burariStatus.textContent = `再生中：写真 ${{burariSlides.length}}枚を最後まで再生します。`;
           return;
         }}
         if (attempt >= 8) {{
           try {{ burariPlayer.seekTo(burariStartSeconds, true); }} catch (_) {{}}
           burariWaitingForRequestedPosition = false;
           burariStartMusicEndWatch();
-          if (burariStatus) burariStatus.textContent = `再生中：${{burariStartSeconds}}秒 → ${{burariEndSeconds}}秒`;
+          if (burariStatus) burariStatus.textContent = `再生中：写真 ${{burariSlides.length}}枚を最後まで再生します。`;
           return;
         }}
         try {{ burariPlayer.seekTo(burariStartSeconds, true); }} catch (_) {{}}
@@ -22508,6 +22586,9 @@ def render_monthly_replay_player(period_label, review, playback, photo_items, cu
         burariWaitingForRequestedPosition = true;
         burariSlideLoopStarted = false;
         burariSlideAdvancePending = false;
+        burariSequenceComplete = false;
+        burariMusicSourceEnded = false;
+        burariRuntimeEndSeconds = burariEndSeconds;
         burariIndex = 0;
         burariStopVoice(false);
         // The slide loop begins only after slide 1 is fully ready, so its photo,
@@ -22521,7 +22602,6 @@ def render_monthly_replay_player(period_label, review, playback, photo_items, cu
           burariPlayer.loadVideoById({{
             videoId: burariVideoId,
             startSeconds: burariStartSeconds,
-            endSeconds: burariEndSeconds,
           }});
           burariEnsureAudible();
           if (typeof burariPlayer.playVideo === 'function') burariPlayer.playVideo();
@@ -22552,7 +22632,6 @@ def render_monthly_replay_player(period_label, review, playback, photo_items, cu
                 burariPlayer.cueVideoById({{
                   videoId: burariVideoId,
                   startSeconds: burariStartSeconds,
-                  endSeconds: burariEndSeconds,
                 }});
               }} catch (_) {{}}
               burariSetPlayerControlsReady(true);
@@ -22581,9 +22660,15 @@ def render_monthly_replay_player(period_label, review, playback, photo_items, cu
                   burariKeepBgmDuringVoice();
                 }}
               }} else if (event.data === YT.PlayerState.ENDED) {{
-                // ENDED is a YouTube-side end signal (requested segment or source video).
-                // A completed photo cycle never reaches this branch and never stops music.
-                burariStopAtEnd();
+                // The source video itself ended. Keep the photo scheduler alive so a
+                // short source can never hide the remaining photos. The last photo (and
+                // any attached voice) still decides when the replay is complete.
+                burariMusicSourceEnded = true;
+                if (burariSequenceComplete && !burariVoicePlaybackActive) {{
+                  burariStopAtEnd();
+                }} else if (burariStatus) {{
+                  burariStatus.textContent = '音楽は終了しました。写真は最後まで再生します。';
+                }}
               }}
             }},
             onError: function() {{
@@ -32818,9 +32903,13 @@ def render_photo_library_single_v420(photo, photo_number, total_count):
 def page_photo_library_v418():
     page_top(
         "🖼️ これまで撮った写真",
-        "この個人アカウントに保存している写真を、一覧または拡大して見られます。",
+        "この個人アカウントに保存している写真を一覧・拡大で確認し、感情・共有・お気に入り・削除も同じ画面で操作できます。",
     )
     render_photo_favorite_notice()
+    render_photo_family_share_notice()
+    library_delete_notice = st.session_state.pop("_diary_notice", None)
+    if library_delete_notice:
+        st.success(str(library_delete_notice))
     try:
         photos = list_member_still_photos_for_tags(max_items=5000)
     except Exception as exc:
@@ -32910,6 +32999,8 @@ def page_photo_library_v418():
     except Exception:
         signed = {}
 
+    st.caption("写真をタップすると感情を切り替えます。左上の☆でお気に入り、下のボタンで拡大・共有、右上の×で削除できます。")
+
     cards = []
     photo_ids = []
     for local_index, photo in enumerate(visible):
@@ -32924,6 +33015,7 @@ def page_photo_library_v418():
             "location": str(photo_location_label(photo) or ""),
             "tags": photo_ai_tags(photo)[:12],
             "favorite": photo_favorite_is_enabled(photo),
+            "shared": photo_family_share_is_enabled(photo),
             "has_voice": has_voice,
             "shared_meta": f"{captured_label}{' ・ 🎙 声あり' if has_voice else ''}",
         })
@@ -32931,25 +33023,62 @@ def page_photo_library_v418():
 
     gallery_component = _get_diary_gallery_component()
     if gallery_component is not None and cards:
+        serial_key = f"all_photo_library_controls_serial_v425_{current_page}"
+        serial = int(st.session_state.get(serial_key) or 0)
         result = gallery_component(
             data={
                 "photos": cards,
                 "single": False,
-                "allow_delete": False,
-                "allow_emotion": False,
-                "allow_share": False,
+                "allow_delete": True,
+                "allow_emotion": True,
+                "allow_share": True,
                 "allow_voice": False,
                 "allow_voice_preview": False,
-                "allow_favorite": False,
+                "allow_favorite": True,
                 "open_on_click": True,
-                "carousel_key": f"all_photo_library_page_{current_page}_v420",
+                "carousel_key": f"all_photo_library_page_{current_page}_v425",
                 "family_key": current_family_key(),
                 "member_key": current_member_key(),
                 "pending_param": PENDING_EMOTION_QUERY_PARAM,
             },
-            key=f"all_photo_library_grid_v420_{current_page}_{_current_ui_refresh_epoch()}",
+            key=f"all_photo_library_grid_v425_{current_page}_{serial}_{_current_ui_refresh_epoch()}",
             on_photo_id_change=lambda: None,
+            on_delete_photo_id_change=lambda: None,
+            on_share_photo_change=lambda: None,
+            on_favorite_photo_change=lambda: None,
         )
+        if handle_photo_family_share_event(result, photo_ids, serial_key=serial_key):
+            return
+        if handle_photo_favorite_event(result, photo_ids, serial_key=serial_key):
+            return
+
+        delete_clicked = str(getattr(result, "delete_photo_id", "") or "")
+        if delete_clicked in photo_ids:
+            selected_photo = next(
+                (row for row in visible if str(row.get("id") or "") == delete_clicked),
+                None,
+            )
+            selected_trip_id = str((selected_photo or {}).get("trip_id") or "")
+            if selected_trip_id:
+                try:
+                    trip_photos = list_trip_photos(selected_trip_id)
+                except Exception:
+                    trip_photos = None
+                try:
+                    delete_is_pending = not bool(get_diary_for_trip(selected_trip_id))
+                except Exception:
+                    delete_is_pending = False
+                st.session_state[serial_key] = serial + 1
+                confirm_photo_delete_dialog(
+                    selected_trip_id,
+                    delete_clicked,
+                    photos=trip_photos,
+                    is_pending=delete_is_pending,
+                )
+            else:
+                st.warning("この写真の保存情報を確認できないため、削除できませんでした。")
+            return
+
         clicked = str(getattr(result, "photo_id", "") or "")
         if clicked in photo_ids:
             st.session_state[index_key] = start + photo_ids.index(clicked)
