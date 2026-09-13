@@ -33,11 +33,13 @@ from zoneinfo import ZoneInfo
 import streamlit as st
 
 # Freshly generated update: 2026-09-13 JST
-GENERATED_UPDATE_JST = "2026-09-13T20:14:00+09:00"
+GENERATED_UPDATE_JST = "2026-09-14T00:40:00+09:00"
 
-APP_BUILD = "v416"
+APP_BUILD = "v417"
 # v416: Add GPS-confirmed evening tourism review around 20:00, dedicated deep link, and local comment saving.
 # Restore Android discovery deep-link compatibility alongside the v413 external Maps bridge.
+# v417: Keep Good Moments emotion/voice metadata synchronized with saved diary photos.
+# Diary enlarged views now show an attached voice player directly under the photo.
 # v415: Move the Settings heading to the top of the page and separate it from the setting controls with a divider.
 # v414: Raise the saved/imported video size limit from 100MB to 150MB without changing time limits.
 # v413: Route actions use a token-protected Android external-app bridge so Google Maps
@@ -5644,6 +5646,13 @@ _DIARY_GALLERY_CSS = """
 }
 .diary-photo-voice.has-voice { border-color:rgba(93,166,133,.58); background:rgba(93,166,133,.13); }
 .diary-photo-voice:active { transform:scale(.985); }
+.diary-photo-voice-preview {
+  width:100%; margin:7px 0 0; padding:7px 8px; box-sizing:border-box;
+  border:1px solid rgba(93,166,133,.34); border-radius:10px; background:rgba(93,166,133,.075);
+}
+.diary-photo-voice-preview-title { font-size:10px; line-height:1.25; font-weight:820; margin:0 0 5px; }
+.diary-photo-voice-preview audio { display:block; width:100%; min-height:34px; }
+.diary-photo-voice-preview-text { margin-top:4px; font-size:9px; line-height:1.35; opacity:.72; overflow-wrap:anywhere; }
 .diary-photo-shared-meta { margin-top:5px; font-size:9.5px; line-height:1.35; font-weight:730; opacity:.78; overflow-wrap:anywhere; }
 .diary-photo-location { margin-top:4px; font-size:10px; line-height:1.25; color:var(--st-text-color); opacity:.78; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 @media (max-width:640px) {
@@ -5659,6 +5668,9 @@ _DIARY_GALLERY_CSS = """
   .diary-photo-favorite { top:5px; left:5px; width:27px; height:27px; font-size:17px; }
   .diary-photo-share { min-height:27px; font-size:7.7px; padding:3px 3px; }
   .diary-photo-voice { min-height:32px; font-size:9px; padding:5px 6px; }
+  .diary-photo-voice-preview { padding:6px 7px; }
+  .diary-photo-voice-preview-title { font-size:9px; }
+  .diary-photo-voice-preview-text { font-size:8px; }
   .diary-photo-shared-meta { font-size:8.5px; }
   .diary-emotion-badge { right:5px; bottom:5px; min-width:25px; height:22px; padding:0 5px; font-size:7.5px; }
   .diary-mode-button { min-height:25px; font-size:7.5px; padding:3px 2px; }
@@ -5686,6 +5698,7 @@ export default function(component) {
   const allowEmotion = data?.allow_emotion !== false;
   const allowShare = Boolean(data?.allow_share);
   const allowVoice = Boolean(data?.allow_voice);
+  const allowVoicePreview = Boolean(data?.allow_voice_preview);
   const allowFavorite = Boolean(data?.allow_favorite);
   const carouselKey = String(data?.carousel_key || 'default');
   const carouselStore = `tokyo_burari_diary_carousel_v180_${carouselKey}`;
@@ -5857,13 +5870,30 @@ export default function(component) {
       });
       wrap.appendChild(share);
     }
+    if (single && allowVoicePreview && Boolean(photo.has_voice) && String(photo.voice_url || '')) {
+      const preview=document.createElement('div');
+      preview.className='diary-photo-voice-preview';
+      const previewTitle=document.createElement('div');
+      previewTitle.className='diary-photo-voice-preview-title';
+      previewTitle.textContent='🎙 この写真の声';
+      preview.appendChild(previewTitle);
+      const audio=document.createElement('audio');
+      audio.controls=true; audio.preload='metadata'; audio.src=String(photo.voice_url || '');
+      preview.appendChild(audio);
+      const transcript=String(photo.voice_transcript || '').trim();
+      if (transcript) {
+        const text=document.createElement('div'); text.className='diary-photo-voice-preview-text';
+        text.textContent=`文字起こし: ${transcript}`; preview.appendChild(text);
+      }
+      wrap.appendChild(preview);
+    }
     if (single && allowVoice) {
       const voice=document.createElement('button');
       voice.type='button';
       voice.className='diary-photo-voice';
       const hasVoice=Boolean(photo.has_voice);
       voice.classList.toggle('has-voice', hasVoice);
-      voice.textContent = hasVoice ? '🎙 声あり・確認／変更' : '🎙 この写真に声を残す';
+      voice.textContent = hasVoice ? '🎙 声を確認・変更する' : '🎙 この写真に声を残す';
       voice.setAttribute('aria-label', hasVoice ? 'この写真の声を確認または変更する' : 'この写真に声を残す');
       voice.addEventListener('click', (event) => {
         event.preventDefault(); event.stopPropagation();
@@ -15765,7 +15795,16 @@ def update_video_ai_selection_tags(video_photo, emotion_changes=None, parenting_
                 [{"photo_id": pid, "parenting": parenting} for pid, _, parenting in saved_sync],
             )
         except Exception:
-            pass
+            # v417 repair path: if a batched write fails, retry each linked photo so
+            # one stale/deleted row cannot prevent every selected still from syncing.
+            for pid, emotion, parenting in saved_sync:
+                try:
+                    update_photo_tags_combined_v166(
+                        [{"photo_id": pid, "emotion": emotion}],
+                        [{"photo_id": pid, "parenting": parenting}],
+                    )
+                except Exception:
+                    continue
 
     updated = dict(fresh)
     updated["reflection_json"] = reflection
@@ -16493,15 +16532,43 @@ def _selection_capture_time(photo, timestamp_ms):
 
 
 def save_video_ai_selection_as_photo(video_photo, selection_item):
-    """Copy one AI derivative into the normal photo collection exactly once."""
+    """Copy one AI derivative into the normal photo collection exactly once.
+
+    v417: the browser can persist a feeling just before the Save action rerun. Always
+    re-read the source video row and resolve the same rank from its newest selection
+    before creating the diary photo, so the saved still receives the exact latest
+    emotion/parenting tag and attached voice candidate.
+    """
     if not isinstance(video_photo, dict) or not isinstance(selection_item, dict):
         raise ValueError("保存する画像を確認できませんでした。")
+
+    rank = int(selection_item.get("rank") or 0)
+    if rank <= 0:
+        raise ValueError("保存する画像を確認できませんでした。")
+
+    try:
+        current_rows = (
+            supabase_client().table(PHOTO_TABLE).select("*")
+            .eq("id", video_photo.get("id"))
+            .eq("family_key", current_family_key()).eq("member_key", current_member_key())
+            .limit(1).execute()
+        ).data or []
+        fresh_video = current_rows[0] if current_rows else video_photo
+        fresh_item = next(
+            (item for item in video_ai_selection_items(fresh_video) if int(item.get("rank") or 0) == rank),
+            None,
+        )
+        if isinstance(fresh_item, dict):
+            video_photo = fresh_video
+            selection_item = fresh_item
+    except Exception:
+        pass
+
     if selection_item.get("saved_photo_id"):
         return str(selection_item.get("saved_photo_id"))
 
-    rank = int(selection_item.get("rank") or 0)
     source_path = str(selection_item.get("storage_path") or "").strip()
-    if not source_path or rank <= 0:
+    if not source_path:
         raise ValueError("保存する画像を確認できませんでした。")
     original_raw = download_photo(source_path)
     raw = _normalize_video_frame_photo_bytes(original_raw) or original_raw
@@ -16599,6 +16666,135 @@ def save_video_ai_selection_as_photo(video_photo, selection_item):
         except Exception:
             pass
     return saved_id
+
+
+def _sync_moments_metadata_into_saved_photos_v417(photos):
+    """Repair/synchronize Good Moments metadata on derived diary photos.
+
+    AI-selected stills keep source_video_photo_id/source_selection_rank in their
+    reflection_json. Older runs could save the still before the browser-local feeling
+    or voice choice reached the copied photo. When a diary view opens, resolve those
+    source links in one video query and fill missing/stale Moments-origin tags and
+    missing voice notes. Manual diary edits remain authoritative.
+    """
+    photo_rows = [photo for photo in (photos or []) if isinstance(photo, dict) and not photo_is_video(photo)]
+    links = []
+    source_ids = set()
+    for photo in photo_rows:
+        reflection = photo.get("reflection_json") or {}
+        if not isinstance(reflection, dict):
+            continue
+        source_video_id = str(reflection.get("source_video_photo_id") or "").strip()
+        try:
+            source_rank = int(reflection.get("source_selection_rank") or 0)
+        except Exception:
+            source_rank = 0
+        photo_id = str(photo.get("id") or "").strip()
+        if not photo_id or not source_video_id or source_rank <= 0:
+            continue
+        links.append((photo, source_video_id, source_rank))
+        source_ids.add(source_video_id)
+    if not links or not source_ids:
+        return False
+
+    try:
+        source_rows = (
+            supabase_client().table(PHOTO_TABLE).select("*")
+            .in_("id", sorted(source_ids))
+            .eq("family_key", current_family_key()).eq("member_key", current_member_key())
+            .execute()
+        ).data or []
+    except Exception:
+        return False
+    source_map = {str(row.get("id") or ""): row for row in source_rows if row.get("id")}
+
+    emotion_changes = []
+    parenting_changes = []
+    voice_jobs = []
+    voice_cache = {}
+
+    for photo, source_video_id, source_rank in links:
+        source_video = source_map.get(source_video_id)
+        if not source_video:
+            continue
+        source_item = next(
+            (item for item in video_ai_selection_items(source_video) if int(item.get("rank") or 0) == source_rank),
+            None,
+        )
+        if not isinstance(source_item, dict):
+            continue
+
+        source_emotion, source_parenting = selection_item_tag_values(source_item)
+        reflection = photo.get("reflection_json") or {}
+        reflection = reflection if isinstance(reflection, dict) else {}
+        current_emotion, current_parenting = photo_selected_tag_values(photo)
+        current_emotion_record = reflection.get("emotion") if isinstance(reflection.get("emotion"), dict) else {}
+        current_parenting_record = reflection.get("parenting_tag") if isinstance(reflection.get("parenting_tag"), dict) else {}
+        current_source = str(current_emotion_record.get("source") or current_parenting_record.get("source") or "")
+        # Missing values are always repaired. Values originally copied from Moments
+        # keep following Moments; values explicitly changed in Diary are preserved.
+        moments_owned_tag = "moments" in current_source
+        if source_emotion and (not current_emotion or current_parenting or moments_owned_tag):
+            if current_emotion != source_emotion or current_parenting:
+                emotion_changes.append({"photo_id": str(photo.get("id") or ""), "emotion": source_emotion})
+                parenting_changes.append({"photo_id": str(photo.get("id") or ""), "parenting": ""})
+        elif source_parenting and (not current_parenting or current_emotion or moments_owned_tag):
+            if current_parenting != source_parenting or current_emotion:
+                emotion_changes.append({"photo_id": str(photo.get("id") or ""), "emotion": ""})
+                parenting_changes.append({"photo_id": str(photo.get("id") or ""), "parenting": source_parenting})
+
+        try:
+            source_voice_rank = int(source_item.get("voice_candidate_rank") or 0)
+        except Exception:
+            source_voice_rank = 0
+        if source_voice_rank > 0 and not photo_voice_note_storage_path(photo):
+            voice_jobs.append((str(photo.get("id") or ""), source_video, source_video_id, source_rank, source_voice_rank))
+
+    changed = False
+    if emotion_changes or parenting_changes:
+        try:
+            update_photo_tags_combined_v166(emotion_changes, parenting_changes)
+            changed = True
+        except Exception:
+            pass
+
+    for photo_id, source_video, source_video_id, source_rank, source_voice_rank in voice_jobs:
+        try:
+            cache_key = (source_video_id, source_voice_rank)
+            voice_payload = voice_cache.get(cache_key)
+            if voice_payload is None:
+                voice_candidates = {
+                    int(item.get("rank") or 0): item
+                    for item in video_ai_voice_candidate_items(source_video)
+                }
+                chosen = voice_candidates.get(source_voice_rank) or {}
+                chosen_path = str(chosen.get("storage_path") or "").strip()
+                if not chosen_path:
+                    voice_cache[cache_key] = False
+                    continue
+                voice_payload = (
+                    download_photo(chosen_path),
+                    str(chosen.get("file_name") or f"voice_candidate_{source_voice_rank:02d}.m4a"),
+                    str(chosen.get("mime_type") or "audio/mp4"),
+                    str(chosen.get("transcript") or ""),
+                )
+                voice_cache[cache_key] = voice_payload
+            if not voice_payload:
+                continue
+            raw_voice, file_name, mime_type, transcript = voice_payload
+            save_photo_voice_note_bytes(
+                photo_id,
+                raw_voice,
+                filename=file_name,
+                content_type=mime_type,
+                transcript=transcript,
+                auto_transcribe=not bool(transcript.strip()),
+            )
+            changed = True
+        except Exception:
+            continue
+
+    return changed
 
 
 # ============================================================
@@ -25984,6 +26180,8 @@ def render_history_photo_viewer(photos, trip_id):
     photos = diary_photos_only(photos)
     if not photos:
         return
+    if _sync_moments_metadata_into_saved_photos_v417(photos):
+        photos = diary_photos_only(list_trip_photos(trip_id))
 
     # v229: make the display-mode control explicit on each saved daily diary.
     # The existing browser gallery already supports previous/next and swipe in single mode.
@@ -26009,6 +26207,8 @@ def render_history_photo_viewer(photos, trip_id):
 
     paths = tuple(str(photo.get("storage_path") or "") for photo in photos if photo.get("storage_path"))
     signed = signed_photo_url_map(paths) if paths else {}
+    voice_paths = tuple(photo_voice_note_storage_path(photo) for photo in photos if photo_voice_note_storage_path(photo))
+    voice_signed = signed_photo_url_map(voice_paths, expires_in=1800) if voice_paths else {}
     cards = []
     photo_ids = []
     for photo in photos:
@@ -26026,6 +26226,8 @@ def render_history_photo_viewer(photos, trip_id):
                 "shared": photo_family_share_is_enabled(photo),
                 "favorite": photo_favorite_is_enabled(photo),
                 "has_voice": bool(photo_voice_note_storage_path(photo)),
+                "voice_url": str(voice_signed.get(photo_voice_note_storage_path(photo)) or ""),
+                "voice_transcript": str(photo_voice_note_meta(photo).get("transcript") or ""),
             }
         )
         photo_ids.append(pid)
@@ -26042,6 +26244,7 @@ def render_history_photo_viewer(photos, trip_id):
                 "allow_emotion": False,
                 "allow_share": True,
                 "allow_voice": single_mode,
+                "allow_voice_preview": single_mode,
                 "allow_favorite": single_mode,
                 "carousel_key": f"history_{trip_id}",
                 "family_key": current_family_key(),
@@ -31830,6 +32033,8 @@ def render_diary_emotion_gallery(trip_id, photos, trip=None, is_pending=False):
     photos = diary_photos_only(photos)
     if not photos:
         return
+    if _sync_moments_metadata_into_saved_photos_v417(photos):
+        photos = diary_photos_only(list_trip_photos(trip_id))
     st.markdown("#### この日の写真")
     render_photo_favorite_notice()
     counts, selected = photo_emotion_counts(photos)
@@ -31877,6 +32082,8 @@ def render_diary_emotion_gallery(trip_id, photos, trip=None, is_pending=False):
     displayed_photos = photos
     paths = tuple(str(photo.get("storage_path") or "") for photo in displayed_photos if photo.get("storage_path"))
     signed = signed_photo_url_map(paths) if paths else {}
+    voice_paths = tuple(photo_voice_note_storage_path(photo) for photo in displayed_photos if photo_voice_note_storage_path(photo))
+    voice_signed = signed_photo_url_map(voice_paths, expires_in=1800) if voice_paths else {}
     cards = []
     photo_ids = []
     for photo in displayed_photos:
@@ -31894,6 +32101,8 @@ def render_diary_emotion_gallery(trip_id, photos, trip=None, is_pending=False):
                 "shared": photo_family_share_is_enabled(photo),
                 "favorite": photo_favorite_is_enabled(photo),
                 "has_voice": bool(photo_voice_note_storage_path(photo)),
+                "voice_url": str(voice_signed.get(photo_voice_note_storage_path(photo)) or ""),
+                "voice_transcript": str(photo_voice_note_meta(photo).get("transcript") or ""),
             }
         )
         photo_ids.append(pid)
@@ -31903,7 +32112,7 @@ def render_diary_emotion_gallery(trip_id, photos, trip=None, is_pending=False):
         serial_key = f"diary_emotion_gallery_serial_{trip_id}_{'pending' if is_pending else 'saved'}"
         serial = int(st.session_state.get(serial_key) or 0)
         result = gallery_component(
-            data={"photos": cards, "single": single_mode, "allow_delete": True, "allow_emotion": True, "allow_share": True, "allow_voice": bool(single_mode and not is_pending), "allow_favorite": bool(single_mode and not is_pending), "carousel_key": f"diary_saved_{trip_id}", "mode_by_photo": st.session_state.get(f"_diary_icon_modes_{trip_id}") or {}, "family_key": current_family_key(), "member_key": current_member_key(), "pending_param": PENDING_EMOTION_QUERY_PARAM},
+            data={"photos": cards, "single": single_mode, "allow_delete": True, "allow_emotion": True, "allow_share": True, "allow_voice": bool(single_mode and not is_pending), "allow_voice_preview": bool(single_mode), "allow_favorite": bool(single_mode and not is_pending), "carousel_key": f"diary_saved_{trip_id}", "mode_by_photo": st.session_state.get(f"_diary_icon_modes_{trip_id}") or {}, "family_key": current_family_key(), "member_key": current_member_key(), "pending_param": PENDING_EMOTION_QUERY_PARAM},
             key=f"diary_emotion_gallery_{trip_id}_{serial}_{_current_ui_refresh_epoch()}_{'single' if single_mode else 'grid'}_v365",
             on_delete_photo_id_change=lambda: None,
             on_share_photo_change=lambda: None,
