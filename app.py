@@ -33,9 +33,10 @@ from zoneinfo import ZoneInfo
 import streamlit as st
 
 # Freshly generated update: 2026-09-13 JST
-GENERATED_UPDATE_JST = "2026-09-14T00:40:00+09:00"
+GENERATED_UPDATE_JST = "2026-09-14T00:46:00+09:00"
 
-APP_BUILD = "v418"
+APP_BUILD = "v419"
+# v419: All-photo library now supports explicit list/enlarged modes with Previous/Next navigation and direct enlargement from the grid.
 # v418: Add an all-photo library entry from Diary so every saved still photo can be browsed in one chronological gallery.
 # v416: Add GPS-confirmed evening tourism review around 20:00, dedicated deep link, and local comment saving.
 # Restore Android discovery deep-link compatibility alongside the v413 external Maps bridge.
@@ -24619,6 +24620,8 @@ def _open_photo_library_callback_v418(return_page="diary"):
         return_page = "diary"
     st.session_state["_photo_library_return_page_v418"] = return_page
     st.session_state["_all_photo_library_page_v418"] = 0
+    st.session_state["_all_photo_library_view_mode_v419"] = "一覧モード"
+    st.session_state["_all_photo_library_enlarged_index_v419"] = 0
     _set_page_state("photos", history_mode="push")
 
 
@@ -32417,7 +32420,7 @@ def show_photo_library_dialog_v418(photo, photo_number, total_count):
 def page_photo_library_v418():
     page_top(
         "🖼️ これまで撮った写真",
-        "この個人アカウントに保存している写真を、新しい順に一覧で見られます。",
+        "この個人アカウントに保存している写真を、一覧または拡大して見られます。",
     )
     try:
         photos = list_member_still_photos_for_tags(max_items=5000)
@@ -32437,6 +32440,58 @@ def page_photo_library_v418():
         return
 
     st.caption(f"保存している写真：{len(photos)}枚")
+
+    mode_key = "_all_photo_library_view_mode_v419"
+    current_mode = str(st.session_state.get(mode_key) or "一覧モード")
+    if current_mode not in {"一覧モード", "拡大モード"}:
+        current_mode = "一覧モード"
+        st.session_state[mode_key] = current_mode
+    st.caption("写真の表示方法")
+    view_mode = st.radio(
+        "写真の表示方法",
+        ["一覧モード", "拡大モード"],
+        horizontal=True,
+        key=mode_key,
+        label_visibility="collapsed",
+    )
+
+    index_key = "_all_photo_library_enlarged_index_v419"
+    try:
+        enlarged_index = int(st.session_state.get(index_key) or 0)
+    except Exception:
+        enlarged_index = 0
+    enlarged_index = max(0, min(enlarged_index, len(photos) - 1))
+    st.session_state[index_key] = enlarged_index
+
+    if view_mode == "拡大モード":
+        st.caption("◀ 前へ／次へ ▶ で、これまでの写真を1枚ずつ見られます。")
+        prev_col, count_col, next_col = st.columns([1, 1.25, 1], gap="small")
+        with prev_col:
+            if st.button(
+                "◀ 前へ",
+                use_container_width=True,
+                disabled=enlarged_index <= 0,
+                key=f"all_photo_enlarged_prev_v419_{enlarged_index}",
+            ):
+                st.session_state[index_key] = max(0, enlarged_index - 1)
+                st.rerun()
+        with count_col:
+            st.markdown(
+                f'<div style="text-align:center;padding:.55rem .2rem;font-weight:800;">{enlarged_index + 1} / {len(photos)}</div>',
+                unsafe_allow_html=True,
+            )
+        with next_col:
+            if st.button(
+                "次へ ▶",
+                use_container_width=True,
+                disabled=enlarged_index >= len(photos) - 1,
+                key=f"all_photo_enlarged_next_v419_{enlarged_index}",
+            ):
+                st.session_state[index_key] = min(len(photos) - 1, enlarged_index + 1)
+                st.rerun()
+
+        show_photo_library_dialog_v418(photos[enlarged_index], enlarged_index + 1, len(photos))
+        return
 
     per_page = 30
     page_count = max(1, math.ceil(len(photos) / per_page))
@@ -32486,11 +32541,13 @@ def page_photo_library_v418():
                     )
                 st.caption(_photo_library_captured_label_v418(photo.get("captured_at")))
                 if st.button(
-                    "見る",
+                    "拡大",
                     use_container_width=True,
-                    key=f"all_photo_open_v418_{current_page}_{photo_id}",
+                    key=f"all_photo_open_v419_{current_page}_{photo_id}",
                 ):
-                    show_photo_library_dialog_v418(photo, absolute_index + 1, len(photos))
+                    st.session_state[index_key] = absolute_index
+                    st.session_state[mode_key] = "拡大モード"
+                    st.rerun()
 
     if page_count > 1:
         st.caption(f"{current_page + 1} / {page_count}ページ　（1ページ最大30枚）")
