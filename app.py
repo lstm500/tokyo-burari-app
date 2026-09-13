@@ -33,9 +33,11 @@ from zoneinfo import ZoneInfo
 import streamlit as st
 
 # Freshly generated update: 2026-08-31 23:49 JST
-GENERATED_UPDATE_JST = "2026-09-12T10:30:00+09:00"
+GENERATED_UPDATE_JST = "2026-09-13T01:09:00+09:00"
 
-APP_BUILD = "v402"
+APP_BUILD = "v403"
+# v403: Android automatic discovery notifications open a dedicated saved-results
+# screen directly; the manual search/filter screen is never placed in between.
 # v393: prevent clipped labels on narrow phones; Home uses shorter compact labels
 # and Field Notes presents its four choices as a readable 2x2 grid.
 # v392: keep the auto-location run guard on the rendered text element because the
@@ -6144,7 +6146,7 @@ def sync_pending_tags_from_browser_v166():
 _HISTORY_JS = r"""
 export default function(component) {
   const { data, setTriggerValue } = component;
-  const validPages = new Set(['home', 'camera', 'videos', 'moments', 'diary', 'review', 'review_map', 'review_project', 'review_monthly', 'review_tag', 'review_history', 'nearby', 'toilets', 'settings', 'settings_moments', 'settings_moments_definition', 'settings_location', 'settings_account']);
+  const validPages = new Set(['home', 'camera', 'videos', 'moments', 'diary', 'review', 'review_map', 'review_project', 'review_monthly', 'review_tag', 'review_history', 'nearby', 'discovery_results', 'toilets', 'settings', 'settings_moments', 'settings_moments_definition', 'settings_location', 'settings_account']);
   const marker = '__tokyo_burari_page__';
   const guardMarker = '__tokyo_burari_first_level_guard__';
   const requestedPage = validPages.has(data?.page) ? data.page : 'home';
@@ -23262,8 +23264,63 @@ def init_state():
                 _invalidate_active_trip_snapshot()
 
 
+def consume_auto_discovery_deep_link():
+    """Open the exact candidate list saved by the Android background search."""
+    try:
+        event_id = str(st.query_params.get("auto_discovery_event", "") or "").strip()
+        encoded = str(st.query_params.get("auto_discovery_results", "") or "").strip()
+    except Exception:
+        return False
+    if not event_id or not encoded:
+        return False
+    if event_id == str(st.session_state.get("_auto_discovery_consumed_event") or ""):
+        return False
+    try:
+        if len(encoded) > 48_000:
+            raise ValueError("result payload too large")
+        padded = encoded + ("=" * ((4 - len(encoded) % 4) % 4))
+        payload = json.loads(base64.urlsafe_b64decode(padded.encode("ascii")).decode("utf-8"))
+        if not isinstance(payload, dict):
+            raise ValueError("invalid result payload")
+        kind = str(payload.get("kind") or st.query_params.get("auto_discovery_kind", "") or "")
+        if kind not in {"snack", "tourism"}:
+            raise ValueError("invalid discovery kind")
+        safe_places = []
+        for raw in list(payload.get("places") or [])[:6]:
+            if not isinstance(raw, dict):
+                continue
+            lat = float(raw.get("lat"))
+            lon = float(raw.get("lon"))
+            if not (-90 <= lat <= 90 and -180 <= lon <= 180):
+                continue
+            safe_places.append({
+                "id": str(raw.get("id") or "")[:160],
+                "name": str(raw.get("name") or "候補")[:120],
+                "lat": lat,
+                "lon": lon,
+                "category": str(raw.get("category") or "")[:80],
+                "experience_axis": str(raw.get("experience_axis") or "")[:80],
+                "distance_m": max(0.0, float(raw.get("distance_m") or 0.0)),
+            })
+        if not safe_places:
+            raise ValueError("no discovery results")
+        payload["kind"] = kind
+        payload["places"] = safe_places
+        payload["event_id"] = event_id
+        st.session_state["_auto_discovery_result"] = payload
+        st.session_state["_auto_discovery_consumed_event"] = event_id
+        st.session_state["main_page"] = "discovery_results"
+        st.session_state["_history_action"] = "replace"
+        return True
+    except Exception:
+        st.session_state["_auto_discovery_open_error"] = (
+            "自動検索の候補を読み込めませんでした。次の通知をお待ちください。"
+        )
+        return False
 
-VALID_APP_PAGES = {"home", "camera", "videos", "moments", "diary", "review", "review_map", "review_project", "review_monthly", "review_tag", "review_history", "nearby", "toilets", "field_notes", "settings", "settings_moments", "settings_moments_definition", "settings_location", "settings_account"}
+
+
+VALID_APP_PAGES = {"home", "camera", "videos", "moments", "diary", "review", "review_map", "review_project", "review_monthly", "review_tag", "review_history", "nearby", "discovery_results", "toilets", "field_notes", "settings", "settings_moments", "settings_moments_definition", "settings_location", "settings_account"}
 
 
 def _current_ui_refresh_epoch():
@@ -23340,6 +23397,8 @@ def _sync_recent_camera_state_from_browser(key="home_recent_camera_state_v126"):
 
 def restore_recent_camera_session():
     """Reopen a recently used photo/video camera in the same mode."""
+    if str(st.session_state.get("main_page") or "") == "discovery_results":
+        return
     if st.session_state.get("_recent_camera_restore_checked", False):
         return
     st.session_state["_recent_camera_restore_checked"] = True
@@ -23478,6 +23537,7 @@ def navigation_parent_node(node=None):
         "diary": "home",
         "review": "home",
         "nearby": "home",
+        "discovery_results": "home",
         "toilets": "home",
         "field_notes": "home",
         "settings": "home",
@@ -27106,6 +27166,82 @@ def page_toilets():
         return
 
     st.caption(f"地図に{len(places)}か所を表示しています。候補はOpenStreetMapと、設定済みの場合はGoogle Placesを同時に検索しています。")
+
+
+def page_discovery_results():
+    result = st.session_state.get("_auto_discovery_result")
+    if not isinstance(result, dict):
+        page_top("🔔 自動で見つけた候補", "自動検索の結果を確認できませんでした。")
+        st.info("候補が保存されていません。次の自動通知から、この画面に候補が表示されます。")
+        return
+
+    kind = str(result.get("kind") or "")
+    is_snack = kind == "snack"
+    title = "🍦 自動で見つけたおやつ" if is_snack else "🚩 自動で見つけた場所"
+    caption = (
+        "通知が出た時点で見つけた、徒歩約3分圏の候補です。"
+        if is_snack else
+        "駅を降りて歩いた先で、通知が出た時点に見つけた候補です。"
+    )
+    page_top(title, caption)
+    st.markdown(
+        """
+        <style>
+        .auto-discovery-summary{margin:.12rem 0 .72rem;padding:.68rem .75rem;border-radius:14px;
+          background:linear-gradient(145deg,rgba(255,246,224,.92),rgba(233,248,244,.92));
+          border:1px solid rgba(224,170,72,.22);font-size:.78rem;line-height:1.48}
+        .auto-discovery-title{font-size:1.07rem;font-weight:850;line-height:1.28}
+        .auto-discovery-meta{margin-top:.20rem;font-size:.78rem;opacity:.72;line-height:1.4}
+        .auto-discovery-axis{display:inline-flex;margin-top:.38rem;padding:.20rem .52rem;border-radius:999px;
+          background:rgba(73,169,132,.11);border:1px solid rgba(73,169,132,.20);font-size:.69rem;font-weight:760}
+        [class*="st-key-auto_discovery_route_"] div.stLinkButton>a{min-height:2.85rem;border-radius:13px;font-weight:820;
+          color:#fff!important;background:#ff4b4b!important;border-color:#ff4b4b!important}
+        [class*="st-key-auto_discovery_route_"] div.stLinkButton>a:active{background:#c93443!important;border-color:#b82e3c!important;
+          transform:translateY(1px) scale(.985)}
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+    station = result.get("station") if isinstance(result.get("station"), dict) else {}
+    station_name = str(station.get("name") or "").strip()
+    searched_at_ms = result.get("searched_at_ms")
+    searched_text = ""
+    try:
+        searched_dt = datetime.fromtimestamp(
+            float(searched_at_ms) / 1000.0,
+            tz=ZoneInfo(APP_TIMEZONE),
+        )
+        searched_text = searched_dt.strftime("%m月%d日 %H:%Mに検索")
+    except Exception:
+        pass
+    summary_parts = [part for part in (station_name and f"🚉 {station_name}周辺", searched_text) if part]
+    st.markdown(
+        '<div class="auto-discovery-summary"><b>自動検索済みの結果です</b><br>'
+        + html.escape("　／　".join(summary_parts) if summary_parts else "通知時に取得した候補を表示しています。")
+        + "<br>条件を選び直したり、検索ボタンを押したりする必要はありません。</div>",
+        unsafe_allow_html=True,
+    )
+
+    places = list(result.get("places") or [])[:6]
+    for index, place in enumerate(places, start=1):
+        with st.container(border=True):
+            name = str(place.get("name") or "候補")
+            category = str(place.get("category") or "")
+            distance = max(0.0, float(place.get("distance_m") or 0.0))
+            distance_text = f"約{int(round(distance))}m"
+            axis = str(place.get("experience_axis") or "").strip()
+            st.markdown(
+                f'<div class="auto-discovery-title">{index}. {html.escape(name)}</div>'
+                f'<div class="auto-discovery-meta">{html.escape(category)}　・　{html.escape(distance_text)}</div>'
+                + (f'<div class="auto-discovery-axis">{html.escape(axis)}</div>' if axis else ""),
+                unsafe_allow_html=True,
+            )
+            direction_url = _nearby_directions_url(place)
+            with st.container(key=f"auto_discovery_route_{index}"):
+                if direction_url:
+                    st.link_button("🗺️ この場所までの道を見る", direction_url, use_container_width=True)
+
+    st.caption("候補は通知が作られた時点の検索結果です。営業状況は現地表示や地図で確認してください。")
 
 
 def page_nearby():
@@ -38941,6 +39077,9 @@ def page_settings():
 verify_setup()
 require_family_pin()
 init_state()
+# Notification launches must win over camera-session restoration and open the
+# already-completed automatic search result directly.
+consume_auto_discovery_deep_link()
 # v383: newly saved videos launch their AI job immediately. Full recovery scans are
 # only for interrupted/stale jobs, so keep them off unrelated button reruns and run
 # them lazily on video-related pages.
@@ -39000,6 +39139,10 @@ with st.container(key="app_page_root_v280"):
             with st.expander("保護者向け詳細"):
                 st.code(str(emotion_sync_detail))
 
+    discovery_open_error = st.session_state.pop("_auto_discovery_open_error", None)
+    if discovery_open_error:
+        st.warning(discovery_open_error)
+
     rollover_warning = st.session_state.pop("_rollover_warning", None)
     if rollover_warning:
         st.warning(rollover_warning)
@@ -39033,6 +39176,8 @@ with st.container(key="app_page_root_v280"):
         page_history(embedded=False)
     elif page == "nearby":
         page_nearby()
+    elif page == "discovery_results":
+        page_discovery_results()
     elif page == "toilets":
         page_toilets()
     elif page == "field_notes":
@@ -39058,6 +39203,6 @@ with st.container(key="app_page_root_v280"):
         live_page = str(st.session_state.get("main_page") or "home")
         if (
             page == live_page
-            and page in {"camera", "videos", "moments", "diary", "review", "review_map", "review_project", "review_monthly", "review_tag", "review_history", "nearby", "toilets", "field_notes", "settings", "settings_moments", "settings_moments_definition", "settings_location", "settings_account"}
+            and page in {"camera", "videos", "moments", "diary", "review", "review_map", "review_project", "review_monthly", "review_tag", "review_history", "nearby", "discovery_results", "toilets", "field_notes", "settings", "settings_moments", "settings_moments_definition", "settings_location", "settings_account"}
         ):
             render_global_bottom_navigation(page)
