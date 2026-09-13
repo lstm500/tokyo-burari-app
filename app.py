@@ -35,7 +35,10 @@ import streamlit as st
 # Freshly generated update: 2026-09-13 JST
 GENERATED_UPDATE_JST = "2026-09-13T01:09:00+09:00"
 
-APP_BUILD = "v406"
+APP_BUILD = "v407"
+# v407: Replay requests Android media focus at playback start and again after the
+# WebView returns from background. Restore YouTube/photo voice playback and the
+# current headphone route without restarting the replay from the beginning.
 # v406: Saved tag movies use live tag membership, and both tag/month movies
 # refresh their photo membership when reopened. A stale curation is cleared when
 # its source gains or loses photos so newly eligible photos cannot stay hidden.
@@ -20839,6 +20842,7 @@ def render_monthly_replay_player(period_label, review, playback, photo_items, cu
     replay_alt = "タグ別の振り返り写真" if is_tag_review else "期間の振り返り写真"
     first_caption = html.escape(str(photo_items[0].get("caption") or "")) if photo_items else ""
     payload = json.dumps(photo_items, ensure_ascii=False)
+    native_audio_bridge_token = json.dumps(_query_param_scalar("native_bridge_token"))
     component_html = f"""
     <style>
       .burari-replay-wrap {{
@@ -21016,6 +21020,30 @@ def render_monthly_replay_player(period_label, review, playback, photo_items, cu
     <script>
       const burariSlides = {payload};
       const burariVideoId = {json.dumps(video_id)};
+      const burariNativeAudioBridgeToken = {native_audio_bridge_token};
+      let burariNativeAudioRequestSerial = 0;
+      function burariRequestNativeAudioFocus() {{
+        if (!burariNativeAudioBridgeToken) return false;
+        // addJavascriptInterface is normally visible inside the component frame.
+        // Keep the parent relay as a fallback for WebView/Streamlit frame isolation.
+        try {{
+          if (window.BurariAudio && typeof window.BurariAudio.requestFocus === 'function') {{
+            window.BurariAudio.requestFocus(burariNativeAudioBridgeToken);
+            return true;
+          }}
+        }} catch (_) {{}}
+        try {{
+          const requestId = `replay-audio-${{Date.now()}}-${{++burariNativeAudioRequestSerial}}`;
+          window.parent.postMessage({{
+            type: 'burari-native-audio-request-v1',
+            request_id: requestId,
+            action: 'request_focus',
+            token: burariNativeAudioBridgeToken,
+          }}, '*');
+          return true;
+        }} catch (_) {{}}
+        return false;
+      }}
       const burariMarkUserActivity = () => {{
         const at = Date.now();
         try {{ localStorage.setItem('tokyo_burari_last_user_activity_v336', String(at)); }} catch (_) {{}}
@@ -21051,6 +21079,9 @@ def render_monthly_replay_player(period_label, review, playback, photo_items, cu
       let burariWaitingForRequestedPosition = false;
       let burariSlideLoopStarted = false;
       let burariSlideRequestToken = 0;
+      let burariNeedsForegroundRestore = false;
+      let burariForegroundRestoreTimer = null;
+      let burariLastForegroundRestoreAt = 0;
       // v337: replay has no photo-count ceiling, so keep only the current/next decode
       // window alive. With the 3-second minimum slide interval there is enough time to
       // preload one image ahead; retaining more full decoded photos needlessly increases
@@ -21126,6 +21157,67 @@ def render_monthly_replay_player(period_label, review, playback, photo_items, cu
 
       function burariEnsureAudible() {{
         burariSetMusicVolume(burariVoicePlaybackActive ? burariVoiceMusicVolume : burariNormalMusicVolume);
+      }}
+
+      function burariRestoreReplayAfterForeground() {{
+        if (!burariReplayPlaybackActive || !burariPlayerReady || !burariPlayer) return;
+        const now = Date.now();
+        if (now - burariLastForegroundRestoreAt < 350) return;
+        burariLastForegroundRestoreAt = now;
+        burariRequestNativeAudioFocus();
+        if (burariForegroundRestoreTimer) clearTimeout(burariForegroundRestoreTimer);
+        burariForegroundRestoreTimer = setTimeout(() => {{
+          burariForegroundRestoreTimer = null;
+          if (!burariReplayPlaybackActive || document.hidden) return;
+          let current = -1;
+          try {{ current = Number(burariPlayer.getCurrentTime()); }} catch (_) {{}}
+          if (Number.isFinite(current) && current >= burariEndSeconds - 0.12) {{
+            burariStopAtEnd();
+            return;
+          }}
+          burariEnsureAudible();
+          try {{
+            if (typeof burariPlayer.playVideo === 'function') burariPlayer.playVideo();
+          }} catch (_) {{}}
+          // WebView may also suspend the HTML audio element used for a photo voice.
+          // Resume it on the same headphone route while keeping YouTube at 80%.
+          if (burariVoicePlaybackActive && burariVoiceAudio) {{
+            try {{
+              const voicePromise = burariVoiceAudio.play();
+              if (voicePromise && typeof voicePromise.catch === 'function') {{
+                voicePromise.catch(() => burariFinishVoice('写真の声を再開できなかったため、BGMを続けます。', true));
+              }}
+            }} catch (_) {{
+              burariFinishVoice('写真の声を再開できなかったため、BGMを続けます。', true);
+            }}
+          }}
+          setTimeout(() => {{
+            if (!burariReplayPlaybackActive || document.hidden) return;
+            burariEnsureAudible();
+            try {{
+              if (burariPlayer && typeof burariPlayer.getPlayerState === 'function' &&
+                  window.YT && burariPlayer.getPlayerState() !== YT.PlayerState.PLAYING &&
+                  typeof burariPlayer.playVideo === 'function') {{
+                burariPlayer.playVideo();
+              }}
+            }} catch (_) {{}}
+          }}, 320);
+          if (!burariMusicWatchTimer) burariStartMusicEndWatch();
+          if (burariStatus) burariStatus.textContent = burariVoicePlaybackActive
+            ? '復帰しました。写真の声とBGMを再生しています。'
+            : '復帰しました。BGMを再生しています。';
+        }}, 120);
+      }}
+
+      function burariHandleReplayVisibility() {{
+        if (document.hidden) {{
+          burariNeedsForegroundRestore = burariReplayPlaybackActive;
+          return;
+        }}
+        if (burariNeedsForegroundRestore && burariReplayPlaybackActive) {{
+          burariNeedsForegroundRestore = false;
+          burariRestoreReplayAfterForeground();
+        }}
       }}
 
       function burariAdvanceSlideNow() {{
@@ -21310,6 +21402,10 @@ def render_monthly_replay_player(period_label, review, playback, photo_items, cu
           clearInterval(burariActivityHeartbeat);
           burariActivityHeartbeat = null;
         }}
+        if (burariForegroundRestoreTimer) {{
+          clearTimeout(burariForegroundRestoreTimer);
+          burariForegroundRestoreTimer = null;
+        }}
       }}
 
       function burariStopAtEnd() {{
@@ -21346,6 +21442,7 @@ def render_monthly_replay_player(period_label, review, playback, photo_items, cu
 
       function burariPlayCurrentVoice(autoTriggered = false) {{
         if (!burariCurrentVoiceUrl) return;
+        burariRequestNativeAudioFocus();
         if (!burariVoiceAudio) {{
           burariVoiceAudio = new Audio();
           burariVoiceAudio.preload = 'auto';
@@ -21476,8 +21573,10 @@ def render_monthly_replay_player(period_label, review, playback, photo_items, cu
           return;
         }}
         burariPendingStart = false;
+        burariRequestNativeAudioFocus();
         burariStopTimers();
         burariReplayPlaybackActive = true;
+        burariNeedsForegroundRestore = false;
         burariWaitingForRequestedPosition = true;
         burariSlideLoopStarted = false;
         burariSlideAdvancePending = false;
@@ -21566,6 +21665,20 @@ def render_monthly_replay_player(period_label, review, playback, photo_items, cu
       const burariApiScript = document.createElement('script');
       burariApiScript.src = 'https://www.youtube.com/iframe_api';
       document.head.appendChild(burariApiScript);
+
+      document.addEventListener('visibilitychange', burariHandleReplayVisibility, {{ passive: true }});
+      window.addEventListener('pageshow', () => {{
+        if (burariReplayPlaybackActive) {{
+          burariNeedsForegroundRestore = true;
+          burariHandleReplayVisibility();
+        }}
+      }}, {{ passive: true }});
+      window.addEventListener('focus', () => {{
+        if (burariReplayPlaybackActive && !document.hidden) {{
+          burariNeedsForegroundRestore = true;
+          burariHandleReplayVisibility();
+        }}
+      }}, {{ passive: true }});
 
       document.getElementById('burariReplayStart').addEventListener('click', burariActuallyStart);
       document.getElementById('burariReplayStop').addEventListener('click', burariInterrupt);
