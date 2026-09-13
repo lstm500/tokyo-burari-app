@@ -33,9 +33,13 @@ from zoneinfo import ZoneInfo
 import streamlit as st
 
 # Freshly generated update: 2026-09-13 JST
-GENERATED_UPDATE_JST = "2026-09-13T12:05:25+09:00"
+GENERATED_UPDATE_JST = "2026-09-13T14:45:00+09:00"
 
-APP_BUILD = "v411"
+APP_BUILD = "v412"
+# v412: On every fresh entry, Good Moments opens the newest unreviewed video first.
+# Route buttons now navigate from the top-level app context through a v2 launcher;
+# toilet-map popup route taps relay to the same launcher instead of relying on iframe
+# target=_top navigation, which can be ignored by Android WebView.
 # v411: Release camera canvases, decoded previews, video Blob references, streams,
 # recorder callbacks and audio graphs promptly after each save/upload cycle.
 # v410: Notification-opened discovery results now provide working walking-route
@@ -10135,6 +10139,136 @@ def _nearby_directions_url(place):
         }
     )
     return f"https://www.google.com/maps/dir/?{params}"
+
+
+# v412: Android WebView does not reliably honor route anchors rendered inside
+# Streamlit HTML/iframe content. Use a v2 component so the actual tap navigates the
+# top-level app window. The same component also receives route requests relayed from
+# the Leaflet toilet-map iframe.
+_ROUTE_LAUNCHER_HTML_V412 = r"""
+<div class="burari-route-launcher-v412">
+  <button id="burari-route-launch-v412" type="button"></button>
+</div>
+"""
+
+_ROUTE_LAUNCHER_CSS_V412 = r"""
+.burari-route-launcher-v412 { width:100%; box-sizing:border-box; }
+#burari-route-launch-v412 {
+  appearance:none; -webkit-appearance:none; width:100%; min-height:2.78rem; margin:0;
+  box-sizing:border-box; padding:.48rem .56rem; border-radius:12px;
+  border:1px solid rgba(47,128,237,.48); background:rgba(47,128,237,.10);
+  color:#235fa8; font:inherit; font-size:.80rem; font-weight:820; line-height:1.22;
+  text-align:center; cursor:pointer; touch-action:manipulation; -webkit-tap-highlight-color:transparent;
+}
+#burari-route-launch-v412:active { background:rgba(47,128,237,.24); transform:translateY(1px) scale(.99); }
+#burari-route-launch-v412[hidden] { display:none !important; }
+#burari-route-launch-v412:disabled { opacity:.45; cursor:default; }
+"""
+
+_ROUTE_LAUNCHER_JS_V412 = r"""
+export default function(component) {
+  const { data, parentElement } = component;
+  const button = parentElement.querySelector('#burari-route-launch-v412');
+  const listenerOnly = Boolean(data?.listener_only);
+  const ownUrl = String(data?.url || '');
+  const messageType = 'tokyo-burari-open-route-v412';
+
+  const safeRouteUrl = (value) => {
+    try {
+      const parsed = new URL(String(value || ''), window.location.href);
+      if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') return '';
+      if (!/(^|\.)google\.com$/i.test(parsed.hostname) && !/(^|\.)maps\.google\.com$/i.test(parsed.hostname)) return '';
+      return parsed.href;
+    } catch (_) { return ''; }
+  };
+
+  const openRoute = (value) => {
+    const url = safeRouteUrl(value);
+    if (!url) return;
+    // Assign the current top-level browsing context. Android's WebView client sees this
+    // as a main-frame navigation and can hand the Google Maps URL to the Maps app.
+    try { window.location.assign(url); return; } catch (_) {}
+    try { window.location.href = url; } catch (_) {}
+  };
+
+  const onMessage = (event) => {
+    const payload = event?.data;
+    if (!payload || payload.type !== messageType) return;
+    openRoute(payload.url);
+  };
+  window.addEventListener('message', onMessage);
+
+  if (button) {
+    button.hidden = listenerOnly;
+    button.disabled = !safeRouteUrl(ownUrl);
+    button.textContent = String(data?.label || '🗺️ この場所に案内してもらう');
+    const onClick = (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      openRoute(ownUrl);
+    };
+    button.addEventListener('click', onClick);
+    return () => {
+      button.removeEventListener('click', onClick);
+      window.removeEventListener('message', onMessage);
+    };
+  }
+  return () => window.removeEventListener('message', onMessage);
+}
+"""
+
+_route_launcher_component_v412 = None
+_route_launcher_component_initialized_v412 = False
+
+
+def _get_route_launcher_component_v412():
+    global _route_launcher_component_v412, _route_launcher_component_initialized_v412
+    if _route_launcher_component_initialized_v412:
+        return _route_launcher_component_v412
+    _route_launcher_component_initialized_v412 = True
+    try:
+        _route_launcher_component_v412 = st.components.v2.component(
+            "tokyo_burari_route_launcher_v412",
+            html=_ROUTE_LAUNCHER_HTML_V412,
+            css=_ROUTE_LAUNCHER_CSS_V412,
+            js=_ROUTE_LAUNCHER_JS_V412,
+        )
+    except Exception:
+        _route_launcher_component_v412 = None
+    return _route_launcher_component_v412
+
+
+def render_route_launcher_v412(place, *, label="🗺️ この場所に案内してもらう", key="route_v412"):
+    """Render a route action that navigates the main WebView, not an HTML subframe."""
+    url = _nearby_directions_url(place)
+    if not url:
+        st.button(label, use_container_width=True, disabled=True, key=f"{key}_disabled")
+        return False
+    component = _get_route_launcher_component_v412()
+    if component is not None:
+        component(
+            data={"url": url, "label": label, "listener_only": False},
+            key=key,
+        )
+    else:
+        # Old-runtime fallback: same-frame navigation is more reliable in Android
+        # WebView than target=_top/_blank links.
+        st.markdown(
+            f'<a href="{html.escape(url, quote=True)}" target="_self" rel="noopener noreferrer" '
+            'style="display:flex;align-items:center;justify-content:center;width:100%;min-height:2.78rem;'
+            'box-sizing:border-box;padding:.48rem .56rem;border-radius:12px;border:1px solid rgba(47,128,237,.48);'
+            'background:rgba(47,128,237,.10);color:#235fa8;text-decoration:none;text-align:center;font-weight:820;">'
+            f'{html.escape(label)}</a>',
+            unsafe_allow_html=True,
+        )
+    return True
+
+
+def render_route_message_listener_v412(*, key="route_listener_v412"):
+    """Listen for route requests from sandboxed map iframes and navigate the main app."""
+    component = _get_route_launcher_component_v412()
+    if component is not None:
+        component(data={"listener_only": True}, key=key)
 
 
 def _nearby_distance_text(place):
@@ -24006,6 +24140,12 @@ def _return_diary_photo_to_gallery(trip_id):
         st.session_state.pop(f"reflection_state_{trip_id}", None)
 
 
+def _prepare_moments_page_entry_v412():
+    """Start Good Moments on the newest unreviewed video whenever the page is entered."""
+    st.session_state["_moments_page_mode_v387"] = "これから確認"
+    st.session_state["_moments_ready_index_v387"] = 0
+
+
 def _set_page_state(page_name, history_mode="push"):
     """Change route state without starting a second Streamlit rerun.
 
@@ -24018,6 +24158,11 @@ def _set_page_state(page_name, history_mode="push"):
     current = str(st.session_state.get("main_page") or "home")
     if current == target:
         return
+
+    if target == "moments":
+        # v412: a previous visit to "確認済みを見る" must never hide newly captured,
+        # unreviewed Good Moments the next time this page is opened.
+        _prepare_moments_page_entry_v412()
 
     if target == "diary" and current == "home":
         reset_diary_navigation_for_home_entry()
@@ -24202,6 +24347,8 @@ def sync_browser_history():
 
     browser_page = getattr(result, "page", None)
     if browser_page in VALID_APP_PAGES and browser_page != page:
+        if browser_page == "moments":
+            _prepare_moments_page_entry_v412()
         st.session_state["main_page"] = browser_page
         # A browser Back/Forward event has already changed window.history. Do not
         # push a new entry while reflecting that event back into Streamlit.
@@ -26566,7 +26713,7 @@ html,body{{margin:0;padding:0;background:transparent;font-family:-apple-system,B
 .toilet-popup-pill.good{{background:#e9f7ef;border-color:#c9ead6;color:#1d7446;}}
 .toilet-popup-pill.warn{{background:#fff6df;border-color:#f0dfad;color:#866315;}}
 .toilet-popup-detail{{font-size:10px;color:#68727c;line-height:1.45;margin:5px 0;word-break:break-word;}}
-.toilet-route-button{{display:flex;align-items:center;justify-content:center;width:100%;min-height:42px;margin-top:9px;padding:8px 10px;box-sizing:border-box;border-radius:11px;background:#2f80ed;color:white!important;text-decoration:none!important;font-size:13px;font-weight:850;box-shadow:0 4px 12px rgba(47,128,237,.20);}}
+.toilet-route-button{{appearance:none;-webkit-appearance:none;display:flex;align-items:center;justify-content:center;width:100%;min-height:42px;margin-top:9px;padding:8px 10px;box-sizing:border-box;border:0;border-radius:11px;background:#2f80ed;color:white!important;text-decoration:none!important;font:inherit;font-size:13px;font-weight:850;box-shadow:0 4px 12px rgba(47,128,237,.20);cursor:pointer;touch-action:manipulation;}}
 .toilet-route-button:active{{transform:translateY(1px);}}
 .toilet-pin-shell{{background:transparent!important;border:0!important;}}
 .toilet-pin{{position:relative;width:34px;height:34px;border-radius:50% 50% 50% 6px;transform:rotate(-45deg);background:#28a17a;border:3px solid white;box-shadow:0 3px 9px rgba(0,0,0,.28);box-sizing:border-box;}}
@@ -26624,9 +26771,18 @@ html,body{{margin:0;padding:0;background:transparent;font-family:-apple-system,B
     const details = [];
     if (place.opening_hours) details.push(`利用時間: ${{esc(place.opening_hours)}}`);
     if (place.address) details.push(esc(place.address));
-    const route = place.route_url ? `<a class="toilet-route-button" href="${{esc(place.route_url)}}" target="_top" rel="noopener noreferrer">🚶 ここへ徒歩で案内</a>` : '';
+    const route = place.route_url ? `<button class="toilet-route-button" type="button" data-route-url="${{esc(place.route_url)}}">🚶 ここへ徒歩で案内</button>` : '';
     const popup = `<div class="toilet-popup-title">${{esc(place.name || 'トイレ')}}</div>` + `<div class="toilet-popup-meta">${{esc(place.category || 'トイレ')}} ・ 徒歩約${{Math.max(1,Number(place.walk_minutes)||1)}}分（${{distanceText}}）</div>` + (pills ? `<div class="toilet-popup-pills">${{pills}}</div>` : '') + (details.length ? `<div class="toilet-popup-detail">${{details.join(' ／ ')}}</div>` : '') + route;
     L.marker([lat,lon], {{icon, riseOnHover:true}}).addTo(map).bindPopup(popup, {{maxWidth:300, closeButton:true}});
+  }});
+  mapNode.addEventListener('click', (event) => {{
+    const routeButton = event.target && event.target.closest ? event.target.closest('.toilet-route-button') : null;
+    if (!routeButton) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const routeUrl = String(routeButton.getAttribute('data-route-url') || '');
+    if (!routeUrl) return;
+    try {{ window.parent.postMessage({{type:'tokyo-burari-open-route-v412', url:routeUrl}}, '*'); }} catch (_) {{}}
   }});
   if ((data.places || []).length) map.fitBounds(bounds, {{padding:[34,34], maxZoom:18}}); else map.setView(center, Number(data.radius_m || 0) <= 80 ? 18 : 17);
   setTimeout(() => map.invalidateSize(), 120);
@@ -27604,6 +27760,8 @@ def page_toilets():
 
     map_accuracy = saved.get("search_accuracy_m") if isinstance(saved, dict) else None
     map_source = saved.get("search_source") if isinstance(saved, dict) else "gps"
+    # v412: receive route taps from the sandboxed Leaflet popup in the top-level app.
+    render_route_message_listener_v412(key=f"toilet_route_listener_v412_{current_signature}")
     if current_lat is not None and current_lon is not None:
         _render_toilet_map(current_lat, current_lon, places, radius_m, accuracy_m=map_accuracy, search_source=map_source)
 
@@ -27704,12 +27862,11 @@ def page_discovery_results():
             is_open = open_detail == place_identity
             route_col, detail_col = st.columns(2)
             with route_col:
-                direction_url = _nearby_directions_url(place)
-                if direction_url:
-                    st.markdown(
-                        f'<a class="auto-discovery-route-link" href="{html.escape(direction_url, quote=True)}" target="_top" rel="noopener noreferrer">🗺️ 地図で案内</a>',
-                        unsafe_allow_html=True,
-                    )
+                render_route_launcher_v412(
+                    place,
+                    label="🗺️ 地図で案内",
+                    key=f"auto_discovery_route_v412_{place_key}",
+                )
             with detail_col:
                 detail_label = "詳細を閉じる" if is_open else "写真・詳細を見る"
                 if st.button(detail_label, use_container_width=True, key=f"auto_discovery_detail_v410_{place_key}"):
@@ -28344,14 +28501,11 @@ def page_nearby():
                     st.session_state[detail_key] = "" if open_detail == pid else pid
                     st.rerun()
             with route_col:
-                direction_url = _nearby_directions_url(place)
-                if direction_url:
-                    st.markdown(
-                        f'<a class="nearby-route-link" href="{html.escape(direction_url, quote=True)}" target="_top" rel="noopener noreferrer">🗺️ この場所に案内してもらう</a>',
-                        unsafe_allow_html=True,
-                    )
-                else:
-                    st.button("🗺️ この場所に案内してもらう", use_container_width=True, disabled=True, key=f"nearby_route_disabled_{place_key}")
+                render_route_launcher_v412(
+                    place,
+                    label="🗺️ この場所に案内してもらう",
+                    key=f"nearby_route_v412_{place_key}",
+                )
 
             if open_detail == pid:
                 detail_data = {}
