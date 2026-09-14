@@ -33,9 +33,11 @@ from zoneinfo import ZoneInfo
 import streamlit as st
 
 # Freshly generated update: 2026-09-14 JST
-GENERATED_UPDATE_JST = "2026-09-15T00:14:00+09:00"
+GENERATED_UPDATE_JST = "2026-09-15T00:38:00+09:00"
 
-APP_BUILD = "v436"
+APP_BUILD = "v438"
+# v438: Clean the full source audio before voice-candidate analysis. Candidate pickup, previews, transcription, and photo attachment now all come from the same pre-cleaned source audio; do not rank raw/noisy audio first.
+# v437: Move the voice-candidate regenerate control directly below the six voice candidate buttons in both the custom voice picker and its fallback UI; regeneration behavior itself is unchanged.
 # v436: Add an explicit voice-candidate regenerate button in the photo/voice workspace. Forced regeneration rebuilds the six noise-cleaned candidates from the original video while remapping existing selections by source candidate so attached choices do not silently jump to a different clip.
 # v435: Move noise cleanup to video voice-candidate generation before the user chooses a voice. Candidate previews, transcription, and later photo attachment all use the same already-cleaned audio, so selecting/attaching a candidate never runs cleanup a second time. Regenerate older candidate sets under schema v4.
 # v434: Automatically apply mild post-save voice cleanup to photo voice notes: high-pass rumble removal, light FFT noise reduction, gentle dynamic normalization, and limiting. Store processed AAC/M4A when available, fall back to the original audio without blocking save, and use the cleaned audio for transcription/replay.
@@ -12381,8 +12383,8 @@ def _voice_storage_upload_mime(logical_mime, filename=""):
     return "video/mp4"
 
 
-PHOTO_VOICE_CLEANUP_VERSION = "v435_candidate_afftdn_light"
-PHOTO_VOICE_CLEANUP_TIMEOUT_SECONDS = 30
+PHOTO_VOICE_CLEANUP_VERSION = "v438_pre_pick_afftdn_light"
+PHOTO_VOICE_CLEANUP_TIMEOUT_SECONDS = 75
 PHOTO_VOICE_CLEANUP_FILTER = (
     "highpass=f=80,"
     "afftdn=nr=7:nf=-38:tn=1:gs=3,"
@@ -16425,7 +16427,7 @@ def video_ai_voice_candidate_meta(photo):
 
 VIDEO_VOICE_CANDIDATE_COUNT = 6
 VIDEO_VOICE_SNIPPET_SECONDS = 5.0
-VIDEO_VOICE_CANDIDATE_SCHEMA_VERSION = 4
+VIDEO_VOICE_CANDIDATE_SCHEMA_VERSION = 5
 
 
 def video_ai_voice_candidate_items(photo):
@@ -16438,15 +16440,15 @@ def video_ai_voice_candidate_items(photo):
         snippet_seconds = float(meta.get("snippet_seconds") or 0.0)
     except Exception:
         snippet_seconds = 0.0
-    # v435: schema v4 guarantees that every candidate the user previews has already
-    # passed through the light cleanup stage. Older/raw candidate sets are regenerated
-    # before they can be offered for selection.
+    # v438: schema v5 guarantees that the full source audio was cleaned BEFORE
+    # candidate ranking/pickup. Older sets (including v435-v437, which ranked raw audio
+    # first and cleaned only the selected snippets) are regenerated before selection.
     cleanup_stage = str(meta.get("audio_cleanup_stage") or "").strip()
     cleanup_version = str(meta.get("audio_cleanup_version") or "").strip()
     if (
         schema_version < VIDEO_VOICE_CANDIDATE_SCHEMA_VERSION
         or snippet_seconds < 4.5
-        or cleanup_stage != "before_user_selection"
+        or cleanup_stage != "before_candidate_pickup"
         or cleanup_version != PHOTO_VOICE_CLEANUP_VERSION
     ):
         return []
@@ -16460,17 +16462,17 @@ def video_ai_voice_candidate_items(photo):
     return sorted(clean, key=lambda item: int(item.get("rank") or 99))[:VIDEO_VOICE_CANDIDATE_COUNT]
 
 
-def _extract_video_voice_candidate_specs(video_raw, candidate_count=VIDEO_VOICE_CANDIDATE_COUNT, clip_seconds=VIDEO_VOICE_SNIPPET_SECONDS):
+def _extract_video_voice_candidate_specs(cleaned_audio_raw, candidate_count=VIDEO_VOICE_CANDIDATE_COUNT, clip_seconds=VIDEO_VOICE_SNIPPET_SECONDS):
     ffmpeg = _ffmpeg_executable()
     if not ffmpeg:
         raise RuntimeError("この実行環境では音声候補抽出用のffmpegを利用できません。")
-    if not video_raw:
-        raise ValueError("動画データを読み込めませんでした。")
+    if not cleaned_audio_raw:
+        raise ValueError("ノイズ処理後の音声データを読み込めませんでした。")
 
-    with tempfile.TemporaryDirectory(prefix="burari_voice_pick_") as td:
-        input_path = os.path.join(td, "input_video.mp4")
+    with tempfile.TemporaryDirectory(prefix="burari_voice_pick_cleaned_") as td:
+        input_path = os.path.join(td, "cleaned_source.m4a")
         wav_path = os.path.join(td, "audio_mono.wav")
-        Path(input_path).write_bytes(video_raw)
+        Path(input_path).write_bytes(cleaned_audio_raw)
         proc = subprocess.run(
             [
                 ffmpeg, "-hide_banner", "-loglevel", "error", "-y",
@@ -16483,7 +16485,7 @@ def _extract_video_voice_candidate_specs(video_raw, candidate_count=VIDEO_VOICE_
         )
         if proc.returncode != 0 or not os.path.exists(wav_path) or os.path.getsize(wav_path) <= 128:
             detail = (proc.stderr or proc.stdout or "").strip()
-            raise RuntimeError("動画から音声を取り出せませんでした。動画に声が入っていない可能性があります。" + (f"\n{detail}" if detail else ""))
+            raise RuntimeError("ノイズ処理後の音声を解析できませんでした。" + (f"\n{detail}" if detail else ""))
 
         with wave.open(wav_path, "rb") as wf:
             channels = int(wf.getnchannels() or 1)
@@ -16708,9 +16710,30 @@ def generate_video_ai_voice_candidates(photo, force=False):
     if not video_raw:
         raise ValueError("元動画を読み込めませんでした。")
 
-    specs = _extract_video_voice_candidate_specs(video_raw)
+    # v438 order is strict: 1) clean the complete source audio, 2) pick candidate
+    # regions from that cleaned signal, 3) cut/store those already-cleaned regions.
+    # Never rank the noisy/raw waveform first, because steady station/road noise can
+    # otherwise win the RMS-based pickup score and hide quieter child speech.
+    source_cleanup = _clean_photo_voice_note_audio(
+        video_raw,
+        filename="source_video.mp4",
+        content_type="video/mp4",
+    )
+    if not bool(source_cleanup.get("applied")):
+        cleanup_status = str(source_cleanup.get("status") or "cleanup_failed")
+        cleanup_detail = str(source_cleanup.get("error") or "").strip()
+        raise RuntimeError(
+            "声候補を選ぶ前のノイズ処理を完了できませんでした。"
+            + (f" ({cleanup_status})" if cleanup_status else "")
+            + (f" {cleanup_detail[:220]}" if cleanup_detail else "")
+        )
+    cleaned_source_raw = bytes(source_cleanup.get("raw") or b"")
+    if not cleaned_source_raw:
+        raise RuntimeError("声候補を選ぶ前のノイズ処理結果が空でした。")
+
+    specs = _extract_video_voice_candidate_specs(cleaned_source_raw)
     if not specs:
-        raise ValueError("声の候補を作成できませんでした。")
+        raise ValueError("ノイズ処理後の音声から声の候補を作成できませんでした。")
 
     ffmpeg = _ffmpeg_executable()
     if not ffmpeg:
@@ -16730,27 +16753,34 @@ def generate_video_ai_voice_candidates(photo, force=False):
         for item in previous_voice_items
         if str(item.get("storage_path") or "").strip()
     ]
-    # v436: candidate ranks can compress when one cleaned clip is rejected. Remember the
-    # underlying source rank so a forced rebuild can keep an existing voice choice tied to
-    # the same source snippet instead of accidentally pointing at a different new candidate.
-    previous_rank_to_source_rank = {}
+    # v438: preprocessing can legitimately change which peaks are selected. Preserve an
+    # already attached voice only when a newly picked candidate is close to the old clip's
+    # timestamp; do not assume candidate number/source rank still means the same sound.
+    previous_choice_anchor = {}
     for old_item in previous_voice_items:
         try:
             old_rank = int(old_item.get("rank") or 0)
+            old_timestamp_ms = int(old_item.get("timestamp_ms") or 0)
             old_source_rank = int(old_item.get("source_rank") or old_rank or 0)
         except Exception:
             continue
-        if old_rank > 0 and old_source_rank > 0:
-            previous_rank_to_source_rank[old_rank] = old_source_rank
+        if old_rank > 0:
+            previous_choice_anchor[old_rank] = {
+                "timestamp_ms": max(0, old_timestamp_ms),
+                "source_rank": max(0, old_source_rank),
+            }
 
     base = _video_selection_base_path(fresh)
     stamp = now_jst().strftime("%Y%m%d_%H%M%S")
     uploaded_paths = []
     items = []
     try:
-        with tempfile.TemporaryDirectory(prefix="burari_voice_extract_") as td:
-            input_path = os.path.join(td, "input_video.mp4")
-            Path(input_path).write_bytes(video_raw)
+        with tempfile.TemporaryDirectory(prefix="burari_voice_extract_cleaned_") as td:
+            # IMPORTANT: this source is already the full-track cleaned audio. Candidate
+            # boundaries and exported candidate bytes are therefore both downstream of
+            # the same cleanup pass. No raw-video waveform is used for ranking here.
+            input_path = os.path.join(td, "cleaned_source.m4a")
+            Path(input_path).write_bytes(cleaned_source_raw)
             for spec in specs:
                 rank = int(spec.get("rank") or 0)
                 if rank <= 0:
@@ -16772,19 +16802,7 @@ def generate_video_ai_voice_candidates(photo, force=False):
                 )
                 if proc.returncode != 0 or not os.path.exists(local_out) or os.path.getsize(local_out) <= 64:
                     continue
-                raw = Path(local_out).read_bytes()
-
-                # v435: clean each candidate BEFORE it reaches the picker. The preview,
-                # transcript, and eventual photo attachment therefore all reference the
-                # exact same processed bytes; no second cleanup happens after selection.
-                cleanup = _clean_photo_voice_note_audio(
-                    raw,
-                    filename=f"voice_candidate_source_{rank:02d}.m4a",
-                    content_type="audio/mp4",
-                )
-                if not bool(cleanup.get("applied")):
-                    continue
-                processed_raw = bytes(cleanup.get("raw") or b"")
+                processed_raw = Path(local_out).read_bytes()
                 if not processed_raw:
                     continue
 
@@ -16812,12 +16830,12 @@ def generate_video_ai_voice_candidates(photo, force=False):
 
                 cleanup_meta = {
                     "version": PHOTO_VOICE_CLEANUP_VERSION,
-                    "status": str(cleanup.get("status") or "applied"),
+                    "status": str(source_cleanup.get("status") or "applied"),
                     "applied": True,
                     "mode": "light_noise_reduction_and_leveling",
-                    "stage": "candidate_generation_before_user_selection",
+                    "stage": "whole_source_before_candidate_pickup",
                 }
-                cleanup_error = str(cleanup.get("error") or "").strip()
+                cleanup_error = str(source_cleanup.get("error") or "").strip()
                 if cleanup_error:
                     cleanup_meta["detail"] = cleanup_error[:220]
 
@@ -16842,19 +16860,11 @@ def generate_video_ai_voice_candidates(photo, force=False):
 
         items = sorted(items, key=lambda item: int(item.get("rank") or 99))[:VIDEO_VOICE_CANDIDATE_COUNT]
 
-        # Preserve existing photo-to-voice choices across a forced rebuild by matching the
-        # old candidate's source snippet to the corresponding newly cleaned candidate.
-        # If that source snippet could not be rebuilt, clear only that stale association.
-        if force and previous_rank_to_source_rank:
-            new_source_to_rank = {}
-            for new_item in items:
-                try:
-                    new_rank = int(new_item.get("rank") or 0)
-                    new_source_rank = int(new_item.get("source_rank") or new_rank or 0)
-                except Exception:
-                    continue
-                if new_rank > 0 and new_source_rank > 0:
-                    new_source_to_rank[new_source_rank] = new_rank
+        # Preserve an attached voice across regeneration only when the new candidate is
+        # still the same moment. Cleanup-before-pickup can change ranks, so match by time
+        # (<=1.8 s) and use source rank only as a tie-breaker. Otherwise clear the stale
+        # association rather than silently attaching a different utterance.
+        if force and previous_choice_anchor:
             selection_items = [item for item in (selection.get("items") or []) if isinstance(item, dict)]
             remapped_at = now_jst().isoformat()
             for selection_item in selection_items:
@@ -16864,8 +16874,24 @@ def generate_video_ai_voice_candidates(photo, force=False):
                     old_choice_rank = 0
                 if old_choice_rank <= 0:
                     continue
-                old_source_rank = previous_rank_to_source_rank.get(old_choice_rank)
-                new_choice_rank = new_source_to_rank.get(old_source_rank) if old_source_rank else None
+                anchor = previous_choice_anchor.get(old_choice_rank) or {}
+                old_ts = int(anchor.get("timestamp_ms") or 0)
+                old_source_rank = int(anchor.get("source_rank") or 0)
+                scored = []
+                for new_item in items:
+                    try:
+                        new_rank = int(new_item.get("rank") or 0)
+                        new_ts = int(new_item.get("timestamp_ms") or 0)
+                        new_source_rank = int(new_item.get("source_rank") or new_rank or 0)
+                    except Exception:
+                        continue
+                    if new_rank <= 0:
+                        continue
+                    distance = abs(new_ts - old_ts) if old_ts > 0 else 10**9
+                    source_penalty = 0 if old_source_rank > 0 and new_source_rank == old_source_rank else 1
+                    scored.append((distance, source_penalty, new_rank))
+                scored.sort()
+                new_choice_rank = scored[0][2] if scored and scored[0][0] <= 1800 else None
                 if new_choice_rank:
                     selection_item["voice_candidate_rank"] = int(new_choice_rank)
                     selection_item["voice_candidate_updated_at"] = remapped_at
@@ -16881,8 +16907,9 @@ def generate_video_ai_voice_candidates(photo, force=False):
             "candidate_count": len(items),
             "snippet_seconds": VIDEO_VOICE_SNIPPET_SECONDS,
             "boundary_mode": "natural_pause",
-            "audio_cleanup_stage": "before_user_selection",
+            "audio_cleanup_stage": "before_candidate_pickup",
             "audio_cleanup_version": PHOTO_VOICE_CLEANUP_VERSION,
+            "audio_cleanup_order": ["whole_source_cleanup", "candidate_pickup", "candidate_cut"],
             "items": items,
         }
         selection["updated_at"] = now_jst().isoformat()
@@ -31237,6 +31264,7 @@ _MOMENTS_VOICE_HTML = """
   <div class="moments-voice-heading">この写真に合う声を選ぶ</div>
   <div class="moments-voice-help">声をタップするとその場で再生します。写真を見ながら聞き比べられます。</div>
   <div id="moments-voice-candidates" class="moments-voice-candidates"></div>
+  <button id="moments-voice-regenerate" class="moments-voice-regenerate" type="button">↻ 声を再作成</button>
   <div class="moments-voice-player-shell">
     <audio id="moments-voice-player" controls preload="metadata"></audio>
     <div id="moments-voice-meta" class="moments-voice-meta"></div>
@@ -31272,6 +31300,12 @@ _MOMENTS_VOICE_CSS = """
 }
 .moments-voice-candidate.active { border-color:#6C9BD2; background:rgba(108,155,210,.17); box-shadow:0 0 0 1px rgba(108,155,210,.18); }
 .moments-voice-candidate:active { transform:scale(.97); }
+.moments-voice-regenerate {
+  appearance:none; -webkit-appearance:none; width:100%; margin-top:7px; min-height:38px; padding:7px 10px;
+  border:1px solid rgba(217,119,6,.55); border-radius:11px; background:rgba(217,119,6,.08);
+  color:var(--st-text-color); font-size:12px; font-weight:850; cursor:pointer; touch-action:manipulation;
+}
+.moments-voice-regenerate:active { transform:scale(.985); }
 .moments-voice-player-shell { margin-top:8px; padding:8px; border:1px solid rgba(128,128,128,.16); border-radius:12px; background:rgba(128,128,128,.025); }
 .moments-voice-player-shell audio { display:block; width:100%; height:38px; }
 .moments-voice-meta { margin-top:4px; font-size:10px; opacity:.70; }
@@ -31290,13 +31324,14 @@ export default function(component) {
   const image = parentElement.querySelector('#moments-voice-photo');
   const current = parentElement.querySelector('#moments-voice-current');
   const candidatesEl = parentElement.querySelector('#moments-voice-candidates');
+  const regenerate = parentElement.querySelector('#moments-voice-regenerate');
   const player = parentElement.querySelector('#moments-voice-player');
   const metaEl = parentElement.querySelector('#moments-voice-meta');
   const transcriptEl = parentElement.querySelector('#moments-voice-transcript');
   const back = parentElement.querySelector('#moments-voice-back');
   const apply = parentElement.querySelector('#moments-voice-apply');
   const clear = parentElement.querySelector('#moments-voice-clear');
-  if (!image || !candidatesEl || !player || !back || !apply || !clear) return;
+  if (!image || !candidatesEl || !regenerate || !player || !back || !apply || !clear) return;
 
   image.src = String(data?.photo_src || '');
   const currentRank = Math.max(0, Number(data?.current_voice_rank || 0));
@@ -31342,6 +31377,7 @@ export default function(component) {
   const emit = (action, candidateRank=0) => setTriggerValue('voice_action', {
     action, candidate_rank:Number(candidateRank||0), nonce:`${Date.now()}:${Math.random()}`
   });
+  regenerate.onclick = (event) => { event.preventDefault(); emit('regenerate', selectedRank); };
   back.onclick = (event) => { event.preventDefault(); emit('close', selectedRank); };
   apply.onclick = (event) => { event.preventDefault(); emit('apply', selectedRank); };
   clear.onclick = (event) => { event.preventDefault(); emit('clear', 0); };
@@ -31359,7 +31395,7 @@ def _get_moments_voice_component():
     _moments_voice_component_initialized = True
     try:
         moments_voice_component = st.components.v2.component(
-            "tokyo_burari_moments_voice_v388",
+            "tokyo_burari_moments_voice_v437",
             html=_MOMENTS_VOICE_HTML,
             css=_MOMENTS_VOICE_CSS,
             js=_MOMENTS_VOICE_JS,
@@ -31400,35 +31436,6 @@ def _render_moments_voice_workspace(
 
     st.markdown("#### 🎙 写真に声を合わせる")
     voice_candidates = video_ai_voice_candidate_items(photo)
-    if voice_candidates:
-        regen_col, regen_note_col = st.columns([1.0, 1.35], gap="small")
-        with regen_col:
-            if st.button(
-                "↻ 声を再作成",
-                use_container_width=True,
-                key=f"moments_voice_regenerate_v436_{video_id}_{round_number}_{target_rank}",
-                help="元動画から声候補をもう一度抽出し、ノイズ低減と音量補正もやり直します。",
-            ):
-                try:
-                    with st.spinner("元動画から声候補を再作成し、ノイズを処理しています…"):
-                        regenerated_photo = generate_video_ai_voice_candidates(photo, force=True)
-                    if isinstance(regenerated_photo, dict):
-                        photo = regenerated_photo
-                    st.session_state[voice_panel_open_key] = True
-                    st.session_state[voice_panel_target_key] = target_rank
-                    st.session_state[active_rank_key] = target_rank
-                    st.session_state.pop(voice_candidate_choice_key, None)
-                    st.session_state.pop(
-                        f"moments_voice_fallback_choice_v387_{video_id}_{round_number}_{target_rank}",
-                        None,
-                    )
-                    st.rerun()
-                except Exception as exc:
-                    st.error("声候補を再作成できませんでした。現在の候補はそのまま残しています。")
-                    with st.expander("保護者向け詳細"):
-                        st.code(str(exc))
-        with regen_note_col:
-            st.caption("元動画から候補を作り直します。新しい候補にもノイズ低減を自動で適用します。")
 
     if not voice_candidates:
         # v388: one tap on the photo's voice button must be enough. If this video's
@@ -31444,7 +31451,7 @@ def _render_moments_voice_workspace(
                 unsafe_allow_html=True,
             )
         try:
-            with st.spinner("この写真に合わせる声候補を作っています…"):
+            with st.spinner("先に音声全体のノイズを処理し、その後で声候補を選んでいます…"):
                 generated_photo = generate_video_ai_voice_candidates(photo, force=False)
             if isinstance(generated_photo, dict):
                 photo = generated_photo
@@ -31510,7 +31517,7 @@ def _render_moments_voice_workspace(
                 "current_voice_rank": current_voice_rank,
                 "candidates": candidates,
             },
-            key=f"moments_voice_workspace_v388_{video_id}_{round_number}_{target_rank}",
+            key=f"moments_voice_workspace_v437_{video_id}_{round_number}_{target_rank}",
             on_voice_action_change=lambda: None,
         )
         action = getattr(result, "voice_action", None)
@@ -31522,7 +31529,21 @@ def _render_moments_voice_workspace(
                 action_name = str(action.get("action") or "")
                 candidate_rank = max(0, int(action.get("candidate_rank") or 0))
                 try:
-                    if action_name == "apply" and candidate_rank > 0:
+                    if action_name == "regenerate":
+                        with st.spinner("元動画の音声全体から先にノイズを処理し、その後で声候補を再作成しています…"):
+                            regenerated_photo = generate_video_ai_voice_candidates(photo, force=True)
+                        if isinstance(regenerated_photo, dict):
+                            photo = regenerated_photo
+                        st.session_state[voice_panel_open_key] = True
+                        st.session_state[voice_panel_target_key] = target_rank
+                        st.session_state[active_rank_key] = target_rank
+                        st.session_state.pop(voice_candidate_choice_key, None)
+                        st.session_state.pop(
+                            f"moments_voice_fallback_choice_v387_{video_id}_{round_number}_{target_rank}",
+                            None,
+                        )
+                        st.rerun()
+                    elif action_name == "apply" and candidate_rank > 0:
                         if candidate_rank != current_voice_rank:
                             update_video_ai_selection_voice_choice(photo, target_rank, candidate_rank)
                             st.session_state["_moments_notice"] = (
@@ -31539,7 +31560,10 @@ def _render_moments_voice_workspace(
                         st.session_state.pop(voice_candidate_choice_key, None)
                         st.rerun()
                 except Exception as exc:
-                    st.error("写真の声を更新できませんでした。")
+                    if action_name == "regenerate":
+                        st.error("声候補を再作成できませんでした。現在の候補はそのまま残しています。")
+                    else:
+                        st.error("写真の声を更新できませんでした。")
                     with st.expander("保護者向け詳細"):
                         st.code(str(exc))
         return True
@@ -31564,6 +31588,27 @@ def _render_moments_voice_workspace(
             if st.button(f"声{rank}", use_container_width=True, key=f"voice_fallback_v387_{video_id}_{target_rank}_{rank}"):
                 st.session_state[fallback_key] = rank
                 st.rerun()
+    if st.button(
+        "↻ 声を再作成",
+        use_container_width=True,
+        key=f"moments_voice_regenerate_fallback_v437_{video_id}_{round_number}_{target_rank}",
+        help="元動画から声候補をもう一度抽出し、ノイズ低減と音量補正もやり直します。",
+    ):
+        try:
+            with st.spinner("元動画の音声全体から先にノイズを処理し、その後で声候補を再作成しています…"):
+                regenerated_photo = generate_video_ai_voice_candidates(photo, force=True)
+            if isinstance(regenerated_photo, dict):
+                photo = regenerated_photo
+            st.session_state[voice_panel_open_key] = True
+            st.session_state[voice_panel_target_key] = target_rank
+            st.session_state[active_rank_key] = target_rank
+            st.session_state.pop(voice_candidate_choice_key, None)
+            st.session_state.pop(fallback_key, None)
+            st.rerun()
+        except Exception as exc:
+            st.error("声候補を再作成できませんでした。現在の候補はそのまま残しています。")
+            with st.expander("保護者向け詳細"):
+                st.code(str(exc))
     selected_rank = int(st.session_state.get(fallback_key) or ranks[0])
     selected = next((item for item in candidates if int(item["rank"]) == selected_rank), candidates[0])
     if selected.get("url"):
