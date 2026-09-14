@@ -33,9 +33,10 @@ from zoneinfo import ZoneInfo
 import streamlit as st
 
 # Freshly generated update: 2026-09-14 JST
-GENERATED_UPDATE_JST = "2026-09-15T00:08:00+09:00"
+GENERATED_UPDATE_JST = "2026-09-15T00:14:00+09:00"
 
-APP_BUILD = "v434"
+APP_BUILD = "v435"
+# v435: Move noise cleanup to video voice-candidate generation before the user chooses a voice. Candidate previews, transcription, and later photo attachment all use the same already-cleaned audio, so selecting/attaching a candidate never runs cleanup a second time. Regenerate older candidate sets under schema v4.
 # v434: Automatically apply mild post-save voice cleanup to photo voice notes: high-pass rumble removal, light FFT noise reduction, gentle dynamic normalization, and limiting. Store processed AAC/M4A when available, fall back to the original audio without blocking save, and use the cleaned audio for transcription/replay.
 # v433: Fix replay slide timing regression from v432 (null pause override became 0 ms), re-lock every fresh slide to its >=2.0s/voice minimum, and compute non-portrait zoom from the actual movie stage size while prioritizing prominent people over small edge/background detections.
 # v432: Replace the separate replay stop button with one stateful main control: blue Play -> red Pause -> green Resume, preserving the current music/photo position across a user pause.
@@ -12379,7 +12380,7 @@ def _voice_storage_upload_mime(logical_mime, filename=""):
     return "video/mp4"
 
 
-PHOTO_VOICE_CLEANUP_VERSION = "v434_afftdn_light"
+PHOTO_VOICE_CLEANUP_VERSION = "v435_candidate_afftdn_light"
 PHOTO_VOICE_CLEANUP_TIMEOUT_SECONDS = 30
 PHOTO_VOICE_CLEANUP_FILTER = (
     "highpass=f=80,"
@@ -12433,7 +12434,7 @@ def _clean_photo_voice_note_audio(raw, filename="voice_note.webm", content_type=
 
     input_suffix = _photo_voice_input_suffix(original_name, original_mime)
     try:
-        with tempfile.TemporaryDirectory(prefix="burari_voice_cleanup_v434_") as td:
+        with tempfile.TemporaryDirectory(prefix="burari_voice_cleanup_v435_") as td:
             input_path = os.path.join(td, "input" + input_suffix)
             output_path = os.path.join(td, "cleaned.m4a")
             Path(input_path).write_bytes(original)
@@ -12495,7 +12496,24 @@ def photo_voice_note_storage_path(photo):
     return str(photo_voice_note_meta(photo).get("storage_path") or "").strip()
 
 
-def save_photo_voice_note_bytes(photo_id, raw, filename="voice_note.m4a", content_type="audio/mp4", transcript="", auto_transcribe=False):
+def save_photo_voice_note_bytes(
+    photo_id,
+    raw,
+    filename="voice_note.m4a",
+    content_type="audio/mp4",
+    transcript="",
+    auto_transcribe=False,
+    *,
+    apply_cleanup=False,
+    cleanup_meta=None,
+):
+    """Save a photo voice note without implicitly changing its sound.
+
+    v435 makes cleanup stage-explicit. Video-derived voice candidates are already cleaned
+    before the user previews/chooses them, so attaching one to a photo must copy those
+    exact processed bytes without running the filter again. Direct microphone recordings
+    can still opt in with apply_cleanup=True.
+    """
     if not photo_id:
         raise ValueError("写真が見つかりません。")
     if not raw:
@@ -12522,10 +12540,27 @@ def save_photo_voice_note_bytes(photo_id, raw, filename="voice_note.m4a", conten
 
     source_filename = str(filename or "voice_note.m4a").strip() or "voice_note.m4a"
     source_content_type = str(content_type or "audio/mp4").split(";", 1)[0].strip().lower() or "audio/mp4"
-    cleanup = _clean_photo_voice_note_audio(raw, source_filename, source_content_type)
-    processed_raw = bytes(cleanup.get("raw") or raw)
-    processed_filename = str(cleanup.get("filename") or source_filename).strip() or source_filename
-    logical_content_type = str(cleanup.get("content_type") or source_content_type).split(";", 1)[0].strip().lower() or source_content_type
+    processed_raw = bytes(raw)
+    processed_filename = source_filename
+    logical_content_type = source_content_type
+    cleanup_record = dict(cleanup_meta) if isinstance(cleanup_meta, dict) else {}
+
+    if apply_cleanup:
+        cleanup = _clean_photo_voice_note_audio(raw, source_filename, source_content_type)
+        processed_raw = bytes(cleanup.get("raw") or raw)
+        processed_filename = str(cleanup.get("filename") or source_filename).strip() or source_filename
+        logical_content_type = str(cleanup.get("content_type") or source_content_type).split(";", 1)[0].strip().lower() or source_content_type
+        cleanup_record = {
+            "version": PHOTO_VOICE_CLEANUP_VERSION,
+            "status": str(cleanup.get("status") or "original"),
+            "applied": bool(cleanup.get("applied")),
+            "mode": "light_noise_reduction_and_leveling",
+            "stage": "direct_recording_before_save",
+        }
+        cleanup_error = str(cleanup.get("error") or "").strip()
+        if cleanup_error:
+            cleanup_record["fallback_detail"] = cleanup_error[:220]
+
     _, extension = _audio_storage_format(processed_filename)
     storage_content_type = _voice_storage_upload_mime(logical_content_type, processed_filename)
     stamp = now_jst().strftime("%Y%m%d_%H%M%S_%f")
@@ -12552,17 +12587,7 @@ def save_photo_voice_note_bytes(photo_id, raw, filename="voice_note.m4a", conten
             except Exception:
                 final_transcript = ""
 
-        cleanup_meta = {
-            "version": PHOTO_VOICE_CLEANUP_VERSION,
-            "status": str(cleanup.get("status") or "original"),
-            "applied": bool(cleanup.get("applied")),
-            "mode": "light_noise_reduction_and_leveling",
-        }
-        cleanup_error = str(cleanup.get("error") or "").strip()
-        if cleanup_error:
-            cleanup_meta["fallback_detail"] = cleanup_error[:220]
-
-        reflection["voice_note"] = {
+        voice_note = {
             "storage_path": storage_path,
             "mime_type": logical_content_type,
             "storage_mime_type": storage_content_type,
@@ -12571,8 +12596,10 @@ def save_photo_voice_note_bytes(photo_id, raw, filename="voice_note.m4a", conten
             "source_file_name": source_filename,
             "uploaded_at": now_jst().isoformat(),
             "transcript": final_transcript,
-            "audio_cleanup": cleanup_meta,
         }
+        if cleanup_record:
+            voice_note["audio_cleanup"] = cleanup_record
+        reflection["voice_note"] = voice_note
 
         (
             client
@@ -16397,7 +16424,7 @@ def video_ai_voice_candidate_meta(photo):
 
 VIDEO_VOICE_CANDIDATE_COUNT = 6
 VIDEO_VOICE_SNIPPET_SECONDS = 5.0
-VIDEO_VOICE_CANDIDATE_SCHEMA_VERSION = 3
+VIDEO_VOICE_CANDIDATE_SCHEMA_VERSION = 4
 
 
 def video_ai_voice_candidate_items(photo):
@@ -16410,9 +16437,17 @@ def video_ai_voice_candidate_items(photo):
         snippet_seconds = float(meta.get("snippet_seconds") or 0.0)
     except Exception:
         snippet_seconds = 0.0
-    # v377: regenerate older candidate sets because the previous natural-boundary
-    # detector often stopped at a short 0.4-second pause and produced ~1-second clips.
-    if schema_version < VIDEO_VOICE_CANDIDATE_SCHEMA_VERSION or snippet_seconds < 4.5:
+    # v435: schema v4 guarantees that every candidate the user previews has already
+    # passed through the light cleanup stage. Older/raw candidate sets are regenerated
+    # before they can be offered for selection.
+    cleanup_stage = str(meta.get("audio_cleanup_stage") or "").strip()
+    cleanup_version = str(meta.get("audio_cleanup_version") or "").strip()
+    if (
+        schema_version < VIDEO_VOICE_CANDIDATE_SCHEMA_VERSION
+        or snippet_seconds < 4.5
+        or cleanup_stage != "before_user_selection"
+        or cleanup_version != PHOTO_VOICE_CLEANUP_VERSION
+    ):
         return []
     items = meta.get("items") or []
     if not isinstance(items, list):
@@ -16721,32 +16756,67 @@ def generate_video_ai_voice_candidates(photo, force=False):
                 if proc.returncode != 0 or not os.path.exists(local_out) or os.path.getsize(local_out) <= 64:
                     continue
                 raw = Path(local_out).read_bytes()
-                storage_path = f"{base}_voice_{stamp}_{rank:02d}.m4a"
-                storage_mime_type = _voice_storage_upload_mime("audio/mp4", f"voice_candidate_{rank:02d}.m4a")
+
+                # v435: clean each candidate BEFORE it reaches the picker. The preview,
+                # transcript, and eventual photo attachment therefore all reference the
+                # exact same processed bytes; no second cleanup happens after selection.
+                cleanup = _clean_photo_voice_note_audio(
+                    raw,
+                    filename=f"voice_candidate_source_{rank:02d}.m4a",
+                    content_type="audio/mp4",
+                )
+                if not bool(cleanup.get("applied")):
+                    continue
+                processed_raw = bytes(cleanup.get("raw") or b"")
+                if not processed_raw:
+                    continue
+
+                candidate_rank = len(items) + 1
+                processed_filename = f"voice_candidate_{candidate_rank:02d}_clean.m4a"
+                storage_path = f"{base}_voice_clean_{stamp}_{candidate_rank:02d}.m4a"
+                storage_mime_type = _voice_storage_upload_mime("audio/mp4", processed_filename)
                 client.storage.from_(PHOTO_BUCKET).upload(
                     path=storage_path,
-                    file=raw,
+                    file=processed_raw,
                     file_options={"content-type": storage_mime_type, "cache-control": "3600"},
                 )
                 uploaded_paths.append(storage_path)
+
                 transcript = ""
                 try:
-                    audio_copy = io.BytesIO(raw)
-                    audio_copy.name = f"voice_candidate_{rank:02d}.m4a"
-                    transcript = transcribe_audio(audio_copy, context="東京ぶらり旅の動画から切り出した、話し声の切れ目を優先した最大5秒程度の短い音声候補です。")
+                    audio_copy = io.BytesIO(processed_raw)
+                    audio_copy.name = processed_filename
+                    transcript = transcribe_audio(
+                        audio_copy,
+                        context="東京ぶらり旅の動画から切り出し、軽いノイズ低減と音量補正を済ませた、最大5秒程度の短い音声候補です。",
+                    )
                 except Exception:
                     transcript = ""
+
+                cleanup_meta = {
+                    "version": PHOTO_VOICE_CLEANUP_VERSION,
+                    "status": str(cleanup.get("status") or "applied"),
+                    "applied": True,
+                    "mode": "light_noise_reduction_and_leveling",
+                    "stage": "candidate_generation_before_user_selection",
+                }
+                cleanup_error = str(cleanup.get("error") or "").strip()
+                if cleanup_error:
+                    cleanup_meta["detail"] = cleanup_error[:220]
+
                 items.append(
                     {
-                        "rank": rank,
+                        "rank": candidate_rank,
+                        "source_rank": rank,
                         "storage_path": storage_path,
                         "mime_type": "audio/mp4",
                         "storage_mime_type": storage_mime_type,
-                        "file_name": f"voice_candidate_{rank:02d}.m4a",
+                        "file_name": processed_filename,
                         "timestamp_ms": int(spec.get("timestamp_ms") or 0),
                         "duration_ms": int(round(float(spec.get("duration_sec") or VIDEO_VOICE_SNIPPET_SECONDS) * 1000)),
                         "score": int(round(float(spec.get("score") or 0.0))),
                         "transcript": transcript,
+                        "audio_cleanup": cleanup_meta,
                     }
                 )
 
@@ -16761,6 +16831,8 @@ def generate_video_ai_voice_candidates(photo, force=False):
             "candidate_count": len(items),
             "snippet_seconds": VIDEO_VOICE_SNIPPET_SECONDS,
             "boundary_mode": "natural_pause",
+            "audio_cleanup_stage": "before_user_selection",
+            "audio_cleanup_version": PHOTO_VOICE_CLEANUP_VERSION,
             "items": items,
         }
         selection["updated_at"] = now_jst().isoformat()
@@ -16843,6 +16915,7 @@ def update_video_ai_selection_voice_choice(video_photo, rank, candidate_rank):
                 content_type=str(chosen.get("mime_type") or "audio/mp4"),
                 transcript=str(chosen.get("transcript") or ""),
                 auto_transcribe=not bool(str(chosen.get("transcript") or "").strip()),
+                cleanup_meta=chosen.get("audio_cleanup") if isinstance(chosen.get("audio_cleanup"), dict) else None,
             )
         else:
             delete_photo_voice_note(saved_photo_id)
@@ -16994,6 +17067,7 @@ def save_video_ai_selection_as_photo(video_photo, selection_item):
                     content_type=str(chosen.get("mime_type") or "audio/mp4"),
                     transcript=str(chosen.get("transcript") or ""),
                     auto_transcribe=not bool(str(chosen.get("transcript") or "").strip()),
+                    cleanup_meta=chosen.get("audio_cleanup") if isinstance(chosen.get("audio_cleanup"), dict) else None,
                 )
         except Exception:
             pass
@@ -17109,11 +17183,12 @@ def _sync_moments_metadata_into_saved_photos_v417(photos):
                     str(chosen.get("file_name") or f"voice_candidate_{source_voice_rank:02d}.m4a"),
                     str(chosen.get("mime_type") or "audio/mp4"),
                     str(chosen.get("transcript") or ""),
+                    dict(chosen.get("audio_cleanup") or {}) if isinstance(chosen.get("audio_cleanup"), dict) else {},
                 )
                 voice_cache[cache_key] = voice_payload
             if not voice_payload:
                 continue
-            raw_voice, file_name, mime_type, transcript = voice_payload
+            raw_voice, file_name, mime_type, transcript, cleanup_meta = voice_payload
             save_photo_voice_note_bytes(
                 photo_id,
                 raw_voice,
@@ -17121,6 +17196,7 @@ def _sync_moments_metadata_into_saved_photos_v417(photos):
                 content_type=mime_type,
                 transcript=transcript,
                 auto_transcribe=not bool(transcript.strip()),
+                cleanup_meta=cleanup_meta,
             )
             changed = True
         except Exception:
