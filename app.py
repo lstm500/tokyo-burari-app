@@ -33,9 +33,11 @@ from zoneinfo import ZoneInfo
 import streamlit as st
 
 # Freshly generated update: 2026-09-14 JST
-GENERATED_UPDATE_JST = "2026-09-14T23:20:05+09:00"
+GENERATED_UPDATE_JST = "2026-09-14T23:34:00+09:00"
 
-APP_BUILD = "v429"
+APP_BUILD = "v431"
+# v431: Replace replay blur/contain fallback with per-photo quality-safe smart zoom. For non-portrait photos, preserve every detected person while enlarging as far as the people-safe region and source resolution allow; never use a blurred backdrop.
+# v430: Duck YouTube BGM to 70% only while a replay photo voice is active, then restore it to 100% immediately when the voice ends, errors, or is stopped.
 # v429: Make replay framing photo-aware for non-portrait stills: detect visible people locally, keep them inside the 9:16 frame when safe, and fall back to a full-image foreground over a blurred backdrop when cropping would cut people.
 # v428: Show a more specific genre line on Nearby result cards before details are opened, using already-fetched Google place types / matched lunch genres without adding detail-page product scraping.
 # v427: Keep the replay end time strict. Recompute timing on every play against the fixed music window, require every photo to reach at least 2.0s, and reserve enough time for each attached voice; never extend playback past the configured end.
@@ -19953,12 +19955,13 @@ def _monthly_replay_photo_caption(photo, trip, index):
 
 @st.cache_data(ttl=86400, show_spinner=False, max_entries=2500)
 def _replay_photo_framing_meta(storage_path):
-    """Choose replay framing for one stored photo without changing the source image.
+    """Choose quality-safe replay framing without altering the stored photo.
 
-    Portrait photos keep the existing full-stage cover treatment.  For square/landscape
-    photos, lightweight local face/person detection is used to decide whether a 9:16
-    crop can preserve every detected person.  If not, the live replay uses a contained
-    foreground over a blurred copy of the same photo so nobody is cut off.
+    Portrait photos keep the existing 9:16 cover treatment. Square/landscape photos
+    use a width-fit base and then enlarge only as far as source resolution and the
+    detected people-safe region allow. This intentionally avoids the old blurred
+    backdrop / full-image fallback: when several people are far apart, the photo is
+    still enlarged as much as possible while keeping every detected person visible.
     """
     default = {
         "fit": "cover",
@@ -19967,6 +19970,10 @@ def _replay_photo_framing_meta(storage_path):
         "use_backdrop": False,
         "person_count": 0,
         "orientation": "unknown",
+        "zoom": 1.0,
+        "focus_x": 50.0,
+        "focus_y": 50.0,
+        "source_ratio": 1.0,
     }
     path = str(storage_path or "").strip()
     if not path:
@@ -19981,64 +19988,91 @@ def _replay_photo_framing_meta(storage_path):
             width, height = src.size
             if width <= 0 or height <= 0:
                 return default
-            # The user asked to preserve the existing treatment for portrait photos.
+            source_ratio = float(width) / float(height)
+            orientation = "portrait" if height > width else ("landscape" if width > height else "square")
+            base = {
+                **default,
+                "orientation": orientation,
+                "source_ratio": round(source_ratio, 6),
+            }
+
+            # Preserve the established portrait treatment exactly.
             if height > width:
-                return {**default, "orientation": "portrait"}
+                return base
 
-            meta = {**default, "orientation": "landscape" if width > height else "square"}
+            # Treat roughly 960 px as the quality reference width for a high-density phone
+            # stage. Do not choose a zoom that would materially magnify beyond source
+            # resolution at that target; a separate ceiling avoids extreme close-ups.
+            quality_safe_zoom = max(1.0, min(2.35, (float(width) * 0.98) / 960.0))
             people = _estimate_person_focus_boxes(src)
-            meta["person_count"] = len(people)
+            person_count = len(people)
 
-            # If local detection is unavailable or no person is detected, avoid the old
-            # aggressive 9:16 zoom on wide photos and show the whole image instead.
             if not people:
-                meta.update({"fit": "contain", "use_backdrop": True})
-                return meta
+                # No reliable person detection: still remove the blur fallback, but use a
+                # conservative centered enlargement rather than an aggressive 9:16 crop.
+                aesthetic_zoom = 1.55 if width > height else 1.42
+                zoom = max(1.0, min(quality_safe_zoom, aesthetic_zoom))
+                return {
+                    **base,
+                    "fit": "smart",
+                    "person_count": 0,
+                    "zoom": round(zoom, 4),
+                    "focus_x": 50.0,
+                    "focus_y": 50.0,
+                }
 
-            # Preserve all detected people, not only the most prominent face.
+            # Union every detected person so a distant second/third person cannot be lost.
             x1 = min(float(item["box"][0]) for item in people)
             y1 = min(float(item["box"][1]) for item in people)
             x2 = max(float(item["box"][2]) for item in people)
             y2 = max(float(item["box"][3]) for item in people)
             union_w = max(1.0, x2 - x1)
             union_h = max(1.0, y2 - y1)
-            # Add breathing room around heads / shoulders / hands before deciding that
-            # a crop is safe.  This makes the check stricter than merely keeping a face.
-            margin_x = max(width * 0.035, union_w * 0.10)
-            margin_y = max(height * 0.025, union_h * 0.07)
+
+            # Keep breathing room around the complete people region. The margin becomes a
+            # little wider for multi-person photos because relationship/context matters.
+            multi = person_count >= 2
+            margin_x = max(width * (0.025 if not multi else 0.035), union_w * (0.08 if not multi else 0.10))
+            margin_y = max(height * 0.025, union_h * (0.06 if not multi else 0.075))
             safe_x1 = max(0.0, x1 - margin_x)
             safe_x2 = min(float(width), x2 + margin_x)
             safe_y1 = max(0.0, y1 - margin_y)
             safe_y2 = min(float(height), y2 + margin_y)
+            safe_w = max(1.0, safe_x2 - safe_x1)
+            safe_h = max(1.0, safe_y2 - safe_y1)
 
-            target_ratio = 9.0 / 16.0
-            source_ratio = float(width) / float(height)
-            # Square/landscape photos are wider than 9:16, so `cover` fills height and
-            # trims the left/right edges.  Work in source coordinates to check whether
-            # the complete people-safe region can fit in that crop.
-            if source_ratio > target_ratio:
-                crop_w = float(height) * target_ratio
-                safe_w = safe_x2 - safe_x1
-                if safe_w <= crop_w * 0.96 and safe_y1 >= 0 and safe_y2 <= height:
-                    desired_center = (safe_x1 + safe_x2) / 2.0
-                    left = max(0.0, min(float(width) - crop_w, desired_center - crop_w / 2.0))
-                    overflow = max(1e-6, float(width) - crop_w)
-                    position_x = max(0.0, min(100.0, (left / overflow) * 100.0))
-                    meta.update({
-                        "fit": "cover",
-                        "position_x": round(position_x, 2),
-                        "position_y": 50.0,
-                        "use_backdrop": False,
-                    })
-                    return meta
-
-            # Multiple people spread across the frame, a large close-up, or uncertain
-            # geometry: never sacrifice a person just to fill 9:16.
-            meta.update({"fit": "contain", "position_x": 50.0, "position_y": 50.0, "use_backdrop": True})
-            return meta
+            # Smart mode starts with the whole image width exactly matching the stage width.
+            # Enlarging by z scales the people-safe width by z as well. Therefore the
+            # horizontal people constraint is width/safe_w. The vertical stage is 16/9 of
+            # the stage width, giving the corresponding vertical constraint below.
+            max_zoom_people_x = (float(width) / safe_w) * 0.97
+            max_zoom_people_y = ((16.0 / 9.0) * float(width) / safe_h) * 0.97
+            zoom = max(
+                1.0,
+                min(
+                    quality_safe_zoom,
+                    2.35,
+                    max_zoom_people_x,
+                    max_zoom_people_y,
+                ),
+            )
+            focus_x = ((safe_x1 + safe_x2) / 2.0) / float(width) * 100.0
+            focus_y = ((safe_y1 + safe_y2) / 2.0) / float(height) * 100.0
+            return {
+                **base,
+                "fit": "smart",
+                "person_count": person_count,
+                "zoom": round(zoom, 4),
+                "focus_x": round(max(0.0, min(100.0, focus_x)), 3),
+                "focus_y": round(max(0.0, min(100.0, focus_y)), 3),
+                "position_x": round(max(0.0, min(100.0, focus_x)), 3),
+                "position_y": round(max(0.0, min(100.0, focus_y)), 3),
+                "use_backdrop": False,
+            }
     except Exception:
-        # Safe fallback for non-portrait photos if analysis fails.  Showing the complete
-        # image is preferable to an accidental person crop.
+        # Never restore the old blurred fallback after an analysis failure. If dimensions
+        # can still be read, use a conservative centered smart frame; otherwise use the
+        # original cover fallback rather than inventing a crop from unavailable geometry.
         try:
             from PIL import Image, ImageOps
             raw = download_photo(path)
@@ -20046,7 +20080,18 @@ def _replay_photo_framing_meta(storage_path):
                 with Image.open(io.BytesIO(raw)) as image:
                     src = ImageOps.exif_transpose(image)
                     if src.width > 0 and src.height > 0 and src.height <= src.width:
-                        return {**default, "fit": "contain", "use_backdrop": True, "orientation": "landscape" if src.width > src.height else "square"}
+                        source_ratio = float(src.width) / float(src.height)
+                        quality_safe_zoom = max(1.0, min(1.35, (float(src.width) * 0.98) / 960.0))
+                        return {
+                            **default,
+                            "fit": "smart",
+                            "orientation": "landscape" if src.width > src.height else "square",
+                            "source_ratio": round(source_ratio, 6),
+                            "zoom": round(quality_safe_zoom, 4),
+                            "focus_x": 50.0,
+                            "focus_y": 50.0,
+                            "use_backdrop": False,
+                        }
         except Exception:
             pass
         return default
@@ -20069,7 +20114,7 @@ def build_monthly_replay_photo_items(bundle, limit=None):
         voice_signed_map.update(signed_photo_url_map(voice_paths[start:start + 200], expires_in=1800))
     items = []
     for idx, photo in enumerate(photos, start=1):
-        url = photo_display_url(photo, signed_map=signed_map, max_px=1080, quality=86)
+        url = photo_display_url(photo, signed_map=signed_map, max_px=1920, quality=90)
         if not url:
             continue
         trip = trip_map.get(str(photo.get("trip_id")), {})
@@ -20091,9 +20136,13 @@ def build_monthly_replay_photo_items(bundle, limit=None):
             "replay_fit": str(framing.get("fit") or "cover"),
             "replay_position_x": float(framing.get("position_x") or 50.0),
             "replay_position_y": float(framing.get("position_y") or 50.0),
-            "replay_use_backdrop": bool(framing.get("use_backdrop")),
+            "replay_use_backdrop": False,
             "replay_person_count": int(framing.get("person_count") or 0),
             "replay_orientation": str(framing.get("orientation") or "unknown"),
+            "replay_zoom": float(framing.get("zoom") or 1.0),
+            "replay_focus_x": float(framing.get("focus_x") or framing.get("position_x") or 50.0),
+            "replay_focus_y": float(framing.get("focus_y") or framing.get("position_y") or 50.0),
+            "replay_source_ratio": float(framing.get("source_ratio") or 1.0),
             "has_voice": bool(voice_path),
             "voice_url": str(voice_signed_map.get(voice_path) or ""),
             "voice_transcript": str(voice_meta.get("transcript") or ""),
@@ -20584,9 +20633,13 @@ def build_monthly_family_share_photo_snapshot(bundle, limit=None):
             "replay_fit": str(framing.get("fit") or "cover"),
             "replay_position_x": float(framing.get("position_x") or 50.0),
             "replay_position_y": float(framing.get("position_y") or 50.0),
-            "replay_use_backdrop": bool(framing.get("use_backdrop")),
+            "replay_use_backdrop": False,
             "replay_person_count": int(framing.get("person_count") or 0),
             "replay_orientation": str(framing.get("orientation") or "unknown"),
+            "replay_zoom": float(framing.get("zoom") or 1.0),
+            "replay_focus_x": float(framing.get("focus_x") or framing.get("position_x") or 50.0),
+            "replay_focus_y": float(framing.get("focus_y") or framing.get("position_y") or 50.0),
+            "replay_source_ratio": float(framing.get("source_ratio") or 1.0),
             "voice_storage_path": str(voice_meta.get("storage_path") or ""),
             "voice_transcript": str(voice_meta.get("transcript") or ""),
         })
@@ -20626,16 +20679,9 @@ def build_family_shared_replay_photo_items(share):
         if not url:
             continue
         voice_path = str(snap.get("voice_storage_path") or "").strip()
-        framing = {
-            "fit": str(snap.get("replay_fit") or ""),
-            "position_x": snap.get("replay_position_x"),
-            "position_y": snap.get("replay_position_y"),
-            "use_backdrop": snap.get("replay_use_backdrop"),
-            "person_count": snap.get("replay_person_count"),
-            "orientation": str(snap.get("replay_orientation") or ""),
-        }
-        if not framing["fit"]:
-            framing = _replay_photo_framing_meta(path)
+        # Recompute from the original image so older shared snapshots that stored the
+        # v429 blurred/contain framing automatically receive the current smart framing.
+        framing = _replay_photo_framing_meta(path)
         items.append({
             "url": url,
             "caption": str(snap.get("caption") or ""),
@@ -20646,9 +20692,13 @@ def build_family_shared_replay_photo_items(share):
             "replay_fit": str(framing.get("fit") or "cover"),
             "replay_position_x": float(framing.get("position_x") or 50.0),
             "replay_position_y": float(framing.get("position_y") or 50.0),
-            "replay_use_backdrop": bool(framing.get("use_backdrop")),
+            "replay_use_backdrop": False,
             "replay_person_count": int(framing.get("person_count") or 0),
             "replay_orientation": str(framing.get("orientation") or "unknown"),
+            "replay_zoom": float(framing.get("zoom") or 1.0),
+            "replay_focus_x": float(framing.get("focus_x") or framing.get("position_x") or 50.0),
+            "replay_focus_y": float(framing.get("focus_y") or framing.get("position_y") or 50.0),
+            "replay_source_ratio": float(framing.get("source_ratio") or 1.0),
             "has_voice": bool(voice_path),
             "voice_url": str(voice_signed_map.get(voice_path) or ""),
             "voice_transcript": str(snap.get("voice_transcript") or ""),
@@ -21775,50 +21825,58 @@ def _replay_export_image_bytes(item):
     return b""
 
 
-def _replay_export_frame_jpeg(image_bytes, width=720, height=1280):
-    """Build a cinematic 9:16 frame without requiring Japanese system fonts."""
-    from PIL import Image, ImageEnhance, ImageFilter, ImageOps
+def _replay_export_frame_jpeg(image_bytes, framing=None, width=720, height=1280):
+    """Build a 9:16 replay frame using the same no-blur smart framing as live playback."""
+    from PIL import Image, ImageOps
 
     if not image_bytes:
         return b""
     try:
-        prepared = _normalize_video_frame_photo_bytes(
-            image_bytes,
-            quality=88,
-            max_long=max(int(width), int(height)),
-        ) or image_bytes
-        with Image.open(io.BytesIO(prepared)) as src:
-            src = ImageOps.exif_transpose(src).convert("RGB")
+        with Image.open(io.BytesIO(image_bytes)) as raw_src:
+            src = ImageOps.exif_transpose(raw_src).convert("RGB")
             resampling = getattr(getattr(Image, "Resampling", Image), "LANCZOS")
+            frame_w = max(1, int(width))
+            frame_h = max(1, int(height))
+            meta = framing if isinstance(framing, dict) else {}
+            fit = str(meta.get("replay_fit") or meta.get("fit") or "cover").lower()
 
-            # Soft blurred background lets landscape photos remain fully visible instead of
-            # being aggressively cropped to 9:16.
-            background = ImageOps.fit(src, (int(width), int(height)), method=resampling)
-            background = background.filter(ImageFilter.GaussianBlur(radius=max(10, int(width * 0.025))))
-            background = ImageEnhance.Brightness(background).enhance(0.58)
-            background = ImageEnhance.Color(background).enhance(0.82)
+            if fit == "smart" and src.width > 0 and src.height > 0:
+                source_ratio = float(meta.get("replay_source_ratio") or meta.get("source_ratio") or (float(src.width) / float(src.height)))
+                source_ratio = max(0.05, source_ratio)
+                zoom = max(1.0, float(meta.get("replay_zoom") or meta.get("zoom") or 1.0))
+                focus_x = max(0.0, min(1.0, float(meta.get("replay_focus_x") or meta.get("focus_x") or 50.0) / 100.0))
+                focus_y = max(0.0, min(1.0, float(meta.get("replay_focus_y") or meta.get("focus_y") or 50.0) / 100.0))
 
-            foreground = src.copy()
-            foreground.thumbnail((int(width * 0.93), int(height * 0.90)), resampling)
-            x = (int(width) - foreground.width) // 2
-            y = (int(height) - foreground.height) // 2
+                # Width-fit is zoom=1. Keep source pixels at or above output pixels; framing
+                # metadata already caps zoom from source resolution, and this is a final guard.
+                zoom = min(zoom, max(1.0, float(src.width) / float(frame_w)))
+                image_w = max(frame_w, int(round(frame_w * zoom)))
+                image_h = max(1, int(round(image_w / source_ratio)))
+                resized = src.resize((image_w, image_h), resampling)
 
-            # A low-cost soft shadow gives the photo a film-card feel while keeping the
-            # original picture unchanged.
-            shadow = Image.new("RGBA", (int(width), int(height)), (0, 0, 0, 0))
-            card = Image.new("RGBA", foreground.size, (0, 0, 0, 0))
-            card.paste(foreground.convert("RGBA"), (0, 0))
-            alpha = Image.new("L", foreground.size, 222)
-            shadow_blob = Image.new("RGBA", foreground.size, (0, 0, 0, 150))
-            shadow_blob.putalpha(alpha.filter(ImageFilter.GaussianBlur(radius=10)))
-            shadow.alpha_composite(shadow_blob, (x, min(int(height) - foreground.height, y + 12)))
+                # Put the people-safe focus point near stage center, then clamp offsets so
+                # no horizontal blank edge is introduced. Vertical blank space is allowed
+                # only when even the maximally safe crop remains shorter than 9:16.
+                left = int(round((frame_w * 0.5) - (focus_x * image_w)))
+                if image_w >= frame_w:
+                    left = max(frame_w - image_w, min(0, left))
+                else:
+                    left = (frame_w - image_w) // 2
+                top = int(round((frame_h * 0.5) - (focus_y * image_h)))
+                if image_h >= frame_h:
+                    top = max(frame_h - image_h, min(0, top))
+                else:
+                    top = (frame_h - image_h) // 2
 
-            frame = background.convert("RGBA")
-            frame.alpha_composite(shadow)
-            frame.alpha_composite(card, (x, y))
-            frame = frame.convert("RGB")
+                frame = Image.new("RGB", (frame_w, frame_h), (15, 23, 42))
+                frame.paste(resized, (left, top))
+            else:
+                pos_x = max(0.0, min(1.0, float(meta.get("replay_position_x") or meta.get("position_x") or 50.0) / 100.0))
+                pos_y = max(0.0, min(1.0, float(meta.get("replay_position_y") or meta.get("position_y") or 50.0) / 100.0))
+                frame = ImageOps.fit(src, (frame_w, frame_h), method=resampling, centering=(pos_x, pos_y))
+
             out = io.BytesIO()
-            frame.save(out, format="JPEG", quality=88, optimize=True)
+            frame.save(out, format="JPEG", quality=90, optimize=True)
             return out.getvalue()
     except Exception:
         return b""
@@ -21857,7 +21915,7 @@ def build_replay_visual_mp4(photo_items, display_ms, duration_seconds):
         frame_paths = {}
         for item_index in sorted({idx for idx, _duration in sequence}):
             raw = _replay_export_image_bytes(items[item_index])
-            frame = _replay_export_frame_jpeg(raw)
+            frame = _replay_export_frame_jpeg(raw, framing=items[item_index])
             if not frame:
                 raise RuntimeError(f"写真 {item_index + 1} を動画用に読み込めませんでした。")
             frame_path = temp_dir / f"frame_{item_index:04d}.jpg"
@@ -22006,17 +22064,7 @@ def render_monthly_replay_player(period_label, review, playback, photo_items, cu
         box-sizing: border-box;
         transition: none; /* v209: switch frame color on the exact same paint as the photo */
       }}
-      .burari-replay-backdrop {{
-        position: absolute;
-        inset: -5%;
-        z-index: 0;
-        display: none;
-        background-size: cover;
-        background-position: center;
-        filter: blur(20px) brightness(.56) saturate(.82);
-        transform: scale(1.10);
-        pointer-events: none;
-      }}
+      .burari-replay-backdrop {{ display:none !important; }}
       .burari-replay-stage img {{
         position: relative;
         z-index: 1;
@@ -22226,7 +22274,7 @@ def render_monthly_replay_player(period_label, review, playback, photo_items, cu
       let burariVoiceSafetyTimer = null;
       let burariVoiceBgmKeepAliveTimer = null;
       const burariNormalMusicVolume = 100;
-      const burariVoiceMusicVolume = 80;
+      const burariVoiceMusicVolume = 70;
       let burariVoiceAutoTimer = null;
       let burariReplayPlaybackActive = false;
       let burariTimer = null;
@@ -22515,7 +22563,7 @@ def render_monthly_replay_player(period_label, review, playback, photo_items, cu
             if (typeof burariPlayer.playVideo === 'function') burariPlayer.playVideo();
           }} catch (_) {{}}
           // WebView may also suspend the HTML audio element used for a photo voice.
-          // Resume it on the same headphone route while keeping YouTube at 80%.
+          // Resume it on the same headphone route while keeping YouTube at 70% during the photo voice.
           if (burariVoicePlaybackActive && burariVoiceAudio) {{
             try {{
               const voicePromise = burariVoiceAudio.play();
@@ -22671,21 +22719,52 @@ def render_monthly_replay_player(period_label, review, playback, photo_items, cu
       function burariApplyReplayFraming(item, imageUrl) {{
         if (!burariImg) return;
         const requestedFit = String((item && item.replay_fit) || 'cover').toLowerCase();
-        const fit = requestedFit === 'contain' ? 'contain' : 'cover';
         const x = Math.max(0, Math.min(100, Number((item && item.replay_position_x) ?? 50)));
         const y = Math.max(0, Math.min(100, Number((item && item.replay_position_y) ?? 50)));
-        burariImg.style.objectFit = fit;
-        burariImg.style.objectPosition = `${{x}}% ${{y}}%`;
-        const useBackdrop = Boolean(item && item.replay_use_backdrop) || fit === 'contain';
+
+        // v431 never uses the old blurred background. Non-portrait photos are placed
+        // from a width-fit base, then enlarged only to the photo-specific safe zoom.
         if (burariBackdrop) {{
-          if (useBackdrop && imageUrl) {{
-            burariBackdrop.style.backgroundImage = `url(${{JSON.stringify(String(imageUrl))}})`;
-            burariBackdrop.style.display = 'block';
-          }} else {{
-            burariBackdrop.style.backgroundImage = 'none';
-            burariBackdrop.style.display = 'none';
-          }}
+          burariBackdrop.style.backgroundImage = 'none';
+          burariBackdrop.style.display = 'none';
         }}
+
+        if (requestedFit === 'smart') {{
+          const stageRatio = 16 / 9; // stage height in units of stage width
+          const sourceRatio = Math.max(0.05, Number((item && item.replay_source_ratio) || 1));
+          const zoom = Math.max(1, Math.min(2.35, Number((item && item.replay_zoom) || 1)));
+          const focusX = Math.max(0, Math.min(1, Number((item && item.replay_focus_x) ?? 50) / 100));
+          const focusY = Math.max(0, Math.min(1, Number((item && item.replay_focus_y) ?? 50) / 100));
+          const imageW = zoom;
+          const imageH = zoom / sourceRatio;
+
+          let left = 0.5 - focusX * imageW;
+          left = imageW >= 1 ? Math.max(1 - imageW, Math.min(0, left)) : (1 - imageW) / 2;
+          let top = (stageRatio / 2) - focusY * imageH;
+          top = imageH >= stageRatio ? Math.max(stageRatio - imageH, Math.min(0, top)) : (stageRatio - imageH) / 2;
+
+          burariImg.style.position = 'absolute';
+          burariImg.style.left = `${{left * 100}}%`;
+          burariImg.style.top = `${{(top / stageRatio) * 100}}%`;
+          burariImg.style.width = `${{imageW * 100}}%`;
+          burariImg.style.height = 'auto';
+          burariImg.style.maxWidth = 'none';
+          burariImg.style.objectFit = 'fill';
+          burariImg.style.objectPosition = '50% 50%';
+          burariImg.style.transform = 'none';
+          return;
+        }}
+
+        // Portrait photos keep the established cover behavior.
+        burariImg.style.position = 'relative';
+        burariImg.style.left = 'auto';
+        burariImg.style.top = 'auto';
+        burariImg.style.width = '100%';
+        burariImg.style.height = '100%';
+        burariImg.style.maxWidth = '100%';
+        burariImg.style.objectFit = 'cover';
+        burariImg.style.objectPosition = `${{x}}% ${{y}}%`;
+        burariImg.style.transform = 'none';
       }}
 
       function burariApplySlideFrame(item, safeIndex, nextUrl) {{
