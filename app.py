@@ -33,9 +33,10 @@ from zoneinfo import ZoneInfo
 import streamlit as st
 
 # Freshly generated update: 2026-09-14 JST
-GENERATED_UPDATE_JST = "2026-09-14T23:34:00+09:00"
+GENERATED_UPDATE_JST = "2026-09-14T23:51:32+09:00"
 
-APP_BUILD = "v431"
+APP_BUILD = "v432"
+# v432: Replace the separate replay stop button with one stateful main control: blue Play -> red Pause -> green Resume, preserving the current music/photo position across a user pause.
 # v431: Replace replay blur/contain fallback with per-photo quality-safe smart zoom. For non-portrait photos, preserve every detected person while enlarging as far as the people-safe region and source resolution allow; never use a blurred backdrop.
 # v430: Duck YouTube BGM to 70% only while a replay photo voice is active, then restore it to 100% immediately when the voice ends, errors, or is stopped.
 # v429: Make replay framing photo-aware for non-portrait stills: detect visible people locally, keep them inside the 9:16 frame when safe, and fall back to a full-image foreground over a blurred backdrop when cropping would cut people.
@@ -70,7 +71,7 @@ APP_BUILD = "v431"
 # v409: Release search controls when fresh results return, discard stale component
 # state, and route map links through the top-level WebView so Android can open Maps.
 # v408: While a photo voice is playing, actively keep the YouTube iframe playing
-# at 80%. Android WebView may pause the iframe when the HTML voice player starts;
+# at 70%. Android WebView may pause the iframe when the HTML voice player starts;
 # detect that state immediately and restore BGM during—not after—the voice.
 # v407: Replay requests Android media focus at playback start and again after the
 # WebView returns from background. Restore YouTube/photo voice playback and the
@@ -78,7 +79,7 @@ APP_BUILD = "v431"
 # v406: Saved tag movies use live tag membership, and both tag/month movies
 # refresh their photo membership when reopened. A stale curation is cleared when
 # its source gains or loses photos so newly eligible photos cannot stay hidden.
-# v405: Keep YouTube BGM at 80% while a photo voice is playing.
+# v405: Keep YouTube BGM reduced while a photo voice is playing.
 # v404: Replay photo voices duck YouTube BGM instead of intentionally stopping it.
 # Restore/restart the BGM after voice ended/error/abort even when Android WebView
 # paused YouTube first, and hold the current photo until its voice has finished.
@@ -22149,8 +22150,10 @@ def render_monthly_replay_player(period_label, review, playback, photo_items, cu
         white-space: nowrap;
         cursor: pointer;
       }}
-      #burariReplayStart {{ background: #2563eb; color: #fff; }}
-      #burariReplayStop {{ background: #fee2e2; color: #991b1b; }}
+      #burariReplayStart {{ color: #fff; transition: background-color .16s ease, color .16s ease, transform .12s ease; }}
+      #burariReplayStart.burari-state-play {{ background: #2563eb; color: #fff; }}
+      #burariReplayStart.burari-state-interrupt {{ background: #dc2626; color: #fff; }}
+      #burariReplayStart.burari-state-resume {{ background: #16a34a; color: #fff; }}
       #burariReplayAgain {{ background: #e5edf8; color: #123; }}
       .burari-replay-controls button:disabled {{
         cursor: wait;
@@ -22201,8 +22204,7 @@ def render_monthly_replay_player(period_label, review, playback, photo_items, cu
           <div class="burari-replay-emotion" id="burariReplayEmotion" aria-hidden="true"></div>
         </div>
         <div class="burari-replay-controls">
-          <button id="burariReplayStart" type="button" disabled>音楽準備中…</button>
-          <button id="burariReplayStop" type="button">■ 中断</button>
+          <button id="burariReplayStart" class="burari-state-play" type="button" disabled>音楽準備中…</button>
           <button id="burariReplayAgain" type="button" disabled>↻ 最初から</button>
         </div>
       </div>
@@ -22277,6 +22279,10 @@ def render_monthly_replay_player(period_label, review, playback, photo_items, cu
       const burariVoiceMusicVolume = 70;
       let burariVoiceAutoTimer = null;
       let burariReplayPlaybackActive = false;
+      let burariReplayPausedByUser = false;
+      let burariPausedSlideRemainingMs = null;
+      let burariCurrentSlidePlannedMs = 0;
+      let burariCurrentSlideStartClockSeconds = NaN;
       let burariTimer = null;
       let burariMusicWatchTimer = null;
       let burariFallbackEndTimer = null;
@@ -22478,14 +22484,41 @@ def render_monthly_replay_player(period_label, review, playback, photo_items, cu
         }}
       }}
 
+      function burariRefreshMainReplayButton(ready = burariPlayerReady) {{
+        if (!burariStartButton) return;
+        const fullyReady = Boolean(ready && burariVoiceDurationsReady && !burariVoiceDurationError);
+        burariStartButton.disabled = !fullyReady;
+        burariStartButton.classList.remove('burari-state-play', 'burari-state-interrupt', 'burari-state-resume');
+        if (!ready) {{
+          burariStartButton.textContent = '音楽準備中…';
+          burariStartButton.classList.add('burari-state-play');
+          return;
+        }}
+        if (!burariVoiceDurationsReady) {{
+          burariStartButton.textContent = '声の長さ確認中…';
+          burariStartButton.classList.add('burari-state-play');
+          return;
+        }}
+        if (burariVoiceDurationError) {{
+          burariStartButton.textContent = '声を確認できません';
+          burariStartButton.classList.add('burari-state-play');
+          return;
+        }}
+        if (burariReplayPlaybackActive) {{
+          burariStartButton.textContent = '■ 中断';
+          burariStartButton.classList.add('burari-state-interrupt');
+        }} else if (burariReplayPausedByUser) {{
+          burariStartButton.textContent = '▶ 再開';
+          burariStartButton.classList.add('burari-state-resume');
+        }} else {{
+          burariStartButton.textContent = '▶ 再生';
+          burariStartButton.classList.add('burari-state-play');
+        }}
+      }}
+
       function burariSetPlayerControlsReady(ready) {{
         const fullyReady = Boolean(ready && burariVoiceDurationsReady && !burariVoiceDurationError);
-        if (burariStartButton) {{
-          burariStartButton.disabled = !fullyReady;
-          burariStartButton.textContent = !ready
-            ? '音楽準備中…'
-            : (!burariVoiceDurationsReady ? '声の長さ確認中…' : (burariVoiceDurationError ? '声を確認できません' : '▶ 再生'));
-        }}
+        burariRefreshMainReplayButton(ready);
         if (burariAgainButton) burariAgainButton.disabled = !fullyReady;
       }}
 
@@ -22917,6 +22950,10 @@ def render_monthly_replay_player(period_label, review, playback, photo_items, cu
         const reachedLastPhoto = burariSequenceComplete || burariIndex >= burariSlides.length - 1;
         burariStopTimers();
         burariReplayPlaybackActive = false;
+        burariReplayPausedByUser = false;
+        burariPausedSlideRemainingMs = null;
+        burariCurrentSlidePlannedMs = 0;
+        burariCurrentSlideStartClockSeconds = NaN;
         burariPendingStart = false;
         burariWaitingForRequestedPosition = false;
         burariSlideLoopStarted = false;
@@ -22927,25 +22964,108 @@ def render_monthly_replay_player(period_label, review, playback, photo_items, cu
         }} catch (_) {{}}
         burariSlideAdvancePending = false;
         burariStopVoice(false);
+        burariRefreshMainReplayButton();
         if (burariStatus) burariStatus.textContent = reachedLastPhoto
           ? '終了：設定した終了時間どおり、最後の写真まで再生しました。'
           : '終了時間に到達したため再生を終了しました。終了時間は延長していません。';
       }}
 
-      function burariInterrupt() {{
+      function burariPauseReplay() {{
+        if (!burariReplayPlaybackActive) return;
+        // Preserve the unfinished portion of the current still against the YouTube clock,
+        // so resuming does not restart that photo's full interval or steal time from later photos.
+        if (burariTimer && Number.isFinite(burariCurrentSlideStartClockSeconds) && burariCurrentSlidePlannedMs > 0) {{
+          const nowSeconds = burariPlaybackClockSeconds();
+          const elapsedMs = Math.max(0, (nowSeconds - burariCurrentSlideStartClockSeconds) * 1000);
+          burariPausedSlideRemainingMs = Math.max(0, burariCurrentSlidePlannedMs - elapsedMs);
+        }} else {{
+          burariPausedSlideRemainingMs = null;
+        }}
+        if (burariVoiceSafetyTimer) {{
+          clearTimeout(burariVoiceSafetyTimer);
+          burariVoiceSafetyTimer = null;
+        }}
+        try {{
+          if (burariVoicePlaybackActive && burariVoiceAudio) burariVoiceAudio.pause();
+        }} catch (_) {{}}
         burariStopTimers();
         burariReplayPlaybackActive = false;
+        burariReplayPausedByUser = true;
         burariPendingStart = false;
         burariWaitingForRequestedPosition = false;
-        burariSlideLoopStarted = false;
         try {{
-          if (burariPlayer && typeof burariPlayer.pauseVideo === 'function') {{
-            burariPlayer.pauseVideo();
-          }}
+          if (burariPlayer && typeof burariPlayer.pauseVideo === 'function') burariPlayer.pauseVideo();
         }} catch (_) {{}}
-        burariSlideAdvancePending = false;
-        burariStopVoice(false);
-        if (burariStatus) burariStatus.textContent = '中断しました。▶ 再生で指定区間の最初から再生できます。';
+        burariSetMusicVolume(burariNormalMusicVolume);
+        burariRefreshMainReplayButton();
+        if (burariStatus) burariStatus.textContent = '中断しました。▶ 再開でこの続きから再生します。';
+      }}
+
+      function burariResumeReplay() {{
+        if (!burariReplayPausedByUser || !burariPlayerReady || !burariPlayer) return;
+        let current = NaN;
+        try {{ current = Number(burariPlayer.getCurrentTime()); }} catch (_) {{}}
+        if (Number.isFinite(current) && current >= burariStrictEndSeconds - 0.08) {{
+          burariStopAtEnd();
+          return;
+        }}
+        const resumeRemainingMs = Number.isFinite(Number(burariPausedSlideRemainingMs))
+          ? Math.max(0, Number(burariPausedSlideRemainingMs))
+          : null;
+        burariRequestNativeAudioFocus();
+        burariReplayPausedByUser = false;
+        burariReplayPlaybackActive = true;
+        burariNeedsForegroundRestore = false;
+        burariRefreshMainReplayButton();
+        try {{ if (typeof burariPlayer.playVideo === 'function') burariPlayer.playVideo(); }} catch (_) {{}}
+
+        if (burariVoicePlaybackActive && burariVoiceAudio) {{
+          burariSetMusicVolume(burariVoiceMusicVolume);
+          try {{
+            const duration = Number(burariVoiceAudio.duration);
+            const currentVoice = Number(burariVoiceAudio.currentTime || 0);
+            const remainingVoiceMs = Number.isFinite(duration)
+              ? Math.max(1200, (duration - currentVoice) * 1000 + 1800)
+              : 90000;
+            burariVoiceSafetyTimer = setTimeout(() => {{
+              if (burariVoicePlaybackActive) burariFinishVoice('写真の声の再生を終了しました。', true);
+            }}, remainingVoiceMs);
+            const voicePromise = burariVoiceAudio.play();
+            if (voicePromise && typeof voicePromise.catch === 'function') {{
+              voicePromise.catch(() => burariFinishVoice('写真の声を再開できなかったため、BGMを続けます。', true));
+            }}
+          }} catch (_) {{
+            burariFinishVoice('写真の声を再開できなかったため、BGMを続けます。', true);
+          }}
+          burariKeepBgmDuringVoice();
+        }} else {{
+          burariSetMusicVolume(burariNormalMusicVolume);
+        }}
+
+        burariStartMusicEndWatch();
+        if (burariSlideLoopStarted && !burariSequenceComplete) {{
+          if (burariSlideAdvancePending && !burariVoicePlaybackActive) {{
+            burariCompleteCurrentSlide();
+          }} else if (!burariVoicePlaybackActive || !burariSlideAdvancePending) {{
+            burariScheduleNextSlide(resumeRemainingMs);
+          }}
+        }} else if (!burariSequenceComplete) {{
+          burariSlideLoopStarted = true;
+          burariScheduleNextSlide(resumeRemainingMs);
+        }}
+        if (burariStatus) burariStatus.textContent = burariVoicePlaybackActive
+          ? '再開しました。写真の声とBGMを続きから再生しています。'
+          : '再開しました。この続きから再生しています。';
+      }}
+
+      function burariHandleMainReplayButton() {{
+        if (burariReplayPlaybackActive) {{
+          burariPauseReplay();
+        }} else if (burariReplayPausedByUser) {{
+          burariResumeReplay();
+        }} else {{
+          burariActuallyStart();
+        }}
       }}
 
       function burariPlayCurrentVoice(autoTriggered = false) {{
@@ -22994,16 +23114,29 @@ def render_monthly_replay_player(period_label, review, playback, photo_items, cu
         }}
       }}
 
-      function burariScheduleNextSlide() {{
+      function burariScheduleNextSlide(overrideMs = null) {{
         if (!burariSlideLoopStarted || !burariSlides.length || burariSequenceComplete) return;
         if (burariTimer) clearTimeout(burariTimer);
-        const plannedMs = burariPlannedDisplayMsForIndex(burariIndex);
+        const fallbackMs = burariPlannedDisplayMsForIndex(burariIndex);
+        const requestedOverride = Number(overrideMs);
+        const plannedMs = Number.isFinite(requestedOverride) && requestedOverride >= 0
+          ? Math.max(0, requestedOverride)
+          : fallbackMs;
+        burariPausedSlideRemainingMs = null;
+        burariCurrentSlidePlannedMs = plannedMs;
+        burariCurrentSlideStartClockSeconds = burariPlaybackClockSeconds();
         if (burariStatus && burariReplayPlaybackActive) {{
-          const seconds = Math.max(2.0, plannedMs / 1000);
-          burariStatus.textContent = `再生中：${{burariIndex + 1}} / ${{burariSlides.length}}（この写真 約${{seconds.toFixed(1)}}秒）`;
+          const seconds = Math.max(0, plannedMs / 1000);
+          burariStatus.textContent = `再生中：${{burariIndex + 1}} / ${{burariSlides.length}}（この写真 残り約${{seconds.toFixed(1)}}秒）`;
+        }}
+        if (plannedMs <= 20) {{
+          burariTimer = null;
+          if (burariVoicePlaybackActive) burariSlideAdvancePending = true;
+          else burariCompleteCurrentSlide();
+          return;
         }}
         burariTimer = setTimeout(() => {{
-          if (!burariSlideLoopStarted || burariSequenceComplete) return;
+          if (!burariSlideLoopStarted || burariSequenceComplete || !burariReplayPlaybackActive) return;
           burariTimer = null;
           // A voice-bearing photo never changes while its voice is still playing.
           // When the planned still interval has elapsed, advance as soon as voice ends.
@@ -23092,6 +23225,11 @@ def render_monthly_replay_player(period_label, review, playback, photo_items, cu
         burariRequestNativeAudioFocus();
         burariStopTimers();
         burariReplayPlaybackActive = true;
+        burariReplayPausedByUser = false;
+        burariPausedSlideRemainingMs = null;
+        burariCurrentSlidePlannedMs = 0;
+        burariCurrentSlideStartClockSeconds = NaN;
+        burariRefreshMainReplayButton();
         burariNeedsForegroundRestore = false;
         burariWaitingForRequestedPosition = true;
         burariSlideLoopStarted = false;
@@ -23168,7 +23306,7 @@ def render_monthly_replay_player(period_label, review, playback, photo_items, cu
                 }}
               }} else if (event.data === YT.PlayerState.PAUSED) {{
                 // Starting a photo voice can cause an Android WebView media-session
-                // pause. This is not a user stop: immediately keep BGM at 80%.
+                // pause. This is not a user stop: immediately keep BGM at 70%.
                 if (burariReplayPlaybackActive && burariVoicePlaybackActive && !document.hidden) {{
                   burariKeepBgmDuringVoice();
                 }}
@@ -23213,8 +23351,7 @@ def render_monthly_replay_player(period_label, review, playback, photo_items, cu
         }}
       }}, {{ passive: true }});
 
-      document.getElementById('burariReplayStart').addEventListener('click', burariActuallyStart);
-      document.getElementById('burariReplayStop').addEventListener('click', burariInterrupt);
+      document.getElementById('burariReplayStart').addEventListener('click', burariHandleMainReplayButton);
       document.getElementById('burariReplayAgain').addEventListener('click', burariActuallyStart);
       if (burariVoiceButton) burariVoiceButton.addEventListener('click', () => {{
         if (burariVoiceAutoTimer) {{
