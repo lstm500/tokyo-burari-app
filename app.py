@@ -33,9 +33,10 @@ from zoneinfo import ZoneInfo
 import streamlit as st
 
 # Freshly generated update: 2026-09-14 JST
-GENERATED_UPDATE_JST = "2026-09-15T00:38:00+09:00"
+GENERATED_UPDATE_JST = "2026-09-15T00:44:56+09:00"
 
-APP_BUILD = "v438"
+APP_BUILD = "v439"
+# v439: Strengthen the whole-source noise cleanup used BEFORE voice-candidate pickup. Use a dedicated aggressive speech-preserving FFT cleanup profile, invalidate older candidate sets, and keep manual photo-voice cleanup unchanged.
 # v438: Clean the full source audio before voice-candidate analysis. Candidate pickup, previews, transcription, and photo attachment now all come from the same pre-cleaned source audio; do not rank raw/noisy audio first.
 # v437: Move the voice-candidate regenerate control directly below the six voice candidate buttons in both the custom voice picker and its fallback UI; regeneration behavior itself is unchanged.
 # v436: Add an explicit voice-candidate regenerate button in the photo/voice workspace. Forced regeneration rebuilds the six noise-cleaned candidates from the original video while remapping existing selections by source candidate so attached choices do not silently jump to a different clip.
@@ -12383,7 +12384,7 @@ def _voice_storage_upload_mime(logical_mime, filename=""):
     return "video/mp4"
 
 
-PHOTO_VOICE_CLEANUP_VERSION = "v438_pre_pick_afftdn_light"
+PHOTO_VOICE_CLEANUP_VERSION = "v434_afftdn_light"
 PHOTO_VOICE_CLEANUP_TIMEOUT_SECONDS = 75
 PHOTO_VOICE_CLEANUP_FILTER = (
     "highpass=f=80,"
@@ -12391,6 +12392,20 @@ PHOTO_VOICE_CLEANUP_FILTER = (
     "lowpass=f=12000,"
     "dynaudnorm=f=250:g=15:p=0.90:m=3.5:s=2,"
     "alimiter=limit=0.95"
+)
+
+# v439: voice candidates use a separate, substantially stronger pass BEFORE pickup.
+# Keep this independent from manually recorded photo voice notes so the stronger profile
+# cannot unexpectedly alter that separate workflow.  Avoid a hard noise gate: quiet or
+# distant child speech must remain available for candidate ranking even in noisy stations.
+VIDEO_VOICE_STRONG_CLEANUP_VERSION = "v439_pre_pick_afftdn_strong"
+VIDEO_VOICE_STRONG_CLEANUP_TIMEOUT_SECONDS = 90
+VIDEO_VOICE_STRONG_CLEANUP_FILTER = (
+    "highpass=f=100,"
+    "afftdn=nr=18:nf=-38:tn=1:gs=8,"
+    "lowpass=f=9500,"
+    "dynaudnorm=f=250:g=12:p=0.88:m=3.0:s=3,"
+    "alimiter=limit=0.93"
 )
 
 
@@ -12408,7 +12423,7 @@ def _photo_voice_input_suffix(filename, content_type=""):
     return ".webm"
 
 
-def _clean_photo_voice_note_audio(raw, filename="voice_note.webm", content_type="audio/webm"):
+def _clean_photo_voice_note_audio(raw, filename="voice_note.webm", content_type="audio/webm", filter_chain=None, timeout_seconds=None):
     """Best-effort light cleanup for short photo voice notes.
 
     The raw capture remains the fallback.  We intentionally do not use an aggressive
@@ -12436,8 +12451,10 @@ def _clean_photo_voice_note_audio(raw, filename="voice_note.webm", content_type=
         return result
 
     input_suffix = _photo_voice_input_suffix(original_name, original_mime)
+    selected_filter = str(filter_chain or PHOTO_VOICE_CLEANUP_FILTER).strip() or PHOTO_VOICE_CLEANUP_FILTER
+    selected_timeout = max(10, int(timeout_seconds or PHOTO_VOICE_CLEANUP_TIMEOUT_SECONDS))
     try:
-        with tempfile.TemporaryDirectory(prefix="burari_voice_cleanup_v435_") as td:
+        with tempfile.TemporaryDirectory(prefix="burari_voice_cleanup_") as td:
             input_path = os.path.join(td, "input" + input_suffix)
             output_path = os.path.join(td, "cleaned.m4a")
             Path(input_path).write_bytes(original)
@@ -12446,7 +12463,7 @@ def _clean_photo_voice_note_audio(raw, filename="voice_note.webm", content_type=
                 "-i", input_path,
                 "-vn", "-map_metadata", "-1",
                 "-ac", "1", "-ar", "48000",
-                "-af", PHOTO_VOICE_CLEANUP_FILTER,
+                "-af", selected_filter,
                 "-c:a", "aac", "-b:a", "96k",
                 "-movflags", "+faststart",
                 output_path,
@@ -12455,7 +12472,7 @@ def _clean_photo_voice_note_audio(raw, filename="voice_note.webm", content_type=
                 command,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                timeout=PHOTO_VOICE_CLEANUP_TIMEOUT_SECONDS,
+                timeout=selected_timeout,
             )
             if completed.returncode != 0 or not os.path.exists(output_path):
                 detail = completed.stderr.decode("utf-8", errors="ignore")[-220:].strip()
@@ -16427,7 +16444,7 @@ def video_ai_voice_candidate_meta(photo):
 
 VIDEO_VOICE_CANDIDATE_COUNT = 6
 VIDEO_VOICE_SNIPPET_SECONDS = 5.0
-VIDEO_VOICE_CANDIDATE_SCHEMA_VERSION = 5
+VIDEO_VOICE_CANDIDATE_SCHEMA_VERSION = 6
 
 
 def video_ai_voice_candidate_items(photo):
@@ -16440,16 +16457,16 @@ def video_ai_voice_candidate_items(photo):
         snippet_seconds = float(meta.get("snippet_seconds") or 0.0)
     except Exception:
         snippet_seconds = 0.0
-    # v438: schema v5 guarantees that the full source audio was cleaned BEFORE
-    # candidate ranking/pickup. Older sets (including v435-v437, which ranked raw audio
-    # first and cleaned only the selected snippets) are regenerated before selection.
+    # v439: schema v6 guarantees that the full source audio was STRONGLY cleaned BEFORE
+    # candidate ranking/pickup. Older sets, including the lighter v438 preprocessing,
+    # are regenerated so every preview/attachment comes from the stronger source pass.
     cleanup_stage = str(meta.get("audio_cleanup_stage") or "").strip()
     cleanup_version = str(meta.get("audio_cleanup_version") or "").strip()
     if (
         schema_version < VIDEO_VOICE_CANDIDATE_SCHEMA_VERSION
         or snippet_seconds < 4.5
         or cleanup_stage != "before_candidate_pickup"
-        or cleanup_version != PHOTO_VOICE_CLEANUP_VERSION
+        or cleanup_version != VIDEO_VOICE_STRONG_CLEANUP_VERSION
     ):
         return []
     items = meta.get("items") or []
@@ -16710,14 +16727,16 @@ def generate_video_ai_voice_candidates(photo, force=False):
     if not video_raw:
         raise ValueError("元動画を読み込めませんでした。")
 
-    # v438 order is strict: 1) clean the complete source audio, 2) pick candidate
-    # regions from that cleaned signal, 3) cut/store those already-cleaned regions.
-    # Never rank the noisy/raw waveform first, because steady station/road noise can
-    # otherwise win the RMS-based pickup score and hide quieter child speech.
+    # v439 order is strict: 1) STRONGLY clean the complete source audio, 2) pick
+    # candidate regions from that cleaned signal, 3) cut/store those already-cleaned
+    # regions.  A dedicated stronger FFT profile is used here before ranking so steady
+    # station/road/HVAC noise is much less likely to outrank quieter child speech.
     source_cleanup = _clean_photo_voice_note_audio(
         video_raw,
         filename="source_video.mp4",
         content_type="video/mp4",
+        filter_chain=VIDEO_VOICE_STRONG_CLEANUP_FILTER,
+        timeout_seconds=VIDEO_VOICE_STRONG_CLEANUP_TIMEOUT_SECONDS,
     )
     if not bool(source_cleanup.get("applied")):
         cleanup_status = str(source_cleanup.get("status") or "cleanup_failed")
@@ -16823,16 +16842,16 @@ def generate_video_ai_voice_candidates(photo, force=False):
                     audio_copy.name = processed_filename
                     transcript = transcribe_audio(
                         audio_copy,
-                        context="東京ぶらり旅の動画から切り出し、軽いノイズ低減と音量補正を済ませた、最大5秒程度の短い音声候補です。",
+                        context="東京ぶらり旅の動画音声全体へ強めのノイズ低減と音量補正を先に行い、その処理済み音声から切り出した最大5秒程度の短い音声候補です。",
                     )
                 except Exception:
                     transcript = ""
 
                 cleanup_meta = {
-                    "version": PHOTO_VOICE_CLEANUP_VERSION,
+                    "version": VIDEO_VOICE_STRONG_CLEANUP_VERSION,
                     "status": str(source_cleanup.get("status") or "applied"),
                     "applied": True,
-                    "mode": "light_noise_reduction_and_leveling",
+                    "mode": "strong_noise_reduction_and_leveling",
                     "stage": "whole_source_before_candidate_pickup",
                 }
                 cleanup_error = str(source_cleanup.get("error") or "").strip()
@@ -16908,7 +16927,7 @@ def generate_video_ai_voice_candidates(photo, force=False):
             "snippet_seconds": VIDEO_VOICE_SNIPPET_SECONDS,
             "boundary_mode": "natural_pause",
             "audio_cleanup_stage": "before_candidate_pickup",
-            "audio_cleanup_version": PHOTO_VOICE_CLEANUP_VERSION,
+            "audio_cleanup_version": VIDEO_VOICE_STRONG_CLEANUP_VERSION,
             "audio_cleanup_order": ["whole_source_cleanup", "candidate_pickup", "candidate_cut"],
             "items": items,
         }
