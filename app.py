@@ -33,9 +33,10 @@ from zoneinfo import ZoneInfo
 import streamlit as st
 
 # Freshly generated update: 2026-09-14 JST
-GENERATED_UPDATE_JST = "2026-09-14T23:58:36+09:00"
+GENERATED_UPDATE_JST = "2026-09-15T00:08:00+09:00"
 
-APP_BUILD = "v433"
+APP_BUILD = "v434"
+# v434: Automatically apply mild post-save voice cleanup to photo voice notes: high-pass rumble removal, light FFT noise reduction, gentle dynamic normalization, and limiting. Store processed AAC/M4A when available, fall back to the original audio without blocking save, and use the cleaned audio for transcription/replay.
 # v433: Fix replay slide timing regression from v432 (null pause override became 0 ms), re-lock every fresh slide to its >=2.0s/voice minimum, and compute non-portrait zoom from the actual movie stage size while prioritizing prominent people over small edge/background detections.
 # v432: Replace the separate replay stop button with one stateful main control: blue Play -> red Pause -> green Resume, preserving the current music/photo position across a user pause.
 # v431: Replace replay blur/contain fallback with per-photo quality-safe smart zoom. For non-portrait photos, preserve every detected person while enlarging as far as the people-safe region and source resolution allow; never use a blurred backdrop.
@@ -12378,6 +12379,110 @@ def _voice_storage_upload_mime(logical_mime, filename=""):
     return "video/mp4"
 
 
+PHOTO_VOICE_CLEANUP_VERSION = "v434_afftdn_light"
+PHOTO_VOICE_CLEANUP_TIMEOUT_SECONDS = 30
+PHOTO_VOICE_CLEANUP_FILTER = (
+    "highpass=f=80,"
+    "afftdn=nr=7:nf=-38:tn=1:gs=3,"
+    "lowpass=f=12000,"
+    "dynaudnorm=f=250:g=15:p=0.90:m=3.5:s=2,"
+    "alimiter=limit=0.95"
+)
+
+
+def _photo_voice_input_suffix(filename, content_type=""):
+    name = str(filename or "").strip().lower()
+    mime = str(content_type or "").split(";", 1)[0].strip().lower()
+    if name.endswith((".m4a", ".mp4")) or mime in {"audio/mp4", "audio/x-m4a", "audio/m4a"}:
+        return ".m4a"
+    if name.endswith(".ogg") or mime in {"audio/ogg", "application/ogg"}:
+        return ".ogg"
+    if name.endswith(".wav") or mime in {"audio/wav", "audio/x-wav"}:
+        return ".wav"
+    if name.endswith(".mp3") or mime in {"audio/mpeg", "audio/mp3"}:
+        return ".mp3"
+    return ".webm"
+
+
+def _clean_photo_voice_note_audio(raw, filename="voice_note.webm", content_type="audio/webm"):
+    """Best-effort light cleanup for short photo voice notes.
+
+    The raw capture remains the fallback.  We intentionally do not use an aggressive
+    gate or speech-isolation model because quiet/distant child speech is common in this
+    app and should not be mistaken for noise.  When ffmpeg is available, remove low
+    rumble, reduce steady broadband noise gently, even out speech level, and limit peaks.
+    """
+    original = bytes(raw or b"")
+    original_name = str(filename or "voice_note.webm").strip() or "voice_note.webm"
+    original_mime = str(content_type or "audio/webm").split(";", 1)[0].strip().lower() or "audio/webm"
+    result = {
+        "raw": original,
+        "filename": original_name,
+        "content_type": original_mime,
+        "applied": False,
+        "status": "original",
+        "error": "",
+    }
+    if not original:
+        return result
+
+    ffmpeg = _ffmpeg_executable()
+    if not ffmpeg:
+        result["status"] = "ffmpeg_unavailable"
+        return result
+
+    input_suffix = _photo_voice_input_suffix(original_name, original_mime)
+    try:
+        with tempfile.TemporaryDirectory(prefix="burari_voice_cleanup_v434_") as td:
+            input_path = os.path.join(td, "input" + input_suffix)
+            output_path = os.path.join(td, "cleaned.m4a")
+            Path(input_path).write_bytes(original)
+            command = [
+                ffmpeg, "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
+                "-i", input_path,
+                "-vn", "-map_metadata", "-1",
+                "-ac", "1", "-ar", "48000",
+                "-af", PHOTO_VOICE_CLEANUP_FILTER,
+                "-c:a", "aac", "-b:a", "96k",
+                "-movflags", "+faststart",
+                output_path,
+            ]
+            completed = subprocess.run(
+                command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=PHOTO_VOICE_CLEANUP_TIMEOUT_SECONDS,
+            )
+            if completed.returncode != 0 or not os.path.exists(output_path):
+                detail = completed.stderr.decode("utf-8", errors="ignore")[-220:].strip()
+                result["status"] = "cleanup_failed"
+                result["error"] = detail
+                return result
+            cleaned = Path(output_path).read_bytes()
+            if len(cleaned) <= 256:
+                result["status"] = "cleanup_empty"
+                return result
+
+            stem = Path(original_name).stem.strip() or "voice_note"
+            stem = re.sub(r"[^0-9A-Za-z._-]+", "_", stem).strip("._-") or "voice_note"
+            result.update({
+                "raw": cleaned,
+                "filename": f"{stem}_clean.m4a",
+                "content_type": "audio/mp4",
+                "applied": True,
+                "status": "applied",
+                "error": "",
+            })
+            return result
+    except subprocess.TimeoutExpired:
+        result["status"] = "cleanup_timeout"
+        return result
+    except Exception as exc:
+        result["status"] = "cleanup_failed"
+        result["error"] = str(exc)[:220]
+        return result
+
+
 def photo_voice_note_meta(photo):
     reflection = (photo or {}).get("reflection_json") or {}
     if not isinstance(reflection, dict):
@@ -12415,9 +12520,14 @@ def save_photo_voice_note_bytes(photo_id, raw, filename="voice_note.m4a", conten
         reflection = {}
     existing_path = str(photo_voice_note_meta(row).get("storage_path") or "").strip()
 
-    logical_content_type = str(content_type or "audio/mp4").split(";", 1)[0].strip().lower() or "audio/mp4"
-    _, extension = _audio_storage_format(filename)
-    storage_content_type = _voice_storage_upload_mime(logical_content_type, filename)
+    source_filename = str(filename or "voice_note.m4a").strip() or "voice_note.m4a"
+    source_content_type = str(content_type or "audio/mp4").split(";", 1)[0].strip().lower() or "audio/mp4"
+    cleanup = _clean_photo_voice_note_audio(raw, source_filename, source_content_type)
+    processed_raw = bytes(cleanup.get("raw") or raw)
+    processed_filename = str(cleanup.get("filename") or source_filename).strip() or source_filename
+    logical_content_type = str(cleanup.get("content_type") or source_content_type).split(";", 1)[0].strip().lower() or source_content_type
+    _, extension = _audio_storage_format(processed_filename)
+    storage_content_type = _voice_storage_upload_mime(logical_content_type, processed_filename)
     stamp = now_jst().strftime("%Y%m%d_%H%M%S_%f")
     storage_path = f"{current_family_key()}/{current_member_key()}/voice_notes/{photo_id}/{stamp}_{uuid.uuid4().hex[:8]}.{extension}"
 
@@ -12426,7 +12536,7 @@ def save_photo_voice_note_bytes(photo_id, raw, filename="voice_note.m4a", conten
     try:
         client.storage.from_(PHOTO_BUCKET).upload(
             path=storage_path,
-            file=raw,
+            file=processed_raw,
             file_options={
                 "content-type": storage_content_type,
                 "cache-control": "3600",
@@ -12436,19 +12546,32 @@ def save_photo_voice_note_bytes(photo_id, raw, filename="voice_note.m4a", conten
 
         if auto_transcribe and not final_transcript:
             try:
-                audio_copy = io.BytesIO(raw)
-                audio_copy.name = filename or f"voice_note.{extension}"
+                audio_copy = io.BytesIO(processed_raw)
+                audio_copy.name = processed_filename or f"voice_note.{extension}"
                 final_transcript = transcribe_audio(audio_copy, context="東京ぶらり旅の写真にひもづく短い声メモです。")
             except Exception:
                 final_transcript = ""
+
+        cleanup_meta = {
+            "version": PHOTO_VOICE_CLEANUP_VERSION,
+            "status": str(cleanup.get("status") or "original"),
+            "applied": bool(cleanup.get("applied")),
+            "mode": "light_noise_reduction_and_leveling",
+        }
+        cleanup_error = str(cleanup.get("error") or "").strip()
+        if cleanup_error:
+            cleanup_meta["fallback_detail"] = cleanup_error[:220]
 
         reflection["voice_note"] = {
             "storage_path": storage_path,
             "mime_type": logical_content_type,
             "storage_mime_type": storage_content_type,
-            "file_name": filename or f"voice_note.{extension}",
+            "file_name": processed_filename or f"voice_note.{extension}",
+            "source_mime_type": source_content_type,
+            "source_file_name": source_filename,
             "uploaded_at": now_jst().isoformat(),
             "transcript": final_transcript,
+            "audio_cleanup": cleanup_meta,
         }
 
         (
@@ -12498,90 +12621,18 @@ def save_photo_voice_note(photo_id, audio_file, auto_transcribe=True):
     if not raw:
         raise ValueError("録音データが空です。")
 
-    client = supabase_client()
-    current = (
-        client
-        .table(PHOTO_TABLE)
-        .select("id,reflection_json")
-        .eq("id", photo_id)
-        .eq("family_key", current_family_key()).eq("member_key", current_member_key())
-        .limit(1)
-        .execute()
+    filename = str(getattr(audio_file, "name", "voice_note.webm") or "voice_note.webm")
+    declared_type = str(getattr(audio_file, "type", "") or "").split(";", 1)[0].strip().lower()
+    inferred_type, _ = _audio_storage_format(filename)
+    content_type = declared_type or inferred_type
+    return save_photo_voice_note_bytes(
+        photo_id,
+        raw,
+        filename=filename,
+        content_type=content_type,
+        transcript="",
+        auto_transcribe=bool(auto_transcribe),
     )
-    row = (current.data or [None])[0] or {}
-    if not row:
-        raise ValueError("写真が見つかりません。")
-
-    reflection = row.get("reflection_json") or {}
-    if not isinstance(reflection, dict):
-        reflection = {}
-    existing_path = str(photo_voice_note_meta(row).get("storage_path") or "").strip()
-
-    content_type, extension = _audio_storage_format(getattr(audio_file, "name", "voice_note.webm"))
-    storage_content_type = _voice_storage_upload_mime(content_type, getattr(audio_file, "name", "voice_note.webm"))
-    stamp = now_jst().strftime("%Y%m%d_%H%M%S_%f")
-    storage_path = f"{current_family_key()}/{current_member_key()}/voice_notes/{photo_id}/{stamp}_{uuid.uuid4().hex[:8]}.{extension}"
-
-    transcript = ""
-    uploaded = False
-    try:
-        client.storage.from_(PHOTO_BUCKET).upload(
-            path=storage_path,
-            file=raw,
-            file_options={
-                "content-type": storage_content_type,
-                "cache-control": "3600",
-            },
-        )
-        uploaded = True
-
-        if auto_transcribe:
-            try:
-                audio_copy = io.BytesIO(raw)
-                audio_copy.name = getattr(audio_file, "name", f"voice_note.{extension}") or f"voice_note.{extension}"
-                transcript = transcribe_audio(audio_copy, context="東京ぶらり旅の写真にひもづく短い声メモです。")
-            except Exception:
-                transcript = ""
-
-        reflection["voice_note"] = {
-            "storage_path": storage_path,
-            "mime_type": content_type,
-            "storage_mime_type": storage_content_type,
-            "file_name": getattr(audio_file, "name", f"voice_note.{extension}") or f"voice_note.{extension}",
-            "uploaded_at": now_jst().isoformat(),
-            "transcript": transcript,
-        }
-
-        (
-            client
-            .table(PHOTO_TABLE)
-            .update({"reflection_json": reflection})
-            .eq("id", photo_id)
-            .eq("family_key", current_family_key()).eq("member_key", current_member_key())
-            .execute()
-        )
-
-        if existing_path and existing_path != storage_path:
-            try:
-                client.storage.from_(PHOTO_BUCKET).remove([existing_path])
-            except Exception:
-                pass
-
-        download_photo.clear()
-        signed_photo_url_map.clear()
-        _invalidate_fast_db_cache()
-        try:
-            _memory_map_rows_light.clear()
-        except Exception:
-            pass
-        return reflection["voice_note"]
-    except Exception as exc:
-        if uploaded:
-            try:
-                client.storage.from_(PHOTO_BUCKET).remove([storage_path])
-            except Exception:
-                pass
-        raise RuntimeError(f"声メモの保存でエラーが発生しました: {exc}") from exc
 
 
 def delete_photo_voice_note(photo_id):
@@ -20609,7 +20660,7 @@ def render_replay_voice_embed_section(scope_key, photo_items, photo_row_map):
         return
     with st.container(border=True):
         st.markdown("#### 🎙 写真に声を埋め込む")
-        st.caption("写真ごとに短い声メモを登録できます。保存した写真はムービーで🎙マークが出て、そこから再生できます。")
+        st.caption("写真ごとに短い声メモを登録できます。保存時に軽いノイズ低減と音量補正を自動で行い、ムービーでも同じ声を再生します。")
 
         select_key = f"replay_voice_photo_{scope_key}"
         selected_photo_id = st.selectbox(
@@ -27280,7 +27331,7 @@ def render_diary_single_photo_voice_editor(trip_id, photo, target_state_key, con
 
     with st.container(border=True):
         st.markdown("##### 🎙 この写真に声を残す")
-        st.caption("この写真にひもづく短い声を保存します。保存した声は振り返りムービーでもこの写真に付帯します。")
+        st.caption("この写真にひもづく短い声を保存します。保存時に軽いノイズ低減と音量補正を自動で行い、振り返りムービーでも同じ声を使います。")
 
         voice_meta = photo_voice_note_meta(photo)
         voice_path = str(voice_meta.get("storage_path") or "").strip()
