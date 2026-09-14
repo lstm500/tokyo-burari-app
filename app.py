@@ -33,9 +33,10 @@ from zoneinfo import ZoneInfo
 import streamlit as st
 
 # Freshly generated update: 2026-09-14 JST
-GENERATED_UPDATE_JST = "2026-09-14T23:51:32+09:00"
+GENERATED_UPDATE_JST = "2026-09-14T23:58:36+09:00"
 
-APP_BUILD = "v432"
+APP_BUILD = "v433"
+# v433: Fix replay slide timing regression from v432 (null pause override became 0 ms), re-lock every fresh slide to its >=2.0s/voice minimum, and compute non-portrait zoom from the actual movie stage size while prioritizing prominent people over small edge/background detections.
 # v432: Replace the separate replay stop button with one stateful main control: blue Play -> red Pause -> green Resume, preserving the current music/photo position across a user pause.
 # v431: Replace replay blur/contain fallback with per-photo quality-safe smart zoom. For non-portrait photos, preserve every detected person while enlarging as far as the people-safe region and source resolution allow; never use a blurred backdrop.
 # v430: Duck YouTube BGM to 70% only while a replay photo voice is active, then restore it to 100% immediately when the voice ends, errors, or is stopped.
@@ -19954,15 +19955,77 @@ def _monthly_replay_photo_caption(photo, trip, index):
 
 
 
+def _replay_primary_people(people, width, height):
+    """Keep visually prominent people while ignoring tiny/partial edge background detections.
+
+    This is used only for replay framing. It never identifies who a person is; it ranks
+    detector boxes by visible size, centrality, and whether the box is clipped by an image edge.
+    """
+    width = max(1.0, float(width or 1))
+    height = max(1.0, float(height or 1))
+    image_area = width * height
+    ranked = []
+    for item in list(people or []):
+        if not isinstance(item, dict):
+            continue
+        try:
+            x1, y1, x2, y2 = [float(v) for v in item.get("box")]
+        except Exception:
+            continue
+        box_w = max(1.0, x2 - x1)
+        box_h = max(1.0, y2 - y1)
+        area_ratio = max(0.0, min(1.0, (box_w * box_h) / image_area))
+        cx = (x1 + x2) / 2.0
+        cy = (y1 + y2) / 2.0
+        dx = abs((cx / width) - 0.5)
+        dy = abs((cy / height) - 0.5)
+        center_distance = min(1.0, ((dx * dx + dy * dy) ** 0.5) / 0.70710678)
+        centrality = 1.0 - center_distance
+        edge_count = sum([
+            x1 <= width * 0.012,
+            y1 <= height * 0.012,
+            x2 >= width * 0.988,
+            y2 >= height * 0.988,
+        ])
+        edge_penalty = 1.0 if edge_count == 0 else (0.64 if edge_count == 1 else 0.40)
+        kind_bonus = 1.04 if str(item.get("kind") or "") == "face" else 1.0
+        prominence = area_ratio * (0.68 + 0.32 * centrality) * edge_penalty * kind_bonus
+        ranked.append({
+            **item,
+            "_area_ratio": area_ratio,
+            "_prominence": prominence,
+            "_edge_count": int(edge_count),
+        })
+    if not ranked:
+        return []
+    ranked.sort(key=lambda row: (row.get("_prominence", 0.0), row.get("_area_ratio", 0.0)), reverse=True)
+    top = ranked[0]
+    top_prominence = max(1e-9, float(top.get("_prominence") or 0.0))
+    top_area = max(1e-9, float(top.get("_area_ratio") or 0.0))
+    selected = [top]
+    for item in ranked[1:]:
+        prominence = float(item.get("_prominence") or 0.0)
+        area_ratio = float(item.get("_area_ratio") or 0.0)
+        edge_count = int(item.get("_edge_count") or 0)
+        # A second/third person remains a main subject when they are materially sized
+        # relative to the strongest subject. Tiny edge-clipped passers-by do not constrain zoom.
+        comparable = prominence >= top_prominence * 0.40 and area_ratio >= max(0.014, top_area * 0.30)
+        materially_large = area_ratio >= max(0.055, top_area * 0.52)
+        edge_background = edge_count >= 1 and prominence < top_prominence * 0.58 and area_ratio < top_area * 0.58
+        if (comparable or materially_large) and not edge_background:
+            selected.append(item)
+    return selected[:4]
+
+
 @st.cache_data(ttl=86400, show_spinner=False, max_entries=2500)
 def _replay_photo_framing_meta(storage_path):
-    """Choose quality-safe replay framing without altering the stored photo.
+    """Choose replay framing without altering the stored photo.
 
-    Portrait photos keep the existing 9:16 cover treatment. Square/landscape photos
-    use a width-fit base and then enlarge only as far as source resolution and the
-    detected people-safe region allow. This intentionally avoids the old blurred
-    backdrop / full-image fallback: when several people are far apart, the photo is
-    still enlarged as much as possible while keeping every detected person visible.
+    Portrait photos retain the established 9:16 cover behavior. Square/landscape photos
+    return a people-safe *maximum* zoom and source dimensions. The browser then applies the
+    final quality cap from the actual rendered movie-stage width, so there is no fixed 960 px
+    quality reference. Small/partial edge background detections no longer force the main
+    subjects to stay unnecessarily small.
     """
     default = {
         "fit": "cover",
@@ -19970,11 +20033,14 @@ def _replay_photo_framing_meta(storage_path):
         "position_y": 50.0,
         "use_backdrop": False,
         "person_count": 0,
+        "primary_person_count": 0,
         "orientation": "unknown",
         "zoom": 1.0,
         "focus_x": 50.0,
         "focus_y": 50.0,
         "source_ratio": 1.0,
+        "source_width": 0,
+        "source_height": 0,
     }
     path = str(storage_path or "").strip()
     if not path:
@@ -19991,50 +20057,56 @@ def _replay_photo_framing_meta(storage_path):
                 return default
             source_ratio = float(width) / float(height)
             orientation = "portrait" if height > width else ("landscape" if width > height else "square")
+            # Live replay photo URLs are requested at max 1920 px. Use that delivered-size
+            # ceiling when the browser later computes quality-safe zoom from stage width.
+            delivered_scale = min(1.0, 1920.0 / float(max(width, height)))
+            delivered_width = max(1, int(round(width * delivered_scale)))
+            delivered_height = max(1, int(round(height * delivered_scale)))
             base = {
                 **default,
                 "orientation": orientation,
                 "source_ratio": round(source_ratio, 6),
+                "source_width": delivered_width,
+                "source_height": delivered_height,
             }
 
-            # Preserve the established portrait treatment exactly.
             if height > width:
                 return base
 
-            # Treat roughly 960 px as the quality reference width for a high-density phone
-            # stage. Do not choose a zoom that would materially magnify beyond source
-            # resolution at that target; a separate ceiling avoids extreme close-ups.
-            quality_safe_zoom = max(1.0, min(2.35, (float(width) * 0.98) / 960.0))
             people = _estimate_person_focus_boxes(src)
+            primary_people = _replay_primary_people(people, width, height)
             person_count = len(people)
+            primary_count = len(primary_people)
 
-            if not people:
-                # No reliable person detection: still remove the blur fallback, but use a
-                # conservative centered enlargement rather than an aggressive 9:16 crop.
-                aesthetic_zoom = 1.55 if width > height else 1.42
-                zoom = max(1.0, min(quality_safe_zoom, aesthetic_zoom))
+            if not primary_people:
+                # Without a reliable main person, keep framing conservative. The browser still
+                # applies its actual-stage quality cap, so this is an aesthetic limit only.
+                aesthetic_zoom_limit = 1.70 if width > height else 1.55
                 return {
                     **base,
                     "fit": "smart",
-                    "person_count": 0,
-                    "zoom": round(zoom, 4),
+                    "person_count": person_count,
+                    "primary_person_count": 0,
+                    "zoom": round(aesthetic_zoom_limit, 4),
                     "focus_x": 50.0,
                     "focus_y": 50.0,
                 }
 
-            # Union every detected person so a distant second/third person cannot be lost.
-            x1 = min(float(item["box"][0]) for item in people)
-            y1 = min(float(item["box"][1]) for item in people)
-            x2 = max(float(item["box"][2]) for item in people)
-            y2 = max(float(item["box"][3]) for item in people)
+            # Only primary subjects constrain the crop. This is what allows a main child/adult
+            # to become larger even when a small passer-by or cropped background person appears
+            # near an edge of the same frame.
+            x1 = min(float(item["box"][0]) for item in primary_people)
+            y1 = min(float(item["box"][1]) for item in primary_people)
+            x2 = max(float(item["box"][2]) for item in primary_people)
+            y2 = max(float(item["box"][3]) for item in primary_people)
             union_w = max(1.0, x2 - x1)
             union_h = max(1.0, y2 - y1)
 
-            # Keep breathing room around the complete people region. The margin becomes a
-            # little wider for multi-person photos because relationship/context matters.
-            multi = person_count >= 2
-            margin_x = max(width * (0.025 if not multi else 0.035), union_w * (0.08 if not multi else 0.10))
-            margin_y = max(height * 0.025, union_h * (0.06 if not multi else 0.075))
+            multi = primary_count >= 2
+            # Use tighter replay-specific breathing room than v431. The detector regions already
+            # include shoulders/hands, so the previous extra margin made subjects too small.
+            margin_x = max(width * 0.012, union_w * (0.035 if not multi else 0.045))
+            margin_y = max(height * 0.012, union_h * (0.030 if not multi else 0.040))
             safe_x1 = max(0.0, x1 - margin_x)
             safe_x2 = min(float(width), x2 + margin_x)
             safe_y1 = max(0.0, y1 - margin_y)
@@ -20042,28 +20114,19 @@ def _replay_photo_framing_meta(storage_path):
             safe_w = max(1.0, safe_x2 - safe_x1)
             safe_h = max(1.0, safe_y2 - safe_y1)
 
-            # Smart mode starts with the whole image width exactly matching the stage width.
-            # Enlarging by z scales the people-safe width by z as well. Therefore the
-            # horizontal people constraint is width/safe_w. The vertical stage is 16/9 of
-            # the stage width, giving the corresponding vertical constraint below.
-            max_zoom_people_x = (float(width) / safe_w) * 0.97
-            max_zoom_people_y = ((16.0 / 9.0) * float(width) / safe_h) * 0.97
-            zoom = max(
-                1.0,
-                min(
-                    quality_safe_zoom,
-                    2.35,
-                    max_zoom_people_x,
-                    max_zoom_people_y,
-                ),
-            )
+            # This is only the people-safe limit. v433 intentionally does NOT apply a 960 px
+            # quality rule here; the client computes that from the real stage width at playback.
+            max_zoom_people_x = (float(width) / safe_w) * 0.992
+            max_zoom_people_y = ((16.0 / 9.0) * float(width) / safe_h) * 0.992
+            people_zoom_limit = max(1.0, min(3.35, max_zoom_people_x, max_zoom_people_y))
             focus_x = ((safe_x1 + safe_x2) / 2.0) / float(width) * 100.0
             focus_y = ((safe_y1 + safe_y2) / 2.0) / float(height) * 100.0
             return {
                 **base,
                 "fit": "smart",
                 "person_count": person_count,
-                "zoom": round(zoom, 4),
+                "primary_person_count": primary_count,
+                "zoom": round(people_zoom_limit, 4),
                 "focus_x": round(max(0.0, min(100.0, focus_x)), 3),
                 "focus_y": round(max(0.0, min(100.0, focus_y)), 3),
                 "position_x": round(max(0.0, min(100.0, focus_x)), 3),
@@ -20071,9 +20134,8 @@ def _replay_photo_framing_meta(storage_path):
                 "use_backdrop": False,
             }
     except Exception:
-        # Never restore the old blurred fallback after an analysis failure. If dimensions
-        # can still be read, use a conservative centered smart frame; otherwise use the
-        # original cover fallback rather than inventing a crop from unavailable geometry.
+        # No fixed pixel quality fallback: preserve dimensions when possible and let the
+        # browser decide the final quality cap from the actual rendered stage size.
         try:
             from PIL import Image, ImageOps
             raw = download_photo(path)
@@ -20082,13 +20144,15 @@ def _replay_photo_framing_meta(storage_path):
                     src = ImageOps.exif_transpose(image)
                     if src.width > 0 and src.height > 0 and src.height <= src.width:
                         source_ratio = float(src.width) / float(src.height)
-                        quality_safe_zoom = max(1.0, min(1.35, (float(src.width) * 0.98) / 960.0))
+                        delivered_scale = min(1.0, 1920.0 / float(max(src.width, src.height)))
                         return {
                             **default,
                             "fit": "smart",
                             "orientation": "landscape" if src.width > src.height else "square",
                             "source_ratio": round(source_ratio, 6),
-                            "zoom": round(quality_safe_zoom, 4),
+                            "source_width": max(1, int(round(src.width * delivered_scale))),
+                            "source_height": max(1, int(round(src.height * delivered_scale))),
+                            "zoom": 1.45,
                             "focus_x": 50.0,
                             "focus_y": 50.0,
                             "use_backdrop": False,
@@ -20139,8 +20203,11 @@ def build_monthly_replay_photo_items(bundle, limit=None):
             "replay_position_y": float(framing.get("position_y") or 50.0),
             "replay_use_backdrop": False,
             "replay_person_count": int(framing.get("person_count") or 0),
+            "replay_primary_person_count": int(framing.get("primary_person_count") or 0),
             "replay_orientation": str(framing.get("orientation") or "unknown"),
             "replay_zoom": float(framing.get("zoom") or 1.0),
+            "replay_source_width": int(framing.get("source_width") or 0),
+            "replay_source_height": int(framing.get("source_height") or 0),
             "replay_focus_x": float(framing.get("focus_x") or framing.get("position_x") or 50.0),
             "replay_focus_y": float(framing.get("focus_y") or framing.get("position_y") or 50.0),
             "replay_source_ratio": float(framing.get("source_ratio") or 1.0),
@@ -20636,8 +20703,11 @@ def build_monthly_family_share_photo_snapshot(bundle, limit=None):
             "replay_position_y": float(framing.get("position_y") or 50.0),
             "replay_use_backdrop": False,
             "replay_person_count": int(framing.get("person_count") or 0),
+            "replay_primary_person_count": int(framing.get("primary_person_count") or 0),
             "replay_orientation": str(framing.get("orientation") or "unknown"),
             "replay_zoom": float(framing.get("zoom") or 1.0),
+            "replay_source_width": int(framing.get("source_width") or 0),
+            "replay_source_height": int(framing.get("source_height") or 0),
             "replay_focus_x": float(framing.get("focus_x") or framing.get("position_x") or 50.0),
             "replay_focus_y": float(framing.get("focus_y") or framing.get("position_y") or 50.0),
             "replay_source_ratio": float(framing.get("source_ratio") or 1.0),
@@ -20695,8 +20765,11 @@ def build_family_shared_replay_photo_items(share):
             "replay_position_y": float(framing.get("position_y") or 50.0),
             "replay_use_backdrop": False,
             "replay_person_count": int(framing.get("person_count") or 0),
+            "replay_primary_person_count": int(framing.get("primary_person_count") or 0),
             "replay_orientation": str(framing.get("orientation") or "unknown"),
             "replay_zoom": float(framing.get("zoom") or 1.0),
+            "replay_source_width": int(framing.get("source_width") or 0),
+            "replay_source_height": int(framing.get("source_height") or 0),
             "replay_focus_x": float(framing.get("focus_x") or framing.get("position_x") or 50.0),
             "replay_focus_y": float(framing.get("focus_y") or framing.get("position_y") or 50.0),
             "replay_source_ratio": float(framing.get("source_ratio") or 1.0),
@@ -21848,9 +21921,10 @@ def _replay_export_frame_jpeg(image_bytes, framing=None, width=720, height=1280)
                 focus_x = max(0.0, min(1.0, float(meta.get("replay_focus_x") or meta.get("focus_x") or 50.0) / 100.0))
                 focus_y = max(0.0, min(1.0, float(meta.get("replay_focus_y") or meta.get("focus_y") or 50.0) / 100.0))
 
-                # Width-fit is zoom=1. Keep source pixels at or above output pixels; framing
-                # metadata already caps zoom from source resolution, and this is a final guard.
-                zoom = min(zoom, max(1.0, float(src.width) / float(frame_w)))
+                # v433: replay_zoom is now the people-safe limit. Apply the export
+                # quality cap against the actual 720px output stage, not a fixed 960px rule.
+                quality_safe_zoom = max(1.0, min(3.35, (float(src.width) / float(frame_w)) * 1.12))
+                zoom = min(3.35, zoom, quality_safe_zoom)
                 image_w = max(frame_w, int(round(frame_w * zoom)))
                 image_h = max(1, int(round(image_w / source_ratio)))
                 resized = src.resize((image_w, image_h), resampling)
@@ -22765,7 +22839,19 @@ def render_monthly_replay_player(period_label, review, playback, photo_items, cu
         if (requestedFit === 'smart') {{
           const stageRatio = 16 / 9; // stage height in units of stage width
           const sourceRatio = Math.max(0.05, Number((item && item.replay_source_ratio) || 1));
-          const zoom = Math.max(1, Math.min(2.35, Number((item && item.replay_zoom) || 1)));
+          const peopleSafeZoom = Math.max(1, Math.min(3.35, Number((item && item.replay_zoom) || 1)));
+          const sourceWidth = Math.max(0, Number((item && item.replay_source_width) || 0));
+          const stageWidth = Math.max(
+            1,
+            Number((burariStage && burariStage.clientWidth) || (burariImg && burariImg.clientWidth) || 360)
+          );
+          // v433: use the size this movie is actually occupying on screen. Allow only a
+          // modest ~18% upscale beyond native crop resolution; this enlarges 1280/1920 px
+          // stills far more appropriately on a phone without the old hard-coded 960 px cap.
+          const qualitySafeZoom = sourceWidth > 0
+            ? Math.max(1, Math.min(3.35, (sourceWidth / stageWidth) * 1.18))
+            : peopleSafeZoom;
+          const zoom = Math.max(1, Math.min(3.35, peopleSafeZoom, qualitySafeZoom));
           const focusX = Math.max(0, Math.min(1, Number((item && item.replay_focus_x) ?? 50) / 100));
           const focusY = Math.max(0, Math.min(1, Number((item && item.replay_focus_y) ?? 50) / 100));
           const imageW = zoom;
@@ -23118,10 +23204,19 @@ def render_monthly_replay_player(period_label, review, playback, photo_items, cu
         if (!burariSlideLoopStarted || !burariSlides.length || burariSequenceComplete) return;
         if (burariTimer) clearTimeout(burariTimer);
         const fallbackMs = burariPlannedDisplayMsForIndex(burariIndex);
-        const requestedOverride = Number(overrideMs);
+        const currentMinimumMs = Math.max(
+          burariMinimumDisplayMs,
+          Number(burariSlideMinimumMs[burariIndex] || burariMinimumDisplayMs)
+        );
+        // v432 regression: Number(null) === 0, so the ordinary no-override call was
+        // interpreted as a 0 ms pause-resume remainder and every photo advanced instantly.
+        // Only an explicit numeric pause remainder is an override. Every fresh photo is
+        // hard-locked to its 2.0 s / voice minimum.
+        const hasOverride = overrideMs !== null && overrideMs !== undefined && overrideMs !== '';
+        const requestedOverride = hasOverride ? Number(overrideMs) : NaN;
         const plannedMs = Number.isFinite(requestedOverride) && requestedOverride >= 0
           ? Math.max(0, requestedOverride)
-          : fallbackMs;
+          : Math.max(currentMinimumMs, fallbackMs);
         burariPausedSlideRemainingMs = null;
         burariCurrentSlidePlannedMs = plannedMs;
         burariCurrentSlideStartClockSeconds = burariPlaybackClockSeconds();
@@ -23129,7 +23224,9 @@ def render_monthly_replay_player(period_label, review, playback, photo_items, cu
           const seconds = Math.max(0, plannedMs / 1000);
           burariStatus.textContent = `再生中：${{burariIndex + 1}} / ${{burariSlides.length}}（この写真 残り約${{seconds.toFixed(1)}}秒）`;
         }}
-        if (plannedMs <= 20) {{
+        // A tiny explicit remainder is valid only after the same photo has already spent
+        // almost all of its minimum time on screen before a user pause.
+        if (hasOverride && plannedMs <= 20) {{
           burariTimer = null;
           if (burariVoicePlaybackActive) burariSlideAdvancePending = true;
           else burariCompleteCurrentSlide();
@@ -23145,7 +23242,7 @@ def render_monthly_replay_player(period_label, review, playback, photo_items, cu
             return;
           }}
           burariCompleteCurrentSlide();
-        }}, plannedMs);
+        }}, Math.max(hasOverride ? 0 : currentMinimumMs, plannedMs));
       }}
 
       function burariStartSlideLoopOnce() {{
