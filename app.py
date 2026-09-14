@@ -33,9 +33,11 @@ from zoneinfo import ZoneInfo
 import streamlit as st
 
 # Freshly generated update: 2026-09-14 JST
-GENERATED_UPDATE_JST = "2026-09-14T02:03:30+09:00"
+GENERATED_UPDATE_JST = "2026-09-14T23:20:05+09:00"
 
-APP_BUILD = "v427"
+APP_BUILD = "v429"
+# v429: Make replay framing photo-aware for non-portrait stills: detect visible people locally, keep them inside the 9:16 frame when safe, and fall back to a full-image foreground over a blurred backdrop when cropping would cut people.
+# v428: Show a more specific genre line on Nearby result cards before details are opened, using already-fetched Google place types / matched lunch genres without adding detail-page product scraping.
 # v427: Keep the replay end time strict. Recompute timing on every play against the fixed music window, require every photo to reach at least 2.0s, and reserve enough time for each attached voice; never extend playback past the configured end.
 # v426: Recalculate replay timing on every play so the current photo set reaches the final photo. Silent photos stay at least 2.5s; voiced photos remain visible until their voice ends, extending runtime only when mathematically necessary.
 # v425: Bring the all-photo library in line with diary photo controls: emotion selection, family share, delete, and an interactive favorite star at the photo top-left, while keeping enlarged-view favorites across own-photo screens.
@@ -9035,6 +9037,114 @@ def _nearby_place_label(tags, kind):
     if tags.get("historic"):
         return "歴史スポット"
     return "観光スポット"
+
+
+NEARBY_GOOGLE_TYPE_DETAIL_LABELS = {
+    # Snacks / cafes
+    "bakery": "ベーカリー",
+    "pastry_shop": "洋菓子",
+    "dessert_shop": "スイーツ",
+    "cake_shop": "ケーキ",
+    "candy_store": "お菓子",
+    "confectionery": "お菓子",
+    "chocolate_shop": "チョコレート",
+    "donut_shop": "ドーナツ",
+    "ice_cream_shop": "アイス・ジェラート",
+    "cafe": "カフェ",
+    "coffee_shop": "コーヒー",
+    "tea_house": "喫茶・ティー",
+    "sandwich_shop": "サンドイッチ",
+    "snack_bar": "軽食",
+    # Lunch / restaurants
+    "japanese_restaurant": "和食",
+    "sushi_restaurant": "寿司",
+    "seafood_restaurant": "海鮮",
+    "yakiniku_restaurant": "焼肉",
+    "korean_barbecue_restaurant": "韓国焼肉",
+    "barbecue_restaurant": "バーベキュー",
+    "yakitori_restaurant": "焼き鳥",
+    "chicken_restaurant": "鶏料理",
+    "steak_house": "ステーキ",
+    "tonkatsu_restaurant": "とんかつ",
+    "ramen_restaurant": "ラーメン",
+    "noodle_shop": "麺類",
+    "chinese_restaurant": "中華料理",
+    "chinese_noodle_restaurant": "中華麺",
+    "cantonese_restaurant": "広東料理",
+    "dim_sum_restaurant": "点心",
+    "dumpling_restaurant": "餃子",
+    "korean_restaurant": "韓国料理",
+    "italian_restaurant": "イタリアン",
+    "pizza_restaurant": "ピザ",
+    "french_restaurant": "フレンチ",
+    "bistro": "ビストロ",
+    "western_restaurant": "洋食",
+    "hamburger_restaurant": "ハンバーガー",
+    "japanese_curry_restaurant": "カレー",
+    "thai_restaurant": "タイ料理",
+    "vietnamese_restaurant": "ベトナム料理",
+    "indian_restaurant": "インド料理",
+    "asian_restaurant": "アジア料理",
+    "asian_fusion_restaurant": "アジアンフュージョン",
+    "restaurant": "レストラン",
+    # Sightseeing / general place types that are useful as a visible genre hint.
+    "museum": "博物館",
+    "art_gallery": "美術館・ギャラリー",
+    "tourist_attraction": "観光スポット",
+    "park": "公園",
+    "garden": "庭園",
+    "aquarium": "水族館",
+    "zoo": "動物園",
+    "shinto_shrine": "神社",
+    "buddhist_temple": "寺院",
+}
+
+
+def _nearby_detailed_genre_text(place):
+    """Return a compact, pre-detail genre description from data already in search results."""
+    place = place if isinstance(place, dict) else {}
+    kind = str(place.get("kind") or "").strip()
+    category = str(place.get("category") or "").strip()
+    labels = []
+
+    def add(label):
+        label = str(label or "").strip()
+        if not label or label in {"おまかせ", "ランチ", "レストラン"}:
+            return
+        # Avoid near-duplicate labels such as イタリアン / イタリア料理店.
+        normalized = re.sub(r"[・\s　()（）/／_-]+", "", label).replace("料理店", "").replace("店", "")
+        for existing in labels:
+            existing_norm = re.sub(r"[・\s　()（）/／_-]+", "", existing).replace("料理店", "").replace("店", "")
+            if normalized == existing_norm or (normalized and existing_norm and (normalized in existing_norm or existing_norm in normalized)):
+                return
+        labels.append(label)
+
+    # Lunch searches already remember which fine-grained atomic query matched the place.
+    if kind == "lunch":
+        for label in list(place.get("lunch_atomic_genres") or []):
+            add(label)
+
+    # Google types are more specific than the broad UI group and cost no extra request.
+    for google_type in list(place.get("google_types") or []):
+        add(NEARBY_GOOGLE_TYPE_DETAIL_LABELS.get(str(google_type or "").strip()))
+
+    # Google can return a localized human-readable type label. Keep it as a fallback/addition.
+    google_label = str(place.get("google_maps_type_label") or "").strip()
+    if google_label:
+        add(google_label)
+
+    # For OpenStreetMap fallback or sparse Google results, retain the existing category.
+    if not labels:
+        add(category)
+
+    if not labels:
+        return ""
+
+    # Do not add a second line when it would merely repeat the broad category verbatim.
+    joined = "・".join(labels[:3])
+    if re.sub(r"\s+", "", joined) == re.sub(r"\s+", "", category):
+        return ""
+    return joined
 
 
 def _nearby_place_priority(tags, kind):
@@ -19839,6 +19949,109 @@ def _monthly_replay_photo_caption(photo, trip, index):
     return " / ".join(label_bits) or f"写真{index}"
 
 
+
+
+@st.cache_data(ttl=86400, show_spinner=False, max_entries=2500)
+def _replay_photo_framing_meta(storage_path):
+    """Choose replay framing for one stored photo without changing the source image.
+
+    Portrait photos keep the existing full-stage cover treatment.  For square/landscape
+    photos, lightweight local face/person detection is used to decide whether a 9:16
+    crop can preserve every detected person.  If not, the live replay uses a contained
+    foreground over a blurred copy of the same photo so nobody is cut off.
+    """
+    default = {
+        "fit": "cover",
+        "position_x": 50.0,
+        "position_y": 50.0,
+        "use_backdrop": False,
+        "person_count": 0,
+        "orientation": "unknown",
+    }
+    path = str(storage_path or "").strip()
+    if not path:
+        return default
+    try:
+        raw = download_photo(path)
+        if not raw:
+            return default
+        from PIL import Image, ImageOps
+        with Image.open(io.BytesIO(raw)) as image:
+            src = ImageOps.exif_transpose(image).convert("RGB")
+            width, height = src.size
+            if width <= 0 or height <= 0:
+                return default
+            # The user asked to preserve the existing treatment for portrait photos.
+            if height > width:
+                return {**default, "orientation": "portrait"}
+
+            meta = {**default, "orientation": "landscape" if width > height else "square"}
+            people = _estimate_person_focus_boxes(src)
+            meta["person_count"] = len(people)
+
+            # If local detection is unavailable or no person is detected, avoid the old
+            # aggressive 9:16 zoom on wide photos and show the whole image instead.
+            if not people:
+                meta.update({"fit": "contain", "use_backdrop": True})
+                return meta
+
+            # Preserve all detected people, not only the most prominent face.
+            x1 = min(float(item["box"][0]) for item in people)
+            y1 = min(float(item["box"][1]) for item in people)
+            x2 = max(float(item["box"][2]) for item in people)
+            y2 = max(float(item["box"][3]) for item in people)
+            union_w = max(1.0, x2 - x1)
+            union_h = max(1.0, y2 - y1)
+            # Add breathing room around heads / shoulders / hands before deciding that
+            # a crop is safe.  This makes the check stricter than merely keeping a face.
+            margin_x = max(width * 0.035, union_w * 0.10)
+            margin_y = max(height * 0.025, union_h * 0.07)
+            safe_x1 = max(0.0, x1 - margin_x)
+            safe_x2 = min(float(width), x2 + margin_x)
+            safe_y1 = max(0.0, y1 - margin_y)
+            safe_y2 = min(float(height), y2 + margin_y)
+
+            target_ratio = 9.0 / 16.0
+            source_ratio = float(width) / float(height)
+            # Square/landscape photos are wider than 9:16, so `cover` fills height and
+            # trims the left/right edges.  Work in source coordinates to check whether
+            # the complete people-safe region can fit in that crop.
+            if source_ratio > target_ratio:
+                crop_w = float(height) * target_ratio
+                safe_w = safe_x2 - safe_x1
+                if safe_w <= crop_w * 0.96 and safe_y1 >= 0 and safe_y2 <= height:
+                    desired_center = (safe_x1 + safe_x2) / 2.0
+                    left = max(0.0, min(float(width) - crop_w, desired_center - crop_w / 2.0))
+                    overflow = max(1e-6, float(width) - crop_w)
+                    position_x = max(0.0, min(100.0, (left / overflow) * 100.0))
+                    meta.update({
+                        "fit": "cover",
+                        "position_x": round(position_x, 2),
+                        "position_y": 50.0,
+                        "use_backdrop": False,
+                    })
+                    return meta
+
+            # Multiple people spread across the frame, a large close-up, or uncertain
+            # geometry: never sacrifice a person just to fill 9:16.
+            meta.update({"fit": "contain", "position_x": 50.0, "position_y": 50.0, "use_backdrop": True})
+            return meta
+    except Exception:
+        # Safe fallback for non-portrait photos if analysis fails.  Showing the complete
+        # image is preferable to an accidental person crop.
+        try:
+            from PIL import Image, ImageOps
+            raw = download_photo(path)
+            if raw:
+                with Image.open(io.BytesIO(raw)) as image:
+                    src = ImageOps.exif_transpose(image)
+                    if src.width > 0 and src.height > 0 and src.height <= src.width:
+                        return {**default, "fit": "contain", "use_backdrop": True, "orientation": "landscape" if src.width > src.height else "square"}
+        except Exception:
+            pass
+        return default
+
+
 def build_monthly_replay_photo_items(bundle, limit=None):
     photos, trip_map = _monthly_replay_selected_photos(bundle, limit=limit)
     if not photos:
@@ -19863,6 +20076,7 @@ def build_monthly_replay_photo_items(bundle, limit=None):
         emotion = photo_selected_tag_meta(photo)
         voice_meta = photo_voice_note_meta(photo)
         voice_path = str(voice_meta.get("storage_path") or "").strip()
+        framing = _replay_photo_framing_meta(str(photo.get("storage_path") or ""))
         items.append({
             "photo_id": str(photo.get("id") or ""),
             "storage_path": str(photo.get("storage_path") or ""),
@@ -19874,6 +20088,12 @@ def build_monthly_replay_photo_items(bundle, limit=None):
             "emotion_emoji": str(emotion.get("emoji") or ""),
             "emotion_color": str(emotion.get("color") or ""),
             "favorite": photo_favorite_is_enabled(photo),
+            "replay_fit": str(framing.get("fit") or "cover"),
+            "replay_position_x": float(framing.get("position_x") or 50.0),
+            "replay_position_y": float(framing.get("position_y") or 50.0),
+            "replay_use_backdrop": bool(framing.get("use_backdrop")),
+            "replay_person_count": int(framing.get("person_count") or 0),
+            "replay_orientation": str(framing.get("orientation") or "unknown"),
             "has_voice": bool(voice_path),
             "voice_url": str(voice_signed_map.get(voice_path) or ""),
             "voice_transcript": str(voice_meta.get("transcript") or ""),
@@ -20353,6 +20573,7 @@ def build_monthly_family_share_photo_snapshot(bundle, limit=None):
         trip = trip_map.get(str(photo.get("trip_id")), {})
         emotion = photo_selected_tag_meta(photo)
         voice_meta = photo_voice_note_meta(photo)
+        framing = _replay_photo_framing_meta(storage_path)
         snapshots.append({
             "storage_path": storage_path,
             "caption": _monthly_replay_photo_caption(photo, trip, idx),
@@ -20360,6 +20581,12 @@ def build_monthly_family_share_photo_snapshot(bundle, limit=None):
             "emotion_label": str(emotion.get("label") or ""),
             "emotion_emoji": str(emotion.get("emoji") or ""),
             "emotion_color": str(emotion.get("color") or ""),
+            "replay_fit": str(framing.get("fit") or "cover"),
+            "replay_position_x": float(framing.get("position_x") or 50.0),
+            "replay_position_y": float(framing.get("position_y") or 50.0),
+            "replay_use_backdrop": bool(framing.get("use_backdrop")),
+            "replay_person_count": int(framing.get("person_count") or 0),
+            "replay_orientation": str(framing.get("orientation") or "unknown"),
             "voice_storage_path": str(voice_meta.get("storage_path") or ""),
             "voice_transcript": str(voice_meta.get("transcript") or ""),
         })
@@ -20399,6 +20626,16 @@ def build_family_shared_replay_photo_items(share):
         if not url:
             continue
         voice_path = str(snap.get("voice_storage_path") or "").strip()
+        framing = {
+            "fit": str(snap.get("replay_fit") or ""),
+            "position_x": snap.get("replay_position_x"),
+            "position_y": snap.get("replay_position_y"),
+            "use_backdrop": snap.get("replay_use_backdrop"),
+            "person_count": snap.get("replay_person_count"),
+            "orientation": str(snap.get("replay_orientation") or ""),
+        }
+        if not framing["fit"]:
+            framing = _replay_photo_framing_meta(path)
         items.append({
             "url": url,
             "caption": str(snap.get("caption") or ""),
@@ -20406,6 +20643,12 @@ def build_family_shared_replay_photo_items(share):
             "emotion_label": str(snap.get("emotion_label") or ""),
             "emotion_emoji": str(snap.get("emotion_emoji") or ""),
             "emotion_color": str(snap.get("emotion_color") or ""),
+            "replay_fit": str(framing.get("fit") or "cover"),
+            "replay_position_x": float(framing.get("position_x") or 50.0),
+            "replay_position_y": float(framing.get("position_y") or 50.0),
+            "replay_use_backdrop": bool(framing.get("use_backdrop")),
+            "replay_person_count": int(framing.get("person_count") or 0),
+            "replay_orientation": str(framing.get("orientation") or "unknown"),
             "has_voice": bool(voice_path),
             "voice_url": str(voice_signed_map.get(voice_path) or ""),
             "voice_transcript": str(snap.get("voice_transcript") or ""),
@@ -21763,12 +22006,28 @@ def render_monthly_replay_player(period_label, review, playback, photo_items, cu
         box-sizing: border-box;
         transition: none; /* v209: switch frame color on the exact same paint as the photo */
       }}
+      .burari-replay-backdrop {{
+        position: absolute;
+        inset: -5%;
+        z-index: 0;
+        display: none;
+        background-size: cover;
+        background-position: center;
+        filter: blur(20px) brightness(.56) saturate(.82);
+        transform: scale(1.10);
+        pointer-events: none;
+      }}
       .burari-replay-stage img {{
+        position: relative;
+        z-index: 1;
         width: 100%;
         height: 100%;
         object-fit: cover;
+        object-position: 50% 50%;
         display: block;
       }}
+      .burari-replay-top {{ z-index: 4; }}
+      .burari-replay-bottom {{ z-index: 4; }}
       .burari-replay-top {{
         position: absolute;
         top: 0;
@@ -21880,6 +22139,7 @@ def render_monthly_replay_player(period_label, review, playback, photo_items, cu
     <div class="burari-replay-wrap">
       <div class="burari-replay-phone">
         <div class="burari-replay-stage">
+          <div class="burari-replay-backdrop" id="burariReplayBackdrop" aria-hidden="true"></div>
           <img id="burariReplayImage" src="{html.escape(str(photo_items[0].get('url') or ''))}" alt="{html.escape(replay_alt)}" />
           <div class="burari-replay-top">
             <div class="burari-replay-kicker">{html.escape(replay_kicker)}</div>
@@ -22013,6 +22273,7 @@ def render_monthly_replay_player(period_label, review, playback, photo_items, cu
         return preload;
       }}
       const burariImg = document.getElementById('burariReplayImage');
+      const burariBackdrop = document.getElementById('burariReplayBackdrop');
       const burariStage = document.querySelector('.burari-replay-stage');
       const burariEmotion = document.getElementById('burariReplayEmotion');
       const burariCaption = document.getElementById('burariReplayCaption');
@@ -22045,6 +22306,10 @@ def render_monthly_replay_player(period_label, review, playback, photo_items, cu
         sharp: '#53657D',
       }};
       const burariEmotionIcons = {{ cozy: '🥰', joy: '😊', surprise: '😲', anger: '😠', sadness: '😢', frustration: '😣', relaxed: '😌', delicious: '😋', beautiful: '✨', mixed: '😵‍💫', effort: '⭐', challenge: '💪', discovery: '💡', kindness: '❤️', together: '🤝', tears: '😭', hmm: '🤔', peace: '✌️', teach_me: '🙋', sharp: '🫡' }};
+
+      try {{
+        if (burariSlides.length) burariApplyReplayFraming(burariSlides[0] || {{}}, String((burariSlides[0] || {{}}).url || ''));
+      }} catch (_) {{}}
 
       function burariVoiceMinimumMsForIndex(index) {{
         const safeIndex = Math.max(0, Math.min(Number(index) || 0, burariSlides.length - 1));
@@ -22403,6 +22668,26 @@ def render_monthly_replay_player(period_label, review, playback, photo_items, cu
         burariFinishVoice('', resumeMusic);
       }}
 
+      function burariApplyReplayFraming(item, imageUrl) {{
+        if (!burariImg) return;
+        const requestedFit = String((item && item.replay_fit) || 'cover').toLowerCase();
+        const fit = requestedFit === 'contain' ? 'contain' : 'cover';
+        const x = Math.max(0, Math.min(100, Number((item && item.replay_position_x) ?? 50)));
+        const y = Math.max(0, Math.min(100, Number((item && item.replay_position_y) ?? 50)));
+        burariImg.style.objectFit = fit;
+        burariImg.style.objectPosition = `${{x}}% ${{y}}%`;
+        const useBackdrop = Boolean(item && item.replay_use_backdrop) || fit === 'contain';
+        if (burariBackdrop) {{
+          if (useBackdrop && imageUrl) {{
+            burariBackdrop.style.backgroundImage = `url(${{JSON.stringify(String(imageUrl))}})`;
+            burariBackdrop.style.display = 'block';
+          }} else {{
+            burariBackdrop.style.backgroundImage = 'none';
+            burariBackdrop.style.display = 'none';
+          }}
+        }}
+      }}
+
       function burariApplySlideFrame(item, safeIndex, nextUrl) {{
         if (burariVoiceAutoTimer) {{
           clearTimeout(burariVoiceAutoTimer);
@@ -22416,6 +22701,7 @@ def render_monthly_replay_player(period_label, review, playback, photo_items, cu
           burariImg.src = nextUrl;
           burariImg.dataset.burariSlideUrl = nextUrl;
         }}
+        burariApplyReplayFraming(item, nextUrl);
         const emotionKey = String(item.emotion || '');
         const emotionColor = burariEmotionColors[emotionKey] || String(item.emotion_color || '') || burariDefaultFrameColor;
         const emotionIcon = burariEmotionIcons[emotionKey] || String(item.emotion_emoji || '');
@@ -29009,6 +29295,7 @@ def page_nearby():
         }
         .nearby-place-title { font-size:1.08rem; font-weight:850; line-height:1.25; }
         .nearby-place-meta { margin-top:.16rem; font-size:.84rem; opacity:.80; line-height:1.35; }
+        .nearby-place-genre { margin-top:.14rem; font-size:.76rem; font-weight:720; color:rgba(45,79,112,.88); line-height:1.35; }
         .nearby-place-sub { margin-top:.15rem; font-size:.74rem; opacity:.64; line-height:1.35; }
         .nearby-status-row { display:flex; flex-wrap:wrap; gap:6px; margin:.34rem 0 .08rem; align-items:center; }
         .nearby-pill { display:inline-flex; align-items:center; min-height:1.72rem; padding:.18rem .52rem; border-radius:999px; font-size:.72rem; font-weight:760; line-height:1.15; }
@@ -29514,6 +29801,9 @@ def page_nearby():
         with st.container(border=True):
             st.markdown(f'<div class="nearby-place-title">{index}. {html.escape(str(place.get("name") or "候補"))}</div>', unsafe_allow_html=True)
             st.markdown(f'<div class="nearby-place-meta">{html.escape(str(place.get("category") or ""))}　・　{html.escape(_nearby_distance_text(place))}</div>', unsafe_allow_html=True)
+            detailed_genre = _nearby_detailed_genre_text(place)
+            if detailed_genre:
+                st.markdown(f'<div class="nearby-place-genre">ジャンル：{html.escape(detailed_genre)}</div>', unsafe_allow_html=True)
             status = _nearby_open_status(place)
             rating_text = _nearby_rating_text(place)
             burari_rating_text = _nearby_burari_rating_text(place) if kind == "lunch" else ""
