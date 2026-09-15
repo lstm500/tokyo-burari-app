@@ -33,9 +33,10 @@ from zoneinfo import ZoneInfo
 import streamlit as st
 
 # Freshly generated update: 2026-09-15 JST
-GENERATED_UPDATE_JST = "2026-09-15T23:55:00+09:00"
+GENERATED_UPDATE_JST = "2026-09-16T00:05:00+09:00"
 
-APP_BUILD = "v445"
+APP_BUILD = "v446"
+# v446: Make replay start robust again: never block playback because one voice duration cannot be preflighted or because the fixed music window is shorter than the 2.0s/voice minima. Recalculate on every play, keep every still >=2.0s, keep voiced stills until voice end, and let photos continue silently after the configured music end only when needed. Preserve v433 smart person-safe framing unchanged.
 # v445: When a multi-photo gallery selection contains already-imported photos, add an explicit “取り込み済み以外を残す” action that submits only unimported items while keeping the existing save-all action and duplicate badges.
 # v444: Mark already-imported gallery photos on the in-app import review thumbnails. Legacy v441+ imports match by stored original-name/capture metadata; new imports also persist a sampled-content SHA-256 fingerprint for stronger duplicate recognition. Android system picker thumbnails remain OS-controlled.
 # v443: Route imported gallery photos to the trip date derived from their preserved capture timestamp instead of always attaching them to today. Group multi-date batch imports by capture date, avoid inflating today counters for historical imports, and safely repair pre-v443 gallery imports that are still in an undiarized trip whose date disagrees with captured_at.
@@ -23787,12 +23788,12 @@ def render_monthly_replay_player(period_label, review, playback, photo_items, cu
           <button id="burariReplayAgain" type="button" disabled>↻ 最初から</button>
         </div>
       </div>
-      <div class="burari-replay-meta">音楽区間：{format_mmss(start_seconds)}〜{format_mmss(end_seconds)} ／ 写真 {len(photo_items)}枚 ／ 終了時間固定・再生ごとに自動調整（最低2.0秒・声付きは声が終わるまで）</div>
+      <div class="burari-replay-meta">音楽区間：{format_mmss(start_seconds)}〜{format_mmss(end_seconds)} ／ 写真 {len(photo_items)}枚 ／ 再生ごとに自動調整（最低2.0秒・声付きは声が終わるまで）／音楽区間は設定どおり</div>
       <div class="burari-replay-player-wrap">
         <div class="burari-replay-player-label">YouTube 音楽</div>
         <div id="burariReplayPlayer"></div>
       </div>
-      <div class="burari-replay-status" id="burariReplayStatus">再生時に写真枚数と声の長さから表示時間を計算し、設定した終了時間までに最後の写真へ到達します。</div>
+      <div class="burari-replay-status" id="burariReplayStatus">再生のたびに現在の写真枚数と声の長さから表示時間を再計算します。最低2.0秒、声付き写真は声が終わるまで表示します。</div>
       <div class="burari-replay-note">YouTubeの仕様上、再生中の公式プレーヤーは完全には隠さず、最小限の大きさで表示します。</div>
     </div>
     <script>
@@ -23843,6 +23844,8 @@ def render_monthly_replay_player(period_label, review, playback, photo_items, cu
       let burariSlideMinimumMs = new Array(burariSlides.length).fill(burariMinimumDisplayMs);
       let burariReplayPlanReady = false;
       let burariReplayPlanError = '';
+      let burariReplayNeedsTail = false;
+      let burariMusicWindowEnded = false;
       let burariSequenceComplete = false;
       let burariMusicSourceEnded = false;
       let burariIndex = 0;
@@ -23949,7 +23952,10 @@ def render_monthly_replay_player(period_label, review, playback, photo_items, cu
         const item = burariSlides[safeIndex] || {{}};
         if (!String(item.voice_url || '')) return burariMinimumDisplayMs;
         const durationMs = Number(burariVoiceDurationMsByIndex[safeIndex] || 0);
-        if (!Number.isFinite(durationMs) || durationMs <= 0) return NaN;
+        // v446: metadata preflight is an optimisation, never a playback gate. If a
+        // browser/WebView cannot read duration metadata, start with the 2.0 s floor;
+        // actual voice playback below keeps the still visible until the voice ends.
+        if (!Number.isFinite(durationMs) || durationMs <= 0) return burariMinimumDisplayMs;
         return Math.max(
           burariMinimumDisplayMs,
           Math.ceil(durationMs + burariVoiceAutoDelayMs + burariVoiceTimingSafetyMs)
@@ -23962,31 +23968,19 @@ def render_monthly_replay_player(period_label, review, playback, photo_items, cu
       }}
 
       function burariBuildReplayPlan() {{
+        // Rebuild from the current photo set on every Play/Restart. Known voice durations
+        // are used immediately; unknown durations fall back to 2.0 s and are corrected
+        // dynamically when that voice actually loads/plays. Never refuse playback here.
         burariReplayPlanReady = false;
         burariReplayPlanError = '';
-        if (!burariVoiceDurationsReady) {{
-          burariReplayPlanError = '写真の声の長さを確認中です。少し待ってから再生してください。';
-          return false;
-        }}
-        if (burariVoiceDurationError) {{
-          burariReplayPlanError = burariVoiceDurationError;
-          return false;
-        }}
         const minimums = [];
         for (let i = 0; i < burariSlides.length; i += 1) {{
           const minimumMs = burariVoiceMinimumMsForIndex(i);
-          if (!Number.isFinite(minimumMs)) {{
-            burariReplayPlanError = `写真${{i + 1}}の声の長さを確認できません。終了時間を守るため再生を開始しません。`;
-            return false;
-          }}
-          minimums.push(Math.max(burariMinimumDisplayMs, minimumMs));
+          minimums.push(Math.max(burariMinimumDisplayMs, Number(minimumMs) || burariMinimumDisplayMs));
         }}
         const minimumTotalMs = minimums.reduce((sum, value) => sum + value, 0);
-        if (minimumTotalMs > burariConfiguredDurationMs + 5) {{
-          burariReplayPlanError = `設定した音楽区間は${{burariFormatPlanSeconds(burariConfiguredDurationMs)}}秒ですが、写真${{burariSlides.length}}枚を条件どおり再生するには最低${{burariFormatPlanSeconds(minimumTotalMs)}}秒必要です。終了時間は変更していません。`;
-          return false;
-        }}
         burariSlideMinimumMs = minimums;
+        burariReplayNeedsTail = minimumTotalMs > burariConfiguredDurationMs + 5;
         burariReplayPlanReady = true;
         return true;
       }}
@@ -24053,33 +24047,28 @@ def render_monthly_replay_player(period_label, review, playback, photo_items, cu
         await Promise.all(Array.from({{ length: workerCount }}, () => worker()));
         burariVoiceDurationsReady = true;
         if (failedIndex >= 0) {{
-          burariVoiceDurationError = `写真${{failedIndex + 1}}の声の長さを確認できません。終了時間を守るため、このままでは再生を開始できません。`;
+          // v446: keep a non-blocking note only. The actual Audio element will measure
+          // the voice when it plays, and the photo remains on screen until ended.
+          burariVoiceDurationError = `写真${{failedIndex + 1}}の声は再生時に長さを確認します。`;
         }}
         burariSetPlayerControlsReady(burariPlayerReady);
-        if (burariStatus) {{
-          if (burariVoiceDurationError) burariStatus.textContent = burariVoiceDurationError;
-          else if (burariPlayerReady) burariStatus.textContent = `準備完了。終了時間 ${{burariEndSeconds}}秒を固定して再生します。`;
+        if (burariStatus && !burariReplayPlaybackActive) {{
+          if (burariPlayerReady) burariStatus.textContent = burariVoiceDurationError
+            ? `準備完了。${{burariVoiceDurationError}} ▶ 再生できます。`
+            : '準備完了。▶ 再生できます。';
           else burariStatus.textContent = '写真と声の準備ができました。音楽を準備しています…';
         }}
       }}
 
       function burariRefreshMainReplayButton(ready = burariPlayerReady) {{
         if (!burariStartButton) return;
-        const fullyReady = Boolean(ready && burariVoiceDurationsReady && !burariVoiceDurationError);
+        // v446: YouTube readiness is sufficient to start. Voice metadata continues in
+        // the background and can never leave the Play button permanently disabled.
+        const fullyReady = Boolean(ready);
         burariStartButton.disabled = !fullyReady;
         burariStartButton.classList.remove('burari-state-play', 'burari-state-interrupt', 'burari-state-resume');
         if (!ready) {{
           burariStartButton.textContent = '音楽準備中…';
-          burariStartButton.classList.add('burari-state-play');
-          return;
-        }}
-        if (!burariVoiceDurationsReady) {{
-          burariStartButton.textContent = '声の長さ確認中…';
-          burariStartButton.classList.add('burari-state-play');
-          return;
-        }}
-        if (burariVoiceDurationError) {{
-          burariStartButton.textContent = '声を確認できません';
           burariStartButton.classList.add('burari-state-play');
           return;
         }}
@@ -24096,7 +24085,7 @@ def render_monthly_replay_player(period_label, review, playback, photo_items, cu
       }}
 
       function burariSetPlayerControlsReady(ready) {{
-        const fullyReady = Boolean(ready && burariVoiceDurationsReady && !burariVoiceDurationError);
+        const fullyReady = Boolean(ready);
         burariRefreshMainReplayButton(ready);
         if (burariAgainButton) burariAgainButton.disabled = !fullyReady;
       }}
@@ -24123,7 +24112,7 @@ def render_monthly_replay_player(period_label, review, playback, photo_items, cu
       }}
 
       function burariKeepBgmDuringVoice() {{
-        if (!burariVoicePlaybackActive || !burariReplayPlaybackActive || !burariPlayerReady || !burariPlayer) {{
+        if (burariMusicWindowEnded || !burariVoicePlaybackActive || !burariReplayPlaybackActive || !burariPlayerReady || !burariPlayer) {{
           burariStopVoiceBgmKeepAlive();
           return;
         }}
@@ -24171,9 +24160,11 @@ def render_monthly_replay_player(period_label, review, playback, photo_items, cu
             return;
           }}
           burariEnsureAudible();
-          try {{
-            if (typeof burariPlayer.playVideo === 'function') burariPlayer.playVideo();
-          }} catch (_) {{}}
+          if (!burariMusicWindowEnded) {{
+            try {{
+              if (typeof burariPlayer.playVideo === 'function') burariPlayer.playVideo();
+            }} catch (_) {{}}
+          }}
           // WebView may also suspend the HTML audio element used for a photo voice.
           // Resume it on the same headphone route while keeping YouTube at 70% during the photo voice.
           if (burariVoicePlaybackActive && burariVoiceAudio) {{
@@ -24190,7 +24181,7 @@ def render_monthly_replay_player(period_label, review, playback, photo_items, cu
             if (!burariReplayPlaybackActive || document.hidden) return;
             burariEnsureAudible();
             try {{
-              if (burariPlayer && typeof burariPlayer.getPlayerState === 'function' &&
+              if (!burariMusicWindowEnded && burariPlayer && typeof burariPlayer.getPlayerState === 'function' &&
                   window.YT && burariPlayer.getPlayerState() !== YT.PlayerState.PLAYING &&
                   typeof burariPlayer.playVideo === 'function') {{
                 burariPlayer.playVideo();
@@ -24216,6 +24207,9 @@ def render_monthly_replay_player(period_label, review, playback, photo_items, cu
       }}
 
       function burariPlaybackClockSeconds() {{
+        // Once the configured music window/source has ended, remaining photos run at
+        // their exact minimums instead of inheriting surplus from a frozen YouTube clock.
+        if (burariMusicWindowEnded || burariMusicSourceEnded) return burariStrictEndSeconds;
         // Before YouTube has reached the requested start position, use the requested
         // start as the replay clock. Otherwise the player may still report 0 and make
         // the first still much too long.
@@ -24296,7 +24290,7 @@ def render_monthly_replay_player(period_label, review, playback, photo_items, cu
           clearTimeout(burariVoiceSafetyTimer);
           burariVoiceSafetyTimer = null;
         }}
-        const shouldResume = resumeMusic && burariReplayPlaybackActive && burariResumeAfterVoice;
+        const shouldResume = resumeMusic && burariReplayPlaybackActive && burariResumeAfterVoice && !burariMusicWindowEnded;
         burariVoicePlaybackActive = false;
         burariResumeAfterVoice = false;
         burariSetMusicVolume(burariNormalMusicVolume);
@@ -24537,6 +24531,21 @@ def render_monthly_replay_player(period_label, review, playback, photo_items, cu
         }}
       }}
 
+      function burariFinishMusicWindow() {{
+        if (burariMusicWindowEnded) return;
+        burariMusicWindowEnded = true;
+        try {{
+          if (burariPlayer && typeof burariPlayer.pauseVideo === 'function') burariPlayer.pauseVideo();
+        }} catch (_) {{}}
+        // If every photo condition is already satisfied, finish immediately. Otherwise
+        // keep the photo scheduler running silently until the last >=2.0 s/voice condition.
+        if (burariSequenceComplete && !burariVoicePlaybackActive) {{
+          burariStopAtEnd();
+        }} else if (burariStatus) {{
+          burariStatus.textContent = '音楽区間は終了しました。残りの写真は最低2.0秒、声付きは声が終わるまで再生します。';
+        }}
+      }}
+
       function burariStopAtEnd() {{
         const reachedLastPhoto = burariSequenceComplete || burariIndex >= burariSlides.length - 1;
         burariStopTimers();
@@ -24557,8 +24566,8 @@ def render_monthly_replay_player(period_label, review, playback, photo_items, cu
         burariStopVoice(false);
         burariRefreshMainReplayButton();
         if (burariStatus) burariStatus.textContent = reachedLastPhoto
-          ? '終了：設定した終了時間どおり、最後の写真まで再生しました。'
-          : '終了時間に到達したため再生を終了しました。終了時間は延長していません。';
+          ? '終了：最後の写真まで、最低2.0秒・声付きは声の終了まで再生しました。'
+          : '再生を終了しました。';
       }}
 
       function burariPauseReplay() {{
@@ -24597,8 +24606,7 @@ def render_monthly_replay_player(period_label, review, playback, photo_items, cu
         let current = NaN;
         try {{ current = Number(burariPlayer.getCurrentTime()); }} catch (_) {{}}
         if (Number.isFinite(current) && current >= burariStrictEndSeconds - 0.08) {{
-          burariStopAtEnd();
-          return;
+          burariMusicWindowEnded = true;
         }}
         const resumeRemainingMs = Number.isFinite(Number(burariPausedSlideRemainingMs))
           ? Math.max(0, Number(burariPausedSlideRemainingMs))
@@ -24608,7 +24616,9 @@ def render_monthly_replay_player(period_label, review, playback, photo_items, cu
         burariReplayPlaybackActive = true;
         burariNeedsForegroundRestore = false;
         burariRefreshMainReplayButton();
-        try {{ if (typeof burariPlayer.playVideo === 'function') burariPlayer.playVideo(); }} catch (_) {{}}
+        if (!burariMusicWindowEnded) {{
+          try {{ if (typeof burariPlayer.playVideo === 'function') burariPlayer.playVideo(); }} catch (_) {{}}
+        }}
 
         if (burariVoicePlaybackActive && burariVoiceAudio) {{
           burariSetMusicVolume(burariVoiceMusicVolume);
@@ -24670,6 +24680,14 @@ def render_monthly_replay_player(period_label, review, playback, photo_items, cu
           burariVoiceAudio.addEventListener('loadedmetadata', () => {{
             if (burariVoiceSafetyTimer) clearTimeout(burariVoiceSafetyTimer);
             const duration = Number(burariVoiceAudio.duration);
+            if (Number.isFinite(duration) && duration > 0 && burariIndex >= 0 && burariIndex < burariSlides.length) {{
+              const measuredMs = Math.ceil(duration * 1000);
+              burariVoiceDurationMsByIndex[burariIndex] = measuredMs;
+              burariSlideMinimumMs[burariIndex] = Math.max(
+                burariMinimumDisplayMs,
+                measuredMs + burariVoiceAutoDelayMs + burariVoiceTimingSafetyMs
+              );
+            }}
             const safetyMs = Number.isFinite(duration) ? Math.max(5000, duration * 1000 + 4000) : 90000;
             burariVoiceSafetyTimer = setTimeout(() => {{
               if (burariVoicePlaybackActive) burariFinishVoice('写真の声の再生を終了しました。', true);
@@ -24757,7 +24775,8 @@ def render_monthly_replay_player(period_label, review, playback, photo_items, cu
       }}
 
       function burariStartMusicEndWatch() {{
-        // v427: end_seconds is absolute. Nothing in the photo/voice scheduler may move it.
+        // v446: the configured end still ends the YouTube BGM. If photo minima/voice
+        // playback need more time, only the photo sequence continues after that point.
         if (burariMusicWatchTimer) {{
           clearInterval(burariMusicWatchTimer);
           burariMusicWatchTimer = null;
@@ -24771,17 +24790,16 @@ def render_monthly_replay_player(period_label, review, playback, photo_items, cu
             if (!burariPlayer || typeof burariPlayer.getCurrentTime !== 'function') return;
             const current = Number(burariPlayer.getCurrentTime());
             if (!Number.isFinite(current)) return;
-            if (current >= burariStrictEndSeconds - 0.08) burariStopAtEnd();
+            if (current >= burariStrictEndSeconds - 0.08) burariFinishMusicWindow();
           }} catch (_) {{}}
         }}, 120);
 
-        // Fallback only handles a broken player clock. It never grants extra movie time.
         const fallbackMs = Math.max(90000, burariConfiguredDurationMs * 6);
         burariFallbackEndTimer = setTimeout(() => {{
           if (!burariReplayPlaybackActive) return;
           let current = NaN;
           try {{ current = Number(burariPlayer && burariPlayer.getCurrentTime ? burariPlayer.getCurrentTime() : NaN); }} catch (_) {{}}
-          if (Number.isFinite(current) && current >= burariStrictEndSeconds - 0.08) burariStopAtEnd();
+          if (Number.isFinite(current) && current >= burariStrictEndSeconds - 0.08) burariFinishMusicWindow();
         }}, fallbackMs);
       }}
 
@@ -24818,11 +24836,7 @@ def render_monthly_replay_player(period_label, review, playback, photo_items, cu
           if (burariStatus) burariStatus.textContent = '音楽を準備しています。準備完了後に▶ 再生を押してください。';
           return;
         }}
-        if (!burariBuildReplayPlan()) {{
-          burariPendingStart = false;
-          if (burariStatus) burariStatus.textContent = burariReplayPlanError || '設定した終了時間内に条件どおり再生できません。';
-          return;
-        }}
+        burariBuildReplayPlan();
         burariPendingStart = false;
         burariRequestNativeAudioFocus();
         burariStopTimers();
@@ -24838,6 +24852,7 @@ def render_monthly_replay_player(period_label, review, playback, photo_items, cu
         burariSlideAdvancePending = false;
         burariSequenceComplete = false;
         burariMusicSourceEnded = false;
+        burariMusicWindowEnded = false;
         burariIndex = 0;
         burariStopVoice(false);
         // Apply slide 1 first; its timer starts only after YouTube reaches the requested
@@ -24885,9 +24900,8 @@ def render_monthly_replay_player(period_label, review, playback, photo_items, cu
               }} catch (_) {{}}
               burariSetPlayerControlsReady(true);
               if (burariStatus) {{
-                if (burariVoiceDurationError) burariStatus.textContent = burariVoiceDurationError;
-                else if (!burariVoiceDurationsReady) burariStatus.textContent = '音楽の準備ができました。写真の声の長さを確認しています…';
-                else burariStatus.textContent = `準備完了。▶ 再生で ${{burariStartSeconds}}秒から始まり、${{burariEndSeconds}}秒で必ず終了します。`;
+                if (!burariVoiceDurationsReady) burariStatus.textContent = '音楽の準備ができました。声の長さは裏で確認中ですが、▶ 再生できます。';
+                else burariStatus.textContent = '準備完了。▶ 再生できます。';
               }}
             }},
             onStateChange: function(event) {{
@@ -24909,18 +24923,18 @@ def render_monthly_replay_player(period_label, review, playback, photo_items, cu
               }} else if (event.data === YT.PlayerState.PAUSED) {{
                 // Starting a photo voice can cause an Android WebView media-session
                 // pause. This is not a user stop: immediately keep BGM at 70%.
-                if (burariReplayPlaybackActive && burariVoicePlaybackActive && !document.hidden) {{
+                if (!burariMusicWindowEnded && burariReplayPlaybackActive && burariVoicePlaybackActive && !document.hidden) {{
                   burariKeepBgmDuringVoice();
                 }}
               }} else if (event.data === YT.PlayerState.ENDED) {{
-                // The source video itself ended. Keep the photo scheduler alive so a
-                // short source can never hide the remaining photos. The last photo (and
-                // any attached voice) still decides when the replay is complete.
+                // The source video itself ended. Keep the photo scheduler alive; photos
+                // still obey >=2.0 s and voices still finish completely.
                 burariMusicSourceEnded = true;
+                burariMusicWindowEnded = true;
                 if (burariSequenceComplete && !burariVoicePlaybackActive) {{
                   burariStopAtEnd();
                 }} else if (burariStatus) {{
-                  burariStatus.textContent = '音楽は終了しました。写真は最後まで再生します。';
+                  burariStatus.textContent = '音楽は終了しました。残りの写真は最低2.0秒、声付きは声が終わるまで再生します。';
                 }}
               }}
             }},
