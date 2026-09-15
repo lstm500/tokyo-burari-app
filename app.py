@@ -33,9 +33,10 @@ from zoneinfo import ZoneInfo
 import streamlit as st
 
 # Freshly generated update: 2026-09-15 JST
-GENERATED_UPDATE_JST = "2026-09-16T00:18:00+09:00"
+GENERATED_UPDATE_JST = "2026-09-16T01:05:00+09:00"
 
-APP_BUILD = "v447"
+APP_BUILD = "v448"
+# v448: Replay emotion/tag rendering now treats the photo row currently stored in the database as authoritative. Always reload current photo reflection_json before assembling owner replays, never overwrite a current photo tag from an older Good Moments/source snapshot during replay, and resolve family-shared replay emotions from the owner's live photo row when available. Preserve v447 new-photo support, v446 timing, and v433 smart framing.
 # v447: Refresh Good Moments-derived still metadata before building every replay. Newly saved stills can exist before their browser-selected emotion/parenting tag has been copied from the source video item; replay now runs the existing v417 source-link repair, reloads changed photo rows in the same render, and therefore applies the emotion border/badge immediately without requiring the Diary gallery to be opened first. Preserve v446 timing and v433 smart framing unchanged.
 # v446: Make replay start robust again: never block playback because one voice duration cannot be preflighted or because the fixed music window is shorter than the 2.0s/voice minima. Recalculate on every play, keep every still >=2.0s, keep voiced stills until voice end, and let photos continue silently after the configured music end only when needed. Preserve v433 smart person-safe framing unchanged.
 # v445: When a multi-photo gallery selection contains already-imported photos, add an explicit “取り込み済み以外を残す” action that submits only unimported items while keeping the existing save-all action and duplicate badges.
@@ -21669,44 +21670,18 @@ def _replay_photo_framing_meta(storage_path):
         return default
 
 
-def _refresh_replay_photo_metadata_v447(photos):
-    """Return replay photos with current Good Moments tag/voice metadata.
+def _refresh_replay_photo_metadata_v448(photos):
+    """Reload the current owned photo rows before replay assembly.
 
-    v417 already knows how to repair a still saved from a video when its source
-    Good Moments item received the emotion/parenting/voice choice after the still
-    itself was created.  Until v447 that repair ran only when the Diary gallery
-    opened, so a newly created still could enter the monthly replay with an empty
-    emotion and therefore no colored frame/badge.  Run the same repair before
-    replay assembly and, when it writes anything, reload the affected rows so the
-    current render uses the repaired metadata immediately.
+    Replay must reflect the feeling/tag that is on the photo *now*.  Do not repair
+    or follow a historical Good Moments/source tag here: that could replace a tag
+    the user changed later in Diary/Photos.  The live PHOTO_TABLE row is therefore
+    the final authority for replay border/badge state.  If the refresh fails, keep
+    the already-loaded rows rather than blocking playback.
     """
     rows = [dict(photo) for photo in (photos or []) if isinstance(photo, dict)]
     if not rows:
         return rows
-
-    needs_source_sync = False
-    for photo in rows:
-        reflection = photo.get("reflection_json") or {}
-        if not isinstance(reflection, dict):
-            continue
-        source_video_id = str(reflection.get("source_video_photo_id") or "").strip()
-        try:
-            source_rank = int(reflection.get("source_selection_rank") or 0)
-        except Exception:
-            source_rank = 0
-        if source_video_id and source_rank > 0:
-            needs_source_sync = True
-            break
-    if not needs_source_sync:
-        return rows
-
-    try:
-        changed = bool(_sync_moments_metadata_into_saved_photos_v417(rows))
-    except Exception:
-        changed = False
-    if not changed:
-        return rows
-
     photo_ids = [str(photo.get("id") or "").strip() for photo in rows]
     photo_ids = [photo_id for photo_id in photo_ids if photo_id]
     if not photo_ids:
@@ -21720,7 +21695,11 @@ def _refresh_replay_photo_metadata_v447(photos):
             .eq("member_key", current_member_key())
             .execute()
         ).data or []
-        fresh_map = {str(row.get("id") or ""): row for row in fresh_rows if isinstance(row, dict) and row.get("id")}
+        fresh_map = {
+            str(row.get("id") or ""): row
+            for row in fresh_rows
+            if isinstance(row, dict) and row.get("id")
+        }
         return [dict(fresh_map.get(str(photo.get("id") or "")) or photo) for photo in rows]
     except Exception:
         return rows
@@ -21730,7 +21709,7 @@ def build_monthly_replay_photo_items(bundle, limit=None):
     photos, trip_map = _monthly_replay_selected_photos(bundle, limit=limit)
     if not photos:
         return []
-    photos = _refresh_replay_photo_metadata_v447(photos)
+    photos = _refresh_replay_photo_metadata_v448(photos)
     paths = [str(p.get("storage_path") or "").strip() for p in photos]
     paths = [path for path in paths if path]
     voice_paths = [photo_voice_note_storage_path(photo) for photo in photos]
@@ -22245,8 +22224,9 @@ def monthly_family_share_is_enabled(review):
 
 
 def build_monthly_family_share_photo_snapshot(bundle, limit=None):
-    """Store only lightweight references/labels; original photos are never copied."""
+    """Store lightweight references; current photo rows remain authoritative for tags."""
     photos, trip_map = _monthly_replay_selected_photos(bundle, limit=limit)
+    photos = _refresh_replay_photo_metadata_v448(photos)
     snapshots = []
     for idx, photo in enumerate(photos, start=1):
         storage_path = str(photo.get("storage_path") or "").strip()
@@ -22257,6 +22237,7 @@ def build_monthly_family_share_photo_snapshot(bundle, limit=None):
         voice_meta = photo_voice_note_meta(photo)
         framing = _replay_photo_framing_meta(storage_path)
         snapshots.append({
+            "photo_id": str(photo.get("id") or ""),
             "storage_path": storage_path,
             "caption": _monthly_replay_photo_caption(photo, trip, idx),
             "emotion": str(emotion.get("key") or ""),
@@ -22289,6 +22270,29 @@ def build_family_shared_replay_photo_items(share):
     paths = [x for x in paths if x]
     if not paths:
         return []
+
+    # v448: a shared replay should also show the owner's *current* photo feeling,
+    # not the feeling copied into the movie share payload at share/diary time.
+    current_photo_by_path = {}
+    owner_member_key = str(share.get("shared_by_member_key") or "").strip()
+    if owner_member_key:
+        try:
+            current_rows = (
+                supabase_client().table(PHOTO_TABLE)
+                .select("id,storage_path,reflection_json")
+                .in_("storage_path", paths)
+                .eq("family_key", current_family_key())
+                .eq("member_key", owner_member_key)
+                .execute()
+            ).data or []
+            current_photo_by_path = {
+                str(row.get("storage_path") or "").strip(): row
+                for row in current_rows
+                if isinstance(row, dict) and str(row.get("storage_path") or "").strip()
+            }
+        except Exception:
+            current_photo_by_path = {}
+
     voice_paths = [str(x.get("voice_storage_path") or "").strip() for x in snapshots]
     voice_paths = [x for x in voice_paths if x]
     try:
@@ -22315,16 +22319,18 @@ def build_family_shared_replay_photo_items(share):
         if not url:
             continue
         voice_path = str(snap.get("voice_storage_path") or "").strip()
+        current_photo = current_photo_by_path.get(path)
+        current_emotion = photo_selected_tag_meta(current_photo) if isinstance(current_photo, dict) else {}
         # Recompute from the original image so older shared snapshots that stored the
         # v429 blurred/contain framing automatically receive the current smart framing.
         framing = _replay_photo_framing_meta(path)
         items.append({
             "url": url,
             "caption": str(snap.get("caption") or ""),
-            "emotion": str(snap.get("emotion") or ""),
-            "emotion_label": str(snap.get("emotion_label") or ""),
-            "emotion_emoji": str(snap.get("emotion_emoji") or ""),
-            "emotion_color": str(snap.get("emotion_color") or ""),
+            "emotion": str(current_emotion.get("key") if current_emotion else snap.get("emotion") or ""),
+            "emotion_label": str(current_emotion.get("label") if current_emotion else snap.get("emotion_label") or ""),
+            "emotion_emoji": str(current_emotion.get("emoji") if current_emotion else snap.get("emotion_emoji") or ""),
+            "emotion_color": str(current_emotion.get("color") if current_emotion else snap.get("emotion_color") or ""),
             "replay_fit": str(framing.get("fit") or "cover"),
             "replay_position_x": float(framing.get("position_x") or 50.0),
             "replay_position_y": float(framing.get("position_y") or 50.0),
@@ -22349,7 +22355,7 @@ def _monthly_family_share_payload(month_key, period_label, bundle, previous_shar
     previous_share = previous_share if isinstance(previous_share, dict) else {}
     now_value = now_jst().isoformat()
     return {
-        "version": 1,
+        "version": 2,
         "shared": True,
         "month_key": str(month_key or ""),
         "period_label": str(period_label or format_month_label(month_key)),
