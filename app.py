@@ -32,10 +32,11 @@ from zoneinfo import ZoneInfo
 
 import streamlit as st
 
-# Freshly generated update: 2026-09-14 JST
-GENERATED_UPDATE_JST = "2026-09-15T23:18:00+09:00"
+# Freshly generated update: 2026-09-15 JST
+GENERATED_UPDATE_JST = "2026-09-15T23:31:00+09:00"
 
-APP_BUILD = "v442"
+APP_BUILD = "v443"
+# v443: Route imported gallery photos to the trip date derived from their preserved capture timestamp instead of always attaching them to today. Group multi-date batch imports by capture date, avoid inflating today counters for historical imports, and safely repair pre-v443 gallery imports that are still in an undiarized trip whose date disagrees with captured_at.
 # v442: Add two-step batch photo deletion to pending-diary photo groups and the all-photo library list. Keep single-photo delete, select multiple photos safely, show a running state, and delete sequentially so trip/diary cleanup remains correct.
 # v441: Read original gallery-photo metadata before resize/conversion. Prefer EXIF DateTimeOriginal, then DateTimeDigitized / DateTime / XMP CreateDate, use EXIF GPS when present, and fall back safely to file.lastModified/import time for both single and batch imports.
 # v440: Allow multi-select import from the existing-photo picker. Keep the single-photo review path unchanged, add a bounded 20-photo batch preview/preparation flow, save the batch in one action, and preserve per-file capture timestamps without changing video import.
@@ -17975,6 +17976,258 @@ def get_today_active_trip():
     return (result.data or [None])[0]
 
 
+def _gallery_capture_datetime_v443(value):
+    """Parse an imported-photo timestamp into the app timezone without changing the instant."""
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except Exception:
+        return None
+    try:
+        zone = ZoneInfo(APP_TIMEZONE)
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=zone)
+        else:
+            parsed = parsed.astimezone(zone)
+    except Exception:
+        pass
+    return parsed
+
+
+def _gallery_capture_date_v443(value):
+    parsed = _gallery_capture_datetime_v443(value)
+    if parsed is not None:
+        return parsed.date().isoformat()
+    raw = str(value or "").strip()
+    candidate = raw[:10]
+    try:
+        return date.fromisoformat(candidate).isoformat()
+    except Exception:
+        return today_iso()
+
+
+def _gallery_capture_timestamp_v443(value, capture_date=None):
+    parsed = _gallery_capture_datetime_v443(value)
+    if parsed is not None:
+        return parsed.isoformat()
+    target_date = str(capture_date or _gallery_capture_date_v443(value) or today_iso())
+    try:
+        return datetime.combine(
+            date.fromisoformat(target_date),
+            datetime.min.time().replace(hour=12),
+            tzinfo=ZoneInfo(APP_TIMEZONE),
+        ).isoformat()
+    except Exception:
+        return now_jst().isoformat()
+
+
+def get_or_create_gallery_import_trip_v443(captured_at, cache=None):
+    """Return a no-diary trip whose trip_date matches an imported photo's capture date.
+
+    Today's gallery photos deliberately join today's active trip. Historical gallery
+    photos use/reuse an undiarized historical trip and never change the active-trip
+    pointer, so importing old photos cannot make the app believe the outing happened today.
+    """
+    target_date = _gallery_capture_date_v443(captured_at)
+    cache_map = cache if isinstance(cache, dict) else None
+    if cache_map is not None and target_date in cache_map:
+        cached = cache_map.get(target_date)
+        if isinstance(cached, dict) and cached.get("id"):
+            return cached
+
+    if target_date == today_iso():
+        trip = ensure_today_trip()
+        if cache_map is not None:
+            cache_map[target_date] = trip
+        return trip
+
+    client = supabase_client()
+    rows = (
+        client
+        .table(TRIP_TABLE)
+        .select("*")
+        .eq("family_key", current_family_key()).eq("member_key", current_member_key())
+        .eq("trip_date", target_date)
+        .in_("status", ["ready_for_diary", "active"])
+        .order("started_at", desc=True)
+        .limit(12)
+        .execute()
+    ).data or []
+
+    candidate_ids = [str(row.get("id") or "") for row in rows if isinstance(row, dict) and row.get("id")]
+    diary_trip_ids = set()
+    if candidate_ids:
+        try:
+            diary_rows = (
+                client
+                .table(DIARY_TABLE)
+                .select("trip_id")
+                .eq("family_key", current_family_key()).eq("member_key", current_member_key())
+                .in_("trip_id", candidate_ids)
+                .execute()
+            ).data or []
+            diary_trip_ids = {str(row.get("trip_id") or "") for row in diary_rows if isinstance(row, dict)}
+        except Exception:
+            # Fail closed: if diary ownership cannot be checked, never reuse a
+            # possibly completed trip. A fresh historical pending trip is safer.
+            diary_trip_ids = set(candidate_ids)
+
+    available = [
+        row for row in rows
+        if isinstance(row, dict)
+        and str(row.get("id") or "")
+        and str(row.get("id") or "") not in diary_trip_ids
+    ]
+    trip = next((row for row in available if str(row.get("status") or "") == "ready_for_diary"), None)
+    if trip is None:
+        trip = next((row for row in available if str(row.get("status") or "") == "active"), None)
+
+    capture_timestamp = _gallery_capture_timestamp_v443(captured_at, target_date)
+    if isinstance(trip, dict) and trip.get("id"):
+        if str(trip.get("status") or "") == "active":
+            updated = (
+                client
+                .table(TRIP_TABLE)
+                .update({"status": "ready_for_diary", "ended_at": capture_timestamp})
+                .eq("id", trip["id"])
+                .eq("family_key", current_family_key()).eq("member_key", current_member_key())
+                .execute()
+            )
+            trip = (updated.data or [trip])[0] or trip
+            _invalidate_fast_db_cache()
+    else:
+        created = (
+            client
+            .table(TRIP_TABLE)
+            .insert(
+                {
+                    "family_key": current_family_key(),
+                    "member_key": current_member_key(),
+                    "trip_date": target_date,
+                    "destination": "",
+                    "status": "ready_for_diary",
+                    "started_at": capture_timestamp,
+                    "ended_at": capture_timestamp,
+                }
+            )
+            .execute()
+        )
+        trip = (created.data or [None])[0]
+        if not isinstance(trip, dict) or not trip.get("id"):
+            raise RuntimeError("過去写真の撮影日に対応するぶらり旅を作成できませんでした。")
+        _invalidate_fast_db_cache()
+
+    if cache_map is not None:
+        cache_map[target_date] = trip
+    return trip
+
+
+def repair_misdated_gallery_imports_v443(max_items=5000):
+    """Move older v441/v442 gallery imports out of the wrong dated pending trip.
+
+    Only undiarized source trips are repaired automatically. Completed diaries are left
+    untouched to avoid silently rewriting already-saved diary history. Photo IDs and
+    Storage objects remain unchanged; only the relational trip_id is corrected.
+    """
+    try:
+        source_photos = list_member_still_photos_for_tags(max_items=max_items)
+    except Exception:
+        return {"moved": 0, "skipped_saved_diary": 0, "checked": 0}
+
+    imported = []
+    source_trip_ids = set()
+    for photo in source_photos or []:
+        if not isinstance(photo, dict) or photo_is_video(photo):
+            continue
+        reflection = photo.get("reflection_json") or {}
+        if not isinstance(reflection, dict):
+            continue
+        capture_source = str(reflection.get("capture_source") or "").strip()
+        if capture_source not in {"gallery", "gallery_batch"}:
+            continue
+        photo_id = str(photo.get("id") or "").strip()
+        trip_id = str(photo.get("trip_id") or "").strip()
+        if not photo_id or not trip_id:
+            continue
+        imported.append(photo)
+        source_trip_ids.add(trip_id)
+
+    if not imported or not source_trip_ids:
+        return {"moved": 0, "skipped_saved_diary": 0, "checked": len(imported)}
+
+    client = supabase_client()
+    source_trips = (
+        client
+        .table(TRIP_TABLE)
+        .select("*")
+        .eq("family_key", current_family_key()).eq("member_key", current_member_key())
+        .in_("id", list(source_trip_ids))
+        .execute()
+    ).data or []
+    trip_by_id = {str(row.get("id") or ""): row for row in source_trips if isinstance(row, dict) and row.get("id")}
+
+    try:
+        diary_rows = (
+            client
+            .table(DIARY_TABLE)
+            .select("trip_id")
+            .eq("family_key", current_family_key()).eq("member_key", current_member_key())
+            .in_("trip_id", list(source_trip_ids))
+            .execute()
+        ).data or []
+        diary_trip_ids = {str(row.get("trip_id") or "") for row in diary_rows if isinstance(row, dict)}
+    except Exception:
+        # Automatic repair must never move photos when we cannot prove the source
+        # trip is still undiarized. Leave existing records untouched and retry later.
+        return {"moved": 0, "skipped_saved_diary": 0, "checked": len(imported)}
+
+    target_cache = {}
+    moved = 0
+    skipped_saved_diary = 0
+    for photo in imported:
+        source_trip_id = str(photo.get("trip_id") or "")
+        source_trip = trip_by_id.get(source_trip_id) or {}
+        source_date = str(source_trip.get("trip_date") or "")
+        target_date = _gallery_capture_date_v443(photo.get("captured_at"))
+        if not target_date or not source_date or target_date == source_date:
+            continue
+        if source_trip_id in diary_trip_ids:
+            skipped_saved_diary += 1
+            continue
+        try:
+            target_trip = get_or_create_gallery_import_trip_v443(photo.get("captured_at"), cache=target_cache)
+            target_trip_id = str((target_trip or {}).get("id") or "")
+            if not target_trip_id or target_trip_id == source_trip_id:
+                continue
+            (
+                client
+                .table(PHOTO_TABLE)
+                .update({"trip_id": target_trip_id})
+                .eq("id", photo.get("id"))
+                .eq("trip_id", source_trip_id)
+                .eq("family_key", current_family_key()).eq("member_key", current_member_key())
+                .execute()
+            )
+            moved += 1
+        except Exception:
+            continue
+
+    if moved:
+        _invalidate_fast_db_cache()
+        try:
+            download_photo.clear()
+            thumbnail_photo_bytes.clear()
+            thumbnail_photo_data_url.clear()
+            signed_photo_url_map.clear()
+        except Exception:
+            pass
+        st.session_state.pop("_home_today_photo_count", None)
+        st.session_state.pop("_home_today_place", None)
+    return {"moved": moved, "skipped_saved_diary": skipped_saved_diary, "checked": len(imported)}
+
+
 def update_trip_destination(trip_id, destination):
     destination = str(destination or "").strip()
     client = supabase_client()
@@ -34280,10 +34533,12 @@ def page_trip():
                 batch_state = {}
             already_saved = set(str(x) for x in (batch_state.get(batch_id) or []) if str(x))
             newly_saved = 0
+            today_saved_count = 0
             duplicate_count = 0
             failures = []
             last_saved_photo = None
-            trip = ensure_today_trip()
+            last_saved_trip = None
+            import_trip_cache = {}
             progress_slot = st.empty()
             try:
                 for index, item in enumerate(batch_items, start=1):
@@ -34299,6 +34554,10 @@ def page_trip():
                             item["data_url"] = ""
                             continue
                         capture_source = "gallery_batch"
+                        trip = get_or_create_gallery_import_trip_v443(
+                            item.get("captured_at"),
+                            cache=import_trip_cache,
+                        )
                         location = build_photo_location(
                             item.get("location"),
                             trip,
@@ -34332,8 +34591,11 @@ def page_trip():
                                 break
                         st.session_state[batch_state_key] = batch_state
                         newly_saved += 1
+                        if str(trip.get("trip_date") or "") == today_iso():
+                            today_saved_count += 1
                         if isinstance(saved_photo, dict) and saved_photo.get("id"):
                             last_saved_photo = saved_photo
+                            last_saved_trip = trip
                         item["data_url"] = ""
                     except Exception as item_exc:
                         failures.append(
@@ -34345,15 +34607,21 @@ def page_trip():
                 progress_slot.empty()
 
             if newly_saved > 0:
-                if isinstance(last_saved_photo, dict) and last_saved_photo.get("id"):
-                    st.session_state[f"_camera_recent_photo_{trip['id']}"] = last_saved_photo["id"]
-                    st.session_state[f"_camera_show_recent_v394_{trip['id']}"] = False
-                previous_count = st.session_state.get("_home_today_photo_count")
-                try:
-                    previous_count = int(previous_count) if previous_count is not None else 0
-                except Exception:
-                    previous_count = 0
-                st.session_state["_home_today_photo_count"] = previous_count + newly_saved
+                if (
+                    isinstance(last_saved_photo, dict)
+                    and last_saved_photo.get("id")
+                    and isinstance(last_saved_trip, dict)
+                    and last_saved_trip.get("id")
+                ):
+                    st.session_state[f"_camera_recent_photo_{last_saved_trip['id']}"] = last_saved_photo["id"]
+                    st.session_state[f"_camera_show_recent_v394_{last_saved_trip['id']}"] = False
+                if today_saved_count > 0:
+                    previous_count = st.session_state.get("_home_today_photo_count")
+                    try:
+                        previous_count = int(previous_count) if previous_count is not None else 0
+                    except Exception:
+                        previous_count = 0
+                    st.session_state["_home_today_photo_count"] = previous_count + today_saved_count
                 st.session_state["_browser_last_camera_open_at"] = time.time() * 1000.0
                 st.session_state["_browser_last_camera_mode"] = "photo"
                 st.session_state["_camera_entry_mode_v394"] = "photo"
@@ -34386,8 +34654,11 @@ def page_trip():
             digest = hashlib.sha1(raw).hexdigest()
             digest_key = "saved_camera_digest_current"
             if st.session_state.get(digest_key) != digest:
-                trip = ensure_today_trip()
                 capture_source = str(payload.get("source") or "camera")
+                if capture_source == "gallery":
+                    trip = get_or_create_gallery_import_trip_v443(payload.get("captured_at"))
+                else:
+                    trip = ensure_today_trip()
                 location = build_photo_location(
                     payload.get("location"),
                     trip,
@@ -34441,15 +34712,16 @@ def page_trip():
                     st.session_state[f"_camera_recent_photo_{trip['id']}"] = saved_photo["id"]
                     st.session_state[f"_camera_show_recent_v394_{trip['id']}"] = False
 
-                previous_count = st.session_state.get("_home_today_photo_count")
-                try:
-                    previous_count = int(previous_count) if previous_count is not None else 0
-                except Exception:
-                    previous_count = 0
-                st.session_state["_home_today_photo_count"] = previous_count + 1
-                place_label = str((location or {}).get("place_label") or trip.get("destination") or "").strip()
-                if place_label:
-                    st.session_state["_home_today_place"] = place_label
+                if str(trip.get("trip_date") or "") == today_iso():
+                    previous_count = st.session_state.get("_home_today_photo_count")
+                    try:
+                        previous_count = int(previous_count) if previous_count is not None else 0
+                    except Exception:
+                        previous_count = 0
+                    st.session_state["_home_today_photo_count"] = previous_count + 1
+                    place_label = str((location or {}).get("place_label") or trip.get("destination") or "").strip()
+                    if place_label:
+                        st.session_state["_home_today_place"] = place_label
 
                 st.session_state["_browser_last_camera_open_at"] = time.time() * 1000.0
                 st.session_state["_browser_last_camera_mode"] = "photo"
@@ -35156,10 +35428,28 @@ def page_diary():
         if key_text.startswith("diary_talk_photo_") or key_text.startswith("diary_selected_photo_") or key_text.startswith("reflection_state_"):
             st.session_state.pop(key, None)
 
+    # v443 repair: v441/v442 preserved the real captured_at timestamp but still attached
+    # gallery imports to today's trip. Repair only undiarized mismatches once per session.
+    repair_notice = st.session_state.pop("_gallery_import_date_repair_notice_v443", None)
+    if not st.session_state.get("_gallery_import_date_repair_done_v443"):
+        st.session_state["_gallery_import_date_repair_done_v443"] = True
+        try:
+            repair_result = repair_misdated_gallery_imports_v443()
+            moved = int((repair_result or {}).get("moved") or 0)
+            if moved > 0:
+                st.session_state["_gallery_import_date_repair_notice_v443"] = (
+                    f"過去に取り込んだ写真 {moved}枚を、写真の撮影日ごとのぶらり旅へ整理しました。"
+                )
+                st.rerun()
+        except Exception:
+            pass
+
     page_top(
         "📖 日記",
         "写真をタップするたびに通常10種類／こどもーど10種類のアイコンを切り替え、その記録から日記を作ります。アイコンを変えるだけではページ更新しません。コメント入力は使いません。",
     )
+    if repair_notice:
+        st.success(str(repair_notice))
     notice = st.session_state.pop("_diary_notice", None)
     if notice:
         st.success(notice)
