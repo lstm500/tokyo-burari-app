@@ -33,9 +33,11 @@ from zoneinfo import ZoneInfo
 import streamlit as st
 
 # Freshly generated update: 2026-09-14 JST
-GENERATED_UPDATE_JST = "2026-09-15T22:38:00+09:00"
+GENERATED_UPDATE_JST = "2026-09-15T23:18:00+09:00"
 
-APP_BUILD = "v440"
+APP_BUILD = "v442"
+# v442: Add two-step batch photo deletion to pending-diary photo groups and the all-photo library list. Keep single-photo delete, select multiple photos safely, show a running state, and delete sequentially so trip/diary cleanup remains correct.
+# v441: Read original gallery-photo metadata before resize/conversion. Prefer EXIF DateTimeOriginal, then DateTimeDigitized / DateTime / XMP CreateDate, use EXIF GPS when present, and fall back safely to file.lastModified/import time for both single and batch imports.
 # v440: Allow multi-select import from the existing-photo picker. Keep the single-photo review path unchanged, add a bounded 20-photo batch preview/preparation flow, save the batch in one action, and preserve per-file capture timestamps without changing video import.
 # v439: Strengthen the whole-source noise cleanup used BEFORE voice-candidate pickup. Use a dedicated aggressive speech-preserving FFT cleanup profile, invalidate older candidate sets, and keep manual photo-voice cleanup unchanged.
 # v438: Clean the full source audio before voice-candidate analysis. Candidate pickup, previews, transcription, and photo attachment now all come from the same pre-cleaned source audio; do not rank raw/noisy audio first.
@@ -329,7 +331,8 @@ st.markdown(
       }
       /* v423: while the destructive batch operation is running, replace the red
          confirmation button with a clearly different orange, disabled progress state. */
-      [class*="st-key-video_batch_delete_running"] div.stButton > button:disabled {
+      [class*="st-key-video_batch_delete_running"] div.stButton > button:disabled,
+      [class*="st-key-photo_batch_delete_running_"] div.stButton > button:disabled {
         opacity: 1 !important;
         border-color: #b45309 !important;
         background: linear-gradient(145deg, #f59e0b, #d97706) !important;
@@ -337,7 +340,8 @@ st.markdown(
         cursor: wait !important;
         box-shadow: 0 4px 12px rgba(180, 83, 9, .24), 0 0 0 2px rgba(255,255,255,.14) inset !important;
       }
-      [class*="st-key-video_batch_delete_running"] div.stButton > button:disabled p {
+      [class*="st-key-video_batch_delete_running"] div.stButton > button:disabled p,
+      [class*="st-key-photo_batch_delete_running_"] div.stButton > button:disabled p {
         color: #fff !important;
       }
       /* v401: Settings uses one calm red family instead of one isolated primary
@@ -3170,6 +3174,334 @@ export default function(component) {
     }
   };
 
+  const GALLERY_PHOTO_METADATA_SCAN_BYTES_V441 = 2 * 1024 * 1024;
+
+  const galleryPhotoFallbackCaptureMetaV441 = (file) => {
+    const modified = Number(file?.lastModified || 0);
+    if (Number.isFinite(modified) && modified > 0) {
+      const date = new Date(modified);
+      if (Number.isFinite(date.getTime())) {
+        return {
+          captured_at: date.toISOString(),
+          capture_time_source: 'file_last_modified',
+          capture_time_raw: String(file?.lastModified || ''),
+        };
+      }
+    }
+    const now = new Date();
+    return {
+      captured_at: now.toISOString(),
+      capture_time_source: 'imported_at',
+      capture_time_raw: '',
+    };
+  };
+
+  const parsePhotoCaptureDateV441 = (rawValue, offsetValue = '') => {
+    const raw = String(rawValue || '').replace(/\0/g, '').trim();
+    if (!raw) return '';
+    const exifMatch = /^(\d{4}):(\d{2}):(\d{2})\s+(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,6}))?$/.exec(raw);
+    if (exifMatch) {
+      const year = Number(exifMatch[1]);
+      const month = Number(exifMatch[2]);
+      const day = Number(exifMatch[3]);
+      const hour = Number(exifMatch[4]);
+      const minute = Number(exifMatch[5]);
+      const second = Number(exifMatch[6]);
+      if (!(year >= 1900 && year <= 2200 && month >= 1 && month <= 12 && day >= 1 && day <= 31 && hour <= 23 && minute <= 59 && second <= 60)) {
+        return '';
+      }
+      const fraction = String(exifMatch[7] || '').slice(0, 3).padEnd(3, '0');
+      const offset = String(offsetValue || '').replace(/\0/g, '').trim();
+      if (/^(?:Z|[+-]\d{2}:?\d{2})$/.test(offset)) {
+        const normalizedOffset = offset === 'Z'
+          ? 'Z'
+          : (offset.includes(':') ? offset : `${offset.slice(0, 3)}:${offset.slice(3)}`);
+        const iso = `${String(year).padStart(4, '0')}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}T${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}:${String(second).padStart(2, '0')}.${fraction || '000'}${normalizedOffset}`;
+        const ms = Date.parse(iso);
+        if (Number.isFinite(ms)) return new Date(ms).toISOString();
+      }
+      // EXIF often omits the timezone. In that case interpret the camera clock in
+      // the phone/browser's local timezone instead of pretending it is UTC.
+      const local = new Date(year, month - 1, day, hour, minute, second, Number(fraction || 0));
+      if (
+        local.getFullYear() === year && local.getMonth() === month - 1 && local.getDate() === day &&
+        local.getHours() === hour && local.getMinutes() === minute
+      ) {
+        return local.toISOString();
+      }
+      return '';
+    }
+    // XMP CreateDate is normally ISO-8601. Date.parse handles timezone-qualified
+    // strings directly and treats timezone-less date-time values as local time.
+    const parsed = Date.parse(raw);
+    return Number.isFinite(parsed) ? new Date(parsed).toISOString() : '';
+  };
+
+  const parseTiffExifV441 = (buffer, tiffStart, tiffEnd) => {
+    const view = new DataView(buffer);
+    const start = Number(tiffStart || 0);
+    const end = Math.min(view.byteLength, Number(tiffEnd || view.byteLength));
+    const result = {};
+    if (!(start >= 0 && start + 8 <= end)) return result;
+    const order = view.getUint16(start, false);
+    const little = order === 0x4949 ? true : (order === 0x4d4d ? false : null);
+    if (little === null) return result;
+    const safe = (offset, size = 1) => Number.isFinite(offset) && offset >= start && offset + size <= end;
+    const u16 = (offset) => safe(offset, 2) ? view.getUint16(offset, little) : null;
+    const u32 = (offset) => safe(offset, 4) ? view.getUint32(offset, little) : null;
+    if (u16(start + 2) !== 42) return result;
+    const typeSizes = {1: 1, 2: 1, 3: 2, 4: 4, 5: 8, 7: 1, 9: 4, 10: 8};
+
+    const collectIfd = (relativeOffset) => {
+      const map = new Map();
+      const rel = Number(relativeOffset || 0);
+      const base = start + rel;
+      if (!safe(base, 2)) return map;
+      const count = u16(base);
+      if (!Number.isFinite(count) || count < 0 || count > 512) return map;
+      for (let i = 0; i < count; i += 1) {
+        const entry = base + 2 + i * 12;
+        if (!safe(entry, 12)) break;
+        const tag = u16(entry);
+        const type = u16(entry + 2);
+        const itemCount = u32(entry + 4);
+        const itemSize = typeSizes[type] || 0;
+        if (!Number.isFinite(tag) || !itemSize || !Number.isFinite(itemCount) || itemCount < 0 || itemCount > 100000) continue;
+        const byteLength = itemSize * itemCount;
+        let valueOffset = entry + 8;
+        if (byteLength > 4) {
+          const pointer = u32(entry + 8);
+          if (!Number.isFinite(pointer)) continue;
+          valueOffset = start + pointer;
+        }
+        if (!safe(valueOffset, Math.max(0, byteLength))) continue;
+        map.set(tag, {type, count: itemCount, offset: valueOffset, byteLength});
+      }
+      return map;
+    };
+
+    const readAscii = (entry) => {
+      if (!entry || !safe(entry.offset, entry.byteLength)) return '';
+      const bytes = new Uint8Array(buffer, entry.offset, entry.byteLength);
+      let out = '';
+      for (const value of bytes) {
+        if (value === 0) break;
+        out += String.fromCharCode(value);
+      }
+      return out.trim();
+    };
+    const readLong = (entry) => {
+      if (!entry || entry.count < 1) return null;
+      if (entry.type === 3) return safe(entry.offset, 2) ? view.getUint16(entry.offset, little) : null;
+      if (entry.type === 4) return safe(entry.offset, 4) ? view.getUint32(entry.offset, little) : null;
+      if (entry.type === 9) return safe(entry.offset, 4) ? view.getInt32(entry.offset, little) : null;
+      return null;
+    };
+    const readRationals = (entry) => {
+      if (!entry || ![5, 10].includes(entry.type) || entry.count < 1) return [];
+      const values = [];
+      for (let i = 0; i < entry.count; i += 1) {
+        const offset = entry.offset + i * 8;
+        if (!safe(offset, 8)) break;
+        const signed = entry.type === 10;
+        const numerator = signed ? view.getInt32(offset, little) : view.getUint32(offset, little);
+        const denominator = signed ? view.getInt32(offset + 4, little) : view.getUint32(offset + 4, little);
+        values.push(denominator ? numerator / denominator : 0);
+      }
+      return values;
+    };
+
+    const firstIfdOffset = u32(start + 4);
+    if (!Number.isFinite(firstIfdOffset)) return result;
+    const ifd0 = collectIfd(firstIfdOffset);
+    result.date_time = readAscii(ifd0.get(0x0132));
+
+    const exifPointer = readLong(ifd0.get(0x8769));
+    if (Number.isFinite(exifPointer) && exifPointer > 0) {
+      const exifIfd = collectIfd(exifPointer);
+      result.date_time_original = readAscii(exifIfd.get(0x9003));
+      result.date_time_digitized = readAscii(exifIfd.get(0x9004));
+      result.offset_time = readAscii(exifIfd.get(0x9010));
+      result.offset_time_original = readAscii(exifIfd.get(0x9011));
+      result.offset_time_digitized = readAscii(exifIfd.get(0x9012));
+    }
+
+    const gpsPointer = readLong(ifd0.get(0x8825));
+    if (Number.isFinite(gpsPointer) && gpsPointer > 0) {
+      const gpsIfd = collectIfd(gpsPointer);
+      const latRef = readAscii(gpsIfd.get(0x0001)).toUpperCase();
+      const lonRef = readAscii(gpsIfd.get(0x0003)).toUpperCase();
+      const latParts = readRationals(gpsIfd.get(0x0002));
+      const lonParts = readRationals(gpsIfd.get(0x0004));
+      if (latParts.length >= 3 && lonParts.length >= 3) {
+        let latitude = Number(latParts[0]) + Number(latParts[1]) / 60 + Number(latParts[2]) / 3600;
+        let longitude = Number(lonParts[0]) + Number(lonParts[1]) / 60 + Number(lonParts[2]) / 3600;
+        if (latRef === 'S') latitude *= -1;
+        if (lonRef === 'W') longitude *= -1;
+        if (Number.isFinite(latitude) && Number.isFinite(longitude) && Math.abs(latitude) <= 90 && Math.abs(longitude) <= 180) {
+          result.latitude = latitude;
+          result.longitude = longitude;
+        }
+      }
+    }
+    return result;
+  };
+
+  const parseXmpCreateDateV441 = (text) => {
+    const source = String(text || '');
+    if (!source) return '';
+    const attribute = /(?:xmp:CreateDate|photoshop:DateCreated)\s*=\s*["']([^"']+)["']/i.exec(source);
+    if (attribute && attribute[1]) return String(attribute[1]).trim();
+    const element = /<(?:xmp:CreateDate|photoshop:DateCreated)[^>]*>([^<]+)<\/(?:xmp:CreateDate|photoshop:DateCreated)>/i.exec(source);
+    return element && element[1] ? String(element[1]).trim() : '';
+  };
+
+  const extractGalleryPhotoMetadataV441 = async (file) => {
+    const fallback = galleryPhotoFallbackCaptureMetaV441(file);
+    const output = {
+      captured_at: fallback.captured_at,
+      capture_time_source: fallback.capture_time_source,
+      capture_time_raw: fallback.capture_time_raw,
+      location: {
+        ok: false,
+        source: 'gallery',
+        error_code: 'GALLERY_NO_EXIF_GPS',
+        error_message: '写真の内部データに撮影位置がないため、位置情報は取得していません。'
+      },
+      import_metadata: {
+        capture_time_source: fallback.capture_time_source,
+        capture_time_raw: fallback.capture_time_raw,
+        original_name: String(file?.name || ''),
+        original_type: String(file?.type || ''),
+        exif_gps: false,
+      }
+    };
+    try {
+      const scanSize = Math.min(Number(file?.size || 0), GALLERY_PHOTO_METADATA_SCAN_BYTES_V441);
+      if (!(scanSize > 0)) return output;
+      const buffer = await file.slice(0, scanSize).arrayBuffer();
+      const bytes = new Uint8Array(buffer);
+      const view = new DataView(buffer);
+      let exif = {};
+      let xmpCreateDate = '';
+      const asciiAt = (offset, length) => {
+        if (offset < 0 || length < 0 || offset + length > bytes.length) return '';
+        let out = '';
+        for (let i = 0; i < length; i += 1) out += String.fromCharCode(bytes[offset + i]);
+        return out;
+      };
+      const mergeExif = (candidate) => {
+        if (!candidate || typeof candidate !== 'object') return;
+        exif = {...exif, ...Object.fromEntries(Object.entries(candidate).filter(([, value]) => value !== '' && value !== undefined && value !== null))};
+      };
+      const scanXmpText = (start, length) => {
+        if (!(length > 0) || start < 0 || start + length > bytes.length) return;
+        try {
+          const text = new TextDecoder('utf-8', {fatal: false}).decode(bytes.slice(start, start + length));
+          xmpCreateDate = xmpCreateDate || parseXmpCreateDateV441(text);
+        } catch (_) {}
+      };
+
+      // JPEG APP1: standard EXIF and XMP both live before the compressed image stream.
+      if (bytes.length >= 4 && bytes[0] === 0xff && bytes[1] === 0xd8) {
+        let pos = 2;
+        while (pos + 4 <= bytes.length) {
+          if (bytes[pos] !== 0xff) { pos += 1; continue; }
+          while (pos < bytes.length && bytes[pos] === 0xff) pos += 1;
+          if (pos >= bytes.length) break;
+          const marker = bytes[pos]; pos += 1;
+          if (marker === 0xda || marker === 0xd9) break;
+          if (marker === 0x01 || (marker >= 0xd0 && marker <= 0xd7)) continue;
+          if (pos + 2 > bytes.length) break;
+          const segmentLength = (bytes[pos] << 8) | bytes[pos + 1];
+          if (segmentLength < 2) break;
+          const dataStart = pos + 2;
+          const segmentEnd = pos + segmentLength;
+          if (segmentEnd > bytes.length) break;
+          if (marker === 0xe1) {
+            if (asciiAt(dataStart, 6) === 'Exif\0\0') {
+              mergeExif(parseTiffExifV441(buffer, dataStart + 6, segmentEnd));
+            } else {
+              scanXmpText(dataStart, segmentEnd - dataStart);
+            }
+          }
+          pos = segmentEnd;
+        }
+      // PNG eXIf chunk contains a raw TIFF structure.
+      } else if (bytes.length >= 8 && asciiAt(1, 3) === 'PNG') {
+        let pos = 8;
+        while (pos + 12 <= bytes.length) {
+          const length = view.getUint32(pos, false);
+          const type = asciiAt(pos + 4, 4);
+          const dataStart = pos + 8;
+          const dataEnd = dataStart + length;
+          if (dataEnd + 4 > bytes.length) break;
+          if (type === 'eXIf') mergeExif(parseTiffExifV441(buffer, dataStart, dataEnd));
+          if (type === 'iTXt' || type === 'tEXt') scanXmpText(dataStart, length);
+          pos = dataEnd + 4;
+        }
+      // WebP EXIF/XMP chunks.
+      } else if (bytes.length >= 12 && asciiAt(0, 4) === 'RIFF' && asciiAt(8, 4) === 'WEBP') {
+        let pos = 12;
+        while (pos + 8 <= bytes.length) {
+          const type = asciiAt(pos, 4);
+          const length = view.getUint32(pos + 4, true);
+          const dataStart = pos + 8;
+          const dataEnd = dataStart + length;
+          if (dataEnd > bytes.length) break;
+          if (type === 'EXIF') {
+            const hasPrefix = asciiAt(dataStart, 6) === 'Exif\0\0';
+            mergeExif(parseTiffExifV441(buffer, dataStart + (hasPrefix ? 6 : 0), dataEnd));
+          } else if (type === 'XMP ') {
+            scanXmpText(dataStart, length);
+          }
+          pos = dataEnd + (length % 2);
+        }
+      }
+
+      // Some formats/encoders store XMP outside the standard chunk scanned above.
+      if (!xmpCreateDate) scanXmpText(0, bytes.length);
+
+      const dateCandidates = [
+        ['exif_datetime_original', exif.date_time_original, exif.offset_time_original || exif.offset_time],
+        ['exif_datetime_digitized', exif.date_time_digitized, exif.offset_time_digitized || exif.offset_time],
+        ['exif_datetime', exif.date_time, exif.offset_time],
+        ['xmp_create_date', xmpCreateDate, ''],
+      ];
+      for (const [source, raw, offset] of dateCandidates) {
+        const parsed = parsePhotoCaptureDateV441(raw, offset);
+        if (!parsed) continue;
+        output.captured_at = parsed;
+        output.capture_time_source = source;
+        output.capture_time_raw = String(raw || '').trim();
+        output.import_metadata.capture_time_source = source;
+        output.import_metadata.capture_time_raw = String(raw || '').trim();
+        if (offset) output.import_metadata.capture_time_offset = String(offset || '').trim();
+        break;
+      }
+
+      const latitude = Number(exif.latitude);
+      const longitude = Number(exif.longitude);
+      if (Number.isFinite(latitude) && Number.isFinite(longitude) && Math.abs(latitude) <= 90 && Math.abs(longitude) <= 180) {
+        output.location = {
+          ok: true,
+          source: 'exif_gps',
+          latitude,
+          longitude,
+          accuracy_m: null,
+          measured_at: output.captured_at,
+          place_label: '',
+          place_provider: 'photo_exif',
+        };
+        output.import_metadata.exif_gps = true;
+      }
+      return output;
+    } catch (err) {
+      console.warn('photo metadata parse failed; using safe fallback timestamp', err);
+      return output;
+    }
+  };
+
   const prepareImageFile = async (file) => {
     // Keep the saved-photo quality target (max 1600px / JPEG 0.86), but prefer
     // createImageBitmap + OffscreenCanvas so decoding/resizing can happen away from
@@ -3788,18 +4120,26 @@ export default function(component) {
         if (index >= sourceFiles.length) return;
         if (generation !== pendingPhotoLoadGeneration) throw new Error('gallery batch preparation cancelled');
         const file = sourceFiles[index];
-        const dataUrl = await prepareImageFile(file);
+        // v441: preserve metadata from the untouched original file. Image resize/JPEG
+        // conversion runs in parallel, but never becomes the source for capture time/GPS.
+        const [dataUrl, importMeta] = await Promise.all([
+          prepareImageFile(file),
+          extractGalleryPhotoMetadataV441(file),
+        ]);
         if (generation !== pendingPhotoLoadGeneration) throw new Error('gallery batch preparation cancelled');
         results[index] = {
           data_url: dataUrl,
           name: file.name || `gallery_${index + 1}.jpg`,
           source: 'gallery_batch',
-          captured_at: file.lastModified ? new Date(file.lastModified).toISOString() : new Date().toISOString(),
-          location: {
+          captured_at: String(importMeta?.captured_at || galleryPhotoFallbackCaptureMetaV441(file).captured_at),
+          capture_time_source: String(importMeta?.capture_time_source || 'file_last_modified'),
+          location: importMeta?.location || {
             ok: false,
-            error_code: 'GALLERY',
-            error_message: '写真フォルダから選んだ画像の撮影位置は自動取得しません。'
-          }
+            source: 'gallery',
+            error_code: 'GALLERY_NO_EXIF_GPS',
+            error_message: '写真の内部データに撮影位置がないため、位置情報は取得していません。'
+          },
+          import_metadata: importMeta?.import_metadata || {},
         };
         completed += 1;
         setStatus(`保存用データを準備しています… ${completed}/${sourceFiles.length}`);
@@ -3828,28 +4168,47 @@ export default function(component) {
         const file = selectedFiles[0];
         // Preserve the established single-photo review path exactly.
         previewUrl = URL.createObjectURL(file);
+        const fallbackMeta = galleryPhotoFallbackCaptureMetaV441(file);
         pendingMedia = {
           kind: 'photo',
           data_url: '',
           name: file.name || 'gallery.jpg',
           source: 'gallery',
-          captured_at: file.lastModified ? new Date(file.lastModified).toISOString() : new Date().toISOString(),
+          captured_at: fallbackMeta.captured_at,
+          capture_time_source: fallbackMeta.capture_time_source,
           emotion: '',
           parenting: '',
           location: {
             ok: false,
-            error_code: 'GALLERY',
-            error_message: '写真フォルダから選んだ画像の撮影位置は自動取得しません。'
+            source: 'gallery',
+            error_code: 'GALLERY_NO_EXIF_GPS',
+            error_message: '写真の内部データに撮影位置がないため、位置情報は取得していません。'
+          },
+          import_metadata: {
+            capture_time_source: fallbackMeta.capture_time_source,
+            capture_time_raw: fallbackMeta.capture_time_raw,
+            original_name: String(file.name || ''),
+            original_type: String(file.type || ''),
+            exif_gps: false,
           }
         };
         showPhotoReview(previewUrl);
         pendingPhotoPreviewUrl = previewUrl;
         previewUrl = '';
         setStatus('写真を表示しました。保存用データを準備しています…');
-        pendingPhotoPreparePromise = prepareImageFile(file).then((dataUrl) => {
+        pendingPhotoPreparePromise = Promise.all([
+          prepareImageFile(file),
+          extractGalleryPhotoMetadataV441(file),
+        ]).then(([dataUrl, importMeta]) => {
           if (generation !== pendingPhotoLoadGeneration) return '';
           if (pendingMedia && pendingMedia.kind === 'photo' && pendingMedia.source === 'gallery') {
             pendingMedia.data_url = dataUrl;
+            if (importMeta && typeof importMeta === 'object') {
+              pendingMedia.captured_at = String(importMeta.captured_at || pendingMedia.captured_at || '');
+              pendingMedia.capture_time_source = String(importMeta.capture_time_source || pendingMedia.capture_time_source || '');
+              pendingMedia.location = importMeta.location || pendingMedia.location;
+              pendingMedia.import_metadata = importMeta.import_metadata || pendingMedia.import_metadata || {};
+            }
             setStatus('');
           }
           return dataUrl;
@@ -4219,7 +4578,7 @@ export default function(component) {
 }
 """
 
-LIVE_CAMERA_COMPONENT_BUILD = "v440"
+LIVE_CAMERA_COMPONENT_BUILD = "v441"
 
 # v383: this bundle is large. Register it only on the Camera page so unrelated
 # Streamlit reruns do not pay the camera component setup cost.
@@ -4233,7 +4592,7 @@ def _get_live_camera_component():
     _live_camera_component_initialized = True
     try:
         live_camera_component = st.components.v2.component(
-            "tokyo_burari_live_camera_v440",
+            "tokyo_burari_live_camera_v441",
             html=_LIVE_CAMERA_HTML,
             css=_LIVE_CAMERA_CSS,
             js=_LIVE_CAMERA_JS,
@@ -8178,7 +8537,37 @@ def build_photo_location(raw_location, trip, capture_source="camera"):
     source = str(capture_source or "camera").strip().lower()
 
     # Direct camera captures include both still photos (camera) and videos (video_camera).
-    # Gallery imports intentionally keep their original/no-location behavior.
+    # v441: gallery imports may also carry GPS embedded in the ORIGINAL photo EXIF.
+    # Never substitute the phone's current GPS for a historical gallery photo.
+    if (
+        source in {"gallery", "gallery_batch"}
+        and isinstance(raw_location, dict)
+        and raw_location.get("ok")
+        and str(raw_location.get("source") or "").strip().lower() == "exif_gps"
+    ):
+        try:
+            latitude = float(raw_location.get("latitude"))
+            longitude = float(raw_location.get("longitude"))
+        except (TypeError, ValueError):
+            latitude = longitude = None
+        if (
+            latitude is not None and longitude is not None
+            and math.isfinite(latitude) and math.isfinite(longitude)
+            and abs(latitude) <= 90 and abs(longitude) <= 180
+        ):
+            # Normalize to source=gps so the existing memory-map/reverse-geocode path
+            # can index the coordinates, while gps_origin preserves where they came from.
+            return {
+                "source": "gps",
+                "gps_origin": "photo_exif",
+                "latitude": latitude,
+                "longitude": longitude,
+                "accuracy_m": None,
+                "measured_at": raw_location.get("measured_at"),
+                "place_label": "",
+                "place_provider": "photo_exif",
+            }
+
     if source in {"camera", "video_camera"} and isinstance(raw_location, dict) and raw_location.get("ok"):
         try:
             latitude = float(raw_location.get("latitude"))
@@ -8205,6 +8594,18 @@ def build_photo_location(raw_location, trip, capture_source="camera"):
                 "place_label": place_label,
                 "place_provider": str(raw_location.get("place_provider") or ("manual_destination" if place_label else "")),
             }
+
+    # A gallery photo without embedded EXIF GPS must not inherit the destination
+    # of the trip that happens to be active on import day; that would fabricate a
+    # historical capture location. Keep it explicitly unavailable instead.
+    if source in {"gallery", "gallery_batch"}:
+        return {
+            "source": "unavailable",
+            "place_label": "",
+            "gps_error_code": (
+                raw_location.get("error_code") if isinstance(raw_location, dict) else "GALLERY_NO_EXIF_GPS"
+            ) or "GALLERY_NO_EXIF_GPS",
+        }
 
     if destination:
         return {
@@ -18447,6 +18848,218 @@ def render_video_batch_delete_controls(videos):
                 st.session_state.pop(confirm_key, None)
                 st.session_state.pop(running_key, None)
                 st.rerun()
+
+
+def render_photo_batch_delete_controls_v442(
+    photos,
+    scope_key,
+    *,
+    button_label="🗑 写真をまとめて削除",
+    panel_title="🗑 写真をまとめて削除",
+    force_pending=False,
+):
+    """Select and delete several still photos with an explicit final confirmation.
+
+    Deletions are intentionally performed one-by-one through the established single-photo
+    deletion routine. That keeps diary/trip cleanup correct when several selected photos
+    belong to the same trip and the last remaining image disappears during the batch.
+    """
+    rows = [
+        row for row in list(photos or [])
+        if isinstance(row, dict)
+        and not photo_is_video(row)
+        and str(row.get("id") or "").strip()
+        and str(row.get("trip_id") or "").strip()
+    ]
+    if not rows:
+        return False
+
+    scope_text = str(scope_key or "photo_batch")
+    scope_token = hashlib.sha1(scope_text.encode("utf-8")).hexdigest()[:12]
+    open_key = f"_photo_batch_delete_open_v442_{scope_token}"
+    selected_key = f"_photo_batch_delete_selected_v442_{scope_token}"
+    confirm_key = f"_photo_batch_delete_confirm_v442_{scope_token}"
+    running_key = f"_photo_batch_delete_running_v442_{scope_token}"
+    failure_key = f"_photo_batch_delete_failures_v442_{scope_token}"
+
+    valid_ids = [str(row.get("id") or "").strip() for row in rows]
+    row_by_id = {str(row.get("id") or "").strip(): row for row in rows}
+    order_by_id = {photo_id: index + 1 for index, photo_id in enumerate(valid_ids)}
+
+    stored = st.session_state.get(selected_key)
+    if isinstance(stored, list):
+        cleaned = [str(value) for value in stored if str(value) in row_by_id]
+        if cleaned != stored:
+            st.session_state[selected_key] = cleaned
+    elif stored is not None:
+        st.session_state[selected_key] = []
+
+    failures = st.session_state.pop(failure_key, None)
+    if isinstance(failures, list) and failures:
+        with st.expander("削除できなかった写真の詳細"):
+            for label, detail in failures:
+                st.write(f"・{label}")
+                st.code(str(detail))
+
+    if not st.session_state.get(open_key):
+        st.session_state.pop(running_key, None)
+        if st.button(
+            str(button_label or "🗑 写真をまとめて削除"),
+            use_container_width=True,
+            key=f"photo_batch_delete_open_{scope_token}",
+        ):
+            st.session_state[open_key] = True
+            st.session_state.pop(confirm_key, None)
+            st.session_state.pop(running_key, None)
+            st.rerun()
+        return False
+
+    with st.container(border=True):
+        st.markdown(f"#### {panel_title}")
+
+        running_ids = st.session_state.get(running_key)
+        if isinstance(running_ids, list) and running_ids:
+            running_rows = [row_by_id[value] for value in running_ids if value in row_by_id]
+            st.caption("選択した写真を削除しています。完了するまでそのままお待ちください。")
+            running_col, wait_col = st.columns([1.35, 0.85], gap="small")
+            with running_col:
+                st.button(
+                    f"削除中…（{len(running_rows)}枚）",
+                    type="primary",
+                    use_container_width=True,
+                    disabled=True,
+                    key=f"photo_batch_delete_running_{scope_token}",
+                )
+            with wait_col:
+                st.button(
+                    "処理中",
+                    use_container_width=True,
+                    disabled=True,
+                    key=f"photo_batch_delete_running_wait_{scope_token}",
+                )
+
+            progress = st.progress(0.0)
+            deleted_count = 0
+            delete_failures = []
+            total = max(1, len(running_rows))
+            for index, row in enumerate(list(running_rows), start=1):
+                photo_id = str(row.get("id") or "").strip()
+                trip_id = str(row.get("trip_id") or "").strip()
+                label = _photo_library_captured_label_v418(row.get("captured_at"))
+                try:
+                    delete_photo_and_related_data(
+                        trip_id,
+                        photo_id,
+                        skip_existing_diary_lookup=bool(force_pending),
+                    )
+                    deleted_count += 1
+                except Exception as exc:
+                    delete_failures.append((label, str(exc)))
+                progress.progress(min(1.0, index / total))
+
+            st.session_state.pop(open_key, None)
+            st.session_state.pop(selected_key, None)
+            st.session_state.pop(confirm_key, None)
+            st.session_state.pop(running_key, None)
+
+            if delete_failures:
+                notice = f"{deleted_count}枚を削除しました。{len(delete_failures)}枚は削除できませんでした。"
+                st.session_state[failure_key] = delete_failures
+            else:
+                notice = f"選択した写真を{deleted_count}枚削除しました。"
+                st.session_state.pop(failure_key, None)
+            reload_current_page_after_action("_diary_notice", notice)
+            return True
+
+        st.caption("削除する写真を複数選んでください。削除前にもう一度確認します。")
+        all_col, clear_col, close_col = st.columns(3, gap="small")
+        with all_col:
+            if st.button("すべて選択", use_container_width=True, key=f"photo_batch_select_all_{scope_token}"):
+                st.session_state[selected_key] = list(valid_ids)
+                st.session_state.pop(confirm_key, None)
+                st.rerun()
+        with clear_col:
+            if st.button("選択解除", use_container_width=True, key=f"photo_batch_clear_all_{scope_token}"):
+                st.session_state[selected_key] = []
+                st.session_state.pop(confirm_key, None)
+                st.rerun()
+        with close_col:
+            if st.button("閉じる", use_container_width=True, key=f"photo_batch_close_{scope_token}"):
+                st.session_state.pop(open_key, None)
+                st.session_state.pop(selected_key, None)
+                st.session_state.pop(confirm_key, None)
+                st.session_state.pop(running_key, None)
+                st.rerun()
+
+        def _batch_photo_label(photo_id):
+            row = row_by_id.get(str(photo_id)) or {}
+            number = order_by_id.get(str(photo_id), 0)
+            parts = [f"写真{number}" if number else "写真"]
+            captured = _photo_library_captured_label_v418(row.get("captured_at"))
+            if captured:
+                parts.append(captured)
+            location = str(photo_location_label(row) or "").strip()
+            if location:
+                parts.append(location)
+            if photo_favorite_is_enabled(row):
+                parts.append("★ お気に入り")
+            return " ／ ".join(parts)
+
+        selected_ids = st.multiselect(
+            "削除する写真",
+            options=valid_ids,
+            format_func=_batch_photo_label,
+            key=selected_key,
+            placeholder="写真を選択",
+        )
+        selected_rows = [row_by_id[value] for value in selected_ids if value in row_by_id]
+        if selected_rows:
+            st.caption(f"選択中：{len(selected_rows)}枚")
+        else:
+            st.caption("まだ写真を選択していません。")
+
+        if not st.session_state.get(confirm_key):
+            if st.button(
+                f"選んだ写真を削除する（{len(selected_rows)}枚）",
+                type="primary",
+                use_container_width=True,
+                disabled=not selected_rows,
+                key=f"photo_batch_delete_prepare_{scope_token}",
+            ):
+                st.session_state[confirm_key] = True
+                st.rerun()
+            return False
+
+        st.warning(
+            f"選択した{len(selected_rows)}枚の写真を削除します。"
+            "写真に付けた感情・声・共有情報も削除され、元に戻せません。"
+        )
+        yes_col, no_col = st.columns([1.35, 0.85], gap="small")
+        with yes_col:
+            if st.button(
+                f"{len(selected_rows)}枚を削除",
+                type="primary",
+                use_container_width=True,
+                disabled=not selected_rows,
+                key=f"photo_batch_delete_execute_{scope_token}",
+            ):
+                st.session_state[running_key] = [
+                    str(row.get("id") or "").strip()
+                    for row in selected_rows
+                    if str(row.get("id") or "").strip()
+                ]
+                st.rerun()
+        with no_col:
+            if st.button(
+                "やめる",
+                use_container_width=True,
+                key=f"photo_batch_delete_cancel_{scope_token}",
+            ):
+                st.session_state.pop(confirm_key, None)
+                st.session_state.pop(running_key, None)
+                st.rerun()
+    return False
+
 
 def reset_photo_conversation(trip_id, photo_id):
     """Clear only the conversation/signals for one photo while keeping the image."""
@@ -33325,7 +33938,7 @@ def page_trip():
     notice = st.session_state.pop("_camera_notice", None)
     if notice:
         st.success(notice)
-    batch_error = st.session_state.pop("_camera_batch_error_v440", None)
+    batch_error = st.session_state.pop("_camera_batch_error_v441", None)
     if batch_error:
         with st.expander("保存できなかった写真の詳細"):
             st.code(str(batch_error))
@@ -33411,7 +34024,7 @@ def page_trip():
             "video_candidate_sheet_signed_url": str(video_reservation.get("candidate_sheet_signed_url") or ""),
             "video_candidate_sheet_storage_path": str(video_reservation.get("candidate_sheet_path") or ""),
         },
-        key=f"live_camera_v440_{camera_trip_key}_{st.session_state.capture_serial}_{_current_ui_refresh_epoch()}",
+        key=f"live_camera_v441_{camera_trip_key}_{st.session_state.capture_serial}_{_current_ui_refresh_epoch()}",
         on_photo_change=lambda: None,
         on_photo_batch_change=lambda: None,
         on_video_change=lambda: None,
@@ -33661,7 +34274,7 @@ def page_trip():
                     for item in batch_items
                 )
                 batch_id = hashlib.sha1(identity.encode("utf-8", errors="ignore")).hexdigest()[:24]
-            batch_state_key = "_saved_camera_batch_digests_v440"
+            batch_state_key = "_saved_camera_batch_digests_v441"
             batch_state = st.session_state.get(batch_state_key)
             if not isinstance(batch_state, dict):
                 batch_state = {}
@@ -33691,13 +34304,23 @@ def page_trip():
                             trip,
                             capture_source=capture_source,
                         )
+                        import_meta = item.get("import_metadata") if isinstance(item.get("import_metadata"), dict) else {}
+                        safe_import_meta = {
+                            "capture_time_source": str(import_meta.get("capture_time_source") or "")[:60],
+                            "capture_time_raw": str(import_meta.get("capture_time_raw") or "")[:80],
+                            "capture_time_offset": str(import_meta.get("capture_time_offset") or "")[:20],
+                            "original_name": str(import_meta.get("original_name") or "")[:180],
+                            "original_type": str(import_meta.get("original_type") or "")[:80],
+                            "exif_gps": bool(import_meta.get("exif_gps")),
+                        }
+                        safe_import_meta = {key: value for key, value in safe_import_meta.items() if value not in {"", None, False}}
                         saved_photo = upload_photo(
                             trip["id"],
                             raw,
                             location=location,
                             captured_at=item.get("captured_at"),
                             capture_source=capture_source,
-                            extra_reflection=None,
+                            extra_reflection={"import_metadata": safe_import_meta} if safe_import_meta else None,
                         )
                         already_saved.add(digest)
                         batch_state[batch_id] = list(already_saved)
@@ -33742,7 +34365,7 @@ def page_trip():
                     if newly_saved
                     else f"写真を保存できませんでした（{len(failures)}枚）。"
                 )
-                st.session_state["_camera_batch_error_v440"] = "\n".join(failures[:10])
+                st.session_state["_camera_batch_error_v441"] = "\n".join(failures[:10])
             elif newly_saved:
                 st.session_state["_camera_notice"] = f"写真を{newly_saved}枚まとめて保存しました。"
             elif duplicate_count:
@@ -33787,6 +34410,19 @@ def page_trip():
                         initial_parenting,
                         source="parent_tap_camera_review_v162",
                     )
+                import_meta = payload.get("import_metadata") if isinstance(payload.get("import_metadata"), dict) else {}
+                if capture_source == "gallery" and import_meta:
+                    safe_import_meta = {
+                        "capture_time_source": str(import_meta.get("capture_time_source") or "")[:60],
+                        "capture_time_raw": str(import_meta.get("capture_time_raw") or "")[:80],
+                        "capture_time_offset": str(import_meta.get("capture_time_offset") or "")[:20],
+                        "original_name": str(import_meta.get("original_name") or "")[:180],
+                        "original_type": str(import_meta.get("original_type") or "")[:80],
+                        "exif_gps": bool(import_meta.get("exif_gps")),
+                    }
+                    safe_import_meta = {key: value for key, value in safe_import_meta.items() if value not in {"", None, False}}
+                    if safe_import_meta:
+                        extra_reflection["import_metadata"] = safe_import_meta
                 if not extra_reflection:
                     extra_reflection = None
 
@@ -34348,6 +34984,13 @@ def page_photo_library_v418():
 
     start = current_page * per_page
     visible = photos[start:start + per_page]
+    render_photo_batch_delete_controls_v442(
+        visible,
+        f"all_photo_library_page_{current_page}",
+        button_label="🗑 このページの写真をまとめて削除" if page_count > 1 else "🗑 写真をまとめて削除",
+        panel_title="🗑 このページの写真をまとめて削除" if page_count > 1 else "🗑 写真をまとめて削除",
+        force_pending=False,
+    )
     paths = tuple(str(photo.get("storage_path") or "") for photo in visible if photo.get("storage_path"))
     try:
         signed = signed_photo_url_map(paths, expires_in=1800) if paths else {}
@@ -34563,6 +35206,13 @@ def page_diary():
                 pending_photos,
                 trip=pending_trip,
                 is_pending=True,
+            )
+            render_photo_batch_delete_controls_v442(
+                pending_photos,
+                f"pending_diary_{pending_id}",
+                button_label="🗑 この写真をまとめて削除",
+                panel_title="🗑 この日の写真をまとめて削除",
+                force_pending=True,
             )
             if st.button(
                 "📖 この写真で日記を作る",
