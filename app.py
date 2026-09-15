@@ -33,9 +33,10 @@ from zoneinfo import ZoneInfo
 import streamlit as st
 
 # Freshly generated update: 2026-09-15 JST
-GENERATED_UPDATE_JST = "2026-09-16T00:05:00+09:00"
+GENERATED_UPDATE_JST = "2026-09-16T00:18:00+09:00"
 
-APP_BUILD = "v446"
+APP_BUILD = "v447"
+# v447: Refresh Good Moments-derived still metadata before building every replay. Newly saved stills can exist before their browser-selected emotion/parenting tag has been copied from the source video item; replay now runs the existing v417 source-link repair, reloads changed photo rows in the same render, and therefore applies the emotion border/badge immediately without requiring the Diary gallery to be opened first. Preserve v446 timing and v433 smart framing unchanged.
 # v446: Make replay start robust again: never block playback because one voice duration cannot be preflighted or because the fixed music window is shorter than the 2.0s/voice minima. Recalculate on every play, keep every still >=2.0s, keep voiced stills until voice end, and let photos continue silently after the configured music end only when needed. Preserve v433 smart person-safe framing unchanged.
 # v445: When a multi-photo gallery selection contains already-imported photos, add an explicit “取り込み済み以外を残す” action that submits only unimported items while keeping the existing save-all action and duplicate badges.
 # v444: Mark already-imported gallery photos on the in-app import review thumbnails. Legacy v441+ imports match by stored original-name/capture metadata; new imports also persist a sampled-content SHA-256 fingerprint for stronger duplicate recognition. Android system picker thumbnails remain OS-controlled.
@@ -21668,10 +21669,68 @@ def _replay_photo_framing_meta(storage_path):
         return default
 
 
+def _refresh_replay_photo_metadata_v447(photos):
+    """Return replay photos with current Good Moments tag/voice metadata.
+
+    v417 already knows how to repair a still saved from a video when its source
+    Good Moments item received the emotion/parenting/voice choice after the still
+    itself was created.  Until v447 that repair ran only when the Diary gallery
+    opened, so a newly created still could enter the monthly replay with an empty
+    emotion and therefore no colored frame/badge.  Run the same repair before
+    replay assembly and, when it writes anything, reload the affected rows so the
+    current render uses the repaired metadata immediately.
+    """
+    rows = [dict(photo) for photo in (photos or []) if isinstance(photo, dict)]
+    if not rows:
+        return rows
+
+    needs_source_sync = False
+    for photo in rows:
+        reflection = photo.get("reflection_json") or {}
+        if not isinstance(reflection, dict):
+            continue
+        source_video_id = str(reflection.get("source_video_photo_id") or "").strip()
+        try:
+            source_rank = int(reflection.get("source_selection_rank") or 0)
+        except Exception:
+            source_rank = 0
+        if source_video_id and source_rank > 0:
+            needs_source_sync = True
+            break
+    if not needs_source_sync:
+        return rows
+
+    try:
+        changed = bool(_sync_moments_metadata_into_saved_photos_v417(rows))
+    except Exception:
+        changed = False
+    if not changed:
+        return rows
+
+    photo_ids = [str(photo.get("id") or "").strip() for photo in rows]
+    photo_ids = [photo_id for photo_id in photo_ids if photo_id]
+    if not photo_ids:
+        return rows
+    try:
+        fresh_rows = (
+            supabase_client().table(PHOTO_TABLE)
+            .select("id,trip_id,storage_path,captured_at,reflection_json,signals_json")
+            .in_("id", photo_ids)
+            .eq("family_key", current_family_key())
+            .eq("member_key", current_member_key())
+            .execute()
+        ).data or []
+        fresh_map = {str(row.get("id") or ""): row for row in fresh_rows if isinstance(row, dict) and row.get("id")}
+        return [dict(fresh_map.get(str(photo.get("id") or "")) or photo) for photo in rows]
+    except Exception:
+        return rows
+
+
 def build_monthly_replay_photo_items(bundle, limit=None):
     photos, trip_map = _monthly_replay_selected_photos(bundle, limit=limit)
     if not photos:
         return []
+    photos = _refresh_replay_photo_metadata_v447(photos)
     paths = [str(p.get("storage_path") or "").strip() for p in photos]
     paths = [path for path in paths if path]
     voice_paths = [photo_voice_note_storage_path(photo) for photo in photos]
