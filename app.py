@@ -33,9 +33,10 @@ from zoneinfo import ZoneInfo
 import streamlit as st
 
 # Freshly generated update: 2026-09-14 JST
-GENERATED_UPDATE_JST = "2026-09-15T00:44:56+09:00"
+GENERATED_UPDATE_JST = "2026-09-15T22:38:00+09:00"
 
-APP_BUILD = "v439"
+APP_BUILD = "v440"
+# v440: Allow multi-select import from the existing-photo picker. Keep the single-photo review path unchanged, add a bounded 20-photo batch preview/preparation flow, save the batch in one action, and preserve per-file capture timestamps without changing video import.
 # v439: Strengthen the whole-source noise cleanup used BEFORE voice-candidate pickup. Use a dedicated aggressive speech-preserving FFT cleanup profile, invalidate older candidate sets, and keep manual photo-voice cleanup unchanged.
 # v438: Clean the full source audio before voice-candidate analysis. Candidate pickup, previews, transcription, and photo attachment now all come from the same pre-cleaned source audio; do not rank raw/noisy audio first.
 # v437: Move the voice-candidate regenerate control directly below the six voice candidate buttons in both the custom voice picker and its fallback UI; regeneration behavior itself is unchanged.
@@ -1177,8 +1178,8 @@ _LIVE_CAMERA_HTML = """
   </div>
 
   <div id="camera-library-actions" class="camera-library-actions" hidden>
-    <input id="gallery-photo-input" class="gallery-media-input" type="file" accept="image/*" />
-    <label id="gallery-photo-label" class="camera-library-button photo-library-button" for="gallery-photo-input">🖼 すでに撮った写真から選ぶ</label>
+    <input id="gallery-photo-input" class="gallery-media-input" type="file" accept="image/*" multiple />
+    <label id="gallery-photo-label" class="camera-library-button photo-library-button" for="gallery-photo-input">🖼 すでに撮った写真から選ぶ（複数可）</label>
     <input id="gallery-video-input" class="gallery-media-input" type="file" accept="video/*" />
     <label id="gallery-video-label" class="camera-library-button video-library-button" for="gallery-video-input" hidden>🎞️ すでに撮った動画から選ぶ</label>
   </div>
@@ -1198,6 +1199,10 @@ _LIVE_CAMERA_HTML = """
     <div id="camera-review-mode-switch" class="camera-review-mode-switch" hidden>
       <button id="camera-review-mode-normal" type="button" class="camera-review-mode-button active">🙂 通常</button>
       <button id="camera-review-mode-parenting" type="button" class="camera-review-mode-button parenting">🌱 こどもーど</button>
+    </div>
+    <div id="camera-review-batch" class="camera-review-batch" hidden>
+      <div id="camera-review-batch-count" class="camera-review-batch-count"></div>
+      <div id="camera-review-batch-grid" class="camera-review-batch-grid"></div>
     </div>
     <video id="camera-review-video" class="camera-review-video" playsinline controls hidden></video>
   </div>
@@ -1224,6 +1229,7 @@ _LIVE_CAMERA_CSS = """
 .camera-review-image-shell[hidden],
 .camera-review-emotion-hint[hidden],
 .camera-review-emotion-palette[hidden],
+.camera-review-batch[hidden],
 .camera-review-video[hidden],
 .camera-find-button[hidden],
 .camera-review-build[hidden],
@@ -1321,6 +1327,56 @@ _LIVE_CAMERA_CSS = """
   border-color: rgba(128,128,128,.28);
   background: transparent;
 }
+.camera-review-batch {
+  width: 100%;
+  box-sizing: border-box;
+  margin: 10px 0 0 0;
+}
+.camera-review-batch-count {
+  margin: 0 0 8px 0;
+  font-size: 14px;
+  font-weight: 800;
+  line-height: 1.45;
+  color: var(--st-text-color);
+}
+.camera-review-batch-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+  width: 100%;
+}
+.camera-review-batch-item {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  overflow: hidden;
+  border-radius: 10px;
+  background: rgba(15,23,42,.10);
+}
+.camera-review-batch-item img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.camera-review-batch-index {
+  position: absolute;
+  right: 5px;
+  bottom: 5px;
+  min-width: 22px;
+  height: 22px;
+  padding: 0 5px;
+  box-sizing: border-box;
+  border-radius: 999px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(15,23,42,.78);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 800;
+}
+
 .live-camera-video,
 .camera-review-image,
 .camera-review-video {
@@ -1719,6 +1775,9 @@ export default function(component) {
   const reviewModeSwitch = parentElement.querySelector('#camera-review-mode-switch');
   const reviewModeNormal = parentElement.querySelector('#camera-review-mode-normal');
   const reviewModeParenting = parentElement.querySelector('#camera-review-mode-parenting');
+  const reviewBatch = parentElement.querySelector('#camera-review-batch');
+  const reviewBatchCount = parentElement.querySelector('#camera-review-batch-count');
+  const reviewBatchGrid = parentElement.querySelector('#camera-review-batch-grid');
   const reviewVideo = parentElement.querySelector('#camera-review-video');
   const reviewSave = parentElement.querySelector('#camera-review-save');
   const reviewRetry = parentElement.querySelector('#camera-review-retry');
@@ -1961,10 +2020,29 @@ export default function(component) {
   let pendingPhotoPreparePromise = null;
   let pendingPhotoPreviewUrl = '';
   let pendingPhotoLoadGeneration = 0;
+  let pendingPhotoBatchFiles = [];
+  let pendingPhotoBatchPreparePromise = null;
+  let pendingPhotoBatchPreviewUrls = [];
+  const GALLERY_PHOTO_BATCH_MAX = 20;
+  const GALLERY_PHOTO_BATCH_WORKERS = 2;
   const revokePendingPhotoPreviewUrl = () => {
     if (!pendingPhotoPreviewUrl) return;
     try { URL.revokeObjectURL(pendingPhotoPreviewUrl); } catch (_) {}
     pendingPhotoPreviewUrl = '';
+  };
+  const revokePendingPhotoBatchPreviewUrls = () => {
+    for (const url of pendingPhotoBatchPreviewUrls) {
+      try { URL.revokeObjectURL(url); } catch (_) {}
+    }
+    pendingPhotoBatchPreviewUrls = [];
+  };
+  const resetPendingPhotoBatch = () => {
+    pendingPhotoBatchFiles = [];
+    pendingPhotoBatchPreparePromise = null;
+    revokePendingPhotoBatchPreviewUrls();
+    if (reviewBatchGrid) reviewBatchGrid.replaceChildren();
+    if (reviewBatchCount) reviewBatchCount.textContent = '';
+    if (reviewBatch) reviewBatch.hidden = true;
   };
   const PHOTO_EMOTION_ORDER = ['', 'cozy', 'joy', 'surprise', 'anger', 'sadness', 'frustration', 'relaxed', 'delicious', 'beautiful', 'mixed'];
   const PHOTO_EMOTIONS = {
@@ -2174,6 +2252,7 @@ export default function(component) {
   const hideReview = () => {
     disarmGoodMomentsButton();
     revokePendingPhotoPreviewUrl();
+    resetPendingPhotoBatch();
     if (review) review.hidden = true;
     if (reviewImageShell) reviewImageShell.hidden = true;
     if (reviewEmotionHint) reviewEmotionHint.hidden = true;
@@ -2250,6 +2329,46 @@ export default function(component) {
     if (review) review.hidden = false;
   };
 
+  const showPhotoBatchReview = (files) => {
+    const cleanFiles = Array.isArray(files) ? files.filter(Boolean) : [];
+    syncOrientationUi();
+    if (wrap) { wrap.classList.remove('camera-live'); wrap.classList.add('camera-reviewing'); }
+    if (menu) menu.hidden = true;
+    if (activeActions) activeActions.hidden = true;
+    if (libraryActions) libraryActions.hidden = true;
+    if (video) video.hidden = true;
+    hideReview();
+    if (reviewImageShell) reviewImageShell.hidden = true;
+    if (reviewEmotionHint) reviewEmotionHint.hidden = true;
+    if (reviewModeSwitch) reviewModeSwitch.hidden = true;
+    if (reviewBatchCount) reviewBatchCount.textContent = `${cleanFiles.length}枚を選択しました。まとめて保存できます。`;
+    if (reviewBatchGrid) {
+      reviewBatchGrid.replaceChildren();
+      cleanFiles.forEach((file, index) => {
+        const item = document.createElement('div');
+        item.className = 'camera-review-batch-item';
+        const img = document.createElement('img');
+        img.alt = `選択した写真 ${index + 1}`;
+        img.loading = index < 6 ? 'eager' : 'lazy';
+        const url = URL.createObjectURL(file);
+        pendingPhotoBatchPreviewUrls.push(url);
+        img.src = url;
+        const badge = document.createElement('span');
+        badge.className = 'camera-review-batch-index';
+        badge.textContent = String(index + 1);
+        item.appendChild(img);
+        item.appendChild(badge);
+        reviewBatchGrid.appendChild(item);
+      });
+    }
+    if (reviewBatch) reviewBatch.hidden = false;
+    reviewSave.textContent = `${cleanFiles.length}枚をまとめて残す`;
+    reviewRetry.textContent = '選びなおす';
+    if (reviewFindMoments) reviewFindMoments.hidden = true;
+    if (reviewBuild) reviewBuild.hidden = true;
+    if (review) review.hidden = false;
+  };
+
   const showVideoReview = (blob) => {
     syncOrientationUi();
     if (wrap) { wrap.classList.remove('camera-live'); wrap.classList.add('camera-reviewing'); }
@@ -2308,6 +2427,7 @@ export default function(component) {
     pendingPhotoLoadGeneration += 1;
     pendingPhotoPreparePromise = null;
     revokePendingPhotoPreviewUrl();
+    resetPendingPhotoBatch();
     hideReview();
   };
 
@@ -2319,6 +2439,7 @@ export default function(component) {
     pendingPhotoLoadGeneration += 1;
     pendingPhotoPreparePromise = null;
     revokePendingPhotoPreviewUrl();
+    resetPendingPhotoBatch();
     showMenu();
   };
 
@@ -3655,51 +3776,117 @@ export default function(component) {
     }
   };
 
+  const prepareGalleryPhotoBatch = async (files, generation) => {
+    const sourceFiles = Array.isArray(files) ? files.slice() : [];
+    const results = new Array(sourceFiles.length);
+    let cursor = 0;
+    let completed = 0;
+    const worker = async () => {
+      while (true) {
+        const index = cursor;
+        cursor += 1;
+        if (index >= sourceFiles.length) return;
+        if (generation !== pendingPhotoLoadGeneration) throw new Error('gallery batch preparation cancelled');
+        const file = sourceFiles[index];
+        const dataUrl = await prepareImageFile(file);
+        if (generation !== pendingPhotoLoadGeneration) throw new Error('gallery batch preparation cancelled');
+        results[index] = {
+          data_url: dataUrl,
+          name: file.name || `gallery_${index + 1}.jpg`,
+          source: 'gallery_batch',
+          captured_at: file.lastModified ? new Date(file.lastModified).toISOString() : new Date().toISOString(),
+          location: {
+            ok: false,
+            error_code: 'GALLERY',
+            error_message: '写真フォルダから選んだ画像の撮影位置は自動取得しません。'
+          }
+        };
+        completed += 1;
+        setStatus(`保存用データを準備しています… ${completed}/${sourceFiles.length}`);
+      }
+    };
+    const workerCount = Math.max(1, Math.min(GALLERY_PHOTO_BATCH_WORKERS, sourceFiles.length));
+    await Promise.all(Array.from({ length: workerCount }, () => worker()));
+    return results.filter((item) => item && item.data_url);
+  };
+
   const chooseGalleryPhoto = async () => {
-    const file = galleryInput.files && galleryInput.files[0];
-    if (!file) return;
+    const selectedFiles = Array.from(galleryInput.files || []).filter((file) => file && (!file.type || file.type.startsWith('image/')));
+    if (!selectedFiles.length) return;
+    if (selectedFiles.length > GALLERY_PHOTO_BATCH_MAX) {
+      const message = `一度に選べる写真は${GALLERY_PHOTO_BATCH_MAX}枚までです。枚数を減らして選びなおしてください。`;
+      setStatus(message);
+      setTriggerValue('camera_error', { name: 'GalleryPhotoBatchLimit', message });
+      galleryInput.value = '';
+      return;
+    }
+
     const generation = ++pendingPhotoLoadGeneration;
     let previewUrl = '';
     try {
-      // Display the exact local photo immediately. Do not wait for full-resolution decode,
-      // 1600px resize and JPEG serialization before the user sees the review screen.
-      previewUrl = URL.createObjectURL(file);
-      pendingMedia = {
-        kind: 'photo',
-        data_url: '',
-        name: file.name || 'gallery.jpg',
-        source: 'gallery',
-        captured_at: file.lastModified ? new Date(file.lastModified).toISOString() : new Date().toISOString(),
-        emotion: '',
-        parenting: '',
-        location: {
-          ok: false,
-          error_code: 'GALLERY',
-          error_message: '写真フォルダから選んだ画像の撮影位置は自動取得しません。'
-        }
-      };
-      showPhotoReview(previewUrl);
-      // showPhotoReview() starts by hiding the previous review, so register the new
-      // object URL only after that call. It will then be revoked on retry/close.
-      pendingPhotoPreviewUrl = previewUrl;
-      previewUrl = '';
-      setStatus('写真を表示しました。保存用データを準備しています…');
+      if (selectedFiles.length === 1) {
+        const file = selectedFiles[0];
+        // Preserve the established single-photo review path exactly.
+        previewUrl = URL.createObjectURL(file);
+        pendingMedia = {
+          kind: 'photo',
+          data_url: '',
+          name: file.name || 'gallery.jpg',
+          source: 'gallery',
+          captured_at: file.lastModified ? new Date(file.lastModified).toISOString() : new Date().toISOString(),
+          emotion: '',
+          parenting: '',
+          location: {
+            ok: false,
+            error_code: 'GALLERY',
+            error_message: '写真フォルダから選んだ画像の撮影位置は自動取得しません。'
+          }
+        };
+        showPhotoReview(previewUrl);
+        pendingPhotoPreviewUrl = previewUrl;
+        previewUrl = '';
+        setStatus('写真を表示しました。保存用データを準備しています…');
+        pendingPhotoPreparePromise = prepareImageFile(file).then((dataUrl) => {
+          if (generation !== pendingPhotoLoadGeneration) return '';
+          if (pendingMedia && pendingMedia.kind === 'photo' && pendingMedia.source === 'gallery') {
+            pendingMedia.data_url = dataUrl;
+            setStatus('');
+          }
+          return dataUrl;
+        });
+        pendingPhotoPreparePromise.catch(() => {});
+        return;
+      }
 
-      pendingPhotoPreparePromise = prepareImageFile(file).then((dataUrl) => {
-        if (generation !== pendingPhotoLoadGeneration) return '';
-        if (pendingMedia && pendingMedia.kind === 'photo' && pendingMedia.source === 'gallery') {
-          pendingMedia.data_url = dataUrl;
-          setStatus('');
+      const files = selectedFiles.slice();
+      showPhotoBatchReview(files);
+      pendingPhotoBatchFiles = files;
+      const batchId = (globalThis.crypto && typeof globalThis.crypto.randomUUID === 'function')
+        ? globalThis.crypto.randomUUID()
+        : `photo_batch_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+      pendingMedia = {
+        kind: 'photo_batch',
+        source: 'gallery_batch',
+        batch_id: batchId,
+        selected_count: files.length,
+        items: []
+      };
+      setStatus(`保存用データを準備しています… 0/${files.length}`);
+      pendingPhotoBatchPreparePromise = prepareGalleryPhotoBatch(files, generation).then((items) => {
+        if (generation !== pendingPhotoLoadGeneration) return [];
+        if (pendingMedia && pendingMedia.kind === 'photo_batch' && pendingMedia.batch_id === batchId) {
+          pendingMedia.items = items;
+          setStatus(`${items.length}枚の準備ができました。`);
         }
-        return dataUrl;
+        return items;
       });
-      // Avoid an unhandled rejection if the user immediately navigates away. Save/retry
-      // still receives the same promise and can report the error when relevant.
-      pendingPhotoPreparePromise.catch(() => {});
+      pendingPhotoBatchPreparePromise.catch(() => {});
     } catch (err) {
       console.error(err);
       if (previewUrl) { try { URL.revokeObjectURL(previewUrl); } catch (_) {} }
-      const message = '写真を読み込めませんでした。別の写真を選んでください。';
+      const message = selectedFiles.length > 1
+        ? '複数の写真を読み込めませんでした。枚数を減らすか、別の写真を選んでください。'
+        : '写真を読み込めませんでした。別の写真を選んでください。';
       setStatus(message);
       setTriggerValue('camera_error', { name: 'GalleryError', message });
     } finally {
@@ -3764,6 +3951,37 @@ export default function(component) {
     reviewSave.disabled = true;
     reviewRetry.disabled = true;
     const mediaToSave = pendingMedia;
+
+    if (mediaToSave.kind === 'photo_batch') {
+      try {
+        let items = Array.isArray(mediaToSave.items) ? mediaToSave.items : [];
+        if (!items.length && pendingPhotoBatchPreparePromise) {
+          setStatus(`選んだ${pendingPhotoBatchFiles.length || mediaToSave.selected_count || 0}枚を保存する準備をしています…`);
+          items = await pendingPhotoBatchPreparePromise;
+          if (mediaToSave !== pendingMedia) throw new Error('gallery batch preparation cancelled');
+          mediaToSave.items = items;
+        }
+        if (!items.length) throw new Error('複数写真の保存データを準備できませんでした。');
+        setStatus(`${items.length}枚の写真をまとめて保存しています…`);
+        releaseLiveCameraForUpload();
+        setTriggerValue('photo_batch', {
+          kind: 'photo_batch',
+          source: 'gallery_batch',
+          batch_id: String(mediaToSave.batch_id || ''),
+          selected_count: items.length,
+          items
+        });
+        releaseSubmittedReviewMedia();
+      } catch (err) {
+        console.error(err);
+        reviewSave.disabled = false;
+        reviewRetry.disabled = false;
+        const message = '複数の写真を保存する準備ができませんでした。もう一度選びなおしてください。';
+        setStatus(message);
+        setTriggerValue('camera_error', { name: 'GalleryPhotoBatchPrepareError', message, detail: String(err?.message || '') });
+      }
+      return;
+    }
 
     if (mediaToSave.kind === 'video') {
       try {
@@ -3856,13 +4074,14 @@ export default function(component) {
     pendingPhotoLoadGeneration += 1;
     pendingPhotoPreparePromise = null;
     revokePendingPhotoPreviewUrl();
+    resetPendingPhotoBatch();
     reviewSave.disabled = false;
     reviewRetry.disabled = false;
     disarmGoodMomentsButton();
     setStatus('');
     hideReview();
 
-    if ((source === 'camera' || source === 'gallery' || source === 'video_camera' || source === 'video_gallery') && stream && stream.getTracks().some((track) => track.readyState === 'live')) {
+    if ((source === 'camera' || source === 'gallery' || source === 'gallery_batch' || source === 'video_camera' || source === 'video_gallery') && stream && stream.getTracks().some((track) => track.readyState === 'live')) {
       cameraMode = (source === 'video_camera' || source === 'video_gallery') ? 'video' : 'photo';
       if (video.srcObject !== stream) video.srcObject = stream;
       await video.play();
@@ -3982,6 +4201,7 @@ export default function(component) {
     pendingPhotoLoadGeneration += 1;
     pendingPhotoPreparePromise = null;
     revokePendingPhotoPreviewUrl();
+    resetPendingPhotoBatch();
     reviewSave.removeEventListener('click', savePendingMedia);
     reviewRetry.removeEventListener('click', retryPendingMedia);
     reviewImageShell?.removeEventListener('click', cycleReviewEmotion);
@@ -3999,7 +4219,7 @@ export default function(component) {
 }
 """
 
-LIVE_CAMERA_COMPONENT_BUILD = "v411"
+LIVE_CAMERA_COMPONENT_BUILD = "v440"
 
 # v383: this bundle is large. Register it only on the Camera page so unrelated
 # Streamlit reruns do not pay the camera component setup cost.
@@ -4013,7 +4233,7 @@ def _get_live_camera_component():
     _live_camera_component_initialized = True
     try:
         live_camera_component = st.components.v2.component(
-            "tokyo_burari_live_camera_v411",
+            "tokyo_burari_live_camera_v440",
             html=_LIVE_CAMERA_HTML,
             css=_LIVE_CAMERA_CSS,
             js=_LIVE_CAMERA_JS,
@@ -33105,6 +33325,10 @@ def page_trip():
     notice = st.session_state.pop("_camera_notice", None)
     if notice:
         st.success(notice)
+    batch_error = st.session_state.pop("_camera_batch_error_v440", None)
+    if batch_error:
+        with st.expander("保存できなかった写真の詳細"):
+            st.code(str(batch_error))
     render_photo_family_share_notice()
     render_photo_favorite_notice()
 
@@ -33187,14 +33411,16 @@ def page_trip():
             "video_candidate_sheet_signed_url": str(video_reservation.get("candidate_sheet_signed_url") or ""),
             "video_candidate_sheet_storage_path": str(video_reservation.get("candidate_sheet_path") or ""),
         },
-        key=f"live_camera_v411_{camera_trip_key}_{st.session_state.capture_serial}_{_current_ui_refresh_epoch()}",
+        key=f"live_camera_v440_{camera_trip_key}_{st.session_state.capture_serial}_{_current_ui_refresh_epoch()}",
         on_photo_change=lambda: None,
+        on_photo_batch_change=lambda: None,
         on_video_change=lambda: None,
         on_video_prepare_change=lambda: None,
         on_camera_error_change=lambda: None,
     )
 
     payload = getattr(result, "photo", None)
+    batch_payload = getattr(result, "photo_batch", None)
     video_payload = getattr(result, "video", None)
     video_prepare = getattr(result, "video_prepare", None)
     camera_error = getattr(result, "camera_error", None)
@@ -33424,6 +33650,112 @@ def page_trip():
                         pass
             with st.expander("保護者向け詳細"):
                 st.code(f"処理段階: {save_stage}\n{exc}")
+
+    if isinstance(batch_payload, dict) and isinstance(batch_payload.get("items"), list):
+        batch_items = [item for item in batch_payload.get("items") if isinstance(item, dict) and item.get("data_url")][:20]
+        if batch_items:
+            batch_id = str(batch_payload.get("batch_id") or "").strip()
+            if not batch_id:
+                identity = "|".join(
+                    f"{str(item.get('name') or '')}:{str(item.get('captured_at') or '')}:{len(str(item.get('data_url') or ''))}"
+                    for item in batch_items
+                )
+                batch_id = hashlib.sha1(identity.encode("utf-8", errors="ignore")).hexdigest()[:24]
+            batch_state_key = "_saved_camera_batch_digests_v440"
+            batch_state = st.session_state.get(batch_state_key)
+            if not isinstance(batch_state, dict):
+                batch_state = {}
+            already_saved = set(str(x) for x in (batch_state.get(batch_id) or []) if str(x))
+            newly_saved = 0
+            duplicate_count = 0
+            failures = []
+            last_saved_photo = None
+            trip = ensure_today_trip()
+            progress_slot = st.empty()
+            try:
+                for index, item in enumerate(batch_items, start=1):
+                    progress_slot.caption(f"写真をまとめて保存しています… {index}/{len(batch_items)}")
+                    raw = b""
+                    try:
+                        raw = decode_camera_data_url(item.get("data_url"))
+                        if not raw:
+                            raise ValueError("画像データが空です。")
+                        digest = hashlib.sha1(raw).hexdigest()
+                        if digest in already_saved:
+                            duplicate_count += 1
+                            item["data_url"] = ""
+                            continue
+                        capture_source = "gallery_batch"
+                        location = build_photo_location(
+                            item.get("location"),
+                            trip,
+                            capture_source=capture_source,
+                        )
+                        saved_photo = upload_photo(
+                            trip["id"],
+                            raw,
+                            location=location,
+                            captured_at=item.get("captured_at"),
+                            capture_source=capture_source,
+                            extra_reflection=None,
+                        )
+                        already_saved.add(digest)
+                        batch_state[batch_id] = list(already_saved)
+                        # Keep only a small number of recent batch receipts in session state.
+                        while len(batch_state) > 8:
+                            try:
+                                batch_state.pop(next(iter(batch_state)))
+                            except Exception:
+                                break
+                        st.session_state[batch_state_key] = batch_state
+                        newly_saved += 1
+                        if isinstance(saved_photo, dict) and saved_photo.get("id"):
+                            last_saved_photo = saved_photo
+                        item["data_url"] = ""
+                    except Exception as item_exc:
+                        failures.append(
+                            f"{index}枚目（{str(item.get('name') or '写真')}）: {str(item_exc)[:160]}"
+                        )
+                    finally:
+                        raw = b""
+            finally:
+                progress_slot.empty()
+
+            if newly_saved > 0:
+                if isinstance(last_saved_photo, dict) and last_saved_photo.get("id"):
+                    st.session_state[f"_camera_recent_photo_{trip['id']}"] = last_saved_photo["id"]
+                    st.session_state[f"_camera_show_recent_v394_{trip['id']}"] = False
+                previous_count = st.session_state.get("_home_today_photo_count")
+                try:
+                    previous_count = int(previous_count) if previous_count is not None else 0
+                except Exception:
+                    previous_count = 0
+                st.session_state["_home_today_photo_count"] = previous_count + newly_saved
+                st.session_state["_browser_last_camera_open_at"] = time.time() * 1000.0
+                st.session_state["_browser_last_camera_mode"] = "photo"
+                st.session_state["_camera_entry_mode_v394"] = "photo"
+                st.session_state.capture_serial += 1
+
+            if failures:
+                st.session_state["_camera_notice"] = (
+                    f"写真を{newly_saved}枚保存しました。{len(failures)}枚は保存できませんでした。"
+                    if newly_saved
+                    else f"写真を保存できませんでした（{len(failures)}枚）。"
+                )
+                st.session_state["_camera_batch_error_v440"] = "\n".join(failures[:10])
+            elif newly_saved:
+                st.session_state["_camera_notice"] = f"写真を{newly_saved}枚まとめて保存しました。"
+            elif duplicate_count:
+                st.session_state["_camera_notice"] = "選んだ写真はすでにこの一括保存で処理済みです。"
+
+            for item in batch_items:
+                item["data_url"] = ""
+            if newly_saved or duplicate_count:
+                reload_current_page_after_action()
+            elif failures:
+                st.error("複数の写真を保存できませんでした。")
+                with st.expander("保護者向け詳細"):
+                    st.code("\n".join(failures[:10]))
 
     if isinstance(payload, dict) and payload.get("data_url"):
         try:
