@@ -33,9 +33,10 @@ from zoneinfo import ZoneInfo
 import streamlit as st
 
 # Freshly generated update: 2026-09-15 JST
-GENERATED_UPDATE_JST = "2026-09-16T00:20:00+09:00"
+GENERATED_UPDATE_JST = "2026-09-15T23:55:00+09:00"
 
-APP_BUILD = "v444"
+APP_BUILD = "v445"
+# v445: When a multi-photo gallery selection contains already-imported photos, add an explicit “取り込み済み以外を残す” action that submits only unimported items while keeping the existing save-all action and duplicate badges.
 # v444: Mark already-imported gallery photos on the in-app import review thumbnails. Legacy v441+ imports match by stored original-name/capture metadata; new imports also persist a sampled-content SHA-256 fingerprint for stronger duplicate recognition. Android system picker thumbnails remain OS-controlled.
 # v443: Route imported gallery photos to the trip date derived from their preserved capture timestamp instead of always attaching them to today. Group multi-date batch imports by capture date, avoid inflating today counters for historical imports, and safely repair pre-v443 gallery imports that are still in an undiarized trip whose date disagrees with captured_at.
 # v442: Add two-step batch photo deletion to pending-diary photo groups and the all-photo library list. Keep single-photo delete, select multiple photos safely, show a running state, and delete sequentially so trip/diary cleanup remains correct.
@@ -1195,6 +1196,7 @@ _LIVE_CAMERA_HTML = """
       <button id="camera-review-save" class="camera-save-button" type="button">この写真を残す</button>
       <button id="camera-review-retry" class="camera-retry-button" type="button">撮りなおす／選びなおす</button>
     </div>
+    <button id="camera-review-save-new-only" class="camera-save-new-only-button" type="button" hidden>取り込み済み以外を残す</button>
     <button id="camera-review-find-moments" class="camera-find-button" type="button" hidden>✨ いい瞬間を探す</button>
     <div id="camera-review-build" class="camera-review-build" hidden>camera v253</div>
     <div id="camera-review-emotion-hint" class="camera-review-emotion-hint" hidden>写真下の「通常／こどもーど」を切り替え、写真につけるアイコンを1つ選べます。</div>
@@ -1238,6 +1240,7 @@ _LIVE_CAMERA_CSS = """
 .camera-review-emotion-palette[hidden],
 .camera-review-imported-badge[hidden],
 .camera-review-batch-imported[hidden],
+.camera-save-new-only-button[hidden],
 .camera-review-batch[hidden],
 .camera-review-video[hidden],
 .camera-find-button[hidden],
@@ -1642,6 +1645,31 @@ _LIVE_CAMERA_CSS = """
   border-color: #166534;
   background: #15803d;
 }
+.camera-save-new-only-button {
+  width: 100%;
+  min-height: 54px;
+  box-sizing: border-box;
+  margin: 0 0 8px 0;
+  padding: 10px 14px;
+  border: 2px solid #0f766e;
+  border-radius: 16px;
+  background: #0d9488;
+  color: #fff;
+  font-size: 16px;
+  font-weight: 800;
+  cursor: pointer;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+.camera-save-new-only-button:hover,
+.camera-save-new-only-button:focus-visible {
+  border-color: #115e59;
+  background: #0f766e;
+}
+.camera-save-new-only-button:disabled {
+  cursor: default;
+  opacity: .58;
+}
 .camera-facing-button,
 .camera-mode-switch-button,
 .camera-sub-button,
@@ -1727,6 +1755,7 @@ _LIVE_CAMERA_CSS = """
   gap: 6px;
 }
 .live-camera-wrap.camera-landscape .camera-save-button,
+.live-camera-wrap.camera-landscape .camera-save-new-only-button,
 .live-camera-wrap.camera-landscape .camera-retry-button {
   min-height: 44px;
   font-size: 12px;
@@ -1772,6 +1801,7 @@ _LIVE_CAMERA_CSS = """
 }
 .camera-shoot-button:active,
 .camera-save-button:active,
+.camera-save-new-only-button:active,
 .camera-retry-button:active,
 .camera-mode-switch-button:active,
 .camera-facing-button:active,
@@ -1815,6 +1845,7 @@ export default function(component) {
   const reviewBatchGrid = parentElement.querySelector('#camera-review-batch-grid');
   const reviewVideo = parentElement.querySelector('#camera-review-video');
   const reviewSave = parentElement.querySelector('#camera-review-save');
+  const reviewSaveNewOnly = parentElement.querySelector('#camera-review-save-new-only');
   const reviewRetry = parentElement.querySelector('#camera-review-retry');
   const reviewFindMoments = parentElement.querySelector('#camera-review-find-moments');
   const reviewBuild = parentElement.querySelector('#camera-review-build');
@@ -2299,6 +2330,11 @@ export default function(component) {
     if (review) review.hidden = true;
     if (reviewImageShell) reviewImageShell.hidden = true;
     if (reviewImportedBadge) reviewImportedBadge.hidden = true;
+    if (reviewSaveNewOnly) {
+      reviewSaveNewOnly.hidden = true;
+      reviewSaveNewOnly.disabled = false;
+      reviewSaveNewOnly.textContent = '取り込み済み以外を残す';
+    }
     if (reviewEmotionHint) reviewEmotionHint.hidden = true;
     if (reviewImage) {
       reviewImage.hidden = true;
@@ -2432,14 +2468,23 @@ export default function(component) {
     if (badge) badge.hidden = !Boolean(imported);
   };
 
-  const updateBatchImportedSummaryV444 = (items, totalCount) => {
-    if (!reviewBatchCount) return;
+  const updateBatchImportedSummaryV445 = (items, totalCount) => {
     const clean = Array.isArray(items) ? items.filter(Boolean) : [];
     const importedCount = clean.filter((item) => Boolean(item?.already_imported)).length;
+    const freshCount = Math.max(0, clean.length - importedCount);
     const total = Math.max(0, Number(totalCount || clean.length || 0));
-    reviewBatchCount.textContent = importedCount
-      ? `${total}枚を選択しました。うち${importedCount}枚は ✓ 取り込み済み です。`
-      : `${total}枚を選択しました。取り込み済みの写真はありません。`;
+    if (reviewBatchCount) {
+      reviewBatchCount.textContent = importedCount
+        ? `${total}枚を選択しました。うち${importedCount}枚は ✓ 取り込み済み です。`
+        : `${total}枚を選択しました。取り込み済みの写真はありません。`;
+    }
+    if (reviewSaveNewOnly) {
+      reviewSaveNewOnly.hidden = importedCount <= 0;
+      reviewSaveNewOnly.disabled = importedCount <= 0 || freshCount <= 0;
+      reviewSaveNewOnly.textContent = freshCount > 0
+        ? `取り込み済み以外を残す（${freshCount}枚）`
+        : '取り込み済み以外はありません';
+    }
   };
 
   const showVideoReview = (blob) => {
@@ -4270,7 +4315,7 @@ export default function(component) {
     const workerCount = Math.max(1, Math.min(GALLERY_PHOTO_BATCH_WORKERS, sourceFiles.length));
     await Promise.all(Array.from({ length: workerCount }, () => worker()));
     const cleanResults = results.filter((item) => item && item.data_url);
-    updateBatchImportedSummaryV444(cleanResults, sourceFiles.length);
+    updateBatchImportedSummaryV445(cleanResults, sourceFiles.length);
     return cleanResults;
   };
 
@@ -4438,9 +4483,11 @@ export default function(component) {
     }
   };
 
-  const savePendingMedia = async () => {
+  const savePendingMedia = async (options = null) => {
     if (!pendingMedia) return;
+    const excludeAlreadyImported = Boolean(options && options.excludeAlreadyImported === true);
     reviewSave.disabled = true;
+    if (reviewSaveNewOnly) reviewSaveNewOnly.disabled = true;
     reviewRetry.disabled = true;
     const mediaToSave = pendingMedia;
 
@@ -4454,20 +4501,33 @@ export default function(component) {
           mediaToSave.items = items;
         }
         if (!items.length) throw new Error('複数写真の保存データを準備できませんでした。');
-        setStatus(`${items.length}枚の写真をまとめて保存しています…`);
+        const itemsToSave = excludeAlreadyImported
+          ? items.filter((item) => !Boolean(item?.already_imported))
+          : items;
+        if (!itemsToSave.length) {
+          reviewSave.disabled = false;
+          reviewRetry.disabled = false;
+          updateBatchImportedSummaryV445(items, mediaToSave.selected_count || items.length);
+          setStatus('選んだ写真はすべて取り込み済みです。新しく保存する写真はありません。');
+          return;
+        }
+        setStatus(excludeAlreadyImported
+          ? `${itemsToSave.length}枚の未取り込み写真を保存しています…`
+          : `${itemsToSave.length}枚の写真をまとめて保存しています…`);
         releaseLiveCameraForUpload();
         setTriggerValue('photo_batch', {
           kind: 'photo_batch',
           source: 'gallery_batch',
           batch_id: String(mediaToSave.batch_id || ''),
-          selected_count: items.length,
-          items
+          selected_count: itemsToSave.length,
+          items: itemsToSave
         });
         releaseSubmittedReviewMedia();
       } catch (err) {
         console.error(err);
         reviewSave.disabled = false;
         reviewRetry.disabled = false;
+        updateBatchImportedSummaryV445(Array.isArray(mediaToSave.items) ? mediaToSave.items : [], mediaToSave.selected_count || 0);
         const message = '複数の写真を保存する準備ができませんでした。もう一度選びなおしてください。';
         setStatus(message);
         setTriggerValue('camera_error', { name: 'GalleryPhotoBatchPrepareError', message, detail: String(err?.message || '') });
@@ -4568,6 +4628,7 @@ export default function(component) {
     revokePendingPhotoPreviewUrl();
     resetPendingPhotoBatch();
     reviewSave.disabled = false;
+    if (reviewSaveNewOnly) { reviewSaveNewOnly.hidden = true; reviewSaveNewOnly.disabled = false; }
     reviewRetry.disabled = false;
     disarmGoodMomentsButton();
     setStatus('');
@@ -4663,7 +4724,9 @@ export default function(component) {
   if (reviewModeParenting) reviewModeParenting.addEventListener('click', (event) => {
     event.preventDefault(); event.stopPropagation(); reviewMode = 'parenting'; syncReviewEmotion();
   });
+  const saveOnlyUnimportedGalleryPhotosV445 = () => savePendingMedia({ excludeAlreadyImported: true });
   reviewSave.addEventListener('click', savePendingMedia);
+  reviewSaveNewOnly?.addEventListener('click', saveOnlyUnimportedGalleryPhotosV445);
   reviewRetry.addEventListener('click', retryPendingMedia);
   reviewImageShell?.addEventListener('click', cycleReviewEmotion);
   reviewImageShell?.addEventListener('keydown', onReviewEmotionKeydown);
@@ -4695,6 +4758,7 @@ export default function(component) {
     revokePendingPhotoPreviewUrl();
     resetPendingPhotoBatch();
     reviewSave.removeEventListener('click', savePendingMedia);
+    reviewSaveNewOnly?.removeEventListener('click', saveOnlyUnimportedGalleryPhotosV445);
     reviewRetry.removeEventListener('click', retryPendingMedia);
     reviewImageShell?.removeEventListener('click', cycleReviewEmotion);
     reviewImageShell?.removeEventListener('keydown', onReviewEmotionKeydown);
@@ -4711,7 +4775,7 @@ export default function(component) {
 }
 """
 
-LIVE_CAMERA_COMPONENT_BUILD = "v444"
+LIVE_CAMERA_COMPONENT_BUILD = "v445"
 
 # v383: this bundle is large. Register it only on the Camera page so unrelated
 # Streamlit reruns do not pay the camera component setup cost.
@@ -34455,7 +34519,7 @@ def page_trip():
             "gallery_import_identity_hashes": list(gallery_marker_payload_v444.get("identity_hashes") or []),
             "gallery_import_fingerprints": list(gallery_marker_payload_v444.get("fingerprints") or []),
         },
-        key=f"live_camera_v444_{camera_trip_key}_{st.session_state.capture_serial}_{_current_ui_refresh_epoch()}",
+        key=f"live_camera_v445_{camera_trip_key}_{st.session_state.capture_serial}_{_current_ui_refresh_epoch()}",
         on_photo_change=lambda: None,
         on_photo_batch_change=lambda: None,
         on_video_change=lambda: None,
