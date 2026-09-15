@@ -33,9 +33,10 @@ from zoneinfo import ZoneInfo
 import streamlit as st
 
 # Freshly generated update: 2026-09-15 JST
-GENERATED_UPDATE_JST = "2026-09-16T01:05:00+09:00"
+GENERATED_UPDATE_JST = "2026-09-16T01:18:00+09:00"
 
-APP_BUILD = "v448"
+APP_BUILD = "v449"
+# v449: Flush browser-local photo emotion/parenting changes through the existing v166 bridge before any page is rendered, so the all-photo library and replay read the same current tag state. Also apply the first replay frame/badge immediately and treat legacy icon/color metadata as an active frame even if a key is absent. Preserve v448 live-photo authority, v446 timing, and v433 smart framing.
 # v448: Replay emotion/tag rendering now treats the photo row currently stored in the database as authoritative. Always reload current photo reflection_json before assembling owner replays, never overwrite a current photo tag from an older Good Moments/source snapshot during replay, and resolve family-shared replay emotions from the owner's live photo row when available. Preserve v447 new-photo support, v446 timing, and v433 smart framing.
 # v447: Refresh Good Moments-derived still metadata before building every replay. Newly saved stills can exist before their browser-selected emotion/parenting tag has been copied from the source video item; replay now runs the existing v417 source-link repair, reloads changed photo rows in the same render, and therefore applies the emotion border/badge immediately without requiring the Diary gallery to be opened first. Preserve v446 timing and v433 smart framing unchanged.
 # v446: Make replay start robust again: never block playback because one voice duration cannot be preflighted or because the fixed music window is shorter than the 2.0s/voice minima. Recalculate on every play, keep every still >=2.0s, keep voiced stills until voice end, and let photos continue silently after the configured music end only when needed. Preserve v433 smart person-safe framing unchanged.
@@ -24008,8 +24009,11 @@ def render_monthly_replay_player(period_label, review, playback, photo_items, cu
       }};
       const burariEmotionIcons = {{ cozy: '🥰', joy: '😊', surprise: '😲', anger: '😠', sadness: '😢', frustration: '😣', relaxed: '😌', delicious: '😋', beautiful: '✨', mixed: '😵‍💫', effort: '⭐', challenge: '💪', discovery: '💡', kindness: '❤️', together: '🤝', tears: '😭', hmm: '🤔', peace: '✌️', teach_me: '🙋', sharp: '🫡' }};
 
+      // v449: render the same emotion frame/badge on the initial still as on every
+      // subsequent slide. Function declarations are hoisted, so the full frame helper
+      // can safely be used here before playback starts.
       try {{
-        if (burariSlides.length) burariApplyReplayFraming(burariSlides[0] || {{}}, String((burariSlides[0] || {{}}).url || ''));
+        if (burariSlides.length) burariApplySlideFrame(burariSlides[0] || {{}}, 0, String((burariSlides[0] || {{}}).url || ''));
       }} catch (_) {{}}
 
       function burariVoiceMinimumMsForIndex(index) {{
@@ -24467,11 +24471,12 @@ def render_monthly_replay_player(period_label, review, playback, photo_items, cu
         const emotionKey = String(item.emotion || '');
         const emotionColor = burariEmotionColors[emotionKey] || String(item.emotion_color || '') || burariDefaultFrameColor;
         const emotionIcon = burariEmotionIcons[emotionKey] || String(item.emotion_emoji || '');
-        if (burariStage) burariStage.style.borderColor = emotionKey ? emotionColor : burariDefaultFrameColor;
+        const emotionActive = Boolean(emotionKey || emotionIcon || String(item.emotion_label || '') || String(item.emotion_color || ''));
+        if (burariStage) burariStage.style.borderColor = emotionActive ? emotionColor : burariDefaultFrameColor;
         if (burariEmotion) {{
           burariEmotion.textContent = emotionIcon;
           burariEmotion.style.display = emotionIcon ? 'flex' : 'none';
-          burariEmotion.style.borderColor = emotionKey ? emotionColor : 'rgba(255,255,255,.96)';
+          burariEmotion.style.borderColor = emotionActive ? emotionColor : 'rgba(255,255,255,.96)';
           burariEmotion.setAttribute('aria-hidden', emotionIcon ? 'false' : 'true');
           burariEmotion.title = emotionIcon ? `${{emotionIcon}} ${{item.emotion_label || ''}}` : '';
         }}
@@ -43743,6 +43748,11 @@ consume_pending_emotion_query()
 # rerun. Handle history first; if it changes the page, sync_browser_history() reruns
 # before any visible UI is emitted.
 sync_browser_history()
+# v449: photo-library emotion taps are intentionally browser-local for instant UI.
+# Mount the v166 flush bridge on every real app rerun *before* the requested page is
+# rendered so Review/Replay sees exactly the same current tags shown in the library.
+# The bridge is idempotent by token and clears the fast DB caches after persistence.
+sync_pending_tags_from_browser_v166()
 render_pending_emotion_query_cleanup()
 
 # v338: loading remains lightweight; stale Streamlit DOM stays visible during reconciliation. Android GPS is native-background only and never emits Streamlit GPS events. It performs
