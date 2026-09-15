@@ -33,9 +33,10 @@ from zoneinfo import ZoneInfo
 import streamlit as st
 
 # Freshly generated update: 2026-09-15 JST
-GENERATED_UPDATE_JST = "2026-09-15T23:31:00+09:00"
+GENERATED_UPDATE_JST = "2026-09-16T00:20:00+09:00"
 
-APP_BUILD = "v443"
+APP_BUILD = "v444"
+# v444: Mark already-imported gallery photos on the in-app import review thumbnails. Legacy v441+ imports match by stored original-name/capture metadata; new imports also persist a sampled-content SHA-256 fingerprint for stronger duplicate recognition. Android system picker thumbnails remain OS-controlled.
 # v443: Route imported gallery photos to the trip date derived from their preserved capture timestamp instead of always attaching them to today. Group multi-date batch imports by capture date, avoid inflating today counters for historical imports, and safely repair pre-v443 gallery imports that are still in an undiarized trip whose date disagrees with captured_at.
 # v442: Add two-step batch photo deletion to pending-diary photo groups and the all-photo library list. Keep single-photo delete, select multiple photos safely, show a running state, and delete sequentially so trip/diary cleanup remains correct.
 # v441: Read original gallery-photo metadata before resize/conversion. Prefer EXIF DateTimeOriginal, then DateTimeDigitized / DateTime / XMP CreateDate, use EXIF GPS when present, and fall back safely to file.lastModified/import time for both single and batch imports.
@@ -1199,6 +1200,7 @@ _LIVE_CAMERA_HTML = """
     <div id="camera-review-emotion-hint" class="camera-review-emotion-hint" hidden>写真下の「通常／こどもーど」を切り替え、写真につけるアイコンを1つ選べます。</div>
     <div id="camera-review-image-shell" class="camera-review-image-shell" role="button" tabindex="0" aria-label="写真のアイコンを選ぶ" hidden>
       <img id="camera-review-image" class="camera-review-image" alt="撮影した写真の確認" />
+      <span id="camera-review-imported-badge" class="camera-review-imported-badge" hidden>✓ 取り込み済み</span>
       <span id="camera-review-emotion-badge" class="camera-review-emotion-badge" hidden></span>
     </div>
     <div id="camera-review-mode-switch" class="camera-review-mode-switch" hidden>
@@ -1234,6 +1236,8 @@ _LIVE_CAMERA_CSS = """
 .camera-review-image-shell[hidden],
 .camera-review-emotion-hint[hidden],
 .camera-review-emotion-palette[hidden],
+.camera-review-imported-badge[hidden],
+.camera-review-batch-imported[hidden],
 .camera-review-batch[hidden],
 .camera-review-video[hidden],
 .camera-find-button[hidden],
@@ -1380,6 +1384,31 @@ _LIVE_CAMERA_CSS = """
   color: #fff;
   font-size: 11px;
   font-weight: 800;
+}
+.camera-review-batch-imported,
+.camera-review-imported-badge {
+  position: absolute;
+  left: 7px;
+  top: 7px;
+  z-index: 4;
+  max-width: calc(100% - 14px);
+  padding: 5px 8px;
+  box-sizing: border-box;
+  border-radius: 999px;
+  background: rgba(15,118,110,.94);
+  border: 1px solid rgba(255,255,255,.82);
+  color: #fff;
+  box-shadow: 0 2px 8px rgba(0,0,0,.22);
+  font-size: 10px;
+  line-height: 1.15;
+  font-weight: 900;
+  white-space: nowrap;
+}
+.camera-review-imported-badge {
+  left: 11px;
+  top: 11px;
+  font-size: 12px;
+  padding: 6px 10px;
 }
 
 .live-camera-video,
@@ -1775,6 +1804,7 @@ export default function(component) {
   const review = parentElement.querySelector('#camera-review');
   const reviewImageShell = parentElement.querySelector('#camera-review-image-shell');
   const reviewImage = parentElement.querySelector('#camera-review-image');
+  const reviewImportedBadge = parentElement.querySelector('#camera-review-imported-badge');
   const reviewEmotionBadge = parentElement.querySelector('#camera-review-emotion-badge');
   const reviewEmotionHint = parentElement.querySelector('#camera-review-emotion-hint');
   const reviewModeSwitch = parentElement.querySelector('#camera-review-mode-switch');
@@ -1807,6 +1837,14 @@ export default function(component) {
   const videoAllowed = data?.video_allowed !== false && Boolean(videoUploadSignedUrl && videoUploadStoragePath);
   const videoCapacityMessage = String(
     data?.video_capacity_message || '動画の保存容量または保存先を確認できないため、最大60秒の動画を撮影できません。'
+  );
+  const galleryImportedIdentityHashesV444 = new Set(
+    (Array.isArray(data?.gallery_import_identity_hashes) ? data.gallery_import_identity_hashes : [])
+      .map((value) => String(value || '').trim()).filter(Boolean)
+  );
+  const galleryImportedFingerprintsV444 = new Set(
+    (Array.isArray(data?.gallery_import_fingerprints) ? data.gallery_import_fingerprints : [])
+      .map((value) => String(value || '').trim()).filter(Boolean)
   );
   const unavailableSuffix = videoUnavailableReason === 'quota'
     ? '容量不足'
@@ -2260,6 +2298,7 @@ export default function(component) {
     resetPendingPhotoBatch();
     if (review) review.hidden = true;
     if (reviewImageShell) reviewImageShell.hidden = true;
+    if (reviewImportedBadge) reviewImportedBadge.hidden = true;
     if (reviewEmotionHint) reviewEmotionHint.hidden = true;
     if (reviewImage) {
       reviewImage.hidden = true;
@@ -2324,6 +2363,7 @@ export default function(component) {
       reviewImage.hidden = false;
     }
     if (reviewImageShell) reviewImageShell.hidden = false;
+    if (reviewImportedBadge) reviewImportedBadge.hidden = true;
     if (reviewEmotionHint) reviewEmotionHint.hidden = false;
     if (reviewModeSwitch) reviewModeSwitch.hidden = false;
     syncReviewEmotion();
@@ -2344,24 +2384,31 @@ export default function(component) {
     if (video) video.hidden = true;
     hideReview();
     if (reviewImageShell) reviewImageShell.hidden = true;
+    if (reviewImportedBadge) reviewImportedBadge.hidden = true;
     if (reviewEmotionHint) reviewEmotionHint.hidden = true;
     if (reviewModeSwitch) reviewModeSwitch.hidden = true;
-    if (reviewBatchCount) reviewBatchCount.textContent = `${cleanFiles.length}枚を選択しました。まとめて保存できます。`;
+    if (reviewBatchCount) reviewBatchCount.textContent = `${cleanFiles.length}枚を選択しました。取り込み履歴を確認しています…`;
     if (reviewBatchGrid) {
       reviewBatchGrid.replaceChildren();
       cleanFiles.forEach((file, index) => {
         const item = document.createElement('div');
         item.className = 'camera-review-batch-item';
+        item.dataset.importIndex = String(index);
         const img = document.createElement('img');
         img.alt = `選択した写真 ${index + 1}`;
         img.loading = index < 6 ? 'eager' : 'lazy';
         const url = URL.createObjectURL(file);
         pendingPhotoBatchPreviewUrls.push(url);
         img.src = url;
+        const importedBadge = document.createElement('span');
+        importedBadge.className = 'camera-review-batch-imported';
+        importedBadge.textContent = '✓ 取り込み済み';
+        importedBadge.hidden = true;
         const badge = document.createElement('span');
         badge.className = 'camera-review-batch-index';
         badge.textContent = String(index + 1);
         item.appendChild(img);
+        item.appendChild(importedBadge);
         item.appendChild(badge);
         reviewBatchGrid.appendChild(item);
       });
@@ -2372,6 +2419,27 @@ export default function(component) {
     if (reviewFindMoments) reviewFindMoments.hidden = true;
     if (reviewBuild) reviewBuild.hidden = true;
     if (review) review.hidden = false;
+  };
+
+  const setSingleGalleryImportedBadgeV444 = (imported) => {
+    if (reviewImportedBadge) reviewImportedBadge.hidden = !Boolean(imported);
+  };
+
+  const setBatchGalleryImportedBadgeV444 = (index, imported) => {
+    if (!reviewBatchGrid) return;
+    const item = reviewBatchGrid.querySelector(`[data-import-index="${Number(index)}"]`);
+    const badge = item?.querySelector('.camera-review-batch-imported');
+    if (badge) badge.hidden = !Boolean(imported);
+  };
+
+  const updateBatchImportedSummaryV444 = (items, totalCount) => {
+    if (!reviewBatchCount) return;
+    const clean = Array.isArray(items) ? items.filter(Boolean) : [];
+    const importedCount = clean.filter((item) => Boolean(item?.already_imported)).length;
+    const total = Math.max(0, Number(totalCount || clean.length || 0));
+    reviewBatchCount.textContent = importedCount
+      ? `${total}枚を選択しました。うち${importedCount}枚は ✓ 取り込み済み です。`
+      : `${total}枚を選択しました。取り込み済みの写真はありません。`;
   };
 
   const showVideoReview = (blob) => {
@@ -3357,6 +3425,56 @@ export default function(component) {
     return element && element[1] ? String(element[1]).trim() : '';
   };
 
+  const hexFromBytesV444 = (bytes) => Array.from(bytes || []).map((value) => Number(value).toString(16).padStart(2, '0')).join('');
+
+  const sha256TextPrefixV444 = async (text, prefixLength = 24) => {
+    try {
+      if (!globalThis.crypto?.subtle || typeof TextEncoder === 'undefined') return '';
+      const input = new TextEncoder().encode(String(text || ''));
+      const digest = new Uint8Array(await globalThis.crypto.subtle.digest('SHA-256', input));
+      return hexFromBytesV444(digest).slice(0, Math.max(8, Number(prefixLength || 24)));
+    } catch (_) { return ''; }
+  };
+
+  const galleryPhotoFingerprintV444 = async (file) => {
+    try {
+      if (!file || !globalThis.crypto?.subtle || typeof TextEncoder === 'undefined') return '';
+      const size = Math.max(0, Number(file.size || 0));
+      if (!(size > 0)) return '';
+      const sampleBytes = 65536;
+      const headLength = Math.min(sampleBytes, size);
+      const tailStart = Math.max(headLength, size - sampleBytes);
+      const head = new Uint8Array(await file.slice(0, headLength).arrayBuffer());
+      const tail = tailStart < size ? new Uint8Array(await file.slice(tailStart, size).arrayBuffer()) : new Uint8Array(0);
+      const prefix = new TextEncoder().encode(`tokyo-burari-gallery-v444|${size}|${head.length}|${tail.length}|`);
+      const combined = new Uint8Array(prefix.length + head.length + tail.length);
+      combined.set(prefix, 0); combined.set(head, prefix.length);
+      if (tail.length) combined.set(tail, prefix.length + head.length);
+      const digest = new Uint8Array(await globalThis.crypto.subtle.digest('SHA-256', combined));
+      return `sha256_sample_v1:${hexFromBytesV444(digest)}`;
+    } catch (err) {
+      console.warn('gallery fingerprint skipped', err);
+      return '';
+    }
+  };
+
+  const galleryImportLegacyIdentityV444 = (file, importMeta) => {
+    const meta = importMeta?.import_metadata && typeof importMeta.import_metadata === 'object' ? importMeta.import_metadata : {};
+    const name = String(meta.original_name || file?.name || '').trim().toLowerCase();
+    const source = String(meta.capture_time_source || importMeta?.capture_time_source || '').trim();
+    const raw = String(meta.capture_time_raw || importMeta?.capture_time_raw || '').trim();
+    return name && source && raw ? `${name}|${source}|${raw}` : '';
+  };
+
+  const galleryPhotoAlreadyImportedV444 = async (file, importMeta, fingerprint = '') => {
+    const fp = String(fingerprint || '').trim();
+    if (fp && galleryImportedFingerprintsV444.has(fp)) return true;
+    const identity = galleryImportLegacyIdentityV444(file, importMeta);
+    if (!identity) return false;
+    const hash = await sha256TextPrefixV444(identity, 24);
+    return Boolean(hash && galleryImportedIdentityHashesV444.has(hash));
+  };
+
   const extractGalleryPhotoMetadataV441 = async (file) => {
     const fallback = galleryPhotoFallbackCaptureMetaV441(file);
     const output = {
@@ -3374,6 +3492,8 @@ export default function(component) {
         capture_time_raw: fallback.capture_time_raw,
         original_name: String(file?.name || ''),
         original_type: String(file?.type || ''),
+        original_size_bytes: Math.max(0, Number(file?.size || 0)),
+        original_last_modified_ms: Math.max(0, Number(file?.lastModified || 0)),
         exif_gps: false,
       }
     };
@@ -4121,12 +4241,14 @@ export default function(component) {
         if (index >= sourceFiles.length) return;
         if (generation !== pendingPhotoLoadGeneration) throw new Error('gallery batch preparation cancelled');
         const file = sourceFiles[index];
-        // v441: preserve metadata from the untouched original file. Image resize/JPEG
-        // conversion runs in parallel, but never becomes the source for capture time/GPS.
-        const [dataUrl, importMeta] = await Promise.all([
+        const [dataUrl, importMeta, fingerprint] = await Promise.all([
           prepareImageFile(file),
           extractGalleryPhotoMetadataV441(file),
+          galleryPhotoFingerprintV444(file),
         ]);
+        if (importMeta?.import_metadata && fingerprint) importMeta.import_metadata.source_fingerprint = fingerprint;
+        const alreadyImported = await galleryPhotoAlreadyImportedV444(file, importMeta, fingerprint);
+        setBatchGalleryImportedBadgeV444(index, alreadyImported);
         if (generation !== pendingPhotoLoadGeneration) throw new Error('gallery batch preparation cancelled');
         results[index] = {
           data_url: dataUrl,
@@ -4135,12 +4257,11 @@ export default function(component) {
           captured_at: String(importMeta?.captured_at || galleryPhotoFallbackCaptureMetaV441(file).captured_at),
           capture_time_source: String(importMeta?.capture_time_source || 'file_last_modified'),
           location: importMeta?.location || {
-            ok: false,
-            source: 'gallery',
-            error_code: 'GALLERY_NO_EXIF_GPS',
+            ok: false, source: 'gallery', error_code: 'GALLERY_NO_EXIF_GPS',
             error_message: '写真の内部データに撮影位置がないため、位置情報は取得していません。'
           },
           import_metadata: importMeta?.import_metadata || {},
+          already_imported: alreadyImported,
         };
         completed += 1;
         setStatus(`保存用データを準備しています… ${completed}/${sourceFiles.length}`);
@@ -4148,7 +4269,9 @@ export default function(component) {
     };
     const workerCount = Math.max(1, Math.min(GALLERY_PHOTO_BATCH_WORKERS, sourceFiles.length));
     await Promise.all(Array.from({ length: workerCount }, () => worker()));
-    return results.filter((item) => item && item.data_url);
+    const cleanResults = results.filter((item) => item && item.data_url);
+    updateBatchImportedSummaryV444(cleanResults, sourceFiles.length);
+    return cleanResults;
   };
 
   const chooseGalleryPhoto = async () => {
@@ -4190,6 +4313,8 @@ export default function(component) {
             capture_time_raw: fallbackMeta.capture_time_raw,
             original_name: String(file.name || ''),
             original_type: String(file.type || ''),
+            original_size_bytes: Math.max(0, Number(file.size || 0)),
+            original_last_modified_ms: Math.max(0, Number(file.lastModified || 0)),
             exif_gps: false,
           }
         };
@@ -4200,17 +4325,23 @@ export default function(component) {
         pendingPhotoPreparePromise = Promise.all([
           prepareImageFile(file),
           extractGalleryPhotoMetadataV441(file),
-        ]).then(([dataUrl, importMeta]) => {
+          galleryPhotoFingerprintV444(file),
+        ]).then(async ([dataUrl, importMeta, fingerprint]) => {
+          if (generation !== pendingPhotoLoadGeneration) return '';
+          if (importMeta?.import_metadata && fingerprint) importMeta.import_metadata.source_fingerprint = fingerprint;
+          const alreadyImported = await galleryPhotoAlreadyImportedV444(file, importMeta, fingerprint);
           if (generation !== pendingPhotoLoadGeneration) return '';
           if (pendingMedia && pendingMedia.kind === 'photo' && pendingMedia.source === 'gallery') {
             pendingMedia.data_url = dataUrl;
+            pendingMedia.already_imported = alreadyImported;
             if (importMeta && typeof importMeta === 'object') {
               pendingMedia.captured_at = String(importMeta.captured_at || pendingMedia.captured_at || '');
               pendingMedia.capture_time_source = String(importMeta.capture_time_source || pendingMedia.capture_time_source || '');
               pendingMedia.location = importMeta.location || pendingMedia.location;
               pendingMedia.import_metadata = importMeta.import_metadata || pendingMedia.import_metadata || {};
             }
-            setStatus('');
+            setSingleGalleryImportedBadgeV444(alreadyImported);
+            setStatus(alreadyImported ? '✓ この写真はすでにアプリへ取り込み済みです。' : '');
           }
           return dataUrl;
         });
@@ -4236,7 +4367,8 @@ export default function(component) {
         if (generation !== pendingPhotoLoadGeneration) return [];
         if (pendingMedia && pendingMedia.kind === 'photo_batch' && pendingMedia.batch_id === batchId) {
           pendingMedia.items = items;
-          setStatus(`${items.length}枚の準備ができました。`);
+          const importedCount = items.filter((item) => Boolean(item?.already_imported)).length;
+          setStatus(importedCount ? `${items.length}枚の準備ができました。${importedCount}枚は取り込み済みです。` : `${items.length}枚の準備ができました。`);
         }
         return items;
       });
@@ -4579,7 +4711,7 @@ export default function(component) {
 }
 """
 
-LIVE_CAMERA_COMPONENT_BUILD = "v441"
+LIVE_CAMERA_COMPONENT_BUILD = "v444"
 
 # v383: this bundle is large. Register it only on the Camera page so unrelated
 # Streamlit reruns do not pay the camera component setup cost.
@@ -4593,7 +4725,7 @@ def _get_live_camera_component():
     _live_camera_component_initialized = True
     try:
         live_camera_component = st.components.v2.component(
-            "tokyo_burari_live_camera_v441",
+            "tokyo_burari_live_camera_v444",
             html=_LIVE_CAMERA_HTML,
             css=_LIVE_CAMERA_CSS,
             js=_LIVE_CAMERA_JS,
@@ -34182,6 +34314,45 @@ def render_recent_camera_photo_emotion(trip):
 
 
 # ============================================================
+# Gallery import duplicate markers (v444)
+# ============================================================
+def gallery_import_marker_payload_v444(max_items=5000):
+    """Return compact identifiers for gallery photos already imported by this member."""
+    cache_key = _account_cache_key("gallery_import_markers_v444", int(max_items))
+    cached = _session_cache_get(cache_key, max_age_seconds=30)
+    if isinstance(cached, dict):
+        return cached
+    identity_hashes = set()
+    fingerprints = set()
+    try:
+        rows = list_member_still_photos_for_tags(max_items=max_items)
+    except Exception:
+        rows = []
+    for row in rows:
+        if not isinstance(row, dict) or photo_is_video(row):
+            continue
+        reflection = row.get("reflection_json") or {}
+        if not isinstance(reflection, dict):
+            continue
+        if str(reflection.get("capture_source") or "") not in {"gallery", "gallery_batch"}:
+            continue
+        meta = reflection.get("import_metadata") or {}
+        if not isinstance(meta, dict):
+            continue
+        fingerprint = str(meta.get("source_fingerprint") or "").strip()
+        if fingerprint:
+            fingerprints.add(fingerprint[:100])
+        name = str(meta.get("original_name") or "").strip().lower()
+        source = str(meta.get("capture_time_source") or "").strip()
+        raw = str(meta.get("capture_time_raw") or "").strip()
+        if name and source and raw:
+            identity = f"{name}|{source}|{raw}"
+            identity_hashes.add(hashlib.sha256(identity.encode("utf-8", errors="ignore")).hexdigest()[:24])
+    payload = {"identity_hashes": sorted(identity_hashes), "fingerprints": sorted(fingerprints)}
+    return _session_cache_set(cache_key, payload)
+
+
+# ============================================================
 # Page: Trip / camera
 # ============================================================
 def page_trip():
@@ -34263,6 +34434,11 @@ def page_trip():
             browser_video_max_bytes = min(VIDEO_MAX_BYTES, max(0, int(remaining_for_recording)))
         except Exception:
             browser_video_max_bytes = VIDEO_MAX_BYTES
+    try:
+        gallery_marker_payload_v444 = gallery_import_marker_payload_v444(max_items=5000)
+    except Exception:
+        gallery_marker_payload_v444 = {"identity_hashes": [], "fingerprints": []}
+
     result = camera_component(
         data={
             "auto_start": auto_start,
@@ -34276,8 +34452,10 @@ def page_trip():
             "video_upload_storage_path": str(video_reservation.get("storage_path") or ""),
             "video_candidate_sheet_signed_url": str(video_reservation.get("candidate_sheet_signed_url") or ""),
             "video_candidate_sheet_storage_path": str(video_reservation.get("candidate_sheet_path") or ""),
+            "gallery_import_identity_hashes": list(gallery_marker_payload_v444.get("identity_hashes") or []),
+            "gallery_import_fingerprints": list(gallery_marker_payload_v444.get("fingerprints") or []),
         },
-        key=f"live_camera_v441_{camera_trip_key}_{st.session_state.capture_serial}_{_current_ui_refresh_epoch()}",
+        key=f"live_camera_v444_{camera_trip_key}_{st.session_state.capture_serial}_{_current_ui_refresh_epoch()}",
         on_photo_change=lambda: None,
         on_photo_batch_change=lambda: None,
         on_video_change=lambda: None,
@@ -34570,6 +34748,9 @@ def page_trip():
                             "capture_time_offset": str(import_meta.get("capture_time_offset") or "")[:20],
                             "original_name": str(import_meta.get("original_name") or "")[:180],
                             "original_type": str(import_meta.get("original_type") or "")[:80],
+                            "original_size_bytes": max(0, int(import_meta.get("original_size_bytes") or 0)),
+                            "original_last_modified_ms": max(0, int(import_meta.get("original_last_modified_ms") or 0)),
+                            "source_fingerprint": str(import_meta.get("source_fingerprint") or "")[:100],
                             "exif_gps": bool(import_meta.get("exif_gps")),
                         }
                         safe_import_meta = {key: value for key, value in safe_import_meta.items() if value not in {"", None, False}}
@@ -34689,6 +34870,9 @@ def page_trip():
                         "capture_time_offset": str(import_meta.get("capture_time_offset") or "")[:20],
                         "original_name": str(import_meta.get("original_name") or "")[:180],
                         "original_type": str(import_meta.get("original_type") or "")[:80],
+                        "original_size_bytes": max(0, int(import_meta.get("original_size_bytes") or 0)),
+                        "original_last_modified_ms": max(0, int(import_meta.get("original_last_modified_ms") or 0)),
+                        "source_fingerprint": str(import_meta.get("source_fingerprint") or "")[:100],
                         "exif_gps": bool(import_meta.get("exif_gps")),
                     }
                     safe_import_meta = {key: value for key, value in safe_import_meta.items() if value not in {"", None, False}}
