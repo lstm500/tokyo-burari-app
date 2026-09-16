@@ -32,10 +32,11 @@ from zoneinfo import ZoneInfo
 
 import streamlit as st
 
-# Freshly generated update: 2026-09-15 JST
-GENERATED_UPDATE_JST = "2026-09-16T01:18:00+09:00"
+# Freshly generated update: 2026-09-16 JST
+GENERATED_UPDATE_JST = "2026-09-16T23:46:00+09:00"
 
-APP_BUILD = "v449"
+APP_BUILD = "v450"
+# v450: Replace the Diary day selectbox/search field with a button-only day picker dialog so reviewing a date never focuses a text field or leaves the Android keyboard open. Show the current day as read-only text, and make diary-title editing an explicit button that reveals the text field only when the user chooses to rename it. Preserve v449 emotion sync, replay timing/framing, and all existing diary/photo behavior.
 # v449: Flush browser-local photo emotion/parenting changes through the existing v166 bridge before any page is rendered, so the all-photo library and replay read the same current tag state. Also apply the first replay frame/badge immediately and treat legacy icon/color metadata as an active frame even if a key is absent. Preserve v448 live-photo authority, v446 timing, and v433 smart framing.
 # v448: Replay emotion/tag rendering now treats the photo row currently stored in the database as authoritative. Always reload current photo reflection_json before assembling owner replays, never overwrite a current photo tag from an older Good Moments/source snapshot during replay, and resolve family-shared replay emotions from the owner's live photo row when available. Preserve v447 new-photo support, v446 timing, and v433 smart framing.
 # v447: Refresh Good Moments-derived still metadata before building every replay. Newly saved stills can exist before their browser-selected emotion/parenting tag has been copied from the source video item; replay now runs the existing v417 source-link repair, reloads changed photo rows in the same render, and therefore applies the emotion border/badge immediately without requiring the Diary gallery to be opened first. Preserve v446 timing and v433 smart framing unchanged.
@@ -27219,14 +27220,16 @@ def _active_diary_navigation_trip_id():
     if pending_id:
         return pending_id
 
+    # v450: the day picker stores the selected trip directly. Prefer it over any
+    # stale legacy selectbox state left in an upgraded mobile session.
+    preferred = st.session_state.get("preferred_diary_trip_id")
+    if preferred:
+        return str(preferred)
+
     serial = int(st.session_state.get("_diary_selector_serial") or 0)
     selected = st.session_state.get(f"diary_trip_selector_{serial}")
     if selected:
         return str(selected)
-
-    preferred = st.session_state.get("preferred_diary_trip_id")
-    if preferred:
-        return str(preferred)
 
     # Fallback for an already-open photo after a widget-key migration.
     for key, value in list(st.session_state.items()):
@@ -34346,26 +34349,79 @@ def page_moments():
 
 
 def render_diary_title_editor(trip_id, current_title, key_prefix):
-    with st.expander("タイトルを変更"):
-        with st.form(f"{key_prefix}_title_form_v327_{trip_id}", clear_on_submit=False, border=False):
+    """Show the rename text field only after an explicit user action.
+
+    v450 keeps ordinary diary review completely free of text inputs, so Android does
+    not reopen or retain the software keyboard just because a saved day is displayed.
+    """
+    editor_key = f"_diary_title_editor_open_v450_{trip_id}"
+    if not st.session_state.get(editor_key):
+        if st.button(
+            "✏️ 日記の名前を変更",
+            use_container_width=True,
+            key=f"{key_prefix}_title_open_v450_{trip_id}",
+        ):
+            st.session_state[editor_key] = True
+            st.rerun()
+        return
+
+    with st.container(border=True):
+        st.markdown("##### ✏️ 日記の名前を変更")
+        st.caption("名前を変更するときだけ文字入力を使います。")
+        with st.form(f"{key_prefix}_title_form_v450_{trip_id}", clear_on_submit=False, border=False):
             edited_title = st.text_input(
-                "日記タイトル",
+                "日記の名前",
                 value=str(current_title or ""),
-                key=f"{key_prefix}_title_input_{trip_id}",
+                key=f"{key_prefix}_title_input_v450_{trip_id}",
             )
-            save_title_clicked = st.form_submit_button("タイトルを保存", use_container_width=True)
+            save_col, cancel_col = st.columns(2, gap="small")
+            with save_col:
+                save_title_clicked = st.form_submit_button("保存", type="primary", use_container_width=True)
+            with cancel_col:
+                cancel_title_clicked = st.form_submit_button("やめる", use_container_width=True)
+
+        if cancel_title_clicked:
+            st.session_state.pop(editor_key, None)
+            st.rerun()
+
         if save_title_clicked:
             try:
                 saved_title = update_diary_title(trip_id, edited_title)
-                # Preserve the diary being viewed while the selectbox is rebuilt with
-                # a fresh key, so its visible label changes immediately on mobile too.
                 st.session_state.preferred_diary_trip_id = trip_id
-                st.session_state["_diary_notice"] = f"日記のタイトルを「{saved_title}」に変更しました。"
+                st.session_state.pop(editor_key, None)
+                st.session_state["_diary_notice"] = f"日記の名前を「{saved_title}」に変更しました。"
                 st.rerun()
             except Exception as exc:
-                st.error("タイトルを変更できませんでした。")
+                st.error("日記の名前を変更できませんでした。")
                 with st.expander("保護者向け詳細"):
                     st.code(str(exc))
+
+
+def _select_diary_trip_callback_v450(trip_id):
+    """Select one saved diary day without creating a searchable text field."""
+    st.session_state.preferred_diary_trip_id = str(trip_id or "").strip() or None
+    st.session_state.pop("_pending_diary_open_trip_id", None)
+
+
+@st.dialog("振り返る日を選ぶ")
+def render_diary_day_picker_v450(ids, label_map, selected_trip_id=None):
+    """Button-only diary-day picker; no input/search element means no keyboard."""
+    st.caption("日付をタップしてください。文字入力は使いません。")
+    current = str(selected_trip_id or "").strip()
+    for value in ids or []:
+        trip_id = str(value or "").strip()
+        if not trip_id:
+            continue
+        label = str((label_map or {}).get(trip_id) or trip_id)
+        button_label = f"✓ {label}" if trip_id == current else label
+        st.button(
+            button_label,
+            type="primary" if trip_id == current else "secondary",
+            use_container_width=True,
+            key=f"diary_day_picker_v450_{trip_id}",
+            on_click=_select_diary_trip_callback_v450,
+            args=(trip_id,),
+        )
 
 
 @st.fragment
@@ -35880,17 +35936,25 @@ def page_diary():
         f"{diary_display_title(diary_map.get(trip_id_value), trip_map[trip_id_value], photos=None)}"
         for trip_id_value in ids
     }
-    preferred = st.session_state.preferred_diary_trip_id
-    default_index = ids.index(str(preferred)) if str(preferred) in ids else None
-    selector_serial = int(st.session_state.get("_diary_selector_serial") or 0)
-    trip_id = st.selectbox(
-        "振り返る日",
-        ids,
-        index=default_index,
-        placeholder="振り返る日を選んでください",
-        format_func=lambda x: label_map.get(str(x), str(x)),
-        key=f"diary_trip_selector_{selector_serial}",
-    )
+    preferred = str(st.session_state.get("preferred_diary_trip_id") or "").strip()
+    trip_id = preferred if preferred in ids else None
+
+    # v450: Streamlit selectbox is searchable and focuses a text input on Android,
+    # which can leave the software keyboard covering the diary while reviewing dates.
+    # Keep the selected day read-only and open a button-only dialog only when the user
+    # explicitly wants to choose another day.
+    st.markdown("**振り返る日**")
+    if trip_id:
+        with st.container(border=True):
+            st.markdown(f"**{html.escape(label_map.get(trip_id, trip_id))}**")
+    else:
+        st.caption("まだ振り返る日を選んでいません。")
+    if st.button(
+        "📅 別の日を選ぶ" if trip_id else "📅 振り返る日を選ぶ",
+        use_container_width=True,
+        key="diary_open_day_picker_v450",
+    ):
+        render_diary_day_picker_v450(ids, label_map, selected_trip_id=trip_id)
 
     # v269: Diary can also be revisited from place rather than date. Reuse the
     # existing lightweight Memory Map instead of duplicating map/photo loading here.
