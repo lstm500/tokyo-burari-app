@@ -33,9 +33,10 @@ from zoneinfo import ZoneInfo
 import streamlit as st
 
 # Freshly generated update: 2026-09-16 JST
-GENERATED_UPDATE_JST = "2026-09-16T23:51:32+09:00"
+GENERATED_UPDATE_JST = "2026-09-16T23:56:49+09:00"
 
-APP_BUILD = "v451"
+APP_BUILD = "v452"
+# v452: Fix Diary day selection inside the st.dialog fragment. A normal dialog button interaction reruns only the dialog, so the parent Diary page kept showing the previous/no day. Handle the click inside the dialog, persist preferred_diary_trip_id, then call a full-app st.rerun() so the dialog closes and the selected day's photos render immediately. Preserve newest-first ordering and the no-keyboard picker.
 # v451: Sort the button-only Diary day picker explicitly by trip_date descending (newest first), with started_at/id as deterministic tie-breakers. Preserve the v450 no-keyboard picker and all other diary/replay behavior.
 # v450: Replace the Diary day selectbox/search field with a button-only day picker dialog so reviewing a date never focuses a text field or leaves the Android keyboard open. Show the current day as read-only text, and make diary-title editing an explicit button that reveals the text field only when the user chooses to rename it. Preserve v449 emotion sync, replay timing/framing, and all existing diary/photo behavior.
 # v449: Flush browser-local photo emotion/parenting changes through the existing v166 bridge before any page is rendered, so the all-photo library and replay read the same current tag state. Also apply the first replay frame/badge immediately and treat legacy icon/color metadata as an active frame even if a key is absent. Preserve v448 live-photo authority, v446 timing, and v433 smart framing.
@@ -34398,15 +34399,26 @@ def render_diary_title_editor(trip_id, current_title, key_prefix):
                     st.code(str(exc))
 
 
-def _select_diary_trip_callback_v450(trip_id):
-    """Select one saved diary day without creating a searchable text field."""
-    st.session_state.preferred_diary_trip_id = str(trip_id or "").strip() or None
+def _select_diary_trip_v452(trip_id):
+    """Persist the selected saved diary day before a full-page rerun."""
+    selected = str(trip_id or "").strip()
+    st.session_state.preferred_diary_trip_id = selected or None
     st.session_state.pop("_pending_diary_open_trip_id", None)
+    # Clear transient per-day drill-down state so the newly selected day opens at its
+    # photo gallery instead of inheriting a detail/photo state from the previous day.
+    for key in list(st.session_state.keys()):
+        key_text = str(key)
+        if key_text.startswith((
+            "diary_talk_photo_",
+            "diary_selected_photo_",
+            "diary_existing_photo_view_",
+        )):
+            st.session_state.pop(key, None)
 
 
 @st.dialog("振り返る日を選ぶ")
-def render_diary_day_picker_v450(ids, label_map, selected_trip_id=None):
-    """Button-only diary-day picker; no input/search element means no keyboard."""
+def render_diary_day_picker_v452(ids, label_map, selected_trip_id=None):
+    """Button-only day picker that closes into a full Diary rerun after selection."""
     st.caption("日付をタップしてください。文字入力は使いません。")
     current = str(selected_trip_id or "").strip()
     for value in ids or []:
@@ -34415,14 +34427,17 @@ def render_diary_day_picker_v450(ids, label_map, selected_trip_id=None):
             continue
         label = str((label_map or {}).get(trip_id) or trip_id)
         button_label = f"✓ {label}" if trip_id == current else label
-        st.button(
+        if st.button(
             button_label,
             type="primary" if trip_id == current else "secondary",
             use_container_width=True,
-            key=f"diary_day_picker_v450_{trip_id}",
-            on_click=_select_diary_trip_callback_v450,
-            args=(trip_id,),
-        )
+            key=f"diary_day_picker_v452_{trip_id}",
+        ):
+            _select_diary_trip_v452(trip_id)
+            # st.dialog is a fragment: an ordinary button interaction reruns only the
+            # dialog. Force a full-app rerun so page_diary recomputes trip_id/photos and
+            # the dialog closes with the selected day's gallery visible immediately.
+            st.rerun()
 
 
 @st.fragment
@@ -35963,9 +35978,9 @@ def page_diary():
     if st.button(
         "📅 別の日を選ぶ" if trip_id else "📅 振り返る日を選ぶ",
         use_container_width=True,
-        key="diary_open_day_picker_v450",
+        key="diary_open_day_picker_v452",
     ):
-        render_diary_day_picker_v450(ids, label_map, selected_trip_id=trip_id)
+        render_diary_day_picker_v452(ids, label_map, selected_trip_id=trip_id)
 
     # v269: Diary can also be revisited from place rather than date. Reuse the
     # existing lightweight Memory Map instead of duplicating map/photo loading here.
