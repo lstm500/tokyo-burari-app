@@ -33,9 +33,10 @@ from zoneinfo import ZoneInfo
 import streamlit as st
 
 # Freshly generated update: 2026-09-16 JST
-GENERATED_UPDATE_JST = "2026-09-16T23:59:00+09:00"
+GENERATED_UPDATE_JST = "2026-09-17T00:20:00+09:00"
 
-APP_BUILD = "v454"
+APP_BUILD = "v455"
+# v455: Add a lightweight urban-GPS fallback for the project map without increasing GPS sampling, polling, API traffic, or background work. Keep the strict <=45m route as the authoritative distance line, but render short dashed approximate connectors through 45-90m fixes when they are temporally/walk-speed plausible so high-rise/hotel visits are less likely to disappear. Add an on-demand compact GPS diagnostic using the points already loaded for the map; no extra database query is performed.
 # v454: Reduce instructional copy across the app so controls and layout carry the interaction. Remove verbose/static hints from Diary day photos, photo library, Moments, replay setup, Nearby/Toilets, Review landing, Map, and Settings while preserving errors, destructive confirmations, progress, counts, dates, and other state feedback.
 # v453: Simplify the Diary screen for direct use: remove the Diary-page explanatory copy, remove the Memory Map shortcut from Diary, remove helper text under the day picker and inside its dialog, while preserving the button-only no-keyboard day picker, newest-first order, title editing, photos, emotions, and diary functions.
 # v452: Fix Diary day selection inside the st.dialog fragment. A normal dialog button interaction reruns only the dialog, so the parent Diary page kept showing the previous/no day. Handle the click inside the dialog, persist preferred_diary_trip_id, then call a full-app st.rerun() so the dialog closes and the selected day's photos render immediately. Preserve newest-first ordering and the no-keyboard picker.
@@ -1073,6 +1074,15 @@ GPS_TRACK_SEGMENT_MAX_JUMP_M = 180.0
 # v372: dense-city GPS can wander tens of meters while a person is standing still.
 # Keep raw points for audit/history, but use a stricter quality/noise gate for the glowing walk line.
 GPS_TRACK_RENDER_MAX_ACCURACY_M = 45.0
+# v455: do not loosen the authoritative glowing route.  In dense urban canyons, however,
+# a short run of 45-90m fixes can be the only evidence that the user reached a hotel/building.
+# Those fixes are eligible only for a separate dashed map-only fallback; they never change
+# stored raw GPS, the normal route distance, sampling frequency, or background sync.
+GPS_TRACK_CITY_FALLBACK_MAX_ACCURACY_M_V455 = 90.0
+GPS_TRACK_CITY_FALLBACK_MAX_GAP_SECONDS_V455 = 120.0
+GPS_TRACK_CITY_FALLBACK_MAX_STEP_M_V455 = 180.0
+GPS_TRACK_CITY_FALLBACK_MAX_SPEED_MPS_V455 = 4.5
+GPS_TRACK_CITY_FALLBACK_MAX_POINTS_V455 = 1800
 # v384: display-only cleanup. Dense-city fixes with ~15-30m accuracy can alternate
 # between Android-native GPS and the legacy browser watcher, producing false zigzags
 # and radial "spider-web" lines near stations. Raw stored points are never deleted.
@@ -39054,6 +39064,160 @@ def _project_clean_track_points_v372(points):
     return clean
 
 
+def _project_city_fallback_segments_v455(points):
+    """Build map-only urban fallback segments from already-loaded raw GPS points.
+
+    The normal route remains strict (<= GPS_TRACK_RENDER_MAX_ACCURACY_M).  This helper
+    only bridges short plausible gaps that contain at least one 45-90m fix.  It performs
+    one linear pass, makes no network/API calls, and is capped before being sent to Leaflet.
+    """
+    # _load_all_project_track_points_v271 already returns timestamp-ordered rows.  Do not
+    # run the expensive source-dedupe/sort pipeline a second time just for this fallback.
+    rows = [row for row in (points or []) if isinstance(row, dict)]
+    if not rows:
+        return []
+
+    def parsed(row):
+        try:
+            lat = float(row.get("lat")); lon = float(row.get("lon")); ts_ms = int(float(row.get("ts_ms") or 0))
+            accuracy = float(row.get("accuracy_m")) if row.get("accuracy_m") is not None else 0.0
+        except (TypeError, ValueError):
+            return None
+        if not (math.isfinite(lat) and math.isfinite(lon) and ts_ms > 0 and math.isfinite(accuracy)):
+            return None
+        if accuracy < 0 or accuracy > GPS_TRACK_CITY_FALLBACK_MAX_ACCURACY_M_V455:
+            return None
+        return lat, lon, ts_ms, accuracy
+
+    def pair_walk_like(a_row, a, b_row, b):
+        alat, alon, ats, _aacc = a
+        blat, blon, bts, _bacc = b
+        dt = (bts - ats) / 1000.0
+        if dt <= 0 or dt > GPS_TRACK_CITY_FALLBACK_MAX_GAP_SECONDS_V455:
+            return False
+        dist = _nearby_haversine_m(alat, alon, blat, blon)
+        if dist > GPS_TRACK_CITY_FALLBACK_MAX_STEP_M_V455:
+            return False
+        estimated_speed = dist / max(0.001, dt)
+        if estimated_speed > GPS_TRACK_CITY_FALLBACK_MAX_SPEED_MPS_V455:
+            return False
+        same_session = bool(str(b_row.get("session_id") or "")) and str(b_row.get("session_id") or "") == str(a_row.get("session_id") or "")
+        source_a = str(a_row.get("source") or "").strip().lower()
+        same_source = bool(source_a) and source_a == str(b_row.get("source") or "").strip().lower()
+        if not (same_session or same_source):
+            return False
+        try:
+            reported_speed = float(b_row.get("speed_mps")) if b_row.get("speed_mps") is not None else None
+        except (TypeError, ValueError):
+            reported_speed = None
+        if reported_speed is not None and reported_speed > 8.0 and dist > 30.0:
+            return False
+        return True
+
+    segments = []
+    current = []
+    current_has_coarse = False
+    prev_row = None
+    prev_parsed = None
+
+    def finish_current():
+        nonlocal current, current_has_coarse
+        if current_has_coarse and len(current) >= 2:
+            segments.append(current)
+        current = []
+        current_has_coarse = False
+
+    for row in rows:
+        item = parsed(row)
+        if item is None:
+            finish_current()
+            prev_row = None; prev_parsed = None
+            continue
+        _lat, _lon, _ts, accuracy = item
+        is_coarse = accuracy > GPS_TRACK_RENDER_MAX_ACCURACY_M
+        if prev_row is None or prev_parsed is None:
+            if is_coarse:
+                current = [[round(item[0], 7), round(item[1], 7)]]
+                current_has_coarse = True
+            prev_row, prev_parsed = row, item
+            continue
+
+        linked = pair_walk_like(prev_row, prev_parsed, row, item)
+        if not linked:
+            finish_current()
+            if is_coarse:
+                current = [[round(item[0], 7), round(item[1], 7)]]
+                current_has_coarse = True
+            prev_row, prev_parsed = row, item
+            continue
+
+        prev_is_coarse = prev_parsed[3] > GPS_TRACK_RENDER_MAX_ACCURACY_M
+        if is_coarse or prev_is_coarse:
+            if not current:
+                current = [[round(prev_parsed[0], 7), round(prev_parsed[1], 7)]]
+            coord = [round(item[0], 7), round(item[1], 7)]
+            if current[-1] != coord:
+                current.append(coord)
+            current_has_coarse = True
+            # A good fix after a coarse run closes the approximate bridge immediately,
+            # preventing a fallback polyline from duplicating a long strict route.
+            if not is_coarse:
+                finish_current()
+        else:
+            finish_current()
+        prev_row, prev_parsed = row, item
+    finish_current()
+
+    total_points = sum(len(seg) for seg in segments)
+    if total_points <= GPS_TRACK_CITY_FALLBACK_MAX_POINTS_V455:
+        return segments
+    # Bound browser payload cost without touching source data.
+    ratio = max(1, int(math.ceil(total_points / float(GPS_TRACK_CITY_FALLBACK_MAX_POINTS_V455))))
+    out = []
+    for seg in segments:
+        if len(seg) <= 2:
+            out.append(seg)
+            continue
+        sampled = seg[::ratio]
+        if sampled[-1] != seg[-1]:
+            sampled.append(seg[-1])
+        if len(sampled) >= 2:
+            out.append(sampled)
+    return out
+
+
+def _project_gps_diagnostics_v455(points):
+    """Compact diagnostics from the in-memory map dataset only; zero extra I/O."""
+    today = now_jst().date()
+    result = {"today": 0, "strict": 0, "urban": 0, "poor": 0, "latest": None}
+    for row in points or []:
+        if not isinstance(row, dict):
+            continue
+        try:
+            ts_ms = int(float(row.get("ts_ms") or 0))
+            if ts_ms <= 0:
+                continue
+            dt = datetime.fromtimestamp(ts_ms / 1000.0, ZoneInfo(APP_TIMEZONE))
+        except Exception:
+            continue
+        if result["latest"] is None or ts_ms > int(result["latest"].get("ts_ms") or 0):
+            result["latest"] = row
+        if dt.date() != today:
+            continue
+        result["today"] += 1
+        try:
+            accuracy = float(row.get("accuracy_m")) if row.get("accuracy_m") is not None else None
+        except (TypeError, ValueError):
+            accuracy = None
+        if accuracy is None or accuracy <= GPS_TRACK_RENDER_MAX_ACCURACY_M:
+            result["strict"] += 1
+        elif accuracy <= GPS_TRACK_CITY_FALLBACK_MAX_ACCURACY_M_V455:
+            result["urban"] += 1
+        else:
+            result["poor"] += 1
+    return result
+
+
 def _project_walk_segments_v271(points):
     segments = []
     current = []
@@ -42096,7 +42260,7 @@ def _project_snap_display_segments_v298(segments):
     return [seg for seg in out if isinstance(seg, list) and len(seg) >= 2]
 
 
-def _render_burari_project_map_v295(points, segments, stations, photo_segments=None, latest_point=None):
+def _render_burari_project_map_v295(points, segments, stations, photo_segments=None, latest_point=None, fallback_segments=None):
     """Render a deliberately minimal project map.
 
     v299 keeps the minimal map UI from v295. Only the photo-derived historical seed
@@ -42121,6 +42285,7 @@ def _render_burari_project_map_v295(points, segments, stations, photo_segments=N
     payload = {
         "points": [[round(float(p["lat"]), 7), round(float(p["lon"]), 7)] for p in points],
         "segments": segments,
+        "fallback_segments": fallback_segments or [],
         "photo_segments": photo_segments or [],
         "stations": stations,
         "latest_point": latest_payload,
@@ -42150,7 +42315,14 @@ html,body{{margin:0;padding:0;background:#0b1012;font-family:-apple-system,Blink
  const all=(data.points||[]).filter((p)=>Array.isArray(p)&&p.length>=2);
  if(all.length){{const bounds=L.latLngBounds(all);map.fitBounds(bounds,{{padding:[28,28],maxZoom:16}});}}else map.setView([35.6812,139.7671],11);
 
- // Native GPS route remains green.
+ // v455 urban fallback: approximate only, so draw a lighter dashed green line first.
+ (data.fallback_segments||[]).forEach((seg)=>{{
+   if(!Array.isArray(seg)||seg.length<2)return;
+   L.polyline(seg,{{color:'#39f374',weight:6.0,opacity:.13,dashArray:'7 9',lineCap:'round',lineJoin:'round',interactive:false}}).addTo(map);
+   L.polyline(seg,{{color:'#c8ffd5',weight:2.2,opacity:.64,dashArray:'7 9',lineCap:'round',lineJoin:'round',interactive:false}}).addTo(map);
+ }});
+
+ // Native GPS route remains green and stays visually authoritative.
  (data.segments||[]).forEach((seg)=>{{
    if(!Array.isArray(seg)||seg.length<2)return;
    L.polyline(seg,{{color:'#13e95b',weight:13,opacity:.055,lineCap:'round',lineJoin:'round',interactive:false}}).addTo(map);
@@ -42818,7 +42990,9 @@ def page_burari_project():
         st.info("まだ歩行データがありません。位置情報を許可した状態で、ぶらり旅を開いて歩くと自動的に記録が始まります。")
         return
     segments = _project_walk_segments_v271(points) if points else []
+    fallback_segments = _project_city_fallback_segments_v455(points) if points else []
     walk_points = _project_walk_points_v271(segments) if segments else []
+    fallback_points = _project_walk_points_v271(fallback_segments) if fallback_segments else []
     walk_m = _project_walk_distance_m_v271(segments) if segments else 0.0
     st.markdown(
         f"""
@@ -42832,6 +43006,14 @@ def page_burari_project():
     )
     latest_point = points[-1] if points else None
     map_points = list(walk_points or [])
+    # Map-only urban fallback points widen the visible bounds but do not affect the
+    # authoritative distance/segment counters above.
+    if fallback_points:
+        seen_map = {(round(float(p.get("lat") or 0), 7), round(float(p.get("lon") or 0), 7)) for p in map_points if isinstance(p, dict)}
+        for p in fallback_points:
+            key = (round(float(p.get("lat") or 0), 7), round(float(p.get("lon") or 0), 7))
+            if key not in seen_map:
+                map_points.append(p); seen_map.add(key)
     # v371: segment filtering must never hide the latest GPS position. The newest raw
     # point is included in map bounds even if it is the first point of a fresh session.
     if latest_point:
@@ -42903,14 +43085,35 @@ def page_burari_project():
             route_status.empty()
     display_segments = list(segments or [])
 
-    _render_burari_project_map_v295(display_points, display_segments, stations, photo_segments=photo_segments, latest_point=latest_point)
+    _render_burari_project_map_v295(
+        display_points,
+        display_segments,
+        stations,
+        photo_segments=photo_segments,
+        latest_point=latest_point,
+        fallback_segments=fallback_segments,
+    )
 
-    with st.expander("記録の仕組み", expanded=False):
-        st.caption(
-            "位置情報を許可している間はGPSを自動記録し、移動距離とGPS精度を見ながら端末へ保存してまとめて同期します。"
-            "電車・車など歩行より速い移動に加え、精度の悪い点・停止中のGPS揺れ・短い往復スパイク・同時刻のGPS重複は発光線から自動的に外します。"
-            "元のGPS記録自体は削除せず、地図表示だけを安定化します。プロジェクト地図を開いたときは端末に残っている直近GPSを優先して同期します。"
+    # v455 diagnostics reuse the dataset already loaded for this map: no polling, no
+    # additional Supabase query, and no extra native GPS request. Hidden by default.
+    gps_diag = _project_gps_diagnostics_v455(points) if points else {"today": 0, "strict": 0, "urban": 0, "poor": 0, "latest": None}
+    with st.expander("GPS診断", expanded=False):
+        st.write(
+            f"今日 {int(gps_diag.get('today') or 0)}点 ｜ "
+            f"通常 {int(gps_diag.get('strict') or 0)} ｜ "
+            f"都市部補助 {int(gps_diag.get('urban') or 0)} ｜ "
+            f"低精度 {int(gps_diag.get('poor') or 0)}"
         )
+        diag_latest = gps_diag.get("latest")
+        if isinstance(diag_latest, dict):
+            try:
+                diag_dt = datetime.fromtimestamp(float(diag_latest.get("ts_ms") or 0) / 1000.0, ZoneInfo(APP_TIMEZONE))
+                diag_acc = diag_latest.get("accuracy_m")
+                diag_acc_text = f" / 約{float(diag_acc):.0f}m" if diag_acc is not None else ""
+                diag_source = {"android_native": "Android", "browser_watch": "ブラウザ", "timeline_import": "過去取込"}.get(str(diag_latest.get("source") or ""), "GPS")
+                st.write(f"最終 {diag_dt.strftime('%m/%d %H:%M:%S')} / {diag_source}{diag_acc_text}")
+            except Exception:
+                pass
 
 
 # ============================================================
