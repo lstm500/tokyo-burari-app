@@ -33,9 +33,10 @@ from zoneinfo import ZoneInfo
 import streamlit as st
 
 # Freshly generated update: 2026-09-16 JST
-GENERATED_UPDATE_JST = "2026-09-16T23:46:00+09:00"
+GENERATED_UPDATE_JST = "2026-09-16T23:51:32+09:00"
 
-APP_BUILD = "v450"
+APP_BUILD = "v451"
+# v451: Sort the button-only Diary day picker explicitly by trip_date descending (newest first), with started_at/id as deterministic tie-breakers. Preserve the v450 no-keyboard picker and all other diary/replay behavior.
 # v450: Replace the Diary day selectbox/search field with a button-only day picker dialog so reviewing a date never focuses a text field or leaves the Android keyboard open. Show the current day as read-only text, and make diary-title editing an explicit button that reveals the text field only when the user chooses to rename it. Preserve v449 emotion sync, replay timing/framing, and all existing diary/photo behavior.
 # v449: Flush browser-local photo emotion/parenting changes through the existing v166 bridge before any page is rendered, so the all-photo library and replay read the same current tag state. Also apply the first replay frame/badge immediately and treat legacy icon/color metadata as an active frame even if a key is absent. Preserve v448 live-photo authority, v446 timing, and v433 smart framing.
 # v448: Replay emotion/tag rendering now treats the photo row currently stored in the database as authoritative. Always reload current photo reflection_json before assembling owner replays, never overwrite a current photo tag from an older Good Moments/source snapshot during replay, and resolve family-shared replay emotions from the owner's live photo row when available. Preserve v447 new-photo support, v446 timing, and v433 smart framing.
@@ -35929,6 +35930,16 @@ def page_diary():
             st.info("まだ日記はありません。")
         return
 
+    # v451: The day picker is always newest-first regardless of database/list return order.
+    trips = sorted(
+        trips,
+        key=lambda t: (
+            str((t or {}).get("trip_date") or ""),
+            str((t or {}).get("started_at") or ""),
+            str((t or {}).get("id") or ""),
+        ),
+        reverse=True,
+    )
     ids = [str(t["id"]) for t in trips]
     trip_map = {str(t["id"]): t for t in trips}
     label_map = {
