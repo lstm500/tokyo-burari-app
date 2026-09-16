@@ -33,9 +33,10 @@ from zoneinfo import ZoneInfo
 import streamlit as st
 
 # Freshly generated update: 2026-09-16 JST
-GENERATED_UPDATE_JST = "2026-09-16T23:56:49+09:00"
+GENERATED_UPDATE_JST = "2026-09-16T23:59:00+09:00"
 
-APP_BUILD = "v452"
+APP_BUILD = "v453"
+# v453: Simplify the Diary screen for direct use: remove the Diary-page explanatory copy, remove the Memory Map shortcut from Diary, remove helper text under the day picker and inside its dialog, while preserving the button-only no-keyboard day picker, newest-first order, title editing, photos, emotions, and diary functions.
 # v452: Fix Diary day selection inside the st.dialog fragment. A normal dialog button interaction reruns only the dialog, so the parent Diary page kept showing the previous/no day. Handle the click inside the dialog, persist preferred_diary_trip_id, then call a full-app st.rerun() so the dialog closes and the selected day's photos render immediately. Preserve newest-first ordering and the no-keyboard picker.
 # v451: Sort the button-only Diary day picker explicitly by trip_date descending (newest first), with started_at/id as deterministic tie-breakers. Preserve the v450 no-keyboard picker and all other diary/replay behavior.
 # v450: Replace the Diary day selectbox/search field with a button-only day picker dialog so reviewing a date never focuses a text field or leaves the Android keyboard open. Show the current day as read-only text, and make diary-title editing an explicit button that reveals the text field only when the user chooses to rename it. Preserve v449 emotion sync, replay timing/framing, and all existing diary/photo behavior.
@@ -34419,7 +34420,6 @@ def _select_diary_trip_v452(trip_id):
 @st.dialog("振り返る日を選ぶ")
 def render_diary_day_picker_v452(ids, label_map, selected_trip_id=None):
     """Button-only day picker that closes into a full Diary rerun after selection."""
-    st.caption("日付をタップしてください。文字入力は使いません。")
     current = str(selected_trip_id or "").strip()
     for value in ids or []:
         trip_id = str(value or "").strip()
@@ -35848,10 +35848,7 @@ def page_diary():
         except Exception:
             pass
 
-    page_top(
-        "📖 日記",
-        "写真をタップするたびに通常10種類／こどもーど10種類のアイコンを切り替え、その記録から日記を作ります。アイコンを変えるだけではページ更新しません。コメント入力は使いません。",
-    )
+    page_top("📖 日記")
     if repair_notice:
         st.success(str(repair_notice))
     notice = st.session_state.pop("_diary_notice", None)
@@ -35881,7 +35878,6 @@ def page_diary():
 
     if pending_rows:
         st.markdown("#### まだ日記になっていない写真")
-        st.caption("写真をタップするたびに 未設定 → 🥰 ほっこりした → 😊 うれしい → 😲 びっくり → 😠 おこった → 😢 かなしい → 😣 くやしい → 未設定 の順で変わります。気持ちを変えるだけではページ更新せず、次に別の操作をしたときにまとめて保存します。")
         pending_titles = pending_diary_titles(pending_rows, used_titles=saved_titles)
         for item in pending_rows:
             pending_trip = item.get("trip") or {}
@@ -35974,7 +35970,7 @@ def page_diary():
         with st.container(border=True):
             st.markdown(f"**{html.escape(label_map.get(trip_id, trip_id))}**")
     else:
-        st.caption("まだ振り返る日を選んでいません。")
+        pass
     if st.button(
         "📅 別の日を選ぶ" if trip_id else "📅 振り返る日を選ぶ",
         use_container_width=True,
@@ -35982,18 +35978,7 @@ def page_diary():
     ):
         render_diary_day_picker_v452(ids, label_map, selected_trip_id=trip_id)
 
-    # v269: Diary can also be revisited from place rather than date. Reuse the
-    # existing lightweight Memory Map instead of duplicating map/photo loading here.
-    st.button(
-        "🗺️ 地図から振り返る",
-        use_container_width=True,
-        key="diary_open_memory_map_v269",
-        on_click=_go_page_callback,
-        args=("review_map", "push"),
-    )
-
     if trip_id is None:
-        st.caption("振り返る日を選ぶと、そのぶらり旅の日記と写真を表示します。地図からは、場所を起点に過去の写真・動画を振り返れます。")
         return
 
     trip_id = str(trip_id)
