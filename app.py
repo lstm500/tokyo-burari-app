@@ -35,7 +35,8 @@ import streamlit as st
 # Freshly generated update: 2026-09-16 JST
 GENERATED_UPDATE_JST = "2026-09-16T23:59:00+09:00"
 
-APP_BUILD = "v453"
+APP_BUILD = "v454"
+# v454: Reduce instructional copy across the app so controls and layout carry the interaction. Remove verbose/static hints from Diary day photos, photo library, Moments, replay setup, Nearby/Toilets, Review landing, Map, and Settings while preserving errors, destructive confirmations, progress, counts, dates, and other state feedback.
 # v453: Simplify the Diary screen for direct use: remove the Diary-page explanatory copy, remove the Memory Map shortcut from Diary, remove helper text under the day picker and inside its dialog, while preserving the button-only no-keyboard day picker, newest-first order, title editing, photos, emotions, and diary functions.
 # v452: Fix Diary day selection inside the st.dialog fragment. A normal dialog button interaction reruns only the dialog, so the parent Diary page kept showing the previous/no day. Handle the click inside the dialog, persist preferred_diary_trip_id, then call a full-app st.rerun() so the dialog closes and the selected day's photos render immediately. Preserve newest-first ordering and the no-keyboard picker.
 # v451: Sort the button-only Diary day picker explicitly by trip_date descending (newest first), with started_at/id as deterministic tie-breakers. Preserve the v450 no-keyboard picker and all other diary/replay behavior.
@@ -1165,7 +1166,6 @@ PHOTO_LEGACY_ROUTE_CACHE_SCHEMA_V300 = "photo_legacy_pairwise_osrm_v300"
 PHOTO_LEGACY_ROUTE_RENDER_DEBUG_RED_V300 = True
 
 
-
 # ============================================================
 # Live mobile camera component
 # ============================================================
@@ -1207,7 +1207,7 @@ _LIVE_CAMERA_HTML = """
     <button id="camera-review-save-new-only" class="camera-save-new-only-button" type="button" hidden>取り込み済み以外を残す</button>
     <button id="camera-review-find-moments" class="camera-find-button" type="button" hidden>✨ いい瞬間を探す</button>
     <div id="camera-review-build" class="camera-review-build" hidden>camera v253</div>
-    <div id="camera-review-emotion-hint" class="camera-review-emotion-hint" hidden>写真下の「通常／こどもーど」を切り替え、写真につけるアイコンを1つ選べます。</div>
+    <div id="camera-review-emotion-hint" class="camera-review-emotion-hint" hidden></div>
     <div id="camera-review-image-shell" class="camera-review-image-shell" role="button" tabindex="0" aria-label="写真のアイコンを選ぶ" hidden>
       <img id="camera-review-image" class="camera-review-image" alt="撮影した写真の確認" />
       <span id="camera-review-imported-badge" class="camera-review-imported-badge" hidden>✓ 取り込み済み</span>
@@ -6230,7 +6230,6 @@ def update_photo_parenting_tags_batch(changes, valid_photo_ids=None, trip_id=Non
     return latest
 
 
-
 def update_photo_tags_combined_v166(emotion_changes=None, parenting_changes=None):
     """Persist both tag axes with one row read/write per photo and one diary refresh."""
     emotion_latest = {}
@@ -7480,7 +7479,6 @@ except Exception:
     browser_persistence_component = None
 
 
-
 AUTO_LOGIN_TTL_SECONDS = 24 * 60 * 60
 
 
@@ -7818,7 +7816,6 @@ def today_iso():
     return now_jst().date().isoformat()
 
 
-
 @st.cache_data(ttl=1800, show_spinner=False)
 def _verify_remote_schema_cached():
     """Cold-start schema probe only; repeated Streamlit reruns reuse the result."""
@@ -7888,7 +7885,6 @@ def list_family_accounts():
         .execute()
     )
     return result.data or []
-
 
 
 def create_family_account(family_key, display_name, member_key, member_name, pin):
@@ -8142,7 +8138,6 @@ def ensure_default_member_account():
     ).execute()
 
 
-
 def current_family_key():
     return str(st.session_state.get("_current_family_key") or "default").strip() or "default"
 
@@ -8359,8 +8354,6 @@ def require_family_pin():
 
     with st.container(key="login_account_card", border=True):
         st.markdown("#### ログイン")
-        st.caption("家族アカウントの中の、個人アカウントでログインしてください。")
-        st.caption("一度ログインすると、このブラウザでは24時間ログイン画面を省略します。ログアウトすると自動ログインは解除されます。")
         family_key = st.text_input(
             "家族ID",
             value=str(st.session_state.get("_last_family_key") or "default"),
@@ -8664,7 +8657,6 @@ def far_field_audio_input(label, key):
             message = str(error.get("message") or "").strip()
         if message:
             st.warning(message)
-        st.caption("距離対応マイクが使えない場合は、下の予備マイクを使えます。")
         return st.audio_input("予備のマイク", sample_rate=16000, key=f"{key}_fallback")
 
     payload = getattr(result, "audio", None)
@@ -8900,7 +8892,6 @@ def launch_photo_place_enrichment_v394(photo, location):
         )
     except Exception:
         pass
-
 
 
 # ============================================================
@@ -9996,9 +9987,6 @@ def _nearby_place_priority(tags, kind):
     return 1
 
 
-
-
-
 NEARBY_LUNCH_GENRES = (
     "おまかせ",
     "和食・定食",
@@ -10798,7 +10786,6 @@ def _nearby_load_detail_images(place, limit=3):
         }
     with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="burari-nearby-detail") as pool:
         return [item for item in pool.map(fetch, refs) if item.get("src")]
-
 
 
 def _nearby_parse_place_time(value):
@@ -13174,7 +13161,6 @@ def upload_photo(trip_id, image_bytes, location=None, captured_at=None, capture_
         raise RuntimeError(f"写真保存処理でエラーが発生しました: {exc}") from exc
 
 
-
 def _audio_storage_format(filename):
     name = str(filename or "").strip().lower()
     if name.endswith(".m4a") or name.endswith(".mp4"):
@@ -14462,7 +14448,6 @@ def _ask_json_with_images_client(client, prompt, image_items, name, schema, max_
         **response_args(VISION_MODEL, input_value, name, schema, max_output_tokens)
     )
     return json.loads(result.output_text)
-
 
 
 # Good Moments selection factors. Technical defects such as severe blur, clipping,
@@ -15975,7 +15960,6 @@ def _video_ai_executor():
 @st.cache_resource(show_spinner=False)
 def _video_ai_job_registry():
     return {"lock": threading.Lock(), "futures": {}}
-
 
 
 def _get_focus_detection_models():
@@ -18805,7 +18789,6 @@ def confirm_diary_delete_dialog(trip_id, photo_count):
             st.rerun(scope="app")
 
 
-
 def delete_photo_and_related_data(
     trip_id,
     photo_id,
@@ -19123,7 +19106,6 @@ def show_video_delete_dialog(video_photo):
             st.rerun()
 
 
-
 def render_video_batch_delete_controls(videos):
     """Allow multiple saved videos to be selected and deleted in one confirmed action."""
     rows = [row for row in list(videos or []) if isinstance(row, dict) and photo_is_video(row)]
@@ -19212,7 +19194,6 @@ def render_video_batch_delete_controls(videos):
             reload_current_page_after_action("_video_delete_notice", notice)
             return
 
-        st.caption("削除する動画を複数選んでください。削除前にもう一度確認します。")
 
         all_col, clear_col, close_col = st.columns(3, gap="small")
         with all_col:
@@ -19428,7 +19409,6 @@ def render_photo_batch_delete_controls_v442(
             reload_current_page_after_action("_diary_notice", notice)
             return True
 
-        st.caption("削除する写真を複数選んでください。削除前にもう一度確認します。")
         all_col, clear_col, close_col = st.columns(3, gap="small")
         with all_col:
             if st.button("すべて選択", use_container_width=True, key=f"photo_batch_select_all_{scope_token}"):
@@ -19727,7 +19707,7 @@ def render_diary_delete_controls(
     if selected_photo_id:
         photo_index = photo_ids.index(selected_photo_id)
         photo_number = photo_index + 1
-        st.caption(f"対象：写真 {photo_number} / {len(photo_ids)}（上の一覧で選択できます）")
+        st.caption(f"写真 {photo_number} / {len(photo_ids)}")
 
         if show_photo_navigation:
             has_next_photo = photo_index < len(photo_ids) - 1
@@ -20099,7 +20079,6 @@ def save_monthly_review(month_key, review_json):
     else:
         payload["created_at"] = now_jst().isoformat()
         supabase_client().table(MONTHLY_TABLE).insert(payload).execute()
-
 
 
 # ============================================================
@@ -21153,7 +21132,6 @@ def render_trip_field_notes(trip):
     if not items:
         return
     st.markdown("#### 外出中のひとこと")
-    st.caption("その場で本人が残した言葉です。AIが内容を補っていません。")
     audio_paths = [str(x.get("audio_storage_path") or "") for x in items if x.get("audio_storage_path")]
     try:
         audio_urls = signed_photo_url_map(audio_paths, expires_in=1800) if audio_paths else {}
@@ -21466,8 +21444,6 @@ def _monthly_replay_photo_caption(photo, trip, index):
     return " / ".join(label_bits) or f"写真{index}"
 
 
-
-
 def _replay_primary_people(people, width, height):
     """Keep visually prominent people while ignoring tiny/partial edge background detections.
 
@@ -21765,7 +21741,6 @@ def build_monthly_replay_photo_items(bundle, limit=None):
             "voice_transcript": str(voice_meta.get("transcript") or ""),
         })
     return items
-
 
 
 PHOTO_CURATION_SCHEMA = {
@@ -22097,15 +22072,8 @@ def render_replay_photo_curation_controls(scope_key, period_label, bundle, all_p
     target_count = replay_photo_curation_target_count(total_count)
     with st.container(border=True):
         st.markdown("#### ✨ 写真厳選モード")
-        st.caption("基準：①カメラ目線で感情が伝わる ②夢中・頑張り中 ③人との絆 ＋ 映りの良さ・成長感・未来感を優先。★お気に入りは必ず入れます。")
         if state.get("active") and active_count:
             st.success(f"厳選中です。{total_count}枚から {active_count}枚を表示しています。")
-        else:
-            if target_count > 0:
-                st.info(f"AIがムービー向きの写真を厳選し、{total_count}枚の中から約1/3の {target_count}枚前後にしぼります。")
-            else:
-                st.info("AIがムービー向きの写真を厳選して、見返しやすい枚数にしぼります。")
-
         cols = st.columns(3)
         with cols[0]:
             if st.button("✨ 写真厳選モードにする", key=f"replay_curation_on_{scope_key}", type="primary", use_container_width=True):
@@ -22158,7 +22126,6 @@ def render_replay_voice_embed_section(scope_key, photo_items, photo_row_map):
         return
     with st.container(border=True):
         st.markdown("#### 🎙 写真に声を埋め込む")
-        st.caption("写真ごとに短い声メモを登録できます。保存時に軽いノイズ低減と音量補正を自動で行い、ムービーでも同じ声を再生します。")
 
         select_key = f"replay_voice_photo_{scope_key}"
         selected_photo_id = st.selectbox(
@@ -23135,7 +23102,6 @@ def render_own_replay_movie_library():
     DOM size and page churn. No photos, MP4 bytes, or YouTube players are loaded here.
     """
     st.markdown("#### 🎞 作ったムービー")
-    st.caption("これまで作ったムービーです。ここでは動画本体を読み込まず、一覧だけ軽く表示します。")
 
     notice = st.session_state.pop("_replay_movie_library_notice_v357", None)
     if notice:
@@ -23390,7 +23356,6 @@ def render_family_shared_monthly_reviews():
         return False
 
     st.markdown("#### 👨‍👩‍👦 家族から届いた振り返り")
-    st.caption("同じ家族IDの別アカウントが共有した振り返りです。閲覧のみできます。")
     row_map = {row["id"]: row for row in shared_rows}
     option_ids = list(row_map.keys())
     selector_key = "family_shared_monthly_selector"
@@ -23647,7 +23612,6 @@ def render_replay_download_controls(period_label, playback, photo_items, display
         return build_replay_visual_mp4(export_items, export_display_ms, export_duration_seconds)
 
     st.markdown("#### ⬇ スマホに保存")
-    st.caption("下のボタン1つでMP4を作成し、そのまま保存を開始します。作成には数秒〜数十秒かかることがあります。")
     st.download_button(
         "⬇ MP4を作成してスマホに保存",
         data=build_movie_for_download,
@@ -23658,8 +23622,7 @@ def render_replay_download_controls(period_label, playback, photo_items, display
         on_click="ignore",
         key=f"replay_export_one_tap_{widget_id}",
     )
-    st.caption("Androidアプリ版では端末の「ダウンロード」フォルダへ保存します。YouTube音声はMP4には含まれません。")
-
+    st.caption("YouTube音声はMP4には含まれません。")
 
 
 def render_monthly_replay_player(period_label, review, playback, photo_items, curated_mode=False):
@@ -25123,7 +25086,6 @@ def render_monthly_music_settings(month_key, bundle, review, expanded=True):
                 st.session_state[state_key] = value
 
     st.markdown("### 🎬 振り返りムービーを作る")
-    st.info("ここではムービーを保存せず、同じ写真のまま音楽を何度でも試せます。気に入った音楽だけ保存できます。")
     if photo_items:
         st.caption(f"写真 {len(photo_items)}枚を、選んだ音楽に合わせて順番に再生します。")
     else:
@@ -25136,7 +25098,6 @@ def render_monthly_music_settings(month_key, bundle, review, expanded=True):
 
     with st.container(border=True):
         st.markdown("#### A. 保存した音楽を使う")
-        st.caption("保存した音楽は、保存時の開始・終了時間もセットで復元します。")
         if saved_music:
             saved_choice_key = f"monthly_saved_music_choice_{month_key}"
             with st.form(
@@ -25189,7 +25150,6 @@ def render_monthly_music_settings(month_key, bundle, review, expanded=True):
 
     with st.container(border=True):
         st.markdown("#### B. 新しい音楽を使う")
-        st.caption("① YouTube URL → ② 再生時間 → ③ 作成、の順に設定します。")
 
         with st.form(
             key=f"monthly_music_edit_form_{month_key}",
@@ -25216,7 +25176,6 @@ def render_monthly_music_settings(month_key, bundle, review, expanded=True):
                 end_seconds = int(st.number_input("終了（秒）", min_value=1, step=1, key=end_key))
             display_end = end_seconds if end_seconds > start_seconds else start_seconds + 20
             st.info(f"再生予定：{format_mmss(start_seconds)} 〜 {format_mmss(display_end)}")
-            st.caption("＋／－や入力欄を変更している間は通信しません。")
             if end_seconds <= start_seconds:
                 st.caption("終了が開始以下の場合は、作成時に開始から20秒後へ自動調整します。")
 
@@ -25373,7 +25332,6 @@ def render_monthly_music_settings(month_key, bundle, review, expanded=True):
             f"{current_playback.get('title') or 'YouTube音楽'} ／ "
             f"{format_mmss(current_playback.get('start_seconds'))}〜{format_mmss(current_playback.get('end_seconds'))}"
         )
-    st.caption("※ 選択・入力・＋／－操作だけでは通信しません。ムービー試写は操作中だけです。『音楽だけ保存』は音楽＋再生時間だけを保存し、ムービーは保存しません。")
 
 def render_monthly_time_settings(month_key, review):
     """Edit only the current music playback window without rerunning on +/- taps."""
@@ -25417,7 +25375,6 @@ def render_monthly_time_settings(month_key, review):
             end_seconds = int(st.number_input("終了（秒）", min_value=1, step=1, key=edit_end_key))
             display_end = end_seconds if end_seconds > start_seconds else start_seconds + 20
             st.caption(f"入力値：{format_mmss(start_seconds)}〜{format_mmss(display_end)}")
-            st.caption("＋／－を押している間は通信しません。")
             apply_clicked = st.form_submit_button(
                 "この時間を再生に反映",
                 type="primary",
@@ -26001,13 +25958,9 @@ def render_ai_photo_tag_action(photos, key, scope_label="この範囲", max_phot
     if not taggable:
         return False
     if not pending:
-        st.caption("🏷️ この範囲の写真は最新のAIタグ判定済みです。")
         return False
 
     count = len(pending)
-    st.caption(f"AIタグ未設定・更新対象：{count}枚　／　4枚ずつまとめて解析します。")
-    if count > int(max_photos):
-        st.caption(f"一度の操作では最大{int(max_photos)}枚まで処理します。残りは同じボタンでもう一度続けられます。")
     if st.button(
         f"🏷️ AIタグを付ける・更新する（{count}枚）",
         use_container_width=True,
@@ -26393,7 +26346,6 @@ def render_summary_feedback_controls(meta, trip_id, key_prefix, draft_state=None
         return
 
     current = str(meta.get("summary_feedback") or "").lower()
-    st.caption("上のAIまとめを評価します。次回以降のまとめ方に少しだけ反映されます。")
     good_col, bad_col = st.columns(2)
     with good_col:
         good_label = "👍 Good ✓" if current == "good" else "👍 Good"
@@ -26901,7 +26853,6 @@ def consume_auto_discovery_deep_link():
         return False
 
 
-
 def consume_evening_review_deep_link():
     """Open the GPS-confirmed evening tourism review sent by Android."""
     try:
@@ -27020,10 +26971,6 @@ def page_evening_review():
         "🌙 今日のぶらり旅",
         "今日立ち寄った可能性が高い場所を、ひとことだけ振り返ります。",
     )
-    st.caption(
-        "GPSで観光候補の近くに入り、約3分以上その周辺にいた記録を『立ち寄り』として扱っています。"
-        "近くを通っただけの候補は、この振り返りには出しません。"
-    )
     if not places:
         st.info("今日は振り返る立ち寄り場所がありません。")
         return
@@ -27048,7 +26995,6 @@ def page_evening_review():
                 pass
             if meta:
                 st.caption(" ／ ".join(meta))
-            st.caption("どんなところだった？ また行きたい？ 気になったことは？ ひとつだけでも大丈夫です。")
 
             initial_comment = str(saved_comments.get(event_id) or place.get("comment") or "")[:1200]
             field_key = f"evening_review_comment_v416_{key_token}"
@@ -27078,7 +27024,6 @@ def page_evening_review():
                         key=f"evening_review_native_save_v416_{key_token}",
                     )
 
-    st.caption("何も思いつかなければ、無理にコメントを残す必要はありません。")
 
 VALID_APP_PAGES = {"home", "camera", "videos", "moments", "diary", "photos", "review", "review_map", "review_project", "review_monthly", "review_tag", "review_history", "nearby", "discovery_results", "evening_review", "toilets", "field_notes", "settings", "settings_moments", "settings_moments_definition", "settings_location", "settings_account"}
 
@@ -27176,7 +27121,6 @@ def restore_recent_camera_session():
         st.session_state.pop("_camera_auto_start_video", None)
     st.session_state["_history_action"] = "replace"
     st.rerun()
-
 
 
 def reset_diary_navigation_for_home_entry():
@@ -27630,7 +27574,6 @@ def _home_train_for_session():
     return theme["line_name"], _home_icon_uri(theme["train_key"]) or _home_icon_uri("train")
 
 
-
 def inject_lightweight_train_loading_v326():
     """Render a zero-network loader; the train follows its illustrated rail angle with a gentle joint-click sway."""
     try:
@@ -27861,8 +27804,7 @@ def page_top(title, caption=""):
         )
     with c2:
         st.subheader(title)
-    if caption:
-        st.caption(caption)
+    # v454: page titles should stand on their own; avoid static instructional subtitles.
 
 
 def _stored_photo_conversation(photo):
@@ -28487,10 +28429,6 @@ def render_video_ai_selection(photo, key_prefix="video_selection", allow_save=Tr
         return
 
     st.markdown("##### AIが選んだセレクション")
-    st.caption(
-        f"表情・躍動感・写真としての美しさ・被写体の魅力などを総合評価し、"
-        f"似た場面が並びすぎないよう最大{VIDEO_AI_MAX_SELECTIONS}枚を選んでいます。"
-    )
     paths = tuple(str(item.get("storage_path") or "").strip() for item in items)
     try:
         signed_map = signed_photo_url_map(paths, expires_in=1800)
@@ -28669,7 +28607,6 @@ def render_pending_video_ai_review():
                 st.code(str(exc))
 
     st.markdown("##### AIが選んだセレクション")
-    st.caption("表情・躍動感・写真としての美しさ・被写体の魅力などを総合評価し、似た場面が並びすぎないよう6枚を選んでいます。")
     columns = st.columns(3, gap="small")
     for index, selected in enumerate(selections):
         rank = index + 1
@@ -28703,7 +28640,6 @@ def render_pending_video_ai_review():
             ):
                 show_pending_video_ai_selection_dialog(image_bytes, best_label, caption)
 
-    st.caption("動画を残すと、この6枚もAIセレクションとして保存され、各画像をあとから写真として保存できます。")
     return True
 
 
@@ -28724,7 +28660,6 @@ def trip_label(trip):
             diary = None
     title = diary_display_title(diary, trip, photos=photos)
     return f"{trip.get('trip_date', '')}　{title}"
-
 
 
 def render_pending_thumbnail_grid(trip_id, photos, max_count=None, trip=None):
@@ -28875,7 +28810,6 @@ def render_diary_single_photo_voice_editor(trip_id, photo, target_state_key, con
 
     with st.container(border=True):
         st.markdown("##### 🎙 この写真に声を残す")
-        st.caption("この写真にひもづく短い声を保存します。保存時に軽いノイズ低減と音量補正を自動で行い、振り返りムービーでも同じ声を使います。")
 
         voice_meta = photo_voice_note_meta(photo)
         voice_path = str(voice_meta.get("storage_path") or "").strip()
@@ -28976,7 +28910,6 @@ def render_history_photo_viewer(photos, trip_id):
         mode_key = f"history_photo_view_mode_{trip_id}"
         if st.session_state.get(mode_key) == "1枚ずつ拡大":
             st.session_state[mode_key] = "1枚ずつ表示"
-        st.caption("写真の表示方法")
         view_mode = st.radio(
             "写真の表示方法",
             ["3列一覧", "1枚ずつ表示"],
@@ -28986,8 +28919,6 @@ def render_history_photo_viewer(photos, trip_id):
             label_visibility="collapsed",
         )
     single_mode = view_mode == "1枚ずつ表示"
-    if single_mode and len(photos) > 1:
-        st.caption("◀ 前へ／次へ ▶、または写真を左右にスワイプして切り替えられます。")
 
     paths = tuple(str(photo.get("storage_path") or "") for photo in photos if photo.get("storage_path"))
     signed = signed_photo_url_map(paths) if paths else {}
@@ -29128,7 +29059,6 @@ def render_diary_photo_gallery(trip_id, photos, state=None):
         return None
 
     st.markdown("#### この日の写真")
-    st.caption("オレンジ：話した写真　／　グレー：まだ話していない写真")
 
     paths = tuple(str(photo.get("storage_path") or "") for photo in photos if photo.get("storage_path"))
     signed = signed_photo_url_map(paths) if paths else {}
@@ -29848,8 +29778,6 @@ def page_home():
         render_home_storage_usage_status()
 
 
-
-
 def _render_toilet_map(search_latitude, search_longitude, places, radius_m, *, accuracy_m=None, search_source="gps"):
     """Render toilet candidates as a Leaflet map; pin popups open walking directions."""
     try:
@@ -30039,7 +29967,6 @@ html,body{{margin:0;padding:0;background:transparent;font-family:-apple-system,B
 </body>
 </html>'''
     st.components.v1.html(map_html, height=550, scrolling=False)
-
 
 
 # ============================================================
@@ -30475,7 +30402,6 @@ def page_field_notes():
 
     if next_items and (kind == "next" or st.session_state.get("field_note_focus_next_v390")):
         st.markdown("#### 前に残した『次にやりたい』")
-        st.caption("終わるまでトップ画面にも残ります。今日やるものを選んでも、ノルマにはなりません。")
         for index, item in enumerate(next_items[:8]):
             text_value = html.escape(str(item.get("text") or ""))
             place_value = html.escape(str(item.get("place_label") or "場所未登録"))
@@ -30519,7 +30445,6 @@ def page_field_notes():
         """
         <div class="field-note-hero-v390">
           <div class="field-note-hero-title-v390">いま思ったことを、そのまま</div>
-          <div class="field-note-hero-sub-v390">答えや理由は考えなくて大丈夫。声か文字のどちらかで、短く残します。</div>
         </div>
         """,
         unsafe_allow_html=True,
@@ -31004,7 +30929,6 @@ def page_toilets():
     places = list(search_result.get("places") or [])[:30]
     st.divider()
     st.markdown("### 地図からトイレを選ぶ")
-    st.caption("現在地は青い点、トイレ候補は番号付きピンです。ピンをタップし、『ここへ徒歩で案内』を押すとGoogleマップの徒歩経路案内を開きます。")
 
     map_accuracy = saved.get("search_accuracy_m") if isinstance(saved, dict) else None
     map_source = saved.get("search_source") if isinstance(saved, dict) else "gps"
@@ -31163,8 +31087,6 @@ def page_discovery_results():
                         st.caption("この場所の写真は取得できませんでした。")
                 else:
                     st.caption("この場所の写真・詳細は取得できませんでした。地図から確認できます。")
-
-    st.caption("候補は通知が作られた時点の検索結果です。営業状況は現地表示や地図で確認してください。")
 
 
 def page_nearby():
@@ -31684,10 +31606,6 @@ def page_nearby():
 
     st.divider()
     st.markdown("### ランチ候補（口コミ補正評価順）" if kind == "lunch" else "### 今ちょっと寄るなら")
-    if kind == "lunch":
-        st.caption("候補は最大6か所。Google評価を口コミ件数で補正した「ぶらり旅評価」順です。口コミ100件を信頼基準にし、件数が少ない評価は周辺候補の平均へ少し寄せます。")
-    else:
-        st.caption("候補は最大6か所。検索時点の現在地を基準に、営業状況・評価・写真をその都度取得して表示します。")
     if not GOOGLE_PLACES_API_KEY:
         st.info("写真表示を使うには Streamlit Secrets に `GOOGLE_PLACES_API_KEY` を追加してください。検索自体はこのまま利用できます。")
     if not places:
@@ -31790,10 +31708,6 @@ def page_nearby():
                             attr_html = f'<div class="nearby-attribution">写真: {html.escape(attr)}</div>' if attr else '<div class="nearby-attribution">Google Places</div>'
                             cards.append(f'<div class="nearby-detail-photo"><img src="{html.escape(item["src"], quote=True)}" alt="参考写真">{attr_html}</div>')
                         st.markdown('<div class="nearby-detail-grid">' + ''.join(cards) + '</div>', unsafe_allow_html=True)
-                        if kind == "lunch":
-                            st.caption("店舗に登録された参考写真です。料理写真を含むことがありますが、外観・内観が混ざる場合があります。")
-                        else:
-                            st.caption("店舗・施設に登録された参考写真です。おやつ店では商品写真を含むことがありますが、外観・内観が混ざる場合があります。")
                     else:
                         st.caption("この場所では追加の参考写真を取得できませんでした。")
 
@@ -32080,7 +31994,6 @@ def _moments_video_title(photo):
         pass
     place = photo_location_label(photo)
     return f"{label}　{place}" if place else label
-
 
 
 _MOMENTS_SELECT_HTML = """
@@ -32645,7 +32558,6 @@ def _get_moments_select_component():
     return moments_select_component
 
 
-
 _MOMENTS_VOICE_HTML = """
 <div id="moments-voice-workspace" class="moments-voice-workspace">
   <div class="moments-voice-photo-wrap">
@@ -32852,7 +32764,6 @@ def _render_moments_voice_workspace(
             st.rerun()
         except Exception as exc:
             st.error("声候補を作成できませんでした。")
-            st.caption("通常は写真の🎙を1回押すだけで声候補を作成します。失敗した場合だけ再試行してください。")
             retry_col, back_col = st.columns([1.35, .75], gap="small")
             with retry_col:
                 if st.button(
@@ -33128,7 +33039,6 @@ def _render_moments_picker(photo, index, view_mode=None, next_video_action=None)
         if detail:
             with st.expander("詳細"):
                 st.code(detail)
-        st.caption("「いい瞬間を見る」は閲覧専用です。ここから初回の切り取り処理は開始しません。")
         return
 
     items = video_ai_selection_items(photo)
@@ -33145,10 +33055,6 @@ def _render_moments_picker(photo, index, view_mode=None, next_video_action=None)
         ):
             st.rerun()
         return
-
-    st.caption("残したい写真をタップして気持ちを付けます。🎙を押すと、その写真を見ながら声を合わせられます。")
-    if status == "reviewed":
-        st.caption("選択済みの動画も、この6枚からそのまま選び直せます。")
 
     paths = tuple(str(item.get("storage_path") or "").strip() for item in items)
     try:
@@ -33504,12 +33410,7 @@ def _render_moments_picker(photo, index, view_mode=None, next_video_action=None)
         if isinstance(item, dict) and int(item.get("voice_candidate_rank") or 0) > 0
     )
     if voice_candidates:
-        st.caption(
-            f"🎙 声候補 {len(voice_candidates)}個 ／ 声を付けた写真 {attached_voice_count}枚。"
-            "写真の🎙を押すと、写真を見ながら声を選べます。"
-        )
-    else:
-        st.caption("写真の🎙を押すと、その写真を見ながら元動画の声を選べます。")
+        st.caption(f"🎙 声候補 {len(voice_candidates)}個 ／ 声付き {attached_voice_count}枚")
 
     if picker_component is None:
         send_clicked = st.button(
@@ -33555,7 +33456,6 @@ def _render_moments_picker(photo, index, view_mode=None, next_video_action=None)
     can_reroll = bool(_video_ai_has_candidate_source(selection_meta) or photo_video_storage_path(photo))
     if can_reroll and status != "reviewed":
         with st.expander("候補の6枚が合わないとき"):
-            st.caption("同じ元動画から、別の瞬間を選び直します。現在写真を選択中の場合は先に選択を外してください。")
             if st.button(
                 "🔄 別の6枚を作る",
                 use_container_width=True,
@@ -34224,10 +34124,8 @@ def page_moments():
             st.divider()
             st.markdown("### いま確認する動画")
             st.caption(f"{ready_index + 1} / {len(ready)}本　・　{_moments_video_title(current_video)}")
-            st.info("写真を選んで『選んだ写真を日記に残す』を押すと、この動画は確認済みになり、次の動画へ進みます。")
             _render_moments_picker(current_video, ready_index)
 
-            st.caption("残したい写真が1枚もなければ、下のボタンで次へ進めます。")
             if st.button(
                 "今回は写真を残さない",
                 use_container_width=True,
@@ -34244,7 +34142,6 @@ def page_moments():
                     with st.expander("保護者向け詳細"):
                         st.code(str(exc))
 
-            st.caption("候補写真も元動画も不要な場合はこちらです。")
             render_video_delete_controls(
                 current_video,
                 f"moments_ready_delete_{current_video.get('id')}",
@@ -34315,7 +34212,6 @@ def page_moments():
 
         st.divider()
         with st.expander("確認済み動画の整理"):
-            st.caption("元動画を一斉削除しても、すでに日記へ残した写真は残ります。")
             bulk_delete_key = "_moments_delete_all_reviewed_confirm_v387"
             if not st.session_state.get(bulk_delete_key):
                 if st.button(
@@ -34370,7 +34266,6 @@ def render_diary_title_editor(trip_id, current_title, key_prefix):
 
     with st.container(border=True):
         st.markdown("##### ✏️ 日記の名前を変更")
-        st.caption("名前を変更するときだけ文字入力を使います。")
         with st.form(f"{key_prefix}_title_form_v450_{trip_id}", clear_on_submit=False, border=False):
             edited_title = st.text_input(
                 "日記の名前",
@@ -34467,12 +34362,9 @@ def render_recent_camera_photo_emotion(trip):
             delete_key_prefix="recent_camera",
         ):
             st.warning("撮影した動画のプレビューを表示できませんでした。")
-        st.caption("✨ いい瞬間は動画保存とは別にバックグラウンドで作成します。切り取った写真は、日記画面でタップするたびに通常10種類／こどもーど10種類のアイコンを切り替えられます。")
         return
 
     location_label = photo_location_label(photo)
-    st.caption("写真下の「通常／こどもーど」を切り替え、写真につけるアイコンを1つ選べます。")
-    st.caption("モード切替・アイコン選択だけではページ更新しません。")
 
     path = str(photo.get("storage_path") or "")
     signed = signed_photo_url_map((path,)) if path else {}
@@ -35174,9 +35066,7 @@ def render_diary_emotion_gallery(trip_id, photos, trip=None, is_pending=False):
     st.markdown("#### この日の写真")
     render_photo_favorite_notice()
     counts, selected = photo_emotion_counts(photos)
-    st.caption("写真下の「通常／こどもーど」を切り替え、写真につけるアイコンを1つ選べます。")
     summary = photo_emotion_summary_text(photos)
-    st.caption(f"感情選択済み：{selected} / {len(photos)}枚" + (f"　｜　{summary}" if summary else ""))
 
     # v365: both saved diaries and the pre-diary "この日の写真" view can switch
     # between a compact grid and one-photo enlarged mode. Pending photos keep their
@@ -35186,7 +35076,6 @@ def render_diary_emotion_gallery(trip_id, photos, trip=None, is_pending=False):
         current_mode = str(st.session_state.get(mode_key) or "").strip()
         if current_mode not in {"一覧モード", "拡大モード"}:
             st.session_state[mode_key] = "一覧モード"
-        st.caption("写真の表示方法")
         view_mode = st.radio(
             "写真の表示方法",
             ["一覧モード", "拡大モード"],
@@ -35199,7 +35088,6 @@ def render_diary_emotion_gallery(trip_id, photos, trip=None, is_pending=False):
         mode_key = f"diary_saved_photo_view_mode_{trip_id}"
         if st.session_state.get(mode_key) == "1枚ずつ拡大":
             st.session_state[mode_key] = "1枚ずつ表示"
-        st.caption("写真の表示方法")
         view_mode = st.radio(
             "写真の表示方法",
             ["3列一覧", "1枚ずつ表示"],
@@ -35209,8 +35097,6 @@ def render_diary_emotion_gallery(trip_id, photos, trip=None, is_pending=False):
             label_visibility="collapsed",
         )
         single_mode = view_mode == "1枚ずつ表示"
-    if single_mode and len(photos) > 1:
-        st.caption("◀ 前へ／次へ ▶、または写真を左右にスワイプして切り替えられます。")
 
     # v180: enlarged mode keeps all photos in one browser component. The component
     # swaps the visible card locally and preloads neighboring images, avoiding a rerun
@@ -35601,7 +35487,6 @@ def page_photo_library_v418():
     if current_mode not in {"一覧モード", "拡大モード"}:
         current_mode = "一覧モード"
         st.session_state[mode_key] = current_mode
-    st.caption("写真の表示方法")
     view_mode = st.radio(
         "写真の表示方法",
         ["一覧モード", "拡大モード"],
@@ -35619,7 +35504,6 @@ def page_photo_library_v418():
     st.session_state[index_key] = enlarged_index
 
     if view_mode == "拡大モード":
-        st.caption("◀ 前へ／次へ ▶ で、これまでの写真を1枚ずつ見られます。")
         prev_col, count_col, next_col = st.columns([1, 1.25, 1], gap="small")
         with prev_col:
             if st.button(
@@ -35673,7 +35557,6 @@ def page_photo_library_v418():
     except Exception:
         signed = {}
 
-    st.caption("写真をタップすると感情を切り替えます。左上の☆でお気に入り、下のボタンで拡大・共有、右上の×で削除できます。")
 
     cards = []
     photo_ids = []
@@ -35890,7 +35773,6 @@ def page_diary():
             st.markdown(
                 f"**{html.escape(str(pending_trip.get('trip_date') or ''))}　{html.escape(pending_title)}**　・ 写真 {len(pending_photos)}枚"
             )
-            st.caption(f"感情選択済み：{emotion_selected} / {len(pending_photos)}枚" + (f"　｜　{photo_emotion_summary_text(pending_photos)}" if photo_emotion_summary_text(pending_photos) else ""))
             render_diary_emotion_gallery(
                 pending_id,
                 pending_photos,
@@ -36186,7 +36068,6 @@ def page_history(embedded=False):
             confirm_diary_delete_dialog(trip_id, len(photos))
         return
 
-    st.caption("読みたい日記を選んでください。")
     for row in rows:
         diary = row["diary"]
         trip = row["trip"]
@@ -36273,7 +36154,6 @@ def page_tag_review(embedded=False):
         """
         <div class="tag-review-hero">
           <div class="tag-review-hero-title">写真をつないで、音楽と一緒に振り返る</div>
-          <div class="tag-review-hero-sub">AI画像タグを1つ以上選び、条件に合う写真を月をまたいで時系列にすべて集めます。音楽と再生時間を保存すると、後から同じタグが付いた写真も自動で加わります。</div>
         </div>
         <style>
           .tag-review-hero {
@@ -36357,7 +36237,6 @@ def page_tag_review(embedded=False):
             horizontal=True,
             key="ai_tag_review_match_mode_form_v330",
         )
-        st.caption("タグを選んでいる間は通信しません。下のボタンを押したときだけ反映します。")
         apply_tag_selection = st.form_submit_button(
             "このタグで振り返る",
             type="primary",
@@ -36432,7 +36311,6 @@ def page_tag_review(embedded=False):
 
     if not review:
         st.markdown("#### 次にすること")
-        st.caption("対象写真が決まったので、そのまま音楽付きムービーを作れます。AIコメントは任意です。")
         if st.button(
             "🎞️ 選んだ写真で音楽つきムービーを作る",
             type="primary",
@@ -36536,7 +36414,6 @@ def page_tag_review(embedded=False):
                     with st.expander("保護者向け詳細"):
                         st.code(str(exc))
         else:
-            st.caption("AIコメントは任意です。ムービーだけ作る場合はこのままで大丈夫です。")
             if st.button(
                 "✨ AIコメントも作る",
                 use_container_width=True,
@@ -36564,7 +36441,6 @@ def page_tag_review(embedded=False):
         audition_active = monthly_preview_playback_is_active(storage_key)
         if saved_movie and not audition_active:
             st.success(f"💾 この振り返りムービーは保存済みです（写真 {saved_count}枚）。")
-            st.caption("同じタグの組み合わせを選ぶと、後からタグが付いた写真も自動で加えて開きます。")
         else:
             if saved_movie and audition_active:
                 st.info("現在は保存済みムービーとは別の音楽を一時的に試しています。この試写はまだ保存していません。")
@@ -36825,7 +36701,6 @@ def page_monthly(embedded=False):
     if deleted_notice:
         st.success(deleted_notice)
     render_photo_tag_notices()
-    st.caption("保存した日記と写真ごとの気持ちを、まとまった期間ごとにつないで振り返ります。")
 
     shared_visible = render_family_shared_monthly_reviews()
     if shared_visible:
@@ -38021,7 +37896,6 @@ def page_memory_map():
         "🗺️ 思い出マップ",
         "日記からではなく、いまいる場所の地図から、以前ここで何を見て・経験したかをたどります。",
     )
-    st.caption("地図を動かして見たい場所を中央に置き、『この中心で再取得』を押すと、その地点の周辺に思い出のピンを立て直します。写真本体はピンを開いたときだけ表示します。")
 
     location_key = f"_memory_map_location_v259_{current_family_key()}_{current_member_key()}"
     token_key = f"_memory_map_location_token_v259_{current_family_key()}_{current_member_key()}"
@@ -38066,7 +37940,6 @@ def page_memory_map():
 
     location = st.session_state.get(location_key) if isinstance(st.session_state.get(location_key), dict) else location
     if not isinstance(location, dict) or location.get("latitude") is None or location.get("longitude") is None:
-        st.info("上のボタンで現在地を取得すると、その周辺に残っている思い出を地図に表示します。")
         return
 
     try:
@@ -39784,7 +39657,6 @@ def _project_stations_near_track_v290(points):
     return merged[:120]
 
 
-
 def _project_slippy_global_pixel_v291(lat, lon, zoom):
     """Web-Mercator global pixel coordinate for the standard 256px OSM tile grid."""
     lat = max(-85.05112878, min(85.05112878, float(lat)))
@@ -40299,7 +40171,6 @@ def _project_osaki_forced_debug_v292(points):
             "debug_osaki":True,"forced_debug":True}
 
 
-
 def _station_visit_state_key_v293(family_key, member_key):
     raw = f"{str(family_key or 'default').strip()}|{str(member_key or 'main').strip()}".encode("utf-8")
     return hashlib.sha1(raw).hexdigest()[:28]
@@ -40635,7 +40506,6 @@ def _station_row_from_footprint_v293(station, footprint, map_points, debug_osaki
         "zone_cache_key": str(fp.get("zone_cache_key") or _station_row_key_v293(name, lat, lon))[:64],
         "debug_osaki": bool(debug_osaki),
     }
-
 
 
 # ============================================================
@@ -41626,7 +41496,6 @@ def _photo_legacy_prepare_routes_v301():
     return [], {'mode': 'unresolved', 'saved': False}
 
 
-
 PHOTO_LEGACY_ROUTE_SCHEMA_V302 = "photo_legacy_pedestrian_graph_v302"
 PHOTO_LEGACY_ROUTE_STORAGE_FILE_V302 = "photo_legacy_pedestrian_routes_v302.json"
 PHOTO_LEGACY_ROUTE_OSRM_FOOT_BASE_V302 = "https://routing.openstreetmap.de/routed-foot/route/v1/driving"
@@ -41983,8 +41852,6 @@ def _project_station_preflight_v293(raw_points, map_points):
     return rows, {
         "mode": "updated", "new_gps": len(new_walk_raw), "new_cells": len(set(new_cells)), "saved": saved,
     }
-
-
 
 
 def _project_clean_segment_v298(segment):
@@ -43116,7 +42983,6 @@ def page_review():
             font-size:.74rem; line-height:1.38;
           }
         </style>
-        <div class="review-menu-note">思い出マップは日記単位ではなく、撮影地点から過去をたどります。月別・タグ別・日記表示も元の写真は変えません。</div>
         """,
         unsafe_allow_html=True,
     )
@@ -43129,7 +42995,6 @@ def page_review():
             on_click=_go_page_callback,
             args=("review_map", "push"),
         )
-        st.caption("いまいる場所の近くで、以前どんな写真・動画を残したかを地図のピンからたどる")
 
     with st.container(key="review_project_jump"):
         st.button(
@@ -43139,7 +43004,6 @@ def page_review():
             on_click=_go_page_callback,
             args=("review_project", "push"),
         )
-        st.caption("スマホを持って歩いた道を蓄光テープのように光らせ、到達した駅を特別に表示する")
 
     with st.container(key="review_monthly_jump"):
         st.button(
@@ -43149,7 +43013,6 @@ def page_review():
             on_click=_go_page_callback,
             args=("review_monthly", "push"),
         )
-        st.caption("月を選び、その月の写真・気持ち・日記をまとめて、写真＋音楽で見返す")
 
     with st.container(key="review_tag_jump"):
         st.button(
@@ -43159,7 +43022,6 @@ def page_review():
             on_click=_go_page_callback,
             args=("review_tag", "push"),
         )
-        st.caption("AIが自動判定した『子ども』『大人』『複数人』などを選び、月をまたいで写真＋音楽で見返す")
 
     with st.container(key="review_history_jump"):
         st.button(
@@ -43169,18 +43031,12 @@ def page_review():
             on_click=_go_page_callback,
             args=("review_history", "push"),
         )
-        st.caption("これまで作った日記を1日ごとに読み返す")
 
     render_own_replay_movie_library()
 
 
-
 def page_good_moments_menu():
     page_top("✨ いい瞬間の設定をする")
-    st.caption(
-        "動画からどの写真を『いい瞬間』として残すかを設定します。"
-        "★お気に入り写真のAIタグ傾向は自動で学習されます。"
-    )
     st.button(
         "✨ いい瞬間の定義",
         type="primary",
@@ -43189,12 +43045,6 @@ def page_good_moments_menu():
         on_click=_go_page_callback,
         args=("settings_moments_definition", "push"),
     )
-    st.caption("表情、決定的瞬間、構図、発見、記憶、お気に入り傾向の重みを個別に調整します。")
-    st.info(
-        "お気に入り傾向は、単に多く写っているタグではなく、"
-        "『そのタグの写真がお気に入りになった割合』と『複数のお気に入りで繰り返し現れるか』を使って学習します。"
-    )
-
 
 
 _GOOD_MOMENTS_FACTOR_HTML = """
@@ -43341,14 +43191,6 @@ def _get_good_moments_factor_component():
 
 def page_good_moments_definition():
     page_top("✨ いい瞬間の定義")
-    st.caption(
-        "動画から切り抜く写真の評価バランスです。横スライダーは使わず、"
-        "大きな＋／－だけで調整できます。"
-    )
-    st.caption(
-        "ピンぼけ・強い手ぶれ・目つぶり・大きな見切れ・強い白飛び/黒つぶれは、"
-        "この配分とは別の最低品質条件として常に避けます。"
-    )
 
     notice = st.session_state.pop("_good_moments_settings_notice", None)
     if notice:
@@ -43418,20 +43260,10 @@ def page_good_moments_definition():
             )
             st.rerun()
 
-    st.caption(
-        "標準配分：表情・感情25% ／ 決定的瞬間・動き20% ／ 構図・見やすさ15% ／ "
-        "発見・被写体の面白さ10% ／ 記憶・物語性10% ／ タグ別お気に入り傾向20%"
-    )
-
 def page_settings_location():
     page_top("📍 位置情報を確認")
-    st.caption("現在地の精度確認とAndroidの位置情報設定を、この画面にまとめています。")
 
     st.markdown("#### 📍 現在地・GPS")
-    st.caption(
-        "トイレ・おやつなどの近距離検索に使う位置情報を、この端末で確認します。"
-        "検索にはGPS精度 ±45m以内を使用し、それより粗い位置では誤検索を防ぐため検索を開始しません。"
-    )
 
     gps_state_key = f"_settings_gps_diagnostic_{current_family_key()}_{current_member_key()}"
     gps_token_key = f"_settings_gps_diagnostic_token_{current_family_key()}_{current_member_key()}"
@@ -43523,7 +43355,6 @@ def page_settings_location():
 
 def page_settings_account():
     page_top("👤 アカウントを確認")
-    st.caption("ログイン情報、個人アカウント、家族アカウントをこの画面にまとめています。")
     settings_notice = st.session_state.pop("_settings_notice", None)
     if settings_notice:
         st.success(settings_notice)
@@ -43554,7 +43385,6 @@ def page_settings_account():
             st.error("このあいことばではありません。")
 
     with st.expander("あいことばを変更・再設定"):
-        st.caption("現在のあいことばを忘れていても、ログイン中であれば新しく設定できます。")
         with st.form("settings_change_pin_form_v327", clear_on_submit=False, border=False):
             new_pin = st.text_input(
                 "新しいあいことば",
@@ -43585,10 +43415,6 @@ def page_settings_account():
     st.write(
         f"現在：**{current_member_name()}**　（個人ID：`{current_member_key()}`）  "
         f"／ 家族：**{current_family_name()}**（`{current_family_key()}`）"
-    )
-    st.caption(
-        "ログイン、写真、日記、月ごとの振り返り、AIまとめのGood/Bad学習は個人アカウントごとに分かれます。"
-        "同じ家族の別アカウントからは原則見えません。写真ごとの『家族に共有』または振り返り共有をONにしたものだけ閲覧できます。"
     )
     with st.expander("現在の個人名を変更"):
         with st.form("settings_rename_member_form_v327", clear_on_submit=False, border=False):
@@ -43639,7 +43465,6 @@ def page_settings_account():
     st.divider()
     st.markdown("#### 家族アカウント")
     st.write(f"家族：**{current_family_name()}**　（家族ID：`{current_family_key()}`）")
-    st.caption("家族アカウントは個人アカウントをまとめる入れ物です。写真や日記の所有者は個人アカウントです。")
     with st.expander("現在の家族名を変更"):
         with st.form("settings_rename_family_form_v327", clear_on_submit=False, border=False):
             renamed_family = st.text_input(
@@ -43657,7 +43482,6 @@ def page_settings_account():
                 st.error(str(exc))
 
     with st.expander("新しい家族アカウントを作る"):
-        st.caption("新しい家族には、最初の個人アカウントも同時に作ります。")
         with st.form("settings_create_family_form_v327", clear_on_submit=False, border=False):
             new_family_name = st.text_input("家族名", placeholder="例：原田家", key="new_family_display_name")
             new_family_key = st.text_input("家族ID", placeholder="例：harada2", key="new_family_key")
@@ -43684,7 +43508,6 @@ def page_settings_account():
 
     st.divider()
     st.markdown("#### 自動ログイン")
-    st.caption("この端末では、一度個人アカウントへログインすると次回から同じ個人で自動ログインします。")
     if st.button("この端末の自動ログインを解除", use_container_width=True, key="settings_clear_auto_login"):
         clear_browser_auto_login()
         st.success("この端末の自動ログインを解除しました。次回は個人IDとあいことばが必要です。")
@@ -43709,7 +43532,6 @@ def page_settings():
             on_click=_go_page_callback,
             args=("settings_moments", "push"),
         )
-        st.caption("動画から残す写真の選び方と、タグ別のお気に入り傾向の反映を設定します。")
 
     st.markdown("#### AIまとめの調整")
     feedback_status = get_summary_feedback_status()
@@ -43719,10 +43541,6 @@ def page_settings():
         st.write("現在は**標準のまとめ方**です。Good/Badの影響はありません。")
     else:
         st.write(f"これまでの評価：**Good {good_count}件** ／ **Bad {bad_count}件**")
-        st.caption(
-            "次回のAIまとめでは、この個人アカウントの直近Good最大3件を少しだけ参考にし、"
-            "Bad最大2件に近い書き方を少しだけ避けます。写真と本人が選んだ気持ち、基本ルールを常に優先します。"
-        )
         with st.expander("現在参考にしているGood / Badを見る"):
             good_examples = feedback_status.get("good_examples") or []
             bad_examples = feedback_status.get("bad_examples") or []
@@ -43746,23 +43564,7 @@ def page_settings():
         confirm_summary_feedback_reset_dialog()
 
     st.divider()
-    st.markdown("#### カメラについて")
-    st.write(
-        "『カメラで撮る』画面では、ブラウザのライブカメラを直接開いて撮影します。"
-        "初回だけ、このサイトへのカメラ使用を『許可』してください。"
-    )
-    st.caption(
-        "アプリ内の動画撮影は最大60秒です。録画を止めると元動画を保管庫へ自動保存し、"
-        "『いい瞬間』は別処理で作成します。写真カメラと動画カメラは、それぞれ保存済み写真・動画の取り込みにも対応します。"
-    )
-
-    st.divider()
-    st.markdown("#### プロジェクトの考え方")
-    st.caption("写真の枚数を課題にはしません。本人が気になったものを残し、写真ごとに選んだ気持ちを一緒に振り返ります。")
-
-    st.divider()
     st.markdown("#### 確認・管理")
-    st.caption("位置情報とアカウントの確認は必要なときだけ開けます。")
     st.button(
         "📍 位置情報を確認",
         use_container_width=True,
