@@ -33,9 +33,11 @@ from zoneinfo import ZoneInfo
 import streamlit as st
 
 # Freshly generated update: 2026-09-16 JST
-GENERATED_UPDATE_JST = "2026-09-17T16:10:00+09:00"
+GENERATED_UPDATE_JST = "2026-09-17T21:10:00+09:00"
 
-APP_BUILD = "v460"
+APP_BUILD = "v462"
+# v462: Tighten toilet-search admission around practical public access. Keep standalone public toilets, stations/transit, major public/commercial facilities, convenience/supermarket/department-store hosts, selected civic/cultural/medical facilities, and restroom-confirmed major chains. Exclude ordinary small restaurants/cafes/shops/clinics/offices even when a toilet flag exists. Mixed office/commercial buildings now require strong same-building multi-tenant evidence instead of nearby-place density, preventing dense-city false positives. No extra API calls are added; filtering is local and the existing parallel search remains unchanged.
+# v461: Restore reliable AI-tag replay creation after the detailed-log pass. Do not build/download/frame every tagged photo while the user is only choosing music; batch live-photo metadata refreshes for large tag sets; stop per-photo download logging; preserve cache clear methods when instrumentation wraps cached helpers; and log replay preparation as a few aggregate phases instead of hundreds of per-photo rows. Keep v460 Nearby cleanup, v449 tag sync, v448 live emotion authority, v446 replay timing, and v433 framing semantics unchanged.
 # v460: Remove the v459 restaurant seat-count and kitchen part-time job lookup because source-page extraction was not reliable enough. Retain the v459 Google Places LocalizedText normalization so genre labels never expose internal {text, languageCode} objects. Keep v458 detailed performance logging and all other behavior unchanged.
 # v458: Expand the bounded in-session performance log from coarse page timings to actionable bottleneck tracing. Record sequence/run/page, nested data/component/render phases, result counts, foreground lifecycle/remount context, and selected cache-backed DB/storage operations. Keep logging memory-only, bounded, thresholded, and free of new polling/network/database writes.
 # v457: Repair Android/WebView foreground return without polling: the existing history bridge records background/foreground lifecycle, forces a cheap layout refresh, and remounts custom UI only when stale DOM is detected, BFCache restores, or a long background pause makes component state unreliable. Remove global button will-change layer promotion to reduce GPU/memory pressure. Add an in-session bounded performance log with download/clear controls and timings for startup phases, page renders, and important cache-miss data loads; no new database writes, timers, polling, or background traffic are added.
@@ -11884,15 +11886,74 @@ def _toilet_baby_info(tags):
     return {"ok": None, "label": ""}
 
 
-def _toilet_rank_key(place, usable_now_preferred=True):
-    """Sort toilets by availability -> distance -> public access.
+_TOILET_MAJOR_CHAIN_TERMS_V462 = (
+    # Convenience / large retail
+    "セブンイレブン", "ファミリーマート", "ローソン", "ミニストップ",
+    "ドンキホーテ", "イオン", "イトーヨーカドー", "ヨドバシカメラ", "ビックカメラ",
+    "ヤマダデンキ", "ニトリ", "無印良品", "ユニクロ",
+    # Coffee / fast food / family restaurants / nationwide food chains
+    "マクドナルド", "mcdonalds", "モスバーガー", "バーガーキング", "burgerking",
+    "ケンタッキー", "kfc", "スターバックス", "starbucks", "ドトール", "doutor",
+    "タリーズ", "tullys", "コメダ", "サンマルクカフェ", "エクセルシオール",
+    "ガスト", "バーミヤン", "ジョナサン", "サイゼリヤ", "デニーズ", "ロイヤルホスト",
+    "ココス", "びっくりドンキー", "吉野家", "すき家", "松屋", "なか卯",
+    "丸亀製麺", "はなまるうどん", "大戸屋", "やよい軒", "スシロー", "くら寿司",
+    "はま寿司", "かっぱ寿司", "魚べい", "ミスタードーナツ", "プロント", "pronto",
+    "ベローチェ", "上島珈琲", "日高屋", "餃子の王将", "リンガーハット", "しゃぶ葉",
+    "夢庵", "てんや", "かつや", "サブウェイ",
+    # Major drugstore chains
+    "マツモトキヨシ", "マツキヨ", "ウエルシア", "スギ薬局", "ココカラファイン",
+    "サンドラッグ", "ツルハドラッグ", "トモズ", "クリエイトsd",
+)
 
-    When "今使える優先" is selected, confirmed-open candidates come first, followed
-    by candidates whose opening hours are unknown. Within the same availability group,
-    physical distance is the primary order. Only after distance do we prefer toilets
-    explicitly marked as generally accessible. This keeps the requested order explicit
-    instead of blending the factors into one weighted score.
-    """
+_TOILET_GOOGLE_TRUSTED_TYPES_V462 = {
+    "public_bathroom",
+    "train_station", "subway_station", "transit_station",
+    "shopping_mall", "department_store", "supermarket", "convenience_store",
+    "food_court", "post_office", "library", "museum", "movie_theater",
+    "performing_arts_theater", "event_venue", "city_hall", "local_government_office",
+    "community_center", "park", "city_park", "rest_stop", "hospital", "medical_center",
+}
+
+_TOILET_GOOGLE_TENANT_TYPES_V462 = {
+    "restaurant", "cafe", "bakery", "food_court", "store", "pharmacy",
+    "supermarket", "convenience_store", "department_store",
+}
+
+_TOILET_OSM_TRUSTED_AMENITIES_V462 = {
+    "marketplace", "community_centre", "library", "townhall", "arts_centre",
+    "cinema", "theatre", "hospital", "post_office",
+}
+
+_TOILET_OSM_TRUSTED_SHOPS_V462 = {
+    "convenience", "supermarket", "department_store", "mall",
+}
+
+
+def _toilet_host_name_key_v462(value):
+    value = unicodedata.normalize("NFKC", str(value or "")).casefold()
+    return re.sub(r"[^0-9a-z\u3040-\u30ff\u3400-\u9fff]+", "", value)
+
+
+def _toilet_is_major_chain_v462(value):
+    key = _toilet_host_name_key_v462(value)
+    if not key:
+        return False
+    return any(_toilet_host_name_key_v462(term) in key for term in _TOILET_MAJOR_CHAIN_TERMS_V462)
+
+
+def _toilet_confidence_rank_v462(place):
+    level = str((place or {}).get("public_confidence") or "").strip().lower()
+    return {
+        "public": 0,
+        "trusted_facility": 0,
+        "major_chain": 1,
+        "mixed_complex": 1,
+    }.get(level, 3)
+
+
+def _toilet_rank_key(place, usable_now_preferred=True):
+    """Prefer actually usable public-style toilets before merely-nearby candidates."""
     place = place if isinstance(place, dict) else {}
     try:
         distance = max(0, int(place.get("distance_m") or 0))
@@ -11924,8 +11985,10 @@ def _toilet_rank_key(place, usable_now_preferred=True):
         access_rank = 2
 
     floor_rank = 0 if str(place.get("floor_label") or "").strip() == "1階情報あり" else 1
-    return (availability_rank, distance, access_rank, floor_rank)
-
+    confidence_rank = _toilet_confidence_rank_v462(place)
+    # v462: trust/accessibility now precede raw distance. A private-looking toilet
+    # 20 m away should not outrank a station or mall toilet 60 m away.
+    return (availability_rank, confidence_rank, access_rank, distance, floor_rank)
 
 def _toilet_normalized_address(value):
     """Return a normalized full address key for duplicate toilet candidates."""
@@ -12123,15 +12186,12 @@ def _dedupe_toilet_places(places):
 
 @st.cache_data(ttl=30, show_spinner=False)
 def _toilet_google_fallback(latitude, longitude, radius_m):
-    """Supplement nearby toilets with Google Places, including mixed-use office buildings.
+    """Supplement toilets with Google Places while rejecting small/private-looking hosts.
 
-    Pure office/coworking facilities are excluded. An office/business-center candidate is
-    retained only when Google reports restroom=true *and* there is evidence that the same
-    building/complex has public-facing commercial/service uses. Evidence is deliberately
-    conservative: a public-facing type on the same Place, the same normalized address as
-    a public-facing Place, or at least two public-facing Places within 65 m. Such candidates
-    are labelled "一般利用しやすい施設", not "一般利用可", because Google does not expose
-    whether the restroom itself is outside an office security gate.
+    v462 intentionally optimizes precision over recall. A place-level restroom flag alone
+    is not enough: ordinary small restaurants, cafes, shops, clinics and offices are not
+    shown. Mixed office/commercial buildings must show same-building multi-tenant evidence.
+    No extra requests are made; all evidence comes from the existing three parallel searches.
     """
     if not GOOGLE_PLACES_API_KEY:
         return {"places": [], "error": "", "provider": ""}
@@ -12142,12 +12202,13 @@ def _toilet_google_fallback(latitude, longitude, radius_m):
     except (TypeError, ValueError):
         return {"places": [], "error": "現在地を確認できませんでした。", "provider": "Google Places"}
 
-    # Keep office-like Places in a separate request so dense restaurant results do not
-    # crowd them out. They are filtered aggressively after all three result sets are merged.
     type_groups = [
         [
             "public_bathroom", "train_station", "subway_station", "transit_station",
-            "shopping_mall", "department_store", "supermarket",
+            "shopping_mall", "department_store", "supermarket", "convenience_store",
+            "post_office", "library", "museum", "movie_theater", "city_hall",
+            "local_government_office", "community_center", "park", "city_park", "rest_stop",
+            "hospital", "medical_center",
         ],
         [
             "food_court", "restaurant", "cafe", "convenience_store",
@@ -12213,20 +12274,16 @@ def _toilet_google_fallback(latitude, longitude, radius_m):
         except (TypeError, ValueError):
             return None
 
-    def _normalize_address(value):
-        value = str(value or "").strip().lower()
-        # Ignore spaces and common punctuation so tenant/building address strings match.
-        return re.sub(r"[\s　,，、・\-‐‑‒–—―]+", "", value)
+    def _display_name(raw):
+        name_obj = raw.get("displayName") if isinstance(raw, dict) else {}
+        return str(name_obj.get("text") if isinstance(name_obj, dict) else "").strip()
+
+    def _building_key(raw):
+        address = str((raw or {}).get("formattedAddress") or "").strip()
+        return _toilet_address_base_key(address) or _toilet_normalized_address(address)
 
     office_types = {"business_center", "corporate_office", "coworking_space"}
-    strong_commercial_types = {"shopping_mall", "department_store", "supermarket"}
-    public_facing_types = {
-        "shopping_mall", "department_store", "supermarket", "convenience_store",
-        "food_court", "restaurant", "cafe", "bakery", "store", "pharmacy",
-        "train_station", "subway_station", "transit_station", "public_bathroom",
-        "library", "museum", "movie_theater", "performing_arts_theater", "event_venue",
-        "hospital", "medical_center",
-    }
+    chain_host_types = {"restaurant", "cafe", "bakery", "store", "pharmacy", "food_court"}
 
     # Deduplicate Places returned by multiple type groups while preserving the union of types.
     merged = {}
@@ -12235,8 +12292,7 @@ def _toilet_google_fallback(latitude, longitude, radius_m):
             if not isinstance(raw, dict):
                 continue
             loc = _raw_location(raw)
-            name_obj = raw.get("displayName") or {}
-            name = str(name_obj.get("text") if isinstance(name_obj, dict) else "").strip()
+            name = _display_name(raw)
             place_id = str(raw.get("id") or "").strip()
             if place_id:
                 key = ("id", place_id)
@@ -12261,61 +12317,60 @@ def _toilet_google_fallback(latitude, longitude, radius_m):
 
     raw_places = list(merged.values())
 
-    public_hosts = []
+    # Same-building tenant evidence. v461 used two unrelated public places within 65 m,
+    # which is too permissive in Tokyo: almost every small office building satisfies it.
+    # v462 only counts distinct customer-facing tenants sharing the same street-address key.
+    tenant_ids_by_building = {}
+    tenant_kind_by_building = {}
     for raw in raw_places:
         types = {str(value) for value in (raw.get("types") or []) if str(value)}
-        if not (types & public_facing_types):
+        if not (types & _TOILET_GOOGLE_TENANT_TYPES_V462):
+            continue
+        building_key = _building_key(raw)
+        if not building_key:
             continue
         loc = _raw_location(raw)
-        if not loc:
-            continue
-        public_hosts.append(
-            {
-                "lat": loc[0],
-                "lon": loc[1],
-                "address": _normalize_address(raw.get("formattedAddress")),
-                "types": types,
-                "id": str(raw.get("id") or ""),
-            }
-        )
+        pid = str(raw.get("id") or "").strip()
+        identity = pid or f"{_display_name(raw)}:{loc}"
+        tenant_ids_by_building.setdefault(building_key, set()).add(identity)
+        coarse = "food" if types & {"restaurant", "cafe", "bakery", "food_court"} else "retail"
+        tenant_kind_by_building.setdefault(building_key, set()).add(coarse)
 
-    def _mixed_use_office_evidence(raw, types, plat, plon):
-        # A Place already classified as retail/food/public-facing is direct evidence.
-        if types & public_facing_types:
+    def _mixed_use_office_evidence(raw, types):
+        # If Google itself classifies the same Place as a trusted public/commercial facility,
+        # it is already suitable without inferring from neighboring tenants.
+        if types & _TOILET_GOOGLE_TRUSTED_TYPES_V462:
             return True
-
-        # A coworking listing by itself is a tenant, not a building-level public facility.
-        if "coworking_space" in types and not (types & {"business_center", "corporate_office"}):
+        building_key = _building_key(raw)
+        if not building_key:
             return False
+        tenant_count = len(tenant_ids_by_building.get(building_key) or set())
+        tenant_kinds = tenant_kind_by_building.get(building_key) or set()
+        # Three same-address customer-facing tenants is a practical multi-tenant signal.
+        # Requiring the same address (not merely nearby coordinates) removes small-office
+        # false positives while still allowing genuine mixed-use buildings.
+        return tenant_count >= 3 and len(tenant_kinds) >= 1
 
-        address = _normalize_address(raw.get("formattedAddress"))
-        same_address = False
-        nearby_public = 0
-        own_id = str(raw.get("id") or "")
-        for host in public_hosts:
-            if own_id and host.get("id") == own_id:
-                continue
-            host_address = str(host.get("address") or "")
-            if address and host_address and address == host_address:
-                same_address = True
-                break
-            distance = _nearby_haversine_m(plat, plon, host.get("lat"), host.get("lon"))
-            if math.isfinite(distance) and distance <= 65.0:
-                nearby_public += 1
-        return same_address or nearby_public >= 2
-
-    def _category_for_types(types, mixed_use_office=False):
+    def _category_for_types(types, *, major_chain=False, mixed_use_office=False):
         types = set(types or [])
         if "public_bathroom" in types:
             return "公衆トイレ"
-        if mixed_use_office:
-            return "商業併設ビル内トイレ"
-        if types & {"shopping_mall", "department_store", "supermarket", "convenience_store"}:
-            return "商業施設内トイレ"
-        if types & {"food_court", "restaurant", "cafe", "bakery"}:
-            return "飲食施設内トイレ"
         if types & {"train_station", "subway_station", "transit_station"}:
             return "駅・交通施設内トイレ"
+        if types & {"shopping_mall", "department_store", "supermarket", "convenience_store", "food_court"}:
+            return "商業施設内トイレ"
+        if types & {
+            "post_office", "library", "museum", "movie_theater", "performing_arts_theater",
+            "event_venue", "city_hall", "local_government_office", "community_center",
+            "park", "city_park", "rest_stop",
+        }:
+            return "公共・文化施設内トイレ"
+        if types & {"hospital", "medical_center"}:
+            return "医療施設内トイレ"
+        if mixed_use_office:
+            return "複合施設内トイレ"
+        if major_chain:
+            return "大規模チェーン店内トイレ"
         return "施設内トイレ"
 
     places = []
@@ -12330,16 +12385,24 @@ def _toilet_google_fallback(latitude, longitude, radius_m):
         if not loc:
             continue
         plat, plon = loc
+        base_name = _display_name(raw)
+        major_chain = bool(types & chain_host_types) and _toilet_is_major_chain_v462(base_name)
+        trusted_facility = bool(types & _TOILET_GOOGLE_TRUSTED_TYPES_V462)
 
-        # Facility toilets must be explicitly reported by Places. Office-like facilities
-        # then face a second, stricter mixed-use test before being admitted.
+        # A facility candidate needs an explicit Google restroom flag. A nearby business
+        # without restroom=true is never promoted by name/type heuristics.
         if not standalone and raw.get("restroom") is not True:
             continue
+
         mixed_use_office = False
         if office_like:
-            mixed_use_office = _mixed_use_office_evidence(raw, types, plat, plon)
+            mixed_use_office = _mixed_use_office_evidence(raw, types)
             if not mixed_use_office:
                 continue
+        elif not standalone and not trusted_facility and not major_chain:
+            # This is the central precision change: ordinary independent restaurants,
+            # cafes, bakeries, shops and clinics are not practical public-toilet results.
+            continue
 
         distance_m = _nearby_haversine_m(latitude, longitude, plat, plon)
         if not math.isfinite(distance_m) or distance_m > radius_m * 1.15:
@@ -12349,51 +12412,55 @@ def _toilet_google_fallback(latitude, longitude, radius_m):
         if coord_key in seen:
             continue
         seen.add(coord_key)
-        name_obj = raw.get("displayName") or {}
-        base_name = str(name_obj.get("text") if isinstance(name_obj, dict) else "").strip()
-        category = _category_for_types(types, mixed_use_office=mixed_use_office)
-        if standalone:
-            name = base_name or "公衆トイレ"
-            access_label = "一般利用可"
-        else:
-            name = f"{base_name} のトイレ" if base_name else category
-            if mixed_use_office or bool(types & strong_commercial_types):
-                access_label = "一般利用しやすい施設"
-            else:
-                access_label = "利用条件未確認"
 
+        if standalone:
+            public_confidence = "public"
+            access_label = "一般利用可"
+        elif mixed_use_office:
+            public_confidence = "mixed_complex"
+            access_label = "一般利用しやすい施設"
+        elif major_chain and not trusted_facility:
+            public_confidence = "major_chain"
+            access_label = "一般利用しやすい施設"
+        else:
+            public_confidence = "trusted_facility"
+            access_label = "一般利用しやすい施設"
+
+        category = _category_for_types(types, major_chain=major_chain, mixed_use_office=mixed_use_office)
+        name = base_name if standalone else (f"{base_name} のトイレ" if base_name else category)
         current_hours = raw.get("currentOpeningHours") if isinstance(raw.get("currentOpeningHours"), dict) else {}
         open_now = current_hours.get("openNow") if isinstance(current_hours.get("openNow"), bool) else None
         opening_known = open_now is not None
         opening_label = "🟢 利用可能" if open_now is True else ("🔴 利用時間外" if open_now is False else "利用時間情報なし")
         walk_minutes = max(1, int(math.ceil((distance_m * 1.25) / 80.0)))
-        places.append(
-            {
-                "id": f"google:{place_id}",
-                "name": name,
-                "category": category,
-                "latitude": plat,
-                "longitude": plon,
-                "distance_m": int(round(distance_m)),
-                "walk_minutes": walk_minutes,
-                "fee_status": "unknown",
-                "fee_label": "料金情報なし",
-                "wheelchair_ok": None,
-                "wheelchair_label": "",
-                "baby_ok": None,
-                "baby_label": "",
-                "access_label": access_label,
-                "floor_label": "",
-                "opening_hours": "",
-                "opening_known": opening_known,
-                "open_now": open_now,
-                "opening_label": opening_label,
-                "address": str(raw.get("formattedAddress") or "").strip(),
-                "sort_score": int(round(distance_m)),
-                "provider": "Google Places",
-                "mixed_use_evidence": bool(mixed_use_office),
-            }
-        )
+        places.append({
+            "id": f"google:{place_id}",
+            "name": name,
+            "category": category,
+            "latitude": plat,
+            "longitude": plon,
+            "distance_m": int(round(distance_m)),
+            "walk_minutes": walk_minutes,
+            "fee_status": "unknown",
+            "fee_label": "料金情報なし",
+            "wheelchair_ok": None,
+            "wheelchair_label": "",
+            "baby_ok": None,
+            "baby_label": "",
+            "access_label": access_label,
+            "floor_label": "",
+            "opening_hours": "",
+            "opening_known": opening_known,
+            "open_now": open_now,
+            "opening_label": opening_label,
+            "address": str(raw.get("formattedAddress") or "").strip(),
+            "sort_score": int(round(distance_m)),
+            "provider": "Google Places",
+            "mixed_use_evidence": bool(mixed_use_office),
+            "major_chain_evidence": bool(major_chain),
+            "public_confidence": public_confidence,
+        })
+
     places.sort(key=lambda item: _toilet_rank_key(item, usable_now_preferred=True))
     return {
         "places": places[:40],
@@ -12466,7 +12533,8 @@ def _toilet_place_from_osm_element(element, latitude, longitude, radius_m):
     baby = _toilet_baby_info(tags)
     opening_hours = str(tags.get("toilets:opening_hours") or tags.get("opening_hours") or "").strip()
     opening = _toilet_opening_status(opening_hours)
-    base_name = str(tags.get("name:ja") or tags.get("name") or tags.get("operator") or "").strip()
+    base_name = str(tags.get("name:ja") or tags.get("name") or tags.get("operator") or tags.get("brand") or "").strip()
+    host_identity = " ".join(str(tags.get(key) or "") for key in ("name:ja", "name", "operator", "brand"))
 
     amenity = str(tags.get("amenity") or "").lower()
     shop = str(tags.get("shop") or "").lower()
@@ -12478,55 +12546,81 @@ def _toilet_place_from_osm_element(element, latitude, longitude, radius_m):
     leisure = str(tags.get("leisure") or "").lower()
     healthcare = str(tags.get("healthcare") or "").lower()
 
-    public_facing_amenities = {
-        "restaurant", "cafe", "fast_food", "food_court", "marketplace",
-        "community_centre", "library", "townhall", "arts_centre", "cinema",
-        "theatre", "clinic", "hospital", "pharmacy", "bank", "post_office",
-    }
-    public_facing_host = bool(
-        railway
-        or public_transport
-        or shop
-        or building == "retail"
-        or amenity in public_facing_amenities
-        or tourism
-        or leisure
-        or healthcare
+    # For non-standalone toilets, only an explicit toilets:access value counts as proof
+    # that the restroom itself is public. A generic building access=yes is not enough.
+    toilet_access_raw = str(tags.get("toilets:access") or "").strip().lower()
+    explicit_public_access = toilet_access_raw in {"permissive", "public", "yes"}
+
+    trusted_shop = shop in _TOILET_OSM_TRUSTED_SHOPS_V462
+    trusted_amenity = amenity in _TOILET_OSM_TRUSTED_AMENITIES_V462
+    trusted_tourism = tourism in {"museum", "gallery", "information", "zoo", "aquarium", "theme_park"}
+    trusted_leisure = leisure in {"park", "sports_centre", "stadium"}
+    trusted_healthcare = healthcare == "hospital" or amenity == "hospital"
+    trusted_transport = bool(railway or public_transport)
+    large_complex_name = any(
+        term in _toilet_host_name_key_v462(host_identity)
+        for term in ("ショッピングセンター", "モール", "タワー", "ヒルズ", "プラザ", "スクエア", "シティ", "テラス", "ゲート", "アトリウム")
+    )
+    trusted_retail_building = building == "retail" and large_complex_name
+    major_chain = _toilet_is_major_chain_v462(host_identity) and (
+        amenity in {"restaurant", "cafe", "fast_food"}
+        or bool(shop)
+    )
+    trusted_public_host = bool(
+        trusted_transport
+        or trusted_shop
+        or trusted_amenity
+        or trusted_tourism
+        or trusted_leisure
+        or trusted_healthcare
+        or trusted_retail_building
     )
     office_like_host = bool(office or building in {"office", "commercial"})
-    explicit_public_access = str(access.get("label") or "").strip() == "一般利用可"
 
     if standalone:
         name = base_name or "公衆トイレ"
         category = "公衆トイレ"
+        public_confidence = "public"
     else:
-        # Keep an office/commercial building only when OSM itself shows either a
-        # public-facing use or explicit public toilet access. Pure offices remain out.
-        if office_like_host and not public_facing_host and not explicit_public_access:
+        # v462: ordinary small offices, restaurants, cafes and shops are excluded even
+        # when OSM carries toilets=yes. They return only with direct toilet-public access,
+        # a trusted public/commercial host type, or a recognized major-chain identity.
+        if office_like_host and not trusted_retail_building and not explicit_public_access:
+            return None
+        if not trusted_public_host and not major_chain and not explicit_public_access:
             return None
 
-        if office_like_host and public_facing_host:
-            category = "商業併設ビル内トイレ"
-        elif railway or public_transport:
+        if trusted_transport:
             category = "駅・交通施設内トイレ"
-        elif shop or building == "retail":
+        elif trusted_shop or trusted_retail_building:
             category = "商業施設内トイレ"
-        elif amenity in {"restaurant", "cafe", "fast_food", "food_court"}:
-            category = "飲食施設内トイレ"
-        elif tourism or leisure or healthcare or amenity in public_facing_amenities:
-            category = "施設内トイレ"
+        elif trusted_healthcare:
+            category = "医療施設内トイレ"
+        elif trusted_amenity or trusted_tourism or trusted_leisure:
+            category = "公共・文化施設内トイレ"
+        elif major_chain:
+            category = "大規模チェーン店内トイレ"
+        elif office_like_host and explicit_public_access:
+            category = "複合施設内トイレ"
         else:
             category = "施設内トイレ"
         name = f"{base_name} のトイレ" if base_name else category
+        if explicit_public_access:
+            public_confidence = "public"
+        elif major_chain:
+            public_confidence = "major_chain"
+        else:
+            public_confidence = "trusted_facility"
 
     access_label = str(access.get("label") or "").strip()
-    if not access_label:
-        common_area_like = bool(
-            (office_like_host and public_facing_host)
-            or building == "retail"
-            or amenity in {"marketplace", "community_centre", "library", "townhall", "arts_centre", "cinema", "theatre"}
-        )
-        access_label = "一般利用可" if standalone else ("一般利用しやすい施設" if common_area_like else "利用条件未確認")
+    if standalone or explicit_public_access:
+        access_label = "一般利用可"
+    elif access_label == "施設利用者向け":
+        pass
+    elif public_confidence in {"trusted_facility", "major_chain", "mixed_complex"}:
+        access_label = "一般利用しやすい施設"
+    elif not access_label:
+        access_label = "利用条件未確認"
 
     level_raw = str(tags.get("toilets:level") or tags.get("level") or "").strip()
     floor_label = ""
@@ -12570,8 +12664,9 @@ def _toilet_place_from_osm_element(element, latitude, longitude, radius_m):
         "address": " ".join(addr_parts[:3]),
         "sort_score": int(round(distance_m)) + access_penalty,
         "provider": "OpenStreetMap",
+        "major_chain_evidence": bool(major_chain),
+        "public_confidence": public_confidence,
     }
-
 
 @st.cache_data(ttl=300, show_spinner=False)
 def search_nearby_toilets(
@@ -12670,6 +12765,11 @@ def search_nearby_toilets(
     any_wheelchair_yes = any(p.get("wheelchair_ok") is True for p in places)
     any_baby_yes = any(p.get("baby_ok") is True for p in places)
     for place in places:
+        # v462 safety net: only candidates that passed an explicit public-availability
+        # class from the provider parser reach the result list. This also prevents stale
+        # broad candidates from surviving a mixed-provider merge.
+        if _toilet_confidence_rank_v462(place) >= 3:
+            continue
         if free_preferred and place.get("fee_status") == "paid":
             continue
         if usable_now_preferred and place.get("opening_known") and place.get("open_now") is False:
@@ -12689,7 +12789,8 @@ def search_nearby_toilets(
     if not filtered and places and equipment_filter_unavailable:
         filtered = [
             p for p in places
-            if not (free_preferred and p.get("fee_status") == "paid")
+            if _toilet_confidence_rank_v462(p) < 3
+            and not (free_preferred and p.get("fee_status") == "paid")
             and not (usable_now_preferred and p.get("opening_known") and p.get("open_now") is False)
         ]
 
@@ -21915,13 +22016,14 @@ def _replay_photo_framing_meta(storage_path):
 
 
 def _refresh_replay_photo_metadata_v448(photos):
-    """Reload the current owned photo rows before replay assembly.
+    """Reload current owned photo rows before replay assembly.
 
-    Replay must reflect the feeling/tag that is on the photo *now*.  Do not repair
+    Replay must reflect the feeling/tag that is on the photo *now*. Do not repair
     or follow a historical Good Moments/source tag here: that could replace a tag
-    the user changed later in Diary/Photos.  The live PHOTO_TABLE row is therefore
-    the final authority for replay border/badge state.  If the refresh fails, keep
-    the already-loaded rows rather than blocking playback.
+    the user changed later in Diary/Photos. The live PHOTO_TABLE row is therefore
+    the final authority for replay border/badge state. Large AI-tag scopes are read
+    in bounded batches so one very large ``in`` filter cannot break movie creation.
+    If refresh fails, keep the already-loaded rows rather than blocking playback.
     """
     rows = [dict(photo) for photo in (photos or []) if isinstance(photo, dict)]
     if not rows:
@@ -21930,34 +22032,59 @@ def _refresh_replay_photo_metadata_v448(photos):
     photo_ids = [photo_id for photo_id in photo_ids if photo_id]
     if not photo_ids:
         return rows
+
+    started = time.perf_counter()
+    fresh_rows = []
     try:
-        fresh_rows = (
-            supabase_client().table(PHOTO_TABLE)
-            .select("id,trip_id,storage_path,captured_at,reflection_json,signals_json")
-            .in_("id", photo_ids)
-            .eq("family_key", current_family_key())
-            .eq("member_key", current_member_key())
-            .execute()
-        ).data or []
+        client = supabase_client()
+        # Keep request/query size bounded for broad tags such as 子ども / 大人.
+        for offset in range(0, len(photo_ids), 100):
+            chunk = photo_ids[offset:offset + 100]
+            if not chunk:
+                continue
+            batch = (
+                client.table(PHOTO_TABLE)
+                .select("id,trip_id,storage_path,captured_at,reflection_json,signals_json")
+                .in_("id", chunk)
+                .eq("family_key", current_family_key())
+                .eq("member_key", current_member_key())
+                .execute()
+            ).data or []
+            fresh_rows.extend(row for row in batch if isinstance(row, dict))
         fresh_map = {
             str(row.get("id") or ""): row
             for row in fresh_rows
             if isinstance(row, dict) and row.get("id")
         }
-        return [dict(fresh_map.get(str(photo.get("id") or "")) or photo) for photo in rows]
+        result = [dict(fresh_map.get(str(photo.get("id") or "")) or photo) for photo in rows]
+        _perf_log_v457(
+            "replay:refresh_photo_metadata",
+            started_at=started,
+            meta={"requested": len(photo_ids), "fresh": len(fresh_map), "batches": max(1, (len(photo_ids) + 99) // 100)},
+        )
+        return result
     except Exception:
+        _perf_log_v457(
+            "replay:refresh_photo_metadata",
+            started_at=started,
+            meta={"requested": len(photo_ids), "fresh": len(fresh_rows), "fallback": True},
+        )
         return rows
 
 
 def build_monthly_replay_photo_items(bundle, limit=None):
+    total_started = time.perf_counter()
     photos, trip_map = _monthly_replay_selected_photos(bundle, limit=limit)
     if not photos:
         return []
+
     photos = _refresh_replay_photo_metadata_v448(photos)
     paths = [str(p.get("storage_path") or "").strip() for p in photos]
     paths = [path for path in paths if path]
     voice_paths = [photo_voice_note_storage_path(photo) for photo in photos]
     voice_paths = [path for path in voice_paths if path]
+
+    sign_started = time.perf_counter()
     signed_map = {}
     voice_signed_map = {}
     # v325: process signing in bounded batches while keeping the total photo count unlimited.
@@ -21965,6 +22092,16 @@ def build_monthly_replay_photo_items(bundle, limit=None):
         signed_map.update(signed_photo_url_map(paths[start:start + 200], expires_in=1800))
     for start in range(0, len(voice_paths), 200):
         voice_signed_map.update(signed_photo_url_map(voice_paths[start:start + 200], expires_in=1800))
+    _perf_log_v457(
+        "replay:sign_media_urls",
+        started_at=sign_started,
+        meta={"photos": len(paths), "voices": len(voice_paths), "signed": len(signed_map), "voice_signed": len(voice_signed_map)},
+    )
+
+    # Framing keeps the exact v433 smart person/quality semantics. The diagnostic log
+    # records one aggregate timing rather than one row per photo, which avoids turning
+    # broad AI-tag movies into a logging workload.
+    assemble_started = time.perf_counter()
     items = []
     for idx, photo in enumerate(photos, start=1):
         url = photo_display_url(photo, signed_map=signed_map, max_px=1920, quality=90)
@@ -22003,6 +22140,16 @@ def build_monthly_replay_photo_items(bundle, limit=None):
             "voice_url": str(voice_signed_map.get(voice_path) or ""),
             "voice_transcript": str(voice_meta.get("transcript") or ""),
         })
+    _perf_log_v457(
+        "replay:framing_and_items",
+        started_at=assemble_started,
+        meta={"source": len(photos), "items": len(items), "voices": len(voice_paths)},
+    )
+    _perf_log_v457(
+        "replay:build_photo_items_total",
+        started_at=total_started,
+        meta={"source": len(photos), "items": len(items)},
+    )
     return items
 
 
@@ -25331,7 +25478,10 @@ def render_monthly_music_settings(month_key, bundle, review, expanded=True):
     rerun the app. Network/server work happens only after an explicit action button.
     Saved music presets always include their start/end playback interval.
     """
-    photo_items = build_monthly_replay_photo_items(bundle)
+    # v461: music selection does not need image signing, downloads, face/person
+    # framing, or replay-item assembly. For broad AI tags that work was the main
+    # reason the setup screen could appear frozen before the user had even chosen music.
+    photo_count = len([photo for photo in (bundle or {}).get("photos", []) or [] if isinstance(photo, dict)])
     state = _monthly_replay_state(month_key, review)
     playback = state["playback"]
     url_key = state["url_key"]
@@ -25349,8 +25499,8 @@ def render_monthly_music_settings(month_key, bundle, review, expanded=True):
                 st.session_state[state_key] = value
 
     st.markdown("### 🎬 振り返りムービーを作る")
-    if photo_items:
-        st.caption(f"写真 {len(photo_items)}枚を、選んだ音楽に合わせて順番に再生します。")
+    if photo_count:
+        st.caption(f"写真 {photo_count}枚を、選んだ音楽に合わせて順番に再生します。")
     else:
         st.warning("この期間には再生に使える写真がありません。音楽設定はできますが、写真ムービーは表示できません。")
 
@@ -44135,6 +44285,10 @@ def _perf_result_meta_v458(result):
         if isinstance(result, (list, tuple, set, dict)):
             meta["count"] = len(result)
         if isinstance(result, dict):
+            for collection_key in ("photos", "trips", "diaries"):
+                collection = result.get(collection_key)
+                if isinstance(collection, (list, tuple, set)):
+                    meta[f"{collection_key}_count"] = len(collection)
             for key in ("tagged", "attempted", "api_calls", "moved", "checked", "routed_segments", "display_segments"):
                 value = result.get(key)
                 if isinstance(value, (int, float, str, bool)):
@@ -44184,6 +44338,16 @@ def _perf_wrap_global_v458(name, phase):
                 pass
             _perf_log_v457(phase, started_at=started, meta=meta)
 
+    # Some Streamlit cached callables expose ``.clear()``. The v458 wrapper replaced
+    # the callable and accidentally hid that method, which could break later save/delete
+    # flows. Preserve it explicitly while keeping the original cached callable underneath.
+    try:
+        clear_method = getattr(original, "clear", None)
+        if callable(clear_method):
+            wrapped.clear = clear_method
+    except Exception:
+        pass
+
     wrapped._burari_perf_wrapped_v458 = True
     globals()[name] = wrapped
 
@@ -44200,7 +44364,6 @@ def _install_detailed_perf_wrappers_v458():
         "list_family_shared_monthly_reviews": "data:family_shared_reviews",
         "get_tag_review_source": "data:tag_review_source",
         "signed_photo_url_map": "storage:signed_photo_urls",
-        "download_photo": "storage:download_photo",
         "_load_all_project_track_points_v271": "gps:load_project_points",
         "_project_clean_track_points_v372": "gps:clean_points",
         "_project_walk_segments_v271": "gps:build_segments",
@@ -44211,6 +44374,7 @@ def _install_detailed_perf_wrappers_v458():
         "render_photo_library_single_v420": "render:photo_single",
         "render_own_replay_movie_library": "render:movie_library",
         "render_family_shared_individual_photos": "render:family_shared_photos",
+        "render_monthly_replay_section": "render:replay_section",
         "read_browser_persistence": "component:browser_persistence",
         "read_browser_review_state": "component:browser_review_state",
         "_sync_recent_camera_state_from_browser": "component:camera_state_restore",
