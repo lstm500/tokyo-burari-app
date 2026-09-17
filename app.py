@@ -22,7 +22,7 @@ import sys
 import unicodedata
 from concurrent.futures import ThreadPoolExecutor
 from array import array
-from urllib.parse import urlencode, urlparse, parse_qs, quote, urljoin
+from urllib.parse import urlencode, urlparse, parse_qs, quote
 from urllib.request import Request, urlopen
 from urllib.error import HTTPError
 from datetime import date, datetime, timedelta
@@ -33,10 +33,10 @@ from zoneinfo import ZoneInfo
 import streamlit as st
 
 # Freshly generated update: 2026-09-16 JST
-GENERATED_UPDATE_JST = "2026-09-17T15:55:00+09:00"
+GENERATED_UPDATE_JST = "2026-09-17T16:10:00+09:00"
 
-APP_BUILD = "v459"
-# v459: Fix Google Places LocalizedText leaking as Python/JSON-like text in Nearby genre labels. Add a lightweight, explicit-on-demand official-site lookup for restaurant seat count and kitchen part-time recruitment evidence; never run it during normal search/list rendering, cache results for 12 hours, fetch only a bounded number of same-site pages, and never infer "not hiring" from missing data. Surface confirmed results as compact store-info pills and keep v458 detailed performance logging, including the new optional lookup.
+APP_BUILD = "v460"
+# v460: Remove the v459 restaurant seat-count and kitchen part-time job lookup because source-page extraction was not reliable enough. Retain the v459 Google Places LocalizedText normalization so genre labels never expose internal {text, languageCode} objects. Keep v458 detailed performance logging and all other behavior unchanged.
 # v458: Expand the bounded in-session performance log from coarse page timings to actionable bottleneck tracing. Record sequence/run/page, nested data/component/render phases, result counts, foreground lifecycle/remount context, and selected cache-backed DB/storage operations. Keep logging memory-only, bounded, thresholded, and free of new polling/network/database writes.
 # v457: Repair Android/WebView foreground return without polling: the existing history bridge records background/foreground lifecycle, forces a cheap layout refresh, and remounts custom UI only when stale DOM is detected, BFCache restores, or a long background pause makes component state unreliable. Remove global button will-change layer promotion to reduce GPU/memory pressure. Add an in-session bounded performance log with download/clear controls and timings for startup phases, page renders, and important cache-miss data loads; no new database writes, timers, polling, or background traffic are added.
 # v456: Add a deterministic virtual 「声付き」 photo tag from the existing voice-note metadata, so tag browsing/review can find voiced photos without AI calls or DB rewrites. Improve UI responsiveness by keeping large photo/tag snapshots in the account cache longer (writes still invalidate them), lazy-loading family-shared photos, removing the all-photo tag scan from the History list in favor of the dedicated tag-review page, and reducing photo-library thumbnail count/size per page.
@@ -10170,8 +10170,8 @@ def _nearby_localized_text_v459(value):
     raw = str(value or "").strip()
     if not raw:
         return ""
-    # v458 could leave a stringified LocalizedText object in session state across an
-    # app hot-reload. Recover only the human-readable text field from that legacy value.
+    # Older session state can retain a stringified LocalizedText object across a hot reload.
+    # Recover only the human-readable text field.
     if raw.startswith("{") and "text" in raw:
         match = re.search(r"['\"]text['\"]\s*:\s*['\"]([^'\"]+)['\"]", raw)
         if match:
@@ -10207,8 +10207,8 @@ def _nearby_detailed_genre_text(place):
     for google_type in list(place.get("google_types") or []):
         add(NEARBY_GOOGLE_TYPE_DETAIL_LABELS.get(str(google_type or "").strip()))
 
-    # Google returns these as LocalizedText objects. Extract only .text so an internal
-    # {'text': ..., 'languageCode': ...} representation can never leak into the UI.
+    # Google returns localized labels as LocalizedText objects. Extract only .text so
+    # internal {'text': ..., 'languageCode': ...} data never leaks into the UI.
     google_label = _nearby_localized_text_v459(place.get("google_maps_type_label"))
     if google_label:
         add(google_label)
@@ -11257,255 +11257,6 @@ def _nearby_google_place_details(place_id):
         return data if isinstance(data, dict) else {}
     except Exception:
         return {}
-
-
-
-
-def _nearby_official_safe_url_v459(value):
-    raw = str(value or "").strip()
-    if not raw:
-        return ""
-    try:
-        parsed = urlparse(raw)
-    except Exception:
-        return ""
-    if str(parsed.scheme or "").lower() not in {"http", "https"}:
-        return ""
-    host = str(parsed.hostname or "").strip().lower()
-    if not host or host in {"localhost", "localhost.localdomain"} or host.endswith(".local"):
-        return ""
-    # Reject obvious literal loopback/private host forms. Google-supplied websiteUri is
-    # normally a public URL; this prevents the lookup helper from becoming a local probe.
-    if host in {"127.0.0.1", "0.0.0.0", "::1"} or host.startswith("127.") or host.startswith("10.") or host.startswith("192.168."):
-        return ""
-    return raw
-
-
-def _nearby_official_decode_html_v459(raw, content_type=""):
-    if not raw:
-        return ""
-    encodings = []
-    match = re.search(r"charset\s*=\s*['\"]?([A-Za-z0-9._-]+)", str(content_type or ""), flags=re.I)
-    if match:
-        encodings.append(match.group(1))
-    head = bytes(raw[:5000])
-    try:
-        ascii_head = head.decode("ascii", errors="ignore")
-        meta = re.search(r"charset\s*=\s*['\"]?([A-Za-z0-9._-]+)", ascii_head, flags=re.I)
-        if meta:
-            encodings.append(meta.group(1))
-    except Exception:
-        pass
-    encodings.extend(["utf-8", "cp932", "shift_jis"])
-    seen = set()
-    for encoding in encodings:
-        key = str(encoding or "").lower()
-        if not key or key in seen:
-            continue
-        seen.add(key)
-        try:
-            return bytes(raw).decode(encoding)
-        except Exception:
-            continue
-    return bytes(raw).decode("utf-8", errors="replace")
-
-
-def _nearby_official_visible_text_v459(raw_html):
-    value = str(raw_html or "")
-    if not value:
-        return ""
-    value = re.sub(r"(?is)<(script|style|noscript|svg|template)\b.*?</\1\s*>", " ", value)
-    value = re.sub(r"(?is)<!--.*?-->", " ", value)
-    value = re.sub(r"(?is)<br\s*/?>", "\n", value)
-    value = re.sub(r"(?is)</(?:p|div|li|section|article|tr|h[1-6])\s*>", "\n", value)
-    value = re.sub(r"(?is)<[^>]+>", " ", value)
-    value = html.unescape(value)
-    value = unicodedata.normalize("NFKC", value)
-    value = re.sub(r"[\t\r\f\v]+", " ", value)
-    value = re.sub(r"[ ]{2,}", " ", value)
-    value = re.sub(r"\n{3,}", "\n\n", value)
-    return value.strip()
-
-
-def _nearby_official_links_v459(raw_html, base_url):
-    links = []
-    seen = set()
-    try:
-        base_host = str(urlparse(base_url).hostname or "").lower()
-    except Exception:
-        base_host = ""
-    if not base_host:
-        return links
-    for match in re.finditer(r"(?is)<a\b[^>]*?href\s*=\s*['\"]([^'\"]+)['\"][^>]*>(.*?)</a\s*>", str(raw_html or "")):
-        href = html.unescape(str(match.group(1) or "").strip())
-        if not href or href.startswith(("#", "javascript:", "mailto:", "tel:")):
-            continue
-        try:
-            absolute = urljoin(base_url, href)
-            parsed = urlparse(absolute)
-        except Exception:
-            continue
-        if str(parsed.scheme or "").lower() not in {"http", "https"}:
-            continue
-        host = str(parsed.hostname or "").lower()
-        # Fetch only the same host or www/non-www variant. External recruiting links may
-        # still be shown as links elsewhere, but are not crawled by this lightweight probe.
-        normalized_host = host[4:] if host.startswith("www.") else host
-        normalized_base = base_host[4:] if base_host.startswith("www.") else base_host
-        if normalized_host != normalized_base:
-            continue
-        clean = parsed._replace(fragment="").geturl()
-        if clean in seen:
-            continue
-        seen.add(clean)
-        label = _nearby_official_visible_text_v459(match.group(2))[:160]
-        links.append((clean, label))
-        if len(links) >= 80:
-            break
-    return links
-
-
-def _nearby_official_fetch_page_v459(url):
-    safe_url = _nearby_official_safe_url_v459(url)
-    if not safe_url:
-        return {"ok": False, "url": "", "html": "", "text": "", "error": "invalid_url"}
-    req = Request(
-        safe_url,
-        headers={
-            "User-Agent": "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/152 Mobile Safari/537.36 TokyoBurari/1.0",
-            "Accept": "text/html,application/xhtml+xml;q=0.9,*/*;q=0.4",
-            "Accept-Language": "ja,en-US;q=0.6,en;q=0.4",
-            "Accept-Encoding": "identity",
-        },
-        method="GET",
-    )
-    try:
-        with urlopen(req, timeout=3.2) as response:
-            content_type = str(response.headers.get("Content-Type") or "")
-            if content_type and "html" not in content_type.lower() and "text/" not in content_type.lower():
-                return {"ok": False, "url": str(response.geturl() or safe_url), "html": "", "text": "", "error": "not_html"}
-            raw = response.read(650000)
-            final_url = str(response.geturl() or safe_url)
-        raw_html = _nearby_official_decode_html_v459(raw, content_type)
-        return {
-            "ok": bool(raw_html),
-            "url": final_url,
-            "html": raw_html,
-            "text": _nearby_official_visible_text_v459(raw_html),
-            "error": "" if raw_html else "empty",
-        }
-    except Exception as exc:
-        return {"ok": False, "url": safe_url, "html": "", "text": "", "error": type(exc).__name__}
-
-
-def _nearby_extract_seat_count_v459(text):
-    normalized = unicodedata.normalize("NFKC", str(text or ""))
-    patterns = [
-        r"(?:総席数|席数|座席数|客席数)\s*[：:]?\s*(?:全|合計|計)?\s*([0-9]{1,4})\s*席?",
-        r"(?:全|合計|計)\s*([0-9]{1,4})\s*席(?:\b|[（(、,。])",
-    ]
-    for pattern in patterns:
-        for match in re.finditer(pattern, normalized, flags=re.I):
-            try:
-                count = int(match.group(1))
-            except Exception:
-                continue
-            if 1 <= count <= 2000:
-                return count
-    return None
-
-
-def _nearby_extract_kitchen_hiring_v459(text):
-    normalized = unicodedata.normalize("NFKC", str(text or ""))
-    compact = re.sub(r"\s+", " ", normalized)
-    if not compact:
-        return "unknown"
-    kitchen_terms = ("キッチン", "調理スタッフ", "調理補助", "厨房")
-    employment_terms = ("アルバイト", "パート", "バイト")
-    positive_terms = ("募集", "採用", "求人", "スタッフ募集")
-    negative_terms = (
-        "現在募集しておりません", "現在募集はありません", "現在、募集はありません",
-        "募集を終了", "募集終了", "現在募集を行っておりません", "現在は募集しておりません",
-    )
-    for kitchen in kitchen_terms:
-        start = 0
-        while True:
-            index = compact.find(kitchen, start)
-            if index < 0:
-                break
-            window = compact[max(0, index - 220): min(len(compact), index + 420)]
-            if any(term in window for term in negative_terms):
-                return "no"
-            if any(term in window for term in employment_terms) and any(term in window for term in positive_terms):
-                return "yes"
-            start = index + len(kitchen)
-    return "unknown"
-
-
-@st.cache_data(ttl=43200, max_entries=128, show_spinner=False)
-def _nearby_official_store_info_v459(website_url, place_name=""):
-    """Check a tiny bounded slice of the official site only after explicit user action."""
-    website_url = _nearby_official_safe_url_v459(website_url)
-    result = {
-        "seat_count": None,
-        "seat_source_url": "",
-        "kitchen_hiring": "unknown",
-        "hiring_source_url": "",
-        "official_url": website_url,
-        "pages_checked": 0,
-        "status": "unavailable" if not website_url else "checked",
-    }
-    if not website_url:
-        return result
-
-    homepage = _nearby_official_fetch_page_v459(website_url)
-    pages = []
-    if homepage.get("ok"):
-        pages.append(homepage)
-    else:
-        result["status"] = "unavailable"
-        return result
-
-    links = _nearby_official_links_v459(homepage.get("html"), homepage.get("url") or website_url)
-    seat_keywords = ("座席", "席数", "店内", "店舗情報", "店舗詳細", "shop", "store", "access")
-    job_keywords = ("採用", "求人", "アルバイト", "パート", "スタッフ", "recruit", "career", "job")
-
-    def score_link(item, keywords):
-        url, label = item
-        hay = (str(url) + " " + str(label)).lower()
-        return sum(1 for keyword in keywords if str(keyword).lower() in hay)
-
-    selected_urls = []
-    for keyword_group in (job_keywords, seat_keywords):
-        ranked = sorted(links, key=lambda item: score_link(item, keyword_group), reverse=True)
-        for candidate in ranked:
-            if score_link(candidate, keyword_group) <= 0:
-                break
-            url = candidate[0]
-            if url not in selected_urls and url != homepage.get("url"):
-                selected_urls.append(url)
-                break
-    for url in selected_urls[:2]:
-        page = _nearby_official_fetch_page_v459(url)
-        if page.get("ok"):
-            pages.append(page)
-
-    result["pages_checked"] = len(pages)
-    for page in pages:
-        page_text = str(page.get("text") or "")
-        if result["seat_count"] is None:
-            seat_count = _nearby_extract_seat_count_v459(page_text)
-            if seat_count is not None:
-                result["seat_count"] = int(seat_count)
-                result["seat_source_url"] = str(page.get("url") or website_url)
-        if result["kitchen_hiring"] == "unknown":
-            hiring = _nearby_extract_kitchen_hiring_v459(page_text)
-            if hiring in {"yes", "no"}:
-                result["kitchen_hiring"] = hiring
-                result["hiring_source_url"] = str(page.get("url") or website_url)
-        if result["seat_count"] is not None and result["kitchen_hiring"] != "unknown":
-            break
-    return result
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -32209,9 +31960,6 @@ def page_nearby():
     for index, place in enumerate(places, start=1):
         pid = str(place.get("id") or f"p{index}")
         place_key = hashlib.sha1(pid.encode("utf-8")).hexdigest()[:12]
-        store_info_key = f"_nearby_store_info_v459_{place_key}"
-        store_info = st.session_state.get(store_info_key)
-        store_info = dict(store_info) if isinstance(store_info, dict) else {}
         preview = preview_images[index - 1] if index - 1 < len(preview_images) else ""
         with st.container(border=True):
             st.markdown(f'<div class="nearby-place-title">{index}. {html.escape(str(place.get("name") or "候補"))}</div>', unsafe_allow_html=True)
@@ -32236,17 +31984,6 @@ def page_nearby():
                 status_html += f'<span class="nearby-pill unknown">{html.escape(budget_text)}</span>'
             elif kind == "lunch":
                 status_html += '<span class="nearby-pill unknown">💴 価格情報なし</span>'
-            if kind == "lunch" and store_info:
-                seat_count = store_info.get("seat_count")
-                if isinstance(seat_count, int) and seat_count > 0:
-                    status_html += f'<span class="nearby-pill unknown">🪑 {seat_count}席</span>'
-                hiring_state = str(store_info.get("kitchen_hiring") or "unknown")
-                if hiring_state == "yes":
-                    status_html += '<span class="nearby-pill open">👨‍🍳 キッチン求人あり</span>'
-                elif hiring_state == "no":
-                    status_html += '<span class="nearby-pill unknown">👨‍🍳 募集なしの記載</span>'
-                else:
-                    status_html += '<span class="nearby-pill unknown">👨‍🍳 求人未確認</span>'
             st.markdown('<div class="nearby-status-row">' + status_html + '</div>', unsafe_allow_html=True)
             if preview:
                 st.markdown(f'<div class="nearby-photo-wrap"><img src="{html.escape(preview, quote=True)}" alt="{html.escape(str(place.get("name") or "候補"))}の参考写真"></div>', unsafe_allow_html=True)
@@ -32297,35 +32034,6 @@ def page_nearby():
                 website = str(detail_data.get("websiteUri") or "").strip()
                 if website:
                     st.link_button("🌐 公式サイトを見る", website, use_container_width=True)
-
-                if kind == "lunch":
-                    if store_info:
-                        seat_count = store_info.get("seat_count")
-                        seat_text = f"🪑 座席数：{int(seat_count)}席" if isinstance(seat_count, int) and seat_count > 0 else "🪑 座席数：確認できず"
-                        hiring_state = str(store_info.get("kitchen_hiring") or "unknown")
-                        if hiring_state == "yes":
-                            hiring_text = "👨‍🍳 キッチンバイト：募集記載あり"
-                        elif hiring_state == "no":
-                            hiring_text = "👨‍🍳 キッチンバイト：募集なしの記載"
-                        else:
-                            hiring_text = "👨‍🍳 キッチンバイト：確認できず"
-                        st.markdown(
-                            '<div class="nearby-detail-info">' + html.escape(seat_text) + '<br>' + html.escape(hiring_text) + '</div>',
-                            unsafe_allow_html=True,
-                        )
-                        source_urls = []
-                        for source_url in (store_info.get("seat_source_url"), store_info.get("hiring_source_url")):
-                            source_url = str(source_url or "").strip()
-                            if source_url and source_url not in source_urls:
-                                source_urls.append(source_url)
-                        if source_urls:
-                            st.link_button("確認したページを見る", source_urls[0], use_container_width=True)
-                    elif website:
-                        if st.button("🪑 座席・求人を確認", use_container_width=True, key=f"nearby_store_info_v459_{place_key}"):
-                            with st.spinner("店舗情報を確認しています…"):
-                                info = _nearby_official_store_info_v459(website, str(place.get("name") or ""))
-                            st.session_state[store_info_key] = dict(info) if isinstance(info, dict) else {}
-                            st.rerun()
 
                 if place.get("photo_refs"):
                     with st.spinner("参考写真を読み込んでいます…"):
@@ -44427,7 +44135,7 @@ def _perf_result_meta_v458(result):
         if isinstance(result, (list, tuple, set, dict)):
             meta["count"] = len(result)
         if isinstance(result, dict):
-            for key in ("tagged", "attempted", "api_calls", "moved", "checked", "routed_segments", "display_segments", "seat_count", "kitchen_hiring", "pages_checked", "status"):
+            for key in ("tagged", "attempted", "api_calls", "moved", "checked", "routed_segments", "display_segments"):
                 value = result.get(key)
                 if isinstance(value, (int, float, str, bool)):
                     meta[key] = value
@@ -44506,7 +44214,6 @@ def _install_detailed_perf_wrappers_v458():
         "read_browser_persistence": "component:browser_persistence",
         "read_browser_review_state": "component:browser_review_state",
         "_sync_recent_camera_state_from_browser": "component:camera_state_restore",
-        "_nearby_official_store_info_v459": "nearby:official_store_info",
     }
     for name, phase in targets.items():
         _perf_wrap_global_v458(name, phase)
