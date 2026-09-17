@@ -33,9 +33,10 @@ from zoneinfo import ZoneInfo
 import streamlit as st
 
 # Freshly generated update: 2026-09-16 JST
-GENERATED_UPDATE_JST = "2026-09-17T21:10:00+09:00"
+GENERATED_UPDATE_JST = "2026-09-18T00:36:00+09:00"
 
-APP_BUILD = "v463"
+APP_BUILD = "v464"
+# v464: Increase Good Moments final still selection from 6 to 9 photos. Keep the existing maximum-20 candidate sampling and AI quality criteria, but require up to 9 distinct final moments. Show the Good Moments list as a fixed 3-column x 3-row grid while preserving the one-photo enlarged viewer, voice attachment, emotion/parenting tags, reroll behavior, and all unrelated app behavior.
 # v463: Change the Android Nearby snack automatic-notification cooldown from 60 minutes to about 20 minutes when the existing eligibility conditions are met. Keep dwell/walking/time-window/history/distance rules, tourism notification logic, place-repeat suppression, GPS sampling, background-service cadence, and API/search behavior unchanged; no new polling or timers are added.
 # v462: Tighten toilet-search admission around practical public access. Keep standalone public toilets, stations/transit, major public/commercial facilities, convenience/supermarket/department-store hosts, selected civic/cultural/medical facilities, and restroom-confirmed major chains. Exclude ordinary small restaurants/cafes/shops/clinics/offices even when a toilet flag exists. Mixed office/commercial buildings now require strong same-building multi-tenant evidence instead of nearby-place density, preventing dense-city false positives. No extra API calls are added; filtering is local and the existing parallel search remains unchanged.
 # v461: Restore reliable AI-tag replay creation after the detailed-log pass. Do not build/download/frame every tagged photo while the user is only choosing music; batch live-photo metadata refreshes for large tag sets; stop per-photo download logging; preserve cache clear methods when instrumentation wraps cached helpers; and log replay preparation as a few aggregate phases instead of hundreds of per-photo rows. Keep v460 Nearby cleanup, v449 tag sync, v448 live emotion authority, v446 replay timing, and v433 framing semantics unchanged.
@@ -990,7 +991,7 @@ VIDEO_PROCESSING_MAX_SECONDS = 75
 # conservative margin because browser/device bitrates vary.
 VIDEO_RECORDING_RESERVE_BYTES = 36 * 1024 * 1024
 VIDEO_MAX_BYTES = 150 * 1024 * 1024
-VIDEO_AI_MAX_SELECTIONS = 6  # いい瞬間の切り抜き枚数
+VIDEO_AI_MAX_SELECTIONS = 9  # いい瞬間の切り抜き枚数
 # Good Moments sampling is duration-aware and capped at 20 candidate frames:
 #   <=10 sec -> every 0.5 sec
 #   15 sec   -> every 0.75 sec
@@ -1003,7 +1004,7 @@ VIDEO_AI_SAMPLE_INTERVAL_MS = VIDEO_AI_MIN_SAMPLE_INTERVAL_MS
 # With at most 20 candidates, the normal path fits in one final vision request;
 # the batching code remains only as a compatibility/safety path for legacy pools.
 VIDEO_AI_BATCH_SIZE = 25
-VIDEO_AI_BATCH_KEEP = 6
+VIDEO_AI_BATCH_KEEP = 9
 VIDEO_AI_BATCH_WORKERS = 3
 # Background AI must never remain in "processing" indefinitely.
 # One provider call is bounded, and a stale Streamlit worker can be relaunched.
@@ -1015,8 +1016,8 @@ def video_ai_sample_interval_ms_for_duration(duration_ms):
     """Return a duration-aware Good Moments interval, capped at 20 samples.
 
     Keep the established v248 sampling rule for normal clips. Only very short clips
-    are sampled more densely so there are enough distinct timestamps to present six
-    Good Moments when possible. This runs after recording and does not affect capture.
+    are sampled more densely so there are enough distinct timestamps to present the requested
+    Good Moments count when possible. This runs after recording and does not affect capture.
     """
     try:
         raw_duration = float(duration_ms or 0)
@@ -15119,7 +15120,7 @@ def choose_video_ai_frames(
     ai_client=None,
     progress_callback=None,
 ):
-    """Pick exactly six stills when six candidates are available after AI inspection.
+    """Pick the configured number of stills when enough candidates are available after AI inspection.
 
     v153 caps Good Moments at 20 frames. Sampling is max(0.5 seconds, duration / 20),
     so 10s -> 0.5s, 15s -> 0.75s, and 60s -> 3s. The normal path therefore fits
@@ -15311,7 +15312,7 @@ def choose_video_ai_frames(
         "動画全体の最終フォトセレクターです。候補は動画長に応じた一定間隔で最大20枚に絞って比較されています。"
         "ここでは動画全体を横断して、最終的に残したい静止画を選んでください。\n"
         f"候補が{VIDEO_AI_MAX_SELECTIONS}枚以上ある場合は、必ず{VIDEO_AI_MAX_SELECTIONS}枚を選んでください。"
-        "似た候補が多い場合も、動画内の時間位置を分散させて6枚をそろえてください。"
+        f"似た候補が多い場合も、動画内の時間位置を分散させて{VIDEO_AI_MAX_SELECTIONS}枚をそろえてください。"
         "動画全体から違いのある良い瞬間を優先してください。\n"
         f"{factor_text}\n"
         "各項目は設定された割合に従って評価し、特定の項目を固定的に優先しないでください。"
@@ -17025,14 +17026,14 @@ def resume_member_video_background_jobs(limit=24, min_interval_seconds=5):
         status = str(selection.get("status") or "").strip().lower()
         selection_items = video_ai_selection_items(row)
         has_items = bool(selection_items)
-        has_full_six = len(selection_items) >= VIDEO_AI_MAX_SELECTIONS
+        has_full_selection = len(selection_items) >= VIDEO_AI_MAX_SELECTIONS
         photo_id = str(row.get("id") or "")
 
         if status == "reviewed":
             continue
-        if status == "ready" and has_full_six:
+        if status == "ready" and has_full_selection:
             continue
-        if status == "ready" and has_items and not has_full_six:
+        if status == "ready" and has_items and not has_full_selection:
             try:
                 selection["status"] = "waiting_candidates"
                 selection["stage"] = "candidate_preparation"
@@ -32486,7 +32487,7 @@ def _moments_video_title(photo):
 
 _MOMENTS_SELECT_HTML = """
 <div class="moments-view-toggle" role="group" aria-label="この動画の写真表示">
-  <button id="moments-view-list" class="moments-view-button" type="button">6枚で見る</button>
+  <button id="moments-view-list" class="moments-view-button" type="button">9枚で見る</button>
   <button id="moments-view-enlarge" class="moments-view-button" type="button">1枚ずつ見る</button>
 </div>
 <div id="moments-select-grid" class="moments-select-grid"></div>
@@ -32789,7 +32790,7 @@ export default function(component) {
   const grid = parentElement.querySelector('#moments-select-grid');
   if (!grid) return;
 
-  const photos = Array.isArray(data?.photos) ? data.photos.slice(0,6) : [];
+  const photos = Array.isArray(data?.photos) ? data.photos.slice(0,9) : [];
   const disabled = Boolean(data?.disabled);
   const familyKey=String(data?.family_key||''), memberKey=String(data?.member_key||''), videoId=String(data?.video_id||'');
   const roundNumber=Math.max(0,Number(data?.round_number||0)||0);
@@ -32992,7 +32993,7 @@ export default function(component) {
         persistActiveRank();
         counter.textContent=`${activeIndex+1} / ${photos.length}`; prev.disabled=activeIndex<=0; next.disabled=activeIndex>=photos.length-1;
         viewer.replaceChildren(makeCard(activePhoto,activeIndex,true));
-        // Warm only the adjacent frame; never decode all six large images at once.
+        // Warm only the adjacent frame; never decode all large images at once.
         for(const neighborIndex of [activeIndex-1,activeIndex+1]){
           const neighbor=photos[neighborIndex];
           if(neighbor?.src){try{const prefetch=new Image();prefetch.decoding='async';prefetch.src=String(neighbor.src);}catch(_){}}
@@ -33036,7 +33037,7 @@ def _get_moments_select_component():
     _moments_select_component_initialized = True
     try:
         moments_select_component = st.components.v2.component(
-            "tokyo_burari_moments_select_v378",
+            "tokyo_burari_moments_select_v464",
             html=_MOMENTS_SELECT_HTML,
             css=_MOMENTS_SELECT_CSS,
             js=_MOMENTS_SELECT_JS,
@@ -33456,7 +33457,7 @@ def _render_moments_picker(photo, index, view_mode=None, next_video_action=None)
 
     st.markdown(f"#### {html.escape(title)}")
     # v387: photos are the main task. Keep source-video/technical information behind
-    # one collapsed control so it does not push the six candidate photos downward.
+    # one collapsed control so it does not push the nine candidate photos downward.
     view_mode = "list"
     capture_meta = photo_media_metadata(photo).get("video_capture") or {}
     high_quality_count = max(0, int(selection_meta.get("high_quality_count") or 0))
@@ -33579,7 +33580,7 @@ def _render_moments_picker(photo, index, view_mode=None, next_video_action=None)
         path = str(item.get("storage_path") or "").strip()
         # v362: use one batch-signed URL for both list and enlarged modes. The
         # browser component mounts only one large image in enlarged mode, so there is
-        # no reason to download + resize all six files on the server before switching.
+        # no reason to download + resize every file on the server before switching.
         url = str(signed_map.get(path) or "")
         if not url:
             try:
@@ -33943,9 +33944,9 @@ def _render_moments_picker(photo, index, view_mode=None, next_video_action=None)
 
     can_reroll = bool(_video_ai_has_candidate_source(selection_meta) or photo_video_storage_path(photo))
     if can_reroll and status != "reviewed":
-        with st.expander("候補の6枚が合わないとき"):
+        with st.expander("候補の9枚が合わないとき"):
             if st.button(
-                "🔄 別の6枚を作る",
+                "🔄 別の9枚を作る",
                 use_container_width=True,
                 disabled=bool(selected_rank_set),
                 key=f"moments_reroll_{video_id}_{round_number}",
