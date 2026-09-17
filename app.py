@@ -33,9 +33,11 @@ from zoneinfo import ZoneInfo
 import streamlit as st
 
 # Freshly generated update: 2026-09-16 JST
-GENERATED_UPDATE_JST = "2026-09-17T00:20:00+09:00"
+GENERATED_UPDATE_JST = "2026-09-17T15:40:00+09:00"
 
-APP_BUILD = "v455"
+APP_BUILD = "v457"
+# v457: Repair Android/WebView foreground return without polling: the existing history bridge records background/foreground lifecycle, forces a cheap layout refresh, and remounts custom UI only when stale DOM is detected, BFCache restores, or a long background pause makes component state unreliable. Remove global button will-change layer promotion to reduce GPU/memory pressure. Add an in-session bounded performance log with download/clear controls and timings for startup phases, page renders, and important cache-miss data loads; no new database writes, timers, polling, or background traffic are added.
+# v456: Add a deterministic virtual 「声付き」 photo tag from the existing voice-note metadata, so tag browsing/review can find voiced photos without AI calls or DB rewrites. Improve UI responsiveness by keeping large photo/tag snapshots in the account cache longer (writes still invalidate them), lazy-loading family-shared photos, removing the all-photo tag scan from the History list in favor of the dedicated tag-review page, and reducing photo-library thumbnail count/size per page.
 # v455: Add a lightweight urban-GPS fallback for the project map without increasing GPS sampling, polling, API traffic, or background work. Keep the strict <=45m route as the authoritative distance line, but render short dashed approximate connectors through 45-90m fixes when they are temporally/walk-speed plausible so high-rise/hotel visits are less likely to disappear. Add an on-demand compact GPS diagnostic using the points already loaded for the map; no extra database query is performed.
 # v454: Reduce instructional copy across the app so controls and layout carry the interaction. Remove verbose/static hints from Diary day photos, photo library, Moments, replay setup, Nearby/Toilets, Review landing, Map, and Settings while preserving errors, destructive confirmations, progress, counts, dates, and other state feedback.
 # v453: Simplify the Diary screen for direct use: remove the Diary-page explanatory copy, remove the Memory Map shortcut from Diary, remove helper text under the day picker and inside its dialog, while preserving the button-only no-keyboard day picker, newest-first order, title editing, photos, emotions, and diary functions.
@@ -308,7 +310,6 @@ st.markdown(
         user-select: none;
         -webkit-touch-callout: none;
         transition: transform 55ms ease-out, filter 55ms linear, box-shadow 55ms linear !important;
-        will-change: transform, filter;
       }
       /* v400: every ordinary control acknowledges finger-down immediately while
          preserving its own page/theme colour at rest. */
@@ -5543,6 +5544,7 @@ def photo_selected_tag_values(photo):
 # ============================================================
 PHOTO_FAVORITE_KEY = "_favorite"
 PHOTO_FAVORITE_TAG = "お気に入り"
+PHOTO_VOICE_TAG = "声付き"
 
 
 def photo_favorite_info(photo):
@@ -5604,8 +5606,8 @@ def set_photo_favorite(photo_id, enabled=True):
     if not isinstance(raw_tags, (list, tuple)):
         raw_tags = []
     content_tags = [
-        tag for tag in normalize_ai_photo_tags(raw_tags, max_tags=AI_PHOTO_TAG_MAX_PER_PHOTO + 1)
-        if tag != PHOTO_FAVORITE_TAG
+        tag for tag in normalize_ai_photo_tags(raw_tags, max_tags=AI_PHOTO_TAG_MAX_PER_PHOTO + 2)
+        if tag not in {PHOTO_FAVORITE_TAG, PHOTO_VOICE_TAG}
     ][:AI_PHOTO_TAG_MAX_PER_PHOTO]
     synced_tags = ([PHOTO_FAVORITE_TAG] + content_tags) if enabled else content_tags
 
@@ -5832,12 +5834,16 @@ def list_family_shared_photos(limit=90):
         requested = max(1, min(180, int(limit)))
     except Exception:
         requested = 90
+    cache_key = _account_cache_key("family_shared_photos_v456", requested)
+    cached = _session_cache_get(cache_key, max_age_seconds=90)
+    if cached is not None:
+        return cached
     query_limit = max(180, min(800, requested * 6))
     try:
         rows = (
             supabase_client()
             .table(PHOTO_TABLE)
-            .select("*")
+            .select("id,member_key,trip_id,storage_path,captured_at,reflection_json,signals_json")
             .eq("family_key", current_family_key())
             .order("captured_at", desc=True)
             .limit(query_limit)
@@ -5887,7 +5893,7 @@ def list_family_shared_photos(limit=90):
         shared.append(item)
         if len(shared) >= requested:
             break
-    return shared
+    return _session_cache_set(cache_key, shared)
 
 
 def render_photo_family_share_notice():
@@ -7250,7 +7256,7 @@ def sync_pending_tags_from_browser_v166():
 _HISTORY_JS = r"""
 export default function(component) {
   const { data, setTriggerValue } = component;
-  const validPages = new Set(['home', 'camera', 'videos', 'moments', 'diary', 'review', 'review_map', 'review_project', 'review_monthly', 'review_tag', 'review_history', 'nearby', 'discovery_results', 'evening_review', 'toilets', 'settings', 'settings_moments', 'settings_moments_definition', 'settings_location', 'settings_account']);
+  const validPages = new Set(['home', 'camera', 'videos', 'moments', 'diary', 'photos', 'review', 'review_map', 'review_project', 'review_monthly', 'review_tag', 'review_history', 'nearby', 'discovery_results', 'evening_review', 'toilets', 'field_notes', 'settings', 'settings_moments', 'settings_moments_definition', 'settings_location', 'settings_account']);
   const marker = '__tokyo_burari_page__';
   const guardMarker = '__tokyo_burari_first_level_guard__';
   const requestedPage = validPages.has(data?.page) ? data.page : 'home';
@@ -7260,6 +7266,81 @@ export default function(component) {
   const firstLevelBackToHome = requestedPage !== 'home' && navigationNode === requestedPage && !interceptHierarchyBack;
   const pendingFeelingParam = 'feel_v159';
   const pendingFeelingStore = 'tokyo_burari_pending_feelings_v159';
+  const foregroundHiddenStore = 'tokyo_burari_hidden_at_v457';
+  let hiddenAtV457 = 0;
+  let lastForegroundEmitV457 = 0;
+  let hostWindowV457 = window;
+  let hostDocumentV457 = document;
+  try {
+    if (window.parent && window.parent !== window && window.parent.document) {
+      hostWindowV457 = window.parent;
+      hostDocumentV457 = window.parent.document;
+    }
+  } catch (_) {}
+
+  const refreshLayoutV457 = () => {
+    const refresh = () => {
+      try { if (hostDocumentV457.body) void hostDocumentV457.body.offsetHeight; } catch (_) {}
+      try { hostWindowV457.dispatchEvent(new Event('resize')); } catch (_) {}
+    };
+    try { requestAnimationFrame(refresh); } catch (_) { refresh(); }
+    setTimeout(refresh, 180);
+  };
+
+  const foregroundSnapshotV457 = () => {
+    let staleCount = 0, rootCount = 0, iframeCount = 0, spinnerCount = 0;
+    try { staleCount = hostDocumentV457.querySelectorAll('[data-stale="true"]').length; } catch (_) {}
+    try { rootCount = hostDocumentV457.querySelectorAll('.st-key-app_page_root_v280').length; } catch (_) {}
+    try { iframeCount = hostDocumentV457.querySelectorAll('iframe').length; } catch (_) {}
+    try { spinnerCount = hostDocumentV457.querySelectorAll('[data-testid="stSpinner"]').length; } catch (_) {}
+    return { stale_count: staleCount, root_count: rootCount, iframe_count: iframeCount, spinner_count: spinnerCount };
+  };
+
+  const emitForegroundRestoreV457 = (reason, persisted) => {
+    if (hostDocumentV457.hidden) return;
+    const now = Date.now();
+    let storedAt = 0;
+    try { storedAt = Number(localStorage.getItem(foregroundHiddenStore) || 0); } catch (_) {}
+    const startedAt = Number(hiddenAtV457 || storedAt || 0);
+    const hiddenMs = startedAt > 0 ? Math.max(0, now - startedAt) : 0;
+    if (!persisted && hiddenMs < 1200) {
+      try { localStorage.removeItem(foregroundHiddenStore); } catch (_) {}
+      hiddenAtV457 = 0;
+      return;
+    }
+    if (now - lastForegroundEmitV457 < 3500) return;
+    lastForegroundEmitV457 = now;
+    refreshLayoutV457();
+    const stats = foregroundSnapshotV457();
+    const token = `${now}:${Math.random()}`;
+    queueMicrotask(() => setTriggerValue('foreground_restore', {
+      token, reason: String(reason || 'visible'), hidden_ms: Math.round(hiddenMs),
+      visible_at_ms: now, persisted: Boolean(persisted), ...stats
+    }));
+    hiddenAtV457 = 0;
+    try { localStorage.removeItem(foregroundHiddenStore); } catch (_) {}
+  };
+
+  const onVisibilityV457 = () => {
+    if (hostDocumentV457.hidden) {
+      hiddenAtV457 = Date.now();
+      try { localStorage.setItem(foregroundHiddenStore, String(hiddenAtV457)); } catch (_) {}
+    } else {
+      emitForegroundRestoreV457('visibility', false);
+    }
+  };
+  const onPageHideV457 = () => {
+    hiddenAtV457 = Date.now();
+    try { localStorage.setItem(foregroundHiddenStore, String(hiddenAtV457)); } catch (_) {}
+  };
+  const onPageShowV457 = (event) => {
+    if (event && event.persisted) emitForegroundRestoreV457('pageshow_bfcache', true);
+    else if (!hostDocumentV457.hidden) {
+      let storedAt = 0;
+      try { storedAt = Number(localStorage.getItem(foregroundHiddenStore) || 0); } catch (_) {}
+      if (storedAt > 0 && Date.now() - storedAt >= 1200) emitForegroundRestoreV457('pageshow', false);
+    }
+  };
   const restorePendingFeelingParam = () => {
     try {
       const url = new URL(window.location.href);
@@ -7391,7 +7472,15 @@ export default function(component) {
   };
 
   window.addEventListener('popstate', onPopState);
-  return () => window.removeEventListener('popstate', onPopState);
+  hostDocumentV457.addEventListener('visibilitychange', onVisibilityV457, { passive: true });
+  hostWindowV457.addEventListener('pagehide', onPageHideV457, { passive: true });
+  hostWindowV457.addEventListener('pageshow', onPageShowV457, { passive: true });
+  return () => {
+    window.removeEventListener('popstate', onPopState);
+    hostDocumentV457.removeEventListener('visibilitychange', onVisibilityV457);
+    hostWindowV457.removeEventListener('pagehide', onPageHideV457);
+    hostWindowV457.removeEventListener('pageshow', onPageShowV457);
+  };
 }
 """
 
@@ -8213,6 +8302,119 @@ def _invalidate_fast_db_cache():
     for key in list(st.session_state.keys()):
         if str(key).startswith("_fastdb|"):
             st.session_state.pop(key, None)
+
+
+PERF_LOG_KEY_V457 = "_performance_log_v457"
+PERF_LOG_LIMIT_V457 = 180
+PERF_LOG_MIN_MS_V457 = 4.0
+
+
+def _perf_begin_run_v457():
+    try:
+        run_id = int(st.session_state.get("_performance_run_id_v457") or 0) + 1
+    except Exception:
+        run_id = 1
+    st.session_state["_performance_run_id_v457"] = run_id
+    st.session_state["_performance_current_run_v457"] = run_id
+    return run_id
+
+
+def _perf_log_v457(phase, *, started_at=None, duration_ms=None, page=None, meta=None, force=False):
+    """Append one tiny in-memory timing row. No network, file IO, or background work."""
+    try:
+        if duration_ms is None:
+            if started_at is None:
+                duration_ms = 0.0
+            else:
+                duration_ms = (time.perf_counter() - float(started_at)) * 1000.0
+        duration_ms = max(0.0, float(duration_ms))
+        if not force and duration_ms < PERF_LOG_MIN_MS_V457:
+            return duration_ms
+        row = {
+            "at_ms": int(time.time() * 1000),
+            "run": int(st.session_state.get("_performance_current_run_v457") or 0),
+            "page": str(page or st.session_state.get("main_page") or "home"),
+            "phase": str(phase or ""),
+            "ms": round(duration_ms, 1),
+        }
+        if isinstance(meta, dict) and meta:
+            safe_meta = {}
+            for key, value in list(meta.items())[:10]:
+                if isinstance(value, (str, int, float, bool)) or value is None:
+                    safe_meta[str(key)] = value
+            if safe_meta:
+                row["meta"] = safe_meta
+        rows = st.session_state.get(PERF_LOG_KEY_V457)
+        if not isinstance(rows, list):
+            rows = []
+        rows.append(row)
+        if len(rows) > PERF_LOG_LIMIT_V457:
+            rows = rows[-PERF_LOG_LIMIT_V457:]
+        st.session_state[PERF_LOG_KEY_V457] = rows
+        return duration_ms
+    except Exception:
+        return 0.0
+
+
+def _perf_call_v457(phase, func, *args, force=False, meta=None, **kwargs):
+    started = time.perf_counter()
+    try:
+        return func(*args, **kwargs)
+    finally:
+        _perf_log_v457(phase, started_at=started, meta=meta, force=force)
+
+
+def _performance_log_text_v457():
+    rows = st.session_state.get(PERF_LOG_KEY_V457)
+    if not isinstance(rows, list):
+        rows = []
+    lines = []
+    for row in rows:
+        try:
+            stamp = datetime.fromtimestamp(float(row.get("at_ms") or 0) / 1000.0, ZoneInfo(APP_TIMEZONE)).strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+        except Exception:
+            stamp = ""
+        meta = row.get("meta") if isinstance(row.get("meta"), dict) else {}
+        meta_text = " ".join(f"{k}={v}" for k, v in meta.items())
+        lines.append(
+            f"{stamp}	run={row.get('run', 0)}	page={row.get('page', '')}	phase={row.get('phase', '')}	ms={row.get('ms', 0)}"
+            + (f"	{meta_text}" if meta_text else "")
+        )
+    return "\n".join(lines)
+
+
+def render_performance_log_v457():
+    rows = st.session_state.get(PERF_LOG_KEY_V457)
+    rows = list(rows) if isinstance(rows, list) else []
+    with st.expander("⚡ 動作ログ", expanded=False):
+        if rows:
+            recent_totals = [row for row in rows if str(row.get("phase") or "") == "rerun_total"][-8:]
+            if recent_totals:
+                last = recent_totals[-1]
+                st.caption(f"直近 {float(last.get('ms') or 0):.0f} ms")
+            slow = sorted(
+                [row for row in rows if float(row.get("ms") or 0) >= 20.0],
+                key=lambda row: float(row.get("ms") or 0),
+                reverse=True,
+            )[:10]
+            if slow:
+                st.code("\n".join(
+                    f"{float(row.get('ms') or 0):7.1f} ms  {row.get('page','')}  {row.get('phase','')}"
+                    for row in slow
+                ), language="text")
+            st.download_button(
+                "動作ログを保存",
+                data=_performance_log_text_v457(),
+                file_name=f"burari_performance_{today_iso()}.log",
+                mime="text/plain",
+                use_container_width=True,
+                key="download_performance_log_v457",
+            )
+            if st.button("ログを消去", use_container_width=True, key="clear_performance_log_v457"):
+                st.session_state[PERF_LOG_KEY_V457] = []
+                st.rerun(scope="app")
+        else:
+            st.caption("ログはまだありません。")
 
 
 def _set_authenticated_family(family_account, member_account, persist=False):
@@ -15789,7 +15991,7 @@ def _favorite_tag_tendencies_from_rows(rows, max_tags=8):
             continue
         tags = [
             tag for tag in photo_ai_tags(row)
-            if tag and tag != PHOTO_FAVORITE_TAG
+            if tag and tag not in {PHOTO_FAVORITE_TAG, PHOTO_VOICE_TAG}
         ]
         # One photo counts at most once for a given tag.
         tags = list(dict.fromkeys(tags))
@@ -18525,9 +18727,10 @@ def list_trip_photos(trip_id):
     if not trip_id:
         return []
     cache_key = _account_cache_key("trip_photos", trip_id)
-    cached = _session_cache_get(cache_key, max_age_seconds=12)
+    cached = _session_cache_get(cache_key, max_age_seconds=60)
     if cached is not None:
         return cached
+    started = time.perf_counter()
     result = (
         supabase_client()
         .table(PHOTO_TABLE)
@@ -18537,7 +18740,9 @@ def list_trip_photos(trip_id):
         .order("captured_at")
         .execute()
     )
-    return _session_cache_set(cache_key, result.data or [])
+    rows = result.data or []
+    _perf_log_v457("db:trip_photos", started_at=started, meta={"count": len(rows)}, force=True)
+    return _session_cache_set(cache_key, rows)
 
 
 def update_photo_reflection(photo_id, conversation, signals, done=None):
@@ -19823,10 +20028,13 @@ def _list_recent_diaries_uncached(limit=60):
 
 def list_recent_diaries(limit=60):
     cache_key = _account_cache_key("recent_diaries", int(limit))
-    cached = _session_cache_get(cache_key, max_age_seconds=15)
+    cached = _session_cache_get(cache_key, max_age_seconds=90)
     if cached is not None:
         return cached
-    return _session_cache_set(cache_key, _list_recent_diaries_uncached(limit=limit))
+    started = time.perf_counter()
+    rows = _list_recent_diaries_uncached(limit=limit)
+    _perf_log_v457("db:recent_diaries", started_at=started, meta={"count": len(rows or [])}, force=True)
+    return _session_cache_set(cache_key, rows)
 
 
 def month_bounds(month_key):
@@ -25645,7 +25853,8 @@ def normalize_ai_photo_tags(values, max_tags=AI_PHOTO_TAG_MAX_PER_PHOTO):
     return result
 
 
-def photo_ai_tags(photo):
+def photo_stored_ai_content_tags(photo):
+    """Return only persisted visual/content tags, excluding deterministic system tags."""
     reflection = (photo or {}).get("reflection_json") or {}
     if not isinstance(reflection, dict):
         return []
@@ -25656,17 +25865,23 @@ def photo_ai_tags(photo):
         raw = [part.strip() for part in re.split(r"[,，、]", raw) if part.strip()]
     if not isinstance(raw, (list, tuple)):
         raw = []
-
-    # v353 compatibility: favorites saved in v352 already have _favorite but no
-    # physical favorite tag. Surface them immediately as 「お気に入り」 in every
-    # tag browser, while all new favorite toggles also persist the tag to ai_tags.
-    content_tags = [
-        tag for tag in normalize_ai_photo_tags(raw, max_tags=AI_PHOTO_TAG_MAX_PER_PHOTO + 1)
-        if tag != PHOTO_FAVORITE_TAG
+    return [
+        tag for tag in normalize_ai_photo_tags(raw, max_tags=AI_PHOTO_TAG_MAX_PER_PHOTO + 2)
+        if tag not in {PHOTO_FAVORITE_TAG, PHOTO_VOICE_TAG}
     ][:AI_PHOTO_TAG_MAX_PER_PHOTO]
+
+
+def photo_ai_tags(photo):
+    # v456: 「声付き」 is derived from the current voice-note metadata instead of being
+    # written into ai_tags. Removing/adding a voice therefore changes the tag immediately
+    # and never leaves a stale searchable tag behind. No AI/API call is needed.
+    tags = []
     if photo_favorite_is_enabled(photo):
-        return [PHOTO_FAVORITE_TAG] + content_tags
-    return content_tags
+        tags.append(PHOTO_FAVORITE_TAG)
+    if photo_voice_note_storage_path(photo):
+        tags.append(PHOTO_VOICE_TAG)
+    tags.extend(photo_stored_ai_content_tags(photo))
+    return list(dict.fromkeys(tag for tag in tags if tag))
 
 
 def photo_ai_tag_version(photo):
@@ -25687,10 +25902,9 @@ def photo_has_ai_tags(photo):
 
 
 def photo_needs_ai_tagging(photo):
-    # v322: version 2 adds the special train-project judgment. Existing v1 tags are
-    # rechecked only when the normal tag action/diary flow reaches the photo, so no
-    # background bulk scan or extra communication is introduced.
-    return (not photo_has_ai_tags(photo)) or photo_ai_tag_version(photo) < AI_PHOTO_TAG_VERSION
+    # Deterministic tags such as 「お気に入り」「声付き」 must not make an otherwise
+    # untagged photo look AI-tagged. Only persisted visual/content tags satisfy this check.
+    return (not photo_stored_ai_content_tags(photo)) or photo_ai_tag_version(photo) < AI_PHOTO_TAG_VERSION
 
 
 def _taggable_still_photos(photos, only_untagged=False):
@@ -25764,6 +25978,7 @@ def _photo_tag_prompt(slots):
 - 駅名標、ホームの駅名看板、駅入口の駅名表示、駅構内の案内板などで「駅名そのもの」が写真から明確に読める場合は、train_project を true にする。
 - train_project=true の写真では、読めた駅名も可能ならタグに含める（例: 新宿駅）。駅名が読めない、単に線路・ホーム・電車が写っているだけの場合は、この条件だけを理由に train_project=true にしない。
 - 「電車プロジェクト」はアプリ側で自動付与する専用タグなので、tags 内に無理に書かなくてよい。
+- 「声付き」は音声メタデータからアプリ側で自動付与するので、写真の見た目だけから tags に書かない。
 """.strip()
 
 
@@ -25862,12 +26077,11 @@ def tag_untagged_photos_with_ai(photos, batch_size=AI_PHOTO_TAG_BATCH_SIZE, max_
             # Preserve a newer/current result written by another operation. v1 results are
             # upgraded to v2 so station-name signs can receive the train-project tag.
             existing_photo = {"reflection_json": reflection}
-            existing = photo_ai_tags(existing_photo)
+            existing_content = photo_stored_ai_content_tags(existing_photo)
             existing_version = photo_ai_tag_version(existing_photo)
-            if existing and existing_version >= AI_PHOTO_TAG_VERSION:
+            if existing_content and existing_version >= AI_PHOTO_TAG_VERSION:
                 continue
-            if existing:
-                existing_content = [tag for tag in existing if tag != PHOTO_FAVORITE_TAG]
+            if existing_content:
                 tags = normalize_ai_photo_tags(tags + [tag for tag in existing_content if tag not in tags])
             if photo_favorite_is_enabled(existing_photo):
                 tags = [PHOTO_FAVORITE_TAG] + [tag for tag in tags if tag != PHOTO_FAVORITE_TAG]
@@ -25906,9 +26120,10 @@ def tag_untagged_photos_with_ai(photos, batch_size=AI_PHOTO_TAG_BATCH_SIZE, max_
 def list_member_still_photos_for_tags(max_items=5000):
     """Load photo metadata for tag browsing without downloading image bytes."""
     cache_key = _account_cache_key("tag_photo_library", int(max_items))
-    cached = _session_cache_get(cache_key, max_age_seconds=30)
+    cached = _session_cache_get(cache_key, max_age_seconds=300)
     if cached is not None:
         return cached
+    started = time.perf_counter()
     page_size = 400
     offset = 0
     rows = []
@@ -25927,7 +26142,9 @@ def list_member_still_photos_for_tags(max_items=5000):
         if len(chunk) < page_size:
             break
         offset += page_size
-    return _session_cache_set(cache_key, _taggable_still_photos(rows, only_untagged=False))
+    result = _taggable_still_photos(rows, only_untagged=False)
+    _perf_log_v457("db:photo_tag_library", started_at=started, meta={"count": len(result)}, force=True)
+    return _session_cache_set(cache_key, result)
 
 
 def _set_photo_tag_run_notice(stats, scope_label=""):
@@ -27495,7 +27712,69 @@ def sync_browser_history():
         on_page_change=lambda: None,
         on_hierarchy_back_change=lambda: None,
         on_pending_restore_change=lambda: None,
+        on_foreground_restore_change=lambda: None,
     )
+
+    foreground_restore = getattr(result, "foreground_restore", None)
+    if isinstance(foreground_restore, dict):
+        token = str(foreground_restore.get("token") or "").strip()
+        if token and token != str(st.session_state.get("_foreground_restore_token_v457") or ""):
+            st.session_state["_foreground_restore_token_v457"] = token
+            try:
+                hidden_ms = max(0, int(foreground_restore.get("hidden_ms") or 0))
+            except Exception:
+                hidden_ms = 0
+            try:
+                stale_count = max(0, int(foreground_restore.get("stale_count") or 0))
+            except Exception:
+                stale_count = 0
+            try:
+                root_count = max(0, int(foreground_restore.get("root_count") or 0))
+            except Exception:
+                root_count = 0
+            try:
+                iframe_count = max(0, int(foreground_restore.get("iframe_count") or 0))
+            except Exception:
+                iframe_count = 0
+            try:
+                spinner_count = max(0, int(foreground_restore.get("spinner_count") or 0))
+            except Exception:
+                spinner_count = 0
+            persisted = bool(foreground_restore.get("persisted"))
+            try:
+                visible_at_ms = max(0, int(foreground_restore.get("visible_at_ms") or 0))
+                signal_delay_ms = max(0, int(time.time() * 1000) - visible_at_ms) if visible_at_ms else 0
+            except Exception:
+                signal_delay_ms = 0
+            _perf_log_v457(
+                "foreground_resume",
+                duration_ms=0.0,
+                page=page,
+                meta={
+                    "hidden_ms": hidden_ms,
+                    "stale": stale_count,
+                    "roots": root_count,
+                    "iframes": iframe_count,
+                    "spinners": spinner_count,
+                    "signal_ms": signal_delay_ms,
+                    "persisted": persisted,
+                    "reason": str(foreground_restore.get("reason") or ""),
+                },
+                force=True,
+            )
+            # Short returns only receive the browser-side resize/reflow above. A clean
+            # Streamlit remount is reserved for stale/BFCache/long-background states so
+            # normal foregrounding adds no permanent work or polling. Replay pages keep
+            # their dedicated playback-resume logic unless stale UI is actually detected.
+            replay_page = page in {"review_monthly", "review_tag"}
+            should_remount = persisted or stale_count > 0 or root_count > 1 or hidden_ms >= 15000
+            if replay_page and not persisted and stale_count <= 0 and root_count <= 1:
+                should_remount = False
+            if should_remount:
+                st.session_state["_ui_refresh_epoch"] = _current_ui_refresh_epoch() + 1
+                st.session_state.pop("_browser_hierarchy_back_token", None)
+                st.session_state.pop("_history_action", None)
+                st.rerun(scope="app")
 
     hierarchy_back = getattr(result, "hierarchy_back", None)
     if hierarchy_back:
@@ -27729,7 +28008,7 @@ def inject_home_icon_css(review_attention=False):
         f'.st-key-home_camera div.stButton > button:hover,.st-key-home_video div.stButton > button:hover,.st-key-home_diary div.stButton > button:hover{{border-color:{accent} !important;background:linear-gradient(155deg,rgba({rgb2},.34),rgba({rgb1},.11)) !important;box-shadow:0 11px 24px rgba({rgb1},.14),0 0 0 2px rgba(255,255,255,.40) inset !important;}}',
         f'.st-key-home_settings div.stButton > button{{border-color:rgba({rgb1},.46) !important;background:linear-gradient(155deg,rgba({rgb2},.18),rgba({rgb1},.035)) !important;box-shadow:0 8px 20px rgba({rgb1},.07),0 0 0 2px rgba(255,255,255,.30) inset !important;}}',
         f'.st-key-home_settings div.stButton > button:hover{{border-color:rgba({rgb1},.62) !important;background:linear-gradient(155deg,rgba({rgb2},.25),rgba({rgb1},.065)) !important;box-shadow:0 10px 22px rgba({rgb1},.10),0 0 0 2px rgba(255,255,255,.35) inset !important;}}',
-        '.st-key-home_camera div.stButton > button,.st-key-home_video div.stButton > button{touch-action:manipulation !important;-webkit-tap-highlight-color:transparent !important;transition:transform 55ms ease-out,background 55ms linear,box-shadow 55ms linear,color 55ms linear !important;will-change:transform;}',
+        '.st-key-home_camera div.stButton > button,.st-key-home_video div.stButton > button{touch-action:manipulation !important;-webkit-tap-highlight-color:transparent !important;transition:transform 55ms ease-out,background 55ms linear,box-shadow 55ms linear,color 55ms linear !important;}',
         '.st-key-home_camera div.stButton > button:active,.st-key-home_camera div.stButton > button:focus{color:#fff !important;border-color:#1F6FD1 !important;background:linear-gradient(145deg,#4AA8FF,#2878DF) !important;box-shadow:0 2px 7px rgba(31,111,209,.30),0 0 0 3px rgba(74,168,255,.22) !important;transform:translateY(1px) scale(.975) !important;}',
         '.st-key-home_video div.stButton > button:active,.st-key-home_video div.stButton > button:focus{color:#fff !important;border-color:#6D28D9 !important;background:linear-gradient(145deg,#9A67F5,#7134D2) !important;box-shadow:0 2px 7px rgba(109,40,217,.30),0 0 0 3px rgba(154,103,245,.22) !important;transform:translateY(1px) scale(.975) !important;}',
         '.st-key-home_camera div.stButton > button:active p,.st-key-home_camera div.stButton > button:focus p,.st-key-home_video div.stButton > button:active p,.st-key-home_video div.stButton > button:focus p{color:#fff !important;}',
@@ -28111,10 +28390,13 @@ def _list_pending_photo_trips_uncached(limit=40):
 
 def list_pending_photo_trips(limit=40):
     cache_key = _account_cache_key("pending_photo_trips", int(limit))
-    cached = _session_cache_get(cache_key, max_age_seconds=10)
+    cached = _session_cache_get(cache_key, max_age_seconds=45)
     if cached is not None:
         return cached
-    return _session_cache_set(cache_key, _list_pending_photo_trips_uncached(limit=limit))
+    started = time.perf_counter()
+    rows = _list_pending_photo_trips_uncached(limit=limit)
+    _perf_log_v457("db:pending_photo_trips", started_at=started, meta={"count": len(rows or [])}, force=True)
+    return _session_cache_set(cache_key, rows)
 
 
 def _title_against_used(base_title, used_titles):
@@ -35278,87 +35560,106 @@ def render_diary_emotion_gallery(trip_id, photos, trip=None, is_pending=False):
 
 
 def render_family_shared_individual_photos():
-    """Show individual photos shared by other accounts in the same family."""
-    shared_photos = list_family_shared_photos(limit=90)
-    if not shared_photos:
+    """Load family-shared photos only when the user explicitly opens them."""
+    open_key = "_family_shared_individual_open_v456"
+    if not st.session_state.get(open_key):
+        if st.button(
+            "👨‍👩‍👦 家族の共有写真",
+            use_container_width=True,
+            key="family_shared_individual_open_v456",
+        ):
+            st.session_state[open_key] = True
+            st.rerun()
         return False
 
-    with st.expander(f"👨‍👩‍👦 家族から共有された写真（{len(shared_photos)}枚）", expanded=False):
-        st.caption("同じ家族IDの別アカウントが1枚ずつ共有した写真です。写真につけた感情・こどもーどタグも一緒に表示し、共有元で変更するとこちらにも反映します。ここでは閲覧のみできます。")
-        view_mode = "3列一覧"
-        if len(shared_photos) > 1:
-            view_mode = st.radio(
-                "共有写真の表示モード",
-                ["3列一覧", "1枚ずつ拡大"],
-                horizontal=True,
-                key="family_shared_photo_view_mode_v225",
-                label_visibility="collapsed",
-            )
-        paths = tuple(str(photo.get("storage_path") or "") for photo in shared_photos if photo.get("storage_path"))
-        signed = signed_photo_url_map(paths) if paths else {}
-        cards = []
-        for photo in shared_photos:
-            pid = str(photo.get("id") or "")
-            if not pid:
-                continue
-            owner = str(photo.get("_shared_owner_name") or photo.get("_shared_owner_key") or "家族").strip()
-            captured = str(photo.get("captured_at") or "").strip()
-            captured_label = captured[:10] if len(captured) >= 10 else captured
-            tag_meta = photo_selected_tag_meta(photo)
-            tag_text = ""
-            if tag_meta.get("key"):
-                tag_text = f"{tag_meta.get('emoji') or ''} {tag_meta.get('label') or ''}".strip()
-            meta_text = f"👨‍👩‍👦 {owner}さんから共有" + (f" ・ {captured_label}" if captured_label else "") + (f" ・ {tag_text}" if tag_text else "")
-            cards.append({
-                "id": pid,
-                "src": photo_display_url(photo, signed, max_px=1600 if view_mode == "1枚ずつ拡大" else 520, quality=92 if view_mode == "1枚ずつ拡大" else 80),
-                "emotion": photo_selected_tag_values(photo)[0],
-                "parenting": photo_selected_tag_values(photo)[1],
-                "emotion_label": str(tag_meta.get("label") or ""),
-                "emotion_emoji": str(tag_meta.get("emoji") or ""),
-                "emotion_color": str(tag_meta.get("color") or ""),
-                "location": str(photo_location_label(photo) or ""),
-                "tags": photo_ai_tags(photo)[:12],
-                "shared_meta": meta_text,
-            })
+    if st.button(
+        "閉じる",
+        use_container_width=True,
+        key="family_shared_individual_close_v456",
+    ):
+        st.session_state.pop(open_key, None)
+        st.rerun()
 
-        gallery_component = _get_diary_gallery_component()
-        if gallery_component is not None and cards:
-            gallery_component(
-                data={
-                    "photos": cards,
-                    "single": view_mode == "1枚ずつ拡大",
-                    "allow_delete": False,
-                    "allow_emotion": False,
-                    "allow_share": False,
-                    "carousel_key": "family_shared_individual_v225",
-                    "family_key": current_family_key(),
-                    "member_key": current_member_key(),
-                    "pending_param": PENDING_EMOTION_QUERY_PARAM,
-                },
-                key=f"family_shared_individual_photos_v225_{_current_ui_refresh_epoch()}_{'large' if view_mode == '1枚ずつ拡大' else 'grid'}",
-            )
-        else:
-            columns = 1 if view_mode == "1枚ずつ拡大" else 3
-            cols = st.columns(columns, gap="small")
-            for index, card in enumerate(cards):
-                with cols[index % columns]:
-                    if card.get("src"):
-                        border = str(card.get("emotion_color") or "#AEB6C2")
-                        emoji = str(card.get("emotion_emoji") or "")
-                        label = str(card.get("emotion_label") or "")
-                        badge = (
-                            f'<span style="position:absolute;right:9px;bottom:9px;background:rgba(255,255,255,.92);border-radius:999px;padding:4px 7px;font-size:16px;font-weight:800;">{html.escape(emoji)} {html.escape(label)}</span>'
-                            if emoji or label else ""
-                        )
-                        st.markdown(
-                            f'<div style="position:relative;padding:4px;border:3px solid {html.escape(border, quote=True)};border-radius:12px;">'
-                            f'<img src="{html.escape(str(card["src"]), quote=True)}" style="display:block;width:100%;max-height:70vh;object-fit:contain;border-radius:8px;" />{badge}</div>',
-                            unsafe_allow_html=True,
-                        )
-                    st.caption(str(card.get("shared_meta") or ""))
-                    if card.get("location"):
-                        st.caption(f"📍 {card['location']}")
+    shared_photos = list_family_shared_photos(limit=90)
+    if not shared_photos:
+        st.info("共有された写真はありません。")
+        return False
+
+    st.markdown(f"#### 👨‍👩‍👦 家族の共有写真（{len(shared_photos)}枚）")
+    view_mode = "3列一覧"
+    if len(shared_photos) > 1:
+        view_mode = st.radio(
+            "共有写真の表示モード",
+            ["3列一覧", "1枚ずつ拡大"],
+            horizontal=True,
+            key="family_shared_photo_view_mode_v456",
+            label_visibility="collapsed",
+        )
+    paths = tuple(str(photo.get("storage_path") or "") for photo in shared_photos if photo.get("storage_path"))
+    signed = signed_photo_url_map(paths) if paths else {}
+    cards = []
+    for photo in shared_photos:
+        pid = str(photo.get("id") or "")
+        if not pid:
+            continue
+        owner = str(photo.get("_shared_owner_name") or photo.get("_shared_owner_key") or "家族").strip()
+        captured = str(photo.get("captured_at") or "").strip()
+        captured_label = captured[:10] if len(captured) >= 10 else captured
+        tag_meta = photo_selected_tag_meta(photo)
+        tag_text = ""
+        if tag_meta.get("key"):
+            tag_text = f"{tag_meta.get('emoji') or ''} {tag_meta.get('label') or ''}".strip()
+        meta_text = f"👨‍👩‍👦 {owner}さん" + (f" ・ {captured_label}" if captured_label else "") + (f" ・ {tag_text}" if tag_text else "")
+        cards.append({
+            "id": pid,
+            "src": photo_display_url(photo, signed, max_px=1400 if view_mode == "1枚ずつ拡大" else 420, quality=90 if view_mode == "1枚ずつ拡大" else 76),
+            "emotion": photo_selected_tag_values(photo)[0],
+            "parenting": photo_selected_tag_values(photo)[1],
+            "emotion_label": str(tag_meta.get("label") or ""),
+            "emotion_emoji": str(tag_meta.get("emoji") or ""),
+            "emotion_color": str(tag_meta.get("color") or ""),
+            "location": str(photo_location_label(photo) or ""),
+            "tags": photo_ai_tags(photo)[:12],
+            "shared_meta": meta_text,
+        })
+
+    gallery_component = _get_diary_gallery_component()
+    if gallery_component is not None and cards:
+        gallery_component(
+            data={
+                "photos": cards,
+                "single": view_mode == "1枚ずつ拡大",
+                "allow_delete": False,
+                "allow_emotion": False,
+                "allow_share": False,
+                "carousel_key": "family_shared_individual_v456",
+                "family_key": current_family_key(),
+                "member_key": current_member_key(),
+                "pending_param": PENDING_EMOTION_QUERY_PARAM,
+            },
+            key=f"family_shared_individual_photos_v456_{_current_ui_refresh_epoch()}_{'large' if view_mode == '1枚ずつ拡大' else 'grid'}",
+        )
+    else:
+        columns = 1 if view_mode == "1枚ずつ拡大" else 3
+        cols = st.columns(columns, gap="small")
+        for index, card in enumerate(cards):
+            with cols[index % columns]:
+                if card.get("src"):
+                    border = str(card.get("emotion_color") or "#AEB6C2")
+                    emoji = str(card.get("emotion_emoji") or "")
+                    label = str(card.get("emotion_label") or "")
+                    badge = (
+                        f'<span style="position:absolute;right:9px;bottom:9px;background:rgba(255,255,255,.92);border-radius:999px;padding:4px 7px;font-size:16px;font-weight:800;">{html.escape(emoji)} {html.escape(label)}</span>'
+                        if emoji or label else ""
+                    )
+                    st.markdown(
+                        f'<div style="position:relative;padding:4px;border:3px solid {html.escape(border, quote=True)};border-radius:12px;">'
+                        f'<img src="{html.escape(str(card["src"]), quote=True)}" loading="lazy" decoding="async" style="display:block;width:100%;max-height:70vh;object-fit:contain;border-radius:8px;" />{badge}</div>',
+                        unsafe_allow_html=True,
+                    )
+                st.caption(str(card.get("shared_meta") or ""))
+                if card.get("location"):
+                    st.caption(f"📍 {card['location']}")
     return True
 
 
@@ -35464,10 +35765,7 @@ def render_photo_library_single_v420(photo, photo_number, total_count):
 
 
 def page_photo_library_v418():
-    page_top(
-        "🖼️ これまで撮った写真",
-        "この個人アカウントに保存している写真を一覧・拡大で確認し、感情・共有・お気に入り・削除も同じ画面で操作できます。",
-    )
+    page_top("🖼️ これまで撮った写真")
     render_photo_favorite_notice()
     render_photo_family_share_notice()
     library_delete_notice = st.session_state.pop("_diary_notice", None)
@@ -35542,7 +35840,7 @@ def page_photo_library_v418():
         render_photo_library_single_v420(photos[enlarged_index], enlarged_index + 1, len(photos))
         return
 
-    per_page = 30
+    per_page = 18
     page_count = max(1, math.ceil(len(photos) / per_page))
     page_key = "_all_photo_library_page_v418"
     try:
@@ -35576,7 +35874,7 @@ def page_photo_library_v418():
         has_voice = bool(photo_voice_note_storage_path(photo))
         cards.append({
             "id": photo_id,
-            "src": photo_display_url(photo, signed, max_px=520, quality=80),
+            "src": photo_display_url(photo, signed, max_px=420, quality=76),
             "emotion": photo_selected_tag_values(photo)[0],
             "parenting": photo_selected_tag_values(photo)[1],
             "location": str(photo_location_label(photo) or ""),
@@ -35663,7 +35961,7 @@ def page_photo_library_v418():
                 absolute_index = start + local_index
                 photo_id = str(photo.get("id") or absolute_index)
                 with cols[offset]:
-                    src = photo_display_url(photo, signed, max_px=520, quality=80)
+                    src = photo_display_url(photo, signed, max_px=420, quality=76)
                     if src:
                         meta = photo_selected_tag_meta(photo)
                         border = str(meta.get("color") or "#AEB6C2")
@@ -35691,7 +35989,7 @@ def page_photo_library_v418():
                         st.rerun()
 
     if page_count > 1:
-        st.caption(f"{current_page + 1} / {page_count}ページ　（1ページ最大30枚）")
+        st.caption(f"{current_page + 1} / {page_count}ページ　（1ページ最大18枚）")
         prev_col, next_col = st.columns(2, gap="small")
         with prev_col:
             if st.button(
@@ -35984,17 +36282,13 @@ def page_history(embedded=False):
 
     rows = list_recent_diaries()
     if not st.session_state.get("history_detail_trip_id"):
-        try:
-            all_tag_photos = list_member_still_photos_for_tags()
-            render_ai_photo_tag_action(
-                all_tag_photos,
-                key="history_all_photos",
-                scope_label="これまでの写真",
-            )
-            render_photo_tag_browser(all_tag_photos, key="history_all_photos")
-        except Exception as exc:
-            with st.expander("写真タグ機能の詳細"):
-                st.code(str(exc))
+        st.button(
+            "🏷️ タグから振り返る",
+            use_container_width=True,
+            key="history_open_tag_review_v456",
+            on_click=_go_page_callback,
+            args=("review_tag", "push"),
+        )
 
     if not rows:
         st.session_state.pop("history_detail_trip_id", None)
@@ -43784,21 +44078,27 @@ def page_settings():
     )
 
     st.divider()
+    render_performance_log_v457()
     st.caption(f"アプリビルド：{APP_BUILD}")
 
 # ============================================================
 # Main UI
 # ============================================================
-verify_setup()
-require_family_pin()
-init_state()
+_app_run_started_v457 = time.perf_counter()
+_perf_begin_run_v457()
+_perf_call_v457("bootstrap:verify_setup", verify_setup)
+_perf_call_v457("bootstrap:login", require_family_pin)
+_perf_call_v457("bootstrap:init_state", init_state)
 # Notification launches must win over camera-session restoration. Evening review
 # has priority; ordinary automatic-discovery notifications keep their dedicated page.
+_deep_link_started_v457 = time.perf_counter()
 if not consume_evening_review_deep_link():
     consume_auto_discovery_deep_link()
+_perf_log_v457("bootstrap:deep_links", started_at=_deep_link_started_v457)
 # v383: newly saved videos launch their AI job immediately. Full recovery scans are
 # only for interrupted/stale jobs, so keep them off unrelated button reruns and run
 # them lazily on video-related pages.
+_video_resume_started_v457 = time.perf_counter()
 try:
     _bg_resume_page = str(st.session_state.get("main_page") or "home")
     if _bg_resume_page in {"videos", "moments"}:
@@ -43809,17 +44109,18 @@ try:
             resume_member_video_background_jobs(min_interval_seconds=90)
 except Exception:
     pass
+_perf_log_v457("bootstrap:video_resume", started_at=_video_resume_started_v457)
 # v145 does not use browser-side low-resolution candidate recovery. If native
 # extraction from the saved original is unavailable, the job ends as an explicit
 # error instead of silently substituting blurry frames.
 # Daily rollover and old-title repair can touch many rows. They are diary/history
 # maintenance, not startup requirements, so home/camera opens no longer wait for them.
-restore_recent_camera_session()
+_perf_call_v457("bootstrap:camera_restore", restore_recent_camera_session)
 
 # Legacy v159 pending query values are still consumed for users who upgrade with an
 # older tab open. v167 mirrors browser-only choices into this URL payload with
 # history.replaceState, so the next real app action can persist them without any tap-time communication.
-consume_pending_emotion_query()
+_perf_call_v457("bootstrap:pending_emotion", consume_pending_emotion_query)
 
 # v146: resolve browser Back/Forward before drawing any visible page.
 # Previously the bridge ran after page rendering, so a mobile Back event could first
@@ -43827,22 +44128,22 @@ consume_pending_emotion_query()
 # That ordering could leave stale Back/Home controls in odd positions until another
 # rerun. Handle history first; if it changes the page, sync_browser_history() reruns
 # before any visible UI is emitted.
-sync_browser_history()
+_perf_call_v457("bootstrap:browser_history", sync_browser_history)
 # v449: photo-library emotion taps are intentionally browser-local for instant UI.
 # Mount the v166 flush bridge on every real app rerun *before* the requested page is
 # rendered so Review/Replay sees exactly the same current tags shown in the library.
 # The bridge is idempotent by token and clears the fast DB caches after persistence.
-sync_pending_tags_from_browser_v166()
-render_pending_emotion_query_cleanup()
+_perf_call_v457("bootstrap:pending_tag_sync", sync_pending_tags_from_browser_v166)
+_perf_call_v457("bootstrap:pending_cleanup", render_pending_emotion_query_cleanup)
 
 # v338: loading remains lightweight; stale Streamlit DOM stays visible during reconciliation. Android GPS is native-background only and never emits Streamlit GPS events. It performs
 # no network request and has no artificial minimum display time; it exists only while
 # real work is already blocking the UI.
-inject_lightweight_train_loading_v326()
+_perf_call_v457("bootstrap:loader", inject_lightweight_train_loading_v326)
 
 # v338: browser/PWA keeps the legacy watcher. Android returns immediately inside this
 # function because its foreground GPS service + WorkManager own recording/sync entirely.
-run_always_on_gps_tracker_v271()
+_perf_call_v457("bootstrap:gps_bridge", run_always_on_gps_tracker_v271)
 
 # v337: keep the whole visible page under one keyed root so its top-level identity
 # does not shift between Home/Review/Camera/etc. During reconciliation the outgoing
@@ -43878,49 +44179,49 @@ with st.container(key="app_page_root_v280"):
 
     page = st.session_state.get("main_page", "home")
     if page == "home":
-        page_home()
+        _perf_call_v457("page:home", page_home, force=True)
     elif page == "camera":
-        page_trip()
+        _perf_call_v457("page:camera", page_trip, force=True)
     elif page == "videos":
-        page_videos()
+        _perf_call_v457("page:videos", page_videos, force=True)
     elif page == "moments":
-        page_moments()
+        _perf_call_v457("page:moments", page_moments, force=True)
     elif page == "diary":
-        page_diary()
+        _perf_call_v457("page:diary", page_diary, force=True)
     elif page == "photos":
-        page_photo_library_v418()
+        _perf_call_v457("page:photos", page_photo_library_v418, force=True)
     elif page == "review":
-        page_review()
+        _perf_call_v457("page:review", page_review, force=True)
     elif page == "review_map":
-        page_memory_map()
+        _perf_call_v457("page:review_map", page_memory_map, force=True)
     elif page == "review_project":
-        page_burari_project()
+        _perf_call_v457("page:review_project", page_burari_project, force=True)
     elif page == "review_monthly":
-        page_monthly(embedded=False)
+        _perf_call_v457("page:review_monthly", page_monthly, embedded=False, force=True)
     elif page == "review_tag":
-        page_tag_review(embedded=False)
+        _perf_call_v457("page:review_tag", page_tag_review, embedded=False, force=True)
     elif page == "review_history":
-        page_history(embedded=False)
+        _perf_call_v457("page:review_history", page_history, embedded=False, force=True)
     elif page == "nearby":
-        page_nearby()
+        _perf_call_v457("page:nearby", page_nearby, force=True)
     elif page == "discovery_results":
-        page_discovery_results()
+        _perf_call_v457("page:discovery_results", page_discovery_results, force=True)
     elif page == "evening_review":
-        page_evening_review()
+        _perf_call_v457("page:evening_review", page_evening_review, force=True)
     elif page == "toilets":
-        page_toilets()
+        _perf_call_v457("page:toilets", page_toilets, force=True)
     elif page == "field_notes":
-        page_field_notes()
+        _perf_call_v457("page:field_notes", page_field_notes, force=True)
     elif page == "settings":
-        page_settings()
+        _perf_call_v457("page:settings", page_settings, force=True)
     elif page == "settings_moments":
-        page_good_moments_menu()
+        _perf_call_v457("page:settings_moments", page_good_moments_menu, force=True)
     elif page == "settings_moments_definition":
-        page_good_moments_definition()
+        _perf_call_v457("page:settings_moments_definition", page_good_moments_definition, force=True)
     elif page == "settings_location":
-        page_settings_location()
+        _perf_call_v457("page:settings_location", page_settings_location, force=True)
     elif page == "settings_account":
-        page_settings_account()
+        _perf_call_v457("page:settings_account", page_settings_account, force=True)
     else:
         st.session_state["main_page"] = "home"
         st.rerun(scope="app")
@@ -43934,4 +44235,6 @@ with st.container(key="app_page_root_v280"):
             page == live_page
             and page in {"camera", "videos", "moments", "diary", "photos", "review", "review_map", "review_project", "review_monthly", "review_tag", "review_history", "nearby", "discovery_results", "evening_review", "toilets", "field_notes", "settings", "settings_moments", "settings_moments_definition", "settings_location", "settings_account"}
         ):
-            render_global_bottom_navigation(page)
+            _perf_call_v457("ui:bottom_navigation", render_global_bottom_navigation, page)
+
+_perf_log_v457("rerun_total", started_at=_app_run_started_v457, force=True)
