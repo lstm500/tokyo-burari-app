@@ -35,8 +35,8 @@ import streamlit as st
 # Freshly generated update: 2026-09-16 JST
 GENERATED_UPDATE_JST = "2026-09-18T00:36:00+09:00"
 
-APP_BUILD = "v465"
-# v465: Observational browser interaction timing and complete server phase lifecycle logs only.
+APP_BUILD = "v466"
+# v466: Logging only: bounded operation records, explicit/estimated endpoint separation, confirmation-delay exclusion, descriptive summaries and loss metadata.
 # v464: Increase Good Moments final still selection from 6 to 9 photos. Keep the existing maximum-20 candidate sampling and AI quality criteria, but require up to 9 distinct final moments. Show the Good Moments list as a fixed 3-column x 3-row grid while preserving the one-photo enlarged viewer, voice attachment, emotion/parenting tags, reroll behavior, and all unrelated app behavior.
 # v463: Change the Android Nearby snack automatic-notification cooldown from 60 minutes to about 20 minutes when the existing eligibility conditions are met. Keep dwell/walking/time-window/history/distance rules, tourism notification logic, place-repeat suppression, GPS sampling, background-service cadence, and API/search behavior unchanged; no new polling or timers are added.
 # v462: Tighten toilet-search admission around practical public access. Keep standalone public toilets, stations/transit, major public/commercial facilities, convenience/supermarket/department-store hosts, selected civic/cultural/medical facilities, and restroom-confirmed major chains. Exclude ordinary small restaurants/cafes/shops/clinics/offices even when a toilet flag exists. Mixed office/commercial buildings now require strong same-building multi-tenant evidence instead of nearby-place density, preventing dense-city false positives. No extra API calls are added; filtering is local and the existing parallel search remains unchanged.
@@ -945,6 +945,13 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
+
+
+# Only wraps the existing component trigger for diagnostics; no new messages.
+@functools.lru_cache(maxsize=32)
+def _perf_instrument_js_v466(source):
+    marker = "export default function(component) {"
+    return source.replace(marker, marker + "\n  // v466 diagnostic observer: preserve event names, values, return and exceptions.\n  try {\n    const perfOriginal466 = component;\n    component = new Proxy(perfOriginal466, {get(target, property, receiver) {\n      if (property !== 'setTriggerValue') return Reflect.get(target, property, receiver);\n      return function(...args) {\n        try {\n          let host = window;\n          try { if(window.parent.document) host=window.parent; } catch (_) {}\n          host.__burariPerf466?.submitted(args[0], target.parentElement);\n        } catch (_) {}\n        return Reflect.apply(target.setTriggerValue, target, args);\n      };\n    }});\n  } catch (_) {}\n", 1)
 
 def secret(name, default=None):
     try:
@@ -4818,7 +4825,7 @@ def _get_live_camera_component():
             "tokyo_burari_live_camera_v444",
             html=_LIVE_CAMERA_HTML,
             css=_LIVE_CAMERA_CSS,
-            js=_LIVE_CAMERA_JS,
+            js=_perf_instrument_js_v466(_LIVE_CAMERA_JS),
         )
     except Exception:
         live_camera_component = None
@@ -5233,7 +5240,7 @@ def _get_far_field_mic_component():
             "tokyo_burari_far_field_mic",
             html=_FAR_FIELD_MIC_HTML,
             css=_FAR_FIELD_MIC_CSS,
-            js=_FAR_FIELD_MIC_JS,
+            js=_perf_instrument_js_v466(_FAR_FIELD_MIC_JS),
         )
     except Exception:
         far_field_mic_component = None
@@ -6987,7 +6994,7 @@ def _get_diary_gallery_component():
             "tokyo_burari_diary_gallery_v425",
             html=_DIARY_GALLERY_HTML,
             css=_DIARY_GALLERY_CSS,
-            js=_DIARY_GALLERY_JS,
+            js=_perf_instrument_js_v466(_DIARY_GALLERY_JS),
         )
     except Exception:
         diary_gallery_component = None
@@ -7045,7 +7052,7 @@ def _get_pending_emotion_cleanup_component():
     try:
         pending_emotion_cleanup_component = st.components.v2.component(
             "tokyo_burari_pending_emotion_cleanup_v159",
-            js=_PENDING_EMOTION_CLEANUP_JS,
+            js=_perf_instrument_js_v466(_PENDING_EMOTION_CLEANUP_JS),
         )
     except Exception:
         pending_emotion_cleanup_component = None
@@ -7131,7 +7138,7 @@ def _get_pending_tag_sync_component_v166():
     try:
         pending_tag_sync_component_v166 = st.components.v2.component(
             "tokyo_burari_pending_tag_sync_v166",
-            js=_PENDING_TAG_SYNC_JS,
+            js=_perf_instrument_js_v466(_PENDING_TAG_SYNC_JS),
         )
     except Exception:
         pending_tag_sync_component_v166 = None
@@ -7260,9 +7267,9 @@ def sync_pending_tags_from_browser_v166():
 # Streamlit session-state navigation does not create browser history entries by
 # itself. This small component mirrors each app screen into window.history so
 # Chrome/Safari back and forward buttons move between app screens first.
-_PERF_BROWSER_JS_V465 = 'function installBurariPerf465(host, page, run) {\n  const key = \'__burariPerf465\';\n  if (host[key]) { host[key].run(page, run); return host[key]; }\n  const doc = host.document, clock = () => host.performance.now();\n  const storageKey = \'burari_perf_v465\';\n  let rows = [], active = null, timer = null, settle = null, currentPage = page, currentRun = run;\n  let sequence = 0;\n  const session = Math.random().toString(36).slice(2, 10);\n  const watched = new WeakSet();\n  const roots = new Set();\n  const round = v => Math.round(v * 10) / 10;\n  try { rows = JSON.parse(host.sessionStorage.getItem(storageKey) || \'[]\').slice(-300); } catch (_) {}\n  const persist = () => { try { host.sessionStorage.setItem(storageKey, JSON.stringify(rows.slice(-300))); } catch (_) {} };\n  const record = r => { rows.push(r); if (rows.length > 300) rows.shift(); persist(); };\n  const visible = e => !!(e && e.isConnected && e.getClientRects().length && host.getComputedStyle(e).visibility !== \'hidden\');\n  const signature = e => e && e.isConnected ? [e.textContent, e.getAttribute(\'class\'), e.getAttribute(\'style\'), e.getAttribute(\'disabled\'), e.getAttribute(\'aria-pressed\')].join(\'|\') : \'removed\';\n  const all = selector => { const out = []; for (const root of roots) { if (root.host && !root.host.isConnected) { roots.delete(root); continue; } try { out.push(...root.querySelectorAll(selector)); } catch (_) {} } return out; };\n  const busy = () => all(\'[data-testid="stSpinner"],[data-stale="true"],[aria-busy="true"]\').some(visible);\n  function finish(status, evidence) {\n    if (!active) return;\n    const a = active; active = null;\n    host.clearTimeout(timer); host.clearTimeout(settle);\n    record({type:\'interaction\', id:a.id, page:a.page, button:a.label, control:a.control,\n      pressed_at:new Date(a.wall).toISOString(), first_response_ms:a.response,\n      first_response_at:a.response == null ? null : new Date(a.wall + a.response).toISOString(),\n      result_at:status === \'display_estimated\' ? new Date(a.wall + clock() - a.start).toISOString() : null,\n      elapsed_ms:round(clock()-a.start), status, evidence, runs:a.runs,\n      clock:\'performance.now\', display_measurement:\'DOM + two animation frames; physical display not measured\'});\n  }\n  function check() {\n    if (!active || doc.hidden) return;\n    if (active.response == null && signature(active.button) !== active.before) active.response = round(clock()-active.start);\n    if (busy()) return;\n    let evidence = \'\';\n    // A completed server render is necessary for standard Streamlit buttons.\n    const markers = all(\'[data-burari-perf-done]\');\n    if (markers.some(e => Number(e.getAttribute(\'data-burari-perf-done\')) > active.initialRun)) evidence = \'server_render_done_and_dom_idle\';\n    // Camera preview is an explicit local result, independent of server reruns.\n    if (active.control === \'live-camera-shoot\') {\n      const img = all(\'#camera-review-image\').find(e => visible(e) && e.complete && e.naturalWidth > 0);\n      evidence = img && img.currentSrc !== active.previewBefore ? \'camera_preview_loaded\' : \'\';\n    }\n    // Purely local controls have no generic business-completion signal. Keep them\n    // unresolved instead of incorrectly treating their pressed colour as success.\n    if (!evidence) return;\n    if (all(\'img\').some(e => { if (!visible(e) || e.complete) return false; const r=e.getBoundingClientRect(); return r.bottom>0 && r.right>0 && r.top<host.innerHeight && r.left<host.innerWidth; })) return;\n    const id = active.id;\n    const failed = all(\'[data-testid="stAlert"]\').some(e => visible(e) && !active.alertsBefore.includes(e.textContent) && /error|失敗|エラー|できません|できなかった/i.test(e.textContent));\n    host.requestAnimationFrame(() => host.requestAnimationFrame(() => {\n      if (active && active.id === id && !doc.hidden && !busy()) finish(failed ? \'error_displayed\' : \'display_estimated\', evidence);\n    }));\n  }\n  function changed() {\n    if (!active) return;\n    if (active.response == null && signature(active.button) !== active.before) active.response = round(clock()-active.start);\n    host.clearTimeout(settle); settle = host.setTimeout(check, 200);\n  }\n  function clicked(event) {\n    if (event.__burari465 || !event.isTrusted) return;\n    const path = event.composedPath ? event.composedPath() : [event.target];\n    const button = path.find(e => e && e.matches && e.matches(\'button,[role="button"],input[type="submit"]\'));\n    if (!button || button.disabled || button.closest(\'[data-burari-perf-ui]\')) return;\n    const label = String(button.getAttribute(\'aria-label\') || button.textContent || button.value || \'\').trim().slice(0, 80);\n    if (/動作ログ|ログを|ログ消去/.test(label)) return;\n    event.__burari465 = true;\n    if (active) finish(\'interrupted\', \'next_button\');\n    const start = clock();\n    active = {id:session + \'-\' + (++sequence), page:currentPage, label, control:button.id || button.getAttribute(\'data-testid\') || \'\',\n      wall:Date.now(), start, response:null, button, before:signature(button), initialRun:currentRun, runs:[],\n      alertsBefore:all(\'[data-testid="stAlert"]\').filter(visible).map(e=>e.textContent),\n      previewBefore:(all(\'#camera-review-image\')[0] || {}).currentSrc || \'\'};\n    record({type:\'press\',id:active.id,page:currentPage,button:label,pressed_at:new Date(active.wall).toISOString()});\n    timer = host.setTimeout(() => finish(\'timeout\',\'no_confirmed_result_within_120s\'),120000);\n    host.requestAnimationFrame(() => host.requestAnimationFrame(changed));\n  }\n  function scan(node) {\n    if (!node || !node.querySelectorAll) return;\n    if (node.shadowRoot) watch(node.shadowRoot);\n    for (const el of node.querySelectorAll(\'*\')) {\n      if (el.shadowRoot) watch(el.shadowRoot);\n      if (el.tagName === \'IFRAME\') {\n        const attach = () => { try { if (el.contentDocument) watch(el.contentDocument); } catch (_) {} };\n        if (!watched.has(el)) { watched.add(el); el.addEventListener(\'load\',attach,{passive:true}); }\n        attach();\n      }\n    }\n  }\n  function watch(root) {\n    if (watched.has(root)) return;\n    watched.add(root); roots.add(root);\n    root.addEventListener(\'click\',clicked,{capture:true,passive:true});\n    root.addEventListener(\'load\',changed,{capture:true,passive:true});\n    const observer = new host.MutationObserver(records => {\n      for (const r of records) for (const n of r.addedNodes) scan(n);\n      changed();\n    });\n    observer.observe(root,{subtree:true,childList:true,attributes:true,characterData:true});\n    scan(root);\n  }\n  watch(doc);\n  doc.addEventListener(\'visibilitychange\',() => { if (doc.hidden && active) finish(\'interrupted\',\'background\'); },{passive:true});\n  host.addEventListener(\'pagehide\',() => { if(active) finish(\'interrupted\',\'pagehide\'); persist(); },{passive:true});\n  const api = {run(p,r) {currentPage=p;currentRun=Number(r)||0;if(active && !active.runs.includes(currentRun))active.runs.push(currentRun);},\n    snapshot() { return {version:465, captured_at:new Date().toISOString(), rows:rows.slice(),\n      pending:active ? {id:active.id,button:active.label,elapsed_ms:round(clock()-active.start),status:\'pending\'} : null,\n      limitations:[\'DOM display time is estimated\',\'Cross-origin iframe internals and external apps are not observable\',\'Local controls without an explicit completion signal stay unresolved\',\'Server runs are temporal candidates, not guaranteed request attribution\']}; },\n    clear(){if(active)finish(\'interrupted\',\'log_clear\');rows=[];persist();}};\n  host[key]=api; return api;\n}\n'
+_PERF_BROWSER_JS_V466 = 'function installBurariPerf466(host, page, run, serverSession) {\n  const KEY=\'__burariPerf466\', STORE=\'burari_perf_v466\';\n  if(host[KEY]) { host[KEY].run(page,run,serverSession); return host[KEY]; }\n  const doc=host.document, mono=()=>host.performance.now(), rounded=x=>Math.round(x*10)/10;\n  const boot=host.crypto?.randomUUID?.() || Date.now().toString(36)+\'-\'+Math.random().toString(36).slice(2);\n  let seq=0, rows=[], dropped=0, persistenceError=false, active=null, current={page,run:Number(run)||0,session:serverSession};\n  let deadline=null, quiet=null, persistTimer=null, checking=false, pointer=null;\n  const observers=new Map(), frameHandlers=new Map(), handledEvents=new WeakSet(), counts=new Map();\n  try { const saved=JSON.parse(host.sessionStorage.getItem(STORE)||\'null\'); if(saved?.version===466 && Array.isArray(saved.rows)) { rows=saved.rows.slice(-300); dropped=Number(saved.dropped)||0; for(const row of rows) if(row.status===\'pending\'){row.status=\'interrupted\';row.reason=\'document_reloaded\';row.result_ms=null;} } } catch(_){persistenceError=true;}\n  function persistNow(){try{host.sessionStorage.setItem(STORE,JSON.stringify({version:466,rows,dropped}));}catch(_){persistenceError=true;}}\n  function persist(){if(persistTimer!==null)return;persistTimer=host.setTimeout(()=>{persistTimer=null;persistNow();},50);}\n  function safe(fn){try{return fn();}catch(_){return undefined;}}\n  function afterPaint(fn){host.requestAnimationFrame(()=>host.requestAnimationFrame(()=>safe(fn)));}\n  function visible(el){if(!el?.isConnected)return false;const w=el.ownerDocument?.defaultView||host;return !!el.getClientRects().length && w.getComputedStyle(el).visibility!==\'hidden\';}\n  function viewport(el){if(!visible(el))return false;const r=el.getBoundingClientRect(),w=el.ownerDocument?.defaultView||host;return r.bottom>0&&r.right>0&&r.top<w.innerHeight&&r.left<w.innerWidth;}\n  function connected(root){return root===doc || (root.host?root.host.isConnected:!!root.defaultView?.frameElement?.isConnected);}\n  function prune(){for(const [root,state] of observers) if(!connected(root)){state.observer.disconnect();for(const [name,fn]of state.listeners)root.removeEventListener(name,fn,true);observers.delete(root);}for(const [frame,fn]of frameHandlers)if(!frame.isConnected){frame.removeEventListener(\'load\',fn);frameHandlers.delete(frame);}}\n  function query(selector){const result=[];for(const root of observers.keys())safe(()=>result.push(...root.querySelectorAll(selector)));return result;}\n  function signature(el){return el?.isConnected?[el.textContent,el.getAttribute(\'class\'),el.getAttribute(\'style\'),el.getAttribute(\'disabled\'),el.getAttribute(\'aria-pressed\')].join(\'|\'):\'removed\';}\n  function busy(){return query(\'[data-testid="stSpinner"],[data-stale="true"],[aria-busy="true"]\').some(visible);}\n  function imageReady(el){return visible(el)&&el.complete&&el.naturalWidth>0;}\n  function stamp(row,ms){return new Date(Date.parse(row.pressed_at)+ms).toISOString();}\n  function end(status,reason,observedAt=null,kind=null){\n    if(!active)return;const a=active;active=null;host.clearTimeout(deadline);host.clearTimeout(quiet);\n    a.row.status=status;a.row.reason=reason;a.row.observed_until_ms=rounded(mono()-a.start);\n    a.row.measurement_kind=kind;\n    // No success duration is fabricated for timeouts, interruptions or failures.\n    a.row.result_ms=status===\'completed\'&&observedAt!==null?rounded(observedAt-a.start):null;\n    a.row.result_at=a.row.result_ms===null?null:stamp(a.row,a.row.result_ms);\n    a.row.confirmation_ms=observedAt===null?null:rounded(mono()-observedAt);\n    persist();\n  }\n  function response(){const a=active;if(!a||a.row.first_response_ms!==null||signature(a.button)===a.before)return;\n    afterPaint(()=>{if(active!==a||doc.hidden)return;a.row.first_response_ms=rounded(mono()-a.start);a.row.first_response_at=stamp(a.row,a.row.first_response_ms);});}\n  function endpoint(){const a=active;if(!a)return null;\n    if(a.control===\'live-camera-shoot\'){\n      const img=query(\'#camera-review-image\').find(e=>imageReady(e)&&e.currentSrc!==a.preview);\n      return img?{kind:\'camera_preview_loaded\',explicit:true}:null;\n    }\n    if([\'live-camera-start\',\'live-video-start\',\'live-camera-facing-switch\'].includes(a.control)){\n      const v=query(\'#live-camera-video\').find(e=>visible(e)&&e.readyState>=2&&!e.paused&&(!a.cameraWasReady||a.control===\'live-camera-facing-switch\'&&a.cameraStream!==e.srcObject));\n      return v?{kind:\'camera_video_ready\',explicit:true}:null;\n    }\n    // A render marker is only a UI estimate, never confirmation of a database save,\n    // map tile completion or media playback. Local-only actions cannot use it.\n    if(a.localOnly && !a.submitted)return null;\n    if(!a.row.server_runs.some(x=>x.session===current.session && x.run!==a.initialRun))return null;\n    const marker=query(\'[data-burari-perf-done]\').find(e=>Number(e.getAttribute(\'data-burari-perf-done\'))===current.run&&e.getAttribute(\'data-burari-perf-session\')===current.session&&current.run!==a.initialRun);\n    if(!marker||busy())return null;\n    if(query(\'img\').some(e=>viewport(e)&&(!e.complete||!e.naturalWidth)))return null;\n    return {kind:\'server_ui_render_estimate\',explicit:false};\n  }\n  function consider(){if(!active||doc.hidden||checking)return;response();const candidate=endpoint();if(!candidate)return;\n    const a=active,revision=a.revision;checking=true;\n    afterPaint(()=>{checking=false;if(active!==a||doc.hidden)return;if(a.revision!==revision){consider();return;}\n      const again=endpoint();if(!again||again.kind!==candidate.kind)return;\n      const paintedAt=mono();\n      if(candidate.explicit){end(\'completed\',candidate.kind,paintedAt,\'explicit_ui_state\');return;}\n      // Confirmation delay is excluded from result_ms. Reject candidates that\n      // change during the quiet window rather than adding a fixed 200 ms latency.\n      host.clearTimeout(quiet);quiet=host.setTimeout(()=>safe(()=>{\n        if(active===a&&a.revision===revision&&!doc.hidden&&endpoint()?.kind===candidate.kind)end(\'completed\',candidate.kind,paintedAt,\'render_estimate\');\n      }),200);\n    });\n  }\n  function mutations(records){prune();for(const r of records)for(const node of r.addedNodes||[])scan(node);\n    if(!active)return;\n    // Ignore clock text/continuous style animations outside the clicked control\n    // for confirmation; use structural/result mutations to invalidate candidates.\n    if(records.some(r=>r.type===\'childList\'||r.attributeName===\'src\'||r.attributeName===\'data-burari-perf-done\'))active.revision++;\n    consider();\n  }\n  function getButton(event){const path=event.composedPath?event.composedPath():[event.target];return path.find(e=>e?.matches?.(\'button,[role="button"],input[type="submit"]\'));}\n  function isLog(button){return button.closest?.(\'[data-burari-perf-ui]\')||/動作ログ|操作時間ログ|ログを|ログ消去/.test(button.textContent||\'\');}\n  function down(event){const button=getButton(event);if(!button||button.disabled||isLog(button))return;const p={button,at:mono(),wall:Date.now(),id:event.pointerId,before:signature(button),responseAt:null};pointer=p;afterPaint(()=>{if(pointer===p&&signature(button)!==p.before)p.responseAt=mono();});}\n  function click(event){if(!event.isTrusted||handledEvents.has(event))return;\n    const button=getButton(event);if(!button||button.disabled||isLog(button))return;handledEvents.add(event);\n    if(active)end(\'interrupted\',\'next_operation\');prune();\n    const label=String(button.getAttribute(\'aria-label\')||button.textContent||button.value||\'\').trim().replace(/\\s+/g,\' \').slice(0,80);\n    const widget=button.closest?.(\'[class*="st-key-"]\');\n    const widgetKey=Array.from(widget?.classList||[]).find(x=>x.startsWith(\'st-key-\'))||\'\';\n    const control=button.id||widgetKey||button.getAttribute(\'data-testid\')||label;\n    const group=current.page+\'|\'+control;\n    const attempt=(counts.get(group)||0)+1;counts.set(group,attempt);if(counts.size>300)counts.delete(counts.keys().next().value);\n    const pressed=pointer?.button===button&&mono()-pointer.at<30000?pointer:{at:mono(),wall:Date.now()};pointer=null;\n    const row={id:boot+\'-\'+(++seq),build:466,page:current.page,control,button:label,\n      pressed_at:new Date(pressed.wall).toISOString(),activation_delay_ms:rounded(mono()-pressed.at),\n      input_method:event.detail===0?\'keyboard_or_accessibility\':\'pointer\',\n      first_response_ms:pressed.responseAt==null?null:rounded(pressed.responseAt-pressed.at),first_response_at:pressed.responseAt==null?null:new Date(pressed.wall+pressed.responseAt-pressed.at).toISOString(),result_ms:null,result_at:null,status:\'pending\',\n      attempt_in_document:attempt,visit_class:attempt===1?\'first_in_document\':\'repeat_in_document\',\n      server_runs:[],correlation:\'temporal_candidates_only\',measurement_kind:null};\n    const camera=query(\'#live-camera-video\')[0];\n    active={row,button,control:button.id||\'\',before:pressed.before||signature(button),start:pressed.at,initialRun:current.run,revision:0,\n      localOnly:!!button.getRootNode?.().host || button.ownerDocument!==doc,\n      preview:query(\'#camera-review-image\')[0]?.currentSrc||\'\',cameraWasReady:camera?.readyState>=2&&!camera?.paused,cameraStream:camera?.srcObject};\n    rows.push(row);if(rows.length>300){rows.shift();dropped++;}persist();\n    deadline=host.setTimeout(()=>safe(()=>end(\'timeout\',\'no_confirmed_endpoint_120s\')),120000);\n    afterPaint(()=>safe(consider));\n  }\n  function media(event){const a=active;if(!a)return;\n    if(event.type===\'playing\'&&[\'moments-voice-play\',\'burariReplayStart\',\'burariReplayAgain\'].includes(a.control)){\n      // Only a media element inside the same document as the pressed control.\n      if(event.target.ownerDocument===a.button.ownerDocument)afterPaint(()=>{if(active===a)end(\'completed\',\'media_playing\',mono(),\'media_event\');});\n    }\n    consider();\n  }\n  function watch(root){if(observers.has(root))return;\n    const listeners=[[\'pointerdown\',e=>safe(()=>down(e))],[\'pointercancel\',()=>{pointer=null;}],[\'click\',e=>safe(()=>click(e))],[\'load\',()=>safe(consider)],[\'loadeddata\',e=>safe(()=>media(e))],[\'playing\',e=>safe(()=>media(e))]];\n    for(const [name,fn]of listeners)root.addEventListener(name,fn,{capture:true,passive:true});\n    const observer=new host.MutationObserver(r=>safe(()=>mutations(r)));\n    observers.set(root,{observer,listeners});observer.observe(root,{subtree:true,childList:true,attributes:true,attributeFilter:[\'src\',\'hidden\',\'disabled\',\'class\',\'style\',\'aria-pressed\',\'aria-busy\',\'data-stale\',\'data-burari-perf-done\'],characterData:true});scan(root);\n  }\n  function scan(node){if(!node?.querySelectorAll)return;if(node.shadowRoot)watch(node.shadowRoot);\n    const list=[node,...node.querySelectorAll(\'*\')];\n    for(const el of list){if(el.shadowRoot)watch(el.shadowRoot);\n      if(el.tagName===\'IFRAME\'&&!frameHandlers.has(el)){\n        const attach=()=>safe(()=>{if(el.contentDocument)watch(el.contentDocument);});frameHandlers.set(el,attach);el.addEventListener(\'load\',attach,{passive:true});attach();\n      }\n    }\n  }\n  function quantile(values,q){const v=[...values].sort((a,b)=>a-b),i=(v.length-1)*q,lo=Math.floor(i),hi=Math.ceil(i);return rounded(v[lo]+(v[hi]-v[lo])*(i-lo));}\n  function summary(){const groups=new Map();\n    for(const row of rows){const key=[row.build,row.page,row.control,row.visit_class,row.measurement_kind||\'unresolved\',row.input_method].join(\'|\');\n      if(!groups.has(key))groups.set(key,{key,page:row.page,control:row.control,visit_class:row.visit_class,measurement_kind:row.measurement_kind,input_method:row.input_method,n:0,completed:0,interrupted:0,timeout:0,pending:0,error:0,values:[]});\n      const g=groups.get(key);g.n++;if(row.status in g)g[row.status]++;if(row.status===\'completed\'&&Number.isFinite(row.result_ms))g.values.push(row.result_ms);\n    }\n    return [...groups.values()].map(g=>{const v=g.values;delete g.values;return {...g,median_ms:v.length?quantile(v,.5):null,p90_ms:v.length>=20?quantile(v,.9):null,p95_ms:v.length>=100?quantile(v,.95):null,minimum_ms:v.length?Math.min(...v):null,maximum_ms:v.length?Math.max(...v):null,sample_note:v.length<20?\'small_sample\':\'descriptive_only\'};});\n  }\n  const api={submitted(name,root){if(!active||!root?.contains?.(active.button))return;active.submitted=true;active.row.component_event=String(name).slice(0,64);active.row.submitted_ms=rounded(mono()-active.start);if(/error/i.test(name))end(\'error\',\'component_error\');},run(p,r,session){if(active&&current.session&&session!==current.session)end(\'interrupted\',\'server_session_changed\');current={page:p,run:Number(r)||0,session};if(active){const list=active.row.server_runs;if(!list.some(x=>x.run===current.run&&x.session===session)){if(list.length<32)list.push({session,run:current.run});else active.row.correlation_truncated=true;}}safe(consider);},\n    snapshot(){if(active)active.row.observed_until_ms=rounded(mono()-active.start);persistNow();return JSON.parse(JSON.stringify({version:466,document_id:boot,captured_at:new Date().toISOString(),limit:300,dropped_operations:dropped,persistence_error:persistenceError,rows,summary:summary(),coverage:{watched_roots:observers.size,inaccessible_iframes:[...frameHandlers.keys()].filter(f=>!safe(()=>f.contentDocument)).length},limitations:[\'Physical screen presentation is not measured\',\'Render estimates are not business-operation completion\',\'First/repeat means this document, not cache hit/miss\',\'Cross-origin frames and external apps are not measured\',\'Server links are temporal candidates; do not sum nested phase times\',\'Timeouts and interruptions are excluded from successful latency distributions\']}));},\n    clear(){host.clearTimeout(deadline);host.clearTimeout(quiet);active=null;rows=[];dropped=0;counts.clear();persistNow();}};\n  host[KEY]=api;watch(doc);\n  doc.addEventListener(\'visibilitychange\',()=>safe(()=>{if(doc.hidden&&active)end(\'interrupted\',\'background\');persistNow();}),{passive:true});\n  host.addEventListener(\'pagehide\',()=>safe(()=>{if(active)end(\'interrupted\',\'pagehide\');persistNow();}),{passive:true});\n  return api;\n}\n'
 
-_HISTORY_JS = _PERF_BROWSER_JS_V465 + r"""
+_HISTORY_JS = _PERF_BROWSER_JS_V466 + r"""
 export default function(component) {
   const { data, setTriggerValue } = component;
   const validPages = new Set(['home', 'camera', 'videos', 'moments', 'diary', 'photos', 'review', 'review_map', 'review_project', 'review_monthly', 'review_tag', 'review_history', 'nearby', 'discovery_results', 'evening_review', 'toilets', 'field_notes', 'settings', 'settings_moments', 'settings_moments_definition', 'settings_location', 'settings_account']);
@@ -7287,7 +7294,7 @@ export default function(component) {
     }
   } catch (_) {}
 
-  try { installBurariPerf465(hostWindowV457, requestedPage, data?.perf_run); } catch (_) {}
+  try { installBurariPerf466(hostWindowV457, requestedPage, data?.perf_run, data?.perf_session); } catch (_) {}
 
   const refreshLayoutV457 = () => {
     const refresh = () => {
@@ -7498,7 +7505,7 @@ export default function(component) {
 try:
     browser_history_component = st.components.v2.component(
         'tokyo_burari_browser_history_v208',
-        js=_HISTORY_JS,
+        js=_perf_instrument_js_v466(_HISTORY_JS),
     )
 except Exception:
     browser_history_component = None
@@ -7583,7 +7590,7 @@ try:
     browser_persistence_component = st.components.v2.component(
         "tokyo_burari_browser_persistence_v126",
         html=_BROWSER_PERSISTENCE_HTML,
-        js=_BROWSER_PERSISTENCE_JS,
+        js=_perf_instrument_js_v466(_BROWSER_PERSISTENCE_JS),
     )
 except Exception:
     browser_persistence_component = None
@@ -8348,6 +8355,7 @@ def _perf_log_v457(phase, *, started_at=None, duration_ms=None, page=None, meta=
         st.session_state["_performance_seq_v458"] = seq
         row = {
             "seq": seq,
+            "server_session": st.session_state.setdefault("_perf_session_v466", uuid.uuid4().hex),
             "at_ms": int(time.time() * 1000),
             "run": int(st.session_state.get("_performance_current_run_v457") or 0),
             "page": str(page or st.session_state.get("main_page") or "home"),
@@ -8366,6 +8374,7 @@ def _perf_log_v457(phase, *, started_at=None, duration_ms=None, page=None, meta=
             rows = []
         rows.append(row)
         if len(rows) > PERF_LOG_LIMIT_V457:
+            st.session_state["_perf_dropped_v466"] = int(st.session_state.get("_perf_dropped_v466", 0)) + len(rows) - PERF_LOG_LIMIT_V457
             rows = rows[-PERF_LOG_LIMIT_V457:]
         st.session_state[PERF_LOG_KEY_V457] = rows
         return duration_ms
@@ -8410,13 +8419,19 @@ def _performance_log_text_v457():
 
 _PERF_EXPORT_JS_V465 = r"""
 export default function(component) {
-  const {parentElement, setTriggerValue} = component;
+  const {parentElement, setTriggerValue, data} = component;
+  let resetHost = window;
+  try { if(window.parent.document) resetHost=window.parent; } catch (_) {}
+  const resetToken = data?.reset_token;
+  if(resetToken && resetHost.__burariPerfReset466 !== resetToken) {
+    try { resetHost.__burariPerf466?.clear(); resetHost.__burariPerfReset466=resetToken; } catch (_) {}
+  }
   const button = parentElement.querySelector('button');
   const handler = () => {
     let host = window;
     try { if(window.parent.document) host = window.parent; } catch (_) {}
     let snapshot;
-    try { snapshot = host.__burariPerf465?.snapshot(); } catch (_) {}
+    try { snapshot = host.__burariPerf466?.snapshot(); } catch (_) {}
     setTriggerValue('snapshot', {token:String(Date.now()), browser:snapshot || {error:'browser_logger_unavailable'}});
   };
   button.addEventListener('click', handler);
@@ -8429,13 +8444,13 @@ def _perf_export_component_v465():
     return st.components.v2.component("burari_perf_export_v465",
         html='<div data-burari-perf-ui><button type="button">最新の動作ログをまとめる</button></div>',
         css='button{width:100%;padding:12px;border:1px solid #aaa;border-radius:8px;background:white;color:#222;cursor:pointer}',
-        js=_PERF_EXPORT_JS_V465)
+        js=_perf_instrument_js_v466(_PERF_EXPORT_JS_V465))
 
 
 def _render_interaction_export_v465():
-    st.caption("重い操作の後に「最新の動作ログをまとめる」→「操作時間ログを保存」。画面反映時刻は描画状態からの推定です。")
+    st.caption("操作後に「最新の動作ログをまとめる」→「操作時間ログを保存」。確認できた表示と推定を区別し、初回・繰り返し別に集計します。")
     try:
-        result = _perf_export_component_v465()(key="perf_export_v465", on_snapshot_change=lambda: None)
+        result = _perf_export_component_v465()(key="perf_export_v465", data={"reset_token": st.session_state.get("_perf_reset_v466", "")}, on_snapshot_change=lambda: None)
         payload = getattr(result, "snapshot", None)
         if isinstance(payload, dict):
             token = str(payload.get("token") or "")
@@ -8444,10 +8459,13 @@ def _render_interaction_export_v465():
                 # Freeze both sources together; rendering the download widget must not
                 # silently change the snapshot in a subsequent rerun.
                 st.session_state["_perf_export_v465"] = json.dumps({
-                    "format": "burari_interaction_v465", "build": APP_BUILD,
+                    "format": "burari_interaction_v466", "build": APP_BUILD,
                     "browser": payload.get("browser"),
                     "server": list(st.session_state.get(PERF_LOG_KEY_V457) or []),
-                    "server_session": st.session_state.setdefault("_perf_session_v465", uuid.uuid4().hex),
+                    "server_limit": PERF_LOG_LIMIT_V457,
+                    "server_dropped_rows": int(st.session_state.get("_perf_dropped_v466", 0)),
+                    "server_clock": "server wall time for labels; perf_counter for durations",
+                    "server_session": st.session_state.setdefault("_perf_session_v466", uuid.uuid4().hex),
                 }, ensure_ascii=False, indent=2)
         exported = st.session_state.get("_perf_export_v465")
         if exported:
@@ -8506,6 +8524,9 @@ def render_performance_log_v457():
             if st.button("ログを消去", use_container_width=True, key="clear_performance_log_v457"):
                 st.session_state[PERF_LOG_KEY_V457] = []
                 st.session_state["_performance_seq_v458"] = 0
+                st.session_state["_perf_dropped_v466"] = 0
+                st.session_state["_perf_reset_v466"] = uuid.uuid4().hex
+                st.session_state.pop("_perf_export_v465", None)
                 st.rerun(scope="app")
         else:
             st.caption("ログはまだありません。")
@@ -9289,7 +9310,7 @@ def _get_nearby_location_component():
             "tokyo_burari_nearby_location_v187",
             html=_NEARBY_LOCATION_HTML,
             css=_NEARBY_LOCATION_CSS,
-            js=_NEARBY_LOCATION_JS,
+            js=_perf_instrument_js_v466(_NEARBY_LOCATION_JS),
         )
     except Exception:
         nearby_location_component = None
@@ -9357,7 +9378,7 @@ def _get_field_note_location_component_v390():
             "tokyo_burari_field_note_location_v392",
             html=_FIELD_NOTE_LOCATION_HTML,
             css=_FIELD_NOTE_LOCATION_CSS,
-            js=_FIELD_NOTE_LOCATION_JS,
+            js=_perf_instrument_js_v466(_FIELD_NOTE_LOCATION_JS),
         )
     except Exception:
         field_note_location_component_v390 = None
@@ -9559,7 +9580,7 @@ def _get_nearby_search_now_component():
             "tokyo_burari_nearby_search_now_v401",
             html=_NEARBY_SEARCH_NOW_HTML,
             css=_NEARBY_SEARCH_NOW_CSS,
-            js=_NEARBY_SEARCH_NOW_JS,
+            js=_perf_instrument_js_v466(_NEARBY_SEARCH_NOW_JS),
         )
     except Exception:
         nearby_search_now_component = None
@@ -9762,7 +9783,7 @@ def _get_toilet_search_now_component():
             "tokyo_burari_toilet_search_now_v401",
             html=_TOILET_SEARCH_NOW_HTML,
             css=_TOILET_SEARCH_NOW_CSS,
-            js=_TOILET_SEARCH_NOW_JS,
+            js=_perf_instrument_js_v466(_TOILET_SEARCH_NOW_JS),
         )
     except Exception:
         toilet_search_now_component = None
@@ -9952,7 +9973,7 @@ def _get_gps_settings_component():
             "tokyo_burari_gps_settings_v219",
             html=_GPS_SETTINGS_HTML,
             css=_GPS_SETTINGS_CSS,
-            js=_GPS_SETTINGS_JS,
+            js=_perf_instrument_js_v466(_GPS_SETTINGS_JS),
         )
     except Exception:
         gps_settings_component = None
@@ -11729,7 +11750,7 @@ def _get_route_launcher_component_v412():
             "tokyo_burari_route_launcher_v412",
             html=_ROUTE_LAUNCHER_HTML_V412,
             css=_ROUTE_LAUNCHER_CSS_V412,
-            js=_ROUTE_LAUNCHER_JS_V412,
+            js=_perf_instrument_js_v466(_ROUTE_LAUNCHER_JS_V412),
         )
     except Exception:
         _route_launcher_component_v412 = None
@@ -23547,7 +23568,7 @@ def _get_replay_movie_library_component_v357():
             "tokyo_burari_replay_movie_library_v357",
             html=_REPLAY_MOVIE_LIBRARY_HTML_V357,
             css=_REPLAY_MOVIE_LIBRARY_CSS_V357,
-            js=_REPLAY_MOVIE_LIBRARY_JS_V357,
+            js=_perf_instrument_js_v466(_REPLAY_MOVIE_LIBRARY_JS_V357),
         )
     except Exception:
         _replay_movie_library_component_v357 = None
@@ -27971,6 +27992,7 @@ def sync_browser_history():
             "node": navigation_node,
             "intercept_hierarchy_back": navigation_node in intercept_nodes,
             "perf_run": st.session_state.get("_performance_current_run_v457", 0),
+            "perf_session": st.session_state.setdefault("_perf_session_v466", uuid.uuid4().hex),
         },
         key=f"tokyo_burari_browser_history_instance_v208_{_current_ui_refresh_epoch()}",
         on_page_change=lambda: None,
@@ -30744,7 +30766,7 @@ def _get_nearby_batch_search_component_v320():
             "tokyo_burari_nearby_batch_search_v409",
             html=_NEARBY_BATCH_SEARCH_HTML_V320,
             css=_NEARBY_BATCH_SEARCH_CSS_V320,
-            js=_NEARBY_BATCH_SEARCH_JS_V320,
+            js=_perf_instrument_js_v466(_NEARBY_BATCH_SEARCH_JS_V320),
         )
     except Exception:
         _nearby_batch_search_component_v320 = None
@@ -30878,7 +30900,7 @@ def _get_toilet_batch_search_component_v320():
             "tokyo_burari_toilet_batch_search_v409",
             html=_TOILET_BATCH_SEARCH_HTML_V320,
             css=_TOILET_BATCH_SEARCH_CSS_V320,
-            js=_TOILET_BATCH_SEARCH_JS_V320,
+            js=_perf_instrument_js_v466(_TOILET_BATCH_SEARCH_JS_V320),
         )
     except Exception:
         _toilet_batch_search_component_v320 = None
@@ -32403,7 +32425,7 @@ try:
     moments_recovery_component = st.components.v2.component(
         "tokyo_burari_moments_recovery_v134",
         html=_MOMENTS_RECOVERY_HTML,
-        js=_MOMENTS_RECOVERY_JS,
+        js=_perf_instrument_js_v466(_MOMENTS_RECOVERY_JS),
     )
 except Exception:
     moments_recovery_component = None
@@ -33107,7 +33129,7 @@ def _get_moments_select_component():
             "tokyo_burari_moments_select_v464",
             html=_MOMENTS_SELECT_HTML,
             css=_MOMENTS_SELECT_CSS,
-            js=_MOMENTS_SELECT_JS,
+            js=_perf_instrument_js_v466(_MOMENTS_SELECT_JS),
         )
     except Exception:
         moments_select_component = None
@@ -33257,7 +33279,7 @@ def _get_moments_voice_component():
             "tokyo_burari_moments_voice_v437",
             html=_MOMENTS_VOICE_HTML,
             css=_MOMENTS_VOICE_CSS,
-            js=_MOMENTS_VOICE_JS,
+            js=_perf_instrument_js_v466(_MOMENTS_VOICE_JS),
         )
     except Exception:
         moments_voice_component = None
@@ -34390,7 +34412,7 @@ def _get_video_library_grid_component():
             "tokyo_burari_video_library_grid_v128",
             html=_VIDEO_LIBRARY_GRID_HTML,
             css=_VIDEO_LIBRARY_GRID_CSS,
-            js=_VIDEO_LIBRARY_GRID_JS,
+            js=_perf_instrument_js_v466(_VIDEO_LIBRARY_GRID_JS),
         )
     except Exception:
         video_library_grid_component = None
@@ -37732,7 +37754,7 @@ def _get_memory_map_location_component():
             "tokyo_burari_memory_map_location_v259",
             html=_MEMORY_MAP_LOCATION_HTML,
             css=_MEMORY_MAP_LOCATION_CSS,
-            js=_MEMORY_MAP_LOCATION_JS,
+            js=_perf_instrument_js_v466(_MEMORY_MAP_LOCATION_JS),
         )
     except Exception:
         memory_map_location_component = None
@@ -38422,7 +38444,7 @@ def _get_memory_map_view_component():
             "tokyo_burari_memory_map_view_v268",
             html=_MEMORY_MAP_VIEW_HTML,
             css=_MEMORY_MAP_VIEW_CSS,
-            js=_MEMORY_MAP_VIEW_JS,
+            js=_perf_instrument_js_v466(_MEMORY_MAP_VIEW_JS),
         )
     except Exception:
         memory_map_view_component = None
@@ -39083,7 +39105,7 @@ def _get_gps_tracker_component_v271():
             "tokyo_burari_always_gps_v279",
             html=_GPS_TRACKER_HTML,
             css=_GPS_TRACKER_CSS,
-            js=_GPS_TRACKER_JS,
+            js=_perf_instrument_js_v466(_GPS_TRACKER_JS),
         )
     except Exception:
         gps_tracker_component_v271 = None
@@ -43944,7 +43966,7 @@ def _get_good_moments_factor_component():
             "tokyo_burari_good_moments_factor_v387",
             html=_GOOD_MOMENTS_FACTOR_HTML,
             css=_GOOD_MOMENTS_FACTOR_CSS,
-            js=_GOOD_MOMENTS_FACTOR_JS,
+            js=_perf_instrument_js_v466(_GOOD_MOMENTS_FACTOR_JS),
         )
     except Exception:
         good_moments_factor_component = None
@@ -44612,5 +44634,5 @@ with st.container(key="app_page_root_v280"):
 
 _perf_log_v457("rerun_total", started_at=_app_run_started_v457, force=True, meta={"ui_epoch": _current_ui_refresh_epoch(), "session_keys": len(st.session_state)})
 
-# v465: marker observed after the page has emitted all of its UI.
-st.markdown(f'<span hidden data-burari-perf-done="{int(st.session_state.get("_performance_current_run_v457", 0))}"></span>', unsafe_allow_html=True)
+# v466: inert UI endpoint; operation logic is unchanged.
+st.markdown(f'<span hidden data-burari-perf-session="{st.session_state.setdefault("_perf_session_v466", uuid.uuid4().hex)}" data-burari-perf-done="{int(st.session_state.get("_performance_current_run_v457", 0))}"></span>', unsafe_allow_html=True)
