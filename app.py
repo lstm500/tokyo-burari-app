@@ -35,7 +35,8 @@ import streamlit as st
 # Freshly generated update: 2026-09-16 JST
 GENERATED_UPDATE_JST = "2026-09-18T00:36:00+09:00"
 
-APP_BUILD = "v466"
+APP_BUILD = "v467"
+# v467: bounded read concurrency, exact storage inventory reuse, URL reuse and ordered framing; UI and save semantics preserved.
 # v466: Logging only: bounded operation records, explicit/estimated endpoint separation, confirmation-delay exclusion, descriptive summaries and loss metadata.
 # v464: Increase Good Moments final still selection from 6 to 9 photos. Keep the existing maximum-20 candidate sampling and AI quality criteria, but require up to 9 distinct final moments. Show the Good Moments list as a fixed 3-column x 3-row grid while preserving the one-photo enlarged viewer, voice attachment, emotion/parenting tags, reroll behavior, and all unrelated app behavior.
 # v463: Change the Android Nearby snack automatic-notification cooldown from 60 minutes to about 20 minutes when the existing eligibility conditions are met. Keep dwell/walking/time-window/history/distance rules, tourism notification logic, place-repeat suppression, GPS sampling, background-service cadence, and API/search behavior unchanged; no new polling or timers are added.
@@ -13363,8 +13364,7 @@ def _signed_url_from_value(value):
     return url
 
 
-@st.cache_data(ttl=540, max_entries=128, show_spinner=False)
-def signed_photo_url_map(storage_paths, expires_in=900):
+def _sign_photo_urls_uncached_v467(storage_paths, expires_in=900):
     """Create short-lived private image URLs in one Storage request when possible.
 
     The browser can then fetch visible images in parallel and lazily instead of the
@@ -13410,6 +13410,53 @@ def signed_photo_url_map(storage_paths, expires_in=900):
         except Exception:
             pass
     return result
+
+
+@st.cache_resource(show_spinner=False)
+def _signed_path_cache_v467():
+    return {"lock": threading.RLock(), "entries": {}, "generation": 0}
+
+
+def _clear_signed_paths_v467():
+    cache = _signed_path_cache_v467()
+    with cache["lock"]:
+        cache["entries"].clear()
+        cache["generation"] += 1
+
+
+def signed_photo_url_map(storage_paths, expires_in=900):
+    paths = tuple(dict.fromkeys(str(x or "").strip() for x in (storage_paths or ()) if str(x or "").strip()))
+    if not paths:
+        return {}
+    cache = _signed_path_cache_v467()
+    now = time.monotonic()
+    scope = (str(SUPABASE_URL), str(PHOTO_BUCKET), int(expires_in))
+    result = {}
+    missing = []
+    with cache["lock"]:
+        generation = cache["generation"]
+        for path in paths:
+            entry = cache["entries"].get((*scope, path))
+            if entry and entry[0] > now:
+                result[path] = entry[1]
+            else:
+                cache["entries"].pop((*scope, path), None)
+                missing.append(path)
+    if missing:
+        started = time.monotonic()
+        signed = _sign_photo_urls_uncached_v467(missing, expires_in=expires_in)
+        lifetime = max(0, min(540, int(expires_in) - 30))
+        with cache["lock"]:
+            if generation == cache["generation"]:
+                for path, url in signed.items():
+                    cache["entries"][(*scope, path)] = (started + lifetime, url)
+                while len(cache["entries"]) > 4096:
+                    cache["entries"].pop(next(iter(cache["entries"])))
+        result.update(signed)
+    return {path: result[path] for path in paths if path in result}
+
+
+signed_photo_url_map.clear = _clear_signed_paths_v467
 
 
 def photo_display_url(photo, signed_map=None, max_px=420, quality=76):
@@ -14069,26 +14116,33 @@ def _storage_path_is_original_video(path, mime_type=""):
     return ("_video." in value or "_stabilized_" in value) and ext in {"video", "webm", "mp4", "mov", "m4v"}
 
 
+@st.cache_resource(show_spinner=False)
+def _read_executor_v467():
+    return ThreadPoolExecutor(max_workers=4, thread_name_prefix="burari-read")
+
+
+@st.cache_resource(show_spinner=False)
+def _framing_executor_v467():
+    # Separate from IO listing so queued image jobs cannot starve Home.
+    return ThreadPoolExecutor(max_workers=2, thread_name_prefix="burari-framing")
+
+
+@st.cache_resource(show_spinner=False)
+def _focus_model_storage_v467():
+    return threading.local()
+
+
 def _list_member_storage_objects(max_depth=4):
-    """List actual Storage objects under only the current family/member prefix."""
+    """Same paginated inventory and DFS output; independent folders read in parallel."""
     bucket = supabase_client().storage.from_(PHOTO_BUCKET)
     root = f"{current_family_key()}/{current_member_key()}".strip("/")
-    results = []
+    tree = {}
     visited = set()
-
-    def walk(folder, depth):
-        folder = str(folder or "").strip("/")
-        if folder in visited or depth > max_depth:
-            return
-        visited.add(folder)
+    def fetch(folder):
+        entries = []
         offset = 0
-        page_size = 500
         while True:
-            options = {
-                "limit": page_size,
-                "offset": offset,
-                "sortBy": {"column": "name", "order": "asc"},
-            }
+            options = {"limit": 500, "offset": offset, "sortBy": {"column": "name", "order": "asc"}}
             try:
                 response = bucket.list(folder, options)
             except TypeError:
@@ -14100,20 +14154,44 @@ def _list_member_storage_objects(max_depth=4):
                     continue
                 full_path = f"{folder}/{name}" if folder else name
                 if _storage_row_is_folder(row):
-                    walk(full_path, depth + 1)
-                    continue
-                results.append({
-                    "path": full_path,
-                    "name": name,
-                    "size_bytes": _storage_row_size(row),
-                    "mime_type": _storage_row_mime(row),
-                    "updated_at": str(row.get("updated_at") or row.get("created_at") or ""),
-                })
-            if len(rows) < page_size:
-                break
-            offset += page_size
-
-    walk(root, 0)
+                    entries.append((True, full_path))
+                else:
+                    entries.append((False, {
+                        "path": full_path, "name": name, "size_bytes": _storage_row_size(row),
+                        "mime_type": _storage_row_mime(row),
+                        "updated_at": str(row.get("updated_at") or row.get("created_at") or ""),
+                    }))
+            if len(rows) < 500:
+                return entries
+            offset += 500
+    frontier = [(root, 0)]
+    while frontier:
+        level = []
+        for folder, depth in frontier:
+            folder = str(folder or "").strip("/")
+            if folder not in visited and depth <= max_depth:
+                visited.add(folder)
+                level.append((folder, depth))
+        if not level:
+            break
+        # At most four requests in flight; no per-folder thread creation.
+        entries = list(_read_executor_v467().map(fetch, [x[0] for x in level]))
+        frontier = []
+        for (folder, depth), children in zip(level, entries):
+            tree[folder] = children
+            frontier.extend((child, depth + 1) for is_folder, child in children if is_folder)
+    results = []
+    emitted = set()
+    def flatten(folder):
+        if folder in emitted:
+            return
+        emitted.add(folder)
+        for is_folder, child in tree.get(folder, []):
+            if is_folder:
+                flatten(child)
+            else:
+                results.append(child)
+    flatten(root)
     return results
 
 
@@ -14149,6 +14227,16 @@ def _member_db_storage_references():
     return refs, video_refs
 
 
+def _member_storage_inventory_v467(force=False, max_age_seconds=45):
+    key = _account_cache_key("storage_inventory_v467")
+    if not force:
+        cached = _session_cache_get(key, max_age_seconds=max_age_seconds)
+        if cached is not None:
+            return cached
+    objects = _list_member_storage_objects()
+    return _session_cache_set(key, objects)
+
+
 def member_storage_audit(force=False, max_age_seconds=45):
     """Compare actual Storage objects with DB references for the signed-in person."""
     cache_key = _account_cache_key("member_storage_audit_v111")
@@ -14156,7 +14244,7 @@ def member_storage_audit(force=False, max_age_seconds=45):
         cached = _session_cache_get(cache_key, max_age_seconds=max_age_seconds)
         if isinstance(cached, dict):
             return cached
-    objects = _list_member_storage_objects()
+    objects = _member_storage_inventory_v467(force=force, max_age_seconds=max_age_seconds)
     refs, video_refs = _member_db_storage_references()
     actual_paths = {str(x.get("path") or "") for x in objects if x.get("path")}
     video_objects = [
@@ -14179,11 +14267,15 @@ def member_storage_audit(force=False, max_age_seconds=45):
         "orphan_object_bytes": sum(max(0, int(x.get("size_bytes") or 0)) for x in orphan_objects),
         "missing_video_paths": sorted(video_refs - actual_paths),
     }
-    return _session_cache_set(cache_key, report)
+    _session_cache_set(cache_key, report)
+    inventory_entry = st.session_state.get(_account_cache_key("storage_inventory_v467"))
+    if isinstance(inventory_entry, dict):
+        st.session_state[cache_key]["at"] = inventory_entry["at"]
+    return report
 
 
 def _invalidate_video_storage_audit_cache():
-    for suffix in ("member_storage_audit_v111", "video_storage_usage"):
+    for suffix in ("member_storage_audit_v111", "video_storage_usage", "storage_inventory_v467"):
         key = _account_cache_key(suffix)
         st.session_state.pop(key, None)
 
@@ -14236,8 +14328,9 @@ def current_video_storage_usage_bytes(max_age_seconds=30):
             pass
 
     try:
-        report = member_storage_audit(force=False, max_age_seconds=45)
-        actual = max(0, int((report or {}).get("video_bytes") or 0))
+        objects = _member_storage_inventory_v467(max_age_seconds=45)
+        actual = sum(max(0, int(x.get("size_bytes") or 0)) for x in objects
+                     if _storage_path_is_original_video(x.get("path"), x.get("mime_type")))
         return _session_cache_set(cache_key, actual)
     except Exception:
         pass
@@ -16433,9 +16526,13 @@ def _get_focus_detection_models():
     return face_cascade, hog
 
 
-@functools.lru_cache(maxsize=1)
 def _cached_focus_detection_models():
-    return _get_focus_detection_models()
+    local = _focus_model_storage_v467()
+    models = getattr(local, "models", None)
+    if models is None:
+        models = _get_focus_detection_models()
+        local.models = models
+    return models
 
 
 def _clamp_box(left, top, right, bottom, width, height):
@@ -20636,23 +20733,19 @@ def get_tag_review_source(limit=AI_TAG_REVIEW_SOURCE_LIMIT):
 
     trips = []
     client = supabase_client()
-    for offset in range(0, len(trip_ids), 100):
-        chunk = trip_ids[offset:offset + 100]
-        if not chunk:
-            continue
+    family, member = current_family_key(), current_member_key()
+    chunks = [trip_ids[offset:offset + 100] for offset in range(0, len(trip_ids), 100)]
+    def fetch(chunk):
         try:
-            batch = (
-                client
-                .table(TRIP_TABLE)
-                .select("*")
-                .eq("family_key", current_family_key())
-                .eq("member_key", current_member_key())
-                .in_("id", chunk)
-                .execute()
-            ).data or []
-            trips.extend(row for row in batch if isinstance(row, dict))
+            batch = (client.table(TRIP_TABLE).select("*")
+                     .eq("family_key", family).eq("member_key", member)
+                     .in_("id", chunk).execute()).data or []
+            return [row for row in batch if isinstance(row, dict)]
         except Exception:
-            continue
+            return []
+    batches = _read_executor_v467().map(fetch, chunks) if len(chunks) > 1 else map(fetch, chunks)
+    for batch in batches:
+        trips.extend(batch)
 
     return {"trips": trips, "diaries": [], "photos": photos}
 
@@ -22126,20 +22219,17 @@ def _refresh_replay_photo_metadata_v448(photos):
     fresh_rows = []
     try:
         client = supabase_client()
-        # Keep request/query size bounded for broad tags such as 子ども / 大人.
-        for offset in range(0, len(photo_ids), 100):
-            chunk = photo_ids[offset:offset + 100]
-            if not chunk:
-                continue
-            batch = (
-                client.table(PHOTO_TABLE)
-                .select("id,trip_id,storage_path,captured_at,reflection_json,signals_json")
-                .in_("id", chunk)
-                .eq("family_key", current_family_key())
-                .eq("member_key", current_member_key())
-                .execute()
-            ).data or []
-            fresh_rows.extend(row for row in batch if isinstance(row, dict))
+        family, member = current_family_key(), current_member_key()
+        chunks = [photo_ids[offset:offset + 100] for offset in range(0, len(photo_ids), 100)]
+        def fetch(chunk):
+            batch = (client.table(PHOTO_TABLE)
+                     .select("id,trip_id,storage_path,captured_at,reflection_json,signals_json")
+                     .in_("id", chunk).eq("family_key", family).eq("member_key", member)
+                     .execute()).data or []
+            return [row for row in batch if isinstance(row, dict)]
+        batches = _read_executor_v467().map(fetch, chunks) if len(chunks) > 1 else map(fetch, chunks)
+        for batch in batches:
+            fresh_rows.extend(batch)
         fresh_map = {
             str(row.get("id") or ""): row
             for row in fresh_rows
@@ -22159,6 +22249,14 @@ def _refresh_replay_photo_metadata_v448(photos):
             meta={"requested": len(photo_ids), "fresh": len(fresh_rows), "fallback": True},
         )
         return rows
+
+
+def _replay_framing_map_v467(paths):
+    unique = tuple(dict.fromkeys(str(path or "") for path in paths))
+    if len(unique) < 2:
+        return {path: _replay_photo_framing_meta(path) for path in unique}
+    values = _framing_executor_v467().map(_replay_photo_framing_meta, unique)
+    return dict(zip(unique, values))
 
 
 def build_monthly_replay_photo_items(bundle, limit=None):
@@ -22191,6 +22289,7 @@ def build_monthly_replay_photo_items(bundle, limit=None):
     # records one aggregate timing rather than one row per photo, which avoids turning
     # broad AI-tag movies into a logging workload.
     assemble_started = time.perf_counter()
+    framing_map = _replay_framing_map_v467([str(p.get("storage_path") or "") for p in photos])
     items = []
     for idx, photo in enumerate(photos, start=1):
         url = photo_display_url(photo, signed_map=signed_map, max_px=1920, quality=90)
@@ -22200,7 +22299,7 @@ def build_monthly_replay_photo_items(bundle, limit=None):
         emotion = photo_selected_tag_meta(photo)
         voice_meta = photo_voice_note_meta(photo)
         voice_path = str(voice_meta.get("storage_path") or "").strip()
-        framing = _replay_photo_framing_meta(str(photo.get("storage_path") or ""))
+        framing = framing_map[str(photo.get("storage_path") or "")]
         items.append({
             "photo_id": str(photo.get("id") or ""),
             "storage_path": str(photo.get("storage_path") or ""),
@@ -22774,6 +22873,7 @@ def build_family_shared_replay_photo_items(share):
         voice_signed_map = signed_photo_url_map(voice_paths, expires_in=1800) if voice_paths else {}
     except Exception:
         voice_signed_map = {}
+    framing_map = _replay_framing_map_v467(paths)
     items = []
     for snap in snapshots:
         path = str(snap.get("storage_path") or "").strip()
@@ -22794,7 +22894,7 @@ def build_family_shared_replay_photo_items(share):
         current_emotion = photo_selected_tag_meta(current_photo) if isinstance(current_photo, dict) else {}
         # Recompute from the original image so older shared snapshots that stored the
         # v429 blurred/contain framing automatically receive the current smart framing.
-        framing = _replay_photo_framing_meta(path)
+        framing = framing_map[path]
         items.append({
             "url": url,
             "caption": str(snap.get("caption") or ""),
@@ -22897,14 +22997,7 @@ def list_family_shared_monthly_reviews(limit=24):
     except Exception:
         return []
 
-    try:
-        member_map = {
-            str(row.get("member_key") or ""): str(row.get("display_name") or row.get("member_key") or "")
-            for row in list_family_members(current_family_key())
-            if isinstance(row, dict)
-        }
-    except Exception:
-        member_map = {}
+    member_map = None
 
     current_member = current_member_key()
     shared_rows = []
@@ -22921,6 +23014,16 @@ def list_family_shared_monthly_reviews(limit=24):
         photos = [x for x in (share.get("photos") or []) if isinstance(x, dict) and str(x.get("storage_path") or "").strip()]
         if not photos:
             continue
+        if member_map is None:
+            try:
+                member_map = {
+                    str(row.get("member_key") or ""): str(row.get("display_name") or row.get("member_key") or "")
+                    for row in list_family_members(current_family_key())
+                    if isinstance(row, dict)
+                }
+            except Exception:
+                member_map = {}
+
         month_key = str(share.get("month_key") or str(row.get("review_month") or "")[:7]).strip()
         period_label = str(share.get("period_label") or (format_month_label(month_key) if month_key else "期間")).strip()
         member_name = str(member_map.get(member_key) or share.get("shared_by_member_name") or member_key).strip()
@@ -34486,6 +34589,11 @@ def page_videos():
     start_index = current_page * per_page
     visible_videos = videos[start_index:start_index + per_page]
     cards = []
+    poster_paths = [str(v.get("storage_path") or "").strip() for v in visible_videos]
+    try:
+        poster_urls = signed_photo_url_map(poster_paths)
+    except Exception:
+        poster_urls = {}
     for local_index, video_row in enumerate(visible_videos):
         metadata = photo_media_metadata(video_row)
         size_value = max(0, int(metadata.get("video_size_bytes") or 0))
@@ -34513,7 +34621,7 @@ def page_videos():
                 status_label = "AI選定は未完了"
 
         poster_path = str(video_row.get("storage_path") or "").strip()
-        preview_url = photo_display_url(video_row)
+        preview_url = photo_display_url(video_row, signed_map=poster_urls)
         if not preview_url and poster_path:
             try:
                 preview_url = thumbnail_photo_data_url(poster_path, max_px=520, quality=82)
@@ -39222,10 +39330,15 @@ def _upsert_track_month_v271(month_key, incoming_points):
     family = current_family_key(); member = current_member_key()
     existing = _read_track_month_uncached_v271(month_key, family, member)
     merged = {str(row.get("id") or ""): row for row in existing if row.get("id")}
+    unchanged = bool(existing)
     for raw in incoming_points or []:
         point = _coerce_track_point_v271(raw)
         if point:
+            if merged.get(point["id"]) != point:
+                unchanged = False
             merged[point["id"]] = point
+    if unchanged:
+        return len(merged)
     points = sorted(merged.values(), key=lambda x: (int(x.get("ts_ms") or 0), str(x.get("id") or "")))
     document = {
         "version": 1,
@@ -44447,6 +44560,17 @@ def _install_detailed_perf_wrappers_v458():
     # Curated list only: enough to isolate DB/storage/render bottlenecks without
     # tracing every Python call or producing meaningful runtime overhead.
     targets = {
+        "_list_member_storage_objects": "storage:inventory",
+        "_member_db_storage_references": "db:storage_references",
+        "current_video_storage_usage_bytes": "home:storage_usage",
+        "home_video_counts": "home:video_counts",
+        "home_review_attention_needed": "home:review_notice",
+        "preferred_next_action": "home:next_action",
+        "_summary_feedback_entries": "settings:feedback_rows",
+        "list_own_replay_movies": "data:own_movies",
+        "list_member_videos_for_moments": "data:video_library_rows",
+        "get_member_account": "db:login_account",
+        "_upsert_track_month_v271": "gps:save_month",
         "list_recent_diaries": "data:recent_diaries",
         "list_pending_photo_trips": "data:pending_photo_trips",
         "list_trip_photos": "data:trip_photos",
