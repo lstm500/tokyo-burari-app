@@ -35,7 +35,8 @@ import streamlit as st
 # Freshly generated update: 2026-09-16 JST
 GENERATED_UPDATE_JST = "2026-09-18T00:36:00+09:00"
 
-APP_BUILD = "v464"
+APP_BUILD = "v465"
+# v465: Observational browser interaction timing and complete server phase lifecycle logs only.
 # v464: Increase Good Moments final still selection from 6 to 9 photos. Keep the existing maximum-20 candidate sampling and AI quality criteria, but require up to 9 distinct final moments. Show the Good Moments list as a fixed 3-column x 3-row grid while preserving the one-photo enlarged viewer, voice attachment, emotion/parenting tags, reroll behavior, and all unrelated app behavior.
 # v463: Change the Android Nearby snack automatic-notification cooldown from 60 minutes to about 20 minutes when the existing eligibility conditions are met. Keep dwell/walking/time-window/history/distance rules, tourism notification logic, place-repeat suppression, GPS sampling, background-service cadence, and API/search behavior unchanged; no new polling or timers are added.
 # v462: Tighten toilet-search admission around practical public access. Keep standalone public toilets, stations/transit, major public/commercial facilities, convenience/supermarket/department-store hosts, selected civic/cultural/medical facilities, and restroom-confirmed major chains. Exclude ordinary small restaurants/cafes/shops/clinics/offices even when a toilet flag exists. Mixed office/commercial buildings now require strong same-building multi-tenant evidence instead of nearby-place density, preventing dense-city false positives. No extra API calls are added; filtering is local and the existing parallel search remains unchanged.
@@ -7259,7 +7260,9 @@ def sync_pending_tags_from_browser_v166():
 # Streamlit session-state navigation does not create browser history entries by
 # itself. This small component mirrors each app screen into window.history so
 # Chrome/Safari back and forward buttons move between app screens first.
-_HISTORY_JS = r"""
+_PERF_BROWSER_JS_V465 = 'function installBurariPerf465(host, page, run) {\n  const key = \'__burariPerf465\';\n  if (host[key]) { host[key].run(page, run); return host[key]; }\n  const doc = host.document, clock = () => host.performance.now();\n  const storageKey = \'burari_perf_v465\';\n  let rows = [], active = null, timer = null, settle = null, currentPage = page, currentRun = run;\n  let sequence = 0;\n  const session = Math.random().toString(36).slice(2, 10);\n  const watched = new WeakSet();\n  const roots = new Set();\n  const round = v => Math.round(v * 10) / 10;\n  try { rows = JSON.parse(host.sessionStorage.getItem(storageKey) || \'[]\').slice(-300); } catch (_) {}\n  const persist = () => { try { host.sessionStorage.setItem(storageKey, JSON.stringify(rows.slice(-300))); } catch (_) {} };\n  const record = r => { rows.push(r); if (rows.length > 300) rows.shift(); persist(); };\n  const visible = e => !!(e && e.isConnected && e.getClientRects().length && host.getComputedStyle(e).visibility !== \'hidden\');\n  const signature = e => e && e.isConnected ? [e.textContent, e.getAttribute(\'class\'), e.getAttribute(\'style\'), e.getAttribute(\'disabled\'), e.getAttribute(\'aria-pressed\')].join(\'|\') : \'removed\';\n  const all = selector => { const out = []; for (const root of roots) { if (root.host && !root.host.isConnected) { roots.delete(root); continue; } try { out.push(...root.querySelectorAll(selector)); } catch (_) {} } return out; };\n  const busy = () => all(\'[data-testid="stSpinner"],[data-stale="true"],[aria-busy="true"]\').some(visible);\n  function finish(status, evidence) {\n    if (!active) return;\n    const a = active; active = null;\n    host.clearTimeout(timer); host.clearTimeout(settle);\n    record({type:\'interaction\', id:a.id, page:a.page, button:a.label, control:a.control,\n      pressed_at:new Date(a.wall).toISOString(), first_response_ms:a.response,\n      first_response_at:a.response == null ? null : new Date(a.wall + a.response).toISOString(),\n      result_at:status === \'display_estimated\' ? new Date(a.wall + clock() - a.start).toISOString() : null,\n      elapsed_ms:round(clock()-a.start), status, evidence, runs:a.runs,\n      clock:\'performance.now\', display_measurement:\'DOM + two animation frames; physical display not measured\'});\n  }\n  function check() {\n    if (!active || doc.hidden) return;\n    if (active.response == null && signature(active.button) !== active.before) active.response = round(clock()-active.start);\n    if (busy()) return;\n    let evidence = \'\';\n    // A completed server render is necessary for standard Streamlit buttons.\n    const markers = all(\'[data-burari-perf-done]\');\n    if (markers.some(e => Number(e.getAttribute(\'data-burari-perf-done\')) > active.initialRun)) evidence = \'server_render_done_and_dom_idle\';\n    // Camera preview is an explicit local result, independent of server reruns.\n    if (active.control === \'live-camera-shoot\') {\n      const img = all(\'#camera-review-image\').find(e => visible(e) && e.complete && e.naturalWidth > 0);\n      evidence = img && img.currentSrc !== active.previewBefore ? \'camera_preview_loaded\' : \'\';\n    }\n    // Purely local controls have no generic business-completion signal. Keep them\n    // unresolved instead of incorrectly treating their pressed colour as success.\n    if (!evidence) return;\n    if (all(\'img\').some(e => { if (!visible(e) || e.complete) return false; const r=e.getBoundingClientRect(); return r.bottom>0 && r.right>0 && r.top<host.innerHeight && r.left<host.innerWidth; })) return;\n    const id = active.id;\n    const failed = all(\'[data-testid="stAlert"]\').some(e => visible(e) && !active.alertsBefore.includes(e.textContent) && /error|失敗|エラー|できません|できなかった/i.test(e.textContent));\n    host.requestAnimationFrame(() => host.requestAnimationFrame(() => {\n      if (active && active.id === id && !doc.hidden && !busy()) finish(failed ? \'error_displayed\' : \'display_estimated\', evidence);\n    }));\n  }\n  function changed() {\n    if (!active) return;\n    if (active.response == null && signature(active.button) !== active.before) active.response = round(clock()-active.start);\n    host.clearTimeout(settle); settle = host.setTimeout(check, 200);\n  }\n  function clicked(event) {\n    if (event.__burari465 || !event.isTrusted) return;\n    const path = event.composedPath ? event.composedPath() : [event.target];\n    const button = path.find(e => e && e.matches && e.matches(\'button,[role="button"],input[type="submit"]\'));\n    if (!button || button.disabled || button.closest(\'[data-burari-perf-ui]\')) return;\n    const label = String(button.getAttribute(\'aria-label\') || button.textContent || button.value || \'\').trim().slice(0, 80);\n    if (/動作ログ|ログを|ログ消去/.test(label)) return;\n    event.__burari465 = true;\n    if (active) finish(\'interrupted\', \'next_button\');\n    const start = clock();\n    active = {id:session + \'-\' + (++sequence), page:currentPage, label, control:button.id || button.getAttribute(\'data-testid\') || \'\',\n      wall:Date.now(), start, response:null, button, before:signature(button), initialRun:currentRun, runs:[],\n      alertsBefore:all(\'[data-testid="stAlert"]\').filter(visible).map(e=>e.textContent),\n      previewBefore:(all(\'#camera-review-image\')[0] || {}).currentSrc || \'\'};\n    record({type:\'press\',id:active.id,page:currentPage,button:label,pressed_at:new Date(active.wall).toISOString()});\n    timer = host.setTimeout(() => finish(\'timeout\',\'no_confirmed_result_within_120s\'),120000);\n    host.requestAnimationFrame(() => host.requestAnimationFrame(changed));\n  }\n  function scan(node) {\n    if (!node || !node.querySelectorAll) return;\n    if (node.shadowRoot) watch(node.shadowRoot);\n    for (const el of node.querySelectorAll(\'*\')) {\n      if (el.shadowRoot) watch(el.shadowRoot);\n      if (el.tagName === \'IFRAME\') {\n        const attach = () => { try { if (el.contentDocument) watch(el.contentDocument); } catch (_) {} };\n        if (!watched.has(el)) { watched.add(el); el.addEventListener(\'load\',attach,{passive:true}); }\n        attach();\n      }\n    }\n  }\n  function watch(root) {\n    if (watched.has(root)) return;\n    watched.add(root); roots.add(root);\n    root.addEventListener(\'click\',clicked,{capture:true,passive:true});\n    root.addEventListener(\'load\',changed,{capture:true,passive:true});\n    const observer = new host.MutationObserver(records => {\n      for (const r of records) for (const n of r.addedNodes) scan(n);\n      changed();\n    });\n    observer.observe(root,{subtree:true,childList:true,attributes:true,characterData:true});\n    scan(root);\n  }\n  watch(doc);\n  doc.addEventListener(\'visibilitychange\',() => { if (doc.hidden && active) finish(\'interrupted\',\'background\'); },{passive:true});\n  host.addEventListener(\'pagehide\',() => { if(active) finish(\'interrupted\',\'pagehide\'); persist(); },{passive:true});\n  const api = {run(p,r) {currentPage=p;currentRun=Number(r)||0;if(active && !active.runs.includes(currentRun))active.runs.push(currentRun);},\n    snapshot() { return {version:465, captured_at:new Date().toISOString(), rows:rows.slice(),\n      pending:active ? {id:active.id,button:active.label,elapsed_ms:round(clock()-active.start),status:\'pending\'} : null,\n      limitations:[\'DOM display time is estimated\',\'Cross-origin iframe internals and external apps are not observable\',\'Local controls without an explicit completion signal stay unresolved\',\'Server runs are temporal candidates, not guaranteed request attribution\']}; },\n    clear(){if(active)finish(\'interrupted\',\'log_clear\');rows=[];persist();}};\n  host[key]=api; return api;\n}\n'
+
+_HISTORY_JS = _PERF_BROWSER_JS_V465 + r"""
 export default function(component) {
   const { data, setTriggerValue } = component;
   const validPages = new Set(['home', 'camera', 'videos', 'moments', 'diary', 'photos', 'review', 'review_map', 'review_project', 'review_monthly', 'review_tag', 'review_history', 'nearby', 'discovery_results', 'evening_review', 'toilets', 'field_notes', 'settings', 'settings_moments', 'settings_moments_definition', 'settings_location', 'settings_account']);
@@ -7283,6 +7286,8 @@ export default function(component) {
       hostDocumentV457 = window.parent.document;
     }
   } catch (_) {}
+
+  try { installBurariPerf465(hostWindowV457, requestedPage, data?.perf_run); } catch (_) {}
 
   const refreshLayoutV457 = () => {
     const refresh = () => {
@@ -8311,7 +8316,7 @@ def _invalidate_fast_db_cache():
 
 
 PERF_LOG_KEY_V457 = "_performance_log_v457"
-PERF_LOG_LIMIT_V457 = 600
+PERF_LOG_LIMIT_V457 = 2000
 PERF_LOG_MIN_MS_V457 = 2.0
 
 
@@ -8370,10 +8375,18 @@ def _perf_log_v457(phase, *, started_at=None, duration_ms=None, page=None, meta=
 
 def _perf_call_v457(phase, func, *args, force=False, meta=None, **kwargs):
     started = time.perf_counter()
+    _perf_log_v457(phase + ":start", duration_ms=0, meta=meta, force=True)
+    status = "completed"
     try:
         return func(*args, **kwargs)
+    except BaseException as exc:
+        kind = type(exc).__name__
+        status = "rerun" if kind == "RerunException" else "stopped" if kind == "StopException" else "error"
+        raise
     finally:
-        _perf_log_v457(phase, started_at=started, meta=meta, force=force)
+        detail = dict(meta or {})
+        detail["status"] = status
+        _perf_log_v457(phase, started_at=started, meta=detail, force=True)
 
 
 def _performance_log_text_v457():
@@ -8395,10 +8408,63 @@ def _performance_log_text_v457():
     return "\n".join(lines)
 
 
+_PERF_EXPORT_JS_V465 = r"""
+export default function(component) {
+  const {parentElement, setTriggerValue} = component;
+  const button = parentElement.querySelector('button');
+  const handler = () => {
+    let host = window;
+    try { if(window.parent.document) host = window.parent; } catch (_) {}
+    let snapshot;
+    try { snapshot = host.__burariPerf465?.snapshot(); } catch (_) {}
+    setTriggerValue('snapshot', {token:String(Date.now()), browser:snapshot || {error:'browser_logger_unavailable'}});
+  };
+  button.addEventListener('click', handler);
+  return () => button.removeEventListener('click', handler);
+}
+"""
+
+@st.cache_resource(show_spinner=False)
+def _perf_export_component_v465():
+    return st.components.v2.component("burari_perf_export_v465",
+        html='<div data-burari-perf-ui><button type="button">最新の動作ログをまとめる</button></div>',
+        css='button{width:100%;padding:12px;border:1px solid #aaa;border-radius:8px;background:white;color:#222;cursor:pointer}',
+        js=_PERF_EXPORT_JS_V465)
+
+
+def _render_interaction_export_v465():
+    st.caption("重い操作の後に「最新の動作ログをまとめる」→「操作時間ログを保存」。画面反映時刻は描画状態からの推定です。")
+    try:
+        result = _perf_export_component_v465()(key="perf_export_v465", on_snapshot_change=lambda: None)
+        payload = getattr(result, "snapshot", None)
+        if isinstance(payload, dict):
+            token = str(payload.get("token") or "")
+            if token and token != st.session_state.get("_perf_export_token_v465"):
+                st.session_state["_perf_export_token_v465"] = token
+                # Freeze both sources together; rendering the download widget must not
+                # silently change the snapshot in a subsequent rerun.
+                st.session_state["_perf_export_v465"] = json.dumps({
+                    "format": "burari_interaction_v465", "build": APP_BUILD,
+                    "browser": payload.get("browser"),
+                    "server": list(st.session_state.get(PERF_LOG_KEY_V457) or []),
+                    "server_session": st.session_state.setdefault("_perf_session_v465", uuid.uuid4().hex),
+                }, ensure_ascii=False, indent=2)
+        exported = st.session_state.get("_perf_export_v465")
+        if exported:
+            st.download_button("操作時間ログを保存", data=exported,
+                file_name=f"burari_interaction_{today_iso()}.log", mime="text/plain",
+                key="perf_interaction_download_v465", use_container_width=True)
+    except Exception as exc:
+        st.warning("端末ログを取得できません。下の処理ログは保存できます。")
+        _perf_log_v457("browser_log_export_error", duration_ms=0,
+                       meta={"error_type": type(exc).__name__}, force=True)
+
+
 def render_performance_log_v457():
     rows = st.session_state.get(PERF_LOG_KEY_V457)
     rows = list(rows) if isinstance(rows, list) else []
     with st.expander("⚡ 動作ログ", expanded=False):
+        _render_interaction_export_v465()
         if rows:
             recent_totals = [row for row in rows if str(row.get("phase") or "") == "rerun_total"][-8:]
             if recent_totals:
@@ -27904,6 +27970,7 @@ def sync_browser_history():
             "action": action,
             "node": navigation_node,
             "intercept_hierarchy_back": navigation_node in intercept_nodes,
+            "perf_run": st.session_state.get("_performance_current_run_v457", 0),
         },
         key=f"tokyo_burari_browser_history_instance_v208_{_current_ui_refresh_epoch()}",
         on_page_change=lambda: None,
@@ -44544,3 +44611,6 @@ with st.container(key="app_page_root_v280"):
             _perf_call_v457("ui:bottom_navigation", render_global_bottom_navigation, page)
 
 _perf_log_v457("rerun_total", started_at=_app_run_started_v457, force=True, meta={"ui_epoch": _current_ui_refresh_epoch(), "session_keys": len(st.session_state)})
+
+# v465: marker observed after the page has emitted all of its UI.
+st.markdown(f'<span hidden data-burari-perf-done="{int(st.session_state.get("_performance_current_run_v457", 0))}"></span>', unsafe_allow_html=True)
