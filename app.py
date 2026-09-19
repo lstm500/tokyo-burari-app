@@ -40,10 +40,14 @@ def _app_css_v473(markup, **_ignored):
     else:
         st.markdown(markup, unsafe_allow_html=True)
 
-# Home spacing-only update: 2026-09-19 JST
-GENERATED_UPDATE_JST = "2026-09-19T13:03:15+09:00"
+# Review menu-only update: 2026-09-19 JST
+GENERATED_UPDATE_JST = "2026-09-19T14:54:38+09:00"
 
-APP_BUILD = "v475"
+APP_BUILD = "v477"
+# v477: Review menu is random -> tags -> project -> map; hide other landing entries.
+# Existing media, saved movies, diaries, page logic, and Home layout are preserved.
+# v476: viewport-measured Home density, compact header/weather, no clipping.
+# Display-only change; all data, navigation, forecast and replay logic retained.
 # v475: reserve full height for Home Markdown/caption text; remove negative margin overlap.
 # CSS only: preserve v474 button sizes, weather, replay, capture and data operations.
 # v474: modest Home-only spacing/height reduction; all behavior and other screens unchanged.
@@ -30350,22 +30354,22 @@ _HOME_WEATHER_HTML_V470 = r"""
 
 _HOME_WEATHER_CSS_V470 = r"""
 :host {display:block;width:100%;min-width:0;box-sizing:border-box;}
-.bw470 {width:100%;min-width:0;box-sizing:border-box;margin:0;padding:7px 10px 5px;border:1px solid rgba(128,150,173,.20);border-radius:15px;color:var(--st-text-color,#263548);background:var(--st-secondary-background-color,#f3f7fa);font-family:var(--st-font,sans-serif);}
+.bw470 {width:100%;min-width:0;box-sizing:border-box;margin:0;padding:var(--bh-weather-py,5px) 9px var(--bh-weather-py,5px);border:1px solid rgba(128,150,173,.20);border-radius:15px;color:var(--st-text-color,#263548);background:var(--st-secondary-background-color,#f3f7fa);font-family:var(--st-font,sans-serif);}
 .bw470 * {box-sizing:border-box;}
-.bw470-main {display:grid;grid-template-columns:minmax(0,1fr) 32px;gap:5px;align-items:center;min-width:0;}
+.bw470-main {display:grid;grid-template-columns:minmax(0,1fr) 32px;gap:var(--bh-weather-gap,3px);align-items:center;min-width:0;}
 .bw470-place {grid-column:1;grid-row:1;min-width:0;display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;}
 .bw470-name {font-size:13px;font-weight:750;line-height:1.45;overflow-wrap:anywhere;}
 .bw470-sub {font-size:10px;line-height:1.4;opacity:.66;white-space:nowrap;}
 .bw470-slots {grid-column:1/-1;grid-row:2;display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:4px;min-width:0;}
-.bw470-slot {text-align:center;min-width:0;display:flex;flex-direction:column;align-items:center;gap:2px;}
+.bw470-slot {text-align:center;min-width:0;display:flex;flex-direction:column;align-items:center;gap:1px;}
 .bw470-time {font-size:10px;line-height:1.3;font-variant-numeric:tabular-nums;opacity:.8;}
-.bw470-icon,.bw470-icon svg {height:27px;width:30px;display:block;}
+.bw470-icon,.bw470-icon svg {height:var(--bh-weather-icon,24px);width:28px;display:block;}
 .bw470-condition {font-size:9px;line-height:1.35;white-space:nowrap;opacity:.8;}
 .bw470-refresh {grid-column:2;grid-row:1;width:32px;height:32px;min-height:32px;padding:6px;margin:0;border:0;border-radius:8px;color:inherit;background:transparent;cursor:pointer;touch-action:manipulation;}
 .bw470-refresh svg {display:block;width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round;opacity:.65;}
 .bw470-refresh:disabled {opacity:.35;cursor:default;}
 .bw470-refresh:active {background:rgba(74,144,226,.17);}
-.bw470-bottom {display:flex;align-items:baseline;flex-wrap:wrap;gap:4px 7px;min-width:0;margin-top:4px;line-height:1.4;}
+.bw470-bottom {display:flex;align-items:baseline;flex-wrap:wrap;gap:4px 7px;min-width:0;margin-top:2px;line-height:1.4;}
 .bw470-status {flex:1 1 auto;min-width:0;font-size:9px;opacity:.68;overflow-wrap:anywhere;}
 .bw470-credit,.bw470-details summary {font-size:9px;color:inherit;opacity:.7;white-space:nowrap;}
 .bw470-credit {text-decoration:none;flex:0 0 auto;}
@@ -30377,7 +30381,7 @@ _HOME_WEATHER_CSS_V470 = r"""
 .bw470-details[open] {flex:1 1 100%;order:3;}
 .bw470-explanation {font-size:11px;line-height:1.6;padding:6px 0;opacity:.84;overflow-wrap:anywhere;white-space:normal;}
 .bw470-explanation a {color:inherit;}
-@media(max-width:350px){.bw470{padding:7px 8px 5px;}.bw470-slots{gap:2px;}.bw470-time{font-size:9px;}.bw470-condition{font-size:8px;}}
+@media(max-width:350px){.bw470{padding:var(--bh-weather-py,5px) 8px;}.bw470-slots{gap:1px;}.bw470-time{font-size:9px;}.bw470-condition{font-size:8px;}}
 """
 
 _HOME_WEATHER_JS_V470 = r"""
@@ -30665,7 +30669,7 @@ export default function(component) {
 @st.cache_resource(show_spinner=False)
 def _home_weather_component_v470():
     return st.components.v2.component(
-        "burari_home_weather_v473", html=_HOME_WEATHER_HTML_V470,
+        "burari_home_weather_v476", html=_HOME_WEATHER_HTML_V470,
         css=_HOME_WEATHER_CSS_V470, js=_HOME_WEATHER_JS_V470,
     )
 
@@ -30678,7 +30682,7 @@ def render_home_weather_v470():
     try:
         with st.container(key="home_weather_slot_v473"):
             _weather_result = _home_weather_component_v470()(
-                key=f"home_weather_v473_{scope}", width="stretch", height="content",
+                key=f"home_weather_v476_{scope}", width="stretch", height="content",
                 data={"scope": scope, "timezone": str(APP_TIMEZONE or "Asia/Tokyo")},
             )
     except Exception:
@@ -30687,17 +30691,31 @@ def render_home_weather_v470():
 
 
 _HOME_LAYOUT_CSS_V473 = r"""<style>
-/* v474: modest Home-only spacing reduction. Keep normal flow, readable type,
-   wrapping labels and auto heights; never squeeze the page into a viewport. */
-/* Non-visual bridges keep running, but never allocate vertical page space. */
+/* v476: Home-only, measured viewport density. All visible controls stay in
+   normal flow. No zoom, negative margins, clipping, or scroll suppression. */
 .st-key-app_runtime_bridges_v473, .st-key-home_runtime_bridges_v473 {
   position:absolute !important; width:1px !important; height:0 !important;
   min-height:0 !important; max-height:0 !important; margin:0 !important;
   padding:0 !important; overflow:visible !important; pointer-events:none;
 }
+.st-key-home_viewport_fit {
+  --bh-gap:8px; --bh-primary:68px; --bh-secondary:54px; --bh-tools:48px;
+  --bh-py:7px; --bh-status-py:6px; --bh-title:1.85rem;
+  --bh-weather-py:5px; --bh-weather-gap:3px; --bh-weather-icon:24px;
+}
+.st-key-home_viewport_fit[data-home-density-v476="compact"] {
+  --bh-gap:5px; --bh-primary:56px; --bh-secondary:46px; --bh-tools:44px;
+  --bh-py:5px; --bh-status-py:4px; --bh-title:1.75rem;
+  --bh-weather-py:4px; --bh-weather-gap:2px; --bh-weather-icon:23px;
+}
+.st-key-home_viewport_fit[data-home-density-v476="tight"] {
+  --bh-gap:3px; --bh-primary:48px; --bh-secondary:44px; --bh-tools:44px;
+  --bh-py:3px; --bh-status-py:2px; --bh-title:1.65rem;
+  --bh-weather-py:3px; --bh-weather-gap:2px; --bh-weather-icon:22px;
+}
 .st-key-home_viewport_fit, .st-key-home_primary, .st-key-home_media_tools,
 .st-key-home_capture_pair, .st-key-home_quick_pair, .st-key-home_secondary,
-.st-key-home_destination, .st-key-home_location_tools {
+.st-key-home_destination, .st-key-home_location_tools, .st-key-home_storage_v476 {
   width:100%; min-width:0 !important; max-width:100%; height:auto !important;
   min-height:min-content !important; max-height:none !important; flex:0 0 auto !important;
 }
@@ -30705,8 +30723,8 @@ _HOME_LAYOUT_CSS_V473 = r"""<style>
 .st-key-home_viewport_fit > [data-testid="stVerticalBlock"],
 .st-key-home_viewport_fit > [data-testid="stVerticalBlockBorderWrapper"] > [data-testid="stVerticalBlock"] {
   display:flex !important; flex-direction:column !important;
-  justify-content:flex-start !important; gap:9px !important; overflow:visible !important;
-  margin:0 !important;
+  justify-content:flex-start !important; gap:var(--bh-gap) !important;
+  overflow:visible !important; margin:0 !important;
 }
 .st-key-home_viewport_fit [data-testid="stElementContainer"],
 .st-key-home_viewport_fit [data-testid="stVerticalBlockBorderWrapper"],
@@ -30714,65 +30732,82 @@ _HOME_LAYOUT_CSS_V473 = r"""<style>
 .st-key-home_viewport_fit [data-testid="stVerticalBlock"] {
   flex-shrink:0 !important; min-width:0 !important;
 }
-/* v475: Streamlit's non-label Markdown renderer uses a negative bottom
-   margin to cancel a normal paragraph margin. Our Home HTML cards have no
-   trailing paragraph, and the video-count caption deliberately has p margin:0.
-   With the compact 8/9px gaps, that compensation pulled the next card/button
-   over the text. Reset the renderer, NOT the button label or the weather host.
-   flow-root also keeps child margins inside their own measured text row.
-   No fixed height, clipping, extra DOM observers or network requests are needed. */
+/* Retain the v475 Markdown fix: never borrow the next text row's height. */
 .st-key-home_viewport_fit :is(.stMarkdown, [data-testid="stMarkdown"], .stCaption) {
   margin-top:0 !important; margin-bottom:0 !important;
 }
 .st-key-home_viewport_fit :is(.stMarkdown, [data-testid="stMarkdown"]) [data-testid="stMarkdownContainer"],
 .st-key-home_viewport_fit [data-testid="stCaptionContainer"] {
-  display:flow-root !important;
-  margin-top:0 !important; margin-bottom:0 !important;
+  display:flow-root !important; margin-top:0 !important; margin-bottom:0 !important;
   height:auto !important; min-height:0 !important; max-height:none !important;
 }
 .st-key-home_viewport_fit :is(.stMarkdown, [data-testid="stMarkdown"]) [data-testid="stMarkdownContainer"] > :last-child,
 .st-key-home_viewport_fit [data-testid="stCaptionContainer"] > :last-child {
   margin-bottom:0 !important;
 }
-/* The footer note is intentionally hidden in v473+. Hide its empty layout
-   slot too, rather than keeping a blank flex row before the storage meter. */
 .st-key-home_viewport_fit :is([data-testid="stElementContainer"], .element-container):has(.home-footer-note) {
   display:none !important;
 }
 .st-key-home_viewport_fit .home-account {
-  font-size:.75rem !important; line-height:1.45 !important; margin:0 !important;
+  font-size:.72rem !important; line-height:1.3 !important; margin:0 !important;
   overflow-wrap:anywhere;
 }
 .st-key-home_viewport_fit .home-hero {
-  height:auto !important; margin:0 !important; padding:12px 14px !important;
+  height:auto !important; margin:0 !important;
+  padding:var(--bh-py) 12px !important; border-radius:18px;
 }
-.st-key-home_viewport_fit .home-hero-inner { gap:10px !important; }
-.st-key-home_viewport_fit .home-hero-copy { min-width:0 !important; }
-.st-key-home_viewport_fit .home-eyebrow { font-size:.70rem !important; line-height:1.4 !important; margin:0 0 4px !important; }
-.st-key-home_viewport_fit .home-title { font-size:2rem !important; line-height:1.2 !important; margin:0 !important; }
-.st-key-home_viewport_fit .home-tagline { font-size:.84rem !important; line-height:1.5 !important; margin:4px 0 0 !important; white-space:normal !important; }
+.st-key-home_viewport_fit .home-hero-inner { gap:8px !important; }
+/* Keep the eyebrow and full tagline, but share the title row. */
+.st-key-home_viewport_fit .home-hero-copy {
+  min-width:0 !important; display:grid; grid-template-columns:auto minmax(0,1fr);
+  column-gap:7px; row-gap:2px; align-items:center;
+}
+.st-key-home_viewport_fit .home-eyebrow {
+  grid-row:1; grid-column:1; font-size:.60rem !important; letter-spacing:.06em;
+  line-height:1.25 !important; margin:0 !important;
+}
+.st-key-home_viewport_fit .home-title {
+  grid-row:1; grid-column:2; font-size:var(--bh-title) !important;
+  line-height:1.15 !important; margin:0 !important;
+}
+.st-key-home_viewport_fit .home-tagline {
+  grid-column:1/-1; font-size:.78rem !important; line-height:1.35 !important;
+  margin:0 !important; white-space:normal !important; overflow-wrap:anywhere;
+}
 .st-key-home_viewport_fit .home-hero-train,
-.st-key-home_viewport_fit .home-hero-train img { width:64px !important; height:60px !important; margin:0 !important; }
+.st-key-home_viewport_fit .home-hero-train img {
+  width:54px !important; height:46px !important; margin:0 !important;
+}
 .st-key-home_viewport_fit .home-status {
   display:grid !important; grid-template-columns:auto minmax(0,1fr) !important;
-  gap:4px 9px !important; margin:0 !important; padding:8px 12px !important;
-  height:auto !important; min-height:0 !important; line-height:1.45 !important;
-  font-size:.85rem !important; box-sizing:border-box;
+  gap:2px 7px !important; margin:0 !important;
+  padding:var(--bh-status-py) 10px !important;
+  height:auto !important; min-height:0 !important; line-height:1.3 !important;
+  font-size:.81rem !important; box-sizing:border-box;
 }
-.st-key-home_viewport_fit .home-status-badge { min-height:26px !important; font-size:.74rem !important; }
+.st-key-home_viewport_fit .home-status-badge {
+  min-height:20px !important; font-size:.70rem !important; padding:1px 6px !important;
+}
 .st-key-home_viewport_fit .home-status-main { min-width:0 !important; white-space:normal !important; }
-.st-key-home_viewport_fit .home-status-sub { grid-column:1/-1; white-space:normal !important; overflow-wrap:anywhere; line-height:1.45 !important; }
-.st-key-home_viewport_fit .home-section-label { margin:4px 0 0 !important; font-size:.78rem !important; line-height:1.5 !important; }
-.st-key-home_primary, .st-key-home_secondary,
+.st-key-home_viewport_fit .home-status-sub {
+  grid-column:1/-1; font-size:.76rem; white-space:normal !important;
+  overflow-wrap:anywhere; line-height:1.3 !important;
+}
+.st-key-home_viewport_fit .home-section-label {
+  margin:0 !important; font-size:.73rem !important; line-height:1.3 !important;
+}
+.st-key-home_primary, .st-key-home_secondary, .st-key-home_storage_v476,
 .st-key-home_primary [data-testid="stVerticalBlock"],
-.st-key-home_media_tools [data-testid="stVerticalBlock"] { gap:8px !important; }
+.st-key-home_media_tools [data-testid="stVerticalBlock"] {
+  gap:var(--bh-gap) !important;
+}
 .st-key-home_capture_pair [data-testid="stHorizontalBlock"],
 .st-key-home_quick_pair [data-testid="stHorizontalBlock"],
 .st-key-home_media_tools [data-testid="stHorizontalBlock"],
 .st-key-home_secondary [data-testid="stHorizontalBlock"],
 .st-key-home_location_tools [data-testid="stHorizontalBlock"] {
   display:flex !important; flex-direction:row !important; flex-wrap:nowrap !important;
-  align-items:stretch !important; gap:8px !important;
+  align-items:stretch !important; gap:7px !important;
 }
 .st-key-home_capture_pair [data-testid="stHorizontalBlock"] > [data-testid="stColumn"],
 .st-key-home_quick_pair [data-testid="stHorizontalBlock"] > [data-testid="stColumn"],
@@ -30782,60 +30817,183 @@ _HOME_LAYOUT_CSS_V473 = r"""<style>
 }
 .st-key-home_viewport_fit .st-key-home_primary div.stButton > button,
 .st-key-home_viewport_fit .st-key-home_secondary div.stButton > button {
-  width:100% !important; height:auto !important; min-height:74px !important; max-height:none !important;
-  display:grid !important; grid-template-columns:auto minmax(0,1fr) !important;
-  align-items:center !important; justify-content:center !important; gap:7px !important;
-  padding:10px 10px !important; font-size:1rem !important; line-height:1.4 !important;
+  width:100% !important; height:auto !important; min-height:var(--bh-primary) !important;
+  max-height:none !important; display:grid !important;
+  grid-template-columns:auto minmax(0,1fr) !important; align-items:center !important;
+  justify-content:center !important; gap:6px !important; padding:6px 9px !important;
+  font-size:.92rem !important; line-height:1.35 !important;
   white-space:normal !important; box-sizing:border-box !important;
 }
-.st-key-home_viewport_fit .st-key-home_secondary div.stButton > button { min-height:62px !important; }
+.st-key-home_viewport_fit .st-key-home_secondary div.stButton > button {
+  min-height:var(--bh-secondary) !important; padding:5px 9px !important;
+}
 .st-key-home_viewport_fit .st-key-home_primary div.stButton > button [data-testid="stMarkdownContainer"],
 .st-key-home_viewport_fit .st-key-home_secondary div.stButton > button [data-testid="stMarkdownContainer"],
 .st-key-home_viewport_fit .st-key-home_primary div.stButton > button p,
 .st-key-home_viewport_fit .st-key-home_secondary div.stButton > button p {
   min-width:0 !important; max-width:100% !important; width:auto !important;
   white-space:normal !important; overflow-wrap:anywhere !important; word-break:normal !important;
-  line-height:1.4 !important; margin:0 !important;
+  font-size:inherit !important; line-height:1.35 !important; margin:0 !important;
 }
-.st-key-home_viewport_fit .st-key-home_primary button::before { width:36px !important; height:36px !important; }
-.st-key-home_viewport_fit .st-key-home_video button::before { width:46px !important; height:36px !important; }
-.st-key-home_viewport_fit .st-key-home_secondary button::before { width:32px !important; height:32px !important; }
-.st-key-home_media_tools { margin:0 !important; }
+.st-key-home_viewport_fit .st-key-home_primary button::before { width:34px !important; height:34px !important; }
+.st-key-home_viewport_fit .st-key-home_video button::before { width:44px !important; height:34px !important; background-size:34px 34px,44px 34px !important; }
+.st-key-home_viewport_fit .st-key-home_secondary button::before { width:30px !important; height:30px !important; }
+.st-key-home_media_tools { margin:0 !important; gap:var(--bh-gap) !important; }
 .st-key-home_media_tools div.stButton > button {
-  height:auto !important; min-height:56px !important; max-height:none !important;
-  padding:7px 5px !important; font-size:.82rem !important; line-height:1.4 !important;
+  height:auto !important; min-height:var(--bh-tools) !important; max-height:none !important;
+  padding:5px 4px !important; font-size:.81rem !important; line-height:1.35 !important;
   white-space:normal !important; overflow-wrap:anywhere !important;
 }
-.st-key-home_media_tools div.stButton > button p { min-width:0 !important; white-space:normal !important; margin:0 !important; line-height:1.4 !important; }
-.st-key-home_media_tools [data-testid="stCaptionContainer"] p { font-size:.73rem !important; line-height:1.5 !important; margin:0 !important; white-space:normal !important; }
+.st-key-home_media_tools div.stButton > button p {
+  min-width:0 !important; white-space:normal !important; margin:0 !important;
+  font-size:inherit !important; line-height:1.35 !important;
+}
+.st-key-home_media_tools [data-testid="stCaptionContainer"] p {
+  font-size:.70rem !important; line-height:1.3 !important; margin:0 !important; white-space:normal !important;
+}
 .st-key-home_destination { margin:0 !important; }
-.st-key-home_destination div.stButton > button { min-height:48px !important; height:auto !important; max-height:none !important; padding:8px 8px !important; font-size:.79rem !important; line-height:1.4 !important; white-space:normal !important; }
-.st-key-home_destination button p { white-space:normal !important; overflow-wrap:anywhere !important; line-height:1.4 !important; }
+.st-key-home_destination div.stButton > button {
+  min-height:44px !important; height:auto !important; max-height:none !important;
+  padding:5px 7px !important; font-size:.76rem !important; line-height:1.35 !important;
+  white-space:normal !important;
+}
+.st-key-home_destination button p {
+  white-space:normal !important; overflow-wrap:anywhere !important;
+  font-size:inherit !important; line-height:1.35 !important; margin:0 !important;
+}
 .st-key-home_next_prompt_v390 { margin:0 !important; }
-.st-key-home_next_prompt_v390 button { height:auto !important; min-height:54px; white-space:normal !important; }
+.st-key-home_next_prompt_v390 button { height:auto !important; min-height:44px; white-space:normal !important; }
 .st-key-home_primary .st-key-home_diary div.stButton > button {
-  font-size:.90rem !important; column-gap:6px !important;
-  padding-left:8px !important; padding-right:8px !important;
+  font-size:.86rem !important; column-gap:5px !important; padding-left:7px !important; padding-right:7px !important;
 }
 .st-key-home_primary .st-key-home_diary div.stButton > button p { text-wrap:balance; }
 .st-key-home_viewport_fit .home-footer-note { display:none !important; }
-/* Do not override the weather Bidi container's measured height. */
 .st-key-home_weather_slot_v473 { min-width:0; width:100%; max-width:100%; margin:0; padding:0; }
-@media(max-width:640px) {
+.st-key-home_storage_v476 { margin:0 !important; padding:0 !important; position:relative; }
+.st-key-home_storage_v476 [data-testid="stMarkdownContainer"] > div { margin:0 2px !important; }
+/* A one-pixel heartbeat is not an extra flex row; its timer still runs. */
+.st-key-home_storage_v476 [class*="st-key-storage_tick_v468_home"] {
+  position:absolute !important; width:1px !important; height:1px !important;
+  min-height:0 !important; margin:0 !important; padding:0 !important; pointer-events:none;
+}
+/* Scope page-padding changes to Home only, including empty runtime/footer slots. */
+.block-container:has(.st-key-home_viewport_fit) {
+  min-height:0 !important; height:auto !important;
+  padding-top:calc(3rem + env(safe-area-inset-top,0px)) !important;
+  padding-bottom:max(44px,calc(12px + env(safe-area-inset-bottom,0px))) !important;
+}
+.block-container:has(.st-key-home_viewport_fit) > [data-testid="stVerticalBlock"],
+.st-key-app_page_root_v280:has(.st-key-home_viewport_fit),
+.st-key-app_page_root_v280:has(.st-key-home_viewport_fit) > [data-testid="stVerticalBlock"]:not(.st-key-home_viewport_fit) { gap:0 !important; }
+.st-key-app_page_root_v280:has(.st-key-home_viewport_fit) .st-key-global_bottom_navigation_slot_v256:empty,
+.block-container:has(.st-key-home_viewport_fit) [data-testid="stElementContainer"]:has(span[hidden][data-burari-perf-done]) { display:none !important; }
+@media(max-width:760px) {
   [data-testid="stMain"]:has(.st-key-home_viewport_fit) { overflow-x:hidden; overflow-y:auto; }
   .block-container:has(.st-key-home_viewport_fit) {
-    max-width:100% !important; width:100% !important; min-height:0 !important; height:auto !important;
-    padding:calc(3.5rem + env(safe-area-inset-top,0px)) 10px calc(1.5rem + env(safe-area-inset-bottom,0px)) !important;
+    max-width:100% !important; width:100% !important; padding-left:10px !important; padding-right:10px !important;
   }
   .st-key-app_page_root_v280:has(.st-key-home_viewport_fit) { height:auto !important; min-height:min-content !important; flex:0 0 auto !important; }
 }
 @media(max-width:350px) {
-  .st-key-home_viewport_fit .home-title { font-size:1.8rem !important; }
-  .st-key-home_viewport_fit .home-hero { padding:11px 12px !important; }
-  .st-key-home_viewport_fit .st-key-home_primary div.stButton > button { padding:9px 7px !important; gap:5px !important; font-size:.90rem !important; }
+  .st-key-home_viewport_fit .home-hero { padding-left:9px !important; padding-right:9px !important; }
+  .st-key-home_viewport_fit .home-hero-copy { column-gap:4px; }
+  .st-key-home_viewport_fit .home-title { font-size:1.55rem !important; }
+  .st-key-home_viewport_fit .home-hero-train,
+  .st-key-home_viewport_fit .home-hero-train img { width:42px !important; height:40px !important; }
+  .st-key-home_viewport_fit .st-key-home_primary div.stButton > button { padding-left:6px !important; padding-right:6px !important; gap:4px !important; font-size:.86rem !important; }
   .st-key-home_viewport_fit .st-key-home_video button::before { width:40px !important; }
 }
 </style>"""
+
+
+_HOME_FIT_JS_V476 = r"""export default function(component) {
+  // Layout only. No network, intervals, app reruns, scroll locking or transforms.
+  let host = window;
+  try { if (window.parent.document) host = window.parent; } catch (_) {}
+  const doc = host.document;
+  let root = null, alive = true, frame = 0, signature = '';
+  let resize = null, waiting = null;
+  const density = ['comfortable', 'compact', 'tight'];
+  const number = v => Number.parseFloat(v) || 0;
+  const geometry = () => {
+    const block = root.closest('.block-container');
+    const main = root.closest('[data-testid="stMain"]') || doc.scrollingElement;
+    const rect = root.getBoundingClientRect();
+    const viewport = host.visualViewport;
+    const bottom = Math.min(host.innerHeight, viewport ? viewport.height + viewport.offsetTop : host.innerHeight,
+      main && main !== doc.scrollingElement ? main.getBoundingClientRect().bottom : Infinity);
+    const padding = block ? number(host.getComputedStyle(block).paddingBottom) : 44;
+    // Use the unscrolled top; scrolling must never increase the layout budget.
+    const top = rect.top + (main ? main.scrollTop : 0);
+    return {height:rect.height, available:Math.max(0,bottom-top-padding-4),
+      width:rect.width, viewport:bottom, font:host.getComputedStyle(root).fontSize};
+  };
+  const stamp = g => [g.width.toFixed(1),g.height.toFixed(1),g.available.toFixed(1),g.viewport.toFixed(1),g.font].join('|');
+  const fit = () => {
+    frame = 0;
+    if (!alive || !root?.isConnected) return;
+    let g = geometry();
+    if (g.width <= 0 || g.available <= 0 || stamp(g) === signature) return;
+    // Each tier changes padding/gaps first, never hides a feature or shrinks text
+    // below the CSS floor. Extra notices, open editors and large accessibility
+    // text are allowed to scroll rather than overlap or disappear.
+    for (const level of density) {
+      if (root.dataset.homeDensityV476 !== level) root.dataset.homeDensityV476 = level;
+      g = geometry();
+      if (g.height <= g.available + 1) break;
+    }
+    root.dataset.homeFitV476 = g.height <= g.available + 1 ? 'fits' : 'scroll';
+    signature = stamp(g);
+  };
+  const schedule = () => {
+    if (alive && !frame) frame = host.requestAnimationFrame(fit);
+  };
+  const attach = () => {
+    if (!alive) return;
+    const next = doc.querySelector('.st-key-home_viewport_fit');
+    if (!next) return;
+    root = next;
+    if (waiting) { waiting.disconnect(); waiting = null; }
+    if (typeof host.ResizeObserver === 'function') {
+      resize = new host.ResizeObserver(schedule);
+      resize.observe(root);
+      const main = root.closest('[data-testid="stMain"]');
+      if (main) resize.observe(main);
+    }
+    schedule();
+  };
+  attach();
+  if (!root && typeof host.MutationObserver === 'function') {
+    waiting = new host.MutationObserver(attach);
+    waiting.observe(doc.body, {childList:true, subtree:true});
+  }
+  host.addEventListener('resize', schedule, {passive:true});
+  host.visualViewport?.addEventListener('resize', schedule, {passive:true});
+  doc.fonts?.addEventListener?.('loadingdone', schedule);
+  doc.fonts?.ready?.then(() => { if (alive) schedule(); });
+  return () => {
+    alive = false;
+    if (frame) host.cancelAnimationFrame(frame);
+    resize?.disconnect(); waiting?.disconnect();
+    host.removeEventListener('resize', schedule);
+    host.visualViewport?.removeEventListener('resize', schedule);
+    doc.fonts?.removeEventListener?.('loadingdone', schedule);
+  };
+}"""
+
+
+@st.cache_resource(show_spinner=False)
+def _home_fit_component_v476():
+    return st.components.v2.component("burari_home_fit_v476", js=_HOME_FIT_JS_V476)
+
+
+def _render_home_fit_v476():
+    """Observe Home geometry in the browser; no server events or background polling."""
+    try:
+        _home_fit_component_v476()(key="home_fit_v476", height=1)
+    except Exception:
+        # The normal-flow CSS remains usable even without the optional observer.
+        pass
 
 
 def page_home():
@@ -30843,6 +31001,7 @@ def page_home():
     # V2 mounts use API-valid height=1; their nonvisual parent is CSS-collapsed.
     _app_css_v473(_HOME_LAYOUT_CSS_V473)
     with st.container(key="home_runtime_bridges_v473"):
+        _render_home_fit_v476()
         _sync_recent_camera_state_from_browser()
         browser_home_state = read_browser_review_state()
     review_attention = home_review_attention_needed(browser_state=browser_home_state)
@@ -31055,7 +31214,8 @@ def page_home():
             '<div class="home-footer-note">写真・動画は0件でも大丈夫。気になったときだけ使います。</div>',
             unsafe_allow_html=True,
         )
-        render_home_storage_usage_status()
+        with st.container(key="home_storage_v476"):
+            render_home_storage_usage_status()
 
 
 def _render_toilet_map(search_latitude, search_longitude, places, radius_m, *, accuracy_m=None, search_source="gps"):
@@ -44548,8 +44708,8 @@ def page_random_replay_v473():
 
 
 def page_review():
-    # v208: Review is now a compact landing screen. Monthly/tag/history content lives
-    # on dedicated app pages so opening Review never becomes one long scrolling page.
+    # v477: Keep only random, tags, project, and map on the Review landing page.
+    # Remove links/library display only; preserve stored media and destination pages.
     st.session_state.pop("review_view_selector", None)
     st.session_state.pop("history_detail_trip_id", None)
 
@@ -44624,13 +44784,13 @@ def page_review():
         st.button("\U0001f3b2 \u304a\u307e\u304b\u305b\u30e0\u30fc\u30d3\u30fc", use_container_width=True,
                   key="review_open_random_v473", on_click=_open_random_replay_v473)
 
-    with st.container(key="review_map_jump"):
+    with st.container(key="review_tag_jump"):
         st.button(
-            "🗺️ 思い出マップ",
+            "🏷️ タグ別の振り返り",
             use_container_width=True,
-            key="review_open_map_v259",
+            key="review_open_tag_v208",
             on_click=_go_page_callback,
-            args=("review_map", "push"),
+            args=("review_tag", "push"),
         )
 
     with st.container(key="review_project_jump"):
@@ -44642,35 +44802,14 @@ def page_review():
             args=("review_project", "push"),
         )
 
-    with st.container(key="review_monthly_jump"):
+    with st.container(key="review_map_jump"):
         st.button(
-            "🗓 月別の振り返り",
+            "🗺️ 思い出マップ",
             use_container_width=True,
-            key="review_open_monthly_v208",
+            key="review_open_map_v259",
             on_click=_go_page_callback,
-            args=("review_monthly", "push"),
+            args=("review_map", "push"),
         )
-
-    with st.container(key="review_tag_jump"):
-        st.button(
-            "🏷️ タグ別の振り返り",
-            use_container_width=True,
-            key="review_open_tag_v208",
-            on_click=_go_page_callback,
-            args=("review_tag", "push"),
-        )
-
-    with st.container(key="review_history_jump"):
-        st.button(
-            "📚 これまでの日記",
-            use_container_width=True,
-            key="review_open_history_v208",
-            on_click=_go_page_callback,
-            args=("review_history", "push"),
-        )
-
-    render_own_replay_movie_library()
-
 
 def page_good_moments_menu():
     page_top("✨ いい瞬間の設定をする")
