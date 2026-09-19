@@ -43,7 +43,8 @@ def _app_css_v473(markup, **_ignored):
 # Review menu-only update: 2026-09-19 JST
 GENERATED_UPDATE_JST = "2026-09-19T14:54:38+09:00"
 
-APP_BUILD = "v477"
+APP_BUILD = "v478"
+# v478: Move the Home dashboard slightly lower on mobile without changing its density, controls, or one-screen fit behavior.
 # v477: Review menu is random -> tags -> project -> map; hide other landing entries.
 # Existing media, saved movies, diaries, page logic, and Home layout are preserved.
 # v476: viewport-measured Home density, compact header/weather, no clipping.
@@ -30879,7 +30880,7 @@ _HOME_LAYOUT_CSS_V473 = r"""<style>
 /* Scope page-padding changes to Home only, including empty runtime/footer slots. */
 .block-container:has(.st-key-home_viewport_fit) {
   min-height:0 !important; height:auto !important;
-  padding-top:calc(3rem + env(safe-area-inset-top,0px)) !important;
+  padding-top:calc(3rem + 14px + env(safe-area-inset-top,0px)) !important;
   padding-bottom:max(44px,calc(12px + env(safe-area-inset-bottom,0px))) !important;
 }
 .block-container:has(.st-key-home_viewport_fit) > [data-testid="stVerticalBlock"],
