@@ -32,10 +32,12 @@ from zoneinfo import ZoneInfo
 
 import streamlit as st
 
-# Replay update: 2026-09-19 JST
-GENERATED_UPDATE_JST = "2026-09-19T09:00:00+09:00"
+# Home forecast update: 2026-09-19 JST
+GENERATED_UPDATE_JST = "2026-09-19T11:37:15+09:00"
 
-APP_BUILD = "v469"
+APP_BUILD = "v470"
+# v470: small current-location / 2-hour forecast strip above the Home title.
+# Browser-only, bounded cache, no Streamlit weather reruns; v469 features preserved.
 # v469: deletable duration-sorted music presets, standard keypad, voice-budgeted random replay.
 # v468 performance improvements and unrelated capture/GPS/account behavior are preserved.
 # v468: post-save vision jobs, persistent exact framing, async display-only storage,
@@ -30142,6 +30144,394 @@ def _render_home_storage_usage_status():
 render_home_storage_usage_status = st.fragment(_render_home_storage_usage_status)
 
 
+# ============================================================
+# v470: compact, browser-only Home forecast (no Streamlit reruns)
+# ============================================================
+# Forecast API / attribution / non-commercial-use limits:
+# https://open-meteo.com/en/docs
+# https://open-meteo.com/en/terms
+# Japan's 15-minute data is interpolated from hourly forecasts, NOT rain radar.
+# The place-name endpoint is deliberately called only in the device browser with
+# that same device's freshly obtained geolocation, never with stored/server GPS:
+# https://www.bigdatacloud.com/docs/article/fair-use-policy-for-free-client-side-reverse-geocoding-api
+_HOME_WEATHER_HTML_V470 = """
+<section class="bw470" aria-label="現在地の2時間先までの天気予報">
+  <div class="bw470-main">
+    <div class="bw470-place">
+      <div class="bw470-name">現在地を確認中</div>
+      <div class="bw470-sub">2時間先まで</div>
+    </div>
+    <div class="bw470-slots" aria-live="polite"></div>
+    <button class="bw470-refresh" type="button" aria-label="現在地と天気を更新" title="現在地と天気を更新">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19 8a8 8 0 1 0 1 8M19 3v5h-5"/></svg>
+    </button>
+  </div>
+  <div class="bw470-bottom">
+    <span class="bw470-status" role="status">天気を確認しています</span>
+    <details class="bw470-details"><summary>予報・出典</summary>
+      <div class="bw470-explanation">
+        現在・1時間後・2時間後に最も近い予報時刻を表示します（15分刻み）。
+        日本の15分値は1時間予報を補間したもので、雨雲レーダーや降り始めを分単位で予測する表示ではありません。<br>
+        位置情報は天気・地名の取得に使用します。天気には約1km単位に丸めた座標、地名には端末で取得した座標を送信します。
+        写真・音声・日記・アカウント情報は送信しません。<br>
+        天気：<a href="https://open-meteo.com/" target="_blank" rel="noopener noreferrer">Open-Meteo</a>（CC BY 4.0）<br>
+        地名：<a href="https://www.bigdatacloud.com/" target="_blank" rel="noopener noreferrer">BigDataCloud</a>
+      </div>
+    </details>
+    <a class="bw470-credit" href="https://open-meteo.com/" target="_blank" rel="noopener noreferrer">Open-Meteo</a>
+  </div>
+</section>
+"""
+
+_HOME_WEATHER_CSS_V470 = """
+.bw470 { width:100%; box-sizing:border-box; margin:0; padding:5px 7px 3px;
+  color:var(--st-text-color,#263548); background:var(--st-secondary-background-color,#f3f7fa);
+  border:1px solid rgba(128,150,173,.16); border-radius:12px;
+  font-family:var(--st-font,sans-serif); }
+.bw470 * { box-sizing:border-box; }
+.bw470-main { display:flex; align-items:center; gap:5px; min-height:44px; }
+.bw470-place { flex:1 1 95px; min-width:0; padding-left:2px; }
+.bw470-name { font-size:12px; font-weight:750; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; line-height:1.45; }
+.bw470-sub { font-size:9px; opacity:.64; line-height:1.5; }
+.bw470-slots { flex:0 0 165px; display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:4px; }
+.bw470-slot { text-align:center; min-width:0; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:0; }
+.bw470-time { font-size:9px; line-height:1.2; font-variant-numeric:tabular-nums; opacity:.76; }
+.bw470-icon { height:27px; width:32px; display:block; }
+.bw470-icon svg { height:27px; width:32px; display:block; }
+.bw470-condition { font-size:8px; line-height:1.05; white-space:nowrap; opacity:.76; }
+.bw470-refresh { flex:0 0 28px; width:28px; height:32px; min-height:32px; padding:5px; margin:0;
+  border:0; border-radius:8px; color:inherit; background:transparent; cursor:pointer; touch-action:manipulation; }
+.bw470-refresh svg { display:block; width:18px; height:18px; fill:none; stroke:currentColor; stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round; opacity:.6; }
+.bw470-refresh:disabled { opacity:.35; cursor:default; }
+.bw470-refresh:active { background:rgba(74,144,226,.17); }
+.bw470-bottom { display:flex; align-items:baseline; gap:8px; min-height:12px; margin-top:1px; }
+.bw470-status { flex:1 1 auto; min-width:0; font-size:8px; opacity:.66; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.bw470-credit,.bw470-details summary { font-size:8px; color:inherit; opacity:.65; white-space:nowrap; }
+.bw470-credit { flex:0 0 auto; text-decoration:none; }
+.bw470-credit:hover { text-decoration:underline; }
+.bw470-details { flex:0 0 auto; }
+.bw470-details summary { cursor:pointer; list-style:none; }
+.bw470-details summary::-webkit-details-marker { display:none; }
+.bw470-details summary::before { content:'i '; }
+.bw470-details[open] { flex:1 1 100%; order:3; }
+.bw470-bottom:has(.bw470-details[open]) { flex-wrap:wrap; }
+.bw470-explanation { font-size:10px; line-height:1.6; padding:5px 2px; opacity:.84; }
+.bw470-explanation a { color:inherit; }
+@media(max-width:360px) {
+  .bw470 { padding:4px 5px 3px; }
+  .bw470-main { gap:2px; }
+  .bw470-name { font-size:11px; }
+  .bw470-slots { flex-basis:144px; gap:2px; }
+  .bw470-place { flex-basis:76px; }
+  .bw470-refresh { flex-basis:26px; width:26px; }
+}
+"""
+
+_HOME_WEATHER_JS_V470 = r"""
+export default function(component) {
+  const {parentElement, data} = component;
+  const root = parentElement.querySelector('.bw470');
+  if (!root) return;
+  const scope = String(data?.scope || '');
+  if (!scope) return;
+  // V2 is a shadow root, not necessarily an HTMLElement. Keep the entire widget
+  // inside its own root; never manipulate the app title, navigation or GPS bridge.
+  let host = window;
+  try { if (window.parent?.document) host = window.parent; } catch (_) {}
+  const pool = host.__burariHomeWeatherV470 ||= new Map();
+  const storageKey = `burari_weather_v470:${scope}`;
+  const TTL = 10 * 60 * 1000;
+  const STALE = 30 * 60 * 1000;
+  const STEP = 15 * 60 * 1000;
+  const now = () => Date.now();
+  const number = (v) => (v === null || v === undefined || v === '' || typeof v === 'boolean') ? NaN : Number(v);
+  const parse = (s) => { try { return JSON.parse(s); } catch (_) { return null; } };
+  const storage = (() => { try { return host.sessionStorage; } catch (_) { return null; } })();
+  let state = pool.get(scope);
+  if (!state) {
+    let saved = null;
+    try { saved = parse(storage?.getItem(storageKey) || ''); } catch (_) {}
+    state = {listeners:new Set(), forecasts:new Map(), names:[], fix:null, place:'',
+      geoError:'', weatherError:'', nameError:false, busy:false, checked:0, attempted:0,
+      timer:null, teardown:null, epoch:0, controllers:new Set(), timezone:String(data?.timezone || 'Asia/Tokyo')};
+    if (saved?.version === 1) {
+      for (const entry of (Array.isArray(saved.forecasts) ? saved.forecasts : []).slice(-4)) {
+        if (typeof entry?.key === 'string' && Number.isFinite(number(entry.at)) && now()-entry.at >= 0 && now()-entry.at < STALE) {
+          state.forecasts.set(entry.key, entry);
+        }
+      }
+      state.names = (Array.isArray(saved.names) ? saved.names : []).filter(x => x && typeof x.label==='string'
+        && Number.isFinite(number(x.lat)) && Number.isFinite(number(x.lon)) && now()-number(x.at)>=0 && now()-number(x.at)<6*3600000).slice(-6);
+    }
+    pool.set(scope,state);
+    // A bounded page-lifetime cache. Account names/IDs are never passed to providers.
+    for (const [key,value] of pool) {
+      if (pool.size<=4) break;
+      if (key!==scope && !value.listeners.size && !value.busy) pool.delete(key);
+    }
+  }
+  if (state.teardown) { clearTimeout(state.teardown); state.teardown=null; }
+  const persist = () => {
+    try { storage?.setItem(storageKey,JSON.stringify({version:1,
+      forecasts:[...state.forecasts.values()].slice(-4), names:state.names.slice(-6)})); } catch (_) {}
+  };
+  const distance = (a,b) => {
+    if (!a || !b) return Infinity;
+    const r=Math.PI/180, dLat=(b.lat-a.lat)*r, dLon=(b.lon-a.lon)*r;
+    const h=Math.sin(dLat/2)**2+Math.cos(a.lat*r)*Math.cos(b.lat*r)*Math.sin(dLon/2)**2;
+    return 12742000*Math.asin(Math.min(1,Math.sqrt(Math.max(0,h))));
+  };
+  const cell = (p) => `${Number(p.lat).toFixed(2)},${Number(p.lon).toFixed(2)}`;
+  const fmt = (ms,tz=state.timezone) => {
+    try { return new Intl.DateTimeFormat('ja-JP',{timeZone:tz,hour:'2-digit',minute:'2-digit',hour12:false}).format(new Date(ms)); }
+    catch (_) { return new Intl.DateTimeFormat('ja-JP',{hour:'2-digit',minute:'2-digit',hour12:false}).format(new Date(ms)); }
+  };
+  const descriptor = (value,isDay) => {
+    const c=number(value), night=number(isDay)===0;
+    if (c===0 || c===1) return {kind:night?'moon':'sun',label:c===1?'ほぼ晴れ':'晴れ'};
+    if (c===2) return {kind:night?'mooncloud':'suncloud',label:'晴れ曇り'};
+    if (c===3) return {kind:'cloud',label:'曇り'};
+    if (c===45 || c===48) return {kind:'fog',label:'霧'};
+    if ([51,53,55].includes(c)) return {kind:'drizzle',label:'霧雨'};
+    if ([56,57,66,67].includes(c)) return {kind:'ice',label:'凍る雨'};
+    if ([61,63,65,80,81,82].includes(c)) return {kind:'rain',label:[65,82].includes(c)?'強い雨':'雨'};
+    if ([71,73,75,77,85,86].includes(c)) return {kind:'snow',label:'雪'};
+    if ([95,96,99].includes(c)) return {kind:'thunder',label:'雷雨'};
+    return {kind:'unknown',label:'情報なし'};
+  };
+  const icon = (kind) => {
+    // Original inline vector icons: no image downloads or platform-dependent emoji.
+    const sun='<g stroke="#dea42b" stroke-width="2" stroke-linecap="round"><path d="M18 2v3m0 22v3M4 16h3m22 0h3M8 6l2 2m16 16 2 2M8 26l2-2M26 8l2-2"/><circle cx="18" cy="16" r="7" fill="#ffd66b"/></g>';
+    const moon='<path d="M25 3a13 13 0 1 0 7 23A12 12 0 0 1 25 3Z" fill="#a4bde4" stroke="#657faa" stroke-width="1.5"/>';
+    const cloud='<path d="M9 25a7 7 0 1 1 2-13 9 9 0 0 1 17 0 6.5 6.5 0 1 1 3 13Z" fill="#dce5ee" stroke="#839bae" stroke-width="1.5"/>';
+    let s='';
+    if (kind==='sun') s=sun;
+    else if (kind==='moon') s=moon;
+    else if (kind==='suncloud' || kind==='mooncloud') s=`<g transform="translate(0,-2) scale(.8)">${kind==='suncloud'?sun:moon}</g>`+cloud;
+    else if (kind==='cloud') s=cloud;
+    else if (kind==='fog') s=cloud+'<path d="M5 28h28M8 32h23M12 36h16" stroke="#8ba0ac" stroke-width="2" stroke-linecap="round"/>';
+    else if (kind==='snow') s=cloud+'<g stroke="#5d9cc8" stroke-width="1.3"><path d="M12 28v9m-4-6 8 4m-8 0 8-4M26 28v9m-4-6 8 4m-8 0 8-4"/></g>';
+    else if (kind==='thunder') s=cloud+'<path d="m20 23-7 9h6l-3 7 11-12h-7l4-4" fill="#efbb3f" stroke="#b98422" stroke-width=".8"/>';
+    else if (['rain','drizzle','ice'].includes(kind)) s=cloud+'<path d="m11 28-2 5m12-5-2 5m12-5-2 5" stroke="#4a97d0" stroke-width="2.6" stroke-linecap="round"/>'+(kind==='ice'?'<path d="M17 35h10m-5-4v8" stroke="#9b82be" stroke-width="1.5"/>':'');
+    else s='<circle cx="20" cy="19" r="13" fill="none" stroke="#9aa8b5" stroke-width="1.5"/><path d="M16 15c0-6 10-6 9 0 0 3-5 3-5 6m0 5v1" fill="none" stroke="#8a99a8" stroke-width="2" stroke-linecap="round"/>';
+    return `<svg viewBox="0 0 40 40" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">${s}</svg>`;
+  };
+  const rowsFrom = (raw) => {
+    const src=raw?.minutely_15;
+    if (!src || !Array.isArray(src.time) || !Array.isArray(src.weather_code)) return [];
+    return src.time.slice(0,32).map((ts,i)=>({ms:number(ts)*1000,code:src.weather_code[i],day:src.is_day?.[i]}))
+      .filter(r=>Number.isFinite(r.ms) && Number.isFinite(number(r.code))).sort((a,b)=>a.ms-b.ms);
+  };
+  const selectSlots = (entry,clock=now()) => {
+    const rows=Array.isArray(entry?.rows)?entry.rows:[];
+    return [0,3600000,7200000].map(offset=>{
+      const target=clock+offset;
+      let best=null;
+      for (const r of rows) if (r && Number.isFinite(number(r.ms)) && (!best || Math.abs(r.ms-target)<Math.abs(best.ms-target))) best=r;
+      // Never mislabel yesterday's or an incomplete response's last point as +2h.
+      return best && Math.abs(best.ms-target)<=STEP/2+1000 ? best : null;
+    });
+  };
+  const entryForFix = () => state.fix ? state.forecasts.get(cell(state.fix)) : null;
+  const slotRoot=root.querySelector('.bw470-slots'), placeEl=root.querySelector('.bw470-name');
+  const statusEl=root.querySelector('.bw470-status'), refreshEl=root.querySelector('.bw470-refresh');
+  let disposed=false;
+  const draw = () => {
+    if (disposed || !root.isConnected) return;
+    const entry=entryForFix(), age=now()-number(entry?.at);
+    const fixFresh=state.fix && now()-state.fix.at<12*60000;
+    const usable=!state.geoError && fixFresh && age>=0 && age<STALE;
+    const slots=usable?selectSlots(entry):[null,null,null];
+    placeEl.textContent=state.geoError ? '現在地を確認できません' : state.place || (state.fix?'現在地付近':'現在地を確認中');
+    placeEl.title=placeEl.textContent;
+    const fragment=document.createDocumentFragment();
+    slots.forEach((row,i)=>{
+      const d=descriptor(row?.code,row?.day), el=document.createElement('div');
+      el.className='bw470-slot';
+      const time=document.createElement('span'); time.className='bw470-time';
+      time.textContent=row?fmt(row.ms,entry?.timezone):['現在','1時間後','2時間後'][i];
+      const graphic=document.createElement('span'); graphic.className='bw470-icon'; graphic.innerHTML=icon(d.kind);
+      const label=document.createElement('span'); label.className='bw470-condition'; label.textContent=row?d.label:'--';
+      el.setAttribute('role','img'); el.setAttribute('aria-label',`${time.textContent} ${row?d.label:'予報未取得'}`);
+      el.title=`${['現在に近い時刻','約1時間後','約2時間後'][i]}: ${time.textContent} ${d.label}`;
+      el.append(time,graphic,label); fragment.appendChild(el);
+    });
+    slotRoot.replaceChildren(fragment);
+    const hasAll=slots.every(Boolean);
+    let message='';
+    if (state.geoError) message=state.geoError;
+    else if (!state.fix) message='現在地を確認しています';
+    else if (state.weatherError && hasAll) message=`${fmt(entry.at)}取得の予報・更新できません`;
+    else if (state.weatherError) message=state.weatherError;
+    else if (state.busy && !hasAll) message='天気を確認しています';
+    else if (hasAll) message=`${fmt(entry.at)}更新${state.nameError?'・地名未取得':''}`;
+    else message='予報を取得できません。更新をお試しください';
+    statusEl.textContent=message; statusEl.title=message;
+    refreshEl.disabled=state.busy;
+  };
+  const emit = () => { for (const listener of state.listeners) { try { listener(); } catch (_) {} } };
+  state.listeners.add(draw);
+  const active = () => state.listeners.size>0 && !host.document.hidden;
+  const fetchJson = async (url,epoch) => {
+    const controller=new AbortController(); state.controllers.add(controller);
+    const timer=setTimeout(()=>controller.abort(),6000);
+    try {
+      const response=await fetch(url,{signal:controller.signal,credentials:'omit',referrerPolicy:'no-referrer',cache:'no-store'});
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const text=await response.text();
+      if (text.length>100000) throw new Error('response_too_large');
+      const result=JSON.parse(text);
+      if (epoch!==state.epoch || !active()) throw new Error('obsolete');
+      return result;
+    } finally { clearTimeout(timer); state.controllers.delete(controller); }
+  };
+  const position = (high=false) => new Promise((resolve,reject)=>{
+    if (!host.navigator.geolocation) { reject({code:0}); return; }
+    let done=false;
+    const finish=(fn,value)=>{ if(done)return; done=true; clearTimeout(timer);fn(value); };
+    const timer=setTimeout(()=>finish(reject,{code:3}),9500);
+    try { host.navigator.geolocation.getCurrentPosition(p=>finish(resolve,p),e=>finish(reject,e),
+      {enableHighAccuracy:high,maximumAge:60000,timeout:8000}); }
+    catch (_) { finish(reject,{code:0}); }
+  });
+  const normalizePosition = (p) => {
+    const lat=number(p?.coords?.latitude),lon=number(p?.coords?.longitude),acc=number(p?.coords?.accuracy),ts=number(p?.timestamp);
+    if (!Number.isFinite(lat)||!Number.isFinite(lon)||Math.abs(lat)>90||Math.abs(lon)>180||!Number.isFinite(acc)||acc<0
+      ||!Number.isFinite(ts)||now()-ts>120000||ts-now()>30000) throw {code:2};
+    return {lat,lon,accuracy:acc,at:ts};
+  };
+  const resolveWeather = async (fix,epoch,force) => {
+    const key=cell(fix),old=state.forecasts.get(key);
+    if (!force && old && now()-old.at>=0 && now()-old.at<TTL && selectSlots(old).every(Boolean)) { state.weatherError='';emit();return; }
+    const [lat,lon]=key.split(',');
+    const params=new URLSearchParams({latitude:lat,longitude:lon,timezone:'auto',timeformat:'unixtime',
+      minutely_15:'weather_code,is_day',forecast_minutely_15:'20',past_minutely_15:'1'});
+    try {
+      const raw=await fetchJson(`https://api.open-meteo.com/v1/forecast?${params}`,epoch);
+      const rows=rowsFrom(raw),entry={key,at:now(),timezone:String(raw?.timezone||state.timezone),rows};
+      if (!selectSlots(entry).every(Boolean)) throw new Error('incomplete_forecast');
+      if (epoch!==state.epoch) return;
+      state.forecasts.delete(key);state.forecasts.set(key,entry);
+      while(state.forecasts.size>4) state.forecasts.delete(state.forecasts.keys().next().value);
+      state.weatherError='';persist();emit();
+    } catch (_) {
+      if (epoch!==state.epoch) return;
+      state.weatherError='天気を取得できません。更新をお試しください';emit();
+    }
+  };
+  const resolvePlace = async (fix,epoch) => {
+    const existing=state.names.filter(x=>now()-x.at>=0 && now()-x.at<6*3600000 && distance(x,fix)<350).at(-1);
+    if (existing) { state.place=existing.label;state.nameError=false;emit();return; }
+    state.place='現在地付近';state.nameError=false;emit();
+    // IMPORTANT: `fix` comes from this device's current geolocation in this refresh.
+    // Never call this endpoint for an arbitrary map point, photograph, or DB record.
+    const params=new URLSearchParams({latitude:String(fix.lat),longitude:String(fix.lon),localityLanguage:'ja'});
+    try {
+      const raw=await fetchJson(`https://api.bigdatacloud.net/data/reverse-geocode-client?${params}`,epoch);
+      const city=typeof raw?.city==='string'?raw.city.trim():'';
+      const locality=typeof raw?.locality==='string'?raw.locality.trim():'';
+      const region=typeof raw?.principalSubdivision==='string'?raw.principalSubdivision.trim():'';
+      const name=(locality||city||region).replace(/[\u0000-\u001f\u007f]/g,'').slice(0,60);
+      if (!name) throw new Error('missing_name');
+      if (epoch!==state.epoch) return;
+      state.place=name.endsWith('付近')?name:`${name}付近`;state.nameError=false;
+      // Persist only an approximate point for locality-cache matching, never exact GPS.
+      state.names.push({lat:Number(fix.lat.toFixed(3)),lon:Number(fix.lon.toFixed(3)),label:state.place,at:now()});
+      state.names=state.names.slice(-6);persist();emit();
+    } catch (_) { if (epoch===state.epoch) { state.nameError=true;emit(); } }
+  };
+  const schedule = () => {
+    if (state.timer) clearTimeout(state.timer);
+    state.timer=null;
+    if (!active()) return;
+    // Home-only, ten-minute refresh. No watcher, no server round-trip and no
+    // timers/network left running after leaving Home or hiding the application.
+    state.timer=setTimeout(()=>{state.timer=null;void refresh(false);},TTL);
+  };
+  const refresh = async (manual=false) => {
+    if (!active() || state.busy) return;
+    // Repeated Home reruns and rapid presses must not multiply service requests.
+    const elapsed=now()-state.attempted;
+    if (elapsed>=0 && elapsed<(manual?15000:60000)) { draw();schedule();return; }
+    state.attempted=now();state.busy=true;state.geoError='';
+    const epoch=++state.epoch;
+    emit();
+    try {
+      let fix=normalizePosition(await position(false));
+      if (epoch!==state.epoch||!active()) return;
+      if (fix.accuracy>3000) fix=normalizePosition(await position(true));
+      if (epoch!==state.epoch||!active()) return;
+      if (fix.accuracy>3000) throw {code:2};
+      if (state.fix && distance(state.fix,fix)>350) state.place='';
+      state.fix=fix;state.checked=now();state.geoError='';state.weatherError='';emit();
+      await Promise.allSettled([resolveWeather(fix,epoch,manual),resolvePlace(fix,epoch)]);
+    } catch (e) {
+      if (epoch!==state.epoch) return;
+      state.geoError=Number(e?.code)===1?'位置情報を許可すると表示できます'
+        :Number(e?.code)===3?'現在地の取得がタイムアウトしました':'位置情報を確認して更新してください';
+      // No IP-based guess and no previous visit masquerading as current location.
+      state.fix=null;state.place='';emit();
+    } finally {
+      if (epoch===state.epoch) { state.busy=false;emit();schedule(); }
+    }
+  };
+  const suspend = () => {
+    if (state.timer) clearTimeout(state.timer);state.timer=null;
+    state.epoch++;state.busy=false;
+    for(const controller of state.controllers) controller.abort();
+    state.controllers.clear();
+  };
+  const onVisibility = () => {
+    if (host.document.hidden) suspend();
+    else { state.attempted=0;void refresh(false); }
+  };
+  const onRefresh = () => { void refresh(true); };
+  const onPageShow = () => { void refresh(false); };
+  refreshEl.addEventListener('click',onRefresh);
+  host.document.addEventListener('visibilitychange',onVisibility);
+  host.addEventListener('pageshow',onPageShow);
+  draw();
+  // Start after the first paint. Fetch never holds up the title or capture buttons.
+  const initialTimer=setTimeout(()=>{void refresh(false);},120);
+  return () => {
+    disposed=true;clearTimeout(initialTimer);state.listeners.delete(draw);
+    refreshEl.removeEventListener('click',onRefresh);
+    host.document.removeEventListener('visibilitychange',onVisibility);
+    host.removeEventListener('pageshow',onPageShow);
+    if (!state.listeners.size) {
+      if (state.timer) clearTimeout(state.timer);state.timer=null;
+      // A tiny grace period lets Streamlit rebind the same component on an ordinary
+      // rerun without aborting and reissuing its in-flight request.
+      state.teardown=setTimeout(()=>{ if(!state.listeners.size)suspend();state.teardown=null; },200);
+    }
+  };
+}
+"""
+
+
+@st.cache_resource(show_spinner=False)
+def _home_weather_component_v470():
+    return st.components.v2.component(
+        "burari_home_weather_v470", html=_HOME_WEATHER_HTML_V470,
+        css=_HOME_WEATHER_CSS_V470, js=_HOME_WEATHER_JS_V470,
+    )
+
+
+def render_home_weather_v470():
+    """Mount a display-only widget; no GPS/DB/API call runs on the server path."""
+    scope = hashlib.sha256(
+        f"{current_family_key()}|{current_member_key()}".encode("utf-8")
+    ).hexdigest()[:24]
+    try:
+        _home_weather_component_v470()(
+            key=f"home_weather_v470_{scope}",
+            data={"scope": scope, "timezone": str(APP_TIMEZONE or "Asia/Tokyo")},
+        )
+    except Exception:
+        # Weather is optional; never block recording or change existing routes.
+        st.caption("天気予報を表示できません。ほかの機能はそのまま使えます。")
+
+
 def page_home():
     # Keep the recent photo/video camera mode fresh using browser-local storage only.
     _sync_recent_camera_state_from_browser()
@@ -30431,6 +30821,7 @@ def page_home():
         field_note_notice = st.session_state.pop("_field_note_notice_v390", None)
         if field_note_notice:
             st.success(field_note_notice)
+        render_home_weather_v470()
         # The hero train keeps the same track-equipped illustration, but varies by route on each new session.
         train_line_name, train_uri = _home_train_for_session()
         train_html = (
