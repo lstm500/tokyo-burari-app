@@ -32,10 +32,21 @@ from zoneinfo import ZoneInfo
 
 import streamlit as st
 
-# Home forecast update: 2026-09-19 JST
-GENERATED_UPDATE_JST = '2026-09-19T12:00:52+09:00'
 
-APP_BUILD = "v471"
+def _app_css_v473(markup, **_ignored):
+    """Render trusted, CSS-only app markup without a blank Markdown layout slot."""
+    if hasattr(st, "html"):
+        st.html(markup)
+    else:
+        st.markdown(markup, unsafe_allow_html=True)
+
+# Home layout, random replay and five-hour forecast update: 2026-09-19 JST
+GENERATED_UPDATE_JST = '2026-09-19T12:43:20+09:00'
+
+APP_BUILD = "v473"
+# v473: normal-flow Home, all-date random music/photo replay, five-hour weather.
+# Keep minute/second editor, voice timing, photo quality and existing manual replays.
+# v472: minute/second music labels and unit-selectable keypad; stored seconds and playback logic unchanged.
 # v471: prioritize music settings before replay preparation; bound the Home weather strip.
 # Preserve v468 performance, v469 music/random-play timing, and v470 forecast behavior.
 # v470: small current-location / 2-hour forecast strip above the Home title.
@@ -290,7 +301,7 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
-st.markdown(
+_app_css_v473(
     """
     <style>
       .block-container {
@@ -956,6 +967,8 @@ st.markdown(
 )
 
 
+
+_app_css_v473('<style>.st-key-app_runtime_bridges_v473,.st-key-home_runtime_bridges_v473{position:absolute!important;width:1px!important;height:0!important;min-height:0!important;max-height:0!important;padding:0!important;margin:0!important;overflow:visible!important;pointer-events:none;}</style>')
 
 # Only wraps the existing component trigger for diagnostics; no new messages.
 @functools.lru_cache(maxsize=32)
@@ -7035,7 +7048,7 @@ def render_pending_emotion_query_cleanup():
         return
     component(
         data={"ack_token": ack, "pending_param": PENDING_EMOTION_QUERY_PARAM},
-        key=f"pending_emotion_cleanup_v159_{ack}",
+        key=f"pending_emotion_cleanup_v159_{ack}", height=1,
     )
 
 
@@ -7219,7 +7232,7 @@ def sync_pending_tags_from_browser_v166():
             "ack_token": str(st.session_state.get("_pending_tag_v166_ack_token") or ""),
             "scan_nonce": time.time_ns(),
         },
-        key="pending_tag_sync_instance_v166",
+        key="pending_tag_sync_instance_v166", height=1,
         on_pending_payload_change=lambda: None,
     )
     payload = getattr(result, "pending_payload", None)
@@ -7239,7 +7252,7 @@ _PERF_BROWSER_JS_V466 = 'function installBurariPerf466(host, page, run, serverSe
 _HISTORY_JS = _PERF_BROWSER_JS_V466 + r"""
 export default function(component) {
   const { data, setTriggerValue } = component;
-  const validPages = new Set(['home', 'camera', 'videos', 'moments', 'diary', 'photos', 'review', 'review_map', 'review_project', 'review_monthly', 'review_tag', 'review_history', 'nearby', 'discovery_results', 'evening_review', 'toilets', 'field_notes', 'settings', 'settings_moments', 'settings_moments_definition', 'settings_location', 'settings_account']);
+  const validPages = new Set(['home', 'camera', 'videos', 'moments', 'diary', 'photos', 'review', 'review_map', 'review_project', 'review_monthly', 'review_tag', 'review_random', 'review_history', 'nearby', 'discovery_results', 'evening_review', 'toilets', 'field_notes', 'settings', 'settings_moments', 'settings_moments_definition', 'settings_location', 'settings_account']);
   const marker = '__tokyo_burari_page__';
   const guardMarker = '__tokyo_burari_first_level_guard__';
   const requestedPage = validPages.has(data?.page) ? data.page : 'home';
@@ -7620,7 +7633,7 @@ def read_browser_persistence(key, extra_data=None):
         data.update(extra_data)
     result = browser_persistence_component(
         data=data,
-        key=key,
+        key=key, height=1,
         on_browser_state_change=lambda: None,
         on_browser_error_change=lambda: None,
     )
@@ -21364,20 +21377,24 @@ _MUSIC_EDITOR_HTML_V469 = """
     <input id="music-url-469" class="music-url" type="url" inputmode="url" autocomplete="off" placeholder="https://www.youtube.com/watch?v=...">
   </div>
   <div class="music-times">
-    <div><span class="music-label">\u958b\u59cb\uff08\u79d2\uff09</span><div class="music-time-control">
+    <div><span class="music-label">\u958b\u59cb</span><div class="music-time-control">
       <button type="button" data-step="start:-1" aria-label="\u958b\u59cb\u30921\u79d2\u6e1b\u3089\u3059">&#8722;</button>
-      <button type="button" data-edit="start" class="music-time-value" aria-label="\u958b\u59cb\u79d2\u6570\u3092\u5165\u529b"></button>
+      <button type="button" data-edit="start" class="music-time-value" aria-label="\u958b\u59cb\u6642\u9593\u3092\u5206\u3068\u79d2\u3067\u5165\u529b"></button>
       <button type="button" data-step="start:1" aria-label="\u958b\u59cb\u30921\u79d2\u5897\u3084\u3059">+</button>
     </div></div>
-    <div><span class="music-label">\u7d42\u4e86\uff08\u79d2\uff09</span><div class="music-time-control">
+    <div><span class="music-label">\u7d42\u4e86</span><div class="music-time-control">
       <button type="button" data-step="end:-1" aria-label="\u7d42\u4e86\u30921\u79d2\u6e1b\u3089\u3059">&#8722;</button>
-      <button type="button" data-edit="end" class="music-time-value" aria-label="\u7d42\u4e86\u79d2\u6570\u3092\u5165\u529b"></button>
+      <button type="button" data-edit="end" class="music-time-value" aria-label="\u7d42\u4e86\u6642\u9593\u3092\u5206\u3068\u79d2\u3067\u5165\u529b"></button>
       <button type="button" data-step="end:1" aria-label="\u7d42\u4e86\u30921\u79d2\u5897\u3084\u3059">+</button>
     </div></div>
   </div>
-  <div class="music-keypad" hidden role="group" aria-label="\u79d2\u6570\u306e\u30c6\u30f3\u30ad\u30fc" tabindex="-1">
+  <div class="music-keypad" hidden role="group" aria-label="\u5206\u3068\u79d2\u306e\u30c6\u30f3\u30ad\u30fc" tabindex="-1">
     <div class="music-pad-heading"><strong class="music-pad-label"></strong><button type="button" data-pad="clear" class="music-pad-clear">\u30af\u30ea\u30a2</button></div>
     <output class="music-pad-display" aria-live="polite"></output>
+    <div class="music-pad-parts" role="group" aria-label="\u5165\u529b\u3059\u308b\u5358\u4f4d">
+      <button type="button" data-part="minutes" aria-pressed="true" aria-label="\u5206\u3092\u5165\u529b"></button>
+      <button type="button" data-part="seconds" aria-pressed="false" aria-label="\u79d2\u3092\u5165\u529b"></button>
+    </div>
     <div class="music-pad-grid">
       <button type="button" data-digit="7">7</button><button type="button" data-digit="8">8</button><button type="button" data-digit="9">9</button>
       <button type="button" data-digit="4">4</button><button type="button" data-digit="5">5</button><button type="button" data-digit="6">6</button>
@@ -21408,12 +21425,15 @@ _MUSIC_EDITOR_CSS_V469 = """
 .music-times {display:grid;grid-template-columns:1fr 1fr;gap:12px;}
 .music-time-control {display:grid;grid-template-columns:38px minmax(0,1fr) 38px;gap:5px;}
 .music-time-control button {padding:6px 3px;}
-.music-time-control .music-time-value {background:rgba(59,130,246,.08);border-color:#7da9df;font-size:20px;font-variant-numeric:tabular-nums;}
+.music-time-control .music-time-value {background:rgba(59,130,246,.08);border-color:#7da9df;font-size:18px;font-variant-numeric:tabular-nums;overflow-wrap:anywhere;line-height:1.3;min-width:0;}
 .music-summary {margin:12px 0;font-size:14px;line-height:1.6;}
 .music-keypad {width:min(330px,100%);padding:12px;margin:12px auto;border:1px solid #cbd5e1;border-radius:16px;background:var(--st-background-color,#fff);}
 .music-pad-heading {display:flex;align-items:center;justify-content:space-between;gap:10px;}
 .music-pad-heading .music-pad-clear {min-height:34px;font-size:12px;}
-.music-pad-display {display:block;text-align:right;font-size:30px;font-weight:800;font-variant-numeric:tabular-nums;padding:10px 4px;min-height:57px;}
+.music-pad-display {display:block;text-align:right;font-size:30px;font-weight:800;font-variant-numeric:tabular-nums;padding:10px 4px;min-height:57px;overflow-wrap:anywhere;}
+.music-pad-parts {display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:0 0 10px;}
+.music-pad-parts button {font-size:19px;min-width:0;overflow-wrap:anywhere;font-variant-numeric:tabular-nums;}
+.music-pad-parts button[aria-pressed="true"] {border:2px solid #2563eb;background:rgba(37,99,235,.12);box-shadow:0 0 0 1px rgba(37,99,235,.08) inset;}
 .music-pad-grid {display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;}
 .music-pad-grid button {height:54px;font-size:23px;}
 .music-pad-zero {grid-column:span 2;}
@@ -21423,7 +21443,7 @@ _MUSIC_EDITOR_CSS_V469 = """
 .music-helper-actions {display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px;margin-top:8px;}
 .music-helper-actions button {font-size:12px;line-height:1.4;padding:8px 4px;}
 .music-error {font-size:13px;color:#b91c1c;margin:8px 0;}
-@media(max-width:380px){.music-times{gap:8px;}.music-time-control{grid-template-columns:30px minmax(0,1fr) 30px;gap:3px;}.music-time-value{font-size:18px !important;}}
+@media(max-width:380px){.music-times{gap:8px;}.music-time-control{grid-template-columns:30px minmax(0,1fr) 30px;gap:3px;}.music-time-value{font-size:15px !important;}}
 """
 
 _MUSIC_EDITOR_JS_V469 = r"""
@@ -21431,60 +21451,99 @@ export default function(component) {
   const {parentElement, data, setTriggerValue} = component;
   const root = parentElement.querySelector('.music-editor-469');
   if (!root) return;
-  const mode = data?.mode === 'time' ? 'time' : 'music';
+  const mode = ['time','library'].includes(data?.mode) ? data.mode : 'music';
   const url = root.querySelector('.music-url');
   const pad = root.querySelector('.music-keypad');
   const display = root.querySelector('.music-pad-display');
   const error = root.querySelector('.music-error');
   const signature = JSON.stringify([data?.youtube_url, data?.start_seconds, data?.end_seconds, data?.revision, mode]);
+  // Keep the seconds-based draft compatible with v469-v471.
   const draftKey = 'burari-music-editor-v469:' + String(data?.scope || '');
   let draft = null;
   try { draft = JSON.parse(sessionStorage.getItem(draftKey) || 'null'); } catch (_) {}
   if (!draft || draft.signature !== signature) draft = {signature, url:String(data?.youtube_url || ''), start:Number(data?.start_seconds ?? 0), end:Number(data?.end_seconds ?? 20)};
-  const integer = (value, minimum=0) => Math.max(minimum, Math.min(999999999, Math.floor(Number(value) || 0)));
+  const MAX_SECONDS = 999999999;
+  const integer = (value, minimum=0) => Math.max(minimum, Math.min(MAX_SECONDS, Math.floor(Number(value) || 0)));
+  const timeLabel = (value) => {const n=integer(value);return `${Math.floor(n/60)}\u5206${n%60}\u79d2`;};
   draft.start = integer(draft.start); draft.end = integer(draft.end, 1);
-  let editing = '', digits = '', replace = true;
+  let editing = '', part = 'minutes', digits = '', replace = true;
+  let parts = {minutes:'0', seconds:'0'};
   const saveDraft = () => {try { sessionStorage.setItem(draftKey, JSON.stringify(draft)); } catch (_) {}};
-  const mmss = (value) => {const n=integer(value);return `${Math.floor(n/60)}:${String(n%60).padStart(2,'0')}`;};
   const showError = (message='') => {error.textContent=message;error.hidden=!message;};
   const render = () => {
-    root.querySelector('[data-edit="start"]').textContent=String(draft.start);
-    root.querySelector('[data-edit="end"]').textContent=String(draft.end);
+    root.querySelector('[data-edit="start"]').textContent=timeLabel(draft.start);
+    root.querySelector('[data-edit="end"]').textContent=timeLabel(draft.end);
     const end=draft.end>draft.start?draft.end:draft.start+20;
-    root.querySelector('.music-summary').textContent=`${mmss(draft.start)} \u301c ${mmss(end)}\uff08${end-draft.start}\u79d2\uff09`+(draft.end<=draft.start?'\uff0f\u7d42\u4e86\u306f\u958b\u59cb\u304b\u308920\u79d2\u5f8c\u306b\u8abf\u6574\u3057\u307e\u3059\u3002':'');
-    display.textContent=(digits||'0')+' \u79d2';
+    root.querySelector('.music-summary').textContent=`${timeLabel(draft.start)} \u301c ${timeLabel(end)}\uff08\u518d\u751f ${timeLabel(end-draft.start)}\uff09`+(draft.end<=draft.start?'\uff0f\u7d42\u4e86\u306f\u958b\u59cb\u304b\u30890\u520620\u79d2\u5f8c\u306b\u8abf\u6574\u3057\u307e\u3059\u3002':'');
+    display.textContent=`${integer(parts.minutes)}\u5206${integer(parts.seconds)}\u79d2`;
+    for (const button of root.querySelectorAll('[data-part]')) {
+      const name=button.dataset.part;
+      button.textContent=String(integer(parts[name]))+(name==='minutes'?'\u5206':'\u79d2');
+      button.setAttribute('aria-pressed',String(name===part));
+      button.setAttribute('aria-label',button.textContent+'\u3092\u5165\u529b');
+    }
   };
-  const commitPad = () => {if(editing){draft[editing]=integer(digits,editing==='end'?1:0);editing='';pad.hidden=true;saveDraft();render();}};
-  const openPad = (field) => {editing=field;digits=String(draft[field]);replace=true;root.querySelector('.music-pad-label').textContent=(field==='start'?'\u958b\u59cb':'\u7d42\u4e86')+'\uff08\u79d2\uff09';pad.hidden=false;render();pad.focus({preventScroll:true});};
+  const commitPad = () => {
+    if(!editing)return true;
+    const minutes=integer(parts.minutes), seconds=integer(parts.seconds);
+    if(seconds>59){showError('\u79d2\u306f0\u301c59\u3067\u5165\u529b\u3057\u3066\u304f\u3060\u3055\u3044\u3002');return false;}
+    const total=minutes*60+seconds;
+    if(total>MAX_SECONDS){showError('\u8a2d\u5b9a\u3067\u304d\u308b\u4e0a\u9650\u306f'+timeLabel(MAX_SECONDS)+'\u3067\u3059\u3002');return false;}
+    draft[editing]=integer(total,editing==='end'?1:0);
+    editing='';pad.hidden=true;saveDraft();render();return true;
+  };
+  const selectPart = (name) => {
+    if(!editing || !['minutes','seconds'].includes(name))return;
+    part=name;digits=parts[part];replace=true;render();pad.focus({preventScroll:true});
+  };
+  const openPad = (field) => {
+    if(!['start','end'].includes(field))return;
+    editing=field;const value=integer(draft[field]);
+    parts={minutes:String(Math.floor(value/60)),seconds:String(value%60)};
+    root.querySelector('.music-pad-label').textContent=(field==='start'?'\u958b\u59cb':'\u7d42\u4e86')+'\u6642\u9593';
+    pad.hidden=false;selectPart('minutes');
+  };
   const pressPad = (action) => {
     if(!editing)return;
-    if(/^\d$/.test(action)){digits=replace?action:(digits+action).slice(0,9);digits=digits.replace(/^0+(?=\d)/,'');replace=false;}
+    if(/^\d$/.test(action)){
+      const limit=part==='seconds'?2:8;
+      digits=replace?action:(digits+action).slice(0,limit);
+      digits=digits.replace(/^0+(?=\d)/,'');replace=false;
+    }
     else if(action==='clear'){digits='';replace=false;}
     else if(action==='back'){digits=digits.slice(0,-1);replace=false;}
     else if(action==='ok'){commitPad();return;}
-    else if(action==='cancel'){editing='';pad.hidden=true;}
-    render();
+    else if(action==='cancel'){editing='';pad.hidden=true;render();return;}
+    parts[part]=digits||'0';render();
   };
   url.value=draft.url;
   root.querySelector('.music-url-block').hidden=mode==='time';
-  root.querySelector('.music-helper-actions').hidden=mode==='time';
+  root.querySelector('.music-helper-actions').hidden=mode==='time'||mode==='library';
+  if(mode==='library'){const b=root.querySelector('.music-apply');b.textContent='\u3053\u306e\u97f3\u697d\u3092\u4fdd\u5b58';b.dataset.action='save';}
   if(mode==='time')root.querySelector('.music-apply').textContent='\u3053\u306e\u6642\u9593\u3092\u518d\u751f\u306b\u53cd\u6620';
   const onInput=()=>{draft.url=url.value;saveDraft();showError();};
   const onClick=(event)=>{
     const button=event.target.closest('button');if(!button||!root.contains(button))return;
     event.preventDefault();showError();
-    if(button.dataset.edit){commitPad();openPad(button.dataset.edit);return;}
+    if(button.dataset.edit){if(commitPad())openPad(button.dataset.edit);return;}
+    if(button.dataset.part){selectPart(button.dataset.part);return;}
     if(button.dataset.digit!==undefined){pressPad(button.dataset.digit);return;}
     if(button.dataset.pad){pressPad(button.dataset.pad);return;}
-    if(button.dataset.step){commitPad();const [field,delta]=button.dataset.step.split(':');draft[field]=integer(draft[field]+Number(delta),field==='end'?1:0);saveDraft();render();return;}
+    if(button.dataset.step){if(!commitPad())return;const [field,delta]=button.dataset.step.split(':');draft[field]=integer(draft[field]+Number(delta),field==='end'?1:0);saveDraft();render();return;}
     if(button.dataset.action){
-      commitPad();draft.url=url.value.trim();saveDraft();
+      if(!commitPad())return;draft.url=url.value.trim();saveDraft();
       const action=button.dataset.action;
       if(action!=='clear' && !draft.url){showError('YouTube URL\u3092\u5165\u529b\u3057\u3066\u304f\u3060\u3055\u3044\u3002');return;}
+      // UI is minutes/seconds, but the server and the replay retain integer seconds.
       setTriggerValue('editor_action',{action,youtube_url:draft.url,start_seconds:draft.start,end_seconds:draft.end,token:`${Date.now()}:${Math.random()}`});
     }
   };
-  const onKey=(event)=>{if(!editing)return;const key=event.key;let action='';if(/^\d$/.test(key))action=key;else if(key==='Backspace')action='back';else if(key==='Delete')action='clear';else if(key==='Enter')action='ok';else if(key==='Escape')action='cancel';if(action){event.preventDefault();pressPad(action);}};
+  const onKey=(event)=>{
+    if(!editing)return;const key=event.key;let action='';
+    if(key==='ArrowLeft'||key==='ArrowRight'){event.preventDefault();showError();selectPart(key==='ArrowLeft'?'minutes':'seconds');return;}
+    if(/^\d$/.test(key))action=key;else if(key==='Backspace')action='back';else if(key==='Delete')action='clear';else if(key==='Enter')action='ok';else if(key==='Escape')action='cancel';
+    if(action){event.preventDefault();showError();pressPad(action);}
+  };
   root.addEventListener('click',onClick);url.addEventListener('input',onInput);pad.addEventListener('keydown',onKey);
   render();
   return ()=>{saveDraft();root.removeEventListener('click',onClick);url.removeEventListener('input',onInput);pad.removeEventListener('keydown',onKey);};
@@ -21494,13 +21553,13 @@ export default function(component) {
 
 @st.cache_resource(show_spinner=False)
 def _music_editor_component_v469():
-    return st.components.v2.component("burari_music_editor_v469", html=_MUSIC_EDITOR_HTML_V469,
+    return st.components.v2.component("burari_music_editor_v473", html=_MUSIC_EDITOR_HTML_V469,
         css=_MUSIC_EDITOR_CSS_V469, js=_perf_instrument_js_v466(_MUSIC_EDITOR_JS_V469))
 
 
 def _render_music_editor_v469(month_key, youtube_url, start_seconds, end_seconds, mode="music"):
     scope = f"{current_family_key()}|{current_member_key()}|{month_key}|{mode}"
-    key = "music_editor_v469_" + hashlib.sha256(scope.encode()).hexdigest()[:20]
+    key = "music_editor_v472_" + hashlib.sha256(scope.encode()).hexdigest()[:20]
     result = _music_editor_component_v469()(
         data={"scope": scope, "mode": mode, "youtube_url": str(youtube_url or ""),
               "start_seconds": max(0, int(start_seconds)), "end_seconds": max(1, int(end_seconds)),
@@ -21999,6 +22058,16 @@ def delete_field_note(note_id):
             pass
 
 
+def _format_music_time_v472(total_seconds):
+    """Display music positions/durations as minutes and seconds; never change stored data."""
+    try:
+        value = max(0, int(total_seconds or 0))
+    except (TypeError, ValueError, OverflowError):
+        value = 0
+    minutes, seconds = divmod(value, 60)
+    return f"{minutes}\u5206{seconds}\u79d2"
+
+
 def music_library_label(item):
     item = item if isinstance(item, dict) else {}
     title = str(item.get("title") or item.get("video_id") or "保存した音楽").strip()
@@ -22006,7 +22075,7 @@ def music_library_label(item):
     start_seconds = int(item.get("start_seconds") or 0)
     end_seconds = int(item.get("end_seconds") or (start_seconds + 20))
     prefix = f"{title} / {author}" if author else title
-    return f"{end_seconds - start_seconds}秒｜{prefix}（{format_mmss(start_seconds)}〜{format_mmss(end_seconds)}）"
+    return f"{_format_music_time_v472(end_seconds - start_seconds)}｜{prefix}（{_format_music_time_v472(start_seconds)}〜{_format_music_time_v472(end_seconds)}）"
 
 
 def apply_music_library_item(month_key, review, item):
@@ -23930,7 +23999,7 @@ def render_own_replay_movie_library():
         music_title = str(playback.get("title") or "YouTube音楽").strip()
         start_seconds = max(0, int(playback.get("start_seconds") or 0))
         end_seconds = int(playback.get("end_seconds") or (start_seconds + 1))
-        detail_parts = [movie_type, music_title, f"{format_mmss(start_seconds)}〜{format_mmss(end_seconds)}"]
+        detail_parts = [movie_type, music_title, f"{_format_music_time_v472(start_seconds)}〜{_format_music_time_v472(end_seconds)}"]
         if saved_label:
             detail_parts.append(saved_label)
         component_rows.append({
@@ -24340,6 +24409,9 @@ def render_monthly_replay_player(period_label, review, playback, photo_items, cu
     is_tag_review = isinstance(review, dict) and str(review.get("_review_scope_type") or "") in {"tag", "ai_tag"}
     replay_kicker = "タグで振り返り" if is_tag_review else "まとめた期間の振り返り"
     replay_alt = "タグ別の振り返り写真" if is_tag_review else "期間の振り返り写真"
+    if isinstance(review, dict) and review.get("_review_scope_type") == "random":
+        replay_kicker = "\u5168\u671f\u9593\u304b\u3089\u304a\u307e\u304b\u305b"
+        replay_alt = "\u64ae\u5f71\u9806\u306e\u632f\u308a\u8fd4\u308a\u5199\u771f"
     first_caption = html.escape(str(photo_items[0].get("caption") or "")) if photo_items else ""
     payload = json.dumps(photo_items, ensure_ascii=False).replace("<", "\\u003c")
     native_audio_bridge_token = json.dumps(_query_param_scalar("native_bridge_token"))
@@ -24517,7 +24589,7 @@ def render_monthly_replay_player(period_label, review, playback, photo_items, cu
           <button id="burariReplayAgain" type="button" disabled>↻ 最初から</button>
         </div>
       </div>
-      <div class="burari-replay-meta">音楽区間：{format_mmss(start_seconds)}〜{format_mmss(end_seconds)} ／ 写真 {len(photo_items)}枚 ／ 再生ごとに自動調整（最低2.0秒・声付きは声が終わるまで）／音楽区間は設定どおり</div>
+      <div class="burari-replay-meta">音楽区間：{_format_music_time_v472(start_seconds)}〜{_format_music_time_v472(end_seconds)} ／ 写真 {len(photo_items)}枚 ／ 再生ごとに自動調整（最低2.0秒・声付きは声が終わるまで）／音楽区間は設定どおり</div>
       <div class="burari-replay-player-wrap">
         <div class="burari-replay-player-label">YouTube 音楽</div>
         <div id="burariReplayPlayer"></div>
@@ -25907,7 +25979,7 @@ def _render_replay_music_settings_if_open_v471(month_key, bundle, review):
         if focus:
             try:
                 _focus_result = _replay_settings_focus_component_v471()(
-                    key=f"replay_music_focus_v471_{suffix}", height=0, width="stretch",
+                    key=f"replay_music_focus_v471_{suffix}", height=1, width="stretch",
                     data={"token": focus, "panel_class": f"st-key-{panel_key}"},
                 )
             except Exception:
@@ -26058,7 +26130,7 @@ def render_monthly_music_settings(month_key, bundle, review, expanded=True):
                     st.session_state[f"monthly_music_settings_open_{month_key}"] = False
                     st.success(
                         f"『{selected.get('title') or '保存した音楽'}』を "
-                        f"{format_mmss(selected.get('start_seconds'))}〜{format_mmss(selected.get('end_seconds'))} でプレビューに反映しました。"
+                        f"{_format_music_time_v472(selected.get('start_seconds'))}〜{_format_music_time_v472(selected.get('end_seconds'))} でプレビューに反映しました。"
                         "ムービーは保存していません。"
                     )
                     st.rerun()
@@ -26107,7 +26179,7 @@ def render_monthly_music_settings(month_key, bundle, review, expanded=True):
                     }
                     st.session_state[f"monthly_music_settings_open_{month_key}"] = True
                     st.session_state[f"_monthly_music_guess_notice_{month_key}"] = (
-                        f"AIの候補は {format_mmss(guessed_start)}〜{format_mmss(guessed_end)} です。"
+                        f"AIの候補は {_format_music_time_v472(guessed_start)}〜{_format_music_time_v472(guessed_end)} です。"
                         "確認後に『この音楽でムービーを試す（保存しない）』を押してください。"
                     )
                     st.rerun()
@@ -26160,7 +26232,7 @@ def render_monthly_music_settings(month_key, bundle, review, expanded=True):
                 }
                 st.session_state[f"monthly_music_settings_open_{month_key}"] = False
                 st.success(
-                    f"{format_mmss(start_seconds)}〜{format_mmss(end_seconds)} でムービーをプレビューしています。"
+                    f"{_format_music_time_v472(start_seconds)}〜{_format_music_time_v472(end_seconds)} でムービーをプレビューしています。"
                     "ムービーは保存していません。"
                 )
                 st.rerun()
@@ -26213,7 +26285,7 @@ def render_monthly_music_settings(month_key, bundle, review, expanded=True):
         st.caption(
             "現在のムービー設定："
             f"{current_playback.get('title') or 'YouTube音楽'} ／ "
-            f"{format_mmss(current_playback.get('start_seconds'))}〜{format_mmss(current_playback.get('end_seconds'))}"
+            f"{_format_music_time_v472(current_playback.get('start_seconds'))}〜{_format_music_time_v472(current_playback.get('end_seconds'))}"
         )
 
 def render_monthly_time_settings(month_key, review):
@@ -26274,7 +26346,7 @@ def render_monthly_time_settings(month_key, review):
                 "end_seconds": end_seconds,
             }
             st.session_state[f"monthly_time_settings_open_{month_key}"] = False
-            st.success(f"{format_mmss(start_seconds)}〜{format_mmss(end_seconds)} を操作中のムービーに反映しました。ムービーは保存していません。")
+            st.success(f"{_format_music_time_v472(start_seconds)}〜{_format_music_time_v472(end_seconds)} を操作中のムービーに反映しました。ムービーは保存していません。")
             st.rerun()
 
 def render_monthly_replay_section(month_key, period_label, bundle, review):
@@ -27934,7 +28006,7 @@ def page_evening_review():
                     )
 
 
-VALID_APP_PAGES = {"home", "camera", "videos", "moments", "diary", "photos", "review", "review_map", "review_project", "review_monthly", "review_tag", "review_history", "nearby", "discovery_results", "evening_review", "toilets", "field_notes", "settings", "settings_moments", "settings_moments_definition", "settings_location", "settings_account"}
+VALID_APP_PAGES = {"home", "camera", "videos", "moments", "diary", "photos", "review", "review_map", "review_project", "review_monthly", "review_tag", "review_random", "review_history", "nearby", "discovery_results", "evening_review", "toilets", "field_notes", "settings", "settings_moments", "settings_moments_definition", "settings_location", "settings_account"}
 
 
 def _current_ui_refresh_epoch():
@@ -28146,6 +28218,7 @@ def navigation_parent_node(node=None):
         "review_project": "review",
         "review_monthly": "review",
         "review_tag": "review",
+        "review_random": "review",
         "camera": "home",
         "videos": "home",
         "moments": "home",
@@ -28302,7 +28375,7 @@ def _navigate_to_parent_state_only():
         st.session_state["_history_action"] = "replace"
         return
 
-    if node in {"review_history", "review_map", "review_project", "review_monthly", "review_tag"}:
+    if node in {"review_history", "review_map", "review_project", "review_monthly", "review_tag", "review_random"}:
         st.session_state.pop("history_detail_trip_id", None)
         st.session_state.pop("review_view_selector", None)
         _set_page_state("review", history_mode="replace")
@@ -28378,6 +28451,7 @@ def sync_browser_history():
         "review_project",
         "review_monthly",
         "review_tag",
+        "review_random",
         "settings_moments",
         "settings_moments_definition",
         "settings_location",
@@ -28392,7 +28466,7 @@ def sync_browser_history():
             "perf_run": st.session_state.get("_performance_current_run_v457", 0),
             "perf_session": st.session_state.setdefault("_perf_session_v466", uuid.uuid4().hex),
         },
-        key=f"tokyo_burari_browser_history_instance_v208_{_current_ui_refresh_epoch()}",
+        key=f"tokyo_burari_browser_history_instance_v208_{_current_ui_refresh_epoch()}", height=1,
         on_page_change=lambda: None,
         on_hierarchy_back_change=lambda: None,
         on_pending_restore_change=lambda: None,
@@ -28450,7 +28524,7 @@ def sync_browser_history():
             # Streamlit remount is reserved for stale/BFCache/long-background states so
             # normal foregrounding adds no permanent work or polling. Replay pages keep
             # their dedicated playback-resume logic unless stale UI is actually detected.
-            replay_page = page in {"review_monthly", "review_tag"}
+            replay_page = page in {"review_monthly", "review_tag", "review_random"}
             should_remount = persisted or stale_count > 0 or root_count > 1 or hidden_ms >= 15000
             if replay_page and not persisted and stale_count <= 0 and root_count <= 1:
                 should_remount = False
@@ -28731,7 +28805,7 @@ def inject_home_icon_css(review_attention=False):
         css_chunks.append(f'.st-key-home_settings div.stButton > button::before{{background-image:url("{settings_uri}") !important;}}')
 
     if css_chunks:
-        st.markdown("<style>" + "\n".join(css_chunks) + "</style>", unsafe_allow_html=True)
+        _app_css_v473("<style>" + "\n".join(css_chunks) + "</style>", unsafe_allow_html=True)
 
 def render_global_bottom_navigation(page_name):
     """Render one stable Back/Home navigation tree for the active page.
@@ -30242,12 +30316,12 @@ render_home_storage_usage_status = st.fragment(_render_home_storage_usage_status
 # The place-name endpoint is deliberately called only in the device browser with
 # that same device's freshly obtained geolocation, never with stored/server GPS:
 # https://www.bigdatacloud.com/docs/article/fair-use-policy-for-free-client-side-reverse-geocoding-api
-_HOME_WEATHER_HTML_V470 = """
-<section class="bw470" aria-label="現在地の2時間先までの天気予報">
+_HOME_WEATHER_HTML_V470 = r"""
+<section class="bw470" aria-label="現在地の5時間先までの天気予報">
   <div class="bw470-main">
     <div class="bw470-place">
       <div class="bw470-name">現在地を確認中</div>
-      <div class="bw470-sub">2時間先まで</div>
+      <div class="bw470-sub">5時間先まで</div>
     </div>
     <div class="bw470-slots" aria-live="polite"></div>
     <button class="bw470-refresh" type="button" aria-label="現在地と天気を更新" title="現在地と天気を更新">
@@ -30258,7 +30332,7 @@ _HOME_WEATHER_HTML_V470 = """
     <span class="bw470-status" role="status">天気を確認しています</span>
     <details class="bw470-details"><summary>予報・出典</summary>
       <div class="bw470-explanation">
-        現在・1時間後・2時間後に最も近い予報時刻を表示します（15分刻み）。
+        現在から5時間後まで、1時間おきに最も近い予報時刻を表示します（15分刻み）。
         日本の15分値は1時間予報を補間したもので、雨雲レーダーや降り始めを分単位で予測する表示ではありません。<br>
         位置情報は天気・地名の取得に使用します。天気には約1km単位に丸めた座標、地名には端末で取得した座標を送信します。
         写真・音声・日記・アカウント情報は送信しません。<br>
@@ -30271,53 +30345,36 @@ _HOME_WEATHER_HTML_V470 = """
 </section>
 """
 
-_HOME_WEATHER_CSS_V470 = """
-:host { display:block; width:100%; max-width:100%; min-width:0; height:auto; min-height:0; box-sizing:border-box; }
-.bw470 { width:100%; max-width:100%; min-width:0; box-sizing:border-box; margin:0; padding:3px 6px 2px;
-  color:var(--st-text-color,#263548); background:var(--st-secondary-background-color,#f3f7fa);
-  border:1px solid rgba(128,150,173,.16); border-radius:12px;
-  font-family:var(--st-font,sans-serif); }
-.bw470 * { box-sizing:border-box; }
-.bw470-main { display:flex; align-items:center; gap:4px; min-width:0; min-height:39px; }
-.bw470-place { flex:1 1 0; min-width:0; overflow:hidden; padding-left:1px; }
-.bw470-name { font-size:12px; font-weight:750; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; line-height:1.45; }
-.bw470-sub { font-size:9px; opacity:.64; line-height:1.5; }
-.bw470-slots { flex:0 1 153px; min-width:120px; max-width:54%; display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:3px; }
-.bw470-slot { text-align:center; min-width:0; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:0; }
-.bw470-time { font-size:9px; line-height:1.2; font-variant-numeric:tabular-nums; opacity:.76; }
-.bw470-icon { height:22px; width:28px; display:block; }
-.bw470-icon svg { height:22px; width:28px; display:block; }
-.bw470-condition { font-size:8px; line-height:1.05; white-space:nowrap; opacity:.76; }
-.bw470-refresh { flex:0 0 28px; width:28px; height:32px; min-height:32px; padding:5px; margin:0;
-  border:0; border-radius:8px; color:inherit; background:transparent; cursor:pointer; touch-action:manipulation; }
-.bw470-refresh svg { display:block; width:18px; height:18px; fill:none; stroke:currentColor; stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round; opacity:.6; }
-.bw470-refresh:disabled { opacity:.35; cursor:default; }
-.bw470-refresh:active { background:rgba(74,144,226,.17); }
-.bw470-bottom { display:flex; align-items:baseline; gap:6px; min-width:0; min-height:10px; line-height:10px; margin-top:0; }
-.bw470-status { flex:1 1 auto; min-width:0; font-size:8px; opacity:.66; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-.bw470-credit,.bw470-details summary { font-size:8px; color:inherit; opacity:.65; white-space:nowrap; }
-.bw470-credit { flex:0 0 auto; text-decoration:none; }
-.bw470-credit:hover { text-decoration:underline; }
-.bw470-details { flex:0 0 auto; }
-.bw470-details summary { cursor:pointer; list-style:none; }
-.bw470-details summary::-webkit-details-marker { display:none; }
-.bw470-details summary::before { content:'i '; }
-.bw470-details[open] { flex:1 1 100%; order:3; }
-.bw470-bottom:has(.bw470-details[open]) { flex-wrap:wrap; }
-.bw470-explanation { font-size:10px; line-height:1.6; padding:5px 2px; opacity:.84; }
-.bw470-explanation a { color:inherit; }
-/* Closed weather stays one compact strip; only an explicit source expansion grows it. */
-.bw470:not(:has(.bw470-details[open])) { height:58px; min-height:58px; overflow:hidden; }
-.bw470:has(.bw470-details[open]) { height:auto; min-height:58px; }
-.bw470-explanation { overflow-wrap:anywhere; white-space:normal; }
-@media(max-width:360px) {
-  .bw470 { padding:3px 5px 2px; }
-  .bw470-main { gap:2px; }
-  .bw470-name { font-size:11px; }
-  .bw470-slots { flex-basis:144px; gap:2px; }
-  .bw470-place { flex-basis:0; }
-  .bw470-refresh { flex-basis:26px; width:26px; }
-}
+_HOME_WEATHER_CSS_V470 = r"""
+:host {display:block;width:100%;min-width:0;box-sizing:border-box;}
+.bw470 {width:100%;min-width:0;box-sizing:border-box;margin:0;padding:9px 10px 6px;border:1px solid rgba(128,150,173,.20);border-radius:15px;color:var(--st-text-color,#263548);background:var(--st-secondary-background-color,#f3f7fa);font-family:var(--st-font,sans-serif);}
+.bw470 * {box-sizing:border-box;}
+.bw470-main {display:grid;grid-template-columns:minmax(0,1fr) 32px;gap:7px;align-items:center;min-width:0;}
+.bw470-place {grid-column:1;grid-row:1;min-width:0;display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;}
+.bw470-name {font-size:13px;font-weight:750;line-height:1.45;overflow-wrap:anywhere;}
+.bw470-sub {font-size:10px;line-height:1.4;opacity:.66;white-space:nowrap;}
+.bw470-slots {grid-column:1/-1;grid-row:2;display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:4px;min-width:0;}
+.bw470-slot {text-align:center;min-width:0;display:flex;flex-direction:column;align-items:center;gap:2px;}
+.bw470-time {font-size:10px;line-height:1.3;font-variant-numeric:tabular-nums;opacity:.8;}
+.bw470-icon,.bw470-icon svg {height:27px;width:30px;display:block;}
+.bw470-condition {font-size:9px;line-height:1.35;white-space:nowrap;opacity:.8;}
+.bw470-refresh {grid-column:2;grid-row:1;width:32px;height:32px;min-height:32px;padding:6px;margin:0;border:0;border-radius:8px;color:inherit;background:transparent;cursor:pointer;touch-action:manipulation;}
+.bw470-refresh svg {display:block;width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round;opacity:.65;}
+.bw470-refresh:disabled {opacity:.35;cursor:default;}
+.bw470-refresh:active {background:rgba(74,144,226,.17);}
+.bw470-bottom {display:flex;align-items:baseline;flex-wrap:wrap;gap:4px 7px;min-width:0;margin-top:7px;line-height:1.4;}
+.bw470-status {flex:1 1 auto;min-width:0;font-size:9px;opacity:.68;overflow-wrap:anywhere;}
+.bw470-credit,.bw470-details summary {font-size:9px;color:inherit;opacity:.7;white-space:nowrap;}
+.bw470-credit {text-decoration:none;flex:0 0 auto;}
+.bw470-credit:hover {text-decoration:underline;}
+.bw470-details {flex:0 0 auto;}
+.bw470-details summary {cursor:pointer;list-style:none;}
+.bw470-details summary::-webkit-details-marker {display:none;}
+.bw470-details summary::before {content:'i ';}
+.bw470-details[open] {flex:1 1 100%;order:3;}
+.bw470-explanation {font-size:11px;line-height:1.6;padding:6px 0;opacity:.84;overflow-wrap:anywhere;white-space:normal;}
+.bw470-explanation a {color:inherit;}
+@media(max-width:350px){.bw470{padding:8px 8px 6px;}.bw470-slots{gap:2px;}.bw470-time{font-size:9px;}.bw470-condition{font-size:8px;}}
 """
 
 _HOME_WEATHER_JS_V470 = r"""
@@ -30331,8 +30388,8 @@ export default function(component) {
   // inside its own root; never manipulate the app title, navigation or GPS bridge.
   let host = window;
   try { if (window.parent?.document) host = window.parent; } catch (_) {}
-  const pool = host.__burariHomeWeatherV470 ||= new Map();
-  const storageKey = `burari_weather_v470:${scope}`;
+  const pool = host.__burariHomeWeatherV473 ||= new Map();
+  const storageKey = `burari_weather_v473:${scope}`;
   const TTL = 10 * 60 * 1000;
   const STALE = 30 * 60 * 1000;
   const STEP = 15 * 60 * 1000;
@@ -30412,16 +30469,16 @@ export default function(component) {
   const rowsFrom = (raw) => {
     const src=raw?.minutely_15;
     if (!src || !Array.isArray(src.time) || !Array.isArray(src.weather_code)) return [];
-    return src.time.slice(0,32).map((ts,i)=>({ms:number(ts)*1000,code:src.weather_code[i],day:src.is_day?.[i]}))
+    return src.time.slice(0,40).map((ts,i)=>({ms:number(ts)*1000,code:src.weather_code[i],day:src.is_day?.[i]}))
       .filter(r=>Number.isFinite(r.ms) && Number.isFinite(number(r.code))).sort((a,b)=>a.ms-b.ms);
   };
   const selectSlots = (entry,clock=now()) => {
     const rows=Array.isArray(entry?.rows)?entry.rows:[];
-    return [0,3600000,7200000].map(offset=>{
+    return [0,1,2,3,4,5].map(hour=>hour*3600000).map(offset=>{
       const target=clock+offset;
       let best=null;
       for (const r of rows) if (r && Number.isFinite(number(r.ms)) && (!best || Math.abs(r.ms-target)<Math.abs(best.ms-target))) best=r;
-      // Never mislabel yesterday's or an incomplete response's last point as +2h.
+      // Never mislabel yesterday's or an incomplete response's last point as +5h.
       return best && Math.abs(best.ms-target)<=STEP/2+1000 ? best : null;
     });
   };
@@ -30434,7 +30491,7 @@ export default function(component) {
     const entry=entryForFix(), age=now()-number(entry?.at);
     const fixFresh=state.fix && now()-state.fix.at<12*60000;
     const usable=!state.geoError && fixFresh && age>=0 && age<STALE;
-    const slots=usable?selectSlots(entry):[null,null,null];
+    const slots=usable?selectSlots(entry):[null,null,null,null,null,null];
     placeEl.textContent=state.geoError ? '現在地を確認できません' : state.place || (state.fix?'現在地付近':'現在地を確認中');
     placeEl.title=placeEl.textContent;
     const fragment=document.createDocumentFragment();
@@ -30442,11 +30499,11 @@ export default function(component) {
       const d=descriptor(row?.code,row?.day), el=document.createElement('div');
       el.className='bw470-slot';
       const time=document.createElement('span'); time.className='bw470-time';
-      time.textContent=row?fmt(row.ms,entry?.timezone):['現在','1時間後','2時間後'][i];
+      time.textContent=row?fmt(row.ms,entry?.timezone):(i===0?'現在':`${i}時間後`);
       const graphic=document.createElement('span'); graphic.className='bw470-icon'; graphic.innerHTML=icon(d.kind);
       const label=document.createElement('span'); label.className='bw470-condition'; label.textContent=row?d.label:'--';
       el.setAttribute('role','img'); el.setAttribute('aria-label',`${time.textContent} ${row?d.label:'予報未取得'}`);
-      el.title=`${['現在に近い時刻','約1時間後','約2時間後'][i]}: ${time.textContent} ${d.label}`;
+      el.title=`${(i===0?'現在に近い時刻':`約${i}時間後`)}: ${time.textContent} ${d.label}`;
       el.append(time,graphic,label); fragment.appendChild(el);
     });
     slotRoot.replaceChildren(fragment);
@@ -30498,7 +30555,7 @@ export default function(component) {
     if (!force && old && now()-old.at>=0 && now()-old.at<TTL && selectSlots(old).every(Boolean)) { state.weatherError='';emit();return; }
     const [lat,lon]=key.split(',');
     const params=new URLSearchParams({latitude:lat,longitude:lon,timezone:'auto',timeformat:'unixtime',
-      minutely_15:'weather_code,is_day',forecast_minutely_15:'20',past_minutely_15:'1'});
+      minutely_15:'weather_code,is_day',forecast_minutely_15:'32',past_minutely_15:'1'});
     try {
       const raw=await fetchJson(`https://api.open-meteo.com/v1/forecast?${params}`,epoch);
       const rows=rowsFrom(raw),entry={key,at:now(),timezone:String(raw?.timezone||state.timezone),rows};
@@ -30605,7 +30662,7 @@ export default function(component) {
 @st.cache_resource(show_spinner=False)
 def _home_weather_component_v470():
     return st.components.v2.component(
-        "burari_home_weather_v471", html=_HOME_WEATHER_HTML_V470,
+        "burari_home_weather_v473", html=_HOME_WEATHER_HTML_V470,
         css=_HOME_WEATHER_CSS_V470, js=_HOME_WEATHER_JS_V470,
     )
 
@@ -30616,9 +30673,9 @@ def render_home_weather_v470():
         f"{current_family_key()}|{current_member_key()}".encode("utf-8")
     ).hexdigest()[:24]
     try:
-        with st.container(key="home_weather_slot_v471"):
+        with st.container(key="home_weather_slot_v473"):
             _weather_result = _home_weather_component_v470()(
-                key=f"home_weather_v471_{scope}", width="stretch", height="content",
+                key=f"home_weather_v473_{scope}", width="stretch", height="content",
                 data={"scope": scope, "timezone": str(APP_TIMEZONE or "Asia/Tokyo")},
             )
     except Exception:
@@ -30626,300 +30683,141 @@ def render_home_weather_v470():
         st.caption("天気予報を表示できません。ほかの機能はそのまま使えます。")
 
 
+_HOME_LAYOUT_CSS_V473 = r"""<style>
+/* Non-visual bridges keep running, but never allocate vertical page space. */
+.st-key-app_runtime_bridges_v473, .st-key-home_runtime_bridges_v473 {
+  position:absolute !important; width:1px !important; height:0 !important;
+  min-height:0 !important; max-height:0 !important; margin:0 !important;
+  padding:0 !important; overflow:visible !important; pointer-events:none;
+}
+.st-key-home_viewport_fit, .st-key-home_primary, .st-key-home_media_tools,
+.st-key-home_capture_pair, .st-key-home_quick_pair, .st-key-home_secondary,
+.st-key-home_destination, .st-key-home_location_tools {
+  width:100%; min-width:0 !important; max-width:100%; height:auto !important;
+  min-height:min-content !important; max-height:none !important; flex:0 0 auto !important;
+}
+.st-key-home_viewport_fit,
+.st-key-home_viewport_fit > [data-testid="stVerticalBlock"],
+.st-key-home_viewport_fit > [data-testid="stVerticalBlockBorderWrapper"] > [data-testid="stVerticalBlock"] {
+  display:flex !important; flex-direction:column !important;
+  justify-content:flex-start !important; gap:12px !important; overflow:visible !important;
+  margin:0 !important;
+}
+.st-key-home_viewport_fit [data-testid="stElementContainer"],
+.st-key-home_viewport_fit [data-testid="stVerticalBlockBorderWrapper"],
+.st-key-home_viewport_fit [data-testid="stHorizontalBlock"],
+.st-key-home_viewport_fit [data-testid="stVerticalBlock"] {
+  flex-shrink:0 !important; min-width:0 !important;
+}
+.st-key-home_viewport_fit .home-account {
+  font-size:.75rem !important; line-height:1.45 !important; margin:0 !important;
+  overflow-wrap:anywhere;
+}
+.st-key-home_viewport_fit .home-hero {
+  height:auto !important; margin:0 !important; padding:16px !important;
+}
+.st-key-home_viewport_fit .home-hero-inner { gap:10px !important; }
+.st-key-home_viewport_fit .home-hero-copy { min-width:0 !important; }
+.st-key-home_viewport_fit .home-eyebrow { font-size:.70rem !important; line-height:1.4 !important; margin:0 0 5px !important; }
+.st-key-home_viewport_fit .home-title { font-size:2rem !important; line-height:1.2 !important; margin:0 !important; }
+.st-key-home_viewport_fit .home-tagline { font-size:.84rem !important; line-height:1.5 !important; margin:6px 0 0 !important; white-space:normal !important; }
+.st-key-home_viewport_fit .home-hero-train,
+.st-key-home_viewport_fit .home-hero-train img { width:64px !important; height:60px !important; margin:0 !important; }
+.st-key-home_viewport_fit .home-status {
+  display:grid !important; grid-template-columns:auto minmax(0,1fr) !important;
+  gap:6px 9px !important; margin:0 !important; padding:10px 12px !important;
+  height:auto !important; min-height:0 !important; line-height:1.45 !important;
+  font-size:.85rem !important; box-sizing:border-box;
+}
+.st-key-home_viewport_fit .home-status-badge { min-height:26px !important; font-size:.74rem !important; }
+.st-key-home_viewport_fit .home-status-main { min-width:0 !important; white-space:normal !important; }
+.st-key-home_viewport_fit .home-status-sub { grid-column:1/-1; white-space:normal !important; overflow-wrap:anywhere; line-height:1.45 !important; }
+.st-key-home_viewport_fit .home-section-label { margin:4px 0 0 !important; font-size:.78rem !important; line-height:1.5 !important; }
+.st-key-home_primary, .st-key-home_secondary,
+.st-key-home_primary [data-testid="stVerticalBlock"],
+.st-key-home_media_tools [data-testid="stVerticalBlock"] { gap:10px !important; }
+.st-key-home_capture_pair [data-testid="stHorizontalBlock"],
+.st-key-home_quick_pair [data-testid="stHorizontalBlock"],
+.st-key-home_media_tools [data-testid="stHorizontalBlock"],
+.st-key-home_secondary [data-testid="stHorizontalBlock"],
+.st-key-home_location_tools [data-testid="stHorizontalBlock"] {
+  display:flex !important; flex-direction:row !important; flex-wrap:nowrap !important;
+  align-items:stretch !important; gap:8px !important;
+}
+.st-key-home_capture_pair [data-testid="stHorizontalBlock"] > [data-testid="stColumn"],
+.st-key-home_quick_pair [data-testid="stHorizontalBlock"] > [data-testid="stColumn"],
+.st-key-home_media_tools [data-testid="stHorizontalBlock"] > [data-testid="stColumn"],
+.st-key-home_secondary [data-testid="stHorizontalBlock"] > [data-testid="stColumn"] {
+  flex:1 1 0 !important; width:0 !important; min-width:0 !important;
+}
+.st-key-home_viewport_fit .st-key-home_primary div.stButton > button,
+.st-key-home_viewport_fit .st-key-home_secondary div.stButton > button {
+  width:100% !important; height:auto !important; min-height:84px !important; max-height:none !important;
+  display:grid !important; grid-template-columns:auto minmax(0,1fr) !important;
+  align-items:center !important; justify-content:center !important; gap:7px !important;
+  padding:12px 10px !important; font-size:1rem !important; line-height:1.4 !important;
+  white-space:normal !important; box-sizing:border-box !important;
+}
+.st-key-home_viewport_fit .st-key-home_secondary div.stButton > button { min-height:70px !important; }
+.st-key-home_viewport_fit .st-key-home_primary div.stButton > button [data-testid="stMarkdownContainer"],
+.st-key-home_viewport_fit .st-key-home_secondary div.stButton > button [data-testid="stMarkdownContainer"],
+.st-key-home_viewport_fit .st-key-home_primary div.stButton > button p,
+.st-key-home_viewport_fit .st-key-home_secondary div.stButton > button p {
+  min-width:0 !important; max-width:100% !important; width:auto !important;
+  white-space:normal !important; overflow-wrap:anywhere !important; word-break:normal !important;
+  line-height:1.4 !important; margin:0 !important;
+}
+.st-key-home_viewport_fit .st-key-home_primary button::before { width:36px !important; height:36px !important; }
+.st-key-home_viewport_fit .st-key-home_video button::before { width:46px !important; height:36px !important; }
+.st-key-home_viewport_fit .st-key-home_secondary button::before { width:32px !important; height:32px !important; }
+.st-key-home_media_tools { margin:0 !important; }
+.st-key-home_media_tools div.stButton > button {
+  height:auto !important; min-height:64px !important; max-height:none !important;
+  padding:9px 5px !important; font-size:.82rem !important; line-height:1.4 !important;
+  white-space:normal !important; overflow-wrap:anywhere !important;
+}
+.st-key-home_media_tools div.stButton > button p { min-width:0 !important; white-space:normal !important; margin:0 !important; line-height:1.4 !important; }
+.st-key-home_media_tools [data-testid="stCaptionContainer"] p { font-size:.73rem !important; line-height:1.5 !important; margin:0 !important; white-space:normal !important; }
+.st-key-home_destination { margin:0 !important; }
+.st-key-home_destination div.stButton > button { min-height:54px !important; height:auto !important; max-height:none !important; padding:10px 8px !important; font-size:.79rem !important; line-height:1.4 !important; white-space:normal !important; }
+.st-key-home_destination button p { white-space:normal !important; overflow-wrap:anywhere !important; line-height:1.4 !important; }
+.st-key-home_next_prompt_v390 { margin:0 !important; }
+.st-key-home_next_prompt_v390 button { height:auto !important; min-height:54px; white-space:normal !important; }
+.st-key-home_primary .st-key-home_diary div.stButton > button {
+  font-size:.90rem !important; column-gap:6px !important;
+  padding-left:8px !important; padding-right:8px !important;
+}
+.st-key-home_primary .st-key-home_diary div.stButton > button p { text-wrap:balance; }
+.st-key-home_viewport_fit .home-footer-note { display:none !important; }
+/* Do not override the weather Bidi container's measured height. */
+.st-key-home_weather_slot_v473 { min-width:0; width:100%; max-width:100%; margin:0; padding:0; }
+@media(max-width:640px) {
+  [data-testid="stMain"]:has(.st-key-home_viewport_fit) { overflow-x:hidden; overflow-y:auto; }
+  .block-container:has(.st-key-home_viewport_fit) {
+    max-width:100% !important; width:100% !important; min-height:0 !important; height:auto !important;
+    padding:calc(3.5rem + env(safe-area-inset-top,0px)) 10px calc(1.5rem + env(safe-area-inset-bottom,0px)) !important;
+  }
+  .st-key-app_page_root_v280:has(.st-key-home_viewport_fit) { height:auto !important; min-height:min-content !important; flex:0 0 auto !important; }
+}
+@media(max-width:350px) {
+  .st-key-home_viewport_fit .home-title { font-size:1.8rem !important; }
+  .st-key-home_viewport_fit .home-hero { padding:13px !important; }
+  .st-key-home_viewport_fit .st-key-home_primary div.stButton > button { padding:10px 7px !important; gap:5px !important; font-size:.90rem !important; }
+  .st-key-home_viewport_fit .st-key-home_video button::before { width:40px !important; }
+}
+</style>"""
+
+
 def page_home():
-    # Keep the recent photo/video camera mode fresh using browser-local storage only.
-    _sync_recent_camera_state_from_browser()
-    # Reuse one localStorage read for both the monthly reminder and shared-movie NEW marker.
-    # This avoids instantiating the same browser-state widget twice in one Streamlit run.
-    browser_home_state = read_browser_review_state()
+    # Display-free persistence bridges must not become empty rows above the hero.
+    # V2 mounts use API-valid height=1; their nonvisual parent is CSS-collapsed.
+    _app_css_v473(_HOME_LAYOUT_CSS_V473)
+    with st.container(key="home_runtime_bridges_v473"):
+        _sync_recent_camera_state_from_browser()
+        browser_home_state = read_browser_review_state()
     review_attention = home_review_attention_needed(browser_state=browser_home_state)
     shared_movie_notice = home_family_shared_movie_notice(browser_home_state)
     inject_home_icon_css(review_attention=review_attention or bool(shared_movie_notice))
-    # v183: scale the Home design itself to each phone instead of only distributing
-    # unchanged controls across the viewport. Width stays nearly edge-to-edge, while
-    # button heights, icons, type, hero art and spacing all respond to visible height.
-    st.markdown(
-        """
-        <style>
-        @media (max-width: 640px) {
-          :root {
-            /* Horizontal and vertical units are deliberately separate. The phone keeps
-               the same visual hierarchy, but taller screens get larger controls/art
-               rather than merely larger blank gaps. */
-            --home-wu: clamp(3.20px, 1vw, 4.55px);
-            --home-hu: clamp(3.45px, .56dvh, 5.15px);
-            --home-edge-gap: 18px;
-            --home-toolbar-space: 2.95rem;
-            --home-top-gap: max(var(--home-edge-gap), env(safe-area-inset-top, 0px));
-            --home-bottom-gap: max(var(--home-edge-gap), env(safe-area-inset-bottom, 0px));
-            --home-inline: clamp(6px, calc(var(--home-wu) * 1.8), 10px);
-            --home-vgap: clamp(5px, calc(var(--home-hu) * 1.45), 9px);
-            --home-hgap: clamp(5px, calc(var(--home-wu) * 1.45), 8px);
-            --home-usable-height: calc(100vh - var(--home-toolbar-space) - var(--home-top-gap) - var(--home-bottom-gap) - 1rem);
-          }
-          @supports (height: 100dvh) {
-            :root {
-              --home-usable-height: calc(100dvh - var(--home-toolbar-space) - var(--home-top-gap) - var(--home-bottom-gap) - 1rem);
-            }
-          }
-
-          /* v251: one normal vertical scroller on Home. Prevent nested/sideways
-             scroll containers from creating a second scrollbar or preserving a bad
-             scroll position after returning from another page. */
-          html, body { overflow-x: hidden !important; }
-          [data-testid="stAppViewContainer"] { overflow: hidden !important; }
-          section[data-testid="stMain"], [data-testid="stMain"] {
-            overflow-y: auto !important;
-            overflow-x: hidden !important;
-            height: 100dvh !important;
-            max-height: 100dvh !important;
-            overscroll-behavior-y: contain !important;
-          }
-          /* Use almost the full phone width. Do not force the entire Streamlit page to a
-             viewport height; that was the source of the visible scroll/seek bar in v182. */
-          .block-container {
-            width: 100% !important;
-            max-width: 100% !important;
-            padding-left: var(--home-inline) !important;
-            padding-right: var(--home-inline) !important;
-            padding-top: calc(var(--home-toolbar-space) + var(--home-top-gap)) !important;
-            padding-bottom: var(--home-bottom-gap) !important;
-            min-height: 0 !important;
-            box-sizing: border-box !important;
-          }
-
-          .st-key-home_viewport_fit {
-            width: 100% !important;
-            max-width: none !important;
-            margin: 0 !important;
-            min-height: 0 !important;
-            overflow: visible !important;
-          }
-          .st-key-home_viewport_fit > [data-testid="stVerticalBlock"],
-          .st-key-home_viewport_fit > [data-testid="stVerticalBlockBorderWrapper"] > [data-testid="stVerticalBlock"] {
-            min-height: 0 !important;
-            display: flex !important;
-            flex-direction: column !important;
-            justify-content: flex-start !important;
-            gap: var(--home-vgap) !important;
-            overflow: visible !important;
-          }
-
-          .home-account {
-            margin: 0 !important;
-            font-size: clamp(.61rem, calc(var(--home-hu) * 2.45), .73rem) !important;
-            line-height: 1.08 !important;
-          }
-          .home-hero {
-            margin: 0 !important;
-            padding: clamp(.50rem, calc(var(--home-hu) * 2.05), .72rem)
-                     clamp(.62rem, calc(var(--home-wu) * 2.45), .88rem) !important;
-            border-radius: clamp(16px, calc(var(--home-wu) * 4.5), 20px) !important;
-          }
-          .home-hero-inner { gap: clamp(.24rem, calc(var(--home-wu) * 1.25), .38rem) !important; }
-          .home-hero-train, .home-hero-train img {
-            width: clamp(54px, min(calc(var(--home-wu) * 16.2), calc(var(--home-hu) * 14.2)), 72px) !important;
-            height: clamp(47px, min(calc(var(--home-wu) * 13.8), calc(var(--home-hu) * 12.5)), 63px) !important;
-          }
-          .home-eyebrow {
-            font-size: clamp(.56rem, calc(var(--home-hu) * 2.25), .67rem) !important;
-            margin-bottom: clamp(.08rem, calc(var(--home-hu) * .35), .16rem) !important;
-          }
-          .home-title {
-            font-size: clamp(1.45rem, calc(var(--home-hu) * 5.55), 1.82rem) !important;
-            line-height: 1.02 !important;
-            margin-bottom: .03rem !important;
-          }
-          .home-tagline {
-            margin-top: clamp(.12rem, calc(var(--home-hu) * .45), .22rem) !important;
-            font-size: clamp(.69rem, calc(var(--home-hu) * 2.65), .82rem) !important;
-            line-height: 1.18 !important;
-          }
-
-          .home-status {
-            flex-wrap: nowrap !important;
-            gap: clamp(.26rem, calc(var(--home-wu) * 1.15), .40rem) !important;
-            margin: 0 !important;
-            min-height: clamp(2.10rem, calc(var(--home-hu) * 8.7), 2.78rem) !important;
-            padding: clamp(.30rem, calc(var(--home-hu) * .90), .46rem)
-                     clamp(.38rem, calc(var(--home-wu) * 1.70), .56rem) !important;
-            border-radius: clamp(12px, calc(var(--home-wu) * 3.4), 15px) !important;
-            font-size: clamp(.68rem, calc(var(--home-hu) * 2.55), .79rem) !important;
-            line-height: 1.12 !important;
-            min-width: 0 !important;
-            box-sizing: border-box !important;
-          }
-          .home-status-badge {
-            min-height: clamp(1.24rem, calc(var(--home-hu) * 3.25), 1.52rem) !important;
-            padding: .07rem clamp(.28rem, calc(var(--home-wu) * 1.15), .40rem) !important;
-            font-size: clamp(.59rem, calc(var(--home-hu) * 2.18), .68rem) !important;
-          }
-          .home-status-main { white-space: nowrap !important; }
-          .home-status-sub {
-            min-width: 0 !important;
-            white-space: nowrap !important;
-            overflow: hidden !important;
-            text-overflow: ellipsis !important;
-          }
-          .home-section-label {
-            margin: 0 !important;
-            font-size: clamp(.62rem, calc(var(--home-hu) * 2.30), .72rem) !important;
-            line-height: 1.05 !important;
-          }
-          .home-section-label[style] { margin-top: 0 !important; }
-
-          .st-key-home_primary [data-testid="stVerticalBlock"],
-          .st-key-home_media_tools [data-testid="stVerticalBlock"],
-          .st-key-home_secondary [data-testid="stVerticalBlock"] {
-            gap: var(--home-vgap) !important;
-          }
-          .st-key-home_capture_pair [data-testid="stHorizontalBlock"],
-          .st-key-home_quick_pair [data-testid="stHorizontalBlock"],
-          .st-key-home_media_tools [data-testid="stHorizontalBlock"],
-          .st-key-home_secondary [data-testid="stHorizontalBlock"] {
-            display: flex !important;
-            flex-direction: row !important;
-            flex-wrap: nowrap !important;
-            align-items: stretch !important;
-            gap: var(--home-hgap) !important;
-          }
-          .st-key-home_capture_pair [data-testid="stHorizontalBlock"] > [data-testid="stColumn"],
-          .st-key-home_quick_pair [data-testid="stHorizontalBlock"] > [data-testid="stColumn"],
-          .st-key-home_media_tools [data-testid="stHorizontalBlock"] > [data-testid="stColumn"],
-          .st-key-home_secondary [data-testid="stHorizontalBlock"] > [data-testid="stColumn"] {
-            flex: 1 1 0 !important;
-            width: 0 !important;
-            min-width: 0 !important;
-          }
-
-          /* Primary controls now grow/shrink with visible screen height. This is the main
-             difference from v182: tall phones get visibly larger icons and buttons. */
-          .st-key-home_primary div.stButton > button {
-            height: clamp(3.00rem, calc(var(--home-hu) * 16.0), 5.15rem) !important;
-            min-height: clamp(3.00rem, calc(var(--home-hu) * 16.0), 5.15rem) !important;
-            max-height: clamp(3.00rem, calc(var(--home-hu) * 16.0), 5.15rem) !important;
-            border-radius: clamp(15px, calc(var(--home-wu) * 4.4), 20px) !important;
-            font-size: clamp(.90rem, calc(var(--home-hu) * 3.20), 1.10rem) !important;
-            line-height: 1.02 !important;
-            padding: .28rem clamp(.34rem, calc(var(--home-wu) * 1.8), .54rem) !important;
-            column-gap: clamp(.18rem, calc(var(--home-wu) * 1.05), .32rem) !important;
-          }
-          .st-key-home_capture_pair .st-key-home_camera div.stButton > button,
-          .st-key-home_capture_pair .st-key-home_video div.stButton > button {
-            height: clamp(3.18rem, calc(var(--home-hu) * 17.2), 5.48rem) !important;
-            min-height: clamp(3.18rem, calc(var(--home-hu) * 17.2), 5.48rem) !important;
-            max-height: clamp(3.18rem, calc(var(--home-hu) * 17.2), 5.48rem) !important;
-            font-size: clamp(.84rem, calc(var(--home-hu) * 3.02), 1.02rem) !important;
-            padding-left: clamp(.16rem, calc(var(--home-wu) * .85), .30rem) !important;
-            padding-right: clamp(.16rem, calc(var(--home-wu) * .85), .30rem) !important;
-            column-gap: clamp(.12rem, calc(var(--home-wu) * .70), .20rem) !important;
-          }
-          .st-key-home_camera div.stButton > button::before,
-          .st-key-home_diary div.stButton > button::before,
-          .st-key-home_nearby div.stButton > button::before {
-            width: clamp(29px, min(calc(var(--home-wu) * 9.5), calc(var(--home-hu) * 8.4)), 43px) !important;
-            height: clamp(29px, min(calc(var(--home-wu) * 9.5), calc(var(--home-hu) * 8.4)), 43px) !important;
-          }
-          .st-key-home_video div.stButton > button::before {
-            width: clamp(38px, min(calc(var(--home-wu) * 12.2), calc(var(--home-hu) * 10.8)), 54px) !important;
-            height: clamp(29px, min(calc(var(--home-wu) * 9.5), calc(var(--home-hu) * 8.4)), 43px) !important;
-          }
-
-          .st-key-home_media_tools { margin-top: 0 !important; }
-          .st-key-home_media_tools div.stButton > button {
-            height: clamp(2.62rem, calc(var(--home-hu) * 13.2), 4.25rem) !important;
-            min-height: clamp(2.62rem, calc(var(--home-hu) * 13.2), 4.25rem) !important;
-            max-height: clamp(2.62rem, calc(var(--home-hu) * 13.2), 4.25rem) !important;
-            border-radius: clamp(13px, calc(var(--home-wu) * 3.7), 17px) !important;
-            font-size: clamp(.74rem, calc(var(--home-hu) * 2.62), .88rem) !important;
-            line-height: 1.05 !important;
-            padding: .24rem .30rem !important;
-            white-space: nowrap !important;
-          }
-          .st-key-home_media_tools div.stButton > button p {
-            margin:0 !important; min-width:0 !important; max-width:100% !important;
-            white-space:nowrap !important; overflow:visible !important; text-overflow:clip !important;
-            word-break:keep-all !important;
-          }
-          .st-key-home_media_tools [data-testid="stCaptionContainer"],
-          .st-key-home_media_tools [data-testid="stCaptionContainer"] p {
-            margin: 0 !important;
-            font-size: clamp(.57rem, calc(var(--home-hu) * 2.05), .67rem) !important;
-            line-height: 1.05 !important;
-            white-space: nowrap !important;
-          }
-
-          .st-key-home_destination { margin-top: 0 !important; }
-          .st-key-home_destination div.stButton > button {
-            min-height: clamp(2.10rem, calc(var(--home-hu) * 9.7), 3.15rem) !important;
-            border-radius: clamp(11px, calc(var(--home-wu) * 3.1), 14px) !important;
-            font-size: clamp(.65rem, calc(var(--home-hu) * 2.35), .77rem) !important;
-            line-height: 1.04 !important;
-            padding: .28rem .38rem !important;
-          }
-
-          .st-key-home_secondary div.stButton > button {
-            height: clamp(2.78rem, calc(var(--home-hu) * 13.7), 4.40rem) !important;
-            min-height: clamp(2.78rem, calc(var(--home-hu) * 13.7), 4.40rem) !important;
-            max-height: clamp(2.78rem, calc(var(--home-hu) * 13.7), 4.40rem) !important;
-            border-radius: clamp(13px, calc(var(--home-wu) * 3.8), 17px) !important;
-            font-size: clamp(.78rem, calc(var(--home-hu) * 2.72), .92rem) !important;
-            line-height: 1.02 !important;
-            padding: .24rem .32rem !important;
-            column-gap: clamp(.15rem, calc(var(--home-wu) * .75), .22rem) !important;
-          }
-          .st-key-home_review div.stButton > button::before,
-          .st-key-home_settings div.stButton > button::before {
-            width: clamp(24px, min(calc(var(--home-wu) * 7.6), calc(var(--home-hu) * 6.6)), 34px) !important;
-            height: clamp(24px, min(calc(var(--home-wu) * 7.6), calc(var(--home-hu) * 6.6)), 34px) !important;
-          }
-          .home-footer-note { display: none !important; }
-        }
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
-    st.markdown(
-        """
-        <style>
-          /* v471: compact the weather mount and its Streamlit wrappers, not the whole app. */
-          .st-key-home_weather_slot_v471,
-          .st-key-home_weather_slot_v471 [data-testid="stVerticalBlock"],
-          .st-key-home_weather_slot_v471 [data-testid="stVerticalBlockBorderWrapper"],
-          .st-key-home_weather_slot_v471 [data-testid="stElementContainer"],
-          .st-key-home_weather_slot_v471 [data-testid="stBidiComponent"] {
-            width:100% !important; max-width:100% !important; min-width:0 !important;
-            height:auto !important; min-height:0 !important; flex:0 0 auto !important;
-            margin:0 !important; padding:0 !important; gap:0 !important; box-sizing:border-box !important;
-          }
-          .st-key-home_viewport_fit { min-width:0 !important; max-width:100% !important; }
-          @media(max-width:640px) {
-            /* A keyed container may itself be stVerticalBlock on newer Streamlit. */
-            .st-key-home_viewport_fit[data-testid="stVerticalBlock"] { gap:var(--home-vgap) !important; }
-          }
-          .st-key-home_next_prompt_v390 {
-            margin:.10rem 0 .14rem; padding:.38rem .44rem; border-radius:13px;
-            border:1px solid rgba(107,134,196,.20);
-            background:linear-gradient(145deg,rgba(237,242,255,.90),rgba(246,244,255,.82));
-          }
-          .st-key-home_next_prompt_v390 div.stButton > button {
-            min-height:2.32rem !important; height:auto !important; max-height:none !important;
-            padding:.34rem .54rem !important;
-            border-radius:11px !important; border:0 !important;
-            background:rgba(255,255,255,.72) !important; color:inherit !important;
-            font-size:.70rem !important; line-height:1.20 !important; font-weight:780 !important;
-            box-shadow:none !important; justify-content:flex-start !important; text-align:left !important;
-            white-space:normal !important; overflow:visible !important; overflow-wrap:anywhere !important;
-          }
-          .st-key-home_next_prompt_v390 div.stButton > button p {
-            margin:0 !important; min-width:0 !important; max-width:100% !important;
-            white-space:normal !important; overflow:visible !important; text-overflow:clip !important;
-            overflow-wrap:anywhere !important;
-          }
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
     with st.container(key="home_viewport_fit"):
         fast_family_name = str(st.session_state.get("_current_family_name") or current_family_key())
         fast_member_name = str(st.session_state.get("_current_member_name") or current_member_key())
@@ -37894,7 +37792,7 @@ def page_tag_review(embedded=False):
                 saved_item = save_music_to_library(current_playback)
                 st.success(
                     f"『{saved_item.get('title') or 'この音楽'}』＋ "
-                    f"{format_mmss(saved_item.get('start_seconds'))}〜{format_mmss(saved_item.get('end_seconds'))} を保存しました。"
+                    f"{_format_music_time_v472(saved_item.get('start_seconds'))}〜{_format_music_time_v472(saved_item.get('end_seconds'))} を保存しました。"
                     "再生時間も一緒に保存しました。ムービーは保存していません。"
                 )
             except Exception as exc:
@@ -38257,7 +38155,7 @@ def page_monthly(embedded=False):
                 saved_item = save_music_to_library(current_playback)
                 st.success(
                     f"『{saved_item.get('title') or 'この音楽'}』＋ "
-                    f"{format_mmss(saved_item.get('start_seconds'))}〜{format_mmss(saved_item.get('end_seconds'))} を保存しました。"
+                    f"{_format_music_time_v472(saved_item.get('start_seconds'))}〜{_format_music_time_v472(saved_item.get('end_seconds'))} を保存しました。"
                     "再生時間も一緒に保存しました。ムービーは保存していません。"
                 )
             except Exception as exc:
@@ -44416,6 +44314,209 @@ def page_burari_project():
 # ============================================================
 # Page: Review / Settings
 # ============================================================
+
+# ============================================================
+# Random replay: all owned stills, metadata-only draw, selected-media preparation
+# ============================================================
+def _random_capture_key_v473(photo):
+    """Sort instants, not ISO strings: UTC offsets and old imports can differ."""
+    raw = str((photo or {}).get("captured_at") or "").strip()
+    try:
+        stamp = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        if stamp.tzinfo is None:
+            stamp = stamp.replace(tzinfo=ZoneInfo(APP_TIMEZONE))
+        seconds = stamp.timestamp()
+        if not math.isfinite(seconds):
+            raise ValueError("non-finite timestamp")
+    except (ValueError, TypeError, OverflowError, OSError):
+        seconds = float("inf")
+    return (seconds, str((photo or {}).get("id") or (photo or {}).get("photo_id") or ""))
+
+
+def _random_photo_source_v473(force=False):
+    """Read all dates, paginated; never download/frame all images just to draw a set."""
+    key = _account_cache_key("random_photo_source_v473")
+    if not force:
+        cached = _session_cache_get(key, max_age_seconds=180)
+        if isinstance(cached, list):
+            return cached
+    client = supabase_client()
+    family, member = current_family_key(), current_member_key()
+    photos, seen = [], set()
+    offset, page_size = 0, 400
+    while True:
+        response = (client.table(PHOTO_TABLE)
+            .select("id,trip_id,storage_path,captured_at,reflection_json")
+            .eq("family_key", family).eq("member_key", member)
+            .order("captured_at").order("id")
+            .range(offset, offset + page_size - 1).execute())
+        rows = response.data
+        if not isinstance(rows, list):
+            raise RuntimeError("\u5199\u771f\u4e00\u89a7\u3092\u8aad\u307f\u8fbc\u3081\u307e\u305b\u3093\u3067\u3057\u305f\u3002")
+        for photo in _taggable_still_photos(rows):
+            pid = str(photo.get("id") or "")
+            if pid not in seen:
+                seen.add(pid)
+                photos.append(photo)
+        if len(rows) < page_size:
+            break
+        offset += page_size
+    photos.sort(key=_random_capture_key_v473)
+    return _session_cache_set(key, photos)
+
+
+def _choose_random_replay_v473(photos, music_library, rng=None):
+    """Draw music and unique stills; sort AFTER sampling; never mutate stored data.
+
+    Known voice lengths reserve the identical 180+120ms margin as the player.
+    Unknown voices remain candidates for the existing browser metadata preflight;
+    they are never treated as a verified 2-second clip during actual playback.
+    """
+    rng = rng or random.SystemRandom()
+    presets, keys = [], set()
+    for raw in music_library or []:
+        item = _normalize_music_library_item(raw)
+        if not item or item["end_seconds"] - item["start_seconds"] < 2:
+            continue
+        key = _music_preset_key_v469(item)
+        if key not in keys:
+            keys.add(key)
+            presets.append(item)
+    candidates = []
+    for photo in _taggable_still_photos(photos):
+        voice = photo_voice_note_meta(photo)
+        has_voice = bool(str(voice.get("storage_path") or "").strip())
+        duration = _voice_duration_value_ms_v469(voice) if has_voice else 0
+        minimum = max(2000, duration + 300) if duration else 2000
+        candidates.append((photo, minimum, bool(has_voice and not duration)))
+    if not presets:
+        raise ValueError("\u518d\u751f\u533a\u9593\u304c2\u79d2\u4ee5\u4e0a\u306e\u97f3\u697d\u3092\u4fdd\u5b58\u3057\u3066\u304f\u3060\u3055\u3044\u3002")
+    if not candidates:
+        raise ValueError("\u307e\u3060\u4fdd\u5b58\u3055\u308c\u305f\u5199\u771f\u304c\u3042\u308a\u307e\u305b\u3093\u3002")
+    # Exclude songs for which not even one known/probeable still can fit.
+    shortest = min(row[1] for row in candidates)
+    presets = [item for item in presets if (item["end_seconds"] - item["start_seconds"]) * 1000 >= shortest]
+    if not presets:
+        raise ValueError("\u58f0\u304c\u6700\u5f8c\u307e\u3067\u53ce\u307e\u308b\u3088\u3046\u3001\u3082\u3046\u5c11\u3057\u9577\u3044\u97f3\u697d\u3092\u4fdd\u5b58\u3057\u3066\u304f\u3060\u3055\u3044\u3002")
+    playback = dict(rng.choice(presets))
+    budget = (playback["end_seconds"] - playback["start_seconds"]) * 1000
+    order = list(candidates)
+    rng.shuffle(order)
+    chosen, used, unknown = [], 0, 0
+    for photo, cost, needs_probe in order:
+        if used + cost <= budget:
+            chosen.append(photo)
+            used += cost
+            unknown += int(needs_probe)
+    chosen.sort(key=_random_capture_key_v473)
+    return {"playback": playback, "photo_ids": [str(photo["id"]) for photo in chosen],
+            "source_count": len(candidates), "minimum_ms": used,
+            "unknown_voice_count": unknown, "token": uuid.uuid4().hex}
+
+
+def _random_replay_key_v473():
+    return "_random_replay_v473_" + hashlib.sha256(
+        f"{current_family_key()}|{current_member_key()}".encode("utf-8")
+    ).hexdigest()[:24]
+
+
+def _reset_random_replay_v473():
+    st.session_state.pop(_random_replay_key_v473(), None)
+    prefix = _account_cache_key("random_replay_items_v473")
+    for key in list(st.session_state):
+        if str(key).startswith(prefix):
+            st.session_state.pop(key, None)
+
+
+def _open_random_replay_v473():
+    _reset_random_replay_v473()
+    _set_page_state("review_random", history_mode="push")
+
+
+def _random_replay_items_v473(state):
+    """Use the existing account snapshot cache: every photo write invalidates it."""
+    cache_key = _account_cache_key("random_replay_items_v473", state["token"], _current_ui_refresh_epoch())
+    cached = _session_cache_get(cache_key, max_age_seconds=120)
+    if isinstance(cached, list):
+        return cached
+    bundle = _bundle_from_owned_photo_ids(state.get("photo_ids") or [])
+    items = build_monthly_replay_photo_items(bundle)
+    items.sort(key=_random_capture_key_v473)
+    return _session_cache_set(cache_key, items)
+
+
+def _random_music_library_editor_v473():
+    """Register a song in the existing library, never in a synthetic monthly movie."""
+    action = _render_music_editor_v469("random_library_v473", "", 0, 60, mode="library")
+    if not action or action.get("action") != "save":
+        return
+    video_id = parse_youtube_video_id(action.get("youtube_url"))
+    start = int(action.get("start_seconds") or 0)
+    end = int(action.get("end_seconds") or 0)
+    if not video_id or end - start < 2:
+        st.warning("YouTube URL\u3068\u30012\u79d2\u4ee5\u4e0a\u306e\u518d\u751f\u533a\u9593\u3092\u78ba\u8a8d\u3057\u3066\u304f\u3060\u3055\u3044\u3002")
+        return
+    try:
+        save_music_to_library({**action, "video_id": video_id})
+    except Exception as exc:
+        st.error("\u97f3\u697d\u3092\u4fdd\u5b58\u3067\u304d\u307e\u305b\u3093\u3067\u3057\u305f\u3002\u3082\u3046\u4e00\u5ea6\u304a\u8a66\u3057\u304f\u3060\u3055\u3044\u3002")
+        _perf_log_v457("random_replay:music_save_error", duration_ms=0,
+                       meta={"error_type": type(exc).__name__}, force=True)
+        return
+    _reset_random_replay_v473()
+    st.rerun(scope="app")
+
+
+def page_random_replay_v473():
+    page_top("\U0001f3b2 \u304a\u307e\u304b\u305b\u30e0\u30fc\u30d3\u30fc", "")
+    st.caption("\u4fdd\u5b58\u3057\u305f\u97f3\u697d\u3068\u5168\u671f\u9593\u306e\u5199\u771f\u304b\u3089\u304a\u307e\u304b\u305b\u3002\u5199\u771f\u306f\u64ae\u5f71\u3057\u305f\u9806\u306b\u6d41\u308c\u307e\u3059\u3002")
+    # Widgets are emitted BEFORE costly preparation; a reroll callback clears one snapshot.
+    st.button("\U0001f3b2 \u66f2\u3068\u5199\u771f\u3092\u9078\u3073\u76f4\u3059", key="random_replay_redraw_v473",
+              use_container_width=True, on_click=_reset_random_replay_v473)
+    key = _random_replay_key_v473()
+    state = st.session_state.get(key)
+    if not isinstance(state, dict):
+        try:
+            music = get_saved_music_library(force=True)
+        except Exception:
+            st.error("\u4fdd\u5b58\u3057\u305f\u97f3\u697d\u3092\u8aad\u307f\u8fbc\u3081\u307e\u305b\u3093\u3067\u3057\u305f\u3002\u9078\u3073\u76f4\u3059\u30dc\u30bf\u30f3\u3067\u518d\u8a66\u884c\u3057\u3066\u304f\u3060\u3055\u3044\u3002")
+            return
+        if not any(item["end_seconds"] - item["start_seconds"] >= 2 for item in music):
+            st.info("\u307e\u305a\u97f3\u697d\u3092\u4fdd\u5b58\u3057\u3066\u304f\u3060\u3055\u3044\u3002")
+            _random_music_library_editor_v473()
+            return
+        try:
+            with st.spinner("\u66f2\u3068\u5199\u771f\u3092\u9078\u3093\u3067\u3044\u307e\u3059"):
+                source = _random_photo_source_v473()
+                state = _choose_random_replay_v473(source, music)
+            st.session_state[key] = state
+        except ValueError as exc:
+            st.info(str(exc))
+            return
+        except Exception as exc:
+            st.error("\u5199\u771f\u3092\u8aad\u307f\u8fbc\u3081\u307e\u305b\u3093\u3067\u3057\u305f\u3002\u9078\u3073\u76f4\u3059\u30dc\u30bf\u30f3\u3067\u518d\u8a66\u884c\u3057\u3066\u304f\u3060\u3055\u3044\u3002")
+            _perf_log_v457("random_replay:source_error", duration_ms=0,
+                           meta={"error_type": type(exc).__name__}, force=True)
+            return
+    try:
+        with st.spinner("\u9078\u3093\u3060\u5199\u771f\u3092\u6e96\u5099\u3057\u3066\u3044\u307e\u3059"):
+            items = _random_replay_items_v473(state)
+    except Exception as exc:
+        st.error("\u30e0\u30fc\u30d3\u30fc\u3092\u6e96\u5099\u3067\u304d\u307e\u305b\u3093\u3067\u3057\u305f\u3002\u9078\u3073\u76f4\u3059\u30dc\u30bf\u30f3\u3067\u518d\u8a66\u884c\u3057\u3066\u304f\u3060\u3055\u3044\u3002")
+        _perf_log_v457("random_replay:prepare_error", duration_ms=0,
+                       meta={"error_type": type(exc).__name__}, force=True)
+        return
+    if not items:
+        st.info("\u9078\u3093\u3060\u5199\u771f\u304c\u898b\u3064\u304b\u308a\u307e\u305b\u3093\u3002\u9078\u3073\u76f4\u3057\u3066\u304f\u3060\u3055\u3044\u3002")
+        return
+    playback = state["playback"]
+    title = str(playback.get("title") or "YouTube\u97f3\u697d")
+    st.markdown("**" + html.escape(title) + "**")
+    st.caption(f"{_format_music_time_v472(playback['end_seconds'] - playback['start_seconds'])}"
+               f" \uff0f \u5168{state['source_count']:,}\u679a\u304b\u3089{len(items)}\u679a\u3092\u9078\u629e")
+    render_monthly_replay_player("\u304a\u307e\u304b\u305b\u30e0\u30fc\u30d3\u30fc", {"_review_scope_type": "random"}, playback, items)
+
+
 def page_review():
     # v208: Review is now a compact landing screen. Monthly/tag/history content lives
     # on dedicated app pages so opening Review never becomes one long scrolling page.
@@ -44434,6 +44535,7 @@ def page_review():
             background:rgba(128,128,128,.055); border:1px solid rgba(128,128,128,.11);
             font-size:.76rem; line-height:1.45; opacity:.82;
           }
+          .st-key-review_random_jump_v473,
           .st-key-review_map_jump,
           .st-key-review_project_jump,
           .st-key-review_monthly_jump,
@@ -44458,6 +44560,7 @@ def page_review():
           .st-key-review_history_jump {
             background:linear-gradient(145deg,rgba(240,250,247,.98),rgba(232,246,241,.95));
           }
+          .st-key-review_random_jump_v473 div.stButton > button,
           .st-key-review_map_jump div.stButton > button,
           .st-key-review_project_jump div.stButton > button,
           .st-key-review_monthly_jump div.stButton > button,
@@ -44486,6 +44589,10 @@ def page_review():
         """,
         unsafe_allow_html=True,
     )
+
+    with st.container(key="review_random_jump_v473"):
+        st.button("\U0001f3b2 \u304a\u307e\u304b\u305b\u30e0\u30fc\u30d3\u30fc", use_container_width=True,
+                  key="review_open_random_v473", on_click=_open_random_replay_v473)
 
     with st.container(key="review_map_jump"):
         st.button(
@@ -45483,9 +45590,9 @@ def _storage_tick_v468(pending, suffix):
     # A component event reruns ONLY the enclosing fragment. Removed on completion.
     try:
         _storage_tick_component_v468()(data={"pending": bool(pending)},
-            key="storage_tick_v468_" + suffix, on_tick_change=lambda: None)
+            key="storage_tick_v468_" + suffix, height=1, on_tick_change=lambda: None)
     except Exception:
-        pass  # normal next interaction still refreshes the display on old clients
+        pass
 
 
 @st.fragment
@@ -45841,35 +45948,37 @@ _perf_log_v457("bootstrap:video_resume", started_at=_video_resume_started_v457)
 # error instead of silently substituting blurry frames.
 # Daily rollover and old-title repair can touch many rows. They are diary/history
 # maintenance, not startup requirements, so home/camera opens no longer wait for them.
-_perf_call_v457("bootstrap:camera_restore", restore_recent_camera_session)
+with st.container(key="app_runtime_bridges_v473"):
+    _perf_call_v457("bootstrap:camera_restore", restore_recent_camera_session)
 
-# Legacy v159 pending query values are still consumed for users who upgrade with an
-# older tab open. v167 mirrors browser-only choices into this URL payload with
-# history.replaceState, so the next real app action can persist them without any tap-time communication.
-_perf_call_v457("bootstrap:pending_emotion", consume_pending_emotion_query)
+    # Legacy v159 pending query values are still consumed for users who upgrade with an
+    # older tab open. v167 mirrors browser-only choices into this URL payload with
+    # history.replaceState, so the next real app action can persist them without any tap-time communication.
+    _perf_call_v457("bootstrap:pending_emotion", consume_pending_emotion_query)
 
-# v146: resolve browser Back/Forward before drawing any visible page.
-# Previously the bridge ran after page rendering, so a mobile Back event could first
-# queue the old page (including its bottom navigation) and only then switch to Home.
-# That ordering could leave stale Back/Home controls in odd positions until another
-# rerun. Handle history first; if it changes the page, sync_browser_history() reruns
-# before any visible UI is emitted.
-_perf_call_v457("bootstrap:browser_history", sync_browser_history)
-# v449: photo-library emotion taps are intentionally browser-local for instant UI.
-# Mount the v166 flush bridge on every real app rerun *before* the requested page is
-# rendered so Review/Replay sees exactly the same current tags shown in the library.
-# The bridge is idempotent by token and clears the fast DB caches after persistence.
-_perf_call_v457("bootstrap:pending_tag_sync", sync_pending_tags_from_browser_v166)
-_perf_call_v457("bootstrap:pending_cleanup", render_pending_emotion_query_cleanup)
+    # v146: resolve browser Back/Forward before drawing any visible page.
+    # Previously the bridge ran after page rendering, so a mobile Back event could first
+    # queue the old page (including its bottom navigation) and only then switch to Home.
+    # That ordering could leave stale Back/Home controls in odd positions until another
+    # rerun. Handle history first; if it changes the page, sync_browser_history() reruns
+    # before any visible UI is emitted.
+    _perf_call_v457("bootstrap:browser_history", sync_browser_history)
+    # v449: photo-library emotion taps are intentionally browser-local for instant UI.
+    # Mount the v166 flush bridge on every real app rerun *before* the requested page is
+    # rendered so Review/Replay sees exactly the same current tags shown in the library.
+    # The bridge is idempotent by token and clears the fast DB caches after persistence.
+    _perf_call_v457("bootstrap:pending_tag_sync", sync_pending_tags_from_browser_v166)
+    _perf_call_v457("bootstrap:pending_cleanup", render_pending_emotion_query_cleanup)
 
-# v338: loading remains lightweight; stale Streamlit DOM stays visible during reconciliation. Android GPS is native-background only and never emits Streamlit GPS events. It performs
-# no network request and has no artificial minimum display time; it exists only while
-# real work is already blocking the UI.
-_perf_call_v457("bootstrap:loader", inject_lightweight_train_loading_v326)
+    # v338: loading remains lightweight; stale Streamlit DOM stays visible during reconciliation. Android GPS is native-background only and never emits Streamlit GPS events. It performs
+    # no network request and has no artificial minimum display time; it exists only while
+    # real work is already blocking the UI.
+    _perf_call_v457("bootstrap:loader", inject_lightweight_train_loading_v326)
 
-# v338: browser/PWA keeps the legacy watcher. Android returns immediately inside this
-# function because its foreground GPS service + WorkManager own recording/sync entirely.
-_perf_call_v457("bootstrap:gps_bridge", run_always_on_gps_tracker_v271)
+    # v338: browser/PWA keeps the legacy watcher. Android returns immediately inside this
+    # function because its foreground GPS service + WorkManager own recording/sync entirely.
+    _perf_call_v457("bootstrap:gps_bridge", run_always_on_gps_tracker_v271)
+
 
 # v337: keep the whole visible page under one keyed root so its top-level identity
 # does not shift between Home/Review/Camera/etc. During reconciliation the outgoing
@@ -45922,6 +46031,8 @@ with st.container(key="app_page_root_v280"):
         _perf_call_v457("page:review_map", page_memory_map, force=True)
     elif page == "review_project":
         _perf_call_v457("page:review_project", page_burari_project, force=True)
+    elif page == "review_random":
+        _perf_call_v457("page:review_random", page_random_replay_v473, force=True)
     elif page == "review_monthly":
         _perf_call_v457("page:review_monthly", page_monthly, embedded=False, force=True)
     elif page == "review_tag":
@@ -45959,7 +46070,7 @@ with st.container(key="app_page_root_v280"):
         live_page = str(st.session_state.get("main_page") or "home")
         if (
             page == live_page
-            and page in {"camera", "videos", "moments", "diary", "photos", "review", "review_map", "review_project", "review_monthly", "review_tag", "review_history", "nearby", "discovery_results", "evening_review", "toilets", "field_notes", "settings", "settings_moments", "settings_moments_definition", "settings_location", "settings_account"}
+            and page in {"camera", "videos", "moments", "diary", "photos", "review", "review_map", "review_project", "review_monthly", "review_tag", "review_random", "review_history", "nearby", "discovery_results", "evening_review", "toilets", "field_notes", "settings", "settings_moments", "settings_moments_definition", "settings_location", "settings_account"}
         ):
             _perf_call_v457("ui:bottom_navigation", render_global_bottom_navigation, page)
 
