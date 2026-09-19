@@ -41,9 +41,11 @@ def _app_css_v473(markup, **_ignored):
         st.markdown(markup, unsafe_allow_html=True)
 
 # Home spacing-only update: 2026-09-19 JST
-GENERATED_UPDATE_JST = '2026-09-19T12:53:42+09:00'
+GENERATED_UPDATE_JST = "2026-09-19T13:03:15+09:00"
 
-APP_BUILD = "v474"
+APP_BUILD = "v475"
+# v475: reserve full height for Home Markdown/caption text; remove negative margin overlap.
+# CSS only: preserve v474 button sizes, weather, replay, capture and data operations.
 # v474: modest Home-only spacing/height reduction; all behavior and other screens unchanged.
 # v473: normal-flow Home, all-date random music/photo replay, five-hour weather.
 # Keep minute/second editor, voice timing, photo quality and existing manual replays.
@@ -30711,6 +30713,31 @@ _HOME_LAYOUT_CSS_V473 = r"""<style>
 .st-key-home_viewport_fit [data-testid="stHorizontalBlock"],
 .st-key-home_viewport_fit [data-testid="stVerticalBlock"] {
   flex-shrink:0 !important; min-width:0 !important;
+}
+/* v475: Streamlit's non-label Markdown renderer uses a negative bottom
+   margin to cancel a normal paragraph margin. Our Home HTML cards have no
+   trailing paragraph, and the video-count caption deliberately has p margin:0.
+   With the compact 8/9px gaps, that compensation pulled the next card/button
+   over the text. Reset the renderer, NOT the button label or the weather host.
+   flow-root also keeps child margins inside their own measured text row.
+   No fixed height, clipping, extra DOM observers or network requests are needed. */
+.st-key-home_viewport_fit :is(.stMarkdown, [data-testid="stMarkdown"], .stCaption) {
+  margin-top:0 !important; margin-bottom:0 !important;
+}
+.st-key-home_viewport_fit :is(.stMarkdown, [data-testid="stMarkdown"]) [data-testid="stMarkdownContainer"],
+.st-key-home_viewport_fit [data-testid="stCaptionContainer"] {
+  display:flow-root !important;
+  margin-top:0 !important; margin-bottom:0 !important;
+  height:auto !important; min-height:0 !important; max-height:none !important;
+}
+.st-key-home_viewport_fit :is(.stMarkdown, [data-testid="stMarkdown"]) [data-testid="stMarkdownContainer"] > :last-child,
+.st-key-home_viewport_fit [data-testid="stCaptionContainer"] > :last-child {
+  margin-bottom:0 !important;
+}
+/* The footer note is intentionally hidden in v473+. Hide its empty layout
+   slot too, rather than keeping a blank flex row before the storage meter. */
+.st-key-home_viewport_fit :is([data-testid="stElementContainer"], .element-container):has(.home-footer-note) {
+  display:none !important;
 }
 .st-key-home_viewport_fit .home-account {
   font-size:.75rem !important; line-height:1.45 !important; margin:0 !important;
