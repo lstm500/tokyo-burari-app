@@ -43,7 +43,7 @@ def _app_css_v473(markup, **_ignored):
 # Review menu-only update: 2026-09-19 JST
 GENERATED_UPDATE_JST = "2026-09-19T14:54:38+09:00"
 
-APP_BUILD = "v481"
+APP_BUILD = "v482"
 # v481: Keep Nearby/Toilet filter drafts authoritative across rerenders/remounts and freeze the exact visible filter snapshot at Search press, so GPS wait/scroll/rerun cannot fall back to the previous search conditions.
 # v480: Preserve browser-side Nearby/Toilet filter selections across component rerenders so repeat searches use the visible conditions; refresh component identities to avoid stale cached JS.
 # v479: Move the Home dashboard about 1 cm (38 CSS px) lower than v478 without changing its layout or controls.
@@ -67,6 +67,7 @@ APP_BUILD = "v481"
 # v468: post-save vision jobs, persistent exact framing, async display-only storage,
 # batched current-tag/diary updates, account caches, movie-sharing retirement.
 # Capture/GPS/replay quality and canonical-save acknowledgement are unchanged.
+# v482: visible-filter two-stage search confirmation. Search reads the DOM actually shown, commits it server-side, then starts GPS only from that immutable confirmed snapshot.
 # v467: bounded read concurrency, exact storage inventory reuse, URL reuse and ordered framing; UI and save semantics preserved.
 # v466: Logging only: bounded operation records, explicit/estimated endpoint separation, confirmation-delay exclusion, descriptive summaries and loss metadata.
 # v464: Increase Good Moments final still selection from 6 to 9 photos. Keep the existing maximum-20 candidate sampling and AI quality criteria, but require up to 9 distinct final moments. Show the Good Moments list as a fixed 3-column x 3-row grid while preserving the one-photo enlarged viewer, voice attachment, emotion/parenting tags, reroll behavior, and all unrelated app behavior.
@@ -31519,8 +31520,9 @@ export default function(component) {
   const initial = (data && data.initial && typeof data.initial === 'object') ? data.initial : {};
   const lunchGenres = Array.isArray(data?.lunch_genres) && data.lunch_genres.length ? data.lunch_genres.map(String) : ['おまかせ'];
   const googleEnabled = !!data?.google_enabled;
-  const stateKey = String(data?.state_key || 'tokyo_burari_nearby_filters_v480');
+  const stateKey = String(data?.state_key || 'tokyo_burari_nearby_filters_v482');
   const serverToken = String(data?.completion_token || '');
+  const confirmedRequest = (data?.confirmed_request && typeof data.confirmed_request === 'object') ? data.confirmed_request : null;
   const validKind = ['snack','lunch','sightseeing'].includes(String(initial.kind||'')) ? String(initial.kind) : 'snack';
 
   const defaults = {
@@ -31661,17 +31663,56 @@ export default function(component) {
 
   const stop=()=>{if(watchId!==null&&navigator.geolocation){try{navigator.geolocation.clearWatch(watchId)}catch(_){}watchId=null}if(hardTimer){clearTimeout(hardTimer);hardTimer=null}};
   const unlock=()=>{if(!cancelled){button.disabled=false;button.classList.remove('searching');button.textContent='🔎 この条件で検索'}};
-  const searchFilterSnapshot=()=>{
-    const current=gather();
-    return {kind:String(current.kind||''),subkind:String(current.subkind||''),radius_m:Number(current.radius_m),budget_under_1000:!!current.budget_under_1000,budget_limit:current.budget_limit==null?null:Number(current.budget_limit),open_now_only:!!current.open_now_only};
+  const activeValue=(root)=>String(root?.querySelector('.legacy-choice.active')?.dataset?.value||'');
+  const visibleFilterSnapshot=()=>{
+    // Read the controls that are actually painted on screen at the tap moment.
+    const visibleKind=activeValue(kindArea);
+    if(!['snack','lunch','sightseeing'].includes(visibleKind))return null;
+    const visibleSub=visibleKind==='lunch'?String(subArea.querySelector('select')?.value||''):activeValue(subArea);
+    const radiusText=activeValue(radiusArea);
+    const budgetText=activeValue(budgetArea);
+    const openText=googleEnabled?activeValue(openArea):'all';
+    const radius=Number(radiusText);
+    if(!visibleSub||!Number.isFinite(radius)||!budgetText||(googleEnabled&&!openText))return null;
+    if(visibleKind==='lunch'){
+      if(!lunchGenres.includes(visibleSub)||![320,640,1280].includes(radius)||!['1000','2000','5000'].includes(budgetText))return null;
+      return {kind:visibleKind,subkind:visibleSub,radius_m:radius,budget_under_1000:false,budget_limit:Number(budgetText),open_now_only:googleEnabled&&openText==='open'};
+    }
+    if(visibleKind==='snack'){
+      if(!['食べ歩き向き','店内中心'].includes(visibleSub)||![64,192,320].includes(radius)||!['under1000','all'].includes(budgetText))return null;
+    }else{
+      if(!['なんでも','公園','神社・寺','博物館・施設','電車・乗り物'].includes(visibleSub)||![800,1600,2500].includes(radius)||!['under1000','all'].includes(budgetText))return null;
+    }
+    return {kind:visibleKind,subkind:visibleSub,radius_m:radius,budget_under_1000:budgetText==='under1000',budget_limit:null,open_now_only:googleEnabled&&openText==='open'};
   };
-  const filtersForActiveSearch=()=>activeSearchFilters?{...activeSearchFilters}:searchFilterSnapshot();
-  const emitBest=()=>{if(cancelled||!best?.coords)return;stop();const filters=filtersForActiveSearch();persistClientState(true,{searching:false,last_submitted_filters:filters});const accuracy=Number(best.coords.accuracy||0);status.textContent=`現在地を取得しました（精度 ±${Math.round(accuracy)}m）。検索しています…`;setTriggerValue('search_location',{token:`${Date.now()}_${Math.random().toString(36).slice(2)}`,latitude:Number(best.coords.latitude),longitude:Number(best.coords.longitude),accuracy_m:accuracy,measured_at:new Date(best.timestamp||Date.now()).toISOString(),filters})};
-  const fail=(message,code=0)=>{stop();const filters=filtersForActiveSearch();persistClientState(true,{searching:false,last_submitted_filters:filters});status.textContent=String(message||'現在地を取得できませんでした。');setTriggerValue('search_error',{token:`${Date.now()}_${Math.random().toString(36).slice(2)}`,code:Number(code||0),message:String(message||''),filters});unlock()};
-  const searchNow=()=>{activeSearchFilters=searchFilterSnapshot();persistClientState(true,{searching:true,pending_filters:activeSearchFilters,search_started_at:Date.now()});if(!navigator.geolocation){fail('この端末では位置情報を取得できません。');return}stop();best=null;startedAt=Date.now();button.classList.add('searching');button.textContent='🔎 検索中…';button.disabled=true;status.textContent='検索地点を高精度GPSで確認しています…';watchId=navigator.geolocation.watchPosition((position)=>{if(cancelled||!position?.coords)return;const accuracy=Number(position.coords.accuracy||Number.POSITIVE_INFINITY);const bestAccuracy=best?Number(best.coords?.accuracy||Number.POSITIVE_INFINITY):Number.POSITIVE_INFINITY;if(!best||accuracy<bestAccuracy)best=position;const currentBest=best?Number(best.coords?.accuracy||Number.POSITIVE_INFINITY):Number.POSITIVE_INFINITY;status.textContent=Number.isFinite(currentBest)?`検索地点を高精度GPSで確認しています… ±${Math.round(currentBest)}m`:'検索地点を高精度GPSで確認しています…';if(currentBest>0&&currentBest<=25){emitBest();return}if(currentBest>0&&currentBest<=45&&(Date.now()-startedAt)>=1200)emitBest()},(error)=>{const bestAccuracy=best?Number(best.coords?.accuracy||Number.POSITIVE_INFINITY):Number.POSITIVE_INFINITY;if(best&&bestAccuracy>0&&bestAccuracy<=45){emitBest();return}const code=Number(error?.code||0);const msg=code===1?'位置情報の利用が許可されていません。':code===3?'現在地の取得に時間がかかりました。':'現在地を取得できませんでした。';fail(msg,code)},{enableHighAccuracy:true,timeout:10000,maximumAge:0});hardTimer=setTimeout(()=>{const bestAccuracy=best?Number(best.coords?.accuracy||Number.POSITIVE_INFINITY):Number.POSITIVE_INFINITY;if(best&&bestAccuracy>0&&bestAccuracy<=45)emitBest();else if(best&&Number.isFinite(bestAccuracy))fail(`GPS精度が ±${Math.round(bestAccuracy)}m のため検索を中止しました。`,3);else fail('現在地を高精度で取得できませんでした。',3)},10500)};
+  let activeSearchToken='';
+  const emitBest=()=>{if(cancelled||!best?.coords||!activeSearchToken||!activeSearchFilters)return;stop();const filters={...activeSearchFilters};persistClientState(true,{searching:false,last_submitted_filters:filters});const accuracy=Number(best.coords.accuracy||0);status.textContent=`現在地を取得しました（精度 ±${Math.round(accuracy)}m）。検索しています…`;setTriggerValue('search_location',{token:`${Date.now()}_${Math.random().toString(36).slice(2)}`,request_token:activeSearchToken,latitude:Number(best.coords.latitude),longitude:Number(best.coords.longitude),accuracy_m:accuracy,measured_at:new Date(best.timestamp||Date.now()).toISOString(),filters})};
+  const fail=(message,code=0)=>{stop();const filters=activeSearchFilters?{...activeSearchFilters}:null;persistClientState(true,{searching:false,last_submitted_filters:filters});status.textContent=String(message||'現在地を取得できませんでした。');setTriggerValue('search_error',{token:`${Date.now()}_${Math.random().toString(36).slice(2)}`,request_token:activeSearchToken,code:Number(code||0),message:String(message||''),filters});unlock()};
+  const beginGpsSearch=(requestToken,filters)=>{
+    if(!requestToken||!filters||typeof filters!=='object')return;
+    activeSearchToken=String(requestToken);activeSearchFilters={...filters};
+    persistClientState(true,{searching:true,pending_filters:activeSearchFilters,confirmed_request_token:activeSearchToken,search_started_at:Date.now()});
+    if(!navigator.geolocation){fail('この端末では位置情報を取得できません。');return}
+    stop();best=null;startedAt=Date.now();button.classList.add('searching');button.textContent='🔎 検索中…';button.disabled=true;status.textContent='条件を確定しました。検索地点を高精度GPSで確認しています…';
+    watchId=navigator.geolocation.watchPosition((position)=>{if(cancelled||!position?.coords)return;const accuracy=Number(position.coords.accuracy||Number.POSITIVE_INFINITY);const bestAccuracy=best?Number(best.coords?.accuracy||Number.POSITIVE_INFINITY):Number.POSITIVE_INFINITY;if(!best||accuracy<bestAccuracy)best=position;const currentBest=best?Number(best.coords?.accuracy||Number.POSITIVE_INFINITY):Number.POSITIVE_INFINITY;status.textContent=Number.isFinite(currentBest)?`確定した条件で現在地を確認しています… ±${Math.round(currentBest)}m`:'確定した条件で現在地を確認しています…';if(currentBest>0&&currentBest<=25){emitBest();return}if(currentBest>0&&currentBest<=45&&(Date.now()-startedAt)>=1200)emitBest()},(error)=>{const bestAccuracy=best?Number(best.coords?.accuracy||Number.POSITIVE_INFINITY):Number.POSITIVE_INFINITY;if(best&&bestAccuracy>0&&bestAccuracy<=45){emitBest();return}const code=Number(error?.code||0);const msg=code===1?'位置情報の利用が許可されていません。':code===3?'現在地の取得に時間がかかりました。':'現在地を取得できませんでした。';fail(msg,code)},{enableHighAccuracy:true,timeout:10000,maximumAge:0});
+    hardTimer=setTimeout(()=>{const bestAccuracy=best?Number(best.coords?.accuracy||Number.POSITIVE_INFINITY):Number.POSITIVE_INFINITY;if(best&&bestAccuracy>0&&bestAccuracy<=45)emitBest();else if(best&&Number.isFinite(bestAccuracy))fail(`GPS精度が ±${Math.round(bestAccuracy)}m のため検索を中止しました。`,3);else fail('現在地を高精度で取得できませんでした。',3)},10500);
+  };
+  const confirmVisibleSearch=()=>{
+    const filters=visibleFilterSnapshot();
+    if(!filters){status.textContent='表示中の検索条件を確認できませんでした。条件を選び直してもう一度押してください。';return}
+    const requestToken=`${Date.now()}_${Math.random().toString(36).slice(2)}`;
+    activeSearchToken='';activeSearchFilters=null;
+    button.classList.add('searching');button.textContent='🔎 条件を確定中…';button.disabled=true;
+    status.textContent='いま画面に表示されている条件を確定しています…';
+    persistClientState(true,{searching:false,pending_filters:filters,confirming:true,confirm_request_token:requestToken});
+    setTriggerValue('confirm_filters',{token:requestToken,filters,visible_summary:String(summary?.textContent||'')});
+  };
   unlock();
-  button.addEventListener('click',searchNow);
-  return()=>{cancelled=true;stop();button.removeEventListener('click',searchNow);try{parentElement?.removeEventListener(activityPressEvent,markUserActivity,{capture:true,passive:true})}catch(_){}try{parentElement?.removeEventListener('keydown',markUserActivity,true)}catch(_){}try{parentElement?.removeEventListener('wheel',markUserActivity,{capture:true,passive:true})}catch(_){}};
+  button.addEventListener('click',confirmVisibleSearch);
+  if(confirmedRequest&&confirmedRequest.token&&confirmedRequest.filters){
+    setTimeout(()=>{if(!cancelled)beginGpsSearch(String(confirmedRequest.token),confirmedRequest.filters)},0);
+  }
+  return()=>{cancelled=true;stop();button.removeEventListener('click',confirmVisibleSearch);try{parentElement?.removeEventListener(activityPressEvent,markUserActivity,{capture:true,passive:true})}catch(_){}try{parentElement?.removeEventListener('keydown',markUserActivity,true)}catch(_){}try{parentElement?.removeEventListener('wheel',markUserActivity,{capture:true,passive:true})}catch(_){}};
 }
 """
 
@@ -31685,7 +31726,7 @@ def _get_nearby_batch_search_component_v320():
     _nearby_batch_search_component_initialized_v320 = True
     try:
         _nearby_batch_search_component_v320 = st.components.v2.component(
-            "tokyo_burari_nearby_batch_search_v481",
+            "tokyo_burari_nearby_batch_search_v482",
             html=_NEARBY_BATCH_SEARCH_HTML_V320,
             css=_NEARBY_BATCH_SEARCH_CSS_V320,
             js=_perf_instrument_js_v466(_NEARBY_BATCH_SEARCH_JS_V320),
@@ -31781,8 +31822,9 @@ export default function(component) {
   const summary=parentElement.querySelector('#tb-summary'), button=parentElement.querySelector('#tb-search'), status=parentElement.querySelector('#tb-status');
   if(!distanceArea||!feeArea||!wheelArea||!babyArea||!openArea||!summary||!button||!status)return;
   const initial=(data&&data.initial&&typeof data.initial==='object')?data.initial:{};
-  const stateKey=String(data?.state_key||'tokyo_burari_toilet_filters_v480');
+  const stateKey=String(data?.state_key||'tokyo_burari_toilet_filters_v482');
   const serverToken=String(data?.completion_token||'');
+  const confirmedRequest=(data?.confirmed_request&&typeof data.confirmed_request==='object')?data.confirmed_request:null;
   const state={
     distance:['1','3'].includes(String(initial.distance||''))?String(initial.distance):'3',
     fee:['free','all'].includes(String(initial.fee||''))?String(initial.fee):'free',
@@ -31807,7 +31849,7 @@ export default function(component) {
   let loaderFailSafeTimer=null;
   const showTrainLoader=(message)=>{const overlay=loaderDoc.getElementById('burari-global-loader-v326');if(!overlay)return;const msg=loaderDoc.getElementById('burari-global-loader-message-v326');if(msg)msg.textContent=String(message||'読み込み中…');overlay.classList.add('burari-active');if(loaderFailSafeTimer)clearTimeout(loaderFailSafeTimer);loaderFailSafeTimer=setTimeout(()=>{overlay.classList.remove('burari-active')},13000)};
   const hideTrainLoader=()=>{if(loaderFailSafeTimer){clearTimeout(loaderFailSafeTimer);loaderFailSafeTimer=null}const overlay=loaderDoc.getElementById('burari-global-loader-v326');if(overlay)overlay.classList.remove('burari-active')};
-  const makeChoice=(label,value,selected,onClick)=>{const b=document.createElement('button');b.type='button';b.className='legacy-choice'+(String(value)===String(selected)?' active':'');b.textContent=String(label);b.addEventListener('click',()=>onClick(String(value)));return b};
+  const makeChoice=(label,value,selected,onClick)=>{const b=document.createElement('button');b.type='button';b.className='legacy-choice'+(String(value)===String(selected)?' active':'');b.textContent=String(label);b.dataset.value=String(value);b.addEventListener('click',()=>onClick(String(value)));return b};
   const fill=(root,rows,selected,key)=>{root.innerHTML='';rows.forEach(([label,value])=>root.appendChild(makeChoice(label,value,selected,(v)=>{state[key]=v;persistClientState(true);render()})))};
   const gather=()=>({distance:state.distance,fee:state.fee,wheelchair:state.wheelchair,baby:state.baby,open:state.open});
   const updateSummary=()=>{const f=gather();summary.textContent=`徒歩${f.distance}分くらい　／　${f.fee==='free'?'無料優先':'料金問わない'}　／　${f.wheelchair==='yes'?'車いす対応':'車いす問わない'}　／　${f.baby==='yes'?'交換台あり':'交換台問わない'}　／　${f.open==='usable'?'今使える優先':'利用時間問わない'}`};
@@ -31815,13 +31857,18 @@ export default function(component) {
   render();
   const stop=()=>{if(watchId!==null&&navigator.geolocation){try{navigator.geolocation.clearWatch(watchId)}catch(_){}watchId=null}if(hardTimer){clearTimeout(hardTimer);hardTimer=null}};
   const unlock=()=>{if(!cancelled){button.disabled=false;button.classList.remove('searching');button.textContent='🚻 この条件でトイレを探す'}};
-  const searchFilterSnapshot=()=>{const f=gather();return {distance:String(f.distance||''),fee:String(f.fee||''),wheelchair:String(f.wheelchair||''),baby:String(f.baby||''),open:String(f.open||'')}};
-  const filtersForActiveSearch=()=>activeSearchFilters?{...activeSearchFilters}:searchFilterSnapshot();
-  const emitBest=()=>{if(cancelled||!best?.coords)return;stop();const filters=filtersForActiveSearch();persistClientState(true,{searching:false,last_submitted_filters:filters});const accuracy=Number(best.coords.accuracy||0);status.textContent=`現在地を取得しました（精度 ±${Math.round(accuracy)}m）。トイレを検索しています…`;hideTrainLoader();setTriggerValue('search_location',{token:`${Date.now()}_${Math.random().toString(36).slice(2)}`,latitude:Number(best.coords.latitude),longitude:Number(best.coords.longitude),accuracy_m:accuracy,measured_at:new Date(best.timestamp||Date.now()).toISOString(),filters})};
-  const fail=(message,code=0)=>{stop();const filters=filtersForActiveSearch();persistClientState(true,{searching:false,last_submitted_filters:filters});status.textContent=String(message||'現在地を取得できませんでした。');hideTrainLoader();setTriggerValue('search_error',{token:`${Date.now()}_${Math.random().toString(36).slice(2)}`,code:Number(code||0),message:String(message||''),filters});unlock()};
-  const searchNow=()=>{activeSearchFilters=searchFilterSnapshot();persistClientState(true,{searching:true,pending_filters:activeSearchFilters,search_started_at:Date.now()});if(!navigator.geolocation){fail('この端末では位置情報を取得できません。');return}stop();best=null;startedAt=Date.now();button.classList.add('searching');button.textContent='🚻 検索中…';button.disabled=true;status.textContent='現在地を高精度GPSで確認しています…';showTrainLoader(status.textContent);watchId=navigator.geolocation.watchPosition((position)=>{if(cancelled||!position?.coords)return;const accuracy=Number(position.coords.accuracy||Number.POSITIVE_INFINITY);const bestAccuracy=best?Number(best.coords?.accuracy||Number.POSITIVE_INFINITY):Number.POSITIVE_INFINITY;if(!best||accuracy<bestAccuracy)best=position;const currentBest=best?Number(best.coords?.accuracy||Number.POSITIVE_INFINITY):Number.POSITIVE_INFINITY;status.textContent=Number.isFinite(currentBest)?`現在地を高精度GPSで確認しています… ±${Math.round(currentBest)}m`:'現在地を高精度GPSで確認しています…';showTrainLoader(status.textContent);if(currentBest>0&&currentBest<=25){emitBest();return}if(currentBest>0&&currentBest<=45&&(Date.now()-startedAt)>=1200)emitBest()},(error)=>{const bestAccuracy=best?Number(best.coords?.accuracy||Number.POSITIVE_INFINITY):Number.POSITIVE_INFINITY;if(best&&bestAccuracy>0&&bestAccuracy<=45){emitBest();return}const code=Number(error?.code||0);const msg=code===1?'位置情報の利用が許可されていません。':code===3?'現在地の取得に時間がかかりました。':'現在地を取得できませんでした。';fail(msg,code)},{enableHighAccuracy:true,timeout:10000,maximumAge:0});hardTimer=setTimeout(()=>{const bestAccuracy=best?Number(best.coords?.accuracy||Number.POSITIVE_INFINITY):Number.POSITIVE_INFINITY;if(best&&bestAccuracy>0&&bestAccuracy<=45)emitBest();else if(best&&Number.isFinite(bestAccuracy))fail(`GPS精度が ±${Math.round(bestAccuracy)}m のため検索を中止しました。`,3);else fail('現在地を高精度で取得できませんでした。',3)},10500)};
-  unlock();
-  button.addEventListener('click',searchNow);return()=>{cancelled=true;stop();hideTrainLoader();button.removeEventListener('click',searchNow);try{parentElement?.removeEventListener(activityPressEvent,markUserActivity,{capture:true,passive:true})}catch(_){}try{parentElement?.removeEventListener('keydown',markUserActivity,true)}catch(_){}try{parentElement?.removeEventListener('wheel',markUserActivity,{capture:true,passive:true})}catch(_){}};
+  const activeValue=(root)=>String(root?.querySelector('.legacy-choice.active')?.dataset?.value||'');
+  const visibleFilterSnapshot=()=>{
+    const distance=activeValue(distanceArea),fee=activeValue(feeArea),wheelchair=activeValue(wheelArea),baby=activeValue(babyArea),open=activeValue(openArea);
+    if(!['1','3'].includes(distance)||!['free','all'].includes(fee)||!['yes','all'].includes(wheelchair)||!['yes','all'].includes(baby)||!['usable','all'].includes(open))return null;
+    return {distance,fee,wheelchair,baby,open};
+  };
+  let activeSearchToken='';
+  const emitBest=()=>{if(cancelled||!best?.coords||!activeSearchToken||!activeSearchFilters)return;stop();const filters={...activeSearchFilters};persistClientState(true,{searching:false,last_submitted_filters:filters});const accuracy=Number(best.coords.accuracy||0);status.textContent=`現在地を取得しました（精度 ±${Math.round(accuracy)}m）。トイレを検索しています…`;hideTrainLoader();setTriggerValue('search_location',{token:`${Date.now()}_${Math.random().toString(36).slice(2)}`,request_token:activeSearchToken,latitude:Number(best.coords.latitude),longitude:Number(best.coords.longitude),accuracy_m:accuracy,measured_at:new Date(best.timestamp||Date.now()).toISOString(),filters})};
+  const fail=(message,code=0)=>{stop();const filters=activeSearchFilters?{...activeSearchFilters}:null;persistClientState(true,{searching:false,last_submitted_filters:filters});status.textContent=String(message||'現在地を取得できませんでした。');hideTrainLoader();setTriggerValue('search_error',{token:`${Date.now()}_${Math.random().toString(36).slice(2)}`,request_token:activeSearchToken,code:Number(code||0),message:String(message||''),filters});unlock()};
+  const beginGpsSearch=(requestToken,filters)=>{if(!requestToken||!filters||typeof filters!=='object')return;activeSearchToken=String(requestToken);activeSearchFilters={...filters};persistClientState(true,{searching:true,pending_filters:activeSearchFilters,confirmed_request_token:activeSearchToken,search_started_at:Date.now()});if(!navigator.geolocation){fail('この端末では位置情報を取得できません。');return}stop();best=null;startedAt=Date.now();button.classList.add('searching');button.textContent='🚻 検索中…';button.disabled=true;status.textContent='条件を確定しました。現在地を高精度GPSで確認しています…';showTrainLoader(status.textContent);watchId=navigator.geolocation.watchPosition((position)=>{if(cancelled||!position?.coords)return;const accuracy=Number(position.coords.accuracy||Number.POSITIVE_INFINITY);const bestAccuracy=best?Number(best.coords?.accuracy||Number.POSITIVE_INFINITY):Number.POSITIVE_INFINITY;if(!best||accuracy<bestAccuracy)best=position;const currentBest=best?Number(best.coords?.accuracy||Number.POSITIVE_INFINITY):Number.POSITIVE_INFINITY;status.textContent=Number.isFinite(currentBest)?`確定した条件で現在地を確認しています… ±${Math.round(currentBest)}m`:'確定した条件で現在地を確認しています…';showTrainLoader(status.textContent);if(currentBest>0&&currentBest<=25){emitBest();return}if(currentBest>0&&currentBest<=45&&(Date.now()-startedAt)>=1200)emitBest()},(error)=>{const bestAccuracy=best?Number(best.coords?.accuracy||Number.POSITIVE_INFINITY):Number.POSITIVE_INFINITY;if(best&&bestAccuracy>0&&bestAccuracy<=45){emitBest();return}const code=Number(error?.code||0);const msg=code===1?'位置情報の利用が許可されていません。':code===3?'現在地の取得に時間がかかりました。':'現在地を取得できませんでした。';fail(msg,code)},{enableHighAccuracy:true,timeout:10000,maximumAge:0});hardTimer=setTimeout(()=>{const bestAccuracy=best?Number(best.coords?.accuracy||Number.POSITIVE_INFINITY):Number.POSITIVE_INFINITY;if(best&&bestAccuracy>0&&bestAccuracy<=45)emitBest();else if(best&&Number.isFinite(bestAccuracy))fail(`GPS精度が ±${Math.round(bestAccuracy)}m のため検索を中止しました。`,3);else fail('現在地を高精度で取得できませんでした。',3)},10500)};
+  const confirmVisibleSearch=()=>{const filters=visibleFilterSnapshot();if(!filters){status.textContent='表示中の検索条件を確認できませんでした。条件を選び直してもう一度押してください。';return}const requestToken=`${Date.now()}_${Math.random().toString(36).slice(2)}`;activeSearchToken='';activeSearchFilters=null;button.classList.add('searching');button.textContent='🚻 条件を確定中…';button.disabled=true;status.textContent='いま画面に表示されている条件を確定しています…';persistClientState(true,{searching:false,pending_filters:filters,confirming:true,confirm_request_token:requestToken});setTriggerValue('confirm_filters',{token:requestToken,filters,visible_summary:String(summary?.textContent||'')})};
+  unlock();button.addEventListener('click',confirmVisibleSearch);if(confirmedRequest&&confirmedRequest.token&&confirmedRequest.filters){setTimeout(()=>{if(!cancelled)beginGpsSearch(String(confirmedRequest.token),confirmedRequest.filters)},0)}return()=>{cancelled=true;stop();hideTrainLoader();button.removeEventListener('click',confirmVisibleSearch);try{parentElement?.removeEventListener(activityPressEvent,markUserActivity,{capture:true,passive:true})}catch(_){}try{parentElement?.removeEventListener('keydown',markUserActivity,true)}catch(_){}try{parentElement?.removeEventListener('wheel',markUserActivity,{capture:true,passive:true})}catch(_){}};
 }
 """
 
@@ -31835,7 +31882,7 @@ def _get_toilet_batch_search_component_v320():
     _toilet_batch_search_component_initialized_v320 = True
     try:
         _toilet_batch_search_component_v320 = st.components.v2.component(
-            "tokyo_burari_toilet_batch_search_v481",
+            "tokyo_burari_toilet_batch_search_v482",
             html=_TOILET_BATCH_SEARCH_HTML_V320,
             css=_TOILET_BATCH_SEARCH_CSS_V320,
             js=_perf_instrument_js_v466(_TOILET_BATCH_SEARCH_JS_V320),
@@ -32263,13 +32310,18 @@ def page_toilets():
     current_signature = _toilet_signature_v320(latitude, longitude, current_cfg)
 
     search_component_result = None
+    pending_toilet_key_v482 = f"_toilet_confirmed_search_v482_{prefix}"
+    pending_toilet_v482 = st.session_state.get(pending_toilet_key_v482)
+    if not isinstance(pending_toilet_v482, dict):
+        pending_toilet_v482 = None
     search_component = _get_toilet_batch_search_component_v320()
     if search_component is not None:
         previous_result = st.session_state.get(result_key)
         completion_token = str(previous_result.get("searched_at") or "") if isinstance(previous_result, dict) else ""
         search_component_result = search_component(
-            data={"initial": {"distance": distance_mode, "fee": fee_mode, "wheelchair": wheelchair_mode, "baby": baby_mode, "open": open_mode}, "completion_token": completion_token, "state_key": f"tokyo_burari_toilet_filters_v480_{hashlib.sha1(prefix.encode('utf-8')).hexdigest()[:16]}"},
-            key=f"toilet_batch_search_v481_{prefix}",
+            data={"initial": {"distance": distance_mode, "fee": fee_mode, "wheelchair": wheelchair_mode, "baby": baby_mode, "open": open_mode}, "completion_token": completion_token, "state_key": f"tokyo_burari_toilet_filters_v482_{hashlib.sha1(prefix.encode('utf-8')).hexdigest()[:16]}", "confirmed_request": pending_toilet_v482},
+            key=f"toilet_batch_search_v482_{prefix}",
+            on_confirm_filters_change=lambda: None,
             on_search_location_change=lambda: None,
             on_search_error_change=lambda: None,
         )
@@ -32345,6 +32397,21 @@ def page_toilets():
             st.session_state["_toilet_search_notice"] = "現在地を取得できなかったため、指定した地名を中心に検索しました。"
         return True
 
+    fresh_confirm_payload = getattr(search_component_result, "confirm_filters", None) if search_component_result is not None else None
+    if isinstance(fresh_confirm_payload, dict):
+        confirm_token = str(fresh_confirm_payload.get("token") or "")
+        confirm_seen_key = f"_toilet_confirm_seen_v482_{prefix}"
+        if confirm_token and confirm_token != str(st.session_state.get(confirm_seen_key) or ""):
+            st.session_state[confirm_seen_key] = confirm_token
+            try:
+                confirmed_cfg = _commit_toilet_filters_v320(fresh_confirm_payload.get("filters"))
+            except ValueError:
+                st.session_state.pop(pending_toilet_key_v482, None)
+                st.session_state["_toilet_search_warning"] = "画面に表示されているトイレ検索条件を確定できませんでした。条件を選び直して、もう一度検索してください。"
+            else:
+                st.session_state[pending_toilet_key_v482] = {"token": confirm_token, "filters": confirmed_cfg, "visible_summary": str(fresh_confirm_payload.get("visible_summary") or ""), "confirmed_at": now_jst().isoformat()}
+            st.rerun()
+
     fresh_search_payload = getattr(search_component_result, "search_location", None) if search_component_result is not None else None
     if isinstance(fresh_search_payload, dict):
         search_token = str(fresh_search_payload.get("token") or "")
@@ -32357,11 +32424,14 @@ def page_toilets():
             except (TypeError, ValueError):
                 st.session_state["_toilet_search_warning"] = "検索時の現在地を確認できませんでした。もう一度お試しください。"
             else:
-                try:
-                    request_cfg = _commit_toilet_filters_v320(fresh_search_payload.get("filters"))
-                except ValueError:
-                    st.session_state["_toilet_search_warning"] = "選んだトイレ検索条件を正しく受け取れませんでした。条件を確認して、もう一度検索してください。"
+                pending_request = st.session_state.get(pending_toilet_key_v482)
+                request_token = str(fresh_search_payload.get("request_token") or "")
+                if not isinstance(pending_request, dict) or not request_token or request_token != str(pending_request.get("token") or ""):
+                    st.session_state.pop(pending_toilet_key_v482, None)
+                    st.session_state["_toilet_search_warning"] = "確定したトイレ検索条件を確認できなかったため、検索を中止しました。表示中の条件で、もう一度検索してください。"
                 else:
+                    request_cfg = dict(pending_request.get("filters") or {})
+                    st.session_state.pop(pending_toilet_key_v482, None)
                     _run_toilet_search(fresh_lat, fresh_lon, fresh_accuracy, "gps", search_config=request_cfg)
                     st.rerun()
 
@@ -32377,12 +32447,15 @@ def page_toilets():
                 and manual_fallback.get("latitude") is not None
                 and manual_fallback.get("longitude") is not None
             ):
-                try:
-                    request_cfg = _commit_toilet_filters_v320(fresh_search_error.get("filters"))
-                except ValueError:
-                    st.session_state["_toilet_search_warning"] = "選んだトイレ検索条件を正しく受け取れませんでした。条件を確認して、もう一度検索してください。"
+                pending_request = st.session_state.get(pending_toilet_key_v482)
+                request_token = str(fresh_search_error.get("request_token") or "")
+                if not isinstance(pending_request, dict) or not request_token or request_token != str(pending_request.get("token") or ""):
+                    st.session_state.pop(pending_toilet_key_v482, None)
+                    st.session_state["_toilet_search_warning"] = "確定したトイレ検索条件を確認できなかったため、検索を中止しました。表示中の条件で、もう一度検索してください。"
                     st.rerun()
                 else:
+                    request_cfg = dict(pending_request.get("filters") or {})
+                    st.session_state.pop(pending_toilet_key_v482, None)
                     try:
                         _run_toilet_search(
                             manual_fallback.get("latitude"),
@@ -32397,6 +32470,7 @@ def page_toilets():
                             fresh_search_error.get("message") or "現在地を取得できませんでした。もう一度お試しください。"
                         )
             else:
+                st.session_state.pop(pending_toilet_key_v482, None)
                 st.session_state["_toilet_search_warning"] = str(
                     fresh_search_error.get("message") or "現在地を取得できませんでした。もう一度お試しください。"
                 )
@@ -32956,13 +33030,18 @@ def page_nearby():
     search_signature = _nearby_signature_v320(current_cfg)
 
     search_component_result = None
+    pending_search_key_v482 = f"_nearby_confirmed_search_v482_{prefix}"
+    pending_confirmed_v482 = st.session_state.get(pending_search_key_v482)
+    if not isinstance(pending_confirmed_v482, dict):
+        pending_confirmed_v482 = None
     search_component = _get_nearby_batch_search_component_v320()
     if search_component is not None:
         previous_result = st.session_state.get(result_key)
         completion_token = str(previous_result.get("searched_at") or "") if isinstance(previous_result, dict) else ""
         search_component_result = search_component(
-            data={"initial": current_cfg, "lunch_genres": list(NEARBY_LUNCH_GENRES), "google_enabled": bool(GOOGLE_PLACES_API_KEY), "completion_token": completion_token, "state_key": f"tokyo_burari_nearby_filters_v480_{hashlib.sha1(prefix.encode('utf-8')).hexdigest()[:16]}"},
-            key=f"nearby_batch_search_v481_{prefix}",
+            data={"initial": current_cfg, "lunch_genres": list(NEARBY_LUNCH_GENRES), "google_enabled": bool(GOOGLE_PLACES_API_KEY), "completion_token": completion_token, "state_key": f"tokyo_burari_nearby_filters_v482_{hashlib.sha1(prefix.encode('utf-8')).hexdigest()[:16]}", "confirmed_request": pending_confirmed_v482},
+            key=f"nearby_batch_search_v482_{prefix}",
+            on_confirm_filters_change=lambda: None,
             on_search_location_change=lambda: None,
             on_search_error_change=lambda: None,
         )
@@ -33055,6 +33134,21 @@ def page_nearby():
             st.session_state["_nearby_search_notice"] = "現在地を取得できなかったため、指定した地名を中心に検索しました。"
         return True
 
+    fresh_confirm_payload = getattr(search_component_result, "confirm_filters", None) if search_component_result is not None else None
+    if isinstance(fresh_confirm_payload, dict):
+        confirm_token = str(fresh_confirm_payload.get("token") or "")
+        confirm_seen_key = f"_nearby_confirm_seen_v482_{prefix}"
+        if confirm_token and confirm_token != str(st.session_state.get(confirm_seen_key) or ""):
+            st.session_state[confirm_seen_key] = confirm_token
+            try:
+                confirmed_cfg = _commit_nearby_filters_v320(fresh_confirm_payload.get("filters"))
+            except ValueError:
+                st.session_state.pop(pending_search_key_v482, None)
+                st.session_state["_nearby_search_warning"] = "画面に表示されている検索条件を確定できませんでした。条件を選び直して、もう一度検索してください。"
+            else:
+                st.session_state[pending_search_key_v482] = {"token": confirm_token, "filters": confirmed_cfg, "visible_summary": str(fresh_confirm_payload.get("visible_summary") or ""), "confirmed_at": now_jst().isoformat()}
+            st.rerun()
+
     fresh_search_payload = getattr(search_component_result, "search_location", None) if search_component_result is not None else None
     if isinstance(fresh_search_payload, dict):
         search_token = str(fresh_search_payload.get("token") or "")
@@ -33067,11 +33161,14 @@ def page_nearby():
             except (TypeError, ValueError):
                 st.session_state["_nearby_search_warning"] = "検索時の現在地を確認できませんでした。もう一度お試しください。"
             else:
-                try:
-                    request_cfg = _commit_nearby_filters_v320(fresh_search_payload.get("filters"))
-                except ValueError:
-                    st.session_state["_nearby_search_warning"] = "選んだ検索条件を正しく受け取れませんでした。表示中の条件を確認して、もう一度検索してください。"
+                pending_request = st.session_state.get(pending_search_key_v482)
+                request_token = str(fresh_search_payload.get("request_token") or "")
+                if not isinstance(pending_request, dict) or not request_token or request_token != str(pending_request.get("token") or ""):
+                    st.session_state.pop(pending_search_key_v482, None)
+                    st.session_state["_nearby_search_warning"] = "確定した検索条件を確認できなかったため、検索を中止しました。表示中の条件で、もう一度検索してください。"
                 else:
+                    request_cfg = dict(pending_request.get("filters") or {})
+                    st.session_state.pop(pending_search_key_v482, None)
                     _run_nearby_search(fresh_lat, fresh_lon, fresh_accuracy, "gps", search_config=request_cfg)
                     st.rerun()
 
@@ -33087,12 +33184,15 @@ def page_nearby():
                 and manual_fallback.get("latitude") is not None
                 and manual_fallback.get("longitude") is not None
             ):
-                try:
-                    request_cfg = _commit_nearby_filters_v320(fresh_search_error.get("filters"))
-                except ValueError:
-                    st.session_state["_nearby_search_warning"] = "選んだ検索条件を正しく受け取れませんでした。表示中の条件を確認して、もう一度検索してください。"
+                pending_request = st.session_state.get(pending_search_key_v482)
+                request_token = str(fresh_search_error.get("request_token") or "")
+                if not isinstance(pending_request, dict) or not request_token or request_token != str(pending_request.get("token") or ""):
+                    st.session_state.pop(pending_search_key_v482, None)
+                    st.session_state["_nearby_search_warning"] = "確定した検索条件を確認できなかったため、検索を中止しました。表示中の条件で、もう一度検索してください。"
                     st.rerun()
                 else:
+                    request_cfg = dict(pending_request.get("filters") or {})
+                    st.session_state.pop(pending_search_key_v482, None)
                     _run_nearby_search(
                         manual_fallback.get("latitude"),
                         manual_fallback.get("longitude"),
@@ -33102,6 +33202,7 @@ def page_nearby():
                     )
                     st.rerun()
             else:
+                st.session_state.pop(pending_search_key_v482, None)
                 st.session_state.pop(result_key, None)
                 st.session_state[detail_key] = ""
                 st.session_state["_nearby_search_warning"] = str(
