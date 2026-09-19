@@ -40,10 +40,11 @@ def _app_css_v473(markup, **_ignored):
     else:
         st.markdown(markup, unsafe_allow_html=True)
 
-# Home layout, random replay and five-hour forecast update: 2026-09-19 JST
-GENERATED_UPDATE_JST = '2026-09-19T12:43:20+09:00'
+# Home spacing-only update: 2026-09-19 JST
+GENERATED_UPDATE_JST = '2026-09-19T12:53:42+09:00'
 
-APP_BUILD = "v473"
+APP_BUILD = "v474"
+# v474: modest Home-only spacing/height reduction; all behavior and other screens unchanged.
 # v473: normal-flow Home, all-date random music/photo replay, five-hour weather.
 # Keep minute/second editor, voice timing, photo quality and existing manual replays.
 # v472: minute/second music labels and unit-selectable keypad; stored seconds and playback logic unchanged.
@@ -30347,9 +30348,9 @@ _HOME_WEATHER_HTML_V470 = r"""
 
 _HOME_WEATHER_CSS_V470 = r"""
 :host {display:block;width:100%;min-width:0;box-sizing:border-box;}
-.bw470 {width:100%;min-width:0;box-sizing:border-box;margin:0;padding:9px 10px 6px;border:1px solid rgba(128,150,173,.20);border-radius:15px;color:var(--st-text-color,#263548);background:var(--st-secondary-background-color,#f3f7fa);font-family:var(--st-font,sans-serif);}
+.bw470 {width:100%;min-width:0;box-sizing:border-box;margin:0;padding:7px 10px 5px;border:1px solid rgba(128,150,173,.20);border-radius:15px;color:var(--st-text-color,#263548);background:var(--st-secondary-background-color,#f3f7fa);font-family:var(--st-font,sans-serif);}
 .bw470 * {box-sizing:border-box;}
-.bw470-main {display:grid;grid-template-columns:minmax(0,1fr) 32px;gap:7px;align-items:center;min-width:0;}
+.bw470-main {display:grid;grid-template-columns:minmax(0,1fr) 32px;gap:5px;align-items:center;min-width:0;}
 .bw470-place {grid-column:1;grid-row:1;min-width:0;display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;}
 .bw470-name {font-size:13px;font-weight:750;line-height:1.45;overflow-wrap:anywhere;}
 .bw470-sub {font-size:10px;line-height:1.4;opacity:.66;white-space:nowrap;}
@@ -30362,7 +30363,7 @@ _HOME_WEATHER_CSS_V470 = r"""
 .bw470-refresh svg {display:block;width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round;opacity:.65;}
 .bw470-refresh:disabled {opacity:.35;cursor:default;}
 .bw470-refresh:active {background:rgba(74,144,226,.17);}
-.bw470-bottom {display:flex;align-items:baseline;flex-wrap:wrap;gap:4px 7px;min-width:0;margin-top:7px;line-height:1.4;}
+.bw470-bottom {display:flex;align-items:baseline;flex-wrap:wrap;gap:4px 7px;min-width:0;margin-top:4px;line-height:1.4;}
 .bw470-status {flex:1 1 auto;min-width:0;font-size:9px;opacity:.68;overflow-wrap:anywhere;}
 .bw470-credit,.bw470-details summary {font-size:9px;color:inherit;opacity:.7;white-space:nowrap;}
 .bw470-credit {text-decoration:none;flex:0 0 auto;}
@@ -30374,7 +30375,7 @@ _HOME_WEATHER_CSS_V470 = r"""
 .bw470-details[open] {flex:1 1 100%;order:3;}
 .bw470-explanation {font-size:11px;line-height:1.6;padding:6px 0;opacity:.84;overflow-wrap:anywhere;white-space:normal;}
 .bw470-explanation a {color:inherit;}
-@media(max-width:350px){.bw470{padding:8px 8px 6px;}.bw470-slots{gap:2px;}.bw470-time{font-size:9px;}.bw470-condition{font-size:8px;}}
+@media(max-width:350px){.bw470{padding:7px 8px 5px;}.bw470-slots{gap:2px;}.bw470-time{font-size:9px;}.bw470-condition{font-size:8px;}}
 """
 
 _HOME_WEATHER_JS_V470 = r"""
@@ -30684,6 +30685,8 @@ def render_home_weather_v470():
 
 
 _HOME_LAYOUT_CSS_V473 = r"""<style>
+/* v474: modest Home-only spacing reduction. Keep normal flow, readable type,
+   wrapping labels and auto heights; never squeeze the page into a viewport. */
 /* Non-visual bridges keep running, but never allocate vertical page space. */
 .st-key-app_runtime_bridges_v473, .st-key-home_runtime_bridges_v473 {
   position:absolute !important; width:1px !important; height:0 !important;
@@ -30700,7 +30703,7 @@ _HOME_LAYOUT_CSS_V473 = r"""<style>
 .st-key-home_viewport_fit > [data-testid="stVerticalBlock"],
 .st-key-home_viewport_fit > [data-testid="stVerticalBlockBorderWrapper"] > [data-testid="stVerticalBlock"] {
   display:flex !important; flex-direction:column !important;
-  justify-content:flex-start !important; gap:12px !important; overflow:visible !important;
+  justify-content:flex-start !important; gap:9px !important; overflow:visible !important;
   margin:0 !important;
 }
 .st-key-home_viewport_fit [data-testid="stElementContainer"],
@@ -30714,18 +30717,18 @@ _HOME_LAYOUT_CSS_V473 = r"""<style>
   overflow-wrap:anywhere;
 }
 .st-key-home_viewport_fit .home-hero {
-  height:auto !important; margin:0 !important; padding:16px !important;
+  height:auto !important; margin:0 !important; padding:12px 14px !important;
 }
 .st-key-home_viewport_fit .home-hero-inner { gap:10px !important; }
 .st-key-home_viewport_fit .home-hero-copy { min-width:0 !important; }
-.st-key-home_viewport_fit .home-eyebrow { font-size:.70rem !important; line-height:1.4 !important; margin:0 0 5px !important; }
+.st-key-home_viewport_fit .home-eyebrow { font-size:.70rem !important; line-height:1.4 !important; margin:0 0 4px !important; }
 .st-key-home_viewport_fit .home-title { font-size:2rem !important; line-height:1.2 !important; margin:0 !important; }
-.st-key-home_viewport_fit .home-tagline { font-size:.84rem !important; line-height:1.5 !important; margin:6px 0 0 !important; white-space:normal !important; }
+.st-key-home_viewport_fit .home-tagline { font-size:.84rem !important; line-height:1.5 !important; margin:4px 0 0 !important; white-space:normal !important; }
 .st-key-home_viewport_fit .home-hero-train,
 .st-key-home_viewport_fit .home-hero-train img { width:64px !important; height:60px !important; margin:0 !important; }
 .st-key-home_viewport_fit .home-status {
   display:grid !important; grid-template-columns:auto minmax(0,1fr) !important;
-  gap:6px 9px !important; margin:0 !important; padding:10px 12px !important;
+  gap:4px 9px !important; margin:0 !important; padding:8px 12px !important;
   height:auto !important; min-height:0 !important; line-height:1.45 !important;
   font-size:.85rem !important; box-sizing:border-box;
 }
@@ -30735,7 +30738,7 @@ _HOME_LAYOUT_CSS_V473 = r"""<style>
 .st-key-home_viewport_fit .home-section-label { margin:4px 0 0 !important; font-size:.78rem !important; line-height:1.5 !important; }
 .st-key-home_primary, .st-key-home_secondary,
 .st-key-home_primary [data-testid="stVerticalBlock"],
-.st-key-home_media_tools [data-testid="stVerticalBlock"] { gap:10px !important; }
+.st-key-home_media_tools [data-testid="stVerticalBlock"] { gap:8px !important; }
 .st-key-home_capture_pair [data-testid="stHorizontalBlock"],
 .st-key-home_quick_pair [data-testid="stHorizontalBlock"],
 .st-key-home_media_tools [data-testid="stHorizontalBlock"],
@@ -30752,13 +30755,13 @@ _HOME_LAYOUT_CSS_V473 = r"""<style>
 }
 .st-key-home_viewport_fit .st-key-home_primary div.stButton > button,
 .st-key-home_viewport_fit .st-key-home_secondary div.stButton > button {
-  width:100% !important; height:auto !important; min-height:84px !important; max-height:none !important;
+  width:100% !important; height:auto !important; min-height:74px !important; max-height:none !important;
   display:grid !important; grid-template-columns:auto minmax(0,1fr) !important;
   align-items:center !important; justify-content:center !important; gap:7px !important;
-  padding:12px 10px !important; font-size:1rem !important; line-height:1.4 !important;
+  padding:10px 10px !important; font-size:1rem !important; line-height:1.4 !important;
   white-space:normal !important; box-sizing:border-box !important;
 }
-.st-key-home_viewport_fit .st-key-home_secondary div.stButton > button { min-height:70px !important; }
+.st-key-home_viewport_fit .st-key-home_secondary div.stButton > button { min-height:62px !important; }
 .st-key-home_viewport_fit .st-key-home_primary div.stButton > button [data-testid="stMarkdownContainer"],
 .st-key-home_viewport_fit .st-key-home_secondary div.stButton > button [data-testid="stMarkdownContainer"],
 .st-key-home_viewport_fit .st-key-home_primary div.stButton > button p,
@@ -30772,14 +30775,14 @@ _HOME_LAYOUT_CSS_V473 = r"""<style>
 .st-key-home_viewport_fit .st-key-home_secondary button::before { width:32px !important; height:32px !important; }
 .st-key-home_media_tools { margin:0 !important; }
 .st-key-home_media_tools div.stButton > button {
-  height:auto !important; min-height:64px !important; max-height:none !important;
-  padding:9px 5px !important; font-size:.82rem !important; line-height:1.4 !important;
+  height:auto !important; min-height:56px !important; max-height:none !important;
+  padding:7px 5px !important; font-size:.82rem !important; line-height:1.4 !important;
   white-space:normal !important; overflow-wrap:anywhere !important;
 }
 .st-key-home_media_tools div.stButton > button p { min-width:0 !important; white-space:normal !important; margin:0 !important; line-height:1.4 !important; }
 .st-key-home_media_tools [data-testid="stCaptionContainer"] p { font-size:.73rem !important; line-height:1.5 !important; margin:0 !important; white-space:normal !important; }
 .st-key-home_destination { margin:0 !important; }
-.st-key-home_destination div.stButton > button { min-height:54px !important; height:auto !important; max-height:none !important; padding:10px 8px !important; font-size:.79rem !important; line-height:1.4 !important; white-space:normal !important; }
+.st-key-home_destination div.stButton > button { min-height:48px !important; height:auto !important; max-height:none !important; padding:8px 8px !important; font-size:.79rem !important; line-height:1.4 !important; white-space:normal !important; }
 .st-key-home_destination button p { white-space:normal !important; overflow-wrap:anywhere !important; line-height:1.4 !important; }
 .st-key-home_next_prompt_v390 { margin:0 !important; }
 .st-key-home_next_prompt_v390 button { height:auto !important; min-height:54px; white-space:normal !important; }
@@ -30801,8 +30804,8 @@ _HOME_LAYOUT_CSS_V473 = r"""<style>
 }
 @media(max-width:350px) {
   .st-key-home_viewport_fit .home-title { font-size:1.8rem !important; }
-  .st-key-home_viewport_fit .home-hero { padding:13px !important; }
-  .st-key-home_viewport_fit .st-key-home_primary div.stButton > button { padding:10px 7px !important; gap:5px !important; font-size:.90rem !important; }
+  .st-key-home_viewport_fit .home-hero { padding:11px 12px !important; }
+  .st-key-home_viewport_fit .st-key-home_primary div.stButton > button { padding:9px 7px !important; gap:5px !important; font-size:.90rem !important; }
   .st-key-home_viewport_fit .st-key-home_video button::before { width:40px !important; }
 }
 </style>"""
