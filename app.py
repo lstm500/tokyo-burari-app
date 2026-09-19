@@ -43,7 +43,8 @@ def _app_css_v473(markup, **_ignored):
 # Review menu-only update: 2026-09-19 JST
 GENERATED_UPDATE_JST = "2026-09-19T14:54:38+09:00"
 
-APP_BUILD = "v480"
+APP_BUILD = "v481"
+# v481: Keep Nearby/Toilet filter drafts authoritative across rerenders/remounts and freeze the exact visible filter snapshot at Search press, so GPS wait/scroll/rerun cannot fall back to the previous search conditions.
 # v480: Preserve browser-side Nearby/Toilet filter selections across component rerenders so repeat searches use the visible conditions; refresh component identities to avoid stale cached JS.
 # v479: Move the Home dashboard about 1 cm (38 CSS px) lower than v478 without changing its layout or controls.
 # v478: Move the Home dashboard slightly lower on mobile without changing its density, controls, or one-screen fit behavior.
@@ -31565,23 +31566,26 @@ export default function(component) {
     const parsed = JSON.parse(localStorage.getItem(stateKey) || 'null');
     if (parsed && typeof parsed === 'object') savedClientState = parsed;
   } catch (_) {}
-  // Keep unsent browser edits only while the server result has not advanced. Once a
-  // search completes, completion_token changes and the committed server filters win.
-  const restoreDirty = !!(savedClientState?.dirty && String(savedClientState?.server_token || '') === serverToken);
-  if (restoreDirty && savedClientState?.perKind && typeof savedClientState.perKind === 'object') {
+  // v481: browser-visible filters are the UI source of truth.  A Streamlit rerun,
+  // component remount, completed prior search, or scroll-induced lifecycle change must
+  // never replace them with the previous server-side search conditions.  The key is
+  // account-scoped, and every field is normalized before reuse.
+  const restoreClientState = !!(savedClientState && typeof savedClientState === 'object');
+  if (restoreClientState && savedClientState?.perKind && typeof savedClientState.perKind === 'object') {
     for (const k of ['snack','lunch','sightseeing']) {
       perKind[k] = normalizeCfg(k, savedClientState.perKind[k], perKind[k]);
     }
   }
-  let kind = restoreDirty && ['snack','lunch','sightseeing'].includes(String(savedClientState?.kind || ''))
+  let kind = restoreClientState && ['snack','lunch','sightseeing'].includes(String(savedClientState?.kind || ''))
     ? String(savedClientState.kind) : validKind;
   let cancelled = false, watchId = null, hardTimer = null, best = null, startedAt = 0;
-  const persistClientState = (dirty=true) => {
+  let activeSearchFilters = null;
+  const persistClientState = (dirty=true, extra={}) => {
     try {
-      localStorage.setItem(stateKey, JSON.stringify({dirty:!!dirty, server_token:serverToken, kind, perKind}));
+      localStorage.setItem(stateKey, JSON.stringify({dirty:!!dirty, server_token:serverToken, kind, perKind, updated_at:Date.now(), ...extra}));
     } catch (_) {}
   };
-  if (!restoreDirty) persistClientState(false);
+  if (!restoreClientState) persistClientState(false);
 
   const makeChoice = (label, value, selected, onClick) => {
     const b = document.createElement('button');
@@ -31657,9 +31661,14 @@ export default function(component) {
 
   const stop=()=>{if(watchId!==null&&navigator.geolocation){try{navigator.geolocation.clearWatch(watchId)}catch(_){}watchId=null}if(hardTimer){clearTimeout(hardTimer);hardTimer=null}};
   const unlock=()=>{if(!cancelled){button.disabled=false;button.classList.remove('searching');button.textContent='🔎 この条件で検索'}};
-  const emitBest=()=>{if(cancelled||!best?.coords)return;stop();const filters=gather();persistClientState(true);const accuracy=Number(best.coords.accuracy||0);status.textContent=`現在地を取得しました（精度 ±${Math.round(accuracy)}m）。検索しています…`;setTriggerValue('search_location',{token:`${Date.now()}_${Math.random().toString(36).slice(2)}`,latitude:Number(best.coords.latitude),longitude:Number(best.coords.longitude),accuracy_m:accuracy,measured_at:new Date(best.timestamp||Date.now()).toISOString(),filters})};
-  const fail=(message,code=0)=>{stop();const filters=gather();persistClientState(true);status.textContent=String(message||'現在地を取得できませんでした。');setTriggerValue('search_error',{token:`${Date.now()}_${Math.random().toString(36).slice(2)}`,code:Number(code||0),message:String(message||''),filters});unlock()};
-  const searchNow=()=>{if(!navigator.geolocation){fail('この端末では位置情報を取得できません。');return}stop();best=null;startedAt=Date.now();button.classList.add('searching');button.textContent='🔎 検索中…';button.disabled=true;status.textContent='検索地点を高精度GPSで確認しています…';watchId=navigator.geolocation.watchPosition((position)=>{if(cancelled||!position?.coords)return;const accuracy=Number(position.coords.accuracy||Number.POSITIVE_INFINITY);const bestAccuracy=best?Number(best.coords?.accuracy||Number.POSITIVE_INFINITY):Number.POSITIVE_INFINITY;if(!best||accuracy<bestAccuracy)best=position;const currentBest=best?Number(best.coords?.accuracy||Number.POSITIVE_INFINITY):Number.POSITIVE_INFINITY;status.textContent=Number.isFinite(currentBest)?`検索地点を高精度GPSで確認しています… ±${Math.round(currentBest)}m`:'検索地点を高精度GPSで確認しています…';if(currentBest>0&&currentBest<=25){emitBest();return}if(currentBest>0&&currentBest<=45&&(Date.now()-startedAt)>=1200)emitBest()},(error)=>{const bestAccuracy=best?Number(best.coords?.accuracy||Number.POSITIVE_INFINITY):Number.POSITIVE_INFINITY;if(best&&bestAccuracy>0&&bestAccuracy<=45){emitBest();return}const code=Number(error?.code||0);const msg=code===1?'位置情報の利用が許可されていません。':code===3?'現在地の取得に時間がかかりました。':'現在地を取得できませんでした。';fail(msg,code)},{enableHighAccuracy:true,timeout:10000,maximumAge:0});hardTimer=setTimeout(()=>{const bestAccuracy=best?Number(best.coords?.accuracy||Number.POSITIVE_INFINITY):Number.POSITIVE_INFINITY;if(best&&bestAccuracy>0&&bestAccuracy<=45)emitBest();else if(best&&Number.isFinite(bestAccuracy))fail(`GPS精度が ±${Math.round(bestAccuracy)}m のため検索を中止しました。`,3);else fail('現在地を高精度で取得できませんでした。',3)},10500)};
+  const searchFilterSnapshot=()=>{
+    const current=gather();
+    return {kind:String(current.kind||''),subkind:String(current.subkind||''),radius_m:Number(current.radius_m),budget_under_1000:!!current.budget_under_1000,budget_limit:current.budget_limit==null?null:Number(current.budget_limit),open_now_only:!!current.open_now_only};
+  };
+  const filtersForActiveSearch=()=>activeSearchFilters?{...activeSearchFilters}:searchFilterSnapshot();
+  const emitBest=()=>{if(cancelled||!best?.coords)return;stop();const filters=filtersForActiveSearch();persistClientState(true,{searching:false,last_submitted_filters:filters});const accuracy=Number(best.coords.accuracy||0);status.textContent=`現在地を取得しました（精度 ±${Math.round(accuracy)}m）。検索しています…`;setTriggerValue('search_location',{token:`${Date.now()}_${Math.random().toString(36).slice(2)}`,latitude:Number(best.coords.latitude),longitude:Number(best.coords.longitude),accuracy_m:accuracy,measured_at:new Date(best.timestamp||Date.now()).toISOString(),filters})};
+  const fail=(message,code=0)=>{stop();const filters=filtersForActiveSearch();persistClientState(true,{searching:false,last_submitted_filters:filters});status.textContent=String(message||'現在地を取得できませんでした。');setTriggerValue('search_error',{token:`${Date.now()}_${Math.random().toString(36).slice(2)}`,code:Number(code||0),message:String(message||''),filters});unlock()};
+  const searchNow=()=>{activeSearchFilters=searchFilterSnapshot();persistClientState(true,{searching:true,pending_filters:activeSearchFilters,search_started_at:Date.now()});if(!navigator.geolocation){fail('この端末では位置情報を取得できません。');return}stop();best=null;startedAt=Date.now();button.classList.add('searching');button.textContent='🔎 検索中…';button.disabled=true;status.textContent='検索地点を高精度GPSで確認しています…';watchId=navigator.geolocation.watchPosition((position)=>{if(cancelled||!position?.coords)return;const accuracy=Number(position.coords.accuracy||Number.POSITIVE_INFINITY);const bestAccuracy=best?Number(best.coords?.accuracy||Number.POSITIVE_INFINITY):Number.POSITIVE_INFINITY;if(!best||accuracy<bestAccuracy)best=position;const currentBest=best?Number(best.coords?.accuracy||Number.POSITIVE_INFINITY):Number.POSITIVE_INFINITY;status.textContent=Number.isFinite(currentBest)?`検索地点を高精度GPSで確認しています… ±${Math.round(currentBest)}m`:'検索地点を高精度GPSで確認しています…';if(currentBest>0&&currentBest<=25){emitBest();return}if(currentBest>0&&currentBest<=45&&(Date.now()-startedAt)>=1200)emitBest()},(error)=>{const bestAccuracy=best?Number(best.coords?.accuracy||Number.POSITIVE_INFINITY):Number.POSITIVE_INFINITY;if(best&&bestAccuracy>0&&bestAccuracy<=45){emitBest();return}const code=Number(error?.code||0);const msg=code===1?'位置情報の利用が許可されていません。':code===3?'現在地の取得に時間がかかりました。':'現在地を取得できませんでした。';fail(msg,code)},{enableHighAccuracy:true,timeout:10000,maximumAge:0});hardTimer=setTimeout(()=>{const bestAccuracy=best?Number(best.coords?.accuracy||Number.POSITIVE_INFINITY):Number.POSITIVE_INFINITY;if(best&&bestAccuracy>0&&bestAccuracy<=45)emitBest();else if(best&&Number.isFinite(bestAccuracy))fail(`GPS精度が ±${Math.round(bestAccuracy)}m のため検索を中止しました。`,3);else fail('現在地を高精度で取得できませんでした。',3)},10500)};
   unlock();
   button.addEventListener('click',searchNow);
   return()=>{cancelled=true;stop();button.removeEventListener('click',searchNow);try{parentElement?.removeEventListener(activityPressEvent,markUserActivity,{capture:true,passive:true})}catch(_){}try{parentElement?.removeEventListener('keydown',markUserActivity,true)}catch(_){}try{parentElement?.removeEventListener('wheel',markUserActivity,{capture:true,passive:true})}catch(_){}};
@@ -31676,7 +31685,7 @@ def _get_nearby_batch_search_component_v320():
     _nearby_batch_search_component_initialized_v320 = True
     try:
         _nearby_batch_search_component_v320 = st.components.v2.component(
-            "tokyo_burari_nearby_batch_search_v480",
+            "tokyo_burari_nearby_batch_search_v481",
             html=_NEARBY_BATCH_SEARCH_HTML_V320,
             css=_NEARBY_BATCH_SEARCH_CSS_V320,
             js=_perf_instrument_js_v466(_NEARBY_BATCH_SEARCH_JS_V320),
@@ -31782,8 +31791,8 @@ export default function(component) {
     open:['usable','all'].includes(String(initial.open||''))?String(initial.open):'usable'
   };
   let savedClientState=null;try{const parsed=JSON.parse(localStorage.getItem(stateKey)||'null');if(parsed&&typeof parsed==='object')savedClientState=parsed}catch(_){}
-  const restoreDirty=!!(savedClientState?.dirty&&String(savedClientState?.server_token||'')===serverToken);
-  if(restoreDirty&&savedClientState?.state&&typeof savedClientState.state==='object'){
+  const restoreClientState=!!(savedClientState&&typeof savedClientState==='object');
+  if(restoreClientState&&savedClientState?.state&&typeof savedClientState.state==='object'){
     const saved=savedClientState.state;
     if(['1','3'].includes(String(saved.distance||'')))state.distance=String(saved.distance);
     if(['free','all'].includes(String(saved.fee||'')))state.fee=String(saved.fee);
@@ -31791,9 +31800,9 @@ export default function(component) {
     if(['yes','all'].includes(String(saved.baby||'')))state.baby=String(saved.baby);
     if(['usable','all'].includes(String(saved.open||'')))state.open=String(saved.open);
   }
-  let cancelled=false,watchId=null,hardTimer=null,best=null,startedAt=0;
-  const persistClientState=(dirty=true)=>{try{localStorage.setItem(stateKey,JSON.stringify({dirty:!!dirty,server_token:serverToken,state}))}catch(_){}};
-  if(!restoreDirty)persistClientState(false);
+  let cancelled=false,watchId=null,hardTimer=null,best=null,startedAt=0,activeSearchFilters=null;
+  const persistClientState=(dirty=true,extra={})=>{try{localStorage.setItem(stateKey,JSON.stringify({dirty:!!dirty,server_token:serverToken,state,updated_at:Date.now(),...extra}))}catch(_){}};
+  if(!restoreClientState)persistClientState(false);
   let loaderDoc=parentElement?.ownerDocument||document;try{const parentDoc=window.parent&&window.parent.document?window.parent.document:null;if(parentDoc&&parentDoc.getElementById('burari-global-loader-v326'))loaderDoc=parentDoc}catch(_){}
   let loaderFailSafeTimer=null;
   const showTrainLoader=(message)=>{const overlay=loaderDoc.getElementById('burari-global-loader-v326');if(!overlay)return;const msg=loaderDoc.getElementById('burari-global-loader-message-v326');if(msg)msg.textContent=String(message||'読み込み中…');overlay.classList.add('burari-active');if(loaderFailSafeTimer)clearTimeout(loaderFailSafeTimer);loaderFailSafeTimer=setTimeout(()=>{overlay.classList.remove('burari-active')},13000)};
@@ -31806,9 +31815,11 @@ export default function(component) {
   render();
   const stop=()=>{if(watchId!==null&&navigator.geolocation){try{navigator.geolocation.clearWatch(watchId)}catch(_){}watchId=null}if(hardTimer){clearTimeout(hardTimer);hardTimer=null}};
   const unlock=()=>{if(!cancelled){button.disabled=false;button.classList.remove('searching');button.textContent='🚻 この条件でトイレを探す'}};
-  const emitBest=()=>{if(cancelled||!best?.coords)return;stop();const filters=gather();persistClientState(true);const accuracy=Number(best.coords.accuracy||0);status.textContent=`現在地を取得しました（精度 ±${Math.round(accuracy)}m）。トイレを検索しています…`;hideTrainLoader();setTriggerValue('search_location',{token:`${Date.now()}_${Math.random().toString(36).slice(2)}`,latitude:Number(best.coords.latitude),longitude:Number(best.coords.longitude),accuracy_m:accuracy,measured_at:new Date(best.timestamp||Date.now()).toISOString(),filters})};
-  const fail=(message,code=0)=>{stop();const filters=gather();persistClientState(true);status.textContent=String(message||'現在地を取得できませんでした。');hideTrainLoader();setTriggerValue('search_error',{token:`${Date.now()}_${Math.random().toString(36).slice(2)}`,code:Number(code||0),message:String(message||''),filters});unlock()};
-  const searchNow=()=>{if(!navigator.geolocation){fail('この端末では位置情報を取得できません。');return}stop();best=null;startedAt=Date.now();button.classList.add('searching');button.textContent='🚻 検索中…';button.disabled=true;status.textContent='現在地を高精度GPSで確認しています…';showTrainLoader(status.textContent);watchId=navigator.geolocation.watchPosition((position)=>{if(cancelled||!position?.coords)return;const accuracy=Number(position.coords.accuracy||Number.POSITIVE_INFINITY);const bestAccuracy=best?Number(best.coords?.accuracy||Number.POSITIVE_INFINITY):Number.POSITIVE_INFINITY;if(!best||accuracy<bestAccuracy)best=position;const currentBest=best?Number(best.coords?.accuracy||Number.POSITIVE_INFINITY):Number.POSITIVE_INFINITY;status.textContent=Number.isFinite(currentBest)?`現在地を高精度GPSで確認しています… ±${Math.round(currentBest)}m`:'現在地を高精度GPSで確認しています…';showTrainLoader(status.textContent);if(currentBest>0&&currentBest<=25){emitBest();return}if(currentBest>0&&currentBest<=45&&(Date.now()-startedAt)>=1200)emitBest()},(error)=>{const bestAccuracy=best?Number(best.coords?.accuracy||Number.POSITIVE_INFINITY):Number.POSITIVE_INFINITY;if(best&&bestAccuracy>0&&bestAccuracy<=45){emitBest();return}const code=Number(error?.code||0);const msg=code===1?'位置情報の利用が許可されていません。':code===3?'現在地の取得に時間がかかりました。':'現在地を取得できませんでした。';fail(msg,code)},{enableHighAccuracy:true,timeout:10000,maximumAge:0});hardTimer=setTimeout(()=>{const bestAccuracy=best?Number(best.coords?.accuracy||Number.POSITIVE_INFINITY):Number.POSITIVE_INFINITY;if(best&&bestAccuracy>0&&bestAccuracy<=45)emitBest();else if(best&&Number.isFinite(bestAccuracy))fail(`GPS精度が ±${Math.round(bestAccuracy)}m のため検索を中止しました。`,3);else fail('現在地を高精度で取得できませんでした。',3)},10500)};
+  const searchFilterSnapshot=()=>{const f=gather();return {distance:String(f.distance||''),fee:String(f.fee||''),wheelchair:String(f.wheelchair||''),baby:String(f.baby||''),open:String(f.open||'')}};
+  const filtersForActiveSearch=()=>activeSearchFilters?{...activeSearchFilters}:searchFilterSnapshot();
+  const emitBest=()=>{if(cancelled||!best?.coords)return;stop();const filters=filtersForActiveSearch();persistClientState(true,{searching:false,last_submitted_filters:filters});const accuracy=Number(best.coords.accuracy||0);status.textContent=`現在地を取得しました（精度 ±${Math.round(accuracy)}m）。トイレを検索しています…`;hideTrainLoader();setTriggerValue('search_location',{token:`${Date.now()}_${Math.random().toString(36).slice(2)}`,latitude:Number(best.coords.latitude),longitude:Number(best.coords.longitude),accuracy_m:accuracy,measured_at:new Date(best.timestamp||Date.now()).toISOString(),filters})};
+  const fail=(message,code=0)=>{stop();const filters=filtersForActiveSearch();persistClientState(true,{searching:false,last_submitted_filters:filters});status.textContent=String(message||'現在地を取得できませんでした。');hideTrainLoader();setTriggerValue('search_error',{token:`${Date.now()}_${Math.random().toString(36).slice(2)}`,code:Number(code||0),message:String(message||''),filters});unlock()};
+  const searchNow=()=>{activeSearchFilters=searchFilterSnapshot();persistClientState(true,{searching:true,pending_filters:activeSearchFilters,search_started_at:Date.now()});if(!navigator.geolocation){fail('この端末では位置情報を取得できません。');return}stop();best=null;startedAt=Date.now();button.classList.add('searching');button.textContent='🚻 検索中…';button.disabled=true;status.textContent='現在地を高精度GPSで確認しています…';showTrainLoader(status.textContent);watchId=navigator.geolocation.watchPosition((position)=>{if(cancelled||!position?.coords)return;const accuracy=Number(position.coords.accuracy||Number.POSITIVE_INFINITY);const bestAccuracy=best?Number(best.coords?.accuracy||Number.POSITIVE_INFINITY):Number.POSITIVE_INFINITY;if(!best||accuracy<bestAccuracy)best=position;const currentBest=best?Number(best.coords?.accuracy||Number.POSITIVE_INFINITY):Number.POSITIVE_INFINITY;status.textContent=Number.isFinite(currentBest)?`現在地を高精度GPSで確認しています… ±${Math.round(currentBest)}m`:'現在地を高精度GPSで確認しています…';showTrainLoader(status.textContent);if(currentBest>0&&currentBest<=25){emitBest();return}if(currentBest>0&&currentBest<=45&&(Date.now()-startedAt)>=1200)emitBest()},(error)=>{const bestAccuracy=best?Number(best.coords?.accuracy||Number.POSITIVE_INFINITY):Number.POSITIVE_INFINITY;if(best&&bestAccuracy>0&&bestAccuracy<=45){emitBest();return}const code=Number(error?.code||0);const msg=code===1?'位置情報の利用が許可されていません。':code===3?'現在地の取得に時間がかかりました。':'現在地を取得できませんでした。';fail(msg,code)},{enableHighAccuracy:true,timeout:10000,maximumAge:0});hardTimer=setTimeout(()=>{const bestAccuracy=best?Number(best.coords?.accuracy||Number.POSITIVE_INFINITY):Number.POSITIVE_INFINITY;if(best&&bestAccuracy>0&&bestAccuracy<=45)emitBest();else if(best&&Number.isFinite(bestAccuracy))fail(`GPS精度が ±${Math.round(bestAccuracy)}m のため検索を中止しました。`,3);else fail('現在地を高精度で取得できませんでした。',3)},10500)};
   unlock();
   button.addEventListener('click',searchNow);return()=>{cancelled=true;stop();hideTrainLoader();button.removeEventListener('click',searchNow);try{parentElement?.removeEventListener(activityPressEvent,markUserActivity,{capture:true,passive:true})}catch(_){}try{parentElement?.removeEventListener('keydown',markUserActivity,true)}catch(_){}try{parentElement?.removeEventListener('wheel',markUserActivity,{capture:true,passive:true})}catch(_){}};
 }
@@ -31824,7 +31835,7 @@ def _get_toilet_batch_search_component_v320():
     _toilet_batch_search_component_initialized_v320 = True
     try:
         _toilet_batch_search_component_v320 = st.components.v2.component(
-            "tokyo_burari_toilet_batch_search_v480",
+            "tokyo_burari_toilet_batch_search_v481",
             html=_TOILET_BATCH_SEARCH_HTML_V320,
             css=_TOILET_BATCH_SEARCH_CSS_V320,
             js=_perf_instrument_js_v466(_TOILET_BATCH_SEARCH_JS_V320),
@@ -32258,7 +32269,7 @@ def page_toilets():
         completion_token = str(previous_result.get("searched_at") or "") if isinstance(previous_result, dict) else ""
         search_component_result = search_component(
             data={"initial": {"distance": distance_mode, "fee": fee_mode, "wheelchair": wheelchair_mode, "baby": baby_mode, "open": open_mode}, "completion_token": completion_token, "state_key": f"tokyo_burari_toilet_filters_v480_{hashlib.sha1(prefix.encode('utf-8')).hexdigest()[:16]}"},
-            key=f"toilet_batch_search_v480_{prefix}",
+            key=f"toilet_batch_search_v481_{prefix}",
             on_search_location_change=lambda: None,
             on_search_error_change=lambda: None,
         )
@@ -32951,7 +32962,7 @@ def page_nearby():
         completion_token = str(previous_result.get("searched_at") or "") if isinstance(previous_result, dict) else ""
         search_component_result = search_component(
             data={"initial": current_cfg, "lunch_genres": list(NEARBY_LUNCH_GENRES), "google_enabled": bool(GOOGLE_PLACES_API_KEY), "completion_token": completion_token, "state_key": f"tokyo_burari_nearby_filters_v480_{hashlib.sha1(prefix.encode('utf-8')).hexdigest()[:16]}"},
-            key=f"nearby_batch_search_v480_{prefix}",
+            key=f"nearby_batch_search_v481_{prefix}",
             on_search_location_change=lambda: None,
             on_search_error_change=lambda: None,
         )
