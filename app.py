@@ -33,9 +33,11 @@ from zoneinfo import ZoneInfo
 import streamlit as st
 
 # Home forecast update: 2026-09-19 JST
-GENERATED_UPDATE_JST = "2026-09-19T11:37:15+09:00"
+GENERATED_UPDATE_JST = '2026-09-19T12:00:52+09:00'
 
-APP_BUILD = "v470"
+APP_BUILD = "v471"
+# v471: prioritize music settings before replay preparation; bound the Home weather strip.
+# Preserve v468 performance, v469 music/random-play timing, and v470 forecast behavior.
 # v470: small current-location / 2-hour forecast strip above the Home title.
 # Browser-only, bounded cache, no Streamlit weather reruns; v469 features preserved.
 # v469: deletable duration-sorted music presets, standard keypad, voice-budgeted random replay.
@@ -25834,6 +25836,92 @@ function burariStartSlideVoiceV469() {{
     )
 
 
+
+def _set_replay_music_settings_v471(month_key, opened=True):
+    """Set navigation intent in a callback, BEFORE a rerun can rebuild the player.
+
+    This writes session-only UI state. No photos, music presets, saved movies,
+    or database values are changed merely by opening/closing the editor.
+    """
+    scope = str(month_key or "").strip()
+    if not scope:
+        return
+    key = f"monthly_music_settings_open_{scope}"
+    was_open = bool(st.session_state.get(key))
+    st.session_state[key] = bool(opened)
+    if opened:
+        st.session_state[f"monthly_time_settings_open_{scope}"] = False
+        if not was_open:
+            st.session_state[f"_music_settings_focus_v471_{scope}"] = uuid.uuid4().hex
+    else:
+        st.session_state.pop(f"_music_settings_focus_v471_{scope}", None)
+
+
+_REPLAY_SETTINGS_FOCUS_JS_V471 = r"""
+export default function(component) {
+  const {parentElement, data} = component;
+  const marker = parentElement.querySelector('[data-replay-settings-focus-v471]');
+  const token = String(data?.token || '');
+  const panelClass = String(data?.panel_class || '');
+  if (!marker || !token || !/^st-key-replay_music_panel_v471_[a-f0-9]+$/.test(panelClass)) return;
+  let disposed = false;
+  let frame = 0;
+  const focusPanel = () => {
+    if (disposed || !marker.isConnected) return;
+    let node = marker;
+    // Components may have a ShadowRoot or a normal element as parentElement.
+    while (node) {
+      if (node.nodeType === 1 && node.classList?.contains(panelClass)) break;
+      node = node.parentElement || node.getRootNode?.()?.host || null;
+    }
+    if (!node || node.dataset.replayFocusToken471 === token) return;
+    node.dataset.replayFocusToken471 = token;
+    node.style.scrollMarginTop = '4rem';
+    node.scrollIntoView({block:'start', inline:'nearest', behavior:'instant'});
+  };
+  // Two paint frames only: no interval, network, or Streamlit round-trip.
+  frame = requestAnimationFrame(() => { frame = requestAnimationFrame(focusPanel); });
+  return () => { disposed = true; cancelAnimationFrame(frame); };
+}
+"""
+
+
+@st.cache_resource(show_spinner=False)
+def _replay_settings_focus_component_v471():
+    return st.components.v2.component(
+        "burari_replay_settings_focus_v471",
+        html='<span data-replay-settings-focus-v471 aria-hidden="true"></span>',
+        css=':host{display:block;height:0;min-height:0;overflow:hidden;}',
+        js=_REPLAY_SETTINGS_FOCUS_JS_V471,
+    )
+
+
+def _render_replay_music_settings_if_open_v471(month_key, bundle, review):
+    """Render the existing editor first; skip image preparation while it is open."""
+    if not st.session_state.get(f"monthly_music_settings_open_{month_key}"):
+        return False
+    suffix = hashlib.sha256(str(month_key).encode('utf-8')).hexdigest()[:16]
+    panel_key = f"replay_music_panel_v471_{suffix}"
+    with st.container(key=panel_key):
+        focus = st.session_state.pop(f"_music_settings_focus_v471_{month_key}", None)
+        if focus:
+            try:
+                _focus_result = _replay_settings_focus_component_v471()(
+                    key=f"replay_music_focus_v471_{suffix}", height=0, width="stretch",
+                    data={"token": focus, "panel_class": f"st-key-{panel_key}"},
+                )
+            except Exception:
+                # Scrolling is optional; the editor itself must remain usable.
+                pass
+        st.button(
+            "\u25c0 \u30e0\u30fc\u30d3\u30fc\u306b\u623b\u308b",
+            key=f"replay_music_close_v471_{suffix}", use_container_width=True,
+            on_click=_set_replay_music_settings_v471, args=(month_key, False),
+        )
+        render_monthly_music_settings(month_key, bundle, review, expanded=True)
+    return True
+
+
 def _monthly_replay_state(month_key, review):
     playback = get_active_monthly_playback(month_key, review)
     url_key = f"monthly_replay_url_{month_key}"
@@ -30184,27 +30272,28 @@ _HOME_WEATHER_HTML_V470 = """
 """
 
 _HOME_WEATHER_CSS_V470 = """
-.bw470 { width:100%; box-sizing:border-box; margin:0; padding:5px 7px 3px;
+:host { display:block; width:100%; max-width:100%; min-width:0; height:auto; min-height:0; box-sizing:border-box; }
+.bw470 { width:100%; max-width:100%; min-width:0; box-sizing:border-box; margin:0; padding:3px 6px 2px;
   color:var(--st-text-color,#263548); background:var(--st-secondary-background-color,#f3f7fa);
   border:1px solid rgba(128,150,173,.16); border-radius:12px;
   font-family:var(--st-font,sans-serif); }
 .bw470 * { box-sizing:border-box; }
-.bw470-main { display:flex; align-items:center; gap:5px; min-height:44px; }
-.bw470-place { flex:1 1 95px; min-width:0; padding-left:2px; }
+.bw470-main { display:flex; align-items:center; gap:4px; min-width:0; min-height:39px; }
+.bw470-place { flex:1 1 0; min-width:0; overflow:hidden; padding-left:1px; }
 .bw470-name { font-size:12px; font-weight:750; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; line-height:1.45; }
 .bw470-sub { font-size:9px; opacity:.64; line-height:1.5; }
-.bw470-slots { flex:0 0 165px; display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:4px; }
+.bw470-slots { flex:0 1 153px; min-width:120px; max-width:54%; display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:3px; }
 .bw470-slot { text-align:center; min-width:0; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:0; }
 .bw470-time { font-size:9px; line-height:1.2; font-variant-numeric:tabular-nums; opacity:.76; }
-.bw470-icon { height:27px; width:32px; display:block; }
-.bw470-icon svg { height:27px; width:32px; display:block; }
+.bw470-icon { height:22px; width:28px; display:block; }
+.bw470-icon svg { height:22px; width:28px; display:block; }
 .bw470-condition { font-size:8px; line-height:1.05; white-space:nowrap; opacity:.76; }
 .bw470-refresh { flex:0 0 28px; width:28px; height:32px; min-height:32px; padding:5px; margin:0;
   border:0; border-radius:8px; color:inherit; background:transparent; cursor:pointer; touch-action:manipulation; }
 .bw470-refresh svg { display:block; width:18px; height:18px; fill:none; stroke:currentColor; stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round; opacity:.6; }
 .bw470-refresh:disabled { opacity:.35; cursor:default; }
 .bw470-refresh:active { background:rgba(74,144,226,.17); }
-.bw470-bottom { display:flex; align-items:baseline; gap:8px; min-height:12px; margin-top:1px; }
+.bw470-bottom { display:flex; align-items:baseline; gap:6px; min-width:0; min-height:10px; line-height:10px; margin-top:0; }
 .bw470-status { flex:1 1 auto; min-width:0; font-size:8px; opacity:.66; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 .bw470-credit,.bw470-details summary { font-size:8px; color:inherit; opacity:.65; white-space:nowrap; }
 .bw470-credit { flex:0 0 auto; text-decoration:none; }
@@ -30217,12 +30306,16 @@ _HOME_WEATHER_CSS_V470 = """
 .bw470-bottom:has(.bw470-details[open]) { flex-wrap:wrap; }
 .bw470-explanation { font-size:10px; line-height:1.6; padding:5px 2px; opacity:.84; }
 .bw470-explanation a { color:inherit; }
+/* Closed weather stays one compact strip; only an explicit source expansion grows it. */
+.bw470:not(:has(.bw470-details[open])) { height:58px; min-height:58px; overflow:hidden; }
+.bw470:has(.bw470-details[open]) { height:auto; min-height:58px; }
+.bw470-explanation { overflow-wrap:anywhere; white-space:normal; }
 @media(max-width:360px) {
-  .bw470 { padding:4px 5px 3px; }
+  .bw470 { padding:3px 5px 2px; }
   .bw470-main { gap:2px; }
   .bw470-name { font-size:11px; }
   .bw470-slots { flex-basis:144px; gap:2px; }
-  .bw470-place { flex-basis:76px; }
+  .bw470-place { flex-basis:0; }
   .bw470-refresh { flex-basis:26px; width:26px; }
 }
 """
@@ -30512,7 +30605,7 @@ export default function(component) {
 @st.cache_resource(show_spinner=False)
 def _home_weather_component_v470():
     return st.components.v2.component(
-        "burari_home_weather_v470", html=_HOME_WEATHER_HTML_V470,
+        "burari_home_weather_v471", html=_HOME_WEATHER_HTML_V470,
         css=_HOME_WEATHER_CSS_V470, js=_HOME_WEATHER_JS_V470,
     )
 
@@ -30523,10 +30616,11 @@ def render_home_weather_v470():
         f"{current_family_key()}|{current_member_key()}".encode("utf-8")
     ).hexdigest()[:24]
     try:
-        _home_weather_component_v470()(
-            key=f"home_weather_v470_{scope}",
-            data={"scope": scope, "timezone": str(APP_TIMEZONE or "Asia/Tokyo")},
-        )
+        with st.container(key="home_weather_slot_v471"):
+            _weather_result = _home_weather_component_v470()(
+                key=f"home_weather_v471_{scope}", width="stretch", height="content",
+                data={"scope": scope, "timezone": str(APP_TIMEZONE or "Asia/Tokyo")},
+            )
     except Exception:
         # Weather is optional; never block recording or change existing routes.
         st.caption("天気予報を表示できません。ほかの機能はそのまま使えます。")
@@ -30788,6 +30882,21 @@ def page_home():
     st.markdown(
         """
         <style>
+          /* v471: compact the weather mount and its Streamlit wrappers, not the whole app. */
+          .st-key-home_weather_slot_v471,
+          .st-key-home_weather_slot_v471 [data-testid="stVerticalBlock"],
+          .st-key-home_weather_slot_v471 [data-testid="stVerticalBlockBorderWrapper"],
+          .st-key-home_weather_slot_v471 [data-testid="stElementContainer"],
+          .st-key-home_weather_slot_v471 [data-testid="stBidiComponent"] {
+            width:100% !important; max-width:100% !important; min-width:0 !important;
+            height:auto !important; min-height:0 !important; flex:0 0 auto !important;
+            margin:0 !important; padding:0 !important; gap:0 !important; box-sizing:border-box !important;
+          }
+          .st-key-home_viewport_fit { min-width:0 !important; max-width:100% !important; }
+          @media(max-width:640px) {
+            /* A keyed container may itself be stVerticalBlock on newer Streamlit. */
+            .st-key-home_viewport_fit[data-testid="stVerticalBlock"] { gap:var(--home-vgap) !important; }
+          }
           .st-key-home_next_prompt_v390 {
             margin:.10rem 0 .14rem; padding:.38rem .44rem; border-radius:13px;
             border:1px solid rgba(107,134,196,.20);
@@ -37613,6 +37722,8 @@ def page_tag_review(embedded=False):
 
     # v406: a saved tag movie is a live tag query, not a frozen photo snapshot.
     movie_bundle = tag_movie_bundle_from_snapshot(bundle, review)
+    if _render_replay_music_settings_if_open_v471(storage_key, movie_bundle, review):
+        return
     if review.get("_tag_movie_saved"):
         try:
             review = sync_dynamic_tag_movie_membership(scope_key, review, movie_bundle)
@@ -37748,14 +37859,12 @@ def page_tag_review(embedded=False):
 
     action_cols = st.columns(2)
     with action_cols[0]:
-        if st.button(
+        st.button(
             "🎵 音楽を変更する",
             use_container_width=True,
             key=f"ai_tag_change_music_{unsaved_token}",
-        ):
-            st.session_state[settings_open_key] = not bool(st.session_state.get(settings_open_key))
-            if st.session_state[settings_open_key]:
-                st.session_state[time_settings_open_key] = False
+            on_click=_set_replay_music_settings_v471, args=(storage_key, True),
+        )
 
         if st.button(
             "☆ この音楽だけ保存",
@@ -37996,6 +38105,9 @@ def page_monthly(embedded=False):
                     st.code(str(exc))
         return
 
+    if _render_replay_music_settings_if_open_v471(month_key, bundle, review):
+        return
+
     # Period reviews are text-only unless the user starts the YouTube replay.
     st.session_state.pop(f"monthly_audio_{month_key}", None)
     st.session_state.pop(f"monthly_audio_pending_{month_key}", None)
@@ -38110,14 +38222,12 @@ def page_monthly(embedded=False):
 
     action_cols = st.columns(2)
     with action_cols[0]:
-        if st.button(
+        st.button(
             "🎵 音楽を変更する",
             use_container_width=True,
             key=f"monthly_change_music_{month_key}",
-        ):
-            st.session_state[settings_open_key] = not bool(st.session_state.get(settings_open_key))
-            if st.session_state[settings_open_key]:
-                st.session_state[time_settings_open_key] = False
+            on_click=_set_replay_music_settings_v471, args=(month_key, True),
+        )
 
         if st.button(
             "☆ この音楽だけ保存",
