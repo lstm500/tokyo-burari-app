@@ -32,10 +32,13 @@ from zoneinfo import ZoneInfo
 
 import streamlit as st
 
-# Freshly generated update: 2026-09-16 JST
-GENERATED_UPDATE_JST = "2026-09-18T00:36:00+09:00"
+# Performance update: 2026-09-19 JST
+GENERATED_UPDATE_JST = "2026-09-19T09:00:00+09:00"
 
-APP_BUILD = "v467"
+APP_BUILD = "v468"
+# v468: post-save vision jobs, persistent exact framing, async display-only storage,
+# batched current-tag/diary updates, account caches, movie-sharing retirement.
+# Capture/GPS/replay quality and canonical-save acknowledgement are unchanged.
 # v467: bounded read concurrency, exact storage inventory reuse, URL reuse and ordered framing; UI and save semantics preserved.
 # v466: Logging only: bounded operation records, explicit/estimated endpoint separation, confirmation-delay exclusion, descriptive summaries and loss metadata.
 # v464: Increase Good Moments final still selection from 6 to 9 photos. Keep the existing maximum-20 candidate sampling and AI quality criteria, but require up to 9 distinct final moments. Show the Good Moments list as a fixed 3-column x 3-row grid while preserving the one-photo enlarged viewer, voice attachment, emotion/parenting tags, reroll behavior, and all unrelated app behavior.
@@ -6054,6 +6057,7 @@ def _invalidate_monthly_review_for_trip(trip_id):
         supabase_client().table(MONTHLY_TABLE).delete().eq(
             "review_month", first_day
         ).eq("family_key", current_family_key()).eq("member_key", current_member_key()).execute()
+        _invalidate_fast_db_cache()
         for key in (
             f"monthly_review_{month_key}",
             f"monthly_audio_{month_key}",
@@ -6067,34 +6071,7 @@ def _invalidate_monthly_review_for_trip(trip_id):
 
 
 def _refresh_after_photo_emotion_changes(trip_ids):
-    """Refresh caches/derived diary data once after one or more emotion writes.
-
-    v159 persists browser-local choices only on the next real app interaction.
-    Expensive diary/monthly refresh work is then batched once for all pending changes.
-    """
-    resolved = []
-    seen = set()
-    for value in trip_ids or []:
-        key = str(value or "").strip()
-        if key and key not in seen:
-            seen.add(key)
-            resolved.append(key)
-    _invalidate_fast_db_cache()
-    for resolved_trip_id in resolved:
-        _invalidate_monthly_review_for_trip(resolved_trip_id)
-        try:
-            existing = get_diary_for_trip(resolved_trip_id)
-            if existing:
-                trip = get_trip(resolved_trip_id) or {}
-                photos = diary_photos_only(list_trip_photos(resolved_trip_id))
-                create_and_save_diary_from_photos(
-                    trip,
-                    photos,
-                    requested_title=str(existing.get("title") or "").strip() or None,
-                    reason="emotion_change_v159_deferred",
-                )
-        except Exception:
-            pass
+    return _refresh_diaries_batched_v468(trip_ids)
 
 
 def update_photo_emotion(photo_id, emotion_key, trip_id=None, refresh_related=True):
@@ -6281,57 +6258,40 @@ def update_photo_tags_combined_v166(emotion_changes=None, parenting_changes=None
         return {"emotion": emotion_latest, "parenting": parenting_latest}
 
     client = supabase_client()
-    rows = (
-        client.table(PHOTO_TABLE)
-        .select("id,trip_id,reflection_json")
-        .in_("id", photo_ids)
-        .eq("family_key", current_family_key())
-        .eq("member_key", current_member_key())
-        .execute()
-    ).data or []
+    owner = _owner_v468()
+    rows = _rows_v468(client, PHOTO_TABLE, owner, "id", photo_ids, "id,trip_id,reflection_json")
     row_map = {str(row.get("id") or ""): row for row in rows if row.get("id")}
     touched_trips = set()
 
-    for photo_id in photo_ids:
+    def save_one(photo_id):
         row = row_map.get(photo_id)
         if not row:
-            continue
-        reflection = row.get("reflection_json") or {}
-        if not isinstance(reflection, dict):
-            reflection = {}
-        else:
-            reflection = dict(reflection)
-
+            return ""
         emotion_present = photo_id in emotion_latest
         parenting_present = photo_id in parenting_latest
-        emotion_key = emotion_latest.get(photo_id, "") if emotion_present else ""
-        tag_key = parenting_latest.get(photo_id, "") if parenting_present else ""
-
-        # A non-empty choice in either palette replaces the other palette's value.
-        if emotion_present and emotion_key:
-            reflection["emotion"] = photo_emotion_record(emotion_key, source="child_tap_batch_v168")
-            reflection.pop("parenting_tag", None)
-        elif parenting_present and tag_key:
-            reflection["parenting_tag"] = parenting_tag_record(tag_key, source="parent_tap_batch_v168")
-            reflection.pop("emotion", None)
-        else:
-            if emotion_present:
-                reflection.pop("emotion", None)
-            if parenting_present:
-                reflection.pop("parenting_tag", None)
-        reflection = _sync_photo_family_share_tag_snapshot(reflection)
-
-        (
-            client.table(PHOTO_TABLE)
-            .update({"reflection_json": reflection})
-            .eq("id", photo_id)
-            .eq("family_key", current_family_key())
-            .eq("member_key", current_member_key())
-            .execute()
-        )
-        trip_id = str(row.get("trip_id") or "").strip()
-        if trip_id:
-            touched_trips.add(trip_id)
+        emotion_key = emotion_latest.get(photo_id, "")
+        tag_key = parenting_latest.get(photo_id, "")
+        def merge(reflection):
+            original = dict(reflection)
+            current = {"reflection_json": reflection}
+            if emotion_present and emotion_key:
+                if photo_emotion_key(current) != emotion_key or reflection.get("parenting_tag"):
+                    reflection["emotion"] = photo_emotion_record(emotion_key, source="child_tap_batch_v168")
+                    reflection.pop("parenting_tag", None)
+            elif parenting_present and tag_key:
+                if normalize_parenting_tag_key((reflection.get("parenting_tag") or {}).get("key")) != tag_key or reflection.get("emotion"):
+                    reflection["parenting_tag"] = parenting_tag_record(tag_key, source="parent_tap_batch_v168")
+                    reflection.pop("emotion", None)
+            else:
+                if emotion_present:
+                    reflection.pop("emotion", None)
+                if parenting_present:
+                    reflection.pop("parenting_tag", None)
+            return reflection if reflection == original else _sync_photo_family_share_tag_snapshot(reflection)
+        _json_cas_v468(client, PHOTO_TABLE, owner, photo_id, "reflection_json", merge, initial_row=row)
+        return str(row.get("trip_id") or "")
+    # Independent photos only; no worker touches Streamlit session state.
+    touched_trips.update(x for x in _read_executor_v467().map(save_one, photo_ids) if x)
 
     _refresh_after_photo_emotion_changes(touched_trips)
     return {"emotion": emotion_latest, "parenting": parenting_latest}
@@ -8317,10 +8277,12 @@ def _account_cache_key(name, *parts):
 
 
 def _invalidate_fast_db_cache():
-    """Clear only small account-scoped DB snapshots after a write."""
-    for key in list(st.session_state.keys()):
-        if str(key).startswith("_fastdb|"):
-            st.session_state.pop(key, None)
+    """Invalidate small account snapshots, not expensive image/storage caches."""
+    _clear_fast_snapshots_v468()
+    try:
+        _bump_owner_v468(_owner_v468())
+    except Exception:
+        pass  # cache hints must never turn a successful canonical write into failure
 
 
 PERF_LOG_KEY_V457 = "_performance_log_v457"
@@ -8483,6 +8445,10 @@ def render_performance_log_v457():
     rows = st.session_state.get(PERF_LOG_KEY_V457)
     rows = list(rows) if isinstance(rows, list) else []
     with st.expander("⚡ 動作ログ", expanded=False):
+        pending_errors = st.session_state.get("_background_errors_v468") or []
+        if pending_errors:
+            st.caption("\u4e00\u90e8\u306e\u4e8b\u524d\u51e6\u7406\u306f\u518d\u8a66\u884c\u5f85\u3061\u3067\u3059\u3002\u4fdd\u5b58\u6e08\u307f\u306e\u5199\u771f\u3084\u6c17\u6301\u3061\u306f\u6b8b\u3063\u3066\u3044\u307e\u3059\u3002")
+            st.code("\n".join(x.get("phase", "") + ": " + x.get("type", "") for x in pending_errors[-6:]), language="text")
         _render_interaction_export_v465()
         if rows:
             recent_totals = [row for row in rows if str(row.get("phase") or "") == "rerun_total"][-8:]
@@ -8797,7 +8763,7 @@ def ask_json_with_image(prompt, image_bytes, name, schema, max_output_tokens=800
     return json.loads(result.output_text)
 
 
-def ask_json_with_images(prompt, image_items, name, schema, max_output_tokens=1000):
+def ask_json_with_images(prompt, image_items, name, schema, max_output_tokens=1000, _client=None):
     """Ask the vision model with several labeled images in one request."""
     content = [{"type": "input_text", "text": prompt}]
     for label, image_bytes in image_items or []:
@@ -8807,7 +8773,7 @@ def ask_json_with_images(prompt, image_items, name, schema, max_output_tokens=10
         if image_bytes:
             content.append({"type": "input_image", "image_url": image_data_url(image_bytes)})
     input_value = [{"role": "user", "content": content}]
-    result = openai_client().responses.create(
+    result = (_client or openai_client()).responses.create(
         **response_args(VISION_MODEL, input_value, name, schema, max_output_tokens)
     )
     return json.loads(result.output_text)
@@ -13428,32 +13394,40 @@ def signed_photo_url_map(storage_paths, expires_in=900):
     paths = tuple(dict.fromkeys(str(x or "").strip() for x in (storage_paths or ()) if str(x or "").strip()))
     if not paths:
         return {}
+    ttl = max(1, int(expires_in))
     cache = _signed_path_cache_v467()
     now = time.monotonic()
-    scope = (str(SUPABASE_URL), str(PHOTO_BUCKET), int(expires_in))
-    result = {}
-    missing = []
+    scope = (str(SUPABASE_URL), str(PHOTO_BUCKET))
+    minimum_remaining = max(1, ttl - max(0, min(540, ttl - 30)))
+    result, missing = {}, []
     with cache["lock"]:
         generation = cache["generation"]
         for path in paths:
             entry = cache["entries"].get((*scope, path))
-            if entry and entry[0] > now:
+            if entry and entry[0] - now >= minimum_remaining:
                 result[path] = entry[1]
             else:
-                cache["entries"].pop((*scope, path), None)
+                if entry and entry[0] <= now:
+                    cache["entries"].pop((*scope, path), None)
                 missing.append(path)
     if missing:
         started = time.monotonic()
-        signed = _sign_photo_urls_uncached_v467(missing, expires_in=expires_in)
-        lifetime = max(0, min(540, int(expires_in) - 30))
+        chunks = [missing[i:i + 200] for i in range(0, len(missing), 200)]
+        def sign(chunk):
+            return _sign_photo_urls_uncached_v467(chunk, expires_in=ttl)
+        maps = _read_executor_v467().map(sign, chunks) if len(chunks) > 1 else map(sign, chunks)
+        signed = {}
+        for mapping in maps:
+            signed.update(mapping)
         with cache["lock"]:
             if generation == cache["generation"]:
                 for path, url in signed.items():
-                    cache["entries"][(*scope, path)] = (started + lifetime, url)
+                    cache["entries"][(*scope, path)] = (started + ttl - 1, url)
                 while len(cache["entries"]) > 4096:
                     cache["entries"].pop(next(iter(cache["entries"])))
         result.update(signed)
     return {path: result[path] for path in paths if path in result}
+
 
 
 signed_photo_url_map.clear = _clear_signed_paths_v467
@@ -13644,6 +13618,10 @@ def upload_photo(trip_id, image_bytes, location=None, captured_at=None, capture_
         except Exception:
             pass
         saved_row = (result.data or [None])[0]
+        try:
+            _queue_framing_rows_v468([saved_row] if isinstance(saved_row, dict) else [])
+        except Exception:
+            pass  # optional precomputation cannot roll back the photo save
         launch_photo_place_enrichment_v394(saved_row, location)
         return saved_row
     except Exception as exc:
@@ -14132,10 +14110,11 @@ def _focus_model_storage_v467():
     return threading.local()
 
 
-def _list_member_storage_objects(max_depth=4):
+def _list_member_storage_objects(max_depth=4, *, _owner=None, _client=None):
     """Same paginated inventory and DFS output; independent folders read in parallel."""
-    bucket = supabase_client().storage.from_(PHOTO_BUCKET)
-    root = f"{current_family_key()}/{current_member_key()}".strip("/")
+    owner = _owner or _owner_v468()
+    bucket = (_client or supabase_client()).storage.from_(PHOTO_BUCKET)
+    root = f"{owner[2]}/{owner[3]}".strip("/")
     tree = {}
     visited = set()
     def fetch(folder):
@@ -14233,8 +14212,30 @@ def _member_storage_inventory_v467(force=False, max_age_seconds=45):
         cached = _session_cache_get(key, max_age_seconds=max_age_seconds)
         if cached is not None:
             return cached
+    runtime = _runtime_v468()
+    owner = _owner_v468()
+    state = _owner_state_v468(runtime, owner)
+    with runtime["lock"]:
+        value = state["storage"]
+        generation = state["storage_generation"]
+        future = state["storage_future"]
+    if not force and value and value["generation"] == generation and time.monotonic() - value["at"] <= max_age_seconds:
+        return _session_cache_set(key, value["inventory"])
+    if not force and future and not future.done():
+        value = future.result()
+        with runtime["lock"]:
+            if value["generation"] == state["storage_generation"]:
+                return _session_cache_set(key, value["inventory"])
+    # This synchronous path is only for actual capacity/repair checks, not page display.
     objects = _list_member_storage_objects()
+    usage = sum(max(0, int(x.get("size_bytes") or 0)) for x in objects
+                if _storage_path_is_original_video(x.get("path"), x.get("mime_type")))
+    with runtime["lock"]:
+        if generation == state["storage_generation"]:
+            state["storage"] = {"usage": usage, "inventory": objects,
+                                "at": time.monotonic(), "generation": generation}
     return _session_cache_set(key, objects)
+
 
 
 def member_storage_audit(force=False, max_age_seconds=45):
@@ -14245,6 +14246,8 @@ def member_storage_audit(force=False, max_age_seconds=45):
         if isinstance(cached, dict):
             return cached
     objects = _member_storage_inventory_v467(force=force, max_age_seconds=max_age_seconds)
+    internal_prefix = current_family_key() + "/" + current_member_key() + "/_postsave_v468/"
+    objects = [x for x in objects if not str(x.get("path") or "").startswith(internal_prefix)]
     refs, video_refs = _member_db_storage_references()
     actual_paths = {str(x.get("path") or "") for x in objects if x.get("path")}
     video_objects = [
@@ -14275,6 +14278,7 @@ def member_storage_audit(force=False, max_age_seconds=45):
 
 
 def _invalidate_video_storage_audit_cache():
+    _invalidate_storage_v468()
     for suffix in ("member_storage_audit_v111", "video_storage_usage", "storage_inventory_v467"):
         key = _account_cache_key(suffix)
         st.session_state.pop(key, None)
@@ -14756,6 +14760,7 @@ def register_browser_uploaded_video(
         download_photo.clear()
         signed_photo_url_map.clear()
         _invalidate_fast_db_cache()
+        _invalidate_video_storage_audit_cache()
         try:
             _memory_map_rows_light.clear()
         except Exception:
@@ -14912,6 +14917,7 @@ def upload_video(
         download_photo.clear()
         signed_photo_url_map.clear()
         _invalidate_fast_db_cache()
+        _invalidate_video_storage_audit_cache()
         try:
             _memory_map_rows_light.clear()
         except Exception:
@@ -17109,6 +17115,13 @@ def _video_ai_job_done(photo_id, future, registry):
             cached_counter.clear()
     except Exception:
         pass
+    try:
+        runtime = _runtime_v468()
+        with runtime["lock"]:
+            for state in runtime["accounts"].values():
+                state["epoch"] += 1
+    except Exception:
+        pass
 
 
 def launch_video_ai_background_job(photo):
@@ -19082,7 +19095,7 @@ def update_photo_reflection(photo_id, conversation, signals, done=None):
     current = (
         client
         .table(PHOTO_TABLE)
-        .select("reflection_json")
+        .select("reflection_json,signals_json")
         .eq("id", photo_id)
         .eq("family_key", current_family_key()).eq("member_key", current_member_key())
         .limit(1)
@@ -19107,8 +19120,9 @@ def update_photo_reflection(photo_id, conversation, signals, done=None):
         existing_signals = {}
     next_signals = dict(signals or {}) if isinstance(signals, dict) else {}
     # Preserve the compact GPS map index when conversation analysis updates signals.
-    if MEMORY_MAP_SIGNAL_KEY in existing_signals and MEMORY_MAP_SIGNAL_KEY not in next_signals:
-        next_signals[MEMORY_MAP_SIGNAL_KEY] = existing_signals[MEMORY_MAP_SIGNAL_KEY]
+    for metadata_key in (MEMORY_MAP_SIGNAL_KEY, FRAMING_KEY_V468):
+        if metadata_key in existing_signals and metadata_key not in next_signals:
+            next_signals[metadata_key] = existing_signals[metadata_key]
 
     (
         client
@@ -20301,16 +20315,17 @@ def render_diary_delete_controls(
         confirm_diary_delete_dialog(trip_id, len(photos))
 
 
-def _list_recent_diaries_uncached(limit=60):
+def _list_recent_diaries_uncached(limit=60, _owner=None, _client=None):
     """Load diaries and their trip metadata in one PostgREST request when available."""
-    client = supabase_client()
+    owner = _owner or _owner_v468()
+    client = _client or supabase_client()
     try:
         relation = TRIP_TABLE
         rows = (
             client
             .table(DIARY_TABLE)
             .select(f"*,{relation}(*)")
-            .eq("family_key", current_family_key()).eq("member_key", current_member_key())
+            .eq("family_key", owner[2]).eq("member_key", owner[3])
             .order("created_at", desc=True)
             .limit(limit)
             .execute()
@@ -20333,7 +20348,7 @@ def _list_recent_diaries_uncached(limit=60):
         client
         .table(DIARY_TABLE)
         .select("*")
-        .eq("family_key", current_family_key()).eq("member_key", current_member_key())
+        .eq("family_key", owner[2]).eq("member_key", owner[3])
         .order("created_at", desc=True)
         .limit(limit)
         .execute()
@@ -20346,7 +20361,7 @@ def _list_recent_diaries_uncached(limit=60):
         client
         .table(TRIP_TABLE)
         .select("*")
-        .eq("family_key", current_family_key()).eq("member_key", current_member_key())
+        .eq("family_key", owner[2]).eq("member_key", owner[3])
         .in_("id", trip_ids)
         .execute()
     )
@@ -20629,6 +20644,7 @@ def save_monthly_review(month_key, review_json):
     else:
         payload["created_at"] = now_jst().isoformat()
         supabase_client().table(MONTHLY_TABLE).insert(payload).execute()
+    _invalidate_fast_db_cache()
 
 
 # ============================================================
@@ -20747,6 +20763,7 @@ def get_tag_review_source(limit=AI_TAG_REVIEW_SOURCE_LIMIT):
     for batch in batches:
         trips.extend(batch)
 
+    _queue_framing_rows_v468(photos)
     return {"trips": trips, "diaries": [], "photos": photos}
 
 
@@ -22053,7 +22070,7 @@ def _replay_primary_people(people, width, height):
 
 
 @st.cache_data(ttl=86400, show_spinner=False, max_entries=2500)
-def _replay_photo_framing_meta(storage_path):
+def _replay_photo_framing_meta(storage_path, _raw=None):
     """Choose replay framing without altering the stored photo.
 
     Portrait photos retain the established 9:16 cover behavior. Square/landscape photos
@@ -22081,7 +22098,7 @@ def _replay_photo_framing_meta(storage_path):
     if not path:
         return default
     try:
-        raw = download_photo(path)
+        raw = _raw if _raw is not None else download_photo(path)
         if not raw:
             return default
         from PIL import Image, ImageOps
@@ -22173,7 +22190,7 @@ def _replay_photo_framing_meta(storage_path):
         # browser decide the final quality cap from the actual rendered stage size.
         try:
             from PIL import Image, ImageOps
-            raw = download_photo(path)
+            raw = _raw if _raw is not None else download_photo(path)
             if raw:
                 with Image.open(io.BytesIO(raw)) as image:
                     src = ImageOps.exif_transpose(image)
@@ -22251,12 +22268,20 @@ def _refresh_replay_photo_metadata_v448(photos):
         return rows
 
 
-def _replay_framing_map_v467(paths):
+def _replay_framing_map_v467(paths, photos=None):
     unique = tuple(dict.fromkeys(str(path or "") for path in paths))
-    if len(unique) < 2:
-        return {path: _replay_photo_framing_meta(path) for path in unique}
-    values = _framing_executor_v467().map(_replay_photo_framing_meta, unique)
-    return dict(zip(unique, values))
+    known = {}
+    for photo in photos or []:
+        frame = _json_frame_v468(photo)
+        if frame:
+            known[str(photo.get("storage_path") or "")] = frame
+    missing = [path for path in unique if path not in known]
+    if missing:
+        values = _framing_executor_v467().map(_replay_photo_framing_meta, missing) if len(missing) > 1 else map(_replay_photo_framing_meta, missing)
+        known.update(zip(missing, values))
+        _queue_framing_rows_v468(photos or [], computed=known, limit=len(missing))
+    return {path: known[path] for path in unique}
+
 
 
 def build_monthly_replay_photo_items(bundle, limit=None):
@@ -22275,10 +22300,10 @@ def build_monthly_replay_photo_items(bundle, limit=None):
     signed_map = {}
     voice_signed_map = {}
     # v325: process signing in bounded batches while keeping the total photo count unlimited.
-    for start in range(0, len(paths), 200):
-        signed_map.update(signed_photo_url_map(paths[start:start + 200], expires_in=1800))
-    for start in range(0, len(voice_paths), 200):
-        voice_signed_map.update(signed_photo_url_map(voice_paths[start:start + 200], expires_in=1800))
+    combined_paths = tuple(dict.fromkeys(paths + voice_paths))
+    signed_all = signed_photo_url_map(combined_paths, expires_in=1800)
+    signed_map = {path: signed_all[path] for path in paths if path in signed_all}
+    voice_signed_map = {path: signed_all[path] for path in voice_paths if path in signed_all}
     _perf_log_v457(
         "replay:sign_media_urls",
         started_at=sign_started,
@@ -22289,7 +22314,7 @@ def build_monthly_replay_photo_items(bundle, limit=None):
     # records one aggregate timing rather than one row per photo, which avoids turning
     # broad AI-tag movies into a logging workload.
     assemble_started = time.perf_counter()
-    framing_map = _replay_framing_map_v467([str(p.get("storage_path") or "") for p in photos])
+    framing_map = _replay_framing_map_v467([str(p.get("storage_path") or "") for p in photos], photos=photos)
     items = []
     for idx, photo in enumerate(photos, start=1):
         url = photo_display_url(photo, signed_map=signed_map, max_px=1920, quality=90)
@@ -22790,7 +22815,7 @@ def monthly_family_share_info(review):
 
 
 def monthly_family_share_is_enabled(review):
-    return bool(monthly_family_share_info(review).get("shared"))
+    return False  # movie-only feature flag; no DB mutation
 
 
 def build_monthly_family_share_photo_snapshot(bundle, limit=None):
@@ -22939,6 +22964,8 @@ def _monthly_family_share_payload(month_key, period_label, bundle, previous_shar
 
 
 def set_monthly_family_share(month_key, period_label, bundle, review, enabled=True):
+    if not MOVIE_SHARING_ENABLED_V468:
+        raise ValueError("Movie sharing is disabled; saved movies are retained.")
     updated = dict(review or {})
     if enabled:
         previous = monthly_family_share_info(updated)
@@ -22979,73 +23006,7 @@ def _coerce_review_json(value):
 
 
 def list_family_shared_monthly_reviews(limit=24):
-    """Shared reviews from other personal accounts in the same family container."""
-    try:
-        result = (
-            supabase_client()
-            .table(MONTHLY_TABLE)
-            .select("id,member_key,review_month,review_json,updated_at")
-            .eq("family_key", current_family_key())
-            # Tag-review movies live in 1800-1899 sentinel months, so review_month
-            # cannot be used to find the most recently shared movie. updated_at keeps
-            # newly shared tag/monthly movies near the front without loading the table.
-            .order("updated_at", desc=True)
-            .limit(max(36, int(limit) * 6))
-            .execute()
-        )
-        rows = result.data or []
-    except Exception:
-        return []
-
-    member_map = None
-
-    current_member = current_member_key()
-    shared_rows = []
-    for row in rows:
-        if not isinstance(row, dict):
-            continue
-        member_key = str(row.get("member_key") or "").strip()
-        if not member_key or member_key == current_member:
-            continue
-        review = _coerce_review_json(row.get("review_json"))
-        share = monthly_family_share_info(review)
-        if not share.get("shared"):
-            continue
-        photos = [x for x in (share.get("photos") or []) if isinstance(x, dict) and str(x.get("storage_path") or "").strip()]
-        if not photos:
-            continue
-        if member_map is None:
-            try:
-                member_map = {
-                    str(row.get("member_key") or ""): str(row.get("display_name") or row.get("member_key") or "")
-                    for row in list_family_members(current_family_key())
-                    if isinstance(row, dict)
-                }
-            except Exception:
-                member_map = {}
-
-        month_key = str(share.get("month_key") or str(row.get("review_month") or "")[:7]).strip()
-        period_label = str(share.get("period_label") or (format_month_label(month_key) if month_key else "期間")).strip()
-        member_name = str(member_map.get(member_key) or share.get("shared_by_member_name") or member_key).strip()
-        shared_rows.append({
-            "id": str(row.get("id") or f"{member_key}:{month_key}"),
-            "member_key": member_key,
-            "member_name": member_name,
-            "month_key": month_key,
-            "period_label": period_label,
-            "review": review,
-            "share": share,
-            "updated_at": str(row.get("updated_at") or share.get("updated_at") or ""),
-        })
-    shared_rows.sort(
-        key=lambda item: (
-            _shared_movie_time_value((item.get("share") or {}).get("shared_at")),
-            _shared_movie_time_value(item.get("updated_at")),
-            str(item.get("id") or ""),
-        ),
-        reverse=True,
-    )
-    return shared_rows[:max(1, int(limit))]
+    return []  # v468: no recipient movie queries
 
 
 def _owned_replay_movie_period_label(review, month_key):
@@ -23070,6 +23031,10 @@ def list_own_replay_movies(limit=120):
     only after the user has explicitly saved the dynamic movie. Drafts and settings
     records are intentionally excluded.
     """
+    cache_key = _account_cache_key("own_movies_v468", int(limit))
+    cached = _session_cache_get(cache_key, max_age_seconds=90)
+    if cached is not None:
+        return cached
     requested = max(1, min(300, int(limit or 120)))
     result = (
         supabase_client()
@@ -23137,7 +23102,7 @@ def list_own_replay_movies(limit=120):
         ),
         reverse=True,
     )
-    return movies[:requested]
+    return _session_cache_set(cache_key, movies[:requested])
 
 
 def _bundle_from_owned_photo_ids(photo_ids):
@@ -23213,6 +23178,8 @@ def _owned_replay_movie_bundle(month_key, review):
 
 def set_owned_replay_movie_share(row_id, enabled=True):
     """Toggle family sharing for one saved movie from the Review movie library."""
+    if not MOVIE_SHARING_ENABLED_V468:
+        raise ValueError("Movie sharing is disabled; saved movies are retained.")
     row_id = str(row_id or "").strip()
     if not row_id:
         raise ValueError("共有設定を変更するムービーを確認できませんでした。")
@@ -23380,6 +23347,7 @@ def delete_owned_replay_movie(row_id):
             if state_key:
                 st.session_state.pop(state_key, None)
     st.session_state.pop("_home_shared_movie_check_v341", None)
+    _invalidate_fast_db_cache()
     return review
 
 
@@ -23586,7 +23554,7 @@ export default function(component) {
       const status = document.createElement('span');
       status.className = `replay-movie-status-v357${shared ? ' shared' : ''}`;
       status.textContent = shared ? '● 共有中' : '未共有';
-      titleRow.append(title, status);
+      titleRow.append(title); // v468: no movie-sharing badge
 
       const meta = document.createElement('div');
       meta.className = 'replay-movie-meta-v357';
@@ -23597,9 +23565,7 @@ export default function(component) {
       // Fixed CSS grid, not Streamlit columns: never collapses from 2x2 to four rows on phones.
       actions.append(
         button('▶ 見る', 'view', rowId, false),
-        button('共有', 'share', rowId, shared),
-        button('🗑 削除', 'delete', rowId, false, 'delete'),
-        button('解除', 'unshare', rowId, !shared)
+        button('🗑 削除', 'delete', rowId, false, 'delete')
       );
 
       card.append(titleRow, meta, actions);
@@ -23762,7 +23728,7 @@ def render_own_replay_movie_library():
             period_label = str(item.get("period_label") or "振り返りムービー").strip()
             shared = bool(item.get("shared"))
             with st.container(border=True):
-                st.markdown(f"**{html.escape(period_label)}**　{'● 共有中' if shared else '未共有'}")
+                st.markdown(f"**{html.escape(period_label)}**")
                 if st.button("▶ 見る", key=f"review_movie_fallback_view_v357_{row_id}", use_container_width=True):
                     open_owned_replay_movie_from_library(item)
                     _refresh_after_movie_library_navigation_v357()
@@ -23829,62 +23795,7 @@ def _family_shared_movie_notice_at(row):
 
 
 def home_family_shared_movie_notice(browser_state=None):
-    """Return a compact NEW-movie notice, with no polling and a short session cache."""
-    # Preserve Home's fast first paint: wait for the existing localStorage component's
-    # cheap first response before doing the one lightweight family-share query.
-    if browser_persistence_component is not None and not isinstance(browser_state, dict):
-        return None
-
-    family_key = current_family_key()
-    member_key = current_member_key()
-    now_value = time.time()
-    cache = st.session_state.get("_home_shared_movie_check_v341")
-    if (
-        isinstance(cache, dict)
-        and str(cache.get("family_key") or "") == family_key
-        and str(cache.get("member_key") or "") == member_key
-        and now_value - float(cache.get("checked_at") or 0) < 180.0
-    ):
-        rows = list(cache.get("rows") or [])
-    else:
-        rows = list_family_shared_monthly_reviews(limit=12)
-        st.session_state["_home_shared_movie_check_v341"] = {
-            "family_key": family_key,
-            "member_key": member_key,
-            "checked_at": now_value,
-            "rows": rows,
-        }
-
-    if not rows:
-        return None
-
-    browser_seen = str((browser_state or {}).get("shared_movie_seen_at") or "").strip() if isinstance(browser_state, dict) else ""
-    session_seen = str(st.session_state.get("_family_shared_movie_seen_at") or "").strip()
-    seen_at = browser_seen
-    if _shared_movie_time_value(session_seen) > _shared_movie_time_value(seen_at):
-        seen_at = session_seen
-    seen_value = _shared_movie_time_value(seen_at)
-
-    new_rows = [
-        row for row in rows
-        if _shared_movie_time_value(_family_shared_movie_notice_at(row)) > seen_value
-    ]
-    if not new_rows:
-        return None
-
-    new_rows.sort(key=lambda row: _shared_movie_time_value(_family_shared_movie_notice_at(row)), reverse=True)
-    latest = new_rows[0]
-    newest_all = max(rows, key=lambda row: _shared_movie_time_value(_family_shared_movie_notice_at(row)))
-    review = latest.get("review") or {}
-    target_page = "review_tag" if str(review.get("_review_scope_type") or "") == "ai_tag" else "review_monthly"
-    return {
-        "count": len(new_rows),
-        "id": str(latest.get("id") or ""),
-        "member_name": str(latest.get("member_name") or "家族"),
-        "period_label": str(latest.get("period_label") or "振り返り"),
-        "target_page": target_page,
-        "mark_seen_at": _family_shared_movie_notice_at(newest_all),
-    }
+    return None  # v468: movie sharing retired; photos are unaffected
 
 
 def _open_family_shared_movie_from_home_callback(shared_id, seen_at, target_page="review_monthly"):
@@ -23952,53 +23863,7 @@ def render_home_family_shared_movie_notice(notice):
 
 
 def render_family_shared_monthly_reviews():
-    flush_family_shared_movie_seen_marker()
-    shared_rows = list_family_shared_monthly_reviews(limit=24)
-    if not shared_rows:
-        return False
-
-    st.markdown("#### 👨‍👩‍👦 家族から届いた振り返り")
-    row_map = {row["id"]: row for row in shared_rows}
-    option_ids = list(row_map.keys())
-    selector_key = "family_shared_monthly_selector"
-    if st.session_state.get(selector_key) not in option_ids:
-        st.session_state.pop(selector_key, None)
-
-    selected_id = st.selectbox(
-        "共有された振り返り",
-        option_ids,
-        format_func=lambda rid: f"{row_map[rid]['member_name']}さん ／ {row_map[rid]['period_label']}",
-        key=selector_key,
-        label_visibility="collapsed",
-    )
-    selected = row_map.get(selected_id)
-    if not selected:
-        return True
-
-    open_key = "_family_shared_monthly_open_id"
-    is_open = str(st.session_state.get(open_key) or "") == str(selected_id)
-    button_label = "閉じる" if is_open else "▶ 家族の振り返りを見る"
-    if st.button(button_label, use_container_width=True, key="family_shared_monthly_open_button"):
-        if not is_open:
-            mark_family_shared_movie_seen(_family_shared_movie_notice_at(selected))
-        st.session_state[open_key] = "" if is_open else str(selected_id)
-        st.rerun()
-
-    if str(st.session_state.get(open_key) or "") == str(selected_id):
-        review = selected["review"]
-        share = selected["share"]
-        playback = get_monthly_playback(review)
-        photo_items = build_family_shared_replay_photo_items(share)
-        st.markdown(f"**{selected['member_name']}さんから共有された {selected['period_label']}**")
-        if monthly_playback_is_ready(playback) and photo_items:
-            render_monthly_replay_player(selected["period_label"], review, playback, photo_items)
-        elif not photo_items:
-            st.info("共有された写真を表示できませんでした。")
-        else:
-            st.info("共有元で振り返りムービーの音楽設定が解除されています。")
-        with st.expander("✨ AIのコメントを見る"):
-            render_monthly_ai_comments(review)
-    return True
+    return False
 
 
 def monthly_playback_is_ready(playback):
@@ -25673,6 +25538,7 @@ def render_monthly_music_settings(month_key, bundle, review, expanded=True):
     # v461: music selection does not need image signing, downloads, face/person
     # framing, or replay-item assembly. For broad AI tags that work was the main
     # reason the setup screen could appear frozen before the user had even chosen music.
+    _queue_framing_rows_v468((bundle or {}).get("photos") or [])
     photo_count = len([photo for photo in (bundle or {}).get("photos", []) or [] if isinstance(photo, dict)])
     state = _monthly_replay_state(month_key, review)
     playback = state["playback"]
@@ -26369,7 +26235,7 @@ def _photo_tag_prompt(slots):
 """.strip()
 
 
-def tag_untagged_photos_with_ai(photos, batch_size=AI_PHOTO_TAG_BATCH_SIZE, max_photos=None):
+def tag_untagged_photos_with_ai(photos, batch_size=AI_PHOTO_TAG_BATCH_SIZE, max_photos=None, _owner=None, _client=None, _runtime=None):
     """Add observable-content AI tags to still photos, up to four images per API request."""
     candidates = _taggable_still_photos(photos, only_untagged=True)
     total_untagged = len(candidates)
@@ -26385,19 +26251,36 @@ def tag_untagged_photos_with_ai(photos, batch_size=AI_PHOTO_TAG_BATCH_SIZE, max_
         }
 
     batch_size = max(1, min(AI_PHOTO_TAG_BATCH_SIZE, int(batch_size or AI_PHOTO_TAG_BATCH_SIZE)))
-    client = supabase_client()
+    owner = _owner or _owner_v468()
+    client = _client or supabase_client()
+    ai_client = None
+    if _owner is not None:
+        from openai import OpenAI
+        ai_client = getattr(_runtime["tls"], "ai_client", None) if _runtime else None
+        if ai_client is None:
+            ai_client = OpenAI(api_key=OPENAI_API_KEY, timeout=30.0, max_retries=0)
+            if _runtime:
+                _runtime["tls"].ai_client = ai_client
     tagged_count = 0
     api_calls = 0
     errors = []
 
     for start in range(0, len(candidates), batch_size):
+        if _owner is not None and _runtime:
+            state = _owner_state_v468(_runtime, _owner)
+            with _runtime["lock"]:
+                capture_busy = state["page"] == "camera" and time.monotonic() - state["page_at"] < 120
+            if capture_busy:
+                errors.append("deferred_for_camera")
+                break
         raw_batch = candidates[start:start + batch_size]
         loaded = []
         image_items = []
         for index, photo in enumerate(raw_batch, start=1):
             slot = f"F{index}"
             try:
-                raw = download_photo(str(photo.get("storage_path") or ""))
+                raw = (_storage_bytes(client.storage.from_(PHOTO_BUCKET).download(str(photo.get("storage_path") or "")))
+                       if _owner is not None else download_photo(str(photo.get("storage_path") or "")))
                 if not raw:
                     raise ValueError("写真データが空です")
                 vision_bytes = _vision_ready_photo(raw, max_side=1280, quality=84)
@@ -26417,6 +26300,7 @@ def tag_untagged_photos_with_ai(photos, batch_size=AI_PHOTO_TAG_BATCH_SIZE, max_
                 "burari_photo_tags_v322_train_project",
                 _photo_tag_schema(slots),
                 max_output_tokens=max(700, 260 * len(slots)),
+                _client=ai_client,
             )
             api_calls += 1
         except Exception as exc:
@@ -26442,8 +26326,8 @@ def tag_untagged_photos_with_ai(photos, batch_size=AI_PHOTO_TAG_BATCH_SIZE, max_
                 client.table(PHOTO_TABLE)
                 .select("id,reflection_json")
                 .in_("id", photo_ids)
-                .eq("family_key", current_family_key())
-                .eq("member_key", current_member_key())
+                .eq("family_key", owner[2])
+                .eq("member_key", owner[3])
                 .execute()
             ).data or []
             latest_rows = {str(row.get("id") or ""): row for row in rows if isinstance(row, dict)}
@@ -26472,7 +26356,7 @@ def tag_untagged_photos_with_ai(photos, batch_size=AI_PHOTO_TAG_BATCH_SIZE, max_
                 tags = normalize_ai_photo_tags(tags + [tag for tag in existing_content if tag not in tags])
             if photo_favorite_is_enabled(existing_photo):
                 tags = [PHOTO_FAVORITE_TAG] + [tag for tag in tags if tag != PHOTO_FAVORITE_TAG]
-            reflection["ai_tags"] = {
+            tag_payload = {
                 "version": AI_PHOTO_TAG_VERSION,
                 "tags": tags,
                 "source": "vision_batch_4_v322_train_project",
@@ -26480,21 +26364,33 @@ def tag_untagged_photos_with_ai(photos, batch_size=AI_PHOTO_TAG_BATCH_SIZE, max_
                 "favorite_tag_synced": bool(photo_favorite_is_enabled(existing_photo)),
             }
             try:
-                (
-                    client.table(PHOTO_TABLE)
-                    .update({"reflection_json": reflection})
-                    .eq("id", photo_id)
-                    .eq("family_key", current_family_key())
-                    .eq("member_key", current_member_key())
-                    .execute()
-                )
-                photo["reflection_json"] = reflection
+                def merge_tags(value):
+                    current = {"reflection_json": value}
+                    if photo_stored_ai_content_tags(current) and photo_ai_tag_version(current) >= AI_PHOTO_TAG_VERSION:
+                        return value
+                    payload = dict(tag_payload)
+                    current_tags = list(payload["tags"])
+                    if photo_favorite_is_enabled(current):
+                        current_tags = [PHOTO_FAVORITE_TAG] + [x for x in current_tags if x != PHOTO_FAVORITE_TAG]
+                    else:
+                        current_tags = [x for x in current_tags if x != PHOTO_FAVORITE_TAG]
+                    payload["tags"] = current_tags
+                    payload["favorite_tag_synced"] = bool(photo_favorite_is_enabled(current))
+                    value["ai_tags"] = payload
+                    return value
+                saved = _json_cas_v468(client, PHOTO_TABLE, owner, photo_id, "reflection_json", merge_tags, initial_row=latest)
+                if saved is None:
+                    continue
+                photo["reflection_json"] = saved
                 tagged_count += 1
             except Exception as exc:
                 errors.append(f"{photo_id[:8]}: タグ保存失敗 ({exc})")
 
     if tagged_count:
-        _invalidate_fast_db_cache()
+        if _owner is None:
+            _invalidate_fast_db_cache()
+        else:
+            _bump_owner_v468(owner, _runtime)
     return {
         "untagged_before": total_untagged,
         "attempted": len(candidates),
@@ -26727,18 +26623,22 @@ def _apply_summary_feedback_to_meta(meta, rating):
 
 def _summary_feedback_entries(limit=SUMMARY_FEEDBACK_SCAN_LIMIT):
     """Collect recent persisted ratings without needing a new Supabase table."""
-    try:
-        rows = (
-            supabase_client()
-            .table(DIARY_TABLE)
-            .select("id,trip_id,ai_meta,updated_at")
-            .eq("family_key", current_family_key()).eq("member_key", current_member_key())
-            .order("updated_at", desc=True)
-            .limit(limit)
-            .execute()
-        ).data or []
-    except Exception:
-        return []
+    cache_key = _account_cache_key("feedback_rows_v468", int(limit))
+    rows = _session_cache_get(cache_key, max_age_seconds=90)
+    if rows is None:
+        try:
+            rows = (
+                supabase_client()
+                .table(DIARY_TABLE)
+                .select("id,trip_id,ai_meta,updated_at")
+                .eq("family_key", current_family_key()).eq("member_key", current_member_key())
+                .order("updated_at", desc=True)
+                .limit(limit)
+                .execute()
+            ).data or []
+        except Exception:
+            return []
+        _session_cache_set(cache_key, rows)
 
     entries = []
     seen = set()
@@ -28708,9 +28608,10 @@ def finalize_previous_days_into_diaries():
         )
 
 
-def _list_pending_photo_trips_uncached(limit=40):
+def _list_pending_photo_trips_uncached(limit=40, _owner=None, _client=None):
     """Return trips with photos but no diary, normally in one PostgREST request."""
-    client = supabase_client()
+    owner = _owner or _owner_v468()
+    client = _client or supabase_client()
     try:
         rows = (
             client
@@ -28719,7 +28620,7 @@ def _list_pending_photo_trips_uncached(limit=40):
                 f"*,{DIARY_TABLE}(id,trip_id,title),"
                 f"{PHOTO_TABLE}(id,trip_id,storage_path,captured_at,reflection_json,signals_json)"
             )
-            .eq("family_key", current_family_key()).eq("member_key", current_member_key())
+            .eq("family_key", owner[2]).eq("member_key", owner[3])
             .in_("status", ["active", "ready_for_diary", "diary_done"])
             .order("trip_date", desc=True)
             .order("started_at", desc=True)
@@ -28754,7 +28655,7 @@ def _list_pending_photo_trips_uncached(limit=40):
         client
         .table(TRIP_TABLE)
         .select("*")
-        .eq("family_key", current_family_key()).eq("member_key", current_member_key())
+        .eq("family_key", owner[2]).eq("member_key", owner[3])
         .in_("status", ["active", "ready_for_diary", "diary_done"])
         .order("trip_date", desc=True)
         .order("started_at", desc=True)
@@ -28765,10 +28666,14 @@ def _list_pending_photo_trips_uncached(limit=40):
     if not trips:
         return []
     trip_ids = [str(trip.get("id")) for trip in trips if trip.get("id")]
-    diary_map = diaries_for_trip_ids(trip_ids)
+    diary_rows = _rows_v468(client, DIARY_TABLE, owner, "trip_id", trip_ids)
+    diary_map = {str(x.get("trip_id")): x for x in diary_rows}
     pending_trips = [trip for trip in trips if str(trip.get("id")) not in diary_map]
     pending_ids = [str(trip.get("id")) for trip in pending_trips if trip.get("id")]
-    photo_map = photos_for_trip_ids(pending_ids)
+    photo_rows = _rows_v468(client, PHOTO_TABLE, owner, "trip_id", pending_ids, order="captured_at")
+    photo_map = {tid: [] for tid in pending_ids}
+    for photo in photo_rows:
+        photo_map.setdefault(str(photo.get("trip_id")), []).append(photo)
     result_rows = []
     for trip in pending_trips:
         stills = diary_photos_only(photo_map.get(str(trip.get("id")), []))
@@ -28861,52 +28766,7 @@ def create_and_save_diary_from_photos(trip, photos, requested_title=None, reason
         st.session_state["_photo_tag_warning"] = "日記は保存しますが、写真のAIタグ付けは後で再実行してください。"
         st.session_state["_photo_tag_error_detail"] = str(exc)
 
-    counts, selected = photo_emotion_counts(photos)
-    unset = max(0, len(photos) - selected)
-    emotion_parts = []
-    emotion_points = []
-    photo_emotions = []
-    for index, photo in enumerate(photos, start=1):
-        meta = photo_selected_tag_meta(photo)
-        key = str(meta.get("key") or "")
-        photo_emotions.append(
-            {
-                "photo_id": str(photo.get("id") or ""),
-                "emotion": key,
-                "mode": str(meta.get("mode") or ""),
-                "label": meta.get("label") or "",
-                "emoji": meta.get("emoji") or "",
-            }
-        )
-    for key in ALL_PHOTO_TAG_ORDER:
-        count = int(counts.get(key) or 0)
-        if not count:
-            continue
-        meta = photo_tag_meta_from_key(key)
-        phrase = f"{meta['emoji']}{meta['label']}が{count}枚"
-        emotion_parts.append(phrase)
-        emotion_points.append(f"{meta['emoji']} {meta['label']}：{count}枚")
-
-    sentences = [f"この日は写真を{len(photos)}枚残しました。"]
-    if emotion_parts:
-        sentences.append("写真につけた気持ちは、" + "、".join(emotion_parts) + "でした。")
-    else:
-        sentences.append("写真の気持ちはまだ選んでいません。")
-    if unset and selected:
-        sentences.append(f"まだ気持ちを選んでいない写真が{unset}枚あります。")
-    diary_text = "".join(sentences)
-
-    meta = {
-        "reflection_summary": "",
-        "emotion_points": emotion_points[:4],
-        "emotion_counts": counts,
-        "photo_emotions": photo_emotions,
-        "photo_count": len(photos),
-        "emotion_selected_photo_count": selected,
-        "created_from_photo_list": True,
-        "create_reason": str(reason or "manual_create"),
-        "subjective_input_mode": "photo_emotion_six_choices_v159",
-    }
+    diary_text, meta = _photo_diary_content_v468(photos, reason)
     title = requested_title or diary_title_for_trip(trip, photos=photos)
     return save_diary(trip["id"], title, diary_text, {}, meta)
 
@@ -29933,10 +29793,15 @@ def _render_home_storage_usage_status():
         return
 
     try:
-        usage_bytes = current_video_storage_usage_bytes(max_age_seconds=300)
+        usage_bytes, pending, failed, fresh = _display_storage_v468(max_age=300)
+        if usage_bytes is None:
+            message = "\u5bb9\u91cf\u3092\u78ba\u8a8d\u3067\u304d\u307e\u305b\u3093\u3067\u3057\u305f" if failed else "\u78ba\u8a8d\u4e2d"
+            st.markdown(f'<div style="margin:.30rem .10rem .05rem;opacity:.52;font-size:.65rem;text-align:center;">\u52d5\u753b\u30b9\u30c8\u30ec\u30fc\u30b8\uff1a{message}</div>', unsafe_allow_html=True)
+            _storage_tick_v468(pending, "home")
+            return
         ratio = min(1.0, max(0.0, float(usage_bytes) / float(quota_bytes))) if quota_bytes else 0.0
         percent = ratio * 100.0
-        usage_text = format_storage_size(usage_bytes)
+        usage_text = format_storage_size(usage_bytes) + ("" if fresh else " (\u524d\u56de\u5024)")
         quota_text = format_storage_size(quota_bytes)
         st.markdown(
             f"""
@@ -29956,6 +29821,7 @@ def _render_home_storage_usage_status():
             """,
             unsafe_allow_html=True,
         )
+        _storage_tick_v468(pending, "home")
     except Exception:
         st.markdown(
             """
@@ -29968,7 +29834,7 @@ def _render_home_storage_usage_status():
 
 
 # v383: storage enumeration can be expensive. Never poll it every 15 seconds.
-render_home_storage_usage_status = _render_home_storage_usage_status
+render_home_storage_usage_status = st.fragment(_render_home_storage_usage_status)
 
 
 def page_home():
@@ -32650,6 +32516,10 @@ def auto_recover_one_video_candidate_sheet():
 
 
 def list_member_videos_for_moments(limit=300):
+    cache_key = _account_cache_key("video_rows_v468", int(limit))
+    cached = _session_cache_get(cache_key, max_age_seconds=12)
+    if cached is not None:
+        return cached
     rows = (
         supabase_client()
         .table(PHOTO_TABLE)
@@ -32662,7 +32532,7 @@ def list_member_videos_for_moments(limit=300):
     ).data or []
     # The query is already newest-first. page_moments groups by review status
     # without disturbing that order inside each group.
-    return [row for row in rows if photo_is_video(row)]
+    return _session_cache_set(cache_key, [row for row in rows if photo_is_video(row)])
 
 
 def _moments_video_title(photo):
@@ -34540,21 +34410,7 @@ def page_videos():
             st.code(str(exc))
         return
 
-    quota = video_storage_quota_bytes()
-    try:
-        usage = current_video_storage_usage_bytes()
-    except Exception:
-        usage = sum(
-            max(0, int(photo_media_metadata(v).get("video_size_bytes") or 0))
-            for v in videos
-        )
-    if quota > 0:
-        st.caption(
-            f"DB登録済み動画：{len(videos)}本 ／ 動画Storage実使用量 {format_storage_size(usage)} / "
-            f"上限 {format_storage_size(quota)} ／ 残り {format_storage_size(max(0, quota - usage))}"
-        )
-    else:
-        st.caption(f"DB登録済み動画：{len(videos)}本 ／ 動画Storage実使用量 {format_storage_size(usage)} ／ 総容量上限は未設定")
+    _render_vault_usage_v468(len(videos))
 
     repair_notice = st.session_state.pop("_video_storage_repair_notice", None)
     if repair_notice:
@@ -36453,13 +36309,12 @@ def page_diary():
 
     render_family_shared_individual_photos()
 
-    recent_rows = list_recent_diaries(limit=80)
+    recent_rows, pending_rows = _diary_overview_v468()
     saved_titles = [
         str((row.get("diary") or {}).get("title") or "").strip()
         for row in recent_rows
         if str((row.get("diary") or {}).get("title") or "").strip()
     ]
-    pending_rows = list_pending_photo_trips()
 
     if pending_rows:
         st.markdown("#### まだ日記になっていない写真")
@@ -36783,6 +36638,9 @@ def page_history(embedded=False):
 
 
 def render_monthly_ai_comments(review):
+    review = _refresh_dirty_month_on_demand_v468(review)
+    if review is None:
+        return
     review = review if isinstance(review, dict) else {}
     st.markdown("#### AIからの気づき")
     opening = str(review.get("opening") or "").strip()
@@ -37162,37 +37020,7 @@ def page_tag_review(embedded=False):
                     with st.expander("保護者向け詳細"):
                         st.code(str(exc))
 
-        share_enabled = monthly_family_share_is_enabled(review)
-        with st.container(key="monthly_family_share_area"):
-            if share_enabled:
-                st.caption("👨‍👩‍👦 同じ家族IDの別アカウント全員に共有中です。相手側は閲覧のみできます。")
-                if st.button(
-                    "家族への共有を解除する",
-                    use_container_width=True,
-                    key=f"ai_tag_family_unshare_{unsaved_token}",
-                ):
-                    try:
-                        review = set_monthly_family_share(storage_key, scope_label, movie_bundle, review, enabled=False)
-                        st.success("家族への共有を解除しました。")
-                        st.rerun()
-                    except Exception as exc:
-                        st.error("家族への共有を解除できませんでした。")
-                        with st.expander("保護者向け詳細"):
-                            st.code(str(exc))
-            else:
-                if st.button(
-                    "👨‍👩‍👦 家族に共有する",
-                    use_container_width=True,
-                    key=f"ai_tag_family_share_{unsaved_token}",
-                ):
-                    try:
-                        review = set_monthly_family_share(storage_key, scope_label, movie_bundle, review, enabled=True)
-                        st.success("同じ家族IDの別アカウント全員に共有しました。")
-                        st.rerun()
-                    except Exception as exc:
-                        st.error("家族に共有できませんでした。")
-                        with st.expander("保護者向け詳細"):
-                            st.code(str(exc))
+        pass  # v468: owner playback is unchanged; movie sharing controls removed.
 
     time_settings_open_key = f"monthly_time_settings_open_{storage_key}"
     if st.button(
@@ -37551,37 +37379,7 @@ def page_monthly(embedded=False):
     if not rendered:
         st.warning("振り返りムービーを表示できませんでした。音楽または写真の設定を確認してください。")
     else:
-        share_enabled = monthly_family_share_is_enabled(review)
-        with st.container(key="monthly_family_share_area"):
-            if share_enabled:
-                st.caption("👨‍👩‍👦 同じ家族IDの別アカウント全員に共有中です。相手側は閲覧のみできます。")
-                if st.button(
-                    "家族への共有を解除する",
-                    use_container_width=True,
-                    key=f"monthly_family_unshare_{month_key}",
-                ):
-                    try:
-                        review = set_monthly_family_share(month_key, period_label, bundle, review, enabled=False)
-                        st.success("家族への共有を解除しました。")
-                        st.rerun()
-                    except Exception as exc:
-                        st.error("家族への共有を解除できませんでした。")
-                        with st.expander("保護者向け詳細"):
-                            st.code(str(exc))
-            else:
-                if st.button(
-                    "👨‍👩‍👦 家族に共有する",
-                    use_container_width=True,
-                    key=f"monthly_family_share_{month_key}",
-                ):
-                    try:
-                        review = set_monthly_family_share(month_key, period_label, bundle, review, enabled=True)
-                        st.success("同じ家族IDの別アカウント全員に共有しました。")
-                        st.rerun()
-                    except Exception as exc:
-                        st.error("家族に共有できませんでした。")
-                        with st.expander("保護者向け詳細"):
-                            st.code(str(exc))
+        pass  # v468: owner playback is unchanged; movie sharing controls removed.
 
     time_settings_open_key = f"monthly_time_settings_open_{month_key}"
     if st.button(
@@ -44483,6 +44281,602 @@ def page_settings():
 # ============================================================
 # v458: detailed, bounded bottleneck tracing
 # ============================================================
+# ============================================================
+# v468: bounded post-save work and small account-scoped caches
+# ============================================================
+FRAMING_KEY_V468 = "replay_framing_v468"
+FRAMING_SCHEMA_V468 = "v433_people_safe_1920_v1"
+MOVIE_SHARING_ENABLED_V468 = False
+
+
+@st.cache_resource(show_spinner=False)
+def _runtime_v468():
+    # No session state is retained by workers. Limits are process-wide, not per tap.
+    from collections import OrderedDict
+    return {"lock": threading.RLock(), "io": ThreadPoolExecutor(max_workers=2, thread_name_prefix="burari-maint-io"),
+            "image": ThreadPoolExecutor(max_workers=1, thread_name_prefix="burari-preframe"),
+            "ai": ThreadPoolExecutor(max_workers=1, thread_name_prefix="burari-postsave"),
+            "accounts": OrderedDict(), "tls": threading.local()}
+
+
+def _owner_state_v468(runtime, owner):
+    with runtime["lock"]:
+        accounts = runtime["accounts"]
+        state = accounts.get(owner)
+        if state is None:
+            state = {"epoch": 0, "storage_generation": 0, "storage": None,
+                     "storage_future": None, "storage_started": 0.0, "storage_retry": 0.0,
+                     "frames": {}, "frame_future": None, "frame_retry": 0.0, "frame_fail_until": {},
+                     "ai_future": None, "ai_retry": 0.0, "ai_paths": set(),
+                     "recovery_at": 0.0, "page": "", "page_at": 0.0,
+                     "mutation_lock": threading.RLock(), "errors": [], "timings": []}
+            accounts[owner] = state
+        accounts.move_to_end(owner)
+        # Evict idle accounts only. Never discard running jobs or unsaved hints.
+        for key in list(accounts):
+            if len(accounts) <= 16:
+                break
+            item = accounts[key]
+            if key != owner and not any(item.get(k) and not item[k].done() for k in ("storage_future", "frame_future", "ai_future")) and not item["frames"] and not item["ai_paths"]:
+                accounts.pop(key, None)
+        return state
+
+
+def _owner_v468():
+    return (str(SUPABASE_URL), str(PHOTO_BUCKET), current_family_key(), current_member_key())
+
+
+def _worker_client_v468(runtime):
+    client = getattr(runtime["tls"], "client", None)
+    if client is None:
+        from supabase import create_client
+        client = create_client(SUPABASE_URL, SUPABASE_SECRET_KEY)
+        runtime["tls"].client = client
+    return client
+
+
+def _rows_v468(client, table, owner, column, ids, fields="*", order="id"):
+    """Bound IN filters and page every result, including more than 1,000 photos."""
+    values = list(dict.fromkeys(str(x) for x in ids if x))
+    rows = []
+    for start in range(0, len(values), 80):
+        chunk = values[start:start + 80]
+        offset = 0
+        while True:
+            q = (client.table(table).select(fields).eq("family_key", owner[2])
+                 .eq("member_key", owner[3]).in_(column, chunk))
+            batch = q.order(order).range(offset, offset + 499).execute().data or []
+            rows.extend(x for x in batch if isinstance(x, dict))
+            if len(batch) < 500:
+                break
+            offset += 500
+    return rows
+
+
+def _json_cas_v468(client, table, owner, row_id, field, transform, attempts=4, initial_row=None):
+    """Merge a single JSON field against its latest value, never an old snapshot.
+
+    Optimistic equality guards also protect writes from another app process. If the
+    server cannot perform the conditional update we fail closed, not overwrite.
+    """
+    for attempt in range(attempts):
+        rows = [initial_row] if attempt == 0 and initial_row is not None else (
+            client.table(table).select("id," + field).eq("id", row_id)
+            .eq("family_key", owner[2]).eq("member_key", owner[3]).limit(1).execute()).data or []
+        if not rows:
+            return None  # deleted photos are never recreated
+        original = rows[0].get(field)
+        before = original if isinstance(original, dict) else {}
+        updated = transform(dict(before))
+        if updated == before:
+            return before
+        q = (client.table(table).update({field: updated}).eq("id", row_id)
+             .eq("family_key", owner[2]).eq("member_key", owner[3]))
+        q = q.is_(field, "null") if original is None else q.eq(field, json.dumps(original, ensure_ascii=False, separators=(",", ":")))
+        result = q.execute()
+        if result.data:
+            return updated
+        # Some deployments do not return UPDATE representations. Verify the write.
+        check = (client.table(table).select(field).eq("id", row_id)
+                 .eq("family_key", owner[2]).eq("member_key", owner[3]).limit(1).execute()).data or []
+        if not check:
+            return None
+        if check[0].get(field) == updated:
+            return updated
+    raise RuntimeError("Concurrent metadata update; retry without overwriting newer changes.")
+
+
+def _background_result_v468(runtime, owner, phase, started, error=None):
+    state = _owner_state_v468(runtime, owner)
+    with runtime["lock"]:
+        state["timings"].append((phase, (time.perf_counter() - started) * 1000.0, not bool(error)))
+        state["timings"] = state["timings"][-40:]
+        if not error:
+            state["errors"] = [x for x in state["errors"] if x.get("phase") != phase]
+        if error:
+            # No content, tokens, paths, locations or credentials in diagnostics.
+            state["errors"].append({"phase": phase, "type": type(error).__name__})
+            state["errors"] = state["errors"][-12:]
+
+
+def _bump_owner_v468(owner, runtime=None):
+    runtime = runtime or _runtime_v468()
+    with runtime["lock"]:
+        _owner_state_v468(runtime, owner)["epoch"] += 1
+
+
+def _consume_background_results_v468():
+    runtime = _runtime_v468()
+    owner = _owner_v468()
+    state = _owner_state_v468(runtime, owner)
+    with runtime["lock"]:
+        state["page"] = str(st.session_state.get("main_page") or "home")
+        state["page_at"] = time.monotonic()
+        epoch = state["epoch"]
+        timings = list(state["timings"])
+        state["timings"].clear()
+        errors = list(state["errors"])
+    key = "_background_epoch_v468"
+    if st.session_state.get(key) != (owner, epoch):
+        _clear_fast_snapshots_v468()
+        st.session_state[key] = (owner, epoch)
+    for phase, elapsed, ok in timings:
+        _perf_log_v457(phase, duration_ms=elapsed, meta={"ok": ok, "background": True}, force=True)
+    st.session_state["_background_errors_v468"] = errors
+
+
+def _clear_fast_snapshots_v468():
+    for key in list(st.session_state.keys()):
+        if str(key).startswith("_fastdb|"):
+            st.session_state.pop(key, None)
+
+
+def _json_frame_v468(photo):
+    signals = (photo or {}).get("signals_json") or {}
+    value = signals.get(FRAMING_KEY_V468) if isinstance(signals, dict) else None
+    if not isinstance(value, dict) or value.get("schema") != FRAMING_SCHEMA_V468:
+        return None
+    if value.get("path") != str((photo or {}).get("storage_path") or ""):
+        return None
+    frame = value.get("frame")
+    if not isinstance(frame, dict) or not frame.get("source_width") or not frame.get("source_height"):
+        return None
+    return dict(frame)
+
+
+def _queue_framing_rows_v468(photos, computed=None, limit=24):
+    runtime = _runtime_v468()
+    owner = _owner_v468()
+    state = _owner_state_v468(runtime, owner)
+    added = 0
+    with runtime["lock"]:
+        for photo in photos or []:
+            if not isinstance(photo, dict) or photo_is_video(photo) or _json_frame_v468(photo):
+                continue
+            pid = str(photo.get("id") or "")
+            path = str(photo.get("storage_path") or "")
+            if not pid or not path or not path.startswith(owner[2] + "/" + owner[3] + "/"):
+                continue
+            if state["frame_fail_until"].get(pid, 0.0) > time.monotonic():
+                continue
+            state["frame_fail_until"].pop(pid, None)
+            frame = (computed or {}).get(path)
+            if pid in state["frames"]:
+                if frame:
+                    state["frames"][pid]["frame"] = frame
+                continue
+            if len(state["frames"]) >= 256 or added >= limit:
+                break
+            state["frames"][pid] = {"id": pid, "path": path, "frame": frame}
+            added += 1
+    return added
+
+
+def _run_framing_queue_v468(runtime, owner):
+    state = _owner_state_v468(runtime, owner)
+    started = time.perf_counter()
+    error = None
+    item = None
+    try:
+        client = _worker_client_v468(runtime)
+        # A single worker yields after at most 24 photos; capture always wins.
+        for _ in range(24):
+            with runtime["lock"]:
+                if state["page"] == "camera" and time.monotonic() - state["page_at"] < 120:
+                    break
+                item = next(iter(state["frames"].values()), None)
+            if not item:
+                break
+            rows = _rows_v468(client, PHOTO_TABLE, owner, "id", [item["id"]],
+                              "id,storage_path,signals_json,reflection_json")
+            if rows and rows[0].get("storage_path") == item["path"] and not _json_frame_v468(rows[0]):
+                frame = item.get("frame")
+                if not frame:
+                    raw = _storage_bytes(client.storage.from_(PHOTO_BUCKET).download(item["path"]))
+                    frame = _replay_photo_framing_meta(item["path"], _raw=raw)
+                if not frame or not frame.get("source_width") or not frame.get("source_height"):
+                    _replay_photo_framing_meta.clear(item["path"])
+                    raise RuntimeError("Framing temporarily unavailable")
+                value = {"schema": FRAMING_SCHEMA_V468, "path": item["path"], "frame": frame}
+                def merge(signals):
+                    signals[FRAMING_KEY_V468] = value
+                    return signals
+                _json_cas_v468(client, PHOTO_TABLE, owner, item["id"], "signals_json", merge, initial_row=rows[0])
+            with runtime["lock"]:
+                state["frames"].pop(item["id"], None)
+    except Exception as exc:
+        error = exc
+        with runtime["lock"]:
+            state["frame_retry"] = time.monotonic() + 60.0
+            if item:
+                state["frames"].pop(item["id"], None)
+                state["frame_fail_until"][item["id"]] = time.monotonic() + 300.0
+                while len(state["frame_fail_until"]) > 256:
+                    state["frame_fail_until"].pop(next(iter(state["frame_fail_until"])))
+    finally:
+        _background_result_v468(runtime, owner, "background:photo_framing", started, error)
+
+
+def _persist_ai_job_v468(photos):
+    ids = sorted({str(p.get("id")) for p in photos or [] if isinstance(p, dict) and p.get("id") and photo_needs_ai_tagging(p) and not photo_is_video(p)})
+    if not ids:
+        return
+    owner = _owner_v468()
+    runtime = _runtime_v468()
+    state = _owner_state_v468(runtime, owner)
+    digest = hashlib.sha256((str(AI_PHOTO_TAG_VERSION) + "|" + "|".join(ids)).encode()).hexdigest()
+    remembered = st.session_state.get("_postsave_ai_jobs_v468") or {}
+    if digest in remembered:
+        return
+    path = owner[2] + "/" + owner[3] + "/_postsave_v468/" + uuid.uuid4().hex + ".jpg"
+    payload = {"v": 468, "family": owner[2], "member": owner[3], "ids": ids, "created_at": now_jst().isoformat()}
+    supabase_client().storage.from_(PHOTO_BUCKET).upload(path=path,
+        file=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+        file_options={"content-type": "image/jpeg", "cache-control": "0"})
+    # Same allowed JSON-in-image metadata convention as the existing GPS store.
+    with runtime["lock"]:
+        state["ai_paths"].add(path)
+    remembered = dict(remembered)
+    remembered[digest] = True
+    while len(remembered) > 64:
+        remembered.pop(next(iter(remembered)))
+    st.session_state["_postsave_ai_jobs_v468"] = remembered
+
+
+def _run_ai_jobs_v468(runtime, owner, recover=False):
+    state = _owner_state_v468(runtime, owner)
+    started = time.perf_counter()
+    error = None
+    try:
+        client = _worker_client_v468(runtime)
+        bucket = client.storage.from_(PHOTO_BUCKET)
+        prefix = owner[2] + "/" + owner[3] + "/_postsave_v468"
+        if recover:
+            # Bounded recovery. Unlisted jobs stay durable for the next pass.
+            rows = _coerce_storage_list_rows(bucket.list(prefix, {"limit": 100, "offset": 0}))
+            with runtime["lock"]:
+                state["ai_paths"].update(prefix + "/" + str(x.get("name")) for x in rows
+                                         if re.fullmatch(r"[0-9a-f]{32}\.jpg", str(x.get("name") or "")))
+        with runtime["lock"]:
+            paths = sorted(state["ai_paths"])[:8]
+        jobs = []
+        ids = set()
+        for path in paths:
+            payload = json.loads(_storage_bytes(bucket.download(path)).decode("utf-8"))
+            if payload.get("v") != 468 or (payload.get("family"), payload.get("member")) != owner[2:]:
+                continue
+            jobs.append(path)
+            ids.update(str(x) for x in payload.get("ids", []) if x)
+        if not jobs:
+            return
+        photos = _rows_v468(client, PHOTO_TABLE, owner, "id", sorted(ids),
+                           "id,trip_id,storage_path,reflection_json,signals_json")
+        # Existing AI prompt, batching and criteria are reused. Only timing changes.
+        stats = tag_untagged_photos_with_ai(photos, max_photos=32, _owner=owner, _client=client, _runtime=runtime)
+        if stats.get("errors"):
+            raise RuntimeError("Deferred AI tagging incomplete; durable job retained")
+        if int(stats.get("untagged_before") or 0) > int(stats.get("attempted") or 0):
+            _bump_owner_v468(owner, runtime)
+            return  # untouched remainder stays in the durable job, not an unbounded worker
+        bucket.remove(jobs)
+        with runtime["lock"]:
+            state["ai_paths"].difference_update(jobs)
+            state["epoch"] += 1
+    except Exception as exc:
+        error = exc
+        with runtime["lock"]:
+            state["ai_retry"] = time.monotonic() + 90.0
+    finally:
+        _background_result_v468(runtime, owner, "background:photo_ai_tags", started, error)
+
+
+def _maintenance_tick_v468():
+    """Called after page paint; no polling, sleep, or Future.result on the UI path."""
+    runtime = _runtime_v468()
+    owner = _owner_v468()
+    state = _owner_state_v468(runtime, owner)
+    now = time.monotonic()
+    with runtime["lock"]:
+        state["page"] = str(st.session_state.get("main_page") or "home")
+        state["page_at"] = now
+        if state["page"] == "camera":
+            return
+        if state["frames"] and now >= state["frame_retry"] and (not state["frame_future"] or state["frame_future"].done()):
+            state["frame_future"] = runtime["image"].submit(_run_framing_queue_v468, runtime, owner)
+        recover = not state["recovery_at"] or now - state["recovery_at"] >= 300.0
+        if (state["ai_paths"] or recover) and now >= state["ai_retry"] and (not state["ai_future"] or state["ai_future"].done()):
+            state["recovery_at"] = now
+            state["ai_future"] = runtime["ai"].submit(_run_ai_jobs_v468, runtime, owner, recover)
+
+
+def _invalidate_storage_v468():
+    runtime = _runtime_v468()
+    state = _owner_state_v468(runtime, _owner_v468())
+    with runtime["lock"]:
+        state["storage_generation"] += 1
+        if state["storage"]:
+            state["storage"]["at"] = 0.0  # keep old DISPLAY value, never authorize saves with it
+        state["storage_retry"] = 0.0
+
+
+def _storage_scan_v468(runtime, owner, generation):
+    state = _owner_state_v468(runtime, owner)
+    started = time.perf_counter()
+    error = None
+    try:
+        client = _worker_client_v468(runtime)
+        rows = _list_member_storage_objects(_owner=owner, _client=client)
+        usage = sum(max(0, int(x.get("size_bytes") or 0)) for x in rows
+                    if _storage_path_is_original_video(x.get("path"), x.get("mime_type")))
+        value = {"usage": usage, "inventory": rows, "at": time.monotonic(), "generation": generation}
+        with runtime["lock"]:
+            if generation == state["storage_generation"]:
+                state["storage"] = value
+        return value
+    except Exception as exc:
+        error = exc
+        with runtime["lock"]:
+            state["storage_retry"] = time.monotonic() + 30.0
+        raise
+    finally:
+        _background_result_v468(runtime, owner, "background:storage_inventory", started, error)
+
+
+def _display_storage_v468(max_age=300):
+    runtime = _runtime_v468()
+    owner = _owner_v468()
+    state = _owner_state_v468(runtime, owner)
+    now = time.monotonic()
+    with runtime["lock"]:
+        value = state["storage"]
+        fresh = bool(value and value["generation"] == state["storage_generation"] and now - value["at"] <= max_age)
+        future = state["storage_future"]
+        if not fresh and (not future or future.done()) and now >= state["storage_retry"]:
+            state["storage_started"] = now
+            future = runtime["io"].submit(_storage_scan_v468, runtime, owner, state["storage_generation"])
+            state["storage_future"] = future
+        pending = bool(future and not future.done())
+        # No infinite heartbeat and no repeated storage enumeration in the heartbeat.
+        pulse = pending and now - state["storage_started"] < 30.0
+        failed = bool(not pending and not fresh and state["storage_retry"] > now)
+        return (value["usage"] if value else None), pulse, failed, fresh
+
+
+@st.cache_resource(show_spinner=False)
+def _storage_tick_component_v468():
+    return st.components.v2.component("burari_storage_tick_v468", html="<span hidden></span>",
+        js="""export default function(component) {
+  const {data, setTriggerValue} = component;
+  let timer = null;
+  if (data?.pending) timer = setTimeout(() => setTriggerValue('tick', {t:Date.now()}), 1000);
+  return () => { if(timer !== null) clearTimeout(timer); };
+}""")
+
+
+def _storage_tick_v468(pending, suffix):
+    # A component event reruns ONLY the enclosing fragment. Removed on completion.
+    try:
+        _storage_tick_component_v468()(data={"pending": bool(pending)},
+            key="storage_tick_v468_" + suffix, on_tick_change=lambda: None)
+    except Exception:
+        pass  # normal next interaction still refreshes the display on old clients
+
+
+@st.fragment
+def _render_vault_usage_v468(count):
+    quota = video_storage_quota_bytes()
+    usage, pending, failed, fresh = _display_storage_v468(max_age=30)
+    if usage is None:
+        suffix = "\u5bb9\u91cf\u3092\u78ba\u8a8d\u3067\u304d\u307e\u305b\u3093\u3067\u3057\u305f" if failed else "\u5bb9\u91cf\u3092\u78ba\u8a8d\u4e2d"
+        st.caption(f"DB\u767b\u9332\u6e08\u307f\u52d5\u753b\uff1a{count}\u672c \uff0f {suffix}")
+    else:
+        label = f"DB\u767b\u9332\u6e08\u307f\u52d5\u753b\uff1a{count}\u672c \uff0f \u52d5\u753bStorage\u5b9f\u4f7f\u7528\u91cf {format_storage_size(usage)}"
+        if quota > 0:
+            label += f" / \u4e0a\u9650 {format_storage_size(quota)} \uff0f \u6b8b\u308a {format_storage_size(max(0, quota - usage))}"
+        else:
+            label += " \uff0f \u7dcf\u5bb9\u91cf\u4e0a\u9650\u306f\u672a\u8a2d\u5b9a"
+        if not fresh:
+            label += "\uff08\u524d\u56de\u5024\u30fb\u78ba\u8a8d\u4e2d\uff09" if not failed else "\uff08\u524d\u56de\u5024\u30fb\u78ba\u8a8d\u5931\u6557\uff09"
+        st.caption(label)
+    _storage_tick_v468(pending, "vault")
+
+
+def _diary_overview_v468():
+    owner = _owner_v468()
+    client = supabase_client()
+    keys = [_account_cache_key("recent_diaries", 80), _account_cache_key("pending_photo_trips", 40)]
+    values = [_session_cache_get(keys[0], max_age_seconds=90), _session_cache_get(keys[1], max_age_seconds=45)]
+    futures = {}
+    functions = [_list_recent_diaries_uncached, _list_pending_photo_trips_uncached]
+    for index, limit in enumerate((80, 40)):
+        if values[index] is None:
+            futures[index] = _read_executor_v467().submit(functions[index], limit, _owner=owner, _client=client)
+    for index, future in futures.items():
+        values[index] = _session_cache_set(keys[index], future.result())
+    return values[0], values[1]
+
+
+def _refresh_diaries_batched_v468(trip_ids):
+    """Keep current tags/diary text synchronous; defer only expensive vision work.
+
+    This avoids a stale diary after navigation and removes the 37-times repeated
+    photo fetch / AI pass from the old tag-sync path. No background job writes diary
+    text or user-selected tags, so an old completion cannot roll them back.
+    """
+    ids = sorted({str(x) for x in trip_ids or [] if x})
+    _invalidate_fast_db_cache()
+    if not ids:
+        return
+    started = time.perf_counter()
+    owner = _owner_v468()
+    client = supabase_client()
+    trips = _rows_v468(client, TRIP_TABLE, owner, "id", ids)
+    diaries = _rows_v468(client, DIARY_TABLE, owner, "trip_id", ids)
+    tmap = {str(x["id"]): x for x in trips}
+    dmap = {str(x["trip_id"]): x for x in diaries if x.get("trip_id")}
+    photos = _rows_v468(client, PHOTO_TABLE, owner, "trip_id", list(dmap),
+                       "id,trip_id,storage_path,captured_at,reflection_json,signals_json", "captured_at")
+    grouped = {tid: [] for tid in dmap}
+    for photo in photos:
+        if not photo_is_video(photo):
+            grouped.setdefault(str(photo.get("trip_id")), []).append(photo)
+    ai_photos = [p for values in grouped.values() for p in values]
+    # Durable before acknowledging browser pending choices. Failure is retryable.
+    _persist_ai_job_v468(ai_photos)
+    updates = []
+    for tid, old in dmap.items():
+        current_photos = grouped.get(tid) or []
+        if not current_photos or tid not in tmap:
+            continue
+        text, meta = _photo_diary_content_v468(current_photos, "emotion_change_v159_deferred")
+        old_meta = old.get("ai_meta") or {}
+        if isinstance(old_meta, dict) and old_meta.get("summary_feedback_history"):
+            meta["summary_feedback_history"] = list(old_meta["summary_feedback_history"])
+        if old.get("diary_text") == text and old_meta == meta:
+            continue
+        updates.append((tid, old, text, meta))
+    def save(item):
+        tid, old, text, meta = item
+        q = (client.table(DIARY_TABLE).update({"diary_text": text, "ai_meta": meta,
+                "updated_at": now_jst().isoformat()}).eq("id", old["id"])
+             .eq("family_key", owner[2]).eq("member_key", owner[3]))
+        # Preserve titles, raw child comments and concurrent manual edits.
+        if old.get("updated_at"):
+            q = q.eq("updated_at", old["updated_at"])
+        result = q.execute()
+        if not result.data:
+            check = _rows_v468(client, DIARY_TABLE, owner, "id", [old["id"]], "id,diary_text,ai_meta")
+            if check and (check[0].get("diary_text") != text or check[0].get("ai_meta") != meta):
+                raise RuntimeError("Diary changed concurrently; keep pending tags for retry")
+    list(_read_executor_v467().map(save, updates))
+    for tid, old, text, meta in updates:
+        trip = tmap.get(tid) or {}
+        if trip.get("status") != "diary_done" or not trip.get("ended_at"):
+            client.table(TRIP_TABLE).update({"status": "diary_done", "ended_at": trip.get("ended_at") or now_jst().isoformat()}).eq("id", tid).eq("family_key", owner[2]).eq("member_key", owner[3]).execute()
+    months = {str(t.get("trip_date") or "")[:7] for t in trips}
+    _invalidate_months_batched_v468(months)
+    _queue_framing_rows_v468(ai_photos)
+    _invalidate_fast_db_cache()
+    _perf_log_v457("tags:batched_diary_refresh", started_at=started,
+                   meta={"trips": len(ids), "diaries": len(updates), "photos": len(photos)}, force=True)
+
+
+def _invalidate_months_batched_v468(months):
+    dates = [month_bounds(m)[0] for m in sorted(months) if re.fullmatch(r"\d{4}-\d{2}", m or "")]
+    if not dates:
+        return
+    client = supabase_client()
+    owner = _owner_v468()
+    rows = _rows_v468(client, MONTHLY_TABLE, owner, "review_month", dates, "id,review_month,review_json")
+    delete_ids = []
+    for row in rows:
+        review = _coerce_review_json(row.get("review_json"))
+        if review.get("_playback") or review.get("_tag_movie_saved"):
+            month = str(row.get("review_month") or "")[:7]
+            def mark(value):
+                value["_source_dirty_v468"] = True
+                value["_refresh_month_v468"] = month
+                return value
+            _json_cas_v468(client, MONTHLY_TABLE, owner, row["id"], "review_json", mark)
+        else:
+            delete_ids.append(row["id"])
+    for start in range(0, len(delete_ids), 80):
+        client.table(MONTHLY_TABLE).delete().eq("family_key", owner[2]).eq("member_key", owner[3]).in_("id", delete_ids[start:start + 80]).execute()
+    for month in months:
+        for prefix in ("monthly_review_", "monthly_audio_", "monthly_audio_pending_"):
+            st.session_state.pop(prefix + month, None)
+
+
+def _refresh_dirty_month_on_demand_v468(review):
+    if not isinstance(review, dict) or not review.get("_source_dirty_v468"):
+        return review
+    month = str(review.get("_refresh_month_v468") or "")
+    if not re.fullmatch(r"\d{4}-\d{2}", month):
+        return review
+    try:
+        # Only executed when the AI-comment panel is actually requested, not Home/replay.
+        fresh = make_monthly_review(month, get_month_bundle(month))
+        for key, value in review.items():
+            if key.startswith("_") and key not in {"_source_dirty_v468", "_refresh_month_v468", "_insight_version"}:
+                fresh[key] = value
+        save_monthly_review(month, fresh)
+        st.session_state["monthly_review_" + month] = fresh
+        return fresh
+    except Exception:
+        st.warning("\u6700\u65b0\u306e\u6c17\u6301\u3061\u3092\u53cd\u6620\u3057\u305f\u307e\u3068\u3081\u3092\u53d6\u5f97\u3067\u304d\u307e\u305b\u3093\u3067\u3057\u305f\u3002\u6b21\u56de\u3082\u3046\u4e00\u5ea6\u8a66\u3057\u307e\u3059\u3002")
+        return None
+
+
+def _photo_diary_content_v468(photos, reason="manual_create"):
+    counts, selected = photo_emotion_counts(photos)
+    unset = max(0, len(photos) - selected)
+    emotion_parts = []
+    emotion_points = []
+    photo_emotions = []
+    for index, photo in enumerate(photos, start=1):
+        meta = photo_selected_tag_meta(photo)
+        key = str(meta.get("key") or "")
+        photo_emotions.append(
+            {
+                "photo_id": str(photo.get("id") or ""),
+                "emotion": key,
+                "mode": str(meta.get("mode") or ""),
+                "label": meta.get("label") or "",
+                "emoji": meta.get("emoji") or "",
+            }
+        )
+    for key in ALL_PHOTO_TAG_ORDER:
+        count = int(counts.get(key) or 0)
+        if not count:
+            continue
+        meta = photo_tag_meta_from_key(key)
+        phrase = f"{meta['emoji']}{meta['label']}が{count}枚"
+        emotion_parts.append(phrase)
+        emotion_points.append(f"{meta['emoji']} {meta['label']}：{count}枚")
+
+    sentences = [f"この日は写真を{len(photos)}枚残しました。"]
+    if emotion_parts:
+        sentences.append("写真につけた気持ちは、" + "、".join(emotion_parts) + "でした。")
+    else:
+        sentences.append("写真の気持ちはまだ選んでいません。")
+    if unset and selected:
+        sentences.append(f"まだ気持ちを選んでいない写真が{unset}枚あります。")
+    diary_text = "".join(sentences)
+
+    meta = {
+        "reflection_summary": "",
+        "emotion_points": emotion_points[:4],
+        "emotion_counts": counts,
+        "photo_emotions": photo_emotions,
+        "photo_count": len(photos),
+        "emotion_selected_photo_count": selected,
+        "created_from_photo_list": True,
+        "create_reason": str(reason or "manual_create"),
+        "subjective_input_mode": "photo_emotion_six_choices_v159",
+    }
+    return diary_text, meta
+
+
 def _perf_result_meta_v458(result):
     meta = {}
     try:
@@ -44509,6 +44903,8 @@ def _perf_wrap_global_v458(name, phase):
 
     @functools.wraps(original)
     def wrapped(*args, **kwargs):
+        if kwargs.get("_owner") is not None:
+            return original(*args, **kwargs)
         started = time.perf_counter()
         ok = True
         result = None
@@ -44571,6 +44967,10 @@ def _install_detailed_perf_wrappers_v458():
         "list_member_videos_for_moments": "data:video_library_rows",
         "get_member_account": "db:login_account",
         "_upsert_track_month_v271": "gps:save_month",
+        "save_gps_track_batch_v271": "gps:validate_and_save_batch",
+        "validate_browser_auto_login_token": "login:validate_token",
+        "get_summary_feedback_status": "settings:feedback_summary",
+        "_diary_overview_v468": "diary:overview_parallel",
         "list_recent_diaries": "data:recent_diaries",
         "list_pending_photo_trips": "data:pending_photo_trips",
         "list_trip_photos": "data:trip_photos",
@@ -44608,6 +45008,7 @@ _perf_begin_run_v457()
 _perf_call_v457("bootstrap:verify_setup", verify_setup)
 _perf_call_v457("bootstrap:login", require_family_pin)
 _perf_call_v457("bootstrap:init_state", init_state)
+_consume_background_results_v468()
 # Notification launches must win over camera-session restoration. Evening review
 # has priority; ordinary automatic-discovery notifications keep their dedicated page.
 _deep_link_started_v457 = time.perf_counter()
@@ -44755,6 +45156,12 @@ with st.container(key="app_page_root_v280"):
             and page in {"camera", "videos", "moments", "diary", "photos", "review", "review_map", "review_project", "review_monthly", "review_tag", "review_history", "nearby", "discovery_results", "evening_review", "toilets", "field_notes", "settings", "settings_moments", "settings_moments_definition", "settings_location", "settings_account"}
         ):
             _perf_call_v457("ui:bottom_navigation", render_global_bottom_navigation, page)
+
+try:
+    _maintenance_tick_v468()
+except Exception as _maintenance_error_v468:
+    _perf_log_v457("background:schedule_error", duration_ms=0,
+                   meta={"type": type(_maintenance_error_v468).__name__}, force=True)
 
 _perf_log_v457("rerun_total", started_at=_app_run_started_v457, force=True, meta={"ui_epoch": _current_ui_refresh_epoch(), "session_keys": len(st.session_state)})
 
