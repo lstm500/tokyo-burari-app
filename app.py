@@ -43,7 +43,8 @@ def _app_css_v473(markup, **_ignored):
 # Review menu-only update: 2026-09-19 JST
 GENERATED_UPDATE_JST = "2026-09-19T14:54:38+09:00"
 
-APP_BUILD = "v479"
+APP_BUILD = "v480"
+# v480: Preserve browser-side Nearby/Toilet filter selections across component rerenders so repeat searches use the visible conditions; refresh component identities to avoid stale cached JS.
 # v479: Move the Home dashboard about 1 cm (38 CSS px) lower than v478 without changing its layout or controls.
 # v478: Move the Home dashboard slightly lower on mobile without changing its density, controls, or one-screen fit behavior.
 # v477: Review menu is random -> tags -> project -> map; hide other landing entries.
@@ -31517,6 +31518,8 @@ export default function(component) {
   const initial = (data && data.initial && typeof data.initial === 'object') ? data.initial : {};
   const lunchGenres = Array.isArray(data?.lunch_genres) && data.lunch_genres.length ? data.lunch_genres.map(String) : ['おまかせ'];
   const googleEnabled = !!data?.google_enabled;
+  const stateKey = String(data?.state_key || 'tokyo_burari_nearby_filters_v480');
+  const serverToken = String(data?.completion_token || '');
   const validKind = ['snack','lunch','sightseeing'].includes(String(initial.kind||'')) ? String(initial.kind) : 'snack';
 
   const defaults = {
@@ -31524,15 +31527,61 @@ export default function(component) {
     lunch: {subkind:'おまかせ', radius_m:640, budget:'2000', open:googleEnabled?'open':'all'},
     sightseeing: {subkind:'なんでも', radius_m:800, budget:'under1000', open:googleEnabled?'open':'all'}
   };
+  const validSubkinds = {
+    snack: new Set(['食べ歩き向き','店内中心']),
+    lunch: new Set(lunchGenres),
+    sightseeing: new Set(['なんでも','公園','神社・寺','博物館・施設','電車・乗り物'])
+  };
+  const validRadii = {snack:new Set([64,192,320]), lunch:new Set([320,640,1280]), sightseeing:new Set([800,1600,2500])};
+  const normalizeCfg = (targetKind, candidate, base) => {
+    const raw = (candidate && typeof candidate === 'object') ? candidate : {};
+    const next = {...base};
+    const sub = String(raw.subkind || '');
+    if (validSubkinds[targetKind]?.has(sub)) next.subkind = sub;
+    const radius = Number(raw.radius_m);
+    if (validRadii[targetKind]?.has(radius)) next.radius_m = radius;
+    if (targetKind === 'lunch') {
+      const budget = String(raw.budget ?? raw.budget_limit ?? '');
+      if (['1000','2000','5000'].includes(budget)) next.budget = budget;
+    } else {
+      const budget = String(raw.budget || '');
+      if (['under1000','all'].includes(budget)) next.budget = budget;
+    }
+    const open = String(raw.open || '');
+    if (googleEnabled && ['open','all'].includes(open)) next.open = open;
+    if (!googleEnabled) next.open = 'all';
+    return next;
+  };
   const perKind = JSON.parse(JSON.stringify(defaults));
-  perKind[validKind].subkind = String(initial.subkind || perKind[validKind].subkind);
-  perKind[validKind].radius_m = Number(initial.radius_m || perKind[validKind].radius_m);
-  perKind[validKind].budget = validKind === 'lunch'
-    ? String(initial.budget_limit != null ? initial.budget_limit : perKind[validKind].budget)
-    : (initial.budget_under_1000 === false ? 'all' : 'under1000');
-  perKind[validKind].open = googleEnabled && initial.open_now_only !== false ? 'open' : 'all';
-  let kind = validKind;
+  perKind[validKind] = normalizeCfg(validKind, {
+    subkind: initial.subkind,
+    radius_m: initial.radius_m,
+    budget: validKind === 'lunch' ? String(initial.budget_limit ?? '') : (initial.budget_under_1000 === false ? 'all' : 'under1000'),
+    open: googleEnabled && initial.open_now_only !== false ? 'open' : 'all'
+  }, perKind[validKind]);
+
+  let savedClientState = null;
+  try {
+    const parsed = JSON.parse(localStorage.getItem(stateKey) || 'null');
+    if (parsed && typeof parsed === 'object') savedClientState = parsed;
+  } catch (_) {}
+  // Keep unsent browser edits only while the server result has not advanced. Once a
+  // search completes, completion_token changes and the committed server filters win.
+  const restoreDirty = !!(savedClientState?.dirty && String(savedClientState?.server_token || '') === serverToken);
+  if (restoreDirty && savedClientState?.perKind && typeof savedClientState.perKind === 'object') {
+    for (const k of ['snack','lunch','sightseeing']) {
+      perKind[k] = normalizeCfg(k, savedClientState.perKind[k], perKind[k]);
+    }
+  }
+  let kind = restoreDirty && ['snack','lunch','sightseeing'].includes(String(savedClientState?.kind || ''))
+    ? String(savedClientState.kind) : validKind;
   let cancelled = false, watchId = null, hardTimer = null, best = null, startedAt = 0;
+  const persistClientState = (dirty=true) => {
+    try {
+      localStorage.setItem(stateKey, JSON.stringify({dirty:!!dirty, server_token:serverToken, kind, perKind}));
+    } catch (_) {}
+  };
+  if (!restoreDirty) persistClientState(false);
 
   const makeChoice = (label, value, selected, onClick) => {
     const b = document.createElement('button');
@@ -31548,14 +31597,14 @@ export default function(component) {
 
   const render = () => {
     const cfg = perKind[kind];
-    fillChoices(kindArea, [['🍡 おやつ','snack'],['🍽️ ランチ','lunch'],['🏛️ 観光','sightseeing']], kind, (v) => { kind=v; render(); });
+    fillChoices(kindArea, [['🍡 おやつ','snack'],['🍽️ ランチ','lunch'],['🏛️ 観光','sightseeing']], kind, (v) => { kind=v; persistClientState(true); render(); });
 
     if (kind === 'snack') {
       subLabel.textContent = '食べ方';
-      fillChoices(subArea, [['🚶 食べ歩き向き','食べ歩き向き'],['🪑 店内中心','店内中心']], cfg.subkind, (v)=>{cfg.subkind=v;render();});
+      fillChoices(subArea, [['🚶 食べ歩き向き','食べ歩き向き'],['🪑 店内中心','店内中心']], cfg.subkind, (v)=>{cfg.subkind=v;persistClientState(true);render();});
       subNote.textContent = 'テイクアウト情報や店舗の種類・商品名から判定します。';
-      fillChoices(radiusArea, [['🚶 1分',64],['🚶 3分',192],['🚶 5分',320]], cfg.radius_m, (v)=>{cfg.radius_m=Number(v);render();});
-      fillChoices(budgetArea, [['💴 1,000円以下','under1000'],['○ 予算を問わない','all']], cfg.budget, (v)=>{cfg.budget=v;render();});
+      fillChoices(radiusArea, [['🚶 1分',64],['🚶 3分',192],['🚶 5分',320]], cfg.radius_m, (v)=>{cfg.radius_m=Number(v);persistClientState(true);render();});
+      fillChoices(budgetArea, [['💴 1,000円以下','under1000'],['○ 予算を問わない','all']], cfg.budget, (v)=>{cfg.budget=v;persistClientState(true);render();});
       budgetNote.textContent = '価格情報がある候補は1,000円以下で絞ります。料金未登録の場所は候補に残します。';
     } else if (kind === 'lunch') {
       subLabel.textContent = 'ジャンル';
@@ -31563,22 +31612,22 @@ export default function(component) {
       const select = document.createElement('select'); select.className='legacy-select'; select.setAttribute('aria-label','ランチのジャンル');
       lunchGenres.forEach((g)=>{ const opt=document.createElement('option'); opt.value=g; opt.textContent=g; select.appendChild(opt); });
       if (lunchGenres.includes(cfg.subkind)) select.value=cfg.subkind; else {cfg.subkind=lunchGenres[0]||'おまかせ'; select.value=cfg.subkind;}
-      select.addEventListener('change',()=>{cfg.subkind=String(select.value||'おまかせ');updateSummary();}); subArea.appendChild(select);
+      select.addEventListener('change',()=>{cfg.subkind=String(select.value||'おまかせ');persistClientState(true);updateSummary();}); subArea.appendChild(select);
       subNote.textContent = '表示はまとめた分類ですが、元ジャンルを個別検索し、Googleの料理タイプ検索も併用して候補をまとめます。';
-      fillChoices(radiusArea, [['🚶 5分',320],['🚶 10分',640],['🚶 20分',1280]], cfg.radius_m, (v)=>{cfg.radius_m=Number(v);render();});
-      fillChoices(budgetArea, [['💴 1,000円','1000'],['💴 2,000円','2000'],['💴 5,000円','5000']], cfg.budget, (v)=>{cfg.budget=v;render();});
+      fillChoices(radiusArea, [['🚶 5分',320],['🚶 10分',640],['🚶 20分',1280]], cfg.radius_m, (v)=>{cfg.radius_m=Number(v);persistClientState(true);render();});
+      fillChoices(budgetArea, [['💴 1,000円','1000'],['💴 2,000円','2000'],['💴 5,000円','5000']], cfg.budget, (v)=>{cfg.budget=v;persistClientState(true);render();});
       budgetNote.textContent = '選んだ金額以内を目安に絞ります。価格未登録の店は候補から落とさず残します。';
     } else {
       subLabel.textContent = '種類';
-      fillChoices(subArea, [['おまかせ','なんでも'],['🌳 公園','公園'],['⛩️ 神社・寺','神社・寺'],['🏛️ 博物館・施設','博物館・施設'],['🚃 電車・乗り物','電車・乗り物']], cfg.subkind, (v)=>{cfg.subkind=v;render();});
+      fillChoices(subArea, [['おまかせ','なんでも'],['🌳 公園','公園'],['⛩️ 神社・寺','神社・寺'],['🏛️ 博物館・施設','博物館・施設'],['🚃 電車・乗り物','電車・乗り物']], cfg.subkind, (v)=>{cfg.subkind=v;persistClientState(true);render();});
       subNote.textContent = '気軽に寄れる場所から選びます。';
-      fillChoices(radiusArea, [['🚶 10分くらい',800],['🚶 20分くらい',1600],['＋ もう少し遠く',2500]], cfg.radius_m, (v)=>{cfg.radius_m=Number(v);render();});
-      fillChoices(budgetArea, [['💴 1,000円以下','under1000'],['○ 予算を問わない','all']], cfg.budget, (v)=>{cfg.budget=v;render();});
+      fillChoices(radiusArea, [['🚶 10分くらい',800],['🚶 20分くらい',1600],['＋ もう少し遠く',2500]], cfg.radius_m, (v)=>{cfg.radius_m=Number(v);persistClientState(true);render();});
+      fillChoices(budgetArea, [['💴 1,000円以下','under1000'],['○ 予算を問わない','all']], cfg.budget, (v)=>{cfg.budget=v;persistClientState(true);render();});
       budgetNote.textContent = '料金未登録の場所は候補に残します。';
     }
 
     if (googleEnabled) {
-      fillChoices(openArea, [['🟢 営業中だけ','open'],['○ 時間を問わない','all']], cfg.open, (v)=>{cfg.open=v;render();});
+      fillChoices(openArea, [['🟢 営業中だけ','open'],['○ 時間を問わない','all']], cfg.open, (v)=>{cfg.open=v;persistClientState(true);render();});
       openNote.textContent = '営業中だけにすると、営業時間が未登録の場所は候補から外れることがあります。';
     } else {
       cfg.open='all'; openArea.innerHTML='<div class="legacy-note" style="margin:0">Google Places未設定のため、営業時間では絞り込みません。</div>'; openNote.textContent='';
@@ -31608,8 +31657,8 @@ export default function(component) {
 
   const stop=()=>{if(watchId!==null&&navigator.geolocation){try{navigator.geolocation.clearWatch(watchId)}catch(_){}watchId=null}if(hardTimer){clearTimeout(hardTimer);hardTimer=null}};
   const unlock=()=>{if(!cancelled){button.disabled=false;button.classList.remove('searching');button.textContent='🔎 この条件で検索'}};
-  const emitBest=()=>{if(cancelled||!best?.coords)return;stop();const accuracy=Number(best.coords.accuracy||0);status.textContent=`現在地を取得しました（精度 ±${Math.round(accuracy)}m）。検索しています…`;setTriggerValue('search_location',{token:`${Date.now()}_${Math.random().toString(36).slice(2)}`,latitude:Number(best.coords.latitude),longitude:Number(best.coords.longitude),accuracy_m:accuracy,measured_at:new Date(best.timestamp||Date.now()).toISOString(),filters:gather()})};
-  const fail=(message,code=0)=>{stop();status.textContent=String(message||'現在地を取得できませんでした。');setTriggerValue('search_error',{token:`${Date.now()}_${Math.random().toString(36).slice(2)}`,code:Number(code||0),message:String(message||''),filters:gather()});unlock()};
+  const emitBest=()=>{if(cancelled||!best?.coords)return;stop();const filters=gather();persistClientState(true);const accuracy=Number(best.coords.accuracy||0);status.textContent=`現在地を取得しました（精度 ±${Math.round(accuracy)}m）。検索しています…`;setTriggerValue('search_location',{token:`${Date.now()}_${Math.random().toString(36).slice(2)}`,latitude:Number(best.coords.latitude),longitude:Number(best.coords.longitude),accuracy_m:accuracy,measured_at:new Date(best.timestamp||Date.now()).toISOString(),filters})};
+  const fail=(message,code=0)=>{stop();const filters=gather();persistClientState(true);status.textContent=String(message||'現在地を取得できませんでした。');setTriggerValue('search_error',{token:`${Date.now()}_${Math.random().toString(36).slice(2)}`,code:Number(code||0),message:String(message||''),filters});unlock()};
   const searchNow=()=>{if(!navigator.geolocation){fail('この端末では位置情報を取得できません。');return}stop();best=null;startedAt=Date.now();button.classList.add('searching');button.textContent='🔎 検索中…';button.disabled=true;status.textContent='検索地点を高精度GPSで確認しています…';watchId=navigator.geolocation.watchPosition((position)=>{if(cancelled||!position?.coords)return;const accuracy=Number(position.coords.accuracy||Number.POSITIVE_INFINITY);const bestAccuracy=best?Number(best.coords?.accuracy||Number.POSITIVE_INFINITY):Number.POSITIVE_INFINITY;if(!best||accuracy<bestAccuracy)best=position;const currentBest=best?Number(best.coords?.accuracy||Number.POSITIVE_INFINITY):Number.POSITIVE_INFINITY;status.textContent=Number.isFinite(currentBest)?`検索地点を高精度GPSで確認しています… ±${Math.round(currentBest)}m`:'検索地点を高精度GPSで確認しています…';if(currentBest>0&&currentBest<=25){emitBest();return}if(currentBest>0&&currentBest<=45&&(Date.now()-startedAt)>=1200)emitBest()},(error)=>{const bestAccuracy=best?Number(best.coords?.accuracy||Number.POSITIVE_INFINITY):Number.POSITIVE_INFINITY;if(best&&bestAccuracy>0&&bestAccuracy<=45){emitBest();return}const code=Number(error?.code||0);const msg=code===1?'位置情報の利用が許可されていません。':code===3?'現在地の取得に時間がかかりました。':'現在地を取得できませんでした。';fail(msg,code)},{enableHighAccuracy:true,timeout:10000,maximumAge:0});hardTimer=setTimeout(()=>{const bestAccuracy=best?Number(best.coords?.accuracy||Number.POSITIVE_INFINITY):Number.POSITIVE_INFINITY;if(best&&bestAccuracy>0&&bestAccuracy<=45)emitBest();else if(best&&Number.isFinite(bestAccuracy))fail(`GPS精度が ±${Math.round(bestAccuracy)}m のため検索を中止しました。`,3);else fail('現在地を高精度で取得できませんでした。',3)},10500)};
   unlock();
   button.addEventListener('click',searchNow);
@@ -31627,7 +31676,7 @@ def _get_nearby_batch_search_component_v320():
     _nearby_batch_search_component_initialized_v320 = True
     try:
         _nearby_batch_search_component_v320 = st.components.v2.component(
-            "tokyo_burari_nearby_batch_search_v409",
+            "tokyo_burari_nearby_batch_search_v480",
             html=_NEARBY_BATCH_SEARCH_HTML_V320,
             css=_NEARBY_BATCH_SEARCH_CSS_V320,
             js=_perf_instrument_js_v466(_NEARBY_BATCH_SEARCH_JS_V320),
@@ -31723,6 +31772,8 @@ export default function(component) {
   const summary=parentElement.querySelector('#tb-summary'), button=parentElement.querySelector('#tb-search'), status=parentElement.querySelector('#tb-status');
   if(!distanceArea||!feeArea||!wheelArea||!babyArea||!openArea||!summary||!button||!status)return;
   const initial=(data&&data.initial&&typeof data.initial==='object')?data.initial:{};
+  const stateKey=String(data?.state_key||'tokyo_burari_toilet_filters_v480');
+  const serverToken=String(data?.completion_token||'');
   const state={
     distance:['1','3'].includes(String(initial.distance||''))?String(initial.distance):'3',
     fee:['free','all'].includes(String(initial.fee||''))?String(initial.fee):'free',
@@ -31730,21 +31781,33 @@ export default function(component) {
     baby:['yes','all'].includes(String(initial.baby||''))?String(initial.baby):'all',
     open:['usable','all'].includes(String(initial.open||''))?String(initial.open):'usable'
   };
+  let savedClientState=null;try{const parsed=JSON.parse(localStorage.getItem(stateKey)||'null');if(parsed&&typeof parsed==='object')savedClientState=parsed}catch(_){}
+  const restoreDirty=!!(savedClientState?.dirty&&String(savedClientState?.server_token||'')===serverToken);
+  if(restoreDirty&&savedClientState?.state&&typeof savedClientState.state==='object'){
+    const saved=savedClientState.state;
+    if(['1','3'].includes(String(saved.distance||'')))state.distance=String(saved.distance);
+    if(['free','all'].includes(String(saved.fee||'')))state.fee=String(saved.fee);
+    if(['yes','all'].includes(String(saved.wheelchair||'')))state.wheelchair=String(saved.wheelchair);
+    if(['yes','all'].includes(String(saved.baby||'')))state.baby=String(saved.baby);
+    if(['usable','all'].includes(String(saved.open||'')))state.open=String(saved.open);
+  }
   let cancelled=false,watchId=null,hardTimer=null,best=null,startedAt=0;
+  const persistClientState=(dirty=true)=>{try{localStorage.setItem(stateKey,JSON.stringify({dirty:!!dirty,server_token:serverToken,state}))}catch(_){}};
+  if(!restoreDirty)persistClientState(false);
   let loaderDoc=parentElement?.ownerDocument||document;try{const parentDoc=window.parent&&window.parent.document?window.parent.document:null;if(parentDoc&&parentDoc.getElementById('burari-global-loader-v326'))loaderDoc=parentDoc}catch(_){}
   let loaderFailSafeTimer=null;
   const showTrainLoader=(message)=>{const overlay=loaderDoc.getElementById('burari-global-loader-v326');if(!overlay)return;const msg=loaderDoc.getElementById('burari-global-loader-message-v326');if(msg)msg.textContent=String(message||'読み込み中…');overlay.classList.add('burari-active');if(loaderFailSafeTimer)clearTimeout(loaderFailSafeTimer);loaderFailSafeTimer=setTimeout(()=>{overlay.classList.remove('burari-active')},13000)};
   const hideTrainLoader=()=>{if(loaderFailSafeTimer){clearTimeout(loaderFailSafeTimer);loaderFailSafeTimer=null}const overlay=loaderDoc.getElementById('burari-global-loader-v326');if(overlay)overlay.classList.remove('burari-active')};
   const makeChoice=(label,value,selected,onClick)=>{const b=document.createElement('button');b.type='button';b.className='legacy-choice'+(String(value)===String(selected)?' active':'');b.textContent=String(label);b.addEventListener('click',()=>onClick(String(value)));return b};
-  const fill=(root,rows,selected,key)=>{root.innerHTML='';rows.forEach(([label,value])=>root.appendChild(makeChoice(label,value,selected,(v)=>{state[key]=v;render()})))};
+  const fill=(root,rows,selected,key)=>{root.innerHTML='';rows.forEach(([label,value])=>root.appendChild(makeChoice(label,value,selected,(v)=>{state[key]=v;persistClientState(true);render()})))};
   const gather=()=>({distance:state.distance,fee:state.fee,wheelchair:state.wheelchair,baby:state.baby,open:state.open});
   const updateSummary=()=>{const f=gather();summary.textContent=`徒歩${f.distance}分くらい　／　${f.fee==='free'?'無料優先':'料金問わない'}　／　${f.wheelchair==='yes'?'車いす対応':'車いす問わない'}　／　${f.baby==='yes'?'交換台あり':'交換台問わない'}　／　${f.open==='usable'?'今使える優先':'利用時間問わない'}`};
   const render=()=>{fill(distanceArea,[['🚶 1分','1'],['🚶 3分','3']],state.distance,'distance');fill(feeArea,[['🆓 無料優先','free'],['料金問わない','all']],state.fee,'fee');fill(wheelArea,[['♿ 対応だけ','yes'],['問わない','all']],state.wheelchair,'wheelchair');fill(babyArea,[['👶 交換台あり','yes'],['問わない','all']],state.baby,'baby');fill(openArea,[['🟢 今使える優先','usable'],['時間問わない','all']],state.open,'open');updateSummary()};
   render();
   const stop=()=>{if(watchId!==null&&navigator.geolocation){try{navigator.geolocation.clearWatch(watchId)}catch(_){}watchId=null}if(hardTimer){clearTimeout(hardTimer);hardTimer=null}};
   const unlock=()=>{if(!cancelled){button.disabled=false;button.classList.remove('searching');button.textContent='🚻 この条件でトイレを探す'}};
-  const emitBest=()=>{if(cancelled||!best?.coords)return;stop();const accuracy=Number(best.coords.accuracy||0);status.textContent=`現在地を取得しました（精度 ±${Math.round(accuracy)}m）。トイレを検索しています…`;hideTrainLoader();setTriggerValue('search_location',{token:`${Date.now()}_${Math.random().toString(36).slice(2)}`,latitude:Number(best.coords.latitude),longitude:Number(best.coords.longitude),accuracy_m:accuracy,measured_at:new Date(best.timestamp||Date.now()).toISOString(),filters:gather()})};
-  const fail=(message,code=0)=>{stop();status.textContent=String(message||'現在地を取得できませんでした。');hideTrainLoader();setTriggerValue('search_error',{token:`${Date.now()}_${Math.random().toString(36).slice(2)}`,code:Number(code||0),message:String(message||''),filters:gather()});unlock()};
+  const emitBest=()=>{if(cancelled||!best?.coords)return;stop();const filters=gather();persistClientState(true);const accuracy=Number(best.coords.accuracy||0);status.textContent=`現在地を取得しました（精度 ±${Math.round(accuracy)}m）。トイレを検索しています…`;hideTrainLoader();setTriggerValue('search_location',{token:`${Date.now()}_${Math.random().toString(36).slice(2)}`,latitude:Number(best.coords.latitude),longitude:Number(best.coords.longitude),accuracy_m:accuracy,measured_at:new Date(best.timestamp||Date.now()).toISOString(),filters})};
+  const fail=(message,code=0)=>{stop();const filters=gather();persistClientState(true);status.textContent=String(message||'現在地を取得できませんでした。');hideTrainLoader();setTriggerValue('search_error',{token:`${Date.now()}_${Math.random().toString(36).slice(2)}`,code:Number(code||0),message:String(message||''),filters});unlock()};
   const searchNow=()=>{if(!navigator.geolocation){fail('この端末では位置情報を取得できません。');return}stop();best=null;startedAt=Date.now();button.classList.add('searching');button.textContent='🚻 検索中…';button.disabled=true;status.textContent='現在地を高精度GPSで確認しています…';showTrainLoader(status.textContent);watchId=navigator.geolocation.watchPosition((position)=>{if(cancelled||!position?.coords)return;const accuracy=Number(position.coords.accuracy||Number.POSITIVE_INFINITY);const bestAccuracy=best?Number(best.coords?.accuracy||Number.POSITIVE_INFINITY):Number.POSITIVE_INFINITY;if(!best||accuracy<bestAccuracy)best=position;const currentBest=best?Number(best.coords?.accuracy||Number.POSITIVE_INFINITY):Number.POSITIVE_INFINITY;status.textContent=Number.isFinite(currentBest)?`現在地を高精度GPSで確認しています… ±${Math.round(currentBest)}m`:'現在地を高精度GPSで確認しています…';showTrainLoader(status.textContent);if(currentBest>0&&currentBest<=25){emitBest();return}if(currentBest>0&&currentBest<=45&&(Date.now()-startedAt)>=1200)emitBest()},(error)=>{const bestAccuracy=best?Number(best.coords?.accuracy||Number.POSITIVE_INFINITY):Number.POSITIVE_INFINITY;if(best&&bestAccuracy>0&&bestAccuracy<=45){emitBest();return}const code=Number(error?.code||0);const msg=code===1?'位置情報の利用が許可されていません。':code===3?'現在地の取得に時間がかかりました。':'現在地を取得できませんでした。';fail(msg,code)},{enableHighAccuracy:true,timeout:10000,maximumAge:0});hardTimer=setTimeout(()=>{const bestAccuracy=best?Number(best.coords?.accuracy||Number.POSITIVE_INFINITY):Number.POSITIVE_INFINITY;if(best&&bestAccuracy>0&&bestAccuracy<=45)emitBest();else if(best&&Number.isFinite(bestAccuracy))fail(`GPS精度が ±${Math.round(bestAccuracy)}m のため検索を中止しました。`,3);else fail('現在地を高精度で取得できませんでした。',3)},10500)};
   unlock();
   button.addEventListener('click',searchNow);return()=>{cancelled=true;stop();hideTrainLoader();button.removeEventListener('click',searchNow);try{parentElement?.removeEventListener(activityPressEvent,markUserActivity,{capture:true,passive:true})}catch(_){}try{parentElement?.removeEventListener('keydown',markUserActivity,true)}catch(_){}try{parentElement?.removeEventListener('wheel',markUserActivity,{capture:true,passive:true})}catch(_){}};
@@ -31761,7 +31824,7 @@ def _get_toilet_batch_search_component_v320():
     _toilet_batch_search_component_initialized_v320 = True
     try:
         _toilet_batch_search_component_v320 = st.components.v2.component(
-            "tokyo_burari_toilet_batch_search_v409",
+            "tokyo_burari_toilet_batch_search_v480",
             html=_TOILET_BATCH_SEARCH_HTML_V320,
             css=_TOILET_BATCH_SEARCH_CSS_V320,
             js=_perf_instrument_js_v466(_TOILET_BATCH_SEARCH_JS_V320),
@@ -32151,17 +32214,22 @@ def page_toilets():
         }, ensure_ascii=False, sort_keys=True)
 
     def _commit_toilet_filters_v320(filters):
-        filters = filters if isinstance(filters, dict) else {}
-        distance = str(filters.get("distance") or "3")
-        if distance not in {"1", "3"}: distance = "3"
-        fee = str(filters.get("fee") or "free")
-        if fee not in {"free", "all"}: fee = "free"
-        wheel = str(filters.get("wheelchair") or "all")
-        if wheel not in {"yes", "all"}: wheel = "all"
-        baby = str(filters.get("baby") or "all")
-        if baby not in {"yes", "all"}: baby = "all"
-        open_value = str(filters.get("open") or "usable")
-        if open_value not in {"usable", "all"}: open_value = "usable"
+        # v480: the toilet picker follows the same fail-closed rule as Nearby.
+        if not isinstance(filters, dict):
+            raise ValueError("toilet_filters_missing")
+        required = {"distance", "fee", "wheelchair", "baby", "open"}
+        if not required.issubset(filters.keys()):
+            raise ValueError("toilet_filters_incomplete")
+        distance = str(filters.get("distance") or "")
+        if distance not in {"1", "3"}: raise ValueError("toilet_distance_invalid")
+        fee = str(filters.get("fee") or "")
+        if fee not in {"free", "all"}: raise ValueError("toilet_fee_invalid")
+        wheel = str(filters.get("wheelchair") or "")
+        if wheel not in {"yes", "all"}: raise ValueError("toilet_wheelchair_invalid")
+        baby = str(filters.get("baby") or "")
+        if baby not in {"yes", "all"}: raise ValueError("toilet_baby_invalid")
+        open_value = str(filters.get("open") or "")
+        if open_value not in {"usable", "all"}: raise ValueError("toilet_open_invalid")
         st.session_state[distance_key] = distance
         st.session_state[fee_key] = fee
         st.session_state[wheelchair_key] = wheel
@@ -32189,8 +32257,8 @@ def page_toilets():
         previous_result = st.session_state.get(result_key)
         completion_token = str(previous_result.get("searched_at") or "") if isinstance(previous_result, dict) else ""
         search_component_result = search_component(
-            data={"initial": {"distance": distance_mode, "fee": fee_mode, "wheelchair": wheelchair_mode, "baby": baby_mode, "open": open_mode}, "completion_token": completion_token},
-            key=f"toilet_batch_search_v409_{prefix}",
+            data={"initial": {"distance": distance_mode, "fee": fee_mode, "wheelchair": wheelchair_mode, "baby": baby_mode, "open": open_mode}, "completion_token": completion_token, "state_key": f"tokyo_burari_toilet_filters_v480_{hashlib.sha1(prefix.encode('utf-8')).hexdigest()[:16]}"},
+            key=f"toilet_batch_search_v480_{prefix}",
             on_search_location_change=lambda: None,
             on_search_error_change=lambda: None,
         )
@@ -32275,11 +32343,16 @@ def page_toilets():
                 fresh_lat = float(fresh_search_payload.get("latitude"))
                 fresh_lon = float(fresh_search_payload.get("longitude"))
                 fresh_accuracy = float(fresh_search_payload.get("accuracy_m") or 0) or None
-                request_cfg = _commit_toilet_filters_v320(fresh_search_payload.get("filters"))
-                _run_toilet_search(fresh_lat, fresh_lon, fresh_accuracy, "gps", search_config=request_cfg)
-                st.rerun()
             except (TypeError, ValueError):
                 st.session_state["_toilet_search_warning"] = "検索時の現在地を確認できませんでした。もう一度お試しください。"
+            else:
+                try:
+                    request_cfg = _commit_toilet_filters_v320(fresh_search_payload.get("filters"))
+                except ValueError:
+                    st.session_state["_toilet_search_warning"] = "選んだトイレ検索条件を正しく受け取れませんでした。条件を確認して、もう一度検索してください。"
+                else:
+                    _run_toilet_search(fresh_lat, fresh_lon, fresh_accuracy, "gps", search_config=request_cfg)
+                    st.rerun()
 
     fresh_search_error = getattr(search_component_result, "search_error", None) if search_component_result is not None else None
     if isinstance(fresh_search_error, dict):
@@ -32295,18 +32368,23 @@ def page_toilets():
             ):
                 try:
                     request_cfg = _commit_toilet_filters_v320(fresh_search_error.get("filters"))
-                    _run_toilet_search(
-                        manual_fallback.get("latitude"),
-                        manual_fallback.get("longitude"),
-                        None,
-                        "manual",
-                        search_config=request_cfg,
-                    )
+                except ValueError:
+                    st.session_state["_toilet_search_warning"] = "選んだトイレ検索条件を正しく受け取れませんでした。条件を確認して、もう一度検索してください。"
                     st.rerun()
-                except Exception:
-                    st.session_state["_toilet_search_warning"] = str(
-                        fresh_search_error.get("message") or "現在地を取得できませんでした。もう一度お試しください。"
-                    )
+                else:
+                    try:
+                        _run_toilet_search(
+                            manual_fallback.get("latitude"),
+                            manual_fallback.get("longitude"),
+                            None,
+                            "manual",
+                            search_config=request_cfg,
+                        )
+                        st.rerun()
+                    except Exception:
+                        st.session_state["_toilet_search_warning"] = str(
+                            fresh_search_error.get("message") or "現在地を取得できませんでした。もう一度お試しください。"
+                        )
             else:
                 st.session_state["_toilet_search_warning"] = str(
                     fresh_search_error.get("message") or "現在地を取得できませんでした。もう一度お試しください。"
@@ -32803,29 +32881,51 @@ def page_nearby():
         }, ensure_ascii=False, sort_keys=True)
 
     def _commit_nearby_filters_v320(filters):
-        filters = filters if isinstance(filters, dict) else {}
-        request_kind = str(filters.get("kind") or "snack")
-        if request_kind not in {"snack", "lunch", "sightseeing"}: request_kind = "snack"
+        # v480: never silently replace a missing/invalid browser selection with a default.
+        # A wrong fallback (notably Lunch -> おまかせ / 10分 / 2,000円) is worse than
+        # asking the user to press Search again with the visible conditions.
+        if not isinstance(filters, dict):
+            raise ValueError("nearby_filters_missing")
+        required = {"kind", "subkind", "radius_m", "open_now_only"}
+        if not required.issubset(filters.keys()):
+            raise ValueError("nearby_filters_incomplete")
+        request_kind = str(filters.get("kind") or "")
+        if request_kind not in {"snack", "lunch", "sightseeing"}:
+            raise ValueError("nearby_kind_invalid")
         request_sub = str(filters.get("subkind") or "")
         if request_kind == "snack":
-            if request_sub not in {"食べ歩き向き", "店内中心"}: request_sub = "食べ歩き向き"
-            allowed = {64, 192, 320}; default_r = 192
+            if request_sub not in {"食べ歩き向き", "店内中心"}: raise ValueError("nearby_subkind_invalid")
+            allowed = {64, 192, 320}
             st.session_state[snack_key] = request_sub
         elif request_kind == "lunch":
-            if request_sub not in set(NEARBY_LUNCH_GENRES): request_sub = "おまかせ"
-            allowed = {320, 640, 1280}; default_r = 640
+            if request_sub not in set(NEARBY_LUNCH_GENRES): raise ValueError("nearby_lunch_genre_invalid")
+            allowed = {320, 640, 1280}
             st.session_state[lunch_key] = request_sub
         else:
-            if request_sub not in {"なんでも", "公園", "神社・寺", "博物館・施設", "電車・乗り物"}: request_sub = "なんでも"
-            allowed = {800, 1600, 2500}; default_r = 800
+            if request_sub not in {"なんでも", "公園", "神社・寺", "博物館・施設", "電車・乗り物"}: raise ValueError("nearby_subkind_invalid")
+            allowed = {800, 1600, 2500}
             st.session_state[sight_key] = request_sub
-        try: request_radius = int(filters.get("radius_m") or default_r)
-        except Exception: request_radius = default_r
-        if request_radius not in allowed: request_radius = default_r
-        request_budget_under = bool(filters.get("budget_under_1000")) if request_kind != "lunch" else False
-        try: request_budget_limit = int(filters.get("budget_limit") or 2000) if request_kind == "lunch" else None
-        except Exception: request_budget_limit = 2000 if request_kind == "lunch" else None
-        if request_kind == "lunch" and request_budget_limit not in {1000, 2000, 5000}: request_budget_limit = 2000
+        try:
+            request_radius = int(filters.get("radius_m"))
+        except Exception as exc:
+            raise ValueError("nearby_radius_invalid") from exc
+        if request_radius not in allowed:
+            raise ValueError("nearby_radius_invalid")
+        if request_kind == "lunch":
+            if "budget_limit" not in filters:
+                raise ValueError("nearby_lunch_budget_missing")
+            try:
+                request_budget_limit = int(filters.get("budget_limit"))
+            except Exception as exc:
+                raise ValueError("nearby_lunch_budget_invalid") from exc
+            if request_budget_limit not in {1000, 2000, 5000}:
+                raise ValueError("nearby_lunch_budget_invalid")
+            request_budget_under = False
+        else:
+            if "budget_under_1000" not in filters:
+                raise ValueError("nearby_budget_missing")
+            request_budget_under = bool(filters.get("budget_under_1000"))
+            request_budget_limit = None
         request_open = bool(GOOGLE_PLACES_API_KEY and filters.get("open_now_only"))
         st.session_state[kind_key] = request_kind
         st.session_state[radius_key] = request_radius
@@ -32850,8 +32950,8 @@ def page_nearby():
         previous_result = st.session_state.get(result_key)
         completion_token = str(previous_result.get("searched_at") or "") if isinstance(previous_result, dict) else ""
         search_component_result = search_component(
-            data={"initial": current_cfg, "lunch_genres": list(NEARBY_LUNCH_GENRES), "google_enabled": bool(GOOGLE_PLACES_API_KEY), "completion_token": completion_token},
-            key=f"nearby_batch_search_v409_{prefix}",
+            data={"initial": current_cfg, "lunch_genres": list(NEARBY_LUNCH_GENRES), "google_enabled": bool(GOOGLE_PLACES_API_KEY), "completion_token": completion_token, "state_key": f"tokyo_burari_nearby_filters_v480_{hashlib.sha1(prefix.encode('utf-8')).hexdigest()[:16]}"},
+            key=f"nearby_batch_search_v480_{prefix}",
             on_search_location_change=lambda: None,
             on_search_error_change=lambda: None,
         )
@@ -32953,11 +33053,16 @@ def page_nearby():
                 fresh_lat = float(fresh_search_payload.get("latitude"))
                 fresh_lon = float(fresh_search_payload.get("longitude"))
                 fresh_accuracy = float(fresh_search_payload.get("accuracy_m") or 0) or None
-                request_cfg = _commit_nearby_filters_v320(fresh_search_payload.get("filters"))
-                _run_nearby_search(fresh_lat, fresh_lon, fresh_accuracy, "gps", search_config=request_cfg)
-                st.rerun()
             except (TypeError, ValueError):
                 st.session_state["_nearby_search_warning"] = "検索時の現在地を確認できませんでした。もう一度お試しください。"
+            else:
+                try:
+                    request_cfg = _commit_nearby_filters_v320(fresh_search_payload.get("filters"))
+                except ValueError:
+                    st.session_state["_nearby_search_warning"] = "選んだ検索条件を正しく受け取れませんでした。表示中の条件を確認して、もう一度検索してください。"
+                else:
+                    _run_nearby_search(fresh_lat, fresh_lon, fresh_accuracy, "gps", search_config=request_cfg)
+                    st.rerun()
 
     fresh_search_error = getattr(search_component_result, "search_error", None) if search_component_result is not None else None
     if isinstance(fresh_search_error, dict):
@@ -32971,15 +33076,20 @@ def page_nearby():
                 and manual_fallback.get("latitude") is not None
                 and manual_fallback.get("longitude") is not None
             ):
-                request_cfg = _commit_nearby_filters_v320(fresh_search_error.get("filters"))
-                _run_nearby_search(
-                    manual_fallback.get("latitude"),
-                    manual_fallback.get("longitude"),
-                    None,
-                    "manual",
-                    search_config=request_cfg,
-                )
-                st.rerun()
+                try:
+                    request_cfg = _commit_nearby_filters_v320(fresh_search_error.get("filters"))
+                except ValueError:
+                    st.session_state["_nearby_search_warning"] = "選んだ検索条件を正しく受け取れませんでした。表示中の条件を確認して、もう一度検索してください。"
+                    st.rerun()
+                else:
+                    _run_nearby_search(
+                        manual_fallback.get("latitude"),
+                        manual_fallback.get("longitude"),
+                        None,
+                        "manual",
+                        search_config=request_cfg,
+                    )
+                    st.rerun()
             else:
                 st.session_state.pop(result_key, None)
                 st.session_state[detail_key] = ""
