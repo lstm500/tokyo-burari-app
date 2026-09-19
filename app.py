@@ -32,10 +32,12 @@ from zoneinfo import ZoneInfo
 
 import streamlit as st
 
-# Performance update: 2026-09-19 JST
+# Replay update: 2026-09-19 JST
 GENERATED_UPDATE_JST = "2026-09-19T09:00:00+09:00"
 
-APP_BUILD = "v468"
+APP_BUILD = "v469"
+# v469: deletable duration-sorted music presets, standard keypad, voice-budgeted random replay.
+# v468 performance improvements and unrelated capture/GPS/account behavior are preserved.
 # v468: post-save vision jobs, persistent exact framing, async display-only storage,
 # batched current-tag/diary updates, account caches, movie-sharing retirement.
 # Capture/GPS/replay quality and canonical-save acknowledgement are unchanged.
@@ -13810,6 +13812,7 @@ def save_photo_voice_note_bytes(
     *,
     apply_cleanup=False,
     cleanup_meta=None,
+    duration_ms=0,
 ):
     """Save a photo voice note without implicitly changing its sound.
 
@@ -13901,6 +13904,9 @@ def save_photo_voice_note_bytes(
             "uploaded_at": now_jst().isoformat(),
             "transcript": final_transcript,
         }
+        known_duration = _voice_duration_value_ms_v469({"duration_ms": duration_ms})
+        if known_duration:
+            voice_note["duration_ms"] = known_duration
         if cleanup_record:
             voice_note["audio_cleanup"] = cleanup_record
         reflection["voice_note"] = voice_note
@@ -18379,6 +18385,7 @@ def update_video_ai_selection_voice_choice(video_photo, rank, candidate_rank):
                 transcript=str(chosen.get("transcript") or ""),
                 auto_transcribe=not bool(str(chosen.get("transcript") or "").strip()),
                 cleanup_meta=chosen.get("audio_cleanup") if isinstance(chosen.get("audio_cleanup"), dict) else None,
+                duration_ms=_voice_duration_value_ms_v469(chosen),
             )
         else:
             delete_photo_voice_note(saved_photo_id)
@@ -18531,6 +18538,7 @@ def save_video_ai_selection_as_photo(video_photo, selection_item):
                     transcript=str(chosen.get("transcript") or ""),
                     auto_transcribe=not bool(str(chosen.get("transcript") or "").strip()),
                     cleanup_meta=chosen.get("audio_cleanup") if isinstance(chosen.get("audio_cleanup"), dict) else None,
+                duration_ms=_voice_duration_value_ms_v469(chosen),
                 )
         except Exception:
             pass
@@ -18647,11 +18655,12 @@ def _sync_moments_metadata_into_saved_photos_v417(photos):
                     str(chosen.get("mime_type") or "audio/mp4"),
                     str(chosen.get("transcript") or ""),
                     dict(chosen.get("audio_cleanup") or {}) if isinstance(chosen.get("audio_cleanup"), dict) else {},
+                    _voice_duration_value_ms_v469(chosen),
                 )
                 voice_cache[cache_key] = voice_payload
             if not voice_payload:
                 continue
-            raw_voice, file_name, mime_type, transcript, cleanup_meta = voice_payload
+            raw_voice, file_name, mime_type, transcript, cleanup_meta, duration_ms = voice_payload
             save_photo_voice_note_bytes(
                 photo_id,
                 raw_voice,
@@ -18660,6 +18669,7 @@ def _sync_moments_metadata_into_saved_photos_v417(photos):
                 transcript=transcript,
                 auto_transcribe=not bool(transcript.strip()),
                 cleanup_meta=cleanup_meta,
+                duration_ms=duration_ms,
             )
             changed = True
         except Exception:
@@ -21300,6 +21310,215 @@ def _normalize_music_library_item(item):
     }
 
 
+# v469: music presets use stable identities, independent of their display order.
+def _music_preset_key_v469(item):
+    normalized = _normalize_music_library_item(item)
+    if not normalized:
+        return ""
+    return json.dumps([normalized["video_id"], normalized["start_seconds"], normalized["end_seconds"]], separators=(",", ":"))
+
+
+def _sorted_music_library_v469(items):
+    valid = [_normalize_music_library_item(item) for item in (items or [])]
+    return sorted((item for item in valid if item), key=lambda item: (
+        item["end_seconds"] - item["start_seconds"],
+        item["title"].casefold(), item["video_id"], item["start_seconds"], item["end_seconds"],
+    ))
+
+
+def delete_saved_music_v469(item):
+    """Remove only this member's exact saved interval; never edit a movie's playback."""
+    target = _music_preset_key_v469(item)
+    if not target:
+        raise ValueError("\u524a\u9664\u3059\u308b\u97f3\u697d\u3092\u78ba\u8a8d\u3067\u304d\u307e\u305b\u3093\u3002")
+    # Re-read at confirmation, rather than writing the earlier selectbox snapshot.
+    current = get_saved_music_library(force=True)
+    remaining = [row for row in current if _music_preset_key_v469(row) != target]
+    if len(remaining) == len(current):
+        return False
+    _write_saved_music_library(remaining)
+    return True
+
+
+def _voice_duration_value_ms_v469(meta):
+    """Read finite durations without a network request. Zero means unknown, NOT silent."""
+    meta = meta if isinstance(meta, dict) else {}
+    for key, multiplier in (("duration_ms", 1), ("voice_duration_ms", 1), ("duration_seconds", 1000), ("duration_sec", 1000)):
+        try:
+            value = float(meta.get(key) or 0) * multiplier
+            if math.isfinite(value) and value > 0:
+                return int(math.ceil(value))
+        except (TypeError, ValueError, OverflowError):
+            pass
+    return 0
+
+
+_MUSIC_EDITOR_HTML_V469 = """
+<div class="music-editor-469">
+  <div class="music-url-block">
+    <label class="music-label" for="music-url-469">YouTube URL</label>
+    <input id="music-url-469" class="music-url" type="url" inputmode="url" autocomplete="off" placeholder="https://www.youtube.com/watch?v=...">
+  </div>
+  <div class="music-times">
+    <div><span class="music-label">\u958b\u59cb\uff08\u79d2\uff09</span><div class="music-time-control">
+      <button type="button" data-step="start:-1" aria-label="\u958b\u59cb\u30921\u79d2\u6e1b\u3089\u3059">&#8722;</button>
+      <button type="button" data-edit="start" class="music-time-value" aria-label="\u958b\u59cb\u79d2\u6570\u3092\u5165\u529b"></button>
+      <button type="button" data-step="start:1" aria-label="\u958b\u59cb\u30921\u79d2\u5897\u3084\u3059">+</button>
+    </div></div>
+    <div><span class="music-label">\u7d42\u4e86\uff08\u79d2\uff09</span><div class="music-time-control">
+      <button type="button" data-step="end:-1" aria-label="\u7d42\u4e86\u30921\u79d2\u6e1b\u3089\u3059">&#8722;</button>
+      <button type="button" data-edit="end" class="music-time-value" aria-label="\u7d42\u4e86\u79d2\u6570\u3092\u5165\u529b"></button>
+      <button type="button" data-step="end:1" aria-label="\u7d42\u4e86\u30921\u79d2\u5897\u3084\u3059">+</button>
+    </div></div>
+  </div>
+  <div class="music-keypad" hidden role="group" aria-label="\u79d2\u6570\u306e\u30c6\u30f3\u30ad\u30fc" tabindex="-1">
+    <div class="music-pad-heading"><strong class="music-pad-label"></strong><button type="button" data-pad="clear" class="music-pad-clear">\u30af\u30ea\u30a2</button></div>
+    <output class="music-pad-display" aria-live="polite"></output>
+    <div class="music-pad-grid">
+      <button type="button" data-digit="7">7</button><button type="button" data-digit="8">8</button><button type="button" data-digit="9">9</button>
+      <button type="button" data-digit="4">4</button><button type="button" data-digit="5">5</button><button type="button" data-digit="6">6</button>
+      <button type="button" data-digit="1">1</button><button type="button" data-digit="2">2</button><button type="button" data-digit="3">3</button>
+      <button type="button" data-digit="0" class="music-pad-zero">0</button><button type="button" data-pad="back" aria-label="1\u6587\u5b57\u6d88\u3059">&#9003;</button>
+    </div>
+    <div class="music-pad-actions"><button type="button" data-pad="cancel">\u30ad\u30e3\u30f3\u30bb\u30eb</button><button type="button" data-pad="ok" class="music-primary">\u6c7a\u5b9a</button></div>
+  </div>
+  <div class="music-summary" aria-live="polite"></div>
+  <div class="music-error" hidden role="alert"></div>
+  <div class="music-actions">
+    <button type="button" data-action="apply" class="music-primary music-apply">\u3053\u306e\u97f3\u697d\u3067\u30e0\u30fc\u30d3\u30fc\u3092\u8a66\u3059\uff08\u4fdd\u5b58\u3057\u306a\u3044\uff09</button>
+    <div class="music-helper-actions"><button type="button" data-action="guess">AI\u306b\u304a\u3059\u3059\u3081\u6642\u9593</button><button type="button" data-action="save">\u97f3\u697d\u3060\u3051\u4fdd\u5b58</button><button type="button" data-action="clear">\u8a2d\u5b9a\u3092\u30ea\u30bb\u30c3\u30c8</button></div>
+  </div>
+</div>
+"""
+
+_MUSIC_EDITOR_CSS_V469 = """
+.music-editor-469 {font-family:var(--st-font, sans-serif);color:var(--st-text-color,#1f2937);width:100%;box-sizing:border-box;}
+.music-editor-469 * {box-sizing:border-box;}
+.music-editor-469 [hidden] {display:none !important;}
+.music-editor-469 button {appearance:none;min-height:48px;padding:8px 10px;border:1px solid #bcc5d0;border-radius:12px;background:var(--st-secondary-background-color,#f4f6f8);color:var(--st-text-color,#1f2937);font:inherit;font-weight:700;cursor:pointer;touch-action:manipulation;}
+.music-editor-469 button:active {filter:brightness(.82);transform:scale(.97);}
+.music-editor-469 button:focus-visible, .music-url:focus {outline:3px solid #93c5fd;outline-offset:2px;}
+.music-label {display:block;font-size:14px;font-weight:700;margin:0 0 7px;}
+.music-url {width:100%;min-height:46px;border:1px solid #bcc5d0;border-radius:10px;padding:10px;font-size:16px;color:var(--st-text-color,#1f2937);background:var(--st-secondary-background-color,#f4f6f8);}
+.music-url-block {margin-bottom:16px;}
+.music-times {display:grid;grid-template-columns:1fr 1fr;gap:12px;}
+.music-time-control {display:grid;grid-template-columns:38px minmax(0,1fr) 38px;gap:5px;}
+.music-time-control button {padding:6px 3px;}
+.music-time-control .music-time-value {background:rgba(59,130,246,.08);border-color:#7da9df;font-size:20px;font-variant-numeric:tabular-nums;}
+.music-summary {margin:12px 0;font-size:14px;line-height:1.6;}
+.music-keypad {width:min(330px,100%);padding:12px;margin:12px auto;border:1px solid #cbd5e1;border-radius:16px;background:var(--st-background-color,#fff);}
+.music-pad-heading {display:flex;align-items:center;justify-content:space-between;gap:10px;}
+.music-pad-heading .music-pad-clear {min-height:34px;font-size:12px;}
+.music-pad-display {display:block;text-align:right;font-size:30px;font-weight:800;font-variant-numeric:tabular-nums;padding:10px 4px;min-height:57px;}
+.music-pad-grid {display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;}
+.music-pad-grid button {height:54px;font-size:23px;}
+.music-pad-zero {grid-column:span 2;}
+.music-pad-actions {display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px;}
+.music-editor-469 .music-primary {color:white;background:#2563eb;border-color:#2563eb;}
+.music-apply {width:100%;}
+.music-helper-actions {display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px;margin-top:8px;}
+.music-helper-actions button {font-size:12px;line-height:1.4;padding:8px 4px;}
+.music-error {font-size:13px;color:#b91c1c;margin:8px 0;}
+@media(max-width:380px){.music-times{gap:8px;}.music-time-control{grid-template-columns:30px minmax(0,1fr) 30px;gap:3px;}.music-time-value{font-size:18px !important;}}
+"""
+
+_MUSIC_EDITOR_JS_V469 = r"""
+export default function(component) {
+  const {parentElement, data, setTriggerValue} = component;
+  const root = parentElement.querySelector('.music-editor-469');
+  if (!root) return;
+  const mode = data?.mode === 'time' ? 'time' : 'music';
+  const url = root.querySelector('.music-url');
+  const pad = root.querySelector('.music-keypad');
+  const display = root.querySelector('.music-pad-display');
+  const error = root.querySelector('.music-error');
+  const signature = JSON.stringify([data?.youtube_url, data?.start_seconds, data?.end_seconds, data?.revision, mode]);
+  const draftKey = 'burari-music-editor-v469:' + String(data?.scope || '');
+  let draft = null;
+  try { draft = JSON.parse(sessionStorage.getItem(draftKey) || 'null'); } catch (_) {}
+  if (!draft || draft.signature !== signature) draft = {signature, url:String(data?.youtube_url || ''), start:Number(data?.start_seconds ?? 0), end:Number(data?.end_seconds ?? 20)};
+  const integer = (value, minimum=0) => Math.max(minimum, Math.min(999999999, Math.floor(Number(value) || 0)));
+  draft.start = integer(draft.start); draft.end = integer(draft.end, 1);
+  let editing = '', digits = '', replace = true;
+  const saveDraft = () => {try { sessionStorage.setItem(draftKey, JSON.stringify(draft)); } catch (_) {}};
+  const mmss = (value) => {const n=integer(value);return `${Math.floor(n/60)}:${String(n%60).padStart(2,'0')}`;};
+  const showError = (message='') => {error.textContent=message;error.hidden=!message;};
+  const render = () => {
+    root.querySelector('[data-edit="start"]').textContent=String(draft.start);
+    root.querySelector('[data-edit="end"]').textContent=String(draft.end);
+    const end=draft.end>draft.start?draft.end:draft.start+20;
+    root.querySelector('.music-summary').textContent=`${mmss(draft.start)} \u301c ${mmss(end)}\uff08${end-draft.start}\u79d2\uff09`+(draft.end<=draft.start?'\uff0f\u7d42\u4e86\u306f\u958b\u59cb\u304b\u308920\u79d2\u5f8c\u306b\u8abf\u6574\u3057\u307e\u3059\u3002':'');
+    display.textContent=(digits||'0')+' \u79d2';
+  };
+  const commitPad = () => {if(editing){draft[editing]=integer(digits,editing==='end'?1:0);editing='';pad.hidden=true;saveDraft();render();}};
+  const openPad = (field) => {editing=field;digits=String(draft[field]);replace=true;root.querySelector('.music-pad-label').textContent=(field==='start'?'\u958b\u59cb':'\u7d42\u4e86')+'\uff08\u79d2\uff09';pad.hidden=false;render();pad.focus({preventScroll:true});};
+  const pressPad = (action) => {
+    if(!editing)return;
+    if(/^\d$/.test(action)){digits=replace?action:(digits+action).slice(0,9);digits=digits.replace(/^0+(?=\d)/,'');replace=false;}
+    else if(action==='clear'){digits='';replace=false;}
+    else if(action==='back'){digits=digits.slice(0,-1);replace=false;}
+    else if(action==='ok'){commitPad();return;}
+    else if(action==='cancel'){editing='';pad.hidden=true;}
+    render();
+  };
+  url.value=draft.url;
+  root.querySelector('.music-url-block').hidden=mode==='time';
+  root.querySelector('.music-helper-actions').hidden=mode==='time';
+  if(mode==='time')root.querySelector('.music-apply').textContent='\u3053\u306e\u6642\u9593\u3092\u518d\u751f\u306b\u53cd\u6620';
+  const onInput=()=>{draft.url=url.value;saveDraft();showError();};
+  const onClick=(event)=>{
+    const button=event.target.closest('button');if(!button||!root.contains(button))return;
+    event.preventDefault();showError();
+    if(button.dataset.edit){commitPad();openPad(button.dataset.edit);return;}
+    if(button.dataset.digit!==undefined){pressPad(button.dataset.digit);return;}
+    if(button.dataset.pad){pressPad(button.dataset.pad);return;}
+    if(button.dataset.step){commitPad();const [field,delta]=button.dataset.step.split(':');draft[field]=integer(draft[field]+Number(delta),field==='end'?1:0);saveDraft();render();return;}
+    if(button.dataset.action){
+      commitPad();draft.url=url.value.trim();saveDraft();
+      const action=button.dataset.action;
+      if(action!=='clear' && !draft.url){showError('YouTube URL\u3092\u5165\u529b\u3057\u3066\u304f\u3060\u3055\u3044\u3002');return;}
+      setTriggerValue('editor_action',{action,youtube_url:draft.url,start_seconds:draft.start,end_seconds:draft.end,token:`${Date.now()}:${Math.random()}`});
+    }
+  };
+  const onKey=(event)=>{if(!editing)return;const key=event.key;let action='';if(/^\d$/.test(key))action=key;else if(key==='Backspace')action='back';else if(key==='Delete')action='clear';else if(key==='Enter')action='ok';else if(key==='Escape')action='cancel';if(action){event.preventDefault();pressPad(action);}};
+  root.addEventListener('click',onClick);url.addEventListener('input',onInput);pad.addEventListener('keydown',onKey);
+  render();
+  return ()=>{saveDraft();root.removeEventListener('click',onClick);url.removeEventListener('input',onInput);pad.removeEventListener('keydown',onKey);};
+}
+"""
+
+
+@st.cache_resource(show_spinner=False)
+def _music_editor_component_v469():
+    return st.components.v2.component("burari_music_editor_v469", html=_MUSIC_EDITOR_HTML_V469,
+        css=_MUSIC_EDITOR_CSS_V469, js=_perf_instrument_js_v466(_MUSIC_EDITOR_JS_V469))
+
+
+def _render_music_editor_v469(month_key, youtube_url, start_seconds, end_seconds, mode="music"):
+    scope = f"{current_family_key()}|{current_member_key()}|{month_key}|{mode}"
+    key = "music_editor_v469_" + hashlib.sha256(scope.encode()).hexdigest()[:20]
+    result = _music_editor_component_v469()(
+        data={"scope": scope, "mode": mode, "youtube_url": str(youtube_url or ""),
+              "start_seconds": max(0, int(start_seconds)), "end_seconds": max(1, int(end_seconds)),
+              "revision": int(st.session_state.get(f"_music_editor_revision_v469_{month_key}") or 0)},
+        key=key, on_editor_action_change=lambda: None,
+    )
+    payload = getattr(result, "editor_action", None)
+    if not isinstance(payload, dict) or str(payload.get("action") or "") not in {"apply", "guess", "save", "clear"}:
+        return {}
+    token = str(payload.get("token") or "")
+    if not token or token == st.session_state.get(key + "_consumed"):
+        return {}
+    try:
+        start = max(0, min(999999999, int(payload.get("start_seconds") or 0)))
+        end = max(1, min(999999999, int(payload.get("end_seconds") or 1)))
+    except (TypeError, ValueError, OverflowError):
+        return {}
+    st.session_state[key + "_consumed"] = token
+    return {"action": payload["action"], "youtube_url": str(payload.get("youtube_url") or "").strip(),
+            "start_seconds": start, "end_seconds": end}
+
+
 def get_saved_music_library(force=False):
     """Return the current member's saved YouTube music choices.
 
@@ -21308,7 +21527,7 @@ def get_saved_music_library(force=False):
     """
     cache_key = _music_library_session_key()
     if not force and isinstance(st.session_state.get(cache_key), list):
-        return list(st.session_state.get(cache_key) or [])
+        return _sorted_music_library_v469(st.session_state.get(cache_key) or [])
 
     result = (
         supabase_client()
@@ -21335,6 +21554,7 @@ def get_saved_music_library(force=False):
             continue
         seen.add(key)
         items.append(item)
+    items = _sorted_music_library_v469(items)
     st.session_state[cache_key] = items
     return list(items)
 
@@ -21383,6 +21603,7 @@ def _write_saved_music_library(items):
     else:
         payload["created_at"] = now_value
         client.table(MONTHLY_TABLE).insert(payload).execute()
+    normalized = _sorted_music_library_v469(normalized)
     st.session_state[_music_library_session_key()] = normalized
     return normalized
 
@@ -21409,6 +21630,7 @@ def save_music_to_library(playback):
             int(x.get("end_seconds") or (int(x.get("start_seconds") or 0) + 20)),
         ) != preset_key
     ]
+    items.sort(key=lambda row: str(row.get("saved_at") or ""), reverse=True)
     items.insert(0, item)
     _write_saved_music_library(items)
     return item
@@ -21780,7 +22002,7 @@ def music_library_label(item):
     start_seconds = int(item.get("start_seconds") or 0)
     end_seconds = int(item.get("end_seconds") or (start_seconds + 20))
     prefix = f"{title} / {author}" if author else title
-    return f"{prefix}（{format_mmss(start_seconds)}〜{format_mmss(end_seconds)}）"
+    return f"{end_seconds - start_seconds}秒｜{prefix}（{format_mmss(start_seconds)}〜{format_mmss(end_seconds)}）"
 
 
 def apply_music_library_item(month_key, review, item):
@@ -22352,6 +22574,7 @@ def build_monthly_replay_photo_items(bundle, limit=None):
             "has_voice": bool(voice_path),
             "voice_url": str(voice_signed_map.get(voice_path) or ""),
             "voice_transcript": str(voice_meta.get("transcript") or ""),
+            "voice_duration_ms": _voice_duration_value_ms_v469(voice_meta),
         })
     _perf_log_v457(
         "replay:framing_and_items",
@@ -22854,6 +23077,7 @@ def build_monthly_family_share_photo_snapshot(bundle, limit=None):
             "replay_source_ratio": float(framing.get("source_ratio") or 1.0),
             "voice_storage_path": str(voice_meta.get("storage_path") or ""),
             "voice_transcript": str(voice_meta.get("transcript") or ""),
+            "voice_duration_ms": _voice_duration_value_ms_v469(voice_meta),
         })
     return snapshots
 
@@ -22943,6 +23167,7 @@ def build_family_shared_replay_photo_items(share):
             "has_voice": bool(voice_path),
             "voice_url": str(voice_signed_map.get(voice_path) or ""),
             "voice_transcript": str(snap.get("voice_transcript") or ""),
+            "voice_duration_ms": _voice_duration_value_ms_v469(snap),
         })
     return items
 
@@ -24103,16 +24328,16 @@ def render_monthly_replay_player(period_label, review, playback, photo_items, cu
     if end_seconds <= start_seconds:
         end_seconds = start_seconds + 20
     duration_seconds = max(1, end_seconds - start_seconds)
-    # v427: the configured music end is absolute. The browser recalculates every play
-    # using the current photo count and attached-voice durations. No photo may be shorter
-    # than 2.0 seconds, and playback is never extended beyond end_seconds.
+    # v469: plan a random subset only when the source pool cannot fit the music.
+    # Use actual voice durations plus startup/safety margins; never truncate a voice.
+    # A delayed current voice may finish after BGM, but no unseen photos start then.
     display_ms = max(2000, int(round(duration_seconds * 1000.0 / max(1, len(photo_items)))))
     period_label_escaped = html.escape(str(period_label or "振り返り"))
     is_tag_review = isinstance(review, dict) and str(review.get("_review_scope_type") or "") in {"tag", "ai_tag"}
     replay_kicker = "タグで振り返り" if is_tag_review else "まとめた期間の振り返り"
     replay_alt = "タグ別の振り返り写真" if is_tag_review else "期間の振り返り写真"
     first_caption = html.escape(str(photo_items[0].get("caption") or "")) if photo_items else ""
-    payload = json.dumps(photo_items, ensure_ascii=False)
+    payload = json.dumps(photo_items, ensure_ascii=False).replace("<", "\\u003c")
     native_audio_bridge_token = json.dumps(_query_param_scalar("native_bridge_token"))
     component_html = f"""
     <style>
@@ -24293,11 +24518,73 @@ def render_monthly_replay_player(period_label, review, playback, photo_items, cu
         <div class="burari-replay-player-label">YouTube 音楽</div>
         <div id="burariReplayPlayer"></div>
       </div>
+      <div class="burari-replay-status" id="burariReplaySelection" aria-live="polite"></div>
       <div class="burari-replay-status" id="burariReplayStatus">再生のたびに現在の写真枚数と声の長さから表示時間を再計算します。最低2.0秒、声付き写真は声が終わるまで表示します。</div>
       <div class="burari-replay-note">YouTubeの仕様上、再生中の公式プレーヤーは完全には隠さず、最小限の大きさで表示します。</div>
     </div>
     <script>
-      const burariSlides = {payload};
+      const burariAllSlides = {payload}.map((item, index) => ({{...item, _source_index_v469:index}}));
+      let burariSlides = burariAllSlides.slice();
+      const burariKnownVoiceMsV469 = new Map();
+      let burariSelectionUnknownV469 = 0;
+      let burariFirstSlideReadyV469 = false;
+      let burariSlideVisibleAtV469 = null;
+      let burariDisplayedSourceIndexV469 = -1;
+      let burariSlideVisibleElapsedV469 = 0;
+// Pure, bounded selection. A missing voice duration is unknown, never a 2-second voice.
+function burariChooseSlidesV469(source, knownDurations, budgetMs, randomFn = Math.random) {{
+  const budget = Math.max(0, Number(budgetMs) || 0);
+  let unknown = 0, tooLong = 0;
+  const candidates = [];
+  source.forEach((item, position) => {{
+    let minimum = burariMinimumDisplayMs;
+    if (item.has_voice || String(item.voice_url || '')) {{
+      if (!String(item.voice_url || '')) {{unknown += 1; return;}}
+      const ms = Number(knownDurations.get(item._source_index_v469) || item.voice_duration_ms || 0);
+      if (!Number.isFinite(ms) || ms <= 0) {{unknown += 1; return;}}
+      minimum = Math.max(minimum, Math.ceil(ms + burariVoiceAutoDelayMs + burariVoiceTimingSafetyMs));
+    }}
+    if (minimum > budget) {{tooLong += 1; return;}}
+    candidates.push({{item, minimum, position}});
+  }});
+  const total = candidates.reduce((sum, entry) => sum + entry.minimum, 0);
+  const randomized = total > budget;
+  let selected = candidates;
+  if (randomized) {{
+    const shuffled = candidates.slice();
+    for (let i = shuffled.length - 1; i > 0; i -= 1) {{
+      const j = Math.floor(Math.max(0, Math.min(.999999999999, Number(randomFn()) || 0)) * (i + 1));
+      [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+    }}
+    let remaining = budget;
+    selected = [];
+    for (const entry of shuffled) {{
+      if (entry.minimum <= remaining) {{selected.push(entry); remaining -= entry.minimum;}}
+    }}
+    // Random SELECTION, original chronological DISPLAY order.
+    selected.sort((a, b) => a.position - b.position);
+  }}
+  return {{slides:selected.map(entry => entry.item), minimums:selected.map(entry => entry.minimum),
+    randomized, unknown, tooLong, minimumTotal:selected.reduce((sum, entry) => sum + entry.minimum, 0)}};
+}}
+
+function burariReplaySelectionStatusV469() {{
+  let text = burariSlides.length < burariAllSlides.length
+    ? `\u518d\u751f\u4e2d\uff1a${{burariAllSlides.length}}\u679a\u304b\u3089${{burariSlides.length}}\u679a\u3092\u9078\u629e\uff08\u66f2\u306e\u9577\u3055\u306b\u5408\u308f\u305b\u3066\u518d\u751f\uff09`
+    : `\u518d\u751f\u4e2d\uff1a\u5199\u771f ${{burariSlides.length}}\u679a`;
+  if (burariSelectionUnknownV469) text += `\u3002\u58f0\u306e\u9577\u3055\u672a\u78ba\u8a8d ${{burariSelectionUnknownV469}}\u679a\u306f\u4eca\u56de\u306e\u5bfe\u8c61\u5916\u3067\u3059\u3002`;
+  return text;
+}}
+
+function burariStartSlideVoiceV469() {{
+  if (!burariReplayPlaybackActive || !burariSlideLoopStarted || !burariCurrentVoiceUrl || burariVoicePlaybackActive || burariVoiceAutoTimer) return;
+  const expected = burariCurrentVoiceUrl;
+  burariVoiceAutoTimer = setTimeout(() => {{
+    burariVoiceAutoTimer = null;
+    if (burariReplayPlaybackActive && burariCurrentVoiceUrl === expected) burariPlayCurrentVoice(true);
+  }}, burariVoiceAutoDelayMs);
+}}
+
       const burariVideoId = {json.dumps(video_id)};
       const burariNativeAudioBridgeToken = {native_audio_bridge_token};
       let burariNativeAudioRequestSerial = 0;
@@ -24454,7 +24741,7 @@ def render_monthly_replay_player(period_label, review, playback, photo_items, cu
         const safeIndex = Math.max(0, Math.min(Number(index) || 0, burariSlides.length - 1));
         const item = burariSlides[safeIndex] || {{}};
         if (!String(item.voice_url || '')) return burariMinimumDisplayMs;
-        const durationMs = Number(burariVoiceDurationMsByIndex[safeIndex] || 0);
+        const durationMs = Number(burariKnownVoiceMsV469.get(item._source_index_v469) || item.voice_duration_ms || 0);
         // v446: metadata preflight is an optimisation, never a playback gate. If a
         // browser/WebView cannot read duration metadata, start with the 2.0 s floor;
         // actual voice playback below keeps the still visible until the voice ends.
@@ -24471,23 +24758,38 @@ def render_monthly_replay_player(period_label, review, playback, photo_items, cu
       }}
 
       function burariBuildReplayPlan() {{
-        // Rebuild from the current photo set on every Play/Restart. Known voice durations
-        // are used immediately; unknown durations fall back to 2.0 s and are corrected
-        // dynamically when that voice actually loads/plays. Never refuse playback here.
+        const plan = burariChooseSlidesV469(burariAllSlides, burariKnownVoiceMsV469, burariConfiguredDurationMs);
         burariReplayPlanReady = false;
         burariReplayPlanError = '';
-        const minimums = [];
-        for (let i = 0; i < burariSlides.length; i += 1) {{
-          const minimumMs = burariVoiceMinimumMsForIndex(i);
-          minimums.push(Math.max(burariMinimumDisplayMs, Number(minimumMs) || burariMinimumDisplayMs));
+        burariSelectionUnknownV469 = plan.unknown;
+        if (!plan.slides.length) {{
+          burariReplayPlanError = plan.unknown
+            ? (burariVoiceDurationsReady ? '\u58f0\u306e\u9577\u3055\u3092\u78ba\u8a8d\u3067\u304d\u307e\u305b\u3093\u3002\u30da\u30fc\u30b8\u3092\u958b\u304d\u76f4\u3057\u3066\u304a\u8a66\u3057\u304f\u3060\u3055\u3044\u3002' : '\u58f0\u306e\u9577\u3055\u3092\u78ba\u8a8d\u4e2d\u3067\u3059\u3002\u6e96\u5099\u5b8c\u4e86\u5f8c\u306b\u518d\u751f\u3092\u62bc\u3057\u3066\u304f\u3060\u3055\u3044\u3002')
+            : '\u3053\u306e\u518d\u751f\u533a\u9593\u306b\u53ce\u307e\u308b\u5199\u771f\u304c\u3042\u308a\u307e\u305b\u3093\u3002\u66f2\u306e\u533a\u9593\u3092\u9577\u304f\u3057\u3066\u304f\u3060\u3055\u3044\uff08\u5199\u771f2\u79d2\u4ee5\u4e0a\u3001\u58f0\u4ed8\u304d\u306f\u58f0\u306e\u9577\u3055\u4ee5\u4e0a\uff09\u3002';
+          if (burariStatus) burariStatus.textContent = burariReplayPlanError;
+          return false;
         }}
-        const minimumTotalMs = minimums.reduce((sum, value) => sum + value, 0);
-        burariSlideMinimumMs = minimums;
-        burariReplayNeedsTail = minimumTotalMs > burariConfiguredDurationMs + 5;
+        // Index-keyed image preloads belong to the OLD subset and must not be reused.
+        burariSlideRequestToken += 1;
+        for (const key of Array.from(burariPreloadedSlides.keys())) burariReleasePreload(key);
+        burariSlides = plan.slides;
+        burariSlideMinimumMs = plan.minimums;
+        burariVoiceDurationMsByIndex = burariSlides.map(item => Number(burariKnownVoiceMsV469.get(item._source_index_v469) || item.voice_duration_ms || 0));
+        burariReplayNeedsTail = false;
+        const selectionNotice = document.getElementById('burariReplaySelection');
+        if (selectionNotice) {{
+          selectionNotice.textContent = plan.slides.length < burariAllSlides.length
+            ? `${{burariAllSlides.length}}枚から${{plan.slides.length}}枚を選択` : `全${{plan.slides.length}}枚を再生`;
+          if (plan.unknown) selectionNotice.textContent += `／声の長さ未確認 ${{plan.unknown}}枚は対象外`;
+          if (plan.tooLong) selectionNotice.textContent += `／曲の区間より長い声 ${{plan.tooLong}}枚は対象外`;
+        }}
         burariReplayPlanReady = true;
         return true;
       }}
 
+      const burariVoiceProbeCancelsV469 = new Set();
+      let burariReplayDisposedV469 = false;
+      window.addEventListener("pagehide", (event) => {{ if (!event.persisted) {{burariReplayDisposedV469 = true; for (const cancel of Array.from(burariVoiceProbeCancelsV469)) cancel();}} }});
       function burariLoadVoiceDurationMs(url) {{
         return new Promise((resolve) => {{
           const src = String(url || '');
@@ -24498,11 +24800,14 @@ def render_monthly_replay_player(period_label, review, playback, photo_items, cu
           const finish = (value) => {{
             if (settled) return;
             settled = true;
+            burariVoiceProbeCancelsV469.delete(cancel);
             if (timer) clearTimeout(timer);
             try {{ probe.pause(); }} catch (_) {{}}
             try {{ probe.removeAttribute('src'); probe.load(); }} catch (_) {{}}
             resolve(value);
           }};
+          const cancel = () => finish(NaN);
+          burariVoiceProbeCancelsV469.add(cancel);
           probe.preload = 'metadata';
           probe.addEventListener('loadedmetadata', () => {{
             const duration = Number(probe.duration);
@@ -24517,50 +24822,37 @@ def render_monthly_replay_player(period_label, review, playback, photo_items, cu
       async function burariPrepareVoiceDurations() {{
         burariVoiceDurationsReady = false;
         burariVoiceDurationError = '';
-        const queue = [];
-        for (let i = 0; i < burariSlides.length; i += 1) {{
-          const item = burariSlides[i] || {{}};
+        const byUrl = new Map();
+        for (const item of burariAllSlides) {{
           if (!String(item.voice_url || '')) continue;
-          const storedMs = Number(item.voice_duration_ms || 0);
-          if (Number.isFinite(storedMs) && storedMs > 0) {{
-            burariVoiceDurationMsByIndex[i] = storedMs;
-          }} else {{
-            queue.push(i);
+          const stored = Number(item.voice_duration_ms || 0);
+          if (Number.isFinite(stored) && stored > 0) burariKnownVoiceMsV469.set(item._source_index_v469, stored);
+          else {{
+            const url = String(item.voice_url);
+            if (!byUrl.has(url)) byUrl.set(url, []);
+            byUrl.get(url).push(item._source_index_v469);
           }}
         }}
-        if (queue.length && burariStatus) burariStatus.textContent = `写真の声 ${{queue.length}}件の長さを確認しています…`;
+        const queue = Array.from(byUrl.entries());
         let cursor = 0;
-        let failedIndex = -1;
         const worker = async () => {{
-          while (true) {{
-            const position = cursor;
-            cursor += 1;
+          while (!burariReplayDisposedV469) {{
+            const position = cursor++;
             if (position >= queue.length) return;
-            const slideIndex = queue[position];
-            const item = burariSlides[slideIndex] || {{}};
-            const durationMs = await burariLoadVoiceDurationMs(String(item.voice_url || ''));
-            if (!Number.isFinite(durationMs) || durationMs <= 0) {{
-              if (failedIndex < 0) failedIndex = slideIndex;
-              continue;
-            }}
-            burariVoiceDurationMsByIndex[slideIndex] = durationMs;
+            const [url, sourceIds] = queue[position];
+            const ms = await burariLoadVoiceDurationMs(url);
+            if (Number.isFinite(ms) && ms > 0) for (const id of sourceIds) burariKnownVoiceMsV469.set(id, ms);
           }}
         }};
-        const workerCount = Math.min(4, Math.max(1, queue.length));
-        await Promise.all(Array.from({{ length: workerCount }}, () => worker()));
+        await Promise.all(Array.from({{length: Math.min(4, queue.length)}}, () => worker()));
+        if (burariReplayDisposedV469) return;
         burariVoiceDurationsReady = true;
-        if (failedIndex >= 0) {{
-          // v446: keep a non-blocking note only. The actual Audio element will measure
-          // the voice when it plays, and the photo remains on screen until ended.
-          burariVoiceDurationError = `写真${{failedIndex + 1}}の声は再生時に長さを確認します。`;
-        }}
+        const unknown = burariAllSlides.filter(item => (item.has_voice || item.voice_url) && !burariKnownVoiceMsV469.has(item._source_index_v469)).length;
+        if (unknown) burariVoiceDurationError = `\u58f0\u306e\u9577\u3055\u672a\u78ba\u8a8d ${{unknown}}\u679a\u306f\u62bd\u9078\u5bfe\u8c61\u5916\u3067\u3059\u3002`;
         burariSetPlayerControlsReady(burariPlayerReady);
-        if (burariStatus && !burariReplayPlaybackActive) {{
-          if (burariPlayerReady) burariStatus.textContent = burariVoiceDurationError
-            ? `準備完了。${{burariVoiceDurationError}} ▶ 再生できます。`
-            : '準備完了。▶ 再生できます。';
-          else burariStatus.textContent = '写真と声の準備ができました。音楽を準備しています…';
-        }}
+        if (burariStatus && !burariReplayPlaybackActive && !burariReplayPausedByUser) burariStatus.textContent = burariPlayerReady
+          ? `\u6e96\u5099\u5b8c\u4e86\u3002\u518d\u751f\u3067\u5199\u771f\u3092\u9078\u3073\u307e\u3059\u3002${{burariVoiceDurationError}}`
+          : '\u97f3\u697d\u3092\u6e96\u5099\u3057\u3066\u3044\u307e\u3059\u2026';
       }}
 
       function burariRefreshMainReplayButton(ready = burariPlayerReady) {{
@@ -24776,14 +25068,23 @@ def render_monthly_replay_player(period_label, review, playback, photo_items, cu
       function burariAdvanceSlideNow() {{
         if (!burariSlideLoopStarted || !burariSlides.length || burariSequenceComplete) return;
         burariSlideAdvancePending = false;
-        const nextIndex = burariIndex + 1;
-        if (nextIndex >= burariSlides.length) {{
+        const next = burariIndex + 1;
+        const remaining = (burariMusicWindowEnded || burariMusicSourceEnded) ? 0 : Math.max(0, (burariStrictEndSeconds - burariPlaybackClockSeconds()) * 1000);
+        const plan = burariChooseSlidesV469(burariSlides.slice(next), burariKnownVoiceMsV469, remaining);
+        if (!plan.slides.length) {{
+          burariSlides = burariSlides.slice(0, next);
+          burariSlideMinimumMs = burariSlideMinimumMs.slice(0, next);
+          if (burariProgress) burariProgress.textContent = `${{next}} / ${{next}}`;
           burariSequenceComplete = true;
           burariMaybeFinishReplay();
           return;
         }}
-        burariIndex = nextIndex;
-        // Start each interval only after the next photo/frame is actually applied.
+        if (plan.slides.length !== burariSlides.length - next) {{
+          for (const key of Array.from(burariPreloadedSlides.keys())) if (key >= next) burariReleasePreload(key);
+          burariSlides = burariSlides.slice(0, next).concat(plan.slides);
+          burariSlideMinimumMs = burariSlideMinimumMs.slice(0, next).concat(plan.minimums);
+        }}
+        burariIndex = next;
         burariShowSlide(burariIndex, burariScheduleNextSlide);
       }}
 
@@ -24889,6 +25190,7 @@ def render_monthly_replay_player(period_label, review, playback, photo_items, cu
       }}
 
       function burariApplySlideFrame(item, safeIndex, nextUrl) {{
+        burariDisplayedSourceIndexV469 = item._source_index_v469;
         if (burariVoiceAutoTimer) {{
           clearTimeout(burariVoiceAutoTimer);
           burariVoiceAutoTimer = null;
@@ -24901,6 +25203,7 @@ def render_monthly_replay_player(period_label, review, playback, photo_items, cu
           burariImg.src = nextUrl;
           burariImg.dataset.burariSlideUrl = nextUrl;
         }}
+        if (burariReplayPlaybackActive) {{burariSlideVisibleAtV469 = performance.now(); burariSlideVisibleElapsedV469 = 0;}}
         burariApplyReplayFraming(item, nextUrl);
         const emotionKey = String(item.emotion || '');
         const emotionColor = burariEmotionColors[emotionKey] || String(item.emotion_color || '') || burariDefaultFrameColor;
@@ -24928,15 +25231,7 @@ def render_monthly_replay_player(period_label, review, playback, photo_items, cu
         // v369: voice attached to a photo plays automatically when that photo becomes
         // visible during an actively playing replay. Initial static rendering does not
         // autoplay, so mobile browsers still receive a user gesture from ▶ 再生 first.
-        if (burariReplayPlaybackActive && burariCurrentVoiceUrl) {{
-          const voiceUrlForThisSlide = burariCurrentVoiceUrl;
-          burariVoiceAutoTimer = setTimeout(() => {{
-            burariVoiceAutoTimer = null;
-            if (!burariReplayPlaybackActive) return;
-            if (String(burariCurrentVoiceUrl || '') !== voiceUrlForThisSlide) return;
-            burariPlayCurrentVoice(true);
-          }}, burariVoiceAutoDelayMs);
-        }}
+        burariStartSlideVoiceV469();
         burariCaption.textContent = item.caption || '';
         burariProgress.textContent = `${{safeIndex + 1}} / ${{burariSlides.length}}`;
       }}
@@ -24954,6 +25249,9 @@ def render_monthly_replay_player(period_label, review, playback, photo_items, cu
           if (settled || requestToken !== burariSlideRequestToken) return;
           settled = true;
           if (safetyTimer) {{ clearTimeout(safetyTimer); safetyTimer = null; }}
+          if (burariReplayPlaybackActive && (burariMusicWindowEnded || burariMusicSourceEnded)) {{
+            burariSequenceComplete = true; burariMaybeFinishReplay(); return;
+          }}
           // The scheduler must continue even if optional caption/emotion/voice UI fails.
           try {{
             if (applyFrame) burariApplySlideFrame(item, safeIndex, nextUrl);
@@ -25035,18 +25333,41 @@ def render_monthly_replay_player(period_label, review, playback, photo_items, cu
         }}
       }}
 
+      function burariFinishCurrentOnlyV469() {{
+        if (!burariReplayPlaybackActive) return;
+        if (burariSequenceComplete || !burariFirstSlideReadyV469) {{
+          if (!burariVoicePlaybackActive) burariStopAtEnd();
+          return;
+        }}
+        if (burariTimer) {{clearTimeout(burariTimer); burariTimer = null;}}
+        const elapsed = burariSlideVisibleElapsedV469 + (burariSlideVisibleAtV469 === null ? 0 : Math.max(0, performance.now() - burariSlideVisibleAtV469));
+        const required = Math.max(burariMinimumDisplayMs, Number(burariSlideMinimumMs[burariIndex] || burariMinimumDisplayMs));
+        const finish = () => {{
+          burariTimer = null;
+          if (!burariReplayPlaybackActive) return;
+          if (burariVoicePlaybackActive) {{burariSlideAdvancePending = true; return;}}
+          burariSequenceComplete = true;
+          burariStopAtEnd();
+        }};
+        const remaining = Math.max(0, required - elapsed);
+        burariCurrentSlidePlannedMs = remaining;
+        burariCurrentSlideStartClockSeconds = burariPlaybackClockSeconds();
+        if (remaining <= 1) finish(); else burariTimer = setTimeout(finish, remaining);
+      }}
+
       function burariFinishMusicWindow() {{
         if (burariMusicWindowEnded) return;
         burariMusicWindowEnded = true;
         try {{
           if (burariPlayer && typeof burariPlayer.pauseVideo === 'function') burariPlayer.pauseVideo();
         }} catch (_) {{}}
-        // If every photo condition is already satisfied, finish immediately. Otherwise
-        // keep the photo scheduler running silently until the last >=2.0 s/voice condition.
+        burariFinishCurrentOnlyV469();
+        if (!burariReplayPlaybackActive) return;
+        // Only the current visible still/voice may finish after BGM. No unseen tail.
         if (burariSequenceComplete && !burariVoicePlaybackActive) {{
           burariStopAtEnd();
         }} else if (burariStatus) {{
-          burariStatus.textContent = '音楽区間は終了しました。残りの写真は最低2.0秒、声付きは声が終わるまで再生します。';
+          burariStatus.textContent = '音楽区間は終了しました。再生中の写真と声が終わり次第終了します。';
         }}
       }}
 
@@ -25076,6 +25397,10 @@ def render_monthly_replay_player(period_label, review, playback, photo_items, cu
 
       function burariPauseReplay() {{
         if (!burariReplayPlaybackActive) return;
+        if (burariSlideVisibleAtV469 !== null) {{
+          burariSlideVisibleElapsedV469 += Math.max(0, performance.now() - burariSlideVisibleAtV469);
+          burariSlideVisibleAtV469 = null;
+        }}
         // Preserve the unfinished portion of the current still against the YouTube clock,
         // so resuming does not restart that photo's full interval or steal time from later photos.
         if (burariTimer && Number.isFinite(burariCurrentSlideStartClockSeconds) && burariCurrentSlidePlannedMs > 0) {{
@@ -25118,6 +25443,7 @@ def render_monthly_replay_player(period_label, review, playback, photo_items, cu
         burariRequestNativeAudioFocus();
         burariReplayPausedByUser = false;
         burariReplayPlaybackActive = true;
+        burariSlideVisibleAtV469 = performance.now();
         burariNeedsForegroundRestore = false;
         burariRefreshMainReplayButton();
         if (!burariMusicWindowEnded) {{
@@ -25148,6 +25474,14 @@ def render_monthly_replay_player(period_label, review, playback, photo_items, cu
         }}
 
         burariStartMusicEndWatch();
+        if (burariMusicWindowEnded) {{burariFinishCurrentOnlyV469(); return;}}
+        if (!burariFirstSlideReadyV469 || burariDisplayedSourceIndexV469 !== burariSlides[burariIndex]?._source_index_v469) {{
+          // A pause can cancel an in-flight image decode. Resume that SAME chosen
+          // slide instead of timing a new photo while the old image remains visible.
+          burariSlideLoopStarted = false;
+          burariShowSlide(burariIndex, () => {{burariFirstSlideReadyV469 = true; burariStartSlideLoopOnce();}});
+          return;
+        }}
         if (burariSlideLoopStarted && !burariSequenceComplete) {{
           if (burariSlideAdvancePending && !burariVoicePlaybackActive) {{
             burariCompleteCurrentSlide();
@@ -25187,6 +25521,7 @@ def render_monthly_replay_player(period_label, review, playback, photo_items, cu
             if (Number.isFinite(duration) && duration > 0 && burariIndex >= 0 && burariIndex < burariSlides.length) {{
               const measuredMs = Math.ceil(duration * 1000);
               burariVoiceDurationMsByIndex[burariIndex] = measuredMs;
+              burariKnownVoiceMsV469.set(burariSlides[burariIndex]._source_index_v469, measuredMs);
               burariSlideMinimumMs[burariIndex] = Math.max(
                 burariMinimumDisplayMs,
                 measuredMs + burariVoiceAutoDelayMs + burariVoiceTimingSafetyMs
@@ -25273,8 +25608,9 @@ def render_monthly_replay_player(period_label, review, playback, photo_items, cu
       }}
 
       function burariStartSlideLoopOnce() {{
-        if (burariSlideLoopStarted) return;
+        if (burariSlideLoopStarted || !burariReplayPlaybackActive || burariWaitingForRequestedPosition || !burariFirstSlideReadyV469) return;
         burariSlideLoopStarted = true;
+        burariStartSlideVoiceV469();
         burariScheduleNextSlide();
       }}
 
@@ -25316,7 +25652,7 @@ def render_monthly_replay_player(period_label, review, playback, photo_items, cu
           burariWaitingForRequestedPosition = false;
           burariStartMusicEndWatch();
           burariStartSlideLoopOnce();
-          if (burariStatus) burariStatus.textContent = `再生中：写真 ${{burariSlides.length}}枚を終了時間までに最後まで再生します。`;
+          if (burariStatus) burariStatus.textContent = burariReplaySelectionStatusV469();
           return;
         }}
         if (attempt >= 8) {{
@@ -25324,7 +25660,7 @@ def render_monthly_replay_player(period_label, review, playback, photo_items, cu
           burariWaitingForRequestedPosition = false;
           burariStartMusicEndWatch();
           burariStartSlideLoopOnce();
-          if (burariStatus) burariStatus.textContent = `再生中：写真 ${{burariSlides.length}}枚を終了時間までに最後まで再生します。`;
+          if (burariStatus) burariStatus.textContent = burariReplaySelectionStatusV469();
           return;
         }}
         try {{ burariPlayer.seekTo(burariStartSeconds, true); }} catch (_) {{}}
@@ -25340,7 +25676,7 @@ def render_monthly_replay_player(period_label, review, playback, photo_items, cu
           if (burariStatus) burariStatus.textContent = '音楽を準備しています。準備完了後に▶ 再生を押してください。';
           return;
         }}
-        burariBuildReplayPlan();
+        if (!burariBuildReplayPlan()) return;
         burariPendingStart = false;
         burariRequestNativeAudioFocus();
         burariStopTimers();
@@ -25358,10 +25694,11 @@ def render_monthly_replay_player(period_label, review, playback, photo_items, cu
         burariMusicSourceEnded = false;
         burariMusicWindowEnded = false;
         burariIndex = 0;
+        burariFirstSlideReadyV469 = false;
         burariStopVoice(false);
         // Apply slide 1 first; its timer starts only after YouTube reaches the requested
         // start position, so the fixed music window is the timing source of truth.
-        burariShowSlide(burariIndex);
+        burariShowSlide(burariIndex, () => {{ burariFirstSlideReadyV469 = true; burariStartSlideLoopOnce(); }});
         // Explicitly restore audible playback in the same user gesture. This is
         // especially important for a freshly opened family-shared replay on mobile.
         burariEnsureAudible();
@@ -25435,10 +25772,12 @@ def render_monthly_replay_player(period_label, review, playback, photo_items, cu
                 // still obey >=2.0 s and voices still finish completely.
                 burariMusicSourceEnded = true;
                 burariMusicWindowEnded = true;
+                burariFinishCurrentOnlyV469();
+                if (!burariReplayPlaybackActive) return;
                 if (burariSequenceComplete && !burariVoicePlaybackActive) {{
                   burariStopAtEnd();
                 }} else if (burariStatus) {{
-                  burariStatus.textContent = '音楽は終了しました。残りの写真は最低2.0秒、声付きは声が終わるまで再生します。';
+                  burariStatus.textContent = '音楽は終了しました。再生中の写真と声が終わり次第終了します。';
                 }}
               }}
             }},
@@ -25552,13 +25891,18 @@ def render_monthly_music_settings(month_key, bundle, review, expanded=True):
     pending_override_key = f"_monthly_music_form_override_{month_key}"
     pending_override = st.session_state.pop(pending_override_key, None)
     if isinstance(pending_override, dict):
+        epoch_key = f"_music_editor_revision_v469_{month_key}"
+        st.session_state[epoch_key] = int(st.session_state.get(epoch_key) or 0) + 1
         for state_key, value in pending_override.items():
             if state_key:
                 st.session_state[state_key] = value
 
+    st.markdown("""<style>[class*="st-key-music_delete_confirm_v469_"] button {
+        background:#dc4855 !important;border-color:#c73743 !important;color:white !important;
+    }</style>""", unsafe_allow_html=True)
     st.markdown("### 🎬 振り返りムービーを作る")
     if photo_count:
-        st.caption(f"写真 {photo_count}枚を、選んだ音楽に合わせて順番に再生します。")
+        st.caption(f"写真 {photo_count}枚。曲に入りきらない場合は、再生ごとにランダムに選びます。")
     else:
         st.warning("この期間には再生に使える写真がありません。音楽設定はできますが、写真ムービーは表示できません。")
 
@@ -25569,33 +25913,49 @@ def render_monthly_music_settings(month_key, bundle, review, expanded=True):
 
     with st.container(border=True):
         st.markdown("#### A. 保存した音楽を使う")
+        notice = st.session_state.pop(f"_music_library_notice_v469_{month_key}", None)
+        if notice:
+            st.success(notice)
         if saved_music:
-            saved_choice_key = f"monthly_saved_music_choice_{month_key}"
-            with st.form(
-                key=f"monthly_saved_music_form_{month_key}",
-                clear_on_submit=False,
-                border=False,
-            ):
-                selected_index = st.selectbox(
-                    "保存した音楽と再生時間",
-                    options=list(range(len(saved_music))),
-                    format_func=lambda idx: music_library_label(saved_music[idx]),
-                    key=saved_choice_key,
+            saved_choice_key = f"monthly_saved_music_choice_v469_{month_key}"
+            saved_map = {_music_preset_key_v469(item): item for item in _sorted_music_library_v469(saved_music)}
+            choices = list(saved_map)
+            if st.session_state.get(saved_choice_key) not in saved_map:
+                st.session_state[saved_choice_key] = choices[0]
+            with st.form(key=f"monthly_saved_music_form_{month_key}", clear_on_submit=False, border=False):
+                selected_key = st.selectbox(
+                    "保存した音楽（再生秒数の短い順）", options=choices,
+                    format_func=lambda value: music_library_label(saved_map[value]), key=saved_choice_key,
                 )
-                selected_preview = saved_music[int(selected_index)] if saved_music else {}
-                if selected_preview:
-                    st.info(
-                        f"この設定を使います：{format_mmss(selected_preview.get('start_seconds'))}〜"
-                        f"{format_mmss(selected_preview.get('end_seconds'))}"
-                    )
                 use_saved_clicked = st.form_submit_button(
-                    "🎬 この音楽でムービーを試す（保存しない）",
-                    type="primary",
-                    use_container_width=True,
-                )
+                    "この音楽でムービーを試す（保存しない）", type="primary", use_container_width=True)
+                delete_clicked = st.form_submit_button("選んだ音楽を削除", use_container_width=True)
+            pending_delete_key = f"_music_delete_pending_v469_{month_key}"
+            if delete_clicked:
+                st.session_state[pending_delete_key] = dict(saved_map[selected_key])
+            pending_delete = st.session_state.get(pending_delete_key)
+            if isinstance(pending_delete, dict):
+                st.warning(f"{music_library_label(pending_delete)}\n\n音楽一覧から削除します。保存済みムービーは変更しません。")
+                confirm_col, cancel_col = st.columns(2)
+                with confirm_col:
+                    if st.button("削除する", key=f"music_delete_confirm_v469_{month_key}", type="primary", use_container_width=True):
+                        try:
+                            delete_saved_music_v469(pending_delete)
+                            st.session_state.pop(pending_delete_key, None)
+                            st.session_state[f"_music_library_notice_v469_{month_key}"] = "音楽一覧から削除しました。"
+                            st.rerun(scope="app")
+                        except Exception as exc:
+                            st.error("音楽を削除できませんでした。もう一度お試しください。")
+                            with st.expander("詳細"):
+                                st.code(_safe_error_text(exc, 500))
+                with cancel_col:
+                    if st.button("キャンセル", key=f"music_delete_cancel_v469_{month_key}", use_container_width=True):
+                        st.session_state.pop(pending_delete_key, None)
+                        st.rerun(scope="app")
             if use_saved_clicked:
                 try:
-                    selected = saved_music[int(selected_index)]
+                    st.session_state.pop(pending_delete_key, None)
+                    selected = saved_map[selected_key]
                     applied_playback = apply_music_library_item(month_key, review, selected)
                     st.session_state[pending_override_key] = {
                         url_key: str(applied_playback.get("youtube_url") or ""),
@@ -25622,56 +25982,20 @@ def render_monthly_music_settings(month_key, bundle, review, expanded=True):
     with st.container(border=True):
         st.markdown("#### B. 新しい音楽を使う")
 
-        with st.form(
-            key=f"monthly_music_edit_form_{month_key}",
-            clear_on_submit=False,
-            border=False,
-        ):
-            st.markdown("**① 音楽を指定**")
-            current_url = st.text_input(
-                "YouTube URL",
-                key=url_key,
-                placeholder="https://www.youtube.com/watch?v=...",
-            )
-            video_id = parse_youtube_video_id(current_url)
-            if current_url and not video_id:
-                st.warning("YouTube URLの形式を読み取れませんでした。通常の共有URLか埋め込みURLを入れてください。")
-            elif video_id:
-                st.caption("YouTube URLを確認しました。")
-
-            st.markdown("**② 再生する時間を決める**")
-            time_cols = st.columns(2)
-            with time_cols[0]:
-                start_seconds = max(0, int(st.number_input("開始（秒）", min_value=0, step=1, key=start_key)))
-            with time_cols[1]:
-                end_seconds = int(st.number_input("終了（秒）", min_value=1, step=1, key=end_key))
-            display_end = end_seconds if end_seconds > start_seconds else start_seconds + 20
-            st.info(f"再生予定：{format_mmss(start_seconds)} 〜 {format_mmss(display_end)}")
-            if end_seconds <= start_seconds:
-                st.caption("終了が開始以下の場合は、作成時に開始から20秒後へ自動調整します。")
-
-            st.markdown("**③ ムービーで試す**")
-            apply_clicked = st.form_submit_button(
-                "🎬 この音楽でムービーを試す（保存しない）",
-                type="primary",
-                use_container_width=True,
-            )
-            helper_cols = st.columns(3)
-            with helper_cols[0]:
-                guess_clicked = st.form_submit_button(
-                    "✨ AIにおすすめ時間",
-                    use_container_width=True,
-                )
-            with helper_cols[1]:
-                save_music_only_clicked = st.form_submit_button(
-                    "☆ 音楽だけ保存",
-                    use_container_width=True,
-                )
-            with helper_cols[2]:
-                clear_clicked = st.form_submit_button(
-                    "設定をリセット",
-                    use_container_width=True,
-                )
+        editor = _render_music_editor_v469(
+            month_key, st.session_state.get(url_key, ""),
+            st.session_state.get(start_key, 48), st.session_state.get(end_key, 68))
+        current_url = str(editor.get("youtube_url", st.session_state.get(url_key, "")) or "").strip()
+        video_id = parse_youtube_video_id(current_url)
+        start_seconds = max(0, int(editor.get("start_seconds", st.session_state.get(start_key, 48))))
+        end_seconds = max(1, int(editor.get("end_seconds", st.session_state.get(end_key, 68))))
+        action = editor.get("action", "")
+        apply_clicked, guess_clicked = action == "apply", action == "guess"
+        save_music_only_clicked, clear_clicked = action == "save", action == "clear"
+        if action:
+            st.session_state[url_key] = current_url
+            st.session_state[start_key] = start_seconds
+            st.session_state[end_key] = end_seconds
 
         # Explicit actions only from here onward.
         if guess_clicked:
@@ -25771,11 +26095,9 @@ def render_monthly_music_settings(month_key, bundle, review, expanded=True):
                         "source": "music_only_saved_from_audition",
                     }
                     saved_item = save_music_to_library(music_payload)
-                    st.success(
-                        f"『{saved_item.get('title') or 'この音楽'}』を "
-                        f"{format_mmss(saved_item.get('start_seconds'))}〜{format_mmss(saved_item.get('end_seconds'))} で音楽だけ保存しました。"
-                        "ムービーは保存していません。"
-                    )
+                    st.session_state[f"_music_library_notice_v469_{month_key}"] = (
+                        f"{music_library_label(saved_item)}を音楽一覧に保存しました。")
+                    st.rerun(scope="app")
                 except Exception as exc:
                     st.error("音楽だけを保存できませんでした。")
                     with st.expander("保護者向け詳細"):
@@ -25829,29 +26151,12 @@ def render_monthly_time_settings(month_key, review):
     if current_end <= current_start:
         current_end = current_start + 20
 
-    if edit_start_key not in st.session_state:
-        st.session_state[edit_start_key] = current_start
-    if edit_end_key not in st.session_state:
-        st.session_state[edit_end_key] = current_end
-
     with st.container(border=True):
         st.markdown("**音楽を再生する時間**")
-        st.caption(f"現在の再生設定：{format_mmss(current_start)}〜{format_mmss(current_end)}")
-        with st.form(
-            key=f"monthly_time_only_form_{month_key}",
-            clear_on_submit=False,
-            border=False,
-        ):
-            start_seconds = max(0, int(st.number_input("開始（秒）", min_value=0, step=1, key=edit_start_key)))
-            end_seconds = int(st.number_input("終了（秒）", min_value=1, step=1, key=edit_end_key))
-            display_end = end_seconds if end_seconds > start_seconds else start_seconds + 20
-            st.caption(f"入力値：{format_mmss(start_seconds)}〜{format_mmss(display_end)}")
-            apply_clicked = st.form_submit_button(
-                "この時間を再生に反映",
-                type="primary",
-                use_container_width=True,
-            )
-
+        editor = _render_music_editor_v469(month_key, current_url, current_start, current_end, mode="time")
+        start_seconds = int(editor.get("start_seconds", current_start))
+        end_seconds = int(editor.get("end_seconds", current_end))
+        apply_clicked = editor.get("action") == "apply"
         if apply_clicked:
             if end_seconds <= start_seconds:
                 end_seconds = start_seconds + 20
