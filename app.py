@@ -43,7 +43,8 @@ def _app_css_v473(markup, **_ignored):
 # Review menu-only update: 2026-09-19 JST
 GENERATED_UPDATE_JST = "2026-09-19T14:54:38+09:00"
 
-APP_BUILD = "v486"
+APP_BUILD = "v487"
+# v487: center the random-replay train icon together with its label by removing Streamlit's full-width inner markdown flex item.
 # v486: align the random-replay train icon with the other Review icons; weather gets startup priority before native media scan/upload.
 # v485: Android MediaStore background scan + exact duplicate detection + signed-url auto import; selectable 今日/1週間/1ヶ月.
 # v481: Keep Nearby/Toilet filter drafts authoritative across rerenders/remounts and freeze the exact visible filter snapshot at Search press, so GPS wait/scroll/rerun cannot fall back to the previous search conditions.
@@ -45136,16 +45137,27 @@ def page_review():
             box-shadow:0 4px 12px rgba(0,0,0,.035) !important;
           }}
           .st-key-review_random_jump_v473 div.stButton > button {{
-            display:flex !important; align-items:center !important; justify-content:center !important; gap:.34rem !important;
+            display:flex !important; align-items:center !important; justify-content:center !important;
+            gap:.28rem !important; position:relative !important;
+          }}
+          /* v487: Streamlit gives the Markdown label wrapper the remaining button width.
+             That made the train pseudo-element sit at the far left while the text stayed centered.
+             Make both direct flex items content-sized so train + label are centered as one group. */
+          .st-key-review_random_jump_v473 div.stButton > button > [data-testid="stMarkdownContainer"],
+          .st-key-review_random_jump_v473 div.stButton > button > div {{
+            flex:0 0 auto !important; width:auto !important; min-width:0 !important;
+            margin:0 !important; padding:0 !important;
           }}
           .st-key-review_random_jump_v473 div.stButton > button::before {{
-            content:''; display:block; width:1.28rem; height:1.28rem; flex:0 0 1.28rem;
+            content:''; display:block; width:1.10rem; height:1.10rem; flex:0 0 1.10rem;
             margin:0 !important; transform:none !important;
             background-repeat:no-repeat; background-position:center; background-size:contain;
             {random_icon_css}
           }}
           .st-key-review_random_jump_v473 div.stButton > button p {{
-            margin:0 !important; line-height:1.25 !important;
+            display:block !important; width:auto !important; flex:none !important;
+            margin:0 !important; padding:0 !important; line-height:1.25 !important;
+            white-space:nowrap !important;
           }}
           .st-key-review_map_jump [data-testid="stCaptionContainer"],
           .st-key-review_project_jump [data-testid="stCaptionContainer"],
