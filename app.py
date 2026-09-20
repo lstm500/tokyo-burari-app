@@ -43,7 +43,8 @@ def _app_css_v473(markup, **_ignored):
 # Review menu-only update: 2026-09-19 JST
 GENERATED_UPDATE_JST = "2026-09-19T14:54:38+09:00"
 
-APP_BUILD = "v485"
+APP_BUILD = "v486"
+# v486: align the random-replay train icon with the other Review icons; weather gets startup priority before native media scan/upload.
 # v485: Android MediaStore background scan + exact duplicate detection + signed-url auto import; selectable 今日/1週間/1ヶ月.
 # v481: Keep Nearby/Toilet filter drafts authoritative across rerenders/remounts and freeze the exact visible filter snapshot at Search press, so GPS wait/scroll/rerun cannot fall back to the previous search conditions.
 # v480: Preserve browser-side Nearby/Toilet filter selections across component rerenders so repeat searches use the visible conditions; refresh component identities to avoid stale cached JS.
@@ -30477,6 +30478,7 @@ export default function(component) {
   if (!root) return;
   const scope = String(data?.scope || '');
   if (!scope) return;
+  const nativeBridgeToken = String(data?.native_bridge_token || '');
   // V2 is a shadow root, not necessarily an HTMLElement. Keep the entire widget
   // inside its own root; never manipulate the app title, navigation or GPS bridge.
   let host = window;
@@ -30490,6 +30492,34 @@ export default function(component) {
   const number = (v) => (v === null || v === undefined || v === '' || typeof v === 'boolean') ? NaN : Number(v);
   const parse = (s) => { try { return JSON.parse(s); } catch (_) { return null; } };
   const storage = (() => { try { return host.sessionStorage; } catch (_) { return null; } })();
+  const weatherPriorityKey = `burari_weather_priority_done_v486:${scope}`;
+  let weatherPriorityNotified = false;
+  const notifyWeatherPriorityDone = (reason='done') => {
+    if (weatherPriorityNotified) return;
+    weatherPriorityNotified = true;
+    try {
+      const doneAt = now();
+      storage?.setItem(weatherPriorityKey, String(doneAt));
+      host.__burariWeatherPriorityDoneV486 = {scope, at:doneAt, reason:String(reason||'done')};
+    } catch (_) {}
+    if (!nativeBridgeToken) return;
+    try {
+      const direct = host.BurariMedia || globalThis.BurariMedia || null;
+      if (direct && typeof direct.weatherReady === 'function') {
+        direct.weatherReady(nativeBridgeToken);
+        return;
+      }
+    } catch (_) {}
+    try {
+      const target=(window.parent&&window.parent!==window)?window.parent:window;
+      target.postMessage({
+        type:'burari-native-media-request-v485',
+        request_id:`weather-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+        action:'weather_ready',
+        token:nativeBridgeToken
+      },'*');
+    } catch (_) {}
+  };
   let state = pool.get(scope);
   if (!state) {
     let saved = null;
@@ -30645,7 +30675,7 @@ export default function(component) {
   };
   const resolveWeather = async (fix,epoch,force) => {
     const key=cell(fix),old=state.forecasts.get(key);
-    if (!force && old && now()-old.at>=0 && now()-old.at<TTL && selectSlots(old).every(Boolean)) { state.weatherError='';emit();return; }
+    if (!force && old && now()-old.at>=0 && now()-old.at<TTL && selectSlots(old).every(Boolean)) { state.weatherError='';emit();notifyWeatherPriorityDone('cache');return; }
     const [lat,lon]=key.split(',');
     const params=new URLSearchParams({latitude:lat,longitude:lon,timezone:'auto',timeformat:'unixtime',
       minutely_15:'weather_code,is_day',forecast_minutely_15:'32',past_minutely_15:'1'});
@@ -30656,10 +30686,10 @@ export default function(component) {
       if (epoch!==state.epoch) return;
       state.forecasts.delete(key);state.forecasts.set(key,entry);
       while(state.forecasts.size>4) state.forecasts.delete(state.forecasts.keys().next().value);
-      state.weatherError='';persist();emit();
+      state.weatherError='';persist();emit();notifyWeatherPriorityDone('forecast');
     } catch (_) {
       if (epoch!==state.epoch) return;
-      state.weatherError='天気を取得できません。更新をお試しください';emit();
+      state.weatherError='天気を取得できません。更新をお試しください';emit();notifyWeatherPriorityDone('forecast_error');
     }
   };
   const resolvePlace = async (fix,epoch) => {
@@ -30713,7 +30743,7 @@ export default function(component) {
       state.geoError=Number(e?.code)===1?'位置情報を許可すると表示できます'
         :Number(e?.code)===3?'現在地の取得がタイムアウトしました':'位置情報を確認して更新してください';
       // No IP-based guess and no previous visit masquerading as current location.
-      state.fix=null;state.place='';emit();
+      state.fix=null;state.place='';emit();notifyWeatherPriorityDone('location_error');
     } finally {
       if (epoch===state.epoch) { state.busy=false;emit();schedule(); }
     }
@@ -30735,7 +30765,7 @@ export default function(component) {
   host.addEventListener('pageshow',onPageShow);
   draw();
   // Start after the first paint. Fetch never holds up the title or capture buttons.
-  const initialTimer=setTimeout(()=>{void refresh(false);},120);
+  const initialTimer=setTimeout(()=>{void refresh(false);},20);
   return () => {
     disposed=true;clearTimeout(initialTimer);state.listeners.delete(draw);
     refreshEl.removeEventListener('click',onRefresh);
@@ -30755,7 +30785,7 @@ export default function(component) {
 @st.cache_resource(show_spinner=False)
 def _home_weather_component_v470():
     return st.components.v2.component(
-        "burari_home_weather_v476", html=_HOME_WEATHER_HTML_V470,
+        "burari_home_weather_v486", html=_HOME_WEATHER_HTML_V470,
         css=_HOME_WEATHER_CSS_V470, js=_HOME_WEATHER_JS_V470,
     )
 
@@ -30768,8 +30798,9 @@ def render_home_weather_v470():
     try:
         with st.container(key="home_weather_slot_v473"):
             _weather_result = _home_weather_component_v470()(
-                key=f"home_weather_v476_{scope}", width="stretch", height="content",
-                data={"scope": scope, "timezone": str(APP_TIMEZONE or "Asia/Tokyo")},
+                key=f"home_weather_v486_{scope}", width="stretch", height="content",
+                data={"scope": scope, "timezone": str(APP_TIMEZONE or "Asia/Tokyo"),
+                      "native_bridge_token": str(_query_param_scalar("native_bridge_token") or "")},
             )
     except Exception:
         # Weather is optional; never block recording or change existing routes.
@@ -45105,15 +45136,16 @@ def page_review():
             box-shadow:0 4px 12px rgba(0,0,0,.035) !important;
           }}
           .st-key-review_random_jump_v473 div.stButton > button {{
-            display:flex !important; align-items:center !important; justify-content:flex-start !important; gap:.56rem !important;
+            display:flex !important; align-items:center !important; justify-content:center !important; gap:.34rem !important;
           }}
           .st-key-review_random_jump_v473 div.stButton > button::before {{
-            content:''; display:block; width:34px; height:26px; flex-shrink:0;
+            content:''; display:block; width:1.28rem; height:1.28rem; flex:0 0 1.28rem;
+            margin:0 !important; transform:none !important;
             background-repeat:no-repeat; background-position:center; background-size:contain;
             {random_icon_css}
           }}
-          @media (max-width: 640px) {{
-            .st-key-review_random_jump_v473 div.stButton > button::before {{ width:30px; height:22px; }}
+          .st-key-review_random_jump_v473 div.stButton > button p {{
+            margin:0 !important; line-height:1.25 !important;
           }}
           .st-key-review_map_jump [data-testid="stCaptionContainer"],
           .st-key-review_project_jump [data-testid="stCaptionContainer"],
@@ -46014,6 +46046,11 @@ export default function(component) {
   const showStatus = Boolean(data?.show_status);
   if (root) root.hidden = !showStatus;
   const token = String(data?.native_bridge_token || '');
+  let host = window;
+  try { if (window.parent?.document) host = window.parent; } catch (_) {}
+  const deferUntilWeather = Boolean(data?.defer_until_weather);
+  const weatherScope = String(data?.weather_priority_scope || '');
+  const weatherPriorityKey = weatherScope ? `burari_weather_priority_done_v486:${weatherScope}` : '';
   let cancelled = false;
   const setStatus = (text) => { if (statusNode) statusNode.textContent = String(text || ''); };
   const safeJson = (raw, fallback=null) => { try { const v=JSON.parse(String(raw||'')); return v ?? fallback; } catch (_) { return fallback; } };
@@ -46038,6 +46075,7 @@ export default function(component) {
   const call=async(action,payload={})=>{
     if(direct){try{
       if(action==='status') return {result_json:String(direct.status(token)||'{}')};
+      if(action==='weather_ready' && typeof direct.weatherReady==='function') return {result:Number(direct.weatherReady(token)||0)};
       if(action==='configure') return {result_json:String(direct.configure(token,Boolean(payload.enabled),String(payload.period||'month'))||'{}')};
       if(action==='request_permissions') return {result:Number(direct.requestPermissions(token)||0)};
       if(action==='scan') return {result:Number(direct.scanNow(token)||0)};
@@ -46052,6 +46090,20 @@ export default function(component) {
     return await relay(action,payload);
   };
   const emitStable=(name,payload,key)=>{try{const sig=JSON.stringify(payload||{});const old=sessionStorage.getItem(key)||'';if(sig===old)return;sessionStorage.setItem(key,sig);setTriggerValue(name,payload)}catch(_){setTriggerValue(name,payload)}};
+  const weatherDone=()=>{
+    if(!deferUntilWeather) return true;
+    try {
+      const marker=host.__burariWeatherPriorityDoneV486;
+      if(marker && (!weatherScope || String(marker.scope||'')===weatherScope)) return true;
+      if(weatherPriorityKey && Number(host.sessionStorage?.getItem(weatherPriorityKey)||0)>0) return true;
+    } catch (_) {}
+    return false;
+  };
+  const waitForWeather=async()=>{
+    if(weatherDone()) return;
+    const deadline=Date.now()+12000;
+    while(!cancelled && Date.now()<deadline && !weatherDone()) await new Promise(r=>setTimeout(r,120));
+  };
   const formatStatus=(s)=>{
     if(!s||typeof s!=='object')return '端末の自動取込状態を確認しています…';
     const enabled=Boolean(s.enabled), period=String(s.period_label||s.period||''), perm=String(s.permission_label||s.permission_mode||'');
@@ -46101,6 +46153,8 @@ export default function(component) {
       emitStable('native_status',status,'burari_media_status_v485');
     } else if(showStatus) setStatus('Androidの自動取込機能を確認できませんでした。APK側の更新が必要です。');
     if(cancelled||!Boolean(data?.auto_sync)||!Boolean(status?.enabled))return;
+    await waitForWeather();
+    if(cancelled)return;
 
     const reservation=data?.reservation&&typeof data.reservation==='object'?data.reservation:null;
     if(reservation&&reservation.media_key){
@@ -46140,7 +46194,7 @@ def _get_native_media_sync_component_v485():
     _native_media_sync_component_initialized_v485 = True
     try:
         _native_media_sync_component_v485 = st.components.v2.component(
-            "tokyo_burari_native_media_sync_v485",
+            "tokyo_burari_native_media_sync_v486",
             html=_NATIVE_MEDIA_SYNC_HTML_V485,
             css=_NATIVE_MEDIA_SYNC_CSS_V485,
             js=_perf_instrument_js_v466(_NATIVE_MEDIA_SYNC_JS_V485),
@@ -46235,7 +46289,7 @@ def _native_media_process_upload_result_v485(payload):
     return True
 
 
-def render_native_media_sync_v485(*, show_status=False, command=None, auto_sync=True, key="native_media_sync_v485"):
+def render_native_media_sync_v485(*, show_status=False, command=None, auto_sync=True, defer_until_weather=False, key="native_media_sync_v485"):
     component = _get_native_media_sync_component_v485()
     if component is None:
         if show_status:
@@ -46245,6 +46299,10 @@ def render_native_media_sync_v485(*, show_status=False, command=None, auto_sync=
         "native_bridge_token": str(_query_param_scalar("native_bridge_token") or ""),
         "show_status": bool(show_status),
         "auto_sync": bool(auto_sync),
+        "defer_until_weather": bool(defer_until_weather),
+        "weather_priority_scope": hashlib.sha256(
+            f"{current_family_key()}|{current_member_key()}".encode("utf-8")
+        ).hexdigest()[:24],
         "command": command if isinstance(command, dict) else None,
         "reservation": st.session_state.get("_native_media_reservation_v485"),
         "ack": st.session_state.get("_native_media_ack_v485"),
@@ -47228,7 +47286,8 @@ with st.container(key="app_runtime_bridges_v473"):
             show_status=False,
             command=None,
             auto_sync=True,
-            key="native_media_background_v485",
+            defer_until_weather=(_native_media_page_v485 == "home"),
+            key="native_media_background_v486",
         )
 
 
