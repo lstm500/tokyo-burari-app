@@ -43,7 +43,8 @@ def _app_css_v473(markup, **_ignored):
 # Review menu-only update: 2026-09-19 JST
 GENERATED_UPDATE_JST = "2026-09-19T14:54:38+09:00"
 
-APP_BUILD = "v482"
+APP_BUILD = "v485"
+# v485: Android MediaStore background scan + exact duplicate detection + signed-url auto import; selectable 今日/1週間/1ヶ月.
 # v481: Keep Nearby/Toilet filter drafts authoritative across rerenders/remounts and freeze the exact visible filter snapshot at Search press, so GPS wait/scroll/rerun cannot fall back to the previous search conditions.
 # v480: Preserve browser-side Nearby/Toilet filter selections across component rerenders so repeat searches use the visible conditions; refresh component identities to avoid stale cached JS.
 # v479: Move the Home dashboard about 1 cm (38 CSS px) lower than v478 without changing its layout or controls.
@@ -7264,7 +7265,7 @@ _PERF_BROWSER_JS_V466 = 'function installBurariPerf466(host, page, run, serverSe
 _HISTORY_JS = _PERF_BROWSER_JS_V466 + r"""
 export default function(component) {
   const { data, setTriggerValue } = component;
-  const validPages = new Set(['home', 'camera', 'videos', 'moments', 'diary', 'photos', 'review', 'review_map', 'review_project', 'review_monthly', 'review_tag', 'review_random', 'review_history', 'nearby', 'discovery_results', 'evening_review', 'toilets', 'field_notes', 'settings', 'settings_moments', 'settings_moments_definition', 'settings_location', 'settings_account']);
+  const validPages = new Set(['home', 'camera', 'videos', 'moments', 'diary', 'photos', 'review', 'review_map', 'review_project', 'review_monthly', 'review_tag', 'review_random', 'review_history', 'nearby', 'discovery_results', 'evening_review', 'toilets', 'field_notes', 'settings', 'settings_moments', 'settings_moments_definition', 'settings_location', 'settings_account', 'settings_media_import']);
   const marker = '__tokyo_burari_page__';
   const guardMarker = '__tokyo_burari_first_level_guard__';
   const requestedPage = validPages.has(data?.page) ? data.page : 'home';
@@ -10103,6 +10104,16 @@ def _nearby_overpass_selectors(kind, subkind, radius, latitude, longitude):
         }
         return cuisine_map.get(str(subkind), cuisine_map["おまかせ"])
 
+    if kind == "rain_sightseeing":
+        return [
+            f'nwr{around}["tourism"~"^(museum|gallery|aquarium)$"];',
+            f'nwr{around}["tourism"]["indoor"="yes"];',
+            f'nwr{around}["tourism"]["covered"="yes"];',
+            f'nwr{around}["tourism"~"^(attraction|museum|gallery|aquarium)$"]["building"];',
+            f'nwr{around}["leisure"="indoor_playground"];',
+            f'nwr{around}["name"~"博物館|美術館|科学館|資料館|記念館|展示館|水族館|プラネタリウム|ミュージアム|屋内|室内"];',
+        ]
+
     mapping = {
         "なんでも": [
             f'nwr{around}["tourism"~"^(attraction|museum|gallery|viewpoint|zoo|aquarium)$"];',
@@ -10477,6 +10488,8 @@ def _nearby_google_text_query(kind, subkind):
         return mapping.get(str(subkind), mapping["食べ歩き向き"])
     if kind == "lunch":
         return _nearby_lunch_text_query(subkind)
+    if kind == "rain_sightseeing":
+        return "屋内 観光 博物館 美術館 科学館 資料館 記念館 展示館 水族館 プラネタリウム ミュージアム 屋内施設"
     mapping = {
         "なんでも": "観光スポット 公園 神社 寺 博物館 鉄道",
         "公園": "公園 庭園 遊歩道",
@@ -10527,6 +10540,7 @@ def search_nearby_quick_stops_google(latitude, longitude, kind, subkind, radius_
 
     is_snack = str(kind) == "snack"
     is_lunch = str(kind) == "lunch"
+    is_rain_sightseeing = str(kind) == "rain_sightseeing"
     snack_style = str(subkind or "食べ歩き向き")
     lunch_genre = str(subkind or "おまかせ") if is_lunch else ""
 
@@ -10856,6 +10870,27 @@ def search_nearby_quick_stops_google(latitude, longitude, kind, subkind, radius_
         if primary_type:
             types.add(primary_type)
 
+        rain_reason = ""
+        if is_rain_sightseeing:
+            strong_indoor_types = {
+                "museum", "art_gallery", "aquarium", "shopping_mall",
+                "visitor_center", "cultural_center", "amusement_center"
+            }
+            outdoor_types = {"park", "garden", "hiking_area", "campground", "beach"}
+            indoor_name_terms = (
+                "博物館", "美術館", "科学館", "資料館", "記念館", "展示館", "水族館",
+                "プラネタリウム", "ミュージアム", "屋内", "室内", "地下街", "展望室"
+            )
+            strong_type = bool(types.intersection(strong_indoor_types))
+            strong_name = any(term in name for term in indoor_name_terms)
+            if types.intersection(outdoor_types) and not (strong_type or strong_name):
+                continue
+            if not (strong_type or strong_name):
+                # A generic tourist_attraction can be outdoors; do not claim rain protection
+                # unless the place type or name itself provides strong indoor evidence.
+                continue
+            rain_reason = "屋内施設" if strong_type else "屋内を示す施設名"
+
         takeout = raw.get("takeout") if isinstance(raw.get("takeout"), bool) else None
         dine_in = raw.get("dineIn") if isinstance(raw.get("dineIn"), bool) else None
         serves_dessert = raw.get("servesDessert") if isinstance(raw.get("servesDessert"), bool) else None
@@ -10922,6 +10957,8 @@ def search_nearby_quick_stops_google(latitude, longitude, kind, subkind, radius_
         ] if is_lunch else []
         if is_snack and primary_type in cafe_types:
             category = "カフェ・喫茶"
+        elif is_rain_sightseeing:
+            category = "雨でも安心・屋内観光"
         elif is_lunch:
             if matched_lunch_atomic_genres and matched_lunch_atomic_genres != ["おまかせ"]:
                 category = "・".join(matched_lunch_atomic_genres[:2])
@@ -10974,6 +11011,8 @@ def search_nearby_quick_stops_google(latitude, longitude, kind, subkind, radius_
             "google_maps_type_label": _nearby_localized_text_v459(raw.get("googleMapsTypeLabel")),
             "google_primary_type_label": _nearby_localized_text_v459(raw.get("primaryTypeDisplayName")),
             "walkability_rank": walkability_rank,
+            "rain_suitable": bool(is_rain_sightseeing),
+            "rain_suitable_reason": rain_reason if is_rain_sightseeing else "",
         })
 
     if is_lunch and budget_limit is not None:
@@ -11527,6 +11566,22 @@ def search_nearby_quick_stops(latitude, longitude, kind, subkind, radius_m):
             amenity = str(tags.get("amenity") or "")
             if amenity not in {"restaurant", "fast_food", "food_court", "cafe"} and not str(tags.get("cuisine") or "").strip():
                 continue
+        elif kind == "rain_sightseeing":
+            tourism = str(tags.get("tourism") or "").strip().lower()
+            indoor = str(tags.get("indoor") or "").strip().lower()
+            covered = str(tags.get("covered") or "").strip().lower()
+            building = str(tags.get("building") or "").strip().lower()
+            leisure = str(tags.get("leisure") or "").strip().lower()
+            indoor_name_terms = ("博物館", "美術館", "科学館", "資料館", "記念館", "展示館", "水族館", "プラネタリウム", "ミュージアム", "屋内", "室内", "地下街")
+            strong_rain = (
+                tourism in {"museum", "gallery", "aquarium"}
+                or indoor == "yes" or covered == "yes"
+                or (bool(building) and tourism in {"attraction", "museum", "gallery", "aquarium"})
+                or leisure == "indoor_playground"
+                or any(term in name for term in indoor_name_terms)
+            )
+            if not strong_rain:
+                continue
         center = element.get("center") if isinstance(element.get("center"), dict) else {}
         plat = element.get("lat", center.get("lat"))
         plon = element.get("lon", center.get("lon"))
@@ -11564,6 +11619,8 @@ def search_nearby_quick_stops(latitude, longitude, kind, subkind, radius_m):
                 "address": " ".join(addr_parts[:3]),
                 "priority": _nearby_place_priority(tags, kind),
                 "provider": "OpenStreetMap",
+                "rain_suitable": bool(kind == "rain_sightseeing"),
+                "rain_suitable_reason": "屋内・屋根あり情報" if kind == "rain_sightseeing" else "",
             }
         )
 
@@ -23560,8 +23617,8 @@ def _shared_movie_list_time_label(value):
         return raw.replace("T", " ")[:16]
 
 
-def open_owned_replay_movie_from_library(item):
-    """Open one saved movie from the Review movie library on its normal detail page."""
+def open_owned_replay_movie_from_library(item, edit=False):
+    """Open one saved movie for playback, or open its music editor when edit=True."""
     item = item if isinstance(item, dict) else {}
     month_key = str(item.get("month_key") or "").strip()[:7]
     review = dict(item.get("review") or {}) if isinstance(item.get("review"), dict) else {}
@@ -23569,6 +23626,10 @@ def open_owned_replay_movie_from_library(item):
         raise ValueError("開くムービーの情報を確認できませんでした。")
 
     st.session_state[f"monthly_review_{month_key}"] = review
+    if edit:
+        st.session_state[f"monthly_music_settings_open_{month_key}"] = True
+        st.session_state[f"_music_settings_focus_v471_{month_key}"] = uuid.uuid4().hex
+        st.session_state.pop(f"monthly_time_settings_open_{month_key}", None)
     scope_type = str(review.get("_review_scope_type") or "").strip().lower()
     if scope_type in {"tag", "ai_tag"}:
         tags = _normalize_tag_review_selection(review.get("_ai_tag_keys") or [])
@@ -23727,7 +23788,7 @@ _REPLAY_MOVIE_LIBRARY_CSS_V357 = r"""
 }
 .replay-movie-actions-v357 {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 6px;
   margin-top: 9px;
   width: 100%;
@@ -23872,9 +23933,10 @@ export default function(component) {
 
       const actions = document.createElement('div');
       actions.className = 'replay-movie-actions-v357';
-      // Fixed CSS grid, not Streamlit columns: never collapses from 2x2 to four rows on phones.
+      // Compact fixed grid: playback, edit, delete stay on one row even on phones.
       actions.append(
-        button('▶ 見る', 'view', rowId, false),
+        button('▶ 再生', 'view', rowId, false),
+        button('✏️ 編集', 'edit', rowId, false),
         button('🗑 削除', 'delete', rowId, false, 'delete')
       );
 
@@ -23944,7 +24006,7 @@ def _get_replay_movie_library_component_v357():
     _replay_movie_library_component_initialized_v357 = True
     try:
         _replay_movie_library_component_v357 = st.components.v2.component(
-            "tokyo_burari_replay_movie_library_v357",
+            "tokyo_burari_replay_movie_library_v484",
             html=_REPLAY_MOVIE_LIBRARY_HTML_V357,
             css=_REPLAY_MOVIE_LIBRARY_CSS_V357,
             js=_perf_instrument_js_v466(_REPLAY_MOVIE_LIBRARY_JS_V357),
@@ -23979,7 +24041,7 @@ def render_own_replay_movie_library():
     also avoids mounting four Streamlit widgets per movie, which materially reduces mobile
     DOM size and page churn. No photos, MP4 bytes, or YouTube players are loaded here.
     """
-    st.markdown("#### 🎞 作ったムービー")
+    st.markdown("#### 🎞 保存済みムービー")
 
     notice = st.session_state.pop("_replay_movie_library_notice_v357", None)
     if notice:
@@ -24039,10 +24101,22 @@ def render_own_replay_movie_library():
             shared = bool(item.get("shared"))
             with st.container(border=True):
                 st.markdown(f"**{html.escape(period_label)}**")
-                if st.button("▶ 見る", key=f"review_movie_fallback_view_v357_{row_id}", use_container_width=True):
-                    open_owned_replay_movie_from_library(item)
-                    _refresh_after_movie_library_navigation_v357()
-                    st.rerun(scope="app")
+                fallback_cols = st.columns(3)
+                with fallback_cols[0]:
+                    if st.button("▶ 再生", key=f"review_movie_fallback_view_v484_{row_id}", use_container_width=True):
+                        open_owned_replay_movie_from_library(item, edit=False)
+                        _refresh_after_movie_library_navigation_v357()
+                        st.rerun(scope="app")
+                with fallback_cols[1]:
+                    if st.button("✏️ 編集", key=f"review_movie_fallback_edit_v484_{row_id}", use_container_width=True):
+                        open_owned_replay_movie_from_library(item, edit=True)
+                        _refresh_after_movie_library_navigation_v357()
+                        st.rerun(scope="app")
+                with fallback_cols[2]:
+                    if st.button("🗑 削除", key=f"review_movie_fallback_delete_v484_{row_id}", use_container_width=True):
+                        delete_owned_replay_movie(row_id)
+                        st.session_state["_replay_movie_library_notice_v357"] = f"「{period_label}」を削除しました。"
+                        reload_current_page_after_action()
         if len(rows) > 12:
             st.caption("この端末では先頭12件を表示しています。")
         return
@@ -24050,7 +24124,7 @@ def render_own_replay_movie_library():
     serial = int(st.session_state.get("_replay_movie_library_serial_v357") or 0)
     result = component(
         data={"movies": component_rows, "page_size": 12},
-        key=f"replay_movie_library_v357_{serial}_{_current_ui_refresh_epoch()}",
+        key=f"replay_movie_library_v484_{serial}_{_current_ui_refresh_epoch()}",
         on_action_change=lambda: None,
     )
     action_payload = getattr(result, "action", None) if result is not None else None
@@ -24066,7 +24140,12 @@ def render_own_replay_movie_library():
 
     try:
         if action == "view":
-            open_owned_replay_movie_from_library(item)
+            open_owned_replay_movie_from_library(item, edit=False)
+            _refresh_after_movie_library_navigation_v357()
+            st.rerun(scope="app")
+            return
+        if action == "edit":
+            open_owned_replay_movie_from_library(item, edit=True)
             _refresh_after_movie_library_navigation_v357()
             st.rerun(scope="app")
             return
@@ -24089,7 +24168,7 @@ def render_own_replay_movie_library():
             reload_current_page_after_action()
             return
     except Exception as exc:
-        action_label = {"view": "開く", "share": "共有", "unshare": "共有解除", "delete": "削除"}.get(action, "操作")
+        action_label = {"view": "再生", "edit": "編集", "share": "共有", "unshare": "共有解除", "delete": "削除"}.get(action, "操作")
         st.error(f"ムービーを{action_label}できませんでした。")
         with st.expander("保護者向け詳細"):
             st.code(str(exc))
@@ -28018,7 +28097,7 @@ def page_evening_review():
                     )
 
 
-VALID_APP_PAGES = {"home", "camera", "videos", "moments", "diary", "photos", "review", "review_map", "review_project", "review_monthly", "review_tag", "review_random", "review_history", "nearby", "discovery_results", "evening_review", "toilets", "field_notes", "settings", "settings_moments", "settings_moments_definition", "settings_location", "settings_account"}
+VALID_APP_PAGES = {"home", "camera", "videos", "moments", "diary", "photos", "review", "review_map", "review_project", "review_monthly", "review_tag", "review_random", "review_history", "nearby", "discovery_results", "evening_review", "toilets", "field_notes", "settings", "settings_moments", "settings_moments_definition", "settings_location", "settings_account", "settings_media_import"}
 
 
 def _current_ui_refresh_epoch():
@@ -28247,6 +28326,7 @@ def navigation_parent_node(node=None):
         "settings_moments_definition": "settings_moments",
         "settings_location": "settings",
         "settings_account": "settings",
+        "settings_media_import": "settings",
     }
     return parents.get(str(node), "")
 
@@ -28397,7 +28477,7 @@ def _navigate_to_parent_state_only():
         _set_page_state("settings_moments", history_mode="replace")
         return
 
-    if node in {"settings_moments", "settings_location", "settings_account"}:
+    if node in {"settings_moments", "settings_location", "settings_account", "settings_media_import"}:
         _set_page_state("settings", history_mode="replace")
         return
 
@@ -28468,6 +28548,7 @@ def sync_browser_history():
         "settings_moments_definition",
         "settings_location",
         "settings_account",
+        "settings_media_import",
     }
     result = browser_history_component(
         data={
@@ -31427,7 +31508,7 @@ _NEARBY_BATCH_SEARCH_HTML_V320 = r"""
     <section class="legacy-step-card">
       <div class="legacy-step-title"><span class="legacy-step-badge">1</span><span>何に寄る？</span></div>
       <div id="nb-kind-area" class="legacy-choice-stack"></div>
-      <div class="legacy-note">おやつ・ランチ・気軽な立ち寄り先。</div>
+      <div class="legacy-note">おやつ・ランチ・観光・雨の日観光。</div>
     </section>
     <section class="legacy-step-card">
       <div class="legacy-step-title"><span class="legacy-step-badge">2</span><span id="nb-sub-label">条件</span></div>
@@ -31523,19 +31604,21 @@ export default function(component) {
   const stateKey = String(data?.state_key || 'tokyo_burari_nearby_filters_v482');
   const serverToken = String(data?.completion_token || '');
   const confirmedRequest = (data?.confirmed_request && typeof data.confirmed_request === 'object') ? data.confirmed_request : null;
-  const validKind = ['snack','lunch','sightseeing'].includes(String(initial.kind||'')) ? String(initial.kind) : 'snack';
+  const validKind = ['snack','lunch','sightseeing','rain_sightseeing'].includes(String(initial.kind||'')) ? String(initial.kind) : 'snack';
 
   const defaults = {
     snack: {subkind:'食べ歩き向き', radius_m:192, budget:'under1000', open:googleEnabled?'open':'all'},
     lunch: {subkind:'おまかせ', radius_m:640, budget:'2000', open:googleEnabled?'open':'all'},
-    sightseeing: {subkind:'なんでも', radius_m:800, budget:'under1000', open:googleEnabled?'open':'all'}
+    sightseeing: {subkind:'なんでも', radius_m:800, budget:'under1000', open:googleEnabled?'open':'all'},
+    rain_sightseeing: {subkind:'屋内・屋根あり', radius_m:800, budget:'all', open:googleEnabled?'open':'all'}
   };
   const validSubkinds = {
     snack: new Set(['食べ歩き向き','店内中心']),
     lunch: new Set(lunchGenres),
-    sightseeing: new Set(['なんでも','公園','神社・寺','博物館・施設','電車・乗り物'])
+    sightseeing: new Set(['なんでも','公園','神社・寺','博物館・施設','電車・乗り物']),
+    rain_sightseeing: new Set(['屋内・屋根あり'])
   };
-  const validRadii = {snack:new Set([64,192,320]), lunch:new Set([320,640,1280]), sightseeing:new Set([800,1600,2500])};
+  const validRadii = {snack:new Set([64,192,320]), lunch:new Set([320,640,1280]), sightseeing:new Set([800,1600,2500]), rain_sightseeing:new Set([800,1600,2500])};
   const normalizeCfg = (targetKind, candidate, base) => {
     const raw = (candidate && typeof candidate === 'object') ? candidate : {};
     const next = {...base};
@@ -31574,11 +31657,11 @@ export default function(component) {
   // account-scoped, and every field is normalized before reuse.
   const restoreClientState = !!(savedClientState && typeof savedClientState === 'object');
   if (restoreClientState && savedClientState?.perKind && typeof savedClientState.perKind === 'object') {
-    for (const k of ['snack','lunch','sightseeing']) {
+    for (const k of ['snack','lunch','sightseeing','rain_sightseeing']) {
       perKind[k] = normalizeCfg(k, savedClientState.perKind[k], perKind[k]);
     }
   }
-  let kind = restoreClientState && ['snack','lunch','sightseeing'].includes(String(savedClientState?.kind || ''))
+  let kind = restoreClientState && ['snack','lunch','sightseeing','rain_sightseeing'].includes(String(savedClientState?.kind || ''))
     ? String(savedClientState.kind) : validKind;
   let cancelled = false, watchId = null, hardTimer = null, best = null, startedAt = 0;
   let activeSearchFilters = null;
@@ -31603,7 +31686,7 @@ export default function(component) {
 
   const render = () => {
     const cfg = perKind[kind];
-    fillChoices(kindArea, [['🍡 おやつ','snack'],['🍽️ ランチ','lunch'],['🏛️ 観光','sightseeing']], kind, (v) => { kind=v; persistClientState(true); render(); });
+    fillChoices(kindArea, [['🍡 おやつ','snack'],['🍽️ ランチ','lunch'],['🏛️ 観光','sightseeing'],['☔ 観光（雨）','rain_sightseeing']], kind, (v) => { kind=v; persistClientState(true); render(); });
 
     if (kind === 'snack') {
       subLabel.textContent = '食べ方';
@@ -31623,6 +31706,13 @@ export default function(component) {
       fillChoices(radiusArea, [['🚶 5分',320],['🚶 10分',640],['🚶 20分',1280]], cfg.radius_m, (v)=>{cfg.radius_m=Number(v);persistClientState(true);render();});
       fillChoices(budgetArea, [['💴 1,000円','1000'],['💴 2,000円','2000'],['💴 5,000円','5000']], cfg.budget, (v)=>{cfg.budget=v;persistClientState(true);render();});
       budgetNote.textContent = '選んだ金額以内を目安に絞ります。価格未登録の店は候補から落とさず残します。';
+    } else if (kind === 'rain_sightseeing') {
+      subLabel.textContent = '雨の日';
+      fillChoices(subArea, [['☔ 屋内・屋根あり','屋内・屋根あり']], cfg.subkind, (v)=>{cfg.subkind=v;persistClientState(true);render();});
+      subNote.textContent = '博物館・美術館・水族館など、屋内で雨を避けやすい観光先だけを探します。';
+      fillChoices(radiusArea, [['🚶 10分くらい',800],['🚶 20分くらい',1600],['＋ もう少し遠く',2500]], cfg.radius_m, (v)=>{cfg.radius_m=Number(v);persistClientState(true);render();});
+      fillChoices(budgetArea, [['💴 1,000円以下','under1000'],['○ 予算を問わない','all']], cfg.budget, (v)=>{cfg.budget=v;persistClientState(true);render();});
+      budgetNote.textContent = '屋内性を優先します。料金未登録の場所は候補に残します。';
     } else {
       subLabel.textContent = '種類';
       fillChoices(subArea, [['おまかせ','なんでも'],['🌳 公園','公園'],['⛩️ 神社・寺','神社・寺'],['🏛️ 博物館・施設','博物館・施設'],['🚃 電車・乗り物','電車・乗り物']], cfg.subkind, (v)=>{cfg.subkind=v;persistClientState(true);render();});
@@ -31654,7 +31744,7 @@ export default function(component) {
   };
   function updateSummary(){
     const f=gather();
-    const kindLabel=f.kind==='snack'?'おやつ':f.kind==='lunch'?'ランチ':'観光';
+    const kindLabel=f.kind==='snack'?'おやつ':f.kind==='lunch'?'ランチ':f.kind==='rain_sightseeing'?'観光（雨）':'観光';
     const mins=f.radius_m<=64?'徒歩1分':f.radius_m<=192?'徒歩3分':f.radius_m<=320?'徒歩5分':f.radius_m<=640?'徒歩10分':f.radius_m<=1280?'徒歩20分':f.radius_m<=1600?'徒歩20分':'もう少し遠く';
     const budget=f.kind==='lunch'?`${Number(f.budget_limit||0).toLocaleString()}円以内目安`:(f.budget_under_1000?'1,000円以下':'予算指定なし');
     summary.textContent=`${kindLabel}　／　${f.subkind}　／　${mins}くらい　／　${budget}　／　${f.open_now_only?'営業中のみ':'営業時間で絞らない'}`;
@@ -31667,7 +31757,7 @@ export default function(component) {
   const visibleFilterSnapshot=()=>{
     // Read the controls that are actually painted on screen at the tap moment.
     const visibleKind=activeValue(kindArea);
-    if(!['snack','lunch','sightseeing'].includes(visibleKind))return null;
+    if(!['snack','lunch','sightseeing','rain_sightseeing'].includes(visibleKind))return null;
     const visibleSub=visibleKind==='lunch'?String(subArea.querySelector('select')?.value||''):activeValue(subArea);
     const radiusText=activeValue(radiusArea);
     const budgetText=activeValue(budgetArea);
@@ -31680,6 +31770,8 @@ export default function(component) {
     }
     if(visibleKind==='snack'){
       if(!['食べ歩き向き','店内中心'].includes(visibleSub)||![64,192,320].includes(radius)||!['under1000','all'].includes(budgetText))return null;
+    }else if(visibleKind==='rain_sightseeing'){
+      if(visibleSub!=='屋内・屋根あり'||![800,1600,2500].includes(radius)||!['under1000','all'].includes(budgetText))return null;
     }else{
       if(!['なんでも','公園','神社・寺','博物館・施設','電車・乗り物'].includes(visibleSub)||![800,1600,2500].includes(radius)||!['under1000','all'].includes(budgetText))return null;
     }
@@ -31726,7 +31818,7 @@ def _get_nearby_batch_search_component_v320():
     _nearby_batch_search_component_initialized_v320 = True
     try:
         _nearby_batch_search_component_v320 = st.components.v2.component(
-            "tokyo_burari_nearby_batch_search_v482",
+            "tokyo_burari_nearby_batch_search_v484",
             html=_NEARBY_BATCH_SEARCH_HTML_V320,
             css=_NEARBY_BATCH_SEARCH_CSS_V320,
             js=_perf_instrument_js_v466(_NEARBY_BATCH_SEARCH_JS_V320),
@@ -32697,7 +32789,7 @@ def page_discovery_results():
 def page_nearby():
     page_top(
         "📍 近くに寄る",
-        "おやつ・ランチ・観光から条件を選ぶと、その瞬間の現在地を高精度で取り直して周辺を調べます。行きたい場所が決まったら、Googleマップの徒歩経路確認画面を開きます。",
+        "おやつ・ランチ・観光・観光（雨）から条件を選ぶと、その瞬間の現在地を高精度で取り直して周辺を調べます。観光（雨）は屋内・屋根ありの候補に絞ります。",
     )
     st.markdown(
         """
@@ -32912,6 +33004,7 @@ def page_nearby():
     kind_key = f"_nearby_filter_kind_v320_{prefix}"
     snack_key = f"_nearby_filter_snack_v320_{prefix}"
     sight_key = f"_nearby_filter_sight_v320_{prefix}"
+    rain_key = f"_nearby_filter_rain_v484_{prefix}"
     lunch_key = f"_nearby_filter_lunch_v320_{prefix}"
     radius_key = f"_nearby_filter_radius_v320_{prefix}"
     budget_key = f"_nearby_filter_budget_v320_{prefix}"
@@ -32920,9 +33013,10 @@ def page_nearby():
     lunch_open_key = f"_nearby_filter_lunch_open_v320_{prefix}"
     result_key = f"_nearby_search_result_v320_{prefix}"
 
-    if st.session_state.get(kind_key) not in {"snack", "sightseeing", "lunch"}: st.session_state[kind_key] = "snack"
+    if st.session_state.get(kind_key) not in {"snack", "sightseeing", "rain_sightseeing", "lunch"}: st.session_state[kind_key] = "snack"
     if st.session_state.get(snack_key) not in {"食べ歩き向き", "店内中心"}: st.session_state[snack_key] = "食べ歩き向き"
     if st.session_state.get(sight_key) not in {"なんでも", "公園", "神社・寺", "博物館・施設", "電車・乗り物"}: st.session_state[sight_key] = "なんでも"
+    if st.session_state.get(rain_key) != "屋内・屋根あり": st.session_state[rain_key] = "屋内・屋根あり"
     if st.session_state.get(lunch_key) not in set(NEARBY_LUNCH_GENRES): st.session_state[lunch_key] = "おまかせ"
     if st.session_state.get(budget_key) not in {"under1000", "all"}: st.session_state[budget_key] = "under1000"
     if str(st.session_state.get(lunch_budget_key) or "") not in {"1000", "2000", "5000"}: st.session_state[lunch_budget_key] = "2000"
@@ -32938,6 +33032,10 @@ def page_nearby():
         subkind = str(st.session_state.get(lunch_key) or "おまかせ")
         valid_radii = {320: "徒歩5分くらい", 640: "徒歩10分くらい", 1280: "徒歩20分くらい"}
         default_radius_m = 640
+    elif kind == "rain_sightseeing":
+        subkind = str(st.session_state.get(rain_key) or "屋内・屋根あり")
+        valid_radii = {800: "徒歩10分くらい", 1600: "徒歩20分くらい", 2500: "もう少し遠く"}
+        default_radius_m = 800
     else:
         subkind = str(st.session_state.get(sight_key) or "なんでも")
         valid_radii = {800: "徒歩10分くらい", 1600: "徒歩20分くらい", 2500: "もう少し遠く"}
@@ -32975,7 +33073,7 @@ def page_nearby():
         if not required.issubset(filters.keys()):
             raise ValueError("nearby_filters_incomplete")
         request_kind = str(filters.get("kind") or "")
-        if request_kind not in {"snack", "lunch", "sightseeing"}:
+        if request_kind not in {"snack", "lunch", "sightseeing", "rain_sightseeing"}:
             raise ValueError("nearby_kind_invalid")
         request_sub = str(filters.get("subkind") or "")
         if request_kind == "snack":
@@ -32986,6 +33084,10 @@ def page_nearby():
             if request_sub not in set(NEARBY_LUNCH_GENRES): raise ValueError("nearby_lunch_genre_invalid")
             allowed = {320, 640, 1280}
             st.session_state[lunch_key] = request_sub
+        elif request_kind == "rain_sightseeing":
+            if request_sub != "屋内・屋根あり": raise ValueError("nearby_rain_subkind_invalid")
+            allowed = {800, 1600, 2500}
+            st.session_state[rain_key] = request_sub
         else:
             if request_sub not in {"なんでも", "公園", "神社・寺", "博物館・施設", "電車・乗り物"}: raise ValueError("nearby_subkind_invalid")
             allowed = {800, 1600, 2500}
@@ -33040,7 +33142,7 @@ def page_nearby():
         completion_token = str(previous_result.get("searched_at") or "") if isinstance(previous_result, dict) else ""
         search_component_result = search_component(
             data={"initial": current_cfg, "lunch_genres": list(NEARBY_LUNCH_GENRES), "google_enabled": bool(GOOGLE_PLACES_API_KEY), "completion_token": completion_token, "state_key": f"tokyo_burari_nearby_filters_v482_{hashlib.sha1(prefix.encode('utf-8')).hexdigest()[:16]}", "confirmed_request": pending_confirmed_v482},
-            key=f"nearby_batch_search_v482_{prefix}",
+            key=f"nearby_batch_search_v484_{prefix}",
             on_confirm_filters_change=lambda: None,
             on_search_location_change=lambda: None,
             on_search_error_change=lambda: None,
@@ -33225,6 +33327,9 @@ def page_nearby():
     elif kind == "lunch":
         subkind = str(st.session_state.get(lunch_key) or "おまかせ")
         allowed_r = {320,640,1280}; default_r = 640
+    elif kind == "rain_sightseeing":
+        subkind = str(st.session_state.get(rain_key) or "屋内・屋根あり")
+        allowed_r = {800,1600,2500}; default_r = 800
     else:
         subkind = str(st.session_state.get(sight_key) or "なんでも")
         allowed_r = {800,1600,2500}; default_r = 800
@@ -33269,7 +33374,7 @@ def page_nearby():
         st.warning("Google Placesに接続できなかったため、今回は評価順ではなく距離順の代替候補です。")
 
     st.divider()
-    st.markdown("### ランチ候補（口コミ補正評価順）" if kind == "lunch" else "### 今ちょっと寄るなら")
+    st.markdown("### ランチ候補（口コミ補正評価順）" if kind == "lunch" else ("### ☔ 雨の日の観光候補" if kind == "rain_sightseeing" else "### 今ちょっと寄るなら"))
     if not GOOGLE_PLACES_API_KEY:
         st.info("写真表示を使うには Streamlit Secrets に `GOOGLE_PLACES_API_KEY` を追加してください。検索自体はこのまま利用できます。")
     if not places:
@@ -33277,6 +33382,8 @@ def page_nearby():
             st.info("この条件では候補を見つけられませんでした。徒歩3分・5分へ広げるか、『食べ歩き向き／店内中心』を切り替えてもう一度検索してください。")
         elif kind == "lunch":
             st.info("この条件ではランチ候補を見つけられませんでした。徒歩10分に広げる、予算を上げる、またはジャンルを『おまかせ』にしてもう一度検索してください。")
+        elif kind == "rain_sightseeing":
+            st.info("この範囲では屋内・屋根ありと判断できる観光候補を見つけられませんでした。20分または『もう少し遠く』へ広げてください。")
         else:
             st.info("この条件では候補を見つけられませんでした。検索範囲を広げるか、種類を『おまかせ』にしてもう一度検索してください。")
         return
@@ -33298,6 +33405,8 @@ def page_nearby():
             rating_text = _nearby_rating_text(place)
             burari_rating_text = _nearby_burari_rating_text(place) if kind == "lunch" else ""
             status_html = f'<span class="nearby-pill {html.escape(status.get("css") or "unknown")}">{html.escape(str(status.get("label") or "営業時間情報なし"))}</span>'
+            if kind == "rain_sightseeing":
+                status_html += '<span class="nearby-pill unknown">☔ 屋内・屋根あり候補</span>'
             if kind == "lunch" and burari_rating_text:
                 status_html += f'<span class="nearby-pill rating">{html.escape(burari_rating_text)}</span>'
                 if rating_text:
@@ -33315,7 +33424,7 @@ def page_nearby():
             if preview:
                 st.markdown(f'<div class="nearby-photo-wrap"><img src="{html.escape(preview, quote=True)}" alt="{html.escape(str(place.get("name") or "候補"))}の参考写真"></div>', unsafe_allow_html=True)
             else:
-                icon = "🍡" if kind == "snack" else ("🍽️" if kind == "lunch" else "🏛️")
+                icon = "🍡" if kind == "snack" else ("🍽️" if kind == "lunch" else ("☔" if kind == "rain_sightseeing" else "🏛️"))
                 st.markdown(f'<div class="nearby-photo-placeholder">{icon}</div>', unsafe_allow_html=True)
 
             extras = []
@@ -33379,6 +33488,8 @@ def page_nearby():
         source_text = "候補・写真・営業情報・評価・価格情報：Google Places。"
         if kind == "lunch":
             source_text += "ランチは評価順で表示します。"
+        if kind == "rain_sightseeing":
+            source_text += "観光（雨）は施設タイプ・名称から屋内性を確認できる候補だけを表示します。"
         source_text += "検索ボタンを押すたびに現在地を取り直し、周辺候補もその都度検索します。電話・公式サイトなどの詳細は開いた場所だけ取得します。"
         st.markdown('<div class="nearby-source-note">' + html.escape(source_text) + '</div>', unsafe_allow_html=True)
     else:
@@ -44932,8 +45043,8 @@ def page_random_replay_v473():
 
 
 def page_review():
-    # v477: Keep only random, tags, project, and map on the Review landing page.
-    # Remove links/library display only; preserve stored media and destination pages.
+    # v483: show the Burari train icon on the random movie button instead of the dice icon.
+    # Reuse the same local train asset family as the home screen so the identity stays consistent.
     st.session_state.pop("review_view_selector", None)
     st.session_state.pop("history_detail_trip_id", None)
 
@@ -44941,72 +45052,95 @@ def page_review():
         "🔍 振り返り",
         "見たい振り返りを選ぶと、専用ページへ移動します。",
     )
+    try:
+        _random_train_name, review_train_uri = _home_train_for_session()
+    except Exception:
+        review_train_uri = _home_icon_uri("train") or ""
+    safe_review_train_uri = str(review_train_uri or "").replace('"', '%22').replace("'", '%27')
+    random_icon_css = (
+        f'background-image:url("{safe_review_train_uri}") !important;' if safe_review_train_uri else ""
+    )
     st.markdown(
-        """
+        f"""
         <style>
-          .review-menu-note {
+          .review-menu-note {{
             margin:.05rem 0 .72rem; padding:.62rem .72rem; border-radius:14px;
             background:rgba(128,128,128,.055); border:1px solid rgba(128,128,128,.11);
             font-size:.76rem; line-height:1.45; opacity:.82;
-          }
+          }}
           .st-key-review_random_jump_v473,
           .st-key-review_map_jump,
           .st-key-review_project_jump,
           .st-key-review_monthly_jump,
           .st-key-review_tag_jump,
-          .st-key-review_history_jump {
+          .st-key-review_history_jump {{
             border-radius:18px; padding:.58rem .66rem .50rem; margin:.18rem 0 .62rem;
             border:1px solid rgba(128,128,128,.16);
             box-shadow:0 8px 22px rgba(0,0,0,.045);
-          }
-          .st-key-review_map_jump {
+          }}
+          .st-key-review_map_jump {{
             background:linear-gradient(145deg,rgba(239,248,255,.98),rgba(232,245,249,.95));
-          }
-          .st-key-review_project_jump {
+          }}
+          .st-key-review_project_jump {{
             background:linear-gradient(145deg,rgba(229,251,239,.98),rgba(221,246,233,.95));
-          }
-          .st-key-review_monthly_jump {
+          }}
+          .st-key-review_monthly_jump {{
             background:linear-gradient(145deg,rgba(255,249,231,.98),rgba(255,239,213,.95));
-          }
-          .st-key-review_tag_jump {
+          }}
+          .st-key-review_tag_jump {{
             background:linear-gradient(145deg,rgba(244,244,255,.98),rgba(233,241,255,.95));
-          }
-          .st-key-review_history_jump {
+          }}
+          .st-key-review_history_jump {{
             background:linear-gradient(145deg,rgba(240,250,247,.98),rgba(232,246,241,.95));
-          }
+          }}
           .st-key-review_random_jump_v473 div.stButton > button,
           .st-key-review_map_jump div.stButton > button,
           .st-key-review_project_jump div.stButton > button,
           .st-key-review_monthly_jump div.stButton > button,
           .st-key-review_tag_jump div.stButton > button,
-          .st-key-review_history_jump div.stButton > button {
+          .st-key-review_history_jump div.stButton > button {{
             min-height:3.05rem; border-radius:14px !important; font-size:1.00rem;
             font-weight:850 !important; background:rgba(255,255,255,.78) !important;
             border:1px solid rgba(128,128,128,.16) !important;
             box-shadow:0 4px 12px rgba(0,0,0,.035) !important;
-          }
+          }}
+          .st-key-review_random_jump_v473 div.stButton > button {{
+            display:flex !important; align-items:center !important; justify-content:flex-start !important; gap:.56rem !important;
+          }}
+          .st-key-review_random_jump_v473 div.stButton > button::before {{
+            content:''; display:block; width:34px; height:26px; flex-shrink:0;
+            background-repeat:no-repeat; background-position:center; background-size:contain;
+            {random_icon_css}
+          }}
+          @media (max-width: 640px) {{
+            .st-key-review_random_jump_v473 div.stButton > button::before {{ width:30px; height:22px; }}
+          }}
           .st-key-review_map_jump [data-testid="stCaptionContainer"],
           .st-key-review_project_jump [data-testid="stCaptionContainer"],
           .st-key-review_monthly_jump [data-testid="stCaptionContainer"],
           .st-key-review_tag_jump [data-testid="stCaptionContainer"],
-          .st-key-review_history_jump [data-testid="stCaptionContainer"] {
+          .st-key-review_history_jump [data-testid="stCaptionContainer"] {{
             margin-top:-.10rem; padding:.02rem .16rem .02rem;
-          }
+          }}
           .st-key-review_map_jump [data-testid="stCaptionContainer"] p,
           .st-key-review_project_jump [data-testid="stCaptionContainer"] p,
           .st-key-review_monthly_jump [data-testid="stCaptionContainer"] p,
           .st-key-review_tag_jump [data-testid="stCaptionContainer"] p,
-          .st-key-review_history_jump [data-testid="stCaptionContainer"] p {
+          .st-key-review_history_jump [data-testid="stCaptionContainer"] p {{
             font-size:.74rem; line-height:1.38;
-          }
+          }}
         </style>
         """,
         unsafe_allow_html=True,
     )
 
     with st.container(key="review_random_jump_v473"):
-        st.button("\U0001f3b2 \u304a\u307e\u304b\u305b\u30e0\u30fc\u30d3\u30fc", use_container_width=True,
-                  key="review_open_random_v473", on_click=_open_random_replay_v473)
+        st.button(
+            "おまかせムービー",
+            use_container_width=True,
+            key="review_open_random_v473",
+            on_click=_open_random_replay_v473,
+        )
 
     with st.container(key="review_tag_jump"):
         st.button(
@@ -45034,6 +45168,10 @@ def page_review():
             on_click=_go_page_callback,
             args=("review_map", "push"),
         )
+
+    st.divider()
+    render_own_replay_movie_library()
+
 
 def page_good_moments_menu():
     page_top("✨ いい瞬間の設定をする")
@@ -45513,6 +45651,707 @@ def page_settings_account():
         st.success("この端末の自動ログインを解除しました。次回は個人IDとあいことばが必要です。")
 
 
+# ============================================================
+# v485: Android MediaStore background auto-import
+# ============================================================
+NATIVE_MEDIA_PERIOD_OPTIONS_V485 = {
+    "today": "今日",
+    "week": "1週間",
+    "month": "1ヶ月",
+}
+NATIVE_MEDIA_SYNC_PAGES_V485 = {"home", "settings", "settings_media_import"}
+
+
+def _native_media_capture_iso_v485(item):
+    raw_ms = (item or {}).get("captured_at_ms")
+    try:
+        value = int(raw_ms or 0)
+    except Exception:
+        value = 0
+    if value <= 0:
+        return now_jst().isoformat()
+    try:
+        return datetime.fromtimestamp(value / 1000.0, tz=ZoneInfo(APP_TIMEZONE)).isoformat()
+    except Exception:
+        return now_jst().isoformat()
+
+
+def _native_media_parse_iso_ms_v485(value):
+    text = str(value or "").strip()
+    if not text:
+        return 0
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=ZoneInfo(APP_TIMEZONE))
+        return int(parsed.timestamp() * 1000)
+    except Exception:
+        return 0
+
+
+def _native_media_duplicate_index_v485(max_items=5000):
+    cache_key = _account_cache_key("native_media_duplicate_index_v485", int(max_items))
+    cached = _session_cache_get(cache_key, max_age_seconds=120)
+    if isinstance(cached, dict):
+        return cached
+
+    fingerprints = set()
+    media_store_ids = set()
+    legacy_videos = []
+    rows = []
+    try:
+        client = supabase_client()
+        page_size = 400
+        offset = 0
+        while offset < int(max_items):
+            chunk = (
+                client.table(PHOTO_TABLE)
+                .select("id,captured_at,reflection_json")
+                .eq("family_key", current_family_key())
+                .eq("member_key", current_member_key())
+                .order("captured_at", desc=True)
+                .range(offset, min(offset + page_size - 1, int(max_items) - 1))
+                .execute()
+            ).data or []
+            rows.extend(row for row in chunk if isinstance(row, dict))
+            if len(chunk) < page_size:
+                break
+            offset += page_size
+    except Exception:
+        rows = []
+
+    for row in rows:
+        reflection = row.get("reflection_json") or {}
+        if not isinstance(reflection, dict):
+            continue
+        meta = reflection.get("import_metadata") or {}
+        if not isinstance(meta, dict):
+            meta = {}
+        fingerprint = str(meta.get("source_fingerprint") or "").strip()
+        if fingerprint:
+            fingerprints.add(fingerprint[:160])
+        media_store_id = str(meta.get("android_media_store_id") or "").strip()
+        if media_store_id:
+            media_store_ids.add(media_store_id[:80])
+
+        if str(reflection.get("media_type") or "") == "video":
+            try:
+                size_bytes = max(0, int(reflection.get("video_size_bytes") or 0))
+                duration_ms = max(0, int(reflection.get("video_duration_ms") or 0))
+            except Exception:
+                size_bytes = 0
+                duration_ms = 0
+            captured_ms = _native_media_parse_iso_ms_v485(row.get("captured_at"))
+            if size_bytes > 0 and captured_ms > 0:
+                legacy_videos.append((size_bytes, duration_ms, captured_ms))
+
+    payload = {
+        "fingerprints": sorted(fingerprints),
+        "media_store_ids": sorted(media_store_ids),
+        "legacy_videos": legacy_videos[-5000:],
+    }
+    return _session_cache_set(cache_key, payload)
+
+
+def _native_media_is_duplicate_v485(item):
+    item = item if isinstance(item, dict) else {}
+    index = _native_media_duplicate_index_v485()
+    fingerprint = str(item.get("fingerprint") or "").strip()
+    if fingerprint and fingerprint in set(index.get("fingerprints") or []):
+        return True, "同じ内容の写真・動画をすでに取り込み済みです。"
+    media_store_id = str(item.get("media_key") or item.get("media_store_id") or "").strip()
+    if media_store_id and media_store_id in set(index.get("media_store_ids") or []):
+        return True, "この端末の同じメディアをすでに取り込み済みです。"
+
+    if str(item.get("kind") or "") == "video":
+        try:
+            size_bytes = max(0, int(item.get("size_bytes") or 0))
+            duration_ms = max(0, int(item.get("duration_ms") or 0))
+            captured_ms = max(0, int(item.get("captured_at_ms") or 0))
+        except Exception:
+            size_bytes = duration_ms = captured_ms = 0
+        if size_bytes > 0 and captured_ms > 0:
+            for old_size, old_duration, old_captured in index.get("legacy_videos") or []:
+                if int(old_size or 0) != size_bytes:
+                    continue
+                if duration_ms > 0 and int(old_duration or 0) > 0 and abs(int(old_duration) - duration_ms) > 1500:
+                    continue
+                if abs(int(old_captured or 0) - captured_ms) <= 4000:
+                    return True, "同じ撮影時刻・容量の動画をすでに取り込み済みです。"
+    return False, ""
+
+
+def _native_media_safe_import_meta_v485(item):
+    item = item if isinstance(item, dict) else {}
+    return {
+        "source_fingerprint": str(item.get("fingerprint") or "")[:160],
+        "android_media_store_id": str(item.get("media_key") or item.get("media_store_id") or "")[:120],
+        "android_media_key": str(item.get("media_key") or "")[:120],
+        "original_name": str(item.get("display_name") or "")[:180],
+        "original_type": str(item.get("mime_type") or "")[:80],
+        "original_size_bytes": max(0, int(item.get("size_bytes") or 0)),
+        "original_last_modified_ms": max(0, int(item.get("modified_ms") or 0)),
+        "capture_time_source": "android_mediastore_date_taken_v485",
+        "capture_time_raw": str(item.get("captured_at_ms") or "")[:40],
+        "auto_import_period": str(item.get("scan_period") or "")[:20],
+    }
+
+
+def _native_media_storage_reservation_v485(item):
+    item = item if isinstance(item, dict) else {}
+    media_key = str(item.get("media_key") or "").strip()
+    kind = str(item.get("kind") or "").strip().lower()
+    if not media_key or kind not in {"image", "video"}:
+        raise ValueError("端末メディアの情報を確認できませんでした。")
+
+    captured_at = _native_media_capture_iso_v485(item)
+    trip = get_or_create_gallery_import_trip_v443(captured_at)
+    trip_id = str(trip.get("id") or "")
+    if not trip_id:
+        raise ValueError("写真・動画の保存先となる日付を作成できませんでした。")
+
+    stamp = now_jst().strftime("%Y%m%d_%H%M%S_%f")
+    token = uuid.uuid4().hex[:10]
+    base = f"{current_family_key()}/{current_member_key()}/{trip_id}/{stamp}_{token}"
+
+    reservation = {
+        "token": uuid.uuid4().hex,
+        "media_key": media_key,
+        "kind": kind,
+        "trip_id": trip_id,
+        "captured_at": captured_at,
+        "item": dict(item),
+        "created_at": now_jst().isoformat(),
+    }
+
+    if kind == "image":
+        remote_path = base + "_auto.jpg"
+        reservation.update({
+            "remote_path": remote_path,
+            "poster_remote_path": "",
+            "signed_url": _create_signed_video_upload_url(remote_path),
+            "poster_signed_url": "",
+            "upload_mime_type": "image/jpeg",
+        })
+        return reservation
+
+    size_bytes = max(0, int(item.get("size_bytes") or 0))
+    duration_ms = max(0, int(item.get("duration_ms") or 0))
+    if size_bytes <= 0:
+        raise ValueError("動画の容量を確認できませんでした。")
+    if size_bytes > VIDEO_MAX_BYTES:
+        raise ValueError(f"動画が現在の上限 {format_storage_size(VIDEO_MAX_BYTES)} を超えています。")
+    if duration_ms > VIDEO_IMPORT_MAX_SECONDS * 1000:
+        raise ValueError(f"動画が現在の取込上限 {VIDEO_IMPORT_MAX_SECONDS}秒を超えています。")
+    ensure_video_storage_capacity(size_bytes)
+
+    mime = str(item.get("mime_type") or "video/mp4").split(";", 1)[0].strip().lower()
+    ext_map = {
+        "video/mp4": "mp4",
+        "video/webm": "webm",
+        "video/quicktime": "mov",
+        "video/x-m4v": "m4v",
+    }
+    extension = ext_map.get(mime)
+    if not extension:
+        raise ValueError(f"この動画形式（{mime or '不明'}）は現在の自動取込対象外です。")
+    remote_path = base + f"_video.{extension}"
+    poster_remote_path = base + "_video.jpg"
+    reservation.update({
+        "remote_path": remote_path,
+        "poster_remote_path": poster_remote_path,
+        "signed_url": _create_signed_video_upload_url(remote_path),
+        "poster_signed_url": _create_signed_video_upload_url(poster_remote_path),
+        "upload_mime_type": mime,
+    })
+    return reservation
+
+
+def _native_media_validate_owned_path_v485(path, trip_id):
+    value = str(path or "").strip()
+    prefix = f"{current_family_key()}/{current_member_key()}/{str(trip_id or '')}/"
+    return bool(value and value.startswith(prefix) and ".." not in value)
+
+
+def _native_media_register_uploaded_v485(reservation):
+    reservation = reservation if isinstance(reservation, dict) else {}
+    item = reservation.get("item") if isinstance(reservation.get("item"), dict) else {}
+    kind = str(reservation.get("kind") or item.get("kind") or "").strip().lower()
+    trip_id = str(reservation.get("trip_id") or "").strip()
+    remote_path = str(reservation.get("remote_path") or item.get("remote_path") or "").strip()
+    poster_remote_path = str(reservation.get("poster_remote_path") or item.get("poster_remote_path") or "").strip()
+    captured_at = str(reservation.get("captured_at") or _native_media_capture_iso_v485(item))
+    media_key = str(reservation.get("media_key") or item.get("media_key") or "").strip()
+    registered = st.session_state.setdefault("_native_media_registered_v485", {})
+    if media_key and isinstance(registered, dict) and isinstance(registered.get(media_key), dict):
+        return dict(registered[media_key])
+    if not trip_id or kind not in {"image", "video"}:
+        raise ValueError("自動取込の保存情報を確認できませんでした。")
+    if not _native_media_validate_owned_path_v485(remote_path, trip_id):
+        raise ValueError("自動取込ファイルの保存先を確認できませんでした。")
+    if kind == "video" and not _native_media_validate_owned_path_v485(poster_remote_path, trip_id):
+        raise ValueError("動画の代表画像の保存先を確認できませんでした。")
+
+    import_meta = _native_media_safe_import_meta_v485(item)
+    import_meta = {k: v for k, v in import_meta.items() if v not in {"", None, False, 0}}
+    reflection = {
+        "capture_source": "android_auto_import_v485",
+        "location": {},
+        "import_metadata": import_meta,
+    }
+    if kind == "video":
+        mime = str(item.get("mime_type") or reservation.get("upload_mime_type") or "video/mp4").split(";", 1)[0].strip().lower()
+        reflection.update({
+            "media_type": "video",
+            "video_storage_path": remote_path,
+            "video_mime_type": mime,
+            "video_duration_ms": max(0, int(item.get("duration_ms") or 0)),
+            "video_size_bytes": max(0, int(item.get("size_bytes") or 0)),
+            "browser_direct_upload": False,
+            "android_native_auto_import": True,
+            "video_capture": {
+                "width": max(0, int(item.get("width") or 0)),
+                "height": max(0, int(item.get("height") or 0)),
+                "frame_rate": 0.0,
+                "video_bitrate_bps": 0,
+                "has_audio": None,
+                "audio_bitrate_bps": 0,
+                "quality_pipeline": "v485_android_mediastore",
+            },
+            "video_stabilization": {
+                "version": VIDEO_STABILIZATION_VERSION,
+                "mode": "light",
+                "status": "queued",
+                "storage_path": "",
+                "size_bytes": 0,
+                "original_preserved": True,
+                "last_error": "",
+            },
+        })
+        storage_path = poster_remote_path
+    else:
+        storage_path = remote_path
+
+    result = (
+        supabase_client().table(PHOTO_TABLE).insert({
+            "trip_id": trip_id,
+            "family_key": current_family_key(),
+            "member_key": current_member_key(),
+            "storage_path": storage_path,
+            "captured_at": captured_at,
+            "reflection_json": reflection,
+            "signals_json": {},
+        }).execute()
+    )
+    saved_row = (result.data or [None])[0]
+    if not isinstance(saved_row, dict):
+        saved_row = {
+            "trip_id": trip_id,
+            "storage_path": storage_path,
+            "captured_at": captured_at,
+            "reflection_json": reflection,
+            "signals_json": {},
+        }
+    download_photo.clear()
+    signed_photo_url_map.clear()
+    _invalidate_fast_db_cache()
+    if kind == "video":
+        _invalidate_video_storage_audit_cache()
+        try:
+            launch_video_ai_background_job(saved_row)
+        except Exception:
+            pass
+    else:
+        try:
+            _queue_framing_rows_v468([saved_row])
+        except Exception:
+            pass
+    if media_key:
+        try:
+            st.session_state.setdefault("_native_media_registered_v485", {})[media_key] = dict(saved_row)
+        except Exception:
+            pass
+    # Server-side duplicate reads must see this row immediately on the next queued item.
+    try:
+        st.session_state.pop(_account_cache_key("native_media_duplicate_index_v485", 5000), None)
+    except Exception:
+        pass
+    return saved_row
+
+
+def _native_media_cleanup_remote_v485(item):
+    item = item if isinstance(item, dict) else {}
+    paths = []
+    for key in ("remote_path", "poster_remote_path"):
+        value = str(item.get(key) or "").strip()
+        if value and value.startswith(f"{current_family_key()}/{current_member_key()}/") and ".." not in value:
+            paths.append(value)
+    if not paths:
+        return
+    try:
+        supabase_client().storage.from_(PHOTO_BUCKET).remove(list(dict.fromkeys(paths)))
+    except Exception:
+        pass
+
+
+_NATIVE_MEDIA_SYNC_HTML_V485 = r"""
+<div class="native-media-sync-v485" id="native-media-sync-v485">
+  <div class="native-media-status-v485" id="native-media-status-v485"></div>
+</div>
+"""
+
+_NATIVE_MEDIA_SYNC_CSS_V485 = r"""
+.native-media-sync-v485{width:100%;box-sizing:border-box;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Hiragino Sans","Yu Gothic",sans-serif}
+.native-media-sync-v485[hidden]{display:none!important}
+.native-media-status-v485{padding:10px 12px;border-radius:13px;border:1px solid rgba(128,128,128,.14);background:rgba(128,128,128,.045);font-size:12px;line-height:1.55;color:rgba(31,38,48,.76)}
+"""
+
+_NATIVE_MEDIA_SYNC_JS_V485 = r"""
+export default function(component) {
+  const { data, setTriggerValue, parentElement } = component;
+  const root = parentElement.querySelector('#native-media-sync-v485');
+  const statusNode = parentElement.querySelector('#native-media-status-v485');
+  const showStatus = Boolean(data?.show_status);
+  if (root) root.hidden = !showStatus;
+  const token = String(data?.native_bridge_token || '');
+  let cancelled = false;
+  const setStatus = (text) => { if (statusNode) statusNode.textContent = String(text || ''); };
+  const safeJson = (raw, fallback=null) => { try { const v=JSON.parse(String(raw||'')); return v ?? fallback; } catch (_) { return fallback; } };
+  if (!token) { setStatus('Android版アプリで利用できます。'); return; }
+
+  const direct = (() => {
+    try {
+      const bridge = globalThis.BurariMedia || window.BurariMedia || null;
+      if (!bridge || typeof bridge.status !== 'function') return null;
+      return bridge;
+    } catch (_) { return null; }
+  })();
+  const requestType='burari-native-media-request-v485', responseType='burari-native-media-response-v485';
+  let relaySeq=0; const relayPending=new Map();
+  const onMessage=(event)=>{try{const p=event?.data;if(!p||p.type!==responseType)return;const id=String(p.request_id||'');const e=relayPending.get(id);if(!e)return;relayPending.delete(id);clearTimeout(e.timer);e.resolve(p);}catch(_){}};
+  window.addEventListener('message',onMessage);
+  const relay=(action,payload={})=>new Promise((resolve)=>{
+    const id=`media-${Date.now()}-${++relaySeq}-${Math.random().toString(36).slice(2)}`;
+    const timer=setTimeout(()=>{relayPending.delete(id);resolve(null)},4000);relayPending.set(id,{resolve,timer});
+    try{const target=(window.parent&&window.parent!==window)?window.parent:window;target.postMessage({type:requestType,request_id:id,action,token,...payload},'*')}catch(_){clearTimeout(timer);relayPending.delete(id);resolve(null)}
+  });
+  const call=async(action,payload={})=>{
+    if(direct){try{
+      if(action==='status') return {result_json:String(direct.status(token)||'{}')};
+      if(action==='configure') return {result_json:String(direct.configure(token,Boolean(payload.enabled),String(payload.period||'month'))||'{}')};
+      if(action==='request_permissions') return {result:Number(direct.requestPermissions(token)||0)};
+      if(action==='scan') return {result:Number(direct.scanNow(token)||0)};
+      if(action==='pending') return {result_json:String(direct.pendingItems(token,Number(payload.limit||1))||'[]')};
+      if(action==='start_upload') return {result:Number(direct.startUpload(token,String(payload.media_key||''),String(payload.remote_path||''),String(payload.signed_url||''),String(payload.poster_remote_path||''),String(payload.poster_signed_url||''))||0)};
+      if(action==='upload_status') return {result_json:String(direct.uploadStatus(token,String(payload.media_key||''))||'{}')};
+      if(action==='ack') return {result:Number(direct.acknowledgeImported(token,String(payload.media_key||''),String(payload.server_id||''))||0)};
+      if(action==='duplicate') return {result:Number(direct.markDuplicate(token,String(payload.media_key||''),String(payload.reason||''))||0)};
+      if(action==='skip') return {result:Number(direct.markSkipped(token,String(payload.media_key||''),String(payload.reason||''))||0)};
+      if(action==='bridge_version') return {result:Number(direct.bridgeVersion(token)||0)};
+    }catch(_){}}
+    return await relay(action,payload);
+  };
+  const emitStable=(name,payload,key)=>{try{const sig=JSON.stringify(payload||{});const old=sessionStorage.getItem(key)||'';if(sig===old)return;sessionStorage.setItem(key,sig);setTriggerValue(name,payload)}catch(_){setTriggerValue(name,payload)}};
+  const formatStatus=(s)=>{
+    if(!s||typeof s!=='object')return '端末の自動取込状態を確認しています…';
+    const enabled=Boolean(s.enabled), period=String(s.period_label||s.period||''), perm=String(s.permission_label||s.permission_mode||'');
+    const pending=Number(s.pending_count||0), imported=Number(s.imported_count||0), dup=Number(s.duplicate_count||0), skipped=Number(s.skipped_count||0);
+    const last=s.last_scan_at?` ／ 最終確認 ${String(s.last_scan_at)}`:'';
+    return `${enabled?'自動取込：ON':'自動取込：OFF'}${period?` ／ ${period}`:''}${perm?` ／ ${perm}`:''} ／ 未取込 ${pending}件 ／ 取込済み ${imported}件 ／ 重複 ${dup}件${skipped?` ／ 対象外 ${skipped}件`:''}${last}`;
+  };
+  const pollUpload=async(mediaKey)=>{
+    for(let i=0;i<300&&!cancelled;i++){
+      const reply=await call('upload_status',{media_key:mediaKey}); const status=safeJson(reply?.result_json,{}); const state=String(status?.status||'');
+      if(showStatus)setStatus(state==='uploading'?'写真・動画を自動取込しています…':formatStatus(safeJson((await call('status'))?.result_json,{})));
+      if(state==='uploaded'){setTriggerValue('upload_result',{token:`${Date.now()}_${Math.random().toString(36).slice(2)}`,media_key:mediaKey,status:'uploaded'});return;}
+      if(state==='error'){setTriggerValue('upload_result',{token:`${Date.now()}_${Math.random().toString(36).slice(2)}`,media_key:mediaKey,status:'error',error:String(status?.last_error||'')});return;}
+      await new Promise(r=>setTimeout(r,800));
+    }
+  };
+  const run=async()=>{
+    const once=async(prefix,obj,action,payload)=>{
+      if(!obj||!obj.media_key)return;
+      const k=prefix+String(obj.media_key)+'|'+String(obj.server_id||obj.reason||'');
+      if(sessionStorage.getItem(k))return;
+      const r=await call(action,payload);
+      if(r)sessionStorage.setItem(k,'1');
+    };
+    await once('burari_media_ack_v485_',data?.ack,'ack',{media_key:String(data?.ack?.media_key||''),server_id:String(data?.ack?.server_id||'')});
+    await once('burari_media_dup_v485_',data?.duplicate_ack,'duplicate',{media_key:String(data?.duplicate_ack?.media_key||''),reason:String(data?.duplicate_ack?.reason||'')});
+    await once('burari_media_skip_v485_',data?.skip_ack,'skip',{media_key:String(data?.skip_ack?.media_key||''),reason:String(data?.skip_ack?.reason||'')});
+
+    const command=data?.command&&typeof data.command==='object'?data.command:null;
+    if(command&&command.token){
+      const commandKey='burari_media_command_v485_'+String(command.token);
+      if(!sessionStorage.getItem(commandKey)){
+        sessionStorage.setItem(commandKey,'1');
+        let reply=null;
+        if(command.action==='configure'){
+          reply=await call('configure',{enabled:Boolean(command.enabled),period:String(command.period||'month')});
+          const parsed=safeJson(reply?.result_json,{});
+          if(Boolean(command.enabled)&&String(parsed?.permission_mode||'none')==='none') await call('request_permissions');
+        } else if(command.action==='scan') reply=await call('scan');
+        setTriggerValue('command_result',{token:String(command.token),action:String(command.action||''),ok:Boolean(reply)});
+      }
+    }
+
+    const statusReply=await call('status'); const status=safeJson(statusReply?.result_json,null);
+    if(status){
+      if(showStatus)setStatus(formatStatus(status));
+      emitStable('native_status',status,'burari_media_status_v485');
+    } else if(showStatus) setStatus('Androidの自動取込機能を確認できませんでした。APK側の更新が必要です。');
+    if(cancelled||!Boolean(data?.auto_sync)||!Boolean(status?.enabled))return;
+
+    const reservation=data?.reservation&&typeof data.reservation==='object'?data.reservation:null;
+    if(reservation&&reservation.media_key){
+      const key=String(reservation.media_key); const stateReply=await call('upload_status',{media_key:key}); const state=safeJson(stateReply?.result_json,{});
+      if(String(state?.status||'')==='uploaded'){
+        setTriggerValue('upload_result',{token:`${Date.now()}_${Math.random().toString(36).slice(2)}`,media_key:key,status:'uploaded'});return;
+      }
+      const started=await call('start_upload',{
+        media_key:key,remote_path:String(reservation.remote_path||''),signed_url:String(reservation.signed_url||''),
+        poster_remote_path:String(reservation.poster_remote_path||''),poster_signed_url:String(reservation.poster_signed_url||'')
+      });
+      if(Number(started?.result||0)>0){await pollUpload(key);} else {
+        setTriggerValue('upload_result',{token:`${Date.now()}_${Math.random().toString(36).slice(2)}`,media_key:key,status:'error',error:'端末側のアップロードを開始できませんでした。'});
+      }
+      return;
+    }
+
+    const pendingReply=await call('pending',{limit:1}); const pending=safeJson(pendingReply?.result_json,[]); const item=Array.isArray(pending)?pending[0]:null;
+    if(item&&item.media_key){
+      const key=String(item.media_key); const gateKey='burari_media_pending_emit_v485_'+key; const last=Number(sessionStorage.getItem(gateKey)||0);
+      if(Date.now()-last>15000){sessionStorage.setItem(gateKey,String(Date.now()));setTriggerValue('pending_item',{token:`${Date.now()}_${Math.random().toString(36).slice(2)}`,item});}
+    }
+  };
+  run();
+  return()=>{cancelled=true;window.removeEventListener('message',onMessage);for(const e of relayPending.values())clearTimeout(e.timer);relayPending.clear();};
+}
+"""
+
+_native_media_sync_component_v485 = None
+_native_media_sync_component_initialized_v485 = False
+
+
+def _get_native_media_sync_component_v485():
+    global _native_media_sync_component_v485, _native_media_sync_component_initialized_v485
+    if _native_media_sync_component_initialized_v485:
+        return _native_media_sync_component_v485
+    _native_media_sync_component_initialized_v485 = True
+    try:
+        _native_media_sync_component_v485 = st.components.v2.component(
+            "tokyo_burari_native_media_sync_v485",
+            html=_NATIVE_MEDIA_SYNC_HTML_V485,
+            css=_NATIVE_MEDIA_SYNC_CSS_V485,
+            js=_perf_instrument_js_v466(_NATIVE_MEDIA_SYNC_JS_V485),
+        )
+    except Exception:
+        _native_media_sync_component_v485 = None
+    return _native_media_sync_component_v485
+
+
+def _native_media_process_pending_v485(payload):
+    if not isinstance(payload, dict):
+        return False
+    token = str(payload.get("token") or "")
+    seen_key = "_native_media_pending_seen_v485"
+    if not token or token == str(st.session_state.get(seen_key) or ""):
+        return False
+    st.session_state[seen_key] = token
+    item = payload.get("item") if isinstance(payload.get("item"), dict) else {}
+    media_key = str(item.get("media_key") or "").strip()
+    if not media_key:
+        return False
+    if st.session_state.get("_native_media_reservation_v485"):
+        return False
+
+    duplicate, reason = _native_media_is_duplicate_v485(item)
+    if duplicate:
+        # Never delete a native-uploaded object here. On app restart this may be the
+        # exact object already referenced by the server row that made it a duplicate.
+        st.session_state["_native_media_duplicate_ack_v485"] = {"media_key": media_key, "reason": reason}
+        return True
+
+    if str(item.get("status") or "") == "uploaded" and item.get("remote_path"):
+        reservation = {
+            "token": uuid.uuid4().hex,
+            "media_key": media_key,
+            "kind": str(item.get("kind") or ""),
+            "trip_id": str(item.get("trip_id") or ""),
+            "captured_at": _native_media_capture_iso_v485(item),
+            "item": dict(item),
+            "remote_path": str(item.get("remote_path") or ""),
+            "poster_remote_path": str(item.get("poster_remote_path") or ""),
+            "already_uploaded": True,
+        }
+        # The native queue cannot know the Supabase trip id. Recover it from the owned path.
+        parts = str(reservation["remote_path"]).split("/")
+        if len(parts) >= 4:
+            reservation["trip_id"] = parts[2]
+        try:
+            saved = _native_media_register_uploaded_v485(reservation)
+        except Exception as exc:
+            st.session_state["_native_media_error_v485"] = str(exc)[:260]
+            return False
+        st.session_state["_native_media_ack_v485"] = {"media_key": media_key, "server_id": str((saved or {}).get("id") or "")}
+        return True
+
+    try:
+        reservation = _native_media_storage_reservation_v485(item)
+    except ValueError as exc:
+        st.session_state["_native_media_skip_ack_v485"] = {"media_key": media_key, "reason": str(exc)[:240]}
+        return True
+    except Exception as exc:
+        st.session_state["_native_media_error_v485"] = str(exc)[:260]
+        return False
+    st.session_state["_native_media_reservation_v485"] = reservation
+    return True
+
+
+def _native_media_process_upload_result_v485(payload):
+    if not isinstance(payload, dict):
+        return False
+    token = str(payload.get("token") or "")
+    seen_key = "_native_media_upload_result_seen_v485"
+    if not token or token == str(st.session_state.get(seen_key) or ""):
+        return False
+    st.session_state[seen_key] = token
+    media_key = str(payload.get("media_key") or "")
+    reservation = st.session_state.get("_native_media_reservation_v485")
+    if not isinstance(reservation, dict) or media_key != str(reservation.get("media_key") or ""):
+        return False
+    if str(payload.get("status") or "") != "uploaded":
+        st.session_state.pop("_native_media_reservation_v485", None)
+        st.session_state["_native_media_error_v485"] = str(payload.get("error") or "自動取込に失敗しました。")[:260]
+        return True
+    try:
+        saved = _native_media_register_uploaded_v485(reservation)
+    except Exception as exc:
+        st.session_state["_native_media_error_v485"] = str(exc)[:260]
+        return False
+    st.session_state.pop("_native_media_reservation_v485", None)
+    st.session_state["_native_media_ack_v485"] = {"media_key": media_key, "server_id": str((saved or {}).get("id") or "")}
+    st.session_state["_native_media_import_notice_v485"] = "端末の新しい写真・動画を自動で取り込みました。"
+    return True
+
+
+def render_native_media_sync_v485(*, show_status=False, command=None, auto_sync=True, key="native_media_sync_v485"):
+    component = _get_native_media_sync_component_v485()
+    if component is None:
+        if show_status:
+            st.info("この環境ではAndroid自動取込の状態を表示できません。")
+        return None
+    data = {
+        "native_bridge_token": str(_query_param_scalar("native_bridge_token") or ""),
+        "show_status": bool(show_status),
+        "auto_sync": bool(auto_sync),
+        "command": command if isinstance(command, dict) else None,
+        "reservation": st.session_state.get("_native_media_reservation_v485"),
+        "ack": st.session_state.get("_native_media_ack_v485"),
+        "duplicate_ack": st.session_state.get("_native_media_duplicate_ack_v485"),
+        "skip_ack": st.session_state.get("_native_media_skip_ack_v485"),
+    }
+    result = component(
+        data=data,
+        key=key,
+        on_native_status_change=lambda: None,
+        on_pending_item_change=lambda: None,
+        on_upload_result_change=lambda: None,
+        on_command_result_change=lambda: None,
+    )
+    status = getattr(result, "native_status", None) if result is not None else None
+    if isinstance(status, dict):
+        st.session_state["_native_media_status_v485"] = status
+
+    command_result = getattr(result, "command_result", None) if result is not None else None
+    if isinstance(command_result, dict):
+        expected = st.session_state.get("_native_media_command_v485")
+        if isinstance(expected, dict) and str(command_result.get("token") or "") == str(expected.get("token") or ""):
+            action = str(expected.get("action") or "")
+            st.session_state.pop("_native_media_command_v485", None)
+            if action == "configure":
+                st.session_state["_settings_notice"] = "写真・動画の自動取込設定を保存しました。必要な場合はAndroidの写真・動画アクセス許可が表示されます。"
+            elif action == "scan":
+                st.session_state["_settings_notice"] = "端末内の写真・動画を確認しています。"
+
+    pending = getattr(result, "pending_item", None) if result is not None else None
+    if _native_media_process_pending_v485(pending):
+        st.rerun()
+
+    upload_result = getattr(result, "upload_result", None) if result is not None else None
+    if _native_media_process_upload_result_v485(upload_result):
+        st.rerun()
+
+    # Acknowledgements are intentionally retained in session state. The frontend applies
+    # each media-key acknowledgement once per browser session, while native updates are
+    # idempotent. This avoids losing the final ack if Android is backgrounded mid-rerun.
+    return status
+
+
+def page_settings_media_import_v485():
+    page_top("🖼 写真・動画の自動取込", "端末のフォトフォルダから、まだ取り込んでいない写真・動画だけを確認します。")
+    command = st.session_state.get("_native_media_command_v485")
+    status = render_native_media_sync_v485(show_status=True, command=command, auto_sync=True, key="native_media_settings_v485")
+    status = status if isinstance(status, dict) else st.session_state.get("_native_media_status_v485") or {}
+
+    current_period = str(status.get("period") or "month")
+    if current_period not in NATIVE_MEDIA_PERIOD_OPTIONS_V485:
+        current_period = "month"
+    current_enabled = bool(status.get("enabled"))
+    period_keys = list(NATIVE_MEDIA_PERIOD_OPTIONS_V485.keys())
+    period_labels = [NATIVE_MEDIA_PERIOD_OPTIONS_V485[x] for x in period_keys]
+    # Load the native device setting into the widgets exactly once. Afterwards user taps
+    # are authoritative until "設定を保存" is pressed.
+    if isinstance(status, dict) and status and not st.session_state.get("_settings_media_loaded_v485"):
+        st.session_state["settings_media_auto_enabled_v485"] = current_enabled
+        st.session_state["settings_media_period_v485"] = NATIVE_MEDIA_PERIOD_OPTIONS_V485[current_period]
+        st.session_state["_settings_media_loaded_v485"] = True
+    st.session_state.setdefault("settings_media_auto_enabled_v485", current_enabled)
+    st.session_state.setdefault("settings_media_period_v485", NATIVE_MEDIA_PERIOD_OPTIONS_V485[current_period])
+    enabled = st.toggle("自動取得をON", key="settings_media_auto_enabled_v485")
+    selected_label = st.radio(
+        "自動取得する期間",
+        options=period_labels,
+        horizontal=True,
+        key="settings_media_period_v485",
+    )
+    selected_period = next((k for k, v in NATIVE_MEDIA_PERIOD_OPTIONS_V485.items() if v == selected_label), "month")
+
+    col_save, col_scan = st.columns(2)
+    with col_save:
+        if st.button("設定を保存", use_container_width=True, type="primary", key="settings_media_save_v485"):
+            st.session_state["_native_media_command_v485"] = {
+                "token": uuid.uuid4().hex,
+                "action": "configure",
+                "enabled": bool(enabled),
+                "period": selected_period,
+            }
+            st.rerun()
+    with col_scan:
+        if st.button("今すぐ確認", use_container_width=True, key="settings_media_scan_now_v485"):
+            st.session_state["_native_media_command_v485"] = {
+                "token": uuid.uuid4().hex,
+                "action": "scan",
+            }
+            st.rerun()
+
+    st.caption(
+        "同じMediaStore IDに加え、ファイル内容のサンプルSHA-256でも重複を判定します。"
+        "バックグラウンドでは端末内を検索・重複判定し、Supabaseへの安全な転送はアプリ起動・復帰時に自動で続けます。"
+    )
+    permission_mode = str(status.get("permission_mode") or "")
+    if permission_mode == "selected":
+        st.info("Androidで『選択した写真と動画のみ』を許可しているため、その範囲だけが自動取得対象です。")
+    elif enabled and permission_mode == "none":
+        st.warning("写真・動画へのアクセス許可がありません。『設定を保存』を押すとAndroidの許可画面を開きます。")
+    error = st.session_state.pop("_native_media_error_v485", None)
+    if error:
+        st.warning(str(error))
+    notice = st.session_state.pop("_native_media_import_notice_v485", None)
+    if notice:
+        st.success(str(notice))
+
+
 def page_settings():
     # v415: The page title comes first so the user immediately knows this is Settings.
     # A divider separates the heading from the individual setting controls.
@@ -45565,6 +46404,13 @@ def page_settings():
 
     st.divider()
     st.markdown("#### 確認・管理")
+    st.button(
+        "🖼 写真・動画の自動取込",
+        use_container_width=True,
+        key="settings_open_media_import_v485",
+        on_click=_go_page_callback,
+        args=("settings_media_import", "push"),
+    )
     st.button(
         "📍 位置情報を確認",
         use_container_width=True,
@@ -46372,6 +47218,19 @@ with st.container(key="app_runtime_bridges_v473"):
     # function because its foreground GPS service + WorkManager own recording/sync entirely.
     _perf_call_v457("bootstrap:gps_bridge", run_always_on_gps_tracker_v271)
 
+    # v485: Android scans MediaStore in the background. Transfer at most one queued
+    # media item while the app is on a low-conflict page; camera/replay pages stay untouched.
+    _native_media_page_v485 = str(st.session_state.get("main_page") or "home")
+    if _native_media_page_v485 in {"home", "settings"}:
+        _perf_call_v457(
+            "bootstrap:native_media_sync",
+            render_native_media_sync_v485,
+            show_status=False,
+            command=None,
+            auto_sync=True,
+            key="native_media_background_v485",
+        )
+
 
 # v337: keep the whole visible page under one keyed root so its top-level identity
 # does not shift between Home/Review/Camera/etc. During reconciliation the outgoing
@@ -46452,6 +47311,8 @@ with st.container(key="app_page_root_v280"):
         _perf_call_v457("page:settings_location", page_settings_location, force=True)
     elif page == "settings_account":
         _perf_call_v457("page:settings_account", page_settings_account, force=True)
+    elif page == "settings_media_import":
+        _perf_call_v457("page:settings_media_import", page_settings_media_import_v485, force=True)
     else:
         st.session_state["main_page"] = "home"
         st.rerun(scope="app")
@@ -46463,7 +47324,7 @@ with st.container(key="app_page_root_v280"):
         live_page = str(st.session_state.get("main_page") or "home")
         if (
             page == live_page
-            and page in {"camera", "videos", "moments", "diary", "photos", "review", "review_map", "review_project", "review_monthly", "review_tag", "review_random", "review_history", "nearby", "discovery_results", "evening_review", "toilets", "field_notes", "settings", "settings_moments", "settings_moments_definition", "settings_location", "settings_account"}
+            and page in {"camera", "videos", "moments", "diary", "photos", "review", "review_map", "review_project", "review_monthly", "review_tag", "review_random", "review_history", "nearby", "discovery_results", "evening_review", "toilets", "field_notes", "settings", "settings_moments", "settings_moments_definition", "settings_location", "settings_account", "settings_media_import"}
         ):
             _perf_call_v457("ui:bottom_navigation", render_global_bottom_navigation, page)
 
