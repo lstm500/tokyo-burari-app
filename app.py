@@ -43,7 +43,8 @@ def _app_css_v473(markup, **_ignored):
 # Review menu-only update: 2026-09-19 JST
 GENERATED_UPDATE_JST = "2026-09-19T14:54:38+09:00"
 
-APP_BUILD = "v487"
+APP_BUILD = "v488"
+# v488: replace the two remaining dice icons on the random-replay page with the same Burari train image used on the Review entry.
 # v487: center the random-replay train icon together with its label by removing Streamlit's full-width inner markdown flex item.
 # v486: align the random-replay train icon with the other Review icons; weather gets startup priority before native media scan/upload.
 # v485: Android MediaStore background scan + exact duplicate detection + signed-url auto import; selectable 今日/1週間/1ヶ月.
@@ -45025,10 +45026,68 @@ def _random_music_library_editor_v473():
 
 
 def page_random_replay_v473():
-    page_top("\U0001f3b2 \u304a\u307e\u304b\u305b\u30e0\u30fc\u30d3\u30fc", "")
+    # v488: the random-replay destination uses the same Burari train artwork as its Review entry.
+    try:
+        _random_replay_train_name, random_replay_train_uri = _home_train_for_session()
+    except Exception:
+        random_replay_train_uri = _home_icon_uri("train") or ""
+    safe_random_replay_train_uri = str(random_replay_train_uri or "").replace('"', '%22').replace("'", '%27')
+    random_replay_train_css = (
+        f'background-image:url("{safe_random_replay_train_uri}") !important;'
+        if safe_random_replay_train_uri else ""
+    )
+    _app_css_v473(
+        f"""
+        <style>
+          .st-key-random_replay_page_title_v488 h3 {{
+            display:flex !important;
+            align-items:center !important;
+            gap:.42rem !important;
+          }}
+          .st-key-random_replay_page_title_v488 h3::before {{
+            content:'';
+            display:inline-block;
+            width:1.18rem;
+            height:1.18rem;
+            flex:0 0 1.18rem;
+            margin:0 !important;
+            background-repeat:no-repeat;
+            background-position:center;
+            background-size:contain;
+            {random_replay_train_css}
+          }}
+          .st-key-random_replay_redraw_v473 div.stButton > button {{
+            display:flex !important;
+            align-items:center !important;
+            justify-content:center !important;
+            gap:.42rem !important;
+          }}
+          .st-key-random_replay_redraw_v473 div.stButton > button::before {{
+            content:'';
+            display:block;
+            width:1.08rem;
+            height:1.08rem;
+            flex:0 0 1.08rem;
+            margin:0 !important;
+            background-repeat:no-repeat;
+            background-position:center;
+            background-size:contain;
+            {random_replay_train_css}
+          }}
+          .st-key-random_replay_redraw_v473 div.stButton > button p {{
+            width:auto !important;
+            flex:none !important;
+            margin:0 !important;
+            padding:0 !important;
+          }}
+        </style>
+        """
+    )
+    with st.container(key="random_replay_page_title_v488"):
+        page_top("おまかせムービー", "")
     st.caption("\u4fdd\u5b58\u3057\u305f\u97f3\u697d\u3068\u5168\u671f\u9593\u306e\u5199\u771f\u304b\u3089\u304a\u307e\u304b\u305b\u3002\u5199\u771f\u306f\u64ae\u5f71\u3057\u305f\u9806\u306b\u6d41\u308c\u307e\u3059\u3002")
     # Widgets are emitted BEFORE costly preparation; a reroll callback clears one snapshot.
-    st.button("\U0001f3b2 \u66f2\u3068\u5199\u771f\u3092\u9078\u3073\u76f4\u3059", key="random_replay_redraw_v473",
+    st.button("曲と写真を選び直す", key="random_replay_redraw_v473",
               use_container_width=True, on_click=_reset_random_replay_v473)
     key = _random_replay_key_v473()
     state = st.session_state.get(key)
