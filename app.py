@@ -43,7 +43,9 @@ def _app_css_v473(markup, **_ignored):
 # Review menu-only update: 2026-09-19 JST
 GENERATED_UPDATE_JST = "2026-09-19T14:54:38+09:00"
 
-APP_BUILD = "v488"
+APP_BUILD = "v490"
+# v490: restore Android native GPS bridge sync so background SQLite points are pulled into Supabase when the app is active; opening Burari Project force-flushes pending native points before rendering the updated green route.
+# v489: make replay photo voices reliable on Android/WebView: keep unknown-duration voices eligible, preload the selected clip, retry transient play failures, and never force-restart YouTube while a voice is playing; if the WebView pauses BGM for audio focus, resume BGM after the voice instead.
 # v488: replace the two remaining dice icons on the random-replay page with the same Burari train image used on the Review entry.
 # v487: center the random-replay train icon together with its label by removing Streamlit's full-width inner markdown flex item.
 # v486: align the random-replay train icon with the other Review icons; weather gets startup priority before native media scan/upload.
@@ -22691,6 +22693,23 @@ def build_monthly_replay_photo_items(bundle, limit=None):
         emotion = photo_selected_tag_meta(photo)
         voice_meta = photo_voice_note_meta(photo)
         voice_path = str(voice_meta.get("storage_path") or "").strip()
+        voice_url = str(voice_signed_map.get(voice_path) or "")
+        # v489: signed URLs are the fast path. If Storage signing transiently misses a
+        # short voice note, embed only that missing clip as a data URL so a visible
+        # voice-bearing photo never becomes silently unplayable. The fallback is rare
+        # and bounded to already-selected replay photos, so ordinary replays stay light.
+        if voice_path and not voice_url:
+            try:
+                voice_raw = download_photo(voice_path)
+                if voice_raw:
+                    voice_mime = str(
+                        voice_meta.get("storage_mime_type")
+                        or voice_meta.get("mime_type")
+                        or "audio/mp4"
+                    ).strip() or "audio/mp4"
+                    voice_url = f"data:{voice_mime};base64," + base64.b64encode(voice_raw).decode("ascii")
+            except Exception:
+                voice_url = ""
         framing = framing_map[str(photo.get("storage_path") or "")]
         items.append({
             "photo_id": str(photo.get("id") or ""),
@@ -22716,8 +22735,8 @@ def build_monthly_replay_photo_items(bundle, limit=None):
             "replay_focus_x": float(framing.get("focus_x") or framing.get("position_x") or 50.0),
             "replay_focus_y": float(framing.get("focus_y") or framing.get("position_y") or 50.0),
             "replay_source_ratio": float(framing.get("source_ratio") or 1.0),
-            "has_voice": bool(voice_path),
-            "voice_url": str(voice_signed_map.get(voice_path) or ""),
+            "has_voice": bool(voice_path and voice_url),
+            "voice_url": voice_url,
             "voice_transcript": str(voice_meta.get("transcript") or ""),
             "voice_duration_ms": _voice_duration_value_ms_v469(voice_meta),
         })
@@ -24701,18 +24720,24 @@ def render_monthly_replay_player(period_label, review, playback, photo_items, cu
       let burariSlideVisibleAtV469 = null;
       let burariDisplayedSourceIndexV469 = -1;
       let burariSlideVisibleElapsedV469 = 0;
-// Pure, bounded selection. A missing voice duration is unknown, never a 2-second voice.
+// v489: voice-duration preflight is an optimisation, not an admission gate.
+// Older voice notes can lack duration metadata and Android WebView can occasionally fail
+// a metadata-only probe even though the same clip plays normally. Keep those photos
+// eligible at the 2-second floor; actual playback holds the still until the voice ends.
 function burariChooseSlidesV469(source, knownDurations, budgetMs, randomFn = Math.random) {{
   const budget = Math.max(0, Number(budgetMs) || 0);
   let unknown = 0, tooLong = 0;
   const candidates = [];
   source.forEach((item, position) => {{
     let minimum = burariMinimumDisplayMs;
-    if (item.has_voice || String(item.voice_url || '')) {{
-      if (!String(item.voice_url || '')) {{unknown += 1; return;}}
+    const voiceUrl = String(item.voice_url || '');
+    if (voiceUrl) {{
       const ms = Number(knownDurations.get(item._source_index_v469) || item.voice_duration_ms || 0);
-      if (!Number.isFinite(ms) || ms <= 0) {{unknown += 1; return;}}
-      minimum = Math.max(minimum, Math.ceil(ms + burariVoiceAutoDelayMs + burariVoiceTimingSafetyMs));
+      if (Number.isFinite(ms) && ms > 0) {{
+        minimum = Math.max(minimum, Math.ceil(ms + burariVoiceAutoDelayMs + burariVoiceTimingSafetyMs));
+      }} else {{
+        unknown += 1;
+      }}
     }}
     if (minimum > budget) {{tooLong += 1; return;}}
     candidates.push({{item, minimum, position}});
@@ -24742,7 +24767,7 @@ function burariReplaySelectionStatusV469() {{
   let text = burariSlides.length < burariAllSlides.length
     ? `\u518d\u751f\u4e2d\uff1a${{burariAllSlides.length}}\u679a\u304b\u3089${{burariSlides.length}}\u679a\u3092\u9078\u629e\uff08\u66f2\u306e\u9577\u3055\u306b\u5408\u308f\u305b\u3066\u518d\u751f\uff09`
     : `\u518d\u751f\u4e2d\uff1a\u5199\u771f ${{burariSlides.length}}\u679a`;
-  if (burariSelectionUnknownV469) text += `\u3002\u58f0\u306e\u9577\u3055\u672a\u78ba\u8a8d ${{burariSelectionUnknownV469}}\u679a\u306f\u4eca\u56de\u306e\u5bfe\u8c61\u5916\u3067\u3059\u3002`;
+  if (burariSelectionUnknownV469) text += `。声の長さ未確認 ${{burariSelectionUnknownV469}}枚は、再生時に実際の声が終わるまで写真を保持します。`;
   return text;
 }}
 
@@ -24814,6 +24839,14 @@ function burariStartSlideVoiceV469() {{
       let burariSlideAdvancePending = false;
       let burariVoiceSafetyTimer = null;
       let burariVoiceBgmKeepAliveTimer = null;
+      // v489: one reusable audio element is primed before the 180 ms auto-start.
+      // A generation token prevents a late promise/event from an old photo from
+      // changing the new photo's playback state.
+      let burariVoiceGenerationV489 = 0;
+      let burariVoiceRetryTimerV489 = null;
+      let burariVoiceIntentionalPauseV489 = false;
+      let burariVoiceFallbackBgmPausedV489 = false;
+      let burariVoiceUnexpectedPauseCountV489 = 0;
       const burariNormalMusicVolume = 100;
       const burariVoiceMusicVolume = 70;
       let burariVoiceAutoTimer = null;
@@ -24950,7 +24983,7 @@ function burariStartSlideVoiceV469() {{
         if (selectionNotice) {{
           selectionNotice.textContent = plan.slides.length < burariAllSlides.length
             ? `${{burariAllSlides.length}}枚から${{plan.slides.length}}枚を選択` : `全${{plan.slides.length}}枚を再生`;
-          if (plan.unknown) selectionNotice.textContent += `／声の長さ未確認 ${{plan.unknown}}枚は対象外`;
+          if (plan.unknown) selectionNotice.textContent += `／声の長さ未確認 ${{plan.unknown}}枚は再生時に実測`;
           if (plan.tooLong) selectionNotice.textContent += `／曲の区間より長い声 ${{plan.tooLong}}枚は対象外`;
         }}
         burariReplayPlanReady = true;
@@ -25018,7 +25051,7 @@ function burariStartSlideVoiceV469() {{
         if (burariReplayDisposedV469) return;
         burariVoiceDurationsReady = true;
         const unknown = burariAllSlides.filter(item => (item.has_voice || item.voice_url) && !burariKnownVoiceMsV469.has(item._source_index_v469)).length;
-        if (unknown) burariVoiceDurationError = `\u58f0\u306e\u9577\u3055\u672a\u78ba\u8a8d ${{unknown}}\u679a\u306f\u62bd\u9078\u5bfe\u8c61\u5916\u3067\u3059\u3002`;
+        if (unknown) burariVoiceDurationError = `声の長さ未確認 ${{unknown}}枚は、再生時に実際の終了まで写真を保持します。`;
         burariSetPlayerControlsReady(burariPlayerReady);
         if (burariStatus && !burariReplayPlaybackActive && !burariReplayPausedByUser) burariStatus.textContent = burariPlayerReady
           ? `\u6e96\u5099\u5b8c\u4e86\u3002\u518d\u751f\u3067\u5199\u771f\u3092\u9078\u3073\u307e\u3059\u3002${{burariVoiceDurationError}}`
@@ -25081,30 +25114,25 @@ function burariStartSlideVoiceV469() {{
           burariStopVoiceBgmKeepAlive();
           return;
         }}
-        const restoreBgm = () => {{
+        // v489: voice is authoritative. Some Android WebViews pause the YouTube iframe
+        // when HTMLAudio starts. Forcing playVideo() every 280 ms can then steal the
+        // media session back and pause the voice. Keep BGM at the requested ducked
+        // volume when it remains playing naturally, but never force-restart it during
+        // an active voice. burariFinishVoice() resumes it immediately afterwards.
+        const maintainVolume = () => {{
           if (!burariVoicePlaybackActive || !burariReplayPlaybackActive || document.hidden) return;
           try {{
-            const state = (typeof burariPlayer.getPlayerState === 'function')
-              ? burariPlayer.getPlayerState()
-              : null;
-            const volume = (typeof burariPlayer.getVolume === 'function')
-              ? Number(burariPlayer.getVolume())
-              : -1;
-            if (volume !== burariVoiceMusicVolume) burariSetMusicVolume(burariVoiceMusicVolume);
-            const shouldRestart = !window.YT ||
-              state === YT.PlayerState.PAUSED ||
-              state === YT.PlayerState.CUED ||
-              state === YT.PlayerState.UNSTARTED;
-            if (shouldRestart && typeof burariPlayer.playVideo === 'function') {{
-              burariRequestNativeAudioFocus();
-              burariPlayer.playVideo();
-              burariSetMusicVolume(burariVoiceMusicVolume);
+            if (burariVoiceAudio && !burariVoiceAudio.paused && !burariVoiceAudio.ended) {{
+              const volume = (typeof burariPlayer.getVolume === 'function')
+                ? Number(burariPlayer.getVolume())
+                : -1;
+              if (volume !== burariVoiceMusicVolume) burariSetMusicVolume(burariVoiceMusicVolume);
             }}
           }} catch (_) {{}}
         }};
-        restoreBgm();
+        maintainVolume();
         if (!burariVoiceBgmKeepAliveTimer) {{
-          burariVoiceBgmKeepAliveTimer = setInterval(restoreBgm, 280);
+          burariVoiceBgmKeepAliveTimer = setInterval(maintainVolume, 420);
         }}
       }}
 
@@ -25125,22 +25153,25 @@ function burariStartSlideVoiceV469() {{
             return;
           }}
           burariEnsureAudible();
-          if (!burariMusicWindowEnded) {{
-            try {{
-              if (typeof burariPlayer.playVideo === 'function') burariPlayer.playVideo();
-            }} catch (_) {{}}
-          }}
-          // WebView may also suspend the HTML audio element used for a photo voice.
-          // Resume it on the same headphone route while keeping YouTube at 70% during the photo voice.
+          // v489: when returning while a photo voice is active, resume the voice first.
+          // Starting YouTube first can take the Android media session and immediately
+          // pause the HTMLAudio element. If Android kept BGM playing, it will continue
+          // at the ducked volume; otherwise it is resumed when the voice ends.
           if (burariVoicePlaybackActive && burariVoiceAudio) {{
             try {{
               const voicePromise = burariVoiceAudio.play();
-              if (voicePromise && typeof voicePromise.catch === 'function') {{
-                voicePromise.catch(() => burariFinishVoice('写真の声を再開できなかったため、BGMを続けます。', true));
+              if (voicePromise && typeof voicePromise.then === 'function') {{
+                voicePromise.then(() => burariKeepBgmDuringVoice()).catch(() => {{
+                  burariAttemptVoicePlayV489(true, 1, burariCurrentVoiceUrl, burariVoiceGenerationV489);
+                }});
               }}
             }} catch (_) {{
-              burariFinishVoice('写真の声を再開できなかったため、BGMを続けます。', true);
+              burariAttemptVoicePlayV489(true, 1, burariCurrentVoiceUrl, burariVoiceGenerationV489);
             }}
+          }} else if (!burariMusicWindowEnded) {{
+            try {{
+              if (typeof burariPlayer.playVideo === 'function') burariPlayer.playVideo();
+            }} catch (_) {{}}
           }}
           setTimeout(() => {{
             if (!burariReplayPlaybackActive || document.hidden) return;
@@ -25260,6 +25291,10 @@ function burariStartSlideVoiceV469() {{
 
       function burariFinishVoice(statusText = '写真の声を聞き終わりました。', resumeMusic = true) {{
         burariStopVoiceBgmKeepAlive();
+        if (burariVoiceRetryTimerV489) {{
+          clearTimeout(burariVoiceRetryTimerV489);
+          burariVoiceRetryTimerV489 = null;
+        }}
         if (burariVoiceSafetyTimer) {{
           clearTimeout(burariVoiceSafetyTimer);
           burariVoiceSafetyTimer = null;
@@ -25267,6 +25302,8 @@ function burariStartSlideVoiceV469() {{
         const shouldResume = resumeMusic && burariReplayPlaybackActive && burariResumeAfterVoice && !burariMusicWindowEnded;
         burariVoicePlaybackActive = false;
         burariResumeAfterVoice = false;
+        burariVoiceUnexpectedPauseCountV489 = 0;
+        burariVoiceFallbackBgmPausedV489 = false;
         burariSetMusicVolume(burariNormalMusicVolume);
         // Android WebView can pause the YouTube iframe for audio focus before JS sees
         // its state. Replay activity is therefore the source of truth for resuming.
@@ -25287,12 +25324,19 @@ function burariStartSlideVoiceV469() {{
       }}
 
       function burariStopVoice(resumeMusic = true) {{
+        burariVoiceGenerationV489 += 1;
+        if (burariVoiceRetryTimerV489) {{
+          clearTimeout(burariVoiceRetryTimerV489);
+          burariVoiceRetryTimerV489 = null;
+        }}
+        burariVoiceIntentionalPauseV489 = true;
         try {{
           if (burariVoiceAudio) {{
             burariVoiceAudio.pause();
             burariVoiceAudio.currentTime = 0;
           }}
         }} catch (_) {{}}
+        burariVoiceIntentionalPauseV489 = false;
         burariFinishVoice('', resumeMusic);
       }}
 
@@ -25398,6 +25442,10 @@ function burariStartSlideVoiceV469() {{
         }} catch (_) {{
           burariCurrentVoiceUrl = '';
         }}
+        // v489: start fetching the small voice clip as soon as the photo is committed
+        // to the screen. The 180 ms auto-start can then use an already-primed Audio
+        // element instead of opening the network request at the exact play boundary.
+        burariPrimeCurrentVoiceV489();
         // v369: voice attached to a photo plays automatically when that photo becomes
         // visible during an actively playing replay. Initial static rendering does not
         // autoplay, so mobile browsers still receive a user gesture from ▶ 再生 first.
@@ -25616,7 +25664,10 @@ function burariStartSlideVoiceV469() {{
         burariSlideVisibleAtV469 = performance.now();
         burariNeedsForegroundRestore = false;
         burariRefreshMainReplayButton();
-        if (!burariMusicWindowEnded) {{
+        // v489: if pause happened during a photo voice, resume that voice before
+        // touching YouTube. Otherwise Android can give the iframe the media session
+        // first and the voice immediately pauses again.
+        if (!burariMusicWindowEnded && !burariVoicePlaybackActive) {{
           try {{ if (typeof burariPlayer.playVideo === 'function') burariPlayer.playVideo(); }} catch (_) {{}}
         }}
 
@@ -25677,59 +25728,165 @@ function burariStartSlideVoiceV469() {{
         }}
       }}
 
-      function burariPlayCurrentVoice(autoTriggered = false) {{
-        if (!burariCurrentVoiceUrl) return;
-        burariRequestNativeAudioFocus();
-        if (!burariVoiceAudio) {{
-          burariVoiceAudio = new Audio();
-          burariVoiceAudio.preload = 'auto';
-          burariVoiceAudio.addEventListener('ended', () => burariFinishVoice());
-          burariVoiceAudio.addEventListener('error', () => burariFinishVoice('声を再生できませんでした。', true));
-          burariVoiceAudio.addEventListener('loadedmetadata', () => {{
-            if (burariVoiceSafetyTimer) clearTimeout(burariVoiceSafetyTimer);
-            const duration = Number(burariVoiceAudio.duration);
-            if (Number.isFinite(duration) && duration > 0 && burariIndex >= 0 && burariIndex < burariSlides.length) {{
-              const measuredMs = Math.ceil(duration * 1000);
-              burariVoiceDurationMsByIndex[burariIndex] = measuredMs;
-              burariKnownVoiceMsV469.set(burariSlides[burariIndex]._source_index_v469, measuredMs);
-              burariSlideMinimumMs[burariIndex] = Math.max(
-                burariMinimumDisplayMs,
-                measuredMs + burariVoiceAutoDelayMs + burariVoiceTimingSafetyMs
-              );
-            }}
-            const safetyMs = Number.isFinite(duration) ? Math.max(5000, duration * 1000 + 4000) : 90000;
-            burariVoiceSafetyTimer = setTimeout(() => {{
-              if (burariVoicePlaybackActive) burariFinishVoice('写真の声の再生を終了しました。', true);
-            }}, safetyMs);
-          }});
+      function burariEnsureVoiceAudioV489() {{
+        if (burariVoiceAudio) return burariVoiceAudio;
+        const audio = new Audio();
+        audio.preload = 'auto';
+        audio.setAttribute('playsinline', '');
+        audio.addEventListener('ended', () => {{
+          if (burariVoicePlaybackActive) burariFinishVoice();
+        }});
+        audio.addEventListener('error', () => {{
+          if (!burariVoicePlaybackActive) return;
+          const generation = burariVoiceGenerationV489;
+          const expected = burariCurrentVoiceUrl;
+          burariAttemptVoicePlayV489(true, 1, expected, generation);
+        }});
+        audio.addEventListener('loadedmetadata', () => {{
+          if (burariVoiceSafetyTimer) clearTimeout(burariVoiceSafetyTimer);
+          const duration = Number(audio.duration);
+          if (Number.isFinite(duration) && duration > 0 && burariIndex >= 0 && burariIndex < burariSlides.length) {{
+            const measuredMs = Math.ceil(duration * 1000);
+            burariVoiceDurationMsByIndex[burariIndex] = measuredMs;
+            burariKnownVoiceMsV469.set(burariSlides[burariIndex]._source_index_v469, measuredMs);
+            burariSlideMinimumMs[burariIndex] = Math.max(
+              burariMinimumDisplayMs,
+              measuredMs + burariVoiceAutoDelayMs + burariVoiceTimingSafetyMs
+            );
+          }}
+          const safetyMs = Number.isFinite(duration) ? Math.max(5000, duration * 1000 + 4000) : 90000;
+          burariVoiceSafetyTimer = setTimeout(() => {{
+            if (burariVoicePlaybackActive) burariFinishVoice('写真の声の再生を終了しました。', true);
+          }}, safetyMs);
+        }});
+        audio.addEventListener('playing', () => {{
+          if (!burariVoicePlaybackActive) return;
+          burariVoiceUnexpectedPauseCountV489 = 0;
+          burariKeepBgmDuringVoice();
+        }});
+        audio.addEventListener('pause', () => {{
+          if (!burariVoicePlaybackActive || burariVoiceIntentionalPauseV489 || burariReplayPausedByUser || audio.ended) return;
+          const duration = Number(audio.duration);
+          const current = Number(audio.currentTime || 0);
+          if (Number.isFinite(duration) && current >= Math.max(0, duration - 0.08)) return;
+          burariVoiceUnexpectedPauseCountV489 += 1;
+          // Android occasionally hands the media session back to YouTube immediately
+          // after HTMLAudio starts. On the first unexpected pause, stop fighting over
+          // the session: temporarily pause BGM and resume the same voice position.
+          if (burariReplayPlaybackActive && !burariMusicWindowEnded) {{
+            burariVoiceFallbackBgmPausedV489 = true;
+            try {{
+              if (burariPlayer && typeof burariPlayer.pauseVideo === 'function') burariPlayer.pauseVideo();
+            }} catch (_) {{}}
+          }}
+          burariAttemptVoicePlayV489(true, Math.min(2, burariVoiceUnexpectedPauseCountV489), burariCurrentVoiceUrl, burariVoiceGenerationV489);
+        }});
+        burariVoiceAudio = audio;
+        return audio;
+      }}
+
+      function burariPrimeCurrentVoiceV489() {{
+        const url = String(burariCurrentVoiceUrl || '');
+        if (!url) return;
+        const audio = burariEnsureVoiceAudioV489();
+        const loadedUrl = String(audio.dataset.burariVoiceUrl || '');
+        if (loadedUrl === url && String(audio.currentSrc || audio.src || '')) return;
+        burariVoiceIntentionalPauseV489 = true;
+        try {{ audio.pause(); }} catch (_) {{}}
+        burariVoiceIntentionalPauseV489 = false;
+        try {{
+          audio.src = url;
+          audio.dataset.burariVoiceUrl = url;
+          audio.preload = 'auto';
+          audio.load();
+        }} catch (_) {{}}
+      }}
+
+      function burariAttemptVoicePlayV489(autoTriggered, attempt, expectedUrl, generation) {{
+        if (!burariVoicePlaybackActive || generation !== burariVoiceGenerationV489 ||
+            !expectedUrl || String(burariCurrentVoiceUrl || '') !== String(expectedUrl)) return;
+        const audio = burariEnsureVoiceAudioV489();
+        if (String(audio.dataset.burariVoiceUrl || '') !== String(expectedUrl)) {{
+          try {{
+            audio.src = String(expectedUrl);
+            audio.dataset.burariVoiceUrl = String(expectedUrl);
+            audio.load();
+          }} catch (_) {{}}
         }}
-        // A second tap restarts the same voice cleanly. Do this before marking the
-        // new playback active so cleanup from the old source cannot restore volume.
+        // Replay already requested native audio focus on the user's Play tap. Re-request
+        // only for a standalone/manual voice, avoiding focus churn between iframe/audio.
+        if (!burariReplayPlaybackActive) burariRequestNativeAudioFocus();
+        const playOnce = () => {{
+          if (!burariVoicePlaybackActive || generation !== burariVoiceGenerationV489) return;
+          let promise = null;
+          try {{ promise = audio.play(); }} catch (_) {{ promise = null; }}
+          if (promise && typeof promise.then === 'function') {{
+            promise.then(() => {{
+              if (!burariVoicePlaybackActive || generation !== burariVoiceGenerationV489) return;
+              if (burariStatus) burariStatus.textContent = autoTriggered
+                ? '写真に付いた声を自動再生しています。'
+                : 'この写真の声を再生しています。';
+              burariKeepBgmDuringVoice();
+            }}).catch(() => burariRetryVoicePlayV489(autoTriggered, attempt, expectedUrl, generation));
+          }} else if (audio.paused) {{
+            burariRetryVoicePlayV489(autoTriggered, attempt, expectedUrl, generation);
+          }}
+        }};
+        playOnce();
+      }}
+
+      function burariRetryVoicePlayV489(autoTriggered, attempt, expectedUrl, generation) {{
+        if (!burariVoicePlaybackActive || generation !== burariVoiceGenerationV489) return;
+        if (burariVoiceRetryTimerV489) clearTimeout(burariVoiceRetryTimerV489);
+        if (attempt >= 3) {{
+          burariFinishVoice('声を自動再生できませんでした。🎙 声を押すと再生できます。', true);
+          return;
+        }}
+        // First failure: give the voice exclusive priority for this clip. This is only
+        // a fallback on devices where concurrent YouTube + HTMLAudio is unstable.
+        if (burariReplayPlaybackActive && !burariMusicWindowEnded) {{
+          burariVoiceFallbackBgmPausedV489 = true;
+          try {{
+            if (burariPlayer && typeof burariPlayer.pauseVideo === 'function') burariPlayer.pauseVideo();
+          }} catch (_) {{}}
+        }}
+        burariVoiceRetryTimerV489 = setTimeout(() => {{
+          burariVoiceRetryTimerV489 = null;
+          burariAttemptVoicePlayV489(autoTriggered, attempt + 1, expectedUrl, generation);
+        }}, 180 + (attempt * 140));
+      }}
+
+      function burariPlayCurrentVoice(autoTriggered = false) {{
+        const url = String(burariCurrentVoiceUrl || '');
+        if (!url) return;
+        // A second tap restarts the same voice cleanly. Invalidate every pending retry
+        // from the previous photo/source before assigning the new generation.
         if (burariVoicePlaybackActive) burariStopVoice(false);
-        // Replay state, rather than a racy YouTube state check, decides whether BGM
-        // must continue after the voice. Keep BGM playing softly during the voice.
+        burariVoiceGenerationV489 += 1;
+        const generation = burariVoiceGenerationV489;
+        burariVoiceUnexpectedPauseCountV489 = 0;
+        burariVoiceFallbackBgmPausedV489 = false;
         burariResumeAfterVoice = burariReplayPlaybackActive;
         burariVoicePlaybackActive = true;
         burariSetMusicVolume(burariVoiceMusicVolume);
-        try {{
-          burariVoiceAudio.pause();
-          burariVoiceAudio.currentTime = 0;
-        }} catch (_) {{}}
-        burariVoiceAudio.src = burariCurrentVoiceUrl;
-        const playPromise = burariVoiceAudio.play();
-        // The voice player can make Android WebView pause YouTube a fraction of a
-        // second later. Start monitoring now so BGM is restored while voice continues.
-        burariKeepBgmDuringVoice();
-        if (playPromise && typeof playPromise.then === 'function') {{
-          playPromise.then(() => {{
-            burariKeepBgmDuringVoice();
-            if (burariStatus) burariStatus.textContent = autoTriggered
-              ? '写真に付いた声を自動再生しています。'
-              : 'この写真の声を再生しています。';
-          }}).catch(() => {{
-            burariFinishVoice('声を自動再生できませんでした。🎙 声を押すと再生できます。', true);
-          }});
+        const audio = burariEnsureVoiceAudioV489();
+        if (String(audio.dataset.burariVoiceUrl || '') !== url) {{
+          try {{
+            audio.src = url;
+            audio.dataset.burariVoiceUrl = url;
+            audio.load();
+          }} catch (_) {{}}
         }}
+        burariVoiceIntentionalPauseV489 = true;
+        try {{ audio.currentTime = 0; }} catch (_) {{}}
+        burariVoiceIntentionalPauseV489 = false;
+        // Always have a bounded safety timer even if loadedmetadata never arrives.
+        if (burariVoiceSafetyTimer) clearTimeout(burariVoiceSafetyTimer);
+        burariVoiceSafetyTimer = setTimeout(() => {{
+          if (burariVoicePlaybackActive && generation === burariVoiceGenerationV489)
+            burariFinishVoice('写真の声の再生を終了しました。', true);
+        }}, 90000);
+        burariAttemptVoicePlayV489(autoTriggered, 0, url, generation);
       }}
 
       function burariScheduleNextSlide(overrideMs = null) {{
@@ -25933,7 +26090,8 @@ function burariStartSlideVoiceV469() {{
                 }}
               }} else if (event.data === YT.PlayerState.PAUSED) {{
                 // Starting a photo voice can cause an Android WebView media-session
-                // pause. This is not a user stop: immediately keep BGM at 70%.
+                // pause. This is not a user stop. v489 prioritizes the photo voice: do not force
+                // YouTube back into PLAYING while HTMLAudio owns the media session.
                 if (!burariMusicWindowEnded && burariReplayPlaybackActive && burariVoicePlaybackActive && !document.hidden) {{
                   burariKeepBgmDuringVoice();
                 }}
@@ -40462,15 +40620,15 @@ def save_gps_track_batch_v271(batch):
 
 
 def run_always_on_gps_tracker_v271():
-    # v371: only the v338+ wrapper explicitly advertising native_gps_background=1 may
-    # suppress the browser watcher. Older Android wrappers also set native_android=1 but
-    # do not own the v338 SQLite/WorkManager pipeline; returning for those wrappers made
-    # walking history silently stop. They now fall back to the same high-accuracy browser
-    # watcher used by Chrome/PWA.
+    # v490: Android v489 stores authoritative GPS fixes in its native SQLite database
+    # and exposes them through BurariGps + the parent-frame relay.  The previous Python
+    # wrapper accidentally hard-coded native_mode=False (and could even return early for
+    # native_gps_background=1), so those background points were never pulled through this
+    # component.  Prefer the native bridge whenever the Android wrapper supplies its
+    # signed bridge token; older wrappers without a token keep the browser/PWA watcher.
     native_android = str(_query_param_scalar("native_android") or "").strip() == "1"
-    native_background = str(_query_param_scalar("native_gps_background") or "").strip() == "1"
-    if native_android and native_background:
-        return
+    native_bridge_token = str(_query_param_scalar("native_bridge_token") or "").strip()
+    native_mode = bool(native_android and native_bridge_token)
 
     component = _get_gps_tracker_component_v271()
     if component is None:
@@ -40486,9 +40644,6 @@ def run_always_on_gps_tracker_v271():
     activity_guard_enabled = True
     activity_grace_ms = 5 * 60 * 1000
     ack_key = f"_gps_track_ack_v271_{current_family_key()}_{current_member_key()}"
-    # Android returned above. This component is now browser/PWA fallback only.
-    native_mode = False
-    native_bridge_token = ""
     result = component(
         data={
             "native_mode": native_mode,
