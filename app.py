@@ -43,7 +43,8 @@ def _app_css_v473(markup, **_ignored):
 # Review menu-only update: 2026-09-19 JST
 GENERATED_UPDATE_JST = "2026-09-19T14:54:38+09:00"
 
-APP_BUILD = "v490"
+APP_BUILD = "v491"
+# v491: add GPS bridge/service/sync diagnostics to the performance log and greatly expand bounded log retention (browser 2,000 operations; server 10,000 rows). Preserve v490 native GPS recovery behavior.
 # v490: restore Android native GPS bridge sync so background SQLite points are pulled into Supabase when the app is active; opening Burari Project force-flushes pending native points before rendering the updated green route.
 # v489: make replay photo voices reliable on Android/WebView: keep unknown-duration voices eligible, preload the selected clip, retry transient play failures, and never force-restart YouTube while a voice is playing; if the WebView pauses BGM for audio focus, resume BGM after the voice instead.
 # v488: replace the two remaining dice icons on the random-replay page with the same Burari train image used on the Review entry.
@@ -7265,7 +7266,7 @@ def sync_pending_tags_from_browser_v166():
 # Streamlit session-state navigation does not create browser history entries by
 # itself. This small component mirrors each app screen into window.history so
 # Chrome/Safari back and forward buttons move between app screens first.
-_PERF_BROWSER_JS_V466 = 'function installBurariPerf466(host, page, run, serverSession) {\n  const KEY=\'__burariPerf466\', STORE=\'burari_perf_v466\';\n  if(host[KEY]) { host[KEY].run(page,run,serverSession); return host[KEY]; }\n  const doc=host.document, mono=()=>host.performance.now(), rounded=x=>Math.round(x*10)/10;\n  const boot=host.crypto?.randomUUID?.() || Date.now().toString(36)+\'-\'+Math.random().toString(36).slice(2);\n  let seq=0, rows=[], dropped=0, persistenceError=false, active=null, current={page,run:Number(run)||0,session:serverSession};\n  let deadline=null, quiet=null, persistTimer=null, checking=false, pointer=null;\n  const observers=new Map(), frameHandlers=new Map(), handledEvents=new WeakSet(), counts=new Map();\n  try { const saved=JSON.parse(host.sessionStorage.getItem(STORE)||\'null\'); if(saved?.version===466 && Array.isArray(saved.rows)) { rows=saved.rows.slice(-300); dropped=Number(saved.dropped)||0; for(const row of rows) if(row.status===\'pending\'){row.status=\'interrupted\';row.reason=\'document_reloaded\';row.result_ms=null;} } } catch(_){persistenceError=true;}\n  function persistNow(){try{host.sessionStorage.setItem(STORE,JSON.stringify({version:466,rows,dropped}));}catch(_){persistenceError=true;}}\n  function persist(){if(persistTimer!==null)return;persistTimer=host.setTimeout(()=>{persistTimer=null;persistNow();},50);}\n  function safe(fn){try{return fn();}catch(_){return undefined;}}\n  function afterPaint(fn){host.requestAnimationFrame(()=>host.requestAnimationFrame(()=>safe(fn)));}\n  function visible(el){if(!el?.isConnected)return false;const w=el.ownerDocument?.defaultView||host;return !!el.getClientRects().length && w.getComputedStyle(el).visibility!==\'hidden\';}\n  function viewport(el){if(!visible(el))return false;const r=el.getBoundingClientRect(),w=el.ownerDocument?.defaultView||host;return r.bottom>0&&r.right>0&&r.top<w.innerHeight&&r.left<w.innerWidth;}\n  function connected(root){return root===doc || (root.host?root.host.isConnected:!!root.defaultView?.frameElement?.isConnected);}\n  function prune(){for(const [root,state] of observers) if(!connected(root)){state.observer.disconnect();for(const [name,fn]of state.listeners)root.removeEventListener(name,fn,true);observers.delete(root);}for(const [frame,fn]of frameHandlers)if(!frame.isConnected){frame.removeEventListener(\'load\',fn);frameHandlers.delete(frame);}}\n  function query(selector){const result=[];for(const root of observers.keys())safe(()=>result.push(...root.querySelectorAll(selector)));return result;}\n  function signature(el){return el?.isConnected?[el.textContent,el.getAttribute(\'class\'),el.getAttribute(\'style\'),el.getAttribute(\'disabled\'),el.getAttribute(\'aria-pressed\')].join(\'|\'):\'removed\';}\n  function busy(){return query(\'[data-testid="stSpinner"],[data-stale="true"],[aria-busy="true"]\').some(visible);}\n  function imageReady(el){return visible(el)&&el.complete&&el.naturalWidth>0;}\n  function stamp(row,ms){return new Date(Date.parse(row.pressed_at)+ms).toISOString();}\n  function end(status,reason,observedAt=null,kind=null){\n    if(!active)return;const a=active;active=null;host.clearTimeout(deadline);host.clearTimeout(quiet);\n    a.row.status=status;a.row.reason=reason;a.row.observed_until_ms=rounded(mono()-a.start);\n    a.row.measurement_kind=kind;\n    // No success duration is fabricated for timeouts, interruptions or failures.\n    a.row.result_ms=status===\'completed\'&&observedAt!==null?rounded(observedAt-a.start):null;\n    a.row.result_at=a.row.result_ms===null?null:stamp(a.row,a.row.result_ms);\n    a.row.confirmation_ms=observedAt===null?null:rounded(mono()-observedAt);\n    persist();\n  }\n  function response(){const a=active;if(!a||a.row.first_response_ms!==null||signature(a.button)===a.before)return;\n    afterPaint(()=>{if(active!==a||doc.hidden)return;a.row.first_response_ms=rounded(mono()-a.start);a.row.first_response_at=stamp(a.row,a.row.first_response_ms);});}\n  function endpoint(){const a=active;if(!a)return null;\n    if(a.control===\'live-camera-shoot\'){\n      const img=query(\'#camera-review-image\').find(e=>imageReady(e)&&e.currentSrc!==a.preview);\n      return img?{kind:\'camera_preview_loaded\',explicit:true}:null;\n    }\n    if([\'live-camera-start\',\'live-video-start\',\'live-camera-facing-switch\'].includes(a.control)){\n      const v=query(\'#live-camera-video\').find(e=>visible(e)&&e.readyState>=2&&!e.paused&&(!a.cameraWasReady||a.control===\'live-camera-facing-switch\'&&a.cameraStream!==e.srcObject));\n      return v?{kind:\'camera_video_ready\',explicit:true}:null;\n    }\n    // A render marker is only a UI estimate, never confirmation of a database save,\n    // map tile completion or media playback. Local-only actions cannot use it.\n    if(a.localOnly && !a.submitted)return null;\n    if(!a.row.server_runs.some(x=>x.session===current.session && x.run!==a.initialRun))return null;\n    const marker=query(\'[data-burari-perf-done]\').find(e=>Number(e.getAttribute(\'data-burari-perf-done\'))===current.run&&e.getAttribute(\'data-burari-perf-session\')===current.session&&current.run!==a.initialRun);\n    if(!marker||busy())return null;\n    if(query(\'img\').some(e=>viewport(e)&&(!e.complete||!e.naturalWidth)))return null;\n    return {kind:\'server_ui_render_estimate\',explicit:false};\n  }\n  function consider(){if(!active||doc.hidden||checking)return;response();const candidate=endpoint();if(!candidate)return;\n    const a=active,revision=a.revision;checking=true;\n    afterPaint(()=>{checking=false;if(active!==a||doc.hidden)return;if(a.revision!==revision){consider();return;}\n      const again=endpoint();if(!again||again.kind!==candidate.kind)return;\n      const paintedAt=mono();\n      if(candidate.explicit){end(\'completed\',candidate.kind,paintedAt,\'explicit_ui_state\');return;}\n      // Confirmation delay is excluded from result_ms. Reject candidates that\n      // change during the quiet window rather than adding a fixed 200 ms latency.\n      host.clearTimeout(quiet);quiet=host.setTimeout(()=>safe(()=>{\n        if(active===a&&a.revision===revision&&!doc.hidden&&endpoint()?.kind===candidate.kind)end(\'completed\',candidate.kind,paintedAt,\'render_estimate\');\n      }),200);\n    });\n  }\n  function mutations(records){prune();for(const r of records)for(const node of r.addedNodes||[])scan(node);\n    if(!active)return;\n    // Ignore clock text/continuous style animations outside the clicked control\n    // for confirmation; use structural/result mutations to invalidate candidates.\n    if(records.some(r=>r.type===\'childList\'||r.attributeName===\'src\'||r.attributeName===\'data-burari-perf-done\'))active.revision++;\n    consider();\n  }\n  function getButton(event){const path=event.composedPath?event.composedPath():[event.target];return path.find(e=>e?.matches?.(\'button,[role="button"],input[type="submit"]\'));}\n  function isLog(button){return button.closest?.(\'[data-burari-perf-ui]\')||/動作ログ|操作時間ログ|ログを|ログ消去/.test(button.textContent||\'\');}\n  function down(event){const button=getButton(event);if(!button||button.disabled||isLog(button))return;const p={button,at:mono(),wall:Date.now(),id:event.pointerId,before:signature(button),responseAt:null};pointer=p;afterPaint(()=>{if(pointer===p&&signature(button)!==p.before)p.responseAt=mono();});}\n  function click(event){if(!event.isTrusted||handledEvents.has(event))return;\n    const button=getButton(event);if(!button||button.disabled||isLog(button))return;handledEvents.add(event);\n    if(active)end(\'interrupted\',\'next_operation\');prune();\n    const label=String(button.getAttribute(\'aria-label\')||button.textContent||button.value||\'\').trim().replace(/\\s+/g,\' \').slice(0,80);\n    const widget=button.closest?.(\'[class*="st-key-"]\');\n    const widgetKey=Array.from(widget?.classList||[]).find(x=>x.startsWith(\'st-key-\'))||\'\';\n    const control=button.id||widgetKey||button.getAttribute(\'data-testid\')||label;\n    const group=current.page+\'|\'+control;\n    const attempt=(counts.get(group)||0)+1;counts.set(group,attempt);if(counts.size>300)counts.delete(counts.keys().next().value);\n    const pressed=pointer?.button===button&&mono()-pointer.at<30000?pointer:{at:mono(),wall:Date.now()};pointer=null;\n    const row={id:boot+\'-\'+(++seq),build:466,page:current.page,control,button:label,\n      pressed_at:new Date(pressed.wall).toISOString(),activation_delay_ms:rounded(mono()-pressed.at),\n      input_method:event.detail===0?\'keyboard_or_accessibility\':\'pointer\',\n      first_response_ms:pressed.responseAt==null?null:rounded(pressed.responseAt-pressed.at),first_response_at:pressed.responseAt==null?null:new Date(pressed.wall+pressed.responseAt-pressed.at).toISOString(),result_ms:null,result_at:null,status:\'pending\',\n      attempt_in_document:attempt,visit_class:attempt===1?\'first_in_document\':\'repeat_in_document\',\n      server_runs:[],correlation:\'temporal_candidates_only\',measurement_kind:null};\n    const camera=query(\'#live-camera-video\')[0];\n    active={row,button,control:button.id||\'\',before:pressed.before||signature(button),start:pressed.at,initialRun:current.run,revision:0,\n      localOnly:!!button.getRootNode?.().host || button.ownerDocument!==doc,\n      preview:query(\'#camera-review-image\')[0]?.currentSrc||\'\',cameraWasReady:camera?.readyState>=2&&!camera?.paused,cameraStream:camera?.srcObject};\n    rows.push(row);if(rows.length>300){rows.shift();dropped++;}persist();\n    deadline=host.setTimeout(()=>safe(()=>end(\'timeout\',\'no_confirmed_endpoint_120s\')),120000);\n    afterPaint(()=>safe(consider));\n  }\n  function media(event){const a=active;if(!a)return;\n    if(event.type===\'playing\'&&[\'moments-voice-play\',\'burariReplayStart\',\'burariReplayAgain\'].includes(a.control)){\n      // Only a media element inside the same document as the pressed control.\n      if(event.target.ownerDocument===a.button.ownerDocument)afterPaint(()=>{if(active===a)end(\'completed\',\'media_playing\',mono(),\'media_event\');});\n    }\n    consider();\n  }\n  function watch(root){if(observers.has(root))return;\n    const listeners=[[\'pointerdown\',e=>safe(()=>down(e))],[\'pointercancel\',()=>{pointer=null;}],[\'click\',e=>safe(()=>click(e))],[\'load\',()=>safe(consider)],[\'loadeddata\',e=>safe(()=>media(e))],[\'playing\',e=>safe(()=>media(e))]];\n    for(const [name,fn]of listeners)root.addEventListener(name,fn,{capture:true,passive:true});\n    const observer=new host.MutationObserver(r=>safe(()=>mutations(r)));\n    observers.set(root,{observer,listeners});observer.observe(root,{subtree:true,childList:true,attributes:true,attributeFilter:[\'src\',\'hidden\',\'disabled\',\'class\',\'style\',\'aria-pressed\',\'aria-busy\',\'data-stale\',\'data-burari-perf-done\'],characterData:true});scan(root);\n  }\n  function scan(node){if(!node?.querySelectorAll)return;if(node.shadowRoot)watch(node.shadowRoot);\n    const list=[node,...node.querySelectorAll(\'*\')];\n    for(const el of list){if(el.shadowRoot)watch(el.shadowRoot);\n      if(el.tagName===\'IFRAME\'&&!frameHandlers.has(el)){\n        const attach=()=>safe(()=>{if(el.contentDocument)watch(el.contentDocument);});frameHandlers.set(el,attach);el.addEventListener(\'load\',attach,{passive:true});attach();\n      }\n    }\n  }\n  function quantile(values,q){const v=[...values].sort((a,b)=>a-b),i=(v.length-1)*q,lo=Math.floor(i),hi=Math.ceil(i);return rounded(v[lo]+(v[hi]-v[lo])*(i-lo));}\n  function summary(){const groups=new Map();\n    for(const row of rows){const key=[row.build,row.page,row.control,row.visit_class,row.measurement_kind||\'unresolved\',row.input_method].join(\'|\');\n      if(!groups.has(key))groups.set(key,{key,page:row.page,control:row.control,visit_class:row.visit_class,measurement_kind:row.measurement_kind,input_method:row.input_method,n:0,completed:0,interrupted:0,timeout:0,pending:0,error:0,values:[]});\n      const g=groups.get(key);g.n++;if(row.status in g)g[row.status]++;if(row.status===\'completed\'&&Number.isFinite(row.result_ms))g.values.push(row.result_ms);\n    }\n    return [...groups.values()].map(g=>{const v=g.values;delete g.values;return {...g,median_ms:v.length?quantile(v,.5):null,p90_ms:v.length>=20?quantile(v,.9):null,p95_ms:v.length>=100?quantile(v,.95):null,minimum_ms:v.length?Math.min(...v):null,maximum_ms:v.length?Math.max(...v):null,sample_note:v.length<20?\'small_sample\':\'descriptive_only\'};});\n  }\n  const api={submitted(name,root){if(!active||!root?.contains?.(active.button))return;active.submitted=true;active.row.component_event=String(name).slice(0,64);active.row.submitted_ms=rounded(mono()-active.start);if(/error/i.test(name))end(\'error\',\'component_error\');},run(p,r,session){if(active&&current.session&&session!==current.session)end(\'interrupted\',\'server_session_changed\');current={page:p,run:Number(r)||0,session};if(active){const list=active.row.server_runs;if(!list.some(x=>x.run===current.run&&x.session===session)){if(list.length<32)list.push({session,run:current.run});else active.row.correlation_truncated=true;}}safe(consider);},\n    snapshot(){if(active)active.row.observed_until_ms=rounded(mono()-active.start);persistNow();return JSON.parse(JSON.stringify({version:466,document_id:boot,captured_at:new Date().toISOString(),limit:300,dropped_operations:dropped,persistence_error:persistenceError,rows,summary:summary(),coverage:{watched_roots:observers.size,inaccessible_iframes:[...frameHandlers.keys()].filter(f=>!safe(()=>f.contentDocument)).length},limitations:[\'Physical screen presentation is not measured\',\'Render estimates are not business-operation completion\',\'First/repeat means this document, not cache hit/miss\',\'Cross-origin frames and external apps are not measured\',\'Server links are temporal candidates; do not sum nested phase times\',\'Timeouts and interruptions are excluded from successful latency distributions\']}));},\n    clear(){host.clearTimeout(deadline);host.clearTimeout(quiet);active=null;rows=[];dropped=0;counts.clear();persistNow();}};\n  host[KEY]=api;watch(doc);\n  doc.addEventListener(\'visibilitychange\',()=>safe(()=>{if(doc.hidden&&active)end(\'interrupted\',\'background\');persistNow();}),{passive:true});\n  host.addEventListener(\'pagehide\',()=>safe(()=>{if(active)end(\'interrupted\',\'pagehide\');persistNow();}),{passive:true});\n  return api;\n}\n'
+_PERF_BROWSER_JS_V466 = 'function installBurariPerf466(host, page, run, serverSession) {\n  const KEY=\'__burariPerf466\', STORE=\'burari_perf_v466\';\n  if(host[KEY]) { host[KEY].run(page,run,serverSession); return host[KEY]; }\n  const doc=host.document, mono=()=>host.performance.now(), rounded=x=>Math.round(x*10)/10;\n  const boot=host.crypto?.randomUUID?.() || Date.now().toString(36)+\'-\'+Math.random().toString(36).slice(2);\n  let seq=0, rows=[], dropped=0, persistenceError=false, active=null, current={page,run:Number(run)||0,session:serverSession};\n  let deadline=null, quiet=null, persistTimer=null, checking=false, pointer=null;\n  const observers=new Map(), frameHandlers=new Map(), handledEvents=new WeakSet(), counts=new Map();\n  try { const saved=JSON.parse(host.sessionStorage.getItem(STORE)||\'null\'); if(saved?.version===466 && Array.isArray(saved.rows)) { rows=saved.rows.slice(-2000); dropped=Number(saved.dropped)||0; for(const row of rows) if(row.status===\'pending\'){row.status=\'interrupted\';row.reason=\'document_reloaded\';row.result_ms=null;} } } catch(_){persistenceError=true;}\n  function persistNow(){try{host.sessionStorage.setItem(STORE,JSON.stringify({version:466,rows,dropped}));}catch(_){persistenceError=true;}}\n  function persist(){if(persistTimer!==null)return;persistTimer=host.setTimeout(()=>{persistTimer=null;persistNow();},50);}\n  function safe(fn){try{return fn();}catch(_){return undefined;}}\n  function afterPaint(fn){host.requestAnimationFrame(()=>host.requestAnimationFrame(()=>safe(fn)));}\n  function visible(el){if(!el?.isConnected)return false;const w=el.ownerDocument?.defaultView||host;return !!el.getClientRects().length && w.getComputedStyle(el).visibility!==\'hidden\';}\n  function viewport(el){if(!visible(el))return false;const r=el.getBoundingClientRect(),w=el.ownerDocument?.defaultView||host;return r.bottom>0&&r.right>0&&r.top<w.innerHeight&&r.left<w.innerWidth;}\n  function connected(root){return root===doc || (root.host?root.host.isConnected:!!root.defaultView?.frameElement?.isConnected);}\n  function prune(){for(const [root,state] of observers) if(!connected(root)){state.observer.disconnect();for(const [name,fn]of state.listeners)root.removeEventListener(name,fn,true);observers.delete(root);}for(const [frame,fn]of frameHandlers)if(!frame.isConnected){frame.removeEventListener(\'load\',fn);frameHandlers.delete(frame);}}\n  function query(selector){const result=[];for(const root of observers.keys())safe(()=>result.push(...root.querySelectorAll(selector)));return result;}\n  function signature(el){return el?.isConnected?[el.textContent,el.getAttribute(\'class\'),el.getAttribute(\'style\'),el.getAttribute(\'disabled\'),el.getAttribute(\'aria-pressed\')].join(\'|\'):\'removed\';}\n  function busy(){return query(\'[data-testid="stSpinner"],[data-stale="true"],[aria-busy="true"]\').some(visible);}\n  function imageReady(el){return visible(el)&&el.complete&&el.naturalWidth>0;}\n  function stamp(row,ms){return new Date(Date.parse(row.pressed_at)+ms).toISOString();}\n  function end(status,reason,observedAt=null,kind=null){\n    if(!active)return;const a=active;active=null;host.clearTimeout(deadline);host.clearTimeout(quiet);\n    a.row.status=status;a.row.reason=reason;a.row.observed_until_ms=rounded(mono()-a.start);\n    a.row.measurement_kind=kind;\n    // No success duration is fabricated for timeouts, interruptions or failures.\n    a.row.result_ms=status===\'completed\'&&observedAt!==null?rounded(observedAt-a.start):null;\n    a.row.result_at=a.row.result_ms===null?null:stamp(a.row,a.row.result_ms);\n    a.row.confirmation_ms=observedAt===null?null:rounded(mono()-observedAt);\n    persist();\n  }\n  function response(){const a=active;if(!a||a.row.first_response_ms!==null||signature(a.button)===a.before)return;\n    afterPaint(()=>{if(active!==a||doc.hidden)return;a.row.first_response_ms=rounded(mono()-a.start);a.row.first_response_at=stamp(a.row,a.row.first_response_ms);});}\n  function endpoint(){const a=active;if(!a)return null;\n    if(a.control===\'live-camera-shoot\'){\n      const img=query(\'#camera-review-image\').find(e=>imageReady(e)&&e.currentSrc!==a.preview);\n      return img?{kind:\'camera_preview_loaded\',explicit:true}:null;\n    }\n    if([\'live-camera-start\',\'live-video-start\',\'live-camera-facing-switch\'].includes(a.control)){\n      const v=query(\'#live-camera-video\').find(e=>visible(e)&&e.readyState>=2&&!e.paused&&(!a.cameraWasReady||a.control===\'live-camera-facing-switch\'&&a.cameraStream!==e.srcObject));\n      return v?{kind:\'camera_video_ready\',explicit:true}:null;\n    }\n    // A render marker is only a UI estimate, never confirmation of a database save,\n    // map tile completion or media playback. Local-only actions cannot use it.\n    if(a.localOnly && !a.submitted)return null;\n    if(!a.row.server_runs.some(x=>x.session===current.session && x.run!==a.initialRun))return null;\n    const marker=query(\'[data-burari-perf-done]\').find(e=>Number(e.getAttribute(\'data-burari-perf-done\'))===current.run&&e.getAttribute(\'data-burari-perf-session\')===current.session&&current.run!==a.initialRun);\n    if(!marker||busy())return null;\n    if(query(\'img\').some(e=>viewport(e)&&(!e.complete||!e.naturalWidth)))return null;\n    return {kind:\'server_ui_render_estimate\',explicit:false};\n  }\n  function consider(){if(!active||doc.hidden||checking)return;response();const candidate=endpoint();if(!candidate)return;\n    const a=active,revision=a.revision;checking=true;\n    afterPaint(()=>{checking=false;if(active!==a||doc.hidden)return;if(a.revision!==revision){consider();return;}\n      const again=endpoint();if(!again||again.kind!==candidate.kind)return;\n      const paintedAt=mono();\n      if(candidate.explicit){end(\'completed\',candidate.kind,paintedAt,\'explicit_ui_state\');return;}\n      // Confirmation delay is excluded from result_ms. Reject candidates that\n      // change during the quiet window rather than adding a fixed 200 ms latency.\n      host.clearTimeout(quiet);quiet=host.setTimeout(()=>safe(()=>{\n        if(active===a&&a.revision===revision&&!doc.hidden&&endpoint()?.kind===candidate.kind)end(\'completed\',candidate.kind,paintedAt,\'render_estimate\');\n      }),200);\n    });\n  }\n  function mutations(records){prune();for(const r of records)for(const node of r.addedNodes||[])scan(node);\n    if(!active)return;\n    // Ignore clock text/continuous style animations outside the clicked control\n    // for confirmation; use structural/result mutations to invalidate candidates.\n    if(records.some(r=>r.type===\'childList\'||r.attributeName===\'src\'||r.attributeName===\'data-burari-perf-done\'))active.revision++;\n    consider();\n  }\n  function getButton(event){const path=event.composedPath?event.composedPath():[event.target];return path.find(e=>e?.matches?.(\'button,[role="button"],input[type="submit"]\'));}\n  function isLog(button){return button.closest?.(\'[data-burari-perf-ui]\')||/動作ログ|操作時間ログ|ログを|ログ消去/.test(button.textContent||\'\');}\n  function down(event){const button=getButton(event);if(!button||button.disabled||isLog(button))return;const p={button,at:mono(),wall:Date.now(),id:event.pointerId,before:signature(button),responseAt:null};pointer=p;afterPaint(()=>{if(pointer===p&&signature(button)!==p.before)p.responseAt=mono();});}\n  function click(event){if(!event.isTrusted||handledEvents.has(event))return;\n    const button=getButton(event);if(!button||button.disabled||isLog(button))return;handledEvents.add(event);\n    if(active)end(\'interrupted\',\'next_operation\');prune();\n    const label=String(button.getAttribute(\'aria-label\')||button.textContent||button.value||\'\').trim().replace(/\\s+/g,\' \').slice(0,80);\n    const widget=button.closest?.(\'[class*="st-key-"]\');\n    const widgetKey=Array.from(widget?.classList||[]).find(x=>x.startsWith(\'st-key-\'))||\'\';\n    const control=button.id||widgetKey||button.getAttribute(\'data-testid\')||label;\n    const group=current.page+\'|\'+control;\n    const attempt=(counts.get(group)||0)+1;counts.set(group,attempt);if(counts.size>2000)counts.delete(counts.keys().next().value);\n    const pressed=pointer?.button===button&&mono()-pointer.at<30000?pointer:{at:mono(),wall:Date.now()};pointer=null;\n    const row={id:boot+\'-\'+(++seq),build:466,page:current.page,control,button:label,\n      pressed_at:new Date(pressed.wall).toISOString(),activation_delay_ms:rounded(mono()-pressed.at),\n      input_method:event.detail===0?\'keyboard_or_accessibility\':\'pointer\',\n      first_response_ms:pressed.responseAt==null?null:rounded(pressed.responseAt-pressed.at),first_response_at:pressed.responseAt==null?null:new Date(pressed.wall+pressed.responseAt-pressed.at).toISOString(),result_ms:null,result_at:null,status:\'pending\',\n      attempt_in_document:attempt,visit_class:attempt===1?\'first_in_document\':\'repeat_in_document\',\n      server_runs:[],correlation:\'temporal_candidates_only\',measurement_kind:null};\n    const camera=query(\'#live-camera-video\')[0];\n    active={row,button,control:button.id||\'\',before:pressed.before||signature(button),start:pressed.at,initialRun:current.run,revision:0,\n      localOnly:!!button.getRootNode?.().host || button.ownerDocument!==doc,\n      preview:query(\'#camera-review-image\')[0]?.currentSrc||\'\',cameraWasReady:camera?.readyState>=2&&!camera?.paused,cameraStream:camera?.srcObject};\n    rows.push(row);if(rows.length>2000){rows.shift();dropped++;}persist();\n    deadline=host.setTimeout(()=>safe(()=>end(\'timeout\',\'no_confirmed_endpoint_120s\')),120000);\n    afterPaint(()=>safe(consider));\n  }\n  function media(event){const a=active;if(!a)return;\n    if(event.type===\'playing\'&&[\'moments-voice-play\',\'burariReplayStart\',\'burariReplayAgain\'].includes(a.control)){\n      // Only a media element inside the same document as the pressed control.\n      if(event.target.ownerDocument===a.button.ownerDocument)afterPaint(()=>{if(active===a)end(\'completed\',\'media_playing\',mono(),\'media_event\');});\n    }\n    consider();\n  }\n  function watch(root){if(observers.has(root))return;\n    const listeners=[[\'pointerdown\',e=>safe(()=>down(e))],[\'pointercancel\',()=>{pointer=null;}],[\'click\',e=>safe(()=>click(e))],[\'load\',()=>safe(consider)],[\'loadeddata\',e=>safe(()=>media(e))],[\'playing\',e=>safe(()=>media(e))]];\n    for(const [name,fn]of listeners)root.addEventListener(name,fn,{capture:true,passive:true});\n    const observer=new host.MutationObserver(r=>safe(()=>mutations(r)));\n    observers.set(root,{observer,listeners});observer.observe(root,{subtree:true,childList:true,attributes:true,attributeFilter:[\'src\',\'hidden\',\'disabled\',\'class\',\'style\',\'aria-pressed\',\'aria-busy\',\'data-stale\',\'data-burari-perf-done\'],characterData:true});scan(root);\n  }\n  function scan(node){if(!node?.querySelectorAll)return;if(node.shadowRoot)watch(node.shadowRoot);\n    const list=[node,...node.querySelectorAll(\'*\')];\n    for(const el of list){if(el.shadowRoot)watch(el.shadowRoot);\n      if(el.tagName===\'IFRAME\'&&!frameHandlers.has(el)){\n        const attach=()=>safe(()=>{if(el.contentDocument)watch(el.contentDocument);});frameHandlers.set(el,attach);el.addEventListener(\'load\',attach,{passive:true});attach();\n      }\n    }\n  }\n  function quantile(values,q){const v=[...values].sort((a,b)=>a-b),i=(v.length-1)*q,lo=Math.floor(i),hi=Math.ceil(i);return rounded(v[lo]+(v[hi]-v[lo])*(i-lo));}\n  function summary(){const groups=new Map();\n    for(const row of rows){const key=[row.build,row.page,row.control,row.visit_class,row.measurement_kind||\'unresolved\',row.input_method].join(\'|\');\n      if(!groups.has(key))groups.set(key,{key,page:row.page,control:row.control,visit_class:row.visit_class,measurement_kind:row.measurement_kind,input_method:row.input_method,n:0,completed:0,interrupted:0,timeout:0,pending:0,error:0,values:[]});\n      const g=groups.get(key);g.n++;if(row.status in g)g[row.status]++;if(row.status===\'completed\'&&Number.isFinite(row.result_ms))g.values.push(row.result_ms);\n    }\n    return [...groups.values()].map(g=>{const v=g.values;delete g.values;return {...g,median_ms:v.length?quantile(v,.5):null,p90_ms:v.length>=20?quantile(v,.9):null,p95_ms:v.length>=100?quantile(v,.95):null,minimum_ms:v.length?Math.min(...v):null,maximum_ms:v.length?Math.max(...v):null,sample_note:v.length<20?\'small_sample\':\'descriptive_only\'};});\n  }\n  const api={submitted(name,root){if(!active||!root?.contains?.(active.button))return;active.submitted=true;active.row.component_event=String(name).slice(0,64);active.row.submitted_ms=rounded(mono()-active.start);if(/error/i.test(name))end(\'error\',\'component_error\');},run(p,r,session){if(active&&current.session&&session!==current.session)end(\'interrupted\',\'server_session_changed\');current={page:p,run:Number(r)||0,session};if(active){const list=active.row.server_runs;if(!list.some(x=>x.run===current.run&&x.session===session)){if(list.length<32)list.push({session,run:current.run});else active.row.correlation_truncated=true;}}safe(consider);},\n    snapshot(){if(active)active.row.observed_until_ms=rounded(mono()-active.start);persistNow();return JSON.parse(JSON.stringify({version:466,document_id:boot,captured_at:new Date().toISOString(),limit:2000,dropped_operations:dropped,persistence_error:persistenceError,rows,summary:summary(),coverage:{watched_roots:observers.size,inaccessible_iframes:[...frameHandlers.keys()].filter(f=>!safe(()=>f.contentDocument)).length},limitations:[\'Physical screen presentation is not measured\',\'Render estimates are not business-operation completion\',\'First/repeat means this document, not cache hit/miss\',\'Cross-origin frames and external apps are not measured\',\'Server links are temporal candidates; do not sum nested phase times\',\'Timeouts and interruptions are excluded from successful latency distributions\']}));},\n    clear(){host.clearTimeout(deadline);host.clearTimeout(quiet);active=null;rows=[];dropped=0;counts.clear();persistNow();}};\n  host[KEY]=api;watch(doc);\n  doc.addEventListener(\'visibilitychange\',()=>safe(()=>{if(doc.hidden&&active)end(\'interrupted\',\'background\');persistNow();}),{passive:true});\n  host.addEventListener(\'pagehide\',()=>safe(()=>{if(active)end(\'interrupted\',\'pagehide\');persistNow();}),{passive:true});\n  return api;\n}\n'
 
 _HISTORY_JS = _PERF_BROWSER_JS_V466 + r"""
 export default function(component) {
@@ -8323,7 +8324,7 @@ def _invalidate_fast_db_cache():
 
 
 PERF_LOG_KEY_V457 = "_performance_log_v457"
-PERF_LOG_LIMIT_V457 = 2000
+PERF_LOG_LIMIT_V457 = 10000
 PERF_LOG_MIN_MS_V457 = 2.0
 
 
@@ -8364,7 +8365,7 @@ def _perf_log_v457(phase, *, started_at=None, duration_ms=None, page=None, meta=
         }
         if isinstance(meta, dict) and meta:
             safe_meta = {}
-            for key, value in list(meta.items())[:10]:
+            for key, value in list(meta.items())[:24]:
                 if isinstance(value, (str, int, float, bool)) or value is None:
                     safe_meta[str(key)] = value
             if safe_meta:
@@ -8464,6 +8465,8 @@ def _render_interaction_export_v465():
                     "server": list(st.session_state.get(PERF_LOG_KEY_V457) or []),
                     "server_limit": PERF_LOG_LIMIT_V457,
                     "server_dropped_rows": int(st.session_state.get("_perf_dropped_v466", 0)),
+                    "gps_native_diagnostic": dict(st.session_state.get("_gps_native_diag_v491") or {}),
+                    "gps_last_sync": dict(st.session_state.get("_gps_last_sync_v491") or {}),
                     "server_clock": "server wall time for labels; perf_counter for durations",
                     "server_session": st.session_state.setdefault("_perf_session_v466", uuid.uuid4().hex),
                 }, ensure_ascii=False, indent=2)
@@ -8482,6 +8485,30 @@ def render_performance_log_v457():
     rows = st.session_state.get(PERF_LOG_KEY_V457)
     rows = list(rows) if isinstance(rows, list) else []
     with st.expander("⚡ 動作ログ", expanded=False):
+        st.caption("ログ保持上限：端末操作 2,000件 / サーバー処理 10,000件（古い順に自動整理）")
+        gps_diag = st.session_state.get("_gps_native_diag_v491") or {}
+        gps_sync = st.session_state.get("_gps_last_sync_v491") or {}
+        if isinstance(gps_diag, dict) and gps_diag:
+            def _gps_log_time_v491(value):
+                try:
+                    value = int(float(value or 0))
+                    if value <= 0:
+                        return "--"
+                    return datetime.fromtimestamp(value / 1000.0, ZoneInfo(APP_TIMEZONE)).strftime("%m/%d %H:%M:%S")
+                except Exception:
+                    return "--"
+            st.markdown("**GPS診断（直近）**")
+            st.code(
+                "\n".join([
+                    f"ブリッジ: {gps_diag.get('bridge_path','--')} / v{gps_diag.get('bridge_version','--')}",
+                    f"GPSサービス: {'稼働中' if gps_diag.get('gps_service_running') is True else '停止/不明' if gps_diag.get('gps_service_running') is not False else '停止'}",
+                    f"Android最新GPS: {_gps_log_time_v491(gps_diag.get('device_latest_ts_ms'))}",
+                    f"端末未同期GPS: {gps_diag.get('pending_count','--')} 点 / 端末総GPS: {gps_diag.get('device_total_count','--')} 点",
+                    f"GPSコールバック: {_gps_log_time_v491(gps_diag.get('service_last_callback_ms'))}",
+                    f"直近同期: {_gps_log_time_v491(gps_sync.get('at_ms'))} / {gps_sync.get('accepted','--')} 点 / {gps_sync.get('status','--')}",
+                ]),
+                language="text",
+            )
         pending_errors = st.session_state.get("_background_errors_v468") or []
         if pending_errors:
             st.caption("\u4e00\u90e8\u306e\u4e8b\u524d\u51e6\u7406\u306f\u518d\u8a66\u884c\u5f85\u3061\u3067\u3059\u3002\u4fdd\u5b58\u6e08\u307f\u306e\u5199\u771f\u3084\u6c17\u6301\u3061\u306f\u6b8b\u3063\u3066\u3044\u307e\u3059\u3002")
@@ -8531,6 +8558,8 @@ def render_performance_log_v457():
                 st.session_state["_perf_dropped_v466"] = 0
                 st.session_state["_perf_reset_v466"] = uuid.uuid4().hex
                 st.session_state.pop("_perf_export_v465", None)
+                st.session_state.pop("_gps_native_diag_v491", None)
+                st.session_state.pop("_gps_last_sync_v491", None)
                 st.rerun(scope="app")
         else:
             st.caption("ログはまだありません。")
@@ -40167,6 +40196,64 @@ export default function(component) {
   // them into top-level WebView localStorage.
   acknowledgeNative();
 
+  // v491: diagnostic snapshot for the server log. This intentionally contains no
+  // bridge token and no latitude/longitude. Newer Android wrappers expose service
+  // state + latest device timestamp; older wrappers still report bridge/pending state.
+  const readNativeDiagnostic = async () => {
+    const fallback = {
+      bridge_path: directNativeBridge ? 'direct' : (relayNativeBridge ? 'relay' : 'unavailable'),
+      bridge_version: 0, pending_count: null, device_total_count: null,
+      device_latest_ts_ms: null, device_latest_accuracy_m: null, gps_service_running: null,
+      service_started_ms: null, service_last_callback_ms: null, service_last_accepted_ms: null,
+      fine_location_granted: null, coarse_location_granted: null, status_error: null,
+    };
+    if (!nativeBridgeAvailable) return fallback;
+    try {
+      if (directNativeBridge) {
+        let payload = {};
+        if (typeof nativeBridge.diagnosticStatus === 'function') {
+          payload = safeParse(nativeBridge.diagnosticStatus(nativeBridgeToken), {});
+        } else {
+          payload = {
+            pending_count: Number(nativeBridge.pendingCount(nativeBridgeToken) || 0),
+            bridge_version: Number(nativeBridge.bridgeVersion(nativeBridgeToken) || 0),
+          };
+        }
+        return {...fallback, ...payload, bridge_path:'direct'};
+      }
+      const reply = await relayRequest('status');
+      if (!reply) return {...fallback, status_error:'relay_timeout'};
+      const payload = safeParse(reply?.status_json, {});
+      return {
+        ...fallback, ...payload, bridge_path:'relay',
+        bridge_version: Number(payload?.bridge_version ?? reply?.bridge_version ?? 0),
+        pending_count: Number.isFinite(Number(payload?.pending_count)) ? Number(payload.pending_count)
+          : (Number.isFinite(Number(reply?.pending_count)) ? Number(reply.pending_count) : null),
+        status_error: reply?.error ? String(reply.error).slice(0,120) : (payload?.status_error || null),
+      };
+    } catch (error) {
+      return {...fallback, status_error:String(error?.message || error || 'diagnostic_error').slice(0,120)};
+    }
+  };
+
+  const gpsDiagSentKey = `${keyBase}:diagnostic_v491`;
+  const maybeEmitNativeDiagnostic = async () => {
+    if (cancelled || !nativeMode) return;
+    const now = Date.now();
+    const previous = safeParse(localStorage.getItem(gpsDiagSentKey), {});
+    // Project-page reruns are frequent while route work is happening. One diagnostic
+    // snapshot per 30 seconds is enough and prevents a component-trigger loop.
+    if (now - Number(previous?.at || 0) < 30000) return;
+    const status = await readNativeDiagnostic();
+    if (cancelled) return;
+    try { localStorage.setItem(gpsDiagSentKey, JSON.stringify({at:now})); } catch (_) {}
+    setTriggerValue('gps_diagnostic', {
+      token:`gpsdiag-${now}-${Math.random().toString(36).slice(2)}`,
+      captured_at_ms:now,
+      ...status,
+    });
+  };
+
   let nativeFlushBusy = false;
   const maybeFlushNative = async (forced=false) => {
     if (cancelled || !allowFlush || !nativeBridgeAvailable || nativeFlushBusy) return;
@@ -40392,6 +40479,10 @@ export default function(component) {
     }
   }
 
+  if (nativeMode && forceFlush) {
+    setTimeout(() => { void maybeEmitNativeDiagnostic(); }, 1600);
+  }
+
   const onVisibility = () => {
     if (!nativeMode && !document.hidden) startWatch();
   };
@@ -40598,12 +40689,35 @@ def save_gps_track_batch_v271(batch):
     raw_points = batch.get("points") or []
     if not isinstance(raw_points, list):
         return 0
+    source = str(batch.get("source") or "browser_or_legacy")[:80]
+    received_at_ms = int(time.time() * 1000)
+    _perf_log_v457(
+        "gps:sync_batch_received",
+        duration_ms=0,
+        meta={
+            "source": source,
+            "raw_count": len(raw_points),
+            "background_sync": bool(batch.get("background_sync")),
+            "max_ts_ms": int(float(batch.get("max_ts_ms") or 0)) if str(batch.get("max_ts_ms") or "").strip() else 0,
+        },
+        force=True,
+    )
     cleaned = []
     for raw in raw_points[:GPS_TRACK_BATCH_MAX_POINTS]:
         point = _coerce_track_point_v271(raw)
         if point:
             cleaned.append(point)
     if not cleaned:
+        st.session_state["_gps_last_sync_v491"] = {
+            "at_ms": received_at_ms,
+            "source": source,
+            "received": len(raw_points),
+            "accepted": 0,
+            "ack_ms": 0,
+            "status": "no_valid_points",
+        }
+        _perf_log_v457("gps:sync_batch_no_valid_points", duration_ms=0,
+                       meta={"source": source, "raw_count": len(raw_points)}, force=True)
         return 0
     by_month = {}
     for point in cleaned:
@@ -40616,34 +40730,69 @@ def save_gps_track_batch_v271(batch):
         _upsert_track_month_v271(month_key, rows)
     _read_track_month_cached_v271.clear()
     _list_track_month_keys_v271.clear()
-    return max(int(p.get("ts_ms") or 0) for p in cleaned)
-
+    ack_ms = max(int(p.get("ts_ms") or 0) for p in cleaned)
+    min_ts_ms = min(int(p.get("ts_ms") or 0) for p in cleaned)
+    last_sync = {
+        "at_ms": int(time.time() * 1000),
+        "source": source,
+        "received": len(raw_points),
+        "accepted": len(cleaned),
+        "ack_ms": ack_ms,
+        "min_ts_ms": min_ts_ms,
+        "months": len(by_month),
+        "status": "saved",
+    }
+    st.session_state["_gps_last_sync_v491"] = last_sync
+    _perf_log_v457(
+        "gps:sync_batch_saved",
+        duration_ms=0,
+        meta={
+            "source": source,
+            "received": len(raw_points),
+            "accepted": len(cleaned),
+            "months": len(by_month),
+            "min_ts_ms": min_ts_ms,
+            "ack_ms": ack_ms,
+        },
+        force=True,
+    )
+    return ack_ms
 
 def run_always_on_gps_tracker_v271():
-    # v490: Android v489 stores authoritative GPS fixes in its native SQLite database
-    # and exposes them through BurariGps + the parent-frame relay.  The previous Python
-    # wrapper accidentally hard-coded native_mode=False (and could even return early for
-    # native_gps_background=1), so those background points were never pulled through this
-    # component.  Prefer the native bridge whenever the Android wrapper supplies its
-    # signed bridge token; older wrappers without a token keep the browser/PWA watcher.
+    # v491: keep v490 native bridge recovery, and capture diagnostic status from the
+    # Android bridge whenever Burari Project is opened. No bridge token or coordinate
+    # is written to the log; only counts, timestamps, permission/service state and sync results.
     native_android = str(_query_param_scalar("native_android") or "").strip() == "1"
     native_bridge_token = str(_query_param_scalar("native_bridge_token") or "").strip()
     native_mode = bool(native_android and native_bridge_token)
 
     component = _get_gps_tracker_component_v271()
     if component is None:
+        _perf_log_v457(
+            "gps:component_unavailable",
+            duration_ms=0,
+            meta={"native_android": native_android, "native_mode": native_mode},
+            force=True,
+        )
         return
     page = str(st.session_state.get("main_page") or "home")
-    # v336: high-accuracy GPS recording remains active, but the cloud-sync trigger is
-    # suppressed for five minutes after the latest confirmed user interaction. After
-    # five minutes of inactivity it may sync even while the app stays open. Camera remains
-    # a hard no-flush page. Nearby/toilet search use their own fresh-GPS request and are
-    # independent of this always-on tracking sync.
     allow_flush = page != "camera"
     force_flush = page == "review_project"
     activity_guard_enabled = True
     activity_grace_ms = 5 * 60 * 1000
     ack_key = f"_gps_track_ack_v271_{current_family_key()}_{current_member_key()}"
+    if force_flush:
+        _perf_log_v457(
+            "gps:project_bridge_request",
+            duration_ms=0,
+            meta={
+                "native_android": native_android,
+                "native_mode": native_mode,
+                "bridge_token_present": bool(native_bridge_token),
+                "ack_ms": int(st.session_state.get(ack_key) or 0),
+            },
+            force=True,
+        )
     result = component(
         data={
             "native_mode": native_mode,
@@ -40663,22 +40812,72 @@ def run_always_on_gps_tracker_v271():
         },
         key=f"always_on_gps_tracker_v279_{current_family_key()}_{current_member_key()}",
         on_track_batch_change=lambda: None,
+        on_gps_diagnostic_change=lambda: None,
     )
+
+    diagnostic = getattr(result, "gps_diagnostic", None)
+    if isinstance(diagnostic, dict):
+        diag_token = str(diagnostic.get("token") or "")
+        diag_token_key = f"_gps_diag_token_v491_{current_family_key()}_{current_member_key()}"
+        if not diag_token or diag_token != str(st.session_state.get(diag_token_key) or ""):
+            if diag_token:
+                st.session_state[diag_token_key] = diag_token
+            clean_diag = {}
+            for key in (
+                "bridge_path", "bridge_version", "pending_count", "device_total_count",
+                "device_latest_ts_ms", "device_latest_accuracy_m", "gps_service_running",
+                "service_started_ms", "service_last_callback_ms", "service_last_accepted_ms",
+                "fine_location_granted", "coarse_location_granted", "status_error",
+                "captured_at_ms",
+            ):
+                value = diagnostic.get(key)
+                if isinstance(value, (str, int, float, bool)) or value is None:
+                    clean_diag[key] = value
+            clean_diag["received_at_ms"] = int(time.time() * 1000)
+            st.session_state["_gps_native_diag_v491"] = clean_diag
+            _perf_log_v457("gps:native_diagnostic", duration_ms=0, meta=clean_diag, force=True)
+
     batch = getattr(result, "track_batch", None)
     if not isinstance(batch, dict) or not batch.get("points"):
         return
     token = str(batch.get("token") or "")
     token_key = f"_gps_track_batch_token_v271_{current_family_key()}_{current_member_key()}"
     if token and token == str(st.session_state.get(token_key) or ""):
+        _perf_log_v457("gps:sync_batch_duplicate_suppressed", duration_ms=0,
+                       meta={"source": str(batch.get("source") or "")[:80]}, force=True)
         return
     try:
         ack_ms = save_gps_track_batch_v271(batch)
-    except Exception:
+    except Exception as exc:
+        st.session_state["_gps_last_sync_v491"] = {
+            "at_ms": int(time.time() * 1000),
+            "source": str(batch.get("source") or "")[:80],
+            "received": len(batch.get("points") or []),
+            "accepted": 0,
+            "ack_ms": 0,
+            "status": "error",
+            "error_type": type(exc).__name__,
+        }
+        _perf_log_v457(
+            "gps:sync_batch_error",
+            duration_ms=0,
+            meta={
+                "source": str(batch.get("source") or "")[:80],
+                "count": len(batch.get("points") or []),
+                "error_type": type(exc).__name__,
+            },
+            force=True,
+        )
         return
     if ack_ms > 0:
         st.session_state[token_key] = token
         st.session_state[ack_key] = max(int(st.session_state.get(ack_key) or 0), int(ack_ms))
-        # v332: do not force a second app rerun just to deliver the acknowledgement.
+        _perf_log_v457(
+            "gps:sync_ack_ready",
+            duration_ms=0,
+            meta={"ack_ms": int(ack_ms), "source": str(batch.get("source") or "")[:80]},
+            force=True,
+        )
         # The next natural app interaction supplies ack_ms to the component. Until then,
         # the durable sent-token prevents an immediate duplicate upload.
 
@@ -44894,6 +45093,33 @@ def page_burari_project():
     # account receive its historical seed even when it has not recorded live GPS yet.
     photo_seed_enabled = _photo_legacy_enabled_v296()
     points = _load_all_project_track_points_v271()
+    _gps_diag_v491 = st.session_state.get("_gps_native_diag_v491") or {}
+    _gps_sync_v491 = st.session_state.get("_gps_last_sync_v491") or {}
+    _cloud_latest_v491 = points[-1] if points else {}
+    _cloud_latest_ts_v491 = int(float(_cloud_latest_v491.get("ts_ms") or 0)) if isinstance(_cloud_latest_v491, dict) else 0
+    _cloud_age_min_v491 = None
+    if _cloud_latest_ts_v491 > 0:
+        try:
+            _cloud_age_min_v491 = round(max(0.0, (time.time() * 1000 - _cloud_latest_ts_v491) / 60000.0), 1)
+        except Exception:
+            _cloud_age_min_v491 = None
+    _perf_log_v457(
+        "gps:project_cloud_state",
+        duration_ms=0,
+        meta={
+            "cloud_points": len(points or []),
+            "cloud_latest_ts_ms": _cloud_latest_ts_v491,
+            "cloud_latest_source": str((_cloud_latest_v491 or {}).get("source") or "")[:40] if isinstance(_cloud_latest_v491, dict) else "",
+            "cloud_age_min": _cloud_age_min_v491,
+            "device_latest_ts_ms": _gps_diag_v491.get("device_latest_ts_ms") if isinstance(_gps_diag_v491, dict) else None,
+            "device_pending": _gps_diag_v491.get("pending_count") if isinstance(_gps_diag_v491, dict) else None,
+            "gps_service_running": _gps_diag_v491.get("gps_service_running") if isinstance(_gps_diag_v491, dict) else None,
+            "last_sync_at_ms": _gps_sync_v491.get("at_ms") if isinstance(_gps_sync_v491, dict) else None,
+            "last_sync_count": _gps_sync_v491.get("accepted") if isinstance(_gps_sync_v491, dict) else None,
+            "last_sync_status": _gps_sync_v491.get("status") if isinstance(_gps_sync_v491, dict) else None,
+        },
+        force=True,
+    )
     if not points and not photo_seed_enabled:
         st.info("まだ歩行データがありません。位置情報を許可した状態で、ぶらり旅を開いて歩くと自動的に記録が始まります。")
         return
