@@ -43,7 +43,7 @@ def _app_css_v473(markup, **_ignored):
 # Review menu-only update: 2026-09-19 JST
 GENERATED_UPDATE_JST = "2026-09-19T14:54:38+09:00"
 
-APP_BUILD = "v494"
+APP_BUILD = "v495"
 # v494: drain pending Android GPS on Burari Project in 500-point acknowledged batches; rerun immediately after each successful save so the next batch can be acknowledged and recovered without user taps.
 # v493: request native GPS diagnostics on Settings as well as Burari Project, using a per-page throttle key so the log page can actually receive Android status without forcing a GPS cloud flush.
 # v491: add GPS bridge/service/sync diagnostics to the performance log and greatly expand bounded log retention (browser 2,000 operations; server 10,000 rows). Preserve v490 native GPS recovery behavior.
@@ -40225,9 +40225,11 @@ export default function(component) {
   };
 
   // A cloud acknowledgement is the only event allowed to mark native SQLite rows as
-  // bridged. This fixes the first APK, which marked rows bridged after merely copying
-  // them into top-level WebView localStorage.
-  acknowledgeNative();
+  // bridged. v495 also re-applies the latest acknowledgement before every forced
+  // recovery read. The v494 recovery loop depended on a component remount applying
+  // ACK before the next read; if that hand-off was delayed, the same 500 rows could
+  // reappear and the old 120-second duplicate guard made recovery look stalled.
+  void acknowledgeNative();
 
   // v491: diagnostic snapshot for the server log. This intentionally contains no
   // bridge token and no latitude/longitude. Newer Android wrappers expose service
@@ -40293,10 +40295,13 @@ export default function(component) {
   const maybeFlushNative = async (forced=false) => {
     if (cancelled || !allowFlush || !nativeBridgeAvailable || nativeFlushBusy) return;
     // A component trigger causes a Streamlit app rerun. While the UI is visible,
-    // never emit that trigger; leave the native SQLite rows pending instead.
+    // never emit that trigger unless this is the explicit Project recovery flow.
     if (userRecentlyActive() && !(forced || forceFlush)) return;
     nativeFlushBusy = true;
     try {
+      // v495: in forced recovery, ACK first and only then ask Android for the next
+      // unbridged rows. This makes ACK -> next batch an explicit ordered handshake.
+      if (forced || forceFlush) await acknowledgeNative();
       const rows = await readNativeRows();
       if (!rows.length || cancelled) return;
       const now = Date.now();
@@ -40308,8 +40313,13 @@ export default function(component) {
       const last = batch[batch.length - 1] || {};
       const token = `native-v5|${batch[0]?.id || ''}|${last?.id || ''}|${batch.length}`;
       const sent = safeParse(localStorage.getItem(sentKey), {});
-      if ((nativeSentToken === token && now - nativeSentAt < 120000) ||
-          (String(sent?.token || '') === token && now - Number(sent?.at || 0) < 120000)) return;
+      // Normal background flushes retain the long duplicate guard. During explicit
+      // backlog recovery the same token is allowed to retry after 4 seconds because
+      // server storage is idempotent by GPS id and a repeated batch is safer than a
+      // two-minute stall caused by an ACK/remount race.
+      const duplicateWindowMs = (forced || forceFlush) ? 4000 : 120000;
+      if ((nativeSentToken === token && now - nativeSentAt < duplicateWindowMs) ||
+          (String(sent?.token || '') === token && now - Number(sent?.at || 0) < duplicateWindowMs)) return;
       nativeSentToken = token;
       nativeSentAt = now;
       try { localStorage.setItem(sentKey, JSON.stringify({token, at:now})); } catch (_) {}
@@ -40317,7 +40327,7 @@ export default function(component) {
         token,
         points: batch,
         max_ts_ms: Number(last?.ts_ms || 0),
-        source: directNativeBridge ? 'android_direct_bridge_v3' : 'android_parent_relay_v5',
+        source: directNativeBridge ? 'android_direct_bridge_v4_recovery' : 'android_parent_relay_v5',
         background_sync: true,
       });
     } finally {
@@ -40794,7 +40804,7 @@ def save_gps_track_batch_v271(batch):
     return ack_ms
 
 def run_always_on_gps_tracker_v271():
-    # v493: keep v490 native bridge recovery, and capture diagnostic status from the
+    # v495: keep native bridge recovery, make ACK->next-batch recovery resilient, and capture diagnostic status from the
     # Android bridge whenever Burari Project or Settings is opened. No bridge token or coordinate
     # is written to the log; only counts, timestamps, permission/service state and sync results.
     native_android = str(_query_param_scalar("native_android") or "").strip() == "1"
@@ -40901,9 +40911,17 @@ def run_always_on_gps_tracker_v271():
     token = str(batch.get("token") or "")
     token_key = f"_gps_track_batch_token_v271_{current_family_key()}_{current_member_key()}"
     if token and token == str(st.session_state.get(token_key) or ""):
-        _perf_log_v457("gps:sync_batch_duplicate_suppressed", duration_ms=0,
-                       meta={"source": str(batch.get("source") or "")[:80]}, force=True)
-        return
+        _perf_log_v457(
+            "gps:sync_batch_duplicate_seen",
+            duration_ms=0,
+            meta={"source": str(batch.get("source") or "")[:80], "force_recovery": bool(force_flush)},
+            force=True,
+        )
+        if not force_flush:
+            return
+        # v495 recovery is intentionally idempotent. If Android returns the same 500
+        # rows again, save/upsert them again and issue the same ACK instead of stopping
+        # the chain indefinitely. The next component render re-applies ACK first.
     try:
         ack_ms = save_gps_track_batch_v271(batch)
     except Exception as exc:
