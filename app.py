@@ -43,7 +43,8 @@ def _app_css_v473(markup, **_ignored):
 # Review menu-only update: 2026-09-19 JST
 GENERATED_UPDATE_JST = "2026-09-19T14:54:38+09:00"
 
-APP_BUILD = "v493"
+APP_BUILD = "v494"
+# v494: drain pending Android GPS on Burari Project in 500-point acknowledged batches; rerun immediately after each successful save so the next batch can be acknowledged and recovered without user taps.
 # v493: request native GPS diagnostics on Settings as well as Burari Project, using a per-page throttle key so the log page can actually receive Android status without forcing a GPS cloud flush.
 # v491: add GPS bridge/service/sync diagnostics to the performance log and greatly expand bounded log retention (browser 2,000 operations; server 10,000 rows). Preserve v490 native GPS recovery behavior.
 # v490: restore Android native GPS bridge sync so background SQLite points are pulled into Supabase when the app is active; opening Burari Project force-flushes pending native points before rendering the updated green route.
@@ -1125,7 +1126,7 @@ GPS_TRACK_MIN_DISTANCE_M = 10.0
 GPS_TRACK_MAX_ACCURACY_M = 45.0
 GPS_TRACK_FLUSH_POINT_COUNT = 30
 GPS_TRACK_FLUSH_INTERVAL_MS = 180000
-GPS_TRACK_BATCH_MAX_POINTS = 180
+GPS_TRACK_BATCH_MAX_POINTS = 500
 GPS_TRACK_WALK_MAX_SPEED_MPS = 4.5
 GPS_TRACK_SEGMENT_MAX_GAP_SECONDS = 180.0
 GPS_TRACK_SEGMENT_MAX_JUMP_M = 180.0
@@ -40935,8 +40936,30 @@ def run_always_on_gps_tracker_v271():
             meta={"ack_ms": int(ack_ms), "source": str(batch.get("source") or "")[:80]},
             force=True,
         )
-        # The next natural app interaction supplies ack_ms to the component. Until then,
-        # the durable sent-token prevents an immediate duplicate upload.
+        # v494: Burari Project is the explicit recovery screen. The component was
+        # previously rendered with the old ack_ms before this batch was saved, so
+        # waiting for a later user action could leave thousands of Android SQLite
+        # rows pending indefinitely. Rerun immediately: the next render sends this
+        # ack_ms to Android, marks the saved rows bridged, and the component then
+        # requests the next (up to 500-point) batch. This repeats until no batch remains.
+        if force_flush and native_mode:
+            recovery_key = f"_gps_recovery_batches_v494_{current_family_key()}_{current_member_key()}"
+            recovery_batches = int(st.session_state.get(recovery_key) or 0) + 1
+            st.session_state[recovery_key] = recovery_batches
+            _perf_log_v457(
+                "gps:recovery_batch_saved",
+                duration_ms=0,
+                meta={
+                    "batch_no": recovery_batches,
+                    "received": len(batch.get("points") or []),
+                    "ack_ms": int(ack_ms),
+                },
+                force=True,
+            )
+            # A duplicate batch is already suppressed by token before this point, so a
+            # successful new batch can safely rerun immediately without an arbitrary
+            # lifetime batch cap. This also lets very large backlogs finish.
+            st.rerun()
 
 
 @st.cache_data(ttl=15, max_entries=24, show_spinner=False)
