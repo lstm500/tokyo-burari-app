@@ -47,7 +47,7 @@ APP_BUILD = "v499"
 # v499: Experience-card photos are manual-selection only. Pressing the photo button opens the picker; nothing is auto-selected. Obvious Android screenshots are hidden from the picker, selected photos are previewed under the buttons, and multiple selected photos are always combined into one experience card.
 
 # v500: Match the existing moments photo-selection UI for experience cards: three thumbnails per row, select by tapping the photo card itself (no visible "選ぶ" buttons), allow multiple photos across repeated opens, and collapse the picker immediately after each selection.
-# v501: Selected experience photos stay compact in a fixed 3-column grid. Large display is available only through an explicit enlarged-photo mode, matching the rest of the app.
+# v502: Experience selected-photo previews now use the same gallery component as the existing photo screens, so mobile keeps a real 3-column grid instead of Streamlit columns stacking vertically.
 # v496: map-only GPS anti-spaghetti cleanup. Preserve every stored GPS row and existing distance/station calculations, but render a stricter high-confidence line: reject large/low-quality station-area jumps, remove rapid U-turn spikes, and collapse short dense drift loops so urban-canyon GPS cannot paint radial lines through buildings.
 # v494: drain pending Android GPS on Burari Project in 500-point acknowledged batches; rerun immediately after each successful save so the next batch can be acknowledged and recovered without user taps.
 # v493: request native GPS diagnostics on Settings as well as Burari Project, using a per-page throttle key so the log page can actually receive Android status without forcing a GPS cloud flush.
@@ -22272,6 +22272,7 @@ def _reset_experience_draft_v497():
         "_experience_photo_warning_v497", "_experience_photo_fetched_v498",
         "_experience_manual_picker_open_v499", "_experience_selected_photo_ids_v499",
         "_experience_selected_photo_view_mode_v501", "_experience_selected_photo_enlarged_index_v501",
+        "_experience_selected_photo_view_mode_v502", "_experience_selected_photo_enlarged_index_v502",
     ):
         st.session_state.pop(key, None)
     st.session_state["_experience_draft_serial_v497"] = int(st.session_state.get("_experience_draft_serial_v497") or 0) + 1
@@ -32869,7 +32870,7 @@ def _toggle_experience_photo_v499(photo_id):
     st.session_state[key] = selected
 
 
-def page_experience_v501():
+def page_experience_v502():
     page_top("📝 体験を残す", "体験の感想と、選んだ写真から1つの体験カードを作ります。")
     _app_css_v473(
         """
@@ -32976,8 +32977,11 @@ def page_experience_v501():
     selected_ids = [photo_id for photo_id in selected_ids if photo_id in recent_by_id]
     st.session_state[selected_key] = selected_ids
 
-    # v501: selected photos are compact by default. One selected image must never expand
-    # to the full content width simply because it is the only photo.
+    # v502: do not use st.columns(3) for the selected-photo preview.
+    # Streamlit stacks those columns vertically on narrow Android screens, which made
+    # a single selected image look like a full-width enlarged photo. Reuse the same
+    # diary/photo gallery component as the rest of the app so the mobile layout stays
+    # a true 3-column grid. Tapping a thumbnail switches to the normal enlarged view.
     selected_photos = [recent_by_id[photo_id] for photo_id in selected_ids if photo_id in recent_by_id]
     if selected_photos:
         paths = [str(photo.get("storage_path") or "") for photo in selected_photos]
@@ -32986,11 +32990,11 @@ def page_experience_v501():
         except Exception:
             signed_map = {}
 
-        view_mode_key = "_experience_selected_photo_view_mode_v501"
-        index_key = "_experience_selected_photo_enlarged_index_v501"
-        view_mode = str(st.session_state.get(view_mode_key) or "3列一覧")
-        if view_mode not in {"3列一覧", "1枚ずつ拡大"}:
-            view_mode = "3列一覧"
+        view_mode_key = "_experience_selected_photo_view_mode_v502"
+        index_key = "_experience_selected_photo_enlarged_index_v502"
+        view_mode = str(st.session_state.get(view_mode_key) or "一覧モード")
+        if view_mode not in {"一覧モード", "拡大モード"}:
+            view_mode = "一覧モード"
             st.session_state[view_mode_key] = view_mode
 
         try:
@@ -33000,22 +33004,22 @@ def page_experience_v501():
         enlarged_index = max(0, min(enlarged_index, len(selected_photos) - 1))
         st.session_state[index_key] = enlarged_index
 
-        view_mode = st.radio(
-            "選択した写真の表示方法",
-            ["3列一覧", "1枚ずつ拡大"],
-            horizontal=True,
-            key=view_mode_key,
-            label_visibility="collapsed",
-        )
+        if view_mode == "拡大モード":
+            if st.button(
+                "← 3枚一覧に戻る",
+                use_container_width=True,
+                key=f"experience_selected_back_to_grid_v502_{enlarged_index}",
+            ):
+                st.session_state[view_mode_key] = "一覧モード"
+                st.rerun(scope="app")
 
-        if view_mode == "1枚ずつ拡大":
             prev_col, count_col, next_col = st.columns([1, 1.15, 1], gap="small")
             with prev_col:
                 if st.button(
                     "◀ 前へ",
                     use_container_width=True,
                     disabled=enlarged_index <= 0,
-                    key=f"experience_selected_prev_v501_{enlarged_index}",
+                    key=f"experience_selected_prev_v502_{enlarged_index}",
                 ):
                     st.session_state[index_key] = max(0, enlarged_index - 1)
                     st.rerun(scope="app")
@@ -33029,7 +33033,7 @@ def page_experience_v501():
                     "次へ ▶",
                     use_container_width=True,
                     disabled=enlarged_index >= len(selected_photos) - 1,
-                    key=f"experience_selected_next_v501_{enlarged_index}",
+                    key=f"experience_selected_next_v502_{enlarged_index}",
                 ):
                     st.session_state[index_key] = min(len(selected_photos) - 1, enlarged_index + 1)
                     st.rerun(scope="app")
@@ -33043,31 +33047,73 @@ def page_experience_v501():
                 unsafe_allow_html=True,
             )
         else:
-            # Always create three columns, even when only one photo is selected.
-            # This keeps the selected preview thumbnail-sized on mobile.
-            for row_start in range(0, len(selected_photos), 3):
-                preview_cols = st.columns(3, gap="small")
-                for offset in range(3):
-                    index = row_start + offset
-                    if index >= len(selected_photos):
+            cards = []
+            photo_ids = []
+            for photo in selected_photos:
+                photo_id = str(photo.get("id") or "")
+                if not photo_id:
+                    continue
+                cards.append({
+                    "id": photo_id,
+                    "src": photo_display_url(photo, signed_map=signed_map, max_px=420, quality=76),
+                    "emotion": "",
+                    "parenting": "",
+                    "location": "",
+                    "tags": [],
+                    "favorite": False,
+                    "shared": False,
+                    "has_voice": False,
+                    "shared_meta": _experience_captured_label_v497(photo.get("captured_at")),
+                })
+                photo_ids.append(photo_id)
+
+            gallery_component = _get_diary_gallery_component()
+            if gallery_component is not None and cards:
+                result = gallery_component(
+                    data={
+                        "photos": cards,
+                        "single": False,
+                        "allow_delete": False,
+                        "allow_emotion": False,
+                        "allow_share": False,
+                        "allow_voice": False,
+                        "allow_voice_preview": False,
+                        "allow_favorite": False,
+                        "open_on_click": True,
+                        "carousel_key": "experience_selected_v502",
+                        "family_key": current_family_key(),
+                        "member_key": current_member_key(),
+                        "pending_param": PENDING_EMOTION_QUERY_PARAM,
+                    },
+                    key=f"experience_selected_grid_v502_{int(st.session_state.get('_experience_draft_serial_v497') or 1)}_{len(cards)}",
+                    on_photo_id_change=lambda: None,
+                )
+                clicked = str(getattr(result, "photo_id", "") or "") if result is not None else ""
+                if clicked in photo_ids:
+                    st.session_state[index_key] = photo_ids.index(clicked)
+                    st.session_state[view_mode_key] = "拡大モード"
+                    st.rerun(scope="app")
+            elif cards:
+                # Last-resort visual fallback: force a CSS grid instead of st.columns,
+                # because st.columns collapses to one full-width column on mobile.
+                items = []
+                for card in cards:
+                    src = str(card.get("src") or "")
+                    if not src:
                         continue
-                    photo = selected_photos[index]
-                    with preview_cols[offset]:
-                        url = photo_display_url(photo, signed_map=signed_map, max_px=360, quality=76)
-                        if url:
-                            st.image(url, use_container_width=True)
-                        st.markdown(
-                            f'<div class="experience-photo-label-v499">{html.escape(_experience_captured_label_v497(photo.get("captured_at")))}</div>',
-                            unsafe_allow_html=True,
-                        )
-                        if st.button(
-                            "拡大",
-                            use_container_width=True,
-                            key=f"experience_selected_enlarge_v501_{str(photo.get('id') or index)}",
-                        ):
-                            st.session_state[index_key] = index
-                            st.session_state[view_mode_key] = "1枚ずつ拡大"
-                            st.rerun(scope="app")
+                    meta = html.escape(str(card.get("shared_meta") or ""))
+                    items.append(
+                        '<div style="min-width:0;">'
+                        f'<div style="aspect-ratio:1/1;overflow:hidden;border-radius:10px;background:rgba(128,128,128,.06);">'
+                        f'<img src="{html.escape(src, quote=True)}" loading="lazy" decoding="async" style="display:block;width:100%;height:100%;object-fit:cover;" />'
+                        '</div>'
+                        f'<div style="font-size:8px;opacity:.68;margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">{meta}</div>'
+                        '</div>'
+                    )
+                st.markdown(
+                    '<div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px;width:100%;">' + ''.join(items) + '</div>',
+                    unsafe_allow_html=True,
+                )
 
     if st.session_state.get("_experience_show_audio_v497") or transcript:
         serial = int(st.session_state.get("_experience_draft_serial_v497") or 1)
@@ -49592,7 +49638,7 @@ with st.container(key="app_page_root_v280"):
     elif page == "field_notes":
         _perf_call_v457("page:field_notes", page_field_notes, force=True)
     elif page == "experience":
-        _perf_call_v457("page:experience", page_experience_v501, force=True)
+        _perf_call_v457("page:experience", page_experience_v502, force=True)
     elif page == "settings":
         _perf_call_v457("page:settings", page_settings, force=True)
     elif page == "settings_moments":
