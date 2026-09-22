@@ -43,8 +43,8 @@ def _app_css_v473(markup, **_ignored):
 # Review menu-only update: 2026-09-19 JST
 GENERATED_UPDATE_JST = "2026-09-19T14:54:38+09:00"
 
-APP_BUILD = "v498"
-# v498: Experience photos are fetched only after the parent presses the photo button. The AI excludes maps, route screens, screenshots, and other app UI from automatic picks; selected photos are shown immediately below the buttons and can still be manually changed.
+APP_BUILD = "v499"
+# v499: Experience-card photos are manual-selection only. Pressing the photo button opens the picker; nothing is auto-selected. Obvious Android screenshots are hidden from the picker, selected photos are previewed under the buttons, and multiple selected photos are always combined into one experience card.
 # v496: map-only GPS anti-spaghetti cleanup. Preserve every stored GPS row and existing distance/station calculations, but render a stricter high-confidence line: reject large/low-quality station-area jumps, remove rapid U-turn spikes, and collapse short dense drift loops so urban-canyon GPS cannot paint radial lines through buildings.
 # v494: drain pending Android GPS on Burari Project in 500-point acknowledged batches; rerun immediately after each successful save so the next batch can be acknowledged and recovered without user taps.
 # v493: request native GPS diagnostics on Settings as well as Burari Project, using a per-page throttle key so the log page can actually receive Android status without forcing a GPS cloud flush.
@@ -22267,6 +22267,7 @@ def _reset_experience_draft_v497():
         "_experience_audio_bytes_v497", "_experience_audio_name_v497",
         "_experience_audio_digest_v497", "_experience_transcript_v497",
         "_experience_photo_warning_v497", "_experience_photo_fetched_v498",
+        "_experience_manual_picker_open_v499", "_experience_selected_photo_ids_v499",
     ):
         st.session_state.pop(key, None)
     st.session_state["_experience_draft_serial_v497"] = int(st.session_state.get("_experience_draft_serial_v497") or 0) + 1
@@ -32707,6 +32708,345 @@ def _get_toilet_batch_search_component_v320():
     return _toilet_batch_search_component_v320
 
 
+
+
+def _experience_photo_is_obvious_screenshot_v499(photo):
+    """Hide device screenshots from the manual experience-photo picker when metadata makes that explicit."""
+    photo = photo if isinstance(photo, dict) else {}
+    reflection = photo.get("reflection_json") or {}
+    if not isinstance(reflection, dict):
+        reflection = {}
+    import_meta = reflection.get("import_metadata") or {}
+    if not isinstance(import_meta, dict):
+        import_meta = {}
+    values = [
+        import_meta.get("original_name"),
+        import_meta.get("display_name"),
+        reflection.get("original_name"),
+        reflection.get("capture_source"),
+        reflection.get("source"),
+    ]
+    text = " ".join(str(v or "") for v in values).strip().lower()
+    if not text:
+        return False
+    tokens = (
+        "screenshot", "screen_shot", "screen-shot", "screencap", "screen capture",
+        "スクリーンショット", "画面キャプチャ",
+    )
+    return any(token in text for token in tokens)
+
+
+def _experience_manual_photo_rows_v499(limit=EXPERIENCE_RECENT_PHOTO_LIMIT_V497):
+    rows = _list_recent_experience_photos_v497(limit=limit)
+    return [row for row in rows if not _experience_photo_is_obvious_screenshot_v499(row)]
+
+
+def _toggle_experience_photo_v499(photo_id):
+    photo_id = str(photo_id or "").strip()
+    if not photo_id:
+        return
+    key = "_experience_selected_photo_ids_v499"
+    selected = [str(x) for x in st.session_state.get(key, []) if str(x)]
+    if photo_id in selected:
+        selected = [x for x in selected if x != photo_id]
+    else:
+        if len(selected) >= EXPERIENCE_MANUAL_PHOTO_MAX_V497:
+            st.session_state["_experience_photo_warning_v497"] = (
+                f"写真は最大{EXPERIENCE_MANUAL_PHOTO_MAX_V497}枚まで選べます。"
+            )
+            return
+        selected.append(photo_id)
+    st.session_state[key] = selected
+
+
+def page_experience_v499():
+    page_top("📝 体験を残す", "体験の感想と、選んだ写真から1つの体験カードを作ります。")
+    _app_css_v473(
+        """
+        <style>
+        .st-key-experience_input_pair_v499 [data-testid="stHorizontalBlock"]{gap:.55rem!important;align-items:stretch!important;}
+        .st-key-experience_input_pair_v499 [data-testid="stColumn"]{min-width:0!important;}
+        .st-key-experience_input_pair_v499 div.stButton>button{min-height:58px!important;font-weight:800!important;white-space:normal!important;}
+        .st-key-experience_create_v499 div.stButton>button{min-height:54px!important;font-size:1.02rem!important;font-weight:850!important;}
+        .experience-status-v499{font-size:.76rem;opacity:.72;margin:.20rem 0 .30rem;line-height:1.35;}
+        .experience-card-v499{border:1px solid rgba(128,128,128,.16);border-radius:15px;padding:.70rem .76rem;margin:.55rem 0;background:rgba(128,128,128,.035);}
+        .experience-card-title-v499{font-size:1.02rem;font-weight:850;line-height:1.32;}
+        .experience-card-meta-v499{font-size:.72rem;opacity:.66;margin-top:.18rem;line-height:1.35;}
+        .experience-card-comment-v499{font-size:.90rem;font-weight:650;margin-top:.42rem;line-height:1.5;}
+        .experience-photo-label-v499{font-size:.67rem;opacity:.68;margin-top:.12rem;line-height:1.3;}
+        </style>
+        """
+    )
+
+    notice = st.session_state.pop("_experience_notice_v497", None)
+    if notice:
+        st.success(notice)
+
+    owner_token = f"{current_family_key()}::{current_member_key()}"
+    if st.session_state.get("_experience_draft_owner_v497") != owner_token:
+        _reset_experience_draft_v497()
+        st.session_state["_experience_draft_owner_v497"] = owner_token
+
+    try:
+        card_state = get_experience_card_state_v497()
+        cards = list(card_state.get("cards") or [])
+    except Exception as exc:
+        cards = []
+        st.warning("体験カードの保存状態を読み込めませんでした。")
+        with st.expander("保護者向け詳細"):
+            st.code(str(exc))
+
+    used_ids = _experience_used_photo_ids_v497(cards)
+    transcript = str(st.session_state.get("_experience_transcript_v497") or "").strip()
+    selected_key = "_experience_selected_photo_ids_v499"
+    selected_ids = [str(x) for x in st.session_state.get(selected_key, []) if str(x)][:EXPERIENCE_MANUAL_PHOTO_MAX_V497]
+    st.session_state[selected_key] = selected_ids
+
+    with st.container(key="experience_input_pair_v499"):
+        left, right = st.columns(2, gap="small")
+        with left:
+            if st.button(
+                "🎤 体験の感想",
+                type="secondary",
+                use_container_width=True,
+                key="experience_show_audio_button_v499",
+            ):
+                st.session_state["_experience_show_audio_v497"] = not bool(st.session_state.get("_experience_show_audio_v497"))
+            st.markdown(
+                f'<div class="experience-status-v499">{"✓ 録音済み" if transcript else "感想を短く録音"}</div>',
+                unsafe_allow_html=True,
+            )
+        with right:
+            if st.button(
+                "📷 体験の写真",
+                type="secondary",
+                use_container_width=True,
+                key="experience_open_manual_photos_v499",
+            ):
+                st.session_state["_experience_manual_picker_open_v499"] = True
+            photo_status = f"✓ {len(selected_ids)}枚 選択済み" if selected_ids else "押して写真を選ぶ"
+            st.markdown(
+                f'<div class="experience-status-v499">{html.escape(photo_status)}</div>',
+                unsafe_allow_html=True,
+            )
+
+    # v499: nothing is auto-selected. Load photos only after the picker was opened,
+    # or when we need to render already-selected photos.
+    picker_open = bool(st.session_state.get("_experience_manual_picker_open_v499"))
+    recent_photos = []
+    recent_by_id = {}
+    if picker_open or selected_ids:
+        try:
+            recent_photos = _experience_manual_photo_rows_v499()
+            recent_by_id = {
+                str(photo.get("id") or ""): photo
+                for photo in recent_photos
+                if str(photo.get("id") or "")
+            }
+        except Exception as exc:
+            st.warning("最近の写真を読み込めませんでした。")
+            with st.expander("保護者向け詳細"):
+                st.code(str(exc))
+
+    # If a selected photo is no longer in the filtered recent window, fetch it directly
+    # from the normal recent list before dropping it. This preserves a parent's manual choice.
+    missing_selected = [photo_id for photo_id in selected_ids if photo_id not in recent_by_id]
+    if missing_selected:
+        try:
+            fallback_rows = _list_recent_experience_photos_v497(limit=60)
+            for photo in fallback_rows:
+                photo_id = str((photo or {}).get("id") or "")
+                if photo_id in missing_selected:
+                    recent_by_id[photo_id] = photo
+        except Exception:
+            pass
+
+    selected_ids = [photo_id for photo_id in selected_ids if photo_id in recent_by_id]
+    st.session_state[selected_key] = selected_ids
+
+    # Only manually selected photos are shown under the two buttons.
+    selected_photos = [recent_by_id[photo_id] for photo_id in selected_ids if photo_id in recent_by_id]
+    if selected_photos:
+        paths = [str(photo.get("storage_path") or "") for photo in selected_photos]
+        try:
+            signed_map = signed_photo_url_map(paths, expires_in=1800)
+        except Exception:
+            signed_map = {}
+        preview_cols = st.columns(min(3, max(1, len(selected_photos))), gap="small")
+        for index, photo in enumerate(selected_photos):
+            with preview_cols[index % len(preview_cols)]:
+                url = photo_display_url(photo, signed_map=signed_map, max_px=360, quality=76)
+                if url:
+                    st.image(url, use_container_width=True)
+                st.markdown(
+                    f'<div class="experience-photo-label-v499">{html.escape(_experience_captured_label_v497(photo.get("captured_at")))}</div>',
+                    unsafe_allow_html=True,
+                )
+
+    if st.session_state.get("_experience_show_audio_v497") or transcript:
+        serial = int(st.session_state.get("_experience_draft_serial_v497") or 1)
+        audio_file = far_field_audio_input(
+            "感想を話す",
+            key=f"experience_audio_input_v499_{serial}",
+        )
+        if audio_file is not None:
+            digest = audio_digest(audio_file)
+            if digest and digest != str(st.session_state.get("_experience_audio_digest_v497") or ""):
+                try:
+                    audio_file.seek(0)
+                    raw_audio = audio_file.read()
+                    audio_file.seek(0)
+                    with st.spinner("感想を聞き取っています…"):
+                        text_value = transcribe_audio(
+                            audio_file,
+                            context="東京ぶらり旅で体験した直後の感想です。主に5〜6歳の子どもの発話を、その言い回しを残して聞き取ってください。",
+                        )
+                    st.session_state["_experience_audio_bytes_v497"] = bytes(raw_audio)
+                    st.session_state["_experience_audio_name_v497"] = str(getattr(audio_file, "name", "experience.webm") or "experience.webm")
+                    st.session_state["_experience_audio_digest_v497"] = digest
+                    st.session_state["_experience_transcript_v497"] = str(text_value or "").strip()
+                    transcript = str(text_value or "").strip()
+                except Exception as exc:
+                    st.error("感想を聞き取れませんでした。もう一度録音してください。")
+                    with st.expander("保護者向け詳細"):
+                        st.code(str(exc))
+        transcript = str(st.session_state.get("_experience_transcript_v497") or "").strip()
+        if transcript:
+            st.markdown(f"**感想**　「{html.escape(transcript)}」", unsafe_allow_html=True)
+
+    warning = st.session_state.pop("_experience_photo_warning_v497", None)
+    if warning:
+        st.warning(warning)
+
+    if picker_open:
+        st.markdown("#### 写真を選ぶ")
+        st.caption("使う写真を手で選んでください。複数枚選んでも、作成される体験カードは1つです。")
+        if recent_photos:
+            paths = [str(photo.get("storage_path") or "") for photo in recent_photos[:24]]
+            try:
+                manual_signed = signed_photo_url_map(paths, expires_in=1800)
+            except Exception:
+                manual_signed = {}
+            for start in range(0, min(24, len(recent_photos)), 3):
+                cols = st.columns(3, gap="small")
+                for offset, col in enumerate(cols):
+                    pos = start + offset
+                    if pos >= min(24, len(recent_photos)):
+                        continue
+                    photo = recent_photos[pos]
+                    photo_id = str(photo.get("id") or "")
+                    with col:
+                        url = photo_display_url(photo, signed_map=manual_signed, max_px=300, quality=74)
+                        if url:
+                            st.image(url, use_container_width=True)
+                        used_label = "・使用済み" if photo_id in used_ids else ""
+                        st.caption(f"{_experience_captured_label_v497(photo.get('captured_at'))}{used_label}")
+                        is_selected = photo_id in selected_ids
+                        st.button(
+                            "✓ 選択中" if is_selected else "選ぶ",
+                            type="primary" if is_selected else "secondary",
+                            use_container_width=True,
+                            key=f"experience_pick_photo_v499_{photo_id}",
+                            on_click=_toggle_experience_photo_v499,
+                            args=(photo_id,),
+                        )
+            if st.button(
+                "写真選択を閉じる",
+                use_container_width=True,
+                key="experience_close_manual_photos_v499",
+            ):
+                st.session_state["_experience_manual_picker_open_v499"] = False
+                st.rerun(scope="app")
+        else:
+            st.info("選べる写真がありません。先に写真を撮ってください。")
+
+    can_create = bool(transcript and selected_ids)
+    with st.container(key="experience_create_v499"):
+        create_clicked = st.button(
+            "体験カードを作る",
+            type="primary",
+            use_container_width=True,
+            disabled=not can_create,
+            key="experience_create_card_button_v499",
+        )
+    if not can_create:
+        missing = []
+        if not transcript:
+            missing.append("体験の感想")
+        if not selected_ids:
+            missing.append("体験の写真")
+        if missing:
+            st.caption("・".join(missing) + "を用意すると作成できます。")
+
+    if create_clicked:
+        if not recent_by_id:
+            try:
+                rows = _list_recent_experience_photos_v497(limit=60)
+                recent_by_id = {
+                    str(photo.get("id") or ""): photo
+                    for photo in rows
+                    if str(photo.get("id") or "")
+                }
+            except Exception:
+                recent_by_id = {}
+        photos_for_card = [recent_by_id[x] for x in selected_ids if x in recent_by_id]
+        try:
+            with st.spinner("体験カードを作っています…"):
+                card = create_experience_card_v497(
+                    photos_for_card,
+                    transcript,
+                    audio_bytes=st.session_state.get("_experience_audio_bytes_v497") or b"",
+                    audio_name=st.session_state.get("_experience_audio_name_v497") or "experience.webm",
+                )
+            category = str(card.get("compare_category") or "")
+            category_suffix = f"・{category}" if category and category != EXPERIENCE_COMPARE_EXCLUDED_V497 else ""
+            _reset_experience_draft_v497()
+            st.session_state["_experience_notice_v497"] = f"体験カードを1件保存しました{category_suffix}。"
+            st.rerun(scope="app")
+        except Exception as exc:
+            st.error("体験カードを作成できませんでした。")
+            with st.expander("保護者向け詳細"):
+                st.code(str(exc))
+
+    if cards:
+        st.divider()
+        st.markdown("#### これまでの体験カード")
+        card_paths = []
+        for card in cards[:8]:
+            paths = list(card.get("photo_storage_paths") or [])
+            if paths:
+                card_paths.append(paths[0])
+        try:
+            card_signed = signed_photo_url_map(card_paths, expires_in=1800) if card_paths else {}
+        except Exception:
+            card_signed = {}
+        for card in cards[:8]:
+            first_path = next(iter(card.get("photo_storage_paths") or []), "")
+            image_col, text_col = st.columns([.82, 2.18], gap="small")
+            with image_col:
+                if first_path:
+                    url = card_signed.get(first_path) or photo_display_url({"storage_path": first_path}, signed_map=card_signed, max_px=320, quality=74)
+                    if url:
+                        st.image(url, use_container_width=True)
+            with text_col:
+                category = str(card.get("compare_category") or EXPERIENCE_COMPARE_EXCLUDED_V497)
+                place = str(card.get("place_name") or "不明")
+                item_name = str(card.get("item_name") or "不明")
+                if str(card.get("experience_type") or "") == "おやつ":
+                    headline = f"{place}　{category if category != EXPERIENCE_COMPARE_EXCLUDED_V497 else 'おやつ'}"
+                else:
+                    headline = f"{place}　{category if category != EXPERIENCE_COMPARE_EXCLUDED_V497 else str(card.get('experience_type') or '体験')}"
+                item_line = f"商品名：{item_name}" if str(card.get("experience_type") or "") == "おやつ" else ""
+                st.markdown(
+                    f"""
+                    <div class="experience-card-v499">
+                      <div class="experience-card-title-v499">{html.escape(headline)}</div>
+                      <div class="experience-card-meta-v499">{html.escape(str(card.get('trip_date') or ''))}{('　' + html.escape(item_line)) if item_line else ''}</div>
+                      <div class="experience-card-comment-v499">「{html.escape(str(card.get('child_comment') or ''))}」</div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
 
 def page_experience_v498():
     page_top("📝 体験を残す", "体験の感想と写真から、あとで比べられる体験カードを作ります。")
@@ -49050,7 +49390,7 @@ with st.container(key="app_page_root_v280"):
     elif page == "field_notes":
         _perf_call_v457("page:field_notes", page_field_notes, force=True)
     elif page == "experience":
-        _perf_call_v457("page:experience", page_experience_v498, force=True)
+        _perf_call_v457("page:experience", page_experience_v499, force=True)
     elif page == "settings":
         _perf_call_v457("page:settings", page_settings, force=True)
     elif page == "settings_moments":
