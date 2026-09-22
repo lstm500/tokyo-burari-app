@@ -43,7 +43,7 @@ def _app_css_v473(markup, **_ignored):
 # Review menu-only update: 2026-09-19 JST
 GENERATED_UPDATE_JST = "2026-09-19T14:54:38+09:00"
 
-APP_BUILD = "v491"
+APP_BUILD = "v492"
 # v491: add GPS bridge/service/sync diagnostics to the performance log and greatly expand bounded log retention (browser 2,000 operations; server 10,000 rows). Preserve v490 native GPS recovery behavior.
 # v490: restore Android native GPS bridge sync so background SQLite points are pulled into Supabase when the app is active; opening Burari Project force-flushes pending native points before rendering the updated green route.
 # v489: make replay photo voices reliable on Android/WebView: keep unknown-duration voices eligible, preload the selected clip, retry transient play failures, and never force-restart YouTube while a voice is playing; if the WebView pauses BGM for audio focus, resume BGM after the voice instead.
@@ -8466,6 +8466,7 @@ def _render_interaction_export_v465():
                     "server_limit": PERF_LOG_LIMIT_V457,
                     "server_dropped_rows": int(st.session_state.get("_perf_dropped_v466", 0)),
                     "gps_native_diagnostic": dict(st.session_state.get("_gps_native_diag_v491") or {}),
+                    "gps_diagnostic_probe": dict(st.session_state.get("_gps_diag_probe_v492") or {}),
                     "gps_last_sync": dict(st.session_state.get("_gps_last_sync_v491") or {}),
                     "server_clock": "server wall time for labels; perf_counter for durations",
                     "server_session": st.session_state.setdefault("_perf_session_v466", uuid.uuid4().hex),
@@ -8487,28 +8488,55 @@ def render_performance_log_v457():
     with st.expander("⚡ 動作ログ", expanded=False):
         st.caption("ログ保持上限：端末操作 2,000件 / サーバー処理 10,000件（古い順に自動整理）")
         gps_diag = st.session_state.get("_gps_native_diag_v491") or {}
+        gps_probe = st.session_state.get("_gps_diag_probe_v492") or {}
         gps_sync = st.session_state.get("_gps_last_sync_v491") or {}
-        if isinstance(gps_diag, dict) and gps_diag:
-            def _gps_log_time_v491(value):
-                try:
-                    value = int(float(value or 0))
-                    if value <= 0:
-                        return "--"
-                    return datetime.fromtimestamp(value / 1000.0, ZoneInfo(APP_TIMEZONE)).strftime("%m/%d %H:%M:%S")
-                except Exception:
+
+        def _gps_log_time_v491(value):
+            try:
+                value = int(float(value or 0))
+                if value <= 0:
                     return "--"
-            st.markdown("**GPS診断（直近）**")
+                return datetime.fromtimestamp(value / 1000.0, ZoneInfo(APP_TIMEZONE)).strftime("%m/%d %H:%M:%S")
+            except Exception:
+                return "--"
+
+        # v492: Always show the GPS diagnosis section. In v491 it disappeared when
+        # Android did not return diagnosticStatus(), which made the failure itself invisible.
+        st.markdown("**GPS診断（直近）**")
+        if isinstance(gps_diag, dict) and gps_diag:
             st.code(
                 "\n".join([
+                    f"診断受信: あり ({_gps_log_time_v491(gps_diag.get('received_at_ms'))})",
                     f"ブリッジ: {gps_diag.get('bridge_path','--')} / v{gps_diag.get('bridge_version','--')}",
                     f"GPSサービス: {'稼働中' if gps_diag.get('gps_service_running') is True else '停止/不明' if gps_diag.get('gps_service_running') is not False else '停止'}",
                     f"Android最新GPS: {_gps_log_time_v491(gps_diag.get('device_latest_ts_ms'))}",
+                    f"Android最新GPS精度: {gps_diag.get('device_latest_accuracy_m','--')} m",
                     f"端末未同期GPS: {gps_diag.get('pending_count','--')} 点 / 端末総GPS: {gps_diag.get('device_total_count','--')} 点",
+                    f"GPSサービス開始: {_gps_log_time_v491(gps_diag.get('service_started_ms'))}",
                     f"GPSコールバック: {_gps_log_time_v491(gps_diag.get('service_last_callback_ms'))}",
-                    f"直近同期: {_gps_log_time_v491(gps_sync.get('at_ms'))} / {gps_sync.get('accepted','--')} 点 / {gps_sync.get('status','--')}",
+                    f"端末GPS保存: {_gps_log_time_v491(gps_diag.get('service_last_accepted_ms'))}",
+                    f"位置情報権限: fine={gps_diag.get('fine_location_granted','--')} / coarse={gps_diag.get('coarse_location_granted','--')}",
+                    f"直近同期: {_gps_log_time_v491(gps_sync.get('at_ms'))} / 受信{gps_sync.get('received','--')}点 / 保存{gps_sync.get('accepted','--')}点 / {gps_sync.get('status','--')}",
+                    f"Android診断エラー: {gps_diag.get('status_error') or '--'}",
                 ]),
                 language="text",
             )
+        else:
+            st.code(
+                "\n".join([
+                    "診断受信: なし",
+                    f"Androidアプリ判定: {'あり' if gps_probe.get('native_android') is True else 'なし/不明'}",
+                    f"ブリッジトークン: {'あり' if gps_probe.get('bridge_token_present') is True else 'なし'}",
+                    f"ネイティブGPSモード: {'有効' if gps_probe.get('native_mode') is True else '無効'}",
+                    f"GPSコンポーネント: {'利用可' if gps_probe.get('component_available') is True else '利用不可/未確認'}",
+                    f"診断要求結果: {'応答あり' if gps_probe.get('diagnostic_received') is True else '応答なし'}",
+                    f"最終診断確認: {_gps_log_time_v491(gps_probe.get('checked_at_ms'))}",
+                    f"確認時ページ: {gps_probe.get('page') or '--'}",
+                    f"直近同期: {_gps_log_time_v491(gps_sync.get('at_ms'))} / 受信{gps_sync.get('received','--')}点 / 保存{gps_sync.get('accepted','--')}点 / {gps_sync.get('status','--')}",
+                ]),
+                language="text",
+            )
+            st.caption("Androidから詳細GPS診断を受信できていません。上の項目で、APK認識・ブリッジ・GPSコンポーネントのどこまで到達しているか確認できます。")
         pending_errors = st.session_state.get("_background_errors_v468") or []
         if pending_errors:
             st.caption("\u4e00\u90e8\u306e\u4e8b\u524d\u51e6\u7406\u306f\u518d\u8a66\u884c\u5f85\u3061\u3067\u3059\u3002\u4fdd\u5b58\u6e08\u307f\u306e\u5199\u771f\u3084\u6c17\u6301\u3061\u306f\u6b8b\u3063\u3066\u3044\u307e\u3059\u3002")
@@ -40765,8 +40793,21 @@ def run_always_on_gps_tracker_v271():
     native_android = str(_query_param_scalar("native_android") or "").strip() == "1"
     native_bridge_token = str(_query_param_scalar("native_bridge_token") or "").strip()
     native_mode = bool(native_android and native_bridge_token)
+    page = str(st.session_state.get("main_page") or "home")
 
     component = _get_gps_tracker_component_v271()
+    # v492: Persist a non-sensitive probe on every run so the settings log can explain
+    # why detailed Android diagnostics are absent. Never store the bridge token itself.
+    gps_probe = {
+        "checked_at_ms": int(time.time() * 1000),
+        "page": page,
+        "native_android": bool(native_android),
+        "bridge_token_present": bool(native_bridge_token),
+        "native_mode": bool(native_mode),
+        "component_available": component is not None,
+        "diagnostic_received": False,
+    }
+    st.session_state["_gps_diag_probe_v492"] = gps_probe
     if component is None:
         _perf_log_v457(
             "gps:component_unavailable",
@@ -40775,7 +40816,6 @@ def run_always_on_gps_tracker_v271():
             force=True,
         )
         return
-    page = str(st.session_state.get("main_page") or "home")
     allow_flush = page != "camera"
     force_flush = page == "review_project"
     activity_guard_enabled = True
@@ -40816,6 +40856,11 @@ def run_always_on_gps_tracker_v271():
     )
 
     diagnostic = getattr(result, "gps_diagnostic", None)
+    gps_probe = dict(st.session_state.get("_gps_diag_probe_v492") or {})
+    gps_probe["result_returned"] = result is not None
+    gps_probe["diagnostic_received"] = bool(isinstance(diagnostic, dict) and diagnostic)
+    gps_probe["checked_at_ms"] = int(time.time() * 1000)
+    st.session_state["_gps_diag_probe_v492"] = gps_probe
     if isinstance(diagnostic, dict):
         diag_token = str(diagnostic.get("token") or "")
         diag_token_key = f"_gps_diag_token_v491_{current_family_key()}_{current_member_key()}"
