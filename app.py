@@ -6519,6 +6519,11 @@ _DIARY_GALLERY_HTML = """
   <div id="diary-photo-count" class="diary-photo-count">1 / 1</div>
   <button id="diary-photo-next" type="button">次へ ▶</button>
 </div>
+<div id="diary-photo-batch-toolbar" class="diary-photo-batch-toolbar" hidden>
+  <div id="diary-photo-batch-count" class="diary-photo-batch-count">0枚選択</div>
+  <button id="diary-photo-batch-cancel" type="button">やめる</button>
+  <button id="diary-photo-batch-delete" class="danger" type="button">削除</button>
+</div>
 <div id="diary-photo-grid" class="diary-photo-grid"></div>
 """
 
@@ -6530,6 +6535,32 @@ _DIARY_GALLERY_CSS = """
   gap: 8px;
   box-sizing: border-box;
 }
+.diary-photo-batch-toolbar {
+  width:100%; display:grid; grid-template-columns:minmax(0,1fr) auto auto; gap:7px; align-items:center;
+  margin:0 0 8px; padding:7px 8px; box-sizing:border-box;
+  border:1px solid rgba(128,128,128,.22); border-radius:12px; background:rgba(128,128,128,.055);
+}
+.diary-photo-batch-toolbar[hidden] { display:none !important; }
+.diary-photo-batch-count { min-width:0; font-size:12px; line-height:1.2; font-weight:850; }
+.diary-photo-batch-toolbar button {
+  appearance:none; -webkit-appearance:none; min-height:34px; margin:0; padding:6px 11px;
+  border:1px solid rgba(128,128,128,.24); border-radius:9px; background:rgba(255,255,255,.72);
+  color:var(--st-text-color); font-size:11px; line-height:1; font-weight:820; cursor:pointer;
+  touch-action:manipulation; -webkit-tap-highlight-color:transparent;
+}
+.diary-photo-batch-toolbar button.danger { border-color:rgba(221,72,72,.52); background:rgba(221,72,72,.12); color:#C83D3D; }
+.diary-photo-card.batch-selected {
+  border-color:#E14B4B !important; background:rgba(225,75,75,.14) !important;
+  box-shadow:0 0 0 2px rgba(225,75,75,.24) inset !important;
+}
+.diary-photo-card.batch-selected::after {
+  content:'✓'; position:absolute; right:7px; top:7px; z-index:20; width:26px; height:26px;
+  border-radius:999px; display:flex; align-items:center; justify-content:center;
+  background:#E14B4B; color:#fff; border:2px solid #fff; box-shadow:0 2px 7px rgba(0,0,0,.25);
+  font-size:15px; line-height:1; font-weight:900; pointer-events:none;
+}
+.diary-photo-grid.batch-mode .diary-photo-delete,
+.diary-photo-grid.batch-mode .diary-photo-favorite { opacity:.18; pointer-events:none; }
 .diary-photo-single-nav {
   display:grid; grid-template-columns:1fr 1.05fr 1fr; gap:7px; align-items:center;
   width:100%; max-width:620px; margin:0 auto 8px; box-sizing:border-box;
@@ -6682,6 +6713,10 @@ export default function(component) {
   const prevButton = parentElement.querySelector('#diary-photo-prev');
   const nextButton = parentElement.querySelector('#diary-photo-next');
   const countNode = parentElement.querySelector('#diary-photo-count');
+  const batchToolbar = parentElement.querySelector('#diary-photo-batch-toolbar');
+  const batchCount = parentElement.querySelector('#diary-photo-batch-count');
+  const batchCancel = parentElement.querySelector('#diary-photo-batch-cancel');
+  const batchDelete = parentElement.querySelector('#diary-photo-batch-delete');
   if (!grid) return;
 
   grid.replaceChildren();
@@ -6689,6 +6724,7 @@ export default function(component) {
   grid.classList.toggle('single', single);
   const photos = Array.isArray(data?.photos) ? data.photos : [];
   const allowDelete = data?.allow_delete !== false;
+  const allowBatchDelete = Boolean(data?.allow_batch_delete) && !single;
   const allowEmotion = data?.allow_emotion !== false;
   const allowShare = Boolean(data?.allow_share);
   const allowVoice = Boolean(data?.allow_voice);
@@ -6704,7 +6740,54 @@ export default function(component) {
   const memberKey = String(data?.member_key || '');
   const modeByPhoto = (data?.mode_by_photo && typeof data.mode_by_photo === 'object') ? {...data.mode_by_photo} : {};
 
+  let batchMode = false;
+  const batchSelected = new Set();
+  const cardByPhotoId = new Map();
+  const syncBatchUi = () => {
+    if (!allowBatchDelete) {
+      if (batchToolbar) batchToolbar.hidden = true;
+      grid.classList.remove('batch-mode');
+      return;
+    }
+    grid.classList.toggle('batch-mode', batchMode);
+    if (batchToolbar) batchToolbar.hidden = !batchMode;
+    if (batchCount) batchCount.textContent = `${batchSelected.size}枚選択`;
+    if (batchDelete) batchDelete.disabled = batchSelected.size === 0;
+    for (const [photoId, cardNode] of cardByPhotoId.entries()) {
+      cardNode.classList.toggle('batch-selected', batchSelected.has(photoId));
+    }
+  };
+  const leaveBatchMode = () => {
+    batchMode = false;
+    batchSelected.clear();
+    syncBatchUi();
+  };
+  const toggleBatchPhoto = (photoId) => {
+    const id = String(photoId || '');
+    if (!id) return;
+    if (batchSelected.has(id)) batchSelected.delete(id); else batchSelected.add(id);
+    if (!batchSelected.size) batchMode = false;
+    syncBatchUi();
+  };
+  const enterBatchMode = (photoId) => {
+    if (!allowBatchDelete) return;
+    batchMode = true;
+    batchSelected.add(String(photoId || ''));
+    syncBatchUi();
+    try { navigator.vibrate?.(28); } catch (_) {}
+  };
+  batchCancel?.addEventListener('click', (event) => {
+    event.preventDefault(); event.stopPropagation(); leaveBatchMode();
+  });
+  batchDelete?.addEventListener('click', (event) => {
+    event.preventDefault(); event.stopPropagation();
+    const ids = Array.from(batchSelected);
+    if (!ids.length) return;
+    setTriggerValue('batch_delete_photos', {photo_ids:ids, token:`${Date.now()}_${Math.random().toString(36).slice(2)}`});
+  });
+
   if (singleNav) singleNav.hidden = !(single && photos.length > 1);
+  if (batchToolbar) batchToolbar.hidden = true;
 
   const normalOrder = ['cozy', 'joy', 'surprise', 'anger', 'sadness', 'frustration', 'relaxed', 'delicious', 'beautiful', 'mixed'];
   const normalMeta = {
@@ -6799,7 +6882,8 @@ export default function(component) {
     }
     let activeMode = String(modeByPhoto[String(photo.id)] || '') === 'parenting' ? 'parenting' : (photo.parenting ? 'parenting' : 'normal');
     const wrap = document.createElement('div'); wrap.className = 'diary-photo-wrap';
-    const card = document.createElement('div'); card.className = 'diary-photo-card'; card.setAttribute('role','button'); card.tabIndex = (allowEmotion || openOnClick) ? 0 : -1;
+    const card = document.createElement('div'); card.className = 'diary-photo-card'; card.setAttribute('role','button'); card.tabIndex = (allowEmotion || openOnClick || allowBatchDelete) ? 0 : -1;
+    cardByPhotoId.set(String(photo.id || ''), card);
     const img = document.createElement('img'); img.src = photo.src || ''; img.alt = 'ぶらり旅の写真'; img.loading='lazy'; img.decoding='async'; img.fetchPriority='low'; card.appendChild(img);
     const badge = document.createElement('div'); badge.className='diary-emotion-badge'; card.appendChild(badge);
     if (photo.location) { const location=document.createElement('div'); location.className='diary-photo-location'; location.textContent=`📍 ${photo.location}`; card.appendChild(location); }
@@ -6833,9 +6917,12 @@ export default function(component) {
     normalButton.addEventListener('click', (event) => { event.preventDefault(); event.stopPropagation(); activeMode='normal'; modeByPhoto[String(photo.id)]='normal'; syncVisual(); });
     parentingButton.addEventListener('click', (event) => { event.preventDefault(); event.stopPropagation(); activeMode='parenting'; modeByPhoto[String(photo.id)]='parenting'; syncVisual(); });
 
+    let suppressCardClickUntil = 0;
     if (allowEmotion) {
       const cycle = (event) => {
         event?.preventDefault?.(); event?.stopPropagation?.();
+        if (Date.now() < suppressCardClickUntil) return;
+        if (allowBatchDelete && batchMode) { toggleBatchPhoto(photo.id); return; }
         if (activeMode === 'parenting') {
           photo.parenting = nextValue(photo.parenting, parentingOrder, normalizeParenting);
           photo.emotion = '';
@@ -6858,6 +6945,40 @@ export default function(component) {
       card.addEventListener('click', openPhoto);
       card.addEventListener('keydown', (event) => { if (event.key === 'Enter' || event.key === ' ') openPhoto(event); });
     } else card.style.cursor='default';
+
+    if (allowBatchDelete) {
+      let pressTimer = null;
+      let startX = 0;
+      let startY = 0;
+      let longPressed = false;
+      const cancelPress = () => {
+        if (pressTimer) { clearTimeout(pressTimer); pressTimer = null; }
+      };
+      card.addEventListener('pointerdown', (event) => {
+        if (event.pointerType === 'mouse' && Number(event.button || 0) !== 0) return;
+        if (event.target?.closest?.('button,audio,input,select,textarea')) return;
+        startX = Number(event.clientX || 0); startY = Number(event.clientY || 0); longPressed = false;
+        cancelPress();
+        pressTimer = setTimeout(() => {
+          pressTimer = null; longPressed = true; suppressCardClickUntil = Date.now() + 850; enterBatchMode(photo.id);
+        }, 520);
+      }, {passive:true});
+      card.addEventListener('pointermove', (event) => {
+        if (!pressTimer) return;
+        const dx = Number(event.clientX || 0) - startX;
+        const dy = Number(event.clientY || 0) - startY;
+        if ((dx * dx + dy * dy) > 196) cancelPress();
+      }, {passive:true});
+      card.addEventListener('pointerup', () => {
+        cancelPress();
+        if (longPressed) setTimeout(() => { longPressed = false; }, 0);
+      }, {passive:true});
+      card.addEventListener('pointercancel', cancelPress, {passive:true});
+      card.addEventListener('contextmenu', (event) => {
+        if (!allowBatchDelete) return;
+        event.preventDefault();
+      });
+    }
 
     wrap.insertBefore(card, wrap.firstChild);
     if (allowEmotion) wrap.appendChild(modeSwitch);
@@ -7018,7 +7139,7 @@ def _get_diary_gallery_component():
     _diary_gallery_component_initialized = True
     try:
         diary_gallery_component = st.components.v2.component(
-            "tokyo_burari_diary_gallery_v425",
+            "tokyo_burari_diary_gallery_v504",
             html=_DIARY_GALLERY_HTML,
             css=_DIARY_GALLERY_CSS,
             js=_perf_instrument_js_v466(_DIARY_GALLERY_JS),
@@ -20434,6 +20555,65 @@ def confirm_photo_delete_dialog(trip_id, photo_id, photos=None, is_pending=False
             key=f"dialog_photo_delete_no_{trip_id}_{photo_id}",
         ):
             st.rerun(scope="app")
+
+@st.dialog("選択した写真を削除しますか？")
+def confirm_pending_photo_batch_delete_dialog_v504(trip_id, photo_ids, photos=None, trip=None):
+    """Confirm and delete multiple photos from a trip that does not have a diary yet."""
+    rows = list(photos) if isinstance(photos, (list, tuple)) else list_trip_photos(trip_id)
+    rows = [row for row in rows if isinstance(row, dict) and not photo_is_video(row)]
+    row_by_id = {str(row.get("id") or ""): row for row in rows if str(row.get("id") or "")}
+    selected_ids = []
+    for value in list(photo_ids or []):
+        photo_id = str(value or "")
+        if photo_id in row_by_id and photo_id not in selected_ids:
+            selected_ids.append(photo_id)
+    if not selected_ids:
+        st.warning("削除する写真が見つかりませんでした。")
+        if st.button("閉じる", use_container_width=True, key=f"pending_batch_delete_close_v504_{trip_id}"):
+            st.rerun(scope="app")
+        return
+
+    st.warning(
+        f"選択した{len(selected_ids)}枚の写真を削除します。"
+        "写真に付けた感情・声・共有情報も削除され、元に戻せません。"
+    )
+    yes_col, no_col = st.columns([1.35, 0.85], gap="small")
+    with yes_col:
+        if st.button(
+            f"{len(selected_ids)}枚を削除",
+            type="primary",
+            use_container_width=True,
+            key=f"pending_batch_delete_yes_v504_{trip_id}_{len(selected_ids)}",
+        ):
+            deleted = 0
+            failures = []
+            for photo_id in selected_ids:
+                try:
+                    delete_photo_and_related_data(
+                        trip_id,
+                        photo_id,
+                        skip_existing_diary_lookup=True,
+                    )
+                    deleted += 1
+                except Exception as exc:
+                    failures.append(str(exc))
+            if failures:
+                st.session_state["_diary_notice"] = (
+                    f"{deleted}枚を削除しました。{len(failures)}枚は削除できませんでした。"
+                )
+                st.session_state["_pending_diary_batch_delete_failures_v504"] = failures
+            else:
+                st.session_state["_diary_notice"] = f"選択した写真を{deleted}枚削除しました。"
+                st.session_state.pop("_pending_diary_batch_delete_failures_v504", None)
+            reload_current_page_after_action()
+    with no_col:
+        if st.button(
+            "やめる",
+            use_container_width=True,
+            key=f"pending_batch_delete_no_v504_{trip_id}",
+        ):
+            st.rerun(scope="app")
+
 
 def render_diary_delete_controls(
     trip_id,
@@ -38760,17 +38940,39 @@ def render_diary_emotion_gallery(trip_id, photos, trip=None, is_pending=False):
         serial_key = f"diary_emotion_gallery_serial_{trip_id}_{'pending' if is_pending else 'saved'}"
         serial = int(st.session_state.get(serial_key) or 0)
         result = gallery_component(
-            data={"photos": cards, "single": single_mode, "allow_delete": True, "allow_emotion": True, "allow_share": True, "allow_voice": bool(single_mode and not is_pending), "allow_voice_preview": bool(single_mode), "allow_favorite": bool(single_mode), "carousel_key": f"diary_saved_{trip_id}", "mode_by_photo": st.session_state.get(f"_diary_icon_modes_{trip_id}") or {}, "family_key": current_family_key(), "member_key": current_member_key(), "pending_param": PENDING_EMOTION_QUERY_PARAM},
+            data={"photos": cards, "single": single_mode, "allow_delete": True, "allow_batch_delete": bool(is_pending and not single_mode), "allow_emotion": True, "allow_share": True, "allow_voice": bool(single_mode and not is_pending), "allow_voice_preview": bool(single_mode), "allow_favorite": bool(single_mode), "carousel_key": f"diary_saved_{trip_id}", "mode_by_photo": st.session_state.get(f"_diary_icon_modes_{trip_id}") or {}, "family_key": current_family_key(), "member_key": current_member_key(), "pending_param": PENDING_EMOTION_QUERY_PARAM},
             key=f"diary_emotion_gallery_{trip_id}_{serial}_{_current_ui_refresh_epoch()}_{'single' if single_mode else 'grid'}_v365",
             on_delete_photo_id_change=lambda: None,
             on_share_photo_change=lambda: None,
             on_voice_photo_id_change=lambda: None,
             on_favorite_photo_change=lambda: None,
+            on_batch_delete_photos_change=lambda: None,
         )
         if handle_photo_family_share_event(result, photo_ids, serial_key=serial_key):
             return
         if handle_photo_favorite_event(result, photo_ids, serial_key=serial_key):
             return
+        batch_delete_payload = getattr(result, "batch_delete_photos", None)
+        if is_pending and isinstance(batch_delete_payload, dict):
+            token = str(batch_delete_payload.get("token") or "")
+            last_key = f"_pending_diary_batch_delete_token_v504_{trip_id}"
+            last_token = str(st.session_state.get(last_key) or "")
+            selected_ids = []
+            valid_set = set(photo_ids)
+            for value in batch_delete_payload.get("photo_ids") or []:
+                photo_id = str(value or "")
+                if photo_id in valid_set and photo_id not in selected_ids:
+                    selected_ids.append(photo_id)
+            if token and token != last_token and selected_ids:
+                st.session_state[last_key] = token
+                st.session_state[serial_key] = serial + 1
+                confirm_pending_photo_batch_delete_dialog_v504(
+                    trip_id,
+                    selected_ids,
+                    photos=photos,
+                    trip=trip,
+                )
+                return
         delete_clicked = str(getattr(result, "delete_photo_id", "") or "")
         if delete_clicked in photo_ids:
             st.session_state[serial_key] = serial + 1
@@ -39379,6 +39581,11 @@ def page_diary():
     notice = st.session_state.pop("_diary_notice", None)
     if notice:
         st.success(notice)
+    batch_failures = st.session_state.pop("_pending_diary_batch_delete_failures_v504", None)
+    if isinstance(batch_failures, list) and batch_failures:
+        with st.expander("削除できなかった写真の詳細"):
+            for detail in batch_failures:
+                st.code(str(detail))
     render_photo_family_share_notice()
     render_photo_tag_notices()
 
@@ -39419,13 +39626,6 @@ def page_diary():
                 pending_photos,
                 trip=pending_trip,
                 is_pending=True,
-            )
-            render_photo_batch_delete_controls_v442(
-                pending_photos,
-                f"pending_diary_{pending_id}",
-                button_label="🗑 この写真をまとめて削除",
-                panel_title="🗑 この日の写真をまとめて削除",
-                force_pending=True,
             )
             if st.button(
                 "📖 この写真で日記を作る",
