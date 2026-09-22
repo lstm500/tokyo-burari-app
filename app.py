@@ -43,7 +43,8 @@ def _app_css_v473(markup, **_ignored):
 # Review menu-only update: 2026-09-19 JST
 GENERATED_UPDATE_JST = "2026-09-19T14:54:38+09:00"
 
-APP_BUILD = "v495"
+APP_BUILD = "v496"
+# v496: map-only GPS anti-spaghetti cleanup. Preserve every stored GPS row and existing distance/station calculations, but render a stricter high-confidence line: reject large/low-quality station-area jumps, remove rapid U-turn spikes, and collapse short dense drift loops so urban-canyon GPS cannot paint radial lines through buildings.
 # v494: drain pending Android GPS on Burari Project in 500-point acknowledged batches; rerun immediately after each successful save so the next batch can be acknowledged and recovered without user taps.
 # v493: request native GPS diagnostics on Settings as well as Burari Project, using a per-page throttle key so the log page can actually receive Android status without forcing a GPS cloud flush.
 # v491: add GPS bridge/service/sync diagnostics to the performance log and greatly expand bounded log retention (browser 2,000 operations; server 10,000 rows). Preserve v490 native GPS recovery behavior.
@@ -1149,6 +1150,25 @@ GPS_TRACK_RENDER_BASE_NOISE_M = 12.0
 GPS_TRACK_RENDER_MAX_NOISE_M = 42.0
 GPS_TRACK_RENDER_SOURCE_OVERLAP_WINDOW_MS_V384 = 8000
 GPS_TRACK_RENDER_SOURCE_OVERLAP_DISTANCE_M_V384 = 120.0
+# v496: display-only anti-spaghetti gate. These values do not change raw GPS storage,
+# cloud sync, walked-distance totals, or station-arrival evidence. They only decide
+# which high-confidence links are allowed to become the solid green map line.
+GPS_TRACK_DISPLAY_MAX_ACCURACY_M_V496 = 34.0
+GPS_TRACK_DISPLAY_STATION_MAX_ACCURACY_M_V496 = 26.0
+GPS_TRACK_DISPLAY_MAX_GAP_SECONDS_V496 = 90.0
+GPS_TRACK_DISPLAY_STATION_MAX_GAP_SECONDS_V496 = 65.0
+GPS_TRACK_DISPLAY_MAX_STEP_M_V496 = 78.0
+GPS_TRACK_DISPLAY_STATION_MAX_STEP_M_V496 = 48.0
+GPS_TRACK_DISPLAY_MAX_SPEED_MPS_V496 = 3.4
+GPS_TRACK_DISPLAY_STATION_MAX_SPEED_MPS_V496 = 2.8
+GPS_TRACK_DISPLAY_STATION_RADIUS_M_V496 = 280.0
+GPS_TRACK_DISPLAY_SHARP_TURN_DEG_V496 = 125.0
+GPS_TRACK_DISPLAY_SHARP_TURN_WINDOW_SECONDS_V496 = 50.0
+GPS_TRACK_DISPLAY_DWELL_WINDOW_SECONDS_V496 = 180.0
+GPS_TRACK_DISPLAY_DWELL_MIN_SECONDS_V496 = 45.0
+GPS_TRACK_DISPLAY_DWELL_RADIUS_M_V496 = 85.0
+GPS_TRACK_DISPLAY_DWELL_PATH_M_V496 = 120.0
+GPS_TRACK_DISPLAY_DWELL_DISPLACEMENT_M_V496 = 42.0
 # v290: platform-first / parallel-cluster / robust-capsule station footprint.
 # The previous v289 let every nearby rail line determine the station axis; at junctions
 # such as Osaki that can rotate the footprint away from the platforms. v290 treats each
@@ -41269,6 +41289,329 @@ def _project_clean_track_points_v372(points):
     return clean
 
 
+
+def _project_display_walk_segments_v496(points, stations=None):
+    """Build a conservative map-only walking line without altering stored GPS/history.
+
+    The authoritative v271 segments remain the basis for distance and station evidence.
+    This display path is deliberately stricter around reached stations, where reflected
+    GNSS signals can create dozens of plausible-looking 10-50m fixes that form a radial
+    spider-web through buildings. Uncertain links are split/omitted rather than invented.
+    """
+    rows = [row for row in _project_clean_track_points_v372(points) if isinstance(row, dict)]
+    centers = []
+    for station in stations or []:
+        if not isinstance(station, dict):
+            continue
+        if not bool(station.get("arrived") or station.get("visited")):
+            continue
+        try:
+            lat = float(station.get("lat")); lon = float(station.get("lon"))
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(lat) and math.isfinite(lon):
+            centers.append((lat, lon))
+
+    station_cache = {}
+    def near_reached_station(row):
+        if not centers:
+            return False
+        key = str(row.get("id") or "") or f"{row.get('lat')}:{row.get('lon')}"
+        if key in station_cache:
+            return station_cache[key]
+        try:
+            lat = float(row.get("lat")); lon = float(row.get("lon"))
+        except (TypeError, ValueError):
+            station_cache[key] = False
+            return False
+        hit = False
+        for slat, slon in centers:
+            try:
+                if _nearby_haversine_m(lat, lon, slat, slon) <= float(GPS_TRACK_DISPLAY_STATION_RADIUS_M_V496):
+                    hit = True
+                    break
+            except Exception:
+                continue
+        station_cache[key] = hit
+        return hit
+
+    def row_accuracy(row):
+        try:
+            value = float(row.get("accuracy_m")) if row.get("accuracy_m") is not None else None
+        except (TypeError, ValueError):
+            return None
+        return value if value is None or math.isfinite(value) else None
+
+    def row_reported_speed(row):
+        try:
+            value = float(row.get("speed_mps")) if row.get("speed_mps") is not None else None
+        except (TypeError, ValueError):
+            return None
+        return value if value is None or math.isfinite(value) else None
+
+    preliminary = []
+    current = []
+    prev = None
+    quality_dropped = 0
+    link_breaks = 0
+
+    for point in rows:
+        try:
+            lat = float(point.get("lat")); lon = float(point.get("lon")); ts_ms = int(float(point.get("ts_ms") or 0))
+        except (TypeError, ValueError):
+            continue
+        if not (math.isfinite(lat) and math.isfinite(lon) and ts_ms > 0):
+            continue
+        station_area = near_reached_station(point)
+        accuracy = row_accuracy(point)
+        max_accuracy = (
+            GPS_TRACK_DISPLAY_STATION_MAX_ACCURACY_M_V496
+            if station_area else GPS_TRACK_DISPLAY_MAX_ACCURACY_M_V496
+        )
+        if accuracy is not None and accuracy > float(max_accuracy):
+            quality_dropped += 1
+            if len(current) >= 2:
+                preliminary.append(current)
+            current = []
+            prev = None
+            continue
+
+        if prev is None:
+            current = [point]
+            prev = point
+            continue
+        try:
+            dt = (float(point.get("ts_ms")) - float(prev.get("ts_ms"))) / 1000.0
+            dist = _nearby_haversine_m(float(prev["lat"]), float(prev["lon"]), lat, lon)
+        except Exception:
+            if len(current) >= 2:
+                preliminary.append(current)
+            current = [point]
+            prev = point
+            link_breaks += 1
+            continue
+        if dt <= 0:
+            prev = point
+            continue
+
+        prev_station_area = near_reached_station(prev)
+        in_station_area = bool(station_area or prev_station_area)
+        max_gap = (
+            GPS_TRACK_DISPLAY_STATION_MAX_GAP_SECONDS_V496
+            if in_station_area else GPS_TRACK_DISPLAY_MAX_GAP_SECONDS_V496
+        )
+        max_step = (
+            GPS_TRACK_DISPLAY_STATION_MAX_STEP_M_V496
+            if in_station_area else GPS_TRACK_DISPLAY_MAX_STEP_M_V496
+        )
+        max_speed = (
+            GPS_TRACK_DISPLAY_STATION_MAX_SPEED_MPS_V496
+            if in_station_area else GPS_TRACK_DISPLAY_MAX_SPEED_MPS_V496
+        )
+        # A real 10m-sampled walk should not teleport 50-80m between adjacent fixes.
+        # Tighten the allowed jump for short time gaps instead of using one 180m cap.
+        dynamic_step = max(24.0, min(float(max_step), 18.0 + dt * 2.35))
+        estimated_speed = dist / max(0.001, dt)
+        same_session = bool(str(point.get("session_id") or "")) and str(point.get("session_id") or "") == str(prev.get("session_id") or "")
+        source = str(point.get("source") or "").strip().lower()
+        prev_source = str(prev.get("source") or "").strip().lower()
+        same_source = bool(source) and source == prev_source
+        restart_ok = (
+            not same_session and same_source
+            and dt <= min(45.0, float(max_gap))
+            and dist <= min(55.0, dynamic_step)
+        )
+        reported_speed = row_reported_speed(point)
+        # Around stations a stationary/near-stationary reported fix that suddenly moves
+        # tens of metres is much more likely multipath drift than a genuine walked link.
+        stationary_jump = False
+        if in_station_area and reported_speed is not None and reported_speed <= 0.75:
+            acc_radius = max(12.0, float(accuracy or 0.0), float(row_accuracy(prev) or 0.0))
+            stationary_jump = dist > max(20.0, acc_radius * 1.10)
+
+        linked = (
+            (same_session or restart_ok)
+            and dt <= float(max_gap)
+            and dist <= dynamic_step
+            and estimated_speed <= float(max_speed)
+            and not stationary_jump
+        )
+        if linked:
+            if not current:
+                current = [prev]
+            current.append(point)
+        else:
+            if len(current) >= 2:
+                preliminary.append(current)
+            current = [point]
+            link_breaks += 1
+        prev = point
+    if len(current) >= 2:
+        preliminary.append(current)
+
+    def turn_degrees(a, b, c):
+        try:
+            lat0 = math.radians((float(a["lat"]) + float(b["lat"]) + float(c["lat"])) / 3.0)
+            scale_x = 111320.0 * max(0.2, math.cos(lat0))
+            scale_y = 111320.0
+            bax = (float(a["lon"]) - float(b["lon"])) * scale_x
+            bay = (float(a["lat"]) - float(b["lat"])) * scale_y
+            bcx = (float(c["lon"]) - float(b["lon"])) * scale_x
+            bcy = (float(c["lat"]) - float(b["lat"])) * scale_y
+            na = math.hypot(bax, bay); nc = math.hypot(bcx, bcy)
+            if na < 1e-6 or nc < 1e-6:
+                return 0.0
+            cosine = max(-1.0, min(1.0, (bax * bcx + bay * bcy) / (na * nc)))
+            interior = math.degrees(math.acos(cosine))
+            return max(0.0, 180.0 - interior)
+        except Exception:
+            return 0.0
+
+    turn_removed = 0
+    dwell_removed = 0
+    output_rows = []
+    for raw_seg in preliminary:
+        seg = list(raw_seg)
+        # Remove abrupt A-B-C reversals that occur too quickly to represent a normal
+        # street corner. A 90-degree street turn is preserved; only near-U-turn spikes go.
+        for _ in range(2):
+            if len(seg) < 3:
+                break
+            reduced = [seg[0]]
+            for idx in range(1, len(seg) - 1):
+                a = reduced[-1]; b = seg[idx]; c = seg[idx + 1]
+                try:
+                    total_dt = (float(c.get("ts_ms")) - float(a.get("ts_ms"))) / 1000.0
+                    ab = _nearby_haversine_m(float(a["lat"]), float(a["lon"]), float(b["lat"]), float(b["lon"]))
+                    bc = _nearby_haversine_m(float(b["lat"]), float(b["lon"]), float(c["lat"]), float(c["lon"]))
+                    ac = _nearby_haversine_m(float(a["lat"]), float(a["lon"]), float(c["lat"]), float(c["lon"]))
+                except Exception:
+                    reduced.append(b)
+                    continue
+                sharp = (
+                    0 < total_dt <= float(GPS_TRACK_DISPLAY_SHARP_TURN_WINDOW_SECONDS_V496)
+                    and ab >= 14.0 and bc >= 14.0
+                    and turn_degrees(a, b, c) >= float(GPS_TRACK_DISPLAY_SHARP_TURN_DEG_V496)
+                    and ac <= max(34.0, (ab + bc) * 0.68)
+                    and (near_reached_station(a) or near_reached_station(b) or near_reached_station(c))
+                )
+                if sharp:
+                    turn_removed += 1
+                    continue
+                reduced.append(b)
+            reduced.append(seg[-1])
+            seg = reduced
+
+        if len(seg) < 2:
+            continue
+
+        # Collapse short dense loops around reached stations. These are characteristic
+        # of reflected GNSS: large accumulated path, little net displacement, and all
+        # fixes remaining inside one small area. Preserve the endpoints but remove the
+        # radial interior, so the map never paints a starburst through surrounding blocks.
+        keep = [True] * len(seg)
+        start = 0
+        for end in range(len(seg)):
+            try:
+                end_ts = float(seg[end].get("ts_ms") or 0)
+            except Exception:
+                continue
+            while start < end:
+                try:
+                    age = (end_ts - float(seg[start].get("ts_ms") or 0)) / 1000.0
+                except Exception:
+                    age = 0.0
+                if age <= float(GPS_TRACK_DISPLAY_DWELL_WINDOW_SECONDS_V496):
+                    break
+                start += 1
+            if end - start + 1 < 6:
+                continue
+            try:
+                duration = (float(seg[end].get("ts_ms")) - float(seg[start].get("ts_ms"))) / 1000.0
+            except Exception:
+                continue
+            if duration < float(GPS_TRACK_DISPLAY_DWELL_MIN_SECONDS_V496):
+                continue
+            window = seg[start:end + 1]
+            if sum(1 for row in window if near_reached_station(row)) < max(3, int(math.ceil(len(window) * 0.5))):
+                continue
+            path_m = 0.0
+            max_radius = 0.0
+            ok = True
+            for left, right in zip(window[:-1], window[1:]):
+                try:
+                    path_m += _nearby_haversine_m(float(left["lat"]), float(left["lon"]), float(right["lat"]), float(right["lon"]))
+                except Exception:
+                    ok = False; break
+            if not ok or path_m < float(GPS_TRACK_DISPLAY_DWELL_PATH_M_V496):
+                continue
+            try:
+                displacement = _nearby_haversine_m(float(window[0]["lat"]), float(window[0]["lon"]), float(window[-1]["lat"]), float(window[-1]["lon"]))
+                for row in window[1:]:
+                    max_radius = max(max_radius, _nearby_haversine_m(float(window[0]["lat"]), float(window[0]["lon"]), float(row["lat"]), float(row["lon"])))
+            except Exception:
+                continue
+            if (
+                displacement <= float(GPS_TRACK_DISPLAY_DWELL_DISPLACEMENT_M_V496)
+                and max_radius <= float(GPS_TRACK_DISPLAY_DWELL_RADIUS_M_V496)
+                and path_m / max(15.0, displacement) >= 3.0
+            ):
+                for idx in range(start + 1, end):
+                    if keep[idx]:
+                        keep[idx] = False
+                        dwell_removed += 1
+
+        # Split at removed drift points instead of drawing a chord through the omitted
+        # cloud. This intentionally prefers a small gap over a false road/building line.
+        piece = []
+        for idx, row in enumerate(seg):
+            if not keep[idx]:
+                if len(piece) >= 2:
+                    output_rows.append(piece)
+                piece = []
+                continue
+            if not piece:
+                piece = [row]
+            else:
+                try:
+                    gap = _nearby_haversine_m(float(piece[-1]["lat"]), float(piece[-1]["lon"]), float(row["lat"]), float(row["lon"]))
+                except Exception:
+                    gap = float("inf")
+                if gap > float(GPS_TRACK_DISPLAY_MAX_STEP_M_V496):
+                    if len(piece) >= 2:
+                        output_rows.append(piece)
+                    piece = [row]
+                else:
+                    piece.append(row)
+        if len(piece) >= 2:
+            output_rows.append(piece)
+
+    output = []
+    for seg in output_rows:
+        coords = []
+        for row in seg:
+            try:
+                coord = [round(float(row["lat"]), 7), round(float(row["lon"]), 7)]
+            except Exception:
+                continue
+            if coords and coord == coords[-1]:
+                continue
+            coords.append(coord)
+        if len(coords) >= 2:
+            output.append(coords)
+    meta = {
+        "input_points": len(rows),
+        "preliminary_segments": len(preliminary),
+        "display_segments": len(output),
+        "display_points": sum(len(seg) for seg in output),
+        "quality_dropped": quality_dropped,
+        "link_breaks": link_breaks,
+        "turn_removed": turn_removed,
+        "dwell_removed": dwell_removed,
+        "station_centers": len(centers),
+    }
+    return output, meta
+
 def _project_city_fallback_segments_v455(points):
     """Build map-only urban fallback segments from already-loaded raw GPS points.
 
@@ -44468,8 +44811,8 @@ def _project_snap_display_segments_v298(segments):
 def _render_burari_project_map_v295(points, segments, stations, photo_segments=None, latest_point=None, fallback_segments=None):
     """Render a deliberately minimal project map.
 
-    v299 keeps the minimal map UI from v295. Only the photo-derived historical seed
-    is road-snapped; ordinary GPS walking segments are rendered unchanged.
+    v496 keeps raw GPS/history untouched but receives a stricter display-only GPS path
+    that suppresses urban multipath spider-webs. Photo-derived history remains road-snapped.
     Reached-station glow is narrowed to the former Osaki diagnostic footprint style so it
     stays compact when zoomed out. Osaki now renders exactly like every other reached station.
     """
@@ -45132,11 +45475,11 @@ def _photo_legacy_prepare_routes_v305():
     progress_bar.progress(1.0 if total else 1.0)
     if failed_count:
         progress_slot.warning(
-            f"道路確認が終了しました。{done_count}/{total} 区間を道路形状で保存済み、"
+            f"写真由来ルートの道路確認が終了しました。{done_count}/{total} 区間を道路形状で保存済み、"
             f"{failed_count} 区間は今回取得できませんでした。"
         )
     else:
-        progress_slot.success(f"道路確認が終了しました。{done_count}/{total} 区間を道路形状で保存しました。")
+        progress_slot.success(f"写真由来ルートの道路確認が終了しました。{done_count}/{total} 区間を道路形状で保存しました。")
 
     routed_segments = _photo_legacy_segments_from_state_v305(state)
     display_segments = _photo_legacy_display_segments_v308(state)
@@ -45315,10 +45658,49 @@ def page_burari_project():
                 st.rerun()
         else:
             route_status.empty()
-    display_segments = list(segments or [])
+    # v496: distance/station evidence above continues to use the authoritative v271
+    # segments. The solid green line is a separate high-confidence display path so
+    # station-area multipath cannot draw radial lines through buildings.
+    display_segments, display_cleanup_meta = _project_display_walk_segments_v496(points, stations) if points else ([], {})
+    _perf_log_v457(
+        "gps:display_cleanup_v496",
+        duration_ms=0,
+        meta=display_cleanup_meta,
+        force=True,
+    )
+    render_points = []
+    seen_render = set()
+    for seg in display_segments:
+        for pair in seg or []:
+            if not isinstance(pair, (list, tuple)) or len(pair) < 2:
+                continue
+            try:
+                key = (round(float(pair[0]), 7), round(float(pair[1]), 7))
+            except Exception:
+                continue
+            if key in seen_render:
+                continue
+            seen_render.add(key)
+            render_points.append({"lat": key[0], "lon": key[1]})
+    for p in _photo_legacy_map_points_v296():
+        if not isinstance(p, dict):
+            continue
+        try:
+            key = (round(float(p.get("lat")), 7), round(float(p.get("lon")), 7))
+        except Exception:
+            continue
+        if key not in seen_render:
+            seen_render.add(key); render_points.append(p)
+    if latest_point and isinstance(latest_point, dict):
+        try:
+            latest_key = (round(float(latest_point.get("lat")), 7), round(float(latest_point.get("lon")), 7))
+        except Exception:
+            latest_key = None
+        if latest_key and latest_key not in seen_render:
+            render_points.append(latest_point)
 
     _render_burari_project_map_v295(
-        display_points,
+        render_points or display_points,
         display_segments,
         stations,
         photo_segments=photo_segments,
