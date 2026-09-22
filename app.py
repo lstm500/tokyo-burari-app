@@ -45,6 +45,8 @@ GENERATED_UPDATE_JST = "2026-09-19T14:54:38+09:00"
 
 APP_BUILD = "v499"
 # v499: Experience-card photos are manual-selection only. Pressing the photo button opens the picker; nothing is auto-selected. Obvious Android screenshots are hidden from the picker, selected photos are previewed under the buttons, and multiple selected photos are always combined into one experience card.
+
+# v500: Match the existing moments photo-selection UI for experience cards: three thumbnails per row, select by tapping the photo card itself (no visible "選ぶ" buttons), allow multiple photos across repeated opens, and collapse the picker immediately after each selection.
 # v496: map-only GPS anti-spaghetti cleanup. Preserve every stored GPS row and existing distance/station calculations, but render a stricter high-confidence line: reject large/low-quality station-area jumps, remove rapid U-turn spikes, and collapse short dense drift loops so urban-canyon GPS cannot paint radial lines through buildings.
 # v494: drain pending Android GPS on Burari Project in 500-point acknowledged batches; rerun immediately after each successful save so the next batch can be acknowledged and recovered without user taps.
 # v493: request native GPS diagnostics on Settings as well as Burari Project, using a per-page throttle key so the log page can actually receive Android status without forcing a GPS cloud flush.
@@ -32710,6 +32712,112 @@ def _get_toilet_batch_search_component_v320():
 
 
 
+_EXPERIENCE_PHOTO_PICKER_HTML_V500 = """
+<div id="experience-photo-picker-grid-v500" class="experience-photo-picker-grid-v500"></div>
+"""
+
+_EXPERIENCE_PHOTO_PICKER_CSS_V500 = r"""
+.experience-photo-picker-grid-v500 {
+  width:100%; display:grid; grid-template-columns:repeat(3,minmax(0,1fr));
+  gap:7px; box-sizing:border-box; margin:4px 0 8px;
+}
+.experience-photo-card-v500 {
+  appearance:none; -webkit-appearance:none; position:relative; width:100%; min-width:0;
+  margin:0; padding:3px; border:3px solid rgba(174,182,194,.72); border-radius:12px;
+  background:rgba(174,182,194,.07); color:var(--st-text-color); cursor:pointer;
+  touch-action:manipulation; -webkit-tap-highlight-color:transparent; overflow:hidden; text-align:left;
+}
+.experience-photo-card-v500.selected {
+  border-color:#F59E0B; background:rgba(245,158,11,.16); box-shadow:0 0 0 2px rgba(245,158,11,.12);
+}
+.experience-photo-card-v500:active { transform:scale(.985); }
+.experience-photo-card-v500:disabled { opacity:1; cursor:default; }
+.experience-photo-image-wrap-v500 {
+  position:relative; width:100%; aspect-ratio:1/1; overflow:hidden; border-radius:8px; background:rgba(128,128,128,.06);
+}
+.experience-photo-image-wrap-v500 img { display:block; width:100%; height:100%; object-fit:cover; }
+.experience-photo-picked-v500 {
+  position:absolute; z-index:3; right:5px; bottom:5px; padding:4px 7px; border-radius:999px;
+  background:#F59E0B; color:#fff; font-size:8px; line-height:1.1; font-weight:800;
+  box-shadow:0 1px 4px rgba(0,0,0,.22); pointer-events:none;
+}
+.experience-photo-used-v500 {
+  position:absolute; z-index:3; left:5px; top:5px; padding:3px 6px; border-radius:999px;
+  background:rgba(17,24,39,.72); color:#fff; font-size:7.5px; line-height:1.1; font-weight:800;
+  box-shadow:0 1px 4px rgba(0,0,0,.22); pointer-events:none;
+}
+.experience-photo-meta-v500 {
+  margin:4px 2px 1px; font-size:8px; line-height:1.2; font-weight:700; opacity:.68;
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+}
+.experience-photo-empty-v500 { grid-column:1/-1; padding:16px 8px; text-align:center; font-size:12px; opacity:.68; }
+@media (max-width:640px) {
+  .experience-photo-picker-grid-v500 { gap:6px; }
+  .experience-photo-card-v500 { padding:3px; border-radius:11px; }
+  .experience-photo-image-wrap-v500 { border-radius:7px; }
+  .experience-photo-meta-v500 { font-size:7.5px; }
+}
+"""
+
+_EXPERIENCE_PHOTO_PICKER_JS_V500 = r"""
+export default function(component) {
+  const { parentElement, data, setTriggerValue } = component;
+  const grid = parentElement.querySelector('#experience-photo-picker-grid-v500');
+  if (!grid) return;
+  grid.replaceChildren();
+  const photos = Array.isArray(data?.photos) ? data.photos : [];
+  const selected = new Set((Array.isArray(data?.selected_ids) ? data.selected_ids : []).map(v => String(v || '')).filter(Boolean));
+  if (!photos.length) {
+    const empty=document.createElement('div'); empty.className='experience-photo-empty-v500'; empty.textContent='選べる写真がありません。'; grid.appendChild(empty); return;
+  }
+  const cards=[];
+  for (const photo of photos) {
+    const id=String(photo?.id||''); if(!id) continue;
+    const card=document.createElement('button'); card.type='button'; card.className='experience-photo-card-v500';
+    if(selected.has(id)) card.classList.add('selected');
+    card.setAttribute('aria-pressed', selected.has(id) ? 'true' : 'false');
+    card.setAttribute('aria-label', selected.has(id) ? '選択中の写真。タップすると選択解除' : 'この写真を選択');
+    const wrap=document.createElement('div'); wrap.className='experience-photo-image-wrap-v500';
+    const src=String(photo?.src||'');
+    if(src){ const img=document.createElement('img'); img.src=src; img.alt='体験の写真候補'; img.loading='lazy'; img.decoding='async'; wrap.appendChild(img); }
+    if(Boolean(photo?.used)) { const badge=document.createElement('div'); badge.className='experience-photo-used-v500'; badge.textContent='使用済み'; wrap.appendChild(badge); }
+    if(selected.has(id)) { const badge=document.createElement('div'); badge.className='experience-photo-picked-v500'; badge.textContent='選択中'; wrap.appendChild(badge); }
+    card.appendChild(wrap);
+    const meta=document.createElement('div'); meta.className='experience-photo-meta-v500'; meta.textContent=String(photo?.meta||''); card.appendChild(meta);
+    card.addEventListener('click',(event)=>{
+      event.preventDefault(); event.stopPropagation();
+      const next=!selected.has(id);
+      card.disabled=true;
+      if(next){selected.add(id);card.classList.add('selected');}else{selected.delete(id);card.classList.remove('selected');}
+      card.setAttribute('aria-pressed',next?'true':'false');
+      // The user asked for the other candidates to close immediately after one choice.
+      for(const other of cards){ if(other!==card) other.hidden=true; }
+      setTriggerValue('photo_select',{photo_id:id,selected:next,token:`${Date.now()}_${Math.random().toString(36).slice(2)}`});
+    });
+    cards.push(card); grid.appendChild(card);
+  }
+}
+"""
+
+_experience_photo_picker_component_v500 = None
+_experience_photo_picker_component_initialized_v500 = False
+
+def _get_experience_photo_picker_component_v500():
+    global _experience_photo_picker_component_v500, _experience_photo_picker_component_initialized_v500
+    if _experience_photo_picker_component_initialized_v500:
+        return _experience_photo_picker_component_v500
+    _experience_photo_picker_component_initialized_v500 = True
+    try:
+        _experience_photo_picker_component_v500 = st.components.v2.component(
+            "tokyo_burari_experience_photo_picker_v500",
+            html=_EXPERIENCE_PHOTO_PICKER_HTML_V500,
+            css=_EXPERIENCE_PHOTO_PICKER_CSS_V500,
+            js=_perf_instrument_js_v466(_EXPERIENCE_PHOTO_PICKER_JS_V500),
+        )
+    except Exception:
+        _experience_photo_picker_component_v500 = None
+    return _experience_photo_picker_component_v500
+
 def _experience_photo_is_obvious_screenshot_v499(photo):
     """Hide device screenshots from the manual experience-photo picker when metadata makes that explicit."""
     photo = photo if isinstance(photo, dict) else {}
@@ -32759,7 +32867,7 @@ def _toggle_experience_photo_v499(photo_id):
     st.session_state[key] = selected
 
 
-def page_experience_v499():
+def page_experience_v500():
     page_top("📝 体験を残す", "体験の感想と、選んだ写真から1つの体験カードを作ります。")
     _app_css_v473(
         """
@@ -32821,9 +32929,11 @@ def page_experience_v499():
                 "📷 体験の写真",
                 type="secondary",
                 use_container_width=True,
-                key="experience_open_manual_photos_v499",
+                key="experience_open_manual_photos_v500",
             ):
-                st.session_state["_experience_manual_picker_open_v499"] = True
+                st.session_state["_experience_manual_picker_open_v499"] = not bool(
+                    st.session_state.get("_experience_manual_picker_open_v499")
+                )
             photo_status = f"✓ {len(selected_ids)}枚 選択済み" if selected_ids else "押して写真を選ぶ"
             st.markdown(
                 f'<div class="experience-status-v499">{html.escape(photo_status)}</div>',
@@ -32920,43 +33030,59 @@ def page_experience_v499():
 
     if picker_open:
         st.markdown("#### 写真を選ぶ")
-        st.caption("使う写真を手で選んでください。複数枚選んでも、作成される体験カードは1つです。")
+        st.caption("写真をタップして選びます。3枚ずつ表示し、選ぶと候補一覧は閉じます。複数枚使う場合は「体験の写真」をもう一度押して追加します。")
         if recent_photos:
             paths = [str(photo.get("storage_path") or "") for photo in recent_photos[:24]]
             try:
                 manual_signed = signed_photo_url_map(paths, expires_in=1800)
             except Exception:
                 manual_signed = {}
-            for start in range(0, min(24, len(recent_photos)), 3):
-                cols = st.columns(3, gap="small")
-                for offset, col in enumerate(cols):
-                    pos = start + offset
-                    if pos >= min(24, len(recent_photos)):
-                        continue
-                    photo = recent_photos[pos]
-                    photo_id = str(photo.get("id") or "")
-                    with col:
-                        url = photo_display_url(photo, signed_map=manual_signed, max_px=300, quality=74)
-                        if url:
-                            st.image(url, use_container_width=True)
-                        used_label = "・使用済み" if photo_id in used_ids else ""
-                        st.caption(f"{_experience_captured_label_v497(photo.get('captured_at'))}{used_label}")
-                        is_selected = photo_id in selected_ids
-                        st.button(
-                            "✓ 選択中" if is_selected else "選ぶ",
-                            type="primary" if is_selected else "secondary",
-                            use_container_width=True,
-                            key=f"experience_pick_photo_v499_{photo_id}",
-                            on_click=_toggle_experience_photo_v499,
-                            args=(photo_id,),
-                        )
-            if st.button(
-                "写真選択を閉じる",
-                use_container_width=True,
-                key="experience_close_manual_photos_v499",
-            ):
-                st.session_state["_experience_manual_picker_open_v499"] = False
-                st.rerun(scope="app")
+            picker_rows = []
+            for photo in recent_photos[:24]:
+                photo_id = str(photo.get("id") or "")
+                if not photo_id:
+                    continue
+                url = photo_display_url(photo, signed_map=manual_signed, max_px=320, quality=76)
+                if not url:
+                    continue
+                picker_rows.append({
+                    "id": photo_id,
+                    "src": url,
+                    "meta": _experience_captured_label_v497(photo.get("captured_at")),
+                    "used": photo_id in used_ids,
+                })
+            component = _get_experience_photo_picker_component_v500()
+            if component is not None and picker_rows:
+                result = component(
+                    data={"photos": picker_rows, "selected_ids": selected_ids},
+                    key=f"experience_photo_picker_v500_{int(st.session_state.get('_experience_draft_serial_v497') or 1)}",
+                    on_photo_select_change=lambda: None,
+                )
+                payload = getattr(result, "photo_select", None) if result is not None else None
+                if isinstance(payload, dict):
+                    token = str(payload.get("token") or "")
+                    last_token = str(st.session_state.get("_experience_photo_picker_last_token_v500") or "")
+                    photo_id = str(payload.get("photo_id") or "")
+                    if token and token != last_token and photo_id in {row["id"] for row in picker_rows}:
+                        current = [str(x) for x in st.session_state.get(selected_key, []) if str(x)]
+                        want_selected = bool(payload.get("selected"))
+                        if want_selected and photo_id not in current:
+                            if len(current) < EXPERIENCE_MANUAL_PHOTO_MAX_V497:
+                                current.append(photo_id)
+                            else:
+                                st.session_state["_experience_photo_warning_v497"] = (
+                                    f"写真は最大{EXPERIENCE_MANUAL_PHOTO_MAX_V497}枚まで選べます。"
+                                )
+                        elif (not want_selected) and photo_id in current:
+                            current = [x for x in current if x != photo_id]
+                        st.session_state[selected_key] = current
+                        st.session_state["_experience_photo_picker_last_token_v500"] = token
+                        st.session_state["_experience_manual_picker_open_v499"] = False
+                        st.rerun(scope="app")
+            elif picker_rows:
+                st.info("写真選択UIを読み込めませんでした。画面を開き直してください。")
+            else:
+                st.info("選べる写真がありません。先に写真を撮ってください。")
         else:
             st.info("選べる写真がありません。先に写真を撮ってください。")
 
@@ -49390,7 +49516,7 @@ with st.container(key="app_page_root_v280"):
     elif page == "field_notes":
         _perf_call_v457("page:field_notes", page_field_notes, force=True)
     elif page == "experience":
-        _perf_call_v457("page:experience", page_experience_v499, force=True)
+        _perf_call_v457("page:experience", page_experience_v500, force=True)
     elif page == "settings":
         _perf_call_v457("page:settings", page_settings, force=True)
     elif page == "settings_moments":
