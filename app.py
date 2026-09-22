@@ -43,7 +43,8 @@ def _app_css_v473(markup, **_ignored):
 # Review menu-only update: 2026-09-19 JST
 GENERATED_UPDATE_JST = "2026-09-19T14:54:38+09:00"
 
-APP_BUILD = "v496"
+APP_BUILD = "v497"
+# v497: replace the Home quick-note entry with a low-operation Experience Card flow. Parents open one screen, record a short experience impression, review AI-auto-picked recent unused photos (with optional manual reselection), then create a persisted card whose comparison category comes from a fixed human-scale taxonomy. Used photos are excluded from later auto-picks.
 # v496: map-only GPS anti-spaghetti cleanup. Preserve every stored GPS row and existing distance/station calculations, but render a stricter high-confidence line: reject large/low-quality station-area jumps, remove rapid U-turn spikes, and collapse short dense drift loops so urban-canyon GPS cannot paint radial lines through buildings.
 # v494: drain pending Android GPS on Burari Project in 500-point acknowledged batches; rerun immediately after each successful save so the next batch can be acknowledged and recovered without user taps.
 # v493: request native GPS diagnostics on Settings as well as Burari Project, using a per-page throttle key so the log page can actually receive Android status without forcing a GPS cloud flush.
@@ -1115,6 +1116,7 @@ MONTHLY_TABLE = "burari_monthly_reviews"
 MUSIC_LIBRARY_REVIEW_DATE = "1900-01-01"
 VIDEO_MOMENT_SETTINGS_REVIEW_DATE = "1900-01-02"
 FIELD_NOTE_REVIEW_DATE = "1900-01-03"
+EXPERIENCE_CARD_REVIEW_DATE = "1900-01-04"
 FAMILY_TABLE = "burari_families"
 MEMBER_TABLE = "burari_members"
 
@@ -7293,7 +7295,7 @@ _PERF_BROWSER_JS_V466 = 'function installBurariPerf466(host, page, run, serverSe
 _HISTORY_JS = _PERF_BROWSER_JS_V466 + r"""
 export default function(component) {
   const { data, setTriggerValue } = component;
-  const validPages = new Set(['home', 'camera', 'videos', 'moments', 'diary', 'photos', 'review', 'review_map', 'review_project', 'review_monthly', 'review_tag', 'review_random', 'review_history', 'nearby', 'discovery_results', 'evening_review', 'toilets', 'field_notes', 'settings', 'settings_moments', 'settings_moments_definition', 'settings_location', 'settings_account', 'settings_media_import']);
+  const validPages = new Set(['home', 'camera', 'videos', 'moments', 'diary', 'photos', 'review', 'review_map', 'review_project', 'review_monthly', 'review_tag', 'review_random', 'review_history', 'nearby', 'discovery_results', 'evening_review', 'toilets', 'field_notes', 'experience', 'settings', 'settings_moments', 'settings_moments_definition', 'settings_location', 'settings_account', 'settings_media_import']);
   const marker = '__tokyo_burari_page__';
   const guardMarker = '__tokyo_burari_first_level_guard__';
   const requestedPage = validPages.has(data?.page) ? data.page : 'home';
@@ -21853,6 +21855,448 @@ def save_music_to_library(playback):
     return item
 
 
+
+# ============================================================
+# Experience cards (v497)
+# ============================================================
+# Comparison categories are intentionally fixed and fairly narrow. The AI may choose
+# from this list but may not invent a new comparison bucket. Ambiguous experiences are
+# kept as comparison-excluded rather than forcing, for example, taiyaki and pudding
+# into one broad sweets category.
+EXPERIENCE_SNACK_COMPARE_CATEGORIES_V497 = (
+    "たい焼き", "プリン", "団子", "ソフトクリーム", "アイスクリーム", "ケーキ",
+    "ドーナツ", "クレープ", "パフェ", "シュークリーム", "カステラ", "どら焼き",
+    "大福", "まんじゅう", "羊羹", "せんべい", "クッキー", "チョコレート",
+    "ゼリー", "かき氷", "パン",
+)
+EXPERIENCE_TOURISM_COMPARE_CATEGORIES_V497 = (
+    "公園", "神社", "寺", "博物館", "科学館", "水族館", "動物園", "展望スポット",
+    "商店街", "市場", "鉄道スポット", "水辺", "庭園", "城・史跡", "遊園地", "体験施設",
+)
+EXPERIENCE_COMPARE_EXCLUDED_V497 = "比較対象外"
+EXPERIENCE_COMPARE_CATEGORIES_V497 = (
+    *EXPERIENCE_SNACK_COMPARE_CATEGORIES_V497,
+    *EXPERIENCE_TOURISM_COMPARE_CATEGORIES_V497,
+    EXPERIENCE_COMPARE_EXCLUDED_V497,
+)
+EXPERIENCE_AUTO_CANDIDATE_LIMIT_V497 = 8
+EXPERIENCE_RECENT_PHOTO_LIMIT_V497 = 24
+EXPERIENCE_AUTO_PHOTO_MAX_V497 = 3
+EXPERIENCE_MANUAL_PHOTO_MAX_V497 = 4
+
+
+def _experience_state_session_key_v497():
+    return f"_experience_card_state_v497_{current_family_key()}_{current_member_key()}"
+
+
+def _normalize_experience_card_v497(raw):
+    if not isinstance(raw, dict):
+        return None
+    card_id = str(raw.get("id") or "").strip()
+    if not card_id:
+        return None
+    experience_type = str(raw.get("experience_type") or "その他").strip()
+    if experience_type not in {"おやつ", "観光", "その他"}:
+        experience_type = "その他"
+    compare_category = str(raw.get("compare_category") or EXPERIENCE_COMPARE_EXCLUDED_V497).strip()
+    if compare_category not in EXPERIENCE_COMPARE_CATEGORIES_V497:
+        compare_category = EXPERIENCE_COMPARE_EXCLUDED_V497
+    photo_ids = []
+    for value in raw.get("photo_ids") or []:
+        value = str(value or "").strip()
+        if value and value not in photo_ids:
+            photo_ids.append(value[:100])
+        if len(photo_ids) >= EXPERIENCE_MANUAL_PHOTO_MAX_V497:
+            break
+    photo_paths = []
+    for value in raw.get("photo_storage_paths") or []:
+        value = str(value or "").strip()
+        if value and value not in photo_paths:
+            photo_paths.append(value[:500])
+        if len(photo_paths) >= EXPERIENCE_MANUAL_PHOTO_MAX_V497:
+            break
+    item = {
+        "id": card_id[:80],
+        "created_at": str(raw.get("created_at") or "").strip(),
+        "trip_date": str(raw.get("trip_date") or "").strip()[:10],
+        "trip_id": str(raw.get("trip_id") or "").strip()[:100],
+        "experience_type": experience_type,
+        "compare_category": compare_category,
+        "place_name": str(raw.get("place_name") or "不明").strip()[:120] or "不明",
+        "item_name": str(raw.get("item_name") or "不明").strip()[:120] or "不明",
+        "child_comment": str(raw.get("child_comment") or "").strip()[:700],
+        "raw_transcript": str(raw.get("raw_transcript") or "").strip()[:1200],
+        "audio_storage_path": str(raw.get("audio_storage_path") or "").strip()[:500],
+        "photo_ids": photo_ids,
+        "photo_storage_paths": photo_paths,
+    }
+    if not item["photo_ids"] and not item["photo_storage_paths"]:
+        return None
+    return item
+
+
+def get_experience_card_state_v497(force=False):
+    cache_key = _experience_state_session_key_v497()
+    if not force and isinstance(st.session_state.get(cache_key), dict):
+        return dict(st.session_state.get(cache_key) or {})
+    result = (
+        supabase_client()
+        .table(MONTHLY_TABLE)
+        .select("id,review_json,updated_at")
+        .eq("family_key", current_family_key())
+        .eq("member_key", current_member_key())
+        .eq("review_month", EXPERIENCE_CARD_REVIEW_DATE)
+        .limit(1)
+        .execute()
+    )
+    row = (result.data or [None])[0] or {}
+    payload = row.get("review_json") or {}
+    raw_cards = payload.get("cards") if isinstance(payload, dict) else []
+    cards, seen = [], set()
+    for raw in raw_cards if isinstance(raw_cards, list) else []:
+        card = _normalize_experience_card_v497(raw)
+        if not card or card["id"] in seen:
+            continue
+        seen.add(card["id"])
+        cards.append(card)
+    state = {"version": 1, "cards": cards[:500]}
+    st.session_state[cache_key] = state
+    return dict(state)
+
+
+def _write_experience_card_state_v497(state):
+    cards, seen = [], set()
+    for raw in list((state or {}).get("cards") or [])[:500]:
+        card = _normalize_experience_card_v497(raw)
+        if not card or card["id"] in seen:
+            continue
+        seen.add(card["id"])
+        cards.append(card)
+    now_value = now_jst().isoformat()
+    review_json = {
+        "_record_type": "experience_cards_v497",
+        "version": 1,
+        "cards": cards,
+        "updated_at": now_value,
+    }
+    client = supabase_client()
+    existing = (
+        client.table(MONTHLY_TABLE)
+        .select("id")
+        .eq("family_key", current_family_key())
+        .eq("member_key", current_member_key())
+        .eq("review_month", EXPERIENCE_CARD_REVIEW_DATE)
+        .limit(1)
+        .execute()
+    )
+    row = (existing.data or [None])[0]
+    payload = {
+        "family_key": current_family_key(),
+        "member_key": current_member_key(),
+        "review_month": EXPERIENCE_CARD_REVIEW_DATE,
+        "review_json": review_json,
+        "updated_at": now_value,
+    }
+    if row:
+        (
+            client.table(MONTHLY_TABLE)
+            .update(payload)
+            .eq("id", row["id"])
+            .eq("family_key", current_family_key())
+            .eq("member_key", current_member_key())
+            .execute()
+        )
+    else:
+        payload["created_at"] = now_value
+        client.table(MONTHLY_TABLE).insert(payload).execute()
+    normalized = {"version": 1, "cards": cards}
+    st.session_state[_experience_state_session_key_v497()] = normalized
+    return normalized
+
+
+def _experience_used_photo_ids_v497(cards=None):
+    if cards is None:
+        cards = list(get_experience_card_state_v497().get("cards") or [])
+    used = set()
+    for card in cards or []:
+        for photo_id in (card or {}).get("photo_ids") or []:
+            if str(photo_id or "").strip():
+                used.add(str(photo_id))
+    return used
+
+
+def _list_recent_experience_photos_v497(limit=EXPERIENCE_RECENT_PHOTO_LIMIT_V497):
+    try:
+        limit = max(1, min(60, int(limit)))
+    except Exception:
+        limit = EXPERIENCE_RECENT_PHOTO_LIMIT_V497
+    result = (
+        supabase_client()
+        .table(PHOTO_TABLE)
+        .select("id,trip_id,storage_path,captured_at,reflection_json,signals_json")
+        .eq("family_key", current_family_key())
+        .eq("member_key", current_member_key())
+        .order("captured_at", desc=True)
+        .limit(limit)
+        .execute()
+    )
+    return [
+        row for row in diary_photos_only(result.data or [])
+        if str((row or {}).get("id") or "").strip() and str((row or {}).get("storage_path") or "").strip()
+    ]
+
+
+def _experience_auto_pick_schema_v497(slots):
+    return {
+        "type": "object",
+        "properties": {
+            "selected_slots": {
+                "type": "array",
+                "items": {"type": "string", "enum": list(slots)},
+                "minItems": 1,
+                "maxItems": EXPERIENCE_AUTO_PHOTO_MAX_V497,
+            }
+        },
+        "required": ["selected_slots"],
+        "additionalProperties": False,
+    }
+
+
+def _auto_pick_experience_photo_ids_v497(candidates):
+    candidates = [x for x in candidates or [] if isinstance(x, dict)][:EXPERIENCE_AUTO_CANDIDATE_LIMIT_V497]
+    if not candidates:
+        return []
+    loaded, image_items = [], []
+    for index, photo in enumerate(candidates, start=1):
+        slot = f"P{index}"
+        try:
+            raw = download_photo(str(photo.get("storage_path") or ""))
+            if not raw:
+                continue
+            vision_bytes = _vision_ready_photo(raw, max_side=900, quality=80)
+            captured = str(photo.get("captured_at") or "")[:19]
+            loaded.append((slot, photo))
+            image_items.append((f"【{slot}】撮影時刻 {captured}", vision_bytes))
+        except Exception:
+            continue
+    if not loaded:
+        return [str(x.get("id") or "") for x in candidates[:2] if str(x.get("id") or "")]
+    slots = [slot for slot, _ in loaded]
+    prompt = """
+直近に撮影された写真から、親子が今から1枚の「体験カード」にまとめるのに最も自然な写真を1〜3枚選んでください。
+写真は新しい順の候補です。同じ一つの体験に属する組み合わせを優先してください。
+
+優先例:
+- 店の外観・看板 + 食べ物 + 子どもがその食べ物を食べている様子
+- 観光スポットの外観・特徴 + 子どもがその場所で体験している様子
+
+ルール:
+- 無関係な別の体験を混ぜない。
+- 同じような写真が複数ある場合は代表的なものだけにする。
+- 食べ物・店・観光・体験が分からない場合でも、最もまとまりのある直近の写真を選ぶ。
+- 写真の内容を説明せず、selected_slots だけ返す。
+""".strip()
+    try:
+        response = ask_json_with_images(
+            prompt,
+            image_items,
+            "burari_experience_photo_pick_v497",
+            _experience_auto_pick_schema_v497(slots),
+            max_output_tokens=220,
+        )
+        selected_slots = [str(x) for x in (response or {}).get("selected_slots", [])]
+        mapping = {slot: photo for slot, photo in loaded}
+        selected = []
+        for slot in selected_slots:
+            photo = mapping.get(slot)
+            photo_id = str((photo or {}).get("id") or "")
+            if photo_id and photo_id not in selected:
+                selected.append(photo_id)
+            if len(selected) >= EXPERIENCE_AUTO_PHOTO_MAX_V497:
+                break
+        if selected:
+            return selected
+    except Exception:
+        pass
+    # A safe fallback keeps the feature usable even if vision is temporarily unavailable.
+    return [str(photo.get("id") or "") for _, photo in loaded[:2] if str(photo.get("id") or "")]
+
+
+def _experience_card_schema_v497():
+    return {
+        "type": "object",
+        "properties": {
+            "experience_type": {"type": "string", "enum": ["おやつ", "観光", "その他"]},
+            "compare_category": {"type": "string", "enum": list(EXPERIENCE_COMPARE_CATEGORIES_V497)},
+            "place_name": {"type": "string"},
+            "item_name": {"type": "string"},
+            "child_comment": {"type": "string"},
+        },
+        "required": ["experience_type", "compare_category", "place_name", "item_name", "child_comment"],
+        "additionalProperties": False,
+    }
+
+
+def _experience_card_prompt_v497(raw_transcript):
+    snack = "、".join(EXPERIENCE_SNACK_COMPARE_CATEGORIES_V497)
+    tourism = "、".join(EXPERIENCE_TOURISM_COMPARE_CATEGORIES_V497)
+    return f"""
+親子の「体験カード」を作ります。入力は、親が選んだ体験写真と、体験中または直後に録音した発話の文字起こしです。
+写真と文字起こしから直接確認できる範囲だけを使ってください。分からないことを補わないでください。
+
+文字起こし:
+{str(raw_transcript or '').strip()[:1200]}
+
+比較カテゴリーは人が「同じ種類として比べる」粒度に固定します。次の選択肢以外を作ってはいけません。
+おやつ: {snack}
+観光: {tourism}
+判断できない、またはこの粒度で同種比較に向かない場合: {EXPERIENCE_COMPARE_EXCLUDED_V497}
+
+重要:
+- たい焼きとプリンのような別種のおやつを同じ比較カテゴリーにしない。
+- たい焼きの餡違いなどは「たい焼き」でよい。
+- 観光も、公園と神社のような別種を同じ比較カテゴリーにしない。
+- 店名・施設名は写真の看板等から明確に読める場合だけ place_name に書く。不明なら「不明」。
+- item_name は正式な商品名・体験名が明確な場合だけ書く。不明なら「不明」。
+- child_comment は、文字起こしの中から子どもの感想に当たる部分だけをできるだけ元の言葉のまま短く抜き出す。親の質問や相づちは除く。
+- 子どもの発言を特定できない場合は、文字起こしを勝手に要約せず、聞き取れた短い部分だけを書く。感情や評価を創作しない。
+""".strip()
+
+
+def _experience_audio_extension_v497(file_name):
+    suffix = Path(str(file_name or "").lower()).suffix.lower().lstrip(".")
+    return suffix if suffix in {"wav", "webm", "m4a", "mp4", "ogg", "mp3"} else "webm"
+
+
+def _upload_experience_audio_v497(raw_bytes, file_name, card_id):
+    raw_bytes = bytes(raw_bytes or b"")
+    if not raw_bytes:
+        return ""
+    extension = _experience_audio_extension_v497(file_name)
+    mime_type = {
+        "wav": "audio/wav", "m4a": "audio/mp4", "mp4": "audio/mp4",
+        "ogg": "audio/ogg", "mp3": "audio/mpeg", "webm": "audio/webm",
+    }.get(extension, "audio/webm")
+    path = (
+        f"{current_family_key()}/{current_member_key()}/"
+        f"_experience_cards/v1/{str(card_id)}.{extension}"
+    )
+    supabase_client().storage.from_(PHOTO_BUCKET).upload(
+        path=path,
+        file=raw_bytes,
+        file_options={"content-type": mime_type, "cache-control": "3600", "upsert": "true"},
+    )
+    return path
+
+
+def create_experience_card_v497(photos, raw_transcript, audio_bytes=b"", audio_name="experience.webm"):
+    photos = [x for x in photos or [] if isinstance(x, dict)][:EXPERIENCE_MANUAL_PHOTO_MAX_V497]
+    raw_transcript = str(raw_transcript or "").strip()
+    if not photos:
+        raise ValueError("体験の写真を1枚以上選んでください。")
+    if not raw_transcript:
+        raise ValueError("体験の感想を録音してください。")
+
+    image_items = []
+    valid_photos = []
+    for index, photo in enumerate(photos, start=1):
+        path = str(photo.get("storage_path") or "").strip()
+        if not path:
+            continue
+        raw = download_photo(path)
+        if not raw:
+            continue
+        valid_photos.append(photo)
+        image_items.append((f"【体験写真{index}】", _vision_ready_photo(raw, max_side=1100, quality=82)))
+    if not image_items:
+        raise ValueError("選択した写真を読み込めませんでした。")
+
+    result = ask_json_with_images(
+        _experience_card_prompt_v497(raw_transcript),
+        image_items,
+        "burari_experience_card_v497",
+        _experience_card_schema_v497(),
+        max_output_tokens=520,
+    )
+    experience_type = str((result or {}).get("experience_type") or "その他").strip()
+    if experience_type not in {"おやつ", "観光", "その他"}:
+        experience_type = "その他"
+    category = str((result or {}).get("compare_category") or EXPERIENCE_COMPARE_EXCLUDED_V497).strip()
+    if category not in EXPERIENCE_COMPARE_CATEGORIES_V497:
+        category = EXPERIENCE_COMPARE_EXCLUDED_V497
+    # Protect cross-domain mistakes even if a model response is syntactically valid.
+    if experience_type == "おやつ" and category in EXPERIENCE_TOURISM_COMPARE_CATEGORIES_V497:
+        category = EXPERIENCE_COMPARE_EXCLUDED_V497
+    if experience_type == "観光" and category in EXPERIENCE_SNACK_COMPARE_CATEGORIES_V497:
+        category = EXPERIENCE_COMPARE_EXCLUDED_V497
+    if experience_type == "その他":
+        category = EXPERIENCE_COMPARE_EXCLUDED_V497
+
+    card_id = uuid.uuid4().hex
+    audio_path = _upload_experience_audio_v497(audio_bytes, audio_name, card_id) if audio_bytes else ""
+    first = valid_photos[0]
+    captured = str(first.get("captured_at") or "")
+    trip_date = captured[:10] if re.match(r"^\d{4}-\d{2}-\d{2}", captured) else today_iso()
+    card = {
+        "id": card_id,
+        "created_at": now_jst().isoformat(),
+        "trip_date": trip_date,
+        "trip_id": str(first.get("trip_id") or ""),
+        "experience_type": experience_type,
+        "compare_category": category,
+        "place_name": str((result or {}).get("place_name") or "不明").strip()[:120] or "不明",
+        "item_name": str((result or {}).get("item_name") or "不明").strip()[:120] or "不明",
+        "child_comment": str((result or {}).get("child_comment") or "").strip()[:700] or raw_transcript[:700],
+        "raw_transcript": raw_transcript[:1200],
+        "audio_storage_path": audio_path,
+        "photo_ids": [str(photo.get("id") or "") for photo in valid_photos if str(photo.get("id") or "")],
+        "photo_storage_paths": [str(photo.get("storage_path") or "") for photo in valid_photos if str(photo.get("storage_path") or "")],
+    }
+    state = get_experience_card_state_v497(force=True)
+    state["cards"] = [card] + list(state.get("cards") or [])
+    _write_experience_card_state_v497(state)
+    return card
+
+
+def _reset_experience_draft_v497():
+    for key in (
+        "_experience_show_audio_v497", "_experience_show_photos_v497",
+        "_experience_selected_photo_ids_v497", "_experience_auto_pick_done_v497",
+        "_experience_audio_bytes_v497", "_experience_audio_name_v497",
+        "_experience_audio_digest_v497", "_experience_transcript_v497",
+        "_experience_photo_warning_v497",
+    ):
+        st.session_state.pop(key, None)
+    st.session_state["_experience_draft_serial_v497"] = int(st.session_state.get("_experience_draft_serial_v497") or 0) + 1
+
+
+def _toggle_experience_photo_v497(photo_id):
+    photo_id = str(photo_id or "").strip()
+    if not photo_id:
+        return
+    selected = [str(x) for x in st.session_state.get("_experience_selected_photo_ids_v497", []) if str(x)]
+    if photo_id in selected:
+        selected = [x for x in selected if x != photo_id]
+    else:
+        if len(selected) >= EXPERIENCE_MANUAL_PHOTO_MAX_V497:
+            st.session_state["_experience_photo_warning_v497"] = f"写真は最大{EXPERIENCE_MANUAL_PHOTO_MAX_V497}枚まで選べます。"
+            return
+        selected.append(photo_id)
+    st.session_state["_experience_selected_photo_ids_v497"] = selected
+    st.session_state["_experience_auto_pick_done_v497"] = True
+
+
+def _experience_captured_label_v497(value):
+    value = str(value or "")
+    try:
+        dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        if dt.tzinfo is not None:
+            dt = dt.astimezone(ZoneInfo(APP_TIMEZONE))
+        return dt.strftime("%m/%d %H:%M")
+    except Exception:
+        return value[:16].replace("T", " ")
+
+
 FIELD_NOTE_KINDS = {
     "curiosity": {
         "emoji": "💡",
@@ -28338,7 +28782,7 @@ def page_evening_review():
                     )
 
 
-VALID_APP_PAGES = {"home", "camera", "videos", "moments", "diary", "photos", "review", "review_map", "review_project", "review_monthly", "review_tag", "review_random", "review_history", "nearby", "discovery_results", "evening_review", "toilets", "field_notes", "settings", "settings_moments", "settings_moments_definition", "settings_location", "settings_account", "settings_media_import"}
+VALID_APP_PAGES = {"home", "camera", "videos", "moments", "diary", "photos", "review", "review_map", "review_project", "review_monthly", "review_tag", "review_random", "review_history", "nearby", "discovery_results", "evening_review", "toilets", "field_notes", "experience", "settings", "settings_moments", "settings_moments_definition", "settings_location", "settings_account", "settings_media_import"}
 
 
 def _current_ui_refresh_epoch():
@@ -28562,6 +29006,7 @@ def navigation_parent_node(node=None):
         "evening_review": "home",
         "toilets": "home",
         "field_notes": "home",
+        "experience": "home",
         "settings": "home",
         "settings_moments": "settings",
         "settings_moments_definition": "settings_moments",
@@ -28678,6 +29123,12 @@ def _select_field_note_kind_callback(kind):
         st.session_state["field_note_kind_v390"] = kind
         st.session_state["field_note_focus_next_v390"] = kind == "next"
         st.session_state.pop("field_note_text_v390", None)
+
+
+def _open_experience_callback_v497():
+    """Open the compact experience-card draft without discarding an unfinished draft."""
+    st.session_state.setdefault("_experience_draft_serial_v497", 1)
+    _set_page_state("experience", history_mode="push")
 
 
 def _navigate_to_parent_state_only():
@@ -31474,11 +31925,10 @@ def page_home():
             note_col, media_left, media_right = st.columns(3, gap="small")
             with note_col:
                 st.button(
-                    "💭 ひとこと",
-                    key="home_field_note_open_v390",
+                    "📝 体験を残す",
+                    key="home_experience_open_v497",
                     use_container_width=True,
-                    on_click=_open_field_note_callback,
-                    args=("curiosity", False),
+                    on_click=_open_experience_callback_v497,
                 )
             with media_left:
                 st.button(
@@ -32253,6 +32703,272 @@ def _get_toilet_batch_search_component_v320():
     except Exception:
         _toilet_batch_search_component_v320 = None
     return _toilet_batch_search_component_v320
+
+
+
+def page_experience_v497():
+    page_top("📝 体験を残す", "体験の感想と写真から、あとで比べられる体験カードを作ります。")
+    _app_css_v473(
+        """
+        <style>
+        .st-key-experience_input_pair_v497 [data-testid="stHorizontalBlock"]{gap:.55rem!important;align-items:stretch!important;}
+        .st-key-experience_input_pair_v497 [data-testid="stColumn"]{min-width:0!important;}
+        .st-key-experience_input_pair_v497 div.stButton>button{min-height:58px!important;font-weight:800!important;white-space:normal!important;}
+        .st-key-experience_create_v497 div.stButton>button{min-height:54px!important;font-size:1.02rem!important;font-weight:850!important;}
+        .experience-status-v497{font-size:.76rem;opacity:.72;margin:.20rem 0 .30rem;line-height:1.35;}
+        .experience-card-v497{border:1px solid rgba(128,128,128,.16);border-radius:15px;padding:.70rem .76rem;margin:.55rem 0;background:rgba(128,128,128,.035);}
+        .experience-card-title-v497{font-size:1.02rem;font-weight:850;line-height:1.32;}
+        .experience-card-meta-v497{font-size:.72rem;opacity:.66;margin-top:.18rem;line-height:1.35;}
+        .experience-card-comment-v497{font-size:.90rem;font-weight:650;margin-top:.42rem;line-height:1.5;}
+        .experience-photo-label-v497{font-size:.67rem;opacity:.68;margin-top:.12rem;line-height:1.3;}
+        </style>
+        """
+    )
+
+    notice = st.session_state.pop("_experience_notice_v497", None)
+    if notice:
+        st.success(notice)
+
+    owner_token = f"{current_family_key()}::{current_member_key()}"
+    if st.session_state.get("_experience_draft_owner_v497") != owner_token:
+        _reset_experience_draft_v497()
+        st.session_state["_experience_draft_owner_v497"] = owner_token
+
+    try:
+        card_state = get_experience_card_state_v497()
+        cards = list(card_state.get("cards") or [])
+    except Exception as exc:
+        cards = []
+        st.warning("体験カードの保存状態を読み込めませんでした。")
+        with st.expander("保護者向け詳細"):
+            st.code(str(exc))
+
+    try:
+        recent_photos = _list_recent_experience_photos_v497()
+    except Exception as exc:
+        recent_photos = []
+        st.warning("最近の写真を読み込めませんでした。")
+        with st.expander("保護者向け詳細"):
+            st.code(str(exc))
+
+    recent_by_id = {str(photo.get("id") or ""): photo for photo in recent_photos if str(photo.get("id") or "")}
+    used_ids = _experience_used_photo_ids_v497(cards)
+
+    if not st.session_state.get("_experience_auto_pick_done_v497"):
+        auto_candidates = [photo for photo in recent_photos if str(photo.get("id") or "") not in used_ids]
+        if auto_candidates:
+            with st.spinner("体験の写真を選んでいます…"):
+                picked = _auto_pick_experience_photo_ids_v497(auto_candidates)
+            st.session_state["_experience_selected_photo_ids_v497"] = picked
+        else:
+            st.session_state["_experience_selected_photo_ids_v497"] = []
+        st.session_state["_experience_auto_pick_done_v497"] = True
+
+    selected_ids = [
+        str(x) for x in st.session_state.get("_experience_selected_photo_ids_v497", [])
+        if str(x) in recent_by_id
+    ][:EXPERIENCE_MANUAL_PHOTO_MAX_V497]
+    st.session_state["_experience_selected_photo_ids_v497"] = selected_ids
+    transcript = str(st.session_state.get("_experience_transcript_v497") or "").strip()
+
+    with st.container(key="experience_input_pair_v497"):
+        left, right = st.columns(2, gap="small")
+        with left:
+            if st.button(
+                "🎤 体験の感想",
+                type="secondary",
+                use_container_width=True,
+                key="experience_show_audio_button_v497",
+            ):
+                st.session_state["_experience_show_audio_v497"] = not bool(st.session_state.get("_experience_show_audio_v497"))
+            st.markdown(
+                f'<div class="experience-status-v497">{"✓ 録音済み" if transcript else "感想を短く録音"}</div>',
+                unsafe_allow_html=True,
+            )
+        with right:
+            if st.button(
+                "📷 体験の写真",
+                type="secondary",
+                use_container_width=True,
+                key="experience_show_photos_button_v497",
+            ):
+                st.session_state["_experience_show_photos_v497"] = not bool(st.session_state.get("_experience_show_photos_v497"))
+            photo_status = f"✓ {len(selected_ids)}枚 自動選択済み" if selected_ids else "最近の写真から自動選択"
+            st.markdown(f'<div class="experience-status-v497">{html.escape(photo_status)}</div>', unsafe_allow_html=True)
+
+    if st.session_state.get("_experience_show_audio_v497") or transcript:
+        serial = int(st.session_state.get("_experience_draft_serial_v497") or 1)
+        audio_file = far_field_audio_input(
+            "感想を話す",
+            key=f"experience_audio_input_v497_{serial}",
+        )
+        if audio_file is not None:
+            digest = audio_digest(audio_file)
+            if digest and digest != str(st.session_state.get("_experience_audio_digest_v497") or ""):
+                try:
+                    audio_file.seek(0)
+                    raw_audio = audio_file.read()
+                    audio_file.seek(0)
+                    with st.spinner("感想を聞き取っています…"):
+                        text_value = transcribe_audio(
+                            audio_file,
+                            context="東京ぶらり旅で体験した直後の感想です。主に5〜6歳の子どもの発話を、その言い回しを残して聞き取ってください。",
+                        )
+                    st.session_state["_experience_audio_bytes_v497"] = bytes(raw_audio)
+                    st.session_state["_experience_audio_name_v497"] = str(getattr(audio_file, "name", "experience.webm") or "experience.webm")
+                    st.session_state["_experience_audio_digest_v497"] = digest
+                    st.session_state["_experience_transcript_v497"] = str(text_value or "").strip()
+                    transcript = str(text_value or "").strip()
+                except Exception as exc:
+                    st.error("感想を聞き取れませんでした。もう一度録音してください。")
+                    with st.expander("保護者向け詳細"):
+                        st.code(str(exc))
+        transcript = str(st.session_state.get("_experience_transcript_v497") or "").strip()
+        if transcript:
+            st.markdown(f"**感想**　「{html.escape(transcript)}」", unsafe_allow_html=True)
+
+    # Always show the current automatic/manual photo choice so the normal path needs
+    # no extra confirmation tap. The photo button only opens the optional chooser.
+    selected_photos = [recent_by_id[photo_id] for photo_id in selected_ids if photo_id in recent_by_id]
+    if selected_photos:
+        paths = [str(photo.get("storage_path") or "") for photo in selected_photos]
+        try:
+            signed_map = signed_photo_url_map(paths, expires_in=1800)
+        except Exception:
+            signed_map = {}
+        preview_cols = st.columns(min(3, max(1, len(selected_photos))), gap="small")
+        for index, photo in enumerate(selected_photos):
+            with preview_cols[index % len(preview_cols)]:
+                url = photo_display_url(photo, signed_map=signed_map, max_px=360, quality=76)
+                if url:
+                    st.image(url, use_container_width=True)
+                st.markdown(
+                    f'<div class="experience-photo-label-v497">{html.escape(_experience_captured_label_v497(photo.get("captured_at")))}</div>',
+                    unsafe_allow_html=True,
+                )
+    elif recent_photos:
+        st.caption("体験カードに使う写真を選べませんでした。「体験の写真」から選択できます。")
+    else:
+        st.info("最近の写真がありません。先に写真を撮ってから体験カードを作成してください。")
+
+    warning = st.session_state.pop("_experience_photo_warning_v497", None)
+    if warning:
+        st.warning(warning)
+
+    if st.session_state.get("_experience_show_photos_v497"):
+        st.markdown("#### 写真を選び直す")
+        st.caption("自動選択が合っていれば変更不要です。使用済み写真も手動では再利用できます。")
+        if recent_photos:
+            paths = [str(photo.get("storage_path") or "") for photo in recent_photos[:18]]
+            try:
+                manual_signed = signed_photo_url_map(paths, expires_in=1800)
+            except Exception:
+                manual_signed = {}
+            for start in range(0, min(18, len(recent_photos)), 3):
+                cols = st.columns(3, gap="small")
+                for offset, col in enumerate(cols):
+                    pos = start + offset
+                    if pos >= min(18, len(recent_photos)):
+                        continue
+                    photo = recent_photos[pos]
+                    photo_id = str(photo.get("id") or "")
+                    with col:
+                        url = photo_display_url(photo, signed_map=manual_signed, max_px=300, quality=74)
+                        if url:
+                            st.image(url, use_container_width=True)
+                        used_label = "・使用済み" if photo_id in used_ids else ""
+                        st.caption(f"{_experience_captured_label_v497(photo.get('captured_at'))}{used_label}")
+                        is_selected = photo_id in selected_ids
+                        st.button(
+                            "✓ 選択中" if is_selected else "選ぶ",
+                            type="primary" if is_selected else "secondary",
+                            use_container_width=True,
+                            key=f"experience_pick_photo_v497_{photo_id}",
+                            on_click=_toggle_experience_photo_v497,
+                            args=(photo_id,),
+                        )
+        if st.button("自動選択に戻す", use_container_width=True, key="experience_reset_auto_pick_v497"):
+            st.session_state.pop("_experience_selected_photo_ids_v497", None)
+            st.session_state["_experience_auto_pick_done_v497"] = False
+            st.rerun(scope="app")
+
+    can_create = bool(transcript and selected_ids)
+    with st.container(key="experience_create_v497"):
+        create_clicked = st.button(
+            "体験カードを作る",
+            type="primary",
+            use_container_width=True,
+            disabled=not can_create,
+            key="experience_create_card_button_v497",
+        )
+    if not can_create:
+        missing = []
+        if not transcript:
+            missing.append("体験の感想")
+        if not selected_ids:
+            missing.append("体験の写真")
+        if missing:
+            st.caption("・".join(missing) + "を用意すると作成できます。")
+
+    if create_clicked:
+        photos_for_card = [recent_by_id[x] for x in selected_ids if x in recent_by_id]
+        try:
+            with st.spinner("体験カードを作っています…"):
+                card = create_experience_card_v497(
+                    photos_for_card,
+                    transcript,
+                    audio_bytes=st.session_state.get("_experience_audio_bytes_v497") or b"",
+                    audio_name=st.session_state.get("_experience_audio_name_v497") or "experience.webm",
+                )
+            category = str(card.get("compare_category") or "")
+            category_suffix = f"・{category}" if category and category != EXPERIENCE_COMPARE_EXCLUDED_V497 else ""
+            _reset_experience_draft_v497()
+            st.session_state["_experience_notice_v497"] = f"体験カードを保存しました{category_suffix}。"
+            st.rerun(scope="app")
+        except Exception as exc:
+            st.error("体験カードを作成できませんでした。")
+            with st.expander("保護者向け詳細"):
+                st.code(str(exc))
+
+    if cards:
+        st.divider()
+        st.markdown("#### これまでの体験カード")
+        card_paths = []
+        for card in cards[:8]:
+            paths = list(card.get("photo_storage_paths") or [])
+            if paths:
+                card_paths.append(paths[0])
+        try:
+            card_signed = signed_photo_url_map(card_paths, expires_in=1800) if card_paths else {}
+        except Exception:
+            card_signed = {}
+        for card in cards[:8]:
+            first_path = next(iter(card.get("photo_storage_paths") or []), "")
+            image_col, text_col = st.columns([.82, 2.18], gap="small")
+            with image_col:
+                if first_path:
+                    url = card_signed.get(first_path) or photo_display_url({"storage_path": first_path}, signed_map=card_signed, max_px=320, quality=74)
+                    if url:
+                        st.image(url, use_container_width=True)
+            with text_col:
+                category = str(card.get("compare_category") or EXPERIENCE_COMPARE_EXCLUDED_V497)
+                place = str(card.get("place_name") or "不明")
+                item_name = str(card.get("item_name") or "不明")
+                if str(card.get("experience_type") or "") == "おやつ":
+                    headline = f"{place}　{category if category != EXPERIENCE_COMPARE_EXCLUDED_V497 else 'おやつ'}"
+                else:
+                    headline = f"{place}　{category if category != EXPERIENCE_COMPARE_EXCLUDED_V497 else str(card.get('experience_type') or '体験')}"
+                item_line = f"商品名：{item_name}" if str(card.get("experience_type") or "") == "おやつ" else ""
+                st.markdown(
+                    f"""
+                    <div class="experience-card-v497">
+                      <div class="experience-card-title-v497">{html.escape(headline)}</div>
+                      <div class="experience-card-meta-v497">{html.escape(str(card.get('trip_date') or ''))}{('　' + html.escape(item_line)) if item_line else ''}</div>
+                      <div class="experience-card-comment-v497">「{html.escape(str(card.get('child_comment') or ''))}」</div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
 
 
 def page_field_notes():
@@ -48292,6 +49008,8 @@ with st.container(key="app_page_root_v280"):
         _perf_call_v457("page:toilets", page_toilets, force=True)
     elif page == "field_notes":
         _perf_call_v457("page:field_notes", page_field_notes, force=True)
+    elif page == "experience":
+        _perf_call_v457("page:experience", page_experience_v497, force=True)
     elif page == "settings":
         _perf_call_v457("page:settings", page_settings, force=True)
     elif page == "settings_moments":
@@ -48315,7 +49033,7 @@ with st.container(key="app_page_root_v280"):
         live_page = str(st.session_state.get("main_page") or "home")
         if (
             page == live_page
-            and page in {"camera", "videos", "moments", "diary", "photos", "review", "review_map", "review_project", "review_monthly", "review_tag", "review_random", "review_history", "nearby", "discovery_results", "evening_review", "toilets", "field_notes", "settings", "settings_moments", "settings_moments_definition", "settings_location", "settings_account", "settings_media_import"}
+            and page in {"camera", "videos", "moments", "diary", "photos", "review", "review_map", "review_project", "review_monthly", "review_tag", "review_random", "review_history", "nearby", "discovery_results", "evening_review", "toilets", "field_notes", "experience", "settings", "settings_moments", "settings_moments_definition", "settings_location", "settings_account", "settings_media_import"}
         ):
             _perf_call_v457("ui:bottom_navigation", render_global_bottom_navigation, page)
 
