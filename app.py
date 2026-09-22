@@ -43,7 +43,8 @@ def _app_css_v473(markup, **_ignored):
 # Review menu-only update: 2026-09-19 JST
 GENERATED_UPDATE_JST = "2026-09-19T14:54:38+09:00"
 
-APP_BUILD = "v492"
+APP_BUILD = "v493"
+# v493: request native GPS diagnostics on Settings as well as Burari Project, using a per-page throttle key so the log page can actually receive Android status without forcing a GPS cloud flush.
 # v491: add GPS bridge/service/sync diagnostics to the performance log and greatly expand bounded log retention (browser 2,000 operations; server 10,000 rows). Preserve v490 native GPS recovery behavior.
 # v490: restore Android native GPS bridge sync so background SQLite points are pulled into Supabase when the app is active; opening Burari Project force-flushes pending native points before rendering the updated green route.
 # v489: make replay photo voices reliable on Android/WebView: keep unknown-duration voices eligible, preload the selected clip, retry transient play failures, and never force-restart YouTube while a voice is playing; if the WebView pauses BGM for audio focus, resume BGM after the voice instead.
@@ -8529,7 +8530,8 @@ def render_performance_log_v457():
                     f"ブリッジトークン: {'あり' if gps_probe.get('bridge_token_present') is True else 'なし'}",
                     f"ネイティブGPSモード: {'有効' if gps_probe.get('native_mode') is True else '無効'}",
                     f"GPSコンポーネント: {'利用可' if gps_probe.get('component_available') is True else '利用不可/未確認'}",
-                    f"診断要求結果: {'応答あり' if gps_probe.get('diagnostic_received') is True else '応答なし'}",
+                    f"診断要求: {'実行' if gps_probe.get('diagnostic_requested') is True else '未実行'}",
+                    f"診断要求結果: {'応答あり' if gps_probe.get('diagnostic_received') is True else ('応答なし' if gps_probe.get('diagnostic_requested') is True else '未要求')}",
                     f"最終診断確認: {_gps_log_time_v491(gps_probe.get('checked_at_ms'))}",
                     f"確認時ページ: {gps_probe.get('page') or '--'}",
                     f"直近同期: {_gps_log_time_v491(gps_sync.get('at_ms'))} / 受信{gps_sync.get('received','--')}点 / 保存{gps_sync.get('accepted','--')}点 / {gps_sync.get('status','--')}",
@@ -40032,6 +40034,8 @@ export default function(component) {
   const batchMax = Math.max(30, Number(data?.batch_max_points || 180));
   const allowFlush = Boolean(data?.allow_flush);
   const forceFlush = Boolean(data?.force_flush);
+  const requestDiagnostic = Boolean(data?.request_diagnostic);
+  const diagnosticContext = String(data?.diagnostic_context || 'default');
   // v336: user-activity guard. Any confirmed tap/touch/key/wheel action postpones the
   // Streamlit-bound GPS cloud flush for five minutes. GPS recording itself continues
   // locally during the guard window. After five minutes of no interaction, syncing is
@@ -40264,7 +40268,9 @@ export default function(component) {
     }
   };
 
-  const gpsDiagSentKey = `${keyBase}:diagnostic_v491`;
+  // v493: keep the throttle per screen. A Project diagnostic must not suppress a
+  // Settings diagnostic opened a few seconds later.
+  const gpsDiagSentKey = `${keyBase}:diagnostic_v493:${diagnosticContext}`;
   const maybeEmitNativeDiagnostic = async () => {
     if (cancelled || !nativeMode) return;
     const now = Date.now();
@@ -40507,8 +40513,8 @@ export default function(component) {
     }
   }
 
-  if (nativeMode && forceFlush) {
-    setTimeout(() => { void maybeEmitNativeDiagnostic(); }, 1600);
+  if (nativeMode && requestDiagnostic) {
+    setTimeout(() => { void maybeEmitNativeDiagnostic(); }, 700);
   }
 
   const onVisibility = () => {
@@ -40787,8 +40793,8 @@ def save_gps_track_batch_v271(batch):
     return ack_ms
 
 def run_always_on_gps_tracker_v271():
-    # v491: keep v490 native bridge recovery, and capture diagnostic status from the
-    # Android bridge whenever Burari Project is opened. No bridge token or coordinate
+    # v493: keep v490 native bridge recovery, and capture diagnostic status from the
+    # Android bridge whenever Burari Project or Settings is opened. No bridge token or coordinate
     # is written to the log; only counts, timestamps, permission/service state and sync results.
     native_android = str(_query_param_scalar("native_android") or "").strip() == "1"
     native_bridge_token = str(_query_param_scalar("native_bridge_token") or "").strip()
@@ -40805,6 +40811,7 @@ def run_always_on_gps_tracker_v271():
         "bridge_token_present": bool(native_bridge_token),
         "native_mode": bool(native_mode),
         "component_available": component is not None,
+        "diagnostic_requested": bool(native_mode and page in {"review_project", "settings"}),
         "diagnostic_received": False,
     }
     st.session_state["_gps_diag_probe_v492"] = gps_probe
@@ -40818,6 +40825,9 @@ def run_always_on_gps_tracker_v271():
         return
     allow_flush = page != "camera"
     force_flush = page == "review_project"
+    # v493: Settings needs the same native status snapshot for the visible GPS log,
+    # but it must not force-upload GPS points merely because the user opened Settings.
+    request_diagnostic = bool(native_mode and page in {"review_project", "settings"})
     activity_guard_enabled = True
     activity_grace_ms = 5 * 60 * 1000
     ack_key = f"_gps_track_ack_v271_{current_family_key()}_{current_member_key()}"
@@ -40846,6 +40856,8 @@ def run_always_on_gps_tracker_v271():
             "batch_max_points": GPS_TRACK_BATCH_MAX_POINTS,
             "allow_flush": allow_flush,
             "force_flush": force_flush,
+            "request_diagnostic": request_diagnostic,
+            "diagnostic_context": page,
             "activity_guard_enabled": activity_guard_enabled,
             "activity_grace_ms": activity_grace_ms,
             "ack_ms": int(st.session_state.get(ack_key) or 0),
