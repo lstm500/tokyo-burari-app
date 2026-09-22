@@ -47,6 +47,7 @@ APP_BUILD = "v499"
 # v499: Experience-card photos are manual-selection only. Pressing the photo button opens the picker; nothing is auto-selected. Obvious Android screenshots are hidden from the picker, selected photos are previewed under the buttons, and multiple selected photos are always combined into one experience card.
 
 # v500: Match the existing moments photo-selection UI for experience cards: three thumbnails per row, select by tapping the photo card itself (no visible "選ぶ" buttons), allow multiple photos across repeated opens, and collapse the picker immediately after each selection.
+# v501: Selected experience photos stay compact in a fixed 3-column grid. Large display is available only through an explicit enlarged-photo mode, matching the rest of the app.
 # v496: map-only GPS anti-spaghetti cleanup. Preserve every stored GPS row and existing distance/station calculations, but render a stricter high-confidence line: reject large/low-quality station-area jumps, remove rapid U-turn spikes, and collapse short dense drift loops so urban-canyon GPS cannot paint radial lines through buildings.
 # v494: drain pending Android GPS on Burari Project in 500-point acknowledged batches; rerun immediately after each successful save so the next batch can be acknowledged and recovered without user taps.
 # v493: request native GPS diagnostics on Settings as well as Burari Project, using a per-page throttle key so the log page can actually receive Android status without forcing a GPS cloud flush.
@@ -22270,6 +22271,7 @@ def _reset_experience_draft_v497():
         "_experience_audio_digest_v497", "_experience_transcript_v497",
         "_experience_photo_warning_v497", "_experience_photo_fetched_v498",
         "_experience_manual_picker_open_v499", "_experience_selected_photo_ids_v499",
+        "_experience_selected_photo_view_mode_v501", "_experience_selected_photo_enlarged_index_v501",
     ):
         st.session_state.pop(key, None)
     st.session_state["_experience_draft_serial_v497"] = int(st.session_state.get("_experience_draft_serial_v497") or 0) + 1
@@ -32867,7 +32869,7 @@ def _toggle_experience_photo_v499(photo_id):
     st.session_state[key] = selected
 
 
-def page_experience_v500():
+def page_experience_v501():
     page_top("📝 体験を残す", "体験の感想と、選んだ写真から1つの体験カードを作ります。")
     _app_css_v473(
         """
@@ -32974,7 +32976,8 @@ def page_experience_v500():
     selected_ids = [photo_id for photo_id in selected_ids if photo_id in recent_by_id]
     st.session_state[selected_key] = selected_ids
 
-    # Only manually selected photos are shown under the two buttons.
+    # v501: selected photos are compact by default. One selected image must never expand
+    # to the full content width simply because it is the only photo.
     selected_photos = [recent_by_id[photo_id] for photo_id in selected_ids if photo_id in recent_by_id]
     if selected_photos:
         paths = [str(photo.get("storage_path") or "") for photo in selected_photos]
@@ -32982,16 +32985,89 @@ def page_experience_v500():
             signed_map = signed_photo_url_map(paths, expires_in=1800)
         except Exception:
             signed_map = {}
-        preview_cols = st.columns(min(3, max(1, len(selected_photos))), gap="small")
-        for index, photo in enumerate(selected_photos):
-            with preview_cols[index % len(preview_cols)]:
-                url = photo_display_url(photo, signed_map=signed_map, max_px=360, quality=76)
-                if url:
-                    st.image(url, use_container_width=True)
+
+        view_mode_key = "_experience_selected_photo_view_mode_v501"
+        index_key = "_experience_selected_photo_enlarged_index_v501"
+        view_mode = str(st.session_state.get(view_mode_key) or "3列一覧")
+        if view_mode not in {"3列一覧", "1枚ずつ拡大"}:
+            view_mode = "3列一覧"
+            st.session_state[view_mode_key] = view_mode
+
+        try:
+            enlarged_index = int(st.session_state.get(index_key) or 0)
+        except Exception:
+            enlarged_index = 0
+        enlarged_index = max(0, min(enlarged_index, len(selected_photos) - 1))
+        st.session_state[index_key] = enlarged_index
+
+        view_mode = st.radio(
+            "選択した写真の表示方法",
+            ["3列一覧", "1枚ずつ拡大"],
+            horizontal=True,
+            key=view_mode_key,
+            label_visibility="collapsed",
+        )
+
+        if view_mode == "1枚ずつ拡大":
+            prev_col, count_col, next_col = st.columns([1, 1.15, 1], gap="small")
+            with prev_col:
+                if st.button(
+                    "◀ 前へ",
+                    use_container_width=True,
+                    disabled=enlarged_index <= 0,
+                    key=f"experience_selected_prev_v501_{enlarged_index}",
+                ):
+                    st.session_state[index_key] = max(0, enlarged_index - 1)
+                    st.rerun(scope="app")
+            with count_col:
                 st.markdown(
-                    f'<div class="experience-photo-label-v499">{html.escape(_experience_captured_label_v497(photo.get("captured_at")))}</div>',
+                    f'<div style="text-align:center;padding:.55rem .1rem;font-weight:800;">{enlarged_index + 1} / {len(selected_photos)}</div>',
                     unsafe_allow_html=True,
                 )
+            with next_col:
+                if st.button(
+                    "次へ ▶",
+                    use_container_width=True,
+                    disabled=enlarged_index >= len(selected_photos) - 1,
+                    key=f"experience_selected_next_v501_{enlarged_index}",
+                ):
+                    st.session_state[index_key] = min(len(selected_photos) - 1, enlarged_index + 1)
+                    st.rerun(scope="app")
+
+            photo = selected_photos[enlarged_index]
+            url = photo_display_url(photo, signed_map=signed_map, max_px=1400, quality=90)
+            if url:
+                st.image(url, use_container_width=True)
+            st.markdown(
+                f'<div class="experience-photo-label-v499">{html.escape(_experience_captured_label_v497(photo.get("captured_at")))}</div>',
+                unsafe_allow_html=True,
+            )
+        else:
+            # Always create three columns, even when only one photo is selected.
+            # This keeps the selected preview thumbnail-sized on mobile.
+            for row_start in range(0, len(selected_photos), 3):
+                preview_cols = st.columns(3, gap="small")
+                for offset in range(3):
+                    index = row_start + offset
+                    if index >= len(selected_photos):
+                        continue
+                    photo = selected_photos[index]
+                    with preview_cols[offset]:
+                        url = photo_display_url(photo, signed_map=signed_map, max_px=360, quality=76)
+                        if url:
+                            st.image(url, use_container_width=True)
+                        st.markdown(
+                            f'<div class="experience-photo-label-v499">{html.escape(_experience_captured_label_v497(photo.get("captured_at")))}</div>',
+                            unsafe_allow_html=True,
+                        )
+                        if st.button(
+                            "拡大",
+                            use_container_width=True,
+                            key=f"experience_selected_enlarge_v501_{str(photo.get('id') or index)}",
+                        ):
+                            st.session_state[index_key] = index
+                            st.session_state[view_mode_key] = "1枚ずつ拡大"
+                            st.rerun(scope="app")
 
     if st.session_state.get("_experience_show_audio_v497") or transcript:
         serial = int(st.session_state.get("_experience_draft_serial_v497") or 1)
@@ -49516,7 +49592,7 @@ with st.container(key="app_page_root_v280"):
     elif page == "field_notes":
         _perf_call_v457("page:field_notes", page_field_notes, force=True)
     elif page == "experience":
-        _perf_call_v457("page:experience", page_experience_v500, force=True)
+        _perf_call_v457("page:experience", page_experience_v501, force=True)
     elif page == "settings":
         _perf_call_v457("page:settings", page_settings, force=True)
     elif page == "settings_moments":
