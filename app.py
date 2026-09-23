@@ -4345,7 +4345,11 @@ export default function(component) {
 
       mediaRecorder.start(1000);
       recordingStartedAt = Date.now();
+      // v508: the shutter is disabled only while MediaRecorder is being prepared.
+      // Once recording has actually started, re-enable it so the same button can
+      // receive the user's "撮影終了" tap and stop the active recorder.
       videoRecordingStartBusy = false;
+      if (shootButton) shootButton.disabled = false;
       setRecordingUi(true);
       updateRecordingClock();
       recordingTimer = setInterval(updateRecordingClock, 500);
