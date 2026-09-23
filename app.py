@@ -50,6 +50,7 @@ APP_BUILD = "v506"
 # v502: Experience selected-photo previews now use the same gallery component as the existing photo screens, so mobile keeps a real 3-column grid instead of Streamlit columns stacking vertically.
 # v503: Experience photo picker now uses the same full past-photo library as 「これまで撮った写真」. Normal tap selects one and closes; long-press enters multi-select. Long-pressing already-selected experience photos enters multi-remove mode without deleting the original library photos.
 # v505: After experience photos are selected, infer the food from the images, combine it with the photos' saved GPS, reuse Nearby/Google Places search to suggest up to three likely shops, and carry the selected shop into the experience card.
+# v509: Experience food inference now has a compact manual-input override. A parent can type the food when photo inference is wrong; the typed food becomes the search query, nearby shop candidates are re-searched from the selected photos' saved GPS, and the manual food/category are carried into the experience card.
 # v506: Good Moments now lets the user move between every ready video instead of being locked to the newest one. Camera photo→video switching uses an explicit transition state and a frozen preview frame while the camera is reopened, preventing the menu/blank-screen jump during mode changes.
 # v496: map-only GPS anti-spaghetti cleanup. Preserve every stored GPS row and existing distance/station calculations, but render a stricter high-confidence line: reject large/low-quality station-area jumps, remove rapid U-turn spikes, and collapse short dense drift loops so urban-canyon GPS cannot paint radial lines through buildings.
 # v494: drain pending Android GPS on Burari Project in 500-point acknowledged batches; rerun immediately after each successful save so the next batch can be acknowledged and recovered without user taps.
@@ -22661,6 +22662,9 @@ def _reset_experience_draft_v497():
         "_experience_photo_picker_page_v503", "_experience_photo_picker_last_token_v503",
         "_experience_selected_multi_last_token_v503",
         "_experience_store_inference_v505", "_experience_store_choice_v505",
+        "_experience_manual_food_open_v509", "_experience_manual_food_query_v509",
+        "_experience_manual_food_signature_v509", "_experience_manual_store_inference_v509",
+        "_experience_store_effective_inference_v509",
     ):
         st.session_state.pop(key, None)
     st.session_state["_experience_draft_serial_v497"] = int(st.session_state.get("_experience_draft_serial_v497") or 0) + 1
@@ -33864,6 +33868,193 @@ def infer_experience_store_candidates_v505(photos):
     }
 
 
+
+def _experience_kana_fold_v509(value):
+    """Normalize manual food labels enough for stable fixed-category matching."""
+    text = unicodedata.normalize("NFKC", str(value or "")).strip().lower()
+    out = []
+    for ch in text:
+        code = ord(ch)
+        # Katakana ァ-ヶ -> Hiragana ぁ-ゖ. Keep punctuation cleanup separate.
+        if 0x30A1 <= code <= 0x30F6:
+            ch = chr(code - 0x60)
+        out.append(ch)
+    return re.sub(r"[\s　・･\-ー_./／()（）\[\]【】『』「」'\"]+", "", "".join(out))
+
+
+def _experience_manual_compare_category_v509(food_query):
+    """Map a parent-entered food name to the same fixed comparison buckets used by cards."""
+    folded = _experience_kana_fold_v509(food_query)
+    if not folded:
+        return EXPERIENCE_COMPARE_EXCLUDED_V497
+
+    aliases = {
+        "たい焼き": ("たい焼き", "鯛焼き", "タイ焼き", "タイヤキ"),
+        "プリン": ("プリン", "焼きプリン", "カスタードプリン"),
+        "団子": ("団子", "だんご", "ダンゴ", "みたらし団子"),
+        "ソフトクリーム": ("ソフトクリーム", "ソフト"),
+        "アイスクリーム": ("アイスクリーム", "アイス", "ジェラート"),
+        "ケーキ": ("ケーキ", "ショートケーキ", "チーズケーキ"),
+        "ドーナツ": ("ドーナツ", "ドーナッツ"),
+        "クレープ": ("クレープ",),
+        "パフェ": ("パフェ",),
+        "シュークリーム": ("シュークリーム", "シュー"),
+        "カステラ": ("カステラ",),
+        "どら焼き": ("どら焼き", "どらやき", "ドラ焼き"),
+        "大福": ("大福",),
+        "まんじゅう": ("まんじゅう", "饅頭", "マンジュウ"),
+        "羊羹": ("羊羹", "ようかん", "ヨウカン"),
+        "せんべい": ("せんべい", "煎餅", "センベイ"),
+        "クッキー": ("クッキー", "ビスケット"),
+        "チョコレート": ("チョコレート", "チョコ"),
+        "ゼリー": ("ゼリー",),
+        "かき氷": ("かき氷", "かきごおり", "カキ氷"),
+        "パン": ("パン", "クロワッサン", "あんぱん", "メロンパン", "食パン"),
+    }
+    for category in EXPERIENCE_SNACK_COMPARE_CATEGORIES_V497:
+        terms = aliases.get(category, (category,))
+        for term in terms:
+            term_folded = _experience_kana_fold_v509(term)
+            if term_folded and term_folded in folded:
+                return category
+    return EXPERIENCE_COMPARE_EXCLUDED_V497
+
+
+def infer_experience_store_candidates_manual_v509(photos, food_query, base_inference=None):
+    """Re-search nearby stores using the parent's food text as the authoritative query.
+
+    Photo GPS remains the geographic anchor. Photo-derived readable shop/brand text is
+    retained only as a ranking hint; the manual food label replaces the AI food guess.
+    """
+    photos = [x for x in (photos or []) if isinstance(x, dict)][:EXPERIENCE_MANUAL_PHOTO_MAX_V497]
+    food_query = str(food_query or "").strip()[:100]
+    if not photos:
+        return {"is_food": True, "food_label": food_query, "compare_category": _experience_manual_compare_category_v509(food_query), "candidates": [], "reason": "no_photos", "manual_override": True}
+    if not food_query:
+        return {"is_food": True, "food_label": "", "compare_category": EXPERIENCE_COMPARE_EXCLUDED_V497, "candidates": [], "reason": "no_food_query", "manual_override": True}
+
+    base = dict(base_inference or {}) if isinstance(base_inference, dict) else {}
+    compare_category = _experience_manual_compare_category_v509(food_query)
+    analysis = {
+        "is_food": True,
+        "food_label": food_query,
+        "compare_category": compare_category,
+        "store_text_hints": [str(x)[:80] for x in (base.get("store_text_hints") or []) if str(x).strip()][:3],
+        "manual_override": True,
+    }
+
+    center = _experience_photo_search_center_v505(photos)
+    if not center:
+        return {**analysis, "candidates": [], "reason": "no_photo_location"}
+
+    sitdown_categories = {"プリン", "ケーキ", "パフェ", "シュークリーム", "ゼリー", "かき氷"}
+    snack_style = "店内中心" if compare_category in sitdown_categories else "食べ歩き向き"
+    lat = center["latitude"]
+    lon = center["longitude"]
+    text_rows = []
+    nearby_rows = []
+    if GOOGLE_PLACES_API_KEY:
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            f_text = executor.submit(
+                _experience_google_food_text_candidates_v505,
+                lat, lon, food_query, EXPERIENCE_STORE_RADIUS_M_V505,
+            )
+            f_near = executor.submit(
+                search_nearby_quick_stops_google,
+                lat, lon, "snack", snack_style, EXPERIENCE_STORE_RADIUS_M_V505, False, False, None,
+            )
+            try:
+                text_rows = list(f_text.result() or [])
+            except Exception:
+                text_rows = []
+            try:
+                nearby_result = f_near.result()
+                nearby_rows = list((nearby_result or {}).get("places") or []) if isinstance(nearby_result, dict) else []
+            except Exception:
+                nearby_rows = []
+    else:
+        try:
+            fallback = search_nearby_quick_stops(lat, lon, "snack", snack_style, EXPERIENCE_STORE_RADIUS_M_V505)
+            nearby_rows = list((fallback or {}).get("places") or []) if isinstance(fallback, dict) else []
+        except Exception:
+            nearby_rows = []
+
+    merged = {}
+
+    def add_place(raw, source):
+        if not isinstance(raw, dict):
+            return
+        name = str(raw.get("name") or "").strip()
+        if not name:
+            return
+        try:
+            plat = float(raw.get("latitude"))
+            plon = float(raw.get("longitude"))
+        except (TypeError, ValueError):
+            return
+        distance = _nearby_haversine_m(lat, lon, plat, plon)
+        if distance > max(650.0, EXPERIENCE_STORE_RADIUS_M_V505 * 1.45):
+            return
+        pid = str(raw.get("google_place_id") or "").strip()
+        key = f"google:{pid}" if pid else f"name:{_experience_store_norm_v505(name)}:{round(plat,5)}:{round(plon,5)}"
+        row = merged.get(key)
+        if row is None:
+            row = dict(raw)
+            row["distance_m"] = int(round(distance))
+            row["_sources"] = []
+            merged[key] = row
+        if source not in row["_sources"]:
+            row["_sources"].append(source)
+        if source == "food_text_search" and "search_rank" in raw:
+            row["search_rank"] = raw.get("search_rank")
+        if not row.get("google_place_id") and raw.get("google_place_id"):
+            row["google_place_id"] = raw.get("google_place_id")
+        if not row.get("address") and raw.get("address"):
+            row["address"] = raw.get("address")
+        if not row.get("google_types") and raw.get("google_types"):
+            row["google_types"] = raw.get("google_types")
+
+    for row in text_rows:
+        add_place(row, "food_text_search")
+    for row in nearby_rows:
+        row = dict(row)
+        row["source"] = "nearby_search"
+        add_place(row, "nearby_search")
+
+    hints = list(analysis.get("store_text_hints") or [])
+    ranked = []
+    for row in merged.values():
+        score = _experience_store_score_v505(row, food_query, compare_category, hints)
+        ranked.append({
+            "id": str(row.get("google_place_id") or row.get("id") or uuid.uuid4().hex),
+            "google_place_id": str(row.get("google_place_id") or "").strip(),
+            "name": str(row.get("name") or "").strip()[:120],
+            "distance_m": int(row.get("distance_m") or 0),
+            "address": str(row.get("address") or "").strip()[:220],
+            "source": "manual_photo_location_google" if row.get("google_place_id") else "manual_photo_location_nearby",
+            "score": round(float(score), 2),
+        })
+    ranked.sort(key=lambda item: (-float(item.get("score") or 0), int(item.get("distance_m") or 999999), str(item.get("name") or "")))
+
+    candidates = []
+    seen_names = set()
+    for item in ranked:
+        norm_name = _experience_store_norm_v505(item.get("name"))
+        if not norm_name or norm_name in seen_names:
+            continue
+        if float(item.get("score") or 0) < 22.0:
+            continue
+        seen_names.add(norm_name)
+        candidates.append(item)
+        if len(candidates) >= EXPERIENCE_STORE_MAX_CANDIDATES_V505:
+            break
+    return {
+        **analysis,
+        "location": center,
+        "candidates": candidates,
+        "reason": "ok" if candidates else "no_candidates",
+    }
+
 def page_experience_v503():
     page_top("📝 体験を残す", "体験の感想と、選んだ写真から1つの体験カードを作ります。")
     _app_css_v473(
@@ -34100,14 +34291,28 @@ def page_experience_v503():
                     )
                 st.markdown('<div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px;width:100%;">'+''.join(items)+'</div>',unsafe_allow_html=True)
 
-    # v505: once photos are selected and the picker is closed, infer the food and
-    # search around the photos' saved GPS. Cache by the exact photo set so ordinary
-    # Streamlit reruns (audio/radio/card UI) do not repeat vision/Places requests.
+    # v505/v509: once photos are selected and the picker is closed, infer the food and
+    # search around the photos' saved GPS. The parent can override the food with a
+    # compact manual entry; a manual value re-runs the same nearby-store search using
+    # the typed food as the authoritative query.
     store_inference = {}
     selected_store_candidate = None
     store_choice_key = "_experience_store_choice_v505"
     if selected_photos and not picker_open:
         signature = hashlib.sha1("|".join(selected_ids).encode("utf-8")).hexdigest()[:16]
+
+        # A food override belongs only to the exact currently selected photo set.
+        manual_signature = str(st.session_state.get("_experience_manual_food_signature_v509") or "")
+        if manual_signature and manual_signature != signature:
+            for key in (
+                "_experience_manual_food_query_v509",
+                "_experience_manual_food_signature_v509",
+                "_experience_manual_store_inference_v509",
+                "_experience_store_effective_inference_v509",
+            ):
+                st.session_state.pop(key, None)
+            st.session_state.pop(store_choice_key, None)
+
         cached_inference = st.session_state.get("_experience_store_inference_v505")
         if not isinstance(cached_inference, dict) or str(cached_inference.get("signature") or "") != signature:
             st.session_state.pop(store_choice_key, None)
@@ -34126,18 +34331,104 @@ def page_experience_v503():
             fresh_inference["signature"] = signature
             st.session_state["_experience_store_inference_v505"] = fresh_inference
             cached_inference = fresh_inference
-        store_inference = dict(cached_inference or {})
+        auto_inference = dict(cached_inference or {})
+
+        manual_query = ""
+        if str(st.session_state.get("_experience_manual_food_signature_v509") or "") == signature:
+            manual_query = str(st.session_state.get("_experience_manual_food_query_v509") or "").strip()
+
+        # Small manual-entry control next to the food inference. Keep it optional so
+        # the normal flow still needs no extra action when the AI guess is correct.
+        auto_food_label = str(auto_inference.get("food_label") or "").strip()
+        auto_compare_hint = str(auto_inference.get("compare_category") or "").strip()
+        info_col, manual_col = st.columns([4.25, 1.05], gap="small")
+        with info_col:
+            if manual_query:
+                manual_category = _experience_manual_compare_category_v509(manual_query)
+                if manual_category in EXPERIENCE_SNACK_COMPARE_CATEGORIES_V497:
+                    st.caption(f"手入力『{manual_query}』で検索中です。比較カテゴリー：{manual_category}")
+                else:
+                    st.caption(f"手入力『{manual_query}』で検索中です。")
+            elif auto_food_label:
+                if auto_compare_hint in EXPERIENCE_SNACK_COMPARE_CATEGORIES_V497:
+                    st.caption(f"写真から『{auto_food_label}』と推定しました。比較カテゴリー：{auto_compare_hint}")
+                else:
+                    st.caption(f"写真から『{auto_food_label}』と推定しました。")
+            else:
+                st.caption("写真から食べ物を判定できない場合は、手入力できます。")
+        with manual_col:
+            if st.button(
+                "手入力",
+                type="secondary",
+                use_container_width=True,
+                key=f"experience_manual_food_open_v509_{signature}",
+            ):
+                st.session_state["_experience_manual_food_open_v509"] = not bool(
+                    st.session_state.get("_experience_manual_food_open_v509")
+                )
+
+        if bool(st.session_state.get("_experience_manual_food_open_v509")):
+            with st.form(key=f"experience_manual_food_form_v509_{signature}", clear_on_submit=False):
+                typed_food = st.text_input(
+                    "食べ物を手入力",
+                    value=manual_query or auto_food_label,
+                    placeholder="例：たい焼き",
+                    max_chars=100,
+                )
+                rerun_manual = st.form_submit_button("この内容で再検索", use_container_width=True)
+            if rerun_manual:
+                typed_food = str(typed_food or "").strip()
+                if typed_food:
+                    st.session_state["_experience_manual_food_query_v509"] = typed_food
+                    st.session_state["_experience_manual_food_signature_v509"] = signature
+                    st.session_state.pop("_experience_manual_store_inference_v509", None)
+                    st.session_state.pop("_experience_store_effective_inference_v509", None)
+                    st.session_state.pop(store_choice_key, None)
+                    st.session_state["_experience_manual_food_open_v509"] = False
+                    st.rerun(scope="app")
+                else:
+                    st.warning("食べ物を入力してください。")
+
+        # Manual input takes precedence. Cache by photo signature + typed query so a
+        # normal Streamlit rerun does not repeat the Places search.
+        if manual_query:
+            manual_cache_key = hashlib.sha1(f"{signature}|{manual_query}".encode("utf-8")).hexdigest()[:20]
+            manual_cached = st.session_state.get("_experience_manual_store_inference_v509")
+            if not isinstance(manual_cached, dict) or str(manual_cached.get("manual_cache_key") or "") != manual_cache_key:
+                try:
+                    with st.spinner(f"『{manual_query}』でお店候補を再検索しています…"):
+                        manual_cached = infer_experience_store_candidates_manual_v509(
+                            selected_photos,
+                            manual_query,
+                            base_inference=auto_inference,
+                        )
+                except Exception as exc:
+                    manual_cached = {
+                        "is_food": True,
+                        "food_label": manual_query,
+                        "compare_category": _experience_manual_compare_category_v509(manual_query),
+                        "candidates": [],
+                        "reason": "inference_error",
+                        "detail": str(exc)[:180],
+                        "manual_override": True,
+                    }
+                manual_cached["signature"] = signature
+                manual_cached["manual_cache_key"] = manual_cache_key
+                st.session_state["_experience_manual_store_inference_v509"] = manual_cached
+            store_inference = dict(manual_cached or {})
+        else:
+            store_inference = auto_inference
+
+        st.session_state["_experience_store_effective_inference_v509"] = dict(store_inference or {})
 
         if bool(store_inference.get("is_food")):
             food_label = str(store_inference.get("food_label") or "").strip()
             compare_hint = str(store_inference.get("compare_category") or "").strip()
-            candidates = [x for x in (store_inference.get("candidates") or []) if isinstance(x, dict) and str(x.get("name") or "").strip()]
+            candidates = [
+                x for x in (store_inference.get("candidates") or [])
+                if isinstance(x, dict) and str(x.get("name") or "").strip()
+            ]
             st.markdown("#### お店の候補")
-            if food_label:
-                if compare_hint in EXPERIENCE_SNACK_COMPARE_CATEGORIES_V497:
-                    st.caption(f"写真から「{food_label}」と推定しました。比較カテゴリー：{compare_hint}")
-                else:
-                    st.caption(f"写真から「{food_label}」と推定しました。")
             reason = str(store_inference.get("reason") or "")
             if candidates:
                 options = [str(x.get("id") or f"candidate_{i}") for i, x in enumerate(candidates)] + ["__unknown__"]
@@ -34159,7 +34450,10 @@ def page_experience_v503():
                     label_visibility="collapsed",
                 )
                 selected_store_candidate = candidate_by_id.get(str(choice))
-                st.caption("写真の内容と撮影位置から候補を絞っています。正しければ操作不要です。違う場合だけ選び直してください。")
+                if manual_query:
+                    st.caption("手入力した食べ物と撮影位置から候補を絞り直しました。")
+                else:
+                    st.caption("写真の内容と撮影位置から候補を絞っています。正しければ操作不要です。違う場合だけ選び直してください。")
             elif reason == "no_photo_location":
                 st.caption("この写真には利用できる撮影位置情報がないため、お店候補は表示できません。")
             elif reason in {"no_candidates", "no_food_query"}:
@@ -34337,7 +34631,9 @@ def page_experience_v503():
         photos_for_card = [recent_by_id[x] for x in selected_ids if x in recent_by_id]
         try:
             with st.spinner("体験カードを作っています…"):
-                inference_for_card = st.session_state.get("_experience_store_inference_v505")
+                inference_for_card = st.session_state.get("_experience_store_effective_inference_v509")
+                if not isinstance(inference_for_card, dict):
+                    inference_for_card = st.session_state.get("_experience_store_inference_v505")
                 if not isinstance(inference_for_card, dict):
                     inference_for_card = {}
                 place_for_card = selected_store_candidate
