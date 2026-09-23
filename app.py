@@ -37472,6 +37472,25 @@ _MOMENTS_SELECT_CSS = """
   min-height: 1px;
   box-sizing: border-box;
 }
+.moments-save-current-button {
+  width: 100%;
+  margin-top: 10px;
+  min-height: 46px;
+  border: none;
+  border-radius: 14px;
+  background: linear-gradient(180deg, #ff8a3d 0%, #ff6f1f 100%);
+  color: #fff;
+  font-size: 15px;
+  font-weight: 800;
+  box-shadow: 0 10px 22px rgba(255,111,31,.20);
+}
+.moments-save-current-button[hidden] {
+  display: none !important;
+}
+.moments-save-current-button:disabled {
+  opacity: .55;
+  box-shadow: none;
+}
 .moments-enlarge-nav {
   display: grid;
   grid-template-columns: 52px minmax(0, 1fr) 52px;
@@ -37785,11 +37804,18 @@ export default function(component) {
       const counter=document.createElement('div');counter.className='moments-enlarge-counter';
       const next=document.createElement('button');next.type='button';next.textContent='›';next.setAttribute('aria-label','次の写真');
       const viewer=document.createElement('div');viewer.className='moments-enlarge-viewer';
+      const saveCurrent=document.createElement('button');saveCurrent.type='button';saveCurrent.className='moments-save-current-button';
+      saveCurrent.textContent='この写真を日記に登録';
+      saveCurrent.setAttribute('aria-label','いま拡大している写真を日記に登録');
+      saveCurrent.addEventListener('click',(event)=>{event.preventDefault();event.stopPropagation();emitAction('save_current_photo');});
       const renderActive=()=>{
         const activePhoto=photos[activeIndex]; activeRank=rankFor(activePhoto,activeIndex);
         persistActiveRank();
         counter.textContent=`${activeIndex+1} / ${photos.length}`; prev.disabled=activeIndex<=0; next.disabled=activeIndex>=photos.length-1;
         viewer.replaceChildren(makeCard(activePhoto,activeIndex,true));
+        const alreadySaved=Boolean(activePhoto?.saved);
+        saveCurrent.hidden=disabled||alreadySaved;
+        saveCurrent.disabled=disabled||alreadySaved;
         // Warm only the adjacent frame; never decode all large images at once.
         for(const neighborIndex of [activeIndex-1,activeIndex+1]){
           const neighbor=photos[neighborIndex];
@@ -37803,7 +37829,7 @@ export default function(component) {
       viewer.addEventListener('touchstart',(event)=>{const touch=event.touches&&event.touches[0];touchStartX=touch?touch.clientX:null;},{passive:true});
       viewer.addEventListener('touchend',(event)=>{if(touchStartX===null)return;const touch=event.changedTouches&&event.changedTouches[0];const dx=touch?touch.clientX-touchStartX:0;touchStartX=null;if(Math.abs(dx)>=45)move(dx<0?1:-1);},{passive:true});
       shell.tabIndex=0;shell.addEventListener('keydown',(event)=>{if(event.key==='ArrowLeft'){event.preventDefault();move(-1);}else if(event.key==='ArrowRight'){event.preventDefault();move(1);}});
-      nav.appendChild(prev);nav.appendChild(counter);nav.appendChild(next);shell.appendChild(nav);shell.appendChild(viewer);grid.appendChild(shell);renderActive();return;
+      nav.appendChild(prev);nav.appendChild(counter);nav.appendChild(next);shell.appendChild(nav);shell.appendChild(viewer);shell.appendChild(saveCurrent);grid.appendChild(shell);renderActive();return;
     }
     for(let index=0;index<photos.length;index+=1){const photo=photos[index];if(!photo)continue;grid.appendChild(makeCard(photo,index,false));}
   };
@@ -38394,6 +38420,7 @@ def _render_moments_picker(photo, index, view_mode=None, next_video_action=None)
                 "emotion": selection_item_tag_values(item)[0],
                 "parenting": selection_item_tag_values(item)[1],
                 "voice_candidate_rank": max(0, int(item.get("voice_candidate_rank") or 0)),
+                "saved": bool(str(item.get("saved_photo_id") or "").strip()),
                 "meta": f"{seconds:.1f}秒・{quality}",
                 "reason": str(item.get("reason") or "").strip(),
             }
@@ -38507,6 +38534,27 @@ def _render_moments_picker(photo, index, view_mode=None, next_video_action=None)
                     else:
                         st.session_state.pop(voice_candidate_choice_key, None)
                     st.rerun(scope="app")
+                if action_name == "save_current_photo" and current_active_rank in valid_ranks:
+                    active_item = next(
+                        (item for item in (video_ai_selection_items(action_photo) or items) if int(item.get("rank") or 0) == int(current_active_rank)),
+                        None,
+                    )
+                    if not isinstance(active_item, dict):
+                        st.warning("写真を確認できませんでした。")
+                    elif active_item.get("saved_photo_id"):
+                        st.session_state["_moments_notice"] = "この写真はすでに日記に登録されています。"
+                        st.rerun(scope="app")
+                    else:
+                        with st.spinner("写真を日記に登録しています…"):
+                            save_video_ai_selection_as_photo(action_photo, active_item)
+                        previous_count = st.session_state.get("_home_today_photo_count")
+                        try:
+                            previous_count = int(previous_count) if previous_count is not None else 0
+                        except Exception:
+                            previous_count = 0
+                        st.session_state["_home_today_photo_count"] = previous_count + 1
+                        st.session_state["_moments_notice"] = "拡大している写真を日記に登録しました。"
+                        st.rerun(scope="app")
                 if action_name in {"save_selection", "next_video"}:
                     if not selected_rank_set:
                         if action_name == "save_selection":
@@ -38627,6 +38675,29 @@ def _render_moments_picker(photo, index, view_mode=None, next_video_action=None)
                 st.session_state[active_rank_key] = rank
                 st.session_state.pop(voice_candidate_choice_key, None)
                 st.rerun()
+            active_item = next((item for item in items if int(item.get("rank") or 0) == rank), None)
+            if isinstance(active_item, dict) and not active_item.get("saved_photo_id"):
+                if st.button(
+                    "この写真を日記に登録",
+                    type="primary",
+                    use_container_width=True,
+                    key=f"moments_enlarge_save_current_{video_id}_{round_number}_{rank}",
+                ):
+                    try:
+                        with st.spinner("写真を日記に登録しています…"):
+                            save_video_ai_selection_as_photo(photo, active_item)
+                        previous_count = st.session_state.get("_home_today_photo_count")
+                        try:
+                            previous_count = int(previous_count) if previous_count is not None else 0
+                        except Exception:
+                            previous_count = 0
+                        st.session_state["_home_today_photo_count"] = previous_count + 1
+                        st.session_state["_moments_notice"] = "拡大している写真を日記に登録しました。"
+                        st.rerun(scope="app")
+                    except Exception as exc:
+                        st.error("写真を日記に登録できませんでした。")
+                        with st.expander("保護者向け詳細"):
+                            st.code(str(exc))
         else:
             for row_start in range(0, VIDEO_AI_MAX_SELECTIONS, 3):
                 row_columns = st.columns(3, gap="small")
