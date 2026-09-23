@@ -18328,7 +18328,12 @@ def video_ai_voice_candidate_items(photo):
     return sorted(clean, key=lambda item: int(item.get("rank") or 99))[:VIDEO_VOICE_CANDIDATE_COUNT]
 
 
-def _extract_video_voice_candidate_specs(cleaned_audio_raw, candidate_count=VIDEO_VOICE_CANDIDATE_COUNT, clip_seconds=VIDEO_VOICE_SNIPPET_SECONDS):
+def _extract_video_voice_candidate_specs(
+    cleaned_audio_raw,
+    candidate_count=VIDEO_VOICE_CANDIDATE_COUNT,
+    clip_seconds=VIDEO_VOICE_SNIPPET_SECONDS,
+    variation_index=0,
+):
     ffmpeg = _ffmpeg_executable()
     if not ffmpeg:
         raise RuntimeError("この実行環境では音声候補抽出用のffmpegを利用できません。")
@@ -18425,7 +18430,62 @@ def _extract_video_voice_candidate_specs(cleaned_audio_raw, candidate_count=VIDE
     min_clip = min(2.6, max_clip)
     preferred_clip = min(4.2, max_clip)
 
-    def _natural_bounds(center_sec):
+    # v516: pressing "voice regenerate" should not reproduce the exact same cuts.
+    # Keep the detected speech moments stable, but cycle through very small boundary
+    # variations (roughly 0.1-0.2 s) so the parent can hear a slightly different
+    # amount of context on every regeneration.  This is deterministic rather than
+    # random, so repeated reruns of the same generation do not drift.
+    try:
+        variation_index = max(0, int(variation_index or 0))
+    except Exception:
+        variation_index = 0
+    boundary_profiles = (
+        (-0.18, 0.10),  # a little more lead-in and tail
+        (0.10, 0.18),   # start slightly later, keep more tail
+        (-0.10, -0.14), # a little earlier/tighter ending
+        (0.16, -0.06),  # tighter around the detected utterance
+        (-0.06, 0.20),  # small lead-in, longer ending context
+    )
+
+    def _apply_boundary_variation(start_sec, duration_sec, slot=0):
+        if variation_index <= 0 or total_duration <= 0:
+            return start_sec, duration_sec
+        end_sec = min(total_duration, max(start_sec, start_sec + duration_sec))
+        base_start = float(start_sec)
+        base_end = float(end_sec)
+        profile = boundary_profiles[(variation_index - 1 + int(slot or 0)) % len(boundary_profiles)]
+        start_delta, end_delta = profile
+        varied_start = max(0.0, min(total_duration, base_start + start_delta))
+        varied_end = max(varied_start, min(total_duration, base_end + end_delta))
+
+        # Preserve enough speech context even when the tighter profile is selected.
+        minimum_duration = min(max_clip, 2.2 if total_duration >= 2.2 else max(0.6, total_duration))
+        if varied_end - varied_start < minimum_duration:
+            need = minimum_duration - (varied_end - varied_start)
+            add_after = min(need * 0.65, max(0.0, total_duration - varied_end))
+            varied_end += add_after
+            need -= add_after
+            varied_start = max(0.0, varied_start - need)
+
+        # At the very start/end of a video one delta can be clamped away.  If both
+        # boundaries ended up effectively identical, force a tiny safe change so a
+        # regeneration is still audibly/visibly a different cut when possible.
+        if abs(varied_start - base_start) < 0.035 and abs(varied_end - base_end) < 0.035:
+            if base_end + 0.12 <= total_duration:
+                varied_end = base_end + 0.12
+            elif base_start >= 0.12:
+                varied_start = base_start - 0.12
+            elif base_end - base_start > minimum_duration + 0.12:
+                varied_end = base_end - 0.12
+
+        varied_duration = max(0.1, varied_end - varied_start)
+        if varied_duration > max_clip:
+            varied_duration = max_clip
+            if varied_start + varied_duration > total_duration:
+                varied_start = max(0.0, total_duration - varied_duration)
+        return varied_start, varied_duration
+
+    def _natural_bounds(center_sec, variation_slot=0):
         if not windows:
             start_sec = max(0.0, center_sec - 0.4)
             end_sec = min(total_duration, start_sec + max_clip)
@@ -18498,13 +18558,13 @@ def _extract_video_voice_candidate_specs(cleaned_audio_raw, candidate_count=VIDE
         duration_sec = min(max_clip, max(min_clip if total_duration >= min_clip else 0.6, end_sec - start_sec))
         if start_sec + duration_sec > total_duration:
             start_sec = max(0.0, total_duration - duration_sec)
-        return start_sec, duration_sec
+        return _apply_boundary_variation(start_sec, duration_sec, variation_slot)
 
     def _try_add(candidate):
         center_sec = float(candidate.get("center_sec") or 0.0)
         if any(abs(center_sec - existing["center_sec"]) < min_spacing for existing in picks):
             return False
-        start_sec, duration_sec = _natural_bounds(center_sec)
+        start_sec, duration_sec = _natural_bounds(center_sec, len(picks))
         end_sec = start_sec + duration_sec
         # Avoid returning several almost-identical snippets around one utterance.
         for existing in picks:
@@ -18600,7 +18660,26 @@ def generate_video_ai_voice_candidates(photo, force=False):
     if not cleaned_source_raw:
         raise RuntimeError("声候補を選ぶ前のノイズ処理結果が空でした。")
 
-    specs = _extract_video_voice_candidate_specs(cleaned_source_raw)
+    reflection = dict(photo_media_metadata(fresh))
+    selection = reflection.get("ai_selection") or {}
+    if not isinstance(selection, dict):
+        selection = {}
+    previous_voice_meta = selection.get("voice_candidates") or {}
+    if not isinstance(previous_voice_meta, dict):
+        previous_voice_meta = {}
+    try:
+        previous_regeneration_index = max(0, int(previous_voice_meta.get("regeneration_index") or 0))
+    except Exception:
+        previous_regeneration_index = 0
+    # First generation keeps the natural boundaries.  Every explicit regeneration
+    # advances one deterministic boundary profile, guaranteeing a slightly different
+    # cut while keeping the same speech-detection logic and original-audio priority.
+    regeneration_index = previous_regeneration_index + 1 if force else 0
+
+    specs = _extract_video_voice_candidate_specs(
+        cleaned_source_raw,
+        variation_index=regeneration_index,
+    )
     if not specs:
         raise ValueError("ノイズ処理後の音声から声の候補を作成できませんでした。")
 
@@ -18608,11 +18687,6 @@ def generate_video_ai_voice_candidates(photo, force=False):
     if not ffmpeg:
         raise RuntimeError("この実行環境では音声候補抽出用のffmpegを利用できません。")
 
-    reflection = dict(photo_media_metadata(fresh))
-    selection = reflection.get("ai_selection") or {}
-    if not isinstance(selection, dict):
-        selection = {}
-    previous_voice_meta = selection.get("voice_candidates") or {}
     previous_voice_items = [
         item for item in (previous_voice_meta.get("items") or [])
         if isinstance(item, dict)
@@ -18751,6 +18825,7 @@ def generate_video_ai_voice_candidates(photo, force=False):
                         "file_name": processed_filename,
                         "timestamp_ms": int(spec.get("timestamp_ms") or 0),
                         "duration_ms": int(round(float(spec.get("duration_sec") or VIDEO_VOICE_SNIPPET_SECONDS) * 1000)),
+                        "boundary_regeneration_index": regeneration_index,
                         "score": int(round(float(spec.get("score") or 0.0))),
                         "transcript": transcript,
                         "transcription_source": "original_audio" if candidate_audio_source == "original" else "cleaned_fallback",
@@ -18809,7 +18884,9 @@ def generate_video_ai_voice_candidates(photo, force=False):
             "generated_at": now_jst().isoformat(),
             "candidate_count": len(items),
             "snippet_seconds": VIDEO_VOICE_SNIPPET_SECONDS,
-            "boundary_mode": "natural_pause",
+            "boundary_mode": "natural_pause_varied_on_regenerate" if regeneration_index > 0 else "natural_pause",
+            "regeneration_index": regeneration_index,
+            "boundary_variation_seconds": "about_0.1_to_0.2",
             "transcription_source": "original_audio_first",
             "audio_cleanup_stage": "candidate_detection_only",
             "audio_cleanup_version": VIDEO_VOICE_STRONG_CLEANUP_VERSION,
@@ -37854,7 +37931,7 @@ def _render_moments_voice_workspace(
                 candidate_rank = max(0, int(action.get("candidate_rank") or 0))
                 try:
                     if action_name == "regenerate":
-                        with st.spinner("元動画の音声全体から先にノイズを処理し、その後で声候補を再作成しています…"):
+                        with st.spinner("前回と少し違う区切りで、元動画から声候補を再作成しています…"):
                             regenerated_photo = generate_video_ai_voice_candidates(photo, force=True)
                         if isinstance(regenerated_photo, dict):
                             photo = regenerated_photo
@@ -37916,10 +37993,10 @@ def _render_moments_voice_workspace(
         "↻ 声を再作成",
         use_container_width=True,
         key=f"moments_voice_regenerate_fallback_v437_{video_id}_{round_number}_{target_rank}",
-        help="元動画から声候補をもう一度抽出し、ノイズ低減と音量補正もやり直します。",
+        help="元動画から声候補をもう一度抽出します。再作成のたびに前回と少し違う区切り方にします。",
     ):
         try:
-            with st.spinner("元動画の音声全体から先にノイズを処理し、その後で声候補を再作成しています…"):
+            with st.spinner("前回と少し違う区切りで、元動画から声候補を再作成しています…"):
                 regenerated_photo = generate_video_ai_voice_candidates(photo, force=True)
             if isinstance(regenerated_photo, dict):
                 photo = regenerated_photo
