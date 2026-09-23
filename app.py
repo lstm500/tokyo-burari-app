@@ -19146,6 +19146,84 @@ def _selection_capture_time(photo, timestamp_ms):
         return raw
 
 
+
+def _existing_photo_ids_for_current_member(photo_ids):
+    ids = sorted({str(value or "").strip() for value in (photo_ids or []) if str(value or "").strip()})
+    if not ids:
+        return set()
+    try:
+        rows = (
+            supabase_client().table(PHOTO_TABLE).select("id")
+            .in_("id", ids)
+            .eq("family_key", current_family_key()).eq("member_key", current_member_key())
+            .execute()
+        ).data or []
+    except Exception:
+        return set()
+    return {str((row or {}).get("id") or "").strip() for row in rows if str((row or {}).get("id") or "").strip()}
+
+
+def _selection_saved_photo_id_if_live(selection_item, existing_ids=None):
+    if not isinstance(selection_item, dict):
+        return ""
+    saved_photo_id = str(selection_item.get("saved_photo_id") or "").strip()
+    if not saved_photo_id:
+        return ""
+    if existing_ids is None:
+        existing_ids = _existing_photo_ids_for_current_member([saved_photo_id])
+    live_ids = set(existing_ids or set())
+    return saved_photo_id if saved_photo_id in live_ids else ""
+
+
+def _clear_video_ai_saved_photo_link(source_video_id, selection_rank, stale_saved_photo_id=""):
+    source_video_id = str(source_video_id or "").strip()
+    try:
+        selection_rank = int(selection_rank or 0)
+    except Exception:
+        selection_rank = 0
+    stale_saved_photo_id = str(stale_saved_photo_id or "").strip()
+    if not source_video_id or selection_rank <= 0:
+        return False
+    try:
+        current = (
+            supabase_client().table(PHOTO_TABLE).select("id,reflection_json")
+            .eq("id", source_video_id)
+            .eq("family_key", current_family_key()).eq("member_key", current_member_key())
+            .limit(1).execute()
+        )
+        row = (current.data or [None])[0] or {}
+    except Exception:
+        return False
+    reflection = row.get("reflection_json") or {}
+    if not isinstance(reflection, dict):
+        reflection = {}
+    selection = reflection.get("ai_selection") or {}
+    if not isinstance(selection, dict):
+        selection = {}
+    items = selection.get("items") or []
+    changed = False
+    if isinstance(items, list):
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            if int(item.get("rank") or 0) != selection_rank:
+                continue
+            current_saved = str(item.get("saved_photo_id") or "").strip()
+            if not current_saved:
+                break
+            if stale_saved_photo_id and current_saved != stale_saved_photo_id:
+                break
+            item["saved_photo_id"] = None
+            changed = True
+            break
+    if changed:
+        selection["items"] = items
+        selection["updated_at"] = now_jst().isoformat()
+        reflection["ai_selection"] = selection
+        _write_photo_reflection(source_video_id, reflection)
+    return changed
+
+
 def save_video_ai_selection_as_photo(video_photo, selection_item):
     """Copy one AI derivative into the normal photo collection exactly once.
 
@@ -19179,8 +19257,17 @@ def save_video_ai_selection_as_photo(video_photo, selection_item):
     except Exception:
         pass
 
-    if selection_item.get("saved_photo_id"):
-        return str(selection_item.get("saved_photo_id"))
+    live_saved_photo_id = _selection_saved_photo_id_if_live(selection_item)
+    if live_saved_photo_id:
+        return live_saved_photo_id
+    stale_saved_photo_id = str(selection_item.get("saved_photo_id") or "").strip()
+    if stale_saved_photo_id:
+        try:
+            _clear_video_ai_saved_photo_link(video_photo.get("id"), rank, stale_saved_photo_id)
+        except Exception:
+            pass
+        selection_item = dict(selection_item)
+        selection_item["saved_photo_id"] = None
 
     source_path = str(selection_item.get("storage_path") or "").strip()
     if not source_path:
@@ -20154,6 +20241,16 @@ def delete_photo_and_related_data(
     photo = next((p for p in photos if p.get("id") == photo_id), None)
     if not photo:
         raise ValueError("削除する画像が見つかりませんでした。")
+
+    try:
+        reflection = photo.get("reflection_json") or {}
+        reflection = reflection if isinstance(reflection, dict) else {}
+        source_video_id = str(reflection.get("source_video_photo_id") or "").strip()
+        source_selection_rank = int(reflection.get("source_selection_rank") or 0)
+        if source_video_id and source_selection_rank > 0:
+            _clear_video_ai_saved_photo_link(source_video_id, source_selection_rank, str(photo_id or ""))
+    except Exception:
+        pass
 
     storage_paths = photo_all_storage_paths(photo)
     if storage_paths:
@@ -38397,6 +38494,8 @@ def _render_moments_picker(photo, index, view_mode=None, next_video_action=None)
         rank for rank in (st.session_state.get(selection_state_key) or [])
         if int(rank) in valid_ranks
     )
+    linked_saved_photo_ids = [str(item.get("saved_photo_id") or "").strip() for item in grid_items if isinstance(item, dict)]
+    live_saved_photo_ids = _existing_photo_ids_for_current_member(linked_saved_photo_ids)
     cards = []
     for item_index, item in enumerate(grid_items):
         rank = int(item.get("rank") or item_index + 1)
@@ -38420,7 +38519,7 @@ def _render_moments_picker(photo, index, view_mode=None, next_video_action=None)
                 "emotion": selection_item_tag_values(item)[0],
                 "parenting": selection_item_tag_values(item)[1],
                 "voice_candidate_rank": max(0, int(item.get("voice_candidate_rank") or 0)),
-                "saved": bool(str(item.get("saved_photo_id") or "").strip()),
+                "saved": bool(_selection_saved_photo_id_if_live(item, live_saved_photo_ids)),
                 "meta": f"{seconds:.1f}秒・{quality}",
                 "reason": str(item.get("reason") or "").strip(),
             }
@@ -38541,7 +38640,7 @@ def _render_moments_picker(photo, index, view_mode=None, next_video_action=None)
                     )
                     if not isinstance(active_item, dict):
                         st.warning("写真を確認できませんでした。")
-                    elif active_item.get("saved_photo_id"):
+                    elif _selection_saved_photo_id_if_live(active_item, live_saved_photo_ids):
                         st.session_state["_moments_notice"] = "この写真はすでに日記に登録されています。"
                         st.rerun(scope="app")
                     else:
@@ -38567,7 +38666,7 @@ def _render_moments_picker(photo, index, view_mode=None, next_video_action=None)
                                 rank = int(action_item.get("rank") or 0)
                                 if rank not in selected_rank_set:
                                     continue
-                                if not action_item.get("saved_photo_id"):
+                                if not _selection_saved_photo_id_if_live(action_item, live_saved_photo_ids):
                                     save_video_ai_selection_as_photo(action_photo, action_item)
                                     newly_saved += 1
                             record_video_ai_human_choices(action_photo, selected_rank_set)
@@ -38676,7 +38775,7 @@ def _render_moments_picker(photo, index, view_mode=None, next_video_action=None)
                 st.session_state.pop(voice_candidate_choice_key, None)
                 st.rerun()
             active_item = next((item for item in items if int(item.get("rank") or 0) == rank), None)
-            if isinstance(active_item, dict) and not active_item.get("saved_photo_id"):
+            if isinstance(active_item, dict) and not _selection_saved_photo_id_if_live(active_item, live_saved_photo_ids):
                 if st.button(
                     "この写真を日記に登録",
                     type="primary",
@@ -38787,7 +38886,7 @@ def _render_moments_picker(photo, index, view_mode=None, next_video_action=None)
                         rank = int(item.get("rank") or 0)
                         if rank not in selected_rank_set:
                             continue
-                        if not item.get("saved_photo_id"):
+                        if not _selection_saved_photo_id_if_live(item, live_saved_photo_ids):
                             save_video_ai_selection_as_photo(photo, item)
                             newly_saved += 1
                     record_video_ai_human_choices(photo, selected_rank_set)
