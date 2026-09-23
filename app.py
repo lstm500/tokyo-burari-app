@@ -43,13 +43,14 @@ def _app_css_v473(markup, **_ignored):
 # Review menu-only update: 2026-09-19 JST
 GENERATED_UPDATE_JST = "2026-09-19T14:54:38+09:00"
 
-APP_BUILD = "v505"
+APP_BUILD = "v506"
 # v499: Experience-card photos are manual-selection only. Pressing the photo button opens the picker; nothing is auto-selected. Obvious Android screenshots are hidden from the picker, selected photos are previewed under the buttons, and multiple selected photos are always combined into one experience card.
 
 # v500: Match the existing moments photo-selection UI for experience cards: three thumbnails per row, select by tapping the photo card itself (no visible "選ぶ" buttons), allow multiple photos across repeated opens, and collapse the picker immediately after each selection.
 # v502: Experience selected-photo previews now use the same gallery component as the existing photo screens, so mobile keeps a real 3-column grid instead of Streamlit columns stacking vertically.
 # v503: Experience photo picker now uses the same full past-photo library as 「これまで撮った写真」. Normal tap selects one and closes; long-press enters multi-select. Long-pressing already-selected experience photos enters multi-remove mode without deleting the original library photos.
 # v505: After experience photos are selected, infer the food from the images, combine it with the photos' saved GPS, reuse Nearby/Google Places search to suggest up to three likely shops, and carry the selected shop into the experience card.
+# v506: Good Moments now lets the user move between every ready video instead of being locked to the newest one. Camera photo→video switching uses an explicit transition state and a frozen preview frame while the camera is reopened, preventing the menu/blank-screen jump during mode changes.
 # v496: map-only GPS anti-spaghetti cleanup. Preserve every stored GPS row and existing distance/station calculations, but render a stricter high-confidence line: reject large/low-quality station-area jumps, remove rapid U-turn spikes, and collapse short dense drift loops so urban-canyon GPS cannot paint radial lines through buildings.
 # v494: drain pending Android GPS on Burari Project in 500-point acknowledged batches; rerun immediately after each successful save so the next batch can be acknowledged and recovered without user taps.
 # v493: request native GPS diagnostics on Settings as well as Burari Project, using a per-page throttle key so the log page can actually receive Android status without forcing a GPS cloud flush.
@@ -1992,6 +1993,8 @@ export default function(component) {
   let stream = null;
   let cameraStartGeneration = 0;
   let videoPrepareRequested = false;
+  let cameraModeSwitchInProgress = false;
+  let cameraTransitionPoster = '';
   let cameraMode = 'photo';
   let cameraFacing = 'environment';
   // v313: remember the actual lens so photo/video use the same physical camera.
@@ -2653,9 +2656,62 @@ export default function(component) {
     hideReview();
   };
 
+  const captureCameraTransitionPoster = () => {
+    if (!video || !canvas || !(video.videoWidth > 0) || !(video.videoHeight > 0)) return '';
+    try {
+      const maxEdge = 960;
+      const scale = Math.min(1, maxEdge / Math.max(video.videoWidth, video.videoHeight));
+      canvas.width = Math.max(1, Math.round(video.videoWidth * scale));
+      canvas.height = Math.max(1, Math.round(video.videoHeight * scale));
+      const ctx = canvas.getContext('2d', { alpha: false });
+      if (!ctx) return '';
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+      return canvas.toDataURL('image/jpeg', 0.76);
+    } catch (_) {
+      return '';
+    }
+  };
+
+  const clearCameraTransitionPoster = () => {
+    cameraTransitionPoster = '';
+    if (video) {
+      try { video.removeAttribute('poster'); } catch (_) {}
+    }
+  };
+
+  const releaseCurrentCameraForModeSwitch = () => {
+    // Keep the camera area in place while Android/WebView reopens the same lens in
+    // photo/video mode. The old implementation called showMenu(), which made a mode
+    // switch look like the camera had closed and then reopened.
+    stopActiveRecorderSilently();
+    cameraTransitionPoster = captureCameraTransitionPoster();
+    if (stream) {
+      stopMediaStream(stream);
+      stream = null;
+    }
+    if (video) {
+      try { video.pause(); } catch (_) {}
+      video.srcObject = null;
+      if (cameraTransitionPoster) video.poster = cameraTransitionPoster;
+      video.hidden = false;
+    }
+    pendingMedia = null;
+    pendingVideoBlob = null;
+    pendingPhotoLoadGeneration += 1;
+    pendingPhotoPreparePromise = null;
+    revokePendingPhotoPreviewUrl();
+    resetPendingPhotoBatch();
+    if (wrap) { wrap.classList.add('camera-live'); wrap.classList.remove('camera-reviewing'); }
+    if (menu) menu.hidden = true;
+    if (activeActions) activeActions.hidden = false;
+    if (libraryActions) libraryActions.hidden = true;
+    hideReview();
+  };
+
   const clearCurrentCameraStream = () => {
     stopActiveRecorderSilently();
     releaseLiveCameraForUpload();
+    clearCameraTransitionPoster();
     pendingMedia = null;
     pendingVideoBlob = null;
     pendingPhotoLoadGeneration += 1;
@@ -2690,17 +2746,29 @@ export default function(component) {
     return videoMode ? '動画撮影用のカメラまたはマイクを開けませんでした。権限設定を確認してください。' : 'カメラを開けませんでした。ブラウザのカメラ権限を確認してください。';
   };
 
-  const startCamera = async (mode = 'photo') => {
+  const startCamera = async (mode = 'photo', options = {}) => {
     const requestedMode = mode === 'video' ? 'video' : 'photo';
+    const fromModeSwitch = Boolean(options?.fromModeSwitch);
     if (requestedMode === 'video' && !videoAllowed) {
       if (videoPrepareAvailable && !videoPrepareRequested) {
         videoPrepareRequested = true;
+        cameraModeSwitchInProgress = fromModeSwitch;
+        if (fromModeSwitch) {
+          // Keep the current photo preview visible while the server prepares the
+          // signed video destination. Make the intended mode obvious immediately.
+          cameraMode = 'video';
+          syncOrientationUi();
+          if (shootButton) { shootButton.disabled = true; shootButton.textContent = '● 動画準備中'; }
+          if (modeSwitchButton) { modeSwitchButton.disabled = true; modeSwitchButton.textContent = '📷 写真へ'; }
+          if (facingSwitchButton) facingSwitchButton.disabled = true;
+          if (libraryActions) libraryActions.hidden = true;
+        }
         if (videoStartButton) videoStartButton.disabled = true;
-        if (modeSwitchButton) modeSwitchButton.disabled = true;
         setStatus('動画の保存先を準備しています…');
         setTriggerValue('video_prepare', { requested_at: Date.now() });
         return;
       }
+      cameraModeSwitchInProgress = false;
       setStatus(videoCapacityMessage);
       return;
     }
@@ -2708,8 +2776,18 @@ export default function(component) {
     // Each open request owns a generation token. A slow/failed older request is not
     // allowed to stop or overwrite a camera that the user opened afterwards.
     const generation = ++cameraStartGeneration;
-    clearCurrentCameraStream();
+    const liveBeforeSwitch = Boolean(
+      fromModeSwitch && stream && stream.getTracks && stream.getTracks().some((track) => track.readyState === 'live')
+    );
+    if (liveBeforeSwitch) releaseCurrentCameraForModeSwitch();
+    else clearCurrentCameraStream();
     cameraMode = requestedMode;
+    cameraModeSwitchInProgress = fromModeSwitch;
+    syncOrientationUi();
+    if (fromModeSwitch && shootButton) {
+      shootButton.disabled = true;
+      shootButton.textContent = requestedMode === 'video' ? '● 動画準備中' : '● 写真準備中';
+    }
 
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
       const message = 'このブラウザでは直接カメラを開けません。ChromeまたはSafariの最新版で開いてください。';
@@ -2817,6 +2895,7 @@ export default function(component) {
 
       stream = localCameraStream;
       video.srcObject = stream;
+      clearCameraTransitionPoster();
       try {
         await video.play();
       } catch (playErr) {
@@ -2943,6 +3022,7 @@ export default function(component) {
         localStorage.setItem('tokyo_burari_last_camera_mode_v1', requestedMode);
       } catch (_) {}
 
+      cameraModeSwitchInProgress = false;
       if (requestedMode === 'video') {
         const fpsLabel = Number(appliedVideoFps || 0) >= 50 ? '60fps' : '端末対応フレームレート';
         if (audioReady) {
@@ -2960,6 +3040,8 @@ export default function(component) {
       }
     } catch (err) {
       console.error(err);
+      cameraModeSwitchInProgress = false;
+      clearCameraTransitionPoster();
       stopMediaStream(localAudioStream);
       // Only the request that is still current may tear down its own camera. An older
       // rejected play()/getUserMedia() promise must not break a newer photo/video request.
@@ -4782,7 +4864,10 @@ export default function(component) {
 
   const switchCameraMode = () => {
     if (mediaRecorder && mediaRecorder.state === 'recording') return;
-    startCamera(cameraMode === 'video' ? 'photo' : 'video');
+    if (cameraModeSwitchInProgress) return;
+    const targetMode = cameraMode === 'video' ? 'photo' : 'video';
+    cameraModeSwitchInProgress = true;
+    startCamera(targetMode, { fromModeSwitch: true });
   };
 
   const switchCameraFacing = () => {
@@ -4808,8 +4893,8 @@ export default function(component) {
     }, 180);
   };
 
-  const startPhotoCamera = () => startCamera('photo');
-  const startVideoCamera = () => startCamera('video');
+  const startPhotoCamera = () => { cameraModeSwitchInProgress = false; startCamera('photo'); };
+  const startVideoCamera = () => { cameraModeSwitchInProgress = false; startCamera('video'); };
 
   startButton.addEventListener('click', startPhotoCamera);
   videoStartButton.addEventListener('click', startVideoCamera);
@@ -4879,7 +4964,7 @@ export default function(component) {
 }
 """
 
-LIVE_CAMERA_COMPONENT_BUILD = "v445"
+LIVE_CAMERA_COMPONENT_BUILD = "v506"
 
 # v383: this bundle is large. Register it only on the Camera page so unrelated
 # Streamlit reruns do not pay the camera component setup cost.
@@ -4893,7 +4978,7 @@ def _get_live_camera_component():
     _live_camera_component_initialized = True
     try:
         live_camera_component = st.components.v2.component(
-            "tokyo_burari_live_camera_v444",
+            "tokyo_burari_live_camera_v506",
             html=_LIVE_CAMERA_HTML,
             css=_LIVE_CAMERA_CSS,
             js=_perf_instrument_js_v466(_LIVE_CAMERA_JS),
@@ -38440,7 +38525,34 @@ def page_moments():
 
             st.divider()
             st.markdown("### いま確認する動画")
-            st.caption(f"{ready_index + 1} / {len(ready)}本　・　{_moments_video_title(current_video)}")
+            if len(ready) > 1:
+                nav_left, nav_center, nav_right = st.columns([1, 1.35, 1], gap="small")
+                with nav_left:
+                    if st.button(
+                        "← 前の動画",
+                        use_container_width=True,
+                        disabled=ready_index <= 0,
+                        key=f"moments_ready_prev_v506_{ready_index}_{len(ready)}",
+                    ):
+                        st.session_state[index_key] = max(0, ready_index - 1)
+                        st.rerun()
+                with nav_center:
+                    st.markdown(
+                        f'<div style="text-align:center;padding:.65rem 0;font-weight:800;">{ready_index + 1} / {len(ready)}本</div>',
+                        unsafe_allow_html=True,
+                    )
+                with nav_right:
+                    if st.button(
+                        "次の動画 →",
+                        use_container_width=True,
+                        disabled=ready_index >= len(ready) - 1,
+                        key=f"moments_ready_next_v506_{ready_index}_{len(ready)}",
+                    ):
+                        st.session_state[index_key] = min(len(ready) - 1, ready_index + 1)
+                        st.rerun()
+            else:
+                st.caption("1 / 1本")
+            st.caption(_moments_video_title(current_video))
             _render_moments_picker(current_video, ready_index)
 
             if st.button(
