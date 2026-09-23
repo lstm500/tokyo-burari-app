@@ -1965,6 +1965,8 @@ export default function(component) {
   // Streamlit component trigger value.
   const videoUploadSignedUrl = String(data?.video_upload_signed_url || '');
   const videoUploadStoragePath = String(data?.video_upload_storage_path || '');
+  const videoUploadFallbackSignedUrl = String(data?.video_upload_fallback_signed_url || '');
+  const videoUploadFallbackStoragePath = String(data?.video_upload_fallback_storage_path || '');
   const candidateSheetSignedUrl = String(data?.video_candidate_sheet_signed_url || '');
   const candidateSheetStoragePath = String(data?.video_candidate_sheet_storage_path || '');
   const videoUnavailableReason = String(data?.video_unavailable_reason || '');
@@ -2310,6 +2312,8 @@ export default function(component) {
   };
   let reviewVideoUrl = '';
   let mediaRecorder = null;
+  let videoRecordingStartBusy = false;
+  let videoUploadBusy = false;
   let recordedChunks = [];
   let recordingStartedAt = 0;
   let recordingCapturedAt = '';
@@ -3161,7 +3165,19 @@ export default function(component) {
       throw new Error('動画のアップロード先がありません');
     }
     const contentType = String(blob.type || '').split(';', 1)[0] || 'video/webm';
-    return await uploadRawBlobToSignedUrl(blob, videoUploadSignedUrl, contentType, '動画');
+    try {
+      await uploadRawBlobToSignedUrl(blob, videoUploadSignedUrl, contentType, '動画');
+      return videoUploadStoragePath;
+    } catch (err) {
+      const detail = String(err?.message || '').toLowerCase();
+      const isCollision = detail.includes('keyalreadyexists')
+        || detail.includes('resource already exists')
+        || detail.includes('storage 409')
+        || detail.includes('\"duplicate\"');
+      if (!isCollision || !videoUploadFallbackSignedUrl || !videoUploadFallbackStoragePath) throw err;
+      await uploadRawBlobToSignedUrl(blob, videoUploadFallbackSignedUrl, contentType, '動画');
+      return videoUploadFallbackStoragePath;
+    }
   };
 
 
@@ -4114,7 +4130,11 @@ export default function(component) {
   };
 
   const startVideoRecording = async () => {
+    if (videoRecordingStartBusy || videoUploadBusy) return;
+    if (mediaRecorder && mediaRecorder.state !== 'inactive') return;
     if (!stream || !video.videoWidth || !video.videoHeight) return;
+    videoRecordingStartBusy = true;
+    if (shootButton) shootButton.disabled = true;
     const hasAudio = !!(stream.getAudioTracks && stream.getAudioTracks().some((track) => {
       try { track.enabled = true; } catch (_) {}
       return track.readyState === 'live' && track.enabled !== false;
@@ -4201,6 +4221,8 @@ export default function(component) {
           return;
         }
         try {
+          if (videoUploadBusy) return;
+          videoUploadBusy = true;
           const durationMs = Math.max(1, Date.now() - recordingStartedAt);
           const finalType = (recorder && recorder.mimeType) || mimeType || 'video/webm';
           const blob = new Blob(recordedChunks, { type: finalType });
@@ -4251,7 +4273,7 @@ export default function(component) {
           // Upload the original first. The trigger payload sent to Streamlit contains
           // only metadata and small JPEG stills, never the multi-megabyte video itself.
           setStatus('動画を保管庫へ送信しています…');
-          await uploadVideoBlobToSignedUrl(blob);
+          const actualVideoStoragePath = await uploadVideoBlobToSignedUrl(blob);
 
           // Do not build any browser-side candidate JPEG sheet. The saved
           // original video is now the single source of truth. The server extracts
@@ -4268,7 +4290,7 @@ export default function(component) {
           const mediaToSave = {
             kind: 'video_uploaded',
             recording_id: recordingId,
-            video_storage_path: videoUploadStoragePath,
+            video_storage_path: actualVideoStoragePath,
             video_size_bytes: blob.size,
             poster_data_url: posterDataUrl,
             candidate_frames: [],
@@ -4305,6 +4327,8 @@ export default function(component) {
           setStatus(message);
           setTriggerValue('camera_error', { name: 'VideoPrepareError', message, detail });
         } finally {
+          videoUploadBusy = false;
+          videoRecordingStartBusy = false;
           await closeRecordingAudioPipeline();
           if (recorder) {
             recorder.ondataavailable = null;
@@ -4321,6 +4345,7 @@ export default function(component) {
 
       mediaRecorder.start(1000);
       recordingStartedAt = Date.now();
+      videoRecordingStartBusy = false;
       setRecordingUi(true);
       updateRecordingClock();
       recordingTimer = setInterval(updateRecordingClock, 500);
@@ -4330,6 +4355,8 @@ export default function(component) {
       setStatus(hasAudio ? '' : '音声なしで動画を録画しています。');
     } catch (err) {
       console.error(err);
+      videoRecordingStartBusy = false;
+      if (shootButton) shootButton.disabled = false;
       await closeRecordingAudioPipeline();
       setRecordingUi(false);
       const message = 'この端末では動画録画を開始できませんでした。ブラウザを最新版にしてください。';
@@ -4731,14 +4758,14 @@ export default function(component) {
         setStatus('選んだ動画を保管庫へ送信しています…');
         const mimeType = String(mediaToSave.mime_type || inferGalleryVideoMime(pendingVideoBlob) || 'video/mp4');
         releaseLiveCameraForUpload();
-        await uploadRawBlobToSignedUrl(pendingVideoBlob, videoUploadSignedUrl, mimeType, '動画');
+        const actualVideoStoragePath = await uploadVideoBlobToSignedUrl(pendingVideoBlob);
         const recordingId = (globalThis.crypto && typeof globalThis.crypto.randomUUID === 'function')
           ? globalThis.crypto.randomUUID()
           : `gallery_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
         const uploadedPayload = {
           kind: 'video_uploaded',
           recording_id: recordingId,
-          video_storage_path: videoUploadStoragePath,
+          video_storage_path: actualVideoStoragePath,
           video_size_bytes: pendingVideoBlob.size,
           poster_data_url: String(mediaToSave.poster_data_url || ''),
           candidate_frames: [],
@@ -4838,6 +4865,7 @@ export default function(component) {
 
   const handleShoot = () => {
     if (cameraMode === 'video') {
+      if (videoRecordingStartBusy || videoUploadBusy) return;
       if (mediaRecorder && mediaRecorder.state === 'recording') stopVideoRecording();
       else startVideoRecording();
     } else {
@@ -4863,6 +4891,7 @@ export default function(component) {
   };
 
   const switchCameraMode = () => {
+    if (videoRecordingStartBusy || videoUploadBusy) return;
     if (mediaRecorder && mediaRecorder.state === 'recording') return;
     if (cameraModeSwitchInProgress) return;
     const targetMode = cameraMode === 'video' ? 'photo' : 'video';
@@ -4871,6 +4900,7 @@ export default function(component) {
   };
 
   const switchCameraFacing = () => {
+    if (videoRecordingStartBusy || videoUploadBusy) return;
     if (mediaRecorder && mediaRecorder.state === 'recording') return;
     cameraFacing = cameraFacing === 'user' ? 'environment' : 'user';
     preferredCameraDeviceId = null;
@@ -14967,6 +14997,26 @@ def _create_signed_video_upload_url(path):
     raise RuntimeError("動画アップロード先を作成できませんでした。" + " / ".join(errors[:3]))
 
 
+def _storage_object_exists_v507(path):
+    """Best-effort check used only to avoid reusing a consumed signed upload path."""
+    clean_path = str(path or "").strip().strip("/")
+    if not clean_path or "/" not in clean_path:
+        return False
+    folder, name = clean_path.rsplit("/", 1)
+    try:
+        rows = _coerce_storage_list_rows(
+            supabase_client().storage.from_(PHOTO_BUCKET).list(
+                folder,
+                {"limit": 20, "offset": 0, "search": name},
+            )
+        )
+        return any(str(row.get("name") or "").strip() == name for row in rows)
+    except Exception:
+        # Collision prevention must never make video mode unavailable if Storage list
+        # is temporarily unsupported/unavailable. A 409 is still recovered below.
+        return False
+
+
 def get_camera_video_upload_reservation(trip_id, capture_serial):
     """Return one stable signed upload destination for the current camera capture."""
     state_key = "_camera_video_upload_reservation_v116"
@@ -14982,8 +15032,24 @@ def get_camera_video_upload_reservation(trip_id, capture_serial):
             and int(current.get("capture_serial") if current.get("capture_serial") is not None else -1) == serial
             and str(current.get("storage_path") or "").strip()
             and str(current.get("signed_url") or "").strip()
+            and str(current.get("fallback_storage_path") or "").strip()
+            and str(current.get("fallback_signed_url") or "").strip()
         ):
-            return current
+            # A signed upload URL is single-use for our non-upsert video path. If a
+            # previous browser upload reached Storage but registration did not finish,
+            # reusing the reservation causes KeyAlreadyExists forever. Verify that the
+            # cached destination is still empty and rotate it when already consumed.
+            now_ts = time.time()
+            last_check = float(current.get("empty_verified_at_v507") or 0.0)
+            if (now_ts - last_check) < 8.0:
+                return current
+            current_path = str(current.get("storage_path") or "").strip()
+            if not _storage_object_exists_v507(current_path):
+                current = dict(current)
+                current["empty_verified_at_v507"] = now_ts
+                st.session_state[state_key] = current
+                return current
+            st.session_state.pop(state_key, None)
 
     stamp = now_jst().strftime("%Y%m%d_%H%M%S_%f")
     token = uuid.uuid4().hex[:12]
@@ -14991,6 +15057,9 @@ def get_camera_video_upload_reservation(trip_id, capture_serial):
     # Safari and WebM on Chromium. Storage metadata carries the real MIME type.
     storage_path = f"{family_key}/{member_key}/{trip_id}/{stamp}_{token}_video.video"
     signed_url = _create_signed_video_upload_url(storage_path)
+    fallback_token = uuid.uuid4().hex[:12]
+    fallback_path = f"{family_key}/{member_key}/{trip_id}/{stamp}_{fallback_token}_video.video"
+    fallback_signed_url = _create_signed_video_upload_url(fallback_path)
     # The existing background job extracts candidates from the saved original.
     # Avoid creating a second unused signed URL before opening the video camera.
     candidate_sheet_path = ""
@@ -15002,9 +15071,12 @@ def get_camera_video_upload_reservation(trip_id, capture_serial):
         "capture_serial": serial,
         "storage_path": storage_path,
         "signed_url": signed_url,
+        "fallback_storage_path": fallback_path,
+        "fallback_signed_url": fallback_signed_url,
         "candidate_sheet_path": candidate_sheet_path,
         "candidate_sheet_signed_url": candidate_sheet_signed_url,
         "created_at": now_jst().isoformat(),
+        "empty_verified_at_v507": time.time(),
     }
     st.session_state[state_key] = reservation
     return reservation
@@ -15072,6 +15144,23 @@ def register_browser_uploaded_video(
     poster_path = base + "_video.jpg"
     client = supabase_client()
     poster_uploaded = False
+    # Streamlit/component reruns can deliver the same uploaded video more than once.
+    # Treat an existing DB row for this deterministic poster path as already saved.
+    try:
+        existing_result = (
+            client.table(PHOTO_TABLE)
+            .select("id,trip_id,storage_path,captured_at,reflection_json,signals_json")
+            .eq("trip_id", trip_id)
+            .eq("family_key", current_family_key()).eq("member_key", current_member_key())
+            .eq("storage_path", poster_path)
+            .limit(1)
+            .execute()
+        )
+        existing_rows = existing_result.data or []
+        if existing_rows and isinstance(existing_rows[0], dict):
+            return existing_rows[0]
+    except Exception:
+        pass
     reflection = {
         "capture_source": str(capture_source or "video_camera"),
         "location": location if isinstance(location, dict) else {},
@@ -15110,7 +15199,7 @@ def register_browser_uploaded_video(
         client.storage.from_(PHOTO_BUCKET).upload(
             path=poster_path,
             file=poster,
-            file_options={"content-type": "image/jpeg", "cache-control": "3600"},
+            file_options={"content-type": "image/jpeg", "cache-control": "3600", "upsert": "true"},
         )
         poster_uploaded = True
         result = (
@@ -15166,11 +15255,8 @@ def register_browser_uploaded_video(
         launch_photo_place_enrichment_v394(saved_row, location)
         return saved_row
     except Exception:
-        if poster_uploaded:
-            try:
-                client.storage.from_(PHOTO_BUCKET).remove([poster_path])
-            except Exception:
-                pass
+        # Keep a successfully uploaded poster. The next idempotent registration can
+        # reuse/upsert it; deleting here can race with a duplicate component event.
         raise
 
 
@@ -38903,6 +38989,9 @@ def page_trip():
     notice = st.session_state.pop("_camera_notice", None)
     if notice:
         st.success(notice)
+    camera_warning = st.session_state.pop("_camera_warning_v507", None)
+    if camera_warning:
+        st.warning(camera_warning)
     batch_error = st.session_state.pop("_camera_batch_error_v441", None)
     if batch_error:
         with st.expander("保存できなかった写真の詳細"):
@@ -38991,6 +39080,8 @@ def page_trip():
             "video_max_bytes": browser_video_max_bytes,
             "video_upload_signed_url": str(video_reservation.get("signed_url") or ""),
             "video_upload_storage_path": str(video_reservation.get("storage_path") or ""),
+            "video_upload_fallback_signed_url": str(video_reservation.get("fallback_signed_url") or ""),
+            "video_upload_fallback_storage_path": str(video_reservation.get("fallback_storage_path") or ""),
             "video_candidate_sheet_signed_url": str(video_reservation.get("candidate_sheet_signed_url") or ""),
             "video_candidate_sheet_storage_path": str(video_reservation.get("candidate_sheet_path") or ""),
             "gallery_import_identity_hashes": list(gallery_marker_payload_v444.get("identity_hashes") or []),
@@ -39014,6 +39105,9 @@ def page_trip():
         request_token = str(video_prepare.get("requested_at") or "")
         if request_token and request_token != str(st.session_state.get("_camera_video_prepare_token_v394") or ""):
             st.session_state["_camera_video_prepare_token_v394"] = request_token
+            # Each explicit photo->video transition gets a fresh one-shot upload path.
+            clear_camera_video_upload_reservation()
+            st.session_state.capture_serial += 1
             st.session_state["_camera_prepare_video_v394"] = True
             st.session_state["_camera_auto_start_video"] = True
             st.session_state["_camera_entry_mode_v394"] = "video"
@@ -39021,10 +39115,27 @@ def page_trip():
 
     if camera_error:
         message = camera_error.get("message") if isinstance(camera_error, dict) else str(camera_error)
+        detail = str(camera_error.get("detail") or "").strip() if isinstance(camera_error, dict) else ""
+        collision_text = f"{message or ''} {detail}".lower()
+        storage_collision = any(token in collision_text for token in (
+            "keyalreadyexists", "resource already exists", '"duplicate"', "statuscode\":\"409", "storage 409",
+        ))
+        if storage_collision:
+            # The current Blob could not be committed because its one-shot destination
+            # had already been consumed. Rotate the reservation immediately so the next
+            # recording cannot repeat the same 409 forever.
+            clear_camera_video_upload_reservation()
+            st.session_state.capture_serial += 1
+            st.session_state["_camera_entry_mode_v394"] = "video"
+            st.session_state["_camera_auto_start_video"] = True
+            st.session_state["_camera_warning_v507"] = (
+                "動画の保存先が重複していたため、自動的に新しい保存先へ切り替えました。"
+                "直前の動画は保存されていないため、もう一度撮影してください。"
+            )
+            st.rerun(scope="app")
         if message:
             st.warning(message)
         if isinstance(camera_error, dict):
-            detail = str(camera_error.get("detail") or "").strip()
             if detail and detail not in str(message or ""):
                 with st.expander("動画保存エラーの詳細", expanded=True):
                     st.code(detail)
