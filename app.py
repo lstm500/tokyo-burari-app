@@ -29545,6 +29545,7 @@ def _open_experience_callback_v497():
     st.session_state["_experience_selected_photo_enlarged_index_v502"] = 0
     st.session_state["_experience_manual_food_open_v509"] = False
     st.session_state["_experience_photo_picker_page_v503"] = 0
+    st.session_state.pop("_experience_saved_cards_view_v513", None)
     # Force the photo/audio components to remount so an old enlarged/custom-component
     # state cannot survive entry from Home.  Draft data itself is intentionally kept.
     st.session_state["_experience_draft_serial_v497"] = int(
@@ -34081,8 +34082,99 @@ def infer_experience_store_candidates_manual_v509(photos, food_query, base_infer
         "reason": "ok" if candidates else "no_candidates",
     }
 
+def _render_saved_experience_cards_v513(cards):
+    """Render saved experience cards as a compact mobile-friendly list."""
+    cards = [card for card in (cards or []) if isinstance(card, dict)]
+    if not cards:
+        st.info("作成済みの体験カードはまだありません。")
+        return
+
+    per_page = 12
+    page_count = max(1, math.ceil(len(cards) / per_page))
+    page_key = "_experience_saved_cards_page_v513"
+    try:
+        current_page = int(st.session_state.get(page_key) or 0)
+    except Exception:
+        current_page = 0
+    current_page = max(0, min(current_page, page_count - 1))
+    st.session_state[page_key] = current_page
+
+    visible_cards = cards[current_page * per_page:(current_page + 1) * per_page]
+    paths = []
+    for card in visible_cards:
+        first_path = next(iter(card.get("photo_storage_paths") or []), "")
+        if first_path:
+            paths.append(first_path)
+    try:
+        signed = signed_photo_url_map(paths, expires_in=1800) if paths else {}
+    except Exception:
+        signed = {}
+
+    st.caption(f"{len(cards)}件の体験カード")
+    for card in visible_cards:
+        first_path = next(iter(card.get("photo_storage_paths") or []), "")
+        image_url = ""
+        if first_path:
+            image_url = signed.get(first_path) or photo_display_url(
+                {"storage_path": first_path}, signed_map=signed, max_px=360, quality=78
+            )
+
+        category = str(card.get("compare_category") or EXPERIENCE_COMPARE_EXCLUDED_V497)
+        place = str(card.get("place_name") or "不明")
+        experience_type = str(card.get("experience_type") or "体験")
+        item_name = str(card.get("item_name") or "不明")
+        category_label = category if category != EXPERIENCE_COMPARE_EXCLUDED_V497 else ("おやつ" if experience_type == "おやつ" else experience_type)
+        headline = f"{place}　{category_label}"
+        meta_parts = [str(card.get("trip_date") or "")]
+        if experience_type == "おやつ":
+            meta_parts.append(f"商品名：{item_name}")
+        meta = "　".join([x for x in meta_parts if x])
+        comment = str(card.get("child_comment") or "").strip()
+
+        if image_url:
+            image_html = (
+                f'<img src="{html.escape(str(image_url), quote=True)}" '
+                'style="width:88px;height:88px;flex:0 0 88px;object-fit:cover;border-radius:12px;background:rgba(128,128,128,.08);" />'
+            )
+        else:
+            image_html = (
+                '<div style="width:88px;height:88px;flex:0 0 88px;border-radius:12px;'
+                'background:rgba(128,128,128,.08);display:flex;align-items:center;justify-content:center;'
+                'font-size:1.5rem;">📝</div>'
+            )
+        st.markdown(
+            f"""
+            <div style="display:flex;gap:10px;align-items:flex-start;border:1px solid rgba(128,128,128,.18);border-radius:15px;padding:9px;margin:8px 0;background:rgba(128,128,128,.025);">
+              {image_html}
+              <div style="min-width:0;flex:1;">
+                <div style="font-size:.98rem;font-weight:850;line-height:1.35;">{html.escape(headline)}</div>
+                <div style="font-size:.70rem;opacity:.66;margin-top:3px;line-height:1.35;">{html.escape(meta)}</div>
+                <div style="font-size:.86rem;font-weight:620;margin-top:7px;line-height:1.48;">「{html.escape(comment)}」</div>
+              </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    if page_count > 1:
+        st.caption(f"{current_page + 1} / {page_count}ページ")
+        prev_col, next_col = st.columns(2, gap="small")
+        with prev_col:
+            if st.button("← 前のカード", use_container_width=True, disabled=current_page <= 0, key=f"experience_saved_prev_v513_{current_page}"):
+                st.session_state[page_key] = max(0, current_page - 1)
+                st.rerun(scope="app")
+        with next_col:
+            if st.button("次のカード →", use_container_width=True, disabled=current_page >= page_count - 1, key=f"experience_saved_next_v513_{current_page}"):
+                st.session_state[page_key] = min(page_count - 1, current_page + 1)
+                st.rerun(scope="app")
+
+
 def page_experience_v503():
-    page_top("📝 体験を残す", "体験の感想と、選んだ写真から1つの体験カードを作ります。")
+    saved_cards_view = bool(st.session_state.get("_experience_saved_cards_view_v513"))
+    if saved_cards_view:
+        page_top("📚 作成済み体験カード", "これまで作成した体験カードを確認できます。")
+    else:
+        page_top("📝 体験を残す", "体験の感想と、選んだ写真から1つの体験カードを作ります。")
     _app_css_v473(
         """
         <style>
@@ -34117,6 +34209,23 @@ def page_experience_v503():
         st.warning("体験カードの保存状態を読み込めませんでした。")
         with st.expander("保護者向け詳細"):
             st.code(str(exc))
+
+    if saved_cards_view:
+        if st.button("← 体験を残すに戻る", use_container_width=True, key="experience_saved_cards_back_v513"):
+            st.session_state.pop("_experience_saved_cards_view_v513", None)
+            st.rerun(scope="app")
+        _render_saved_experience_cards_v513(cards)
+        return
+
+    if st.button(
+        f"📚 作成済み体験カードを見る（{len(cards)}件）",
+        use_container_width=True,
+        disabled=not bool(cards),
+        key="experience_open_saved_cards_v513",
+    ):
+        st.session_state["_experience_saved_cards_view_v513"] = True
+        st.session_state["_experience_saved_cards_page_v513"] = 0
+        st.rerun(scope="app")
 
     used_ids = _experience_used_photo_ids_v497(cards)
     transcript = str(st.session_state.get("_experience_transcript_v497") or "").strip()
@@ -34706,45 +34815,7 @@ def page_experience_v503():
             with st.expander("保護者向け詳細"):
                 st.code(str(exc))
 
-    if cards:
-        st.divider()
-        st.markdown("#### これまでの体験カード")
-        card_paths = []
-        for card in cards[:8]:
-            paths = list(card.get("photo_storage_paths") or [])
-            if paths:
-                card_paths.append(paths[0])
-        try:
-            card_signed = signed_photo_url_map(card_paths, expires_in=1800) if card_paths else {}
-        except Exception:
-            card_signed = {}
-        for card in cards[:8]:
-            first_path = next(iter(card.get("photo_storage_paths") or []), "")
-            image_col, text_col = st.columns([.82, 2.18], gap="small")
-            with image_col:
-                if first_path:
-                    url = card_signed.get(first_path) or photo_display_url({"storage_path": first_path}, signed_map=card_signed, max_px=320, quality=74)
-                    if url:
-                        st.image(url, use_container_width=True)
-            with text_col:
-                category = str(card.get("compare_category") or EXPERIENCE_COMPARE_EXCLUDED_V497)
-                place = str(card.get("place_name") or "不明")
-                item_name = str(card.get("item_name") or "不明")
-                if str(card.get("experience_type") or "") == "おやつ":
-                    headline = f"{place}　{category if category != EXPERIENCE_COMPARE_EXCLUDED_V497 else 'おやつ'}"
-                else:
-                    headline = f"{place}　{category if category != EXPERIENCE_COMPARE_EXCLUDED_V497 else str(card.get('experience_type') or '体験')}"
-                item_line = f"商品名：{item_name}" if str(card.get("experience_type") or "") == "おやつ" else ""
-                st.markdown(
-                    f"""
-                    <div class="experience-card-v499">
-                      <div class="experience-card-title-v499">{html.escape(headline)}</div>
-                      <div class="experience-card-meta-v499">{html.escape(str(card.get('trip_date') or ''))}{('　' + html.escape(item_line)) if item_line else ''}</div>
-                      <div class="experience-card-comment-v499">「{html.escape(str(card.get('child_comment') or ''))}」</div>
-                    </div>
-                    """,
-                    unsafe_allow_html=True,
-                )
+
 
 def page_experience_v498():
     page_top("📝 体験を残す", "体験の感想と写真から、あとで比べられる体験カードを作ります。")
