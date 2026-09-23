@@ -9209,6 +9209,7 @@ def transcribe_audio(audio_file, context=""):
         "5〜6歳の子どもの日本語の発話です。"
         "幼児の小さい声や少し不明瞭な発音も、前後の文脈を使って丁寧に聞き取ってください。"
         "ただし聞こえない語を推測で作らないでください。"
+        "風、走行音、雑踏、機械音、食器音、BGMなど人の発話ではない音を言葉として文字起こししないでください。"
         "子どもらしい言い回しを大人の表現に直しすぎず、聞こえた内容を自然な日本語として文字起こししてください。"
         "言い直しがあるときは、最後に言い直した内容を優先してください。"
     )
@@ -18293,7 +18294,7 @@ def video_ai_voice_candidate_meta(photo):
 
 VIDEO_VOICE_CANDIDATE_COUNT = 6
 VIDEO_VOICE_SNIPPET_SECONDS = 5.0
-VIDEO_VOICE_CANDIDATE_SCHEMA_VERSION = 6
+VIDEO_VOICE_CANDIDATE_SCHEMA_VERSION = 7
 
 
 def video_ai_voice_candidate_items(photo):
@@ -18306,16 +18307,15 @@ def video_ai_voice_candidate_items(photo):
         snippet_seconds = float(meta.get("snippet_seconds") or 0.0)
     except Exception:
         snippet_seconds = 0.0
-    # v439: schema v6 guarantees that the full source audio was STRONGLY cleaned BEFORE
-    # candidate ranking/pickup. Older sets, including the lighter v438 preprocessing,
-    # are regenerated so every preview/attachment comes from the stronger source pass.
-    cleanup_stage = str(meta.get("audio_cleanup_stage") or "").strip()
-    cleanup_version = str(meta.get("audio_cleanup_version") or "").strip()
+    # v515: cleaned audio is used only to FIND likely speech moments. The candidate
+    # audio itself, and therefore speech recognition, must come from the original
+    # video audio whenever possible. This avoids FFT/noise-reduction artifacts being
+    # mistaken for speech. Older candidate sets are regenerated once.
+    transcription_source = str(meta.get("transcription_source") or "").strip()
     if (
         schema_version < VIDEO_VOICE_CANDIDATE_SCHEMA_VERSION
         or snippet_seconds < 4.5
-        or cleanup_stage != "before_candidate_pickup"
-        or cleanup_version != VIDEO_VOICE_STRONG_CLEANUP_VERSION
+        or transcription_source != "original_audio_first"
     ):
         return []
     items = meta.get("items") or []
@@ -18576,10 +18576,11 @@ def generate_video_ai_voice_candidates(photo, force=False):
     if not video_raw:
         raise ValueError("元動画を読み込めませんでした。")
 
-    # v439 order is strict: 1) STRONGLY clean the complete source audio, 2) pick
-    # candidate regions from that cleaned signal, 3) cut/store those already-cleaned
-    # regions.  A dedicated stronger FFT profile is used here before ranking so steady
-    # station/road/HVAC noise is much less likely to outrank quieter child speech.
+    # v515: keep two roles separate. A strongly cleaned copy is used only for
+    # candidate timing/ranking so road/station/HVAC noise is less likely to win.
+    # The actual candidate clip and transcription are taken from the ORIGINAL video
+    # audio whenever possible. This preserves the child's real voice and avoids
+    # denoise artifacts being interpreted as words.
     source_cleanup = _clean_photo_voice_note_audio(
         video_raw,
         filename="source_video.mp4",
@@ -18643,40 +18644,67 @@ def generate_video_ai_voice_candidates(photo, force=False):
     uploaded_paths = []
     items = []
     try:
-        with tempfile.TemporaryDirectory(prefix="burari_voice_extract_cleaned_") as td:
-            # IMPORTANT: this source is already the full-track cleaned audio. Candidate
-            # boundaries and exported candidate bytes are therefore both downstream of
-            # the same cleanup pass. No raw-video waveform is used for ranking here.
-            input_path = os.path.join(td, "cleaned_source.m4a")
-            Path(input_path).write_bytes(cleaned_source_raw)
+        with tempfile.TemporaryDirectory(prefix="burari_voice_extract_original_first_") as td:
+            # Cleaned audio is used only for candidate discovery. Export the matching
+            # time window from the original video for listening/transcription.
+            cleaned_input_path = os.path.join(td, "cleaned_source.m4a")
+            original_input_path = os.path.join(td, "source_video.mp4")
+            Path(cleaned_input_path).write_bytes(cleaned_source_raw)
+            Path(original_input_path).write_bytes(video_raw)
             for spec in specs:
                 rank = int(spec.get("rank") or 0)
                 if rank <= 0:
                     continue
-                local_out = os.path.join(td, f"voice_{rank:02d}.m4a")
-                proc = subprocess.run(
+                start_sec = float(spec.get("start_sec") or 0.0)
+                duration_sec = float(spec.get("duration_sec") or VIDEO_VOICE_SNIPPET_SECONDS)
+                original_out = os.path.join(td, f"voice_{rank:02d}_original.m4a")
+                original_proc = subprocess.run(
                     [
                         ffmpeg, "-hide_banner", "-loglevel", "error", "-y",
-                        "-ss", f"{float(spec.get('start_sec') or 0.0):.3f}",
-                        "-t", f"{float(spec.get('duration_sec') or VIDEO_VOICE_SNIPPET_SECONDS):.3f}",
-                        "-i", input_path,
+                        "-ss", f"{start_sec:.3f}",
+                        "-t", f"{duration_sec:.3f}",
+                        "-i", original_input_path,
                         "-vn", "-ac", "1",
-                        "-c:a", "aac", "-b:a", "96k",
+                        "-c:a", "aac", "-b:a", "128k",
                         "-movflags", "+faststart",
-                        local_out,
+                        original_out,
                     ],
                     capture_output=True,
                     text=True,
                 )
-                if proc.returncode != 0 or not os.path.exists(local_out) or os.path.getsize(local_out) <= 64:
-                    continue
-                processed_raw = Path(local_out).read_bytes()
+
+                candidate_audio_source = "original"
+                processed_raw = b""
+                if original_proc.returncode == 0 and os.path.exists(original_out) and os.path.getsize(original_out) > 64:
+                    processed_raw = Path(original_out).read_bytes()
+
+                # Rare fallback: if the original container cannot be cut, keep the
+                # feature usable by cutting the already-cleaned analysis copy.
+                if not processed_raw:
+                    candidate_audio_source = "cleaned_fallback"
+                    fallback_out = os.path.join(td, f"voice_{rank:02d}_fallback.m4a")
+                    fallback_proc = subprocess.run(
+                        [
+                            ffmpeg, "-hide_banner", "-loglevel", "error", "-y",
+                            "-ss", f"{start_sec:.3f}",
+                            "-t", f"{duration_sec:.3f}",
+                            "-i", cleaned_input_path,
+                            "-vn", "-ac", "1",
+                            "-c:a", "aac", "-b:a", "96k",
+                            "-movflags", "+faststart",
+                            fallback_out,
+                        ],
+                        capture_output=True,
+                        text=True,
+                    )
+                    if fallback_proc.returncode == 0 and os.path.exists(fallback_out) and os.path.getsize(fallback_out) > 64:
+                        processed_raw = Path(fallback_out).read_bytes()
                 if not processed_raw:
                     continue
 
                 candidate_rank = len(items) + 1
-                processed_filename = f"voice_candidate_{candidate_rank:02d}_clean.m4a"
-                storage_path = f"{base}_voice_clean_{stamp}_{candidate_rank:02d}.m4a"
+                processed_filename = f"voice_candidate_{candidate_rank:02d}_original.m4a" if candidate_audio_source == "original" else f"voice_candidate_{candidate_rank:02d}_fallback.m4a"
+                storage_path = f"{base}_voice_original_{stamp}_{candidate_rank:02d}.m4a" if candidate_audio_source == "original" else f"{base}_voice_fallback_{stamp}_{candidate_rank:02d}.m4a"
                 storage_mime_type = _voice_storage_upload_mime("audio/mp4", processed_filename)
                 client.storage.from_(PHOTO_BUCKET).upload(
                     path=storage_path,
@@ -18691,7 +18719,12 @@ def generate_video_ai_voice_candidates(photo, force=False):
                     audio_copy.name = processed_filename
                     transcript = transcribe_audio(
                         audio_copy,
-                        context="東京ぶらり旅の動画音声全体へ強めのノイズ低減と音量補正を先に行い、その処理済み音声から切り出した最大5秒程度の短い音声候補です。",
+                        context=(
+                            "東京ぶらり旅の元動画から切り出した最大5秒程度の音声です。"
+                            "人の発話として明確に聞こえる部分だけを文字にしてください。"
+                            "走行音、風、雑踏、食器音、機械音、BGMなどの非発話音は言葉として解釈しないでください。"
+                            "聞き取れない箇所は推測で補わず、元の子どもの声を最優先してください。"
+                        ),
                     )
                 except Exception:
                     transcript = ""
@@ -18699,9 +18732,10 @@ def generate_video_ai_voice_candidates(photo, force=False):
                 cleanup_meta = {
                     "version": VIDEO_VOICE_STRONG_CLEANUP_VERSION,
                     "status": str(source_cleanup.get("status") or "applied"),
-                    "applied": True,
-                    "mode": "strong_noise_reduction_and_leveling",
-                    "stage": "whole_source_before_candidate_pickup",
+                    "applied": candidate_audio_source != "original",
+                    "mode": "cleaned_for_candidate_detection_original_for_playback_and_transcription",
+                    "stage": "candidate_detection_only",
+                    "candidate_audio_source": candidate_audio_source,
                 }
                 cleanup_error = str(source_cleanup.get("error") or "").strip()
                 if cleanup_error:
@@ -18719,6 +18753,7 @@ def generate_video_ai_voice_candidates(photo, force=False):
                         "duration_ms": int(round(float(spec.get("duration_sec") or VIDEO_VOICE_SNIPPET_SECONDS) * 1000)),
                         "score": int(round(float(spec.get("score") or 0.0))),
                         "transcript": transcript,
+                        "transcription_source": "original_audio" if candidate_audio_source == "original" else "cleaned_fallback",
                         "audio_cleanup": cleanup_meta,
                     }
                 )
@@ -18775,9 +18810,10 @@ def generate_video_ai_voice_candidates(photo, force=False):
             "candidate_count": len(items),
             "snippet_seconds": VIDEO_VOICE_SNIPPET_SECONDS,
             "boundary_mode": "natural_pause",
-            "audio_cleanup_stage": "before_candidate_pickup",
+            "transcription_source": "original_audio_first",
+            "audio_cleanup_stage": "candidate_detection_only",
             "audio_cleanup_version": VIDEO_VOICE_STRONG_CLEANUP_VERSION,
-            "audio_cleanup_order": ["whole_source_cleanup", "candidate_pickup", "candidate_cut"],
+            "audio_cleanup_order": ["whole_source_cleanup_for_detection", "candidate_pickup", "original_audio_cut", "original_audio_transcription"],
             "items": items,
         }
         selection["updated_at"] = now_jst().isoformat()
