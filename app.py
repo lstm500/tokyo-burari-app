@@ -22539,10 +22539,15 @@ def _upload_experience_audio_v497(raw_bytes, file_name, card_id):
     if not raw_bytes:
         return ""
     extension = _experience_audio_extension_v497(file_name)
-    mime_type = {
+    logical_mime_type = {
         "wav": "audio/wav", "m4a": "audio/mp4", "mp4": "audio/mp4",
         "ogg": "audio/ogg", "mp3": "audio/mpeg", "webm": "audio/webm",
     }.get(extension, "audio/webm")
+    # v512: PHOTO_BUCKET is shared with photos/videos and its MIME allow-list can
+    # reject audio/* metadata with Storage 415 invalid_mime. Voice clips elsewhere
+    # in this app already solve this by keeping the original audio bytes/extension
+    # while using the equivalent bucket-compatible video-container MIME metadata.
+    storage_mime_type = _voice_storage_upload_mime(logical_mime_type, file_name)
     path = (
         f"{current_family_key()}/{current_member_key()}/"
         f"_experience_cards/v1/{str(card_id)}.{extension}"
@@ -22550,7 +22555,7 @@ def _upload_experience_audio_v497(raw_bytes, file_name, card_id):
     supabase_client().storage.from_(PHOTO_BUCKET).upload(
         path=path,
         file=raw_bytes,
-        file_options={"content-type": mime_type, "cache-control": "3600", "upsert": "true"},
+        file_options={"content-type": storage_mime_type, "cache-control": "3600", "upsert": "true"},
     )
     return path
 
