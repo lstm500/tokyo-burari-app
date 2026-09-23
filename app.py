@@ -29526,8 +29526,29 @@ def _select_field_note_kind_callback(kind):
 
 
 def _open_experience_callback_v497():
-    """Open the compact experience-card draft without discarding an unfinished draft."""
+    """Open Experience at its normal top-level view while preserving the draft contents.
+
+    v510: a previous visit could leave the selected-photo preview in enlarged mode.
+    Re-entering from Home then looked as if the "体験を残す" button had done nothing,
+    because Streamlit restored that stale sub-view.  Keep the selected photos and
+    transcript, but always close transient pickers/zoom panels and remount the compact
+    Experience UI on entry.
+    """
     st.session_state.setdefault("_experience_draft_serial_v497", 1)
+    st.session_state["_experience_manual_picker_open_v499"] = False
+    st.session_state["_experience_selected_photo_view_mode_v502"] = "一覧モード"
+    st.session_state["_experience_selected_photo_enlarged_index_v502"] = 0
+    st.session_state["_experience_manual_food_open_v509"] = False
+    st.session_state["_experience_photo_picker_page_v503"] = 0
+    # Force the photo/audio components to remount so an old enlarged/custom-component
+    # state cannot survive entry from Home.  Draft data itself is intentionally kept.
+    st.session_state["_experience_draft_serial_v497"] = int(
+        st.session_state.get("_experience_draft_serial_v497") or 0
+    ) + 1
+    current = str(st.session_state.get("main_page") or "home")
+    if current == "experience":
+        st.session_state["_history_action"] = "replace"
+        return
     _set_page_state("experience", history_mode="push")
 
 
@@ -34297,6 +34318,7 @@ def page_experience_v503():
     # the typed food as the authoritative query.
     store_inference = {}
     selected_store_candidate = None
+    experience_flow_create_requested = False
     store_choice_key = "_experience_store_choice_v505"
     if selected_photos and not picker_open:
         signature = hashlib.sha1("|".join(selected_ids).encode("utf-8")).hexdigest()[:16]
@@ -34454,12 +34476,33 @@ def page_experience_v503():
                     st.caption("手入力した食べ物と撮影位置から候補を絞り直しました。")
                 else:
                     st.caption("写真の内容と撮影位置から候補を絞っています。正しければ操作不要です。違う場合だけ選び直してください。")
+
+                # v511: keep the experience flow visible immediately after the parent
+                # chooses a store. If a comment is already recorded, this CTA can
+                # create the card directly. Otherwise it opens the comment recorder
+                # directly below this section so the parent does not have to hunt for
+                # the next action elsewhere on the page.
+                if st.button(
+                    "体験を残す",
+                    type="primary",
+                    use_container_width=True,
+                    key=f"experience_store_continue_v511_{signature}",
+                ):
+                    if transcript and selected_ids:
+                        experience_flow_create_requested = True
+                    else:
+                        st.session_state["_experience_show_audio_v497"] = True
+                        st.session_state["_experience_flow_hint_v511"] = "続けて体験の感想を録音してください。"
             elif reason == "no_photo_location":
                 st.caption("この写真には利用できる撮影位置情報がないため、お店候補は表示できません。")
             elif reason in {"no_candidates", "no_food_query"}:
                 st.caption("撮影場所の近くから一致するお店候補を絞れませんでした。店名は不明のまま体験カードを作れます。")
             elif reason in {"vision_error", "inference_error"}:
                 st.caption("お店候補の推定に失敗しました。店名は不明のまま体験カードを作れます。")
+
+    flow_hint = st.session_state.pop("_experience_flow_hint_v511", None)
+    if flow_hint:
+        st.info(flow_hint)
 
     if st.session_state.get("_experience_show_audio_v497") or transcript:
         serial = int(st.session_state.get("_experience_draft_serial_v497") or 1)
@@ -34617,7 +34660,7 @@ def page_experience_v503():
         if missing:
             st.caption("・".join(missing) + "を用意すると作成できます。")
 
-    if create_clicked:
+    if create_clicked or experience_flow_create_requested:
         if not recent_by_id:
             try:
                 rows = _experience_photo_library_rows_v503()
