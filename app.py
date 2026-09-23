@@ -43,12 +43,13 @@ def _app_css_v473(markup, **_ignored):
 # Review menu-only update: 2026-09-19 JST
 GENERATED_UPDATE_JST = "2026-09-19T14:54:38+09:00"
 
-APP_BUILD = "v503"
+APP_BUILD = "v505"
 # v499: Experience-card photos are manual-selection only. Pressing the photo button opens the picker; nothing is auto-selected. Obvious Android screenshots are hidden from the picker, selected photos are previewed under the buttons, and multiple selected photos are always combined into one experience card.
 
 # v500: Match the existing moments photo-selection UI for experience cards: three thumbnails per row, select by tapping the photo card itself (no visible "選ぶ" buttons), allow multiple photos across repeated opens, and collapse the picker immediately after each selection.
 # v502: Experience selected-photo previews now use the same gallery component as the existing photo screens, so mobile keeps a real 3-column grid instead of Streamlit columns stacking vertically.
 # v503: Experience photo picker now uses the same full past-photo library as 「これまで撮った写真」. Normal tap selects one and closes; long-press enters multi-select. Long-pressing already-selected experience photos enters multi-remove mode without deleting the original library photos.
+# v505: After experience photos are selected, infer the food from the images, combine it with the photos' saved GPS, reuse Nearby/Google Places search to suggest up to three likely shops, and carry the selected shop into the experience card.
 # v496: map-only GPS anti-spaghetti cleanup. Preserve every stored GPS row and existing distance/station calculations, but render a stricter high-confidence line: reject large/low-quality station-area jumps, remove rapid U-turn spikes, and collapse short dense drift loops so urban-canyon GPS cannot paint radial lines through buildings.
 # v494: drain pending Android GPS on Burari Project in 500-point acknowledged batches; rerun immediately after each successful save so the next batch can be acknowledged and recovered without user taps.
 # v493: request native GPS diagnostics on Settings as well as Burari Project, using a per-page throttle key so the log page can actually receive Android status without forcing a GPS cloud flush.
@@ -22111,6 +22112,9 @@ def _normalize_experience_card_v497(raw):
         "child_comment": str(raw.get("child_comment") or "").strip()[:700],
         "raw_transcript": str(raw.get("raw_transcript") or "").strip()[:1200],
         "audio_storage_path": str(raw.get("audio_storage_path") or "").strip()[:500],
+        "food_label": str(raw.get("food_label") or "").strip()[:100],
+        "place_source": str(raw.get("place_source") or "").strip()[:80],
+        "place_google_place_id": str(raw.get("place_google_place_id") or "").strip()[:180],
         "photo_ids": photo_ids,
         "photo_storage_paths": photo_paths,
     }
@@ -22375,7 +22379,7 @@ def _upload_experience_audio_v497(raw_bytes, file_name, card_id):
     return path
 
 
-def create_experience_card_v497(photos, raw_transcript, audio_bytes=b"", audio_name="experience.webm"):
+def create_experience_card_v497(photos, raw_transcript, audio_bytes=b"", audio_name="experience.webm", place_candidate=None, compare_category_hint="", food_label_hint=""):
     photos = [x for x in photos or [] if isinstance(x, dict)][:EXPERIENCE_MANUAL_PHOTO_MAX_V497]
     raw_transcript = str(raw_transcript or "").strip()
     if not photos:
@@ -22418,6 +22422,28 @@ def create_experience_card_v497(photos, raw_transcript, audio_bytes=b"", audio_n
     if experience_type == "その他":
         category = EXPERIENCE_COMPARE_EXCLUDED_V497
 
+    # v505: the photo-only pass is intentionally narrow and only overrides a valid
+    # snack comparison bucket. This keeps taiyaki/pudding classification stable while
+    # letting the final card pass use the child's transcript for everything else.
+    compare_category_hint = str(compare_category_hint or "").strip()
+    if compare_category_hint in EXPERIENCE_SNACK_COMPARE_CATEGORIES_V497:
+        experience_type = "おやつ"
+        category = compare_category_hint
+
+    place_name = str((result or {}).get("place_name") or "不明").strip()[:120] or "不明"
+    place_source = "image" if place_name != "不明" else "unknown"
+    place_google_place_id = ""
+    if isinstance(place_candidate, dict):
+        if bool(place_candidate.get("force_unknown")):
+            place_name = "不明"
+            place_source = "user_unknown"
+        else:
+            candidate_name = str(place_candidate.get("name") or "").strip()[:120]
+            if candidate_name:
+                place_name = candidate_name
+                place_source = str(place_candidate.get("source") or "photo_location_search").strip()[:80] or "photo_location_search"
+                place_google_place_id = str(place_candidate.get("google_place_id") or "").strip()[:180]
+
     card_id = uuid.uuid4().hex
     audio_path = _upload_experience_audio_v497(audio_bytes, audio_name, card_id) if audio_bytes else ""
     first = valid_photos[0]
@@ -22430,9 +22456,12 @@ def create_experience_card_v497(photos, raw_transcript, audio_bytes=b"", audio_n
         "trip_id": str(first.get("trip_id") or ""),
         "experience_type": experience_type,
         "compare_category": category,
-        "place_name": str((result or {}).get("place_name") or "不明").strip()[:120] or "不明",
+        "place_name": place_name,
         "item_name": str((result or {}).get("item_name") or "不明").strip()[:120] or "不明",
         "child_comment": str((result or {}).get("child_comment") or "").strip()[:700] or raw_transcript[:700],
+        "food_label": str(food_label_hint or "").strip()[:100],
+        "place_source": place_source,
+        "place_google_place_id": place_google_place_id,
         "raw_transcript": raw_transcript[:1200],
         "audio_storage_path": audio_path,
         "photo_ids": [str(photo.get("id") or "") for photo in valid_photos if str(photo.get("id") or "")],
@@ -22456,6 +22485,7 @@ def _reset_experience_draft_v497():
         "_experience_selected_photo_view_mode_v502", "_experience_selected_photo_enlarged_index_v502",
         "_experience_photo_picker_page_v503", "_experience_photo_picker_last_token_v503",
         "_experience_selected_multi_last_token_v503",
+        "_experience_store_inference_v505", "_experience_store_choice_v505",
     ):
         st.session_state.pop(key, None)
     st.session_state["_experience_draft_serial_v497"] = int(st.session_state.get("_experience_draft_serial_v497") or 0) + 1
@@ -33254,6 +33284,411 @@ def _toggle_experience_photo_v499(photo_id):
     st.session_state[key] = selected
 
 
+EXPERIENCE_STORE_RADIUS_M_V505 = 450
+EXPERIENCE_STORE_MAX_CANDIDATES_V505 = 3
+
+
+def _experience_food_photo_schema_v505():
+    return {
+        "type": "object",
+        "properties": {
+            "is_food": {"type": "boolean"},
+            "food_label": {"type": "string"},
+            "compare_category": {
+                "type": "string",
+                "enum": list(EXPERIENCE_SNACK_COMPARE_CATEGORIES_V497) + [EXPERIENCE_COMPARE_EXCLUDED_V497],
+            },
+            "store_text_hints": {
+                "type": "array",
+                "items": {"type": "string"},
+                "minItems": 0,
+                "maxItems": 3,
+            },
+        },
+        "required": ["is_food", "food_label", "compare_category", "store_text_hints"],
+        "additionalProperties": False,
+    }
+
+
+def _experience_analyze_food_photos_v505(photos):
+    photos = [x for x in (photos or []) if isinstance(x, dict)][:EXPERIENCE_MANUAL_PHOTO_MAX_V497]
+    image_items = []
+    for index, photo in enumerate(photos, start=1):
+        path = str(photo.get("storage_path") or "").strip()
+        if not path:
+            continue
+        try:
+            raw = download_photo(path)
+            if not raw:
+                continue
+            image_items.append((f"【選択写真{index}】", _vision_ready_photo(raw, max_side=1000, quality=82)))
+        except Exception:
+            continue
+    if not image_items:
+        return {
+            "is_food": False,
+            "food_label": "",
+            "compare_category": EXPERIENCE_COMPARE_EXCLUDED_V497,
+            "store_text_hints": [],
+        }
+    snack_categories = "、".join(EXPERIENCE_SNACK_COMPARE_CATEGORIES_V497)
+    prompt = f"""
+親子の体験写真から、写真に写っている食べ物を判定してください。
+この結果は、写真の撮影位置周辺から「どのお店で買ったものか」の候補を探すために使います。
+
+比較カテゴリーは、次の固定分類からだけ選んでください:
+{snack_categories}
+該当しない・食べ物ではない・判定できない場合は「{EXPERIENCE_COMPARE_EXCLUDED_V497}」。
+
+ルール:
+- たい焼きとプリンのように、人間が別物として比較する食品を同じカテゴリーにしない。
+- food_label は写真から分かる食べ物の一般名だけを書く。例: たい焼き、プリン、たこ焼き。商品名を推測しない。
+- store_text_hints には、看板・包装・カップ・袋などに実際に読める店名やブランド名らしい文字だけを入れる。
+- 読めない文字や店名を推測して作らない。
+- 店舗外観だけで食べ物自体が分からない場合、看板等から明確に食品種が分かる時だけ food_label に入れる。
+- 観光写真など食体験でない場合は is_food=false とする。
+""".strip()
+    result = ask_json_with_images(
+        prompt,
+        image_items,
+        "burari_experience_food_store_hint_v505",
+        _experience_food_photo_schema_v505(),
+        max_output_tokens=360,
+    ) or {}
+    category = str(result.get("compare_category") or EXPERIENCE_COMPARE_EXCLUDED_V497).strip()
+    if category not in list(EXPERIENCE_SNACK_COMPARE_CATEGORIES_V497) + [EXPERIENCE_COMPARE_EXCLUDED_V497]:
+        category = EXPERIENCE_COMPARE_EXCLUDED_V497
+    hints = []
+    for value in result.get("store_text_hints") or []:
+        value = str(value or "").strip()
+        if value and value not in hints:
+            hints.append(value[:80])
+        if len(hints) >= 3:
+            break
+    return {
+        "is_food": bool(result.get("is_food")),
+        "food_label": str(result.get("food_label") or "").strip()[:100],
+        "compare_category": category,
+        "store_text_hints": hints,
+    }
+
+
+def _experience_photo_search_center_v505(photos):
+    points = []
+    for photo in photos or []:
+        location = get_photo_location(photo)
+        if str(location.get("source") or "").strip() != "gps":
+            continue
+        try:
+            lat = float(location.get("latitude"))
+            lon = float(location.get("longitude"))
+        except (TypeError, ValueError):
+            continue
+        if not (math.isfinite(lat) and math.isfinite(lon) and abs(lat) <= 90 and abs(lon) <= 180):
+            continue
+        points.append({
+            "latitude": lat,
+            "longitude": lon,
+            "accuracy_m": location.get("accuracy_m"),
+            "place_label": str(location.get("place_label") or "").strip(),
+        })
+    if not points:
+        return None
+    if len(points) == 1:
+        return dict(points[0])
+
+    # Multiple selected photos can include one stale/outlier GPS point. Use the medoid
+    # and only average points close to it so a single bad fix cannot move the shop search.
+    def total_distance(point):
+        return sum(
+            _nearby_haversine_m(point["latitude"], point["longitude"], other["latitude"], other["longitude"])
+            for other in points
+        )
+    medoid = min(points, key=total_distance)
+    nearby = [
+        point for point in points
+        if _nearby_haversine_m(
+            medoid["latitude"], medoid["longitude"], point["latitude"], point["longitude"]
+        ) <= 500.0
+    ] or [medoid]
+    return {
+        "latitude": sum(point["latitude"] for point in nearby) / len(nearby),
+        "longitude": sum(point["longitude"] for point in nearby) / len(nearby),
+        "accuracy_m": medoid.get("accuracy_m"),
+        "place_label": medoid.get("place_label") or "",
+    }
+
+
+def _experience_google_food_text_candidates_v505(latitude, longitude, food_query, radius_m=EXPERIENCE_STORE_RADIUS_M_V505):
+    if not GOOGLE_PLACES_API_KEY:
+        return []
+    food_query = str(food_query or "").strip()
+    if not food_query:
+        return []
+    try:
+        latitude = float(latitude)
+        longitude = float(longitude)
+        radius_m = max(100, min(1200, int(radius_m)))
+    except (TypeError, ValueError):
+        return []
+    field_mask = (
+        "places.id,places.displayName,places.formattedAddress,places.location,places.types,places.primaryType,"
+        "places.primaryTypeDisplayName,places.googleMapsTypeLabel,places.businessStatus,places.rating,places.userRatingCount"
+    )
+    body = {
+        "textQuery": food_query,
+        "languageCode": "ja",
+        "regionCode": "JP",
+        "maxResultCount": 12,
+        "locationBias": {
+            "circle": {
+                "center": {"latitude": latitude, "longitude": longitude},
+                "radius": float(radius_m),
+            }
+        },
+    }
+    request = Request(
+        "https://places.googleapis.com/v1/places:searchText",
+        data=json.dumps(body, ensure_ascii=False).encode("utf-8"),
+        headers={
+            "Content-Type": "application/json; charset=UTF-8",
+            "X-Goog-Api-Key": GOOGLE_PLACES_API_KEY,
+            "X-Goog-FieldMask": field_mask,
+        },
+        method="POST",
+    )
+    try:
+        with urlopen(request, timeout=6.0) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except Exception:
+        return []
+
+    rows = []
+    for rank, raw in enumerate(list((payload or {}).get("places") or [])):
+        if not isinstance(raw, dict):
+            continue
+        display = raw.get("displayName") if isinstance(raw.get("displayName"), dict) else {}
+        name = str(display.get("text") or "").strip()
+        location = raw.get("location") if isinstance(raw.get("location"), dict) else {}
+        try:
+            lat = float(location.get("latitude"))
+            lon = float(location.get("longitude"))
+        except (TypeError, ValueError):
+            continue
+        if not name:
+            continue
+        distance_m = _nearby_haversine_m(latitude, longitude, lat, lon)
+        if distance_m > max(650.0, float(radius_m) * 1.45):
+            continue
+        rows.append({
+            "id": f"google:{str(raw.get('id') or '').strip()}" if str(raw.get("id") or "").strip() else f"foodtext:{rank}:{name}",
+            "google_place_id": str(raw.get("id") or "").strip(),
+            "name": name,
+            "latitude": lat,
+            "longitude": lon,
+            "distance_m": int(round(distance_m)),
+            "address": str(raw.get("formattedAddress") or "").strip(),
+            "google_types": [str(x) for x in (raw.get("types") or []) if str(x)],
+            "google_primary_type_label": _nearby_localized_text_v459(raw.get("primaryTypeDisplayName")),
+            "google_maps_type_label": _nearby_localized_text_v459(raw.get("googleMapsTypeLabel")),
+            "source": "food_text_search",
+            "search_rank": rank,
+        })
+    return rows
+
+
+def _experience_store_norm_v505(value):
+    value = unicodedata.normalize("NFKC", str(value or "")).lower()
+    value = re.sub(r"[\s　・･\-ー_./／()（）\[\]【】『』「」'\"]+", "", value)
+    return value
+
+
+def _experience_store_score_v505(place, food_label, compare_category, store_text_hints):
+    place = place if isinstance(place, dict) else {}
+    score = 0.0
+    sources = set(str(x) for x in (place.get("_sources") or []) if str(x))
+    if str(place.get("source") or ""):
+        sources.add(str(place.get("source")))
+    if "food_text_search" in sources:
+        score += 70.0
+        try:
+            score += max(0.0, 18.0 - float(place.get("search_rank") or 0) * 2.0)
+        except Exception:
+            pass
+    if "nearby_search" in sources:
+        score += 15.0
+
+    try:
+        distance_m = max(0.0, float(place.get("distance_m") or 0))
+    except Exception:
+        distance_m = 9999.0
+    score += max(0.0, 38.0 - distance_m * 0.095)
+
+    name_norm = _experience_store_norm_v505(place.get("name"))
+    food_norm = _experience_store_norm_v505(food_label)
+    category_norm = _experience_store_norm_v505(compare_category)
+    if food_norm and food_norm in name_norm:
+        score += 34.0
+    elif category_norm and category_norm != _experience_store_norm_v505(EXPERIENCE_COMPARE_EXCLUDED_V497) and category_norm in name_norm:
+        score += 26.0
+
+    for hint in store_text_hints or []:
+        hint_norm = _experience_store_norm_v505(hint)
+        if not hint_norm or len(hint_norm) < 2:
+            continue
+        if hint_norm in name_norm or (len(name_norm) >= 3 and name_norm in hint_norm):
+            score += 110.0
+            break
+        # Partial overlap handles a visible chain name plus a branch suffix.
+        tokens = [token for token in re.split(r"[^0-9a-zA-Zぁ-んァ-ヶ一-龠]+", unicodedata.normalize("NFKC", str(hint))) if len(token) >= 2]
+        if any(_experience_store_norm_v505(token) in name_norm for token in tokens):
+            score += 45.0
+            break
+
+    types = set(str(x) for x in (place.get("google_types") or []) if str(x))
+    if types.intersection({
+        "bakery", "cake_shop", "candy_store", "chocolate_shop", "confectionery", "dessert_shop",
+        "donut_shop", "ice_cream_shop", "pastry_shop", "cafe", "coffee_shop", "tea_house",
+    }):
+        score += 10.0
+    return score
+
+
+def infer_experience_store_candidates_v505(photos):
+    """Infer food + likely shop from selected photos and the photos' saved GPS.
+
+    The parent still owns the final choice. A wrong guess never becomes authoritative merely
+    because it ranked first; the UI always includes 「わからない」.
+    """
+    photos = [x for x in (photos or []) if isinstance(x, dict)][:EXPERIENCE_MANUAL_PHOTO_MAX_V497]
+    if not photos:
+        return {"is_food": False, "food_label": "", "compare_category": EXPERIENCE_COMPARE_EXCLUDED_V497, "candidates": [], "reason": "no_photos"}
+    try:
+        analysis = _experience_analyze_food_photos_v505(photos)
+    except Exception as exc:
+        return {"is_food": False, "food_label": "", "compare_category": EXPERIENCE_COMPARE_EXCLUDED_V497, "candidates": [], "reason": "vision_error", "detail": str(exc)[:180]}
+    if not bool(analysis.get("is_food")):
+        return {**analysis, "candidates": [], "reason": "not_food"}
+
+    center = _experience_photo_search_center_v505(photos)
+    if not center:
+        return {**analysis, "candidates": [], "reason": "no_photo_location"}
+
+    food_label = str(analysis.get("food_label") or "").strip()
+    compare_category = str(analysis.get("compare_category") or EXPERIENCE_COMPARE_EXCLUDED_V497).strip()
+    food_query = food_label or (compare_category if compare_category != EXPERIENCE_COMPARE_EXCLUDED_V497 else "")
+    if not food_query:
+        return {**analysis, "location": center, "candidates": [], "reason": "no_food_query"}
+
+    sitdown_categories = {"プリン", "ケーキ", "パフェ", "シュークリーム", "ゼリー", "かき氷"}
+    snack_style = "店内中心" if compare_category in sitdown_categories else "食べ歩き向き"
+
+    text_rows = []
+    nearby_rows = []
+    lat = center["latitude"]
+    lon = center["longitude"]
+    if GOOGLE_PLACES_API_KEY:
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            f_text = executor.submit(_experience_google_food_text_candidates_v505, lat, lon, food_query, EXPERIENCE_STORE_RADIUS_M_V505)
+            f_near = executor.submit(
+                search_nearby_quick_stops_google,
+                lat, lon, "snack", snack_style, EXPERIENCE_STORE_RADIUS_M_V505, False, False, None,
+            )
+            try:
+                text_rows = list(f_text.result() or [])
+            except Exception:
+                text_rows = []
+            try:
+                nearby_result = f_near.result()
+                nearby_rows = list((nearby_result or {}).get("places") or []) if isinstance(nearby_result, dict) else []
+            except Exception:
+                nearby_rows = []
+    else:
+        try:
+            fallback = search_nearby_quick_stops(lat, lon, "snack", snack_style, EXPERIENCE_STORE_RADIUS_M_V505)
+            nearby_rows = list((fallback or {}).get("places") or []) if isinstance(fallback, dict) else []
+        except Exception:
+            nearby_rows = []
+
+    merged = {}
+    def add_place(raw, source):
+        if not isinstance(raw, dict):
+            return
+        name = str(raw.get("name") or "").strip()
+        if not name:
+            return
+        try:
+            plat = float(raw.get("latitude"))
+            plon = float(raw.get("longitude"))
+        except (TypeError, ValueError):
+            return
+        distance = _nearby_haversine_m(lat, lon, plat, plon)
+        if distance > max(650.0, EXPERIENCE_STORE_RADIUS_M_V505 * 1.45):
+            return
+        pid = str(raw.get("google_place_id") or "").strip()
+        key = f"google:{pid}" if pid else f"name:{_experience_store_norm_v505(name)}:{round(plat,5)}:{round(plon,5)}"
+        row = merged.get(key)
+        if row is None:
+            row = dict(raw)
+            row["distance_m"] = int(round(distance))
+            row["_sources"] = []
+            merged[key] = row
+        if source not in row["_sources"]:
+            row["_sources"].append(source)
+        if source == "food_text_search" and "search_rank" in raw:
+            row["search_rank"] = raw.get("search_rank")
+        if not row.get("google_place_id") and raw.get("google_place_id"):
+            row["google_place_id"] = raw.get("google_place_id")
+        if not row.get("address") and raw.get("address"):
+            row["address"] = raw.get("address")
+        if not row.get("google_types") and raw.get("google_types"):
+            row["google_types"] = raw.get("google_types")
+
+    for row in text_rows:
+        add_place(row, "food_text_search")
+    for row in nearby_rows:
+        row = dict(row)
+        row["source"] = "nearby_search"
+        add_place(row, "nearby_search")
+
+    hints = list(analysis.get("store_text_hints") or [])
+    ranked = []
+    for row in merged.values():
+        score = _experience_store_score_v505(row, food_label, compare_category, hints)
+        candidate = {
+            "id": str(row.get("google_place_id") or row.get("id") or uuid.uuid4().hex),
+            "google_place_id": str(row.get("google_place_id") or "").strip(),
+            "name": str(row.get("name") or "").strip()[:120],
+            "distance_m": int(row.get("distance_m") or 0),
+            "address": str(row.get("address") or "").strip()[:220],
+            "source": "photo_location_google" if row.get("google_place_id") else "photo_location_nearby",
+            "score": round(float(score), 2),
+        }
+        ranked.append(candidate)
+    ranked.sort(key=lambda item: (-float(item.get("score") or 0), int(item.get("distance_m") or 999999), str(item.get("name") or "")))
+
+    # Avoid presenting weak, generic results simply because they are nearby. Text-search
+    # results are still kept because the food query itself is evidence of relevance.
+    candidates = []
+    seen_names = set()
+    for item in ranked:
+        norm_name = _experience_store_norm_v505(item.get("name"))
+        if not norm_name or norm_name in seen_names:
+            continue
+        if float(item.get("score") or 0) < 22.0:
+            continue
+        seen_names.add(norm_name)
+        candidates.append(item)
+        if len(candidates) >= EXPERIENCE_STORE_MAX_CANDIDATES_V505:
+            break
+    return {
+        **analysis,
+        "location": center,
+        "candidates": candidates,
+        "reason": "ok" if candidates else "no_candidates",
+    }
+
+
 def page_experience_v503():
     page_top("📝 体験を残す", "体験の感想と、選んだ写真から1つの体験カードを作ります。")
     _app_css_v473(
@@ -33490,6 +33925,73 @@ def page_experience_v503():
                     )
                 st.markdown('<div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px;width:100%;">'+''.join(items)+'</div>',unsafe_allow_html=True)
 
+    # v505: once photos are selected and the picker is closed, infer the food and
+    # search around the photos' saved GPS. Cache by the exact photo set so ordinary
+    # Streamlit reruns (audio/radio/card UI) do not repeat vision/Places requests.
+    store_inference = {}
+    selected_store_candidate = None
+    store_choice_key = "_experience_store_choice_v505"
+    if selected_photos and not picker_open:
+        signature = hashlib.sha1("|".join(selected_ids).encode("utf-8")).hexdigest()[:16]
+        cached_inference = st.session_state.get("_experience_store_inference_v505")
+        if not isinstance(cached_inference, dict) or str(cached_inference.get("signature") or "") != signature:
+            st.session_state.pop(store_choice_key, None)
+            try:
+                with st.spinner("写真と撮影場所からお店候補を探しています…"):
+                    fresh_inference = infer_experience_store_candidates_v505(selected_photos)
+            except Exception as exc:
+                fresh_inference = {
+                    "is_food": False,
+                    "food_label": "",
+                    "compare_category": EXPERIENCE_COMPARE_EXCLUDED_V497,
+                    "candidates": [],
+                    "reason": "inference_error",
+                    "detail": str(exc)[:180],
+                }
+            fresh_inference["signature"] = signature
+            st.session_state["_experience_store_inference_v505"] = fresh_inference
+            cached_inference = fresh_inference
+        store_inference = dict(cached_inference or {})
+
+        if bool(store_inference.get("is_food")):
+            food_label = str(store_inference.get("food_label") or "").strip()
+            compare_hint = str(store_inference.get("compare_category") or "").strip()
+            candidates = [x for x in (store_inference.get("candidates") or []) if isinstance(x, dict) and str(x.get("name") or "").strip()]
+            st.markdown("#### お店の候補")
+            if food_label:
+                if compare_hint in EXPERIENCE_SNACK_COMPARE_CATEGORIES_V497:
+                    st.caption(f"写真から「{food_label}」と推定しました。比較カテゴリー：{compare_hint}")
+                else:
+                    st.caption(f"写真から「{food_label}」と推定しました。")
+            reason = str(store_inference.get("reason") or "")
+            if candidates:
+                options = [str(x.get("id") or f"candidate_{i}") for i, x in enumerate(candidates)] + ["__unknown__"]
+                label_map = {}
+                candidate_by_id = {}
+                for i, candidate in enumerate(candidates):
+                    option_id = str(candidate.get("id") or f"candidate_{i}")
+                    distance = int(candidate.get("distance_m") or 0)
+                    distance_text = f"（約{distance}m）" if distance > 0 else ""
+                    label_map[option_id] = f"{str(candidate.get('name') or '').strip()}{distance_text}"
+                    candidate_by_id[option_id] = candidate
+                label_map["__unknown__"] = "わからない"
+                choice = st.radio(
+                    "候補から選択",
+                    options,
+                    index=0,
+                    format_func=lambda value: label_map.get(value, str(value)),
+                    key=store_choice_key,
+                    label_visibility="collapsed",
+                )
+                selected_store_candidate = candidate_by_id.get(str(choice))
+                st.caption("写真の内容と撮影位置から候補を絞っています。正しければ操作不要です。違う場合だけ選び直してください。")
+            elif reason == "no_photo_location":
+                st.caption("この写真には利用できる撮影位置情報がないため、お店候補は表示できません。")
+            elif reason in {"no_candidates", "no_food_query"}:
+                st.caption("撮影場所の近くから一致するお店候補を絞れませんでした。店名は不明のまま体験カードを作れます。")
+            elif reason in {"vision_error", "inference_error"}:
+                st.caption("お店候補の推定に失敗しました。店名は不明のまま体験カードを作れます。")
+
     if st.session_state.get("_experience_show_audio_v497") or transcript:
         serial = int(st.session_state.get("_experience_draft_serial_v497") or 1)
         audio_file = far_field_audio_input(
@@ -33660,11 +34162,20 @@ def page_experience_v503():
         photos_for_card = [recent_by_id[x] for x in selected_ids if x in recent_by_id]
         try:
             with st.spinner("体験カードを作っています…"):
+                inference_for_card = st.session_state.get("_experience_store_inference_v505")
+                if not isinstance(inference_for_card, dict):
+                    inference_for_card = {}
+                place_for_card = selected_store_candidate
+                if bool(inference_for_card.get("is_food")) and str(st.session_state.get("_experience_store_choice_v505") or "") == "__unknown__":
+                    place_for_card = {"force_unknown": True}
                 card = create_experience_card_v497(
                     photos_for_card,
                     transcript,
                     audio_bytes=st.session_state.get("_experience_audio_bytes_v497") or b"",
                     audio_name=st.session_state.get("_experience_audio_name_v497") or "experience.webm",
+                    place_candidate=place_for_card,
+                    compare_category_hint=str(inference_for_card.get("compare_category") or ""),
+                    food_label_hint=str(inference_for_card.get("food_label") or ""),
                 )
             category = str(card.get("compare_category") or "")
             category_suffix = f"・{category}" if category and category != EXPERIENCE_COMPARE_EXCLUDED_V497 else ""
