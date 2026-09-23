@@ -48,6 +48,7 @@ APP_BUILD = "v506"
 
 # v500: Match the existing moments photo-selection UI for experience cards: three thumbnails per row, select by tapping the photo card itself (no visible "選ぶ" buttons), allow multiple photos across repeated opens, and collapse the picker immediately after each selection.
 # v502: Experience selected-photo previews now use the same gallery component as the existing photo screens, so mobile keeps a real 3-column grid instead of Streamlit columns stacking vertically.
+# v514: All-saved-photo library now enters multi-delete mode by long-pressing a photo; the old standalone multiselect delete panel is removed.
 # v503: Experience photo picker now uses the same full past-photo library as 「これまで撮った写真」. Normal tap selects one and closes; long-press enters multi-select. Long-pressing already-selected experience photos enters multi-remove mode without deleting the original library photos.
 # v505: After experience photos are selected, infer the food from the images, combine it with the photos' saved GPS, reuse Nearby/Google Places search to suggest up to three likely shops, and carry the selected shop into the experience card.
 # v509: Experience food inference now has a compact manual-input override. A parent can type the food when photo inference is wrong; the typed food becomes the search query, nearby shop candidates are re-searched from the selected photos' saved GPS, and the manual food/category are carried into the experience card.
@@ -20792,6 +20793,75 @@ def confirm_pending_photo_batch_delete_dialog_v504(trip_id, photo_ids, photos=No
             st.rerun(scope="app")
 
 
+@st.dialog("選択した写真を削除しますか？")
+def confirm_photo_library_batch_delete_dialog_v514(photo_ids, photos=None):
+    """Delete multiple saved photos selected by long-press in the all-photo library."""
+    rows = [row for row in list(photos or []) if isinstance(row, dict) and not photo_is_video(row)]
+    row_by_id = {
+        str(row.get("id") or ""): row
+        for row in rows
+        if str(row.get("id") or "").strip() and str(row.get("trip_id") or "").strip()
+    }
+    selected_ids = []
+    for value in list(photo_ids or []):
+        photo_id = str(value or "").strip()
+        if photo_id in row_by_id and photo_id not in selected_ids:
+            selected_ids.append(photo_id)
+
+    if not selected_ids:
+        st.warning("削除する写真が見つかりませんでした。")
+        if st.button("閉じる", use_container_width=True, key="photo_library_batch_delete_close_v514"):
+            st.rerun(scope="app")
+        return
+
+    st.warning(
+        f"選択した{len(selected_ids)}枚の写真を削除します。"
+        "写真に付けた感情・声・共有情報も削除され、元に戻せません。"
+    )
+    yes_col, no_col = st.columns([1.35, 0.85], gap="small")
+    with yes_col:
+        if st.button(
+            f"{len(selected_ids)}枚を削除",
+            type="primary",
+            use_container_width=True,
+            key=f"photo_library_batch_delete_yes_v514_{len(selected_ids)}",
+        ):
+            deleted = 0
+            failures = []
+            for photo_id in selected_ids:
+                row = row_by_id.get(photo_id) or {}
+                trip_id = str(row.get("trip_id") or "").strip()
+                if not trip_id:
+                    failures.append(f"{photo_id}: trip_id がありません。")
+                    continue
+                try:
+                    delete_photo_and_related_data(
+                        trip_id,
+                        photo_id,
+                        skip_existing_diary_lookup=False,
+                    )
+                    deleted += 1
+                except Exception as exc:
+                    failures.append(str(exc))
+
+            if failures:
+                st.session_state["_diary_notice"] = (
+                    f"{deleted}枚を削除しました。{len(failures)}枚は削除できませんでした。"
+                )
+                st.session_state["_photo_library_batch_delete_failures_v514"] = failures
+            else:
+                st.session_state["_diary_notice"] = f"選択した写真を{deleted}枚削除しました。"
+                st.session_state.pop("_photo_library_batch_delete_failures_v514", None)
+            reload_current_page_after_action()
+    with no_col:
+        if st.button(
+            "やめる",
+            use_container_width=True,
+            key="photo_library_batch_delete_no_v514",
+        ):
+            st.rerun(scope="app")
+
+
 def render_diary_delete_controls(
     trip_id,
     photos,
@@ -40460,6 +40530,11 @@ def page_photo_library_v418():
     library_delete_notice = st.session_state.pop("_diary_notice", None)
     if library_delete_notice:
         st.success(str(library_delete_notice))
+    batch_failures = st.session_state.pop("_photo_library_batch_delete_failures_v514", None)
+    if isinstance(batch_failures, list) and batch_failures:
+        with st.expander("削除できなかった写真の詳細"):
+            for detail in batch_failures:
+                st.code(str(detail))
     try:
         photos = list_member_still_photos_for_tags(max_items=5000)
     except Exception as exc:
@@ -40478,6 +40553,7 @@ def page_photo_library_v418():
         return
 
     st.caption(f"保存している写真：{len(photos)}枚")
+    st.caption("写真を長押しすると複数削除モードになります。")
 
     mode_key = "_all_photo_library_view_mode_v419"
     current_mode = str(st.session_state.get(mode_key) or "一覧モード")
@@ -40541,13 +40617,6 @@ def page_photo_library_v418():
 
     start = current_page * per_page
     visible = photos[start:start + per_page]
-    render_photo_batch_delete_controls_v442(
-        visible,
-        f"all_photo_library_page_{current_page}",
-        button_label="🗑 このページの写真をまとめて削除" if page_count > 1 else "🗑 写真をまとめて削除",
-        panel_title="🗑 このページの写真をまとめて削除" if page_count > 1 else "🗑 写真をまとめて削除",
-        force_pending=False,
-    )
     paths = tuple(str(photo.get("storage_path") or "") for photo in visible if photo.get("storage_path"))
     try:
         signed = signed_photo_url_map(paths, expires_in=1800) if paths else {}
@@ -40584,6 +40653,7 @@ def page_photo_library_v418():
                 "photos": cards,
                 "single": False,
                 "allow_delete": True,
+                "allow_batch_delete": True,
                 "allow_emotion": True,
                 "allow_share": True,
                 "allow_voice": False,
@@ -40600,11 +40670,32 @@ def page_photo_library_v418():
             on_delete_photo_id_change=lambda: None,
             on_share_photo_change=lambda: None,
             on_favorite_photo_change=lambda: None,
+            on_batch_delete_photos_change=lambda: None,
         )
         if handle_photo_family_share_event(result, photo_ids, serial_key=serial_key):
             return
         if handle_photo_favorite_event(result, photo_ids, serial_key=serial_key):
             return
+
+        batch_delete_payload = getattr(result, "batch_delete_photos", None)
+        if isinstance(batch_delete_payload, dict):
+            token = str(batch_delete_payload.get("token") or "")
+            last_key = f"_photo_library_batch_delete_token_v514_{current_page}"
+            last_token = str(st.session_state.get(last_key) or "")
+            selected_batch_ids = []
+            valid_set = set(photo_ids)
+            for value in batch_delete_payload.get("photo_ids") or []:
+                photo_id = str(value or "")
+                if photo_id in valid_set and photo_id not in selected_batch_ids:
+                    selected_batch_ids.append(photo_id)
+            if token and token != last_token and selected_batch_ids:
+                st.session_state[last_key] = token
+                st.session_state[serial_key] = serial + 1
+                confirm_photo_library_batch_delete_dialog_v514(
+                    selected_batch_ids,
+                    photos=visible,
+                )
+                return
 
         delete_clicked = str(getattr(result, "delete_photo_id", "") or "")
         if delete_clicked in photo_ids:
