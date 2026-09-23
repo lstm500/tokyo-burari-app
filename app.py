@@ -18873,9 +18873,11 @@ def generate_video_ai_voice_candidates(photo, force=False):
                 if new_choice_rank:
                     selection_item["voice_candidate_rank"] = int(new_choice_rank)
                     selection_item["voice_candidate_updated_at"] = remapped_at
+                    selection_item.pop("voice_candidate_cleared_by_regeneration", None)
                 else:
                     selection_item.pop("voice_candidate_rank", None)
-                    selection_item.pop("voice_candidate_updated_at", None)
+                    selection_item["voice_candidate_updated_at"] = remapped_at
+                    selection_item["voice_candidate_cleared_by_regeneration"] = True
             selection["items"] = selection_items
 
         selection["voice_candidates"] = {
@@ -18897,6 +18899,18 @@ def generate_video_ai_voice_candidates(photo, force=False):
         reflection["ai_selection"] = selection
         _write_photo_reflection(fresh.get("id"), reflection)
 
+        # v517: a selected still may already exist in the diary. Regenerating voice
+        # candidates changes the actual clip bytes/timing, so replace the diary copy
+        # immediately while the new candidate objects are still available.
+        synced_video = dict(fresh)
+        synced_video["reflection_json"] = reflection
+        _sync_video_voice_candidates_to_saved_photos_v517(
+            synced_video,
+            selection=selection,
+            voice_candidates=items,
+            clear_removed=bool(force),
+        )
+
         if old_paths:
             try:
                 client.storage.from_(PHOTO_BUCKET).remove(old_paths)
@@ -18914,6 +18928,135 @@ def generate_video_ai_voice_candidates(photo, force=False):
                 pass
         raise
 
+
+
+def _moments_voice_note_owned_v517(photo_or_meta, source_video_id=""):
+    """Return True only for a diary voice note copied from Good Moments.
+
+    v517 adds explicit provenance, while the filename/cleanup fallback recognizes
+    already-saved pre-v517 Moments voice notes so they can be repaired once.
+    """
+    if isinstance(photo_or_meta, dict) and "reflection_json" in photo_or_meta:
+        meta = photo_voice_note_meta(photo_or_meta)
+    else:
+        meta = photo_or_meta if isinstance(photo_or_meta, dict) else {}
+    cleanup = meta.get("audio_cleanup") if isinstance(meta.get("audio_cleanup"), dict) else {}
+    recorded_source = str(cleanup.get("moments_source_video_id") or "").strip()
+    expected_source = str(source_video_id or "").strip()
+    if recorded_source:
+        return not expected_source or recorded_source == expected_source
+    filename = str(meta.get("file_name") or meta.get("source_file_name") or "").strip().lower()
+    stage = str(cleanup.get("stage") or "").strip().lower()
+    mode = str(cleanup.get("mode") or "").strip().lower()
+    return (
+        filename.startswith("voice_candidate_")
+        or stage in {"candidate_detection_only", "whole_source_before_candidate_pickup"}
+        or "candidate" in mode
+    )
+
+
+def _moments_voice_cleanup_meta_v517(chosen, source_video_id, source_rank, candidate_rank, generated_at=""):
+    cleanup = dict(chosen.get("audio_cleanup") or {}) if isinstance(chosen, dict) and isinstance(chosen.get("audio_cleanup"), dict) else {}
+    cleanup.update(
+        {
+            "moments_source": "good_moments",
+            "moments_source_video_id": str(source_video_id or "")[:120],
+            "moments_source_selection_rank": int(source_rank or 0),
+            "moments_voice_candidate_rank": int(candidate_rank or 0),
+            "moments_voice_generated_at": str(generated_at or "")[:80],
+            "moments_voice_synced_at": now_jst().isoformat(),
+        }
+    )
+    return cleanup
+
+
+def _sync_video_voice_candidates_to_saved_photos_v517(video_photo, selection=None, voice_candidates=None, clear_removed=False):
+    """Mirror Good Moments voice changes into already-saved diary photos.
+
+    Regeneration changes candidate bytes/timing even when a photo keeps the same visual
+    selection. Diary photos linked by saved_photo_id therefore need their copied voice
+    note replaced immediately, not only when the diary is later opened.
+    """
+    if not isinstance(video_photo, dict):
+        return {"updated": 0, "cleared": 0, "errors": 0}
+    source_video_id = str(video_photo.get("id") or "").strip()
+    reflection = dict(photo_media_metadata(video_photo))
+    if selection is None:
+        selection = reflection.get("ai_selection") or {}
+    if not isinstance(selection, dict):
+        return {"updated": 0, "cleared": 0, "errors": 0}
+    if voice_candidates is None:
+        voice_candidates = selection.get("voice_candidates", {}).get("items", []) if isinstance(selection.get("voice_candidates"), dict) else []
+    candidate_map = {}
+    for candidate in voice_candidates or []:
+        if not isinstance(candidate, dict):
+            continue
+        try:
+            candidate_rank = int(candidate.get("rank") or 0)
+        except Exception:
+            candidate_rank = 0
+        if candidate_rank > 0:
+            candidate_map[candidate_rank] = candidate
+    generated_at = ""
+    voice_meta = selection.get("voice_candidates") if isinstance(selection.get("voice_candidates"), dict) else {}
+    if isinstance(voice_meta, dict):
+        generated_at = str(voice_meta.get("generated_at") or "")
+
+    updated = 0
+    cleared = 0
+    errors = 0
+    for item in selection.get("items") or []:
+        if not isinstance(item, dict):
+            continue
+        saved_photo_id = str(item.get("saved_photo_id") or "").strip()
+        if not saved_photo_id:
+            continue
+        try:
+            source_rank = int(item.get("rank") or 0)
+            candidate_rank = int(item.get("voice_candidate_rank") or 0)
+        except Exception:
+            errors += 1
+            continue
+        if candidate_rank > 0:
+            chosen = candidate_map.get(candidate_rank) or {}
+            chosen_path = str(chosen.get("storage_path") or "").strip()
+            if not chosen_path:
+                errors += 1
+                continue
+            try:
+                raw_voice = download_photo(chosen_path)
+                if not raw_voice:
+                    raise ValueError("声候補を読み込めませんでした。")
+                save_photo_voice_note_bytes(
+                    saved_photo_id,
+                    raw_voice,
+                    filename=str(chosen.get("file_name") or f"voice_candidate_{candidate_rank:02d}.m4a"),
+                    content_type=str(chosen.get("mime_type") or "audio/mp4"),
+                    transcript=str(chosen.get("transcript") or ""),
+                    auto_transcribe=not bool(str(chosen.get("transcript") or "").strip()),
+                    cleanup_meta=_moments_voice_cleanup_meta_v517(
+                        chosen, source_video_id, source_rank, candidate_rank, generated_at
+                    ),
+                    duration_ms=_voice_duration_value_ms_v469(chosen),
+                )
+                updated += 1
+            except Exception:
+                errors += 1
+        elif clear_removed and bool(item.get("voice_candidate_cleared_by_regeneration")):
+            try:
+                current = (
+                    supabase_client().table(PHOTO_TABLE).select("id,reflection_json")
+                    .eq("id", saved_photo_id)
+                    .eq("family_key", current_family_key()).eq("member_key", current_member_key())
+                    .limit(1).execute()
+                )
+                saved_row = (current.data or [None])[0] or {}
+                if saved_row and _moments_voice_note_owned_v517(saved_row, source_video_id):
+                    delete_photo_voice_note(saved_photo_id)
+                    cleared += 1
+            except Exception:
+                errors += 1
+    return {"updated": updated, "cleared": cleared, "errors": errors}
 
 def update_video_ai_selection_voice_choice(video_photo, rank, candidate_rank):
     if not isinstance(video_photo, dict) or not video_photo.get("id") or not photo_is_video(video_photo):
@@ -18950,9 +19093,11 @@ def update_video_ai_selection_voice_choice(video_photo, rank, candidate_rank):
         if candidate_rank > 0:
             item["voice_candidate_rank"] = candidate_rank
             item["voice_candidate_updated_at"] = now_jst().isoformat()
+            item.pop("voice_candidate_cleared_by_regeneration", None)
         else:
             item.pop("voice_candidate_rank", None)
-            item.pop("voice_candidate_updated_at", None)
+            item["voice_candidate_updated_at"] = now_jst().isoformat()
+            item.pop("voice_candidate_cleared_by_regeneration", None)
         break
     if target_item is None:
         raise ValueError("対象の写真が見つかりませんでした。")
@@ -18973,7 +19118,13 @@ def update_video_ai_selection_voice_choice(video_photo, rank, candidate_rank):
                 content_type=str(chosen.get("mime_type") or "audio/mp4"),
                 transcript=str(chosen.get("transcript") or ""),
                 auto_transcribe=not bool(str(chosen.get("transcript") or "").strip()),
-                cleanup_meta=chosen.get("audio_cleanup") if isinstance(chosen.get("audio_cleanup"), dict) else None,
+                cleanup_meta=_moments_voice_cleanup_meta_v517(
+                    chosen,
+                    str(fresh.get("id") or ""),
+                    rank,
+                    candidate_rank,
+                    str(video_ai_voice_candidate_meta(fresh).get("generated_at") or ""),
+                ),
                 duration_ms=_voice_duration_value_ms_v469(chosen),
             )
         else:
@@ -19126,8 +19277,14 @@ def save_video_ai_selection_as_photo(video_photo, selection_item):
                     content_type=str(chosen.get("mime_type") or "audio/mp4"),
                     transcript=str(chosen.get("transcript") or ""),
                     auto_transcribe=not bool(str(chosen.get("transcript") or "").strip()),
-                    cleanup_meta=chosen.get("audio_cleanup") if isinstance(chosen.get("audio_cleanup"), dict) else None,
-                duration_ms=_voice_duration_value_ms_v469(chosen),
+                        cleanup_meta=_moments_voice_cleanup_meta_v517(
+                        chosen,
+                        str(video_photo.get("id") or ""),
+                        rank,
+                        voice_candidate_rank,
+                        str(video_ai_voice_candidate_meta(updated_video_photo).get("generated_at") or ""),
+                    ),
+                    duration_ms=_voice_duration_value_ms_v469(chosen),
                 )
         except Exception:
             pass
@@ -19213,8 +19370,32 @@ def _sync_moments_metadata_into_saved_photos_v417(photos):
             source_voice_rank = int(source_item.get("voice_candidate_rank") or 0)
         except Exception:
             source_voice_rank = 0
-        if source_voice_rank > 0 and not photo_voice_note_storage_path(photo):
-            voice_jobs.append((str(photo.get("id") or ""), source_video, source_video_id, source_rank, source_voice_rank))
+        voice_note_meta = photo_voice_note_meta(photo)
+        current_voice_path = str(voice_note_meta.get("storage_path") or "").strip()
+        current_voice_uploaded_at = str(voice_note_meta.get("uploaded_at") or "").strip()
+        source_voice_updated_at = str(source_item.get("voice_candidate_updated_at") or "").strip()
+        source_voice_generated_at = str(video_ai_voice_candidate_meta(source_video).get("generated_at") or "").strip()
+        source_voice_fresh_at = max(source_voice_updated_at, source_voice_generated_at)
+        if source_voice_rank > 0:
+            # v517: repair not only missing diary voice notes, but also stale copies
+            # after Good Moments regenerated/reselected a voice for this same still.
+            if (not current_voice_path) or (source_voice_fresh_at and source_voice_fresh_at > current_voice_uploaded_at):
+                voice_jobs.append((
+                    "set", str(photo.get("id") or ""), source_video,
+                    source_video_id, source_rank, source_voice_rank, source_voice_fresh_at,
+                ))
+        elif (
+            current_voice_path
+            and source_voice_fresh_at
+            and source_voice_fresh_at > current_voice_uploaded_at
+            and _moments_voice_note_owned_v517(voice_note_meta, source_video_id)
+        ):
+            # If regeneration could no longer map the prior voice, remove only a
+            # Moments-owned diary copy. A voice recorded manually in Diary is preserved.
+            voice_jobs.append((
+                "clear", str(photo.get("id") or ""), source_video,
+                source_video_id, source_rank, 0, source_voice_fresh_at,
+            ))
 
     changed = False
     if emotion_changes or parenting_changes:
@@ -19224,8 +19405,12 @@ def _sync_moments_metadata_into_saved_photos_v417(photos):
         except Exception:
             pass
 
-    for photo_id, source_video, source_video_id, source_rank, source_voice_rank in voice_jobs:
+    for action, photo_id, source_video, source_video_id, source_rank, source_voice_rank, source_voice_fresh_at in voice_jobs:
         try:
+            if action == "clear":
+                delete_photo_voice_note(photo_id)
+                changed = True
+                continue
             cache_key = (source_video_id, source_voice_rank)
             voice_payload = voice_cache.get(cache_key)
             if voice_payload is None:
@@ -19243,13 +19428,13 @@ def _sync_moments_metadata_into_saved_photos_v417(photos):
                     str(chosen.get("file_name") or f"voice_candidate_{source_voice_rank:02d}.m4a"),
                     str(chosen.get("mime_type") or "audio/mp4"),
                     str(chosen.get("transcript") or ""),
-                    dict(chosen.get("audio_cleanup") or {}) if isinstance(chosen.get("audio_cleanup"), dict) else {},
+                    chosen,
                     _voice_duration_value_ms_v469(chosen),
                 )
                 voice_cache[cache_key] = voice_payload
             if not voice_payload:
                 continue
-            raw_voice, file_name, mime_type, transcript, cleanup_meta, duration_ms = voice_payload
+            raw_voice, file_name, mime_type, transcript, chosen, duration_ms = voice_payload
             save_photo_voice_note_bytes(
                 photo_id,
                 raw_voice,
@@ -19257,7 +19442,9 @@ def _sync_moments_metadata_into_saved_photos_v417(photos):
                 content_type=mime_type,
                 transcript=transcript,
                 auto_transcribe=not bool(transcript.strip()),
-                cleanup_meta=cleanup_meta,
+                cleanup_meta=_moments_voice_cleanup_meta_v517(
+                    chosen, source_video_id, source_rank, source_voice_rank, source_voice_fresh_at
+                ),
                 duration_ms=duration_ms,
             )
             changed = True
