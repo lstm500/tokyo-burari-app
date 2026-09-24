@@ -762,14 +762,9 @@ _app_css_v473(
         gap: .42rem !important;
       }
       .st-key-home_location_tools [data-testid="stHorizontalBlock"] > [data-testid="stColumn"] {
+        flex: 1 1 0 !important;
         width: 0 !important;
         min-width: 0 !important;
-      }
-      .st-key-home_location_tools [data-testid="stHorizontalBlock"] > [data-testid="stColumn"]:first-child {
-        flex: 2.35 1 0 !important;
-      }
-      .st-key-home_location_tools [data-testid="stHorizontalBlock"] > [data-testid="stColumn"]:last-child {
-        flex: .82 1 0 !important;
       }
       .st-key-home_location_tools .st-key-home_toilets_quick div.stButton > button {
         white-space: nowrap !important;
@@ -32620,6 +32615,29 @@ _HOME_LAYOUT_CSS_V473 = r"""<style>
   white-space:normal !important; overflow-wrap:anywhere !important;
   font-size:inherit !important; line-height:1.35 !important; margin:0 !important;
 }
+/* v524: the utility row is exactly three equal columns on phones. */
+.st-key-home_location_tools [data-testid="stHorizontalBlock"] > [data-testid="stColumn"] {
+  flex:1 1 0 !important; width:0 !important; min-width:0 !important;
+}
+.st-key-home_location_tools .st-key-home_settings div.stButton > button::before {
+  width:18px !important; height:18px !important; flex:0 0 18px !important;
+}
+.st-key-home_location_tools .st-key-home_settings div.stButton > button {
+  min-height:44px !important; padding:5px 5px !important; font-size:.76rem !important;
+  display:flex !important; align-items:center !important; justify-content:center !important; gap:4px !important;
+}
+/* Review is intentionally larger and full width below the utility row. */
+.st-key-home_review_large_v524,
+.st-key-home_review_large_v524 > [data-testid="stVerticalBlock"],
+.st-key-home_review_large_v524 .st-key-home_review { width:100% !important; }
+.st-key-home_review_large_v524 .st-key-home_review div.stButton > button {
+  min-height:58px !important; height:auto !important; max-height:none !important;
+  border-radius:18px !important; font-size:1.02rem !important; font-weight:820 !important;
+  padding:8px 14px !important;
+}
+.st-key-home_review_large_v524 .st-key-home_review div.stButton > button::before {
+  width:34px !important; height:34px !important;
+}
 .st-key-home_next_prompt_v390 { margin:0 !important; }
 .st-key-home_next_prompt_v390 button { height:auto !important; min-height:44px; white-space:normal !important; }
 .st-key-home_primary .st-key-home_diary div.stButton > button {
@@ -32899,12 +32917,11 @@ def page_home():
                 )
             render_home_video_count_status()
 
-        # v523: replace the editable Home place label with a direct civic-help action.
-        # The help screen auto-acquires a fresh location on entry, while the existing
-        # toilet shortcut remains beside it so Home density and interaction count stay stable.
+        # v524: compact utility row. Keep help/toilet/settings in one line, then place
+        # the less-frequent Review action as one larger full-width button below.
         with st.container(key="home_destination"):
             with st.container(key="home_location_tools"):
-                help_col, toilet_col = st.columns([2.35, .82], gap="small")
+                help_col, toilet_col, settings_col = st.columns(3, gap="small")
                 with help_col:
                     st.button(
                         "🆘 困ったとき",
@@ -32921,14 +32938,12 @@ def page_home():
                             on_click=_go_page_callback,
                             args=("toilets", "push"),
                         )
+                with settings_col:
+                    render_home_button("設定", "settings", "home_settings")
 
-        st.markdown('<div class="home-section-label" style="margin-top:.60rem;">たまに使う</div>', unsafe_allow_html=True)
         with st.container(key="home_secondary"):
-            review_col, settings_col = st.columns(2, gap="small")
-            with review_col:
-                render_home_button("振り返り", "review", "home_review", open_period_review=review_attention)
-            with settings_col:
-                render_home_button("設定", "settings", "home_settings")
+            with st.container(key="home_review_large_v524"):
+                render_home_button("振り返り（たまに）", "review", "home_review", open_period_review=review_attention)
 
         st.markdown(
             '<div class="home-footer-note">写真・動画は0件でも大丈夫。気になったときだけ使います。</div>',
