@@ -43,7 +43,7 @@ def _app_css_v473(markup, **_ignored):
 # Review menu-only update: 2026-09-19 JST
 GENERATED_UPDATE_JST = "2026-09-19T14:54:38+09:00"
 
-APP_BUILD = "v506"
+APP_BUILD = "v520"
 # v499: Experience-card photos are manual-selection only. Pressing the photo button opens the picker; nothing is auto-selected. Obvious Android screenshots are hidden from the picker, selected photos are previewed under the buttons, and multiple selected photos are always combined into one experience card.
 
 # v500: Match the existing moments photo-selection UI for experience cards: three thumbnails per row, select by tapping the photo card itself (no visible "選ぶ" buttons), allow multiple photos across repeated opens, and collapse the picker immediately after each selection.
@@ -23239,10 +23239,20 @@ def get_field_note_state(force=False):
 
     Keeping this in burari_monthly_reviews avoids a database migration while retaining
     normal family/member isolation and cross-device availability.
+    v520 can consume a read-ahead Future started before Home renders; the returned
+    state and persistence semantics are unchanged.
     """
     cache_key = _field_note_state_session_key()
     if not force and isinstance(st.session_state.get(cache_key), dict):
         return dict(st.session_state.get(cache_key) or {})
+    if not force:
+        try:
+            prefetched = _read_ahead_value_v520("field_notes", block=True)
+        except Exception:
+            prefetched = None
+        if isinstance(prefetched, dict):
+            st.session_state[cache_key] = prefetched
+            return dict(prefetched)
     result = (
         supabase_client()
         .table(MONTHLY_TABLE)
@@ -23317,6 +23327,10 @@ def _write_field_note_state(state):
         client.table(MONTHLY_TABLE).insert(payload).execute()
     normalized_state = {"version": 1, "items": items}
     st.session_state[_field_note_state_session_key()] = normalized_state
+    try:
+        _bump_owner_v468(_owner_v468())
+    except Exception:
+        pass
     return normalized_state
 
 
@@ -28742,17 +28756,22 @@ def _summary_feedback_entries(limit=SUMMARY_FEEDBACK_SCAN_LIMIT):
     rows = _session_cache_get(cache_key, max_age_seconds=90)
     if rows is None:
         try:
-            rows = (
-                supabase_client()
-                .table(DIARY_TABLE)
-                .select("id,trip_id,ai_meta,updated_at")
-                .eq("family_key", current_family_key()).eq("member_key", current_member_key())
-                .order("updated_at", desc=True)
-                .limit(limit)
-                .execute()
-            ).data or []
+            rows = _read_ahead_value_v520("summary_feedback_rows", block=True)
         except Exception:
-            return []
+            rows = None
+        if rows is None:
+            try:
+                rows = (
+                    supabase_client()
+                    .table(DIARY_TABLE)
+                    .select("id,trip_id,ai_meta,updated_at")
+                    .eq("family_key", current_family_key()).eq("member_key", current_member_key())
+                    .order("updated_at", desc=True)
+                    .limit(limit)
+                    .execute()
+                ).data or []
+            except Exception:
+                return []
         _session_cache_set(cache_key, rows)
 
     entries = []
@@ -31889,7 +31908,15 @@ def _home_video_counts_cached(family_key, member_key):
 
 def home_video_counts():
     try:
-        counts = _home_video_counts_cached(current_family_key(), current_member_key())
+        counts = None
+        try:
+            prefetched = _read_ahead_value_v520("home_video_counts", block=True)
+            if isinstance(prefetched, (list, tuple)) and len(prefetched) >= 4:
+                counts = prefetched
+        except Exception:
+            counts = None
+        if counts is None:
+            counts = _home_video_counts_cached(current_family_key(), current_member_key())
         st.session_state["_home_video_saved_count"] = int(counts[0])
         st.session_state["_home_video_before_clip_count"] = int(counts[1])
         st.session_state["_home_video_error_count"] = int(counts[3]) if len(counts) > 3 else 0
@@ -49386,68 +49413,14 @@ def _random_music_library_editor_v473():
 
 
 def page_random_replay_v473():
-    # v488: the random-replay destination uses the same Burari train artwork as its Review entry.
-    try:
-        _random_replay_train_name, random_replay_train_uri = _home_train_for_session()
-    except Exception:
-        random_replay_train_uri = _home_icon_uri("train") or ""
-    safe_random_replay_train_uri = str(random_replay_train_uri or "").replace('"', '%22').replace("'", '%27')
-    random_replay_train_css = (
-        f'background-image:url("{safe_random_replay_train_uri}") !important;'
-        if safe_random_replay_train_uri else ""
-    )
-    _app_css_v473(
-        f"""
-        <style>
-          .st-key-random_replay_page_title_v488 h3 {{
-            display:flex !important;
-            align-items:center !important;
-            gap:.42rem !important;
-          }}
-          .st-key-random_replay_page_title_v488 h3::before {{
-            content:'';
-            display:inline-block;
-            width:1.18rem;
-            height:1.18rem;
-            flex:0 0 1.18rem;
-            margin:0 !important;
-            background-repeat:no-repeat;
-            background-position:center;
-            background-size:contain;
-            {random_replay_train_css}
-          }}
-          .st-key-random_replay_redraw_v473 div.stButton > button {{
-            display:flex !important;
-            align-items:center !important;
-            justify-content:center !important;
-            gap:.42rem !important;
-          }}
-          .st-key-random_replay_redraw_v473 div.stButton > button::before {{
-            content:'';
-            display:block;
-            width:1.08rem;
-            height:1.08rem;
-            flex:0 0 1.08rem;
-            margin:0 !important;
-            background-repeat:no-repeat;
-            background-position:center;
-            background-size:contain;
-            {random_replay_train_css}
-          }}
-          .st-key-random_replay_redraw_v473 div.stButton > button p {{
-            width:auto !important;
-            flex:none !important;
-            margin:0 !important;
-            padding:0 !important;
-          }}
-        </style>
-        """
-    )
-    with st.container(key="random_replay_page_title_v488"):
-        page_top("おまかせムービー", "")
+    # v521: use the same inline-icon structure as the other Review pages.
+    # Pseudo-element train artwork rendered at a different size/position during
+    # Streamlit's transition rerun, briefly producing a detached tiny icon.
+    # Keeping the icon inside the actual label makes title/button layout atomic.
+    page_top("🚂 おまかせムービー", "")
     st.caption("\u4fdd\u5b58\u3057\u305f\u97f3\u697d\u3068\u5168\u671f\u9593\u306e\u5199\u771f\u304b\u3089\u304a\u307e\u304b\u305b\u3002\u5199\u771f\u306f\u64ae\u5f71\u3057\u305f\u9806\u306b\u6d41\u308c\u307e\u3059\u3002")
     # Widgets are emitted BEFORE costly preparation; a reroll callback clears one snapshot.
-    st.button("曲と写真を選び直す", key="random_replay_redraw_v473",
+    st.button("🚂 曲と写真を選び直す", key="random_replay_redraw_v473",
               use_container_width=True, on_click=_reset_random_replay_v473)
     key = _random_replay_key_v473()
     state = st.session_state.get(key)
@@ -49503,14 +49476,6 @@ def page_review():
         "🔍 振り返り",
         "見たい振り返りを選ぶと、専用ページへ移動します。",
     )
-    try:
-        _random_train_name, review_train_uri = _home_train_for_session()
-    except Exception:
-        review_train_uri = _home_icon_uri("train") or ""
-    safe_review_train_uri = str(review_train_uri or "").replace('"', '%22').replace("'", '%27')
-    random_icon_css = (
-        f'background-image:url("{safe_review_train_uri}") !important;' if safe_review_train_uri else ""
-    )
     st.markdown(
         f"""
         <style>
@@ -49555,29 +49520,6 @@ def page_review():
             border:1px solid rgba(128,128,128,.16) !important;
             box-shadow:0 4px 12px rgba(0,0,0,.035) !important;
           }}
-          .st-key-review_random_jump_v473 div.stButton > button {{
-            display:flex !important; align-items:center !important; justify-content:center !important;
-            gap:.28rem !important; position:relative !important;
-          }}
-          /* v487: Streamlit gives the Markdown label wrapper the remaining button width.
-             That made the train pseudo-element sit at the far left while the text stayed centered.
-             Make both direct flex items content-sized so train + label are centered as one group. */
-          .st-key-review_random_jump_v473 div.stButton > button > [data-testid="stMarkdownContainer"],
-          .st-key-review_random_jump_v473 div.stButton > button > div {{
-            flex:0 0 auto !important; width:auto !important; min-width:0 !important;
-            margin:0 !important; padding:0 !important;
-          }}
-          .st-key-review_random_jump_v473 div.stButton > button::before {{
-            content:''; display:block; width:1.10rem; height:1.10rem; flex:0 0 1.10rem;
-            margin:0 !important; transform:none !important;
-            background-repeat:no-repeat; background-position:center; background-size:contain;
-            {random_icon_css}
-          }}
-          .st-key-review_random_jump_v473 div.stButton > button p {{
-            display:block !important; width:auto !important; flex:none !important;
-            margin:0 !important; padding:0 !important; line-height:1.25 !important;
-            white-space:nowrap !important;
-          }}
           .st-key-review_map_jump [data-testid="stCaptionContainer"],
           .st-key-review_project_jump [data-testid="stCaptionContainer"],
           .st-key-review_monthly_jump [data-testid="stCaptionContainer"],
@@ -49599,7 +49541,7 @@ def page_review():
 
     with st.container(key="review_random_jump_v473"):
         st.button(
-            "おまかせムービー",
+            "🚂 おまかせムービー",
             use_container_width=True,
             key="review_open_random_v473",
             on_click=_open_random_replay_v473,
@@ -50949,6 +50891,7 @@ def _owner_state_v468(runtime, owner):
                      "storage_future": None, "storage_started": 0.0, "storage_retry": 0.0,
                      "frames": {}, "frame_future": None, "frame_retry": 0.0, "frame_fail_until": {},
                      "ai_future": None, "ai_retry": 0.0, "ai_paths": set(),
+                     "read_ahead": {},
                      "recovery_at": 0.0, "page": "", "page_at": 0.0,
                      "mutation_lock": threading.RLock(), "errors": [], "timings": []}
             accounts[owner] = state
@@ -50958,7 +50901,11 @@ def _owner_state_v468(runtime, owner):
             if len(accounts) <= 16:
                 break
             item = accounts[key]
-            if key != owner and not any(item.get(k) and not item[k].done() for k in ("storage_future", "frame_future", "ai_future")) and not item["frames"] and not item["ai_paths"]:
+            read_ahead_busy = any(
+                isinstance(entry, dict) and entry.get("future") is not None and not entry["future"].done()
+                for entry in (item.get("read_ahead") or {}).values()
+            )
+            if key != owner and not any(item.get(k) and not item[k].done() for k in ("storage_future", "frame_future", "ai_future")) and not read_ahead_busy and not item["frames"] and not item["ai_paths"]:
                 accounts.pop(key, None)
         return state
 
@@ -50974,6 +50921,167 @@ def _worker_client_v468(runtime):
         client = create_client(SUPABASE_URL, SUPABASE_SECRET_KEY)
         runtime["tls"].client = client
     return client
+
+
+def _read_ahead_session_token_v520():
+    token = str(st.session_state.get("_read_ahead_session_v520") or "").strip()
+    if not token:
+        token = uuid.uuid4().hex
+        st.session_state["_read_ahead_session_v520"] = token
+    return token
+
+
+def _read_ahead_field_notes_worker_v520(runtime, owner):
+    client = _worker_client_v468(runtime)
+    result = (
+        client.table(MONTHLY_TABLE)
+        .select("id,review_json,updated_at")
+        .eq("family_key", owner[2]).eq("member_key", owner[3])
+        .eq("review_month", FIELD_NOTE_REVIEW_DATE)
+        .limit(1).execute()
+    )
+    row = (result.data or [None])[0] or {}
+    payload = row.get("review_json") or {}
+    raw_items = payload.get("items") if isinstance(payload, dict) else []
+    items = []
+    seen = set()
+    for raw in raw_items if isinstance(raw_items, list) else []:
+        item = _normalize_field_note_item(raw)
+        if not item or item["id"] in seen:
+            continue
+        seen.add(item["id"])
+        items.append(item)
+    return {"version": 1, "items": items[:400]}
+
+
+def _read_ahead_home_video_counts_worker_v520(runtime, owner):
+    client = _worker_client_v468(runtime)
+    rows = (
+        client.table(PHOTO_TABLE)
+        .select("id,reflection_json")
+        .eq("family_key", owner[2]).eq("member_key", owner[3])
+        .limit(1000).execute()
+    ).data or []
+    saved_count = 0
+    before_clip_count = 0
+    processing_rows = []
+    error_count = 0
+    for row in rows:
+        if not photo_is_video(row):
+            continue
+        saved_count += 1
+        selection = photo_media_metadata(row).get("ai_selection") or {}
+        if not isinstance(selection, dict):
+            selection = {}
+        status = video_ai_effective_status(row)
+        has_selection = bool(video_ai_selection_items(row))
+        if not (status in {"ready", "reviewed"} and has_selection):
+            before_clip_count += 1
+        if status == "processing":
+            job_row = dict(row)
+            job_row["family_key"] = owner[2]
+            job_row["member_key"] = owner[3]
+            processing_rows.append(job_row)
+        elif status == "error":
+            error_count += 1
+    return saved_count, before_clip_count, processing_rows, error_count
+
+
+def _read_ahead_feedback_rows_worker_v520(runtime, owner):
+    client = _worker_client_v468(runtime)
+    return (
+        client.table(DIARY_TABLE)
+        .select("id,trip_id,ai_meta,updated_at")
+        .eq("family_key", owner[2]).eq("member_key", owner[3])
+        .order("updated_at", desc=True)
+        .limit(SUMMARY_FEEDBACK_SCAN_LIMIT).execute()
+    ).data or []
+
+
+def _run_read_ahead_v520(runtime, owner, name, worker):
+    started = time.perf_counter()
+    error = None
+    try:
+        return worker(runtime, owner)
+    except Exception as exc:
+        error = exc
+        raise
+    finally:
+        _background_result_v468(runtime, owner, f"background:read_ahead:{name}", started, error)
+
+
+def _prime_read_ahead_v520(page_name, *, post_paint=False):
+    """Start only small account reads that the current/likely-next page will need.
+
+    No Future.result() is called here. Home's two independent DB reads run in parallel.
+    After Home paint, Settings feedback is warmed without delaying the visible page.
+    """
+    page_name = str(page_name or "home")
+    names = []
+    if page_name == "home" and not post_paint:
+        names = [
+            ("field_notes", _read_ahead_field_notes_worker_v520, 30.0),
+            ("home_video_counts", _read_ahead_home_video_counts_worker_v520, 10.0),
+        ]
+    elif page_name == "settings" and not post_paint:
+        names = [("summary_feedback_rows", _read_ahead_feedback_rows_worker_v520, 90.0)]
+    elif page_name == "home" and post_paint:
+        names = [("summary_feedback_rows", _read_ahead_feedback_rows_worker_v520, 90.0)]
+    if not names:
+        return
+
+    runtime = _runtime_v468()
+    owner = _owner_v468()
+    state = _owner_state_v468(runtime, owner)
+    session_token = _read_ahead_session_token_v520()
+    now = time.monotonic()
+    with runtime["lock"]:
+        read_ahead = state.setdefault("read_ahead", {})
+        # Bound finished entries from older browser sessions.
+        for key, entry in list(read_ahead.items()):
+            future = entry.get("future") if isinstance(entry, dict) else None
+            started = float((entry or {}).get("started") or 0.0) if isinstance(entry, dict) else 0.0
+            if future is None or (future.done() and started and now - started > 180.0):
+                read_ahead.pop(key, None)
+        epoch = int(state.get("epoch") or 0)
+        for name, worker, ttl in names:
+            key = session_token + ":" + name
+            entry = read_ahead.get(key)
+            if isinstance(entry, dict):
+                future = entry.get("future")
+                same_epoch = int(entry.get("epoch") or -1) == epoch
+                fresh = now - float(entry.get("started") or 0.0) <= float(ttl)
+                if same_epoch and fresh and future is not None:
+                    continue
+            future = _read_executor_v467().submit(_run_read_ahead_v520, runtime, owner, name, worker)
+            read_ahead[key] = {"future": future, "epoch": epoch, "started": now, "ttl": float(ttl)}
+
+
+def _read_ahead_value_v520(name, *, block=False):
+    runtime = _runtime_v468()
+    owner = _owner_v468()
+    state = _owner_state_v468(runtime, owner)
+    session_token = _read_ahead_session_token_v520()
+    key = session_token + ":" + str(name or "")
+    with runtime["lock"]:
+        entry = (state.get("read_ahead") or {}).get(key)
+        epoch = int(state.get("epoch") or 0)
+        if not isinstance(entry, dict) or int(entry.get("epoch") or -1) != epoch:
+            return None
+        future = entry.get("future")
+    if future is None:
+        return None
+    if not block and not future.done():
+        return None
+    started = time.perf_counter()
+    try:
+        value = future.result()
+    except Exception:
+        with runtime["lock"]:
+            (state.get("read_ahead") or {}).pop(key, None)
+        return None
+    _perf_log_v457(f"read_ahead:wait:{name}", started_at=started, meta={"prefetched": True})
+    return value
 
 
 def _rows_v468(client, table, owner, column, ids, fields="*", order="id"):
@@ -51650,6 +51758,11 @@ _perf_call_v457("bootstrap:verify_setup", verify_setup)
 _perf_call_v457("bootstrap:login", require_family_pin)
 _perf_call_v457("bootstrap:init_state", init_state)
 _consume_background_results_v468()
+try:
+    _prime_read_ahead_v520(str(st.session_state.get("main_page") or "home"), post_paint=False)
+except Exception as _read_ahead_prime_error_v520:
+    _perf_log_v457("background:read_ahead_schedule_error", duration_ms=0,
+                   meta={"type": type(_read_ahead_prime_error_v520).__name__}, force=True)
 # Notification launches must win over camera-session restoration. Evening review
 # has priority; ordinary automatic-discovery notifications keep their dedicated page.
 _deep_link_started_v457 = time.perf_counter()
@@ -51819,6 +51932,13 @@ with st.container(key="app_page_root_v280"):
             and page in {"camera", "videos", "moments", "diary", "photos", "review", "review_map", "review_project", "review_monthly", "review_tag", "review_random", "review_history", "nearby", "discovery_results", "evening_review", "toilets", "field_notes", "experience", "settings", "settings_moments", "settings_moments_definition", "settings_location", "settings_account", "settings_media_import"}
         ):
             _perf_call_v457("ui:bottom_navigation", render_global_bottom_navigation, page)
+
+try:
+    if str(st.session_state.get("main_page") or "home") == "home":
+        _prime_read_ahead_v520("home", post_paint=True)
+except Exception as _read_ahead_postpaint_error_v520:
+    _perf_log_v457("background:read_ahead_postpaint_error", duration_ms=0,
+                   meta={"type": type(_read_ahead_postpaint_error_v520).__name__}, force=True)
 
 try:
     _maintenance_tick_v468()
