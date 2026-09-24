@@ -43,7 +43,8 @@ def _app_css_v473(markup, **_ignored):
 # Review menu-only update: 2026-09-19 JST
 GENERATED_UPDATE_JST = "2026-09-19T14:54:38+09:00"
 
-APP_BUILD = "v520"
+APP_BUILD = "v523"
+# v523: Home adds a one-tap civic-help search for nearby police boxes/stations, fire stations, and municipal offices. It auto-locates on entry, supports manual place fallback, renders a map, and exposes phone/route actions without changing the rest of Home.
 # v499: Experience-card photos are manual-selection only. Pressing the photo button opens the picker; nothing is auto-selected. Obvious Android screenshots are hidden from the picker, selected photos are previewed under the buttons, and multiple selected photos are always combined into one experience card.
 
 # v500: Match the existing moments photo-selection UI for experience cards: three thumbnails per row, select by tapping the photo card itself (no visible "選ぶ" buttons), allow multiple photos across repeated opens, and collapse the picker immediately after each selection.
@@ -774,6 +775,17 @@ _app_css_v473(
         white-space: nowrap !important;
         padding-left: .28rem !important;
         padding-right: .28rem !important;
+      }
+      .st-key-home_help_places_button_v523 div.stButton > button {
+        border-color: rgba(217,74,74,.34) !important;
+        background: linear-gradient(145deg, rgba(255,245,245,.98), rgba(255,237,237,.94)) !important;
+        color: #a83e3e !important;
+        font-weight: 790 !important;
+        opacity: 1 !important;
+      }
+      .st-key-home_help_places_button_v523 div.stButton > button:hover {
+        border-color: rgba(217,74,74,.52) !important;
+        background: linear-gradient(145deg, rgba(255,239,239,1), rgba(255,229,229,.98)) !important;
       }
       .home-footer-note {
         margin-top: .72rem;
@@ -7542,7 +7554,7 @@ _PERF_BROWSER_JS_V466 = 'function installBurariPerf466(host, page, run, serverSe
 _HISTORY_JS = _PERF_BROWSER_JS_V466 + r"""
 export default function(component) {
   const { data, setTriggerValue } = component;
-  const validPages = new Set(['home', 'camera', 'videos', 'moments', 'diary', 'photos', 'review', 'review_map', 'review_project', 'review_monthly', 'review_tag', 'review_random', 'review_history', 'nearby', 'discovery_results', 'evening_review', 'toilets', 'field_notes', 'experience', 'settings', 'settings_moments', 'settings_moments_definition', 'settings_location', 'settings_account', 'settings_media_import']);
+  const validPages = new Set(['home', 'camera', 'videos', 'moments', 'diary', 'photos', 'review', 'review_map', 'review_project', 'review_monthly', 'review_tag', 'review_random', 'review_history', 'nearby', 'discovery_results', 'evening_review', 'toilets', 'help_places', 'field_notes', 'experience', 'settings', 'settings_moments', 'settings_moments_definition', 'settings_location', 'settings_account', 'settings_media_import']);
   const marker = '__tokyo_burari_page__';
   const guardMarker = '__tokyo_burari_first_level_guard__';
   const requestedPage = validPages.has(data?.page) ? data.page : 'home';
@@ -13346,7 +13358,7 @@ def photo_location_preview(location):
         return f"📍 GPS位置情報を取得しました{accuracy_text}"
     if source == "manual_destination" and label:
         return f"📍 {label}"
-    return "📍 位置情報を取得できませんでした。ホームの地名表示を押して手入力できます。"
+    return "📍 位置情報を取得できませんでした。必要な検索画面の地名入力から指定できます。"
 
 
 MEMORY_MAP_SIGNAL_KEY = "memory_map_v1"
@@ -29673,7 +29685,7 @@ def page_evening_review():
                     )
 
 
-VALID_APP_PAGES = {"home", "camera", "videos", "moments", "diary", "photos", "review", "review_map", "review_project", "review_monthly", "review_tag", "review_random", "review_history", "nearby", "discovery_results", "evening_review", "toilets", "field_notes", "experience", "settings", "settings_moments", "settings_moments_definition", "settings_location", "settings_account", "settings_media_import"}
+VALID_APP_PAGES = {"home", "camera", "videos", "moments", "diary", "photos", "review", "review_map", "review_project", "review_monthly", "review_tag", "review_random", "review_history", "nearby", "discovery_results", "evening_review", "toilets", "help_places", "field_notes", "experience", "settings", "settings_moments", "settings_moments_definition", "settings_location", "settings_account", "settings_media_import"}
 
 
 def _current_ui_refresh_epoch():
@@ -29896,6 +29908,7 @@ def navigation_parent_node(node=None):
         "discovery_results": "home",
         "evening_review": "home",
         "toilets": "home",
+        "help_places": "home",
         "field_notes": "home",
         "experience": "home",
         "settings": "home",
@@ -30014,6 +30027,23 @@ def _select_field_note_kind_callback(kind):
         st.session_state["field_note_kind_v390"] = kind
         st.session_state["field_note_focus_next_v390"] = kind == "next"
         st.session_state.pop("field_note_text_v390", None)
+
+
+
+def _open_help_places_callback_v523():
+    """Open civic-help search from Home with a fresh location/search request."""
+    for key in (
+        "_help_places_result_v523",
+        "_help_places_location_v523",
+        "_help_places_error_v523",
+        "_help_places_location_token_v523",
+        "_help_places_error_token_v523",
+    ):
+        st.session_state.pop(key, None)
+    st.session_state["_help_places_entry_serial_v523"] = int(
+        st.session_state.get("_help_places_entry_serial_v523") or 0
+    ) + 1
+    _set_page_state("help_places", history_mode="push")
 
 
 def _open_experience_callback_v497():
@@ -32869,18 +32899,18 @@ def page_home():
                 )
             render_home_video_count_status()
 
-        # Manual fallback for cases where the phone/browser cannot provide GPS.
-        # v196: keep the emergency toilet shortcut beside the place control so Home stays compact.
+        # v523: replace the editable Home place label with a direct civic-help action.
+        # The help screen auto-acquires a fresh location on entry, while the existing
+        # toilet shortcut remains beside it so Home density and interaction count stay stable.
         with st.container(key="home_destination"):
-            place_button_label = f"📍 地名：{active_place}" if active_place else "📍 地名：自動取得（必要なら手入力）"
             with st.container(key="home_location_tools"):
-                place_col, toilet_col = st.columns([2.35, .82], gap="small")
-                with place_col:
+                help_col, toilet_col = st.columns([2.35, .82], gap="small")
+                with help_col:
                     st.button(
-                        place_button_label,
-                        key="home_destination_toggle",
+                        "🆘 困ったとき",
+                        key="home_help_places_button_v523",
                         use_container_width=True,
-                        on_click=_toggle_home_destination_editor,
+                        on_click=_open_help_places_callback_v523,
                     )
                 with toilet_col:
                     with st.container(key="home_toilets_quick"):
@@ -32891,44 +32921,6 @@ def page_home():
                             on_click=_go_page_callback,
                             args=("toilets", "push"),
                         )
-
-            if st.session_state.get("show_home_destination_editor"):
-                trip = ensure_today_trip()
-                current_trip = get_trip(trip["id"]) or trip
-                current_photos = list_trip_photos(trip["id"])
-                current_place = trip_place_label(current_trip, photos=current_photos)
-                with st.form(f"home_destination_form_v327_{trip['id']}", clear_on_submit=False, border=False):
-                    destination = st.text_input(
-                        "地名",
-                        value=str(current_trip.get("destination") or current_place),
-                        placeholder="例：神楽坂、浅草のあたり",
-                        key=f"home_destination_input_{trip['id']}",
-                        label_visibility="collapsed",
-                    )
-                    save_col, close_col = st.columns([2, 1])
-                    with save_col:
-                        save_destination_clicked = st.form_submit_button(
-                            "保存",
-                            type="primary",
-                            use_container_width=True,
-                        )
-                    with close_col:
-                        close_destination_clicked = st.form_submit_button(
-                            "閉じる",
-                            use_container_width=True,
-                        )
-                if save_destination_clicked:
-                    try:
-                        update_trip_destination(trip["id"], destination)
-                        st.session_state.show_home_destination_editor = False
-                        st.rerun()
-                    except Exception as exc:
-                        st.error("地名を保存できませんでした。")
-                        with st.expander("保護者向け詳細"):
-                            st.code(str(exc))
-                if close_destination_clicked:
-                    st.session_state.show_home_destination_editor = False
-                    st.rerun()
 
         st.markdown('<div class="home-section-label" style="margin-top:.60rem;">たまに使う</div>', unsafe_allow_html=True)
         with st.container(key="home_secondary"):
@@ -35842,6 +35834,578 @@ def page_field_notes():
                         st.rerun()
                     except Exception as exc:
                         st.error(str(exc))
+
+
+# ============================================================
+# v523: One-tap civic help search (police / fire / municipal offices)
+# ============================================================
+HELP_PLACE_RADIUS_M_V523 = 8000
+HELP_PLACE_MAX_PER_CATEGORY_V523 = 5
+HELP_PLACE_CATEGORIES_V523 = {
+    "koban": {"label": "交番・駐在所", "icon": "👮", "queries": ("交番",)},
+    "police": {"label": "警察署", "icon": "🏢", "queries": ("警察署",)},
+    "fire": {"label": "消防署", "icon": "🚒", "queries": ("消防署",)},
+    "office": {"label": "市区町村の役所", "icon": "🏛️", "queries": ("区役所", "市役所", "役場")},
+}
+
+
+def _help_phone_digits_v523(value):
+    raw = unicodedata.normalize("NFKC", str(value or "")).strip()
+    if not raw:
+        return ""
+    prefix = "+" if raw.startswith("+") else ""
+    digits = re.sub(r"[^0-9]", "", raw)
+    if len(digits) < 5:
+        return ""
+    return prefix + digits
+
+
+def _help_category_v523(name, fallback=""):
+    text = unicodedata.normalize("NFKC", str(name or ""))
+    if re.search(r"交番|駐在所", text):
+        return "koban"
+    if "警察署" in text or "警察本部" in text:
+        return "police"
+    if re.search(r"消防署|消防出張所|消防分署", text):
+        return "fire"
+    if re.search(r"区役所|市役所|町役場|村役場|役所|行政センター|区民事務所", text):
+        return "office"
+    return fallback if fallback in HELP_PLACE_CATEGORIES_V523 else "office"
+
+
+def _help_place_safe_v523(raw, category, latitude, longitude, provider="Google Places"):
+    if not isinstance(raw, dict):
+        return None
+    location = raw.get("location") if isinstance(raw.get("location"), dict) else {}
+    try:
+        plat = float(location.get("latitude") if location else raw.get("latitude"))
+        plon = float(location.get("longitude") if location else raw.get("longitude"))
+    except (TypeError, ValueError):
+        return None
+    display = raw.get("displayName") if isinstance(raw.get("displayName"), dict) else {}
+    name = str(display.get("text") or raw.get("name") or "").strip()
+    if not name:
+        return None
+    distance_m = _nearby_haversine_m(latitude, longitude, plat, plon)
+    if not math.isfinite(distance_m) or distance_m > HELP_PLACE_RADIUS_M_V523 * 1.6:
+        return None
+    resolved_category = _help_category_v523(name, category)
+    return {
+        "id": str(raw.get("id") or raw.get("google_place_id") or f"{provider}:{name}:{plat:.6f}:{plon:.6f}"),
+        "google_place_id": str(raw.get("id") or raw.get("google_place_id") or ""),
+        "name": name,
+        "category": resolved_category,
+        "category_label": HELP_PLACE_CATEGORIES_V523.get(resolved_category, {}).get("label", "公共施設"),
+        "icon": HELP_PLACE_CATEGORIES_V523.get(resolved_category, {}).get("icon", "📍"),
+        "address": str(raw.get("formattedAddress") or raw.get("address") or "").strip(),
+        "latitude": plat,
+        "longitude": plon,
+        "distance_m": max(0, int(round(distance_m))),
+        "phone": str(raw.get("nationalPhoneNumber") or raw.get("phone") or "").strip(),
+        "provider": provider,
+    }
+
+
+
+def _help_google_nearby_search_v523(latitude, longitude):
+    """Use one Places Nearby call for all civic-help categories."""
+    if not GOOGLE_PLACES_API_KEY:
+        return []
+    body = json.dumps(
+        {
+            "includedTypes": [
+                "neighborhood_police_station",
+                "police",
+                "fire_station",
+                "city_hall",
+                "local_government_office",
+            ],
+            "maxResultCount": 20,
+            "rankPreference": "DISTANCE",
+            "languageCode": "ja",
+            "locationRestriction": {
+                "circle": {
+                    "center": {"latitude": float(latitude), "longitude": float(longitude)},
+                    "radius": float(HELP_PLACE_RADIUS_M_V523),
+                }
+            },
+        },
+        ensure_ascii=False,
+    ).encode("utf-8")
+    req = Request(
+        "https://places.googleapis.com/v1/places:searchNearby",
+        data=body,
+        headers={
+            "Content-Type": "application/json; charset=UTF-8",
+            "X-Goog-Api-Key": GOOGLE_PLACES_API_KEY,
+            "X-Goog-FieldMask": (
+                "places.id,places.displayName,places.formattedAddress,places.location,"
+                "places.types,places.primaryType,places.businessStatus,places.nationalPhoneNumber"
+            ),
+        },
+        method="POST",
+    )
+    try:
+        with urlopen(req, timeout=7.0) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except Exception:
+        return []
+    type_to_category = {
+        "neighborhood_police_station": "koban",
+        "police": "police",
+        "fire_station": "fire",
+        "city_hall": "office",
+        "local_government_office": "office",
+    }
+    rows = []
+    for raw in list((payload or {}).get("places") or []):
+        if not isinstance(raw, dict) or str(raw.get("businessStatus") or "") == "CLOSED_PERMANENTLY":
+            continue
+        primary_type = str(raw.get("primaryType") or "").strip()
+        category = type_to_category.get(primary_type, "")
+        if not category:
+            raw_types = {str(value or "") for value in (raw.get("types") or [])}
+            for place_type, candidate_category in type_to_category.items():
+                if place_type in raw_types:
+                    category = candidate_category
+                    break
+        item = _help_place_safe_v523(raw, category or "office", latitude, longitude, provider="Google Places")
+        if item:
+            rows.append(item)
+    return rows
+
+
+def _help_google_text_search_v523(query, category, latitude, longitude):
+    if not GOOGLE_PLACES_API_KEY:
+        return []
+    body = json.dumps(
+        {
+            "textQuery": str(query),
+            "languageCode": "ja",
+            "maxResultCount": 8,
+            "locationBias": {
+                "circle": {
+                    "center": {"latitude": float(latitude), "longitude": float(longitude)},
+                    "radius": float(HELP_PLACE_RADIUS_M_V523),
+                }
+            },
+        },
+        ensure_ascii=False,
+    ).encode("utf-8")
+    req = Request(
+        "https://places.googleapis.com/v1/places:searchText",
+        data=body,
+        headers={
+            "Content-Type": "application/json; charset=UTF-8",
+            "X-Goog-Api-Key": GOOGLE_PLACES_API_KEY,
+            "X-Goog-FieldMask": (
+                "places.id,places.displayName,places.formattedAddress,places.location,"
+                "places.types,places.primaryType,places.businessStatus,places.nationalPhoneNumber"
+            ),
+        },
+        method="POST",
+    )
+    try:
+        with urlopen(req, timeout=6.5) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except Exception:
+        return []
+    rows = []
+    for raw in list((payload or {}).get("places") or []):
+        if not isinstance(raw, dict) or str(raw.get("businessStatus") or "") == "CLOSED_PERMANENTLY":
+            continue
+        item = _help_place_safe_v523(raw, category, latitude, longitude, provider="Google Places")
+        if item:
+            rows.append(item)
+    return rows
+
+
+def _help_osm_search_v523(latitude, longitude):
+    around = f"(around:{int(HELP_PLACE_RADIUS_M_V523)},{float(latitude):.6f},{float(longitude):.6f})"
+    query = (
+        "[out:json][timeout:12];("
+        f'nwr{around}["amenity"="police"];'
+        f'nwr{around}["amenity"="fire_station"];'
+        f'nwr{around}["amenity"="townhall"];'
+        ");out center tags;"
+    )
+    payload_bytes = urlencode({"data": query}).encode("utf-8")
+    payload = None
+    for endpoint in (
+        "https://overpass-api.de/api/interpreter",
+        "https://overpass.kumi.systems/api/interpreter",
+    ):
+        req = Request(
+            endpoint,
+            data=payload_bytes,
+            headers={
+                "User-Agent": "TokyoBurariApp/1.0 (civic help search)",
+                "Accept": "application/json",
+                "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+            },
+            method="POST",
+        )
+        try:
+            with urlopen(req, timeout=8.0) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+            if isinstance(payload, dict):
+                break
+        except Exception:
+            payload = None
+    if not isinstance(payload, dict):
+        return []
+    items = []
+    for raw in list((payload or {}).get("elements") or []):
+        if not isinstance(raw, dict):
+            continue
+        tags = raw.get("tags") if isinstance(raw.get("tags"), dict) else {}
+        center = raw.get("center") if isinstance(raw.get("center"), dict) else {}
+        try:
+            plat = float(raw.get("lat") if raw.get("lat") is not None else center.get("lat"))
+            plon = float(raw.get("lon") if raw.get("lon") is not None else center.get("lon"))
+        except (TypeError, ValueError):
+            continue
+        name = str(tags.get("name:ja") or tags.get("name") or "").strip()
+        amenity = str(tags.get("amenity") or "").strip()
+        if not name:
+            name = "警察施設" if amenity == "police" else "消防署" if amenity == "fire_station" else "役所"
+        fallback = "police" if amenity == "police" else "fire" if amenity == "fire_station" else "office"
+        phone = str(tags.get("contact:phone") or tags.get("phone") or "").strip()
+        address_parts = [
+            str(tags.get("addr:province") or "").strip(),
+            str(tags.get("addr:city") or tags.get("addr:ward") or "").strip(),
+            str(tags.get("addr:suburb") or "").strip(),
+            str(tags.get("addr:street") or "").strip(),
+            str(tags.get("addr:housenumber") or "").strip(),
+        ]
+        item = _help_place_safe_v523(
+            {
+                "id": f"osm-{raw.get('type')}-{raw.get('id')}",
+                "name": name,
+                "latitude": plat,
+                "longitude": plon,
+                "address": " ".join(x for x in address_parts if x),
+                "phone": phone,
+            },
+            fallback,
+            latitude,
+            longitude,
+            provider="OpenStreetMap",
+        )
+        if item:
+            items.append(item)
+    return items
+
+
+def _help_diverse_limit_v523(items):
+    deduped = {}
+    for item in list(items or []):
+        if not isinstance(item, dict):
+            continue
+        gid = str(item.get("google_place_id") or "").strip()
+        if gid:
+            key = "g:" + gid
+        else:
+            name_key = re.sub(r"[^0-9a-z\u3040-\u30ff\u3400-\u9fff]+", "", unicodedata.normalize("NFKC", str(item.get("name") or "")).casefold())
+            try:
+                pos = (round(float(item.get("latitude")), 4), round(float(item.get("longitude")), 4))
+            except Exception:
+                pos = (0.0, 0.0)
+            key = f"n:{name_key}:{pos[0]}:{pos[1]}"
+        previous = deduped.get(key)
+        if previous is None or int(item.get("distance_m") or 10**9) < int(previous.get("distance_m") or 10**9):
+            deduped[key] = dict(item)
+    grouped = {key: [] for key in HELP_PLACE_CATEGORIES_V523}
+    for item in deduped.values():
+        category = str(item.get("category") or "office")
+        grouped.setdefault(category, []).append(item)
+    chosen = []
+    for category in HELP_PLACE_CATEGORIES_V523:
+        rows = sorted(grouped.get(category) or [], key=lambda x: int(x.get("distance_m") or 10**9))
+        chosen.extend(rows[:HELP_PLACE_MAX_PER_CATEGORY_V523])
+    return sorted(chosen, key=lambda x: (int(x.get("distance_m") or 10**9), str(x.get("category") or "")))[:18]
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def search_civic_help_places_v523(latitude, longitude):
+    try:
+        latitude = float(latitude)
+        longitude = float(longitude)
+    except (TypeError, ValueError):
+        return {"places": [], "error": "現在地を確認できませんでした。", "provider": ""}
+
+    places = []
+    provider = ""
+    if GOOGLE_PLACES_API_KEY:
+        try:
+            places = _help_diverse_limit_v523(_help_google_nearby_search_v523(latitude, longitude))
+        except Exception:
+            places = []
+        if places:
+            provider = "Google Places"
+
+
+
+    if not places:
+        places = _help_diverse_limit_v523(_help_osm_search_v523(latitude, longitude))
+        provider = "OpenStreetMap" if places else ""
+
+    return {
+        "places": places,
+        "error": "" if places else "周辺の交番・警察署・消防署・役所を見つけられませんでした。",
+        "provider": provider,
+    }
+
+
+_HELP_AUTO_LOCATION_HTML_V523 = """
+<div class="help-auto-location-v523">
+  <button id="help-auto-location-button-v523" type="button">📍 現在地からもう一度探す</button>
+  <div id="help-auto-location-status-v523" aria-live="polite"></div>
+</div>
+"""
+
+_HELP_AUTO_LOCATION_CSS_V523 = """
+.help-auto-location-v523{width:100%;box-sizing:border-box}
+#help-auto-location-button-v523{width:100%;min-height:46px;border-radius:14px;border:1px solid rgba(47,128,237,.28);background:rgba(47,128,237,.07);color:var(--st-text-color);font:inherit;font-size:.80rem;font-weight:800;cursor:pointer}
+#help-auto-location-button-v523:disabled{opacity:.58;cursor:wait}
+#help-auto-location-status-v523{min-height:18px;margin-top:6px;font-size:.68rem;line-height:1.35;opacity:.66;text-align:center}
+"""
+
+_HELP_AUTO_LOCATION_JS_V523 = r"""
+export default function(component) {
+  const { data, parentElement, setTriggerValue } = component;
+  const button = parentElement.querySelector('#help-auto-location-button-v523');
+  const status = parentElement.querySelector('#help-auto-location-status-v523');
+  if (!button || !status) return;
+  let cancelled=false, watchId=null, timer=null, best=null, startedAt=0, running=false;
+  const stop=()=>{if(watchId!==null&&navigator.geolocation){try{navigator.geolocation.clearWatch(watchId)}catch(_){}watchId=null}if(timer){clearTimeout(timer);timer=null}};
+  const unlock=()=>{if(!cancelled){running=false;button.disabled=false;button.textContent='📍 現在地からもう一度探す'}};
+  const emit=()=>{if(cancelled||!best?.coords)return;stop();const accuracy=Number(best.coords.accuracy||0);status.textContent=`現在地を取得しました（±${Math.round(accuracy)}m）。周辺を検索しています…`;setTriggerValue('location',{token:`${Date.now()}_${Math.random().toString(36).slice(2)}`,latitude:Number(best.coords.latitude),longitude:Number(best.coords.longitude),accuracy_m:accuracy,measured_at:new Date(best.timestamp||Date.now()).toISOString()});unlock()};
+  const fail=(message,code=0)=>{stop();status.textContent=String(message||'現在地を取得できませんでした。');setTriggerValue('location_error',{token:`${Date.now()}_${Math.random().toString(36).slice(2)}`,code:Number(code||0),message:String(message||'')});unlock()};
+  const locate=()=>{if(running)return;if(!navigator.geolocation){fail('この端末では位置情報を取得できません。下の地名入力を使ってください。');return}running=true;button.disabled=true;button.textContent='📍 現在地を確認中…';status.textContent='高精度GPSで現在地を確認しています…';best=null;startedAt=Date.now();watchId=navigator.geolocation.watchPosition((position)=>{if(cancelled||!position?.coords)return;const accuracy=Number(position.coords.accuracy||Number.POSITIVE_INFINITY);const bestAccuracy=best?Number(best.coords?.accuracy||Number.POSITIVE_INFINITY):Number.POSITIVE_INFINITY;if(!best||accuracy<bestAccuracy)best=position;const current=best?Number(best.coords?.accuracy||Number.POSITIVE_INFINITY):Number.POSITIVE_INFINITY;status.textContent=Number.isFinite(current)?`現在地を確認しています… ±${Math.round(current)}m`:'現在地を確認しています…';if(current>0&&current<=25){emit();return}if(current>0&&current<=55&&(Date.now()-startedAt)>=1200)emit()},(error)=>{const current=best?Number(best.coords?.accuracy||Number.POSITIVE_INFINITY):Number.POSITIVE_INFINITY;if(best&&current<=55){emit();return}const code=Number(error?.code||0);fail(code===1?'位置情報の利用が許可されていません。下の地名入力を使ってください。':code===3?'現在地の取得に時間がかかりました。もう一度お試しください。':'現在地を取得できませんでした。下の地名入力を使ってください。',code)},{enableHighAccuracy:true,timeout:10000,maximumAge:0});timer=setTimeout(()=>{const current=best?Number(best.coords?.accuracy||Number.POSITIVE_INFINITY):Number.POSITIVE_INFINITY;if(best&&Number.isFinite(current)&&current<=90)emit();else fail('現在地を高精度で取得できませんでした。下の地名入力も使えます。',3)},10500)};
+  button.addEventListener('click',locate);
+  if(Boolean(data?.auto_start))setTimeout(()=>{if(!cancelled)locate()},60);
+  return()=>{cancelled=true;stop();button.removeEventListener('click',locate)};
+}
+"""
+
+_help_auto_location_component_v523 = None
+_help_auto_location_component_initialized_v523 = False
+
+
+def _get_help_auto_location_component_v523():
+    global _help_auto_location_component_v523, _help_auto_location_component_initialized_v523
+    if _help_auto_location_component_initialized_v523:
+        return _help_auto_location_component_v523
+    _help_auto_location_component_initialized_v523 = True
+    try:
+        _help_auto_location_component_v523 = st.components.v2.component(
+            "tokyo_burari_help_auto_location_v523",
+            html=_HELP_AUTO_LOCATION_HTML_V523,
+            css=_HELP_AUTO_LOCATION_CSS_V523,
+            js=_perf_instrument_js_v466(_HELP_AUTO_LOCATION_JS_V523),
+        )
+    except Exception:
+        _help_auto_location_component_v523 = None
+    return _help_auto_location_component_v523
+
+
+def _render_help_places_map_v523(search_latitude, search_longitude, places, *, accuracy_m=None, search_source="gps"):
+    try:
+        center_lat = float(search_latitude)
+        center_lon = float(search_longitude)
+    except (TypeError, ValueError):
+        st.warning("地図の中心となる場所を確認できませんでした。")
+        return
+    map_places = []
+    for index, place in enumerate(list(places or [])[:18], start=1):
+        if not isinstance(place, dict):
+            continue
+        try:
+            plat = float(place.get("latitude"))
+            plon = float(place.get("longitude"))
+        except (TypeError, ValueError):
+            continue
+        phone_display = str(place.get("phone") or "").strip()
+        phone_digits = _help_phone_digits_v523(phone_display)
+        map_places.append({
+            "index": index,
+            "name": str(place.get("name") or "公共施設"),
+            "category": str(place.get("category") or "office"),
+            "category_label": str(place.get("category_label") or "公共施設"),
+            "icon": str(place.get("icon") or "📍"),
+            "latitude": plat,
+            "longitude": plon,
+            "distance_m": max(0, int(place.get("distance_m") or 0)),
+            "address": str(place.get("address") or ""),
+            "phone_display": phone_display,
+            "phone_digits": phone_digits,
+            "route_url": str(_nearby_directions_url(place) or ""),
+        })
+    try:
+        accuracy_value = float(accuracy_m or 0)
+    except (TypeError, ValueError):
+        accuracy_value = 0.0
+    payload = {
+        "center": {"lat": center_lat, "lon": center_lon},
+        "accuracy_m": accuracy_value if accuracy_value > 0 else 0,
+        "search_source": str(search_source or "gps"),
+        "native_bridge_token": str(_query_param_scalar("native_bridge_token") or ""),
+        "places": map_places,
+    }
+    payload_json = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).replace("</", "<\\/")
+    map_html = f'''<!doctype html>
+<html lang="ja"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no"/>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin=""/>
+<style>
+html,body{{margin:0;padding:0;background:transparent;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Hiragino Sans","Yu Gothic",sans-serif}}
+#help-map-v523{{width:100%;height:540px;border-radius:16px;overflow:hidden;background:#eef3f6;border:1px solid rgba(80,100,120,.16);box-sizing:border-box}}
+.help-map-error-v523{{height:100%;display:flex;align-items:center;justify-content:center;padding:24px;text-align:center;color:#5b6570;font-size:14px;line-height:1.6;box-sizing:border-box}}
+.leaflet-popup-content-wrapper{{border-radius:14px;box-shadow:0 8px 28px rgba(0,0,0,.16)}}.leaflet-popup-content{{margin:12px 13px;width:min(280px,75vw)!important}}
+.help-popup-title-v523{{font-size:15px;font-weight:850;line-height:1.35;color:#20242a}}.help-popup-meta-v523{{font-size:11px;color:#5f6974;line-height:1.45;margin-top:4px}}.help-popup-address-v523{{font-size:10px;color:#68727c;line-height:1.45;margin-top:5px;word-break:break-word}}
+.help-popup-actions-v523{{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:9px}}.help-popup-actions-v523.one{{grid-template-columns:1fr}}
+.help-action-v523{{appearance:none;-webkit-appearance:none;display:flex;align-items:center;justify-content:center;min-height:42px;padding:7px 8px;box-sizing:border-box;border-radius:11px;border:0;font:inherit;font-size:12px;font-weight:850;cursor:pointer;text-decoration:none!important}}
+.help-call-v523{{background:#d94a4a;color:#fff!important}}.help-route-v523{{background:#2f80ed;color:#fff!important}}
+.help-pin-shell-v523{{background:transparent!important;border:0!important}}.help-pin-v523{{position:relative;width:34px;height:34px;border-radius:50% 50% 50% 6px;transform:rotate(-45deg);border:3px solid #fff;box-shadow:0 3px 9px rgba(0,0,0,.28);box-sizing:border-box;background:#415d8d}}
+.help-pin-v523.koban{{background:#4b77be}}.help-pin-v523.police{{background:#31598e}}.help-pin-v523.fire{{background:#d9534f}}.help-pin-v523.office{{background:#3b946f}}.help-pin-v523 span{{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;transform:rotate(45deg);font-size:11px;font-weight:900;color:#fff}}
+.help-current-dot-v523{{width:18px;height:18px;border-radius:50%;background:#2f80ed;border:4px solid #fff;box-shadow:0 2px 9px rgba(0,0,0,.3);box-sizing:border-box}}
+.help-legend-v523{{position:absolute;z-index:1000;left:10px;bottom:10px;background:rgba(255,255,255,.94);border:1px solid rgba(0,0,0,.1);border-radius:10px;padding:6px 8px;box-shadow:0 3px 12px rgba(0,0,0,.10);font-size:10px;color:#4a535c;pointer-events:none}}
+@media(max-width:640px){{#help-map-v523{{height:500px;border-radius:14px}}.leaflet-popup-content{{width:min(270px,76vw)!important}}}}
+</style></head><body>
+<div style="position:relative"><div id="help-map-v523"><div class="help-map-error-v523">地図を読み込んでいます…</div></div><div class="help-legend-v523">青: 警察　赤: 消防　緑: 役所</div></div>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
+<script>(function(){{
+const data={payload_json};const node=document.getElementById('help-map-v523');if(!window.L){{node.innerHTML='<div class="help-map-error-v523">地図を読み込めませんでした。通信状態を確認してください。</div>';return}}
+const esc=(v)=>String(v==null?'':v).replace(/[&<>"']/g,(ch)=>({{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}}[ch]));
+node.innerHTML='';const center=[Number(data.center.lat),Number(data.center.lon)];const map=L.map('help-map-v523',{{zoomControl:true,attributionControl:true,preferCanvas:true}}).setView(center,15);L.tileLayer('https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png',{{maxZoom:19,attribution:'&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap</a>'}}).addTo(map);const bounds=L.latLngBounds([center]);
+if(Number(data.accuracy_m||0)>0&&String(data.search_source||'')==='gps')L.circle(center,{{radius:Number(data.accuracy_m),color:'#2f80ed',weight:1,opacity:.35,fillColor:'#2f80ed',fillOpacity:.07}}).addTo(map);const currentIcon=L.divIcon({{className:'',html:'<div class="help-current-dot-v523"></div>',iconSize:[18,18],iconAnchor:[9,9]}});L.marker(center,{{icon:currentIcon,keyboard:false,zIndexOffset:1200}}).addTo(map).bindPopup(String(data.search_source||'')==='manual'?'<b>検索中心</b>':'<b>現在地</b>');
+(data.places||[]).forEach((place)=>{{const lat=Number(place.latitude),lon=Number(place.longitude);if(!Number.isFinite(lat)||!Number.isFinite(lon))return;bounds.extend([lat,lon]);const cat=String(place.category||'office');const icon=L.divIcon({{className:'help-pin-shell-v523',html:`<div class="help-pin-v523 ${{cat}}"><span>${{Number(place.index)||''}}</span></div>`,iconSize:[34,42],iconAnchor:[17,38],popupAnchor:[0,-35]}});const d=Number(place.distance_m||0);const dt=d>=1000?`${{(d/1000).toFixed(1)}}km`:`${{Math.round(d)}}m`;const phone=String(place.phone_digits||'');const phoneDisplay=String(place.phone_display||'');const route=String(place.route_url||'');const call=phone?`<button class="help-action-v523 help-call-v523" type="button" data-phone="${{esc(phone)}}">📞 電話</button>`:'';const routeButton=route?`<button class="help-action-v523 help-route-v523" type="button" data-route="${{esc(route)}}">🗺️ 案内</button>`:'';const cls=(call&&routeButton)?'help-popup-actions-v523':'help-popup-actions-v523 one';const popup=`<div class="help-popup-title-v523">${{esc(place.icon)}} ${{esc(place.name)}}</div><div class="help-popup-meta-v523">${{esc(place.category_label)}} ／ ${{dt}}${{phoneDisplay?' ／ '+esc(phoneDisplay):''}}</div>${{place.address?`<div class="help-popup-address-v523">${{esc(place.address)}}</div>`:''}}<div class="${{cls}}">${{call}}${{routeButton}}</div>`;L.marker([lat,lon],{{icon}}).addTo(map).bindPopup(popup)}});
+const safePhone=(v)=>{{const x=String(v||'');return /^\\+?[0-9]{{5,18}}$/.test(x)?x:''}};const openPhone=(value)=>{{const phone=safePhone(value);if(!phone)return;const token=String(data.native_bridge_token||'');try{{const bridge=globalThis.BurariExternal||window.BurariExternal||null;if(bridge&&typeof bridge.openPhone==='function'){{bridge.openPhone(token,phone);return}}}}catch(_){{}}try{{window.top.location.href='tel:'+phone;return}}catch(_){{}}try{{window.location.href='tel:'+phone}}catch(_){{}}}};const openRoute=(value)=>{{let url='';try{{const parsed=new URL(String(value||''),window.location.href);if((parsed.protocol==='https:'||parsed.protocol==='http:')&&(parsed.hostname==='google.com'||parsed.hostname.endsWith('.google.com'))&&String(parsed.pathname||'').startsWith('/maps/dir'))url=parsed.href}}catch(_){{}}if(!url)return;const token=String(data.native_bridge_token||'');try{{const bridge=globalThis.BurariExternal||window.BurariExternal||null;if(bridge&&typeof bridge.openRoute==='function'){{bridge.openRoute(token,url);return}}}}catch(_){{}}try{{const opened=window.open(url,'_blank','noopener,noreferrer');if(opened)return}}catch(_){{}}try{{window.top.location.href=url}}catch(_){{}}}};
+node.addEventListener('click',(event)=>{{const call=event.target?.closest?.('[data-phone]');if(call){{event.preventDefault();event.stopPropagation();openPhone(call.getAttribute('data-phone'));return}}const route=event.target?.closest?.('[data-route]');if(route){{event.preventDefault();event.stopPropagation();openRoute(route.getAttribute('data-route'))}}}});if((data.places||[]).length)map.fitBounds(bounds,{{padding:[34,34],maxZoom:17}});setTimeout(()=>map.invalidateSize(),120)
+}})();</script></body></html>'''
+    st.components.v1.html(map_html, height=550, scrolling=False)
+
+
+def page_help_places_v523():
+    page_top(
+        "🆘 困ったとき",
+        "交番・警察署・消防署・市区町村の役所を、現在地の近くからまとめて探します。地図のピンをタップすると電話や徒歩案内を選べます。",
+    )
+    st.markdown(
+        """
+        <style>
+        .help-summary-v523{margin:.10rem 0 .58rem;padding:.62rem .70rem;border-radius:14px;border:1px solid rgba(217,74,74,.16);background:rgba(217,74,74,.045);font-size:.75rem;line-height:1.48}
+        .help-category-row-v523{display:flex;flex-wrap:wrap;gap:5px;margin:.42rem 0 .58rem}.help-category-chip-v523{display:inline-flex;align-items:center;min-height:1.65rem;padding:.16rem .48rem;border-radius:999px;background:rgba(128,128,128,.065);border:1px solid rgba(128,128,128,.14);font-size:.66rem;font-weight:760}
+        .help-source-v523{margin:.42rem 0 0;font-size:.60rem;line-height:1.4;opacity:.52}
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        '<div class="help-summary-v523"><b>緊急通報そのものを代替する機能ではありません。</b><br>事件・事故の緊急通報は110、火事・救急は119です。地図では各施設の公開電話番号が取得できた場合だけ「電話」を表示します。</div>',
+        unsafe_allow_html=True,
+    )
+    chips = ''.join(
+        f'<span class="help-category-chip-v523">{html.escape(meta["icon"])} {html.escape(meta["label"])}</span>'
+        for meta in HELP_PLACE_CATEGORIES_V523.values()
+    )
+    st.markdown('<div class="help-category-row-v523">' + chips + '</div>', unsafe_allow_html=True)
+
+    result_key = "_help_places_result_v523"
+    location_key = "_help_places_location_v523"
+    error_key = "_help_places_error_v523"
+    entry_serial = int(st.session_state.get("_help_places_entry_serial_v523") or 0)
+    component = _get_help_auto_location_component_v523()
+    auto_start = not isinstance(st.session_state.get(result_key), dict) and not str(st.session_state.get(error_key) or "")
+    if component is not None:
+        locate_result = component(
+            data={"auto_start": bool(auto_start)},
+            key=f"help_auto_location_v523_{entry_serial}_{_current_ui_refresh_epoch()}",
+            on_location_change=lambda: None,
+            on_location_error_change=lambda: None,
+        )
+        location_event = getattr(locate_result, "location", None)
+        if isinstance(location_event, dict):
+            token = str(location_event.get("token") or "")
+            if token and token != str(st.session_state.get("_help_places_location_token_v523") or ""):
+                st.session_state["_help_places_location_token_v523"] = token
+                try:
+                    latitude = float(location_event.get("latitude"))
+                    longitude = float(location_event.get("longitude"))
+                    accuracy = float(location_event.get("accuracy_m") or 0) or None
+                except (TypeError, ValueError):
+                    latitude = longitude = None
+                    accuracy = None
+                if latitude is not None and longitude is not None:
+                    label = reverse_geocode_rough(latitude, longitude) or "現在地"
+                    location = {
+                        "source": "gps", "latitude": latitude, "longitude": longitude,
+                        "accuracy_m": accuracy, "place_label": label,
+                        "measured_at": str(location_event.get("measured_at") or now_jst().isoformat()),
+                    }
+                    with st.spinner("交番・警察署・消防署・役所を探しています…"):
+                        search_result = search_civic_help_places_v523(latitude, longitude)
+                    st.session_state[location_key] = location
+                    st.session_state[result_key] = search_result
+                    st.session_state.pop(error_key, None)
+                    st.rerun(scope="app")
+        error_event = getattr(locate_result, "location_error", None)
+        if isinstance(error_event, dict):
+            token = str(error_event.get("token") or "")
+            if token and token != str(st.session_state.get("_help_places_error_token_v523") or ""):
+                st.session_state["_help_places_error_token_v523"] = token
+                st.session_state[error_key] = str(error_event.get("message") or "現在地を取得できませんでした。")
+                st.rerun(scope="app")
+    else:
+        st.info("現在地の自動取得を利用できません。下の地名入力から検索してください。")
+
+    if st.session_state.get(error_key):
+        st.warning(str(st.session_state.get(error_key)))
+
+    with st.expander("現在地が取れないとき・別の場所から探す"):
+        with st.form("help_manual_place_form_v523", clear_on_submit=False):
+            manual_text = st.text_input("駅名・地名", placeholder="例：品川駅、浅草、新宿区", key="help_manual_place_text_v523")
+            manual_submit = st.form_submit_button("この場所の近くを探す", use_container_width=True)
+        if manual_submit:
+            with st.spinner("場所を確認しています…"):
+                resolved = geocode_nearby_place_text(manual_text)
+            if not resolved:
+                st.error("場所を確認できませんでした。駅名・区名などを少し具体的に入力してください。")
+            else:
+                with st.spinner("交番・警察署・消防署・役所を探しています…"):
+                    search_result = search_civic_help_places_v523(resolved.get("latitude"), resolved.get("longitude"))
+                st.session_state[location_key] = resolved
+                st.session_state[result_key] = search_result
+                st.session_state.pop(error_key, None)
+                st.rerun(scope="app")
+
+    location = st.session_state.get(location_key) if isinstance(st.session_state.get(location_key), dict) else {}
+    search_result = st.session_state.get(result_key) if isinstance(st.session_state.get(result_key), dict) else None
+    if not search_result:
+        st.caption("ホームの「困ったとき」を押すと、この画面で現在地を自動取得して検索します。")
+        return
+    error = str(search_result.get("error") or "")
+    if error:
+        st.warning(error)
+        return
+    places = list(search_result.get("places") or [])
+    if not places:
+        st.info("この範囲では候補を見つけられませんでした。地名を指定してもう一度検索できます。")
+        return
+    label = str(location.get("place_label") or ("現在地" if location.get("source") == "gps" else "検索地点"))
+    accuracy = location.get("accuracy_m")
+    accuracy_text = f" ／ GPS精度 ±{int(round(float(accuracy)))}m" if isinstance(accuracy, (int, float)) and float(accuracy or 0) > 0 else ""
+    st.markdown(f"**📍 {html.escape(label)}**{html.escape(accuracy_text)}")
+    _render_help_places_map_v523(
+        location.get("latitude"), location.get("longitude"), places,
+        accuracy_m=location.get("accuracy_m"), search_source=location.get("source") or "gps",
+    )
+    provider = str(search_result.get("provider") or "")
+    phone_count = sum(1 for place in places if _help_phone_digits_v523(place.get("phone")))
+    st.markdown(
+        f'<div class="help-source-v523">候補：{html.escape(provider or "周辺地図情報")} ／ {len(places)}か所 ／ 電話番号を取得できた場所 {phone_count}か所。電話前に施設名を確認してください。</div>',
+        unsafe_allow_html=True,
+    )
 
 
 def page_toilets():
@@ -51947,6 +52511,8 @@ with st.container(key="app_page_root_v280"):
         _perf_call_v457("page:evening_review", page_evening_review, force=True)
     elif page == "toilets":
         _perf_call_v457("page:toilets", page_toilets, force=True)
+    elif page == "help_places":
+        _perf_call_v457("page:help_places", page_help_places_v523, force=True)
     elif page == "field_notes":
         _perf_call_v457("page:field_notes", page_field_notes, force=True)
     elif page == "experience":
@@ -51974,7 +52540,7 @@ with st.container(key="app_page_root_v280"):
         live_page = str(st.session_state.get("main_page") or "home")
         if (
             page == live_page
-            and page in {"camera", "videos", "moments", "diary", "photos", "review", "review_map", "review_project", "review_monthly", "review_tag", "review_random", "review_history", "nearby", "discovery_results", "evening_review", "toilets", "field_notes", "experience", "settings", "settings_moments", "settings_moments_definition", "settings_location", "settings_account", "settings_media_import"}
+            and page in {"camera", "videos", "moments", "diary", "photos", "review", "review_map", "review_project", "review_monthly", "review_tag", "review_random", "review_history", "nearby", "discovery_results", "evening_review", "toilets", "help_places", "field_notes", "experience", "settings", "settings_moments", "settings_moments_definition", "settings_location", "settings_account", "settings_media_import"}
         ):
             _perf_call_v457("ui:bottom_navigation", render_global_bottom_navigation, page)
 
