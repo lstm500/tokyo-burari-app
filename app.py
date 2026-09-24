@@ -49413,14 +49413,44 @@ def _random_music_library_editor_v473():
 
 
 def page_random_replay_v473():
-    # v521: use the same inline-icon structure as the other Review pages.
-    # Pseudo-element train artwork rendered at a different size/position during
-    # Streamlit's transition rerun, briefly producing a detached tiny icon.
-    # Keeping the icon inside the actual label makes title/button layout atomic.
-    page_top("🚂 おまかせムービー", "")
+    # v522: preserve the original route-specific train artwork from assets/icons.
+    # Render it as the background of the actual title/button element instead of a
+    # detached pseudo-element, so its size/position cannot drift during a rerun.
+    try:
+        _random_replay_train_name, random_replay_train_uri = _home_train_for_session()
+    except Exception:
+        random_replay_train_uri = _home_icon_uri("train") or ""
+    safe_random_replay_train_uri = str(random_replay_train_uri or "").replace('"', '%22').replace("'", '%27')
+    random_replay_train_image = (
+        f'url("{safe_random_replay_train_uri}")' if safe_random_replay_train_uri else "none"
+    )
+    _app_css_v473(
+        f"""
+        <style>
+          .st-key-random_replay_page_title_v522 h3 {{
+            background-image:{random_replay_train_image} !important;
+            background-repeat:no-repeat !important;
+            background-position:left center !important;
+            background-size:1.22em 1.22em !important;
+            padding-left:1.46em !important;
+          }}
+          .st-key-random_replay_redraw_v473 div.stButton > button {{
+            background-image:{random_replay_train_image} !important;
+            background-repeat:no-repeat !important;
+            background-position:calc(50% - 5.55rem) center !important;
+            background-size:1.16rem 1.16rem !important;
+          }}
+          .st-key-random_replay_redraw_v473 div.stButton > button > [data-testid="stMarkdownContainer"] {{
+            transform:translateX(.64rem) !important;
+          }}
+        </style>
+        """
+    )
+    with st.container(key="random_replay_page_title_v522"):
+        page_top("おまかせムービー", "")
     st.caption("\u4fdd\u5b58\u3057\u305f\u97f3\u697d\u3068\u5168\u671f\u9593\u306e\u5199\u771f\u304b\u3089\u304a\u307e\u304b\u305b\u3002\u5199\u771f\u306f\u64ae\u5f71\u3057\u305f\u9806\u306b\u6d41\u308c\u307e\u3059\u3002")
     # Widgets are emitted BEFORE costly preparation; a reroll callback clears one snapshot.
-    st.button("🚂 曲と写真を選び直す", key="random_replay_redraw_v473",
+    st.button("曲と写真を選び直す", key="random_replay_redraw_v473",
               use_container_width=True, on_click=_reset_random_replay_v473)
     key = _random_replay_key_v473()
     state = st.session_state.get(key)
@@ -49476,6 +49506,12 @@ def page_review():
         "🔍 振り返り",
         "見たい振り返りを選ぶと、専用ページへ移動します。",
     )
+    try:
+        _random_train_name, review_train_uri = _home_train_for_session()
+    except Exception:
+        review_train_uri = _home_icon_uri("train") or ""
+    safe_review_train_uri = str(review_train_uri or "").replace('"', '%22').replace("'", '%27')
+    review_train_image = f'url("{safe_review_train_uri}")' if safe_review_train_uri else "none"
     st.markdown(
         f"""
         <style>
@@ -49520,6 +49556,15 @@ def page_review():
             border:1px solid rgba(128,128,128,.16) !important;
             box-shadow:0 4px 12px rgba(0,0,0,.035) !important;
           }}
+          .st-key-review_random_jump_v473 div.stButton > button {{
+            background-image:{review_train_image} !important;
+            background-repeat:no-repeat !important;
+            background-position:calc(50% - 4.18rem) center !important;
+            background-size:1.14rem 1.14rem !important;
+          }}
+          .st-key-review_random_jump_v473 div.stButton > button > [data-testid="stMarkdownContainer"] {{
+            transform:translateX(.70rem) !important;
+          }}
           .st-key-review_map_jump [data-testid="stCaptionContainer"],
           .st-key-review_project_jump [data-testid="stCaptionContainer"],
           .st-key-review_monthly_jump [data-testid="stCaptionContainer"],
@@ -49541,7 +49586,7 @@ def page_review():
 
     with st.container(key="review_random_jump_v473"):
         st.button(
-            "🚂 おまかせムービー",
+            "おまかせムービー",
             use_container_width=True,
             key="review_open_random_v473",
             on_click=_open_random_replay_v473,
