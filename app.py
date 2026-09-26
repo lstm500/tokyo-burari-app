@@ -43,7 +43,8 @@ def _app_css_v473(markup, **_ignored):
 # Review menu-only update: 2026-09-19 JST
 GENERATED_UPDATE_JST = "2026-09-19T14:54:38+09:00"
 
-APP_BUILD = "v523"
+APP_BUILD = "v525"
+# v525: Burari Project renders only persisted road-inferred GPS paths in green. Raw GPS still drives distance/station logic, while a bounded background pedestrian-road inference job incrementally map-matches display-safe GPS chunks, saves successful geometry in Supabase Storage, and reuses it without repeated inference.
 # v523: Home adds a one-tap civic-help search for nearby police boxes/stations, fire stations, and municipal offices. It auto-locates on entry, supports manual place fallback, renders a map, and exposes phone/route actions without changing the rest of Home.
 # v499: Experience-card photos are manual-selection only. Pressing the photo button opens the picker; nothing is auto-selected. Obvious Android screenshots are hidden from the picker, selected photos are previewed under the buttons, and multiple selected photos are always combined into one experience card.
 
@@ -1270,6 +1271,27 @@ PROJECT_ROUTE_SNAP_MAX_WORKERS_V299 = 3
 PHOTO_LEGACY_ROUTE_CACHE_DIR_V300 = "_photo_routes/v1"
 PHOTO_LEGACY_ROUTE_CACHE_SCHEMA_V300 = "photo_legacy_pairwise_osrm_v300"
 PHOTO_LEGACY_ROUTE_RENDER_DEBUG_RED_V300 = True
+
+# v525: live GPS road inference is display-only. Stored raw GPS, distance totals,
+# station arrival evidence, and sampling/sync behavior remain unchanged.
+PROJECT_LIVE_ROAD_SCHEMA_V525 = "project_live_gps_road_match_v525"
+PROJECT_LIVE_ROAD_STORAGE_FILE_V525 = "project_live_gps_road_match_v525.json"
+PROJECT_LIVE_ROAD_PROVIDER_V525 = "routing.openstreetmap.de/routed-foot"
+PROJECT_LIVE_ROAD_BASE_URL_V525 = "https://routing.openstreetmap.de/routed-foot/route/v1/driving"
+PROJECT_LIVE_ROAD_REQUEST_TIMEOUT_V525 = 12.0
+PROJECT_LIVE_ROAD_MAX_ANCHORS_V525 = 10
+PROJECT_LIVE_ROAD_ANCHOR_SPACING_M_V525 = 34.0
+PROJECT_LIVE_ROAD_GROUP_MAX_M_V525 = 1550.0
+PROJECT_LIVE_ROAD_GROUP_MAX_TIME_GAP_SECONDS_V525 = 120.0
+PROJECT_LIVE_ROAD_GROUP_MAX_ENDPOINT_GAP_M_V525 = 85.0
+PROJECT_LIVE_ROAD_MAX_REQUESTS_PER_JOB_V525 = 48
+PROJECT_LIVE_ROAD_MAX_STATE_CHUNKS_V525 = 1800
+PROJECT_LIVE_ROAD_RETRY_BASE_SECONDS_V525 = 1800.0
+PROJECT_LIVE_ROAD_RETRY_MAX_SECONDS_V525 = 86400.0
+PROJECT_LIVE_ROAD_MAX_ANCHOR_ERROR_M_V525 = 95.0
+PROJECT_LIVE_ROAD_MEDIAN_ANCHOR_ERROR_M_V525 = 48.0
+PROJECT_LIVE_ROAD_RATIO_MIN_V525 = 0.62
+PROJECT_LIVE_ROAD_RATIO_MAX_V525 = 4.6
 
 
 # ============================================================
@@ -45692,8 +45714,10 @@ def _project_display_walk_segments_v496(points, stations=None):
             output_rows.append(piece)
 
     output = []
+    segment_windows = []
     for seg in output_rows:
         coords = []
+        source_rows = []
         for row in seg:
             try:
                 coord = [round(float(row["lat"]), 7), round(float(row["lon"]), 7)]
@@ -45702,8 +45726,21 @@ def _project_display_walk_segments_v496(points, stations=None):
             if coords and coord == coords[-1]:
                 continue
             coords.append(coord)
+            source_rows.append(row)
         if len(coords) >= 2:
             output.append(coords)
+            try:
+                start_ts_ms = int(float(source_rows[0].get("ts_ms") or 0))
+                end_ts_ms = int(float(source_rows[-1].get("ts_ms") or 0))
+            except Exception:
+                start_ts_ms = end_ts_ms = 0
+            segment_windows.append({
+                "start_ts_ms": max(0, start_ts_ms),
+                "end_ts_ms": max(0, end_ts_ms),
+                "point_count": len(source_rows),
+                "session_id": str(source_rows[0].get("session_id") or "")[:120] if source_rows else "",
+                "source": str(source_rows[0].get("source") or "")[:80] if source_rows else "",
+            })
     meta = {
         "input_points": len(rows),
         "preliminary_segments": len(preliminary),
@@ -45714,6 +45751,7 @@ def _project_display_walk_segments_v496(points, stations=None):
         "turn_removed": turn_removed,
         "dwell_removed": dwell_removed,
         "station_centers": len(centers),
+        "segment_windows": segment_windows,
     }
     return output, meta
 
@@ -48913,6 +48951,472 @@ def _project_snap_display_segments_v298(segments):
     return [seg for seg in out if isinstance(seg, list) and len(seg) >= 2]
 
 
+
+def _project_live_road_state_path_v525(family_key=None, member_key=None):
+    return f"{_gps_track_prefix(family_key, member_key)}/{PROJECT_LIVE_ROAD_STORAGE_FILE_V525}"
+
+
+def _project_live_road_default_state_v525(family_key=None, member_key=None):
+    return {
+        "schema": PROJECT_LIVE_ROAD_SCHEMA_V525,
+        "family_key": str(family_key or current_family_key() or ""),
+        "member_key": str(member_key or current_member_key() or ""),
+        "provider": PROJECT_LIVE_ROAD_PROVIDER_V525,
+        "saved_at": "",
+        "chunks": {},
+        "failures": {},
+    }
+
+
+def _project_live_road_read_state_v525(client, family_key, member_key):
+    state = _project_live_road_default_state_v525(family_key, member_key)
+    path = _project_live_road_state_path_v525(family_key, member_key)
+    try:
+        raw = _storage_bytes(client.storage.from_(GPS_TRACK_BUCKET).download(path))
+        payload = json.loads(raw.decode("utf-8")) if raw else {}
+    except Exception:
+        return state
+    if not isinstance(payload, dict) or str(payload.get("schema") or "") != PROJECT_LIVE_ROAD_SCHEMA_V525:
+        return state
+    chunks = payload.get("chunks") if isinstance(payload.get("chunks"), dict) else {}
+    failures = payload.get("failures") if isinstance(payload.get("failures"), dict) else {}
+    clean_chunks = {}
+    for key, row in chunks.items():
+        if not isinstance(row, dict):
+            continue
+        geometry = _project_clean_segment_v298(row.get("geometry") or [])
+        if len(geometry) < 2:
+            continue
+        clean = dict(row)
+        clean["geometry"] = geometry
+        clean_chunks[str(key)[:80]] = clean
+    clean_failures = {}
+    for key, row in failures.items():
+        if isinstance(row, dict):
+            clean_failures[str(key)[:80]] = dict(row)
+    state.update({
+        "saved_at": str(payload.get("saved_at") or "")[:80],
+        "chunks": clean_chunks,
+        "failures": clean_failures,
+    })
+    return state
+
+
+def _project_live_road_save_state_v525(client, family_key, member_key, state):
+    chunks = state.get("chunks") if isinstance(state.get("chunks"), dict) else {}
+    failures = state.get("failures") if isinstance(state.get("failures"), dict) else {}
+    document = {
+        "schema": PROJECT_LIVE_ROAD_SCHEMA_V525,
+        "family_key": str(family_key or ""),
+        "member_key": str(member_key or ""),
+        "provider": PROJECT_LIVE_ROAD_PROVIDER_V525,
+        "saved_at": now_jst().isoformat(),
+        "chunks": chunks,
+        "failures": failures,
+    }
+    blob = json.dumps(document, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    path = _project_live_road_state_path_v525(family_key, member_key)
+    bucket = client.storage.from_(GPS_TRACK_BUCKET)
+    options = {"content-type": GPS_TRACK_STORAGE_MIME, "cache-control": "0", "upsert": "true"}
+    try:
+        bucket.upload(path=path, file=blob, file_options=options)
+    except Exception:
+        try:
+            bucket.update(path=path, file=blob, file_options={"content-type": GPS_TRACK_STORAGE_MIME, "cache-control": "0"})
+        except Exception:
+            try:
+                bucket.remove([path])
+            except Exception:
+                pass
+            bucket.upload(path=path, file=blob, file_options={"content-type": GPS_TRACK_STORAGE_MIME, "cache-control": "0"})
+    return True
+
+
+def _project_live_road_anchor_points_v525(segment):
+    pts = _project_clean_segment_v298(segment)
+    if len(pts) <= 2:
+        return pts
+    out = [pts[0]]
+    last = pts[0]
+    for idx, point in enumerate(pts[1:-1], start=1):
+        keep = False
+        try:
+            if _nearby_haversine_m(last[0], last[1], point[0], point[1]) >= float(PROJECT_LIVE_ROAD_ANCHOR_SPACING_M_V525):
+                keep = True
+        except Exception:
+            keep = True
+        if not keep:
+            try:
+                prev = out[-1]
+                nxt = pts[idx + 1]
+                ax = point[1] - prev[1]; ay = point[0] - prev[0]
+                bx = nxt[1] - point[1]; by = nxt[0] - point[0]
+                na = math.hypot(ax, ay); nb = math.hypot(bx, by)
+                if na > 1e-12 and nb > 1e-12:
+                    cosine = max(-1.0, min(1.0, (ax * bx + ay * by) / (na * nb)))
+                    if math.degrees(math.acos(cosine)) >= 24.0:
+                        keep = True
+            except Exception:
+                pass
+        if keep:
+            out.append(point); last = point
+    if out[-1] != pts[-1]:
+        out.append(pts[-1])
+    return out
+
+
+def _project_live_road_group_source_v525(display_segments, display_meta):
+    windows = display_meta.get("segment_windows") if isinstance(display_meta, dict) else []
+    windows = windows if isinstance(windows, list) else []
+    source_rows = []
+    for idx, segment in enumerate(display_segments or []):
+        clean = _project_clean_segment_v298(segment)
+        if len(clean) < 2:
+            continue
+        meta = windows[idx] if idx < len(windows) and isinstance(windows[idx], dict) else {}
+        source_rows.append({
+            "coords": clean,
+            "start_ts_ms": max(0, int(meta.get("start_ts_ms") or 0)),
+            "end_ts_ms": max(0, int(meta.get("end_ts_ms") or 0)),
+            "session_id": str(meta.get("session_id") or ""),
+            "source": str(meta.get("source") or ""),
+            "distance_m": _project_segment_total_m_v298(clean),
+        })
+    groups = []
+    current = None
+    for row in source_rows:
+        if current is None:
+            current = dict(row)
+            continue
+        try:
+            time_gap = (float(row.get("start_ts_ms") or 0) - float(current.get("end_ts_ms") or 0)) / 1000.0
+            end_point = current["coords"][-1]; start_point = row["coords"][0]
+            endpoint_gap = _nearby_haversine_m(end_point[0], end_point[1], start_point[0], start_point[1])
+        except Exception:
+            time_gap = float("inf"); endpoint_gap = float("inf")
+        same_session = bool(current.get("session_id")) and current.get("session_id") == row.get("session_id")
+        same_source = bool(current.get("source")) and current.get("source") == row.get("source")
+        combined_m = float(current.get("distance_m") or 0.0) + float(row.get("distance_m") or 0.0) + max(0.0, endpoint_gap if math.isfinite(endpoint_gap) else 0.0)
+        merge_ok = (
+            0 <= time_gap <= float(PROJECT_LIVE_ROAD_GROUP_MAX_TIME_GAP_SECONDS_V525)
+            and endpoint_gap <= float(PROJECT_LIVE_ROAD_GROUP_MAX_ENDPOINT_GAP_M_V525)
+            and combined_m <= float(PROJECT_LIVE_ROAD_GROUP_MAX_M_V525)
+            and (same_session or (same_source and time_gap <= 45.0))
+        )
+        if merge_ok:
+            coords = list(current.get("coords") or [])
+            incoming = list(row.get("coords") or [])
+            if coords and incoming and coords[-1] == incoming[0]:
+                incoming = incoming[1:]
+            coords.extend(incoming)
+            current["coords"] = coords
+            current["end_ts_ms"] = max(int(current.get("end_ts_ms") or 0), int(row.get("end_ts_ms") or 0))
+            current["distance_m"] = combined_m
+        else:
+            groups.append(current)
+            current = dict(row)
+    if current is not None:
+        groups.append(current)
+    return groups
+
+
+def _project_live_road_source_chunks_v525(display_segments, display_meta, fallback_segments=None):
+    chunks = []
+    group_index = 0
+    groups = _project_live_road_group_source_v525(display_segments, display_meta)
+    for group in groups:
+        anchors = _project_live_road_anchor_points_v525(group.get("coords") or [])
+        if len(anchors) < 2:
+            continue
+        for part_index, part in enumerate(_project_chunk_points_v298(anchors, PROJECT_LIVE_ROAD_MAX_ANCHORS_V525)):
+            raw_m = _project_segment_total_m_v298(part)
+            if raw_m < 7.0:
+                continue
+            signature = "strict|" + ";".join(f"{float(p[0]):.6f},{float(p[1]):.6f}" for p in part)
+            key = hashlib.sha1((PROJECT_LIVE_ROAD_SCHEMA_V525 + "|" + signature).encode("utf-8")).hexdigest()[:28]
+            chunks.append({
+                "key": key, "kind": "strict", "group": group_index, "part": part_index,
+                "anchors": part, "raw_m": round(raw_m, 2),
+                "start_ts_ms": int(group.get("start_ts_ms") or 0),
+                "end_ts_ms": int(group.get("end_ts_ms") or 0),
+            })
+        group_index += 1
+
+    # Coarse urban fixes are never drawn raw in v525. They may contribute only after
+    # the same pedestrian-road inference succeeds, keeping every green pixel road-aligned.
+    for fallback_index, segment in enumerate(fallback_segments or []):
+        anchors = _project_live_road_anchor_points_v525(segment)
+        if len(anchors) < 2:
+            continue
+        for part_index, part in enumerate(_project_chunk_points_v298(anchors, PROJECT_LIVE_ROAD_MAX_ANCHORS_V525)):
+            raw_m = _project_segment_total_m_v298(part)
+            if raw_m < 12.0:
+                continue
+            signature = "coarse|" + ";".join(f"{float(p[0]):.6f},{float(p[1]):.6f}" for p in part)
+            key = hashlib.sha1((PROJECT_LIVE_ROAD_SCHEMA_V525 + "|" + signature).encode("utf-8")).hexdigest()[:28]
+            chunks.append({
+                "key": key, "kind": "coarse", "group": group_index + fallback_index, "part": part_index,
+                "anchors": part, "raw_m": round(raw_m, 2), "start_ts_ms": 0, "end_ts_ms": 0,
+            })
+    return chunks
+
+
+def _project_live_road_point_polyline_distance_m_v525(point, geometry):
+    try:
+        plat = float(point[0]); plon = float(point[1])
+    except Exception:
+        return float("inf")
+    line = _project_clean_segment_v298(geometry)
+    if len(line) < 2:
+        return float("inf")
+    lat0 = math.radians(plat)
+    sx = 111320.0 * max(0.2, math.cos(lat0)); sy = 111320.0
+    px = plon * sx; py = plat * sy
+    best = float("inf")
+    for a, b in zip(line[:-1], line[1:]):
+        ax = float(a[1]) * sx; ay = float(a[0]) * sy
+        bx = float(b[1]) * sx; by = float(b[0]) * sy
+        vx = bx - ax; vy = by - ay
+        denom = vx * vx + vy * vy
+        if denom <= 1e-9:
+            dist = math.hypot(px - ax, py - ay)
+        else:
+            t = max(0.0, min(1.0, ((px - ax) * vx + (py - ay) * vy) / denom))
+            qx = ax + t * vx; qy = ay + t * vy
+            dist = math.hypot(px - qx, py - qy)
+        best = min(best, dist)
+    return best
+
+
+def _project_live_road_reduce_geometry_v525(geometry):
+    clean = _project_clean_segment_v298(geometry)
+    if len(clean) <= 2:
+        return clean
+    out = [clean[0]]
+    for idx in range(1, len(clean) - 1):
+        point = clean[idx]
+        try:
+            dist = _nearby_haversine_m(out[-1][0], out[-1][1], point[0], point[1])
+        except Exception:
+            dist = 99.0
+        keep = dist >= 4.0
+        if not keep and idx + 1 < len(clean):
+            try:
+                prev = out[-1]; nxt = clean[idx + 1]
+                ax = point[1] - prev[1]; ay = point[0] - prev[0]
+                bx = nxt[1] - point[1]; by = nxt[0] - point[0]
+                na = math.hypot(ax, ay); nb = math.hypot(bx, by)
+                if na > 1e-12 and nb > 1e-12:
+                    cosine = max(-1.0, min(1.0, (ax * bx + ay * by) / (na * nb)))
+                    keep = math.degrees(math.acos(cosine)) >= 12.0
+            except Exception:
+                pass
+        if keep:
+            out.append(point)
+    if out[-1] != clean[-1]:
+        out.append(clean[-1])
+    if len(out) <= 360:
+        return out
+    step = max(1, int(math.ceil(len(out) / 360.0)))
+    sampled = out[::step]
+    if sampled[-1] != out[-1]:
+        sampled.append(out[-1])
+    return sampled
+
+
+def _project_live_road_route_v525(chunk):
+    anchors = _project_clean_segment_v298((chunk or {}).get("anchors") or [])
+    if len(anchors) < 2:
+        return None
+    coords = ";".join(f"{float(lon):.6f},{float(lat):.6f}" for lat, lon in anchors)
+    params = urlencode({"overview": "full", "geometries": "geojson", "steps": "false", "continue_straight": "true"})
+    url = f"{PROJECT_LIVE_ROAD_BASE_URL_V525}/{coords}?{params}"
+    req = Request(url, headers={"User-Agent": "TokyoBurariProjectRoadMatchV525/1.0"})
+    try:
+        with urlopen(req, timeout=float(PROJECT_LIVE_ROAD_REQUEST_TIMEOUT_V525)) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except Exception:
+        return None
+    routes = payload.get("routes") if isinstance(payload, dict) else None
+    if not isinstance(routes, list) or not routes or not isinstance(routes[0], dict):
+        return None
+    geometry_payload = routes[0].get("geometry") or {}
+    raw_coords = geometry_payload.get("coordinates") if isinstance(geometry_payload, dict) else None
+    geometry = []
+    for value in raw_coords or []:
+        if not isinstance(value, (list, tuple)) or len(value) < 2:
+            continue
+        try:
+            lon = float(value[0]); lat = float(value[1])
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(lat) and math.isfinite(lon):
+            geometry.append([round(lat, 7), round(lon, 7)])
+    geometry = _project_live_road_reduce_geometry_v525(geometry)
+    if len(geometry) < 2:
+        return None
+    raw_m = max(0.1, float((chunk or {}).get("raw_m") or _project_segment_total_m_v298(anchors)))
+    route_m = _project_segment_total_m_v298(geometry)
+    ratio = route_m / raw_m
+    if ratio < float(PROJECT_LIVE_ROAD_RATIO_MIN_V525) or ratio > float(PROJECT_LIVE_ROAD_RATIO_MAX_V525):
+        return None
+    errors = sorted(_project_live_road_point_polyline_distance_m_v525(point, geometry) for point in anchors)
+    if not errors or not math.isfinite(errors[-1]):
+        return None
+    median_error = errors[len(errors) // 2]
+    if errors[-1] > float(PROJECT_LIVE_ROAD_MAX_ANCHOR_ERROR_M_V525) or median_error > float(PROJECT_LIVE_ROAD_MEDIAN_ANCHOR_ERROR_M_V525):
+        return None
+    return {
+        "geometry": geometry,
+        "raw_m": round(raw_m, 2),
+        "route_m": round(route_m, 2),
+        "ratio": round(ratio, 4),
+        "max_anchor_error_m": round(errors[-1], 2),
+        "median_anchor_error_m": round(median_error, 2),
+        "provider": PROJECT_LIVE_ROAD_PROVIDER_V525,
+        "kind": str((chunk or {}).get("kind") or "strict"),
+        "start_ts_ms": int((chunk or {}).get("start_ts_ms") or 0),
+        "end_ts_ms": int((chunk or {}).get("end_ts_ms") or 0),
+        "saved_at": now_jst().isoformat(),
+    }
+
+
+@st.cache_resource(show_spinner=False)
+def _project_live_road_runtime_v525():
+    return {"lock": threading.Lock(), "executor": ThreadPoolExecutor(max_workers=1, thread_name_prefix="burari-road-match"), "jobs": {}}
+
+
+def _project_live_road_worker_v525(owner, source_chunks):
+    from supabase import create_client
+    client = create_client(SUPABASE_URL, SUPABASE_SECRET_KEY)
+    family_key, member_key = owner
+    state = _project_live_road_read_state_v525(client, family_key, member_key)
+    chunks = state.setdefault("chunks", {})
+    failures = state.setdefault("failures", {})
+    active_keys = {str(row.get("key") or "") for row in source_chunks if isinstance(row, dict) and row.get("key")}
+    now_epoch = time.time()
+    attempted = 0; saved_count = 0; failed_count = 0
+    for chunk in source_chunks:
+        key = str((chunk or {}).get("key") or "")
+        if not key or key in chunks:
+            continue
+        failure = failures.get(key) if isinstance(failures.get(key), dict) else {}
+        try:
+            retry_after = float(failure.get("retry_after_epoch") or 0.0)
+        except Exception:
+            retry_after = 0.0
+        if retry_after > now_epoch:
+            continue
+        if attempted >= int(PROJECT_LIVE_ROAD_MAX_REQUESTS_PER_JOB_V525):
+            break
+        attempted += 1
+        result = _project_live_road_route_v525(chunk)
+        if result:
+            chunks[key] = result
+            failures.pop(key, None)
+            saved_count += 1
+        else:
+            attempts = max(0, int(failure.get("attempts") or 0)) + 1
+            delay = min(float(PROJECT_LIVE_ROAD_RETRY_MAX_SECONDS_V525), float(PROJECT_LIVE_ROAD_RETRY_BASE_SECONDS_V525) * (2 ** min(5, attempts - 1)))
+            failures[key] = {
+                "attempts": attempts,
+                "last_at": now_jst().isoformat(),
+                "retry_after_epoch": round(time.time() + delay, 1),
+            }
+            failed_count += 1
+        # Save small batches so a long first-time reconstruction survives process restarts.
+        if attempted % 4 == 0:
+            state["chunks"] = chunks; state["failures"] = failures
+            _project_live_road_save_state_v525(client, family_key, member_key, state)
+
+    if len(chunks) > int(PROJECT_LIVE_ROAD_MAX_STATE_CHUNKS_V525):
+        active = {key: row for key, row in chunks.items() if key in active_keys}
+        if len(active) < int(PROJECT_LIVE_ROAD_MAX_STATE_CHUNKS_V525):
+            extras = [(key, row) for key, row in chunks.items() if key not in active_keys]
+            extras.sort(key=lambda pair: str((pair[1] or {}).get("saved_at") or ""), reverse=True)
+            room = int(PROJECT_LIVE_ROAD_MAX_STATE_CHUNKS_V525) - len(active)
+            active.update(extras[:max(0, room)])
+        chunks = active
+    failures = {key: row for key, row in failures.items() if key in active_keys or float((row or {}).get("retry_after_epoch") or 0.0) > time.time()}
+    state["chunks"] = chunks; state["failures"] = failures
+    state["source_chunk_count"] = len(source_chunks)
+    state["last_job"] = {"attempted": attempted, "saved": saved_count, "failed": failed_count, "at": now_jst().isoformat()}
+    _project_live_road_save_state_v525(client, family_key, member_key, state)
+    return state["last_job"]
+
+
+def _project_live_road_launch_v525(source_chunks, state):
+    source_chunks = [row for row in (source_chunks or []) if isinstance(row, dict) and row.get("key")]
+    if not source_chunks:
+        return False
+    chunks = state.get("chunks") if isinstance(state, dict) and isinstance(state.get("chunks"), dict) else {}
+    failures = state.get("failures") if isinstance(state, dict) and isinstance(state.get("failures"), dict) else {}
+    now_epoch = time.time()
+    missing = False
+    for row in source_chunks:
+        key = str(row.get("key") or "")
+        if key in chunks:
+            continue
+        failure = failures.get(key) if isinstance(failures.get(key), dict) else {}
+        try:
+            retry_after = float(failure.get("retry_after_epoch") or 0.0)
+        except Exception:
+            retry_after = 0.0
+        if retry_after <= now_epoch:
+            missing = True
+            break
+    runtime = _project_live_road_runtime_v525()
+    owner = (current_family_key(), current_member_key())
+    with runtime["lock"]:
+        future = runtime["jobs"].get(owner)
+        if future is not None:
+            if not future.done():
+                return True
+            runtime["jobs"].pop(owner, None)
+            # Give the next rerun a chance to reload the just-saved state before a new batch.
+            return True
+        if not missing:
+            return False
+        runtime["jobs"][owner] = runtime["executor"].submit(_project_live_road_worker_v525, owner, source_chunks)
+        return True
+
+
+def _project_live_road_segments_v525(source_chunks, state):
+    chunks = state.get("chunks") if isinstance(state, dict) and isinstance(state.get("chunks"), dict) else {}
+    output = []
+    matched = 0
+    for source in source_chunks or []:
+        key = str((source or {}).get("key") or "")
+        row = chunks.get(key) if key else None
+        geometry = _project_clean_segment_v298((row or {}).get("geometry") or []) if isinstance(row, dict) else []
+        if len(geometry) >= 2:
+            output.append(geometry); matched += 1
+    return output, {"matched": matched, "total": len(source_chunks or []), "pending": max(0, len(source_chunks or []) - matched)}
+
+
+@st.cache_resource(show_spinner=False)
+def _project_live_road_tick_component_v525():
+    return st.components.v2.component(
+        "burari_project_road_tick_v525",
+        html="<span hidden></span>",
+        js="""export default function(component){const {data,setTriggerValue}=component;let timer=null;if(data?.pending){timer=setTimeout(()=>setTriggerValue('tick',{t:Date.now()}),6000);}return()=>{if(timer!==null)clearTimeout(timer);};}""",
+    )
+
+
+def _project_live_road_tick_v525(pending):
+    if not pending:
+        return
+    try:
+        _project_live_road_tick_component_v525()(
+            data={"pending": True},
+            key=f"project_road_tick_v525_{current_family_key()}_{current_member_key()}",
+            height=1,
+            on_tick_change=lambda: None,
+        )
+    except Exception:
+        pass
+
+
 def _render_burari_project_map_v295(points, segments, stations, photo_segments=None, latest_point=None, fallback_segments=None):
     """Render a deliberately minimal project map.
 
@@ -49763,19 +50267,56 @@ def page_burari_project():
                 st.rerun()
         else:
             route_status.empty()
-    # v496: distance/station evidence above continues to use the authoritative v271
-    # segments. The solid green line is a separate high-confidence display path so
-    # station-area multipath cannot draw radial lines through buildings.
+    # v496 still determines which GPS fixes are plausible enough for display. v525 then
+    # uses those cleaned fixes only as evidence for a pedestrian-road inference job.
+    # Raw GPS never becomes the green line anymore; successful inferred road geometry is
+    # saved and reused, while distance/station calculations above remain raw-GPS based.
     display_segments, display_cleanup_meta = _project_display_walk_segments_v496(points, stations) if points else ([], {})
     _perf_log_v457(
         "gps:display_cleanup_v496",
         duration_ms=0,
-        meta=display_cleanup_meta,
+        meta={k: v for k, v in display_cleanup_meta.items() if k != "segment_windows"},
         force=True,
     )
+
+    road_source_chunks = _project_live_road_source_chunks_v525(
+        display_segments,
+        display_cleanup_meta,
+        fallback_segments=fallback_segments,
+    ) if points else []
+    if road_source_chunks:
+        try:
+            from supabase import create_client
+            _road_client_v525 = create_client(SUPABASE_URL, SUPABASE_SECRET_KEY)
+            road_state = _project_live_road_read_state_v525(
+                _road_client_v525,
+                current_family_key(),
+                current_member_key(),
+            )
+        except Exception:
+            road_state = _project_live_road_default_state_v525()
+    else:
+        road_state = _project_live_road_default_state_v525()
+    road_segments, road_match_meta = _project_live_road_segments_v525(road_source_chunks, road_state)
+    road_pending = _project_live_road_launch_v525(road_source_chunks, road_state) if road_source_chunks else False
+    _project_live_road_tick_v525(road_pending)
+    _perf_log_v457(
+        "gps:road_match_v525",
+        duration_ms=0,
+        meta={
+            "source_chunks": len(road_source_chunks),
+            "matched_chunks": int(road_match_meta.get("matched") or 0),
+            "pending_chunks": int(road_match_meta.get("pending") or 0),
+            "background_running": bool(road_pending),
+        },
+        force=True,
+    )
+
+    # Fit the map to inferred roads, not noisy raw fixes. The newest GPS point remains
+    # visible as the independent blue marker so the user can still see sync recency.
     render_points = []
     seen_render = set()
-    for seg in display_segments:
+    for seg in road_segments:
         for pair in seg or []:
             if not isinstance(pair, (list, tuple)) or len(pair) < 2:
                 continue
@@ -49805,12 +50346,12 @@ def page_burari_project():
             render_points.append(latest_point)
 
     _render_burari_project_map_v295(
-        render_points or display_points,
-        display_segments,
+        render_points or _photo_legacy_map_points_v296() or ([latest_point] if latest_point else display_points),
+        road_segments,
         stations,
         photo_segments=photo_segments,
         latest_point=latest_point,
-        fallback_segments=fallback_segments,
+        fallback_segments=[],
     )
 
     # v455 diagnostics reuse the dataset already loaded for this map: no polling, no
