@@ -24,7 +24,7 @@ from concurrent.futures import ThreadPoolExecutor
 from array import array
 from urllib.parse import urlencode, urlparse, parse_qs, quote
 from urllib.request import Request, urlopen
-from urllib.error import HTTPError
+from urllib.error import HTTPError, URLError
 from datetime import date, datetime, timedelta
 from bisect import bisect_left
 from pathlib import Path
@@ -43,7 +43,8 @@ def _app_css_v473(markup, **_ignored):
 # Review menu-only update: 2026-09-19 JST
 GENERATED_UPDATE_JST = "2026-09-19T14:54:38+09:00"
 
-APP_BUILD = "v528"
+APP_BUILD = "v529"
+# v529: Keep the exact v527 road-acceptance thresholds while accelerating the server worker: request pacing is start-to-start (still >=1.05s), transient network failures no longer trigger pointless recursive splits, and full-state Storage checkpoints are batched.
 # v528: Once GPS road rebuilding starts, one server-side worker drains the full queued snapshot to completion without requiring the Burari Project page to stay visible. Failed chunks remain in the same worker and retry after persisted backoff; every completed chunk is checkpointed to Supabase.
 # v527: Rebuild every displayed green road from GPS with timestamp/accuracy-aware OSRM map matching.
 # over the normal v271 walking segments. Smaller chunks and more GPS anchors constrain the
@@ -1344,6 +1345,10 @@ PROJECT_GPS_MATCH_CONTINUOUS_V528 = True
 PROJECT_GPS_MATCH_RETRY_POLL_SECONDS_V528 = 30.0
 PROJECT_GPS_MATCH_CHECKPOINT_RETRIES_V528 = 4
 PROJECT_GPS_MATCH_CHECKPOINT_RETRY_SECONDS_V528 = 2.0
+# v529: Do not rewrite the growing full JSON document after every routing request.
+# Accuracy/matching thresholds are unchanged; this only batches persistence overhead.
+PROJECT_GPS_MATCH_CHECKPOINT_EVERY_ATTEMPTS_V529 = 8
+PROJECT_GPS_MATCH_CHECKPOINT_MAX_SECONDS_V529 = 12.0
 
 
 # ============================================================
@@ -49986,10 +49991,15 @@ def _project_gps_match_request_v527(rows, *, rate_state=None):
     if len(rows) < int(PROJECT_GPS_MATCH_MIN_POINTS_V527):
         return None
     if isinstance(rate_state, dict):
-        elapsed = time.monotonic() - float(rate_state.get("last_request_monotonic") or 0.0)
+        # v529: enforce the same >=1.05s limit between REQUEST STARTS. The old code
+        # waited after the response completed, adding network latency on top of the
+        # intended interval and leaving the worker idle without improving accuracy.
+        elapsed = time.monotonic() - float(rate_state.get("last_request_started_monotonic") or 0.0)
         wait = float(PROJECT_GPS_MATCH_REQUEST_INTERVAL_V527) - elapsed
         if wait > 0:
             time.sleep(wait)
+        rate_state["last_request_started_monotonic"] = time.monotonic()
+        rate_state["requests"] = int(rate_state.get("requests") or 0) + 1
     coords = ";".join(f"{float(row['lon']):.7f},{float(row['lat']):.7f}" for row in rows)
     timestamps = ";".join(str(int(row["ts_sec"])) for row in rows)
     radiuses = ";".join(f"{float(row['accuracy_m']):.1f}" for row in rows)
@@ -50004,20 +50014,29 @@ def _project_gps_match_request_v527(rows, *, rate_state=None):
         "radiuses": radiuses,
     })
     url = f"{PROJECT_GPS_MATCH_BASE_URL_V527}/{coords}?{params}"
-    req = Request(url, headers={"User-Agent": "TokyoBurariProjectGpsMatchV527/1.0"})
+    req = Request(url, headers={"User-Agent": "TokyoBurariProjectGpsMatchV529/1.0"})
     try:
         with urlopen(req, timeout=float(PROJECT_GPS_MATCH_REQUEST_TIMEOUT_V527)) as response:
             payload = json.loads(response.read().decode("utf-8"))
+    except HTTPError as exc:
+        status = int(getattr(exc, "code", 0) or 0)
+        return {
+            "ok": False,
+            "error": f"HTTP{status or 'error'}",
+            "transient": bool(status == 429 or status >= 500),
+            "rows": rows,
+        }
+    except (URLError, TimeoutError) as exc:
+        return {"ok": False, "error": type(exc).__name__, "transient": True, "rows": rows}
     except Exception as exc:
-        if isinstance(rate_state, dict):
-            rate_state["last_request_monotonic"] = time.monotonic()
-            rate_state["requests"] = int(rate_state.get("requests") or 0) + 1
-        return {"ok": False, "error": type(exc).__name__, "rows": rows}
-    if isinstance(rate_state, dict):
-        rate_state["last_request_monotonic"] = time.monotonic()
-        rate_state["requests"] = int(rate_state.get("requests") or 0) + 1
+        return {"ok": False, "error": type(exc).__name__, "transient": True, "rows": rows}
     if not isinstance(payload, dict) or str(payload.get("code") or "") != "Ok":
-        return {"ok": False, "error": str((payload or {}).get("code") or "no_match")[:80], "rows": rows}
+        return {
+            "ok": False,
+            "error": str((payload or {}).get("code") or "no_match")[:80],
+            "transient": False,
+            "rows": rows,
+        }
     return {"ok": True, "payload": payload, "rows": rows}
 
 
@@ -50117,7 +50136,7 @@ def _project_gps_match_route_chunk_v527(chunk, rate_state=None):
     if len(rows) < int(PROJECT_GPS_MATCH_MIN_POINTS_V527):
         return None
     if not isinstance(rate_state, dict):
-        rate_state = {"last_request_monotonic": 0.0, "requests": 0}
+        rate_state = {"last_request_started_monotonic": 0.0, "requests": 0}
     requests_before = int(rate_state.get("requests") or 0)
 
     def attempt(candidate_rows, depth=0):
@@ -50125,6 +50144,11 @@ def _project_gps_match_route_chunk_v527(chunk, rate_state=None):
         accepted = _project_gps_match_evaluate_v527(result)
         if accepted:
             return accepted
+        # v529: keep the same accuracy-preserving split for genuine map-matching
+        # rejection/NoMatch. A timeout, 429, 5xx, or network failure contains no road
+        # evidence, so recursively sending 2/4 smaller requests only burns time.
+        if isinstance(result, dict) and bool(result.get("transient")):
+            return []
         if depth >= int(PROJECT_GPS_MATCH_MAX_SPLIT_DEPTH_V527) or len(candidate_rows) < 12:
             return []
         midpoint = len(candidate_rows) // 2
@@ -50211,15 +50235,24 @@ def _project_gps_match_worker_v527(owner, source_chunks):
     state = _project_gps_match_read_state_v527(client, family_key, member_key)
     chunks = state.setdefault("chunks", {})
     failures = state.setdefault("failures", {})
-    rate_state = {"last_request_monotonic": 0.0, "requests": 0}
+    rate_state = {"last_request_started_monotonic": 0.0, "requests": 0}
     attempted_total = 0
     saved_total = 0
     failed_total = 0
     request_total = 0
+    dirty_attempts = 0
+    last_checkpoint_monotonic = 0.0
 
-    def checkpoint(status, *, next_retry_epoch=0.0):
+    def checkpoint(status, *, next_retry_epoch=0.0, force=False):
+        nonlocal dirty_attempts, last_checkpoint_monotonic
         matched_count = sum(1 for key in active_keys if key in chunks)
         pending_count = max(0, len(active_keys) - matched_count)
+        elapsed = time.monotonic() - float(last_checkpoint_monotonic or 0.0)
+        if not force:
+            enough_attempts = dirty_attempts >= int(PROJECT_GPS_MATCH_CHECKPOINT_EVERY_ATTEMPTS_V529)
+            enough_time = elapsed >= float(PROJECT_GPS_MATCH_CHECKPOINT_MAX_SECONDS_V529)
+            if dirty_attempts > 0 and not enough_attempts and not enough_time:
+                return matched_count, pending_count
         state["chunks"] = chunks
         state["failures"] = failures
         state["source_chunk_count"] = len(ordered)
@@ -50234,11 +50267,14 @@ def _project_gps_match_worker_v527(owner, source_chunks):
             "next_retry_epoch": round(float(next_retry_epoch or 0.0), 1),
             "at": now_jst().isoformat(),
             "server_continuous": True,
+            "checkpoint_batching": True,
         }
-        _project_gps_match_checkpoint_v528(client, family_key, member_key, state)
+        if _project_gps_match_checkpoint_v528(client, family_key, member_key, state):
+            dirty_attempts = 0
+            last_checkpoint_monotonic = time.monotonic()
         return matched_count, pending_count
 
-    checkpoint("running")
+    checkpoint("running", force=True)
 
     while True:
         # Reuse every successful chunk already persisted by v527/v528. This also lets a
@@ -50249,7 +50285,7 @@ def _project_gps_match_worker_v527(owner, source_chunks):
             if len(chunks) > int(PROJECT_GPS_MATCH_MAX_STATE_CHUNKS_V527):
                 chunks = {key: row for key, row in chunks.items() if key in active_keys}
             failures = {key: row for key, row in failures.items() if key in active_keys}
-            checkpoint("complete")
+            checkpoint("complete", force=True)
             return dict(state.get("last_job") or {})
 
         now_epoch = time.time()
@@ -50271,7 +50307,7 @@ def _project_gps_match_worker_v527(owner, source_chunks):
             # No browser/page interaction is needed here. Stay alive on the server and
             # wake periodically until the earliest retry becomes eligible.
             next_retry = min(future_retry_epochs) if future_retry_epochs else (now_epoch + float(PROJECT_GPS_MATCH_RETRY_POLL_SECONDS_V528))
-            checkpoint("waiting_retry", next_retry_epoch=next_retry)
+            checkpoint("waiting_retry", next_retry_epoch=next_retry, force=True)
             remaining = max(0.5, next_retry - time.time())
             time.sleep(min(float(PROJECT_GPS_MATCH_RETRY_POLL_SECONDS_V528), remaining))
             continue
@@ -50309,10 +50345,11 @@ def _project_gps_match_worker_v527(owner, source_chunks):
                 }
                 failed_total += 1
 
-            # Accuracy-first processing can run for a long time. Persist every single
-            # completed attempt so hiding the app, losing the WebView, or a later server
-            # restart does not discard already-finished map matching work.
-            checkpoint("running")
+            # v529: matching accuracy is unchanged. Batch only the Storage checkpoint
+            # so the growing full JSON document is not rewritten after every routing
+            # request. Forced saves still happen before retry sleeps and on completion.
+            dirty_attempts += 1
+            checkpoint("running", force=False)
 
 
 def _project_gps_match_launch_v527(source_chunks, state):
