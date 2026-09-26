@@ -43,7 +43,8 @@ def _app_css_v473(markup, **_ignored):
 # Review menu-only update: 2026-09-19 JST
 GENERATED_UPDATE_JST = "2026-09-19T14:54:38+09:00"
 
-APP_BUILD = "v527"
+APP_BUILD = "v528"
+# v528: Once GPS road rebuilding starts, one server-side worker drains the full queued snapshot to completion without requiring the Burari Project page to stay visible. Failed chunks remain in the same worker and retry after persisted backoff; every completed chunk is checkpointed to Supabase.
 # v527: Rebuild every displayed green road from GPS with timestamp/accuracy-aware OSRM map matching.
 # over the normal v271 walking segments. Smaller chunks and more GPS anchors constrain the
 # pedestrian router to the streets actually walked, while persisted chunk keys prevent the
@@ -1337,6 +1338,12 @@ PROJECT_GPS_MATCH_MAX_P90_SNAP_M_V527 = 62.0
 PROJECT_GPS_MATCH_RATIO_MIN_V527 = 0.42
 PROJECT_GPS_MATCH_RATIO_MAX_V527 = 3.4
 PROJECT_GPS_MATCH_MAX_SPLIT_DEPTH_V527 = 2
+# v528: server-side continuation controls. The worker no longer stops after 120 chunks.
+# It keeps the same persisted v527 schema so already-completed road matches are reused.
+PROJECT_GPS_MATCH_CONTINUOUS_V528 = True
+PROJECT_GPS_MATCH_RETRY_POLL_SECONDS_V528 = 30.0
+PROJECT_GPS_MATCH_CHECKPOINT_RETRIES_V528 = 4
+PROJECT_GPS_MATCH_CHECKPOINT_RETRY_SECONDS_V528 = 2.0
 
 
 # ============================================================
@@ -50162,97 +50169,159 @@ def _project_gps_match_runtime_v527():
     return {"lock": threading.Lock(), "executor": ThreadPoolExecutor(max_workers=1, thread_name_prefix="burari-gps-map-match"), "jobs": {}}
 
 
+def _project_gps_match_checkpoint_v528(client, family_key, member_key, state):
+    """Persist progress without letting a transient Storage failure kill the long worker."""
+    last_error = None
+    for attempt in range(max(1, int(PROJECT_GPS_MATCH_CHECKPOINT_RETRIES_V528))):
+        try:
+            _project_gps_match_save_state_v527(client, family_key, member_key, state)
+            return True
+        except Exception as exc:
+            last_error = exc
+            if attempt + 1 < int(PROJECT_GPS_MATCH_CHECKPOINT_RETRIES_V528):
+                time.sleep(float(PROJECT_GPS_MATCH_CHECKPOINT_RETRY_SECONDS_V528))
+    # Keep processing in memory. A later chunk checkpoint will retry the full state.
+    try:
+        state["last_checkpoint_error"] = type(last_error).__name__ if last_error else "unknown"
+    except Exception:
+        pass
+    return False
+
+
 def _project_gps_match_worker_v527(owner, source_chunks):
+    """v528: drain the entire source snapshot on the server, independent of page reruns.
+
+    Once launched, this loop does not use the browser tick or the Burari Project page to
+    advance. It processes every currently eligible chunk, checkpoints each result, and if
+    only retry-delayed failures remain it sleeps server-side until the next retry window.
+    The loop exits only when every chunk in this snapshot has a persisted match.
+    """
     from supabase import create_client
+
     client = create_client(SUPABASE_URL, SUPABASE_SECRET_KEY)
     family_key, member_key = owner
+    ordered = sorted(
+        [dict(row) for row in (source_chunks or []) if isinstance(row, dict) and row.get("key")],
+        key=lambda row: (int(row.get("start_ts_ms") or 0), int(row.get("segment") or 0), int(row.get("part") or 0)),
+    )
+    active_keys = {str(row.get("key") or "") for row in ordered if row.get("key")}
+    if not ordered:
+        return {"status": "complete", "attempted": 0, "saved": 0, "failed": 0, "requests": 0, "pending": 0}
+
     state = _project_gps_match_read_state_v527(client, family_key, member_key)
     chunks = state.setdefault("chunks", {})
     failures = state.setdefault("failures", {})
-    active_keys = {str(row.get("key") or "") for row in source_chunks if isinstance(row, dict) and row.get("key")}
-    now_epoch = time.time()
-    attempted = 0; saved_count = 0; failed_count = 0; request_count = 0
     rate_state = {"last_request_monotonic": 0.0, "requests": 0}
-    ordered = sorted(
-        [row for row in source_chunks if isinstance(row, dict) and row.get("key")],
-        key=lambda row: (int(row.get("start_ts_ms") or 0), int(row.get("segment") or 0), int(row.get("part") or 0)),
-    )
-    for chunk in ordered:
-        key = str(chunk.get("key") or "")
-        if not key or key in chunks:
-            continue
-        failure = failures.get(key) if isinstance(failures.get(key), dict) else {}
-        try:
-            retry_after = float(failure.get("retry_after_epoch") or 0.0)
-        except Exception:
-            retry_after = 0.0
-        if retry_after > now_epoch:
-            continue
-        if attempted >= int(PROJECT_GPS_MATCH_MAX_CHUNKS_PER_JOB_V527):
-            break
-        attempted += 1
-        requests_before = int(rate_state.get("requests") or 0)
-        result = _project_gps_match_route_chunk_v527(chunk, rate_state=rate_state)
-        request_count += max(0, int(rate_state.get("requests") or 0) - requests_before)
-        if result:
-            chunks[key] = result
-            failures.pop(key, None)
-            saved_count += 1
-        else:
-            attempts = max(0, int(failure.get("attempts") or 0)) + 1
-            delay = min(
-                float(PROJECT_GPS_MATCH_RETRY_MAX_SECONDS_V527),
-                float(PROJECT_GPS_MATCH_RETRY_BASE_SECONDS_V527) * (2 ** min(5, attempts - 1)),
-            )
-            failures[key] = {
-                "attempts": attempts,
-                "last_at": now_jst().isoformat(),
-                "retry_after_epoch": round(time.time() + delay, 1),
-            }
-            failed_count += 1
-        # Accuracy-first processing may run for several minutes. Persist every completed
-        # chunk so app/worker restarts never throw away expensive map-matching work.
-        state["chunks"] = chunks; state["failures"] = failures; state["source_chunk_count"] = len(source_chunks)
-        _project_gps_match_save_state_v527(client, family_key, member_key, state)
+    attempted_total = 0
+    saved_total = 0
+    failed_total = 0
+    request_total = 0
 
-    if len(chunks) > int(PROJECT_GPS_MATCH_MAX_STATE_CHUNKS_V527):
-        chunks = {key: row for key, row in chunks.items() if key in active_keys}
-    failures = {
-        key: row for key, row in failures.items()
-        if key in active_keys or float((row or {}).get("retry_after_epoch") or 0.0) > time.time()
-    }
-    state["chunks"] = chunks; state["failures"] = failures; state["source_chunk_count"] = len(source_chunks)
-    state["last_job"] = {
-        "attempted": attempted,
-        "saved": saved_count,
-        "failed": failed_count,
-        "requests": request_count,
-        "at": now_jst().isoformat(),
-    }
-    _project_gps_match_save_state_v527(client, family_key, member_key, state)
-    return state["last_job"]
+    def checkpoint(status, *, next_retry_epoch=0.0):
+        matched_count = sum(1 for key in active_keys if key in chunks)
+        pending_count = max(0, len(active_keys) - matched_count)
+        state["chunks"] = chunks
+        state["failures"] = failures
+        state["source_chunk_count"] = len(ordered)
+        state["last_job"] = {
+            "status": str(status or "running"),
+            "attempted": attempted_total,
+            "saved": saved_total,
+            "failed": failed_total,
+            "requests": request_total,
+            "matched": matched_count,
+            "pending": pending_count,
+            "next_retry_epoch": round(float(next_retry_epoch or 0.0), 1),
+            "at": now_jst().isoformat(),
+            "server_continuous": True,
+        }
+        _project_gps_match_checkpoint_v528(client, family_key, member_key, state)
+        return matched_count, pending_count
+
+    checkpoint("running")
+
+    while True:
+        # Reuse every successful chunk already persisted by v527/v528. This also lets a
+        # worker resume from a partially completed historical rebuild after a new launch.
+        pending_rows = [row for row in ordered if str(row.get("key") or "") not in chunks]
+        if not pending_rows:
+            # Keep only data relevant to the active GPS snapshot before the final save.
+            if len(chunks) > int(PROJECT_GPS_MATCH_MAX_STATE_CHUNKS_V527):
+                chunks = {key: row for key, row in chunks.items() if key in active_keys}
+            failures = {key: row for key, row in failures.items() if key in active_keys}
+            checkpoint("complete")
+            return dict(state.get("last_job") or {})
+
+        now_epoch = time.time()
+        ready = []
+        future_retry_epochs = []
+        for chunk in pending_rows:
+            key = str(chunk.get("key") or "")
+            failure = failures.get(key) if isinstance(failures.get(key), dict) else {}
+            try:
+                retry_after = float(failure.get("retry_after_epoch") or 0.0)
+            except Exception:
+                retry_after = 0.0
+            if retry_after <= now_epoch:
+                ready.append(chunk)
+            else:
+                future_retry_epochs.append(retry_after)
+
+        if not ready:
+            # No browser/page interaction is needed here. Stay alive on the server and
+            # wake periodically until the earliest retry becomes eligible.
+            next_retry = min(future_retry_epochs) if future_retry_epochs else (now_epoch + float(PROJECT_GPS_MATCH_RETRY_POLL_SECONDS_V528))
+            checkpoint("waiting_retry", next_retry_epoch=next_retry)
+            remaining = max(0.5, next_retry - time.time())
+            time.sleep(min(float(PROJECT_GPS_MATCH_RETRY_POLL_SECONDS_V528), remaining))
+            continue
+
+        for chunk in ready:
+            key = str(chunk.get("key") or "")
+            if not key or key in chunks:
+                continue
+            failure = failures.get(key) if isinstance(failures.get(key), dict) else {}
+            attempted_total += 1
+            requests_before = int(rate_state.get("requests") or 0)
+            result = None
+            worker_error = ""
+            try:
+                result = _project_gps_match_route_chunk_v527(chunk, rate_state=rate_state)
+            except Exception as exc:
+                worker_error = type(exc).__name__
+            request_total += max(0, int(rate_state.get("requests") or 0) - requests_before)
+
+            if result:
+                chunks[key] = result
+                failures.pop(key, None)
+                saved_total += 1
+            else:
+                attempts = max(0, int(failure.get("attempts") or 0)) + 1
+                delay = min(
+                    float(PROJECT_GPS_MATCH_RETRY_MAX_SECONDS_V527),
+                    float(PROJECT_GPS_MATCH_RETRY_BASE_SECONDS_V527) * (2 ** min(5, attempts - 1)),
+                )
+                failures[key] = {
+                    "attempts": attempts,
+                    "last_at": now_jst().isoformat(),
+                    "retry_after_epoch": round(time.time() + delay, 1),
+                    "last_error": worker_error,
+                }
+                failed_total += 1
+
+            # Accuracy-first processing can run for a long time. Persist every single
+            # completed attempt so hiding the app, losing the WebView, or a later server
+            # restart does not discard already-finished map matching work.
+            checkpoint("running")
 
 
 def _project_gps_match_launch_v527(source_chunks, state):
-    source_chunks = [row for row in source_chunks or [] if isinstance(row, dict) and row.get("key")]
+    """Start one owner-scoped server job whenever any chunk is still unmatched."""
+    source_chunks = [dict(row) for row in (source_chunks or []) if isinstance(row, dict) and row.get("key")]
     if not source_chunks:
         return False
     chunks = state.get("chunks") if isinstance(state, dict) and isinstance(state.get("chunks"), dict) else {}
-    failures = state.get("failures") if isinstance(state, dict) and isinstance(state.get("failures"), dict) else {}
-    now_epoch = time.time()
-    missing = False
-    for row in source_chunks:
-        key = str(row.get("key") or "")
-        if key in chunks:
-            continue
-        failure = failures.get(key) if isinstance(failures.get(key), dict) else {}
-        try:
-            retry_after = float(failure.get("retry_after_epoch") or 0.0)
-        except Exception:
-            retry_after = 0.0
-        if retry_after <= now_epoch:
-            missing = True
-            break
+    unfinished = any(str(row.get("key") or "") not in chunks for row in source_chunks)
     runtime = _project_gps_match_runtime_v527()
     owner = (current_family_key(), current_member_key())
     with runtime["lock"]:
@@ -50260,11 +50329,16 @@ def _project_gps_match_launch_v527(source_chunks, state):
         if future is not None:
             if not future.done():
                 return True
+            # A previous job ended. Remove it and immediately relaunch if anything in
+            # the current GPS snapshot is still missing; do not require another page tick.
             runtime["jobs"].pop(owner, None)
-            return True
-        if not missing:
+        if not unfinished:
             return False
-        runtime["jobs"][owner] = runtime["executor"].submit(_project_gps_match_worker_v527, owner, source_chunks)
+        runtime["jobs"][owner] = runtime["executor"].submit(
+            _project_gps_match_worker_v527,
+            owner,
+            [dict(row) for row in source_chunks],
+        )
         return True
 
 
@@ -51188,7 +51262,7 @@ def page_burari_project():
         if pending_chunks > 0:
             st.info(
                 f"GPSから歩いた道路を高精度で再作成中：{matched_chunks}/{total_chunks}区間。"
-                "GPSの時刻・精度も使って道路上へ照合し、完成した区間から保存しています。"
+                "サーバー側で全区間を連続処理しているため、この画面を閉じても処理は継続します。"
             )
         else:
             st.success(f"GPS道路判定が完了しました：{matched_chunks}/{total_chunks}区間。")
