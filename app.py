@@ -43,7 +43,8 @@ def _app_css_v473(markup, **_ignored):
 # Review menu-only update: 2026-09-19 JST
 GENERATED_UPDATE_JST = "2026-09-19T14:54:38+09:00"
 
-APP_BUILD = "v529"
+APP_BUILD = "v530"
+# v530: Remove the 30-minute GPS map-match retry stall. Deterministic NoMatch/rejected chunks are finalized after the existing full precision-preserving split pass, while transient network/server failures retry in seconds. While the Burari Project page remains open, a hidden keepalive periodically renews this browser's signed auto-login token.
 # v529: Keep the exact v527 road-acceptance thresholds while accelerating the server worker: request pacing is start-to-start (still >=1.05s), transient network failures no longer trigger pointless recursive splits, and full-state Storage checkpoints are batched.
 # v528: Once GPS road rebuilding starts, one server-side worker drains the full queued snapshot to completion without requiring the Burari Project page to stay visible. Failed chunks remain in the same worker and retry after persisted backoff; every completed chunk is checkpointed to Supabase.
 # v527: Rebuild every displayed green road from GPS with timestamp/accuracy-aware OSRM map matching.
@@ -1349,6 +1350,15 @@ PROJECT_GPS_MATCH_CHECKPOINT_RETRY_SECONDS_V528 = 2.0
 # Accuracy/matching thresholds are unchanged; this only batches persistence overhead.
 PROJECT_GPS_MATCH_CHECKPOINT_EVERY_ATTEMPTS_V529 = 8
 PROJECT_GPS_MATCH_CHECKPOINT_MAX_SECONDS_V529 = 12.0
+# v530: no 30-minute retry sleeps. Only transient transport/provider failures retry;
+# deterministic NoMatch / accuracy-rejected chunks are finalized after the existing
+# recursive split pass, so they cannot hold the full rebuild open forever.
+PROJECT_GPS_MATCH_TRANSIENT_RETRY_BASE_SECONDS_V530 = 5.0
+PROJECT_GPS_MATCH_TRANSIENT_RETRY_MAX_SECONDS_V530 = 30.0
+# Keep a long-lived Burari Project screen authenticated without changing the normal
+# 24-hour policy elsewhere. The page renews its signed browser token every 10 minutes.
+PROJECT_AUTH_KEEPALIVE_INTERVAL_SECONDS_V530 = 600.0
+PROJECT_AUTH_TOKEN_REFRESH_SECONDS_V530 = 540.0
 
 
 # ============================================================
@@ -8139,6 +8149,51 @@ def clear_browser_auto_login(key="browser_auto_login_clear"):
         on_browser_state_change=lambda: None,
         on_browser_error_change=lambda: None,
     )
+
+
+@st.cache_resource(show_spinner=False)
+def _project_auth_keepalive_component_v530():
+    return st.components.v2.component(
+        "burari_project_auth_keepalive_v530",
+        html="<span hidden></span>",
+        js="""export default function(component){const {data,setTriggerValue}=component;const ms=Math.max(60000,Number(data?.interval_ms||600000));const timer=setTimeout(()=>setTriggerValue('keepalive',{t:Date.now()}),ms);return()=>clearTimeout(timer);}""",
+    )
+
+
+def _project_auth_keepalive_v530():
+    """Renew browser auto-login only while the Burari Project page stays mounted."""
+    if not st.session_state.get("_family_authenticated", False):
+        return
+    family_key = str(current_family_key() or "").strip()
+    member_key = str(current_member_key() or "").strip()
+    if not family_key or not member_key:
+        return
+    now_epoch = time.time()
+    last_refresh = float(st.session_state.get("_project_auth_token_refresh_v530") or 0.0)
+    if now_epoch - last_refresh >= float(PROJECT_AUTH_TOKEN_REFRESH_SECONDS_V530):
+        try:
+            member = get_member_account(family_key, member_key) or {}
+            token = browser_auto_login_token(family_key, member_key, member.get("pin_hash"))
+            if token:
+                refresh_bucket = int(now_epoch // max(60.0, float(PROJECT_AUTH_TOKEN_REFRESH_SECONDS_V530)))
+                write_browser_auto_login(
+                    token,
+                    key=f"browser_auto_login_project_keepalive_v530_{refresh_bucket}",
+                )
+                st.session_state["_project_auth_token_refresh_v530"] = now_epoch
+        except Exception:
+            # Authentication already present in this Streamlit session remains valid;
+            # a transient DB/browser-persistence failure will simply retry next tick.
+            pass
+    try:
+        _project_auth_keepalive_component_v530()(
+            data={"interval_ms": int(float(PROJECT_AUTH_KEEPALIVE_INTERVAL_SECONDS_V530) * 1000)},
+            key="project_auth_keepalive_v530",
+            height=1,
+            on_keepalive_change=lambda: None,
+        )
+    except Exception:
+        pass
 
 
 def _coerce_component_data_url(value):
@@ -49738,7 +49793,8 @@ def _project_gps_match_read_state_v527(client, family_key, member_key):
             geometry = _project_clean_segment_v298(row.get("geometry") or [])
             if len(geometry) >= 2:
                 geometries.append(geometry)
-        if not geometries:
+        terminal_no_match = str(row.get("status") or "") == "no_match"
+        if not geometries and not terminal_no_match:
             continue
         clean = dict(row)
         clean["geometries"] = geometries
@@ -50137,10 +50193,13 @@ def _project_gps_match_route_chunk_v527(chunk, rate_state=None):
         return None
     if not isinstance(rate_state, dict):
         rate_state = {"last_request_started_monotonic": 0.0, "requests": 0}
+    rate_state["chunk_had_transient_failure_v530"] = False
     requests_before = int(rate_state.get("requests") or 0)
 
     def attempt(candidate_rows, depth=0):
         result = _project_gps_match_request_v527(candidate_rows, rate_state=rate_state)
+        if isinstance(result, dict) and bool(result.get("transient")):
+            rate_state["chunk_had_transient_failure_v530"] = True
         accepted = _project_gps_match_evaluate_v527(result)
         if accepted:
             return accepted
@@ -50245,14 +50304,19 @@ def _project_gps_match_worker_v527(owner, source_chunks):
 
     def checkpoint(status, *, next_retry_epoch=0.0, force=False):
         nonlocal dirty_attempts, last_checkpoint_monotonic
-        matched_count = sum(1 for key in active_keys if key in chunks)
-        pending_count = max(0, len(active_keys) - matched_count)
+        processed_count = sum(1 for key in active_keys if key in chunks)
+        matched_count = sum(
+            1 for key in active_keys
+            if key in chunks and any(len(g or []) >= 2 for g in ((chunks.get(key) or {}).get("geometries") or []))
+        )
+        unmatched_count = max(0, processed_count - matched_count)
+        pending_count = max(0, len(active_keys) - processed_count)
         elapsed = time.monotonic() - float(last_checkpoint_monotonic or 0.0)
         if not force:
             enough_attempts = dirty_attempts >= int(PROJECT_GPS_MATCH_CHECKPOINT_EVERY_ATTEMPTS_V529)
             enough_time = elapsed >= float(PROJECT_GPS_MATCH_CHECKPOINT_MAX_SECONDS_V529)
             if dirty_attempts > 0 and not enough_attempts and not enough_time:
-                return matched_count, pending_count
+                return processed_count, pending_count
         state["chunks"] = chunks
         state["failures"] = failures
         state["source_chunk_count"] = len(ordered)
@@ -50262,7 +50326,9 @@ def _project_gps_match_worker_v527(owner, source_chunks):
             "saved": saved_total,
             "failed": failed_total,
             "requests": request_total,
+            "processed": processed_count,
             "matched": matched_count,
+            "unmatched": unmatched_count,
             "pending": pending_count,
             "next_retry_epoch": round(float(next_retry_epoch or 0.0), 1),
             "at": now_jst().isoformat(),
@@ -50272,7 +50338,7 @@ def _project_gps_match_worker_v527(owner, source_chunks):
         if _project_gps_match_checkpoint_v528(client, family_key, member_key, state):
             dirty_attempts = 0
             last_checkpoint_monotonic = time.monotonic()
-        return matched_count, pending_count
+        return processed_count, pending_count
 
     checkpoint("running", force=True)
 
@@ -50332,17 +50398,36 @@ def _project_gps_match_worker_v527(owner, source_chunks):
                 failures.pop(key, None)
                 saved_total += 1
             else:
+                transient_failure = bool(rate_state.get("chunk_had_transient_failure_v530")) or bool(worker_error)
                 attempts = max(0, int(failure.get("attempts") or 0)) + 1
-                delay = min(
-                    float(PROJECT_GPS_MATCH_RETRY_MAX_SECONDS_V527),
-                    float(PROJECT_GPS_MATCH_RETRY_BASE_SECONDS_V527) * (2 ** min(5, attempts - 1)),
-                )
-                failures[key] = {
-                    "attempts": attempts,
-                    "last_at": now_jst().isoformat(),
-                    "retry_after_epoch": round(time.time() + delay, 1),
-                    "last_error": worker_error,
-                }
+                if transient_failure:
+                    delay = min(
+                        float(PROJECT_GPS_MATCH_TRANSIENT_RETRY_MAX_SECONDS_V530),
+                        float(PROJECT_GPS_MATCH_TRANSIENT_RETRY_BASE_SECONDS_V530) * (2 ** min(3, attempts - 1)),
+                    )
+                    failures[key] = {
+                        "attempts": attempts,
+                        "last_at": now_jst().isoformat(),
+                        "retry_after_epoch": round(time.time() + delay, 1),
+                        "last_error": worker_error or "transient_provider_error",
+                        "transient": True,
+                    }
+                else:
+                    # The full v527 matching + recursive split pass ran and produced no
+                    # road that met the unchanged accuracy thresholds. Repeating exactly
+                    # the same deterministic request after 30 minutes adds no evidence;
+                    # finalize it as no-match and continue the remaining GPS chunks now.
+                    chunks[key] = {
+                        "geometries": [],
+                        "provider": PROJECT_GPS_MATCH_PROVIDER_V527,
+                        "algorithm": PROJECT_GPS_MATCH_SCHEMA_V527,
+                        "status": "no_match",
+                        "raw_m": round(float((chunk or {}).get("raw_m") or 0.0), 2),
+                        "start_ts_ms": int((chunk or {}).get("start_ts_ms") or 0),
+                        "end_ts_ms": int((chunk or {}).get("end_ts_ms") or 0),
+                        "saved_at": now_jst().isoformat(),
+                    }
+                    failures.pop(key, None)
                 failed_total += 1
 
             # v529: matching accuracy is unchanged. Batch only the Storage checkpoint
@@ -50382,7 +50467,9 @@ def _project_gps_match_launch_v527(source_chunks, state):
 def _project_gps_match_segments_v527(source_chunks, state):
     chunks = state.get("chunks") if isinstance(state, dict) and isinstance(state.get("chunks"), dict) else {}
     output = []
+    processed = 0
     matched = 0
+    unmatched = 0
     rendered_parts = 0
     seen_geometry = set()
     for source in source_chunks or []:
@@ -50390,12 +50477,15 @@ def _project_gps_match_segments_v527(source_chunks, state):
         row = chunks.get(key) if key else None
         if not isinstance(row, dict):
             continue
+        processed += 1
         geometries = []
         for geometry in row.get("geometries") or []:
             cleaned = _project_clean_segment_v298(geometry)
             if len(cleaned) >= 2:
                 geometries.append(cleaned)
         if not geometries:
+            if str(row.get("status") or "") == "no_match":
+                unmatched += 1
             continue
         matched += 1
         for geometry in geometries:
@@ -50412,9 +50502,11 @@ def _project_gps_match_segments_v527(source_chunks, state):
             rendered_parts += 1
     total = len(source_chunks or [])
     return output, {
+        "processed": processed,
         "matched": matched,
+        "unmatched": unmatched,
         "total": total,
-        "pending": max(0, total - matched),
+        "pending": max(0, total - processed),
         "rendered_parts": rendered_parts,
     }
 
@@ -51164,6 +51256,10 @@ def page_burari_project():
         unsafe_allow_html=True,
     )
     page_top("✨ ぶらり旅プロジェクト", "")
+    # v530: while this screen remains open, periodically renew the signed browser
+    # auto-login credential and keep the Streamlit session active. Other pages retain
+    # the normal fixed 24-hour auto-login policy.
+    _project_auth_keepalive_v530()
     # Resolve the one-time wall-map profile before the no-GPS guard. This lets a new
     # account receive its historical seed even when it has not recorded live GPS yet.
     photo_seed_enabled = _photo_legacy_enabled_v296()
@@ -51292,24 +51388,32 @@ def page_burari_project():
     ) if gps_match_source_chunks else False
     _project_gps_match_tick_v527(road_worker_running)
 
+    processed_chunks = int(road_match_meta.get("processed") or 0)
     matched_chunks = int(road_match_meta.get("matched") or 0)
+    unmatched_chunks = int(road_match_meta.get("unmatched") or 0)
     total_chunks = int(road_match_meta.get("total") or 0)
     pending_chunks = int(road_match_meta.get("pending") or 0)
     if total_chunks > 0:
         if pending_chunks > 0:
             st.info(
-                f"GPSから歩いた道路を高精度で再作成中：{matched_chunks}/{total_chunks}区間。"
+                f"GPSから歩いた道路を高精度で再作成中：{processed_chunks}/{total_chunks}区間を判定済み"
+                f"（道路確定 {matched_chunks}、判定不能 {unmatched_chunks}）。"
                 "サーバー側で全区間を連続処理しているため、この画面を閉じても処理は継続します。"
             )
         else:
-            st.success(f"GPS道路判定が完了しました：{matched_chunks}/{total_chunks}区間。")
+            st.success(
+                f"GPS道路判定が完了しました：{processed_chunks}/{total_chunks}区間"
+                f"（道路確定 {matched_chunks}、判定不能 {unmatched_chunks}）。"
+            )
 
     _perf_log_v457(
         "gps:map_match_v527",
         duration_ms=0,
         meta={
             "source_chunks": len(gps_match_source_chunks),
+            "processed_chunks": processed_chunks,
             "matched_chunks": matched_chunks,
+            "unmatched_chunks": unmatched_chunks,
             "pending_chunks": pending_chunks,
             "rendered_parts": int(road_match_meta.get("rendered_parts") or 0),
             "background_running": bool(road_worker_running),
