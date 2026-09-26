@@ -43,8 +43,11 @@ def _app_css_v473(markup, **_ignored):
 # Review menu-only update: 2026-09-19 JST
 GENERATED_UPDATE_JST = "2026-09-19T14:54:38+09:00"
 
-APP_BUILD = "v525"
-# v525: Burari Project renders only persisted road-inferred GPS paths in green. Raw GPS still drives distance/station logic, while a bounded background pedestrian-road inference job incrementally map-matches display-safe GPS chunks, saves successful geometry in Supabase Storage, and reuses it without repeated inference.
+APP_BUILD = "v527"
+# v527: Rebuild every displayed green road from GPS with timestamp/accuracy-aware OSRM map matching.
+# over the normal v271 walking segments. Smaller chunks and more GPS anchors constrain the
+# pedestrian router to the streets actually walked, while persisted chunk keys prevent the
+# same historical section from being inferred again on later page opens.
 # v523: Home adds a one-tap civic-help search for nearby police boxes/stations, fire stations, and municipal offices. It auto-locates on entry, supports manual place fallback, renders a map, and exposes phone/route actions without changing the rest of Home.
 # v499: Experience-card photos are manual-selection only. Pressing the photo button opens the picker; nothing is auto-selected. Obvious Android screenshots are hidden from the picker, selected photos are previewed under the buttons, and multiple selected photos are always combined into one experience card.
 
@@ -1284,14 +1287,56 @@ PROJECT_LIVE_ROAD_ANCHOR_SPACING_M_V525 = 34.0
 PROJECT_LIVE_ROAD_GROUP_MAX_M_V525 = 1550.0
 PROJECT_LIVE_ROAD_GROUP_MAX_TIME_GAP_SECONDS_V525 = 120.0
 PROJECT_LIVE_ROAD_GROUP_MAX_ENDPOINT_GAP_M_V525 = 85.0
-PROJECT_LIVE_ROAD_MAX_REQUESTS_PER_JOB_V525 = 48
-PROJECT_LIVE_ROAD_MAX_STATE_CHUNKS_V525 = 1800
-PROJECT_LIVE_ROAD_RETRY_BASE_SECONDS_V525 = 1800.0
-PROJECT_LIVE_ROAD_RETRY_MAX_SECONDS_V525 = 86400.0
+PROJECT_LIVE_ROAD_MAX_REQUESTS_PER_JOB_V525 = 12
+PROJECT_LIVE_ROAD_MAX_STATE_CHUNKS_V525 = 2800
+PROJECT_LIVE_ROAD_RETRY_BASE_SECONDS_V525 = 900.0
+PROJECT_LIVE_ROAD_RETRY_MAX_SECONDS_V525 = 43200.0
 PROJECT_LIVE_ROAD_MAX_ANCHOR_ERROR_M_V525 = 95.0
 PROJECT_LIVE_ROAD_MEDIAN_ANCHOR_ERROR_M_V525 = 48.0
 PROJECT_LIVE_ROAD_RATIO_MIN_V525 = 0.62
 PROJECT_LIVE_ROAD_RATIO_MAX_V525 = 4.6
+
+# v526 detail pass. These chunks come from the ordinary v271 walking segments rather
+# than the much stricter v496 display line. They are never drawn raw: GPS is only used
+# as dense evidence for the pedestrian router, so previously walked streets can return
+# without reintroducing the station-area spider-web.
+PROJECT_LIVE_ROAD_DETAIL_ALGO_V526 = "detail_walk_v526"
+PROJECT_LIVE_ROAD_DETAIL_ANCHOR_SPACING_M_V526 = 12.0
+PROJECT_LIVE_ROAD_DETAIL_TURN_DEGREES_V526 = 16.0
+PROJECT_LIVE_ROAD_DETAIL_MAX_ANCHORS_V526 = 14
+PROJECT_LIVE_ROAD_DETAIL_MIN_CHUNK_M_V526 = 5.0
+PROJECT_LIVE_ROAD_DETAIL_FALLBACK_ANCHORS_V526 = 5
+PROJECT_LIVE_ROAD_DETAIL_RATIO_MIN_V526 = 0.48
+PROJECT_LIVE_ROAD_DETAIL_RATIO_MAX_V526 = 5.4
+PROJECT_LIVE_ROAD_DETAIL_MAX_ANCHOR_ERROR_M_V526 = 105.0
+PROJECT_LIVE_ROAD_DETAIL_MEDIAN_ANCHOR_ERROR_M_V526 = 55.0
+
+# v527: accuracy-first full rebuild. This deliberately uses a new Storage document, so
+# no v525/v526 inferred green geometry is reused. Every green road is regenerated from
+# the stored GPS trace. OSRM Match consumes the real timestamps and per-fix accuracy,
+# which is materially better suited to noisy walking traces than repeatedly routing
+# between simplified waypoint anchors.
+PROJECT_GPS_MATCH_SCHEMA_V527 = "project_gps_map_match_v527"
+PROJECT_GPS_MATCH_STORAGE_FILE_V527 = "project_gps_map_match_v527.json"
+PROJECT_GPS_MATCH_PROVIDER_V527 = "routing.openstreetmap.de/routed-foot"
+PROJECT_GPS_MATCH_BASE_URL_V527 = "https://routing.openstreetmap.de/routed-foot/match/v1/driving"
+PROJECT_GPS_MATCH_MAX_POINTS_V527 = 80
+PROJECT_GPS_MATCH_OVERLAP_POINTS_V527 = 8
+PROJECT_GPS_MATCH_MIN_POINTS_V527 = 4
+PROJECT_GPS_MATCH_REQUEST_TIMEOUT_V527 = 18.0
+PROJECT_GPS_MATCH_REQUEST_INTERVAL_V527 = 1.05
+PROJECT_GPS_MATCH_MAX_CHUNKS_PER_JOB_V527 = 120
+PROJECT_GPS_MATCH_MAX_STATE_CHUNKS_V527 = 5000
+PROJECT_GPS_MATCH_RETRY_BASE_SECONDS_V527 = 1800.0
+PROJECT_GPS_MATCH_RETRY_MAX_SECONDS_V527 = 86400.0
+PROJECT_GPS_MATCH_MIN_CONFIDENCE_V527 = 0.24
+PROJECT_GPS_MATCH_STRONG_CONFIDENCE_V527 = 0.55
+PROJECT_GPS_MATCH_MIN_TRACE_COVERAGE_V527 = 0.58
+PROJECT_GPS_MATCH_MAX_MEDIAN_SNAP_M_V527 = 30.0
+PROJECT_GPS_MATCH_MAX_P90_SNAP_M_V527 = 62.0
+PROJECT_GPS_MATCH_RATIO_MIN_V527 = 0.42
+PROJECT_GPS_MATCH_RATIO_MAX_V527 = 3.4
+PROJECT_GPS_MATCH_MAX_SPLIT_DEPTH_V527 = 2
 
 
 # ============================================================
@@ -48985,10 +49030,22 @@ def _project_live_road_read_state_v525(client, family_key, member_key):
         if not isinstance(row, dict):
             continue
         geometry = _project_clean_segment_v298(row.get("geometry") or [])
-        if len(geometry) < 2:
+        geometries = []
+        for candidate in (row.get("geometries") or []):
+            cleaned = _project_clean_segment_v298(candidate)
+            if len(cleaned) >= 2:
+                geometries.append(cleaned)
+        if len(geometry) < 2 and not geometries:
             continue
         clean = dict(row)
-        clean["geometry"] = geometry
+        if len(geometry) >= 2:
+            clean["geometry"] = geometry
+        else:
+            clean.pop("geometry", None)
+        if geometries:
+            clean["geometries"] = geometries
+        else:
+            clean.pop("geometries", None)
         clean_chunks[str(key)[:80]] = clean
     clean_failures = {}
     for key, row in failures.items():
@@ -49065,6 +49122,48 @@ def _project_live_road_anchor_points_v525(segment):
     return out
 
 
+def _project_live_road_detail_anchor_points_v526(segment):
+    """Keep substantially more walking evidence than the v525 display-only pass.
+
+    The resulting coordinates are still never rendered directly. They only constrain
+    road routing, which lets us restore genuine walked streets that v496 intentionally
+    hid while retaining a road-shaped final display.
+    """
+    pts = _project_clean_segment_v298(segment)
+    if len(pts) <= 2:
+        return pts
+    out = [pts[0]]
+    last = pts[0]
+    spacing = float(PROJECT_LIVE_ROAD_DETAIL_ANCHOR_SPACING_M_V526)
+    turn_limit = float(PROJECT_LIVE_ROAD_DETAIL_TURN_DEGREES_V526)
+    for idx, point in enumerate(pts[1:-1], start=1):
+        keep = False
+        try:
+            if _nearby_haversine_m(last[0], last[1], point[0], point[1]) >= spacing:
+                keep = True
+        except Exception:
+            keep = True
+        if not keep:
+            try:
+                prev = pts[idx - 1]
+                nxt = pts[idx + 1]
+                ax = point[1] - prev[1]; ay = point[0] - prev[0]
+                bx = nxt[1] - point[1]; by = nxt[0] - point[0]
+                na = math.hypot(ax, ay); nb = math.hypot(bx, by)
+                if na > 1e-12 and nb > 1e-12:
+                    cosine = max(-1.0, min(1.0, (ax * bx + ay * by) / (na * nb)))
+                    if math.degrees(math.acos(cosine)) >= turn_limit:
+                        keep = True
+            except Exception:
+                pass
+        if keep:
+            out.append(point)
+            last = point
+    if out[-1] != pts[-1]:
+        out.append(pts[-1])
+    return out
+
+
 def _project_live_road_group_source_v525(display_segments, display_meta):
     windows = display_meta.get("segment_windows") if isinstance(display_meta, dict) else []
     windows = windows if isinstance(windows, list) else []
@@ -49120,44 +49219,71 @@ def _project_live_road_group_source_v525(display_segments, display_meta):
     return groups
 
 
-def _project_live_road_source_chunks_v525(display_segments, display_meta, fallback_segments=None):
+def _project_live_road_source_chunks_v525(display_segments, display_meta, fallback_segments=None, detail_segments=None):
     chunks = []
+    seen_keys = set()
     group_index = 0
+
+    def append_chunk(kind, group, part_index, part, start_ts_ms=0, end_ts_ms=0, signature_prefix=None):
+        clean_part = _project_clean_segment_v298(part)
+        if len(clean_part) < 2:
+            return
+        raw_m = _project_segment_total_m_v298(clean_part)
+        min_m = float(PROJECT_LIVE_ROAD_DETAIL_MIN_CHUNK_M_V526) if kind == "detail" else (12.0 if kind == "coarse" else 7.0)
+        if raw_m < min_m:
+            return
+        prefix = str(signature_prefix or kind)
+        signature = prefix + "|" + ";".join(f"{float(p[0]):.6f},{float(p[1]):.6f}" for p in clean_part)
+        key = hashlib.sha1((PROJECT_LIVE_ROAD_SCHEMA_V525 + "|" + signature).encode("utf-8")).hexdigest()[:28]
+        if key in seen_keys:
+            return
+        seen_keys.add(key)
+        chunks.append({
+            "key": key, "kind": kind, "group": group, "part": part_index,
+            "anchors": clean_part, "raw_m": round(raw_m, 2),
+            "start_ts_ms": int(start_ts_ms or 0), "end_ts_ms": int(end_ts_ms or 0),
+        })
+
+    # v526 coverage pass FIRST. v271 walking segments are less destructive than v496,
+    # but remain cleaned for accuracy/noise and walk-like continuity. Using 12m-spaced
+    # anchors in short chunks makes the pedestrian router follow small side streets and
+    # restores places that disappeared when v525 only used the strict display trace.
+    for detail_index, segment in enumerate(detail_segments or []):
+        anchors = _project_live_road_detail_anchor_points_v526(segment)
+        if len(anchors) < 2:
+            continue
+        for part_index, part in enumerate(_project_chunk_points_v298(anchors, PROJECT_LIVE_ROAD_DETAIL_MAX_ANCHORS_V526)):
+            append_chunk(
+                "detail", detail_index, part_index, part,
+                signature_prefix=PROJECT_LIVE_ROAD_DETAIL_ALGO_V526,
+            )
+
+    # Keep all v525 source definitions unchanged so already-persisted road inference is
+    # immediately reusable while the new detail pass fills historical gaps in background.
     groups = _project_live_road_group_source_v525(display_segments, display_meta)
     for group in groups:
         anchors = _project_live_road_anchor_points_v525(group.get("coords") or [])
         if len(anchors) < 2:
             continue
         for part_index, part in enumerate(_project_chunk_points_v298(anchors, PROJECT_LIVE_ROAD_MAX_ANCHORS_V525)):
-            raw_m = _project_segment_total_m_v298(part)
-            if raw_m < 7.0:
-                continue
-            signature = "strict|" + ";".join(f"{float(p[0]):.6f},{float(p[1]):.6f}" for p in part)
-            key = hashlib.sha1((PROJECT_LIVE_ROAD_SCHEMA_V525 + "|" + signature).encode("utf-8")).hexdigest()[:28]
-            chunks.append({
-                "key": key, "kind": "strict", "group": group_index, "part": part_index,
-                "anchors": part, "raw_m": round(raw_m, 2),
-                "start_ts_ms": int(group.get("start_ts_ms") or 0),
-                "end_ts_ms": int(group.get("end_ts_ms") or 0),
-            })
+            append_chunk(
+                "strict", group_index, part_index, part,
+                start_ts_ms=int(group.get("start_ts_ms") or 0),
+                end_ts_ms=int(group.get("end_ts_ms") or 0),
+                signature_prefix="strict",
+            )
         group_index += 1
 
-    # Coarse urban fixes are never drawn raw in v525. They may contribute only after
-    # the same pedestrian-road inference succeeds, keeping every green pixel road-aligned.
+    # Coarse urban fixes still contribute only after road inference succeeds.
     for fallback_index, segment in enumerate(fallback_segments or []):
         anchors = _project_live_road_anchor_points_v525(segment)
         if len(anchors) < 2:
             continue
         for part_index, part in enumerate(_project_chunk_points_v298(anchors, PROJECT_LIVE_ROAD_MAX_ANCHORS_V525)):
-            raw_m = _project_segment_total_m_v298(part)
-            if raw_m < 12.0:
-                continue
-            signature = "coarse|" + ";".join(f"{float(p[0]):.6f},{float(p[1]):.6f}" for p in part)
-            key = hashlib.sha1((PROJECT_LIVE_ROAD_SCHEMA_V525 + "|" + signature).encode("utf-8")).hexdigest()[:28]
-            chunks.append({
-                "key": key, "kind": "coarse", "group": group_index + fallback_index, "part": part_index,
-                "anchors": part, "raw_m": round(raw_m, 2), "start_ts_ms": 0, "end_ts_ms": 0,
-            })
+            append_chunk(
+                "coarse", group_index + fallback_index, part_index, part,
+                signature_prefix="coarse",
+            )
     return chunks
 
 
@@ -49224,22 +49350,27 @@ def _project_live_road_reduce_geometry_v525(geometry):
     return sampled
 
 
-def _project_live_road_route_v525(chunk):
-    anchors = _project_clean_segment_v298((chunk or {}).get("anchors") or [])
+def _project_live_road_request_geometry_v526(anchors, *, continue_straight=True):
+    anchors = _project_clean_segment_v298(anchors)
     if len(anchors) < 2:
-        return None
+        return []
     coords = ";".join(f"{float(lon):.6f},{float(lat):.6f}" for lat, lon in anchors)
-    params = urlencode({"overview": "full", "geometries": "geojson", "steps": "false", "continue_straight": "true"})
+    params = urlencode({
+        "overview": "full",
+        "geometries": "geojson",
+        "steps": "false",
+        "continue_straight": "true" if continue_straight else "false",
+    })
     url = f"{PROJECT_LIVE_ROAD_BASE_URL_V525}/{coords}?{params}"
-    req = Request(url, headers={"User-Agent": "TokyoBurariProjectRoadMatchV525/1.0"})
+    req = Request(url, headers={"User-Agent": "TokyoBurariProjectRoadMatchV526/1.0"})
     try:
         with urlopen(req, timeout=float(PROJECT_LIVE_ROAD_REQUEST_TIMEOUT_V525)) as response:
             payload = json.loads(response.read().decode("utf-8"))
     except Exception:
-        return None
+        return []
     routes = payload.get("routes") if isinstance(payload, dict) else None
     if not isinstance(routes, list) or not routes or not isinstance(routes[0], dict):
-        return None
+        return []
     geometry_payload = routes[0].get("geometry") or {}
     raw_coords = geometry_payload.get("coordinates") if isinstance(geometry_payload, dict) else None
     geometry = []
@@ -49252,29 +49383,120 @@ def _project_live_road_route_v525(chunk):
             continue
         if math.isfinite(lat) and math.isfinite(lon):
             geometry.append([round(lat, 7), round(lon, 7)])
-    geometry = _project_live_road_reduce_geometry_v525(geometry)
-    if len(geometry) < 2:
+    return _project_live_road_reduce_geometry_v525(geometry)
+
+
+def _project_live_road_validate_geometry_v526(anchors, geometry, *, kind="strict", raw_m=None):
+    anchors = _project_clean_segment_v298(anchors)
+    geometry = _project_clean_segment_v298(geometry)
+    if len(anchors) < 2 or len(geometry) < 2:
         return None
-    raw_m = max(0.1, float((chunk or {}).get("raw_m") or _project_segment_total_m_v298(anchors)))
+    raw_m = max(0.1, float(raw_m or _project_segment_total_m_v298(anchors)))
     route_m = _project_segment_total_m_v298(geometry)
     ratio = route_m / raw_m
-    if ratio < float(PROJECT_LIVE_ROAD_RATIO_MIN_V525) or ratio > float(PROJECT_LIVE_ROAD_RATIO_MAX_V525):
+    detail = str(kind or "") == "detail"
+    ratio_min = float(PROJECT_LIVE_ROAD_DETAIL_RATIO_MIN_V526 if detail else PROJECT_LIVE_ROAD_RATIO_MIN_V525)
+    ratio_max = float(PROJECT_LIVE_ROAD_DETAIL_RATIO_MAX_V526 if detail else PROJECT_LIVE_ROAD_RATIO_MAX_V525)
+    if ratio < ratio_min or ratio > ratio_max:
         return None
     errors = sorted(_project_live_road_point_polyline_distance_m_v525(point, geometry) for point in anchors)
     if not errors or not math.isfinite(errors[-1]):
         return None
     median_error = errors[len(errors) // 2]
-    if errors[-1] > float(PROJECT_LIVE_ROAD_MAX_ANCHOR_ERROR_M_V525) or median_error > float(PROJECT_LIVE_ROAD_MEDIAN_ANCHOR_ERROR_M_V525):
+    max_error = float(PROJECT_LIVE_ROAD_DETAIL_MAX_ANCHOR_ERROR_M_V526 if detail else PROJECT_LIVE_ROAD_MAX_ANCHOR_ERROR_M_V525)
+    median_limit = float(PROJECT_LIVE_ROAD_DETAIL_MEDIAN_ANCHOR_ERROR_M_V526 if detail else PROJECT_LIVE_ROAD_MEDIAN_ANCHOR_ERROR_M_V525)
+    if errors[-1] > max_error or median_error > median_limit:
         return None
     return {
-        "geometry": geometry,
-        "raw_m": round(raw_m, 2),
-        "route_m": round(route_m, 2),
+        "raw_m": raw_m,
+        "route_m": route_m,
+        "ratio": ratio,
+        "max_anchor_error_m": errors[-1],
+        "median_anchor_error_m": median_error,
+    }
+
+
+def _project_live_road_route_v525(chunk):
+    anchors = _project_clean_segment_v298((chunk or {}).get("anchors") or [])
+    if len(anchors) < 2:
+        return None
+    kind = str((chunk or {}).get("kind") or "strict")
+    raw_m = max(0.1, float((chunk or {}).get("raw_m") or _project_segment_total_m_v298(anchors)))
+
+    # v526 detail chunks use many more waypoints and allow natural turns at each anchor.
+    # This is deliberately slower than v525 but strongly constrains the inferred road to
+    # the streets represented by the recorded walk.
+    geometry = _project_live_road_request_geometry_v526(
+        anchors,
+        continue_straight=(kind != "detail"),
+    )
+    metrics = _project_live_road_validate_geometry_v526(anchors, geometry, kind=kind, raw_m=raw_m)
+    if metrics:
+        return {
+            "geometry": geometry,
+            "raw_m": round(metrics["raw_m"], 2),
+            "route_m": round(metrics["route_m"], 2),
+            "ratio": round(metrics["ratio"], 4),
+            "max_anchor_error_m": round(metrics["max_anchor_error_m"], 2),
+            "median_anchor_error_m": round(metrics["median_anchor_error_m"], 2),
+            "provider": PROJECT_LIVE_ROAD_PROVIDER_V525,
+            "kind": kind,
+            "algorithm": PROJECT_LIVE_ROAD_DETAIL_ALGO_V526 if kind == "detail" else "v525",
+            "start_ts_ms": int((chunk or {}).get("start_ts_ms") or 0),
+            "end_ts_ms": int((chunk or {}).get("end_ts_ms") or 0),
+            "saved_at": now_jst().isoformat(),
+        }
+
+    # If a dense detail chunk cannot be routed as one path, recover the portions that
+    # can be inferred confidently. This is the main coverage repair for old walks: one
+    # noisy point no longer causes an entire 100-200m walked section to disappear.
+    if kind != "detail" or len(anchors) <= 2:
+        return None
+
+    fallback_parts = _project_chunk_points_v298(
+        anchors,
+        max(2, int(PROJECT_LIVE_ROAD_DETAIL_FALLBACK_ANCHORS_V526)),
+    )
+    geometries = []
+    raw_total = 0.0
+    route_total = 0.0
+    max_errors = []
+    median_errors = []
+    accepted_parts = 0
+    for part in fallback_parts:
+        part_raw_m = max(0.1, _project_segment_total_m_v298(part))
+        part_geometry = _project_live_road_request_geometry_v526(part, continue_straight=False)
+        part_metrics = _project_live_road_validate_geometry_v526(
+            part,
+            part_geometry,
+            kind="detail",
+            raw_m=part_raw_m,
+        )
+        if not part_metrics:
+            continue
+        geometries.append(part_geometry)
+        raw_total += float(part_metrics["raw_m"])
+        route_total += float(part_metrics["route_m"])
+        max_errors.append(float(part_metrics["max_anchor_error_m"]))
+        median_errors.append(float(part_metrics["median_anchor_error_m"]))
+        accepted_parts += 1
+
+    if not geometries:
+        return None
+    ratio = route_total / max(0.1, raw_total)
+    return {
+        "geometries": geometries,
+        "raw_m": round(raw_total, 2),
+        "route_m": round(route_total, 2),
         "ratio": round(ratio, 4),
-        "max_anchor_error_m": round(errors[-1], 2),
-        "median_anchor_error_m": round(median_error, 2),
+        "max_anchor_error_m": round(max(max_errors) if max_errors else 0.0, 2),
+        "median_anchor_error_m": round(max(median_errors) if median_errors else 0.0, 2),
         "provider": PROJECT_LIVE_ROAD_PROVIDER_V525,
-        "kind": str((chunk or {}).get("kind") or "strict"),
+        "kind": kind,
+        "algorithm": PROJECT_LIVE_ROAD_DETAIL_ALGO_V526 + "_partial",
+        "partial": accepted_parts < len(fallback_parts),
+        "matched_parts": accepted_parts,
+        "total_parts": len(fallback_parts),
         "start_ts_ms": int((chunk or {}).get("start_ts_ms") or 0),
         "end_ts_ms": int((chunk or {}).get("end_ts_ms") or 0),
         "saved_at": now_jst().isoformat(),
@@ -49296,7 +49518,16 @@ def _project_live_road_worker_v525(owner, source_chunks):
     active_keys = {str(row.get("key") or "") for row in source_chunks if isinstance(row, dict) and row.get("key")}
     now_epoch = time.time()
     attempted = 0; saved_count = 0; failed_count = 0
-    for chunk in source_chunks:
+    kind_priority = {"detail": 0, "strict": 1, "coarse": 2}
+    ordered_chunks = sorted(
+        [row for row in (source_chunks or []) if isinstance(row, dict)],
+        key=lambda row: (
+            kind_priority.get(str(row.get("kind") or ""), 9),
+            int(row.get("group") or 0),
+            int(row.get("part") or 0),
+        ),
+    )
+    for chunk in ordered_chunks:
         key = str((chunk or {}).get("key") or "")
         if not key or key in chunks:
             continue
@@ -49324,8 +49555,9 @@ def _project_live_road_worker_v525(owner, source_chunks):
                 "retry_after_epoch": round(time.time() + delay, 1),
             }
             failed_count += 1
-        # Save small batches so a long first-time reconstruction survives process restarts.
-        if attempted % 4 == 0:
+        # v526 detail inference is intentionally slower. Save every two completed chunks
+        # so phone/app restarts never force already-finished street inference to repeat.
+        if attempted % 2 == 0:
             state["chunks"] = chunks; state["failures"] = failures
             _project_live_road_save_state_v525(client, family_key, member_key, state)
 
@@ -49385,13 +49617,42 @@ def _project_live_road_segments_v525(source_chunks, state):
     chunks = state.get("chunks") if isinstance(state, dict) and isinstance(state.get("chunks"), dict) else {}
     output = []
     matched = 0
+    detail_total = 0
+    detail_matched = 0
+    rendered_parts = 0
     for source in source_chunks or []:
         key = str((source or {}).get("key") or "")
         row = chunks.get(key) if key else None
-        geometry = _project_clean_segment_v298((row or {}).get("geometry") or []) if isinstance(row, dict) else []
+        kind = str((source or {}).get("kind") or "")
+        if kind == "detail":
+            detail_total += 1
+        if not isinstance(row, dict):
+            continue
+        geometries = []
+        geometry = _project_clean_segment_v298(row.get("geometry") or [])
         if len(geometry) >= 2:
-            output.append(geometry); matched += 1
-    return output, {"matched": matched, "total": len(source_chunks or []), "pending": max(0, len(source_chunks or []) - matched)}
+            geometries.append(geometry)
+        for candidate in (row.get("geometries") or []):
+            cleaned = _project_clean_segment_v298(candidate)
+            if len(cleaned) >= 2:
+                geometries.append(cleaned)
+        if not geometries:
+            continue
+        matched += 1
+        if kind == "detail":
+            detail_matched += 1
+        for geometry in geometries:
+            output.append(geometry)
+            rendered_parts += 1
+    total = len(source_chunks or [])
+    return output, {
+        "matched": matched,
+        "total": total,
+        "pending": max(0, total - matched),
+        "detail_matched": detail_matched,
+        "detail_total": detail_total,
+        "rendered_parts": rendered_parts,
+    }
 
 
 @st.cache_resource(show_spinner=False)
@@ -49399,7 +49660,7 @@ def _project_live_road_tick_component_v525():
     return st.components.v2.component(
         "burari_project_road_tick_v525",
         html="<span hidden></span>",
-        js="""export default function(component){const {data,setTriggerValue}=component;let timer=null;if(data?.pending){timer=setTimeout(()=>setTriggerValue('tick',{t:Date.now()}),6000);}return()=>{if(timer!==null)clearTimeout(timer);};}""",
+        js="""export default function(component){const {data,setTriggerValue}=component;let timer=null;if(data?.pending){timer=setTimeout(()=>setTriggerValue('tick',{t:Date.now()}),8000);}return()=>{if(timer!==null)clearTimeout(timer);};}""",
     )
 
 
@@ -49410,6 +49671,659 @@ def _project_live_road_tick_v525(pending):
         _project_live_road_tick_component_v525()(
             data={"pending": True},
             key=f"project_road_tick_v525_{current_family_key()}_{current_member_key()}",
+            height=1,
+            on_tick_change=lambda: None,
+        )
+    except Exception:
+        pass
+
+
+
+# ============================================================
+# v527: full GPS -> road map matching rebuild
+# ============================================================
+
+def _project_gps_match_state_path_v527(family_key=None, member_key=None):
+    return f"{_gps_track_prefix(family_key, member_key)}/{PROJECT_GPS_MATCH_STORAGE_FILE_V527}"
+
+
+def _project_gps_match_default_state_v527(family_key=None, member_key=None):
+    return {
+        "schema": PROJECT_GPS_MATCH_SCHEMA_V527,
+        "family_key": str(family_key or current_family_key() or ""),
+        "member_key": str(member_key or current_member_key() or ""),
+        "provider": PROJECT_GPS_MATCH_PROVIDER_V527,
+        "saved_at": "",
+        "chunks": {},
+        "failures": {},
+        "source_chunk_count": 0,
+    }
+
+
+def _project_gps_match_read_state_v527(client, family_key, member_key):
+    state = _project_gps_match_default_state_v527(family_key, member_key)
+    try:
+        raw = _storage_bytes(client.storage.from_(GPS_TRACK_BUCKET).download(
+            _project_gps_match_state_path_v527(family_key, member_key)
+        ))
+        payload = json.loads(raw.decode("utf-8")) if raw else {}
+    except Exception:
+        return state
+    if not isinstance(payload, dict) or str(payload.get("schema") or "") != PROJECT_GPS_MATCH_SCHEMA_V527:
+        return state
+    chunks = payload.get("chunks") if isinstance(payload.get("chunks"), dict) else {}
+    failures = payload.get("failures") if isinstance(payload.get("failures"), dict) else {}
+    clean_chunks = {}
+    for key, row in chunks.items():
+        if not isinstance(row, dict):
+            continue
+        geometries = []
+        for candidate in row.get("geometries") or []:
+            cleaned = _project_clean_segment_v298(candidate)
+            if len(cleaned) >= 2:
+                geometries.append(cleaned)
+        if not geometries:
+            geometry = _project_clean_segment_v298(row.get("geometry") or [])
+            if len(geometry) >= 2:
+                geometries.append(geometry)
+        if not geometries:
+            continue
+        clean = dict(row)
+        clean["geometries"] = geometries
+        clean.pop("geometry", None)
+        clean_chunks[str(key)[:80]] = clean
+    clean_failures = {
+        str(key)[:80]: dict(row)
+        for key, row in failures.items()
+        if isinstance(row, dict)
+    }
+    state.update({
+        "saved_at": str(payload.get("saved_at") or "")[:80],
+        "chunks": clean_chunks,
+        "failures": clean_failures,
+        "source_chunk_count": max(0, int(payload.get("source_chunk_count") or 0)),
+        "last_job": payload.get("last_job") if isinstance(payload.get("last_job"), dict) else {},
+    })
+    return state
+
+
+def _project_gps_match_save_state_v527(client, family_key, member_key, state):
+    document = {
+        "schema": PROJECT_GPS_MATCH_SCHEMA_V527,
+        "family_key": str(family_key or ""),
+        "member_key": str(member_key or ""),
+        "provider": PROJECT_GPS_MATCH_PROVIDER_V527,
+        "saved_at": now_jst().isoformat(),
+        "source_chunk_count": max(0, int((state or {}).get("source_chunk_count") or 0)),
+        "chunks": (state or {}).get("chunks") if isinstance((state or {}).get("chunks"), dict) else {},
+        "failures": (state or {}).get("failures") if isinstance((state or {}).get("failures"), dict) else {},
+        "last_job": (state or {}).get("last_job") if isinstance((state or {}).get("last_job"), dict) else {},
+    }
+    blob = json.dumps(document, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    path = _project_gps_match_state_path_v527(family_key, member_key)
+    bucket = client.storage.from_(GPS_TRACK_BUCKET)
+    options = {"content-type": GPS_TRACK_STORAGE_MIME, "cache-control": "0", "upsert": "true"}
+    try:
+        bucket.upload(path=path, file=blob, file_options=options)
+    except Exception:
+        try:
+            bucket.update(path=path, file=blob, file_options={"content-type": GPS_TRACK_STORAGE_MIME, "cache-control": "0"})
+        except Exception:
+            try:
+                bucket.remove([path])
+            except Exception:
+                pass
+            bucket.upload(path=path, file=blob, file_options={"content-type": GPS_TRACK_STORAGE_MIME, "cache-control": "0"})
+    return True
+
+
+def _project_gps_walk_row_segments_v527(points):
+    """Retain full GPS metadata while applying the same walk-only continuity rules as v271.
+
+    v271 returns only coordinates, which discards timestamps and Location accuracy. v527
+    keeps those fields because OSRM Match can use both to reject implausible transitions
+    and choose the most plausible pedestrian road sequence.
+    """
+    segments = []
+    current = []
+    prev = None
+    rows = [row for row in _project_clean_track_points_v372(points) if isinstance(row, dict)]
+    rows.sort(key=lambda row: int(float(row.get("ts_ms") or 0)))
+    for point in rows:
+        if prev is None:
+            prev = point
+            continue
+        try:
+            dt = max(0.001, (float(point.get("ts_ms")) - float(prev.get("ts_ms"))) / 1000.0)
+            dist = _nearby_haversine_m(float(prev["lat"]), float(prev["lon"]), float(point["lat"]), float(point["lon"]))
+        except Exception:
+            if len(current) >= 2:
+                segments.append(current)
+            current = []
+            prev = point
+            continue
+        reported_speed = point.get("speed_mps")
+        try:
+            reported_speed = float(reported_speed) if reported_speed is not None else None
+        except (TypeError, ValueError):
+            reported_speed = None
+        estimated_speed = dist / dt if dt > 0 else 999.0
+        same_session = bool(str(point.get("session_id") or "")) and str(point.get("session_id") or "") == str(prev.get("session_id") or "")
+        point_source = str(point.get("source") or "").strip().lower()
+        prev_source = str(prev.get("source") or "").strip().lower()
+        same_source = bool(point_source) and point_source == prev_source
+        short_session_restart = (
+            not same_session
+            and same_source
+            and dt <= 75.0
+            and dist <= 90.0
+            and estimated_speed <= GPS_TRACK_WALK_MAX_SPEED_MPS
+        )
+        implausibly_fast_report = (
+            reported_speed is not None
+            and reported_speed > 8.0
+            and dist > 30.0
+        )
+        walk_like = (
+            (same_session or short_session_restart)
+            and dt <= GPS_TRACK_SEGMENT_MAX_GAP_SECONDS
+            and dist <= GPS_TRACK_SEGMENT_MAX_JUMP_M
+            and estimated_speed <= GPS_TRACK_WALK_MAX_SPEED_MPS
+            and not implausibly_fast_report
+        )
+        if walk_like:
+            if not current:
+                current = [dict(prev)]
+            current.append(dict(point))
+        else:
+            if len(current) >= 2:
+                segments.append(current)
+            current = []
+        prev = point
+    if len(current) >= 2:
+        segments.append(current)
+    return segments
+
+
+def _project_gps_match_prepare_rows_v527(rows):
+    """Make OSRM-safe ordered observations without fabricating coordinates."""
+    out = []
+    last_ts_sec = None
+    last_coord = None
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        try:
+            lat = float(row.get("lat")); lon = float(row.get("lon")); ts_ms = int(float(row.get("ts_ms") or 0))
+        except (TypeError, ValueError):
+            continue
+        if not (math.isfinite(lat) and math.isfinite(lon)) or ts_ms <= 0:
+            continue
+        ts_sec = int(ts_ms // 1000)
+        # OSRM requires monotonic timestamps. If two fixes fall in the same second,
+        # keep the later one only when it actually moved; otherwise the extra duplicate
+        # adds no map-matching evidence.
+        if last_ts_sec is not None and ts_sec <= last_ts_sec:
+            continue
+        coord = [round(lat, 7), round(lon, 7)]
+        if last_coord is not None:
+            try:
+                if _nearby_haversine_m(last_coord[0], last_coord[1], coord[0], coord[1]) < 0.8:
+                    continue
+            except Exception:
+                pass
+        try:
+            accuracy = float(row.get("accuracy_m")) if row.get("accuracy_m") is not None else 12.0
+        except (TypeError, ValueError):
+            accuracy = 12.0
+        if not math.isfinite(accuracy) or accuracy <= 0:
+            accuracy = 12.0
+        # Android horizontal accuracy is useful evidence. Keep a floor so points do not
+        # become overconfident, and a ceiling so a single very poor fix does not invite
+        # a completely different parallel road hundreds of metres away.
+        accuracy = max(4.0, min(55.0, accuracy))
+        out.append({
+            "lat": coord[0], "lon": coord[1], "ts_ms": ts_ms, "ts_sec": ts_sec,
+            "accuracy_m": accuracy,
+            "session_id": str(row.get("session_id") or ""),
+            "source": str(row.get("source") or ""),
+        })
+        last_ts_sec = ts_sec
+        last_coord = coord
+    return out
+
+
+def _project_gps_match_source_chunks_v527(points):
+    chunks = []
+    seen = set()
+    max_points = max(8, int(PROJECT_GPS_MATCH_MAX_POINTS_V527))
+    overlap = max(2, min(max_points - 2, int(PROJECT_GPS_MATCH_OVERLAP_POINTS_V527)))
+    stride = max(2, max_points - overlap)
+    for segment_index, segment_rows in enumerate(_project_gps_walk_row_segments_v527(points)):
+        prepared = _project_gps_match_prepare_rows_v527(segment_rows)
+        if len(prepared) < int(PROJECT_GPS_MATCH_MIN_POINTS_V527):
+            continue
+        start = 0
+        part_index = 0
+        while start < len(prepared) - 1:
+            part = prepared[start:start + max_points]
+            if len(part) < 2:
+                break
+            raw_coords = [[row["lat"], row["lon"]] for row in part]
+            raw_m = _project_segment_total_m_v298(raw_coords)
+            if raw_m >= 4.0:
+                signature = (
+                    PROJECT_GPS_MATCH_SCHEMA_V527 + "|"
+                    + str(part[0]["ts_ms"]) + "|" + str(part[-1]["ts_ms"]) + "|"
+                    + ";".join(f"{row['lat']:.6f},{row['lon']:.6f},{int(row['ts_sec'])}" for row in part)
+                )
+                key = hashlib.sha1(signature.encode("utf-8")).hexdigest()[:32]
+                if key not in seen:
+                    seen.add(key)
+                    chunks.append({
+                        "key": key,
+                        "segment": segment_index,
+                        "part": part_index,
+                        "rows": part,
+                        "raw_m": round(raw_m, 2),
+                        "start_ts_ms": int(part[0]["ts_ms"]),
+                        "end_ts_ms": int(part[-1]["ts_ms"]),
+                    })
+            if start + max_points >= len(prepared):
+                break
+            start += stride
+            part_index += 1
+    return chunks
+
+
+def _project_percentile_simple_v527(values, q):
+    vals = sorted(float(v) for v in values if v is not None and math.isfinite(float(v)))
+    if not vals:
+        return float("inf")
+    if len(vals) == 1:
+        return vals[0]
+    pos = max(0.0, min(1.0, float(q))) * (len(vals) - 1)
+    lo = int(math.floor(pos)); hi = int(math.ceil(pos))
+    if lo == hi:
+        return vals[lo]
+    frac = pos - lo
+    return vals[lo] * (1.0 - frac) + vals[hi] * frac
+
+
+def _project_gps_match_geometry_from_payload_v527(raw_geometry):
+    payload = raw_geometry if isinstance(raw_geometry, dict) else {}
+    coords = payload.get("coordinates") if isinstance(payload.get("coordinates"), list) else []
+    out = []
+    for value in coords:
+        if not isinstance(value, (list, tuple)) or len(value) < 2:
+            continue
+        try:
+            lon = float(value[0]); lat = float(value[1])
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(lat) and math.isfinite(lon):
+            point = [round(lat, 7), round(lon, 7)]
+            if not out:
+                out.append(point)
+            else:
+                try:
+                    if _nearby_haversine_m(out[-1][0], out[-1][1], point[0], point[1]) >= 0.7:
+                        out.append(point)
+                except Exception:
+                    out.append(point)
+    return _project_live_road_reduce_geometry_v525(out)
+
+
+def _project_gps_match_request_v527(rows, *, rate_state=None):
+    rows = _project_gps_match_prepare_rows_v527(rows)
+    if len(rows) < int(PROJECT_GPS_MATCH_MIN_POINTS_V527):
+        return None
+    if isinstance(rate_state, dict):
+        elapsed = time.monotonic() - float(rate_state.get("last_request_monotonic") or 0.0)
+        wait = float(PROJECT_GPS_MATCH_REQUEST_INTERVAL_V527) - elapsed
+        if wait > 0:
+            time.sleep(wait)
+    coords = ";".join(f"{float(row['lon']):.7f},{float(row['lat']):.7f}" for row in rows)
+    timestamps = ";".join(str(int(row["ts_sec"])) for row in rows)
+    radiuses = ";".join(f"{float(row['accuracy_m']):.1f}" for row in rows)
+    params = urlencode({
+        "overview": "full",
+        "geometries": "geojson",
+        "steps": "false",
+        "annotations": "false",
+        "tidy": "true",
+        "gaps": "split",
+        "timestamps": timestamps,
+        "radiuses": radiuses,
+    })
+    url = f"{PROJECT_GPS_MATCH_BASE_URL_V527}/{coords}?{params}"
+    req = Request(url, headers={"User-Agent": "TokyoBurariProjectGpsMatchV527/1.0"})
+    try:
+        with urlopen(req, timeout=float(PROJECT_GPS_MATCH_REQUEST_TIMEOUT_V527)) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except Exception as exc:
+        if isinstance(rate_state, dict):
+            rate_state["last_request_monotonic"] = time.monotonic()
+            rate_state["requests"] = int(rate_state.get("requests") or 0) + 1
+        return {"ok": False, "error": type(exc).__name__, "rows": rows}
+    if isinstance(rate_state, dict):
+        rate_state["last_request_monotonic"] = time.monotonic()
+        rate_state["requests"] = int(rate_state.get("requests") or 0) + 1
+    if not isinstance(payload, dict) or str(payload.get("code") or "") != "Ok":
+        return {"ok": False, "error": str((payload or {}).get("code") or "no_match")[:80], "rows": rows}
+    return {"ok": True, "payload": payload, "rows": rows}
+
+
+def _project_gps_match_evaluate_v527(request_result):
+    if not isinstance(request_result, dict) or not request_result.get("ok"):
+        return []
+    payload = request_result.get("payload") if isinstance(request_result.get("payload"), dict) else {}
+    rows = request_result.get("rows") if isinstance(request_result.get("rows"), list) else []
+    matchings = payload.get("matchings") if isinstance(payload.get("matchings"), list) else []
+    tracepoints = payload.get("tracepoints") if isinstance(payload.get("tracepoints"), list) else []
+    if not rows or not matchings:
+        return []
+    accepted = []
+    for matching_index, matching in enumerate(matchings):
+        if not isinstance(matching, dict):
+            continue
+        geometry = _project_gps_match_geometry_from_payload_v527(matching.get("geometry") or {})
+        if len(geometry) < 2:
+            continue
+        try:
+            confidence = float(matching.get("confidence") or 0.0)
+        except (TypeError, ValueError):
+            confidence = 0.0
+        member_indices = []
+        snap_errors = []
+        normalized_errors = []
+        for index, tracepoint in enumerate(tracepoints):
+            if index >= len(rows) or not isinstance(tracepoint, dict):
+                continue
+            try:
+                if int(tracepoint.get("matchings_index")) != matching_index:
+                    continue
+            except Exception:
+                continue
+            loc = tracepoint.get("location") if isinstance(tracepoint.get("location"), (list, tuple)) else None
+            if not loc or len(loc) < 2:
+                continue
+            try:
+                snapped_lon = float(loc[0]); snapped_lat = float(loc[1])
+                source = rows[index]
+                error_m = _nearby_haversine_m(float(source["lat"]), float(source["lon"]), snapped_lat, snapped_lon)
+                accuracy = max(4.0, float(source.get("accuracy_m") or 12.0))
+            except Exception:
+                continue
+            member_indices.append(index)
+            snap_errors.append(error_m)
+            normalized_errors.append(error_m / accuracy)
+        if len(member_indices) < 2:
+            continue
+        coverage = len(member_indices) / max(1, len(rows))
+        median_snap = _project_percentile_simple_v527(snap_errors, 0.50)
+        p90_snap = _project_percentile_simple_v527(snap_errors, 0.90)
+        median_norm = _project_percentile_simple_v527(normalized_errors, 0.50)
+        p90_norm = _project_percentile_simple_v527(normalized_errors, 0.90)
+        subset_coords = [[rows[i]["lat"], rows[i]["lon"]] for i in member_indices]
+        raw_m = max(0.1, _project_segment_total_m_v298(subset_coords))
+        route_m = _project_segment_total_m_v298(geometry)
+        ratio = route_m / raw_m
+        strong = confidence >= float(PROJECT_GPS_MATCH_STRONG_CONFIDENCE_V527)
+        confidence_ok = confidence >= float(PROJECT_GPS_MATCH_MIN_CONFIDENCE_V527)
+        # A low OSRM confidence can still be correct in a dense Tokyo grid when the GPS
+        # snaps very tightly to one road sequence. Require tight normalized errors in that
+        # case rather than discarding the walk solely because several parallel streets exist.
+        tight_low_confidence = median_norm <= 1.05 and p90_norm <= 2.1 and median_snap <= 18.0 and p90_snap <= 42.0
+        error_ok = (
+            median_snap <= float(PROJECT_GPS_MATCH_MAX_MEDIAN_SNAP_M_V527)
+            and p90_snap <= float(PROJECT_GPS_MATCH_MAX_P90_SNAP_M_V527)
+            and median_norm <= 1.8
+            and p90_norm <= 3.4
+        )
+        ratio_ok = float(PROJECT_GPS_MATCH_RATIO_MIN_V527) <= ratio <= float(PROJECT_GPS_MATCH_RATIO_MAX_V527)
+        coverage_ok = (
+            coverage >= float(PROJECT_GPS_MATCH_MIN_TRACE_COVERAGE_V527)
+            or len(member_indices) >= 8
+            or (len(member_indices) >= 4 and strong and p90_snap <= 35.0)
+        )
+        if not ratio_ok or not error_ok or not coverage_ok or not (confidence_ok or tight_low_confidence or strong):
+            continue
+        accepted.append({
+            "geometry": geometry,
+            "confidence": round(confidence, 4),
+            "matched_points": len(member_indices),
+            "coverage": round(coverage, 4),
+            "median_snap_m": round(median_snap, 2),
+            "p90_snap_m": round(p90_snap, 2),
+            "median_accuracy_ratio": round(median_norm, 3),
+            "p90_accuracy_ratio": round(p90_norm, 3),
+            "raw_m": round(raw_m, 2),
+            "route_m": round(route_m, 2),
+            "route_ratio": round(ratio, 4),
+        })
+    return accepted
+
+
+def _project_gps_match_route_chunk_v527(chunk, rate_state=None):
+    rows = list((chunk or {}).get("rows") or [])
+    if len(rows) < int(PROJECT_GPS_MATCH_MIN_POINTS_V527):
+        return None
+    if not isinstance(rate_state, dict):
+        rate_state = {"last_request_monotonic": 0.0, "requests": 0}
+    requests_before = int(rate_state.get("requests") or 0)
+
+    def attempt(candidate_rows, depth=0):
+        result = _project_gps_match_request_v527(candidate_rows, rate_state=rate_state)
+        accepted = _project_gps_match_evaluate_v527(result)
+        if accepted:
+            return accepted
+        if depth >= int(PROJECT_GPS_MATCH_MAX_SPLIT_DEPTH_V527) or len(candidate_rows) < 12:
+            return []
+        midpoint = len(candidate_rows) // 2
+        overlap = min(3, max(1, len(candidate_rows) // 10))
+        left = candidate_rows[:min(len(candidate_rows), midpoint + overlap)]
+        right = candidate_rows[max(0, midpoint - overlap):]
+        output = []
+        if len(left) >= int(PROJECT_GPS_MATCH_MIN_POINTS_V527):
+            output.extend(attempt(left, depth + 1))
+        if len(right) >= int(PROJECT_GPS_MATCH_MIN_POINTS_V527):
+            output.extend(attempt(right, depth + 1))
+        return output
+
+    matches = attempt(rows, 0)
+    if not matches:
+        return None
+    geometries = [row["geometry"] for row in matches if len(row.get("geometry") or []) >= 2]
+    if not geometries:
+        return None
+    confidences = [float(row.get("confidence") or 0.0) for row in matches]
+    medians = [float(row.get("median_snap_m") or 0.0) for row in matches]
+    p90s = [float(row.get("p90_snap_m") or 0.0) for row in matches]
+    return {
+        "geometries": geometries,
+        "provider": PROJECT_GPS_MATCH_PROVIDER_V527,
+        "algorithm": PROJECT_GPS_MATCH_SCHEMA_V527,
+        "request_count": max(0, int(rate_state.get("requests") or 0) - requests_before),
+        "match_count": len(geometries),
+        "min_confidence": round(min(confidences) if confidences else 0.0, 4),
+        "median_confidence": round(_project_percentile_simple_v527(confidences, 0.5), 4) if confidences else 0.0,
+        "max_median_snap_m": round(max(medians) if medians else 0.0, 2),
+        "max_p90_snap_m": round(max(p90s) if p90s else 0.0, 2),
+        "raw_m": round(float((chunk or {}).get("raw_m") or 0.0), 2),
+        "start_ts_ms": int((chunk or {}).get("start_ts_ms") or 0),
+        "end_ts_ms": int((chunk or {}).get("end_ts_ms") or 0),
+        "saved_at": now_jst().isoformat(),
+    }
+
+
+@st.cache_resource(show_spinner=False)
+def _project_gps_match_runtime_v527():
+    return {"lock": threading.Lock(), "executor": ThreadPoolExecutor(max_workers=1, thread_name_prefix="burari-gps-map-match"), "jobs": {}}
+
+
+def _project_gps_match_worker_v527(owner, source_chunks):
+    from supabase import create_client
+    client = create_client(SUPABASE_URL, SUPABASE_SECRET_KEY)
+    family_key, member_key = owner
+    state = _project_gps_match_read_state_v527(client, family_key, member_key)
+    chunks = state.setdefault("chunks", {})
+    failures = state.setdefault("failures", {})
+    active_keys = {str(row.get("key") or "") for row in source_chunks if isinstance(row, dict) and row.get("key")}
+    now_epoch = time.time()
+    attempted = 0; saved_count = 0; failed_count = 0; request_count = 0
+    rate_state = {"last_request_monotonic": 0.0, "requests": 0}
+    ordered = sorted(
+        [row for row in source_chunks if isinstance(row, dict) and row.get("key")],
+        key=lambda row: (int(row.get("start_ts_ms") or 0), int(row.get("segment") or 0), int(row.get("part") or 0)),
+    )
+    for chunk in ordered:
+        key = str(chunk.get("key") or "")
+        if not key or key in chunks:
+            continue
+        failure = failures.get(key) if isinstance(failures.get(key), dict) else {}
+        try:
+            retry_after = float(failure.get("retry_after_epoch") or 0.0)
+        except Exception:
+            retry_after = 0.0
+        if retry_after > now_epoch:
+            continue
+        if attempted >= int(PROJECT_GPS_MATCH_MAX_CHUNKS_PER_JOB_V527):
+            break
+        attempted += 1
+        requests_before = int(rate_state.get("requests") or 0)
+        result = _project_gps_match_route_chunk_v527(chunk, rate_state=rate_state)
+        request_count += max(0, int(rate_state.get("requests") or 0) - requests_before)
+        if result:
+            chunks[key] = result
+            failures.pop(key, None)
+            saved_count += 1
+        else:
+            attempts = max(0, int(failure.get("attempts") or 0)) + 1
+            delay = min(
+                float(PROJECT_GPS_MATCH_RETRY_MAX_SECONDS_V527),
+                float(PROJECT_GPS_MATCH_RETRY_BASE_SECONDS_V527) * (2 ** min(5, attempts - 1)),
+            )
+            failures[key] = {
+                "attempts": attempts,
+                "last_at": now_jst().isoformat(),
+                "retry_after_epoch": round(time.time() + delay, 1),
+            }
+            failed_count += 1
+        # Accuracy-first processing may run for several minutes. Persist every completed
+        # chunk so app/worker restarts never throw away expensive map-matching work.
+        state["chunks"] = chunks; state["failures"] = failures; state["source_chunk_count"] = len(source_chunks)
+        _project_gps_match_save_state_v527(client, family_key, member_key, state)
+
+    if len(chunks) > int(PROJECT_GPS_MATCH_MAX_STATE_CHUNKS_V527):
+        chunks = {key: row for key, row in chunks.items() if key in active_keys}
+    failures = {
+        key: row for key, row in failures.items()
+        if key in active_keys or float((row or {}).get("retry_after_epoch") or 0.0) > time.time()
+    }
+    state["chunks"] = chunks; state["failures"] = failures; state["source_chunk_count"] = len(source_chunks)
+    state["last_job"] = {
+        "attempted": attempted,
+        "saved": saved_count,
+        "failed": failed_count,
+        "requests": request_count,
+        "at": now_jst().isoformat(),
+    }
+    _project_gps_match_save_state_v527(client, family_key, member_key, state)
+    return state["last_job"]
+
+
+def _project_gps_match_launch_v527(source_chunks, state):
+    source_chunks = [row for row in source_chunks or [] if isinstance(row, dict) and row.get("key")]
+    if not source_chunks:
+        return False
+    chunks = state.get("chunks") if isinstance(state, dict) and isinstance(state.get("chunks"), dict) else {}
+    failures = state.get("failures") if isinstance(state, dict) and isinstance(state.get("failures"), dict) else {}
+    now_epoch = time.time()
+    missing = False
+    for row in source_chunks:
+        key = str(row.get("key") or "")
+        if key in chunks:
+            continue
+        failure = failures.get(key) if isinstance(failures.get(key), dict) else {}
+        try:
+            retry_after = float(failure.get("retry_after_epoch") or 0.0)
+        except Exception:
+            retry_after = 0.0
+        if retry_after <= now_epoch:
+            missing = True
+            break
+    runtime = _project_gps_match_runtime_v527()
+    owner = (current_family_key(), current_member_key())
+    with runtime["lock"]:
+        future = runtime["jobs"].get(owner)
+        if future is not None:
+            if not future.done():
+                return True
+            runtime["jobs"].pop(owner, None)
+            return True
+        if not missing:
+            return False
+        runtime["jobs"][owner] = runtime["executor"].submit(_project_gps_match_worker_v527, owner, source_chunks)
+        return True
+
+
+def _project_gps_match_segments_v527(source_chunks, state):
+    chunks = state.get("chunks") if isinstance(state, dict) and isinstance(state.get("chunks"), dict) else {}
+    output = []
+    matched = 0
+    rendered_parts = 0
+    seen_geometry = set()
+    for source in source_chunks or []:
+        key = str((source or {}).get("key") or "")
+        row = chunks.get(key) if key else None
+        if not isinstance(row, dict):
+            continue
+        geometries = []
+        for geometry in row.get("geometries") or []:
+            cleaned = _project_clean_segment_v298(geometry)
+            if len(cleaned) >= 2:
+                geometries.append(cleaned)
+        if not geometries:
+            continue
+        matched += 1
+        for geometry in geometries:
+            # Overlapping source windows intentionally share several GPS observations.
+            # Deduplicate exactly repeated matched geometries while keeping genuine
+            # out-and-back walks on the same road visually identical, not doubled.
+            sig = tuple((round(float(p[0]), 6), round(float(p[1]), 6)) for p in geometry)
+            rev = tuple(reversed(sig))
+            canonical = sig if sig <= rev else rev
+            if canonical in seen_geometry:
+                continue
+            seen_geometry.add(canonical)
+            output.append(geometry)
+            rendered_parts += 1
+    total = len(source_chunks or [])
+    return output, {
+        "matched": matched,
+        "total": total,
+        "pending": max(0, total - matched),
+        "rendered_parts": rendered_parts,
+    }
+
+
+@st.cache_resource(show_spinner=False)
+def _project_gps_match_tick_component_v527():
+    return st.components.v2.component(
+        "burari_project_gps_match_tick_v527",
+        html="<span hidden></span>",
+        js="""export default function(component){const {data,setTriggerValue}=component;let timer=null;if(data?.pending){timer=setTimeout(()=>setTriggerValue('tick',{t:Date.now()}),8000);}return()=>{if(timer!==null)clearTimeout(timer);};}""",
+    )
+
+
+def _project_gps_match_tick_v527(pending):
+    if not pending:
+        return
+    try:
+        _project_gps_match_tick_component_v527()(
+            data={"pending": True},
+            key=f"project_gps_match_tick_v527_{current_family_key()}_{current_member_key()}",
             height=1,
             on_tick_change=lambda: None,
         )
@@ -50238,82 +51152,63 @@ def page_burari_project():
     display_points = list(map_points or []) + _photo_legacy_map_points_v296()
     stations = _merge_photo_legacy_stations_v296(stations)
 
+    # v527: all displayed green roads are rebuilt from GPS only. Historical photo-route
+    # geometry and the v525/v526 inferred-road cache are deliberately not painted. The
+    # photo seed may still contribute station metadata, but never a green route line.
     photo_segments = []
-    if photo_seed_enabled:
-        route_status = st.empty()
-        profile_label = _photo_legacy_profile_v307()
-        expected_photo_pairs = len(_photo_legacy_pair_defs_v305())
-        route_status.info(
-            f"写真由来の過去データを読み込み済み：{expected_photo_pairs}区間。"
-            "緑線＋水色線を本当に1区間ずつ道路へ合わせ、各区間の完了直後に保存します。"
-        )
-        photo_segments, photo_route_meta = _photo_legacy_prepare_routes_v305()
-        route_done = int(photo_route_meta.get("done") or 0)
-        route_total = int(photo_route_meta.get("total") or 0)
-        route_failed = int(photo_route_meta.get("failed") or 0)
-        route_pending = int(photo_route_meta.get("pending") or 0)
-        if route_failed > 0:
-            route_status.warning(
-                f"過去ルート：全 {route_total} 区間を地図に表示しています。うち {route_done} 区間は道路形状に合わせて保存済み、未取得は {route_failed} 区間です。"
-            )
-            if st.button("未取得の過去ルートだけ再試行", use_container_width=True, key="retry_photo_route_v307"):
-                _photo_legacy_reset_failed_v306()
-                st.rerun()
-        elif route_pending > 0:
-            route_status.info(
-                f"過去ルート：全 {route_total} 区間を地図に表示しています。うち {route_done} 区間は道路形状に合わせて保存済みで、残り {route_pending} 区間も今回できるだけ続けて補完します。"
-            )
-            if st.button("残りの過去ルートを続けて補完", use_container_width=True, key="continue_photo_route_v307"):
-                st.rerun()
-        else:
-            route_status.empty()
-    # v496 still determines which GPS fixes are plausible enough for display. v525 then
-    # uses those cleaned fixes only as evidence for a pedestrian-road inference job.
-    # Raw GPS never becomes the green line anymore; successful inferred road geometry is
-    # saved and reused, while distance/station calculations above remain raw-GPS based.
-    display_segments, display_cleanup_meta = _project_display_walk_segments_v496(points, stations) if points else ([], {})
-    _perf_log_v457(
-        "gps:display_cleanup_v496",
-        duration_ms=0,
-        meta={k: v for k, v in display_cleanup_meta.items() if k != "segment_windows"},
-        force=True,
-    )
-
-    road_source_chunks = _project_live_road_source_chunks_v525(
-        display_segments,
-        display_cleanup_meta,
-        fallback_segments=fallback_segments,
-    ) if points else []
-    if road_source_chunks:
+    gps_match_source_chunks = _project_gps_match_source_chunks_v527(points) if points else []
+    if gps_match_source_chunks:
         try:
             from supabase import create_client
-            _road_client_v525 = create_client(SUPABASE_URL, SUPABASE_SECRET_KEY)
-            road_state = _project_live_road_read_state_v525(
-                _road_client_v525,
+            _gps_match_client_v527 = create_client(SUPABASE_URL, SUPABASE_SECRET_KEY)
+            gps_match_state = _project_gps_match_read_state_v527(
+                _gps_match_client_v527,
                 current_family_key(),
                 current_member_key(),
             )
         except Exception:
-            road_state = _project_live_road_default_state_v525()
+            gps_match_state = _project_gps_match_default_state_v527()
     else:
-        road_state = _project_live_road_default_state_v525()
-    road_segments, road_match_meta = _project_live_road_segments_v525(road_source_chunks, road_state)
-    road_pending = _project_live_road_launch_v525(road_source_chunks, road_state) if road_source_chunks else False
-    _project_live_road_tick_v525(road_pending)
+        gps_match_state = _project_gps_match_default_state_v527()
+
+    road_segments, road_match_meta = _project_gps_match_segments_v527(
+        gps_match_source_chunks,
+        gps_match_state,
+    )
+    road_worker_running = _project_gps_match_launch_v527(
+        gps_match_source_chunks,
+        gps_match_state,
+    ) if gps_match_source_chunks else False
+    _project_gps_match_tick_v527(road_worker_running)
+
+    matched_chunks = int(road_match_meta.get("matched") or 0)
+    total_chunks = int(road_match_meta.get("total") or 0)
+    pending_chunks = int(road_match_meta.get("pending") or 0)
+    if total_chunks > 0:
+        if pending_chunks > 0:
+            st.info(
+                f"GPSから歩いた道路を高精度で再作成中：{matched_chunks}/{total_chunks}区間。"
+                "GPSの時刻・精度も使って道路上へ照合し、完成した区間から保存しています。"
+            )
+        else:
+            st.success(f"GPS道路判定が完了しました：{matched_chunks}/{total_chunks}区間。")
+
     _perf_log_v457(
-        "gps:road_match_v525",
+        "gps:map_match_v527",
         duration_ms=0,
         meta={
-            "source_chunks": len(road_source_chunks),
-            "matched_chunks": int(road_match_meta.get("matched") or 0),
-            "pending_chunks": int(road_match_meta.get("pending") or 0),
-            "background_running": bool(road_pending),
+            "source_chunks": len(gps_match_source_chunks),
+            "matched_chunks": matched_chunks,
+            "pending_chunks": pending_chunks,
+            "rendered_parts": int(road_match_meta.get("rendered_parts") or 0),
+            "background_running": bool(road_worker_running),
+            "algorithm": PROJECT_GPS_MATCH_SCHEMA_V527,
         },
         force=True,
     )
 
-    # Fit the map to inferred roads, not noisy raw fixes. The newest GPS point remains
-    # visible as the independent blue marker so the user can still see sync recency.
+    # Map bounds follow only GPS-derived matched roads. The newest raw GPS point remains
+    # a separate blue marker; raw GPS coordinates themselves are never drawn as green.
     render_points = []
     seen_render = set()
     for seg in road_segments:
@@ -50328,15 +51223,6 @@ def page_burari_project():
                 continue
             seen_render.add(key)
             render_points.append({"lat": key[0], "lon": key[1]})
-    for p in _photo_legacy_map_points_v296():
-        if not isinstance(p, dict):
-            continue
-        try:
-            key = (round(float(p.get("lat")), 7), round(float(p.get("lon")), 7))
-        except Exception:
-            continue
-        if key not in seen_render:
-            seen_render.add(key); render_points.append(p)
     if latest_point and isinstance(latest_point, dict):
         try:
             latest_key = (round(float(latest_point.get("lat")), 7), round(float(latest_point.get("lon")), 7))
@@ -50346,10 +51232,10 @@ def page_burari_project():
             render_points.append(latest_point)
 
     _render_burari_project_map_v295(
-        render_points or _photo_legacy_map_points_v296() or ([latest_point] if latest_point else display_points),
+        render_points or ([latest_point] if latest_point else map_points),
         road_segments,
         stations,
-        photo_segments=photo_segments,
+        photo_segments=[],
         latest_point=latest_point,
         fallback_segments=[],
     )
