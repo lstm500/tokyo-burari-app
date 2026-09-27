@@ -44,7 +44,8 @@ def _app_css_v473(markup, **_ignored):
 # Review menu-only update: 2026-09-19 JST
 GENERATED_UPDATE_JST = "2026-09-19T14:54:38+09:00"
 
-APP_BUILD = "v557"
+APP_BUILD = "v559"
+# v559: Preserve the v556 saved/shared-movie UI byte-for-byte while strengthening Share write verification with a unique write token, keeping recipient discovery/media preparation Review-only, and removing the no-op Home shared-movie lookup call. No requested visual styles are changed.
 # v557: Rebuild replay-movie family sharing around native Streamlit buttons. Share/unshare writes are read back from Supabase before success is shown; recipient cache is invalidated, while recipient discovery/media preparation remains Review-only background work.
 # v556: After Review is opened, discover family-shared replay movies and prepare their playback media in the same bounded background pipeline. Photo/voice signed URLs, current feeling metadata and replay item payloads are prepared before a received movie becomes playable, so pressing Play performs no blocking media lookup. No Home/startup recipient query is added.
 # v555: Restore saved replay-movie family sharing without any Home/startup recipient query. Pressing Review starts one bounded family lookup on a background thread; the Review library merges received movies with the user's own movies, while sharing/unsharing remains explicit. Received-movie media is loaded only when the user presses Play.
@@ -25716,25 +25717,31 @@ def _read_owned_replay_movie_review_v557(client, row_id):
     return row, _coerce_review_json(row.get("review_json"))
 
 
-def _verify_owned_replay_movie_share_v557(client, row_id, enabled):
-    """Read back the persisted row; success is reported only after DB state is verified."""
-    last_review = {}
-    for attempt in range(3):
+def _verify_owned_replay_movie_share_v559(client, row_id, enabled, expected_write_token=""):
+    """Read back the exact persisted write; stale pre-existing share state is not accepted."""
+    expected_write_token = str(expected_write_token or "").strip()
+    for attempt in range(4):
         row, review = _read_owned_replay_movie_review_v557(client, row_id)
-        last_review = review
         share = monthly_family_share_info(review)
         if enabled:
             photos = [x for x in (share.get("photos") or []) if isinstance(x, dict)]
             sender_key = str(share.get("shared_by_member_key") or "").strip()
-            if bool(share.get("shared")) and sender_key == current_member_key() and bool(photos):
+            persisted_token = str(share.get("_write_token_v559") or "").strip()
+            if (
+                bool(share.get("shared"))
+                and sender_key == current_member_key()
+                and bool(photos)
+                and expected_write_token
+                and persisted_token == expected_write_token
+            ):
                 return row, review
         else:
-            if not bool(share.get("shared")):
+            if not share or not bool(share.get("shared")):
                 return row, review
-        if attempt < 2:
+        if attempt < 3:
             time.sleep(0.12 * (attempt + 1))
     if enabled:
-        raise RuntimeError("共有情報を保存後に再取得しましたが、共有済み状態を確認できませんでした。")
+        raise RuntimeError("共有情報を保存後に再取得しましたが、今回の共有書き込みを確認できませんでした。")
     raise RuntimeError("共有解除を保存後に再取得しましたが、解除済み状態を確認できませんでした。")
 
 
@@ -25770,8 +25777,11 @@ def set_owned_replay_movie_share(row_id, enabled=True):
         payload["shared"] = True
         payload["shared_by_member_key"] = current_member_key()
         payload["shared_by_member_name"] = current_member_name()
+        expected_write_token = uuid.uuid4().hex
+        payload["_write_token_v559"] = expected_write_token
         review["_family_share"] = payload
     else:
+        expected_write_token = ""
         review.pop("_family_share", None)
 
     now_value = now_jst().isoformat()
@@ -25786,7 +25796,9 @@ def set_owned_replay_movie_share(row_id, enabled=True):
     # Some Supabase client versions return an empty data list for UPDATE even when the write
     # succeeds. Do not infer success from the response body; always verify with a fresh SELECT.
     _ = update_result
-    verified_row, verified_review = _verify_owned_replay_movie_share_v557(client, row_id, bool(enabled))
+    verified_row, verified_review = _verify_owned_replay_movie_share_v559(
+        client, row_id, bool(enabled), expected_write_token=expected_write_token
+    )
 
     if month_key:
         st.session_state[f"monthly_review_{month_key}"] = dict(verified_review)
@@ -26330,55 +26342,12 @@ def render_replay_movie_library_fragment_v555():
     render_own_replay_movie_library()
 
 
-def _rerun_movie_library_fragment_v557():
-    """Refresh only the saved/shared movie library after an explicit user action."""
-    try:
-        st.rerun(scope="fragment")
-    except Exception:
-        st.rerun()
-
-
-def _native_movie_row_key_v557(prefix, row_id):
-    raw = f"{prefix}|{str(row_id or '')}".encode("utf-8")
-    return f"{prefix}_{hashlib.sha256(raw).hexdigest()[:18]}"
-
-
-def _shared_movie_browser_preload_v557(rows):
-    """Warm received photo/voice URLs in the browser without creating any Streamlit trigger."""
-    urls = []
-    seen = set()
-    for item in rows or []:
-        if not isinstance(item, dict) or not bool(item.get("received")):
-            continue
-        for media_item in item.get("_prepared_photo_items_v556") or []:
-            if not isinstance(media_item, dict):
-                continue
-            for key in ("url", "voice_url"):
-                url = str(media_item.get(key) or "").strip()
-                if url and url not in seen:
-                    seen.add(url)
-                    urls.append(url)
-    if not urls:
-        return
-    # Reuse the already-registered v2 movie component as a pure preloader would couple
-    # playback to its action channel. Instead the server-side preparation remains authoritative;
-    # browser warm-up is best-effort and must never affect Share button correctness.
-    try:
-        preload_html = "".join(
-            f'<link rel="preload" href="{html.escape(url, quote=True)}" as="fetch" crossorigin="anonymous">'
-            for url in urls[:80]
-        )
-        st.html(f'<div aria-hidden="true" style="display:none">{preload_html}</div>')
-    except Exception:
-        pass
-
-
 def render_own_replay_movie_library():
-    """Render saved + received movies using native Streamlit buttons only.
+    """Render own and received saved movies in one compact Review library.
 
-    v557 deliberately removes Share/Unshare from the custom JS component. The native buttons
-    run inside this st.fragment, the Supabase write is read back before success is shown, and
-    recipient discovery/media preparation remains background-only after Review is opened.
+    Own rows are loaded as before. Recipient discovery and replay-media preparation both run
+    in the bounded background worker. Only received movies with a fully prepared playback
+    payload are exposed as playable rows, so Play performs no blocking media lookup.
     """
     st.markdown("#### 🎞 保存済み・共有ムービー")
 
@@ -26403,6 +26372,7 @@ def render_own_replay_movie_library():
         and isinstance(item.get("_prepared_photo_items_v556"), list)
         and bool(item.get("_prepared_photo_items_v556"))
     ]
+    received_preparing = max(0, len(received_all_rows) - len(received_rows))
 
     rows = []
     for item in own_rows:
@@ -26425,163 +26395,178 @@ def render_own_replay_movie_library():
         reverse=True,
     )
 
-    if received_pending:
-        progress = family_shared_movie_progress_v556()
-        if progress.get("metadata_ready") and progress.get("total"):
-            st.caption(
-                f"共有ムービーをバックグラウンドで準備中です（{progress.get('ready', 0)}/{progress.get('total', 0)}）。"
-                "準備済みのものから表示します。"
-            )
-        else:
-            st.caption("家族共有をバックグラウンドで確認しています。確認中も他の操作はそのまま使えます。")
-    elif received_error and not received_rows:
-        st.caption("家族共有の確認は次回の振り返り表示時に再試行します。")
-
-    _movie_share_tick_v555(received_pending)
-
     if not rows:
-        st.caption("まだ保存済み・共有ムービーはありません。")
+        if received_pending:
+            progress = family_shared_movie_progress_v556()
+            if progress.get("metadata_ready") and progress.get("total"):
+                st.caption(f"共有ムービーをバックグラウンドで準備中です（{progress.get('ready', 0)}/{progress.get('total', 0)}）。")
+            else:
+                st.caption("家族から共有されたムービーをバックグラウンドで確認中です。")
+            _movie_share_tick_v555(True)
+        else:
+            st.caption("まだ保存済み・共有ムービーはありません。")
         return
 
-    _shared_movie_browser_preload_v557(rows)
-
-    visible_key = "_replay_movie_library_visible_v557"
-    try:
-        visible_count = max(12, int(st.session_state.get(visible_key) or 12))
-    except Exception:
-        visible_count = 12
-    visible_count = min(len(rows), visible_count)
-
-    for item in rows[:visible_count]:
+    component_rows = []
+    row_map = {}
+    for item in rows:
         row_id = str(item.get("id") or "").strip()
         if not row_id:
             continue
         received = bool(item.get("received"))
-        shared = bool(item.get("shared"))
+        component_id = ("received::" if received else "own::") + row_id
         period_label = str(item.get("period_label") or "振り返りムービー").strip()
         movie_type = str(item.get("movie_type") or "振り返り").strip()
+        shared = bool(item.get("shared"))
         playback = item.get("playback") if isinstance(item.get("playback"), dict) else {}
-        music_title = str(playback.get("title") or "保存した音楽").strip()
-        try:
-            start_seconds = float(playback.get("start_seconds") or 0.0)
-            end_seconds = float(playback.get("end_seconds") or 0.0)
-        except Exception:
-            start_seconds, end_seconds = 0.0, 0.0
         saved_label = _shared_movie_list_time_label(
             item.get("shared_at") if received else (item.get("saved_at") or item.get("updated_at"))
         )
+        music_title = str(playback.get("title") or "YouTube音楽").strip()
+        start_seconds = max(0, int(playback.get("start_seconds") or 0))
+        end_seconds = int(playback.get("end_seconds") or (start_seconds + 1))
         detail_parts = []
         if received:
-            detail_parts.append(f"{str(item.get('source_member_name') or '家族')}さんから共有")
+            source_name = str(item.get("source_member_name") or "家族").strip() or "家族"
+            detail_parts.append(f"{source_name}さんから共有")
         detail_parts.extend([movie_type, music_title, f"{_format_music_time_v472(start_seconds)}〜{_format_music_time_v472(end_seconds)}"])
         if saved_label:
             detail_parts.append(saved_label)
+        preload_urls = []
+        if received:
+            for media_item in item.get("_prepared_photo_items_v556") or []:
+                if not isinstance(media_item, dict):
+                    continue
+                photo_url = str(media_item.get("url") or "").strip()
+                voice_url = str(media_item.get("voice_url") or "").strip()
+                if photo_url:
+                    preload_urls.append(photo_url)
+                if voice_url:
+                    preload_urls.append(voice_url)
+        component_rows.append({
+            "id": component_id,
+            "title": period_label,
+            "meta": " ／ ".join(detail_parts),
+            "shared": shared,
+            "received": received,
+            "preload_urls": preload_urls,
+        })
+        row_map[component_id] = item
 
-        with st.container(border=True):
-            st.markdown(f"**{html.escape(period_label)}**")
-            if received:
-                st.caption(" ／ ".join(detail_parts))
-                if st.button(
-                    "▶ 共有ムービーを再生",
-                    key=_native_movie_row_key_v557("review_received_view_v557", row_id),
-                    use_container_width=True,
-                ):
-                    try:
-                        open_received_replay_movie_from_library_v555(item)
-                        _refresh_after_movie_library_navigation_v357()
-                        st.rerun(scope="app")
-                    except Exception as exc:
-                        st.error("共有ムービーを開けませんでした。")
-                        with st.expander("保護者向け詳細"):
-                            st.code(str(exc))
+    if not component_rows:
+        st.caption("まだ保存済み・共有ムービーはありません。")
+        return
+
+    if received_pending:
+        progress = family_shared_movie_progress_v556()
+        if progress.get("metadata_ready") and progress.get("total"):
+            st.caption(f"共有ムービーをバックグラウンドで準備中です（{progress.get('ready', 0)}/{progress.get('total', 0)}）。準備済みのムービーはすぐ再生できます。")
+        elif not received_rows:
+            st.caption("家族共有はバックグラウンドで確認しています。確認中も他の操作はそのまま使えます。")
+    elif received_error and not received_rows:
+        st.caption("家族共有の確認は次回の振り返り表示時に再試行します。")
+
+    # Tiny hidden component: while the DB lookup is still running, only this fragment
+    # reruns. The rest of Review/Home never reruns or waits for family-sharing metadata.
+    _movie_share_tick_v555(received_pending)
+
+    component = _get_replay_movie_library_component_v357()
+    if component is None:
+        for item in rows[:12]:
+            row_id = str(item.get("id") or "").strip()
+            if not row_id:
                 continue
-
-            if shared:
-                st.caption("● 家族に共有中 ／ " + " ／ ".join(detail_parts))
-            else:
-                st.caption(" ／ ".join(detail_parts))
-
-            top_cols = st.columns(2)
-            with top_cols[0]:
-                if st.button(
-                    "▶ 再生",
-                    key=_native_movie_row_key_v557("review_owned_view_v557", row_id),
-                    use_container_width=True,
-                ):
-                    try:
-                        open_owned_replay_movie_from_library(item, edit=False)
-                        _refresh_after_movie_library_navigation_v357()
+            received = bool(item.get("received"))
+            period_label = str(item.get("period_label") or "振り返りムービー").strip()
+            with st.container(border=True):
+                st.markdown(f"**{html.escape(period_label)}**")
+                if received:
+                    st.caption(f"{html.escape(str(item.get('source_member_name') or '家族'))}さんから共有")
+                    if st.button("▶ 共有ムービーを再生", key=f"review_received_fallback_view_v555_{row_id}", use_container_width=True):
+                        open_received_replay_movie_from_library_v555(item)
                         st.rerun(scope="app")
-                    except Exception as exc:
-                        st.error("ムービーを再生できませんでした。")
-                        with st.expander("保護者向け詳細"):
-                            st.code(str(exc))
-            with top_cols[1]:
-                if st.button(
-                    "✏️ 編集",
-                    key=_native_movie_row_key_v557("review_owned_edit_v557", row_id),
-                    use_container_width=True,
-                ):
-                    try:
-                        open_owned_replay_movie_from_library(item, edit=True)
-                        _refresh_after_movie_library_navigation_v357()
-                        st.rerun(scope="app")
-                    except Exception as exc:
-                        st.error("ムービーを編集できませんでした。")
-                        with st.expander("保護者向け詳細"):
-                            st.code(str(exc))
-
-            action_cols = st.columns(2)
-            with action_cols[0]:
-                share_label = "共有解除" if shared else "家族に共有"
-                if st.button(
-                    share_label,
-                    key=_native_movie_row_key_v557("review_owned_share_v557", row_id),
-                    type="primary" if not shared else "secondary",
-                    use_container_width=True,
-                ):
-                    try:
-                        with st.spinner("共有状態を保存して確認しています…"):
-                            set_owned_replay_movie_share(row_id, enabled=not shared)
-                        st.session_state["_replay_movie_library_notice_v357"] = (
-                            f"「{period_label}」を家族に共有しました。" if not shared
-                            else f"「{period_label}」の家族共有を解除しました。"
-                        )
-                        _rerun_movie_library_fragment_v557()
-                    except Exception as exc:
-                        st.error("家族共有を変更できませんでした。保存状態は変更済みとして扱いません。")
-                        with st.expander("保護者向け詳細"):
-                            st.code(str(exc))
-            with action_cols[1]:
-                delete_key = _native_movie_row_key_v557("review_owned_delete_v557", row_id)
-                confirm_key = _native_movie_row_key_v557("review_owned_delete_confirm_v557", row_id)
-                if st.session_state.get(confirm_key):
-                    if st.button("削除を実行", key=delete_key + "_yes", use_container_width=True):
-                        try:
+                else:
+                    fallback_cols = st.columns(2)
+                    with fallback_cols[0]:
+                        if st.button("▶ 再生", key=f"review_movie_fallback_view_v555_{row_id}", use_container_width=True):
+                            open_owned_replay_movie_from_library(item, edit=False)
+                            _refresh_after_movie_library_navigation_v357()
+                            st.rerun(scope="app")
+                        share_label = "共有解除" if item.get("shared") else "家族に共有"
+                        if st.button(share_label, key=f"review_movie_fallback_share_v555_{row_id}", use_container_width=True):
+                            set_owned_replay_movie_share(row_id, enabled=not bool(item.get("shared")))
+                            reload_current_page_after_action()
+                    with fallback_cols[1]:
+                        if st.button("✏️ 編集", key=f"review_movie_fallback_edit_v555_{row_id}", use_container_width=True):
+                            open_owned_replay_movie_from_library(item, edit=True)
+                            _refresh_after_movie_library_navigation_v357()
+                            st.rerun(scope="app")
+                        if st.button("🗑 削除", key=f"review_movie_fallback_delete_v555_{row_id}", use_container_width=True):
                             delete_owned_replay_movie(row_id)
-                            st.session_state.pop(confirm_key, None)
                             st.session_state["_replay_movie_library_notice_v357"] = f"「{period_label}」を削除しました。"
-                            _rerun_movie_library_fragment_v557()
-                        except Exception as exc:
-                            st.error("ムービーを削除できませんでした。")
-                            with st.expander("保護者向け詳細"):
-                                st.code(str(exc))
-                    if st.button("削除をやめる", key=delete_key + "_no", use_container_width=True):
-                        st.session_state.pop(confirm_key, None)
-                        _rerun_movie_library_fragment_v557()
-                elif st.button("🗑 削除", key=delete_key, use_container_width=True):
-                    st.session_state[confirm_key] = True
-                    _rerun_movie_library_fragment_v557()
+                            reload_current_page_after_action()
+        if len(rows) > 12:
+            st.caption("この端末では先頭12件を表示しています。")
+        return
 
-    if visible_count < len(rows):
-        remaining = len(rows) - visible_count
-        if st.button(
-            f"さらに表示（残り {remaining}件）",
-            key="review_movie_more_v557",
-            use_container_width=True,
-        ):
-            st.session_state[visible_key] = min(len(rows), visible_count + 12)
-            _rerun_movie_library_fragment_v557()
+    serial = int(st.session_state.get("_replay_movie_library_serial_v357") or 0)
+    result = component(
+        data={"movies": component_rows, "page_size": 12},
+        key=f"replay_movie_library_v555_{serial}_{_current_ui_refresh_epoch()}",
+        on_action_change=lambda: None,
+    )
+    action_payload = getattr(result, "action", None) if result is not None else None
+    if not isinstance(action_payload, dict) or not _movie_library_action_token_is_new_v357(action_payload):
+        return
+
+    component_id = str(action_payload.get("row_id") or "").strip()
+    action = str(action_payload.get("action") or "").strip().lower()
+    item = row_map.get(component_id)
+    if not item:
+        return
+    row_id = str(item.get("id") or "").strip()
+    period_label = str(item.get("period_label") or "振り返りムービー").strip()
+
+    try:
+        if bool(item.get("received")):
+            if action == "view":
+                open_received_replay_movie_from_library_v555(item)
+                _refresh_after_movie_library_navigation_v357()
+                st.rerun(scope="app")
+            return
+        if action == "view":
+            open_owned_replay_movie_from_library(item, edit=False)
+            _refresh_after_movie_library_navigation_v357()
+            st.rerun(scope="app")
+            return
+        if action == "edit":
+            open_owned_replay_movie_from_library(item, edit=True)
+            _refresh_after_movie_library_navigation_v357()
+            st.rerun(scope="app")
+            return
+        if action == "share":
+            set_owned_replay_movie_share(row_id, enabled=True)
+            st.session_state["_replay_movie_library_notice_v357"] = f"「{period_label}」を家族に共有しました。"
+            st.session_state["_replay_movie_library_serial_v357"] = serial + 1
+            reload_current_page_after_action()
+            return
+        if action == "unshare":
+            set_owned_replay_movie_share(row_id, enabled=False)
+            st.session_state["_replay_movie_library_notice_v357"] = f"「{period_label}」の家族共有を解除しました。"
+            st.session_state["_replay_movie_library_serial_v357"] = serial + 1
+            reload_current_page_after_action()
+            return
+        if action == "delete":
+            delete_owned_replay_movie(row_id)
+            st.session_state["_replay_movie_library_notice_v357"] = f"「{period_label}」を削除しました。"
+            st.session_state["_replay_movie_library_serial_v357"] = serial + 1
+            reload_current_page_after_action()
+            return
+    except Exception as exc:
+        action_label = {"view": "再生", "edit": "編集", "share": "共有", "unshare": "共有解除", "delete": "削除"}.get(action, "操作")
+        st.error(f"ムービーを{action_label}できませんでした。")
+        with st.expander("保護者向け詳細"):
+            st.code(str(exc))
 
 
 def open_received_replay_movie_from_library_v555(item):
@@ -33804,8 +33789,8 @@ def page_home():
         _sync_recent_camera_state_from_browser()
         browser_home_state = read_browser_review_state()
     review_attention = home_review_attention_needed(browser_state=browser_home_state)
-    shared_movie_notice = home_family_shared_movie_notice(browser_home_state)
-    inject_home_icon_css(review_attention=review_attention or bool(shared_movie_notice))
+    # v559: no shared-movie lookup is called from Home/startup. Review entry starts it in the background.
+    inject_home_icon_css(review_attention=review_attention)
     with st.container(key="home_viewport_fit"):
         fast_family_name = str(st.session_state.get("_current_family_name") or current_family_key())
         fast_member_name = str(st.session_state.get("_current_member_name") or current_member_key())
@@ -33841,12 +33826,7 @@ def page_home():
             unsafe_allow_html=True,
         )
 
-        if shared_movie_notice:
-            render_home_family_shared_movie_notice(shared_movie_notice)
-
-        # Home avoids recurring DB work. The shared-movie check above runs only after
-        # localStorage is ready and is session-cached for 20 seconds; it never polls.
-        # Counts/place are updated in session immediately
+        # Home avoids all shared-movie recipient work. Counts/place are updated in session immediately
         # after a successful capture; a fresh browser session shows a neutral status until
         # the first data action instead of delaying every launch with two network requests.
         active = st.session_state.get("_active_trip_snapshot")
