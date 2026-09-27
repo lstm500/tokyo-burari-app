@@ -20,7 +20,7 @@ import zipfile
 import threading
 import sys
 import unicodedata
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from array import array
 from urllib.parse import urlencode, urlparse, parse_qs, quote
 from urllib.request import Request, urlopen
@@ -43,7 +43,7 @@ def _app_css_v473(markup, **_ignored):
 # Review menu-only update: 2026-09-19 JST
 GENERATED_UPDATE_JST = "2026-09-19T14:54:38+09:00"
 
-APP_BUILD = "v544"
+APP_BUILD = "v549"
 # v544: For the ねんね account only, add the same green-free road-recognition treatment for 新大久保→大久保→東中野→中野. Append three fixed station-pairs so existing 86 photo-pair chunk keys remain stable and only the new westward links are newly processed.
 # v539: Keep the single detailed road-rebuild work log for diagnostics/download, but simplify the Project-page UI. Users see only save state and aggregate counts; timestamps, per-step rows, and error details are not rendered.
 # v537: Isolate the road-rebuild background runtime by schema/build so a still-running cached v535/v536 Future can never block the new worker. Strip verbose per-chunk diagnostics from the main road-state JSON (they remain in the dedicated work log), cap the fallback state log, and derive progress counters from current chunk state to prevent retry double-counting.
@@ -63,6 +63,7 @@ APP_BUILD = "v544"
 # v499: Experience-card photos are manual-selection only. Pressing the photo button opens the picker; nothing is auto-selected. Obvious Android screenshots are hidden from the picker, selected photos are previewed under the buttons, and multiple selected photos are always combined into one experience card.
 
 # v500: Match the existing moments photo-selection UI for experience cards: three thumbnails per row, select by tapping the photo card itself (no visible "選ぶ" buttons), allow multiple photos across repeated opens, and collapse the picker immediately after each selection.
+# v549: Apply road-based interpolation to all currently rendered green route fragments. Preserve existing v548 fills, add global endpoint pairing with direction/mutual-nearest safeguards, and still require green-free OSM road recognition plus on-mask A* before drawing any connector.
 # v502: Experience selected-photo previews now use the same gallery component as the existing photo screens, so mobile keeps a real 3-column grid instead of Streamlit columns stacking vertically.
 # v514: All-saved-photo library now enters multi-delete mode by long-pressing a photo; the old standalone multiselect delete panel is removed.
 # v503: Experience photo picker now uses the same full past-photo library as 「これまで撮った写真」. Normal tap selects one and closes; long-press enters multi-select. Long-pressing already-selected experience photos enters multi-remove mode without deleting the original library photos.
@@ -1473,14 +1474,17 @@ PROJECT_IMAGE_ROAD_PHOTO_OSAKI_SHINAGAWA_FALLBACK_SNAP_RADIUS_PX_V546 = 215
 PROJECT_IMAGE_ROAD_PHOTO_OSAKI_SHINAGAWA_AGGRESSIVE_SEARCH_RADIUS_PX_V546 = 280
 PROJECT_IMAGE_ROAD_PHOTO_OSAKI_SHINAGAWA_AGGRESSIVE_SNAP_RADIUS_PX_V546 = 265
 PROJECT_IMAGE_ROAD_PHOTO_OSAKI_SHINAGAWA_REVISION_V546 = "osaki_shinagawa_trackside_road_guide_v546"
-# v547: fill only short visible breaks between route fragments that belong to the SAME
-# ordered walk.  Candidate gaps are never joined by a straight green chord.  A fresh
+# v549: run the road-based gap pass against ALL currently rendered green route fragments.
+# Route-aware same-walk gaps remain first priority.  Any still-uncovered green endpoints
+# are then compared globally with nearby endpoints using continuation direction + mutual
+# nearest-neighbour checks, so unrelated nearby streets are not connected just because
+# they are close.  Candidate gaps are never drawn as straight green chords: a fresh
 # green-free OSM raster is recognized first and the connector must be a complete A* path
-# inside that recognized road mask.  This prevents nearby but unrelated city streets from
-# being connected merely because their green endpoints are close on screen.
-PROJECT_IMAGE_ROAD_GAP_REVISION_V547 = "small_same_walk_road_gap_fill_v547"
+# inside that recognized road mask.
+PROJECT_IMAGE_ROAD_GAP_REVISION_V547 = "small_same_walk_road_gap_fill_v548"
+PROJECT_IMAGE_ROAD_WORKFLOW_REVISION_V548 = "road_then_all_green_gap_autochain_v549"
 PROJECT_IMAGE_ROAD_GAP_MIN_M_V547 = 4.0
-PROJECT_IMAGE_ROAD_GAP_MAX_M_V547 = 120.0
+PROJECT_IMAGE_ROAD_GAP_MAX_M_V547 = 160.0
 PROJECT_IMAGE_ROAD_GAP_DENSIFY_M_V547 = 10.0
 PROJECT_IMAGE_ROAD_GAP_MOSAIC_RADIUS_PX_V547 = 190
 PROJECT_IMAGE_ROAD_GAP_SEARCH_RADIUS_PX_V547 = 110
@@ -1491,6 +1495,11 @@ PROJECT_IMAGE_ROAD_GAP_AGGRESSIVE_SNAP_RADIUS_PX_V547 = 122
 PROJECT_IMAGE_ROAD_GAP_ENDPOINT_TOLERANCE_M_V547 = 14.0
 PROJECT_IMAGE_ROAD_GAP_MAX_PATH_RATIO_V547 = 3.4
 PROJECT_IMAGE_ROAD_GAP_WORKERS_V547 = 4
+PROJECT_IMAGE_ROAD_GLOBAL_GAP_CROSS_GROUP_MAX_M_V549 = 95.0
+PROJECT_IMAGE_ROAD_GLOBAL_GAP_SAME_GROUP_MAX_M_V549 = 160.0
+PROJECT_IMAGE_ROAD_GLOBAL_GAP_ALIGNMENT_MIN_V549 = 0.32
+PROJECT_IMAGE_ROAD_GLOBAL_GAP_SAME_GROUP_ALIGNMENT_MIN_V549 = -0.10
+PROJECT_IMAGE_ROAD_GLOBAL_GAP_GRID_M_V549 = 110.0
 PROJECT_IMAGE_ROAD_GAP_CHECKPOINT_EVERY_V547 = 8
 # Keep a long-lived Burari Project screen authenticated without changing the normal
 # 24-hour policy elsewhere. The page renews its signed browser token every 10 minutes.
@@ -52249,12 +52258,69 @@ def _project_image_road_gap_candidate_v547(kind, group, left_key, right_key, slo
     }
 
 
+def _project_image_road_gap_unit_xy_v549(a, b):
+    """Unit vector a->b in local metres; None when the points are effectively identical."""
+    try:
+        lat0 = (float(a[0]) + float(b[0])) * 0.5
+        coslat = max(0.2, math.cos(math.radians(lat0)))
+        dx = (float(b[1]) - float(a[1])) * 111320.0 * coslat
+        dy = (float(b[0]) - float(a[0])) * 111320.0
+        norm = math.hypot(dx, dy)
+        if norm < 0.8:
+            return None
+        return (dx / norm, dy / norm)
+    except Exception:
+        return None
+
+
+def _project_image_road_gap_outward_tangent_v549(points, side):
+    """Direction in which a broken route would naturally continue away from one endpoint."""
+    pts = _project_clean_segment_v298(points)
+    if len(pts) < 2:
+        return None
+    if str(side) == "start":
+        endpoint = pts[0]
+        # Use the first point at least a few metres inside the existing green segment.
+        inner = pts[1]
+        for p in pts[1:min(len(pts), 10)]:
+            if _project_image_road_gap_distance_m_v547(endpoint, p) >= 8.0:
+                inner = p
+                break
+        return _project_image_road_gap_unit_xy_v549(inner, endpoint)
+    endpoint = pts[-1]
+    inner = pts[-2]
+    for p in reversed(pts[max(0, len(pts)-10):-1]):
+        if _project_image_road_gap_distance_m_v547(endpoint, p) >= 8.0:
+            inner = p
+            break
+    return _project_image_road_gap_unit_xy_v549(inner, endpoint)
+
+
+def _project_image_road_gap_dot_v549(a, b):
+    if a is None or b is None:
+        return -1.0
+    try:
+        return float(a[0]) * float(b[0]) + float(a[1]) * float(b[1])
+    except Exception:
+        return -1.0
+
+
 def _project_image_road_gap_candidates_v547(source_chunks, state):
+    """Build gap candidates from every current green route fragment.
+
+    v549 keeps the original route-aware candidates, then adds a global endpoint pass for
+    all remaining matched green geometries.  Global pairs must be close, point toward one
+    another, and be mutual best matches (unless they share the same source group).  This
+    expands interpolation coverage without turning nearby unrelated streets into one route.
+    """
     chunks = state.get("chunks") if isinstance(state, dict) and isinstance(state.get("chunks"), dict) else {}
     candidates = []
     seen = set()
     grouped = {}
     ordered_sources = []
+    endpoint_records = []
+    covered_endpoint_ids = set()
+
     for order, source in enumerate(source_chunks or []):
         if not isinstance(source, dict):
             continue
@@ -52273,27 +52339,147 @@ def _project_image_road_gap_candidates_v547(source_chunks, state):
         entry = {"key": key, "row": row, "geoms": geoms, "group": group, "part": part, "order": order, "points": points, "source_kind": source_kind}
         ordered_sources.append(entry)
         grouped.setdefault(group, []).append(entry)
+
+        # Every currently rendered green polyline contributes both endpoints to the global pass.
+        for geom_index, geom in enumerate(geoms):
+            for side, point in (("start", geom[0]), ("end", geom[-1])):
+                eid = f"{key}:g{geom_index}:{side}"
+                endpoint_records.append({
+                    "id": eid,
+                    "point": [float(point[0]), float(point[1])],
+                    "tangent": _project_image_road_gap_outward_tangent_v549(geom, side),
+                    "group": group,
+                    "key": key,
+                    "geom_index": geom_index,
+                    "side": side,
+                    "source_kind": source_kind,
+                })
+
+        # Priority 1: breaks inside one matched chunk, using its original ordered guide.
         for idx in range(len(geoms) - 1):
             a = geoms[idx][-1]; b = geoms[idx + 1][0]
+            left_eid = f"{key}:g{idx}:end"
+            right_eid = f"{key}:g{idx+1}:start"
             guide = _project_image_road_gap_same_chunk_guide_v547(points, a, b)
             cand = _project_image_road_gap_candidate_v547("within_chunk", group, key, key, idx, a, b, guide, source_kind)
             if cand and cand["key"] not in seen:
+                cand["left_endpoint_id"] = left_eid
+                cand["right_endpoint_id"] = right_eid
                 seen.add(cand["key"]); candidates.append(cand)
+                covered_endpoint_ids.update((left_eid, right_eid))
+
+    # Priority 2: consecutive chunks belonging to the same original walk.
     for group, entries in grouped.items():
         entries = sorted(entries, key=lambda x: (x["part"], x["order"]))
         for idx in range(len(entries) - 1):
             left = entries[idx]; right = entries[idx + 1]
-            # Only consecutive windows from the same original walk may be bridged.
             if int(right["part"]) != int(left["part"]) + 1:
                 continue
             a = left["geoms"][-1][-1]
             b = right["geoms"][0][0]
+            left_eid = f'{left["key"]}:g{len(left["geoms"])-1}:end'
+            right_eid = f'{right["key"]}:g0:start'
             guide = _project_image_road_gap_between_chunks_guide_v547(left["points"], right["points"], a, b)
             cand = _project_image_road_gap_candidate_v547("between_chunks", group, left["key"], right["key"], idx, a, b, guide, left["source_kind"] or right["source_kind"])
             if cand and cand["key"] not in seen:
+                cand["left_endpoint_id"] = left_eid
+                cand["right_endpoint_id"] = right_eid
                 seen.add(cand["key"]); candidates.append(cand)
-    return candidates
+                covered_endpoint_ids.update((left_eid, right_eid))
 
+    # Priority 3 (v549): all remaining green endpoints, regardless of GPS/photo/source group.
+    # A lightweight metre grid avoids O(N^2) comparisons on thousands of route fragments.
+    remaining = [e for e in endpoint_records if e["id"] not in covered_endpoint_ids]
+    if remaining:
+        ref_lat = sum(float(e["point"][0]) for e in remaining) / max(1, len(remaining))
+        coslat = max(0.2, math.cos(math.radians(ref_lat)))
+        cell_m = max(40.0, float(PROJECT_IMAGE_ROAD_GLOBAL_GAP_GRID_M_V549))
+        grid = {}
+        for e in remaining:
+            x = float(e["point"][1]) * 111320.0 * coslat
+            y = float(e["point"][0]) * 111320.0
+            gx = int(math.floor(x / cell_m)); gy = int(math.floor(y / cell_m))
+            e["grid"] = (gx, gy)
+            grid.setdefault((gx, gy), []).append(e)
+
+        best_for = {}
+        pair_rows = {}
+        max_search_cells = 2
+        for e in remaining:
+            gx, gy = e["grid"]
+            best_score = float("inf")
+            best_pair_key = None
+            for oy in range(-max_search_cells, max_search_cells + 1):
+                for ox in range(-max_search_cells, max_search_cells + 1):
+                    for other in grid.get((gx + ox, gy + oy), []):
+                        if other["id"] == e["id"] or other["key"] == e["key"] and other["geom_index"] == e["geom_index"]:
+                            continue
+                        pair_ids = tuple(sorted((e["id"], other["id"])))
+                        if pair_ids in pair_rows:
+                            row = pair_rows[pair_ids]
+                        else:
+                            gap_m = _project_image_road_gap_distance_m_v547(e["point"], other["point"])
+                            same_group = bool(e["group"] and e["group"] == other["group"])
+                            max_gap = float(PROJECT_IMAGE_ROAD_GLOBAL_GAP_SAME_GROUP_MAX_M_V549 if same_group else PROJECT_IMAGE_ROAD_GLOBAL_GAP_CROSS_GROUP_MAX_M_V549)
+                            if not (float(PROJECT_IMAGE_ROAD_GAP_MIN_M_V547) <= gap_m <= max_gap):
+                                pair_rows[pair_ids] = None
+                                continue
+                            ab = _project_image_road_gap_unit_xy_v549(e["point"], other["point"])
+                            ba = _project_image_road_gap_unit_xy_v549(other["point"], e["point"])
+                            align_a = _project_image_road_gap_dot_v549(e.get("tangent"), ab)
+                            align_b = _project_image_road_gap_dot_v549(other.get("tangent"), ba)
+                            align_min = float(PROJECT_IMAGE_ROAD_GLOBAL_GAP_SAME_GROUP_ALIGNMENT_MIN_V549 if same_group else PROJECT_IMAGE_ROAD_GLOBAL_GAP_ALIGNMENT_MIN_V549)
+                            if align_a < align_min or align_b < align_min:
+                                pair_rows[pair_ids] = None
+                                continue
+                            # Lower score is better. Strong continuation alignment can beat a
+                            # slightly shorter but sideways nearby street.
+                            score = float(gap_m) + (2.0 - align_a - align_b) * (18.0 if same_group else 28.0)
+                            row = {
+                                "a": e, "b": other, "gap_m": gap_m, "score": score,
+                                "same_group": same_group, "align_a": align_a, "align_b": align_b,
+                            }
+                            pair_rows[pair_ids] = row
+                        if not row:
+                            continue
+                        score = float(row["score"])
+                        if score < best_score:
+                            best_score = score
+                            best_pair_key = pair_ids
+            if best_pair_key is not None:
+                best_for[e["id"]] = best_pair_key
+
+        emitted_pairs = set()
+        for pair_ids, row in pair_rows.items():
+            if not row or pair_ids in emitted_pairs:
+                continue
+            a_rec = row["a"]; b_rec = row["b"]
+            mutual = best_for.get(a_rec["id"]) == pair_ids and best_for.get(b_rec["id"]) == pair_ids
+            # Same-source fragments may legitimately have another close branch, so one-sided
+            # best is allowed there. Cross-source pairs must be mutual nearest continuations.
+            if row["same_group"]:
+                accepted = best_for.get(a_rec["id"]) == pair_ids or best_for.get(b_rec["id"]) == pair_ids
+            else:
+                accepted = mutual
+            if not accepted:
+                continue
+            group = a_rec["group"] if row["same_group"] else f'global:{a_rec["key"]}:{b_rec["key"]}'
+            guide = _project_image_road_gap_dense_guide_v547([a_rec["point"], b_rec["point"]])
+            cand = _project_image_road_gap_candidate_v547(
+                "all_green_global", group, a_rec["key"], b_rec["key"], 0,
+                a_rec["point"], b_rec["point"], guide,
+                a_rec["source_kind"] or b_rec["source_kind"],
+            )
+            if cand and cand["key"] not in seen:
+                cand["left_endpoint_id"] = a_rec["id"]
+                cand["right_endpoint_id"] = b_rec["id"]
+                cand["alignment_a"] = round(float(row["align_a"]), 4)
+                cand["alignment_b"] = round(float(row["align_b"]), 4)
+                cand["global_same_group"] = bool(row["same_group"])
+                seen.add(cand["key"]); candidates.append(cand)
+                emitted_pairs.add(pair_ids)
+
+    return candidates
 
 def _project_image_road_gap_merge_geometry_v547(geometries):
     geoms = [_project_clean_segment_v298(g) for g in (geometries or [])]
@@ -52404,8 +52590,12 @@ def _project_image_road_gap_worker_v547(owner, source_chunks):
     work_log = [row for row in (log_doc.get("events") or []) if isinstance(row, dict)]
     done_since_save = 0
     with ThreadPoolExecutor(max_workers=int(PROJECT_IMAGE_ROAD_GAP_WORKERS_V547)) as pool:
-        futures = [(c, pool.submit(_project_image_road_gap_match_v547, c)) for c in pending]
-        for cand, future in futures:
+        future_map = {pool.submit(_project_image_road_gap_match_v547, c): c for c in pending}
+        # v548: consume whichever connector finishes first. The v547 submission-order
+        # loop could sit at 0/N when the first submitted gap was slow even though other
+        # workers had already completed useful connectors.
+        for future in as_completed(future_map):
+            cand = future_map[future]
             try:
                 result = future.result()
             except Exception as exc:
@@ -52421,11 +52611,29 @@ def _project_image_road_gap_worker_v547(owner, source_chunks):
                 del work_log[:-int(PROJECT_IMAGE_ROAD_WORK_LOG_PERSIST_MAX_V535)]
             done_since_save += 1
             if done_since_save >= int(PROJECT_IMAGE_ROAD_GAP_CHECKPOINT_EVERY_V547):
+                # Re-read before saving so a concurrent page/worker update cannot be
+                # discarded. Only gap_fills is owned by this phase.
+                try:
+                    latest = _project_image_road_read_state_v531(client, family_key, member_key)
+                    if isinstance(latest, dict):
+                        state["chunks"] = latest.get("chunks") if isinstance(latest.get("chunks"), dict) else state.get("chunks", {})
+                        state["source_chunk_count"] = int(latest.get("source_chunk_count") or state.get("source_chunk_count") or 0)
+                        state["last_job"] = latest.get("last_job") if isinstance(latest.get("last_job"), dict) else state.get("last_job", {})
+                except Exception:
+                    pass
                 state["gap_revision"] = PROJECT_IMAGE_ROAD_GAP_REVISION_V547
                 state["gap_fills"] = dict(fills)
                 _project_image_road_save_state_v531(client, family_key, member_key, state)
                 _project_image_road_save_work_log_v535(client, family_key, member_key, work_log)
                 done_since_save = 0
+    try:
+        latest = _project_image_road_read_state_v531(client, family_key, member_key)
+        if isinstance(latest, dict):
+            state["chunks"] = latest.get("chunks") if isinstance(latest.get("chunks"), dict) else state.get("chunks", {})
+            state["source_chunk_count"] = int(latest.get("source_chunk_count") or state.get("source_chunk_count") or 0)
+            state["last_job"] = latest.get("last_job") if isinstance(latest.get("last_job"), dict) else state.get("last_job", {})
+    except Exception:
+        pass
     state["gap_revision"] = PROJECT_IMAGE_ROAD_GAP_REVISION_V547
     state["gap_fills"] = dict(fills)
     _project_image_road_save_state_v531(client, family_key, member_key, state)
@@ -52442,8 +52650,8 @@ def _project_image_road_gap_launch_v547(source_chunks, state):
     if not unfinished:
         return False
     owner = (current_family_key(), current_member_key())
-    runtime = _project_image_road_runtime_v537(PROJECT_IMAGE_ROAD_SCHEMA_V531 + "|gap|" + PROJECT_IMAGE_ROAD_GAP_REVISION_V547)
-    job_key = (owner[0], owner[1], "gap", PROJECT_IMAGE_ROAD_GAP_REVISION_V547)
+    runtime = _project_image_road_runtime_v537(PROJECT_IMAGE_ROAD_SCHEMA_V531 + "|gap|" + PROJECT_IMAGE_ROAD_GAP_REVISION_V547 + "|" + PROJECT_IMAGE_ROAD_WORKFLOW_REVISION_V548)
+    job_key = (owner[0], owner[1], "gap", PROJECT_IMAGE_ROAD_GAP_REVISION_V547, PROJECT_IMAGE_ROAD_WORKFLOW_REVISION_V548)
     with runtime["lock"]:
         future = runtime["jobs"].get(job_key)
         if future is not None:
@@ -52640,6 +52848,16 @@ def _project_image_road_worker_v531(owner, source_chunks):
         "log_save_error": str(log_save_status.get("error") or "")[:500],
     }
     _project_image_road_save_state_v531(client, family_key, member_key, state)
+
+    # v548: the gap-fill phase is part of the same background workflow. v547 only
+    # launched it from a later Streamlit rerun after the primary worker was already
+    # finished, so a page showing 1734/1736 could remain at 0/860 indefinitely.
+    # Chaining here guarantees that completion of the primary phase automatically
+    # starts short-gap repair even if the page is closed.
+    try:
+        _project_image_road_gap_worker_v547(owner, ordered)
+    except Exception:
+        pass
     return dict(state["last_job"])
 
 
@@ -52653,12 +52871,13 @@ def _project_image_road_launch_v531(source_chunks, state):
         return _project_image_road_terminal_v540(row)
     unfinished = any(not terminal(str(row.get("key") or "")) for row in source_chunks)
     runtime = _project_image_road_runtime_v537(
-        PROJECT_IMAGE_ROAD_SCHEMA_V531 + "|" + PROJECT_IMAGE_ROAD_FALLBACK_REVISION_V540 + "|" + PROJECT_IMAGE_ROAD_SOURCE_REVISION_V543
+        PROJECT_IMAGE_ROAD_SCHEMA_V531 + "|" + PROJECT_IMAGE_ROAD_FALLBACK_REVISION_V540 + "|" + PROJECT_IMAGE_ROAD_SOURCE_REVISION_V543 + "|" + PROJECT_IMAGE_ROAD_WORKFLOW_REVISION_V548
     )
     owner = (current_family_key(), current_member_key())
     job_key = (
         owner[0], owner[1], PROJECT_IMAGE_ROAD_SCHEMA_V531,
         PROJECT_IMAGE_ROAD_FALLBACK_REVISION_V540, PROJECT_IMAGE_ROAD_SOURCE_REVISION_V543,
+        PROJECT_IMAGE_ROAD_WORKFLOW_REVISION_V548,
     )
     with runtime["lock"]:
         future = runtime["jobs"].get(job_key)
@@ -53629,10 +53848,12 @@ def page_burari_project():
             f"（内部処理 {photo_chunk_count_v543} 分割）"
         )
     if gap_total_v547 > 0:
-        if gap_pending_v547 > 0 or gap_worker_running_v547:
-            st.caption(f"短い緑線の切れ目を道路上で補間中：{gap_filled_v547}/{gap_total_v547}件")
+        if pending_chunks > 0 and road_worker_running and gap_filled_v547 == 0:
+            st.caption(f"現在ある全緑線を確認：補間候補 {gap_total_v547}件。道路再作成後に自動補間します。")
+        elif gap_pending_v547 > 0 or gap_worker_running_v547 or road_worker_running:
+            st.caption(f"現在ある全緑線の切れ目を道路上で補間中：{gap_filled_v547}/{gap_total_v547}件")
         else:
-            st.caption(f"短い緑線の切れ目を道路上で補間済み：{gap_filled_v547}/{gap_total_v547}件")
+            st.caption(f"現在ある全緑線の切れ目を道路上で補間済み：{gap_filled_v547}/{gap_total_v547}件")
     if total_chunks > 0:
         if pending_chunks > 0:
             st.info(
