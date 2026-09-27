@@ -1473,6 +1473,25 @@ PROJECT_IMAGE_ROAD_PHOTO_OSAKI_SHINAGAWA_FALLBACK_SNAP_RADIUS_PX_V546 = 215
 PROJECT_IMAGE_ROAD_PHOTO_OSAKI_SHINAGAWA_AGGRESSIVE_SEARCH_RADIUS_PX_V546 = 280
 PROJECT_IMAGE_ROAD_PHOTO_OSAKI_SHINAGAWA_AGGRESSIVE_SNAP_RADIUS_PX_V546 = 265
 PROJECT_IMAGE_ROAD_PHOTO_OSAKI_SHINAGAWA_REVISION_V546 = "osaki_shinagawa_trackside_road_guide_v546"
+# v547: fill only short visible breaks between route fragments that belong to the SAME
+# ordered walk.  Candidate gaps are never joined by a straight green chord.  A fresh
+# green-free OSM raster is recognized first and the connector must be a complete A* path
+# inside that recognized road mask.  This prevents nearby but unrelated city streets from
+# being connected merely because their green endpoints are close on screen.
+PROJECT_IMAGE_ROAD_GAP_REVISION_V547 = "small_same_walk_road_gap_fill_v547"
+PROJECT_IMAGE_ROAD_GAP_MIN_M_V547 = 4.0
+PROJECT_IMAGE_ROAD_GAP_MAX_M_V547 = 120.0
+PROJECT_IMAGE_ROAD_GAP_DENSIFY_M_V547 = 10.0
+PROJECT_IMAGE_ROAD_GAP_MOSAIC_RADIUS_PX_V547 = 190
+PROJECT_IMAGE_ROAD_GAP_SEARCH_RADIUS_PX_V547 = 110
+PROJECT_IMAGE_ROAD_GAP_SNAP_RADIUS_PX_V547 = 96
+PROJECT_IMAGE_ROAD_GAP_AGGRESSIVE_MAX_M_V547 = 80.0
+PROJECT_IMAGE_ROAD_GAP_AGGRESSIVE_SEARCH_RADIUS_PX_V547 = 138
+PROJECT_IMAGE_ROAD_GAP_AGGRESSIVE_SNAP_RADIUS_PX_V547 = 122
+PROJECT_IMAGE_ROAD_GAP_ENDPOINT_TOLERANCE_M_V547 = 14.0
+PROJECT_IMAGE_ROAD_GAP_MAX_PATH_RATIO_V547 = 3.4
+PROJECT_IMAGE_ROAD_GAP_WORKERS_V547 = 4
+PROJECT_IMAGE_ROAD_GAP_CHECKPOINT_EVERY_V547 = 8
 # Keep a long-lived Burari Project screen authenticated without changing the normal
 # 24-hour policy elsewhere. The page renews its signed browser token every 10 minutes.
 PROJECT_AUTH_KEEPALIVE_INTERVAL_SECONDS_V530 = 600.0
@@ -48089,6 +48108,8 @@ def _photo_legacy_image_road_chunks_v543():
                     "photo_pair_a": a_name,
                     "photo_pair_b": b_name,
                     "photo_part": part_index + 1,
+                    "source_group": f"photo_pair:{pair_index:03d}",
+                    "source_part": part_index,
                     "photo_special_guide": "yoyogi_harajuku_roadside_v545",
                 })
                 if end_idx >= len(dense):
@@ -48140,6 +48161,8 @@ def _photo_legacy_image_road_chunks_v543():
                     "photo_pair_a": a_name,
                     "photo_pair_b": b_name,
                     "photo_part": part_index + 1,
+                    "source_group": f"photo_pair:{pair_index:03d}",
+                    "source_part": part_index,
                     "photo_special_guide": "osaki_shinagawa_trackside_v546",
                 })
                 if end_idx >= len(dense):
@@ -48187,6 +48210,8 @@ def _photo_legacy_image_road_chunks_v543():
                 "photo_pair_b": b_name,
                 "photo_part": part_index + 1,
                 "photo_parts": part_count,
+                "source_group": f"photo_pair:{pair_index:03d}",
+                "source_part": part_index,
             })
     return chunks
 
@@ -51008,6 +51033,8 @@ def _project_image_road_default_state_v531(family_key=None, member_key=None):
         "saved_at": "",
         "chunks": {},
         "source_chunk_count": 0,
+        "gap_revision": PROJECT_IMAGE_ROAD_GAP_REVISION_V547,
+        "gap_fills": {},
         "last_job": {},
     }
 
@@ -51042,10 +51069,30 @@ def _project_image_road_read_state_v531(client, family_key, member_key):
         clean.pop("diagnostic_event_count", None)
         clean["geometries"] = geometries
         clean_chunks[str(key)[:96]] = clean
+    raw_gap_fills = payload.get("gap_fills") if isinstance(payload.get("gap_fills"), dict) else {}
+    clean_gap_fills = {}
+    if str(payload.get("gap_revision") or "") == PROJECT_IMAGE_ROAD_GAP_REVISION_V547:
+        for key, row in raw_gap_fills.items():
+            if not isinstance(row, dict):
+                continue
+            geometries = []
+            for candidate in row.get("geometries") or []:
+                cleaned = _project_clean_segment_v298(candidate)
+                if len(cleaned) >= 2:
+                    geometries.append(cleaned)
+            status = str(row.get("status") or "")
+            if status == "matched" and not geometries:
+                continue
+            clean = dict(row)
+            clean.pop("diagnostics", None)
+            clean["geometries"] = geometries
+            clean_gap_fills[str(key)[:120]] = clean
     state.update({
         "saved_at": str(payload.get("saved_at") or "")[:80],
         "chunks": clean_chunks,
         "source_chunk_count": max(0, int(payload.get("source_chunk_count") or 0)),
+        "gap_revision": PROJECT_IMAGE_ROAD_GAP_REVISION_V547,
+        "gap_fills": clean_gap_fills,
         "last_job": payload.get("last_job") if isinstance(payload.get("last_job"), dict) else {},
     })
     return state
@@ -51059,6 +51106,8 @@ def _project_image_road_save_state_v531(client, family_key, member_key, state):
         "saved_at": now_jst().isoformat(),
         "source_chunk_count": max(0, int((state or {}).get("source_chunk_count") or 0)),
         "chunks": (state or {}).get("chunks") if isinstance((state or {}).get("chunks"), dict) else {},
+        "gap_revision": PROJECT_IMAGE_ROAD_GAP_REVISION_V547,
+        "gap_fills": (state or {}).get("gap_fills") if isinstance((state or {}).get("gap_fills"), dict) else {},
         "last_job": (state or {}).get("last_job") if isinstance((state or {}).get("last_job"), dict) else {},
     }
     blob = json.dumps(document, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
@@ -51306,10 +51355,13 @@ def _project_image_road_source_chunks_v531(points, stations=None):
     overlap = max(2, min(max_points - 2, int(PROJECT_IMAGE_ROAD_CHUNK_OVERLAP_V531)))
     chunks = []
     seen = set()
-    for source_kind, seg in sources:
+    for source_index, (source_kind, seg) in enumerate(sources):
         cleaned = _project_clean_segment_v298(seg)
         if len(cleaned) < 2:
             continue
+        group_packed = ";".join(f"{float(p[0]):.6f},{float(p[1]):.6f}" for p in cleaned)
+        group_digest = hashlib.sha1((source_kind + "|" + group_packed).encode("utf-8")).hexdigest()[:18]
+        source_group = f"gps:{source_kind}:{group_digest}"
         # Densify long links so the image matcher sees the same corridor that the old
         # green stroke covered, rather than only sparse GPS vertices.
         dense = []
@@ -51341,7 +51393,10 @@ def _project_image_road_source_chunks_v531(points, stations=None):
             key = f"{source_kind[0]}_{digest}"
             if key not in seen:
                 seen.add(key)
-                chunks.append({"key": key, "source_kind": source_kind, "points": window, "part": part})
+                chunks.append({
+                    "key": key, "source_kind": source_kind, "points": window, "part": part,
+                    "source_group": source_group, "source_part": part, "source_index": source_index,
+                })
             if end >= len(dense):
                 break
             start = max(start + 1, end - overlap)
@@ -52090,6 +52145,313 @@ def _project_image_road_match_chunk_v531(chunk):
 
     return recover_v540(coverage, connected_pairs, attempted_pairs, geometries, road_pixels, corridor_pixels, "chunk.pathfinding")
 
+
+def _project_image_road_gap_distance_m_v547(a, b):
+    try:
+        return float(_nearby_haversine_m(float(a[0]), float(a[1]), float(b[0]), float(b[1])))
+    except Exception:
+        return float("inf")
+
+
+def _project_image_road_gap_path_length_m_v547(points):
+    total = 0.0
+    clean = _project_clean_segment_v298(points)
+    for i in range(1, len(clean)):
+        d = _project_image_road_gap_distance_m_v547(clean[i - 1], clean[i])
+        if math.isfinite(d):
+            total += d
+    return total
+
+
+def _project_image_road_gap_nearest_index_v547(points, target):
+    best = None
+    best_d = float("inf")
+    for idx, p in enumerate(points or []):
+        d = _project_image_road_gap_distance_m_v547(p, target)
+        if d < best_d:
+            best_d = d; best = idx
+    return best
+
+
+def _project_image_road_gap_dense_guide_v547(points):
+    clean = _project_clean_segment_v298(points)
+    if len(clean) < 2:
+        return clean
+    dense = [clean[0]]
+    step_m = max(4.0, float(PROJECT_IMAGE_ROAD_GAP_DENSIFY_M_V547))
+    for cur in clean[1:]:
+        prev = dense[-1]
+        dist = _project_image_road_gap_distance_m_v547(prev, cur)
+        steps = max(1, min(20, int(math.ceil(dist / step_m)))) if math.isfinite(dist) else 1
+        for step in range(1, steps + 1):
+            t = step / float(steps)
+            dense.append([
+                float(prev[0]) + (float(cur[0]) - float(prev[0])) * t,
+                float(prev[1]) + (float(cur[1]) - float(prev[1])) * t,
+            ])
+    if len(dense) > 96:
+        stride = max(1, int(math.ceil(len(dense) / 96.0)))
+        reduced = dense[::stride]
+        if reduced[-1] != dense[-1]:
+            reduced.append(dense[-1])
+        dense = reduced
+    return [[round(float(p[0]), 7), round(float(p[1]), 7)] for p in dense]
+
+
+def _project_image_road_gap_same_chunk_guide_v547(source_points, a, b):
+    pts = _project_clean_segment_v298(source_points)
+    if len(pts) < 2:
+        return _project_image_road_gap_dense_guide_v547([a, b])
+    ia = _project_image_road_gap_nearest_index_v547(pts, a)
+    ib = _project_image_road_gap_nearest_index_v547(pts, b)
+    if ia is None or ib is None:
+        return _project_image_road_gap_dense_guide_v547([a, b])
+    if ia <= ib:
+        middle = pts[ia:ib + 1]
+    else:
+        middle = list(reversed(pts[ib:ia + 1]))
+    if middle and _project_image_road_gap_distance_m_v547(middle[0], a) > _project_image_road_gap_distance_m_v547(middle[-1], a):
+        middle = list(reversed(middle))
+    return _project_image_road_gap_dense_guide_v547([a] + middle + [b])
+
+
+def _project_image_road_gap_between_chunks_guide_v547(left_points, right_points, a, b):
+    left = _project_clean_segment_v298(left_points)
+    right = _project_clean_segment_v298(right_points)
+    if not left or not right:
+        return _project_image_road_gap_dense_guide_v547([a, b])
+    ia = _project_image_road_gap_nearest_index_v547(left, a)
+    ib = _project_image_road_gap_nearest_index_v547(right, b)
+    tail = left[ia:] if ia is not None else [a]
+    head = right[:ib + 1] if ib is not None else [b]
+    return _project_image_road_gap_dense_guide_v547([a] + tail + head + [b])
+
+
+def _project_image_road_gap_candidate_v547(kind, group, left_key, right_key, slot, a, b, guide, source_kind):
+    gap_m = _project_image_road_gap_distance_m_v547(a, b)
+    if not (float(PROJECT_IMAGE_ROAD_GAP_MIN_M_V547) <= gap_m <= float(PROJECT_IMAGE_ROAD_GAP_MAX_M_V547)):
+        return None
+    guide = _project_image_road_gap_dense_guide_v547(guide)
+    if len(guide) < 2:
+        return None
+    packed = (
+        PROJECT_IMAGE_ROAD_GAP_REVISION_V547 + "|" + str(kind) + "|" + str(group) + "|" +
+        str(left_key) + "|" + str(right_key) + "|" + str(slot) + "|" +
+        f"{float(a[0]):.6f},{float(a[1]):.6f}|{float(b[0]):.6f},{float(b[1]):.6f}"
+    )
+    digest = hashlib.sha1(packed.encode("utf-8")).hexdigest()[:24]
+    return {
+        "key": f"gap_{digest}", "kind": str(kind), "source_group": str(group),
+        "left_key": str(left_key), "right_key": str(right_key), "slot": int(slot),
+        "a": [round(float(a[0]), 7), round(float(a[1]), 7)],
+        "b": [round(float(b[0]), 7), round(float(b[1]), 7)],
+        "guide": guide, "gap_m": round(float(gap_m), 2), "source_kind": str(source_kind or ""),
+    }
+
+
+def _project_image_road_gap_candidates_v547(source_chunks, state):
+    chunks = state.get("chunks") if isinstance(state, dict) and isinstance(state.get("chunks"), dict) else {}
+    candidates = []
+    seen = set()
+    grouped = {}
+    ordered_sources = []
+    for order, source in enumerate(source_chunks or []):
+        if not isinstance(source, dict):
+            continue
+        key = str(source.get("key") or "")
+        row = chunks.get(key) if key else None
+        if not isinstance(row, dict) or str(row.get("status") or "") != "matched":
+            continue
+        geoms = [_project_clean_segment_v298(g) for g in (row.get("geometries") or [])]
+        geoms = [g for g in geoms if len(g) >= 2]
+        if not geoms:
+            continue
+        group = str(source.get("source_group") or f"single:{key}")
+        part = int(source.get("source_part") if source.get("source_part") is not None else source.get("photo_part") or source.get("part") or order)
+        source_kind = str(source.get("source_kind") or "")
+        points = _project_clean_segment_v298(source.get("points") or [])
+        entry = {"key": key, "row": row, "geoms": geoms, "group": group, "part": part, "order": order, "points": points, "source_kind": source_kind}
+        ordered_sources.append(entry)
+        grouped.setdefault(group, []).append(entry)
+        for idx in range(len(geoms) - 1):
+            a = geoms[idx][-1]; b = geoms[idx + 1][0]
+            guide = _project_image_road_gap_same_chunk_guide_v547(points, a, b)
+            cand = _project_image_road_gap_candidate_v547("within_chunk", group, key, key, idx, a, b, guide, source_kind)
+            if cand and cand["key"] not in seen:
+                seen.add(cand["key"]); candidates.append(cand)
+    for group, entries in grouped.items():
+        entries = sorted(entries, key=lambda x: (x["part"], x["order"]))
+        for idx in range(len(entries) - 1):
+            left = entries[idx]; right = entries[idx + 1]
+            # Only consecutive windows from the same original walk may be bridged.
+            if int(right["part"]) != int(left["part"]) + 1:
+                continue
+            a = left["geoms"][-1][-1]
+            b = right["geoms"][0][0]
+            guide = _project_image_road_gap_between_chunks_guide_v547(left["points"], right["points"], a, b)
+            cand = _project_image_road_gap_candidate_v547("between_chunks", group, left["key"], right["key"], idx, a, b, guide, left["source_kind"] or right["source_kind"])
+            if cand and cand["key"] not in seen:
+                seen.add(cand["key"]); candidates.append(cand)
+    return candidates
+
+
+def _project_image_road_gap_merge_geometry_v547(geometries):
+    geoms = [_project_clean_segment_v298(g) for g in (geometries or [])]
+    geoms = [g for g in geoms if len(g) >= 2]
+    if not geoms:
+        return []
+    merged = list(geoms[0])
+    for g in geoms[1:]:
+        d_forward = _project_image_road_gap_distance_m_v547(merged[-1], g[0])
+        d_reverse = _project_image_road_gap_distance_m_v547(merged[-1], g[-1])
+        if d_reverse < d_forward:
+            g = list(reversed(g)); d_forward = d_reverse
+        if d_forward > 4.0:
+            return []
+        merged.extend(g[1:] if d_forward < 1.2 else g)
+    return _project_clean_segment_v298(merged)
+
+
+def _project_image_road_gap_match_v547(candidate):
+    candidate = dict(candidate or {})
+    guide = _project_clean_segment_v298(candidate.get("guide") or [])
+    a = candidate.get("a"); b = candidate.get("b")
+    gap_m = float(candidate.get("gap_m") or 0.0)
+    if len(guide) < 2 or not isinstance(a, (list, tuple)) or not isinstance(b, (list, tuple)):
+        return {"status":"no_path", "geometries":[], "gap_revision":PROJECT_IMAGE_ROAD_GAP_REVISION_V547}
+    diag = []
+    try:
+        before, strict_mask, local_points, origin_x, origin_y = _project_image_road_mosaic_v531(
+            guide, diag=diag, search_radius_px=int(PROJECT_IMAGE_ROAD_GAP_MOSAIC_RADIUS_PX_V547)
+        )
+        relaxed = _project_image_road_relaxed_mask_v540(before, strict_mask, aggressive=False)
+        result = _project_image_road_route_mask_v540(
+            relaxed, local_points, origin_x, origin_y, diag, "gapfill",
+            int(PROJECT_IMAGE_ROAD_GAP_SEARCH_RADIUS_PX_V547),
+            int(PROJECT_IMAGE_ROAD_GAP_SNAP_RADIUS_PX_V547), 2,
+        )
+        path = _project_image_road_gap_merge_geometry_v547(result.get("geometries") or []) if float(result.get("coverage") or 0.0) >= 0.999 else []
+        phase = "relaxed"
+        if not path and gap_m <= float(PROJECT_IMAGE_ROAD_GAP_AGGRESSIVE_MAX_M_V547):
+            aggressive = _project_image_road_relaxed_mask_v540(before, strict_mask, aggressive=True)
+            result = _project_image_road_route_mask_v540(
+                aggressive, local_points, origin_x, origin_y, diag, "gapfill_aggressive",
+                int(PROJECT_IMAGE_ROAD_GAP_AGGRESSIVE_SEARCH_RADIUS_PX_V547),
+                int(PROJECT_IMAGE_ROAD_GAP_AGGRESSIVE_SNAP_RADIUS_PX_V547), 2,
+            )
+            path = _project_image_road_gap_merge_geometry_v547(result.get("geometries") or []) if float(result.get("coverage") or 0.0) >= 0.999 else []
+            phase = "aggressive"
+        if path:
+            forward = _project_image_road_gap_distance_m_v547(path[0], a) + _project_image_road_gap_distance_m_v547(path[-1], b)
+            reverse = _project_image_road_gap_distance_m_v547(path[-1], a) + _project_image_road_gap_distance_m_v547(path[0], b)
+            if reverse < forward:
+                path = list(reversed(path))
+            start_d = _project_image_road_gap_distance_m_v547(path[0], a)
+            end_d = _project_image_road_gap_distance_m_v547(path[-1], b)
+            path_len = _project_image_road_gap_path_length_m_v547(path)
+            max_len = max(180.0, gap_m * float(PROJECT_IMAGE_ROAD_GAP_MAX_PATH_RATIO_V547))
+            if start_d <= float(PROJECT_IMAGE_ROAD_GAP_ENDPOINT_TOLERANCE_M_V547) and end_d <= float(PROJECT_IMAGE_ROAD_GAP_ENDPOINT_TOLERANCE_M_V547) and path_len <= max_len:
+                return {
+                    "status":"matched", "geometries":[path], "gap_revision":PROJECT_IMAGE_ROAD_GAP_REVISION_V547,
+                    "gap_m":round(gap_m,2), "path_m":round(path_len,2), "phase":phase,
+                    "saved_at":now_jst().isoformat(),
+                }
+        return {"status":"no_path", "geometries":[], "gap_revision":PROJECT_IMAGE_ROAD_GAP_REVISION_V547, "gap_m":round(gap_m,2), "saved_at":now_jst().isoformat()}
+    except Exception as exc:
+        return {"status":"no_path", "geometries":[], "gap_revision":PROJECT_IMAGE_ROAD_GAP_REVISION_V547, "gap_m":round(gap_m,2), "error":_project_image_road_exc_text_v534(exc), "saved_at":now_jst().isoformat()}
+
+
+def _project_image_road_gap_terminal_v547(row):
+    return isinstance(row, dict) and str(row.get("gap_revision") or "") == PROJECT_IMAGE_ROAD_GAP_REVISION_V547 and str(row.get("status") or "") in {"matched", "no_path"}
+
+
+def _project_image_road_gap_segments_v547(source_chunks, state):
+    candidates = _project_image_road_gap_candidates_v547(source_chunks, state)
+    fills = state.get("gap_fills") if isinstance(state, dict) and isinstance(state.get("gap_fills"), dict) else {}
+    output = []
+    filled = no_path = 0
+    for cand in candidates:
+        row = fills.get(str(cand.get("key") or ""))
+        if not _project_image_road_gap_terminal_v547(row):
+            continue
+        if str(row.get("status") or "") == "matched":
+            filled += 1
+            for g in row.get("geometries") or []:
+                clean = _project_clean_segment_v298(g)
+                if len(clean) >= 2:
+                    output.append(clean)
+        else:
+            no_path += 1
+    return output, {"total":len(candidates), "filled":filled, "no_path":no_path, "pending":max(0, len(candidates)-filled-no_path)}
+
+
+def _project_image_road_gap_worker_v547(owner, source_chunks):
+    from supabase import create_client
+    client = create_client(SUPABASE_URL, SUPABASE_SECRET_KEY)
+    family_key, member_key = owner
+    state = _project_image_road_read_state_v531(client, family_key, member_key)
+    candidates = _project_image_road_gap_candidates_v547(source_chunks, state)
+    fills = state.get("gap_fills") if isinstance(state.get("gap_fills"), dict) else {}
+    active_keys = {str(c.get("key") or "") for c in candidates}
+    fills = {k:v for k,v in fills.items() if k in active_keys and _project_image_road_gap_terminal_v547(v)}
+    pending = [c for c in candidates if not _project_image_road_gap_terminal_v547(fills.get(str(c.get("key") or "")))]
+    if not pending:
+        state["gap_revision"] = PROJECT_IMAGE_ROAD_GAP_REVISION_V547
+        state["gap_fills"] = fills
+        _project_image_road_save_state_v531(client, family_key, member_key, state)
+        return {"total":len(candidates), "pending":0}
+    log_doc = _project_image_road_read_work_log_v535(client, family_key, member_key)
+    work_log = [row for row in (log_doc.get("events") or []) if isinstance(row, dict)]
+    done_since_save = 0
+    with ThreadPoolExecutor(max_workers=int(PROJECT_IMAGE_ROAD_GAP_WORKERS_V547)) as pool:
+        futures = [(c, pool.submit(_project_image_road_gap_match_v547, c)) for c in pending]
+        for cand, future in futures:
+            try:
+                result = future.result()
+            except Exception as exc:
+                result = {"status":"no_path", "geometries":[], "gap_revision":PROJECT_IMAGE_ROAD_GAP_REVISION_V547, "error":_project_image_road_exc_text_v534(exc)}
+            key = str(cand.get("key") or "")
+            fills[key] = _project_image_road_compact_result_v537(result)
+            work_log.append({
+                "at":now_jst().isoformat(), "stage":"gap_fill.result", "status":"ok" if str(result.get("status") or "") == "matched" else "warning",
+                "chunk_key":key, "result":str(result.get("status") or ""), "gap_m":float(cand.get("gap_m") or 0.0),
+                "source_group":str(cand.get("source_group") or ""),
+            })
+            if len(work_log) > int(PROJECT_IMAGE_ROAD_WORK_LOG_PERSIST_MAX_V535):
+                del work_log[:-int(PROJECT_IMAGE_ROAD_WORK_LOG_PERSIST_MAX_V535)]
+            done_since_save += 1
+            if done_since_save >= int(PROJECT_IMAGE_ROAD_GAP_CHECKPOINT_EVERY_V547):
+                state["gap_revision"] = PROJECT_IMAGE_ROAD_GAP_REVISION_V547
+                state["gap_fills"] = dict(fills)
+                _project_image_road_save_state_v531(client, family_key, member_key, state)
+                _project_image_road_save_work_log_v535(client, family_key, member_key, work_log)
+                done_since_save = 0
+    state["gap_revision"] = PROJECT_IMAGE_ROAD_GAP_REVISION_V547
+    state["gap_fills"] = dict(fills)
+    _project_image_road_save_state_v531(client, family_key, member_key, state)
+    _project_image_road_save_work_log_v535(client, family_key, member_key, work_log)
+    return {"total":len(candidates), "pending":0}
+
+
+def _project_image_road_gap_launch_v547(source_chunks, state):
+    candidates = _project_image_road_gap_candidates_v547(source_chunks, state)
+    if not candidates:
+        return False
+    fills = state.get("gap_fills") if isinstance(state, dict) and isinstance(state.get("gap_fills"), dict) else {}
+    unfinished = any(not _project_image_road_gap_terminal_v547(fills.get(str(c.get("key") or ""))) for c in candidates)
+    if not unfinished:
+        return False
+    owner = (current_family_key(), current_member_key())
+    runtime = _project_image_road_runtime_v537(PROJECT_IMAGE_ROAD_SCHEMA_V531 + "|gap|" + PROJECT_IMAGE_ROAD_GAP_REVISION_V547)
+    job_key = (owner[0], owner[1], "gap", PROJECT_IMAGE_ROAD_GAP_REVISION_V547)
+    with runtime["lock"]:
+        future = runtime["jobs"].get(job_key)
+        if future is not None:
+            if not future.done():
+                return True
+            runtime["jobs"].pop(job_key, None)
+        runtime["jobs"][job_key] = runtime["executor"].submit(_project_image_road_gap_worker_v547, owner, source_chunks)
+        return True
 
 @st.cache_resource(show_spinner=False)
 def _project_image_road_runtime_v537(schema_key):
@@ -53242,7 +53604,13 @@ def page_burari_project():
                 )
         except Exception:
             pass
-    _project_gps_match_tick_v527(road_worker_running)
+    gap_segments_v547, gap_meta_v547 = _project_image_road_gap_segments_v547(image_road_source_chunks, image_road_state)
+    gap_worker_running_v547 = False
+    if int(image_road_meta.get("pending") or 0) == 0 and image_road_source_chunks and not road_worker_running:
+        gap_worker_running_v547 = _project_image_road_gap_launch_v547(image_road_source_chunks, image_road_state)
+    if gap_segments_v547:
+        road_segments = list(road_segments) + list(gap_segments_v547)
+    _project_gps_match_tick_v527(bool(road_worker_running or gap_worker_running_v547))
 
     processed_chunks = int(image_road_meta.get("processed") or 0)
     matched_chunks = int(image_road_meta.get("matched") or 0)
@@ -53250,6 +53618,9 @@ def page_burari_project():
     tile_error_chunks = int(image_road_meta.get("tile_errors") or 0)
     total_chunks = int(image_road_meta.get("total") or 0)
     pending_chunks = int(image_road_meta.get("pending") or 0)
+    gap_total_v547 = int(gap_meta_v547.get("total") or 0)
+    gap_filled_v547 = int(gap_meta_v547.get("filled") or 0)
+    gap_pending_v547 = int(gap_meta_v547.get("pending") or 0)
     photo_pair_route_count_v543 = int(PHOTO_LEGACY_FIXED_ROUTE_PAIR_COUNT_V309) if _photo_legacy_is_nenne_v543() else 0
     photo_chunk_count_v543 = len(photo_image_road_source_chunks)
     if photo_pair_route_count_v543:
@@ -53257,6 +53628,11 @@ def page_burari_project():
             f"ねんね：写真の青・緑テープから読み取った徒歩 {photo_pair_route_count_v543} 駅間を道路画像認識へ追加済み"
             f"（内部処理 {photo_chunk_count_v543} 分割）"
         )
+    if gap_total_v547 > 0:
+        if gap_pending_v547 > 0 or gap_worker_running_v547:
+            st.caption(f"短い緑線の切れ目を道路上で補間中：{gap_filled_v547}/{gap_total_v547}件")
+        else:
+            st.caption(f"短い緑線の切れ目を道路上で補間済み：{gap_filled_v547}/{gap_total_v547}件")
     if total_chunks > 0:
         if pending_chunks > 0:
             st.info(
