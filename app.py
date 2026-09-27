@@ -44,8 +44,8 @@ def _app_css_v473(markup, **_ignored):
 # Review menu-only update: 2026-09-19 JST
 GENERATED_UPDATE_JST = "2026-09-19T14:54:38+09:00"
 
-APP_BUILD = "v559"
-# v559: Preserve the v556 saved/shared-movie UI byte-for-byte while strengthening Share write verification with a unique write token, keeping recipient discovery/media preparation Review-only, and removing the no-op Home shared-movie lookup call. No requested visual styles are changed.
+APP_BUILD = "v560"
+# v560: Rebuild green-gap closure as an iterative, verified network process. Existing UI is preserved; only progress wording distinguishes fully verified completion from residual unresolved gaps.
 # v557: Rebuild replay-movie family sharing around native Streamlit buttons. Share/unshare writes are read back from Supabase before success is shown; recipient cache is invalidated, while recipient discovery/media preparation remains Review-only background work.
 # v556: After Review is opened, discover family-shared replay movies and prepare their playback media in the same bounded background pipeline. Photo/voice signed URLs, current feeling metadata and replay item payloads are prepared before a received movie becomes playable, so pressing Play performs no blocking media lookup. No Home/startup recipient query is added.
 # v555: Restore saved replay-movie family sharing without any Home/startup recipient query. Pressing Review starts one bounded family lookup on a background thread; the Review library merges received movies with the user's own movies, while sharing/unsharing remains explicit. Received-movie media is loaded only when the user presses Play.
@@ -1489,25 +1489,39 @@ PROJECT_IMAGE_ROAD_PHOTO_OSAKI_SHINAGAWA_REVISION_V546 = "osaki_shinagawa_tracks
 # they are close.  Candidate gaps are never drawn as straight green chords: a fresh
 # green-free OSM raster is recognized first and the connector must be a complete A* path
 # inside that recognized road mask.
-PROJECT_IMAGE_ROAD_GAP_REVISION_V547 = "all_current_green_road_gap_fill_v550"
-PROJECT_IMAGE_ROAD_WORKFLOW_REVISION_V548 = "road_gap_ui_isolated_v554"
-PROJECT_IMAGE_ROAD_GAP_MIN_M_V547 = 4.0
-PROJECT_IMAGE_ROAD_GAP_MAX_M_V547 = 160.0
-PROJECT_IMAGE_ROAD_GAP_DENSIFY_M_V547 = 10.0
-PROJECT_IMAGE_ROAD_GAP_MOSAIC_RADIUS_PX_V547 = 190
-PROJECT_IMAGE_ROAD_GAP_SEARCH_RADIUS_PX_V547 = 110
-PROJECT_IMAGE_ROAD_GAP_SNAP_RADIUS_PX_V547 = 96
-PROJECT_IMAGE_ROAD_GAP_AGGRESSIVE_MAX_M_V547 = 80.0
-PROJECT_IMAGE_ROAD_GAP_AGGRESSIVE_SEARCH_RADIUS_PX_V547 = 138
-PROJECT_IMAGE_ROAD_GAP_AGGRESSIVE_SNAP_RADIUS_PX_V547 = 122
-PROJECT_IMAGE_ROAD_GAP_ENDPOINT_TOLERANCE_M_V547 = 14.0
-PROJECT_IMAGE_ROAD_GAP_MAX_PATH_RATIO_V547 = 3.4
+PROJECT_IMAGE_ROAD_GAP_REVISION_V547 = "iterative_all_green_network_closure_v560"
+PROJECT_IMAGE_ROAD_WORKFLOW_REVISION_V548 = "road_gap_verified_iterative_v560"
+PROJECT_IMAGE_ROAD_GAP_MIN_M_V547 = 3.0
+PROJECT_IMAGE_ROAD_GAP_MAX_M_V547 = 260.0
+PROJECT_IMAGE_ROAD_GAP_DENSIFY_M_V547 = 8.0
+PROJECT_IMAGE_ROAD_GAP_MOSAIC_RADIUS_PX_V547 = 240
+PROJECT_IMAGE_ROAD_GAP_SEARCH_RADIUS_PX_V547 = 130
+PROJECT_IMAGE_ROAD_GAP_SNAP_RADIUS_PX_V547 = 28
+PROJECT_IMAGE_ROAD_GAP_AGGRESSIVE_MAX_M_V547 = 260.0
+PROJECT_IMAGE_ROAD_GAP_AGGRESSIVE_SEARCH_RADIUS_PX_V547 = 185
+PROJECT_IMAGE_ROAD_GAP_AGGRESSIVE_SNAP_RADIUS_PX_V547 = 34
+PROJECT_IMAGE_ROAD_GAP_ENDPOINT_TOLERANCE_M_V547 = 3.0
+PROJECT_IMAGE_ROAD_GAP_MAX_PATH_RATIO_V547 = 4.6
 PROJECT_IMAGE_ROAD_GAP_WORKERS_V547 = 1
-PROJECT_IMAGE_ROAD_GLOBAL_GAP_CROSS_GROUP_MAX_M_V549 = 95.0
-PROJECT_IMAGE_ROAD_GLOBAL_GAP_SAME_GROUP_MAX_M_V549 = 160.0
-PROJECT_IMAGE_ROAD_GLOBAL_GAP_ALIGNMENT_MIN_V549 = 0.32
-PROJECT_IMAGE_ROAD_GLOBAL_GAP_SAME_GROUP_ALIGNMENT_MIN_V549 = -0.10
+PROJECT_IMAGE_ROAD_GLOBAL_GAP_CROSS_GROUP_MAX_M_V549 = 120.0
+PROJECT_IMAGE_ROAD_GLOBAL_GAP_SAME_GROUP_MAX_M_V549 = 220.0
+PROJECT_IMAGE_ROAD_GLOBAL_GAP_ALIGNMENT_MIN_V549 = 0.40
+PROJECT_IMAGE_ROAD_GLOBAL_GAP_SAME_GROUP_ALIGNMENT_MIN_V549 = -0.20
 PROJECT_IMAGE_ROAD_GLOBAL_GAP_GRID_M_V549 = 110.0
+# v560: completion is based on repeated verification of the actually rendered green network.
+PROJECT_IMAGE_ROAD_GAP_CONNECTED_TOLERANCE_M_V560 = 3.2
+PROJECT_IMAGE_ROAD_GAP_VERIFY_SAMPLE_M_V560 = 2.5
+PROJECT_IMAGE_ROAD_GLOBAL_GAP_TOP_K_V560 = 3
+PROJECT_IMAGE_ROAD_GAP_INTERIOR_TARGET_MAX_M_V560 = 65.0
+PROJECT_IMAGE_ROAD_GAP_INTERIOR_ALIGNMENT_MIN_V560 = 0.20
+PROJECT_IMAGE_ROAD_GAP_ATTACHMENT_DILATE_PX_V560 = 5
+PROJECT_IMAGE_ROAD_GAP_ATTACHMENT_MAX_PX_V560 = 11
+PROJECT_IMAGE_ROAD_GAP_RETRY_SEARCH_RADIUS_PX_V560 = 225
+PROJECT_IMAGE_ROAD_GAP_RETRY_SNAP_RADIUS_PX_V560 = 38
+PROJECT_IMAGE_ROAD_GAP_FINAL_SEARCH_RADIUS_PX_V560 = 285
+PROJECT_IMAGE_ROAD_GAP_FINAL_SNAP_RADIUS_PX_V560 = 42
+PROJECT_IMAGE_ROAD_GAP_MAX_ATTEMPTS_V560 = 3
+PROJECT_IMAGE_ROAD_GAP_MAX_PASSES_V560 = 8
 PROJECT_IMAGE_ROAD_GAP_CHECKPOINT_EVERY_V547 = 50
 # v553: tiny progress object is polled directly by the browser from Supabase Storage.
 # This does not rerun Streamlit or call Python while the user is operating the app.
@@ -51735,6 +51749,9 @@ def _project_image_road_progress_document_v553(family_key, member_key, state):
         "gap_processed": max(0, int(gap_job.get("processed") or 0)),
         "gap_filled": max(0, int(gap_job.get("filled") or 0)),
         "gap_pending": max(0, int(gap_job.get("pending") or 0)),
+        "gap_unresolved": max(0, int(gap_job.get("unresolved") or 0)),
+        "gap_verified": bool(gap_job.get("verified")),
+        "gap_pass": max(0, int(gap_job.get("pass_index") or 0)),
     }
 
 
@@ -52960,7 +52977,8 @@ def _project_image_road_gap_nearest_index_v547(points, target):
     for idx, p in enumerate(points or []):
         d = _project_image_road_gap_distance_m_v547(p, target)
         if d < best_d:
-            best_d = d; best = idx
+            best_d = d
+            best = idx
     return best
 
 
@@ -52973,15 +52991,15 @@ def _project_image_road_gap_dense_guide_v547(points):
     for cur in clean[1:]:
         prev = dense[-1]
         dist = _project_image_road_gap_distance_m_v547(prev, cur)
-        steps = max(1, min(20, int(math.ceil(dist / step_m)))) if math.isfinite(dist) else 1
+        steps = max(1, min(32, int(math.ceil(dist / step_m)))) if math.isfinite(dist) else 1
         for step in range(1, steps + 1):
             t = step / float(steps)
             dense.append([
                 float(prev[0]) + (float(cur[0]) - float(prev[0])) * t,
                 float(prev[1]) + (float(cur[1]) - float(prev[1])) * t,
             ])
-    if len(dense) > 96:
-        stride = max(1, int(math.ceil(len(dense) / 96.0)))
+    if len(dense) > 128:
+        stride = max(1, int(math.ceil(len(dense) / 128.0)))
         reduced = dense[::stride]
         if reduced[-1] != dense[-1]:
             reduced.append(dense[-1])
@@ -52997,10 +53015,7 @@ def _project_image_road_gap_same_chunk_guide_v547(source_points, a, b):
     ib = _project_image_road_gap_nearest_index_v547(pts, b)
     if ia is None or ib is None:
         return _project_image_road_gap_dense_guide_v547([a, b])
-    if ia <= ib:
-        middle = pts[ia:ib + 1]
-    else:
-        middle = list(reversed(pts[ib:ia + 1]))
+    middle = pts[ia:ib + 1] if ia <= ib else list(reversed(pts[ib:ia + 1]))
     if middle and _project_image_road_gap_distance_m_v547(middle[0], a) > _project_image_road_gap_distance_m_v547(middle[-1], a):
         middle = list(reversed(middle))
     return _project_image_road_gap_dense_guide_v547([a] + middle + [b])
@@ -53018,30 +53033,7 @@ def _project_image_road_gap_between_chunks_guide_v547(left_points, right_points,
     return _project_image_road_gap_dense_guide_v547([a] + tail + head + [b])
 
 
-def _project_image_road_gap_candidate_v547(kind, group, left_key, right_key, slot, a, b, guide, source_kind):
-    gap_m = _project_image_road_gap_distance_m_v547(a, b)
-    if not (float(PROJECT_IMAGE_ROAD_GAP_MIN_M_V547) <= gap_m <= float(PROJECT_IMAGE_ROAD_GAP_MAX_M_V547)):
-        return None
-    guide = _project_image_road_gap_dense_guide_v547(guide)
-    if len(guide) < 2:
-        return None
-    packed = (
-        PROJECT_IMAGE_ROAD_GAP_REVISION_V547 + "|" + str(kind) + "|" + str(group) + "|" +
-        str(left_key) + "|" + str(right_key) + "|" + str(slot) + "|" +
-        f"{float(a[0]):.6f},{float(a[1]):.6f}|{float(b[0]):.6f},{float(b[1]):.6f}"
-    )
-    digest = hashlib.sha1(packed.encode("utf-8")).hexdigest()[:24]
-    return {
-        "key": f"gap_{digest}", "kind": str(kind), "source_group": str(group),
-        "left_key": str(left_key), "right_key": str(right_key), "slot": int(slot),
-        "a": [round(float(a[0]), 7), round(float(a[1]), 7)],
-        "b": [round(float(b[0]), 7), round(float(b[1]), 7)],
-        "guide": guide, "gap_m": round(float(gap_m), 2), "source_kind": str(source_kind or ""),
-    }
-
-
 def _project_image_road_gap_unit_xy_v549(a, b):
-    """Unit vector a->b in local metres; None when the points are effectively identical."""
     try:
         lat0 = (float(a[0]) + float(b[0])) * 0.5
         coslat = max(0.2, math.cos(math.radians(lat0)))
@@ -53056,22 +53048,20 @@ def _project_image_road_gap_unit_xy_v549(a, b):
 
 
 def _project_image_road_gap_outward_tangent_v549(points, side):
-    """Direction in which a broken route would naturally continue away from one endpoint."""
     pts = _project_clean_segment_v298(points)
     if len(pts) < 2:
         return None
     if str(side) == "start":
         endpoint = pts[0]
-        # Use the first point at least a few metres inside the existing green segment.
         inner = pts[1]
-        for p in pts[1:min(len(pts), 10)]:
+        for p in pts[1:min(len(pts), 12)]:
             if _project_image_road_gap_distance_m_v547(endpoint, p) >= 8.0:
                 inner = p
                 break
         return _project_image_road_gap_unit_xy_v549(inner, endpoint)
     endpoint = pts[-1]
     inner = pts[-2]
-    for p in reversed(pts[max(0, len(pts)-10):-1]):
+    for p in reversed(pts[max(0, len(pts) - 12):-1]):
         if _project_image_road_gap_distance_m_v547(endpoint, p) >= 8.0:
             inner = p
             break
@@ -53087,24 +53077,45 @@ def _project_image_road_gap_dot_v549(a, b):
         return -1.0
 
 
-def _project_image_road_gap_candidates_v547(source_chunks, state):
-    """Build gap candidates from every current green route fragment.
+def _project_image_road_gap_pair_id_v560(a_id, b_id):
+    return "|".join(sorted((str(a_id or ""), str(b_id or ""))))
 
-    v550 keeps the route-aware candidates and adds a global endpoint pass for all current
-    matched green geometries.  The gap revision is intentionally bumped in v550 so earlier
-    no_path decisions are not treated as terminal after the all-green logic changed.  Every
-    current gap candidate is therefore evaluated again with the same road-first matcher.
-    Global pairs must be close, point toward one another, and be mutual best matches (unless
-    they share the same source group), avoiding arbitrary nearby-street joins.
+
+def _project_image_road_gap_candidate_v560(kind, group, left_key, right_key, slot, a, b, guide, source_kind, left_endpoint_id, right_endpoint_id):
+    gap_m = _project_image_road_gap_distance_m_v547(a, b)
+    if not (float(PROJECT_IMAGE_ROAD_GAP_MIN_M_V547) <= gap_m <= float(PROJECT_IMAGE_ROAD_GAP_MAX_M_V547)):
+        return None
+    guide = _project_image_road_gap_dense_guide_v547(guide)
+    if len(guide) < 2:
+        return None
+    pair_id = _project_image_road_gap_pair_id_v560(left_endpoint_id, right_endpoint_id)
+    packed = "|".join([
+        PROJECT_IMAGE_ROAD_GAP_REVISION_V547, str(kind), str(group), str(left_key), str(right_key),
+        str(slot), pair_id, f"{float(a[0]):.6f},{float(a[1]):.6f}", f"{float(b[0]):.6f},{float(b[1]):.6f}",
+    ])
+    digest = hashlib.sha1(packed.encode("utf-8")).hexdigest()[:24]
+    return {
+        "key": f"gap_{digest}", "kind": str(kind), "source_group": str(group),
+        "left_key": str(left_key), "right_key": str(right_key), "slot": int(slot),
+        "left_endpoint_id": str(left_endpoint_id or ""), "right_endpoint_id": str(right_endpoint_id or ""),
+        "pair_id": pair_id,
+        "a": [round(float(a[0]), 7), round(float(a[1]), 7)],
+        "b": [round(float(b[0]), 7), round(float(b[1]), 7)],
+        "guide": guide, "gap_m": round(float(gap_m), 2), "source_kind": str(source_kind or ""),
+    }
+
+
+def _project_image_road_gap_collect_v560(source_chunks, state, fills=None):
+    """Collect every persisted green geometry plus source ordering metadata.
+
+    This is server-worker-only. Matched gap fills are included so each verification pass
+    evaluates the network that is actually rendered, not only the original road chunks.
     """
     chunks = state.get("chunks") if isinstance(state, dict) and isinstance(state.get("chunks"), dict) else {}
-    candidates = []
-    seen = set()
+    fills = fills if isinstance(fills, dict) else (state.get("gap_fills") if isinstance(state, dict) and isinstance(state.get("gap_fills"), dict) else {})
+    records = []
+    source_entries = []
     grouped = {}
-    ordered_sources = []
-    endpoint_records = []
-    covered_endpoint_ids = set()
-
     for order, source in enumerate(source_chunks or []):
         if not isinstance(source, dict):
             continue
@@ -53120,83 +53131,195 @@ def _project_image_road_gap_candidates_v547(source_chunks, state):
         part = int(source.get("source_part") if source.get("source_part") is not None else source.get("photo_part") or source.get("part") or order)
         source_kind = str(source.get("source_kind") or "")
         points = _project_clean_segment_v298(source.get("points") or [])
-        entry = {"key": key, "row": row, "geoms": geoms, "group": group, "part": part, "order": order, "points": points, "source_kind": source_kind}
-        ordered_sources.append(entry)
+        entry = {"key": key, "geoms": geoms, "group": group, "part": part, "order": order, "points": points, "source_kind": source_kind}
+        source_entries.append(entry)
         grouped.setdefault(group, []).append(entry)
-
-        # Every currently rendered green polyline contributes both endpoints to the global pass.
-        for geom_index, geom in enumerate(geoms):
-            for side, point in (("start", geom[0]), ("end", geom[-1])):
-                eid = f"{key}:g{geom_index}:{side}"
-                endpoint_records.append({
-                    "id": eid,
-                    "point": [float(point[0]), float(point[1])],
-                    "tangent": _project_image_road_gap_outward_tangent_v549(geom, side),
-                    "group": group,
-                    "key": key,
-                    "geom_index": geom_index,
-                    "side": side,
-                    "source_kind": source_kind,
+        for gi, geom in enumerate(geoms):
+            records.append({
+                "record_id": f"base:{key}:g{gi}", "key": key, "geom_index": gi, "geometry": geom,
+                "group": group, "source_kind": source_kind, "origin": "base",
+            })
+    for fill_key, row in (fills or {}).items():
+        if not isinstance(row, dict) or str(row.get("gap_revision") or "") != PROJECT_IMAGE_ROAD_GAP_REVISION_V547:
+            continue
+        if str(row.get("status") or "") != "matched":
+            continue
+        group = str(row.get("source_group") or f"fill:{fill_key}")
+        source_kind = str(row.get("source_kind") or "")
+        for gi, geom in enumerate(row.get("geometries") or []):
+            clean = _project_clean_segment_v298(geom)
+            if len(clean) >= 2:
+                records.append({
+                    "record_id": f"fill:{fill_key}:g{gi}", "key": str(fill_key), "geom_index": gi,
+                    "geometry": clean, "group": group, "source_kind": source_kind, "origin": "fill",
                 })
+    return source_entries, grouped, records
 
-        # Priority 1: breaks inside one matched chunk, using its original ordered guide.
+
+def _project_image_road_gap_geometry_samples_v560(records):
+    """Sample all green geometry every few metres for connectivity verification."""
+    samples = []
+    step_m = max(1.5, float(PROJECT_IMAGE_ROAD_GAP_VERIFY_SAMPLE_M_V560))
+    for rec in records or []:
+        geom = _project_clean_segment_v298(rec.get("geometry") or [])
+        if len(geom) < 2:
+            continue
+        sample_index = 0
+        for si, (a, b) in enumerate(zip(geom[:-1], geom[1:])):
+            dist = _project_image_road_gap_distance_m_v547(a, b)
+            steps = max(1, min(80, int(math.ceil(dist / step_m)))) if math.isfinite(dist) else 1
+            for k in range(steps):
+                t = k / float(steps)
+                p = [float(a[0]) + (float(b[0]) - float(a[0])) * t, float(a[1]) + (float(b[1]) - float(a[1])) * t]
+                samples.append({"point": p, "record_id": rec["record_id"], "group": rec.get("group") or "", "key": rec.get("key") or "", "sample_index": sample_index})
+                sample_index += 1
+        b = geom[-1]
+        samples.append({"point": [float(b[0]), float(b[1])], "record_id": rec["record_id"], "group": rec.get("group") or "", "key": rec.get("key") or "", "sample_index": sample_index})
+    return samples
+
+
+def _project_image_road_gap_endpoint_state_v560(records):
+    endpoints = []
+    for rec in records or []:
+        geom = _project_clean_segment_v298(rec.get("geometry") or [])
+        if len(geom) < 2:
+            continue
+        for side, point in (("start", geom[0]), ("end", geom[-1])):
+            endpoints.append({
+                "id": f'{rec["record_id"]}:{side}', "record_id": rec["record_id"], "key": rec.get("key") or "",
+                "point": [float(point[0]), float(point[1])], "side": side,
+                "tangent": _project_image_road_gap_outward_tangent_v549(geom, side),
+                "group": rec.get("group") or "", "source_kind": rec.get("source_kind") or "",
+                "origin": rec.get("origin") or "",
+            })
+    if not endpoints:
+        return endpoints, set(), []
+    samples = _project_image_road_gap_geometry_samples_v560(records)
+    ref_lat = sum(float(e["point"][0]) for e in endpoints) / max(1, len(endpoints))
+    coslat = max(0.2, math.cos(math.radians(ref_lat)))
+    tol = max(1.0, float(PROJECT_IMAGE_ROAD_GAP_CONNECTED_TOLERANCE_M_V560))
+    cell_m = max(4.0, tol * 2.0)
+    sample_grid = {}
+    for s in samples:
+        p = s["point"]
+        x = float(p[1]) * 111320.0 * coslat; y = float(p[0]) * 111320.0
+        cell = (int(math.floor(x / cell_m)), int(math.floor(y / cell_m)))
+        sample_grid.setdefault(cell, []).append(s)
+    connected = set()
+    for e in endpoints:
+        p = e["point"]
+        x = float(p[1]) * 111320.0 * coslat; y = float(p[0]) * 111320.0
+        gx = int(math.floor(x / cell_m)); gy = int(math.floor(y / cell_m))
+        found = False
+        for oy in (-1, 0, 1):
+            if found:
+                break
+            for ox in (-1, 0, 1):
+                for s in sample_grid.get((gx + ox, gy + oy), []):
+                    if s["record_id"] == e["record_id"]:
+                        continue
+                    if _project_image_road_gap_distance_m_v547(p, s["point"]) <= tol:
+                        connected.add(e["id"])
+                        found = True
+                        break
+                if found:
+                    break
+    return endpoints, connected, samples
+
+
+def _project_image_road_gap_candidates_v547(source_chunks, state, fills_override=None):
+    """v560 iterative candidate discovery over the complete rendered green network.
+
+    Important differences from v550:
+    - matched fills participate in the next scan;
+    - route-aware failures do not suppress global fallback candidates;
+    - global pairing uses multiple best continuations instead of one mutual-nearest pair;
+    - same-walk dangling endpoints can also target a nearby interior green segment;
+    - verification is rerun after every fill pass and completion is impossible while a
+      resolvable candidate remains.
+    """
+    fills = fills_override if isinstance(fills_override, dict) else (state.get("gap_fills") if isinstance(state, dict) and isinstance(state.get("gap_fills"), dict) else {})
+    source_entries, grouped, records = _project_image_road_gap_collect_v560(source_chunks, state, fills)
+    endpoints, connected_ids, samples = _project_image_road_gap_endpoint_state_v560(records)
+    endpoint_by_id = {e["id"]: e for e in endpoints}
+    bridged_pairs = set()
+    for row in fills.values():
+        if not isinstance(row, dict) or str(row.get("gap_revision") or "") != PROJECT_IMAGE_ROAD_GAP_REVISION_V547 or str(row.get("status") or "") != "matched":
+            continue
+        pair_id = str(row.get("pair_id") or "")
+        if pair_id:
+            bridged_pairs.add(pair_id)
+
+    candidates = []
+    seen_keys = set()
+    seen_pairs = set(bridged_pairs)
+    endpoint_candidate_ids = set()
+
+    def add(cand):
+        if not cand:
+            return
+        if cand["key"] in seen_keys or cand.get("pair_id") in seen_pairs:
+            return
+        seen_keys.add(cand["key"]); seen_pairs.add(cand.get("pair_id")); candidates.append(cand)
+        prior = fills.get(str(cand.get("key") or "")) if isinstance(fills.get(str(cand.get("key") or "")), dict) else {}
+        exhausted = str(prior.get("status") or "") == "no_path" and int(prior.get("attempts") or 0) >= int(PROJECT_IMAGE_ROAD_GAP_MAX_ATTEMPTS_V560)
+        if not exhausted:
+            for endpoint_id in (cand.get("left_endpoint_id"), cand.get("right_endpoint_id")):
+                endpoint_id = str(endpoint_id or "")
+                if endpoint_id and not endpoint_id.startswith("interior:"):
+                    endpoint_candidate_ids.add(endpoint_id)
+
+    # Priority 1: geometry breaks inside a single source chunk.
+    for entry in source_entries:
+        key = entry["key"]; geoms = entry["geoms"]; group = entry["group"]
         for idx in range(len(geoms) - 1):
             a = geoms[idx][-1]; b = geoms[idx + 1][0]
-            left_eid = f"{key}:g{idx}:end"
-            right_eid = f"{key}:g{idx+1}:start"
-            guide = _project_image_road_gap_same_chunk_guide_v547(points, a, b)
-            cand = _project_image_road_gap_candidate_v547("within_chunk", group, key, key, idx, a, b, guide, source_kind)
-            if cand and cand["key"] not in seen:
-                cand["left_endpoint_id"] = left_eid
-                cand["right_endpoint_id"] = right_eid
-                seen.add(cand["key"]); candidates.append(cand)
-                covered_endpoint_ids.update((left_eid, right_eid))
+            left_id = f"base:{key}:g{idx}:end"; right_id = f"base:{key}:g{idx+1}:start"
+            pair_id = _project_image_road_gap_pair_id_v560(left_id, right_id)
+            if pair_id in bridged_pairs or _project_image_road_gap_distance_m_v547(a, b) <= float(PROJECT_IMAGE_ROAD_GAP_CONNECTED_TOLERANCE_M_V560):
+                continue
+            guide = _project_image_road_gap_same_chunk_guide_v547(entry["points"], a, b)
+            add(_project_image_road_gap_candidate_v560("within_chunk", group, key, key, idx, a, b, guide, entry["source_kind"], left_id, right_id))
 
-    # Priority 2: consecutive chunks belonging to the same original walk.
+    # Priority 2: adjacent source chunks from the same recorded walk/photo pair.
     for group, entries in grouped.items():
         entries = sorted(entries, key=lambda x: (x["part"], x["order"]))
         for idx in range(len(entries) - 1):
             left = entries[idx]; right = entries[idx + 1]
             if int(right["part"]) != int(left["part"]) + 1:
                 continue
-            a = left["geoms"][-1][-1]
-            b = right["geoms"][0][0]
-            left_eid = f'{left["key"]}:g{len(left["geoms"])-1}:end'
-            right_eid = f'{right["key"]}:g0:start'
+            a = left["geoms"][-1][-1]; b = right["geoms"][0][0]
+            left_id = f'base:{left["key"]}:g{len(left["geoms"])-1}:end'; right_id = f'base:{right["key"]}:g0:start'
+            pair_id = _project_image_road_gap_pair_id_v560(left_id, right_id)
+            if pair_id in bridged_pairs or _project_image_road_gap_distance_m_v547(a, b) <= float(PROJECT_IMAGE_ROAD_GAP_CONNECTED_TOLERANCE_M_V560):
+                continue
             guide = _project_image_road_gap_between_chunks_guide_v547(left["points"], right["points"], a, b)
-            cand = _project_image_road_gap_candidate_v547("between_chunks", group, left["key"], right["key"], idx, a, b, guide, left["source_kind"] or right["source_kind"])
-            if cand and cand["key"] not in seen:
-                cand["left_endpoint_id"] = left_eid
-                cand["right_endpoint_id"] = right_eid
-                seen.add(cand["key"]); candidates.append(cand)
-                covered_endpoint_ids.update((left_eid, right_eid))
+            add(_project_image_road_gap_candidate_v560("between_chunks", group, left["key"], right["key"], idx, a, b, guide, left["source_kind"] or right["source_kind"], left_id, right_id))
 
-    # Priority 3 (v549): all remaining green endpoints, regardless of GPS/photo/source group.
-    # A lightweight metre grid avoids O(N^2) comparisons on thousands of route fragments.
-    remaining = [e for e in endpoint_records if e["id"] not in covered_endpoint_ids]
+    # Priority 3: every dangling endpoint in the *current* rendered network.
+    # Do not let a lower-confidence global candidate compete with an active route-aware
+    # candidate in the same pass. If that primary candidate exhausts all retries, add()
+    # deliberately stops reserving its endpoints and the next rescan enables global fallback.
+    remaining = [e for e in endpoints if e["id"] not in connected_ids and e["id"] not in endpoint_candidate_ids]
     if remaining:
         ref_lat = sum(float(e["point"][0]) for e in remaining) / max(1, len(remaining))
         coslat = max(0.2, math.cos(math.radians(ref_lat)))
-        cell_m = max(40.0, float(PROJECT_IMAGE_ROAD_GLOBAL_GAP_GRID_M_V549))
+        cell_m = max(50.0, float(PROJECT_IMAGE_ROAD_GLOBAL_GAP_GRID_M_V549))
         grid = {}
         for e in remaining:
-            x = float(e["point"][1]) * 111320.0 * coslat
-            y = float(e["point"][0]) * 111320.0
-            gx = int(math.floor(x / cell_m)); gy = int(math.floor(y / cell_m))
-            e["grid"] = (gx, gy)
-            grid.setdefault((gx, gy), []).append(e)
+            x = float(e["point"][1]) * 111320.0 * coslat; y = float(e["point"][0]) * 111320.0
+            cell = (int(math.floor(x / cell_m)), int(math.floor(y / cell_m)))
+            e["grid"] = cell; grid.setdefault(cell, []).append(e)
 
-        best_for = {}
+        top_for = {}
         pair_rows = {}
-        max_search_cells = 2
+        search_cells = max(2, int(math.ceil(float(PROJECT_IMAGE_ROAD_GLOBAL_GAP_SAME_GROUP_MAX_M_V549) / cell_m)))
         for e in remaining:
-            gx, gy = e["grid"]
-            best_score = float("inf")
-            best_pair_key = None
-            for oy in range(-max_search_cells, max_search_cells + 1):
-                for ox in range(-max_search_cells, max_search_cells + 1):
+            gx, gy = e["grid"]; rows = []
+            for oy in range(-search_cells, search_cells + 1):
+                for ox in range(-search_cells, search_cells + 1):
                     for other in grid.get((gx + ox, gy + oy), []):
-                        if other["id"] == e["id"] or other["key"] == e["key"] and other["geom_index"] == e["geom_index"]:
+                        if other["id"] == e["id"] or other["record_id"] == e["record_id"]:
                             continue
                         pair_ids = tuple(sorted((e["id"], other["id"])))
                         if pair_ids in pair_rows:
@@ -53206,64 +53329,85 @@ def _project_image_road_gap_candidates_v547(source_chunks, state):
                             same_group = bool(e["group"] and e["group"] == other["group"])
                             max_gap = float(PROJECT_IMAGE_ROAD_GLOBAL_GAP_SAME_GROUP_MAX_M_V549 if same_group else PROJECT_IMAGE_ROAD_GLOBAL_GAP_CROSS_GROUP_MAX_M_V549)
                             if not (float(PROJECT_IMAGE_ROAD_GAP_MIN_M_V547) <= gap_m <= max_gap):
-                                pair_rows[pair_ids] = None
-                                continue
-                            ab = _project_image_road_gap_unit_xy_v549(e["point"], other["point"])
-                            ba = _project_image_road_gap_unit_xy_v549(other["point"], e["point"])
-                            align_a = _project_image_road_gap_dot_v549(e.get("tangent"), ab)
-                            align_b = _project_image_road_gap_dot_v549(other.get("tangent"), ba)
+                                pair_rows[pair_ids] = None; continue
+                            ab = _project_image_road_gap_unit_xy_v549(e["point"], other["point"]); ba = _project_image_road_gap_unit_xy_v549(other["point"], e["point"])
+                            align_a = _project_image_road_gap_dot_v549(e.get("tangent"), ab); align_b = _project_image_road_gap_dot_v549(other.get("tangent"), ba)
                             align_min = float(PROJECT_IMAGE_ROAD_GLOBAL_GAP_SAME_GROUP_ALIGNMENT_MIN_V549 if same_group else PROJECT_IMAGE_ROAD_GLOBAL_GAP_ALIGNMENT_MIN_V549)
                             if align_a < align_min or align_b < align_min:
-                                pair_rows[pair_ids] = None
-                                continue
-                            # Lower score is better. Strong continuation alignment can beat a
-                            # slightly shorter but sideways nearby street.
-                            score = float(gap_m) + (2.0 - align_a - align_b) * (18.0 if same_group else 28.0)
-                            row = {
-                                "a": e, "b": other, "gap_m": gap_m, "score": score,
-                                "same_group": same_group, "align_a": align_a, "align_b": align_b,
-                            }
+                                pair_rows[pair_ids] = None; continue
+                            score = float(gap_m) + (2.0 - align_a - align_b) * (15.0 if same_group else 32.0)
+                            row = {"a": e, "b": other, "gap_m": gap_m, "score": score, "same_group": same_group, "align_a": align_a, "align_b": align_b}
                             pair_rows[pair_ids] = row
-                        if not row:
-                            continue
-                        score = float(row["score"])
-                        if score < best_score:
-                            best_score = score
-                            best_pair_key = pair_ids
-            if best_pair_key is not None:
-                best_for[e["id"]] = best_pair_key
+                        if row:
+                            rows.append((float(row["score"]), pair_ids))
+            rows.sort(key=lambda x: x[0])
+            top_for[e["id"]] = {pair_ids for _score, pair_ids in rows[:int(PROJECT_IMAGE_ROAD_GLOBAL_GAP_TOP_K_V560)]}
 
-        emitted_pairs = set()
         for pair_ids, row in pair_rows.items():
-            if not row or pair_ids in emitted_pairs:
+            if not row:
                 continue
             a_rec = row["a"]; b_rec = row["b"]
-            mutual = best_for.get(a_rec["id"]) == pair_ids and best_for.get(b_rec["id"]) == pair_ids
-            # Same-source fragments may legitimately have another close branch, so one-sided
-            # best is allowed there. Cross-source pairs must be mutual nearest continuations.
-            if row["same_group"]:
-                accepted = best_for.get(a_rec["id"]) == pair_ids or best_for.get(b_rec["id"]) == pair_ids
-            else:
-                accepted = mutual
+            a_top = pair_ids in top_for.get(a_rec["id"], set()); b_top = pair_ids in top_for.get(b_rec["id"], set())
+            accepted = (a_top or b_top) if row["same_group"] else (a_top and b_top)
             if not accepted:
+                continue
+            pair_id = _project_image_road_gap_pair_id_v560(a_rec["id"], b_rec["id"])
+            if pair_id in seen_pairs:
                 continue
             group = a_rec["group"] if row["same_group"] else f'global:{a_rec["key"]}:{b_rec["key"]}'
             guide = _project_image_road_gap_dense_guide_v547([a_rec["point"], b_rec["point"]])
-            cand = _project_image_road_gap_candidate_v547(
-                "all_green_global", group, a_rec["key"], b_rec["key"], 0,
-                a_rec["point"], b_rec["point"], guide,
-                a_rec["source_kind"] or b_rec["source_kind"],
-            )
-            if cand and cand["key"] not in seen:
-                cand["left_endpoint_id"] = a_rec["id"]
-                cand["right_endpoint_id"] = b_rec["id"]
-                cand["alignment_a"] = round(float(row["align_a"]), 4)
-                cand["alignment_b"] = round(float(row["align_b"]), 4)
-                cand["global_same_group"] = bool(row["same_group"])
-                seen.add(cand["key"]); candidates.append(cand)
-                emitted_pairs.add(pair_ids)
+            cand = _project_image_road_gap_candidate_v560("all_green_global", group, a_rec["key"], b_rec["key"], 0, a_rec["point"], b_rec["point"], guide, a_rec["source_kind"] or b_rec["source_kind"], a_rec["id"], b_rec["id"])
+            if cand:
+                cand["alignment_a"] = round(float(row["align_a"]), 4); cand["alignment_b"] = round(float(row["align_b"]), 4); cand["global_same_group"] = bool(row["same_group"])
+            add(cand)
 
+        # Priority 4: a dangling endpoint may end near the interior of another fragment
+        # from the same walk. This catches T-like joins and overlap boundaries that an
+        # endpoint-only detector cannot see. Only same-group targets are allowed here.
+        if samples:
+            sample_cell_m = max(25.0, float(PROJECT_IMAGE_ROAD_GAP_INTERIOR_TARGET_MAX_M_V560))
+            sample_grid = {}
+            for s in samples:
+                p = s["point"]
+                x = float(p[1]) * 111320.0 * coslat; y = float(p[0]) * 111320.0
+                cell = (int(math.floor(x / sample_cell_m)), int(math.floor(y / sample_cell_m)))
+                sample_grid.setdefault(cell, []).append(s)
+            for e in remaining:
+                if not e.get("group") or e["id"] in endpoint_candidate_ids:
+                    continue
+                p = e["point"]; x = float(p[1]) * 111320.0 * coslat; y = float(p[0]) * 111320.0
+                gx = int(math.floor(x / sample_cell_m)); gy = int(math.floor(y / sample_cell_m))
+                best = None
+                for oy in (-1, 0, 1):
+                    for ox in (-1, 0, 1):
+                        for s in sample_grid.get((gx + ox, gy + oy), []):
+                            if s["record_id"] == e["record_id"] or str(s.get("group") or "") != str(e.get("group") or ""):
+                                continue
+                            d = _project_image_road_gap_distance_m_v547(p, s["point"])
+                            if not (float(PROJECT_IMAGE_ROAD_GAP_MIN_M_V547) <= d <= float(PROJECT_IMAGE_ROAD_GAP_INTERIOR_TARGET_MAX_M_V560)):
+                                continue
+                            direction = _project_image_road_gap_unit_xy_v549(p, s["point"])
+                            align = _project_image_road_gap_dot_v549(e.get("tangent"), direction)
+                            if align < float(PROJECT_IMAGE_ROAD_GAP_INTERIOR_ALIGNMENT_MIN_V560):
+                                continue
+                            score = d + (1.0 - align) * 20.0
+                            if best is None or score < best[0]:
+                                best = (score, s, d, align)
+                if best is None:
+                    continue
+                _score, s, _d, align = best
+                target_id = f'interior:{s["record_id"]}:{int(s.get("sample_index") or 0)}'
+                pair_id = _project_image_road_gap_pair_id_v560(e["id"], target_id)
+                if pair_id in seen_pairs:
+                    continue
+                cand = _project_image_road_gap_candidate_v560("same_group_interior", e["group"], e["key"], s.get("key") or "", 0, e["point"], s["point"], [e["point"], s["point"]], e["source_kind"], e["id"], target_id)
+                if cand:
+                    cand["alignment_a"] = round(float(align), 4)
+                add(cand)
+
+    candidates.sort(key=lambda c: (0 if c.get("kind") == "within_chunk" else 1 if c.get("kind") == "between_chunks" else 2 if c.get("kind") == "same_group_interior" else 3, float(c.get("gap_m") or 0.0)))
     return candidates
+
 
 def _project_image_road_gap_merge_geometry_v547(geometries):
     geoms = [_project_clean_segment_v298(g) for g in (geometries or [])]
@@ -53276,67 +53420,142 @@ def _project_image_road_gap_merge_geometry_v547(geometries):
         d_reverse = _project_image_road_gap_distance_m_v547(merged[-1], g[-1])
         if d_reverse < d_forward:
             g = list(reversed(g)); d_forward = d_reverse
-        if d_forward > 4.0:
+        if d_forward > float(PROJECT_IMAGE_ROAD_GAP_CONNECTED_TOLERANCE_M_V560):
             return []
         merged.extend(g[1:] if d_forward < 1.2 else g)
     return _project_clean_segment_v298(merged)
 
 
-def _project_image_road_gap_match_v547(candidate):
+def _project_image_road_gap_endpoint_route_v560(mask_img, local_points, origin_x, origin_y, search_radius, snap_radius, a_geo, b_geo):
+    """One A* route between the two green endpoints, constrained to recognized roads.
+
+    Unlike the old gap matcher, intermediate guide anchors are not mandatory. The whole
+    guide only defines the search corridor; start/end are the only route anchors. This
+    avoids rejecting a valid connector because one synthetic midpoint missed a road pixel.
+    """
+    from PIL import Image, ImageFilter
+    import numpy as np
+    road = (np.asarray(mask_img, dtype=np.uint8) > 0).astype(np.uint8)
+    if int(road.sum()) < 2 or len(local_points or []) < 2:
+        return []
+    trace_dist = _project_image_road_trace_distance_radius_v540(mask_img.size, local_points, search_radius)
+    if trace_dist is None:
+        return []
+    corridor = ((road > 0) & (trace_dist <= float(search_radius))).astype(np.uint8)
+    sx, sy = local_points[0]; gx, gy = local_points[-1]
+    start = _project_image_road_nearest_pixel_v532(corridor, None, sx, sy, int(snap_radius))
+    goal = _project_image_road_nearest_pixel_v532(corridor, None, gx, gy, int(snap_radius))
+    if start is None or goal is None:
+        return []
+    margin = int(PROJECT_IMAGE_ROAD_FALLBACK_PATH_MARGIN_PX_V540)
+    minx = min(p[0] for p in local_points) - float(search_radius) - margin
+    maxx = max(p[0] for p in local_points) + float(search_radius) + margin
+    miny = min(p[1] for p in local_points) - float(search_radius) - margin
+    maxy = max(p[1] for p in local_points) + float(search_radius) + margin
+    path_px = _project_image_road_astar_v532(corridor, trace_dist, None, start, goal, roi_bounds=(minx, miny, maxx, maxy), trace_radius=float(search_radius))
+    if not path_px:
+        return []
+    path_px = _project_image_road_compress_path_v532(path_px, corridor)
+    if len(path_px) < 2 or not all(_project_image_road_line_inside_v532(corridor, path_px[i], path_px[i + 1]) for i in range(len(path_px) - 1)):
+        return []
+
+    # The exact green endpoints must actually touch the new connector. Permit only a tiny
+    # attachment inside a dilated recognized-road mask; this eliminates the old 14 m visual
+    # gap that could be reported as 'matched'.
+    attach_px = max(1, int(PROJECT_IMAGE_ROAD_GAP_ATTACHMENT_DILATE_PX_V560))
+    filter_size = attach_px * 2 + 1
+    expanded = np.asarray(Image.fromarray((road * 255).astype(np.uint8), mode="L").filter(ImageFilter.MaxFilter(filter_size)), dtype=np.uint8) > 0
+    start_exact = (int(round(sx)), int(round(sy))); goal_exact = (int(round(gx)), int(round(gy)))
+    h, w = expanded.shape
+    for exact, snapped in ((start_exact, start), (goal_exact, goal)):
+        if not (0 <= exact[0] < w and 0 <= exact[1] < h):
+            return []
+        if math.hypot(float(exact[0] - snapped[0]), float(exact[1] - snapped[1])) > float(PROJECT_IMAGE_ROAD_GAP_ATTACHMENT_MAX_PX_V560):
+            return []
+        if not _project_image_road_line_inside_v532(expanded, exact, snapped):
+            return []
+
+    geo = []
+    for x, y in path_px:
+        lat, lon = _project_image_road_latlon_v531(float(x) + origin_x, float(y) + origin_y)
+        pair = [round(float(lat), 7), round(float(lon), 7)]
+        if not geo or pair != geo[-1]:
+            geo.append(pair)
+    if len(geo) < 2:
+        return []
+    # Force exact endpoint continuity only after the tiny road-mask attachment passed.
+    out = [[round(float(a_geo[0]), 7), round(float(a_geo[1]), 7)]]
+    out.extend(geo)
+    out.append([round(float(b_geo[0]), 7), round(float(b_geo[1]), 7)])
+    return _project_clean_segment_v298(out)
+
+
+def _project_image_road_gap_match_v547(candidate, attempt=1):
     candidate = dict(candidate or {})
     guide = _project_clean_segment_v298(candidate.get("guide") or [])
     a = candidate.get("a"); b = candidate.get("b")
     gap_m = float(candidate.get("gap_m") or 0.0)
     if len(guide) < 2 or not isinstance(a, (list, tuple)) or not isinstance(b, (list, tuple)):
-        return {"status":"no_path", "geometries":[], "gap_revision":PROJECT_IMAGE_ROAD_GAP_REVISION_V547}
+        return {"status": "no_path", "geometries": [], "gap_revision": PROJECT_IMAGE_ROAD_GAP_REVISION_V547, "attempts": int(attempt)}
     diag = []
-    try:
-        before, strict_mask, local_points, origin_x, origin_y = _project_image_road_mosaic_v531(
-            guide, diag=diag, search_radius_px=int(PROJECT_IMAGE_ROAD_GAP_MOSAIC_RADIUS_PX_V547)
-        )
-        relaxed = _project_image_road_relaxed_mask_v540(before, strict_mask, aggressive=False)
-        result = _project_image_road_route_mask_v540(
-            relaxed, local_points, origin_x, origin_y, diag, "gapfill",
-            int(PROJECT_IMAGE_ROAD_GAP_SEARCH_RADIUS_PX_V547),
-            int(PROJECT_IMAGE_ROAD_GAP_SNAP_RADIUS_PX_V547), 2,
-        )
-        path = _project_image_road_gap_merge_geometry_v547(result.get("geometries") or []) if float(result.get("coverage") or 0.0) >= 0.999 else []
-        phase = "relaxed"
-        if not path and gap_m <= float(PROJECT_IMAGE_ROAD_GAP_AGGRESSIVE_MAX_M_V547):
-            aggressive = _project_image_road_relaxed_mask_v540(before, strict_mask, aggressive=True)
-            result = _project_image_road_route_mask_v540(
-                aggressive, local_points, origin_x, origin_y, diag, "gapfill_aggressive",
-                int(PROJECT_IMAGE_ROAD_GAP_AGGRESSIVE_SEARCH_RADIUS_PX_V547),
-                int(PROJECT_IMAGE_ROAD_GAP_AGGRESSIVE_SNAP_RADIUS_PX_V547), 2,
+    # Attempt 1 favors the route-aware guide. Later retries progressively widen search and
+    # include a straight-corridor fallback, while road pixels are always recognized first.
+    strategies = [
+        ("relaxed_guide", guide, False, int(PROJECT_IMAGE_ROAD_GAP_SEARCH_RADIUS_PX_V547), int(PROJECT_IMAGE_ROAD_GAP_SNAP_RADIUS_PX_V547)),
+        ("aggressive_guide", guide, True, int(PROJECT_IMAGE_ROAD_GAP_AGGRESSIVE_SEARCH_RADIUS_PX_V547), int(PROJECT_IMAGE_ROAD_GAP_AGGRESSIVE_SNAP_RADIUS_PX_V547)),
+    ]
+    straight = _project_image_road_gap_dense_guide_v547([a, b])
+    if int(attempt) >= 2:
+        strategies.append(("aggressive_straight", straight, True, int(PROJECT_IMAGE_ROAD_GAP_RETRY_SEARCH_RADIUS_PX_V560), int(PROJECT_IMAGE_ROAD_GAP_RETRY_SNAP_RADIUS_PX_V560)))
+    if int(attempt) >= 3:
+        strategies.append(("wide_straight", straight, True, int(PROJECT_IMAGE_ROAD_GAP_FINAL_SEARCH_RADIUS_PX_V560), int(PROJECT_IMAGE_ROAD_GAP_FINAL_SNAP_RADIUS_PX_V560)))
+
+    errors = []
+    for phase, phase_guide, aggressive, search_radius, snap_radius in strategies:
+        try:
+            before, strict_mask, local_points, origin_x, origin_y = _project_image_road_mosaic_v531(
+                phase_guide, diag=diag, search_radius_px=int(PROJECT_IMAGE_ROAD_GAP_MOSAIC_RADIUS_PX_V547)
             )
-            path = _project_image_road_gap_merge_geometry_v547(result.get("geometries") or []) if float(result.get("coverage") or 0.0) >= 0.999 else []
-            phase = "aggressive"
-        if path:
-            forward = _project_image_road_gap_distance_m_v547(path[0], a) + _project_image_road_gap_distance_m_v547(path[-1], b)
-            reverse = _project_image_road_gap_distance_m_v547(path[-1], a) + _project_image_road_gap_distance_m_v547(path[0], b)
-            if reverse < forward:
-                path = list(reversed(path))
-            start_d = _project_image_road_gap_distance_m_v547(path[0], a)
-            end_d = _project_image_road_gap_distance_m_v547(path[-1], b)
+            mask = _project_image_road_relaxed_mask_v540(before, strict_mask, aggressive=bool(aggressive))
+            path = _project_image_road_gap_endpoint_route_v560(mask, local_points, origin_x, origin_y, search_radius, snap_radius, a, b)
+            if not path:
+                continue
             path_len = _project_image_road_gap_path_length_m_v547(path)
             max_len = max(180.0, gap_m * float(PROJECT_IMAGE_ROAD_GAP_MAX_PATH_RATIO_V547))
-            if start_d <= float(PROJECT_IMAGE_ROAD_GAP_ENDPOINT_TOLERANCE_M_V547) and end_d <= float(PROJECT_IMAGE_ROAD_GAP_ENDPOINT_TOLERANCE_M_V547) and path_len <= max_len:
+            if path_len <= max_len:
                 return {
-                    "status":"matched", "geometries":[path], "gap_revision":PROJECT_IMAGE_ROAD_GAP_REVISION_V547,
-                    "gap_m":round(gap_m,2), "path_m":round(path_len,2), "phase":phase,
-                    "saved_at":now_jst().isoformat(),
+                    "status": "matched", "geometries": [path], "gap_revision": PROJECT_IMAGE_ROAD_GAP_REVISION_V547,
+                    "gap_m": round(gap_m, 2), "path_m": round(path_len, 2), "phase": phase,
+                    "attempts": int(attempt), "saved_at": now_jst().isoformat(),
+                    "pair_id": str(candidate.get("pair_id") or ""),
+                    "left_endpoint_id": str(candidate.get("left_endpoint_id") or ""),
+                    "right_endpoint_id": str(candidate.get("right_endpoint_id") or ""),
+                    "source_group": str(candidate.get("source_group") or ""),
+                    "source_kind": str(candidate.get("source_kind") or ""),
+                    "candidate_kind": str(candidate.get("kind") or ""),
                 }
-        return {"status":"no_path", "geometries":[], "gap_revision":PROJECT_IMAGE_ROAD_GAP_REVISION_V547, "gap_m":round(gap_m,2), "saved_at":now_jst().isoformat()}
-    except Exception as exc:
-        return {"status":"no_path", "geometries":[], "gap_revision":PROJECT_IMAGE_ROAD_GAP_REVISION_V547, "gap_m":round(gap_m,2), "error":_project_image_road_exc_text_v534(exc), "saved_at":now_jst().isoformat()}
+        except Exception as exc:
+            errors.append(_project_image_road_exc_text_v534(exc))
+    return {
+        "status": "no_path", "geometries": [], "gap_revision": PROJECT_IMAGE_ROAD_GAP_REVISION_V547,
+        "gap_m": round(gap_m, 2), "attempts": int(attempt), "saved_at": now_jst().isoformat(),
+        "pair_id": str(candidate.get("pair_id") or ""),
+        "left_endpoint_id": str(candidate.get("left_endpoint_id") or ""),
+        "right_endpoint_id": str(candidate.get("right_endpoint_id") or ""),
+        "source_group": str(candidate.get("source_group") or ""), "source_kind": str(candidate.get("source_kind") or ""),
+        "candidate_kind": str(candidate.get("kind") or ""), "error": (errors[-1] if errors else "")[:500],
+    }
 
 
 def _project_image_road_gap_terminal_v547(row):
-    return isinstance(row, dict) and str(row.get("gap_revision") or "") == PROJECT_IMAGE_ROAD_GAP_REVISION_V547 and str(row.get("status") or "") in {"matched", "no_path"}
+    if not isinstance(row, dict) or str(row.get("gap_revision") or "") != PROJECT_IMAGE_ROAD_GAP_REVISION_V547:
+        return False
+    if str(row.get("status") or "") == "matched":
+        return True
+    return str(row.get("status") or "") == "no_path" and int(row.get("attempts") or 0) >= int(PROJECT_IMAGE_ROAD_GAP_MAX_ATTEMPTS_V560)
 
 
 def _project_image_road_gap_source_signature_v551(source_chunks):
-    """Cheap source signature only; never performs gap detection on the Streamlit page thread."""
     digest = hashlib.sha1()
     count = 0
     for row in source_chunks or []:
@@ -53346,34 +53565,23 @@ def _project_image_road_gap_source_signature_v551(source_chunks):
         if not key:
             continue
         count += 1
-        digest.update(key.encode("utf-8", "ignore"))
-        digest.update(b"|")
-        digest.update(str(row.get("source_group") or "").encode("utf-8", "ignore"))
-        digest.update(b"|")
-        digest.update(str(row.get("source_part") if row.get("source_part") is not None else row.get("part") or "").encode("utf-8", "ignore"))
-        digest.update(b"\n")
+        digest.update(key.encode("utf-8", "ignore")); digest.update(b"|")
+        digest.update(str(row.get("source_group") or "").encode("utf-8", "ignore")); digest.update(b"|")
+        digest.update(str(row.get("source_part") if row.get("source_part") is not None else row.get("part") or "").encode("utf-8", "ignore")); digest.update(b"\n")
     return f"{count}:{digest.hexdigest()[:20]}"
 
 
 def _project_image_road_gap_segments_v547(source_chunks, state):
-    """v551 page-side view: render saved fills and read saved progress only.
-
-    IMPORTANT: this function intentionally does NOT call
-    `_project_image_road_gap_candidates_v547()`. Candidate discovery, endpoint scans,
-    road recognition and A* all run only inside the server worker.
-    """
+    """UI-safe view: persisted geometry + persisted progress only; zero gap computation."""
     fills = state.get("gap_fills") if isinstance(state, dict) and isinstance(state.get("gap_fills"), dict) else {}
     output = []
     for row in fills.values():
-        if not _project_image_road_gap_terminal_v547(row):
-            continue
-        if str(row.get("status") or "") != "matched":
+        if not isinstance(row, dict) or str(row.get("gap_revision") or "") != PROJECT_IMAGE_ROAD_GAP_REVISION_V547 or str(row.get("status") or "") != "matched":
             continue
         for g in row.get("geometries") or []:
             clean = _project_clean_segment_v298(g)
             if len(clean) >= 2:
                 output.append(clean)
-
     job = state.get("gap_job") if isinstance(state, dict) and isinstance(state.get("gap_job"), dict) else {}
     expected_signature = _project_image_road_gap_source_signature_v551(source_chunks)
     same_job = (
@@ -53382,38 +53590,18 @@ def _project_image_road_gap_segments_v547(source_chunks, state):
         and str(job.get("source_signature") or "") == expected_signature
     )
     if not same_job:
-        return output, {
-            "status": "waiting",
-            "phase": "waiting",
-            "total": 0,
-            "processed": 0,
-            "filled": 0,
-            "no_path": 0,
-            "pending": 0,
-        }
-    total = max(0, int(job.get("total") or 0))
-    processed = max(0, int(job.get("processed") or 0))
-    filled = max(0, int(job.get("filled") or 0))
-    no_path = max(0, int(job.get("no_path") or 0))
-    pending = max(0, int(job.get("pending") if job.get("pending") is not None else total - processed))
+        return output, {"status": "waiting", "phase": "waiting", "total": 0, "processed": 0, "filled": 0, "no_path": 0, "pending": 0, "unresolved": 0, "verified": False, "pass_index": 0}
     return output, {
-        "status": str(job.get("status") or "waiting"),
-        "phase": str(job.get("phase") or "waiting"),
-        "total": total,
-        "processed": processed,
-        "filled": filled,
-        "no_path": no_path,
-        "pending": pending,
+        "status": str(job.get("status") or "waiting"), "phase": str(job.get("phase") or "waiting"),
+        "total": max(0, int(job.get("total") or 0)), "processed": max(0, int(job.get("processed") or 0)),
+        "filled": max(0, int(job.get("filled") or 0)), "no_path": max(0, int(job.get("no_path") or 0)),
+        "pending": max(0, int(job.get("pending") or 0)), "unresolved": max(0, int(job.get("unresolved") or 0)),
+        "verified": bool(job.get("verified")), "pass_index": max(0, int(job.get("pass_index") or 0)),
     }
 
 
 def _project_image_road_gap_worker_v547(owner, source_chunks):
-    """v551 fully server-side gap workflow.
-
-    Every expensive step stays here: all-green endpoint scanning, candidate generation,
-    raster-road recognition, A* connector generation, checkpointing and finalization.
-    The Streamlit render thread only reads `gap_job` progress and already-saved fills.
-    """
+    """v560 iterative all-green closure worker; runs only in the isolated server process."""
     from supabase import create_client
     client = create_client(SUPABASE_URL, SUPABASE_SECRET_KEY)
     family_key, member_key = owner
@@ -53421,126 +53609,163 @@ def _project_image_road_gap_worker_v547(owner, source_chunks):
     source_signature = _project_image_road_gap_source_signature_v551(source_chunks)
     state = _project_image_road_read_state_v531(client, family_key, member_key)
     fills = state.get("gap_fills") if isinstance(state.get("gap_fills"), dict) else {}
+    fills = {
+        k: v for k, v in fills.items()
+        if isinstance(v, dict)
+        and str(v.get("gap_revision") or "") == PROJECT_IMAGE_ROAD_GAP_REVISION_V547
+        and str(v.get("source_signature") or "") == source_signature
+    }
+    work_doc = _project_image_road_read_work_log_v535(client, family_key, member_key)
+    work_log = [row for row in (work_doc.get("events") or []) if isinstance(row, dict)]
 
     def refresh_primary_state():
         nonlocal state
         try:
             latest = _project_image_road_read_state_v531(client, family_key, member_key)
             if isinstance(latest, dict):
-                state["chunks"] = latest.get("chunks") if isinstance(latest.get("chunks"), dict) else state.get("chunks", {})
-                state["active_chunk_keys"] = latest.get("active_chunk_keys") if isinstance(latest.get("active_chunk_keys"), list) else state.get("active_chunk_keys", [])
-                state["source_chunk_count"] = int(latest.get("source_chunk_count") or state.get("source_chunk_count") or 0)
-                state["last_job"] = latest.get("last_job") if isinstance(latest.get("last_job"), dict) else state.get("last_job", {})
+                for key in ("chunks", "active_chunk_keys", "source_chunk_count", "last_job", "workflow_job"):
+                    if key in latest:
+                        state[key] = latest[key]
         except Exception:
             pass
 
-    def save_gap_state(status, phase, total, processed, filled_count, no_path_count, pending_count, *, error=""):
+    def counts_for(candidates):
+        filled_count = sum(1 for row in fills.values() if isinstance(row, dict) and str(row.get("status") or "") == "matched")
+        active = {str(c.get("key") or "") for c in candidates}
+        no_path_count = sum(1 for key in active if isinstance(fills.get(key), dict) and str(fills[key].get("status") or "") == "no_path")
+        return filled_count, no_path_count
+
+    def save_gap_state(status, phase, total, processed, pending, unresolved, pass_index, verified=False, error=""):
         refresh_primary_state()
+        filled_count, no_path_count = counts_for([] if phase == "complete" and unresolved == 0 else current_candidates)
         state["gap_revision"] = PROJECT_IMAGE_ROAD_GAP_REVISION_V547
         state["gap_fills"] = dict(fills)
         state["gap_job"] = {
-            "gap_revision": PROJECT_IMAGE_ROAD_GAP_REVISION_V547,
-            "workflow_revision": PROJECT_IMAGE_ROAD_WORKFLOW_REVISION_V548,
-            "source_signature": source_signature,
-            "status": str(status),
-            "phase": str(phase),
-            "total": max(0, int(total)),
-            "processed": max(0, int(processed)),
-            "filled": max(0, int(filled_count)),
-            "no_path": max(0, int(no_path_count)),
-            "pending": max(0, int(pending_count)),
-            "workers": int(PROJECT_IMAGE_ROAD_GAP_WORKERS_V547),
-            "updated_at": now_jst().isoformat(),
-            "error": str(error or "")[:500],
+            "gap_revision": PROJECT_IMAGE_ROAD_GAP_REVISION_V547, "workflow_revision": PROJECT_IMAGE_ROAD_WORKFLOW_REVISION_V548,
+            "source_signature": source_signature, "status": str(status), "phase": str(phase),
+            "total": max(0, int(total)), "processed": max(0, int(processed)), "filled": max(0, int(filled_count)),
+            "no_path": max(0, int(no_path_count)), "pending": max(0, int(pending)), "unresolved": max(0, int(unresolved)),
+            "verified": bool(verified), "pass_index": max(0, int(pass_index)), "workers": int(PROJECT_IMAGE_ROAD_GAP_WORKERS_V547),
+            "updated_at": now_jst().isoformat(), "error": str(error or "")[:500],
         }
         _project_image_road_save_state_v531(client, family_key, member_key, state)
+        _project_image_road_save_progress_v553(client, family_key, member_key, state)
 
-    # Publish immediately so the page can show progress without doing any candidate scan.
-    save_gap_state("running", "scanning", 0, 0, 0, 0, 0)
+    current_candidates = []
+    save_gap_state("running", "scanning", 0, 0, 0, 0, 0, False)
     try:
-        candidates = _project_image_road_gap_candidates_v547(source_chunks, state)
-    except Exception as exc:
-        save_gap_state("failed", "scanning", 0, 0, 0, 0, 0, error=_project_image_road_exc_text_v534(exc))
-        return {"status": "failed", "total": 0, "pending": 0}
+        for pass_index in range(1, int(PROJECT_IMAGE_ROAD_GAP_MAX_PASSES_V560) + 1):
+            refresh_primary_state()
+            current_candidates = _project_image_road_gap_candidates_v547(source_chunks, state, fills_override=fills)
+            unresolved = len(current_candidates)
+            if unresolved == 0:
+                # A second independent scan guards against a transient in-memory accounting mistake.
+                verify_again = _project_image_road_gap_candidates_v547(source_chunks, state, fills_override=fills)
+                if not verify_again:
+                    save_gap_state("complete", "complete", 0, 0, 0, 0, pass_index, True)
+                    _project_image_road_save_work_log_v535(client, family_key, member_key, work_log)
+                    return {"status": "complete", "total": 0, "processed": 0, "filled": sum(1 for r in fills.values() if str((r or {}).get("status") or "") == "matched"), "no_path": 0, "pending": 0, "unresolved": 0, "verified": True}
+                current_candidates = verify_again; unresolved = len(current_candidates)
 
-    active_keys = {str(c.get("key") or "") for c in candidates}
-    fills = {k:v for k,v in fills.items() if k in active_keys and _project_image_road_gap_terminal_v547(v)}
-    pending = [c for c in candidates if not _project_image_road_gap_terminal_v547(fills.get(str(c.get("key") or "")))]
-    total = len(candidates)
-    filled_count = sum(1 for c in candidates if str((fills.get(str(c.get("key") or "")) or {}).get("status") or "") == "matched")
-    no_path_count = sum(1 for c in candidates if str((fills.get(str(c.get("key") or "")) or {}).get("status") or "") == "no_path")
-    processed = filled_count + no_path_count
-    save_gap_state("running" if pending else "complete", "matching" if pending else "complete", total, processed, filled_count, no_path_count, total - processed)
-    if not pending:
-        return {"status":"complete", "total":total, "processed":processed, "filled":filled_count, "no_path":no_path_count, "pending":0}
+            pending = []
+            for cand in current_candidates:
+                key = str(cand.get("key") or "")
+                row = fills.get(key) if isinstance(fills.get(key), dict) else {}
+                if str(row.get("status") or "") == "matched":
+                    continue
+                attempts = max(0, int(row.get("attempts") or 0))
+                if attempts < int(PROJECT_IMAGE_ROAD_GAP_MAX_ATTEMPTS_V560):
+                    pending.append((cand, attempts + 1))
 
-    log_doc = _project_image_road_read_work_log_v535(client, family_key, member_key)
-    work_log = [row for row in (log_doc.get("events") or []) if isinstance(row, dict)]
-    done_since_save = 0
-    gap_progress_since_save = 0
-    gap_progress_last_save = time.monotonic()
-
-    def publish_gap_progress(force=False):
-        nonlocal gap_progress_since_save, gap_progress_last_save
-        if (
-            not force
-            and gap_progress_since_save < int(PROJECT_IMAGE_ROAD_PROGRESS_CHECKPOINT_EVERY_V553)
-            and (time.monotonic() - gap_progress_last_save) < float(PROJECT_IMAGE_ROAD_PROGRESS_CHECKPOINT_SECONDS_V553)
-        ):
-            return
-        progress_state = {
-            "workflow_job": state.get("workflow_job") if isinstance(state.get("workflow_job"), dict) else {},
-            "last_job": state.get("last_job") if isinstance(state.get("last_job"), dict) else {},
-            "gap_job": {
-                "status": "running" if processed < total else "complete",
-                "phase": "matching" if processed < total else "complete",
-                "total": total, "processed": processed, "filled": filled_count,
-                "no_path": no_path_count, "pending": max(0, total - processed),
-            },
-        }
-        _project_image_road_save_progress_v553(client, family_key, member_key, progress_state)
-        gap_progress_since_save = 0
-        gap_progress_last_save = time.monotonic()
-
-    with ThreadPoolExecutor(max_workers=int(PROJECT_IMAGE_ROAD_GAP_WORKERS_V547)) as pool:
-        future_map = {pool.submit(_project_image_road_gap_match_v547, c): c for c in pending}
-        for future in as_completed(future_map):
-            cand = future_map[future]
-            try:
-                result = future.result()
-            except Exception as exc:
-                result = {"status":"no_path", "geometries":[], "gap_revision":PROJECT_IMAGE_ROAD_GAP_REVISION_V547, "error":_project_image_road_exc_text_v534(exc)}
-            key = str(cand.get("key") or "")
-            fills[key] = _project_image_road_compact_result_v537(result)
-            result_status = str(result.get("status") or "")
-            if result_status == "matched":
-                filled_count += 1
-            else:
-                no_path_count += 1
-            processed += 1
-            work_log.append({
-                "at":now_jst().isoformat(), "stage":"gap_fill.result", "status":"ok" if result_status == "matched" else "warning",
-                "chunk_key":key, "result":result_status, "gap_m":float(cand.get("gap_m") or 0.0),
-                "source_group":str(cand.get("source_group") or ""),
-            })
-            if len(work_log) > int(PROJECT_IMAGE_ROAD_WORK_LOG_PERSIST_MAX_V535):
-                del work_log[:-int(PROJECT_IMAGE_ROAD_WORK_LOG_PERSIST_MAX_V535)]
-            done_since_save += 1
-            gap_progress_since_save += 1
-            publish_gap_progress(force=False)
-            if done_since_save >= int(PROJECT_IMAGE_ROAD_GAP_CHECKPOINT_EVERY_V547):
-                save_gap_state("running", "matching", total, processed, filled_count, no_path_count, total - processed)
+            if not pending:
+                save_gap_state("partial", "verification_complete", unresolved, unresolved, 0, unresolved, pass_index, True)
                 _project_image_road_save_work_log_v535(client, family_key, member_key, work_log)
-                done_since_save = 0
+                return {"status": "partial", "total": unresolved, "processed": unresolved, "filled": sum(1 for r in fills.values() if str((r or {}).get("status") or "") == "matched"), "no_path": unresolved, "pending": 0, "unresolved": unresolved, "verified": True}
 
-    publish_gap_progress(force=True)
-    save_gap_state("complete", "complete", total, processed, filled_count, no_path_count, 0)
-    _project_image_road_save_work_log_v535(client, family_key, member_key, work_log)
-    return {"status":"complete", "total":total, "processed":processed, "filled":filled_count, "no_path":no_path_count, "pending":0}
+            processed = 0
+            save_gap_state("running", "matching", len(current_candidates), 0, len(pending), unresolved, pass_index, False)
+            matched_this_pass = 0
+            checkpoint = 0
+            matched_endpoint_ids_this_pass = set()
+            for cand, attempt in pending:
+                left_id = str(cand.get("left_endpoint_id") or "")
+                right_id = str(cand.get("right_endpoint_id") or "")
+                real_ids = [eid for eid in (left_id, right_id) if eid and not eid.startswith("interior:")]
+                # Never create two new branches from the same dangling endpoint in one pass.
+                # If the best candidate fails, the next candidate is still tried; after the
+                # first success, lower-ranked alternatives sharing that endpoint are skipped.
+                if any(eid in matched_endpoint_ids_this_pass for eid in real_ids):
+                    processed += 1
+                    continue
+                try:
+                    result = _project_image_road_gap_match_v547(cand, attempt)
+                except Exception as exc:
+                    result = {"status": "no_path", "geometries": [], "gap_revision": PROJECT_IMAGE_ROAD_GAP_REVISION_V547, "attempts": int(attempt), "error": _project_image_road_exc_text_v534(exc)}
+                key = str(cand.get("key") or "")
+                result = dict(result or {})
+                result.setdefault("pair_id", str(cand.get("pair_id") or "")); result.setdefault("left_endpoint_id", left_id); result.setdefault("right_endpoint_id", right_id)
+                result.setdefault("source_group", str(cand.get("source_group") or "")); result.setdefault("source_kind", str(cand.get("source_kind") or "")); result.setdefault("candidate_kind", str(cand.get("kind") or "")); result["attempts"] = int(attempt)
+                result["source_signature"] = source_signature
+                fills[key] = _project_image_road_compact_result_v537(result)
+                if str(result.get("status") or "") == "matched":
+                    matched_this_pass += 1
+                    matched_endpoint_ids_this_pass.update(real_ids)
+                processed += 1; checkpoint += 1
+                work_log.append({
+                    "at": now_jst().isoformat(), "stage": "gap_fill_v560.result",
+                    "status": "ok" if str(result.get("status") or "") == "matched" else "warning",
+                    "chunk_key": key, "result": str(result.get("status") or ""), "attempt": int(attempt),
+                    "pass": int(pass_index), "gap_m": float(cand.get("gap_m") or 0.0), "source_group": str(cand.get("source_group") or ""),
+                })
+                if len(work_log) > int(PROJECT_IMAGE_ROAD_WORK_LOG_PERSIST_MAX_V535):
+                    del work_log[:-int(PROJECT_IMAGE_ROAD_WORK_LOG_PERSIST_MAX_V535)]
+                if checkpoint >= int(PROJECT_IMAGE_ROAD_GAP_CHECKPOINT_EVERY_V547):
+                    save_gap_state("running", "matching", len(current_candidates), processed, max(0, len(pending) - processed), unresolved, pass_index, False)
+                    _project_image_road_save_work_log_v535(client, family_key, member_key, work_log)
+                    checkpoint = 0
+            save_gap_state("running", "verifying", len(current_candidates), processed, 0, unresolved, pass_index, False)
+
+            refresh_primary_state()
+            residual = _project_image_road_gap_candidates_v547(source_chunks, state, fills_override=fills)
+            residual_count = len(residual)
+            if residual_count == 0:
+                # Verify twice before saying complete.
+                residual_second = _project_image_road_gap_candidates_v547(source_chunks, state, fills_override=fills)
+                if len(residual_second) == 0:
+                    current_candidates = []
+                    save_gap_state("complete", "complete", len(current_candidates), len(current_candidates), 0, 0, pass_index, True)
+                    _project_image_road_save_work_log_v535(client, family_key, member_key, work_log)
+                    return {"status": "complete", "total": 0, "processed": 0, "filled": sum(1 for r in fills.values() if str((r or {}).get("status") or "") == "matched"), "no_path": 0, "pending": 0, "unresolved": 0, "verified": True}
+                residual = residual_second; residual_count = len(residual)
+            current_candidates = residual
+            # If this pass added nothing, the next pass may still use a wider retry. Once all
+            # residual candidates have exhausted retries, the next loop reports partial.
+            save_gap_state("running", "rescanning", residual_count, 0, residual_count, residual_count, pass_index, False)
+            if matched_this_pass == 0:
+                exhausted = True
+                for cand in residual:
+                    row = fills.get(str(cand.get("key") or "")) if isinstance(fills.get(str(cand.get("key") or "")), dict) else {}
+                    if int(row.get("attempts") or 0) < int(PROJECT_IMAGE_ROAD_GAP_MAX_ATTEMPTS_V560):
+                        exhausted = False; break
+                if exhausted:
+                    save_gap_state("partial", "verification_complete", residual_count, residual_count, 0, residual_count, pass_index, True)
+                    _project_image_road_save_work_log_v535(client, family_key, member_key, work_log)
+                    return {"status": "partial", "total": residual_count, "processed": residual_count, "filled": sum(1 for r in fills.values() if str((r or {}).get("status") or "") == "matched"), "no_path": residual_count, "pending": 0, "unresolved": residual_count, "verified": True}
+
+        current_candidates = _project_image_road_gap_candidates_v547(source_chunks, state, fills_override=fills)
+        unresolved = len(current_candidates)
+        status = "complete" if unresolved == 0 else "partial"
+        phase = "complete" if unresolved == 0 else "verification_complete"
+        save_gap_state(status, phase, unresolved, unresolved, 0, unresolved, int(PROJECT_IMAGE_ROAD_GAP_MAX_PASSES_V560), True)
+        _project_image_road_save_work_log_v535(client, family_key, member_key, work_log)
+        return {"status": status, "total": unresolved, "processed": unresolved, "filled": sum(1 for r in fills.values() if str((r or {}).get("status") or "") == "matched"), "no_path": unresolved, "pending": 0, "unresolved": unresolved, "verified": True}
+    except Exception as exc:
+        save_gap_state("failed", "failed", len(current_candidates), 0, len(current_candidates), len(current_candidates), 0, False, _project_image_road_exc_text_v534(exc))
+        return {"status": "failed", "total": len(current_candidates), "pending": len(current_candidates), "unresolved": len(current_candidates), "verified": False}
 
 
 def _project_image_road_gap_launch_v547(source_chunks, state):
-    """v551 lightweight launcher: never discovers candidates on the page thread."""
+    """Lightweight launcher only; all discovery/matching remains outside Streamlit."""
     source_chunks = [dict(row) for row in (source_chunks or []) if isinstance(row, dict) and row.get("key")]
     if not source_chunks:
         return False
@@ -53549,40 +53774,27 @@ def _project_image_road_gap_launch_v547(source_chunks, state):
     runtime = _project_image_road_runtime_v552(PROJECT_IMAGE_ROAD_SCHEMA_V531 + "|gap|" + PROJECT_IMAGE_ROAD_GAP_REVISION_V547 + "|" + PROJECT_IMAGE_ROAD_WORKFLOW_REVISION_V548)
     job_key = (owner[0], owner[1], "gap", PROJECT_IMAGE_ROAD_GAP_REVISION_V547, PROJECT_IMAGE_ROAD_WORKFLOW_REVISION_V548, source_signature)
     with runtime["lock"]:
-        # At most one road workflow per account. If new GPS arrives while one is running,
-        # let the current snapshot finish; the next natural page render can start the new snapshot.
         for existing_key, existing_proc in list(runtime["jobs"].items()):
             try:
                 same_owner = len(existing_key) >= 2 and existing_key[0] == owner[0] and existing_key[1] == owner[1]
                 if same_owner and existing_proc is not None and existing_proc.is_alive():
                     return True
                 if existing_proc is not None and not existing_proc.is_alive():
-                    existing_proc.join(timeout=0)
-                    runtime["jobs"].pop(existing_key, None)
+                    existing_proc.join(timeout=0); runtime["jobs"].pop(existing_key, None)
             except Exception:
                 runtime["jobs"].pop(existing_key, None)
-        proc = runtime["jobs"].get(job_key)
-        if proc is not None:
-            try:
-                if proc.is_alive():
-                    return True
-            except Exception:
-                pass
-            runtime["jobs"].pop(job_key, None)
-
         saved_job = state.get("gap_job") if isinstance(state, dict) and isinstance(state.get("gap_job"), dict) else {}
         saved_complete = (
             str(saved_job.get("gap_revision") or "") == PROJECT_IMAGE_ROAD_GAP_REVISION_V547
             and str(saved_job.get("workflow_revision") or "") == PROJECT_IMAGE_ROAD_WORKFLOW_REVISION_V548
             and str(saved_job.get("source_signature") or "") == source_signature
-            and str(saved_job.get("status") or "") == "complete"
+            and str(saved_job.get("status") or "") in {"complete", "partial"}
+            and bool(saved_job.get("verified"))
         )
         if saved_complete:
             return False
-
-        # Persisted running state with no live process means the server restarted.
-        # Start a fresh detached process; terminal fills are reused by the worker.
         return _project_image_road_start_process_v552(runtime, job_key, "gap", owner, source_chunks)
+
 
 @st.cache_resource(show_spinner=False)
 def _project_image_road_runtime_v552(schema_key):
@@ -53966,8 +54178,12 @@ def _project_image_road_saved_segments_v553(state):
             if canonical not in seen:
                 seen.add(canonical); output.append(clean)
     fills = state.get("gap_fills") if isinstance(state.get("gap_fills"), dict) else {}
+    gap_job = state.get("gap_job") if isinstance(state.get("gap_job"), dict) else {}
+    active_gap_signature = str(gap_job.get("source_signature") or "")
     for row in fills.values():
         if not _project_image_road_gap_terminal_v547(row) or str(row.get("status") or "") != "matched":
+            continue
+        if active_gap_signature and str(row.get("source_signature") or "") != active_gap_signature:
             continue
         for geometry in row.get("geometries") or []:
             clean = _project_clean_segment_v298(geometry)
@@ -54099,6 +54315,8 @@ def _project_image_road_workflow_process_v553(owner, points, stations, photo_is_
             gap_result = _project_image_road_gap_worker_v547(owner, ordered) or {}
         if str(gap_result.get("status") or "") == "failed":
             mark("failed", "failed", "gap_worker_failed")
+        elif str(gap_result.get("status") or "") == "partial" or int(gap_result.get("unresolved") or 0) > 0:
+            mark("complete_with_errors", "complete_with_errors", f"unresolved_gaps:{int(gap_result.get('unresolved') or 0)}")
         elif int(road_result.get("pending") or 0) > 0:
             mark("complete_with_errors", "complete_with_errors")
         else:
@@ -54201,14 +54419,15 @@ export default function(component){
     const rp=Number(s?.road_processed||0), rpend=Number(s?.road_pending||0);
     const gs=String(s?.gap_status||''), gp=String(s?.gap_phase||'');
     const gt=Number(s?.gap_total||0), gdone=Number(s?.gap_processed||0), gf=Number(s?.gap_filled||0);
+    const gu=Number(s?.gap_unresolved||0), gv=Boolean(s?.gap_verified), gpass=Number(s?.gap_pass||0);
     let text='';
-    if(ws==='failed') text='道路・補間処理：停止';
-    else if(ws==='complete_with_errors') text='道路・補間処理：一部未完了';
-    else if(ws==='complete' || gs==='complete') text=`緑線の補間：完了（${gf}件補間）`;
+    if(ws==='failed' || gs==='failed') text='道路・補間処理：停止';
+    else if(gs==='partial' || ws==='complete_with_errors') text=`緑線の補間：再検査済み・未接続${gu}件（${gf}件補間）`;
+    else if((ws==='complete' || gs==='complete') && gv && gu===0) text=`緑線の補間：再検査まで完了（${gf}件補間）`;
     else if(wp==='source_build' || (!rs && ws==='running')) text='道路再作成：準備中（裏側で処理中）';
     else if(rpend>0 || rs==='running') text=`道路再作成：${rp}件処理済み / 残り${rpend}件（裏側で処理中）`;
-    else if(gs==='running' && (gp==='scanning' || gt<=0)) text='緑線の補間：候補確認中（裏側で処理中）';
-    else if(gs==='running') text=`緑線の補間：${gdone}/${gt}件処理済み・${gf}件補間`;
+    else if(gs==='running' && (gp==='scanning' || gp==='rescanning' || gp==='verifying' || gt<=0)) text=`緑線の補間：全体再検査中${gpass?`（${gpass}巡目）`:''}`;
+    else if(gs==='running') text=`緑線の補間：${gdone}/${gt}件処理済み・${gf}件補間${gpass?`（${gpass}巡目）`:''}`;
     else if(ws==='running') text='緑線の補間：準備中（裏側で処理中）';
     else text='道路・補間処理：待機中';
     node.textContent=text;
@@ -54253,8 +54472,10 @@ def _project_image_road_render_progress_v553(state, expected_signature=""):
     except Exception:
         # Static snapshot only; still no timer/rerun fallback.
         doc = initial
-        if str(doc.get("gap_status") or "") == "complete" or str(doc.get("workflow_status") or "") == "complete":
-            st.caption(f"緑線の補間：完了（{int(doc.get('gap_filled') or 0)}件補間）")
+        if str(doc.get("gap_status") or "") == "partial":
+            st.caption(f"緑線の補間：再検査済み・未接続{int(doc.get('gap_unresolved') or 0)}件（{int(doc.get('gap_filled') or 0)}件補間）")
+        elif (str(doc.get("gap_status") or "") == "complete" or str(doc.get("workflow_status") or "") == "complete") and bool(doc.get("gap_verified")) and int(doc.get("gap_unresolved") or 0) == 0:
+            st.caption(f"緑線の補間：再検査まで完了（{int(doc.get('gap_filled') or 0)}件補間）")
         elif int(doc.get("road_pending") or 0) > 0:
             st.caption(f"道路再作成：{int(doc.get('road_processed') or 0)}件処理済み / 残り{int(doc.get('road_pending') or 0)}件（裏側で処理中）")
         else:
