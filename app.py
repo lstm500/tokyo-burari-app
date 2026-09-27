@@ -43,7 +43,9 @@ def _app_css_v473(markup, **_ignored):
 # Review menu-only update: 2026-09-19 JST
 GENERATED_UPDATE_JST = "2026-09-19T14:54:38+09:00"
 
-APP_BUILD = "v536"
+APP_BUILD = "v538"
+# v538: Keep exactly one persistent road-rebuild work log. The dedicated work-log JSON is the sole log source; the road-state JSON stores only chunk results/progress and never duplicates work-log events or per-chunk diagnostics.
+# v537: Isolate the road-rebuild background runtime by schema/build so a still-running cached v535/v536 Future can never block the new worker. Strip verbose per-chunk diagnostics from the main road-state JSON (they remain in the dedicated work log), cap the fallback state log, and derive progress counters from current chunk state to prevent retry double-counting.
 # v536: Remove the OpenCV/cv2 runtime dependency from the road rebuild. The v535 work log showed every chunk failed after successful tile/road-mask creation with ModuleNotFoundError: cv2. Road masking, trace distance and snapping now use Pillow + NumPy only; failed v533 state is isolated by a new schema/storage file.
 # v535: Persist road-rebuild diagnostics in a dedicated Storage log, flush failures immediately, and re-read the log at the bottom of the Project page so the UI never relies on a stale pre-worker snapshot.
 # v534: Persist detailed road-rebuild work logs, including per-tile download attempts, decode/mask stages, chunk recognition/path stages, retries, timings, and failures. Show saved diagnostics at the bottom of Burari Project. Road-recognition behavior itself is unchanged from v533.
@@ -1365,8 +1367,8 @@ PROJECT_GPS_MATCH_TRANSIENT_RETRY_MAX_SECONDS_V530 = 30.0
 # IMPORTANT: road recognition runs on the green-free OSM raster only. The historical
 # green trace is introduced afterwards solely to choose which ALREADY-RECOGNIZED road
 # component was walked. Output geometry is an actual pixel path inside that road mask.
-PROJECT_IMAGE_ROAD_SCHEMA_V531 = "project_image_road_v536"
-PROJECT_IMAGE_ROAD_STORAGE_FILE_V531 = "project_image_road_v536.json"
+PROJECT_IMAGE_ROAD_SCHEMA_V531 = "project_image_road_v537"
+PROJECT_IMAGE_ROAD_STORAGE_FILE_V531 = "project_image_road_v537.json"
 PROJECT_IMAGE_ROAD_TILE_TEMPLATE_V531 = "https://tile.openstreetmap.org/{z}/{x}/{y}.png"
 PROJECT_IMAGE_ROAD_ZOOM_V531 = 18
 PROJECT_IMAGE_ROAD_TILE_SIZE_V531 = 256
@@ -1396,11 +1398,13 @@ PROJECT_IMAGE_ROAD_MAX_COMPACT_ASPECT_V532 = 2.8
 PROJECT_IMAGE_ROAD_WORK_LOG_MAX_V534 = 6000
 # v535: persist diagnostics in a dedicated small Storage document instead of relying
 # only on the much larger road-state checkpoint. Errors are flushed immediately.
-PROJECT_IMAGE_ROAD_WORK_LOG_STORAGE_FILE_V535 = "project_image_road_work_log_v536.json"
-PROJECT_IMAGE_ROAD_WORK_LOG_SCHEMA_V535 = "project_image_road_work_log_v536"
+PROJECT_IMAGE_ROAD_WORK_LOG_STORAGE_FILE_V535 = "project_image_road_work_log_v537.json"
+PROJECT_IMAGE_ROAD_WORK_LOG_SCHEMA_V535 = "project_image_road_work_log_v537"
 PROJECT_IMAGE_ROAD_WORK_LOG_PERSIST_MAX_V535 = 2200
 PROJECT_IMAGE_ROAD_WORK_LOG_SUCCESS_FLUSH_EVERY_V535 = 5
 PROJECT_IMAGE_ROAD_CHUNK_DIAG_MAX_V534 = 180
+# v538: the dedicated work-log JSON is the ONLY persistent work log.
+# The road-state JSON never contains work-log events or per-chunk diagnostics.
 PROJECT_IMAGE_ROAD_LOG_TEXT_MAX_V534 = 700
 # v533 precision-first GREEN-FREE recognition. Thin white strokes on OSM tiles are often
 # label halos or map ornaments rather than roads. A road must first contain an interior
@@ -49853,6 +49857,8 @@ def _project_gps_match_read_state_v527(client, family_key, member_key):
         if not geometries and not terminal_no_match:
             continue
         clean = dict(row)
+        clean.pop("diagnostics", None)
+        clean.pop("diagnostic_event_count", None)
         clean["geometries"] = geometries
         clean.pop("geometry", None)
         clean_chunks[str(key)[:80]] = clean
@@ -50610,7 +50616,7 @@ def _project_image_road_work_log_path_v535(family_key=None, member_key=None):
 
 
 def _project_image_road_read_work_log_v535(client, family_key, member_key):
-    """Read the independently persisted road-rebuild diagnostic log."""
+    """Read the single authoritative persisted road-rebuild work log."""
     result = {"events": [], "saved_at": "", "save_error": "", "schema": PROJECT_IMAGE_ROAD_WORK_LOG_SCHEMA_V535}
     try:
         raw = _storage_bytes(client.storage.from_(GPS_TRACK_BUCKET).download(
@@ -50627,7 +50633,7 @@ def _project_image_road_read_work_log_v535(client, family_key, member_key):
 
 
 def _project_image_road_save_work_log_v535(client, family_key, member_key, events, save_error=""):
-    """Persist diagnostics separately so a large road-state checkpoint cannot hide them."""
+    """Persist the single authoritative road-rebuild work log."""
     document = {
         "schema": PROJECT_IMAGE_ROAD_WORK_LOG_SCHEMA_V535,
         "family_key": str(family_key or ""),
@@ -50668,7 +50674,6 @@ def _project_image_road_default_state_v531(family_key=None, member_key=None):
         "chunks": {},
         "source_chunk_count": 0,
         "last_job": {},
-        "work_log": [],
     }
 
 
@@ -50697,6 +50702,9 @@ def _project_image_road_read_state_v531(client, family_key, member_key):
         if not geometries and status not in {"no_road_pixels", "tile_error"}:
             continue
         clean = dict(row)
+        # v538: legacy diagnostic payloads are never allowed back into road-state JSON.
+        clean.pop("diagnostics", None)
+        clean.pop("diagnostic_event_count", None)
         clean["geometries"] = geometries
         clean_chunks[str(key)[:96]] = clean
     state.update({
@@ -50704,7 +50712,6 @@ def _project_image_road_read_state_v531(client, family_key, member_key):
         "chunks": clean_chunks,
         "source_chunk_count": max(0, int(payload.get("source_chunk_count") or 0)),
         "last_job": payload.get("last_job") if isinstance(payload.get("last_job"), dict) else {},
-        "work_log": [row for row in (payload.get("work_log") or []) if isinstance(row, dict)][-int(PROJECT_IMAGE_ROAD_WORK_LOG_MAX_V534):],
     })
     return state
 
@@ -50718,7 +50725,6 @@ def _project_image_road_save_state_v531(client, family_key, member_key, state):
         "source_chunk_count": max(0, int((state or {}).get("source_chunk_count") or 0)),
         "chunks": (state or {}).get("chunks") if isinstance((state or {}).get("chunks"), dict) else {},
         "last_job": (state or {}).get("last_job") if isinstance((state or {}).get("last_job"), dict) else {},
-        "work_log": [row for row in ((state or {}).get("work_log") or []) if isinstance(row, dict)][-int(PROJECT_IMAGE_ROAD_WORK_LOG_MAX_V534):],
     }
     blob = json.dumps(document, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
     path = _project_image_road_state_path_v531(family_key, member_key)
@@ -51409,8 +51415,34 @@ def _project_image_road_match_chunk_v531(chunk):
 
 
 @st.cache_resource(show_spinner=False)
-def _project_image_road_runtime_v531():
-    return {"lock": threading.RLock(), "jobs": {}, "executor": ThreadPoolExecutor(max_workers=2)}
+def _project_image_road_runtime_v537(schema_key):
+    """Build-isolated server runtime for road reconstruction.
+
+    v535/v536 used the unchanged cached `_project_image_road_runtime_v531()` resource.
+    During a hot Streamlit reload, its `jobs` dictionary could therefore still contain a
+    Future from the previous build.  `_project_image_road_launch_v531()` then returned
+    True for that old Future without ever submitting the new-schema worker.  The UI said
+    "processing" while the new state/log remained at zero.  Versioning both the function
+    and its cache argument makes a new executor/job registry for each schema.
+    """
+    schema_key = str(schema_key or "")
+    suffix = re.sub(r"[^a-zA-Z0-9]+", "-", schema_key)[-24:] or "road"
+    return {
+        "schema": schema_key,
+        "lock": threading.RLock(),
+        "jobs": {},
+        "executor": ThreadPoolExecutor(max_workers=2, thread_name_prefix=f"burari-road-{suffix}"),
+    }
+
+
+def _project_image_road_compact_result_v537(result):
+    """Keep road state log-free; detailed diagnostics live only in the single work-log JSON."""
+    clean = dict(result or {})
+    clean.pop("diagnostics", None)
+    # Defensive bounds: no large accidental debug payload may enter the checkpoint JSON.
+    if isinstance(clean.get("error"), str):
+        clean["error"] = clean["error"][:500]
+    return clean
 
 
 def _project_image_road_worker_v531(owner, source_chunks):
@@ -51425,9 +51457,8 @@ def _project_image_road_worker_v531(owner, source_chunks):
         return str(row.get("status") or "") in {"matched", "no_road_pixels"}
     pending = [row for row in ordered if not terminal(str(row.get("key") or ""))]
     persisted_log = _project_image_road_read_work_log_v535(client, family_key, member_key)
+    # v538: one log only. Never fall back to or duplicate events inside road-state JSON.
     work_log = [row for row in (persisted_log.get("events") or []) if isinstance(row, dict)]
-    if not work_log:
-        work_log = [row for row in (state.get("work_log") or []) if isinstance(row, dict)][-int(PROJECT_IMAGE_ROAD_WORK_LOG_PERSIST_MAX_V535):]
     log_save_status = {"ok": True, "saved_at": str(persisted_log.get("saved_at") or ""), "bytes": 0, "error": ""}
     success_since_log_flush = 0
 
@@ -51501,16 +51532,19 @@ def _project_image_road_worker_v531(owner, source_chunks):
                 chunks.clear(); chunks.update(trimmed)
             state["chunks"] = dict(chunks)
             state["source_chunk_count"] = len(ordered)
-            state["work_log"] = list(work_log)[-int(PROJECT_IMAGE_ROAD_WORK_LOG_MAX_V534):]
+            current_matched = sum(1 for key in {str(row.get("key") or "") for row in ordered} if isinstance(chunks.get(key), dict) and str(chunks[key].get("status") or "") == "matched")
+            current_no_road = sum(1 for key in {str(row.get("key") or "") for row in ordered} if isinstance(chunks.get(key), dict) and str(chunks[key].get("status") or "") == "no_road_pixels")
+            current_tile_errors = sum(1 for key in {str(row.get("key") or "") for row in ordered} if isinstance(chunks.get(key), dict) and str(chunks[key].get("status") or "") == "tile_error")
+            current_processed = current_matched + current_no_road
             state["last_job"] = {
                 "status": "running",
-                "processed": len(chunks),
-                "matched": matched,
-                "no_road": no_road,
-                "tile_errors": tile_errors,
-                "pending": max(0, len(ordered) - len(chunks)),
+                "processed": current_processed,
+                "matched": current_matched,
+                "no_road": current_no_road,
+                "tile_errors": current_tile_errors,
+                "pending": max(0, len(ordered) - current_processed),
                 "workers": int(PROJECT_IMAGE_ROAD_WORKERS_V531),
-                "engine": "green_free_numpy_v536",
+                "engine": "green_free_numpy_v537",
                 "at": now_jst().isoformat(),
                 "log_saved_at": str(log_save_status.get("saved_at") or ""),
                 "log_save_error": str(log_save_status.get("error") or "")[:500],
@@ -51541,28 +51575,26 @@ def _project_image_road_worker_v531(owner, source_chunks):
                 append_work_log(key, 2, retry_result, persist_now=True)
                 result = retry_result
             with lock:
-                chunks[key] = result
+                chunks[key] = _project_image_road_compact_result_v537(result)
                 total_processed += 1; processed_since_save += 1
-                if str(result.get("status") or "") == "matched":
-                    matched += 1
-                elif str(result.get("status") or "") == "no_road_pixels":
-                    no_road += 1
-                else:
-                    tile_errors += 1
             checkpoint(force=False)
     persist_work_log(force=True)
     state["chunks"] = dict(chunks)
     state["source_chunk_count"] = len(ordered)
-    state["work_log"] = list(work_log)[-int(PROJECT_IMAGE_ROAD_WORK_LOG_MAX_V534):]
+    active_keys = {str(row.get("key") or "") for row in ordered}
+    final_matched = sum(1 for key in active_keys if isinstance(chunks.get(key), dict) and str(chunks[key].get("status") or "") == "matched")
+    final_no_road = sum(1 for key in active_keys if isinstance(chunks.get(key), dict) and str(chunks[key].get("status") or "") == "no_road_pixels")
+    final_tile_errors = sum(1 for key in active_keys if isinstance(chunks.get(key), dict) and str(chunks[key].get("status") or "") == "tile_error")
+    final_processed = final_matched + final_no_road
     state["last_job"] = {
-        "status": "complete",
-        "processed": len(chunks),
-        "matched": matched,
-        "no_road": no_road,
-        "tile_errors": tile_errors,
-        "pending": max(0, len(ordered) - len(chunks)),
+        "status": "complete" if final_processed == len(ordered) else "complete_with_errors",
+        "processed": final_processed,
+        "matched": final_matched,
+        "no_road": final_no_road,
+        "tile_errors": final_tile_errors,
+        "pending": max(0, len(ordered) - final_processed),
         "workers": int(PROJECT_IMAGE_ROAD_WORKERS_V531),
-        "engine": "green_free_numpy_v536",
+        "engine": "green_free_numpy_v537",
         "at": now_jst().isoformat(),
         "log_saved_at": str(log_save_status.get("saved_at") or ""),
         "log_save_error": str(log_save_status.get("error") or "")[:500],
@@ -51580,17 +51612,38 @@ def _project_image_road_launch_v531(source_chunks, state):
         row = chunks.get(key) if isinstance(chunks.get(key), dict) else {}
         return str(row.get("status") or "") in {"matched", "no_road_pixels"}
     unfinished = any(not terminal(str(row.get("key") or "")) for row in source_chunks)
-    runtime = _project_image_road_runtime_v531()
+    runtime = _project_image_road_runtime_v537(PROJECT_IMAGE_ROAD_SCHEMA_V531)
     owner = (current_family_key(), current_member_key())
+    job_key = (owner[0], owner[1], PROJECT_IMAGE_ROAD_SCHEMA_V531)
     with runtime["lock"]:
-        future = runtime["jobs"].get(owner)
+        future = runtime["jobs"].get(job_key)
         if future is not None:
             if not future.done():
                 return True
-            runtime["jobs"].pop(owner, None)
+            runtime["jobs"].pop(job_key, None)
         if not unfinished:
             return False
-        runtime["jobs"][owner] = runtime["executor"].submit(_project_image_road_worker_v531, owner, source_chunks)
+        # Persist a tiny launch marker synchronously. If the background worker cannot
+        # even start, the page log will still show that submission happened.
+        try:
+            from supabase import create_client
+            launch_client = create_client(SUPABASE_URL, SUPABASE_SECRET_KEY)
+            existing_log = _project_image_road_read_work_log_v535(launch_client, owner[0], owner[1])
+            launch_events = [row for row in (existing_log.get("events") or []) if isinstance(row, dict)]
+            launch_events.append({
+                "at": now_jst().isoformat(),
+                "chunk_key": "",
+                "attempt": 0,
+                "stage": "worker.launch",
+                "status": "info",
+                "schema": PROJECT_IMAGE_ROAD_SCHEMA_V531,
+                "source_chunks": len(source_chunks),
+                "unfinished": True,
+            })
+            _project_image_road_save_work_log_v535(launch_client, owner[0], owner[1], launch_events)
+        except Exception:
+            pass
+        runtime["jobs"][job_key] = runtime["executor"].submit(_project_image_road_worker_v531, owner, source_chunks)
         return True
 
 
@@ -52508,7 +52561,7 @@ def page_burari_project():
             )
 
     _perf_log_v457(
-        "gps:image_road_v533",
+        "gps:image_road_v537",
         duration_ms=0,
         meta={
             "source_chunks": len(image_road_source_chunks),
@@ -52597,19 +52650,8 @@ def page_burari_project():
         )
     except Exception as exc:
         fresh_log_doc = {"events": [], "saved_at": "", "save_error": _project_image_road_exc_text_v534(exc)}
+    # v538: this dedicated JSON is the one and only work-log source.
     saved_work_log = [row for row in (fresh_log_doc.get("events") or []) if isinstance(row, dict)]
-    if not saved_work_log:
-        saved_work_log = [row for row in (fresh_state_for_log.get("work_log") or []) if isinstance(row, dict)]
-    # Last-resort reconstruction: chunk diagnostics are persisted inside each chunk result.
-    if not saved_work_log:
-        rebuilt = []
-        for _chunk_key, _chunk_row in ((fresh_state_for_log.get("chunks") or {}).items() if isinstance(fresh_state_for_log.get("chunks"), dict) else []):
-            if not isinstance(_chunk_row, dict):
-                continue
-            for _event in (_chunk_row.get("diagnostics") or []):
-                if isinstance(_event, dict):
-                    _row = dict(_event); _row["chunk_key"] = str(_chunk_key)[:96]; _row.setdefault("attempt", 1); rebuilt.append(_row)
-        saved_work_log = rebuilt[-int(PROJECT_IMAGE_ROAD_WORK_LOG_PERSIST_MAX_V535):]
     current_job = fresh_state_for_log.get("last_job") if isinstance(fresh_state_for_log.get("last_job"), dict) else {}
     persisted_at = str(fresh_log_doc.get("saved_at") or current_job.get("log_saved_at") or "")
     persistence_error = str(fresh_log_doc.get("save_error") or current_job.get("log_save_error") or "")
@@ -52618,7 +52660,7 @@ def page_burari_project():
     elif persisted_at:
         st.success(f"作業ログ保存済み：{persisted_at[:19].replace('T',' ')}")
     else:
-        st.warning("作業ログ専用ファイルはまだ保存されていません。ワーカー開始後に自動保存します。")
+        st.warning("作業ログはまだ保存されていません。ワーカー開始後に1つの作業ログJSONへ自動保存します。")
     if saved_work_log:
         error_rows = [row for row in saved_work_log if str(row.get("status") or "").lower() in {"error", "failed", "failure"}]
         st.caption(
@@ -52654,7 +52696,7 @@ def page_burari_project():
             data=json.dumps(log_payload, ensure_ascii=False, indent=2).encode("utf-8"),
             file_name=f"burari_road_work_log_{now_jst().strftime('%Y%m%d_%H%M%S')}.json",
             mime="application/json",
-            key="project_image_road_work_log_download_v535",
+            key="project_image_road_work_log_download_v538",
             use_container_width=True,
         )
     else:
