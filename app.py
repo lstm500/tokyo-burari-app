@@ -1481,8 +1481,8 @@ PROJECT_IMAGE_ROAD_PHOTO_OSAKI_SHINAGAWA_REVISION_V546 = "osaki_shinagawa_tracks
 # they are close.  Candidate gaps are never drawn as straight green chords: a fresh
 # green-free OSM raster is recognized first and the connector must be a complete A* path
 # inside that recognized road mask.
-PROJECT_IMAGE_ROAD_GAP_REVISION_V547 = "small_same_walk_road_gap_fill_v548"
-PROJECT_IMAGE_ROAD_WORKFLOW_REVISION_V548 = "road_then_all_green_gap_autochain_v549"
+PROJECT_IMAGE_ROAD_GAP_REVISION_V547 = "all_current_green_road_gap_fill_v550"
+PROJECT_IMAGE_ROAD_WORKFLOW_REVISION_V548 = "road_then_all_green_gap_autochain_v550"
 PROJECT_IMAGE_ROAD_GAP_MIN_M_V547 = 4.0
 PROJECT_IMAGE_ROAD_GAP_MAX_M_V547 = 160.0
 PROJECT_IMAGE_ROAD_GAP_DENSIFY_M_V547 = 10.0
@@ -52308,10 +52308,12 @@ def _project_image_road_gap_dot_v549(a, b):
 def _project_image_road_gap_candidates_v547(source_chunks, state):
     """Build gap candidates from every current green route fragment.
 
-    v549 keeps the original route-aware candidates, then adds a global endpoint pass for
-    all remaining matched green geometries.  Global pairs must be close, point toward one
-    another, and be mutual best matches (unless they share the same source group).  This
-    expands interpolation coverage without turning nearby unrelated streets into one route.
+    v550 keeps the route-aware candidates and adds a global endpoint pass for all current
+    matched green geometries.  The gap revision is intentionally bumped in v550 so earlier
+    no_path decisions are not treated as terminal after the all-green logic changed.  Every
+    current gap candidate is therefore evaluated again with the same road-first matcher.
+    Global pairs must be close, point toward one another, and be mutual best matches (unless
+    they share the same source group), avoiding arbitrary nearby-street joins.
     """
     chunks = state.get("chunks") if isinstance(state, dict) and isinstance(state.get("chunks"), dict) else {}
     candidates = []
