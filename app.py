@@ -18,6 +18,7 @@ import uuid
 import wave
 import zipfile
 import threading
+import multiprocessing as mp
 import sys
 import unicodedata
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -43,7 +44,10 @@ def _app_css_v473(markup, **_ignored):
 # Review menu-only update: 2026-09-19 JST
 GENERATED_UPDATE_JST = "2026-09-19T14:54:38+09:00"
 
-APP_BUILD = "v549"
+APP_BUILD = "v554"
+# v554: Road reconstruction/gap-fill is isolated from Streamlit UI execution. The worker is a separate lowest-priority OS process, is pinned to one CPU when possible WITHOUT removing that CPU from the UI process, uses idle I/O priority and one road/tile/gap worker, while progress is fetched directly by the browser from a tiny signed Supabase JSON object with no Python rerun.
+# v553: Road reconstruction/gap-fill is application-isolated from Streamlit UI: no Streamlit timer/fragment polling, no page-thread source-chunk/gap discovery, one low-priority OS worker on a reserved CPU when available, idle I/O priority, single-threaded road work, and browser-to-Supabase signed-JSON progress polling that never triggers a Python rerun.
+# v552: Make road rebuild and green-gap interpolation truly non-UI work. Launch the full workflows in dedicated low-priority OS processes instead of Streamlit-process threads, remove the 8-second whole-app tick rerun, and update only the tiny progress fragment. This prevents CPU/GIL contention and periodic full-page reruns from blocking mobile taps.
 # v544: For the ねんね account only, add the same green-free road-recognition treatment for 新大久保→大久保→東中野→中野. Append three fixed station-pairs so existing 86 photo-pair chunk keys remain stable and only the new westward links are newly processed.
 # v539: Keep the single detailed road-rebuild work log for diagnostics/download, but simplify the Project-page UI. Users see only save state and aggregate counts; timestamps, per-step rows, and error details are not rendered.
 # v537: Isolate the road-rebuild background runtime by schema/build so a still-running cached v535/v536 Future can never block the new worker. Strip verbose per-chunk diagnostics from the main road-state JSON (they remain in the dedicated work log), cap the fallback state log, and derive progress counters from current chunk state to prevent retry double-counting.
@@ -1379,12 +1383,12 @@ PROJECT_IMAGE_ROAD_CHUNK_OVERLAP_V531 = 4
 # At z18 in Tokyo this is roughly 25-35 m. It is ONLY a post-recognition selection
 # corridor; it cannot create road pixels or permit a path through non-road areas.
 PROJECT_IMAGE_ROAD_SEARCH_RADIUS_PX_V531 = 72
-PROJECT_IMAGE_ROAD_WORKERS_V531 = 8
-PROJECT_IMAGE_ROAD_TILE_FETCH_WORKERS_V531 = 4
+PROJECT_IMAGE_ROAD_WORKERS_V531 = 1
+PROJECT_IMAGE_ROAD_TILE_FETCH_WORKERS_V531 = 1
 PROJECT_IMAGE_ROAD_TILE_TIMEOUT_SECONDS_V531 = 7.0
 PROJECT_IMAGE_ROAD_TILE_CACHE_MAX_V531 = 1400
-PROJECT_IMAGE_ROAD_CHECKPOINT_EVERY_V531 = 20
-PROJECT_IMAGE_ROAD_CHECKPOINT_SECONDS_V531 = 8.0
+PROJECT_IMAGE_ROAD_CHECKPOINT_EVERY_V531 = 100
+PROJECT_IMAGE_ROAD_CHECKPOINT_SECONDS_V531 = 30.0
 PROJECT_IMAGE_ROAD_MIN_POINT_SCORE_V531 = 0.0  # legacy constant; v532 does not point-snap
 PROJECT_IMAGE_ROAD_MIN_CHUNK_COVERAGE_V531 = 0.62
 PROJECT_IMAGE_ROAD_MAX_STATE_CHUNKS_V531 = 8000
@@ -1403,7 +1407,7 @@ PROJECT_IMAGE_ROAD_WORK_LOG_MAX_V534 = 6000
 PROJECT_IMAGE_ROAD_WORK_LOG_STORAGE_FILE_V535 = "project_image_road_work_log_v537.json"
 PROJECT_IMAGE_ROAD_WORK_LOG_SCHEMA_V535 = "project_image_road_work_log_v537"
 PROJECT_IMAGE_ROAD_WORK_LOG_PERSIST_MAX_V535 = 2200
-PROJECT_IMAGE_ROAD_WORK_LOG_SUCCESS_FLUSH_EVERY_V535 = 5
+PROJECT_IMAGE_ROAD_WORK_LOG_SUCCESS_FLUSH_EVERY_V535 = 100
 PROJECT_IMAGE_ROAD_CHUNK_DIAG_MAX_V534 = 180
 # v538: the dedicated work-log JSON is the ONLY persistent work log.
 # The road-state JSON never contains work-log events or per-chunk diagnostics.
@@ -1482,7 +1486,7 @@ PROJECT_IMAGE_ROAD_PHOTO_OSAKI_SHINAGAWA_REVISION_V546 = "osaki_shinagawa_tracks
 # green-free OSM raster is recognized first and the connector must be a complete A* path
 # inside that recognized road mask.
 PROJECT_IMAGE_ROAD_GAP_REVISION_V547 = "all_current_green_road_gap_fill_v550"
-PROJECT_IMAGE_ROAD_WORKFLOW_REVISION_V548 = "road_then_all_green_gap_background_only_v551"
+PROJECT_IMAGE_ROAD_WORKFLOW_REVISION_V548 = "road_gap_ui_isolated_v554"
 PROJECT_IMAGE_ROAD_GAP_MIN_M_V547 = 4.0
 PROJECT_IMAGE_ROAD_GAP_MAX_M_V547 = 160.0
 PROJECT_IMAGE_ROAD_GAP_DENSIFY_M_V547 = 10.0
@@ -1494,13 +1498,22 @@ PROJECT_IMAGE_ROAD_GAP_AGGRESSIVE_SEARCH_RADIUS_PX_V547 = 138
 PROJECT_IMAGE_ROAD_GAP_AGGRESSIVE_SNAP_RADIUS_PX_V547 = 122
 PROJECT_IMAGE_ROAD_GAP_ENDPOINT_TOLERANCE_M_V547 = 14.0
 PROJECT_IMAGE_ROAD_GAP_MAX_PATH_RATIO_V547 = 3.4
-PROJECT_IMAGE_ROAD_GAP_WORKERS_V547 = 4
+PROJECT_IMAGE_ROAD_GAP_WORKERS_V547 = 1
 PROJECT_IMAGE_ROAD_GLOBAL_GAP_CROSS_GROUP_MAX_M_V549 = 95.0
 PROJECT_IMAGE_ROAD_GLOBAL_GAP_SAME_GROUP_MAX_M_V549 = 160.0
 PROJECT_IMAGE_ROAD_GLOBAL_GAP_ALIGNMENT_MIN_V549 = 0.32
 PROJECT_IMAGE_ROAD_GLOBAL_GAP_SAME_GROUP_ALIGNMENT_MIN_V549 = -0.10
 PROJECT_IMAGE_ROAD_GLOBAL_GAP_GRID_M_V549 = 110.0
-PROJECT_IMAGE_ROAD_GAP_CHECKPOINT_EVERY_V547 = 8
+PROJECT_IMAGE_ROAD_GAP_CHECKPOINT_EVERY_V547 = 50
+# v553: tiny progress object is polled directly by the browser from Supabase Storage.
+# This does not rerun Streamlit or call Python while the user is operating the app.
+PROJECT_IMAGE_ROAD_PROGRESS_STORAGE_FILE_V553 = "project_image_road_progress_v554.json"
+PROJECT_IMAGE_ROAD_PROGRESS_SCHEMA_V553 = "project_image_road_progress_v554"
+PROJECT_IMAGE_ROAD_PROGRESS_SIGNED_SECONDS_V553 = 21600
+PROJECT_IMAGE_ROAD_PROGRESS_BROWSER_POLL_MS_V553 = 10000
+PROJECT_IMAGE_ROAD_PROGRESS_CHECKPOINT_EVERY_V553 = 10
+PROJECT_IMAGE_ROAD_PROGRESS_CHECKPOINT_SECONDS_V553 = 10.0
+PROJECT_IMAGE_ROAD_WORKER_NICE_V553 = 19
 # Keep a long-lived Burari Project screen authenticated without changing the normal
 # 24-hour policy elsewhere. The page renews its signed browser token every 10 minutes.
 PROJECT_AUTH_KEEPALIVE_INTERVAL_SECONDS_V530 = 600.0
@@ -8297,15 +8310,6 @@ def clear_browser_auto_login(key="browser_auto_login_clear"):
     )
 
 
-@st.cache_resource(show_spinner=False)
-def _project_auth_keepalive_component_v530():
-    return st.components.v2.component(
-        "burari_project_auth_keepalive_v530",
-        html="<span hidden></span>",
-        js="""export default function(component){const {data,setTriggerValue}=component;const ms=Math.max(60000,Number(data?.interval_ms||600000));const timer=setTimeout(()=>setTriggerValue('keepalive',{t:Date.now()}),ms);return()=>clearTimeout(timer);}""",
-    )
-
-
 def _project_auth_keepalive_v530():
     """Renew browser auto-login only while the Burari Project page stays mounted."""
     if not st.session_state.get("_family_authenticated", False):
@@ -8331,15 +8335,10 @@ def _project_auth_keepalive_v530():
             # Authentication already present in this Streamlit session remains valid;
             # a transient DB/browser-persistence failure will simply retry next tick.
             pass
-    try:
-        _project_auth_keepalive_component_v530()(
-            data={"interval_ms": int(float(PROJECT_AUTH_KEEPALIVE_INTERVAL_SECONDS_V530) * 1000)},
-            key="project_auth_keepalive_v530",
-            height=1,
-            on_keepalive_change=lambda: None,
-        )
-    except Exception:
-        pass
+    # v553: no timer may trigger a Streamlit rerun while this page is open.
+    # The 24-hour signed auto-login token is refreshed on natural page renders only;
+    # an open Streamlit/WebSocket session itself remains active without this timer.
+    return
 
 
 def _coerce_component_data_url(value):
@@ -48060,7 +48059,7 @@ def _photo_legacy_dense_guide_v545(nodes, spacing_m):
     return dense
 
 
-def _photo_legacy_image_road_chunks_v543():
+def _photo_legacy_image_road_chunks_v543(force_nenne=None):
     """Convert photographed/user-confirmed station-pairs into image-road chunks.
 
     Normal pairs preserve the existing v543 keys and behaviour.  The problematic
@@ -48068,7 +48067,8 @@ def _photo_legacy_image_road_chunks_v543():
     so unrelated completed photo pairs are not reprocessed.  Each guide is used only
     after the untouched map image has been converted into a road mask.
     """
-    if not _photo_legacy_is_nenne_v543():
+    enabled_for_nenne = _photo_legacy_is_nenne_v543() if force_nenne is None else bool(force_nenne)
+    if not enabled_for_nenne:
         return []
     stations = PHOTO_LEGACY_NEW_ACTIVE_STATIONS_V309
     chunks = []
@@ -50254,6 +50254,7 @@ def _project_gps_match_save_state_v527(client, family_key, member_key, state):
         "provider": PROJECT_GPS_MATCH_PROVIDER_V527,
         "saved_at": now_jst().isoformat(),
         "source_chunk_count": max(0, int((state or {}).get("source_chunk_count") or 0)),
+        "active_chunk_keys": [str(x)[:96] for x in ((state or {}).get("active_chunk_keys") or []) if str(x or "").strip()],
         "chunks": (state or {}).get("chunks") if isinstance((state or {}).get("chunks"), dict) else {},
         "failures": (state or {}).get("failures") if isinstance((state or {}).get("failures"), dict) else {},
         "last_job": (state or {}).get("last_job") if isinstance((state or {}).get("last_job"), dict) else {},
@@ -50984,6 +50985,53 @@ def _project_image_road_work_log_path_v535(family_key=None, member_key=None):
     return f"{_gps_track_prefix(family_key, member_key)}/{PROJECT_IMAGE_ROAD_WORK_LOG_STORAGE_FILE_V535}"
 
 
+def _project_image_road_progress_path_v553(family_key=None, member_key=None):
+    return f"{_gps_track_prefix(family_key, member_key)}/{PROJECT_IMAGE_ROAD_PROGRESS_STORAGE_FILE_V553}"
+
+
+def _project_image_road_progress_document_v553(family_key, member_key, state):
+    state = state if isinstance(state, dict) else {}
+    last_job = state.get("last_job") if isinstance(state.get("last_job"), dict) else {}
+    gap_job = state.get("gap_job") if isinstance(state.get("gap_job"), dict) else {}
+    workflow = state.get("workflow_job") if isinstance(state.get("workflow_job"), dict) else {}
+    return {
+        "schema": PROJECT_IMAGE_ROAD_PROGRESS_SCHEMA_V553,
+        "build": APP_BUILD,
+        "family_key": str(family_key or ""),
+        "member_key": str(member_key or ""),
+        "updated_at": now_jst().isoformat(),
+        "input_signature": str(workflow.get("input_signature") or ""),
+        "workflow_status": str(workflow.get("status") or ""),
+        "workflow_phase": str(workflow.get("phase") or ""),
+        "road_status": str(last_job.get("status") or ""),
+        "road_processed": max(0, int(last_job.get("processed") or 0)),
+        "road_pending": max(0, int(last_job.get("pending") or 0)),
+        "gap_status": str(gap_job.get("status") or ""),
+        "gap_phase": str(gap_job.get("phase") or ""),
+        "gap_total": max(0, int(gap_job.get("total") or 0)),
+        "gap_processed": max(0, int(gap_job.get("processed") or 0)),
+        "gap_filled": max(0, int(gap_job.get("filled") or 0)),
+        "gap_pending": max(0, int(gap_job.get("pending") or 0)),
+    }
+
+
+def _project_image_road_save_progress_v553(client, family_key, member_key, state):
+    """Write a tiny progress-only object for direct browser polling."""
+    try:
+        document = _project_image_road_progress_document_v553(family_key, member_key, state)
+        blob = json.dumps(document, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        path = _project_image_road_progress_path_v553(family_key, member_key)
+        bucket = client.storage.from_(GPS_TRACK_BUCKET)
+        options = {"content-type": "application/json", "cache-control": "0", "upsert": "true"}
+        try:
+            bucket.upload(path=path, file=blob, file_options=options)
+        except Exception:
+            bucket.update(path=path, file=blob, file_options={"content-type": "application/json", "cache-control": "0"})
+        return True
+    except Exception:
+        return False
+
+
 def _project_image_road_read_work_log_v535(client, family_key, member_key):
     """Read the single authoritative persisted road-rebuild work log."""
     result = {"events": [], "saved_at": "", "save_error": "", "schema": PROJECT_IMAGE_ROAD_WORK_LOG_SCHEMA_V535}
@@ -51041,11 +51089,13 @@ def _project_image_road_default_state_v531(family_key=None, member_key=None):
         "member_key": str(member_key or current_member_key() or ""),
         "saved_at": "",
         "chunks": {},
+        "active_chunk_keys": [],
         "source_chunk_count": 0,
         "gap_revision": PROJECT_IMAGE_ROAD_GAP_REVISION_V547,
         "gap_fills": {},
         "gap_job": {},
         "last_job": {},
+        "workflow_job": {},
     }
 
 
@@ -51100,11 +51150,13 @@ def _project_image_road_read_state_v531(client, family_key, member_key):
     state.update({
         "saved_at": str(payload.get("saved_at") or "")[:80],
         "chunks": clean_chunks,
+        "active_chunk_keys": [str(x)[:96] for x in (payload.get("active_chunk_keys") or []) if str(x or "").strip()],
         "source_chunk_count": max(0, int(payload.get("source_chunk_count") or 0)),
         "gap_revision": PROJECT_IMAGE_ROAD_GAP_REVISION_V547,
         "gap_fills": clean_gap_fills,
         "gap_job": payload.get("gap_job") if isinstance(payload.get("gap_job"), dict) else {},
         "last_job": payload.get("last_job") if isinstance(payload.get("last_job"), dict) else {},
+        "workflow_job": payload.get("workflow_job") if isinstance(payload.get("workflow_job"), dict) else {},
     })
     return state
 
@@ -51121,6 +51173,7 @@ def _project_image_road_save_state_v531(client, family_key, member_key, state):
         "gap_fills": (state or {}).get("gap_fills") if isinstance((state or {}).get("gap_fills"), dict) else {},
         "gap_job": (state or {}).get("gap_job") if isinstance((state or {}).get("gap_job"), dict) else {},
         "last_job": (state or {}).get("last_job") if isinstance((state or {}).get("last_job"), dict) else {},
+        "workflow_job": (state or {}).get("workflow_job") if isinstance((state or {}).get("workflow_job"), dict) else {},
     }
     blob = json.dumps(document, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
     path = _project_image_road_state_path_v531(family_key, member_key)
@@ -51137,6 +51190,9 @@ def _project_image_road_save_state_v531(client, family_key, member_key, state):
             except Exception:
                 pass
             bucket.upload(path=path, file=blob, file_options={"content-type": GPS_TRACK_STORAGE_MIME, "cache-control": "0"})
+    # v553: progress is a separate tiny object. The browser polls it directly, so
+    # progress updates never trigger Streamlit/Python work.
+    _project_image_road_save_progress_v553(client, family_key, member_key, state)
     return True
 
 
@@ -52649,6 +52705,7 @@ def _project_image_road_gap_worker_v547(owner, source_chunks):
             latest = _project_image_road_read_state_v531(client, family_key, member_key)
             if isinstance(latest, dict):
                 state["chunks"] = latest.get("chunks") if isinstance(latest.get("chunks"), dict) else state.get("chunks", {})
+                state["active_chunk_keys"] = latest.get("active_chunk_keys") if isinstance(latest.get("active_chunk_keys"), list) else state.get("active_chunk_keys", [])
                 state["source_chunk_count"] = int(latest.get("source_chunk_count") or state.get("source_chunk_count") or 0)
                 state["last_job"] = latest.get("last_job") if isinstance(latest.get("last_job"), dict) else state.get("last_job", {})
         except Exception:
@@ -52697,6 +52754,31 @@ def _project_image_road_gap_worker_v547(owner, source_chunks):
     log_doc = _project_image_road_read_work_log_v535(client, family_key, member_key)
     work_log = [row for row in (log_doc.get("events") or []) if isinstance(row, dict)]
     done_since_save = 0
+    gap_progress_since_save = 0
+    gap_progress_last_save = time.monotonic()
+
+    def publish_gap_progress(force=False):
+        nonlocal gap_progress_since_save, gap_progress_last_save
+        if (
+            not force
+            and gap_progress_since_save < int(PROJECT_IMAGE_ROAD_PROGRESS_CHECKPOINT_EVERY_V553)
+            and (time.monotonic() - gap_progress_last_save) < float(PROJECT_IMAGE_ROAD_PROGRESS_CHECKPOINT_SECONDS_V553)
+        ):
+            return
+        progress_state = {
+            "workflow_job": state.get("workflow_job") if isinstance(state.get("workflow_job"), dict) else {},
+            "last_job": state.get("last_job") if isinstance(state.get("last_job"), dict) else {},
+            "gap_job": {
+                "status": "running" if processed < total else "complete",
+                "phase": "matching" if processed < total else "complete",
+                "total": total, "processed": processed, "filled": filled_count,
+                "no_path": no_path_count, "pending": max(0, total - processed),
+            },
+        }
+        _project_image_road_save_progress_v553(client, family_key, member_key, progress_state)
+        gap_progress_since_save = 0
+        gap_progress_last_save = time.monotonic()
+
     with ThreadPoolExecutor(max_workers=int(PROJECT_IMAGE_ROAD_GAP_WORKERS_V547)) as pool:
         future_map = {pool.submit(_project_image_road_gap_match_v547, c): c for c in pending}
         for future in as_completed(future_map):
@@ -52721,11 +52803,14 @@ def _project_image_road_gap_worker_v547(owner, source_chunks):
             if len(work_log) > int(PROJECT_IMAGE_ROAD_WORK_LOG_PERSIST_MAX_V535):
                 del work_log[:-int(PROJECT_IMAGE_ROAD_WORK_LOG_PERSIST_MAX_V535)]
             done_since_save += 1
+            gap_progress_since_save += 1
+            publish_gap_progress(force=False)
             if done_since_save >= int(PROJECT_IMAGE_ROAD_GAP_CHECKPOINT_EVERY_V547):
                 save_gap_state("running", "matching", total, processed, filled_count, no_path_count, total - processed)
                 _project_image_road_save_work_log_v535(client, family_key, member_key, work_log)
                 done_since_save = 0
 
+    publish_gap_progress(force=True)
     save_gap_state("complete", "complete", total, processed, filled_count, no_path_count, 0)
     _project_image_road_save_work_log_v535(client, family_key, member_key, work_log)
     return {"status":"complete", "total":total, "processed":processed, "filled":filled_count, "no_path":no_path_count, "pending":0}
@@ -52738,13 +52823,28 @@ def _project_image_road_gap_launch_v547(source_chunks, state):
         return False
     owner = (current_family_key(), current_member_key())
     source_signature = _project_image_road_gap_source_signature_v551(source_chunks)
-    runtime = _project_image_road_runtime_v537(PROJECT_IMAGE_ROAD_SCHEMA_V531 + "|gap|" + PROJECT_IMAGE_ROAD_GAP_REVISION_V547 + "|" + PROJECT_IMAGE_ROAD_WORKFLOW_REVISION_V548)
+    runtime = _project_image_road_runtime_v552(PROJECT_IMAGE_ROAD_SCHEMA_V531 + "|gap|" + PROJECT_IMAGE_ROAD_GAP_REVISION_V547 + "|" + PROJECT_IMAGE_ROAD_WORKFLOW_REVISION_V548)
     job_key = (owner[0], owner[1], "gap", PROJECT_IMAGE_ROAD_GAP_REVISION_V547, PROJECT_IMAGE_ROAD_WORKFLOW_REVISION_V548, source_signature)
     with runtime["lock"]:
-        future = runtime["jobs"].get(job_key)
-        if future is not None:
-            if not future.done():
-                return True
+        # At most one road workflow per account. If new GPS arrives while one is running,
+        # let the current snapshot finish; the next natural page render can start the new snapshot.
+        for existing_key, existing_proc in list(runtime["jobs"].items()):
+            try:
+                same_owner = len(existing_key) >= 2 and existing_key[0] == owner[0] and existing_key[1] == owner[1]
+                if same_owner and existing_proc is not None and existing_proc.is_alive():
+                    return True
+                if existing_proc is not None and not existing_proc.is_alive():
+                    existing_proc.join(timeout=0)
+                    runtime["jobs"].pop(existing_key, None)
+            except Exception:
+                runtime["jobs"].pop(existing_key, None)
+        proc = runtime["jobs"].get(job_key)
+        if proc is not None:
+            try:
+                if proc.is_alive():
+                    return True
+            except Exception:
+                pass
             runtime["jobs"].pop(job_key, None)
 
         saved_job = state.get("gap_job") if isinstance(state, dict) and isinstance(state.get("gap_job"), dict) else {}
@@ -52757,30 +52857,65 @@ def _project_image_road_gap_launch_v547(source_chunks, state):
         if saved_complete:
             return False
 
-        # A persisted "running" job without a live Future means the server restarted.
-        # Resubmit it; existing terminal fills are reused by the worker.
-        runtime["jobs"][job_key] = runtime["executor"].submit(_project_image_road_gap_worker_v547, owner, source_chunks)
-        return True
+        # Persisted running state with no live process means the server restarted.
+        # Start a fresh detached process; terminal fills are reused by the worker.
+        return _project_image_road_start_process_v552(runtime, job_key, "gap", owner, source_chunks)
 
 @st.cache_resource(show_spinner=False)
-def _project_image_road_runtime_v537(schema_key):
-    """Build-isolated server runtime for road reconstruction.
+def _project_image_road_runtime_v552(schema_key):
+    """Track detached road workers without running heavy work in Streamlit's process.
 
-    v535/v536 used the unchanged cached `_project_image_road_runtime_v531()` resource.
-    During a hot Streamlit reload, its `jobs` dictionary could therefore still contain a
-    Future from the previous build.  `_project_image_road_launch_v531()` then returned
-    True for that old Future without ever submitting the new-schema worker.  The UI said
-    "processing" while the new state/log remained at zero.  Versioning both the function
-    and its cache argument makes a new executor/job registry for each schema.
+    Heavy reconstruction/gap-fill work lives in a dedicated OS process.  The page process
+    only owns tiny Process handles and reads persisted progress.  A positive nice value in
+    the child gives UI/server request handling priority when CPU is busy.
     """
-    schema_key = str(schema_key or "")
-    suffix = re.sub(r"[^a-zA-Z0-9]+", "-", schema_key)[-24:] or "road"
     return {
-        "schema": schema_key,
+        "schema": str(schema_key or ""),
         "lock": threading.RLock(),
         "jobs": {},
-        "executor": ThreadPoolExecutor(max_workers=2, thread_name_prefix=f"burari-road-{suffix}"),
     }
+
+
+def _project_image_road_process_entry_v552(kind, owner, source_chunks):
+    try:
+        os.nice(10)
+    except Exception:
+        pass
+    # Avoid numerical libraries creating their own large CPU pools in the worker.
+    for name in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
+        os.environ[name] = "1"
+    if str(kind) == "road":
+        _project_image_road_worker_v531(owner, source_chunks)
+    else:
+        _project_image_road_gap_worker_v547(owner, source_chunks)
+
+
+def _project_image_road_start_process_v552(runtime, job_key, kind, owner, source_chunks):
+    """Start one low-priority detached worker and return True when it is alive/started."""
+    proc = runtime.get("jobs", {}).get(job_key)
+    if proc is not None:
+        try:
+            if proc.is_alive():
+                return True
+            proc.join(timeout=0)
+        except Exception:
+            pass
+        runtime["jobs"].pop(job_key, None)
+    try:
+        # Linux/Android-hosted Streamlit uses POSIX; fork avoids re-running the 56k-line
+        # Streamlit script in a spawned child.  The worker creates fresh Supabase clients.
+        ctx = mp.get_context("fork") if "fork" in mp.get_all_start_methods() else mp.get_context()
+        proc = ctx.Process(
+            target=_project_image_road_process_entry_v552,
+            args=(str(kind), tuple(owner), [dict(x) for x in source_chunks]),
+            daemon=False,
+            name=f"burari-road-{kind}",
+        )
+        proc.start()
+        runtime["jobs"][job_key] = proc
+        return True
+    except Exception:
+        return False
 
 
 def _project_image_road_compact_result_v537(result):
@@ -52793,7 +52928,7 @@ def _project_image_road_compact_result_v537(result):
     return clean
 
 
-def _project_image_road_worker_v531(owner, source_chunks):
+def _project_image_road_worker_v531(owner, source_chunks, chain_gap=True):
     from supabase import create_client
     client = create_client(SUPABASE_URL, SUPABASE_SECRET_KEY)
     family_key, member_key = owner
@@ -52868,6 +53003,34 @@ def _project_image_road_worker_v531(owner, source_chunks):
     no_road = sum(1 for row in chunks.values() if isinstance(row, dict) and str(row.get("status") or "") == "no_road_pixels")
     tile_errors = sum(1 for row in chunks.values() if isinstance(row, dict) and str(row.get("status") or "") == "tile_error")
     last_save = time.monotonic()
+    progress_since_save = 0
+    progress_last_save = time.monotonic()
+
+    def publish_progress(force=False):
+        nonlocal progress_since_save, progress_last_save
+        if (
+            not force
+            and progress_since_save < int(PROJECT_IMAGE_ROAD_PROGRESS_CHECKPOINT_EVERY_V553)
+            and (time.monotonic() - progress_last_save) < float(PROJECT_IMAGE_ROAD_PROGRESS_CHECKPOINT_SECONDS_V553)
+        ):
+            return
+        active_now = {str(row.get("key") or "") for row in ordered}
+        current_matched = sum(1 for key in active_now if isinstance(chunks.get(key), dict) and str(chunks[key].get("status") or "") == "matched")
+        current_no_road = sum(1 for key in active_now if isinstance(chunks.get(key), dict) and str(chunks[key].get("status") or "") == "no_road_pixels" and _project_image_road_terminal_v540(chunks[key]))
+        current_tile_errors = sum(1 for key in active_now if isinstance(chunks.get(key), dict) and str(chunks[key].get("status") or "") == "tile_error")
+        current_processed = sum(1 for key in active_now if _project_image_road_terminal_v540(chunks.get(key)))
+        progress_state = {
+            "workflow_job": state.get("workflow_job") if isinstance(state.get("workflow_job"), dict) else {},
+            "gap_job": state.get("gap_job") if isinstance(state.get("gap_job"), dict) else {},
+            "last_job": {
+                "status": "running", "processed": current_processed, "matched": current_matched,
+                "no_road": current_no_road, "tile_errors": current_tile_errors,
+                "pending": max(0, len(ordered) - current_processed),
+            },
+        }
+        _project_image_road_save_progress_v553(client, family_key, member_key, progress_state)
+        progress_since_save = 0
+        progress_last_save = time.monotonic()
 
     def checkpoint(force=False):
         nonlocal processed_since_save, last_save
@@ -52881,6 +53044,7 @@ def _project_image_road_worker_v531(owner, source_chunks):
             state["chunks"] = dict(chunks)
             state["source_chunk_count"] = len(ordered)
             active_now = {str(row.get("key") or "") for row in ordered}
+            state["active_chunk_keys"] = sorted(active_now)
             current_matched = sum(1 for key in active_now if isinstance(chunks.get(key), dict) and str(chunks[key].get("status") or "") == "matched")
             current_no_road = sum(1 for key in active_now if isinstance(chunks.get(key), dict) and str(chunks[key].get("status") or "") == "no_road_pixels" and _project_image_road_terminal_v540(chunks[key]))
             current_tile_errors = sum(1 for key in active_now if isinstance(chunks.get(key), dict) and str(chunks[key].get("status") or "") == "tile_error")
@@ -52925,12 +53089,15 @@ def _project_image_road_worker_v531(owner, source_chunks):
                 result = retry_result
             with lock:
                 chunks[key] = _project_image_road_compact_result_v537(result)
-                total_processed += 1; processed_since_save += 1
+                total_processed += 1; processed_since_save += 1; progress_since_save += 1
+            publish_progress(force=False)
             checkpoint(force=False)
+    publish_progress(force=True)
     persist_work_log(force=True)
     state["chunks"] = dict(chunks)
     state["source_chunk_count"] = len(ordered)
     active_keys = {str(row.get("key") or "") for row in ordered}
+    state["active_chunk_keys"] = sorted(active_keys)
     final_matched = sum(1 for key in active_keys if isinstance(chunks.get(key), dict) and str(chunks[key].get("status") or "") == "matched")
     final_no_road = sum(1 for key in active_keys if isinstance(chunks.get(key), dict) and str(chunks[key].get("status") or "") == "no_road_pixels" and _project_image_road_terminal_v540(chunks[key]))
     final_tile_errors = sum(1 for key in active_keys if isinstance(chunks.get(key), dict) and str(chunks[key].get("status") or "") == "tile_error")
@@ -52955,10 +53122,11 @@ def _project_image_road_worker_v531(owner, source_chunks):
     # finished, so a page showing 1734/1736 could remain at 0/860 indefinitely.
     # Chaining here guarantees that completion of the primary phase automatically
     # starts short-gap repair even if the page is closed.
-    try:
-        _project_image_road_gap_worker_v547(owner, ordered)
-    except Exception:
-        pass
+    if chain_gap:
+        try:
+            _project_image_road_gap_worker_v547(owner, ordered)
+        except Exception:
+            pass
     return dict(state["last_job"])
 
 
@@ -52971,7 +53139,7 @@ def _project_image_road_launch_v531(source_chunks, state):
         row = chunks.get(key) if isinstance(chunks.get(key), dict) else {}
         return _project_image_road_terminal_v540(row)
     unfinished = any(not terminal(str(row.get("key") or "")) for row in source_chunks)
-    runtime = _project_image_road_runtime_v537(
+    runtime = _project_image_road_runtime_v552(
         PROJECT_IMAGE_ROAD_SCHEMA_V531 + "|" + PROJECT_IMAGE_ROAD_FALLBACK_REVISION_V540 + "|" + PROJECT_IMAGE_ROAD_SOURCE_REVISION_V543 + "|" + PROJECT_IMAGE_ROAD_WORKFLOW_REVISION_V548
     )
     owner = (current_family_key(), current_member_key())
@@ -52981,10 +53149,13 @@ def _project_image_road_launch_v531(source_chunks, state):
         PROJECT_IMAGE_ROAD_WORKFLOW_REVISION_V548,
     )
     with runtime["lock"]:
-        future = runtime["jobs"].get(job_key)
-        if future is not None:
-            if not future.done():
-                return True
+        proc = runtime["jobs"].get(job_key)
+        if proc is not None:
+            try:
+                if proc.is_alive():
+                    return True
+            except Exception:
+                pass
             runtime["jobs"].pop(job_key, None)
         if not unfinished:
             return False
@@ -53008,8 +53179,7 @@ def _project_image_road_launch_v531(source_chunks, state):
             _project_image_road_save_work_log_v535(launch_client, owner[0], owner[1], launch_events)
         except Exception:
             pass
-        runtime["jobs"][job_key] = runtime["executor"].submit(_project_image_road_worker_v531, owner, source_chunks)
-        return True
+        return _project_image_road_start_process_v552(runtime, job_key, "road", owner, source_chunks)
 
 
 def _project_image_road_segments_v531(source_chunks, state):
@@ -53051,6 +53221,321 @@ def _project_image_road_segments_v531(source_chunks, state):
         "rendered_parts": len(output),
     }
 
+
+
+def _project_image_road_saved_segments_v553(state):
+    """Render only persisted results; never rebuild source chunks on the UI thread."""
+    state = state if isinstance(state, dict) else {}
+    output = []
+    seen = set()
+    chunks = state.get("chunks") if isinstance(state.get("chunks"), dict) else {}
+    active_keys = {str(x) for x in (state.get("active_chunk_keys") or []) if str(x or "").strip()}
+    chunk_items = ((k, v) for k, v in chunks.items() if not active_keys or str(k) in active_keys)
+    for _key, row in chunk_items:
+        if not isinstance(row, dict) or str(row.get("status") or "") != "matched":
+            continue
+        for geometry in row.get("geometries") or []:
+            clean = _project_clean_segment_v298(geometry)
+            if len(clean) < 2:
+                continue
+            sig = tuple((round(float(p[0]), 6), round(float(p[1]), 6)) for p in clean)
+            rev = tuple(reversed(sig)); canonical = sig if sig <= rev else rev
+            if canonical not in seen:
+                seen.add(canonical); output.append(clean)
+    fills = state.get("gap_fills") if isinstance(state.get("gap_fills"), dict) else {}
+    for row in fills.values():
+        if not _project_image_road_gap_terminal_v547(row) or str(row.get("status") or "") != "matched":
+            continue
+        for geometry in row.get("geometries") or []:
+            clean = _project_clean_segment_v298(geometry)
+            if len(clean) < 2:
+                continue
+            sig = tuple((round(float(p[0]), 6), round(float(p[1]), 6)) for p in clean)
+            rev = tuple(reversed(sig)); canonical = sig if sig <= rev else rev
+            if canonical not in seen:
+                seen.add(canonical); output.append(clean)
+    return output
+
+
+def _project_image_road_input_signature_v553(points, photo_is_nenne):
+    """O(1)-ish UI-side input identity; all heavy source construction stays in worker."""
+    rows = points if isinstance(points, list) else list(points or [])
+    first = rows[0] if rows and isinstance(rows[0], dict) else {}
+    last = rows[-1] if rows and isinstance(rows[-1], dict) else {}
+    raw = "|".join([
+        str(len(rows)),
+        str(first.get("id") or ""), str(first.get("ts_ms") or ""),
+        str(last.get("id") or ""), str(last.get("ts_ms") or ""),
+        "nenne" if photo_is_nenne else "normal",
+        PROJECT_IMAGE_ROAD_SCHEMA_V531,
+        PROJECT_IMAGE_ROAD_FALLBACK_REVISION_V540,
+        PROJECT_IMAGE_ROAD_SOURCE_REVISION_V543,
+        PROJECT_IMAGE_ROAD_GAP_REVISION_V547,
+        PROJECT_IMAGE_ROAD_WORKFLOW_REVISION_V548,
+    ])
+    return hashlib.sha1(raw.encode("utf-8", "ignore")).hexdigest()[:24]
+
+
+_PROJECT_IMAGE_ROAD_CPU_RESERVATION_V553 = {"initialized": False, "worker_cpu": None, "original": None}
+
+
+def _project_image_road_reserve_cpu_v553():
+    """Choose a worker CPU without changing Streamlit/UI CPU affinity.
+
+    The child is pinned to one allowed CPU and SCHED_IDLE makes it yield to normal-priority
+    work.  The parent keeps its complete original CPU set, so starting background work can
+    never reduce the CPU capacity available to UI/server request handling.
+    """
+    state = _PROJECT_IMAGE_ROAD_CPU_RESERVATION_V553
+    if state.get("initialized"):
+        return state.get("worker_cpu")
+    state["initialized"] = True
+    if not hasattr(os, "sched_getaffinity"):
+        return None
+    try:
+        allowed = sorted(os.sched_getaffinity(0))
+        state["original"] = tuple(allowed)
+        if not allowed:
+            return None
+        worker_cpu = int(allowed[-1])
+        state["worker_cpu"] = worker_cpu
+        return worker_cpu
+    except Exception:
+        return None
+
+
+def _project_image_road_apply_worker_isolation_v553(worker_cpu=None):
+    """Make background CPU/I/O yield to UI, and keep numerical libraries single-threaded."""
+    for name in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
+        os.environ[name] = "1"
+    # Linux SCHED_IDLE is stronger than nice: this worker receives CPU only when
+    # normal-priority UI/server work has nothing runnable. Fall back harmlessly elsewhere.
+    try:
+        if hasattr(os, "SCHED_IDLE") and hasattr(os, "sched_setscheduler"):
+            os.sched_setscheduler(0, os.SCHED_IDLE, os.sched_param(0))
+    except Exception:
+        pass
+    try:
+        os.setpriority(os.PRIO_PROCESS, 0, int(PROJECT_IMAGE_ROAD_WORKER_NICE_V553))
+    except Exception:
+        try:
+            os.nice(int(PROJECT_IMAGE_ROAD_WORKER_NICE_V553))
+        except Exception:
+            pass
+    try:
+        subprocess.run(
+            ["ionice", "-c", "3", "-p", str(os.getpid())],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=1.0, check=False,
+        )
+    except Exception:
+        pass
+    if worker_cpu is not None and hasattr(os, "sched_setaffinity"):
+        try:
+            os.sched_setaffinity(0, {int(worker_cpu)})
+        except Exception:
+            pass
+
+
+def _project_image_road_workflow_process_v553(owner, points, stations, photo_is_nenne, input_signature, worker_cpu=None):
+    """Entire road + all-green gap workflow. Never called in the Streamlit UI process."""
+    _project_image_road_apply_worker_isolation_v553(worker_cpu)
+    from supabase import create_client
+    family_key, member_key = owner
+    client = create_client(SUPABASE_URL, SUPABASE_SECRET_KEY)
+    state = _project_image_road_read_state_v531(client, family_key, member_key)
+
+    def mark(status, phase, error=""):
+        latest = _project_image_road_read_state_v531(client, family_key, member_key)
+        if isinstance(latest, dict):
+            state.update(latest)
+        state["workflow_job"] = {
+            "revision": PROJECT_IMAGE_ROAD_WORKFLOW_REVISION_V548,
+            "input_signature": str(input_signature or ""),
+            "status": str(status), "phase": str(phase),
+            "updated_at": now_jst().isoformat(), "error": str(error or "")[:500],
+        }
+        _project_image_road_save_state_v531(client, family_key, member_key, state)
+
+    try:
+        mark("running", "source_build")
+        gps_chunks = _project_image_road_source_chunks_v531(points or [], stations=stations or []) if points else []
+        photo_chunks = _photo_legacy_image_road_chunks_v543(force_nenne=bool(photo_is_nenne))
+        ordered = list(gps_chunks) + list(photo_chunks)
+        mark("running", "road")
+        road_result = {"status": "complete", "pending": 0}
+        gap_result = {"status": "complete", "pending": 0}
+        if ordered:
+            # Retry only genuinely unfinished road chunks inside the isolated process.
+            # No UI rerun is needed for these recovery passes.
+            for retry_round in range(3):
+                road_result = _project_image_road_worker_v531(owner, ordered, chain_gap=False) or {}
+                if int(road_result.get("pending") or 0) <= 0:
+                    break
+                time.sleep(1.5 * (retry_round + 1))
+            mark("running", "gap")
+            gap_result = _project_image_road_gap_worker_v547(owner, ordered) or {}
+        if str(gap_result.get("status") or "") == "failed":
+            mark("failed", "failed", "gap_worker_failed")
+        elif int(road_result.get("pending") or 0) > 0:
+            mark("complete_with_errors", "complete_with_errors")
+        else:
+            mark("complete", "complete")
+    except Exception as exc:
+        mark("failed", "failed", _project_image_road_exc_text_v534(exc))
+
+
+def _project_image_road_start_workflow_v553(points, stations, state, photo_is_nenne, input_signature=None):
+    """Light UI launcher only: no source chunks, candidate scan, road mask or A* here."""
+    owner = (current_family_key(), current_member_key())
+    signature = str(input_signature or _project_image_road_input_signature_v553(points, photo_is_nenne))
+    workflow = state.get("workflow_job") if isinstance(state, dict) and isinstance(state.get("workflow_job"), dict) else {}
+    if (
+        str(workflow.get("revision") or "") == PROJECT_IMAGE_ROAD_WORKFLOW_REVISION_V548
+        and str(workflow.get("input_signature") or "") == signature
+        and str(workflow.get("status") or "") == "complete"
+    ):
+        return False
+    runtime = _project_image_road_runtime_v552("workflow|" + PROJECT_IMAGE_ROAD_WORKFLOW_REVISION_V548)
+    job_key = (owner[0], owner[1], "workflow", signature, PROJECT_IMAGE_ROAD_WORKFLOW_REVISION_V548)
+    with runtime["lock"]:
+        # Never run two road workflows for one account at the same time.
+        for existing_key, existing_proc in list(runtime["jobs"].items()):
+            try:
+                same_owner = len(existing_key) >= 2 and existing_key[0] == owner[0] and existing_key[1] == owner[1]
+                if same_owner and existing_proc is not None and existing_proc.is_alive():
+                    return True
+                if existing_proc is not None and not existing_proc.is_alive():
+                    existing_proc.join(timeout=0)
+                    runtime["jobs"].pop(existing_key, None)
+            except Exception:
+                runtime["jobs"].pop(existing_key, None)
+        proc = runtime["jobs"].get(job_key)
+        if proc is not None:
+            try:
+                if proc.is_alive():
+                    return True
+                proc.join(timeout=0)
+            except Exception:
+                pass
+            runtime["jobs"].pop(job_key, None)
+        worker_cpu = _project_image_road_reserve_cpu_v553()
+        try:
+            ctx = mp.get_context("fork") if "fork" in mp.get_all_start_methods() else mp.get_context()
+            proc = ctx.Process(
+                target=_project_image_road_workflow_process_v553,
+                args=(owner, points or [], stations or [], bool(photo_is_nenne), signature, worker_cpu),
+                daemon=True,
+                name="burari-road-workflow-v554",
+            )
+            proc.start()
+            runtime["jobs"][job_key] = proc
+            return True
+        except Exception:
+            return False
+
+
+def _project_image_road_progress_initial_v553(state):
+    return _project_image_road_progress_document_v553(current_family_key(), current_member_key(), state)
+
+
+@st.cache_data(ttl=18000, show_spinner=False)
+def _project_image_road_progress_signed_url_v553(family_key, member_key):
+    """Create the browser progress URL at most once per five hours per account.
+
+    Reusing this URL prevents ordinary UI reruns from making an extra Supabase signing
+    request.  The URL lifetime is six hours, so the five-hour cache never outlives it.
+    """
+    try:
+        client = supabase_client()
+        response = client.storage.from_(GPS_TRACK_BUCKET).create_signed_url(
+            _project_image_road_progress_path_v553(family_key, member_key),
+            int(PROJECT_IMAGE_ROAD_PROGRESS_SIGNED_SECONDS_V553),
+        )
+        return _signed_url_from_value(response)
+    except Exception:
+        return ""
+
+
+@st.cache_resource(show_spinner=False)
+def _project_image_road_progress_component_v553():
+    return st.components.v2.component(
+        "burari_project_road_progress_v554",
+        html="""<div id='road-progress-v554' style='font-size:.82rem;opacity:.78;line-height:1.45;min-height:1.2em'></div>""",
+        css="""#road-progress-v554{padding:.05rem 0 .15rem 0} .ok{opacity:.86} .run{opacity:.82}""",
+        js=r"""
+export default function(component){
+  const {data,parentElement}=component;
+  const node=parentElement.querySelector('#road-progress-v554');
+  if(!node)return;
+  let stopped=false, timer=null, activeController=null;
+  const expected=String(data?.expected_signature||'');
+  const render=(s)=>{
+    const sig=String(s?.input_signature||'');
+    if(expected && sig!==expected){ node.textContent='道路再作成：準備中（裏側で処理中）'; return false; }
+    const ws=String(s?.workflow_status||'');
+    const wp=String(s?.workflow_phase||'');
+    const rs=String(s?.road_status||'');
+    const rp=Number(s?.road_processed||0), rpend=Number(s?.road_pending||0);
+    const gs=String(s?.gap_status||''), gp=String(s?.gap_phase||'');
+    const gt=Number(s?.gap_total||0), gdone=Number(s?.gap_processed||0), gf=Number(s?.gap_filled||0);
+    let text='';
+    if(ws==='failed') text='道路・補間処理：停止';
+    else if(ws==='complete_with_errors') text='道路・補間処理：一部未完了';
+    else if(ws==='complete' || gs==='complete') text=`緑線の補間：完了（${gf}件補間）`;
+    else if(wp==='source_build' || (!rs && ws==='running')) text='道路再作成：準備中（裏側で処理中）';
+    else if(rpend>0 || rs==='running') text=`道路再作成：${rp}件処理済み / 残り${rpend}件（裏側で処理中）`;
+    else if(gs==='running' && (gp==='scanning' || gt<=0)) text='緑線の補間：候補確認中（裏側で処理中）';
+    else if(gs==='running') text=`緑線の補間：${gdone}/${gt}件処理済み・${gf}件補間`;
+    else if(ws==='running') text='緑線の補間：準備中（裏側で処理中）';
+    else text='道路・補間処理：待機中';
+    node.textContent=text;
+    return ws==='complete' || ws==='complete_with_errors' || ws==='failed';
+  };
+  let current=data?.initial||{};
+  let terminal=render(current);
+  const url=String(data?.signed_url||'');
+  const pollMs=Math.max(3000,Number(data?.poll_ms||5000));
+  const poll=async()=>{
+    if(stopped || terminal || !url)return;
+    try{
+      const sep=url.includes('?')?'&':'?';
+      activeController=new AbortController();
+      const res=await fetch(url+sep+'_v='+Date.now(),{cache:'no-store',credentials:'omit',signal:activeController.signal});
+      activeController=null;
+      if(res.ok){ current=await res.json(); terminal=render(current); }
+    }catch(_){ /* keep last known text; never signal Python */ }
+    if(!stopped && !terminal) timer=setTimeout(poll,pollMs);
+  };
+  if(url && !terminal) timer=setTimeout(poll,Math.min(1200,pollMs));
+  return()=>{stopped=true;if(timer)clearTimeout(timer);if(activeController){try{activeController.abort();}catch(_){}}};
+}
+""",
+    )
+
+
+def _project_image_road_render_progress_v553(state, expected_signature=""):
+    initial = _project_image_road_progress_initial_v553(state)
+    signed_url = _project_image_road_progress_signed_url_v553(current_family_key(), current_member_key())
+    try:
+        _project_image_road_progress_component_v553()(
+            data={
+                "initial": initial,
+                "signed_url": signed_url,
+                "expected_signature": str(expected_signature or ""),
+                "poll_ms": int(PROJECT_IMAGE_ROAD_PROGRESS_BROWSER_POLL_MS_V553),
+            },
+            key=f"project_road_progress_v554_{current_family_key()}_{current_member_key()}",
+            height=28,
+        )
+    except Exception:
+        # Static snapshot only; still no timer/rerun fallback.
+        doc = initial
+        if str(doc.get("gap_status") or "") == "complete" or str(doc.get("workflow_status") or "") == "complete":
+            st.caption(f"緑線の補間：完了（{int(doc.get('gap_filled') or 0)}件補間）")
+        elif int(doc.get("road_pending") or 0) > 0:
+            st.caption(f"道路再作成：{int(doc.get('road_processed') or 0)}件処理済み / 残り{int(doc.get('road_pending') or 0)}件（裏側で処理中）")
+        else:
+            st.caption("道路・補間処理：裏側で処理中")
 
 
 def _render_burari_project_map_v295(points, segments, stations, photo_segments=None, latest_point=None, fallback_segments=None):
@@ -53878,119 +54363,64 @@ def page_burari_project():
     display_points = list(map_points or []) + _photo_legacy_map_points_v296()
     stations = _merge_photo_legacy_stations_v296(stations)
 
-    # v532: first recognize roads from the untouched GREEN-FREE map image. Only after
-    # that independent road mask exists is the historical green trace used to choose
-    # which recognized roads were likely walked. Green geometry is an on-mask A* path;
-    # it is never a straight connection between GPS/snapped points.
+    # v554: the Streamlit page NEVER builds road source chunks, gap candidates, road masks
+    # or A* paths. It reads one persisted snapshot, renders saved geometry, and launches
+    # a separate isolated workflow process only when the input snapshot changed.
     photo_segments = []
-    gps_image_road_source_chunks = _project_image_road_source_chunks_v531(points, stations=stations) if points else []
-    photo_image_road_source_chunks = _photo_legacy_image_road_chunks_v543()
-    image_road_source_chunks = list(gps_image_road_source_chunks) + list(photo_image_road_source_chunks)
-    if image_road_source_chunks:
-        try:
-            from supabase import create_client
-            _image_road_client_v531 = create_client(SUPABASE_URL, SUPABASE_SECRET_KEY)
-            image_road_state = _project_image_road_read_state_v531(
-                _image_road_client_v531,
-                current_family_key(),
-                current_member_key(),
-            )
-        except Exception:
-            image_road_state = _project_image_road_default_state_v531()
-    else:
+    try:
+        from supabase import create_client
+        _image_road_client_v553 = create_client(SUPABASE_URL, SUPABASE_SECRET_KEY)
+        image_road_state = _project_image_road_read_state_v531(
+            _image_road_client_v553, current_family_key(), current_member_key()
+        )
+    except Exception:
         image_road_state = _project_image_road_default_state_v531()
 
-    road_segments, image_road_meta = _project_image_road_segments_v531(
-        image_road_source_chunks, image_road_state
+    road_segments = _project_image_road_saved_segments_v553(image_road_state)
+    photo_is_nenne_v553 = _photo_legacy_is_nenne_v543()
+    workflow_signature_v553 = _project_image_road_input_signature_v553(points, photo_is_nenne_v553)
+    road_worker_running = _project_image_road_start_workflow_v553(
+        points, stations, image_road_state, photo_is_nenne_v553, workflow_signature_v553
     )
-    road_worker_running = _project_image_road_launch_v531(
-        image_road_source_chunks, image_road_state
-    ) if image_road_source_chunks else False
-
-    # v543: the worker can finish between the initial state read and this render. Re-read
-    # once after launch so the top progress card cannot remain at a stale 1459/1461 while
-    # Storage already says 1461/1461 complete.
-    if image_road_source_chunks:
-        try:
-            from supabase import create_client
-            _fresh_client_v543 = create_client(SUPABASE_URL, SUPABASE_SECRET_KEY)
-            _fresh_state_v543 = _project_image_road_read_state_v531(
-                _fresh_client_v543, current_family_key(), current_member_key()
-            )
-            if isinstance(_fresh_state_v543, dict) and _fresh_state_v543:
-                image_road_state = _fresh_state_v543
-                road_segments, image_road_meta = _project_image_road_segments_v531(
-                    image_road_source_chunks, image_road_state
-                )
-        except Exception:
-            pass
-    gap_segments_v547, gap_meta_v547 = _project_image_road_gap_segments_v547(image_road_source_chunks, image_road_state)
-    gap_worker_running_v547 = False
-    if int(image_road_meta.get("pending") or 0) == 0 and image_road_source_chunks and not road_worker_running:
-        gap_worker_running_v547 = _project_image_road_gap_launch_v547(image_road_source_chunks, image_road_state)
-    if gap_segments_v547:
-        road_segments = list(road_segments) + list(gap_segments_v547)
-    _project_gps_match_tick_v527(bool(road_worker_running or gap_worker_running_v547))
-
-    processed_chunks = int(image_road_meta.get("processed") or 0)
-    matched_chunks = int(image_road_meta.get("matched") or 0)
-    no_road_chunks = int(image_road_meta.get("no_road") or 0)
-    tile_error_chunks = int(image_road_meta.get("tile_errors") or 0)
-    total_chunks = int(image_road_meta.get("total") or 0)
-    pending_chunks = int(image_road_meta.get("pending") or 0)
-    gap_total_v547 = int(gap_meta_v547.get("total") or 0)
-    gap_filled_v547 = int(gap_meta_v547.get("filled") or 0)
-    gap_pending_v547 = int(gap_meta_v547.get("pending") or 0)
-    photo_pair_route_count_v543 = int(PHOTO_LEGACY_FIXED_ROUTE_PAIR_COUNT_V309) if _photo_legacy_is_nenne_v543() else 0
-    photo_chunk_count_v543 = len(photo_image_road_source_chunks)
+    progress_state_v553 = image_road_state
+    existing_workflow_v553 = image_road_state.get("workflow_job") if isinstance(image_road_state.get("workflow_job"), dict) else {}
+    if road_worker_running and str(existing_workflow_v553.get("input_signature") or "") != workflow_signature_v553:
+        progress_state_v553 = dict(image_road_state)
+        progress_state_v553["workflow_job"] = {
+            "revision": PROJECT_IMAGE_ROAD_WORKFLOW_REVISION_V548,
+            "input_signature": workflow_signature_v553,
+            "status": "running", "phase": "source_build",
+        }
+    last_job_v553 = image_road_state.get("last_job") if isinstance(image_road_state.get("last_job"), dict) else {}
+    gap_job_v553 = image_road_state.get("gap_job") if isinstance(image_road_state.get("gap_job"), dict) else {}
+    processed_chunks = int(last_job_v553.get("processed") or 0)
+    matched_chunks = int(last_job_v553.get("matched") or 0)
+    no_road_chunks = int(last_job_v553.get("no_road") or 0)
+    tile_error_chunks = int(last_job_v553.get("tile_errors") or 0)
+    total_chunks = max(int(image_road_state.get("source_chunk_count") or 0), processed_chunks + int(last_job_v553.get("pending") or 0))
+    pending_chunks = int(last_job_v553.get("pending") or 0)
+    gap_total_v547 = int(gap_job_v553.get("total") or 0)
+    gap_filled_v547 = int(gap_job_v553.get("filled") or 0)
+    gap_pending_v547 = int(gap_job_v553.get("pending") or 0)
+    photo_pair_route_count_v543 = int(PHOTO_LEGACY_FIXED_ROUTE_PAIR_COUNT_V309) if photo_is_nenne_v553 else 0
     if photo_pair_route_count_v543:
-        st.caption(
-            f"ねんね：写真の青・緑テープから読み取った徒歩 {photo_pair_route_count_v543} 駅間を道路画像認識へ追加済み"
-            f"（内部処理 {photo_chunk_count_v543} 分割）"
-        )
-    gap_status_v551 = str(gap_meta_v547.get("status") or "waiting")
-    gap_phase_v551 = str(gap_meta_v547.get("phase") or "waiting")
-    gap_processed_v551 = int(gap_meta_v547.get("processed") or 0)
-    gap_no_path_v551 = int(gap_meta_v547.get("no_path") or 0)
-    if gap_worker_running_v547 or gap_status_v551 in {"running", "waiting"}:
-        if gap_phase_v551 == "scanning" or gap_total_v547 <= 0:
-            st.caption("緑線の補間：候補確認中（バックグラウンド処理）")
-        else:
-            st.caption(
-                f"緑線の補間：{gap_processed_v551}/{gap_total_v547}件処理済み"
-                f"（補間 {gap_filled_v547}件）"
-            )
-    elif gap_status_v551 == "complete":
-        st.caption(
-            f"緑線の補間：完了 {gap_processed_v551}/{gap_total_v547}件"
-            f"（補間 {gap_filled_v547}件）"
-        )
-    elif gap_status_v551 == "failed":
-        st.caption("緑線の補間：バックグラウンド処理を再開待ち")
-    if total_chunks > 0:
-        if pending_chunks > 0:
-            st.info(
-                f"緑線なし地図で道路を先に認識→道路上へ再作成中：{processed_chunks}/{total_chunks}区間"
-                f"（道路確定 {matched_chunks}、補完処理中 {pending_chunks}、補完未了 {no_road_chunks}、処理失敗 {tile_error_chunks}）。"
-                f"{int(PROJECT_IMAGE_ROAD_WORKERS_V531)}並列でサーバー処理しているため、この画面を閉じても継続します。"
-            )
-        else:
-            st.success(
-                f"道路先行認識による緑線再作成が完了しました：{processed_chunks}/{total_chunks}区間"
-                f"（道路確定 {matched_chunks}、補完未了 {no_road_chunks}、処理失敗 {tile_error_chunks}）。"
-            )
+        st.caption(f"ねんね：写真の青・緑テープから読み取った徒歩 {photo_pair_route_count_v543} 駅間を道路画像認識対象に設定済み")
+
+    # Progress polling is browser -> signed Supabase JSON only. No st.fragment,
+    # setTriggerValue, st.rerun or Python polling is involved.
+    _project_image_road_render_progress_v553(progress_state_v553, workflow_signature_v553)
 
     _perf_log_v457(
         "gps:image_road_v537",
         duration_ms=0,
         meta={
-            "source_chunks": len(image_road_source_chunks),
+            "source_chunks": int(image_road_state.get("source_chunk_count") or 0),
             "processed_chunks": processed_chunks,
             "matched_chunks": matched_chunks,
             "no_road_chunks": no_road_chunks,
             "tile_error_chunks": tile_error_chunks,
             "pending_chunks": pending_chunks,
-            "rendered_parts": int(image_road_meta.get("rendered_parts") or 0),
+            "rendered_parts": len(road_segments),
             "background_running": bool(road_worker_running),
             "workers": int(PROJECT_IMAGE_ROAD_WORKERS_V531),
             "algorithm": PROJECT_IMAGE_ROAD_SCHEMA_V531,
@@ -54062,57 +54492,9 @@ def page_burari_project():
             except Exception:
                 pass
 
-    # v534: persistent diagnostic log for the road-rebuild worker. This is deliberately
-    # placed at the bottom of the Project page so map use stays unchanged.
-    st.markdown("### 道路再作成 作業ログ")
-    # v535: fetch the log again HERE. The image_road_state used above was read before the
-    # background worker ran and can therefore be stale even when Storage already has logs.
-    fresh_log_doc = {"events": [], "saved_at": "", "save_error": ""}
-    fresh_state_for_log = image_road_state
-    try:
-        from supabase import create_client
-        _log_client_v535 = create_client(SUPABASE_URL, SUPABASE_SECRET_KEY)
-        fresh_log_doc = _project_image_road_read_work_log_v535(
-            _log_client_v535, current_family_key(), current_member_key()
-        )
-        fresh_state_for_log = _project_image_road_read_state_v531(
-            _log_client_v535, current_family_key(), current_member_key()
-        )
-    except Exception as exc:
-        fresh_log_doc = {"events": [], "saved_at": "", "save_error": _project_image_road_exc_text_v534(exc)}
-    # v539: this dedicated JSON remains the one and only work-log source. Keep the
-    # diagnostic detail in the saved/downloadable JSON, but do not render timestamps,
-    # per-step rows, or error detail on the user-facing Project page.
-    saved_work_log = [row for row in (fresh_log_doc.get("events") or []) if isinstance(row, dict)]
-    current_job = fresh_state_for_log.get("last_job") if isinstance(fresh_state_for_log.get("last_job"), dict) else {}
-    persisted_at = str(fresh_log_doc.get("saved_at") or current_job.get("log_saved_at") or "")
-    persistence_error = str(fresh_log_doc.get("save_error") or current_job.get("log_save_error") or "")
-    error_rows = [row for row in saved_work_log if str(row.get("status") or "").lower() in {"error", "failed", "failure"}]
-
-    if persistence_error:
-        st.warning("作業ログを保存できていません。")
-    elif persisted_at:
-        st.success("作業ログは保存されています。")
-    else:
-        st.info("作業ログはまだありません。")
-
-    if saved_work_log:
-        st.caption(f"処理記録 {len(saved_work_log)}件 ｜ エラー {len(error_rows)}件")
-        log_payload = {
-            "schema": PROJECT_IMAGE_ROAD_WORK_LOG_SCHEMA_V535,
-            "generated_at": now_jst().isoformat(),
-            "algorithm": PROJECT_IMAGE_ROAD_SCHEMA_V531,
-            "last_job": current_job,
-            "events": saved_work_log,
-        }
-        st.download_button(
-            "作業ログJSONをダウンロード",
-            data=json.dumps(log_payload, ensure_ascii=False, indent=2).encode("utf-8"),
-            file_name=f"burari_road_work_log_{now_jst().strftime('%Y%m%d_%H%M%S')}.json",
-            mime="application/json",
-            key="project_image_road_work_log_download_v539",
-            use_container_width=True,
-        )
+    # v553: detailed road work log remains persisted in the single JSON object, but it is
+    # intentionally not fetched/rendered on this interactive page. Live log downloads caused
+    # avoidable Storage reads while the user was trying to navigate.
 
 
 # ============================================================
