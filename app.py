@@ -47956,25 +47956,54 @@ def _claim_photo_legacy_seed_v307(family_key, member_key):
     return True
 
 
-def _photo_legacy_profile_v307():
-    """Use the new photographed network for every account, including main.
+def _normalize_photo_legacy_member_label_v541(value):
+    normalized = unicodedata.normalize("NFKC", str(value or "")).strip()
+    normalized = re.sub(r"\s+", "", normalized)
+    return normalized.lower()
 
-    The main account receives a merged profile so its older Nakano -> Shinjuku history
-    is preserved while the newly read green/cyan wall-map routes are added.
+
+def _photo_legacy_profile_v307():
+    """Enable photographed wall-map seeds only for explicitly intended accounts.
+
+    - main account: keep the original merged historical profile.
+    - ねんね account: apply the blue/green photographed walked-network profile.
+    - all other accounts: do not apply this manual photo seed.
+
+    A secret PHOTO_LEGACY_NEW_TARGET_MEMBER_V307, when supplied, may also point to the
+    intended non-main account by either member_key or display_name.
     """
     try:
-        member = str(current_member_key() or "").strip()
+        member_key = str(current_member_key() or "").strip()
     except Exception:
         return ""
-    if not member:
+    if not member_key:
         return ""
-    if member == PHOTO_LEGACY_MAIN_MEMBER_V296:
-        return "legacy_main_plus_wallmap_v311"
-    return PHOTO_LEGACY_NEW_PROFILE_V307
+    if member_key == PHOTO_LEGACY_MAIN_MEMBER_V296:
+        return "legacy_main_v296"
+
+    try:
+        member_name = str(current_member_name() or "").strip()
+    except Exception:
+        member_name = ""
+
+    labels = {
+        _normalize_photo_legacy_member_label_v541(member_key),
+        _normalize_photo_legacy_member_label_v541(member_name),
+    }
+    labels.discard("")
+
+    explicit_target = _normalize_photo_legacy_member_label_v541(PHOTO_LEGACY_NEW_TARGET_MEMBER_V307)
+    if explicit_target and explicit_target in labels:
+        return PHOTO_LEGACY_NEW_PROFILE_V307
+    if "ねんね" in labels:
+        return PHOTO_LEGACY_NEW_PROFILE_V307
+    return ""
 
 
 def _photo_legacy_active_stations_v307():
     profile = _photo_legacy_profile_v307()
+    if profile == "legacy_main_v296":
+        return PHOTO_LEGACY_STATIONS_V296
     if profile == "legacy_main_plus_wallmap_v311":
         return PHOTO_LEGACY_MAIN_COMBINED_STATIONS_V311
     if profile == PHOTO_LEGACY_NEW_PROFILE_V307:
@@ -47984,6 +48013,8 @@ def _photo_legacy_active_stations_v307():
 
 def _photo_legacy_active_sequences_v307():
     profile = _photo_legacy_profile_v307()
+    if profile == "legacy_main_v296":
+        return PHOTO_LEGACY_ROUTE_SEQUENCES_V296
     if profile == "legacy_main_plus_wallmap_v311":
         return PHOTO_LEGACY_MAIN_COMBINED_SEQUENCES_V311
     if profile == PHOTO_LEGACY_NEW_PROFILE_V307:
@@ -47993,6 +48024,8 @@ def _photo_legacy_active_sequences_v307():
 
 def _photo_legacy_active_big_stations_v307():
     profile = _photo_legacy_profile_v307()
+    if profile == "legacy_main_v296":
+        return PHOTO_LEGACY_BIG_STATIONS_V296
     if profile == "legacy_main_plus_wallmap_v311":
         return PHOTO_LEGACY_MAIN_COMBINED_BIG_STATIONS_V311
     if profile == PHOTO_LEGACY_NEW_PROFILE_V307:
