@@ -1417,7 +1417,8 @@ PROJECT_IMAGE_ROAD_REGROW_ITERATIONS_V533 = 3
 PROJECT_IMAGE_ROAD_MIN_COMPONENT_AREA_V533 = 20
 PROJECT_IMAGE_ROAD_MAX_THIN_COMPONENT_WIDTH_PX_V533 = 4
 
-# v543: nenne photographed 86 station-pairs are routed through the same green-free image-road pipeline; stale progress state is refreshed after launch.
+# v545: repair the photographed 代々木駅-原宿駅 link with a road-side, overlapping search guide while preserving green-free road-first recognition.
+# v543: nenne photographed station-pairs are routed through the same green-free image-road pipeline; stale progress state is refreshed after launch.
 # v540: second-pass recovery is applied ONLY to chunks that the strict road-first
 # pass could not finalize. Existing matched chunks are preserved and never re-run.
 PROJECT_IMAGE_ROAD_FALLBACK_REVISION_V540 = "no_road_recovery_v540"
@@ -1439,6 +1440,23 @@ PROJECT_IMAGE_ROAD_PHOTO_FALLBACK_SNAP_RADIUS_PX_V543 = 165
 PROJECT_IMAGE_ROAD_PHOTO_FALLBACK_AGGRESSIVE_SEARCH_RADIUS_PX_V543 = 220
 PROJECT_IMAGE_ROAD_PHOTO_FALLBACK_AGGRESSIVE_SNAP_RADIUS_PX_V543 = 205
 PROJECT_IMAGE_ROAD_SOURCE_REVISION_V543 = "nenne_photo_pairs_v543"
+# v545: the Yoyogi -> Harajuku photographed link cannot be searched around the
+# station-to-station chord because that chord runs through the railway/Meiji-Jingu
+# block rather than a continuous walkable road.  Give ONLY this photographed pair a
+# road-side guide corridor.  The guide is never rendered and never creates road pixels:
+# the untouched OSM raster is still recognized first, then A* may use only pixels from
+# that recognized road mask.  Overlapping windows make independently matched parts share
+# a long common road section so a visual gap is not left between chunks.
+PROJECT_IMAGE_ROAD_PHOTO_YOYOGI_HARAJUKU_SOURCE_V545 = "photo_pair_yoyogi_harajuku_v545"
+PROJECT_IMAGE_ROAD_PHOTO_YOYOGI_HARAJUKU_MAX_SPAN_M_V545 = 320.0
+PROJECT_IMAGE_ROAD_PHOTO_YOYOGI_HARAJUKU_OVERLAP_M_V545 = 120.0
+PROJECT_IMAGE_ROAD_PHOTO_YOYOGI_HARAJUKU_DENSIFY_M_V545 = 10.0
+PROJECT_IMAGE_ROAD_PHOTO_YOYOGI_HARAJUKU_MOSAIC_RADIUS_PX_V545 = 300
+PROJECT_IMAGE_ROAD_PHOTO_YOYOGI_HARAJUKU_FALLBACK_SEARCH_RADIUS_PX_V545 = 250
+PROJECT_IMAGE_ROAD_PHOTO_YOYOGI_HARAJUKU_FALLBACK_SNAP_RADIUS_PX_V545 = 235
+PROJECT_IMAGE_ROAD_PHOTO_YOYOGI_HARAJUKU_AGGRESSIVE_SEARCH_RADIUS_PX_V545 = 300
+PROJECT_IMAGE_ROAD_PHOTO_YOYOGI_HARAJUKU_AGGRESSIVE_SNAP_RADIUS_PX_V545 = 285
+PROJECT_IMAGE_ROAD_PHOTO_YOYOGI_HARAJUKU_REVISION_V545 = "yoyogi_harajuku_roadside_guide_v545"
 # Keep a long-lived Burari Project screen authenticated without changing the normal
 # 24-hour policy elsewhere. The page renews its signed browser token every 10 minutes.
 PROJECT_AUTH_KEEPALIVE_INTERVAL_SECONDS_V530 = 600.0
@@ -47920,13 +47938,72 @@ PHOTO_LEGACY_MAIN_COMBINED_BIG_STATIONS_V311 = (
 )
 
 
-def _photo_legacy_image_road_chunks_v543():
-    """Convert the fixed photographed/user-confirmed station-pairs into internal road-recognition chunks.
+def _photo_legacy_pair_guide_nodes_v545(a_name, b_name, stations):
+    """Return a non-rendered search guide for the one problematic photographed pair.
 
-    No direct station-to-station line is ever displayed. Each pair is split into bounded
-    guide pieces so the green-free OSM raster can be recognized first without creating an
-    oversized image mosaic. The straight interpolation is only a post-recognition search
-    corridor; A* remains constrained to recognized road pixels.
+    The original photograph establishes only that 代々木駅〜原宿駅 was walked; it does
+    not provide street-level geometry.  A straight chord between the station centres
+    crosses the rail/park block and can therefore leave the road recognizer with no
+    continuous corridor.  For this pair only, bias the search toward the east-side
+    pedestrian street corridor.  These points are search hints only; final green pixels
+    still come exclusively from the green-free OSM road mask.
+    """
+    a_name = str(a_name or "")
+    b_name = str(b_name or "")
+    if {a_name, b_name} != {"代々木駅", "原宿駅"}:
+        a = stations.get(a_name); b = stations.get(b_name)
+        return [a, b] if a and b else []
+
+    yoyogi = stations.get("代々木駅")
+    harajuku = stations.get("原宿駅")
+    if not yoyogi or not harajuku:
+        return []
+    # East-side road corridor around Kita-sando/Jingumae.  Intermediate coordinates
+    # are deliberately not treated as visited stations and are never displayed.
+    forward = [
+        [float(yoyogi[0]), float(yoyogi[1])],
+        [35.68175, 139.70325],
+        [35.67945, 139.70510],
+        [35.67655, 139.70535],
+        [35.67365, 139.70495],
+        [35.67135, 139.70410],
+        [float(harajuku[0]), float(harajuku[1])],
+    ]
+    return list(reversed(forward)) if a_name == "原宿駅" else forward
+
+
+def _photo_legacy_dense_guide_v545(nodes, spacing_m):
+    dense = []
+    spacing_m = max(4.0, float(spacing_m))
+    for node_index, node in enumerate(nodes or []):
+        if not isinstance(node, (list, tuple)) or len(node) < 2:
+            continue
+        current = [float(node[0]), float(node[1])]
+        if not dense:
+            dense.append(current)
+            continue
+        prev = dense[-1]
+        try:
+            dist = max(0.0, float(_nearby_haversine_m(prev[0], prev[1], current[0], current[1])))
+        except Exception:
+            dist = spacing_m
+        steps = max(1, int(math.ceil(dist / spacing_m)))
+        for step in range(1, steps + 1):
+            t = step / float(steps)
+            dense.append([
+                prev[0] + (current[0] - prev[0]) * t,
+                prev[1] + (current[1] - prev[1]) * t,
+            ])
+    return dense
+
+
+def _photo_legacy_image_road_chunks_v543():
+    """Convert photographed/user-confirmed station-pairs into image-road chunks.
+
+    Normal pairs preserve the existing v543 keys and behaviour.  Only the problematic
+    代々木駅〜原宿駅 pair gets the v545 road-side guide and new keys, so already-finished
+    photo pairs are not reprocessed.  The guide is used only after the untouched map
+    image has been converted into a road mask.
     """
     if not _photo_legacy_is_nenne_v543():
         return []
@@ -47938,6 +48015,58 @@ def _photo_legacy_image_road_chunks_v543():
         a = stations.get(a_name); b = stations.get(b_name)
         if not a or not b:
             continue
+
+        # v545: Yoyogi-Harajuku needs a road-side search corridor rather than a chord
+        # through the rail/park block.  Build overlapping windows so adjacent road-matched
+        # chunks share substantial recognized-road geometry and cannot leave a visible gap.
+        if {str(a_name), str(b_name)} == {"代々木駅", "原宿駅"}:
+            guide_nodes = _photo_legacy_pair_guide_nodes_v545(a_name, b_name, stations)
+            dense = _photo_legacy_dense_guide_v545(
+                guide_nodes, PROJECT_IMAGE_ROAD_PHOTO_YOYOGI_HARAJUKU_DENSIFY_M_V545
+            )
+            if len(dense) < 2:
+                continue
+            point_step_m = max(4.0, float(PROJECT_IMAGE_ROAD_PHOTO_YOYOGI_HARAJUKU_DENSIFY_M_V545))
+            max_points = max(8, int(math.floor(float(PROJECT_IMAGE_ROAD_PHOTO_YOYOGI_HARAJUKU_MAX_SPAN_M_V545) / point_step_m)) + 1)
+            overlap_points = max(3, int(math.ceil(float(PROJECT_IMAGE_ROAD_PHOTO_YOYOGI_HARAJUKU_OVERLAP_M_V545) / point_step_m)))
+            overlap_points = min(max_points - 2, overlap_points)
+            start_idx = 0
+            part_index = 0
+            while start_idx < len(dense) - 1:
+                end_idx = min(len(dense), start_idx + max_points)
+                window = dense[start_idx:end_idx]
+                if len(window) < 2:
+                    break
+                packed = ";".join(f"{p[0]:.6f},{p[1]:.6f}" for p in window)
+                digest = hashlib.sha1(
+                    (
+                        PROJECT_IMAGE_ROAD_SCHEMA_V531
+                        + "|" + PROJECT_IMAGE_ROAD_PHOTO_YOYOGI_HARAJUKU_REVISION_V545
+                        + "|" + a_name + ">" + b_name + "|" + packed
+                    ).encode("utf-8")
+                ).hexdigest()[:18]
+                chunks.append({
+                    "key": f"p_{pair_index:03d}_yh_{part_index + 1:02d}_{digest}",
+                    "source_kind": PROJECT_IMAGE_ROAD_PHOTO_YOYOGI_HARAJUKU_SOURCE_V545,
+                    "points": [[round(float(p[0]), 7), round(float(p[1]), 7)] for p in window],
+                    "photo_pair_index": pair_index,
+                    "photo_pair_total": int(PHOTO_LEGACY_FIXED_ROUTE_PAIR_COUNT_V309),
+                    "photo_pair_a": a_name,
+                    "photo_pair_b": b_name,
+                    "photo_part": part_index + 1,
+                    "photo_special_guide": "yoyogi_harajuku_roadside_v545",
+                })
+                if end_idx >= len(dense):
+                    break
+                start_idx = max(start_idx + 1, end_idx - overlap_points)
+                part_index += 1
+            # Add the final part-count metadata after all windows are known.
+            pair_chunks = [row for row in chunks if row.get("photo_pair_index") == pair_index and row.get("photo_special_guide")]
+            for row in pair_chunks:
+                row["photo_parts"] = len(pair_chunks)
+            continue
+
+        # Unchanged v543 path for every other pair, preserving their keys/results.
         try:
             total_m = max(1.0, float(_nearby_haversine_m(a[0], a[1], b[0], b[1])))
         except Exception:
@@ -51619,11 +51748,19 @@ def _project_image_road_route_mask_v540(mask_img, local_points, origin_x, origin
 
 def _project_image_road_fallback_v540(before, strict_mask_img, local_points, origin_x, origin_y, diag, source_kind=""):
     """Two-stage recovery used only after the strict pass says no_road_pixels."""
-    photo_pair = str(source_kind or "") == "photo_pair"
-    relaxed_search = int(PROJECT_IMAGE_ROAD_PHOTO_FALLBACK_SEARCH_RADIUS_PX_V543 if photo_pair else PROJECT_IMAGE_ROAD_FALLBACK_SEARCH_RADIUS_PX_V540)
-    relaxed_snap = int(PROJECT_IMAGE_ROAD_PHOTO_FALLBACK_SNAP_RADIUS_PX_V543 if photo_pair else PROJECT_IMAGE_ROAD_FALLBACK_SNAP_RADIUS_PX_V540)
-    aggressive_search = int(PROJECT_IMAGE_ROAD_PHOTO_FALLBACK_AGGRESSIVE_SEARCH_RADIUS_PX_V543 if photo_pair else PROJECT_IMAGE_ROAD_FALLBACK_AGGRESSIVE_SEARCH_RADIUS_PX_V540)
-    aggressive_snap = int(PROJECT_IMAGE_ROAD_PHOTO_FALLBACK_AGGRESSIVE_SNAP_RADIUS_PX_V543 if photo_pair else PROJECT_IMAGE_ROAD_FALLBACK_AGGRESSIVE_SNAP_RADIUS_PX_V540)
+    source_kind = str(source_kind or "")
+    photo_pair = source_kind.startswith("photo_pair")
+    yoyogi_harajuku = source_kind == PROJECT_IMAGE_ROAD_PHOTO_YOYOGI_HARAJUKU_SOURCE_V545
+    if yoyogi_harajuku:
+        relaxed_search = int(PROJECT_IMAGE_ROAD_PHOTO_YOYOGI_HARAJUKU_FALLBACK_SEARCH_RADIUS_PX_V545)
+        relaxed_snap = int(PROJECT_IMAGE_ROAD_PHOTO_YOYOGI_HARAJUKU_FALLBACK_SNAP_RADIUS_PX_V545)
+        aggressive_search = int(PROJECT_IMAGE_ROAD_PHOTO_YOYOGI_HARAJUKU_AGGRESSIVE_SEARCH_RADIUS_PX_V545)
+        aggressive_snap = int(PROJECT_IMAGE_ROAD_PHOTO_YOYOGI_HARAJUKU_AGGRESSIVE_SNAP_RADIUS_PX_V545)
+    else:
+        relaxed_search = int(PROJECT_IMAGE_ROAD_PHOTO_FALLBACK_SEARCH_RADIUS_PX_V543 if photo_pair else PROJECT_IMAGE_ROAD_FALLBACK_SEARCH_RADIUS_PX_V540)
+        relaxed_snap = int(PROJECT_IMAGE_ROAD_PHOTO_FALLBACK_SNAP_RADIUS_PX_V543 if photo_pair else PROJECT_IMAGE_ROAD_FALLBACK_SNAP_RADIUS_PX_V540)
+        aggressive_search = int(PROJECT_IMAGE_ROAD_PHOTO_FALLBACK_AGGRESSIVE_SEARCH_RADIUS_PX_V543 if photo_pair else PROJECT_IMAGE_ROAD_FALLBACK_AGGRESSIVE_SEARCH_RADIUS_PX_V540)
+        aggressive_snap = int(PROJECT_IMAGE_ROAD_PHOTO_FALLBACK_AGGRESSIVE_SNAP_RADIUS_PX_V543 if photo_pair else PROJECT_IMAGE_ROAD_FALLBACK_SNAP_RADIUS_PX_V540)
     relaxed = _project_image_road_relaxed_mask_v540(before, strict_mask_img, aggressive=False)
     first = _project_image_road_route_mask_v540(
         relaxed, local_points, origin_x, origin_y, diag, "relaxed",
@@ -51679,7 +51816,12 @@ def _project_image_road_match_chunk_v531(chunk):
         _project_image_road_diag_v534(diag, "chunk.validate", "error", error="not_enough_points", point_count=len(points))
         return finish({"status":"no_road_pixels","geometries":[],"coverage":0.0,"engine":"road_first_astar_v536"}, "chunk.validate")
     try:
-        _mosaic_radius_v543 = int(PROJECT_IMAGE_ROAD_PHOTO_MOSAIC_RADIUS_PX_V543) if source_kind == "photo_pair" else None
+        if source_kind == PROJECT_IMAGE_ROAD_PHOTO_YOYOGI_HARAJUKU_SOURCE_V545:
+            _mosaic_radius_v543 = int(PROJECT_IMAGE_ROAD_PHOTO_YOYOGI_HARAJUKU_MOSAIC_RADIUS_PX_V545)
+        elif source_kind.startswith("photo_pair"):
+            _mosaic_radius_v543 = int(PROJECT_IMAGE_ROAD_PHOTO_MOSAIC_RADIUS_PX_V543)
+        else:
+            _mosaic_radius_v543 = None
         _before, road_mask_img, local_points, origin_x, origin_y = _project_image_road_mosaic_v531(
             points, diag=diag, search_radius_px=_mosaic_radius_v543
         )
