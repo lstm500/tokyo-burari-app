@@ -44,7 +44,9 @@ def _app_css_v473(markup, **_ignored):
 # Review menu-only update: 2026-09-19 JST
 GENERATED_UPDATE_JST = "2026-09-19T14:54:38+09:00"
 
-APP_BUILD = "v554"
+APP_BUILD = "v556"
+# v556: After Review is opened, discover family-shared replay movies and prepare their playback media in the same bounded background pipeline. Photo/voice signed URLs, current feeling metadata and replay item payloads are prepared before a received movie becomes playable, so pressing Play performs no blocking media lookup. No Home/startup recipient query is added.
+# v555: Restore saved replay-movie family sharing without any Home/startup recipient query. Pressing Review starts one bounded family lookup on a background thread; the Review library merges received movies with the user's own movies, while sharing/unsharing remains explicit. Received-movie media is loaded only when the user presses Play.
 # v554: Road reconstruction/gap-fill is isolated from Streamlit UI execution. The worker is a separate lowest-priority OS process, is pinned to one CPU when possible WITHOUT removing that CPU from the UI process, uses idle I/O priority and one road/tile/gap worker, while progress is fetched directly by the browser from a tiny signed Supabase JSON object with no Python rerun.
 # v553: Road reconstruction/gap-fill is application-isolated from Streamlit UI: no Streamlit timer/fragment polling, no page-thread source-chunk/gap discovery, one low-priority OS worker on a reserved CPU when available, idle I/O priority, single-threaded road work, and browser-to-Supabase signed-JSON progress polling that never triggers a Python rerun.
 # v552: Make road rebuild and green-gap interpolation truly non-UI work. Launch the full workflows in dedicated low-priority OS processes instead of Streamlit-process threads, remove the 8-second whole-app tick rerun, and update only the tiny progress fragment. This prevents CPU/GIL contention and periodic full-page reruns from blocking mobile taps.
@@ -7797,7 +7799,7 @@ _PERF_BROWSER_JS_V466 = 'function installBurariPerf466(host, page, run, serverSe
 _HISTORY_JS = _PERF_BROWSER_JS_V466 + r"""
 export default function(component) {
   const { data, setTriggerValue } = component;
-  const validPages = new Set(['home', 'camera', 'videos', 'moments', 'diary', 'photos', 'review', 'review_map', 'review_project', 'review_monthly', 'review_tag', 'review_random', 'review_history', 'nearby', 'discovery_results', 'evening_review', 'toilets', 'help_places', 'field_notes', 'experience', 'settings', 'settings_moments', 'settings_moments_definition', 'settings_location', 'settings_account', 'settings_media_import']);
+  const validPages = new Set(['home', 'camera', 'videos', 'moments', 'diary', 'photos', 'review', 'review_map', 'review_project', 'review_monthly', 'review_tag', 'review_random', 'review_shared', 'review_history', 'nearby', 'discovery_results', 'evening_review', 'toilets', 'help_places', 'field_notes', 'experience', 'settings', 'settings_moments', 'settings_moments_definition', 'settings_location', 'settings_account', 'settings_media_import']);
   const marker = '__tokyo_burari_page__';
   const guardMarker = '__tokyo_burari_first_level_guard__';
   const requestedPage = validPages.has(data?.page) ? data.page : 'home';
@@ -24898,7 +24900,7 @@ def monthly_family_share_info(review):
 
 
 def monthly_family_share_is_enabled(review):
-    return False  # movie-only feature flag; no DB mutation
+    return bool(monthly_family_share_info(review).get("shared"))
 
 
 def build_monthly_family_share_photo_snapshot(bundle, limit=None):
@@ -25090,8 +25092,421 @@ def _coerce_review_json(value):
     return {}
 
 
+@st.cache_resource(show_spinner=False)
+def _movie_share_runtime_v555():
+    """Process-wide recipient lookup/media-prep cache. Nothing starts at app startup."""
+    return {
+        "lock": threading.RLock(),
+        # One bounded worker keeps family-share preparation from competing with UI work.
+        "io": ThreadPoolExecutor(max_workers=1, thread_name_prefix="burari-movie-share"),
+        "states": {},
+    }
+
+
+def _movie_share_owner_v555():
+    return (str(SUPABASE_URL), current_family_key(), current_member_key())
+
+
+def _movie_share_state_v555(runtime, owner):
+    with runtime["lock"]:
+        state = runtime["states"].get(owner)
+        if state is None:
+            state = {
+                "rows": [],
+                "future": None,
+                "fetched_at": 0.0,
+                "error": "",
+                "started_at": 0.0,
+                "metadata_ready": False,
+                "media_total": 0,
+                "media_ready": 0,
+                "media_failed": 0,
+                # Keep prepared payloads across Review re-entry when the share version did not change.
+                "prepared_cache": {},
+            }
+            runtime["states"][owner] = state
+        if len(runtime["states"]) > 24:
+            for key in list(runtime["states"]):
+                if len(runtime["states"]) <= 20:
+                    break
+                item = runtime["states"].get(key) or {}
+                future = item.get("future")
+                if key != owner and (future is None or future.done()):
+                    runtime["states"].pop(key, None)
+        return state
+
+
+def _fetch_family_shared_movies_worker_v555(owner, limit=120):
+    """Fetch only metadata for movies explicitly shared by other family members."""
+    _url, family_key, member_key = owner
+    if not (SUPABASE_URL and SUPABASE_SECRET_KEY and family_key):
+        return []
+    from supabase import create_client
+    client = create_client(SUPABASE_URL, SUPABASE_SECRET_KEY)
+    requested = max(1, min(240, int(limit or 120)))
+    scan_limit = max(240, min(900, requested * 6))
+    result = (
+        client.table(MONTHLY_TABLE)
+        .select("id,member_key,review_month,review_json,created_at,updated_at")
+        .eq("family_key", family_key)
+        .order("updated_at", desc=True)
+        .limit(scan_limit)
+        .execute()
+    )
+    movies = []
+    for row in result.data or []:
+        if not isinstance(row, dict):
+            continue
+        owner_member_key = str(row.get("member_key") or "").strip()
+        if not owner_member_key or owner_member_key == member_key:
+            continue
+        review = _coerce_review_json(row.get("review_json"))
+        if not review:
+            continue
+        if str(review.get("_record_type") or "").strip().lower() in {"music_library", "video_moment_factor_settings"}:
+            continue
+        share = monthly_family_share_info(review)
+        if not bool(share.get("shared")):
+            continue
+        playback = get_monthly_playback(review)
+        if not monthly_playback_is_ready(playback):
+            continue
+        scope_type = str(review.get("_review_scope_type") or "").strip().lower()
+        is_tag = scope_type in {"tag", "ai_tag"}
+        if is_tag and not bool(review.get("_tag_movie_saved")):
+            continue
+        month_key = str(row.get("review_month") or "")[:7]
+        period_label = str(share.get("period_label") or "").strip()
+        if not period_label:
+            period_label = _owned_replay_movie_period_label(review, month_key)
+        member_name = str(share.get("shared_by_member_name") or owner_member_key).strip() or owner_member_key
+        shared_at = str(share.get("updated_at") or share.get("shared_at") or row.get("updated_at") or "").strip()
+        photo_count = len([x for x in (share.get("photos") or []) if isinstance(x, dict)])
+        movies.append({
+            "id": str(row.get("id") or ""),
+            "month_key": month_key,
+            "period_label": period_label or "振り返りムービー",
+            "movie_type": "タグ別" if is_tag else "月別",
+            "photo_count": photo_count,
+            "received": True,
+            "shared": True,
+            "source_member_key": owner_member_key,
+            "source_member_name": member_name,
+            "shared_at": shared_at,
+            "saved_at": shared_at,
+            "updated_at": str(row.get("updated_at") or ""),
+            "playback": playback,
+            "review": review,
+            "share": share,
+            "_media_ready_v556": False,
+        })
+        if len(movies) >= requested:
+            break
+    movies.sort(
+        key=lambda item: (
+            _shared_movie_time_value(item.get("shared_at") or item.get("updated_at")),
+            str(item.get("id") or ""),
+        ),
+        reverse=True,
+    )
+    return movies[:requested]
+
+
+def _shared_movie_prepare_key_v556(item):
+    item = item if isinstance(item, dict) else {}
+    share = item.get("share") if isinstance(item.get("share"), dict) else {}
+    stamp = str(share.get("updated_at") or share.get("shared_at") or item.get("updated_at") or "")
+    raw = "|".join([
+        str(item.get("id") or ""),
+        str(item.get("source_member_key") or ""),
+        stamp,
+        str(len([x for x in (share.get("photos") or []) if isinstance(x, dict)])),
+    ])
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:32]
+
+
+def _sign_shared_media_urls_v556(client, storage_paths, expires_in=1800):
+    paths = tuple(dict.fromkeys(str(x or "").strip() for x in (storage_paths or ()) if str(x or "").strip()))
+    if not paths:
+        return {}
+    bucket = client.storage.from_(PHOTO_BUCKET)
+    result = {}
+    try:
+        if hasattr(bucket, "create_signed_urls"):
+            response = bucket.create_signed_urls(list(paths), int(expires_in))
+            rows = response
+            if isinstance(response, dict):
+                rows = response.get("data") or response.get("signedURLs") or response.get("signed_urls") or []
+            elif hasattr(response, "data"):
+                rows = getattr(response, "data") or []
+            if isinstance(rows, list):
+                for idx, row in enumerate(rows):
+                    path = ""
+                    if isinstance(row, dict):
+                        path = str(row.get("path") or row.get("name") or "").strip()
+                    if not path and idx < len(paths):
+                        path = paths[idx]
+                    url = _signed_url_from_value(row)
+                    if path and url:
+                        result[path] = url
+    except Exception:
+        result = {}
+    for path in paths:
+        if path in result:
+            continue
+        try:
+            url = _signed_url_from_value(bucket.create_signed_url(path, int(expires_in)))
+            if url:
+                result[path] = url
+        except Exception:
+            pass
+    return result
+
+
+def _prepare_family_shared_movie_media_worker_v556(owner, item):
+    """Prepare everything the shared replay player needs without touching Streamlit/session state."""
+    _url, family_key, _viewer_member_key = owner
+    item = dict(item or {})
+    share = item.get("share") if isinstance(item.get("share"), dict) else {}
+    snapshots = [dict(x) for x in (share.get("photos") or []) if isinstance(x, dict)]
+    if not snapshots:
+        return []
+
+    from supabase import create_client
+    client = create_client(SUPABASE_URL, SUPABASE_SECRET_KEY)
+    paths = [str(x.get("storage_path") or "").strip() for x in snapshots]
+    paths = [x for x in paths if x]
+    voice_paths = [str(x.get("voice_storage_path") or "").strip() for x in snapshots]
+    voice_paths = [x for x in voice_paths if x]
+    combined = tuple(dict.fromkeys(paths + voice_paths))
+    signed_all = _sign_shared_media_urls_v556(client, combined, expires_in=1800)
+
+    current_photo_by_path = {}
+    source_member_key = str(item.get("source_member_key") or share.get("shared_by_member_key") or "").strip()
+    if source_member_key and paths:
+        try:
+            rows = []
+            for offset in range(0, len(paths), 100):
+                chunk = paths[offset:offset + 100]
+                batch = (
+                    client.table(PHOTO_TABLE)
+                    .select("id,storage_path,reflection_json")
+                    .in_("storage_path", chunk)
+                    .eq("family_key", family_key)
+                    .eq("member_key", source_member_key)
+                    .execute()
+                ).data or []
+                rows.extend(x for x in batch if isinstance(x, dict))
+            current_photo_by_path = {
+                str(row.get("storage_path") or "").strip(): row
+                for row in rows
+                if str(row.get("storage_path") or "").strip()
+            }
+        except Exception:
+            current_photo_by_path = {}
+
+    items = []
+    for snap in snapshots:
+        path = str(snap.get("storage_path") or "").strip()
+        if not path:
+            continue
+        url = str(signed_all.get(path) or "")
+        if not url:
+            # Rare fallback is still background work. It never blocks the Play action.
+            try:
+                raw = client.storage.from_(PHOTO_BUCKET).download(path)
+                if raw:
+                    url = "data:image/jpeg;base64," + base64.b64encode(raw).decode("ascii")
+            except Exception:
+                url = ""
+        if not url:
+            continue
+        current_photo = current_photo_by_path.get(path)
+        current_emotion = photo_selected_tag_meta(current_photo) if isinstance(current_photo, dict) else {}
+        voice_path = str(snap.get("voice_storage_path") or "").strip()
+        items.append({
+            "url": url,
+            "caption": str(snap.get("caption") or ""),
+            "emotion": str(current_emotion.get("key") if current_emotion else snap.get("emotion") or ""),
+            "emotion_label": str(current_emotion.get("label") if current_emotion else snap.get("emotion_label") or ""),
+            "emotion_emoji": str(current_emotion.get("emoji") if current_emotion else snap.get("emotion_emoji") or ""),
+            "emotion_color": str(current_emotion.get("color") if current_emotion else snap.get("emotion_color") or ""),
+            # Shared snapshots already persist replay framing. Reusing it avoids expensive
+            # image-analysis/download work in the family-share background pipeline.
+            "replay_fit": str(snap.get("replay_fit") or "cover"),
+            "replay_position_x": float(snap.get("replay_position_x") or 50.0),
+            "replay_position_y": float(snap.get("replay_position_y") or 50.0),
+            "replay_use_backdrop": bool(snap.get("replay_use_backdrop") or False),
+            "replay_person_count": int(snap.get("replay_person_count") or 0),
+            "replay_primary_person_count": int(snap.get("replay_primary_person_count") or 0),
+            "replay_orientation": str(snap.get("replay_orientation") or "unknown"),
+            "replay_zoom": float(snap.get("replay_zoom") or 1.0),
+            "replay_source_width": int(snap.get("replay_source_width") or 0),
+            "replay_source_height": int(snap.get("replay_source_height") or 0),
+            "replay_focus_x": float(snap.get("replay_focus_x") or snap.get("replay_position_x") or 50.0),
+            "replay_focus_y": float(snap.get("replay_focus_y") or snap.get("replay_position_y") or 50.0),
+            "replay_source_ratio": float(snap.get("replay_source_ratio") or 1.0),
+            "has_voice": bool(voice_path),
+            "voice_url": str(signed_all.get(voice_path) or ""),
+            "voice_transcript": str(snap.get("voice_transcript") or ""),
+            "voice_duration_ms": _voice_duration_value_ms_v469(snap),
+        })
+    return items
+
+
+def _fetch_and_prefetch_family_shared_movies_worker_v556(owner, limit, runtime, state):
+    """Background-only pipeline: metadata first, then replay media preparation newest-first."""
+    rows = _fetch_family_shared_movies_worker_v555(owner, limit=limit)
+    now = time.monotonic()
+    with runtime["lock"]:
+        state["rows"] = [dict(x) for x in rows]
+        state["fetched_at"] = now
+        state["metadata_ready"] = True
+        state["media_total"] = len(rows)
+        state["media_ready"] = 0
+        state["media_failed"] = 0
+        state["error"] = ""
+        prepared_cache = state.setdefault("prepared_cache", {})
+
+    for index, row in enumerate(rows):
+        key = _shared_movie_prepare_key_v556(row)
+        prepared = None
+        with runtime["lock"]:
+            cached = prepared_cache.get(key)
+            if isinstance(cached, dict):
+                try:
+                    if now - float(cached.get("at") or 0.0) < 1200.0 and isinstance(cached.get("items"), list):
+                        prepared = list(cached.get("items") or [])
+                except Exception:
+                    prepared = None
+        error = ""
+        if prepared is None:
+            try:
+                prepared = _prepare_family_shared_movie_media_worker_v556(owner, row)
+            except Exception as exc:
+                prepared = []
+                error = f"{type(exc).__name__}: {exc}"
+        with runtime["lock"]:
+            current_rows = state.get("rows") or []
+            if index < len(current_rows) and str(current_rows[index].get("id") or "") == str(row.get("id") or ""):
+                current_rows[index]["_prepared_photo_items_v556"] = list(prepared or [])
+                current_rows[index]["_media_ready_v556"] = bool(prepared)
+                current_rows[index]["_media_error_v556"] = error
+                current_rows[index]["_prepare_key_v556"] = key
+            if prepared:
+                prepared_cache[key] = {"at": time.monotonic(), "items": list(prepared)}
+                state["media_ready"] = int(state.get("media_ready") or 0) + 1
+            else:
+                state["media_failed"] = int(state.get("media_failed") or 0) + 1
+            # Bound memory while retaining the newest reusable payloads.
+            if len(prepared_cache) > 160:
+                oldest = sorted(
+                    prepared_cache.items(), key=lambda kv: float((kv[1] or {}).get("at") or 0.0)
+                )[: len(prepared_cache) - 140]
+                for old_key, _old_value in oldest:
+                    prepared_cache.pop(old_key, None)
+    with runtime["lock"]:
+        return {
+            "rows": [dict(x) for x in (state.get("rows") or [])],
+            "media_total": int(state.get("media_total") or 0),
+            "media_ready": int(state.get("media_ready") or 0),
+            "media_failed": int(state.get("media_failed") or 0),
+        }
+
+
+def _harvest_family_shared_movie_future_v555(runtime, state):
+    """Consume a finished family-share pipeline Future without blocking the UI thread."""
+    with runtime["lock"]:
+        future = state.get("future")
+    if future is None or not future.done():
+        return False
+    try:
+        payload = future.result(timeout=0)
+        error = ""
+    except Exception as exc:
+        payload = None
+        error = f"{type(exc).__name__}: {exc}"
+    with runtime["lock"]:
+        if state.get("future") is future:
+            state["future"] = None
+            if isinstance(payload, dict) and isinstance(payload.get("rows"), list):
+                state["rows"] = [dict(x) for x in payload.get("rows") or []]
+                state["fetched_at"] = time.monotonic()
+                state["media_total"] = int(payload.get("media_total") or len(state["rows"]))
+                state["media_ready"] = int(payload.get("media_ready") or 0)
+                state["media_failed"] = int(payload.get("media_failed") or 0)
+            elif isinstance(payload, list):
+                state["rows"] = list(payload)
+                state["fetched_at"] = time.monotonic()
+            state["error"] = error
+    return True
+
+
+def start_family_shared_movie_lookup_v555(force=False, limit=120):
+    """Start metadata + media preparation in the background and return immediately."""
+    runtime = _movie_share_runtime_v555()
+    owner = _movie_share_owner_v555()
+    state = _movie_share_state_v555(runtime, owner)
+    _harvest_family_shared_movie_future_v555(runtime, state)
+    now = time.monotonic()
+    with runtime["lock"]:
+        future = state.get("future")
+        if future is not None and not future.done():
+            return True
+        age = now - float(state.get("fetched_at") or 0.0)
+        # Reuse prepared signed URLs for a short Review session; entering Review explicitly
+        # with force=True still performs a fresh share check.
+        if not force and state.get("fetched_at") and 0.0 <= age < 300.0:
+            return False
+        state["error"] = ""
+        state["started_at"] = now
+        state["metadata_ready"] = False
+        state["media_total"] = 0
+        state["media_ready"] = 0
+        state["media_failed"] = 0
+        state["future"] = runtime["io"].submit(
+            _fetch_and_prefetch_family_shared_movies_worker_v556,
+            owner,
+            limit,
+            runtime,
+            state,
+        )
+        return True
+
+
+def family_shared_movie_snapshot_v555(start_if_needed=False, limit=120):
+    """Return the latest non-blocking snapshot; media preparation remains background-only."""
+    runtime = _movie_share_runtime_v555()
+    owner = _movie_share_owner_v555()
+    state = _movie_share_state_v555(runtime, owner)
+    _harvest_family_shared_movie_future_v555(runtime, state)
+    if start_if_needed:
+        start_family_shared_movie_lookup_v555(force=False, limit=limit)
+        _harvest_family_shared_movie_future_v555(runtime, state)
+    with runtime["lock"]:
+        future = state.get("future")
+        return [dict(x) for x in (state.get("rows") or [])], bool(future is not None and not future.done()), str(state.get("error") or "")
+
+
+def family_shared_movie_progress_v556():
+    runtime = _movie_share_runtime_v555()
+    owner = _movie_share_owner_v555()
+    state = _movie_share_state_v555(runtime, owner)
+    _harvest_family_shared_movie_future_v555(runtime, state)
+    with runtime["lock"]:
+        return {
+            "metadata_ready": bool(state.get("metadata_ready")),
+            "total": int(state.get("media_total") or 0),
+            "ready": int(state.get("media_ready") or 0),
+            "failed": int(state.get("media_failed") or 0),
+            "pending": bool(state.get("future") is not None and not state.get("future").done()),
+        }
+
+
 def list_family_shared_monthly_reviews(limit=24):
-    return []  # v468: no recipient movie queries
+    """Compatibility helper: non-blocking snapshot only; never starts a Home/startup query."""
+    rows, _pending, _error = family_shared_movie_snapshot_v555(start_if_needed=False, limit=limit)
+    return rows[:max(1, int(limit or 24))]
 
 
 def _owned_replay_movie_period_label(review, month_key):
@@ -25314,6 +25729,7 @@ def set_owned_replay_movie_share(row_id, enabled=True):
     if month_key:
         st.session_state[f"monthly_review_{month_key}"] = review
     st.session_state.pop("_home_shared_movie_check_v341", None)
+    _invalidate_fast_db_cache()
     return review
 
 
@@ -25506,7 +25922,7 @@ _REPLAY_MOVIE_LIBRARY_CSS_V357 = r"""
 }
 .replay-movie-actions-v357 {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 6px;
   margin-top: 9px;
   width: 100%;
@@ -25538,6 +25954,8 @@ _REPLAY_MOVIE_LIBRARY_CSS_V357 = r"""
 .replay-movie-action-v357.delete {
   border-color: rgba(194, 82, 82, .25);
 }
+.replay-movie-actions-v357.received { grid-template-columns: 1fr; }
+.replay-movie-action-v357.share { border-color: rgba(66, 176, 101, .28); }
 .replay-movie-delete-confirm-v380 {
   display: grid;
   grid-template-columns: 1.35fr .85fr;
@@ -25594,6 +26012,42 @@ export default function(component) {
   let visibleCount = Math.min(pageSize, movies.length);
   let disposed = false;
   let pendingDeleteRowId = '';
+  let preloadTimer = null;
+  let preloadIdle = null;
+  let preloadController = new AbortController();
+
+  // v556: received-movie URLs are already prepared on the server. While the Review
+  // screen is idle, warm the browser HTTP cache one URL at a time so Play does not
+  // become the first photo/voice network request. This never blocks rendering/taps.
+  const preloadQueue = [];
+  const preloadSeen = new Set();
+  movies.forEach((movie) => {
+    if (!movie?.received || !Array.isArray(movie?.preload_urls)) return;
+    movie.preload_urls.forEach((raw) => {
+      const url = String(raw || '').trim();
+      if (!url || preloadSeen.has(url)) return;
+      preloadSeen.add(url);
+      preloadQueue.push(url);
+    });
+  });
+  const schedulePreload = () => {
+    if (disposed || preloadQueue.length === 0) return;
+    const run = () => {
+      preloadIdle = null;
+      if (disposed || preloadQueue.length === 0) return;
+      const url = preloadQueue.shift();
+      fetch(url, {cache:'force-cache', signal:preloadController.signal})
+        .catch(() => null)
+        .finally(() => {
+          if (!disposed) preloadTimer = setTimeout(schedulePreload, 35);
+        });
+    };
+    if (typeof window.requestIdleCallback === 'function') {
+      preloadIdle = window.requestIdleCallback(run, {timeout: 900});
+    } else {
+      preloadTimer = setTimeout(run, 160);
+    }
+  };
 
   const send = (action, rowId) => {
     if (disposed || !rowId) return;
@@ -25631,6 +26085,7 @@ export default function(component) {
     movies.slice(0, visibleCount).forEach((movie) => {
       const rowId = String(movie?.id || '');
       const shared = Boolean(movie?.shared);
+      const received = Boolean(movie?.received);
 
       const card = document.createElement('section');
       card.className = 'replay-movie-card-v357';
@@ -25642,25 +26097,30 @@ export default function(component) {
       title.textContent = String(movie?.title || '振り返りムービー');
       const status = document.createElement('span');
       status.className = `replay-movie-status-v357${shared ? ' shared' : ''}`;
-      status.textContent = shared ? '● 共有中' : '未共有';
-      titleRow.append(title); // v468: no movie-sharing badge
+      status.textContent = received ? '家族共有' : (shared ? '● 共有中' : '未共有');
+      titleRow.append(title);
+      if (received || shared) titleRow.append(status);
 
       const meta = document.createElement('div');
       meta.className = 'replay-movie-meta-v357';
       meta.textContent = String(movie?.meta || '');
 
       const actions = document.createElement('div');
-      actions.className = 'replay-movie-actions-v357';
-      // Compact fixed grid: playback, edit, delete stay on one row even on phones.
-      actions.append(
-        button('▶ 再生', 'view', rowId, false),
-        button('✏️ 編集', 'edit', rowId, false),
-        button('🗑 削除', 'delete', rowId, false, 'delete')
-      );
+      actions.className = `replay-movie-actions-v357${received ? ' received' : ''}`;
+      if (received) {
+        actions.append(button('▶ 共有ムービーを再生', 'view', rowId, false));
+      } else {
+        actions.append(
+          button('▶ 再生', 'view', rowId, false),
+          button('✏️ 編集', 'edit', rowId, false),
+          button(shared ? '共有解除' : '家族に共有', shared ? 'unshare' : 'share', rowId, false, 'share'),
+          button('🗑 削除', 'delete', rowId, false, 'delete')
+        );
+      }
 
       card.append(titleRow, meta, actions);
 
-      if (pendingDeleteRowId === rowId) {
+      if (!received && pendingDeleteRowId === rowId) {
         const confirmRow = document.createElement('div');
         confirmRow.className = 'replay-movie-delete-confirm-v380';
 
@@ -25708,7 +26168,15 @@ export default function(component) {
   };
 
   render();
-  return () => { disposed = true; };
+  schedulePreload();
+  return () => {
+    disposed = true;
+    try { preloadController.abort(); } catch (_) {}
+    if (preloadTimer !== null) clearTimeout(preloadTimer);
+    if (preloadIdle !== null && typeof window.cancelIdleCallback === 'function') {
+      try { window.cancelIdleCallback(preloadIdle); } catch (_) {}
+    }
+  };
 }
 """
 
@@ -25724,7 +26192,7 @@ def _get_replay_movie_library_component_v357():
     _replay_movie_library_component_initialized_v357 = True
     try:
         _replay_movie_library_component_v357 = st.components.v2.component(
-            "tokyo_burari_replay_movie_library_v484",
+            "tokyo_burari_replay_movie_library_v555",
             html=_REPLAY_MOVIE_LIBRARY_HTML_V357,
             css=_REPLAY_MOVIE_LIBRARY_CSS_V357,
             js=_perf_instrument_js_v466(_REPLAY_MOVIE_LIBRARY_JS_V357),
@@ -25751,90 +26219,217 @@ def _refresh_after_movie_library_navigation_v357():
     st.session_state.pop("_browser_hierarchy_back_token", None)
 
 
-def render_own_replay_movie_library():
-    """Lightweight, isolated movie list below 'これまでの日記'.
+@st.cache_resource(show_spinner=False)
+def _movie_share_tick_component_v555():
+    return st.components.v2.component(
+        "burari_movie_share_tick_v555",
+        html="<span hidden></span>",
+        js="""export default function(component) {
+  const {data, setTriggerValue} = component;
+  let timer = null;
+  if (data?.pending) timer = setTimeout(() => setTriggerValue('tick', {t:Date.now()}), 1200);
+  return () => { if (timer !== null) clearTimeout(timer); };
+}""",
+    )
 
-    v357 intentionally renders the whole list inside one v2 component. Its 2x2 grid CSS is
-    component-scoped, so it cannot leak into Home/Monthly/Tag pages after navigation. It
-    also avoids mounting four Streamlit widgets per movie, which materially reduces mobile
-    DOM size and page churn. No photos, MP4 bytes, or YouTube players are loaded here.
+
+def _movie_share_tick_v555(pending):
+    """Rerun only the Review-library fragment while background metadata/media preparation is pending.
+
+    The heartbeat is bounded and never reruns Home or the full app.
     """
-    st.markdown("#### 🎞 保存済みムービー")
+    attempt_key = "_movie_share_tick_attempt_v555"
+    if not pending:
+        st.session_state.pop(attempt_key, None)
+        return
+    try:
+        attempt = max(0, int(st.session_state.get(attempt_key) or 0))
+    except Exception:
+        attempt = 0
+    if attempt >= 90:
+        return
+    st.session_state[attempt_key] = attempt + 1
+    try:
+        _movie_share_tick_component_v555()(
+            data={"pending": True},
+            key="movie_share_tick_v555_" + hashlib.sha256(
+                (current_family_key() + "|" + current_member_key()).encode("utf-8")
+            ).hexdigest()[:16],
+            height=1,
+            on_tick_change=lambda: None,
+        )
+    except Exception:
+        pass
+
+
+@st.fragment
+def render_replay_movie_library_fragment_v555():
+    render_own_replay_movie_library()
+
+
+def render_own_replay_movie_library():
+    """Render own and received saved movies in one compact Review library.
+
+    Own rows are loaded as before. Recipient discovery and replay-media preparation both run
+    in the bounded background worker. Only received movies with a fully prepared playback
+    payload are exposed as playable rows, so Play performs no blocking media lookup.
+    """
+    st.markdown("#### 🎞 保存済み・共有ムービー")
 
     notice = st.session_state.pop("_replay_movie_library_notice_v357", None)
     if notice:
         st.success(str(notice))
 
     try:
-        rows = list_own_replay_movies(limit=120)
+        own_rows = list_own_replay_movies(limit=120)
     except Exception as exc:
         st.warning("作ったムービーの一覧を読み込めませんでした。")
         with st.expander("保護者向け詳細"):
             st.code(str(exc))
-        return
+        own_rows = []
+
+    received_all_rows, received_pending, received_error = family_shared_movie_snapshot_v555(
+        start_if_needed=True, limit=120
+    )
+    received_rows = [
+        item for item in received_all_rows
+        if isinstance(item, dict) and bool(item.get("_media_ready_v556"))
+        and isinstance(item.get("_prepared_photo_items_v556"), list)
+        and bool(item.get("_prepared_photo_items_v556"))
+    ]
+    received_preparing = max(0, len(received_all_rows) - len(received_rows))
+
+    rows = []
+    for item in own_rows:
+        if isinstance(item, dict):
+            row = dict(item)
+            row["received"] = False
+            rows.append(row)
+    for item in received_rows:
+        if isinstance(item, dict):
+            row = dict(item)
+            row["received"] = True
+            rows.append(row)
+    rows.sort(
+        key=lambda item: (
+            _shared_movie_time_value(
+                item.get("shared_at") if item.get("received") else (item.get("saved_at") or item.get("updated_at"))
+            ),
+            str(item.get("id") or ""),
+        ),
+        reverse=True,
+    )
 
     if not rows:
-        st.caption("まだ保存済みのムービーはありません。")
+        if received_pending:
+            progress = family_shared_movie_progress_v556()
+            if progress.get("metadata_ready") and progress.get("total"):
+                st.caption(f"共有ムービーをバックグラウンドで準備中です（{progress.get('ready', 0)}/{progress.get('total', 0)}）。")
+            else:
+                st.caption("家族から共有されたムービーをバックグラウンドで確認中です。")
+            _movie_share_tick_v555(True)
+        else:
+            st.caption("まだ保存済み・共有ムービーはありません。")
         return
 
     component_rows = []
     row_map = {}
-    for index, item in enumerate(rows, start=1):
+    for item in rows:
         row_id = str(item.get("id") or "").strip()
         if not row_id:
             continue
+        received = bool(item.get("received"))
+        component_id = ("received::" if received else "own::") + row_id
         period_label = str(item.get("period_label") or "振り返りムービー").strip()
         movie_type = str(item.get("movie_type") or "振り返り").strip()
         shared = bool(item.get("shared"))
         playback = item.get("playback") if isinstance(item.get("playback"), dict) else {}
-        saved_label = _shared_movie_list_time_label(item.get("saved_at") or item.get("updated_at"))
+        saved_label = _shared_movie_list_time_label(
+            item.get("shared_at") if received else (item.get("saved_at") or item.get("updated_at"))
+        )
         music_title = str(playback.get("title") or "YouTube音楽").strip()
         start_seconds = max(0, int(playback.get("start_seconds") or 0))
         end_seconds = int(playback.get("end_seconds") or (start_seconds + 1))
-        detail_parts = [movie_type, music_title, f"{_format_music_time_v472(start_seconds)}〜{_format_music_time_v472(end_seconds)}"]
+        detail_parts = []
+        if received:
+            source_name = str(item.get("source_member_name") or "家族").strip() or "家族"
+            detail_parts.append(f"{source_name}さんから共有")
+        detail_parts.extend([movie_type, music_title, f"{_format_music_time_v472(start_seconds)}〜{_format_music_time_v472(end_seconds)}"])
         if saved_label:
             detail_parts.append(saved_label)
+        preload_urls = []
+        if received:
+            for media_item in item.get("_prepared_photo_items_v556") or []:
+                if not isinstance(media_item, dict):
+                    continue
+                photo_url = str(media_item.get("url") or "").strip()
+                voice_url = str(media_item.get("voice_url") or "").strip()
+                if photo_url:
+                    preload_urls.append(photo_url)
+                if voice_url:
+                    preload_urls.append(voice_url)
         component_rows.append({
-            "id": row_id,
+            "id": component_id,
             "title": period_label,
             "meta": " ／ ".join(detail_parts),
             "shared": shared,
+            "received": received,
+            "preload_urls": preload_urls,
         })
-        row_map[row_id] = item
+        row_map[component_id] = item
 
     if not component_rows:
-        st.caption("まだ保存済みのムービーはありません。")
+        st.caption("まだ保存済み・共有ムービーはありません。")
         return
+
+    if received_pending:
+        progress = family_shared_movie_progress_v556()
+        if progress.get("metadata_ready") and progress.get("total"):
+            st.caption(f"共有ムービーをバックグラウンドで準備中です（{progress.get('ready', 0)}/{progress.get('total', 0)}）。準備済みのムービーはすぐ再生できます。")
+        elif not received_rows:
+            st.caption("家族共有はバックグラウンドで確認しています。確認中も他の操作はそのまま使えます。")
+    elif received_error and not received_rows:
+        st.caption("家族共有の確認は次回の振り返り表示時に再試行します。")
+
+    # Tiny hidden component: while the DB lookup is still running, only this fragment
+    # reruns. The rest of Review/Home never reruns or waits for family-sharing metadata.
+    _movie_share_tick_v555(received_pending)
 
     component = _get_replay_movie_library_component_v357()
     if component is None:
-        # Very old/unsupported Streamlit runtimes get a deliberately small native fallback.
-        # Do not inject global CSS here; keeping the fallback plain is safer than risking a
-        # style leak onto another page.
         for item in rows[:12]:
             row_id = str(item.get("id") or "").strip()
             if not row_id:
                 continue
+            received = bool(item.get("received"))
             period_label = str(item.get("period_label") or "振り返りムービー").strip()
-            shared = bool(item.get("shared"))
             with st.container(border=True):
                 st.markdown(f"**{html.escape(period_label)}**")
-                fallback_cols = st.columns(3)
-                with fallback_cols[0]:
-                    if st.button("▶ 再生", key=f"review_movie_fallback_view_v484_{row_id}", use_container_width=True):
-                        open_owned_replay_movie_from_library(item, edit=False)
-                        _refresh_after_movie_library_navigation_v357()
+                if received:
+                    st.caption(f"{html.escape(str(item.get('source_member_name') or '家族'))}さんから共有")
+                    if st.button("▶ 共有ムービーを再生", key=f"review_received_fallback_view_v555_{row_id}", use_container_width=True):
+                        open_received_replay_movie_from_library_v555(item)
                         st.rerun(scope="app")
-                with fallback_cols[1]:
-                    if st.button("✏️ 編集", key=f"review_movie_fallback_edit_v484_{row_id}", use_container_width=True):
-                        open_owned_replay_movie_from_library(item, edit=True)
-                        _refresh_after_movie_library_navigation_v357()
-                        st.rerun(scope="app")
-                with fallback_cols[2]:
-                    if st.button("🗑 削除", key=f"review_movie_fallback_delete_v484_{row_id}", use_container_width=True):
-                        delete_owned_replay_movie(row_id)
-                        st.session_state["_replay_movie_library_notice_v357"] = f"「{period_label}」を削除しました。"
-                        reload_current_page_after_action()
+                else:
+                    fallback_cols = st.columns(2)
+                    with fallback_cols[0]:
+                        if st.button("▶ 再生", key=f"review_movie_fallback_view_v555_{row_id}", use_container_width=True):
+                            open_owned_replay_movie_from_library(item, edit=False)
+                            _refresh_after_movie_library_navigation_v357()
+                            st.rerun(scope="app")
+                        share_label = "共有解除" if item.get("shared") else "家族に共有"
+                        if st.button(share_label, key=f"review_movie_fallback_share_v555_{row_id}", use_container_width=True):
+                            set_owned_replay_movie_share(row_id, enabled=not bool(item.get("shared")))
+                            reload_current_page_after_action()
+                    with fallback_cols[1]:
+                        if st.button("✏️ 編集", key=f"review_movie_fallback_edit_v555_{row_id}", use_container_width=True):
+                            open_owned_replay_movie_from_library(item, edit=True)
+                            _refresh_after_movie_library_navigation_v357()
+                            st.rerun(scope="app")
+                        if st.button("🗑 削除", key=f"review_movie_fallback_delete_v555_{row_id}", use_container_width=True):
+                            delete_owned_replay_movie(row_id)
+                            st.session_state["_replay_movie_library_notice_v357"] = f"「{period_label}」を削除しました。"
+                            reload_current_page_after_action()
         if len(rows) > 12:
             st.caption("この端末では先頭12件を表示しています。")
         return
@@ -25842,21 +26437,28 @@ def render_own_replay_movie_library():
     serial = int(st.session_state.get("_replay_movie_library_serial_v357") or 0)
     result = component(
         data={"movies": component_rows, "page_size": 12},
-        key=f"replay_movie_library_v484_{serial}_{_current_ui_refresh_epoch()}",
+        key=f"replay_movie_library_v555_{serial}_{_current_ui_refresh_epoch()}",
         on_action_change=lambda: None,
     )
     action_payload = getattr(result, "action", None) if result is not None else None
     if not isinstance(action_payload, dict) or not _movie_library_action_token_is_new_v357(action_payload):
         return
 
-    row_id = str(action_payload.get("row_id") or "").strip()
+    component_id = str(action_payload.get("row_id") or "").strip()
     action = str(action_payload.get("action") or "").strip().lower()
-    item = row_map.get(row_id)
+    item = row_map.get(component_id)
     if not item:
         return
+    row_id = str(item.get("id") or "").strip()
     period_label = str(item.get("period_label") or "振り返りムービー").strip()
 
     try:
+        if bool(item.get("received")):
+            if action == "view":
+                open_received_replay_movie_from_library_v555(item)
+                _refresh_after_movie_library_navigation_v357()
+                st.rerun(scope="app")
+            return
         if action == "view":
             open_owned_replay_movie_from_library(item, edit=False)
             _refresh_after_movie_library_navigation_v357()
@@ -25891,6 +26493,44 @@ def render_own_replay_movie_library():
         with st.expander("保護者向け詳細"):
             st.code(str(exc))
 
+
+def open_received_replay_movie_from_library_v555(item):
+    item = dict(item or {}) if isinstance(item, dict) else {}
+    if not item.get("id") or not isinstance(item.get("share"), dict):
+        raise ValueError("共有されたムービーの情報を確認できませんでした。")
+    st.session_state["_family_shared_replay_open_v555"] = item
+    _set_page_state("review_shared", history_mode="push")
+
+
+def page_family_shared_replay_v555():
+    item = st.session_state.get("_family_shared_replay_open_v555")
+    if not isinstance(item, dict) or not item.get("id"):
+        page_top("🎬 共有された振り返り")
+        st.info("共有されたムービーの情報がありません。振り返り一覧から開き直してください。")
+        return
+
+    source_name = str(item.get("source_member_name") or "家族").strip() or "家族"
+    period_label = str(item.get("period_label") or "振り返りムービー").strip() or "振り返りムービー"
+    page_top("🎬 共有された振り返り", f"{source_name}さんから共有されたムービーです。")
+    share = item.get("share") if isinstance(item.get("share"), dict) else {}
+    playback = item.get("playback") if isinstance(item.get("playback"), dict) else {}
+    if not share or not monthly_playback_is_ready(playback):
+        st.warning("この共有ムービーの再生情報を確認できませんでした。")
+        return
+
+    # v556: Play never performs photo/voice lookup. The Review background pipeline has
+    # already prepared the complete replay payload before this received movie was shown.
+    photo_items = item.get("_prepared_photo_items_v556")
+    if not isinstance(photo_items, list) or not photo_items:
+        st.info("共有ムービーをバックグラウンドで準備中です。振り返り一覧に戻ると、準備完了後に再生できる状態で表示されます。")
+        try:
+            start_family_shared_movie_lookup_v555(force=False, limit=120)
+        except Exception:
+            pass
+        return
+    review = dict(item.get("review") or {}) if isinstance(item.get("review"), dict) else {}
+    render_monthly_replay_player(period_label, review, playback, photo_items)
+
 def render_own_shared_replay_movies():
     """Compatibility alias for v354 callers."""
     render_own_replay_movie_library()
@@ -25902,7 +26542,9 @@ def _family_shared_movie_notice_at(row):
 
 
 def home_family_shared_movie_notice(browser_state=None):
-    return None  # v468: movie sharing retired; photos are unaffected
+    # v555: intentionally no Home/startup recipient query. Shared movies are checked
+    # only after the user enters Review, on the dedicated background worker.
+    return None
 
 
 def _open_family_shared_movie_from_home_callback(shared_id, seen_at, target_page="review_monthly"):
@@ -25970,6 +26612,7 @@ def render_home_family_shared_movie_notice(notice):
 
 
 def render_family_shared_monthly_reviews():
+    # v555: received movies live in the single Review library, not in Monthly/Tag pages.
     return False
 
 
@@ -29959,7 +30602,7 @@ def page_evening_review():
                     )
 
 
-VALID_APP_PAGES = {"home", "camera", "videos", "moments", "diary", "photos", "review", "review_map", "review_project", "review_monthly", "review_tag", "review_random", "review_history", "nearby", "discovery_results", "evening_review", "toilets", "help_places", "field_notes", "experience", "settings", "settings_moments", "settings_moments_definition", "settings_location", "settings_account", "settings_media_import"}
+VALID_APP_PAGES = {"home", "camera", "videos", "moments", "diary", "photos", "review", "review_map", "review_project", "review_monthly", "review_tag", "review_random", "review_shared", "review_history", "nearby", "discovery_results", "evening_review", "toilets", "help_places", "field_notes", "experience", "settings", "settings_moments", "settings_moments_definition", "settings_location", "settings_account", "settings_media_import"}
 
 
 def _current_ui_refresh_epoch():
@@ -30149,6 +30792,9 @@ def current_navigation_context():
     if page == "review_tag":
         return "review_tag", ""
 
+    if page == "review_shared":
+        return "review_shared", ""
+
     if page == "review_history":
         detail_trip_id = str(st.session_state.get("history_detail_trip_id") or "")
         if detail_trip_id:
@@ -30172,6 +30818,7 @@ def navigation_parent_node(node=None):
         "review_monthly": "review",
         "review_tag": "review",
         "review_random": "review",
+        "review_shared": "review",
         "camera": "home",
         "videos": "home",
         "moments": "home",
@@ -30283,6 +30930,11 @@ def _home_nav_callback(page_name, camera_mode=None):
             st.session_state.pop("_camera_auto_start_video", None)
     elif page_name == "review":
         st.session_state.pop("review_view_selector", None)
+        st.session_state.pop("_movie_share_tick_attempt_v555", None)
+        try:
+            start_family_shared_movie_lookup_v555(force=True, limit=120)
+        except Exception:
+            pass
     _set_page_state(page_name, history_mode="push")
 
 
@@ -30376,7 +31028,7 @@ def _navigate_to_parent_state_only():
         st.session_state["_history_action"] = "replace"
         return
 
-    if node in {"review_history", "review_map", "review_project", "review_monthly", "review_tag", "review_random"}:
+    if node in {"review_history", "review_map", "review_project", "review_monthly", "review_tag", "review_random", "review_shared"}:
         st.session_state.pop("history_detail_trip_id", None)
         st.session_state.pop("review_view_selector", None)
         _set_page_state("review", history_mode="replace")
@@ -30453,6 +31105,7 @@ def sync_browser_history():
         "review_monthly",
         "review_tag",
         "review_random",
+        "review_shared",
         "settings_moments",
         "settings_moments_definition",
         "settings_location",
@@ -30526,7 +31179,7 @@ def sync_browser_history():
             # Streamlit remount is reserved for stale/BFCache/long-background states so
             # normal foregrounding adds no permanent work or polling. Replay pages keep
             # their dedicated playback-resume logic unless stale UI is actually detected.
-            replay_page = page in {"review_monthly", "review_tag", "review_random"}
+            replay_page = page in {"review_monthly", "review_tag", "review_random", "review_shared"}
             should_remount = persisted or stale_count > 0 or root_count > 1 or hidden_ms >= 15000
             if replay_page and not persisted and stale_count <= 0 and root_count <= 1:
                 should_remount = False
@@ -54738,6 +55391,10 @@ def page_random_replay_v473():
 
 
 def page_review():
+    try:
+        start_family_shared_movie_lookup_v555(force=False, limit=120)
+    except Exception:
+        pass
     # v483: show the Burari train icon on the random movie button instead of the dice icon.
     # Reuse the same local train asset family as the home screen so the identity stays consistent.
     st.session_state.pop("review_view_selector", None)
@@ -54861,7 +55518,7 @@ def page_review():
         )
 
     st.divider()
-    render_own_replay_movie_library()
+    render_replay_movie_library_fragment_v555()
 
 
 def page_good_moments_menu():
@@ -56155,7 +56812,7 @@ def page_settings():
 # ============================================================
 FRAMING_KEY_V468 = "replay_framing_v468"
 FRAMING_SCHEMA_V468 = "v433_people_safe_1920_v1"
-MOVIE_SHARING_ENABLED_V468 = False
+MOVIE_SHARING_ENABLED_V468 = True
 
 
 @st.cache_resource(show_spinner=False)
@@ -57178,6 +57835,8 @@ with st.container(key="app_page_root_v280"):
         _perf_call_v457("page:review_monthly", page_monthly, embedded=False, force=True)
     elif page == "review_tag":
         _perf_call_v457("page:review_tag", page_tag_review, embedded=False, force=True)
+    elif page == "review_shared":
+        _perf_call_v457("page:review_shared", page_family_shared_replay_v555, force=True)
     elif page == "review_history":
         _perf_call_v457("page:review_history", page_history, embedded=False, force=True)
     elif page == "nearby":
@@ -57217,7 +57876,7 @@ with st.container(key="app_page_root_v280"):
         live_page = str(st.session_state.get("main_page") or "home")
         if (
             page == live_page
-            and page in {"camera", "videos", "moments", "diary", "photos", "review", "review_map", "review_project", "review_monthly", "review_tag", "review_random", "review_history", "nearby", "discovery_results", "evening_review", "toilets", "help_places", "field_notes", "experience", "settings", "settings_moments", "settings_moments_definition", "settings_location", "settings_account", "settings_media_import"}
+            and page in {"camera", "videos", "moments", "diary", "photos", "review", "review_map", "review_project", "review_monthly", "review_tag", "review_random", "review_shared", "review_history", "nearby", "discovery_results", "evening_review", "toilets", "help_places", "field_notes", "experience", "settings", "settings_moments", "settings_moments_definition", "settings_location", "settings_account", "settings_media_import"}
         ):
             _perf_call_v457("ui:bottom_navigation", render_global_bottom_navigation, page)
 
