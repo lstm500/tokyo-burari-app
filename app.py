@@ -43,7 +43,8 @@ def _app_css_v473(markup, **_ignored):
 # Review menu-only update: 2026-09-19 JST
 GENERATED_UPDATE_JST = "2026-09-19T14:54:38+09:00"
 
-APP_BUILD = "v540"
+APP_BUILD = "v544"
+# v544: For the ねんね account only, add the same green-free road-recognition treatment for 新大久保→大久保→東中野→中野. Append three fixed station-pairs so existing 86 photo-pair chunk keys remain stable and only the new westward links are newly processed.
 # v539: Keep the single detailed road-rebuild work log for diagnostics/download, but simplify the Project-page UI. Users see only save state and aggregate counts; timestamps, per-step rows, and error details are not rendered.
 # v537: Isolate the road-rebuild background runtime by schema/build so a still-running cached v535/v536 Future can never block the new worker. Strip verbose per-chunk diagnostics from the main road-state JSON (they remain in the dedicated work log), cap the fallback state log, and derive progress counters from current chunk state to prevent retry double-counting.
 # v536: Remove the OpenCV/cv2 runtime dependency from the road rebuild. The v535 work log showed every chunk failed after successful tile/road-mask creation with ModuleNotFoundError: cv2. Road masking, trace distance and snapping now use Pillow + NumPy only; failed v533 state is isolated by a new schema/storage file.
@@ -47684,6 +47685,8 @@ PHOTO_LEGACY_NEW_STATIONS_V307 = {
 
     # Chuo/Sobu corridor and western inner links visible in the new photos
     "大久保駅": (35.700784, 139.697239),
+    "東中野駅": (35.706032, 139.685616),
+    "中野駅": (35.705765, 139.665835),
     "千駄ケ谷駅": (35.681195, 139.711103),
     "信濃町駅": (35.680030, 139.720365),
     "四ツ谷駅": (35.686014, 139.730667),
@@ -47796,8 +47799,8 @@ PHOTO_LEGACY_NEW_BIG_STATIONS_V307 = {
 # v309: fixed photographed route list approved from 1818.jpg + 1820.jpg
 # ============================================================
 # Both green and cyan/light-blue connections are historical walked routes.
-# This list is intentionally explicit: only these 86 photographed station/place
-# pairs drive the new-account historical seed. Routing may refine the geometry,
+# This list is intentionally explicit: the original 86 photographed station/place
+# pairs plus the three user-confirmed ねんね westward links drive this historical seed. Routing may refine the geometry,
 # but it must not add/remove photographed connections implicitly.
 PHOTO_LEGACY_FIXED_ROUTE_PAIRS_V309 = (
     ('池袋駅', '目白駅'),  # 1
@@ -47886,6 +47889,9 @@ PHOTO_LEGACY_FIXED_ROUTE_PAIRS_V309 = (
     ('末広町駅', '秋葉原駅'),  # 84
     ('上野駅', '上野広小路駅'),  # 85
     ('上野広小路駅', '御徒町駅'),  # 86
+    ('新大久保駅', '大久保駅'),  # 87 - v544 ねんね追加
+    ('大久保駅', '東中野駅'),  # 88 - v544 ねんね追加
+    ('東中野駅', '中野駅'),  # 89 - v544 ねんね追加
 )
 PHOTO_LEGACY_FIXED_ROUTE_PAIR_COUNT_V309 = len(PHOTO_LEGACY_FIXED_ROUTE_PAIRS_V309)
 PHOTO_LEGACY_NEW_ROUTE_SEQUENCES_V307 = tuple((a, b) for a, b in PHOTO_LEGACY_FIXED_ROUTE_PAIRS_V309)
@@ -47915,7 +47921,7 @@ PHOTO_LEGACY_MAIN_COMBINED_BIG_STATIONS_V311 = (
 
 
 def _photo_legacy_image_road_chunks_v543():
-    """Convert the 86 photographed station-pairs into internal road-recognition chunks.
+    """Convert the fixed photographed/user-confirmed station-pairs into internal road-recognition chunks.
 
     No direct station-to-station line is ever displayed. Each pair is split into bounded
     guide pieces so the green-free OSM raster can be recognized first without creating an
