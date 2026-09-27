@@ -1416,6 +1416,7 @@ PROJECT_IMAGE_ROAD_REGROW_ITERATIONS_V533 = 3
 PROJECT_IMAGE_ROAD_MIN_COMPONENT_AREA_V533 = 20
 PROJECT_IMAGE_ROAD_MAX_THIN_COMPONENT_WIDTH_PX_V533 = 4
 
+# v543: nenne photographed 86 station-pairs are routed through the same green-free image-road pipeline; stale progress state is refreshed after launch.
 # v540: second-pass recovery is applied ONLY to chunks that the strict road-first
 # pass could not finalize. Existing matched chunks are preserved and never re-run.
 PROJECT_IMAGE_ROAD_FALLBACK_REVISION_V540 = "no_road_recovery_v540"
@@ -1425,6 +1426,18 @@ PROJECT_IMAGE_ROAD_FALLBACK_PATH_MARGIN_PX_V540 = 34
 PROJECT_IMAGE_ROAD_FALLBACK_ANCHOR_STRIDE_V540 = 2
 PROJECT_IMAGE_ROAD_FALLBACK_AGGRESSIVE_SEARCH_RADIUS_PX_V540 = 142
 PROJECT_IMAGE_ROAD_FALLBACK_AGGRESSIVE_SNAP_RADIUS_PX_V540 = 132
+# v543: photographed blue/green tape routes for the personal account whose display name
+# is exactly ねんね. These historical station-pair guides are fed into the SAME green-free
+# raster road recognizer as live GPS history. The guide only selects among road pixels
+# recognized from the untouched OSM image; it is never rendered directly.
+PROJECT_IMAGE_ROAD_PHOTO_PAIR_MAX_SPAN_M_V543 = 360.0
+PROJECT_IMAGE_ROAD_PHOTO_PAIR_DENSIFY_M_V543 = 12.0
+PROJECT_IMAGE_ROAD_PHOTO_MOSAIC_RADIUS_PX_V543 = 220
+PROJECT_IMAGE_ROAD_PHOTO_FALLBACK_SEARCH_RADIUS_PX_V543 = 180
+PROJECT_IMAGE_ROAD_PHOTO_FALLBACK_SNAP_RADIUS_PX_V543 = 165
+PROJECT_IMAGE_ROAD_PHOTO_FALLBACK_AGGRESSIVE_SEARCH_RADIUS_PX_V543 = 220
+PROJECT_IMAGE_ROAD_PHOTO_FALLBACK_AGGRESSIVE_SNAP_RADIUS_PX_V543 = 205
+PROJECT_IMAGE_ROAD_SOURCE_REVISION_V543 = "nenne_photo_pairs_v543"
 # Keep a long-lived Burari Project screen authenticated without changing the normal
 # 24-hour policy elsewhere. The page renews its signed browser token every 10 minutes.
 PROJECT_AUTH_KEEPALIVE_INTERVAL_SECONDS_V530 = 600.0
@@ -47900,6 +47913,64 @@ PHOTO_LEGACY_MAIN_COMBINED_BIG_STATIONS_V311 = (
     set(PHOTO_LEGACY_BIG_STATIONS_V296) | set(PHOTO_LEGACY_NEW_BIG_STATIONS_V307)
 )
 
+
+def _photo_legacy_image_road_chunks_v543():
+    """Convert the 86 photographed station-pairs into internal road-recognition chunks.
+
+    No direct station-to-station line is ever displayed. Each pair is split into bounded
+    guide pieces so the green-free OSM raster can be recognized first without creating an
+    oversized image mosaic. The straight interpolation is only a post-recognition search
+    corridor; A* remains constrained to recognized road pixels.
+    """
+    if not _photo_legacy_is_nenne_v543():
+        return []
+    stations = PHOTO_LEGACY_NEW_ACTIVE_STATIONS_V309
+    chunks = []
+    max_span = max(180.0, float(PROJECT_IMAGE_ROAD_PHOTO_PAIR_MAX_SPAN_M_V543))
+    densify_m = max(6.0, float(PROJECT_IMAGE_ROAD_PHOTO_PAIR_DENSIFY_M_V543))
+    for pair_index, (a_name, b_name) in enumerate(PHOTO_LEGACY_FIXED_ROUTE_PAIRS_V309, start=1):
+        a = stations.get(a_name); b = stations.get(b_name)
+        if not a or not b:
+            continue
+        try:
+            total_m = max(1.0, float(_nearby_haversine_m(a[0], a[1], b[0], b[1])))
+        except Exception:
+            total_m = max_span
+        part_count = max(1, int(math.ceil(total_m / max_span)))
+        for part_index in range(part_count):
+            t0 = part_index / float(part_count)
+            t1 = (part_index + 1) / float(part_count)
+            lat0 = float(a[0]) + (float(b[0]) - float(a[0])) * t0
+            lon0 = float(a[1]) + (float(b[1]) - float(a[1])) * t0
+            lat1 = float(a[0]) + (float(b[0]) - float(a[0])) * t1
+            lon1 = float(a[1]) + (float(b[1]) - float(a[1])) * t1
+            part_m = max(1.0, total_m / float(part_count))
+            steps = max(2, int(math.ceil(part_m / densify_m)))
+            points = []
+            for step in range(steps + 1):
+                t = step / float(steps)
+                points.append([
+                    round(lat0 + (lat1 - lat0) * t, 7),
+                    round(lon0 + (lon1 - lon0) * t, 7),
+                ])
+            packed = ";".join(f"{p[0]:.6f},{p[1]:.6f}" for p in points)
+            digest = hashlib.sha1(
+                (PROJECT_IMAGE_ROAD_SCHEMA_V531 + "|photo_pair|" + a_name + ">" + b_name + "|" + packed).encode("utf-8")
+            ).hexdigest()[:18]
+            chunks.append({
+                "key": f"p_{pair_index:03d}_{part_index + 1:02d}_{digest}",
+                "source_kind": "photo_pair",
+                "points": points,
+                "photo_pair_index": pair_index,
+                "photo_pair_total": int(PHOTO_LEGACY_FIXED_ROUTE_PAIR_COUNT_V309),
+                "photo_pair_a": a_name,
+                "photo_pair_b": b_name,
+                "photo_part": part_index + 1,
+                "photo_parts": part_count,
+            })
+    return chunks
+
+
 def _photo_legacy_seed_assignment_path_v307(family_key=None):
     family = re.sub(r"[^a-zA-Z0-9_.-]+", "_", str(family_key or current_family_key() or "family").strip() or "family")
     return f"{PHOTO_LEGACY_SEED_ASSIGNMENT_DIR_V307}/{family}.json"
@@ -47962,41 +48033,42 @@ def _normalize_photo_legacy_member_label_v541(value):
     return normalized.lower()
 
 
-def _photo_legacy_profile_v307():
-    """Enable photographed wall-map seeds only for explicitly intended accounts.
+def _photo_legacy_is_nenne_v543():
+    """True only for the personal account labelled ねんね.
 
-    - main account: keep the original merged historical profile.
-    - ねんね account: apply the blue/green photographed walked-network profile.
-    - all other accounts: do not apply this manual photo seed.
-
-    A secret PHOTO_LEGACY_NEW_TARGET_MEMBER_V307, when supplied, may also point to the
-    intended non-main account by either member_key or display_name.
+    The current installation uses member_key ``main`` for that account, so display_name
+    must be checked before any legacy-main fallback. No other account may receive the
+    blue/green photographed route seed.
     """
+    try:
+        member_key = _normalize_photo_legacy_member_label_v541(current_member_key())
+    except Exception:
+        member_key = ""
+    try:
+        member_name = _normalize_photo_legacy_member_label_v541(current_member_name())
+    except Exception:
+        member_name = ""
+    return member_key == "ねんね" or member_name == "ねんね"
+
+
+def _photo_legacy_profile_v307():
+    """Select historical photo seeds without leaking the new wall-map to other users."""
     try:
         member_key = str(current_member_key() or "").strip()
     except Exception:
         return ""
     if not member_key:
         return ""
+
+    # Critical v543 ordering: the screenshot-confirmed account is displayed as
+    # ``ねんね (main)``. Therefore the name check must precede the legacy main branch.
+    if _photo_legacy_is_nenne_v543():
+        if member_key == PHOTO_LEGACY_MAIN_MEMBER_V296:
+            return "legacy_main_plus_wallmap_v311"
+        return PHOTO_LEGACY_NEW_PROFILE_V307
+
     if member_key == PHOTO_LEGACY_MAIN_MEMBER_V296:
         return "legacy_main_v296"
-
-    try:
-        member_name = str(current_member_name() or "").strip()
-    except Exception:
-        member_name = ""
-
-    labels = {
-        _normalize_photo_legacy_member_label_v541(member_key),
-        _normalize_photo_legacy_member_label_v541(member_name),
-    }
-    labels.discard("")
-
-    explicit_target = _normalize_photo_legacy_member_label_v541(PHOTO_LEGACY_NEW_TARGET_MEMBER_V307)
-    if explicit_target and explicit_target in labels:
-        return PHOTO_LEGACY_NEW_PROFILE_V307
-    if "ねんね" in labels:
-        return PHOTO_LEGACY_NEW_PROFILE_V307
     return ""
 
 
@@ -51138,12 +51210,12 @@ def _project_image_road_confirmed_mask_v532(before, likelihood):
 
     return Image.fromarray((keep * 255).astype(np.uint8), mode="L")
 
-def _project_image_road_mosaic_v531(points, diag=None):
+def _project_image_road_mosaic_v531(points, diag=None, search_radius_px=None):
     from PIL import Image
     zoom = int(PROJECT_IMAGE_ROAD_ZOOM_V531)
     tile_size = int(PROJECT_IMAGE_ROAD_TILE_SIZE_V531)
     global_px = [_project_image_road_global_pixel_v531(p[0], p[1], zoom) for p in points]
-    radius = int(PROJECT_IMAGE_ROAD_SEARCH_RADIUS_PX_V531)
+    radius = int(search_radius_px if search_radius_px is not None else PROJECT_IMAGE_ROAD_SEARCH_RADIUS_PX_V531)
     min_x = min(x for x, _ in global_px) - radius - 10
     max_x = max(x for x, _ in global_px) + radius + 10
     min_y = min(y for _, y in global_px) - radius - 10
@@ -51539,13 +51611,18 @@ def _project_image_road_route_mask_v540(mask_img, local_points, origin_x, origin
     return {"geometries": geometries, "coverage": round(float(coverage), 4), "connected_pairs": connected, "attempted_pairs": attempted, "road_pixels": road_pixels, "corridor_pixels": corridor_pixels}
 
 
-def _project_image_road_fallback_v540(before, strict_mask_img, local_points, origin_x, origin_y, diag):
+def _project_image_road_fallback_v540(before, strict_mask_img, local_points, origin_x, origin_y, diag, source_kind=""):
     """Two-stage recovery used only after the strict pass says no_road_pixels."""
+    photo_pair = str(source_kind or "") == "photo_pair"
+    relaxed_search = int(PROJECT_IMAGE_ROAD_PHOTO_FALLBACK_SEARCH_RADIUS_PX_V543 if photo_pair else PROJECT_IMAGE_ROAD_FALLBACK_SEARCH_RADIUS_PX_V540)
+    relaxed_snap = int(PROJECT_IMAGE_ROAD_PHOTO_FALLBACK_SNAP_RADIUS_PX_V543 if photo_pair else PROJECT_IMAGE_ROAD_FALLBACK_SNAP_RADIUS_PX_V540)
+    aggressive_search = int(PROJECT_IMAGE_ROAD_PHOTO_FALLBACK_AGGRESSIVE_SEARCH_RADIUS_PX_V543 if photo_pair else PROJECT_IMAGE_ROAD_FALLBACK_AGGRESSIVE_SEARCH_RADIUS_PX_V540)
+    aggressive_snap = int(PROJECT_IMAGE_ROAD_PHOTO_FALLBACK_AGGRESSIVE_SNAP_RADIUS_PX_V543 if photo_pair else PROJECT_IMAGE_ROAD_FALLBACK_AGGRESSIVE_SNAP_RADIUS_PX_V540)
     relaxed = _project_image_road_relaxed_mask_v540(before, strict_mask_img, aggressive=False)
     first = _project_image_road_route_mask_v540(
         relaxed, local_points, origin_x, origin_y, diag, "relaxed",
-        int(PROJECT_IMAGE_ROAD_FALLBACK_SEARCH_RADIUS_PX_V540),
-        int(PROJECT_IMAGE_ROAD_FALLBACK_SNAP_RADIUS_PX_V540),
+        relaxed_search,
+        relaxed_snap,
         int(PROJECT_IMAGE_ROAD_FALLBACK_ANCHOR_STRIDE_V540),
     )
     if first.get("geometries"):
@@ -51555,8 +51632,8 @@ def _project_image_road_fallback_v540(before, strict_mask_img, local_points, ori
     aggressive = _project_image_road_relaxed_mask_v540(before, strict_mask_img, aggressive=True)
     second = _project_image_road_route_mask_v540(
         aggressive, local_points, origin_x, origin_y, diag, "aggressive",
-        int(PROJECT_IMAGE_ROAD_FALLBACK_AGGRESSIVE_SEARCH_RADIUS_PX_V540),
-        int(PROJECT_IMAGE_ROAD_FALLBACK_AGGRESSIVE_SNAP_RADIUS_PX_V540),
+        aggressive_search,
+        aggressive_snap,
         1,
     )
     second["phase"] = "aggressive"
@@ -51596,7 +51673,10 @@ def _project_image_road_match_chunk_v531(chunk):
         _project_image_road_diag_v534(diag, "chunk.validate", "error", error="not_enough_points", point_count=len(points))
         return finish({"status":"no_road_pixels","geometries":[],"coverage":0.0,"engine":"road_first_astar_v536"}, "chunk.validate")
     try:
-        _before, road_mask_img, local_points, origin_x, origin_y = _project_image_road_mosaic_v531(points, diag=diag)
+        _mosaic_radius_v543 = int(PROJECT_IMAGE_ROAD_PHOTO_MOSAIC_RADIUS_PX_V543) if source_kind == "photo_pair" else None
+        _before, road_mask_img, local_points, origin_x, origin_y = _project_image_road_mosaic_v531(
+            points, diag=diag, search_radius_px=_mosaic_radius_v543
+        )
         import numpy as np
     except Exception as exc:
         _project_image_road_diag_v534(diag, "chunk.mosaic", "error", error=_project_image_road_exc_text_v534(exc))
@@ -51612,7 +51692,7 @@ def _project_image_road_match_chunk_v531(chunk):
             primary_attempted_pairs=int(primary_attempted or 0),
             primary_geometries=len(primary_geometries),
         )
-        fallback = _project_image_road_fallback_v540(_before, road_mask_img, local_points, origin_x, origin_y, diag)
+        fallback = _project_image_road_fallback_v540(_before, road_mask_img, local_points, origin_x, origin_y, diag, source_kind=source_kind)
         fb_geometries = [g for g in (fallback.get("geometries") or []) if isinstance(g, list) and len(g) >= 2]
         fb_coverage = float(fallback.get("coverage") or 0.0)
         # If the strict pass already produced some verified on-road subpaths but missed
@@ -51969,9 +52049,14 @@ def _project_image_road_launch_v531(source_chunks, state):
         row = chunks.get(key) if isinstance(chunks.get(key), dict) else {}
         return _project_image_road_terminal_v540(row)
     unfinished = any(not terminal(str(row.get("key") or "")) for row in source_chunks)
-    runtime = _project_image_road_runtime_v537(PROJECT_IMAGE_ROAD_SCHEMA_V531 + "|" + PROJECT_IMAGE_ROAD_FALLBACK_REVISION_V540)
+    runtime = _project_image_road_runtime_v537(
+        PROJECT_IMAGE_ROAD_SCHEMA_V531 + "|" + PROJECT_IMAGE_ROAD_FALLBACK_REVISION_V540 + "|" + PROJECT_IMAGE_ROAD_SOURCE_REVISION_V543
+    )
     owner = (current_family_key(), current_member_key())
-    job_key = (owner[0], owner[1], PROJECT_IMAGE_ROAD_SCHEMA_V531, PROJECT_IMAGE_ROAD_FALLBACK_REVISION_V540)
+    job_key = (
+        owner[0], owner[1], PROJECT_IMAGE_ROAD_SCHEMA_V531,
+        PROJECT_IMAGE_ROAD_FALLBACK_REVISION_V540, PROJECT_IMAGE_ROAD_SOURCE_REVISION_V543,
+    )
     with runtime["lock"]:
         future = runtime["jobs"].get(job_key)
         if future is not None:
@@ -52875,7 +52960,9 @@ def page_burari_project():
     # which recognized roads were likely walked. Green geometry is an on-mask A* path;
     # it is never a straight connection between GPS/snapped points.
     photo_segments = []
-    image_road_source_chunks = _project_image_road_source_chunks_v531(points, stations=stations) if points else []
+    gps_image_road_source_chunks = _project_image_road_source_chunks_v531(points, stations=stations) if points else []
+    photo_image_road_source_chunks = _photo_legacy_image_road_chunks_v543()
+    image_road_source_chunks = list(gps_image_road_source_chunks) + list(photo_image_road_source_chunks)
     if image_road_source_chunks:
         try:
             from supabase import create_client
@@ -52896,6 +52983,24 @@ def page_burari_project():
     road_worker_running = _project_image_road_launch_v531(
         image_road_source_chunks, image_road_state
     ) if image_road_source_chunks else False
+
+    # v543: the worker can finish between the initial state read and this render. Re-read
+    # once after launch so the top progress card cannot remain at a stale 1459/1461 while
+    # Storage already says 1461/1461 complete.
+    if image_road_source_chunks:
+        try:
+            from supabase import create_client
+            _fresh_client_v543 = create_client(SUPABASE_URL, SUPABASE_SECRET_KEY)
+            _fresh_state_v543 = _project_image_road_read_state_v531(
+                _fresh_client_v543, current_family_key(), current_member_key()
+            )
+            if isinstance(_fresh_state_v543, dict) and _fresh_state_v543:
+                image_road_state = _fresh_state_v543
+                road_segments, image_road_meta = _project_image_road_segments_v531(
+                    image_road_source_chunks, image_road_state
+                )
+        except Exception:
+            pass
     _project_gps_match_tick_v527(road_worker_running)
 
     processed_chunks = int(image_road_meta.get("processed") or 0)
@@ -52904,6 +53009,13 @@ def page_burari_project():
     tile_error_chunks = int(image_road_meta.get("tile_errors") or 0)
     total_chunks = int(image_road_meta.get("total") or 0)
     pending_chunks = int(image_road_meta.get("pending") or 0)
+    photo_pair_route_count_v543 = int(PHOTO_LEGACY_FIXED_ROUTE_PAIR_COUNT_V309) if _photo_legacy_is_nenne_v543() else 0
+    photo_chunk_count_v543 = len(photo_image_road_source_chunks)
+    if photo_pair_route_count_v543:
+        st.caption(
+            f"ねんね：写真の青・緑テープから読み取った徒歩 {photo_pair_route_count_v543} 駅間を道路画像認識へ追加済み"
+            f"（内部処理 {photo_chunk_count_v543} 分割）"
+        )
     if total_chunks > 0:
         if pending_chunks > 0:
             st.info(
@@ -52958,6 +53070,16 @@ def page_burari_project():
             latest_key = None
         if latest_key and latest_key not in seen_render:
             render_points.append(latest_point)
+
+    if _photo_legacy_is_nenne_v543():
+        for p in _photo_legacy_map_points_v296():
+            try:
+                key = (round(float(p.get("lat")), 7), round(float(p.get("lon")), 7))
+            except Exception:
+                continue
+            if key not in seen_render:
+                seen_render.add(key)
+                render_points.append({"lat": key[0], "lon": key[1]})
 
     _render_burari_project_map_v295(
         render_points or ([latest_point] if latest_point else map_points),
