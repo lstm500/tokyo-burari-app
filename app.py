@@ -43,7 +43,8 @@ def _app_css_v473(markup, **_ignored):
 # Review menu-only update: 2026-09-19 JST
 GENERATED_UPDATE_JST = "2026-09-19T14:54:38+09:00"
 
-APP_BUILD = "v535"
+APP_BUILD = "v536"
+# v536: Remove the OpenCV/cv2 runtime dependency from the road rebuild. The v535 work log showed every chunk failed after successful tile/road-mask creation with ModuleNotFoundError: cv2. Road masking, trace distance and snapping now use Pillow + NumPy only; failed v533 state is isolated by a new schema/storage file.
 # v535: Persist road-rebuild diagnostics in a dedicated Storage log, flush failures immediately, and re-read the log at the bottom of the Project page so the UI never relies on a stale pre-worker snapshot.
 # v534: Persist detailed road-rebuild work logs, including per-tile download attempts, decode/mask stages, chunk recognition/path stages, retries, timings, and failures. Show saved diagnostics at the bottom of Burari Project. Road-recognition behavior itself is unchanged from v533.
 # v533: Tighten GREEN-FREE raster road recognition before any GPS/legacy-green selection. Require a genuine thick road interior seed, regrow only a few pixels into nearby road-colour support, and reject thin text halos / map ornament strokes / compact bright areas. v532 cached results are ignored and rebuilt.
@@ -1364,8 +1365,8 @@ PROJECT_GPS_MATCH_TRANSIENT_RETRY_MAX_SECONDS_V530 = 30.0
 # IMPORTANT: road recognition runs on the green-free OSM raster only. The historical
 # green trace is introduced afterwards solely to choose which ALREADY-RECOGNIZED road
 # component was walked. Output geometry is an actual pixel path inside that road mask.
-PROJECT_IMAGE_ROAD_SCHEMA_V531 = "project_image_road_v533"
-PROJECT_IMAGE_ROAD_STORAGE_FILE_V531 = "project_image_road_v533.json"
+PROJECT_IMAGE_ROAD_SCHEMA_V531 = "project_image_road_v536"
+PROJECT_IMAGE_ROAD_STORAGE_FILE_V531 = "project_image_road_v536.json"
 PROJECT_IMAGE_ROAD_TILE_TEMPLATE_V531 = "https://tile.openstreetmap.org/{z}/{x}/{y}.png"
 PROJECT_IMAGE_ROAD_ZOOM_V531 = 18
 PROJECT_IMAGE_ROAD_TILE_SIZE_V531 = 256
@@ -1395,8 +1396,8 @@ PROJECT_IMAGE_ROAD_MAX_COMPACT_ASPECT_V532 = 2.8
 PROJECT_IMAGE_ROAD_WORK_LOG_MAX_V534 = 6000
 # v535: persist diagnostics in a dedicated small Storage document instead of relying
 # only on the much larger road-state checkpoint. Errors are flushed immediately.
-PROJECT_IMAGE_ROAD_WORK_LOG_STORAGE_FILE_V535 = "project_image_road_work_log_v535.json"
-PROJECT_IMAGE_ROAD_WORK_LOG_SCHEMA_V535 = "project_image_road_work_log_v535"
+PROJECT_IMAGE_ROAD_WORK_LOG_STORAGE_FILE_V535 = "project_image_road_work_log_v536.json"
+PROJECT_IMAGE_ROAD_WORK_LOG_SCHEMA_V535 = "project_image_road_work_log_v536"
 PROJECT_IMAGE_ROAD_WORK_LOG_PERSIST_MAX_V535 = 2200
 PROJECT_IMAGE_ROAD_WORK_LOG_SUCCESS_FLUSH_EVERY_V535 = 5
 PROJECT_IMAGE_ROAD_CHUNK_DIAG_MAX_V534 = 180
@@ -51008,22 +51009,18 @@ def _project_image_road_source_chunks_v531(points, stations=None):
 
 
 def _project_image_road_confirmed_mask_v532(before, likelihood):
-    """Build a precision-first road mask before looking at any green/GPS trace.
+    """Build the road mask from the GREEN-FREE raster without OpenCV.
 
-    v533 fixes the main v532 failure mode: OSM text halos and other near-white map
-    decoration could form long connected components and therefore survive the old
-    shape-only cleanup. Here a pixel can become road only when it belongs to a colour
-    candidate that contains a genuinely thick interior. Thin strokes never become seeds.
-    We then regrow only a few pixels into adjacent road-colour support to recover
-    anti-aliasing. Historical green/GPS information is not available to this function.
+    v536 removes the hard cv2 dependency that caused every chunk to fail in v535.
+    This function uses only Pillow + NumPy.  Historical green/GPS information is not
+    visible here, preserving the required order: road recognition first, route selection
+    second.  The mask is precision-first: only colour candidates with a thick interior
+    are accepted, then they are regrown a few pixels inside candidate support.
     """
-    from PIL import Image
+    from PIL import Image, ImageFilter
     try:
-        import cv2
         import numpy as np
     except Exception:
-        # Precision-first fallback. Without CV we intentionally omit uncertain roads
-        # rather than risk painting green through a non-road region.
         return likelihood.point(lambda v: 255 if v >= 250 else 0).convert("L")
 
     conf = np.asarray(likelihood, dtype=np.uint8)
@@ -51032,60 +51029,65 @@ def _project_image_road_confirmed_mask_v532(before, likelihood):
     if int(strong.sum()) == 0:
         return Image.fromarray(np.zeros_like(conf, dtype=np.uint8), mode="L")
 
-    # Critical v533 gate: a real road surface must contain a thick interior. Thin white
-    # letter outlines, label halos, rail/POI ornament strokes and similar cartography
-    # normally have no pixels this far from their edge and are therefore rejected before
-    # any green trace can influence selection.
-    interior_dist = cv2.distanceTransform((strong * 255).astype(np.uint8), cv2.DIST_L2, 5)
-    seed = ((strong > 0) & (interior_dist >= float(PROJECT_IMAGE_ROAD_MIN_INTERIOR_RADIUS_PX_V533))).astype(np.uint8)
+    # A 5x5 erosion is deliberately conservative and approximates the old requirement
+    # that a valid road colour must contain a >2 px interior.  Thin text/label strokes
+    # cannot seed a road component.
+    strong_img = Image.fromarray((strong * 255).astype(np.uint8), mode="L")
+    seed_img = strong_img.filter(ImageFilter.MinFilter(5))
+    seed = (np.asarray(seed_img, dtype=np.uint8) > 0).astype(np.uint8)
     if int(seed.sum()) == 0:
         return Image.fromarray(np.zeros_like(conf, dtype=np.uint8), mode="L")
 
-    # Regrow only locally from confirmed interior seeds. This is intentionally NOT a
-    # connected-component flood fill: a white road touching a white text halo cannot
-    # cause the whole label to be accepted.
+    # Regrow locally only into road-colour support.  MaxFilter is binary dilation.
     mask = seed.copy()
-    kernel3 = np.ones((3, 3), np.uint8)
     for _ in range(max(0, int(PROJECT_IMAGE_ROAD_REGROW_ITERATIONS_V533))):
-        mask = ((cv2.dilate(mask, kernel3, iterations=1) > 0) & (support > 0)).astype(np.uint8)
+        grown = Image.fromarray((mask * 255).astype(np.uint8), mode="L").filter(ImageFilter.MaxFilter(3))
+        mask = ((np.asarray(grown, dtype=np.uint8) > 0) & (support > 0)).astype(np.uint8)
 
-    # Close only one-pixel anti-alias seams. Larger closes could bridge separate streets
-    # across a building or label, which is explicitly forbidden.
-    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel3, iterations=1)
+    # One-pixel close: dilate then erode.  This repairs tiny anti-alias gaps without
+    # creating long bridges across buildings.
+    closed = Image.fromarray((mask * 255).astype(np.uint8), mode="L").filter(ImageFilter.MaxFilter(3)).filter(ImageFilter.MinFilter(3))
+    mask = (np.asarray(closed, dtype=np.uint8) > 0).astype(np.uint8)
 
-    # Reject residual compact bright objects and very thin isolated strokes. Large sparse
-    # branching components are retained because an actual street network is naturally
-    # branched.
-    count, labels, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
-    keep = np.zeros(mask.shape, dtype=np.uint8)
-    for label in range(1, count):
-        x, y, w, h, area = [int(v) for v in stats[label]]
-        if area < int(PROJECT_IMAGE_ROAD_MIN_COMPONENT_AREA_V533) or w <= 1 or h <= 1:
+    # Remove tiny / compact components using an 8-neighbour flood fill.  This is kept
+    # intentionally simple and deterministic so the server does not require cv2.
+    h, w = mask.shape
+    seen = np.zeros((h, w), dtype=np.uint8)
+    keep = np.zeros((h, w), dtype=np.uint8)
+    ys, xs = np.nonzero(mask)
+    for sy, sx in zip(ys.tolist(), xs.tolist()):
+        if seen[sy, sx]:
             continue
-        short_side = min(w, h)
-        long_side = max(w, h)
-        aspect = long_side / max(1.0, float(short_side))
-        fill = area / max(1.0, float(w * h))
-
-        # Thin isolated strokes are overwhelmingly labels/ornaments at z18. A genuine
-        # narrow road should still have produced the required thick interior seed above.
+        stack=[(sx,sy)]; seen[sy,sx]=1; comp=[]
+        minx=maxx=sx; miny=maxy=sy
+        while stack:
+            x,y=stack.pop(); comp.append((x,y))
+            if x<minx: minx=x
+            if x>maxx: maxx=x
+            if y<miny: miny=y
+            if y>maxy: maxy=y
+            for dy in (-1,0,1):
+                ny=y+dy
+                if ny<0 or ny>=h: continue
+                for dx in (-1,0,1):
+                    if dx==0 and dy==0: continue
+                    nx=x+dx
+                    if nx<0 or nx>=w or seen[ny,nx] or not mask[ny,nx]: continue
+                    seen[ny,nx]=1; stack.append((nx,ny))
+        area=len(comp); bw=maxx-minx+1; bh=maxy-miny+1
+        if area < int(PROJECT_IMAGE_ROAD_MIN_COMPONENT_AREA_V533) or bw <= 1 or bh <= 1:
+            continue
+        short_side=min(bw,bh); long_side=max(bw,bh)
         if short_side <= int(PROJECT_IMAGE_ROAD_MAX_THIN_COMPONENT_WIDTH_PX_V533):
             continue
-
-        compact_blob = (
-            short_side >= 7
-            and aspect <= float(PROJECT_IMAGE_ROAD_MAX_COMPACT_ASPECT_V532)
-            and fill >= float(PROJECT_IMAGE_ROAD_MAX_COMPACT_FILL_V532)
-        )
+        aspect=long_side/max(1.0,float(short_side)); fill=area/max(1.0,float(bw*bh))
+        compact_blob=(short_side>=7 and aspect<=float(PROJECT_IMAGE_ROAD_MAX_COMPACT_ASPECT_V532) and fill>=float(PROJECT_IMAGE_ROAD_MAX_COMPACT_FILL_V532))
         if compact_blob:
             continue
-        keep[labels == label] = 1
+        for x,y in comp:
+            keep[y,x]=1
 
-    # No final dilation in v533. v532 expanded every surviving component by one pixel,
-    # which could push accepted geometry outside the actual raster road surface. The
-    # returned mask is the final immutable road network used by the later A* stage.
     return Image.fromarray((keep * 255).astype(np.uint8), mode="L")
-
 
 def _project_image_road_mosaic_v531(points, diag=None):
     from PIL import Image
@@ -51130,28 +51132,46 @@ def _project_image_road_mosaic_v531(points, diag=None):
 
 
 def _project_image_road_trace_distance_v532(size, local_points):
-    """After road recognition, measure distance to the historical green trace."""
+    """Distance to the historical trace using NumPy only.
+
+    This runs only AFTER the independent road mask is complete.  Values farther than
+    the configured search radius are left above the radius because the caller never
+    traverses them.
+    """
     try:
-        import cv2
         import numpy as np
     except Exception:
         return None
     h, w = int(size[1]), int(size[0])
-    trace = np.zeros((h,w), dtype=np.uint8)
-    pts = np.array([[int(round(x)), int(round(y))] for x,y in local_points], dtype=np.int32)
-    if len(pts) >= 2:
-        cv2.polylines(trace, [pts.reshape((-1,1,2))], False, 255, 1, lineType=cv2.LINE_8)
-    elif len(pts) == 1:
-        x,y=pts[0];
-        if 0 <= x < w and 0 <= y < h: trace[y,x]=255
-    inv = np.where(trace > 0, 0, 255).astype(np.uint8)
-    return cv2.distanceTransform(inv, cv2.DIST_L2, 3)
-
+    radius = float(PROJECT_IMAGE_ROAD_SEARCH_RADIUS_PX_V531)
+    dist = np.full((h, w), radius + 1.0, dtype=np.float32)
+    pts=[(float(x),float(y)) for x,y in (local_points or [])]
+    if not pts:
+        return dist
+    if len(pts)==1:
+        segments=[(pts[0],pts[0])]
+    else:
+        segments=list(zip(pts[:-1],pts[1:]))
+    pad=int(math.ceil(radius))+2
+    for (ax,ay),(bx,by) in segments:
+        x0=max(0,int(math.floor(min(ax,bx)))-pad); x1=min(w-1,int(math.ceil(max(ax,bx)))+pad)
+        y0=max(0,int(math.floor(min(ay,by)))-pad); y1=min(h-1,int(math.ceil(max(ay,by)))+pad)
+        if x1<x0 or y1<y0: continue
+        yy,xx=np.ogrid[y0:y1+1,x0:x1+1]
+        dx=bx-ax; dy=by-ay; denom=dx*dx+dy*dy
+        if denom <= 1e-9:
+            d=np.sqrt((xx-ax)**2+(yy-ay)**2)
+        else:
+            t=np.clip(((xx-ax)*dx+(yy-ay)*dy)/denom,0.0,1.0)
+            px=ax+t*dx; py=ay+t*dy
+            d=np.sqrt((xx-px)**2+(yy-py)**2)
+        sub=dist[y0:y1+1,x0:x1+1]
+        np.minimum(sub,d.astype(np.float32),out=sub)
+    return dist
 
 def _project_image_road_nearest_pixel_v532(mask, center_dist, x, y, max_radius):
     """Snap an anchor to a PRE-RECOGNIZED road pixel; never create a new road pixel."""
     try:
-        import cv2
         import numpy as np
     except Exception:
         return None
@@ -51280,31 +51300,32 @@ def _project_image_road_match_chunk_v531(chunk):
 
     if len(points) < 2:
         _project_image_road_diag_v534(diag, "chunk.validate", "error", error="not_enough_points", point_count=len(points))
-        return finish({"status":"no_road_pixels","geometries":[],"coverage":0.0,"engine":"road_first_astar_v533"}, "chunk.validate")
+        return finish({"status":"no_road_pixels","geometries":[],"coverage":0.0,"engine":"road_first_astar_v536"}, "chunk.validate")
     try:
         _before, road_mask_img, local_points, origin_x, origin_y = _project_image_road_mosaic_v531(points, diag=diag)
-        import cv2
         import numpy as np
     except Exception as exc:
         _project_image_road_diag_v534(diag, "chunk.mosaic", "error", error=_project_image_road_exc_text_v534(exc))
-        return finish({"status":"tile_error","geometries":[],"error":_project_image_road_exc_text_v534(exc),"coverage":0.0,"engine":"road_first_astar_v533"}, "chunk.mosaic")
+        return finish({"status":"tile_error","geometries":[],"error":_project_image_road_exc_text_v534(exc),"coverage":0.0,"engine":"road_first_astar_v536"}, "chunk.mosaic")
 
     road = (np.asarray(road_mask_img, dtype=np.uint8) > 0).astype(np.uint8)
     road_pixels = int(road.sum())
     _project_image_road_diag_v534(diag, "chunk.road_mask", "ok" if road_pixels >= 8 else "error", recognized_road_pixels=road_pixels)
     if road_pixels < 8:
-        return finish({"status":"no_road_pixels","geometries":[],"coverage":0.0,"recognized_road_pixels":road_pixels,"engine":"road_first_astar_v533"}, "chunk.road_mask")
+        return finish({"status":"no_road_pixels","geometries":[],"coverage":0.0,"recognized_road_pixels":road_pixels,"engine":"road_first_astar_v536"}, "chunk.road_mask")
 
     trace_dist = _project_image_road_trace_distance_v532(road_mask_img.size, local_points)
     if trace_dist is None:
         _project_image_road_diag_v534(diag, "chunk.trace_distance", "error", error="cv_runtime_unavailable")
-        return finish({"status":"tile_error","geometries":[],"error":"cv_runtime_unavailable","coverage":0.0,"engine":"road_first_astar_v533"}, "chunk.trace_distance")
+        return finish({"status":"tile_error","geometries":[],"error":"cv_runtime_unavailable","coverage":0.0,"engine":"road_first_astar_v536"}, "chunk.trace_distance")
     corridor = ((road > 0) & (trace_dist <= float(PROJECT_IMAGE_ROAD_SEARCH_RADIUS_PX_V531))).astype(np.uint8)
     corridor_pixels = int(corridor.sum())
     _project_image_road_diag_v534(diag, "chunk.corridor", "ok" if corridor_pixels >= 8 else "error", corridor_pixels=corridor_pixels, search_radius_px=int(PROJECT_IMAGE_ROAD_SEARCH_RADIUS_PX_V531))
     if corridor_pixels < 8:
-        return finish({"status":"no_road_pixels","geometries":[],"coverage":0.0,"recognized_road_pixels":road_pixels,"corridor_pixels":corridor_pixels,"engine":"road_first_astar_v533"}, "chunk.corridor")
-    center_dist = cv2.distanceTransform((road*255).astype(np.uint8), cv2.DIST_L2, 3)
+        return finish({"status":"no_road_pixels","geometries":[],"coverage":0.0,"recognized_road_pixels":road_pixels,"corridor_pixels":corridor_pixels,"engine":"road_first_astar_v536"}, "chunk.corridor")
+    # v536 deliberately avoids OpenCV.  Centre-distance weighting is optional in the
+    # downstream snap/A* code; None keeps geometry constrained to the same road mask.
+    center_dist = None
 
     stride=max(1,int(PROJECT_IMAGE_ROAD_ANCHOR_STRIDE_V532))
     anchor_indices=list(range(0,len(local_points),stride))
@@ -51382,7 +51403,7 @@ def _project_image_road_match_chunk_v531(chunk):
         "corridor_pixels":corridor_pixels,
         "source_kind":source_kind,
         "saved_at":now_jst().isoformat(),
-        "engine":"road_first_astar_v533",
+        "engine":"road_first_astar_v536",
         "road_recognition_order":"green_free_thick_seed_first",
     })
 
@@ -51489,7 +51510,7 @@ def _project_image_road_worker_v531(owner, source_chunks):
                 "tile_errors": tile_errors,
                 "pending": max(0, len(ordered) - len(chunks)),
                 "workers": int(PROJECT_IMAGE_ROAD_WORKERS_V531),
-                "engine": "green_free_thick_seed_cv_v533",
+                "engine": "green_free_numpy_v536",
                 "at": now_jst().isoformat(),
                 "log_saved_at": str(log_save_status.get("saved_at") or ""),
                 "log_save_error": str(log_save_status.get("error") or "")[:500],
@@ -51541,7 +51562,7 @@ def _project_image_road_worker_v531(owner, source_chunks):
         "tile_errors": tile_errors,
         "pending": max(0, len(ordered) - len(chunks)),
         "workers": int(PROJECT_IMAGE_ROAD_WORKERS_V531),
-        "engine": "green_free_thick_seed_cv_v533",
+        "engine": "green_free_numpy_v536",
         "at": now_jst().isoformat(),
         "log_saved_at": str(log_save_status.get("saved_at") or ""),
         "log_save_error": str(log_save_status.get("error") or "")[:500],
@@ -52477,13 +52498,13 @@ def page_burari_project():
         if pending_chunks > 0:
             st.info(
                 f"緑線なし地図で道路を先に認識→道路上へ再作成中：{processed_chunks}/{total_chunks}区間"
-                f"（道路確定 {matched_chunks}、道路画素なし {no_road_chunks}、画像取得失敗 {tile_error_chunks}）。"
+                f"（道路確定 {matched_chunks}、道路画素なし {no_road_chunks}、処理失敗 {tile_error_chunks}）。"
                 f"{int(PROJECT_IMAGE_ROAD_WORKERS_V531)}並列でサーバー処理しているため、この画面を閉じても継続します。"
             )
         else:
             st.success(
                 f"道路先行認識による緑線再作成が完了しました：{processed_chunks}/{total_chunks}区間"
-                f"（道路確定 {matched_chunks}、道路画素なし {no_road_chunks}、画像取得失敗 {tile_error_chunks}）。"
+                f"（道路確定 {matched_chunks}、道路画素なし {no_road_chunks}、処理失敗 {tile_error_chunks}）。"
             )
 
     _perf_log_v457(
