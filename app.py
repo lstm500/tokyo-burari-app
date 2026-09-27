@@ -43,7 +43,8 @@ def _app_css_v473(markup, **_ignored):
 # Review menu-only update: 2026-09-19 JST
 GENERATED_UPDATE_JST = "2026-09-19T14:54:38+09:00"
 
-APP_BUILD = "v533"
+APP_BUILD = "v534"
+# v534: Persist detailed road-rebuild work logs, including per-tile download attempts, decode/mask stages, chunk recognition/path stages, retries, timings, and failures. Show saved diagnostics at the bottom of Burari Project. Road-recognition behavior itself is unchanged from v533.
 # v533: Tighten GREEN-FREE raster road recognition before any GPS/legacy-green selection. Require a genuine thick road interior seed, regrow only a few pixels into nearby road-colour support, and reject thin text halos / map ornament strokes / compact bright areas. v532 cached results are ignored and rebuilt.
 # v532: Recognize a conservative road network from the GREEN-FREE raster map first, independently of GPS/legacy green. Only after that recognition finishes for a chunk is the prior green trace used as a selection corridor. Every displayed green segment is then solved as an on-mask raster path, so the renderer never joins independently snapped points with straight off-road chords. v531 results are ignored and rebuilt in a new state.
 # v530: Remove the 30-minute GPS map-match retry stall. Deterministic NoMatch/rejected chunks are finalized after the existing full precision-preserving split pass, while transient network/server failures retry in seconds. While the Burari Project page remains open, a hidden keepalive periodically renews this browser's signed auto-login token.
@@ -1388,6 +1389,11 @@ PROJECT_IMAGE_ROAD_ASTAR_MAX_VISITS_V532 = 180000
 PROJECT_IMAGE_ROAD_MIN_PATH_POINTS_V532 = 4
 PROJECT_IMAGE_ROAD_MAX_COMPACT_FILL_V532 = 0.72
 PROJECT_IMAGE_ROAD_MAX_COMPACT_ASPECT_V532 = 2.8
+# v534 diagnostics: persist enough detail to identify the exact failing stage without
+# unboundedly growing the Supabase state document.
+PROJECT_IMAGE_ROAD_WORK_LOG_MAX_V534 = 6000
+PROJECT_IMAGE_ROAD_CHUNK_DIAG_MAX_V534 = 180
+PROJECT_IMAGE_ROAD_LOG_TEXT_MAX_V534 = 700
 # v533 precision-first GREEN-FREE recognition. Thin white strokes on OSM tiles are often
 # label halos or map ornaments rather than roads. A road must first contain an interior
 # that is at least this far from the candidate edge; only then may a very small ring of
@@ -50600,6 +50606,7 @@ def _project_image_road_default_state_v531(family_key=None, member_key=None):
         "chunks": {},
         "source_chunk_count": 0,
         "last_job": {},
+        "work_log": [],
     }
 
 
@@ -50635,6 +50642,7 @@ def _project_image_road_read_state_v531(client, family_key, member_key):
         "chunks": clean_chunks,
         "source_chunk_count": max(0, int(payload.get("source_chunk_count") or 0)),
         "last_job": payload.get("last_job") if isinstance(payload.get("last_job"), dict) else {},
+        "work_log": [row for row in (payload.get("work_log") or []) if isinstance(row, dict)][-int(PROJECT_IMAGE_ROAD_WORK_LOG_MAX_V534):],
     })
     return state
 
@@ -50648,6 +50656,7 @@ def _project_image_road_save_state_v531(client, family_key, member_key, state):
         "source_chunk_count": max(0, int((state or {}).get("source_chunk_count") or 0)),
         "chunks": (state or {}).get("chunks") if isinstance((state or {}).get("chunks"), dict) else {},
         "last_job": (state or {}).get("last_job") if isinstance((state or {}).get("last_job"), dict) else {},
+        "work_log": [row for row in ((state or {}).get("work_log") or []) if isinstance(row, dict)][-int(PROJECT_IMAGE_ROAD_WORK_LOG_MAX_V534):],
     }
     blob = json.dumps(document, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
     path = _project_image_road_state_path_v531(family_key, member_key)
@@ -50746,15 +50755,53 @@ def _project_image_road_tile_mask_v531(image):
     return Image.fromarray(score, mode="L")
 
 
-def _project_image_road_tile_v531(z, x, y):
+def _project_image_road_diag_v534(log, stage, status="info", **detail):
+    """Append one bounded, JSON-safe diagnostic event for the road rebuild."""
+    if log is None:
+        return
+    try:
+        clean = {}
+        for key, value in detail.items():
+            if value is None:
+                continue
+            if isinstance(value, (str, int, float, bool)):
+                if isinstance(value, str):
+                    value = value[:int(PROJECT_IMAGE_ROAD_LOG_TEXT_MAX_V534)]
+                clean[str(key)[:64]] = value
+            else:
+                clean[str(key)[:64]] = str(value)[:int(PROJECT_IMAGE_ROAD_LOG_TEXT_MAX_V534)]
+        row = {
+            "at": now_jst().isoformat(),
+            "stage": str(stage or "")[:96],
+            "status": str(status or "info")[:32],
+            **clean,
+        }
+        log.append(row)
+        if len(log) > int(PROJECT_IMAGE_ROAD_CHUNK_DIAG_MAX_V534):
+            del log[:-int(PROJECT_IMAGE_ROAD_CHUNK_DIAG_MAX_V534)]
+    except Exception:
+        pass
+
+
+def _project_image_road_exc_text_v534(exc):
+    try:
+        return f"{type(exc).__name__}: {exc}"[:int(PROJECT_IMAGE_ROAD_LOG_TEXT_MAX_V534)]
+    except Exception:
+        return "unknown_exception"
+
+
+def _project_image_road_tile_v531(z, x, y, diag=None):
     from PIL import Image
+    tile_started = time.monotonic()
     key = (int(z), int(x), int(y))
     with _PROJECT_IMAGE_ROAD_TILE_LOCK_V531:
         cached = _PROJECT_IMAGE_ROAD_TILE_CACHE_V531.get(key)
         if cached is not None:
+            _project_image_road_diag_v534(diag, "tile.cache", "ok", z=int(z), x=int(x), y=int(y), elapsed_ms=round((time.monotonic()-tile_started)*1000,1))
             return cached
     n = 2 ** int(z)
     if int(y) < 0 or int(y) >= n:
+        _project_image_road_diag_v534(diag, "tile.validate", "error", z=int(z), x=int(x), y=int(y), error="tile_y_out_of_range")
         raise ValueError("tile_y_out_of_range")
     x_wrapped = int(x) % n
     url = PROJECT_IMAGE_ROAD_TILE_TEMPLATE_V531.format(z=int(z), x=x_wrapped, y=int(y))
@@ -50765,20 +50812,50 @@ def _project_image_road_tile_v531(z, x, y):
     raw = b""
     last_error = None
     for attempt in range(3):
+        attempt_started = time.monotonic()
+        _project_image_road_diag_v534(diag, "tile.download.start", "info", z=int(z), x=x_wrapped, y=int(y), attempt=attempt+1, url=url)
         try:
             with _PROJECT_IMAGE_ROAD_TILE_SEMAPHORE_V531:
                 with urlopen(req, timeout=float(PROJECT_IMAGE_ROAD_TILE_TIMEOUT_SECONDS_V531)) as response:
+                    status_code = getattr(response, "status", None) or getattr(response, "code", None)
+                    content_type = str(response.headers.get("Content-Type", "")) if getattr(response, "headers", None) is not None else ""
                     raw = response.read()
+            _project_image_road_diag_v534(
+                diag, "tile.download.finish", "ok" if raw else "error",
+                z=int(z), x=x_wrapped, y=int(y), attempt=attempt+1,
+                http_status=status_code, content_type=content_type, bytes=len(raw),
+                elapsed_ms=round((time.monotonic()-attempt_started)*1000,1),
+            )
             if raw:
                 break
         except Exception as exc:
             last_error = exc
+            http_status = getattr(exc, "code", None)
+            _project_image_road_diag_v534(
+                diag, "tile.download.error", "error", z=int(z), x=x_wrapped, y=int(y), attempt=attempt+1,
+                http_status=http_status, error=_project_image_road_exc_text_v534(exc),
+                elapsed_ms=round((time.monotonic()-attempt_started)*1000,1),
+            )
             if attempt < 2:
                 time.sleep(0.18 * (attempt + 1))
     if not raw:
-        raise RuntimeError(type(last_error).__name__ if last_error else "tile_download_empty")
-    image = Image.open(io.BytesIO(raw)).convert("RGB")
-    mask = _project_image_road_tile_mask_v531(image)
+        error_name = type(last_error).__name__ if last_error else "tile_download_empty"
+        _project_image_road_diag_v534(diag, "tile.download.giveup", "error", z=int(z), x=x_wrapped, y=int(y), error=error_name, total_elapsed_ms=round((time.monotonic()-tile_started)*1000,1))
+        raise RuntimeError(error_name)
+    try:
+        decode_started = time.monotonic()
+        image = Image.open(io.BytesIO(raw)).convert("RGB")
+        _project_image_road_diag_v534(diag, "tile.decode", "ok", z=int(z), x=x_wrapped, y=int(y), width=image.width, height=image.height, elapsed_ms=round((time.monotonic()-decode_started)*1000,1))
+    except Exception as exc:
+        _project_image_road_diag_v534(diag, "tile.decode", "error", z=int(z), x=x_wrapped, y=int(y), bytes=len(raw), error=_project_image_road_exc_text_v534(exc))
+        raise
+    try:
+        mask_started = time.monotonic()
+        mask = _project_image_road_tile_mask_v531(image)
+        _project_image_road_diag_v534(diag, "tile.mask", "ok", z=int(z), x=x_wrapped, y=int(y), elapsed_ms=round((time.monotonic()-mask_started)*1000,1))
+    except Exception as exc:
+        _project_image_road_diag_v534(diag, "tile.mask", "error", z=int(z), x=x_wrapped, y=int(y), error=_project_image_road_exc_text_v534(exc))
+        raise
     bundle = (image, mask)
     with _PROJECT_IMAGE_ROAD_TILE_LOCK_V531:
         _PROJECT_IMAGE_ROAD_TILE_CACHE_V531[key] = bundle
@@ -50786,8 +50863,8 @@ def _project_image_road_tile_v531(z, x, y):
         while len(_PROJECT_IMAGE_ROAD_TILE_CACHE_ORDER_V531) > int(PROJECT_IMAGE_ROAD_TILE_CACHE_MAX_V531):
             old = _PROJECT_IMAGE_ROAD_TILE_CACHE_ORDER_V531.pop(0)
             _PROJECT_IMAGE_ROAD_TILE_CACHE_V531.pop(old, None)
+    _project_image_road_diag_v534(diag, "tile.complete", "ok", z=int(z), x=x_wrapped, y=int(y), total_elapsed_ms=round((time.monotonic()-tile_started)*1000,1))
     return bundle
-
 
 def _project_image_road_source_chunks_v531(points, stations=None):
     """Reconstruct the GPS-only green trace used before API road matching, then chunk it."""
@@ -50949,7 +51026,7 @@ def _project_image_road_confirmed_mask_v532(before, likelihood):
     return Image.fromarray((keep * 255).astype(np.uint8), mode="L")
 
 
-def _project_image_road_mosaic_v531(points):
+def _project_image_road_mosaic_v531(points, diag=None):
     from PIL import Image
     zoom = int(PROJECT_IMAGE_ROAD_ZOOM_V531)
     tile_size = int(PROJECT_IMAGE_ROAD_TILE_SIZE_V531)
@@ -50961,7 +51038,10 @@ def _project_image_road_mosaic_v531(points):
     max_y = max(y for _, y in global_px) + radius + 10
     tx0 = int(math.floor(min_x / tile_size)); tx1 = int(math.floor(max_x / tile_size))
     ty0 = int(math.floor(min_y / tile_size)); ty1 = int(math.floor(max_y / tile_size))
-    if (tx1 - tx0 + 1) * (ty1 - ty0 + 1) > 30:
+    tile_count = (tx1 - tx0 + 1) * (ty1 - ty0 + 1)
+    _project_image_road_diag_v534(diag, "mosaic.bounds", "ok", points=len(points), tx0=tx0, tx1=tx1, ty0=ty0, ty1=ty1, tile_count=tile_count)
+    if tile_count > 30:
+        _project_image_road_diag_v534(diag, "mosaic.bounds", "error", error="image_chunk_too_large", tile_count=tile_count)
         raise ValueError("image_chunk_too_large")
     width = (tx1 - tx0 + 1) * tile_size
     height = (ty1 - ty0 + 1) * tile_size
@@ -50969,7 +51049,7 @@ def _project_image_road_mosaic_v531(points):
     likelihood = Image.new("L", (width, height), 0)
     for ty in range(ty0, ty1 + 1):
         for tx in range(tx0, tx1 + 1):
-            tile, tile_mask = _project_image_road_tile_v531(zoom, tx, ty)
+            tile, tile_mask = _project_image_road_tile_v531(zoom, tx, ty, diag=diag)
             ox = (tx - tx0) * tile_size; oy = (ty - ty0) * tile_size
             before.paste(tile, (ox, oy)); likelihood.paste(tile_mask, (ox, oy))
     origin_x = tx0 * tile_size; origin_y = ty0 * tile_size
@@ -50977,7 +51057,14 @@ def _project_image_road_mosaic_v531(points):
 
     # CRITICAL v532 ordering: recognize the road network NOW, while the map contains
     # absolutely no green trace. The green/legacy path is not rendered or consulted here.
+    recognition_started = time.monotonic()
     road_mask = _project_image_road_confirmed_mask_v532(before, likelihood)
+    try:
+        import numpy as np
+        recognized = int((np.asarray(road_mask, dtype=np.uint8) > 0).sum())
+    except Exception:
+        recognized = -1
+    _project_image_road_diag_v534(diag, "mosaic.road_recognition", "ok", recognized_pixels=recognized, elapsed_ms=round((time.monotonic()-recognition_started)*1000,1))
     return before, road_mask, local_points, origin_x, origin_y
 
 
@@ -51114,47 +51201,70 @@ def _project_image_road_compress_path_v532(path, mask):
 
 
 def _project_image_road_match_chunk_v531(chunk):
+    diag = []
+    started = time.monotonic()
+    chunk_key = str((chunk or {}).get("key") or "")
+    source_kind = str((chunk or {}).get("source_kind") or "")
     points = _project_clean_segment_v298((chunk or {}).get("points") or [])
+    _project_image_road_diag_v534(diag, "chunk.start", "info", chunk_key=chunk_key, source_kind=source_kind, point_count=len(points))
+
+    def finish(payload, stage=None):
+        payload = dict(payload or {})
+        payload["diagnostics"] = list(diag)[-int(PROJECT_IMAGE_ROAD_CHUNK_DIAG_MAX_V534):]
+        payload["diagnostic_event_count"] = len(payload["diagnostics"])
+        payload["elapsed_ms"] = round((time.monotonic()-started)*1000,1)
+        if stage:
+            payload["failure_stage"] = stage
+        return payload
+
     if len(points) < 2:
-        return {"status":"no_road_pixels","geometries":[],"coverage":0.0,"engine":"road_first_astar_v533"}
+        _project_image_road_diag_v534(diag, "chunk.validate", "error", error="not_enough_points", point_count=len(points))
+        return finish({"status":"no_road_pixels","geometries":[],"coverage":0.0,"engine":"road_first_astar_v533"}, "chunk.validate")
     try:
-        _before, road_mask_img, local_points, origin_x, origin_y = _project_image_road_mosaic_v531(points)
+        _before, road_mask_img, local_points, origin_x, origin_y = _project_image_road_mosaic_v531(points, diag=diag)
         import cv2
         import numpy as np
     except Exception as exc:
-        return {"status":"tile_error","geometries":[],"error":type(exc).__name__,"coverage":0.0,"engine":"road_first_astar_v533"}
+        _project_image_road_diag_v534(diag, "chunk.mosaic", "error", error=_project_image_road_exc_text_v534(exc))
+        return finish({"status":"tile_error","geometries":[],"error":_project_image_road_exc_text_v534(exc),"coverage":0.0,"engine":"road_first_astar_v533"}, "chunk.mosaic")
 
-    # ROAD RECOGNITION IS COMPLETE before any trace-based operation below this line.
     road = (np.asarray(road_mask_img, dtype=np.uint8) > 0).astype(np.uint8)
-    if int(road.sum()) < 8:
-        return {"status":"no_road_pixels","geometries":[],"coverage":0.0,"engine":"road_first_astar_v533"}
+    road_pixels = int(road.sum())
+    _project_image_road_diag_v534(diag, "chunk.road_mask", "ok" if road_pixels >= 8 else "error", recognized_road_pixels=road_pixels)
+    if road_pixels < 8:
+        return finish({"status":"no_road_pixels","geometries":[],"coverage":0.0,"recognized_road_pixels":road_pixels,"engine":"road_first_astar_v533"}, "chunk.road_mask")
 
-    # The old green trace now only selects among recognized roads.
     trace_dist = _project_image_road_trace_distance_v532(road_mask_img.size, local_points)
     if trace_dist is None:
-        return {"status":"tile_error","geometries":[],"error":"cv_runtime_unavailable","coverage":0.0,"engine":"road_first_astar_v533"}
+        _project_image_road_diag_v534(diag, "chunk.trace_distance", "error", error="cv_runtime_unavailable")
+        return finish({"status":"tile_error","geometries":[],"error":"cv_runtime_unavailable","coverage":0.0,"engine":"road_first_astar_v533"}, "chunk.trace_distance")
     corridor = ((road > 0) & (trace_dist <= float(PROJECT_IMAGE_ROAD_SEARCH_RADIUS_PX_V531))).astype(np.uint8)
-    if int(corridor.sum()) < 8:
-        return {"status":"no_road_pixels","geometries":[],"coverage":0.0,"engine":"road_first_astar_v533"}
+    corridor_pixels = int(corridor.sum())
+    _project_image_road_diag_v534(diag, "chunk.corridor", "ok" if corridor_pixels >= 8 else "error", corridor_pixels=corridor_pixels, search_radius_px=int(PROJECT_IMAGE_ROAD_SEARCH_RADIUS_PX_V531))
+    if corridor_pixels < 8:
+        return finish({"status":"no_road_pixels","geometries":[],"coverage":0.0,"recognized_road_pixels":road_pixels,"corridor_pixels":corridor_pixels,"engine":"road_first_astar_v533"}, "chunk.corridor")
     center_dist = cv2.distanceTransform((road*255).astype(np.uint8), cv2.DIST_L2, 3)
 
     stride=max(1,int(PROJECT_IMAGE_ROAD_ANCHOR_STRIDE_V532))
     anchor_indices=list(range(0,len(local_points),stride))
     if anchor_indices[-1] != len(local_points)-1: anchor_indices.append(len(local_points)-1)
     anchors=[]
+    missing_anchors=0
     for idx in anchor_indices:
         sx,sy=local_points[idx]
-        snap=_project_image_road_nearest_pixel_v532(
-            corridor, center_dist, sx, sy, int(PROJECT_IMAGE_ROAD_MAX_ANCHOR_SNAP_PX_V532)
-        )
+        snap=_project_image_road_nearest_pixel_v532(corridor, center_dist, sx, sy, int(PROJECT_IMAGE_ROAD_MAX_ANCHOR_SNAP_PX_V532))
+        if snap is None:
+            missing_anchors += 1
         anchors.append((idx,snap))
+    _project_image_road_diag_v534(diag, "chunk.anchors", "ok" if missing_anchors < len(anchors) else "error", anchors=len(anchors), missing=missing_anchors, max_snap_px=int(PROJECT_IMAGE_ROAD_MAX_ANCHOR_SNAP_PX_V532))
 
-    geometries_px=[]; current=[]; connected_pairs=0; attempted_pairs=0
+    geometries_px=[]; current=[]; connected_pairs=0; attempted_pairs=0; astar_failed=0; invalid_compressed=0; missing_pair_anchors=0
     margin=int(PROJECT_IMAGE_ROAD_PATH_MARGIN_PX_V532)
     for pos in range(len(anchors)-1):
         i0,a=anchors[pos]; i1,b=anchors[pos+1]
         attempted_pairs += 1
         if a is None or b is None:
+            missing_pair_anchors += 1
             if len(current) >= int(PROJECT_IMAGE_ROAD_MIN_PATH_POINTS_V532): geometries_px.append(current)
             current=[]; continue
         sub=local_points[i0:i1+1]
@@ -51162,22 +51272,18 @@ def _project_image_road_match_chunk_v531(chunk):
         maxx=max(p[0] for p in sub)+float(PROJECT_IMAGE_ROAD_SEARCH_RADIUS_PX_V531)+margin
         miny=min(p[1] for p in sub)-float(PROJECT_IMAGE_ROAD_SEARCH_RADIUS_PX_V531)-margin
         maxy=max(p[1] for p in sub)+float(PROJECT_IMAGE_ROAD_SEARCH_RADIUS_PX_V531)+margin
-        path=_project_image_road_astar_v532(
-            corridor, trace_dist, center_dist, a, b,
-            roi_bounds=(minx,miny,maxx,maxy),
-        )
+        path=_project_image_road_astar_v532(corridor, trace_dist, center_dist, a, b, roi_bounds=(minx,miny,maxx,maxy))
         if not path:
+            astar_failed += 1
             if len(current) >= int(PROJECT_IMAGE_ROAD_MIN_PATH_POINTS_V532): geometries_px.append(current)
             current=[]; continue
         connected_pairs += 1
         path=_project_image_road_compress_path_v532(path,corridor)
-        # Defensive invariant: every compressed segment must still rasterize entirely
-        # inside the recognized-road corridor. If not, discard that pair rather than
-        # drawing a questionable line.
         valid=True
         for j in range(len(path)-1):
             if not _project_image_road_line_inside_v532(corridor,path[j],path[j+1]): valid=False; break
         if not valid:
+            invalid_compressed += 1
             if len(current) >= int(PROJECT_IMAGE_ROAD_MIN_PATH_POINTS_V532): geometries_px.append(current)
             current=[]; continue
         if not current:
@@ -51190,12 +51296,11 @@ def _project_image_road_match_chunk_v531(chunk):
     if len(current) >= int(PROJECT_IMAGE_ROAD_MIN_PATH_POINTS_V532): geometries_px.append(current)
 
     coverage = connected_pairs / max(1, attempted_pairs)
+    _project_image_road_diag_v534(diag, "chunk.pathfinding", "ok" if connected_pairs else "error", attempted_pairs=attempted_pairs, connected_pairs=connected_pairs, missing_pair_anchors=missing_pair_anchors, astar_failed=astar_failed, invalid_compressed=invalid_compressed, coverage=round(float(coverage),4))
     geometries=[]
     for path in geometries_px:
         geo=[]
         for x,y in path:
-            # Assert at serialization time as well: green output is impossible outside
-            # the recognized road mask.
             if not corridor[int(y),int(x)]:
                 continue
             lat,lon=_project_image_road_latlon_v531(float(x)+origin_x,float(y)+origin_y)
@@ -51205,18 +51310,20 @@ def _project_image_road_match_chunk_v531(chunk):
 
     status = "matched" if geometries and coverage >= float(PROJECT_IMAGE_ROAD_MIN_CHUNK_COVERAGE_V531) else "no_road_pixels"
     if status != "matched": geometries=[]
-    return {
+    _project_image_road_diag_v534(diag, "chunk.complete", "ok" if status == "matched" else "warning", result=status, coverage=round(float(coverage),4), geometries=len(geometries), elapsed_ms=round((time.monotonic()-started)*1000,1))
+    return finish({
         "status":status,
         "geometries":geometries,
         "coverage":round(float(coverage),4),
         "connected_pairs":int(connected_pairs),
         "attempted_pairs":int(attempted_pairs),
-        "recognized_road_pixels":int(road.sum()),
-        "source_kind":str((chunk or {}).get("source_kind") or ""),
+        "recognized_road_pixels":road_pixels,
+        "corridor_pixels":corridor_pixels,
+        "source_kind":source_kind,
         "saved_at":now_jst().isoformat(),
         "engine":"road_first_astar_v533",
         "road_recognition_order":"green_free_thick_seed_first",
-    }
+    })
 
 
 @st.cache_resource(show_spinner=False)
@@ -51235,6 +51342,18 @@ def _project_image_road_worker_v531(owner, source_chunks):
         row = chunks.get(key) if isinstance(chunks.get(key), dict) else {}
         return str(row.get("status") or "") in {"matched", "no_road_pixels"}
     pending = [row for row in ordered if not terminal(str(row.get("key") or ""))]
+    work_log = [row for row in (state.get("work_log") or []) if isinstance(row, dict)][-int(PROJECT_IMAGE_ROAD_WORK_LOG_MAX_V534):]
+    def append_work_log(chunk_key, attempt, result):
+        events = (result or {}).get("diagnostics") if isinstance((result or {}).get("diagnostics"), list) else []
+        for event in events:
+            if not isinstance(event, dict):
+                continue
+            row = dict(event)
+            row["chunk_key"] = str(chunk_key or "")[:96]
+            row["attempt"] = int(attempt)
+            work_log.append(row)
+        if len(work_log) > int(PROJECT_IMAGE_ROAD_WORK_LOG_MAX_V534):
+            del work_log[:-int(PROJECT_IMAGE_ROAD_WORK_LOG_MAX_V534)]
     if not pending:
         return dict(state.get("last_job") or {"status": "complete"})
     lock = threading.RLock()
@@ -51256,6 +51375,7 @@ def _project_image_road_worker_v531(owner, source_chunks):
                 chunks.clear(); chunks.update(trimmed)
             state["chunks"] = dict(chunks)
             state["source_chunk_count"] = len(ordered)
+            state["work_log"] = list(work_log)[-int(PROJECT_IMAGE_ROAD_WORK_LOG_MAX_V534):]
             state["last_job"] = {
                 "status": "running",
                 "processed": len(chunks),
@@ -51279,13 +51399,18 @@ def _project_image_road_worker_v531(owner, source_chunks):
             try:
                 result = future.result()
             except Exception as exc:
-                result = {"status": "tile_error", "geometries": [], "error": type(exc).__name__, "saved_at": now_jst().isoformat()}
+                result = {"status": "tile_error", "geometries": [], "error": _project_image_road_exc_text_v534(exc), "saved_at": now_jst().isoformat(), "diagnostics": [{"at": now_jst().isoformat(), "stage": "worker.future", "status": "error", "error": _project_image_road_exc_text_v534(exc)}]}
+            append_work_log(key, 1, result)
             if str((result or {}).get("status") or "") == "tile_error":
+                work_log.append({"at": now_jst().isoformat(), "chunk_key": key, "attempt": 2, "stage": "worker.retry", "status": "info", "delay_ms": 350})
+                if len(work_log) > int(PROJECT_IMAGE_ROAD_WORK_LOG_MAX_V534): del work_log[:-int(PROJECT_IMAGE_ROAD_WORK_LOG_MAX_V534)]
                 time.sleep(0.35)
                 try:
-                    result = _project_image_road_match_chunk_v531(row)
+                    retry_result = _project_image_road_match_chunk_v531(row)
                 except Exception as exc:
-                    result = {"status": "tile_error", "geometries": [], "error": type(exc).__name__, "saved_at": now_jst().isoformat()}
+                    retry_result = {"status": "tile_error", "geometries": [], "error": _project_image_road_exc_text_v534(exc), "saved_at": now_jst().isoformat(), "diagnostics": [{"at": now_jst().isoformat(), "stage": "worker.retry.future", "status": "error", "error": _project_image_road_exc_text_v534(exc)}]}
+                append_work_log(key, 2, retry_result)
+                result = retry_result
             with lock:
                 chunks[key] = result
                 total_processed += 1; processed_since_save += 1
@@ -51298,6 +51423,7 @@ def _project_image_road_worker_v531(owner, source_chunks):
             checkpoint(force=False)
     state["chunks"] = dict(chunks)
     state["source_chunk_count"] = len(ordered)
+    state["work_log"] = list(work_log)[-int(PROJECT_IMAGE_ROAD_WORK_LOG_MAX_V534):]
     state["last_job"] = {
         "status": "complete",
         "processed": len(chunks),
@@ -52320,6 +52446,52 @@ def page_burari_project():
                 st.write(f"最終 {diag_dt.strftime('%m/%d %H:%M:%S')} / {diag_source}{diag_acc_text}")
             except Exception:
                 pass
+
+    # v534: persistent diagnostic log for the road-rebuild worker. This is deliberately
+    # placed at the bottom of the Project page so map use stays unchanged.
+    st.markdown("### 道路再作成 作業ログ")
+    saved_work_log = [row for row in (image_road_state.get("work_log") or []) if isinstance(row, dict)]
+    current_job = image_road_state.get("last_job") if isinstance(image_road_state.get("last_job"), dict) else {}
+    if saved_work_log:
+        error_rows = [row for row in saved_work_log if str(row.get("status") or "").lower() in {"error", "failed", "failure"}]
+        st.caption(
+            f"保存済み {len(saved_work_log)}件 ｜ エラー {len(error_rows)}件 ｜ "
+            f"最終保存 {str(image_road_state.get('saved_at') or current_job.get('at') or '-')[:25]}"
+        )
+        recent_rows = list(reversed(saved_work_log[-250:]))
+        table_rows = []
+        for row in recent_rows:
+            detail = {k: v for k, v in row.items() if k not in {"at", "chunk_key", "attempt", "stage", "status"}}
+            table_rows.append({
+                "時刻": str(row.get("at") or "")[5:19].replace("T", " "),
+                "区間": str(row.get("chunk_key") or "")[:18],
+                "試行": row.get("attempt", ""),
+                "工程": str(row.get("stage") or ""),
+                "状態": str(row.get("status") or ""),
+                "詳細": json.dumps(detail, ensure_ascii=False, separators=(",", ":"))[:900],
+            })
+        st.dataframe(table_rows, use_container_width=True, hide_index=True, height=420)
+        if error_rows:
+            with st.expander("直近のエラー詳細", expanded=True):
+                for row in reversed(error_rows[-20:]):
+                    st.code(json.dumps(row, ensure_ascii=False, indent=2), language="json")
+        log_payload = {
+            "schema": "project_image_road_work_log_v534",
+            "generated_at": now_jst().isoformat(),
+            "algorithm": PROJECT_IMAGE_ROAD_SCHEMA_V531,
+            "last_job": current_job,
+            "events": saved_work_log,
+        }
+        st.download_button(
+            "作業ログJSONをダウンロード",
+            data=json.dumps(log_payload, ensure_ascii=False, indent=2).encode("utf-8"),
+            file_name=f"burari_road_work_log_{now_jst().strftime('%Y%m%d_%H%M%S')}.json",
+            mime="application/json",
+            key="project_image_road_work_log_download_v534",
+            use_container_width=True,
+        )
+    else:
+        st.info("まだ保存された作業ログはありません。道路再作成処理が進むと、画像取得・画像解析・道路判定・経路生成・リトライの各工程がここに保存されます。")
 
 
 # ============================================================
