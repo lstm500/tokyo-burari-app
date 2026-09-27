@@ -1482,7 +1482,7 @@ PROJECT_IMAGE_ROAD_PHOTO_OSAKI_SHINAGAWA_REVISION_V546 = "osaki_shinagawa_tracks
 # green-free OSM raster is recognized first and the connector must be a complete A* path
 # inside that recognized road mask.
 PROJECT_IMAGE_ROAD_GAP_REVISION_V547 = "all_current_green_road_gap_fill_v550"
-PROJECT_IMAGE_ROAD_WORKFLOW_REVISION_V548 = "road_then_all_green_gap_autochain_v550"
+PROJECT_IMAGE_ROAD_WORKFLOW_REVISION_V548 = "road_then_all_green_gap_background_only_v551"
 PROJECT_IMAGE_ROAD_GAP_MIN_M_V547 = 4.0
 PROJECT_IMAGE_ROAD_GAP_MAX_M_V547 = 160.0
 PROJECT_IMAGE_ROAD_GAP_DENSIFY_M_V547 = 10.0
@@ -51044,6 +51044,7 @@ def _project_image_road_default_state_v531(family_key=None, member_key=None):
         "source_chunk_count": 0,
         "gap_revision": PROJECT_IMAGE_ROAD_GAP_REVISION_V547,
         "gap_fills": {},
+        "gap_job": {},
         "last_job": {},
     }
 
@@ -51102,6 +51103,7 @@ def _project_image_road_read_state_v531(client, family_key, member_key):
         "source_chunk_count": max(0, int(payload.get("source_chunk_count") or 0)),
         "gap_revision": PROJECT_IMAGE_ROAD_GAP_REVISION_V547,
         "gap_fills": clean_gap_fills,
+        "gap_job": payload.get("gap_job") if isinstance(payload.get("gap_job"), dict) else {},
         "last_job": payload.get("last_job") if isinstance(payload.get("last_job"), dict) else {},
     })
     return state
@@ -51117,6 +51119,7 @@ def _project_image_road_save_state_v531(client, family_key, member_key, state):
         "chunks": (state or {}).get("chunks") if isinstance((state or {}).get("chunks"), dict) else {},
         "gap_revision": PROJECT_IMAGE_ROAD_GAP_REVISION_V547,
         "gap_fills": (state or {}).get("gap_fills") if isinstance((state or {}).get("gap_fills"), dict) else {},
+        "gap_job": (state or {}).get("gap_job") if isinstance((state or {}).get("gap_job"), dict) else {},
         "last_job": (state or {}).get("last_job") if isinstance((state or {}).get("last_job"), dict) else {},
     }
     blob = json.dumps(document, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
@@ -52553,49 +52556,149 @@ def _project_image_road_gap_terminal_v547(row):
     return isinstance(row, dict) and str(row.get("gap_revision") or "") == PROJECT_IMAGE_ROAD_GAP_REVISION_V547 and str(row.get("status") or "") in {"matched", "no_path"}
 
 
+def _project_image_road_gap_source_signature_v551(source_chunks):
+    """Cheap source signature only; never performs gap detection on the Streamlit page thread."""
+    digest = hashlib.sha1()
+    count = 0
+    for row in source_chunks or []:
+        if not isinstance(row, dict):
+            continue
+        key = str(row.get("key") or "").strip()
+        if not key:
+            continue
+        count += 1
+        digest.update(key.encode("utf-8", "ignore"))
+        digest.update(b"|")
+        digest.update(str(row.get("source_group") or "").encode("utf-8", "ignore"))
+        digest.update(b"|")
+        digest.update(str(row.get("source_part") if row.get("source_part") is not None else row.get("part") or "").encode("utf-8", "ignore"))
+        digest.update(b"\n")
+    return f"{count}:{digest.hexdigest()[:20]}"
+
+
 def _project_image_road_gap_segments_v547(source_chunks, state):
-    candidates = _project_image_road_gap_candidates_v547(source_chunks, state)
+    """v551 page-side view: render saved fills and read saved progress only.
+
+    IMPORTANT: this function intentionally does NOT call
+    `_project_image_road_gap_candidates_v547()`. Candidate discovery, endpoint scans,
+    road recognition and A* all run only inside the server worker.
+    """
     fills = state.get("gap_fills") if isinstance(state, dict) and isinstance(state.get("gap_fills"), dict) else {}
     output = []
-    filled = no_path = 0
-    for cand in candidates:
-        row = fills.get(str(cand.get("key") or ""))
+    for row in fills.values():
         if not _project_image_road_gap_terminal_v547(row):
             continue
-        if str(row.get("status") or "") == "matched":
-            filled += 1
-            for g in row.get("geometries") or []:
-                clean = _project_clean_segment_v298(g)
-                if len(clean) >= 2:
-                    output.append(clean)
-        else:
-            no_path += 1
-    return output, {"total":len(candidates), "filled":filled, "no_path":no_path, "pending":max(0, len(candidates)-filled-no_path)}
+        if str(row.get("status") or "") != "matched":
+            continue
+        for g in row.get("geometries") or []:
+            clean = _project_clean_segment_v298(g)
+            if len(clean) >= 2:
+                output.append(clean)
+
+    job = state.get("gap_job") if isinstance(state, dict) and isinstance(state.get("gap_job"), dict) else {}
+    expected_signature = _project_image_road_gap_source_signature_v551(source_chunks)
+    same_job = (
+        str(job.get("gap_revision") or "") == PROJECT_IMAGE_ROAD_GAP_REVISION_V547
+        and str(job.get("workflow_revision") or "") == PROJECT_IMAGE_ROAD_WORKFLOW_REVISION_V548
+        and str(job.get("source_signature") or "") == expected_signature
+    )
+    if not same_job:
+        return output, {
+            "status": "waiting",
+            "phase": "waiting",
+            "total": 0,
+            "processed": 0,
+            "filled": 0,
+            "no_path": 0,
+            "pending": 0,
+        }
+    total = max(0, int(job.get("total") or 0))
+    processed = max(0, int(job.get("processed") or 0))
+    filled = max(0, int(job.get("filled") or 0))
+    no_path = max(0, int(job.get("no_path") or 0))
+    pending = max(0, int(job.get("pending") if job.get("pending") is not None else total - processed))
+    return output, {
+        "status": str(job.get("status") or "waiting"),
+        "phase": str(job.get("phase") or "waiting"),
+        "total": total,
+        "processed": processed,
+        "filled": filled,
+        "no_path": no_path,
+        "pending": pending,
+    }
 
 
 def _project_image_road_gap_worker_v547(owner, source_chunks):
+    """v551 fully server-side gap workflow.
+
+    Every expensive step stays here: all-green endpoint scanning, candidate generation,
+    raster-road recognition, A* connector generation, checkpointing and finalization.
+    The Streamlit render thread only reads `gap_job` progress and already-saved fills.
+    """
     from supabase import create_client
     client = create_client(SUPABASE_URL, SUPABASE_SECRET_KEY)
     family_key, member_key = owner
+    source_chunks = [dict(row) for row in (source_chunks or []) if isinstance(row, dict) and row.get("key")]
+    source_signature = _project_image_road_gap_source_signature_v551(source_chunks)
     state = _project_image_road_read_state_v531(client, family_key, member_key)
-    candidates = _project_image_road_gap_candidates_v547(source_chunks, state)
     fills = state.get("gap_fills") if isinstance(state.get("gap_fills"), dict) else {}
+
+    def refresh_primary_state():
+        nonlocal state
+        try:
+            latest = _project_image_road_read_state_v531(client, family_key, member_key)
+            if isinstance(latest, dict):
+                state["chunks"] = latest.get("chunks") if isinstance(latest.get("chunks"), dict) else state.get("chunks", {})
+                state["source_chunk_count"] = int(latest.get("source_chunk_count") or state.get("source_chunk_count") or 0)
+                state["last_job"] = latest.get("last_job") if isinstance(latest.get("last_job"), dict) else state.get("last_job", {})
+        except Exception:
+            pass
+
+    def save_gap_state(status, phase, total, processed, filled_count, no_path_count, pending_count, *, error=""):
+        refresh_primary_state()
+        state["gap_revision"] = PROJECT_IMAGE_ROAD_GAP_REVISION_V547
+        state["gap_fills"] = dict(fills)
+        state["gap_job"] = {
+            "gap_revision": PROJECT_IMAGE_ROAD_GAP_REVISION_V547,
+            "workflow_revision": PROJECT_IMAGE_ROAD_WORKFLOW_REVISION_V548,
+            "source_signature": source_signature,
+            "status": str(status),
+            "phase": str(phase),
+            "total": max(0, int(total)),
+            "processed": max(0, int(processed)),
+            "filled": max(0, int(filled_count)),
+            "no_path": max(0, int(no_path_count)),
+            "pending": max(0, int(pending_count)),
+            "workers": int(PROJECT_IMAGE_ROAD_GAP_WORKERS_V547),
+            "updated_at": now_jst().isoformat(),
+            "error": str(error or "")[:500],
+        }
+        _project_image_road_save_state_v531(client, family_key, member_key, state)
+
+    # Publish immediately so the page can show progress without doing any candidate scan.
+    save_gap_state("running", "scanning", 0, 0, 0, 0, 0)
+    try:
+        candidates = _project_image_road_gap_candidates_v547(source_chunks, state)
+    except Exception as exc:
+        save_gap_state("failed", "scanning", 0, 0, 0, 0, 0, error=_project_image_road_exc_text_v534(exc))
+        return {"status": "failed", "total": 0, "pending": 0}
+
     active_keys = {str(c.get("key") or "") for c in candidates}
     fills = {k:v for k,v in fills.items() if k in active_keys and _project_image_road_gap_terminal_v547(v)}
     pending = [c for c in candidates if not _project_image_road_gap_terminal_v547(fills.get(str(c.get("key") or "")))]
+    total = len(candidates)
+    filled_count = sum(1 for c in candidates if str((fills.get(str(c.get("key") or "")) or {}).get("status") or "") == "matched")
+    no_path_count = sum(1 for c in candidates if str((fills.get(str(c.get("key") or "")) or {}).get("status") or "") == "no_path")
+    processed = filled_count + no_path_count
+    save_gap_state("running" if pending else "complete", "matching" if pending else "complete", total, processed, filled_count, no_path_count, total - processed)
     if not pending:
-        state["gap_revision"] = PROJECT_IMAGE_ROAD_GAP_REVISION_V547
-        state["gap_fills"] = fills
-        _project_image_road_save_state_v531(client, family_key, member_key, state)
-        return {"total":len(candidates), "pending":0}
+        return {"status":"complete", "total":total, "processed":processed, "filled":filled_count, "no_path":no_path_count, "pending":0}
+
     log_doc = _project_image_road_read_work_log_v535(client, family_key, member_key)
     work_log = [row for row in (log_doc.get("events") or []) if isinstance(row, dict)]
     done_since_save = 0
     with ThreadPoolExecutor(max_workers=int(PROJECT_IMAGE_ROAD_GAP_WORKERS_V547)) as pool:
         future_map = {pool.submit(_project_image_road_gap_match_v547, c): c for c in pending}
-        # v548: consume whichever connector finishes first. The v547 submission-order
-        # loop could sit at 0/N when the first submitted gap was slow even though other
-        # workers had already completed useful connectors.
         for future in as_completed(future_map):
             cand = future_map[future]
             try:
@@ -52604,62 +52707,58 @@ def _project_image_road_gap_worker_v547(owner, source_chunks):
                 result = {"status":"no_path", "geometries":[], "gap_revision":PROJECT_IMAGE_ROAD_GAP_REVISION_V547, "error":_project_image_road_exc_text_v534(exc)}
             key = str(cand.get("key") or "")
             fills[key] = _project_image_road_compact_result_v537(result)
+            result_status = str(result.get("status") or "")
+            if result_status == "matched":
+                filled_count += 1
+            else:
+                no_path_count += 1
+            processed += 1
             work_log.append({
-                "at":now_jst().isoformat(), "stage":"gap_fill.result", "status":"ok" if str(result.get("status") or "") == "matched" else "warning",
-                "chunk_key":key, "result":str(result.get("status") or ""), "gap_m":float(cand.get("gap_m") or 0.0),
+                "at":now_jst().isoformat(), "stage":"gap_fill.result", "status":"ok" if result_status == "matched" else "warning",
+                "chunk_key":key, "result":result_status, "gap_m":float(cand.get("gap_m") or 0.0),
                 "source_group":str(cand.get("source_group") or ""),
             })
             if len(work_log) > int(PROJECT_IMAGE_ROAD_WORK_LOG_PERSIST_MAX_V535):
                 del work_log[:-int(PROJECT_IMAGE_ROAD_WORK_LOG_PERSIST_MAX_V535)]
             done_since_save += 1
             if done_since_save >= int(PROJECT_IMAGE_ROAD_GAP_CHECKPOINT_EVERY_V547):
-                # Re-read before saving so a concurrent page/worker update cannot be
-                # discarded. Only gap_fills is owned by this phase.
-                try:
-                    latest = _project_image_road_read_state_v531(client, family_key, member_key)
-                    if isinstance(latest, dict):
-                        state["chunks"] = latest.get("chunks") if isinstance(latest.get("chunks"), dict) else state.get("chunks", {})
-                        state["source_chunk_count"] = int(latest.get("source_chunk_count") or state.get("source_chunk_count") or 0)
-                        state["last_job"] = latest.get("last_job") if isinstance(latest.get("last_job"), dict) else state.get("last_job", {})
-                except Exception:
-                    pass
-                state["gap_revision"] = PROJECT_IMAGE_ROAD_GAP_REVISION_V547
-                state["gap_fills"] = dict(fills)
-                _project_image_road_save_state_v531(client, family_key, member_key, state)
+                save_gap_state("running", "matching", total, processed, filled_count, no_path_count, total - processed)
                 _project_image_road_save_work_log_v535(client, family_key, member_key, work_log)
                 done_since_save = 0
-    try:
-        latest = _project_image_road_read_state_v531(client, family_key, member_key)
-        if isinstance(latest, dict):
-            state["chunks"] = latest.get("chunks") if isinstance(latest.get("chunks"), dict) else state.get("chunks", {})
-            state["source_chunk_count"] = int(latest.get("source_chunk_count") or state.get("source_chunk_count") or 0)
-            state["last_job"] = latest.get("last_job") if isinstance(latest.get("last_job"), dict) else state.get("last_job", {})
-    except Exception:
-        pass
-    state["gap_revision"] = PROJECT_IMAGE_ROAD_GAP_REVISION_V547
-    state["gap_fills"] = dict(fills)
-    _project_image_road_save_state_v531(client, family_key, member_key, state)
+
+    save_gap_state("complete", "complete", total, processed, filled_count, no_path_count, 0)
     _project_image_road_save_work_log_v535(client, family_key, member_key, work_log)
-    return {"total":len(candidates), "pending":0}
+    return {"status":"complete", "total":total, "processed":processed, "filled":filled_count, "no_path":no_path_count, "pending":0}
 
 
 def _project_image_road_gap_launch_v547(source_chunks, state):
-    candidates = _project_image_road_gap_candidates_v547(source_chunks, state)
-    if not candidates:
-        return False
-    fills = state.get("gap_fills") if isinstance(state, dict) and isinstance(state.get("gap_fills"), dict) else {}
-    unfinished = any(not _project_image_road_gap_terminal_v547(fills.get(str(c.get("key") or ""))) for c in candidates)
-    if not unfinished:
+    """v551 lightweight launcher: never discovers candidates on the page thread."""
+    source_chunks = [dict(row) for row in (source_chunks or []) if isinstance(row, dict) and row.get("key")]
+    if not source_chunks:
         return False
     owner = (current_family_key(), current_member_key())
+    source_signature = _project_image_road_gap_source_signature_v551(source_chunks)
     runtime = _project_image_road_runtime_v537(PROJECT_IMAGE_ROAD_SCHEMA_V531 + "|gap|" + PROJECT_IMAGE_ROAD_GAP_REVISION_V547 + "|" + PROJECT_IMAGE_ROAD_WORKFLOW_REVISION_V548)
-    job_key = (owner[0], owner[1], "gap", PROJECT_IMAGE_ROAD_GAP_REVISION_V547, PROJECT_IMAGE_ROAD_WORKFLOW_REVISION_V548)
+    job_key = (owner[0], owner[1], "gap", PROJECT_IMAGE_ROAD_GAP_REVISION_V547, PROJECT_IMAGE_ROAD_WORKFLOW_REVISION_V548, source_signature)
     with runtime["lock"]:
         future = runtime["jobs"].get(job_key)
         if future is not None:
             if not future.done():
                 return True
             runtime["jobs"].pop(job_key, None)
+
+        saved_job = state.get("gap_job") if isinstance(state, dict) and isinstance(state.get("gap_job"), dict) else {}
+        saved_complete = (
+            str(saved_job.get("gap_revision") or "") == PROJECT_IMAGE_ROAD_GAP_REVISION_V547
+            and str(saved_job.get("workflow_revision") or "") == PROJECT_IMAGE_ROAD_WORKFLOW_REVISION_V548
+            and str(saved_job.get("source_signature") or "") == source_signature
+            and str(saved_job.get("status") or "") == "complete"
+        )
+        if saved_complete:
+            return False
+
+        # A persisted "running" job without a live Future means the server restarted.
+        # Resubmit it; existing terminal fills are reused by the worker.
         runtime["jobs"][job_key] = runtime["executor"].submit(_project_image_road_gap_worker_v547, owner, source_chunks)
         return True
 
@@ -53849,13 +53948,25 @@ def page_burari_project():
             f"ねんね：写真の青・緑テープから読み取った徒歩 {photo_pair_route_count_v543} 駅間を道路画像認識へ追加済み"
             f"（内部処理 {photo_chunk_count_v543} 分割）"
         )
-    if gap_total_v547 > 0:
-        if pending_chunks > 0 and road_worker_running and gap_filled_v547 == 0:
-            st.caption(f"現在ある全緑線を確認：補間候補 {gap_total_v547}件。道路再作成後に自動補間します。")
-        elif gap_pending_v547 > 0 or gap_worker_running_v547 or road_worker_running:
-            st.caption(f"現在ある全緑線の切れ目を道路上で補間中：{gap_filled_v547}/{gap_total_v547}件")
+    gap_status_v551 = str(gap_meta_v547.get("status") or "waiting")
+    gap_phase_v551 = str(gap_meta_v547.get("phase") or "waiting")
+    gap_processed_v551 = int(gap_meta_v547.get("processed") or 0)
+    gap_no_path_v551 = int(gap_meta_v547.get("no_path") or 0)
+    if gap_worker_running_v547 or gap_status_v551 in {"running", "waiting"}:
+        if gap_phase_v551 == "scanning" or gap_total_v547 <= 0:
+            st.caption("緑線の補間：候補確認中（バックグラウンド処理）")
         else:
-            st.caption(f"現在ある全緑線の切れ目を道路上で補間済み：{gap_filled_v547}/{gap_total_v547}件")
+            st.caption(
+                f"緑線の補間：{gap_processed_v551}/{gap_total_v547}件処理済み"
+                f"（補間 {gap_filled_v547}件）"
+            )
+    elif gap_status_v551 == "complete":
+        st.caption(
+            f"緑線の補間：完了 {gap_processed_v551}/{gap_total_v547}件"
+            f"（補間 {gap_filled_v547}件）"
+        )
+    elif gap_status_v551 == "failed":
+        st.caption("緑線の補間：バックグラウンド処理を再開待ち")
     if total_chunks > 0:
         if pending_chunks > 0:
             st.info(
