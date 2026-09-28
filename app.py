@@ -44,7 +44,7 @@ def _app_css_v473(markup, **_ignored):
 # Review menu-only update: 2026-09-19 JST
 GENERATED_UPDATE_JST = "2026-09-19T14:54:38+09:00"
 
-APP_BUILD = "v560"
+APP_BUILD = "v561"
 # v560: Rebuild green-gap closure as an iterative, verified network process. Existing UI is preserved; only progress wording distinguishes fully verified completion from residual unresolved gaps.
 # v557: Rebuild replay-movie family sharing around native Streamlit buttons. Share/unshare writes are read back from Supabase before success is shown; recipient cache is invalidated, while recipient discovery/media preparation remains Review-only background work.
 # v556: After Review is opened, discover family-shared replay movies and prepare their playback media in the same bounded background pipeline. Photo/voice signed URLs, current feeling metadata and replay item payloads are prepared before a received movie becomes playable, so pressing Play performs no blocking media lookup. No Home/startup recipient query is added.
@@ -22050,7 +22050,12 @@ def tag_review_storage_month(tag_key, create=False):
 
 def get_tag_review_source(limit=AI_TAG_REVIEW_SOURCE_LIMIT):
     """Load still photos across all dates, including AI-tagged and yet-untagged rows."""
-    photos = list_member_still_photos_for_tags(max_items=max(1, int(limit)))
+    limit = max(1, int(limit))
+    cache_key_v561 = _account_cache_key("tag_review_source_v561", limit)
+    cached_v561 = _session_cache_get(cache_key_v561, max_age_seconds=90)
+    if isinstance(cached_v561, dict):
+        return cached_v561
+    photos = list_member_still_photos_for_tags(max_items=limit)
     photos = [photo for photo in photos if isinstance(photo, dict) and not photo_is_video(photo)]
     photos.sort(key=lambda photo: (str(photo.get("captured_at") or ""), str(photo.get("id") or "")))
 
@@ -22079,7 +22084,7 @@ def get_tag_review_source(limit=AI_TAG_REVIEW_SOURCE_LIMIT):
         trips.extend(batch)
 
     _queue_framing_rows_v468(photos)
-    return {"trips": trips, "diaries": [], "photos": photos}
+    return _session_cache_set(cache_key_v561, {"trips": trips, "diaries": [], "photos": photos})
 
 
 def tag_review_counts(source):
@@ -24315,6 +24320,20 @@ def _refresh_replay_photo_metadata_v448(photos):
     if not photo_ids:
         return rows
 
+    # v561: shared/owner replay sections can request the exact same photo set twice in
+    # one script run. Cache only for that run, so DB/tag mutations on the next rerun
+    # remain authoritative while duplicate 200-500ms SELECTs disappear.
+    run_id_v561 = int(st.session_state.get("_performance_current_run_v457") or 0)
+    run_cache_key_v561 = "_replay_metadata_run_cache_v561"
+    run_cache_v561 = st.session_state.get(run_cache_key_v561)
+    if not isinstance(run_cache_v561, dict) or int(run_cache_v561.get("run") or -1) != run_id_v561:
+        run_cache_v561 = {"run": run_id_v561, "items": {}}
+        st.session_state[run_cache_key_v561] = run_cache_v561
+    ids_key_v561 = hashlib.sha1("|".join(photo_ids).encode("utf-8")).hexdigest()
+    cached_rows_v561 = (run_cache_v561.get("items") or {}).get(ids_key_v561)
+    if isinstance(cached_rows_v561, list):
+        return [dict(row) for row in cached_rows_v561]
+
     started = time.perf_counter()
     fresh_rows = []
     try:
@@ -24341,6 +24360,10 @@ def _refresh_replay_photo_metadata_v448(photos):
             started_at=started,
             meta={"requested": len(photo_ids), "fresh": len(fresh_map), "batches": max(1, (len(photo_ids) + 99) // 100)},
         )
+        try:
+            run_cache_v561.setdefault("items", {})[ids_key_v561] = [dict(row) for row in result]
+        except Exception:
+            pass
         return result
     except Exception:
         _perf_log_v457(
@@ -33014,7 +33037,10 @@ def _render_home_storage_usage_status():
         return
 
     try:
-        usage_bytes, pending, failed, fresh = _display_storage_v468(max_age=300)
+        # v561: app-side video mutations already invalidate this cache explicitly.
+        # A 30-minute passive refresh avoids repeated 4-5s bucket enumerations while
+        # keeping the same meter and immediate post-save/delete correctness.
+        usage_bytes, pending, failed, fresh = _display_storage_v468(max_age=1800)
         if usage_bytes is None:
             message = "\u5bb9\u91cf\u3092\u78ba\u8a8d\u3067\u304d\u307e\u305b\u3093\u3067\u3057\u305f" if failed else "\u78ba\u8a8d\u4e2d"
             st.markdown(f'<div style="margin:.30rem .10rem .05rem;opacity:.52;font-size:.65rem;text-align:center;">\u52d5\u753b\u30b9\u30c8\u30ec\u30fc\u30b8\uff1a{message}</div>', unsafe_allow_html=True)
@@ -44410,7 +44436,15 @@ def _cluster_memory_map_items(items, cluster_radius_m=MEMORY_MAP_CLUSTER_RADIUS_
     return groups[:42]
 
 
+@st.cache_resource(show_spinner=False)
+def _memory_map_preview_executor_v561():
+    # Preserve the existing embedded-first-preview behavior, but create independent
+    # pin previews concurrently instead of serially blocking the map for every pin.
+    return ThreadPoolExecutor(max_workers=6, thread_name_prefix="burari-map-preview")
+
+
 def _memory_map_payload(center_lat, center_lon, radius_m):
+    payload_started_v561 = time.perf_counter()
     items = _memory_map_nearby_items(center_lat, center_lon, radius_m)
     groups = _cluster_memory_map_items(items)
     preview_paths = []
@@ -44422,6 +44456,27 @@ def _memory_map_payload(center_lat, center_lon, radius_m):
             if path:
                 preview_paths.append(path)
     signed = signed_photo_url_map(tuple(preview_paths), expires_in=1200) if preview_paths else {}
+
+    first_paths_v561 = []
+    for group in groups:
+        sorted_items_v561 = sorted(group.get("items") or [], key=lambda x: str(x.get("captured_at") or ""), reverse=True)
+        if sorted_items_v561:
+            path_v561 = str(sorted_items_v561[0].get("storage_path") or "")
+            if path_v561 and path_v561 not in first_paths_v561:
+                first_paths_v561.append(path_v561)
+    embedded_first_v561 = {}
+    if first_paths_v561:
+        def _embed_first_v561(path):
+            try:
+                return path, thumbnail_photo_data_url(path, max_px=320, quality=70)
+            except Exception:
+                return path, ""
+        try:
+            for path_v561, data_v561 in _memory_map_preview_executor_v561().map(_embed_first_v561, first_paths_v561):
+                if data_v561:
+                    embedded_first_v561[path_v561] = data_v561
+        except Exception:
+            embedded_first_v561 = {}
 
     payload_groups = []
     for index, group in enumerate(groups, start=1):
@@ -44435,11 +44490,10 @@ def _memory_map_payload(center_lat, center_lon, radius_m):
             # A signed Storage URL can be created successfully on the server yet still be
             # blocked/fail inside a mobile Streamlit component.  The popup itself is only
             # about 280px wide, so a cached 320px preview is enough and keeps the map light.
+            # v561 keeps the old embedded first preview exactly; only preparation is
+            # parallelized above so the map no longer downloads one pin after another.
             if item_index == 0 and path:
-                try:
-                    embedded_preview = thumbnail_photo_data_url(path, max_px=320, quality=70)
-                except Exception:
-                    embedded_preview = ""
+                embedded_preview = str(embedded_first_v561.get(path) or "")
                 if embedded_preview:
                     preview_src = embedded_preview
             visible.append({
@@ -44460,7 +44514,10 @@ def _memory_map_payload(center_lat, center_lon, radius_m):
             "place": place,
             "items": visible,
         })
-    return {"groups": payload_groups, "item_count": len(items)}
+    result_v561 = {"groups": payload_groups, "item_count": len(items)}
+    _perf_log_v457("memory_map:payload", started_at=payload_started_v561,
+                   meta={"items": len(items), "groups": len(payload_groups)}, force=True)
+    return result_v561
 
 
 def _render_memory_map_static_v259(center_lat, center_lon, radius_m, *, accuracy_m=None):
@@ -45869,6 +45926,184 @@ def _upsert_track_month_v271(month_key, incoming_points):
     return len(points)
 
 
+@st.cache_resource(show_spinner=False)
+def _gps_sync_runtime_v561():
+    """One bounded background writer for legacy/browser GPS persistence.
+
+    The UI thread never waits for monthly Storage download/rewrite. A completed ACK is
+    harvested on a later natural Streamlit run; until then the device/browser keeps the
+    points locally, so a restart remains lossless and idempotent by point id.
+    """
+    return {
+        "lock": threading.RLock(),
+        "executor": ThreadPoolExecutor(max_workers=1, thread_name_prefix="burari-gps-save"),
+        "owners": {},
+    }
+
+
+def _read_track_month_for_owner_v561(client, month_key, family_key, member_key):
+    path = _gps_track_month_path(month_key, family_key, member_key)
+    try:
+        raw = client.storage.from_(GPS_TRACK_BUCKET).download(path)
+        payload = json.loads(bytes(raw).decode("utf-8"))
+    except Exception:
+        return []
+    rows = payload.get("points") if isinstance(payload, dict) else payload
+    if not isinstance(rows, list):
+        return []
+    output = []
+    for row in rows:
+        point = _coerce_track_point_v271(row)
+        if point:
+            output.append(point)
+    return output
+
+
+def _upsert_track_month_for_owner_v561(client, family_key, member_key, month_key, incoming_points):
+    existing = _read_track_month_for_owner_v561(client, month_key, family_key, member_key)
+    merged = {str(row.get("id") or ""): row for row in existing if row.get("id")}
+    unchanged = bool(existing)
+    for raw in incoming_points or []:
+        point = _coerce_track_point_v271(raw)
+        if point:
+            if merged.get(point["id"]) != point:
+                unchanged = False
+            merged[point["id"]] = point
+    if unchanged:
+        return len(merged)
+    points = sorted(merged.values(), key=lambda x: (int(x.get("ts_ms") or 0), str(x.get("id") or "")))
+    document = {
+        "version": 1, "month": str(month_key), "family_key": str(family_key),
+        "member_key": str(member_key), "updated_at": now_jst().isoformat(), "points": points,
+    }
+    blob = json.dumps(document, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    path = _gps_track_month_path(month_key, family_key, member_key)
+    bucket = client.storage.from_(GPS_TRACK_BUCKET)
+    options = {"content-type": GPS_TRACK_STORAGE_MIME, "cache-control": "0", "upsert": "true"}
+    first_error = None
+    try:
+        bucket.upload(path=path, file=blob, file_options=options)
+    except Exception as exc:
+        first_error = exc
+        try:
+            bucket.update(path=path, file=blob, file_options={"content-type": GPS_TRACK_STORAGE_MIME, "cache-control": "0"})
+        except Exception:
+            try:
+                bucket.remove([path])
+            except Exception:
+                pass
+            try:
+                bucket.upload(path=path, file=blob, file_options={"content-type": GPS_TRACK_STORAGE_MIME, "cache-control": "0"})
+            except Exception:
+                raise first_error
+    return len(points)
+
+
+def _gps_sync_worker_v561(family_key, member_key, batch):
+    received_at_ms = int(time.time() * 1000)
+    raw_points = list((batch or {}).get("points") or [])[:GPS_TRACK_BATCH_MAX_POINTS]
+    source = str((batch or {}).get("source") or "browser_or_legacy")[:80]
+    token = str((batch or {}).get("token") or "")
+    cleaned = []
+    for raw in raw_points:
+        point = _coerce_track_point_v271(raw)
+        if point:
+            cleaned.append(point)
+    if not cleaned:
+        return {"status": "no_valid_points", "at_ms": received_at_ms, "source": source, "token": token,
+                "received": len(raw_points), "accepted": 0, "ack_ms": 0, "months": 0}
+    by_month = {}
+    for point in cleaned:
+        try:
+            dt = datetime.fromtimestamp(float(point["ts_ms"]) / 1000.0, ZoneInfo(APP_TIMEZONE))
+        except Exception:
+            continue
+        by_month.setdefault(dt.strftime("%Y-%m"), []).append(point)
+    from supabase import create_client
+    client = create_client(SUPABASE_URL, SUPABASE_SECRET_KEY)
+    for month_key, rows in by_month.items():
+        _upsert_track_month_for_owner_v561(client, family_key, member_key, month_key, rows)
+    return {
+        "status": "saved", "at_ms": int(time.time() * 1000), "source": source, "token": token,
+        "received": len(raw_points), "accepted": len(cleaned),
+        "ack_ms": max(int(p.get("ts_ms") or 0) for p in cleaned),
+        "min_ts_ms": min(int(p.get("ts_ms") or 0) for p in cleaned),
+        "months": len(by_month),
+    }
+
+
+def _gps_sync_enqueue_v561(batch):
+    runtime = _gps_sync_runtime_v561()
+    owner = (current_family_key(), current_member_key())
+    token = str((batch or {}).get("token") or "")
+    with runtime["lock"]:
+        state = runtime["owners"].setdefault(owner, {"future": None, "token": "", "queued": None, "queued_token": ""})
+        future = state.get("future")
+        if future is not None and not future.done():
+            # The browser/native pending batch is cumulative until ACK. Keeping only the
+            # newest batch therefore coalesces work without losing unsaved points.
+            if token and token != str(state.get("token") or ""):
+                state["queued"] = dict(batch or {})
+                state["queued_token"] = token
+            return False
+        state["future"] = runtime["executor"].submit(_gps_sync_worker_v561, owner[0], owner[1], dict(batch or {}))
+        state["token"] = token
+        state["queued"] = None
+        state["queued_token"] = ""
+        return True
+
+
+def _gps_sync_harvest_v561():
+    """Collect completed background saves without ever waiting on a Future."""
+    runtime = _gps_sync_runtime_v561()
+    owner = (current_family_key(), current_member_key())
+    completed = []
+    with runtime["lock"]:
+        state = runtime["owners"].get(owner)
+        if not isinstance(state, dict):
+            return []
+        future = state.get("future")
+        if future is None or not future.done():
+            return []
+        try:
+            completed.append(future.result(timeout=0))
+        except Exception as exc:
+            completed.append({"status": "error", "at_ms": int(time.time() * 1000),
+                              "source": "background", "received": 0, "accepted": 0,
+                              "ack_ms": 0, "error_type": type(exc).__name__})
+        state["future"] = None
+        queued = state.get("queued")
+        queued_token = str(state.get("queued_token") or "")
+        state["queued"] = None
+        state["queued_token"] = ""
+        if isinstance(queued, dict) and queued.get("points"):
+            state["future"] = runtime["executor"].submit(_gps_sync_worker_v561, owner[0], owner[1], dict(queued))
+            state["token"] = queued_token
+    for result in completed:
+        if not isinstance(result, dict):
+            continue
+        if str(result.get("status") or "") == "saved":
+            try:
+                _read_track_month_cached_v271.clear(); _list_track_month_keys_v271.clear()
+                _load_all_project_track_points_cached_v561.clear()
+            except Exception:
+                pass
+        st.session_state["_gps_last_sync_v491"] = dict(result)
+        if str(result.get("status") or "") == "saved" and int(result.get("ack_ms") or 0) > 0:
+            ack_key_v561 = f"_gps_track_ack_v271_{owner[0]}_{owner[1]}"
+            token_key_v561 = f"_gps_track_batch_token_v271_{owner[0]}_{owner[1]}"
+            st.session_state[ack_key_v561] = max(int(st.session_state.get(ack_key_v561) or 0), int(result.get("ack_ms") or 0))
+            if str(result.get("token") or ""):
+                st.session_state[token_key_v561] = str(result.get("token") or "")
+            _perf_log_v457(
+                "gps:sync_batch_saved_background", duration_ms=0,
+                meta={"source": str(result.get("source") or "")[:80],
+                      "received": int(result.get("received") or 0),
+                      "accepted": int(result.get("accepted") or 0)}, force=True,
+            )
+    return completed
+
+
 def save_gps_track_batch_v271(batch):
     if not isinstance(batch, dict):
         return 0
@@ -45945,6 +46180,9 @@ def save_gps_track_batch_v271(batch):
     return ack_ms
 
 def run_always_on_gps_tracker_v271():
+    # v561: harvest completed persistence first. This is non-blocking and lets the next
+    # natural render carry the ACK without forcing an app rerun.
+    _gps_sync_harvest_v561()
     # v495: keep native bridge recovery, make ACK->next-batch recovery resilient, and capture diagnostic status from the
     # Android bridge whenever Burari Project or Settings is opened. No bridge token or coordinate
     # is written to the log; only counts, timestamps, permission/service state and sync results.
@@ -45976,7 +46214,13 @@ def run_always_on_gps_tracker_v271():
         )
         return
     allow_flush = page != "camera"
-    force_flush = page == "review_project"
+    # v561: preserve the Project page's immediate sync on entry, but only once.
+    # The old design kept force_flush=True on every rerun and became a recovery pump:
+    # one GPS point -> save -> rerun -> next point. A one-shot entry flush keeps the
+    # visible behavior without allowing a continuous rerun chain.
+    last_tracker_page_v561 = str(st.session_state.get("_gps_tracker_last_page_v561") or "")
+    force_flush = bool(page == "review_project" and last_tracker_page_v561 != "review_project")
+    st.session_state["_gps_tracker_last_page_v561"] = page
     # v493: Settings needs the same native status snapshot for the visible GPS log,
     # but it must not force-upload GPS points merely because the user opened Settings.
     request_diagnostic = bool(native_mode and page in {"review_project", "settings"})
@@ -46063,62 +46307,22 @@ def run_always_on_gps_tracker_v271():
         # v495 recovery is intentionally idempotent. If Android returns the same 500
         # rows again, save/upsert them again and issue the same ACK instead of stopping
         # the chain indefinitely. The next component render re-applies ACK first.
-    try:
-        ack_ms = save_gps_track_batch_v271(batch)
-    except Exception as exc:
-        st.session_state["_gps_last_sync_v491"] = {
-            "at_ms": int(time.time() * 1000),
-            "source": str(batch.get("source") or "")[:80],
-            "received": len(batch.get("points") or []),
-            "accepted": 0,
-            "ack_ms": 0,
-            "status": "error",
-            "error_type": type(exc).__name__,
-        }
-        _perf_log_v457(
-            "gps:sync_batch_error",
-            duration_ms=0,
-            meta={
-                "source": str(batch.get("source") or "")[:80],
-                "count": len(batch.get("points") or []),
-                "error_type": type(exc).__name__,
-            },
-            force=True,
-        )
-        return
-    if ack_ms > 0:
-        st.session_state[token_key] = token
-        st.session_state[ack_key] = max(int(st.session_state.get(ack_key) or 0), int(ack_ms))
-        _perf_log_v457(
-            "gps:sync_ack_ready",
-            duration_ms=0,
-            meta={"ack_ms": int(ack_ms), "source": str(batch.get("source") or "")[:80]},
-            force=True,
-        )
-        # v494: Burari Project is the explicit recovery screen. The component was
-        # previously rendered with the old ack_ms before this batch was saved, so
-        # waiting for a later user action could leave thousands of Android SQLite
-        # rows pending indefinitely. Rerun immediately: the next render sends this
-        # ack_ms to Android, marks the saved rows bridged, and the component then
-        # requests the next (up to 500-point) batch. This repeats until no batch remains.
-        if force_flush and native_mode:
-            recovery_key = f"_gps_recovery_batches_v494_{current_family_key()}_{current_member_key()}"
-            recovery_batches = int(st.session_state.get(recovery_key) or 0) + 1
-            st.session_state[recovery_key] = recovery_batches
-            _perf_log_v457(
-                "gps:recovery_batch_saved",
-                duration_ms=0,
-                meta={
-                    "batch_no": recovery_batches,
-                    "received": len(batch.get("points") or []),
-                    "ack_ms": int(ack_ms),
-                },
-                force=True,
-            )
-            # A duplicate batch is already suppressed by token before this point, so a
-            # successful new batch can safely rerun immediately without an arbitrary
-            # lifetime batch cap. This also lets very large backlogs finish.
-            st.rerun()
+    # v561: persistence is queued to the dedicated background writer. The UI thread
+    # returns immediately; ACK is published only after a later non-blocking harvest.
+    submitted = _gps_sync_enqueue_v561(batch)
+    st.session_state["_gps_last_sync_v491"] = {
+        "at_ms": int(time.time() * 1000),
+        "source": str(batch.get("source") or "")[:80],
+        "received": len(batch.get("points") or []),
+        "accepted": 0,
+        "ack_ms": int(st.session_state.get(ack_key) or 0),
+        "status": "queued" if submitted else "queued_coalesced",
+    }
+    _perf_log_v457(
+        "gps:sync_batch_queued", duration_ms=0,
+        meta={"source": str(batch.get("source") or "")[:80],
+              "count": len(batch.get("points") or []), "submitted": bool(submitted)}, force=True,
+    )
 
 
 @st.cache_data(ttl=15, max_entries=24, show_spinner=False)
@@ -46169,8 +46373,8 @@ def _read_native_track_points_v338(family_key, member_key):
     return rows
 
 
-def _load_all_project_track_points_v271():
-    family = current_family_key(); member = current_member_key()
+@st.cache_data(ttl=15, max_entries=24, show_spinner=False)
+def _load_all_project_track_points_cached_v561(family, member):
     months = list(_list_track_month_keys_v271(family, member))
     groups = []
     if months:
@@ -46204,6 +46408,54 @@ def _load_all_project_track_points_v271():
             sampled.append(points[-1])
         return sampled
     return points
+
+
+def _load_all_project_track_points_v271():
+    return _load_all_project_track_points_cached_v561(current_family_key(), current_member_key())
+
+
+def _project_points_signature_v561(points):
+    rows = [row for row in (points or []) if isinstance(row, dict)]
+    if not rows:
+        return "0"
+    picks = rows[::max(1, len(rows) // 32)]
+    material = [str(len(rows)), str(rows[0].get("id") or ""), str(rows[-1].get("id") or "")]
+    material.extend(str(row.get("id") or row.get("ts_ms") or "") for row in picks[:40])
+    return hashlib.sha1("|".join(material).encode("utf-8")).hexdigest()[:20]
+
+
+def _project_route_derived_v561(points):
+    sig = _project_points_signature_v561(points)
+    key = _account_cache_key("project_route_derived_v561")
+    cached = st.session_state.get(key)
+    if isinstance(cached, dict) and cached.get("signature") == sig:
+        value = cached.get("value")
+        if isinstance(value, dict):
+            return value
+    segments = _project_walk_segments_v271(points) if points else []
+    fallback_segments = _project_city_fallback_segments_v455(points) if points else []
+    value = {
+        "segments": segments,
+        "fallback_segments": fallback_segments,
+        "walk_points": _project_walk_points_v271(segments) if segments else [],
+        "fallback_points": _project_walk_points_v271(fallback_segments) if fallback_segments else [],
+        "walk_m": _project_walk_distance_m_v271(segments) if segments else 0.0,
+    }
+    st.session_state[key] = {"signature": sig, "value": value}
+    return value
+
+
+def _project_station_preflight_cached_v561(points, map_points):
+    sig = _project_points_signature_v561(points)
+    key = _account_cache_key("project_station_preflight_v561")
+    cached = st.session_state.get(key)
+    if isinstance(cached, dict) and cached.get("signature") == sig:
+        value = cached.get("value")
+        if isinstance(value, tuple) and len(value) == 2:
+            return value, True
+    value = _project_station_preflight_v293(points, map_points)
+    st.session_state[key] = {"signature": sig, "value": value}
+    return value, False
 
 
 def _project_render_source_dedupe_v384(points):
@@ -51726,6 +51978,13 @@ def _project_image_road_progress_path_v553(family_key=None, member_key=None):
     return f"{_gps_track_prefix(family_key, member_key)}/{PROJECT_IMAGE_ROAD_PROGRESS_STORAGE_FILE_V553}"
 
 
+PROJECT_IMAGE_ROAD_RENDER_SNAPSHOT_FILE_V561 = "project_image_road_render_v561.json"
+PROJECT_IMAGE_ROAD_RENDER_SNAPSHOT_SCHEMA_V561 = "project_image_road_render_v561"
+
+def _project_image_road_render_snapshot_path_v561(family_key=None, member_key=None):
+    return f"{_gps_track_prefix(family_key, member_key)}/{PROJECT_IMAGE_ROAD_RENDER_SNAPSHOT_FILE_V561}"
+
+
 def _project_image_road_progress_document_v553(family_key, member_key, state):
     state = state if isinstance(state, dict) else {}
     last_job = state.get("last_job") if isinstance(state.get("last_job"), dict) else {}
@@ -51742,7 +52001,11 @@ def _project_image_road_progress_document_v553(family_key, member_key, state):
         "workflow_phase": str(workflow.get("phase") or ""),
         "road_status": str(last_job.get("status") or ""),
         "road_processed": max(0, int(last_job.get("processed") or 0)),
+        "road_matched": max(0, int(last_job.get("matched") or 0)),
+        "road_no_road": max(0, int(last_job.get("no_road") or 0)),
+        "road_tile_errors": max(0, int(last_job.get("tile_errors") or 0)),
         "road_pending": max(0, int(last_job.get("pending") or 0)),
+        "source_chunk_count": max(0, int(state.get("source_chunk_count") or 0)),
         "gap_status": str(gap_job.get("status") or ""),
         "gap_phase": str(gap_job.get("phase") or ""),
         "gap_total": max(0, int(gap_job.get("total") or 0)),
@@ -51770,6 +52033,122 @@ def _project_image_road_save_progress_v553(client, family_key, member_key, state
         return True
     except Exception:
         return False
+
+
+def _project_image_road_save_render_snapshot_v561(client, family_key, member_key, state):
+    """Persist only map geometry + input signature, never chunk diagnostics/work state."""
+    try:
+        document = {
+            "schema": PROJECT_IMAGE_ROAD_RENDER_SNAPSHOT_SCHEMA_V561,
+            "build": APP_BUILD,
+            "family_key": str(family_key or ""), "member_key": str(member_key or ""),
+            "saved_at": now_jst().isoformat(),
+            "input_signature": str(((state or {}).get("workflow_job") or {}).get("input_signature") or ""),
+            "segments": _project_image_road_saved_segments_v553(state or {}),
+        }
+        blob = json.dumps(document, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        path = _project_image_road_render_snapshot_path_v561(family_key, member_key)
+        bucket = client.storage.from_(GPS_TRACK_BUCKET)
+        options = {"content-type": "application/json", "cache-control": "0", "upsert": "true"}
+        try:
+            bucket.upload(path=path, file=blob, file_options=options)
+        except Exception:
+            bucket.update(path=path, file=blob, file_options={"content-type": "application/json", "cache-control": "0"})
+        return True
+    except Exception:
+        return False
+
+
+def _project_image_road_read_render_snapshot_v561(client, family_key, member_key):
+    try:
+        raw = _storage_bytes(client.storage.from_(GPS_TRACK_BUCKET).download(
+            _project_image_road_render_snapshot_path_v561(family_key, member_key)
+        ))
+        payload = json.loads(raw.decode("utf-8")) if raw else {}
+    except Exception:
+        return {}
+    if not isinstance(payload, dict) or payload.get("schema") != PROJECT_IMAGE_ROAD_RENDER_SNAPSHOT_SCHEMA_V561:
+        return {}
+    segments = []
+    for candidate in payload.get("segments") or []:
+        cleaned = _project_clean_segment_v298(candidate)
+        if len(cleaned) >= 2:
+            segments.append(cleaned)
+    return {"saved_at": str(payload.get("saved_at") or "")[:80],
+            "input_signature": str(payload.get("input_signature") or ""), "segments": segments}
+
+
+@st.cache_resource(show_spinner=False)
+def _project_image_road_snapshot_runtime_v561():
+    return {"lock": threading.RLock(),
+            "executor": ThreadPoolExecutor(max_workers=1, thread_name_prefix="burari-road-snapshot"),
+            "jobs": {}}
+
+
+def _project_image_road_schedule_snapshot_migration_v561(family_key, member_key, segments, input_signature=""):
+    """One-time v560 -> v561 render snapshot write; never blocks the page."""
+    rows = [seg for seg in (segments or []) if isinstance(seg, list) and len(seg) >= 2]
+    if not rows:
+        return False
+    runtime = _project_image_road_snapshot_runtime_v561()
+    owner = (str(family_key or ""), str(member_key or ""))
+    with runtime["lock"]:
+        prior = runtime["jobs"].get(owner)
+        if prior is not None and not prior.done():
+            return True
+    def worker():
+        try:
+            from supabase import create_client
+            client = create_client(SUPABASE_URL, SUPABASE_SECRET_KEY)
+            document = {
+                "schema": PROJECT_IMAGE_ROAD_RENDER_SNAPSHOT_SCHEMA_V561, "build": APP_BUILD,
+                "family_key": owner[0], "member_key": owner[1],
+                "saved_at": now_jst().isoformat(), "input_signature": str(input_signature or ""),
+                "segments": rows,
+            }
+            blob = json.dumps(document, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+            path = _project_image_road_render_snapshot_path_v561(owner[0], owner[1])
+            bucket = client.storage.from_(GPS_TRACK_BUCKET)
+            options = {"content-type": "application/json", "cache-control": "0", "upsert": "true"}
+            try:
+                bucket.upload(path=path, file=blob, file_options=options)
+            except Exception:
+                bucket.update(path=path, file=blob, file_options={"content-type": "application/json", "cache-control": "0"})
+            return True
+        except Exception:
+            return False
+    with runtime["lock"]:
+        runtime["jobs"][owner] = runtime["executor"].submit(worker)
+    return True
+
+
+def _project_image_road_read_progress_v561(client, family_key, member_key):
+    try:
+        raw = _storage_bytes(client.storage.from_(GPS_TRACK_BUCKET).download(
+            _project_image_road_progress_path_v553(family_key, member_key)
+        ))
+        payload = json.loads(raw.decode("utf-8")) if raw else {}
+        return payload if isinstance(payload, dict) and payload.get("schema") == PROJECT_IMAGE_ROAD_PROGRESS_SCHEMA_V553 else {}
+    except Exception:
+        return {}
+
+
+def _project_image_road_summary_state_v561(progress):
+    p = progress if isinstance(progress, dict) else {}
+    return {
+        "source_chunk_count": max(0, int(p.get("source_chunk_count") or 0)),
+        "last_job": {"status": str(p.get("road_status") or ""), "processed": int(p.get("road_processed") or 0),
+                     "matched": int(p.get("road_matched") or 0), "no_road": int(p.get("road_no_road") or 0),
+                     "tile_errors": int(p.get("road_tile_errors") or 0), "pending": int(p.get("road_pending") or 0)},
+        "gap_job": {"status": str(p.get("gap_status") or ""), "phase": str(p.get("gap_phase") or ""),
+                    "total": int(p.get("gap_total") or 0), "processed": int(p.get("gap_processed") or 0),
+                    "filled": int(p.get("gap_filled") or 0), "pending": int(p.get("gap_pending") or 0),
+                    "unresolved": int(p.get("gap_unresolved") or 0), "verified": bool(p.get("gap_verified")),
+                    "pass_index": int(p.get("gap_pass") or 0)},
+        "workflow_job": {"revision": PROJECT_IMAGE_ROAD_WORKFLOW_REVISION_V548,
+                         "input_signature": str(p.get("input_signature") or ""),
+                         "status": str(p.get("workflow_status") or ""), "phase": str(p.get("workflow_phase") or "")},
+    }
 
 
 def _project_image_road_read_work_log_v535(client, family_key, member_key):
@@ -53648,8 +54027,10 @@ def _project_image_road_gap_worker_v547(owner, source_chunks):
             "verified": bool(verified), "pass_index": max(0, int(pass_index)), "workers": int(PROJECT_IMAGE_ROAD_GAP_WORKERS_V547),
             "updated_at": now_jst().isoformat(), "error": str(error or "")[:500],
         }
+        # _project_image_road_save_state_v531 already writes the tiny progress object.
+        # Do not issue the same Supabase write twice for every gap checkpoint.
         _project_image_road_save_state_v531(client, family_key, member_key, state)
-        _project_image_road_save_progress_v553(client, family_key, member_key, state)
+        _project_image_road_save_render_snapshot_v561(client, family_key, member_key, state)
 
     current_candidates = []
     save_gap_state("running", "scanning", 0, 0, 0, 0, 0, False)
@@ -54051,6 +54432,7 @@ def _project_image_road_worker_v531(owner, source_chunks, chain_gap=True):
         "log_save_error": str(log_save_status.get("error") or "")[:500],
     }
     _project_image_road_save_state_v531(client, family_key, member_key, state)
+    _project_image_road_save_render_snapshot_v561(client, family_key, member_key, state)
 
     # v548: the gap-fill phase is part of the same background workflow. v547 only
     # launched it from a later Streamlit rerun after the primary worker was already
@@ -54294,6 +54676,8 @@ def _project_image_road_workflow_process_v553(owner, points, stations, photo_is_
             "updated_at": now_jst().isoformat(), "error": str(error or "")[:500],
         }
         _project_image_road_save_state_v531(client, family_key, member_key, state)
+        if str(status) in {"complete", "complete_with_errors", "failed"}:
+            _project_image_road_save_render_snapshot_v561(client, family_key, member_key, state)
 
     try:
         mark("running", "source_build")
@@ -55242,11 +55626,12 @@ def page_burari_project():
     if not points and not photo_seed_enabled:
         st.info("まだ歩行データがありません。位置情報を許可した状態で、ぶらり旅を開いて歩くと自動的に記録が始まります。")
         return
-    segments = _project_walk_segments_v271(points) if points else []
-    fallback_segments = _project_city_fallback_segments_v455(points) if points else []
-    walk_points = _project_walk_points_v271(segments) if segments else []
-    fallback_points = _project_walk_points_v271(fallback_segments) if fallback_segments else []
-    walk_m = _project_walk_distance_m_v271(segments) if segments else 0.0
+    _project_derived_v561 = _project_route_derived_v561(points)
+    segments = _project_derived_v561.get("segments") or []
+    fallback_segments = _project_derived_v561.get("fallback_segments") or []
+    walk_points = _project_derived_v561.get("walk_points") or []
+    fallback_points = _project_derived_v561.get("fallback_points") or []
+    walk_m = float(_project_derived_v561.get("walk_m") or 0.0)
     st.markdown(
         f"""
         <div class="burari-project-summary-v297">
@@ -55297,10 +55682,16 @@ def page_burari_project():
             pass
 
     if points:
-        station_status = st.empty()
-        station_status.info("新しい歩行データから到着駅を確認しています。地図は確認完了後に表示します。")
-        stations, station_meta = _project_station_preflight_v293(points, map_points)
-        station_status.empty()
+        station_cache_key_v561 = _account_cache_key("project_station_preflight_v561")
+        station_cache_v561 = st.session_state.get(station_cache_key_v561)
+        station_cache_hit_v561 = bool(isinstance(station_cache_v561, dict) and station_cache_v561.get("signature") == _project_points_signature_v561(points))
+        station_status = None
+        if not station_cache_hit_v561:
+            station_status = st.empty()
+            station_status.info("新しい歩行データから到着駅を確認しています。地図は確認完了後に表示します。")
+        (stations, station_meta), _ = _project_station_preflight_cached_v561(points, map_points)
+        if station_status is not None:
+            station_status.empty()
     else:
         stations, station_meta = [], {"mode": "photo_seed_only"}
 
@@ -55314,13 +55705,33 @@ def page_burari_project():
     try:
         from supabase import create_client
         _image_road_client_v553 = create_client(SUPABASE_URL, SUPABASE_SECRET_KEY)
-        image_road_state = _project_image_road_read_state_v531(
+        _road_progress_v561 = _project_image_road_read_progress_v561(
             _image_road_client_v553, current_family_key(), current_member_key()
         )
+        image_road_state = _project_image_road_summary_state_v561(_road_progress_v561)
+        _road_render_v561 = _project_image_road_read_render_snapshot_v561(
+            _image_road_client_v553, current_family_key(), current_member_key()
+        )
+        road_segments = list(_road_render_v561.get("segments") or [])
+        if not _road_render_v561:
+            # One-time migration fallback for v560 state. Future background saves create
+            # the compact render snapshot, so normal interactive runs avoid this file.
+            _legacy_state_v561 = _project_image_road_read_state_v531(
+                _image_road_client_v553, current_family_key(), current_member_key()
+            )
+            road_segments = _project_image_road_saved_segments_v553(_legacy_state_v561)
+            image_road_state = _legacy_state_v561
+            try:
+                _project_image_road_schedule_snapshot_migration_v561(
+                    current_family_key(), current_member_key(), road_segments,
+                    str(((_legacy_state_v561.get("workflow_job") or {}).get("input_signature") or "")),
+                )
+            except Exception:
+                pass
     except Exception:
         image_road_state = _project_image_road_default_state_v531()
+        road_segments = []
 
-    road_segments = _project_image_road_saved_segments_v553(image_road_state)
     photo_is_nenne_v553 = _photo_legacy_is_nenne_v543()
     workflow_signature_v553 = _project_image_road_input_signature_v553(points, photo_is_nenne_v553)
     road_worker_running = _project_image_road_start_workflow_v553(
@@ -57157,6 +57568,13 @@ def _worker_client_v468(runtime):
     return client
 
 
+@st.cache_resource(show_spinner=False)
+def _read_ahead_executor_v561():
+    # Background warming is strictly opportunistic. One worker prevents it from
+    # competing with foreground replay/tag/photo reads in _read_executor_v467().
+    return ThreadPoolExecutor(max_workers=1, thread_name_prefix="burari-read-ahead")
+
+
 def _read_ahead_session_token_v520():
     token = str(st.session_state.get("_read_ahead_session_v520") or "").strip()
     if not token:
@@ -57254,13 +57672,13 @@ def _prime_read_ahead_v520(page_name, *, post_paint=False):
     names = []
     if page_name == "home" and not post_paint:
         names = [
-            ("field_notes", _read_ahead_field_notes_worker_v520, 30.0),
-            ("home_video_counts", _read_ahead_home_video_counts_worker_v520, 10.0),
+            ("field_notes", _read_ahead_field_notes_worker_v520, 180.0),
+            ("home_video_counts", _read_ahead_home_video_counts_worker_v520, 45.0),
         ]
     elif page_name == "settings" and not post_paint:
-        names = [("summary_feedback_rows", _read_ahead_feedback_rows_worker_v520, 90.0)]
+        names = [("summary_feedback_rows", _read_ahead_feedback_rows_worker_v520, 180.0)]
     elif page_name == "home" and post_paint:
-        names = [("summary_feedback_rows", _read_ahead_feedback_rows_worker_v520, 90.0)]
+        names = [("summary_feedback_rows", _read_ahead_feedback_rows_worker_v520, 180.0)]
     if not names:
         return
 
@@ -57287,7 +57705,7 @@ def _prime_read_ahead_v520(page_name, *, post_paint=False):
                 fresh = now - float(entry.get("started") or 0.0) <= float(ttl)
                 if same_epoch and fresh and future is not None:
                     continue
-            future = _read_executor_v467().submit(_run_read_ahead_v520, runtime, owner, name, worker)
+            future = _read_ahead_executor_v561().submit(_run_read_ahead_v520, runtime, owner, name, worker)
             read_ahead[key] = {"future": future, "epoch": epoch, "started": now, "ttl": float(ttl)}
 
 
