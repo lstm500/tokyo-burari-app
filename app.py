@@ -44,7 +44,8 @@ def _app_css_v473(markup, **_ignored):
 # Review menu-only update: 2026-09-19 JST
 GENERATED_UPDATE_JST = "2026-09-19T14:54:38+09:00"
 
-APP_BUILD = "v563"
+APP_BUILD = "v565"
+# v565: Remember a browser login for up to 90 idle days, rotate signed credentials no more than weekly on natural authenticated page renders, avoid deleting a valid token during transient Supabase errors, and wait for browser restore before displaying login. Logout and PIN-change revocation remain effective.
 # v563: Home UI latency fix. No foreground wait for prefetched field notes/video
 # counts or previous-month review attention. Use bounded, account-scoped background
 # reads and display a neutral/last-known state until a natural rerun harvests data.
@@ -8456,15 +8457,19 @@ except Exception:
     browser_persistence_component = None
 
 
-AUTO_LOGIN_TTL_SECONDS = 24 * 60 * 60
+# A token expires after 90 days without use. Normal app use rotates it no more than
+# once per seven days without a background poll, network request or extra rerun.
+# The signed timestamp still cannot be modified in browser storage.
+AUTO_LOGIN_TTL_SECONDS = 90 * 24 * 60 * 60
+AUTO_LOGIN_RENEW_SECONDS_V565 = 7 * 24 * 60 * 60
 
 
 def browser_auto_login_token(family_key, member_key, credential_hash, issued_at=None):
-    """Return a signed browser credential valid for 24 hours from explicit login.
+    """Return a signed auto-login credential for a personal account.
 
-    The PIN itself is never stored in the browser.  The issued-at timestamp is covered by
-    the HMAC, so changing the timestamp in localStorage does not extend the login period.
-    Auto-login never refreshes this timestamp; only a successful manual login does.
+    The PIN is never stored in the browser; the credential timestamp is HMAC signed.
+    It can be rotated server-side after a validated login or while that Streamlit
+    session remains authenticated. Changing the PIN invalidates other devices.
     """
     family_key = str(family_key or "").strip()
     member_key = str(member_key or "").strip()
@@ -8484,7 +8489,7 @@ def browser_auto_login_token(family_key, member_key, credential_hash, issued_at=
 
 
 def validate_browser_auto_login_token(stored_token, credential_hash, now_ts=None):
-    """Validate signature and the fixed 24-hour lifetime of a browser login token."""
+    """Validate the signed browser token's maximum 90-day idle lifetime."""
     stored_token = str(stored_token or "").strip()
     credential_hash = str(credential_hash or "").strip()
     parts = stored_token.split("|")
@@ -8505,9 +8510,9 @@ def validate_browser_auto_login_token(stored_token, credential_hash, now_ts=None
         return None
     return {"family_key": family_key, "member_key": member_key, "issued_at": issued}
 
-def read_browser_persistence(key, extra_data=None):
+def read_browser_persistence(key, extra_data=None, *, with_error=False):
     if browser_persistence_component is None:
-        return None
+        return (None, "not_supported") if with_error else None
     data = {"instance_key": key}
     if isinstance(extra_data, dict):
         data.update(extra_data)
@@ -8518,7 +8523,10 @@ def read_browser_persistence(key, extra_data=None):
         on_browser_error_change=lambda: None,
     )
     state = getattr(result, "browser_state", None)
-    return state if isinstance(state, dict) else None
+    state = state if isinstance(state, dict) else None
+    if with_error:
+        return state, str(getattr(result, "browser_error", "") or "")
+    return state
 
 
 def _browser_review_account_key():
@@ -8627,7 +8635,7 @@ def write_browser_auto_login(token, key="browser_auto_login_store"):
     if browser_persistence_component is None or not token:
         return
     browser_persistence_component(
-        data={"store_auth_token": token, "instance_key": key},
+        data={"store_auth_token": token, "instance_key": key, "write_only": True},
         key=key,
         on_browser_state_change=lambda: None,
         on_browser_error_change=lambda: None,
@@ -8638,42 +8646,43 @@ def clear_browser_auto_login(key="browser_auto_login_clear"):
     if browser_persistence_component is None:
         return
     browser_persistence_component(
-        data={"clear_auth_token": True, "instance_key": key},
+        data={"clear_auth_token": True, "instance_key": key, "write_only": True},
         key=key,
         on_browser_state_change=lambda: None,
         on_browser_error_change=lambda: None,
     )
 
 
-def _project_auth_keepalive_v530():
-    """Renew browser auto-login only while the Burari Project page stays mounted."""
+def _renew_browser_auto_login_v565(force=False):
+    """Rotate on normal authenticated page renders; never poll or call the DB.
+
+    The token's HMAC key is the hash fetched at manual/validated login, *not* a
+    PIN or a client-supplied value. A password change elsewhere invalidates it.
+    """
     if not st.session_state.get("_family_authenticated", False):
-        return
-    family_key = str(current_family_key() or "").strip()
-    member_key = str(current_member_key() or "").strip()
-    if not family_key or not member_key:
-        return
-    now_epoch = time.time()
-    last_refresh = float(st.session_state.get("_project_auth_token_refresh_v530") or 0.0)
-    if now_epoch - last_refresh >= float(PROJECT_AUTH_TOKEN_REFRESH_SECONDS_V530):
-        try:
-            member = get_member_account(family_key, member_key) or {}
-            token = browser_auto_login_token(family_key, member_key, member.get("pin_hash"))
-            if token:
-                refresh_bucket = int(now_epoch // max(60.0, float(PROJECT_AUTH_TOKEN_REFRESH_SECONDS_V530)))
-                write_browser_auto_login(
-                    token,
-                    key=f"browser_auto_login_project_keepalive_v530_{refresh_bucket}",
-                )
-                st.session_state["_project_auth_token_refresh_v530"] = now_epoch
-        except Exception:
-            # Authentication already present in this Streamlit session remains valid;
-            # a transient DB/browser-persistence failure will simply retry next tick.
-            pass
-    # v553: no timer may trigger a Streamlit rerun while this page is open.
-    # The 24-hour signed auto-login token is refreshed on natural page renders only;
-    # an open Streamlit/WebSocket session itself remains active without this timer.
-    return
+        return False
+    family_key = str(st.session_state.get("_current_family_key") or "").strip()
+    member_key = str(st.session_state.get("_current_member_key") or "").strip()
+    pin_hash = str(st.session_state.get("_auth_pin_hash_v565") or "").strip()
+    if not family_key or not member_key or not pin_hash:
+        return False
+    now = int(time.time())
+    issued = int(st.session_state.get("_auth_token_issued_at_v565") or 0)
+    if not force and issued > 0 and 0 <= now - issued < AUTO_LOGIN_RENEW_SECONDS_V565:
+        return False
+    token = browser_auto_login_token(family_key, member_key, pin_hash, issued_at=now)
+    if not token:
+        return False
+    account_tag = hashlib.sha256(f"{family_key}|{member_key}".encode("utf-8")).hexdigest()[:12]
+    bucket = now // AUTO_LOGIN_RENEW_SECONDS_V565
+    write_browser_auto_login(token, key=f"browser_auto_login_renew_v565_{account_tag}_{bucket}")
+    st.session_state["_auth_token_issued_at_v565"] = now
+    return True
+
+
+def _project_auth_keepalive_v530():
+    """Compatibility entry: normal page renders already refresh at most weekly."""
+    _renew_browser_auto_login_v565()
 
 
 def _coerce_component_data_url(value):
@@ -9096,6 +9105,8 @@ def update_current_member_pin(new_pin):
 
     # Tokens on other browsers were derived from the old hash and become invalid.
     # Keep this already-authenticated browser convenient by replacing only its token.
+    st.session_state["_auth_pin_hash_v565"] = pin_hash
+    st.session_state["_auth_token_issued_at_v565"] = int(time.time())
     token = browser_auto_login_token(family_key, member_key, pin_hash)
     if token:
         write_browser_auto_login(token, key="browser_auto_login_after_pin_change")
@@ -9500,6 +9511,10 @@ def _set_authenticated_family(family_account, member_account, persist=False):
         st.session_state.pop("_current_family_name", None)
     st.session_state["_current_member_key"] = str(member_account.get("member_key") or "main")
     st.session_state["_current_member_name"] = str(member_account.get("display_name") or member_account.get("member_key") or "個人")
+    # Only the server-side Streamlit session keeps this existing credential hash.
+    # The browser stores the opaque HMAC-signed token, never the hash or plaintext PIN.
+    st.session_state["_auth_pin_hash_v565"] = str(member_account.get("pin_hash") or "")
+    st.session_state["_auth_token_issued_at_v565"] = 0
     st.session_state["_family_pin_failures"] = 0
     st.session_state["_family_pin_locked_until"] = 0.0
     if persist:
@@ -9510,6 +9525,7 @@ def logout_family_account():
     clear_browser_auto_login("browser_auto_login_person_logout")
     keep = {
         "_suppress_auto_login_once": True,
+        "_auth_clear_token_pending_v565": True,
         "_last_family_key": current_family_key(),
         "_last_member_key": current_member_key(),
     }
@@ -9530,41 +9546,76 @@ def require_family_pin():
         and st.session_state.get("_current_member_key")
     ):
         if st.session_state.pop("_persist_auto_login_pending", False):
-            member = get_member_account(current_family_key(), current_member_key()) or {}
-            token = browser_auto_login_token(
-                current_family_key(), current_member_key(), member.get("pin_hash")
-            )
-            write_browser_auto_login(token)
+            _renew_browser_auto_login_v565(force=True)
+        else:
+            # Lightweight (no DB fetch, no timer) extension for active usage.
+            _renew_browser_auto_login_v565()
         return
 
     suppress_auto = bool(st.session_state.pop("_suppress_auto_login_once", False))
-    browser_state = None if suppress_auto else read_browser_persistence("browser_auto_login_gate")
+    clear_pending = bool(st.session_state.get("_auth_clear_token_pending_v565", False))
+    manual_bypass = bool(st.session_state.get("_auth_manual_login_bypass_v565", False))
+    browser_state = None
+    browser_error = ""
+    if browser_persistence_component is not None and not manual_bypass:
+        # A fresh nonce per Streamlit session forces the component to publish its
+        # localStorage snapshot even when its JS registry survived a websocket reset.
+        nonce = str(st.session_state.get("_auth_restore_nonce_v565") or "")
+        if not nonce:
+            nonce = uuid.uuid4().hex
+            st.session_state["_auth_restore_nonce_v565"] = nonce
+        browser_state, browser_error = read_browser_persistence(
+            "browser_auto_login_gate",
+            {
+                "instance_key": f"browser_auto_login_gate_v565_{nonce}",
+                "clear_auth_token": clear_pending,
+            },
+            with_error=True,
+        )
+        if isinstance(browser_state, dict) and clear_pending and not browser_state.get("auth_token"):
+            # Only a confirmed empty browser token can finish the logout clear.
+            # A prior v2 state may still be visible before the JS clear executes.
+            st.session_state.pop("_auth_clear_token_pending_v565", None)
+        if browser_state is None and not browser_error and not suppress_auto and not clear_pending:
+            st.caption("この端末の自動ログインを確認しています…")
+            if st.button("ID・あいことばでログインする", key="login_manual_bypass_v565"):
+                st.session_state["_auth_manual_login_bypass_v565"] = True
+                st.rerun()
+            st.stop()
+        if browser_error:
+            st.session_state["_auth_manual_login_bypass_v565"] = True
+    if suppress_auto or clear_pending:
+        browser_state = None
     if isinstance(browser_state, dict):
         stored_token = str(browser_state.get("auth_token") or "").strip()
         parts = stored_token.split("|")
         if len(parts) == 4:
             family_key, member_key = parts[0], parts[1]
             try:
-                # The personal account is sufficient to validate the credential.
-                # Family display metadata is fetched lazily later only if a page shows it.
+                # A transient Supabase outage is NOT evidence of an invalid login.
                 member = get_member_account(family_key, member_key)
             except Exception:
-                member = None
+                st.warning("通信が不安定なため、保存済みのログイン状態を確認できません。ログイン情報は保持しています。")
+                if st.button("接続を再確認する", key="login_restore_retry_v565"):
+                    st.rerun()
+                st.stop()
             validated = validate_browser_auto_login_token(
                 stored_token,
                 (member or {}).get("pin_hash"),
             ) if member else None
             if validated:
                 _set_authenticated_family({"family_key": family_key}, member, persist=False)
+                st.session_state["_auth_token_issued_at_v565"] = int(validated["issued_at"])
                 st.session_state["_browser_last_camera_open_at"] = browser_state.get("last_camera_open_at") or 0
                 st.session_state["_browser_last_camera_mode"] = str(browser_state.get("last_camera_mode") or "").strip().lower()
                 st.rerun()
-            # A changed PIN or an expired token must not be retried on every rerun.
-            clear_browser_auto_login("browser_auto_login_invalid_v205")
+            # Only a confirmed missing account, changed PIN or expired/tampered
+            # signature invalidates a token; never invalidate after a DB exception.
+            st.session_state["_auth_clear_token_pending_v565"] = True
+            clear_browser_auto_login("browser_auto_login_invalid_v565")
         elif stored_token:
-            # v204 and older tokens had no expiry. Invalidate them once so v205 starts
-            # the requested 24-hour policy from the next successful manual login.
-            clear_browser_auto_login("browser_auto_login_legacy_clear_v205")
+            st.session_state["_auth_clear_token_pending_v565"] = True
+            clear_browser_auto_login("browser_auto_login_legacy_clear_v565")
 
     # Legacy no-PIN installation: only probe the legacy account when the app truly
     # has no FAMILY_PIN. Normal PIN installations skip these four network requests.
@@ -55928,9 +55979,8 @@ def page_burari_project():
         unsafe_allow_html=True,
     )
     page_top("✨ ぶらり旅プロジェクト", "")
-    # v530: while this screen remains open, periodically renew the signed browser
-    # auto-login credential and keep the Streamlit session active. Other pages retain
-    # the normal fixed 24-hour auto-login policy.
+    # v565: auth renewal uses natural page renders; no 10-minute DB polling or
+    # Streamlit timer is introduced. Other pages use the same weekly renewal.
     _project_auth_keepalive_v530()
     # Resolve the one-time wall-map profile before the no-GPS guard. This lets a new
     # account receive its historical seed even when it has not recorded live GPS yet.
@@ -57035,6 +57085,7 @@ def page_settings_account():
 
     st.divider()
     st.markdown("#### 自動ログイン")
+    st.caption("この端末の自動ログインは、操作しない期間が90日続くと期限切れになります。利用中は約7日ごとに自動延長します。")
     if st.button("この端末の自動ログインを解除", use_container_width=True, key="settings_clear_auto_login"):
         clear_browser_auto_login()
         st.success("この端末の自動ログインを解除しました。次回は個人IDとあいことばが必要です。")
