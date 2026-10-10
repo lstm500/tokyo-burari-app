@@ -44,7 +44,8 @@ def _app_css_v473(markup, **_ignored):
 # Review menu-only update: 2026-09-19 JST
 GENERATED_UPDATE_JST = "2026-09-19T14:54:38+09:00"
 
-APP_BUILD = "v561"
+APP_BUILD = "v562"
+# v562: Gallery videos larger than 6 MiB use 6 MiB TUS resumable chunks with signed URLs; a bounded XHR PUT remains as fallback. Show progress, permit cancellation and deadline failures; photo/camera/GPS/road pipelines are unchanged.
 # v560: Rebuild green-gap closure as an iterative, verified network process. Existing UI is preserved; only progress wording distinguishes fully verified completion from residual unresolved gaps.
 # v557: Rebuild replay-movie family sharing around native Streamlit buttons. Share/unshare writes are read back from Supabase before success is shown; recipient cache is invalidated, while recipient discovery/media preparation remains Review-only background work.
 # v556: After Review is opened, discover family-shared replay movies and prepare their playback media in the same bounded background pipeline. Photo/voice signed URLs, current feeling metadata and replay item payloads are prepared before a received movie becomes playable, so pressing Play performs no blocking media lookup. No Home/startup recipient query is added.
@@ -2472,6 +2473,10 @@ export default function(component) {
 
   let pendingMedia = null;
   let pendingVideoBlob = null;
+  // v562: Gallery video upload lifetime is separate from camera recording.
+  // Cancelling/replacing a selected gallery clip invalidates outstanding callbacks.
+  let galleryVideoUploadControllerV562 = null;
+  let galleryVideoUploadGenerationV562 = 0;
   // v323: gallery photos are shown from a local object URL immediately.
   // Full-size decoding/resizing for save runs asynchronously so choosing a photo
   // does not leave the screen looking frozen while a 12-50MP phone image is decoded.
@@ -2735,6 +2740,7 @@ export default function(component) {
       try { reviewVideo.pause(); } catch (_) {}
       reviewVideo.hidden = true;
       reviewVideo.removeAttribute('src');
+      reviewVideo.removeAttribute('poster');
       try { reviewVideo.load(); } catch (_) {}
     }
     revokeReviewVideoUrl();
@@ -2873,7 +2879,7 @@ export default function(component) {
     }
   };
 
-  const showVideoReview = (blob) => {
+  const showVideoReview = (blob, galleryPosterDataUrl = '') => {
     syncOrientationUi();
     if (wrap) { wrap.classList.remove('camera-live'); wrap.classList.add('camera-reviewing'); }
     if (menu) menu.hidden = true;
@@ -2883,9 +2889,13 @@ export default function(component) {
     hideReview();
     reviewVideoUrl = URL.createObjectURL(blob);
     if (reviewVideo) {
+      if (galleryPosterDataUrl) reviewVideo.poster = galleryPosterDataUrl;
+      else reviewVideo.removeAttribute('poster');
+      reviewVideo.preload = 'auto';
       reviewVideo.src = reviewVideoUrl;
       reviewVideo.hidden = false;
-      reviewVideo.currentTime = 0;
+      try { reviewVideo.load(); } catch (_) {}
+      try { reviewVideo.currentTime = 0; } catch (_) {}
     }
     reviewSave.textContent = 'この動画を残す';
     reviewRetry.textContent = '選びなおす';
@@ -3455,6 +3465,269 @@ export default function(component) {
     }
   };
 
+
+  // v562: The former gallery path awaited an unbounded fetch(PUT). On Android a
+  // stalled upload left both review actions disabled forever, with the video preview
+  // frozen on its initial frame. Keep the existing recording uploader untouched; use
+  // this monitored transport ONLY for manually selected gallery video files.
+  const GALLERY_UPLOAD_STALL_MS_V562 = 90000;
+  const GALLERY_UPLOAD_MAX_MS_V562 = 480000;
+  const galleryUploadCancelledErrorV562 = () => {
+    const error = new Error('動画の送信を中止しました。');
+    error.name = 'AbortError';
+    return error;
+  };
+
+  const sendGalleryVideoPutOnceV562 = (blob, signedUrl, contentType, reportProgress, signal) => new Promise((resolve, reject) => {
+    if (!signedUrl) { reject(new Error('動画のアップロード先がありません。')); return; }
+    if (!blob || !(Number(blob.size) > 0)) { reject(new Error('動画ファイルが空です。')); return; }
+    if (signal?.aborted) { reject(galleryUploadCancelledErrorV562()); return; }
+
+    let xhr;
+    try { xhr = new XMLHttpRequest(); }
+    catch (error) { reject(error); return; }
+    let settled = false;
+    let stalled = false;
+    let stallTimer = null;
+    let previousBytes = -1;
+    const cleanup = () => {
+      if (stallTimer !== null) { clearTimeout(stallTimer); stallTimer = null; }
+      try { signal?.removeEventListener('abort', abortFromUser); } catch (_) {}
+      xhr.onload = null;
+      xhr.onerror = null;
+      xhr.onabort = null;
+      xhr.ontimeout = null;
+      if (xhr.upload) { xhr.upload.onprogress = null; xhr.upload.onload = null; }
+    };
+    const finish = (error) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      if (error) reject(error); else resolve(true);
+    };
+    const abortFromUser = () => {
+      try { xhr.abort(); } catch (_) {}
+      finish(galleryUploadCancelledErrorV562());
+    };
+    const resetStallTimer = () => {
+      if (stallTimer !== null) clearTimeout(stallTimer);
+      stallTimer = setTimeout(() => {
+        stalled = true;
+        try { xhr.abort(); } catch (_) {}
+        finish(new Error('動画の送信が90秒間進まなかったため停止しました。通信状態を確認してもう一度お試しください。'));
+      }, GALLERY_UPLOAD_STALL_MS_V562);
+    };
+    if (signal) signal.addEventListener('abort', abortFromUser, { once: true });
+    xhr.upload.onprogress = (event) => {
+      if (settled || signal?.aborted) return;
+      const sent = Math.max(0, Number(event?.loaded || 0));
+      if (sent <= previousBytes) return;
+      previousBytes = sent;
+      resetStallTimer();
+      try { reportProgress?.(sent, Number(blob.size)); } catch (_) {}
+    };
+    // The request may still be awaiting Storage's final commit after all bytes leave
+    // the device. Keep the deadline active until the HTTP result arrives.
+    xhr.onload = () => {
+      const statusCode = Number(xhr.status || 0);
+      if (statusCode >= 200 && statusCode < 300) { finish(null); return; }
+      let errorBody = '';
+      try { errorBody = String(xhr.responseText || '').replace(/\s+/g, ' ').trim().slice(0, 200); } catch (_) {}
+      finish(new Error(`Supabase Storage ${statusCode}${errorBody ? `: ${errorBody}` : ''}`));
+    };
+    xhr.onerror = () => finish(new Error('動画の送信中に通信エラーが発生しました。ネットワークまたは保存先への接続を確認してください。'));
+    xhr.onabort = () => finish(signal?.aborted
+      ? galleryUploadCancelledErrorV562()
+      : new Error(stalled ? '動画の送信が90秒間停止しました。再度お試しください。' : '動画の送信が中断されました。'));
+    xhr.ontimeout = () => finish(new Error('動画の送信時間が上限を超えました。通信状態を確認して再度お試しください。'));
+
+    try {
+      xhr.open('PUT', signedUrl, true);
+      xhr.timeout = GALLERY_UPLOAD_MAX_MS_V562;
+      xhr.setRequestHeader('cache-control', 'max-age=3600');
+      xhr.setRequestHeader('content-type', contentType || 'application/octet-stream');
+      resetStallTimer();
+      if (signal?.aborted) { abortFromUser(); return; }
+      xhr.send(blob);
+    } catch (error) {
+      finish(error);
+    }
+  });
+
+  // Supabase recommends TUS in fixed 6 MiB chunks for files above 6 MiB.
+  // The signed token comes from the same URL already reserved server-side. No
+  // privileged key or extra dependency is sent to the browser. A failed TUS
+  // negotiation can fall back to the bounded single-PUT path above.
+  const GALLERY_TUS_CHUNK_BYTES_V562 = 6 * 1024 * 1024;
+  const galleryTusSignedTargetV562 = (signedUrl, storagePath) => {
+    try {
+      const parsed = new URL(signedUrl);
+      const marker = '/storage/v1/object/upload/sign/';
+      const index = parsed.pathname.indexOf(marker);
+      const signature = parsed.searchParams.get('token');
+      if (index < 0 || !signature || !/^https:$/.test(parsed.protocol)) return null;
+      const tail = decodeURIComponent(parsed.pathname.slice(index + marker.length));
+      const slash = tail.indexOf('/');
+      if (slash <= 0 || tail.slice(slash + 1) !== storagePath) return null;
+      return {
+        endpoint: `${parsed.origin}/storage/v1/upload/resumable`,
+        signature, bucket: tail.slice(0, slash), objectName: storagePath
+      };
+    } catch (_) { return null; }
+  };
+
+  const galleryTusRequestV562 = async (method, url, headers, body, signal) => {
+    if (signal?.aborted) throw galleryUploadCancelledErrorV562();
+    const controller = new AbortController();
+    let timedOut = false;
+    const abortWithUser = () => controller.abort();
+    signal?.addEventListener('abort', abortWithUser, { once: true });
+    const timer = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, GALLERY_UPLOAD_STALL_MS_V562);
+    try {
+      const response = await fetch(url, {
+        method, headers, body: body || undefined, signal: controller.signal
+      });
+      if (!response.ok) {
+        let responseText = '';
+        try { responseText = String(await response.text()).replace(/\s+/g, ' ').trim().slice(0, 200); } catch (_) {}
+        throw new Error(`Supabase Storage ${response.status}${responseText ? `: ${responseText}` : ''}`);
+      }
+      return response;
+    } catch (error) {
+      if (signal?.aborted) throw galleryUploadCancelledErrorV562();
+      if (timedOut) throw new Error('動画の分割送信が90秒間進まず中断されました。');
+      throw error;
+    } finally {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', abortWithUser);
+    }
+  };
+
+  const uploadGalleryVideoTusV562 = async (blob, signedUrl, storagePath, contentType, reportProgress, signal) => {
+    const target = galleryTusSignedTargetV562(signedUrl, storagePath);
+    if (!target) throw new Error('分割アップロード用の署名を確認できません。');
+    const tusHeaders = { 'Tus-Resumable': '1.0.0', 'x-signature': target.signature };
+    const metadata = [
+      ['bucketName', target.bucket],
+      ['objectName', target.objectName],
+      ['contentType', contentType],
+      ['cacheControl', '3600']
+    ].map(([key, value]) => `${key} ${btoa(value)}`).join(',');
+    const creation = await galleryTusRequestV562('POST', target.endpoint, {
+      ...tusHeaders, 'Upload-Length': String(blob.size), 'Upload-Metadata': metadata
+    }, null, signal);
+    const location = creation.headers?.get?.('Location');
+    if (!location) throw new Error('分割アップロードの再開先を取得できませんでした。');
+    const resumeUrl = new URL(location, target.endpoint).href;
+    // Reject a cross-domain Location before forwarding the one-use signing token.
+    if (new URL(resumeUrl).origin !== new URL(target.endpoint).origin) {
+      throw new Error('分割アップロードの保存先を確認できませんでした。');
+    }
+    let offset = 0;
+    let consecutiveFailures = 0;
+    const offsetFrom = (response) => {
+      const text = response?.headers?.get?.('Upload-Offset');
+      const value = Number(text);
+      return text != null && Number.isSafeInteger(value) && value >= 0 && value <= blob.size ? value : null;
+    };
+    while (offset < blob.size) {
+      if (signal?.aborted) throw galleryUploadCancelledErrorV562();
+      const start = offset;
+      const end = Math.min(blob.size, start + GALLERY_TUS_CHUNK_BYTES_V562);
+      try {
+        const response = await galleryTusRequestV562('PATCH', resumeUrl, {
+          ...tusHeaders, 'Upload-Offset': String(start),
+          'Content-Type': 'application/offset+octet-stream'
+        }, blob.slice(start, end), signal);
+        const serverOffset = offsetFrom(response);
+        if (serverOffset !== null && serverOffset < end) {
+          throw new Error('分割送信でサーバーの受信済み位置が一致しません。');
+        }
+        offset = serverOffset === null ? end : serverOffset;
+        consecutiveFailures = 0;
+        reportProgress?.(offset, blob.size);
+      } catch (error) {
+        if (signal?.aborted || error?.name === 'AbortError') throw error;
+        const message = String(error?.message || '').toLowerCase();
+        if (/storage\s+(400|401|403|413|415)\b/.test(message)) throw error;
+        consecutiveFailures += 1;
+        if (consecutiveFailures >= 3) throw error;
+        // A lost PATCH response may still have committed the chunk. HEAD tells
+        // us the exact offset so that a retry cannot duplicate/corrupt its bytes.
+        try {
+          const checked = await galleryTusRequestV562('HEAD', resumeUrl, tusHeaders, null, signal);
+          const checkedOffset = offsetFrom(checked);
+          if (checkedOffset !== null && checkedOffset >= offset) {
+            offset = checkedOffset;
+            reportProgress?.(offset, blob.size);
+            if (offset >= blob.size) return;
+            if (offset > start) consecutiveFailures = 0;
+          }
+        } catch (headError) {
+          if (signal?.aborted || headError?.name === 'AbortError') throw headError;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 600 * consecutiveFailures));
+      }
+    }
+  };
+
+  const uploadGalleryVideoToSignedUrlV562 = async (blob, reportProgress, signal) => {
+    if (!videoUploadSignedUrl || !videoUploadStoragePath) {
+      throw new Error('動画のアップロード先がありません。');
+    }
+    const contentType = String(blob?.type || inferGalleryVideoMime(blob) || 'video/mp4').split(';', 1)[0] || 'video/mp4';
+    const sendTarget = async (targetUrl, targetPath) => {
+      if (Number(blob?.size || 0) > GALLERY_TUS_CHUNK_BYTES_V562) {
+        try {
+          await uploadGalleryVideoTusV562(blob, targetUrl, targetPath, contentType, reportProgress, signal);
+          return;
+        } catch (error) {
+          if (signal?.aborted || error?.name === 'AbortError') throw error;
+          // A destination consumed by an earlier upload must go through the
+          // existing secondary signed path, not a re-POST to the same object.
+          const message = String(error?.message || '').toLowerCase();
+          if (message.includes('keyalreadyexists') || message.includes('resource already exists')
+              || message.includes('storage 409') || message.includes('"duplicate"')) throw error;
+          reportProgress?.(0, Number(blob?.size || 0), true);
+        }
+      }
+      let lastError = null;
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        if (signal?.aborted) throw galleryUploadCancelledErrorV562();
+        try {
+          if (attempt > 0) reportProgress?.(0, Number(blob?.size || 0), true);
+          await sendGalleryVideoPutOnceV562(blob, targetUrl, contentType, reportProgress, signal);
+          return;
+        } catch (error) {
+          if (signal?.aborted || error?.name === 'AbortError') throw error;
+          lastError = error;
+          const message = String(error?.message || '').toLowerCase();
+          // Non-transient responses cannot be repaired by re-sending the same body.
+          if (/storage\s+(400|401|403|409|413|415)\b/.test(message)) break;
+          if (attempt === 0) await new Promise((resolve) => setTimeout(resolve, 450));
+        }
+      }
+      throw lastError || new Error('動画の送信に失敗しました。');
+    };
+    try {
+      await sendTarget(videoUploadSignedUrl, videoUploadStoragePath);
+      return videoUploadStoragePath;
+    } catch (error) {
+      if (signal?.aborted || error?.name === 'AbortError') throw error;
+      const message = String(error?.message || '').toLowerCase();
+      const collision = message.includes('keyalreadyexists')
+        || message.includes('resource already exists')
+        || message.includes('storage 409')
+        || message.includes('"duplicate"');
+      if (!collision || !videoUploadFallbackSignedUrl || !videoUploadFallbackStoragePath) throw error;
+      reportProgress?.(0, Number(blob?.size || 0), true);
+      await sendTarget(videoUploadFallbackSignedUrl, videoUploadFallbackStoragePath);
+      return videoUploadFallbackStoragePath;
+    }
+  };
 
   // Capture small candidate stills while recording. This avoids reopening/seeking
   // the finished video before upload and keeps the component payload small.
@@ -4753,7 +5026,7 @@ export default function(component) {
           error_message: '動画フォルダから選んだ動画の撮影位置は自動取得しません。'
         }
       };
-      showVideoReview(file);
+      showVideoReview(file, prepared.poster_data_url);
       setStatus('');
     } catch (err) {
       console.error(err);
@@ -5028,16 +5301,39 @@ export default function(component) {
     }
 
     if (mediaToSave.kind === 'video') {
+      const uploadGeneration = ++galleryVideoUploadGenerationV562;
+      const uploadController = new AbortController();
+      galleryVideoUploadControllerV562 = uploadController;
       try {
         if (!pendingVideoBlob) throw new Error('選んだ動画を確認できません。');
         if (!videoAllowed || !videoUploadSignedUrl || !videoUploadStoragePath) throw new Error(videoCapacityMessage);
         if (videoMaxBytes > 0 && pendingVideoBlob.size > videoMaxBytes) {
           throw new Error('選んだ動画が現在の保存可能容量を超えています。');
         }
-        setStatus('選んだ動画を保管庫へ送信しています…');
+        // Keep Cancel available during a slow mobile upload. All late responses
+        // from an aborted or replaced upload are ignored.
+        reviewRetry.disabled = false;
+        reviewRetry.textContent = '送信を中止する';
+        setStatus('選んだ動画を保管庫へ送信しています… 0%');
         const mimeType = String(mediaToSave.mime_type || inferGalleryVideoMime(pendingVideoBlob) || 'video/mp4');
         releaseLiveCameraForUpload();
-        const actualVideoStoragePath = await uploadVideoBlobToSignedUrl(pendingVideoBlob);
+        const progressV562 = (loaded, total, retrying = false) => {
+          if (uploadGeneration !== galleryVideoUploadGenerationV562 || uploadController.signal.aborted) return;
+          if (retrying) {
+            setStatus('動画の送信を再試行しています… 0%');
+          } else if (total > 0) {
+            const percent = Math.max(0, Math.min(100, Math.floor(100 * loaded / total)));
+            setStatus(percent >= 100
+              ? '動画の送信が完了しました。保存先の確認を待っています…'
+              : `選んだ動画を保管庫へ送信しています… ${percent}%`);
+          }
+        };
+        const actualVideoStoragePath = await uploadGalleryVideoToSignedUrlV562(
+          pendingVideoBlob, progressV562, uploadController.signal
+        );
+        if (uploadGeneration !== galleryVideoUploadGenerationV562 || uploadController.signal.aborted || mediaToSave !== pendingMedia) return;
+        // Do not claim saved here: the server still needs to register the uploaded
+        // original and its poster. Reuse the existing registration payload verbatim.
         const recordingId = (globalThis.crypto && typeof globalThis.crypto.randomUUID === 'function')
           ? globalThis.crypto.randomUUID()
           : `gallery_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
@@ -5069,13 +5365,17 @@ export default function(component) {
         setTriggerValue('video', uploadedPayload);
         releaseSubmittedReviewMedia();
       } catch (err) {
+        if (uploadGeneration !== galleryVideoUploadGenerationV562 || uploadController.signal.aborted || err?.name === 'AbortError') return;
         console.error(err);
         reviewSave.disabled = false;
         reviewRetry.disabled = false;
+        reviewRetry.textContent = '選びなおす';
         const detail = String(err?.message || '').trim();
         const message = detail ? `動画を保存できませんでした。${detail}` : '動画を保存できませんでした。';
         setStatus(message);
         setTriggerValue('camera_error', { name: 'GalleryVideoUploadError', message, detail });
+      } finally {
+        if (galleryVideoUploadControllerV562 === uploadController) galleryVideoUploadControllerV562 = null;
       }
       return;
     }
@@ -5113,6 +5413,11 @@ export default function(component) {
   const retryPendingMedia = async () => {
     if (!pendingMedia) return;
     const source = pendingMedia.source;
+    if (source === 'video_gallery' && galleryVideoUploadControllerV562) {
+      ++galleryVideoUploadGenerationV562;
+      galleryVideoUploadControllerV562.abort();
+      galleryVideoUploadControllerV562 = null;
+    }
     pendingMedia = null;
     pendingVideoBlob = null;
     pendingPhotoLoadGeneration += 1;
@@ -5251,6 +5556,11 @@ export default function(component) {
     stopButton.removeEventListener('click', closeCamera);
     galleryInput.removeEventListener('change', chooseGalleryPhoto);
     galleryVideoInput?.removeEventListener('change', chooseGalleryVideo);
+    ++galleryVideoUploadGenerationV562;
+    if (galleryVideoUploadControllerV562) {
+      galleryVideoUploadControllerV562.abort();
+      galleryVideoUploadControllerV562 = null;
+    }
     pendingPhotoLoadGeneration += 1;
     pendingPhotoPreparePromise = null;
     revokePendingPhotoPreviewUrl();
@@ -5273,7 +5583,7 @@ export default function(component) {
 }
 """
 
-LIVE_CAMERA_COMPONENT_BUILD = "v506"
+LIVE_CAMERA_COMPONENT_BUILD = "v562"
 
 # v383: this bundle is large. Register it only on the Camera page so unrelated
 # Streamlit reruns do not pay the camera component setup cost.
@@ -5287,7 +5597,7 @@ def _get_live_camera_component():
     _live_camera_component_initialized = True
     try:
         live_camera_component = st.components.v2.component(
-            "tokyo_burari_live_camera_v506",
+            "tokyo_burari_live_camera_v562",
             html=_LIVE_CAMERA_HTML,
             css=_LIVE_CAMERA_CSS,
             js=_perf_instrument_js_v466(_LIVE_CAMERA_JS),
