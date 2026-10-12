@@ -44,7 +44,8 @@ def _app_css_v473(markup, **_ignored):
 # Review menu-only update: 2026-09-19 JST
 GENERATED_UPDATE_JST = "2026-09-19T14:54:38+09:00"
 
-APP_BUILD = "v576"
+APP_BUILD = "v578"
+# v578: Improve future-date discovery: accept verified Japanese date lists/ranges and era formats, recheck more ambiguous leads, fix range-start occurrence handling, and keep real source citations.
 # v572: Repair all-zero event results: retain dated/cited venue-unlocated entries as explicitly unverified-distance, add source/failure diagnostics and short negative cache.
 # v571: Expand event discovery to five separately sourced, API-grounded web-search passes
 # (local government/tourism, venue/organizer, category specialists, family/event portals,
@@ -34334,6 +34335,14 @@ EVENT_SEARCH_NEGATIVE_CACHE_SECONDS_V572 = 90
 EVENT_SEARCH_SUPPLEMENT_MIN_SITES_V573 = 4
 EVENT_SEARCH_SUPPLEMENT_MIN_LOCATED_V573 = 5
 EVENT_SEARCH_MODEL_V570 = str(secret("EVENT_SEARCH_MODEL", "gpt-4.1-mini") or "gpt-4.1-mini")
+# v577: Targeted verification is only run when discovered candidates are missing
+# date/source evidence and fewer than ten usable events survive. Up to two paid
+# follow-up searches per category, never a background crawler.
+EVENT_SEARCH_FOLLOWUP_LIMIT_V577 = 12
+EVENT_SEARCH_FUTURE_FOLLOWUP_LIMIT_V578 = 18
+EVENT_SEARCH_FOLLOWUP_BATCH_V577 = 6
+EVENT_SEARCH_FOLLOWUP_MAX_CALLS_V577 = 2
+EVENT_SEARCH_FUTURE_FOLLOWUP_MAX_CALLS_V578 = 3
 
 # v575: Date selection ends one calendar month after today (same day of next month,
 # or that month's last day if there is no matching day). Search/cache keys stay unchanged.
@@ -34413,7 +34422,15 @@ def _events_url_key_v570(value):
         host = parsed.hostname.lower().removeprefix("www.")
         if host in {"localhost", "127.0.0.1", "0.0.0.0"}:
             return ""
-        return host + (parsed.path or "/").rstrip("/")
+        path = (parsed.path or "/").rstrip("/") or "/"
+        # Query parameters that identify individual event pages are part of the
+        # source identity. Tracking parameters are ignored to permit citation
+        # URLs with UTM suffixes to match the same event page.
+        unique_keys = {"id", "event_id", "eventid", "article_id", "pid", "eid", "p", "item_id", "post_id"}
+        unique_params = parse_qs(parsed.query, keep_blank_values=False)
+        qualifiers = sorted((k.lower(), v[0][:100]) for k, v in unique_params.items()
+                            if k.lower() in unique_keys and v)
+        return host + path + ("?" + urlencode(qualifiers) if qualifiers else "")
     except Exception:
         return ""
 
@@ -34630,6 +34647,7 @@ def _events_validate_one_v570(raw, *, day, category, lat, lon, radius_km, source
         "start_date": start_day, "end_date": end_day, **schedule,
         "description": short, "category": category, "source_url": source_url,
         "latitude": plat, "longitude": plon, "distance_m": int(round(distance_m)),
+        "source_rechecked": bool(raw.get("source_rechecked")),
     }
 
 
@@ -34658,6 +34676,7 @@ def _events_validate_unlocated_v572(raw, *, day, category, sources):
         "description": re.sub(r"\s+", " ", str(raw.get("description") or "")).strip()[:155],
         "category": category, "source_url": str(raw.get("source_url") or "").strip(),
         "latitude": None, "longitude": None, "distance_m": None,
+        "source_rechecked": bool(raw.get("source_rechecked")),
     }
 
 
@@ -34787,7 +34806,8 @@ def _events_prefilter_v571(rows, *, day, sources):
             continue
         identity = (title, venue, str(start), key, _events_schedule_v574(raw)["start_time"])
         coords = raw.get("latitude") is not None and raw.get("longitude") is not None
-        quality = (int(coords), _events_source_quality_v571(raw.get("source_url")),
+        quality = (int(coords), int(bool(raw.get("source_rechecked"))),
+                   _events_source_quality_v571(raw.get("source_url")),
                    int(bool(raw.get("description"))),
                    int(bool(_events_schedule_v574(raw)["start_time"])))
         old = unique.get(identity)
@@ -34839,9 +34859,11 @@ def _events_normalize_v570(items, *, day, category, lat, lon, radius_km, sources
         else:
             existing = dedup[same][2]
             new_rank = (event["distance_m"] is not None,
+                        bool(event.get("source_rechecked")),
                         _events_source_quality_v571(event["source_url"]),
                         bool(event["description"]))
             existing_rank = (existing["distance_m"] is not None,
+                             bool(existing.get("source_rechecked")),
                              _events_source_quality_v571(existing["source_url"]),
                              bool(existing["description"]))
             if new_rank > existing_rank:
@@ -34865,22 +34887,362 @@ def _events_normalize_v570(items, *, day, category, lat, lon, radius_km, sources
 _events_web_search_semaphore_v571 = threading.BoundedSemaphore(3)
 
 
+
+def _events_pending_v577(raw_rows, cited_keys, *, cap=EVENT_SEARCH_FOLLOWUP_LIMIT_V577):
+    """Collect plausible leads for a *new* web lookup, never for display.
+
+    Leads without a working citation are still eligible for verification by
+    event name+venue; they never become a displayed event without a new
+    independent matching cited source and a dated occurrence.
+    """
+    indexed = {}
+    for row in list(raw_rows or []):
+        if not isinstance(row, dict):
+            continue
+        title = re.sub(r"\s+", " ", str(row.get("title") or "")).strip()[:130]
+        venue = re.sub(r"\s+", " ", str(row.get("venue") or "")).strip()[:110]
+        if len(title) < 3 or len(venue) < 2:
+            continue
+        identity = (re.sub(r"\W+", "", unicodedata.normalize("NFKC", title).casefold()),
+                    re.sub(r"\W+", "", unicodedata.normalize("NFKC", venue).casefold()))
+        if not all(identity):
+            continue
+        source = str(row.get("source_url") or row.get("evidence_url") or "")
+        citation = _events_url_key_v570(source)
+        anchored = bool(citation and citation in cited_keys)
+        lead = {"title": title, "venue": venue, "address": str(row.get("address") or "")[:160],
+                "source_url": source if citation else "", "anchored": anchored}
+        old = indexed.get(identity)
+        if old is None or (anchored, len(lead["address"])) > (old["anchored"], len(old["address"])):
+            indexed[identity] = lead
+    # Prefer leads observed on a cited listing / source. Avoid unbounded cost.
+    return sorted(indexed.values(), key=lambda x: (not x["anchored"], not bool(x["address"]),
+                                                  x["title"]))[:cap]
+
+
+def _events_date_in_evidence_v577(raw, day, *, title_hint=""):
+    """Check the selected *occurrence*, including real Japanese calendar formats.
+
+    A selected day may be the second day of a multi-day event, or inside a
+    published exhibition period. Never infer a year from today's date, a mere
+    article timestamp, a registration deadline or an unrelated old edition.
+    The caller must independently match an actual web-search cited URL.
+    """
+    evidence = unicodedata.normalize("NFKC", str(raw or ""))[:1100]
+    wanted = date.fromisoformat(str(day))
+    if not evidence.strip():
+        return False
+
+    ignored = re.compile(r"(?:申込|応募|募集|エントリー|公開|掲載|更新|投稿|受付|締切|発売|発行|記事公開)(?:日|日時|期間)?\s*[:：]?\s*$")
+    schedule_words = re.compile(r"開催|会期|期間|日時|日程|イベント|大会|試合|展示|上映|開演|開催予定|フェス|ワークショップ|公演|祭り|実施")
+    # Publication dates should not count, even when they are the selected date.
+    def is_schedule_context(pos, end=None):
+        left = evidence[max(0, pos - 35):pos]
+        if ignored.search(left):
+            return False
+        right = evidence[end:end + 28] if end is not None else ""
+        # "2026年10月24日公開" is a publication date, not an event.
+        if re.match(r"\s*(?:[（(][^()（）]{0,6}[)）]\s*)?"
+                    r"(?:公開|掲載|申込締切|応募締切|締切|受付終了|募集終了|発売|発行)", right):
+            return False
+        return True
+
+    # Full Gregorian dates: 2026年10月24日, 2026/10/24, 2026.10.24.
+    full_pat = re.compile(r"(?<!\d)(20\d{2})\s*[年/.-]\s*(\d{1,2})\s*[月/.-]\s*(\d{1,2})\s*日?")
+    full = []
+    for m in full_pat.finditer(evidence):
+        try:
+            value = date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+        except ValueError:
+            continue
+        if is_schedule_context(m.start(), m.end()):
+            full.append((m.start(), m.end(), value))
+    if any(value == wanted for _, _, value in full):
+        return True
+
+    # Japanese era dates are widely used by municipal/official event notices.
+    era_pat = re.compile(r"令和\s*(元|\d{1,2})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日?")
+    era = []
+    for m in era_pat.finditer(evidence):
+        try:
+            year = 2019 if m.group(1) == "元" else 2018 + int(m.group(1))
+            value = date(year, int(m.group(2)), int(m.group(3)))
+        except ValueError:
+            continue
+        if is_schedule_context(m.start(), m.end()):
+            era.append((m.start(), m.end(), value))
+    if any(value == wanted for _, _, value in era):
+        return True
+
+    # YYYY/M/D to YYYY/M/D (or a Japanese era equivalent): actual *period*.
+    all_full = sorted(full + era)
+    for (_, left_end, first), (right_start, _, second) in zip(all_full, all_full[1:]):
+        separator = evidence[left_end:right_start]
+        if (len(separator) <= 45 and re.search(r"[～〜~－–—]|\bto\b|から", separator, re.I)
+                and 0 <= (second - first).days <= 90 and first <= wanted <= second):
+            return True
+
+    # A date list/period usually mentions the year only once:
+    # "2026年10月24日（土）・25日（日）" or
+    # "令和8年10月10日(土)～11月8日(日)".
+    anchors = all_full
+    for anchor_start, anchor_end, first in anchors:
+        if first.year != wanted.year:
+            continue
+        tail = evidence[anchor_end:anchor_end + 105]
+        # Require the second day to be joined to the first date, not a detached
+        # publication deadline later in the page.
+        pair_pat = re.compile(
+            r"^\s*(?:[（(][^()（）]{0,6}[)）])?\s*(?:日)?\s*"
+            r"(?P<sep>[～〜~－–—、，,・]|から|及び|と)\s*"
+            r"(?:(?P<month>\d{1,2})\s*月)?\s*(?P<day>\d{1,2})\s*日?"
+        )
+        pair = pair_pat.search(tail)
+        if not pair:
+            continue
+        try:
+            second = date(first.year, int(pair.group("month") or first.month), int(pair.group("day")))
+        except ValueError:
+            continue
+        if second == wanted and is_schedule_context(anchor_start):
+            return True
+        if (pair.group("sep") in "～〜~－–—" or pair.group("sep") == "から") and \
+                first <= wanted <= second and (second - first).days <= 90:
+            return True
+
+    # Year and month/day can appear on separate parts of a site's event card:
+    # "秋のキッズフェスタ2026　開催日 10月24日（土）".
+    # The year must come from THIS evidence or the exact event title, not the
+    # computer's current year. The selected day must be a dated schedule line.
+    year_mentioned = bool(re.search(rf"(?<!\d){wanted.year}(?!\d)", evidence))
+    if not year_mentioned:
+        year_mentioned = bool(re.search(rf"(?<!\d){wanted.year}(?!\d)",
+                                        unicodedata.normalize("NFKC", str(title_hint or ""))))
+    if not year_mentioned or not schedule_words.search(evidence):
+        return False
+    # A calendar heading may show the year only once, then an abbreviated
+    # interval: "2026 秋の展示 / 会期 10月10日～11月8日".
+    partial_range = re.compile(
+        r"(?<!\d)(\d{1,2})\s*月\s*(\d{1,2})\s*日?\s*"
+        r"(?:[（(][^()（）]{0,6}[)）]\s*)?"
+        r"(?P<sep>[～〜~－–—、，,・]|から)\s*"
+        r"(?:(\d{1,2})\s*月\s*)?(\d{1,2})\s*日?"
+    )
+    for m in partial_range.finditer(evidence):
+        if not is_schedule_context(m.start(), m.end()):
+            continue
+        years_before = list(re.finditer(r"(?<!\d)(20\d{2})(?!\d)", evidence[:m.start()]))
+        if years_before and int(years_before[-1].group(1)) != wanted.year:
+            continue
+        try:
+            begin = date(wanted.year, int(m.group(1)), int(m.group(2)))
+            finish = date(wanted.year, int(m.group(4) or m.group(1)), int(m.group(5)))
+        except ValueError:
+            continue
+        if m.group("sep") in "～〜~－–—" or m.group("sep") == "から":
+            if begin <= wanted <= finish and (finish - begin).days <= 90:
+                return True
+        elif wanted in (begin, finish):
+            return True
+    md_pat = re.compile(r"(?<!\d)(\d{1,2})\s*月\s*(\d{1,2})\s*日?")
+    for m in md_pat.finditer(evidence):
+        if (int(m.group(1)), int(m.group(2))) != (wanted.month, wanted.day):
+            continue
+        if not is_schedule_context(m.start(), m.end()):
+            continue
+        # When multiple years occur on one calendar page, use the nearest
+        # year marker preceding this date, rather than any year on the page.
+        years_before = list(re.finditer(r"(?<!\d)(20\d{2})(?!\d)", evidence[:m.start()]))
+        if years_before and int(years_before[-1].group(1)) != wanted.year:
+            continue
+        return True
+    return False
+
+
+def _events_repair_calendar_row_v578(raw, *, day):
+    """Preserve cited, explicitly dated future occurrences despite bad AI date fields.
+
+    Repaired dates are used only after the source URL is independently cited;
+    event_date is never changed when a contradictory explicit schedule exists.
+    """
+    if not isinstance(raw, dict):
+        return raw
+    row = dict(raw)
+    evidence = row.get("date_evidence") or row.get("schedule_evidence") or ""
+    if not _events_date_in_evidence_v577(evidence, day, title_hint=row.get("title")):
+        return row
+    wanted = date.fromisoformat(day)
+    def parsed(value):
+        try:
+            return date.fromisoformat(str(value or ""))
+        except (ValueError, TypeError):
+            return None
+    start = parsed(row.get("start_date"))
+    end = parsed(row.get("end_date")) or start
+    event_day = parsed(row.get("event_date"))
+    if start is None or end is None:
+        row["start_date"] = day
+        row["end_date"] = day
+    elif not (start <= wanted <= end and (end-start).days <= 90):
+        return row  # contradictory interval: cannot override published dates
+    if event_day is None or (event_day == start and start != end):
+        row["event_date"] = day  # occurrence in a cited multi-day period
+    return row
+
+
+def _events_verify_match_v577(candidate, row):
+    """Reject follow-up answers about a different similarly named event/venue."""
+    def compact(value):
+        return re.sub(r"\W+", "", unicodedata.normalize("NFKC", str(value or "")).casefold())
+    title_a, title_b = compact(candidate.get("title")), compact(row.get("title"))
+    venue_a, venue_b = compact(candidate.get("venue")), compact(row.get("venue"))
+    if min(len(title_a), len(title_b)) < 3 or min(len(venue_a), len(venue_b)) < 2:
+        return False
+    # Source may abbreviate names, but both title and venue must be recognizably
+    # the same. The model's own candidate_id is not enough to establish identity.
+    from difflib import SequenceMatcher
+    # 2025 and 2026 editions, or different numbered tournaments, are distinct.
+    for value_a, value_b in ((title_a, title_b),):
+        years_a = set(re.findall(r"20\d{2}", value_a))
+        years_b = set(re.findall(r"20\d{2}", value_b))
+        if years_a and years_b and years_a.isdisjoint(years_b):
+            return False
+        editions_a = set(re.findall(r"第\d+回", value_a))
+        editions_b = set(re.findall(r"第\d+回", value_b))
+        if editions_a and editions_b and editions_a.isdisjoint(editions_b):
+            return False
+    title_ok = title_a in title_b or title_b in title_a
+    if not title_ok:
+        title_ok = (SequenceMatcher(None, title_a, title_b).ratio() >= 0.82 and
+                    (title_a[:4] == title_b[:4] or title_a[-4:] == title_b[-4:]))
+    venue_ok = venue_a in venue_b or venue_b in venue_a
+    if not venue_ok:
+        # Typical variants: 港区スポーツセンター / 港区立スポーツセンター.
+        venue_ok = (venue_a[:2] == venue_b[:2] and
+                    SequenceMatcher(None, venue_a, venue_b).ratio() >= 0.83)
+    if not venue_ok:
+        addr_a, addr_b = compact(candidate.get("address")), compact(row.get("address"))
+        venue_ok = bool(len(addr_a) >= 7 and len(addr_b) >= 7 and
+                        (addr_a in addr_b or addr_b in addr_a))
+    return bool(title_ok and venue_ok)
+
+
+def _events_followup_verify_v577(candidates, *, day, category, coarse_lat,
+                                  coarse_lon, radius_km, place_label):
+    """One bounded, independently cited follow-up web search for ambiguous leads."""
+    from openai import OpenAI
+    # Input leads are deduplicated and bounded by the caller. Any initial
+    # source URL is a search hint, not supporting evidence.
+    clean = list(candidates or [])[:EVENT_SEARCH_FOLLOWUP_BATCH_V577]
+    if not clean:
+        return {"name": "開催日・出典の追加確認", "items": [], "sources": set(), "failed": False,
+                "raw_count": 0, "cited_count": 0, "followup_attempted": 0}
+    sent = {f"c{n}": lead for n, lead in enumerate(clean, 1)}
+    queries = [{"id": cid, "title": lead["title"], "venue": lead["venue"],
+                "address": lead.get("address") or "", "found_page_hint": lead.get("source_url") or ""}
+               for cid, lead in sent.items()]
+    day_value = date.fromisoformat(day)
+    japanese_day = f"{day_value.year}年{day_value.month}月{day_value.day}日"
+    prompt = (
+        f"次の地域イベント候補を、開催日 {day}（{japanese_day}）に実際に開催予定か、"
+        f"別のWeb検索でもう一度調べてください。対象地域：{place_label}、"
+        f"概略位置 {coarse_lat:.2f},{coarse_lon:.2f}、半径{radius_km}km。ジャンル：{category}。\n"
+        "候補ごとに『イベント名＋会場＋開催年月日』で個別検索し、自治体・主催者・会場の公式案内を優先。"
+        "初回の記事だけで日付が曖昧なら、公式サイトの開催予定表、同イベントの別サイト、"
+        "主催者告知を探し直すこと。候補のfound_page_hintはヒントに過ぎず、信頼しない。"
+        f"ページにイベントの開催日が{day_value.year}年で明記されていること。"
+        "公開日・申込締切日・更新日・過去年の開催日・別会場開催日と混同しないこと。"
+        "開催日が明示された短い文字列をdate_evidenceに、その文字列が記載された実在ページのURLをsource_urlに入れる。"
+        "date_evidenceはページに実際にある見出しや一文を引用。公開日や応募締切日は不可。"
+        "date_evidenceは実際の表記を尊重し、たとえば『2026年10月24日（土）・25日（日）』、"
+        "『令和8年10月24日』、『2026開催予定／開催日 10月24日』等、年の根拠と日時が読み取れる引用にする。"
+        "指定日が会期中なら会期の始終を含める。存在しない単一の日付に書き換えない。"
+        "イベント名と会場が元の候補と一致しない場合は除外。"
+        "開催時刻はページに記載されたHH:MMのみ、推測しない。位置座標が不明ならnull。"
+        "年が違う／指定日に開催なし／情報源不明／曖昧な場合はverified_eventsに入れない。"
+        "各候補のidをそのまま返す。JSONのみ："
+        '{"verified_events":[{"candidate_id":"c1","title":"...","venue":"...",'
+        '"address":"...","event_date":"' + day + '","start_date":"' + day + '",'
+        '"end_date":"' + day + '","date_evidence":"' + japanese_day + '開催",'
+        '"start_time":"","end_time":"","description":"...",'
+        '"latitude":null,"longitude":null,"source_url":"https://..."}]}。'
+        "\n候補：" + json.dumps(queries, ensure_ascii=False, separators=(",", ":"))
+    )
+    try:
+        with _events_web_search_semaphore_v571:
+            client = OpenAI(api_key=OPENAI_API_KEY, timeout=55.0, max_retries=0)
+            response = client.responses.create(
+                model=EVENT_SEARCH_MODEL_V570,
+                tools=[{"type": "web_search", "search_context_size": "high",
+                        "user_location": {"type": "approximate", "country": "JP"}}],
+                tool_choice="required", include=["web_search_call.action.sources"],
+                input=prompt, max_output_tokens=4300, store=False,
+            )
+        sources = _events_source_urls_v570(response)
+        payload = _events_decode_json_v570(getattr(response, "output_text", ""))
+        rows = payload.get("verified_events") if isinstance(payload.get("verified_events"), list) else []
+        usable = []
+        for row in rows[:16]:
+            if not isinstance(row, dict):
+                continue
+            lead = sent.get(str(row.get("candidate_id") or ""))
+            if not lead or not _events_verify_match_v577(lead, row):
+                continue
+            url = str(row.get("source_url") or row.get("evidence_url") or "").strip()
+            if not _events_url_key_v570(url) or _events_url_key_v570(url) not in sources:
+                continue
+            if not _events_date_in_evidence_v577(row.get("date_evidence"), day,
+                                                  title_hint=lead.get("title")):
+                continue
+            row = _events_repair_calendar_row_v578(row, day=day)
+            if str(row.get("event_date") or "") != day:
+                continue
+            if not _events_day_evidence_v574(row, day):
+                continue
+            try:
+                start = date.fromisoformat(str(row.get("start_date") or ""))
+                end = date.fromisoformat(str(row.get("end_date") or row.get("start_date") or ""))
+                if not start <= date.fromisoformat(day) <= end or (end-start).days > 90:
+                    continue
+            except ValueError:
+                continue
+            confirmed = dict(row)
+            confirmed["source_url"] = url
+            confirmed.pop("candidate_id", None)
+            confirmed["source_rechecked"] = True
+            usable.append(confirmed)
+        return {"name": "開催日・出典の追加確認", "items": usable,
+                "sources": sources, "raw_count": len(rows), "cited_count": len(usable),
+                "followup_attempted": len(sent), "failed": False,
+                "parse_ok": isinstance(payload.get("verified_events"), list)}
+    except Exception as exc:
+        return {"name": "開催日・出典の追加確認", "items": [], "sources": set(),
+                "raw_count": 0, "cited_count": 0, "followup_attempted": len(sent),
+                "failed": True, "failure_type": type(exc).__name__}
+
 def _events_search_one_source_v571(plan, *, day, category, coarse_lat, coarse_lon, radius_km, place_label):
     """One real hosted web search constrained to a named publisher family."""
     from openai import OpenAI
     domains = plan.get("domains")
-    tool = {"type": "web_search", "search_context_size": "medium",
+    # More context for primary first-party listings where exact calendars matter;
+    # aggregator lookups remain medium to avoid unnecessary tokens/cost.
+    context_size = "high" if plan.get("name") in ("自治体・観光公式", "会場・主催者公式") else "medium"
+    tool = {"type": "web_search", "search_context_size": context_size,
             "user_location": {"type": "approximate", "country": "JP"}}
     if domains:
         tool["filters"] = {"allowed_domains": list(domains)}
     prompt = (
-        f"日本時間の指定日 {day} に現地開催予定の日本の{category}イベントをウェブ検索してください。\n"
+        f"日本時間の指定日 {day}（{date.fromisoformat(day).year}年{date.fromisoformat(day).month}月{date.fromisoformat(day).day}日）に"
+        f"現地開催予定の日本の{category}イベントをウェブ検索してください。\n"
         f"検索地点：{place_label}付近（概略座標 {coarse_lat:.2f}, {coarse_lon:.2f}）、半径{radius_km}km。\n"
         f"対象：{EVENT_SEARCH_CATEGORIES_V570[category]}。\n"
         f"今回の情報源：{plan['name']}。探し方：{plan['focus']}\n"
         "対象地域を実際に検索して、開催日・会場・イベント名称が掲載されたイベントごとのページを確認すること。"
         "検索元が開催予定日でなく『申込締切日』や『記事公開日』を示しているだけなら採用しない。"
         "指定日の開催が確認できるもののみ。未来の日付なら開催予定を検索すること。"
+        "未来日は特に、開催予定カレンダー・日別チケット一覧・自治体の月間催事表・主催者の次回予定を優先。"
+        "会期2026年10月24日～11月8日、令和8年10月24日、2026年10月24日・25日、"
+        "イベント名に2026とあり開催日欄には10月24日のみといった一般的な日本語表記にも対応する。"
         "今日の開催に勝手に読み替えない。単に期間内に入るだけでは不十分で、"
         "休館日や開催曜日にも注意し、指定日に実際に予定があることを確認する。"
         "毎日同じ常設施設や常設展示、イベントでない通常営業、指定日には開催されないもの、"
@@ -34889,14 +35251,24 @@ def _events_search_one_source_v571(plan, *, day, category, coarse_lat, coarse_lo
         "時刻が不明なら各項目を空文字とし、日時を推測しない。開場・受付時刻を開催開始時刻と混同しない。"
         "期間イベントは指定日の日程・公開時間を確認する。会場座標がページ等から確認できないならnull。座標は作らない。"
         "source_urlには今回のWeb検索結果の参照元URLを正確にコピーする。URLの生成・補完・別URLへの変更はしない。"
+        "情報元の掲載日・募集締切・過去の開催日を開催日と誤認しない。"
+        "開催日が確かめられた場合、該当ページに掲載された開催日周辺の短い文字列をdate_evidenceに含める。"
+        "年と日付が別見出しなら両方を示す。ページにない文字を引用として創作しない。"
+        "公式会場の開催カレンダー・主催者の告知・予約ページと相互に照合し、"
+        "開催日の年月日・会場が一致した候補だけeventsに入れる。"
+        "イベント名・会場は存在するが開催日や出典の確認が足りない候補は、"
+        "破棄せずpending_eventsに最大5件入れる。日付を捏造しない。"
         "個別案内が見つからなければ、イベント名と開催日を実際に掲載する一覧のURLでよい。"
-        "開催日を確認できない候補は書かない。会場の座標が不明でも候補は残しnullで返す。"
+        "開催日を確認できない候補はeventsに書かずpending_eventsに移すこと。"
+        "会場の座標が不明でも候補は残しnullで返す。"
         "同じ候補を繰り返さず最大10件。0件でもよい。推測で埋めない。"
         "JSONだけで出力：{\"events\":[{\"title\":...,\"venue\":...,\"address\":...,"
         "\"start_date\":\"YYYY-MM-DD\",\"end_date\":\"YYYY-MM-DD\","
         "\"event_date\":\"" + day + "\",\"start_time\":\"HH:MM or empty\","
         "\"end_time\":\"HH:MM or empty\",\"description\":...,"
-        "\"latitude\":null,\"longitude\":null,\"source_url\":...}]}。"
+        "\"date_evidence\":\"掲載元の開催日表記\","
+        "\"latitude\":null,\"longitude\":null,\"source_url\":...}],"
+        "\"pending_events\":[{\"title\":...,\"venue\":...,\"address\":...,\"source_url\":...}]}。"
     )
     try:
         with _events_web_search_semaphore_v571:
@@ -34909,13 +35281,14 @@ def _events_search_one_source_v571(plan, *, day, category, coarse_lat, coarse_lo
         sources = _events_source_urls_v570(response)
         payload = _events_decode_json_v570(getattr(response, "output_text", ""))
         rows = payload.get("events") if isinstance(payload.get("events"), list) else []
+        unconfirmed = payload.get("pending_events") if isinstance(payload.get("pending_events"), list) else []
         candidates = []
         for row in rows[:30]:
             if not isinstance(row, dict):
                 continue
             key = _events_url_key_v570(row.get("source_url"))
             if key in sources:
-                candidates.append(row)
+                candidates.append(_events_repair_calendar_row_v578(row, day=day))
             else:
                 # A cited listing page is usable only when the model explicitly provides
                 # that same consulted URL, never by guessed host or fabricated path.
@@ -34924,8 +35297,22 @@ def _events_search_one_source_v571(plan, *, day, category, coarse_lat, coarse_lo
                     urlparse(evidence).hostname == urlparse(str(row.get("source_url") or "")).hostname):
                     corrected = dict(row)
                     corrected["source_url"] = evidence
-                    candidates.append(corrected)
-        return {"name": plan["name"], "items": candidates, "sources": sources,
+                    candidates.append(_events_repair_calendar_row_v578(corrected, day=day))
+        # Raw items that failed the citation/date gate remain *untrusted leads*.
+        # A separate search must validate them before they may be displayed.
+        def has_confirmed_day(raw):
+            try:
+                start = date.fromisoformat(str(raw.get("start_date") or ""))
+                end = date.fromisoformat(str(raw.get("end_date") or raw.get("start_date") or ""))
+                wanted = date.fromisoformat(day)
+                return start <= wanted <= end and 0 <= (end-start).days <= 90 and _events_day_evidence_v574(raw, day)
+            except (ValueError, TypeError):
+                return False
+        pending_rows = list(unconfirmed)[:7] + [row for row in rows
+                       if isinstance(row, dict) and (row not in candidates or not has_confirmed_day(row))]
+        pending = _events_pending_v577(pending_rows, sources, cap=7)
+        return {"name": plan["name"], "items": candidates, "pending": pending,
+                "sources": sources,
                 "raw_count": len(rows), "cited_count": len(candidates),
                 "failed": False, "parse_ok": isinstance(payload.get("events"), list)}
     except Exception as exc:
@@ -35006,6 +35393,54 @@ def _events_fetch_category_v570(day, category, latitude, longitude, radius_km, p
             results.append({"items": [], "sources": set(), "failed": True})
 
     dated = _events_prefilter_v571(cited_rows, day=day, sources=sources)
+    # v577: A discovered event is not lost merely because the first result did
+    # not expose its schedule or the exact cited page. Re-search its name/venue
+    # in independent sources, and accept only a matching year-bearing date
+    # evidenced by an actual web_search citation.
+    followup_attempted = 0
+    followup_accepted = 0
+    visible_before_followup = _events_normalize_v570(
+        dated, day=day, category=category, lat=latitude, lon=longitude,
+        radius_km=radius_km, sources=sources)
+    if len(visible_before_followup) < EVENT_SEARCH_MAX_PER_CATEGORY_V570:
+        leads = []
+        for result in results:
+            leads.extend(result.get("pending") or [])
+        # Include cited events with missing dates, but do not revisit events
+        # already known to meet the user's selected date.
+        confirmed_identities = {(re.sub(r"\W+", "", unicodedata.normalize("NFKC", str(r.get("title") or "")).casefold()),
+                                 re.sub(r"\W+", "", unicodedata.normalize("NFKC", str(r.get("venue") or "")).casefold()))
+                                for r in dated}
+        future_date = date.fromisoformat(day) > now_jst().date()
+        pending_limit = (EVENT_SEARCH_FUTURE_FOLLOWUP_LIMIT_V578 if future_date
+                         else EVENT_SEARCH_FOLLOWUP_LIMIT_V577)
+        potential = _events_pending_v577(leads, sources, cap=pending_limit)
+        potential = [lead for lead in potential if (
+            re.sub(r"\W+", "", unicodedata.normalize("NFKC", lead["title"]).casefold()),
+            re.sub(r"\W+", "", unicodedata.normalize("NFKC", lead["venue"]).casefold())
+        ) not in confirmed_identities]
+        call_limit = (EVENT_SEARCH_FUTURE_FOLLOWUP_MAX_CALLS_V578 if future_date
+                      else EVENT_SEARCH_FOLLOWUP_MAX_CALLS_V577)
+        for batch_no in range(call_limit):
+            # A dated candidate can still be outside the selected radius.
+            actual_visible = _events_normalize_v570(
+                dated, day=day, category=category, lat=latitude,
+                lon=longitude, radius_km=radius_km, sources=sources)
+            remaining = max(0, EVENT_SEARCH_MAX_PER_CATEGORY_V570 - len(actual_visible))
+            if remaining == 0:
+                break
+            batch = potential[batch_no * EVENT_SEARCH_FOLLOWUP_BATCH_V577:
+                              (batch_no + 1) * EVENT_SEARCH_FOLLOWUP_BATCH_V577]
+            if not batch:
+                break
+            retry = _events_followup_verify_v577(
+                batch, day=day, category=category, coarse_lat=coarse_lat,
+                coarse_lon=coarse_lon, radius_km=radius_km, place_label=area)
+            followup_attempted += int(retry.get("followup_attempted") or 0)
+            followup_accepted += len(retry.get("items") or [])
+            results.append(retry)
+            cited_rows, sources = gather(results)
+            dated = _events_prefilter_v571(cited_rows, day=day, sources=sources)
     checked = _events_geocode_missing_v570(dated, day=day, category=category,
                                              lat=latitude, lon=longitude,
                                              radius_km=radius_km, sources=sources)
@@ -35022,7 +35457,7 @@ def _events_fetch_category_v570(day, category, latitude, longitude, radius_km, p
     elif not items and not sources:
         error = "\u691c\u7d22\u7d50\u679c\u306e\u51fa\u5178\u304c\u53d6\u5f97\u3067\u304d\u307e\u305b\u3093\u3067\u3057\u305f\u3002"
     elif not items and not dated:
-        error = "\u691c\u7d22\u5148\u306b\u60c5\u5831\u306f\u3042\u308a\u307e\u3057\u305f\u304c\u3001\u5f53\u65e5\u958b\u50ac\u306e\u65e5\u4ed8\u30fb\u51fa\u5178\u3092\u78ba\u8a8d\u3067\u304d\u307e\u305b\u3093\u3067\u3057\u305f\u3002"
+        error = "検索先に候補はありましたが、指定日の開催日程・情報源を確認できませんでした。"
     else:
         error = ""
     return {"items": items, "error": error, "source_domains": source_domains,
@@ -35031,6 +35466,8 @@ def _events_fetch_category_v570(day, category, latitude, longitude, radius_km, p
             "failed_passes": failed_count,
             "raw_count": raw_count, "cited_count": len(cited_rows),
             "dated_count": len(dated), "distance_unverified_count": missing_count,
+            "followup_attempted": followup_attempted,
+            "followup_accepted": sum(bool(item.get("source_rechecked")) for item in items),
             "checked_at": datetime.now(ZoneInfo(APP_TIMEZONE)).strftime("%H:%M")}
 
 
@@ -35044,7 +35481,7 @@ def _events_job_v570(day, category, location, radius_km, *, refresh=False):
     """Account-safe short-lived per-area cache; one in-flight search per category."""
     latitude = float(location["latitude"])
     longitude = float(location["longitude"])
-    key = ("v574", day, category, round(latitude, 2), round(longitude, 2), int(radius_km))
+    key = ("v578", day, category, round(latitude, 2), round(longitude, 2), int(radius_km))
     runtime = _events_runtime_v570()
     now = time.monotonic()
     with runtime["lock"]:
@@ -35128,9 +35565,11 @@ def _events_combine_v576(results):
             else:
                 earlier = combined[collision]
                 quality_new = (event.get("distance_m") is not None,
+                               bool(event.get("source_rechecked")),
                                _events_source_quality_v571(event.get("source_url")),
                                bool(event.get("start_time")), bool(event.get("description")))
                 quality_old = (earlier.get("distance_m") is not None,
+                               bool(earlier.get("source_rechecked")),
                                _events_source_quality_v571(earlier.get("source_url")),
                                bool(earlier.get("start_time")), bool(earlier.get("description")))
                 winner = dict(event) if quality_new > quality_old else dict(earlier)
@@ -35163,6 +35602,8 @@ def _events_combine_v576(results):
         "raw_count": sum(int((r or {}).get("raw_count") or 0) for r in results.values()),
         "cited_count": sum(int((r or {}).get("cited_count") or 0) for r in results.values()),
         "dated_count": sum(int((r or {}).get("dated_count") or 0) for r in results.values()),
+        "followup_attempted": sum(int((r or {}).get("followup_attempted") or 0) for r in results.values()),
+        "followup_accepted": sum(int((r or {}).get("followup_accepted") or 0) for r in results.values()),
         "checked_at": max((str((r or {}).get("checked_at") or "") for r in results.values()), default=""),
         "category_counts": {cat: sum(event.get("category") == cat for event in combined)
                             for cat in EVENT_SEARCH_CATEGORIES_V570},
@@ -35184,9 +35625,159 @@ def _events_selected_results_v576(futures, selection):
     return results[selection]
 
 
+
+# v577: Event announcements open in a separate browser; they must NOT replace
+# the currently visible Streamlit app screen. The Android host handles openEvent.
+_EVENTS_EXTERNAL_HTML_V577 = '<div id="burari-events-external-root-v577"></div>'
+_EVENTS_EXTERNAL_CSS_V577 = r"""
+.burari-event-list-v577{border:1px solid rgba(128,128,128,.22);border-radius:13px;overflow:hidden;margin:.45rem 0 .75rem}
+.burari-event-row-v577{display:flex;gap:10px;padding:12px 11px;border-bottom:1px solid rgba(128,128,128,.17);align-items:flex-start}
+.burari-event-row-v577:last-child{border-bottom:0}
+.burari-event-index-v577{display:flex;align-items:center;justify-content:center;flex:0 0 27px;height:27px;border-radius:50%;background:#168c73;color:white;font-weight:800;font-size:12px}
+.burari-event-main-v577{min-width:0;flex:1}
+.burari-event-category-v577{font-size:12px;font-weight:750;color:#116d58;margin-bottom:3px}
+.burari-event-title-v577{font-size:15px;font-weight:800;line-height:1.45;color:#1765a1!important;text-decoration:underline;overflow-wrap:anywhere}
+.burari-event-time-v577{font-size:13px;font-weight:730;margin-top:5px;line-height:1.4}
+.burari-event-meta-v577{font-size:12px;opacity:.75;margin-top:3px;line-height:1.35;overflow-wrap:anywhere}
+.burari-event-button-v577{width:100%;box-sizing:border-box;min-height:45px;border-radius:12px;border:1px solid rgba(47,128,237,.38);background:rgba(47,128,237,.08);color:#235fa8!important;font-size:.85rem;font-weight:800;display:flex;align-items:center;justify-content:center;text-decoration:none;line-height:1.4;padding:5px;text-align:center}
+"""
+_EVENTS_EXTERNAL_JS_V577 = r"""
+export default function(component) {
+  const {data,parentElement} = component;
+  const root = parentElement.querySelector('#burari-events-external-root-v577');
+  const token = String(data?.native_bridge_token || '');
+  const isNative = Boolean(token);
+  const safeUrl = (raw) => {
+    try { const u = new URL(String(raw || ''));
+      return u.protocol === 'https:' && u.hostname && !u.username && !u.password ? u.href : '';
+    } catch (_) { return ''; }
+  };
+  const navigateExternally = (url, event) => {
+    if (!isNative) return; // Browser: follow target=_blank; app remains in current tab.
+    // Android: a named event-only bridge bypasses WebView navigation entirely.
+    try {
+      const bridge = globalThis.BurariExternal || window.BurariExternal || null;
+      if (bridge && typeof bridge.openEvent === 'function') {
+        const accepted = Number(bridge.openEvent(token, url) || 0);
+        if (accepted) { event.preventDefault(); return; }
+      }
+    } catch (_) {}
+    // On some Streamlit versions the component is an isolated iframe: relay via
+    // Android's trusted top page. Without an acknowledgment, use the old WebView
+    // shouldOverrideUrlLoading path as a fallback (never silently swallow clicks).
+    const parent = window.parent;
+    if (parent && parent !== window) {
+      try {
+        const id = 'event-' + Date.now() + '-' + Math.random().toString(36).slice(2);
+        let finished = false;
+        const reply = (incoming) => {
+          const msg = incoming?.data;
+          if (!msg || msg.type !== 'burari-native-external-response-v1' || msg.request_id !== id) return;
+          finished = true;
+          window.removeEventListener('message', reply);
+          if (!Boolean(msg.result)) window.location.href = url;
+        };
+        window.addEventListener('message', reply);
+        parent.postMessage({type:'burari-native-external-request-v1',request_id:id,
+                            action:'open_event',token,url},'*');
+        event.preventDefault();
+        setTimeout(() => {window.removeEventListener('message', reply);
+                          if (!finished) window.location.href = url;}, 750);
+        return;
+      } catch (_) {}
+    }
+    // Legacy Android builds still intercept a same-frame external link.
+    event.currentTarget.target = '_self';
+  };
+  const addLink = (container, url, label, cls) => {
+    const el = document.createElement('a');
+    el.href = safeUrl(url) || '#';
+    el.textContent = String(label || '');
+    el.className = cls;
+    el.target = isNative ? '_self' : '_blank';
+    el.rel = 'noopener noreferrer';
+    if (safeUrl(url)) el.addEventListener('click', e => navigateExternally(el.href, e));
+    container.appendChild(el);
+    return el;
+  };
+  if (!root) return;
+  root.replaceChildren();
+  if (data?.kind === 'list') {
+    const list = document.createElement('div');
+    list.className = 'burari-event-list-v577'; list.setAttribute('role','list');
+    (data.rows || []).forEach((row, index) => {
+      const wrapper = document.createElement('div'); wrapper.className = 'burari-event-row-v577'; wrapper.setAttribute('role','listitem');
+      const num = document.createElement('div'); num.className='burari-event-index-v577'; num.textContent=String(index+1);
+      const main = document.createElement('div'); main.className='burari-event-main-v577';
+      if (row.category) { const cat=document.createElement('div'); cat.className='burari-event-category-v577';cat.textContent=String(row.category); main.appendChild(cat); }
+      addLink(main,row.url,row.title,'burari-event-title-v577');
+      const times=document.createElement('div'); times.className='burari-event-time-v577';times.textContent=String(row.when || '');main.appendChild(times);
+      const meta=document.createElement('div'); meta.className='burari-event-meta-v577';meta.textContent=String(row.meta || '');main.appendChild(meta);
+      wrapper.appendChild(num);wrapper.appendChild(main);list.appendChild(wrapper);
+    });
+    root.appendChild(list);
+  } else {
+    addLink(root, data?.url, data?.label || '開催案内をブラウザで確認','burari-event-button-v577');
+  }
+}
+"""
+_events_external_component_v577 = None
+_events_external_initialized_v577 = False
+
+
+def _get_events_external_component_v577():
+    global _events_external_component_v577, _events_external_initialized_v577
+    if _events_external_initialized_v577:
+        return _events_external_component_v577
+    _events_external_initialized_v577 = True
+    try:
+        _events_external_component_v577 = st.components.v2.component(
+            "tokyo_burari_event_external_v577", html=_EVENTS_EXTERNAL_HTML_V577,
+            css=_EVENTS_EXTERNAL_CSS_V577, js=_EVENTS_EXTERNAL_JS_V577,
+        )
+    except Exception:
+        _events_external_component_v577 = None
+    return _events_external_component_v577
+
+
+def _events_external_button_v577(url, label, *, key):
+    component = _get_events_external_component_v577()
+    if component:
+        component(data={"kind": "button", "url": url, "label": label,
+                        "native_bridge_token": str(_query_param_scalar("native_bridge_token") or "")}, key=key)
+        return
+    # Legacy fallback: WebViewClient handles same-frame external navigation.
+    target = "_self" if _query_param_scalar("native_bridge_token") else "_blank"
+    st.markdown('<a href="' + html.escape(str(url), quote=True) + '" target="' + target + '" '
+                'rel="noopener noreferrer" style="display:flex;align-items:center;justify-content:center;'
+                'min-height:45px;border-radius:12px;border:1px solid rgba(47,128,237,.38);'
+                'background:rgba(47,128,237,.08);color:#235fa8;text-decoration:none;'
+                'font-size:.85rem;font-weight:800;text-align:center;padding:5px;">'
+                + html.escape(str(label)) + '</a>', unsafe_allow_html=True)
+
 def _events_render_list_v574(items, day, *, show_categories=False):
-    """Compact readable list with source links that work in Android WebView."""
+    """Event titles open the external browser, never replace the event list."""
+    component = _get_events_external_component_v577()
+    if component:
+        day_label = _events_display_day_v574(day)
+        rows_for_component = []
+        for event in items:
+            distance = event.get("distance_m")
+            distance_text = f"約{distance / 1000:.1f}km" if distance is not None else "距離未確認"
+            rows_for_component.append({
+                "title": str(event.get("title") or ""), "url": str(event.get("source_url") or ""),
+                "category": str(event.get("category") or "") if show_categories else "",
+                "when": f"{day_label}　{event.get('time_label') or '時間未掲載'}" +
+                        ("　（追加確認済み）" if event.get("source_rechecked") else ""),
+                "meta": f"{event.get('venue') or ''} ／ {distance_text}",
+            })
+        component(data={"kind": "list", "rows": rows_for_component,
+                        "native_bridge_token": str(_query_param_scalar("native_bridge_token") or "")},
+                  key="events_external_list_v577")
+        st.caption("イベント名を押すと標準ブラウザで案内を開きます。アプリにはそのまま戻れます。")
+        return
     rows = []
+    target = "_self" if _query_param_scalar("native_bridge_token") else "_blank"
     for index, event in enumerate(items, 1):
         title = html.escape(str(event.get("title") or ""))
         venue = html.escape(str(event.get("venue") or ""))
@@ -35203,7 +35794,7 @@ def _events_render_list_v574(items, day, *, show_categories=False):
             f'<div class="events-list-number-v574">{index}</div>'
             '<div class="events-list-main-v574">'
             f'{category_html}'
-            f'<a href="{url}" target="_self" rel="noopener noreferrer" class="events-list-title-v574">{title}</a>'
+            f'<a href="{url}" target="{target}" rel="noopener noreferrer" class="events-list-title-v574">{title}</a>'
             f'<div class="events-list-time-v574">{date_text}　{time_text}</div>'
             f'<div class="events-list-meta-v574">{venue} ／ {html.escape(distance_text)}</div>'
             '</div></div>'
@@ -35244,12 +35835,13 @@ def _events_render_map_v574(items, location):
             "category": str(event.get("category") or "")[:20],
             "venue": str(event.get("venue") or "")[:130],
             "time": str(event.get("time_label") or "時間未掲載")[:100],
+            "source_url": str(event.get("source_url") or ""),
         })
     if not points:
         st.info("会場の位置を確認できるイベントがありません。「一覧」または「詳細」で候補を確認してください。")
         return
     data = {"center": center, "origin_label": "現在地" if location.get("source") == "gps" else "検索地点",
-            "points": points}
+            "points": points, "native_token": str(_query_param_scalar("native_bridge_token") or "")}
     encoded = json.dumps(data, ensure_ascii=False, separators=(",", ":")).replace("<", "\\u003c").replace(">", "\\u003e")
     template = r'''<!doctype html><html lang="ja"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -35274,7 +35866,23 @@ const originIcon=L.divIcon({className:'',html:'<div class="event-origin-v574"><s
 L.marker(data.center,{icon:originIcon,zIndexOffset:2000}).addTo(map).bindPopup(escapeText(data.origin_label));
 (data.points||[]).forEach(e=>{bounds.extend([e.lat,e.lon]);
   const pin=L.divIcon({className:'',html:'<div class="event-pin-v574"><b>'+Number(e.index)+'</b></div>',iconSize:[33,33],iconAnchor:[16,31]});
-  L.marker([e.lat,e.lon],{icon:pin}).addTo(map).bindPopup('<div class="event-popup-v574"><b>'+escapeText(e.index+'. '+e.title)+'</b><div>'+escapeText(e.category)+'　'+escapeText(e.time)+'</div><div>'+escapeText(e.venue)+'</div></div>');
+  const link = '<div><a class="event-source-external-v577" href="'+escapeText(e.source_url)+'" target="'+(data.native_token?'_self':'_blank')+'" rel="noopener noreferrer">開催案内をブラウザで確認</a></div>';
+  L.marker([e.lat,e.lon],{icon:pin}).addTo(map).bindPopup('<div class="event-popup-v574"><b>'+escapeText(e.index+'. '+e.title)+'</b><div>'+escapeText(e.category)+'　'+escapeText(e.time)+'</div><div>'+escapeText(e.venue)+'</div>'+link+'</div>');
+});
+node.addEventListener('click',event=>{const a=event.target?.closest?.('.event-source-external-v577');
+ if(!a||!data.native_token)return;
+ const b=window.BurariExternal;
+ if(b&&typeof b.openEvent==='function'){
+   try{if(Number(b.openEvent(data.native_token,a.href)||0)){event.preventDefault();return;}}catch(_){}
+ }
+ try{const id='event-map-'+Date.now();let replied=false;
+  const reply=event=>{const m=event.data;if(!m||m.type!=='burari-native-external-response-v1'||m.request_id!==id)return;
+    replied=true;window.removeEventListener('message',reply);if(!Number(m.result))window.location.href=a.href;};
+  window.addEventListener('message',reply);
+  window.parent.postMessage({type:'burari-native-external-request-v1',request_id:id,
+   action:'open_event',token:data.native_token,url:a.href},'*');event.preventDefault();
+  setTimeout(()=>{window.removeEventListener('message',reply);if(!replied)window.location.href=a.href;},750);
+ }catch(_){}
 });
 map.fitBounds(bounds.pad(.12),{maxZoom:15});setTimeout(()=>map.invalidateSize(),150);
 })();</script></body></html>'''
@@ -35297,22 +35905,16 @@ def _events_render_details_v574(items, day, category):
             time_part = "  " + str(item.get("time_label") or "時間未掲載")
             distance = item.get("distance_m")
             distance_text = f"約{distance / 1000:.1f}km" if distance is not None else "距離未確認"
-            st.caption(f"{date_part}{time_part} ／ {distance_text}")
+            st.caption(f"{date_part}{time_part} ／ {distance_text}" +
+                       (" ／ 開催日・出典を追加確認" if item.get("source_rechecked") else ""))
             st.markdown("**会場：** " + html.escape(str(item["venue"])))
             if item.get("description"):
                 st.write(item["description"])
             link_col, map_col = st.columns(2, gap="small")
             with link_col:
-                # target=_self: Android WebView intercepts external HTTPS and opens the browser;
-                # link_button opens a new window, which this app's WebView disables.
-                source_url = html.escape(str(item["source_url"]), quote=True)
-                st.markdown(
-                    '<a href="' + source_url + '" target="_self" rel="noopener noreferrer" '
-                    'style="display:flex;align-items:center;justify-content:center;min-height:45px;'
-                    'border-radius:12px;border:1px solid rgba(47,128,237,.38);'
-                    'background:rgba(47,128,237,.08);color:#235fa8;text-decoration:none;'
-                    'font-size:.85rem;font-weight:800;text-align:center;padding:5px;">開催案内を確認</a>',
-                    unsafe_allow_html=True,
+                _events_external_button_v577(
+                    str(item["source_url"]), "開催案内をブラウザで確認",
+                    key=f"event_external_v577_{category}_{index}",
                 )
             with map_col:
                 if item.get("latitude") is not None and item.get("longitude") is not None:
@@ -35368,6 +35970,10 @@ def _events_result_panel_v570():
             st.caption("内訳：" + " ／ ".join(f"{cat} {counts.get(cat, 0)}件" for cat in EVENT_SEARCH_CATEGORIES_V570))
         st.caption(f"検索 {int(result.get('search_passes') or 0)}系統／参照元 "
                    f"{int(result.get('searched_source_count') or 0)}サイト")
+        if int(result.get("followup_attempted") or 0):
+            st.caption("開催日・出典の追加確認："
+                       f"{int(result.get('followup_attempted') or 0)}候補を再検索／"
+                       f"{int(result.get('followup_accepted') or 0)}件を採用")
         if unlocated:
             st.caption("会場位置未確認の候補は検索範囲内とは断定できません。掲載元で住所をご確認ください。")
         domains = list(result.get("source_domains") or [])
