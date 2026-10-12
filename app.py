@@ -44,7 +44,11 @@ def _app_css_v473(markup, **_ignored):
 # Review menu-only update: 2026-09-19 JST
 GENERATED_UPDATE_JST = "2026-09-19T14:54:38+09:00"
 
-APP_BUILD = "v570"
+APP_BUILD = "v571"
+# v571: Expand event discovery to five separately sourced, API-grounded web-search passes
+# (local government/tourism, venue/organizer, category specialists, family/event portals,
+# and open local discovery). Independently cite-check each pass, merge/deduplicate,
+# retain 20-minute caching and the same category buttons/UI and strict date/geo gates.
 # v565: Remember a browser login for up to 90 idle days, rotate signed credentials no more than weekly on natural authenticated page renders, avoid deleting a valid token during transient Supabase errors, and wait for browser restore before displaying login. Logout and PIN-change revocation remain effective.
 # v563: Home UI latency fix. No foreground wait for prefetched field notes/video
 # counts or previous-month review attention. Use bounded, account-scoped background
@@ -34442,55 +34446,61 @@ def _events_venue_osm_location_v570(venue, address):
 
 
 def _events_geocode_missing_v570(items, *, day, category, lat, lon, radius_km, sources):
-    """Small bounded geocode pass; removes entries whose venue stays unverified."""
-    results = []
-    jobs_used = 0
-    max_queries = 8 if GOOGLE_PLACES_API_KEY else 3
-    for raw in list(items or [])[:35]:
-        if not isinstance(raw, dict):
-            continue
-        # Never spend a venue lookup on an AI item without a real cited source and date.
-        source_key = _events_url_key_v570(raw.get("source_url"))
-        if not source_key or source_key not in sources:
-            continue
-        try:
-            date_start = date.fromisoformat(str(raw.get("start_date")))
-            date_end = date.fromisoformat(str(raw.get("end_date") or raw.get("start_date")))
-            if not date_start <= date.fromisoformat(day) <= date_end:
-                continue
-        except (TypeError, ValueError):
-            continue
+    """Geocode a bounded set of source/date-confirmed venues without blocking the UI."""
+    verified = _events_prefilter_v571(items, day=day, sources=sources)
+    ready, unresolved = [], []
+    for raw in verified:
         item = dict(raw)
-        event = _events_validate_one_v570(item, day=day, category=category, lat=lat,
-                                          lon=lon, radius_km=radius_km, sources=sources)
-        if event:
-            results.append(item)
-            continue
-        has_coords = item.get("latitude") is not None and item.get("longitude") is not None
-        # Do not override explicit remote venue coordinates with a nearby name match.
-        if has_coords or jobs_used >= max_queries or not item.get("venue"):
-            continue
-        jobs_used += 1
-        if GOOGLE_PLACES_API_KEY:
-            coordinates = _events_venue_google_location_v570(str(item.get("venue") or ""),
-                          str(item.get("address") or ""), round(float(lat), 2),
-                          round(float(lon), 2), int(radius_km))
-        else:
-            # Respect the public Nominatim one-request-per-second policy.
+        accepted = _events_validate_one_v570(item, day=day, category=category,
+                                              lat=lat, lon=lon, radius_km=radius_km, sources=sources)
+        if accepted:
+            ready.append(item)
+        elif item.get("latitude") is None or item.get("longitude") is None:
+            if item.get("venue"):
+                unresolved.append(item)
+        # Explicit coordinates outside the search radius must never be replaced by a
+        # coincidentally nearby venue name: preserve v570's safety check.
+
+    # More independently sourced candidates need additional venue verification. Keep
+    # Google Places concurrency bounded and respect Nominatim's >=1s/request policy.
+    max_queries = 14 if GOOGLE_PLACES_API_KEY else 4
+    lookup = unresolved[:max_queries]
+    if GOOGLE_PLACES_API_KEY and lookup:
+        with ThreadPoolExecutor(max_workers=3, thread_name_prefix="burari-event-geo") as pool:
+            futures = {
+                pool.submit(_events_venue_google_location_v570,
+                            str(item.get("venue") or ""), str(item.get("address") or ""),
+                            round(float(lat), 2), round(float(lon), 2), int(radius_km)): item
+                for item in lookup
+            }
+            for future in as_completed(futures):
+                try:
+                    coordinates = future.result()
+                except Exception:
+                    coordinates = None
+                if not coordinates:
+                    continue
+                item = futures[future]
+                item["latitude"], item["longitude"] = coordinates
+                if _events_validate_one_v570(item, day=day, category=category, lat=lat,
+                                              lon=lon, radius_km=radius_km, sources=sources):
+                    ready.append(item)
+    elif lookup:
+        for item in lookup:
             with _events_nominatim_lock_v570:
                 global _events_nominatim_last_at_v570
                 elapsed = time.monotonic() - _events_nominatim_last_at_v570
                 if elapsed < 1.1:
                     time.sleep(1.1 - elapsed)
-                coordinates = _events_venue_osm_location_v570(str(item.get("venue") or ""),
-                                                               str(item.get("address") or ""))
+                coordinates = _events_venue_osm_location_v570(
+                    str(item.get("venue") or ""), str(item.get("address") or ""))
                 _events_nominatim_last_at_v570 = time.monotonic()
-        if coordinates:
-            item["latitude"], item["longitude"] = coordinates
-            if _events_validate_one_v570(item, day=day, category=category, lat=lat,
-                                          lon=lon, radius_km=radius_km, sources=sources):
-                results.append(item)
-    return results
+            if coordinates:
+                item["latitude"], item["longitude"] = coordinates
+                if _events_validate_one_v570(item, day=day, category=category, lat=lat,
+                                              lon=lon, radius_km=radius_km, sources=sources):
+                    ready.append(item)
+    return ready
 
 
 _events_nominatim_lock_v570 = threading.Lock()
@@ -34539,67 +34549,203 @@ def _events_validate_one_v570(raw, *, day, category, lat, lon, radius_km, source
     }
 
 
+def _events_source_plans_v571(category, latitude, longitude):
+    """Distinct real-world publisher families; no screen-load or periodic crawler."""
+    near_tokyo = 35.35 <= float(latitude) <= 36.05 and 139.15 <= float(longitude) <= 140.15
+    government = ["lg.jp", "go.jp"] + (["tokyo.jp", "gotokyo.org"] if near_tokyo else [])
+    specialists = {
+        "スポーツ": ["sportsentry.ne.jp", "runnet.jp", "moshicom.com", "tokyo-sports.or.jp",
+                    "jleague.jp", "bleague.jp", "japan-sports.or.jp"],
+        "文化": ["tokyoartbeat.com", "artagenda.jp", "museum.or.jp", "eplus.jp",
+                   "t.pia.jp", "gotokyo.org"],
+        "その他": ["gotokyo.org", "peatix.com", "eventregist.com", "walkerplus.com",
+                    "iko-yo.net"],
+    }
+    return [
+        {"name": "自治体・観光公式", "domains": government,
+         "focus": "自治体の本日イベントカレンダー、区市町村の催し、公共スポーツ施設、観光協会の公式案内。"},
+        {"name": "会場・主催者公式", "domains": None,
+         "focus": "近隣の競技場、文化施設、図書館、科学館、公園管理者、商業施設、主催団体の個別告知を直接確認。イベントまとめページだけに偏らない。"},
+        {"name": "分野別専門サイト", "domains": specialists[category],
+         "focus": ("競技大会、試合日程、地域スポーツ団体、子どもの参加・観戦行事。"
+                   if category == "スポーツ" else "美術館・博物館の特別展示、舞台、音楽、伝統芸能、文化施設の個別イベント。"
+                   if category == "文化" else "地域祭り、ものづくり、科学体験、街歩き、地域交流イベント。")},
+        {"name": "親子・地域イベント情報", "domains": ["iko-yo.net", "walkerplus.com", "peatix.com",
+                                                 "asoview.com", "eventregist.com"],
+         "focus": "複数の地域イベント掲載サイトから、本日実施、現地開催の個別イベントページを探索。"},
+        {"name": "近隣地域・補完探索", "domains": None,
+         "focus": "検索地点の周辺市区町村、駅周辺の地区イベント、学校公開行事や地域スポーツ、商店街、文化祭を追加探索。前述の情報源だけに偏らない。"},
+    ]
+
+
+def _events_source_quality_v571(url):
+    """Prefer direct official announcements when duplicates are found."""
+    host = (urlparse(str(url or "")).hostname or "").lower().removeprefix("www.")
+    if host.endswith((".lg.jp", ".go.jp", ".tokyo.jp")) or host in {
+        "gotokyo.org", "tokyo-sports.or.jp"}:
+        return 3
+    if host in {"iko-yo.net", "walkerplus.com", "peatix.com", "asoview.com",
+                "eventregist.com", "sportsentry.ne.jp", "runnet.jp", "moshicom.com"}:
+        return 1
+    return 2
+
+
+def _events_prefilter_v571(rows, *, day, sources):
+    """Independent citation/date gate and pre-geocoding duplicate reduction."""
+    unique = {}
+    sought = date.fromisoformat(day)
+    for raw in list(rows or [])[:150]:
+        if not isinstance(raw, dict):
+            continue
+        key = _events_url_key_v570(raw.get("source_url"))
+        if not key or key not in sources:
+            continue
+        try:
+            start = date.fromisoformat(str(raw.get("start_date") or ""))
+            end = date.fromisoformat(str(raw.get("end_date") or raw.get("start_date") or ""))
+            if not start <= sought <= end or (end-start).days > 90:
+                continue
+        except (ValueError, TypeError):
+            continue
+        title = re.sub(r"\W+", "", unicodedata.normalize("NFKC", str(raw.get("title") or "")).casefold())
+        venue = re.sub(r"\W+", "", unicodedata.normalize("NFKC", str(raw.get("venue") or "")).casefold())
+        if not title or not venue:
+            continue
+        identity = (title, venue, str(start))
+        coords = raw.get("latitude") is not None and raw.get("longitude") is not None
+        quality = (int(coords), _events_source_quality_v571(raw.get("source_url")),
+                   int(bool(raw.get("description"))))
+        old = unique.get(identity)
+        if old is None or quality > old[0]:
+            unique[identity] = (quality, dict(raw))
+    # Prioritize rows already carrying coordinates; venue geocoding is deliberately bounded.
+    return [row for _, row in sorted(unique.values(), key=lambda x:x[0], reverse=True)][:120]
+
+
 def _events_normalize_v570(items, *, day, category, lat, lon, radius_km, sources):
-    dedup = {}
-    for raw in list(items or [])[:40]:
+    dedup = []
+    for raw in list(items or [])[:150]:
         event = _events_validate_one_v570(raw, day=day, category=category, lat=lat,
                                           lon=lon, radius_km=radius_km, sources=sources)
         if event is None:
             continue
         title_key = re.sub(r"\W+", "", unicodedata.normalize("NFKC", event["title"]).casefold())
-        identity = (title_key, event["start_date"])
-        if identity not in dedup or event["distance_m"] < dedup[identity]["distance_m"]:
-            dedup[identity] = event
-    return sorted(dedup.values(), key=lambda e: (e["distance_m"], e["time"] or "99:99", e["title"]))[:EVENT_SEARCH_MAX_PER_CATEGORY_V570]
+        same = None
+        for i, (prior_key, prior) in enumerate(dedup):
+            if title_key == prior_key and event["start_date"] == prior["start_date"]:
+                if _nearby_haversine_m(event["latitude"], event["longitude"],
+                                       prior["latitude"], prior["longitude"]) <= 300:
+                    same = i
+                    break
+        if same is None:
+            dedup.append((title_key, event))
+        else:
+            existing = dedup[same][1]
+            prefer_new = (_events_source_quality_v571(event["source_url"]), bool(event["description"])) > (
+                _events_source_quality_v571(existing["source_url"]), bool(existing["description"]))
+            if prefer_new:
+                dedup[same] = (title_key, event)
+    return sorted((event for _, event in dedup),
+                  key=lambda e:(e["distance_m"], e["time"] or "99:99", e["title"]))[:EVENT_SEARCH_MAX_PER_CATEGORY_V570]
+
+
+# Limit concurrent paid searches across categories/sessions, even if tabs switch quickly.
+_events_web_search_semaphore_v571 = threading.BoundedSemaphore(3)
+
+
+def _events_search_one_source_v571(plan, *, day, category, coarse_lat, coarse_lon, radius_km, place_label):
+    """One real hosted web search constrained to a named publisher family."""
+    from openai import OpenAI
+    domains = plan.get("domains")
+    tool = {"type": "web_search", "search_context_size": "medium",
+            "user_location": {"type": "approximate", "country": "JP"}}
+    if domains:
+        tool["filters"] = {"allowed_domains": list(domains)}
+    prompt = (
+        f"日本時間の{day}当日に実際に開催される日本の{category}イベントをウェブ検索してください。\n"
+        f"検索地点：{place_label}付近（概略座標 {coarse_lat:.2f}, {coarse_lon:.2f}）、半径{radius_km}km。\n"
+        f"対象：{EVENT_SEARCH_CATEGORIES_V570[category]}。\n"
+        f"今回の情報源：{plan['name']}。探し方：{plan['focus']}\n"
+        "対象地域を実際に検索して、開催日・会場・イベント名称が掲載されたイベントごとのページを確認すること。"
+        "検索元が開催予定日でなく『申込締切日』や『記事公開日』を示しているだけなら採用しない。"
+        "当日開催・期間開催中のみ。毎日同じ常設施設や常設展示、イベントでない通常営業、終了済み、"
+        "中止、オンラインのみ、遠方、子供不可は除外。掲載が不確かなものは書かない。"
+        "開始時刻が不明なら空文字、会場座標がページ等から確認できないならnull。座標は作らない。"
+        "各候補のsource_urlは今回ウェブ検索して開いた実際のイベント個別案内ページのhttps URLにする。"
+        "同じ候補を繰り返さず最大14件。0件でもよい。推測で埋めない。"
+        "JSONだけで出力：{\"events\":[{\"title\":...,\"venue\":...,\"address\":...,"
+        "\"start_date\":\"YYYY-MM-DD\",\"end_date\":\"YYYY-MM-DD\",\"time\":\"HH:MM\","
+        "\"description\":...,\"latitude\":null,\"longitude\":null,\"source_url\":...}]}。"
+    )
+    try:
+        with _events_web_search_semaphore_v571:
+            client = OpenAI(api_key=OPENAI_API_KEY, timeout=45.0, max_retries=0)
+            response = client.responses.create(
+                model=EVENT_SEARCH_MODEL_V570, tools=[tool], tool_choice="required",
+                include=["web_search_call.action.sources"], input=prompt,
+                max_output_tokens=4200, store=False,
+            )
+        sources = _events_source_urls_v570(response)
+        payload = _events_decode_json_v570(getattr(response, "output_text", ""))
+        candidates = []
+        for row in list(payload.get("events") or [])[:30]:
+            if isinstance(row, dict) and _events_url_key_v570(row.get("source_url")) in sources:
+                candidates.append(row)
+        return {"name": plan["name"], "items": candidates, "sources": sources, "failed": False}
+    except Exception:
+        return {"name": plan["name"], "items": [], "sources": set(), "failed": True}
 
 
 def _events_fetch_category_v570(day, category, latitude, longitude, radius_km, place_label):
-    """One bounded hosted web search; never fabricate results or claim venue opening hours."""
+    """Five independent source families, one merged verified category result."""
     if not OPENAI_API_KEY:
         return {"items": [], "error": "OPENAI_API_KEY が未設定のためイベント検索を利用できません。", "checked_at": ""}
-    from openai import OpenAI
+    if category not in EVENT_SEARCH_CATEGORIES_V570:
+        return {"items": [], "error": "不明なカテゴリです。", "checked_at": ""}
+    coarse_lat, coarse_lon = round(float(latitude), 2), round(float(longitude), 2)
     area = str(place_label or "日本").strip()[:65]
-    # Disclose only an approximate area, not precise personal coordinates, to search.
-    coarse_lat = round(float(latitude), 2)
-    coarse_lon = round(float(longitude), 2)
-    prompt = (
-        f"日本時間の今日 {day} に実際に開催される日本の地域イベントを調べてください。\n"
-        f"検索場所：{area}付近（概略座標 {coarse_lat:.2f}, {coarse_lon:.2f}、半径{radius_km}km）。\n"
-        f"カテゴリー：{category}。対象例：{EVENT_SEARCH_CATEGORIES_V570[category]}。\n"
-        "必ず最新のWEB検索を使い、実在するイベントの個別案内ページを確認すること。"
-        "開催日が当日を含むイベントだけにしてください（期間開催の企画も可）。"
-        "主催者・公式イベント案内・施設イベント告知・スポーツ団体・自治体等の一次情報を優先。"
-        "通年営業施設や常設展示そのもの、開催日不明、オンラインのみ、遠方、無関係のカテゴリは除外。"
-        "会場の緯度経度が確認できなければ null にすること。GPS座標は推測で創作しない。"
-        "こども・家族で参加・観戦しやすいものを優先、ただし年齢制限があるものは勧めない。"
-        "本当に確認できた分のみ、最大15件。10件に不足しても架空イベントで埋めないこと。"
-        "出力は説明やMarkdownなしで、JSONオブジェクトの events 配列だけ。"
-        "各要素のキー：title,venue,address,start_date,end_date,time,description,latitude,longitude,source_url。"
-        "日付はYYYY-MM-DD、timeはHH:MMまたは空文字、緯度経度は数値またはnull。"
-        "source_urlは実際にウェブ検索で参照した当該イベントの掲載ページの完全なhttps URL。"
-    )
-    try:
-        client = OpenAI(api_key=OPENAI_API_KEY, timeout=55.0, max_retries=0)
-        response = client.responses.create(
-            model=EVENT_SEARCH_MODEL_V570,
-            tools=[{"type": "web_search", "search_context_size": "medium",
-                    "user_location": {"type": "approximate", "country": "JP"}}],
-            tool_choice="required", include=["web_search_call.action.sources"],
-            input=prompt, max_output_tokens=4500, store=False,
-        )
-        sources = _events_source_urls_v570(response)
-        payload = _events_decode_json_v570(getattr(response, "output_text", ""))
-        checked_rows = _events_geocode_missing_v570(payload.get("events"), day=day, category=category,
-                                                      lat=latitude, lon=longitude, radius_km=radius_km, sources=sources)
-        items = _events_normalize_v570(checked_rows, day=day, category=category,
-                                      lat=latitude, lon=longitude, radius_km=radius_km, sources=sources)
-        # Distinguish an actual empty search from unsupported / missing search sources.
-        error = "" if sources else "検索結果の出典を確認できませんでした。しばらくして再検索してください。"
-        return {"items": items, "error": error, "checked_at": datetime.now(ZoneInfo(APP_TIMEZONE)).strftime("%H:%M")}
-    except Exception as exc:
-        # Never surface credentials, raw API payloads, or query coordinates in errors.
-        return {"items": [], "error": "イベント情報を取得できませんでした。通信状態または検索API設定を確認してください。",
-                "detail_type": type(exc).__name__, "checked_at": ""}
+    plans = _events_source_plans_v571(category, latitude, longitude)
+    results = []
+    # Background event job only. Bounded parallel searches never delay Home or GPS.
+    with ThreadPoolExecutor(max_workers=3, thread_name_prefix="burari-event-web") as pool:
+        futures = [pool.submit(_events_search_one_source_v571, plan,
+                               day=day, category=category, coarse_lat=coarse_lat,
+                               coarse_lon=coarse_lon, radius_km=radius_km,
+                               place_label=area) for plan in plans]
+        for future in futures:
+            try:
+                results.append(future.result())
+            except Exception:
+                results.append({"items": [], "sources": set(), "failed": True})
+
+    cited_rows, sources = [], set()
+    failed_count = sum(bool(result.get("failed")) for result in results)
+    for result in results:
+        original_sources = set(result.get("sources") or ())
+        sources.update(original_sources)
+        for row in result.get("items") or []:
+            # Check citation against THAT source pass, never just the combined union.
+            if _events_url_key_v570(row.get("source_url")) in original_sources:
+                cited_rows.append(row)
+
+    checked = _events_geocode_missing_v570(cited_rows, day=day, category=category,
+                                             lat=latitude, lon=longitude,
+                                             radius_km=radius_km, sources=sources)
+    items = _events_normalize_v570(checked, day=day, category=category,
+                                   lat=latitude, lon=longitude, radius_km=radius_km,
+                                   sources=sources)
+    source_domains = sorted({(urlparse(e["source_url"]).hostname or "").lower().removeprefix("www.")
+                             for e in items if e.get("source_url")})
+    if failed_count == len(plans):
+        error = "検索元へのアクセスに失敗しました。しばらくして再検索してください。"
+    elif not sources:
+        error = "検索した情報源で出典を確認できませんでした。時間をおいて再検索してください。"
+    else:
+        error = ""  # individual-source failures are advisory; valid results remain usable.
+    return {"items": items, "error": error,
+            "source_domains": source_domains, "searched_source_count": len({s.split('/')[0] for s in sources}),
+            "search_passes": len(plans), "failed_passes": failed_count,
+            "checked_at": datetime.now(ZoneInfo(APP_TIMEZONE)).strftime("%H:%M")}
 
 
 @st.cache_resource(show_spinner=False)
@@ -34655,6 +34801,9 @@ def _events_result_panel_v570():
     else:
         checked_at = str(result.get("checked_at") or "")
         st.caption(f"{category} {len(items)}件／{radius_km}km以内（距離は会場座標からの概算）" + (f"・{checked_at}確認" if checked_at else ""))
+        domains = list(result.get("source_domains") or [])
+        if domains:
+            st.caption(f"掲載元 {len(domains)}サイト：" + "、".join(domains[:6]) + (" ほか" if len(domains) > 6 else ""))
         for index, item in enumerate(items, 1):
             with st.container(border=True):
                 st.markdown(f"**{index}. {item['title']}**")
