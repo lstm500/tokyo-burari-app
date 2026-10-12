@@ -44,7 +44,7 @@ def _app_css_v473(markup, **_ignored):
 # Review menu-only update: 2026-09-19 JST
 GENERATED_UPDATE_JST = "2026-09-19T14:54:38+09:00"
 
-APP_BUILD = "v574"
+APP_BUILD = "v576"
 # v572: Repair all-zero event results: retain dated/cited venue-unlocated entries as explicitly unverified-distance, add source/failure diagnostics and short negative cache.
 # v571: Expand event discovery to five separately sourced, API-grounded web-search passes
 # (local government/tourism, venue/organizer, category specialists, family/event portals,
@@ -34323,6 +34323,10 @@ EVENT_SEARCH_CATEGORIES_V570 = {
     "その他": "地域のお祭り、マルシェ、科学イベント、ワークショップ、地域行事",
 }
 EVENT_SEARCH_MAX_PER_CATEGORY_V570 = 10
+# v576: 「一覧」 is a category selector, not a display mode. It reuses the three
+# existing category futures/cache entries; no extra all-category paid search.
+EVENT_SEARCH_ALL_CATEGORY_V576 = "一覧"
+EVENT_SEARCH_ALL_MAX_V576 = EVENT_SEARCH_MAX_PER_CATEGORY_V570 * len(EVENT_SEARCH_CATEGORIES_V570)
 EVENT_SEARCH_CACHE_SECONDS_V570 = 20 * 60
 EVENT_SEARCH_NEGATIVE_CACHE_SECONDS_V572 = 90
 # v573: Expand publisher coverage adaptively, not on Home or on unrelated pages.
@@ -35068,8 +35072,120 @@ def _events_job_v570(day, category, location, radius_km, *, refresh=False):
 
 
 
-def _events_render_list_v574(items, day):
-    """Compact readable ten-row list with source links that work in Android WebView."""
+def _events_selection_v576():
+    """The combined 「一覧」 tab lives above the three original category tabs."""
+    selected = str(st.session_state.get("_events_category_v570") or "スポーツ")
+    if selected == EVENT_SEARCH_ALL_CATEGORY_V576 or selected in EVENT_SEARCH_CATEGORIES_V570:
+        return selected
+    return "スポーツ"
+
+
+def _events_pick_all_v576():
+    """Combined-category button opens the consolidated list by default."""
+    st.session_state["_events_category_v570"] = EVENT_SEARCH_ALL_CATEGORY_V576
+    st.session_state["_events_view_v574"] = "リスト"
+
+
+def _events_futures_v576(day, selection, location, radius_km, *, refresh=False):
+    """Reuse the usual category caches; fetch only categories not already cached."""
+    categories = (list(EVENT_SEARCH_CATEGORIES_V570)
+                  if selection == EVENT_SEARCH_ALL_CATEGORY_V576 else [selection])
+    return {cat: _events_job_v570(day, cat, location, radius_km, refresh=refresh)
+            for cat in categories}
+
+
+def _events_combine_v576(results):
+    """One chronological, category-labelled list, capped at ten per category.
+
+    An event found by two categories is shown once unless the start times show
+    separate performances. Missing distance stays unknown; never estimate it.
+    """
+    combined = []
+    for category in EVENT_SEARCH_CATEGORIES_V570:
+        data = results.get(category) or {}
+        for original in list(data.get("items") or [])[:EVENT_SEARCH_MAX_PER_CATEGORY_V570]:
+            event = dict(original)
+            event["category"] = category
+            title_key = re.sub(r"\W+", "", unicodedata.normalize("NFKC", str(event.get("title") or "")).casefold())
+            venue_key = re.sub(r"\W+", "", unicodedata.normalize("NFKC", str(event.get("venue") or "")).casefold())
+            if not title_key or not venue_key:
+                continue
+            time_value = str(event.get("start_time") or event.get("time") or "")
+            collision = None
+            for index, prior in enumerate(combined):
+                if (prior["_dedup_title"] != title_key or prior["_dedup_venue"] != venue_key or
+                        prior.get("start_date") != event.get("start_date")):
+                    continue
+                prior_time = str(prior.get("start_time") or prior.get("time") or "")
+                if time_value and prior_time and time_value != prior_time:
+                    continue  # distinct sessions of the same event
+                collision = index
+                break
+            event["_dedup_title"] = title_key
+            event["_dedup_venue"] = venue_key
+            if collision is None:
+                combined.append(event)
+            else:
+                earlier = combined[collision]
+                quality_new = (event.get("distance_m") is not None,
+                               _events_source_quality_v571(event.get("source_url")),
+                               bool(event.get("start_time")), bool(event.get("description")))
+                quality_old = (earlier.get("distance_m") is not None,
+                               _events_source_quality_v571(earlier.get("source_url")),
+                               bool(earlier.get("start_time")), bool(earlier.get("description")))
+                winner = dict(event) if quality_new > quality_old else dict(earlier)
+                loser = earlier if quality_new > quality_old else event
+                for field in ("start_time", "end_time", "time", "time_label", "description"):
+                    if not winner.get(field) and loser.get(field):
+                        winner[field] = loser[field]
+                combined[collision] = winner
+    for event in combined:
+        event.pop("_dedup_title", None)
+        event.pop("_dedup_venue", None)
+    def order(item):
+        clock = str(item.get("start_time") or item.get("time") or "")
+        if not re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", clock):
+            clock = "99:99"  # Unpublished start time is sorted after known starts.
+        distance = item.get("distance_m")
+        return (clock, distance is None, distance if distance is not None else float("inf"),
+                str(item.get("title") or ""))
+    combined.sort(key=order)
+    combined = combined[:EVENT_SEARCH_ALL_MAX_V576]
+    errors = [f"{cat}：{str((results.get(cat) or {}).get('error') or '')}"
+              for cat in EVENT_SEARCH_CATEGORIES_V570 if (results.get(cat) or {}).get("error")]
+    source_domains = sorted({(urlparse(str(item.get("source_url") or "")).hostname or "").lower().removeprefix("www.")
+                             for item in combined if item.get("source_url")})
+    return {
+        "items": combined, "error": "／".join(errors),
+        "source_domains": source_domains, "searched_source_count": len(source_domains),
+        "search_passes": sum(int((r or {}).get("search_passes") or 0) for r in results.values()),
+        "failed_passes": sum(int((r or {}).get("failed_passes") or 0) for r in results.values()),
+        "raw_count": sum(int((r or {}).get("raw_count") or 0) for r in results.values()),
+        "cited_count": sum(int((r or {}).get("cited_count") or 0) for r in results.values()),
+        "dated_count": sum(int((r or {}).get("dated_count") or 0) for r in results.values()),
+        "checked_at": max((str((r or {}).get("checked_at") or "") for r in results.values()), default=""),
+        "category_counts": {cat: sum(event.get("category") == cat for event in combined)
+                            for cat in EVENT_SEARCH_CATEGORIES_V570},
+    }
+
+
+def _events_selected_results_v576(futures, selection):
+    """A category error never suppresses a different category's results."""
+    results = {}
+    for cat, future in futures.items():
+        if not future.done():
+            return None
+        try:
+            results[cat] = future.result()
+        except Exception:
+            results[cat] = {"items": [], "error": f"{cat}の検索に失敗しました。更新をお試しください。"}
+    if selection == EVENT_SEARCH_ALL_CATEGORY_V576:
+        return _events_combine_v576(results)
+    return results[selection]
+
+
+def _events_render_list_v574(items, day, *, show_categories=False):
+    """Compact readable list with source links that work in Android WebView."""
     rows = []
     for index, event in enumerate(items, 1):
         title = html.escape(str(event.get("title") or ""))
@@ -35079,10 +35195,14 @@ def _events_render_list_v574(items, day):
         distance = event.get("distance_m")
         distance_text = f"約{distance / 1000:.1f}km" if distance is not None else "距離未確認"
         url = html.escape(str(event.get("source_url") or ""), quote=True)
+        category_text = html.escape(str(event.get("category") or "")) if show_categories else ""
+        category_html = (f'<div class="events-list-category-v576">{category_text}</div>'
+                         if category_text else "")
         rows.append(
             '<div class="events-list-row-v574" role="listitem">'
             f'<div class="events-list-number-v574">{index}</div>'
             '<div class="events-list-main-v574">'
+            f'{category_html}'
             f'<a href="{url}" target="_self" rel="noopener noreferrer" class="events-list-title-v574">{title}</a>'
             f'<div class="events-list-time-v574">{date_text}　{time_text}</div>'
             f'<div class="events-list-meta-v574">{venue} ／ {html.escape(distance_text)}</div>'
@@ -35094,6 +35214,7 @@ def _events_render_list_v574(items, day):
 .events-list-row-v574:last-child{border-bottom:0}
 .events-list-number-v574{display:flex;align-items:center;justify-content:center;flex:0 0 27px;height:27px;border-radius:50%;background:#168c73;color:#fff;font-weight:800;font-size:12px}
 .events-list-main-v574{min-width:0;flex:1}
+.events-list-category-v576{font-size:12px;font-weight:750;color:#116d58;margin-bottom:3px}
 .events-list-title-v574{font-size:15px;font-weight:800;line-height:1.45;color:#1765a1!important;text-decoration:underline;text-decoration-thickness:1px;overflow-wrap:anywhere}
 .events-list-time-v574{font-size:13px;font-weight:730;margin-top:5px;line-height:1.4;color:var(--st-text-color,#28313b)}
 .events-list-meta-v574{font-size:12px;color:var(--st-text-color,#28313b);opacity:.75;margin-top:3px;line-height:1.35;overflow-wrap:anywhere}
@@ -35120,6 +35241,7 @@ def _events_render_map_v574(items, location):
         points.append({
             "index": index, "lat": lat, "lon": lon,
             "title": str(event.get("title") or "")[:150],
+            "category": str(event.get("category") or "")[:20],
             "venue": str(event.get("venue") or "")[:130],
             "time": str(event.get("time_label") or "時間未掲載")[:100],
         })
@@ -35152,7 +35274,7 @@ const originIcon=L.divIcon({className:'',html:'<div class="event-origin-v574"><s
 L.marker(data.center,{icon:originIcon,zIndexOffset:2000}).addTo(map).bindPopup(escapeText(data.origin_label));
 (data.points||[]).forEach(e=>{bounds.extend([e.lat,e.lon]);
   const pin=L.divIcon({className:'',html:'<div class="event-pin-v574"><b>'+Number(e.index)+'</b></div>',iconSize:[33,33],iconAnchor:[16,31]});
-  L.marker([e.lat,e.lon],{icon:pin}).addTo(map).bindPopup('<div class="event-popup-v574"><b>'+escapeText(e.index+'. '+e.title)+'</b><div>'+escapeText(e.time)+'</div><div>'+escapeText(e.venue)+'</div></div>');
+  L.marker([e.lat,e.lon],{icon:pin}).addTo(map).bindPopup('<div class="event-popup-v574"><b>'+escapeText(e.index+'. '+e.title)+'</b><div>'+escapeText(e.category)+'　'+escapeText(e.time)+'</div><div>'+escapeText(e.venue)+'</div></div>');
 });
 map.fitBounds(bounds.pad(.12),{maxZoom:15});setTimeout(()=>map.invalidateSize(),150);
 })();</script></body></html>'''
@@ -35166,7 +35288,8 @@ map.fitBounds(bounds.pad(.12),{maxZoom:15});setTimeout(()=>map.invalidateSize(),
 def _events_render_details_v574(items, day, category):
     for index, item in enumerate(items, 1):
         with st.container(border=True):
-            st.markdown(f"**{index}. {item['title']}**")
+            category_prefix = (f"【{item.get('category', '')}】 " if category == EVENT_SEARCH_ALL_CATEGORY_V576 else "")
+            st.markdown(f"**{index}. {category_prefix}{item['title']}**")
             start_date = str(item.get("start_date") or "")
             end_date = str(item.get("end_date") or "")
             selected_label = _events_display_day_v574(day)
@@ -35212,22 +35335,22 @@ def _events_result_panel_v570():
     if not isinstance(location, dict):
         st.info("現在地を取得するか、駅名・地名を入力すると、指定日のイベントを検索します。")
         return
-    category = str(st.session_state.get("_events_category_v570") or "スポーツ")
+    selection = _events_selection_v576()
     radius_km = int(st.session_state.get("_events_radius_v570") or 15)
-    future = _events_job_v570(day, category, location, radius_km)
-    if not future.done():
-        st.info(f"{_events_display_day_v574(day)}の{category}イベントを検索中です。別のカテゴリにも切り替えられます。")
+    futures = _events_futures_v576(day, selection, location, radius_km)
+    result = _events_selected_results_v576(futures, selection)
+    if result is None:
+        done = sum(future.done() for future in futures.values())
+        st.info(f"{_events_display_day_v574(day)}の{selection}イベントを検索中です（{done}/{len(futures)}カテゴリ完了）。")
         return
-    try:
-        result = future.result()
-    except Exception:
-        result = {"items": [], "error": "イベント検索が完了しませんでした。もう一度お試しください。"}
     if result.get("error"):
         st.warning(str(result["error"]))
-    items = list(result.get("items") or [])[:EVENT_SEARCH_MAX_PER_CATEGORY_V570]
+    max_items = (EVENT_SEARCH_ALL_MAX_V576 if selection == EVENT_SEARCH_ALL_CATEGORY_V576
+                 else EVENT_SEARCH_MAX_PER_CATEGORY_V570)
+    items = list(result.get("items") or [])[:max_items]
     if not items:
         if not result.get("error"):
-            st.info(f"{_events_display_day_v574(day)}の{category}イベントを確認できませんでした。『最新情報に更新』で再検索できます。")
+            st.info(f"{_events_display_day_v574(day)}の{selection}イベントを確認できませんでした。『最新情報に更新』で再検索できます。")
         if result.get("search_passes"):
             st.caption("検索状況：" + str(result.get("search_passes")) + "系統、候補 " +
                        str(result.get("raw_count") or 0) + "件、出典照合 " +
@@ -35238,8 +35361,11 @@ def _events_result_panel_v570():
         checked_at = str(result.get("checked_at") or "")
         located = sum(e.get("distance_m") is not None for e in items)
         unlocated = len(items) - located
-        st.caption(f"{category} {len(items)}件／距離確認済み{located}件・会場位置未確認{unlocated}件" +
+        st.caption(f"{selection} {len(items)}件／距離確認済み{located}件・会場位置未確認{unlocated}件" +
                    (f"・{checked_at}確認" if checked_at else ""))
+        if selection == EVENT_SEARCH_ALL_CATEGORY_V576:
+            counts = result.get("category_counts") or {}
+            st.caption("内訳：" + " ／ ".join(f"{cat} {counts.get(cat, 0)}件" for cat in EVENT_SEARCH_CATEGORIES_V570))
         st.caption(f"検索 {int(result.get('search_passes') or 0)}系統／参照元 "
                    f"{int(result.get('searched_source_count') or 0)}サイト")
         if unlocated:
@@ -35248,14 +35374,14 @@ def _events_result_panel_v570():
         if domains:
             st.caption(f"掲載元 {len(domains)}サイト：" + "、".join(domains[:6]) + (" ほか" if len(domains) > 6 else ""))
         mode = str(st.session_state.get("_events_view_v574") or "詳細")
-        if mode == "一覧":
-            _events_render_list_v574(items, day)
+        if mode in ("リスト", "一覧"):
+            _events_render_list_v574(items, day, show_categories=(selection == EVENT_SEARCH_ALL_CATEGORY_V576))
         elif mode == "地図":
             _events_render_map_v574(items, location)
         else:
-            _events_render_details_v574(items, day, category)
-    if st.button("最新情報に更新", use_container_width=True, key=f"event_refresh_v570_{category}"):
-        _events_job_v570(day, category, location, radius_km, refresh=True)
+            _events_render_details_v574(items, day, selection)
+    if st.button("最新情報に更新", use_container_width=True, key=f"event_refresh_v570_{selection}"):
+        _events_futures_v576(day, selection, location, radius_km, refresh=True)
         st.rerun(scope="app")
 
 
@@ -35266,13 +35392,14 @@ def _events_wait_for_result_v574():
     if not isinstance(location, dict):
         return
     day = _events_selected_date_v574().isoformat()
-    category = str(st.session_state.get("_events_category_v570") or "スポーツ")
+    selection = _events_selection_v576()
     radius_km = int(st.session_state.get("_events_radius_v570") or 15)
-    future = _events_job_v570(day, category, location, radius_km)
-    if future.done():
+    futures = _events_futures_v576(day, selection, location, radius_km)
+    done = sum(future.done() for future in futures.values())
+    if done == len(futures):
         st.rerun(scope="app")
     else:
-        st.info(f"{_events_display_day_v574(day)}の{category}イベントを検索中です。")
+        st.info(f"{_events_display_day_v574(day)}の{selection}イベントを検索中です（{done}/{len(futures)}カテゴリ完了）。")
 
 
 if hasattr(st, "fragment"):
@@ -35352,24 +35479,31 @@ def page_events_v570():
         chosen_radius = st.selectbox("検索範囲", radii, index=radii.index(current_radius) if current_radius in radii else 2,
                                      format_func=lambda x: f"半径{x}km", key="_events_radius_v570")
         st.markdown("**表示するカテゴリ**")
+        selected = _events_selection_v576()
+        st.button("一覧", use_container_width=True,
+                  type="primary" if selected == EVENT_SEARCH_ALL_CATEGORY_V576 else "secondary",
+                  key="events_category_button_v576_all", on_click=_events_pick_all_v576)
         cols = st.columns(3, gap="small")
-        selected = str(st.session_state.get("_events_category_v570") or "スポーツ")
         for col, cat in zip(cols, EVENT_SEARCH_CATEGORIES_V570):
             with col:
                 st.button(cat, use_container_width=True, type="primary" if selected == cat else "secondary",
                           key=f"events_category_button_v570_{cat}",
                           on_click=lambda target=cat: st.session_state.update({"_events_category_v570": target}))
-        st.radio("表示形式", ["詳細", "一覧", "地図"], horizontal=True, key="_events_view_v574")
-        # Re-render only while a paid search is running. The completed display is static
-        # until a user changes date, category, radius, location or display mode.
-        future = _events_job_v570(_events_selected_date_v574().isoformat(),
-                                  str(st.session_state.get("_events_category_v570") or "スポーツ"),
-                                  location, int(st.session_state.get("_events_radius_v570") or 15))
-        if future.done():
+        # Older deployments used 「一覧」 for the view mode; that name is now
+        # reserved for the new combined-category button.
+        if st.session_state.get("_events_view_v574") == "一覧":
+            st.session_state["_events_view_v574"] = "リスト"
+        st.radio("表示形式", ["詳細", "リスト", "地図"], horizontal=True, key="_events_view_v574")
+        # Only selected categories start jobs. 「一覧」 reuses all three cached
+        # category results; changing display mode never launches a new search.
+        futures = _events_futures_v576(_events_selected_date_v574().isoformat(),
+                                       _events_selection_v576(), location,
+                                       int(st.session_state.get("_events_radius_v570") or 15))
+        if all(future.done() for future in futures.values()):
             _events_result_panel_v570()
         else:
             _events_wait_fragment_v574()
-    st.caption("開催状況・参加条件・予約の要否は、必ず掲載元の案内で確認してください。検索はカテゴリを開いた時だけ行い、結果を約20分再利用します。")
+    st.caption("開催状況・参加条件・予約の要否は、必ず掲載元の案内で確認してください。「一覧」は3カテゴリを統合表示します。各カテゴリの検索結果は約20分再利用します。")
 
 
 def page_home():
