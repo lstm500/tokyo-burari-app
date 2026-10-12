@@ -44,7 +44,7 @@ def _app_css_v473(markup, **_ignored):
 # Review menu-only update: 2026-09-19 JST
 GENERATED_UPDATE_JST = "2026-09-19T14:54:38+09:00"
 
-APP_BUILD = "v572"
+APP_BUILD = "v574"
 # v572: Repair all-zero event results: retain dated/cited venue-unlocated entries as explicitly unverified-distance, add source/failure diagnostics and short negative cache.
 # v571: Expand event discovery to five separately sourced, API-grounded web-search passes
 # (local government/tourism, venue/organizer, category specialists, family/event portals,
@@ -60,6 +60,7 @@ APP_BUILD = "v572"
 # their timetable must be changed in that native source, not in this Streamlit file.
 # v562: Gallery videos larger than 6 MiB use 6 MiB TUS resumable chunks with signed URLs; a bounded XHR PUT remains as fallback. Show progress, permit cancellation and deadline failures; photo/camera/GPS/road pipelines are unchanged.
 # v573: Expand today's event sources with Tokyo official facilities, local event directories and organizer/ticketing calendars; extra searches run only when the initial results are insufficient. Preserve date/source/radius checks and all other pages.
+# v574: Add future date picker, sourced start/end schedules and optional compact list / map modes to Events only. Keep existing detailed cards, 5+3 sources, citation/date/geo gates and per-date caching.
 # v560: Rebuild green-gap closure as an iterative, verified network process. Existing UI is preserved; only progress wording distinguishes fully verified completion from residual unresolved gaps.
 # v557: Rebuild replay-movie family sharing around native Streamlit buttons. Share/unshare writes are read back from Supabase before success is shown; recipient cache is invalidated, while recipient discovery/media preparation remains Review-only background work.
 # v556: After Review is opened, discover family-shared replay movies and prepare their playback media in the same bounded background pipeline. Photo/voice signed URLs, current feeling metadata and replay item payloads are prepared before a received movie becomes playable, so pressing Play performs no blocking media lookup. No Home/startup recipient query is added.
@@ -34330,6 +34331,74 @@ EVENT_SEARCH_SUPPLEMENT_MIN_SITES_V573 = 4
 EVENT_SEARCH_SUPPLEMENT_MIN_LOCATED_V573 = 5
 EVENT_SEARCH_MODEL_V570 = str(secret("EVENT_SEARCH_MODEL", "gpt-4.1-mini") or "gpt-4.1-mini")
 
+# v575: Date selection ends one calendar month after today (same day of next month,
+# or that month's last day if there is no matching day). Search/cache keys stay unchanged.
+def _events_last_selectable_day_v575(today):
+    year, month = (today.year + 1, 1) if today.month == 12 else (today.year, today.month + 1)
+    following_month_start = date(year + 1, 1, 1) if month == 12 else date(year, month + 1, 1)
+    last_day = (following_month_start - timedelta(days=1)).day
+    return date(year, month, min(today.day, last_day))
+
+
+def _events_selected_date_v574():
+    value = st.session_state.get("_events_date_v574")
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    if isinstance(value, str):
+        try:
+            return date.fromisoformat(value)
+        except ValueError:
+            pass
+    return now_jst().date()
+
+
+def _events_display_day_v574(day_value):
+    value = day_value if isinstance(day_value, date) else date.fromisoformat(str(day_value))
+    return value.strftime("%Y/%m/%d") + "（" + "月火水木金土日"[value.weekday()] + "）"
+
+
+def _events_clean_clock_v574(value):
+    """Only confirmed local HH:MM clock times are eligible for a public schedule."""
+    raw = unicodedata.normalize("NFKC", str(value or "").strip())
+    match = re.fullmatch(r"([01]?\d|2[0-3]):([0-5]\d)", raw)
+    if not match:
+        return ""
+    return f"{int(match.group(1)):02d}:{match.group(2)}"
+
+
+def _events_schedule_v574(raw):
+    """Use model-sourced explicit times; retain old v573 'time' answer compatibility."""
+    start = _events_clean_clock_v574(raw.get("start_time"))
+    end = _events_clean_clock_v574(raw.get("end_time"))
+    legacy = unicodedata.normalize("NFKC", str(raw.get("time") or ""))[:80]
+    clocks = re.findall(r"(?<!\d)(?:[01]?\d|2[0-3]):[0-5]\d", legacy)
+    if not start and clocks:
+        start = _events_clean_clock_v574(clocks[0])
+    if not end and len(clocks) > 1:
+        end = _events_clean_clock_v574(clocks[1])
+    if start and end:
+        label = f"{start}～{end}"
+    elif start:
+        label = f"{start}開始（終了時刻未掲載）"
+    elif end:
+        label = f"終了 {end}（開始時刻未掲載）"
+    else:
+        label = "時間未掲載"
+    return {"time": start, "start_time": start, "end_time": end, "time_label": label}
+
+
+def _events_day_evidence_v574(raw, sought):
+    """When a particular occurrence date is provided, reject a different occurrence."""
+    event_day = str(raw.get("event_date") or "").strip()
+    if not event_day:
+        return True  # v573 older search rows may carry only a confirmed date range
+    try:
+        return date.fromisoformat(event_day) == date.fromisoformat(str(sought))
+    except ValueError:
+        return False
+
 
 def _events_url_key_v570(value):
     """Stable, strict source link identity: never trust an uncited AI event."""
@@ -34538,7 +34607,7 @@ def _events_validate_one_v570(raw, *, day, category, lat, lon, radius_km, source
         sought = date.fromisoformat(day)
     except (TypeError, ValueError):
         return None
-    if not start <= sought <= end or (end - start).days > 90:
+    if not start <= sought <= end or (end - start).days > 90 or not _events_day_evidence_v574(raw, day):
         return None
     try:
         plat = float(raw.get("latitude"))
@@ -34550,13 +34619,11 @@ def _events_validate_one_v570(raw, *, day, category, lat, lon, radius_km, source
     distance_m = _nearby_haversine_m(lat, lon, plat, plon)
     if not math.isfinite(distance_m) or distance_m > radius_km * 1000.0:
         return None
-    time_text = str(raw.get("time") or "").strip()[:30]
-    if time_text and not re.match(r"^(?:[01]?\d|2[0-3]):[0-5]\d", time_text):
-        time_text = ""
+    schedule = _events_schedule_v574(raw)
     short = re.sub(r"\s+", " ", str(raw.get("description") or "")).strip()[:155]
     return {
         "title": title, "venue": venue, "address": str(raw.get("address") or "").strip()[:180],
-        "start_date": start_day, "end_date": end_day, "time": time_text,
+        "start_date": start_day, "end_date": end_day, **schedule,
         "description": short, "category": category, "source_url": source_url,
         "latitude": plat, "longitude": plon, "distance_m": int(round(distance_m)),
     }
@@ -34579,14 +34646,11 @@ def _events_validate_unlocated_v572(raw, *, day, category, sources):
         begin, finish, sought = date.fromisoformat(start), date.fromisoformat(end), date.fromisoformat(day)
     except (ValueError, TypeError):
         return None
-    if not begin <= sought <= finish or (finish - begin).days > 90:
+    if not begin <= sought <= finish or (finish - begin).days > 90 or not _events_day_evidence_v574(raw, day):
         return None
-    when = str(raw.get("time") or "").strip()[:30]
-    if when and not re.match(r"^(?:[01]?\d|2[0-3]):[0-5]\d", when):
-        when = ""
     return {
         "title": title, "venue": venue, "address": str(raw.get("address") or "").strip()[:180],
-        "start_date": start, "end_date": end, "time": when,
+        "start_date": start, "end_date": end, **_events_schedule_v574(raw),
         "description": re.sub(r"\s+", " ", str(raw.get("description") or "")).strip()[:155],
         "category": category, "source_url": str(raw.get("source_url") or "").strip(),
         "latitude": None, "longitude": None, "distance_m": None,
@@ -34620,7 +34684,7 @@ def _events_source_plans_v571(category, latitude, longitude):
                    if category == "スポーツ" else "美術館・博物館の特別展示、舞台、音楽、伝統芸能、文化施設の個別イベント。"
                    if category == "文化" else "地域祭り、ものづくり、科学体験、街歩き、地域交流イベント。")},
         {"name": "親子・地域イベント情報", "domains": family_domains,
-         "focus": "複数の地域イベント掲載サイトから、本日実施、現地開催の個別イベントページを探索。"},
+         "focus": "複数の地域イベント掲載サイトから、指定日に実施する現地開催の個別イベントページを探索。"},
         {"name": "近隣地域・補完探索", "domains": None,
          "focus": "検索地点の周辺市区町村、駅周辺の地区イベント、学校公開行事や地域スポーツ、商店街、文化祭を追加探索。前述の情報源だけに偏らない。"},
     ]
@@ -34656,7 +34720,7 @@ def _events_supplement_plans_v573(category, latitude, longitude):
          "focus": "会場運営者の公式イベントカレンダーや主催者の告知を探索。申込締切日と開催日を混同しない。"
                   "同じ施設の平常営業・常設展示だけの情報は採用しない。"},
         {"name": "地域ニュース・イベントカレンダー追加", "domains": regional,
-         "focus": "現地の地区名・区市町村名と今日の日付で絞り、地域行事・大会・文化催事を探索。"
+         "focus": "現地の地区名・区市町村名と指定開催日で絞り、地域行事・大会・文化催事を探索。"
                   "全国の人気記事よりも検索地点から近い実施会場の個別開催案内を重視。"},
         {"name": "主催者募集・体験チケット追加", "domains": [
             "livepocket.jp", "kokuchpro.com", "connpass.com", "doorkeeper.jp",
@@ -34709,7 +34773,7 @@ def _events_prefilter_v571(rows, *, day, sources):
         try:
             start = date.fromisoformat(str(raw.get("start_date") or ""))
             end = date.fromisoformat(str(raw.get("end_date") or raw.get("start_date") or ""))
-            if not start <= sought <= end or (end-start).days > 90:
+            if not start <= sought <= end or (end-start).days > 90 or not _events_day_evidence_v574(raw, day):
                 continue
         except (ValueError, TypeError):
             continue
@@ -34717,13 +34781,23 @@ def _events_prefilter_v571(rows, *, day, sources):
         venue = re.sub(r"\W+", "", unicodedata.normalize("NFKC", str(raw.get("venue") or "")).casefold())
         if not title or not venue:
             continue
-        identity = (title, venue, str(start), key)
+        identity = (title, venue, str(start), key, _events_schedule_v574(raw)["start_time"])
         coords = raw.get("latitude") is not None and raw.get("longitude") is not None
         quality = (int(coords), _events_source_quality_v571(raw.get("source_url")),
-                   int(bool(raw.get("description"))))
+                   int(bool(raw.get("description"))),
+                   int(bool(_events_schedule_v574(raw)["start_time"])))
         old = unique.get(identity)
-        if old is None or quality > old[0]:
+        if old is None:
             unique[identity] = (quality, dict(raw))
+        else:
+            # Same title, venue, first date AND cited source: preserve start/end
+            # clocks even if one search pass provides better location metadata.
+            winner = dict(raw) if quality > old[0] else dict(old[1])
+            loser = old[1] if quality > old[0] else raw
+            for field in ("start_time", "end_time", "time"):
+                if not winner.get(field) and loser.get(field):
+                    winner[field] = loser[field]
+            unique[identity] = (max(quality, old[0]), winner)
     # Prioritize rows already carrying coordinates; venue geocoding is deliberately bounded.
     return [row for _, row in sorted(unique.values(), key=lambda x:x[0], reverse=True)][:120]
 
@@ -34744,6 +34818,10 @@ def _events_normalize_v570(items, *, day, category, lat, lon, radius_km, sources
         for i, (prior_title, prior_venue, prior) in enumerate(dedup):
             if title_key != prior_title or event["start_date"] != prior["start_date"]:
                 continue
+            # A separate show/match session at a different confirmed start time
+            # is a distinct event occurrence, not a duplicate to be deleted.
+            if event["start_time"] and prior["start_time"] and event["start_time"] != prior["start_time"]:
+                continue
             if event["distance_m"] is None or prior["distance_m"] is None:
                 if venue_key == prior_venue:
                     same = i
@@ -34763,7 +34841,16 @@ def _events_normalize_v570(items, *, day, category, lat, lon, radius_km, sources
                              _events_source_quality_v571(existing["source_url"]),
                              bool(existing["description"]))
             if new_rank > existing_rank:
-                dedup[same] = (title_key, venue_key, event)
+                chosen, other = dict(event), existing
+            else:
+                chosen, other = dict(existing), event
+            if not chosen["start_time"] and other["start_time"]:
+                chosen["start_time"] = other["start_time"]
+                chosen["time"] = other["time"]
+            if not chosen["end_time"] and other["end_time"]:
+                chosen["end_time"] = other["end_time"]
+            chosen["time_label"] = _events_schedule_v574(chosen)["time_label"]
+            dedup[same] = (title_key, venue_key, chosen)
     return sorted((event for _, _, event in dedup),
                   key=lambda e: (e["distance_m"] is None,
                                  e["distance_m"] if e["distance_m"] is not None else float("inf"),
@@ -34783,22 +34870,29 @@ def _events_search_one_source_v571(plan, *, day, category, coarse_lat, coarse_lo
     if domains:
         tool["filters"] = {"allowed_domains": list(domains)}
     prompt = (
-        f"日本時間の{day}当日に実際に開催される日本の{category}イベントをウェブ検索してください。\n"
+        f"日本時間の指定日 {day} に現地開催予定の日本の{category}イベントをウェブ検索してください。\n"
         f"検索地点：{place_label}付近（概略座標 {coarse_lat:.2f}, {coarse_lon:.2f}）、半径{radius_km}km。\n"
         f"対象：{EVENT_SEARCH_CATEGORIES_V570[category]}。\n"
         f"今回の情報源：{plan['name']}。探し方：{plan['focus']}\n"
         "対象地域を実際に検索して、開催日・会場・イベント名称が掲載されたイベントごとのページを確認すること。"
         "検索元が開催予定日でなく『申込締切日』や『記事公開日』を示しているだけなら採用しない。"
-        "当日開催・期間開催中のみ。毎日同じ常設施設や常設展示、イベントでない通常営業、終了済み、"
+        "指定日の開催が確認できるもののみ。未来の日付なら開催予定を検索すること。"
+        "今日の開催に勝手に読み替えない。単に期間内に入るだけでは不十分で、"
+        "休館日や開催曜日にも注意し、指定日に実際に予定があることを確認する。"
+        "毎日同じ常設施設や常設展示、イベントでない通常営業、指定日には開催されないもの、"
         "中止、オンラインのみ、遠方、子供不可は除外。掲載が不確かなものは書かない。"
-        "開始時刻が不明なら空文字、会場座標がページ等から確認できないならnull。座標は作らない。"
+        "開催予定の開始時刻start_time・終了時刻end_timeを掲載元から個別に確認してHH:MM形式で返す。"
+        "時刻が不明なら各項目を空文字とし、日時を推測しない。開場・受付時刻を開催開始時刻と混同しない。"
+        "期間イベントは指定日の日程・公開時間を確認する。会場座標がページ等から確認できないならnull。座標は作らない。"
         "source_urlには今回のWeb検索結果の参照元URLを正確にコピーする。URLの生成・補完・別URLへの変更はしない。"
         "個別案内が見つからなければ、イベント名と開催日を実際に掲載する一覧のURLでよい。"
         "開催日を確認できない候補は書かない。会場の座標が不明でも候補は残しnullで返す。"
         "同じ候補を繰り返さず最大10件。0件でもよい。推測で埋めない。"
         "JSONだけで出力：{\"events\":[{\"title\":...,\"venue\":...,\"address\":...,"
-        "\"start_date\":\"YYYY-MM-DD\",\"end_date\":\"YYYY-MM-DD\",\"time\":\"HH:MM\","
-        "\"description\":...,\"latitude\":null,\"longitude\":null,\"source_url\":...}]}。"
+        "\"start_date\":\"YYYY-MM-DD\",\"end_date\":\"YYYY-MM-DD\","
+        "\"event_date\":\"" + day + "\",\"start_time\":\"HH:MM or empty\","
+        "\"end_time\":\"HH:MM or empty\",\"description\":...,"
+        "\"latitude\":null,\"longitude\":null,\"source_url\":...}]}。"
     )
     try:
         with _events_web_search_semaphore_v571:
@@ -34946,7 +35040,7 @@ def _events_job_v570(day, category, location, radius_km, *, refresh=False):
     """Account-safe short-lived per-area cache; one in-flight search per category."""
     latitude = float(location["latitude"])
     longitude = float(location["longitude"])
-    key = ("v573", day, category, round(latitude, 2), round(longitude, 2), int(radius_km))
+    key = ("v574", day, category, round(latitude, 2), round(longitude, 2), int(radius_km))
     runtime = _events_runtime_v570()
     now = time.monotonic()
     with runtime["lock"]:
@@ -34973,17 +35067,156 @@ def _events_job_v570(day, category, location, radius_km, *, refresh=False):
         return future
 
 
+
+def _events_render_list_v574(items, day):
+    """Compact readable ten-row list with source links that work in Android WebView."""
+    rows = []
+    for index, event in enumerate(items, 1):
+        title = html.escape(str(event.get("title") or ""))
+        venue = html.escape(str(event.get("venue") or ""))
+        date_text = html.escape(_events_display_day_v574(day))
+        time_text = html.escape(str(event.get("time_label") or "時間未掲載"))
+        distance = event.get("distance_m")
+        distance_text = f"約{distance / 1000:.1f}km" if distance is not None else "距離未確認"
+        url = html.escape(str(event.get("source_url") or ""), quote=True)
+        rows.append(
+            '<div class="events-list-row-v574" role="listitem">'
+            f'<div class="events-list-number-v574">{index}</div>'
+            '<div class="events-list-main-v574">'
+            f'<a href="{url}" target="_self" rel="noopener noreferrer" class="events-list-title-v574">{title}</a>'
+            f'<div class="events-list-time-v574">{date_text}　{time_text}</div>'
+            f'<div class="events-list-meta-v574">{venue} ／ {html.escape(distance_text)}</div>'
+            '</div></div>'
+        )
+    markup = '''<style>
+.events-list-v574{border:1px solid rgba(128,128,128,.22);border-radius:13px;overflow:hidden;margin:.45rem 0 .75rem}
+.events-list-row-v574{display:flex;gap:10px;padding:12px 11px;border-bottom:1px solid rgba(128,128,128,.17);align-items:flex-start}
+.events-list-row-v574:last-child{border-bottom:0}
+.events-list-number-v574{display:flex;align-items:center;justify-content:center;flex:0 0 27px;height:27px;border-radius:50%;background:#168c73;color:#fff;font-weight:800;font-size:12px}
+.events-list-main-v574{min-width:0;flex:1}
+.events-list-title-v574{font-size:15px;font-weight:800;line-height:1.45;color:#1765a1!important;text-decoration:underline;text-decoration-thickness:1px;overflow-wrap:anywhere}
+.events-list-time-v574{font-size:13px;font-weight:730;margin-top:5px;line-height:1.4;color:var(--st-text-color,#28313b)}
+.events-list-meta-v574{font-size:12px;color:var(--st-text-color,#28313b);opacity:.75;margin-top:3px;line-height:1.35;overflow-wrap:anywhere}
+</style>'''
+    _app_css_v473(markup + '<div class="events-list-v574" role="list">' + "".join(rows) + '</div>')
+    st.caption("イベント名を押すと開催元の案内を開きます。会場へのルートは「詳細」表示から確認できます。")
+
+
+def _events_render_map_v574(items, location):
+    """Lazy Leaflet map: show actual search origin and only geographically verified venues."""
+    try:
+        center = [float(location["latitude"]), float(location["longitude"])]
+    except (KeyError, ValueError, TypeError):
+        st.info("検索地点の座標がないため地図を表示できません。")
+        return
+    points = []
+    for index, event in enumerate(items, 1):
+        try:
+            lat, lon = float(event["latitude"]), float(event["longitude"])
+        except (KeyError, ValueError, TypeError):
+            continue
+        if not (math.isfinite(lat) and math.isfinite(lon)):
+            continue
+        points.append({
+            "index": index, "lat": lat, "lon": lon,
+            "title": str(event.get("title") or "")[:150],
+            "venue": str(event.get("venue") or "")[:130],
+            "time": str(event.get("time_label") or "時間未掲載")[:100],
+        })
+    if not points:
+        st.info("会場の位置を確認できるイベントがありません。「一覧」または「詳細」で候補を確認してください。")
+        return
+    data = {"center": center, "origin_label": "現在地" if location.get("source") == "gps" else "検索地点",
+            "points": points}
+    encoded = json.dumps(data, ensure_ascii=False, separators=(",", ":")).replace("<", "\\u003c").replace(">", "\\u003e")
+    template = r'''<!doctype html><html lang="ja"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="">
+<style>html,body{margin:0;padding:0;font-family:system-ui,sans-serif}
+#event-map-v574{width:100%;height:445px;border-radius:13px;overflow:hidden;background:#edf2f7}
+.event-pin-v574{display:flex;justify-content:center;align-items:center;width:31px;height:31px;border-radius:50% 50% 50% 5px;transform:rotate(-45deg);background:#149574;color:#fff;border:2px solid white;box-sizing:border-box;box-shadow:0 2px 9px #0005}
+.event-pin-v574>b{transform:rotate(45deg);font-size:12px;line-height:1}
+.event-origin-v574{display:inline-flex;align-items:center;gap:5px;padding:4px 8px;background:white;border:2px solid #226bd7;border-radius:22px;font-size:12px;font-weight:800;color:#1758a7;box-shadow:0 2px 8px #0005;white-space:nowrap}
+.event-origin-dot-v574{width:12px;height:12px;border-radius:50%;background:#226bd7;border:2px solid white;box-shadow:0 0 0 1px #226bd7}
+.event-popup-v574{min-width:160px;max-width:235px;line-height:1.5;color:#243040}
+@media(max-width:640px){#event-map-v574{height:405px}}
+</style></head><body><div id="event-map-v574">地図を読み込んでいます…</div>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
+<script>(function(){const data=__PAYLOAD__,node=document.getElementById('event-map-v574');
+if(!window.L){node.textContent='地図を読み込めませんでした。「一覧」で候補を確認してください。';return;}
+node.textContent='';const escapeText=x=>String(x==null?'':x).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const map=L.map(node,{zoomControl:true,scrollWheelZoom:false,preferCanvas:true}).setView(data.center,13);
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19,attribution:'&copy; OpenStreetMap contributors'}).addTo(map);
+const bounds=L.latLngBounds([data.center]);
+const originIcon=L.divIcon({className:'',html:'<div class="event-origin-v574"><span class="event-origin-dot-v574"></span>'+escapeText(data.origin_label)+'</div>',iconSize:[95,30],iconAnchor:[7,15]});
+L.marker(data.center,{icon:originIcon,zIndexOffset:2000}).addTo(map).bindPopup(escapeText(data.origin_label));
+(data.points||[]).forEach(e=>{bounds.extend([e.lat,e.lon]);
+  const pin=L.divIcon({className:'',html:'<div class="event-pin-v574"><b>'+Number(e.index)+'</b></div>',iconSize:[33,33],iconAnchor:[16,31]});
+  L.marker([e.lat,e.lon],{icon:pin}).addTo(map).bindPopup('<div class="event-popup-v574"><b>'+escapeText(e.index+'. '+e.title)+'</b><div>'+escapeText(e.time)+'</div><div>'+escapeText(e.venue)+'</div></div>');
+});
+map.fitBounds(bounds.pad(.12),{maxZoom:15});setTimeout(()=>map.invalidateSize(),150);
+})();</script></body></html>'''
+    st.components.v1.html(template.replace("__PAYLOAD__", encoded), height=465, scrolling=False)
+    if len(points) < len(items):
+        st.caption(f"地図上に{len(points)}件表示。会場位置未確認の{len(items)-len(points)}件は一覧・詳細で確認できます。")
+    else:
+        st.caption(f"地図上に{len(points)}件表示。青色は現在地・検索地点、緑色はイベント会場です。")
+
+
+def _events_render_details_v574(items, day, category):
+    for index, item in enumerate(items, 1):
+        with st.container(border=True):
+            st.markdown(f"**{index}. {item['title']}**")
+            start_date = str(item.get("start_date") or "")
+            end_date = str(item.get("end_date") or "")
+            selected_label = _events_display_day_v574(day)
+            date_part = selected_label if start_date == day and end_date == day else f"{selected_label}開催（期間：{start_date}～{end_date}）"
+            time_part = "  " + str(item.get("time_label") or "時間未掲載")
+            distance = item.get("distance_m")
+            distance_text = f"約{distance / 1000:.1f}km" if distance is not None else "距離未確認"
+            st.caption(f"{date_part}{time_part} ／ {distance_text}")
+            st.markdown("**会場：** " + html.escape(str(item["venue"])))
+            if item.get("description"):
+                st.write(item["description"])
+            link_col, map_col = st.columns(2, gap="small")
+            with link_col:
+                # target=_self: Android WebView intercepts external HTTPS and opens the browser;
+                # link_button opens a new window, which this app's WebView disables.
+                source_url = html.escape(str(item["source_url"]), quote=True)
+                st.markdown(
+                    '<a href="' + source_url + '" target="_self" rel="noopener noreferrer" '
+                    'style="display:flex;align-items:center;justify-content:center;min-height:45px;'
+                    'border-radius:12px;border:1px solid rgba(47,128,237,.38);'
+                    'background:rgba(47,128,237,.08);color:#235fa8;text-decoration:none;'
+                    'font-size:.85rem;font-weight:800;text-align:center;padding:5px;">開催案内を確認</a>',
+                    unsafe_allow_html=True,
+                )
+            with map_col:
+                if item.get("latitude") is not None and item.get("longitude") is not None:
+                    render_route_launcher_v412({"latitude": item["latitude"], "longitude": item["longitude"]},
+                                                label="会場への徒歩案内", key=f"event_route_v574_{category}_{index}")
+                else:
+                    query = quote(str(item.get("venue") or "") + " " + str(item.get("address") or ""))
+                    venue_url = html.escape("https://www.google.com/maps/search/?api=1&query=" + query, quote=True)
+                    st.markdown('<a href="' + venue_url + '" target="_self" rel="noopener noreferrer" '
+                                'style="display:flex;align-items:center;justify-content:center;min-height:45px;'
+                                'border-radius:12px;border:1px solid rgba(47,128,237,.38);'
+                                'background:rgba(47,128,237,.08);text-decoration:none;text-align:center;'
+                                'font-size:.85rem;font-weight:800;padding:5px;">会場を地図で確認</a>',
+                                unsafe_allow_html=True)
+
+
 def _events_result_panel_v570():
     location = st.session_state.get("_events_location_v570")
+    day = _events_selected_date_v574().isoformat()
     if not isinstance(location, dict):
-        st.info("現在地を取得するか、駅名・地名を入力すると、今日開催のイベントを検索します。")
+        st.info("現在地を取得するか、駅名・地名を入力すると、指定日のイベントを検索します。")
         return
     category = str(st.session_state.get("_events_category_v570") or "スポーツ")
     radius_km = int(st.session_state.get("_events_radius_v570") or 15)
-    day = now_jst().date().isoformat()
     future = _events_job_v570(day, category, location, radius_km)
     if not future.done():
-        st.info(f"{category}の本日開催イベントを検索中です。別のカテゴリにも切り替えられます。")
+        st.info(f"{_events_display_day_v574(day)}の{category}イベントを検索中です。別のカテゴリにも切り替えられます。")
         return
     try:
         result = future.result()
@@ -34994,7 +35227,7 @@ def _events_result_panel_v570():
     items = list(result.get("items") or [])[:EVENT_SEARCH_MAX_PER_CATEGORY_V570]
     if not items:
         if not result.get("error"):
-            st.info(f"{category}の本日開催イベントを確認できませんでした。『最新情報に更新』で再検索できます。")
+            st.info(f"{_events_display_day_v574(day)}の{category}イベントを確認できませんでした。『最新情報に更新』で再検索できます。")
         if result.get("search_passes"):
             st.caption("検索状況：" + str(result.get("search_passes")) + "系統、候補 " +
                        str(result.get("raw_count") or 0) + "件、出典照合 " +
@@ -35014,60 +35247,51 @@ def _events_result_panel_v570():
         domains = list(result.get("source_domains") or [])
         if domains:
             st.caption(f"掲載元 {len(domains)}サイト：" + "、".join(domains[:6]) + (" ほか" if len(domains) > 6 else ""))
-        for index, item in enumerate(items, 1):
-            with st.container(border=True):
-                st.markdown(f"**{index}. {item['title']}**")
-                start_date = str(item.get("start_date") or "")
-                end_date = str(item.get("end_date") or "")
-                date_part = "本日" if start_date == day and end_date == day else f"本日開催（{start_date}～{end_date}）"
-                time_part = f" {item['time']}～" if item.get("time") else " 時刻は掲載ページで確認"
-                distance = item.get("distance_m")
-                distance_text = f"約{distance / 1000:.1f}km" if distance is not None else "距離未確認"
-                st.caption(f"{date_part}{time_part} ／ {distance_text}")
-                st.markdown("**会場：** " + html.escape(str(item["venue"])))
-                if item.get("description"):
-                    st.write(item["description"])
-                link_col, map_col = st.columns(2, gap="small")
-                with link_col:
-                    # target=_self: Android WebView intercepts external HTTPS and opens the browser;
-                    # link_button opens a new window, which this app's WebView disables.
-                    source_url = html.escape(str(item["source_url"]), quote=True)
-                    st.markdown(
-                        '<a href="' + source_url + '" target="_self" rel="noopener noreferrer" '
-                        'style="display:flex;align-items:center;justify-content:center;min-height:45px;'
-                        'border-radius:12px;border:1px solid rgba(47,128,237,.38);'
-                        'background:rgba(47,128,237,.08);color:#235fa8;text-decoration:none;'
-                        'font-size:.85rem;font-weight:800;text-align:center;padding:5px;">開催案内を確認</a>',
-                        unsafe_allow_html=True,
-                    )
-                with map_col:
-                    if item.get("latitude") is not None and item.get("longitude") is not None:
-                        render_route_launcher_v412({"latitude": item["latitude"], "longitude": item["longitude"]},
-                                                    label="会場への徒歩案内", key=f"event_route_v570_{category}_{index}")
-                    else:
-                        query = quote(str(item.get("venue") or "") + " " + str(item.get("address") or ""))
-                        venue_url = html.escape("https://www.google.com/maps/search/?api=1&query=" + query, quote=True)
-                        st.markdown('<a href="' + venue_url + '" target="_self" rel="noopener noreferrer" '
-                                    'style="display:flex;align-items:center;justify-content:center;min-height:45px;'
-                                    'border-radius:12px;border:1px solid rgba(47,128,237,.38);'
-                                    'background:rgba(47,128,237,.08);text-decoration:none;text-align:center;'
-                                    'font-size:.85rem;font-weight:800;padding:5px;">会場を地図で確認</a>',
-                                    unsafe_allow_html=True)
+        mode = str(st.session_state.get("_events_view_v574") or "詳細")
+        if mode == "一覧":
+            _events_render_list_v574(items, day)
+        elif mode == "地図":
+            _events_render_map_v574(items, location)
+        else:
+            _events_render_details_v574(items, day, category)
     if st.button("最新情報に更新", use_container_width=True, key=f"event_refresh_v570_{category}"):
         _events_job_v570(day, category, location, radius_km, refresh=True)
         st.rerun(scope="app")
 
 
-# A fragment refreshes only event results, never Home/GPS/camera/other pages.
+# The 4-second fragment exists only while a search is pending. After completion
+# do one app rerun, then render static results; Leaflet does not reset every 4 sec.
+def _events_wait_for_result_v574():
+    location = st.session_state.get("_events_location_v570")
+    if not isinstance(location, dict):
+        return
+    day = _events_selected_date_v574().isoformat()
+    category = str(st.session_state.get("_events_category_v570") or "スポーツ")
+    radius_km = int(st.session_state.get("_events_radius_v570") or 15)
+    future = _events_job_v570(day, category, location, radius_km)
+    if future.done():
+        st.rerun(scope="app")
+    else:
+        st.info(f"{_events_display_day_v574(day)}の{category}イベントを検索中です。")
+
+
 if hasattr(st, "fragment"):
-    _events_live_results_v570 = st.fragment(run_every="4s")(_events_result_panel_v570)
+    _events_wait_fragment_v574 = st.fragment(run_every="4s")(_events_wait_for_result_v574)
 else:
-    _events_live_results_v570 = _events_result_panel_v570
+    _events_wait_fragment_v574 = _events_wait_for_result_v574
 
 
 def page_events_v570():
-    page_top("今日のイベント")
-    st.caption(now_jst().strftime("%Y年%m月%d日（%a）") + " に開催される、現在地周辺のイベントを探します。")
+    page_top("イベント検索")
+    today = now_jst().date()
+    future_limit = _events_last_selectable_day_v575(today)
+    selected = _events_selected_date_v574()
+    if selected < today or selected > future_limit:
+        selected = today
+    st.session_state["_events_date_v574"] = selected
+    st.date_input("イベント開催日", min_value=today, max_value=future_limit,
+                  format="YYYY/MM/DD", key="_events_date_v574")
+    st.caption(_events_display_day_v574(_events_selected_date_v574()) + "に開催予定の、周辺イベントを検索します。")
     component = _get_help_auto_location_component_v523()
     location = st.session_state.get("_events_location_v570")
     auto_start = not isinstance(location, dict) and not st.session_state.get("_events_location_error_v570")
@@ -35135,7 +35359,16 @@ def page_events_v570():
                 st.button(cat, use_container_width=True, type="primary" if selected == cat else "secondary",
                           key=f"events_category_button_v570_{cat}",
                           on_click=lambda target=cat: st.session_state.update({"_events_category_v570": target}))
-        _events_live_results_v570()
+        st.radio("表示形式", ["詳細", "一覧", "地図"], horizontal=True, key="_events_view_v574")
+        # Re-render only while a paid search is running. The completed display is static
+        # until a user changes date, category, radius, location or display mode.
+        future = _events_job_v570(_events_selected_date_v574().isoformat(),
+                                  str(st.session_state.get("_events_category_v570") or "スポーツ"),
+                                  location, int(st.session_state.get("_events_radius_v570") or 15))
+        if future.done():
+            _events_result_panel_v570()
+        else:
+            _events_wait_fragment_v574()
     st.caption("開催状況・参加条件・予約の要否は、必ず掲載元の案内で確認してください。検索はカテゴリを開いた時だけ行い、結果を約20分再利用します。")
 
 
@@ -35255,7 +35488,7 @@ def page_home():
             note_col, media_left, media_right = st.columns(3, gap="small")
             with note_col:
                 st.button(
-                    "📅 今日のイベント",
+                    "📅 イベント検索",
                     key="home_events_open_v570",
                     use_container_width=True,
                     on_click=_go_page_callback,
