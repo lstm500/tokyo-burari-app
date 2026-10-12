@@ -44,7 +44,7 @@ def _app_css_v473(markup, **_ignored):
 # Review menu-only update: 2026-09-19 JST
 GENERATED_UPDATE_JST = "2026-09-19T14:54:38+09:00"
 
-APP_BUILD = "v565"
+APP_BUILD = "v570"
 # v565: Remember a browser login for up to 90 idle days, rotate signed credentials no more than weekly on natural authenticated page renders, avoid deleting a valid token during transient Supabase errors, and wait for browser restore before displaying login. Logout and PIN-change revocation remain effective.
 # v563: Home UI latency fix. No foreground wait for prefetched field notes/video
 # counts or previous-month review attention. Use bounded, account-scoped background
@@ -30860,6 +30860,97 @@ def init_state():
                 _invalidate_active_trip_snapshot()
 
 
+# v566: the Android discovery notification now opens the normal Streamlit page
+# with a short event ID. The saved result JSON is read only after the app loads,
+# through an existing token-protected, read-only native Review bridge.
+_NATIVE_DISCOVERY_PAYLOAD_JS_V566 = r"""
+const shown566 = globalThis.__burariDiscoveryPublishedV566 ||
+  (globalThis.__burariDiscoveryPublishedV566 = new Set());
+export default function(component) {
+  const { data, setTriggerValue } = component;
+  const eventId = String(data?.event_id || '');
+  const token = String(data?.native_bridge_token || '');
+  if (!eventId || !token) return;
+  const key = token + ':' + eventId;
+  if (shown566.has(key)) return;
+  const read = (raw) => {
+    const value = String(raw || '');
+    if (!value || value.length > 48000) return false;
+    try {
+      const payload = JSON.parse(value);
+      if (!payload || typeof payload !== 'object' || !Array.isArray(payload.places)) return false;
+      if (String(payload.event_id || '') !== eventId) return false;
+    } catch (_) { return false; }
+    if (shown566.has(key)) return true;
+    shown566.add(key);
+    queueMicrotask(() => setTriggerValue('payload_json', value));
+    return true;
+  };
+  try {
+    const bridge = globalThis.BurariReview || window.BurariReview || null;
+    if (bridge && typeof bridge.getDiscoveryPayload === 'function') {
+      if (read(bridge.getDiscoveryPayload(token, eventId))) return;
+    }
+  } catch (_) {}
+  const requestId = `discovery-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  let finished = false;
+  const onMessage = (event) => {
+    const result = event?.data;
+    if (!result || result.type !== 'burari-native-review-response-v1' ||
+        String(result.request_id || '') !== requestId ||
+        String(result.action || '') !== 'get_discovery_payload') return;
+    if (finished) return;
+    finished = true;
+    if (!read(result.payload_json)) {
+      queueMicrotask(() => setTriggerValue('error', '通知の候補を端末から取得できませんでした。'));
+    }
+  };
+  window.addEventListener('message', onMessage);
+  try {
+    const parent = (window.parent && window.parent !== window) ? window.parent : window;
+    parent.postMessage({
+      type:'burari-native-review-request-v1', request_id:requestId,
+      action:'get_discovery_payload', token, event_id:eventId
+    }, '*');
+  } catch (_) {
+    queueMicrotask(() => setTriggerValue('error', '端末との通信を開始できませんでした。'));
+  }
+  const timeout = setTimeout(() => {
+    if (!finished && !shown566.has(key))
+      setTriggerValue('error', '端末から通知を読み取れませんでした。Androidアプリを更新してください。');
+  }, 5000);
+  return () => { window.removeEventListener('message', onMessage); clearTimeout(timeout); };
+}
+"""
+
+try:
+    _native_discovery_payload_component_v566 = st.components.v2.component(
+        "tokyo_burari_native_discovery_payload_v566",
+        js=_NATIVE_DISCOVERY_PAYLOAD_JS_V566,
+    )
+except Exception:
+    _native_discovery_payload_component_v566 = None
+
+
+def _native_discovery_payload_v566(event_id):
+    """Return (payload_json, error), never perform Supabase/Overpass work."""
+    token = str(_query_param_scalar("native_bridge_token") or "").strip()
+    if not token or _native_discovery_payload_component_v566 is None:
+        return "", "端末から通知を取得できません。アプリを更新してください。"
+    try:
+        response = _native_discovery_payload_component_v566(
+            data={"event_id": str(event_id), "native_bridge_token": token},
+            key=f"native_discovery_payload_v566_{hashlib.sha1(str(event_id).encode()).hexdigest()[:16]}",
+            height=1,
+            on_payload_json_change=lambda: None,
+            on_error_change=lambda: None,
+        )
+        return (str(getattr(response, "payload_json", "") or ""),
+                str(getattr(response, "error", "") or ""))
+    except Exception:
+        return "", "通知を読み込む処理に失敗しました。"
+
+
 def consume_auto_discovery_deep_link():
     """Open the exact candidate list saved by the Android background search."""
     try:
@@ -30867,17 +30958,37 @@ def consume_auto_discovery_deep_link():
         encoded = str(st.query_params.get("auto_discovery_results", "") or "").strip()
     except Exception:
         return False
-    if not event_id or not encoded:
+    if not event_id:
         return False
     if event_id == str(st.session_state.get("_auto_discovery_consumed_event") or ""):
         return False
     try:
-        if len(encoded) > 48_000:
-            raise ValueError("result payload too large")
-        padded = encoded + ("=" * ((4 - len(encoded) % 4) % 4))
-        payload = json.loads(base64.urlsafe_b64decode(padded.encode("ascii")).decode("utf-8"))
+        if encoded:
+            # Backward compatibility: notifications made by older Android APKs.
+            if len(encoded) > 48_000:
+                raise ValueError("result payload too large")
+            padded = encoded + ("=" * ((4 - len(encoded) % 4) % 4))
+            payload = json.loads(base64.urlsafe_b64decode(padded.encode("ascii")).decode("utf-8"))
+        else:
+            # v566: no JSON in the URL. Fetch the already-saved event through the
+            # token-protected Android bridge after the Streamlit HTML page is ready.
+            if str(_query_param_scalar("native_android") or "") != "1":
+                return False
+            native_json, native_error = _native_discovery_payload_v566(event_id)
+            if not native_json:
+                if native_error:
+                    st.session_state["_auto_discovery_open_error"] = native_error
+                else:
+                    st.caption("おすすめの候補を読み込んでいます…")
+                    st.stop()
+                return False
+            if len(native_json) > 48_000:
+                raise ValueError("native result payload too large")
+            payload = json.loads(native_json)
         if not isinstance(payload, dict):
             raise ValueError("invalid result payload")
+        if str(payload.get("event_id") or event_id) != event_id:
+            raise ValueError("mismatched discovery event")
         kind = str(payload.get("kind") or st.query_params.get("auto_discovery_kind", "") or "")
         if kind not in {"snack", "tourism"}:
             raise ValueError("invalid discovery kind")
@@ -31087,7 +31198,7 @@ def page_evening_review():
                     )
 
 
-VALID_APP_PAGES = {"home", "camera", "videos", "moments", "diary", "photos", "review", "review_map", "review_project", "review_monthly", "review_tag", "review_random", "review_shared", "review_history", "nearby", "discovery_results", "evening_review", "toilets", "help_places", "field_notes", "experience", "settings", "settings_moments", "settings_moments_definition", "settings_location", "settings_account", "settings_media_import"}
+VALID_APP_PAGES = {"home", "camera", "videos", "moments", "diary", "photos", "review", "review_map", "review_project", "review_monthly", "review_tag", "review_random", "review_shared", "review_history", "nearby", "discovery_results", "evening_review", "toilets", "help_places", "field_notes", "experience", "events", "settings", "settings_moments", "settings_moments_definition", "settings_location", "settings_account", "settings_media_import"}
 
 
 def _current_ui_refresh_epoch():
@@ -31317,6 +31428,7 @@ def navigation_parent_node(node=None):
         "help_places": "home",
         "field_notes": "home",
         "experience": "home",
+        "events": "home",
         "settings": "home",
         "settings_moments": "settings",
         "settings_moments_definition": "settings_moments",
@@ -34193,6 +34305,469 @@ def _render_home_fit_v476():
         pass
 
 
+# ============================================================
+# v570: Nearby events happening TODAY (web-search grounded)
+# ============================================================
+# Searches are initiated only from this dedicated page. The Home screen does not
+# perform event searches, and a category change never reloads another category.
+EVENT_SEARCH_CATEGORIES_V570 = {
+    "スポーツ": "地域のスポーツ大会、試合観戦、体験大会、マラソン、親子参加型スポーツ",
+    "文化": "文化祭、展覧会の期間限定企画、コンサート、舞台、伝統芸能、博物館の催し",
+    "その他": "地域のお祭り、マルシェ、科学イベント、ワークショップ、地域行事",
+}
+EVENT_SEARCH_MAX_PER_CATEGORY_V570 = 10
+EVENT_SEARCH_CACHE_SECONDS_V570 = 20 * 60
+EVENT_SEARCH_MODEL_V570 = str(secret("EVENT_SEARCH_MODEL", "gpt-4.1-mini") or "gpt-4.1-mini")
+
+
+def _events_url_key_v570(value):
+    """Stable, strict source link identity: never trust an uncited AI event."""
+    try:
+        parsed = urlparse(str(value or "").strip())
+        if parsed.scheme != "https" or not parsed.hostname:
+            return ""
+        host = parsed.hostname.lower().removeprefix("www.")
+        if host in {"localhost", "127.0.0.1", "0.0.0.0"}:
+            return ""
+        return host + (parsed.path or "/").rstrip("/")
+    except Exception:
+        return ""
+
+
+def _events_source_urls_v570(response):
+    """Collect sources actually returned by the Responses hosted web_search tool."""
+    urls = set()
+    for item in list(getattr(response, "output", None) or []):
+        action = getattr(item, "action", None)
+        if isinstance(item, dict):
+            action = item.get("action", action)
+        sources = action.get("sources") if isinstance(action, dict) else getattr(action, "sources", None)
+        for source in list(sources or []):
+            url = source.get("url") if isinstance(source, dict) else getattr(source, "url", None)
+            key = _events_url_key_v570(url)
+            if key:
+                urls.add(key)
+        contents = item.get("content", []) if isinstance(item, dict) else getattr(item, "content", [])
+        for content in list(contents or []):
+            annotations = content.get("annotations", []) if isinstance(content, dict) else getattr(content, "annotations", [])
+            for annotation in list(annotations or []):
+                url = annotation.get("url") if isinstance(annotation, dict) else getattr(annotation, "url", None)
+                key = _events_url_key_v570(url)
+                if key:
+                    urls.add(key)
+    return urls
+
+
+def _events_decode_json_v570(raw):
+    """Accept plain JSON or a JSON code fence without executing model text."""
+    value = str(raw or "").strip()
+    if value.startswith("```"):
+        value = re.sub(r"^```(?:json)?\s*", "", value, count=1, flags=re.IGNORECASE)
+        value = re.sub(r"\s*```$", "", value)
+    value = value[value.find("{"):] if "{" in value else ""
+    if not value:
+        return {}
+    try:
+        parsed, _ = json.JSONDecoder().raw_decode(value)
+        return parsed if isinstance(parsed, dict) else {}
+    except (ValueError, TypeError):
+        return {}
+
+
+@functools.lru_cache(maxsize=350)
+def _events_venue_google_location_v570(venue, address, lat_rough, lon_rough, radius_km):
+    """Resolve an actual venue, NOT an event date, with the existing optional Places key."""
+    if not GOOGLE_PLACES_API_KEY or not venue:
+        return None
+    center_lat, center_lon = float(lat_rough), float(lon_rough)
+    data = json.dumps({
+        "textQuery": (str(venue) + " " + str(address)).strip()[:220],
+        "languageCode": "ja", "maxResultCount": 3,
+        "locationBias": {"circle": {"center": {"latitude": center_lat, "longitude": center_lon},
+                                     "radius": float(min(50000, max(1000, radius_km * 1000)))}},
+    }, ensure_ascii=False).encode("utf-8")
+    req = Request("https://places.googleapis.com/v1/places:searchText", data=data, method="POST", headers={
+        "Content-Type": "application/json; charset=UTF-8",
+        "X-Goog-Api-Key": GOOGLE_PLACES_API_KEY,
+        "X-Goog-FieldMask": "places.displayName,places.formattedAddress,places.location,places.businessStatus",
+    })
+    try:
+        with urlopen(req, timeout=6.5) as response:
+            items = list((json.loads(response.read().decode("utf-8")) or {}).get("places") or [])
+    except Exception:
+        return None
+    target = re.sub(r"\s+", "", unicodedata.normalize("NFKC", str(venue)).casefold())
+    candidates = []
+    for row in items:
+        if not isinstance(row, dict) or str(row.get("businessStatus") or "") == "CLOSED_PERMANENTLY":
+            continue
+        place = row.get("location") if isinstance(row.get("location"), dict) else {}
+        try:
+            plat, plon = float(place["latitude"]), float(place["longitude"])
+            distance = _nearby_haversine_m(center_lat, center_lon, plat, plon)
+        except (KeyError, TypeError, ValueError):
+            continue
+        if distance > float(radius_km) * 1000:
+            continue
+        raw_name = row.get("displayName") or {}
+        name = raw_name.get("text") if isinstance(raw_name, dict) else str(raw_name)
+        found = re.sub(r"\s+", "", unicodedata.normalize("NFKC", str(name)).casefold())
+        # Avoid silently using a nearby but unrelated venue.
+        if not target or not found or (target not in found and found not in target):
+            continue
+        candidates.append((distance, plat, plon))
+    if not candidates:
+        return None
+    candidates.sort()
+    return (candidates[0][1], candidates[0][2])
+
+
+@functools.lru_cache(maxsize=180)
+def _events_venue_osm_location_v570(venue, address):
+    """Low-volume, cache-backed fallback when Places is not configured."""
+    search = (str(venue) + " " + str(address)).strip()[:160]
+    if not search:
+        return None
+    req = Request("https://nominatim.openstreetmap.org/search?" + urlencode({
+        "q": search, "format": "jsonv2", "limit": 2, "countrycodes": "jp", "accept-language": "ja",
+    }), headers={"User-Agent": "TokyoBurariApp/1.0 (user-initiated event search)", "Accept": "application/json"})
+    try:
+        with urlopen(req, timeout=5.0) as response:
+            rows = json.loads(response.read().decode("utf-8"))
+        if isinstance(rows, list) and rows:
+            return (float(rows[0]["lat"]), float(rows[0]["lon"]))
+    except Exception:
+        pass
+    return None
+
+
+def _events_geocode_missing_v570(items, *, day, category, lat, lon, radius_km, sources):
+    """Small bounded geocode pass; removes entries whose venue stays unverified."""
+    results = []
+    jobs_used = 0
+    max_queries = 8 if GOOGLE_PLACES_API_KEY else 3
+    for raw in list(items or [])[:35]:
+        if not isinstance(raw, dict):
+            continue
+        # Never spend a venue lookup on an AI item without a real cited source and date.
+        source_key = _events_url_key_v570(raw.get("source_url"))
+        if not source_key or source_key not in sources:
+            continue
+        try:
+            date_start = date.fromisoformat(str(raw.get("start_date")))
+            date_end = date.fromisoformat(str(raw.get("end_date") or raw.get("start_date")))
+            if not date_start <= date.fromisoformat(day) <= date_end:
+                continue
+        except (TypeError, ValueError):
+            continue
+        item = dict(raw)
+        event = _events_validate_one_v570(item, day=day, category=category, lat=lat,
+                                          lon=lon, radius_km=radius_km, sources=sources)
+        if event:
+            results.append(item)
+            continue
+        has_coords = item.get("latitude") is not None and item.get("longitude") is not None
+        # Do not override explicit remote venue coordinates with a nearby name match.
+        if has_coords or jobs_used >= max_queries or not item.get("venue"):
+            continue
+        jobs_used += 1
+        if GOOGLE_PLACES_API_KEY:
+            coordinates = _events_venue_google_location_v570(str(item.get("venue") or ""),
+                          str(item.get("address") or ""), round(float(lat), 2),
+                          round(float(lon), 2), int(radius_km))
+        else:
+            # Respect the public Nominatim one-request-per-second policy.
+            with _events_nominatim_lock_v570:
+                global _events_nominatim_last_at_v570
+                elapsed = time.monotonic() - _events_nominatim_last_at_v570
+                if elapsed < 1.1:
+                    time.sleep(1.1 - elapsed)
+                coordinates = _events_venue_osm_location_v570(str(item.get("venue") or ""),
+                                                               str(item.get("address") or ""))
+                _events_nominatim_last_at_v570 = time.monotonic()
+        if coordinates:
+            item["latitude"], item["longitude"] = coordinates
+            if _events_validate_one_v570(item, day=day, category=category, lat=lat,
+                                          lon=lon, radius_km=radius_km, sources=sources):
+                results.append(item)
+    return results
+
+
+_events_nominatim_lock_v570 = threading.Lock()
+_events_nominatim_last_at_v570 = 0.0
+
+
+def _events_validate_one_v570(raw, *, day, category, lat, lon, radius_km, sources):
+    """Never show an undated, remote, or unreferenced entry as a today's event."""
+    if not isinstance(raw, dict):
+        return None
+    title = re.sub(r"\s+", " ", str(raw.get("title") or "")).strip()[:150]
+    venue = re.sub(r"\s+", " ", str(raw.get("venue") or "")).strip()[:120]
+    source_url = str(raw.get("source_url") or "").strip()
+    source_key = _events_url_key_v570(source_url)
+    if not title or not venue or not source_key or source_key not in sources:
+        return None
+    start_day = str(raw.get("start_date") or "").strip()
+    end_day = str(raw.get("end_date") or start_day).strip() or start_day
+    try:
+        start = date.fromisoformat(start_day)
+        end = date.fromisoformat(end_day)
+        sought = date.fromisoformat(day)
+    except (TypeError, ValueError):
+        return None
+    if not start <= sought <= end or (end - start).days > 90:
+        return None
+    try:
+        plat = float(raw.get("latitude"))
+        plon = float(raw.get("longitude"))
+    except (TypeError, ValueError):
+        return None
+    if not (20.0 < plat < 46.5 and 122.0 < plon < 154.5):
+        return None
+    distance_m = _nearby_haversine_m(lat, lon, plat, plon)
+    if not math.isfinite(distance_m) or distance_m > radius_km * 1000.0:
+        return None
+    time_text = str(raw.get("time") or "").strip()[:30]
+    if time_text and not re.match(r"^(?:[01]?\d|2[0-3]):[0-5]\d", time_text):
+        time_text = ""
+    short = re.sub(r"\s+", " ", str(raw.get("description") or "")).strip()[:155]
+    return {
+        "title": title, "venue": venue, "address": str(raw.get("address") or "").strip()[:180],
+        "start_date": start_day, "end_date": end_day, "time": time_text,
+        "description": short, "category": category, "source_url": source_url,
+        "latitude": plat, "longitude": plon, "distance_m": int(round(distance_m)),
+    }
+
+
+def _events_normalize_v570(items, *, day, category, lat, lon, radius_km, sources):
+    dedup = {}
+    for raw in list(items or [])[:40]:
+        event = _events_validate_one_v570(raw, day=day, category=category, lat=lat,
+                                          lon=lon, radius_km=radius_km, sources=sources)
+        if event is None:
+            continue
+        title_key = re.sub(r"\W+", "", unicodedata.normalize("NFKC", event["title"]).casefold())
+        identity = (title_key, event["start_date"])
+        if identity not in dedup or event["distance_m"] < dedup[identity]["distance_m"]:
+            dedup[identity] = event
+    return sorted(dedup.values(), key=lambda e: (e["distance_m"], e["time"] or "99:99", e["title"]))[:EVENT_SEARCH_MAX_PER_CATEGORY_V570]
+
+
+def _events_fetch_category_v570(day, category, latitude, longitude, radius_km, place_label):
+    """One bounded hosted web search; never fabricate results or claim venue opening hours."""
+    if not OPENAI_API_KEY:
+        return {"items": [], "error": "OPENAI_API_KEY が未設定のためイベント検索を利用できません。", "checked_at": ""}
+    from openai import OpenAI
+    area = str(place_label or "日本").strip()[:65]
+    # Disclose only an approximate area, not precise personal coordinates, to search.
+    coarse_lat = round(float(latitude), 2)
+    coarse_lon = round(float(longitude), 2)
+    prompt = (
+        f"日本時間の今日 {day} に実際に開催される日本の地域イベントを調べてください。\n"
+        f"検索場所：{area}付近（概略座標 {coarse_lat:.2f}, {coarse_lon:.2f}、半径{radius_km}km）。\n"
+        f"カテゴリー：{category}。対象例：{EVENT_SEARCH_CATEGORIES_V570[category]}。\n"
+        "必ず最新のWEB検索を使い、実在するイベントの個別案内ページを確認すること。"
+        "開催日が当日を含むイベントだけにしてください（期間開催の企画も可）。"
+        "主催者・公式イベント案内・施設イベント告知・スポーツ団体・自治体等の一次情報を優先。"
+        "通年営業施設や常設展示そのもの、開催日不明、オンラインのみ、遠方、無関係のカテゴリは除外。"
+        "会場の緯度経度が確認できなければ null にすること。GPS座標は推測で創作しない。"
+        "こども・家族で参加・観戦しやすいものを優先、ただし年齢制限があるものは勧めない。"
+        "本当に確認できた分のみ、最大15件。10件に不足しても架空イベントで埋めないこと。"
+        "出力は説明やMarkdownなしで、JSONオブジェクトの events 配列だけ。"
+        "各要素のキー：title,venue,address,start_date,end_date,time,description,latitude,longitude,source_url。"
+        "日付はYYYY-MM-DD、timeはHH:MMまたは空文字、緯度経度は数値またはnull。"
+        "source_urlは実際にウェブ検索で参照した当該イベントの掲載ページの完全なhttps URL。"
+    )
+    try:
+        client = OpenAI(api_key=OPENAI_API_KEY, timeout=55.0, max_retries=0)
+        response = client.responses.create(
+            model=EVENT_SEARCH_MODEL_V570,
+            tools=[{"type": "web_search", "search_context_size": "medium",
+                    "user_location": {"type": "approximate", "country": "JP"}}],
+            tool_choice="required", include=["web_search_call.action.sources"],
+            input=prompt, max_output_tokens=4500, store=False,
+        )
+        sources = _events_source_urls_v570(response)
+        payload = _events_decode_json_v570(getattr(response, "output_text", ""))
+        checked_rows = _events_geocode_missing_v570(payload.get("events"), day=day, category=category,
+                                                      lat=latitude, lon=longitude, radius_km=radius_km, sources=sources)
+        items = _events_normalize_v570(checked_rows, day=day, category=category,
+                                      lat=latitude, lon=longitude, radius_km=radius_km, sources=sources)
+        # Distinguish an actual empty search from unsupported / missing search sources.
+        error = "" if sources else "検索結果の出典を確認できませんでした。しばらくして再検索してください。"
+        return {"items": items, "error": error, "checked_at": datetime.now(ZoneInfo(APP_TIMEZONE)).strftime("%H:%M")}
+    except Exception as exc:
+        # Never surface credentials, raw API payloads, or query coordinates in errors.
+        return {"items": [], "error": "イベント情報を取得できませんでした。通信状態または検索API設定を確認してください。",
+                "detail_type": type(exc).__name__, "checked_at": ""}
+
+
+@st.cache_resource(show_spinner=False)
+def _events_runtime_v570():
+    return {"lock": threading.RLock(), "jobs": {},
+            "pool": ThreadPoolExecutor(max_workers=3, thread_name_prefix="burari-events")}
+
+
+def _events_job_v570(day, category, location, radius_km, *, refresh=False):
+    """Account-safe short-lived per-area cache; one in-flight search per category."""
+    latitude = float(location["latitude"])
+    longitude = float(location["longitude"])
+    key = (day, category, round(latitude, 2), round(longitude, 2), int(radius_km))
+    runtime = _events_runtime_v570()
+    now = time.monotonic()
+    with runtime["lock"]:
+        jobs = runtime["jobs"]
+        for old, (started, future) in list(jobs.items()):
+            if now - started > EVENT_SEARCH_CACHE_SECONDS_V570 and future.done():
+                jobs.pop(old, None)
+        stored = jobs.get(key)
+        if not refresh and stored and (now - stored[0] < EVENT_SEARCH_CACHE_SECONDS_V570 or not stored[1].done()):
+            return stored[1]
+        if stored and not stored[1].done():
+            return stored[1]  # avoid duplicate paid web searches
+        future = runtime["pool"].submit(_events_fetch_category_v570, day, category, latitude,
+                                         longitude, int(radius_km), str(location.get("place_label") or ""))
+        jobs[key] = (now, future)
+        return future
+
+
+def _events_result_panel_v570():
+    location = st.session_state.get("_events_location_v570")
+    if not isinstance(location, dict):
+        st.info("現在地を取得するか、駅名・地名を入力すると、今日開催のイベントを検索します。")
+        return
+    category = str(st.session_state.get("_events_category_v570") or "スポーツ")
+    radius_km = int(st.session_state.get("_events_radius_v570") or 15)
+    day = now_jst().date().isoformat()
+    future = _events_job_v570(day, category, location, radius_km)
+    if not future.done():
+        st.info(f"{category}の本日開催イベントを検索中です。別のカテゴリにも切り替えられます。")
+        return
+    try:
+        result = future.result()
+    except Exception:
+        result = {"items": [], "error": "イベント検索が完了しませんでした。もう一度お試しください。"}
+    if result.get("error"):
+        st.warning(str(result["error"]))
+    items = list(result.get("items") or [])[:EVENT_SEARCH_MAX_PER_CATEGORY_V570]
+    if not items:
+        st.info(f"半径{radius_km}km以内で、開催日・場所・出典が確認できる{category}のイベントは見つかりませんでした。範囲を広げるか、時間をおいて再検索してください。")
+    else:
+        checked_at = str(result.get("checked_at") or "")
+        st.caption(f"{category} {len(items)}件／{radius_km}km以内（距離は会場座標からの概算）" + (f"・{checked_at}確認" if checked_at else ""))
+        for index, item in enumerate(items, 1):
+            with st.container(border=True):
+                st.markdown(f"**{index}. {item['title']}**")
+                start_date = str(item.get("start_date") or "")
+                end_date = str(item.get("end_date") or "")
+                date_part = "本日" if start_date == day and end_date == day else f"本日開催（{start_date}～{end_date}）"
+                time_part = f" {item['time']}～" if item.get("time") else " 時刻は掲載ページで確認"
+                st.caption(f"{date_part}{time_part} ／ 約{item['distance_m'] / 1000:.1f}km")
+                st.markdown("**会場：** " + html.escape(str(item["venue"])))
+                if item.get("description"):
+                    st.write(item["description"])
+                link_col, map_col = st.columns(2, gap="small")
+                with link_col:
+                    # target=_self: Android WebView intercepts external HTTPS and opens the browser;
+                    # link_button opens a new window, which this app's WebView disables.
+                    source_url = html.escape(str(item["source_url"]), quote=True)
+                    st.markdown(
+                        '<a href="' + source_url + '" target="_self" rel="noopener noreferrer" '
+                        'style="display:flex;align-items:center;justify-content:center;min-height:45px;'
+                        'border-radius:12px;border:1px solid rgba(47,128,237,.38);'
+                        'background:rgba(47,128,237,.08);color:#235fa8;text-decoration:none;'
+                        'font-size:.85rem;font-weight:800;text-align:center;padding:5px;">開催案内を確認</a>',
+                        unsafe_allow_html=True,
+                    )
+                with map_col:
+                    render_route_launcher_v412({"latitude": item["latitude"], "longitude": item["longitude"]},
+                                                label="会場への徒歩案内", key=f"event_route_v570_{category}_{index}")
+    if st.button("最新情報に更新", use_container_width=True, key=f"event_refresh_v570_{category}"):
+        _events_job_v570(day, category, location, radius_km, refresh=True)
+        st.rerun(scope="app")
+
+
+# A fragment refreshes only event results, never Home/GPS/camera/other pages.
+if hasattr(st, "fragment"):
+    _events_live_results_v570 = st.fragment(run_every="4s")(_events_result_panel_v570)
+else:
+    _events_live_results_v570 = _events_result_panel_v570
+
+
+def page_events_v570():
+    page_top("今日のイベント")
+    st.caption(now_jst().strftime("%Y年%m月%d日（%a）") + " に開催される、現在地周辺のイベントを探します。")
+    component = _get_help_auto_location_component_v523()
+    location = st.session_state.get("_events_location_v570")
+    auto_start = not isinstance(location, dict) and not st.session_state.get("_events_location_error_v570")
+    if component is not None:
+        serial = int(st.session_state.get("_events_location_serial_v570") or 0)
+        response = component(
+            data={"auto_start": bool(auto_start)}, key=f"events_location_v570_{serial}",
+            on_location_change=lambda: None, on_location_error_change=lambda: None,
+        )
+        result = getattr(response, "location", None)
+        if isinstance(result, dict):
+            token = str(result.get("token") or "")
+            if token and token != st.session_state.get("_events_location_token_v570"):
+                st.session_state["_events_location_token_v570"] = token
+                try:
+                    lat = float(result.get("latitude"))
+                    lon = float(result.get("longitude"))
+                    acc = float(result.get("accuracy_m") or 0)
+                    if math.isfinite(lat) and math.isfinite(lon) and 20 < lat < 46.5 and 122 < lon < 154.5:
+                        label = reverse_geocode_rough(lat, lon) or "現在地"
+                        st.session_state["_events_location_v570"] = {
+                            "source": "gps", "latitude": lat, "longitude": lon,
+                            "accuracy_m": acc, "place_label": label,
+                        }
+                        st.session_state.pop("_events_location_error_v570", None)
+                        st.rerun(scope="app")
+                except (ValueError, TypeError):
+                    pass
+        error = getattr(response, "location_error", None)
+        if isinstance(error, dict):
+            token = str(error.get("token") or "")
+            if token and token != st.session_state.get("_events_error_token_v570"):
+                st.session_state["_events_error_token_v570"] = token
+                st.session_state["_events_location_error_v570"] = str(error.get("message") or "現在地を取得できませんでした。")
+    else:
+        st.caption("現在地取得が使えない場合は、下の地名入力をご利用ください。")
+    if st.session_state.get("_events_location_error_v570"):
+        st.warning(str(st.session_state["_events_location_error_v570"]))
+    with st.expander("別の場所・駅名から検索"):
+        with st.form("events_manual_form_v570", clear_on_submit=False):
+            place = st.text_input("駅名・地名", placeholder="例：大崎駅、品川区、上野公園")
+            manual_search = st.form_submit_button("この場所で検索", use_container_width=True)
+        if manual_search:
+            with st.spinner("検索地点を確認しています…"):
+                place_location = geocode_nearby_place_text(place)
+            if place_location:
+                st.session_state["_events_location_v570"] = place_location
+                st.session_state.pop("_events_location_error_v570", None)
+                st.rerun(scope="app")
+            else:
+                st.error("場所が見つかりません。駅名・区名などを入力してください。")
+    location = st.session_state.get("_events_location_v570")
+    if isinstance(location, dict):
+        label = str(location.get("place_label") or "現在地")
+        st.markdown("**検索地点：** " + html.escape(label))
+        current_radius = int(st.session_state.get("_events_radius_v570") or 15)
+        radii = [5, 10, 15, 20, 30]
+        chosen_radius = st.selectbox("検索範囲", radii, index=radii.index(current_radius) if current_radius in radii else 2,
+                                     format_func=lambda x: f"半径{x}km", key="_events_radius_v570")
+        st.markdown("**表示するカテゴリ**")
+        cols = st.columns(3, gap="small")
+        selected = str(st.session_state.get("_events_category_v570") or "スポーツ")
+        for col, cat in zip(cols, EVENT_SEARCH_CATEGORIES_V570):
+            with col:
+                st.button(cat, use_container_width=True, type="primary" if selected == cat else "secondary",
+                          key=f"events_category_button_v570_{cat}",
+                          on_click=lambda target=cat: st.session_state.update({"_events_category_v570": target}))
+        _events_live_results_v570()
+    st.caption("開催状況・参加条件・予約の要否は、必ず掲載元の案内で確認してください。検索はカテゴリを開いた時だけ行い、結果を約20分再利用します。")
+
+
 def page_home():
     # Display-free persistence bridges must not become empty rows above the hero.
     # V2 mounts use API-valid height=1; their nonvisual parent is CSS-collapsed.
@@ -34309,10 +34884,11 @@ def page_home():
             note_col, media_left, media_right = st.columns(3, gap="small")
             with note_col:
                 st.button(
-                    "📝 体験を残す",
-                    key="home_experience_open_v497",
+                    "📅 今日のイベント",
+                    key="home_events_open_v570",
                     use_container_width=True,
-                    on_click=_open_experience_callback_v497,
+                    on_click=_go_page_callback,
+                    args=("events", "push"),
                 )
             with media_left:
                 st.button(
@@ -34450,7 +35026,10 @@ html,body{{margin:0;padding:0;background:transparent;font-family:-apple-system,B
 .toilet-pin{{position:relative;width:34px;height:34px;border-radius:50% 50% 50% 6px;transform:rotate(-45deg);background:#28a17a;border:3px solid white;box-shadow:0 3px 9px rgba(0,0,0,.28);box-sizing:border-box;}}
 .toilet-pin.unknown{{background:#3f7ec7;}}
 .toilet-pin .pin-label{{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;transform:rotate(45deg);font-size:12px;font-weight:900;color:white;line-height:1;}}
-.current-dot{{width:18px;height:18px;border-radius:50%;background:#2f80ed;border:4px solid white;box-shadow:0 2px 9px rgba(0,0,0,.30);box-sizing:border-box;}}
+/* v567: label the exact search-position marker without changing the map layout, zoom, or toilet pins. */
+.toilet-current-shell{{background:transparent!important;border:0!important;}}
+.toilet-current-badge{{display:inline-flex;align-items:center;gap:7px;height:36px;padding:4px 10px 4px 6px;box-sizing:border-box;border:2px solid #195bb4;border-radius:22px;background:rgba(255,255,255,.98);color:#174c93;font-size:13px;font-weight:850;white-space:nowrap;box-shadow:0 3px 10px rgba(0,0,0,.28);}}
+.current-dot{{display:block;flex:none;width:20px;height:20px;border-radius:50%;background:#246be5;border:3px solid white;box-shadow:0 0 0 2px #246be5;box-sizing:border-box;}}
 .map-legend{{position:absolute;z-index:1000;left:10px;bottom:10px;background:rgba(255,255,255,.94);border:1px solid rgba(0,0,0,.10);border-radius:10px;padding:6px 8px;box-shadow:0 3px 12px rgba(0,0,0,.10);font-size:10px;color:#4a535c;pointer-events:none;}}
 .map-legend-row{{display:flex;align-items:center;gap:5px;white-space:nowrap;}}
 .map-legend-dot{{width:9px;height:9px;border-radius:50%;display:inline-block;background:#2f80ed;}}
@@ -34479,8 +35058,11 @@ html,body{{margin:0;padding:0;background:transparent;font-family:-apple-system,B
   if (Number(data.accuracy_m || 0) > 0 && String(data.search_source || '') === 'gps') {{
     L.circle(center, {{radius:Number(data.accuracy_m), color:'#2f80ed', weight:1, opacity:.35, fillColor:'#2f80ed', fillOpacity:.07}}).addTo(map);
   }}
-  const currentIcon = L.divIcon({{className:'', html:'<div class="current-dot"></div>', iconSize:[18,18], iconAnchor:[9,9]}});
-  L.marker(center, {{icon:currentIcon, keyboard:false, zIndexOffset:1200}}).addTo(map).bindPopup(String(data.search_source || '') === 'manual' ? '<b>検索中心</b>' : '<b>現在地</b>');
+  const isManualCenter = String(data.search_source || '') === 'manual';
+  const centerLabel = isManualCenter ? '検索中心' : '現在地';
+  // The dot's center (18,18) is exactly the GPS/search coordinate. Text sits beside it.
+  const currentIcon = L.divIcon({{className:'toilet-current-shell', html:'<div class="toilet-current-badge"><span class="current-dot"></span><span>' + centerLabel + '</span></div>', iconSize:[118,36], iconAnchor:[18,18], popupAnchor:[0,-20]}});
+  L.marker(center, {{icon:currentIcon, keyboard:false, zIndexOffset:1200}}).addTo(map).bindPopup(isManualCenter ? '<b>指定した検索中心</b>' : '<b>検索時の現在地</b>');
   const pill = (label, cls='') => label ? `<span class="toilet-popup-pill ${{cls}}">${{esc(label)}}</span>` : '';
   (data.places || []).forEach((place) => {{
     const lat = Number(place.latitude), lon = Number(place.longitude);
@@ -38268,6 +38850,64 @@ def page_toilets():
     st.caption(f"地図に{len(places)}か所を表示しています。候補はOpenStreetMapと、設定済みの場合はGoogle Placesを同時に検索しています。")
 
 
+def _render_auto_discovery_map_v566(result):
+    """Map only the notified candidates. No new network search or server state."""
+    points = []
+    for i, place in enumerate(list(result.get("places") or [])[:6], start=1):
+        try:
+            lat, lon = float(place.get("lat")), float(place.get("lon"))
+        except (TypeError, ValueError):
+            continue
+        if not (math.isfinite(lat) and math.isfinite(lon) and -90 <= lat <= 90 and -180 <= lon <= 180):
+            continue
+        points.append({"i": i, "lat": lat, "lon": lon,
+                       "name": str(place.get("name") or "候補")[:120],
+                       "category": str(place.get("category") or "")[:80]})
+    if not points:
+        return
+    try:
+        origin_lat = float(result.get("trigger_lat"))
+        origin_lon = float(result.get("trigger_lon"))
+        origin = ([origin_lat, origin_lon]
+                  if math.isfinite(origin_lat) and math.isfinite(origin_lon)
+                  and -90 <= origin_lat <= 90 and -180 <= origin_lon <= 180
+                  else None)
+    except (TypeError, ValueError):
+        origin = None
+    payload = {"places": points, "origin": origin}
+    encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).replace("</", "<\\/")
+    map_html = r"""<!doctype html><html lang="ja"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<style>html,body{margin:0;padding:0;font-family:system-ui,sans-serif}
+#discovery-map{height:366px;width:100%;border-radius:14px;overflow:hidden;background:#eaf0ed}
+#discovery-map .leaflet-tile{max-width:none!important;max-height:none!important}
+.discovery-pin{width:29px;height:29px;border-radius:50%;border:2px solid white;background:#15936f;
+ color:#fff;display:flex;align-items:center;justify-content:center;font:800 14px system-ui;
+ box-shadow:0 2px 8px #0005}.discovery-origin{width:15px;height:15px;border-radius:50%;
+ background:#3388ff;border:3px solid white;box-shadow:0 2px 7px #0005}
+</style></head><body><div id="discovery-map">地図を読み込んでいます…</div>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>(function(){const data=__PAYLOAD__;
+const node=document.getElementById('discovery-map');
+if(!window.L){node.textContent='地図を読み込めませんでした。下の「地図で案内」から開けます。';return;}
+node.textContent='';const esc=s=>String(s||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const p=data.places[0], map=L.map(node,{zoomControl:true,scrollWheelZoom:false}).setView([p.lat,p.lon],15);
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{
+  maxZoom:19,attribution:'&copy; OpenStreetMap contributors'}).addTo(map);
+const bounds=L.latLngBounds([]);
+(data.places||[]).forEach(x=>{const pos=[x.lat,x.lon];bounds.extend(pos);
+const ico=L.divIcon({className:'',html:'<div class="discovery-pin">'+Number(x.i)+'</div>',iconSize:[29,29],iconAnchor:[15,15]});
+L.marker(pos,{icon:ico}).addTo(map).bindPopup('<b>'+esc(x.name)+'</b><div>'+esc(x.category)+'</div>');});
+if(data.origin){const pos=data.origin;bounds.extend(pos);const ico=L.divIcon({className:'',
+html:'<div class="discovery-origin"></div>',iconSize:[21,21],iconAnchor:[10,10]});
+L.marker(pos,{icon:ico}).addTo(map).bindPopup('通知時の位置');}
+if(bounds.isValid())map.fitBounds(bounds.pad(.18),{maxZoom:16});
+setTimeout(()=>map.invalidateSize(),150);
+})();</script></body></html>"""
+    st.components.v1.html(map_html.replace("__PAYLOAD__", encoded), height=395, scrolling=False)
+
+
 def page_discovery_results():
     result = st.session_state.get("_auto_discovery_result")
     if not isinstance(result, dict):
@@ -38333,6 +38973,7 @@ def page_discovery_results():
         unsafe_allow_html=True,
     )
 
+    _render_auto_discovery_map_v566(result)
     event_id = str(result.get("event_id") or "")
     detail_state_key = "_auto_discovery_open_detail_v410"
     open_detail = str(st.session_state.get(detail_state_key) or "")
@@ -59012,6 +59653,8 @@ with st.container(key="app_page_root_v280"):
         _perf_call_v457("page:field_notes", page_field_notes, force=True)
     elif page == "experience":
         _perf_call_v457("page:experience", page_experience_v503, force=True)
+    elif page == "events":
+        _perf_call_v457("page:events", page_events_v570, force=True)
     elif page == "settings":
         _perf_call_v457("page:settings", page_settings, force=True)
     elif page == "settings_moments":
@@ -59035,7 +59678,7 @@ with st.container(key="app_page_root_v280"):
         live_page = str(st.session_state.get("main_page") or "home")
         if (
             page == live_page
-            and page in {"camera", "videos", "moments", "diary", "photos", "review", "review_map", "review_project", "review_monthly", "review_tag", "review_random", "review_shared", "review_history", "nearby", "discovery_results", "evening_review", "toilets", "help_places", "field_notes", "experience", "settings", "settings_moments", "settings_moments_definition", "settings_location", "settings_account", "settings_media_import"}
+            and page in {"camera", "videos", "moments", "diary", "photos", "review", "review_map", "review_project", "review_monthly", "review_tag", "review_random", "review_shared", "review_history", "nearby", "discovery_results", "evening_review", "toilets", "help_places", "field_notes", "experience", "events", "settings", "settings_moments", "settings_moments_definition", "settings_location", "settings_account", "settings_media_import"}
         ):
             _perf_call_v457("ui:bottom_navigation", render_global_bottom_navigation, page)
 
