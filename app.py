@@ -44,7 +44,7 @@ def _app_css_v473(markup, **_ignored):
 # Review menu-only update: 2026-09-19 JST
 GENERATED_UPDATE_JST = "2026-09-19T14:54:38+09:00"
 
-APP_BUILD = "v578"
+APP_BUILD = "v579"
 # v578: Improve future-date discovery: accept verified Japanese date lists/ranges and era formats, recheck more ambiguous leads, fix range-start occurrence handling, and keep real source citations.
 # v572: Repair all-zero event results: retain dated/cited venue-unlocated entries as explicitly unverified-distance, add source/failure diagnostics and short negative cache.
 # v571: Expand event discovery to five separately sourced, API-grounded web-search passes
@@ -34911,7 +34911,13 @@ def _events_pending_v577(raw_rows, cited_keys, *, cap=EVENT_SEARCH_FOLLOWUP_LIMI
         citation = _events_url_key_v570(source)
         anchored = bool(citation and citation in cited_keys)
         lead = {"title": title, "venue": venue, "address": str(row.get("address") or "")[:160],
-                "source_url": source if citation else "", "anchored": anchored}
+                "source_url": source if citation else "", "anchored": anchored,
+                "description": re.sub(r"\s+", " ", str(row.get("description") or "")).strip()[:180],
+                "start_date": str(row.get("start_date") or "")[:12],
+                "end_date": str(row.get("end_date") or "")[:12],
+                "event_date": str(row.get("event_date") or "")[:12],
+                "date_evidence": str(row.get("date_evidence") or "")[:350],
+                "latitude": row.get("latitude"), "longitude": row.get("longitude")}
         old = indexed.get(identity)
         if old is None or (anchored, len(lead["address"])) > (old["anchored"], len(old["address"])):
             indexed[identity] = lead
@@ -35321,6 +35327,93 @@ def _events_search_one_source_v571(plan, *, day, category, coarse_lat, coarse_lo
                 "failure_type": type(exc).__name__}
 
 
+def _events_unverified_v579(results, verified, *, day, category, latitude, longitude, radius_km):
+    """Displayable *leads*, NOT confirmations. Never add them to the mapped events.
+
+    Accept only candidates with a name, venue and plausible locality; skip
+    explicitly incompatible dates and remote geocoded venues. A cited link
+    establishes a page reference only, not that the event is on the chosen day.
+    """
+    sought = date.fromisoformat(str(day))
+    def compact(value):
+        return re.sub(r"\W+", "", unicodedata.normalize("NFKC", str(value or "")).casefold())
+    confirmed = {(compact(row.get("title")), compact(row.get("venue")))
+                 for row in list(verified or [])}
+    indexed = {}
+    for origin in results:
+        cited = set(origin.get("sources") or ())
+        for raw in list(origin.get("pending") or [])[:35]:
+            if not isinstance(raw, dict):
+                continue
+            title = re.sub(r"\s+", " ", str(raw.get("title") or "")).strip()[:150]
+            venue = re.sub(r"\s+", " ", str(raw.get("venue") or "")).strip()[:120]
+            if len(title) < 3 or len(venue) < 2:
+                continue
+            identity = (compact(title), compact(venue))
+            if identity in confirmed or not all(identity):
+                continue
+            # An event explicitly scheduled for a different day is not an
+            # undated lead for this one. Nor is a stale earlier-year edition.
+            year_mentions = {int(x) for x in re.findall(r"(?<!\d)20\d{2}(?!\d)", title)}
+            if year_mentions and sought.year not in year_mentions:
+                continue
+            start_raw = str(raw.get("start_date") or "")
+            end_raw = str(raw.get("end_date") or "")
+            event_raw = str(raw.get("event_date") or "")
+            if start_raw or end_raw:
+                try:
+                    start = date.fromisoformat(start_raw or end_raw)
+                    end = date.fromisoformat(end_raw or start_raw)
+                    if (end - start).days < 0 or (end-start).days > 90 or not start <= sought <= end:
+                        continue
+                except (ValueError, TypeError):
+                    pass  # Unparseable text is unknown, not confirmed or disproof.
+            elif event_raw:
+                try:
+                    if date.fromisoformat(event_raw) != sought:
+                        continue
+                except (ValueError, TypeError):
+                    pass
+            try:
+                lat, lon = float(raw.get("latitude")), float(raw.get("longitude"))
+                if math.isfinite(lat) and math.isfinite(lon) and 20 < lat < 46.5 and 122 < lon < 154.5:
+                    distance = _nearby_haversine_m(latitude, longitude, lat, lon)
+                    if distance > float(radius_km) * 1000:
+                        continue
+                else:
+                    distance = None
+            except (ValueError, TypeError):
+                distance = None
+            source = str(raw.get("source_url") or "").strip()
+            source_key = _events_url_key_v570(source)
+            anchored = bool(source_key and source_key in cited)
+            # In a follow-up lead, 'anchored' may refer to a *different* source
+            # pass; never promote an unverified original link to a cited URL.
+            date_evidence = str(raw.get("date_evidence") or "")
+            date_confirmed = bool(_events_date_in_evidence_v577(date_evidence, day, title_hint=title))
+            reason = ("開催日程・出典の照合未完了" if anchored and date_confirmed
+                      else "開催日未確認" if anchored else
+                      "出典未確認" if date_confirmed else "開催日・出典未確認")
+            row = {
+                "title": title, "venue": venue, "address": str(raw.get("address") or "").strip()[:160],
+                "description": str(raw.get("description") or "").strip()[:180],
+                "source_url": source if anchored else "", "reason": reason,
+                "category": category, "distance_m": round(distance) if distance is not None else None,
+                "source_verified": anchored, "date_verified": date_confirmed,
+            }
+            quality = (int(anchored), int(distance is not None), int(bool(row["description"])),
+                       int(bool(row["address"])))
+            prior = indexed.get(identity)
+            if prior is None or quality > prior[0]:
+                indexed[identity] = (quality, row)
+    # Prefer independently cited links, then nearby venues; no invented titles.
+    ordered = sorted(indexed.values(), key=lambda pair: (
+        -pair[0][0], -pair[0][1],
+        pair[1]["distance_m"] if pair[1]["distance_m"] is not None else float("inf"),
+        pair[1]["title"]))
+    return [row for _, row in ordered[:EVENT_SEARCH_MAX_PER_CATEGORY_V570]]
+
+
 def _events_fetch_category_v570(day, category, latitude, longitude, radius_km, place_label):
     """Merge five source families; explain omissions and retry once if truly empty."""
     if not OPENAI_API_KEY:
@@ -35452,15 +35545,18 @@ def _events_fetch_category_v570(day, category, latitude, longitude, radius_km, p
     failed_count = sum(bool(row.get("failed")) for row in results)
     raw_count = sum(int(row.get("raw_count") or 0) for row in results)
     missing_count = sum(item.get("distance_m") is None for item in items)
+    unverified = _events_unverified_v579(
+        results, items, day=day, category=category, latitude=latitude,
+        longitude=longitude, radius_km=radius_km)
     if failed_count == len(results):
         error = "\u691c\u7d22API\u3078\u306e\u63a5\u7d9a\u306b\u5931\u6557\u3057\u307e\u3057\u305f\u3002\u5c11\u3057\u5f85\u3063\u3066\u518d\u8a66\u884c\u3057\u3066\u304f\u3060\u3055\u3044\u3002"
     elif not items and not sources:
         error = "\u691c\u7d22\u7d50\u679c\u306e\u51fa\u5178\u304c\u53d6\u5f97\u3067\u304d\u307e\u305b\u3093\u3067\u3057\u305f\u3002"
-    elif not items and not dated:
-        error = "検索先に候補はありましたが、指定日の開催日程・情報源を確認できませんでした。"
+    elif not items and not dated and not unverified:
+        error = "指定日の開催日程・出典を確認できるイベントは見つかりませんでした。"
     else:
         error = ""
-    return {"items": items, "error": error, "source_domains": source_domains,
+    return {"items": items, "unverified": unverified, "error": error, "source_domains": source_domains,
             "searched_source_count": len({s.split('/')[0] for s in sources}),
             "search_passes": len(results), "supplemented": supplemented,
             "failed_passes": failed_count,
@@ -35507,6 +35603,63 @@ def _events_job_v570(day, category, location, radius_km, *, refresh=False):
         jobs[key] = (now, future)
         return future
 
+
+
+def _events_start_explicit_search_v579(location, *, day=None, radius_km=None):
+    """The ONLY route (besides explicit Refresh) allowed to start paid event jobs."""
+    if not isinstance(location, dict):
+        return False
+    try:
+        lat, lon = float(location["latitude"]), float(location["longitude"])
+        if not (math.isfinite(lat) and math.isfinite(lon) and 20 < lat < 46.5 and 122 < lon < 154.5):
+            return False
+    except (ValueError, KeyError, TypeError):
+        return False
+    selected_day = str(day or _events_selected_date_v574().isoformat())
+    radius = int(radius_km or st.session_state.get("_events_radius_v570") or 15)
+    snapshot_location = dict(location)
+    # One intentional press searches all three categories. Category and view
+    # buttons merely filter the captured results; they NEVER trigger web APIs.
+    futures = _events_futures_v576(selected_day, EVENT_SEARCH_ALL_CATEGORY_V576,
+                                   snapshot_location, radius, refresh=True)
+    st.session_state["_events_explicit_snapshot_v579"] = {
+        "day": selected_day, "radius_km": radius, "location": snapshot_location,
+        "futures": futures, "results": None,
+    }
+    return True
+
+
+def _events_complete_explicit_search_v579(snapshot):
+    """Freeze all 3 results after the explicit search, including empty lists."""
+    if not isinstance(snapshot, dict):
+        return False
+    if isinstance(snapshot.get("results"), dict):
+        return True
+    futures = snapshot.get("futures") or {}
+    if not futures or not all(future.done() for future in futures.values()):
+        return False
+    results = {}
+    for category in EVENT_SEARCH_CATEGORIES_V570:
+        future = futures.get(category)
+        if future is None:
+            results[category] = {"items": [], "unverified": [], "error": "検索されていません。"}
+            continue
+        try:
+            results[category] = future.result() or {"items": [], "unverified": []}
+        except Exception:
+            results[category] = {"items": [], "unverified": [], "error": "検索に失敗しました。再検索してください。"}
+    snapshot["results"] = results
+    snapshot["futures"] = None
+    return True
+
+
+def _events_snapshot_results_v579(snapshot, selection):
+    results = snapshot.get("results") if isinstance(snapshot, dict) else None
+    if not isinstance(results, dict):
+        return None
+    if selection == EVENT_SEARCH_ALL_CATEGORY_V576:
+        return _events_combine_v576(results)
+    return results.get(selection) or {"items": [], "unverified": [], "error": "このカテゴリの検索結果はありません。"}
 
 
 def _events_selection_v576():
@@ -35595,7 +35748,12 @@ def _events_combine_v576(results):
     source_domains = sorted({(urlparse(str(item.get("source_url") or "")).hostname or "").lower().removeprefix("www.")
                              for item in combined if item.get("source_url")})
     return {
-        "items": combined, "error": "／".join(errors),
+        "items": combined,
+        "unverified_by_category": {
+            cat: list((results.get(cat) or {}).get("unverified") or [])[:EVENT_SEARCH_MAX_PER_CATEGORY_V570]
+            for cat in EVENT_SEARCH_CATEGORIES_V570
+        },
+        "error": "／".join(errors),
         "source_domains": source_domains, "searched_source_count": len(source_domains),
         "search_passes": sum(int((r or {}).get("search_passes") or 0) for r in results.values()),
         "failed_passes": sum(int((r or {}).get("failed_passes") or 0) for r in results.values()),
@@ -35931,19 +36089,80 @@ def _events_render_details_v574(items, day, category):
                                 unsafe_allow_html=True)
 
 
+def _events_render_unverified_v579(result, selection, day):
+    """Separated unverified references; never imply date, availability or route."""
+    if selection == EVENT_SEARCH_ALL_CATEGORY_V576:
+        groups = result.get("unverified_by_category") or {}
+        categories = list(EVENT_SEARCH_CATEGORIES_V570)
+    else:
+        groups = {selection: list(result.get("unverified") or [])}
+        categories = [selection]
+    count = sum(len(groups.get(cat) or []) for cat in categories)
+    st.markdown("#### 未確認情報")
+    st.caption("検索で見つかった候補です。指定日の開催・掲載元の確認が完了していません。"
+               "確定したイベントや地図ピンには含めません。")
+    for cat in categories:
+        leads = list(groups.get(cat) or [])[:EVENT_SEARCH_MAX_PER_CATEGORY_V570]
+        with st.expander(f"{cat}｜未確認情報 {len(leads)}件", expanded=True):
+            if not leads:
+                st.caption("未確認の候補はありません。")
+                continue
+            for index, lead in enumerate(leads, 1):
+                with st.container(border=True):
+                    st.markdown(f"**{index}. {html.escape(str(lead.get('title') or '名称未掲載'))}**")
+                    st.caption("会場：" + str(lead.get("venue") or "未確認") +
+                               (" ／ " + str(lead.get("address")) if lead.get("address") else ""))
+                    st.caption("確認状況：" + str(lead.get("reason") or "開催日・出典未確認") +
+                               " ／ 開催時間未確認")
+                    if lead.get("description"):
+                        st.write(str(lead["description"]))
+                    distance = lead.get("distance_m")
+                    st.caption(f"約{distance/1000:.1f}km" if distance is not None else "距離未確認")
+                    url = str(lead.get("source_url") or "")
+                    if not url:
+                        search_terms = (str(lead.get("title") or "") + " " + str(lead.get("venue") or "") +
+                                        " " + f"{date.fromisoformat(day).year}年{date.fromisoformat(day).month}月{date.fromisoformat(day).day}日" + " 開催").strip()
+                        url = "https://www.google.com/search?q=" + quote(search_terms, safe="")
+                        label = "イベント名をブラウザで検索"
+                    else:
+                        label = "参考掲載ページをブラウザで確認"
+                    _events_external_button_v577(url, label, key=f"event_unverified_v579_{cat}_{index}")
+    return count
+
+
 def _events_result_panel_v570():
-    location = st.session_state.get("_events_location_v570")
-    day = _events_selected_date_v574().isoformat()
-    if not isinstance(location, dict):
-        st.info("現在地を取得するか、駅名・地名を入力すると、指定日のイベントを検索します。")
+    # Do not call _events_job_v570 or _events_futures_v576 while rendering.
+    # Otherwise 20-minute cache expiry silently starts a new paid search.
+    snapshot = st.session_state.get("_events_explicit_snapshot_v579")
+    if not isinstance(snapshot, dict):
+        st.info("『現在地から検索する』または『この場所で検索』を押すと、イベントを検索します。")
         return
+    day = str(snapshot["day"])
+    location = snapshot["location"]
+    radius_km = int(snapshot["radius_km"])
     selection = _events_selection_v576()
-    radius_km = int(st.session_state.get("_events_radius_v570") or 15)
-    futures = _events_futures_v576(day, selection, location, radius_km)
-    result = _events_selected_results_v576(futures, selection)
-    if result is None:
+    if not _events_complete_explicit_search_v579(snapshot):
+        futures = snapshot.get("futures") or {}
         done = sum(future.done() for future in futures.values())
-        st.info(f"{_events_display_day_v574(day)}の{selection}イベントを検索中です（{done}/{len(futures)}カテゴリ完了）。")
+        st.info(f"{_events_display_day_v574(day)}のイベントを検索中です（{done}/{len(futures)}カテゴリ完了）。")
+        return
+    # The result always carries the searched date/location. UI setting changes
+    # never mislabel OLD results as newly queried ones.
+    current_location = st.session_state.get("_events_location_v570")
+    try:
+        moved = (not isinstance(current_location, dict) or
+                 abs(float(current_location["latitude"]) - float(location["latitude"])) > .000001 or
+                 abs(float(current_location["longitude"]) - float(location["longitude"])) > .000001)
+    except (ValueError, TypeError, KeyError):
+        moved = True
+    changed = (day != _events_selected_date_v574().isoformat() or
+               radius_km != int(st.session_state.get("_events_radius_v570") or 15) or moved)
+    st.caption(f"前回の検索条件：{_events_display_day_v574(day)}／"
+               f"{location.get('place_label') or '検索地点'}／半径{radius_km}km")
+    if changed:
+        st.info("検索条件が変更されています。表示中は前回の検索結果です。新しい条件で検索するには検索ボタンを押してください。")
+    result = _events_snapshot_results_v579(snapshot, selection)
+    if result is None:
         return
     if result.get("error"):
         st.warning(str(result["error"]))
@@ -35952,7 +36171,8 @@ def _events_result_panel_v570():
     items = list(result.get("items") or [])[:max_items]
     if not items:
         if not result.get("error"):
-            st.info(f"{_events_display_day_v574(day)}の{selection}イベントを確認できませんでした。『最新情報に更新』で再検索できます。")
+            st.info(f"{_events_display_day_v574(day)}の{selection}イベントは開催日・出典を確認できませんでした。"
+                    "未確認の候補は下の『未確認情報』に表示します。")
         if result.get("search_passes"):
             st.caption("検索状況：" + str(result.get("search_passes")) + "系統、候補 " +
                        str(result.get("raw_count") or 0) + "件、出典照合 " +
@@ -35986,26 +36206,27 @@ def _events_result_panel_v570():
             _events_render_map_v574(items, location)
         else:
             _events_render_details_v574(items, day, selection)
-    if st.button("最新情報に更新", use_container_width=True, key=f"event_refresh_v570_{selection}"):
-        _events_futures_v576(day, selection, location, radius_km, refresh=True)
+    _events_render_unverified_v579(result, selection, day)
+    if st.button("最新情報に更新（前回の検索地点）", use_container_width=True,
+                 key=f"event_refresh_v579_{selection}"):
+        _events_start_explicit_search_v579(location, day=day, radius_km=radius_km)
         st.rerun(scope="app")
 
 
 # The 4-second fragment exists only while a search is pending. After completion
 # do one app rerun, then render static results; Leaflet does not reset every 4 sec.
 def _events_wait_for_result_v574():
-    location = st.session_state.get("_events_location_v570")
-    if not isinstance(location, dict):
+    # Streamlit reruns this fragment only while an EXPLICITLY started search
+    # remains in flight. No code path starts a job on fragment refresh.
+    snapshot = st.session_state.get("_events_explicit_snapshot_v579")
+    if not isinstance(snapshot, dict):
         return
-    day = _events_selected_date_v574().isoformat()
-    selection = _events_selection_v576()
-    radius_km = int(st.session_state.get("_events_radius_v570") or 15)
-    futures = _events_futures_v576(day, selection, location, radius_km)
-    done = sum(future.done() for future in futures.values())
-    if done == len(futures):
+    if _events_complete_explicit_search_v579(snapshot):
         st.rerun(scope="app")
-    else:
-        st.info(f"{_events_display_day_v574(day)}の{selection}イベントを検索中です（{done}/{len(futures)}カテゴリ完了）。")
+        return
+    futures = snapshot.get("futures") or {}
+    done = sum(future.done() for future in futures.values())
+    st.info(f"{_events_display_day_v574(snapshot['day'])}のイベントを検索中です（{done}/{len(futures)}カテゴリ完了）。")
 
 
 if hasattr(st, "fragment"):
@@ -36027,11 +36248,13 @@ def page_events_v570():
     st.caption(_events_display_day_v574(_events_selected_date_v574()) + "に開催予定の、周辺イベントを検索します。")
     component = _get_help_auto_location_component_v523()
     location = st.session_state.get("_events_location_v570")
-    auto_start = not isinstance(location, dict) and not st.session_state.get("_events_location_error_v570")
+    # Never request GPS or start event searches when navigating back to this page.
+    auto_start = False
     if component is not None:
         serial = int(st.session_state.get("_events_location_serial_v570") or 0)
         response = component(
-            data={"auto_start": bool(auto_start)}, key=f"events_location_v570_{serial}",
+            data={"auto_start": False, "button_label": "現在地から検索する"},
+            key=f"events_location_v570_{serial}",
             on_location_change=lambda: None, on_location_error_change=lambda: None,
         )
         result = getattr(response, "location", None)
@@ -36050,6 +36273,7 @@ def page_events_v570():
                             "accuracy_m": acc, "place_label": label,
                         }
                         st.session_state.pop("_events_location_error_v570", None)
+                        _events_start_explicit_search_v579(st.session_state["_events_location_v570"])
                         st.rerun(scope="app")
                 except (ValueError, TypeError):
                     pass
@@ -36073,6 +36297,7 @@ def page_events_v570():
             if place_location:
                 st.session_state["_events_location_v570"] = place_location
                 st.session_state.pop("_events_location_error_v570", None)
+                _events_start_explicit_search_v579(place_location)
                 st.rerun(scope="app")
             else:
                 st.error("場所が見つかりません。駅名・区名などを入力してください。")
@@ -36100,16 +36325,14 @@ def page_events_v570():
         if st.session_state.get("_events_view_v574") == "一覧":
             st.session_state["_events_view_v574"] = "リスト"
         st.radio("表示形式", ["詳細", "リスト", "地図"], horizontal=True, key="_events_view_v574")
-        # Only selected categories start jobs. 「一覧」 reuses all three cached
-        # category results; changing display mode never launches a new search.
-        futures = _events_futures_v576(_events_selected_date_v574().isoformat(),
-                                       _events_selection_v576(), location,
-                                       int(st.session_state.get("_events_radius_v570") or 15))
-        if all(future.done() for future in futures.values()):
-            _events_result_panel_v570()
-        else:
+        # Changing category, date, radius or view NEVER starts network queries.
+        snapshot = st.session_state.get("_events_explicit_snapshot_v579")
+        if isinstance(snapshot, dict) and not _events_complete_explicit_search_v579(snapshot):
             _events_wait_fragment_v574()
-    st.caption("開催状況・参加条件・予約の要否は、必ず掲載元の案内で確認してください。「一覧」は3カテゴリを統合表示します。各カテゴリの検索結果は約20分再利用します。")
+        else:
+            _events_result_panel_v570()
+    st.caption("開催状況・参加条件・予約の要否は、必ず掲載元で確認してください。『一覧』は3カテゴリ統合表示。"
+               "検索結果は再検索するまで保持し、画面を開き直しても自動検索しません。")
 
 
 def page_home():
@@ -39534,8 +39757,9 @@ export default function(component) {
   const status = parentElement.querySelector('#help-auto-location-status-v523');
   if (!button || !status) return;
   let cancelled=false, watchId=null, timer=null, best=null, startedAt=0, running=false;
+  button.textContent=String(data?.button_label||'📍 現在地からもう一度探す');
   const stop=()=>{if(watchId!==null&&navigator.geolocation){try{navigator.geolocation.clearWatch(watchId)}catch(_){}watchId=null}if(timer){clearTimeout(timer);timer=null}};
-  const unlock=()=>{if(!cancelled){running=false;button.disabled=false;button.textContent='📍 現在地からもう一度探す'}};
+  const unlock=()=>{if(!cancelled){running=false;button.disabled=false;button.textContent=String(data?.button_label||'📍 現在地からもう一度探す')}};
   const emit=()=>{if(cancelled||!best?.coords)return;stop();const accuracy=Number(best.coords.accuracy||0);status.textContent=`現在地を取得しました（±${Math.round(accuracy)}m）。周辺を検索しています…`;setTriggerValue('location',{token:`${Date.now()}_${Math.random().toString(36).slice(2)}`,latitude:Number(best.coords.latitude),longitude:Number(best.coords.longitude),accuracy_m:accuracy,measured_at:new Date(best.timestamp||Date.now()).toISOString()});unlock()};
   const fail=(message,code=0)=>{stop();status.textContent=String(message||'現在地を取得できませんでした。');setTriggerValue('location_error',{token:`${Date.now()}_${Math.random().toString(36).slice(2)}`,code:Number(code||0),message:String(message||'')});unlock()};
   const locate=()=>{if(running)return;if(!navigator.geolocation){fail('この端末では位置情報を取得できません。下の地名入力を使ってください。');return}running=true;button.disabled=true;button.textContent='📍 現在地を確認中…';status.textContent='高精度GPSで現在地を確認しています…';best=null;startedAt=Date.now();watchId=navigator.geolocation.watchPosition((position)=>{if(cancelled||!position?.coords)return;const accuracy=Number(position.coords.accuracy||Number.POSITIVE_INFINITY);const bestAccuracy=best?Number(best.coords?.accuracy||Number.POSITIVE_INFINITY):Number.POSITIVE_INFINITY;if(!best||accuracy<bestAccuracy)best=position;const current=best?Number(best.coords?.accuracy||Number.POSITIVE_INFINITY):Number.POSITIVE_INFINITY;status.textContent=Number.isFinite(current)?`現在地を確認しています… ±${Math.round(current)}m`:'現在地を確認しています…';if(current>0&&current<=25){emit();return}if(current>0&&current<=55&&(Date.now()-startedAt)>=1200)emit()},(error)=>{const current=best?Number(best.coords?.accuracy||Number.POSITIVE_INFINITY):Number.POSITIVE_INFINITY;if(best&&current<=55){emit();return}const code=Number(error?.code||0);fail(code===1?'位置情報の利用が許可されていません。下の地名入力を使ってください。':code===3?'現在地の取得に時間がかかりました。もう一度お試しください。':'現在地を取得できませんでした。下の地名入力を使ってください。',code)},{enableHighAccuracy:true,timeout:10000,maximumAge:0});timer=setTimeout(()=>{const current=best?Number(best.coords?.accuracy||Number.POSITIVE_INFINITY):Number.POSITIVE_INFINITY;if(best&&Number.isFinite(current)&&current<=90)emit();else fail('現在地を高精度で取得できませんでした。下の地名入力も使えます。',3)},10500)};
