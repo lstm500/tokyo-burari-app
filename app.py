@@ -44,7 +44,7 @@ def _app_css_v473(markup, **_ignored):
 # Review menu-only update: 2026-09-19 JST
 GENERATED_UPDATE_JST = "2026-09-19T14:54:38+09:00"
 
-APP_BUILD = "v580"
+APP_BUILD = "v581"
 # v578: Improve future-date discovery: accept verified Japanese date lists/ranges and era formats, recheck more ambiguous leads, fix range-start occurrence handling, and keep real source citations.
 # v572: Repair all-zero event results: retain dated/cited venue-unlocated entries as explicitly unverified-distance, add source/failure diagnostics and short negative cache.
 # v571: Expand event discovery to five separately sourced, API-grounded web-search passes
@@ -34413,6 +34413,20 @@ def _events_day_evidence_v574(raw, sought):
         return False
 
 
+# v581: Never search, cite, or display events sourced from these domains.
+# The hostname check also covers www. and other subdomains, but not lookalikes.
+EVENT_SEARCH_BLOCKED_DOMAINS_V581 = ("koko.tokyo",)
+
+
+def _events_source_blocked_v581(value):
+    try:
+        hostname = (urlparse(str(value or "").strip()).hostname or "").lower().rstrip(".")
+        return any(hostname == domain or hostname.endswith("." + domain)
+                   for domain in EVENT_SEARCH_BLOCKED_DOMAINS_V581)
+    except (ValueError, TypeError):
+        return False
+
+
 def _events_url_key_v570(value):
     """Stable, strict source link identity: never trust an uncited AI event."""
     try:
@@ -34420,6 +34434,8 @@ def _events_url_key_v570(value):
         if parsed.scheme != "https" or not parsed.hostname:
             return ""
         host = parsed.hostname.lower().removeprefix("www.")
+        if _events_source_blocked_v581(value):
+            return ""
         if host in {"localhost", "127.0.0.1", "0.0.0.0"}:
             return ""
         path = (parsed.path or "/").rstrip("/") or "/"
@@ -35042,6 +35058,9 @@ def _events_pending_v577(raw_rows, cited_keys, *, cap=EVENT_SEARCH_FOLLOWUP_LIMI
         if not all(identity):
             continue
         source = str(row.get("source_url") or row.get("evidence_url") or "")
+        if (_events_source_blocked_v581(row.get("source_url")) or
+                _events_source_blocked_v581(row.get("evidence_url"))):
+            continue
         citation = _events_url_key_v570(source)
         anchored = bool(citation and citation in cited_keys)
         lead = {"title": title, "venue": venue, "address": str(row.get("address") or "")[:160],
@@ -35288,6 +35307,7 @@ def _events_followup_verify_v577(candidates, *, day, category, coarse_lat,
         f"別のWeb検索でもう一度調べてください。対象地域：{place_label}、"
         f"概略位置 {coarse_lat:.2f},{coarse_lon:.2f}、半径{radius_km}km。ジャンル：{category}。\n"
         "候補ごとに『イベント名＋会場＋開催年月日』で個別検索し、自治体・主催者・会場の公式案内を優先。"
+        "koko.tokyo とそのサブドメインは検索元・参照元・出典として使用しない。"
         "初回の記事だけで日付が曖昧なら、公式サイトの開催予定表、同イベントの別サイト、"
         "主催者告知を探し直すこと。候補のfound_page_hintはヒントに過ぎず、信頼しない。"
         f"ページにイベントの開催日が{day_value.year}年で明記されていること。"
@@ -35314,7 +35334,8 @@ def _events_followup_verify_v577(candidates, *, day, category, coarse_lat,
             response = client.responses.create(
                 model=EVENT_SEARCH_MODEL_V570,
                 tools=[{"type": "web_search", "search_context_size": "high",
-                        "user_location": {"type": "approximate", "country": "JP"}}],
+                        "user_location": {"type": "approximate", "country": "JP"},
+                        "filters": {"blocked_domains": list(EVENT_SEARCH_BLOCKED_DOMAINS_V581)}}],
                 tool_choice="required", include=["web_search_call.action.sources"],
                 input=prompt, max_output_tokens=4300, store=False,
             )
@@ -35370,13 +35391,19 @@ def _events_search_one_source_v571(plan, *, day, category, coarse_lat, coarse_lo
     tool = {"type": "web_search", "search_context_size": context_size,
             "user_location": {"type": "approximate", "country": "JP"}}
     if domains:
-        tool["filters"] = {"allowed_domains": list(domains)}
+        allowed = [domain for domain in domains if not any(
+            domain == blocked or domain.endswith("." + blocked)
+            for blocked in EVENT_SEARCH_BLOCKED_DOMAINS_V581)]
+        tool["filters"] = {"allowed_domains": allowed}
+    else:
+        tool["filters"] = {"blocked_domains": list(EVENT_SEARCH_BLOCKED_DOMAINS_V581)}
     prompt = (
         f"日本時間の指定日 {day}（{date.fromisoformat(day).year}年{date.fromisoformat(day).month}月{date.fromisoformat(day).day}日）に"
         f"現地開催予定の日本の{category}イベントをウェブ検索してください。\n"
         f"検索地点：{place_label}付近（概略座標 {coarse_lat:.2f}, {coarse_lon:.2f}）、半径{radius_km}km。\n"
         f"対象：{EVENT_SEARCH_CATEGORIES_V570[category]}。\n"
         f"今回の情報源：{plan['name']}。探し方：{plan['focus']}\n"
+        "koko.tokyo とそのサブドメインは検索元・参照元・出典として使用しない。"
         "対象地域を実際に検索して、開催日・会場・イベント名称が掲載されたイベントごとのページを確認すること。"
         "検索元が開催予定日でなく『申込締切日』や『記事公開日』を示しているだけなら採用しない。"
         "指定日の開催が確認できるもののみ。未来の日付なら開催予定を検索すること。"
@@ -35519,6 +35546,8 @@ def _events_unverified_v579(results, verified, *, day, category, latitude, longi
             except (ValueError, TypeError):
                 distance = None
             source = str(raw.get("source_url") or "").strip()
+            if _events_source_blocked_v581(source):
+                continue
             source_key = _events_url_key_v570(source)
             anchored = bool(source_key and source_key in cited)
             # In a follow-up lead, 'anchored' may refer to a *different* source
@@ -35725,7 +35754,7 @@ def _events_job_v570(day, category, location, radius_km, *, refresh=False):
     """Account-safe short-lived per-area cache; one in-flight search per category."""
     latitude = float(location["latitude"])
     longitude = float(location["longitude"])
-    key = ("v578", day, category, round(latitude, 2), round(longitude, 2), int(radius_km))
+    key = ("v581", day, category, round(latitude, 2), round(longitude, 2), int(radius_km))
     runtime = _events_runtime_v570()
     now = time.monotonic()
     with runtime["lock"]:
@@ -35793,7 +35822,7 @@ def _events_complete_explicit_search_v579(snapshot):
             results[category] = {"items": [], "unverified": [], "error": "検索されていません。"}
             continue
         try:
-            results[category] = future.result() or {"items": [], "unverified": []}
+            results[category] = _events_strip_blocked_v581(future.result())
         except Exception:
             results[category] = {"items": [], "unverified": [], "error": "検索に失敗しました。再検索してください。"}
     snapshot["results"] = results
@@ -35801,13 +35830,30 @@ def _events_complete_explicit_search_v579(snapshot):
     return True
 
 
+def _events_strip_blocked_v581(data):
+    """Filter old explicit snapshots and cached results without starting a search."""
+    if not isinstance(data, dict):
+        return {"items": [], "unverified": []}
+    output = dict(data)
+    output["items"] = [row for row in data.get("items") or []
+                       if isinstance(row, dict) and not _events_source_blocked_v581(row.get("source_url"))]
+    output["unverified"] = [row for row in data.get("unverified") or []
+                            if isinstance(row, dict) and not _events_source_blocked_v581(row.get("source_url"))]
+    if "source_domains" in output:
+        output["source_domains"] = [host for host in data.get("source_domains") or []
+                                    if not _events_source_blocked_v581("https://" + str(host))]
+        output["searched_source_count"] = len(output["source_domains"])
+    return output
+
+
 def _events_snapshot_results_v579(snapshot, selection):
     results = snapshot.get("results") if isinstance(snapshot, dict) else None
     if not isinstance(results, dict):
         return None
+    clean = {category: _events_strip_blocked_v581(result) for category, result in results.items()}
     if selection == EVENT_SEARCH_ALL_CATEGORY_V576:
-        return _events_combine_v576(results)
-    return results.get(selection) or {"items": [], "unverified": [], "error": "このカテゴリの検索結果はありません。"}
+        return _events_combine_v576(clean)
+    return clean.get(selection) or {"items": [], "unverified": [], "error": "このカテゴリの検索結果はありません。"}
 
 
 def _events_selection_v576():
