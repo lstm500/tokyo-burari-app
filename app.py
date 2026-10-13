@@ -44,7 +44,8 @@ def _app_css_v473(markup, **_ignored):
 # Review menu-only update: 2026-09-19 JST
 GENERATED_UPDATE_JST = "2026-09-19T14:54:38+09:00"
 
-APP_BUILD = "v583"
+APP_BUILD = "v585"
+# v584: Cost-bound nearby event searches to one cited web-search tool call per category, eliminate automatic follow-ups and venue API geocoding, reuse multi-hour cached results, and preserve explicit refresh only.
 # v578: Improve future-date discovery: accept verified Japanese date lists/ranges and era formats, recheck more ambiguous leads, fix range-start occurrence handling, and keep real source citations.
 # v572: Repair all-zero event results: retain dated/cited venue-unlocated entries as explicitly unverified-distance, add source/failure diagnostics and short negative cache.
 # v571: Expand event discovery to five separately sourced, API-grounded web-search passes
@@ -34314,7 +34315,7 @@ def _render_home_fit_v476():
 
 
 # ============================================================
-# v570: Nearby events happening TODAY (web-search grounded)
+# v585: Nearby events during selected seven-day window (web-search grounded)
 # ============================================================
 # Searches are initiated only from this dedicated page. The Home screen does not
 # perform event searches, and a category change never reloads another category.
@@ -34330,6 +34331,14 @@ EVENT_SEARCH_ALL_CATEGORY_V576 = "一覧"
 EVENT_SEARCH_ALL_MAX_V576 = EVENT_SEARCH_MAX_PER_CATEGORY_V570 * len(EVENT_SEARCH_CATEGORIES_V570)
 EVENT_SEARCH_CACHE_SECONDS_V570 = 20 * 60
 EVENT_SEARCH_NEGATIVE_CACHE_SECONDS_V572 = 90
+# v584: Respect a strict budget for user-initiated event searches.
+# One hosted-search request per category (3 for the combined 「一覧」 search),
+# and at most one billable web-search tool invocation inside each response.
+# No paid candidate follow-up or paid venue-geocoding calls are automatic.
+EVENT_SEARCH_WEB_CALLS_PER_CATEGORY_V584 = 1
+EVENT_SEARCH_CACHE_TODAY_V584 = 3 * 60 * 60
+EVENT_SEARCH_CACHE_FUTURE_V584 = 12 * 60 * 60
+EVENT_SEARCH_CACHE_EMPTY_V584 = 15 * 60
 # v573: Expand publisher coverage adaptively, not on Home or on unrelated pages.
 # Three extra source-family searches run only if initial results lack breadth/depth.
 EVENT_SEARCH_SUPPLEMENT_MIN_SITES_V573 = 4
@@ -35137,14 +35146,14 @@ def _events_web_search_request_v582(*, prompt, domains, context_size, timeout_se
                           ", ".join(valid_domains[:100]) + "。"
                           "対象外サイトのページは候補に使わない。")
     search_prompt += "\n検索元・参照元から koko.tokyo とそのサブドメインを除外。"
-    client = OpenAI(api_key=OPENAI_API_KEY, timeout=timeout_seconds, max_retries=1)
+    client = OpenAI(api_key=OPENAI_API_KEY, timeout=timeout_seconds, max_retries=0)
 
     def request_with(config):
         with _events_web_search_semaphore_v571:
             return client.responses.create(
                 model=EVENT_SEARCH_MODEL_V570, tools=[config], tool_choice="required",
                 include=["web_search_call.action.sources"], input=search_prompt,
-                max_output_tokens=max_output_tokens, store=False,
+                max_output_tokens=max_output_tokens, max_tool_calls=EVENT_SEARCH_WEB_CALLS_PER_CATEGORY_V584, store=False,
             )
 
     try:
@@ -35902,6 +35911,94 @@ def _events_fetch_category_v570(day, category, latitude, longitude, radius_km, p
             "checked_at": datetime.now(ZoneInfo(APP_TIMEZONE)).strftime("%H:%M")}
 
 
+# v584: The official/venue/specialist/family/regional searches are consolidated
+# into ONE evidence-backed query per category. A search-source plan does not
+# generate a separate paid API request. Verification of uncertain events stays
+# in the existing 「未確認情報」 section instead of launching follow-up calls.
+def _events_compact_source_plan_v584(category, latitude, longitude, radius_km, place_label):
+    original = _events_source_plans_v571(category, latitude, longitude)
+    municipal = _events_nearby_ward_offices_v580(latitude, longitude, radius_km, place_label)
+    ward_names = "、".join(name for name, _ in municipal[:6])
+    agency_sites = "、".join(EVENTS_PUBLIC_AGENCIES_V580[category][:5])
+    specialist_sites = "、".join(original[2].get("domains") or [])
+    family_sites = "、".join((original[3].get("domains") or [])[:5])
+    # The model can discover additional actual publications. The site examples
+    # are hints and MUST NOT count as sources until searched/cited.
+    return {
+        "name": "地域・公共施設・文化スポーツ統合検索（省API）",
+        "domains": None,  # A single query spans different actual publishers.
+        "focus": (
+            "限られた検索回数で、該当日に開催される近隣イベントをまとめて調べる。"
+            "優先順位：自治体と公共施設の公式行事カレンダー、実際の主催者・会場、"
+            "専門サイト、地域ニュース・親子情報サイト。"
+            + ("まず近隣の自治体 " + ward_names + " の公式発表を確認。" if ward_names else
+               "まず検索地付近の市区町村公式サイトを探す。")
+            + "公共施設の参考サイト：" + agency_sites + "。"
+            + "分野別の参考サイト：" + specialist_sites + "。"
+            + "親子・地域情報の参考サイト：" + family_sites + "。"
+            + "これらは検索のヒントであり、必ず実際の検索結果を参照して出典を付ける。"
+            "同じイベントを複数サイトで見つけた場合は公式開催案内を優先する。"
+            "開催日が曖昧な候補はpending_eventsへ記録し、勝手に確定しない。"
+        ),
+    }
+
+
+def _events_fetch_category_v584(day, category, latitude, longitude, radius_km, place_label):
+    """Bound paid event-search requests to one per category, without fan-out.
+
+    Accept only cited date-confirmed occurrences. No Places API, Nominatim venue
+    geocoding, supplementary web queries, or automatic paid follow-up occurs.
+    Venue coordinates given by a genuine searched source can still be rendered;
+    otherwise the venue has unknown distance, not an invented map position.
+    """
+    if not OPENAI_API_KEY:
+        return {"items": [], "unverified": [], "error": "OPENAI_API_KEY が未設定です。",
+                "search_passes": 0, "failed_passes": 0, "checked_at": ""}
+    if category not in EVENT_SEARCH_CATEGORIES_V570:
+        return {"items": [], "unverified": [], "error": "不明なカテゴリです。",
+                "search_passes": 0, "failed_passes": 0, "checked_at": ""}
+    plan = _events_compact_source_plan_v584(category, latitude, longitude,
+                                            radius_km, place_label)
+    result = _events_search_one_source_v571(
+        plan, day=day, category=category,
+        coarse_lat=round(float(latitude), 2),
+        coarse_lon=round(float(longitude), 2),
+        radius_km=radius_km, place_label=str(place_label or "").strip()[:65],
+    )
+    if result.get("failed"):
+        return _events_fast_failure_v582([result])
+    sources = set(result.get("sources") or ())
+    cited_rows = [row for row in result.get("items") or [] if isinstance(row, dict)
+                  and _events_url_key_v570(row.get("source_url")) in sources]
+    dated = _events_prefilter_v571(cited_rows, day=day, sources=sources)
+    # Pure local validation: do NOT resolve missing venues by external API.
+    items = _events_normalize_v570(dated, day=day, category=category,
+                                    lat=latitude, lon=longitude,
+                                    radius_km=radius_km, sources=sources)
+    unverified = _events_unverified_v579(
+        [result], items, day=day, category=category,
+        latitude=latitude, longitude=longitude, radius_km=radius_km)
+    domains = sorted({(urlparse(row.get("source_url") or "").hostname or "").lower().removeprefix("www.")
+                      for row in items if row.get("source_url")})
+    if not items and not sources:
+        error = "検索結果の出典が取得できませんでした。"
+    elif not items and not unverified:
+        error = "指定日に開催するイベントの開催日・出典を確認できませんでした。"
+    else:
+        error = ""
+    return {
+        "items": items, "unverified": unverified, "error": error,
+        "source_domains": domains,
+        "searched_source_count": len({key.split("/", 1)[0] for key in sources}),
+        "search_passes": 1, "failed_passes": 0,
+        "raw_count": int(result.get("raw_count") or 0),
+        "cited_count": len(cited_rows), "dated_count": len(dated),
+        "distance_unverified_count": sum(row.get("distance_m") is None for row in items),
+        "followup_attempted": 0, "followup_accepted": 0,
+        "checked_at": datetime.now(ZoneInfo(APP_TIMEZONE)).strftime("%H:%M"),
+    }
+
+
 @st.cache_resource(show_spinner=False)
 def _events_runtime_v570():
     return {"lock": threading.RLock(), "jobs": {},
@@ -35909,39 +36006,428 @@ def _events_runtime_v570():
 
 
 def _events_job_v570(day, category, location, radius_km, *, refresh=False):
-    """Account-safe short-lived per-area cache; one in-flight search per category."""
-    latitude = float(location["latitude"])
-    longitude = float(location["longitude"])
-    key = ("v583", day, category, round(latitude, 2), round(longitude, 2), int(radius_km))
+    """v584: Cross-session cache with strict API budget per deliberate search.
+
+    Cache keys use selected day, category, coarse location and radius; tapping
+    category/date/view never calls here. Only explicit search and refresh do.
+    """
+    latitude, longitude = float(location["latitude"]), float(location["longitude"])
+    key = ("v584", day, category, round(latitude, 2), round(longitude, 2), int(radius_km))
     runtime = _events_runtime_v570()
     now = time.monotonic()
     with runtime["lock"]:
         jobs = runtime["jobs"]
-        for old, (started, future) in list(jobs.items()):
-            if now - started > EVENT_SEARCH_CACHE_SECONDS_V570 and future.done():
-                jobs.pop(old, None)
-        stored = jobs.get(key)
-        if not refresh and stored:
-            ttl = EVENT_SEARCH_CACHE_SECONDS_V570
-            if stored[1].done():
+
+        def ttl_for(old_key, future):
+            ttl = (EVENT_SEARCH_CACHE_FUTURE_V584 if old_key[1] > now_jst().date().isoformat()
+                   else EVENT_SEARCH_CACHE_TODAY_V584)
+            if future.done():
                 try:
-                    if not (stored[1].result().get("items") or []):
-                        ttl = EVENT_SEARCH_NEGATIVE_CACHE_SECONDS_V572
+                    data = future.result()
+                    if not (data.get("items") or data.get("unverified")):
+                        return EVENT_SEARCH_CACHE_EMPTY_V584
                 except Exception:
-                    ttl = EVENT_SEARCH_NEGATIVE_CACHE_SECONDS_V572
-            if now - stored[0] < ttl or not stored[1].done():
-                return stored[1]
-        if stored and not stored[1].done():
-            return stored[1]  # avoid duplicate paid web searches
-        future = runtime["pool"].submit(_events_fetch_category_v570, day, category, latitude,
-                                         longitude, int(radius_km), str(location.get("place_label") or ""))
+                    return EVENT_SEARCH_CACHE_EMPTY_V584
+            return ttl
+
+        for old_key, (started, future) in list(jobs.items()):
+            if future.done() and now - started >= ttl_for(old_key, future):
+                jobs.pop(old_key, None)
+        # Constrain global memory use without cancelling any in-flight job.
+        if len(jobs) > 240:
+            removable = sorted(((started, k) for k, (started, f) in jobs.items() if f.done()))
+            for _, old_key in removable[:len(jobs) - 200]:
+                jobs.pop(old_key, None)
+        stored = jobs.get(key)
+        if stored:
+            started, future = stored
+            if not future.done() or (not refresh and now - started < ttl_for(key, future)):
+                return future
+        future = runtime["pool"].submit(
+            _events_fetch_category_v584, day, category, latitude,
+            longitude, int(radius_km), str(location.get("place_label") or ""))
         jobs[key] = (now, future)
         return future
 
 
+# v585: ONE 7-day search window, instead of seven paid searches for seven dates.
+# The user may choose a starting date up to one calendar month in the future.
+# The selected final week is shortened at the existing one-month horizon.
+EVENT_SEARCH_WEEK_DAYS_V585 = 7
+EVENT_SEARCH_WEEK_MAX_OUTPUT_TOKENS_V585 = 8000
 
-def _events_start_explicit_search_v579(location, *, day=None, radius_km=None):
-    """The ONLY route (besides explicit Refresh) allowed to start paid event jobs."""
+
+def _events_week_days_v585(start_day, *, today=None):
+    beginning = date.fromisoformat(str(start_day))
+    reference = today or now_jst().date()
+    final = _events_last_selectable_day_v575(reference)
+    if beginning < reference or beginning > final:
+        return []
+    return [(beginning + timedelta(days=offset)).isoformat()
+            for offset in range(EVENT_SEARCH_WEEK_DAYS_V585)
+            if beginning + timedelta(days=offset) <= final]
+
+
+def _events_week_is_occurrence_v585(raw, day):
+    """Require a cited exact occurrence or cited date range, not just an AI date."""
+    if not isinstance(raw, dict):
+        return False
+    evidence = str(raw.get("date_evidence") or raw.get("schedule_evidence") or "")
+    if not _events_date_in_evidence_v577(evidence, day, title_hint=raw.get("title")):
+        return False
+    try:
+        target = date.fromisoformat(day)
+        occurrences = raw.get("occurrence_dates")
+        if isinstance(occurrences, list) and occurrences:
+            parsed_occurrences = set()
+            for value in occurrences[:45]:
+                try:
+                    parsed_occurrences.add(date.fromisoformat(str(value)))
+                except (ValueError, TypeError):
+                    continue
+            if target not in parsed_occurrences:
+                return False
+        explicit_day = raw.get("event_date")
+        if explicit_day and not (isinstance(occurrences, list) and occurrences):
+            explicit = date.fromisoformat(str(explicit_day))
+            if explicit != target:
+                # Older models put the start day in event_date for a continuous
+                # exhibition. Allow that only when the cited period proves this day.
+                if not (explicit == date.fromisoformat(str(raw.get("start_date"))) and
+                        date.fromisoformat(str(raw.get("end_date"))) > explicit):
+                    return False
+        start = date.fromisoformat(str(raw.get("start_date") or raw.get("event_date") or day))
+        end = date.fromisoformat(str(raw.get("end_date") or raw.get("start_date") or raw.get("event_date") or day))
+        return start <= target <= end and 0 <= (end - start).days <= 90
+    except (ValueError, TypeError):
+        return False
+
+
+def _events_week_assign_v585(raw, day):
+    """Materialize one daily occurrence only after citation and evidence checks."""
+    if not _events_week_is_occurrence_v585(raw, day):
+        return None
+    fixed = dict(raw)
+    fixed["start_date"] = str(raw.get("start_date") or raw.get("event_date") or day)
+    fixed["end_date"] = str(raw.get("end_date") or raw.get("start_date") or raw.get("event_date") or day)
+    fixed["event_date"] = day
+    return fixed
+
+
+def _events_search_week_one_category_v585(start_day, days, category, latitude, longitude, radius_km, place_label):
+    """A single hosted Web search per category across all seven dates."""
+    plan = _events_compact_source_plan_v584(category, latitude, longitude, radius_km, place_label)
+    end_day = days[-1]
+    exact_days = "、".join(days)
+    prompt = (
+        f"日本時間 {start_day} から {end_day} までのイベントを検索。対象日：{exact_days}。"
+        f"検索地点：{str(place_label or '')[:65]}、概略座標 {float(latitude):.2f}, {float(longitude):.2f}、"
+        f"半径{radius_km}km以内。カテゴリ：{category}（{EVENT_SEARCH_CATEGORIES_V570[category]}）。\n"
+        f"検索方針：{plan['focus']}\n"
+        "対象7日間の各日を偏らず確認する。自治体・公的施設の公式カレンダー、"
+        "主催者・会場の個別案内、スポーツ・文化の専門サイト、地域情報を検索する。"
+        "実際に開いて確認した掲載元URL以外は出典にしない。koko.tokyo（全サブドメイン）除外。"
+        "開催日と掲載日・申込期限を混同せず、過去年・中止・遠方・オンライン限定・常設営業・"
+        "子ども参加不可のイベントは除外。開催日や出典が不明な候補はpending_eventsに分ける。"
+        "各日に2～4件程度を目標に、日ごとに地域スポーツ・文化・自治体行事を分散する。"
+        "特定日に候補が少なければ空欄のままにし、架空情報で埋めない。"
+        "週に最大24件程度、ページを実際に確認できた分だけ返す。"
+        "日によって開催時刻や会場が異なる催しは、日付ごとに別イベント行とする。"
+        "各events行にtitle,venue,address,start_date,end_date,event_date,"
+        "occurrence_dates,start_time,end_time,description,date_evidence,"
+        "latitude,longitude,source_urlを指定。"
+        "全日開催の会期イベントは実施が確認できる各日をoccurrence_datesで列挙。"
+        "休館日・休演日・土日限定などを考慮し、未確認の開催日を列挙しない。"
+        "1回限りならevent_dateにその実施日を入力。"
+        "開始・終了時刻は掲載元で確認できるHH:MM形式、不明なら空文字。"
+        "開場時刻・受付時刻は開始時刻にしない。会場座標を推測しない。不明ならnull。"
+        "source_urlはWeb検索の参照URLそのもの。URLを創作しない。"
+        "date_evidenceには掲載元の年月日・開催期間の短い表記を正確に書く。"
+        "ページの日付表記から開催日が確認できないものはeventsに入れない。"
+        "JSONのみで出力（説明やコード囲みは不要）："
+        '{"events":[{"title":"...","venue":"...","address":"...",'
+        '"start_date":"YYYY-MM-DD","end_date":"YYYY-MM-DD",'
+        '"event_date":"YYYY-MM-DD or empty","occurrence_dates":["YYYY-MM-DD"],'
+        '"start_time":"HH:MM or empty","end_time":"HH:MM or empty",'
+        '"description":"...","date_evidence":"掲載元の開催日表記",'
+        '"latitude":null,"longitude":null,"source_url":"https://..."}],'
+        '"pending_events":[{"title":"...","venue":"...","address":"...",'
+        '"description":"...","source_url":"https://..."}]}。'
+    )
+    try:
+        response = _events_web_search_request_v582(
+            prompt=prompt, domains=None, context_size="medium", timeout_seconds=55.0,
+            max_output_tokens=EVENT_SEARCH_WEEK_MAX_OUTPUT_TOKENS_V585)
+        sources = _events_source_urls_v570(response)
+        payload = _events_decode_json_v570(getattr(response, "output_text", ""))
+        if not isinstance(payload.get("events"), list):
+            return {"failed": True, "error": "検索APIの応答を読み取れませんでした。検索結果は更新されていません。",
+                    "search_passes": 1, "failed_passes": 1, "days": {}}
+        raw_rows = [row for row in payload["events"][:80] if isinstance(row, dict)]
+        pending_raw = list(payload.get("pending_events") or [])[:32] if isinstance(payload.get("pending_events"), list) else []
+        candidates = {day: [] for day in days}
+        for original in raw_rows:
+            row = dict(original)
+            citation = _events_url_key_v570(row.get("source_url"))
+            if citation not in sources:
+                evidence_url = str(row.get("evidence_url") or row.get("citation_url") or "")
+                if (_events_url_key_v570(evidence_url) in sources and
+                        urlparse(evidence_url).hostname == urlparse(str(row.get("source_url") or "")).hostname):
+                    row["source_url"] = evidence_url
+                    citation = _events_url_key_v570(evidence_url)
+            if not citation or citation not in sources:
+                pending_raw.append(row)
+                continue
+            matched = False
+            for day in days:
+                fixed = _events_week_assign_v585(row, day)
+                if fixed is not None:
+                    candidates[day].append(fixed)
+                    matched = True
+            if not matched:
+                pending_raw.append(row)
+        pending = _events_pending_v577(pending_raw, sources, cap=28)
+        by_day = {}
+        for day in days:
+            dated = _events_prefilter_v571(candidates[day], day=day, sources=sources)
+            items = _events_normalize_v570(dated, day=day, category=category,
+                                           lat=latitude, lon=longitude,
+                                           radius_km=radius_km, sources=sources)
+            unverified = _events_unverified_v579(
+                [{"pending": pending, "sources": sources}], items,
+                day=day, category=category, latitude=latitude,
+                longitude=longitude, radius_km=radius_km)
+            domains = sorted({(urlparse(row.get("source_url") or "").hostname or "").lower().removeprefix("www.")
+                              for row in items if row.get("source_url")})
+            by_day[day] = {
+                "items": items, "unverified": unverified, "error": "",
+                "source_domains": domains, "searched_source_count": len(domains),
+                "search_passes": 1, "failed_passes": 0,
+                "raw_count": len(raw_rows), "cited_count": len(candidates[day]),
+                "dated_count": len(dated), "distance_unverified_count": sum(
+                    r.get("distance_m") is None for r in items),
+                "followup_attempted": 0, "followup_accepted": 0,
+                "checked_at": datetime.now(ZoneInfo(APP_TIMEZONE)).strftime("%H:%M"),
+            }
+        return {"days": by_day, "search_passes": 1, "failed_passes": 0, "failed": False,
+                "start_day": start_day, "end_day": end_day}
+    except Exception as exc:
+        details = _events_error_details_v582(exc)
+        return {"failed": True, "days": {}, "search_passes": 1,
+                "failed_passes": 1, "error": details.get("failure_message") or "検索に失敗しました。",
+                **details}
+
+
+def _events_week_fetch_category_v585(start_day, category, latitude, longitude, radius_km, place_label, *, days):
+    if category not in EVENT_SEARCH_CATEGORIES_V570:
+        return {"failed": True, "days": {}, "error": "不明なカテゴリです。", "search_passes": 0}
+    if not OPENAI_API_KEY:
+        return {"failed": True, "days": {}, "error": "OPENAI_API_KEY が未設定です。", "search_passes": 0}
+    return _events_search_week_one_category_v585(start_day, days, category, latitude,
+                                                  longitude, radius_km, place_label)
+
+
+def _events_week_job_v585(start_day, category, location, radius_km, *, days, refresh=False):
+    """Cache one entire 7-day result per category; changing viewed day is free."""
+    latitude, longitude = float(location["latitude"]), float(location["longitude"])
+    key = ("v585-week", start_day, category, round(latitude, 2), round(longitude, 2), int(radius_km), tuple(days))
+    runtime = _events_runtime_v570()
+    now = time.monotonic()
+    with runtime["lock"]:
+        jobs = runtime["jobs"]
+        def life(old_key, future):
+            ttl = EVENT_SEARCH_CACHE_FUTURE_V584 if old_key[1] > now_jst().date().isoformat() else EVENT_SEARCH_CACHE_TODAY_V584
+            if future.done():
+                try:
+                    result = future.result()
+                    if result.get("failed") or not any(x.get("items") or x.get("unverified")
+                                                      for x in (result.get("days") or {}).values()):
+                        return EVENT_SEARCH_CACHE_EMPTY_V584
+                except Exception:
+                    return EVENT_SEARCH_CACHE_EMPTY_V584
+            return ttl
+        for old_key, (started, future) in list(jobs.items()):
+            if future.done() and now - started >= life(old_key, future):
+                jobs.pop(old_key, None)
+        if len(jobs) > 240:
+            removable = sorted((t, k) for k, (t, f) in jobs.items() if f.done())
+            for _, stale in removable[:len(jobs) - 200]:
+                jobs.pop(stale, None)
+        stored = jobs.get(key)
+        if stored is not None:
+            started, future = stored
+            if not future.done() or (not refresh and now - started < life(key, future)):
+                return future
+        future = runtime["pool"].submit(
+            _events_week_fetch_category_v585, start_day, category, latitude,
+            longitude, int(radius_km), str(location.get("place_label") or ""), days=list(days))
+        jobs[key] = (now, future)
+        return future
+
+
+def _events_week_futures_v585(start_day, location, radius_km, *, days, refresh=False):
+    """Maximum 3 paid API calls per explicit weekly search (1 per category)."""
+    return {category: _events_week_job_v585(start_day, category, location, radius_km,
+                                             days=days, refresh=refresh)
+            for category in EVENT_SEARCH_CATEGORIES_V570}
+
+
+def _events_daily_view_v585(result, day):
+    """View a frozen weekly result without a network request or a model call."""
+    if not isinstance(result, dict):
+        return {"items": [], "unverified": [], "error": "検索結果を読み取れません。"}
+    weeks = result.get("days")
+    if not isinstance(weeks, dict):
+        return _events_strip_blocked_v581(result)  # previous saved single-day result
+    data = _events_strip_blocked_v581(weeks.get(day) or {"items": [], "unverified": []})
+    if result.get("error"):
+        data["error"] = result["error"]
+        data["search_passes"] = int(result.get("search_passes") or 0)
+        data["failed_passes"] = int(result.get("failed_passes") or 0)
+    return data
+
+
+def _events_week_display_day_v585(snapshot):
+    days = list(snapshot.get("days") or []) if isinstance(snapshot, dict) else []
+    selected = str(st.session_state.get("_events_display_day_v585") or "")
+    return selected if selected in days else (days[0] if days else str(snapshot.get("day") or ""))
+
+
+def _events_week_selected_day_counts_v585(snapshot, selection):
+    if not isinstance(snapshot.get("results"), dict):
+        return {}
+    return {day: len((_events_snapshot_results_v579(snapshot, selection, display_day=day) or {}).get("items") or [])
+            for day in snapshot.get("days") or []}
+
+
+def _events_week_day_buttons_v585(snapshot):
+    days = list(snapshot.get("days") or []) if isinstance(snapshot, dict) else []
+    if not days:
+        return
+    st.markdown("**日別に見る**")
+    selection = _events_selection_v576()
+    counts = _events_week_selected_day_counts_v585(snapshot, selection)
+    active = _events_week_display_day_v585(snapshot)
+    for begin in range(0, len(days), 4):
+        chunk = days[begin:begin+4]
+        cols = st.columns(len(chunk), gap="small")
+        for col, iso_day in zip(cols, chunk):
+            d = date.fromisoformat(iso_day)
+            today_label = "今日 " if d == now_jst().date() else ""
+            day_label = today_label + f"{d.month}/{d.day}({ '月火水木金土日'[d.weekday()] })"
+            with col:
+                st.button(day_label, use_container_width=True,
+                          type="primary" if iso_day == active else "secondary",
+                          key=f"events_week_day_button_v585_{iso_day}",
+                          on_click=lambda value=iso_day: st.session_state.update({"_events_display_day_v585": value}))
+    if counts:
+        st.caption("表示中のカテゴリの確認済み件数：" + "／".join(
+            f"{date.fromisoformat(d).month}/{date.fromisoformat(d).day} {counts[d]}件" for d in days))
+    st.caption("日付の切替ではAPI検索しません。未確認の候補は別枠に表示します。")
+
+
+# v585: Optional, explicit per-day deep dive. A weekly search never launches
+# these paid requests. It is the user's choice to spend 1 (single category) or
+# up to 3 (combined category) additional calls for a sparse selected day.
+def _events_start_day_refinement_v585(snapshot, day, selection):
+    if not isinstance(snapshot, dict) or not isinstance(snapshot.get("results"), dict):
+        return False
+    if day not in (snapshot.get("days") or []):
+        return False
+    if isinstance(snapshot.get("refinement"), dict):
+        return False
+    cats = list(EVENT_SEARCH_CATEGORIES_V570) if selection == EVENT_SEARCH_ALL_CATEGORY_V576 else [selection]
+    if not all(cat in EVENT_SEARCH_CATEGORIES_V570 for cat in cats):
+        return False
+    location = dict(snapshot["location"])
+    radius = int(snapshot["radius_km"])
+    # The existing v584 daily search is reused, so all the same trust gates
+    # and per-day caching apply. It performs one hosted Web search per category.
+    futures = {cat: _events_job_v570(day, cat, location, radius, refresh=False)
+               for cat in cats}
+    snapshot["refinement"] = {"day": day, "futures": futures}
+    return True
+
+
+def _events_merge_daily_v585(previous, supplement, *, day, category, location, radius_km):
+    """Deduplicate optional per-day results while keeping original confirmed items."""
+    previous = _events_strip_blocked_v581(previous)
+    supplement = _events_strip_blocked_v581(supplement)
+    raw_items = list(previous.get("items") or []) + list(supplement.get("items") or [])
+    sources = {_events_url_key_v570(row.get("source_url")) for row in raw_items if isinstance(row, dict)}
+    sources.discard("")
+    events = _events_normalize_v570(raw_items, day=day, category=category,
+                                   lat=float(location["latitude"]), lon=float(location["longitude"]),
+                                   radius_km=radius_km, sources=sources)
+    def identity(raw):
+        return (re.sub(r"\W+", "", unicodedata.normalize("NFKC", str(raw.get("title") or "")).casefold()),
+                re.sub(r"\W+", "", unicodedata.normalize("NFKC", str(raw.get("venue") or "")).casefold()))
+    verified = {identity(event) for event in events}
+    seen = set()
+    pending = []
+    for row in list(previous.get("unverified") or []) + list(supplement.get("unverified") or []):
+        if not isinstance(row, dict):
+            continue
+        key = identity(row)
+        if key in verified or key in seen:
+            continue
+        seen.add(key)
+        pending.append(row)
+    domains = sorted({(urlparse(str(event.get("source_url") or "")).hostname or "").lower().removeprefix("www.")
+                      for event in events})
+    return {
+        "items": events, "unverified": pending[:EVENT_SEARCH_MAX_PER_CATEGORY_V570],
+        "error": "" if events else str(supplement.get("error") or previous.get("error") or ""),
+        "source_domains": domains, "searched_source_count": len(domains),
+        "search_passes": int(previous.get("search_passes") or 0) + int(supplement.get("search_passes") or 0),
+        "failed_passes": int(previous.get("failed_passes") or 0) + int(supplement.get("failed_passes") or 0),
+        "raw_count": int(previous.get("raw_count") or 0) + int(supplement.get("raw_count") or 0),
+        "cited_count": int(previous.get("cited_count") or 0) + int(supplement.get("cited_count") or 0),
+        "dated_count": int(previous.get("dated_count") or 0) + int(supplement.get("dated_count") or 0),
+        "checked_at": supplement.get("checked_at") or previous.get("checked_at") or "",
+    }
+
+
+def _events_complete_refinement_v585(snapshot):
+    """Finish a *manually* launched deep dive. Merely polling does not search."""
+    refinement = snapshot.get("refinement") if isinstance(snapshot, dict) else None
+    if not isinstance(refinement, dict):
+        return True
+    futures = refinement.get("futures") or {}
+    if not futures or not all(future.done() for future in futures.values()):
+        return False
+    day = refinement["day"]
+    for category, future in futures.items():
+        try:
+            supplement = future.result()
+        except Exception:
+            supplement = {"items": [], "unverified": [], "error": "追加検索に失敗しました。"}
+        weekly_category = (snapshot.get("results") or {}).get(category)
+        if not isinstance(weekly_category, dict) or not isinstance(weekly_category.get("days"), dict):
+            continue
+        original = weekly_category["days"].get(day) or {}
+        weekly_category["days"][day] = _events_merge_daily_v585(
+            original, supplement, day=day, category=category,
+            location=snapshot["location"], radius_km=int(snapshot["radius_km"]))
+    snapshot.pop("refinement", None)
+    return True
+
+
+def _events_refinement_poll_v585():
+    snapshot = st.session_state.get("_events_explicit_snapshot_v579")
+    if not isinstance(snapshot, dict) or not isinstance(snapshot.get("refinement"), dict):
+        return
+    if _events_complete_refinement_v585(snapshot):
+        st.rerun(scope="app")
+        return
+    job = snapshot["refinement"]
+    futures = job.get("futures") or {}
+    done = sum(future.done() for future in futures.values())
+    st.info(f"{_events_display_day_v574(job['day'])}の追加検索中（{done}/{len(futures)}カテゴリ完了）。")
+
+
+def _events_start_explicit_search_v579(location, *, day=None, radius_km=None, force_refresh=False):
+    """Explicit press creates a 7-day snapshot. No date/view/tab callback searches."""
     if not isinstance(location, dict):
         return False
     try:
@@ -35950,18 +36436,23 @@ def _events_start_explicit_search_v579(location, *, day=None, radius_km=None):
             return False
     except (ValueError, KeyError, TypeError):
         return False
-    selected_day = str(day or _events_selected_date_v574().isoformat())
+    start_day = str(day or _events_selected_date_v574().isoformat())
+    days = _events_week_days_v585(start_day)
+    if not days:
+        return False
     radius = int(radius_km or st.session_state.get("_events_radius_v570") or 15)
-    snapshot_location = dict(location)
-    # One intentional press searches all three categories. Category and view
-    # buttons merely filter the captured results; they NEVER trigger web APIs.
-    futures = _events_futures_v576(selected_day, EVENT_SEARCH_ALL_CATEGORY_V576,
-                                   snapshot_location, radius, refresh=True)
+    location_copy = dict(location)
+    futures = _events_week_futures_v585(start_day, location_copy, radius,
+                                        days=days, refresh=bool(force_refresh))
+    prior_day = str(st.session_state.get("_events_display_day_v585") or "")
     st.session_state["_events_explicit_snapshot_v579"] = {
-        "day": selected_day, "radius_km": radius, "location": snapshot_location,
+        "day": start_day, "days": days, "radius_km": radius, "location": location_copy,
         "futures": futures, "results": None,
     }
+    st.session_state["_events_display_day_v585"] = (
+        prior_day if force_refresh and prior_day in days else start_day)
     return True
+
 
 
 def _events_complete_explicit_search_v579(snapshot):
@@ -36004,14 +36495,16 @@ def _events_strip_blocked_v581(data):
     return output
 
 
-def _events_snapshot_results_v579(snapshot, selection):
+def _events_snapshot_results_v579(snapshot, selection, *, display_day=None):
     results = snapshot.get("results") if isinstance(snapshot, dict) else None
     if not isinstance(results, dict):
         return None
-    clean = {category: _events_strip_blocked_v581(result) for category, result in results.items()}
+    day = str(display_day or _events_week_display_day_v585(snapshot))
+    daily = {cat: _events_daily_view_v585(result, day) for cat, result in results.items()}
     if selection == EVENT_SEARCH_ALL_CATEGORY_V576:
-        return _events_combine_v576(clean)
-    return clean.get(selection) or {"items": [], "unverified": [], "error": "このカテゴリの検索結果はありません。"}
+        return _events_combine_v576(daily)
+    return daily.get(selection) or {"items": [], "unverified": [], "error": "このカテゴリの検索結果はありません。"}
+
 
 
 def _events_selection_v576():
@@ -36489,7 +36982,8 @@ def _events_result_panel_v570():
     if not isinstance(snapshot, dict):
         st.info("『現在地から検索する』または『この場所で検索』を押すと、イベントを検索します。")
         return
-    day = str(snapshot["day"])
+    search_start_day = str(snapshot["day"])
+    day = _events_week_display_day_v585(snapshot)
     location = snapshot["location"]
     radius_km = int(snapshot["radius_km"])
     selection = _events_selection_v576()
@@ -36507,13 +37001,14 @@ def _events_result_panel_v570():
                  abs(float(current_location["longitude"]) - float(location["longitude"])) > .000001)
     except (ValueError, TypeError, KeyError):
         moved = True
-    changed = (day != _events_selected_date_v574().isoformat() or
+    changed = (search_start_day != _events_selected_date_v574().isoformat() or
                radius_km != int(st.session_state.get("_events_radius_v570") or 15) or moved)
-    st.caption(f"前回の検索条件：{_events_display_day_v574(day)}／"
+    st.caption(f"前回の検索条件：{_events_display_day_v574(search_start_day)}～"
+               f"{_events_display_day_v574((snapshot.get('days') or [search_start_day])[-1])}／"
                f"{location.get('place_label') or '検索地点'}／半径{radius_km}km")
     if changed:
         st.info("検索条件が変更されています。表示中は前回の検索結果です。新しい条件で検索するには検索ボタンを押してください。")
-    result = _events_snapshot_results_v579(snapshot, selection)
+    result = _events_snapshot_results_v579(snapshot, selection, display_day=day)
     if result is None:
         return
     if result.get("error"):
@@ -36559,9 +37054,18 @@ def _events_result_panel_v570():
         else:
             _events_render_details_v574(items, day, selection)
     _events_render_unverified_v579(result, selection, day)
-    if st.button("最新情報に更新（前回の検索地点）", use_container_width=True,
+    if isinstance(snapshot.get("refinement"), dict):
+        st.info("選択した日を追加検索中です。結果がそろったら一覧に反映します。")
+    elif not changed and len(items) < max_items:
+        category_calls = len(EVENT_SEARCH_CATEGORIES_V570) if selection == EVENT_SEARCH_ALL_CATEGORY_V576 else 1
+        label = f"この日の情報を詳しく探す（追加API最大{category_calls}回）"
+        if st.button(label, use_container_width=True,
+                     key=f"event_day_refine_v585_{selection}_{day}"):
+            if _events_start_day_refinement_v585(snapshot, day, selection):
+                st.rerun(scope="app")
+    if st.button("最新情報に更新（API再検索）", use_container_width=True,
                  key=f"event_refresh_v579_{selection}"):
-        _events_start_explicit_search_v579(location, day=day, radius_km=radius_km)
+        _events_start_explicit_search_v579(location, day=search_start_day, radius_km=radius_km, force_refresh=True)
         st.rerun(scope="app")
 
 
@@ -36578,13 +37082,21 @@ def _events_wait_for_result_v574():
         return
     futures = snapshot.get("futures") or {}
     done = sum(future.done() for future in futures.values())
-    st.info(f"{_events_display_day_v574(snapshot['day'])}のイベントを検索中です（{done}/{len(futures)}カテゴリ完了）。")
+    st.info(f"{_events_display_day_v574(snapshot['day'])}～"
+            f"{_events_display_day_v574((snapshot.get('days') or [snapshot['day']])[-1])}のイベントを検索中です"
+            f"（{done}/{len(futures)}カテゴリ完了）。")
 
 
 if hasattr(st, "fragment"):
     _events_wait_fragment_v574 = st.fragment(run_every="4s")(_events_wait_for_result_v574)
 else:
     _events_wait_fragment_v574 = _events_wait_for_result_v574
+
+
+if hasattr(st, "fragment"):
+    _events_refine_wait_fragment_v585 = st.fragment(run_every="4s")(_events_refinement_poll_v585)
+else:
+    _events_refine_wait_fragment_v585 = _events_refinement_poll_v585
 
 
 def page_events_v570():
@@ -36595,9 +37107,10 @@ def page_events_v570():
     if selected < today or selected > future_limit:
         selected = today
     st.session_state["_events_date_v574"] = selected
-    st.date_input("イベント開催日", min_value=today, max_value=future_limit,
+    st.date_input("検索開始日（ここから7日分）", min_value=today, max_value=future_limit,
                   format="YYYY/MM/DD", key="_events_date_v574")
-    st.caption(_events_display_day_v574(_events_selected_date_v574()) + "に開催予定の、周辺イベントを検索します。")
+    st.caption(_events_display_day_v574(_events_selected_date_v574()) +
+               "から最大7日間の周辺イベントをまとめて検索します。")
     component = _get_help_auto_location_component_v523()
     location = st.session_state.get("_events_location_v570")
     # Never request GPS or start event searches when navigating back to this page.
@@ -36661,6 +37174,9 @@ def page_events_v570():
         radii = [5, 10, 15, 20, 30]
         chosen_radius = st.selectbox("検索範囲", radii, index=radii.index(current_radius) if current_radius in radii else 2,
                                      format_func=lambda x: f"半径{x}km", key="_events_radius_v570")
+        snapshot = st.session_state.get("_events_explicit_snapshot_v579")
+        if isinstance(snapshot, dict):
+            _events_week_day_buttons_v585(snapshot)
         st.markdown("**表示するカテゴリ**")
         selected = _events_selection_v576()
         st.button("一覧", use_container_width=True,
@@ -36682,7 +37198,14 @@ def page_events_v570():
         if isinstance(snapshot, dict) and not _events_complete_explicit_search_v579(snapshot):
             _events_wait_fragment_v574()
         else:
+            if isinstance(snapshot, dict) and isinstance(snapshot.get("refinement"), dict):
+                _events_refine_wait_fragment_v585()
             _events_result_panel_v570()
+    st.caption("最大7日間をまとめて検索し、通常のWeb検索は3カテゴリ合計で最大3回です。"
+               "曜日・カテゴリ・表示形式を切り替えてもAPI検索しません。"
+               "同じ週・場所・範囲の検索結果は当日3時間・未来日12時間キャッシュします。"
+               "不足している日は『この日の情報を詳しく探す』でのみ追加APIを利用します。"
+               "日付・出典未確認は別枠に表示します。")
     st.caption("開催状況・参加条件・予約の要否は、必ず掲載元で確認してください。『一覧』は3カテゴリ統合表示。"
                "検索結果は再検索するまで保持し、画面を開き直しても自動検索しません。")
 
