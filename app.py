@@ -44,7 +44,7 @@ def _app_css_v473(markup, **_ignored):
 # Review menu-only update: 2026-09-19 JST
 GENERATED_UPDATE_JST = "2026-09-19T14:54:38+09:00"
 
-APP_BUILD = "v582"
+APP_BUILD = "v583"
 # v578: Improve future-date discovery: accept verified Japanese date lists/ranges and era formats, recheck more ambiguous leads, fix range-start occurrence handling, and keep real source citations.
 # v572: Repair all-zero event results: retain dated/cited venue-unlocated entries as explicitly unverified-distance, add source/failure diagnostics and short negative cache.
 # v571: Expand event discovery to five separately sourced, API-grounded web-search passes
@@ -35036,26 +35036,32 @@ def _events_normalize_v570(items, *, day, category, lat, lon, radius_km, sources
 # Limit concurrent paid searches across categories/sessions, even if tabs switch quickly.
 _events_web_search_semaphore_v571 = threading.BoundedSemaphore(2)
 
-# v582: API failure diagnosis and defensive compatibility for hosted web_search.
-# This is a process-level capability flag, NOT a browser cache or search trigger.
+# v583: Repair invalid web-search filter requests and preserve publisher scope.
+# Domain filters are an optimization, never a prerequisite to being able to search.
+# Tokyo municipality suffixes (e.g. lg.jp) are broad public suffixes and must
+# not be submitted as provider allowed_domains. Results are checked afterwards.
 _events_filter_lock_v582 = threading.Lock()
-_events_blocked_filter_available_v582 = True
+_events_allowed_filter_available_v583 = True
+EVENT_SEARCH_BROAD_SUFFIXES_V583 = frozenset({"lg.jp", "go.jp", "tokyo.jp"})
 
 
 def _events_error_details_v582(exc):
-    """Safe diagnostic fields. Never surface raw API errors, credentials, or prompts."""
+    """User-safe HTTP diagnostics: expose only status and parameter names."""
     name = type(exc).__name__
     status = getattr(exc, "status_code", None)
     if not isinstance(status, int):
         status = getattr(getattr(exc, "response", None), "status_code", None)
     status = status if isinstance(status, int) and 100 <= status <= 599 else None
     code = getattr(exc, "code", None)
+    param = getattr(exc, "param", None)
     body = getattr(exc, "body", None)
     if isinstance(body, dict):
         inner = body.get("error") if isinstance(body.get("error"), dict) else body
         code = code or inner.get("code")
-    code = str(code or "").lower()[:60]
-    code = re.sub(r"[^a-z0-9_\-]", "", code)
+        param = param or inner.get("param")
+    code = re.sub(r"[^a-z0-9_\-]", "", str(code or "").lower())[:60]
+    # Never forward the raw API exception/body (it could contain prompt data).
+    param = re.sub(r"[^a-zA-Z0-9_.\[\]\-]", "", str(param or ""))[:100]
     quota = code in {"insufficient_quota", "billing_hard_limit_reached", "quota_exceeded"}
     if status == 401:
         message = "API認証エラー（HTTP 401）。Streamlit SecretsのOPENAI_API_KEYを確認してください。"
@@ -35066,7 +35072,10 @@ def _events_error_details_v582(exc):
     elif status == 429:
         message = "APIの呼び出し制限に達しました（HTTP 429）。時間をおいて検索してください。"
     elif status in {400, 404, 422}:
-        message = f"検索APIがリクエストを拒否しました（HTTP {status}）。モデル・Web検索設定を確認してください。"
+        message = f"検索APIがリクエストを拒否しました（HTTP {status}）。"
+        if param:
+            message += f"エラー項目：{param}。"
+        message += "モデル・Web検索のAPI設定を確認してください。"
     elif status is not None and status >= 500:
         message = f"検索API側の一時的な障害（HTTP {status}）。後で再試行してください。"
     elif name in {"APIConnectionError", "APITimeoutError", "ConnectError", "ReadTimeout", "TimeoutException"}:
@@ -35076,54 +35085,81 @@ def _events_error_details_v582(exc):
     else:
         message = f"検索処理が失敗しました（{name}" + (f"／HTTP {status}" if status else "") + "）。管理者はサーバーログを確認してください。"
     return {"failure_type": name, "http_status": status, "error_code": code,
-            "failure_message": message,
+            "error_param": param, "failure_message": message,
             "hard_failure": status in {400, 401, 403, 404, 422} or quota or
                             name in {"ImportError", "ModuleNotFoundError"}}
 
 
-def _events_web_search_request_v582(*, prompt, domains, context_size, timeout_seconds, max_output_tokens):
-    """One paid search; if the server rejects blocked_domains, retry without it.
+def _events_domain_matches_v583(host, domain):
+    host = str(host or "").lower().rstrip(".")
+    domain = str(domain or "").lower().rstrip(".")
+    return bool(host and domain and (host == domain or host.endswith("." + domain)))
 
-    The application ALWAYS rejects blocked URLs itself, even on the fallback.
-    SDK automatic retries are limited to one for transient 429/5xx/network errors.
+
+def _events_limit_to_planned_domains_v583(source_keys, domains):
+    """A provider 400 must never silently expand an official/specialist source plan."""
+    if not domains:
+        return set(source_keys or ())
+    allowed = tuple(str(d).lower().rstrip(".") for d in domains if str(d).strip())
+    return {key for key in source_keys or ()
+            if isinstance(key, str) and any(
+                _events_domain_matches_v583(key.split("/", 1)[0], d) for d in allowed)}
+
+
+def _events_web_search_request_v582(*, prompt, domains, context_size, timeout_seconds, max_output_tokens):
+    """Hosted Web search with one compatibility fallback for invalid domain filters.
+
+    - Avoid broad municipal TLDs in API filters; restrict by prompt and postfilter.
+    - Never send blocked_domains: some deployed APIs reject this unsupported
+      field; the URL/source checks and search prompt still exclude koko.tokyo.
+    - If allowed_domains is rejected with 400, retry only once without filters.
+    - Do not disguise model/tool errors as no-event results.
     """
     from openai import OpenAI
-    global _events_blocked_filter_available_v582
+    global _events_allowed_filter_available_v583
     tool = {"type": "web_search", "search_context_size": context_size,
             "user_location": {"type": "approximate", "country": "JP"}}
-    if domains:
-        allowed = [str(d) for d in domains if not any(
-            str(d) == blocked or str(d).endswith("." + blocked)
-            for blocked in EVENT_SEARCH_BLOCKED_DOMAINS_V581)]
-        if allowed:
-            tool["filters"] = {"allowed_domains": allowed[:100]}
-    else:
+    valid_domains = sorted({str(d).strip().lower().rstrip(".") for d in domains or ()
+                            if str(d).strip() and not any(
+                                _events_domain_matches_v583(d, bad)
+                                for bad in EVENT_SEARCH_BLOCKED_DOMAINS_V581)})
+    # A top-level municipal domain covers many municipalities: search it via
+    # model instructions rather than fragile provider allowlist validation.
+    if valid_domains and not any(d in EVENT_SEARCH_BROAD_SUFFIXES_V583 for d in valid_domains):
         with _events_filter_lock_v582:
-            use_blocked = _events_blocked_filter_available_v582
-        if use_blocked:
-            tool["filters"] = {"blocked_domains": list(EVENT_SEARCH_BLOCKED_DOMAINS_V581)}
+            allowed_supported = _events_allowed_filter_available_v583
+        if allowed_supported:
+            tool["filters"] = {"allowed_domains": valid_domains[:100]}
+    # Continue to steer the tool even if the provider cannot accept filters.
+    search_prompt = prompt
+    if valid_domains:
+        search_prompt += ("\n対象サイトのドメイン（実際にWeb検索して参照）：" +
+                          ", ".join(valid_domains[:100]) + "。"
+                          "対象外サイトのページは候補に使わない。")
+    search_prompt += "\n検索元・参照元から koko.tokyo とそのサブドメインを除外。"
     client = OpenAI(api_key=OPENAI_API_KEY, timeout=timeout_seconds, max_retries=1)
-    def request_with(tool_config):
+
+    def request_with(config):
         with _events_web_search_semaphore_v571:
             return client.responses.create(
-                model=EVENT_SEARCH_MODEL_V570, tools=[tool_config], tool_choice="required",
-                include=["web_search_call.action.sources"], input=prompt,
+                model=EVENT_SEARCH_MODEL_V570, tools=[config], tool_choice="required",
+                include=["web_search_call.action.sources"], input=search_prompt,
                 max_output_tokens=max_output_tokens, store=False,
             )
+
     try:
         return request_with(tool)
     except Exception as exc:
-        if (getattr(exc, "status_code", None) != 400 or
-                "blocked_domains" not in tool.get("filters", {})):
+        if getattr(exc, "status_code", None) != 400 or "filters" not in tool:
             raise
-        # Some deployed API configurations reject blocked_domains despite
-        # supporting ordinary searches. Do not discard all results for that.
-        fallback = dict(tool)
-        fallback.pop("filters", None)
-        response = request_with(fallback)
+        # Web search was available before domain filters were added; failure of
+        # this optional filter must not block all event search families.
+        bare = dict(tool)
+        bare.pop("filters", None)
+        result = request_with(bare)
         with _events_filter_lock_v582:
-            _events_blocked_filter_available_v582 = False
-        return response
+            _events_allowed_filter_available_v583 = False
+        return result
 
 
 def _events_failed_search_message_v582(results):
@@ -35545,7 +35581,8 @@ def _events_search_one_source_v571(plan, *, day, category, coarse_lat, coarse_lo
         response = _events_web_search_request_v582(
             prompt=prompt, domains=domains, context_size=context_size,
             timeout_seconds=45.0, max_output_tokens=4200)
-        sources = _events_source_urls_v570(response)
+        sources = _events_limit_to_planned_domains_v583(
+            _events_source_urls_v570(response), domains)
         payload = _events_decode_json_v570(getattr(response, "output_text", ""))
         rows = payload.get("events") if isinstance(payload.get("events"), list) else []
         unconfirmed = payload.get("pending_events") if isinstance(payload.get("pending_events"), list) else []
@@ -35875,7 +35912,7 @@ def _events_job_v570(day, category, location, radius_km, *, refresh=False):
     """Account-safe short-lived per-area cache; one in-flight search per category."""
     latitude = float(location["latitude"])
     longitude = float(location["longitude"])
-    key = ("v582", day, category, round(latitude, 2), round(longitude, 2), int(radius_km))
+    key = ("v583", day, category, round(latitude, 2), round(longitude, 2), int(radius_km))
     runtime = _events_runtime_v570()
     now = time.monotonic()
     with runtime["lock"]:
