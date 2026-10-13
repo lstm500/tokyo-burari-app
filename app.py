@@ -44,7 +44,7 @@ def _app_css_v473(markup, **_ignored):
 # Review menu-only update: 2026-09-19 JST
 GENERATED_UPDATE_JST = "2026-09-19T14:54:38+09:00"
 
-APP_BUILD = "v579"
+APP_BUILD = "v580"
 # v578: Improve future-date discovery: accept verified Japanese date lists/ranges and era formats, recheck more ambiguous leads, fix range-start occurrence handling, and keep real source citations.
 # v572: Repair all-zero event results: retain dated/cited venue-unlocated entries as explicitly unverified-distance, add source/failure diagnostics and short negative cache.
 # v571: Expand event discovery to five separately sourced, API-grounded web-search passes
@@ -34713,6 +34713,137 @@ def _events_source_plans_v571(category, latitude, longitude):
     ]
 
 
+
+# v580: Tokyo's 23 official ward portals, sourced from the Shibuya City Office
+# directory of ward websites. The coordinates are APPROXIMATE ward-center hints
+# for search targeting, NOT event/venue positions or ward boundary geometry.
+# Do not interpret a nearby office as evidence an event lies inside the radius.
+EVENTS_TOKYO_WARD_OFFICIAL_V580 = (
+    ("千代田区", 35.6940, 139.7536, "city.chiyoda.lg.jp"),
+    ("中央区", 35.6706, 139.7720, "city.chuo.lg.jp"),
+    ("港区", 35.6581, 139.7516, "city.minato.tokyo.jp"),
+    ("新宿区", 35.6938, 139.7034, "city.shinjuku.lg.jp"),
+    ("文京区", 35.7081, 139.7528, "city.bunkyo.lg.jp"),
+    ("台東区", 35.7126, 139.7799, "city.taito.lg.jp"),
+    ("墨田区", 35.7107, 139.8015, "city.sumida.lg.jp"),
+    ("江東区", 35.6735, 139.8178, "city.koto.lg.jp"),
+    ("品川区", 35.6092, 139.7302, "city.shinagawa.tokyo.jp"),
+    ("目黒区", 35.6415, 139.6982, "city.meguro.tokyo.jp"),
+    ("大田区", 35.5613, 139.7160, "city.ota.tokyo.jp"),
+    ("世田谷区", 35.6465, 139.6532, "city.setagaya.lg.jp"),
+    ("渋谷区", 35.6619, 139.7041, "city.shibuya.tokyo.jp"),
+    ("中野区", 35.7074, 139.6639, "city.tokyo-nakano.lg.jp"),
+    ("杉並区", 35.6995, 139.6360, "city.suginami.tokyo.jp"),
+    ("豊島区", 35.7324, 139.7154, "city.toshima.lg.jp"),
+    ("北区", 35.7527, 139.7333, "city.kita.tokyo.jp"),
+    ("荒川区", 35.7361, 139.7832, "city.arakawa.tokyo.jp"),
+    ("板橋区", 35.7513, 139.7099, "city.itabashi.tokyo.jp"),
+    ("練馬区", 35.7356, 139.6528, "city.nerima.tokyo.jp"),
+    ("足立区", 35.7751, 139.8045, "city.adachi.tokyo.jp"),
+    ("葛飾区", 35.7435, 139.8470, "city.katsushika.lg.jp"),
+    ("江戸川区", 35.7065, 139.8684, "city.edogawa.tokyo.jp"),
+)
+
+# Only confirmed municipal landing pages are provided as search HINTS. They do
+# not become citations unless the web search ACTUALLY retrieves their URL.
+EVENTS_TOKYO_OFFICIAL_CALENDARS_V580 = {
+    "港区": "https://www.city.minato.tokyo.jp/cgi-bin/event_cal_multi/calendar.cgi",
+    "品川区": "https://www.city.shinagawa.tokyo.jp/PC/eventcalendar/index.html",
+    "渋谷区": "https://www.city.shibuya.tokyo.jp/contents/event/calendar/",
+    "中央区": "https://www.city.chuo.lg.jp/cgi-bin/event_cal_multi/calendar.cgi",
+    "世田谷区": "https://www.city.setagaya.lg.jp/cgi-bin/event_cal_multi/calendar.cgi",
+    "豊島区": "https://www.city.toshima.lg.jp/cgi-bin/event_cal/calendar.cgi",
+    "千代田区": "https://www.city.chiyoda.lg.jp/cgi-bin/event_cal_multi/calendar.cgi",
+}
+
+EVENTS_PUBLIC_AGENCIES_V580 = {
+    "スポーツ": ("tef.or.jp", "tokyo-park.or.jp", "tokyo-sports.or.jp",
+              "tptc.co.jp", "japan-sports.or.jp"),
+    "文化": ("rekibun.or.jp", "library.metro.tokyo.lg.jp", "kahaku.go.jp",
+             "tnm.jp", "tobikan.jp", "tokyo-park.or.jp"),
+    "その他": ("tokyo-park.or.jp", "library.metro.tokyo.lg.jp",
+              "tokyo-kodomo-hp.metro.tokyo.lg.jp", "tef.or.jp",
+              "kahaku.go.jp", "rekibun.or.jp"),
+}
+
+
+def _events_nearby_ward_offices_v580(latitude, longitude, radius_km, place_label=""):
+    """Pick plausible adjacent wards, without pretending office centers are borders."""
+    try:
+        lat, lon, radius = float(latitude), float(longitude), float(radius_km)
+        if not (35.47 <= lat <= 35.91 and 139.40 <= lon <= 140.03 and
+                math.isfinite(lat) and math.isfinite(lon) and 0 < radius <= 50):
+            return []
+    except (TypeError, ValueError):
+        return []
+    label = str(place_label or "")
+    ranked = []
+    for name, ward_lat, ward_lon, host in EVENTS_TOKYO_WARD_OFFICIAL_V580:
+        distance = _nearby_haversine_m(lat, lon, ward_lat, ward_lon)
+        if distance <= (radius + 7.0) * 1000:
+            ranked.append((distance - (1800 if name in label else 0), distance,
+                           name, host))
+    ranked.sort(key=lambda row: (row[0], row[2]))
+    # Two targeted publisher batches of six; avoid treating all 23 wards as one
+    # huge allowed_domains search which often surfaces unrelated pages.
+    return [(name, host) for _, _, name, host in ranked[:12]]
+
+
+def _events_public_search_plans_v580(category, latitude, longitude, radius_km, place_label):
+    """First/second-wave official search families; never called on Home or rerun."""
+    primary, second_wave = [], []
+    wards = _events_nearby_ward_offices_v580(latitude, longitude, radius_km, place_label)
+    for batch_index, start in enumerate(range(0, len(wards), 6)):
+        batch = wards[start:start + 6]
+        if not batch:
+            continue
+        names = "、".join(name for name, _ in batch)
+        calendar_hints = "、".join(EVENTS_TOKYO_OFFICIAL_CALENDARS_V580[name]
+                                  for name, _ in batch if name in EVENTS_TOKYO_OFFICIAL_CALENDARS_V580)
+        plan = {
+            "name": "近隣区の公式イベントカレンダー" + str(batch_index + 1),
+            "domains": [host for _, host in batch],
+            "focus": (
+                f"{names}の区役所公式イベントカレンダーを指定年月で横断して、"
+                "スポーツ教室・区民大会・図書館/児童館の催し・地域文化祭・講座・区民センター・"
+                "公民館・区立博物館・区立公園・区の広報記事にある実際の開催イベントを探す。"
+                "イベントカレンダーから個別の催しページへ進み、日付・会場・開催時刻を確認。"
+                "行政手続き・一般の休館日・イベントでない通常営業は除外。"
+                + (f"公式の探し始めのページ（必ずWeb検索で実際に確認）：{calendar_hints}。" if calendar_hints else "")
+                + "近隣区の会場を優先し、区役所所在地をイベント会場とみなさない。"
+            ),
+        }
+        (primary if batch_index == 0 else second_wave).append(plan)
+    if wards:
+        primary.append({
+            "name": "東京都の公共施設・事業団公式",
+            "domains": list(EVENTS_PUBLIC_AGENCIES_V580[category]),
+            "focus": (
+                "都立体育館、競技場、都立公園、公共文化施設、都立博物館・美術館、"
+                "都立図書館、東京都の外郭団体の公式催事カレンダーを重点検索。"
+                "イベント個別ページの開催年月日・開催時間と会場を確認し、"
+                "常設展示だけの紹介やイベント報告記事は採用しない。"
+            ),
+        })
+    elif str(place_label or "").strip():
+        # Outside the wards, preserve locality rather than forcing Tokyo results.
+        primary.append({
+            "name": "検索地点の市町村・公共施設公式",
+            "domains": ["lg.jp", "go.jp"],
+            "focus": (f"{str(place_label)[:65]}に近い市町村および周辺自治体の"
+                      "公式行事予定表、市区町村立体育館・図書館・文化会館・児童館・"
+                      "教育委員会の個別開催案内を探す。首都圏イベントに置換しない。"),
+        })
+    return primary, second_wave
+
+
+def _events_official_count_v580(dated, *, day, category, lat, lon, radius_km, sources):
+    """Count actually verified official events, not merely searched domains."""
+    preview = _events_normalize_v570(dated, day=day, category=category,
+                                      lat=lat, lon=lon, radius_km=radius_km, sources=sources)
+    return sum(_events_source_quality_v571(row.get("source_url")) >= 3 for row in preview)
+
+
 def _events_supplement_plans_v573(category, latitude, longitude):
     """Three independent second-wave sources. All are site search, not bulk scraping.
 
@@ -34879,6 +35010,9 @@ def _events_normalize_v570(items, *, day, category, lat, lon, radius_km, sources
             dedup[same] = (title_key, venue_key, chosen)
     return sorted((event for _, _, event in dedup),
                   key=lambda e: (e["distance_m"] is None,
+                                 (e["distance_m"] - 350 *
+                                  (_events_source_quality_v571(e.get("source_url")) - 1))
+                                 if e["distance_m"] is not None else float("inf"),
                                  e["distance_m"] if e["distance_m"] is not None else float("inf"),
                                  e["time"] or "99:99", e["title"]))[:EVENT_SEARCH_MAX_PER_CATEGORY_V570]
 
@@ -35232,7 +35366,7 @@ def _events_search_one_source_v571(plan, *, day, category, coarse_lat, coarse_lo
     domains = plan.get("domains")
     # More context for primary first-party listings where exact calendars matter;
     # aggregator lookups remain medium to avoid unnecessary tokens/cost.
-    context_size = "high" if plan.get("name") in ("自治体・観光公式", "会場・主催者公式") else "medium"
+    context_size = "high" if plan.get("name") in ("自治体・観光公式", "会場・主催者公式") or str(plan.get("name") or "").startswith(("近隣区の公式", "東京都の公共", "検索地点の市町村")) else "medium"
     tool = {"type": "web_search", "search_context_size": context_size,
             "user_location": {"type": "approximate", "country": "JP"}}
     if domains:
@@ -35423,6 +35557,11 @@ def _events_fetch_category_v570(day, category, latitude, longitude, radius_km, p
     coarse_lat, coarse_lon = round(float(latitude), 2), round(float(longitude), 2)
     area = str(place_label or "").strip()[:65]
     plans = _events_source_plans_v571(category, latitude, longitude)
+    # v580: Prioritize nearby municipal calendars and public operators rather
+    # than relying on one national lg.jp/go.jp search for all municipalities.
+    official_primary, official_secondary = _events_public_search_plans_v580(
+        category, latitude, longitude, radius_km, area)
+    plans = plans + official_primary
     results = []
     with ThreadPoolExecutor(max_workers=3, thread_name_prefix="burari-event-web") as pool:
         futures = [pool.submit(_events_search_one_source_v571, plan,
@@ -35452,11 +35591,20 @@ def _events_fetch_category_v570(day, category, latitude, longitude, radius_km, p
     # primary searches have insufficient unique/nearby breadth.  No extra calls
     # for a full, diverse result; no new timers, Home searches or background crawl.
     supplemented = False
-    if _events_needs_supplement_v573(
+    needs_breadth = _events_needs_supplement_v573(
         dated, sources, day=day, category=category, lat=latitude, lon=longitude,
         radius_km=radius_km,
-    ):
-        extra_plans = _events_supplement_plans_v573(category, latitude, longitude)
+    )
+    needs_public = bool(official_secondary) and _events_official_count_v580(
+        dated, day=day, category=category, lat=latitude, lon=longitude,
+        radius_km=radius_km, sources=sources) < 3
+    if needs_breadth or needs_public:
+        # Search the second set of nearby ward calendars if official coverage
+        # remains weak, even when generic sites already returned many events.
+        # Other specialist supplements are still conditional on breadth.
+        extra_plans = (list(official_secondary) +
+                       (_events_supplement_plans_v573(category, latitude, longitude)
+                        if needs_breadth else []))
         with ThreadPoolExecutor(max_workers=3, thread_name_prefix="burari-event-extra") as pool:
             extra_futures = [pool.submit(_events_search_one_source_v571, plan,
                                          day=day, category=category, coarse_lat=coarse_lat,
