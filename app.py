@@ -44,7 +44,8 @@ def _app_css_v473(markup, **_ignored):
 # Review menu-only update: 2026-09-19 JST
 GENERATED_UPDATE_JST = "2026-09-19T14:54:38+09:00"
 
-APP_BUILD = "v585"
+APP_BUILD = "v586"
+# v586: Reject mismatched Google Places candidates in Android auto-discovery details; separate no Google photo metadata from photo-media download failures. No additional API requests.
 # v584: Cost-bound nearby event searches to one cited web-search tool call per category, eliminate automatic follow-ups and venue API geocoding, reuse multi-hour cached results, and preserve explicit refresh only.
 # v578: Improve future-date discovery: accept verified Japanese date lists/ranges and era formats, recheck more ambiguous leads, fix range-start occurrence handling, and keep real source citations.
 # v572: Repair all-zero event results: retain dated/cited venue-unlocated entries as explicitly unverified-distance, add source/failure diagnostics and short negative cache.
@@ -12403,19 +12404,64 @@ def _nearby_google_place_details(place_id):
         return {}
 
 
+def _auto_discovery_name_quality_v586(requested, found):
+    """Only accept a same-name shop, or a clearly labeled branch of that shop.
+
+    Proximity alone NEVER establishes identity. Japanese punctuation, whitespace,
+    corporate forms and a few unambiguous shop-type prefixes are normalized.
+    An arbitrary shared substring or common shop type is not sufficient.
+    """
+    def key(value):
+        value = unicodedata.normalize("NFKC", str(value or "")).casefold()
+        value = re.sub(r"^(?:株式会社|有限会社|合同会社)", "", value)
+        return re.sub(r"[^0-9a-z\u3040-\u30ff\u3400-\u9fff]+", "", value)
+
+    target = key(requested)
+    actual = key(found)
+    if not target or not actual:
+        return 0
+    if target == actual:
+        return 3
+    # The venue type may precede the proper shop name in Google Places.
+    prefixes = ("和菓子", "御菓子司", "洋菓子", "ベーカリー", "甘味処", "カフェ", "喫茶店")
+    variants = [actual]
+    for prefix in prefixes:
+        if actual.startswith(prefix) and len(actual) > len(prefix):
+            variants.append(actual[len(prefix):])
+    # Generic trailing corporate descriptors do not justify accepting a different shop.
+    for name in variants:
+        if name == target:
+            return 2
+        if len(target) >= 4 and name.startswith(target):
+            suffix = name[len(target):]
+            if suffix in {"本店", "支店", "直売所", "工場直売所", "販売所", "ショップ"}:
+                return 2
+            # Branches like 「東京羊羹 芝店」 are acceptable only if very nearby.
+            if 2 <= len(suffix) <= 6 and suffix.endswith("店"):
+                return 1
+    return 0
+
+
 @st.cache_data(ttl=3600, show_spinner=False)
 def _auto_discovery_google_match(place_name, latitude, longitude):
-    """Resolve an Android/OSM discovery candidate to Google only on detail open."""
+    """Resolve a stored OSM notification candidate WITHOUT accepting nearby strangers.
+
+    Status is returned separately from the matched place so the UI can distinguish
+    absent image metadata, media failures and venue-identity uncertainty.
+    One Text Search request per opened detail; no automatic follow-up API calls.
+    """
     if not GOOGLE_PLACES_API_KEY:
-        return {}
+        return {"_lookup_status_v586": "not_configured"}
     try:
         latitude = float(latitude)
         longitude = float(longitude)
+        if not (math.isfinite(latitude) and math.isfinite(longitude)):
+            raise ValueError("invalid coordinates")
     except (TypeError, ValueError):
-        return {}
+        return {"_lookup_status_v586": "invalid_coordinates"}
     place_name = str(place_name or "").strip()
     if not place_name:
-        return {}
+        return {"_lookup_status_v586": "missing_name"}
     body = json.dumps({
         "textQuery": place_name,
         "languageCode": "ja",
@@ -12443,43 +12489,54 @@ def _auto_discovery_google_match(place_name, latitude, longitude):
     try:
         with urlopen(req, timeout=6.0) as response:
             payload = json.loads(response.read().decode("utf-8"))
+    except HTTPError as exc:
+        return {"_lookup_status_v586": "api_error", "_http_code_v586": int(exc.code)}
     except Exception:
-        return {}
+        return {"_lookup_status_v586": "api_error"}
+    if not isinstance(payload, dict):
+        return {"_lookup_status_v586": "api_error"}
+    rows = payload.get("places")
+    if not isinstance(rows, list) or not rows:
+        return {"_lookup_status_v586": "no_results"}
 
-    def name_key(value):
-        normalized = unicodedata.normalize("NFKC", str(value or "")).casefold()
-        return re.sub(r"[^0-9a-z\u3040-\u30ff\u3400-\u9fff]+", "", normalized)
-
-    target_key = name_key(place_name)
     ranked = []
-    for raw in list(payload.get("places") or []):
+    for raw in rows:
         if not isinstance(raw, dict) or str(raw.get("businessStatus") or "") == "CLOSED_PERMANENTLY":
+            continue
+        google_id = str(raw.get("id") or "").strip()
+        if not google_id:
             continue
         location = raw.get("location") if isinstance(raw.get("location"), dict) else {}
         try:
             candidate_lat = float(location.get("latitude"))
             candidate_lon = float(location.get("longitude"))
+            if not (math.isfinite(candidate_lat) and math.isfinite(candidate_lon)):
+                continue
             distance_m = _nearby_haversine_m(latitude, longitude, candidate_lat, candidate_lon)
         except (TypeError, ValueError):
             continue
-        if not math.isfinite(distance_m) or distance_m > 900:
-            continue
         display = raw.get("displayName") if isinstance(raw.get("displayName"), dict) else {}
         candidate_name = str(display.get("text") or "").strip()
-        candidate_key = name_key(candidate_name)
-        name_score = 10000 if candidate_key == target_key else 0
-        if target_key and candidate_key and (target_key in candidate_key or candidate_key in target_key):
-            name_score = max(name_score, 6000)
-        ranked.append((name_score - min(5000.0, distance_m), raw, candidate_name, candidate_lat, candidate_lon))
+        quality = _auto_discovery_name_quality_v586(place_name, candidate_name)
+        # Exact names tolerate differences in map/building centroids. Variants
+        # require much stronger location agreement. Never use distance alone.
+        max_distance = 150.0 if quality == 3 else (95.0 if quality == 2 else 65.0)
+        if quality == 0 or not math.isfinite(distance_m) or distance_m > max_distance:
+            continue
+        ranked.append((quality, -distance_m, raw, candidate_name, candidate_lat, candidate_lon))
     if not ranked:
-        return {}
-    _, raw, candidate_name, candidate_lat, candidate_lon = max(ranked, key=lambda item: item[0])
+        return {"_lookup_status_v586": "name_or_location_mismatch"}
+    _, negative_distance, raw, candidate_name, candidate_lat, candidate_lon = max(
+        ranked, key=lambda item: (item[0], item[1])
+    )
     return {
+        "_lookup_status_v586": "matched",
         "id": f"google:{raw.get('id') or ''}",
         "google_place_id": str(raw.get("id") or ""),
-        "name": candidate_name or place_name,
+        "name": candidate_name,
         "latitude": candidate_lat,
         "longitude": candidate_lon,
+        "_match_distance_m_v586": round(-negative_distance, 1),
         "address": str(raw.get("formattedAddress") or "").strip(),
         "provider": "Google Places",
         "business_status": str(raw.get("businessStatus") or ""),
@@ -41458,7 +41515,7 @@ def page_discovery_results():
                     place_lat = place_lon = None
                 with st.spinner("写真と詳細を確認しています…"):
                     google_place = _auto_discovery_google_match(name, place_lat, place_lon) if place_lat is not None else {}
-                if google_place:
+                if str(google_place.get("_lookup_status_v586") or "") == "matched" and google_place.get("google_place_id"):
                     detail_parts = []
                     if google_place.get("address"):
                         detail_parts.append(str(google_place.get("address")))
@@ -41470,10 +41527,13 @@ def page_discovery_results():
                     rating = google_place.get("rating")
                     rating_count = google_place.get("user_rating_count")
                     if rating is not None:
-                        rating_text = f"Google ★{float(rating):.1f}"
-                        if rating_count:
-                            rating_text += f"（{int(rating_count)}件）"
-                        detail_parts.append(rating_text)
+                        try:
+                            rating_text = f"Google ★{float(rating):.1f}"
+                            if rating_count:
+                                rating_text += f"（{int(rating_count)}件）"
+                            detail_parts.append(rating_text)
+                        except (TypeError, ValueError):
+                            pass
                     if detail_parts:
                         st.markdown(
                             '<div class="auto-discovery-detail">' + html.escape(" ／ ".join(detail_parts)) + '</div>',
@@ -41489,10 +41549,24 @@ def page_discovery_results():
                                 f'<div class="auto-discovery-photo-credit">写真: {html.escape(attribution)}</div></div>'
                             )
                         st.markdown('<div class="auto-discovery-photo-grid">' + "".join(cards) + '</div>', unsafe_allow_html=True)
+                    elif not google_place.get("photo_refs"):
+                        st.caption("Google Placesの検索結果に、この店舗の写真情報がありません。")
                     else:
-                        st.caption("この場所の写真は取得できませんでした。")
+                        st.caption("写真情報はありますが、画像データの取得に失敗しました。通信状態などを確認してください。")
                 else:
-                    st.caption("この場所の写真・詳細は取得できませんでした。地図から確認できます。")
+                    status = str(google_place.get("_lookup_status_v586") or "")
+                    if status == "name_or_location_mismatch":
+                        st.caption("Google Placesで店舗名と位置が一致する施設を確認できませんでした。別店舗の住所・営業時間・写真は表示しません。")
+                    elif status == "no_results":
+                        st.caption("Google Placesに該当する店舗情報が見つかりませんでした。")
+                    elif status == "not_configured":
+                        st.caption("写真・営業時間の取得に必要なGoogle Places APIが設定されていません。")
+                    elif status == "api_error":
+                        code = google_place.get("_http_code_v586")
+                        suffix = f"（HTTP {int(code)}）" if isinstance(code, int) else ""
+                        st.caption("Google Placesから詳細を取得できませんでした" + suffix + "。通信またはAPI設定を確認してください。")
+                    else:
+                        st.caption("Google Placesで詳細を確認できませんでした。地図から施設を確認してください。")
 
 
 def page_nearby():
