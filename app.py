@@ -44,7 +44,8 @@ def _app_css_v473(markup, **_ignored):
 # Review menu-only update: 2026-09-19 JST
 GENERATED_UPDATE_JST = "2026-09-19T14:54:38+09:00"
 
-APP_BUILD = "v586"
+APP_BUILD = "v587"
+# v587: Add six requested event publications as evidence-driven search hints; rank kid-friendly events; record per-site cited/picked/missed stats in owner-scoped Supabase Storage and export CSV/JSON via Settings. No extra automatic OpenAI API calls.
 # v586: Reject mismatched Google Places candidates in Android auto-discovery details; separate no Google photo metadata from photo-media download failures. No additional API requests.
 # v584: Cost-bound nearby event searches to one cited web-search tool call per category, eliminate automatic follow-ups and venue API geocoding, reuse multi-hour cached results, and preserve explicit refresh only.
 # v578: Improve future-date discovery: accept verified Japanese date lists/ranges and era formats, recheck more ambiguous leads, fix range-start occurrence handling, and keep real source citations.
@@ -34722,6 +34723,8 @@ def _events_validate_one_v570(raw, *, day, category, lat, lon, radius_km, source
     distance_m = _nearby_haversine_m(lat, lon, plat, plon)
     if not math.isfinite(distance_m) or distance_m > radius_km * 1000.0:
         return None
+    if _events_child_meta_v587(raw)["child_audience"] == "大人限定":
+        return None
     schedule = _events_schedule_v574(raw)
     short = re.sub(r"\s+", " ", str(raw.get("description") or "")).strip()[:155]
     return {
@@ -34730,6 +34733,7 @@ def _events_validate_one_v570(raw, *, day, category, lat, lon, radius_km, source
         "description": short, "category": category, "source_url": source_url,
         "latitude": plat, "longitude": plon, "distance_m": int(round(distance_m)),
         "source_rechecked": bool(raw.get("source_rechecked")),
+        **_events_child_meta_v587(raw),
     }
 
 
@@ -34752,6 +34756,8 @@ def _events_validate_unlocated_v572(raw, *, day, category, sources):
         return None
     if not begin <= sought <= finish or (finish - begin).days > 90 or not _events_day_evidence_v574(raw, day):
         return None
+    if _events_child_meta_v587(raw)["child_audience"] == "大人限定":
+        return None
     return {
         "title": title, "venue": venue, "address": str(raw.get("address") or "").strip()[:180],
         "start_date": start, "end_date": end, **_events_schedule_v574(raw),
@@ -34759,6 +34765,7 @@ def _events_validate_unlocated_v572(raw, *, day, category, sources):
         "category": category, "source_url": str(raw.get("source_url") or "").strip(),
         "latitude": None, "longitude": None, "distance_m": None,
         "source_rechecked": bool(raw.get("source_rechecked")),
+        **_events_child_meta_v587(raw),
     }
 
 
@@ -35003,6 +35010,8 @@ def _events_prefilter_v571(rows, *, day, sources):
     for raw in list(rows or [])[:150]:
         if not isinstance(raw, dict):
             continue
+        if _events_child_meta_v587(raw)["child_audience"] == "大人限定":
+            continue
         key = _events_url_key_v570(raw.get("source_url"))
         if not key or key not in sources:
             continue
@@ -35091,7 +35100,7 @@ def _events_normalize_v570(items, *, day, category, lat, lon, radius_km, sources
             chosen["time_label"] = _events_schedule_v574(chosen)["time_label"]
             dedup[same] = (title_key, venue_key, chosen)
     return sorted((event for _, _, event in dedup),
-                  key=lambda e: (e["distance_m"] is None,
+                  key=lambda e: (-_events_child_priority_v587(e), e["distance_m"] is None,
                                  (e["distance_m"] - 350 *
                                   (_events_source_quality_v571(e.get("source_url")) - 1))
                                  if e["distance_m"] is not None else float("inf"),
@@ -35608,6 +35617,8 @@ def _events_search_one_source_v571(plan, *, day, category, coarse_lat, coarse_lo
         f"現地開催予定の日本の{category}イベントをウェブ検索してください。\n"
         f"検索地点：{place_label}付近（概略座標 {coarse_lat:.2f}, {coarse_lon:.2f}）、半径{radius_km}km。\n"
         f"対象：{EVENT_SEARCH_CATEGORIES_V570[category]}。\n"
+        "子ども・親子が参加・見学できる企画を優先。成人限定を除外。"
+        "参照先の候補：" + "、".join(s["url"] for s in EVENT_SOURCE_PORTALS_V587) + "。"
         f"今回の情報源：{plan['name']}。探し方：{plan['focus']}\n"
         "koko.tokyo とそのサブドメインは検索元・参照元・出典として使用しない。"
         "対象地域を実際に検索して、開催日・会場・イベント名称が掲載されたイベントごとのページを確認すること。"
@@ -35640,6 +35651,8 @@ def _events_search_one_source_v571(plan, *, day, category, coarse_lat, coarse_lo
         "\"event_date\":\"" + day + "\",\"start_time\":\"HH:MM or empty\","
         "\"end_time\":\"HH:MM or empty\",\"description\":...,"
         "\"date_evidence\":\"掲載元の開催日表記\","
+        "\"child_audience\":\"子ども向け/親子向け/一般/不明\","
+        "\"child_evidence\":\"掲載元の判断根拠\","
         "\"latitude\":null,\"longitude\":null,\"source_url\":...}],"
         "\"pending_events\":[{\"title\":...,\"venue\":...,\"address\":...,\"source_url\":...}]}。"
     )
@@ -35684,6 +35697,7 @@ def _events_search_one_source_v571(plan, *, day, category, coarse_lat, coarse_lo
         return {"name": plan["name"], "items": candidates, "pending": pending,
                 "sources": sources,
                 "raw_count": len(rows), "cited_count": len(candidates),
+                "api_usage": _events_usage_v587(response),
                 "failed": False, "parse_ok": isinstance(payload.get("events"), list)}
     except Exception as exc:
         return {"name": plan["name"], "items": [], "sources": set(),
@@ -35708,6 +35722,8 @@ def _events_unverified_v579(results, verified, *, day, category, latitude, longi
         cited = set(origin.get("sources") or ())
         for raw in list(origin.get("pending") or [])[:35]:
             if not isinstance(raw, dict):
+                continue
+            if _events_child_meta_v587(raw)["child_audience"] == "大人限定":
                 continue
             title = re.sub(r"\s+", " ", str(raw.get("title") or "")).strip()[:150]
             venue = re.sub(r"\s+", " ", str(raw.get("venue") or "")).strip()[:120]
@@ -36023,7 +36039,12 @@ def _events_fetch_category_v584(day, category, latitude, longitude, radius_km, p
         radius_km=radius_km, place_label=str(place_label or "").strip()[:65],
     )
     if result.get("failed"):
-        return _events_fast_failure_v582([result])
+        failure = _events_fast_failure_v582([result])
+        failure["source_audit"] = _events_source_audit_v587(
+            category=category, sources=set(), raw_rows=[], per_day={},
+            error=failure.get("error") or "検索に失敗しました")
+        failure["http_status"] = result.get("http_status")
+        return failure
     sources = set(result.get("sources") or ())
     cited_rows = [row for row in result.get("items") or [] if isinstance(row, dict)
                   and _events_url_key_v570(row.get("source_url")) in sources]
@@ -36043,8 +36064,12 @@ def _events_fetch_category_v584(day, category, latitude, longitude, radius_km, p
         error = "指定日に開催するイベントの開催日・出典を確認できませんでした。"
     else:
         error = ""
+    audit = _events_source_audit_v587(category=category, sources=sources,
+         raw_rows=result.get("items") or [], per_day={day: {"items": items, "unverified": unverified}},
+         pending_rows=result.get("pending") or [])
     return {
         "items": items, "unverified": unverified, "error": error,
+        "source_audit": audit, "api_usage": dict(result.get("api_usage") or {}),
         "source_domains": domains,
         "searched_source_count": len({key.split("/", 1)[0] for key in sources}),
         "search_passes": 1, "failed_passes": 0,
@@ -36114,6 +36139,319 @@ EVENT_SEARCH_WEEK_DAYS_V585 = 7
 EVENT_SEARCH_WEEK_MAX_OUTPUT_TOKENS_V585 = 8000
 
 
+# v587: Named publication pages are SEARCH HINTS, not proof that the pages were
+# visited. The audited 'cited' flag is set only by an actual web_search source.
+EVENT_SOURCE_PORTALS_V587 = (
+    {"name": "じゃらん 東京イベント", "domain": "jalan.net", "url": "https://www.jalan.net/event/130000/"},
+    {"name": "ウォーカープラス 東京イベント", "domain": "walkerplus.com", "url": "https://www.walkerplus.com/event_list/today/ar0313/"},
+    {"name": "全国・東京の観光情報", "domain": "tourism-alljapanandtokyo.org", "url": "https://www.tourism-alljapanandtokyo.org/event-info"},
+    {"name": "レッツエンジョイ東京", "domain": "enjoytokyo.jp", "url": "https://www.enjoytokyo.jp/event/list/"},
+    {"name": "My TOKYO（東京都公式）", "domain": "my.metro.tokyo.lg.jp", "url": "https://www.my.metro.tokyo.lg.jp/event"},
+    {"name": "GO TOKYO 東京観光公式", "domain": "gotokyo.org", "url": "https://www.gotokyo.org/ja/travel-directory/result/index/event_date_word/today"},
+)
+EVENT_SOURCE_LOG_SCHEMA_V587 = "burari_event_sources_v587"
+EVENT_SOURCE_LOG_DIR_V587 = "event_source_logs_v587"
+EVENT_SOURCE_LOG_SESSION_V587 = "_events_source_log_session_v587"
+EVENT_SOURCE_LOG_LOADED_V587 = "_events_source_log_loaded_v587"
+
+
+def _events_child_meta_v587(raw):
+    """Conservative AI-aided audience tag; never claim an unverified minimum age."""
+    if not isinstance(raw, dict):
+        return {"child_audience": "不明", "child_evidence": ""}
+    label = str(raw.get("child_audience") or "").strip()
+    evidence = re.sub(r"\s+", " ", str(raw.get("child_evidence") or "")).strip()[:160]
+    # A claimed family audience without source evidence is not confirmed.
+    if label not in ("子ども向け", "親子向け", "一般", "大人限定", "不明"):
+        label = "不明"
+    if label in ("子ども向け", "親子向け", "大人限定") and not evidence:
+        label = "不明"
+    return {"child_audience": label, "child_evidence": evidence if label != "不明" else ""}
+
+
+def _events_child_priority_v587(raw):
+    return {"子ども向け": 2, "親子向け": 1}.get(str((raw or {}).get("child_audience") or ""), 0)
+
+
+def _events_source_matches_v587(source, domain):
+    # A URL can be a normal web address or a verified normalized source key.
+    key = _events_url_key_v570(source)
+    if key:
+        host = key.split("/", 1)[0]
+    else:
+        host = str(source or "").split("/", 1)[0].lower()
+    return _events_domain_matches_v583(host, domain)
+
+
+def _events_source_audit_v587(*, category, sources, raw_rows, per_day, pending_rows=(), error=""):
+    """Metrics are observations of a real search response, not fictional site visits.
+
+    参照できず does not mean that the publication contains no events.
+    A seven-day exhibition counts as ONE distinct adopted event per publisher.
+    """
+    cited = {str(x) for x in (sources or ()) if isinstance(x, str) and x}
+    per_day = per_day if isinstance(per_day, dict) else {}
+    all_picked = []
+    all_unverified = list(pending_rows or [])
+    for daily in per_day.values():
+        if not isinstance(daily, dict):
+            continue
+        all_picked.extend(x for x in (daily.get("items") or []) if isinstance(x, dict))
+        all_unverified.extend(x for x in (daily.get("unverified") or []) if isinstance(x, dict))
+    def identity(row):
+        return (str(row.get("title") or "").strip(), str(row.get("venue") or "").strip(),
+                _events_url_key_v570(row.get("source_url")), str(row.get("start_date") or ""))
+    audits = []
+    for portal in EVENT_SOURCE_PORTALS_V587:
+        domain = portal["domain"]
+        cited_for_site = sorted(x for x in cited if _events_source_matches_v587(x, domain))
+        raw_for_site = {identity(x) for x in (raw_rows or ()) if isinstance(x, dict) and
+                        _events_source_matches_v587(x.get("source_url"), domain)}
+        picked_by_id = {identity(x): x for x in all_picked if _events_source_matches_v587(x.get("source_url"), domain)}
+        pending_by_id = {identity(x): x for x in all_unverified if
+                         _events_source_matches_v587(x.get("source_url"), domain)}
+        picked = list(picked_by_id.values())
+        unverified = list(pending_by_id.values())
+        status = ("APIエラー" if error else "採用あり" if picked else
+                  "参照あり・採用なし" if cited_for_site else "参照できず")
+        reason = (str(error)[:150] if error else
+                  "開催日・出典・位置などの条件で採用なし" if cited_for_site and not picked else
+                  "Web検索の出典にこのサイトが現れず。掲載イベントがないとは限らない" if not cited_for_site else "")
+        audits.append({
+            "category": category, "site_name": portal["name"], "site_domain": domain,
+            "index_url": portal["url"], "search_requested": True,
+            "actually_cited": bool(cited_for_site), "status": status,
+            "cited_pages": len(cited_for_site), "raw_candidates": len(raw_for_site),
+            "picked_events": len(picked),
+            "picked_child_events": sum(_events_child_priority_v587(x) > 0 for x in picked),
+            "unverified_candidates": len(unverified), "reason": reason,
+            "sample_picked": [
+                {"title": str(x.get("title") or "")[:120],
+                 "venue": str(x.get("venue") or "")[:90],
+                 "source_url": str(x.get("source_url") or "")[:300],
+                 "child_audience": str(x.get("child_audience") or "不明")}
+                for x in picked[:4]],
+        })
+    return audits
+
+
+def _events_usage_v587(response):
+    usage = getattr(response, "usage", None)
+    if isinstance(response, dict):
+        usage = response.get("usage", usage)
+    def value(key):
+        raw = usage.get(key, 0) if isinstance(usage, dict) else getattr(usage, key, 0)
+        try:
+            return max(0, int(raw or 0))
+        except (TypeError, ValueError):
+            return 0
+    actions = list(getattr(response, "output", None) or [])
+    return {"input_tokens": value("input_tokens"), "output_tokens": value("output_tokens"),
+            "total_tokens": value("total_tokens"),
+            "web_search_actions": sum(str(getattr(x, "type", "") or
+                                          (x.get("type") if isinstance(x, dict) else "")) == "web_search_call"
+                                      for x in actions)}
+
+
+def _events_source_scope_v587():
+    """Non-reversible account scope used only to isolate the in-memory export."""
+    owner = (str(current_family_key()) + "\0" + str(current_member_key())).encode("utf-8")
+    return hashlib.sha256(owner).hexdigest()[:20]
+
+
+def _events_source_log_report_v587(snapshot, results, *, operation, day=None):
+    today = str(day or snapshot.get("day") or "")
+    days = list(snapshot.get("days") or [today])
+    audit = []
+    metrics = {}
+    for cat, result in (results or {}).items():
+        data = result if isinstance(result, dict) else {}
+        audit.extend(list(data.get("source_audit") or
+                          _events_source_audit_v587(
+                              category=cat, sources=set(), raw_rows=[], per_day={},
+                              error=data.get("error") or "")))
+        metrics[cat] = {
+            "search_passes_in_result": int(data.get("search_passes") or 0),
+            "failed_passes": int(data.get("failed_passes") or 0),
+            "usage": dict(data.get("api_usage") or {}),
+            "error": str(data.get("error") or "")[:200],
+            "http_status": data.get("http_status"),
+        }
+    location = snapshot.get("location") or {}
+    return {
+        "schema": EVENT_SOURCE_LOG_SCHEMA_V587, "run_id": uuid.uuid4().hex,
+        "owner_scope": _events_source_scope_v587(),
+        "created_at": now_jst().isoformat(), "build": APP_BUILD,
+        "operation": operation, "date_from": today,
+        "date_through": days[-1] if operation == "weekly" else today,
+        "place_label": str(location.get("place_label") or "")[:65],
+        # Log only rounded locality, not exact device GPS.
+        "coarse_position": [round(float(location.get("latitude") or 0), 2),
+                            round(float(location.get("longitude") or 0), 2)],
+        "radius_km": int(snapshot.get("radius_km") or 0),
+        "model": EVENT_SEARCH_MODEL_V570,
+        "ai_request_cap": len(metrics),
+        "note": "Web検索が実際に引用したサイトのみ『参照あり』。未参照はイベント0件を意味しない。キャッシュからの結果ではAPI再呼び出しがない場合がある。",
+        "api_by_category": metrics,
+        "sources": audit,
+    }
+
+
+def _events_source_log_path_v587():
+    return f"{_gps_track_prefix()}/{EVENT_SOURCE_LOG_DIR_V587}"
+
+
+def _events_source_log_save_v587(report):
+    """Save each search as an immutable account-scoped Storage object."""
+    try:
+        folder = _events_source_log_path_v587()
+        stamp = datetime.now(ZoneInfo(APP_TIMEZONE)).strftime("%Y%m%dT%H%M%S")
+        safe_id = re.sub(r"[^a-f0-9]", "", str(report.get("run_id") or ""))[:32] or uuid.uuid4().hex
+        path = f"{folder}/{stamp}_{safe_id}.json"
+        blob = json.dumps(report, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        if len(blob) > 120000:
+            return False, "ログが大きすぎるため、端末内の一時ログのみ保持しました。"
+        bucket = supabase_client().storage.from_(GPS_TRACK_BUCKET)
+        bucket.upload(path=path, file=blob, file_options={"content-type": GPS_TRACK_STORAGE_MIME,
+                                                           "cache-control": "0"})
+        return True, ""
+    except Exception as exc:
+        return False, "Supabase Storageへの保存に失敗（" + type(exc).__name__ + "）。設定から一時ログを出力できます。"
+
+
+def _events_source_log_record_v587(report):
+    """Called on the main Streamlit thread AFTER an explicitly started search."""
+    buffered = st.session_state.get(EVENT_SOURCE_LOG_SESSION_V587)
+    buffered = [x for x in (buffered if isinstance(buffered, list) else [])
+                if x.get("owner_scope") == _events_source_scope_v587()]
+    saved, error = _events_source_log_save_v587(report)
+    report = dict(report)
+    report["persistent_saved"] = saved
+    if error:
+        report["save_error"] = error
+        st.session_state["_events_source_log_save_error_v587"] = error
+    buffered.append(report)
+    st.session_state[EVENT_SOURCE_LOG_SESSION_V587] = buffered[-15:]
+    return saved
+
+
+def _events_source_log_history_v587(max_files=60):
+    """Only read history after the user explicitly requests an export."""
+    folder = _events_source_log_path_v587()
+    bucket = supabase_client().storage.from_(GPS_TRACK_BUCKET)
+    try:
+        listing = bucket.list(folder, {"limit": int(max_files), "offset": 0,
+                                       "sortBy": {"column": "name", "order": "desc"}})
+    except TypeError:
+        listing = bucket.list(path=folder, options={"limit": int(max_files), "offset": 0,
+                                                      "sortBy": {"column": "name", "order": "desc"}})
+    rows = _coerce_storage_list_rows(listing)
+    reports = []
+    for item in rows[:max_files]:
+        name = str(item.get("name") or "") if isinstance(item, dict) else ""
+        if not re.fullmatch(r"\d{8}T\d{6}_[0-9a-f]{32}\.json", name):
+            continue
+        try:
+            blob = _storage_bytes(bucket.download(f"{folder}/{name}"))
+            if len(blob) > 120000:
+                continue
+            doc = json.loads(blob.decode("utf-8"))
+            if (isinstance(doc, dict) and doc.get("schema") == EVENT_SOURCE_LOG_SCHEMA_V587
+                    and doc.get("owner_scope") == _events_source_scope_v587()):
+                reports.append(doc)
+        except Exception:
+            continue
+    return reports
+
+
+def _events_source_log_export_v587(reports):
+    """UTF-8 BOM CSV for Excel, plus raw machine-readable JSON for API tuning."""
+    import csv
+    docs = []
+    used = set()
+    for raw in reports or []:
+        if not isinstance(raw, dict) or raw.get("schema") != EVENT_SOURCE_LOG_SCHEMA_V587:
+            continue
+        identity = str(raw.get("run_id") or "")
+        if identity in used:
+            continue
+        used.add(identity)
+        docs.append(raw)
+    docs.sort(key=lambda x: str(x.get("created_at") or ""), reverse=True)
+    cols = ["日時", "検索ID", "検索種類", "検索開始日", "検索終了日", "地域", "半径km",
+            "カテゴリ", "サイト", "ドメイン", "検索対象", "出典参照", "結果分類", "参照ページ数",
+            "候補件数", "採用イベント数", "子ども・親子向け採用数", "未確認候補数", "採用イベント例",
+            "採用URL例", "理由", "APIエラー", "HTTP状態", "モデル", "検索回数参考", "入力tokens", "出力tokens"]
+    writer_io = io.StringIO(newline="")
+    writer = csv.writer(writer_io)
+    writer.writerow(cols)
+    def safe(value):
+        value = str(value if value is not None else "")
+        return "'" + value if value and value.lstrip().startswith(("=", "+", "-", "@", "\t", "\r")) else value
+    for doc in docs:
+        metrics = doc.get("api_by_category") or {}
+        for site in doc.get("sources") or []:
+            cat = str(site.get("category") or "")
+            meta = metrics.get(cat) or {}
+            tokens = meta.get("usage") or {}
+            samples = site.get("sample_picked") or []
+            writer.writerow([safe(x) for x in [
+                doc.get("created_at"), doc.get("run_id"), doc.get("operation"),
+                doc.get("date_from"), doc.get("date_through"), doc.get("place_label"),
+                doc.get("radius_km"), cat, site.get("site_name"), site.get("site_domain"),
+                "はい" if site.get("search_requested") else "いいえ",
+                "はい" if site.get("actually_cited") else "いいえ",
+                site.get("status"), site.get("cited_pages"), site.get("raw_candidates"),
+                site.get("picked_events"), site.get("picked_child_events"),
+                site.get("unverified_candidates"),
+                " ／ ".join(str(x.get("title") or "") for x in samples[:3]),
+                " ／ ".join(str(x.get("source_url") or "") for x in samples[:3]),
+                site.get("reason"), meta.get("error"), meta.get("http_status"),
+                doc.get("model"), meta.get("search_passes_in_result"),
+                tokens.get("input_tokens"), tokens.get("output_tokens"),
+            ]])
+    return writer_io.getvalue().encode("utf-8-sig"), json.dumps({
+        "schema": EVENT_SOURCE_LOG_SCHEMA_V587,
+        "explanation": "参照なし≠イベントなし。引用されたURLのドメインから件数を計算。重複開催日は1イベントとして計数。",
+        "reports": docs,
+    }, ensure_ascii=False, indent=2).encode("utf-8")
+
+
+def _events_source_log_settings_v587():
+    with st.expander("イベント検索・情報ソースログ", expanded=False):
+        st.caption("検索で指定した6サイトについて、出典参照の有無、採用数、子ども向け採用数、未確認数、APIエラーを記録します。"
+                   "『参照できず』はイベントがないという意味ではありません。")
+        scope = _events_source_scope_v587()
+        session_docs = [r for r in (st.session_state.get(EVENT_SOURCE_LOG_SESSION_V587) or [])
+                        if isinstance(r, dict) and r.get("owner_scope") == scope]
+        persisted = st.session_state.get(EVENT_SOURCE_LOG_LOADED_V587)
+        persisted = [r for r in (persisted if isinstance(persisted, list) else [])
+                     if isinstance(r, dict) and r.get("owner_scope") == scope]
+        if st.button("保存済みのイベント検索ログを読み込む", key="event_source_log_load_v587",
+                     use_container_width=True):
+            try:
+                persisted = _events_source_log_history_v587()
+                st.session_state[EVENT_SOURCE_LOG_LOADED_V587] = persisted
+                st.session_state.pop("_events_source_log_load_error_v587", None)
+            except Exception as exc:
+                st.session_state["_events_source_log_load_error_v587"] = (
+                    "Supabase Storageの読取失敗（" + type(exc).__name__ + "）。")
+        if st.session_state.get("_events_source_log_save_error_v587"):
+            st.warning(st.session_state["_events_source_log_save_error_v587"])
+        if st.session_state.get("_events_source_log_load_error_v587"):
+            st.warning(st.session_state["_events_source_log_load_error_v587"])
+        docs = session_docs + persisted
+        csv_data, json_data = _events_source_log_export_v587(docs)
+        st.caption(f"出力可能：{len({x.get('run_id') for x in docs if isinstance(x, dict)})}検索分。"
+                   " 過去のログは読み込みボタンで取得（最大60検索分）。")
+        st.download_button("サイト別検索結果ログ（CSV）", data=csv_data,
+                           file_name=f"burari_event_sources_{today_iso()}.csv", mime="text/csv",
+                           use_container_width=True, key="event_source_csv_v587")
+        st.download_button("検索API改善用の詳細ログ（JSON）", data=json_data,
+                           file_name=f"burari_event_sources_{today_iso()}.json", mime="application/json",
+                           use_container_width=True, key="event_source_json_v587")
+
+
 def _events_week_days_v585(start_day, *, today=None):
     beginning = date.fromisoformat(str(start_day))
     reference = today or now_jst().date()
@@ -36176,11 +36514,23 @@ def _events_search_week_one_category_v585(start_day, days, category, latitude, l
     plan = _events_compact_source_plan_v584(category, latitude, longitude, radius_km, place_label)
     end_day = days[-1]
     exact_days = "、".join(days)
+    extra_sites = "\n指定の6サイト（検索優先・出典は実際に取得できたURLのみ）：\n" + "\n".join(
+        f"- {site['name']} {site['url']}" for site in EVENT_SOURCE_PORTALS_V587)
+    child_focus = (
+        "\n子ども（特に未就学児・小学生）と一緒に体験・観戦・見学できる企画を優先する。"
+        "親子体験、科学、自然観察、鉄道、スポーツ、祭り、文化ワークショップを幅広く探す。"
+        "成人限定や年齢制限で子どもが参加・見学できない催しは採用しない。"
+        "各イベントに child_audience（子ども向け/親子向け/一般/大人限定/不明）と"
+        " child_evidence（その判断の掲載元の短い根拠表記、不明なら空文字）を返す。"
+        "子ども向けと明記されていないものを子ども向けと断定しない。"
+        "今日に限定したサイトのページは未来日検索の代わりにしない。"
+        "掲載元の当該未来日を説明する個別のイベントページを探す。"
+        "サイトが検索結果に出なければ未参照と扱い、採用数を創作しない。")
     prompt = (
         f"日本時間 {start_day} から {end_day} までのイベントを検索。対象日：{exact_days}。"
         f"検索地点：{str(place_label or '')[:65]}、概略座標 {float(latitude):.2f}, {float(longitude):.2f}、"
         f"半径{radius_km}km以内。カテゴリ：{category}（{EVENT_SEARCH_CATEGORIES_V570[category]}）。\n"
-        f"検索方針：{plan['focus']}\n"
+        f"検索方針：{plan['focus']}\n" + extra_sites + child_focus + "\n"
         "対象7日間の各日を偏らず確認する。自治体・公的施設の公式カレンダー、"
         "主催者・会場の個別案内、スポーツ・文化の専門サイト、地域情報を検索する。"
         "実際に開いて確認した掲載元URL以外は出典にしない。koko.tokyo（全サブドメイン）除外。"
@@ -36207,6 +36557,7 @@ def _events_search_week_one_category_v585(start_day, days, category, latitude, l
         '"event_date":"YYYY-MM-DD or empty","occurrence_dates":["YYYY-MM-DD"],'
         '"start_time":"HH:MM or empty","end_time":"HH:MM or empty",'
         '"description":"...","date_evidence":"掲載元の開催日表記",'
+        '"child_audience":"子ども向け/親子向け/一般/不明","child_evidence":"掲載元の根拠表記",'
         '"latitude":null,"longitude":null,"source_url":"https://..."}],'
         '"pending_events":[{"title":"...","venue":"...","address":"...",'
         '"description":"...","source_url":"https://..."}]}。'
@@ -36216,9 +36567,13 @@ def _events_search_week_one_category_v585(start_day, days, category, latitude, l
             prompt=prompt, domains=None, context_size="medium", timeout_seconds=55.0,
             max_output_tokens=EVENT_SEARCH_WEEK_MAX_OUTPUT_TOKENS_V585)
         sources = _events_source_urls_v570(response)
+        api_usage = _events_usage_v587(response)
         payload = _events_decode_json_v570(getattr(response, "output_text", ""))
         if not isinstance(payload.get("events"), list):
-            return {"failed": True, "error": "検索APIの応答を読み取れませんでした。検索結果は更新されていません。",
+            failure = "検索APIの応答を読み取れませんでした。"
+            return {"failed": True, "error": failure, "source_audit": _events_source_audit_v587(
+                    category=category, sources=sources, raw_rows=[], per_day={}, error=failure),
+                    "api_usage": api_usage,
                     "search_passes": 1, "failed_passes": 1, "days": {}}
         raw_rows = [row for row in payload["events"][:80] if isinstance(row, dict)]
         pending_raw = list(payload.get("pending_events") or [])[:32] if isinstance(payload.get("pending_events"), list) else []
@@ -36266,12 +36621,19 @@ def _events_search_week_one_category_v585(start_day, days, category, latitude, l
                 "followup_attempted": 0, "followup_accepted": 0,
                 "checked_at": datetime.now(ZoneInfo(APP_TIMEZONE)).strftime("%H:%M"),
             }
+        source_audit = _events_source_audit_v587(
+            category=category, sources=sources, raw_rows=raw_rows,
+            pending_rows=pending_raw, per_day=by_day)
         return {"days": by_day, "search_passes": 1, "failed_passes": 0, "failed": False,
+                "source_audit": source_audit, "api_usage": api_usage,
                 "start_day": start_day, "end_day": end_day}
     except Exception as exc:
         details = _events_error_details_v582(exc)
         return {"failed": True, "days": {}, "search_passes": 1,
                 "failed_passes": 1, "error": details.get("failure_message") or "検索に失敗しました。",
+                "source_audit": _events_source_audit_v587(
+                    category=category, sources=set(), raw_rows=[], per_day={},
+                    error=details.get("failure_message") or "検索に失敗しました。"),
                 **details}
 
 
@@ -36454,11 +36816,13 @@ def _events_complete_refinement_v585(snapshot):
     if not futures or not all(future.done() for future in futures.values()):
         return False
     day = refinement["day"]
+    supplements_for_log = {}
     for category, future in futures.items():
         try:
             supplement = future.result()
         except Exception:
             supplement = {"items": [], "unverified": [], "error": "追加検索に失敗しました。"}
+        supplements_for_log[category] = supplement
         weekly_category = (snapshot.get("results") or {}).get(category)
         if not isinstance(weekly_category, dict) or not isinstance(weekly_category.get("days"), dict):
             continue
@@ -36467,6 +36831,13 @@ def _events_complete_refinement_v585(snapshot):
             original, supplement, day=day, category=category,
             location=snapshot["location"], radius_km=int(snapshot["radius_km"]))
     snapshot.pop("refinement", None)
+    try:
+        report = _events_source_log_report_v587(snapshot, supplements_for_log,
+                                                 operation="day_refinement", day=day)
+        _events_source_log_record_v587(report)
+    except Exception as exc:
+        st.session_state["_events_source_log_save_error_v587"] = (
+            "イベント追加検索ログの作成に失敗（" + type(exc).__name__ + "）。")
     return True
 
 
@@ -36533,6 +36904,14 @@ def _events_complete_explicit_search_v579(snapshot):
             results[category] = {"items": [], "unverified": [], "error": "検索に失敗しました。再検索してください。"}
     snapshot["results"] = results
     snapshot["futures"] = None
+    if not snapshot.get("_source_log_done_v587"):
+        snapshot["_source_log_done_v587"] = True
+        try:
+            report = _events_source_log_report_v587(snapshot, results, operation="weekly")
+            _events_source_log_record_v587(report)
+        except Exception as exc:
+            st.session_state["_events_source_log_save_error_v587"] = (
+                "イベント検索ログの作成に失敗（" + type(exc).__name__ + "）。")
     return True
 
 
@@ -36829,7 +37208,8 @@ def _events_render_list_v574(items, day, *, show_categories=False):
                 "category": str(event.get("category") or "") if show_categories else "",
                 "when": f"{day_label}　{event.get('time_label') or '時間未掲載'}" +
                         ("　（追加確認済み）" if event.get("source_rechecked") else ""),
-                "meta": f"{event.get('venue') or ''} ／ {distance_text}",
+                "meta": f"{event.get('venue') or ''} ／ {distance_text}" +
+                        (" ／ 子ども向け候補（要確認）" if _events_child_priority_v587(event) else ""),
             })
         component(data={"kind": "list", "rows": rows_for_component,
                         "native_bridge_token": str(_query_param_scalar("native_bridge_token") or "")},
@@ -36847,6 +37227,8 @@ def _events_render_list_v574(items, day, *, show_categories=False):
         distance_text = f"約{distance / 1000:.1f}km" if distance is not None else "距離未確認"
         url = html.escape(str(event.get("source_url") or ""), quote=True)
         category_text = html.escape(str(event.get("category") or "")) if show_categories else ""
+        if _events_child_priority_v587(event):
+            distance_text += " ／ 子ども・親子向け候補（対象年齢要確認）"
         category_html = (f'<div class="events-list-category-v576">{category_text}</div>'
                          if category_text else "")
         rows.append(
@@ -36967,6 +37349,8 @@ def _events_render_details_v574(items, day, category):
             distance_text = f"約{distance / 1000:.1f}km" if distance is not None else "距離未確認"
             st.caption(f"{date_part}{time_part} ／ {distance_text}" +
                        (" ／ 開催日・出典を追加確認" if item.get("source_rechecked") else ""))
+            if _events_child_priority_v587(item):
+                st.caption("子ども・親子向け候補（AI分類。参加条件・対象年齢は掲載元で要確認）")
             st.markdown("**会場：** " + html.escape(str(item["venue"])))
             if item.get("description"):
                 st.write(item["description"])
@@ -37258,6 +37642,7 @@ def page_events_v570():
             if isinstance(snapshot, dict) and isinstance(snapshot.get("refinement"), dict):
                 _events_refine_wait_fragment_v585()
             _events_result_panel_v570()
+    st.caption("指定の6サイトも検索候補に加え、子ども・親子向けを優先します。サイト別の採用・未採用ログは設定画面からCSV/JSONで出力できます。")
     st.caption("最大7日間をまとめて検索し、通常のWeb検索は3カテゴリ合計で最大3回です。"
                "曜日・カテゴリ・表示形式を切り替えてもAPI検索しません。"
                "同じ週・場所・範囲の検索結果は当日3時間・未来日12時間キャッシュします。"
@@ -61051,6 +61436,7 @@ def page_settings():
     )
 
     st.divider()
+    _events_source_log_settings_v587()
     render_performance_log_v457()
     st.caption(f"アプリビルド：{APP_BUILD}")
 
