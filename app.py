@@ -23,9 +23,12 @@ import sys
 import unicodedata
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from array import array
-from urllib.parse import urlencode, urlparse, parse_qs, quote
+from urllib.parse import urlencode, urlparse, parse_qs, quote, urljoin
 from urllib.request import Request, urlopen
 from urllib.error import HTTPError, URLError
+from html.parser import HTMLParser
+from urllib.robotparser import RobotFileParser
+from concurrent.futures import Future
 from datetime import date, datetime, timedelta
 from bisect import bisect_left
 from pathlib import Path
@@ -44,7 +47,8 @@ def _app_css_v473(markup, **_ignored):
 # Review menu-only update: 2026-09-19 JST
 GENERATED_UPDATE_JST = "2026-09-19T14:54:38+09:00"
 
-APP_BUILD = "v587"
+APP_BUILD = "v588"
+# v588: Inspect six registered publisher listing pages directly (robots-aware, bounded), parse sourced event date spans, merge with capped Web AI results; store real per-site fetch/accept/reject status and cache-use/API metrics in existing Storage logs.
 # v587: Add six requested event publications as evidence-driven search hints; rank kid-friendly events; record per-site cited/picked/missed stats in owner-scoped Supabase Storage and export CSV/JSON via Settings. No extra automatic OpenAI API calls.
 # v586: Reject mismatched Google Places candidates in Android auto-discovery details; separate no Google photo metadata from photo-media download failures. No additional API requests.
 # v584: Cost-bound nearby event searches to one cited web-search tool call per category, eliminate automatic follow-ups and venue API geocoding, reuse multi-hour cached results, and preserve explicit refresh only.
@@ -34711,7 +34715,7 @@ def _events_validate_one_v570(raw, *, day, category, lat, lon, radius_km, source
         sought = date.fromisoformat(day)
     except (TypeError, ValueError):
         return None
-    if not start <= sought <= end or (end - start).days > 90 or not _events_day_evidence_v574(raw, day):
+    if not start <= sought <= end or (end - start).days > EVENTS_VERIFIED_PERIOD_MAX_DAYS_V588 or not _events_day_evidence_v574(raw, day):
         return None
     try:
         plat = float(raw.get("latitude"))
@@ -34754,7 +34758,7 @@ def _events_validate_unlocated_v572(raw, *, day, category, sources):
         begin, finish, sought = date.fromisoformat(start), date.fromisoformat(end), date.fromisoformat(day)
     except (ValueError, TypeError):
         return None
-    if not begin <= sought <= finish or (finish - begin).days > 90 or not _events_day_evidence_v574(raw, day):
+    if not begin <= sought <= finish or (finish - begin).days > EVENTS_VERIFIED_PERIOD_MAX_DAYS_V588 or not _events_day_evidence_v574(raw, day):
         return None
     if _events_child_meta_v587(raw)["child_audience"] == "大人限定":
         return None
@@ -35018,7 +35022,7 @@ def _events_prefilter_v571(rows, *, day, sources):
         try:
             start = date.fromisoformat(str(raw.get("start_date") or ""))
             end = date.fromisoformat(str(raw.get("end_date") or raw.get("start_date") or ""))
-            if not start <= sought <= end or (end-start).days > 90 or not _events_day_evidence_v574(raw, day):
+            if not start <= sought <= end or (end-start).days > EVENTS_VERIFIED_PERIOD_MAX_DAYS_V588 or not _events_day_evidence_v574(raw, day):
                 continue
         except (ValueError, TypeError):
             continue
@@ -35324,6 +35328,12 @@ def _events_date_in_evidence_v577(raw, day, *, title_hint=""):
     wanted = date.fromisoformat(str(day))
     if not evidence.strip():
         return False
+    # v588: GO TOKYO publishes calendar dates in English ("Oct 15, 2026").
+    # Only the direct calendar parser may attach this explicit source marker;
+    # never infer date from generic English article timestamps.
+    if evidence.startswith("GO TOKYO掲載日程: "):
+        parsed = _events_gotokyo_dates_v588(evidence, wanted.year)
+        return bool(parsed and parsed[0] <= wanted <= parsed[1])
 
     ignored = re.compile(r"(?:申込|応募|募集|エントリー|公開|掲載|更新|投稿|受付|締切|発売|発行|記事公開)(?:日|日時|期間)?\s*[:：]?\s*$")
     schedule_words = re.compile(r"開催|会期|期間|日時|日程|イベント|大会|試合|展示|上映|開演|開催予定|フェス|ワークショップ|公演|祭り|実施")
@@ -35371,7 +35381,7 @@ def _events_date_in_evidence_v577(raw, day, *, title_hint=""):
     for (_, left_end, first), (right_start, _, second) in zip(all_full, all_full[1:]):
         separator = evidence[left_end:right_start]
         if (len(separator) <= 45 and re.search(r"[～〜~－–—]|\bto\b|から", separator, re.I)
-                and 0 <= (second - first).days <= 90 and first <= wanted <= second):
+                and 0 <= (second - first).days <= EVENTS_VERIFIED_PERIOD_MAX_DAYS_V588 and first <= wanted <= second):
             return True
 
     # A date list/period usually mentions the year only once:
@@ -35399,7 +35409,7 @@ def _events_date_in_evidence_v577(raw, day, *, title_hint=""):
         if second == wanted and is_schedule_context(anchor_start):
             return True
         if (pair.group("sep") in "～〜~－–—" or pair.group("sep") == "から") and \
-                first <= wanted <= second and (second - first).days <= 90:
+                first <= wanted <= second and (second - first).days <= EVENTS_VERIFIED_PERIOD_MAX_DAYS_V588:
             return True
 
     # Year and month/day can appear on separate parts of a site's event card:
@@ -35432,7 +35442,7 @@ def _events_date_in_evidence_v577(raw, day, *, title_hint=""):
         except ValueError:
             continue
         if m.group("sep") in "～〜~－–—" or m.group("sep") == "から":
-            if begin <= wanted <= finish and (finish - begin).days <= 90:
+            if begin <= wanted <= finish and (finish - begin).days <= EVENTS_VERIFIED_PERIOD_MAX_DAYS_V588:
                 return True
         elif wanted in (begin, finish):
             return True
@@ -35475,7 +35485,7 @@ def _events_repair_calendar_row_v578(raw, *, day):
     if start is None or end is None:
         row["start_date"] = day
         row["end_date"] = day
-    elif not (start <= wanted <= end and (end-start).days <= 90):
+    elif not (start <= wanted <= end and (end-start).days <= EVENTS_VERIFIED_PERIOD_MAX_DAYS_V588):
         return row  # contradictory interval: cannot override published dates
     if event_day is None or (event_day == start and start != end):
         row["event_date"] = day  # occurrence in a cited multi-day period
@@ -35588,7 +35598,7 @@ def _events_followup_verify_v577(candidates, *, day, category, coarse_lat,
             try:
                 start = date.fromisoformat(str(row.get("start_date") or ""))
                 end = date.fromisoformat(str(row.get("end_date") or row.get("start_date") or ""))
-                if not start <= date.fromisoformat(day) <= end or (end-start).days > 90:
+                if not start <= date.fromisoformat(day) <= end or (end-start).days > EVENTS_VERIFIED_PERIOD_MAX_DAYS_V588:
                     continue
             except ValueError:
                 continue
@@ -35688,7 +35698,7 @@ def _events_search_one_source_v571(plan, *, day, category, coarse_lat, coarse_lo
                 start = date.fromisoformat(str(raw.get("start_date") or ""))
                 end = date.fromisoformat(str(raw.get("end_date") or raw.get("start_date") or ""))
                 wanted = date.fromisoformat(day)
-                return start <= wanted <= end and 0 <= (end-start).days <= 90 and _events_day_evidence_v574(raw, day)
+                return start <= wanted <= end and 0 <= (end-start).days <= EVENTS_VERIFIED_PERIOD_MAX_DAYS_V588 and _events_day_evidence_v574(raw, day)
             except (ValueError, TypeError):
                 return False
         pending_rows = list(unconfirmed)[:7] + [row for row in rows
@@ -35744,7 +35754,7 @@ def _events_unverified_v579(results, verified, *, day, category, latitude, longi
                 try:
                     start = date.fromisoformat(start_raw or end_raw)
                     end = date.fromisoformat(end_raw or start_raw)
-                    if (end - start).days < 0 or (end-start).days > 90 or not start <= sought <= end:
+                    if (end - start).days < 0 or (end-start).days > EVENTS_VERIFIED_PERIOD_MAX_DAYS_V588 or not start <= sought <= end:
                         continue
                 except (ValueError, TypeError):
                     pass  # Unparseable text is unknown, not confirmed or disproof.
@@ -36147,9 +36157,9 @@ EVENT_SOURCE_PORTALS_V587 = (
     {"name": "全国・東京の観光情報", "domain": "tourism-alljapanandtokyo.org", "url": "https://www.tourism-alljapanandtokyo.org/event-info"},
     {"name": "レッツエンジョイ東京", "domain": "enjoytokyo.jp", "url": "https://www.enjoytokyo.jp/event/list/"},
     {"name": "My TOKYO（東京都公式）", "domain": "my.metro.tokyo.lg.jp", "url": "https://www.my.metro.tokyo.lg.jp/event"},
-    {"name": "GO TOKYO 東京観光公式", "domain": "gotokyo.org", "url": "https://www.gotokyo.org/ja/travel-directory/result/index/event_date_word/today"},
+    {"name": "GO TOKYO 東京観光公式", "domain": "gotokyo.org", "url": "https://www.gotokyo.org/jp/calendar/index.html"},
 )
-EVENT_SOURCE_LOG_SCHEMA_V587 = "burari_event_sources_v587"
+EVENT_SOURCE_LOG_SCHEMA_V587 = "burari_event_sources_v588"
 EVENT_SOURCE_LOG_DIR_V587 = "event_source_logs_v587"
 EVENT_SOURCE_LOG_SESSION_V587 = "_events_source_log_session_v587"
 EVENT_SOURCE_LOG_LOADED_V587 = "_events_source_log_loaded_v587"
@@ -36270,11 +36280,19 @@ def _events_source_log_report_v587(snapshot, results, *, operation, day=None):
                           _events_source_audit_v587(
                               category=cat, sources=set(), raw_rows=[], per_day={},
                               error=data.get("error") or "")))
+        cached = bool((snapshot.get("reused_cache_categories") or {}).get(cat)) if operation == "weekly" else False
         metrics[cat] = {
             "search_passes_in_result": int(data.get("search_passes") or 0),
             "failed_passes": int(data.get("failed_passes") or 0),
-            "usage": dict(data.get("api_usage") or {}),
-            "error": str(data.get("error") or "")[:200],
+            "cache_hit": cached,
+            "api_requests_this_action": 0 if cached else int(data.get("api_request_count") or data.get("search_passes") or 0),
+            "usage": {} if cached else dict(data.get("api_usage") or {}),
+            "usage_in_cached_result": dict(data.get("api_usage") or {}) if cached else {},
+            "direct_http_requests_in_result": int(data.get("direct_http_requests") or 0),
+            "direct_http_success_in_result": int(data.get("direct_http_success") or 0),
+            "direct_events_in_result": int(data.get("direct_events_found") or 0),
+            "excluded_reasons": dict(data.get("exclusion_counts") or {}),
+            "error": str(data.get("error") or data.get("api_warning") or "")[:200],
             "http_status": data.get("http_status"),
         }
     location = snapshot.get("location") or {}
@@ -36291,7 +36309,12 @@ def _events_source_log_report_v587(snapshot, results, *, operation, day=None):
         "radius_km": int(snapshot.get("radius_km") or 0),
         "model": EVENT_SEARCH_MODEL_V570,
         "ai_request_cap": len(metrics),
-        "note": "Web検索が実際に引用したサイトのみ『参照あり』。未参照はイベント0件を意味しない。キャッシュからの結果ではAPI再呼び出しがない場合がある。",
+        "api_requests_this_action": sum(int(v.get("api_requests_this_action") or 0) for v in metrics.values()),
+        "cache_hit_categories": [k for k, v in metrics.items() if v.get("cache_hit")],
+        "direct_fetch_shared_by_categories": operation == "weekly",
+        "direct_cache_ttl_seconds": EVENTS_SOURCE_FETCH_TTL_V588 if operation == "weekly" else 0,
+        "search_mode": "AI_AND_PUBLIC_PAGES" if operation == "weekly" else "AI_ONLY_MANUAL_REFINEMENT",
+        "note": "AI引用とサイト直接取得は別に記録。直接HTTP件数は3カテゴリで共有した取得結果のため加算不可。取得ログはキャッシュ由来の場合がある。参照なし≠イベントなし。今回API回数はキャッシュを除外。",
         "api_by_category": metrics,
         "sources": audit,
     }
@@ -36312,8 +36335,10 @@ def _events_source_log_save_v587(report):
         if len(blob) > 120000:
             return False, "ログが大きすぎるため、端末内の一時ログのみ保持しました。"
         bucket = supabase_client().storage.from_(GPS_TRACK_BUCKET)
-        bucket.upload(path=path, file=blob, file_options={"content-type": GPS_TRACK_STORAGE_MIME,
-                                                           "cache-control": "0"})
+        uploaded = bucket.upload(path=path, file=blob, file_options={"content-type": GPS_TRACK_STORAGE_MIME,
+                                                                      "cache-control": "0"})
+        if (isinstance(uploaded, dict) and uploaded.get("error")) or getattr(uploaded, "error", None):
+            return False, "Supabase Storageからログの保存エラーが返されました。設定から一時ログを出力できます。"
         return True, ""
     except Exception as exc:
         return False, "Supabase Storageへの保存に失敗（" + type(exc).__name__ + "）。設定から一時ログを出力できます。"
@@ -36324,8 +36349,9 @@ def _events_source_log_record_v587(report):
     buffered = st.session_state.get(EVENT_SOURCE_LOG_SESSION_V587)
     buffered = [x for x in (buffered if isinstance(buffered, list) else [])
                 if x.get("owner_scope") == _events_source_scope_v587()]
-    saved, error = _events_source_log_save_v587(report)
     report = dict(report)
+    report["persistent_saved"] = True
+    saved, error = _events_source_log_save_v587(report)
     report["persistent_saved"] = saved
     if error:
         report["save_error"] = error
@@ -36356,7 +36382,7 @@ def _events_source_log_history_v587(max_files=60):
             if len(blob) > 120000:
                 continue
             doc = json.loads(blob.decode("utf-8"))
-            if (isinstance(doc, dict) and doc.get("schema") == EVENT_SOURCE_LOG_SCHEMA_V587
+            if (isinstance(doc, dict) and doc.get("schema") in (EVENT_SOURCE_LOG_SCHEMA_V587, "burari_event_sources_v587")
                     and doc.get("owner_scope") == _events_source_scope_v587()):
                 reports.append(doc)
         except Exception:
@@ -36370,7 +36396,7 @@ def _events_source_log_export_v587(reports):
     docs = []
     used = set()
     for raw in reports or []:
-        if not isinstance(raw, dict) or raw.get("schema") != EVENT_SOURCE_LOG_SCHEMA_V587:
+        if not isinstance(raw, dict) or raw.get("schema") not in (EVENT_SOURCE_LOG_SCHEMA_V587, "burari_event_sources_v587"):
             continue
         identity = str(raw.get("run_id") or "")
         if identity in used:
@@ -36381,7 +36407,10 @@ def _events_source_log_export_v587(reports):
     cols = ["日時", "検索ID", "検索種類", "検索開始日", "検索終了日", "地域", "半径km",
             "カテゴリ", "サイト", "ドメイン", "検索対象", "出典参照", "結果分類", "参照ページ数",
             "候補件数", "採用イベント数", "子ども・親子向け採用数", "未確認候補数", "採用イベント例",
-            "採用URL例", "理由", "APIエラー", "HTTP状態", "モデル", "検索回数参考", "入力tokens", "出力tokens"]
+            "採用URL例", "理由", "APIエラー", "HTTP状態", "モデル", "検索回数参考", "入力tokens", "出力tokens",
+            "キャッシュ再利用", "今回API実行数", "直接ページ取得状態", "直接取得HTTP番号", "robots確認",
+            "直接取得ページ数", "直接取得候補数", "直接取得分類一致数", "直接取得時間ms", "取得時の除外理由",
+            "AI候補除外理由", "今回AI実行数合計"]
     writer_io = io.StringIO(newline="")
     writer = csv.writer(writer_io)
     writer.writerow(cols)
@@ -36409,18 +36438,24 @@ def _events_source_log_export_v587(reports):
                 site.get("reason"), meta.get("error"), meta.get("http_status"),
                 doc.get("model"), meta.get("search_passes_in_result"),
                 tokens.get("input_tokens"), tokens.get("output_tokens"),
+                "はい" if meta.get("cache_hit") else "いいえ", meta.get("api_requests_this_action"),
+                site.get("fetch_status"), site.get("http_status"), site.get("robots_status"),
+                site.get("pages_fetched"), site.get("direct_candidates"), site.get("direct_confirmed"),
+                site.get("elapsed_ms"), json.dumps(site.get("direct_exclusion_reasons") or {}, ensure_ascii=False),
+                json.dumps(meta.get("excluded_reasons") or {}, ensure_ascii=False),
+                doc.get("api_requests_this_action"),
             ]])
     return writer_io.getvalue().encode("utf-8-sig"), json.dumps({
         "schema": EVENT_SOURCE_LOG_SCHEMA_V587,
-        "explanation": "参照なし≠イベントなし。引用されたURLのドメインから件数を計算。重複開催日は1イベントとして計数。",
+        "explanation": "AI検索からの引用とサイト直接取得を別計測。直接HTTP件数は3カテゴリ間で共有するため加算不可。参照なし・取得失敗はイベントなしを意味しない。v587の保存ログにも対応。",
         "reports": docs,
     }, ensure_ascii=False, indent=2).encode("utf-8")
 
 
 def _events_source_log_settings_v587():
     with st.expander("イベント検索・情報ソースログ", expanded=False):
-        st.caption("検索で指定した6サイトについて、出典参照の有無、採用数、子ども向け採用数、未確認数、APIエラーを記録します。"
-                   "『参照できず』はイベントがないという意味ではありません。")
+        st.caption("登録6サイトの実際のHTML取得可否、robots確認、候補数、除外理由、AI引用、キャッシュ利用、"
+                   "API使用回数を別々に記録します。取得失敗や未参照は『イベントなし』を意味しません。")
         scope = _events_source_scope_v587()
         session_docs = [r for r in (st.session_state.get(EVENT_SOURCE_LOG_SESSION_V587) or [])
                         if isinstance(r, dict) and r.get("owner_scope") == scope]
@@ -36493,7 +36528,7 @@ def _events_week_is_occurrence_v585(raw, day):
                     return False
         start = date.fromisoformat(str(raw.get("start_date") or raw.get("event_date") or day))
         end = date.fromisoformat(str(raw.get("end_date") or raw.get("start_date") or raw.get("event_date") or day))
-        return start <= target <= end and 0 <= (end - start).days <= 90
+        return start <= target <= end and 0 <= (end - start).days <= EVENTS_VERIFIED_PERIOD_MAX_DAYS_V588
     except (ValueError, TypeError):
         return False
 
@@ -36507,6 +36542,589 @@ def _events_week_assign_v585(raw, day):
     fixed["end_date"] = str(raw.get("end_date") or raw.get("start_date") or raw.get("event_date") or day)
     fixed["event_date"] = day
     return fixed
+
+
+# v588: Six public publication indices are read at most once per cached search.
+# AI Web-search stays at one tool call per category; direct HTML reading is not an AI call.
+EVENTS_VERIFIED_PERIOD_MAX_DAYS_V588 = 366
+EVENTS_SOURCE_FETCH_TTL_V588 = 30 * 60
+EVENTS_SOURCE_FETCH_FAIL_TTL_V588 = 5 * 60
+EVENTS_SOURCE_MAX_HTML_V588 = 900_000
+EVENTS_SOURCE_REQUEST_TIMEOUT_V588 = 5
+EVENTS_SOURCE_WALKER_EXTRA_PAGES_V588 = 2
+EVENTS_SOURCE_MAX_INDEX_LINKS_V588 = 36
+EVENTS_SOURCE_AGENT_V588 = "TokyoBurariEventFinder/1.0 (public event listings, bounded requests)"
+_events_source_fetch_lock_v588 = threading.Lock()
+_events_source_fetch_jobs_v588 = {}
+_events_source_robots_lock_v588 = threading.Lock()
+_events_source_robots_cache_v588 = {}
+
+
+class _EventsSourceText_v588(HTMLParser):
+    """Small stdlib HTML scanner: observable anchors + their surrounding text."""
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.tokens, self.anchors, self.length = [], [], 0
+        self._anchor = None
+        self._ignored = []
+
+    def handle_starttag(self, tag, attrs):
+        attrs = dict(attrs)
+        if tag in ("script", "style", "noscript", "svg"):
+            self._ignored.append(tag)
+        if tag == "a" and not self._ignored:
+            self._anchor = {"href": str(attrs.get("href") or ""),
+                            "position": self.length, "parts": []}
+
+    def handle_endtag(self, tag):
+        if self._ignored and tag == self._ignored[-1]:
+            self._ignored.pop()
+        if tag == "a" and self._anchor is not None:
+            a = self._anchor
+            a["title"] = re.sub(r"\s+", " ", " ".join(a.pop("parts"))).strip()[:180]
+            self.anchors.append(a)
+            self._anchor = None
+
+    def handle_data(self, data):
+        if self._ignored:
+            return
+        clean = re.sub(r"[ \t\u3000]+", " ", html.unescape(str(data))).strip()
+        if clean:
+            # Newlines preserve site labels: "開催日時", "期間", "場所".
+            self.tokens.append(clean + "\n")
+            self.length += len(clean) + 1
+            if self._anchor is not None:
+                self._anchor["parts"].append(clean)
+
+    @property
+    def text(self):
+        return "".join(self.tokens)
+
+
+def _events_source_url_allowed_v588(url, domain):
+    try:
+        p = urlparse(str(url))
+        host = (p.hostname or "").lower().rstrip(".")
+        return (p.scheme == "https" and p.port in (None, 443) and
+                _events_domain_matches_v583(host, domain) and
+                not _events_source_blocked_v581(url) and
+                not any(x in host for x in ("localhost", "127.0.0.1")))
+    except (ValueError, TypeError):
+        return False
+
+
+def _events_robots_allowed_v588(url, domain):
+    host = (urlparse(url).hostname or "").lower()
+    if not _events_source_url_allowed_v588(url, domain):
+        return False, "domain_not_allowed"
+    now = time.monotonic()
+    with _events_source_robots_lock_v588:
+        cached = _events_source_robots_cache_v588.get(host)
+        if cached and now - cached[0] < 6 * 3600:
+            parser, status = cached[1:]
+            return (bool(parser and parser.can_fetch(EVENTS_SOURCE_AGENT_V588, url)), status)
+    robots_url = "https://" + host + "/robots.txt"
+    parser, status = None, "robots_unavailable"
+    try:
+        req = Request(robots_url, headers={"User-Agent": EVENTS_SOURCE_AGENT_V588})
+        with urlopen(req, timeout=3) as response:
+            payload = response.read(200_001)
+            if len(payload) <= 200_000 and (urlparse(response.geturl()).hostname or "") == host:
+                parser = RobotFileParser()
+                parser.parse(payload.decode("utf-8", "replace").splitlines())
+                status = "robots_checked"
+    except HTTPError as exc:
+        if exc.code in (404, 410):
+            parser = RobotFileParser()
+            parser.parse([])
+            status = "robots_absent"
+        else:
+            status = "robots_http_" + str(exc.code)
+    except Exception as exc:
+        status = "robots_" + type(exc).__name__
+    # Fail closed if robots.txt could not be examined.
+    with _events_source_robots_lock_v588:
+        _events_source_robots_cache_v588[host] = (now, parser, status)
+    return bool(parser and parser.can_fetch(EVENTS_SOURCE_AGENT_V588, url)), status
+
+
+def _events_public_html_v588(url, domain):
+    """Bounded HTTPS GET, no login, no captchas/cookie workarounds."""
+    began = time.monotonic()
+    allowed, robots_status = _events_robots_allowed_v588(url, domain)
+    result = {"url": url, "http_status": None, "robots": robots_status,
+              "elapsed_ms": 0, "bytes": 0, "status": "robots_denied" if not allowed else "failed"}
+    if not allowed:
+        result["elapsed_ms"] = round((time.monotonic() - began) * 1000)
+        return "", result
+    try:
+        req = Request(url, headers={"User-Agent": EVENTS_SOURCE_AGENT_V588,
+                                    "Accept": "text/html,application/xhtml+xml",
+                                    "Accept-Encoding": "identity"})
+        with urlopen(req, timeout=EVENTS_SOURCE_REQUEST_TIMEOUT_V588) as response:
+            code = int(getattr(response, "status", 200))
+            end_url = response.geturl()
+            result["http_status"] = code
+            if not _events_source_url_allowed_v588(end_url, domain):
+                result["status"] = "redirect_outside_domain"
+                return "", result
+            ctype = str(response.headers.get("Content-Type") or "").lower()
+            if "html" not in ctype:
+                result["status"] = "unsupported_content_type"
+                return "", result
+            blob = response.read(EVENTS_SOURCE_MAX_HTML_V588 + 1)
+            result["bytes"] = len(blob)
+            if len(blob) > EVENTS_SOURCE_MAX_HTML_V588:
+                result["status"] = "page_too_large"
+                return "", result
+            charset = response.headers.get_content_charset() or "utf-8"
+            result["status"] = "fetched"
+            return blob.decode(charset, "replace"), result
+    except HTTPError as exc:
+        result.update({"http_status": exc.code, "status": "http_error"})
+    except Exception as exc:
+        result.update({"status": "network_error", "error_type": type(exc).__name__})
+    finally:
+        result["elapsed_ms"] = round((time.monotonic() - began) * 1000)
+    return "", result
+
+
+def _events_portal_event_link_v588(url, domain):
+    path = urlparse(url).path
+    if domain == "jalan.net":
+        return bool(re.fullmatch(r"/event/evt_\d+/?", path))
+    if domain == "walkerplus.com":
+        return bool(re.fullmatch(r"/event/ar\d+e\d+/?", path))
+    if domain == "enjoytokyo.jp":
+        return bool(re.fullmatch(r"/event/\d+/?", path))
+    if domain == "my.metro.tokyo.lg.jp":
+        return path not in ("/event", "/event/") and bool(path.strip("/"))
+    if domain == "gotokyo.org":
+        return bool(re.fullmatch(r"/jp/(?:event/.+|spot/ev[0-9]+/index\.html)", path))
+    return ("event" in path.lower() and path.rstrip("/") not in
+            ("/event-info", "/event/list", "/ja/travel-directory/result/index/event_date_word/today"))
+
+
+def _events_date_fragment_v588(value, *, fallback_year=None, fallback_month=None):
+    """Return an explicit year/month/day (or infer month/year only from the first date)."""
+    text = re.sub(r"\([^)]*\)|（[^）]*）", "", str(value or ""))
+    m = re.search(r"(?:(20\d{2})\s*[年/\-])?\s*(?:(\d{1,2})\s*[月/\-])?\s*(\d{1,2})\s*日?", text)
+    if not m:
+        return None
+    y = int(m[1]) if m[1] else fallback_year
+    mo = int(m[2]) if m[2] else fallback_month
+    if not y or not mo:
+        return None
+    try:
+        return date(int(y), int(mo), int(m[3]))
+    except ValueError:
+        return None
+
+
+def _events_period_from_text_v588(context, *, target_year):
+    """Never confuse publishing dates with the date after '開催日時/期間'."""
+    value = re.sub(r"[ \t]+", " ", str(context or ""))
+    marker = re.search(r"(?:開催日時|開催期間|開催日|期間\s*(?:[：:]|\s)|開催中|終了間近)", value)
+    if not marker:
+        return None  # Never treat a bare article publication date as an occurrence.
+    value = value[marker.end():]
+    value = value.lstrip("：: \n")[:210]
+    # Only process dates with a visible Gregorian year, never guess a year.
+    yr = re.search(r"(?<!\d)(20\d{2})\s*年", value)
+    if not yr:
+        yr = re.search(r"(?<!\d)(20\d{2})[-/]\d{1,2}[-/]\d{1,2}", value)
+    if not yr:
+        return None
+    value = value[yr.start():]
+    value = value.split("\n", 1)[0][:140]
+    first = _events_date_fragment_v588(value)
+    if first is None or abs(first.year - int(target_year)) > 1:
+        return None
+    # A range with an explicit end; unspecified ongoing events are NOT inferred.
+    cut = re.search(r"\s*[～〜~]\s*", value)
+    if cut:
+        last = _events_date_fragment_v588(value[cut.end():], fallback_year=first.year, fallback_month=first.month)
+        if last is None or last < first or (last - first).days > EVENTS_VERIFIED_PERIOD_MAX_DAYS_V588:
+            return None
+        return first, last, [], value[:130]
+    if re.search(r"から|以降|予定|未定", value) and not re.search(r"・", value):
+        return None
+    # Discontinuous dates: e.g. "2026年11月7日・19日" should never fill the gap.
+    multiple = re.split(r"\s*[・、]\s*", value)
+    if len(multiple) > 1:
+        occurrences = [first]
+        for part in multiple[1:7]:
+            item = _events_date_fragment_v588(part, fallback_year=first.year, fallback_month=first.month)
+            if item is not None and item >= first:
+                occurrences.append(item)
+        if len(occurrences) > 1:
+            return first, max(occurrences), sorted(set(d.isoformat() for d in occurrences)), value[:130]
+    return first, first, [first.isoformat()], value[:130]
+
+
+def _events_portal_category_v588(text):
+    norm = unicodedata.normalize("NFKC", str(text or "")).casefold()
+    if re.search(r"マラソン|陸上|フットサル|サッカー|野球|水泳|スポーツ|運動会|競技|レース|テニス|バスケ|ラグビー|体操|柔道|剣道|駅伝|自転車大会", norm):
+        return "スポーツ"
+    if re.search(r"美術|博物|ミュージアム|科学|鉄道|展示|工芸|アート|映画|音楽|演奏|コンサート|舞台|演劇|歴史|文化|工作|読書|図書館|伝統|落語|プラネタリウム", norm):
+        return "文化"
+    return "その他"
+
+
+
+def _events_gotokyo_dates_v588(value, year):
+    """Read the calendar's explicit 'Oct 15, 2026 - Nov 29, 2026' range.
+
+    Does not infer a year, occurrence days, or opening hours. The publisher's
+    event detail may have exceptional closed dates; these remain unverified.
+    """
+    months = {"jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6,
+              "jul": 7, "aug": 8, "sep": 9, "oct": 10, "nov": 11, "dec": 12}
+    expression = (r"\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)"
+                  r"\s+(\d{1,2}),\s*(20\d{2})"
+                  r"(?:\s*[-–〜~]\s*(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)"
+                  r"\s+(\d{1,2}),\s*(20\d{2}))?")
+    m = re.search(expression, str(value or ""), re.I)
+    if not m:
+        return None
+    try:
+        first = date(int(m[3]), months[m[1].lower()], int(m[2]))
+        last = (date(int(m[6]), months[m[4].lower()], int(m[5])) if m[4] else first)
+    except (ValueError, KeyError):
+        return None
+    if (abs(first.year - int(year)) > 1 or last < first or
+            (last - first).days > EVENTS_VERIFIED_PERIOD_MAX_DAYS_V588):
+        return None
+    return first, last, [], m.group(0)
+
+
+def _events_gotokyo_detail_venue_v588(markup, title):
+    """Only accept an actual event page's venue line, immediately after H1."""
+    text = str(markup or "")
+    head = re.search(r"<h1\b[^>]*>.*?</h1>", text, re.I | re.S)
+    if not head:
+        return ""
+    after = text[head.end():head.end() + 1100]
+    after = re.sub(r"<script\b[^>]*>.*?</script>", "", after, flags=re.I | re.S)
+    after = re.sub(r"<[^>]+>", "\n", after)
+    lines = [html.unescape(v).strip() for v in after.splitlines() if html.unescape(v).strip()]
+    for v in lines[:12]:
+        if len(v) > 100 or len(v) < 3 or v == title:
+            continue
+        if re.match(r"(?:20\d{2}年|料金|主催者|ホームページ|※|Copyright|FAVORITES)", v):
+            continue
+        if re.match(r"(?:CALENDAR|品川＆天王洲|東京都心部|東京東部|東京西部|東京南部|東京北部)", v):
+            continue
+        # Exclude site navigation/marketing copy masquerading as a venue.
+        if not re.search(r"東京都|[一-龠々]{1,7}[区市]|公園|美術館|博物館|会館|会場|ホール|劇場|スタジアム|神社|寺院|駅|広場|ギャラリー|商店街|旧東海道|エリア", v):
+            continue
+        return v[:100]
+    return ""
+
+
+def _events_gotokyo_direct_v588(portal, markup, days):
+    """Parse date-labelled cards and verify venue with a bounded event-page GET.
+
+    Calendar cards alone do not include a venue: never invent a location.
+    """
+    scanner = _EventsSourceText_v588()
+    scanner.feed(markup)
+    scanner.close()
+    candidates, seen = [], set()
+    for anchor in scanner.anchors:
+        url = urljoin(portal["url"], anchor.get("href") or "")
+        if not (_events_source_url_allowed_v588(url, "gotokyo.org") and
+                _events_portal_event_link_v588(url, "gotokyo.org")):
+            continue
+        key = _events_url_key_v570(url)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        label = str(anchor.get("title") or "")
+        parsed = _events_gotokyo_dates_v588(label, date.fromisoformat(days[0]).year)
+        if not parsed:
+            continue
+        first, last, occurrences, evidence = parsed
+        if not any(first <= date.fromisoformat(d) <= last for d in days):
+            continue
+        title = re.sub(r"^.*?\b20\d{2}(?:\s*[-–〜~]\s*"
+                       r"(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)"
+                       r"\s+\d{1,2},\s*20\d{2})?\s*", "", label, count=1, flags=re.I).strip()
+        if len(title) < 4:
+            continue
+        candidates.append((url, title[:145], first, last, evidence))
+    rows, rejects, diag = [], {}, []
+    # Maximum 4 extra requests per weekly search, even if calendar is long.
+    for url, title, first, last, evidence in candidates[:4]:
+        page, fetch = _events_public_html_v588(url, "gotokyo.org")
+        diag.append(fetch)
+        venue = _events_gotokyo_detail_venue_v588(page, title) if page else ""
+        if not venue:
+            rejects["missing_detail_venue"] = rejects.get("missing_detail_venue", 0) + 1
+            continue
+        rows.append({"title": title, "venue": venue, "address": venue,
+                     "start_date": first.isoformat(), "end_date": last.isoformat(),
+                     "event_date": "", "occurrence_dates": [], "start_time": "", "end_time": "",
+                     "date_evidence": "GO TOKYO掲載日程: " + evidence,
+                     "description": "", "latitude": None, "longitude": None,
+                     "source_url": url, "source_method": "official_event_detail_html",
+                     "source_listing_url": portal["url"],
+                     "category_direct_v588": _events_portal_category_v588(title),
+                     "child_audience": "一般", "child_evidence": ""})
+    return rows, {"candidate_links": len(candidates), "dated_links": len(rows),
+                  "rejects": rejects, "page_diagnostics": diag}
+
+def _events_portal_rows_v588(portal, markup, *, page_url, days):
+    """Extract only dates explicitly printed in a public listing anchor/context."""
+    scanner = _EventsSourceText_v588()
+    try:
+        scanner.feed(str(markup or ""))
+        scanner.close()
+    except Exception:
+        return [], {"candidate_links": 0, "dated_links": 0, "rejects": {"invalid_html": 1}}
+    domain = portal["domain"]
+    text = scanner.text
+    relevant = []
+    seen = set()
+    for anchor in scanner.anchors:
+        url = urljoin(page_url, anchor["href"])
+        if (not _events_source_url_allowed_v588(url, domain) or
+                not _events_portal_event_link_v588(url, domain)):
+            continue
+        if domain == "my.metro.tokyo.lg.jp" and not re.search(
+                r"開催日時|開催期間|開催日", anchor.get("title") or ""):
+            continue
+        identity = _events_url_key_v570(url)
+        if not identity or identity in seen:
+            continue
+        seen.add(identity)
+        relevant.append((anchor, url))
+        if len(relevant) >= EVENTS_SOURCE_MAX_INDEX_LINKS_V588:
+            break
+    rows, rejection = [], {}
+    for index, (anchor, event_url) in enumerate(relevant):
+        limit = relevant[index + 1][0]["position"] if index + 1 < len(relevant) else len(text)
+        snippet = (anchor.get("title", "") + "\n" + text[anchor["position"]: min(limit, anchor["position"] + 680)])
+        title = re.sub(r"\s+", " ", str(anchor.get("title") or "")).strip()
+        title = re.split(r"(?:20\d{2}年|20\d{2}[-/]\d|開催日時|カテゴリ|期間[：:])", title, maxsplit=1)[0].strip()
+        title = re.sub(r"^\d{1,3}(?=\D)", "", title).strip()[:145]
+        if len(title) < 4:
+            rejection["missing_title"] = rejection.get("missing_title", 0) + 1
+            continue
+        # Official Tokyo listings include the publish date BEFORE '開催日時'.
+        marker = re.search(r"開催日時|開催期間|開催日|期間\s*[：:]|開催中|終了間近", snippet)
+        if not marker:
+            rejection["missing_date_label"] = rejection.get("missing_date_label", 0) + 1
+            continue
+        date_text = snippet[marker.start():]
+        period = _events_period_from_text_v588(date_text, target_year=date.fromisoformat(days[0]).year)
+        if not period:
+            rejection["unparseable_dates"] = rejection.get("unparseable_dates", 0) + 1
+            continue
+        start, end, occurrences, evidence = period
+        if not any(start <= date.fromisoformat(d) <= end and
+                   (not occurrences or d in occurrences) for d in days):
+            rejection["outside_window"] = rejection.get("outside_window", 0) + 1
+            continue
+        venue = ""
+        if domain == "my.metro.tokyo.lg.jp":
+            m = re.search(r"地域\s+(.{2,110}?)\s+(?:対象者|開催日時)", snippet)
+            venue = m.group(1).strip() if m else ""
+            # Public notices addressed to professionals/other adults must not
+            # be described as children's experiences.
+            audience = re.search(r"対象者\s+(.{2,90}?)\s+開催日時", snippet)
+            if audience and any(x in audience.group(1) for x in ("薬剤師", "資格者", "学生限定", "50歳以上", "事業者のみ")):
+                rejection["adult_only"] = rejection.get("adult_only", 0) + 1
+                continue
+        else:
+            m = re.search(r"(?:場所|開催場所)\s*[：:]\s*(.{2,125}?)(?:\n|$)", snippet)
+            venue = m.group(1).strip() if m else ""
+        if not venue and domain == "walkerplus.com":
+            # Nearby venue often follows the Tokyo ward on Walkerplus.
+            m = re.search(r"東京都\s*\n?\s*([一-龠々]{1,7}区)\s*\n+([^\n]{3,90})", snippet)
+            if m:
+                venue = m.group(2).strip()
+        if not venue:
+            rejection["missing_venue"] = rejection.get("missing_venue", 0) + 1
+            # Preserve for logging; not auto-promoted without a known venue.
+            continue
+        venue = re.sub(r"\s+", " ", venue).strip(" ／・,，")[:115]
+        category = _events_portal_category_v588(title + " " + snippet[:170])
+        row = {
+            "title": title, "venue": venue, "address": venue,
+            "start_date": start.isoformat(), "end_date": end.isoformat(),
+            "event_date": "", "occurrence_dates": occurrences,
+            "start_time": "", "end_time": "", "date_evidence": evidence,
+            "description": "", "latitude": None, "longitude": None,
+            "source_url": event_url, "source_method": "official_listing_html" if domain.endswith("lg.jp") else "publisher_listing_html",
+            "source_listing_url": page_url,
+            "category_direct_v588": category,
+            "child_audience": "一般", "child_evidence": "",
+        }
+        rows.append(row)
+    return rows, {"candidate_links": len(relevant), "dated_links": len(rows), "rejects": rejection}
+
+
+def _events_direct_one_portal_v588(portal, days):
+    began = time.monotonic()
+    domain = portal["domain"]
+    url = portal["url"]
+    # Walker's /today/ URL is not a future-date event directory.
+    if domain == "walkerplus.com":
+        url = "https://www.walkerplus.com/event_list/ar0313/"
+    html_text, fetch = _events_public_html_v588(url, domain)
+    result = {"domain": domain, "name": portal["name"], "index_url": url,
+              "fetch": fetch, "page_attempts": 1, "page_success": int(bool(html_text)),
+              "rows": [], "candidate_links": 0, "dated_links": 0, "rejects": {},
+              "elapsed_ms": 0}
+    if html_text:
+        if domain == "gotokyo.org":
+            rows, details = _events_gotokyo_direct_v588(portal, html_text, days)
+            result.update({"rows": rows, **details})
+            result["page_attempts"] += len(details.get("page_diagnostics") or [])
+            result["page_success"] += sum(
+                x.get("status") == "fetched" for x in details.get("page_diagnostics") or [])
+        else:
+            rows, details = _events_portal_rows_v588(portal, html_text, page_url=url, days=days)
+            result.update({"rows": rows, **details})
+        if domain == "walkerplus.com" and result["candidate_links"]:
+            # The default WalkerPlus index shows only 10 / 1000+ events.
+            # Two additional documented /2.html, /3.html pages are allowed;
+            # no unbounded pagination and no login/proxy workaround.
+            known = {_events_url_key_v570(r.get("source_url")) for r in rows}
+            for page in range(2, 2 + EVENTS_SOURCE_WALKER_EXTRA_PAGES_V588):
+                url_page = url.rstrip("/") + "/" + str(page) + ".html"
+                page_html, diagnostic = _events_public_html_v588(url_page, domain)
+                result["page_attempts"] += 1
+                result.setdefault("page_diagnostics", []).append(diagnostic)
+                if not page_html:
+                    break
+                result["page_success"] += 1
+                extra, metrics = _events_portal_rows_v588(portal, page_html,
+                                                              page_url=url_page, days=days)
+                result["candidate_links"] += metrics["candidate_links"]
+                result["dated_links"] += metrics["dated_links"]
+                for reason, count in metrics["rejects"].items():
+                    result["rejects"][reason] = result["rejects"].get(reason, 0) + count
+                for row in extra:
+                    identity = _events_url_key_v570(row.get("source_url"))
+                    if identity and identity not in known:
+                        result["rows"].append(row)
+                        known.add(identity)
+                # Be courteous to the publisher between successive requests.
+                time.sleep(0.25)
+    result["elapsed_ms"] = round((time.monotonic() - began) * 1000)
+    return result
+
+
+def _events_direct_collect_v588(days):
+    """Bounded 6-site pass shared by all three category jobs; per-site failures isolated."""
+    results = {}
+    with ThreadPoolExecutor(max_workers=3, thread_name_prefix="burari-event-source") as pool:
+        tasks = {pool.submit(_events_direct_one_portal_v588, portal, days): portal
+                 for portal in EVENT_SOURCE_PORTALS_V587}
+        for task, portal in tasks.items():
+            try:
+                results[portal["domain"]] = task.result(timeout=27)
+            except Exception as exc:
+                results[portal["domain"]] = {
+                    "domain": portal["domain"], "name": portal["name"], "index_url": portal["url"],
+                    "fetch": {"status": "fetch_exception", "error_type": type(exc).__name__,
+                              "http_status": None, "elapsed_ms": 0},
+                    "page_attempts": 1, "page_success": 0, "rows": [],
+                    "candidate_links": 0, "dated_links": 0, "rejects": {"fetch_exception": 1}}
+    return results
+
+
+_events_direct_pool_v588 = ThreadPoolExecutor(max_workers=1, thread_name_prefix="burari-event-six-portals")
+
+
+def _events_direct_future_v588(days):
+    key = tuple(days)
+    now = time.monotonic()
+    with _events_source_fetch_lock_v588:
+        for old, (ts, task) in list(_events_source_fetch_jobs_v588.items()):
+            if task.done() and now - ts > EVENTS_SOURCE_FETCH_TTL_V588:
+                _events_source_fetch_jobs_v588.pop(old, None)
+        cached = _events_source_fetch_jobs_v588.get(key)
+        if cached and (not cached[1].done() or now - cached[0] < EVENTS_SOURCE_FETCH_TTL_V588):
+            return cached[1]
+        future = _events_direct_pool_v588.submit(_events_direct_collect_v588, list(days))
+        _events_source_fetch_jobs_v588[key] = (now, future)
+        return future
+
+
+def _events_direct_shared_v588(days):
+    """One in-flight Future for all categories and callers with same week."""
+    key = tuple(days)
+    now = time.monotonic()
+    with _events_source_fetch_lock_v588:
+        for old, (ts, task) in list(_events_source_fetch_jobs_v588.items()):
+            if task.done() and now - ts > EVENTS_SOURCE_FETCH_TTL_V588:
+                _events_source_fetch_jobs_v588.pop(old, None)
+        cached = _events_source_fetch_jobs_v588.get(key)
+        if cached and (not cached[1].done() or now - cached[0] < EVENTS_SOURCE_FETCH_TTL_V588):
+            future, leader = cached[1], False
+        else:
+            future, leader = Future(), True
+            _events_source_fetch_jobs_v588[key] = (now, future)
+    if leader:
+        try:
+            future.set_result(_events_direct_collect_v588(list(days)))
+        except Exception as exc:
+            future.set_result({"_error": {"status": type(exc).__name__}})
+    return future.result(timeout=60)
+
+
+def _events_direct_audit_merge_v588(audits, direct, category, direct_rows):
+    """Separate actual HTTP reads from AI citation; never report unvisited as 0 events."""
+    for site in audits:
+        diag = direct.get(site.get("site_domain")) or {}
+        fetch = diag.get("fetch") or {}
+        matching = [x for x in direct_rows if
+                    _events_source_matches_v587(x.get("source_url"), site.get("site_domain"))]
+        site.update({
+            "fetch_method": "public_html_index", "fetch_status": str(fetch.get("status") or "not_attempted"),
+            "http_status": fetch.get("http_status"), "robots_status": fetch.get("robots"),
+            "elapsed_ms": int(diag.get("elapsed_ms") or 0), "bytes": int(fetch.get("bytes") or 0),
+            "pages_requested": int(diag.get("page_attempts") or 0),
+            "pages_fetched": int(diag.get("page_success") or 0),
+            "source_links_found": int(diag.get("candidate_links") or 0),
+            "direct_candidates": len(matching),
+            "direct_confirmed": sum(1 for r in matching if r.get("category_direct_v588") == category),
+            "direct_exclusion_reasons": dict(diag.get("rejects") or {}),
+            "page_diagnostics": list(diag.get("page_diagnostics") or [])[:3],
+            "source_tested": bool(diag),
+        })
+        if site.get("picked_events"):
+            site["status"] = "採用あり"
+        elif site["pages_fetched"]:
+            site["status"] = "直接取得あり・採用なし" if site["direct_candidates"] else "ページ取得・候補なし"
+            site["reason"] = (
+                "イベント候補は取得したが、対象カテゴリ・開催日・会場・距離等の条件で採用なし"
+                if site["direct_candidates"] else
+                "HTML取得済み。ただし当該カテゴリで開催日と会場を検証できる候補がなく、サイトにイベントがないとは限らない")
+        elif site["fetch_status"] not in ("not_attempted", "", None):
+            site["status"] = ("AI参照あり・直接取得不可" if site.get("actually_cited") else
+                              "サイト取得不可（" + site["fetch_status"] + "）")
+    return audits
+
+
+def _events_week_failure_tallies_v588(raw_rows, sources, days):
+    tally = {}
+    for row in raw_rows:
+        reason = None
+        if not isinstance(row, dict):
+            reason = "invalid_row"
+        elif not _events_url_key_v570(row.get("source_url")) in sources:
+            reason = "source_unverified"
+        elif not row.get("venue"):
+            reason = "venue_missing"
+        elif not any(_events_week_is_occurrence_v585(row, day) for day in days):
+            reason = "date_not_confirmed_or_outside_week"
+        if reason:
+            tally[reason] = tally.get(reason, 0) + 1
+    return tally
 
 
 def _events_search_week_one_category_v585(start_day, days, category, latitude, longitude, radius_km, place_label):
@@ -36562,86 +37180,115 @@ def _events_search_week_one_category_v585(start_day, days, category, latitude, l
         '"pending_events":[{"title":"...","venue":"...","address":"...",'
         '"description":"...","source_url":"https://..."}]}。'
     )
+    # This public HTML stage runs once per *week*, shared between all 3
+    # categories.  It may fail independently of the paid search.
+    direct_future = _events_direct_future_v588(days)
+    api_sources = set()
+    api_usage = {}
+    payload = {}
+    error_details = {}
+    api_failed = False
     try:
         response = _events_web_search_request_v582(
             prompt=prompt, domains=None, context_size="medium", timeout_seconds=55.0,
             max_output_tokens=EVENT_SEARCH_WEEK_MAX_OUTPUT_TOKENS_V585)
-        sources = _events_source_urls_v570(response)
+        api_sources = _events_source_urls_v570(response)
         api_usage = _events_usage_v587(response)
         payload = _events_decode_json_v570(getattr(response, "output_text", ""))
         if not isinstance(payload.get("events"), list):
-            failure = "検索APIの応答を読み取れませんでした。"
-            return {"failed": True, "error": failure, "source_audit": _events_source_audit_v587(
-                    category=category, sources=sources, raw_rows=[], per_day={}, error=failure),
-                    "api_usage": api_usage,
-                    "search_passes": 1, "failed_passes": 1, "days": {}}
-        raw_rows = [row for row in payload["events"][:80] if isinstance(row, dict)]
-        pending_raw = list(payload.get("pending_events") or [])[:32] if isinstance(payload.get("pending_events"), list) else []
-        candidates = {day: [] for day in days}
-        for original in raw_rows:
-            row = dict(original)
-            citation = _events_url_key_v570(row.get("source_url"))
-            if citation not in sources:
-                evidence_url = str(row.get("evidence_url") or row.get("citation_url") or "")
-                if (_events_url_key_v570(evidence_url) in sources and
-                        urlparse(evidence_url).hostname == urlparse(str(row.get("source_url") or "")).hostname):
-                    row["source_url"] = evidence_url
-                    citation = _events_url_key_v570(evidence_url)
-            if not citation or citation not in sources:
-                pending_raw.append(row)
-                continue
-            matched = False
-            for day in days:
-                fixed = _events_week_assign_v585(row, day)
-                if fixed is not None:
-                    candidates[day].append(fixed)
-                    matched = True
-            if not matched:
-                pending_raw.append(row)
-        pending = _events_pending_v577(pending_raw, sources, cap=28)
-        by_day = {}
-        for day in days:
-            dated = _events_prefilter_v571(candidates[day], day=day, sources=sources)
-            items = _events_normalize_v570(dated, day=day, category=category,
-                                           lat=latitude, lon=longitude,
-                                           radius_km=radius_km, sources=sources)
-            unverified = _events_unverified_v579(
-                [{"pending": pending, "sources": sources}], items,
-                day=day, category=category, latitude=latitude,
-                longitude=longitude, radius_km=radius_km)
-            domains = sorted({(urlparse(row.get("source_url") or "").hostname or "").lower().removeprefix("www.")
-                              for row in items if row.get("source_url")})
-            by_day[day] = {
-                "items": items, "unverified": unverified, "error": "",
-                "source_domains": domains, "searched_source_count": len(domains),
-                "search_passes": 1, "failed_passes": 0,
-                "raw_count": len(raw_rows), "cited_count": len(candidates[day]),
-                "dated_count": len(dated), "distance_unverified_count": sum(
-                    r.get("distance_m") is None for r in items),
-                "followup_attempted": 0, "followup_accepted": 0,
-                "checked_at": datetime.now(ZoneInfo(APP_TIMEZONE)).strftime("%H:%M"),
-            }
-        source_audit = _events_source_audit_v587(
-            category=category, sources=sources, raw_rows=raw_rows,
-            pending_rows=pending_raw, per_day=by_day)
-        return {"days": by_day, "search_passes": 1, "failed_passes": 0, "failed": False,
-                "source_audit": source_audit, "api_usage": api_usage,
-                "start_day": start_day, "end_day": end_day}
+            api_failed = True
+            error_details = {"failure_message": "検索APIの応答JSONを読み取れませんでした。",
+                             "http_status": None, "error_code": "invalid_response"}
+            payload = {"events": [], "pending_events": []}
     except Exception as exc:
-        details = _events_error_details_v582(exc)
-        return {"failed": True, "days": {}, "search_passes": 1,
-                "failed_passes": 1, "error": details.get("failure_message") or "検索に失敗しました。",
-                "source_audit": _events_source_audit_v587(
-                    category=category, sources=set(), raw_rows=[], per_day={},
-                    error=details.get("failure_message") or "検索に失敗しました。"),
-                **details}
+        api_failed = True
+        error_details = _events_error_details_v582(exc)
+        payload = {"events": [], "pending_events": []}
+    try:
+        direct = direct_future.result(timeout=45)
+    except Exception as exc:
+        direct = {"_error": {"status": type(exc).__name__}}
+    direct_rows = []
+    for portal in EVENT_SOURCE_PORTALS_V587:
+        info = direct.get(portal["domain"]) or {}
+        direct_rows.extend(x for x in info.get("rows") or [] if isinstance(x, dict))
+    direct_for_cat = [dict(r) for r in direct_rows if r.get("category_direct_v588") == category]
+    sources = set(api_sources)
+    sources.update(_events_url_key_v570(r.get("source_url")) for r in direct_for_cat)
+    sources.discard("")
+    ai_rows = [r for r in list(payload.get("events") or [])[:80] if isinstance(r, dict)]
+    raw_rows = ai_rows + direct_for_cat
+    pending_raw = [r for r in list(payload.get("pending_events") or [])[:32]
+                   if isinstance(r, dict)]
+    candidates = {day: [] for day in days}
+    for original in raw_rows:
+        row = dict(original)
+        citation = _events_url_key_v570(row.get("source_url"))
+        if citation not in sources and row.get("source_method") is None:
+            evidence_url = str(row.get("evidence_url") or row.get("citation_url") or "")
+            if (_events_url_key_v570(evidence_url) in api_sources and
+                    urlparse(evidence_url).hostname == urlparse(str(row.get("source_url") or "")).hostname):
+                row["source_url"] = evidence_url
+                citation = _events_url_key_v570(evidence_url)
+        if not citation or citation not in sources:
+            pending_raw.append(row)
+            continue
+        matched = False
+        for day in days:
+            fixed = _events_week_assign_v585(row, day)
+            if fixed is not None:
+                candidates[day].append(fixed)
+                matched = True
+        if not matched:
+            pending_raw.append(row)
+    pending = _events_pending_v577(pending_raw, sources, cap=28)
+    by_day = {}
+    for day in days:
+        dated = _events_prefilter_v571(candidates[day], day=day, sources=sources)
+        items = _events_normalize_v570(dated, day=day, category=category,
+                                       lat=latitude, lon=longitude,
+                                       radius_km=radius_km, sources=sources)
+        unverified = _events_unverified_v579(
+            [{"pending": pending, "sources": sources}], items,
+            day=day, category=category, latitude=latitude,
+            longitude=longitude, radius_km=radius_km)
+        domains = sorted({(urlparse(row.get("source_url") or "").hostname or "").lower().removeprefix("www.")
+                          for row in items if row.get("source_url")})
+        by_day[day] = {
+            "items": items, "unverified": unverified, "error": "",
+            "source_domains": domains, "searched_source_count": len(domains),
+            "search_passes": 1, "failed_passes": int(api_failed),
+            "raw_count": len(raw_rows), "cited_count": len(candidates[day]),
+            "dated_count": len(dated), "distance_unverified_count": sum(
+                r.get("distance_m") is None for r in items),
+            "followup_attempted": 0, "followup_accepted": 0,
+            "checked_at": datetime.now(ZoneInfo(APP_TIMEZONE)).strftime("%H:%M"),
+        }
+    audits = _events_source_audit_v587(
+        category=category, sources=api_sources, raw_rows=raw_rows,
+        pending_rows=pending_raw, per_day=by_day,
+        error=(error_details.get("failure_message") if api_failed and not direct_for_cat else ""))
+    audits = _events_direct_audit_merge_v588(audits, direct, category, direct_rows)
+    counts = _events_week_failure_tallies_v588(raw_rows, sources, days)
+    has_results = any(x.get("items") or x.get("unverified") for x in by_day.values())
+    return {"days": by_day, "search_passes": 1, "failed_passes": int(api_failed),
+            "failed": bool(api_failed and not has_results),
+            "error": str(error_details.get("failure_message") or "") if api_failed and not has_results else "",
+            "api_warning": str(error_details.get("failure_message") or "") if api_failed and has_results else "",
+            "http_status": error_details.get("http_status"),
+            "source_audit": audits, "api_usage": api_usage, "api_request_count": 1,
+            "direct_http_requests": sum(int(x.get("page_attempts") or 0) for x in direct.values() if isinstance(x, dict)),
+            "direct_http_success": sum(int(x.get("page_success") or 0) for x in direct.values() if isinstance(x, dict)),
+            "direct_events_found": len(direct_for_cat),
+            "exclusion_counts": counts,
+            "start_day": start_day, "end_day": end_day}
 
 
 def _events_week_fetch_category_v585(start_day, category, latitude, longitude, radius_km, place_label, *, days):
     if category not in EVENT_SEARCH_CATEGORIES_V570:
         return {"failed": True, "days": {}, "error": "不明なカテゴリです。", "search_passes": 0}
-    if not OPENAI_API_KEY:
-        return {"failed": True, "days": {}, "error": "OPENAI_API_KEY が未設定です。", "search_passes": 0}
+    # Direct public listings remain available if the AI key is absent;
+    # the AI call will return a clear error and must not block direct results.
     return _events_search_week_one_category_v585(start_day, days, category, latitude,
                                                   longitude, radius_km, place_label)
 
@@ -36649,7 +37296,7 @@ def _events_week_fetch_category_v585(start_day, category, latitude, longitude, r
 def _events_week_job_v585(start_day, category, location, radius_km, *, days, refresh=False):
     """Cache one entire 7-day result per category; changing viewed day is free."""
     latitude, longitude = float(location["latitude"]), float(location["longitude"])
-    key = ("v585-week", start_day, category, round(latitude, 2), round(longitude, 2), int(radius_km), tuple(days))
+    key = ("v588-week", start_day, category, round(latitude, 2), round(longitude, 2), int(radius_km), tuple(days))
     runtime = _events_runtime_v570()
     now = time.monotonic()
     with runtime["lock"]:
@@ -36854,6 +37501,35 @@ def _events_refinement_poll_v585():
     st.info(f"{_events_display_day_v574(job['day'])}の追加検索中（{done}/{len(futures)}カテゴリ完了）。")
 
 
+def _events_week_cached_v588(start_day, location, radius, days, *, force_refresh=False):
+    """Distinguish actual API calls THIS press from reused Future results."""
+    runtime = _events_runtime_v570()
+    hit = {}
+    for category in EVENT_SEARCH_CATEGORIES_V570:
+        key = ("v588-week", start_day, category,
+               round(float(location["latitude"]), 2), round(float(location["longitude"]), 2),
+               int(radius), tuple(days))
+        with runtime["lock"]:
+            item = runtime["jobs"].get(key)
+        if not item or force_refresh:
+            hit[category] = False
+            continue
+        started, future = item
+        ttl = (EVENT_SEARCH_CACHE_FUTURE_V584 if start_day > now_jst().date().isoformat()
+               else EVENT_SEARCH_CACHE_TODAY_V584)
+        if future.done():
+            try:
+                result = future.result()
+                if result.get("failed") or not any(
+                        x.get("items") or x.get("unverified")
+                        for x in (result.get("days") or {}).values()):
+                    ttl = EVENT_SEARCH_CACHE_EMPTY_V584
+            except Exception:
+                ttl = EVENT_SEARCH_CACHE_EMPTY_V584
+        hit[category] = bool(not future.done() or time.monotonic() - started < ttl)
+    return hit
+
+
 def _events_start_explicit_search_v579(location, *, day=None, radius_km=None, force_refresh=False):
     """Explicit press creates a 7-day snapshot. No date/view/tab callback searches."""
     if not isinstance(location, dict):
@@ -36870,12 +37546,14 @@ def _events_start_explicit_search_v579(location, *, day=None, radius_km=None, fo
         return False
     radius = int(radius_km or st.session_state.get("_events_radius_v570") or 15)
     location_copy = dict(location)
+    cache_status = _events_week_cached_v588(start_day, location_copy, radius, days,
+                                             force_refresh=bool(force_refresh))
     futures = _events_week_futures_v585(start_day, location_copy, radius,
                                         days=days, refresh=bool(force_refresh))
     prior_day = str(st.session_state.get("_events_display_day_v585") or "")
     st.session_state["_events_explicit_snapshot_v579"] = {
         "day": start_day, "days": days, "radius_km": radius, "location": location_copy,
-        "futures": futures, "results": None,
+        "futures": futures, "results": None, "reused_cache_categories": cache_status,
     }
     st.session_state["_events_display_day_v585"] = (
         prior_day if force_refresh and prior_day in days else start_day)
