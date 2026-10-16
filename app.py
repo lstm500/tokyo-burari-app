@@ -47,7 +47,7 @@ def _app_css_v473(markup, **_ignored):
 # Review menu-only update: 2026-09-19 JST
 GENERATED_UPDATE_JST = "2026-09-19T14:54:38+09:00"
 
-APP_BUILD = "v588"
+APP_BUILD = "v589"
 # v588: Inspect six registered publisher listing pages directly (robots-aware, bounded), parse sourced event date spans, merge with capped Web AI results; store real per-site fetch/accept/reject status and cache-use/API metrics in existing Storage logs.
 # v587: Add six requested event publications as evidence-driven search hints; rank kid-friendly events; record per-site cited/picked/missed stats in owner-scoped Supabase Storage and export CSV/JSON via Settings. No extra automatic OpenAI API calls.
 # v586: Reject mismatched Google Places candidates in Android auto-discovery details; separate no Google photo metadata from photo-media download failures. No additional API requests.
@@ -1109,17 +1109,12 @@ VIDEO_PROCESSING_MAX_SECONDS = 75
 VIDEO_RECORDING_RESERVE_BYTES = 36 * 1024 * 1024
 VIDEO_MAX_BYTES = 150 * 1024 * 1024
 VIDEO_AI_MAX_SELECTIONS = 9  # いい瞬間の切り抜き枚数
-# Good Moments sampling is duration-aware and capped at 20 candidate frames:
-#   <=10 sec -> every 0.5 sec
-#   15 sec   -> every 0.75 sec
-#   60 sec   -> every 3 sec
-# General rule: max(0.5 sec, duration / 20). 0.5 sec is the fastest sampling rate.
+# Good Moments sampling now uses a fixed 0.5-second interval and keeps up to 120 candidate frames per video.\n# This gives rerolls a much larger frame pool, especially on longer clips, while still capping total work.\n# Examples: 10s -> about 20 frames, 30s -> about 60 frames, 60s -> up to 120 frames.
 VIDEO_AI_MIN_SAMPLE_INTERVAL_MS = 500
-VIDEO_AI_MAX_CANDIDATES = 20
-# Compatibility alias: this is now the minimum interval, not the interval for every video.
+VIDEO_AI_MAX_CANDIDATES = 120
+# Compatibility alias: Good Moments now uses this fixed interval for every video.
 VIDEO_AI_SAMPLE_INTERVAL_MS = VIDEO_AI_MIN_SAMPLE_INTERVAL_MS
-# With at most 20 candidates, the normal path fits in one final vision request;
-# the batching code remains only as a compatibility/safety path for legacy pools.
+# Candidate pools can now be much larger than one final vision request, so the batching path is part of the normal flow for longer videos.
 VIDEO_AI_BATCH_SIZE = 25
 VIDEO_AI_BATCH_KEEP = 9
 VIDEO_AI_BATCH_WORKERS = 3
@@ -1130,25 +1125,13 @@ VIDEO_AI_STALE_SECONDS = 240
 
 
 def video_ai_sample_interval_ms_for_duration(duration_ms):
-    """Return a duration-aware Good Moments interval, capped at 20 samples.
+    """Return the fixed Good Moments sampling interval (0.5 seconds).
 
-    Keep the established v248 sampling rule for normal clips. Only very short clips
-    are sampled more densely so there are enough distinct timestamps to present the requested
-    Good Moments count when possible. This runs after recording and does not affect capture.
+    v590 deliberately stops stretching the interval for longer clips. Sampling now
+    stays at 0.5 seconds so rerolls can draw from a materially larger pool. This
+    runs after recording and does not affect capture.
     """
-    try:
-        raw_duration = float(duration_ms or 0)
-        duration = int(round(raw_duration)) if raw_duration > 0 else VIDEO_MAX_SECONDS * 1000
-    except Exception:
-        duration = VIDEO_MAX_SECONDS * 1000
-    duration = max(1, min(VIDEO_MAX_SECONDS * 1000, duration))
-    normal_interval = max(
-        VIDEO_AI_MIN_SAMPLE_INTERVAL_MS,
-        int(math.ceil(duration / float(VIDEO_AI_MAX_CANDIDATES))),
-    )
-    if duration < VIDEO_AI_MIN_SAMPLE_INTERVAL_MS * VIDEO_AI_MAX_SELECTIONS:
-        return max(80, int(math.ceil(duration / float(VIDEO_AI_MAX_SELECTIONS))))
-    return normal_interval
+    return int(VIDEO_AI_MIN_SAMPLE_INTERVAL_MS)
 
 
 def video_ai_candidate_count_for_duration(duration_ms):
@@ -1158,7 +1141,7 @@ def video_ai_candidate_count_for_duration(duration_ms):
     except Exception:
         duration = VIDEO_MAX_SECONDS * 1000
     duration = max(1, min(VIDEO_MAX_SECONDS * 1000, duration))
-    interval_ms = video_ai_sample_interval_ms_for_duration(duration)
+    interval_ms = max(1, int(video_ai_sample_interval_ms_for_duration(duration)))
     calculated = int(math.ceil(duration / float(interval_ms)))
     return max(VIDEO_AI_MAX_SELECTIONS, min(VIDEO_AI_MAX_CANDIDATES, calculated))
 
@@ -16534,9 +16517,7 @@ def choose_video_ai_frames(
 ):
     """Pick the configured number of stills when enough candidates are available after AI inspection.
 
-    v153 caps Good Moments at 20 frames. Sampling is max(0.5 seconds, duration / 20),
-    so 10s -> 0.5s, 15s -> 0.75s, and 60s -> 3s. The normal path therefore fits
-    in one final multi-image request; batching remains only for legacy oversized pools.
+    v590 samples Good Moments every 0.5 seconds and keeps up to 120 candidate frames.\n    Longer videos therefore use the batching path as a normal part of selection.
     """
     frames = list(frame_items or [])
     if not frames:
@@ -16616,8 +16597,7 @@ def choose_video_ai_frames(
             max_output_tokens=max_output_tokens,
         )
 
-    # Stage 1 compatibility path: normally skipped because duration-aware sampling is capped
-    # at 20 candidates, below VIDEO_AI_BATCH_SIZE. It remains for older/larger pools.
+    # Stage 1 batching path: this is now the normal path for longer videos because\n    # fixed 0.5-second sampling can produce far more than one-request candidate pools.
     coarse_records = []
     if len(frames) > VIDEO_AI_BATCH_SIZE:
         batch_specs = []
@@ -16625,7 +16605,7 @@ def choose_video_ai_frames(
             batch = frames[batch_start:batch_start + VIDEO_AI_BATCH_SIZE]
             batch_keep = min(VIDEO_AI_BATCH_KEEP, len(batch))
             batch_prompt = (
-                "動画長に応じた一定間隔で切り出した候補フレームの一部です。候補は最大20枚です。"
+                "動画から0.5秒ごとに切り出した候補フレームの一部です。候補は最大120枚です。"
                 "このバッチ内の候補をすべて見比べ、人が写真として残したくなる強い瞬間を選んでください。\n"
                 f"最大{batch_keep}枚を選びます。単なる時間分散ではなく、この個人の設定比率に沿って評価してください。"
                 "似た連続フレームでは、その区間で最も良い候補を優先してください。"
@@ -16721,7 +16701,7 @@ def choose_video_ai_frames(
         final_frames = frames
 
     final_prompt = (
-        "動画全体の最終フォトセレクターです。候補は動画長に応じた一定間隔で最大20枚に絞って比較されています。"
+        "動画全体の最終フォトセレクターです。候補は0.5秒ごとに切り出され、最大120枚の中から比較されています。"
         "ここでは動画全体を横断して、最終的に残したい静止画を選んでください。\n"
         f"候補が{VIDEO_AI_MAX_SELECTIONS}枚以上ある場合は、必ず{VIDEO_AI_MAX_SELECTIONS}枚を選んでください。"
         f"似た候補が多い場合も、動画内の時間位置を分散させて{VIDEO_AI_MAX_SELECTIONS}枚をそろえてください。"
@@ -17029,7 +17009,7 @@ def store_video_ai_candidate_sheet(photo, sheet_path, manifest, columns=4, rows=
         "candidate_sheet_columns": max(1, int(columns or 4)),
         "candidate_sheet_rows": max(1, int(rows or ((len(manifest) + max(1, int(columns or 4)) - 1) // max(1, int(columns or 4))))),
         "candidate_sample_interval_ms": video_ai_sample_interval_ms_for_duration((photo_media_metadata(photo).get("video_duration_ms") or VIDEO_MAX_SECONDS * 1000)),
-        "candidate_sampling_version": "browser_dynamic20_v153",
+        "candidate_sampling_version": "browser_fixed500ms_max120_v590",
         "stage": "ai_selection",
         "round": int(previous.get("round") or 0),
         "items": list(previous.get("items") or []),
@@ -17473,7 +17453,7 @@ def _background_store_video_ai_candidate_bundle(client, photo, family_key, membe
             "candidate_bundle_path": bundle_path,
             "candidate_sheet_path": "",
             "candidate_sample_interval_ms": video_ai_sample_interval_ms_for_duration((photo_media_metadata(photo).get("video_duration_ms") or VIDEO_MAX_SECONDS * 1000)),
-            "candidate_sampling_version": "dynamic20_v153",
+            "candidate_sampling_version": "fixed500ms_max120_v590",
             "round": int(previous.get("round") or 0),
             "items": list(previous.get("items") or []),
             "history": list(previous.get("history") or []),
@@ -18172,7 +18152,7 @@ def _run_video_ai_background_job(photo_id, family_key, member_key):
     selection_meta["started_at"] = now_jst().isoformat()
     selection_meta["updated_at"] = selection_meta["started_at"]
     selection_meta["attempt"] = max(0, int(selection_meta.get("attempt") or 0)) + 1
-    selection_meta["pipeline_mode"] = "background_single_pass_dynamic20_v153"
+    selection_meta["pipeline_mode"] = "background_single_pass_fixed500ms_max120_v590"
     selection_meta["progress_message"] = "元動画から高画質候補を準備中"
     reflection["ai_selection"] = selection_meta
     try:
@@ -18195,7 +18175,7 @@ def _run_video_ai_background_job(photo_id, family_key, member_key):
         selection_meta["candidate_bundle_path"] = ""
         selection_meta["candidate_sheet_path"] = ""
         selection_meta["candidate_sample_interval_ms"] = video_ai_sample_interval_ms_for_duration((photo_media_metadata(photo).get("video_duration_ms") or VIDEO_MAX_SECONDS * 1000))
-        selection_meta["candidate_sampling_version"] = "original_native_dynamic20_v153"
+        selection_meta["candidate_sampling_version"] = "original_native_fixed500ms_max120_v590"
         selection_meta["progress_message"] = "AI一次選定を開始"
         selection_meta["updated_at"] = now_jst().isoformat()
         reflection["ai_selection"] = selection_meta
@@ -18292,7 +18272,7 @@ def _run_video_ai_background_job(photo_id, family_key, member_key):
             latest_selection["last_error"] = str(exc)[:240]
             latest_selection["updated_at"] = now_jst().isoformat()
             latest_selection["stage"] = str(latest_selection.get("stage") or "pipeline")
-            latest_selection["pipeline_mode"] = "background_single_pass_dynamic20_v153"
+            latest_selection["pipeline_mode"] = "background_single_pass_fixed500ms_max120_v590"
             latest_reflection["ai_selection"] = latest_selection
             _write_photo_reflection_for_owner(
                 photo_id, latest_reflection, family_key, member_key, client=client
@@ -18494,7 +18474,7 @@ def resume_member_video_background_jobs(limit=24, min_interval_seconds=5):
                 selection["queued_at"] = now_jst().isoformat()
                 selection["updated_at"] = selection["queued_at"]
                 selection["last_error"] = ""
-                selection["pipeline_mode"] = "background_single_pass_dynamic20_v153"
+                selection["pipeline_mode"] = "background_single_pass_fixed500ms_max120_v590"
                 reflection = dict(photo_media_metadata(row))
                 reflection["ai_selection"] = selection
                 _write_photo_reflection_for_owner(
@@ -18514,7 +18494,7 @@ def resume_member_video_background_jobs(limit=24, min_interval_seconds=5):
                 selection["queued_at"] = str(selection.get("queued_at") or now_jst().isoformat())
                 selection["updated_at"] = now_jst().isoformat()
                 selection["last_error"] = ""
-                selection["pipeline_mode"] = "background_single_pass_dynamic20_v153"
+                selection["pipeline_mode"] = "background_single_pass_fixed500ms_max120_v590"
                 reflection = dict(photo_media_metadata(row))
                 reflection["ai_selection"] = selection
                 _write_photo_reflection_for_owner(
@@ -20966,6 +20946,245 @@ def confirm_diary_delete_dialog(trip_id, photo_count):
             st.rerun(scope="app")
 
 
+
+def _photo_batch_sync_trip_state_v589(trip_id, deleted_ids, remaining_photos, diary_deleted):
+    """Apply the normal single-photo deletion's in-progress UI cleanup only once per trip."""
+    deleted_ids = set(str(x) for x in deleted_ids)
+    remaining_ids = [str(p.get("id")) for p in remaining_photos if p.get("id")]
+    state_key = f"reflection_state_{trip_id}"
+    state = st.session_state.get(state_key)
+    if diary_deleted:
+        st.session_state.pop(state_key, None)
+    elif isinstance(state, dict):
+        old_ids = list(state.get("photo_ids") or [])
+        old_index = int(state.get("photo_index") or 0)
+        new_ids = [pid for pid in old_ids if str(pid) not in deleted_ids]
+        if len(new_ids) != len(old_ids):
+            selected_old = old_ids[old_index] if 0 <= old_index < len(old_ids) else ""
+            state["photo_ids"] = new_ids
+            items = state.get("items")
+            if isinstance(items, dict):
+                for photo_id in deleted_ids:
+                    items.pop(photo_id, None)
+            removed_before = sum(1 for pid in old_ids[:old_index] if str(pid) in deleted_ids)
+            state["photo_index"] = min(max(0, old_index - removed_before), max(0, len(new_ids) - 1))
+            for key, value in (
+                ("draft", None), ("draft_title", None), ("draft_meta", {}),
+                ("raw_conversation", {}), ("draft_audio", None),
+                ("draft_audio_pending", False), ("audio_bytes", None),
+                ("audio_pending", False),
+            ):
+                state[key] = value
+            state["answer_serial"] = int(state.get("answer_serial") or 0) + 1
+            if str(state.get("selected_photo_id") or "") in deleted_ids:
+                state["selected_photo_id"] = new_ids[0] if new_ids else None
+
+    selected_key = f"diary_selected_photo_{trip_id}"
+    if not remaining_ids:
+        st.session_state.pop(selected_key, None)
+    elif str(st.session_state.get(selected_key) or "") in deleted_ids:
+        st.session_state[selected_key] = remaining_ids[0]
+
+    st.session_state.pop(f"delete_photo_selector_{trip_id}", None)
+    if diary_deleted or str(st.session_state.get(f"diary_talk_photo_{trip_id}") or "") in deleted_ids:
+        st.session_state.pop(f"diary_talk_photo_{trip_id}", None)
+    if st.session_state.pop(f"diary_existing_photo_view_{trip_id}", False):
+        st.session_state.pop(state_key, None)
+
+    if diary_deleted:
+        st.session_state.pop(f"_diary_title_override_{trip_id}", None)
+        if st.session_state.get("history_detail_trip_id") == trip_id:
+            st.session_state.pop("history_detail_trip_id", None)
+        if str(st.session_state.get("preferred_diary_trip_id") or "") == str(trip_id):
+            st.session_state.preferred_diary_trip_id = None
+        if str(st.session_state.get("active_trip_id") or "") == str(trip_id):
+            st.session_state.active_trip_id = None
+            _invalidate_active_trip_snapshot()
+        st.session_state["_diary_selector_serial"] = int(st.session_state.get("_diary_selector_serial") or 0) + 1
+
+
+def delete_photos_in_batches_v589(photo_ids, photos=None, *, skip_existing_diary_lookup=False):
+    """Batch Storage/DB deletion, then recalculate affected diaries ONCE per trip.
+
+    Uses fresh owner-scoped rows, not browser-supplied photo metadata, to authorize
+    every deletion. If one storage batch fails, split it to isolate failures.
+    Unrelated photos, videos and diaries remain untouched.
+    """
+    wanted = list(dict.fromkeys(str(x or "").strip() for x in (photo_ids or []) if str(x or "").strip()))
+    if not wanted:
+        return {"deleted_count": 0, "failures": []}
+    supplied = {str(p.get("id") or ""): p for p in (photos or []) if isinstance(p, dict)}
+    trip_ids = list(dict.fromkeys(str(supplied.get(pid, {}).get("trip_id") or "") for pid in wanted))
+    trip_ids = [x for x in trip_ids if x]
+    if not trip_ids:
+        return {"deleted_count": 0, "failures": [(pid, "写真の旅情報がありません。") for pid in wanted]}
+
+    client = supabase_client()
+    family_key = current_family_key()
+    member_key = current_member_key()
+    fresh_grouped = photos_for_trip_ids(trip_ids)  # ONE Supabase read, even across many trips.
+    by_id = {
+        str(row.get("id") or ""): row
+        for rows in fresh_grouped.values() for row in rows
+        if isinstance(row, dict) and row.get("id") and not photo_is_video(row)
+    }
+    selected = []
+    failures = []
+    for pid in wanted:
+        photo = by_id.get(pid)
+        if photo and str(photo.get("trip_id") or "") == str(supplied.get(pid, {}).get("trip_id") or ""):
+            selected.append(photo)
+        else:
+            failures.append((pid, "削除対象が見つからない、または写真を削除する権限がありません。"))
+    if not selected:
+        return {"deleted_count": 0, "failures": failures}
+
+    trip_rows = (
+        client.table(TRIP_TABLE).select("id,trip_date")
+        .eq("family_key", family_key).eq("member_key", member_key)
+        .in_("id", list(dict.fromkeys(p["trip_id"] for p in selected))).execute()
+    ).data or []
+    trips_by_id = {str(p.get("id")): p for p in trip_rows}
+    selected = [p for p in selected if str(p.get("trip_id")) in trips_by_id]
+    authorized_ids = {str(p.get("id")) for p in selected}
+    for pid in wanted:
+        if pid in by_id and pid not in authorized_ids and not any(x[0] == pid for x in failures):
+            failures.append((pid, "ぶらり旅の登録を確認できませんでした。"))
+    if not selected:
+        return {"deleted_count": 0, "failures": failures}
+
+    diaries = {} if skip_existing_diary_lookup else diaries_for_trip_ids(trips_by_id.keys())
+    # Keep all the paths of each photo in the same chunk. Supabase Storage accepts
+    # multiple keys per request; cap it to avoid oversized HTTP requests.
+    chunks = []
+    current = []
+    num_paths = 0
+    for photo in selected:
+        paths = list(dict.fromkeys(p for p in photo_all_storage_paths(photo) if p))
+        if current and (len(current) >= 45 or num_paths + len(paths) > 70):
+            chunks.append(current)
+            current, num_paths = [], 0
+        current.append(photo)
+        num_paths += len(paths)
+    if current:
+        chunks.append(current)
+
+    deleted = {}
+
+    def remove_chunk(rows):
+        if not rows:
+            return
+        ids = [str(p["id"]) for p in rows]
+        try:
+            paths = list(dict.fromkeys(path for p in rows for path in photo_all_storage_paths(p) if path))
+            if paths:
+                client.storage.from_(PHOTO_BUCKET).remove(paths)
+            client.table(PHOTO_TABLE).delete().in_("id", ids).eq(
+                "family_key", family_key
+            ).eq("member_key", member_key).execute()
+            for photo in rows:
+                deleted[str(photo["id"])] = photo
+        except Exception as exc:
+            if len(rows) == 1:
+                failures.append((ids[0], str(exc)[:300]))
+            else:
+                middle = len(rows) // 2
+                remove_chunk(rows[:middle])
+                remove_chunk(rows[middle:])
+
+    for chunk in chunks:
+        remove_chunk(chunk)
+
+    if not deleted:
+        return {"deleted_count": 0, "failures": failures}
+
+    for row in deleted.values():
+        reflection = row.get("reflection_json") or {}
+        if not isinstance(reflection, dict):
+            continue
+        try:
+            source_id = str(reflection.get("source_video_photo_id") or "").strip()
+            rank = int(reflection.get("source_selection_rank") or 0)
+            if source_id and rank > 0:
+                _clear_video_ai_saved_photo_link(source_id, rank, str(row.get("id") or ""))
+        except Exception:
+            pass
+
+    affected_trip_ids = list(dict.fromkeys(str(p["trip_id"]) for p in deleted.values()))
+    month_keys = set()
+    for trip_id in affected_trip_ids:
+        removed_ids = {pid for pid, row in deleted.items() if str(row.get("trip_id")) == trip_id}
+        remaining = [row for row in fresh_grouped.get(trip_id, []) if str(row.get("id") or "") not in removed_ids]
+        if not remaining:
+            # A second device might have added a photo during deletion.
+            remaining = list_trip_photos(trip_id)
+        existing = diaries.get(trip_id)
+        diary_deleted = not remaining
+        try:
+            if diary_deleted:
+                if not skip_existing_diary_lookup:
+                    client.table(DIARY_TABLE).delete().eq("trip_id", trip_id).eq(
+                        "family_key", family_key
+                    ).eq("member_key", member_key).execute()
+                client.table(TRIP_TABLE).delete().eq("id", trip_id).eq(
+                    "family_key", family_key
+                ).eq("member_key", member_key).execute()
+            elif existing:
+                raw = dict(existing.get("raw_conversation") or {}) if isinstance(existing.get("raw_conversation") or {}, dict) else {}
+                for pid in removed_ids:
+                    raw.pop(pid, None)
+                ai_meta = dict(existing.get("ai_meta") or {}) if isinstance(existing.get("ai_meta") or {}, dict) else {}
+                remaining_child_points = []
+                for conversation in raw.values():
+                    if not isinstance(conversation, list):
+                        continue
+                    for turn in conversation:
+                        if isinstance(turn, dict) and turn.get("role") == "child":
+                            value = str(turn.get("text") or "").strip()
+                            if value and value not in remaining_child_points:
+                                remaining_child_points.append(value)
+                ai_meta["child_points"] = remaining_child_points[:3]
+                merged_signals = {}
+                for photo in remaining:
+                    merged_signals = merge_signals(merged_signals, photo.get("signals_json") or {})
+                ai_meta["signals"] = merged_signals
+                ai_meta["reflection_summary"] = ""
+                ai_meta["trip_summary"] = ""
+                _clear_summary_feedback_fields(ai_meta, clear_history=True)
+                client.table(DIARY_TABLE).update({
+                    "raw_conversation": raw,
+                    "ai_meta": ai_meta,
+                    "updated_at": now_jst().isoformat(),
+                }).eq("id", existing["id"]).eq(
+                    "family_key", family_key
+                ).eq("member_key", member_key).execute()
+            _photo_batch_sync_trip_state_v589(trip_id, removed_ids, remaining, diary_deleted)
+            if not skip_existing_diary_lookup:
+                month = str(trips_by_id.get(trip_id, {}).get("trip_date") or "")[:7]
+                if len(month) == 7:
+                    month_keys.add(month)
+        except Exception as exc:
+            failures.append((trip_id, "写真の削除後、日記情報の更新に失敗: " + str(exc)[:220]))
+
+    for month in month_keys:
+        try:
+            first_day, _ = month_bounds(month)
+            client.table(MONTHLY_TABLE).delete().eq("review_month", first_day).eq(
+                "family_key", family_key
+            ).eq("member_key", member_key).execute()
+            for prefix in ("monthly_review_", "monthly_audio_", "monthly_audio_pending_"):
+                st.session_state.pop(prefix + month, None)
+        except Exception as exc:
+            failures.append((month, "月次振り返りの更新に失敗: " + str(exc)[:220]))
+
+    download_photo.clear()
+    thumbnail_photo_bytes.clear()
+    thumbnail_photo_data_url.clear()
+    signed_photo_url_map.clear()
+    _invalidate_fast_db_cache()
+    return {"deleted_count": len(deleted), "failures": failures}
+
+
 def delete_photo_and_related_data(
     trip_id,
     photo_id,
@@ -21563,24 +21782,14 @@ def render_photo_batch_delete_controls_v442(
                     key=f"photo_batch_delete_running_wait_{scope_token}",
                 )
 
-            progress = st.progress(0.0)
-            deleted_count = 0
-            delete_failures = []
-            total = max(1, len(running_rows))
-            for index, row in enumerate(list(running_rows), start=1):
-                photo_id = str(row.get("id") or "").strip()
-                trip_id = str(row.get("trip_id") or "").strip()
-                label = _photo_library_captured_label_v418(row.get("captured_at"))
-                try:
-                    delete_photo_and_related_data(
-                        trip_id,
-                        photo_id,
-                        skip_existing_diary_lookup=bool(force_pending),
-                    )
-                    deleted_count += 1
-                except Exception as exc:
-                    delete_failures.append((label, str(exc)))
-                progress.progress(min(1.0, index / total))
+            with st.spinner("写真をまとめて削除しています…"):
+                result = delete_photos_in_batches_v589(
+                    [str(row.get("id") or "") for row in running_rows],
+                    photos=running_rows,
+                    skip_existing_diary_lookup=bool(force_pending),
+                )
+            deleted_count = int(result.get("deleted_count") or 0)
+            delete_failures = result.get("failures") or []
 
             st.session_state.pop(open_key, None)
             st.session_state.pop(selected_key, None)
@@ -21588,7 +21797,7 @@ def render_photo_batch_delete_controls_v442(
             st.session_state.pop(running_key, None)
 
             if delete_failures:
-                notice = f"{deleted_count}枚を削除しました。{len(delete_failures)}枚は削除できませんでした。"
+                notice = f"{deleted_count}枚を削除しました。{len(delete_failures)}件の処理エラーがあります。"
                 st.session_state[failure_key] = delete_failures
             else:
                 notice = f"選択した写真を{deleted_count}枚削除しました。"
@@ -21903,21 +22112,15 @@ def confirm_pending_photo_batch_delete_dialog_v504(trip_id, photo_ids, photos=No
             use_container_width=True,
             key=f"pending_batch_delete_yes_v504_{trip_id}_{len(selected_ids)}",
         ):
-            deleted = 0
-            failures = []
-            for photo_id in selected_ids:
-                try:
-                    delete_photo_and_related_data(
-                        trip_id,
-                        photo_id,
-                        skip_existing_diary_lookup=True,
-                    )
-                    deleted += 1
-                except Exception as exc:
-                    failures.append(str(exc))
+            with st.spinner("写真をまとめて削除しています…"):
+                result = delete_photos_in_batches_v589(
+                    selected_ids, photos=rows, skip_existing_diary_lookup=True,
+                )
+            deleted = int(result.get("deleted_count") or 0)
+            failures = [f"{label}: {detail}" for label, detail in (result.get("failures") or [])]
             if failures:
                 st.session_state["_diary_notice"] = (
-                    f"{deleted}枚を削除しました。{len(failures)}枚は削除できませんでした。"
+                    f"{deleted}枚を削除しました。{len(failures)}件の処理エラーがあります。"
                 )
                 st.session_state["_pending_diary_batch_delete_failures_v504"] = failures
             else:
@@ -21966,27 +22169,14 @@ def confirm_photo_library_batch_delete_dialog_v514(photo_ids, photos=None):
             use_container_width=True,
             key=f"photo_library_batch_delete_yes_v514_{len(selected_ids)}",
         ):
-            deleted = 0
-            failures = []
-            for photo_id in selected_ids:
-                row = row_by_id.get(photo_id) or {}
-                trip_id = str(row.get("trip_id") or "").strip()
-                if not trip_id:
-                    failures.append(f"{photo_id}: trip_id がありません。")
-                    continue
-                try:
-                    delete_photo_and_related_data(
-                        trip_id,
-                        photo_id,
-                        skip_existing_diary_lookup=False,
-                    )
-                    deleted += 1
-                except Exception as exc:
-                    failures.append(str(exc))
+            with st.spinner("写真をまとめて削除しています…"):
+                result = delete_photos_in_batches_v589(selected_ids, photos=rows)
+            deleted = int(result.get("deleted_count") or 0)
+            failures = [f"{label}: {detail}" for label, detail in (result.get("failures") or [])]
 
             if failures:
                 st.session_state["_diary_notice"] = (
-                    f"{deleted}枚を削除しました。{len(failures)}枚は削除できませんでした。"
+                    f"{deleted}枚を削除しました。{len(failures)}件の処理エラーがあります。"
                 )
                 st.session_state["_photo_library_batch_delete_failures_v514"] = failures
             else:
@@ -44598,7 +44788,7 @@ def _render_moments_picker(photo, index, view_mode=None, next_video_action=None)
             use_container_width=True,
             key=f"moments_reviewed_recut_{video_id}_{round_number}",
             help=(
-                "元動画から動画長に応じた間隔（最大20候補）で再評価して、新しい『いい瞬間』候補を作ります。"
+                "元動画から0.5秒ごとに最大120候補を再評価して、新しい『いい瞬間』候補を作ります。"
                 "すでに日記へ残した写真は削除しません。"
             ),
         ):
@@ -44658,7 +44848,7 @@ def _render_moments_picker(photo, index, view_mode=None, next_video_action=None)
     if status == "processing":
         stage = str(selection_meta.get("stage") or "").strip().lower()
         if stage == "candidate_preparation":
-            st.info("保存済み動画から動画長に応じた間隔で最大20枚を切り出し、AI候補をバックグラウンドで準備しています。")
+            st.info("保存済み動画から0.5秒ごとに最大120枚を切り出し、AI候補をバックグラウンドで準備しています。")
         else:
             st.info("現在いい瞬間の切り取り中です。")
             progress_message = str(selection_meta.get("progress_message") or "").strip()
@@ -45613,7 +45803,7 @@ def page_videos():
             status = video_ai_effective_status(video_row)
             if status == "processing":
                 stage = str(selection.get("stage") or "").strip().lower()
-                status_label = "✨ 最大20候補を準備中" if stage == "candidate_preparation" else "✨ いい瞬間を自動選定中"
+                status_label = "✨ 最大120候補を準備中" if stage == "candidate_preparation" else "✨ いい瞬間を自動選定中"
             elif status in {"", "waiting_candidates"}:
                 status_label = "✨ 自動処理を開始待ち"
             elif status == "ready":
@@ -46483,7 +46673,7 @@ def page_trip():
                             selection["stage"] = "candidate_preparation"
                             selection["last_error"] = str(background_exc)[:240]
                             selection["updated_at"] = now_jst().isoformat()
-                            selection["pipeline_mode"] = "background_single_pass_dynamic20_v153"
+                            selection["pipeline_mode"] = "background_single_pass_fixed500ms_max120_v590"
                             reflection["ai_selection"] = selection
                             _write_photo_reflection(saved_video["id"], reflection)
                         except Exception:
@@ -62022,6 +62212,7 @@ def page_settings_media_import_v485():
             }
             st.rerun()
 
+    st.caption("自動取込の対象：端末の DCIM / Pictures / Movies。Files の Download / Downloads は対象外です。")
     st.caption(
         "同じMediaStore IDに加え、ファイル内容のサンプルSHA-256でも重複を判定します。"
         "バックグラウンドでは端末内を検索・重複判定し、Supabaseへの安全な転送はアプリ起動・復帰時に自動で続けます。"
