@@ -47,7 +47,9 @@ def _app_css_v473(markup, **_ignored):
 # Review menu-only update: 2026-09-19 JST
 GENERATED_UPDATE_JST = "2026-09-19T14:54:38+09:00"
 
-APP_BUILD = "v595"
+APP_BUILD = "v596"
+# v596: Keep prior reroll images hidden until the requested round is fully saved.
+# Reset stale completion progress at queue time and keep failures separate from success.
 # v595: Hide stray developer text; prioritize measurable image/face quality before
 # diversity, suppress transient smile detections and compare structural duplicates offline.
 # v594: Score Good Moments by six distinguishable local signals, including optional offline OpenCV smile/eye/face evidence, camera-motion-compensated action, scene changes and actual favorite-photo similarity. Apply saved percentages exactly; no paid AI calls.
@@ -18507,9 +18509,8 @@ def _run_video_ai_background_job(photo_id, family_key, member_key):
             latest_selection = latest_reflection.get("ai_selection") or {}
             if not isinstance(latest_selection, dict):
                 latest_selection = {}
-            # If a reroll fails, keep the prior usable set. For a first pass, expose
-            # a terminal error immediately rather than leaving a spinner for minutes.
-            if latest_selection.get("items"):
+            # Retain old files internally, but never present them as a successful reroll.
+            if latest_selection.get("items") and not _video_ai_reroll_pending_v596(latest_selection):
                 latest_selection["status"] = "ready"
             else:
                 latest_selection["status"] = "error"
@@ -18806,6 +18807,14 @@ def request_video_ai_reroll(photo, record_rejection=True):
     selection["history"] = history[-12:]
     selection["status"] = "processing"
     selection["queued_at"] = now_jst().isoformat()
+    selection["updated_at"] = selection["queued_at"]
+    selection["reroll_target_round_v596"] = int(selection.get("round") or 0) + 1
+    selection["stage"] = "queued"
+    selection["progress_message"] = "新しい9枚を作成しています。完了まで前の候補は表示しません。"
+    selection["progress_completed"] = 0
+    selection["progress_total"] = 0
+    selection["last_error"] = ""
+    selection.pop("started_at", None)
     selection.pop("reviewed_at", None)
     selection.pop("review_result", None)
     reflection["ai_selection"] = selection
@@ -19223,9 +19232,21 @@ def mark_video_ai_selection_error(photo, message):
         pass
 
 
+def _video_ai_reroll_pending_v596(selection):
+    """An older round is never the completed result of a newer request."""
+    if not isinstance(selection, dict):
+        return False
+    try:
+        return int(selection.get("reroll_target_round_v596") or 0) > int(selection.get("round") or 0)
+    except (TypeError, ValueError, OverflowError):
+        return False
+
+
 def video_ai_selection_items(photo):
     selection = photo_media_metadata(photo).get("ai_selection") or {}
     if not isinstance(selection, dict):
+        return []
+    if _video_ai_reroll_pending_v596(selection):
         return []
     items = selection.get("items") or []
     if not isinstance(items, list):
@@ -19240,10 +19261,22 @@ def video_ai_effective_status(photo):
     if not isinstance(selection, dict):
         return ""
     status = str(selection.get("status") or "").strip().lower()
+    if _video_ai_reroll_pending_v596(selection):
+        return "error" if status == "error" else "processing"
     progress = str(selection.get("progress_message") or "").strip().lower()
+    # A leftover completion message is insufficient if a newer queue timestamp exists.
+    completed_after_queue = True
+    if selection.get("queued_at"):
+        try:
+            generated = datetime.fromisoformat(str(selection.get("generated_at") or "").replace("Z", "+00:00"))
+            queued = datetime.fromisoformat(str(selection["queued_at"]).replace("Z", "+00:00"))
+            completed_after_queue = generated >= queued
+        except (TypeError, ValueError):
+            completed_after_queue = False
     items = video_ai_selection_items(photo)
     if (
         status in {"processing", "waiting_candidates", "waiting_browser_candidates", ""}
+        and completed_after_queue
         and len(items) >= VIDEO_AI_MAX_SELECTIONS
         and progress in {"完了", "complete", "completed"}
     ):
@@ -46294,6 +46327,16 @@ def page_moments():
                     status = str((selection or {}).get("status") or "").lower()
                     label = "処理中" if status != "error" else "エラー"
                     st.write(f"{idx}. {_moments_video_title(video)}　— {label}")
+                    if status == "error" and _video_ai_reroll_pending_v596(selection):
+                        st.warning("新しい9枚を作成できませんでした。前の候補は表示していません。")
+                        if st.button("もう一度作成する", key=f"moments_retry_reroll_v596_{video.get('id')}"):
+                            try:
+                                request_video_ai_reroll(video, record_rejection=False)
+                                st.session_state["_moments_notice"] = "新しい9枚を作成しています。"
+                                st.rerun()
+                            except Exception as exc:
+                                st.error("再作成を開始できませんでした。")
+                                st.code(_safe_error_text(exc, 240))
                     render_video_delete_controls(
                         video,
                         f"moments_pending_delete_{video.get('id')}_{idx}",
