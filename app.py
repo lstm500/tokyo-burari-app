@@ -47,7 +47,9 @@ def _app_css_v473(markup, **_ignored):
 # Review menu-only update: 2026-09-19 JST
 GENERATED_UPDATE_JST = "2026-09-19T14:54:38+09:00"
 
-APP_BUILD = "v596"
+APP_BUILD = "v597"
+# v597: Compare 30 FPS candidates across the whole saved video offline. Disk-backed
+# analysis proxies bound memory; extract only the nine winners at native resolution.
 # v596: Keep prior reroll images hidden until the requested round is fully saved.
 # Reset stale completion progress at queue time and keep failures separate from success.
 # v595: Hide stray developer text; prioritize measurable image/face quality before
@@ -1119,11 +1121,10 @@ VIDEO_PROCESSING_MAX_SECONDS = 75
 VIDEO_RECORDING_RESERVE_BYTES = 36 * 1024 * 1024
 VIDEO_MAX_BYTES = 150 * 1024 * 1024
 VIDEO_AI_MAX_SELECTIONS = 9  # いい瞬間の切り抜き枚数
-# Good Moments sampling uses 0.5-second intervals (max 120 frames). For a
-# very short clip, use a finer interval only if needed to obtain 9 choices.
-VIDEO_AI_MIN_SAMPLE_INTERVAL_MS = 500
-VIDEO_AI_MAX_CANDIDATES = 120
-# Compatibility alias: Good Moments now uses this fixed interval for every video.
+# Full-video analysis at 30 FPS; legacy bundles keep the same count ceiling.
+VIDEO_ANALYSIS_FPS_V597 = 30
+VIDEO_AI_MIN_SAMPLE_INTERVAL_MS = 1000.0 / VIDEO_ANALYSIS_FPS_V597
+VIDEO_AI_MAX_CANDIDATES = VIDEO_MAX_SECONDS * VIDEO_ANALYSIS_FPS_V597
 VIDEO_AI_SAMPLE_INTERVAL_MS = VIDEO_AI_MIN_SAMPLE_INTERVAL_MS
 # Candidate pools can now be much larger than one final vision request, so the batching path is part of the normal flow for longer videos.
 VIDEO_AI_BATCH_SIZE = 25
@@ -1132,35 +1133,23 @@ VIDEO_AI_BATCH_WORKERS = 3
 # Background AI must never remain in "processing" indefinitely.
 # One provider call is bounded, and a stale Streamlit worker can be relaunched.
 VIDEO_AI_REQUEST_TIMEOUT_SECONDS = 30
-VIDEO_AI_STALE_SECONDS = 240
+VIDEO_AI_STALE_SECONDS = 900
 
 
 def video_ai_sample_interval_ms_for_duration(duration_ms):
-    """Return the fixed Good Moments sampling interval (0.5 seconds).
-
-    v590 deliberately stops stretching the interval for longer clips. Sampling now
-    stays at 0.5 seconds so rerolls can draw from a materially larger pool. This
-    runs after recording and does not affect capture.
-    """
-    try:
-        duration = int(float(duration_ms or 0))
-    except (TypeError, ValueError, OverflowError):
-        duration = 0
-    if 0 < duration < VIDEO_AI_MIN_SAMPLE_INTERVAL_MS * VIDEO_AI_MAX_SELECTIONS:
-        return max(80, min(VIDEO_AI_MIN_SAMPLE_INTERVAL_MS, int(math.ceil(duration / float(VIDEO_AI_MAX_SELECTIONS)))))
-    return int(VIDEO_AI_MIN_SAMPLE_INTERVAL_MS)
+    """Analysis cadence in milliseconds; do not round 30 FPS to 33 or 34ms."""
+    return 1000.0 / float(VIDEO_ANALYSIS_FPS_V597)
 
 
 def video_ai_candidate_count_for_duration(duration_ms):
     try:
-        raw_duration = float(duration_ms or 0)
-        duration = int(round(raw_duration)) if raw_duration > 0 else VIDEO_MAX_SECONDS * 1000
-    except Exception:
+        duration = float(duration_ms or VIDEO_MAX_SECONDS * 1000)
+        if not math.isfinite(duration) or duration <= 0:
+            duration = VIDEO_MAX_SECONDS * 1000
+    except (ValueError, TypeError, OverflowError):
         duration = VIDEO_MAX_SECONDS * 1000
-    duration = max(1, min(VIDEO_MAX_SECONDS * 1000, duration))
-    interval_ms = max(1, int(video_ai_sample_interval_ms_for_duration(duration)))
-    calculated = int(math.ceil(duration / float(interval_ms)))
-    return max(VIDEO_AI_MAX_SELECTIONS, min(VIDEO_AI_MAX_CANDIDATES, calculated))
+    return min(VIDEO_AI_MAX_CANDIDATES, max(1, int(math.ceil(
+        min(duration, VIDEO_MAX_SECONDS * 1000) * VIDEO_ANALYSIS_FPS_V597 / 1000.))))
 
 
 # Best-effort post-save video stabilization. The original recording is never
@@ -16661,7 +16650,7 @@ def _video_moment_reference_descriptors_v594(raw_images):
     return descriptors
 
 
-def _video_moment_local_features_v594(frame_items):
+def _video_moment_local_features_v594(frame_items, progress_callback=None):
     """Measure observable visual evidence; face/smile models are OPTIONAL and offline.
 
     No inference about identity, inner feelings, or the meaning of a personal event.
@@ -16677,7 +16666,10 @@ def _video_moment_local_features_v594(frame_items):
     eye_model = models.get("eyes")
     rows = []
     for index, frame in enumerate(frames):
-        raw = frame.get("ai_bytes") or frame.get("image_bytes")
+        if callable(progress_callback) and index % 60 == 0:
+            progress_callback("local_analysis", index, len(frames),
+                              f"30FPSで比較中：{index:,}/{len(frames):,}枚")
+        raw = _video_moment_frame_bytes_v597(frame)
         if not raw:
             continue
         try:
@@ -16826,7 +16818,7 @@ def _video_moment_local_features_v594(frame_items):
             if background_error > .045:
                 continue
             try:
-                raw = row["frame"].get("ai_bytes") or row["frame"].get("image_bytes")
+                raw = _video_moment_frame_bytes_v597(row["frame"])
                 with Image.open(io.BytesIO(raw)) as source:
                     preview = ImageOps.exif_transpose(source).convert("RGB")
                     preview.thumbnail((320, 320), Image.Resampling.LANCZOS)
@@ -16854,11 +16846,15 @@ def _video_moment_local_features_v594(frame_items):
         row["motion_change"] = abs(after_motion - before_motion)
         row["visual_novelty"] = float(np.mean(np.abs(row["signature"] - global_center)))
         # A story proxy: distinct visual context at a boundary, not 'emotional story'.
-        near = rows[max(0, idx - 3):idx] + rows[idx + 1:idx + 4]
+        near = [neighbor for neighbor in rows[max(0, idx - 45):idx] + rows[idx + 1:idx + 46]
+                if abs(neighbor["timestamp_ms"] - row["timestamp_ms"]) <= 1500]
         row["context_change"] = max(
             (float(np.mean(np.abs(row["signature"] - neighbor["signature"]))) for neighbor in near),
             default=0.0,
         )
+    if callable(progress_callback):
+        progress_callback("local_analysis", len(rows), len(frames),
+                          f"30FPSの比較完了：{len(rows):,}枚")
     return rows
 
 
@@ -17069,13 +17065,14 @@ def choose_video_ai_frames(
         except Exception:
             pass
     with _video_moment_analysis_lock_v595:
-        records = _video_moment_local_features_v594(frame_items)
+        records = _video_moment_local_features_v594(frame_items, progress_callback=progress_callback)
     selection = _video_moment_local_pick_v594(
         records, preference_context=preference_context, excluded_frame_ids=excluded_frame_ids
     )
+    selection = _video_moment_native_stills_v597(selection, frame_items, progress_callback)
     if callable(progress_callback):
         try:
-            progress_callback("final_selection", 1, 1, "いい瞬間を9枚選びました")
+            progress_callback("final_selection", 1, 1, "30FPSの比較から9枚を選びました")
         except Exception:
             pass
     return selection
@@ -17573,99 +17570,127 @@ def _video_ai_expected_candidate_count(photo):
     return video_ai_candidate_count_for_duration(duration_ms)
 
 
-def _background_extract_video_candidate_frames(client, photo):
-    """Extract up to 120 native-resolution candidates, spaced 0.5s apart.
+class _VideoMomentFramePoolV597(list):
+    """Disk-backed 30 FPS analysis frames; only nine native JPEGs enter memory."""
+    def __init__(self, workspace, original_path, fps):
+        super().__init__()
+        self.workspace = workspace
+        self.original_path = str(original_path)
+        self.fps = float(fps)
+        self.closed = False
 
-    A compact local-analysis copy is created separately from the full-resolution
-    photo. This does not invoke any external AI API.
+    def close(self):
+        if not self.closed:
+            self.closed = True
+            self.workspace.cleanup()
+
+    def __del__(self):
+        try:
+            self.close()
+        except Exception:
+            pass
+
+
+def _video_moment_frame_bytes_v597(frame):
+    raw = frame.get("ai_bytes") or frame.get("image_bytes")
+    if raw:
+        return raw
+    path = frame.get("analysis_path_v597")
+    if path:
+        candidate = Path(path)
+        if candidate.is_file() and candidate.stat().st_size <= 8 * 1024 * 1024:
+            return candidate.read_bytes()
+    return None
+
+
+def _video_moment_native_stills_v597(selection, frames, progress_callback=None):
+    """Repeat the same FPS filter and select exact indices at original resolution."""
+    if not isinstance(frames, _VideoMomentFramePoolV597):
+        return selection  # compatibility with original-resolution in-memory callers
+    if frames.closed:
+        raise RuntimeError("動画の解析用ファイルを読み込めませんでした。")
+    indices = sorted({int(item["frame"]["analysis_index_v597"]) for item in selection})
+    if len(indices) != VIDEO_AI_MAX_SELECTIONS:
+        raise ValueError("異なる9枚の元動画フレームを確定できませんでした。")
+    if callable(progress_callback):
+        progress_callback("native_stills", 0, len(indices), "選んだ9枚を元の解像度で切り出しています")
+    directory = Path(frames.workspace.name) / "native"
+    directory.mkdir(exist_ok=True)
+    expression = "+".join(f"eq(n\\,{index})" for index in indices)
+    vf = f"fps={frames.fps:.9f}:start_time=0:round=near,select={expression}"
+    command = [_ffmpeg_executable(), "-nostdin", "-hide_banner", "-loglevel", "error",
+               "-threads", "1", "-i", frames.original_path, "-map", "0:v:0", "-an",
+               "-vf", vf, "-vsync", "0", "-frames:v", str(len(indices)),
+               "-threads", "1", "-q:v", "1", str(directory / "selected_%03d.jpg")]
+    result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=180, check=False)
+    paths = sorted(directory.glob("selected_*.jpg"))
+    if result.returncode or len(paths) != len(indices):
+        raise RuntimeError("選定した9枚を元の解像度で切り出せませんでした。")
+    originals = {index: path.read_bytes() for index, path in zip(indices, paths)}
+    if any(not value for value in originals.values()):
+        raise RuntimeError("元動画の切り抜き画像が空でした。")
+    for item in selection:
+        frame = item["frame"]
+        index = int(frame["analysis_index_v597"])
+        frame["image_bytes"] = originals[index]
+        frame["output_source"] = "original_video_native_30fps_v597"
+    return selection
+
+
+def _background_extract_video_candidate_frames(client, photo):
+    """Decode every 1/30-second candidate across the saved video (up to 65s).
+
+    Analysis JPEGs are disk-backed at <=640px, not loaded as 1,950 native images.
+    Native resolution is recovered only for the final nine exact frame indices.
     """
     video_path = photo_video_storage_path(photo)
-    if not video_path:
-        raise ValueError("元動画の保存先を確認できませんでした。")
     ffmpeg = _ffmpeg_executable()
-    if not ffmpeg:
-        raise RuntimeError(
-            "元動画から高画質のいい瞬間を作るためのffmpegを利用できません。"
-            "低画質候補には切り替えません。"
-        )
+    if not video_path or not ffmpeg:
+        raise RuntimeError("元動画または動画解析用のffmpegを確認できませんでした。")
+    workspace = tempfile.TemporaryDirectory(prefix="burari-30fps-v597-")
+    pool = None
+    try:
+        root = Path(workspace.name)
+        suffix = ".mp4" if str(video_path).lower().endswith(".mp4") else ".webm"
+        original = root / ("original" + suffix)
+        raw = _storage_bytes(client.storage.from_(PHOTO_BUCKET).download(video_path))
+        if not raw:
+            raise ValueError("保存済みの元動画を読み込めませんでした。")
+        original.write_bytes(raw)
+        del raw
+        fps = float(VIDEO_ANALYSIS_FPS_V597)
+        pool = _VideoMomentFramePoolV597(workspace, original, fps)
+        # Do not trust duration metadata to truncate the video: decode the actual
+        # file to EOF, bounded by the same 65-second import limit as before.
+        vf = (f"fps={fps:.9f}:start_time=0:round=near,"
+              "scale=w='min(640,iw)':h='min(640,ih)':force_original_aspect_ratio=decrease")
+        command = [ffmpeg, "-nostdin", "-hide_banner", "-loglevel", "error", "-threads", "1",
+                   "-i", str(original), "-map", "0:v:0", "-an", "-t", str(VIDEO_MAX_SECONDS),
+                   "-vf", vf, "-frames:v", str(VIDEO_AI_MAX_CANDIDATES), "-threads", "1",
+                   "-q:v", "3", str(root / "analysis_%05d.jpg")]
+        result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=180, check=False)
+        files = sorted(root.glob("analysis_*.jpg"))
+        # Partial decoding is an error, not a false claim of full-video analysis.
+        if result.returncode:
+            detail = result.stderr.decode("utf-8", errors="replace").replace("\n", " ")[-180:]
+            raise RuntimeError("30FPSで動画全体を解析できませんでした。" + detail)
+        if len(files) < VIDEO_AI_MAX_SELECTIONS:
+            raise ValueError("異なる時刻で9枚切り出せる長さの動画がありません。")
+        for index, path in enumerate(files):
+            if not path.stat().st_size:
+                raise RuntimeError("30FPS解析用の画像が空でした。")
+            pool.append({"frame_id": f"F30_{index:05d}",
+                         "timestamp_ms": int(round(index * 1000. / fps)),
+                         "analysis_index_v597": index, "analysis_path_v597": str(path),
+                         "output_source": "analysis_proxy_30fps_v597"})
+        return pool
+    except Exception:
+        if pool is not None:
+            pool.close()
+        else:
+            workspace.cleanup()
+        raise
 
-    video_raw = _storage_bytes(client.storage.from_(PHOTO_BUCKET).download(video_path))
-    if not video_raw:
-        raise ValueError("保存済みの元動画を読み込めませんでした。")
-
-    metadata = photo_media_metadata(photo)
-    duration_ms = max(0, int(metadata.get("video_duration_ms") or 0)) or (VIDEO_MAX_SECONDS * 1000)
-    duration_ms = min(VIDEO_MAX_SECONDS * 1000, duration_ms)
-    sample_interval_ms = video_ai_sample_interval_ms_for_duration(duration_ms)
-    target_count = video_ai_candidate_count_for_duration(duration_ms)
-    fps = 1000.0 / float(sample_interval_ms)
-    suffix = ".mp4" if str(video_path).lower().endswith(".mp4") else ".webm"
-    with tempfile.TemporaryDirectory(prefix="burari-video-ai-v153-") as tmpdir:
-        input_path = os.path.join(tmpdir, "original" + suffix)
-        output_pattern = os.path.join(tmpdir, "frame_%03d.jpg")
-        with open(input_path, "wb") as fh:
-            fh.write(video_raw)
-
-        # No scale filter: keep the original video frame dimensions. q=1 is the
-        # highest practical JPEG quality for ffmpeg's image2 encoder and avoids the
-        # previous 240/480px quality loss. AI copies are downsized later in Python.
-        command = [
-            ffmpeg,
-            "-nostdin",
-            "-hide_banner",
-            "-loglevel",
-            "error",
-            "-i",
-            input_path,
-            "-vf",
-            f"fps={fps:.6f}:start_time=0:round=near",
-            "-frames:v",
-            str(target_count),
-            "-q:v",
-            "1",
-            output_pattern,
-        ]
-        try:
-            completed = subprocess.run(
-                command,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                timeout=120,
-                check=False,
-            )
-        except subprocess.TimeoutExpired as exc:
-            raise RuntimeError("元動画から高画質候補を作る処理が120秒でタイムアウトしました。") from exc
-
-        files = sorted(Path(tmpdir).glob("frame_*.jpg"))[:target_count]
-        if completed.returncode != 0 and not files:
-            detail = completed.stderr.decode("utf-8", errors="ignore").strip().replace("\n", " ")
-            if len(detail) > 180:
-                detail = detail[:177] + "..."
-            raise RuntimeError("元動画から高画質候補を作成できませんでした。" + (f" {detail}" if detail else ""))
-        if not files:
-            raise ValueError("元動画から高画質候補を1枚も作成できませんでした。")
-
-        frames = []
-        for index, frame_path in enumerate(files, start=1):
-            raw = frame_path.read_bytes()
-            if not raw:
-                continue
-            timestamp_ms = max(0, int(round((index - 1) * sample_interval_ms)))
-            frames.append(
-                {
-                    "frame_id": f"F{index:03d}",
-                    "timestamp_ms": timestamp_ms,
-                    # User-facing source: native-resolution frame from the original
-                    # recording, without any resize or additional JPEG recompression.
-                    "image_bytes": raw,
-                    # AI-only copy. This has no effect on saved-photo quality.
-                    "ai_bytes": normalize_photo(raw, max_side=640, quality=74),
-                    "output_source": "original_video_native_fixed500ms_v591",
-                }
-            )
-        if not frames:
-            raise ValueError("元動画から有効な高画質候補を作成できませんでした。")
-        return frames[:VIDEO_AI_MAX_CANDIDATES]
 
 def _background_store_video_ai_candidate_bundle(client, photo, family_key, member_key, frame_items):
     """Background-safe candidate persistence for server-side video extraction."""
@@ -18320,8 +18345,8 @@ def _background_store_video_ai_selection(
                 "updated_at": now_jst().isoformat(),
                 "round": int(round_number),
                 "items": items,
-                "final_frame_mode": "original_native_offline_max120_v595",
-                "selection_engine": "offline_quality_first_v595",
+                "final_frame_mode": "original_native_30fps_v597",
+                "selection_engine": "offline_quality_first_30fps_v597",
                 "high_quality_count": len(items),
                 "selection_target_count": VIDEO_AI_MAX_SELECTIONS,
                 "progress_message": "完了",
@@ -18398,7 +18423,7 @@ def _run_video_ai_background_job(photo_id, family_key, member_key):
     selection_meta["started_at"] = now_jst().isoformat()
     selection_meta["updated_at"] = selection_meta["started_at"]
     selection_meta["attempt"] = max(0, int(selection_meta.get("attempt") or 0)) + 1
-    selection_meta["pipeline_mode"] = "offline_quality_first_max120_v595"
+    selection_meta["pipeline_mode"] = "offline_quality_first_30fps_v597"
     selection_meta["progress_message"] = "元動画から高画質候補を準備中"
     reflection["ai_selection"] = selection_meta
     try:
@@ -18408,8 +18433,9 @@ def _run_video_ai_background_job(photo_id, family_key, member_key):
     except Exception:
         pass
 
+    frames = None
     try:
-        # v591 uses fixed 0.5-second native extraction (max 120) for local ranking.
+        # v597 decodes all 30 FPS analysis frames, then recovers nine native JPEGs.
         # Legacy browser sheets/low-resolution bundles are ignored for final quality.
         frames = _background_extract_video_candidate_frames(client, photo)
         if not frames:
@@ -18418,11 +18444,12 @@ def _run_video_ai_background_job(photo_id, family_key, member_key):
         selection_meta["status"] = "processing"
         selection_meta["stage"] = "local_analysis"
         selection_meta["candidate_count"] = len(frames)
+        selection_meta["candidate_analysis_fps"] = VIDEO_ANALYSIS_FPS_V597
         selection_meta["candidate_bundle_path"] = ""
         selection_meta["candidate_sheet_path"] = ""
         selection_meta["candidate_sample_interval_ms"] = video_ai_sample_interval_ms_for_duration((photo_media_metadata(photo).get("video_duration_ms") or VIDEO_MAX_SECONDS * 1000))
-        selection_meta["candidate_sampling_version"] = "original_native_fixed500ms_max120_v591"
-        selection_meta["selection_engine"] = "offline_quality_first_v595"
+        selection_meta["candidate_sampling_version"] = "original_30fps_disk_backed_v597"
+        selection_meta["selection_engine"] = "offline_quality_first_30fps_v597"
         selection_meta["progress_message"] = "APIを使わず映像フレームを解析しています"
         selection_meta["updated_at"] = now_jst().isoformat()
         reflection["ai_selection"] = selection_meta
@@ -18517,7 +18544,7 @@ def _run_video_ai_background_job(photo_id, family_key, member_key):
             latest_selection["last_error"] = str(exc)[:240]
             latest_selection["updated_at"] = now_jst().isoformat()
             latest_selection["stage"] = str(latest_selection.get("stage") or "pipeline")
-            latest_selection["pipeline_mode"] = "offline_quality_first_max120_v595"
+            latest_selection["pipeline_mode"] = "offline_quality_first_30fps_v597"
             latest_reflection["ai_selection"] = latest_selection
             _write_photo_reflection_for_owner(
                 photo_id, latest_reflection, family_key, member_key, client=client
@@ -18525,6 +18552,11 @@ def _run_video_ai_background_job(photo_id, family_key, member_key):
         except Exception:
             pass
         return False
+    finally:
+        close_frames = getattr(frames, "close", None)
+        if callable(close_frames):
+            close_frames()
+
 
 def _video_ai_job_is_running(photo_id):
     photo_id = str(photo_id or "").strip()
@@ -45049,7 +45081,7 @@ def _render_moments_picker(photo, index, view_mode=None, next_video_action=None)
             use_container_width=True,
             key=f"moments_reviewed_recut_{video_id}_{round_number}",
             help=(
-                "元動画から0.5秒ごとに最大120候補を再評価して、新しい『いい瞬間』候補を作ります。"
+                "元動画を30FPSで比較して、新しい『いい瞬間』候補を作ります。"
                 "すでに日記へ残した写真は削除しません。"
             ),
         ):
@@ -45109,7 +45141,7 @@ def _render_moments_picker(photo, index, view_mode=None, next_video_action=None)
     if status == "processing":
         stage = str(selection_meta.get("stage") or "").strip().lower()
         if stage == "candidate_preparation":
-            st.info("保存済み動画から0.5秒ごとに最大120枚を切り出し、外部AIを使わず候補を準備しています。")
+            st.info("保存済み動画を30FPS（1秒に30枚）で比較する準備をしています。")
         else:
             st.info("現在いい瞬間の切り取り中です。")
             progress_message = str(selection_meta.get("progress_message") or "").strip()
@@ -46064,7 +46096,7 @@ def page_videos():
             status = video_ai_effective_status(video_row)
             if status == "processing":
                 stage = str(selection.get("stage") or "").strip().lower()
-                status_label = "✨ 最大120候補を準備中" if stage == "candidate_preparation" else "✨ いい瞬間を解析中"
+                status_label = "✨ 30FPS解析を準備中" if stage == "candidate_preparation" else "✨ いい瞬間を解析中"
             elif status in {"", "waiting_candidates"}:
                 status_label = "✨ 自動処理を開始待ち"
             elif status == "ready":
