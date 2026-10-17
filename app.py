@@ -47,7 +47,9 @@ def _app_css_v473(markup, **_ignored):
 # Review menu-only update: 2026-09-19 JST
 GENERATED_UPDATE_JST = "2026-09-19T14:54:38+09:00"
 
-APP_BUILD = "v594"
+APP_BUILD = "v595"
+# v595: Hide stray developer text; prioritize measurable image/face quality before
+# diversity, suppress transient smile detections and compare structural duplicates offline.
 # v594: Score Good Moments by six distinguishable local signals, including optional offline OpenCV smile/eye/face evidence, camera-motion-compensated action, scene changes and actual favorite-photo similarity. Apply saved percentages exactly; no paid AI calls.
 # v593: Event search uses zero paid AI/search/geocoding API calls: directly read robots-permitted public event listings, validate published dates locally, group 7 dates, preserve audit logs and category filters. Manual day detail search is also API-free.
 # v592: Re-enable "別の9枚を作る" even when existing candidates have emotion/parenting selections. Persisted diary photos are untouched; the unsaved current selection is replaced when reroll completes.
@@ -16521,9 +16523,59 @@ def _video_photogenic_fallback_score(image_bytes):
         return 0.0
 
 
-"""Good Moments v594: local, explainable, factor-weighted visual ranking.
-No external API. Optional local OpenCV Haar smile/face/eye models.
-"""
+# Good Moments: local visual ranking; developer notes must not render in Streamlit.
+
+
+_video_moment_analysis_lock_v595 = threading.RLock()
+
+
+def _video_moment_quality_v595(image):
+    """Absolute quality evidence, independent of the other frames in a clip.
+
+    Noise is not sharpness. Measure edges after light smoothing, and keep a
+    separate high-frequency noise estimate. Missing eyes are never called closed.
+    """
+    import numpy as np
+    from PIL import Image, ImageFilter
+    gray = image.convert("L")
+    gray.thumbnail((320, 320), Image.Resampling.LANCZOS)
+    if min(gray.size) < 5:
+        return {"clarity": 0.0, "tier": 0, "focus": 0.0, "exposure": 0.0,
+                "clipped": 1.0, "noise": 0.0, "contrast": 0.0}
+    raw = np.asarray(gray, dtype=np.float32)
+    smooth = np.asarray(gray.filter(ImageFilter.GaussianBlur(.65)), dtype=np.float32)
+    center = smooth[1:-1, 1:-1]
+    lap = (smooth[:-2, 1:-1] + smooth[2:, 1:-1] + smooth[1:-1, :-2]
+           + smooth[1:-1, 2:] - 4. * center)
+    focus = float(np.std(lap))
+    contrast = float(np.std(raw))
+    brightness = float(np.mean(raw))
+    clipped = float(np.mean((raw < 8) | (raw > 249)))
+    # Median residual is less sensitive to a few genuine edges than its variance.
+    median = np.asarray(gray.filter(ImageFilter.MedianFilter(3)), dtype=np.float32)
+    noise = float(np.median(np.abs(raw - median)))
+    clarity = float(np.clip((focus - .7) / 9.0, 0., 1.))
+    clarity *= float(np.clip(1. - max(0., noise - 6.) / 35., .25, 1.))
+    exposure = float(np.clip(min((brightness - 10.) / 40., (245. - brightness) / 40.,
+                                 1. - max(0., clipped - .18) / .65), 0., 1.))
+    severe = contrast < 3. or brightness < 12. or brightness > 244. or clipped > .88
+    marginal = focus < 1.5 or clarity < .12 or exposure < .40 or noise > 25.
+    tier = 0 if severe else (1 if marginal else 2)
+    return {"clarity": clarity, "tier": tier, "focus": round(focus, 4),
+            "exposure": exposure, "clipped": clipped, "noise": noise, "contrast": contrast}
+
+
+def _video_moment_similarity_v595(a, b):
+    """Compare structure as well as brightness; average color alone is insufficient."""
+    import numpy as np
+    x, y = a["tiny"], b["tiny"]
+    ax, by = x - float(np.mean(x)), y - float(np.mean(y))
+    denom = float(np.sqrt(np.sum(ax * ax) * np.sum(by * by)))
+    correlation = float(np.sum(ax * by) / denom) if denom > 1e-7 else 0.
+    difference = float(np.mean(np.abs(a["signature"] - b["signature"])))
+    hash_near = _hamming64(a["hash"], b["hash"]) <= 4
+    return bool(difference < .018 or (difference < .065 and correlation > .97)
+                or (hash_near and difference < .045)), difference
 
 
 def _video_moment_local_face_models_v594():
@@ -16615,7 +16667,7 @@ def _video_moment_local_features_v594(frame_items):
     import numpy as np
     from PIL import Image, ImageOps
 
-    frames = list(frame_items or [])
+    frames = sorted(list(frame_items or []), key=lambda f: max(0, int(f.get("timestamp_ms") or 0)))
     models = _video_moment_local_face_models_v594()
     cv2 = models.get("cv2")
     face_model = models.get("face")
@@ -16629,7 +16681,9 @@ def _video_moment_local_features_v594(frame_items):
         try:
             with Image.open(io.BytesIO(raw)) as source:
                 im = ImageOps.exif_transpose(source).convert("RGB")
-                im.thumbnail((208, 208), Image.Resampling.BILINEAR)
+                im.thumbnail((320, 320), Image.Resampling.LANCZOS)
+                if min(im.size) < 12:
+                    continue
                 rgb = np.asarray(im, dtype=np.float32)
                 signature = np.asarray(im.resize((24, 24), Image.Resampling.BILINEAR), dtype=np.float32) / 255.0
                 tiny = np.asarray(im.convert("L").resize((64, 64), Image.Resampling.BILINEAR), dtype=np.float32) / 255.0
@@ -16668,6 +16722,8 @@ def _video_moment_local_features_v594(frame_items):
         face_area = face_layout = face_sharp = 0.0
         smile_score = eye_score = 0.0
         face_count = 0
+        face_box = None
+        face_quality = None
         # Optional pretrained OpenCV cascade files are LOCAL files.
         if face_model is not None and cv2 is not None:
             gray = np.clip(lum, 0, 255).astype(np.uint8)
@@ -16682,6 +16738,7 @@ def _video_moment_local_features_v594(frame_items):
             if face_count:
                 # The largest well-framed face is more relevant than tiny bystanders.
                 fx, fy, fw, fh = max(boxes, key=lambda box: int(box[2]) * int(box[3]))
+                face_box = (float(fx / width), float(fy / height), float(fw / width), float(fh / height))
                 face_area = float(np.clip(float(fw * fh) / float(width * height) * 5.0, 0, 1))
                 fx0, fy0 = (fx + fw / 2.0) / width, (fy + fh / 2.0) / height
                 edge_guard = min(fx / width, fy / height,
@@ -16693,7 +16750,8 @@ def _video_moment_local_features_v594(frame_items):
                 flum = lum[fy:fy + fh, fx:fx + fw]
                 if fgray.size:
                     fgrad = (flum[1:, :] - flum[:-1, :]) if flum.shape[0] > 1 else flum
-                    face_sharp = float(np.clip(np.std(fgrad) / 42.0, 0, 1))
+                    face_quality = _video_moment_quality_v595(im.crop((int(fx), int(fy), int(fx + fw), int(fy + fh))))
+                    face_sharp = face_quality["clarity"]
                     if eye_model is not None:
                         eyes_roi = fgray[:max(1, int(fh * .62)), :]
                         try:
@@ -16701,7 +16759,13 @@ def _video_moment_local_features_v594(frame_items):
                                 eyes_roi, scaleFactor=1.1, minNeighbors=4,
                                 minSize=(max(5, int(fw * .10)), max(5, int(fh * .08)))
                             )
-                            eye_score = float(min(1., len(eye_boxes) / 2.))
+                            # A valid pair must occupy opposite sides at similar heights.
+                            centers = [(float(x + w / 2) / fw, float(y + h / 2) / fh)
+                                       for x, y, w, h in eye_boxes]
+                            paired = any(.20 <= abs(a[0] - b[0]) <= .65 and abs(a[1] - b[1]) <= .17
+                                         and min(a[0], b[0]) < .5 < max(a[0], b[0])
+                                         for k, a in enumerate(centers) for b in centers[k + 1:])
+                            eye_score = 1.0 if paired else (.25 if centers else 0.0)
                         except Exception:
                             pass
                     if smile_model is not None:
@@ -16714,10 +16778,15 @@ def _video_moment_local_features_v594(frame_items):
                                 mouth_roi, scaleFactor=1.10, minNeighbors=13,
                                 minSize=(max(9, int(fw * .30)), max(6, int(fh * .10)))
                             )
-                            smile_score = 1.0 if len(smiles) else 0.0
+                            valid_smiles = [(x, y, w, h) for x, y, w, h in smiles
+                                            if .25 <= (x + w / 2) / fw <= .75
+                                            and .30 <= w / fw <= .95]
+                            smile_score = 1.0 if valid_smiles else 0.0
                         except Exception:
                             pass
         rows.append({
+            "quality_v595": _video_moment_quality_v595(im),
+            "face_quality_v595": face_quality, "face_box_v595": face_box,
             "frame": frame,
             "frame_id": str(frame.get("frame_id") or f"F{index + 1:03d}"),
             "timestamp_ms": max(0, int(frame.get("timestamp_ms") or 0)),
@@ -16733,6 +16802,39 @@ def _video_moment_local_features_v594(frame_items):
         })
     if not rows:
         return []
+    # A blurred face can disappear from the detector. Reuse only its recent
+    # region for QUALITY measurement, never for expression, identity or face count.
+    # Require matching background geometry so cuts/new scenes cannot inherit it.
+    direct_faces = [r for r in rows if r.get("face_box_v595")]
+    for row in rows:
+        if row["faces"] or not direct_faces:
+            continue
+        anchors = sorted((r for r in direct_faces
+                          if abs(r["timestamp_ms"] - row["timestamp_ms"]) <= 5000),
+                         key=lambda r: abs(r["timestamp_ms"] - row["timestamp_ms"]))
+        for anchor in anchors[:2]:
+            bx, by, bw, bh = anchor["face_box_v595"]
+            mask = np.ones((64, 64), dtype=bool)
+            x0, x1 = max(0, int((bx - .03) * 64)), min(64, int((bx + bw + .03) * 64) + 1)
+            y0, y1 = max(0, int((by - .03) * 64)), min(64, int((by + bh + .03) * 64) + 1)
+            mask[y0:y1, x0:x1] = False
+            if float(np.mean(mask)) < .15:
+                continue
+            background_error = float(np.mean(np.abs(row["tiny"][mask] - anchor["tiny"][mask])))
+            if background_error > .045:
+                continue
+            try:
+                raw = row["frame"].get("ai_bytes") or row["frame"].get("image_bytes")
+                with Image.open(io.BytesIO(raw)) as source:
+                    preview = ImageOps.exif_transpose(source).convert("RGB")
+                    preview.thumbnail((320, 320), Image.Resampling.LANCZOS)
+                    w, h = preview.size
+                    crop = preview.crop((int(bx*w), int(by*h), int((bx+bw)*w), int((by+bh)*h)))
+                    row["face_quality_v595"] = _video_moment_quality_v595(crop)
+                    row["quality_region_reused_v595"] = True
+                break
+            except Exception:
+                continue
     global_center = np.median(np.stack([r["signature"] for r in rows]), axis=0)
     for idx, row in enumerate(rows):
         before_motion = after_motion = 0.0
@@ -16759,204 +16861,193 @@ def _video_moment_local_features_v594(frame_items):
 
 
 def _video_moment_local_pick_v594(records, preference_context=None, excluded_frame_ids=None):
-    """Apply six independent factor scores and the member's EXACT 100-point weights."""
+    """Quality first, configured six-factor ranking second, diversity third.
+
+    Nine unique timestamps are retained when available. If all candidates are
+    poor, keep the least-poor choices without presenting them as high quality.
+    All decisions are local; there is no semantic/emotion recognition claim.
+    """
     import numpy as np
-    entries = list(records or [])
-    if len(entries) < VIDEO_AI_MAX_SELECTIONS:
+    unique = {}
+    for row in records or []:
+        unique.setdefault(str(row["frame_id"]), dict(row))
+    entries = sorted(unique.values(), key=lambda row: row["timestamp_ms"])
+    target = VIDEO_AI_MAX_SELECTIONS
+    if len(entries) < target:
         raise ValueError("9枚を作成できるだけの動画フレームがありません。")
     context = preference_context if isinstance(preference_context, dict) else {}
     weights = _normalize_video_moment_factor_weights(context.get("factor_weights"))
     excluded = {str(fid) for fid in (excluded_frame_ids or []) if str(fid)}
     descriptors = (_video_moment_reference_descriptors_v594(context.get("reference_images"))
                    if weights.get("preference") else [])
-    reference_image_tags = list(context.get("reference_image_tags") or [])
-    tendency_priorities = {}
-    for tendency in context.get("favorite_tag_tendencies") or []:
-        if not isinstance(tendency, dict):
-            continue
-        tag = str(tendency.get("tag") or "")
-        if tag:
-            try:
-                freq = min(1.0, max(0.0, float(tendency.get("favorite_count") or 0) / 4.0))
-                rate = min(1.0, max(0.0, float(tendency.get("favorite_rate") or 0)))
-                tendency_priorities[tag] = 0.65 * rate + 0.35 * freq
-            except (TypeError, ValueError):
+    tags = list(context.get("reference_image_tags") or [])
+    # Preserve reference/tag indices even when one reference cannot be decoded.
+    valid_tags = []
+    if descriptors:
+        from PIL import Image
+        for idx, raw in enumerate(list(context.get("reference_images") or [])[:4]):
+            if not raw:
                 continue
-    liked = context.get("quality_counts") if isinstance(context.get("quality_counts"), dict) else {}
-    rejected = (context.get("rejected_quality_counts")
-                if isinstance(context.get("rejected_quality_counts"), dict) else {})
-    liked_sum = max(1, sum(max(0, int(v or 0)) for v in liked.values()))
-    rejected_sum = max(1, sum(max(0, int(v or 0)) for v in rejected.values()))
+            try:
+                with Image.open(io.BytesIO(raw)) as im:
+                    im.load()
+            except Exception:
+                continue
+            valid_tags.append(tags[idx] if idx < len(tags) else [])
+    priorities = {}
+    for item in context.get("favorite_tag_tendencies") or []:
+        if isinstance(item, dict) and item.get("tag"):
+            try:
+                priorities[str(item["tag"])] = float(np.clip(.65 * float(item.get("favorite_rate") or 0)
+                    + .35 * min(1., float(item.get("favorite_count") or 0) / 4.), 0., 1.))
+            except (ValueError, TypeError):
+                pass
+    liked = context.get("quality_counts") or {}
+    rejected = context.get("rejected_quality_counts") or {}
     quality_names = ("expression", "beauty", "subject", "action", "story")
-
-    def unit(val):
-        return float(np.clip(val, 0., 1.))
-
-    def relative(attr, lo=10, hi=90):
-        data = np.array([float(r.get(attr) or 0.) for r in entries], dtype=np.float32)
-        lower, upper = np.percentile(data, [lo, hi])
-        return [unit((value - lower) / max(1e-5, upper - lower)) for value in data]
-
-    sharp_percentiles = relative("sharpness")
-    motion_percentiles = relative("motion")
-    novelty_percentiles = relative("visual_novelty")
-    context_percentiles = relative("context_change")
-    scene_percentiles = relative("scene_shift")
-    favored_history = bool(liked or rejected)
-
+    def unit(value):
+        return float(np.clip(value, 0., 1.))
+    def relative(key):
+        values = np.array([float(row.get(key) or 0.) for row in entries])
+        low, high = np.percentile(values, [10, 90])
+        return [unit((value - low) / max(1e-5, high - low)) for value in values]
+    motion_rank, novelty_rank = relative("motion"), relative("visual_novelty")
+    context_rank = relative("context_change")
     for i, row in enumerate(entries):
-        sharp = unit(.65 * sharp_percentiles[i] + .35 * unit(row["sharpness"] / 6.0))
-        exposure = unit(1. - abs(row["brightness"] - 130.) / 128.)
-        contrast = unit(row["contrast"] / 70.)
-        unclipped = unit(1. - row["clipped"] / .18)
-        face_present = bool(row["faces"])
-        face_clarity = (.40 * row["face_sharpness"] + .30 * row["face_layout"] +
-                        .30 * row["face_area"]) if face_present else 0.
+        q = row["quality_v595"]
+        face_q = row.get("face_quality_v595")
+        face = row["faces"] > 0
+        # Keep a crisp background from hiding a blurry foreground face.
+        clarity = q["clarity"]
+        tier = int(q["tier"])
+        if face_q:
+            clarity = .40 * clarity + .60 * face_q["clarity"]
+            tier = min(tier, int(face_q["tier"]))
+        box = row.get("face_box_v595")
+        smile_support = 0.
+        if face and row["smile_score"]:
+            for near in entries[max(0, i - 1):i] + entries[i + 1:i + 2]:
+                nb = near.get("face_box_v595")
+                if nb and box and abs(near["timestamp_ms"] - row["timestamp_ms"]) <= 800:
+                    cx, cy = box[0] + box[2]/2, box[1] + box[3]/2
+                    nx, ny = nb[0] + nb[2]/2, nb[1] + nb[3]/2
+                    if np.hypot(cx - nx, cy - ny) <= .22:
+                        smile_support = max(smile_support, near["smile_score"])
+        # Unsupported one-frame mouth detections get only a small bonus.
+        smile = row["smile_score"] * (.30 + .70 * smile_support)
         if row["face_detection_available"]:
-            expression = (unit(.16 * face_clarity + .60 * row["smile_score"] +
-                               .24 * row["eye_score"]) if face_present else 0.)
+            expression = (unit(.40 * row["face_sharpness"] + .15 * row["face_layout"]
+                           + .30 * smile + .15 * row["eye_score"]) if face else 0.)
         else:
-            # Missing face model: a constant neutral score cannot invent emotions
-            # or spuriously reward non-face frames. Other measured factors drive order.
-            expression = 0.5
-        beauty = unit(.35 * sharp + .22 * exposure + .16 * contrast +
-                      .14 * unclipped + .13 * max(row["layout"], row["face_layout"]))
-        subject = unit(.28 * row["central_focus"] + .24 * row["salience"] +
-                       .18 * max(row["layout"], row["face_layout"]) +
-                       .17 * novelty_percentiles[i] +
-                       .13 * (row["face_area"] if face_present else unit(row["saturation"] * 2.5)))
-        motion = unit(.72 * motion_percentiles[i] + .28 * unit(row["motion_change"] / .11))
-        action = unit((.80 * motion + .20 * sharp) * (.75 + .25 * unclipped))
-        story = unit(.38 * context_percentiles[i] + .30 * scene_percentiles[i] +
-                     .22 * novelty_percentiles[i] + .10 * max(row["layout"], row["face_layout"]))
-        score_factors = {
-            "expression": expression, "beauty": beauty, "subject": subject,
-            "action": action, "story": story,
-        }
-        # Only explicit manually liked reference IMAGES are compared locally.
-        # Free-form AI tags cannot be semantically matched without a local trained model.
+            expression = .5
+        beauty = unit(.48 * clarity + .27 * q["exposure"] + .13 * unit(q["contrast"] / 65.)
+                      + .12 * max(row["layout"], row["face_layout"]))
+        subject = unit(.30 * row["central_focus"] + .24 * row["salience"]
+                       + .20 * max(row["layout"], row["face_layout"])
+                       + .16 * novelty_rank[i] + .10 * row["face_area"])
+        # A scene cut/flash is not a subject action. Sharp movement is favored.
+        transition = unit((row["scene_shift"] - .22) / .25)
+        action = unit((.70 * motion_rank[i] + .30 * unit(row["motion_change"] / .11))
+                      * (.30 + .70 * clarity) * (1. - .75 * transition))
+        story = unit((.65 * context_rank[i] + .35 * novelty_rank[i])
+                     * (.40 + .60 * clarity) * (1. - .50 * transition))
+        factors = {"expression": expression, "beauty": beauty, "subject": subject,
+                   "action": action, "story": story}
         similarity = None
         if descriptors:
             sims = []
-            sig = row["signature"]
-            hist = row["hist"]
-            for ref_index, (ref_sig, ref_hist) in enumerate(descriptors):
-                color_sim = unit(1. - .5 * float(np.sum(np.abs(hist - ref_hist))))
-                image_sim = unit(1. - float(np.mean(np.abs(sig - ref_sig))) / .70)
-                match = .70 * color_sim + .30 * image_sim
-                # Prefer visual matches to actual saved favorites carrying the
-                # member's frequent, high-favorite-rate tags. Tag text is NOT
-                # guessed for the current video; this is exemplar matching.
-                tags = (reference_image_tags[ref_index]
-                        if ref_index < len(reference_image_tags) else [])
-                priorities = [tendency_priorities.get(str(tag), 0.0) for tag in tags]
-                if priorities:
-                    match *= .90 + .10 * max(priorities)
+            for index, (ref_sig, ref_hist) in enumerate(descriptors):
+                color = unit(1. - .5 * float(np.sum(np.abs(row["hist"] - ref_hist))))
+                shape = unit(1. - float(np.mean(np.abs(row["signature"] - ref_sig))) / .5)
+                # Color match alone no longer gives a strong preference score.
+                match = shape * (.65 + .35 * color)
+                ref_tags = valid_tags[index] if index < len(valid_tags) else []
+                match *= .95 + .05 * max((priorities.get(str(tag), 0.) for tag in ref_tags), default=0.)
                 sims.append(match)
-            similarity = max(sims)
-        affinities = {}
-        if favored_history:
-            for k in quality_names:
-                p = max(0, int(liked.get(k) or 0)) / liked_sum
-                n = max(0, int(rejected.get(k) or 0)) / rejected_sum
-                affinities[k] = unit(.50 + .75 * (p - n))
-            biggest = max(quality_names, key=lambda k: score_factors[k])
-            history_score = affinities[biggest]
-        else:
-            history_score = None
-        if similarity is not None and history_score is not None:
-            preference = .78 * similarity + .22 * history_score
-        elif similarity is not None:
-            preference = similarity
-        elif history_score is not None:
-            preference = history_score
-        else:
-            # Neutral: when no favorites or choices exist, the preference share
-            # adds the same constant for all frames rather than inventing a taste.
-            preference = .5
-        score_factors["preference"] = unit(preference)
-        weighted = sum(float(weights.get(k) or 0) * score_factors[k] for k in VIDEO_MOMENT_FACTOR_ORDER) / 100.0
-        quality_gate = (.60 + .40 * sharp) * (.65 + .35 * unclipped)
-        if row["brightness"] < 25 or row["brightness"] > 230:
-            quality_gate *= .65
-        if row["clipped"] > .30:
-            quality_gate *= .70
-        row["base"] = unit(weighted * quality_gate)
-        row["factor_scores"] = score_factors
-        row["factor_weights"] = dict(weights)
+            similarity = max(sims, default=None)
+        history = None
+        if liked or rejected:
+            ls = max(1, sum(max(0, int(v or 0)) for v in liked.values()))
+            rs = max(1, sum(max(0, int(v or 0)) for v in rejected.values()))
+            mass = sum(factors.values()) or 1.
+            history = sum(factors[k] * unit(.5 + .75 * (max(0, int(liked.get(k) or 0))/ls
+                          - max(0, int(rejected.get(k) or 0))/rs)) for k in quality_names) / mass
+        preference = (.78 * similarity + .22 * history if similarity is not None and history is not None
+                      else similarity if similarity is not None else history if history is not None else .5)
+        factors["preference"] = unit(preference)
+        weighted = sum(float(weights[k]) * factors[k] for k in VIDEO_MOMENT_FACTOR_ORDER) / 100.
+        gate = (.38 + .62 * clarity) * (.40 + .60 * q["exposure"])
+        row["base"] = unit(weighted * gate)
+        row["tier_v595"] = tier
+        row["factor_scores"] = factors
         row["favorite_similarity"] = similarity
-        primary = max(quality_names, key=lambda k: float(weights.get(k) or 0) * score_factors[k])
-        # For entirely zero-weight accessible factors, choose an observable photo property.
-        if float(weights.get(primary) or 0) <= 0:
-            primary = max(quality_names, key=lambda k: score_factors[k])
-        if primary == "expression" and not face_present:
+        primary = max(quality_names, key=lambda k: float(weights[k]) * factors[k])
+        if primary == "expression" and not face:
             primary = "beauty"
         row["primary_quality"] = primary
-        reasons = {
-            "expression": ("笑顔らしい口元を検出した場面" if row["smile_score"] else
-                           "目元・顔の表情が確認しやすい場面"),
-            "beauty": "ピント・明るさ・被写体の配置を評価",
-            "subject": "被写体の目立ち方・周囲との差を評価",
-            "action": "カメラ移動を補正しても動きが残る場面",
-            "story": "前後の展開・場面の変化から選定",
-        }
-        reason = reasons[primary]
-        if similarity is not None and similarity >= .79 and weights.get("preference", 0):
-            reason += "／お気に入り画像の見え方にも近い"
-        row["reason"] = reason
-
-    candidates = [row for row in entries if row["frame_id"] not in excluded]
-    # Keep past rounds out as long as nine unused frames exist.
-    if len(candidates) < VIDEO_AI_MAX_SELECTIONS:
+        reasons = {"expression": "顔の鮮明さ・目元と前後の口元の検出を評価",
+                   "beauty": "ピントと明るさが安定した場面を優先",
+                   "subject": "被写体の目立ち方と配置を評価",
+                   "action": "場面切替を避け、鮮明に写った動きを評価",
+                   "story": "前後との見た目の変化と画質を評価"}
+        row["reason"] = reasons[primary] if tier == 2 else "鮮明な候補が少ないため、画質を比較して補完"
+        if similarity is not None and similarity >= .85 and weights["preference"]:
+            row["reason"] += "／お気に入り写真との見た目も比較"
+    # Respect rerolls unless doing so would force poor frames over usable ones.
+    unused = [row for row in entries if row["frame_id"] not in excluded]
+    usable = [row for row in entries if row["tier_v595"] == 2]
+    unused_usable = [row for row in unused if row["tier_v595"] == 2]
+    candidates = unused if len(unused) >= target else entries
+    if len(usable) >= target and len(unused_usable) < target:
         candidates = entries
-    excluded_times = [row["timestamp_ms"] for row in entries if row["frame_id"] in excluded]
-    if excluded_times:
-        far = [row for row in candidates if all(abs(row["timestamp_ms"] - t) >= 1000 for t in excluded_times)]
-        if len(far) >= VIDEO_AI_MAX_SELECTIONS:
-            candidates = far
-
-    selected, remaining = [], list(candidates)
-    for relax in (0, 1, 2):
-        while remaining and len(selected) < VIDEO_AI_MAX_SELECTIONS:
-            best = None
-            best_priority = -1e20
-            for item in remaining:
-                if selected:
-                    dist = min(abs(item["timestamp_ms"] - other["timestamp_ms"]) for other in selected)
-                    if (relax == 0 and dist < 1400) or (relax == 1 and dist < 500):
+    selected = []
+    duration = max(1, entries[-1]["timestamp_ms"] - entries[0]["timestamp_ms"])
+    min_gap = min(1400, max(80, duration // (target * 2)))
+    for tier in (2, 1, 0):
+        remaining = [row for row in candidates if row["tier_v595"] == tier]
+        for relax in (0, 1, 2):
+            while remaining and len(selected) < target:
+                best, best_priority = None, -1e20
+                for item in remaining:
+                    distance = min((abs(item["timestamp_ms"] - other["timestamp_ms"]) for other in selected), default=duration)
+                    same = False
+                    diffs = []
+                    for other in selected:
+                        duplicate, diff = _video_moment_similarity_v595(item, other)
+                        same = same or duplicate
+                        diffs.append(diff)
+                    if relax == 0 and (same or distance < min_gap):
                         continue
-                    visual_diffs = [float(np.mean(np.abs(item["signature"] - other["signature"]))) for other in selected]
-                    novelty = unit(min(visual_diffs) / .18)
-                    same = any(_hamming64(item["hash"], other["hash"]) <= 3 and diff < .040
-                               for other, diff in zip(selected, visual_diffs))
-                    if same and relax == 0:
+                    if relax == 1 and distance < min(400, min_gap // 2):
                         continue
-                    temporal_spread = unit(dist / 6000.)
-                else:
-                    novelty, temporal_spread = .65, 1.
-                penalty = .20 if item["frame_id"] in excluded else 0.
-                priority = .76 * item["base"] + .15 * novelty + .09 * temporal_spread - penalty
-                if best is None or priority > best_priority or (priority == best_priority and item["timestamp_ms"] < best["timestamp_ms"]):
-                    best, best_priority = item, priority
-            if best is None:
+                    novelty = unit(min(diffs, default=.18) / .18)
+                    spread = unit(distance / max(1, duration / target))
+                    # Diversity breaks close-quality ties; it cannot rescue a poor tier.
+                    priority = (.92 * item["base"] + .05 * novelty + .03 * spread
+                                - (.045 if item["frame_id"] in excluded else 0.) - (.06 if same else 0.))
+                    if best is None or priority > best_priority:
+                        best, best_priority = item, priority
+                if best is None:
+                    break
+                selected.append(best)
+                remaining = [row for row in remaining if row["frame_id"] != best["frame_id"]]
+            if len(selected) >= target:
                 break
-            selected.append(best)
-            remaining.remove(best)
-        if len(selected) == VIDEO_AI_MAX_SELECTIONS:
+        if len(selected) >= target:
             break
-    if len(selected) < VIDEO_AI_MAX_SELECTIONS:
+    if len(selected) < target:
         raise ValueError("いい瞬間を9枚そろえられませんでした。")
-    return [{
-        "frame": row["frame"],
-        "score": int(round(row["base"] * 100.)),
-        "primary_quality": row["primary_quality"],
-        "reason": row["reason"],
-        "hash": row["hash"],
-        "factor_scores": {k: int(round(row["factor_scores"][k] * 100)) for k in VIDEO_MOMENT_FACTOR_ORDER},
-        "factor_weights": dict(weights),
-        "analysis_method": "offline_opencv_v594" if row["face_detection_available"] else "offline_numpy_v594",
-    } for row in selected]
-
+    # Rank 1 (BEST) must actually be the highest quality-weighted selected frame.
+    selected.sort(key=lambda row: (-row["tier_v595"], -row["base"], row["timestamp_ms"]))
+    return [{"frame": row["frame"], "score": int(round(row["base"] * 100.)),
+             "primary_quality": row["primary_quality"], "reason": row["reason"], "hash": row["hash"],
+             "factor_scores": {k: int(round(row["factor_scores"][k] * 100)) for k in VIDEO_MOMENT_FACTOR_ORDER},
+             "factor_weights": dict(weights),
+             "quality_metrics": {"tier": row["tier_v595"], "clarity": round(row["quality_v595"]["clarity"], 3),
+                                 "exposure": round(row["quality_v595"]["exposure"], 3),
+                                 "face_clarity": round(row["face_sharpness"], 3) if row["faces"] else None},
+             "analysis_method": "offline_opencv_v595" if row["face_detection_available"] else "offline_numpy_v595"}
+            for row in selected]
 
 def choose_video_ai_frames(
     frame_items,
@@ -16972,16 +17063,17 @@ def choose_video_ai_frames(
     """
     if callable(progress_callback):
         try:
-            progress_callback("local_analysis", 0, len(frame_items or []), "表情・構図・動き・場面・好みを端末外部APIなしで解析中")
+            progress_callback("local_analysis", 0, len(frame_items or []), "ピント・明るさ・顔の見やすさを確認しています")
         except Exception:
             pass
-    records = _video_moment_local_features_v594(frame_items)
+    with _video_moment_analysis_lock_v595:
+        records = _video_moment_local_features_v594(frame_items)
     selection = _video_moment_local_pick_v594(
         records, preference_context=preference_context, excluded_frame_ids=excluded_frame_ids
     )
     if callable(progress_callback):
         try:
-            progress_callback("final_selection", 1, 1, "ローカル解析による9枚の選定完了")
+            progress_callback("final_selection", 1, 1, "いい瞬間を9枚選びました")
         except Exception:
             pass
     return selection
@@ -18195,7 +18287,8 @@ def _background_store_video_ai_selection(
                     "reason": str(selected.get("reason") or "").strip(),
                     "factor_scores": dict(selected.get("factor_scores") or {}),
                     "factor_weights": dict(selected.get("factor_weights") or {}),
-                    "analysis_method": str(selected.get("analysis_method") or "offline_numpy_v594"),
+                    "quality_metrics": dict(selected.get("quality_metrics") or {}),
+                    "analysis_method": str(selected.get("analysis_method") or "offline_numpy_v595"),
                     "ai_best": rank == 1,
                     "saved_photo_id": None,
                     "human_selected": False,
@@ -18225,8 +18318,8 @@ def _background_store_video_ai_selection(
                 "updated_at": now_jst().isoformat(),
                 "round": int(round_number),
                 "items": items,
-                "final_frame_mode": "original_native_offline_max120_v594",
-                "selection_engine": "offline_six_factors_v594",
+                "final_frame_mode": "original_native_offline_max120_v595",
+                "selection_engine": "offline_quality_first_v595",
                 "high_quality_count": len(items),
                 "selection_target_count": VIDEO_AI_MAX_SELECTIONS,
                 "progress_message": "完了",
@@ -18303,7 +18396,7 @@ def _run_video_ai_background_job(photo_id, family_key, member_key):
     selection_meta["started_at"] = now_jst().isoformat()
     selection_meta["updated_at"] = selection_meta["started_at"]
     selection_meta["attempt"] = max(0, int(selection_meta.get("attempt") or 0)) + 1
-    selection_meta["pipeline_mode"] = "offline_fixed500ms_max120_v594"
+    selection_meta["pipeline_mode"] = "offline_quality_first_max120_v595"
     selection_meta["progress_message"] = "元動画から高画質候補を準備中"
     reflection["ai_selection"] = selection_meta
     try:
@@ -18327,7 +18420,7 @@ def _run_video_ai_background_job(photo_id, family_key, member_key):
         selection_meta["candidate_sheet_path"] = ""
         selection_meta["candidate_sample_interval_ms"] = video_ai_sample_interval_ms_for_duration((photo_media_metadata(photo).get("video_duration_ms") or VIDEO_MAX_SECONDS * 1000))
         selection_meta["candidate_sampling_version"] = "original_native_fixed500ms_max120_v591"
-        selection_meta["selection_engine"] = "offline_six_factors_v594"
+        selection_meta["selection_engine"] = "offline_quality_first_v595"
         selection_meta["progress_message"] = "APIを使わず映像フレームを解析しています"
         selection_meta["updated_at"] = now_jst().isoformat()
         reflection["ai_selection"] = selection_meta
@@ -18423,7 +18516,7 @@ def _run_video_ai_background_job(photo_id, family_key, member_key):
             latest_selection["last_error"] = str(exc)[:240]
             latest_selection["updated_at"] = now_jst().isoformat()
             latest_selection["stage"] = str(latest_selection.get("stage") or "pipeline")
-            latest_selection["pipeline_mode"] = "offline_fixed500ms_max120_v594"
+            latest_selection["pipeline_mode"] = "offline_quality_first_max120_v595"
             latest_reflection["ai_selection"] = latest_selection
             _write_photo_reflection_for_owner(
                 photo_id, latest_reflection, family_key, member_key, client=client
