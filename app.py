@@ -47,7 +47,8 @@ def _app_css_v473(markup, **_ignored):
 # Review menu-only update: 2026-09-19 JST
 GENERATED_UPDATE_JST = "2026-09-19T14:54:38+09:00"
 
-APP_BUILD = "v591"
+APP_BUILD = "v592"
+# v592: Re-enable "別の9枚を作る" even when existing candidates have emotion/parenting selections. Persisted diary photos are untouched; the unsaved current selection is replaced when reroll completes.
 # v591: Select nine Good Moments using on-server, offline Pillow/NumPy image analysis.
 # No OpenAI/vision API calls in automatic video-frame selection or rerolls.
 # Preserve 0.5-second sampling / max 120 frames, and avoid prior rejected frames.
@@ -45283,7 +45284,7 @@ def _render_moments_picker(photo, index, view_mode=None, next_video_action=None)
             if st.button(
                 "🔄 別の9枚を作る",
                 use_container_width=True,
-                disabled=bool(selected_rank_set),
+                help="写真を選択した状態でも再作成できます。日記に登録済みの写真は残ります。未保存の選択は新しい候補には引き継がれません。",
                 key=f"moments_reroll_{video_id}_{round_number}",
             ):
                 try:
