@@ -47,7 +47,10 @@ def _app_css_v473(markup, **_ignored):
 # Review menu-only update: 2026-09-19 JST
 GENERATED_UPDATE_JST = "2026-09-19T14:54:38+09:00"
 
-APP_BUILD = "v589"
+APP_BUILD = "v591"
+# v591: Select nine Good Moments using on-server, offline Pillow/NumPy image analysis.
+# No OpenAI/vision API calls in automatic video-frame selection or rerolls.
+# Preserve 0.5-second sampling / max 120 frames, and avoid prior rejected frames.
 # v588: Inspect six registered publisher listing pages directly (robots-aware, bounded), parse sourced event date spans, merge with capped Web AI results; store real per-site fetch/accept/reject status and cache-use/API metrics in existing Storage logs.
 # v587: Add six requested event publications as evidence-driven search hints; rank kid-friendly events; record per-site cited/picked/missed stats in owner-scoped Supabase Storage and export CSV/JSON via Settings. No extra automatic OpenAI API calls.
 # v586: Reject mismatched Google Places candidates in Android auto-discovery details; separate no Google photo metadata from photo-media download failures. No additional API requests.
@@ -1109,7 +1112,8 @@ VIDEO_PROCESSING_MAX_SECONDS = 75
 VIDEO_RECORDING_RESERVE_BYTES = 36 * 1024 * 1024
 VIDEO_MAX_BYTES = 150 * 1024 * 1024
 VIDEO_AI_MAX_SELECTIONS = 9  # いい瞬間の切り抜き枚数
-# Good Moments sampling now uses a fixed 0.5-second interval and keeps up to 120 candidate frames per video.\n# This gives rerolls a much larger frame pool, especially on longer clips, while still capping total work.\n# Examples: 10s -> about 20 frames, 30s -> about 60 frames, 60s -> up to 120 frames.
+# Good Moments sampling uses 0.5-second intervals (max 120 frames). For a
+# very short clip, use a finer interval only if needed to obtain 9 choices.
 VIDEO_AI_MIN_SAMPLE_INTERVAL_MS = 500
 VIDEO_AI_MAX_CANDIDATES = 120
 # Compatibility alias: Good Moments now uses this fixed interval for every video.
@@ -1131,6 +1135,12 @@ def video_ai_sample_interval_ms_for_duration(duration_ms):
     stays at 0.5 seconds so rerolls can draw from a materially larger pool. This
     runs after recording and does not affect capture.
     """
+    try:
+        duration = int(float(duration_ms or 0))
+    except (TypeError, ValueError, OverflowError):
+        duration = 0
+    if 0 < duration < VIDEO_AI_MIN_SAMPLE_INTERVAL_MS * VIDEO_AI_MAX_SELECTIONS:
+        return max(80, min(VIDEO_AI_MIN_SAMPLE_INTERVAL_MS, int(math.ceil(duration / float(VIDEO_AI_MAX_SELECTIONS)))))
     return int(VIDEO_AI_MIN_SAMPLE_INTERVAL_MS)
 
 
@@ -16508,6 +16518,244 @@ def _video_photogenic_fallback_score(image_bytes):
         return 0.0
 
 
+def _video_moment_local_features_v591(frame_items):
+    """Offline visual proxies. No remote models or new server dependencies.
+
+    Sharpness, exposure, color, salience, frame change and optional detected face
+    presence are objective image cues; they cannot infer an emotional moment.
+    """
+    from PIL import Image, ImageOps
+    import numpy as np
+
+    frames = list(frame_items or [])
+    if not frames:
+        return []
+    face_cascade = None
+    cv2 = None
+    try:
+        import cv2 as _cv2  # Optional: local Haar model shipped by OpenCV.
+        cascade_path = getattr(getattr(_cv2, "data", None), "haarcascades", "")
+        if cascade_path:
+            candidate = _cv2.CascadeClassifier(
+                os.path.join(cascade_path, "haarcascade_frontalface_default.xml")
+            )
+            if not candidate.empty():
+                face_cascade, cv2 = candidate, _cv2
+    except Exception:
+        pass
+
+    results = []
+    for index, frame in enumerate(frames):
+        raw = frame.get("ai_bytes") or frame.get("image_bytes")
+        if not raw:
+            continue
+        try:
+            with Image.open(io.BytesIO(raw)) as original:
+                image = ImageOps.exif_transpose(original).convert("RGB")
+                image.thumbnail((192, 192), Image.Resampling.BILINEAR)
+                rgb = np.asarray(image, dtype=np.float32)
+                tiny_image = image.resize((40, 40), Image.Resampling.BILINEAR)
+                tiny = np.asarray(tiny_image.convert("L"), dtype=np.float32) / 255.0
+                sig = np.asarray(image.resize((16, 16), Image.Resampling.BILINEAR), dtype=np.float32) / 255.0
+        except Exception:
+            continue
+        luminance = (0.299 * rgb[:, :, 0] + 0.587 * rgb[:, :, 1] + 0.114 * rgb[:, :, 2])
+        # Laplacian contrast is a local sharpness indicator; no OpenCV dependency.
+        core = luminance[1:-1, 1:-1]
+        laplace = (luminance[:-2, 1:-1] + luminance[2:, 1:-1]
+                   + luminance[1:-1, :-2] + luminance[1:-1, 2:] - 4.0 * core)
+        sharpness = float(np.log1p(np.std(laplace)))
+        brightness = float(np.mean(luminance))
+        contrast = float(np.std(luminance))
+        clipped = float(np.mean((luminance < 10.0) | (luminance > 247.0)))
+        saturation = float(np.mean(np.max(rgb, axis=2) - np.min(rgb, axis=2)) / 255.0)
+        grad_y = abs(luminance[1:, :] - luminance[:-1, :])
+        grad_x = abs(luminance[:, 1:] - luminance[:, :-1])
+        grad = (grad_x[:-1, :] + grad_y[:, :-1])
+        height, width = grad.shape
+        y1, y2 = max(0, height // 5), min(height, 4 * height // 5)
+        x1, x2 = max(0, width // 5), min(width, 4 * width // 5)
+        center_energy = float(np.mean(grad[y1:y2, x1:x2])) if y2 > y1 and x2 > x1 else 0.0
+        outer_energy = float(np.mean(grad))
+        central_focus = min(1.0, max(0.0, (center_energy / (outer_energy + 1.0)) / 1.8))
+        faces = 0
+        if face_cascade is not None:
+            try:
+                small_gray = np.clip(luminance, 0, 255).astype(np.uint8)
+                faces = len(face_cascade.detectMultiScale(
+                    small_gray, scaleFactor=1.18, minNeighbors=5, minSize=(22, 22)
+                ))
+            except Exception:
+                faces = 0
+        results.append({
+            "frame": frame,
+            "frame_id": str(frame.get("frame_id") or f"F{index+1:03d}"),
+            "timestamp_ms": max(0, int(frame.get("timestamp_ms") or 0)),
+            "sharpness": sharpness,
+            "brightness": brightness,
+            "contrast": contrast,
+            "clipped": clipped,
+            "saturation": saturation,
+            "central_focus": central_focus,
+            "faces": faces,
+            "tiny": tiny,
+            "signature": sig,
+            "hash": _image_dhash64(raw),
+        })
+
+    if not results:
+        return results
+    # Use adjacent frames to find dynamic moments, but do not reward camera shake
+    # if it also causes noticeable blur.
+    for i, item in enumerate(results):
+        deltas = []
+        if i > 0:
+            deltas.append(float(np.mean(np.abs(item["tiny"] - results[i-1]["tiny"]))))
+        if i + 1 < len(results):
+            deltas.append(float(np.mean(np.abs(item["tiny"] - results[i+1]["tiny"]))))
+        item["motion"] = max(deltas, default=0.0)
+    return results
+
+
+def _video_moment_local_pick_v591(records, preference_context=None, excluded_frame_ids=None):
+    """Choose diverse, clear, reasonably exposed frames without AI API calls."""
+    import numpy as np
+
+    entries = list(records or [])
+    if not entries:
+        raise ValueError("動画から分析可能な画像を取得できませんでした。")
+    excluded = {str(x) for x in (excluded_frame_ids or []) if str(x)}
+    context = preference_context if isinstance(preference_context, dict) else {}
+    weights = _normalize_video_moment_factor_weights(context.get("factor_weights"))
+
+    sharp_values = np.array([x["sharpness"] for x in entries], dtype=np.float32)
+    motion_values = np.array([x["motion"] for x in entries], dtype=np.float32)
+    sharp_low, sharp_high = np.percentile(sharp_values, [10, 90])
+    motion_low, motion_high = np.percentile(motion_values, [10, 90])
+    median_signature = np.median(np.stack([x["signature"] for x in entries]), axis=0)
+
+    liked = context.get("quality_counts") or {}
+    rejected = context.get("rejected_quality_counts") or {}
+    liked_total = sum(max(0, int(v or 0)) for v in liked.values())
+    rejected_total = sum(max(0, int(v or 0)) for v in rejected.values())
+    factor_names = ("expression", "beauty", "subject", "action", "story")
+
+    for item in entries:
+        sharp = (item["sharpness"] - float(sharp_low)) / max(0.25, float(sharp_high - sharp_low))
+        sharp = max(0.0, min(1.0, 0.60 * sharp + 0.40 * min(1.0, item["sharpness"] / 5.2)))
+        motion = (item["motion"] - float(motion_low)) / max(0.012, float(motion_high - motion_low))
+        motion = max(0.0, min(1.0, motion))
+        exposure = max(0.0, 1.0 - abs(item["brightness"] - 129.0) / 125.0)
+        contrast = min(1.0, item["contrast"] / 68.0)
+        saturation = min(1.0, item["saturation"] / 0.30)
+        unclipped = max(0.0, 1.0 - min(1.0, item["clipped"] / 0.20))
+        center = item["central_focus"]
+        face_proxy = min(1.0, item["faces"] / 2.0) if item["faces"] else 0.0
+        distinct = min(1.0, float(np.mean(abs(item["signature"] - median_signature))) / 0.21)
+        # The expression setting is a face-visibility proxy when a local detector
+        # finds a face, NOT a claim to recognize happiness or another emotion.
+        scores = {
+            "expression": 0.45 * sharp + 0.30 * center + 0.25 * face_proxy,
+            "beauty": 0.36 * sharp + 0.26 * exposure + 0.20 * contrast + 0.18 * unclipped,
+            "subject": 0.43 * center + 0.27 * contrast + 0.18 * saturation + 0.12 * face_proxy,
+            "action": 0.60 * motion + 0.40 * sharp,
+            "story": 0.50 * distinct + 0.25 * motion + 0.25 * center,
+        }
+        weighted = sum((weights.get(k, 0) or 0) * scores[k] for k in factor_names)
+        if weights.get("preference", 0):
+            if liked_total or rejected_total:
+                def affinity(key):
+                    good = int(liked.get(key) or 0) / max(1, liked_total)
+                    bad = int(rejected.get(key) or 0) / max(1, rejected_total)
+                    return max(0.0, min(1.0, 0.50 + 0.7 * (good - bad)))
+                preference = sum(scores[k] * affinity(k) for k in factor_names) / len(factor_names)
+            else:
+                preference = sum(scores.values()) / len(scores)
+            weighted += weights["preference"] * preference
+        quality = (0.58 + 0.42 * sharp) * (0.55 + 0.45 * unclipped)
+        if item["brightness"] < 25 or item["brightness"] > 233:
+            quality *= 0.65
+        item["base"] = min(1.0, max(0.0, weighted / 100.0 * quality))
+        item["factor_scores"] = scores
+        best_factor = max(factor_names, key=lambda k: scores[k] * float(weights.get(k) or 0))
+        if best_factor == "expression" and not item["faces"]:
+            best_factor = "beauty"  # Never assert an expression without a face detector.
+        item["primary_quality"] = best_factor
+        if best_factor == "action":
+            item["reason"] = "前後のコマと比較して動きがある場面"
+        elif best_factor == "beauty":
+            item["reason"] = "鮮明さ・明るさ・構図をもとに選定"
+        elif best_factor == "expression":
+            item["reason"] = "人物の顔が比較的確認しやすい場面"
+        elif best_factor == "subject":
+            item["reason"] = "画面内の被写体と構図をもとに選定"
+        else:
+            item["reason"] = "前後の場面との違いをもとに選定"
+
+    target = min(VIDEO_AI_MAX_SELECTIONS, len(entries))
+    if len(entries) < VIDEO_AI_MAX_SELECTIONS:
+        raise ValueError("9枚を作成できるだけの動画フレームがありません。")
+    available = [x for x in entries if x["frame_id"] not in excluded]
+    if len(available) < target:
+        available = entries  # Exhausted histories: prefer novelty, but always return nine.
+    excluded_times = [x["timestamp_ms"] for x in entries if x["frame_id"] in excluded]
+    # Prefer to stay one additional sample away from rejected moments when there
+    # is enough video outside them (a reroll on long clips shouldn't look the same).
+    if excluded_times:
+        far = [x for x in available if all(abs(x["timestamp_ms"] - t) >= 1000 for t in excluded_times)]
+        if len(far) >= target:
+            available = far
+
+    selected = []
+    unused = list(available)
+    # The thresholds relax only when footage is repetitive or short. No random
+    # rescoring is used; the same video/settings/history yields stable choices.
+    for relax in (0, 1, 2):
+        while unused and len(selected) < target:
+            best = None
+            best_priority = -1e9
+            for item in unused:
+                dist_ms = min(abs(item["timestamp_ms"] - s["timestamp_ms"]) for s in selected) if selected else 999999
+                if relax == 0 and dist_ms < 1400:
+                    continue
+                if relax == 1 and dist_ms < 550:
+                    continue
+                if selected:
+                    visual_diffs = [float(np.mean(np.abs(item["signature"] - s["signature"]))) for s in selected]
+                    novelty = min(1.0, min(visual_diffs) / 0.17)
+                    same_view = any(_hamming64(item["hash"], s["hash"]) <= 3 and dif < 0.035
+                                    for s, dif in zip(selected, visual_diffs))
+                    if same_view and relax == 0:
+                        continue
+                    spread = min(1.0, dist_ms / 6000.0)
+                else:
+                    novelty, spread = 0.65, 1.0
+                rejected_penalty = 0.18 if item["frame_id"] in excluded else 0.0
+                priority = (0.74 * item["base"] + 0.16 * novelty + 0.10 * spread
+                            - rejected_penalty)
+                if best is None or priority > best_priority or (priority == best_priority and item["timestamp_ms"] < best["timestamp_ms"]):
+                    best, best_priority = item, priority
+            if best is None:
+                break
+            selected.append(best)
+            unused.remove(best)
+        if len(selected) >= target:
+            break
+
+    if len(selected) < target:
+        raise ValueError("いい瞬間を9枚そろえられませんでした。")
+    return [
+        {
+            "frame": item["frame"],
+            "score": min(100, max(0, int(round(item["base"] * 100.0)))),
+            "primary_quality": item["primary_quality"],
+            "reason": item["reason"],
+            "hash": item["hash"],
+        }
+        for item in selected[:target]
+    ]
+
+
 def choose_video_ai_frames(
     frame_items,
     preference_context=None,
@@ -16515,328 +16763,27 @@ def choose_video_ai_frames(
     ai_client=None,
     progress_callback=None,
 ):
-    """Pick the configured number of stills when enough candidates are available after AI inspection.
+    """Select Good Moments locally. ``ai_client`` is ignored for compatibility.
 
-    v590 samples Good Moments every 0.5 seconds and keeps up to 120 candidate frames.\n    Longer videos therefore use the batching path as a normal part of selection.
+    All image comparisons happen on the server with Pillow/NumPy; the function
+    never calls OpenAI, Google Vision or any other external analysis API.
     """
-    frames = list(frame_items or [])
-    if not frames:
-        raise ValueError("AIセレクション用の候補画像がありません。")
-
-    excluded = {str(x) for x in (excluded_frame_ids or []) if str(x)}
-    available = [frame for frame in frames if str(frame.get("frame_id") or "") not in excluded]
-    # A reroll should avoid the previous set when enough candidates remain.
-    if len(available) >= VIDEO_AI_MAX_SELECTIONS:
-        frames = available
-
-    quality_values = ["expression", "action", "beauty", "subject", "story", "other"]
-
-    def selection_schema(max_items):
-        return {
-            "type": "object",
-            "properties": {
-                "selections": {
-                    "type": "array",
-                    "minItems": 1,
-                    "maxItems": max(1, int(max_items)),
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "rank": {"type": "integer", "minimum": 1, "maximum": max(1, int(max_items))},
-                            "frame_id": {"type": "string"},
-                            "score": {"type": "integer", "minimum": 0, "maximum": 100},
-                            "primary_quality": {"type": "string", "enum": quality_values},
-                            "reason": {"type": "string"},
-                        },
-                        "required": ["rank", "frame_id", "score", "primary_quality", "reason"],
-                        "additionalProperties": False,
-                    },
-                }
-            },
-            "required": ["selections"],
-            "additionalProperties": False,
-        }
-
-    context = preference_context if isinstance(preference_context, dict) else {}
-    factor_text = _video_moment_factor_prompt_text(context)
-    preference_text = _video_preference_prompt_text(context)
-    factor_weights = _normalize_video_moment_factor_weights(context.get("factor_weights"))
-    reference_items = []
-    if int(factor_weights.get("preference") or 0) > 0:
-        for idx, image_bytes in enumerate(context.get("reference_images") or [], start=1):
-            if image_bytes:
-                reference_items.append((f"本人のお気に入り・過去に残した参考画像 {idx}", image_bytes))
-
-    def call_selector(candidate_frames, prompt, name, max_items, max_output_tokens=1500):
-        image_items = list(reference_items)
-        image_items.extend(
-            [
-                (
-                    f"候補 {frame['frame_id']} / {int(frame['timestamp_ms']) / 1000:.1f}秒",
-                    frame["ai_bytes"],
-                )
-                for frame in candidate_frames
-                if frame.get("ai_bytes")
-            ]
-        )
-        schema = selection_schema(min(max_items, max(1, len(candidate_frames))))
-        if ai_client is None:
-            return ask_json_with_images(
-                prompt,
-                image_items,
-                name,
-                schema,
-                max_output_tokens=max_output_tokens,
-            )
-        return _ask_json_with_images_client(
-            ai_client,
-            prompt,
-            image_items,
-            name,
-            schema,
-            max_output_tokens=max_output_tokens,
-        )
-
-    # Stage 1 batching path: this is now the normal path for longer videos because\n    # fixed 0.5-second sampling can produce far more than one-request candidate pools.
-    coarse_records = []
-    if len(frames) > VIDEO_AI_BATCH_SIZE:
-        batch_specs = []
-        for batch_index, batch_start in enumerate(range(0, len(frames), VIDEO_AI_BATCH_SIZE), start=1):
-            batch = frames[batch_start:batch_start + VIDEO_AI_BATCH_SIZE]
-            batch_keep = min(VIDEO_AI_BATCH_KEEP, len(batch))
-            batch_prompt = (
-                "動画から0.5秒ごとに切り出した候補フレームの一部です。候補は最大120枚です。"
-                "このバッチ内の候補をすべて見比べ、人が写真として残したくなる強い瞬間を選んでください。\n"
-                f"最大{batch_keep}枚を選びます。単なる時間分散ではなく、この個人の設定比率に沿って評価してください。"
-                "似た連続フレームでは、その区間で最も良い候補を優先してください。"
-                "ピンぼけ、手ぶれ、目つぶり、大きな見切れ、強い白飛び/黒つぶれは避けてください。\n"
-                f"{factor_text}\n"
-                f"{preference_text}\n"
-                "rank=1をこのバッチのBESTとし、scoreは0〜100で付けてください。"
-            )
-            batch_specs.append((batch_index, batch, batch_keep, batch_prompt))
-
-        def run_first_stage_batch(spec):
-            batch_index, batch, batch_keep, batch_prompt = spec
-            def parse_result(result, candidate_batch):
-                by_id = {str(frame.get("frame_id") or ""): frame for frame in candidate_batch}
-                ranked = sorted(
-                    [item for item in ((result or {}).get("selections") or []) if isinstance(item, dict)],
-                    key=lambda item: int(item.get("rank") or 99),
-                )
-                records = []
-                for item in ranked:
-                    frame_id = str(item.get("frame_id") or "")
-                    frame = by_id.get(frame_id)
-                    if not frame:
-                        continue
-                    records.append({
-                        "frame": frame,
-                        "score": max(0, min(100, int(item.get("score") or 0))),
-                        "primary_quality": str(item.get("primary_quality") or "other"),
-                        "reason": str(item.get("reason") or "").strip()[:100],
-                        "batch_rank": max(1, int(item.get("rank") or 99)),
-                    })
-                return records
-
-            try:
-                result = call_selector(
-                    batch,
-                    batch_prompt,
-                    f"video_moments_v145_coarse_{batch_index}",
-                    batch_keep,
-                    max_output_tokens=1100,
-                )
-                return parse_result(result, batch)
-            except Exception:
-                # v145 keeps retry time bounded. Retry the same complete batch once
-                # so every raw frame is still AI-reviewed, but never expand one
-                # failure into many sequential requests that can run for minutes.
-                result = call_selector(
-                    batch,
-                    batch_prompt,
-                    f"video_moments_v145_coarse_{batch_index}_retry",
-                    batch_keep,
-                    max_output_tokens=1100,
-                )
-                return parse_result(result, batch)
-
-        if callable(progress_callback):
-            try:
-                progress_callback("ai_selection", 0, len(batch_specs), "AI一次選定を開始")
-            except Exception:
-                pass
-
-        workers = max(1, min(int(VIDEO_AI_BATCH_WORKERS), len(batch_specs)))
-        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="burari-ai-batch") as batch_executor:
-            futures = [batch_executor.submit(run_first_stage_batch, spec) for spec in batch_specs]
-            for completed_index, future in enumerate(futures, start=1):
-                coarse_records.extend(future.result())
-                if callable(progress_callback):
-                    try:
-                        progress_callback(
-                            "ai_selection",
-                            completed_index,
-                            len(batch_specs),
-                            f"AI一次選定 {completed_index}/{len(batch_specs)}",
-                        )
-                    except Exception:
-                        pass
-
-        # De-duplicate only identical frame IDs emitted by the model; this is not a
-        # visual quality filter. Every original frame has already been AI-reviewed.
-        seen_ids = set()
-        shortlist_records = []
-        for record in coarse_records:
-            frame_id = str(record["frame"].get("frame_id") or "")
-            if not frame_id or frame_id in seen_ids:
-                continue
-            seen_ids.add(frame_id)
-            shortlist_records.append(record)
-        if not shortlist_records:
-            raise ValueError("AIの一次選定結果を作成できませんでした。")
-        final_frames = [record["frame"] for record in shortlist_records]
-    else:
-        shortlist_records = []
-        final_frames = frames
-
-    final_prompt = (
-        "動画全体の最終フォトセレクターです。候補は0.5秒ごとに切り出され、最大120枚の中から比較されています。"
-        "ここでは動画全体を横断して、最終的に残したい静止画を選んでください。\n"
-        f"候補が{VIDEO_AI_MAX_SELECTIONS}枚以上ある場合は、必ず{VIDEO_AI_MAX_SELECTIONS}枚を選んでください。"
-        f"似た候補が多い場合も、動画内の時間位置を分散させて{VIDEO_AI_MAX_SELECTIONS}枚をそろえてください。"
-        "動画全体から違いのある良い瞬間を優先してください。\n"
-        f"{factor_text}\n"
-        "各項目は設定された割合に従って評価し、特定の項目を固定的に優先しないでください。"
-        "連続したほぼ同じ写真を複数選ばず、写真集として見たときにも変化がある組み合わせにしてください。\n"
-        f"{preference_text}\n"
-        "rank=1をAI BESTとし、最も残したい1枚を1位にしてください。reasonは日本語で短く具体的にしてください。"
-    )
-
-    # When the compatibility first-stage path is used, the shortlist can still be larger than one request. If the provider rejects
-    # the full final request, retry once with the strongest first-stage AI winners.
-    # Every candidate in this compatibility path has already been AI-reviewed at least once; no
-    # non-AI quality filter is introduced here.
     if callable(progress_callback):
         try:
-            progress_callback("final_selection", 1, 1, "AI最終選定中")
+            progress_callback("local_analysis", 0, len(frame_items or []), "画像の鮮明さ・動きをサーバー内で解析中")
         except Exception:
             pass
-    try:
-        final_result = call_selector(
-            final_frames,
-            final_prompt,
-            "video_moments_v145_final",
-            VIDEO_AI_MAX_SELECTIONS,
-            max_output_tokens=900,
-        )
-    except Exception:
-        if not shortlist_records:
-            raise
-        ranked_shortlist = sorted(
-            shortlist_records,
-            key=lambda record: (
-                int(record.get("score") or 0),
-                -int(record.get("batch_rank") or 99),
-            ),
-            reverse=True,
-        )
-        retry_frames = [record["frame"] for record in ranked_shortlist[:18] if record.get("frame")]
-        if len(retry_frames) < VIDEO_AI_MAX_SELECTIONS:
-            raise
-        final_result = call_selector(
-            retry_frames,
-            final_prompt,
-            "video_moments_v145_final_retry",
-            VIDEO_AI_MAX_SELECTIONS,
-            max_output_tokens=900,
-        )
-        final_frames = retry_frames
-
-    by_id = {str(frame.get("frame_id") or ""): frame for frame in final_frames}
-    raw = final_result.get("selections") if isinstance(final_result, dict) else []
-    ranked = sorted(
-        [item for item in (raw or []) if isinstance(item, dict)],
-        key=lambda item: int(item.get("rank") or 99),
+    records = _video_moment_local_features_v591(frame_items)
+    selection = _video_moment_local_pick_v591(
+        records, preference_context=preference_context, excluded_frame_ids=excluded_frame_ids
     )
+    if callable(progress_callback):
+        try:
+            progress_callback("final_selection", 1, 1, "ローカル解析による9枚の選定完了")
+        except Exception:
+            pass
+    return selection
 
-    selected = []
-    used_ids = set()
-    used_hashes = []
-    for item in ranked:
-        frame_id = str(item.get("frame_id") or "")
-        frame = by_id.get(frame_id)
-        if not frame or frame_id in used_ids:
-            continue
-        frame_hash = _image_dhash64(frame.get("ai_bytes") or frame.get("image_bytes"))
-        # Only remove near-identical duplicates after AI has already evaluated them.
-        if any(_hamming64(frame_hash, existing) <= 1 for existing in used_hashes):
-            continue
-        selected.append(
-            {
-                "frame": frame,
-                "score": max(0, min(100, int(item.get("score") or 0))),
-                "primary_quality": str(item.get("primary_quality") or "other"),
-                "reason": str(item.get("reason") or "").strip()[:100],
-                "hash": frame_hash,
-            }
-        )
-        used_ids.add(frame_id)
-        used_hashes.append(frame_hash)
-        if len(selected) >= VIDEO_AI_MAX_SELECTIONS:
-            break
-
-    if not selected:
-        raise ValueError("AIセレクションを作成できませんでした。")
-
-    # v251: surface six Good Moments per video without touching the recording path.
-    # If the model returns fewer than six, fill from AI-reviewed candidates while
-    # preferring high scores and timestamps that are far from already-selected frames.
-    if len(selected) < VIDEO_AI_MAX_SELECTIONS:
-        ranked_by_id = {
-            str(item.get("frame_id") or ""): item
-            for item in ranked
-            if isinstance(item, dict) and str(item.get("frame_id") or "")
-        }
-        selected_timestamps = [
-            max(0, int((item.get("frame") or {}).get("timestamp_ms") or 0))
-            for item in selected
-        ]
-        remaining = [
-            frame for frame in final_frames
-            if str(frame.get("frame_id") or "") not in used_ids
-        ]
-
-        def backfill_priority(frame):
-            frame_id = str(frame.get("frame_id") or "")
-            ai_item = ranked_by_id.get(frame_id) or {}
-            ai_rank = max(1, int(ai_item.get("rank") or 999))
-            ai_score = max(0, min(100, int(ai_item.get("score") or 0)))
-            ts = max(0, int(frame.get("timestamp_ms") or 0))
-            spread = min((abs(ts - existing) for existing in selected_timestamps), default=ts)
-            return (frame_id in ranked_by_id, ai_score, spread, -ai_rank)
-
-        while remaining and len(selected) < VIDEO_AI_MAX_SELECTIONS:
-            frame = max(remaining, key=backfill_priority)
-            remaining.remove(frame)
-            frame_id = str(frame.get("frame_id") or "")
-            ai_item = ranked_by_id.get(frame_id) or {}
-            frame_hash = _image_dhash64(frame.get("ai_bytes") or frame.get("image_bytes"))
-            selected.append(
-                {
-                    "frame": frame,
-                    "score": max(0, min(100, int(ai_item.get("score") or 0))),
-                    "primary_quality": str(ai_item.get("primary_quality") or "other"),
-                    "reason": (str(ai_item.get("reason") or "").strip()[:100]
-                               or "動画全体の時間バランスを保つため選定"),
-                    "hash": frame_hash,
-                }
-            )
-            used_ids.add(frame_id)
-            used_hashes.append(frame_hash)
-            selected_timestamps.append(max(0, int(frame.get("timestamp_ms") or 0)))
-
-    return selected[:VIDEO_AI_MAX_SELECTIONS]
 
 def _video_selection_base_path(photo):
     video_path = photo_video_storage_path(photo)
@@ -17331,12 +17278,10 @@ def _video_ai_expected_candidate_count(photo):
 
 
 def _background_extract_video_candidate_frames(client, photo):
-    """Extract up to 20 native-resolution candidates from the untouched original.
+    """Extract up to 120 native-resolution candidates, spaced 0.5s apart.
 
-    v153 uses one ffmpeg pass with interval=max(0.5s, video_duration/20):
-    10s or shorter -> 0.5s, 15s -> 0.75s, 60s -> 3s. Each candidate keeps a
-    high-quality native-resolution JPEG for user-facing output, while AI receives a
-    separate small copy. The final selected stills never depend on low-res thumbnails.
+    A compact local-analysis copy is created separately from the full-resolution
+    photo. This does not invoke any external AI API.
     """
     video_path = photo_video_storage_path(photo)
     if not video_path:
@@ -17419,7 +17364,7 @@ def _background_extract_video_candidate_frames(client, photo):
                     "image_bytes": raw,
                     # AI-only copy. This has no effect on saved-photo quality.
                     "ai_bytes": normalize_photo(raw, max_side=640, quality=74),
-                    "output_source": "original_video_native_dynamic_v153",
+                    "output_source": "original_video_native_fixed500ms_v591",
                 }
             )
         if not frames:
@@ -17591,7 +17536,7 @@ def _favorite_tag_tendencies_from_rows(rows, max_tags=8):
     }
 
 
-def _load_video_ai_preference_context_for_owner(client, family_key, member_key, max_rows=240):
+def _load_video_ai_preference_context_for_owner(client, family_key, member_key, max_rows=240, include_reference_images=True):
     """Build per-person Good Moments preferences, led by ★ favorite tag tendencies."""
     rows = (
         client
@@ -17663,7 +17608,7 @@ def _load_video_ai_preference_context_for_owner(client, family_key, member_key, 
     for path in favorite_reference_paths + reference_paths:
         if path and path not in ordered_reference_paths:
             ordered_reference_paths.append(path)
-    for path in ordered_reference_paths[:4]:
+    for path in (ordered_reference_paths[:4] if include_reference_images else []):
         try:
             raw = _storage_bytes(client.storage.from_(PHOTO_BUCKET).download(path))
             if raw:
@@ -17686,19 +17631,9 @@ def _load_video_ai_preference_context_for_owner(client, family_key, member_key, 
 
 
 def _background_clients():
-    from openai import OpenAI
+    """Database/Storage client only. Good Moments never needs a paid AI client."""
     from supabase import create_client as _create_client
-    return (
-        _create_client(SUPABASE_URL, SUPABASE_SECRET_KEY),
-        # Do not inherit a very long SDK/network timeout in a background worker.
-        # If the provider is unavailable, the row is moved to error instead of
-        # staying in "processing" for many minutes.
-        OpenAI(
-            api_key=OPENAI_API_KEY,
-            timeout=float(VIDEO_AI_REQUEST_TIMEOUT_SECONDS),
-            max_retries=0,
-        ),
-    )
+    return _create_client(SUPABASE_URL, SUPABASE_SECRET_KEY)
 
 
 @st.cache_resource(show_spinner=False)
@@ -18006,9 +17941,9 @@ def _background_store_video_ai_selection(
         raise ValueError("動画の保存先を確認できませんでした。")
     selected_items = list(selections or [])[:VIDEO_AI_MAX_SELECTIONS]
     if len(selected_items) < VIDEO_AI_MAX_SELECTIONS:
-        raise ValueError(f"AIセレクションを{VIDEO_AI_MAX_SELECTIONS}枚そろえられませんでした。")
+        raise ValueError(f"いい瞬間を{VIDEO_AI_MAX_SELECTIONS}枚そろえられませんでした。")
 
-    # v153 never performs a second seek/re-extraction pass. The single duration-aware
+    # v591 never performs a second seek/re-extraction pass. The initial native
     # ffmpeg pass already produced native-resolution source frames. Refuse anything
     # that did not originate from an original-video native path.
     for selected in selected_items:
@@ -18075,7 +18010,8 @@ def _background_store_video_ai_selection(
                 "updated_at": now_jst().isoformat(),
                 "round": int(round_number),
                 "items": items,
-                "final_frame_mode": "original_native_dynamic20_single_pass_v153",
+                "final_frame_mode": "original_native_offline_max120_v591",
+                "selection_engine": "offline_pillow_numpy_v591",
                 "high_quality_count": len(items),
                 "selection_target_count": VIDEO_AI_MAX_SELECTIONS,
                 "progress_message": "完了",
@@ -18128,7 +18064,7 @@ def video_ai_processing_is_stale(selection_meta):
 
 def _run_video_ai_background_job(photo_id, family_key, member_key):
     """Run one complete Good Moments job synchronously in the active Streamlit run."""
-    client, ai_client = _background_clients()
+    client = _background_clients()
     result = (
         client.table(PHOTO_TABLE)
         .select("*")
@@ -18152,7 +18088,7 @@ def _run_video_ai_background_job(photo_id, family_key, member_key):
     selection_meta["started_at"] = now_jst().isoformat()
     selection_meta["updated_at"] = selection_meta["started_at"]
     selection_meta["attempt"] = max(0, int(selection_meta.get("attempt") or 0)) + 1
-    selection_meta["pipeline_mode"] = "background_single_pass_fixed500ms_max120_v590"
+    selection_meta["pipeline_mode"] = "offline_fixed500ms_max120_v591"
     selection_meta["progress_message"] = "元動画から高画質候補を準備中"
     reflection["ai_selection"] = selection_meta
     try:
@@ -18163,20 +18099,21 @@ def _run_video_ai_background_job(photo_id, family_key, member_key):
         pass
 
     try:
-        # v153 samples the untouched original once using max(0.5s, duration/20), capped at 20 frames.
+        # v591 uses fixed 0.5-second native extraction (max 120) for local ranking.
         # Legacy browser sheets/low-resolution bundles are ignored for final quality.
         frames = _background_extract_video_candidate_frames(client, photo)
         if not frames:
             raise ValueError("元動画から高画質候補フレームを読み込めませんでした。")
 
         selection_meta["status"] = "processing"
-        selection_meta["stage"] = "ai_selection"
+        selection_meta["stage"] = "local_analysis"
         selection_meta["candidate_count"] = len(frames)
         selection_meta["candidate_bundle_path"] = ""
         selection_meta["candidate_sheet_path"] = ""
         selection_meta["candidate_sample_interval_ms"] = video_ai_sample_interval_ms_for_duration((photo_media_metadata(photo).get("video_duration_ms") or VIDEO_MAX_SECONDS * 1000))
-        selection_meta["candidate_sampling_version"] = "original_native_fixed500ms_max120_v590"
-        selection_meta["progress_message"] = "AI一次選定を開始"
+        selection_meta["candidate_sampling_version"] = "original_native_fixed500ms_max120_v591"
+        selection_meta["selection_engine"] = "offline_pillow_numpy_v591"
+        selection_meta["progress_message"] = "APIを使わず映像フレームを解析しています"
         selection_meta["updated_at"] = now_jst().isoformat()
         reflection["ai_selection"] = selection_meta
         try:
@@ -18187,7 +18124,7 @@ def _run_video_ai_background_job(photo_id, family_key, member_key):
             pass
 
         preference = _load_video_ai_preference_context_for_owner(
-            client, family_key, member_key
+            client, family_key, member_key, include_reference_images=False
         )
         selection_meta["factor_weights"] = dict(
             _normalize_video_moment_factor_weights(preference.get("factor_weights"))
@@ -18232,7 +18169,6 @@ def _run_video_ai_background_job(photo_id, family_key, member_key):
             frames,
             preference_context=preference,
             excluded_frame_ids=excluded_ids,
-            ai_client=ai_client,
             progress_callback=update_ai_progress,
         )
         _background_store_video_ai_selection(
@@ -18272,7 +18208,7 @@ def _run_video_ai_background_job(photo_id, family_key, member_key):
             latest_selection["last_error"] = str(exc)[:240]
             latest_selection["updated_at"] = now_jst().isoformat()
             latest_selection["stage"] = str(latest_selection.get("stage") or "pipeline")
-            latest_selection["pipeline_mode"] = "background_single_pass_fixed500ms_max120_v590"
+            latest_selection["pipeline_mode"] = "offline_fixed500ms_max120_v591"
             latest_reflection["ai_selection"] = latest_selection
             _write_photo_reflection_for_owner(
                 photo_id, latest_reflection, family_key, member_key, client=client
@@ -18474,7 +18410,7 @@ def resume_member_video_background_jobs(limit=24, min_interval_seconds=5):
                 selection["queued_at"] = now_jst().isoformat()
                 selection["updated_at"] = selection["queued_at"]
                 selection["last_error"] = ""
-                selection["pipeline_mode"] = "background_single_pass_fixed500ms_max120_v590"
+                selection["pipeline_mode"] = "offline_fixed500ms_max120_v591"
                 reflection = dict(photo_media_metadata(row))
                 reflection["ai_selection"] = selection
                 _write_photo_reflection_for_owner(
@@ -18494,7 +18430,7 @@ def resume_member_video_background_jobs(limit=24, min_interval_seconds=5):
                 selection["queued_at"] = str(selection.get("queued_at") or now_jst().isoformat())
                 selection["updated_at"] = now_jst().isoformat()
                 selection["last_error"] = ""
-                selection["pipeline_mode"] = "background_single_pass_fixed500ms_max120_v590"
+                selection["pipeline_mode"] = "offline_fixed500ms_max120_v591"
                 reflection = dict(photo_media_metadata(row))
                 reflection["ai_selection"] = selection
                 _write_photo_reflection_for_owner(
@@ -32978,7 +32914,7 @@ def render_video_ai_selection(photo, key_prefix="video_selection", allow_save=Tr
                 st.markdown(image_html, unsafe_allow_html=True)
             else:
                 st.caption("画像を表示できません")
-            best_label = "★ AI BEST" if bool(item.get("ai_best")) or rank == 1 else f"SELECT {rank}"
+            best_label = "★ BEST" if bool(item.get("ai_best")) or rank == 1 else f"SELECT {rank}"
             if rank == 1:
                 st.markdown("**★ AI BEST**")
             quality = _video_selection_quality_label(item.get("primary_quality"))
@@ -33141,7 +33077,7 @@ def render_pending_video_ai_review():
         caption = f"{timestamp_ms / 1000:.1f}秒・{quality}"
         if reason:
             caption += f"\n{reason}"
-        best_label = "★ AI BEST" if rank == 1 else f"SELECT {rank}"
+        best_label = "★ BEST" if rank == 1 else f"SELECT {rank}"
         with columns[index % 3]:
             if image_bytes:
                 data_url = "data:image/jpeg;base64," + base64.b64encode(image_bytes).decode("ascii")
@@ -44269,7 +44205,7 @@ export default function(component) {
     const card=document.createElement('div'); card.className=large?'moments-select-card large-card':'moments-select-card'; card.setAttribute('role','button'); card.tabIndex=disabled?-1:0; card.setAttribute('aria-disabled',disabled?'true':'false');
     const imageWrap=document.createElement('div'); imageWrap.className='moments-select-image-wrap';
     if(photo?.src){const img=document.createElement('img');img.src=String(photo.src);img.alt=`いい瞬間 ${rank}`;img.loading=large?'eager':'lazy';img.decoding='async';img.fetchPriority=large?'high':'auto';imageWrap.appendChild(img);}
-    const rankBadge=document.createElement('div');rankBadge.className='moments-select-rank';rankBadge.textContent=photo?.ai_best?'★ AI BEST':`#${rank}`;imageWrap.appendChild(rankBadge);
+    const rankBadge=document.createElement('div');rankBadge.className='moments-select-rank';rankBadge.textContent=photo?.ai_best?'★ BEST':`#${rank}`;imageWrap.appendChild(rankBadge);
     const pickedBadge=document.createElement('div');pickedBadge.className='moments-select-picked';pickedBadge.textContent='選択中';imageWrap.appendChild(pickedBadge);
     const badge=document.createElement('div');badge.className='moments-emotion-badge';imageWrap.appendChild(badge);
     const voiceButton=document.createElement('button');
@@ -44848,7 +44784,7 @@ def _render_moments_picker(photo, index, view_mode=None, next_video_action=None)
     if status == "processing":
         stage = str(selection_meta.get("stage") or "").strip().lower()
         if stage == "candidate_preparation":
-            st.info("保存済み動画から0.5秒ごとに最大120枚を切り出し、AI候補をバックグラウンドで準備しています。")
+            st.info("保存済み動画から0.5秒ごとに最大120枚を切り出し、外部AIを使わず候補を準備しています。")
         else:
             st.info("現在いい瞬間の切り取り中です。")
             progress_message = str(selection_meta.get("progress_message") or "").strip()
@@ -45130,7 +45066,7 @@ def _render_moments_picker(photo, index, view_mode=None, next_video_action=None)
                     else:
                         st.session_state["_moments_notice"] = (
                             f"選択した{len(selected_rank_set)}枚を確認しました。新しく選んだ写真は日記に残しました。"
-                            "今回選んだ傾向は、今後のAIセレクションにも反映します。"
+                            "今回選んだ傾向は、今後のいい瞬間の選定にも反映します。"
                         )
                     st.rerun(scope="app")
 
@@ -45803,7 +45739,7 @@ def page_videos():
             status = video_ai_effective_status(video_row)
             if status == "processing":
                 stage = str(selection.get("stage") or "").strip().lower()
-                status_label = "✨ 最大120候補を準備中" if stage == "candidate_preparation" else "✨ いい瞬間を自動選定中"
+                status_label = "✨ 最大120候補を準備中" if stage == "candidate_preparation" else "✨ いい瞬間を解析中"
             elif status in {"", "waiting_candidates"}:
                 status_label = "✨ 自動処理を開始待ち"
             elif status == "ready":
@@ -46673,7 +46609,7 @@ def page_trip():
                             selection["stage"] = "candidate_preparation"
                             selection["last_error"] = str(background_exc)[:240]
                             selection["updated_at"] = now_jst().isoformat()
-                            selection["pipeline_mode"] = "background_single_pass_fixed500ms_max120_v590"
+                            selection["pipeline_mode"] = "offline_fixed500ms_max120_v591"
                             reflection["ai_selection"] = selection
                             _write_photo_reflection(saved_video["id"], reflection)
                         except Exception:
