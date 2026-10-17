@@ -1,5 +1,8 @@
-streamlit>=1.62.0
-openai>=1.75.0
-supabase>=2.15.0
-Pillow>=11.0.0
-imageio-ffmpeg>=0.6.0
+streamlit>=1.62.0,<2
+openai>=1.99.0,<3
+supabase>=2.18.0,<3
+Pillow>=11.3.0,<13
+imageio-ffmpeg>=0.6.0,<1
+numpy>=1.26,<3
+opencv-python-headless>=4.10,<5
+audioop-lts>=0.2.2; python_version >= "3.13"

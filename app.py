@@ -47,7 +47,9 @@ def _app_css_v473(markup, **_ignored):
 # Review menu-only update: 2026-09-19 JST
 GENERATED_UPDATE_JST = "2026-09-19T14:54:38+09:00"
 
-APP_BUILD = "v592"
+APP_BUILD = "v594"
+# v594: Score Good Moments by six distinguishable local signals, including optional offline OpenCV smile/eye/face evidence, camera-motion-compensated action, scene changes and actual favorite-photo similarity. Apply saved percentages exactly; no paid AI calls.
+# v593: Event search uses zero paid AI/search/geocoding API calls: directly read robots-permitted public event listings, validate published dates locally, group 7 dates, preserve audit logs and category filters. Manual day detail search is also API-free.
 # v592: Re-enable "別の9枚を作る" even when existing candidates have emotion/parenting selections. Persisted diary photos are untouched; the unsaved current selection is replaced when reroll completes.
 # v591: Select nine Good Moments using on-server, offline Pillow/NumPy image analysis.
 # No OpenAI/vision API calls in automatic video-frame selection or rerolls.
@@ -16254,7 +16256,7 @@ VIDEO_MOMENT_FACTOR_META = {
     },
     "preference": {
         "label": "タグ別お気に入り傾向",
-        "description": "★お気に入り写真で繰り返し選ばれるAIタグと、そのタグのお気に入り率から学習した本人の好み",
+        "description": "★お気に入り写真・タグ別の実例との見た目の近さ、過去の選択・却下傾向（タグの内容を自動認識するものではありません）",
         "default": 20,
     },
 }
@@ -16519,242 +16521,441 @@ def _video_photogenic_fallback_score(image_bytes):
         return 0.0
 
 
-def _video_moment_local_features_v591(frame_items):
-    """Offline visual proxies. No remote models or new server dependencies.
+"""Good Moments v594: local, explainable, factor-weighted visual ranking.
+No external API. Optional local OpenCV Haar smile/face/eye models.
+"""
 
-    Sharpness, exposure, color, salience, frame change and optional detected face
-    presence are objective image cues; they cannot infer an emotional moment.
-    """
-    from PIL import Image, ImageOps
-    import numpy as np
 
-    frames = list(frame_items or [])
-    if not frames:
-        return []
-    face_cascade = None
-    cv2 = None
+def _video_moment_local_face_models_v594():
+    """Lazily load local classifiers once per process; never fetch a model online."""
+    cache = getattr(_video_moment_local_face_models_v594, '_cache', None)
+    if cache is not None:
+        return cache
+    models = {"cv2": None, "face": None, "smile": None, "eyes": None}
     try:
-        import cv2 as _cv2  # Optional: local Haar model shipped by OpenCV.
-        cascade_path = getattr(getattr(_cv2, "data", None), "haarcascades", "")
-        if cascade_path:
-            candidate = _cv2.CascadeClassifier(
-                os.path.join(cascade_path, "haarcascade_frontalface_default.xml")
-            )
-            if not candidate.empty():
-                face_cascade, cv2 = candidate, _cv2
+        import cv2
+        root = str(getattr(getattr(cv2, "data", None), "haarcascades", "") or "")
+        if root:
+            for label, filename in (
+                ("face", "haarcascade_frontalface_default.xml"),
+                ("smile", "haarcascade_smile.xml"),
+                ("eyes", "haarcascade_eye_tree_eyeglasses.xml"),
+            ):
+                model = cv2.CascadeClassifier(os.path.join(root, filename))
+                if not model.empty():
+                    models[label] = model
+            if models["face"] is not None:
+                models["cv2"] = cv2
     except Exception:
         pass
+    _video_moment_local_face_models_v594._cache = models
+    return models
 
-    results = []
+
+def _video_moment_camera_corrected_delta_v594(previous, current):
+    """Compare 64px frames after removing small global camera translations.
+
+    Returns (local_motion, scene_change). This is not semantic action recognition.
+    """
+    import numpy as np
+    a = np.asarray(previous, dtype=np.float32)
+    b = np.asarray(current, dtype=np.float32)
+    if a.ndim != 2 or b.ndim != 2 or a.shape != b.shape or min(a.shape) < 12:
+        return 0.0, 0.0
+    pad = 3
+    h, w = a.shape
+    central = a[pad:h - pad, pad:w - pad]
+    best_residual = None
+    best_error = 1e9
+    for dy in (-2, -1, 0, 1, 2):
+        for dx in (-2, -1, 0, 1, 2):
+            aligned = b[pad + dy:h - pad + dy, pad + dx:w - pad + dx]
+            diff = np.abs(central - aligned)
+            error = float(np.mean(diff))
+            if error < best_error:
+                best_error = error
+                best_residual = diff
+    if best_residual is None:
+        return 0.0, 0.0
+    strong_fraction = float(np.mean(best_residual > 0.105))
+    high_percentile = float(np.percentile(best_residual, 80))
+    # A whole-frame flash or camera cut should not count as a 'decisive action'.
+    global_change = float(np.mean(np.abs(a[pad:-pad, pad:-pad] - b[pad:-pad, pad:-pad])))
+    local_motion = 0.55 * high_percentile + 0.45 * best_error
+    if strong_fraction > 0.82 and best_error > 0.20:
+        local_motion *= 0.35
+    return float(max(0.0, local_motion)), float(max(0.0, global_change))
+
+
+def _video_moment_reference_descriptors_v594(raw_images):
+    """Describe manually liked photos by simple local color/shape, not by invented AI tags."""
+    import numpy as np
+    from PIL import Image, ImageOps
+    descriptors = []
+    for raw in list(raw_images or [])[:4]:
+        if not raw:
+            continue
+        try:
+            with Image.open(io.BytesIO(raw)) as source:
+                im = ImageOps.exif_transpose(source).convert("RGB").resize((24, 24), Image.Resampling.BILINEAR)
+                rgb = np.asarray(im, dtype=np.float32) / 255.0
+            hist = np.concatenate([np.histogram(rgb[:, :, k], bins=8, range=(0, 1))[0] for k in range(3)]).astype(np.float32)
+            hist /= max(1.0, float(hist.sum()))
+            descriptors.append((rgb, hist))
+        except Exception:
+            continue
+    return descriptors
+
+
+def _video_moment_local_features_v594(frame_items):
+    """Measure observable visual evidence; face/smile models are OPTIONAL and offline.
+
+    No inference about identity, inner feelings, or the meaning of a personal event.
+    """
+    import numpy as np
+    from PIL import Image, ImageOps
+
+    frames = list(frame_items or [])
+    models = _video_moment_local_face_models_v594()
+    cv2 = models.get("cv2")
+    face_model = models.get("face")
+    smile_model = models.get("smile")
+    eye_model = models.get("eyes")
+    rows = []
     for index, frame in enumerate(frames):
         raw = frame.get("ai_bytes") or frame.get("image_bytes")
         if not raw:
             continue
         try:
-            with Image.open(io.BytesIO(raw)) as original:
-                image = ImageOps.exif_transpose(original).convert("RGB")
-                image.thumbnail((192, 192), Image.Resampling.BILINEAR)
-                rgb = np.asarray(image, dtype=np.float32)
-                tiny_image = image.resize((40, 40), Image.Resampling.BILINEAR)
-                tiny = np.asarray(tiny_image.convert("L"), dtype=np.float32) / 255.0
-                sig = np.asarray(image.resize((16, 16), Image.Resampling.BILINEAR), dtype=np.float32) / 255.0
+            with Image.open(io.BytesIO(raw)) as source:
+                im = ImageOps.exif_transpose(source).convert("RGB")
+                im.thumbnail((208, 208), Image.Resampling.BILINEAR)
+                rgb = np.asarray(im, dtype=np.float32)
+                signature = np.asarray(im.resize((24, 24), Image.Resampling.BILINEAR), dtype=np.float32) / 255.0
+                tiny = np.asarray(im.convert("L").resize((64, 64), Image.Resampling.BILINEAR), dtype=np.float32) / 255.0
         except Exception:
             continue
-        luminance = (0.299 * rgb[:, :, 0] + 0.587 * rgb[:, :, 1] + 0.114 * rgb[:, :, 2])
-        # Laplacian contrast is a local sharpness indicator; no OpenCV dependency.
-        core = luminance[1:-1, 1:-1]
-        laplace = (luminance[:-2, 1:-1] + luminance[2:, 1:-1]
-                   + luminance[1:-1, :-2] + luminance[1:-1, 2:] - 4.0 * core)
-        sharpness = float(np.log1p(np.std(laplace)))
-        brightness = float(np.mean(luminance))
-        contrast = float(np.std(luminance))
-        clipped = float(np.mean((luminance < 10.0) | (luminance > 247.0)))
-        saturation = float(np.mean(np.max(rgb, axis=2) - np.min(rgb, axis=2)) / 255.0)
-        grad_y = abs(luminance[1:, :] - luminance[:-1, :])
-        grad_x = abs(luminance[:, 1:] - luminance[:, :-1])
-        grad = (grad_x[:-1, :] + grad_y[:, :-1])
-        height, width = grad.shape
-        y1, y2 = max(0, height // 5), min(height, 4 * height // 5)
-        x1, x2 = max(0, width // 5), min(width, 4 * width // 5)
-        center_energy = float(np.mean(grad[y1:y2, x1:x2])) if y2 > y1 and x2 > x1 else 0.0
-        outer_energy = float(np.mean(grad))
-        central_focus = min(1.0, max(0.0, (center_energy / (outer_energy + 1.0)) / 1.8))
-        faces = 0
-        if face_cascade is not None:
+        lum = 0.299 * rgb[:, :, 0] + 0.587 * rgb[:, :, 1] + 0.114 * rgb[:, :, 2]
+        core = lum[1:-1, 1:-1]
+        lap = lum[:-2, 1:-1] + lum[2:, 1:-1] + lum[1:-1, :-2] + lum[1:-1, 2:] - 4.0 * core
+        sharpness = float(np.log1p(np.std(lap)))
+        brightness = float(np.mean(lum))
+        contrast = float(np.std(lum))
+        clipped = float(np.mean((lum < 10.0) | (lum > 247.0)))
+        spread = np.max(rgb, axis=2) - np.min(rgb, axis=2)
+        saturation = float(np.mean(spread) / 255.0)
+        energy = np.zeros_like(lum, dtype=np.float32)
+        energy[1:, :] += np.abs(lum[1:, :] - lum[:-1, :])
+        energy[:, 1:] += np.abs(lum[:, 1:] - lum[:, :-1])
+        height, width = energy.shape
+        r0, r1 = height // 5, 4 * height // 5
+        c0, c1 = width // 5, 4 * width // 5
+        central_energy = float(np.mean(energy[r0:r1, c0:c1]))
+        central_focus = float(np.clip(central_energy / (float(np.mean(energy)) + 1.0) / 1.7, 0, 1))
+        focus_percentile = float(np.percentile(energy, 80))
+        high_detail = np.clip(energy - focus_percentile, 0, None)
+        concentration = float(np.clip(high_detail.sum() / (energy.sum() + 1.0) * 5.0, 0, 1))
+        yy, xx = np.mgrid[0:height, 0:width]
+        salience = energy + float(np.mean(energy)) * 0.12 + 1.0
+        center_x = float((xx * salience).sum() / max(1e-6, salience.sum())) / max(1, width)
+        center_y = float((yy * salience).sum() / max(1e-6, salience.sum())) / max(1, height)
+        layout = float(np.clip(1.0 - 1.2 * np.hypot(center_x - 0.5, center_y - 0.5), 0, 1))
+        lowres = signature
+        hist = np.concatenate([
+            np.histogram(lowres[:, :, k], bins=8, range=(0, 1))[0] for k in range(3)
+        ]).astype(np.float32)
+        hist /= max(1.0, float(hist.sum()))
+        face_area = face_layout = face_sharp = 0.0
+        smile_score = eye_score = 0.0
+        face_count = 0
+        # Optional pretrained OpenCV cascade files are LOCAL files.
+        if face_model is not None and cv2 is not None:
+            gray = np.clip(lum, 0, 255).astype(np.uint8)
             try:
-                small_gray = np.clip(luminance, 0, 255).astype(np.uint8)
-                faces = len(face_cascade.detectMultiScale(
-                    small_gray, scaleFactor=1.18, minNeighbors=5, minSize=(22, 22)
-                ))
+                normalized = cv2.equalizeHist(gray)
+                boxes = face_model.detectMultiScale(
+                    normalized, scaleFactor=1.12, minNeighbors=4, minSize=(20, 20)
+                )
             except Exception:
-                faces = 0
-        results.append({
+                boxes = []
+            face_count = len(boxes)
+            if face_count:
+                # The largest well-framed face is more relevant than tiny bystanders.
+                fx, fy, fw, fh = max(boxes, key=lambda box: int(box[2]) * int(box[3]))
+                face_area = float(np.clip(float(fw * fh) / float(width * height) * 5.0, 0, 1))
+                fx0, fy0 = (fx + fw / 2.0) / width, (fy + fh / 2.0) / height
+                edge_guard = min(fx / width, fy / height,
+                                 (width - (fx + fw)) / width, (height - (fy + fh)) / height)
+                face_layout = float(np.clip(1 - np.hypot(fx0 - .5, fy0 - .48) * 1.0, 0, 1))
+                if edge_guard <= .012:
+                    face_layout *= .65
+                fgray = normalized[fy:fy + fh, fx:fx + fw]
+                flum = lum[fy:fy + fh, fx:fx + fw]
+                if fgray.size:
+                    fgrad = (flum[1:, :] - flum[:-1, :]) if flum.shape[0] > 1 else flum
+                    face_sharp = float(np.clip(np.std(fgrad) / 42.0, 0, 1))
+                    if eye_model is not None:
+                        eyes_roi = fgray[:max(1, int(fh * .62)), :]
+                        try:
+                            eye_boxes = eye_model.detectMultiScale(
+                                eyes_roi, scaleFactor=1.1, minNeighbors=4,
+                                minSize=(max(5, int(fw * .10)), max(5, int(fh * .08)))
+                            )
+                            eye_score = float(min(1., len(eye_boxes) / 2.))
+                        except Exception:
+                            pass
+                    if smile_model is not None:
+                        # Smile boxes must occur below the nose; high neighbors
+                        # reduces false positives from nostrils, cheeks, etc.
+                        roi_y = int(fh * .42)
+                        mouth_roi = fgray[roi_y:max(roi_y + 1, int(fh * .95)), :]
+                        try:
+                            smiles = smile_model.detectMultiScale(
+                                mouth_roi, scaleFactor=1.10, minNeighbors=13,
+                                minSize=(max(9, int(fw * .30)), max(6, int(fh * .10)))
+                            )
+                            smile_score = 1.0 if len(smiles) else 0.0
+                        except Exception:
+                            pass
+        rows.append({
             "frame": frame,
-            "frame_id": str(frame.get("frame_id") or f"F{index+1:03d}"),
+            "frame_id": str(frame.get("frame_id") or f"F{index + 1:03d}"),
             "timestamp_ms": max(0, int(frame.get("timestamp_ms") or 0)),
-            "sharpness": sharpness,
-            "brightness": brightness,
-            "contrast": contrast,
-            "clipped": clipped,
-            "saturation": saturation,
-            "central_focus": central_focus,
-            "faces": faces,
-            "tiny": tiny,
-            "signature": sig,
+            "sharpness": sharpness, "brightness": brightness,
+            "contrast": contrast, "clipped": clipped, "saturation": saturation,
+            "central_focus": central_focus, "salience": concentration,
+            "layout": layout, "face_area": face_area, "face_layout": face_layout,
+            "face_sharpness": face_sharp, "faces": face_count,
+            "smile_score": smile_score, "eye_score": eye_score,
+            "face_detection_available": bool(face_model),
+            "signature": signature, "hist": hist, "tiny": tiny,
             "hash": _image_dhash64(raw),
         })
+    if not rows:
+        return []
+    global_center = np.median(np.stack([r["signature"] for r in rows]), axis=0)
+    for idx, row in enumerate(rows):
+        before_motion = after_motion = 0.0
+        before_scene = after_scene = 0.0
+        if idx:
+            before_motion, before_scene = _video_moment_camera_corrected_delta_v594(
+                rows[idx - 1]["tiny"], row["tiny"]
+            )
+        if idx + 1 < len(rows):
+            after_motion, after_scene = _video_moment_camera_corrected_delta_v594(
+                row["tiny"], rows[idx + 1]["tiny"]
+            )
+        row["motion"] = max(before_motion, after_motion)
+        row["scene_shift"] = max(before_scene, after_scene)
+        row["motion_change"] = abs(after_motion - before_motion)
+        row["visual_novelty"] = float(np.mean(np.abs(row["signature"] - global_center)))
+        # A story proxy: distinct visual context at a boundary, not 'emotional story'.
+        near = rows[max(0, idx - 3):idx] + rows[idx + 1:idx + 4]
+        row["context_change"] = max(
+            (float(np.mean(np.abs(row["signature"] - neighbor["signature"]))) for neighbor in near),
+            default=0.0,
+        )
+    return rows
 
-    if not results:
-        return results
-    # Use adjacent frames to find dynamic moments, but do not reward camera shake
-    # if it also causes noticeable blur.
-    for i, item in enumerate(results):
-        deltas = []
-        if i > 0:
-            deltas.append(float(np.mean(np.abs(item["tiny"] - results[i-1]["tiny"]))))
-        if i + 1 < len(results):
-            deltas.append(float(np.mean(np.abs(item["tiny"] - results[i+1]["tiny"]))))
-        item["motion"] = max(deltas, default=0.0)
-    return results
 
-
-def _video_moment_local_pick_v591(records, preference_context=None, excluded_frame_ids=None):
-    """Choose diverse, clear, reasonably exposed frames without AI API calls."""
+def _video_moment_local_pick_v594(records, preference_context=None, excluded_frame_ids=None):
+    """Apply six independent factor scores and the member's EXACT 100-point weights."""
     import numpy as np
-
     entries = list(records or [])
-    if not entries:
-        raise ValueError("動画から分析可能な画像を取得できませんでした。")
-    excluded = {str(x) for x in (excluded_frame_ids or []) if str(x)}
-    context = preference_context if isinstance(preference_context, dict) else {}
-    weights = _normalize_video_moment_factor_weights(context.get("factor_weights"))
-
-    sharp_values = np.array([x["sharpness"] for x in entries], dtype=np.float32)
-    motion_values = np.array([x["motion"] for x in entries], dtype=np.float32)
-    sharp_low, sharp_high = np.percentile(sharp_values, [10, 90])
-    motion_low, motion_high = np.percentile(motion_values, [10, 90])
-    median_signature = np.median(np.stack([x["signature"] for x in entries]), axis=0)
-
-    liked = context.get("quality_counts") or {}
-    rejected = context.get("rejected_quality_counts") or {}
-    liked_total = sum(max(0, int(v or 0)) for v in liked.values())
-    rejected_total = sum(max(0, int(v or 0)) for v in rejected.values())
-    factor_names = ("expression", "beauty", "subject", "action", "story")
-
-    for item in entries:
-        sharp = (item["sharpness"] - float(sharp_low)) / max(0.25, float(sharp_high - sharp_low))
-        sharp = max(0.0, min(1.0, 0.60 * sharp + 0.40 * min(1.0, item["sharpness"] / 5.2)))
-        motion = (item["motion"] - float(motion_low)) / max(0.012, float(motion_high - motion_low))
-        motion = max(0.0, min(1.0, motion))
-        exposure = max(0.0, 1.0 - abs(item["brightness"] - 129.0) / 125.0)
-        contrast = min(1.0, item["contrast"] / 68.0)
-        saturation = min(1.0, item["saturation"] / 0.30)
-        unclipped = max(0.0, 1.0 - min(1.0, item["clipped"] / 0.20))
-        center = item["central_focus"]
-        face_proxy = min(1.0, item["faces"] / 2.0) if item["faces"] else 0.0
-        distinct = min(1.0, float(np.mean(abs(item["signature"] - median_signature))) / 0.21)
-        # The expression setting is a face-visibility proxy when a local detector
-        # finds a face, NOT a claim to recognize happiness or another emotion.
-        scores = {
-            "expression": 0.45 * sharp + 0.30 * center + 0.25 * face_proxy,
-            "beauty": 0.36 * sharp + 0.26 * exposure + 0.20 * contrast + 0.18 * unclipped,
-            "subject": 0.43 * center + 0.27 * contrast + 0.18 * saturation + 0.12 * face_proxy,
-            "action": 0.60 * motion + 0.40 * sharp,
-            "story": 0.50 * distinct + 0.25 * motion + 0.25 * center,
-        }
-        weighted = sum((weights.get(k, 0) or 0) * scores[k] for k in factor_names)
-        if weights.get("preference", 0):
-            if liked_total or rejected_total:
-                def affinity(key):
-                    good = int(liked.get(key) or 0) / max(1, liked_total)
-                    bad = int(rejected.get(key) or 0) / max(1, rejected_total)
-                    return max(0.0, min(1.0, 0.50 + 0.7 * (good - bad)))
-                preference = sum(scores[k] * affinity(k) for k in factor_names) / len(factor_names)
-            else:
-                preference = sum(scores.values()) / len(scores)
-            weighted += weights["preference"] * preference
-        quality = (0.58 + 0.42 * sharp) * (0.55 + 0.45 * unclipped)
-        if item["brightness"] < 25 or item["brightness"] > 233:
-            quality *= 0.65
-        item["base"] = min(1.0, max(0.0, weighted / 100.0 * quality))
-        item["factor_scores"] = scores
-        best_factor = max(factor_names, key=lambda k: scores[k] * float(weights.get(k) or 0))
-        if best_factor == "expression" and not item["faces"]:
-            best_factor = "beauty"  # Never assert an expression without a face detector.
-        item["primary_quality"] = best_factor
-        if best_factor == "action":
-            item["reason"] = "前後のコマと比較して動きがある場面"
-        elif best_factor == "beauty":
-            item["reason"] = "鮮明さ・明るさ・構図をもとに選定"
-        elif best_factor == "expression":
-            item["reason"] = "人物の顔が比較的確認しやすい場面"
-        elif best_factor == "subject":
-            item["reason"] = "画面内の被写体と構図をもとに選定"
-        else:
-            item["reason"] = "前後の場面との違いをもとに選定"
-
-    target = min(VIDEO_AI_MAX_SELECTIONS, len(entries))
     if len(entries) < VIDEO_AI_MAX_SELECTIONS:
         raise ValueError("9枚を作成できるだけの動画フレームがありません。")
-    available = [x for x in entries if x["frame_id"] not in excluded]
-    if len(available) < target:
-        available = entries  # Exhausted histories: prefer novelty, but always return nine.
-    excluded_times = [x["timestamp_ms"] for x in entries if x["frame_id"] in excluded]
-    # Prefer to stay one additional sample away from rejected moments when there
-    # is enough video outside them (a reroll on long clips shouldn't look the same).
-    if excluded_times:
-        far = [x for x in available if all(abs(x["timestamp_ms"] - t) >= 1000 for t in excluded_times)]
-        if len(far) >= target:
-            available = far
+    context = preference_context if isinstance(preference_context, dict) else {}
+    weights = _normalize_video_moment_factor_weights(context.get("factor_weights"))
+    excluded = {str(fid) for fid in (excluded_frame_ids or []) if str(fid)}
+    descriptors = (_video_moment_reference_descriptors_v594(context.get("reference_images"))
+                   if weights.get("preference") else [])
+    reference_image_tags = list(context.get("reference_image_tags") or [])
+    tendency_priorities = {}
+    for tendency in context.get("favorite_tag_tendencies") or []:
+        if not isinstance(tendency, dict):
+            continue
+        tag = str(tendency.get("tag") or "")
+        if tag:
+            try:
+                freq = min(1.0, max(0.0, float(tendency.get("favorite_count") or 0) / 4.0))
+                rate = min(1.0, max(0.0, float(tendency.get("favorite_rate") or 0)))
+                tendency_priorities[tag] = 0.65 * rate + 0.35 * freq
+            except (TypeError, ValueError):
+                continue
+    liked = context.get("quality_counts") if isinstance(context.get("quality_counts"), dict) else {}
+    rejected = (context.get("rejected_quality_counts")
+                if isinstance(context.get("rejected_quality_counts"), dict) else {})
+    liked_sum = max(1, sum(max(0, int(v or 0)) for v in liked.values()))
+    rejected_sum = max(1, sum(max(0, int(v or 0)) for v in rejected.values()))
+    quality_names = ("expression", "beauty", "subject", "action", "story")
 
-    selected = []
-    unused = list(available)
-    # The thresholds relax only when footage is repetitive or short. No random
-    # rescoring is used; the same video/settings/history yields stable choices.
+    def unit(val):
+        return float(np.clip(val, 0., 1.))
+
+    def relative(attr, lo=10, hi=90):
+        data = np.array([float(r.get(attr) or 0.) for r in entries], dtype=np.float32)
+        lower, upper = np.percentile(data, [lo, hi])
+        return [unit((value - lower) / max(1e-5, upper - lower)) for value in data]
+
+    sharp_percentiles = relative("sharpness")
+    motion_percentiles = relative("motion")
+    novelty_percentiles = relative("visual_novelty")
+    context_percentiles = relative("context_change")
+    scene_percentiles = relative("scene_shift")
+    favored_history = bool(liked or rejected)
+
+    for i, row in enumerate(entries):
+        sharp = unit(.65 * sharp_percentiles[i] + .35 * unit(row["sharpness"] / 6.0))
+        exposure = unit(1. - abs(row["brightness"] - 130.) / 128.)
+        contrast = unit(row["contrast"] / 70.)
+        unclipped = unit(1. - row["clipped"] / .18)
+        face_present = bool(row["faces"])
+        face_clarity = (.40 * row["face_sharpness"] + .30 * row["face_layout"] +
+                        .30 * row["face_area"]) if face_present else 0.
+        if row["face_detection_available"]:
+            expression = (unit(.16 * face_clarity + .60 * row["smile_score"] +
+                               .24 * row["eye_score"]) if face_present else 0.)
+        else:
+            # Missing face model: a constant neutral score cannot invent emotions
+            # or spuriously reward non-face frames. Other measured factors drive order.
+            expression = 0.5
+        beauty = unit(.35 * sharp + .22 * exposure + .16 * contrast +
+                      .14 * unclipped + .13 * max(row["layout"], row["face_layout"]))
+        subject = unit(.28 * row["central_focus"] + .24 * row["salience"] +
+                       .18 * max(row["layout"], row["face_layout"]) +
+                       .17 * novelty_percentiles[i] +
+                       .13 * (row["face_area"] if face_present else unit(row["saturation"] * 2.5)))
+        motion = unit(.72 * motion_percentiles[i] + .28 * unit(row["motion_change"] / .11))
+        action = unit((.80 * motion + .20 * sharp) * (.75 + .25 * unclipped))
+        story = unit(.38 * context_percentiles[i] + .30 * scene_percentiles[i] +
+                     .22 * novelty_percentiles[i] + .10 * max(row["layout"], row["face_layout"]))
+        score_factors = {
+            "expression": expression, "beauty": beauty, "subject": subject,
+            "action": action, "story": story,
+        }
+        # Only explicit manually liked reference IMAGES are compared locally.
+        # Free-form AI tags cannot be semantically matched without a local trained model.
+        similarity = None
+        if descriptors:
+            sims = []
+            sig = row["signature"]
+            hist = row["hist"]
+            for ref_index, (ref_sig, ref_hist) in enumerate(descriptors):
+                color_sim = unit(1. - .5 * float(np.sum(np.abs(hist - ref_hist))))
+                image_sim = unit(1. - float(np.mean(np.abs(sig - ref_sig))) / .70)
+                match = .70 * color_sim + .30 * image_sim
+                # Prefer visual matches to actual saved favorites carrying the
+                # member's frequent, high-favorite-rate tags. Tag text is NOT
+                # guessed for the current video; this is exemplar matching.
+                tags = (reference_image_tags[ref_index]
+                        if ref_index < len(reference_image_tags) else [])
+                priorities = [tendency_priorities.get(str(tag), 0.0) for tag in tags]
+                if priorities:
+                    match *= .90 + .10 * max(priorities)
+                sims.append(match)
+            similarity = max(sims)
+        affinities = {}
+        if favored_history:
+            for k in quality_names:
+                p = max(0, int(liked.get(k) or 0)) / liked_sum
+                n = max(0, int(rejected.get(k) or 0)) / rejected_sum
+                affinities[k] = unit(.50 + .75 * (p - n))
+            biggest = max(quality_names, key=lambda k: score_factors[k])
+            history_score = affinities[biggest]
+        else:
+            history_score = None
+        if similarity is not None and history_score is not None:
+            preference = .78 * similarity + .22 * history_score
+        elif similarity is not None:
+            preference = similarity
+        elif history_score is not None:
+            preference = history_score
+        else:
+            # Neutral: when no favorites or choices exist, the preference share
+            # adds the same constant for all frames rather than inventing a taste.
+            preference = .5
+        score_factors["preference"] = unit(preference)
+        weighted = sum(float(weights.get(k) or 0) * score_factors[k] for k in VIDEO_MOMENT_FACTOR_ORDER) / 100.0
+        quality_gate = (.60 + .40 * sharp) * (.65 + .35 * unclipped)
+        if row["brightness"] < 25 or row["brightness"] > 230:
+            quality_gate *= .65
+        if row["clipped"] > .30:
+            quality_gate *= .70
+        row["base"] = unit(weighted * quality_gate)
+        row["factor_scores"] = score_factors
+        row["factor_weights"] = dict(weights)
+        row["favorite_similarity"] = similarity
+        primary = max(quality_names, key=lambda k: float(weights.get(k) or 0) * score_factors[k])
+        # For entirely zero-weight accessible factors, choose an observable photo property.
+        if float(weights.get(primary) or 0) <= 0:
+            primary = max(quality_names, key=lambda k: score_factors[k])
+        if primary == "expression" and not face_present:
+            primary = "beauty"
+        row["primary_quality"] = primary
+        reasons = {
+            "expression": ("笑顔らしい口元を検出した場面" if row["smile_score"] else
+                           "目元・顔の表情が確認しやすい場面"),
+            "beauty": "ピント・明るさ・被写体の配置を評価",
+            "subject": "被写体の目立ち方・周囲との差を評価",
+            "action": "カメラ移動を補正しても動きが残る場面",
+            "story": "前後の展開・場面の変化から選定",
+        }
+        reason = reasons[primary]
+        if similarity is not None and similarity >= .79 and weights.get("preference", 0):
+            reason += "／お気に入り画像の見え方にも近い"
+        row["reason"] = reason
+
+    candidates = [row for row in entries if row["frame_id"] not in excluded]
+    # Keep past rounds out as long as nine unused frames exist.
+    if len(candidates) < VIDEO_AI_MAX_SELECTIONS:
+        candidates = entries
+    excluded_times = [row["timestamp_ms"] for row in entries if row["frame_id"] in excluded]
+    if excluded_times:
+        far = [row for row in candidates if all(abs(row["timestamp_ms"] - t) >= 1000 for t in excluded_times)]
+        if len(far) >= VIDEO_AI_MAX_SELECTIONS:
+            candidates = far
+
+    selected, remaining = [], list(candidates)
     for relax in (0, 1, 2):
-        while unused and len(selected) < target:
+        while remaining and len(selected) < VIDEO_AI_MAX_SELECTIONS:
             best = None
-            best_priority = -1e9
-            for item in unused:
-                dist_ms = min(abs(item["timestamp_ms"] - s["timestamp_ms"]) for s in selected) if selected else 999999
-                if relax == 0 and dist_ms < 1400:
-                    continue
-                if relax == 1 and dist_ms < 550:
-                    continue
+            best_priority = -1e20
+            for item in remaining:
                 if selected:
-                    visual_diffs = [float(np.mean(np.abs(item["signature"] - s["signature"]))) for s in selected]
-                    novelty = min(1.0, min(visual_diffs) / 0.17)
-                    same_view = any(_hamming64(item["hash"], s["hash"]) <= 3 and dif < 0.035
-                                    for s, dif in zip(selected, visual_diffs))
-                    if same_view and relax == 0:
+                    dist = min(abs(item["timestamp_ms"] - other["timestamp_ms"]) for other in selected)
+                    if (relax == 0 and dist < 1400) or (relax == 1 and dist < 500):
                         continue
-                    spread = min(1.0, dist_ms / 6000.0)
+                    visual_diffs = [float(np.mean(np.abs(item["signature"] - other["signature"]))) for other in selected]
+                    novelty = unit(min(visual_diffs) / .18)
+                    same = any(_hamming64(item["hash"], other["hash"]) <= 3 and diff < .040
+                               for other, diff in zip(selected, visual_diffs))
+                    if same and relax == 0:
+                        continue
+                    temporal_spread = unit(dist / 6000.)
                 else:
-                    novelty, spread = 0.65, 1.0
-                rejected_penalty = 0.18 if item["frame_id"] in excluded else 0.0
-                priority = (0.74 * item["base"] + 0.16 * novelty + 0.10 * spread
-                            - rejected_penalty)
+                    novelty, temporal_spread = .65, 1.
+                penalty = .20 if item["frame_id"] in excluded else 0.
+                priority = .76 * item["base"] + .15 * novelty + .09 * temporal_spread - penalty
                 if best is None or priority > best_priority or (priority == best_priority and item["timestamp_ms"] < best["timestamp_ms"]):
                     best, best_priority = item, priority
             if best is None:
                 break
             selected.append(best)
-            unused.remove(best)
-        if len(selected) >= target:
+            remaining.remove(best)
+        if len(selected) == VIDEO_AI_MAX_SELECTIONS:
             break
-
-    if len(selected) < target:
+    if len(selected) < VIDEO_AI_MAX_SELECTIONS:
         raise ValueError("いい瞬間を9枚そろえられませんでした。")
-    return [
-        {
-            "frame": item["frame"],
-            "score": min(100, max(0, int(round(item["base"] * 100.0)))),
-            "primary_quality": item["primary_quality"],
-            "reason": item["reason"],
-            "hash": item["hash"],
-        }
-        for item in selected[:target]
-    ]
+    return [{
+        "frame": row["frame"],
+        "score": int(round(row["base"] * 100.)),
+        "primary_quality": row["primary_quality"],
+        "reason": row["reason"],
+        "hash": row["hash"],
+        "factor_scores": {k: int(round(row["factor_scores"][k] * 100)) for k in VIDEO_MOMENT_FACTOR_ORDER},
+        "factor_weights": dict(weights),
+        "analysis_method": "offline_opencv_v594" if row["face_detection_available"] else "offline_numpy_v594",
+    } for row in selected]
 
 
 def choose_video_ai_frames(
@@ -16771,11 +16972,11 @@ def choose_video_ai_frames(
     """
     if callable(progress_callback):
         try:
-            progress_callback("local_analysis", 0, len(frame_items or []), "画像の鮮明さ・動きをサーバー内で解析中")
+            progress_callback("local_analysis", 0, len(frame_items or []), "表情・構図・動き・場面・好みを端末外部APIなしで解析中")
         except Exception:
             pass
-    records = _video_moment_local_features_v591(frame_items)
-    selection = _video_moment_local_pick_v591(
+    records = _video_moment_local_features_v594(frame_items)
+    selection = _video_moment_local_pick_v594(
         records, preference_context=preference_context, excluded_frame_ids=excluded_frame_ids
     )
     if callable(progress_callback):
@@ -17554,6 +17755,7 @@ def _load_video_ai_preference_context_for_owner(client, family_key, member_key, 
     rejected_quality_counts = {}
     reference_paths = []
     favorite_reference_paths = []
+    favorite_path_tags = {}
     favorite_tag_context = _favorite_tag_tendencies_from_rows(rows, max_tags=8)
 
     for row in rows:
@@ -17568,6 +17770,12 @@ def _load_video_ai_preference_context_for_owner(client, family_key, member_key, 
             favorite_path = str(row.get("storage_path") or "").strip()
             if favorite_path and favorite_path not in favorite_reference_paths:
                 favorite_reference_paths.append(favorite_path)
+                # An exemplar links its already-stored tags to the real photo;
+                # no attempt is made to generate tags for new frames remotely.
+                favorite_path_tags[favorite_path] = [
+                    tag for tag in photo_ai_tags(row)
+                    if tag not in {PHOTO_FAVORITE_TAG, PHOTO_VOICE_TAG}
+                ][:8]
 
         # Durable learning signal: a still explicitly sent to the diary remains
         # useful even if the source video is later deleted.
@@ -17602,28 +17810,31 @@ def _load_video_ai_preference_context_for_owner(client, family_key, member_key, 
                 quality = str(quality or "other")
                 rejected_quality_counts[quality] = int(rejected_quality_counts.get(quality, 0)) + 1
 
+    factor_weights = _load_video_moment_factor_settings_for_owner(
+        client, family_key, member_key
+    )
     reference_images = []
+    reference_image_tags = []
     # Favorites come first.  Fall back to earlier manually selected video stills so
     # accounts with few favorites retain the existing learning behavior.
     ordered_reference_paths = []
     for path in favorite_reference_paths + reference_paths:
         if path and path not in ordered_reference_paths:
             ordered_reference_paths.append(path)
-    for path in (ordered_reference_paths[:4] if include_reference_images else []):
+    for path in (ordered_reference_paths[:4] if include_reference_images and int(factor_weights.get("preference") or 0) > 0 else []):
         try:
             raw = _storage_bytes(client.storage.from_(PHOTO_BUCKET).download(path))
             if raw:
                 reference_images.append(normalize_photo(raw, max_side=640, quality=72))
+                reference_image_tags.append(list(favorite_path_tags.get(path) or []))
         except Exception:
             continue
 
-    factor_weights = _load_video_moment_factor_settings_for_owner(
-        client, family_key, member_key
-    )
     return {
         "quality_counts": quality_counts,
         "rejected_quality_counts": rejected_quality_counts,
         "reference_images": reference_images,
+        "reference_image_tags": reference_image_tags,
         "favorite_tag_tendencies": list(favorite_tag_context.get("items") or []),
         "favorite_photo_count": int(favorite_tag_context.get("favorite_photo_count") or 0),
         "favorite_tagged_photo_count": int(favorite_tag_context.get("favorite_tagged_photo_count") or 0),
@@ -17982,6 +18193,9 @@ def _background_store_video_ai_selection(
                     "score": int(selected.get("score") or 0),
                     "primary_quality": str(selected.get("primary_quality") or "other"),
                     "reason": str(selected.get("reason") or "").strip(),
+                    "factor_scores": dict(selected.get("factor_scores") or {}),
+                    "factor_weights": dict(selected.get("factor_weights") or {}),
+                    "analysis_method": str(selected.get("analysis_method") or "offline_numpy_v594"),
                     "ai_best": rank == 1,
                     "saved_photo_id": None,
                     "human_selected": False,
@@ -18011,8 +18225,8 @@ def _background_store_video_ai_selection(
                 "updated_at": now_jst().isoformat(),
                 "round": int(round_number),
                 "items": items,
-                "final_frame_mode": "original_native_offline_max120_v591",
-                "selection_engine": "offline_pillow_numpy_v591",
+                "final_frame_mode": "original_native_offline_max120_v594",
+                "selection_engine": "offline_six_factors_v594",
                 "high_quality_count": len(items),
                 "selection_target_count": VIDEO_AI_MAX_SELECTIONS,
                 "progress_message": "完了",
@@ -18089,7 +18303,7 @@ def _run_video_ai_background_job(photo_id, family_key, member_key):
     selection_meta["started_at"] = now_jst().isoformat()
     selection_meta["updated_at"] = selection_meta["started_at"]
     selection_meta["attempt"] = max(0, int(selection_meta.get("attempt") or 0)) + 1
-    selection_meta["pipeline_mode"] = "offline_fixed500ms_max120_v591"
+    selection_meta["pipeline_mode"] = "offline_fixed500ms_max120_v594"
     selection_meta["progress_message"] = "元動画から高画質候補を準備中"
     reflection["ai_selection"] = selection_meta
     try:
@@ -18113,7 +18327,7 @@ def _run_video_ai_background_job(photo_id, family_key, member_key):
         selection_meta["candidate_sheet_path"] = ""
         selection_meta["candidate_sample_interval_ms"] = video_ai_sample_interval_ms_for_duration((photo_media_metadata(photo).get("video_duration_ms") or VIDEO_MAX_SECONDS * 1000))
         selection_meta["candidate_sampling_version"] = "original_native_fixed500ms_max120_v591"
-        selection_meta["selection_engine"] = "offline_pillow_numpy_v591"
+        selection_meta["selection_engine"] = "offline_six_factors_v594"
         selection_meta["progress_message"] = "APIを使わず映像フレームを解析しています"
         selection_meta["updated_at"] = now_jst().isoformat()
         reflection["ai_selection"] = selection_meta
@@ -18125,7 +18339,7 @@ def _run_video_ai_background_job(photo_id, family_key, member_key):
             pass
 
         preference = _load_video_ai_preference_context_for_owner(
-            client, family_key, member_key, include_reference_images=False
+            client, family_key, member_key, include_reference_images=True
         )
         selection_meta["factor_weights"] = dict(
             _normalize_video_moment_factor_weights(preference.get("factor_weights"))
@@ -18209,7 +18423,7 @@ def _run_video_ai_background_job(photo_id, family_key, member_key):
             latest_selection["last_error"] = str(exc)[:240]
             latest_selection["updated_at"] = now_jst().isoformat()
             latest_selection["stage"] = str(latest_selection.get("stage") or "pipeline")
-            latest_selection["pipeline_mode"] = "offline_fixed500ms_max120_v591"
+            latest_selection["pipeline_mode"] = "offline_fixed500ms_max120_v594"
             latest_reflection["ai_selection"] = latest_selection
             _write_photo_reflection_for_owner(
                 photo_id, latest_reflection, family_key, member_key, client=client
@@ -36154,68 +36368,20 @@ def _events_compact_source_plan_v584(category, latitude, longitude, radius_km, p
 
 
 def _events_fetch_category_v584(day, category, latitude, longitude, radius_km, place_label):
-    """Bound paid event-search requests to one per category, without fan-out.
-
-    Accept only cited date-confirmed occurrences. No Places API, Nominatim venue
-    geocoding, supplementary web queries, or automatic paid follow-up occurs.
-    Venue coordinates given by a genuine searched source can still be rendered;
-    otherwise the venue has unknown distance, not an invented map position.
-    """
-    if not OPENAI_API_KEY:
-        return {"items": [], "unverified": [], "error": "OPENAI_API_KEY が未設定です。",
-                "search_passes": 0, "failed_passes": 0, "checked_at": ""}
+    """v593: explicit one-day refinement uses ONLY public publisher HTML, no AI API."""
     if category not in EVENT_SEARCH_CATEGORIES_V570:
         return {"items": [], "unverified": [], "error": "不明なカテゴリです。",
-                "search_passes": 0, "failed_passes": 0, "checked_at": ""}
-    plan = _events_compact_source_plan_v584(category, latitude, longitude,
-                                            radius_km, place_label)
-    result = _events_search_one_source_v571(
-        plan, day=day, category=category,
-        coarse_lat=round(float(latitude), 2),
-        coarse_lon=round(float(longitude), 2),
-        radius_km=radius_km, place_label=str(place_label or "").strip()[:65],
-    )
-    if result.get("failed"):
-        failure = _events_fast_failure_v582([result])
-        failure["source_audit"] = _events_source_audit_v587(
-            category=category, sources=set(), raw_rows=[], per_day={},
-            error=failure.get("error") or "検索に失敗しました")
-        failure["http_status"] = result.get("http_status")
-        return failure
-    sources = set(result.get("sources") or ())
-    cited_rows = [row for row in result.get("items") or [] if isinstance(row, dict)
-                  and _events_url_key_v570(row.get("source_url")) in sources]
-    dated = _events_prefilter_v571(cited_rows, day=day, sources=sources)
-    # Pure local validation: do NOT resolve missing venues by external API.
-    items = _events_normalize_v570(dated, day=day, category=category,
-                                    lat=latitude, lon=longitude,
-                                    radius_km=radius_km, sources=sources)
-    unverified = _events_unverified_v579(
-        [result], items, day=day, category=category,
-        latitude=latitude, longitude=longitude, radius_km=radius_km)
-    domains = sorted({(urlparse(row.get("source_url") or "").hostname or "").lower().removeprefix("www.")
-                      for row in items if row.get("source_url")})
-    if not items and not sources:
-        error = "検索結果の出典が取得できませんでした。"
-    elif not items and not unverified:
-        error = "指定日に開催するイベントの開催日・出典を確認できませんでした。"
-    else:
-        error = ""
-    audit = _events_source_audit_v587(category=category, sources=sources,
-         raw_rows=result.get("items") or [], per_day={day: {"items": items, "unverified": unverified}},
-         pending_rows=result.get("pending") or [])
-    return {
-        "items": items, "unverified": unverified, "error": error,
-        "source_audit": audit, "api_usage": dict(result.get("api_usage") or {}),
-        "source_domains": domains,
-        "searched_source_count": len({key.split("/", 1)[0] for key in sources}),
-        "search_passes": 1, "failed_passes": 0,
-        "raw_count": int(result.get("raw_count") or 0),
-        "cited_count": len(cited_rows), "dated_count": len(dated),
-        "distance_unverified_count": sum(row.get("distance_m") is None for row in items),
-        "followup_attempted": 0, "followup_accepted": 0,
-        "checked_at": datetime.now(ZoneInfo(APP_TIMEZONE)).strftime("%H:%M"),
-    }
+                "search_passes": 0, "failed_passes": 0, "api_request_count": 0}
+    weekly = _events_search_week_one_category_v585(
+        day, [day], category, latitude, longitude, radius_km, place_label)
+    daily = dict((weekly.get("days") or {}).get(day) or {})
+    for field in ("source_audit", "search_passes", "failed_passes", "api_request_count",
+                  "api_usage", "direct_http_requests", "direct_http_success",
+                  "direct_events_found", "exclusion_counts"):
+        if field in weekly:
+            daily[field] = weekly[field]
+    daily["error"] = str(weekly.get("error") or daily.get("error") or "")
+    return daily
 
 
 @st.cache_resource(show_spinner=False)
@@ -36285,6 +36451,7 @@ EVENT_SOURCE_PORTALS_V587 = (
     {"name": "レッツエンジョイ東京", "domain": "enjoytokyo.jp", "url": "https://www.enjoytokyo.jp/event/list/"},
     {"name": "My TOKYO（東京都公式）", "domain": "my.metro.tokyo.lg.jp", "url": "https://www.my.metro.tokyo.lg.jp/event"},
     {"name": "GO TOKYO 東京観光公式", "domain": "gotokyo.org", "url": "https://www.gotokyo.org/jp/calendar/index.html"},
+    {"name": "渋谷区公式イベントカレンダー", "domain": "city.shibuya.tokyo.jp", "url": "https://www.city.shibuya.tokyo.jp/contents/event/calendar/"},
 )
 EVENT_SOURCE_LOG_SCHEMA_V587 = "burari_event_sources_v588"
 EVENT_SOURCE_LOG_DIR_V587 = "event_source_logs_v587"
@@ -36434,14 +36601,14 @@ def _events_source_log_report_v587(snapshot, results, *, operation, day=None):
         "coarse_position": [round(float(location.get("latitude") or 0), 2),
                             round(float(location.get("longitude") or 0), 2)],
         "radius_km": int(snapshot.get("radius_km") or 0),
-        "model": EVENT_SEARCH_MODEL_V570,
-        "ai_request_cap": len(metrics),
+        "model": "未使用（無料・公開ページ取得）",
+        "ai_request_cap": 0,
         "api_requests_this_action": sum(int(v.get("api_requests_this_action") or 0) for v in metrics.values()),
         "cache_hit_categories": [k for k, v in metrics.items() if v.get("cache_hit")],
         "direct_fetch_shared_by_categories": operation == "weekly",
         "direct_cache_ttl_seconds": EVENTS_SOURCE_FETCH_TTL_V588 if operation == "weekly" else 0,
-        "search_mode": "AI_AND_PUBLIC_PAGES" if operation == "weekly" else "AI_ONLY_MANUAL_REFINEMENT",
-        "note": "AI引用とサイト直接取得は別に記録。直接HTTP件数は3カテゴリで共有した取得結果のため加算不可。取得ログはキャッシュ由来の場合がある。参照なし≠イベントなし。今回API回数はキャッシュを除外。",
+        "search_mode": "PUBLIC_HTML_ONLY_NO_AI_API",
+        "note": "AI/Web検索API実行ゼロ。公開イベント一覧の直接HTTP取得結果を3カテゴリで共有。robotsで禁止・HTTP失敗は理由を記録。直接HTTP件数は3カテゴリ分を合算しない。",
         "api_by_category": metrics,
         "sources": audit,
     }
@@ -36574,15 +36741,15 @@ def _events_source_log_export_v587(reports):
             ]])
     return writer_io.getvalue().encode("utf-8-sig"), json.dumps({
         "schema": EVENT_SOURCE_LOG_SCHEMA_V587,
-        "explanation": "AI検索からの引用とサイト直接取得を別計測。直接HTTP件数は3カテゴリ間で共有するため加算不可。参照なし・取得失敗はイベントなしを意味しない。v587の保存ログにも対応。",
+        "explanation": "無料の公開イベント一覧直接取得。外部AI検索API呼び出しはゼロ。直接HTTP件数は3カテゴリで共有するため合算不可。取得失敗はイベントなしを意味しない。以前の保存ログにも対応。",
         "reports": docs,
     }, ensure_ascii=False, indent=2).encode("utf-8")
 
 
 def _events_source_log_settings_v587():
     with st.expander("イベント検索・情報ソースログ", expanded=False):
-        st.caption("登録6サイトの実際のHTML取得可否、robots確認、候補数、除外理由、AI引用、キャッシュ利用、"
-                   "API使用回数を別々に記録します。取得失敗や未参照は『イベントなし』を意味しません。")
+        st.caption("登録サイトのHTML取得可否、robots確認、候補数、除外理由、キャッシュ利用を記録します。"
+                   "イベント検索の外部AI API使用回数は0回です。取得失敗は『イベントなし』を意味しません。")
         scope = _events_source_scope_v587()
         session_docs = [r for r in (st.session_state.get(EVENT_SOURCE_LOG_SESSION_V587) or [])
                         if isinstance(r, dict) and r.get("owner_scope") == scope]
@@ -36609,7 +36776,7 @@ def _events_source_log_settings_v587():
         st.download_button("サイト別検索結果ログ（CSV）", data=csv_data,
                            file_name=f"burari_event_sources_{today_iso()}.csv", mime="text/csv",
                            use_container_width=True, key="event_source_csv_v587")
-        st.download_button("検索API改善用の詳細ログ（JSON）", data=json_data,
+        st.download_button("イベント検索の詳細ログ（JSON）", data=json_data,
                            file_name=f"burari_event_sources_{today_iso()}.json", mime="application/json",
                            use_container_width=True, key="event_source_json_v587")
 
@@ -36851,6 +37018,10 @@ def _events_date_fragment_v588(value, *, fallback_year=None, fallback_month=None
 def _events_period_from_text_v588(context, *, target_year):
     """Never confuse publishing dates with the date after '開催日時/期間'."""
     value = re.sub(r"[ \t]+", " ", str(context or ""))
+    # v593: date labels often include parenthesized weekday abbreviations
+    # between start, dash, and end (2026/10/09(金) ～ 11/01(日)). Removing
+    # ONLY weekdays allows date ranges to be recognized without inventing dates.
+    value = re.sub(r"[（(]\s*[日月火水木金土](?:曜日)?\s*[)）]", "", value)
     marker = re.search(r"(?:開催日時|開催期間|開催日|期間\s*(?:[：:]|\s)|開催中|終了間近)", value)
     if not marker:
         return None  # Never treat a bare article publication date as an occurrence.
@@ -37040,15 +37211,28 @@ def _events_portal_rows_v588(portal, markup, *, page_url, days):
             continue
         # Official Tokyo listings include the publish date BEFORE '開催日時'.
         marker = re.search(r"開催日時|開催期間|開催日|期間\s*[：:]|開催中|終了間近", snippet)
-        if not marker:
+        if marker:
+            date_text = snippet[marker.start():]
+        elif domain == "enjoytokyo.jp" and re.search(r"(?<!\d)20\d{2}[/.-]\d{1,2}[/.-]\d{1,2}", snippet):
+            # EnjoyTokyo event cards publish the range without an explicit
+            # '開催期間' prefix, immediately after the event headline.
+            date_text = "開催期間 " + snippet
+        else:
             rejection["missing_date_label"] = rejection.get("missing_date_label", 0) + 1
             continue
-        date_text = snippet[marker.start():]
         period = _events_period_from_text_v588(date_text, target_year=date.fromisoformat(days[0]).year)
         if not period:
             rejection["unparseable_dates"] = rejection.get("unparseable_dates", 0) + 1
             continue
         start, end, occurrences, evidence = period
+        if domain == "enjoytokyo.jp":
+            # Canonicalize a publisher's numeric YYYY/MM/DD～MM/DD date into
+            # the existing local Japanese period verifier. Do not infer years
+            # from publication dates; _events_period_from_text_v588 already
+            # requires an explicit Gregorian start year on this event card.
+            evidence = (f"開催期間 {start.year}年{start.month}月{start.day}日～"
+                        f"{end.year}年{end.month}月{end.day}日") if end != start else (
+                        f"開催日 {start.year}年{start.month}月{start.day}日")
         if not any(start <= date.fromisoformat(d) <= end and
                    (not occurrences or d in occurrences) for d in days):
             rejection["outside_window"] = rejection.get("outside_window", 0) + 1
@@ -37092,6 +37276,87 @@ def _events_portal_rows_v588(portal, markup, *, page_url, days):
     return rows, {"candidate_links": len(relevant), "dated_links": len(rows), "rejects": rejection}
 
 
+def _events_shibuya_direct_v593(portal, markup, days):
+    """Parse the dated entries in Shibuya's *2026* municipal event calendar.
+
+    The listed month/day is used only when the year is explicitly in that
+    calendar page's own heading. A dated link is not a verified venue; read a
+    bounded number of official detail pages and keep unresolved leads separate.
+    """
+    scanner = _EventsSourceText_v588()
+    try:
+        scanner.feed(markup)
+        scanner.close()
+    except Exception:
+        return [], {"candidate_links": 0, "dated_links": 0,
+                    "rejects": {"invalid_html": 1}, "page_diagnostics": []}
+    heading = scanner.text[:1800]
+    years = {int(y) for y in re.findall(r"イベントカレンダー\s*(20\d{2})", heading)}
+    target_days = {date.fromisoformat(d) for d in days}
+    candidates, seen = [], set()
+    # A date printed in an anchor is a schedule claim only because this is an
+    # official municipality event calendar, NOT a news/publication index.
+    for anchor in scanner.anchors:
+        label = re.sub(r"\s+", " ", str(anchor.get("title") or "")).strip()
+        m = re.match(r"(?:(20\d{2})年\s*)?(\d{1,2})月\s*(\d{1,2})日", label)
+        if not m:
+            continue
+        year = int(m.group(1)) if m.group(1) else (next(iter(years)) if len(years) == 1 else None)
+        if year is None:
+            continue
+        try:
+            when = date(year, int(m.group(2)), int(m.group(3)))
+        except ValueError:
+            continue
+        if when not in target_days:
+            continue
+        url = urljoin(portal["url"], str(anchor.get("href") or ""))
+        if not _events_source_url_allowed_v588(url, portal["domain"]):
+            continue
+        path = urlparse(url).path
+        if "/contents/event/calendar/" in path or not path.endswith(".html"):
+            continue
+        title = re.sub(r"^(?:(?:20\d{2})年)?\s*\d{1,2}月\s*\d{1,2}日\s*(?:[（(][^()（）]{0,10}[)）])?\s*", "", label).strip()
+        if len(title) < 4:
+            continue
+        key = _events_url_key_v570(url)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        candidates.append((url, title[:145], when))
+    rows, pending, diag, rejected = [], [], [], {}
+    # At most six detail requests for the chosen week, no unbounded crawling.
+    for url, title, when in candidates[:6]:
+        content, stat = _events_public_html_v588(url, portal["domain"])
+        diag.append(stat)
+        content_text = ""
+        if content:
+            parser = _EventsSourceText_v588()
+            parser.feed(content)
+            parser.close()
+            content_text = parser.text
+        venue_match = re.search(
+            r"(?:開催場所|開催会場|会場|場所)\s*(?:[：:]\s*)?\n\s*([^\n]{3,110})",
+            content_text)
+        venue = venue_match.group(1).strip() if venue_match else ""
+        if not venue or re.search(r"(?:問い合わせ|アクセス|開催概要|地図|イベント情報)$", venue):
+            rejected["missing_detail_venue"] = rejected.get("missing_detail_venue", 0) + 1
+            continue
+        row = {"title": title, "venue": venue[:110], "address": "渋谷区 " + venue[:110],
+               "start_date": when.isoformat(), "end_date": when.isoformat(),
+               "event_date": when.isoformat(), "occurrence_dates": [when.isoformat()],
+               "start_time": "", "end_time": "", "latitude": None, "longitude": None,
+               "description": "", "source_url": url,
+               "date_evidence": f"渋谷区公式イベントカレンダー {when.year}年{when.month}月{when.day}日",
+               "source_method": "municipal_calendar_and_detail_html",
+               "source_listing_url": portal["url"],
+               "category_direct_v588": _events_portal_category_v588(title),
+               "child_audience": "一般", "child_evidence": ""}
+        rows.append(row)
+    return rows, {"candidate_links": len(candidates), "dated_links": len(rows),
+                  "rejects": rejected, "page_diagnostics": diag}
+
+
 def _events_direct_one_portal_v588(portal, days):
     began = time.monotonic()
     domain = portal["domain"]
@@ -37107,13 +37372,14 @@ def _events_direct_one_portal_v588(portal, days):
     if html_text:
         if domain == "gotokyo.org":
             rows, details = _events_gotokyo_direct_v588(portal, html_text, days)
-            result.update({"rows": rows, **details})
-            result["page_attempts"] += len(details.get("page_diagnostics") or [])
-            result["page_success"] += sum(
-                x.get("status") == "fetched" for x in details.get("page_diagnostics") or [])
+        elif domain == "city.shibuya.tokyo.jp":
+            rows, details = _events_shibuya_direct_v593(portal, html_text, days)
         else:
             rows, details = _events_portal_rows_v588(portal, html_text, page_url=url, days=days)
-            result.update({"rows": rows, **details})
+        result.update({"rows": rows, **details})
+        result["page_attempts"] += len(details.get("page_diagnostics") or [])
+        result["page_success"] += sum(
+            x.get("status") == "fetched" for x in details.get("page_diagnostics") or [])
         if domain == "walkerplus.com" and result["candidate_links"]:
             # The default WalkerPlus index shows only 10 / 1000+ events.
             # Two additional documented /2.html, /3.html pages are allowed;
@@ -37255,160 +37521,84 @@ def _events_week_failure_tallies_v588(raw_rows, sources, days):
 
 
 def _events_search_week_one_category_v585(start_day, days, category, latitude, longitude, radius_km, place_label):
-    """A single hosted Web search per category across all seven dates."""
-    plan = _events_compact_source_plan_v584(category, latitude, longitude, radius_km, place_label)
-    end_day = days[-1]
-    exact_days = "、".join(days)
-    extra_sites = "\n指定の6サイト（検索優先・出典は実際に取得できたURLのみ）：\n" + "\n".join(
-        f"- {site['name']} {site['url']}" for site in EVENT_SOURCE_PORTALS_V587)
-    child_focus = (
-        "\n子ども（特に未就学児・小学生）と一緒に体験・観戦・見学できる企画を優先する。"
-        "親子体験、科学、自然観察、鉄道、スポーツ、祭り、文化ワークショップを幅広く探す。"
-        "成人限定や年齢制限で子どもが参加・見学できない催しは採用しない。"
-        "各イベントに child_audience（子ども向け/親子向け/一般/大人限定/不明）と"
-        " child_evidence（その判断の掲載元の短い根拠表記、不明なら空文字）を返す。"
-        "子ども向けと明記されていないものを子ども向けと断定しない。"
-        "今日に限定したサイトのページは未来日検索の代わりにしない。"
-        "掲載元の当該未来日を説明する個別のイベントページを探す。"
-        "サイトが検索結果に出なければ未参照と扱い、採用数を創作しない。")
-    prompt = (
-        f"日本時間 {start_day} から {end_day} までのイベントを検索。対象日：{exact_days}。"
-        f"検索地点：{str(place_label or '')[:65]}、概略座標 {float(latitude):.2f}, {float(longitude):.2f}、"
-        f"半径{radius_km}km以内。カテゴリ：{category}（{EVENT_SEARCH_CATEGORIES_V570[category]}）。\n"
-        f"検索方針：{plan['focus']}\n" + extra_sites + child_focus + "\n"
-        "対象7日間の各日を偏らず確認する。自治体・公的施設の公式カレンダー、"
-        "主催者・会場の個別案内、スポーツ・文化の専門サイト、地域情報を検索する。"
-        "実際に開いて確認した掲載元URL以外は出典にしない。koko.tokyo（全サブドメイン）除外。"
-        "開催日と掲載日・申込期限を混同せず、過去年・中止・遠方・オンライン限定・常設営業・"
-        "子ども参加不可のイベントは除外。開催日や出典が不明な候補はpending_eventsに分ける。"
-        "各日に2～4件程度を目標に、日ごとに地域スポーツ・文化・自治体行事を分散する。"
-        "特定日に候補が少なければ空欄のままにし、架空情報で埋めない。"
-        "週に最大24件程度、ページを実際に確認できた分だけ返す。"
-        "日によって開催時刻や会場が異なる催しは、日付ごとに別イベント行とする。"
-        "各events行にtitle,venue,address,start_date,end_date,event_date,"
-        "occurrence_dates,start_time,end_time,description,date_evidence,"
-        "latitude,longitude,source_urlを指定。"
-        "全日開催の会期イベントは実施が確認できる各日をoccurrence_datesで列挙。"
-        "休館日・休演日・土日限定などを考慮し、未確認の開催日を列挙しない。"
-        "1回限りならevent_dateにその実施日を入力。"
-        "開始・終了時刻は掲載元で確認できるHH:MM形式、不明なら空文字。"
-        "開場時刻・受付時刻は開始時刻にしない。会場座標を推測しない。不明ならnull。"
-        "source_urlはWeb検索の参照URLそのもの。URLを創作しない。"
-        "date_evidenceには掲載元の年月日・開催期間の短い表記を正確に書く。"
-        "ページの日付表記から開催日が確認できないものはeventsに入れない。"
-        "JSONのみで出力（説明やコード囲みは不要）："
-        '{"events":[{"title":"...","venue":"...","address":"...",'
-        '"start_date":"YYYY-MM-DD","end_date":"YYYY-MM-DD",'
-        '"event_date":"YYYY-MM-DD or empty","occurrence_dates":["YYYY-MM-DD"],'
-        '"start_time":"HH:MM or empty","end_time":"HH:MM or empty",'
-        '"description":"...","date_evidence":"掲載元の開催日表記",'
-        '"child_audience":"子ども向け/親子向け/一般/不明","child_evidence":"掲載元の根拠表記",'
-        '"latitude":null,"longitude":null,"source_url":"https://..."}],'
-        '"pending_events":[{"title":"...","venue":"...","address":"...",'
-        '"description":"...","source_url":"https://..."}]}。'
-    )
-    # This public HTML stage runs once per *week*, shared between all 3
-    # categories.  It may fail independently of the paid search.
-    direct_future = _events_direct_future_v588(days)
-    api_sources = set()
-    api_usage = {}
-    payload = {}
-    error_details = {}
-    api_failed = False
+    """v593: no paid AI/Web/Places/geocoding API calls, now or on rerolls.
+
+    Shared public HTML retrieval is robots-aware and bounded (v588); one
+    extraction is reused for all 3 categories and each displayed day. A site
+    whose public page is inaccessible is reported, not silently substituted
+    with a paid search. Venue without coordinates stays distance-unverified.
+    """
+    start_time = time.monotonic()
     try:
-        response = _events_web_search_request_v582(
-            prompt=prompt, domains=None, context_size="medium", timeout_seconds=55.0,
-            max_output_tokens=EVENT_SEARCH_WEEK_MAX_OUTPUT_TOKENS_V585)
-        api_sources = _events_source_urls_v570(response)
-        api_usage = _events_usage_v587(response)
-        payload = _events_decode_json_v570(getattr(response, "output_text", ""))
-        if not isinstance(payload.get("events"), list):
-            api_failed = True
-            error_details = {"failure_message": "検索APIの応答JSONを読み取れませんでした。",
-                             "http_status": None, "error_code": "invalid_response"}
-            payload = {"events": [], "pending_events": []}
-    except Exception as exc:
-        api_failed = True
-        error_details = _events_error_details_v582(exc)
-        payload = {"events": [], "pending_events": []}
-    try:
-        direct = direct_future.result(timeout=45)
+        direct = _events_direct_shared_v588(days)
     except Exception as exc:
         direct = {"_error": {"status": type(exc).__name__}}
     direct_rows = []
     for portal in EVENT_SOURCE_PORTALS_V587:
         info = direct.get(portal["domain"]) or {}
         direct_rows.extend(x for x in info.get("rows") or [] if isinstance(x, dict))
-    direct_for_cat = [dict(r) for r in direct_rows if r.get("category_direct_v588") == category]
-    sources = set(api_sources)
-    sources.update(_events_url_key_v570(r.get("source_url")) for r in direct_for_cat)
+    direct_for_cat = [dict(r) for r in direct_rows
+                      if r.get("category_direct_v588") == category
+                      and not _events_source_blocked_v581(r.get("source_url"))]
+    sources = {_events_url_key_v570(r.get("source_url")) for r in direct_for_cat}
     sources.discard("")
-    ai_rows = [r for r in list(payload.get("events") or [])[:80] if isinstance(r, dict)]
-    raw_rows = ai_rows + direct_for_cat
-    pending_raw = [r for r in list(payload.get("pending_events") or [])[:32]
-                   if isinstance(r, dict)]
     candidates = {day: [] for day in days}
-    for original in raw_rows:
-        row = dict(original)
-        citation = _events_url_key_v570(row.get("source_url"))
-        if citation not in sources and row.get("source_method") is None:
-            evidence_url = str(row.get("evidence_url") or row.get("citation_url") or "")
-            if (_events_url_key_v570(evidence_url) in api_sources and
-                    urlparse(evidence_url).hostname == urlparse(str(row.get("source_url") or "")).hostname):
-                row["source_url"] = evidence_url
-                citation = _events_url_key_v570(evidence_url)
-        if not citation or citation not in sources:
-            pending_raw.append(row)
+    dropped = {"wrong_or_unverified_date": 0, "missing_source": 0}
+    for raw in direct_for_cat:
+        key = _events_url_key_v570(raw.get("source_url"))
+        if key not in sources:
+            dropped["missing_source"] += 1
             continue
         matched = False
         for day in days:
-            fixed = _events_week_assign_v585(row, day)
+            fixed = _events_week_assign_v585(raw, day)
             if fixed is not None:
                 candidates[day].append(fixed)
                 matched = True
         if not matched:
-            pending_raw.append(row)
-    pending = _events_pending_v577(pending_raw, sources, cap=28)
+            dropped["wrong_or_unverified_date"] += 1
     by_day = {}
     for day in days:
         dated = _events_prefilter_v571(candidates[day], day=day, sources=sources)
-        items = _events_normalize_v570(dated, day=day, category=category,
-                                       lat=latitude, lon=longitude,
-                                       radius_km=radius_km, sources=sources)
-        unverified = _events_unverified_v579(
-            [{"pending": pending, "sources": sources}], items,
-            day=day, category=category, latitude=latitude,
-            longitude=longitude, radius_km=radius_km)
+        items = _events_normalize_v570(
+            dated, day=day, category=category, lat=latitude, lon=longitude,
+            radius_km=radius_km, sources=sources)
         domains = sorted({(urlparse(row.get("source_url") or "").hostname or "").lower().removeprefix("www.")
                           for row in items if row.get("source_url")})
         by_day[day] = {
-            "items": items, "unverified": unverified, "error": "",
+            "items": items, "unverified": [], "error": "",
             "source_domains": domains, "searched_source_count": len(domains),
-            "search_passes": 1, "failed_passes": int(api_failed),
-            "raw_count": len(raw_rows), "cited_count": len(candidates[day]),
-            "dated_count": len(dated), "distance_unverified_count": sum(
-                r.get("distance_m") is None for r in items),
+            "search_passes": 0, "failed_passes": 0,
+            "raw_count": len(direct_for_cat), "cited_count": len(candidates[day]),
+            "dated_count": len(dated),
+            "distance_unverified_count": sum(r.get("distance_m") is None for r in items),
             "followup_attempted": 0, "followup_accepted": 0,
             "checked_at": datetime.now(ZoneInfo(APP_TIMEZONE)).strftime("%H:%M"),
         }
     audits = _events_source_audit_v587(
-        category=category, sources=api_sources, raw_rows=raw_rows,
-        pending_rows=pending_raw, per_day=by_day,
-        error=(error_details.get("failure_message") if api_failed and not direct_for_cat else ""))
+        category=category, sources=set(), raw_rows=direct_rows,
+        pending_rows=[], per_day=by_day)
     audits = _events_direct_audit_merge_v588(audits, direct, category, direct_rows)
-    counts = _events_week_failure_tallies_v588(raw_rows, sources, days)
-    has_results = any(x.get("items") or x.get("unverified") for x in by_day.values())
-    return {"days": by_day, "search_passes": 1, "failed_passes": int(api_failed),
-            "failed": bool(api_failed and not has_results),
-            "error": str(error_details.get("failure_message") or "") if api_failed and not has_results else "",
-            "api_warning": str(error_details.get("failure_message") or "") if api_failed and has_results else "",
-            "http_status": error_details.get("http_status"),
-            "source_audit": audits, "api_usage": api_usage, "api_request_count": 1,
-            "direct_http_requests": sum(int(x.get("page_attempts") or 0) for x in direct.values() if isinstance(x, dict)),
-            "direct_http_success": sum(int(x.get("page_success") or 0) for x in direct.values() if isinstance(x, dict)),
-            "direct_events_found": len(direct_for_cat),
-            "exclusion_counts": counts,
-            "start_day": start_day, "end_day": end_day}
+    actual_sites = [x for x in direct.values() if isinstance(x, dict) and x.get("fetch")]
+    successes = sum(int(x.get("page_success") or 0) for x in actual_sites)
+    failures = sum(int(x.get("page_success") or 0) == 0 for x in actual_sites)
+    if successes == 0:
+        error = "公開イベント情報を取得できませんでした。通信状態とサイト別取得ログをご確認ください。"
+    else:
+        error = ""
+    tally = _events_week_failure_tallies_v588(direct_for_cat, sources, days)
+    for reason, count in dropped.items():
+        if count:
+            tally[reason] = tally.get(reason, 0) + count
+    return {
+        "days": by_day, "search_passes": 0, "failed_passes": failures,
+        "failed": successes == 0, "error": error, "api_warning": "",
+        "source_audit": audits, "api_usage": {}, "api_request_count": 0,
+        "direct_http_requests": sum(int(x.get("page_attempts") or 0) for x in actual_sites),
+        "direct_http_success": successes, "direct_events_found": len(direct_for_cat),
+        "exclusion_counts": tally, "start_day": start_day, "end_day": days[-1],
+        "fetch_elapsed_ms": round((time.monotonic()-start_time)*1000),
+    }
 
 
 def _events_week_fetch_category_v585(start_day, category, latitude, longitude, radius_km, place_label, *, days):
@@ -37423,7 +37613,7 @@ def _events_week_fetch_category_v585(start_day, category, latitude, longitude, r
 def _events_week_job_v585(start_day, category, location, radius_km, *, days, refresh=False):
     """Cache one entire 7-day result per category; changing viewed day is free."""
     latitude, longitude = float(location["latitude"]), float(location["longitude"])
-    key = ("v588-week", start_day, category, round(latitude, 2), round(longitude, 2), int(radius_km), tuple(days))
+    key = ("v593-week", start_day, category, round(latitude, 2), round(longitude, 2), int(radius_km), tuple(days))
     runtime = _events_runtime_v570()
     now = time.monotonic()
     with runtime["lock"]:
@@ -37459,7 +37649,7 @@ def _events_week_job_v585(start_day, category, location, radius_km, *, days, ref
 
 
 def _events_week_futures_v585(start_day, location, radius_km, *, days, refresh=False):
-    """Maximum 3 paid API calls per explicit weekly search (1 per category)."""
+    """Zero paid API calls; shared public listings are read once per weekly search."""
     return {category: _events_week_job_v585(start_day, category, location, radius_km,
                                              days=days, refresh=refresh)
             for category in EVENT_SEARCH_CATEGORIES_V570}
@@ -37516,7 +37706,7 @@ def _events_week_day_buttons_v585(snapshot):
     if counts:
         st.caption("表示中のカテゴリの確認済み件数：" + "／".join(
             f"{date.fromisoformat(d).month}/{date.fromisoformat(d).day} {counts[d]}件" for d in days))
-    st.caption("日付の切替ではAPI検索しません。未確認の候補は別枠に表示します。")
+    st.caption("日付切替では通信しません。イベント検索に有料AI APIは使いません。")
 
 
 # v585: Optional, explicit per-day deep dive. A weekly search never launches
@@ -37633,7 +37823,7 @@ def _events_week_cached_v588(start_day, location, radius, days, *, force_refresh
     runtime = _events_runtime_v570()
     hit = {}
     for category in EVENT_SEARCH_CATEGORIES_V570:
-        key = ("v588-week", start_day, category,
+        key = ("v593-week", start_day, category,
                round(float(location["latitude"]), 2), round(float(location["longitude"]), 2),
                int(radius), tuple(days))
         with runtime["lock"]:
@@ -37673,6 +37863,14 @@ def _events_start_explicit_search_v579(location, *, day=None, radius_km=None, fo
         return False
     radius = int(radius_km or st.session_state.get("_events_radius_v570") or 15)
     location_copy = dict(location)
+    # v593: an explicit refresh must really fetch a fresh public index. Merely
+    # making new category futures while the shared HTML cache is warm would
+    # silently reuse stale pages for up to 30 minutes.
+    if force_refresh:
+        with _events_source_fetch_lock_v588:
+            cached = _events_source_fetch_jobs_v588.get(tuple(days))
+            if cached and cached[1].done():
+                _events_source_fetch_jobs_v588.pop(tuple(days), None)
     cache_status = _events_week_cached_v588(start_day, location_copy, radius, days,
                                              force_refresh=bool(force_refresh))
     futures = _events_week_futures_v585(start_day, location_copy, radius,
@@ -38266,12 +38464,12 @@ def _events_result_panel_v570():
         if not result.get("error"):
             st.info(f"{_events_display_day_v574(day)}の{selection}イベントは開催日・出典を確認できませんでした。"
                     "未確認の候補は下の『未確認情報』に表示します。")
-        if result.get("search_passes"):
-            st.caption("検索状況：" + str(result.get("search_passes")) + "系統、候補 " +
+        if result.get("raw_count") or result.get("failed_passes"):
+            st.caption("公開サイトの取得結果：候補 " +
                        str(result.get("raw_count") or 0) + "件、出典照合 " +
                        str(result.get("cited_count") or 0) + "件、日付確認 " +
-                       str(result.get("dated_count") or 0) + "件、通信失敗 " +
-                       str(result.get("failed_passes") or 0) + "件")
+                       str(result.get("dated_count") or 0) + "件、取得失敗サイト " +
+                       str(result.get("failed_passes") or 0) + "件、AI検索API 0回")
     else:
         checked_at = str(result.get("checked_at") or "")
         located = sum(e.get("distance_m") is not None for e in items)
@@ -38281,7 +38479,7 @@ def _events_result_panel_v570():
         if selection == EVENT_SEARCH_ALL_CATEGORY_V576:
             counts = result.get("category_counts") or {}
             st.caption("内訳：" + " ／ ".join(f"{cat} {counts.get(cat, 0)}件" for cat in EVENT_SEARCH_CATEGORIES_V570))
-        st.caption(f"検索 {int(result.get('search_passes') or 0)}系統／参照元 "
+        st.caption(f"公開サイト直接取得／AI検索API 0回／採用掲載元 "
                    f"{int(result.get('searched_source_count') or 0)}サイト")
         if int(result.get("followup_attempted") or 0):
             st.caption("開催日・出典の追加確認："
@@ -38304,12 +38502,12 @@ def _events_result_panel_v570():
         st.info("選択した日を追加検索中です。結果がそろったら一覧に反映します。")
     elif not changed and len(items) < max_items:
         category_calls = len(EVENT_SEARCH_CATEGORIES_V570) if selection == EVENT_SEARCH_ALL_CATEGORY_V576 else 1
-        label = f"この日の情報を詳しく探す（追加API最大{category_calls}回）"
+        label = "この日の公開イベント情報を再確認（無料）"
         if st.button(label, use_container_width=True,
                      key=f"event_day_refine_v585_{selection}_{day}"):
             if _events_start_day_refinement_v585(snapshot, day, selection):
                 st.rerun(scope="app")
-    if st.button("最新情報に更新（API再検索）", use_container_width=True,
+    if st.button("公開イベント情報を更新（無料）", use_container_width=True,
                  key=f"event_refresh_v579_{selection}"):
         _events_start_explicit_search_v579(location, day=search_start_day, radius_km=radius_km, force_refresh=True)
         st.rerun(scope="app")
@@ -61116,6 +61314,14 @@ def _get_good_moments_factor_component():
 
 def page_good_moments_definition():
     page_top("✨ いい瞬間の定義")
+
+    if not _video_moment_local_face_models_v594().get("face"):
+        st.warning(
+            "このサーバーにはローカル顔検出モデルがありません。"
+            "表情・笑顔の評価を有効にするには、GitHubのrequirements.txtに"
+            "opencv-python-headlessを追加してください。"
+            "未導入の場合、表情の項目は推測せず中立点で扱います。"
+        )
 
     notice = st.session_state.pop("_good_moments_settings_notice", None)
     if notice:
