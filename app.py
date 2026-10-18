@@ -47,18 +47,18 @@ def _app_css_v473(markup, **_ignored):
 # Review menu-only update: 2026-09-19 JST
 GENERATED_UPDATE_JST = "2026-09-19T14:54:38+09:00"
 
-APP_BUILD = "v601"
+APP_BUILD = "v602"
 # v598: Passing the focus gate is mandatory before any weighted ranking or reroll.
-# Never fill the nine-image target with focus-rejected candidates.
+# Never fill the twenty-image target with focus-rejected candidates.
 # v597: Compare 30 FPS candidates across the whole saved video offline. Disk-backed
-# analysis proxies bound memory; extract only the nine winners at native resolution.
+# analysis proxies bound memory; extract only the twenty winners at native resolution.
 # v596: Keep prior reroll images hidden until the requested round is fully saved.
 # Reset stale completion progress at queue time and keep failures separate from success.
 # v595: Hide stray developer text; prioritize measurable image/face quality before
 # diversity, suppress transient smile detections and compare structural duplicates offline.
 # v594: Score Good Moments by six distinguishable local signals, including optional offline OpenCV smile/eye/face evidence, camera-motion-compensated action, scene changes and actual favorite-photo similarity. Apply saved percentages exactly; no paid AI calls.
 # v593: Event search uses zero paid AI/search/geocoding API calls: directly read robots-permitted public event listings, validate published dates locally, group 7 dates, preserve audit logs and category filters. Manual day detail search is also API-free.
-# v592: Re-enable "別の9枚を作る" even when existing candidates have emotion/parenting selections. Persisted diary photos are untouched; the unsaved current selection is replaced when reroll completes.
+# v592: Re-enable "別の20枚を作る" even when existing candidates have emotion/parenting selections. Persisted diary photos are untouched; the unsaved current selection is replaced when reroll completes.
 # v591: Select nine Good Moments using on-server, offline Pillow/NumPy image analysis.
 # No OpenAI/vision API calls in automatic video-frame selection or rerolls.
 # Preserve 0.5-second sampling / max 120 frames, and avoid prior rejected frames.
@@ -1122,7 +1122,7 @@ VIDEO_PROCESSING_MAX_SECONDS = 75
 # conservative margin because browser/device bitrates vary.
 VIDEO_RECORDING_RESERVE_BYTES = 36 * 1024 * 1024
 VIDEO_MAX_BYTES = 150 * 1024 * 1024
-VIDEO_AI_MAX_SELECTIONS = 9  # いい瞬間の切り抜き枚数
+VIDEO_AI_MAX_SELECTIONS = 20  # いい瞬間の切り抜き枚数
 # Full-video analysis at 30 FPS; legacy bundles keep the same count ceiling.
 VIDEO_ANALYSIS_FPS_V597 = 30
 VIDEO_AI_MIN_SAMPLE_INTERVAL_MS = 1000.0 / VIDEO_ANALYSIS_FPS_V597
@@ -16909,8 +16909,8 @@ def _video_moment_focus_passes_v598(row):
 def _video_moment_local_pick_v594(records, preference_context=None, excluded_frame_ids=None):
     """Quality first, configured six-factor ranking second, diversity third.
 
-    Focus is a prerequisite, never a weighted preference. Nine distinct choices
-    require nine focus-passing frames; insufficient evidence is an explicit error.
+    Focus is a prerequisite, never a weighted preference. Twenty distinct choices
+    require twenty focus-passing frames; insufficient evidence is an explicit error.
     All decisions are local; there is no semantic/emotion recognition claim.
     """
     import numpy as np
@@ -16922,7 +16922,7 @@ def _video_moment_local_pick_v594(records, preference_context=None, excluded_fra
     target = VIDEO_AI_MAX_SELECTIONS
     if len(entries) < target:
         raise ValueError(
-            f"ピントの基準を満たす候補は{len(entries)}枚で、9枚に足りません。"
+            f"ピントの基準を満たす候補は{len(entries)}枚で、20枚に足りません。"
             "ぼけた写真で枚数を補わず、作成を中止しました。"
         )
     context = preference_context if isinstance(preference_context, dict) else {}
@@ -17086,7 +17086,7 @@ def _video_moment_local_pick_v594(records, preference_context=None, excluded_fra
         if len(selected) >= target:
             break
     if len(selected) < target:
-        raise ValueError("いい瞬間を9枚そろえられませんでした。")
+        raise ValueError("いい瞬間を20枚そろえられませんでした。")
     # Rank 1 (BEST) must actually be the highest quality-weighted selected frame.
     selected.sort(key=lambda row: (-row["tier_v595"], -row["base"], row["timestamp_ms"]))
     return [{"frame": row["frame"], "score": int(round(row["base"] * 100.)),
@@ -17125,7 +17125,7 @@ def choose_video_ai_frames(
     selection = _video_moment_native_stills_v597(selection, frame_items, progress_callback)
     if callable(progress_callback):
         try:
-            progress_callback("final_selection", 1, 1, "30FPSの比較から9枚を選びました")
+            progress_callback("final_selection", 1, 1, "30FPSの比較から20枚を選びました")
         except Exception:
             pass
     return selection
@@ -17624,7 +17624,7 @@ def _video_ai_expected_candidate_count(photo):
 
 
 class _VideoMomentFramePoolV597(list):
-    """Disk-backed 30 FPS analysis frames; only nine native JPEGs enter memory."""
+    """Disk-backed 30 FPS analysis frames; only twenty native JPEGs enter memory."""
     def __init__(self, workspace, original_path, fps):
         super().__init__()
         self.workspace = workspace
@@ -17664,9 +17664,9 @@ def _video_moment_native_stills_v597(selection, frames, progress_callback=None):
         raise RuntimeError("動画の解析用ファイルを読み込めませんでした。")
     indices = sorted({int(item["frame"]["analysis_index_v597"]) for item in selection})
     if len(indices) != VIDEO_AI_MAX_SELECTIONS:
-        raise ValueError("異なる9枚の元動画フレームを確定できませんでした。")
+        raise ValueError("異なる20枚の元動画フレームを確定できませんでした。")
     if callable(progress_callback):
-        progress_callback("native_stills", 0, len(indices), "選んだ9枚を元の解像度で切り出しています")
+        progress_callback("native_stills", 0, len(indices), "選んだ20枚を元の解像度で切り出しています")
     directory = Path(frames.workspace.name) / "native"
     directory.mkdir(exist_ok=True)
     expression = "+".join(f"eq(n\\,{index})" for index in indices)
@@ -17678,7 +17678,7 @@ def _video_moment_native_stills_v597(selection, frames, progress_callback=None):
     result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=180, check=False)
     paths = sorted(directory.glob("selected_*.jpg"))
     if result.returncode or len(paths) != len(indices):
-        raise RuntimeError("選定した9枚を元の解像度で切り出せませんでした。")
+        raise RuntimeError("選定した20枚を元の解像度で切り出せませんでした。")
     originals = {index: path.read_bytes() for index, path in zip(indices, paths)}
     if any(not value for value in originals.values()):
         raise RuntimeError("元動画の切り抜き画像が空でした。")
@@ -17694,7 +17694,7 @@ def _background_extract_video_candidate_frames(client, photo):
     """Decode every 1/30-second candidate across the saved video (up to 65s).
 
     Analysis JPEGs are disk-backed at <=640px, not loaded as 1,950 native images.
-    Native resolution is recovered only for the final nine exact frame indices.
+    Native resolution is recovered only for the final twenty exact frame indices.
     """
     video_path = photo_video_storage_path(photo)
     ffmpeg = _ffmpeg_executable()
@@ -17728,7 +17728,7 @@ def _background_extract_video_candidate_frames(client, photo):
             detail = result.stderr.decode("utf-8", errors="replace").replace("\n", " ")[-180:]
             raise RuntimeError("30FPSで動画全体を解析できませんでした。" + detail)
         if len(files) < VIDEO_AI_MAX_SELECTIONS:
-            raise ValueError("異なる時刻で9枚切り出せる長さの動画がありません。")
+            raise ValueError("異なる時刻で20枚切り出せる長さの動画がありません。")
         for index, path in enumerate(files):
             if not path.stat().st_size:
                 raise RuntimeError("30FPS解析用の画像が空でした。")
@@ -18490,7 +18490,7 @@ def _run_video_ai_background_job(photo_id, family_key, member_key):
 
     frames = None
     try:
-        # v597 decodes all 30 FPS analysis frames, then recovers nine native JPEGs.
+        # v597 decodes all 30 FPS analysis frames, then recovers twenty native JPEGs.
         # Legacy browser sheets/low-resolution bundles are ignored for final quality.
         frames = _background_extract_video_candidate_frames(client, photo)
         if not frames:
@@ -18868,6 +18868,9 @@ def request_video_ai_reroll(photo, record_rejection=True):
         .execute()
     )
     fresh = (current.data or [None])[0] or photo
+    home_counts_before = home_video_counts()
+    home_status_before = video_ai_effective_status(fresh)
+    home_has_items_before = bool(video_ai_selection_items(fresh))
     reflection = dict(photo_media_metadata(fresh))
     selection = reflection.get("ai_selection") or {}
     if not isinstance(selection, dict):
@@ -18898,7 +18901,7 @@ def request_video_ai_reroll(photo, record_rejection=True):
     selection["updated_at"] = selection["queued_at"]
     selection["reroll_target_round_v596"] = int(selection.get("round") or 0) + 1
     selection["stage"] = "queued"
-    selection["progress_message"] = "新しい9枚を作成しています。完了まで前の候補は表示しません。"
+    selection["progress_message"] = "新しい20枚を作成しています。完了まで前の候補は表示しません。"
     selection["progress_completed"] = 0
     selection["progress_total"] = 0
     selection["last_error"] = ""
@@ -18907,6 +18910,8 @@ def request_video_ai_reroll(photo, record_rejection=True):
     selection.pop("review_result", None)
     reflection["ai_selection"] = selection
     _write_photo_reflection(photo.get("id"), reflection)
+    try: _home_video_note_reroll_v602(home_status_before, home_has_items_before, home_counts_before)
+    except Exception: pass
 
     updated = dict(fresh)
     updated["reflection_json"] = reflection
@@ -34087,50 +34092,108 @@ def _home_video_counts_cached(family_key, member_key):
     return saved_count, before_clip_count, processing_rows, error_count
 
 
-def home_video_counts():
-    """Return non-blocking Home counts, or the last trusted session snapshot.
+def _home_video_publish_counts_v602(counts, owner=None):
+    if not isinstance(counts, (list, tuple)) or len(counts) < 4:
+        return
+    runtime = _runtime_v468()
+    owner = owner or _owner_v468()
+    with runtime["lock"]:
+        state = _owner_state_v468(runtime, owner)
+        state["home_video_counts_v602"] = (max(0, int(counts[0])), max(0, int(counts[1])), [], max(0, int(counts[3])))
 
-    The old implementation immediately joined a background Future and fell back
-    to a synchronous 1,000-row Supabase read on miss. Either path could block
-    the entire Streamlit rerun (including other tappable controls).
-    """
+
+def home_video_counts():
+    """Never wait for a database read; retain an owner-scoped verified snapshot."""
+    owner = _owner_v468()
     try:
         counts = _read_ahead_value_v520("home_video_counts", block=False)
         if isinstance(counts, (list, tuple)) and len(counts) >= 4:
+            _home_video_publish_counts_v602(counts, owner)
+            st.session_state.pop("_home_video_count_wait_v602", None)
+        else:
+            runtime = _runtime_v468()
+            with runtime["lock"]:
+                state = _owner_state_v468(runtime, owner)
+                counts = state.get("home_video_counts_v602")
+                # A prefetch can finish while the user is on Moments. Recover its
+                # verified total even if metadata updates have since bumped epoch.
+                if counts is None:
+                    entry = state.get("read_ahead", {}).get(_read_ahead_session_token_v520() + ":home_video_counts") or {}
+                    future = entry.get("future")
+                    if future is not None and future.done():
+                        try: counts = future.result()
+                        except Exception: counts = None
+            if counts is not None:
+                _home_video_publish_counts_v602(counts, owner)
+        if isinstance(counts, (list, tuple)) and len(counts) >= 4:
+            st.session_state["_home_video_count_owner_v602"] = owner
             st.session_state["_home_video_saved_count"] = int(counts[0])
             st.session_state["_home_video_before_clip_count"] = int(counts[1])
             st.session_state["_home_video_error_count"] = int(counts[3])
             return int(counts[0]), int(counts[1])
     except Exception:
         pass
-    # Do not substitute a foreground DB request for an unfinished prefetch.
-    # As in existing v468 Home, the snapshot is refreshed on a natural rerun.
+    if st.session_state.get("_home_video_count_owner_v602") != owner:
+        return None
     saved = st.session_state.get("_home_video_saved_count")
     before = st.session_state.get("_home_video_before_clip_count")
-    if saved is None or before is None:
-        return None
     try:
-        return max(0, int(saved)), max(0, int(before))
+        return (max(0, int(saved)), max(0, int(before))) if saved is not None and before is not None else None
     except (TypeError, ValueError):
         return None
 
 
+def _home_video_note_reroll_v602(previous_status, previously_has_items, counts):
+    if counts is None:
+        return
+    was_pending = not (previous_status in {"ready", "reviewed"} and previously_has_items)
+    saved, pending = counts
+    errors = max(0, int(st.session_state.get("_home_video_error_count") or 0) - int(previous_status == "error"))
+    _home_video_publish_counts_v602((saved, min(saved, pending + int(not was_pending)), [], errors))
+
+
+def _home_video_counts_refreshing_v602():
+    runtime = _runtime_v468()
+    with runtime["lock"]:
+        state = _owner_state_v468(runtime, _owner_v468())
+        entry = state.get("read_ahead", {}).get(_read_ahead_session_token_v520() + ":home_video_counts") or {}
+        future = entry.get("future")
+        return future is None or int(entry.get("epoch", -1)) != int(state.get("epoch") or 0) or not future.done()
+
+
+@st.fragment(run_every=1.0)
+def _home_video_count_tick_v602():
+    # Bounded, cheap readiness checks only; never execute a database query here.
+    owner = _owner_v468()
+    now = time.monotonic()
+    wait = st.session_state.get("_home_video_count_wait_v602")
+    if not isinstance(wait, tuple) or wait[0] != owner:
+        wait = (owner, now)
+        st.session_state["_home_video_count_wait_v602"] = wait
+    if not _home_video_counts_refreshing_v602() or now - wait[1] >= 15:
+        st.rerun(scope="app")
+
+
 def _render_home_video_count_status():
-    """Refresh video processing counts while the home page remains open."""
     video_counts = home_video_counts()
     if video_counts is not None:
         saved_video_count, before_clip_count = video_counts
         error_count = max(0, int(st.session_state.get("_home_video_error_count") or 0))
         suffix = f"　／　処理エラー {error_count}本" if error_count else ""
-        st.caption(
-            f"保存済み {saved_video_count}本　／　瞬間切り取り前 {before_clip_count}本{suffix}"
-        )
+        st.caption(f"保存済み {saved_video_count}本　／　瞬間切り取り前 {before_clip_count}本{suffix}")
     else:
-        st.caption("保存済み本数を読み込み中です。")
+        st.caption("保存済み本数を確認しています。")
+    if _home_video_counts_refreshing_v602() or video_counts is None:
+        owner = _owner_v468()
+        wait = st.session_state.get("_home_video_count_wait_v602")
+        if not isinstance(wait, tuple) or wait[0] != owner or time.monotonic() - wait[1] < 15:
+            _home_video_count_tick_v602()
+        else:
+            if st.button("本数表示を更新", key="home_video_count_retry_v602"):
+                st.session_state.pop("_home_video_count_wait_v602", None)
+                st.rerun()
 
 
-# v383: do not rerun Home every 5 seconds. Natural interactions plus explicit cache
-# invalidation after video mutations keep these counters current without UI churn.
 render_home_video_count_status = _render_home_video_count_status
 
 
@@ -44163,7 +44226,7 @@ def _moments_video_title(photo):
 
 _MOMENTS_SELECT_HTML = """
 <div class="moments-view-toggle" role="group" aria-label="この動画の写真表示">
-  <button id="moments-view-list" class="moments-view-button" type="button">9枚で見る</button>
+  <button id="moments-view-list" class="moments-view-button" type="button">20枚で見る</button>
   <button id="moments-view-enlarge" class="moments-view-button" type="button">1枚ずつ見る</button>
 </div>
 <div id="moments-select-grid" class="moments-select-grid"></div>
@@ -44485,7 +44548,7 @@ export default function(component) {
   const grid = parentElement.querySelector('#moments-select-grid');
   if (!grid) return;
 
-  const photos = Array.isArray(data?.photos) ? data.photos.slice(0,9) : [];
+  const photos = Array.isArray(data?.photos) ? data.photos.slice(0,20) : [];
   const disabled = Boolean(data?.disabled);
   const familyKey=String(data?.family_key||''), memberKey=String(data?.member_key||''), videoId=String(data?.video_id||'');
   const roundNumber=Math.max(0,Number(data?.round_number||0)||0);
@@ -45693,9 +45756,9 @@ def _render_moments_picker(photo, index, view_mode=None, next_video_action=None)
 
     can_reroll = bool(_video_ai_has_candidate_source(selection_meta) or photo_video_storage_path(photo))
     if can_reroll and status != "reviewed":
-        with st.expander("候補の9枚が合わないとき"):
+        with st.expander("候補の20枚が合わないとき"):
             if st.button(
-                "🔄 別の9枚を作る",
+                "🔄 別の20枚を作る",
                 use_container_width=True,
                 help="写真を選択した状態でも再作成できます。日記に登録済みの写真は残ります。未保存の選択は新しい候補には引き継がれません。",
                 key=f"moments_reroll_{video_id}_{round_number}",
@@ -46420,11 +46483,11 @@ def page_moments():
                     if status == "error" and focus_error.startswith("ピント"):
                         st.warning(focus_error)
                     if status == "error" and _video_ai_reroll_pending_v596(selection):
-                        st.warning("新しい9枚を作成できませんでした。前の候補は表示していません。")
+                        st.warning("新しい20枚を作成できませんでした。前の候補は表示していません。")
                         if st.button("もう一度作成する", key=f"moments_retry_reroll_v596_{video.get('id')}"):
                             try:
                                 request_video_ai_reroll(video, record_rejection=False)
-                                st.session_state["_moments_notice"] = "新しい9枚を作成しています。"
+                                st.session_state["_moments_notice"] = "新しい20枚を作成しています。"
                                 st.rerun()
                             except Exception as exc:
                                 st.error("再作成を開始できませんでした。")
@@ -46736,8 +46799,8 @@ def gallery_import_marker_payload_v444(max_items=5000):
 # ============================================================
 # Page: Trip / camera
 # ============================================================
-def page_trip():
-    if st.button("←", key="camera_back_parent", help="1つ前の階層に戻る"):
+def page_trip(*, gallery_inline=False):
+    if not gallery_inline and st.button("←", key="camera_back_parent", help="1つ前の階層に戻る"):
         navigate_to_parent()
 
     notice = st.session_state.pop("_camera_notice", None)
@@ -46750,22 +46813,23 @@ def page_trip():
     if batch_error:
         with st.expander("保存できなかった写真の詳細"):
             st.code(str(batch_error))
-    render_photo_family_share_notice()
-    render_photo_favorite_notice()
+    if not gallery_inline:
+        render_photo_family_share_notice()
+        render_photo_favorite_notice()
 
-    gallery_only = bool(st.session_state.get("_camera_gallery_only_v601"))
-    if gallery_only:
-        st.markdown("### 🖼️ これまで撮った写真から登録する")
+    gallery_only = gallery_inline or bool(st.session_state.get("_camera_gallery_only_v601"))
+    if gallery_only and not gallery_inline:
+        st.markdown("### 🖼️ すでに撮った写真から選ぶ（複数可）")
         st.caption("写真を選んで確認し、保存してください。手動登録では過去の撮影日も選べます。")
     camera_component = _get_live_camera_component()
     if camera_component is None:
         st.error("ライブカメラ機能に必要なStreamlitのバージョンが古いです。requirements.txtを更新してください。")
         return
 
-    auto_start = bool(st.session_state.pop("_camera_auto_start", False))
-    auto_start_video = bool(st.session_state.pop("_camera_auto_start_video", False))
-    prepare_video_now = bool(st.session_state.pop("_camera_prepare_video_v394", False))
-    entry_mode = str(st.session_state.get("_camera_entry_mode_v394") or "photo")
+    auto_start = False if gallery_inline else bool(st.session_state.pop("_camera_auto_start", False))
+    auto_start_video = False if gallery_inline else bool(st.session_state.pop("_camera_auto_start_video", False))
+    prepare_video_now = False if gallery_inline else bool(st.session_state.pop("_camera_prepare_video_v394", False))
+    entry_mode = "photo" if gallery_inline else str(st.session_state.get("_camera_entry_mode_v394") or "photo")
     needs_video_setup = bool(auto_start_video or prepare_video_now or entry_mode == "video")
     active_snapshot = st.session_state.get("_active_trip_snapshot")
     if not isinstance(active_snapshot, dict) or active_snapshot.get("trip_date") != today_iso() or active_snapshot.get("status") != "active":
@@ -46846,7 +46910,7 @@ def page_trip():
             "gallery_import_identity_hashes": list(gallery_marker_payload_v444.get("identity_hashes") or []),
             "gallery_import_fingerprints": list(gallery_marker_payload_v444.get("fingerprints") or []),
         },
-        key=f"live_camera_v445_{camera_trip_key}_{st.session_state.capture_serial}_{_current_ui_refresh_epoch()}",
+        key=f"{'diary_import_v602' if gallery_inline else 'live_camera_v445'}_{camera_trip_key}_{st.session_state.capture_serial}_{_current_ui_refresh_epoch()}",
         on_photo_change=lambda: None,
         on_photo_batch_change=lambda: None,
         on_video_change=lambda: None,
@@ -47330,6 +47394,9 @@ def page_trip():
             st.error("写真を保存できませんでした。")
             with st.expander("保護者向け詳細"):
                 st.code(str(exc))
+
+    if gallery_inline:
+        return
 
     trip = st.session_state.get("_active_trip_snapshot")
     if isinstance(trip, dict) and trip.get("id"):
@@ -48119,12 +48186,9 @@ def page_diary():
         on_click=_open_photo_library_callback_v418,
         args=("diary",),
     )
-    st.button(
-        "🖼️ これまで撮った写真から登録する",
-        use_container_width=True,
-        key="diary_register_past_photos_v601",
-        on_click=_open_gallery_import_v601,
-    )
+    # Share the original image-screen file input, preview, batch selection,
+    # duplicate handling and save handlers. No intermediate navigation or new picker.
+    page_trip(gallery_inline=True)
 
     render_family_shared_individual_photos()
 
@@ -62948,6 +63012,8 @@ def _read_ahead_field_notes_worker_v520(runtime, owner):
 
 
 def _read_ahead_home_video_counts_worker_v520(runtime, owner):
+    with runtime["lock"]:
+        started_epoch = int(_owner_state_v468(runtime, owner).get("epoch") or 0)
     client = _worker_client_v468(runtime)
     rows = (
         client.table(PHOTO_TABLE)
@@ -62977,7 +63043,11 @@ def _read_ahead_home_video_counts_worker_v520(runtime, owner):
             processing_rows.append(job_row)
         elif status == "error":
             error_count += 1
-    return saved_count, before_clip_count, processing_rows, error_count
+    counts = (saved_count, before_clip_count, processing_rows, error_count)
+    with runtime["lock"]:
+        if int(_owner_state_v468(runtime, owner).get("epoch") or 0) == started_epoch:
+            _home_video_publish_counts_v602(counts, owner)
+    return counts
 
 
 def _read_ahead_feedback_rows_worker_v520(runtime, owner):
@@ -63061,6 +63131,11 @@ def _run_read_ahead_v520(runtime, owner, name, worker):
         _background_result_v468(runtime, owner, f"background:read_ahead:{name}", started, error)
 
 
+@st.cache_resource(show_spinner=False)
+def _home_video_count_executor_v602():
+    return ThreadPoolExecutor(max_workers=1, thread_name_prefix="burari-home-count")
+
+
 def _prime_read_ahead_v520(page_name, *, post_paint=False):
     """Start only small account reads that the current/likely-next page will need.
 
@@ -63102,11 +63177,12 @@ def _prime_read_ahead_v520(page_name, *, post_paint=False):
             entry = read_ahead.get(key)
             if isinstance(entry, dict):
                 future = entry.get("future")
-                same_epoch = int(entry.get("epoch") or -1) == epoch
+                same_epoch = int(entry.get("epoch", -1)) == epoch
                 fresh = now - float(entry.get("started") or 0.0) <= float(ttl)
                 if same_epoch and fresh and future is not None:
                     continue
-            future = _read_ahead_executor_v561().submit(_run_read_ahead_v520, runtime, owner, name, worker)
+            executor = _home_video_count_executor_v602() if name == "home_video_counts" else _read_ahead_executor_v561()
+            future = executor.submit(_run_read_ahead_v520, runtime, owner, name, worker)
             read_ahead[key] = {"future": future, "epoch": epoch, "started": now, "ttl": float(ttl)}
 
 
@@ -63119,7 +63195,7 @@ def _read_ahead_value_v520(name, *, block=False):
     with runtime["lock"]:
         entry = (state.get("read_ahead") or {}).get(key)
         epoch = int(state.get("epoch") or 0)
-        if not isinstance(entry, dict) or int(entry.get("epoch") or -1) != epoch:
+        if not isinstance(entry, dict) or int(entry.get("epoch", -1)) != epoch:
             return None
         future = entry.get("future")
     if future is None:
