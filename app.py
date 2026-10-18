@@ -47,7 +47,7 @@ def _app_css_v473(markup, **_ignored):
 # Review menu-only update: 2026-09-19 JST
 GENERATED_UPDATE_JST = "2026-09-19T14:54:38+09:00"
 
-APP_BUILD = "v600"
+APP_BUILD = "v601"
 # v598: Passing the focus gate is mandatory before any weighted ranking or reroll.
 # Never fill the nine-image target with focus-rejected candidates.
 # v597: Compare 30 FPS candidates across the whole saved video offline. Disk-backed
@@ -1616,6 +1616,11 @@ _LIVE_CAMERA_HTML = """
 """
 
 _LIVE_CAMERA_CSS = """
+.gallery-only-v601 #camera-menu{display:none!important}
+.gallery-only-v601:not(.camera-reviewing) #camera-library-actions{display:flex!important}
+.gallery-only-v601 #gallery-photo-label{display:flex!important}
+.gallery-only-v601 #gallery-video-label{display:none!important}
+
 .live-camera-wrap {
   width: 100%;
   box-sizing: border-box;
@@ -2210,6 +2215,8 @@ _LIVE_CAMERA_JS = r"""
 export default function(component) {
   const { parentElement, setTriggerValue, data } = component;
   const wrap = parentElement.querySelector('.live-camera-wrap');
+  const galleryOnly = Boolean(data?.gallery_only);
+  if (wrap) wrap.classList.toggle('gallery-only-v601', galleryOnly);
   const video = parentElement.querySelector('#live-camera-video');
   const canvas = parentElement.querySelector('#live-camera-canvas');
   const menu = parentElement.querySelector('#camera-menu');
@@ -3050,6 +3057,7 @@ export default function(component) {
   };
 
   const startCamera = async (mode = 'photo', options = {}) => {
+    if (galleryOnly) return;
     const requestedMode = mode === 'video' ? 'video' : 'photo';
     const fromModeSwitch = Boolean(options?.fromModeSwitch);
     if (requestedMode === 'video' && !videoAllowed) {
@@ -5552,7 +5560,9 @@ export default function(component) {
   window.addEventListener('resize', handleOrientationChange);
   try { globalThis.screen?.orientation?.addEventListener?.('change', handleOrientationChange); } catch (_) {}
 
-  if (data?.auto_start_mode === 'video') {
+  if (galleryOnly) {
+    showMenu();
+  } else if (data?.auto_start_mode === 'video') {
     queueMicrotask(() => startCamera('video'));
   } else if (data?.auto_start) {
     queueMicrotask(() => startCamera('photo'));
@@ -32131,6 +32141,7 @@ def _open_photo_library_callback_v418(return_page="diary"):
 def _home_nav_callback(page_name, camera_mode=None):
     """Home navigation callback; prepares camera/review state before the rerun."""
     if page_name == "camera":
+        st.session_state.pop("_camera_gallery_only_v601", None)
         requested_mode = str(camera_mode or "").strip().lower()
         if requested_mode not in {"photo", "video"}:
             requested_mode = _remembered_recent_camera_mode() or "photo"
@@ -46742,6 +46753,10 @@ def page_trip():
     render_photo_family_share_notice()
     render_photo_favorite_notice()
 
+    gallery_only = bool(st.session_state.get("_camera_gallery_only_v601"))
+    if gallery_only:
+        st.markdown("### 🖼️ これまで撮った写真から登録する")
+        st.caption("写真を選んで確認し、保存してください。手動登録では過去の撮影日も選べます。")
     camera_component = _get_live_camera_component()
     if camera_component is None:
         st.error("ライブカメラ機能に必要なStreamlitのバージョンが古いです。requirements.txtを更新してください。")
@@ -46814,6 +46829,7 @@ def page_trip():
 
     result = camera_component(
         data={
+            "gallery_only": gallery_only,
             "auto_start": auto_start,
             "auto_start_mode": "video" if auto_start_video else ("photo" if auto_start else ""),
             "video_allowed": video_allowed,
@@ -48048,6 +48064,14 @@ def page_photo_library_v418():
 # ============================================================
 # Page: Diary (photo emotion tagging)
 # ============================================================
+def _open_gallery_import_v601():
+    st.session_state["_camera_gallery_only_v601"] = True
+    st.session_state["_camera_entry_mode_v394"] = "photo"
+    for key in ("_camera_auto_start", "_camera_auto_start_video", "_camera_prepare_video_v394"):
+        st.session_state.pop(key, None)
+    _set_page_state("camera", history_mode="push")
+
+
 def page_diary():
     # Remove transient state from the retired comment/conversation UI. Historical
     # data stays in Supabase for compatibility, but v149 never asks for comments.
@@ -48094,6 +48118,12 @@ def page_diary():
         key="diary_open_all_photos_v418",
         on_click=_open_photo_library_callback_v418,
         args=("diary",),
+    )
+    st.button(
+        "🖼️ これまで撮った写真から登録する",
+        use_container_width=True,
+        key="diary_register_past_photos_v601",
+        on_click=_open_gallery_import_v601,
     )
 
     render_family_shared_individual_photos()
@@ -61866,11 +61896,7 @@ def page_settings_account():
 # ============================================================
 # v485: Android MediaStore background auto-import
 # ============================================================
-NATIVE_MEDIA_PERIOD_OPTIONS_V485 = {
-    "today": "今日",
-    "week": "1週間",
-    "month": "1ヶ月",
-}
+NATIVE_MEDIA_PERIOD_OPTIONS_V485 = {"today": "今日のみ"}
 NATIVE_MEDIA_SYNC_PAGES_V485 = {"home", "settings", "settings_media_import"}
 
 
@@ -62009,8 +62035,28 @@ def _native_media_safe_import_meta_v485(item):
     }
 
 
+def _native_media_today_eligible_v601(item, now=None):
+    if not isinstance(item, dict) or item.get("source_scope") != "camera_today_v601":
+        return False
+    if str(item.get("kind") or "") not in {"image", "video"}:
+        return False
+    try:
+        captured_ms = int(item.get("captured_at_ms") or 0)
+        if captured_ms <= 0:
+            return False
+        current = now or now_jst()
+        zone = ZoneInfo("Asia/Tokyo")
+        current = current.astimezone(zone)
+        captured = datetime.fromtimestamp(captured_ms / 1000.0, tz=zone)
+        return captured.date() == current.date() and captured.timestamp() <= current.timestamp() + 300
+    except (ValueError, TypeError, OverflowError, OSError):
+        return False
+
+
 def _native_media_storage_reservation_v485(item):
     item = item if isinstance(item, dict) else {}
+    if not _native_media_today_eligible_v601(item):
+        raise ValueError("当日撮影のカメラ写真・動画以外は自動取込しません。")
     media_key = str(item.get("media_key") or "").strip()
     kind = str(item.get("kind") or "").strip().lower()
     if not media_key or kind not in {"image", "video"}:
@@ -62086,6 +62132,8 @@ def _native_media_validate_owned_path_v485(path, trip_id):
 
 
 def _native_media_register_uploaded_v485(reservation):
+    if not _native_media_today_eligible_v601((reservation or {}).get("item")):
+        raise ValueError("撮影日が当日ではないため、自動登録しません。")
     reservation = reservation if isinstance(reservation, dict) else {}
     item = reservation.get("item") if isinstance(reservation.get("item"), dict) else {}
     kind = str(reservation.get("kind") or item.get("kind") or "").strip().lower()
@@ -62256,7 +62304,7 @@ export default function(component) {
     if(direct){try{
       if(action==='status') return {result_json:String(direct.status(token)||'{}')};
       if(action==='weather_ready' && typeof direct.weatherReady==='function') return {result:Number(direct.weatherReady(token)||0)};
-      if(action==='configure') return {result_json:String(direct.configure(token,Boolean(payload.enabled),String(payload.period||'month'))||'{}')};
+      if(action==='configure') return {result_json:String(direct.configure(token,Boolean(payload.enabled),'today')||'{}')};
       if(action==='request_permissions') return {result:Number(direct.requestPermissions(token)||0)};
       if(action==='scan') return {result:Number(direct.scanNow(token)||0)};
       if(action==='pending') return {result_json:String(direct.pendingItems(token,Number(payload.limit||1))||'[]')};
@@ -62319,7 +62367,7 @@ export default function(component) {
         sessionStorage.setItem(commandKey,'1');
         let reply=null;
         if(command.action==='configure'){
-          reply=await call('configure',{enabled:Boolean(command.enabled),period:String(command.period||'month')});
+          reply=await call('configure',{enabled:Boolean(command.enabled),period:'today'});
           const parsed=safeJson(reply?.result_json,{});
           if(Boolean(command.enabled)&&String(parsed?.permission_mode||'none')==='none') await call('request_permissions');
         } else if(command.action==='scan') reply=await call('scan');
@@ -62332,6 +62380,10 @@ export default function(component) {
       if(showStatus)setStatus(formatStatus(status));
       emitStable('native_status',status,'burari_media_status_v485');
     } else if(showStatus) setStatus('Androidの自動取込機能を確認できませんでした。APK側の更新が必要です。');
+    if(Number(status?.bridge_version||0)<3){
+      if(showStatus)setStatus('自動取込は停止中です。当日のカメラ撮影だけを取り込むにはAndroidアプリを更新してください。');
+      return;
+    }
     if(cancelled||!Boolean(data?.auto_sync)||!Boolean(status?.enabled))return;
     await waitForWeather();
     if(cancelled)return;
@@ -62398,6 +62450,9 @@ def _native_media_process_pending_v485(payload):
         return False
     if st.session_state.get("_native_media_reservation_v485"):
         return False
+    if not _native_media_today_eligible_v601(item):
+        st.session_state["_native_media_skip_ack_v485"] = {"media_key": media_key, "reason": "当日撮影のカメラ写真・動画以外は対象外です。"}
+        return True
 
     duplicate, reason = _native_media_is_duplicate_v485(item)
     if duplicate:
@@ -62454,6 +62509,10 @@ def _native_media_process_upload_result_v485(payload):
     reservation = st.session_state.get("_native_media_reservation_v485")
     if not isinstance(reservation, dict) or media_key != str(reservation.get("media_key") or ""):
         return False
+    if not _native_media_today_eligible_v601(reservation.get("item")):
+        st.session_state.pop("_native_media_reservation_v485", None)
+        st.session_state["_native_media_skip_ack_v485"] = {"media_key": media_key, "reason": "当日撮影の対象外です。"}
+        return True
     if str(payload.get("status") or "") != "uploaded":
         st.session_state.pop("_native_media_reservation_v485", None)
         st.session_state["_native_media_error_v485"] = str(payload.get("error") or "自動取込に失敗しました。")[:260]
@@ -62470,6 +62529,10 @@ def _native_media_process_upload_result_v485(payload):
 
 
 def render_native_media_sync_v485(*, show_status=False, command=None, auto_sync=True, defer_until_weather=False, key="native_media_sync_v485"):
+    reservation = st.session_state.get("_native_media_reservation_v485")
+    if isinstance(reservation, dict) and not _native_media_today_eligible_v601(reservation.get("item")):
+        st.session_state["_native_media_skip_ack_v485"] = {"media_key": str(reservation.get("media_key") or ""), "reason": "当日撮影の対象外です。"}
+        st.session_state.pop("_native_media_reservation_v485", None)
     component = _get_native_media_sync_component_v485()
     if component is None:
         if show_status:
@@ -62527,33 +62590,21 @@ def render_native_media_sync_v485(*, show_status=False, command=None, auto_sync=
 
 
 def page_settings_media_import_v485():
-    page_top("🖼 写真・動画の自動取込", "端末のフォトフォルダから、まだ取り込んでいない写真・動画だけを確認します。")
+    page_top("🖼 写真・動画の自動取込", "端末にある当日撮影の写真・動画のみを確認します。")
     command = st.session_state.get("_native_media_command_v485")
     status = render_native_media_sync_v485(show_status=True, command=command, auto_sync=True, key="native_media_settings_v485")
     status = status if isinstance(status, dict) else st.session_state.get("_native_media_status_v485") or {}
 
-    current_period = str(status.get("period") or "month")
-    if current_period not in NATIVE_MEDIA_PERIOD_OPTIONS_V485:
-        current_period = "month"
     current_enabled = bool(status.get("enabled"))
-    period_keys = list(NATIVE_MEDIA_PERIOD_OPTIONS_V485.keys())
-    period_labels = [NATIVE_MEDIA_PERIOD_OPTIONS_V485[x] for x in period_keys]
-    # Load the native device setting into the widgets exactly once. Afterwards user taps
-    # are authoritative until "設定を保存" is pressed.
-    if isinstance(status, dict) and status and not st.session_state.get("_settings_media_loaded_v485"):
+    if status and not st.session_state.get("_settings_media_loaded_v601"):
         st.session_state["settings_media_auto_enabled_v485"] = current_enabled
-        st.session_state["settings_media_period_v485"] = NATIVE_MEDIA_PERIOD_OPTIONS_V485[current_period]
-        st.session_state["_settings_media_loaded_v485"] = True
+        st.session_state["_settings_media_loaded_v601"] = True
     st.session_state.setdefault("settings_media_auto_enabled_v485", current_enabled)
-    st.session_state.setdefault("settings_media_period_v485", NATIVE_MEDIA_PERIOD_OPTIONS_V485[current_period])
     enabled = st.toggle("自動取得をON", key="settings_media_auto_enabled_v485")
-    selected_label = st.radio(
-        "自動取得する期間",
-        options=period_labels,
-        horizontal=True,
-        key="settings_media_period_v485",
-    )
-    selected_period = next((k for k, v in NATIVE_MEDIA_PERIOD_OPTIONS_V485.items() if v == selected_label), "month")
+    selected_period = "today"
+    st.caption("自動取得する期間：今日のみ（日本時間の撮影日で判定）")
+    if status and int(status.get("bridge_version") or 0) < 3:
+        st.warning("自動取込の対象を正しく制限するにはAndroidアプリの更新が必要です。更新までは自動転送を停止します。")
 
     col_save, col_scan = st.columns(2)
     with col_save:
@@ -62573,7 +62624,8 @@ def page_settings_media_import_v485():
             }
             st.rerun()
 
-    st.caption("自動取込の対象：端末の DCIM / Pictures / Movies。Files の Download / Downloads は対象外です。")
+    st.caption("自動取込：端末のカメラ撮影フォルダ（DCIM）にある当日の写真・動画のみ。Downloads・スクリーンショット・撮影日不明のファイルは除外します。")
+    st.caption("Googleフォトのクラウド上だけにある写真・動画は、自動取得できません。写真選択画面でGoogleフォトを利用してください。")
     st.caption(
         "同じMediaStore IDに加え、ファイル内容のサンプルSHA-256でも重複を判定します。"
         "バックグラウンドでは端末内を検索・重複判定し、Supabaseへの安全な転送はアプリ起動・復帰時に自動で続けます。"
