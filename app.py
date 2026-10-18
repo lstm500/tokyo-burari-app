@@ -47,7 +47,9 @@ def _app_css_v473(markup, **_ignored):
 # Review menu-only update: 2026-09-19 JST
 GENERATED_UPDATE_JST = "2026-09-19T14:54:38+09:00"
 
-APP_BUILD = "v597"
+APP_BUILD = "v600"
+# v598: Passing the focus gate is mandatory before any weighted ranking or reroll.
+# Never fill the nine-image target with focus-rejected candidates.
 # v597: Compare 30 FPS candidates across the whole saved video offline. Disk-backed
 # analysis proxies bound memory; extract only the nine winners at native resolution.
 # v596: Keep prior reroll images hidden until the requested round is fully saved.
@@ -11075,6 +11077,10 @@ def _nearby_overpass_selectors(kind, subkind, radius, latitude, longitude):
         # Lunch fallback for OpenStreetMap. Google Places remains the primary source
         # because ratings and price data are required for the requested ranking/filtering.
         cuisine_map = {
+            "パン屋": [
+                f'nwr{around}["shop"="bakery"];',
+                f'nwr{around}["name"~"パン屋|パン店|パン工房|ベーカリー|ブーランジェリー|[Bb]akery|[Bb]oulangerie"];',
+            ],
             "おまかせ": [f'nwr{around}["amenity"~"^(restaurant|fast_food|food_court|cafe)$"];'],
             "和食・定食": [
                 f'nwr{around}["cuisine"~"japanese"];',
@@ -11355,6 +11361,7 @@ def _nearby_place_priority(tags, kind):
 
 
 NEARBY_LUNCH_GENRES = (
+    "パン屋",
     "おまかせ",
     "和食・定食",
     "寿司・海鮮",
@@ -11372,6 +11379,7 @@ NEARBY_LUNCH_GENRES = (
 # UI is grouped, but Google Places is searched using the original fine-grained
 # categories one by one. This avoids a long multi-keyword query acting too narrowly.
 NEARBY_LUNCH_GROUP_MEMBERS = {
+    "パン屋": ("パン屋",),
     "おまかせ": ("おまかせ",),
     "和食・定食": ("和食", "定食", "食堂", "とんかつ", "天ぷら", "うなぎ", "お好み焼き", "もんじゃ"),
     "寿司・海鮮": ("寿司", "海鮮"),
@@ -11387,6 +11395,7 @@ NEARBY_LUNCH_GROUP_MEMBERS = {
 }
 
 NEARBY_LUNCH_ATOMIC_QUERIES = {
+    "パン屋": "パン屋 ベーカリー",
     "おまかせ": "ランチ レストラン",
     "和食": "和食",
     "定食": "定食",
@@ -11437,6 +11446,7 @@ NEARBY_LUNCH_ATOMIC_QUERIES = {
 # Nearby Search is especially important for restaurants whose proper name does not
 # contain cuisine words (for example Radicare), which free-text ranking can miss.
 NEARBY_LUNCH_ATOMIC_PLACE_TYPES = {
+    "パン屋": ("bakery",),
     "おまかせ": ("restaurant",),
     "和食": ("japanese_restaurant",),
     "寿司": ("sushi_restaurant",),
@@ -16858,21 +16868,53 @@ def _video_moment_local_features_v594(frame_items, progress_callback=None):
     return rows
 
 
+def _video_moment_focus_passes_v598(row):
+    """Mandatory measurable focus gate, independent of preference weights/counts.
+
+    For people, use the detected/reused face region so a sharp background cannot
+    rescue a blurred face; a sharp face with natural background bokeh is allowed.
+    Otherwise require sufficient detail in the whole-frame focus measurement.
+    Unknown/missing/non-finite focus evidence fails closed. This is a local image
+    heuristic, not a guarantee that a subject's intended focus can be understood.
+    """
+    if not isinstance(row, dict):
+        return False
+    face_quality = row.get("face_quality_v595")
+    if row.get("faces") and not isinstance(face_quality, dict):
+        return False
+    quality = face_quality if isinstance(face_quality, dict) else row.get("quality_v595")
+    if not isinstance(quality, dict):
+        return False
+    try:
+        clarity = float(quality["clarity"])
+        focus = float(quality["focus"])
+        contrast = float(quality["contrast"])
+        noise = float(quality["noise"])
+        return (all(math.isfinite(x) for x in (clarity, focus, contrast, noise))
+                and clarity >= .30 and focus >= 3.4 and contrast >= 3.0 and noise <= 25.0)
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return False
+
+
 def _video_moment_local_pick_v594(records, preference_context=None, excluded_frame_ids=None):
     """Quality first, configured six-factor ranking second, diversity third.
 
-    Nine unique timestamps are retained when available. If all candidates are
-    poor, keep the least-poor choices without presenting them as high quality.
+    Focus is a prerequisite, never a weighted preference. Nine distinct choices
+    require nine focus-passing frames; insufficient evidence is an explicit error.
     All decisions are local; there is no semantic/emotion recognition claim.
     """
     import numpy as np
     unique = {}
     for row in records or []:
         unique.setdefault(str(row["frame_id"]), dict(row))
-    entries = sorted(unique.values(), key=lambda row: row["timestamp_ms"])
+    entries = sorted((row for row in unique.values() if _video_moment_focus_passes_v598(row)),
+                     key=lambda row: row["timestamp_ms"])
     target = VIDEO_AI_MAX_SELECTIONS
     if len(entries) < target:
-        raise ValueError("9枚を作成できるだけの動画フレームがありません。")
+        raise ValueError(
+            f"ピントの基準を満たす候補は{len(entries)}枚で、9枚に足りません。"
+            "ぼけた写真で枚数を補わず、作成を中止しました。"
+        )
     context = preference_context if isinstance(preference_context, dict) else {}
     weights = _normalize_video_moment_factor_weights(context.get("factor_weights"))
     excluded = {str(fid) for fid in (excluded_frame_ids or []) if str(fid)}
@@ -16988,7 +17030,7 @@ def _video_moment_local_pick_v594(records, preference_context=None, excluded_fra
                    "subject": "被写体の目立ち方と配置を評価",
                    "action": "場面切替を避け、鮮明に写った動きを評価",
                    "story": "前後との見た目の変化と画質を評価"}
-        row["reason"] = reasons[primary] if tier == 2 else "鮮明な候補が少ないため、画質を比較して補完"
+        row["reason"] = reasons[primary] if tier == 2 else "ピントの基準を満たす候補から、明るさ・構図を比較"
         if similarity is not None and similarity >= .85 and weights["preference"]:
             row["reason"] += "／お気に入り写真との見た目も比較"
     # Respect rerolls unless doing so would force poor frames over usable ones.
@@ -17041,7 +17083,8 @@ def _video_moment_local_pick_v594(records, preference_context=None, excluded_fra
              "primary_quality": row["primary_quality"], "reason": row["reason"], "hash": row["hash"],
              "factor_scores": {k: int(round(row["factor_scores"][k] * 100)) for k in VIDEO_MOMENT_FACTOR_ORDER},
              "factor_weights": dict(weights),
-             "quality_metrics": {"tier": row["tier_v595"], "clarity": round(row["quality_v595"]["clarity"], 3),
+             "quality_metrics": {"focus_passed": True, "focus_gate": "mandatory_v598",
+                                 "tier": row["tier_v595"], "clarity": round(row["quality_v595"]["clarity"], 3),
                                  "exposure": round(row["quality_v595"]["exposure"], 3),
                                  "face_clarity": round(row["face_sharpness"], 3) if row["faces"] else None},
              "analysis_method": "offline_opencv_v595" if row["face_detection_available"] else "offline_numpy_v595"}
@@ -18271,6 +18314,8 @@ def _background_store_video_ai_selection(
     if not base:
         raise ValueError("動画の保存先を確認できませんでした。")
     selected_items = list(selections or [])[:VIDEO_AI_MAX_SELECTIONS]
+    if any(not (item.get("quality_metrics") or {}).get("focus_passed") for item in selected_items):
+        raise ValueError("ピントの必須確認を通過していない写真は保存できません。")
     if len(selected_items) < VIDEO_AI_MAX_SELECTIONS:
         raise ValueError(f"いい瞬間を{VIDEO_AI_MAX_SELECTIONS}枚そろえられませんでした。")
 
@@ -18537,7 +18582,8 @@ def _run_video_ai_background_job(photo_id, family_key, member_key):
             if not isinstance(latest_selection, dict):
                 latest_selection = {}
             # Retain old files internally, but never present them as a successful reroll.
-            if latest_selection.get("items") and not _video_ai_reroll_pending_v596(latest_selection):
+            if (latest_selection.get("items") and not _video_ai_reroll_pending_v596(latest_selection)
+                    and not str(exc).startswith("ピント")):
                 latest_selection["status"] = "ready"
             else:
                 latest_selection["status"] = "error"
@@ -46359,6 +46405,9 @@ def page_moments():
                     status = str((selection or {}).get("status") or "").lower()
                     label = "処理中" if status != "error" else "エラー"
                     st.write(f"{idx}. {_moments_video_title(video)}　— {label}")
+                    focus_error = str((selection or {}).get("last_error") or "")
+                    if status == "error" and focus_error.startswith("ピント"):
+                        st.warning(focus_error)
                     if status == "error" and _video_ai_reroll_pending_v596(selection):
                         st.warning("新しい9枚を作成できませんでした。前の候補は表示していません。")
                         if st.button("もう一度作成する", key=f"moments_retry_reroll_v596_{video.get('id')}"):
@@ -61482,6 +61531,7 @@ def _get_good_moments_factor_component():
 
 def page_good_moments_definition():
     page_top("✨ いい瞬間の定義")
+    st.caption("選定の必須条件：ピントが合っていること。下の評価比率に関係なく適用します。")
 
     if not _video_moment_local_face_models_v594().get("face"):
         st.warning(
@@ -62541,6 +62591,130 @@ def page_settings_media_import_v485():
         st.success(str(notice))
 
 
+# v599: Android keeps a bounded, persistent diagnostic log; read only on request.
+_NOTIFICATION_LOG_JS_V599 = r"""
+export default function(component) {
+  const { parentElement, data, setTriggerValue } = component;
+  const button = parentElement.querySelector('button');
+  const status = parentElement.querySelector('[role="status"]');
+  const token = String(data?.token || '');
+  let active = '', timer = null;
+  const host = window.parent && window.parent !== window ? window.parent : window;
+  const finish = (raw, error) => {
+    if (!active) return;
+    const id = active; active = ''; clearTimeout(timer); button.disabled = false;
+    if (error) { status.textContent = error; return; }
+    try {
+      if (!raw || String(raw).length > 4000000) throw new Error('invalid size');
+      const payload = JSON.parse(String(raw));
+      if (payload.version !== 1 || !Array.isArray(payload.rows) || payload.rows.length > 2000) throw new Error('invalid log');
+      status.textContent = '読み込みました。';
+      setTriggerValue('snapshot', {request_id:id, payload});
+    } catch (_) { status.textContent = 'ログを取得できません。Androidアプリを更新してください。'; }
+  };
+  const onMessage = (event) => {
+    const result = event?.data;
+    if (event.source !== host || !result || result.type !== 'burari-native-review-response-v1' ||
+        result.action !== 'notification_logs' || result.request_id !== active) return;
+    finish(result.logs_json, result.error ? 'Androidアプリを更新してから読み込んでください。' : '');
+  };
+  window.addEventListener('message', onMessage);
+  button.onclick = () => {
+    if (active) return;
+    active = `log-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    button.disabled = true; status.textContent = '端末から読み込み中…';
+    timer = setTimeout(() => finish('', '端末から応答がありません。Androidアプリを更新して再度お試しください。'), 10000);
+    try {
+      const bridge = globalThis.BurariReview || window.BurariReview;
+      if (bridge && typeof bridge.notificationLogs === 'function') {
+        finish(bridge.notificationLogs(token, 2000), ''); return;
+      }
+      host.postMessage({type:'burari-native-review-request-v1', request_id:active,
+        action:'notification_logs', token}, '*');
+    } catch (_) { finish('', 'ログを取得できません。Androidアプリを更新してください。'); }
+  };
+  return () => { clearTimeout(timer); window.removeEventListener('message', onMessage); button.onclick = null; };
+}
+"""
+
+
+def _notification_log_exports_v599(payload):
+    import csv
+    import io
+    if not isinstance(payload, dict) or payload.get("version") != 1:
+        raise ValueError("通知ログの形式が正しくありません。")
+    rows = payload.get("rows")
+    if not isinstance(rows, list) or len(rows) > 2000 or any(not isinstance(r, dict) for r in rows):
+        raise ValueError("通知ログの件数・形式が正しくありません。")
+    # Only export the defined fields. Bridge credentials never belong in a log file.
+    clean_rows = [{k: r.get(k) for k in ("id", "timestamp_ms", "time", "kind", "stage", "reason", "detail")} for r in rows]
+    clean = {"version": 1, "exported_at_ms": payload.get("exported_at_ms"), "retention_limit": 2000, "rows": clean_rows}
+    raw = json.dumps(clean, ensure_ascii=False, indent=2).encode("utf-8")
+    output = io.StringIO(newline="")
+    writer = csv.writer(output)
+    writer.writerow(["ID", "日時（日本時間）", "種類", "処理", "結果・理由", "詳細"])
+    for row in clean_rows:
+        values = [row["id"], row["time"], row["kind"], row["stage"], row["reason"], json.dumps(row["detail"], ensure_ascii=False)]
+        # Spreadsheet applications must treat externally supplied names as text.
+        writer.writerow(["'" + str(v) if str(v).lstrip().startswith(("=", "+", "-", "@")) else v for v in values])
+    return raw, output.getvalue().encode("utf-8-sig"), clean_rows
+
+
+@st.cache_resource(show_spinner=False)
+def _notification_log_component_v599():
+    return st.components.v2.component(
+        "burari_notification_log_v599",
+        html='<button type="button">端末の通知ログを読み込む</button><p role="status" aria-live="polite"></p>',
+        css='button{padding:12px;border:1px solid #aaa;border-radius:8px;background:white;font:inherit;color:#223;width:100%}p{font-size:13px}',
+        js=_NOTIFICATION_LOG_JS_V599,
+    )
+
+
+def _render_notification_logs_v599():
+    with st.expander("自動通知ログ"):
+        st.caption("おやつ・観光・夜の振り返りの通知結果と見送った理由を、端末に直近2,000件保存します。更新前の履歴は含まれません。")
+        st.caption("「accepted_by_android」はAndroidへ送信した記録です。実際の表示・閲覧を保証する記録ではありません。")
+        token = str(_query_param_scalar("native_bridge_token") or "").strip()
+        if not token:
+            st.info("Android版ぶらり旅の設定から読み込んでください。")
+            return
+        owner = (current_family_key(), current_member_key(), hashlib.sha256(token.encode()).hexdigest()[:16])
+        state_key = "_notification_log_snapshot_v599"
+        saved = st.session_state.get(state_key)
+        if not isinstance(saved, dict) or saved.get("owner") != owner:
+            saved = None
+            st.session_state.pop(state_key, None)
+        try:
+            result = _notification_log_component_v599()(
+                data={"token": token}, key="notification_log_read_v599_" + owner[2], height=100,
+                on_snapshot_change=lambda: None,
+            )
+            snapshot = getattr(result, "snapshot", None)
+            if isinstance(snapshot, dict) and snapshot.get("request_id") != (saved or {}).get("request_id"):
+                payload = snapshot.get("payload")
+                _notification_log_exports_v599(payload)
+                saved = {"owner": owner, "request_id": snapshot.get("request_id"), "payload": payload}
+                st.session_state[state_key] = saved
+        except Exception:
+            st.warning("通知ログを読み込めませんでした。Androidアプリを更新してお試しください。")
+        if not saved:
+            return
+        raw, csv_bytes, rows = _notification_log_exports_v599(saved["payload"])
+        captured = saved["payload"].get("exported_at_ms")
+        if captured:
+            st.caption("読み込み日時：" + datetime.fromtimestamp(int(captured) / 1000, tz=ZoneInfo("Asia/Tokyo")).strftime("%Y/%m/%d %H:%M:%S"))
+        st.write(f"保存ログ：{len(rows):,}件")
+        st.download_button("通知ログをJSONで保存", raw, file_name="burari_notification_log.json", mime="application/json", key="notification_json_v599")
+        st.download_button("通知ログをCSVで保存", csv_bytes, file_name="burari_notification_log.csv", mime="text/csv", key="notification_csv_v599")
+        if rows:
+            labels = {"snack": "おやつ", "tourism": "観光", "evening": "夜の振り返り", "all": "共通", "system": "システム", "notification": "通知"}
+            stages = {"engine": "通知処理", "gate": "通知条件", "dwell_gate": "滞在条件", "search": "検索", "network": "通信", "filter": "候補の絞り込み", "post": "通知送信", "open": "通知を開く"}
+            reasons = {"started": "開始", "not_walking_or_stale_location": "歩行未確認・位置情報が古い", "notifications_disabled": "通知が許可されていません", "low_battery": "電池残量が少ないため待機", "outside_snack_hours": "おやつの通知時間外", "walking_duration_short": "歩き始めてからの時間が不足", "walking_distance_short": "歩き始めてからの移動距離が不足", "retry_wait": "再検索まで待機", "cooldown": "前回の通知から待機中", "routine_area": "普段よく訪れる場所", "visited_within_seven_days": "7日以内に訪れた場所", "query_failed": "検索処理でエラー", "no_usable_candidates": "利用できる候補なし（通信記録も確認）", "all_excluded": "距離・再通知の条件で全候補を除外", "eligible_candidates": "通知できる候補あり", "event_save_failed": "通知内容の保存に失敗", "channel_or_permission_disabled": "通知設定でブロック", "accepted_by_android": "Androidへ送信済み（表示確認は未取得）", "post_failed": "通知の送信に失敗", "connection_failed": "接続開始に失敗", "http_response": "検索サーバーから応答", "request_failed": "検索サーバーとの通信に失敗", "invalid_or_partial_payload": "検索結果が不完全", "all_endpoints_failed": "すべての検索サーバーで失敗", "no_matches": "検索に該当する店・場所なし", "matches": "検索候補あり", "opened": "通知からアプリを開きました", "processing_failed": "通知処理でエラー"}
+            st.dataframe([{"日時": r["time"], "種類": labels.get(r["kind"], r["kind"]), "処理": stages.get(r["stage"], r["stage"]), "結果・理由": reasons.get(r["reason"], r["reason"]), "詳細": json.dumps(r["detail"], ensure_ascii=False)} for r in rows[:100]], hide_index=True, use_container_width=True)
+        else:
+            st.info("まだログがありません。Androidアプリの更新後に、位置情報記録を開始すると蓄積されます。")
+
+
 def page_settings():
     # v415: The page title comes first so the user immediately knows this is Settings.
     # A divider separates the heading from the individual setting controls.
@@ -62616,6 +62790,7 @@ def page_settings():
     )
 
     st.divider()
+    _render_notification_logs_v599()
     _events_source_log_settings_v587()
     render_performance_log_v457()
     st.caption(f"アプリビルド：{APP_BUILD}")
