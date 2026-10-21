@@ -61,7 +61,7 @@ def _app_css_v473(markup, **_ignored):
 # Review menu-only update: 2026-09-19 JST
 GENERATED_UPDATE_JST = "2026-09-19T14:54:38+09:00"
 
-APP_BUILD = "v603"
+APP_BUILD = "v605"
 # v598: Passing the focus gate is mandatory before any weighted ranking or reroll.
 # Never fill the twenty-image target with focus-rejected candidates.
 # v597: Compare 30 FPS candidates across the whole saved video offline. Disk-backed
@@ -1084,6 +1084,12 @@ _app_css_v473(
 
 _app_css_v473('<style>.st-key-app_runtime_bridges_v473,.st-key-home_runtime_bridges_v473{position:absolute!important;width:1px!important;height:0!important;min-height:0!important;max-height:0!important;padding:0!important;margin:0!important;overflow:visible!important;pointer-events:none;}</style>')
 
+_app_css_v473("""<style>
+.st-key-navigation_bridge_v604{position:absolute!important;width:1px!important;height:0!important;min-height:0!important;overflow:visible!important;}
+[class*="st-key-parent_back_"],[class*="st-key-global_parent_back_"],[class*="st-key-global_bottom_home_"],[class*="st-key-history_home_"],.st-key-camera_back_parent{position:relative!important;z-index:2147483100!important;pointer-events:auto!important;}
+[class*="st-key-parent_back_"] button,[class*="st-key-global_parent_back_"] button,[class*="st-key-global_bottom_home_"] button,.st-key-camera_back_parent button{pointer-events:auto!important;touch-action:manipulation;}
+div[data-testid="stSpinner"],#burari-global-loader-v326.burari-active{pointer-events:none!important;}
+</style>""")
 _diag_checkpoint_v603("global_css")
 
 # Only wraps existing component triggers; never sends a diagnostic-only rerun.
@@ -8162,238 +8168,7 @@ def sync_pending_tags_from_browser_v166():
 # Chrome/Safari back and forward buttons move between app screens first.
 _PERF_BROWSER_JS_V466 = 'function installBurariPerf466(host, page, run, serverSession, serverDetails={}) {\n  const KEY=\'__burariPerf466\', STORE=\'burari_perf_v466\';\n  if(host[KEY]) { host[KEY].run(page,run,serverSession,serverDetails); return host[KEY]; }\n  const doc=host.document, mono=()=>host.performance.now(), rounded=x=>Math.round(x*10)/10;\n  const boot=host.crypto?.randomUUID?.() || Date.now().toString(36)+\'-\'+Math.random().toString(36).slice(2);\n  let seq=0, rows=[], dropped=0, persistenceError=false, active=null, current={page,run:Number(run)||0,session:serverSession};\n  let deadline=null, quiet=null, persistTimer=null, checking=false, pointer=null;\n  // Passive, bounded diagnostics. No network request or Streamlit trigger is added.\n  const diagEvents603=[];\n  let diagDropped603=0,diagLagTimer603=null,diagMutations603=0,diagObserverMs603=0;\n  const diagCapabilities603={longtask:false,event:false,resource:false,socket_send:false};\n  function diagEvent603(kind, detail={}, at=mono()) {\n    const item={kind,at_ms:rounded(at),wall_ms:Math.round(host.performance.timeOrigin+at),...detail};\n    if(active){item.operation_id=active.row.id;item.since_press_ms=rounded(at-active.start);}\n    diagEvents603.push(item);\n    if(diagEvents603.length>400){diagEvents603.shift();diagDropped603++;}\n  }\n  function blocked603(reason){\n    if(active){active.row.endpoint_blocker=reason;active.row.endpoint_checked_ms=rounded(mono()-active.start);}\n    return null;\n  }\n  function startLag603(){\n    host.clearTimeout(diagLagTimer603);\n    if(!active || doc.hidden)return;\n    const expected=mono()+250;\n    diagLagTimer603=host.setTimeout(()=>{\n      if(!active || doc.hidden)return;\n      const delay=mono()-expected;\n      if(delay>=150)diagEvent603(\'event_loop_delay\',{delay_ms:rounded(delay)});\n      startLag603();\n    },250);\n  }\n  function installDiagnostics603(){\n    diagEvent603(\'server_run_seen\',{run:current.run,page:current.page,server_sent_ms:serverDetails.server_sent_ms||null,script_started_ms:serverDetails.script_started_ms||null});\n    const supported=host.PerformanceObserver?.supportedEntryTypes||[];\n    function observe(type, callback, extra={}){\n      if(!supported.includes(type))return;\n      try{const observer=new host.PerformanceObserver(list=>safe(()=>callback(list.getEntries())));\n        observer.observe({type,buffered:false,...extra});diagCapabilities603[type]=true;\n      }catch(_){}\n    }\n    observe(\'longtask\',entries=>{\n      for(const e of entries)diagEvent603(\'long_task\',{duration_ms:rounded(e.duration),attribution_available:!!e.attribution?.length},e.startTime);\n    });\n    observe(\'event\',entries=>{\n      for(const e of entries)if([\'pointerdown\',\'pointerup\',\'click\',\'keydown\'].includes(e.name))\n        diagEvent603(\'input_timing\',{event:e.name,duration_ms:rounded(e.duration),queue_ms:rounded(Math.max(0,e.processingStart-e.startTime)),handler_ms:rounded(Math.max(0,e.processingEnd-e.processingStart))},e.startTime);\n    },{durationThreshold:16});\n    observe(\'resource\',entries=>{\n      for(const e of entries){\n        if(e.duration<200 && !(e.responseStatus>=400))continue;\n        let origin=\'\';try{origin=new URL(e.name).origin;}catch(_){}\n        // Do not store paths/query strings, signed URLs, bodies, media IDs or tokens.\n        diagEvent603(\'resource_finished\',{initiator:String(e.initiatorType||\'\'),origin,duration_ms:rounded(e.duration),start_ms:rounded(e.startTime),response_start_ms:rounded(e.responseStart),transfer_bytes:e.transferSize||0,status:Number(e.responseStatus)||null,timing_details_available:e.responseStart>0},e.startTime+e.duration);\n      }\n    });\n    // Observe the existing socket on its next normal send. Never decode its payload.\n    try{\n      const proto=host.WebSocket?.prototype;\n      if(proto && typeof proto.send===\'function\'){\n        const original=proto.send,seen=new WeakSet();\n        proto.send=function(...args){\n          const socket=this;\n          safe(()=>{\n            if(!seen.has(socket)){\n              seen.add(socket);\n              socket.addEventListener(\'message\',event=>safe(()=>{\n                if(!active)return;\n                if(active.row.socket_first_message_ms==null)active.row.socket_first_message_ms=rounded(mono()-active.start);\n                diagEvent603(\'socket_message\',{bytes:event.data?.byteLength??event.data?.size??(typeof event.data===\'string\'?event.data.length:null)});\n              }));\n              for(const kind of [\'close\',\'error\'])socket.addEventListener(kind,()=>safe(()=>diagEvent603(\'socket_\'+kind)));\n            }\n            if(active){\n              if(active.row.socket_first_send_ms==null)active.row.socket_first_send_ms=rounded(mono()-active.start);\n              diagEvent603(\'socket_send\',{buffered_bytes:Number(socket.bufferedAmount)||0});\n            }\n          });\n          return Reflect.apply(original,socket,args);\n        };\n        diagCapabilities603.socket_send=true;\n      }\n    }catch(_){}\n    host.addEventListener(\'message\',event=>safe(()=>{\n      if(!event.data || event.data.burari_diag_v603!==true)return;\n      // Only accept readiness from an iframe this monitor actually observes.\n      const frame=[...frameHandlers.keys()].find(f=>f.isConnected&&f.contentWindow===event.source);\n      if(!frame)return;\n      const kind=event.data.kind;\n      if(![\'replay_script_started\',\'replay_player_ready\',\'replay_playing\',\'replay_player_error\'].includes(kind))return;\n      diagEvent603(kind);\n      if(kind===\'replay_playing\' && active && [\'burariReplayStart\',\'burariReplayAgain\'].includes(active.control)\n         && active.button.ownerDocument===safe(()=>frame.contentDocument)){\n        const a=active;afterPaint(()=>{if(active===a)end(\'completed\',\'replay_playing\',mono(),\'media_event\');});\n      }\n    }),{passive:true});\n  }\n\n  const observers=new Map(), frameHandlers=new Map(), handledEvents=new WeakSet(), counts=new Map();\n  try { const saved=JSON.parse(host.sessionStorage.getItem(STORE)||\'null\'); if(saved?.version===466 && Array.isArray(saved.rows)) { rows=saved.rows.slice(-2000); dropped=Number(saved.dropped)||0; for(const row of rows) if(row.status===\'pending\'){row.status=\'interrupted\';row.reason=\'document_reloaded\';row.result_ms=null;} } } catch(_){persistenceError=true;}\n  function persistNow(){try{host.sessionStorage.setItem(STORE,JSON.stringify({version:466,rows,dropped}));}catch(_){persistenceError=true;}}\n  function persist(){if(persistTimer!==null)return;persistTimer=host.setTimeout(()=>{persistTimer=null;persistNow();},50);}\n  function safe(fn){try{return fn();}catch(_){return undefined;}}\n  function afterPaint(fn){host.requestAnimationFrame(()=>host.requestAnimationFrame(()=>safe(fn)));}\n  function visible(el){if(!el?.isConnected)return false;const w=el.ownerDocument?.defaultView||host;return !!el.getClientRects().length && w.getComputedStyle(el).visibility!==\'hidden\';}\n  function viewport(el){if(!visible(el))return false;const r=el.getBoundingClientRect(),w=el.ownerDocument?.defaultView||host;return r.bottom>0&&r.right>0&&r.top<w.innerHeight&&r.left<w.innerWidth;}\n  function connected(root){return root===doc || (root.host?root.host.isConnected:!!root.defaultView?.frameElement?.isConnected);}\n  function prune(){for(const [root,state] of observers) if(!connected(root)){state.observer.disconnect();for(const [name,fn]of state.listeners)root.removeEventListener(name,fn,true);observers.delete(root);}for(const [frame,fn]of frameHandlers)if(!frame.isConnected){frame.removeEventListener(\'load\',fn);frameHandlers.delete(frame);}}\n  function query(selector){const result=[];for(const root of observers.keys())safe(()=>result.push(...root.querySelectorAll(selector)));return result;}\n  function signature(el){return el?.isConnected?[el.textContent,el.getAttribute(\'class\'),el.getAttribute(\'style\'),el.getAttribute(\'disabled\'),el.getAttribute(\'aria-pressed\')].join(\'|\'):\'removed\';}\n  function busy(){return query(\'[data-testid="stSpinner"],[data-stale="true"],[aria-busy="true"]\').some(visible);}\n  function imageReady(el){return visible(el)&&el.complete&&el.naturalWidth>0;}\n  function stamp(row,ms){return new Date(Date.parse(row.pressed_at)+ms).toISOString();}\n  function end(status,reason,observedAt=null,kind=null){\n    if(!active)return;const a=active;active=null;host.clearTimeout(deadline);host.clearTimeout(quiet);host.clearTimeout(diagLagTimer603);\n    a.row.status=status;a.row.reason=reason;a.row.observed_until_ms=rounded(mono()-a.start);\n    a.row.measurement_kind=kind;\n    // No success duration is fabricated for timeouts, interruptions or failures.\n    a.row.result_ms=status===\'completed\'&&observedAt!==null?rounded(observedAt-a.start):null;\n    a.row.result_at=a.row.result_ms===null?null:stamp(a.row,a.row.result_ms);\n    a.row.confirmation_ms=observedAt===null?null:rounded(mono()-observedAt);\n    persist();\n  }\n  function response(){const a=active;if(!a||a.row.first_response_ms!==null||signature(a.button)===a.before)return;\n    afterPaint(()=>{if(active!==a||doc.hidden)return;a.row.first_response_ms=rounded(mono()-a.start);a.row.first_response_at=stamp(a.row,a.row.first_response_ms);});}\n  function endpoint(){const a=active;if(!a)return null;\n    if(a.control===\'live-camera-shoot\'){\n      const img=query(\'#camera-review-image\').find(e=>imageReady(e)&&e.currentSrc!==a.preview);\n      return img?{kind:\'camera_preview_loaded\',explicit:true}:null;\n    }\n    if([\'live-camera-start\',\'live-video-start\',\'live-camera-facing-switch\'].includes(a.control)){\n      const v=query(\'#live-camera-video\').find(e=>visible(e)&&e.readyState>=2&&!e.paused&&(!a.cameraWasReady||a.control===\'live-camera-facing-switch\'&&a.cameraStream!==e.srcObject));\n      return v?{kind:\'camera_video_ready\',explicit:true}:null;\n    }\n    // A render marker is only a UI estimate, never confirmation of a database save,\n    // map tile completion or media playback. Local-only actions cannot use it.\n    if(a.localOnly && !a.submitted)return blocked603(\'awaiting_local_or_media_endpoint\');\n    if(!a.row.server_runs.some(x=>x.session===current.session && x.run!==a.initialRun))return blocked603(\'awaiting_new_server_run\');\n    const marker=query(\'[data-burari-perf-done]\').find(e=>Number(e.getAttribute(\'data-burari-perf-done\'))===current.run&&e.getAttribute(\'data-burari-perf-session\')===current.session&&current.run!==a.initialRun);\n    if(!marker)return blocked603(\'awaiting_done_marker\');\n    const targetPage=marker.getAttribute(\'data-burari-perf-page\');\n    if(!targetPage || targetPage!==current.page)return blocked603(\'page_marker_mismatch\');\n    if(a.row.expected_page && targetPage!==a.row.expected_page)return blocked603(\'awaiting_target_page\');\n    if(a.requirePageChange && targetPage===a.row.page)return blocked603(\'awaiting_page_change\');\n    if(a.movieNavigation && marker.getAttribute(\'data-burari-perf-operation\')!==a.row.id)return blocked603(\'awaiting_matching_operation\');\n    if(a.movieNavigation && ![\'review_tag\',\'review_monthly\',\'review_shared\'].includes(targetPage))return blocked603(\'awaiting_replay_page\');\n    if(a.row.target_marker_seen_ms==null){a.row.target_marker_seen_ms=rounded(mono()-a.start);a.row.target_page=targetPage;\n      diagEvent603(\'target_marker_seen\',{page:targetPage,server_generated_wall_ms:Number(marker.getAttribute(\'data-burari-perf-generated-ms\'))||null});}\n    if(busy())return blocked603(\'visible_busy_or_stale\');\n    if(query(\'img\').some(e=>viewport(e)&&(!e.complete||!e.naturalWidth)))return blocked603(\'viewport_image_not_ready\');\n    a.row.endpoint_blocker=null;\n    return {kind:\'server_ui_render_estimate\',explicit:false};\n  }\n  function consider(){if(!active||doc.hidden||checking)return;response();const candidate=endpoint();if(!candidate)return;\n    const a=active,revision=a.revision;checking=true;\n    afterPaint(()=>{checking=false;if(active!==a||doc.hidden)return;if(a.revision!==revision){consider();return;}\n      const again=endpoint();if(!again||again.kind!==candidate.kind)return;\n      const paintedAt=mono();\n      if(candidate.explicit){end(\'completed\',candidate.kind,paintedAt,\'explicit_ui_state\');return;}\n      // Confirmation delay is excluded from result_ms. Reject candidates that\n      // change during the quiet window rather than adding a fixed 200 ms latency.\n      host.clearTimeout(quiet);quiet=host.setTimeout(()=>safe(()=>{\n        if(active===a&&a.revision===revision&&!doc.hidden&&endpoint()?.kind===candidate.kind)end(\'completed\',candidate.kind,paintedAt,\'render_estimate\');\n      }),200);\n    });\n  }\n  function mutations(records){const diagStart603=mono();diagMutations603+=records.length;prune();for(const r of records)for(const node of r.addedNodes||[])scan(node);\n    if(!active){diagObserverMs603+=mono()-diagStart603;return;}\n    // Ignore clock text/continuous style animations outside the clicked control\n    // for confirmation; use structural/result mutations to invalidate candidates.\n    if(records.some(r=>r.type===\'childList\'||r.attributeName===\'src\'||r.attributeName===\'data-burari-perf-done\'))active.revision++;\n    consider();diagObserverMs603+=mono()-diagStart603;\n  }\n  function getButton(event){const path=event.composedPath?event.composedPath():[event.target];return path.find(e=>e?.matches?.(\'button,[role="button"],input[type="submit"]\'));}\n  function isLog(button){return button.closest?.(\'[data-burari-perf-ui]\')||/動作ログ|操作時間ログ|ログを|ログ消去/.test(button.textContent||\'\');}\n  function down(event){const button=getButton(event);if(!button||button.disabled||isLog(button))return;const eventAt=Number(event.timeStamp)>1e12?Number(event.timeStamp)-host.performance.timeOrigin:Number(event.timeStamp);const p={button,at:mono(),wall:Date.now(),id:event.pointerId,before:signature(button),responseAt:null,inputQueueMs:Number.isFinite(eventAt)&&eventAt>0?Math.max(0,mono()-eventAt):null};pointer=p;afterPaint(()=>{if(pointer===p&&signature(button)!==p.before)p.responseAt=mono();});}\n  function click(event){if(!event.isTrusted||handledEvents.has(event))return;\n    const button=getButton(event);if(!button||button.disabled||isLog(button))return;handledEvents.add(event);\n    if(active)end(\'interrupted\',\'next_operation\');prune();\n    const label=String(button.getAttribute(\'aria-label\')||button.textContent||button.value||\'\').trim().replace(/\\s+/g,\' \').slice(0,80);\n    const widget=button.closest?.(\'[class*="st-key-"]\');\n    const widgetKey=Array.from(widget?.classList||[]).find(x=>x.startsWith(\'st-key-\'))||\'\';\n    const control=button.id||widgetKey||button.getAttribute(\'data-testid\')||label;\n    const group=current.page+\'|\'+control;\n    const attempt=(counts.get(group)||0)+1;counts.set(group,attempt);if(counts.size>2000)counts.delete(counts.keys().next().value);\n    const pressed=pointer?.button===button&&mono()-pointer.at<30000?pointer:{at:mono(),wall:Date.now()};pointer=null;\n    const row={id:boot+\'-\'+(++seq),build:603,page:current.page,control,button:label,\n      expected_page:({"st-key-home_review":"review","st-key-home_settings":"settings","st-key-home_diary":"diary","st-key-home_camera":"camera","st-key-home_video":"camera"})[control]||null,\n      monotonic_pressed_ms:rounded(pressed.at), input_queue_delay_ms:pressed.inputQueueMs==null?null:rounded(pressed.inputQueueMs),\n      pressed_at:new Date(pressed.wall).toISOString(),activation_delay_ms:rounded(mono()-pressed.at),\n      input_method:event.detail===0?\'keyboard_or_accessibility\':\'pointer\',\n      first_response_ms:pressed.responseAt==null?null:rounded(pressed.responseAt-pressed.at),first_response_at:pressed.responseAt==null?null:new Date(pressed.wall+pressed.responseAt-pressed.at).toISOString(),result_ms:null,result_at:null,status:\'pending\',\n      attempt_in_document:attempt,visit_class:attempt===1?\'first_in_document\':\'repeat_in_document\',\n      server_runs:[],correlation:\'temporal_candidates_only\',measurement_kind:null};\n    const camera=query(\'#live-camera-video\')[0];\n    active={row,button,control:button.id||\'\',before:pressed.before||signature(button),start:pressed.at,initialRun:current.run,revision:0,\n      requirePageChange:control.startsWith(\'st-key-parent_back_\'),\n      localOnly:!!button.getRootNode?.().host || button.ownerDocument!==doc,\n      preview:query(\'#camera-review-image\')[0]?.currentSrc||\'\',cameraWasReady:camera?.readyState>=2&&!camera?.paused,cameraStream:camera?.srcObject};\n    rows.push(row);if(rows.length>2000){rows.shift();dropped++;}persist();\n    deadline=host.setTimeout(()=>safe(()=>end(\'timeout\',\'no_confirmed_endpoint_120s\')),120000);\n    diagEvent603(\'operation_started\',{expected_page:row.expected_page});startLag603();\n    afterPaint(()=>safe(consider));\n  }\n  function media(event){const a=active;if(!a)return;\n    if(event.type===\'playing\'&&[\'moments-voice-play\',\'burariReplayStart\',\'burariReplayAgain\'].includes(a.control)){\n      // Only a media element inside the same document as the pressed control.\n      if(event.target.ownerDocument===a.button.ownerDocument)afterPaint(()=>{if(active===a)end(\'completed\',\'media_playing\',mono(),\'media_event\');});\n    }\n    consider();\n  }\n  function watch(root){if(observers.has(root))return;\n    const listeners=[[\'error\',e=>safe(()=>{if(active&&[\'IMG\',\'AUDIO\',\'VIDEO\',\'SCRIPT\'].includes(e.target?.tagName))diagEvent603(\'asset_error\',{tag:e.target.tagName});})],[\'waiting\',e=>safe(()=>{if(active)diagEvent603(\'media_waiting\',{tag:e.target?.tagName});})],[\'pointerdown\',e=>safe(()=>down(e))],[\'pointercancel\',()=>{pointer=null;}],[\'click\',e=>safe(()=>click(e))],[\'load\',()=>safe(consider)],[\'loadeddata\',e=>safe(()=>media(e))],[\'playing\',e=>safe(()=>media(e))]];\n    for(const [name,fn]of listeners)root.addEventListener(name,fn,{capture:true,passive:true});\n    const observer=new host.MutationObserver(r=>safe(()=>mutations(r)));\n    observers.set(root,{observer,listeners});observer.observe(root,{subtree:true,childList:true,attributes:true,attributeFilter:[\'src\',\'hidden\',\'disabled\',\'class\',\'style\',\'aria-pressed\',\'aria-busy\',\'data-stale\',\'data-burari-perf-done\'],characterData:true});scan(root);\n  }\n  function scan(node){if(!node?.querySelectorAll)return;if(node.shadowRoot)watch(node.shadowRoot);\n    const list=[node,...node.querySelectorAll(\'*\')];\n    for(const el of list){if(el.shadowRoot)watch(el.shadowRoot);\n      if(el.tagName===\'IFRAME\'&&!frameHandlers.has(el)){\n        const attach=()=>safe(()=>{if(active)diagEvent603(\'iframe_loaded\',{same_origin:!!el.contentDocument});if(el.contentDocument)watch(el.contentDocument);});frameHandlers.set(el,attach);el.addEventListener(\'load\',attach,{passive:true});attach();\n      }\n    }\n  }\n  function quantile(values,q){const v=[...values].sort((a,b)=>a-b),i=(v.length-1)*q,lo=Math.floor(i),hi=Math.ceil(i);return rounded(v[lo]+(v[hi]-v[lo])*(i-lo));}\n  function summary(){const groups=new Map();\n    for(const row of rows){const key=[row.build,row.page,row.control,row.visit_class,row.measurement_kind||\'unresolved\',row.input_method].join(\'|\');\n      if(!groups.has(key))groups.set(key,{key,page:row.page,control:row.control,visit_class:row.visit_class,measurement_kind:row.measurement_kind,input_method:row.input_method,n:0,completed:0,interrupted:0,timeout:0,pending:0,error:0,values:[]});\n      const g=groups.get(key);g.n++;if(row.status in g)g[row.status]++;if(row.status===\'completed\'&&Number.isFinite(row.result_ms))g.values.push(row.result_ms);\n    }\n    return [...groups.values()].map(g=>{const v=g.values;delete g.values;return {...g,median_ms:v.length?quantile(v,.5):null,p90_ms:v.length>=20?quantile(v,.9):null,p95_ms:v.length>=100?quantile(v,.95):null,minimum_ms:v.length?Math.min(...v):null,maximum_ms:v.length?Math.max(...v):null,sample_note:v.length<20?\'small_sample\':\'descriptive_only\'};});\n  }\n  const api={version:603,submitted(name,root,value){if(!active||!root?.contains?.(active.button))return;active.submitted=true;active.row.component_event=String(name).slice(0,64);active.row.submitted_ms=rounded(mono()-active.start);\n      diagEvent603(\'component_submitted\',{event:String(name).slice(0,40)});\n      if(name===\'action\'&&value&&typeof value===\'object\'&&!Array.isArray(value)&&root.querySelector?.(\'#replay-movie-list-v357\')){\n        active.movieNavigation=[\'view\',\'edit\'].includes(value.action);\n        return {...value,_burari_diag_v603:{operation_id:active.row.id}};\n      }\n      if(/error/i.test(name))end(\'error\',\'component_error\');\n    },run(p,r,session,details={}){if(active&&current.session&&session!==current.session)end(\'interrupted\',\'server_session_changed\');current={page:p,run:Number(r)||0,session};diagEvent603(\'server_run_seen\',{run:current.run,page:p,server_sent_ms:details.server_sent_ms||null,script_started_ms:details.script_started_ms||null});if(active){const list=active.row.server_runs;if(!list.some(x=>x.run===current.run&&x.session===session)){if(list.length<32)list.push({session,run:current.run});else active.row.correlation_truncated=true;}}safe(consider);},\n    snapshot(){if(active)active.row.observed_until_ms=rounded(mono()-active.start);persistNow();return JSON.parse(JSON.stringify({version:603,diagnostic_version:603,document_id:boot,captured_at:new Date().toISOString(),limit:2000,dropped_operations:dropped,persistence_error:persistenceError,rows,summary:summary(),diagnostics:{events:diagEvents603.slice(),limit:400,dropped:diagDropped603,capabilities:diagCapabilities603,mutation_records:diagMutations603,observer_cpu_ms:rounded(diagObserverMs603),clock_note:\'Only monotonic intervals within the same process are directly comparable; server/browser wall clocks may differ\',socket_note:\'Socket events are temporal candidates; no message payload is decoded\',memory:host.performance.memory?{used_js_heap_bytes:host.performance.memory.usedJSHeapSize,total_js_heap_bytes:host.performance.memory.totalJSHeapSize}:null},coverage:{watched_roots:observers.size,inaccessible_iframes:[...frameHandlers.keys()].filter(f=>!safe(()=>f.contentDocument)).length},limitations:[\'Framework queueing before script entry and WebSocket ingress are not directly measured\',\'Resource timing omits cross-origin details and in-flight transfers\',\'Existing sockets become observable after their next send\',\'Physical screen presentation is not measured\',\'Render estimates are not business-operation completion\',\'First/repeat means this document, not cache hit/miss\',\'Cross-origin frames and external apps are not measured\',\'Server links are temporal candidates; do not sum nested phase times\',\'Timeouts and interruptions are excluded from successful latency distributions\']}));},\n    clear(){host.clearTimeout(deadline);host.clearTimeout(quiet);active=null;rows=[];dropped=0;counts.clear();host.clearTimeout(diagLagTimer603);diagEvents603.length=0;diagDropped603=0;diagMutations603=0;diagObserverMs603=0;persistNow();}};\n  host[KEY]=api;watch(doc);installDiagnostics603();\n  doc.addEventListener(\'visibilitychange\',()=>safe(()=>{if(doc.hidden&&active)end(\'interrupted\',\'background\');persistNow();}),{passive:true});\n  host.addEventListener(\'pagehide\',()=>safe(()=>{if(active)end(\'interrupted\',\'pagehide\');persistNow();}),{passive:true});\n  return api;\n}\n'
 
-_HISTORY_JS = _PERF_BROWSER_JS_V466 + r"""
-export default function(component) {
-  const { data, setTriggerValue } = component;
-  const validPages = new Set(['home', 'camera', 'videos', 'moments', 'diary', 'photos', 'review', 'review_map', 'review_project', 'review_monthly', 'review_tag', 'review_random', 'review_shared', 'review_history', 'nearby', 'discovery_results', 'evening_review', 'toilets', 'help_places', 'field_notes', 'experience', 'settings', 'settings_moments', 'settings_moments_definition', 'settings_location', 'settings_account', 'settings_media_import']);
-  const marker = '__tokyo_burari_page__';
-  const guardMarker = '__tokyo_burari_first_level_guard__';
-  const requestedPage = validPages.has(data?.page) ? data.page : 'home';
-  const action = data?.action || 'sync';
-  const navigationNode = String(data?.node || requestedPage);
-  const interceptHierarchyBack = Boolean(data?.intercept_hierarchy_back) && requestedPage !== 'home';
-  const firstLevelBackToHome = requestedPage !== 'home' && navigationNode === requestedPage && !interceptHierarchyBack;
-  const pendingFeelingParam = 'feel_v159';
-  const pendingFeelingStore = 'tokyo_burari_pending_feelings_v159';
-  const foregroundHiddenStore = 'tokyo_burari_hidden_at_v457';
-  let hiddenAtV457 = 0;
-  let lastForegroundEmitV457 = 0;
-  let hostWindowV457 = window;
-  let hostDocumentV457 = document;
-  try {
-    if (window.parent && window.parent !== window && window.parent.document) {
-      hostWindowV457 = window.parent;
-      hostDocumentV457 = window.parent.document;
-    }
-  } catch (_) {}
-
-  try { installBurariPerf466(hostWindowV457, requestedPage, data?.perf_run, data?.perf_session, {server_sent_ms:data?.diag_server_sent_ms, script_started_ms:data?.diag_script_started_ms}); } catch (_) {}
-
-  const refreshLayoutV457 = () => {
-    const refresh = () => {
-      try { if (hostDocumentV457.body) void hostDocumentV457.body.offsetHeight; } catch (_) {}
-      try { hostWindowV457.dispatchEvent(new Event('resize')); } catch (_) {}
-    };
-    try { requestAnimationFrame(refresh); } catch (_) { refresh(); }
-    setTimeout(refresh, 180);
-  };
-
-  const foregroundSnapshotV457 = () => {
-    let staleCount = 0, rootCount = 0, iframeCount = 0, spinnerCount = 0;
-    try { staleCount = hostDocumentV457.querySelectorAll('[data-stale="true"]').length; } catch (_) {}
-    try { rootCount = hostDocumentV457.querySelectorAll('.st-key-app_page_root_v280').length; } catch (_) {}
-    try { iframeCount = hostDocumentV457.querySelectorAll('iframe').length; } catch (_) {}
-    try { spinnerCount = hostDocumentV457.querySelectorAll('[data-testid="stSpinner"]').length; } catch (_) {}
-    return { stale_count: staleCount, root_count: rootCount, iframe_count: iframeCount, spinner_count: spinnerCount };
-  };
-
-  const emitForegroundRestoreV457 = (reason, persisted) => {
-    if (hostDocumentV457.hidden) return;
-    const now = Date.now();
-    let storedAt = 0;
-    try { storedAt = Number(localStorage.getItem(foregroundHiddenStore) || 0); } catch (_) {}
-    const startedAt = Number(hiddenAtV457 || storedAt || 0);
-    const hiddenMs = startedAt > 0 ? Math.max(0, now - startedAt) : 0;
-    if (!persisted && hiddenMs < 1200) {
-      try { localStorage.removeItem(foregroundHiddenStore); } catch (_) {}
-      hiddenAtV457 = 0;
-      return;
-    }
-    if (now - lastForegroundEmitV457 < 3500) return;
-    lastForegroundEmitV457 = now;
-    refreshLayoutV457();
-    const stats = foregroundSnapshotV457();
-    const token = `${now}:${Math.random()}`;
-    queueMicrotask(() => setTriggerValue('foreground_restore', {
-      token, reason: String(reason || 'visible'), hidden_ms: Math.round(hiddenMs),
-      visible_at_ms: now, persisted: Boolean(persisted), ...stats
-    }));
-    hiddenAtV457 = 0;
-    try { localStorage.removeItem(foregroundHiddenStore); } catch (_) {}
-  };
-
-  const onVisibilityV457 = () => {
-    if (hostDocumentV457.hidden) {
-      hiddenAtV457 = Date.now();
-      try { localStorage.setItem(foregroundHiddenStore, String(hiddenAtV457)); } catch (_) {}
-    } else {
-      emitForegroundRestoreV457('visibility', false);
-    }
-  };
-  const onPageHideV457 = () => {
-    hiddenAtV457 = Date.now();
-    try { localStorage.setItem(foregroundHiddenStore, String(hiddenAtV457)); } catch (_) {}
-  };
-  const onPageShowV457 = (event) => {
-    if (event && event.persisted) emitForegroundRestoreV457('pageshow_bfcache', true);
-    else if (!hostDocumentV457.hidden) {
-      let storedAt = 0;
-      try { storedAt = Number(localStorage.getItem(foregroundHiddenStore) || 0); } catch (_) {}
-      if (storedAt > 0 && Date.now() - storedAt >= 1200) emitForegroundRestoreV457('pageshow', false);
-    }
-  };
-  const restorePendingFeelingParam = () => {
-    try {
-      const url = new URL(window.location.href);
-      if (url.searchParams.get(pendingFeelingParam)) return false;
-      const raw = String(localStorage.getItem(pendingFeelingStore) || '');
-      if (!raw) return false;
-      url.searchParams.set(pendingFeelingParam, raw);
-      window.history.replaceState(window.history.state || {}, '', url.pathname + url.search + url.hash);
-      return true;
-    } catch (_) { return false; }
-  };
-
-  const restoredPendingFeeling = restorePendingFeelingParam();
-  if (restoredPendingFeeling) {
-    queueMicrotask(() => setTriggerValue('pending_restore', `${Date.now()}:${Math.random()}`));
-  }
-
-  const pageFromUrl = () => {
-    try {
-      const value = new URL(window.location.href).searchParams.get('view');
-      return validPages.has(value) ? value : 'home';
-    } catch (_) {
-      return 'home';
-    }
-  };
-
-  const pageFromHistory = () => {
-    const value = window.history.state && window.history.state[marker];
-    return validPages.has(value) ? value : pageFromUrl();
-  };
-
-  const urlFor = (page) => {
-    const url = new URL(window.location.href);
-    if (page === 'home') {
-      url.searchParams.delete('view');
-    } else {
-      url.searchParams.set('view', page);
-    }
-    return url.pathname + url.search + url.hash;
-  };
-
-  let currentPage = pageFromHistory();
-  const state = window.history.state || {};
-
-  // Mark the entry used to open the app as the app's home/current entry.
-  if (!validPages.has(state[marker])) {
-    const initialPage = pageFromUrl();
-    window.history.replaceState(
-      { ...state, [marker]: initialPage },
-      '',
-      urlFor(initialPage)
-    );
-    currentPage = initialPage;
-  }
-
-  if (action === 'push' && currentPage !== requestedPage) {
-    window.history.pushState(
-      { ...(window.history.state || {}), [marker]: requestedPage },
-      '',
-      urlFor(requestedPage)
-    );
-    currentPage = requestedPage;
-  } else if (action === 'replace' && currentPage !== requestedPage) {
-    window.history.replaceState(
-      { ...(window.history.state || {}), [marker]: requestedPage },
-      '',
-      urlFor(requestedPage)
-    );
-    currentPage = requestedPage;
-  } else if (action === 'sync' && currentPage !== requestedPage) {
-    // This covers a page reload or a browser-restored tab whose URL/history
-    // already points at an internal app screen.
-    queueMicrotask(() => setTriggerValue('page', currentPage));
-  }
-
-  // Android/PWA can return from an external Maps app with no usable browser entry
-  // behind the current first-level screen. Add one same-page guard entry so the next
-  // native Back always fires popstate instead of closing the web app. It is armed once
-  // per first-level page and survives the trip out to Google Maps.
-  if (firstLevelBackToHome && currentPage === requestedPage) {
-    const currentState = window.history.state || {};
-    if (currentState[guardMarker] !== requestedPage) {
-      window.history.pushState(
-        { ...currentState, [marker]: requestedPage, [guardMarker]: requestedPage },
-        '',
-        urlFor(requestedPage)
-      );
-    }
-  } else if (requestedPage === 'home') {
-    const currentState = window.history.state || {};
-    if (currentState[guardMarker]) {
-      const cleanState = { ...currentState };
-      delete cleanState[guardMarker];
-      cleanState[marker] = 'home';
-      window.history.replaceState(cleanState, '', urlFor('home'));
-    }
-  }
-
-  const onPopState = (event) => {
-    // A native browser Back can move to an older URL before Streamlit reruns.
-    // Restore browser-local pending feelings onto that history entry first.
-    restorePendingFeelingParam();
-    if (interceptHierarchyBack) {
-      // The phone/browser Back control must mean "one folder level up", not
-      // "whatever screen happened to be visited previously". Restore the app
-      // entry immediately, then let Python apply the fixed parent mapping.
-      window.history.pushState(
-        { ...(window.history.state || {}), [marker]: requestedPage },
-        '',
-        urlFor(requestedPage)
-      );
-      const token = `${navigationNode}:${Date.now()}:${Math.random()}`;
-      setTriggerValue('hierarchy_back', token);
-      return;
-    }
-    if (firstLevelBackToHome) {
-      // We have just popped the synthetic guard. Convert the revealed entry to Home
-      // before Streamlit rerenders, so Android Back never falls through and closes the app.
-      const homeState = { ...(event.state || {}) };
-      delete homeState[guardMarker];
-      homeState[marker] = 'home';
-      window.history.replaceState(homeState, '', urlFor('home'));
-      setTriggerValue('page', 'home');
-      return;
-    }
-    const statePage = event.state && event.state[marker];
-    const target = validPages.has(statePage) ? statePage : pageFromUrl();
-    setTriggerValue('page', validPages.has(target) ? target : 'home');
-  };
-
-  window.addEventListener('popstate', onPopState);
-  hostDocumentV457.addEventListener('visibilitychange', onVisibilityV457, { passive: true });
-  hostWindowV457.addEventListener('pagehide', onPageHideV457, { passive: true });
-  hostWindowV457.addEventListener('pageshow', onPageShowV457, { passive: true });
-  return () => {
-    window.removeEventListener('popstate', onPopState);
-    hostDocumentV457.removeEventListener('visibilitychange', onVisibilityV457);
-    hostWindowV457.removeEventListener('pagehide', onPageHideV457);
-    hostWindowV457.removeEventListener('pageshow', onPageShowV457);
-  };
-}
-"""
+_HISTORY_JS = _PERF_BROWSER_JS_V466 + '\nexport default function(component) {\n  const { data, setTriggerValue } = component;\n  const validPages = new Set([\'home\', \'camera\', \'videos\', \'moments\', \'diary\', \'photos\', \'review\', \'review_map\', \'review_project\', \'review_monthly\', \'review_tag\', \'review_random\', \'review_shared\', \'review_history\', \'nearby\', \'discovery_results\', \'evening_review\', \'toilets\', \'help_places\', \'field_notes\', \'experience\', \'events\', \'settings\', \'settings_moments\', \'settings_moments_definition\', \'settings_location\', \'settings_account\', \'settings_media_import\']);\n  const marker = \'__tokyo_burari_page__\';\n  const guardMarker = \'__tokyo_burari_first_level_guard__\';\n  const requestedPage = validPages.has(data?.page) ? data.page : \'home\';\n  const action = data?.action || \'sync\';\n  const navigationNode = String(data?.node || requestedPage);\n  const interceptHierarchyBack = Boolean(data?.intercept_hierarchy_back) && requestedPage !== \'home\';\n  const firstLevelBackToHome = requestedPage !== \'home\' && navigationNode === requestedPage && !interceptHierarchyBack;\n  const pendingFeelingParam = \'feel_v159\';\n  const pendingFeelingStore = \'tokyo_burari_pending_feelings_v159\';\n  const foregroundHiddenStore = \'tokyo_burari_hidden_at_v457\';\n  let hiddenAtV457 = 0;\n  let lastForegroundEmitV457 = 0;\n  let hostWindowV457 = window;\n  let hostDocumentV457 = document;\n  try {\n    if (window.parent && window.parent !== window && window.parent.document) {\n      hostWindowV457 = window.parent;\n      hostDocumentV457 = window.parent.document;\n    }\n  } catch (_) {}\n\n  try { installBurariPerf466(hostWindowV457, requestedPage, data?.perf_run, data?.perf_session, {server_sent_ms:data?.diag_server_sent_ms, script_started_ms:data?.diag_script_started_ms}); } catch (_) {}\n\n  const refreshLayoutV457 = () => {\n    const refresh = () => {\n      try { if (hostDocumentV457.body) void hostDocumentV457.body.offsetHeight; } catch (_) {}\n      try { hostWindowV457.dispatchEvent(new Event(\'resize\')); } catch (_) {}\n    };\n    try { requestAnimationFrame(refresh); } catch (_) { refresh(); }\n    setTimeout(refresh, 180);\n  };\n\n  const foregroundSnapshotV457 = () => {\n    let staleCount = 0, rootCount = 0, iframeCount = 0, spinnerCount = 0;\n    try { staleCount = hostDocumentV457.querySelectorAll(\'[data-stale="true"]\').length; } catch (_) {}\n    try { rootCount = hostDocumentV457.querySelectorAll(\'.st-key-app_page_root_v280\').length; } catch (_) {}\n    try { iframeCount = hostDocumentV457.querySelectorAll(\'iframe\').length; } catch (_) {}\n    try { spinnerCount = hostDocumentV457.querySelectorAll(\'[data-testid="stSpinner"]\').length; } catch (_) {}\n    return { stale_count: staleCount, root_count: rootCount, iframe_count: iframeCount, spinner_count: spinnerCount };\n  };\n\n  const emitForegroundRestoreV457 = (reason, persisted) => {\n    if (hostDocumentV457.hidden) return;\n    const now = Date.now();\n    let storedAt = 0;\n    try { storedAt = Number(localStorage.getItem(foregroundHiddenStore) || 0); } catch (_) {}\n    const startedAt = Number(hiddenAtV457 || storedAt || 0);\n    const hiddenMs = startedAt > 0 ? Math.max(0, now - startedAt) : 0;\n    if (!persisted && hiddenMs < 1200) {\n      try { localStorage.removeItem(foregroundHiddenStore); } catch (_) {}\n      hiddenAtV457 = 0;\n      return;\n    }\n    if (now - lastForegroundEmitV457 < 3500) return;\n    lastForegroundEmitV457 = now;\n    refreshLayoutV457();\n    const stats = foregroundSnapshotV457();\n    const token = `${now}:${Math.random()}`;\n    queueMicrotask(() => setTriggerValue(\'foreground_restore\', {\n      token, reason: String(reason || \'visible\'), hidden_ms: Math.round(hiddenMs),\n      visible_at_ms: now, persisted: Boolean(persisted), ...stats\n    }));\n    hiddenAtV457 = 0;\n    try { localStorage.removeItem(foregroundHiddenStore); } catch (_) {}\n  };\n\n  const onVisibilityV457 = () => {\n    if (hostDocumentV457.hidden) {\n      hiddenAtV457 = Date.now();\n      try { localStorage.setItem(foregroundHiddenStore, String(hiddenAtV457)); } catch (_) {}\n    } else {\n      emitForegroundRestoreV457(\'visibility\', false);\n    }\n  };\n  const onPageHideV457 = () => {\n    hiddenAtV457 = Date.now();\n    try { localStorage.setItem(foregroundHiddenStore, String(hiddenAtV457)); } catch (_) {}\n  };\n  const onPageShowV457 = (event) => {\n    if (event && event.persisted) emitForegroundRestoreV457(\'pageshow_bfcache\', true);\n    else if (!hostDocumentV457.hidden) {\n      let storedAt = 0;\n      try { storedAt = Number(localStorage.getItem(foregroundHiddenStore) || 0); } catch (_) {}\n      if (storedAt > 0 && Date.now() - storedAt >= 1200) emitForegroundRestoreV457(\'pageshow\', false);\n    }\n  };\n  const restorePendingFeelingParam = () => {\n    try {\n      const url = new URL(hostWindowV457.location.href);\n      if (url.searchParams.get(pendingFeelingParam)) return false;\n      const raw = String(localStorage.getItem(pendingFeelingStore) || \'\');\n      if (!raw) return false;\n      url.searchParams.set(pendingFeelingParam, raw);\n      hostWindowV457.history.replaceState(hostWindowV457.history.state || {}, \'\', url.pathname + url.search + url.hash);\n      return true;\n    } catch (_) { return false; }\n  };\n\n  const restoredPendingFeeling = restorePendingFeelingParam();\n  if(restoredPendingFeeling)queueMicrotask(()=>setTriggerValue(\'pending_restore\', `${Date.now()}:${Math.random()}`));\n  // Buttons keep their native Streamlit callbacks. Never cancel or swallow their clicks.\n  const h=hostWindowV457,d=hostDocumentV457;\n  const guard=\'__burari_navigation_guard_v604\';\n  const previous=h.__burariNavigation604;\n  if(previous && !previous.retired605){\n    if(previous.onClick)d.removeEventListener(\'click\',previous.onClick,true);\n    if(previous.onPop)h.removeEventListener(\'popstate\',previous.onPop);\n    previous.pending=null;previous.queued=null;previous.emit=null;previous.retired605=true;\n    h.__burariNavigationBusy604=false;d.documentElement?.removeAttribute(\'data-burari-navigation\');\n  }\n  let nav=h.__burariNavigation605;\n  if(!nav){\n    nav={page:\'home\',node:\'home\',objectId:\'\',context:\'\',emit:null,seq:0,pending:null};\n    const urlFor=page=>{const url=new URL(h.location.href);if(page===\'home\')url.searchParams.delete(\'view\');else url.searchParams.set(\'view\',page);return url.pathname+url.search+url.hash;};\n    nav.arm=()=>{\n      const state={...(h.history.state||{}),[marker]:nav.page,[guard]:true};delete state[guardMarker];\n      if(!h.history.state?.[guard]){\n        h.history.replaceState({...state,[guard]:false},\'\',urlFor(nav.page));\n        h.history.pushState(state,\'\',urlFor(nav.page));\n      }else h.history.replaceState(state,\'\',urlFor(nav.page));\n    };\n    nav.quietMedia=()=>{\n      try{d.querySelectorAll(\'audio,video\').forEach(el=>{if(!el.paused)el.pause();});}catch(_){}\n      try{d.querySelectorAll(\'iframe\').forEach(frame=>frame.contentWindow?.postMessage({burari_navigation_v604:true},\'*\'));}catch(_){}\n    };\n    nav.findButton=kind=>{\n      const selector=kind===\'home\'\n        ? \'[class*="st-key-global_bottom_home_"] button,[class*="st-key-history_home_"] button\'\n        : \'[class*="st-key-parent_back_"] button,.st-key-camera_back_parent button,[class*="st-key-global_parent_back_"] button\';\n      const roots=[d],seen=new Set();\n      if(typeof document!==\'undefined\'&&document!==d)roots.push(document);\n      // Some Android builds expose the bridge on a same-origin parent document.\n      // Find the actual Streamlit widget there or in its visible child frames.\n      for(let index=0;index<roots.length&&index<24;index++){\n        const root=roots[index];if(!root||seen.has(root))continue;seen.add(root);\n        const button=Array.from(root.querySelectorAll(selector)).find(b=>!b.disabled&&b.isConnected!==false&&b.getClientRects().length&&!b.closest?.(\'[data-stale="true"]\'));\n        if(button)return button;\n        for(const frame of root.querySelectorAll(\'iframe\')){\n          try{if(frame.contentDocument&&frame.getClientRects().length)roots.push(frame.contentDocument);}catch(_){}\n        }\n      }\n      return undefined;\n    };\n    nav.request=kind=>{\n      if(![\'parent\',\'home\'].includes(kind))return true;\n      // Prefer the same real widget callback as an on-screen tap. No component ACK lock.\n      const button=nav.findButton(kind);\n      if(button){nav.quietMedia();button.click();return true;}\n      if(nav.page===\'home\'&&nav.node===\'home\'){nav.arm();return true;}\n      if(!nav.emit)return false; // Not mounted yet: a later press remains usable.\n      // A retry retains its operation token, preventing a lost acknowledgement from\n      // applying the same parent step twice. Home supersedes a queued parent action.\n      const existing=nav.pending;\n      let request=existing&&existing.kind===kind&&existing.context===nav.context?existing.request:null;\n      if(!request){\n        const token=`nav605-${Date.now()}-${++nav.seq}-${Math.random().toString(36).slice(2)}`;\n        request={token,kind,page:nav.page,node:nav.node,object_id:nav.objectId,context:nav.context};\n      }\n      nav.pending={kind,context:nav.context,request,token:request.token};\n      nav.quietMedia();\n      try{nav.emit(\'navigation_request\',{...request,attempt:++nav.seq});return true;}catch(_){return false;}\n    };\n    nav.onPop=()=>{restorePendingFeelingParam();nav.arm();nav.request(\'parent\');};\n    nav.onClick=event=>{\n      const path=event.composedPath?event.composedPath():[event.target];\n      const button=path.find(el=>el?.matches?.(\'button,[role="button"]\'));\n      const widget=button?.closest?.(\'[class*="st-key-"]\');\n      const keys=Array.from(widget?.classList||[]);\n      if(keys.some(k=>k.startsWith(\'st-key-parent_back_\')||k.startsWith(\'st-key-global_parent_back_\')||k.startsWith(\'st-key-global_bottom_home_\')||k.startsWith(\'st-key-history_home_\')||k===\'st-key-camera_back_parent\'))nav.quietMedia();\n      // Intentionally no preventDefault/stopPropagation: React must receive the tap.\n    };\n    h.addEventListener(\'popstate\',nav.onPop);\n    d.addEventListener(\'click\',nav.onClick,{capture:true,passive:true});\n    h.__burariNavigation605=nav;\n  }\n  const binding={};nav.binding=binding;nav.emit=setTriggerValue;\n  const nextContext=JSON.stringify([requestedPage,navigationNode,String(data?.navigation_object||\'\')]);\n  if(nav.pending&&(nav.pending.token===data?.navigation_ack||nav.context!==nextContext))nav.pending=null;\n  nav.page=requestedPage;nav.node=navigationNode;nav.objectId=String(data?.navigation_object||\'\');nav.context=nextContext;\n  // Keep the v13 APK entry working; a new APK is not needed for this fix.\n  h.__burariNavigateParent604=h.__burariNavigateParent605=()=>nav.request(\'parent\');\n  h.__burariNavigateHome604=h.__burariNavigateHome605=()=>nav.request(\'home\');\n  nav.arm();\n  hostDocumentV457.addEventListener(\'visibilitychange\',onVisibilityV457,{passive:true});\n  hostWindowV457.addEventListener(\'pagehide\',onPageHideV457,{passive:true});\n  hostWindowV457.addEventListener(\'pageshow\',onPageShowV457,{passive:true});\n  return ()=>{\n    if(nav.binding===binding)nav.emit=null;\n    hostDocumentV457.removeEventListener(\'visibilitychange\',onVisibilityV457);\n    hostWindowV457.removeEventListener(\'pagehide\',onPageHideV457);\n    hostWindowV457.removeEventListener(\'pageshow\',onPageShowV457);\n  };\n}\n'
 
 try:
     browser_history_component = st.components.v2.component(
@@ -28253,6 +28028,10 @@ def render_monthly_replay_player(period_label, review, playback, photo_items, cu
         try {{ window.parent.postMessage({{burari_diag_v603:true,kind}}, '*'); }} catch (_) {{}}
       }};
       burariDiag603('replay_script_started');
+      window.addEventListener('message', event => {{
+        if(event.source !== window.parent || event.data?.burari_navigation_v604 !== true)return;
+        try {{ burariPauseReplay(); }} catch (_) {{}}
+      }});
       const burariAllSlides = {payload}.map((item, index) => ({{...item, _source_index_v469:index}}));
       let burariSlides = burariAllSlides.slice();
       const burariKnownVoiceMsV469 = new Map();
@@ -32093,6 +31872,15 @@ def current_navigation_context():
             return "diary_trip", trip_id
         return "diary", ""
 
+    if page == "photos" and st.session_state.get("_all_photo_library_view_mode_v419") == "拡大モード":
+        return "photos_detail", ""
+    if page == "experience":
+        if st.session_state.get("_experience_saved_cards_view_v513"):
+            return "experience_cards", ""
+        if st.session_state.get("_experience_manual_picker_open_v499"):
+            return "experience_picker", ""
+        if st.session_state.get("_experience_selected_photo_view_mode_v502") == "拡大モード":
+            return "experience_photo", ""
     if page == "review":
         return "review", ""
 
@@ -32125,6 +31913,10 @@ def navigation_parent_node(node=None):
     if node is None:
         node, _ = current_navigation_context()
     parents = {
+        "photos_detail": "photos",
+        "experience_cards": "experience",
+        "experience_picker": "experience",
+        "experience_photo": "experience",
         "diary_photo": "diary_trip",
         "diary_trip": "diary",
         "review_history_detail": "review_history",
@@ -32220,6 +32012,8 @@ def _set_page_state(page_name, history_mode="push"):
 
 def _go_page_callback(page_name, history_mode="push"):
     """Streamlit button callback for one-rerun page navigation."""
+    if page_name == "home":
+        _mark_navigation_priority_v604()
     _set_page_state(page_name, history_mode=history_mode)
 
 
@@ -32323,10 +32117,24 @@ def _open_experience_callback_v497():
 
 def _navigate_to_parent_state_only():
     """Apply one hierarchy-up action without explicitly triggering a rerun."""
+    _mark_navigation_priority_v604()
     node, object_id = current_navigation_context()
     if node == "home":
         return
 
+    if node == "photos_detail":
+        st.session_state["_all_photo_library_view_mode_v419"] = "一覧モード"
+        st.session_state["_history_action"] = "replace"
+        return
+    if node in {"experience_cards", "experience_picker", "experience_photo"}:
+        if node == "experience_cards":
+            st.session_state.pop("_experience_saved_cards_view_v513", None)
+        elif node == "experience_picker":
+            st.session_state["_experience_manual_picker_open_v499"] = False
+        else:
+            st.session_state["_experience_selected_photo_view_mode_v502"] = "一覧モード"
+        st.session_state["_history_action"] = "replace"
+        return
     if node == "diary_photo":
         _return_diary_photo_to_gallery(object_id)
         st.session_state["_history_action"] = "replace"
@@ -32388,6 +32196,7 @@ def go_page(page_name, history_mode="push"):
     st.rerun(scope="app")
 
 def _history_home_callback():
+    _mark_navigation_priority_v604()
     st.session_state.pop("history_detail_trip_id", None)
     _set_page_state("home", history_mode="replace")
 
@@ -32396,6 +32205,56 @@ def _toggle_home_destination_editor():
     st.session_state.show_home_destination_editor = not bool(
         st.session_state.get("show_home_destination_editor")
     )
+
+
+def _mark_navigation_priority_v604():
+    st.session_state["_navigation_priority_v604"] = True
+    # Explicit navigation supersedes startup restoration, including later reruns.
+    st.session_state["_recent_camera_restore_checked"] = True
+    try:
+        event_id = str(st.query_params.get("auto_discovery_event", "") or "").strip()
+        if event_id:
+            st.session_state["_auto_discovery_consumed_event"] = event_id
+        encoded = str(st.query_params.get("evening_review_places", "") or "").strip()
+        if encoded and len(encoded) <= 48000:
+            day = str(st.query_params.get("evening_review_day", "") or "").strip()
+            st.session_state["_evening_review_consumed_key_v416"] = f"{day}:{hashlib.sha1(encoded.encode('utf-8')).hexdigest()[:16]}"
+    except Exception:
+        pass
+
+
+def _consume_navigation_request_v604(payload):
+    """Apply one acknowledged navigation request before automatic work or UI restoration."""
+    if not isinstance(payload, dict):
+        return False
+    token = str(payload.get("token") or "")
+    kind = payload.get("kind")
+    if not token or len(token) > 180 or kind not in {"parent", "home"}:
+        return False
+    seen = list(st.session_state.get("_navigation_seen_v604") or [])
+    if token in seen:
+        return False
+    st.session_state["_navigation_seen_v604"] = (seen + [token])[-32:]
+    st.session_state["_navigation_ack_v604"] = token
+    node, object_id = current_navigation_context()
+    # An old queued Back must not move a newer screen or undo a later Home action.
+    if kind == "parent" and (
+        str(payload.get("page") or "") != str(st.session_state.get("main_page") or "home")
+        or str(payload.get("node") or "") != node
+        or str(payload.get("object_id") or "") != str(object_id or "")
+    ):
+        return True  # acknowledge obsolete input without applying it
+    _mark_navigation_priority_v604()
+    _diag_action_received_v603("navigation:" + kind)
+    if kind == "home":
+        _set_page_state("home", history_mode="replace")
+    else:
+        _navigate_to_parent_state_only()
+    return True
+
+
+def _navigation_priority_active_v604():
+    return bool(st.session_state.get("_navigation_priority_v604"))
 
 
 def sync_browser_history():
@@ -32409,49 +32268,32 @@ def sync_browser_history():
         st.session_state["main_page"] = page
 
     action = st.session_state.pop("_history_action", "sync")
-    navigation_node, _ = current_navigation_context()
-    # First-level pages (Camera / Videos / Moments / Diary / Review / Nearby / Toilets / Settings)
-    # already have a real Home entry immediately behind them because go_page()
-    # pushes history. Let the phone/browser Back control pop that entry normally.
-    # Only deeper in-page hierarchy states need interception so Back means exactly
-    # one app level rather than jumping all the way to Home.
-    intercept_nodes = {
-        "diary_photo",
-        "diary_trip",
-        "photos",
-        "review_history_detail",
-        "review_history",
-        "review_map",
-        "review_project",
-        "review_monthly",
-        "review_tag",
-        "review_random",
-        "review_shared",
-        "settings_moments",
-        "settings_moments_definition",
-        "settings_location",
-        "settings_account",
-        "settings_media_import",
-    }
+    navigation_node, navigation_object = current_navigation_context()
     result = browser_history_component(
         data={
             "page": page,
             "action": action,
             "node": navigation_node,
-            "intercept_hierarchy_back": navigation_node in intercept_nodes,
+            "intercept_hierarchy_back": True,
+            "navigation_object": navigation_object,
+            "navigation_ack": st.session_state.get("_navigation_ack_v604", ""),
             "perf_run": st.session_state.get("_performance_current_run_v457", 0),
             "perf_session": st.session_state.setdefault("_perf_session_v466", uuid.uuid4().hex),
             "diag_server_sent_ms": int(time.time() * 1000),
             "diag_script_started_ms": _diag_script_wall_ms_v603,
         },
-        key=f"tokyo_burari_browser_history_instance_v208_{_current_ui_refresh_epoch()}", height=1,
+        key=f"tokyo_burari_browser_history_instance_v604_{_current_ui_refresh_epoch()}", height=1,
+        on_navigation_request_change=lambda: None,
         on_page_change=lambda: None,
         on_hierarchy_back_change=lambda: None,
         on_pending_restore_change=lambda: None,
         on_foreground_restore_change=lambda: None,
     )
 
-    foreground_restore = getattr(result, "foreground_restore", None)
+    if _consume_navigation_request_v604(getattr(result, "navigation_request", None)):
+        st.rerun(scope="app")
+
+    foreground_restore = None if _navigation_priority_active_v604() else getattr(result, "foreground_restore", None)
     if isinstance(foreground_restore, dict):
         token = str(foreground_restore.get("token") or "").strip()
         if token and token != str(st.session_state.get("_foreground_restore_token_v457") or ""):
@@ -46894,8 +46736,9 @@ def gallery_import_marker_payload_v444(max_items=5000):
 # Page: Trip / camera
 # ============================================================
 def page_trip(*, gallery_inline=False):
-    if not gallery_inline and st.button("←", key="camera_back_parent", help="1つ前の階層に戻る"):
-        navigate_to_parent()
+    if not gallery_inline:
+        st.button("←", key="camera_back_parent", help="1つ前の階層に戻る",
+                  on_click=_navigate_to_parent_callback)
 
     notice = st.session_state.pop("_camera_notice", None)
     if notice:
@@ -63983,16 +63826,21 @@ _diag_record_pre_main_v603()
 _perf_call_v457("bootstrap:verify_setup", verify_setup)
 _perf_call_v457("bootstrap:login", require_family_pin)
 _perf_call_v457("bootstrap:init_state", init_state)
-_consume_background_results_v468()
+with st.container(key="navigation_bridge_v604"):
+    _perf_call_v457("bootstrap:browser_history", sync_browser_history)
+_navigation_priority_run_v604 = _navigation_priority_active_v604()
+if not _navigation_priority_run_v604:
+    _consume_background_results_v468()
 try:
-    _prime_read_ahead_v520(str(st.session_state.get("main_page") or "home"), post_paint=False)
+    if not _navigation_priority_run_v604:
+        _prime_read_ahead_v520(str(st.session_state.get("main_page") or "home"), post_paint=False)
 except Exception as _read_ahead_prime_error_v520:
     _perf_log_v457("background:read_ahead_schedule_error", duration_ms=0,
                    meta={"type": type(_read_ahead_prime_error_v520).__name__}, force=True)
 # Notification launches must win over camera-session restoration. Evening review
 # has priority; ordinary automatic-discovery notifications keep their dedicated page.
 _deep_link_started_v457 = time.perf_counter()
-if not consume_evening_review_deep_link():
+if not _navigation_priority_run_v604 and not consume_evening_review_deep_link():
     consume_auto_discovery_deep_link()
 _perf_log_v457("bootstrap:deep_links", started_at=_deep_link_started_v457)
 # v383: newly saved videos launch their AI job immediately. Full recovery scans are
@@ -64001,7 +63849,7 @@ _perf_log_v457("bootstrap:deep_links", started_at=_deep_link_started_v457)
 _video_resume_started_v457 = time.perf_counter()
 try:
     _bg_resume_page = str(st.session_state.get("main_page") or "home")
-    if _bg_resume_page in {"videos", "moments"}:
+    if not _navigation_priority_run_v604 and _bg_resume_page in {"videos", "moments"}:
         _bg_resume_now = time.monotonic()
         _bg_resume_last = float(st.session_state.get("_bg_video_resume_last_monotonic") or 0.0)
         if (_bg_resume_now - _bg_resume_last) >= 90.0:
@@ -64016,12 +63864,14 @@ _perf_log_v457("bootstrap:video_resume", started_at=_video_resume_started_v457)
 # Daily rollover and old-title repair can touch many rows. They are diary/history
 # maintenance, not startup requirements, so home/camera opens no longer wait for them.
 with st.container(key="app_runtime_bridges_v473"):
-    _perf_call_v457("bootstrap:camera_restore", restore_recent_camera_session)
+    if not _navigation_priority_run_v604:
+        _perf_call_v457("bootstrap:camera_restore", restore_recent_camera_session)
 
     # Legacy v159 pending query values are still consumed for users who upgrade with an
     # older tab open. v167 mirrors browser-only choices into this URL payload with
     # history.replaceState, so the next real app action can persist them without any tap-time communication.
-    _perf_call_v457("bootstrap:pending_emotion", consume_pending_emotion_query)
+    if not _navigation_priority_run_v604:
+        _perf_call_v457("bootstrap:pending_emotion", consume_pending_emotion_query)
 
     # v146: resolve browser Back/Forward before drawing any visible page.
     # Previously the bridge ran after page rendering, so a mobile Back event could first
@@ -64029,12 +63879,13 @@ with st.container(key="app_runtime_bridges_v473"):
     # That ordering could leave stale Back/Home controls in odd positions until another
     # rerun. Handle history first; if it changes the page, sync_browser_history() reruns
     # before any visible UI is emitted.
-    _perf_call_v457("bootstrap:browser_history", sync_browser_history)
+    # v604: Back/Home was already handled before automatic work.
     # v449: photo-library emotion taps are intentionally browser-local for instant UI.
     # Mount the v166 flush bridge on every real app rerun *before* the requested page is
     # rendered so Review/Replay sees exactly the same current tags shown in the library.
     # The bridge is idempotent by token and clears the fast DB caches after persistence.
-    _perf_call_v457("bootstrap:pending_tag_sync", sync_pending_tags_from_browser_v166)
+    if not _navigation_priority_run_v604:
+        _perf_call_v457("bootstrap:pending_tag_sync", sync_pending_tags_from_browser_v166)
     _perf_call_v457("bootstrap:pending_cleanup", render_pending_emotion_query_cleanup)
 
     # v338: loading remains lightweight; stale Streamlit DOM stays visible during reconciliation. Android GPS is native-background only and never emits Streamlit GPS events. It performs
@@ -64049,7 +63900,7 @@ with st.container(key="app_runtime_bridges_v473"):
     # v485: Android scans MediaStore in the background. Transfer at most one queued
     # media item while the app is on a low-conflict page; camera/replay pages stay untouched.
     _native_media_page_v485 = str(st.session_state.get("main_page") or "home")
-    if _native_media_page_v485 in {"home", "settings"}:
+    if not _navigation_priority_run_v604 and _native_media_page_v485 in {"home", "settings"}:
         _perf_call_v457(
             "bootstrap:native_media_sync",
             render_native_media_sync_v485,
@@ -64166,14 +64017,15 @@ with st.container(key="app_page_root_v280"):
             _perf_call_v457("ui:bottom_navigation", render_global_bottom_navigation, page)
 
 try:
-    if str(st.session_state.get("main_page") or "home") == "home":
+    if not _navigation_priority_run_v604 and str(st.session_state.get("main_page") or "home") == "home":
         _prime_read_ahead_v520("home", post_paint=True)
 except Exception as _read_ahead_postpaint_error_v520:
     _perf_log_v457("background:read_ahead_postpaint_error", duration_ms=0,
                    meta={"type": type(_read_ahead_postpaint_error_v520).__name__}, force=True)
 
 try:
-    _maintenance_tick_v468()
+    if not _navigation_priority_run_v604:
+        _maintenance_tick_v468()
 except Exception as _maintenance_error_v468:
     _perf_log_v457("background:schedule_error", duration_ms=0,
                    meta={"type": type(_maintenance_error_v468).__name__}, force=True)
@@ -64183,3 +64035,6 @@ _perf_log_v457("script:total_to_ui_generated", started_at=_diag_script_started_v
 
 # v466: inert UI endpoint; operation logic is unchanged.
 st.markdown(f'<span hidden data-burari-perf-session="{st.session_state.setdefault("_perf_session_v466", uuid.uuid4().hex)}" data-burari-perf-done="{int(st.session_state.get("_performance_current_run_v457", 0))}" data-burari-perf-page="{html.escape(str(st.session_state.get("main_page") or "home"), quote=True)}" data-burari-perf-operation="{html.escape(str(st.session_state.get("_diag_operation_v603") or ""), quote=True)}" data-burari-perf-generated-ms="{int(time.time() * 1000)}"></span>', unsafe_allow_html=True)
+
+# Priority applies to this completed navigation render, not later ordinary actions.
+st.session_state.pop("_navigation_priority_v604", None)
