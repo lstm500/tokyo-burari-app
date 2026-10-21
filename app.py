@@ -1,3 +1,4 @@
+# v607: 100 focused Good Moments; chronological default list and instant enlarged navigation. Memories map removed.
 # v603: start before imports/definitions; framework queueing and bytecode compilation
 # occur earlier and are explicitly outside this measurement.
 import time as _diag_time_v603
@@ -61,7 +62,7 @@ def _app_css_v473(markup, **_ignored):
 # Review menu-only update: 2026-09-19 JST
 GENERATED_UPDATE_JST = "2026-09-19T14:54:38+09:00"
 
-APP_BUILD = "v605"
+APP_BUILD = "v607"
 # v598: Passing the focus gate is mandatory before any weighted ranking or reroll.
 # Never fill the twenty-image target with focus-rejected candidates.
 # v597: Compare 30 FPS candidates across the whole saved video offline. Disk-backed
@@ -72,7 +73,7 @@ APP_BUILD = "v605"
 # diversity, suppress transient smile detections and compare structural duplicates offline.
 # v594: Score Good Moments by six distinguishable local signals, including optional offline OpenCV smile/eye/face evidence, camera-motion-compensated action, scene changes and actual favorite-photo similarity. Apply saved percentages exactly; no paid AI calls.
 # v593: Event search uses zero paid AI/search/geocoding API calls: directly read robots-permitted public event listings, validate published dates locally, group 7 dates, preserve audit logs and category filters. Manual day detail search is also API-free.
-# v592: Re-enable "別の20枚を作る" even when existing candidates have emotion/parenting selections. Persisted diary photos are untouched; the unsaved current selection is replaced when reroll completes.
+# v592: Re-enable "別の100枚を作る" even when existing candidates have emotion/parenting selections. Persisted diary photos are untouched; the unsaved current selection is replaced when reroll completes.
 # v591: Select nine Good Moments using on-server, offline Pillow/NumPy image analysis.
 # No OpenAI/vision API calls in automatic video-frame selection or rerolls.
 # Preserve 0.5-second sampling / max 120 frames, and avoid prior rejected frames.
@@ -1144,7 +1145,7 @@ VIDEO_PROCESSING_MAX_SECONDS = 75
 # conservative margin because browser/device bitrates vary.
 VIDEO_RECORDING_RESERVE_BYTES = 36 * 1024 * 1024
 VIDEO_MAX_BYTES = 150 * 1024 * 1024
-VIDEO_AI_MAX_SELECTIONS = 20  # いい瞬間の切り抜き枚数
+VIDEO_AI_MAX_SELECTIONS = 100  # いい瞬間の切り抜き枚数
 # Full-video analysis at 30 FPS; legacy bundles keep the same count ceiling.
 VIDEO_ANALYSIS_FPS_V597 = 30
 VIDEO_AI_MIN_SAMPLE_INTERVAL_MS = 1000.0 / VIDEO_ANALYSIS_FPS_V597
@@ -8168,7 +8169,7 @@ def sync_pending_tags_from_browser_v166():
 # Chrome/Safari back and forward buttons move between app screens first.
 _PERF_BROWSER_JS_V466 = 'function installBurariPerf466(host, page, run, serverSession, serverDetails={}) {\n  const KEY=\'__burariPerf466\', STORE=\'burari_perf_v466\';\n  if(host[KEY]) { host[KEY].run(page,run,serverSession,serverDetails); return host[KEY]; }\n  const doc=host.document, mono=()=>host.performance.now(), rounded=x=>Math.round(x*10)/10;\n  const boot=host.crypto?.randomUUID?.() || Date.now().toString(36)+\'-\'+Math.random().toString(36).slice(2);\n  let seq=0, rows=[], dropped=0, persistenceError=false, active=null, current={page,run:Number(run)||0,session:serverSession};\n  let deadline=null, quiet=null, persistTimer=null, checking=false, pointer=null;\n  // Passive, bounded diagnostics. No network request or Streamlit trigger is added.\n  const diagEvents603=[];\n  let diagDropped603=0,diagLagTimer603=null,diagMutations603=0,diagObserverMs603=0;\n  const diagCapabilities603={longtask:false,event:false,resource:false,socket_send:false};\n  function diagEvent603(kind, detail={}, at=mono()) {\n    const item={kind,at_ms:rounded(at),wall_ms:Math.round(host.performance.timeOrigin+at),...detail};\n    if(active){item.operation_id=active.row.id;item.since_press_ms=rounded(at-active.start);}\n    diagEvents603.push(item);\n    if(diagEvents603.length>400){diagEvents603.shift();diagDropped603++;}\n  }\n  function blocked603(reason){\n    if(active){active.row.endpoint_blocker=reason;active.row.endpoint_checked_ms=rounded(mono()-active.start);}\n    return null;\n  }\n  function startLag603(){\n    host.clearTimeout(diagLagTimer603);\n    if(!active || doc.hidden)return;\n    const expected=mono()+250;\n    diagLagTimer603=host.setTimeout(()=>{\n      if(!active || doc.hidden)return;\n      const delay=mono()-expected;\n      if(delay>=150)diagEvent603(\'event_loop_delay\',{delay_ms:rounded(delay)});\n      startLag603();\n    },250);\n  }\n  function installDiagnostics603(){\n    diagEvent603(\'server_run_seen\',{run:current.run,page:current.page,server_sent_ms:serverDetails.server_sent_ms||null,script_started_ms:serverDetails.script_started_ms||null});\n    const supported=host.PerformanceObserver?.supportedEntryTypes||[];\n    function observe(type, callback, extra={}){\n      if(!supported.includes(type))return;\n      try{const observer=new host.PerformanceObserver(list=>safe(()=>callback(list.getEntries())));\n        observer.observe({type,buffered:false,...extra});diagCapabilities603[type]=true;\n      }catch(_){}\n    }\n    observe(\'longtask\',entries=>{\n      for(const e of entries)diagEvent603(\'long_task\',{duration_ms:rounded(e.duration),attribution_available:!!e.attribution?.length},e.startTime);\n    });\n    observe(\'event\',entries=>{\n      for(const e of entries)if([\'pointerdown\',\'pointerup\',\'click\',\'keydown\'].includes(e.name))\n        diagEvent603(\'input_timing\',{event:e.name,duration_ms:rounded(e.duration),queue_ms:rounded(Math.max(0,e.processingStart-e.startTime)),handler_ms:rounded(Math.max(0,e.processingEnd-e.processingStart))},e.startTime);\n    },{durationThreshold:16});\n    observe(\'resource\',entries=>{\n      for(const e of entries){\n        if(e.duration<200 && !(e.responseStatus>=400))continue;\n        let origin=\'\';try{origin=new URL(e.name).origin;}catch(_){}\n        // Do not store paths/query strings, signed URLs, bodies, media IDs or tokens.\n        diagEvent603(\'resource_finished\',{initiator:String(e.initiatorType||\'\'),origin,duration_ms:rounded(e.duration),start_ms:rounded(e.startTime),response_start_ms:rounded(e.responseStart),transfer_bytes:e.transferSize||0,status:Number(e.responseStatus)||null,timing_details_available:e.responseStart>0},e.startTime+e.duration);\n      }\n    });\n    // Observe the existing socket on its next normal send. Never decode its payload.\n    try{\n      const proto=host.WebSocket?.prototype;\n      if(proto && typeof proto.send===\'function\'){\n        const original=proto.send,seen=new WeakSet();\n        proto.send=function(...args){\n          const socket=this;\n          safe(()=>{\n            if(!seen.has(socket)){\n              seen.add(socket);\n              socket.addEventListener(\'message\',event=>safe(()=>{\n                if(!active)return;\n                if(active.row.socket_first_message_ms==null)active.row.socket_first_message_ms=rounded(mono()-active.start);\n                diagEvent603(\'socket_message\',{bytes:event.data?.byteLength??event.data?.size??(typeof event.data===\'string\'?event.data.length:null)});\n              }));\n              for(const kind of [\'close\',\'error\'])socket.addEventListener(kind,()=>safe(()=>diagEvent603(\'socket_\'+kind)));\n            }\n            if(active){\n              if(active.row.socket_first_send_ms==null)active.row.socket_first_send_ms=rounded(mono()-active.start);\n              diagEvent603(\'socket_send\',{buffered_bytes:Number(socket.bufferedAmount)||0});\n            }\n          });\n          return Reflect.apply(original,socket,args);\n        };\n        diagCapabilities603.socket_send=true;\n      }\n    }catch(_){}\n    host.addEventListener(\'message\',event=>safe(()=>{\n      if(!event.data || event.data.burari_diag_v603!==true)return;\n      // Only accept readiness from an iframe this monitor actually observes.\n      const frame=[...frameHandlers.keys()].find(f=>f.isConnected&&f.contentWindow===event.source);\n      if(!frame)return;\n      const kind=event.data.kind;\n      if(![\'replay_script_started\',\'replay_player_ready\',\'replay_playing\',\'replay_player_error\'].includes(kind))return;\n      diagEvent603(kind);\n      if(kind===\'replay_playing\' && active && [\'burariReplayStart\',\'burariReplayAgain\'].includes(active.control)\n         && active.button.ownerDocument===safe(()=>frame.contentDocument)){\n        const a=active;afterPaint(()=>{if(active===a)end(\'completed\',\'replay_playing\',mono(),\'media_event\');});\n      }\n    }),{passive:true});\n  }\n\n  const observers=new Map(), frameHandlers=new Map(), handledEvents=new WeakSet(), counts=new Map();\n  try { const saved=JSON.parse(host.sessionStorage.getItem(STORE)||\'null\'); if(saved?.version===466 && Array.isArray(saved.rows)) { rows=saved.rows.slice(-2000); dropped=Number(saved.dropped)||0; for(const row of rows) if(row.status===\'pending\'){row.status=\'interrupted\';row.reason=\'document_reloaded\';row.result_ms=null;} } } catch(_){persistenceError=true;}\n  function persistNow(){try{host.sessionStorage.setItem(STORE,JSON.stringify({version:466,rows,dropped}));}catch(_){persistenceError=true;}}\n  function persist(){if(persistTimer!==null)return;persistTimer=host.setTimeout(()=>{persistTimer=null;persistNow();},50);}\n  function safe(fn){try{return fn();}catch(_){return undefined;}}\n  function afterPaint(fn){host.requestAnimationFrame(()=>host.requestAnimationFrame(()=>safe(fn)));}\n  function visible(el){if(!el?.isConnected)return false;const w=el.ownerDocument?.defaultView||host;return !!el.getClientRects().length && w.getComputedStyle(el).visibility!==\'hidden\';}\n  function viewport(el){if(!visible(el))return false;const r=el.getBoundingClientRect(),w=el.ownerDocument?.defaultView||host;return r.bottom>0&&r.right>0&&r.top<w.innerHeight&&r.left<w.innerWidth;}\n  function connected(root){return root===doc || (root.host?root.host.isConnected:!!root.defaultView?.frameElement?.isConnected);}\n  function prune(){for(const [root,state] of observers) if(!connected(root)){state.observer.disconnect();for(const [name,fn]of state.listeners)root.removeEventListener(name,fn,true);observers.delete(root);}for(const [frame,fn]of frameHandlers)if(!frame.isConnected){frame.removeEventListener(\'load\',fn);frameHandlers.delete(frame);}}\n  function query(selector){const result=[];for(const root of observers.keys())safe(()=>result.push(...root.querySelectorAll(selector)));return result;}\n  function signature(el){return el?.isConnected?[el.textContent,el.getAttribute(\'class\'),el.getAttribute(\'style\'),el.getAttribute(\'disabled\'),el.getAttribute(\'aria-pressed\')].join(\'|\'):\'removed\';}\n  function busy(){return query(\'[data-testid="stSpinner"],[data-stale="true"],[aria-busy="true"]\').some(visible);}\n  function imageReady(el){return visible(el)&&el.complete&&el.naturalWidth>0;}\n  function stamp(row,ms){return new Date(Date.parse(row.pressed_at)+ms).toISOString();}\n  function end(status,reason,observedAt=null,kind=null){\n    if(!active)return;const a=active;active=null;host.clearTimeout(deadline);host.clearTimeout(quiet);host.clearTimeout(diagLagTimer603);\n    a.row.status=status;a.row.reason=reason;a.row.observed_until_ms=rounded(mono()-a.start);\n    a.row.measurement_kind=kind;\n    // No success duration is fabricated for timeouts, interruptions or failures.\n    a.row.result_ms=status===\'completed\'&&observedAt!==null?rounded(observedAt-a.start):null;\n    a.row.result_at=a.row.result_ms===null?null:stamp(a.row,a.row.result_ms);\n    a.row.confirmation_ms=observedAt===null?null:rounded(mono()-observedAt);\n    persist();\n  }\n  function response(){const a=active;if(!a||a.row.first_response_ms!==null||signature(a.button)===a.before)return;\n    afterPaint(()=>{if(active!==a||doc.hidden)return;a.row.first_response_ms=rounded(mono()-a.start);a.row.first_response_at=stamp(a.row,a.row.first_response_ms);});}\n  function endpoint(){const a=active;if(!a)return null;\n    if(a.control===\'live-camera-shoot\'){\n      const img=query(\'#camera-review-image\').find(e=>imageReady(e)&&e.currentSrc!==a.preview);\n      return img?{kind:\'camera_preview_loaded\',explicit:true}:null;\n    }\n    if([\'live-camera-start\',\'live-video-start\',\'live-camera-facing-switch\'].includes(a.control)){\n      const v=query(\'#live-camera-video\').find(e=>visible(e)&&e.readyState>=2&&!e.paused&&(!a.cameraWasReady||a.control===\'live-camera-facing-switch\'&&a.cameraStream!==e.srcObject));\n      return v?{kind:\'camera_video_ready\',explicit:true}:null;\n    }\n    // A render marker is only a UI estimate, never confirmation of a database save,\n    // map tile completion or media playback. Local-only actions cannot use it.\n    if(a.localOnly && !a.submitted)return blocked603(\'awaiting_local_or_media_endpoint\');\n    if(!a.row.server_runs.some(x=>x.session===current.session && x.run!==a.initialRun))return blocked603(\'awaiting_new_server_run\');\n    const marker=query(\'[data-burari-perf-done]\').find(e=>Number(e.getAttribute(\'data-burari-perf-done\'))===current.run&&e.getAttribute(\'data-burari-perf-session\')===current.session&&current.run!==a.initialRun);\n    if(!marker)return blocked603(\'awaiting_done_marker\');\n    const targetPage=marker.getAttribute(\'data-burari-perf-page\');\n    if(!targetPage || targetPage!==current.page)return blocked603(\'page_marker_mismatch\');\n    if(a.row.expected_page && targetPage!==a.row.expected_page)return blocked603(\'awaiting_target_page\');\n    if(a.requirePageChange && targetPage===a.row.page)return blocked603(\'awaiting_page_change\');\n    if(a.movieNavigation && marker.getAttribute(\'data-burari-perf-operation\')!==a.row.id)return blocked603(\'awaiting_matching_operation\');\n    if(a.movieNavigation && ![\'review_tag\',\'review_monthly\',\'review_shared\'].includes(targetPage))return blocked603(\'awaiting_replay_page\');\n    if(a.row.target_marker_seen_ms==null){a.row.target_marker_seen_ms=rounded(mono()-a.start);a.row.target_page=targetPage;\n      diagEvent603(\'target_marker_seen\',{page:targetPage,server_generated_wall_ms:Number(marker.getAttribute(\'data-burari-perf-generated-ms\'))||null});}\n    if(busy())return blocked603(\'visible_busy_or_stale\');\n    if(query(\'img\').some(e=>viewport(e)&&(!e.complete||!e.naturalWidth)))return blocked603(\'viewport_image_not_ready\');\n    a.row.endpoint_blocker=null;\n    return {kind:\'server_ui_render_estimate\',explicit:false};\n  }\n  function consider(){if(!active||doc.hidden||checking)return;response();const candidate=endpoint();if(!candidate)return;\n    const a=active,revision=a.revision;checking=true;\n    afterPaint(()=>{checking=false;if(active!==a||doc.hidden)return;if(a.revision!==revision){consider();return;}\n      const again=endpoint();if(!again||again.kind!==candidate.kind)return;\n      const paintedAt=mono();\n      if(candidate.explicit){end(\'completed\',candidate.kind,paintedAt,\'explicit_ui_state\');return;}\n      // Confirmation delay is excluded from result_ms. Reject candidates that\n      // change during the quiet window rather than adding a fixed 200 ms latency.\n      host.clearTimeout(quiet);quiet=host.setTimeout(()=>safe(()=>{\n        if(active===a&&a.revision===revision&&!doc.hidden&&endpoint()?.kind===candidate.kind)end(\'completed\',candidate.kind,paintedAt,\'render_estimate\');\n      }),200);\n    });\n  }\n  function mutations(records){const diagStart603=mono();diagMutations603+=records.length;prune();for(const r of records)for(const node of r.addedNodes||[])scan(node);\n    if(!active){diagObserverMs603+=mono()-diagStart603;return;}\n    // Ignore clock text/continuous style animations outside the clicked control\n    // for confirmation; use structural/result mutations to invalidate candidates.\n    if(records.some(r=>r.type===\'childList\'||r.attributeName===\'src\'||r.attributeName===\'data-burari-perf-done\'))active.revision++;\n    consider();diagObserverMs603+=mono()-diagStart603;\n  }\n  function getButton(event){const path=event.composedPath?event.composedPath():[event.target];return path.find(e=>e?.matches?.(\'button,[role="button"],input[type="submit"]\'));}\n  function isLog(button){return button.closest?.(\'[data-burari-perf-ui]\')||/動作ログ|操作時間ログ|ログを|ログ消去/.test(button.textContent||\'\');}\n  function down(event){const button=getButton(event);if(!button||button.disabled||isLog(button))return;const eventAt=Number(event.timeStamp)>1e12?Number(event.timeStamp)-host.performance.timeOrigin:Number(event.timeStamp);const p={button,at:mono(),wall:Date.now(),id:event.pointerId,before:signature(button),responseAt:null,inputQueueMs:Number.isFinite(eventAt)&&eventAt>0?Math.max(0,mono()-eventAt):null};pointer=p;afterPaint(()=>{if(pointer===p&&signature(button)!==p.before)p.responseAt=mono();});}\n  function click(event){if(!event.isTrusted||handledEvents.has(event))return;\n    const button=getButton(event);if(!button||button.disabled||isLog(button))return;handledEvents.add(event);\n    if(active)end(\'interrupted\',\'next_operation\');prune();\n    const label=String(button.getAttribute(\'aria-label\')||button.textContent||button.value||\'\').trim().replace(/\\s+/g,\' \').slice(0,80);\n    const widget=button.closest?.(\'[class*="st-key-"]\');\n    const widgetKey=Array.from(widget?.classList||[]).find(x=>x.startsWith(\'st-key-\'))||\'\';\n    const control=button.id||widgetKey||button.getAttribute(\'data-testid\')||label;\n    const group=current.page+\'|\'+control;\n    const attempt=(counts.get(group)||0)+1;counts.set(group,attempt);if(counts.size>2000)counts.delete(counts.keys().next().value);\n    const pressed=pointer?.button===button&&mono()-pointer.at<30000?pointer:{at:mono(),wall:Date.now()};pointer=null;\n    const row={id:boot+\'-\'+(++seq),build:603,page:current.page,control,button:label,\n      expected_page:({"st-key-home_review":"review","st-key-home_settings":"settings","st-key-home_diary":"diary","st-key-home_camera":"camera","st-key-home_video":"camera"})[control]||null,\n      monotonic_pressed_ms:rounded(pressed.at), input_queue_delay_ms:pressed.inputQueueMs==null?null:rounded(pressed.inputQueueMs),\n      pressed_at:new Date(pressed.wall).toISOString(),activation_delay_ms:rounded(mono()-pressed.at),\n      input_method:event.detail===0?\'keyboard_or_accessibility\':\'pointer\',\n      first_response_ms:pressed.responseAt==null?null:rounded(pressed.responseAt-pressed.at),first_response_at:pressed.responseAt==null?null:new Date(pressed.wall+pressed.responseAt-pressed.at).toISOString(),result_ms:null,result_at:null,status:\'pending\',\n      attempt_in_document:attempt,visit_class:attempt===1?\'first_in_document\':\'repeat_in_document\',\n      server_runs:[],correlation:\'temporal_candidates_only\',measurement_kind:null};\n    const camera=query(\'#live-camera-video\')[0];\n    active={row,button,control:button.id||\'\',before:pressed.before||signature(button),start:pressed.at,initialRun:current.run,revision:0,\n      requirePageChange:control.startsWith(\'st-key-parent_back_\'),\n      localOnly:!!button.getRootNode?.().host || button.ownerDocument!==doc,\n      preview:query(\'#camera-review-image\')[0]?.currentSrc||\'\',cameraWasReady:camera?.readyState>=2&&!camera?.paused,cameraStream:camera?.srcObject};\n    rows.push(row);if(rows.length>2000){rows.shift();dropped++;}persist();\n    deadline=host.setTimeout(()=>safe(()=>end(\'timeout\',\'no_confirmed_endpoint_120s\')),120000);\n    diagEvent603(\'operation_started\',{expected_page:row.expected_page});startLag603();\n    afterPaint(()=>safe(consider));\n  }\n  function media(event){const a=active;if(!a)return;\n    if(event.type===\'playing\'&&[\'moments-voice-play\',\'burariReplayStart\',\'burariReplayAgain\'].includes(a.control)){\n      // Only a media element inside the same document as the pressed control.\n      if(event.target.ownerDocument===a.button.ownerDocument)afterPaint(()=>{if(active===a)end(\'completed\',\'media_playing\',mono(),\'media_event\');});\n    }\n    consider();\n  }\n  function watch(root){if(observers.has(root))return;\n    const listeners=[[\'error\',e=>safe(()=>{if(active&&[\'IMG\',\'AUDIO\',\'VIDEO\',\'SCRIPT\'].includes(e.target?.tagName))diagEvent603(\'asset_error\',{tag:e.target.tagName});})],[\'waiting\',e=>safe(()=>{if(active)diagEvent603(\'media_waiting\',{tag:e.target?.tagName});})],[\'pointerdown\',e=>safe(()=>down(e))],[\'pointercancel\',()=>{pointer=null;}],[\'click\',e=>safe(()=>click(e))],[\'load\',()=>safe(consider)],[\'loadeddata\',e=>safe(()=>media(e))],[\'playing\',e=>safe(()=>media(e))]];\n    for(const [name,fn]of listeners)root.addEventListener(name,fn,{capture:true,passive:true});\n    const observer=new host.MutationObserver(r=>safe(()=>mutations(r)));\n    observers.set(root,{observer,listeners});observer.observe(root,{subtree:true,childList:true,attributes:true,attributeFilter:[\'src\',\'hidden\',\'disabled\',\'class\',\'style\',\'aria-pressed\',\'aria-busy\',\'data-stale\',\'data-burari-perf-done\'],characterData:true});scan(root);\n  }\n  function scan(node){if(!node?.querySelectorAll)return;if(node.shadowRoot)watch(node.shadowRoot);\n    const list=[node,...node.querySelectorAll(\'*\')];\n    for(const el of list){if(el.shadowRoot)watch(el.shadowRoot);\n      if(el.tagName===\'IFRAME\'&&!frameHandlers.has(el)){\n        const attach=()=>safe(()=>{if(active)diagEvent603(\'iframe_loaded\',{same_origin:!!el.contentDocument});if(el.contentDocument)watch(el.contentDocument);});frameHandlers.set(el,attach);el.addEventListener(\'load\',attach,{passive:true});attach();\n      }\n    }\n  }\n  function quantile(values,q){const v=[...values].sort((a,b)=>a-b),i=(v.length-1)*q,lo=Math.floor(i),hi=Math.ceil(i);return rounded(v[lo]+(v[hi]-v[lo])*(i-lo));}\n  function summary(){const groups=new Map();\n    for(const row of rows){const key=[row.build,row.page,row.control,row.visit_class,row.measurement_kind||\'unresolved\',row.input_method].join(\'|\');\n      if(!groups.has(key))groups.set(key,{key,page:row.page,control:row.control,visit_class:row.visit_class,measurement_kind:row.measurement_kind,input_method:row.input_method,n:0,completed:0,interrupted:0,timeout:0,pending:0,error:0,values:[]});\n      const g=groups.get(key);g.n++;if(row.status in g)g[row.status]++;if(row.status===\'completed\'&&Number.isFinite(row.result_ms))g.values.push(row.result_ms);\n    }\n    return [...groups.values()].map(g=>{const v=g.values;delete g.values;return {...g,median_ms:v.length?quantile(v,.5):null,p90_ms:v.length>=20?quantile(v,.9):null,p95_ms:v.length>=100?quantile(v,.95):null,minimum_ms:v.length?Math.min(...v):null,maximum_ms:v.length?Math.max(...v):null,sample_note:v.length<20?\'small_sample\':\'descriptive_only\'};});\n  }\n  const api={version:603,submitted(name,root,value){if(!active||!root?.contains?.(active.button))return;active.submitted=true;active.row.component_event=String(name).slice(0,64);active.row.submitted_ms=rounded(mono()-active.start);\n      diagEvent603(\'component_submitted\',{event:String(name).slice(0,40)});\n      if(name===\'action\'&&value&&typeof value===\'object\'&&!Array.isArray(value)&&root.querySelector?.(\'#replay-movie-list-v357\')){\n        active.movieNavigation=[\'view\',\'edit\'].includes(value.action);\n        return {...value,_burari_diag_v603:{operation_id:active.row.id}};\n      }\n      if(/error/i.test(name))end(\'error\',\'component_error\');\n    },run(p,r,session,details={}){if(active&&current.session&&session!==current.session)end(\'interrupted\',\'server_session_changed\');current={page:p,run:Number(r)||0,session};diagEvent603(\'server_run_seen\',{run:current.run,page:p,server_sent_ms:details.server_sent_ms||null,script_started_ms:details.script_started_ms||null});if(active){const list=active.row.server_runs;if(!list.some(x=>x.run===current.run&&x.session===session)){if(list.length<32)list.push({session,run:current.run});else active.row.correlation_truncated=true;}}safe(consider);},\n    snapshot(){if(active)active.row.observed_until_ms=rounded(mono()-active.start);persistNow();return JSON.parse(JSON.stringify({version:603,diagnostic_version:603,document_id:boot,captured_at:new Date().toISOString(),limit:2000,dropped_operations:dropped,persistence_error:persistenceError,rows,summary:summary(),diagnostics:{events:diagEvents603.slice(),limit:400,dropped:diagDropped603,capabilities:diagCapabilities603,mutation_records:diagMutations603,observer_cpu_ms:rounded(diagObserverMs603),clock_note:\'Only monotonic intervals within the same process are directly comparable; server/browser wall clocks may differ\',socket_note:\'Socket events are temporal candidates; no message payload is decoded\',memory:host.performance.memory?{used_js_heap_bytes:host.performance.memory.usedJSHeapSize,total_js_heap_bytes:host.performance.memory.totalJSHeapSize}:null},coverage:{watched_roots:observers.size,inaccessible_iframes:[...frameHandlers.keys()].filter(f=>!safe(()=>f.contentDocument)).length},limitations:[\'Framework queueing before script entry and WebSocket ingress are not directly measured\',\'Resource timing omits cross-origin details and in-flight transfers\',\'Existing sockets become observable after their next send\',\'Physical screen presentation is not measured\',\'Render estimates are not business-operation completion\',\'First/repeat means this document, not cache hit/miss\',\'Cross-origin frames and external apps are not measured\',\'Server links are temporal candidates; do not sum nested phase times\',\'Timeouts and interruptions are excluded from successful latency distributions\']}));},\n    clear(){host.clearTimeout(deadline);host.clearTimeout(quiet);active=null;rows=[];dropped=0;counts.clear();host.clearTimeout(diagLagTimer603);diagEvents603.length=0;diagDropped603=0;diagMutations603=0;diagObserverMs603=0;persistNow();}};\n  host[KEY]=api;watch(doc);installDiagnostics603();\n  doc.addEventListener(\'visibilitychange\',()=>safe(()=>{if(doc.hidden&&active)end(\'interrupted\',\'background\');persistNow();}),{passive:true});\n  host.addEventListener(\'pagehide\',()=>safe(()=>{if(active)end(\'interrupted\',\'pagehide\');persistNow();}),{passive:true});\n  return api;\n}\n'
 
-_HISTORY_JS = _PERF_BROWSER_JS_V466 + '\nexport default function(component) {\n  const { data, setTriggerValue } = component;\n  const validPages = new Set([\'home\', \'camera\', \'videos\', \'moments\', \'diary\', \'photos\', \'review\', \'review_map\', \'review_project\', \'review_monthly\', \'review_tag\', \'review_random\', \'review_shared\', \'review_history\', \'nearby\', \'discovery_results\', \'evening_review\', \'toilets\', \'help_places\', \'field_notes\', \'experience\', \'events\', \'settings\', \'settings_moments\', \'settings_moments_definition\', \'settings_location\', \'settings_account\', \'settings_media_import\']);\n  const marker = \'__tokyo_burari_page__\';\n  const guardMarker = \'__tokyo_burari_first_level_guard__\';\n  const requestedPage = validPages.has(data?.page) ? data.page : \'home\';\n  const action = data?.action || \'sync\';\n  const navigationNode = String(data?.node || requestedPage);\n  const interceptHierarchyBack = Boolean(data?.intercept_hierarchy_back) && requestedPage !== \'home\';\n  const firstLevelBackToHome = requestedPage !== \'home\' && navigationNode === requestedPage && !interceptHierarchyBack;\n  const pendingFeelingParam = \'feel_v159\';\n  const pendingFeelingStore = \'tokyo_burari_pending_feelings_v159\';\n  const foregroundHiddenStore = \'tokyo_burari_hidden_at_v457\';\n  let hiddenAtV457 = 0;\n  let lastForegroundEmitV457 = 0;\n  let hostWindowV457 = window;\n  let hostDocumentV457 = document;\n  try {\n    if (window.parent && window.parent !== window && window.parent.document) {\n      hostWindowV457 = window.parent;\n      hostDocumentV457 = window.parent.document;\n    }\n  } catch (_) {}\n\n  try { installBurariPerf466(hostWindowV457, requestedPage, data?.perf_run, data?.perf_session, {server_sent_ms:data?.diag_server_sent_ms, script_started_ms:data?.diag_script_started_ms}); } catch (_) {}\n\n  const refreshLayoutV457 = () => {\n    const refresh = () => {\n      try { if (hostDocumentV457.body) void hostDocumentV457.body.offsetHeight; } catch (_) {}\n      try { hostWindowV457.dispatchEvent(new Event(\'resize\')); } catch (_) {}\n    };\n    try { requestAnimationFrame(refresh); } catch (_) { refresh(); }\n    setTimeout(refresh, 180);\n  };\n\n  const foregroundSnapshotV457 = () => {\n    let staleCount = 0, rootCount = 0, iframeCount = 0, spinnerCount = 0;\n    try { staleCount = hostDocumentV457.querySelectorAll(\'[data-stale="true"]\').length; } catch (_) {}\n    try { rootCount = hostDocumentV457.querySelectorAll(\'.st-key-app_page_root_v280\').length; } catch (_) {}\n    try { iframeCount = hostDocumentV457.querySelectorAll(\'iframe\').length; } catch (_) {}\n    try { spinnerCount = hostDocumentV457.querySelectorAll(\'[data-testid="stSpinner"]\').length; } catch (_) {}\n    return { stale_count: staleCount, root_count: rootCount, iframe_count: iframeCount, spinner_count: spinnerCount };\n  };\n\n  const emitForegroundRestoreV457 = (reason, persisted) => {\n    if (hostDocumentV457.hidden) return;\n    const now = Date.now();\n    let storedAt = 0;\n    try { storedAt = Number(localStorage.getItem(foregroundHiddenStore) || 0); } catch (_) {}\n    const startedAt = Number(hiddenAtV457 || storedAt || 0);\n    const hiddenMs = startedAt > 0 ? Math.max(0, now - startedAt) : 0;\n    if (!persisted && hiddenMs < 1200) {\n      try { localStorage.removeItem(foregroundHiddenStore); } catch (_) {}\n      hiddenAtV457 = 0;\n      return;\n    }\n    if (now - lastForegroundEmitV457 < 3500) return;\n    lastForegroundEmitV457 = now;\n    refreshLayoutV457();\n    const stats = foregroundSnapshotV457();\n    const token = `${now}:${Math.random()}`;\n    queueMicrotask(() => setTriggerValue(\'foreground_restore\', {\n      token, reason: String(reason || \'visible\'), hidden_ms: Math.round(hiddenMs),\n      visible_at_ms: now, persisted: Boolean(persisted), ...stats\n    }));\n    hiddenAtV457 = 0;\n    try { localStorage.removeItem(foregroundHiddenStore); } catch (_) {}\n  };\n\n  const onVisibilityV457 = () => {\n    if (hostDocumentV457.hidden) {\n      hiddenAtV457 = Date.now();\n      try { localStorage.setItem(foregroundHiddenStore, String(hiddenAtV457)); } catch (_) {}\n    } else {\n      emitForegroundRestoreV457(\'visibility\', false);\n    }\n  };\n  const onPageHideV457 = () => {\n    hiddenAtV457 = Date.now();\n    try { localStorage.setItem(foregroundHiddenStore, String(hiddenAtV457)); } catch (_) {}\n  };\n  const onPageShowV457 = (event) => {\n    if (event && event.persisted) emitForegroundRestoreV457(\'pageshow_bfcache\', true);\n    else if (!hostDocumentV457.hidden) {\n      let storedAt = 0;\n      try { storedAt = Number(localStorage.getItem(foregroundHiddenStore) || 0); } catch (_) {}\n      if (storedAt > 0 && Date.now() - storedAt >= 1200) emitForegroundRestoreV457(\'pageshow\', false);\n    }\n  };\n  const restorePendingFeelingParam = () => {\n    try {\n      const url = new URL(hostWindowV457.location.href);\n      if (url.searchParams.get(pendingFeelingParam)) return false;\n      const raw = String(localStorage.getItem(pendingFeelingStore) || \'\');\n      if (!raw) return false;\n      url.searchParams.set(pendingFeelingParam, raw);\n      hostWindowV457.history.replaceState(hostWindowV457.history.state || {}, \'\', url.pathname + url.search + url.hash);\n      return true;\n    } catch (_) { return false; }\n  };\n\n  const restoredPendingFeeling = restorePendingFeelingParam();\n  if(restoredPendingFeeling)queueMicrotask(()=>setTriggerValue(\'pending_restore\', `${Date.now()}:${Math.random()}`));\n  // Buttons keep their native Streamlit callbacks. Never cancel or swallow their clicks.\n  const h=hostWindowV457,d=hostDocumentV457;\n  const guard=\'__burari_navigation_guard_v604\';\n  const previous=h.__burariNavigation604;\n  if(previous && !previous.retired605){\n    if(previous.onClick)d.removeEventListener(\'click\',previous.onClick,true);\n    if(previous.onPop)h.removeEventListener(\'popstate\',previous.onPop);\n    previous.pending=null;previous.queued=null;previous.emit=null;previous.retired605=true;\n    h.__burariNavigationBusy604=false;d.documentElement?.removeAttribute(\'data-burari-navigation\');\n  }\n  let nav=h.__burariNavigation605;\n  if(!nav){\n    nav={page:\'home\',node:\'home\',objectId:\'\',context:\'\',emit:null,seq:0,pending:null};\n    const urlFor=page=>{const url=new URL(h.location.href);if(page===\'home\')url.searchParams.delete(\'view\');else url.searchParams.set(\'view\',page);return url.pathname+url.search+url.hash;};\n    nav.arm=()=>{\n      const state={...(h.history.state||{}),[marker]:nav.page,[guard]:true};delete state[guardMarker];\n      if(!h.history.state?.[guard]){\n        h.history.replaceState({...state,[guard]:false},\'\',urlFor(nav.page));\n        h.history.pushState(state,\'\',urlFor(nav.page));\n      }else h.history.replaceState(state,\'\',urlFor(nav.page));\n    };\n    nav.quietMedia=()=>{\n      try{d.querySelectorAll(\'audio,video\').forEach(el=>{if(!el.paused)el.pause();});}catch(_){}\n      try{d.querySelectorAll(\'iframe\').forEach(frame=>frame.contentWindow?.postMessage({burari_navigation_v604:true},\'*\'));}catch(_){}\n    };\n    nav.findButton=kind=>{\n      const selector=kind===\'home\'\n        ? \'[class*="st-key-global_bottom_home_"] button,[class*="st-key-history_home_"] button\'\n        : \'[class*="st-key-parent_back_"] button,.st-key-camera_back_parent button,[class*="st-key-global_parent_back_"] button\';\n      const roots=[d],seen=new Set();\n      if(typeof document!==\'undefined\'&&document!==d)roots.push(document);\n      // Some Android builds expose the bridge on a same-origin parent document.\n      // Find the actual Streamlit widget there or in its visible child frames.\n      for(let index=0;index<roots.length&&index<24;index++){\n        const root=roots[index];if(!root||seen.has(root))continue;seen.add(root);\n        const button=Array.from(root.querySelectorAll(selector)).find(b=>!b.disabled&&b.isConnected!==false&&b.getClientRects().length&&!b.closest?.(\'[data-stale="true"]\'));\n        if(button)return button;\n        for(const frame of root.querySelectorAll(\'iframe\')){\n          try{if(frame.contentDocument&&frame.getClientRects().length)roots.push(frame.contentDocument);}catch(_){}\n        }\n      }\n      return undefined;\n    };\n    nav.request=kind=>{\n      if(![\'parent\',\'home\'].includes(kind))return true;\n      // Prefer the same real widget callback as an on-screen tap. No component ACK lock.\n      const button=nav.findButton(kind);\n      if(button){nav.quietMedia();button.click();return true;}\n      if(nav.page===\'home\'&&nav.node===\'home\'){nav.arm();return true;}\n      if(!nav.emit)return false; // Not mounted yet: a later press remains usable.\n      // A retry retains its operation token, preventing a lost acknowledgement from\n      // applying the same parent step twice. Home supersedes a queued parent action.\n      const existing=nav.pending;\n      let request=existing&&existing.kind===kind&&existing.context===nav.context?existing.request:null;\n      if(!request){\n        const token=`nav605-${Date.now()}-${++nav.seq}-${Math.random().toString(36).slice(2)}`;\n        request={token,kind,page:nav.page,node:nav.node,object_id:nav.objectId,context:nav.context};\n      }\n      nav.pending={kind,context:nav.context,request,token:request.token};\n      nav.quietMedia();\n      try{nav.emit(\'navigation_request\',{...request,attempt:++nav.seq});return true;}catch(_){return false;}\n    };\n    nav.onPop=()=>{restorePendingFeelingParam();nav.arm();nav.request(\'parent\');};\n    nav.onClick=event=>{\n      const path=event.composedPath?event.composedPath():[event.target];\n      const button=path.find(el=>el?.matches?.(\'button,[role="button"]\'));\n      const widget=button?.closest?.(\'[class*="st-key-"]\');\n      const keys=Array.from(widget?.classList||[]);\n      if(keys.some(k=>k.startsWith(\'st-key-parent_back_\')||k.startsWith(\'st-key-global_parent_back_\')||k.startsWith(\'st-key-global_bottom_home_\')||k.startsWith(\'st-key-history_home_\')||k===\'st-key-camera_back_parent\'))nav.quietMedia();\n      // Intentionally no preventDefault/stopPropagation: React must receive the tap.\n    };\n    h.addEventListener(\'popstate\',nav.onPop);\n    d.addEventListener(\'click\',nav.onClick,{capture:true,passive:true});\n    h.__burariNavigation605=nav;\n  }\n  const binding={};nav.binding=binding;nav.emit=setTriggerValue;\n  const nextContext=JSON.stringify([requestedPage,navigationNode,String(data?.navigation_object||\'\')]);\n  if(nav.pending&&(nav.pending.token===data?.navigation_ack||nav.context!==nextContext))nav.pending=null;\n  nav.page=requestedPage;nav.node=navigationNode;nav.objectId=String(data?.navigation_object||\'\');nav.context=nextContext;\n  // Keep the v13 APK entry working; a new APK is not needed for this fix.\n  h.__burariNavigateParent604=h.__burariNavigateParent605=()=>nav.request(\'parent\');\n  h.__burariNavigateHome604=h.__burariNavigateHome605=()=>nav.request(\'home\');\n  nav.arm();\n  hostDocumentV457.addEventListener(\'visibilitychange\',onVisibilityV457,{passive:true});\n  hostWindowV457.addEventListener(\'pagehide\',onPageHideV457,{passive:true});\n  hostWindowV457.addEventListener(\'pageshow\',onPageShowV457,{passive:true});\n  return ()=>{\n    if(nav.binding===binding)nav.emit=null;\n    hostDocumentV457.removeEventListener(\'visibilitychange\',onVisibilityV457);\n    hostWindowV457.removeEventListener(\'pagehide\',onPageHideV457);\n    hostWindowV457.removeEventListener(\'pageshow\',onPageShowV457);\n  };\n}\n'
+_HISTORY_JS = _PERF_BROWSER_JS_V466 + '\nexport default function(component) {\n  const { data, setTriggerValue } = component;\n  const validPages = new Set([\'home\', \'camera\', \'videos\', \'moments\', \'diary\', \'photos\', \'review\', \'review_project\', \'review_monthly\', \'review_tag\', \'review_random\', \'review_shared\', \'review_history\', \'nearby\', \'discovery_results\', \'evening_review\', \'toilets\', \'help_places\', \'field_notes\', \'experience\', \'events\', \'settings\', \'settings_moments\', \'settings_moments_definition\', \'settings_location\', \'settings_account\', \'settings_media_import\']);\n  const marker = \'__tokyo_burari_page__\';\n  const guardMarker = \'__tokyo_burari_first_level_guard__\';\n  const requestedPage = validPages.has(data?.page) ? data.page : \'home\';\n  const action = data?.action || \'sync\';\n  const navigationNode = String(data?.node || requestedPage);\n  const interceptHierarchyBack = Boolean(data?.intercept_hierarchy_back) && requestedPage !== \'home\';\n  const firstLevelBackToHome = requestedPage !== \'home\' && navigationNode === requestedPage && !interceptHierarchyBack;\n  const pendingFeelingParam = \'feel_v159\';\n  const pendingFeelingStore = \'tokyo_burari_pending_feelings_v159\';\n  const foregroundHiddenStore = \'tokyo_burari_hidden_at_v457\';\n  let hiddenAtV457 = 0;\n  let lastForegroundEmitV457 = 0;\n  let hostWindowV457 = window;\n  let hostDocumentV457 = document;\n  try {\n    if (window.parent && window.parent !== window && window.parent.document) {\n      hostWindowV457 = window.parent;\n      hostDocumentV457 = window.parent.document;\n    }\n  } catch (_) {}\n\n  try { installBurariPerf466(hostWindowV457, requestedPage, data?.perf_run, data?.perf_session, {server_sent_ms:data?.diag_server_sent_ms, script_started_ms:data?.diag_script_started_ms}); } catch (_) {}\n\n  const refreshLayoutV457 = () => {\n    const refresh = () => {\n      try { if (hostDocumentV457.body) void hostDocumentV457.body.offsetHeight; } catch (_) {}\n      try { hostWindowV457.dispatchEvent(new Event(\'resize\')); } catch (_) {}\n    };\n    try { requestAnimationFrame(refresh); } catch (_) { refresh(); }\n    setTimeout(refresh, 180);\n  };\n\n  const foregroundSnapshotV457 = () => {\n    let staleCount = 0, rootCount = 0, iframeCount = 0, spinnerCount = 0;\n    try { staleCount = hostDocumentV457.querySelectorAll(\'[data-stale="true"]\').length; } catch (_) {}\n    try { rootCount = hostDocumentV457.querySelectorAll(\'.st-key-app_page_root_v280\').length; } catch (_) {}\n    try { iframeCount = hostDocumentV457.querySelectorAll(\'iframe\').length; } catch (_) {}\n    try { spinnerCount = hostDocumentV457.querySelectorAll(\'[data-testid="stSpinner"]\').length; } catch (_) {}\n    return { stale_count: staleCount, root_count: rootCount, iframe_count: iframeCount, spinner_count: spinnerCount };\n  };\n\n  const emitForegroundRestoreV457 = (reason, persisted) => {\n    if (hostDocumentV457.hidden) return;\n    const now = Date.now();\n    let storedAt = 0;\n    try { storedAt = Number(localStorage.getItem(foregroundHiddenStore) || 0); } catch (_) {}\n    const startedAt = Number(hiddenAtV457 || storedAt || 0);\n    const hiddenMs = startedAt > 0 ? Math.max(0, now - startedAt) : 0;\n    if (!persisted && hiddenMs < 1200) {\n      try { localStorage.removeItem(foregroundHiddenStore); } catch (_) {}\n      hiddenAtV457 = 0;\n      return;\n    }\n    if (now - lastForegroundEmitV457 < 3500) return;\n    lastForegroundEmitV457 = now;\n    refreshLayoutV457();\n    const stats = foregroundSnapshotV457();\n    const token = `${now}:${Math.random()}`;\n    queueMicrotask(() => setTriggerValue(\'foreground_restore\', {\n      token, reason: String(reason || \'visible\'), hidden_ms: Math.round(hiddenMs),\n      visible_at_ms: now, persisted: Boolean(persisted), ...stats\n    }));\n    hiddenAtV457 = 0;\n    try { localStorage.removeItem(foregroundHiddenStore); } catch (_) {}\n  };\n\n  const onVisibilityV457 = () => {\n    if (hostDocumentV457.hidden) {\n      hiddenAtV457 = Date.now();\n      try { localStorage.setItem(foregroundHiddenStore, String(hiddenAtV457)); } catch (_) {}\n    } else {\n      emitForegroundRestoreV457(\'visibility\', false);\n    }\n  };\n  const onPageHideV457 = () => {\n    hiddenAtV457 = Date.now();\n    try { localStorage.setItem(foregroundHiddenStore, String(hiddenAtV457)); } catch (_) {}\n  };\n  const onPageShowV457 = (event) => {\n    if (event && event.persisted) emitForegroundRestoreV457(\'pageshow_bfcache\', true);\n    else if (!hostDocumentV457.hidden) {\n      let storedAt = 0;\n      try { storedAt = Number(localStorage.getItem(foregroundHiddenStore) || 0); } catch (_) {}\n      if (storedAt > 0 && Date.now() - storedAt >= 1200) emitForegroundRestoreV457(\'pageshow\', false);\n    }\n  };\n  const restorePendingFeelingParam = () => {\n    try {\n      const url = new URL(hostWindowV457.location.href);\n      if (url.searchParams.get(pendingFeelingParam)) return false;\n      const raw = String(localStorage.getItem(pendingFeelingStore) || \'\');\n      if (!raw) return false;\n      url.searchParams.set(pendingFeelingParam, raw);\n      hostWindowV457.history.replaceState(hostWindowV457.history.state || {}, \'\', url.pathname + url.search + url.hash);\n      return true;\n    } catch (_) { return false; }\n  };\n\n  const restoredPendingFeeling = restorePendingFeelingParam();\n  if(restoredPendingFeeling)queueMicrotask(()=>setTriggerValue(\'pending_restore\', `${Date.now()}:${Math.random()}`));\n  // Buttons keep their native Streamlit callbacks. Never cancel or swallow their clicks.\n  const h=hostWindowV457,d=hostDocumentV457;\n  const guard=\'__burari_navigation_guard_v604\';\n  const previous=h.__burariNavigation604;\n  if(previous && !previous.retired605){\n    if(previous.onClick)d.removeEventListener(\'click\',previous.onClick,true);\n    if(previous.onPop)h.removeEventListener(\'popstate\',previous.onPop);\n    previous.pending=null;previous.queued=null;previous.emit=null;previous.retired605=true;\n    h.__burariNavigationBusy604=false;d.documentElement?.removeAttribute(\'data-burari-navigation\');\n  }\n  let nav=h.__burariNavigation605;\n  if(!nav){\n    nav={page:\'home\',node:\'home\',objectId:\'\',context:\'\',emit:null,seq:0,pending:null};\n    const urlFor=page=>{const url=new URL(h.location.href);if(page===\'home\')url.searchParams.delete(\'view\');else url.searchParams.set(\'view\',page);return url.pathname+url.search+url.hash;};\n    nav.arm=()=>{\n      const state={...(h.history.state||{}),[marker]:nav.page,[guard]:true};delete state[guardMarker];\n      if(!h.history.state?.[guard]){\n        h.history.replaceState({...state,[guard]:false},\'\',urlFor(nav.page));\n        h.history.pushState(state,\'\',urlFor(nav.page));\n      }else h.history.replaceState(state,\'\',urlFor(nav.page));\n    };\n    nav.quietMedia=()=>{\n      try{d.querySelectorAll(\'audio,video\').forEach(el=>{if(!el.paused)el.pause();});}catch(_){}\n      try{d.querySelectorAll(\'iframe\').forEach(frame=>frame.contentWindow?.postMessage({burari_navigation_v604:true},\'*\'));}catch(_){}\n    };\n    nav.findButton=kind=>{\n      const selector=kind===\'home\'\n        ? \'[class*="st-key-global_bottom_home_"] button,[class*="st-key-history_home_"] button\'\n        : \'[class*="st-key-parent_back_"] button,.st-key-camera_back_parent button,[class*="st-key-global_parent_back_"] button\';\n      const roots=[d],seen=new Set();\n      if(typeof document!==\'undefined\'&&document!==d)roots.push(document);\n      // Some Android builds expose the bridge on a same-origin parent document.\n      // Find the actual Streamlit widget there or in its visible child frames.\n      for(let index=0;index<roots.length&&index<24;index++){\n        const root=roots[index];if(!root||seen.has(root))continue;seen.add(root);\n        const button=Array.from(root.querySelectorAll(selector)).find(b=>!b.disabled&&b.isConnected!==false&&b.getClientRects().length&&!b.closest?.(\'[data-stale="true"]\'));\n        if(button)return button;\n        for(const frame of root.querySelectorAll(\'iframe\')){\n          try{if(frame.contentDocument&&frame.getClientRects().length)roots.push(frame.contentDocument);}catch(_){}\n        }\n      }\n      return undefined;\n    };\n    nav.request=kind=>{\n      if(![\'parent\',\'home\'].includes(kind))return true;\n      // Prefer the same real widget callback as an on-screen tap. No component ACK lock.\n      const button=nav.findButton(kind);\n      if(button){nav.quietMedia();button.click();return true;}\n      if(nav.page===\'home\'&&nav.node===\'home\'){nav.arm();return true;}\n      if(!nav.emit)return false; // Not mounted yet: a later press remains usable.\n      // A retry retains its operation token, preventing a lost acknowledgement from\n      // applying the same parent step twice. Home supersedes a queued parent action.\n      const existing=nav.pending;\n      let request=existing&&existing.kind===kind&&existing.context===nav.context?existing.request:null;\n      if(!request){\n        const token=`nav605-${Date.now()}-${++nav.seq}-${Math.random().toString(36).slice(2)}`;\n        request={token,kind,page:nav.page,node:nav.node,object_id:nav.objectId,context:nav.context};\n      }\n      nav.pending={kind,context:nav.context,request,token:request.token};\n      nav.quietMedia();\n      try{nav.emit(\'navigation_request\',{...request,attempt:++nav.seq});return true;}catch(_){return false;}\n    };\n    nav.onPop=()=>{restorePendingFeelingParam();nav.arm();nav.request(\'parent\');};\n    nav.onClick=event=>{\n      const path=event.composedPath?event.composedPath():[event.target];\n      const button=path.find(el=>el?.matches?.(\'button,[role="button"]\'));\n      const widget=button?.closest?.(\'[class*="st-key-"]\');\n      const keys=Array.from(widget?.classList||[]);\n      if(keys.some(k=>k.startsWith(\'st-key-parent_back_\')||k.startsWith(\'st-key-global_parent_back_\')||k.startsWith(\'st-key-global_bottom_home_\')||k.startsWith(\'st-key-history_home_\')||k===\'st-key-camera_back_parent\'))nav.quietMedia();\n      // Intentionally no preventDefault/stopPropagation: React must receive the tap.\n    };\n    h.addEventListener(\'popstate\',nav.onPop);\n    d.addEventListener(\'click\',nav.onClick,{capture:true,passive:true});\n    h.__burariNavigation605=nav;\n  }\n  const binding={};nav.binding=binding;nav.emit=setTriggerValue;\n  const nextContext=JSON.stringify([requestedPage,navigationNode,String(data?.navigation_object||\'\')]);\n  if(nav.pending&&(nav.pending.token===data?.navigation_ack||nav.context!==nextContext))nav.pending=null;\n  nav.page=requestedPage;nav.node=navigationNode;nav.objectId=String(data?.navigation_object||\'\');nav.context=nextContext;\n  // Keep the v13 APK entry working; a new APK is not needed for this fix.\n  h.__burariNavigateParent604=h.__burariNavigateParent605=()=>nav.request(\'parent\');\n  h.__burariNavigateHome604=h.__burariNavigateHome605=()=>nav.request(\'home\');\n  nav.arm();\n  hostDocumentV457.addEventListener(\'visibilitychange\',onVisibilityV457,{passive:true});\n  hostWindowV457.addEventListener(\'pagehide\',onPageHideV457,{passive:true});\n  hostWindowV457.addEventListener(\'pageshow\',onPageShowV457,{passive:true});\n  return ()=>{\n    if(nav.binding===binding)nav.emit=null;\n    hostDocumentV457.removeEventListener(\'visibilitychange\',onVisibilityV457);\n    hostWindowV457.removeEventListener(\'pagehide\',onPageHideV457);\n    hostWindowV457.removeEventListener(\'pageshow\',onPageShowV457);\n  };\n}\n'
 
 try:
     browser_history_component = st.components.v2.component(
@@ -13957,42 +13958,6 @@ def photo_location_preview(location):
     return "📍 位置情報を取得できませんでした。必要な検索画面の地名入力から指定できます。"
 
 
-MEMORY_MAP_SIGNAL_KEY = "memory_map_v1"
-
-
-def build_memory_map_signal(location, *, media_type="photo", capture_source="camera"):
-    """Small GPS-only map index stored in signals_json for fast map browsing.
-
-    The full capture metadata stays in reflection_json.  This compact duplicate lets
-    the memories map load thousands of rows without pulling video AI metadata or
-    conversations into the map query.
-    """
-    if not isinstance(location, dict) or str(location.get("source") or "") != "gps":
-        return {}
-    try:
-        latitude = float(location.get("latitude"))
-        longitude = float(location.get("longitude"))
-    except (TypeError, ValueError):
-        return {}
-    if not (math.isfinite(latitude) and math.isfinite(longitude)):
-        return {}
-    accuracy = location.get("accuracy_m")
-    try:
-        accuracy = round(float(accuracy), 1) if accuracy is not None else None
-    except (TypeError, ValueError):
-        accuracy = None
-    return {
-        "version": 1,
-        "latitude": round(latitude, 6),
-        "longitude": round(longitude, 6),
-        "accuracy_m": accuracy,
-        "place_label": str(location.get("place_label") or "").strip()[:120],
-        "measured_at": str(location.get("measured_at") or "").strip(),
-        "media_type": "video" if str(media_type or "").lower() == "video" else "photo",
-        "capture_source": str(capture_source or "camera").strip()[:40],
-    }
-
-
 def trip_place_label(trip, photos=None):
     """Return the best coarse place name already registered for a trip."""
     trip = trip or {}
@@ -14607,12 +14572,7 @@ def upload_photo(trip_id, image_bytes, location=None, captured_at=None, capture_
         for key, value in extra_reflection.items():
             if key not in {"capture_source", "location", "media_type", "video_storage_path"}:
                 reflection[str(key)] = value
-    map_signal = build_memory_map_signal(
-        location,
-        media_type="photo",
-        capture_source=capture_source,
-    )
-    signals_payload = {MEMORY_MAP_SIGNAL_KEY: map_signal} if map_signal else {}
+    signals_payload = {}
 
     storage_saved = False
     try:
@@ -14644,10 +14604,6 @@ def upload_photo(trip_id, image_bytes, location=None, captured_at=None, capture_
         )
         download_photo.clear()
         _invalidate_fast_db_cache()
-        try:
-            _memory_map_rows_light.clear()
-        except Exception:
-            pass
         saved_row = (result.data or [None])[0]
         try:
             _queue_framing_rows_v468([saved_row] if isinstance(saved_row, dict) else [])
@@ -14958,10 +14914,6 @@ def save_photo_voice_note_bytes(
         download_photo.clear()
         signed_photo_url_map.clear()
         _invalidate_fast_db_cache()
-        try:
-            _memory_map_rows_light.clear()
-        except Exception:
-            pass
         return reflection["voice_note"]
     except Exception as exc:
         if uploaded:
@@ -15804,12 +15756,7 @@ def register_browser_uploaded_video(
             "last_error": "",
         },
     }
-    map_signal = build_memory_map_signal(
-        location,
-        media_type="video",
-        capture_source=capture_source,
-    )
-    signals_payload = {MEMORY_MAP_SIGNAL_KEY: map_signal} if map_signal else {}
+    signals_payload = {}
     try:
         client.storage.from_(PHOTO_BUCKET).upload(
             path=poster_path,
@@ -15855,10 +15802,6 @@ def register_browser_uploaded_video(
         signed_photo_url_map.clear()
         _invalidate_fast_db_cache()
         _invalidate_video_storage_audit_cache()
-        try:
-            _memory_map_rows_light.clear()
-        except Exception:
-            pass
         if not saved_row:
             saved_row = {
                 "trip_id": trip_id,
@@ -15945,12 +15888,7 @@ def upload_video(
             "last_error": "",
         },
     }
-    map_signal = build_memory_map_signal(
-        location,
-        media_type="video",
-        capture_source=capture_source,
-    )
-    signals_payload = {MEMORY_MAP_SIGNAL_KEY: map_signal} if map_signal else {}
+    signals_payload = {}
 
     try:
         client.storage.from_(PHOTO_BUCKET).upload(
@@ -16009,10 +15947,6 @@ def upload_video(
         signed_photo_url_map.clear()
         _invalidate_fast_db_cache()
         _invalidate_video_storage_audit_cache()
-        try:
-            _memory_map_rows_light.clear()
-        except Exception:
-            pass
         if not saved_row:
             # The INSERT request completed without raising. Preserve the uploaded
             # files and let the next normal list refresh recover the DB row rather
@@ -16765,8 +16699,8 @@ def _video_moment_focus_passes_v598(row):
 def _video_moment_local_pick_v594(records, preference_context=None, excluded_frame_ids=None):
     """Quality first, configured six-factor ranking second, diversity third.
 
-    Focus is a prerequisite, never a weighted preference. Twenty distinct choices
-    require twenty focus-passing frames; insufficient evidence is an explicit error.
+    Focus is a prerequisite, never a weighted preference. One hundred distinct choices
+    require one hundred focus-passing frames; insufficient evidence is an explicit error.
     All decisions are local; there is no semantic/emotion recognition claim.
     """
     import numpy as np
@@ -16778,7 +16712,7 @@ def _video_moment_local_pick_v594(records, preference_context=None, excluded_fra
     target = VIDEO_AI_MAX_SELECTIONS
     if len(entries) < target:
         raise ValueError(
-            f"ピントの基準を満たす候補は{len(entries)}枚で、20枚に足りません。"
+            f"ピントの基準を満たす候補は{len(entries)}枚で、100枚に足りません。"
             "ぼけた写真で枚数を補わず、作成を中止しました。"
         )
     context = preference_context if isinstance(preference_context, dict) else {}
@@ -16907,6 +16841,7 @@ def _video_moment_local_pick_v594(records, preference_context=None, excluded_fra
     if len(usable) >= target and len(unused_usable) < target:
         candidates = entries
     selected = []
+    comparisons = {}
     duration = max(1, entries[-1]["timestamp_ms"] - entries[0]["timestamp_ms"])
     min_gap = min(1400, max(80, duration // (target * 2)))
     for tier in (2, 1, 0):
@@ -16916,12 +16851,14 @@ def _video_moment_local_pick_v594(records, preference_context=None, excluded_fra
                 best, best_priority = None, -1e20
                 for item in remaining:
                     distance = min((abs(item["timestamp_ms"] - other["timestamp_ms"]) for other in selected), default=duration)
-                    same = False
-                    diffs = []
-                    for other in selected:
+                    state = comparisons.setdefault(item["frame_id"], [0, False, None])
+                    for other in selected[state[0]:]:
                         duplicate, diff = _video_moment_similarity_v595(item, other)
-                        same = same or duplicate
-                        diffs.append(diff)
+                        state[1] = state[1] or duplicate
+                        state[2] = diff if state[2] is None else min(state[2], diff)
+                    state[0] = len(selected)
+                    same = state[1]
+                    diffs = [] if state[2] is None else [state[2]]
                     if relax == 0 and (same or distance < min_gap):
                         continue
                     if relax == 1 and distance < min(400, min_gap // 2):
@@ -16942,7 +16879,7 @@ def _video_moment_local_pick_v594(records, preference_context=None, excluded_fra
         if len(selected) >= target:
             break
     if len(selected) < target:
-        raise ValueError("いい瞬間を20枚そろえられませんでした。")
+        raise ValueError("いい瞬間を100枚そろえられませんでした。")
     # Rank 1 (BEST) must actually be the highest quality-weighted selected frame.
     selected.sort(key=lambda row: (-row["tier_v595"], -row["base"], row["timestamp_ms"]))
     return [{"frame": row["frame"], "score": int(round(row["base"] * 100.)),
@@ -16981,7 +16918,7 @@ def choose_video_ai_frames(
     selection = _video_moment_native_stills_v597(selection, frame_items, progress_callback)
     if callable(progress_callback):
         try:
-            progress_callback("final_selection", 1, 1, "30FPSの比較から20枚を選びました")
+            progress_callback("final_selection", 1, 1, "30FPSの比較から100枚を選びました")
         except Exception:
             pass
     return selection
@@ -17480,7 +17417,7 @@ def _video_ai_expected_candidate_count(photo):
 
 
 class _VideoMomentFramePoolV597(list):
-    """Disk-backed 30 FPS analysis frames; only twenty native JPEGs enter memory."""
+    """Disk-backed 30 FPS analysis frames; only one hundred native JPEGs enter memory."""
     def __init__(self, workspace, original_path, fps):
         super().__init__()
         self.workspace = workspace
@@ -17520,9 +17457,9 @@ def _video_moment_native_stills_v597(selection, frames, progress_callback=None):
         raise RuntimeError("動画の解析用ファイルを読み込めませんでした。")
     indices = sorted({int(item["frame"]["analysis_index_v597"]) for item in selection})
     if len(indices) != VIDEO_AI_MAX_SELECTIONS:
-        raise ValueError("異なる20枚の元動画フレームを確定できませんでした。")
+        raise ValueError("異なる100枚の元動画フレームを確定できませんでした。")
     if callable(progress_callback):
-        progress_callback("native_stills", 0, len(indices), "選んだ20枚を元の解像度で切り出しています")
+        progress_callback("native_stills", 0, len(indices), "選んだ100枚を元の解像度で切り出しています")
     directory = Path(frames.workspace.name) / "native"
     directory.mkdir(exist_ok=True)
     expression = "+".join(f"eq(n\\,{index})" for index in indices)
@@ -17534,7 +17471,7 @@ def _video_moment_native_stills_v597(selection, frames, progress_callback=None):
     result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=180, check=False)
     paths = sorted(directory.glob("selected_*.jpg"))
     if result.returncode or len(paths) != len(indices):
-        raise RuntimeError("選定した20枚を元の解像度で切り出せませんでした。")
+        raise RuntimeError("選定した100枚を元の解像度で切り出せませんでした。")
     originals = {index: path.read_bytes() for index, path in zip(indices, paths)}
     if any(not value for value in originals.values()):
         raise RuntimeError("元動画の切り抜き画像が空でした。")
@@ -17550,7 +17487,7 @@ def _background_extract_video_candidate_frames(client, photo):
     """Decode every 1/30-second candidate across the saved video (up to 65s).
 
     Analysis JPEGs are disk-backed at <=640px, not loaded as 1,950 native images.
-    Native resolution is recovered only for the final twenty exact frame indices.
+    Native resolution is recovered only for the final one hundred exact frame indices.
     """
     video_path = photo_video_storage_path(photo)
     ffmpeg = _ffmpeg_executable()
@@ -17584,7 +17521,7 @@ def _background_extract_video_candidate_frames(client, photo):
             detail = result.stderr.decode("utf-8", errors="replace").replace("\n", " ")[-180:]
             raise RuntimeError("30FPSで動画全体を解析できませんでした。" + detail)
         if len(files) < VIDEO_AI_MAX_SELECTIONS:
-            raise ValueError("異なる時刻で20枚切り出せる長さの動画がありません。")
+            raise ValueError("異なる時刻で100枚切り出せる長さの動画がありません。")
         for index, path in enumerate(files):
             if not path.stat().st_size:
                 raise RuntimeError("30FPS解析用の画像が空でした。")
@@ -18757,7 +18694,7 @@ def request_video_ai_reroll(photo, record_rejection=True):
     selection["updated_at"] = selection["queued_at"]
     selection["reroll_target_round_v596"] = int(selection.get("round") or 0) + 1
     selection["stage"] = "queued"
-    selection["progress_message"] = "新しい20枚を作成しています。完了まで前の候補は表示しません。"
+    selection["progress_message"] = "新しい100枚を作成しています。完了まで前の候補は表示しません。"
     selection["progress_completed"] = 0
     selection["progress_total"] = 0
     selection["last_error"] = ""
@@ -19201,7 +19138,7 @@ def video_ai_selection_items(photo):
     if not isinstance(items, list):
         return []
     clean = [item for item in items if isinstance(item, dict) and str(item.get("storage_path") or "").strip()]
-    return sorted(clean, key=lambda item: int(item.get("rank") or 99))[:VIDEO_AI_MAX_SELECTIONS]
+    return sorted(clean, key=lambda item: (max(0, int(item.get("timestamp_ms") or 0)), int(item.get("rank") or 0)))[:VIDEO_AI_MAX_SELECTIONS]
 
 
 def video_ai_effective_status(photo):
@@ -20941,8 +20878,8 @@ def update_photo_reflection(photo_id, conversation, signals, done=None):
     if not isinstance(existing_signals, dict):
         existing_signals = {}
     next_signals = dict(signals or {}) if isinstance(signals, dict) else {}
-    # Preserve the compact GPS map index when conversation analysis updates signals.
-    for metadata_key in (MEMORY_MAP_SIGNAL_KEY, FRAMING_KEY_V468):
+    # Preserve existing legacy metadata and photo framing without generating map indexes.
+    for metadata_key in ("memory_map_v1", FRAMING_KEY_V468):
         if metadata_key in existing_signals and metadata_key not in next_signals:
             next_signals[metadata_key] = existing_signals[metadata_key]
 
@@ -31334,6 +31271,7 @@ def init_state():
         "📖 今日の日記": "diary",
         "📚 これまで": "review",
         "🔍 今月の発見": "review",
+        "review_map": "review",  # migrate sessions that had the removed screen open
     }
     current_page = st.session_state.get("main_page")
     if current_page in legacy_pages:
@@ -31697,7 +31635,7 @@ def page_evening_review():
                     )
 
 
-VALID_APP_PAGES = {"home", "camera", "videos", "moments", "diary", "photos", "review", "review_map", "review_project", "review_monthly", "review_tag", "review_random", "review_shared", "review_history", "nearby", "discovery_results", "evening_review", "toilets", "help_places", "field_notes", "experience", "events", "settings", "settings_moments", "settings_moments_definition", "settings_location", "settings_account", "settings_media_import"}
+VALID_APP_PAGES = {"home", "camera", "videos", "moments", "diary", "photos", "review", "review_project", "review_monthly", "review_tag", "review_random", "review_shared", "review_history", "nearby", "discovery_results", "evening_review", "toilets", "help_places", "field_notes", "experience", "events", "settings", "settings_moments", "settings_moments_definition", "settings_location", "settings_account", "settings_media_import"}
 
 
 def _current_ui_refresh_epoch():
@@ -31884,9 +31822,6 @@ def current_navigation_context():
     if page == "review":
         return "review", ""
 
-    if page == "review_map":
-        return "review_map", ""
-
     if page == "review_project":
         return "review_project", ""
 
@@ -31921,7 +31856,6 @@ def navigation_parent_node(node=None):
         "diary_trip": "diary",
         "review_history_detail": "review_history",
         "review_history": "review",
-        "review_map": "review",
         "review_project": "review",
         "review_monthly": "review",
         "review_tag": "review",
@@ -31967,6 +31901,7 @@ def _prepare_moments_page_entry_v412():
     """Start Good Moments on the newest unreviewed video whenever the page is entered."""
     st.session_state["_moments_page_mode_v387"] = "これから確認"
     st.session_state["_moments_ready_index_v387"] = 0
+    st.session_state["_moments_gallery_visit_v607"] = int(st.session_state.get("_moments_gallery_visit_v607") or 0) + 1
 
 
 def _set_page_state(page_name, history_mode="push"):
@@ -32157,7 +32092,7 @@ def _navigate_to_parent_state_only():
         st.session_state["_history_action"] = "replace"
         return
 
-    if node in {"review_history", "review_map", "review_project", "review_monthly", "review_tag", "review_random", "review_shared"}:
+    if node in {"review_history", "review_project", "review_monthly", "review_tag", "review_random", "review_shared"}:
         st.session_state.pop("history_detail_trip_id", None)
         st.session_state.pop("review_view_selector", None)
         _set_page_state("review", history_mode="replace")
@@ -39932,6 +39867,7 @@ export default function(component) {
     for(const [id,card] of cards){
       const active=set.has(id);
       card.classList.toggle('active',active);
+      if(!large){card.setAttribute('aria-label',`いい瞬間 ${rank} を拡大表示`);return;}
       card.setAttribute('aria-pressed',active?'true':'false');
       const wrap=card.querySelector('.experience-photo-image-v503');
       let badge=wrap?.querySelector('.experience-photo-check-v503');
@@ -44162,7 +44098,7 @@ def _moments_video_title(photo):
 
 _MOMENTS_SELECT_HTML = """
 <div class="moments-view-toggle" role="group" aria-label="この動画の写真表示">
-  <button id="moments-view-list" class="moments-view-button" type="button">20枚で見る</button>
+  <button id="moments-view-list" class="moments-view-button" type="button">一覧表示</button>
   <button id="moments-view-enlarge" class="moments-view-button" type="button">1枚ずつ見る</button>
 </div>
 <div id="moments-select-grid" class="moments-select-grid"></div>
@@ -44186,6 +44122,8 @@ _MOMENTS_SELECT_CSS = """
   border-color:#6C9BD2; background:rgba(108,155,210,.14); color:var(--st-text-color);
 }
 .moments-view-button:active { transform:scale(.99); }
+.moments-select-grid:not(.enlarge-mode) .moments-mode-switch,
+.moments-select-grid:not(.enlarge-mode) .moments-voice-open-button { display:none; }
 .moments-select-grid {
   width: 100%;
   display: grid;
@@ -44371,7 +44309,7 @@ _MOMENTS_SELECT_CSS = """
 }
 .moments-enlarge-nav {
   display: grid;
-  grid-template-columns: 52px minmax(0, 1fr) 52px;
+  grid-template-columns: 1fr 1.4fr 1fr;
   gap: 8px;
   align-items: center;
   margin: 0 0 8px;
@@ -44379,13 +44317,16 @@ _MOMENTS_SELECT_CSS = """
 .moments-enlarge-nav button {
   appearance: none;
   -webkit-appearance: none;
-  width: 52px;
+  width: 100%;
+  min-width: 0;
+  padding: 8px 4px;
   min-height: 44px;
   border: 1px solid rgba(128,128,128,.28);
   border-radius: 12px;
   background: rgba(128,128,128,.06);
   color: var(--st-text-color);
-  font-size: 22px;
+  font-size: 12px;
+  font-weight: 800;
   cursor: pointer;
   touch-action: manipulation;
 }
@@ -44484,13 +44425,13 @@ export default function(component) {
   const grid = parentElement.querySelector('#moments-select-grid');
   if (!grid) return;
 
-  const photos = Array.isArray(data?.photos) ? data.photos.slice(0,20) : [];
+  const photos = Array.isArray(data?.photos) ? data.photos.slice(0,100).sort((a,b)=>(Number(a?.timestamp_ms)||0)-(Number(b?.timestamp_ms)||0)||(Number(a?.rank)||0)-(Number(b?.rank)||0)) : [];
   const disabled = Boolean(data?.disabled);
   const familyKey=String(data?.family_key||''), memberKey=String(data?.member_key||''), videoId=String(data?.video_id||'');
   const roundNumber=Math.max(0,Number(data?.round_number||0)||0);
   const listViewButton=parentElement.querySelector('#moments-view-list');
   const enlargeViewButton=parentElement.querySelector('#moments-view-enlarge');
-  const viewStoreKey=videoId?`tokyo_burari_moments_view_mode_v362_${videoId}`:'';
+  const viewStoreKey=videoId?`tokyo_burari_moments_view_mode_v607_${videoId}_${roundNumber}_${data?.view_session||0}`:'';
   const activeStoreKey=videoId?`tokyo_burari_moments_active_rank_v370_${videoId}_${roundNumber}`:'';
   let viewMode='list';
   try {
@@ -44653,6 +44594,7 @@ export default function(component) {
       pickedBadge.style.display=active&&!meta?'block':'none'; badge.textContent=meta?`${meta.emoji} ${meta.label}`:'';badge.hidden=!meta;
       const nm=normalMeta[normal]||null, pm=parentingMeta[parent]||null; normalButton.textContent=`${nm?nm.emoji:'🙂'} 通常`; parentingButton.textContent=`${pm?pm.emoji:'🌱'} こどもーど`;
       normalButton.classList.toggle('active',activeMode==='normal');parentingButton.classList.toggle('active',activeMode==='parenting');
+      if(!large){card.setAttribute('aria-label',`いい瞬間 ${rank} を拡大表示`);return;}
       card.setAttribute('aria-pressed',active?'true':'false');card.setAttribute('aria-label',meta?`${selectedMode}：${meta.label}。タップすると現在のモードで変更します`:`${activeMode==='parenting'?'こどもーど':'通常'}は未設定。タップして選びます`);
     };
     syncVisual(); card.appendChild(imageWrap); card.appendChild(modeSwitch); card.appendChild(metaText); card.appendChild(reason);
@@ -44660,7 +44602,8 @@ export default function(component) {
     parentingButton.addEventListener('click',(event)=>{event.preventDefault();event.stopPropagation();activeMode='parenting';preferredMode='parenting';syncVisual();});
     if(!disabled){
       const cycle=(event)=>{event?.preventDefault?.();event?.stopPropagation?.(); selectionTouched.add(rank); if(activeMode==='parenting'){parenting.set(rank,nextValue(parenting.get(rank),parentingOrder,normalizeParenting));emotions.set(rank,'');}else{emotions.set(rank,nextValue(emotions.get(rank),normalOrder,normalizeNormal));parenting.set(rank,'');} syncVisual(); persistMomentState(rank);};
-      card.addEventListener('click',cycle);card.addEventListener('keydown',(event)=>{if(event.key==='Enter'||event.key===' ')cycle(event);});
+      const activate=(event)=>{if(large){cycle(event);return;}event?.preventDefault?.();event?.stopPropagation?.();activeRank=rank;persistActiveRank();setViewMode('enlarge');};
+      card.addEventListener('click',activate);card.addEventListener('keydown',(event)=>{if(event.key==='Enter'||event.key===' ')activate(event);});
     }
     return card;
   };
@@ -44678,9 +44621,10 @@ export default function(component) {
       if(!photos.length){const empty=document.createElement('div');empty.className='moments-select-empty';shell.appendChild(empty);grid.appendChild(shell);return;}
       let activeIndex=photos.findIndex((photo,index)=>rankFor(photo,index)===activeRank);if(activeIndex<0)activeIndex=0;
       const nav=document.createElement('div');nav.className='moments-enlarge-nav';
-      const prev=document.createElement('button');prev.type='button';prev.textContent='‹';prev.setAttribute('aria-label','前の写真');
+      const prev=document.createElement('button');prev.type='button';prev.textContent='前の写真';prev.setAttribute('aria-label','前の写真');
+      const backList=document.createElement('button');backList.type='button';backList.textContent='一覧表示に戻る';backList.addEventListener('click',(event)=>{event.preventDefault();event.stopPropagation();setViewMode('list');});
       const counter=document.createElement('div');counter.className='moments-enlarge-counter';
-      const next=document.createElement('button');next.type='button';next.textContent='›';next.setAttribute('aria-label','次の写真');
+      const next=document.createElement('button');next.type='button';next.textContent='次の写真';next.setAttribute('aria-label','次の写真');
       const viewer=document.createElement('div');viewer.className='moments-enlarge-viewer';
       const saveCurrent=document.createElement('button');saveCurrent.type='button';saveCurrent.className='moments-save-current-button';
       saveCurrent.textContent='この写真を日記に登録';
@@ -44707,7 +44651,7 @@ export default function(component) {
       viewer.addEventListener('touchstart',(event)=>{const touch=event.touches&&event.touches[0];touchStartX=touch?touch.clientX:null;},{passive:true});
       viewer.addEventListener('touchend',(event)=>{if(touchStartX===null)return;const touch=event.changedTouches&&event.changedTouches[0];const dx=touch?touch.clientX-touchStartX:0;touchStartX=null;if(Math.abs(dx)>=45)move(dx<0?1:-1);},{passive:true});
       shell.tabIndex=0;shell.addEventListener('keydown',(event)=>{if(event.key==='ArrowLeft'){event.preventDefault();move(-1);}else if(event.key==='ArrowRight'){event.preventDefault();move(1);}});
-      nav.appendChild(prev);nav.appendChild(counter);nav.appendChild(next);shell.appendChild(nav);shell.appendChild(viewer);shell.appendChild(saveCurrent);grid.appendChild(shell);renderActive();return;
+      nav.appendChild(prev);nav.appendChild(backList);nav.appendChild(next);shell.appendChild(nav);shell.appendChild(counter);shell.appendChild(viewer);shell.appendChild(saveCurrent);grid.appendChild(shell);renderActive();return;
     }
     for(let index=0;index<photos.length;index+=1){const photo=photos[index];if(!photo)continue;grid.appendChild(makeCard(photo,index,false));}
   };
@@ -45296,6 +45240,7 @@ def _render_moments_picker(photo, index, view_mode=None, next_video_action=None)
             {
                 "rank": rank,
                 "src": url,
+                "timestamp_ms": max(0, int(item.get("timestamp_ms") or 0)),
                 "ai_best": bool(item.get("ai_best")) or rank == 1,
                 "emotion": selection_item_tag_values(item)[0],
                 "parenting": selection_item_tag_values(item)[1],
@@ -45330,7 +45275,7 @@ def _render_moments_picker(photo, index, view_mode=None, next_video_action=None)
 
     picker_component = _get_moments_select_component()
     if picker_component is None:
-        fallback_mode_key = f"_moments_view_mode_fallback_v362_{video_id}"
+        fallback_mode_key = f"_moments_view_mode_fallback_v607_{video_id}_{round_number}"
         fallback_mode_label = st.radio(
             "この動画の写真表示",
             ["一覧モード", "拡大モード"],
@@ -45353,6 +45298,7 @@ def _render_moments_picker(photo, index, view_mode=None, next_video_action=None)
                 "member_key": current_member_key(),
                 "video_id": video_id,
                 "round_number": round_number,
+                "view_session": int(st.session_state.get("_moments_gallery_visit_v607") or 0),
                 "pending_param": PENDING_EMOTION_QUERY_PARAM,
                 "preferred_mode": str(st.session_state.get(preferred_mode_key) or "normal"),
                 "show_next_video": bool(next_cfg),
@@ -45497,10 +45443,10 @@ def _render_moments_picker(photo, index, view_mode=None, next_video_action=None)
             )
             active_card = cards[active_index]
             rank = int(active_card["rank"])
-            prev_col, count_col, next_col = st.columns([1, 2.2, 1], gap="small")
+            prev_col, count_col, next_col = st.columns([1, 1.4, 1], gap="small")
             with prev_col:
                 if st.button(
-                    "‹",
+                    "前の写真",
                     use_container_width=True,
                     disabled=active_index <= 0,
                     key=f"moments_enlarge_prev_{video_id}_{round_number}_{rank}",
@@ -45508,13 +45454,17 @@ def _render_moments_picker(photo, index, view_mode=None, next_video_action=None)
                     st.session_state[active_rank_key] = int(cards[active_index - 1]["rank"])
                     st.rerun()
             with count_col:
+                if st.button("一覧表示に戻る", use_container_width=True,
+                             key=f"moments_enlarge_list_{video_id}_{round_number}",
+                             on_click=lambda: st.session_state.update({fallback_mode_key: "一覧モード"})):
+                    st.rerun()
                 st.markdown(
                     f'<div style="text-align:center;padding:.65rem 0;font-weight:800;">{active_index + 1} / {len(cards)}</div>',
                     unsafe_allow_html=True,
                 )
             with next_col:
                 if st.button(
-                    "›",
+                    "次の写真",
                     use_container_width=True,
                     disabled=active_index >= len(cards) - 1,
                     key=f"moments_enlarge_next_{video_id}_{round_number}_{rank}",
@@ -45599,17 +45549,12 @@ def _render_moments_picker(photo, index, view_mode=None, next_video_action=None)
                                 unsafe_allow_html=True,
                             )
                         if st.button(
-                            "選択解除" if rank in selected_ranks else "選択",
+                            "拡大表示",
                             use_container_width=True,
                             disabled=False,
                             key=f"moments_fallback_pick_{video_id}_{round_number}_{rank}",
+                            on_click=lambda r=rank: st.session_state.update({fallback_mode_key: "拡大モード", active_rank_key: r}),
                         ):
-                            current = set(selected_ranks)
-                            if rank in current:
-                                current.remove(rank)
-                            else:
-                                current.add(rank)
-                            st.session_state[selection_state_key] = sorted(current)
                             st.rerun()
                         if st.button(
                             "🎙 声",
@@ -45692,9 +45637,9 @@ def _render_moments_picker(photo, index, view_mode=None, next_video_action=None)
 
     can_reroll = bool(_video_ai_has_candidate_source(selection_meta) or photo_video_storage_path(photo))
     if can_reroll and status != "reviewed":
-        with st.expander("候補の20枚が合わないとき"):
+        with st.expander("候補の100枚が合わないとき"):
             if st.button(
-                "🔄 別の20枚を作る",
+                "🔄 別の100枚を作る",
                 use_container_width=True,
                 help="写真を選択した状態でも再作成できます。日記に登録済みの写真は残ります。未保存の選択は新しい候補には引き継がれません。",
                 key=f"moments_reroll_{video_id}_{round_number}",
@@ -46419,11 +46364,11 @@ def page_moments():
                     if status == "error" and focus_error.startswith("ピント"):
                         st.warning(focus_error)
                     if status == "error" and _video_ai_reroll_pending_v596(selection):
-                        st.warning("新しい20枚を作成できませんでした。前の候補は表示していません。")
+                        st.warning("新しい100枚を作成できませんでした。前の候補は表示していません。")
                         if st.button("もう一度作成する", key=f"moments_retry_reroll_v596_{video.get('id')}"):
                             try:
                                 request_video_ai_reroll(video, record_rejection=False)
-                                st.session_state["_moments_notice"] = "新しい20枚を作成しています。"
+                                st.session_state["_moments_notice"] = "新しい100枚を作成しています。"
                                 st.rerun()
                             except Exception as exc:
                                 st.error("再作成を開始できませんでした。")
@@ -49382,990 +49327,6 @@ def page_monthly(embedded=False):
                 ):
                     st.session_state[delete_video_confirm_key] = True
                     st.rerun()
-
-
-# ============================================================
-# Memories map: map-first autobiographical browsing
-# ============================================================
-MEMORY_MAP_DEFAULT_RADIUS_M = 3000
-MEMORY_MAP_LIGHT_ROW_LIMIT = 1800
-MEMORY_MAP_LEGACY_ROW_LIMIT = 320
-MEMORY_MAP_MAX_VISIBLE_ITEMS = 90
-MEMORY_MAP_CLUSTER_RADIUS_M = 55
-
-
-_MEMORY_MAP_LOCATION_HTML = """
-<div class="memory-map-location-box">
-  <button id="memory-map-location-button" type="button">📍 いまいる場所の近くの思い出を見る</button>
-  <div id="memory-map-location-status" aria-live="polite"></div>
-</div>
-"""
-
-_MEMORY_MAP_LOCATION_CSS = """
-.memory-map-location-box { width:100%; box-sizing:border-box; }
-#memory-map-location-button {
-  width:100%; min-height:50px; border-radius:15px; border:1.5px solid rgba(74,144,226,.36);
-  background:rgba(74,144,226,.07); color:var(--st-text-color); font:inherit; font-weight:820; cursor:pointer;
-}
-#memory-map-location-button:disabled { opacity:.58; cursor:wait; }
-#memory-map-location-status { margin-top:6px; min-height:17px; font-size:12px; opacity:.70; line-height:1.35; }
-"""
-
-_MEMORY_MAP_LOCATION_JS = r"""
-export default function(component) {
-  const { parentElement, setTriggerValue } = component;
-  const button = parentElement.querySelector('#memory-map-location-button');
-  const status = parentElement.querySelector('#memory-map-location-status');
-  if (!button || !status) return;
-  let cancelled = false;
-  const finish = () => { if (!cancelled) button.disabled = false; };
-  const setStatus = (value) => { status.textContent = String(value || ''); };
-  const locate = () => {
-    if (!navigator.geolocation) {
-      const message = 'このブラウザでは現在地を取得できません。';
-      setStatus(message);
-      setTriggerValue('location_error', {token:String(Date.now()), message});
-      return;
-    }
-    button.disabled = true;
-    setStatus('現在地を確認しています…');
-    navigator.geolocation.getCurrentPosition(
-      (position) => {
-        if (cancelled) return;
-        setTriggerValue('location', {
-          token: `${Date.now()}_${Math.random().toString(36).slice(2)}`,
-          latitude: Number(position.coords.latitude),
-          longitude: Number(position.coords.longitude),
-          accuracy_m: Number(position.coords.accuracy || 0),
-          measured_at: new Date(position.timestamp || Date.now()).toISOString()
-        });
-        setStatus('現在地を取得しました。');
-        finish();
-      },
-      (error) => {
-        if (cancelled) return;
-        const code = Number(error?.code || 0);
-        const message = code === 1
-          ? '位置情報の利用が許可されていません。'
-          : (code === 3 ? '現在地の取得に時間がかかっています。もう一度お試しください。' : '現在地を取得できませんでした。');
-        setStatus(message);
-        setTriggerValue('location_error', {token:String(Date.now()), code, message});
-        finish();
-      },
-      {enableHighAccuracy:true, timeout:9000, maximumAge:0}
-    );
-  };
-  button.addEventListener('click', locate);
-  return () => { cancelled = true; button.removeEventListener('click', locate); };
-}
-"""
-
-memory_map_location_component = None
-_memory_map_location_component_initialized = False
-
-
-def _get_memory_map_location_component():
-    global memory_map_location_component, _memory_map_location_component_initialized
-    if _memory_map_location_component_initialized:
-        return memory_map_location_component
-    _memory_map_location_component_initialized = True
-    try:
-        memory_map_location_component = st.components.v2.component(
-            "tokyo_burari_memory_map_location_v259",
-            html=_MEMORY_MAP_LOCATION_HTML,
-            css=_MEMORY_MAP_LOCATION_CSS,
-            js=_perf_instrument_js_v466(_MEMORY_MAP_LOCATION_JS),
-        )
-    except Exception:
-        memory_map_location_component = None
-    return memory_map_location_component
-
-
-@st.cache_data(ttl=90, show_spinner=False)
-def _memory_map_rows_light(family_key, member_key, max_rows=MEMORY_MAP_LIGHT_ROW_LIMIT, legacy_rows=MEMORY_MAP_LEGACY_ROW_LIMIT):
-    """Load a compact map index; legacy reflection_json is read only for a small recent window."""
-    client = supabase_client()
-    rows = (
-        client.table(PHOTO_TABLE)
-        .select("id,trip_id,storage_path,captured_at,signals_json")
-        .eq("family_key", str(family_key)).eq("member_key", str(member_key))
-        .order("captured_at", desc=True)
-        .limit(max(100, int(max_rows)))
-        .execute()
-    ).data or []
-
-    indexed = []
-    indexed_ids = set()
-    for row in rows:
-        if not isinstance(row, dict):
-            continue
-        signals = row.get("signals_json") or {}
-        if not isinstance(signals, dict):
-            continue
-        meta = signals.get(MEMORY_MAP_SIGNAL_KEY) or {}
-        if not isinstance(meta, dict):
-            continue
-        try:
-            lat = float(meta.get("latitude"))
-            lon = float(meta.get("longitude"))
-        except (TypeError, ValueError):
-            continue
-        if not (math.isfinite(lat) and math.isfinite(lon)):
-            continue
-        item = dict(row)
-        item["_map_meta"] = dict(meta)
-        indexed.append(item)
-        indexed_ids.add(str(row.get("id") or ""))
-
-    # Existing v227+ captures already contain GPS in reflection_json. Read only a
-    # bounded recent window so the map remains light while old records still appear.
-    legacy = (
-        client.table(PHOTO_TABLE)
-        .select("id,trip_id,storage_path,captured_at,reflection_json")
-        .eq("family_key", str(family_key)).eq("member_key", str(member_key))
-        .order("captured_at", desc=True)
-        .limit(max(0, int(legacy_rows)))
-        .execute()
-    ).data or []
-    for row in legacy:
-        if not isinstance(row, dict):
-            continue
-        rid = str(row.get("id") or "")
-        if rid and rid in indexed_ids:
-            continue
-        reflection = row.get("reflection_json") or {}
-        if not isinstance(reflection, dict):
-            continue
-        location = reflection.get("location") or {}
-        if not isinstance(location, dict) or str(location.get("source") or "") != "gps":
-            continue
-        meta = build_memory_map_signal(
-            location,
-            media_type="video" if str(reflection.get("media_type") or "").lower() == "video" else "photo",
-            capture_source=str(reflection.get("capture_source") or "camera"),
-        )
-        if not meta:
-            continue
-        item = dict(row)
-        item["_map_meta"] = meta
-        indexed.append(item)
-        if rid:
-            indexed_ids.add(rid)
-    return indexed
-
-
-def _memory_map_nearby_items(center_lat, center_lon, radius_m):
-    rows = _memory_map_rows_light(current_family_key(), current_member_key())
-    candidates = []
-    for row in rows:
-        meta = row.get("_map_meta") or {}
-        try:
-            lat = float(meta.get("latitude"))
-            lon = float(meta.get("longitude"))
-        except (TypeError, ValueError):
-            continue
-        distance = _nearby_haversine_m(center_lat, center_lon, lat, lon)
-        if not math.isfinite(distance) or distance > float(radius_m):
-            continue
-        candidates.append({
-            "id": str(row.get("id") or ""),
-            "storage_path": str(row.get("storage_path") or ""),
-            "captured_at": str(row.get("captured_at") or ""),
-            "latitude": lat,
-            "longitude": lon,
-            "distance_m": float(distance),
-            "place_label": str(meta.get("place_label") or "").strip(),
-            "media_type": "video" if str(meta.get("media_type") or "").lower() == "video" else "photo",
-            "capture_source": str(meta.get("capture_source") or ""),
-        })
-    candidates.sort(key=lambda x: (float(x.get("distance_m") or 0), str(x.get("captured_at") or "")))
-    return candidates[:MEMORY_MAP_MAX_VISIBLE_ITEMS]
-
-
-def _cluster_memory_map_items(items, cluster_radius_m=MEMORY_MAP_CLUSTER_RADIUS_M):
-    groups = []
-    for item in list(items or []):
-        lat = float(item.get("latitude"))
-        lon = float(item.get("longitude"))
-        chosen = None
-        for group in groups:
-            if _nearby_haversine_m(lat, lon, group["latitude"], group["longitude"]) <= float(cluster_radius_m):
-                chosen = group
-                break
-        if chosen is None:
-            chosen = {"latitude": lat, "longitude": lon, "items": []}
-            groups.append(chosen)
-        chosen["items"].append(item)
-        count = len(chosen["items"])
-        chosen["latitude"] = ((chosen["latitude"] * (count - 1)) + lat) / count
-        chosen["longitude"] = ((chosen["longitude"] * (count - 1)) + lon) / count
-    groups.sort(key=lambda g: min(float(x.get("distance_m") or 0) for x in g.get("items") or [{}]))
-    return groups[:42]
-
-
-@st.cache_resource(show_spinner=False)
-def _memory_map_preview_executor_v561():
-    # Preserve the existing embedded-first-preview behavior, but create independent
-    # pin previews concurrently instead of serially blocking the map for every pin.
-    return ThreadPoolExecutor(max_workers=6, thread_name_prefix="burari-map-preview")
-
-
-def _memory_map_payload(center_lat, center_lon, radius_m):
-    payload_started_v561 = time.perf_counter()
-    items = _memory_map_nearby_items(center_lat, center_lon, radius_m)
-    groups = _cluster_memory_map_items(items)
-    preview_paths = []
-    for group in groups:
-        sorted_items = sorted(group.get("items") or [], key=lambda x: str(x.get("captured_at") or ""), reverse=True)
-        group["items"] = sorted_items
-        for item in sorted_items[:6]:
-            path = str(item.get("storage_path") or "")
-            if path:
-                preview_paths.append(path)
-    signed = signed_photo_url_map(tuple(preview_paths), expires_in=1200) if preview_paths else {}
-
-    first_paths_v561 = []
-    for group in groups:
-        sorted_items_v561 = sorted(group.get("items") or [], key=lambda x: str(x.get("captured_at") or ""), reverse=True)
-        if sorted_items_v561:
-            path_v561 = str(sorted_items_v561[0].get("storage_path") or "")
-            if path_v561 and path_v561 not in first_paths_v561:
-                first_paths_v561.append(path_v561)
-    embedded_first_v561 = {}
-    if first_paths_v561:
-        def _embed_first_v561(path):
-            try:
-                return path, thumbnail_photo_data_url(path, max_px=320, quality=70)
-            except Exception:
-                return path, ""
-        try:
-            for path_v561, data_v561 in _memory_map_preview_executor_v561().map(_embed_first_v561, first_paths_v561):
-                if data_v561:
-                    embedded_first_v561[path_v561] = data_v561
-        except Exception:
-            embedded_first_v561 = {}
-
-    payload_groups = []
-    for index, group in enumerate(groups, start=1):
-        group_items = list(group.get("items") or [])
-        visible = []
-        for item_index, item in enumerate(group_items[:6]):
-            path = str(item.get("storage_path") or "")
-            captured = str(item.get("captured_at") or "")
-            preview_src = str(signed.get(path) or "")
-            # v266: the first image for every pin is embedded as a small JPEG data URL.
-            # A signed Storage URL can be created successfully on the server yet still be
-            # blocked/fail inside a mobile Streamlit component.  The popup itself is only
-            # about 280px wide, so a cached 320px preview is enough and keeps the map light.
-            # v561 keeps the old embedded first preview exactly; only preparation is
-            # parallelized above so the map no longer downloads one pin after another.
-            if item_index == 0 and path:
-                embedded_preview = str(embedded_first_v561.get(path) or "")
-                if embedded_preview:
-                    preview_src = embedded_preview
-            visible.append({
-                "id": str(item.get("id") or ""),
-                "src": preview_src,
-                "date": captured[:10],
-                "time": captured[11:16] if len(captured) >= 16 else "",
-                "place": str(item.get("place_label") or ""),
-                "media_type": str(item.get("media_type") or "photo"),
-            })
-        place_labels = [str(x.get("place_label") or "").strip() for x in group_items if str(x.get("place_label") or "").strip()]
-        place = place_labels[0] if place_labels else "このあたりの思い出"
-        payload_groups.append({
-            "index": index,
-            "latitude": round(float(group.get("latitude")), 6),
-            "longitude": round(float(group.get("longitude")), 6),
-            "count": len(group_items),
-            "place": place,
-            "items": visible,
-        })
-    result_v561 = {"groups": payload_groups, "item_count": len(items)}
-    _perf_log_v457("memory_map:payload", started_at=payload_started_v561,
-                   meta={"items": len(items), "groups": len(payload_groups)}, force=True)
-    return result_v561
-
-
-def _render_memory_map_static_v259(center_lat, center_lon, radius_m, *, accuracy_m=None):
-    prepared = _memory_map_payload(center_lat, center_lon, radius_m)
-    try:
-        accuracy_value = max(0.0, float(accuracy_m or 0))
-    except (TypeError, ValueError):
-        accuracy_value = 0.0
-    payload = {
-        "center": {"lat": float(center_lat), "lon": float(center_lon)},
-        "radius_m": int(radius_m),
-        "accuracy_m": accuracy_value,
-        "groups": prepared.get("groups") or [],
-        "item_count": int(prepared.get("item_count") or 0),
-    }
-    payload_json = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).replace("</", "<\\/")
-    map_html = f'''<!doctype html>
-<html lang="ja"><head><meta charset="utf-8" />
-<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no" />
-<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
-<style>
-html,body{{margin:0;padding:0;background:transparent;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Hiragino Sans","Yu Gothic",sans-serif;}}
-#memory-map{{width:100%;height:570px;border-radius:16px;overflow:hidden;background:#eef3f6;border:1px solid rgba(80,100,120,.14);box-sizing:border-box;}}
-.memory-map-error{{height:100%;display:flex;align-items:center;justify-content:center;padding:24px;text-align:center;color:#5b6570;font-size:14px;line-height:1.6;box-sizing:border-box;}}
-.memory-current{{width:18px;height:18px;border-radius:50%;background:#2f80ed;border:4px solid white;box-shadow:0 2px 9px rgba(0,0,0,.30);}}
-.memory-pin-shell{{background:transparent!important;border:0!important;}}
-.memory-pin{{width:36px;height:36px;border-radius:50% 50% 50% 7px;transform:rotate(-45deg);background:#db7659;border:3px solid white;box-shadow:0 3px 10px rgba(0,0,0,.25);box-sizing:border-box;position:relative;}}
-.memory-pin span{{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;transform:rotate(45deg);font-size:12px;font-weight:900;color:white;}}
-.leaflet-popup-content-wrapper{{border-radius:15px;box-shadow:0 9px 28px rgba(0,0,0,.17);}}
-.leaflet-popup-content{{margin:11px 12px;width:min(286px,76vw)!important;}}
-.memory-popup-place{{font-size:14px;font-weight:850;color:#23272d;line-height:1.35;margin-bottom:3px;}}
-.memory-popup-meta{{font-size:11px;color:#69737e;margin-bottom:8px;}}
-.memory-main-wrap{{position:relative;width:100%;aspect-ratio:4/3;border-radius:11px;overflow:hidden;background:#edf0f2;}}
-.memory-main{{display:block;width:100%;height:100%;object-fit:cover;}}
-.memory-main-badge{{position:absolute;right:7px;top:7px;padding:3px 7px;border-radius:999px;background:rgba(20,24,28,.72);color:#fff;font-size:10px;font-weight:800;}}
-.memory-main-caption{{font-size:10px;color:#67717c;line-height:1.35;margin:5px 0 0;min-height:14px;}}
-.memory-thumbs{{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:4px;margin-top:7px;}}
-.memory-thumb{{border:0;padding:0;background:transparent;aspect-ratio:1/1;border-radius:7px;overflow:hidden;cursor:pointer;outline-offset:2px;}}
-.memory-thumb img{{width:100%;height:100%;object-fit:cover;display:block;}}
-.memory-more{{font-size:10px;color:#6f7881;margin-top:6px;}}
-.memory-legend{{position:absolute;z-index:1000;left:10px;bottom:10px;background:rgba(255,255,255,.94);border:1px solid rgba(0,0,0,.10);border-radius:10px;padding:6px 8px;box-shadow:0 3px 12px rgba(0,0,0,.10);font-size:10px;color:#4a535c;pointer-events:none;}}
-.memory-legend-row{{display:flex;align-items:center;gap:5px;white-space:nowrap;}}
-.memory-legend-dot{{width:9px;height:9px;border-radius:50%;background:#2f80ed;display:inline-block;}}
-.memory-legend-pin{{width:9px;height:9px;border-radius:50%;background:#db7659;display:inline-block;}}
-@media(max-width:640px){{#memory-map{{height:530px;border-radius:14px;}}.leaflet-popup-content{{width:min(276px,78vw)!important;}}}}
-</style></head><body>
-<div style="position:relative"><div id="memory-map"><div class="memory-map-error">思い出の地図を読み込んでいます…</div></div><div class="memory-legend"><div class="memory-legend-row"><span class="memory-legend-dot"></span>現在地</div><div class="memory-legend-row"><span class="memory-legend-pin"></span>思い出</div></div></div>
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
-<script>
-(function(){{
- const data={payload_json}; const node=document.getElementById('memory-map');
- if(!window.L){{node.innerHTML='<div class="memory-map-error">地図を読み込めませんでした。通信状態を確認して、もう一度ページを開いてください。</div>';return;}}
- const esc=(v)=>String(v==null?'':v).replace(/[&<>"']/g,(c)=>({{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}}[c]));
- node.innerHTML=''; const center=[Number(data.center.lat),Number(data.center.lon)];
- const zoom=Number(data.radius_m)<=1200?15:(Number(data.radius_m)<=4000?13:11);
- const map=L.map('memory-map',{{zoomControl:true,attributionControl:true,preferCanvas:true}}).setView(center,zoom);
- L.tileLayer('https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png',{{maxZoom:19,attribution:'&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap</a>'}}).addTo(map);
- L.circle(center,{{radius:Number(data.radius_m||0),color:'#6d9fd7',weight:1.2,opacity:.46,fillColor:'#6d9fd7',fillOpacity:.035,dashArray:'5 6'}}).addTo(map);
- if(Number(data.accuracy_m||0)>0) L.circle(center,{{radius:Number(data.accuracy_m),color:'#2f80ed',weight:1,opacity:.28,fillColor:'#2f80ed',fillOpacity:.06}}).addTo(map);
- const currentIcon=L.divIcon({{className:'',html:'<div class="memory-current"></div>',iconSize:[18,18],iconAnchor:[9,9]}});
- L.marker(center,{{icon:currentIcon,keyboard:false,zIndexOffset:1200}}).addTo(map).bindPopup('<b>現在地</b>');
- const popupHtml=(g)=>{{
-   const items=Array.isArray(g.items)?g.items:[]; const first=items[0]||{{}};
-   const mediaBadge=first.media_type==='video'?'<span class="memory-main-badge">動画</span>':'';
-   const main=first.src?`<div class="memory-main-wrap"><img class="memory-main" src="${{esc(first.src)}}" loading="lazy" decoding="async" />${{mediaBadge}}</div>`:'<div class="memory-main-wrap"></div>';
-   const caption=`${{esc(first.date||'')}}${{first.time?' '+esc(first.time):''}}${{first.media_type==='video'?' ・ 動画':''}}`;
-   const thumbs=items.length>1?`<div class="memory-thumbs">${{items.map((it)=>it.src?`<button class="memory-thumb" type="button" data-src="${{esc(it.src)}}" data-date="${{esc(it.date||'')}}" data-time="${{esc(it.time||'')}}" data-media="${{esc(it.media_type||'photo')}}" aria-label="${{esc(it.date||'思い出')}}"><img src="${{esc(it.src)}}" loading="lazy" decoding="async" /></button>`:'').join('')}}</div>`:'';
-   const more=Number(g.count||0)>items.length?`<div class="memory-more">ほか ${{Number(g.count)-items.length}} 件の思い出があります</div>`:'';
-   return `<div class="memory-popup-place">${{esc(g.place||'このあたりの思い出')}}</div><div class="memory-popup-meta">${{Number(g.count||0)}}件の思い出</div>${{main}}<div class="memory-main-caption">${{caption}}</div>${{thumbs}}${{more}}`;
- }};
- (data.groups||[]).forEach((g)=>{{
-   const lat=Number(g.latitude),lon=Number(g.longitude); if(!Number.isFinite(lat)||!Number.isFinite(lon))return;
-   const icon=L.divIcon({{className:'memory-pin-shell',html:`<div class="memory-pin"><span>${{Number(g.count||1)}}</span></div>`,iconSize:[36,44],iconAnchor:[18,40],popupAnchor:[0,-36]}});
-   L.marker([lat,lon],{{icon,riseOnHover:true}}).addTo(map).bindPopup(popupHtml(g),{{maxWidth:310,closeButton:true}});
- }});
- map.on('popupopen',(ev)=>{{
-   const root=ev.popup && ev.popup.getElement ? ev.popup.getElement() : null; if(!root)return;
-   const main=root.querySelector('.memory-main'); const caption=root.querySelector('.memory-main-caption'); const wrap=root.querySelector('.memory-main-wrap');
-   root.querySelectorAll('.memory-thumb').forEach((btn)=>btn.addEventListener('click',()=>{{
-     if(main) main.src=String(btn.dataset.src||'');
-     if(caption) caption.textContent=`${{btn.dataset.date||''}}${{btn.dataset.time?' '+btn.dataset.time:''}}${{btn.dataset.media==='video'?' ・ 動画':''}}`;
-     if(wrap){{let badge=wrap.querySelector('.memory-main-badge'); if(btn.dataset.media==='video'){{if(!badge){{badge=document.createElement('span');badge.className='memory-main-badge';wrap.appendChild(badge);}}badge.textContent='動画';}}else if(badge)badge.remove();}}
-   }}));
- }});
- setTimeout(()=>map.invalidateSize(),120);
-}})();
-</script></body></html>'''
-    st.components.v1.html(map_html, height=580, scrolling=False)
-    return prepared
-
-
-_MEMORY_MAP_VIEW_HTML = """
-<div class="memory-map-component-v260">
-  <div id="memory-map-v260" class="memory-map-v260"><div class="memory-map-loading-v260">思い出の地図を読み込んでいます…</div></div>
-  <div id="memory-pin-preview-v267" class="memory-pin-preview-v267" hidden>
-    <button type="button" id="memory-pin-preview-close-v267" class="memory-pin-preview-close-v267" aria-label="写真を閉じる">×</button>
-    <div id="memory-pin-preview-place-v267" class="memory-pin-preview-place-v267"></div>
-    <div id="memory-pin-preview-meta-v267" class="memory-pin-preview-meta-v267"></div>
-    <div class="memory-pin-preview-image-wrap-v267">
-      <img id="memory-pin-preview-image-v267" class="memory-pin-preview-image-v267" alt="思い出の写真" />
-      <button type="button" id="memory-pin-preview-prev-v268" class="memory-pin-preview-nav-v268 memory-pin-preview-prev-v268" aria-label="前の写真" hidden>◀</button>
-      <button type="button" id="memory-pin-preview-next-v268" class="memory-pin-preview-nav-v268 memory-pin-preview-next-v268" aria-label="次の写真" hidden>▶</button>
-      <div id="memory-pin-preview-badge-v267" class="memory-pin-preview-badge-v267" hidden>動画</div>
-      <div id="memory-pin-preview-empty-v267" class="memory-pin-preview-empty-v267" hidden>写真を表示できませんでした</div>
-    </div>
-    <div id="memory-pin-preview-caption-v267" class="memory-pin-preview-caption-v267"></div>
-    <div id="memory-pin-preview-thumbs-v267" class="memory-pin-preview-thumbs-v267"></div>
-  </div>
-  <div class="memory-legend-v260" aria-hidden="true">
-    <div><span class="memory-legend-center-v260"></span><span id="memory-center-label-v260">検索中心</span></div>
-    <div><span class="memory-legend-pin-v260"></span>思い出</div>
-  </div>
-</div>
-"""
-
-_MEMORY_MAP_VIEW_CSS = r"""
-.memory-map-controls-v263 { width:100%; box-sizing:border-box; margin:0 0 10px; }
-.memory-map-control-title-v263 { font-size:14px; font-weight:760; line-height:1.35; margin:0 0 7px; color:var(--st-text-color); }
-.memory-map-control-row-v263 { display:grid; grid-template-columns:minmax(48px,.62fr) minmax(48px,.62fr) minmax(54px,.72fr) minmax(118px,1.75fr); gap:6px; align-items:stretch; width:100%; box-sizing:border-box; }
-.memory-map-control-row-v263 button { min-width:0; min-height:42px; border-radius:12px; font:inherit; cursor:pointer; box-sizing:border-box; touch-action:manipulation; }
-.memory-radius-control-v263 { border:1.5px solid rgba(115,125,135,.30); background:rgba(255,255,255,.94); color:var(--st-text-color); font-size:13px; font-weight:760; }
-.memory-radius-control-v263.active { border-color:#f05a5a; background:rgba(240,90,90,.08); color:var(--st-text-color); box-shadow:inset 0 0 0 1px rgba(240,90,90,.10); }
-.memory-refresh-center-v263 { border:1.5px solid rgba(74,144,226,.42); background:rgba(74,144,226,.08); color:var(--st-text-color); font-size:11px; font-weight:820; line-height:1.25; padding:5px 7px; }
-.memory-map-control-row-v263 button:disabled { opacity:.52; cursor:wait; }
-@media(max-width:380px){ .memory-map-control-row-v263 { grid-template-columns:46px 46px 50px minmax(110px,1fr); gap:5px; } .memory-refresh-center-v263 { font-size:10px; padding:4px; } }
-.memory-map-component-v260 { position:relative; width:100%; box-sizing:border-box; }
-.memory-map-v260 { width:100%; height:570px; border-radius:16px; overflow:hidden; background:#eef3f6; border:1px solid rgba(80,100,120,.14); box-sizing:border-box; }
-/* v261: critical Leaflet layout rules are kept locally so the map cannot render as
-   a vertical collage of 256px OSM tiles while the external Leaflet CSS is still loading. */
-.memory-map-component-v260 .leaflet-pane,
-.memory-map-component-v260 .leaflet-tile,
-.memory-map-component-v260 .leaflet-marker-icon,
-.memory-map-component-v260 .leaflet-marker-shadow,
-.memory-map-component-v260 .leaflet-tile-container,
-.memory-map-component-v260 .leaflet-pane > svg,
-.memory-map-component-v260 .leaflet-pane > canvas,
-.memory-map-component-v260 .leaflet-zoom-box,
-.memory-map-component-v260 .leaflet-image-layer,
-.memory-map-component-v260 .leaflet-layer { position:absolute; left:0; top:0; }
-.memory-map-component-v260 .leaflet-container { overflow:hidden; -webkit-tap-highlight-color:transparent; }
-.memory-map-component-v260 .leaflet-tile { width:256px; height:256px; max-width:none!important; max-height:none!important; user-select:none; -webkit-user-drag:none; }
-.memory-map-component-v260 .leaflet-marker-icon,
-.memory-map-component-v260 .leaflet-marker-shadow { max-width:none!important; max-height:none!important; user-select:none; -webkit-user-drag:none; }
-.memory-map-component-v260 .leaflet-tile { visibility:hidden; }
-.memory-map-component-v260 .leaflet-tile-loaded { visibility:inherit; }
-.memory-map-component-v260 .leaflet-zoom-animated { transform-origin:0 0; }
-.memory-map-loading-v260 { height:100%; display:flex; align-items:center; justify-content:center; padding:24px; text-align:center; color:#5b6570; font-size:14px; line-height:1.6; box-sizing:border-box; }
-.memory-current-v260 { width:18px; height:18px; border-radius:50%; background:#2f80ed; border:4px solid white; box-shadow:0 2px 9px rgba(0,0,0,.30); }
-.memory-pin-shell-v260 { background:transparent!important; border:0!important; }
-.memory-pin-v260 { width:36px; height:36px; border-radius:50% 50% 50% 7px; transform:rotate(-45deg); background:#db7659; border:3px solid white; box-shadow:0 3px 10px rgba(0,0,0,.25); box-sizing:border-box; position:relative; }
-.memory-pin-v260 span { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; transform:rotate(45deg); font-size:12px; font-weight:900; color:white; }
-.memory-map-component-v260 .leaflet-popup-content-wrapper { border-radius:15px; box-shadow:0 9px 28px rgba(0,0,0,.17); }
-.memory-map-component-v260 .leaflet-popup-content { margin:11px 12px; width:min(286px,76vw)!important; }
-.memory-popup-place-v260 { font-size:14px; font-weight:850; color:#23272d; line-height:1.35; margin-bottom:3px; }
-.memory-popup-meta-v260 { font-size:11px; color:#69737e; margin-bottom:8px; }
-.memory-main-wrap-v260 { position:relative; width:100%; aspect-ratio:4/3; border-radius:11px; overflow:hidden; background:#edf0f2; }
-.memory-main-v260 { display:block; width:100%; height:100%; object-fit:cover; }
-.memory-main-unavailable-v266 { width:100%; height:100%; display:flex; align-items:center; justify-content:center; padding:14px; box-sizing:border-box; text-align:center; color:#6f7881; font-size:11px; line-height:1.45; }
-.memory-main-badge-v260 { position:absolute; right:7px; top:7px; padding:3px 7px; border-radius:999px; background:rgba(20,24,28,.72); color:#fff; font-size:10px; font-weight:800; }
-.memory-main-caption-v260 { font-size:10px; color:#67717c; line-height:1.35; margin:5px 0 0; min-height:14px; }
-.memory-thumbs-v260 { display:grid; grid-template-columns:repeat(6,minmax(0,1fr)); gap:4px; margin-top:7px; }
-.memory-thumb-v260 { border:0; padding:0; background:transparent; aspect-ratio:1/1; border-radius:7px; overflow:hidden; cursor:pointer; outline-offset:2px; }
-.memory-thumb-v260 img { width:100%; height:100%; object-fit:cover; display:block; }
-.memory-more-v260 { font-size:10px; color:#6f7881; margin-top:6px; }
-/* v267: do not rely on Leaflet popup rendering for memory photos. A compact card is
-   drawn directly over the map when a numbered pin is tapped/clicked. */
-.memory-map-component-v260 .memory-pin-shell-v260,
-.memory-map-component-v260 .memory-pin-v260 { pointer-events:auto!important; cursor:pointer!important; touch-action:manipulation; }
-.memory-pin-preview-v267 { position:absolute; z-index:1400; top:10px; right:10px; width:min(292px,calc(100% - 72px)); box-sizing:border-box; padding:10px; border-radius:15px; background:rgba(255,255,255,.97); border:1px solid rgba(35,45,55,.13); box-shadow:0 9px 28px rgba(0,0,0,.22); color:#23272d; }
-.memory-pin-preview-v267[hidden] { display:none!important; }
-.memory-pin-preview-close-v267 { position:absolute; z-index:2; right:7px; top:7px; width:30px; height:30px; border:0; border-radius:999px; background:rgba(20,24,28,.72); color:#fff; font-size:20px; line-height:28px; font-weight:700; cursor:pointer; touch-action:manipulation; }
-.memory-pin-preview-place-v267 { padding-right:34px; font-size:14px; font-weight:850; line-height:1.35; margin-bottom:2px; }
-.memory-pin-preview-meta-v267 { padding-right:34px; font-size:11px; color:#69737e; margin-bottom:7px; }
-.memory-pin-preview-image-wrap-v267 { position:relative; width:100%; aspect-ratio:4/3; border-radius:11px; overflow:hidden; background:#edf0f2; }
-.memory-pin-preview-image-v267 { display:block; width:100%; height:100%; object-fit:cover; }
-/* v268: small previous/next controls live on the left/right edges of the photo.
-   They only switch already-loaded preview items, so no Streamlit rerun is needed. */
-.memory-pin-preview-nav-v268 { position:absolute; z-index:4; top:50%; transform:translateY(-50%); width:30px; height:36px; padding:0; border:1px solid rgba(255,255,255,.82); border-radius:999px; background:rgba(20,24,28,.58); color:#fff; box-shadow:0 2px 8px rgba(0,0,0,.20); font-size:14px; line-height:34px; text-align:center; font-weight:800; cursor:pointer; touch-action:manipulation; -webkit-tap-highlight-color:transparent; }
-.memory-pin-preview-nav-v268[hidden] { display:none!important; }
-.memory-pin-preview-prev-v268 { left:6px; }
-.memory-pin-preview-next-v268 { right:6px; }
-.memory-pin-preview-nav-v268:active { background:rgba(20,24,28,.78); transform:translateY(-50%) scale(.96); }
-.memory-pin-preview-badge-v267 { position:absolute; right:7px; top:7px; padding:3px 7px; border-radius:999px; background:rgba(20,24,28,.72); color:#fff; font-size:10px; font-weight:800; }
-.memory-pin-preview-empty-v267 { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; padding:14px; text-align:center; color:#6f7881; font-size:11px; line-height:1.45; }
-.memory-pin-preview-badge-v267[hidden], .memory-pin-preview-empty-v267[hidden] { display:none!important; }
-.memory-pin-preview-caption-v267 { min-height:14px; margin-top:5px; font-size:10px; line-height:1.35; color:#67717c; }
-.memory-pin-preview-thumbs-v267 { display:flex; gap:5px; overflow-x:auto; padding-top:6px; scrollbar-width:none; }
-.memory-pin-preview-thumbs-v267::-webkit-scrollbar { display:none; }
-.memory-pin-preview-thumb-v267 { flex:0 0 42px; width:42px; height:42px; padding:0; border:2px solid transparent; border-radius:8px; overflow:hidden; background:#edf0f2; cursor:pointer; touch-action:manipulation; }
-.memory-pin-preview-thumb-v267.active { border-color:#db7659; }
-.memory-pin-preview-thumb-v267 img { display:block; width:100%; height:100%; object-fit:cover; }
-.memory-legend-v260 { position:absolute; z-index:1000; left:10px; bottom:10px; background:rgba(255,255,255,.94); border:1px solid rgba(0,0,0,.10); border-radius:10px; padding:6px 8px; box-shadow:0 3px 12px rgba(0,0,0,.10); font-size:10px; color:#4a535c; pointer-events:none; }
-.memory-legend-v260 > div { display:flex; align-items:center; gap:5px; white-space:nowrap; }
-.memory-legend-center-v260,.memory-legend-pin-v260 { width:9px; height:9px; border-radius:50%; display:inline-block; }
-.memory-legend-center-v260 { background:#2f80ed; }
-.memory-legend-pin-v260 { background:#db7659; }
-.memory-search-popup-v260 { color:#24292f; min-width:220px; }
-.memory-search-title-v260 { font-size:13px; font-weight:850; line-height:1.45; margin-bottom:7px; }
-.memory-search-radius-v260 { display:flex; gap:5px; margin:6px 0 9px; }
-.memory-search-radius-v260 button { flex:1; min-height:34px; border:1px solid #d7dce1; border-radius:9px; background:#fff; color:#3b424a; font-size:11px; font-weight:800; cursor:pointer; }
-.memory-search-radius-v260 button.active { background:#eaf3ff; border-color:#75a7e0; color:#275d9b; }
-.memory-search-actions-v260 { display:grid; grid-template-columns:1fr 1fr; gap:7px; }
-.memory-search-actions-v260 button { min-height:38px; border-radius:10px; font-size:12px; font-weight:850; cursor:pointer; }
-.memory-search-no-v260 { border:1px solid #d7dce1; background:#f7f8f9; color:#434b54; }
-.memory-search-yes-v260 { border:1px solid #3c83d2; background:#3c83d2; color:#fff; }
-.memory-search-note-v260 { font-size:10px; line-height:1.4; color:#75808b; margin-top:6px; }
-@media(max-width:640px){ .memory-map-v260{height:530px;border-radius:14px;} .memory-map-component-v260 .leaflet-popup-content{width:min(276px,78vw)!important;} .memory-pin-preview-v267{top:8px;right:8px;width:min(286px,calc(100% - 64px));padding:9px;} }
-"""
-
-_MEMORY_MAP_VIEW_JS = r"""
-export default function(component) {
-  const { parentElement, data } = component;
-  const node = parentElement.querySelector('#memory-map-v260');
-  const centerLabel = parentElement.querySelector('#memory-center-label-v260');
-  const preview = parentElement.querySelector('#memory-pin-preview-v267');
-  const previewClose = parentElement.querySelector('#memory-pin-preview-close-v267');
-  const previewPlace = parentElement.querySelector('#memory-pin-preview-place-v267');
-  const previewMeta = parentElement.querySelector('#memory-pin-preview-meta-v267');
-  const previewImage = parentElement.querySelector('#memory-pin-preview-image-v267');
-  const previewPrev = parentElement.querySelector('#memory-pin-preview-prev-v268');
-  const previewNext = parentElement.querySelector('#memory-pin-preview-next-v268');
-  const previewBadge = parentElement.querySelector('#memory-pin-preview-badge-v267');
-  const previewEmpty = parentElement.querySelector('#memory-pin-preview-empty-v267');
-  const previewCaption = parentElement.querySelector('#memory-pin-preview-caption-v267');
-  const previewThumbs = parentElement.querySelector('#memory-pin-preview-thumbs-v267');
-  if (!node || !preview || !previewClose || !previewImage || !previewPrev || !previewNext) return;
-
-  try { parentElement.__memoryMapCleanupV268?.(); } catch (_) {}
-  let cancelled = false;
-  let map = null;
-  let centerSyncTimer = null;
-  let previewItems = [];
-  let previewIndex = 0;
-  const cleanupFns = [];
-  const payload = (data && typeof data === 'object') ? data : {};
-  const selectedRadius = [1000, 3000, 10000].includes(Number(payload.radius_m)) ? Number(payload.radius_m) : 3000;
-  const centerSource = String(payload.center_source || 'gps');
-  if (centerLabel) centerLabel.textContent = centerSource === 'gps' ? '現在地' : '検索中心';
-
-  const hidePreview = () => {
-    preview.hidden = true;
-    previewItems = [];
-    previewIndex = 0;
-    previewPrev.hidden = true;
-    previewNext.hidden = true;
-    previewImage.removeAttribute('src');
-    if (previewThumbs) previewThumbs.replaceChildren();
-  };
-
-  const setPreviewItem = (item, activeButton=null) => {
-    const entry = (item && typeof item === 'object') ? item : {};
-    const src = String(entry.src || '');
-    if (previewThumbs) {
-      previewThumbs.querySelectorAll('.memory-pin-preview-thumb-v267').forEach((button) =>
-        button.classList.toggle('active', button === activeButton)
-      );
-      try { activeButton?.scrollIntoView?.({block:'nearest', inline:'nearest', behavior:'smooth'}); } catch (_) {}
-    }
-    if (src) {
-      previewImage.hidden = false;
-      previewImage.loading = 'eager';
-      previewImage.decoding = 'async';
-      previewImage.fetchPriority = 'high';
-      previewImage.src = src;
-      if (previewEmpty) previewEmpty.hidden = true;
-    } else {
-      previewImage.hidden = true;
-      previewImage.removeAttribute('src');
-      if (previewEmpty) previewEmpty.hidden = false;
-    }
-    if (previewCaption) {
-      previewCaption.textContent = `${entry.date || ''}${entry.time ? ' ' + entry.time : ''}${entry.media_type === 'video' ? ' ・ 動画' : ''}`;
-    }
-    if (previewBadge) previewBadge.hidden = entry.media_type !== 'video';
-  };
-
-  const syncPreviewNav = () => {
-    const canMove = previewItems.length > 1;
-    previewPrev.hidden = !canMove;
-    previewNext.hidden = !canMove;
-  };
-
-  const setPreviewIndex = (nextIndex) => {
-    if (!previewItems.length) {
-      previewIndex = 0;
-      syncPreviewNav();
-      setPreviewItem({}, null);
-      return;
-    }
-    const length = previewItems.length;
-    previewIndex = ((Number(nextIndex || 0) % length) + length) % length;
-    const activeButton = previewThumbs
-      ? previewThumbs.querySelector(`.memory-pin-preview-thumb-v267[data-preview-index="${previewIndex}"]`)
-      : null;
-    setPreviewItem(previewItems[previewIndex], activeButton);
-    syncPreviewNav();
-  };
-
-  const showPreview = (group) => {
-    if (cancelled) return;
-    const g = (group && typeof group === 'object') ? group : {};
-    const items = Array.isArray(g.items) ? g.items : [];
-    // Keep only entries that can actually be shown. The first one is the embedded
-    // lightweight preview from v266; the rest reuse the already-present preview URLs.
-    previewItems = items.filter((item) => item && item.src);
-    previewIndex = 0;
-    if (previewPlace) previewPlace.textContent = String(g.place || 'このあたりの思い出');
-    if (previewMeta) previewMeta.textContent = `${Math.max(1, Number(g.count || items.length || 1))}件の思い出`;
-    if (previewThumbs) {
-      previewThumbs.replaceChildren();
-      previewItems.forEach((item, index) => {
-        const button = document.createElement('button');
-        button.type = 'button';
-        button.className = 'memory-pin-preview-thumb-v267';
-        button.dataset.previewIndex = String(index);
-        button.setAttribute('aria-label', `${item.date || '思い出'}を表示`);
-        const img = document.createElement('img');
-        img.alt = '';
-        img.loading = 'eager';
-        img.decoding = 'async';
-        img.src = String(item.src || '');
-        button.appendChild(img);
-        button.addEventListener('click', (event) => {
-          event.preventDefault(); event.stopPropagation();
-          setPreviewIndex(index);
-        });
-        previewThumbs.appendChild(button);
-      });
-    }
-    setPreviewIndex(0);
-    preview.hidden = false;
-  };
-
-  const onPreviewPrev = (event) => {
-    event.preventDefault(); event.stopPropagation();
-    setPreviewIndex(previewIndex - 1);
-  };
-  const onPreviewNext = (event) => {
-    event.preventDefault(); event.stopPropagation();
-    setPreviewIndex(previewIndex + 1);
-  };
-  previewPrev.addEventListener('click', onPreviewPrev);
-  previewNext.addEventListener('click', onPreviewNext);
-  cleanupFns.push(() => previewPrev.removeEventListener('click', onPreviewPrev));
-  cleanupFns.push(() => previewNext.removeEventListener('click', onPreviewNext));
-
-  const onPreviewClose = (event) => {
-    event.preventDefault(); event.stopPropagation(); hidePreview();
-  };
-  previewClose.addEventListener('click', onPreviewClose);
-  cleanupFns.push(() => previewClose.removeEventListener('click', onPreviewClose));
-
-  const persistVisibleCenter = () => {
-    if (cancelled || !map) return;
-    const centerNow = map.getCenter?.();
-    const lat = Number(centerNow?.lat), lon = Number(centerNow?.lng);
-    if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
-    try {
-      const url = new URL(window.location.href);
-      url.searchParams.set('mm_lat_v264', lat.toFixed(6));
-      url.searchParams.set('mm_lon_v264', lon.toFixed(6));
-      url.searchParams.set('mm_ts_v264', String(Date.now()));
-      window.history.replaceState(window.history.state || {}, '', url.pathname + url.search + url.hash);
-    } catch (_) {}
-  };
-
-  const scheduleCenterSync = () => {
-    if (centerSyncTimer) clearTimeout(centerSyncTimer);
-    centerSyncTimer = setTimeout(() => { centerSyncTimer = null; persistVisibleCenter(); }, 80);
-  };
-
-  const leafletCssReady = () => {
-    try {
-      return Array.from(document.styleSheets || []).some((sheet) =>
-        String(sheet?.href || '').includes('/leaflet@1.9.4/dist/leaflet.css')
-      );
-    } catch (_) { return false; }
-  };
-
-  const ensureLeafletCss = () => new Promise((resolve) => {
-    let link = document.getElementById('tokyo-burari-leaflet-css-v261');
-    if (leafletCssReady()) { resolve(); return; }
-    if (!link) {
-      link = document.createElement('link');
-      link.id = 'tokyo-burari-leaflet-css-v261';
-      link.rel = 'stylesheet';
-      link.href = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.css';
-      link.crossOrigin = '';
-      document.head.appendChild(link);
-    }
-    let settled = false;
-    const finish = () => { if (!settled) { settled = true; resolve(); } };
-    link.addEventListener('load', finish, {once:true});
-    link.addEventListener('error', finish, {once:true});
-    const timer = setInterval(() => { if (leafletCssReady()) { clearInterval(timer); finish(); } }, 50);
-    cleanupFns.push(() => clearInterval(timer));
-    setTimeout(() => { clearInterval(timer); finish(); }, 1800);
-  });
-
-  const ensureLeaflet = () => new Promise((resolve, reject) => {
-    if (globalThis.L) { resolve(globalThis.L); return; }
-    let script = document.getElementById('tokyo-burari-leaflet-js-v260');
-    if (script) {
-      const started = Date.now();
-      const timer = setInterval(() => {
-        if (cancelled) { clearInterval(timer); return; }
-        if (globalThis.L) { clearInterval(timer); resolve(globalThis.L); return; }
-        if (Date.now() - started > 8000) { clearInterval(timer); reject(new Error('Leaflet load timeout')); }
-      }, 80);
-      cleanupFns.push(() => clearInterval(timer));
-      return;
-    }
-    script = document.createElement('script');
-    script.id = 'tokyo-burari-leaflet-js-v260';
-    script.src = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js';
-    script.crossOrigin = '';
-    script.onload = () => globalThis.L ? resolve(globalThis.L) : reject(new Error('Leaflet unavailable'));
-    script.onerror = () => reject(new Error('Leaflet load failed'));
-    document.head.appendChild(script);
-  });
-
-  const render = async () => {
-    try {
-      const [_, L] = await Promise.all([ensureLeafletCss(), ensureLeaflet()]);
-      if (cancelled) return;
-      const center = [Number(payload?.center?.lat), Number(payload?.center?.lon)];
-      if (!Number.isFinite(center[0]) || !Number.isFinite(center[1])) throw new Error('Invalid center');
-      node.innerHTML = '';
-      const radiusM = selectedRadius;
-      const zoom = radiusM <= 1200 ? 15 : (radiusM <= 4000 ? 13 : 11);
-      map = L.map(node, {zoomControl:true, attributionControl:true, preferCanvas:true}).setView(center, zoom);
-      map.on('moveend', scheduleCenterSync);
-      map.on('movestart', hidePreview);
-      cleanupFns.push(() => { try { map?.off('moveend', scheduleCenterSync); map?.off('movestart', hidePreview); } catch (_) {} });
-      scheduleCenterSync();
-      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {maxZoom:19, attribution:'&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap</a>'}).addTo(map);
-      L.circle(center, {radius:radiusM, color:'#6d9fd7', weight:1.2, opacity:.46, fillColor:'#6d9fd7', fillOpacity:.035, dashArray:'5 6', interactive:false}).addTo(map);
-      if (Number(payload.accuracy_m || 0) > 0 && centerSource === 'gps') {
-        L.circle(center, {radius:Number(payload.accuracy_m), color:'#2f80ed', weight:1, opacity:.28, fillColor:'#2f80ed', fillOpacity:.06, interactive:false}).addTo(map);
-      }
-      const currentIcon = L.divIcon({className:'', html:'<div class="memory-current-v260"></div>', iconSize:[18,18], iconAnchor:[9,9]});
-      L.marker(center, {icon:currentIcon, keyboard:false, zIndexOffset:1200, interactive:false}).addTo(map);
-
-      (payload.groups || []).forEach((g) => {
-        const lat = Number(g.latitude), lon = Number(g.longitude);
-        if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
-        const icon = L.divIcon({className:'memory-pin-shell-v260', html:`<div class="memory-pin-v260"><span>${Number(g.count || 1)}</span></div>`, iconSize:[36,44], iconAnchor:[18,40]});
-        const marker = L.marker([lat,lon], {icon, riseOnHover:true, interactive:true, keyboard:true, bubblingMouseEvents:false});
-        const activate = (event) => {
-          try { if (event?.originalEvent) L.DomEvent.stop(event.originalEvent); } catch (_) {}
-          showPreview(g);
-        };
-        marker.on('click', activate);
-        marker.on('keypress', activate);
-        marker.on('add', () => {
-          const element = marker.getElement?.();
-          if (!element || element.__memoryPinV267) return;
-          element.__memoryPinV267 = true;
-          element.style.pointerEvents = 'auto';
-          element.style.touchAction = 'manipulation';
-          element.style.cursor = 'pointer';
-          element.setAttribute('role', 'button');
-          element.setAttribute('aria-label', `${Math.max(1, Number(g.count || 1))}件の思い出を表示`);
-          const onPointerUp = (event) => {
-            if (event.button != null && event.button !== 0) return;
-            event.preventDefault(); event.stopPropagation(); showPreview(g);
-          };
-          const onTouchEnd = (event) => {
-            if (event.cancelable) event.preventDefault();
-            event.stopPropagation(); showPreview(g);
-          };
-          element.addEventListener('pointerup', onPointerUp);
-          element.addEventListener('touchend', onTouchEnd, {passive:false});
-        });
-        marker.addTo(map);
-      });
-
-      scheduleCenterSync();
-      setTimeout(() => { if (!cancelled && map) map.invalidateSize(); }, 120);
-    } catch (err) {
-      if (!cancelled) node.innerHTML = '<div class="memory-map-loading-v260">地図を読み込めませんでした。通信状態を確認して、もう一度ページを開いてください。</div>';
-    }
-  };
-
-  render();
-  const cleanup = () => {
-    cancelled = true;
-    if (centerSyncTimer) { clearTimeout(centerSyncTimer); centerSyncTimer = null; }
-    cleanupFns.forEach((fn) => { try { fn(); } catch (_) {} });
-    try { if (map) map.remove(); } catch (_) {}
-    map = null;
-  };
-  parentElement.__memoryMapCleanupV268 = cleanup;
-  return cleanup;
-}
-"""
-memory_map_view_component = None
-_memory_map_view_component_initialized = False
-
-
-def _get_memory_map_view_component():
-    global memory_map_view_component, _memory_map_view_component_initialized
-    if _memory_map_view_component_initialized:
-        return memory_map_view_component
-    _memory_map_view_component_initialized = True
-    try:
-        memory_map_view_component = st.components.v2.component(
-            "tokyo_burari_memory_map_view_v268",
-            html=_MEMORY_MAP_VIEW_HTML,
-            css=_MEMORY_MAP_VIEW_CSS,
-            js=_perf_instrument_js_v466(_MEMORY_MAP_VIEW_JS),
-        )
-    except Exception:
-        memory_map_view_component = None
-    return memory_map_view_component
-
-
-def _render_memory_map(center_lat, center_lon, radius_m, *, accuracy_m=None, center_source="gps"):
-    """Render the memories map and return (prepared_payload, center_refresh_event).
-
-    The browser keeps map panning local. Only the explicit center-refresh button (or a
-    radius button) sends the visible map center back to Streamlit, keeping interaction light.
-    """
-    prepared = _memory_map_payload(center_lat, center_lon, radius_m)
-    try:
-        accuracy_value = max(0.0, float(accuracy_m or 0))
-    except (TypeError, ValueError):
-        accuracy_value = 0.0
-    payload = {
-        "center": {"lat": float(center_lat), "lon": float(center_lon)},
-        "center_source": "gps" if str(center_source or "") == "gps" else "map",
-        "radius_m": int(radius_m),
-        "accuracy_m": accuracy_value,
-        "groups": prepared.get("groups") or [],
-        "item_count": int(prepared.get("item_count") or 0),
-    }
-    component = _get_memory_map_view_component()
-    if component is None:
-        legacy_prepared = _render_memory_map_static_v259(center_lat, center_lon, radius_m, accuracy_m=accuracy_m)
-        return legacy_prepared, None
-    component(
-        data=payload,
-        key=f"memory_map_view_component_v268_{current_family_key()}_{current_member_key()}",
-    )
-    return prepared, None
-
-
-def page_memory_map():
-    page_top(
-        "🗺️ 思い出マップ",
-        "日記からではなく、いまいる場所の地図から、以前ここで何を見て・経験したかをたどります。",
-    )
-
-    location_key = f"_memory_map_location_v259_{current_family_key()}_{current_member_key()}"
-    token_key = f"_memory_map_location_token_v259_{current_family_key()}_{current_member_key()}"
-    location = st.session_state.get(location_key)
-    if not isinstance(location, dict):
-        nearby = st.session_state.get("_nearby_location")
-        if isinstance(nearby, dict) and nearby.get("latitude") is not None and nearby.get("longitude") is not None:
-            location = dict(nearby)
-
-    component = _get_memory_map_location_component()
-    if component is not None:
-        result = component(
-            data={},
-            key=f"memory_map_location_component_v259_{current_family_key()}_{current_member_key()}_{_current_ui_refresh_epoch()}",
-            on_location_change=lambda: None,
-            on_location_error_change=lambda: None,
-        )
-        payload = getattr(result, "location", None)
-        if isinstance(payload, dict):
-            token = str(payload.get("token") or "")
-            if token and token != str(st.session_state.get(token_key) or ""):
-                try:
-                    lat = float(payload.get("latitude")); lon = float(payload.get("longitude"))
-                    accuracy = float(payload.get("accuracy_m") or 0) or None
-                    st.session_state[token_key] = token
-                    st.session_state[location_key] = {
-                        "source": "gps",
-                        "latitude": lat,
-                        "longitude": lon,
-                        "accuracy_m": accuracy,
-                        "measured_at": str(payload.get("measured_at") or now_jst().isoformat()),
-                        "place_label": reverse_geocode_rough(lat, lon) or "現在地付近",
-                    }
-                    st.rerun()
-                except (TypeError, ValueError):
-                    pass
-        error = getattr(result, "location_error", None)
-        if isinstance(error, dict) and error.get("message"):
-            st.warning(str(error.get("message")))
-    else:
-        st.info("この環境では現在地取得ボタンを表示できません。")
-
-    location = st.session_state.get(location_key) if isinstance(st.session_state.get(location_key), dict) else location
-    if not isinstance(location, dict) or location.get("latitude") is None or location.get("longitude") is None:
-        return
-
-    try:
-        center_lat = float(location.get("latitude")); center_lon = float(location.get("longitude"))
-        accuracy = float(location.get("accuracy_m") or 0) or None
-    except (TypeError, ValueError):
-        st.warning("現在地を確認できませんでした。もう一度取得してください。")
-        return
-
-    center_source = str(location.get("source") or "gps")
-    place_label = str(location.get("place_label") or reverse_geocode_rough(center_lat, center_lon) or ("現在地付近" if center_source == "gps" else "地図で選んだ場所"))
-    accuracy_text = f"GPS精度 ±{int(round(accuracy))}m" if center_source == "gps" and isinstance(accuracy, (int, float)) and accuracy > 0 else ""
-    st.markdown(
-        f'<div style="margin:.08rem 0 .48rem;padding:.48rem .62rem;border-radius:12px;background:rgba(74,144,226,.05);border:1px solid rgba(74,144,226,.12);font-size:.75rem;line-height:1.4;"><b>{"📍" if center_source == "gps" else "🗺️"} {html.escape(place_label)}</b>'
-        + (f'<div style="font-size:.65rem;opacity:.65;margin-top:.08rem;">{html.escape(accuracy_text)}</div>' if accuracy_text else "")
-        + '</div>',
-        unsafe_allow_html=True,
-    )
-
-    radius_key = f"_memory_map_radius_v259_{current_family_key()}_{current_member_key()}"
-    radius_choices = {"1km": 1000, "3km": 3000, "10km": 10000}
-    current_radius_label = str(st.session_state.get(radius_key) or "3km")
-    if current_radius_label not in radius_choices:
-        current_radius_label = "3km"
-    radius_m = int(radius_choices.get(current_radius_label, MEMORY_MAP_DEFAULT_RADIUS_M))
-
-    def _visible_map_center_v264():
-        try:
-            lat_value = float(_query_param_scalar("mm_lat_v264"))
-            lon_value = float(_query_param_scalar("mm_lon_v264"))
-        except (TypeError, ValueError):
-            return None
-        if not (math.isfinite(lat_value) and math.isfinite(lon_value)):
-            return None
-        if not (-90.0 <= lat_value <= 90.0 and -180.0 <= lon_value <= 180.0):
-            return None
-        return lat_value, lon_value
-
-    def _apply_visible_center_v264(next_radius_label):
-        visible = _visible_map_center_v264()
-        next_lat, next_lon = (visible if visible is not None else (center_lat, center_lon))
-        st.session_state[radius_key] = next_radius_label
-        st.session_state[location_key] = {
-            "source": "map",
-            "latitude": float(next_lat),
-            "longitude": float(next_lon),
-            "accuracy_m": None,
-            "measured_at": now_jst().isoformat(),
-            "place_label": "地図の中心",
-        }
-        st.rerun()
-
-    st.markdown("**表示する範囲**")
-    range_cols = st.columns([1.0, 1.0, 1.0, 2.35], gap="small")
-    requested_label = None
-    with range_cols[0]:
-        if st.button("1km", type="primary" if current_radius_label == "1km" else "secondary", use_container_width=True, key="memory_map_radius_1_v264"):
-            requested_label = "1km"
-    with range_cols[1]:
-        if st.button("3km", type="primary" if current_radius_label == "3km" else "secondary", use_container_width=True, key="memory_map_radius_3_v264"):
-            requested_label = "3km"
-    with range_cols[2]:
-        if st.button("10km", type="primary" if current_radius_label == "10km" else "secondary", use_container_width=True, key="memory_map_radius_10_v264"):
-            requested_label = "10km"
-    with range_cols[3]:
-        if st.button("↻ この中心で再取得", use_container_width=True, key="memory_map_refresh_center_v264"):
-            requested_label = current_radius_label
-
-    if requested_label in radius_choices:
-        _apply_visible_center_v264(requested_label)
-
-    with st.spinner("近くの思い出を地図に置いています…"):
-        prepared, _unused_map_event = _render_memory_map(
-            center_lat,
-            center_lon,
-            radius_m,
-            accuracy_m=accuracy,
-            center_source=center_source,
-        )
-
-    count = int((prepared or {}).get("item_count") or 0)
-    if count:
-        st.caption(f"この範囲で {count} 件の写真・動画の記録を見つけました。近い撮影地点は1つのピンにまとめています。")
-    else:
-        st.caption("この範囲には、GPS付きの思い出がまだありません。これから撮る写真・動画は自動的に地図へ追加されます。")
 
 
 # ============================================================
@@ -61304,7 +60265,6 @@ def page_review():
             font-size:.76rem; line-height:1.45; opacity:.82;
           }}
           .st-key-review_random_jump_v473,
-          .st-key-review_map_jump,
           .st-key-review_project_jump,
           .st-key-review_monthly_jump,
           .st-key-review_tag_jump,
@@ -61312,9 +60272,6 @@ def page_review():
             border-radius:18px; padding:.58rem .66rem .50rem; margin:.18rem 0 .62rem;
             border:1px solid rgba(128,128,128,.16);
             box-shadow:0 8px 22px rgba(0,0,0,.045);
-          }}
-          .st-key-review_map_jump {{
-            background:linear-gradient(145deg,rgba(239,248,255,.98),rgba(232,245,249,.95));
           }}
           .st-key-review_project_jump {{
             background:linear-gradient(145deg,rgba(229,251,239,.98),rgba(221,246,233,.95));
@@ -61329,7 +60286,6 @@ def page_review():
             background:linear-gradient(145deg,rgba(240,250,247,.98),rgba(232,246,241,.95));
           }}
           .st-key-review_random_jump_v473 div.stButton > button,
-          .st-key-review_map_jump div.stButton > button,
           .st-key-review_project_jump div.stButton > button,
           .st-key-review_monthly_jump div.stButton > button,
           .st-key-review_tag_jump div.stButton > button,
@@ -61348,14 +60304,12 @@ def page_review():
           .st-key-review_random_jump_v473 div.stButton > button > [data-testid="stMarkdownContainer"] {{
             transform:translateX(.70rem) !important;
           }}
-          .st-key-review_map_jump [data-testid="stCaptionContainer"],
           .st-key-review_project_jump [data-testid="stCaptionContainer"],
           .st-key-review_monthly_jump [data-testid="stCaptionContainer"],
           .st-key-review_tag_jump [data-testid="stCaptionContainer"],
           .st-key-review_history_jump [data-testid="stCaptionContainer"] {{
             margin-top:-.10rem; padding:.02rem .16rem .02rem;
           }}
-          .st-key-review_map_jump [data-testid="stCaptionContainer"] p,
           .st-key-review_project_jump [data-testid="stCaptionContainer"] p,
           .st-key-review_monthly_jump [data-testid="stCaptionContainer"] p,
           .st-key-review_tag_jump [data-testid="stCaptionContainer"] p,
@@ -61391,15 +60345,6 @@ def page_review():
             key="review_open_project_v271",
             on_click=_go_page_callback,
             args=("review_project", "push"),
-        )
-
-    with st.container(key="review_map_jump"):
-        st.button(
-            "🗺️ 思い出マップ",
-            use_container_width=True,
-            key="review_open_map_v259",
-            on_click=_go_page_callback,
-            args=("review_map", "push"),
         )
 
     st.divider()
@@ -63959,8 +62904,6 @@ with st.container(key="app_page_root_v280"):
         _perf_call_v457("page:photos", page_photo_library_v418, force=True)
     elif page == "review":
         _perf_call_v457("page:review", page_review, force=True)
-    elif page == "review_map":
-        _perf_call_v457("page:review_map", page_memory_map, force=True)
     elif page == "review_project":
         _perf_call_v457("page:review_project", page_burari_project, force=True)
     elif page == "review_random":
@@ -64012,7 +62955,7 @@ with st.container(key="app_page_root_v280"):
         live_page = str(st.session_state.get("main_page") or "home")
         if (
             page == live_page
-            and page in {"camera", "videos", "moments", "diary", "photos", "review", "review_map", "review_project", "review_monthly", "review_tag", "review_random", "review_shared", "review_history", "nearby", "discovery_results", "evening_review", "toilets", "help_places", "field_notes", "experience", "events", "settings", "settings_moments", "settings_moments_definition", "settings_location", "settings_account", "settings_media_import"}
+            and page in {"camera", "videos", "moments", "diary", "photos", "review", "review_project", "review_monthly", "review_tag", "review_random", "review_shared", "review_history", "nearby", "discovery_results", "evening_review", "toilets", "help_places", "field_notes", "experience", "events", "settings", "settings_moments", "settings_moments_definition", "settings_location", "settings_account", "settings_media_import"}
         ):
             _perf_call_v457("ui:bottom_navigation", render_global_bottom_navigation, page)
 
