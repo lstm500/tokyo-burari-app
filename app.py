@@ -1,3 +1,5 @@
+# v609: Salt bread map with Sumai v215 geocoding, photo/visit notes, persistent tap/drag ranking.
+# v608: retain microphone/voice events before reruns and open the target photo voice workspace in the fragment.
 # v607: 100 focused Good Moments; chronological default list and instant enlarged navigation. Memories map removed.
 # v603: start before imports/definitions; framework queueing and bytecode compilation
 # occur earlier and are explicitly outside this measurement.
@@ -62,7 +64,7 @@ def _app_css_v473(markup, **_ignored):
 # Review menu-only update: 2026-09-19 JST
 GENERATED_UPDATE_JST = "2026-09-19T14:54:38+09:00"
 
-APP_BUILD = "v607"
+APP_BUILD = "v609"
 # v598: Passing the focus gate is mandatory before any weighted ranking or reroll.
 # Never fill the twenty-image target with focus-rejected candidates.
 # v597: Compare 30 FPS candidates across the whole saved video offline. Disk-backed
@@ -8169,7 +8171,7 @@ def sync_pending_tags_from_browser_v166():
 # Chrome/Safari back and forward buttons move between app screens first.
 _PERF_BROWSER_JS_V466 = 'function installBurariPerf466(host, page, run, serverSession, serverDetails={}) {\n  const KEY=\'__burariPerf466\', STORE=\'burari_perf_v466\';\n  if(host[KEY]) { host[KEY].run(page,run,serverSession,serverDetails); return host[KEY]; }\n  const doc=host.document, mono=()=>host.performance.now(), rounded=x=>Math.round(x*10)/10;\n  const boot=host.crypto?.randomUUID?.() || Date.now().toString(36)+\'-\'+Math.random().toString(36).slice(2);\n  let seq=0, rows=[], dropped=0, persistenceError=false, active=null, current={page,run:Number(run)||0,session:serverSession};\n  let deadline=null, quiet=null, persistTimer=null, checking=false, pointer=null;\n  // Passive, bounded diagnostics. No network request or Streamlit trigger is added.\n  const diagEvents603=[];\n  let diagDropped603=0,diagLagTimer603=null,diagMutations603=0,diagObserverMs603=0;\n  const diagCapabilities603={longtask:false,event:false,resource:false,socket_send:false};\n  function diagEvent603(kind, detail={}, at=mono()) {\n    const item={kind,at_ms:rounded(at),wall_ms:Math.round(host.performance.timeOrigin+at),...detail};\n    if(active){item.operation_id=active.row.id;item.since_press_ms=rounded(at-active.start);}\n    diagEvents603.push(item);\n    if(diagEvents603.length>400){diagEvents603.shift();diagDropped603++;}\n  }\n  function blocked603(reason){\n    if(active){active.row.endpoint_blocker=reason;active.row.endpoint_checked_ms=rounded(mono()-active.start);}\n    return null;\n  }\n  function startLag603(){\n    host.clearTimeout(diagLagTimer603);\n    if(!active || doc.hidden)return;\n    const expected=mono()+250;\n    diagLagTimer603=host.setTimeout(()=>{\n      if(!active || doc.hidden)return;\n      const delay=mono()-expected;\n      if(delay>=150)diagEvent603(\'event_loop_delay\',{delay_ms:rounded(delay)});\n      startLag603();\n    },250);\n  }\n  function installDiagnostics603(){\n    diagEvent603(\'server_run_seen\',{run:current.run,page:current.page,server_sent_ms:serverDetails.server_sent_ms||null,script_started_ms:serverDetails.script_started_ms||null});\n    const supported=host.PerformanceObserver?.supportedEntryTypes||[];\n    function observe(type, callback, extra={}){\n      if(!supported.includes(type))return;\n      try{const observer=new host.PerformanceObserver(list=>safe(()=>callback(list.getEntries())));\n        observer.observe({type,buffered:false,...extra});diagCapabilities603[type]=true;\n      }catch(_){}\n    }\n    observe(\'longtask\',entries=>{\n      for(const e of entries)diagEvent603(\'long_task\',{duration_ms:rounded(e.duration),attribution_available:!!e.attribution?.length},e.startTime);\n    });\n    observe(\'event\',entries=>{\n      for(const e of entries)if([\'pointerdown\',\'pointerup\',\'click\',\'keydown\'].includes(e.name))\n        diagEvent603(\'input_timing\',{event:e.name,duration_ms:rounded(e.duration),queue_ms:rounded(Math.max(0,e.processingStart-e.startTime)),handler_ms:rounded(Math.max(0,e.processingEnd-e.processingStart))},e.startTime);\n    },{durationThreshold:16});\n    observe(\'resource\',entries=>{\n      for(const e of entries){\n        if(e.duration<200 && !(e.responseStatus>=400))continue;\n        let origin=\'\';try{origin=new URL(e.name).origin;}catch(_){}\n        // Do not store paths/query strings, signed URLs, bodies, media IDs or tokens.\n        diagEvent603(\'resource_finished\',{initiator:String(e.initiatorType||\'\'),origin,duration_ms:rounded(e.duration),start_ms:rounded(e.startTime),response_start_ms:rounded(e.responseStart),transfer_bytes:e.transferSize||0,status:Number(e.responseStatus)||null,timing_details_available:e.responseStart>0},e.startTime+e.duration);\n      }\n    });\n    // Observe the existing socket on its next normal send. Never decode its payload.\n    try{\n      const proto=host.WebSocket?.prototype;\n      if(proto && typeof proto.send===\'function\'){\n        const original=proto.send,seen=new WeakSet();\n        proto.send=function(...args){\n          const socket=this;\n          safe(()=>{\n            if(!seen.has(socket)){\n              seen.add(socket);\n              socket.addEventListener(\'message\',event=>safe(()=>{\n                if(!active)return;\n                if(active.row.socket_first_message_ms==null)active.row.socket_first_message_ms=rounded(mono()-active.start);\n                diagEvent603(\'socket_message\',{bytes:event.data?.byteLength??event.data?.size??(typeof event.data===\'string\'?event.data.length:null)});\n              }));\n              for(const kind of [\'close\',\'error\'])socket.addEventListener(kind,()=>safe(()=>diagEvent603(\'socket_\'+kind)));\n            }\n            if(active){\n              if(active.row.socket_first_send_ms==null)active.row.socket_first_send_ms=rounded(mono()-active.start);\n              diagEvent603(\'socket_send\',{buffered_bytes:Number(socket.bufferedAmount)||0});\n            }\n          });\n          return Reflect.apply(original,socket,args);\n        };\n        diagCapabilities603.socket_send=true;\n      }\n    }catch(_){}\n    host.addEventListener(\'message\',event=>safe(()=>{\n      if(!event.data || event.data.burari_diag_v603!==true)return;\n      // Only accept readiness from an iframe this monitor actually observes.\n      const frame=[...frameHandlers.keys()].find(f=>f.isConnected&&f.contentWindow===event.source);\n      if(!frame)return;\n      const kind=event.data.kind;\n      if(![\'replay_script_started\',\'replay_player_ready\',\'replay_playing\',\'replay_player_error\'].includes(kind))return;\n      diagEvent603(kind);\n      if(kind===\'replay_playing\' && active && [\'burariReplayStart\',\'burariReplayAgain\'].includes(active.control)\n         && active.button.ownerDocument===safe(()=>frame.contentDocument)){\n        const a=active;afterPaint(()=>{if(active===a)end(\'completed\',\'replay_playing\',mono(),\'media_event\');});\n      }\n    }),{passive:true});\n  }\n\n  const observers=new Map(), frameHandlers=new Map(), handledEvents=new WeakSet(), counts=new Map();\n  try { const saved=JSON.parse(host.sessionStorage.getItem(STORE)||\'null\'); if(saved?.version===466 && Array.isArray(saved.rows)) { rows=saved.rows.slice(-2000); dropped=Number(saved.dropped)||0; for(const row of rows) if(row.status===\'pending\'){row.status=\'interrupted\';row.reason=\'document_reloaded\';row.result_ms=null;} } } catch(_){persistenceError=true;}\n  function persistNow(){try{host.sessionStorage.setItem(STORE,JSON.stringify({version:466,rows,dropped}));}catch(_){persistenceError=true;}}\n  function persist(){if(persistTimer!==null)return;persistTimer=host.setTimeout(()=>{persistTimer=null;persistNow();},50);}\n  function safe(fn){try{return fn();}catch(_){return undefined;}}\n  function afterPaint(fn){host.requestAnimationFrame(()=>host.requestAnimationFrame(()=>safe(fn)));}\n  function visible(el){if(!el?.isConnected)return false;const w=el.ownerDocument?.defaultView||host;return !!el.getClientRects().length && w.getComputedStyle(el).visibility!==\'hidden\';}\n  function viewport(el){if(!visible(el))return false;const r=el.getBoundingClientRect(),w=el.ownerDocument?.defaultView||host;return r.bottom>0&&r.right>0&&r.top<w.innerHeight&&r.left<w.innerWidth;}\n  function connected(root){return root===doc || (root.host?root.host.isConnected:!!root.defaultView?.frameElement?.isConnected);}\n  function prune(){for(const [root,state] of observers) if(!connected(root)){state.observer.disconnect();for(const [name,fn]of state.listeners)root.removeEventListener(name,fn,true);observers.delete(root);}for(const [frame,fn]of frameHandlers)if(!frame.isConnected){frame.removeEventListener(\'load\',fn);frameHandlers.delete(frame);}}\n  function query(selector){const result=[];for(const root of observers.keys())safe(()=>result.push(...root.querySelectorAll(selector)));return result;}\n  function signature(el){return el?.isConnected?[el.textContent,el.getAttribute(\'class\'),el.getAttribute(\'style\'),el.getAttribute(\'disabled\'),el.getAttribute(\'aria-pressed\')].join(\'|\'):\'removed\';}\n  function busy(){return query(\'[data-testid="stSpinner"],[data-stale="true"],[aria-busy="true"]\').some(visible);}\n  function imageReady(el){return visible(el)&&el.complete&&el.naturalWidth>0;}\n  function stamp(row,ms){return new Date(Date.parse(row.pressed_at)+ms).toISOString();}\n  function end(status,reason,observedAt=null,kind=null){\n    if(!active)return;const a=active;active=null;host.clearTimeout(deadline);host.clearTimeout(quiet);host.clearTimeout(diagLagTimer603);\n    a.row.status=status;a.row.reason=reason;a.row.observed_until_ms=rounded(mono()-a.start);\n    a.row.measurement_kind=kind;\n    // No success duration is fabricated for timeouts, interruptions or failures.\n    a.row.result_ms=status===\'completed\'&&observedAt!==null?rounded(observedAt-a.start):null;\n    a.row.result_at=a.row.result_ms===null?null:stamp(a.row,a.row.result_ms);\n    a.row.confirmation_ms=observedAt===null?null:rounded(mono()-observedAt);\n    persist();\n  }\n  function response(){const a=active;if(!a||a.row.first_response_ms!==null||signature(a.button)===a.before)return;\n    afterPaint(()=>{if(active!==a||doc.hidden)return;a.row.first_response_ms=rounded(mono()-a.start);a.row.first_response_at=stamp(a.row,a.row.first_response_ms);});}\n  function endpoint(){const a=active;if(!a)return null;\n    if(a.control===\'live-camera-shoot\'){\n      const img=query(\'#camera-review-image\').find(e=>imageReady(e)&&e.currentSrc!==a.preview);\n      return img?{kind:\'camera_preview_loaded\',explicit:true}:null;\n    }\n    if([\'live-camera-start\',\'live-video-start\',\'live-camera-facing-switch\'].includes(a.control)){\n      const v=query(\'#live-camera-video\').find(e=>visible(e)&&e.readyState>=2&&!e.paused&&(!a.cameraWasReady||a.control===\'live-camera-facing-switch\'&&a.cameraStream!==e.srcObject));\n      return v?{kind:\'camera_video_ready\',explicit:true}:null;\n    }\n    // A render marker is only a UI estimate, never confirmation of a database save,\n    // map tile completion or media playback. Local-only actions cannot use it.\n    if(a.localOnly && !a.submitted)return blocked603(\'awaiting_local_or_media_endpoint\');\n    if(!a.row.server_runs.some(x=>x.session===current.session && x.run!==a.initialRun))return blocked603(\'awaiting_new_server_run\');\n    const marker=query(\'[data-burari-perf-done]\').find(e=>Number(e.getAttribute(\'data-burari-perf-done\'))===current.run&&e.getAttribute(\'data-burari-perf-session\')===current.session&&current.run!==a.initialRun);\n    if(!marker)return blocked603(\'awaiting_done_marker\');\n    const targetPage=marker.getAttribute(\'data-burari-perf-page\');\n    if(!targetPage || targetPage!==current.page)return blocked603(\'page_marker_mismatch\');\n    if(a.row.expected_page && targetPage!==a.row.expected_page)return blocked603(\'awaiting_target_page\');\n    if(a.requirePageChange && targetPage===a.row.page)return blocked603(\'awaiting_page_change\');\n    if(a.movieNavigation && marker.getAttribute(\'data-burari-perf-operation\')!==a.row.id)return blocked603(\'awaiting_matching_operation\');\n    if(a.movieNavigation && ![\'review_tag\',\'review_monthly\',\'review_shared\'].includes(targetPage))return blocked603(\'awaiting_replay_page\');\n    if(a.row.target_marker_seen_ms==null){a.row.target_marker_seen_ms=rounded(mono()-a.start);a.row.target_page=targetPage;\n      diagEvent603(\'target_marker_seen\',{page:targetPage,server_generated_wall_ms:Number(marker.getAttribute(\'data-burari-perf-generated-ms\'))||null});}\n    if(busy())return blocked603(\'visible_busy_or_stale\');\n    if(query(\'img\').some(e=>viewport(e)&&(!e.complete||!e.naturalWidth)))return blocked603(\'viewport_image_not_ready\');\n    a.row.endpoint_blocker=null;\n    return {kind:\'server_ui_render_estimate\',explicit:false};\n  }\n  function consider(){if(!active||doc.hidden||checking)return;response();const candidate=endpoint();if(!candidate)return;\n    const a=active,revision=a.revision;checking=true;\n    afterPaint(()=>{checking=false;if(active!==a||doc.hidden)return;if(a.revision!==revision){consider();return;}\n      const again=endpoint();if(!again||again.kind!==candidate.kind)return;\n      const paintedAt=mono();\n      if(candidate.explicit){end(\'completed\',candidate.kind,paintedAt,\'explicit_ui_state\');return;}\n      // Confirmation delay is excluded from result_ms. Reject candidates that\n      // change during the quiet window rather than adding a fixed 200 ms latency.\n      host.clearTimeout(quiet);quiet=host.setTimeout(()=>safe(()=>{\n        if(active===a&&a.revision===revision&&!doc.hidden&&endpoint()?.kind===candidate.kind)end(\'completed\',candidate.kind,paintedAt,\'render_estimate\');\n      }),200);\n    });\n  }\n  function mutations(records){const diagStart603=mono();diagMutations603+=records.length;prune();for(const r of records)for(const node of r.addedNodes||[])scan(node);\n    if(!active){diagObserverMs603+=mono()-diagStart603;return;}\n    // Ignore clock text/continuous style animations outside the clicked control\n    // for confirmation; use structural/result mutations to invalidate candidates.\n    if(records.some(r=>r.type===\'childList\'||r.attributeName===\'src\'||r.attributeName===\'data-burari-perf-done\'))active.revision++;\n    consider();diagObserverMs603+=mono()-diagStart603;\n  }\n  function getButton(event){const path=event.composedPath?event.composedPath():[event.target];return path.find(e=>e?.matches?.(\'button,[role="button"],input[type="submit"]\'));}\n  function isLog(button){return button.closest?.(\'[data-burari-perf-ui]\')||/動作ログ|操作時間ログ|ログを|ログ消去/.test(button.textContent||\'\');}\n  function down(event){const button=getButton(event);if(!button||button.disabled||isLog(button))return;const eventAt=Number(event.timeStamp)>1e12?Number(event.timeStamp)-host.performance.timeOrigin:Number(event.timeStamp);const p={button,at:mono(),wall:Date.now(),id:event.pointerId,before:signature(button),responseAt:null,inputQueueMs:Number.isFinite(eventAt)&&eventAt>0?Math.max(0,mono()-eventAt):null};pointer=p;afterPaint(()=>{if(pointer===p&&signature(button)!==p.before)p.responseAt=mono();});}\n  function click(event){if(!event.isTrusted||handledEvents.has(event))return;\n    const button=getButton(event);if(!button||button.disabled||isLog(button))return;handledEvents.add(event);\n    if(active)end(\'interrupted\',\'next_operation\');prune();\n    const label=String(button.getAttribute(\'aria-label\')||button.textContent||button.value||\'\').trim().replace(/\\s+/g,\' \').slice(0,80);\n    const widget=button.closest?.(\'[class*="st-key-"]\');\n    const widgetKey=Array.from(widget?.classList||[]).find(x=>x.startsWith(\'st-key-\'))||\'\';\n    const control=button.id||widgetKey||button.getAttribute(\'data-testid\')||label;\n    const group=current.page+\'|\'+control;\n    const attempt=(counts.get(group)||0)+1;counts.set(group,attempt);if(counts.size>2000)counts.delete(counts.keys().next().value);\n    const pressed=pointer?.button===button&&mono()-pointer.at<30000?pointer:{at:mono(),wall:Date.now()};pointer=null;\n    const row={id:boot+\'-\'+(++seq),build:603,page:current.page,control,button:label,\n      expected_page:({"st-key-home_review":"review","st-key-home_settings":"settings","st-key-home_diary":"diary","st-key-home_camera":"camera","st-key-home_video":"camera"})[control]||null,\n      monotonic_pressed_ms:rounded(pressed.at), input_queue_delay_ms:pressed.inputQueueMs==null?null:rounded(pressed.inputQueueMs),\n      pressed_at:new Date(pressed.wall).toISOString(),activation_delay_ms:rounded(mono()-pressed.at),\n      input_method:event.detail===0?\'keyboard_or_accessibility\':\'pointer\',\n      first_response_ms:pressed.responseAt==null?null:rounded(pressed.responseAt-pressed.at),first_response_at:pressed.responseAt==null?null:new Date(pressed.wall+pressed.responseAt-pressed.at).toISOString(),result_ms:null,result_at:null,status:\'pending\',\n      attempt_in_document:attempt,visit_class:attempt===1?\'first_in_document\':\'repeat_in_document\',\n      server_runs:[],correlation:\'temporal_candidates_only\',measurement_kind:null};\n    const camera=query(\'#live-camera-video\')[0];\n    active={row,button,control:button.id||\'\',before:pressed.before||signature(button),start:pressed.at,initialRun:current.run,revision:0,\n      requirePageChange:control.startsWith(\'st-key-parent_back_\'),\n      localOnly:!!button.getRootNode?.().host || button.ownerDocument!==doc,\n      preview:query(\'#camera-review-image\')[0]?.currentSrc||\'\',cameraWasReady:camera?.readyState>=2&&!camera?.paused,cameraStream:camera?.srcObject};\n    rows.push(row);if(rows.length>2000){rows.shift();dropped++;}persist();\n    deadline=host.setTimeout(()=>safe(()=>end(\'timeout\',\'no_confirmed_endpoint_120s\')),120000);\n    diagEvent603(\'operation_started\',{expected_page:row.expected_page});startLag603();\n    afterPaint(()=>safe(consider));\n  }\n  function media(event){const a=active;if(!a)return;\n    if(event.type===\'playing\'&&[\'moments-voice-play\',\'burariReplayStart\',\'burariReplayAgain\'].includes(a.control)){\n      // Only a media element inside the same document as the pressed control.\n      if(event.target.ownerDocument===a.button.ownerDocument)afterPaint(()=>{if(active===a)end(\'completed\',\'media_playing\',mono(),\'media_event\');});\n    }\n    consider();\n  }\n  function watch(root){if(observers.has(root))return;\n    const listeners=[[\'error\',e=>safe(()=>{if(active&&[\'IMG\',\'AUDIO\',\'VIDEO\',\'SCRIPT\'].includes(e.target?.tagName))diagEvent603(\'asset_error\',{tag:e.target.tagName});})],[\'waiting\',e=>safe(()=>{if(active)diagEvent603(\'media_waiting\',{tag:e.target?.tagName});})],[\'pointerdown\',e=>safe(()=>down(e))],[\'pointercancel\',()=>{pointer=null;}],[\'click\',e=>safe(()=>click(e))],[\'load\',()=>safe(consider)],[\'loadeddata\',e=>safe(()=>media(e))],[\'playing\',e=>safe(()=>media(e))]];\n    for(const [name,fn]of listeners)root.addEventListener(name,fn,{capture:true,passive:true});\n    const observer=new host.MutationObserver(r=>safe(()=>mutations(r)));\n    observers.set(root,{observer,listeners});observer.observe(root,{subtree:true,childList:true,attributes:true,attributeFilter:[\'src\',\'hidden\',\'disabled\',\'class\',\'style\',\'aria-pressed\',\'aria-busy\',\'data-stale\',\'data-burari-perf-done\'],characterData:true});scan(root);\n  }\n  function scan(node){if(!node?.querySelectorAll)return;if(node.shadowRoot)watch(node.shadowRoot);\n    const list=[node,...node.querySelectorAll(\'*\')];\n    for(const el of list){if(el.shadowRoot)watch(el.shadowRoot);\n      if(el.tagName===\'IFRAME\'&&!frameHandlers.has(el)){\n        const attach=()=>safe(()=>{if(active)diagEvent603(\'iframe_loaded\',{same_origin:!!el.contentDocument});if(el.contentDocument)watch(el.contentDocument);});frameHandlers.set(el,attach);el.addEventListener(\'load\',attach,{passive:true});attach();\n      }\n    }\n  }\n  function quantile(values,q){const v=[...values].sort((a,b)=>a-b),i=(v.length-1)*q,lo=Math.floor(i),hi=Math.ceil(i);return rounded(v[lo]+(v[hi]-v[lo])*(i-lo));}\n  function summary(){const groups=new Map();\n    for(const row of rows){const key=[row.build,row.page,row.control,row.visit_class,row.measurement_kind||\'unresolved\',row.input_method].join(\'|\');\n      if(!groups.has(key))groups.set(key,{key,page:row.page,control:row.control,visit_class:row.visit_class,measurement_kind:row.measurement_kind,input_method:row.input_method,n:0,completed:0,interrupted:0,timeout:0,pending:0,error:0,values:[]});\n      const g=groups.get(key);g.n++;if(row.status in g)g[row.status]++;if(row.status===\'completed\'&&Number.isFinite(row.result_ms))g.values.push(row.result_ms);\n    }\n    return [...groups.values()].map(g=>{const v=g.values;delete g.values;return {...g,median_ms:v.length?quantile(v,.5):null,p90_ms:v.length>=20?quantile(v,.9):null,p95_ms:v.length>=100?quantile(v,.95):null,minimum_ms:v.length?Math.min(...v):null,maximum_ms:v.length?Math.max(...v):null,sample_note:v.length<20?\'small_sample\':\'descriptive_only\'};});\n  }\n  const api={version:603,submitted(name,root,value){if(!active||!root?.contains?.(active.button))return;active.submitted=true;active.row.component_event=String(name).slice(0,64);active.row.submitted_ms=rounded(mono()-active.start);\n      diagEvent603(\'component_submitted\',{event:String(name).slice(0,40)});\n      if(name===\'action\'&&value&&typeof value===\'object\'&&!Array.isArray(value)&&root.querySelector?.(\'#replay-movie-list-v357\')){\n        active.movieNavigation=[\'view\',\'edit\'].includes(value.action);\n        return {...value,_burari_diag_v603:{operation_id:active.row.id}};\n      }\n      if(/error/i.test(name))end(\'error\',\'component_error\');\n    },run(p,r,session,details={}){if(active&&current.session&&session!==current.session)end(\'interrupted\',\'server_session_changed\');current={page:p,run:Number(r)||0,session};diagEvent603(\'server_run_seen\',{run:current.run,page:p,server_sent_ms:details.server_sent_ms||null,script_started_ms:details.script_started_ms||null});if(active){const list=active.row.server_runs;if(!list.some(x=>x.run===current.run&&x.session===session)){if(list.length<32)list.push({session,run:current.run});else active.row.correlation_truncated=true;}}safe(consider);},\n    snapshot(){if(active)active.row.observed_until_ms=rounded(mono()-active.start);persistNow();return JSON.parse(JSON.stringify({version:603,diagnostic_version:603,document_id:boot,captured_at:new Date().toISOString(),limit:2000,dropped_operations:dropped,persistence_error:persistenceError,rows,summary:summary(),diagnostics:{events:diagEvents603.slice(),limit:400,dropped:diagDropped603,capabilities:diagCapabilities603,mutation_records:diagMutations603,observer_cpu_ms:rounded(diagObserverMs603),clock_note:\'Only monotonic intervals within the same process are directly comparable; server/browser wall clocks may differ\',socket_note:\'Socket events are temporal candidates; no message payload is decoded\',memory:host.performance.memory?{used_js_heap_bytes:host.performance.memory.usedJSHeapSize,total_js_heap_bytes:host.performance.memory.totalJSHeapSize}:null},coverage:{watched_roots:observers.size,inaccessible_iframes:[...frameHandlers.keys()].filter(f=>!safe(()=>f.contentDocument)).length},limitations:[\'Framework queueing before script entry and WebSocket ingress are not directly measured\',\'Resource timing omits cross-origin details and in-flight transfers\',\'Existing sockets become observable after their next send\',\'Physical screen presentation is not measured\',\'Render estimates are not business-operation completion\',\'First/repeat means this document, not cache hit/miss\',\'Cross-origin frames and external apps are not measured\',\'Server links are temporal candidates; do not sum nested phase times\',\'Timeouts and interruptions are excluded from successful latency distributions\']}));},\n    clear(){host.clearTimeout(deadline);host.clearTimeout(quiet);active=null;rows=[];dropped=0;counts.clear();host.clearTimeout(diagLagTimer603);diagEvents603.length=0;diagDropped603=0;diagMutations603=0;diagObserverMs603=0;persistNow();}};\n  host[KEY]=api;watch(doc);installDiagnostics603();\n  doc.addEventListener(\'visibilitychange\',()=>safe(()=>{if(doc.hidden&&active)end(\'interrupted\',\'background\');persistNow();}),{passive:true});\n  host.addEventListener(\'pagehide\',()=>safe(()=>{if(active)end(\'interrupted\',\'pagehide\');persistNow();}),{passive:true});\n  return api;\n}\n'
 
-_HISTORY_JS = _PERF_BROWSER_JS_V466 + '\nexport default function(component) {\n  const { data, setTriggerValue } = component;\n  const validPages = new Set([\'home\', \'camera\', \'videos\', \'moments\', \'diary\', \'photos\', \'review\', \'review_project\', \'review_monthly\', \'review_tag\', \'review_random\', \'review_shared\', \'review_history\', \'nearby\', \'discovery_results\', \'evening_review\', \'toilets\', \'help_places\', \'field_notes\', \'experience\', \'events\', \'settings\', \'settings_moments\', \'settings_moments_definition\', \'settings_location\', \'settings_account\', \'settings_media_import\']);\n  const marker = \'__tokyo_burari_page__\';\n  const guardMarker = \'__tokyo_burari_first_level_guard__\';\n  const requestedPage = validPages.has(data?.page) ? data.page : \'home\';\n  const action = data?.action || \'sync\';\n  const navigationNode = String(data?.node || requestedPage);\n  const interceptHierarchyBack = Boolean(data?.intercept_hierarchy_back) && requestedPage !== \'home\';\n  const firstLevelBackToHome = requestedPage !== \'home\' && navigationNode === requestedPage && !interceptHierarchyBack;\n  const pendingFeelingParam = \'feel_v159\';\n  const pendingFeelingStore = \'tokyo_burari_pending_feelings_v159\';\n  const foregroundHiddenStore = \'tokyo_burari_hidden_at_v457\';\n  let hiddenAtV457 = 0;\n  let lastForegroundEmitV457 = 0;\n  let hostWindowV457 = window;\n  let hostDocumentV457 = document;\n  try {\n    if (window.parent && window.parent !== window && window.parent.document) {\n      hostWindowV457 = window.parent;\n      hostDocumentV457 = window.parent.document;\n    }\n  } catch (_) {}\n\n  try { installBurariPerf466(hostWindowV457, requestedPage, data?.perf_run, data?.perf_session, {server_sent_ms:data?.diag_server_sent_ms, script_started_ms:data?.diag_script_started_ms}); } catch (_) {}\n\n  const refreshLayoutV457 = () => {\n    const refresh = () => {\n      try { if (hostDocumentV457.body) void hostDocumentV457.body.offsetHeight; } catch (_) {}\n      try { hostWindowV457.dispatchEvent(new Event(\'resize\')); } catch (_) {}\n    };\n    try { requestAnimationFrame(refresh); } catch (_) { refresh(); }\n    setTimeout(refresh, 180);\n  };\n\n  const foregroundSnapshotV457 = () => {\n    let staleCount = 0, rootCount = 0, iframeCount = 0, spinnerCount = 0;\n    try { staleCount = hostDocumentV457.querySelectorAll(\'[data-stale="true"]\').length; } catch (_) {}\n    try { rootCount = hostDocumentV457.querySelectorAll(\'.st-key-app_page_root_v280\').length; } catch (_) {}\n    try { iframeCount = hostDocumentV457.querySelectorAll(\'iframe\').length; } catch (_) {}\n    try { spinnerCount = hostDocumentV457.querySelectorAll(\'[data-testid="stSpinner"]\').length; } catch (_) {}\n    return { stale_count: staleCount, root_count: rootCount, iframe_count: iframeCount, spinner_count: spinnerCount };\n  };\n\n  const emitForegroundRestoreV457 = (reason, persisted) => {\n    if (hostDocumentV457.hidden) return;\n    const now = Date.now();\n    let storedAt = 0;\n    try { storedAt = Number(localStorage.getItem(foregroundHiddenStore) || 0); } catch (_) {}\n    const startedAt = Number(hiddenAtV457 || storedAt || 0);\n    const hiddenMs = startedAt > 0 ? Math.max(0, now - startedAt) : 0;\n    if (!persisted && hiddenMs < 1200) {\n      try { localStorage.removeItem(foregroundHiddenStore); } catch (_) {}\n      hiddenAtV457 = 0;\n      return;\n    }\n    if (now - lastForegroundEmitV457 < 3500) return;\n    lastForegroundEmitV457 = now;\n    refreshLayoutV457();\n    const stats = foregroundSnapshotV457();\n    const token = `${now}:${Math.random()}`;\n    queueMicrotask(() => setTriggerValue(\'foreground_restore\', {\n      token, reason: String(reason || \'visible\'), hidden_ms: Math.round(hiddenMs),\n      visible_at_ms: now, persisted: Boolean(persisted), ...stats\n    }));\n    hiddenAtV457 = 0;\n    try { localStorage.removeItem(foregroundHiddenStore); } catch (_) {}\n  };\n\n  const onVisibilityV457 = () => {\n    if (hostDocumentV457.hidden) {\n      hiddenAtV457 = Date.now();\n      try { localStorage.setItem(foregroundHiddenStore, String(hiddenAtV457)); } catch (_) {}\n    } else {\n      emitForegroundRestoreV457(\'visibility\', false);\n    }\n  };\n  const onPageHideV457 = () => {\n    hiddenAtV457 = Date.now();\n    try { localStorage.setItem(foregroundHiddenStore, String(hiddenAtV457)); } catch (_) {}\n  };\n  const onPageShowV457 = (event) => {\n    if (event && event.persisted) emitForegroundRestoreV457(\'pageshow_bfcache\', true);\n    else if (!hostDocumentV457.hidden) {\n      let storedAt = 0;\n      try { storedAt = Number(localStorage.getItem(foregroundHiddenStore) || 0); } catch (_) {}\n      if (storedAt > 0 && Date.now() - storedAt >= 1200) emitForegroundRestoreV457(\'pageshow\', false);\n    }\n  };\n  const restorePendingFeelingParam = () => {\n    try {\n      const url = new URL(hostWindowV457.location.href);\n      if (url.searchParams.get(pendingFeelingParam)) return false;\n      const raw = String(localStorage.getItem(pendingFeelingStore) || \'\');\n      if (!raw) return false;\n      url.searchParams.set(pendingFeelingParam, raw);\n      hostWindowV457.history.replaceState(hostWindowV457.history.state || {}, \'\', url.pathname + url.search + url.hash);\n      return true;\n    } catch (_) { return false; }\n  };\n\n  const restoredPendingFeeling = restorePendingFeelingParam();\n  if(restoredPendingFeeling)queueMicrotask(()=>setTriggerValue(\'pending_restore\', `${Date.now()}:${Math.random()}`));\n  // Buttons keep their native Streamlit callbacks. Never cancel or swallow their clicks.\n  const h=hostWindowV457,d=hostDocumentV457;\n  const guard=\'__burari_navigation_guard_v604\';\n  const previous=h.__burariNavigation604;\n  if(previous && !previous.retired605){\n    if(previous.onClick)d.removeEventListener(\'click\',previous.onClick,true);\n    if(previous.onPop)h.removeEventListener(\'popstate\',previous.onPop);\n    previous.pending=null;previous.queued=null;previous.emit=null;previous.retired605=true;\n    h.__burariNavigationBusy604=false;d.documentElement?.removeAttribute(\'data-burari-navigation\');\n  }\n  let nav=h.__burariNavigation605;\n  if(!nav){\n    nav={page:\'home\',node:\'home\',objectId:\'\',context:\'\',emit:null,seq:0,pending:null};\n    const urlFor=page=>{const url=new URL(h.location.href);if(page===\'home\')url.searchParams.delete(\'view\');else url.searchParams.set(\'view\',page);return url.pathname+url.search+url.hash;};\n    nav.arm=()=>{\n      const state={...(h.history.state||{}),[marker]:nav.page,[guard]:true};delete state[guardMarker];\n      if(!h.history.state?.[guard]){\n        h.history.replaceState({...state,[guard]:false},\'\',urlFor(nav.page));\n        h.history.pushState(state,\'\',urlFor(nav.page));\n      }else h.history.replaceState(state,\'\',urlFor(nav.page));\n    };\n    nav.quietMedia=()=>{\n      try{d.querySelectorAll(\'audio,video\').forEach(el=>{if(!el.paused)el.pause();});}catch(_){}\n      try{d.querySelectorAll(\'iframe\').forEach(frame=>frame.contentWindow?.postMessage({burari_navigation_v604:true},\'*\'));}catch(_){}\n    };\n    nav.findButton=kind=>{\n      const selector=kind===\'home\'\n        ? \'[class*="st-key-global_bottom_home_"] button,[class*="st-key-history_home_"] button\'\n        : \'[class*="st-key-parent_back_"] button,.st-key-camera_back_parent button,[class*="st-key-global_parent_back_"] button\';\n      const roots=[d],seen=new Set();\n      if(typeof document!==\'undefined\'&&document!==d)roots.push(document);\n      // Some Android builds expose the bridge on a same-origin parent document.\n      // Find the actual Streamlit widget there or in its visible child frames.\n      for(let index=0;index<roots.length&&index<24;index++){\n        const root=roots[index];if(!root||seen.has(root))continue;seen.add(root);\n        const button=Array.from(root.querySelectorAll(selector)).find(b=>!b.disabled&&b.isConnected!==false&&b.getClientRects().length&&!b.closest?.(\'[data-stale="true"]\'));\n        if(button)return button;\n        for(const frame of root.querySelectorAll(\'iframe\')){\n          try{if(frame.contentDocument&&frame.getClientRects().length)roots.push(frame.contentDocument);}catch(_){}\n        }\n      }\n      return undefined;\n    };\n    nav.request=kind=>{\n      if(![\'parent\',\'home\'].includes(kind))return true;\n      // Prefer the same real widget callback as an on-screen tap. No component ACK lock.\n      const button=nav.findButton(kind);\n      if(button){nav.quietMedia();button.click();return true;}\n      if(nav.page===\'home\'&&nav.node===\'home\'){nav.arm();return true;}\n      if(!nav.emit)return false; // Not mounted yet: a later press remains usable.\n      // A retry retains its operation token, preventing a lost acknowledgement from\n      // applying the same parent step twice. Home supersedes a queued parent action.\n      const existing=nav.pending;\n      let request=existing&&existing.kind===kind&&existing.context===nav.context?existing.request:null;\n      if(!request){\n        const token=`nav605-${Date.now()}-${++nav.seq}-${Math.random().toString(36).slice(2)}`;\n        request={token,kind,page:nav.page,node:nav.node,object_id:nav.objectId,context:nav.context};\n      }\n      nav.pending={kind,context:nav.context,request,token:request.token};\n      nav.quietMedia();\n      try{nav.emit(\'navigation_request\',{...request,attempt:++nav.seq});return true;}catch(_){return false;}\n    };\n    nav.onPop=()=>{restorePendingFeelingParam();nav.arm();nav.request(\'parent\');};\n    nav.onClick=event=>{\n      const path=event.composedPath?event.composedPath():[event.target];\n      const button=path.find(el=>el?.matches?.(\'button,[role="button"]\'));\n      const widget=button?.closest?.(\'[class*="st-key-"]\');\n      const keys=Array.from(widget?.classList||[]);\n      if(keys.some(k=>k.startsWith(\'st-key-parent_back_\')||k.startsWith(\'st-key-global_parent_back_\')||k.startsWith(\'st-key-global_bottom_home_\')||k.startsWith(\'st-key-history_home_\')||k===\'st-key-camera_back_parent\'))nav.quietMedia();\n      // Intentionally no preventDefault/stopPropagation: React must receive the tap.\n    };\n    h.addEventListener(\'popstate\',nav.onPop);\n    d.addEventListener(\'click\',nav.onClick,{capture:true,passive:true});\n    h.__burariNavigation605=nav;\n  }\n  const binding={};nav.binding=binding;nav.emit=setTriggerValue;\n  const nextContext=JSON.stringify([requestedPage,navigationNode,String(data?.navigation_object||\'\')]);\n  if(nav.pending&&(nav.pending.token===data?.navigation_ack||nav.context!==nextContext))nav.pending=null;\n  nav.page=requestedPage;nav.node=navigationNode;nav.objectId=String(data?.navigation_object||\'\');nav.context=nextContext;\n  // Keep the v13 APK entry working; a new APK is not needed for this fix.\n  h.__burariNavigateParent604=h.__burariNavigateParent605=()=>nav.request(\'parent\');\n  h.__burariNavigateHome604=h.__burariNavigateHome605=()=>nav.request(\'home\');\n  nav.arm();\n  hostDocumentV457.addEventListener(\'visibilitychange\',onVisibilityV457,{passive:true});\n  hostWindowV457.addEventListener(\'pagehide\',onPageHideV457,{passive:true});\n  hostWindowV457.addEventListener(\'pageshow\',onPageShowV457,{passive:true});\n  return ()=>{\n    if(nav.binding===binding)nav.emit=null;\n    hostDocumentV457.removeEventListener(\'visibilitychange\',onVisibilityV457);\n    hostWindowV457.removeEventListener(\'pagehide\',onPageHideV457);\n    hostWindowV457.removeEventListener(\'pageshow\',onPageShowV457);\n  };\n}\n'
+_HISTORY_JS = _PERF_BROWSER_JS_V466 + '\nexport default function(component) {\n  const { data, setTriggerValue } = component;\n  const validPages = new Set([\'salt_bread\', \'salt_bread_detail\', \'home\', \'camera\', \'videos\', \'moments\', \'diary\', \'photos\', \'review\', \'review_project\', \'review_monthly\', \'review_tag\', \'review_random\', \'review_shared\', \'review_history\', \'nearby\', \'discovery_results\', \'evening_review\', \'toilets\', \'help_places\', \'field_notes\', \'experience\', \'events\', \'settings\', \'settings_moments\', \'settings_moments_definition\', \'settings_location\', \'settings_account\', \'settings_media_import\']);\n  const marker = \'__tokyo_burari_page__\';\n  const guardMarker = \'__tokyo_burari_first_level_guard__\';\n  const requestedPage = validPages.has(data?.page) ? data.page : \'home\';\n  const action = data?.action || \'sync\';\n  const navigationNode = String(data?.node || requestedPage);\n  const interceptHierarchyBack = Boolean(data?.intercept_hierarchy_back) && requestedPage !== \'home\';\n  const firstLevelBackToHome = requestedPage !== \'home\' && navigationNode === requestedPage && !interceptHierarchyBack;\n  const pendingFeelingParam = \'feel_v159\';\n  const pendingFeelingStore = \'tokyo_burari_pending_feelings_v159\';\n  const foregroundHiddenStore = \'tokyo_burari_hidden_at_v457\';\n  let hiddenAtV457 = 0;\n  let lastForegroundEmitV457 = 0;\n  let hostWindowV457 = window;\n  let hostDocumentV457 = document;\n  try {\n    if (window.parent && window.parent !== window && window.parent.document) {\n      hostWindowV457 = window.parent;\n      hostDocumentV457 = window.parent.document;\n    }\n  } catch (_) {}\n\n  try { installBurariPerf466(hostWindowV457, requestedPage, data?.perf_run, data?.perf_session, {server_sent_ms:data?.diag_server_sent_ms, script_started_ms:data?.diag_script_started_ms}); } catch (_) {}\n\n  const refreshLayoutV457 = () => {\n    const refresh = () => {\n      try { if (hostDocumentV457.body) void hostDocumentV457.body.offsetHeight; } catch (_) {}\n      try { hostWindowV457.dispatchEvent(new Event(\'resize\')); } catch (_) {}\n    };\n    try { requestAnimationFrame(refresh); } catch (_) { refresh(); }\n    setTimeout(refresh, 180);\n  };\n\n  const foregroundSnapshotV457 = () => {\n    let staleCount = 0, rootCount = 0, iframeCount = 0, spinnerCount = 0;\n    try { staleCount = hostDocumentV457.querySelectorAll(\'[data-stale="true"]\').length; } catch (_) {}\n    try { rootCount = hostDocumentV457.querySelectorAll(\'.st-key-app_page_root_v280\').length; } catch (_) {}\n    try { iframeCount = hostDocumentV457.querySelectorAll(\'iframe\').length; } catch (_) {}\n    try { spinnerCount = hostDocumentV457.querySelectorAll(\'[data-testid="stSpinner"]\').length; } catch (_) {}\n    return { stale_count: staleCount, root_count: rootCount, iframe_count: iframeCount, spinner_count: spinnerCount };\n  };\n\n  const emitForegroundRestoreV457 = (reason, persisted) => {\n    if (hostDocumentV457.hidden) return;\n    const now = Date.now();\n    let storedAt = 0;\n    try { storedAt = Number(localStorage.getItem(foregroundHiddenStore) || 0); } catch (_) {}\n    const startedAt = Number(hiddenAtV457 || storedAt || 0);\n    const hiddenMs = startedAt > 0 ? Math.max(0, now - startedAt) : 0;\n    if (!persisted && hiddenMs < 1200) {\n      try { localStorage.removeItem(foregroundHiddenStore); } catch (_) {}\n      hiddenAtV457 = 0;\n      return;\n    }\n    if (now - lastForegroundEmitV457 < 3500) return;\n    lastForegroundEmitV457 = now;\n    refreshLayoutV457();\n    const stats = foregroundSnapshotV457();\n    const token = `${now}:${Math.random()}`;\n    queueMicrotask(() => setTriggerValue(\'foreground_restore\', {\n      token, reason: String(reason || \'visible\'), hidden_ms: Math.round(hiddenMs),\n      visible_at_ms: now, persisted: Boolean(persisted), ...stats\n    }));\n    hiddenAtV457 = 0;\n    try { localStorage.removeItem(foregroundHiddenStore); } catch (_) {}\n  };\n\n  const onVisibilityV457 = () => {\n    if (hostDocumentV457.hidden) {\n      hiddenAtV457 = Date.now();\n      try { localStorage.setItem(foregroundHiddenStore, String(hiddenAtV457)); } catch (_) {}\n    } else {\n      emitForegroundRestoreV457(\'visibility\', false);\n    }\n  };\n  const onPageHideV457 = () => {\n    hiddenAtV457 = Date.now();\n    try { localStorage.setItem(foregroundHiddenStore, String(hiddenAtV457)); } catch (_) {}\n  };\n  const onPageShowV457 = (event) => {\n    if (event && event.persisted) emitForegroundRestoreV457(\'pageshow_bfcache\', true);\n    else if (!hostDocumentV457.hidden) {\n      let storedAt = 0;\n      try { storedAt = Number(localStorage.getItem(foregroundHiddenStore) || 0); } catch (_) {}\n      if (storedAt > 0 && Date.now() - storedAt >= 1200) emitForegroundRestoreV457(\'pageshow\', false);\n    }\n  };\n  const restorePendingFeelingParam = () => {\n    try {\n      const url = new URL(hostWindowV457.location.href);\n      if (url.searchParams.get(pendingFeelingParam)) return false;\n      const raw = String(localStorage.getItem(pendingFeelingStore) || \'\');\n      if (!raw) return false;\n      url.searchParams.set(pendingFeelingParam, raw);\n      hostWindowV457.history.replaceState(hostWindowV457.history.state || {}, \'\', url.pathname + url.search + url.hash);\n      return true;\n    } catch (_) { return false; }\n  };\n\n  const restoredPendingFeeling = restorePendingFeelingParam();\n  if(restoredPendingFeeling)queueMicrotask(()=>setTriggerValue(\'pending_restore\', `${Date.now()}:${Math.random()}`));\n  // Buttons keep their native Streamlit callbacks. Never cancel or swallow their clicks.\n  const h=hostWindowV457,d=hostDocumentV457;\n  const guard=\'__burari_navigation_guard_v604\';\n  const previous=h.__burariNavigation604;\n  if(previous && !previous.retired605){\n    if(previous.onClick)d.removeEventListener(\'click\',previous.onClick,true);\n    if(previous.onPop)h.removeEventListener(\'popstate\',previous.onPop);\n    previous.pending=null;previous.queued=null;previous.emit=null;previous.retired605=true;\n    h.__burariNavigationBusy604=false;d.documentElement?.removeAttribute(\'data-burari-navigation\');\n  }\n  let nav=h.__burariNavigation605;\n  if(!nav){\n    nav={page:\'home\',node:\'home\',objectId:\'\',context:\'\',emit:null,seq:0,pending:null};\n    const urlFor=page=>{const url=new URL(h.location.href);if(page===\'home\')url.searchParams.delete(\'view\');else url.searchParams.set(\'view\',page);return url.pathname+url.search+url.hash;};\n    nav.arm=()=>{\n      const state={...(h.history.state||{}),[marker]:nav.page,[guard]:true};delete state[guardMarker];\n      if(!h.history.state?.[guard]){\n        h.history.replaceState({...state,[guard]:false},\'\',urlFor(nav.page));\n        h.history.pushState(state,\'\',urlFor(nav.page));\n      }else h.history.replaceState(state,\'\',urlFor(nav.page));\n    };\n    nav.quietMedia=()=>{\n      try{d.querySelectorAll(\'audio,video\').forEach(el=>{if(!el.paused)el.pause();});}catch(_){}\n      try{d.querySelectorAll(\'iframe\').forEach(frame=>frame.contentWindow?.postMessage({burari_navigation_v604:true},\'*\'));}catch(_){}\n    };\n    nav.findButton=kind=>{\n      const selector=kind===\'home\'\n        ? \'[class*="st-key-global_bottom_home_"] button,[class*="st-key-history_home_"] button\'\n        : \'[class*="st-key-parent_back_"] button,.st-key-camera_back_parent button,[class*="st-key-global_parent_back_"] button\';\n      const roots=[d],seen=new Set();\n      if(typeof document!==\'undefined\'&&document!==d)roots.push(document);\n      // Some Android builds expose the bridge on a same-origin parent document.\n      // Find the actual Streamlit widget there or in its visible child frames.\n      for(let index=0;index<roots.length&&index<24;index++){\n        const root=roots[index];if(!root||seen.has(root))continue;seen.add(root);\n        const button=Array.from(root.querySelectorAll(selector)).find(b=>!b.disabled&&b.isConnected!==false&&b.getClientRects().length&&!b.closest?.(\'[data-stale="true"]\'));\n        if(button)return button;\n        for(const frame of root.querySelectorAll(\'iframe\')){\n          try{if(frame.contentDocument&&frame.getClientRects().length)roots.push(frame.contentDocument);}catch(_){}\n        }\n      }\n      return undefined;\n    };\n    nav.request=kind=>{\n      if(![\'parent\',\'home\'].includes(kind))return true;\n      // Prefer the same real widget callback as an on-screen tap. No component ACK lock.\n      const button=nav.findButton(kind);\n      if(button){nav.quietMedia();button.click();return true;}\n      if(nav.page===\'home\'&&nav.node===\'home\'){nav.arm();return true;}\n      if(!nav.emit)return false; // Not mounted yet: a later press remains usable.\n      // A retry retains its operation token, preventing a lost acknowledgement from\n      // applying the same parent step twice. Home supersedes a queued parent action.\n      const existing=nav.pending;\n      let request=existing&&existing.kind===kind&&existing.context===nav.context?existing.request:null;\n      if(!request){\n        const token=`nav605-${Date.now()}-${++nav.seq}-${Math.random().toString(36).slice(2)}`;\n        request={token,kind,page:nav.page,node:nav.node,object_id:nav.objectId,context:nav.context};\n      }\n      nav.pending={kind,context:nav.context,request,token:request.token};\n      nav.quietMedia();\n      try{nav.emit(\'navigation_request\',{...request,attempt:++nav.seq});return true;}catch(_){return false;}\n    };\n    nav.onPop=()=>{restorePendingFeelingParam();nav.arm();nav.request(\'parent\');};\n    nav.onClick=event=>{\n      const path=event.composedPath?event.composedPath():[event.target];\n      const button=path.find(el=>el?.matches?.(\'button,[role="button"]\'));\n      const widget=button?.closest?.(\'[class*="st-key-"]\');\n      const keys=Array.from(widget?.classList||[]);\n      if(keys.some(k=>k.startsWith(\'st-key-parent_back_\')||k.startsWith(\'st-key-global_parent_back_\')||k.startsWith(\'st-key-global_bottom_home_\')||k.startsWith(\'st-key-history_home_\')||k===\'st-key-camera_back_parent\'))nav.quietMedia();\n      // Intentionally no preventDefault/stopPropagation: React must receive the tap.\n    };\n    h.addEventListener(\'popstate\',nav.onPop);\n    d.addEventListener(\'click\',nav.onClick,{capture:true,passive:true});\n    h.__burariNavigation605=nav;\n  }\n  const binding={};nav.binding=binding;nav.emit=setTriggerValue;\n  const nextContext=JSON.stringify([requestedPage,navigationNode,String(data?.navigation_object||\'\')]);\n  if(nav.pending&&(nav.pending.token===data?.navigation_ack||nav.context!==nextContext))nav.pending=null;\n  nav.page=requestedPage;nav.node=navigationNode;nav.objectId=String(data?.navigation_object||\'\');nav.context=nextContext;\n  // Keep the v13 APK entry working; a new APK is not needed for this fix.\n  h.__burariNavigateParent604=h.__burariNavigateParent605=()=>nav.request(\'parent\');\n  h.__burariNavigateHome604=h.__burariNavigateHome605=()=>nav.request(\'home\');\n  nav.arm();\n  hostDocumentV457.addEventListener(\'visibilitychange\',onVisibilityV457,{passive:true});\n  hostWindowV457.addEventListener(\'pagehide\',onPageHideV457,{passive:true});\n  hostWindowV457.addEventListener(\'pageshow\',onPageShowV457,{passive:true});\n  return ()=>{\n    if(nav.binding===binding)nav.emit=null;\n    hostDocumentV457.removeEventListener(\'visibilitychange\',onVisibilityV457);\n    hostWindowV457.removeEventListener(\'pagehide\',onPageHideV457);\n    hostWindowV457.removeEventListener(\'pageshow\',onPageShowV457);\n  };\n}\n'
 
 try:
     browser_history_component = st.components.v2.component(
@@ -31635,7 +31637,7 @@ def page_evening_review():
                     )
 
 
-VALID_APP_PAGES = {"home", "camera", "videos", "moments", "diary", "photos", "review", "review_project", "review_monthly", "review_tag", "review_random", "review_shared", "review_history", "nearby", "discovery_results", "evening_review", "toilets", "help_places", "field_notes", "experience", "events", "settings", "settings_moments", "settings_moments_definition", "settings_location", "settings_account", "settings_media_import"}
+VALID_APP_PAGES = {"salt_bread", "salt_bread_detail", "home", "camera", "videos", "moments", "diary", "photos", "review", "review_project", "review_monthly", "review_tag", "review_random", "review_shared", "review_history", "nearby", "discovery_results", "evening_review", "toilets", "help_places", "field_notes", "experience", "events", "settings", "settings_moments", "settings_moments_definition", "settings_location", "settings_account", "settings_media_import"}
 
 
 def _current_ui_refresh_epoch():
@@ -31848,7 +31850,8 @@ def navigation_parent_node(node=None):
     if node is None:
         node, _ = current_navigation_context()
     parents = {
-        "photos_detail": "photos",
+        "salt_bread": "home",
+        "salt_bread_detail": "salt_bread",        "photos_detail": "photos",
         "experience_cards": "experience",
         "experience_picker": "experience",
         "experience_photo": "experience",
@@ -38968,6 +38971,8 @@ def page_home():
                 with settings_col:
                     render_home_button("設定", "settings", "home_settings")
 
+        st.button("🍞 食べ歩き・塩パンマップ", key="home_salt_bread_v609", use_container_width=True,
+                  on_click=_go_page_callback, args=("salt_bread", "push"))
         with st.container(key="home_secondary"):
             with st.container(key="home_review_large_v524"):
                 render_home_button("振り返り（たまに）", "review", "home_review", open_period_review=review_attention)
@@ -43112,6 +43117,8 @@ def page_nearby():
         "📍 近くに寄る",
         "おやつ・ランチ・観光・観光（雨）から条件を選ぶと、その瞬間の現在地を高精度で取り直して周辺を調べます。観光（雨）は屋内・屋根ありの候補に絞ります。",
     )
+    st.button("🍞 塩パンマップ", key="nearby_salt_bread_v609", use_container_width=True,
+              on_click=_go_page_callback, args=("salt_bread", "push"))
     st.markdown(
         """
         <style>
@@ -44571,7 +44578,9 @@ export default function(component) {
     voiceButton.setAttribute('aria-label',voiceButton.title);
     voiceButton.addEventListener('click',(event)=>{
       event.preventDefault();event.stopPropagation();
-      activeRank=rank;persistActiveRank();emitAction('open_voice');
+      activeRank=rank;persistActiveRank();
+      voiceButton.textContent='声を開いています…';voiceButton.setAttribute('aria-busy','true');
+      try{emitAction('open_voice');}catch(_){voiceButton.textContent='🎙 もう一度';voiceButton.removeAttribute('aria-busy');}
     });
     imageWrap.appendChild(voiceButton);
     const modeSwitch=document.createElement('div');modeSwitch.className='moments-mode-switch';
@@ -44842,12 +44851,32 @@ def _get_moments_voice_component():
     return moments_voice_component
 
 
+def _capture_moments_component_action_v608(component_key, event_name, inbox_key):
+    """Capture a one-rerun component trigger before any bootstrap/UI work.
+
+    Only retain the event here. Database writes and candidate generation belong
+    to the renderer, where errors can be shown and the target can be validated.
+    """
+    state = st.session_state.get(component_key)
+    if isinstance(state, dict):
+        event = state.get(event_name)
+    else:
+        event = getattr(state, event_name, None)
+    if isinstance(event, dict) and str(event.get("nonce") or ""):
+        st.session_state[inbox_key] = dict(event)
+
+
 def _render_moments_voice_workspace(
     photo, items, cards, video_id, round_number, active_rank_key,
     voice_panel_open_key, voice_panel_target_key, voice_candidate_choice_key,
 ):
     if not bool(st.session_state.get(voice_panel_open_key)):
         return False
+    snapshot_key = f"_moments_voice_snapshot_v608_{current_family_key()}_{current_member_key()}_{video_id}_{round_number}"
+    snapshot = st.session_state.get(snapshot_key)
+    if isinstance(snapshot, dict) and str(snapshot.get("id") or "") == str(video_id):
+        photo = snapshot
+        items = video_ai_selection_items(photo)
 
     valid_ranks = [int(card.get("rank") or 0) for card in cards if int(card.get("rank") or 0) > 0]
     if not valid_ranks:
@@ -44895,7 +44924,10 @@ def _render_moments_voice_workspace(
             st.session_state[voice_panel_open_key] = True
             st.session_state[voice_panel_target_key] = target_rank
             st.session_state[active_rank_key] = target_rank
-            st.rerun()
+            voice_candidates = video_ai_voice_candidate_items(photo)
+            if not voice_candidates:
+                raise ValueError("元動画から利用できる声候補を作成できませんでした。")
+            st.session_state[snapshot_key] = photo
         except Exception as exc:
             st.error("声候補を作成できませんでした。")
             retry_col, back_col = st.columns([1.35, .75], gap="small")
@@ -44909,13 +44941,14 @@ def _render_moments_voice_workspace(
                     st.rerun()
             with back_col:
                 if st.button("戻る", use_container_width=True, key=f"moments_voice_no_candidates_back_v388_{video_id}_{target_rank}"):
+                    st.session_state.pop(snapshot_key, None)
                     st.session_state.pop(voice_panel_open_key, None)
                     st.session_state.pop(voice_panel_target_key, None)
                     st.session_state.pop(voice_candidate_choice_key, None)
                     st.rerun()
             with st.expander("保護者向け詳細"):
                 st.code(str(exc))
-        return True
+            return True
 
     voice_paths = tuple(
         str(item.get("storage_path") or "").strip()
@@ -44946,6 +44979,8 @@ def _render_moments_voice_workspace(
         )
 
     component = _get_moments_voice_component()
+    voice_component_key = f"moments_voice_workspace_v437_{video_id}_{round_number}_{target_rank}"
+    voice_inbox_key = f"_moments_voice_inbox_v608_{video_id}_{round_number}_{target_rank}"
     if component is not None and candidates:
         result = component(
             data={
@@ -44953,10 +44988,12 @@ def _render_moments_voice_workspace(
                 "current_voice_rank": current_voice_rank,
                 "candidates": candidates,
             },
-            key=f"moments_voice_workspace_v437_{video_id}_{round_number}_{target_rank}",
-            on_voice_action_change=lambda: None,
+            key=voice_component_key,
+            on_voice_action_change=lambda: _capture_moments_component_action_v608(
+                voice_component_key, "voice_action", voice_inbox_key
+            ),
         )
-        action = getattr(result, "voice_action", None)
+        action = st.session_state.pop(voice_inbox_key, None) or getattr(result, "voice_action", None)
         if isinstance(action, dict):
             nonce = str(action.get("nonce") or "")
             token_key = f"_moments_voice_action_token_v387_{video_id}_{round_number}_{target_rank}"
@@ -44970,6 +45007,7 @@ def _render_moments_voice_workspace(
                             regenerated_photo = generate_video_ai_voice_candidates(photo, force=True)
                         if isinstance(regenerated_photo, dict):
                             photo = regenerated_photo
+                            st.session_state[snapshot_key] = photo
                         st.session_state[voice_panel_open_key] = True
                         st.session_state[voice_panel_target_key] = target_rank
                         st.session_state[active_rank_key] = target_rank
@@ -44990,6 +45028,7 @@ def _render_moments_voice_workspace(
                         update_video_ai_selection_voice_choice(photo, target_rank, 0)
                         st.session_state["_moments_notice"] = f"写真 {target_rank} の声を外しました。"
                     if action_name in {"apply", "clear", "close"}:
+                        st.session_state.pop(snapshot_key, None)
                         st.session_state[active_rank_key] = target_rank
                         st.session_state.pop(voice_panel_open_key, None)
                         st.session_state.pop(voice_panel_target_key, None)
@@ -45035,6 +45074,7 @@ def _render_moments_voice_workspace(
                 regenerated_photo = generate_video_ai_voice_candidates(photo, force=True)
             if isinstance(regenerated_photo, dict):
                 photo = regenerated_photo
+                st.session_state[snapshot_key] = photo
             st.session_state[voice_panel_open_key] = True
             st.session_state[voice_panel_target_key] = target_rank
             st.session_state[active_rank_key] = target_rank
@@ -45053,10 +45093,12 @@ def _render_moments_voice_workspace(
     with action_col:
         if st.button("この声をつける", type="primary", use_container_width=True, key=f"voice_fallback_apply_v387_{video_id}_{target_rank}"):
             update_video_ai_selection_voice_choice(photo, target_rank, selected_rank)
+            st.session_state.pop(snapshot_key, None)
             st.session_state.pop(voice_panel_open_key, None)
             st.rerun()
     with back_col:
         if st.button("戻る", use_container_width=True, key=f"voice_fallback_back_v387_{video_id}_{target_rank}"):
+            st.session_state.pop(snapshot_key, None)
             st.session_state.pop(voice_panel_open_key, None)
             st.rerun()
     return True
@@ -45265,6 +45307,33 @@ def _render_moments_picker(photo, index, view_mode=None, next_video_action=None)
     voice_panel_target_key = f"_moments_voice_panel_target_v370_{video_id}_{round_number}"
     voice_candidate_choice_key = f"_moments_voice_candidate_choice_v370_{video_id}_{round_number}"
 
+    picker_inbox_key = f"_moments_picker_inbox_v608_{video_id}_{round_number}"
+    pending_picker = st.session_state.get(picker_inbox_key)
+    if isinstance(pending_picker, dict) and pending_picker.get("action") == "open_voice":
+        st.session_state.pop(picker_inbox_key, None)
+        nonce = str(pending_picker.get("nonce") or "")
+        token_key = f"_moments_picker_action_token_{video_id}_{round_number}"
+        try:
+            target_rank = int(pending_picker.get("active_rank") or 0)
+        except (TypeError, ValueError, OverflowError):
+            target_rank = 0
+        if nonce and nonce != str(st.session_state.get(token_key) or "") and target_rank in valid_ranks:
+            st.session_state[token_key] = nonce
+            st.session_state[active_rank_key] = target_rank
+            current_active_rank = target_rank
+            st.session_state[voice_panel_open_key] = True
+            st.session_state[voice_panel_target_key] = target_rank
+            st.session_state.pop(voice_candidate_choice_key, None)
+            selected = pending_picker.get("selected_ranks")
+            if isinstance(selected, (list, tuple)):
+                st.session_state[selection_state_key] = sorted({
+                    int(value) for value in selected
+                    if str(value).strip().isdigit() and int(value) in valid_ranks
+                })
+            st.session_state[preferred_mode_key] = (
+                "parenting" if pending_picker.get("preferred_mode") == "parenting" else "normal"
+            )
+
     # v387: voice selection is a dedicated photo-first workspace. The normal six-photo
     # picker is not rendered behind it, so the photo stays the visual focus.
     if _render_moments_voice_workspace(
@@ -45287,6 +45356,7 @@ def _render_moments_picker(photo, index, view_mode=None, next_video_action=None)
     if picker_component is not None:
         serial = int(st.session_state.get(component_serial_key) or 0)
         next_cfg = next_video_action if isinstance(next_video_action, dict) else {}
+        picker_component_key = f"moments_tap_picker_{video_id}_{round_number}_{serial}"
         result = picker_component(
             data={
                 "photos": cards,
@@ -45306,11 +45376,13 @@ def _render_moments_picker(photo, index, view_mode=None, next_video_action=None)
                 "save_label": "選択内容を更新" if status == "reviewed" else "選んだ写真を日記に残す",
                 "show_save_button": True,
             },
-            key=f"moments_tap_picker_{video_id}_{round_number}_{serial}",
-            on_picker_action_change=lambda: None,
+            key=picker_component_key,
+            on_picker_action_change=lambda: _capture_moments_component_action_v608(
+                picker_component_key, "picker_action", picker_inbox_key
+            ),
         )
 
-        picker_action = getattr(result, "picker_action", None)
+        picker_action = st.session_state.pop(picker_inbox_key, None) or getattr(result, "picker_action", None)
         if isinstance(picker_action, dict):
             nonce = str(picker_action.get("nonce") or "")
             action_token_key = f"_moments_picker_action_token_{video_id}_{round_number}"
@@ -60351,6 +60423,599 @@ def page_review():
     render_replay_movie_library_fragment_v555()
 
 
+# Salt bread map: loaded only on its own page; no new database table is required.
+def _salt_owner_v609():
+    family, member = str(current_family_key()), str(current_member_key())
+    if not family or not member:
+        raise ValueError("ログインし直してください。")
+    return hashlib.sha256((family + "\0" + member).encode()).hexdigest()
+
+
+def _salt_prefix_v609():
+    return "salt_bread_v609/" + _salt_owner_v609()
+
+
+def _salt_empty_v609():
+    return {"version": 1, "revision": 0, "owner": _salt_owner_v609(), "entries": {}, "order": []}
+
+
+def _salt_missing_v609(exc):
+    for value in [getattr(exc, "status_code", None), getattr(exc, "status", None)]:
+        if str(value) == "404":
+            return True
+    for arg in getattr(exc, "args", ()):
+        if isinstance(arg, dict) and str(arg.get("statusCode") or arg.get("status") or arg.get("code")) == "404":
+            return True
+    return "Object not found" in str(exc) or "NoSuchKey" in str(exc)
+
+
+def _salt_load_v609(force=False):
+    key = "_salt_doc_v609_" + _salt_owner_v609()
+    cached = None if force else _session_cache_get(key, max_age_seconds=20)
+    if cached is not None:
+        return json.loads(json.dumps(cached))
+    try:
+        raw = supabase_client().storage.from_(GPS_TRACK_BUCKET).download(_salt_prefix_v609() + "/map.json")
+    except Exception as exc:
+        if not _salt_missing_v609(exc):
+            raise RuntimeError("塩パンの記録を読み込めませんでした。再読み込みしてください。") from exc
+        doc = _salt_empty_v609()
+    else:
+        doc = json.loads(_storage_bytes(raw).decode("utf-8"))
+        if not isinstance(doc, dict) or doc.get("owner") != _salt_owner_v609() or not isinstance(doc.get("entries"), dict) or not isinstance(doc.get("order"), list):
+            raise ValueError("塩パンの保存データを確認できません。上書きせず停止しました。")
+        if set(doc["order"]) != set(doc["entries"]) or len(doc["order"]) != len(set(doc["order"])):
+            raise ValueError("塩パンの順位データを確認できません。")
+        for key, entry in doc["entries"].items():
+            if not isinstance(entry, dict) or entry.get("id") != key or not re.fullmatch(r"[0-9a-f]{32}", key):
+                raise ValueError("お店の記録を確認できません。")
+            _salt_coordinates_v609(entry["lat"], entry["lng"])
+            for visit in entry.get("visits", []):
+                if any(not str(path).startswith(_salt_prefix_v609() + "/images/") for path in visit.get("photos", [])):
+                    raise ValueError("写真の持ち主を確認できません。")
+    _session_cache_set(key, doc)
+    return json.loads(json.dumps(doc))
+
+
+@st.cache_resource
+def _salt_write_lock_v609():
+    return threading.RLock()
+
+
+def _salt_commit_v609(operation, payload, expected_revision=None):
+    # Re-read immediately before a mutation so a cached page cannot erase newer visits.
+    with _salt_write_lock_v609():
+        doc = _salt_load_v609(force=True)
+        if expected_revision is not None and int(expected_revision) != int(doc.get("revision") or 0):
+            raise ValueError("別の画面で記録が更新されました。再読み込みしてから操作してください。")
+        entries, order = doc["entries"], doc["order"]
+        if operation == "visit":
+            place = payload["place"]
+            lat, lng = _salt_coordinates_v609(place["lat"], place["lng"])
+            name = str(place.get("name") or "").strip()[:120]
+            if not name:
+                raise ValueError("店名を入力してください。")
+            identity = hashlib.sha256((name + f"|{lat:.5f}|{lng:.5f}").encode()).hexdigest()
+            entry_id = str(payload.get("entry_id") or "")
+            if entry_id and entry_id not in entries:
+                raise ValueError("登録先のお店が見つかりません。")
+            if not entry_id:
+                entry_id = next((k for k, v in entries.items() if v.get("place_key") == identity), "") or uuid.uuid4().hex
+            entry = dict(entries.get(entry_id) or {"id": entry_id, "place_key": identity, "visits": []})
+            visit = dict(payload["visit"])
+            if not re.fullmatch(r"[0-9a-f]{32}", str(visit.get("id") or "")):
+                raise ValueError("記録を確認できません。")
+            prefix = _salt_prefix_v609() + "/images/"
+            if any(not str(p).startswith(prefix) for p in visit.get("photos", [])):
+                raise ValueError("写真の保存先を確認できません。")
+            if not any(v.get("id") == visit["id"] for v in entry["visits"]):
+                entry["visits"] = list(entry["visits"]) + [visit]
+            entry.update(name=name, address=str(place.get("address") or "")[:240], lat=lat, lng=lng,
+                         again=bool(payload.get("again")), updated_at=now_jst().isoformat())
+            entries[entry_id] = entry
+            if entry_id not in order:
+                order.append(entry_id)
+        elif operation == "order":
+            desired = payload.get("order")
+            if not isinstance(desired, list) or len(desired) != len(order) or len(set(desired)) != len(desired) or set(desired) != set(order):
+                raise ValueError("順位が変わりました。再読み込みしてから並べ替えてください。")
+            doc["order"] = list(desired)
+        else:
+            raise ValueError("操作を確認できません。")
+        doc["revision"] = int(doc.get("revision") or 0) + 1
+        doc["updated_at"] = now_jst().isoformat()
+        raw = json.dumps(doc, ensure_ascii=False, separators=(",", ":")).encode()
+        # Reuse the app's existing metadata-bucket compatibility configuration.
+        supabase_client().storage.from_(GPS_TRACK_BUCKET).upload(
+            path=_salt_prefix_v609() + "/map.json", file=raw,
+            file_options={"content-type": GPS_TRACK_STORAGE_MIME, "cache-control": "0", "upsert": "true"},
+        )
+        _session_cache_set("_salt_doc_v609_" + _salt_owner_v609(), doc)
+        return doc
+
+
+def _salt_coordinates_v609(lat, lng):
+    if isinstance(lat, bool) or isinstance(lng, bool):
+        raise ValueError("場所を確認してください。")
+    lat, lng = float(lat), float(lng)
+    if not (math.isfinite(lat) and math.isfinite(lng) and 35.45 <= lat <= 35.95 and 139.4 <= lng <= 140.05):
+        raise ValueError("東京都とその周辺の場所を選んでください。")
+    return lat, lng
+
+
+def _salt_normal_v609(value):
+    return re.sub(r"\s+", " ", unicodedata.normalize("NFKC", str(value or ""))).strip()
+
+
+def _salt_trace_v609(web, event, detail=None, level="INFO", stage=""):
+    web.logs.append({"time": now_jst().isoformat(), "event": event, "level": level, "stage": stage, "detail": detail or {}})
+    web.logs[:] = web.logs[-80:]
+
+
+class _SaltWebV609:
+    def __init__(self):
+        self.logs = []
+
+
+def _salt_lookup_json_v609(web, url, params, operation):
+    started = time.monotonic()
+    info = {"url": url, "parameters": params, "operation": operation, "failed_stage": operation + ".request"}
+    _salt_trace_v609(web, "request", info)
+    try:
+        request = Request(url + "?" + urlencode(params), headers={"User-Agent": "BurariSaltBreadMap/1.0", "Accept": "application/json"})
+        with urlopen(request, timeout=12) as response:
+            info.update(status=response.status, content_type=response.headers.get("Content-Type", ""))
+            raw = response.read(4 * 1024 * 1024 + 1)
+        if len(raw) > 4 * 1024 * 1024:
+            raise ValueError("検索結果が大きすぎます。店名を詳しく入力してください。")
+        info["failed_stage"] = operation + ".json"
+        doc = json.loads(raw.decode())
+        _salt_trace_v609(web, "response", {**info, "elapsed_ms": round((time.monotonic() - started) * 1000)})
+        return doc, info
+    except Exception as exc:
+        info.update(status=getattr(exc, "code", info.get("status")), exception_type=type(exc).__name__, error=str(exc), elapsed_ms=round((time.monotonic() - started) * 1000))
+        exc.landmark_diagnostic = info
+        _salt_trace_v609(web, "request_failed", info, "ERROR")
+        raise
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _salt_search_v609(query):
+    # The Photon -> exact/partial Overpass pipeline is ported from Sumai v215.
+    query = _salt_normal_v609(query)
+    if not 2 <= len(query) <= 180:
+        raise ValueError("店名や住所を2文字以上で入力してください。")
+    web = _SaltWebV609()
+    compact = re.sub(r"\s+", "", query)
+    pattern = ".*".join(re.sub(r"([.\[\]{}()*+?^$|\\])", r"\\\1", token) for token in query.split())
+    try:
+        # Sumai also uses GSI for Japanese addresses. Show all usable address
+        # candidates for confirmation instead of pretending a town centroid is a shop.
+        if re.search(r"東京都|[市区町村].*[0-9０-９]|丁目", query):
+            addresses, info = _salt_lookup_json_v609(web, "https://msearch.gsi.go.jp/address-search/AddressSearch", {"q": query}, "address_search")
+            results = []
+            if not isinstance(addresses, list):
+                raise ValueError("住所検索の応答を確認できませんでした。")
+            for item in addresses:
+                try:
+                    lng, lat = item["geometry"]["coordinates"][:2]
+                    lat, lng = _salt_coordinates_v609(lat, lng)
+                    address = _salt_normal_v609(item.get("properties", {}).get("title"))
+                    if address:
+                        results.append({"name": "住所から登録", "address": address, "lat": lat, "lng": lng, "source": "国土地理院・住所検索", "address_only": True})
+                except (KeyError, ValueError, TypeError, IndexError):
+                    continue
+            return {"candidates": results, "logs": web.logs}
+        doc, info = _salt_name_document_v609(web, query, pattern)
+        results, seen = [], set()
+        for element in doc["elements"]:
+            tags = element.get("tags") or {}
+            point = element.get("center") or element
+            try:
+                lat, lng = _salt_coordinates_v609(point["lat"], point["lon"])
+            except (ValueError, KeyError, TypeError):
+                continue
+            name = _salt_normal_v609(tags.get("name:ja") or tags.get("name"))
+            if not name:
+                continue
+            address = _salt_normal_v609(tags.get("addr:full")) or "".join(_salt_normal_v609(tags.get(k)) for k in ("addr:province", "addr:city", "addr:suburb", "addr:quarter", "addr:neighbourhood", "addr:street", "addr:block_number", "addr:housenumber"))
+            key = (name, round(lat, 5), round(lng, 5))
+            if key in seen:
+                continue
+            seen.add(key)
+            results.append({"name": name, "address": address or "住所未取得・地図の位置を確認してください", "lat": lat, "lng": lng, "source": info.get("provider", "Overpass") + " / OpenStreetMap"})
+        results.sort(key=lambda p: (re.sub(r"\s+", "", p["name"]).casefold() != compact.casefold(), p["name"], p["lat"], p["lng"]))
+        return {"candidates": results, "logs": web.logs}
+    except Exception as exc:
+        # Preserve technical evidence without putting a saved location at a guessed point.
+        error = RuntimeError("検索できませんでした。正式名称や住所を変えて再検索してください。")
+        error.salt_logs = web.logs + [{"event": "search_failed", "detail": getattr(exc, "landmark_diagnostic", {}), "error": str(exc)}]
+        raise error from exc
+
+
+def _salt_save_visit_v609(place, files, note, date_value, again, entry_id="", visit_id=None):
+    visit_id = visit_id or uuid.uuid4().hex
+    paths = []
+    try:
+        from PIL import Image, ImageOps
+        for index, file in enumerate(files or []):
+            raw = file.getvalue()
+            with Image.open(io.BytesIO(raw)) as image:
+                image = ImageOps.exif_transpose(image).convert("RGB")
+                image.thumbnail((1800, 1800))
+                buffer = io.BytesIO()
+                image.save(buffer, format="JPEG", quality=90)
+            path = f"{_salt_prefix_v609()}/images/{visit_id}_{index}.jpg"
+            supabase_client().storage.from_(PHOTO_BUCKET).upload(path=path, file=buffer.getvalue(), file_options={"content-type": "image/jpeg", "cache-control": "3600", "upsert": "true"})
+            paths.append(path)
+        return _salt_commit_v609("visit", {"place": place, "entry_id": entry_id, "again": again,
+            "visit": {"id": visit_id, "date": str(date_value), "note": str(note or "")[:4000], "photos": paths}})
+    except Exception:
+        # Keep uploaded files on an ambiguous metadata write failure: a server may
+        # have committed despite a lost HTTP reply. Never erase a committed photo.
+        raise
+
+
+def _salt_capture_v609(component_key, inbox_key):
+    value = st.session_state.get(component_key)
+    event = value.get("salt_action") if isinstance(value, dict) else getattr(value, "salt_action", None)
+    if isinstance(event, dict) and event.get("nonce"):
+        st.session_state[inbox_key] = dict(event)
+
+
+def _salt_preview_v609(place):
+    st.session_state["_salt_candidate_v609"] = dict(place)
+    st.session_state["salt_mode_v609"] = "地図"
+
+
+@st.cache_resource
+def _salt_search_jobs_v609():
+    return {"executor": ThreadPoolExecutor(max_workers=2, thread_name_prefix="salt-search"), "jobs": {}, "lock": threading.RLock()}
+
+
+def _salt_start_search_v609(query):
+    query = _salt_normal_v609(query)
+    if not 2 <= len(query) <= 180:
+        raise ValueError("店名や住所を2文字以上で入力してください。")
+    owner = _salt_owner_v609()
+    registry = _salt_search_jobs_v609()
+    with registry["lock"]:
+        # Keep one outstanding lookup per owner and expire abandoned completed jobs.
+        for key, job in list(registry["jobs"].items()):
+            if job["future"].done() and time.monotonic() - job["at"] > 3600:
+                registry["jobs"].pop(key, None)
+        previous = registry["jobs"].get(owner)
+        if previous and not previous["future"].done():
+            return
+        registry["jobs"][owner] = {"future": registry["executor"].submit(_salt_search_v609, query), "at": time.monotonic()}
+    st.session_state["_salt_search_wait_v609_" + owner] = True
+
+
+def _salt_collect_search_v609():
+    owner, registry = _salt_owner_v609(), _salt_search_jobs_v609()
+    with registry["lock"]:
+        job = registry["jobs"].get(owner)
+        if not job:
+            st.session_state.pop("_salt_search_wait_v609_" + owner, None)
+            return False
+        if not job["future"].done():
+            st.session_state["_salt_search_wait_v609_" + owner] = True
+            return False
+        registry["jobs"].pop(owner, None)
+    try:
+        result = job["future"].result()
+    except Exception as exc:
+        result = {"candidates": [], "error": str(exc), "logs": getattr(exc, "salt_logs", [])}
+    st.session_state["_salt_search_result_v609"] = result
+    st.session_state.pop("_salt_candidate_v609", None)
+    st.session_state.pop("_salt_search_wait_v609_" + owner, None)
+    return True
+
+
+@st.fragment(run_every=1)
+def _salt_search_progress_v609():
+    # Only this small status fragment polls; Back/Home can run while HTTP waits.
+    if str(st.session_state.get("main_page")) != "salt_bread":
+        return
+    if _salt_collect_search_v609():
+        st.rerun(scope="app")
+    st.info("店名と住所を検索しています。戻る操作も使えます。")
+
+
+def _salt_cards_v609(doc):
+    entries = [doc["entries"][key] for key in doc["order"]]
+    paths = []
+    for entry in entries:
+        photos = [p for visit in entry.get("visits", []) for p in visit.get("photos", [])]
+        paths.append(photos[-1] if photos else "")
+    signed = signed_photo_url_map(tuple(p for p in paths if p), expires_in=1800) if any(paths) else {}
+    return [{"id": entry["id"], "name": entry["name"], "address": entry.get("address", ""), "lat": entry["lat"], "lng": entry["lng"],
+             "src": str(signed.get(path) or ""), "again": bool(entry.get("again")), "visits": len(entry.get("visits", [])),
+             "note": str((entry.get("visits") or [{}])[-1].get("note") or "")}
+            for entry, path in zip(entries, paths)]
+
+
+def _salt_form_v609(place, entry_id=""):
+    key = str(entry_id or hashlib.sha256((str(place.get("name") or "") + "|" + str(place.get("address") or "")).encode()).hexdigest()[:20])
+    existing = (_salt_load_v609()["entries"].get(entry_id) or {}) if entry_id else {}
+    with st.form("salt_visit_v609_" + key, clear_on_submit=False):
+        name = st.text_input("店名", value="" if place.get("address_only") else str(place.get("name") or ""), max_chars=120)
+        address = st.text_input("住所", value=str(place.get("address") or ""), max_chars=240)
+        st.caption(f"地図上の位置：{float(place['lat']):.6f}, {float(place['lng']):.6f}")
+        files = st.file_uploader("パンの写真（複数可）", type=["jpg", "jpeg", "png", "webp"], accept_multiple_files=True)
+        note = st.text_area("感想（自由・空欄でも保存できます）", max_chars=4000)
+        date_value = st.date_input("食べた日", value=now_jst().date())
+        again = st.checkbox("また買いたい", value=bool(existing.get("again")))
+        checked = st.checkbox("店名・住所・地図の位置を確認しました", value=bool(entry_id))
+        submit = st.form_submit_button("記録を保存", type="primary", use_container_width=True)
+    if submit:
+        if not checked or not name.strip():
+            st.warning("店名と地図の位置を確認してください。")
+        else:
+            try:
+                token_key = "_salt_visit_token_" + key
+                visit_id = st.session_state.setdefault(token_key, uuid.uuid4().hex)
+                with st.spinner("塩パンの記録を保存しています…"):
+                    doc = _salt_save_visit_v609({**place, "name": name, "address": address}, files, note, date_value, again, entry_id, visit_id)
+                st.session_state.pop(token_key, None)
+                st.session_state["_salt_notice_v609"] = "塩パンの記録を保存しました。"
+                st.session_state.pop("_salt_candidate_v609", None)
+                _set_page_state("salt_bread", history_mode="replace")
+                st.rerun()
+            except Exception as exc:
+                st.error("保存できませんでした。入力内容を残しています。")
+                with st.expander("詳細"):
+                    st.code(_safe_error_text(exc, 500))
+
+
+@st.cache_resource
+def _salt_component_v609():
+    return st.components.v2.component("burari_salt_bread_v609", html=_SALT_HTML_V609, css=_SALT_CSS_V609, js=_SALT_JS_V609)
+
+
+def page_salt_bread_v609():
+    page_top("🍞 塩パンマップ", "食べた塩パンを、写真と感想で残そう。")
+    notice = st.session_state.pop("_salt_notice_v609", None)
+    if notice:
+        st.success(notice)
+    try:
+        doc = _salt_load_v609()
+    except Exception as exc:
+        st.error(str(exc))
+        if st.button("再読み込み", key="salt_reload_error_v609"):
+            st.rerun()
+        return
+    owner = _salt_owner_v609()
+    _salt_collect_search_v609()
+    component_key, inbox_key = "salt_map_v609_" + owner, "_salt_inbox_v609_" + owner
+    action = st.session_state.pop(inbox_key, None)
+    if isinstance(action, dict) and action.get("nonce") != st.session_state.get("_salt_action_ack_v609_" + owner):
+        st.session_state["_salt_action_ack_v609_" + owner] = action.get("nonce")
+        try:
+            if action.get("action") == "order":
+                doc = _salt_commit_v609("order", action, action.get("revision"))
+                st.success("順位を保存しました。")
+            elif action.get("action") == "open" and str(action.get("id")) in doc["entries"]:
+                st.session_state["_salt_entry_v609"] = str(action["id"])
+                _set_page_state("salt_bread_detail")
+                st.rerun()
+            elif action.get("action") == "preview" and isinstance(st.session_state.get("_salt_candidate_v609"), dict):
+                lat, lng = _salt_coordinates_v609(action.get("lat"), action.get("lng"))
+                st.session_state["_salt_candidate_v609"] = {**st.session_state["_salt_candidate_v609"], "lat": lat, "lng": lng}
+        except Exception as exc:
+            st.error(str(exc))
+            try:
+                doc = _salt_load_v609(force=True)
+            except Exception:
+                return
+    mode = st.radio("表示", ["地図", "ランキング"], horizontal=True, key="salt_mode_v609", label_visibility="collapsed")
+    candidate = st.session_state.get("_salt_candidate_v609")
+    try:
+        _salt_component_v609()(data={"entries": _salt_cards_v609(doc), "revision": doc["revision"], "mode": mode,
+            "preview": candidate, "ack": st.session_state.get("_salt_action_ack_v609_" + owner, "")}, key=component_key,
+            on_salt_action_change=lambda: _salt_capture_v609(component_key, inbox_key))
+    except Exception as exc:
+        st.error("地図を表示できませんでした。下の一覧から記録を開けます。")
+    if doc["order"]:
+        with st.expander("お店の一覧"):
+            for entry_id in doc["order"]:
+                entry = doc["entries"][entry_id]
+                if st.button(entry["name"], key="salt_open_" + entry_id, use_container_width=True):
+                    st.session_state["_salt_entry_v609"] = entry_id
+                    _set_page_state("salt_bread_detail")
+                    st.rerun()
+    with st.expander("＋ お店を検索して記録する", expanded=not bool(doc["order"]) or bool(candidate)):
+        waiting = bool(st.session_state.get("_salt_search_wait_v609_" + owner))
+        with st.form("salt_search_v609"):
+            query = st.text_input("店名・住所", placeholder="例：パン・メゾン 浅草")
+            searched = st.form_submit_button("場所を検索", use_container_width=True, disabled=waiting)
+        if searched:
+            st.session_state.pop("_salt_candidate_v609", None)
+            st.session_state.pop("_salt_search_result_v609", None)
+            try:
+                _salt_start_search_v609(query)
+                st.rerun()
+            except Exception as exc:
+                st.session_state["_salt_search_result_v609"] = {"candidates": [], "error": str(exc), "logs": getattr(exc, "salt_logs", [])}
+                st.rerun()
+        if waiting:
+            _salt_search_progress_v609()
+        result = st.session_state.get("_salt_search_result_v609") or {}
+        candidates = result.get("candidates") or []
+        if candidates:
+            choice_key = "salt_search_choice_v609_" + hashlib.sha256(json.dumps(candidates, sort_keys=True).encode()).hexdigest()[:16]
+            choice = st.selectbox("名前と住所を確認して選択", range(len(candidates)), format_func=lambda i: candidates[i]["name"] + " ｜ " + candidates[i]["address"], key=choice_key)
+            picked = candidates[choice]
+            st.caption(picked["source"])
+            if st.button("この場所を地図で確認", key="salt_preview_v609", use_container_width=True,
+                         on_click=_salt_preview_v609, args=(picked,)):
+                st.rerun()
+        elif result:
+            st.info(result.get("error") or "候補がありません。正式名称や住所を入力し直してください。")
+        if result.get("logs"):
+            with st.expander("検索ログ"):
+                st.download_button("検索ログを保存", json.dumps(result["logs"], ensure_ascii=False, indent=2), "burari_salt_search.json", "application/json", key="salt_search_log_v609")
+        if candidate:
+            st.markdown("**このお店の塩パンを記録**")
+            _salt_form_v609(candidate)
+
+
+def page_salt_bread_detail_v609():
+    page_top("🍞 塩パンの記録")
+    try:
+        doc = _salt_load_v609()
+    except Exception as exc:
+        st.error(str(exc))
+        return
+    entry = doc["entries"].get(str(st.session_state.get("_salt_entry_v609") or ""))
+    if not entry:
+        st.info("お店を地図から選んでください。")
+        return
+    st.subheader(entry["name"])
+    st.caption(entry.get("address") or "")
+    destination = str(entry["lat"]) + "," + str(entry["lng"])
+    st.link_button("ここへ行く（Googleマップ）", "https://www.google.com/maps/dir/?" + urlencode({"api": 1, "destination": destination, "travelmode": "walking"}), use_container_width=True)
+    st.caption(f"ランキング {doc['order'].index(entry['id']) + 1}位 ／ 記録 {len(entry['visits'])}回" + (" ／ ★ また買いたい" if entry.get("again") else ""))
+    visits = entry.get("visits", [])
+    if visits:
+        visit_index = st.selectbox("食べた記録", list(reversed(range(len(visits)))),
+            format_func=lambda i: str(visits[i].get("date") or "") + f"（{i + 1}回目）",
+            key="salt_visit_view_v609_" + entry["id"])
+        visit = visits[visit_index]
+        st.markdown("**" + str(visit.get("date") or "") + "**")
+        photos = tuple(visit.get("photos") or [])
+        signed = signed_photo_url_map(photos, expires_in=1800) if photos else {}
+        for path in photos:
+            if signed.get(path):
+                st.image(signed[path], caption=entry["name"], use_container_width=True)
+        if visit.get("note"):
+            st.write(visit["note"])
+    with st.expander("もう一度食べた記録を追加"):
+        _salt_form_v609(entry, entry["id"])
+
+_SALT_NAME_CACHE_V609 = {}
+
+def _salt_exception_details_v609(exc):
+    """Do not lose requests/urllib3 causes hidden by `raise AppError from None`."""
+    chain=[];seen=set();current=exc
+    while current is not None and id(current) not in seen and len(chain)<8:
+        seen.add(id(current));chain.append({'type':type(current).__name__,
+            'message':str(current),'errno':getattr(current,'errno',None)})
+        current=current.__cause__ or current.__context__
+    signature=' '.join(item['type']+' '+item['message'] for item in chain).lower()
+    phase=('response_wait' if 'readtimeout' in signature else 'connect' if 'connecttimeout' in signature
+           else 'tls' if 'sslerror' in signature else 'dns' if any(word in signature for word in ('nameresolution','gaierror','getaddrinfo'))
+           else 'timeout_unspecified' if any(word in signature for word in ('timeout','timed out','タイムアウト')) else 'request_or_decode')
+    return {'exception_chain':chain,'failure_phase':phase,'diagnostic_schema':2}
+
+def _salt_photon_document_v609(web,query):
+    cached=_SALT_NAME_CACHE_V609.get(query)
+    if cached and time.monotonic()-cached['time']<3600:
+        _salt_trace_v609(web,'landmark_cache_hit',{'query':query,'provider':'Photon','age_seconds':round(time.monotonic()-cached['time'])},stage='landmark.name_search')
+        return cached['doc'],cached['info']
+    if not hasattr(web,'local'):web.local=threading.local()
+    web.local.landmark_lookup=True
+    params={'q':query,'bbox':'139.4,35.45,140.05,35.95'}
+    doc,info=_salt_lookup_json_v609(web,'https://photon.komoot.io/api/',params,'name_search')
+    info.update(provider='Photon',failed_stage='name_search.validation')
+    try:
+        if not isinstance(doc,dict) or doc.get('type')!='FeatureCollection' or not isinstance(doc.get('features'),list):
+            raise ValueError('Photon response is not a GeoJSON FeatureCollection')
+        elements=[];decisions=[]
+        for feature in doc['features']:
+            try:
+                props=feature['properties'];geometry=feature['geometry']
+                if geometry.get('type')!='Point':raise ValueError('geometry is not a Point')
+                lng,lat=map(float,geometry['coordinates'][:2]);name=_salt_normal_v609(props.get('name') or props.get('street') or query)
+                if not name:raise ValueError('facility name missing')
+                if not (math.isfinite(lat) and math.isfinite(lng) and 35.45<=lat<=35.95 and 139.4<=lng<=140.05):raise ValueError('outside supported region')
+                if props.get('countrycode') and str(props['countrycode']).upper()!='JP':raise ValueError('country is not Japan')
+                parts=[]
+                for key in ('state','city','district','locality','street','housenumber'):
+                    value=_salt_normal_v609(props.get(key))
+                    if value and value not in parts:parts.append(value)
+                address=''.join(parts)
+                if address and not props.get('housenumber'):address+='（番地未確認）'
+                tags={'name':name,'addr:full':address}
+                elements.append({'type':props.get('osm_type'),'id':props.get('osm_id'),'lat':lat,'lon':lng,'tags':tags})
+                decisions.append({'name':name,'address':address,'lat':lat,'lng':lng,'osm_id':props.get('osm_id'),'decision':'candidate'})
+            except (KeyError,TypeError,ValueError,AttributeError,IndexError) as exc:
+                decisions.append({'decision':'rejected','reason':str(exc)})
+        _salt_trace_v609(web,'landmark_geocoder_results',{'query':query,'provider':'Photon','features':len(doc['features']),
+              'accepted':len(elements),'decisions':decisions},stage='landmark.result')
+        result={'elements':elements}
+        if elements:
+            if len(_SALT_NAME_CACHE_V609)>=128:_SALT_NAME_CACHE_V609.clear()
+            _SALT_NAME_CACHE_V609[query]={'time':time.monotonic(),'doc':result,'info':dict(info)}
+        return result,info
+    except Exception as exc:
+        exc.landmark_diagnostic=info
+        raise
+
+def _salt_name_document_v609(web,query,pattern):
+    try:
+        doc,info=_salt_photon_document_v609(web,query)
+        if doc['elements']:return doc,info
+        if len(query.split()) > 1:
+            doc,info=_salt_photon_document_v609(web,query.split()[0])
+            if doc['elements']:return doc,info
+        _salt_trace_v609(web,'landmark_geocoder_empty',{'query':query,'provider':'Photon','next_provider':'Overpass'},stage='landmark.name_search')
+    except Exception as exc:
+        detail={**(getattr(exc,'diagnostic',{}) or {}),**(getattr(exc,'landmark_diagnostic',{}) or {}),**_salt_exception_details_v609(exc)}
+        _salt_trace_v609(web,'landmark_geocoder_failed',{**detail,'query':query,'provider':'Photon','reason':str(exc),'exception_type':type(exc).__name__},'ERROR','landmark.name_search')
+        status=detail.get('status')
+        if str(status) in ('401','403','429'):raise
+    return _salt_overpass_document_v609(web,query,pattern)
+
+def _salt_overpass_document_v609(web,query,pattern):
+    """Indexed exact lookup first; partial lookup only after a successful empty result.
+
+    Try the independent public instance only for network/5xx failures, never
+    for access refusal/rate limits. Each endpoint is attempted once per query.
+    """
+    if not hasattr(web,'local'):web.local=threading.local()
+    web.local.landmark_lookup=True
+    bbox='(35.45,139.4,35.95,140.05)'
+    endpoints=('https://overpass-api.de/api/interpreter','https://overpass.private.coffee/api/interpreter')
+    for mode in ('exact','partial'):
+        literal=json.dumps(query if mode=='exact' else pattern,ensure_ascii=False)
+        operator='=' if mode=='exact' else '~'
+        suffix='' if mode=='exact' else ',i'
+        keys=('name','name:ja','alt_name','short_name')
+        q='[out:json][timeout:8];('+''.join('nwr["'+key+'"'+operator+literal+suffix+']'+bbox+';' for key in keys)+');out center tags;'
+        for index,url in enumerate(endpoints):
+            info={'url':url,'parameters':{'data':q},'match_mode':mode,'failed_stage':'name_search.request'}
+            try:
+                doc,info=_salt_lookup_json_v609(web,url,{'data':q},'name_search')
+                info.update(match_mode=mode,failed_stage='name_search.validation')
+                if not isinstance(doc,dict):raise ValueError('facility response must be an object')
+                if doc.get('remark'):
+                    error=ValueError('Overpass remark: '+str(doc['remark'])[:1500]);error.landmark_diagnostic=info
+                    raise error
+                if not isinstance(doc.get('elements'),list):raise ValueError('facility response is missing elements array')
+                break
+            except Exception as exc:
+                exc.landmark_diagnostic={**info,**(getattr(exc,'landmark_diagnostic',{}) or {})}
+                detail={**(getattr(exc,'diagnostic',{}) or {}),**exc.landmark_diagnostic}
+                status=detail.get('status')
+                try:status=int(status) if status is not None else None
+                except (TypeError,ValueError):status=None
+                transient=(status is not None and 500<=status<=599) or any(word in (type(exc).__name__+' '+str(exc)+' '+str(detail)).lower() for word in ('timeout','timed out','タイムアウト','connection','接続できません','通信失敗'))
+                if status in (401,403,429) or not transient or index==len(endpoints)-1:raise
+                _salt_trace_v609(web,'landmark_endpoint_fallback',{**detail,'url':url,'next_url':endpoints[index+1],
+                      'match_mode':mode,'reason':str(exc),'exception_type':type(exc).__name__},'WARNING','landmark.name_search')
+        if doc['elements'] or mode=='partial':return doc,info
+
+_SALT_HTML_V609 = '<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"><div id="salt-status" role="status" aria-live="polite"></div><div id="salt-map" style="height:420px;width:100%;border-radius:18px"></div><div id="salt-ranking"></div>'
+_SALT_CSS_V609 = """
+:host{color:#173a5e;background:#fff;font-family:inherit}#salt-status{font-size:12px;margin:6px 0 10px;color:#485d6f}#salt-map[hidden],#salt-ranking[hidden]{display:none!important}
+.salt-bread-pin{width:40px;height:40px;background:#fff3d6;border:3px solid #b66b25;border-radius:50% 50% 50% 6px;transform:rotate(-45deg);box-shadow:0 3px 8px #0003;display:flex;align-items:center;justify-content:center}.salt-bread-pin span{transform:rotate(45deg);font-size:27px}.salt-bread-pin.preview{border-style:dashed;background:#e1efff}
+.salt-popup{min-width:160px;max-width:220px;color:#173a5e}.salt-popup img{width:100%;height:115px;object-fit:cover;border-radius:10px}.salt-popup p{font-size:11px}.salt-shop-name{display:block;font-size:12px;line-height:1.4;text-align:center;margin-top:5px;overflow-wrap:anywhere;color:#173a5e}
+.salt-rank-card{display:grid;grid-template-columns:28px minmax(0,1fr) 44px;gap:10px;padding:10px;margin:8px 0;border:2px solid #e6e2d9;border-radius:16px;background:#fffaf0;align-items:center}.salt-rank-card.selected{border-color:#c17a28}.salt-rank-card.dragging{opacity:.65}.salt-rank-card.drop-target{border-top:4px solid #c17a28}.salt-rank-number{font-size:22px;color:#a45c18}.salt-rank-photo{background:none;border:0;cursor:pointer;padding:0;color:#173a5e}.salt-rank-photo img{width:100%;height:120px;object-fit:contain;display:block;border-radius:12px;background:#f2eadb}.salt-no-photo{display:block;font-size:48px;text-align:center;background:#f2eadb;border-radius:12px}
+.salt-button,.salt-drag-handle{background:#fff;border:1px solid #cfb28c;color:#173a5e;border-radius:10px;min-height:44px;font:inherit;font-size:12px;font-weight:700;padding:6px;touch-action:manipulation;cursor:pointer}.salt-button:disabled{opacity:.4}.salt-drag-handle{font-size:27px;touch-action:none;user-select:none;-webkit-user-select:none}.salt-rank-controls{grid-column:1/-1;display:grid;grid-template-columns:1fr 1fr 1.3fr;gap:6px}
+"""
+_SALT_JS_V609 = 'export default function(component) {\n  const {parentElement:root,data,setTriggerValue}=component;\n  const mapEl=root.querySelector(\'#salt-map\'), list=root.querySelector(\'#salt-ranking\'), status=root.querySelector(\'#salt-status\');\n  if(!mapEl||!list||!status)return;\n  let disposed=false, map=null, selected=\'\', drag=null, busy=false;\n  let entries=Array.isArray(data?.entries)?data.entries.slice():[];\n  const emit=(action,extra={})=>setTriggerValue(\'salt_action\',{action,...extra,revision:Number(data?.revision||0),nonce:`${Date.now()}:${Math.random()}`});\n  const saveOrder=()=>{busy=true;status.textContent=\'順位を保存しています…\';emit(\'order\',{order:entries.map(e=>e.id)});};\n  const el=(tag,cls,text)=>{const n=document.createElement(tag);if(cls)n.className=cls;if(text!==undefined)n.textContent=text;return n;};\n  const button=(text,fn)=>{const n=el(\'button\',\'salt-button\',text);n.type=\'button\';n.addEventListener(\'click\',e=>{e.preventDefault();e.stopPropagation();fn();});return n;};\n  const move=(id,delta)=>{if(busy)return;const i=entries.findIndex(e=>e.id===id),j=i+delta;if(i<0||j<0||j>=entries.length)return;const [entry]=entries.splice(i,1);entries.splice(j,0,entry);renderList();saveOrder();};\n  const renderList=()=>{\n    list.replaceChildren();\n    if(!entries.length){list.appendChild(el(\'p\',\'\',\'まだ記録がありません。店名や住所で検索して、最初の塩パンを登録しましょう。\'));return;}\n    entries.forEach((entry,index)=>{\n      const card=el(\'div\',\'salt-rank-card\');card.dataset.id=String(entry.id);card.classList.toggle(\'selected\',selected===entry.id);\n      const rank=el(\'strong\',\'salt-rank-number\',`${index+1}`);card.appendChild(rank);\n      const main=button(\'\',()=>{if(busy)return;selected=entry.id;renderList();});main.className=\'salt-rank-photo\';main.setAttribute(\'aria-label\',`${index+1}位 ${entry.name}を選ぶ`);\n      if(entry.src){const img=el(\'img\');img.src=String(entry.src);img.alt=String(entry.name);img.loading=\'lazy\';img.decoding=\'async\';main.appendChild(img);}else main.appendChild(el(\'span\',\'salt-no-photo\',\'🍞\'));\n      main.appendChild(el(\'small\',\'salt-shop-name\',String(entry.name||\'\')));card.appendChild(main);\n      const handle=button(\'⠿\',()=>{if(!busy){selected=entry.id;renderList();}});handle.className=\'salt-drag-handle\';handle.setAttribute(\'aria-label\',`${entry.name}の順位を指で移動`);\n      handle.addEventListener(\'pointerdown\',e=>{\n        if(busy||e.button>0)return;e.preventDefault();e.stopPropagation();selected=entry.id;\n        drag={id:entry.id,startY:e.clientY,startIndex:index,target:index,pointer:e.pointerId,moved:false};handle.setPointerCapture?.(e.pointerId);card.classList.add(\'dragging\');\n      });\n      handle.addEventListener(\'pointermove\',e=>{\n        if(!drag||drag.pointer!==e.pointerId)return;e.preventDefault();drag.moved=drag.moved||Math.abs(e.clientY-drag.startY)>6;\n        const cards=Array.from(list.querySelectorAll(\'.salt-rank-card\'));\n        let target=0,distance=Infinity;\n        cards.forEach((c,i)=>{const box=c.getBoundingClientRect(),d=Math.abs(e.clientY-(box.top+box.height/2));if(d<distance){distance=d;target=i;}});\n        drag.target=target;\n        cards.forEach((c,i)=>c.classList.toggle(\'drop-target\',i===drag.target));\n        if(e.clientY<80)window.scrollBy?.(0,-14);else if(e.clientY>window.innerHeight-100)window.scrollBy?.(0,14);\n      });\n      const finish=(e,cancel=false)=>{\n        if(!drag||drag.pointer!==e.pointerId)return;const d=drag;drag=null;handle.releasePointerCapture?.(e.pointerId);\n        if(!cancel&&d.moved&&d.target!==d.startIndex){const [item]=entries.splice(d.startIndex,1);entries.splice(d.target,0,item);renderList();saveOrder();}else renderList();\n      };\n      handle.addEventListener(\'pointerup\',e=>finish(e));handle.addEventListener(\'pointercancel\',e=>finish(e,true));card.appendChild(handle);\n      if(selected===entry.id){\n        const controls=el(\'div\',\'salt-rank-controls\');\n        const up=button(\'↑ 上へ\',()=>move(entry.id,-1)), down=button(\'↓ 下へ\',()=>move(entry.id,1));up.disabled=index===0||busy;down.disabled=index===entries.length-1||busy;\n        controls.appendChild(up);controls.appendChild(down);controls.appendChild(button(\'記録を見る\',()=>{if(!busy)emit(\'open\',{id:entry.id});}));card.appendChild(controls);\n      }\n      list.appendChild(card);\n    });\n  };\n  const ranking=data?.mode===\'ランキング\';mapEl.hidden=ranking;list.hidden=!ranking;\n  if(ranking){status.textContent=\'写真をタップして上下ボタン、または右の⠿を押して指で移動\';renderList();}\n  else{\n    status.textContent=\'パンのピンをタップすると、写真と感想を開きます。\';\n    const load=()=>{\n      if(window.L)return Promise.resolve(window.L);\n      if(window.__burariSaltLeaflet609)return window.__burariSaltLeaflet609;\n      window.__burariSaltLeaflet609=new Promise((resolve,reject)=>{const script=document.createElement(\'script\');script.src=\'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js\';script.crossOrigin=\'\';script.onload=()=>window.L?resolve(window.L):reject(new Error(\'地図の準備に失敗しました\'));script.onerror=()=>reject(new Error(\'地図を読み込めませんでした\'));document.head.appendChild(script);}).catch(e=>{window.__burariSaltLeaflet609=null;throw e;});\n      return window.__burariSaltLeaflet609;\n    };\n    load().then(L=>{\n      if(disposed)return;\n      map=L.map(mapEl,{scrollWheelZoom:false}).setView([35.66,139.72],12);\n      L.tileLayer(\'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png\',{maxZoom:19,attribution:\'© OpenStreetMap contributors\'}).addTo(map);\n      const points=[];\n      const icon=(preview=false)=>L.divIcon({className:\'salt-pin-container\',iconSize:[44,52],iconAnchor:[22,49],html:`<div class="salt-bread-pin ${preview?\'preview\':\'\'}"><span>🍞</span></div>`});\n      entries.forEach(entry=>{\n        const lat=Number(entry.lat),lng=Number(entry.lng);if(!Number.isFinite(lat)||!Number.isFinite(lng))return;\n        const marker=L.marker([lat,lng],{icon:icon(),title:String(entry.name||\'\'),keyboard:true}).addTo(map);\n        const content=el(\'div\',\'salt-popup\');if(entry.src){const img=el(\'img\');img.src=String(entry.src);img.alt=String(entry.name);img.loading=\'lazy\';content.appendChild(img);}\n        content.appendChild(el(\'small\',\'salt-shop-name\',String(entry.name||\'\')));content.appendChild(el(\'p\',\'\',String(entry.address||\'\')));\n        content.appendChild(button(\'写真と感想を見る\',()=>emit(\'open\',{id:entry.id})));marker.bindPopup(content);points.push([lat,lng]);\n      });\n      const preview=data?.preview;\n      if(preview&&Number.isFinite(Number(preview.lat))&&Number.isFinite(Number(preview.lng))){\n        const p=[Number(preview.lat),Number(preview.lng)];const marker=L.marker(p,{icon:icon(true),title:\'登録前の確認\',draggable:true}).addTo(map).bindPopup(el(\'div\',\'\',`${preview.name||\'\'}\u3000${preview.address||\'\'}`)).openPopup();\n        marker.on(\'dragend\',()=>{const point=marker.getLatLng();status.textContent=\'ピンの位置を更新しています…\';emit(\'preview\',{lat:point.lat,lng:point.lng});});\n        status.textContent=\'登録前のパンのピンは、指で動かして位置を調整できます。\';map.setView(p,17);\n      }else if(points.length===1)map.setView(points[0],16);else if(points.length>1)map.fitBounds(points,{padding:[35,35],maxZoom:16});\n      map.invalidateSize();\n    }).catch(e=>{if(!disposed){status.textContent=String(e.message||e);mapEl.textContent=\'地図を表示できません。お店の一覧・ランキングから記録を開けます。\';}});\n  }\n  return()=>{disposed=true;try{map?.remove();}catch(_){};};\n}\n'
+
 def page_good_moments_menu():
     page_top("✨ いい瞬間の設定をする")
     st.button(
@@ -62916,6 +63581,10 @@ with st.container(key="app_page_root_v280"):
         _perf_call_v457("page:review_shared", page_family_shared_replay_v555, force=True)
     elif page == "review_history":
         _perf_call_v457("page:review_history", page_history, embedded=False, force=True)
+    elif page == "salt_bread":
+        _perf_call_v457("page:salt_bread", page_salt_bread_v609, force=True)
+    elif page == "salt_bread_detail":
+        _perf_call_v457("page:salt_bread_detail", page_salt_bread_detail_v609, force=True)
     elif page == "nearby":
         _perf_call_v457("page:nearby", page_nearby, force=True)
     elif page == "discovery_results":
