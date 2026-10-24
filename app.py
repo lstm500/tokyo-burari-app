@@ -1,3 +1,4 @@
+# v613: Prefer configured Google Places, rank bakery candidates, and allow confirmed manual map placement during provider outages.
 # v612: Distinguish transport outages from no matches, bounded network waits, Photon retry and English partial-name fallback.
 # v611: Bind Leaflet ownership to its DOM container across changing Streamlit render wrappers.
 # v610: Google Photos chooser, idempotent Leaflet lifecycle, account-scoped persistent diagnostics export from Settings.
@@ -67,7 +68,7 @@ def _app_css_v473(markup, **_ignored):
 # Review menu-only update: 2026-09-19 JST
 GENERATED_UPDATE_JST = "2026-09-19T14:54:38+09:00"
 
-APP_BUILD = "v612"
+APP_BUILD = "v613"
 # v598: Passing the focus gate is mandatory before any weighted ranking or reroll.
 # Never fill the twenty-image target with focus-rejected candidates.
 # v597: Compare 30 FPS candidates across the whole saved video offline. Disk-backed
@@ -60620,7 +60621,7 @@ def _salt_search_v609(query):
             return {"candidates": results, "logs": web.logs}
         doc, info = _salt_name_document_v609(web, query, pattern)
         results, seen = [], set()
-        for element in doc["elements"]:
+        for index, element in enumerate(doc["elements"]):
             tags = element.get("tags") or {}
             point = element.get("center") or element
             try:
@@ -60635,8 +60636,10 @@ def _salt_search_v609(query):
             if key in seen:
                 continue
             seen.add(key)
-            results.append({"name": name, "address": address or "住所未取得・地図の位置を確認してください", "lat": lat, "lng": lng, "source": info.get("provider", "Overpass") + " / OpenStreetMap"})
-        results.sort(key=lambda p: (re.sub(r"\s+", "", p["name"]).casefold() != compact.casefold(), p["name"], p["lat"], p["lng"]))
+            results.append({"name": name, "address": address or "住所未取得・地図の位置を確認してください", "lat": lat, "lng": lng, "source": "Google Maps" if info.get("provider") == "Google Places" else info.get("provider", "Overpass") + " / OpenStreetMap", "_rank": _salt_candidate_rank_v613(query, tags, index)})
+        results.sort(key=lambda p: p["_rank"])
+        for result in results:
+            result.pop("_rank", None)
         return {"candidates": results, "logs": web.logs}
     except Exception as exc:
         # Preserve technical evidence without putting a saved location at a guessed point.
@@ -60999,7 +61002,7 @@ def _salt_form_v609(place, entry_id=""):
 
 @st.cache_resource
 def _salt_component_v609():
-    return st.components.v2.component("burari_salt_bread_v611", html=_SALT_HTML_V609, css=_SALT_CSS_V609, js=_SALT_JS_V609)
+    return st.components.v2.component("burari_salt_bread_v613", html=_SALT_HTML_V609, css=_SALT_CSS_V609, js=_SALT_JS_V609)
 
 
 def page_salt_bread_v609():
@@ -61029,6 +61032,15 @@ def page_salt_bread_v609():
                 st.session_state["_salt_entry_v609"] = str(action["id"])
                 _set_page_state("salt_bread_detail")
                 st.rerun()
+            elif action.get("action") == "manual_place":
+                manual_key = "_salt_manual_v613_" + owner
+                manual = st.session_state.get(manual_key)
+                if not isinstance(manual, dict) or not str(manual.get("name") or "").strip():
+                    raise ValueError("店名を入力してから地図をタップしてください。")
+                lat, lng = _salt_coordinates_v609(action.get("lat"), action.get("lng"))
+                st.session_state["_salt_candidate_v609"] = {**manual, "lat": lat, "lng": lng, "source": "地図で指定"}
+                st.session_state.pop(manual_key, None)
+                st.session_state["salt_mode_v609"] = "地図"
             elif action.get("action") == "preview" and isinstance(st.session_state.get("_salt_candidate_v609"), dict):
                 lat, lng = _salt_coordinates_v609(action.get("lat"), action.get("lng"))
                 st.session_state["_salt_candidate_v609"] = {**st.session_state["_salt_candidate_v609"], "lat": lat, "lng": lng}
@@ -61043,7 +61055,7 @@ def page_salt_bread_v609():
     candidate = st.session_state.get("_salt_candidate_v609")
     try:
         _salt_component_v609()(data={"owner": owner, "entries": _salt_cards_v609(doc), "revision": doc["revision"], "mode": mode,
-            "preview": candidate, "ack": st.session_state.get("_salt_action_ack_v609_" + owner, "")}, key=component_key,
+            "preview": candidate, "manual": st.session_state.get("_salt_manual_v613_" + owner), "ack": st.session_state.get("_salt_action_ack_v609_" + owner, "")}, key=component_key,
             on_salt_action_change=lambda: _salt_capture_v609(component_key, inbox_key),
             on_salt_diagnostic_change=lambda: _app_error_capture_v610(component_key, "salt_diagnostic", owner))
     except Exception as exc:
@@ -61085,6 +61097,16 @@ def page_salt_bread_v609():
                 st.rerun()
         elif result:
             st.info(result.get("error") or "候補がありません。正式名称や住所を入力し直してください。")
+        with st.expander("検索できないとき・地図から直接登録"):
+            manual_name = st.text_input("登録する店名", value=str(query or ""), key="salt_manual_name_v613_" + owner, max_chars=120)
+            manual_address = st.text_input("住所（分かる場合）", key="salt_manual_address_v613_" + owner, max_chars=240)
+            if st.button("地図をタップして場所を選ぶ", key="salt_manual_start_v613_" + owner, disabled=not bool(manual_name.strip()), use_container_width=True, on_click=_salt_manual_begin_v613, args=(owner,)):
+                st.rerun()
+            if st.session_state.get("_salt_manual_v613_" + owner):
+                st.info("上の地図でお店の位置をタップしてください。位置を選んだ後、写真と感想を登録できます。")
+                if st.button("場所の選択をやめる", key="salt_manual_cancel_v613_" + owner):
+                    st.session_state.pop("_salt_manual_v613_" + owner, None)
+                    st.rerun()
         if result.get("logs"):
             with st.expander("検索ログ"):
                 st.download_button("検索ログを保存", json.dumps(result["logs"], ensure_ascii=False, indent=2), "burari_salt_search.json", "application/json", key="salt_search_log_v609")
@@ -61127,6 +61149,86 @@ def page_salt_bread_detail_v609():
         _salt_form_v609(entry, entry["id"])
 
 _SALT_NAME_CACHE_V609 = {}
+
+def _salt_google_document_v613(web, query):
+    body = json.dumps({"textQuery": query, "languageCode": "ja", "regionCode": "JP",
+        "pageSize": 20, "locationBias": {"rectangle": {
+            "low": {"latitude": 35.45, "longitude": 139.4},
+            "high": {"latitude": 35.95, "longitude": 140.05}}}}, ensure_ascii=False).encode()
+    url = "https://places.googleapis.com/v1/places:searchText"
+    info = {"provider": "Google Places", "url": url, "query": query, "failed_stage": "google.request"}
+    started = time.monotonic()
+    _salt_trace_v609(web, "request", dict(info))
+    try:
+        request = Request(url, data=body, method="POST", headers={
+            "Content-Type": "application/json; charset=UTF-8",
+            "X-Goog-Api-Key": GOOGLE_PLACES_API_KEY,
+            "X-Goog-FieldMask": "places.id,places.displayName,places.formattedAddress,places.location,places.types"})
+        remaining = getattr(web, "deadline", time.monotonic() + 5) - time.monotonic()
+        if remaining < .25:
+            raise TimeoutError("検索の通信待ち時間を超えました。")
+        with urlopen(request, timeout=min(5., remaining)) as response:
+            info["status"] = response.status
+            raw = response.read(4 * 1024 * 1024 + 1)
+        if len(raw) > 4 * 1024 * 1024:
+            raise ValueError("検索応答が大きすぎます。")
+        info["failed_stage"] = "google.validation"
+        payload = json.loads(raw.decode())
+        if not isinstance(payload, dict) or "error" in payload or not isinstance(payload.get("places", []), list):
+            raise ValueError("Googleの検索応答を確認できませんでした。")
+        elements = []
+        for row in payload.get("places", []):
+            try:
+                point = row["location"]
+                lat, lng = _salt_coordinates_v609(point["latitude"], point["longitude"])
+                name = _salt_normal_v609(row["displayName"]["text"])
+                address = _salt_normal_v609(row.get("formattedAddress"))
+                if not name:
+                    continue
+                elements.append({"lat": lat, "lon": lng, "tags": {"name": name, "addr:full": address,
+                    "_types": row.get("types") or [], "_google_id": str(row.get("id") or "")}})
+            except (KeyError, TypeError, ValueError):
+                continue
+        _salt_trace_v609(web, "google_results", {**info, "accepted": len(elements),
+            "elapsed_ms": round((time.monotonic() - started) * 1000)})
+        return {"elements": elements}, info
+    except Exception as exc:
+        info.update(status=getattr(exc, "code", info.get("status")), exception_type=type(exc).__name__,
+            error=str(exc), elapsed_ms=round((time.monotonic() - started) * 1000))
+        exc.landmark_diagnostic = dict(info)
+        _salt_trace_v609(web, "google_failed", dict(info), "ERROR")
+        raise
+
+
+def _salt_candidate_rank_v613(query, tags, index):
+    normal = lambda value: re.sub(r"[^\w]", "", _salt_normal_v609(value).casefold())
+    target = normal(query)
+    names = [normal(tags.get(key)) for key in ("name", "name:ja", "name:en", "alt_name", "short_name", "brand")]
+    exact = any(target == value for value in names if value)
+    contains = any(target in value for value in names if value)
+    types = tags.get("_types") or []
+    food = tags.get("shop") in ("bakery", "pastry", "confectionery") or tags.get("amenity") in ("cafe", "restaurant", "fast_food") or any(t in types for t in ("bakery", "cafe", "restaurant", "food_store"))
+    return (not food, not exact, not contains, index)
+
+
+def _salt_manual_begin_v613(owner):
+    if owner != _salt_owner_v609():
+        return
+    name = str(st.session_state.get("salt_manual_name_v613_" + owner) or "").strip()
+    if not name:
+        return
+    st.session_state["_salt_manual_v613_" + owner] = {"name": name[:120],
+        "address": str(st.session_state.get("salt_manual_address_v613_" + owner) or "").strip()[:240]}
+    st.session_state.pop("_salt_candidate_v609", None)
+    st.session_state["salt_mode_v609"] = "地図"
+    # Ignore a late search result once the user explicitly starts choosing a point.
+    registry = _salt_search_jobs_v609()
+    with registry["lock"]:
+        previous = registry["jobs"].pop(owner, None)
+    if previous:
+        previous["future"].cancel()
+    st.session_state.pop("_salt_search_wait_v609_" + owner, None)
+
 
 def _salt_transient_v612(exc):
     detail = getattr(exc, "landmark_diagnostic", {}) or {}
@@ -61183,6 +61285,8 @@ def _salt_photon_document_v609(web,query):
                 address=''.join(parts)
                 if address and not props.get('housenumber'):address+='（番地未確認）'
                 tags={'name':name,'addr:full':address}
+                if props.get('osm_key') and props.get('osm_value'):
+                    tags[str(props['osm_key'])]=str(props['osm_value'])
                 elements.append({'type':props.get('osm_type'),'id':props.get('osm_id'),'lat':lat,'lon':lng,'tags':tags})
                 decisions.append({'name':name,'address':address,'lat':lat,'lng':lng,'osm_id':props.get('osm_id'),'decision':'candidate'})
             except (KeyError,TypeError,ValueError,AttributeError,IndexError) as exc:
@@ -61199,6 +61303,14 @@ def _salt_photon_document_v609(web,query):
         raise
 
 def _salt_name_document_v609(web,query,pattern):
+    if GOOGLE_PLACES_API_KEY:
+        try:
+            google_doc, google_info = _salt_google_document_v613(web, query)
+            if google_doc['elements']:
+                return google_doc, google_info
+        except Exception:
+            # Google failure is logged; the independent OSM search remains usable.
+            pass
     try:
         for attempt in range(2):
             try:
@@ -61267,7 +61379,7 @@ _SALT_CSS_V609 = """
 .salt-rank-card{display:grid;grid-template-columns:28px minmax(0,1fr) 44px;gap:10px;padding:10px;margin:8px 0;border:2px solid #e6e2d9;border-radius:16px;background:#fffaf0;align-items:center}.salt-rank-card.selected{border-color:#c17a28}.salt-rank-card.dragging{opacity:.65}.salt-rank-card.drop-target{border-top:4px solid #c17a28}.salt-rank-number{font-size:22px;color:#a45c18}.salt-rank-photo{background:none;border:0;cursor:pointer;padding:0;color:#173a5e}.salt-rank-photo img{width:100%;height:120px;object-fit:contain;display:block;border-radius:12px;background:#f2eadb}.salt-no-photo{display:block;font-size:48px;text-align:center;background:#f2eadb;border-radius:12px}
 .salt-button,.salt-drag-handle{background:#fff;border:1px solid #cfb28c;color:#173a5e;border-radius:10px;min-height:44px;font:inherit;font-size:12px;font-weight:700;padding:6px;touch-action:manipulation;cursor:pointer}.salt-button:disabled{opacity:.4}.salt-drag-handle{font-size:27px;touch-action:none;user-select:none;-webkit-user-select:none}.salt-rank-controls{grid-column:1/-1;display:grid;grid-template-columns:1fr 1fr 1.3fr;gap:6px}
 """
-_SALT_JS_V609 = 'export default function(component) {\n  const {parentElement:root,data,setTriggerValue}=component;\n  let mapEl=root.querySelector(\'#salt-map\');\n  const list=root.querySelector(\'#salt-ranking\'), status=root.querySelector(\'#salt-status\');\n  if(!mapEl||!list||!status)return;\n  let disposed=false, map=null, selected=\'\', drag=null, busy=false;\n  const lease={dispose(){if(disposed)return;disposed=true;try{map?.remove();}catch(error){reportError610(\'salt.map_cleanup\',error);}map=null;}};\n  const reportError610=(stage,error,detail={})=>{\n    const message=String(error?.message||error||\'Unknown error\').slice(0,3000);\n    const owner=String(data?.owner||\'\');\n    const row={id:(globalThis.crypto?.randomUUID?.()||`${Date.now().toString(16)}${Math.random().toString(16).slice(2)}`).replace(/-/g,\'\').padEnd(32,\'0\').slice(0,32),\n      at:new Date().toISOString(),stage,message,detail:{...detail,stack:String(error?.stack||\'\').slice(0,5000),user_agent:navigator.userAgent,build:\'v611\'}};\n    try{const key=\'burari_errors_v610_\'+owner;let rows=JSON.parse(localStorage.getItem(key)||\'[]\');if(!Array.isArray(rows))rows=[];rows.push(row);localStorage.setItem(key,JSON.stringify(rows.slice(-200)));}catch(_){}\n    try{\n      const throttles=window.__burariErrorThrottle610||(window.__burariErrorThrottle610=new Map());\n      const signature=owner+\'|\'+stage+\'|\'+message;\n      if(Date.now()-(throttles.get(signature)||0)<30000)return;\n      if(throttles.size>100)throttles.clear();throttles.set(signature,Date.now());\n      setTriggerValue(\'salt_diagnostic\',row);\n    }catch(_){}\n  };\n\n  // Ownership belongs to the actual container, not the renderer\'s wrapper.\n  // Streamlit may supply a different wrapper for the same DOM during reruns.\n  const prior=mapEl.__saltMapLease611 || root.__saltMapLease610;\n  if(prior)prior.dispose();\n  if(mapEl._leaflet_id){const fresh=mapEl.cloneNode(false);mapEl.replaceWith(fresh);mapEl=fresh;}\n  mapEl.__saltMapLease611=lease;\n  root.__saltMapLease610=lease;\n  let entries=Array.isArray(data?.entries)?data.entries.slice():[];\n  const emit=(action,extra={})=>setTriggerValue(\'salt_action\',{action,...extra,revision:Number(data?.revision||0),nonce:`${Date.now()}:${Math.random()}`});\n  const saveOrder=()=>{busy=true;status.textContent=\'順位を保存しています…\';emit(\'order\',{order:entries.map(e=>e.id)});};\n  const el=(tag,cls,text)=>{const n=document.createElement(tag);if(cls)n.className=cls;if(text!==undefined)n.textContent=text;return n;};\n  const button=(text,fn)=>{const n=el(\'button\',\'salt-button\',text);n.type=\'button\';n.addEventListener(\'click\',e=>{e.preventDefault();e.stopPropagation();fn();});return n;};\n  const move=(id,delta)=>{if(busy)return;const i=entries.findIndex(e=>e.id===id),j=i+delta;if(i<0||j<0||j>=entries.length)return;const [entry]=entries.splice(i,1);entries.splice(j,0,entry);renderList();saveOrder();};\n  const renderList=()=>{\n    list.replaceChildren();\n    if(!entries.length){list.appendChild(el(\'p\',\'\',\'まだ記録がありません。店名や住所で検索して、最初の塩パンを登録しましょう。\'));return;}\n    entries.forEach((entry,index)=>{\n      const card=el(\'div\',\'salt-rank-card\');card.dataset.id=String(entry.id);card.classList.toggle(\'selected\',selected===entry.id);\n      const rank=el(\'strong\',\'salt-rank-number\',`${index+1}`);card.appendChild(rank);\n      const main=button(\'\',()=>{if(busy)return;selected=entry.id;renderList();});main.className=\'salt-rank-photo\';main.setAttribute(\'aria-label\',`${index+1}位 ${entry.name}を選ぶ`);\n      if(entry.src){const img=el(\'img\');img.src=String(entry.src);img.alt=String(entry.name);img.loading=\'lazy\';img.decoding=\'async\';main.appendChild(img);}else main.appendChild(el(\'span\',\'salt-no-photo\',\'🍞\'));\n      main.appendChild(el(\'small\',\'salt-shop-name\',String(entry.name||\'\')));card.appendChild(main);\n      const handle=button(\'⠿\',()=>{if(!busy){selected=entry.id;renderList();}});handle.className=\'salt-drag-handle\';handle.setAttribute(\'aria-label\',`${entry.name}の順位を指で移動`);\n      handle.addEventListener(\'pointerdown\',e=>{\n        if(busy||e.button>0)return;e.preventDefault();e.stopPropagation();selected=entry.id;\n        drag={id:entry.id,startY:e.clientY,startIndex:index,target:index,pointer:e.pointerId,moved:false};handle.setPointerCapture?.(e.pointerId);card.classList.add(\'dragging\');\n      });\n      handle.addEventListener(\'pointermove\',e=>{\n        if(!drag||drag.pointer!==e.pointerId)return;e.preventDefault();drag.moved=drag.moved||Math.abs(e.clientY-drag.startY)>6;\n        const cards=Array.from(list.querySelectorAll(\'.salt-rank-card\'));\n        let target=0,distance=Infinity;\n        cards.forEach((c,i)=>{const box=c.getBoundingClientRect(),d=Math.abs(e.clientY-(box.top+box.height/2));if(d<distance){distance=d;target=i;}});\n        drag.target=target;\n        cards.forEach((c,i)=>c.classList.toggle(\'drop-target\',i===drag.target));\n        if(e.clientY<80)window.scrollBy?.(0,-14);else if(e.clientY>window.innerHeight-100)window.scrollBy?.(0,14);\n      });\n      const finish=(e,cancel=false)=>{\n        if(!drag||drag.pointer!==e.pointerId)return;const d=drag;drag=null;handle.releasePointerCapture?.(e.pointerId);\n        if(!cancel&&d.moved&&d.target!==d.startIndex){const [item]=entries.splice(d.startIndex,1);entries.splice(d.target,0,item);renderList();saveOrder();}else renderList();\n      };\n      handle.addEventListener(\'pointerup\',e=>finish(e));handle.addEventListener(\'pointercancel\',e=>finish(e,true));card.appendChild(handle);\n      if(selected===entry.id){\n        const controls=el(\'div\',\'salt-rank-controls\');\n        const up=button(\'↑ 上へ\',()=>move(entry.id,-1)), down=button(\'↓ 下へ\',()=>move(entry.id,1));up.disabled=index===0||busy;down.disabled=index===entries.length-1||busy;\n        controls.appendChild(up);controls.appendChild(down);controls.appendChild(button(\'記録を見る\',()=>{if(!busy)emit(\'open\',{id:entry.id});}));card.appendChild(controls);\n      }\n      list.appendChild(card);\n    });\n  };\n  const ranking=data?.mode===\'ランキング\';mapEl.hidden=ranking;list.hidden=!ranking;\n  if(ranking){status.textContent=\'写真をタップして上下ボタン、または右の⠿を押して指で移動\';renderList();}\n  else{\n    status.textContent=\'パンのピンをタップすると、写真と感想を開きます。\';\n    const load=()=>{\n      if(window.L)return Promise.resolve(window.L);\n      if(window.__burariSaltLeaflet609)return window.__burariSaltLeaflet609;\n      window.__burariSaltLeaflet609=new Promise((resolve,reject)=>{const script=document.createElement(\'script\');script.src=\'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js\';script.crossOrigin=\'\';script.onload=()=>window.L?resolve(window.L):reject(new Error(\'地図の準備に失敗しました\'));script.onerror=()=>reject(new Error(\'地図を読み込めませんでした\'));document.head.appendChild(script);}).catch(e=>{window.__burariSaltLeaflet609=null;throw e;});\n      return window.__burariSaltLeaflet609;\n    };\n    load().then(L=>{\n      if(disposed||mapEl.__saltMapLease611!==lease)return;\n      map=L.map(mapEl,{scrollWheelZoom:false}).setView([35.66,139.72],12);\n      L.tileLayer(\'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png\',{maxZoom:19,attribution:\'© OpenStreetMap contributors\'}).addTo(map);\n      const points=[];\n      const icon=(preview=false)=>L.divIcon({className:\'salt-pin-container\',iconSize:[44,52],iconAnchor:[22,49],html:`<div class="salt-bread-pin ${preview?\'preview\':\'\'}"><span>🍞</span></div>`});\n      entries.forEach(entry=>{\n        const lat=Number(entry.lat),lng=Number(entry.lng);if(!Number.isFinite(lat)||!Number.isFinite(lng))return;\n        const marker=L.marker([lat,lng],{icon:icon(),title:String(entry.name||\'\'),keyboard:true}).addTo(map);\n        const content=el(\'div\',\'salt-popup\');if(entry.src){const img=el(\'img\');img.src=String(entry.src);img.alt=String(entry.name);img.loading=\'lazy\';content.appendChild(img);}\n        content.appendChild(el(\'small\',\'salt-shop-name\',String(entry.name||\'\')));content.appendChild(el(\'p\',\'\',String(entry.address||\'\')));\n        content.appendChild(button(\'写真と感想を見る\',()=>emit(\'open\',{id:entry.id})));marker.bindPopup(content);points.push([lat,lng]);\n      });\n      const preview=data?.preview;\n      if(preview&&Number.isFinite(Number(preview.lat))&&Number.isFinite(Number(preview.lng))){\n        const p=[Number(preview.lat),Number(preview.lng)];const marker=L.marker(p,{icon:icon(true),title:\'登録前の確認\',draggable:true}).addTo(map).bindPopup(el(\'div\',\'\',`${preview.name||\'\'}\u3000${preview.address||\'\'}`)).openPopup();\n        marker.on(\'dragend\',()=>{const point=marker.getLatLng();status.textContent=\'ピンの位置を更新しています…\';emit(\'preview\',{lat:point.lat,lng:point.lng});});\n        status.textContent=\'登録前のパンのピンは、指で動かして位置を調整できます。\';map.setView(p,17);\n      }else if(points.length===1)map.setView(points[0],16);else if(points.length>1)map.fitBounds(points,{padding:[35,35],maxZoom:16});\n      map.invalidateSize();\n    }).catch(e=>{if(!disposed){status.textContent=String(e.message||e);reportError610(\'salt.map_initialization\',e,{container_initialized:Boolean(mapEl._leaflet_id),mode:data?.mode,lifecycle:\'container-owner-v611\'});mapEl.textContent=\'地図を表示できません。お店の一覧・ランキングから記録を開けます。\';}});\n  }\n  return()=>{lease.dispose();if(mapEl.__saltMapLease611===lease)delete mapEl.__saltMapLease611;if(root.__saltMapLease610===lease)delete root.__saltMapLease610;};\n}\n'
+_SALT_JS_V609 = 'export default function(component) {\n  const {parentElement:root,data,setTriggerValue}=component;\n  let mapEl=root.querySelector(\'#salt-map\');\n  const list=root.querySelector(\'#salt-ranking\'), status=root.querySelector(\'#salt-status\');\n  if(!mapEl||!list||!status)return;\n  let disposed=false, map=null, selected=\'\', drag=null, busy=false;\n  const lease={dispose(){if(disposed)return;disposed=true;try{map?.remove();}catch(error){reportError610(\'salt.map_cleanup\',error);}map=null;}};\n  const reportError610=(stage,error,detail={})=>{\n    const message=String(error?.message||error||\'Unknown error\').slice(0,3000);\n    const owner=String(data?.owner||\'\');\n    const row={id:(globalThis.crypto?.randomUUID?.()||`${Date.now().toString(16)}${Math.random().toString(16).slice(2)}`).replace(/-/g,\'\').padEnd(32,\'0\').slice(0,32),\n      at:new Date().toISOString(),stage,message,detail:{...detail,stack:String(error?.stack||\'\').slice(0,5000),user_agent:navigator.userAgent,build:\'v611\'}};\n    try{const key=\'burari_errors_v610_\'+owner;let rows=JSON.parse(localStorage.getItem(key)||\'[]\');if(!Array.isArray(rows))rows=[];rows.push(row);localStorage.setItem(key,JSON.stringify(rows.slice(-200)));}catch(_){}\n    try{\n      const throttles=window.__burariErrorThrottle610||(window.__burariErrorThrottle610=new Map());\n      const signature=owner+\'|\'+stage+\'|\'+message;\n      if(Date.now()-(throttles.get(signature)||0)<30000)return;\n      if(throttles.size>100)throttles.clear();throttles.set(signature,Date.now());\n      setTriggerValue(\'salt_diagnostic\',row);\n    }catch(_){}\n  };\n\n  // Ownership belongs to the actual container, not the renderer\'s wrapper.\n  // Streamlit may supply a different wrapper for the same DOM during reruns.\n  const prior=mapEl.__saltMapLease611 || root.__saltMapLease610;\n  if(prior)prior.dispose();\n  if(mapEl._leaflet_id){const fresh=mapEl.cloneNode(false);mapEl.replaceWith(fresh);mapEl=fresh;}\n  mapEl.__saltMapLease611=lease;\n  root.__saltMapLease610=lease;\n  let entries=Array.isArray(data?.entries)?data.entries.slice():[];\n  const emit=(action,extra={})=>setTriggerValue(\'salt_action\',{action,...extra,revision:Number(data?.revision||0),nonce:`${Date.now()}:${Math.random()}`});\n  const saveOrder=()=>{busy=true;status.textContent=\'順位を保存しています…\';emit(\'order\',{order:entries.map(e=>e.id)});};\n  const el=(tag,cls,text)=>{const n=document.createElement(tag);if(cls)n.className=cls;if(text!==undefined)n.textContent=text;return n;};\n  const button=(text,fn)=>{const n=el(\'button\',\'salt-button\',text);n.type=\'button\';n.addEventListener(\'click\',e=>{e.preventDefault();e.stopPropagation();fn();});return n;};\n  const move=(id,delta)=>{if(busy)return;const i=entries.findIndex(e=>e.id===id),j=i+delta;if(i<0||j<0||j>=entries.length)return;const [entry]=entries.splice(i,1);entries.splice(j,0,entry);renderList();saveOrder();};\n  const renderList=()=>{\n    list.replaceChildren();\n    if(!entries.length){list.appendChild(el(\'p\',\'\',\'まだ記録がありません。店名や住所で検索して、最初の塩パンを登録しましょう。\'));return;}\n    entries.forEach((entry,index)=>{\n      const card=el(\'div\',\'salt-rank-card\');card.dataset.id=String(entry.id);card.classList.toggle(\'selected\',selected===entry.id);\n      const rank=el(\'strong\',\'salt-rank-number\',`${index+1}`);card.appendChild(rank);\n      const main=button(\'\',()=>{if(busy)return;selected=entry.id;renderList();});main.className=\'salt-rank-photo\';main.setAttribute(\'aria-label\',`${index+1}位 ${entry.name}を選ぶ`);\n      if(entry.src){const img=el(\'img\');img.src=String(entry.src);img.alt=String(entry.name);img.loading=\'lazy\';img.decoding=\'async\';main.appendChild(img);}else main.appendChild(el(\'span\',\'salt-no-photo\',\'🍞\'));\n      main.appendChild(el(\'small\',\'salt-shop-name\',String(entry.name||\'\')));card.appendChild(main);\n      const handle=button(\'⠿\',()=>{if(!busy){selected=entry.id;renderList();}});handle.className=\'salt-drag-handle\';handle.setAttribute(\'aria-label\',`${entry.name}の順位を指で移動`);\n      handle.addEventListener(\'pointerdown\',e=>{\n        if(busy||e.button>0)return;e.preventDefault();e.stopPropagation();selected=entry.id;\n        drag={id:entry.id,startY:e.clientY,startIndex:index,target:index,pointer:e.pointerId,moved:false};handle.setPointerCapture?.(e.pointerId);card.classList.add(\'dragging\');\n      });\n      handle.addEventListener(\'pointermove\',e=>{\n        if(!drag||drag.pointer!==e.pointerId)return;e.preventDefault();drag.moved=drag.moved||Math.abs(e.clientY-drag.startY)>6;\n        const cards=Array.from(list.querySelectorAll(\'.salt-rank-card\'));\n        let target=0,distance=Infinity;\n        cards.forEach((c,i)=>{const box=c.getBoundingClientRect(),d=Math.abs(e.clientY-(box.top+box.height/2));if(d<distance){distance=d;target=i;}});\n        drag.target=target;\n        cards.forEach((c,i)=>c.classList.toggle(\'drop-target\',i===drag.target));\n        if(e.clientY<80)window.scrollBy?.(0,-14);else if(e.clientY>window.innerHeight-100)window.scrollBy?.(0,14);\n      });\n      const finish=(e,cancel=false)=>{\n        if(!drag||drag.pointer!==e.pointerId)return;const d=drag;drag=null;handle.releasePointerCapture?.(e.pointerId);\n        if(!cancel&&d.moved&&d.target!==d.startIndex){const [item]=entries.splice(d.startIndex,1);entries.splice(d.target,0,item);renderList();saveOrder();}else renderList();\n      };\n      handle.addEventListener(\'pointerup\',e=>finish(e));handle.addEventListener(\'pointercancel\',e=>finish(e,true));card.appendChild(handle);\n      if(selected===entry.id){\n        const controls=el(\'div\',\'salt-rank-controls\');\n        const up=button(\'↑ 上へ\',()=>move(entry.id,-1)), down=button(\'↓ 下へ\',()=>move(entry.id,1));up.disabled=index===0||busy;down.disabled=index===entries.length-1||busy;\n        controls.appendChild(up);controls.appendChild(down);controls.appendChild(button(\'記録を見る\',()=>{if(!busy)emit(\'open\',{id:entry.id});}));card.appendChild(controls);\n      }\n      list.appendChild(card);\n    });\n  };\n  const ranking=data?.mode===\'ランキング\';mapEl.hidden=ranking;list.hidden=!ranking;\n  if(ranking){status.textContent=\'写真をタップして上下ボタン、または右の⠿を押して指で移動\';renderList();}\n  else{\n    status.textContent=\'パンのピンをタップすると、写真と感想を開きます。\';\n    const load=()=>{\n      if(window.L)return Promise.resolve(window.L);\n      if(window.__burariSaltLeaflet609)return window.__burariSaltLeaflet609;\n      window.__burariSaltLeaflet609=new Promise((resolve,reject)=>{const script=document.createElement(\'script\');script.src=\'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js\';script.crossOrigin=\'\';script.onload=()=>window.L?resolve(window.L):reject(new Error(\'地図の準備に失敗しました\'));script.onerror=()=>reject(new Error(\'地図を読み込めませんでした\'));document.head.appendChild(script);}).catch(e=>{window.__burariSaltLeaflet609=null;throw e;});\n      return window.__burariSaltLeaflet609;\n    };\n    load().then(L=>{\n      if(disposed||mapEl.__saltMapLease611!==lease)return;\n      map=L.map(mapEl,{scrollWheelZoom:false}).setView([35.66,139.72],12);\n      L.tileLayer(\'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png\',{maxZoom:19,attribution:\'© OpenStreetMap contributors\'}).addTo(map);\n      const points=[];\n      const icon=(preview=false)=>L.divIcon({className:\'salt-pin-container\',iconSize:[44,52],iconAnchor:[22,49],html:`<div class="salt-bread-pin ${preview?\'preview\':\'\'}"><span>🍞</span></div>`});\n      entries.forEach(entry=>{\n        const lat=Number(entry.lat),lng=Number(entry.lng);if(!Number.isFinite(lat)||!Number.isFinite(lng))return;\n        const marker=L.marker([lat,lng],{icon:icon(),title:String(entry.name||\'\'),keyboard:true}).addTo(map);\n        const content=el(\'div\',\'salt-popup\');if(entry.src){const img=el(\'img\');img.src=String(entry.src);img.alt=String(entry.name);img.loading=\'lazy\';content.appendChild(img);}\n        content.appendChild(el(\'small\',\'salt-shop-name\',String(entry.name||\'\')));content.appendChild(el(\'p\',\'\',String(entry.address||\'\')));\n        content.appendChild(button(\'写真と感想を見る\',()=>emit(\'open\',{id:entry.id})));marker.bindPopup(content);points.push([lat,lng]);\n      });\n      if(data?.manual){\n        status.textContent=\'登録するお店の位置を地図でタップしてください。\';\n        map.on(\'click\',event=>{if(disposed||busy)return;busy=true;status.textContent=\'選んだ場所を確認しています…\';emit(\'manual_place\',{lat:event.latlng.lat,lng:event.latlng.lng});});\n      }\n      const preview=data?.preview;\n      if(preview&&Number.isFinite(Number(preview.lat))&&Number.isFinite(Number(preview.lng))){\n        const p=[Number(preview.lat),Number(preview.lng)];const marker=L.marker(p,{icon:icon(true),title:\'登録前の確認\',draggable:true}).addTo(map).bindPopup(el(\'div\',\'\',`${preview.name||\'\'}\u3000${preview.address||\'\'}`)).openPopup();\n        marker.on(\'dragend\',()=>{const point=marker.getLatLng();status.textContent=\'ピンの位置を更新しています…\';emit(\'preview\',{lat:point.lat,lng:point.lng});});\n        status.textContent=\'登録前のパンのピンは、指で動かして位置を調整できます。\';map.setView(p,17);\n      }else if(points.length===1)map.setView(points[0],16);else if(points.length>1)map.fitBounds(points,{padding:[35,35],maxZoom:16});\n      map.invalidateSize();\n    }).catch(e=>{if(!disposed){status.textContent=String(e.message||e);reportError610(\'salt.map_initialization\',e,{container_initialized:Boolean(mapEl._leaflet_id),mode:data?.mode,lifecycle:\'container-owner-v611\'});mapEl.textContent=\'地図を表示できません。お店の一覧・ランキングから記録を開けます。\';}});\n  }\n  return()=>{lease.dispose();if(mapEl.__saltMapLease611===lease)delete mapEl.__saltMapLease611;if(root.__saltMapLease610===lease)delete root.__saltMapLease610;};\n}\n'
 
 def page_good_moments_menu():
     page_top("✨ いい瞬間の設定をする")
