@@ -1,3 +1,4 @@
+# v614: Include salt bread map/detail pages in the shared bottom Back/Home navigation.
 # v613: Prefer configured Google Places, rank bakery candidates, and allow confirmed manual map placement during provider outages.
 # v612: Distinguish transport outages from no matches, bounded network waits, Photon retry and English partial-name fallback.
 # v611: Bind Leaflet ownership to its DOM container across changing Streamlit render wrappers.
@@ -68,7 +69,7 @@ def _app_css_v473(markup, **_ignored):
 # Review menu-only update: 2026-09-19 JST
 GENERATED_UPDATE_JST = "2026-09-19T14:54:38+09:00"
 
-APP_BUILD = "v613"
+APP_BUILD = "v614"
 # v598: Passing the focus gate is mandatory before any weighted ranking or reroll.
 # Never fill the twenty-image target with focus-rejected candidates.
 # v597: Compare 30 FPS candidates across the whole saved video offline. Disk-backed
@@ -63990,7 +63991,7 @@ with st.container(key="app_page_root_v280"):
         live_page = str(st.session_state.get("main_page") or "home")
         if (
             page == live_page
-            and page in {"camera", "videos", "moments", "diary", "photos", "review", "review_project", "review_monthly", "review_tag", "review_random", "review_shared", "review_history", "nearby", "discovery_results", "evening_review", "toilets", "help_places", "field_notes", "experience", "events", "settings", "settings_moments", "settings_moments_definition", "settings_location", "settings_account", "settings_media_import"}
+            and page in {"salt_bread", "salt_bread_detail", "camera", "videos", "moments", "diary", "photos", "review", "review_project", "review_monthly", "review_tag", "review_random", "review_shared", "review_history", "nearby", "discovery_results", "evening_review", "toilets", "help_places", "field_notes", "experience", "events", "settings", "settings_moments", "settings_moments_definition", "settings_location", "settings_account", "settings_media_import"}
         ):
             _perf_call_v457("ui:bottom_navigation", render_global_bottom_navigation, page)
 
