@@ -1,3 +1,4 @@
+# v612: Distinguish transport outages from no matches, bounded network waits, Photon retry and English partial-name fallback.
 # v611: Bind Leaflet ownership to its DOM container across changing Streamlit render wrappers.
 # v610: Google Photos chooser, idempotent Leaflet lifecycle, account-scoped persistent diagnostics export from Settings.
 # v609: Salt bread map with Sumai v215 geocoding, photo/visit notes, persistent tap/drag ranking.
@@ -66,7 +67,7 @@ def _app_css_v473(markup, **_ignored):
 # Review menu-only update: 2026-09-19 JST
 GENERATED_UPDATE_JST = "2026-09-19T14:54:38+09:00"
 
-APP_BUILD = "v611"
+APP_BUILD = "v612"
 # v598: Passing the focus gate is mandatory before any weighted ranking or reroll.
 # Never fill the twenty-image target with focus-rejected candidates.
 # v597: Compare 30 FPS candidates across the whole saved video offline. Disk-backed
@@ -60562,15 +60563,19 @@ def _salt_trace_v609(web, event, detail=None, level="INFO", stage=""):
 class _SaltWebV609:
     def __init__(self):
         self.logs = []
+        self.deadline = time.monotonic() + 16.0
 
 
 def _salt_lookup_json_v609(web, url, params, operation):
     started = time.monotonic()
     info = {"url": url, "parameters": params, "operation": operation, "failed_stage": operation + ".request"}
-    _salt_trace_v609(web, "request", info)
+    _salt_trace_v609(web, "request", dict(info))
     try:
         request = Request(url + "?" + urlencode(params), headers={"User-Agent": "BurariSaltBreadMap/1.0", "Accept": "application/json"})
-        with urlopen(request, timeout=12) as response:
+        remaining = getattr(web, "deadline", time.monotonic() + 4.0) - time.monotonic()
+        if remaining < 0.25:
+            raise TimeoutError("検索の通信待ち時間を超えました。")
+        with urlopen(request, timeout=min(4.0, remaining)) as response:
             info.update(status=response.status, content_type=response.headers.get("Content-Type", ""))
             raw = response.read(4 * 1024 * 1024 + 1)
         if len(raw) > 4 * 1024 * 1024:
@@ -60635,7 +60640,17 @@ def _salt_search_v609(query):
         return {"candidates": results, "logs": web.logs}
     except Exception as exc:
         # Preserve technical evidence without putting a saved location at a guessed point.
-        error = RuntimeError("検索できませんでした。正式名称や住所を変えて再検索してください。")
+        info = getattr(exc, "landmark_diagnostic", {}) or {}
+        status = str(info.get("status") or getattr(exc, "code", ""))
+        if status == "429":
+            message = "検索サービスが混雑しています。少し時間をおいて、同じ店名で再検索してください。"
+        elif status in ("401", "403"):
+            message = "検索サービスへのアクセスが拒否されました。店名の入力が原因ではありません。検索ログをご確認ください。"
+        elif _salt_transient_v612(exc):
+            message = "検索サービスに接続できませんでした。少し時間をおいて、同じ店名で再検索してください。"
+        else:
+            message = "検索結果を読み取れませんでした。検索ログをご確認ください。"
+        error = RuntimeError(message)
         error.salt_logs = web.logs + [{"event": "search_failed", "detail": getattr(exc, "landmark_diagnostic", {}), "error": str(exc)}]
         raise error from exc
 
@@ -61113,6 +61128,19 @@ def page_salt_bread_detail_v609():
 
 _SALT_NAME_CACHE_V609 = {}
 
+def _salt_transient_v612(exc):
+    detail = getattr(exc, "landmark_diagnostic", {}) or {}
+    status = detail.get("status") or getattr(exc, "code", None)
+    try:
+        status = int(status) if status is not None else None
+    except (TypeError, ValueError):
+        status = None
+    if status is not None:
+        return 500 <= status <= 599
+    signature = json.dumps(_salt_exception_details_v609(exc), ensure_ascii=False).lower()
+    return any(word in signature for word in ("timeout", "timed out", "connection", "urlerror", "gaierror", "nameresolution", "通信待ち時間"))
+
+
 def _salt_exception_details_v609(exc):
     """Do not lose requests/urllib3 causes hidden by `raise AppError from None`."""
     chain=[];seen=set();current=exc
@@ -61172,7 +61200,15 @@ def _salt_photon_document_v609(web,query):
 
 def _salt_name_document_v609(web,query,pattern):
     try:
-        doc,info=_salt_photon_document_v609(web,query)
+        for attempt in range(2):
+            try:
+                doc,info=_salt_photon_document_v609(web,query)
+                break
+            except Exception as retry_exc:
+                detail=getattr(retry_exc,'landmark_diagnostic',{}) or {}
+                if attempt or not _salt_transient_v612(retry_exc) or time.monotonic() >= getattr(web,'deadline',float('inf')):
+                    raise
+                _salt_trace_v609(web,'landmark_retry',{'provider':'Photon','attempt':2,'reason':str(retry_exc),'status':detail.get('status')},'WARNING','landmark.name_search')
         if doc['elements']:return doc,info
         if len(query.split()) > 1:
             doc,info=_salt_photon_document_v609(web,query.split()[0])
@@ -61181,26 +61217,25 @@ def _salt_name_document_v609(web,query,pattern):
     except Exception as exc:
         detail={**(getattr(exc,'diagnostic',{}) or {}),**(getattr(exc,'landmark_diagnostic',{}) or {}),**_salt_exception_details_v609(exc)}
         _salt_trace_v609(web,'landmark_geocoder_failed',{**detail,'query':query,'provider':'Photon','reason':str(exc),'exception_type':type(exc).__name__},'ERROR','landmark.name_search')
-        status=detail.get('status')
+        status=detail.get('status') or getattr(exc,'code',None)
         if str(status) in ('401','403','429'):raise
     return _salt_overpass_document_v609(web,query,pattern)
 
 def _salt_overpass_document_v609(web,query,pattern):
-    """Indexed exact lookup first; partial lookup only after a successful empty result.
+    """ASCII names use case-insensitive substring/English-alias lookup directly.
 
-    Try the independent public instance only for network/5xx failures, never
-    for access refusal/rate limits. Each endpoint is attempted once per query.
+    Japanese names retain exact then partial lookup; network/5xx fallback only.
     """
     if not hasattr(web,'local'):web.local=threading.local()
     web.local.landmark_lookup=True
     bbox='(35.45,139.4,35.95,140.05)'
     endpoints=('https://overpass-api.de/api/interpreter','https://overpass.private.coffee/api/interpreter')
-    for mode in ('exact','partial'):
+    for mode in (('partial',) if re.fullmatch(r'[\x20-\x7e]+',query) and len(query)>=3 else ('exact','partial')):
         literal=json.dumps(query if mode=='exact' else pattern,ensure_ascii=False)
         operator='=' if mode=='exact' else '~'
         suffix='' if mode=='exact' else ',i'
-        keys=('name','name:ja','alt_name','short_name')
-        q='[out:json][timeout:8];('+''.join('nwr["'+key+'"'+operator+literal+suffix+']'+bbox+';' for key in keys)+');out center tags;'
+        keys=('name','name:ja','name:en','alt_name','short_name','brand')
+        q='[out:json][timeout:3];('+''.join('nwr["'+key+'"'+operator+literal+suffix+']'+bbox+';' for key in keys)+');out center tags;'
         for index,url in enumerate(endpoints):
             info={'url':url,'parameters':{'data':q},'match_mode':mode,'failed_stage':'name_search.request'}
             try:
@@ -61215,7 +61250,7 @@ def _salt_overpass_document_v609(web,query,pattern):
             except Exception as exc:
                 exc.landmark_diagnostic={**info,**(getattr(exc,'landmark_diagnostic',{}) or {})}
                 detail={**(getattr(exc,'diagnostic',{}) or {}),**exc.landmark_diagnostic}
-                status=detail.get('status')
+                status=detail.get('status') or getattr(exc,'code',None)
                 try:status=int(status) if status is not None else None
                 except (TypeError,ValueError):status=None
                 transient=(status is not None and 500<=status<=599) or any(word in (type(exc).__name__+' '+str(exc)+' '+str(detail)).lower() for word in ('timeout','timed out','タイムアウト','connection','接続できません','通信失敗'))
