@@ -1,3 +1,5 @@
+# v611: Bind Leaflet ownership to its DOM container across changing Streamlit render wrappers.
+# v610: Google Photos chooser, idempotent Leaflet lifecycle, account-scoped persistent diagnostics export from Settings.
 # v609: Salt bread map with Sumai v215 geocoding, photo/visit notes, persistent tap/drag ranking.
 # v608: retain microphone/voice events before reruns and open the target photo voice workspace in the fragment.
 # v607: 100 focused Good Moments; chronological default list and instant enlarged navigation. Memories map removed.
@@ -64,7 +66,7 @@ def _app_css_v473(markup, **_ignored):
 # Review menu-only update: 2026-09-19 JST
 GENERATED_UPDATE_JST = "2026-09-19T14:54:38+09:00"
 
-APP_BUILD = "v609"
+APP_BUILD = "v611"
 # v598: Passing the focus gate is mandatory before any weighted ranking or reroll.
 # Never fill the twenty-image target with focus-rejected candidates.
 # v597: Compare 30 FPS candidates across the whole saved video offline. Disk-backed
@@ -9163,6 +9165,11 @@ def _perf_call_v457(phase, func, *args, force=False, meta=None, **kwargs):
     except BaseException as exc:
         kind = type(exc).__name__
         status = "rerun" if kind == "RerunException" else "stopped" if kind == "StopException" else "error"
+        if status == "error":
+            recorder = globals().get("_app_error_record_v610")
+            if callable(recorder):
+                import traceback
+                recorder(phase, exc, {"traceback": traceback.format_exc()})
         raise
     finally:
         detail = dict(meta or {})
@@ -60707,6 +60714,8 @@ def _salt_collect_search_v609():
     except Exception as exc:
         result = {"candidates": [], "error": str(exc), "logs": getattr(exc, "salt_logs", [])}
     st.session_state["_salt_search_result_v609"] = result
+    if result.get("error"):
+        _app_error_record_v610("salt.place_search", result["error"], {"events": result.get("logs") or []})
     st.session_state.pop("_salt_candidate_v609", None)
     st.session_state.pop("_salt_search_wait_v609_" + owner, None)
     return True
@@ -60735,19 +60744,221 @@ def _salt_cards_v609(doc):
             for entry, path in zip(entries, paths)]
 
 
+def _app_error_clean_v610(value):
+    text = str(value or "")
+    for name in ("SUPABASE_SECRET_KEY", "OPENAI_API_KEY", "GOOGLE_PLACES_API_KEY"):
+        secret_value = str(globals().get(name) or "")
+        if len(secret_value) > 8:
+            text = text.replace(secret_value, "[REDACTED]")
+    text = re.sub(r"(?i)(authorization|apikey|access_token|refresh_token|native_bridge_token|signature|token)([\s\"':=]+)[^\s&\"<>]+", r"\1\2[REDACTED]", text)
+    text = re.sub(r"data:image/[^,]+,[A-Za-z0-9+/=]+", "[IMAGE OMITTED]", text)
+    return text[:12000]
+
+
+@st.cache_resource
+def _app_error_jobs_v610():
+    return {"executor": ThreadPoolExecutor(max_workers=1, thread_name_prefix="burari-errors"), "pending": [], "lock": threading.RLock()}
+
+
+def _app_error_store_v610(client, path, blob):
+    result = client.storage.from_(GPS_TRACK_BUCKET).upload(path=path, file=blob,
+        file_options={"content-type": GPS_TRACK_STORAGE_MIME, "cache-control": "0", "upsert": "true"})
+    if (isinstance(result, dict) and result.get("error")) or getattr(result, "error", None):
+        raise RuntimeError("エラーログの保存先からエラーが返されました。")
+    return True
+
+
+def _app_error_record_v610(stage, error, detail=None, event_id=None, source="server"):
+    """Account-scoped bounded diagnostics; no photo bytes, keys or blocking upload."""
+    try:
+        owner = _salt_owner_v609()
+        safe_id = re.sub(r"[^a-f0-9]", "", str(event_id or ""))[:32]
+        if len(safe_id) != 32:
+            safe_id = uuid.uuid4().hex
+        key = "_app_errors_v610_" + owner
+        rows = list(st.session_state.get(key) or [])
+        if any(row.get("id") == safe_id for row in rows):
+            return
+        context = dict(detail or {})
+        if isinstance(error, BaseException):
+            import traceback
+            context.setdefault("traceback", "".join(traceback.format_exception(type(error), error, error.__traceback__)))
+        row = {"schema": "burari_errors_v610", "id": safe_id, "owner": owner, "build": APP_BUILD,
+               "at": now_jst().isoformat(), "source": str(source), "page": str(st.session_state.get("main_page") or ""),
+               "stage": str(stage)[:160], "error_type": type(error).__name__ if isinstance(error, BaseException) else "ClientError",
+               "message": _app_error_clean_v610(error),
+               "detail": _app_error_clean_v610(json.dumps(context, ensure_ascii=False, default=str))}
+        rows.append(row)
+        st.session_state[key] = rows[-200:]
+        registry = _app_error_jobs_v610()
+        with registry["lock"]:
+            pending = [future for future in registry["pending"] if not future.done()]
+            registry["pending"] = pending
+            if len(pending) >= 100:
+                st.session_state["_app_error_save_status_v610"] = "ログの送信待ちです。端末内のログは出力できます。"
+                return
+            stamp = now_jst().strftime("%Y%m%dT%H%M%S")
+            path = _salt_prefix_v609() + f"/errors/{stamp}_{safe_id}.json"
+            future = registry["executor"].submit(_app_error_store_v610, supabase_client(), path, json.dumps(row, ensure_ascii=False).encode())
+            pending.append(future)
+            st.session_state["_app_error_future_v610_" + owner] = future
+    except Exception:
+        # A diagnostic must never interfere with Back, or hide the original failure.
+        pass
+
+
+def _app_error_capture_v610(component_key, event_key, owner):
+    try:
+        current_owner = _salt_owner_v609()
+    except Exception:
+        return
+    if owner != current_owner:
+        return
+    state = st.session_state.get(component_key)
+    event = state.get(event_key) if isinstance(state, dict) else getattr(state, event_key, None)
+    if not isinstance(event, dict):
+        return
+    rows = event.get("rows") if isinstance(event.get("rows"), list) else [event]
+    for row in rows[-200:]:
+        if isinstance(row, dict):
+            _app_error_record_v610(row.get("stage") or "browser", row.get("message") or "ブラウザーエラー",
+                                  row.get("detail") or {}, row.get("id"), source="browser")
+
+
+def _app_error_history_v610():
+    owner, bucket = _salt_owner_v609(), supabase_client().storage.from_(GPS_TRACK_BUCKET)
+    folder = _salt_prefix_v609() + "/errors"
+    listing = bucket.list(folder, {"limit": 100, "offset": 0, "sortBy": {"column": "name", "order": "desc"}})
+    rows = []
+    for item in _coerce_storage_list_rows(listing):
+        name = str(item.get("name") or "")
+        if not re.fullmatch(r"\d{8}T\d{6}_[0-9a-f]{32}\.json", name):
+            continue
+        blob = _storage_bytes(bucket.download(folder + "/" + name))
+        if len(blob) > 60000:
+            continue
+        row = json.loads(blob.decode())
+        if row.get("schema") == "burari_errors_v610" and row.get("owner") == owner:
+            rows.append(row)
+    return rows
+
+
+@st.cache_resource
+def _app_error_reader_v610():
+    return st.components.v2.component("burari_error_reader_v610",
+        html='<button id="error-read">この端末の地図・写真エラーログを取り込む</button><span id="error-read-status" role="status"></span>',
+        css='\nbutton{width:100%;min-height:44px;border:1px solid #b6c2cf;background:#fff;color:#173a5e;border-radius:12px;padding:8px}span{display:block;font-size:12px;margin:5px}\n',
+        js=r'''export default function(component) {
+          const {parentElement,data,setTriggerValue}=component;
+          parentElement.querySelector('#error-read').onclick=()=>{
+            let rows=[];
+            try{rows=JSON.parse(localStorage.getItem('burari_errors_v610_'+data.owner)||'[]');}catch(_){}
+            parentElement.querySelector('#error-read-status').textContent=`${Array.isArray(rows)?rows.length:0}件を取り込みました`;
+            setTriggerValue('client_logs',{rows:Array.isArray(rows)?rows:[],nonce:String(Date.now())});
+          };
+        }''')
+
+
+def _app_error_settings_v610():
+    with st.expander("エラーログ"):
+        owner = _salt_owner_v609()
+        key = "_app_errors_v610_" + owner
+        component_key = "app_error_reader_v610_" + owner
+        _app_error_reader_v610()(data={"owner": owner}, key=component_key,
+            on_client_logs_change=lambda: _app_error_capture_v610(component_key, "client_logs", owner))
+        if st.button("保存済みのエラーログも読み込む", key="error_history_v610"):
+            try:
+                st.session_state["_app_error_history_v610_" + owner] = _app_error_history_v610()
+            except Exception as exc:
+                _app_error_record_v610("diagnostics.history_read", exc)
+                st.warning("保存済みログを読み込めませんでした。端末内のログは出力できます。")
+        rows = list(st.session_state.get("_app_error_history_v610_" + owner) or []) + list(st.session_state.get(key) or [])
+        merged = {row.get("id"): row for row in rows if isinstance(row, dict) and row.get("owner") == owner}
+        rows = sorted(merged.values(), key=lambda row: str(row.get("at") or ""))
+        st.caption(f"出力対象 {len(rows)}件。保存済みログは直近100件を読み込みます。")
+        future = st.session_state.get("_app_error_future_v610_" + owner)
+        if future and future.done() and future.exception():
+            st.caption("ログの保存先への送信に失敗しました。端末内のログをダウンロードしてください。")
+        payload = {"build": APP_BUILD, "exported_at": now_jst().isoformat(), "errors": rows}
+        st.download_button("エラーログを出力（JSON）", json.dumps(payload, ensure_ascii=False, indent=2),
+                           "burari_errors.json", "application/json", key="app_errors_json_v610")
+        text = "\n\n".join(f"{row.get('at')} [{row.get('stage')}] {row.get('message')}\n{row.get('detail')}" for row in rows)
+        st.download_button("エラーログを出力（TXT）", text or "記録されたエラーはありません。", "burari_errors.txt", "text/plain", key="app_errors_txt_v610")
+
+
+def _salt_photo_capture_v610(component_key, scope_key):
+    try:
+        if not scope_key.startswith("_salt_photos_v610_" + _salt_owner_v609() + "_"):
+            return
+    except Exception:
+        return
+    state = st.session_state.get(component_key)
+    event = state.get("photo_event") if isinstance(state, dict) else getattr(state, "photo_event", None)
+    if not isinstance(event, dict) or not event.get("nonce"):
+        return
+    token_key = scope_key + "_nonce"
+    if st.session_state.get(token_key) == event["nonce"]:
+        return
+    st.session_state[token_key] = event["nonce"]
+    try:
+        if event.get("action") == "clear":
+            st.session_state[scope_key] = []
+            st.session_state.pop(scope_key + "_error", None)
+            return
+        items = event.get("photos")
+        if not isinstance(items, list) or len(items) > 30:
+            raise ValueError("写真を30枚以内で選び直してください。")
+        photos = []
+        for item in items:
+            data_url = str(item.get("data_url") or "")
+            if not data_url.startswith("data:image/jpeg;base64,") or len(data_url) > 16 * 1024 * 1024:
+                raise ValueError("選んだ写真を読み込めませんでした。")
+            raw = base64.b64decode(data_url.split(",", 1)[1], validate=True)
+            from PIL import Image
+            with Image.open(io.BytesIO(raw)) as image:
+                image.verify()
+            photos.append({"raw": raw, "name": str(item.get("name") or "")[:120], "thumb": str(item.get("thumb") or "")[:150000]})
+        st.session_state[scope_key] = photos
+        st.session_state.pop(scope_key + "_error", None)
+    except Exception as exc:
+        st.session_state[scope_key + "_error"] = str(exc)
+        _app_error_record_v610("salt.photo_selection", exc)
+
+
+@st.cache_resource
+def _salt_photo_component_v610():
+    return st.components.v2.component("burari_salt_photo_v610", html=_SALT_PHOTO_HTML_V610, css=_SALT_PHOTO_CSS_V610, js=_SALT_PHOTO_JS_V610)
+
+
+def _salt_photo_picker_v610(key):
+    scope_key = "_salt_photos_v610_" + _salt_owner_v609() + "_" + key
+    component_key = "salt_photo_v610_" + _salt_owner_v609() + "_" + key
+    photos = st.session_state.get(scope_key) or []
+    _salt_photo_component_v610()(data={"owner": _salt_owner_v609(), "previews": [p.get("thumb") for p in photos], "count": len(photos)},
+        key=component_key, on_photo_event_change=lambda: _salt_photo_capture_v610(component_key, scope_key),
+        on_salt_diagnostic_change=lambda: _app_error_capture_v610(component_key, "salt_diagnostic", _salt_owner_v609()))
+    if st.session_state.get(scope_key + "_error"):
+        st.error(st.session_state[scope_key + "_error"])
+    return [io.BytesIO(p["raw"]) for p in photos], scope_key
+
+_SALT_PHOTO_HTML_V610 = '<label class="salt-photo-select" for="salt-photo-input">🖼 Googleフォトから写真を選ぶ（複数可）</label><input id="salt-photo-input" type="file" accept="image/*" multiple hidden><div id="salt-photo-status" role="status" aria-live="polite"></div><div id="salt-photo-previews"></div><button id="salt-photo-clear" type="button" hidden>写真の選択を解除</button>'
+_SALT_PHOTO_CSS_V610 = '.salt-photo-select{display:block;padding:14px 10px;border:1px solid #aec3d8;border-radius:12px;color:#173a5e;background:#f3f8ff;text-align:center;font-size:14px;font-weight:700;cursor:pointer}\n#salt-photo-status{font-size:12px;color:#486079;margin:8px 0}\n#salt-photo-previews{display:grid;grid-template-columns:repeat(3,1fr);gap:6px}\n#salt-photo-previews img{width:100%;aspect-ratio:1;object-fit:cover;border-radius:9px}\nbutton{min-height:40px;color:#173a5e;background:white;border:1px solid #cad4df;border-radius:10px;padding:6px}\nbutton[hidden]{display:none!important}\n'
+_SALT_PHOTO_JS_V610 = "export default function(component) {\n  const {parentElement:root,data,setTriggerValue}=component;\n  const reportError610=(stage,error,detail={})=>{\n    const message=String(error?.message||error||'Unknown error').slice(0,3000);\n    const owner=String(data?.owner||'');\n    const row={id:(globalThis.crypto?.randomUUID?.()||`${Date.now().toString(16)}${Math.random().toString(16).slice(2)}`).replace(/-/g,'').padEnd(32,'0').slice(0,32),\n      at:new Date().toISOString(),stage,message,detail:{...detail,stack:String(error?.stack||'').slice(0,5000),user_agent:navigator.userAgent,build:'v610'}};\n    try{const key='burari_errors_v610_'+owner;let rows=JSON.parse(localStorage.getItem(key)||'[]');if(!Array.isArray(rows))rows=[];rows.push(row);localStorage.setItem(key,JSON.stringify(rows.slice(-200)));}catch(_){}\n    try{\n      const throttles=window.__burariErrorThrottle610||(window.__burariErrorThrottle610=new Map());\n      const signature=owner+'|'+stage+'|'+message;\n      if(Date.now()-(throttles.get(signature)||0)<30000)return;\n      if(throttles.size>100)throttles.clear();throttles.set(signature,Date.now());\n      setTriggerValue('salt_diagnostic',row);\n    }catch(_){}\n  };\n\n  const input=root.querySelector('#salt-photo-input'),status=root.querySelector('#salt-photo-status'),previews=root.querySelector('#salt-photo-previews'),clear=root.querySelector('#salt-photo-clear');\n  if(!input||!status||!previews||!clear)return;\n  let disposed=false;\n  if(root.__saltPhotoDispose610)root.__saltPhotoDispose610();\n  const dispose=()=>{disposed=true;};root.__saltPhotoDispose610=dispose;\n  status.textContent=Number(data?.count||0)?`${data.count}枚を選択中`:'写真を選ぶと、ここに表示されます。';\n  clear.hidden=!Number(data?.count||0);previews.replaceChildren();\n  for(const src of Array.isArray(data?.previews)?data.previews:[]){if(!String(src||'').startsWith('data:image/jpeg;base64,'))continue;const image=document.createElement('img');image.src=src;image.alt='選んだパンの写真';previews.appendChild(image);}\n  input.onchange=async()=>{\n    const files=Array.from(input.files||[]);if(!files.length)return;\n    if(files.length>30){status.textContent='写真を30枚以内で選んでください。';input.value='';return;}\n    status.textContent='写真を読み込んでいます…';clear.hidden=true;\n    try{\n      const photos=[];\n      for(const file of files){\n        const url=URL.createObjectURL(file);let image;\n        try{image=await new Promise((resolve,reject)=>{const img=new Image();img.onload=()=>resolve(img);img.onerror=()=>reject(new Error('写真を読み込めませんでした。写真を選び直してください。'));img.src=url;});}\n        finally{URL.revokeObjectURL(url);}\n        if(disposed)return;\n        const ratio=Math.min(1,1800/Math.max(image.naturalWidth,image.naturalHeight));\n        const canvas=document.createElement('canvas');canvas.width=Math.max(1,Math.round(image.naturalWidth*ratio));canvas.height=Math.max(1,Math.round(image.naturalHeight*ratio));\n        const context=canvas.getContext('2d');if(!context)throw new Error('写真の変換を開始できませんでした。');context.drawImage(image,0,0,canvas.width,canvas.height);\n        const dataUrl=canvas.toDataURL('image/jpeg',.90);\n        const thumb=document.createElement('canvas');const r=Math.min(1,240/Math.max(canvas.width,canvas.height));thumb.width=Math.max(1,Math.round(canvas.width*r));thumb.height=Math.max(1,Math.round(canvas.height*r));thumb.getContext('2d').drawImage(canvas,0,0,thumb.width,thumb.height);\n        photos.push({name:file.name||'photo.jpg',data_url:dataUrl,thumb:thumb.toDataURL('image/jpeg',.72)});\n        status.textContent=`写真を準備しています… ${photos.length}/${files.length}`;\n      }\n      if(disposed)return;\n      status.textContent=`${photos.length}枚を取り込んでいます…`;\n      setTriggerValue('photo_event',{action:'select',photos,nonce:`${Date.now()}:${Math.random()}`});\n    }catch(error){if(!disposed){status.textContent=String(error.message||error);reportError610('salt.photo_picker',error,{count:files.length,types:files.map(f=>String(f.type||''))});}}\n    finally{input.value='';}\n  };\n  clear.onclick=()=>setTriggerValue('photo_event',{action:'clear',nonce:`${Date.now()}:${Math.random()}`});\n  return dispose;\n}\n"
+
 def _salt_form_v609(place, entry_id=""):
     key = str(entry_id or hashlib.sha256((str(place.get("name") or "") + "|" + str(place.get("address") or "")).encode()).hexdigest()[:20])
     existing = (_salt_load_v609()["entries"].get(entry_id) or {}) if entry_id else {}
-    with st.form("salt_visit_v609_" + key, clear_on_submit=False):
+    st.markdown("**パンの写真（複数可）**")
+    files, photo_scope_key = _salt_photo_picker_v610(key)
+    with st.container(key="salt_visit_v610_" + key):
         name = st.text_input("店名", value="" if place.get("address_only") else str(place.get("name") or ""), max_chars=120)
         address = st.text_input("住所", value=str(place.get("address") or ""), max_chars=240)
         st.caption(f"地図上の位置：{float(place['lat']):.6f}, {float(place['lng']):.6f}")
-        files = st.file_uploader("パンの写真（複数可）", type=["jpg", "jpeg", "png", "webp"], accept_multiple_files=True)
         note = st.text_area("感想（自由・空欄でも保存できます）", max_chars=4000)
         date_value = st.date_input("食べた日", value=now_jst().date())
         again = st.checkbox("また買いたい", value=bool(existing.get("again")))
         checked = st.checkbox("店名・住所・地図の位置を確認しました", value=bool(entry_id))
-        submit = st.form_submit_button("記録を保存", type="primary", use_container_width=True)
+        submit = st.button("記録を保存", type="primary", use_container_width=True, key="salt_save_v610_" + key)
     if submit:
         if not checked or not name.strip():
             st.warning("店名と地図の位置を確認してください。")
@@ -60758,11 +60969,14 @@ def _salt_form_v609(place, entry_id=""):
                 with st.spinner("塩パンの記録を保存しています…"):
                     doc = _salt_save_visit_v609({**place, "name": name, "address": address}, files, note, date_value, again, entry_id, visit_id)
                 st.session_state.pop(token_key, None)
+                st.session_state.pop(photo_scope_key, None)
+                st.session_state.pop(photo_scope_key + "_error", None)
                 st.session_state["_salt_notice_v609"] = "塩パンの記録を保存しました。"
                 st.session_state.pop("_salt_candidate_v609", None)
                 _set_page_state("salt_bread", history_mode="replace")
                 st.rerun()
             except Exception as exc:
+                _app_error_record_v610("salt.record_save", exc)
                 st.error("保存できませんでした。入力内容を残しています。")
                 with st.expander("詳細"):
                     st.code(_safe_error_text(exc, 500))
@@ -60770,7 +60984,7 @@ def _salt_form_v609(place, entry_id=""):
 
 @st.cache_resource
 def _salt_component_v609():
-    return st.components.v2.component("burari_salt_bread_v609", html=_SALT_HTML_V609, css=_SALT_CSS_V609, js=_SALT_JS_V609)
+    return st.components.v2.component("burari_salt_bread_v611", html=_SALT_HTML_V609, css=_SALT_CSS_V609, js=_SALT_JS_V609)
 
 
 def page_salt_bread_v609():
@@ -60781,6 +60995,7 @@ def page_salt_bread_v609():
     try:
         doc = _salt_load_v609()
     except Exception as exc:
+        _app_error_record_v610("salt.map_data_read", exc)
         st.error(str(exc))
         if st.button("再読み込み", key="salt_reload_error_v609"):
             st.rerun()
@@ -60803,6 +61018,7 @@ def page_salt_bread_v609():
                 lat, lng = _salt_coordinates_v609(action.get("lat"), action.get("lng"))
                 st.session_state["_salt_candidate_v609"] = {**st.session_state["_salt_candidate_v609"], "lat": lat, "lng": lng}
         except Exception as exc:
+            _app_error_record_v610("salt.map_action", exc, {"action": action.get("action")})
             st.error(str(exc))
             try:
                 doc = _salt_load_v609(force=True)
@@ -60811,10 +61027,12 @@ def page_salt_bread_v609():
     mode = st.radio("表示", ["地図", "ランキング"], horizontal=True, key="salt_mode_v609", label_visibility="collapsed")
     candidate = st.session_state.get("_salt_candidate_v609")
     try:
-        _salt_component_v609()(data={"entries": _salt_cards_v609(doc), "revision": doc["revision"], "mode": mode,
+        _salt_component_v609()(data={"owner": owner, "entries": _salt_cards_v609(doc), "revision": doc["revision"], "mode": mode,
             "preview": candidate, "ack": st.session_state.get("_salt_action_ack_v609_" + owner, "")}, key=component_key,
-            on_salt_action_change=lambda: _salt_capture_v609(component_key, inbox_key))
+            on_salt_action_change=lambda: _salt_capture_v609(component_key, inbox_key),
+            on_salt_diagnostic_change=lambda: _app_error_capture_v610(component_key, "salt_diagnostic", owner))
     except Exception as exc:
+        _app_error_record_v610("salt.map_render", exc)
         st.error("地図を表示できませんでした。下の一覧から記録を開けます。")
     if doc["order"]:
         with st.expander("お店の一覧"):
@@ -61014,7 +61232,7 @@ _SALT_CSS_V609 = """
 .salt-rank-card{display:grid;grid-template-columns:28px minmax(0,1fr) 44px;gap:10px;padding:10px;margin:8px 0;border:2px solid #e6e2d9;border-radius:16px;background:#fffaf0;align-items:center}.salt-rank-card.selected{border-color:#c17a28}.salt-rank-card.dragging{opacity:.65}.salt-rank-card.drop-target{border-top:4px solid #c17a28}.salt-rank-number{font-size:22px;color:#a45c18}.salt-rank-photo{background:none;border:0;cursor:pointer;padding:0;color:#173a5e}.salt-rank-photo img{width:100%;height:120px;object-fit:contain;display:block;border-radius:12px;background:#f2eadb}.salt-no-photo{display:block;font-size:48px;text-align:center;background:#f2eadb;border-radius:12px}
 .salt-button,.salt-drag-handle{background:#fff;border:1px solid #cfb28c;color:#173a5e;border-radius:10px;min-height:44px;font:inherit;font-size:12px;font-weight:700;padding:6px;touch-action:manipulation;cursor:pointer}.salt-button:disabled{opacity:.4}.salt-drag-handle{font-size:27px;touch-action:none;user-select:none;-webkit-user-select:none}.salt-rank-controls{grid-column:1/-1;display:grid;grid-template-columns:1fr 1fr 1.3fr;gap:6px}
 """
-_SALT_JS_V609 = 'export default function(component) {\n  const {parentElement:root,data,setTriggerValue}=component;\n  const mapEl=root.querySelector(\'#salt-map\'), list=root.querySelector(\'#salt-ranking\'), status=root.querySelector(\'#salt-status\');\n  if(!mapEl||!list||!status)return;\n  let disposed=false, map=null, selected=\'\', drag=null, busy=false;\n  let entries=Array.isArray(data?.entries)?data.entries.slice():[];\n  const emit=(action,extra={})=>setTriggerValue(\'salt_action\',{action,...extra,revision:Number(data?.revision||0),nonce:`${Date.now()}:${Math.random()}`});\n  const saveOrder=()=>{busy=true;status.textContent=\'順位を保存しています…\';emit(\'order\',{order:entries.map(e=>e.id)});};\n  const el=(tag,cls,text)=>{const n=document.createElement(tag);if(cls)n.className=cls;if(text!==undefined)n.textContent=text;return n;};\n  const button=(text,fn)=>{const n=el(\'button\',\'salt-button\',text);n.type=\'button\';n.addEventListener(\'click\',e=>{e.preventDefault();e.stopPropagation();fn();});return n;};\n  const move=(id,delta)=>{if(busy)return;const i=entries.findIndex(e=>e.id===id),j=i+delta;if(i<0||j<0||j>=entries.length)return;const [entry]=entries.splice(i,1);entries.splice(j,0,entry);renderList();saveOrder();};\n  const renderList=()=>{\n    list.replaceChildren();\n    if(!entries.length){list.appendChild(el(\'p\',\'\',\'まだ記録がありません。店名や住所で検索して、最初の塩パンを登録しましょう。\'));return;}\n    entries.forEach((entry,index)=>{\n      const card=el(\'div\',\'salt-rank-card\');card.dataset.id=String(entry.id);card.classList.toggle(\'selected\',selected===entry.id);\n      const rank=el(\'strong\',\'salt-rank-number\',`${index+1}`);card.appendChild(rank);\n      const main=button(\'\',()=>{if(busy)return;selected=entry.id;renderList();});main.className=\'salt-rank-photo\';main.setAttribute(\'aria-label\',`${index+1}位 ${entry.name}を選ぶ`);\n      if(entry.src){const img=el(\'img\');img.src=String(entry.src);img.alt=String(entry.name);img.loading=\'lazy\';img.decoding=\'async\';main.appendChild(img);}else main.appendChild(el(\'span\',\'salt-no-photo\',\'🍞\'));\n      main.appendChild(el(\'small\',\'salt-shop-name\',String(entry.name||\'\')));card.appendChild(main);\n      const handle=button(\'⠿\',()=>{if(!busy){selected=entry.id;renderList();}});handle.className=\'salt-drag-handle\';handle.setAttribute(\'aria-label\',`${entry.name}の順位を指で移動`);\n      handle.addEventListener(\'pointerdown\',e=>{\n        if(busy||e.button>0)return;e.preventDefault();e.stopPropagation();selected=entry.id;\n        drag={id:entry.id,startY:e.clientY,startIndex:index,target:index,pointer:e.pointerId,moved:false};handle.setPointerCapture?.(e.pointerId);card.classList.add(\'dragging\');\n      });\n      handle.addEventListener(\'pointermove\',e=>{\n        if(!drag||drag.pointer!==e.pointerId)return;e.preventDefault();drag.moved=drag.moved||Math.abs(e.clientY-drag.startY)>6;\n        const cards=Array.from(list.querySelectorAll(\'.salt-rank-card\'));\n        let target=0,distance=Infinity;\n        cards.forEach((c,i)=>{const box=c.getBoundingClientRect(),d=Math.abs(e.clientY-(box.top+box.height/2));if(d<distance){distance=d;target=i;}});\n        drag.target=target;\n        cards.forEach((c,i)=>c.classList.toggle(\'drop-target\',i===drag.target));\n        if(e.clientY<80)window.scrollBy?.(0,-14);else if(e.clientY>window.innerHeight-100)window.scrollBy?.(0,14);\n      });\n      const finish=(e,cancel=false)=>{\n        if(!drag||drag.pointer!==e.pointerId)return;const d=drag;drag=null;handle.releasePointerCapture?.(e.pointerId);\n        if(!cancel&&d.moved&&d.target!==d.startIndex){const [item]=entries.splice(d.startIndex,1);entries.splice(d.target,0,item);renderList();saveOrder();}else renderList();\n      };\n      handle.addEventListener(\'pointerup\',e=>finish(e));handle.addEventListener(\'pointercancel\',e=>finish(e,true));card.appendChild(handle);\n      if(selected===entry.id){\n        const controls=el(\'div\',\'salt-rank-controls\');\n        const up=button(\'↑ 上へ\',()=>move(entry.id,-1)), down=button(\'↓ 下へ\',()=>move(entry.id,1));up.disabled=index===0||busy;down.disabled=index===entries.length-1||busy;\n        controls.appendChild(up);controls.appendChild(down);controls.appendChild(button(\'記録を見る\',()=>{if(!busy)emit(\'open\',{id:entry.id});}));card.appendChild(controls);\n      }\n      list.appendChild(card);\n    });\n  };\n  const ranking=data?.mode===\'ランキング\';mapEl.hidden=ranking;list.hidden=!ranking;\n  if(ranking){status.textContent=\'写真をタップして上下ボタン、または右の⠿を押して指で移動\';renderList();}\n  else{\n    status.textContent=\'パンのピンをタップすると、写真と感想を開きます。\';\n    const load=()=>{\n      if(window.L)return Promise.resolve(window.L);\n      if(window.__burariSaltLeaflet609)return window.__burariSaltLeaflet609;\n      window.__burariSaltLeaflet609=new Promise((resolve,reject)=>{const script=document.createElement(\'script\');script.src=\'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js\';script.crossOrigin=\'\';script.onload=()=>window.L?resolve(window.L):reject(new Error(\'地図の準備に失敗しました\'));script.onerror=()=>reject(new Error(\'地図を読み込めませんでした\'));document.head.appendChild(script);}).catch(e=>{window.__burariSaltLeaflet609=null;throw e;});\n      return window.__burariSaltLeaflet609;\n    };\n    load().then(L=>{\n      if(disposed)return;\n      map=L.map(mapEl,{scrollWheelZoom:false}).setView([35.66,139.72],12);\n      L.tileLayer(\'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png\',{maxZoom:19,attribution:\'© OpenStreetMap contributors\'}).addTo(map);\n      const points=[];\n      const icon=(preview=false)=>L.divIcon({className:\'salt-pin-container\',iconSize:[44,52],iconAnchor:[22,49],html:`<div class="salt-bread-pin ${preview?\'preview\':\'\'}"><span>🍞</span></div>`});\n      entries.forEach(entry=>{\n        const lat=Number(entry.lat),lng=Number(entry.lng);if(!Number.isFinite(lat)||!Number.isFinite(lng))return;\n        const marker=L.marker([lat,lng],{icon:icon(),title:String(entry.name||\'\'),keyboard:true}).addTo(map);\n        const content=el(\'div\',\'salt-popup\');if(entry.src){const img=el(\'img\');img.src=String(entry.src);img.alt=String(entry.name);img.loading=\'lazy\';content.appendChild(img);}\n        content.appendChild(el(\'small\',\'salt-shop-name\',String(entry.name||\'\')));content.appendChild(el(\'p\',\'\',String(entry.address||\'\')));\n        content.appendChild(button(\'写真と感想を見る\',()=>emit(\'open\',{id:entry.id})));marker.bindPopup(content);points.push([lat,lng]);\n      });\n      const preview=data?.preview;\n      if(preview&&Number.isFinite(Number(preview.lat))&&Number.isFinite(Number(preview.lng))){\n        const p=[Number(preview.lat),Number(preview.lng)];const marker=L.marker(p,{icon:icon(true),title:\'登録前の確認\',draggable:true}).addTo(map).bindPopup(el(\'div\',\'\',`${preview.name||\'\'}\u3000${preview.address||\'\'}`)).openPopup();\n        marker.on(\'dragend\',()=>{const point=marker.getLatLng();status.textContent=\'ピンの位置を更新しています…\';emit(\'preview\',{lat:point.lat,lng:point.lng});});\n        status.textContent=\'登録前のパンのピンは、指で動かして位置を調整できます。\';map.setView(p,17);\n      }else if(points.length===1)map.setView(points[0],16);else if(points.length>1)map.fitBounds(points,{padding:[35,35],maxZoom:16});\n      map.invalidateSize();\n    }).catch(e=>{if(!disposed){status.textContent=String(e.message||e);mapEl.textContent=\'地図を表示できません。お店の一覧・ランキングから記録を開けます。\';}});\n  }\n  return()=>{disposed=true;try{map?.remove();}catch(_){};};\n}\n'
+_SALT_JS_V609 = 'export default function(component) {\n  const {parentElement:root,data,setTriggerValue}=component;\n  let mapEl=root.querySelector(\'#salt-map\');\n  const list=root.querySelector(\'#salt-ranking\'), status=root.querySelector(\'#salt-status\');\n  if(!mapEl||!list||!status)return;\n  let disposed=false, map=null, selected=\'\', drag=null, busy=false;\n  const lease={dispose(){if(disposed)return;disposed=true;try{map?.remove();}catch(error){reportError610(\'salt.map_cleanup\',error);}map=null;}};\n  const reportError610=(stage,error,detail={})=>{\n    const message=String(error?.message||error||\'Unknown error\').slice(0,3000);\n    const owner=String(data?.owner||\'\');\n    const row={id:(globalThis.crypto?.randomUUID?.()||`${Date.now().toString(16)}${Math.random().toString(16).slice(2)}`).replace(/-/g,\'\').padEnd(32,\'0\').slice(0,32),\n      at:new Date().toISOString(),stage,message,detail:{...detail,stack:String(error?.stack||\'\').slice(0,5000),user_agent:navigator.userAgent,build:\'v611\'}};\n    try{const key=\'burari_errors_v610_\'+owner;let rows=JSON.parse(localStorage.getItem(key)||\'[]\');if(!Array.isArray(rows))rows=[];rows.push(row);localStorage.setItem(key,JSON.stringify(rows.slice(-200)));}catch(_){}\n    try{\n      const throttles=window.__burariErrorThrottle610||(window.__burariErrorThrottle610=new Map());\n      const signature=owner+\'|\'+stage+\'|\'+message;\n      if(Date.now()-(throttles.get(signature)||0)<30000)return;\n      if(throttles.size>100)throttles.clear();throttles.set(signature,Date.now());\n      setTriggerValue(\'salt_diagnostic\',row);\n    }catch(_){}\n  };\n\n  // Ownership belongs to the actual container, not the renderer\'s wrapper.\n  // Streamlit may supply a different wrapper for the same DOM during reruns.\n  const prior=mapEl.__saltMapLease611 || root.__saltMapLease610;\n  if(prior)prior.dispose();\n  if(mapEl._leaflet_id){const fresh=mapEl.cloneNode(false);mapEl.replaceWith(fresh);mapEl=fresh;}\n  mapEl.__saltMapLease611=lease;\n  root.__saltMapLease610=lease;\n  let entries=Array.isArray(data?.entries)?data.entries.slice():[];\n  const emit=(action,extra={})=>setTriggerValue(\'salt_action\',{action,...extra,revision:Number(data?.revision||0),nonce:`${Date.now()}:${Math.random()}`});\n  const saveOrder=()=>{busy=true;status.textContent=\'順位を保存しています…\';emit(\'order\',{order:entries.map(e=>e.id)});};\n  const el=(tag,cls,text)=>{const n=document.createElement(tag);if(cls)n.className=cls;if(text!==undefined)n.textContent=text;return n;};\n  const button=(text,fn)=>{const n=el(\'button\',\'salt-button\',text);n.type=\'button\';n.addEventListener(\'click\',e=>{e.preventDefault();e.stopPropagation();fn();});return n;};\n  const move=(id,delta)=>{if(busy)return;const i=entries.findIndex(e=>e.id===id),j=i+delta;if(i<0||j<0||j>=entries.length)return;const [entry]=entries.splice(i,1);entries.splice(j,0,entry);renderList();saveOrder();};\n  const renderList=()=>{\n    list.replaceChildren();\n    if(!entries.length){list.appendChild(el(\'p\',\'\',\'まだ記録がありません。店名や住所で検索して、最初の塩パンを登録しましょう。\'));return;}\n    entries.forEach((entry,index)=>{\n      const card=el(\'div\',\'salt-rank-card\');card.dataset.id=String(entry.id);card.classList.toggle(\'selected\',selected===entry.id);\n      const rank=el(\'strong\',\'salt-rank-number\',`${index+1}`);card.appendChild(rank);\n      const main=button(\'\',()=>{if(busy)return;selected=entry.id;renderList();});main.className=\'salt-rank-photo\';main.setAttribute(\'aria-label\',`${index+1}位 ${entry.name}を選ぶ`);\n      if(entry.src){const img=el(\'img\');img.src=String(entry.src);img.alt=String(entry.name);img.loading=\'lazy\';img.decoding=\'async\';main.appendChild(img);}else main.appendChild(el(\'span\',\'salt-no-photo\',\'🍞\'));\n      main.appendChild(el(\'small\',\'salt-shop-name\',String(entry.name||\'\')));card.appendChild(main);\n      const handle=button(\'⠿\',()=>{if(!busy){selected=entry.id;renderList();}});handle.className=\'salt-drag-handle\';handle.setAttribute(\'aria-label\',`${entry.name}の順位を指で移動`);\n      handle.addEventListener(\'pointerdown\',e=>{\n        if(busy||e.button>0)return;e.preventDefault();e.stopPropagation();selected=entry.id;\n        drag={id:entry.id,startY:e.clientY,startIndex:index,target:index,pointer:e.pointerId,moved:false};handle.setPointerCapture?.(e.pointerId);card.classList.add(\'dragging\');\n      });\n      handle.addEventListener(\'pointermove\',e=>{\n        if(!drag||drag.pointer!==e.pointerId)return;e.preventDefault();drag.moved=drag.moved||Math.abs(e.clientY-drag.startY)>6;\n        const cards=Array.from(list.querySelectorAll(\'.salt-rank-card\'));\n        let target=0,distance=Infinity;\n        cards.forEach((c,i)=>{const box=c.getBoundingClientRect(),d=Math.abs(e.clientY-(box.top+box.height/2));if(d<distance){distance=d;target=i;}});\n        drag.target=target;\n        cards.forEach((c,i)=>c.classList.toggle(\'drop-target\',i===drag.target));\n        if(e.clientY<80)window.scrollBy?.(0,-14);else if(e.clientY>window.innerHeight-100)window.scrollBy?.(0,14);\n      });\n      const finish=(e,cancel=false)=>{\n        if(!drag||drag.pointer!==e.pointerId)return;const d=drag;drag=null;handle.releasePointerCapture?.(e.pointerId);\n        if(!cancel&&d.moved&&d.target!==d.startIndex){const [item]=entries.splice(d.startIndex,1);entries.splice(d.target,0,item);renderList();saveOrder();}else renderList();\n      };\n      handle.addEventListener(\'pointerup\',e=>finish(e));handle.addEventListener(\'pointercancel\',e=>finish(e,true));card.appendChild(handle);\n      if(selected===entry.id){\n        const controls=el(\'div\',\'salt-rank-controls\');\n        const up=button(\'↑ 上へ\',()=>move(entry.id,-1)), down=button(\'↓ 下へ\',()=>move(entry.id,1));up.disabled=index===0||busy;down.disabled=index===entries.length-1||busy;\n        controls.appendChild(up);controls.appendChild(down);controls.appendChild(button(\'記録を見る\',()=>{if(!busy)emit(\'open\',{id:entry.id});}));card.appendChild(controls);\n      }\n      list.appendChild(card);\n    });\n  };\n  const ranking=data?.mode===\'ランキング\';mapEl.hidden=ranking;list.hidden=!ranking;\n  if(ranking){status.textContent=\'写真をタップして上下ボタン、または右の⠿を押して指で移動\';renderList();}\n  else{\n    status.textContent=\'パンのピンをタップすると、写真と感想を開きます。\';\n    const load=()=>{\n      if(window.L)return Promise.resolve(window.L);\n      if(window.__burariSaltLeaflet609)return window.__burariSaltLeaflet609;\n      window.__burariSaltLeaflet609=new Promise((resolve,reject)=>{const script=document.createElement(\'script\');script.src=\'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js\';script.crossOrigin=\'\';script.onload=()=>window.L?resolve(window.L):reject(new Error(\'地図の準備に失敗しました\'));script.onerror=()=>reject(new Error(\'地図を読み込めませんでした\'));document.head.appendChild(script);}).catch(e=>{window.__burariSaltLeaflet609=null;throw e;});\n      return window.__burariSaltLeaflet609;\n    };\n    load().then(L=>{\n      if(disposed||mapEl.__saltMapLease611!==lease)return;\n      map=L.map(mapEl,{scrollWheelZoom:false}).setView([35.66,139.72],12);\n      L.tileLayer(\'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png\',{maxZoom:19,attribution:\'© OpenStreetMap contributors\'}).addTo(map);\n      const points=[];\n      const icon=(preview=false)=>L.divIcon({className:\'salt-pin-container\',iconSize:[44,52],iconAnchor:[22,49],html:`<div class="salt-bread-pin ${preview?\'preview\':\'\'}"><span>🍞</span></div>`});\n      entries.forEach(entry=>{\n        const lat=Number(entry.lat),lng=Number(entry.lng);if(!Number.isFinite(lat)||!Number.isFinite(lng))return;\n        const marker=L.marker([lat,lng],{icon:icon(),title:String(entry.name||\'\'),keyboard:true}).addTo(map);\n        const content=el(\'div\',\'salt-popup\');if(entry.src){const img=el(\'img\');img.src=String(entry.src);img.alt=String(entry.name);img.loading=\'lazy\';content.appendChild(img);}\n        content.appendChild(el(\'small\',\'salt-shop-name\',String(entry.name||\'\')));content.appendChild(el(\'p\',\'\',String(entry.address||\'\')));\n        content.appendChild(button(\'写真と感想を見る\',()=>emit(\'open\',{id:entry.id})));marker.bindPopup(content);points.push([lat,lng]);\n      });\n      const preview=data?.preview;\n      if(preview&&Number.isFinite(Number(preview.lat))&&Number.isFinite(Number(preview.lng))){\n        const p=[Number(preview.lat),Number(preview.lng)];const marker=L.marker(p,{icon:icon(true),title:\'登録前の確認\',draggable:true}).addTo(map).bindPopup(el(\'div\',\'\',`${preview.name||\'\'}\u3000${preview.address||\'\'}`)).openPopup();\n        marker.on(\'dragend\',()=>{const point=marker.getLatLng();status.textContent=\'ピンの位置を更新しています…\';emit(\'preview\',{lat:point.lat,lng:point.lng});});\n        status.textContent=\'登録前のパンのピンは、指で動かして位置を調整できます。\';map.setView(p,17);\n      }else if(points.length===1)map.setView(points[0],16);else if(points.length>1)map.fitBounds(points,{padding:[35,35],maxZoom:16});\n      map.invalidateSize();\n    }).catch(e=>{if(!disposed){status.textContent=String(e.message||e);reportError610(\'salt.map_initialization\',e,{container_initialized:Boolean(mapEl._leaflet_id),mode:data?.mode,lifecycle:\'container-owner-v611\'});mapEl.textContent=\'地図を表示できません。お店の一覧・ランキングから記録を開けます。\';}});\n  }\n  return()=>{lease.dispose();if(mapEl.__saltMapLease611===lease)delete mapEl.__saltMapLease611;if(root.__saltMapLease610===lease)delete root.__saltMapLease610;};\n}\n'
 
 def page_good_moments_menu():
     page_top("✨ いい瞬間の設定をする")
@@ -61345,6 +61563,7 @@ def page_settings_location():
 
 def page_settings_account():
     page_top("👤 アカウントを確認")
+    _app_error_settings_v610()
     settings_notice = st.session_state.pop("_settings_notice", None)
     if settings_notice:
         st.success(settings_notice)
