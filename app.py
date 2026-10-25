@@ -1,3 +1,4 @@
+# v619: Fix Photon unsupported language; fixed 1/3/5/10km radius choices and service error response logging.
 # v618: Independent Photon bakery fallback, failed-provider cooldown, POST Overpass queries and precise transport diagnostics.
 # v617: Three-calendar-month OSM bakery discovery/evidence cache, persistent candidate pins, and durable search logs.
 # v616: Rotate imported and saved photos, and rotate video stills from enlarged view without losing selection or voice.
@@ -73,7 +74,7 @@ def _app_css_v473(markup, **_ignored):
 # Review menu-only update: 2026-09-19 JST
 GENERATED_UPDATE_JST = "2026-09-19T14:54:38+09:00"
 
-APP_BUILD = "v618"
+APP_BUILD = "v619"
 # v598: Passing the focus gate is mandatory before any weighted ranking or reroll.
 # Never fill the twenty-image target with focus-rejected candidates.
 # v597: Compare 30 FPS candidates across the whole saved video offline. Disk-backed
@@ -55635,7 +55636,7 @@ def _salt_lookup_json_v609(web, url, params, operation):
         remaining = getattr(web, "deadline", time.monotonic() + 4.0) - time.monotonic()
         if remaining < 0.25:
             raise TimeoutError("検索の通信待ち時間を超えました。")
-        with urlopen(request, timeout=min(10.0 if operation == "bakery_search" else 4.0, remaining)) as response:
+        with urlopen(request, timeout=min(10.0 if operation in ("bakery_search", "bakery_photon") else 4.0, remaining)) as response:
             info.update(status=response.status, content_type=response.headers.get("Content-Type", ""))
             raw = response.read(4 * 1024 * 1024 + 1)
         if len(raw) > 4 * 1024 * 1024:
@@ -55646,6 +55647,11 @@ def _salt_lookup_json_v609(web, url, params, operation):
         return doc, info
     except Exception as exc:
         info.update(status=getattr(exc, "code", info.get("status")), exception_type=type(exc).__name__, error=str(exc), elapsed_ms=round((time.monotonic() - started) * 1000))
+        if isinstance(exc, HTTPError):
+            try:
+                info["response_body"] = _safe_error_text(exc.read(2048).decode("utf-8", errors="replace"), 2048)
+            except Exception:
+                pass
         info.update(_salt_exception_details_v609(exc))
         exc.landmark_diagnostic = info
         _salt_trace_v609(web, "request_failed", info, "ERROR")
@@ -56250,7 +56256,8 @@ def _salt_provider_health_v618():
 
 def _salt_photon_bakeries_v618(web,lat,lng,radius):
     # Photon reverse supports principal OSM tag filters and a radius in kilometres.
-    params={"lat":lat,"lon":lng,"radius":radius/1000.,"osm_tag":"shop:bakery","limit":50,"lang":"ja"}
+    # Omit lang: the public instance rejects ja (HTTP 400); default keeps local names.
+    params={"lat":lat,"lon":lng,"radius":radius/1000.,"osm_tag":"shop:bakery","limit":50}
     data,info=_salt_lookup_json_v609(web,'https://photon.komoot.io/reverse',params,'bakery_photon')
     if not isinstance(data,dict) or data.get('type')!='FeatureCollection' or not isinstance(data.get('features'),list):
         raise ValueError('代替パン屋検索の応答を確認できません。')
@@ -56314,14 +56321,14 @@ def _salt_bakery_document_v618(web,query,lat,lng,radius):
                 health['retry_after'][endpoint]=time.monotonic()+300
             _salt_trace_v609(web,'bakery_provider_failed',{'url':endpoint,'error':str(exc),'cooldown_seconds':300},'WARNING')
     # Give this independent provider its own small budget after Overpass failed.
-    web.deadline=max(getattr(web,'deadline',0),time.monotonic()+6)
+    web.deadline=max(getattr(web,'deadline',0),time.monotonic()+12)
     _salt_trace_v609(web,'bakery_provider_fallback',{'next_provider':'Photon','reason':'Overpass transport failure or temporary cooldown'},'WARNING')
     return _salt_photon_bakeries_v618(web,lat,lng,radius)
 
 
 def _salt_discover_v617(lat, lng, radius):
     lat,lng = _salt_coordinates_v609(lat,lng)
-    radius = max(100, min(5000, int(radius)))
+    radius = max(1000, min(10000, int(radius)))
     web = _SaltWebV609()
     web.deadline = time.monotonic()+24
     # An OSM shop query discovers stores; product claims always carry evidence.
@@ -56509,7 +56516,7 @@ def page_salt_bread_v609():
                 st.rerun()
             elif action.get("action") == "search_bakeries":
                 lat,lng = _salt_coordinates_v609(action.get("lat"), action.get("lng"))
-                radius = int(st.session_state.get("salt_discovery_radius_v617") or 1000)
+                radius = int(st.session_state.get("salt_discovery_radius_v619") or 1000)
                 cached = next((q for q in reversed(discovery['searches']) if abs(q['lat']-lat)<.0003 and abs(q['lng']-lng)<.0003 and q['radius_m']==radius),None)
                 if cached and not st.session_state.get("salt_discovery_refresh_v617"):
                     _salt_discovery_cache_log_v617(cached)
@@ -56557,7 +56564,7 @@ def page_salt_bread_v609():
     registry = _salt_discovery_jobs_v617()
     with registry['lock']:
         searching = owner in registry['jobs']
-    st.number_input("周辺検索の半径（m）", min_value=100, max_value=5000, step=100, value=1000, key="salt_discovery_radius_v617")
+    st.selectbox("周辺検索の半径", [1000, 3000, 5000, 10000], format_func=lambda value: f"{value // 1000}km", key="salt_discovery_radius_v619")
     include_unknown = st.checkbox("塩パンの取り扱い未確認のパン屋も表示", value=False, key="salt_discovery_unknown_v617")
     st.checkbox("保存済みでも再検索", value=False, key="salt_discovery_refresh_v617")
     st.caption("地図を探したい場所へ動かし「この周辺の塩パンを探す」を押してください。候補は3か月保存。塩パンの記載があっても、現在の販売・在庫を保証するものではありません。")
