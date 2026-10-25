@@ -1,3 +1,5 @@
+# v617: Three-calendar-month OSM bakery discovery/evidence cache, persistent candidate pins, and durable search logs.
+# v616: Rotate imported and saved photos, and rotate video stills from enlarged view without losing selection or voice.
 # v615: Reversible map pin removal, edit saved photos/notes, restore the originating popup on hierarchy Back.
 # v614: Include salt bread map/detail pages in the shared bottom Back/Home navigation.
 # v613: Prefer configured Google Places, rank bakery candidates, and allow confirmed manual map placement during provider outages.
@@ -70,7 +72,7 @@ def _app_css_v473(markup, **_ignored):
 # Review menu-only update: 2026-09-19 JST
 GENERATED_UPDATE_JST = "2026-09-19T14:54:38+09:00"
 
-APP_BUILD = "v615"
+APP_BUILD = "v617"
 # v598: Passing the focus gate is mandatory before any weighted ranking or reroll.
 # Never fill the twenty-image target with focus-rejected candidates.
 # v597: Compare 30 FPS candidates across the whole saved video offline. Disk-backed
@@ -1646,3997 +1648,9 @@ _LIVE_CAMERA_HTML = """
 </div>
 """
 
-_LIVE_CAMERA_CSS = """
-.gallery-only-v601 #camera-menu{display:none!important}
-.gallery-only-v601:not(.camera-reviewing) #camera-library-actions{display:flex!important}
-.gallery-only-v601 #gallery-photo-label{display:flex!important}
-.gallery-only-v601 #gallery-video-label{display:none!important}
+_LIVE_CAMERA_CSS = "\n.gallery-only-v601 #camera-menu{display:none!important}\n.gallery-only-v601:not(.camera-reviewing) #camera-library-actions{display:flex!important}\n.gallery-only-v601 #gallery-photo-label{display:flex!important}\n.gallery-only-v601 #gallery-video-label{display:none!important}\n\n.live-camera-wrap {\n  width: 100%;\n  box-sizing: border-box;\n  font-family: var(--st-font);\n  padding: 0;\n  margin: 0;\n}\n.camera-menu[hidden],\n.camera-active-actions[hidden],\n.camera-library-actions[hidden],\n.camera-library-button[hidden],\n.live-camera-video[hidden],\n.camera-review[hidden],\n.camera-review-image[hidden],\n.camera-review-image-shell[hidden],\n.camera-review-emotion-hint[hidden],\n.camera-review-emotion-palette[hidden],\n.camera-review-imported-badge[hidden],\n.camera-review-batch-imported[hidden],\n.camera-save-new-only-button[hidden],\n.camera-review-batch[hidden],\n.camera-review-video[hidden],\n.camera-find-button[hidden],\n.camera-review-build[hidden],\n.camera-recording-status[hidden],\n.camera-status[hidden] {\n  display: none !important;\n}\n.camera-menu {\n  display: grid;\n  grid-template-columns: 1fr;\n  gap: 10px;\n  margin: 0;\n}\n.camera-library-actions {\n  display: grid;\n  grid-template-columns: 1fr;\n  gap: 8px;\n  margin: 8px 0 0;\n}\n.camera-library-button {\n  width: 100%;\n  min-height: 54px;\n  box-sizing: border-box;\n  border-radius: 16px;\n  padding: 10px 14px;\n  display: flex;\n  align-items: center;\n  justify-content: center;\n  text-align: center;\n  font-size: 15px;\n  line-height: 1.25;\n  font-weight: 780;\n  cursor: pointer;\n  touch-action: manipulation;\n  -webkit-tap-highlight-color: transparent;\n  border: 1.6px solid rgba(128,128,128,.28);\n  background: rgba(128,128,128,.035);\n  color: var(--st-text-color);\n}\n.photo-library-button {\n  border-color: rgba(74,144,226,.55);\n  background: rgba(74,144,226,.07);\n}\n.video-library-button {\n  border-color: rgba(124,58,237,.62);\n  background: rgba(124,58,237,.08);\n}\n.camera-library-button:hover,\n.camera-library-button:focus-visible {\n  filter: brightness(1.02);\n  box-shadow: 0 0 0 3px rgba(74,144,226,.08);\n}\n.gallery-media-input {\n  position: absolute;\n  width: 1px;\n  height: 1px;\n  opacity: 0;\n  pointer-events: none;\n}\n.camera-menu-button,\n.gallery-button,\n.camera-shoot-button,\n.camera-facing-button,\n.camera-mode-switch-button,\n.camera-sub-button,\n.camera-save-button,\n.camera-retry-button,\n.camera-find-button {\n  width: 100%;\n  min-height: 68px;\n  box-sizing: border-box;\n  border-radius: 18px;\n  font-size: 18px;\n  font-weight: 800;\n  cursor: pointer;\n  touch-action: manipulation;\n  -webkit-tap-highlight-color: transparent;\n  display: flex;\n  align-items: center;\n  justify-content: center;\n  text-align: center;\n  padding: 12px 16px;\n}\n.camera-menu-button,\n.gallery-button {\n  border: 2px solid var(--st-primary-color);\n  background: color-mix(in srgb, var(--st-primary-color) 8%, transparent);\n  color: var(--st-text-color);\n}\n.video-menu-button {\n  border-color: #7c3aed;\n  background: rgba(124, 58, 237, .10);\n}\n.gallery-button {\n  border-color: rgba(128,128,128,.28);\n  background: transparent;\n}\n.camera-review-batch {\n  width: 100%;\n  box-sizing: border-box;\n  margin: 10px 0 0 0;\n}\n.camera-review-batch-count {\n  margin: 0 0 8px 0;\n  font-size: 14px;\n  font-weight: 800;\n  line-height: 1.45;\n  color: var(--st-text-color);\n}\n.camera-review-batch-grid {\n  display: grid;\n  grid-template-columns: repeat(3, minmax(0, 1fr));\n  gap: 6px;\n  width: 100%;\n}\n.camera-review-batch-item {\n  position: relative;\n  width: 100%;\n  aspect-ratio: 1 / 1;\n  overflow: hidden;\n  border-radius: 10px;\n  background: rgba(15,23,42,.10);\n}\n.camera-review-batch-item img {\n  display: block;\n  width: 100%;\n  height: 100%;\n  object-fit: cover;\n}\n.camera-review-batch-index {\n  position: absolute;\n  right: 5px;\n  bottom: 5px;\n  min-width: 22px;\n  height: 22px;\n  padding: 0 5px;\n  box-sizing: border-box;\n  border-radius: 999px;\n  display: flex;\n  align-items: center;\n  justify-content: center;\n  background: rgba(15,23,42,.78);\n  color: #fff;\n  font-size: 11px;\n  font-weight: 800;\n}\n.camera-review-batch-imported,\n.camera-review-imported-badge {\n  position: absolute;\n  left: 7px;\n  top: 7px;\n  z-index: 4;\n  max-width: calc(100% - 14px);\n  padding: 5px 8px;\n  box-sizing: border-box;\n  border-radius: 999px;\n  background: rgba(15,118,110,.94);\n  border: 1px solid rgba(255,255,255,.82);\n  color: #fff;\n  box-shadow: 0 2px 8px rgba(0,0,0,.22);\n  font-size: 10px;\n  line-height: 1.15;\n  font-weight: 900;\n  white-space: nowrap;\n}\n.camera-review-imported-badge {\n  left: 11px;\n  top: 11px;\n  font-size: 12px;\n  padding: 6px 10px;\n}\n\n.live-camera-video,\n.camera-review-image,\n.camera-review-video {\n  display: block;\n  width: var(--camera-preview-width, 100%);\n  height: var(--camera-preview-height, auto);\n  max-width: 100%;\n  max-height: 72dvh;\n  aspect-ratio: var(--camera-preview-aspect-ratio, auto);\n  box-sizing: border-box;\n  border-radius: 16px;\n  background: #000;\n  margin: 0 auto;\n  object-fit: cover;\n}\n/* v246: no app-defined camera ratio. The preview ratio is populated only after\n   reading the actual dimensions returned by the phone camera stream. */\n.live-camera-video {\n  object-fit: cover;\n}\n.live-camera-wrap.camera-video-mode .live-camera-video,\n.live-camera-wrap.camera-video-mode .camera-review-video,\n.live-camera-wrap.camera-photo-mode .live-camera-video,\n.live-camera-wrap.camera-photo-mode .camera-review-image {\n  width: var(--camera-preview-width, 100%);\n  height: var(--camera-preview-height, auto);\n  max-width: 100%;\n  max-height: 72dvh;\n  aspect-ratio: var(--camera-preview-aspect-ratio, auto);\n  object-fit: cover;\n  margin-left: auto;\n  margin-right: auto;\n}\n/* v398: show the complete native video frame. `cover` cropped the edges and\n   made people look closer than the camera stream actually was. */\n.live-camera-wrap.camera-video-mode .live-camera-video,\n.live-camera-wrap.camera-video-mode .camera-review-video {\n  object-fit: contain;\n}\n/* v226: selfie preview is mirrored like a normal phone camera.\n   Captured files keep the camera sensor's original orientation. */\n.live-camera-video.front-facing {\n  transform: scaleX(-1);\n}\n/* v226: when the handset is physically landscape, show a true wide preview\n   instead of keeping the old portrait 3:4 viewport. JS supplies a height/width\n   based on the device's short edge so controls remain reachable without a long scroll. */\n.live-camera-wrap.camera-landscape .live-camera-video {\n  width: min(100%, var(--camera-landscape-preview-width, 640px));\n  height: var(--camera-landscape-preview-height, 340px);\n  max-height: none;\n  aspect-ratio: auto;\n  object-fit: contain;\n  margin-left: auto;\n  margin-right: auto;\n}\n.live-camera-wrap.camera-landscape .camera-review-image,\n.live-camera-wrap.camera-landscape .camera-review-video {\n  width: min(100%, var(--camera-landscape-preview-width, 640px));\n  height: var(--camera-landscape-preview-height, 340px);\n  max-height: none;\n  aspect-ratio: auto;\n  object-fit: contain;\n  margin-left: auto;\n  margin-right: auto;\n}\n.live-camera-wrap.camera-landscape .camera-review-image-shell {\n  width: min(100%, calc(var(--camera-landscape-preview-width, 640px) + 8px));\n  margin-left: auto;\n  margin-right: auto;\n}\n.camera-review-image-shell {\n  position: relative;\n  width: 100%;\n  box-sizing: border-box;\n  border: 4px solid #AEB6C2;\n  border-radius: 19px;\n  padding: 3px;\n  background: rgba(174,182,194,.07);\n  cursor: pointer;\n  touch-action: manipulation;\n  -webkit-tap-highlight-color: transparent;\n  outline: none;\n}\n.camera-review-image-shell:focus-visible {\n  box-shadow: 0 0 0 3px rgba(59,130,246,.20);\n}\n.camera-review-image-shell .camera-review-image {\n  display: block;\n  margin: 0;\n  border-radius: 12px;\n}\n.camera-review-emotion-badge {\n  position: absolute;\n  right: 11px;\n  bottom: 11px;\n  z-index: 3;\n  min-width: 34px;\n  height: 30px;\n  padding: 0 9px;\n  box-sizing: border-box;\n  border-radius: 999px;\n  display: flex;\n  align-items: center;\n  justify-content: center;\n  background: rgba(255,255,255,.92);\n  border: 1px solid rgba(17,24,39,.10);\n  box-shadow: 0 2px 8px rgba(0,0,0,.16);\n  font-size: 11px;\n  line-height: 1;\n  font-weight: 800;\n  white-space: nowrap;\n  pointer-events: none;\n}\n.camera-review-emotion-badge[hidden] { display: none !important; }\n.camera-review-emotion-hint {\n  margin: 2px 0 8px;\n  padding: 7px 9px;\n  border-radius: 10px;\n  background: rgba(128,128,128,.06);\n  font-size: 12px;\n  line-height: 1.35;\n  text-align: center;\n}\n.camera-review-mode-switch {\n  display:grid; grid-template-columns:1fr 1fr; gap:6px; margin:6px 0 8px;\n}\n.camera-review-mode-button {\n  appearance:none; -webkit-appearance:none; min-height:34px; margin:0; padding:6px 8px;\n  border:1.5px solid rgba(128,128,128,.24); border-radius:10px; background:rgba(128,128,128,.05);\n  color:var(--st-text-color); font-size:12px; font-weight:760; cursor:pointer;\n  touch-action:manipulation; -webkit-tap-highlight-color:transparent;\n}\n.camera-review-mode-button.active {\n  border-color:#6C9BD2; background:rgba(108,155,210,.14); box-shadow:0 0 0 1px rgba(108,155,210,.08) inset;\n}\n.camera-review-mode-button.parenting.active {\n  border-color:#6FBA9C; background:rgba(111,186,156,.14); box-shadow:0 0 0 1px rgba(111,186,156,.08) inset;\n}\n.camera-review-emotion-palette {\n  display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:6px; margin:8px 0;\n  padding:8px; border-radius:13px; background:rgba(128,128,128,.06);\n}\n.camera-review-emotion-palette button {\n  appearance:none; -webkit-appearance:none; min-height:48px; margin:0; padding:6px 3px;\n  border:1px solid rgba(128,128,128,.23); border-radius:10px; background:rgba(255,255,255,.72);\n  color:var(--st-text-color); font-size:21px; line-height:1; font-weight:750; cursor:pointer;\n  display:flex; flex-direction:column; align-items:center; justify-content:center; gap:4px;\n  touch-action:manipulation; -webkit-tap-highlight-color:transparent;\n}\n.camera-review-emotion-palette button span { font-size:8px; line-height:1.02; }\n.camera-review-emotion-palette button.selected { outline:3px solid currentColor; outline-offset:1px; }\n.camera-review-emotion-palette .camera-review-emotion-clear { grid-column:1 / -1; min-height:32px; font-size:10px; }\n.camera-review-video { object-fit: contain; }\n.camera-active-actions,\n.camera-review-actions {\n  display: grid;\n  gap: 8px;\n}\n.camera-active-actions { grid-template-columns: 2.15fr .95fr 1.15fr .75fr; }\n.camera-review-actions { grid-template-columns: 3fr 1fr; }\n.camera-active-actions { margin: 8px 0 0 0; }\n.camera-review-actions { margin: 0 0 8px 0; }\n.camera-find-button {\n  margin: 0 0 8px 0;\n  border: 2px solid #7c3aed;\n  background: rgba(124, 58, 237, .10);\n  color: var(--st-text-color);\n}\n.camera-find-button:hover,\n.camera-find-button:focus-visible {\n  background: rgba(124, 58, 237, .16);\n}\n.camera-review-build {\n  margin: -2px 0 8px 0;\n  text-align: right;\n  font-size: 10px;\n  line-height: 1;\n  opacity: .38;\n  user-select: none;\n}\n.camera-find-button:disabled {\n  opacity: .62;\n  cursor: default;\n}\n.camera-recording-status {\n  margin: 8px 0 0;\n  padding: 8px 10px;\n  text-align: center;\n  border-radius: 12px;\n  background: rgba(220, 38, 38, .11);\n  border: 1px solid rgba(220, 38, 38, .25);\n  color: #b91c1c;\n  font-size: 14px;\n  font-weight: 800;\n}\n.live-camera-wrap.camera-recording-active .camera-active-actions {\n  grid-template-columns: 1fr;\n}\n.live-camera-wrap.camera-recording-active .camera-facing-button,\n.live-camera-wrap.camera-recording-active .camera-mode-switch-button,\n.live-camera-wrap.camera-recording-active .camera-sub-button {\n  display: none !important;\n}\n.camera-shoot-button {\n  border: 2px solid var(--st-primary-color);\n  background: var(--st-primary-color);\n  color: white;\n}\n.camera-shoot-button.recording {\n  border-color: #b91c1c;\n  background: #dc2626;\n}\n/* v397: keep the normal shutter colour until it is actually pressed. */\n.camera-shoot-button.photo-capturing {\n  border-color: #1f6fd1;\n  background: linear-gradient(145deg, #4aa8ff, #2878df);\n  box-shadow: 0 3px 10px rgba(31, 111, 209, .28), 0 0 0 3px rgba(74, 168, 255, .13);\n  transform: translateY(1px) scale(.975);\n}\n.camera-save-button {\n  border: 2px solid #15803d;\n  background: #16a34a;\n  color: white;\n  box-shadow: 0 0 0 3px rgba(22, 163, 74, .14);\n}\n.camera-save-button:hover,\n.camera-save-button:focus-visible {\n  border-color: #166534;\n  background: #15803d;\n}\n.camera-save-new-only-button {\n  width: 100%;\n  min-height: 54px;\n  box-sizing: border-box;\n  margin: 0 0 8px 0;\n  padding: 10px 14px;\n  border: 2px solid #0f766e;\n  border-radius: 16px;\n  background: #0d9488;\n  color: #fff;\n  font-size: 16px;\n  font-weight: 800;\n  cursor: pointer;\n  touch-action: manipulation;\n  -webkit-tap-highlight-color: transparent;\n}\n.camera-save-new-only-button:hover,\n.camera-save-new-only-button:focus-visible {\n  border-color: #115e59;\n  background: #0f766e;\n}\n.camera-save-new-only-button:disabled {\n  cursor: default;\n  opacity: .58;\n}\n.camera-facing-button,\n.camera-mode-switch-button,\n.camera-sub-button,\n.camera-retry-button {\n  border: 1px solid rgba(128,128,128,.28);\n  background: transparent;\n  color: var(--st-text-color);\n}\n.camera-review { width: 100%; margin: 0; }\n.camera-status {\n  margin: 8px 0 0 0;\n  padding: 8px 10px;\n  border-radius: 10px;\n  background: rgba(255, 193, 7, .12);\n  font-size: 13px;\n  line-height: 1.45;\n}\n@media (max-width: 640px) {\n  .camera-menu-button,\n  .gallery-button {\n    min-height: 62px;\n    font-size: 16px;\n  }\n  .camera-library-button {\n    min-height: 52px;\n    font-size: 14px;\n  }\n  /* v246: mobile uses only the ratio reported by the active phone camera. */\n  .live-camera-video,\n  .camera-review-image,\n  .camera-review-video {\n    max-height: 72dvh;\n    aspect-ratio: var(--camera-preview-aspect-ratio, auto);\n  }\n  .live-camera-wrap.camera-video-mode .live-camera-video,\n  .live-camera-wrap.camera-video-mode .camera-review-video,\n  .live-camera-wrap.camera-photo-mode .live-camera-video,\n  .live-camera-wrap.camera-photo-mode .camera-review-image {\n    max-height: 72dvh;\n    aspect-ratio: var(--camera-preview-aspect-ratio, auto);\n  }\n  .camera-active-actions { grid-template-columns: 1.85fr .92fr 1.08fr .72fr; gap: 6px; }\n  .camera-review-actions { grid-template-columns: 3fr 1fr; }\n  .camera-shoot-button,\n  .camera-facing-button,\n  .camera-mode-switch-button,\n  .camera-sub-button,\n  .camera-save-button,\n  .camera-retry-button {\n    min-height: 56px;\n    font-size: 14px;\n    padding-left: 8px;\n    padding-right: 8px;\n  }\n}\n.live-camera-wrap.camera-landscape .camera-active-actions {\n  grid-template-columns: 2fr .95fr 1.05fr .72fr;\n  gap: 6px;\n  margin-top: 6px;\n}\n.live-camera-wrap.camera-landscape .camera-shoot-button,\n.live-camera-wrap.camera-landscape .camera-facing-button,\n.live-camera-wrap.camera-landscape .camera-mode-switch-button,\n.live-camera-wrap.camera-landscape .camera-sub-button {\n  min-height: 44px;\n  font-size: 12px;\n  padding: 6px 5px;\n  border-radius: 12px;\n}\n.live-camera-wrap.camera-landscape .camera-library-button {\n  min-height: 42px;\n  font-size: 12px;\n  padding: 6px 9px;\n  border-radius: 12px;\n}\n.live-camera-wrap.camera-landscape .camera-recording-status,\n.live-camera-wrap.camera-landscape .camera-status {\n  margin-top: 5px;\n  padding: 5px 8px;\n  font-size: 11px;\n}\n.live-camera-wrap.camera-landscape .camera-review-actions {\n  gap: 6px;\n}\n.live-camera-wrap.camera-landscape .camera-save-button,\n.live-camera-wrap.camera-landscape .camera-save-new-only-button,\n.live-camera-wrap.camera-landscape .camera-retry-button {\n  min-height: 44px;\n  font-size: 12px;\n  border-radius: 12px;\n}\n.live-camera-wrap.camera-landscape .camera-review-emotion-hint {\n  margin: 2px 0 5px;\n  padding: 5px 7px;\n  font-size: 10px;\n}\n.live-camera-wrap.camera-landscape .camera-review-mode-switch {\n  margin: 4px 0 5px;\n}\n\n/* v395: acknowledge the finger-down immediately, before camera permission or a\n   Streamlit rerun can finish. Focus keeps the colour visible during startup. */\n.camera-menu-button,\n.camera-shoot-button,\n.camera-save-button,\n.camera-retry-button,\n.camera-mode-switch-button,\n.camera-facing-button,\n.camera-sub-button {\n  transition: transform 55ms ease-out, background 55ms linear, box-shadow 55ms linear !important;\n  will-change: transform;\n  touch-action: manipulation;\n}\n.camera-menu-button:not(.video-menu-button):active,\n.camera-menu-button:not(.video-menu-button):focus {\n  color: #fff !important;\n  border-color: #1f6fd1 !important;\n  background: linear-gradient(145deg,#4aa8ff,#2878df) !important;\n  box-shadow: 0 2px 7px rgba(31,111,209,.30),0 0 0 3px rgba(74,168,255,.22) !important;\n  transform: translateY(1px) scale(.975) !important;\n}\n.video-menu-button:active,\n.video-menu-button:focus {\n  color: #fff !important;\n  border-color: #6d28d9 !important;\n  background: linear-gradient(145deg,#9a67f5,#7134d2) !important;\n  box-shadow: 0 2px 7px rgba(109,40,217,.30),0 0 0 3px rgba(154,103,245,.22) !important;\n  transform: translateY(1px) scale(.975) !important;\n}\n.camera-shoot-button:active,\n.camera-save-button:active,\n.camera-save-new-only-button:active,\n.camera-retry-button:active,\n.camera-mode-switch-button:active,\n.camera-facing-button:active,\n.camera-sub-button:active {\n  filter: brightness(.90) saturate(1.16);\n  transform: translateY(1px) scale(.975) !important;\n}\n\n.photo-rotation-controls-v616{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:8px 0}.photo-rotation-controls-v616 button{min-height:44px;border:1px solid #b9c7d7;border-radius:10px;background:#fff;color:#193650;font:inherit;font-size:13px;padding:8px;touch-action:manipulation;cursor:pointer}.photo-rotation-controls-v616 button:disabled{opacity:.5}\n\n.camera-review-batch-item{aspect-ratio:auto;overflow:visible}.camera-review-batch-item img{height:auto;aspect-ratio:1;object-fit:contain}.camera-review-batch-item .photo-rotation-controls-v616{gap:3px}.camera-review-batch-item .photo-rotation-controls-v616 button{font-size:10px;padding:3px;min-height:38px}.camera-review-batch-index{top:5px;bottom:auto}\n"
 
-.live-camera-wrap {
-  width: 100%;
-  box-sizing: border-box;
-  font-family: var(--st-font);
-  padding: 0;
-  margin: 0;
-}
-.camera-menu[hidden],
-.camera-active-actions[hidden],
-.camera-library-actions[hidden],
-.camera-library-button[hidden],
-.live-camera-video[hidden],
-.camera-review[hidden],
-.camera-review-image[hidden],
-.camera-review-image-shell[hidden],
-.camera-review-emotion-hint[hidden],
-.camera-review-emotion-palette[hidden],
-.camera-review-imported-badge[hidden],
-.camera-review-batch-imported[hidden],
-.camera-save-new-only-button[hidden],
-.camera-review-batch[hidden],
-.camera-review-video[hidden],
-.camera-find-button[hidden],
-.camera-review-build[hidden],
-.camera-recording-status[hidden],
-.camera-status[hidden] {
-  display: none !important;
-}
-.camera-menu {
-  display: grid;
-  grid-template-columns: 1fr;
-  gap: 10px;
-  margin: 0;
-}
-.camera-library-actions {
-  display: grid;
-  grid-template-columns: 1fr;
-  gap: 8px;
-  margin: 8px 0 0;
-}
-.camera-library-button {
-  width: 100%;
-  min-height: 54px;
-  box-sizing: border-box;
-  border-radius: 16px;
-  padding: 10px 14px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  text-align: center;
-  font-size: 15px;
-  line-height: 1.25;
-  font-weight: 780;
-  cursor: pointer;
-  touch-action: manipulation;
-  -webkit-tap-highlight-color: transparent;
-  border: 1.6px solid rgba(128,128,128,.28);
-  background: rgba(128,128,128,.035);
-  color: var(--st-text-color);
-}
-.photo-library-button {
-  border-color: rgba(74,144,226,.55);
-  background: rgba(74,144,226,.07);
-}
-.video-library-button {
-  border-color: rgba(124,58,237,.62);
-  background: rgba(124,58,237,.08);
-}
-.camera-library-button:hover,
-.camera-library-button:focus-visible {
-  filter: brightness(1.02);
-  box-shadow: 0 0 0 3px rgba(74,144,226,.08);
-}
-.gallery-media-input {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  opacity: 0;
-  pointer-events: none;
-}
-.camera-menu-button,
-.gallery-button,
-.camera-shoot-button,
-.camera-facing-button,
-.camera-mode-switch-button,
-.camera-sub-button,
-.camera-save-button,
-.camera-retry-button,
-.camera-find-button {
-  width: 100%;
-  min-height: 68px;
-  box-sizing: border-box;
-  border-radius: 18px;
-  font-size: 18px;
-  font-weight: 800;
-  cursor: pointer;
-  touch-action: manipulation;
-  -webkit-tap-highlight-color: transparent;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  text-align: center;
-  padding: 12px 16px;
-}
-.camera-menu-button,
-.gallery-button {
-  border: 2px solid var(--st-primary-color);
-  background: color-mix(in srgb, var(--st-primary-color) 8%, transparent);
-  color: var(--st-text-color);
-}
-.video-menu-button {
-  border-color: #7c3aed;
-  background: rgba(124, 58, 237, .10);
-}
-.gallery-button {
-  border-color: rgba(128,128,128,.28);
-  background: transparent;
-}
-.camera-review-batch {
-  width: 100%;
-  box-sizing: border-box;
-  margin: 10px 0 0 0;
-}
-.camera-review-batch-count {
-  margin: 0 0 8px 0;
-  font-size: 14px;
-  font-weight: 800;
-  line-height: 1.45;
-  color: var(--st-text-color);
-}
-.camera-review-batch-grid {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 6px;
-  width: 100%;
-}
-.camera-review-batch-item {
-  position: relative;
-  width: 100%;
-  aspect-ratio: 1 / 1;
-  overflow: hidden;
-  border-radius: 10px;
-  background: rgba(15,23,42,.10);
-}
-.camera-review-batch-item img {
-  display: block;
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-}
-.camera-review-batch-index {
-  position: absolute;
-  right: 5px;
-  bottom: 5px;
-  min-width: 22px;
-  height: 22px;
-  padding: 0 5px;
-  box-sizing: border-box;
-  border-radius: 999px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: rgba(15,23,42,.78);
-  color: #fff;
-  font-size: 11px;
-  font-weight: 800;
-}
-.camera-review-batch-imported,
-.camera-review-imported-badge {
-  position: absolute;
-  left: 7px;
-  top: 7px;
-  z-index: 4;
-  max-width: calc(100% - 14px);
-  padding: 5px 8px;
-  box-sizing: border-box;
-  border-radius: 999px;
-  background: rgba(15,118,110,.94);
-  border: 1px solid rgba(255,255,255,.82);
-  color: #fff;
-  box-shadow: 0 2px 8px rgba(0,0,0,.22);
-  font-size: 10px;
-  line-height: 1.15;
-  font-weight: 900;
-  white-space: nowrap;
-}
-.camera-review-imported-badge {
-  left: 11px;
-  top: 11px;
-  font-size: 12px;
-  padding: 6px 10px;
-}
-
-.live-camera-video,
-.camera-review-image,
-.camera-review-video {
-  display: block;
-  width: var(--camera-preview-width, 100%);
-  height: var(--camera-preview-height, auto);
-  max-width: 100%;
-  max-height: 72dvh;
-  aspect-ratio: var(--camera-preview-aspect-ratio, auto);
-  box-sizing: border-box;
-  border-radius: 16px;
-  background: #000;
-  margin: 0 auto;
-  object-fit: cover;
-}
-/* v246: no app-defined camera ratio. The preview ratio is populated only after
-   reading the actual dimensions returned by the phone camera stream. */
-.live-camera-video {
-  object-fit: cover;
-}
-.live-camera-wrap.camera-video-mode .live-camera-video,
-.live-camera-wrap.camera-video-mode .camera-review-video,
-.live-camera-wrap.camera-photo-mode .live-camera-video,
-.live-camera-wrap.camera-photo-mode .camera-review-image {
-  width: var(--camera-preview-width, 100%);
-  height: var(--camera-preview-height, auto);
-  max-width: 100%;
-  max-height: 72dvh;
-  aspect-ratio: var(--camera-preview-aspect-ratio, auto);
-  object-fit: cover;
-  margin-left: auto;
-  margin-right: auto;
-}
-/* v398: show the complete native video frame. `cover` cropped the edges and
-   made people look closer than the camera stream actually was. */
-.live-camera-wrap.camera-video-mode .live-camera-video,
-.live-camera-wrap.camera-video-mode .camera-review-video {
-  object-fit: contain;
-}
-/* v226: selfie preview is mirrored like a normal phone camera.
-   Captured files keep the camera sensor's original orientation. */
-.live-camera-video.front-facing {
-  transform: scaleX(-1);
-}
-/* v226: when the handset is physically landscape, show a true wide preview
-   instead of keeping the old portrait 3:4 viewport. JS supplies a height/width
-   based on the device's short edge so controls remain reachable without a long scroll. */
-.live-camera-wrap.camera-landscape .live-camera-video {
-  width: min(100%, var(--camera-landscape-preview-width, 640px));
-  height: var(--camera-landscape-preview-height, 340px);
-  max-height: none;
-  aspect-ratio: auto;
-  object-fit: contain;
-  margin-left: auto;
-  margin-right: auto;
-}
-.live-camera-wrap.camera-landscape .camera-review-image,
-.live-camera-wrap.camera-landscape .camera-review-video {
-  width: min(100%, var(--camera-landscape-preview-width, 640px));
-  height: var(--camera-landscape-preview-height, 340px);
-  max-height: none;
-  aspect-ratio: auto;
-  object-fit: contain;
-  margin-left: auto;
-  margin-right: auto;
-}
-.live-camera-wrap.camera-landscape .camera-review-image-shell {
-  width: min(100%, calc(var(--camera-landscape-preview-width, 640px) + 8px));
-  margin-left: auto;
-  margin-right: auto;
-}
-.camera-review-image-shell {
-  position: relative;
-  width: 100%;
-  box-sizing: border-box;
-  border: 4px solid #AEB6C2;
-  border-radius: 19px;
-  padding: 3px;
-  background: rgba(174,182,194,.07);
-  cursor: pointer;
-  touch-action: manipulation;
-  -webkit-tap-highlight-color: transparent;
-  outline: none;
-}
-.camera-review-image-shell:focus-visible {
-  box-shadow: 0 0 0 3px rgba(59,130,246,.20);
-}
-.camera-review-image-shell .camera-review-image {
-  display: block;
-  margin: 0;
-  border-radius: 12px;
-}
-.camera-review-emotion-badge {
-  position: absolute;
-  right: 11px;
-  bottom: 11px;
-  z-index: 3;
-  min-width: 34px;
-  height: 30px;
-  padding: 0 9px;
-  box-sizing: border-box;
-  border-radius: 999px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: rgba(255,255,255,.92);
-  border: 1px solid rgba(17,24,39,.10);
-  box-shadow: 0 2px 8px rgba(0,0,0,.16);
-  font-size: 11px;
-  line-height: 1;
-  font-weight: 800;
-  white-space: nowrap;
-  pointer-events: none;
-}
-.camera-review-emotion-badge[hidden] { display: none !important; }
-.camera-review-emotion-hint {
-  margin: 2px 0 8px;
-  padding: 7px 9px;
-  border-radius: 10px;
-  background: rgba(128,128,128,.06);
-  font-size: 12px;
-  line-height: 1.35;
-  text-align: center;
-}
-.camera-review-mode-switch {
-  display:grid; grid-template-columns:1fr 1fr; gap:6px; margin:6px 0 8px;
-}
-.camera-review-mode-button {
-  appearance:none; -webkit-appearance:none; min-height:34px; margin:0; padding:6px 8px;
-  border:1.5px solid rgba(128,128,128,.24); border-radius:10px; background:rgba(128,128,128,.05);
-  color:var(--st-text-color); font-size:12px; font-weight:760; cursor:pointer;
-  touch-action:manipulation; -webkit-tap-highlight-color:transparent;
-}
-.camera-review-mode-button.active {
-  border-color:#6C9BD2; background:rgba(108,155,210,.14); box-shadow:0 0 0 1px rgba(108,155,210,.08) inset;
-}
-.camera-review-mode-button.parenting.active {
-  border-color:#6FBA9C; background:rgba(111,186,156,.14); box-shadow:0 0 0 1px rgba(111,186,156,.08) inset;
-}
-.camera-review-emotion-palette {
-  display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:6px; margin:8px 0;
-  padding:8px; border-radius:13px; background:rgba(128,128,128,.06);
-}
-.camera-review-emotion-palette button {
-  appearance:none; -webkit-appearance:none; min-height:48px; margin:0; padding:6px 3px;
-  border:1px solid rgba(128,128,128,.23); border-radius:10px; background:rgba(255,255,255,.72);
-  color:var(--st-text-color); font-size:21px; line-height:1; font-weight:750; cursor:pointer;
-  display:flex; flex-direction:column; align-items:center; justify-content:center; gap:4px;
-  touch-action:manipulation; -webkit-tap-highlight-color:transparent;
-}
-.camera-review-emotion-palette button span { font-size:8px; line-height:1.02; }
-.camera-review-emotion-palette button.selected { outline:3px solid currentColor; outline-offset:1px; }
-.camera-review-emotion-palette .camera-review-emotion-clear { grid-column:1 / -1; min-height:32px; font-size:10px; }
-.camera-review-video { object-fit: contain; }
-.camera-active-actions,
-.camera-review-actions {
-  display: grid;
-  gap: 8px;
-}
-.camera-active-actions { grid-template-columns: 2.15fr .95fr 1.15fr .75fr; }
-.camera-review-actions { grid-template-columns: 3fr 1fr; }
-.camera-active-actions { margin: 8px 0 0 0; }
-.camera-review-actions { margin: 0 0 8px 0; }
-.camera-find-button {
-  margin: 0 0 8px 0;
-  border: 2px solid #7c3aed;
-  background: rgba(124, 58, 237, .10);
-  color: var(--st-text-color);
-}
-.camera-find-button:hover,
-.camera-find-button:focus-visible {
-  background: rgba(124, 58, 237, .16);
-}
-.camera-review-build {
-  margin: -2px 0 8px 0;
-  text-align: right;
-  font-size: 10px;
-  line-height: 1;
-  opacity: .38;
-  user-select: none;
-}
-.camera-find-button:disabled {
-  opacity: .62;
-  cursor: default;
-}
-.camera-recording-status {
-  margin: 8px 0 0;
-  padding: 8px 10px;
-  text-align: center;
-  border-radius: 12px;
-  background: rgba(220, 38, 38, .11);
-  border: 1px solid rgba(220, 38, 38, .25);
-  color: #b91c1c;
-  font-size: 14px;
-  font-weight: 800;
-}
-.live-camera-wrap.camera-recording-active .camera-active-actions {
-  grid-template-columns: 1fr;
-}
-.live-camera-wrap.camera-recording-active .camera-facing-button,
-.live-camera-wrap.camera-recording-active .camera-mode-switch-button,
-.live-camera-wrap.camera-recording-active .camera-sub-button {
-  display: none !important;
-}
-.camera-shoot-button {
-  border: 2px solid var(--st-primary-color);
-  background: var(--st-primary-color);
-  color: white;
-}
-.camera-shoot-button.recording {
-  border-color: #b91c1c;
-  background: #dc2626;
-}
-/* v397: keep the normal shutter colour until it is actually pressed. */
-.camera-shoot-button.photo-capturing {
-  border-color: #1f6fd1;
-  background: linear-gradient(145deg, #4aa8ff, #2878df);
-  box-shadow: 0 3px 10px rgba(31, 111, 209, .28), 0 0 0 3px rgba(74, 168, 255, .13);
-  transform: translateY(1px) scale(.975);
-}
-.camera-save-button {
-  border: 2px solid #15803d;
-  background: #16a34a;
-  color: white;
-  box-shadow: 0 0 0 3px rgba(22, 163, 74, .14);
-}
-.camera-save-button:hover,
-.camera-save-button:focus-visible {
-  border-color: #166534;
-  background: #15803d;
-}
-.camera-save-new-only-button {
-  width: 100%;
-  min-height: 54px;
-  box-sizing: border-box;
-  margin: 0 0 8px 0;
-  padding: 10px 14px;
-  border: 2px solid #0f766e;
-  border-radius: 16px;
-  background: #0d9488;
-  color: #fff;
-  font-size: 16px;
-  font-weight: 800;
-  cursor: pointer;
-  touch-action: manipulation;
-  -webkit-tap-highlight-color: transparent;
-}
-.camera-save-new-only-button:hover,
-.camera-save-new-only-button:focus-visible {
-  border-color: #115e59;
-  background: #0f766e;
-}
-.camera-save-new-only-button:disabled {
-  cursor: default;
-  opacity: .58;
-}
-.camera-facing-button,
-.camera-mode-switch-button,
-.camera-sub-button,
-.camera-retry-button {
-  border: 1px solid rgba(128,128,128,.28);
-  background: transparent;
-  color: var(--st-text-color);
-}
-.camera-review { width: 100%; margin: 0; }
-.camera-status {
-  margin: 8px 0 0 0;
-  padding: 8px 10px;
-  border-radius: 10px;
-  background: rgba(255, 193, 7, .12);
-  font-size: 13px;
-  line-height: 1.45;
-}
-@media (max-width: 640px) {
-  .camera-menu-button,
-  .gallery-button {
-    min-height: 62px;
-    font-size: 16px;
-  }
-  .camera-library-button {
-    min-height: 52px;
-    font-size: 14px;
-  }
-  /* v246: mobile uses only the ratio reported by the active phone camera. */
-  .live-camera-video,
-  .camera-review-image,
-  .camera-review-video {
-    max-height: 72dvh;
-    aspect-ratio: var(--camera-preview-aspect-ratio, auto);
-  }
-  .live-camera-wrap.camera-video-mode .live-camera-video,
-  .live-camera-wrap.camera-video-mode .camera-review-video,
-  .live-camera-wrap.camera-photo-mode .live-camera-video,
-  .live-camera-wrap.camera-photo-mode .camera-review-image {
-    max-height: 72dvh;
-    aspect-ratio: var(--camera-preview-aspect-ratio, auto);
-  }
-  .camera-active-actions { grid-template-columns: 1.85fr .92fr 1.08fr .72fr; gap: 6px; }
-  .camera-review-actions { grid-template-columns: 3fr 1fr; }
-  .camera-shoot-button,
-  .camera-facing-button,
-  .camera-mode-switch-button,
-  .camera-sub-button,
-  .camera-save-button,
-  .camera-retry-button {
-    min-height: 56px;
-    font-size: 14px;
-    padding-left: 8px;
-    padding-right: 8px;
-  }
-}
-.live-camera-wrap.camera-landscape .camera-active-actions {
-  grid-template-columns: 2fr .95fr 1.05fr .72fr;
-  gap: 6px;
-  margin-top: 6px;
-}
-.live-camera-wrap.camera-landscape .camera-shoot-button,
-.live-camera-wrap.camera-landscape .camera-facing-button,
-.live-camera-wrap.camera-landscape .camera-mode-switch-button,
-.live-camera-wrap.camera-landscape .camera-sub-button {
-  min-height: 44px;
-  font-size: 12px;
-  padding: 6px 5px;
-  border-radius: 12px;
-}
-.live-camera-wrap.camera-landscape .camera-library-button {
-  min-height: 42px;
-  font-size: 12px;
-  padding: 6px 9px;
-  border-radius: 12px;
-}
-.live-camera-wrap.camera-landscape .camera-recording-status,
-.live-camera-wrap.camera-landscape .camera-status {
-  margin-top: 5px;
-  padding: 5px 8px;
-  font-size: 11px;
-}
-.live-camera-wrap.camera-landscape .camera-review-actions {
-  gap: 6px;
-}
-.live-camera-wrap.camera-landscape .camera-save-button,
-.live-camera-wrap.camera-landscape .camera-save-new-only-button,
-.live-camera-wrap.camera-landscape .camera-retry-button {
-  min-height: 44px;
-  font-size: 12px;
-  border-radius: 12px;
-}
-.live-camera-wrap.camera-landscape .camera-review-emotion-hint {
-  margin: 2px 0 5px;
-  padding: 5px 7px;
-  font-size: 10px;
-}
-.live-camera-wrap.camera-landscape .camera-review-mode-switch {
-  margin: 4px 0 5px;
-}
-
-/* v395: acknowledge the finger-down immediately, before camera permission or a
-   Streamlit rerun can finish. Focus keeps the colour visible during startup. */
-.camera-menu-button,
-.camera-shoot-button,
-.camera-save-button,
-.camera-retry-button,
-.camera-mode-switch-button,
-.camera-facing-button,
-.camera-sub-button {
-  transition: transform 55ms ease-out, background 55ms linear, box-shadow 55ms linear !important;
-  will-change: transform;
-  touch-action: manipulation;
-}
-.camera-menu-button:not(.video-menu-button):active,
-.camera-menu-button:not(.video-menu-button):focus {
-  color: #fff !important;
-  border-color: #1f6fd1 !important;
-  background: linear-gradient(145deg,#4aa8ff,#2878df) !important;
-  box-shadow: 0 2px 7px rgba(31,111,209,.30),0 0 0 3px rgba(74,168,255,.22) !important;
-  transform: translateY(1px) scale(.975) !important;
-}
-.video-menu-button:active,
-.video-menu-button:focus {
-  color: #fff !important;
-  border-color: #6d28d9 !important;
-  background: linear-gradient(145deg,#9a67f5,#7134d2) !important;
-  box-shadow: 0 2px 7px rgba(109,40,217,.30),0 0 0 3px rgba(154,103,245,.22) !important;
-  transform: translateY(1px) scale(.975) !important;
-}
-.camera-shoot-button:active,
-.camera-save-button:active,
-.camera-save-new-only-button:active,
-.camera-retry-button:active,
-.camera-mode-switch-button:active,
-.camera-facing-button:active,
-.camera-sub-button:active {
-  filter: brightness(.90) saturate(1.16);
-  transform: translateY(1px) scale(.975) !important;
-}
-"""
-
-_LIVE_CAMERA_JS = r"""
-export default function(component) {
-  const { parentElement, setTriggerValue, data } = component;
-  const wrap = parentElement.querySelector('.live-camera-wrap');
-  const galleryOnly = Boolean(data?.gallery_only);
-  if (wrap) wrap.classList.toggle('gallery-only-v601', galleryOnly);
-  const video = parentElement.querySelector('#live-camera-video');
-  const canvas = parentElement.querySelector('#live-camera-canvas');
-  const menu = parentElement.querySelector('#camera-menu');
-  const startButton = parentElement.querySelector('#live-camera-start');
-  const videoStartButton = parentElement.querySelector('#live-video-start');
-  const galleryInput = parentElement.querySelector('#gallery-photo-input');
-  const galleryVideoInput = parentElement.querySelector('#gallery-video-input');
-  const galleryPhotoLabel = parentElement.querySelector('#gallery-photo-label');
-  const galleryVideoLabel = parentElement.querySelector('#gallery-video-label');
-  const libraryActions = parentElement.querySelector('#camera-library-actions');
-  const activeActions = parentElement.querySelector('#camera-active-actions');
-  const shootButton = parentElement.querySelector('#live-camera-shoot');
-  const facingSwitchButton = parentElement.querySelector('#live-camera-facing-switch');
-  const modeSwitchButton = parentElement.querySelector('#live-camera-mode-switch');
-  const stopButton = parentElement.querySelector('#live-camera-stop');
-  const recordingStatus = parentElement.querySelector('#camera-recording-status');
-  const review = parentElement.querySelector('#camera-review');
-  const reviewImageShell = parentElement.querySelector('#camera-review-image-shell');
-  const reviewImage = parentElement.querySelector('#camera-review-image');
-  const reviewImportedBadge = parentElement.querySelector('#camera-review-imported-badge');
-  const reviewEmotionBadge = parentElement.querySelector('#camera-review-emotion-badge');
-  const reviewEmotionHint = parentElement.querySelector('#camera-review-emotion-hint');
-  const reviewModeSwitch = parentElement.querySelector('#camera-review-mode-switch');
-  const reviewModeNormal = parentElement.querySelector('#camera-review-mode-normal');
-  const reviewModeParenting = parentElement.querySelector('#camera-review-mode-parenting');
-  const reviewBatch = parentElement.querySelector('#camera-review-batch');
-  const reviewBatchCount = parentElement.querySelector('#camera-review-batch-count');
-  const reviewBatchGrid = parentElement.querySelector('#camera-review-batch-grid');
-  const reviewVideo = parentElement.querySelector('#camera-review-video');
-  const reviewSave = parentElement.querySelector('#camera-review-save');
-  const reviewSaveNewOnly = parentElement.querySelector('#camera-review-save-new-only');
-  const reviewRetry = parentElement.querySelector('#camera-review-retry');
-  const reviewFindMoments = parentElement.querySelector('#camera-review-find-moments');
-  const reviewBuild = parentElement.querySelector('#camera-review-build');
-  const status = parentElement.querySelector('#live-camera-status');
-
-  const VIDEO_RECORD_MAX_SECONDS = 60;
-  const VIDEO_IMPORT_MAX_SECONDS = 65;
-  const GOOD_MOMENTS_MAX_CANDIDATES = 20;
-  const GOOD_MOMENTS_MIN_INTERVAL_SECONDS = 0.5;
-  // v107: the browser uploads the video blob straight to a short-lived Supabase
-  // signed upload URL. The multi-megabyte video is never serialized through a
-  // Streamlit component trigger value.
-  const videoUploadSignedUrl = String(data?.video_upload_signed_url || '');
-  const videoUploadStoragePath = String(data?.video_upload_storage_path || '');
-  const videoUploadFallbackSignedUrl = String(data?.video_upload_fallback_signed_url || '');
-  const videoUploadFallbackStoragePath = String(data?.video_upload_fallback_storage_path || '');
-  const candidateSheetSignedUrl = String(data?.video_candidate_sheet_signed_url || '');
-  const candidateSheetStoragePath = String(data?.video_candidate_sheet_storage_path || '');
-  const videoUnavailableReason = String(data?.video_unavailable_reason || '');
-  const videoPrepareAvailable = Boolean(data?.video_prepare_available);
-  const videoMaxBytes = Math.max(0, Number(data?.video_max_bytes || 0));
-  const videoAllowed = data?.video_allowed !== false && Boolean(videoUploadSignedUrl && videoUploadStoragePath);
-  const videoCapacityMessage = String(
-    data?.video_capacity_message || '動画の保存容量または保存先を確認できないため、最大60秒の動画を撮影できません。'
-  );
-  const galleryImportedIdentityHashesV444 = new Set(
-    (Array.isArray(data?.gallery_import_identity_hashes) ? data.gallery_import_identity_hashes : [])
-      .map((value) => String(value || '').trim()).filter(Boolean)
-  );
-  const galleryImportedFingerprintsV444 = new Set(
-    (Array.isArray(data?.gallery_import_fingerprints) ? data.gallery_import_fingerprints : [])
-      .map((value) => String(value || '').trim()).filter(Boolean)
-  );
-  const unavailableSuffix = videoUnavailableReason === 'quota'
-    ? '容量不足'
-    : (videoUnavailableReason === 'storage_setup' ? '保存先エラー' : '利用不可');
-  if (!videoAllowed && videoStartButton) {
-    videoStartButton.disabled = !videoPrepareAvailable;
-    videoStartButton.textContent = videoPrepareAvailable ? '🎥 動画を撮る' : `🎥 動画を撮る（${unavailableSuffix}）`;
-    videoStartButton.title = videoPrepareAvailable ? '動画を使うときだけ保存先を準備します。' : videoCapacityMessage;
-  }
-  let stream = null;
-  let cameraStartGeneration = 0;
-  let videoPrepareRequested = false;
-  let cameraModeSwitchInProgress = false;
-  let cameraTransitionPoster = '';
-  let cameraMode = 'photo';
-  let cameraFacing = 'environment';
-  // v313: remember the actual lens so photo/video use the same physical camera.
-  let preferredCameraDeviceId = null;
-  try {
-    const savedFacing = String(localStorage.getItem('tokyo_burari_camera_facing_v226') || '');
-    if (savedFacing === 'user' || savedFacing === 'environment') cameraFacing = savedFacing;
-  } catch (_) {}
-
-  const isDeviceLandscape = () => {
-    try {
-      const type = String(globalThis.screen?.orientation?.type || '');
-      if (type.startsWith('landscape')) return true;
-      if (type.startsWith('portrait')) return false;
-    } catch (_) {}
-    try { return Boolean(window.matchMedia && window.matchMedia('(orientation: landscape)').matches); } catch (_) {}
-    return false;
-  };
-  let nativeCameraPortraitRatio = 0;
-  let nativeCameraShortEdge = 0;
-  let nativeCameraLongEdge = 0;
-  const readNativeCameraDimensions = () => {
-    let width = 0;
-    let height = 0;
-    try {
-      const track = stream && stream.getVideoTracks ? stream.getVideoTracks()[0] : null;
-      const settings = (track && track.getSettings) ? track.getSettings() : {};
-      width = Math.max(0, Number(settings?.width || 0));
-      height = Math.max(0, Number(settings?.height || 0));
-    } catch (_) {}
-    if (!(width > 0 && height > 0)) {
-      width = Math.max(0, Number(video?.videoWidth || 0));
-      height = Math.max(0, Number(video?.videoHeight || 0));
-    }
-    return { width, height };
-  };
-  const syncNativeCameraFrame = () => {
-    if (!wrap) return;
-    const dims = readNativeCameraDimensions();
-    if (!(dims.width > 0 && dims.height > 0)) return;
-    const shortEdge = Math.min(dims.width, dims.height);
-    const longEdge = Math.max(dims.width, dims.height);
-    if (!(shortEdge > 0 && longEdge > 0)) return;
-    nativeCameraShortEdge = shortEdge;
-    nativeCameraLongEdge = longEdge;
-    nativeCameraPortraitRatio = shortEdge / longEdge;
-    wrap.style.setProperty('--camera-preview-aspect-ratio', `${shortEdge} / ${longEdge}`);
-
-    let availableWidth = 0;
-    try { availableWidth = Math.max(0, Number(wrap.getBoundingClientRect()?.width || 0)); } catch (_) {}
-    if (!(availableWidth > 0)) {
-      try { availableWidth = Math.max(0, Number(parentElement?.getBoundingClientRect()?.width || 0)); } catch (_) {}
-    }
-    if (!(availableWidth > 0)) availableWidth = shortEdge;
-    let viewportHeight = 800;
-    try {
-      viewportHeight = Math.max(320, Number(window.visualViewport?.height || window.innerHeight || 800));
-    } catch (_) {}
-    const maxPreviewHeight = Math.min(760, viewportHeight * 0.72);
-    let previewWidth = availableWidth;
-    let previewHeight = previewWidth / nativeCameraPortraitRatio;
-    if (previewHeight > maxPreviewHeight) {
-      previewHeight = maxPreviewHeight;
-      previewWidth = previewHeight * nativeCameraPortraitRatio;
-    }
-    wrap.style.setProperty('--camera-preview-width', `${Math.max(1, Math.floor(previewWidth))}px`);
-    wrap.style.setProperty('--camera-preview-height', `${Math.max(1, Math.floor(previewHeight))}px`);
-  };
-  const applyNativePortraitConstraint = async () => {
-    if (!stream) return;
-    const dims = readNativeCameraDimensions();
-    if (!(dims.width > 0 && dims.height > 0)) {
-      syncNativeCameraFrame();
-      return;
-    }
-    const shortEdge = Math.min(dims.width, dims.height);
-    const longEdge = Math.max(dims.width, dims.height);
-    const portraitRatio = shortEdge / longEdge;
-    nativeCameraShortEdge = shortEdge;
-    nativeCameraLongEdge = longEdge;
-    nativeCameraPortraitRatio = portraitRatio;
-    // If the browser exposes the camera stream in landscape dimensions while the
-    // app is portrait-only, request the reciprocal orientation of that exact same
-    // camera ratio. No new 3:4, 9:16, 4:5, etc. ratio is invented here.
-    if (dims.width > dims.height) {
-      try {
-        const track = stream.getVideoTracks && stream.getVideoTracks()[0];
-        if (track && track.applyConstraints) {
-          await track.applyConstraints({
-            width: { ideal: shortEdge },
-            height: { ideal: longEdge },
-            aspectRatio: { ideal: portraitRatio }
-          });
-        }
-      } catch (err) {
-        console.warn('native portrait camera ratio could not be applied', err);
-      }
-    }
-    syncNativeCameraFrame();
-  };
-  const syncOrientationUi = () => {
-    // v246: landscape mode is removed. Mode changes never invent a camera ratio.
-    const videoMode = cameraMode === 'video';
-    const photoMode = !videoMode;
-    if (wrap) {
-      wrap.classList.toggle('camera-video-mode', videoMode);
-      wrap.classList.toggle('camera-photo-mode', photoMode);
-      wrap.classList.remove('camera-landscape');
-      wrap.style.removeProperty('--camera-landscape-preview-height');
-      wrap.style.removeProperty('--camera-landscape-preview-width');
-      syncNativeCameraFrame();
-    }
-  };
-  const syncFacingUi = () => {
-    const front = cameraFacing === 'user';
-    if (video) video.classList.toggle('front-facing', front);
-    if (facingSwitchButton) {
-      facingSwitchButton.textContent = front ? '📷 外側' : '🤳 内側';
-      facingSwitchButton.setAttribute('aria-label', front ? '外側カメラに切り替える' : '内側カメラに切り替える');
-      facingSwitchButton.title = front ? '外側カメラに切り替える' : '内側カメラに切り替える';
-    }
-  };
-  const persistCameraFacing = () => {
-    try { localStorage.setItem('tokyo_burari_camera_facing_v226', cameraFacing); } catch (_) {}
-  };
-  const preferredVideoConstraints = () => {
-    // v314 keeps photo/video on the same physical camera geometry. Frame-rate is
-    // raised only after the stream opens so Android is less likely to switch lenses
-    // or change the field of view while satisfying the initial getUserMedia request.
-    const constraints = {
-      facingMode: { ideal: cameraFacing },
-      height: { ideal: 1600 }
-    };
-    try {
-      const supported = navigator.mediaDevices?.getSupportedConstraints?.() || {};
-      if (supported.resizeMode) constraints.resizeMode = { ideal: 'none' };
-    } catch (_) {}
-    if (preferredCameraDeviceId) {
-      constraints.deviceId = { exact: preferredCameraDeviceId };
-      delete constraints.facingMode;
-    }
-    return constraints;
-  };
-
-  const applyHighVideoFrameRate = async () => {
-    if (!stream || cameraMode !== 'video') return 0;
-    try {
-      const track = stream.getVideoTracks && stream.getVideoTracks()[0];
-      if (!track || !track.applyConstraints) return 0;
-      let capMax = 0;
-      try {
-        const caps = track.getCapabilities ? (track.getCapabilities() || {}) : {};
-        const frameCaps = caps.frameRate;
-        if (frameCaps && Number.isFinite(Number(frameCaps.max))) capMax = Number(frameCaps.max);
-      } catch (_) {}
-
-      // v398: 60fps keeps motion smooth while avoiding the extra sensor crop and
-      // startup negotiation cost that many phones introduce in their 90fps mode.
-      const targets = [];
-      if (capMax >= 59 || !capMax) targets.push(60);
-      if (capMax > 0 && capMax < 59) targets.push(Math.max(30, Math.floor(capMax)));
-      if (!targets.length) targets.push(60);
-
-      for (const target of [...new Set(targets)]) {
-        try {
-          await track.applyConstraints({ frameRate: { ideal: target, max: target } });
-          const settings = track.getSettings ? (track.getSettings() || {}) : {};
-          const actual = Number(settings.frameRate || 0);
-          if (actual >= 50 || target < 60) return actual || target;
-        } catch (_) {}
-      }
-      const settings = track.getSettings ? (track.getSettings() || {}) : {};
-      return Number(settings.frameRate || 0);
-    } catch (err) {
-      console.warn('high frame rate unavailable', err);
-      return 0;
-    }
-  };
-
-  const applyWidestAvailableZoom = async () => {
-    if (!stream) return;
-    try {
-      const track = stream.getVideoTracks && stream.getVideoTracks()[0];
-      if (!track || !track.applyConstraints || !track.getCapabilities) return;
-      const caps = track.getCapabilities() || {};
-      const zoomCaps = caps.zoom;
-      if (!zoomCaps) return;
-      const minZoom = Number(zoomCaps.min);
-      if (!Number.isFinite(minZoom) || minZoom <= 0) return;
-      await track.applyConstraints({ advanced: [{ zoom: minZoom }] });
-    } catch (err) {
-      // Zoom is optional in getUserMedia. Devices that do not expose it keep their native view.
-      console.warn('minimum camera zoom unavailable', err);
-    }
-  };
-  syncOrientationUi();
-  syncFacingUi();
-
-  let pendingMedia = null;
-  let pendingVideoBlob = null;
-  // v562: Gallery video upload lifetime is separate from camera recording.
-  // Cancelling/replacing a selected gallery clip invalidates outstanding callbacks.
-  let galleryVideoUploadControllerV562 = null;
-  let galleryVideoUploadGenerationV562 = 0;
-  // v323: gallery photos are shown from a local object URL immediately.
-  // Full-size decoding/resizing for save runs asynchronously so choosing a photo
-  // does not leave the screen looking frozen while a 12-50MP phone image is decoded.
-  let pendingPhotoPreparePromise = null;
-  let pendingPhotoPreviewUrl = '';
-  let pendingPhotoLoadGeneration = 0;
-  let pendingPhotoBatchFiles = [];
-  let pendingPhotoBatchPreparePromise = null;
-  let pendingPhotoBatchPreviewUrls = [];
-  const GALLERY_PHOTO_BATCH_MAX = 20;
-  const GALLERY_PHOTO_BATCH_WORKERS = 2;
-  const revokePendingPhotoPreviewUrl = () => {
-    if (!pendingPhotoPreviewUrl) return;
-    try { URL.revokeObjectURL(pendingPhotoPreviewUrl); } catch (_) {}
-    pendingPhotoPreviewUrl = '';
-  };
-  const revokePendingPhotoBatchPreviewUrls = () => {
-    for (const url of pendingPhotoBatchPreviewUrls) {
-      try { URL.revokeObjectURL(url); } catch (_) {}
-    }
-    pendingPhotoBatchPreviewUrls = [];
-  };
-  const resetPendingPhotoBatch = () => {
-    pendingPhotoBatchFiles = [];
-    pendingPhotoBatchPreparePromise = null;
-    revokePendingPhotoBatchPreviewUrls();
-    if (reviewBatchGrid) reviewBatchGrid.replaceChildren();
-    if (reviewBatchCount) reviewBatchCount.textContent = '';
-    if (reviewBatch) reviewBatch.hidden = true;
-  };
-  const PHOTO_EMOTION_ORDER = ['', 'cozy', 'joy', 'surprise', 'anger', 'sadness', 'frustration', 'relaxed', 'delicious', 'beautiful', 'mixed'];
-  const PHOTO_EMOTIONS = {
-    cozy: { emoji: '🥰', color: '#F3B6A0', label: 'ほっこりした' },
-    joy: { emoji: '😊', color: '#F2C94C', label: 'うれしい' },
-    surprise: { emoji: '😲', color: '#9B7BD3', label: 'びっくり' },
-    anger: { emoji: '😠', color: '#E56B6F', label: 'おこった' },
-    sadness: { emoji: '😢', color: '#6C9BD2', label: 'かなしい' },
-    frustration: { emoji: '😣', color: '#A66A8A', label: 'くやしい' },
-    relaxed: { emoji: '😌', color: '#9BCDB8', label: 'のほほん' },
-    delicious: { emoji: '😋', color: '#F2A65A', label: '美味しい' },
-    beautiful: { emoji: '✨', color: '#6EC5D8', label: 'きれい' },
-    mixed: { emoji: '😵‍💫', color: '#8D86A8', label: '複雑' }
-  };
-  const PARENTING_ORDER = ['', 'effort', 'challenge', 'discovery', 'kindness', 'together', 'tears', 'hmm', 'peace', 'teach_me', 'sharp'];
-  const PARENTING_TAGS = {
-    effort: { emoji:'⭐', color:'#E6B84A', label:'がんばった' },
-    challenge: { emoji:'💪', color:'#F2994A', label:'ちょうせん' },
-    discovery: { emoji:'💡', color:'#9BC53D', label:'はっけん' },
-    kindness: { emoji:'❤️', color:'#E57373', label:'やさしさ' },
-    together: { emoji:'🤝', color:'#4DB6AC', label:'いっしょに' },
-    tears: { emoji:'😭', color:'#6C9BD2', label:'なみだ' },
-    hmm: { emoji:'🤔', color:'#8E7CC3', label:'むーん' },
-    peace: { emoji:'✌️', color:'#5BBF9F', label:'ピース' },
-    teach_me: { emoji:'🙋', color:'#4C9BE8', label:'教えて' },
-    sharp: { emoji:'🫡', color:'#53657D', label:'キリッ' }
-  };
-  let pendingEmotion = '';
-  let pendingParenting = '';
-  let reviewMode = 'normal';
-  const normalizeEmotion = (value) => Object.prototype.hasOwnProperty.call(PHOTO_EMOTIONS, String(value || '')) ? String(value || '') : '';
-  const normalizeParenting = (value) => Object.prototype.hasOwnProperty.call(PARENTING_TAGS, String(value || '')) ? String(value || '') : '';
-  const syncReviewModeButtons = () => {
-    const normalMeta = PHOTO_EMOTIONS[normalizeEmotion(pendingEmotion)] || null;
-    const parentingMeta = PARENTING_TAGS[normalizeParenting(pendingParenting)] || null;
-    if (reviewModeNormal) {
-      reviewModeNormal.classList.toggle('active', reviewMode === 'normal');
-      reviewModeNormal.textContent = `${normalMeta ? normalMeta.emoji : '🙂'} 通常`;
-    }
-    if (reviewModeParenting) {
-      reviewModeParenting.classList.toggle('active', reviewMode === 'parenting');
-      reviewModeParenting.textContent = `${parentingMeta ? parentingMeta.emoji : '🌱'} こどもーど`;
-    }
-  };
-  const syncReviewEmotion = () => {
-    const normalKey = normalizeEmotion(pendingEmotion);
-    const parentingKey = normalizeParenting(pendingParenting);
-    const meta = normalKey ? (PHOTO_EMOTIONS[normalKey] || null) : (parentingKey ? (PARENTING_TAGS[parentingKey] || null) : null);
-    const selectedMode = normalKey ? '通常' : (parentingKey ? 'こどもーど' : '');
-    if (reviewImageShell) {
-      reviewImageShell.style.borderColor = meta ? meta.color : '#AEB6C2';
-      reviewImageShell.style.background = meta ? `${meta.color}18` : 'rgba(174,182,194,.07)';
-      reviewImageShell.setAttribute('aria-label', meta ? `${selectedMode}：${meta.label}。タップすると現在のモードで変更します` : `${reviewMode === 'parenting' ? 'こどもーど' : '通常'}は未設定。タップして選びます`);
-    }
-    if (reviewEmotionBadge) {
-      reviewEmotionBadge.textContent = meta ? `${meta.emoji} ${meta.label}` : '';
-      reviewEmotionBadge.hidden = !meta;
-    }
-    syncReviewModeButtons();
-  };
-  const cycleReviewEmotion = (event) => {
-    event?.preventDefault?.(); event?.stopPropagation?.();
-    if (!pendingMedia || pendingMedia.kind !== 'photo') return;
-    if (reviewMode === 'parenting') {
-      const current = normalizeParenting(pendingParenting);
-      const currentIndex = Math.max(0, PARENTING_ORDER.indexOf(current));
-      pendingParenting = PARENTING_ORDER[(currentIndex + 1) % PARENTING_ORDER.length];
-      pendingEmotion = '';
-      pendingMedia.parenting = pendingParenting;
-      pendingMedia.emotion = '';
-    } else {
-      const current = normalizeEmotion(pendingEmotion);
-      const currentIndex = Math.max(0, PHOTO_EMOTION_ORDER.indexOf(current));
-      pendingEmotion = PHOTO_EMOTION_ORDER[(currentIndex + 1) % PHOTO_EMOTION_ORDER.length];
-      pendingParenting = '';
-      pendingMedia.emotion = pendingEmotion;
-      pendingMedia.parenting = '';
-    }
-    syncReviewEmotion();
-  };
-  const onReviewEmotionKeydown = (event) => {
-    if (event.key !== 'Enter' && event.key !== ' ') return;
-    cycleReviewEmotion(event);
-  };
-  let reviewVideoUrl = '';
-  let mediaRecorder = null;
-  let videoRecordingStartBusy = false;
-  let videoUploadBusy = false;
-  let recordedChunks = [];
-  let recordingStartedAt = 0;
-  let recordingCapturedAt = '';
-  let recordingLocationPromise = null;
-  let recordingTimer = null;
-  let recordingMaxTimer = null;
-  let recordingCandidateTimer = null;
-  let recordingCandidateBusy = false;
-  let recordingCandidateFrames = [];
-  let recordingCancelled = false;
-  let photoCaptureBusy = false;
-  let photoPressResetTimer = null;
-  // v381: Android WebView can return a live microphone track whose actual capture
-  // level is extremely low. Keep a per-recording Web Audio gain/compressor graph so
-  // the encoded video receives a usable speech level without monitoring to speakers.
-  let recordingAudioPipeline = null;
-  // Good-moments search is a separate review action. The button remains hidden
-  // briefly after recording stops, so the stop gesture cannot fall through to it.
-  let videoReviewGeneration = 0;
-  let goodMomentsRevealTimer = null;
-
-  const setStatus = (message) => {
-    if (!status) return;
-    status.textContent = message || '';
-    status.hidden = !message;
-  };
-
-  const clearRecordingTimers = () => {
-    if (recordingTimer) {
-      clearInterval(recordingTimer);
-      recordingTimer = null;
-    }
-    if (recordingMaxTimer) {
-      clearTimeout(recordingMaxTimer);
-      recordingMaxTimer = null;
-    }
-    if (recordingCandidateTimer) {
-      clearInterval(recordingCandidateTimer);
-      recordingCandidateTimer = null;
-    }
-  };
-
-  const syncLibraryActions = (recording = false) => {
-    const streamLive = Boolean(stream && stream.getTracks && stream.getTracks().some((track) => track.readyState === 'live'));
-    const activeVisible = Boolean(activeActions && !activeActions.hidden);
-    const shouldShow = Boolean(streamLive && activeVisible && !recording);
-    if (libraryActions) libraryActions.hidden = !shouldShow;
-    if (galleryPhotoLabel) galleryPhotoLabel.hidden = !shouldShow || cameraMode !== 'photo';
-    if (galleryVideoLabel) galleryVideoLabel.hidden = !shouldShow || cameraMode !== 'video';
-  };
-
-  const setPhotoCapturingUi = (capturing) => {
-    if (!shootButton) return;
-    shootButton.classList.toggle('photo-capturing', Boolean(capturing));
-    if (capturing) {
-      shootButton.textContent = '● 撮影中';
-    } else if (cameraMode === 'photo') {
-      shootButton.textContent = '● 写真を撮る';
-    }
-  };
-
-  const setRecordingUi = (recording) => {
-    if (recordingStatus) recordingStatus.hidden = !recording;
-    if (!shootButton) return;
-    if (wrap) wrap.classList.toggle('camera-recording-active', Boolean(recording));
-    if (!recording) {
-      photoCaptureBusy = false;
-      setPhotoCapturingUi(false);
-    }
-    if (recording) {
-      shootButton.textContent = '■ 撮影終了';
-      shootButton.classList.add('recording');
-    } else {
-      shootButton.classList.remove('recording');
-      shootButton.textContent = cameraMode === 'video' ? '● 録画を開始' : '● 写真を撮る';
-    }
-    if (facingSwitchButton) facingSwitchButton.disabled = Boolean(recording);
-    if (modeSwitchButton) {
-      modeSwitchButton.disabled = Boolean(recording) || (cameraMode !== 'video' && !videoAllowed && !videoPrepareAvailable);
-      modeSwitchButton.textContent = cameraMode === 'video'
-        ? '📷 写真へ'
-        : ((videoAllowed || videoPrepareAvailable) ? '🎥 動画へ' : `🎥 動画へ（${unavailableSuffix}）`);
-      modeSwitchButton.title = (!videoAllowed && !videoPrepareAvailable && cameraMode !== 'video') ? videoCapacityMessage : '';
-    }
-    syncLibraryActions(Boolean(recording));
-  };
-
-  const updateRecordingClock = () => {
-    if (!recordingStatus || !recordingStartedAt) return;
-    const elapsed = Math.min(VIDEO_RECORD_MAX_SECONDS, Math.max(0, Math.floor((Date.now() - recordingStartedAt) / 1000)));
-    const mm = Math.floor(elapsed / 60);
-    const ss = String(elapsed % 60).padStart(2, '0');
-    const maxMm = Math.floor(VIDEO_RECORD_MAX_SECONDS / 60);
-    const maxSs = String(VIDEO_RECORD_MAX_SECONDS % 60).padStart(2, '0');
-    recordingStatus.textContent = `● 録画中 ${mm}:${ss} / ${maxMm}:${maxSs}`;
-  };
-
-  const clearGoodMomentsRevealTimer = () => {
-    if (goodMomentsRevealTimer) {
-      clearTimeout(goodMomentsRevealTimer);
-      goodMomentsRevealTimer = null;
-    }
-  };
-
-  const disarmGoodMomentsButton = () => {
-    clearGoodMomentsRevealTimer();
-    if (!reviewFindMoments) return;
-    reviewFindMoments.dataset.armedGeneration = '';
-    reviewFindMoments.hidden = true;
-    reviewFindMoments.disabled = false;
-    reviewFindMoments.textContent = '\u2728 \u3044\u3044\u77ac\u9593\u3092\u63a2\u3059';
-  };
-
-  const revokeReviewVideoUrl = () => {
-    if (reviewVideoUrl) {
-      try { URL.revokeObjectURL(reviewVideoUrl); } catch (_) {}
-      reviewVideoUrl = '';
-    }
-  };
-
-  const hideReview = () => {
-    disarmGoodMomentsButton();
-    revokePendingPhotoPreviewUrl();
-    resetPendingPhotoBatch();
-    if (review) review.hidden = true;
-    if (reviewImageShell) reviewImageShell.hidden = true;
-    if (reviewImportedBadge) reviewImportedBadge.hidden = true;
-    if (reviewSaveNewOnly) {
-      reviewSaveNewOnly.hidden = true;
-      reviewSaveNewOnly.disabled = false;
-      reviewSaveNewOnly.textContent = '取り込み済み以外を残す';
-    }
-    if (reviewEmotionHint) reviewEmotionHint.hidden = true;
-    if (reviewImage) {
-      reviewImage.hidden = true;
-      reviewImage.removeAttribute('src');
-    }
-    pendingEmotion = '';
-    pendingParenting = '';
-    reviewMode = 'normal';
-    if (reviewModeSwitch) reviewModeSwitch.hidden = true;
-    syncReviewEmotion();
-    if (reviewVideo) {
-      try { reviewVideo.pause(); } catch (_) {}
-      reviewVideo.hidden = true;
-      reviewVideo.removeAttribute('src');
-      reviewVideo.removeAttribute('poster');
-      try { reviewVideo.load(); } catch (_) {}
-    }
-    revokeReviewVideoUrl();
-    if (reviewFindMoments) {
-      reviewFindMoments.dataset.armedGeneration = '';
-      reviewFindMoments.hidden = true;
-      reviewFindMoments.disabled = false;
-      reviewFindMoments.textContent = '✨ いい瞬間を探す';
-    }
-    if (reviewBuild) reviewBuild.hidden = true;
-  };
-
-  const showMenu = () => {
-    if (wrap) { wrap.classList.remove('camera-live'); wrap.classList.remove('camera-reviewing'); }
-    if (menu) menu.hidden = false;
-    if (activeActions) activeActions.hidden = true;
-    if (libraryActions) libraryActions.hidden = true;
-    if (video) video.hidden = true;
-    setRecordingUi(false);
-    hideReview();
-  };
-
-  const showCameraActions = () => {
-    syncOrientationUi();
-    syncFacingUi();
-    if (wrap) { wrap.classList.add('camera-live'); wrap.classList.remove('camera-reviewing'); }
-    if (menu) menu.hidden = true;
-    if (activeActions) activeActions.hidden = false;
-    if (video) video.hidden = false;
-    hideReview();
-    setRecordingUi(false);
-    primeCaptureLocation();
-  };
-
-  const showPhotoReview = (dataUrl) => {
-    syncOrientationUi();
-    if (wrap) { wrap.classList.remove('camera-live'); wrap.classList.add('camera-reviewing'); }
-    if (menu) menu.hidden = true;
-    if (activeActions) activeActions.hidden = true;
-    if (libraryActions) libraryActions.hidden = true;
-    if (video) video.hidden = true;
-    hideReview();
-    pendingEmotion = normalizeEmotion(pendingMedia?.emotion);
-    pendingParenting = normalizeParenting(pendingMedia?.parenting);
-    reviewMode = 'normal';
-    if (reviewImage) {
-      reviewImage.src = dataUrl;
-      reviewImage.hidden = false;
-    }
-    if (reviewImageShell) reviewImageShell.hidden = false;
-    if (reviewImportedBadge) reviewImportedBadge.hidden = true;
-    if (reviewEmotionHint) reviewEmotionHint.hidden = false;
-    if (reviewModeSwitch) reviewModeSwitch.hidden = false;
-    syncReviewEmotion();
-    reviewSave.textContent = 'この写真を残す';
-    reviewRetry.textContent = '撮りなおす／選びなおす';
-    if (reviewFindMoments) reviewFindMoments.hidden = true;
-    if (reviewBuild) reviewBuild.hidden = true;
-    if (review) review.hidden = false;
-  };
-
-  const showPhotoBatchReview = (files) => {
-    const cleanFiles = Array.isArray(files) ? files.filter(Boolean) : [];
-    syncOrientationUi();
-    if (wrap) { wrap.classList.remove('camera-live'); wrap.classList.add('camera-reviewing'); }
-    if (menu) menu.hidden = true;
-    if (activeActions) activeActions.hidden = true;
-    if (libraryActions) libraryActions.hidden = true;
-    if (video) video.hidden = true;
-    hideReview();
-    if (reviewImageShell) reviewImageShell.hidden = true;
-    if (reviewImportedBadge) reviewImportedBadge.hidden = true;
-    if (reviewEmotionHint) reviewEmotionHint.hidden = true;
-    if (reviewModeSwitch) reviewModeSwitch.hidden = true;
-    if (reviewBatchCount) reviewBatchCount.textContent = `${cleanFiles.length}枚を選択しました。取り込み履歴を確認しています…`;
-    if (reviewBatchGrid) {
-      reviewBatchGrid.replaceChildren();
-      cleanFiles.forEach((file, index) => {
-        const item = document.createElement('div');
-        item.className = 'camera-review-batch-item';
-        item.dataset.importIndex = String(index);
-        const img = document.createElement('img');
-        img.alt = `選択した写真 ${index + 1}`;
-        img.loading = index < 6 ? 'eager' : 'lazy';
-        const url = URL.createObjectURL(file);
-        pendingPhotoBatchPreviewUrls.push(url);
-        img.src = url;
-        const importedBadge = document.createElement('span');
-        importedBadge.className = 'camera-review-batch-imported';
-        importedBadge.textContent = '✓ 取り込み済み';
-        importedBadge.hidden = true;
-        const badge = document.createElement('span');
-        badge.className = 'camera-review-batch-index';
-        badge.textContent = String(index + 1);
-        item.appendChild(img);
-        item.appendChild(importedBadge);
-        item.appendChild(badge);
-        reviewBatchGrid.appendChild(item);
-      });
-    }
-    if (reviewBatch) reviewBatch.hidden = false;
-    reviewSave.textContent = `${cleanFiles.length}枚をまとめて残す`;
-    reviewRetry.textContent = '選びなおす';
-    if (reviewFindMoments) reviewFindMoments.hidden = true;
-    if (reviewBuild) reviewBuild.hidden = true;
-    if (review) review.hidden = false;
-  };
-
-  const setSingleGalleryImportedBadgeV444 = (imported) => {
-    if (reviewImportedBadge) reviewImportedBadge.hidden = !Boolean(imported);
-  };
-
-  const setBatchGalleryImportedBadgeV444 = (index, imported) => {
-    if (!reviewBatchGrid) return;
-    const item = reviewBatchGrid.querySelector(`[data-import-index="${Number(index)}"]`);
-    const badge = item?.querySelector('.camera-review-batch-imported');
-    if (badge) badge.hidden = !Boolean(imported);
-  };
-
-  const updateBatchImportedSummaryV445 = (items, totalCount) => {
-    const clean = Array.isArray(items) ? items.filter(Boolean) : [];
-    const importedCount = clean.filter((item) => Boolean(item?.already_imported)).length;
-    const freshCount = Math.max(0, clean.length - importedCount);
-    const total = Math.max(0, Number(totalCount || clean.length || 0));
-    if (reviewBatchCount) {
-      reviewBatchCount.textContent = importedCount
-        ? `${total}枚を選択しました。うち${importedCount}枚は ✓ 取り込み済み です。`
-        : `${total}枚を選択しました。取り込み済みの写真はありません。`;
-    }
-    if (reviewSaveNewOnly) {
-      reviewSaveNewOnly.hidden = importedCount <= 0;
-      reviewSaveNewOnly.disabled = importedCount <= 0 || freshCount <= 0;
-      reviewSaveNewOnly.textContent = freshCount > 0
-        ? `取り込み済み以外を残す（${freshCount}枚）`
-        : '取り込み済み以外はありません';
-    }
-  };
-
-  const showVideoReview = (blob, galleryPosterDataUrl = '') => {
-    syncOrientationUi();
-    if (wrap) { wrap.classList.remove('camera-live'); wrap.classList.add('camera-reviewing'); }
-    if (menu) menu.hidden = true;
-    if (activeActions) activeActions.hidden = true;
-    if (libraryActions) libraryActions.hidden = true;
-    if (video) video.hidden = true;
-    hideReview();
-    reviewVideoUrl = URL.createObjectURL(blob);
-    if (reviewVideo) {
-      if (galleryPosterDataUrl) reviewVideo.poster = galleryPosterDataUrl;
-      else reviewVideo.removeAttribute('poster');
-      reviewVideo.preload = 'auto';
-      reviewVideo.src = reviewVideoUrl;
-      reviewVideo.hidden = false;
-      try { reviewVideo.load(); } catch (_) {}
-      try { reviewVideo.currentTime = 0; } catch (_) {}
-    }
-    reviewSave.textContent = 'この動画を残す';
-    reviewRetry.textContent = '選びなおす';
-    disarmGoodMomentsButton();
-    if (reviewBuild) reviewBuild.hidden = false;
-    if (review) review.hidden = false;
-    setStatus('');
-  };
-
-  const stopActiveRecorderSilently = () => {
-    clearRecordingTimers();
-    if (mediaRecorder && mediaRecorder.state !== 'inactive') {
-      recordingCancelled = true;
-      try { mediaRecorder.stop(); } catch (_) {}
-    }
-    mediaRecorder = null;
-    recordedChunks = [];
-    recordingStartedAt = 0;
-    void closeRecordingAudioPipeline();
-    setRecordingUi(false);
-  };
-
-  const stopMediaStream = (targetStream) => {
-    if (!targetStream) return;
-    try { targetStream.getTracks().forEach((track) => { try { track.stop(); } catch (_) {} }); } catch (_) {}
-  };
-
-  const releaseLiveCameraForUpload = () => {
-    if (stream) {
-      stopMediaStream(stream);
-      stream = null;
-    }
-    if (video) {
-      try { video.pause(); } catch (_) {}
-      video.srcObject = null;
-      video.hidden = true;
-    }
-  };
-
-  const releaseSubmittedReviewMedia = () => {
-    pendingMedia = null;
-    pendingVideoBlob = null;
-    pendingPhotoLoadGeneration += 1;
-    pendingPhotoPreparePromise = null;
-    revokePendingPhotoPreviewUrl();
-    resetPendingPhotoBatch();
-    hideReview();
-  };
-
-  const captureCameraTransitionPoster = () => {
-    if (!video || !canvas || !(video.videoWidth > 0) || !(video.videoHeight > 0)) return '';
-    try {
-      const maxEdge = 960;
-      const scale = Math.min(1, maxEdge / Math.max(video.videoWidth, video.videoHeight));
-      canvas.width = Math.max(1, Math.round(video.videoWidth * scale));
-      canvas.height = Math.max(1, Math.round(video.videoHeight * scale));
-      const ctx = canvas.getContext('2d', { alpha: false });
-      if (!ctx) return '';
-      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-      return canvas.toDataURL('image/jpeg', 0.76);
-    } catch (_) {
-      return '';
-    }
-  };
-
-  const clearCameraTransitionPoster = () => {
-    cameraTransitionPoster = '';
-    if (video) {
-      try { video.removeAttribute('poster'); } catch (_) {}
-    }
-  };
-
-  const releaseCurrentCameraForModeSwitch = () => {
-    // Keep the camera area in place while Android/WebView reopens the same lens in
-    // photo/video mode. The old implementation called showMenu(), which made a mode
-    // switch look like the camera had closed and then reopened.
-    stopActiveRecorderSilently();
-    cameraTransitionPoster = captureCameraTransitionPoster();
-    if (stream) {
-      stopMediaStream(stream);
-      stream = null;
-    }
-    if (video) {
-      try { video.pause(); } catch (_) {}
-      video.srcObject = null;
-      if (cameraTransitionPoster) video.poster = cameraTransitionPoster;
-      video.hidden = false;
-    }
-    pendingMedia = null;
-    pendingVideoBlob = null;
-    pendingPhotoLoadGeneration += 1;
-    pendingPhotoPreparePromise = null;
-    revokePendingPhotoPreviewUrl();
-    resetPendingPhotoBatch();
-    if (wrap) { wrap.classList.add('camera-live'); wrap.classList.remove('camera-reviewing'); }
-    if (menu) menu.hidden = true;
-    if (activeActions) activeActions.hidden = false;
-    if (libraryActions) libraryActions.hidden = true;
-    hideReview();
-  };
-
-  const clearCurrentCameraStream = () => {
-    stopActiveRecorderSilently();
-    releaseLiveCameraForUpload();
-    clearCameraTransitionPoster();
-    pendingMedia = null;
-    pendingVideoBlob = null;
-    pendingPhotoLoadGeneration += 1;
-    pendingPhotoPreparePromise = null;
-    revokePendingPhotoPreviewUrl();
-    resetPendingPhotoBatch();
-    showMenu();
-  };
-
-  const stopStream = () => {
-    // Invalidate every in-flight camera/microphone start before releasing the current stream.
-    // This prevents an older failed video+mic request from tearing down a newer photo preview.
-    cameraStartGeneration += 1;
-    clearCurrentCameraStream();
-  };
-
-  const errorMessage = (err, mode = cameraMode) => {
-    const name = (err && err.name) ? err.name : '';
-    const videoMode = String(mode || '') === 'video';
-    if (name === 'NotAllowedError' || name === 'PermissionDeniedError') {
-      return videoMode
-        ? '動画撮影にはカメラとマイクの許可が必要です。端末またはブラウザの権限設定でカメラ・マイクを「許可」にして、このページを再読み込みしてください。'
-        : 'カメラが許可されていません。ブラウザのサイト設定でカメラを「許可」にして、このページを再読み込みしてください。';
-    }
-    if (name === 'NotFoundError' || name === 'DevicesNotFoundError') {
-      return videoMode ? '利用できるカメラまたはマイクが見つかりませんでした。' : '利用できるカメラが見つかりませんでした。';
-    }
-    if (name === 'NotReadableError' || name === 'TrackStartError') {
-      return videoMode ? 'カメラまたはマイクを開けませんでした。ほかのアプリが使用していないか確認してください。' : 'カメラを開けませんでした。ほかのアプリがカメラを使っていないか確認してください。';
-    }
-    if (name === 'SecurityError') return videoMode ? 'セキュリティ設定でカメラまたはマイクがブロックされています。' : 'ブラウザのセキュリティ設定でカメラがブロックされています。';
-    return videoMode ? '動画撮影用のカメラまたはマイクを開けませんでした。権限設定を確認してください。' : 'カメラを開けませんでした。ブラウザのカメラ権限を確認してください。';
-  };
-
-  const startCamera = async (mode = 'photo', options = {}) => {
-    if (galleryOnly) return;
-    const requestedMode = mode === 'video' ? 'video' : 'photo';
-    const fromModeSwitch = Boolean(options?.fromModeSwitch);
-    if (requestedMode === 'video' && !videoAllowed) {
-      if (videoPrepareAvailable && !videoPrepareRequested) {
-        videoPrepareRequested = true;
-        cameraModeSwitchInProgress = fromModeSwitch;
-        if (fromModeSwitch) {
-          // Keep the current photo preview visible while the server prepares the
-          // signed video destination. Make the intended mode obvious immediately.
-          cameraMode = 'video';
-          syncOrientationUi();
-          if (shootButton) { shootButton.disabled = true; shootButton.textContent = '● 動画準備中'; }
-          if (modeSwitchButton) { modeSwitchButton.disabled = true; modeSwitchButton.textContent = '📷 写真へ'; }
-          if (facingSwitchButton) facingSwitchButton.disabled = true;
-          if (libraryActions) libraryActions.hidden = true;
-        }
-        if (videoStartButton) videoStartButton.disabled = true;
-        setStatus('動画の保存先を準備しています…');
-        setTriggerValue('video_prepare', { requested_at: Date.now() });
-        return;
-      }
-      cameraModeSwitchInProgress = false;
-      setStatus(videoCapacityMessage);
-      return;
-    }
-
-    // Each open request owns a generation token. A slow/failed older request is not
-    // allowed to stop or overwrite a camera that the user opened afterwards.
-    const generation = ++cameraStartGeneration;
-    const liveBeforeSwitch = Boolean(
-      fromModeSwitch && stream && stream.getTracks && stream.getTracks().some((track) => track.readyState === 'live')
-    );
-    if (liveBeforeSwitch) releaseCurrentCameraForModeSwitch();
-    else clearCurrentCameraStream();
-    cameraMode = requestedMode;
-    cameraModeSwitchInProgress = fromModeSwitch;
-    syncOrientationUi();
-    if (fromModeSwitch && shootButton) {
-      shootButton.disabled = true;
-      shootButton.textContent = requestedMode === 'video' ? '● 動画準備中' : '● 写真準備中';
-    }
-
-    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-      const message = 'このブラウザでは直接カメラを開けません。ChromeまたはSafariの最新版で開いてください。';
-      setStatus(message);
-      setTriggerValue('camera_error', { name: 'Unsupported', message });
-      return;
-    }
-    if (requestedMode === 'video' && typeof MediaRecorder === 'undefined') {
-      const message = 'このブラウザでは動画録画に対応していません。ChromeまたはSafariの最新版で開いてください。';
-      setStatus(message);
-      setTriggerValue('camera_error', { name: 'MediaRecorderUnsupported', message });
-      return;
-    }
-
-    const stillCurrent = () => generation === cameraStartGeneration;
-    const pause = (ms) => new Promise((resolve) => setTimeout(resolve, Math.max(0, Number(ms) || 0)));
-    setStatus(requestedMode === 'video' ? 'カメラを開いています…' : 'カメラの使用を確認しています…');
-
-    let localCameraStream = null;
-    let localAudioStream = null;
-    try {
-      // v379: photos remain camera-only. For video, request camera + microphone in
-      // the SAME getUserMedia call so Android WebView/Chromium creates one native A/V
-      // capture session. The previous v373 path opened the camera first and added a
-      // separately acquired microphone track afterwards; on this Android/WebView that
-      // track could report readyState=live while MediaRecorder still produced silence.
-      const requestCameraOnly = async () => {
-        const constraints = preferredVideoConstraints();
-        return await navigator.mediaDevices.getUserMedia({ audio: false, video: constraints });
-      };
-      const requestVideoWithAudio = async () => {
-        const constraints = preferredVideoConstraints();
-        return await navigator.mediaDevices.getUserMedia({
-          video: constraints,
-          audio: {
-            channelCount: { ideal: 1 },
-            sampleRate: { ideal: 48000 },
-            autoGainControl: { ideal: true },
-            // Keep ambient/distant sound intact. A phone/browser may otherwise treat
-            // a quiet child or a nearby external speaker as noise/echo and remove it.
-            noiseSuppression: { ideal: false },
-            echoCancellation: { ideal: false },
-            voiceIsolation: { ideal: false }
-          }
-        });
-      };
-
-      // v382: getUserMedia "ideal" values can be ignored by Android WebView. Re-apply
-      // the far-field choices independently to the live track so one unsupported setting
-      // cannot cancel all of the others. Every call is best-effort and never blocks video.
-      const tuneFarFieldAudioTrack = async (track) => {
-        if (!track || !track.applyConstraints) return;
-        let supported = {};
-        try { supported = navigator.mediaDevices.getSupportedConstraints?.() || {}; } catch (_) {}
-        if (supported.autoGainControl) {
-          try { await track.applyConstraints({ autoGainControl: true }); } catch (_) {}
-        }
-        if (supported.noiseSuppression) {
-          try { await track.applyConstraints({ noiseSuppression: false }); } catch (_) {}
-        }
-        if (supported.echoCancellation) {
-          try { await track.applyConstraints({ echoCancellation: false }); } catch (_) {}
-        }
-        if (supported.voiceIsolation) {
-          try { await track.applyConstraints({ voiceIsolation: false }); } catch (_) {}
-        }
-      };
-
-      let combinedAvError = null;
-      if (requestedMode === 'video') {
-        try {
-          localCameraStream = await requestVideoWithAudio();
-        } catch (firstErr) {
-          combinedAvError = firstErr;
-          // A stale preferred camera id can make the combined request fail. Retry once
-          // with the browser's current default device before falling back to camera-only.
-          if (preferredCameraDeviceId) {
-            preferredCameraDeviceId = null;
-            try {
-              localCameraStream = await requestVideoWithAudio();
-              combinedAvError = null;
-            } catch (retryErr) {
-              combinedAvError = retryErr;
-            }
-          }
-          if (!localCameraStream) {
-            // Keep silent recording available as a last-resort path. Microphone-only
-            // acquisition below will get one more chance before the UI says audio is off.
-            localCameraStream = await requestCameraOnly();
-          }
-        }
-      } else {
-        try {
-          localCameraStream = await requestCameraOnly();
-        } catch (firstErr) {
-          if (!preferredCameraDeviceId) throw firstErr;
-          preferredCameraDeviceId = null;
-          localCameraStream = await requestCameraOnly();
-        }
-      }
-      if (!stillCurrent()) {
-        stopMediaStream(localCameraStream);
-        return;
-      }
-
-      stream = localCameraStream;
-      video.srcObject = stream;
-      clearCameraTransitionPoster();
-      try {
-        await video.play();
-      } catch (playErr) {
-        if (!stillCurrent()) return;
-        throw playErr;
-      }
-      if (!stillCurrent()) {
-        if (stream === localCameraStream) stream = null;
-        stopMediaStream(localCameraStream);
-        return;
-      }
-
-      // Reveal video as soon as its first frame plays. The remaining tuning runs
-      // with the preview visible instead of leaving the screen waiting.
-      if (requestedMode === 'video') {
-        syncOrientationUi();
-        syncFacingUi();
-        showCameraActions();
-        shootButton.disabled = true;
-        shootButton.textContent = '● 準備中';
-        setStatus('録画の準備をしています…');
-      }
-
-      await applyNativePortraitConstraint();
-      if (!stillCurrent()) return;
-      // Request smooth 60fps and then explicitly restore the widest hardware zoom.
-      const appliedVideoFps = await applyHighVideoFrameRate();
-      if (!stillCurrent()) return;
-      await applyWidestAvailableZoom();
-      if (!stillCurrent()) return;
-      syncNativeCameraFrame();
-
-      try {
-        const cameraTrack = stream.getVideoTracks && stream.getVideoTracks()[0];
-        const settings = (cameraTrack && cameraTrack.getSettings) ? cameraTrack.getSettings() : {};
-        const actualFacing = String(settings?.facingMode || '');
-        if (actualFacing === 'user' || actualFacing === 'environment') cameraFacing = actualFacing;
-        const actualDeviceId = String(settings?.deviceId || '');
-        if (actualDeviceId) preferredCameraDeviceId = actualDeviceId;
-      } catch (_) {}
-      persistCameraFacing();
-      syncOrientationUi();
-      syncFacingUi();
-      if (requestedMode !== 'video') showCameraActions();
-
-      let audioReady = requestedMode !== 'video';
-      let audioError = requestedMode === 'video' ? combinedAvError : null;
-      if (requestedMode === 'video') {
-        // Preferred v379 path: the audio track already belongs to the same native media
-        // stream as the camera. This is materially more reliable for Android WebView
-        // MediaRecorder than adding a microphone track after the video stream is live.
-        let audioTrack = stream && stream.getAudioTracks
-          ? stream.getAudioTracks().find((track) => track.readyState === 'live')
-          : null;
-        if (audioTrack) {
-          try { audioTrack.enabled = true; } catch (_) {}
-          await tuneFarFieldAudioTrack(audioTrack);
-          audioReady = true;
-          audioError = null;
-        } else {
-          setStatus('カメラを開きました。マイクを再接続しています…');
-          const requestMicrophoneOnly = async () => {
-            return await navigator.mediaDevices.getUserMedia({
-              video: false,
-              audio: {
-                channelCount: { ideal: 1 },
-                sampleRate: { ideal: 48000 },
-                autoGainControl: { ideal: true },
-                noiseSuppression: { ideal: false },
-                echoCancellation: { ideal: false },
-                voiceIsolation: { ideal: false }
-              }
-            });
-          };
-          for (let attempt = 0; attempt < 2 && stillCurrent(); attempt += 1) {
-            try {
-              if (attempt > 0) await pause(450);
-              localAudioStream = await requestMicrophoneOnly();
-              audioTrack = localAudioStream && localAudioStream.getAudioTracks
-                ? localAudioStream.getAudioTracks().find((track) => track.readyState === 'live')
-                : null;
-              if (!audioTrack) throw new Error('audio track is unavailable');
-              if (!stillCurrent()) {
-                stopMediaStream(localAudioStream);
-                return;
-              }
-              try { audioTrack.enabled = true; } catch (_) {}
-              await tuneFarFieldAudioTrack(audioTrack);
-              // Build a NEW combined MediaStream instead of mutating the already-playing
-              // camera stream. This gives MediaRecorder a stable A/V track set from birth.
-              const videoTracks = stream && stream.getVideoTracks ? stream.getVideoTracks() : [];
-              const combinedStream = new MediaStream([...videoTracks, audioTrack]);
-              stream = combinedStream;
-              video.srcObject = stream;
-              try { await video.play(); } catch (_) {}
-              // Stop only extra tracks; the audio track retained in combinedStream stays live.
-              try {
-                localAudioStream.getTracks().forEach((track) => {
-                  if (track !== audioTrack) { try { track.stop(); } catch (_) {} }
-                });
-              } catch (_) {}
-              localAudioStream = null;
-              audioReady = true;
-              audioError = null;
-              break;
-            } catch (micErr) {
-              audioError = micErr;
-              stopMediaStream(localAudioStream);
-              localAudioStream = null;
-            }
-          }
-        }
-      }
-
-      if (!stillCurrent()) return;
-      shootButton.disabled = false;
-      shootButton.textContent = requestedMode === 'video'
-        ? (audioReady ? '● 録画を開始' : '● 音声なしで録画')
-        : '● 写真を撮る';
-
-      try {
-        const openedAt = Date.now();
-        localStorage.setItem('tokyo_burari_last_camera_open_v1', String(openedAt));
-        localStorage.setItem('tokyo_burari_last_camera_mode_v1', requestedMode);
-      } catch (_) {}
-
-      cameraModeSwitchInProgress = false;
-      if (requestedMode === 'video') {
-        const fpsLabel = Number(appliedVideoFps || 0) >= 50 ? '60fps' : '端末対応フレームレート';
-        if (audioReady) {
-          setStatus(`動画は最大60秒です。${fpsLabel}・音声付きで撮影します。${cameraFacing === 'user' ? ' 内側カメラ使用中。' : ''}`);
-        } else {
-          const detail = audioError && audioError.message ? String(audioError.message).replace(/\s+/g, ' ').trim().slice(0, 180) : '';
-          const message = 'カメラは使用できますが、マイクを開始できませんでした。今回は音声なしでも録画できます。音声付きにする場合は、端末の「ぶらり旅」のマイク権限を許可してから動画を開き直してください。';
-          // Microphone failure is non-fatal in v374. Keep the camera component alive
-          // and avoid a Streamlit rerun here; the red button remains usable as
-          // "音声なしで録画". A rerun at this point could reset a working camera preview.
-          setStatus(message);
-        }
-      } else {
-        setStatus(cameraFacing === 'user' ? '内側カメラ使用中です。' : '');
-      }
-    } catch (err) {
-      console.error(err);
-      cameraModeSwitchInProgress = false;
-      clearCameraTransitionPoster();
-      stopMediaStream(localAudioStream);
-      // Only the request that is still current may tear down its own camera. An older
-      // rejected play()/getUserMedia() promise must not break a newer photo/video request.
-      if (!stillCurrent()) {
-        if (localCameraStream && stream !== localCameraStream) stopMediaStream(localCameraStream);
-        return;
-      }
-      if (stream === localCameraStream) {
-        clearCurrentCameraStream();
-      } else {
-        stopMediaStream(localCameraStream);
-      }
-      const message = errorMessage(err, requestedMode);
-      setStatus(message);
-      setTriggerValue('camera_error', {
-        name: (err && err.name) ? err.name : 'CameraError',
-        message,
-        detail: (err && err.message) ? String(err.message) : ''
-      });
-    }
-  };
-
-  const goodMomentsSamplePlan = (durationSeconds) => {
-    const duration = Math.max(0.001, Math.min(VIDEO_IMPORT_MAX_SECONDS, Number(durationSeconds || 0) || VIDEO_IMPORT_MAX_SECONDS));
-    const intervalSeconds = Math.max(
-      GOOD_MOMENTS_MIN_INTERVAL_SECONDS,
-      duration / GOOD_MOMENTS_MAX_CANDIDATES
-    );
-    const count = Math.max(
-      1,
-      Math.min(GOOD_MOMENTS_MAX_CANDIDATES, Math.ceil(duration / intervalSeconds))
-    );
-    return { intervalSeconds, count };
-  };
-
-  const blobToDataUrl = (blob) => new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(reader.result);
-    reader.onerror = reject;
-    reader.readAsDataURL(blob);
-  });
-
-  const uploadRawBlobToSignedUrl = async (blob, signedUrl, contentType, label) => {
-    if (!signedUrl) throw new Error(`${label || 'ファイル'}のアップロード先がありません`);
-    if (!blob || !Number(blob.size || 0)) throw new Error(`${label || 'ファイル'}が空です`);
-    let lastError = null;
-    for (let attempt = 0; attempt < 2; attempt += 1) {
-      try {
-        const response = await fetch(signedUrl, {
-          method: 'PUT',
-          headers: {
-            'cache-control': 'max-age=3600',
-            'content-type': contentType || 'application/octet-stream'
-          },
-          body: blob
-        });
-        if (response.ok) return true;
-        let detail = '';
-        try { detail = await response.text(); } catch (_) {}
-        const compact = String(detail || '').replace(/\s+/g, ' ').trim().slice(0, 220);
-        lastError = new Error(`Supabase Storage ${response.status}${compact ? `: ${compact}` : ''}`);
-        if ([400, 401, 403, 409, 413, 415].includes(response.status)) break;
-      } catch (err) {
-        lastError = err;
-      }
-      if (attempt === 0) await new Promise((resolve) => setTimeout(resolve, 450));
-    }
-    throw lastError || new Error(`${label || 'ファイル'}アップロードに失敗しました`);
-  };
-
-  const buildCandidateSheet = async (frames) => {
-    const source = Array.isArray(frames) ? frames.slice(0, GOOD_MOMENTS_MAX_CANDIDATES) : [];
-    if (!source.length) return null;
-    const loaded = [];
-    for (const frame of source) {
-      const dataUrl = String(frame?.data_url || '');
-      if (!dataUrl) continue;
-      try {
-        const image = await new Promise((resolve, reject) => {
-          const node = new Image();
-          node.onload = () => resolve(node);
-          node.onerror = reject;
-          node.src = dataUrl;
-        });
-        loaded.push({ frame, image });
-      } catch (_) {}
-    }
-    if (!loaded.length) return null;
-    const columns = Math.min(10, loaded.length);
-    const rows = Math.ceil(loaded.length / columns);
-    const tileWidth = Math.max(1, loaded[0].image.naturalWidth || loaded[0].image.width || 320);
-    const tileHeight = Math.max(1, loaded[0].image.naturalHeight || loaded[0].image.height || 180);
-    const sheet = document.createElement('canvas');
-    sheet.width = tileWidth * columns;
-    sheet.height = tileHeight * rows;
-    const ctx = sheet.getContext('2d', { alpha: false });
-    ctx.fillStyle = '#000';
-    ctx.fillRect(0, 0, sheet.width, sheet.height);
-    const manifest = [];
-    loaded.forEach((entry, index) => {
-      const col = index % columns;
-      const row = Math.floor(index / columns);
-      ctx.drawImage(entry.image, col * tileWidth, row * tileHeight, tileWidth, tileHeight);
-      manifest.push({
-        frame_id: String(entry.frame?.frame_id || `F${String(index + 1).padStart(2, '0')}`),
-        timestamp_ms: Math.max(0, Number(entry.frame?.timestamp_ms || 0)),
-        tile_index: index
-      });
-    });
-    const blob = await new Promise((resolve) => sheet.toBlob(resolve, 'image/jpeg', 0.80));
-    if (!blob) return null;
-    return { blob, manifest, columns, rows, tile_width: tileWidth, tile_height: tileHeight };
-  };
-
-  const uploadVideoBlobToSignedUrl = async (blob) => {
-    if (!videoUploadSignedUrl || !videoUploadStoragePath) {
-      throw new Error('動画のアップロード先がありません');
-    }
-    const contentType = String(blob.type || '').split(';', 1)[0] || 'video/webm';
-    try {
-      await uploadRawBlobToSignedUrl(blob, videoUploadSignedUrl, contentType, '動画');
-      return videoUploadStoragePath;
-    } catch (err) {
-      const detail = String(err?.message || '').toLowerCase();
-      const isCollision = detail.includes('keyalreadyexists')
-        || detail.includes('resource already exists')
-        || detail.includes('storage 409')
-        || detail.includes('\"duplicate\"');
-      if (!isCollision || !videoUploadFallbackSignedUrl || !videoUploadFallbackStoragePath) throw err;
-      await uploadRawBlobToSignedUrl(blob, videoUploadFallbackSignedUrl, contentType, '動画');
-      return videoUploadFallbackStoragePath;
-    }
-  };
-
-
-  // v562: The former gallery path awaited an unbounded fetch(PUT). On Android a
-  // stalled upload left both review actions disabled forever, with the video preview
-  // frozen on its initial frame. Keep the existing recording uploader untouched; use
-  // this monitored transport ONLY for manually selected gallery video files.
-  const GALLERY_UPLOAD_STALL_MS_V562 = 90000;
-  const GALLERY_UPLOAD_MAX_MS_V562 = 480000;
-  const galleryUploadCancelledErrorV562 = () => {
-    const error = new Error('動画の送信を中止しました。');
-    error.name = 'AbortError';
-    return error;
-  };
-
-  const sendGalleryVideoPutOnceV562 = (blob, signedUrl, contentType, reportProgress, signal) => new Promise((resolve, reject) => {
-    if (!signedUrl) { reject(new Error('動画のアップロード先がありません。')); return; }
-    if (!blob || !(Number(blob.size) > 0)) { reject(new Error('動画ファイルが空です。')); return; }
-    if (signal?.aborted) { reject(galleryUploadCancelledErrorV562()); return; }
-
-    let xhr;
-    try { xhr = new XMLHttpRequest(); }
-    catch (error) { reject(error); return; }
-    let settled = false;
-    let stalled = false;
-    let stallTimer = null;
-    let previousBytes = -1;
-    const cleanup = () => {
-      if (stallTimer !== null) { clearTimeout(stallTimer); stallTimer = null; }
-      try { signal?.removeEventListener('abort', abortFromUser); } catch (_) {}
-      xhr.onload = null;
-      xhr.onerror = null;
-      xhr.onabort = null;
-      xhr.ontimeout = null;
-      if (xhr.upload) { xhr.upload.onprogress = null; xhr.upload.onload = null; }
-    };
-    const finish = (error) => {
-      if (settled) return;
-      settled = true;
-      cleanup();
-      if (error) reject(error); else resolve(true);
-    };
-    const abortFromUser = () => {
-      try { xhr.abort(); } catch (_) {}
-      finish(galleryUploadCancelledErrorV562());
-    };
-    const resetStallTimer = () => {
-      if (stallTimer !== null) clearTimeout(stallTimer);
-      stallTimer = setTimeout(() => {
-        stalled = true;
-        try { xhr.abort(); } catch (_) {}
-        finish(new Error('動画の送信が90秒間進まなかったため停止しました。通信状態を確認してもう一度お試しください。'));
-      }, GALLERY_UPLOAD_STALL_MS_V562);
-    };
-    if (signal) signal.addEventListener('abort', abortFromUser, { once: true });
-    xhr.upload.onprogress = (event) => {
-      if (settled || signal?.aborted) return;
-      const sent = Math.max(0, Number(event?.loaded || 0));
-      if (sent <= previousBytes) return;
-      previousBytes = sent;
-      resetStallTimer();
-      try { reportProgress?.(sent, Number(blob.size)); } catch (_) {}
-    };
-    // The request may still be awaiting Storage's final commit after all bytes leave
-    // the device. Keep the deadline active until the HTTP result arrives.
-    xhr.onload = () => {
-      const statusCode = Number(xhr.status || 0);
-      if (statusCode >= 200 && statusCode < 300) { finish(null); return; }
-      let errorBody = '';
-      try { errorBody = String(xhr.responseText || '').replace(/\s+/g, ' ').trim().slice(0, 200); } catch (_) {}
-      finish(new Error(`Supabase Storage ${statusCode}${errorBody ? `: ${errorBody}` : ''}`));
-    };
-    xhr.onerror = () => finish(new Error('動画の送信中に通信エラーが発生しました。ネットワークまたは保存先への接続を確認してください。'));
-    xhr.onabort = () => finish(signal?.aborted
-      ? galleryUploadCancelledErrorV562()
-      : new Error(stalled ? '動画の送信が90秒間停止しました。再度お試しください。' : '動画の送信が中断されました。'));
-    xhr.ontimeout = () => finish(new Error('動画の送信時間が上限を超えました。通信状態を確認して再度お試しください。'));
-
-    try {
-      xhr.open('PUT', signedUrl, true);
-      xhr.timeout = GALLERY_UPLOAD_MAX_MS_V562;
-      xhr.setRequestHeader('cache-control', 'max-age=3600');
-      xhr.setRequestHeader('content-type', contentType || 'application/octet-stream');
-      resetStallTimer();
-      if (signal?.aborted) { abortFromUser(); return; }
-      xhr.send(blob);
-    } catch (error) {
-      finish(error);
-    }
-  });
-
-  // Supabase recommends TUS in fixed 6 MiB chunks for files above 6 MiB.
-  // The signed token comes from the same URL already reserved server-side. No
-  // privileged key or extra dependency is sent to the browser. A failed TUS
-  // negotiation can fall back to the bounded single-PUT path above.
-  const GALLERY_TUS_CHUNK_BYTES_V562 = 6 * 1024 * 1024;
-  const galleryTusSignedTargetV562 = (signedUrl, storagePath) => {
-    try {
-      const parsed = new URL(signedUrl);
-      const marker = '/storage/v1/object/upload/sign/';
-      const index = parsed.pathname.indexOf(marker);
-      const signature = parsed.searchParams.get('token');
-      if (index < 0 || !signature || !/^https:$/.test(parsed.protocol)) return null;
-      const tail = decodeURIComponent(parsed.pathname.slice(index + marker.length));
-      const slash = tail.indexOf('/');
-      if (slash <= 0 || tail.slice(slash + 1) !== storagePath) return null;
-      return {
-        endpoint: `${parsed.origin}/storage/v1/upload/resumable`,
-        signature, bucket: tail.slice(0, slash), objectName: storagePath
-      };
-    } catch (_) { return null; }
-  };
-
-  const galleryTusRequestV562 = async (method, url, headers, body, signal) => {
-    if (signal?.aborted) throw galleryUploadCancelledErrorV562();
-    const controller = new AbortController();
-    let timedOut = false;
-    const abortWithUser = () => controller.abort();
-    signal?.addEventListener('abort', abortWithUser, { once: true });
-    const timer = setTimeout(() => {
-      timedOut = true;
-      controller.abort();
-    }, GALLERY_UPLOAD_STALL_MS_V562);
-    try {
-      const response = await fetch(url, {
-        method, headers, body: body || undefined, signal: controller.signal
-      });
-      if (!response.ok) {
-        let responseText = '';
-        try { responseText = String(await response.text()).replace(/\s+/g, ' ').trim().slice(0, 200); } catch (_) {}
-        throw new Error(`Supabase Storage ${response.status}${responseText ? `: ${responseText}` : ''}`);
-      }
-      return response;
-    } catch (error) {
-      if (signal?.aborted) throw galleryUploadCancelledErrorV562();
-      if (timedOut) throw new Error('動画の分割送信が90秒間進まず中断されました。');
-      throw error;
-    } finally {
-      clearTimeout(timer);
-      signal?.removeEventListener('abort', abortWithUser);
-    }
-  };
-
-  const uploadGalleryVideoTusV562 = async (blob, signedUrl, storagePath, contentType, reportProgress, signal) => {
-    const target = galleryTusSignedTargetV562(signedUrl, storagePath);
-    if (!target) throw new Error('分割アップロード用の署名を確認できません。');
-    const tusHeaders = { 'Tus-Resumable': '1.0.0', 'x-signature': target.signature };
-    const metadata = [
-      ['bucketName', target.bucket],
-      ['objectName', target.objectName],
-      ['contentType', contentType],
-      ['cacheControl', '3600']
-    ].map(([key, value]) => `${key} ${btoa(value)}`).join(',');
-    const creation = await galleryTusRequestV562('POST', target.endpoint, {
-      ...tusHeaders, 'Upload-Length': String(blob.size), 'Upload-Metadata': metadata
-    }, null, signal);
-    const location = creation.headers?.get?.('Location');
-    if (!location) throw new Error('分割アップロードの再開先を取得できませんでした。');
-    const resumeUrl = new URL(location, target.endpoint).href;
-    // Reject a cross-domain Location before forwarding the one-use signing token.
-    if (new URL(resumeUrl).origin !== new URL(target.endpoint).origin) {
-      throw new Error('分割アップロードの保存先を確認できませんでした。');
-    }
-    let offset = 0;
-    let consecutiveFailures = 0;
-    const offsetFrom = (response) => {
-      const text = response?.headers?.get?.('Upload-Offset');
-      const value = Number(text);
-      return text != null && Number.isSafeInteger(value) && value >= 0 && value <= blob.size ? value : null;
-    };
-    while (offset < blob.size) {
-      if (signal?.aborted) throw galleryUploadCancelledErrorV562();
-      const start = offset;
-      const end = Math.min(blob.size, start + GALLERY_TUS_CHUNK_BYTES_V562);
-      try {
-        const response = await galleryTusRequestV562('PATCH', resumeUrl, {
-          ...tusHeaders, 'Upload-Offset': String(start),
-          'Content-Type': 'application/offset+octet-stream'
-        }, blob.slice(start, end), signal);
-        const serverOffset = offsetFrom(response);
-        if (serverOffset !== null && serverOffset < end) {
-          throw new Error('分割送信でサーバーの受信済み位置が一致しません。');
-        }
-        offset = serverOffset === null ? end : serverOffset;
-        consecutiveFailures = 0;
-        reportProgress?.(offset, blob.size);
-      } catch (error) {
-        if (signal?.aborted || error?.name === 'AbortError') throw error;
-        const message = String(error?.message || '').toLowerCase();
-        if (/storage\s+(400|401|403|413|415)\b/.test(message)) throw error;
-        consecutiveFailures += 1;
-        if (consecutiveFailures >= 3) throw error;
-        // A lost PATCH response may still have committed the chunk. HEAD tells
-        // us the exact offset so that a retry cannot duplicate/corrupt its bytes.
-        try {
-          const checked = await galleryTusRequestV562('HEAD', resumeUrl, tusHeaders, null, signal);
-          const checkedOffset = offsetFrom(checked);
-          if (checkedOffset !== null && checkedOffset >= offset) {
-            offset = checkedOffset;
-            reportProgress?.(offset, blob.size);
-            if (offset >= blob.size) return;
-            if (offset > start) consecutiveFailures = 0;
-          }
-        } catch (headError) {
-          if (signal?.aborted || headError?.name === 'AbortError') throw headError;
-        }
-        await new Promise((resolve) => setTimeout(resolve, 600 * consecutiveFailures));
-      }
-    }
-  };
-
-  const uploadGalleryVideoToSignedUrlV562 = async (blob, reportProgress, signal) => {
-    if (!videoUploadSignedUrl || !videoUploadStoragePath) {
-      throw new Error('動画のアップロード先がありません。');
-    }
-    const contentType = String(blob?.type || inferGalleryVideoMime(blob) || 'video/mp4').split(';', 1)[0] || 'video/mp4';
-    const sendTarget = async (targetUrl, targetPath) => {
-      if (Number(blob?.size || 0) > GALLERY_TUS_CHUNK_BYTES_V562) {
-        try {
-          await uploadGalleryVideoTusV562(blob, targetUrl, targetPath, contentType, reportProgress, signal);
-          return;
-        } catch (error) {
-          if (signal?.aborted || error?.name === 'AbortError') throw error;
-          // A destination consumed by an earlier upload must go through the
-          // existing secondary signed path, not a re-POST to the same object.
-          const message = String(error?.message || '').toLowerCase();
-          if (message.includes('keyalreadyexists') || message.includes('resource already exists')
-              || message.includes('storage 409') || message.includes('"duplicate"')) throw error;
-          reportProgress?.(0, Number(blob?.size || 0), true);
-        }
-      }
-      let lastError = null;
-      for (let attempt = 0; attempt < 2; attempt += 1) {
-        if (signal?.aborted) throw galleryUploadCancelledErrorV562();
-        try {
-          if (attempt > 0) reportProgress?.(0, Number(blob?.size || 0), true);
-          await sendGalleryVideoPutOnceV562(blob, targetUrl, contentType, reportProgress, signal);
-          return;
-        } catch (error) {
-          if (signal?.aborted || error?.name === 'AbortError') throw error;
-          lastError = error;
-          const message = String(error?.message || '').toLowerCase();
-          // Non-transient responses cannot be repaired by re-sending the same body.
-          if (/storage\s+(400|401|403|409|413|415)\b/.test(message)) break;
-          if (attempt === 0) await new Promise((resolve) => setTimeout(resolve, 450));
-        }
-      }
-      throw lastError || new Error('動画の送信に失敗しました。');
-    };
-    try {
-      await sendTarget(videoUploadSignedUrl, videoUploadStoragePath);
-      return videoUploadStoragePath;
-    } catch (error) {
-      if (signal?.aborted || error?.name === 'AbortError') throw error;
-      const message = String(error?.message || '').toLowerCase();
-      const collision = message.includes('keyalreadyexists')
-        || message.includes('resource already exists')
-        || message.includes('storage 409')
-        || message.includes('"duplicate"');
-      if (!collision || !videoUploadFallbackSignedUrl || !videoUploadFallbackStoragePath) throw error;
-      reportProgress?.(0, Number(blob?.size || 0), true);
-      await sendTarget(videoUploadFallbackSignedUrl, videoUploadFallbackStoragePath);
-      return videoUploadFallbackStoragePath;
-    }
-  };
-
-  // Capture small candidate stills while recording. This avoids reopening/seeking
-  // the finished video before upload and keeps the component payload small.
-  const captureRecordingCandidateFrame = async () => {
-    if (recordingCandidateBusy || !recordingStartedAt || !video.videoWidth || !video.videoHeight) return;
-    if (!mediaRecorder || mediaRecorder.state !== 'recording') return;
-    if (recordingCandidateFrames.length >= GOOD_MOMENTS_MAX_CANDIDATES) return;
-    recordingCandidateBusy = true;
-    try {
-      const frameCanvas = document.createElement('canvas');
-      const srcW = video.videoWidth || 960;
-      const srcH = video.videoHeight || 540;
-      const maxSide = 240;
-      const scale = Math.min(1, maxSide / Math.max(srcW, srcH));
-      frameCanvas.width = Math.max(1, Math.round(srcW * scale));
-      frameCanvas.height = Math.max(1, Math.round(srcH * scale));
-      const ctx = frameCanvas.getContext('2d', { alpha: false });
-      ctx.drawImage(video, 0, 0, frameCanvas.width, frameCanvas.height);
-      const jpegBlob = await new Promise((resolve) => frameCanvas.toBlob(resolve, 'image/jpeg', 0.58));
-      if (!jpegBlob || jpegBlob.size > 45 * 1024) return;
-      const timestampMs = Math.max(0, Date.now() - recordingStartedAt);
-      const dataUrl = await blobToDataUrl(jpegBlob);
-      const index = recordingCandidateFrames.length + 1;
-      recordingCandidateFrames.push({
-        frame_id: `F${String(index).padStart(3, '0')}`,
-        timestamp_ms: timestampMs,
-        data_url: dataUrl
-      });
-    } catch (err) {
-      console.warn('live candidate frame skipped', err);
-    } finally {
-      recordingCandidateBusy = false;
-    }
-  };
-
-  // v227: every direct photo/video capture starts a fresh high-accuracy GPS fix.
-  // Do not reuse a cached position. Keep the best fix seen for a few seconds and
-  // finish early once the phone reaches useful street-level accuracy.
-  let prefetchedLocationPromise = null;
-  let prefetchedLocationStartedAt = 0;
-
-  const getLocationAtCapture = () => new Promise((resolve) => {
-    if (!navigator.geolocation) {
-      resolve({
-        ok: false,
-        error_code: 'UNSUPPORTED',
-        error_message: 'このブラウザでは位置情報を取得できません。'
-      });
-      return;
-    }
-
-    // Android's native tracker keeps GPS warm. Reuse a fresh fix and cap browser
-    // waiting so location acquisition never holds the camera screen for 7 seconds.
-    const targetAccuracyM = 45;
-    const waitMs = 2500;
-    const requestedAtMs = Date.now();
-    let watchId = null;
-    let hardTimer = null;
-    let settled = false;
-    let best = null;
-    let lastError = null;
-
-    const cleanup = () => {
-      if (hardTimer) {
-        clearTimeout(hardTimer);
-        hardTimer = null;
-      }
-      if (watchId !== null) {
-        try { navigator.geolocation.clearWatch(watchId); } catch (_) {}
-        watchId = null;
-      }
-    };
-
-    const finish = (payload) => {
-      if (settled) return;
-      settled = true;
-      cleanup();
-      resolve(payload);
-    };
-
-    const errorPayload = (error) => {
-      let code = 'POSITION_ERROR';
-      let message = '位置情報を取得できませんでした。';
-      if (error && error.code === 1) {
-        code = 'PERMISSION_DENIED';
-        message = '位置情報が許可されていません。';
-      } else if (error && error.code === 2) {
-        code = 'POSITION_UNAVAILABLE';
-        message = '端末の位置情報を利用できません。';
-      } else if (error && error.code === 3) {
-        code = 'TIMEOUT';
-        message = '位置情報の取得が時間切れになりました。';
-      }
-      return { ok: false, error_code: code, error_message: message };
-    };
-
-    const positionPayload = (position) => ({
-      ok: true,
-      latitude: position.coords.latitude,
-      longitude: position.coords.longitude,
-      accuracy_m: position.coords.accuracy,
-      altitude_m: position.coords.altitude,
-      heading_deg: position.coords.heading,
-      speed_mps: position.coords.speed,
-      measured_at: new Date(position.timestamp).toISOString(),
-      requested_at: new Date(requestedAtMs).toISOString(),
-      age_ms: Math.max(0, Date.now() - Number(position.timestamp || Date.now()))
-    });
-
-    const onPosition = (position) => {
-      const candidate = positionPayload(position);
-      const accuracy = Number(candidate.accuracy_m);
-      const bestAccuracy = best ? Number(best.accuracy_m) : Number.POSITIVE_INFINITY;
-      if (!best || (Number.isFinite(accuracy) && (!Number.isFinite(bestAccuracy) || accuracy < bestAccuracy))) {
-        best = candidate;
-      }
-      if (Number.isFinite(accuracy) && accuracy <= targetAccuracyM) {
-        finish(candidate);
-      }
-    };
-
-    const onError = (error) => {
-      lastError = errorPayload(error);
-      if (error && error.code === 1) finish(lastError);
-    };
-
-    hardTimer = setTimeout(() => {
-      if (best) finish(best);
-      else finish(lastError || { ok: false, error_code: 'TIMEOUT', error_message: '位置情報の取得が時間切れになりました。' });
-    }, waitMs);
-
-    try {
-      watchId = navigator.geolocation.watchPosition(
-        onPosition,
-        onError,
-        { enableHighAccuracy: true, timeout: waitMs, maximumAge: 5000 }
-      );
-    } catch (err) {
-      finish(errorPayload(err));
-    }
-  });
-
-  const primeCaptureLocation = () => {
-    const age = Date.now() - Number(prefetchedLocationStartedAt || 0);
-    if (prefetchedLocationPromise && age >= 0 && age <= 6000) return prefetchedLocationPromise;
-    prefetchedLocationStartedAt = Date.now();
-    prefetchedLocationPromise = getLocationAtCapture();
-    return prefetchedLocationPromise;
-  };
-
-  const consumeCaptureLocation = () => {
-    const current = primeCaptureLocation();
-    prefetchedLocationPromise = null;
-    prefetchedLocationStartedAt = 0;
-    return current;
-  };
-
-  const releaseCaptureCanvas = () => {
-    try {
-      const context = canvas.getContext('2d');
-      if (context) context.clearRect(0, 0, canvas.width, canvas.height);
-    } catch (_) {}
-    // Resetting dimensions releases the backing pixel buffer immediately on WebView.
-    try { canvas.width = 1; canvas.height = 1; } catch (_) {}
-  };
-
-  const capturePosterDataUrl = async () => {
-    if (!video.videoWidth || !video.videoHeight) throw new Error('video frame unavailable');
-    const srcW = video.videoWidth;
-    const srcH = video.videoHeight;
-    const maxSide = 1600;
-    const scale = Math.min(1, maxSide / Math.max(srcW, srcH));
-    const width = Math.max(1, Math.round(srcW * scale));
-    const height = Math.max(1, Math.round(srcH * scale));
-    canvas.width = width;
-    canvas.height = height;
-    const ctx = canvas.getContext('2d', { alpha: false });
-    ctx.drawImage(video, 0, 0, width, height);
-    const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', 0.86));
-    if (!blob) {
-      releaseCaptureCanvas();
-      throw new Error('canvas conversion failed');
-    }
-    releaseCaptureCanvas();
-    return await blobToDataUrl(blob);
-  };
-
-
-  const captureVideoPosterDataUrl = async () => {
-    if (!video.videoWidth || !video.videoHeight) throw new Error('video frame unavailable');
-    const srcW = video.videoWidth;
-    const srcH = video.videoHeight;
-    const maxSide = 900;
-    const scale = Math.min(1, maxSide / Math.max(srcW, srcH));
-    const width = Math.max(1, Math.round(srcW * scale));
-    const height = Math.max(1, Math.round(srcH * scale));
-    canvas.width = width;
-    canvas.height = height;
-    const ctx = canvas.getContext('2d', { alpha: false });
-    ctx.drawImage(video, 0, 0, width, height);
-    const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', 0.72));
-    if (!blob) {
-      releaseCaptureCanvas();
-      throw new Error('video poster conversion failed');
-    }
-    releaseCaptureCanvas();
-    return await blobToDataUrl(blob);
-  };
-
-
-  const seekVideoFrame = (node, seconds) => new Promise((resolve, reject) => {
-    let settled = false;
-    const cleanup = () => {
-      node.removeEventListener('seeked', onSeeked);
-      node.removeEventListener('error', onError);
-      clearTimeout(timer);
-    };
-    const finish = (fn, value) => {
-      if (settled) return;
-      settled = true;
-      cleanup();
-      fn(value);
-    };
-    const onSeeked = () => finish(resolve);
-    const onError = () => finish(reject, new Error('video seek failed'));
-    const timer = setTimeout(() => finish(reject, new Error('video seek timeout')), 3500);
-    node.addEventListener('seeked', onSeeked, { once: true });
-    node.addEventListener('error', onError, { once: true });
-    try {
-      node.currentTime = Math.max(0, seconds);
-    } catch (err) {
-      finish(reject, err);
-    }
-  });
-
-  const extractVideoCandidateFrames = async (blob, durationMs) => {
-    const objectUrl = URL.createObjectURL(blob);
-    const probe = document.createElement('video');
-    let frameCanvas = null;
-    probe.preload = 'auto';
-    probe.muted = true;
-    probe.playsInline = true;
-    probe.src = objectUrl;
-    try {
-      await new Promise((resolve, reject) => {
-        const timer = setTimeout(() => reject(new Error('video metadata timeout')), 5000);
-        const ready = () => {
-          clearTimeout(timer);
-          resolve();
-        };
-        const failed = () => {
-          clearTimeout(timer);
-          reject(new Error('video metadata failed'));
-        };
-        probe.addEventListener('loadedmetadata', ready, { once: true });
-        probe.addEventListener('error', failed, { once: true });
-      });
-
-      const measuredDuration = Number.isFinite(probe.duration) && probe.duration > 0
-        ? probe.duration
-        : Math.max(0.2, Number(durationMs || 0) / 1000);
-      const samplePlan = goodMomentsSamplePlan(measuredDuration);
-      const sampleCount = samplePlan.count;
-      const sampleIntervalSeconds = samplePlan.intervalSeconds;
-      frameCanvas = document.createElement('canvas');
-      const srcW = probe.videoWidth || video.videoWidth || 1280;
-      const srcH = probe.videoHeight || video.videoHeight || 720;
-      const maxSide = 240;
-      const scale = Math.min(1, maxSide / Math.max(srcW, srcH));
-      frameCanvas.width = Math.max(1, Math.round(srcW * scale));
-      frameCanvas.height = Math.max(1, Math.round(srcH * scale));
-      const ctx = frameCanvas.getContext('2d', { alpha: false });
-      const frames = [];
-
-      for (let i = 0; i < sampleCount; i += 1) {
-        // Duration-aware timeline positions, capped at 20 samples.
-        const seconds = Math.min(Math.max(0, measuredDuration - 0.02), i * sampleIntervalSeconds);
-        try {
-          await seekVideoFrame(probe, Math.min(Math.max(0, measuredDuration - 0.02), seconds));
-          ctx.drawImage(probe, 0, 0, frameCanvas.width, frameCanvas.height);
-          const jpegBlob = await new Promise((resolve) => frameCanvas.toBlob(resolve, 'image/jpeg', 0.60));
-          if (!jpegBlob) continue;
-          const dataUrl = await blobToDataUrl(jpegBlob);
-          frames.push({
-            frame_id: `F${String(i + 1).padStart(3, '0')}`,
-            timestamp_ms: Math.max(0, Math.round(seconds * 1000)),
-            data_url: dataUrl
-          });
-        } catch (err) {
-          console.warn('candidate frame skipped', err);
-        }
-      }
-      return frames;
-    } finally {
-      try { probe.pause(); } catch (_) {}
-      probe.removeAttribute('src');
-      try { probe.load(); } catch (_) {}
-      URL.revokeObjectURL(objectUrl);
-      if (frameCanvas) {
-        try {
-          const context = frameCanvas.getContext('2d');
-          if (context) context.clearRect(0, 0, frameCanvas.width, frameCanvas.height);
-          frameCanvas.width = 1;
-          frameCanvas.height = 1;
-        } catch (_) {}
-        frameCanvas = null;
-      }
-    }
-  };
-
-  const GALLERY_PHOTO_METADATA_SCAN_BYTES_V441 = 2 * 1024 * 1024;
-
-  const galleryPhotoFallbackCaptureMetaV441 = (file) => {
-    const modified = Number(file?.lastModified || 0);
-    if (Number.isFinite(modified) && modified > 0) {
-      const date = new Date(modified);
-      if (Number.isFinite(date.getTime())) {
-        return {
-          captured_at: date.toISOString(),
-          capture_time_source: 'file_last_modified',
-          capture_time_raw: String(file?.lastModified || ''),
-        };
-      }
-    }
-    const now = new Date();
-    return {
-      captured_at: now.toISOString(),
-      capture_time_source: 'imported_at',
-      capture_time_raw: '',
-    };
-  };
-
-  const parsePhotoCaptureDateV441 = (rawValue, offsetValue = '') => {
-    const raw = String(rawValue || '').replace(/\0/g, '').trim();
-    if (!raw) return '';
-    const exifMatch = /^(\d{4}):(\d{2}):(\d{2})\s+(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,6}))?$/.exec(raw);
-    if (exifMatch) {
-      const year = Number(exifMatch[1]);
-      const month = Number(exifMatch[2]);
-      const day = Number(exifMatch[3]);
-      const hour = Number(exifMatch[4]);
-      const minute = Number(exifMatch[5]);
-      const second = Number(exifMatch[6]);
-      if (!(year >= 1900 && year <= 2200 && month >= 1 && month <= 12 && day >= 1 && day <= 31 && hour <= 23 && minute <= 59 && second <= 60)) {
-        return '';
-      }
-      const fraction = String(exifMatch[7] || '').slice(0, 3).padEnd(3, '0');
-      const offset = String(offsetValue || '').replace(/\0/g, '').trim();
-      if (/^(?:Z|[+-]\d{2}:?\d{2})$/.test(offset)) {
-        const normalizedOffset = offset === 'Z'
-          ? 'Z'
-          : (offset.includes(':') ? offset : `${offset.slice(0, 3)}:${offset.slice(3)}`);
-        const iso = `${String(year).padStart(4, '0')}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}T${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}:${String(second).padStart(2, '0')}.${fraction || '000'}${normalizedOffset}`;
-        const ms = Date.parse(iso);
-        if (Number.isFinite(ms)) return new Date(ms).toISOString();
-      }
-      // EXIF often omits the timezone. In that case interpret the camera clock in
-      // the phone/browser's local timezone instead of pretending it is UTC.
-      const local = new Date(year, month - 1, day, hour, minute, second, Number(fraction || 0));
-      if (
-        local.getFullYear() === year && local.getMonth() === month - 1 && local.getDate() === day &&
-        local.getHours() === hour && local.getMinutes() === minute
-      ) {
-        return local.toISOString();
-      }
-      return '';
-    }
-    // XMP CreateDate is normally ISO-8601. Date.parse handles timezone-qualified
-    // strings directly and treats timezone-less date-time values as local time.
-    const parsed = Date.parse(raw);
-    return Number.isFinite(parsed) ? new Date(parsed).toISOString() : '';
-  };
-
-  const parseTiffExifV441 = (buffer, tiffStart, tiffEnd) => {
-    const view = new DataView(buffer);
-    const start = Number(tiffStart || 0);
-    const end = Math.min(view.byteLength, Number(tiffEnd || view.byteLength));
-    const result = {};
-    if (!(start >= 0 && start + 8 <= end)) return result;
-    const order = view.getUint16(start, false);
-    const little = order === 0x4949 ? true : (order === 0x4d4d ? false : null);
-    if (little === null) return result;
-    const safe = (offset, size = 1) => Number.isFinite(offset) && offset >= start && offset + size <= end;
-    const u16 = (offset) => safe(offset, 2) ? view.getUint16(offset, little) : null;
-    const u32 = (offset) => safe(offset, 4) ? view.getUint32(offset, little) : null;
-    if (u16(start + 2) !== 42) return result;
-    const typeSizes = {1: 1, 2: 1, 3: 2, 4: 4, 5: 8, 7: 1, 9: 4, 10: 8};
-
-    const collectIfd = (relativeOffset) => {
-      const map = new Map();
-      const rel = Number(relativeOffset || 0);
-      const base = start + rel;
-      if (!safe(base, 2)) return map;
-      const count = u16(base);
-      if (!Number.isFinite(count) || count < 0 || count > 512) return map;
-      for (let i = 0; i < count; i += 1) {
-        const entry = base + 2 + i * 12;
-        if (!safe(entry, 12)) break;
-        const tag = u16(entry);
-        const type = u16(entry + 2);
-        const itemCount = u32(entry + 4);
-        const itemSize = typeSizes[type] || 0;
-        if (!Number.isFinite(tag) || !itemSize || !Number.isFinite(itemCount) || itemCount < 0 || itemCount > 100000) continue;
-        const byteLength = itemSize * itemCount;
-        let valueOffset = entry + 8;
-        if (byteLength > 4) {
-          const pointer = u32(entry + 8);
-          if (!Number.isFinite(pointer)) continue;
-          valueOffset = start + pointer;
-        }
-        if (!safe(valueOffset, Math.max(0, byteLength))) continue;
-        map.set(tag, {type, count: itemCount, offset: valueOffset, byteLength});
-      }
-      return map;
-    };
-
-    const readAscii = (entry) => {
-      if (!entry || !safe(entry.offset, entry.byteLength)) return '';
-      const bytes = new Uint8Array(buffer, entry.offset, entry.byteLength);
-      let out = '';
-      for (const value of bytes) {
-        if (value === 0) break;
-        out += String.fromCharCode(value);
-      }
-      return out.trim();
-    };
-    const readLong = (entry) => {
-      if (!entry || entry.count < 1) return null;
-      if (entry.type === 3) return safe(entry.offset, 2) ? view.getUint16(entry.offset, little) : null;
-      if (entry.type === 4) return safe(entry.offset, 4) ? view.getUint32(entry.offset, little) : null;
-      if (entry.type === 9) return safe(entry.offset, 4) ? view.getInt32(entry.offset, little) : null;
-      return null;
-    };
-    const readRationals = (entry) => {
-      if (!entry || ![5, 10].includes(entry.type) || entry.count < 1) return [];
-      const values = [];
-      for (let i = 0; i < entry.count; i += 1) {
-        const offset = entry.offset + i * 8;
-        if (!safe(offset, 8)) break;
-        const signed = entry.type === 10;
-        const numerator = signed ? view.getInt32(offset, little) : view.getUint32(offset, little);
-        const denominator = signed ? view.getInt32(offset + 4, little) : view.getUint32(offset + 4, little);
-        values.push(denominator ? numerator / denominator : 0);
-      }
-      return values;
-    };
-
-    const firstIfdOffset = u32(start + 4);
-    if (!Number.isFinite(firstIfdOffset)) return result;
-    const ifd0 = collectIfd(firstIfdOffset);
-    result.date_time = readAscii(ifd0.get(0x0132));
-
-    const exifPointer = readLong(ifd0.get(0x8769));
-    if (Number.isFinite(exifPointer) && exifPointer > 0) {
-      const exifIfd = collectIfd(exifPointer);
-      result.date_time_original = readAscii(exifIfd.get(0x9003));
-      result.date_time_digitized = readAscii(exifIfd.get(0x9004));
-      result.offset_time = readAscii(exifIfd.get(0x9010));
-      result.offset_time_original = readAscii(exifIfd.get(0x9011));
-      result.offset_time_digitized = readAscii(exifIfd.get(0x9012));
-    }
-
-    const gpsPointer = readLong(ifd0.get(0x8825));
-    if (Number.isFinite(gpsPointer) && gpsPointer > 0) {
-      const gpsIfd = collectIfd(gpsPointer);
-      const latRef = readAscii(gpsIfd.get(0x0001)).toUpperCase();
-      const lonRef = readAscii(gpsIfd.get(0x0003)).toUpperCase();
-      const latParts = readRationals(gpsIfd.get(0x0002));
-      const lonParts = readRationals(gpsIfd.get(0x0004));
-      if (latParts.length >= 3 && lonParts.length >= 3) {
-        let latitude = Number(latParts[0]) + Number(latParts[1]) / 60 + Number(latParts[2]) / 3600;
-        let longitude = Number(lonParts[0]) + Number(lonParts[1]) / 60 + Number(lonParts[2]) / 3600;
-        if (latRef === 'S') latitude *= -1;
-        if (lonRef === 'W') longitude *= -1;
-        if (Number.isFinite(latitude) && Number.isFinite(longitude) && Math.abs(latitude) <= 90 && Math.abs(longitude) <= 180) {
-          result.latitude = latitude;
-          result.longitude = longitude;
-        }
-      }
-    }
-    return result;
-  };
-
-  const parseXmpCreateDateV441 = (text) => {
-    const source = String(text || '');
-    if (!source) return '';
-    const attribute = /(?:xmp:CreateDate|photoshop:DateCreated)\s*=\s*["']([^"']+)["']/i.exec(source);
-    if (attribute && attribute[1]) return String(attribute[1]).trim();
-    const element = /<(?:xmp:CreateDate|photoshop:DateCreated)[^>]*>([^<]+)<\/(?:xmp:CreateDate|photoshop:DateCreated)>/i.exec(source);
-    return element && element[1] ? String(element[1]).trim() : '';
-  };
-
-  const hexFromBytesV444 = (bytes) => Array.from(bytes || []).map((value) => Number(value).toString(16).padStart(2, '0')).join('');
-
-  const sha256TextPrefixV444 = async (text, prefixLength = 24) => {
-    try {
-      if (!globalThis.crypto?.subtle || typeof TextEncoder === 'undefined') return '';
-      const input = new TextEncoder().encode(String(text || ''));
-      const digest = new Uint8Array(await globalThis.crypto.subtle.digest('SHA-256', input));
-      return hexFromBytesV444(digest).slice(0, Math.max(8, Number(prefixLength || 24)));
-    } catch (_) { return ''; }
-  };
-
-  const galleryPhotoFingerprintV444 = async (file) => {
-    try {
-      if (!file || !globalThis.crypto?.subtle || typeof TextEncoder === 'undefined') return '';
-      const size = Math.max(0, Number(file.size || 0));
-      if (!(size > 0)) return '';
-      const sampleBytes = 65536;
-      const headLength = Math.min(sampleBytes, size);
-      const tailStart = Math.max(headLength, size - sampleBytes);
-      const head = new Uint8Array(await file.slice(0, headLength).arrayBuffer());
-      const tail = tailStart < size ? new Uint8Array(await file.slice(tailStart, size).arrayBuffer()) : new Uint8Array(0);
-      const prefix = new TextEncoder().encode(`tokyo-burari-gallery-v444|${size}|${head.length}|${tail.length}|`);
-      const combined = new Uint8Array(prefix.length + head.length + tail.length);
-      combined.set(prefix, 0); combined.set(head, prefix.length);
-      if (tail.length) combined.set(tail, prefix.length + head.length);
-      const digest = new Uint8Array(await globalThis.crypto.subtle.digest('SHA-256', combined));
-      return `sha256_sample_v1:${hexFromBytesV444(digest)}`;
-    } catch (err) {
-      console.warn('gallery fingerprint skipped', err);
-      return '';
-    }
-  };
-
-  const galleryImportLegacyIdentityV444 = (file, importMeta) => {
-    const meta = importMeta?.import_metadata && typeof importMeta.import_metadata === 'object' ? importMeta.import_metadata : {};
-    const name = String(meta.original_name || file?.name || '').trim().toLowerCase();
-    const source = String(meta.capture_time_source || importMeta?.capture_time_source || '').trim();
-    const raw = String(meta.capture_time_raw || importMeta?.capture_time_raw || '').trim();
-    return name && source && raw ? `${name}|${source}|${raw}` : '';
-  };
-
-  const galleryPhotoAlreadyImportedV444 = async (file, importMeta, fingerprint = '') => {
-    const fp = String(fingerprint || '').trim();
-    if (fp && galleryImportedFingerprintsV444.has(fp)) return true;
-    const identity = galleryImportLegacyIdentityV444(file, importMeta);
-    if (!identity) return false;
-    const hash = await sha256TextPrefixV444(identity, 24);
-    return Boolean(hash && galleryImportedIdentityHashesV444.has(hash));
-  };
-
-  const extractGalleryPhotoMetadataV441 = async (file) => {
-    const fallback = galleryPhotoFallbackCaptureMetaV441(file);
-    const output = {
-      captured_at: fallback.captured_at,
-      capture_time_source: fallback.capture_time_source,
-      capture_time_raw: fallback.capture_time_raw,
-      location: {
-        ok: false,
-        source: 'gallery',
-        error_code: 'GALLERY_NO_EXIF_GPS',
-        error_message: '写真の内部データに撮影位置がないため、位置情報は取得していません。'
-      },
-      import_metadata: {
-        capture_time_source: fallback.capture_time_source,
-        capture_time_raw: fallback.capture_time_raw,
-        original_name: String(file?.name || ''),
-        original_type: String(file?.type || ''),
-        original_size_bytes: Math.max(0, Number(file?.size || 0)),
-        original_last_modified_ms: Math.max(0, Number(file?.lastModified || 0)),
-        exif_gps: false,
-      }
-    };
-    try {
-      const scanSize = Math.min(Number(file?.size || 0), GALLERY_PHOTO_METADATA_SCAN_BYTES_V441);
-      if (!(scanSize > 0)) return output;
-      const buffer = await file.slice(0, scanSize).arrayBuffer();
-      const bytes = new Uint8Array(buffer);
-      const view = new DataView(buffer);
-      let exif = {};
-      let xmpCreateDate = '';
-      const asciiAt = (offset, length) => {
-        if (offset < 0 || length < 0 || offset + length > bytes.length) return '';
-        let out = '';
-        for (let i = 0; i < length; i += 1) out += String.fromCharCode(bytes[offset + i]);
-        return out;
-      };
-      const mergeExif = (candidate) => {
-        if (!candidate || typeof candidate !== 'object') return;
-        exif = {...exif, ...Object.fromEntries(Object.entries(candidate).filter(([, value]) => value !== '' && value !== undefined && value !== null))};
-      };
-      const scanXmpText = (start, length) => {
-        if (!(length > 0) || start < 0 || start + length > bytes.length) return;
-        try {
-          const text = new TextDecoder('utf-8', {fatal: false}).decode(bytes.slice(start, start + length));
-          xmpCreateDate = xmpCreateDate || parseXmpCreateDateV441(text);
-        } catch (_) {}
-      };
-
-      // JPEG APP1: standard EXIF and XMP both live before the compressed image stream.
-      if (bytes.length >= 4 && bytes[0] === 0xff && bytes[1] === 0xd8) {
-        let pos = 2;
-        while (pos + 4 <= bytes.length) {
-          if (bytes[pos] !== 0xff) { pos += 1; continue; }
-          while (pos < bytes.length && bytes[pos] === 0xff) pos += 1;
-          if (pos >= bytes.length) break;
-          const marker = bytes[pos]; pos += 1;
-          if (marker === 0xda || marker === 0xd9) break;
-          if (marker === 0x01 || (marker >= 0xd0 && marker <= 0xd7)) continue;
-          if (pos + 2 > bytes.length) break;
-          const segmentLength = (bytes[pos] << 8) | bytes[pos + 1];
-          if (segmentLength < 2) break;
-          const dataStart = pos + 2;
-          const segmentEnd = pos + segmentLength;
-          if (segmentEnd > bytes.length) break;
-          if (marker === 0xe1) {
-            if (asciiAt(dataStart, 6) === 'Exif\0\0') {
-              mergeExif(parseTiffExifV441(buffer, dataStart + 6, segmentEnd));
-            } else {
-              scanXmpText(dataStart, segmentEnd - dataStart);
-            }
-          }
-          pos = segmentEnd;
-        }
-      // PNG eXIf chunk contains a raw TIFF structure.
-      } else if (bytes.length >= 8 && asciiAt(1, 3) === 'PNG') {
-        let pos = 8;
-        while (pos + 12 <= bytes.length) {
-          const length = view.getUint32(pos, false);
-          const type = asciiAt(pos + 4, 4);
-          const dataStart = pos + 8;
-          const dataEnd = dataStart + length;
-          if (dataEnd + 4 > bytes.length) break;
-          if (type === 'eXIf') mergeExif(parseTiffExifV441(buffer, dataStart, dataEnd));
-          if (type === 'iTXt' || type === 'tEXt') scanXmpText(dataStart, length);
-          pos = dataEnd + 4;
-        }
-      // WebP EXIF/XMP chunks.
-      } else if (bytes.length >= 12 && asciiAt(0, 4) === 'RIFF' && asciiAt(8, 4) === 'WEBP') {
-        let pos = 12;
-        while (pos + 8 <= bytes.length) {
-          const type = asciiAt(pos, 4);
-          const length = view.getUint32(pos + 4, true);
-          const dataStart = pos + 8;
-          const dataEnd = dataStart + length;
-          if (dataEnd > bytes.length) break;
-          if (type === 'EXIF') {
-            const hasPrefix = asciiAt(dataStart, 6) === 'Exif\0\0';
-            mergeExif(parseTiffExifV441(buffer, dataStart + (hasPrefix ? 6 : 0), dataEnd));
-          } else if (type === 'XMP ') {
-            scanXmpText(dataStart, length);
-          }
-          pos = dataEnd + (length % 2);
-        }
-      }
-
-      // Some formats/encoders store XMP outside the standard chunk scanned above.
-      if (!xmpCreateDate) scanXmpText(0, bytes.length);
-
-      const dateCandidates = [
-        ['exif_datetime_original', exif.date_time_original, exif.offset_time_original || exif.offset_time],
-        ['exif_datetime_digitized', exif.date_time_digitized, exif.offset_time_digitized || exif.offset_time],
-        ['exif_datetime', exif.date_time, exif.offset_time],
-        ['xmp_create_date', xmpCreateDate, ''],
-      ];
-      for (const [source, raw, offset] of dateCandidates) {
-        const parsed = parsePhotoCaptureDateV441(raw, offset);
-        if (!parsed) continue;
-        output.captured_at = parsed;
-        output.capture_time_source = source;
-        output.capture_time_raw = String(raw || '').trim();
-        output.import_metadata.capture_time_source = source;
-        output.import_metadata.capture_time_raw = String(raw || '').trim();
-        if (offset) output.import_metadata.capture_time_offset = String(offset || '').trim();
-        break;
-      }
-
-      const latitude = Number(exif.latitude);
-      const longitude = Number(exif.longitude);
-      if (Number.isFinite(latitude) && Number.isFinite(longitude) && Math.abs(latitude) <= 90 && Math.abs(longitude) <= 180) {
-        output.location = {
-          ok: true,
-          source: 'exif_gps',
-          latitude,
-          longitude,
-          accuracy_m: null,
-          measured_at: output.captured_at,
-          place_label: '',
-          place_provider: 'photo_exif',
-        };
-        output.import_metadata.exif_gps = true;
-      }
-      return output;
-    } catch (err) {
-      console.warn('photo metadata parse failed; using safe fallback timestamp', err);
-      return output;
-    }
-  };
-
-  const prepareImageFile = async (file) => {
-    // Keep the saved-photo quality target (max 1600px / JPEG 0.86), but prefer
-    // createImageBitmap + OffscreenCanvas so decoding/resizing can happen away from
-    // the most visible UI path on modern Android WebView/Chrome.
-    let bitmap = null;
-    let fallbackUrl = '';
-    let source = null;
-    let offscreen = null;
-    let workCanvas = null;
-    try {
-      if (typeof globalThis.createImageBitmap === 'function') {
-        try {
-          bitmap = await globalThis.createImageBitmap(file, { imageOrientation: 'from-image' });
-          source = bitmap;
-        } catch (err) {
-          console.warn('createImageBitmap unavailable for this photo; using Image fallback', err);
-        }
-      }
-      if (!source) {
-        fallbackUrl = URL.createObjectURL(file);
-        source = await new Promise((resolve, reject) => {
-          const node = new Image();
-          node.decoding = 'async';
-          node.onload = () => resolve(node);
-          node.onerror = reject;
-          node.src = fallbackUrl;
-        });
-      }
-
-      const srcW = Number(source.width || source.naturalWidth || 0);
-      const srcH = Number(source.height || source.naturalHeight || 0);
-      if (!(srcW > 0 && srcH > 0)) throw new Error('invalid image dimensions');
-      const maxSide = 1600;
-      const scale = Math.min(1, maxSide / Math.max(srcW, srcH));
-      const width = Math.max(1, Math.round(srcW * scale));
-      const height = Math.max(1, Math.round(srcH * scale));
-
-      let blob = null;
-      if (typeof globalThis.OffscreenCanvas === 'function') {
-        try {
-          offscreen = new globalThis.OffscreenCanvas(width, height);
-          const ctx = offscreen.getContext('2d', { alpha: false, desynchronized: true });
-          ctx.drawImage(source, 0, 0, width, height);
-          blob = await offscreen.convertToBlob({ type: 'image/jpeg', quality: 0.86 });
-        } catch (err) {
-          console.warn('OffscreenCanvas conversion unavailable; using DOM canvas', err);
-        }
-      }
-      if (!blob) {
-        workCanvas = document.createElement('canvas');
-        workCanvas.width = width;
-        workCanvas.height = height;
-        const ctx = workCanvas.getContext('2d', { alpha: false });
-        ctx.drawImage(source, 0, 0, width, height);
-        blob = await new Promise((resolve) => workCanvas.toBlob(resolve, 'image/jpeg', 0.86));
-      }
-      if (!blob) throw new Error('image conversion failed');
-      return await blobToDataUrl(blob);
-    } finally {
-      if (bitmap && typeof bitmap.close === 'function') { try { bitmap.close(); } catch (_) {} }
-      if (fallbackUrl) { try { URL.revokeObjectURL(fallbackUrl); } catch (_) {} }
-      if (workCanvas) {
-        try { workCanvas.width = 1; workCanvas.height = 1; } catch (_) {}
-        workCanvas = null;
-      }
-      if (offscreen) {
-        try { offscreen.width = 1; offscreen.height = 1; } catch (_) {}
-        offscreen = null;
-      }
-      source = null;
-    }
-  };
-
-  const takePhoto = async () => {
-    if (photoCaptureBusy) return;
-    if (!stream || !video.videoWidth || !video.videoHeight) {
-      setPhotoCapturingUi(false);
-      return;
-    }
-    photoCaptureBusy = true;
-    setPhotoCapturingUi(true);
-    shootButton.disabled = true;
-    const capturedAt = new Date().toISOString();
-    try {
-      // Yield one frame so Android paints the pressed state before image encoding.
-      await new Promise((resolve) => requestAnimationFrame(() => resolve()));
-      const locationPromise = consumeCaptureLocation();
-      const dataUrl = await capturePosterDataUrl();
-      pendingMedia = {
-        kind: 'photo',
-        data_url: dataUrl,
-        name: 'camera.jpg',
-        source: 'camera',
-        camera_facing: cameraFacing,
-        capture_orientation: isDeviceLandscape() ? 'landscape' : 'portrait',
-        captured_at: capturedAt,
-        location: { ok: false, error_code: 'LOCATION_PENDING' },
-        location_promise: locationPromise,
-        emotion: '',
-        parenting: ''
-      };
-      showPhotoReview(dataUrl);
-      photoCaptureBusy = false;
-      setPhotoCapturingUi(false);
-      setStatus('');
-      const capturedMedia = pendingMedia;
-      locationPromise.then((location) => {
-        if (pendingMedia === capturedMedia && location) capturedMedia.location = location;
-      }).catch(() => {});
-    } catch (err) {
-      console.error(err);
-      photoCaptureBusy = false;
-      setPhotoCapturingUi(false);
-      shootButton.disabled = false;
-      const message = '撮影した画像を作れませんでした。もう一度お試しください。';
-      setStatus(message);
-      setTriggerValue('camera_error', { name: 'CaptureError', message });
-    }
-  };
-
-  const chooseRecorderMimeType = (hasAudio = true) => {
-    const candidates = hasAudio ? [
-      'video/mp4;codecs=h264,aac',
-      'video/mp4',
-      'video/webm;codecs=vp8,opus',
-      'video/webm'
-    ] : [
-      'video/mp4;codecs=h264',
-      'video/mp4',
-      'video/webm;codecs=vp8',
-      'video/webm'
-    ];
-    for (const type of candidates) {
-      try {
-        if (MediaRecorder.isTypeSupported(type)) return type;
-      } catch (_) {}
-    }
-    return '';
-  };
-
-  const closeRecordingAudioPipeline = async () => {
-    const pipeline = recordingAudioPipeline;
-    recordingAudioPipeline = null;
-    if (!pipeline) return;
-    try { if (pipeline.timer) clearInterval(pipeline.timer); } catch (_) {}
-    try { pipeline.source && pipeline.source.disconnect(); } catch (_) {}
-    try { pipeline.highpass && pipeline.highpass.disconnect(); } catch (_) {}
-    try { pipeline.analyser && pipeline.analyser.disconnect(); } catch (_) {}
-    try { pipeline.gainNode && pipeline.gainNode.disconnect(); } catch (_) {}
-    try { pipeline.compressor && pipeline.compressor.disconnect(); } catch (_) {}
-    try {
-      if (pipeline.destination && pipeline.destination.stream) {
-        pipeline.destination.stream.getTracks().forEach((track) => { try { track.stop(); } catch (_) {} });
-      }
-    } catch (_) {}
-    if (pipeline.audioContext) {
-      try { await pipeline.audioContext.close(); } catch (_) {}
-    }
-  };
-
-  const buildVideoRecorderStream = async (hasAudio) => {
-    const videoTracks = stream && stream.getVideoTracks
-      ? stream.getVideoTracks().filter((track) => track.readyState === 'live')
-      : [];
-    if (!hasAudio) return new MediaStream(videoTracks);
-
-    const rawAudioTrack = stream && stream.getAudioTracks
-      ? stream.getAudioTracks().find((track) => track.readyState === 'live' && track.enabled !== false)
-      : null;
-    if (!rawAudioTrack) return new MediaStream(videoTracks);
-
-    // `autoGainControl` can still be weak even when the track reports it as enabled.
-    // v382 therefore uses a stronger far-field adaptive gain before encoding. Very quiet
-    // sound can be lifted substantially, while the compressor protects nearby/loud speech.
-    const AudioContextCtor = window.AudioContext || window.webkitAudioContext;
-    if (!AudioContextCtor) return new MediaStream([...videoTracks, rawAudioTrack]);
-
-    try {
-      await closeRecordingAudioPipeline();
-      let audioContext;
-      try { audioContext = new AudioContextCtor({ sampleRate: 48000 }); }
-      catch (_) { audioContext = new AudioContextCtor(); }
-      await audioContext.resume();
-
-      const sourceStream = new MediaStream([rawAudioTrack]);
-      const source = audioContext.createMediaStreamSource(sourceStream);
-      const highpass = audioContext.createBiquadFilter();
-      highpass.type = 'highpass';
-      highpass.frequency.value = 70;
-      highpass.Q.value = 0.7;
-
-      const analyser = audioContext.createAnalyser();
-      analyser.fftSize = 2048;
-      analyser.smoothingTimeConstant = 0.60;
-
-      const gainNode = audioContext.createGain();
-      // Start noticeably above unity so the first words are not lost before the
-      // adaptive meter has collected enough samples.
-      gainNode.gain.value = 6.0;
-
-      const compressor = audioContext.createDynamicsCompressor();
-      compressor.threshold.value = -20;
-      compressor.knee.value = 24;
-      compressor.ratio.value = 5;
-      compressor.attack.value = 0.003;
-      compressor.release.value = 0.30;
-
-      const destination = audioContext.createMediaStreamDestination();
-      source.connect(highpass);
-      highpass.connect(analyser);
-      highpass.connect(gainNode);
-      gainNode.connect(compressor);
-      compressor.connect(destination);
-      // Intentionally do NOT connect to audioContext.destination: recording only,
-      // with no speaker monitoring/feedback.
-
-      const values = new Float32Array(analyser.fftSize);
-      const timer = setInterval(() => {
-        try {
-          analyser.getFloatTimeDomainData(values);
-          let sum = 0;
-          for (let i = 0; i < values.length; i += 1) sum += values[i] * values[i];
-          const rms = Math.sqrt(sum / Math.max(1, values.length));
-          // v382 far-field AGC: aim quiet material at roughly -20 dBFS. The previous
-          // 4.8x ceiling was enough for nearby loud speech but not for a quiet external
-          // speaker around 50 cm away on the affected Android device. Cap at 16x so
-          // room noise does not become unbounded; loud input quickly falls back near 1x.
-          const safeRms = Math.max(0.0008, rms);
-          let targetGain = Math.min(16.0, Math.max(1.15, 0.10 / safeRms));
-          if (rms >= 0.10) targetGain = 1.05;
-          else if (rms >= 0.07) targetGain = Math.min(targetGain, 1.45);
-          else if (rms >= 0.05) targetGain = Math.min(targetGain, 2.0);
-          gainNode.gain.setTargetAtTime(targetGain, audioContext.currentTime, 0.16);
-        } catch (_) {}
-      }, 100);
-
-      recordingAudioPipeline = {
-        audioContext, source, highpass, analyser, gainNode, compressor, destination, timer
-      };
-      const processedTrack = destination.stream.getAudioTracks()[0];
-      if (!processedTrack || processedTrack.readyState !== 'live') {
-        await closeRecordingAudioPipeline();
-        return new MediaStream([...videoTracks, rawAudioTrack]);
-      }
-      return new MediaStream([...videoTracks, processedTrack]);
-    } catch (err) {
-      console.warn('video audio gain pipeline unavailable; using raw microphone', err);
-      await closeRecordingAudioPipeline();
-      return new MediaStream([...videoTracks, rawAudioTrack]);
-    }
-  };
-
-  const stopVideoRecording = () => {
-    clearRecordingTimers();
-    if (mediaRecorder && mediaRecorder.state !== 'inactive') {
-      try { mediaRecorder.stop(); } catch (_) {}
-    }
-  };
-
-  const startVideoRecording = async () => {
-    if (videoRecordingStartBusy || videoUploadBusy) return;
-    if (mediaRecorder && mediaRecorder.state !== 'inactive') return;
-    if (!stream || !video.videoWidth || !video.videoHeight) return;
-    videoRecordingStartBusy = true;
-    if (shootButton) shootButton.disabled = true;
-    const hasAudio = !!(stream.getAudioTracks && stream.getAudioTracks().some((track) => {
-      try { track.enabled = true; } catch (_) {}
-      return track.readyState === 'live' && track.enabled !== false;
-    }));
-    // v374: the button label already tells the user when the microphone is unavailable.
-    // Do not block recording in that state. MediaRecorder can safely record the live
-    // camera stream without an audio track; chooseRecorderMimeType(false) selects a
-    // video-only format and the saved metadata records has_audio=false.
-    recordedChunks = [];
-    recordingCandidateFrames = [];
-    recordingCandidateBusy = false;
-    recordingCancelled = false;
-    recordingCapturedAt = new Date().toISOString();
-    recordingLocationPromise = getLocationAtCapture();
-    const mimeType = chooseRecorderMimeType(hasAudio);
-    const captureTrack = stream.getVideoTracks && stream.getVideoTracks()[0];
-    const captureSettings = (captureTrack && captureTrack.getSettings) ? captureTrack.getSettings() : {};
-    const captureWidth = Math.max(0, Number(captureSettings?.width || video.videoWidth || 0));
-    const captureHeight = Math.max(0, Number(captureSettings?.height || video.videoHeight || 0));
-    const captureFrameRate = Math.max(0, Number(captureSettings?.frameRate || 0));
-    const capturePixels = captureWidth * captureHeight;
-    // v314: keep enough bitrate for 60/90fps so motion does not become blocky.
-    // The source camera frame rate still depends on the hardware/browser capability.
-    const veryHighFps = captureFrameRate >= 80;
-    const highFps = captureFrameRate >= 50;
-    const requestedVideoBitrate = veryHighFps
-      ? (capturePixels >= 800000 ? 7000000 : 5600000)
-      : (highFps
-          ? (capturePixels >= 800000 ? 5200000 : 4200000)
-          : (capturePixels >= 1700000 ? 3600000 : (capturePixels >= 800000 ? 2800000 : 2000000)));
-    try {
-      const options = {
-        videoBitsPerSecond: requestedVideoBitrate
-      };
-      if (hasAudio) options.audioBitsPerSecond = 96000;
-      if (mimeType) options.mimeType = mimeType;
-      // v382: MediaRecorder receives a stronger far-field processed audio track. This changes actual sample
-      // amplitude; audioBitsPerSecond only controls encoding rate and cannot make a quiet
-      // microphone louder.
-      const recorderStream = await buildVideoRecorderStream(hasAudio);
-      try {
-        mediaRecorder = new MediaRecorder(recorderStream, options);
-      } catch (_) {
-        mediaRecorder = new MediaRecorder(recorderStream, mimeType ? { mimeType } : undefined);
-      }
-      mediaRecorder.ondataavailable = (event) => {
-        if (event.data && event.data.size > 0) recordedChunks.push(event.data);
-      };
-      mediaRecorder.onerror = (event) => {
-        console.error(event);
-        clearRecordingTimers();
-        const failedRecorder = mediaRecorder;
-        recordingCancelled = true;
-        mediaRecorder = null;
-        if (failedRecorder) {
-          failedRecorder.ondataavailable = null;
-          failedRecorder.onerror = null;
-          failedRecorder.onstop = null;
-          try { if (failedRecorder.state !== 'inactive') failedRecorder.stop(); } catch (_) {}
-        }
-        recordedChunks = [];
-        recordingCandidateFrames = [];
-        void closeRecordingAudioPipeline();
-        releaseLiveCameraForUpload();
-        setRecordingUi(false);
-        const message = '動画の録画中にエラーが発生しました。もう一度お試しください。';
-        setStatus(message);
-        setTriggerValue('camera_error', { name: 'VideoRecordError', message });
-      };
-      mediaRecorder.onstop = async () => {
-        clearRecordingTimers();
-        setRecordingUi(false);
-        const recorder = mediaRecorder;
-        mediaRecorder = null;
-        if (recordingCancelled) {
-          recordedChunks = [];
-          recordingCandidateFrames = [];
-          recordingCancelled = false;
-          if (recorder) {
-            recorder.ondataavailable = null;
-            recorder.onerror = null;
-            recorder.onstop = null;
-          }
-          return;
-        }
-        try {
-          if (videoUploadBusy) return;
-          videoUploadBusy = true;
-          const durationMs = Math.max(1, Date.now() - recordingStartedAt);
-          const finalType = (recorder && recorder.mimeType) || mimeType || 'video/webm';
-          const blob = new Blob(recordedChunks, { type: finalType });
-          recordedChunks = [];
-          // Recorder has emitted its final data; the processing graph can now be released.
-          await closeRecordingAudioPipeline();
-          if (!blob.size) throw new Error('recorded video is empty');
-          if (videoMaxBytes > 0 && blob.size > videoMaxBytes) {
-            const sizeMb = (blob.size / (1024 * 1024)).toFixed(1);
-            const limitMb = (videoMaxBytes / (1024 * 1024)).toFixed(1);
-            throw new Error(`録画データが大きすぎます（${sizeMb}MB）。この時点で保存できる上限は${limitMb}MBです。`);
-          }
-
-          // Preserve recording quality. No Good Moments JPEG extraction runs while
-          // MediaRecorder is active. The untouched original is uploaded first; only
-          // after recording has ended do we decode lightweight AI thumbnails.
-          if (menu) menu.hidden = true;
-          if (activeActions) activeActions.hidden = true;
-          if (video) video.hidden = true;
-          setStatus('動画を自動保存する準備をしています…');
-
-          let candidateFrames = [];
-          recordingCandidateFrames = [];
-
-          // Poster/location are useful metadata, but neither is allowed to block the
-          // original video save. If poster capture fails, use the first lightweight
-          // candidate still; the server can also create a neutral placeholder.
-          let posterDataUrl = '';
-          try {
-            posterDataUrl = await captureVideoPosterDataUrl();
-          } catch (posterErr) {
-            console.warn('video poster skipped', posterErr);
-          }
-          if (!posterDataUrl && candidateFrames.length) {
-            posterDataUrl = String(candidateFrames[0]?.data_url || '');
-          }
-          let location = { ok: false, error_code: 'UNAVAILABLE', error_message: '位置情報を取得できませんでした。' };
-          try {
-            location = await (recordingLocationPromise || getLocationAtCapture());
-          } catch (locationErr) {
-            console.warn('video location skipped', locationErr);
-          }
-
-          // Poster and capture location are ready. Release camera decoder/sensor buffers
-          // before holding the large recorded Blob during network upload.
-          releaseLiveCameraForUpload();
-
-          // Upload the original first. The trigger payload sent to Streamlit contains
-          // only metadata and small JPEG stills, never the multi-megabyte video itself.
-          setStatus('動画を保管庫へ送信しています…');
-          const actualVideoStoragePath = await uploadVideoBlobToSignedUrl(blob);
-
-          // Do not build any browser-side candidate JPEG sheet. The saved
-          // original video is now the single source of truth. The server extracts
-          // native-resolution duration-aware frames once, then creates separate small
-          // AI copies. This removes duplicated work and avoids low-resolution paths.
-          let candidateSheetPath = '';
-          let candidateManifest = [];
-          let candidateSheetColumns = 0;
-          let candidateSheetRows = 0;
-
-          const recordingId = (globalThis.crypto && typeof globalThis.crypto.randomUUID === 'function')
-            ? globalThis.crypto.randomUUID()
-            : `video_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
-          const mediaToSave = {
-            kind: 'video_uploaded',
-            recording_id: recordingId,
-            video_storage_path: actualVideoStoragePath,
-            video_size_bytes: blob.size,
-            poster_data_url: posterDataUrl,
-            candidate_frames: [],
-            candidate_sheet_path: candidateSheetPath,
-            candidate_manifest: candidateManifest,
-            candidate_sheet_columns: candidateSheetColumns,
-            candidate_sheet_rows: candidateSheetRows,
-            mime_type: finalType,
-            duration_ms: durationMs,
-            capture_width: captureWidth,
-            capture_height: captureHeight,
-            capture_frame_rate: captureFrameRate,
-            video_bitrate_bps: Number((recorder && recorder.videoBitsPerSecond) || requestedVideoBitrate || 0),
-            has_audio: hasAudio,
-            audio_bitrate_bps: Number((recorder && recorder.audioBitsPerSecond) || (hasAudio ? 96000 : 0) || 0),
-            name: finalType.includes('mp4') ? 'camera.mp4' : 'camera.webm',
-            source: 'video_camera',
-            camera_facing: cameraFacing,
-            capture_orientation: isDeviceLandscape() ? 'landscape' : 'portrait',
-            captured_at: recordingCapturedAt || new Date().toISOString(),
-            location,
-            auto_save: true,
-            upload_complete: true
-          };
-
-          setStatus('動画を保管庫へ送信しました。記録を登録しています…');
-          setTriggerValue('video', mediaToSave);
-        } catch (err) {
-          console.error(err);
-          const detail = (err && err.message) ? String(err.message).replace(/\s+/g, ' ').trim().slice(0, 240) : '';
-          const message = detail
-            ? `動画を保存できませんでした。${detail}`
-            : '動画を保存できませんでした。もう一度お試しください。';
-          setStatus(message);
-          setTriggerValue('camera_error', { name: 'VideoPrepareError', message, detail });
-        } finally {
-          videoUploadBusy = false;
-          videoRecordingStartBusy = false;
-          await closeRecordingAudioPipeline();
-          if (recorder) {
-            recorder.ondataavailable = null;
-            recorder.onerror = null;
-            recorder.onstop = null;
-          }
-          recordedChunks = [];
-          recordingCandidateFrames = [];
-          releaseCaptureCanvas();
-          recordingStartedAt = 0;
-          recordingLocationPromise = null;
-        }
-      };
-
-      mediaRecorder.start(1000);
-      recordingStartedAt = Date.now();
-      // v508: the shutter is disabled only while MediaRecorder is being prepared.
-      // Once recording has actually started, re-enable it so the same button can
-      // receive the user's "撮影終了" tap and stop the active recorder.
-      videoRecordingStartBusy = false;
-      if (shootButton) shootButton.disabled = false;
-      setRecordingUi(true);
-      updateRecordingClock();
-      recordingTimer = setInterval(updateRecordingClock, 500);
-      // v139 quality-first recording: do not generate JPEG candidates while the
-      // MediaRecorder encoder is running. Candidate extraction starts after stop.
-      recordingMaxTimer = setTimeout(stopVideoRecording, VIDEO_RECORD_MAX_SECONDS * 1000);
-      setStatus(hasAudio ? '' : '音声なしで動画を録画しています。');
-    } catch (err) {
-      console.error(err);
-      videoRecordingStartBusy = false;
-      if (shootButton) shootButton.disabled = false;
-      await closeRecordingAudioPipeline();
-      setRecordingUi(false);
-      const message = 'この端末では動画録画を開始できませんでした。ブラウザを最新版にしてください。';
-      setStatus(message);
-      setTriggerValue('camera_error', { name: 'VideoStartError', message });
-    }
-  };
-
-  const inferGalleryVideoMime = (file) => {
-    const direct = String(file?.type || '').split(';', 1)[0].trim().toLowerCase();
-    if (direct.startsWith('video/')) return direct;
-    const name = String(file?.name || '').toLowerCase();
-    if (name.endsWith('.mov')) return 'video/quicktime';
-    if (name.endsWith('.m4v')) return 'video/x-m4v';
-    if (name.endsWith('.webm')) return 'video/webm';
-    return 'video/mp4';
-  };
-
-  const prepareGalleryVideoFile = async (file) => {
-    if (!file || !file.size) throw new Error('動画ファイルが空です。');
-    if (videoMaxBytes > 0 && file.size > videoMaxBytes) {
-      const sizeMb = (file.size / (1024 * 1024)).toFixed(1);
-      const limitMb = (videoMaxBytes / (1024 * 1024)).toFixed(1);
-      throw new Error(`動画が大きすぎます（${sizeMb}MB）。保存可能な上限は${limitMb}MBです。`);
-    }
-    const objectUrl = URL.createObjectURL(file);
-    const probe = document.createElement('video');
-    probe.preload = 'auto';
-    probe.muted = true;
-    probe.playsInline = true;
-    probe.src = objectUrl;
-    try {
-      await new Promise((resolve, reject) => {
-        const timer = setTimeout(() => reject(new Error('動画情報の読み込みが時間切れになりました。')), 8000);
-        const ready = () => { clearTimeout(timer); resolve(); };
-        const failed = () => { clearTimeout(timer); reject(new Error('この動画形式をブラウザで読み込めませんでした。')); };
-        probe.addEventListener('loadedmetadata', ready, { once: true });
-        probe.addEventListener('error', failed, { once: true });
-      });
-      const durationSeconds = Number(probe.duration || 0);
-      if (!Number.isFinite(durationSeconds) || durationSeconds <= 0) {
-        throw new Error('動画の長さを確認できませんでした。');
-      }
-      if (durationSeconds > VIDEO_IMPORT_MAX_SECONDS + 0.15) {
-        throw new Error(`取り込める動画は最大${VIDEO_IMPORT_MAX_SECONDS}秒までです。選んだ動画は${durationSeconds.toFixed(1)}秒あります。`);
-      }
-      try {
-        if (probe.readyState < 2) {
-          await new Promise((resolve) => {
-            const timer = setTimeout(resolve, 2500);
-            probe.addEventListener('loadeddata', () => { clearTimeout(timer); resolve(); }, { once: true });
-          });
-        }
-      } catch (_) {}
-      const width = Math.max(0, Number(probe.videoWidth || 0));
-      const height = Math.max(0, Number(probe.videoHeight || 0));
-      let posterDataUrl = '';
-      try {
-        if (durationSeconds > 0.12) {
-          const target = Math.min(Math.max(0, durationSeconds - 0.05), Math.min(0.25, durationSeconds * 0.10));
-          await seekVideoFrame(probe, target);
-        }
-        if (width > 0 && height > 0) {
-          const frameCanvas = document.createElement('canvas');
-          const maxSide = 900;
-          const scale = Math.min(1, maxSide / Math.max(width, height));
-          frameCanvas.width = Math.max(1, Math.round(width * scale));
-          frameCanvas.height = Math.max(1, Math.round(height * scale));
-          const ctx = frameCanvas.getContext('2d', { alpha: false });
-          ctx.drawImage(probe, 0, 0, frameCanvas.width, frameCanvas.height);
-          const posterBlob = await new Promise((resolve) => frameCanvas.toBlob(resolve, 'image/jpeg', 0.72));
-          if (posterBlob) posterDataUrl = await blobToDataUrl(posterBlob);
-        }
-      } catch (posterErr) {
-        console.warn('gallery video poster skipped', posterErr);
-      }
-      return {
-        mime_type: inferGalleryVideoMime(file),
-        duration_ms: Math.max(1, Math.round(durationSeconds * 1000)),
-        capture_width: width,
-        capture_height: height,
-        poster_data_url: posterDataUrl,
-      };
-    } finally {
-      try { probe.pause(); } catch (_) {}
-      probe.removeAttribute('src');
-      try { probe.load(); } catch (_) {}
-      URL.revokeObjectURL(objectUrl);
-    }
-  };
-
-  const chooseGalleryVideo = async () => {
-    const file = galleryVideoInput?.files && galleryVideoInput.files[0];
-    if (!file) return;
-    try {
-      if (!videoAllowed) throw new Error(videoCapacityMessage);
-      setStatus('選んだ動画を確認しています…');
-      const prepared = await prepareGalleryVideoFile(file);
-      pendingVideoBlob = file;
-      pendingMedia = {
-        kind: 'video',
-        name: file.name || 'gallery-video',
-        source: 'video_gallery',
-        captured_at: file.lastModified ? new Date(file.lastModified).toISOString() : new Date().toISOString(),
-        mime_type: prepared.mime_type,
-        duration_ms: prepared.duration_ms,
-        poster_data_url: prepared.poster_data_url,
-        capture_width: prepared.capture_width,
-        capture_height: prepared.capture_height,
-        capture_frame_rate: 0,
-        video_bitrate_bps: 0,
-        location: {
-          ok: false,
-          error_code: 'GALLERY_VIDEO',
-          error_message: '動画フォルダから選んだ動画の撮影位置は自動取得しません。'
-        }
-      };
-      showVideoReview(file, prepared.poster_data_url);
-      setStatus('');
-    } catch (err) {
-      console.error(err);
-      const detail = String(err?.message || '').trim();
-      const message = detail ? `動画を選べませんでした。${detail}` : '動画を選べませんでした。別の動画を選んでください。';
-      setStatus(message);
-      setTriggerValue('camera_error', { name: 'GalleryVideoError', message, detail });
-    } finally {
-      if (galleryVideoInput) galleryVideoInput.value = '';
-    }
-  };
-
-  const prepareGalleryPhotoBatch = async (files, generation) => {
-    const sourceFiles = Array.isArray(files) ? files.slice() : [];
-    const results = new Array(sourceFiles.length);
-    let cursor = 0;
-    let completed = 0;
-    const worker = async () => {
-      while (true) {
-        const index = cursor;
-        cursor += 1;
-        if (index >= sourceFiles.length) return;
-        if (generation !== pendingPhotoLoadGeneration) throw new Error('gallery batch preparation cancelled');
-        const file = sourceFiles[index];
-        const [dataUrl, importMeta, fingerprint] = await Promise.all([
-          prepareImageFile(file),
-          extractGalleryPhotoMetadataV441(file),
-          galleryPhotoFingerprintV444(file),
-        ]);
-        if (importMeta?.import_metadata && fingerprint) importMeta.import_metadata.source_fingerprint = fingerprint;
-        const alreadyImported = await galleryPhotoAlreadyImportedV444(file, importMeta, fingerprint);
-        setBatchGalleryImportedBadgeV444(index, alreadyImported);
-        if (generation !== pendingPhotoLoadGeneration) throw new Error('gallery batch preparation cancelled');
-        results[index] = {
-          data_url: dataUrl,
-          name: file.name || `gallery_${index + 1}.jpg`,
-          source: 'gallery_batch',
-          captured_at: String(importMeta?.captured_at || galleryPhotoFallbackCaptureMetaV441(file).captured_at),
-          capture_time_source: String(importMeta?.capture_time_source || 'file_last_modified'),
-          location: importMeta?.location || {
-            ok: false, source: 'gallery', error_code: 'GALLERY_NO_EXIF_GPS',
-            error_message: '写真の内部データに撮影位置がないため、位置情報は取得していません。'
-          },
-          import_metadata: importMeta?.import_metadata || {},
-          already_imported: alreadyImported,
-        };
-        completed += 1;
-        setStatus(`保存用データを準備しています… ${completed}/${sourceFiles.length}`);
-      }
-    };
-    const workerCount = Math.max(1, Math.min(GALLERY_PHOTO_BATCH_WORKERS, sourceFiles.length));
-    await Promise.all(Array.from({ length: workerCount }, () => worker()));
-    const cleanResults = results.filter((item) => item && item.data_url);
-    updateBatchImportedSummaryV445(cleanResults, sourceFiles.length);
-    return cleanResults;
-  };
-
-  const chooseGalleryPhoto = async () => {
-    const selectedFiles = Array.from(galleryInput.files || []).filter((file) => file && (!file.type || file.type.startsWith('image/')));
-    if (!selectedFiles.length) return;
-    if (selectedFiles.length > GALLERY_PHOTO_BATCH_MAX) {
-      const message = `一度に選べる写真は${GALLERY_PHOTO_BATCH_MAX}枚までです。枚数を減らして選びなおしてください。`;
-      setStatus(message);
-      setTriggerValue('camera_error', { name: 'GalleryPhotoBatchLimit', message });
-      galleryInput.value = '';
-      return;
-    }
-
-    const generation = ++pendingPhotoLoadGeneration;
-    let previewUrl = '';
-    try {
-      if (selectedFiles.length === 1) {
-        const file = selectedFiles[0];
-        // Preserve the established single-photo review path exactly.
-        previewUrl = URL.createObjectURL(file);
-        const fallbackMeta = galleryPhotoFallbackCaptureMetaV441(file);
-        pendingMedia = {
-          kind: 'photo',
-          data_url: '',
-          name: file.name || 'gallery.jpg',
-          source: 'gallery',
-          captured_at: fallbackMeta.captured_at,
-          capture_time_source: fallbackMeta.capture_time_source,
-          emotion: '',
-          parenting: '',
-          location: {
-            ok: false,
-            source: 'gallery',
-            error_code: 'GALLERY_NO_EXIF_GPS',
-            error_message: '写真の内部データに撮影位置がないため、位置情報は取得していません。'
-          },
-          import_metadata: {
-            capture_time_source: fallbackMeta.capture_time_source,
-            capture_time_raw: fallbackMeta.capture_time_raw,
-            original_name: String(file.name || ''),
-            original_type: String(file.type || ''),
-            original_size_bytes: Math.max(0, Number(file.size || 0)),
-            original_last_modified_ms: Math.max(0, Number(file.lastModified || 0)),
-            exif_gps: false,
-          }
-        };
-        showPhotoReview(previewUrl);
-        pendingPhotoPreviewUrl = previewUrl;
-        previewUrl = '';
-        setStatus('写真を表示しました。保存用データを準備しています…');
-        pendingPhotoPreparePromise = Promise.all([
-          prepareImageFile(file),
-          extractGalleryPhotoMetadataV441(file),
-          galleryPhotoFingerprintV444(file),
-        ]).then(async ([dataUrl, importMeta, fingerprint]) => {
-          if (generation !== pendingPhotoLoadGeneration) return '';
-          if (importMeta?.import_metadata && fingerprint) importMeta.import_metadata.source_fingerprint = fingerprint;
-          const alreadyImported = await galleryPhotoAlreadyImportedV444(file, importMeta, fingerprint);
-          if (generation !== pendingPhotoLoadGeneration) return '';
-          if (pendingMedia && pendingMedia.kind === 'photo' && pendingMedia.source === 'gallery') {
-            pendingMedia.data_url = dataUrl;
-            pendingMedia.already_imported = alreadyImported;
-            if (importMeta && typeof importMeta === 'object') {
-              pendingMedia.captured_at = String(importMeta.captured_at || pendingMedia.captured_at || '');
-              pendingMedia.capture_time_source = String(importMeta.capture_time_source || pendingMedia.capture_time_source || '');
-              pendingMedia.location = importMeta.location || pendingMedia.location;
-              pendingMedia.import_metadata = importMeta.import_metadata || pendingMedia.import_metadata || {};
-            }
-            setSingleGalleryImportedBadgeV444(alreadyImported);
-            setStatus(alreadyImported ? '✓ この写真はすでにアプリへ取り込み済みです。' : '');
-          }
-          return dataUrl;
-        });
-        pendingPhotoPreparePromise.catch(() => {});
-        return;
-      }
-
-      const files = selectedFiles.slice();
-      showPhotoBatchReview(files);
-      pendingPhotoBatchFiles = files;
-      const batchId = (globalThis.crypto && typeof globalThis.crypto.randomUUID === 'function')
-        ? globalThis.crypto.randomUUID()
-        : `photo_batch_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
-      pendingMedia = {
-        kind: 'photo_batch',
-        source: 'gallery_batch',
-        batch_id: batchId,
-        selected_count: files.length,
-        items: []
-      };
-      setStatus(`保存用データを準備しています… 0/${files.length}`);
-      pendingPhotoBatchPreparePromise = prepareGalleryPhotoBatch(files, generation).then((items) => {
-        if (generation !== pendingPhotoLoadGeneration) return [];
-        if (pendingMedia && pendingMedia.kind === 'photo_batch' && pendingMedia.batch_id === batchId) {
-          pendingMedia.items = items;
-          const importedCount = items.filter((item) => Boolean(item?.already_imported)).length;
-          setStatus(importedCount ? `${items.length}枚の準備ができました。${importedCount}枚は取り込み済みです。` : `${items.length}枚の準備ができました。`);
-        }
-        return items;
-      });
-      pendingPhotoBatchPreparePromise.catch(() => {});
-    } catch (err) {
-      console.error(err);
-      if (previewUrl) { try { URL.revokeObjectURL(previewUrl); } catch (_) {} }
-      const message = selectedFiles.length > 1
-        ? '複数の写真を読み込めませんでした。枚数を減らすか、別の写真を選んでください。'
-        : '写真を読み込めませんでした。別の写真を選んでください。';
-      setStatus(message);
-      setTriggerValue('camera_error', { name: 'GalleryError', message });
-    } finally {
-      galleryInput.value = '';
-    }
-  };
-
-  const findGoodMoments = async (event) => {
-    // Hard gate: only a real click on the separately armed review button may
-    // start frame extraction. Recording stop and review rendering never call it.
-    if (!event || event.isTrusted !== true) return;
-    if (!reviewFindMoments || event.currentTarget !== reviewFindMoments) return;
-    if (reviewFindMoments.dataset.armedGeneration !== String(videoReviewGeneration)) return;
-    if (!pendingMedia || pendingMedia.kind !== 'video' || !pendingVideoBlob) return;
-    if (!review || review.hidden || reviewFindMoments.hidden) return;
-
-    event.preventDefault();
-    event.stopPropagation();
-    reviewFindMoments.dataset.armedGeneration = '';
-    if (reviewFindMoments) {
-      reviewFindMoments.disabled = true;
-      reviewFindMoments.textContent = '候補を準備しています…';
-    }
-    reviewSave.disabled = true;
-    reviewRetry.disabled = true;
-    setStatus('動画からいい瞬間の候補を準備しています…');
-
-    try {
-      const candidateFrames = await extractVideoCandidateFrames(
-        pendingVideoBlob,
-        pendingMedia.duration_ms
-      );
-      if (!Array.isArray(candidateFrames) || candidateFrames.length < 1) {
-        throw new Error('not enough candidate frames');
-      }
-      const requestId = (globalThis.crypto && typeof globalThis.crypto.randomUUID === 'function')
-        ? globalThis.crypto.randomUUID()
-        : `selection_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
-      const request = {
-        ...pendingMedia,
-        candidate_frames: candidateFrames,
-        selection_requested: true,
-        selection_request_id: requestId,
-        selection_requested_at: new Date().toISOString()
-      };
-      setTriggerValue('video_selection', request);
-    } catch (err) {
-      console.error(err);
-      const message = '良い瞬間を探す準備ができませんでした。もう一度お試しください。';
-      setStatus(message);
-      reviewSave.disabled = false;
-      reviewRetry.disabled = false;
-      if (reviewFindMoments) {
-        reviewFindMoments.textContent = '✨ いい瞬間を探す';
-      }
-      setTriggerValue('camera_error', { name: 'VideoSelectionPrepareError', message });
-    }
-  };
-
-  const savePendingMedia = async (options = null) => {
-    if (!pendingMedia) return;
-    const excludeAlreadyImported = Boolean(options && options.excludeAlreadyImported === true);
-    reviewSave.disabled = true;
-    if (reviewSaveNewOnly) reviewSaveNewOnly.disabled = true;
-    reviewRetry.disabled = true;
-    const mediaToSave = pendingMedia;
-
-    if (mediaToSave.kind === 'photo_batch') {
-      try {
-        let items = Array.isArray(mediaToSave.items) ? mediaToSave.items : [];
-        if (!items.length && pendingPhotoBatchPreparePromise) {
-          setStatus(`選んだ${pendingPhotoBatchFiles.length || mediaToSave.selected_count || 0}枚を保存する準備をしています…`);
-          items = await pendingPhotoBatchPreparePromise;
-          if (mediaToSave !== pendingMedia) throw new Error('gallery batch preparation cancelled');
-          mediaToSave.items = items;
-        }
-        if (!items.length) throw new Error('複数写真の保存データを準備できませんでした。');
-        const itemsToSave = excludeAlreadyImported
-          ? items.filter((item) => !Boolean(item?.already_imported))
-          : items;
-        if (!itemsToSave.length) {
-          reviewSave.disabled = false;
-          reviewRetry.disabled = false;
-          updateBatchImportedSummaryV445(items, mediaToSave.selected_count || items.length);
-          setStatus('選んだ写真はすべて取り込み済みです。新しく保存する写真はありません。');
-          return;
-        }
-        setStatus(excludeAlreadyImported
-          ? `${itemsToSave.length}枚の未取り込み写真を保存しています…`
-          : `${itemsToSave.length}枚の写真をまとめて保存しています…`);
-        releaseLiveCameraForUpload();
-        setTriggerValue('photo_batch', {
-          kind: 'photo_batch',
-          source: 'gallery_batch',
-          batch_id: String(mediaToSave.batch_id || ''),
-          selected_count: itemsToSave.length,
-          items: itemsToSave
-        });
-        releaseSubmittedReviewMedia();
-      } catch (err) {
-        console.error(err);
-        reviewSave.disabled = false;
-        reviewRetry.disabled = false;
-        updateBatchImportedSummaryV445(Array.isArray(mediaToSave.items) ? mediaToSave.items : [], mediaToSave.selected_count || 0);
-        const message = '複数の写真を保存する準備ができませんでした。もう一度選びなおしてください。';
-        setStatus(message);
-        setTriggerValue('camera_error', { name: 'GalleryPhotoBatchPrepareError', message, detail: String(err?.message || '') });
-      }
-      return;
-    }
-
-    if (mediaToSave.kind === 'video') {
-      const uploadGeneration = ++galleryVideoUploadGenerationV562;
-      const uploadController = new AbortController();
-      galleryVideoUploadControllerV562 = uploadController;
-      try {
-        if (!pendingVideoBlob) throw new Error('選んだ動画を確認できません。');
-        if (!videoAllowed || !videoUploadSignedUrl || !videoUploadStoragePath) throw new Error(videoCapacityMessage);
-        if (videoMaxBytes > 0 && pendingVideoBlob.size > videoMaxBytes) {
-          throw new Error('選んだ動画が現在の保存可能容量を超えています。');
-        }
-        // Keep Cancel available during a slow mobile upload. All late responses
-        // from an aborted or replaced upload are ignored.
-        reviewRetry.disabled = false;
-        reviewRetry.textContent = '送信を中止する';
-        setStatus('選んだ動画を保管庫へ送信しています… 0%');
-        const mimeType = String(mediaToSave.mime_type || inferGalleryVideoMime(pendingVideoBlob) || 'video/mp4');
-        releaseLiveCameraForUpload();
-        const progressV562 = (loaded, total, retrying = false) => {
-          if (uploadGeneration !== galleryVideoUploadGenerationV562 || uploadController.signal.aborted) return;
-          if (retrying) {
-            setStatus('動画の送信を再試行しています… 0%');
-          } else if (total > 0) {
-            const percent = Math.max(0, Math.min(100, Math.floor(100 * loaded / total)));
-            setStatus(percent >= 100
-              ? '動画の送信が完了しました。保存先の確認を待っています…'
-              : `選んだ動画を保管庫へ送信しています… ${percent}%`);
-          }
-        };
-        const actualVideoStoragePath = await uploadGalleryVideoToSignedUrlV562(
-          pendingVideoBlob, progressV562, uploadController.signal
-        );
-        if (uploadGeneration !== galleryVideoUploadGenerationV562 || uploadController.signal.aborted || mediaToSave !== pendingMedia) return;
-        // Do not claim saved here: the server still needs to register the uploaded
-        // original and its poster. Reuse the existing registration payload verbatim.
-        const recordingId = (globalThis.crypto && typeof globalThis.crypto.randomUUID === 'function')
-          ? globalThis.crypto.randomUUID()
-          : `gallery_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
-        const uploadedPayload = {
-          kind: 'video_uploaded',
-          recording_id: recordingId,
-          video_storage_path: actualVideoStoragePath,
-          video_size_bytes: pendingVideoBlob.size,
-          poster_data_url: String(mediaToSave.poster_data_url || ''),
-          candidate_frames: [],
-          candidate_sheet_path: '',
-          candidate_manifest: [],
-          candidate_sheet_columns: 0,
-          candidate_sheet_rows: 0,
-          mime_type: mimeType,
-          duration_ms: Number(mediaToSave.duration_ms || 0),
-          capture_width: Number(mediaToSave.capture_width || 0),
-          capture_height: Number(mediaToSave.capture_height || 0),
-          capture_frame_rate: Number(mediaToSave.capture_frame_rate || 0),
-          video_bitrate_bps: Number(mediaToSave.video_bitrate_bps || 0),
-          name: String(mediaToSave.name || 'gallery-video'),
-          source: 'video_gallery',
-          captured_at: String(mediaToSave.captured_at || new Date().toISOString()),
-          location: mediaToSave.location || { ok: false, error_code: 'GALLERY_VIDEO' },
-          auto_save: true,
-          upload_complete: true
-        };
-        setStatus('動画を保管庫へ送信しました。記録を登録しています…');
-        setTriggerValue('video', uploadedPayload);
-        releaseSubmittedReviewMedia();
-      } catch (err) {
-        if (uploadGeneration !== galleryVideoUploadGenerationV562 || uploadController.signal.aborted || err?.name === 'AbortError') return;
-        console.error(err);
-        reviewSave.disabled = false;
-        reviewRetry.disabled = false;
-        reviewRetry.textContent = '選びなおす';
-        const detail = String(err?.message || '').trim();
-        const message = detail ? `動画を保存できませんでした。${detail}` : '動画を保存できませんでした。';
-        setStatus(message);
-        setTriggerValue('camera_error', { name: 'GalleryVideoUploadError', message, detail });
-      } finally {
-        if (galleryVideoUploadControllerV562 === uploadController) galleryVideoUploadControllerV562 = null;
-      }
-      return;
-    }
-
-    try {
-      if (mediaToSave.kind === 'photo' && mediaToSave.source === 'gallery' && !mediaToSave.data_url && pendingPhotoPreparePromise) {
-        setStatus('写真を保存する準備をしています…');
-        const preparedDataUrl = await pendingPhotoPreparePromise;
-        if (!preparedDataUrl) throw new Error('gallery image preparation cancelled');
-        mediaToSave.data_url = preparedDataUrl;
-      }
-      if (!mediaToSave.data_url) throw new Error('写真データを準備できませんでした。');
-      if (mediaToSave.location_promise) {
-        setStatus('撮影地点を確認しています…');
-        try {
-          const resolvedLocation = await mediaToSave.location_promise;
-          if (resolvedLocation) mediaToSave.location = resolvedLocation;
-        } catch (_) {}
-        delete mediaToSave.location_promise;
-      }
-      setStatus('写真を保存しています…');
-      releaseLiveCameraForUpload();
-      setTriggerValue('photo', mediaToSave);
-      releaseSubmittedReviewMedia();
-    } catch (err) {
-      console.error(err);
-      reviewSave.disabled = false;
-      reviewRetry.disabled = false;
-      const message = '写真を保存する準備ができませんでした。もう一度選びなおしてください。';
-      setStatus(message);
-      setTriggerValue('camera_error', { name: 'GalleryPhotoPrepareError', message });
-    }
-  };
-
-  const retryPendingMedia = async () => {
-    if (!pendingMedia) return;
-    const source = pendingMedia.source;
-    if (source === 'video_gallery' && galleryVideoUploadControllerV562) {
-      ++galleryVideoUploadGenerationV562;
-      galleryVideoUploadControllerV562.abort();
-      galleryVideoUploadControllerV562 = null;
-    }
-    pendingMedia = null;
-    pendingVideoBlob = null;
-    pendingPhotoLoadGeneration += 1;
-    pendingPhotoPreparePromise = null;
-    revokePendingPhotoPreviewUrl();
-    resetPendingPhotoBatch();
-    reviewSave.disabled = false;
-    if (reviewSaveNewOnly) { reviewSaveNewOnly.hidden = true; reviewSaveNewOnly.disabled = false; }
-    reviewRetry.disabled = false;
-    disarmGoodMomentsButton();
-    setStatus('');
-    hideReview();
-
-    if ((source === 'camera' || source === 'gallery' || source === 'gallery_batch' || source === 'video_camera' || source === 'video_gallery') && stream && stream.getTracks().some((track) => track.readyState === 'live')) {
-      cameraMode = (source === 'video_camera' || source === 'video_gallery') ? 'video' : 'photo';
-      if (video.srcObject !== stream) video.srcObject = stream;
-      await video.play();
-      shootButton.disabled = false;
-      showCameraActions();
-      return;
-    }
-    showMenu();
-  };
-
-  const closeCamera = () => {
-    stopStream();
-    setStatus('');
-  };
-
-  const handleShoot = () => {
-    if (cameraMode === 'video') {
-      if (videoRecordingStartBusy || videoUploadBusy) return;
-      if (mediaRecorder && mediaRecorder.state === 'recording') stopVideoRecording();
-      else startVideoRecording();
-    } else {
-      takePhoto();
-    }
-  };
-
-  const showImmediatePhotoPress = () => {
-    if (cameraMode !== 'photo' || photoCaptureBusy || shootButton.disabled) return;
-    if (photoPressResetTimer) {
-      clearTimeout(photoPressResetTimer);
-      photoPressResetTimer = null;
-    }
-    setPhotoCapturingUi(true);
-  };
-
-  const safelyResetPhotoPress = () => {
-    if (photoPressResetTimer) clearTimeout(photoPressResetTimer);
-    photoPressResetTimer = setTimeout(() => {
-      photoPressResetTimer = null;
-      if (!photoCaptureBusy) setPhotoCapturingUi(false);
-    }, 180);
-  };
-
-  const switchCameraMode = () => {
-    if (videoRecordingStartBusy || videoUploadBusy) return;
-    if (mediaRecorder && mediaRecorder.state === 'recording') return;
-    if (cameraModeSwitchInProgress) return;
-    const targetMode = cameraMode === 'video' ? 'photo' : 'video';
-    cameraModeSwitchInProgress = true;
-    startCamera(targetMode, { fromModeSwitch: true });
-  };
-
-  const switchCameraFacing = () => {
-    if (videoRecordingStartBusy || videoUploadBusy) return;
-    if (mediaRecorder && mediaRecorder.state === 'recording') return;
-    cameraFacing = cameraFacing === 'user' ? 'environment' : 'user';
-    preferredCameraDeviceId = null;
-    persistCameraFacing();
-    syncFacingUi();
-    setStatus(cameraFacing === 'user' ? '内側カメラに切り替えています…' : '外側カメラに切り替えています…');
-    startCamera(cameraMode);
-  };
-
-  let orientationConstraintTimer = null;
-  const handleOrientationChange = () => {
-    // Horizontal camera mode is intentionally disabled. A viewport resize only
-    // recalculates the size of the same native-ratio portrait frame.
-    syncOrientationUi();
-    if (orientationConstraintTimer) clearTimeout(orientationConstraintTimer);
-    orientationConstraintTimer = setTimeout(() => {
-      orientationConstraintTimer = null;
-      syncNativeCameraFrame();
-      syncFacingUi();
-    }, 180);
-  };
-
-  const startPhotoCamera = () => { cameraModeSwitchInProgress = false; startCamera('photo'); };
-  const startVideoCamera = () => { cameraModeSwitchInProgress = false; startCamera('video'); };
-
-  startButton.addEventListener('click', startPhotoCamera);
-  videoStartButton.addEventListener('click', startVideoCamera);
-  facingSwitchButton?.addEventListener('click', switchCameraFacing);
-  modeSwitchButton.addEventListener('click', switchCameraMode);
-  shootButton.addEventListener('pointerdown', showImmediatePhotoPress, { passive: true });
-  shootButton.addEventListener('pointerup', safelyResetPhotoPress, { passive: true });
-  shootButton.addEventListener('pointercancel', safelyResetPhotoPress, { passive: true });
-  shootButton.addEventListener('click', handleShoot);
-  stopButton.addEventListener('click', closeCamera);
-  galleryInput.addEventListener('change', chooseGalleryPhoto);
-  galleryVideoInput?.addEventListener('change', chooseGalleryVideo);
-  if (reviewModeNormal) reviewModeNormal.addEventListener('click', (event) => {
-    event.preventDefault(); event.stopPropagation(); reviewMode = 'normal'; syncReviewEmotion();
-  });
-  if (reviewModeParenting) reviewModeParenting.addEventListener('click', (event) => {
-    event.preventDefault(); event.stopPropagation(); reviewMode = 'parenting'; syncReviewEmotion();
-  });
-  const saveOnlyUnimportedGalleryPhotosV445 = () => savePendingMedia({ excludeAlreadyImported: true });
-  reviewSave.addEventListener('click', savePendingMedia);
-  reviewSaveNewOnly?.addEventListener('click', saveOnlyUnimportedGalleryPhotosV445);
-  reviewRetry.addEventListener('click', retryPendingMedia);
-  reviewImageShell?.addEventListener('click', cycleReviewEmotion);
-  reviewImageShell?.addEventListener('keydown', onReviewEmotionKeydown);
-  reviewFindMoments?.addEventListener('click', findGoodMoments);
-  window.addEventListener('orientationchange', handleOrientationChange);
-  window.addEventListener('resize', handleOrientationChange);
-  try { globalThis.screen?.orientation?.addEventListener?.('change', handleOrientationChange); } catch (_) {}
-
-  if (galleryOnly) {
-    showMenu();
-  } else if (data?.auto_start_mode === 'video') {
-    queueMicrotask(() => startCamera('video'));
-  } else if (data?.auto_start) {
-    queueMicrotask(() => startCamera('photo'));
-  }
-
-  return () => {
-    startButton.removeEventListener('click', startPhotoCamera);
-    videoStartButton.removeEventListener('click', startVideoCamera);
-    facingSwitchButton?.removeEventListener('click', switchCameraFacing);
-    modeSwitchButton.removeEventListener('click', switchCameraMode);
-    shootButton.removeEventListener('pointerdown', showImmediatePhotoPress);
-    shootButton.removeEventListener('pointerup', safelyResetPhotoPress);
-    shootButton.removeEventListener('pointercancel', safelyResetPhotoPress);
-    shootButton.removeEventListener('click', handleShoot);
-    stopButton.removeEventListener('click', closeCamera);
-    galleryInput.removeEventListener('change', chooseGalleryPhoto);
-    galleryVideoInput?.removeEventListener('change', chooseGalleryVideo);
-    ++galleryVideoUploadGenerationV562;
-    if (galleryVideoUploadControllerV562) {
-      galleryVideoUploadControllerV562.abort();
-      galleryVideoUploadControllerV562 = null;
-    }
-    pendingPhotoLoadGeneration += 1;
-    pendingPhotoPreparePromise = null;
-    revokePendingPhotoPreviewUrl();
-    resetPendingPhotoBatch();
-    reviewSave.removeEventListener('click', savePendingMedia);
-    reviewSaveNewOnly?.removeEventListener('click', saveOnlyUnimportedGalleryPhotosV445);
-    reviewRetry.removeEventListener('click', retryPendingMedia);
-    reviewImageShell?.removeEventListener('click', cycleReviewEmotion);
-    reviewImageShell?.removeEventListener('keydown', onReviewEmotionKeydown);
-    reviewFindMoments?.removeEventListener('click', findGoodMoments);
-    window.removeEventListener('orientationchange', handleOrientationChange);
-    window.removeEventListener('resize', handleOrientationChange);
-    try { globalThis.screen?.orientation?.removeEventListener?.('change', handleOrientationChange); } catch (_) {}
-    if (orientationConstraintTimer) { clearTimeout(orientationConstraintTimer); orientationConstraintTimer = null; }
-    if (photoPressResetTimer) { clearTimeout(photoPressResetTimer); photoPressResetTimer = null; }
-    clearGoodMomentsRevealTimer();
-    stopStream();
-    hideReview();
-  };
-}
-"""
+_LIVE_CAMERA_JS = '\nexport default function(component) {\n  const { parentElement, setTriggerValue, data } = component;\n  const wrap = parentElement.querySelector(\'.live-camera-wrap\');\n  const galleryOnly = Boolean(data?.gallery_only);\n  if (wrap) wrap.classList.toggle(\'gallery-only-v601\', galleryOnly);\n  const video = parentElement.querySelector(\'#live-camera-video\');\n  const canvas = parentElement.querySelector(\'#live-camera-canvas\');\n  const menu = parentElement.querySelector(\'#camera-menu\');\n  const startButton = parentElement.querySelector(\'#live-camera-start\');\n  const videoStartButton = parentElement.querySelector(\'#live-video-start\');\n  const galleryInput = parentElement.querySelector(\'#gallery-photo-input\');\n  const galleryVideoInput = parentElement.querySelector(\'#gallery-video-input\');\n  const galleryPhotoLabel = parentElement.querySelector(\'#gallery-photo-label\');\n  const galleryVideoLabel = parentElement.querySelector(\'#gallery-video-label\');\n  const libraryActions = parentElement.querySelector(\'#camera-library-actions\');\n  const activeActions = parentElement.querySelector(\'#camera-active-actions\');\n  const shootButton = parentElement.querySelector(\'#live-camera-shoot\');\n  const facingSwitchButton = parentElement.querySelector(\'#live-camera-facing-switch\');\n  const modeSwitchButton = parentElement.querySelector(\'#live-camera-mode-switch\');\n  const stopButton = parentElement.querySelector(\'#live-camera-stop\');\n  const recordingStatus = parentElement.querySelector(\'#camera-recording-status\');\n  const review = parentElement.querySelector(\'#camera-review\');\n  const reviewImageShell = parentElement.querySelector(\'#camera-review-image-shell\');\n  const reviewImage = parentElement.querySelector(\'#camera-review-image\');\n  const reviewImportedBadge = parentElement.querySelector(\'#camera-review-imported-badge\');\n  const reviewEmotionBadge = parentElement.querySelector(\'#camera-review-emotion-badge\');\n  const reviewEmotionHint = parentElement.querySelector(\'#camera-review-emotion-hint\');\n  const reviewModeSwitch = parentElement.querySelector(\'#camera-review-mode-switch\');\n  const reviewModeNormal = parentElement.querySelector(\'#camera-review-mode-normal\');\n  const reviewModeParenting = parentElement.querySelector(\'#camera-review-mode-parenting\');\n  const reviewBatch = parentElement.querySelector(\'#camera-review-batch\');\n  const reviewBatchCount = parentElement.querySelector(\'#camera-review-batch-count\');\n  const reviewBatchGrid = parentElement.querySelector(\'#camera-review-batch-grid\');\n  const reviewVideo = parentElement.querySelector(\'#camera-review-video\');\n  const reviewSave = parentElement.querySelector(\'#camera-review-save\');\n  const reviewSaveNewOnly = parentElement.querySelector(\'#camera-review-save-new-only\');\n  const reviewRetry = parentElement.querySelector(\'#camera-review-retry\');\n  const reviewFindMoments = parentElement.querySelector(\'#camera-review-find-moments\');\n  const reviewBuild = parentElement.querySelector(\'#camera-review-build\');\n  const status = parentElement.querySelector(\'#live-camera-status\');\n\n  const VIDEO_RECORD_MAX_SECONDS = 60;\n  const VIDEO_IMPORT_MAX_SECONDS = 65;\n  const GOOD_MOMENTS_MAX_CANDIDATES = 20;\n  const GOOD_MOMENTS_MIN_INTERVAL_SECONDS = 0.5;\n  // v107: the browser uploads the video blob straight to a short-lived Supabase\n  // signed upload URL. The multi-megabyte video is never serialized through a\n  // Streamlit component trigger value.\n  const videoUploadSignedUrl = String(data?.video_upload_signed_url || \'\');\n  const videoUploadStoragePath = String(data?.video_upload_storage_path || \'\');\n  const videoUploadFallbackSignedUrl = String(data?.video_upload_fallback_signed_url || \'\');\n  const videoUploadFallbackStoragePath = String(data?.video_upload_fallback_storage_path || \'\');\n  const candidateSheetSignedUrl = String(data?.video_candidate_sheet_signed_url || \'\');\n  const candidateSheetStoragePath = String(data?.video_candidate_sheet_storage_path || \'\');\n  const videoUnavailableReason = String(data?.video_unavailable_reason || \'\');\n  const videoPrepareAvailable = Boolean(data?.video_prepare_available);\n  const videoMaxBytes = Math.max(0, Number(data?.video_max_bytes || 0));\n  const videoAllowed = data?.video_allowed !== false && Boolean(videoUploadSignedUrl && videoUploadStoragePath);\n  const videoCapacityMessage = String(\n    data?.video_capacity_message || \'動画の保存容量または保存先を確認できないため、最大60秒の動画を撮影できません。\'\n  );\n  const galleryImportedIdentityHashesV444 = new Set(\n    (Array.isArray(data?.gallery_import_identity_hashes) ? data.gallery_import_identity_hashes : [])\n      .map((value) => String(value || \'\').trim()).filter(Boolean)\n  );\n  const galleryImportedFingerprintsV444 = new Set(\n    (Array.isArray(data?.gallery_import_fingerprints) ? data.gallery_import_fingerprints : [])\n      .map((value) => String(value || \'\').trim()).filter(Boolean)\n  );\n  const unavailableSuffix = videoUnavailableReason === \'quota\'\n    ? \'容量不足\'\n    : (videoUnavailableReason === \'storage_setup\' ? \'保存先エラー\' : \'利用不可\');\n  if (!videoAllowed && videoStartButton) {\n    videoStartButton.disabled = !videoPrepareAvailable;\n    videoStartButton.textContent = videoPrepareAvailable ? \'🎥 動画を撮る\' : `🎥 動画を撮る（${unavailableSuffix}）`;\n    videoStartButton.title = videoPrepareAvailable ? \'動画を使うときだけ保存先を準備します。\' : videoCapacityMessage;\n  }\n  let stream = null;\n  let cameraStartGeneration = 0;\n  let videoPrepareRequested = false;\n  let cameraModeSwitchInProgress = false;\n  let cameraTransitionPoster = \'\';\n  let cameraMode = \'photo\';\n  let cameraFacing = \'environment\';\n  // v313: remember the actual lens so photo/video use the same physical camera.\n  let preferredCameraDeviceId = null;\n  try {\n    const savedFacing = String(localStorage.getItem(\'tokyo_burari_camera_facing_v226\') || \'\');\n    if (savedFacing === \'user\' || savedFacing === \'environment\') cameraFacing = savedFacing;\n  } catch (_) {}\n\n  const isDeviceLandscape = () => {\n    try {\n      const type = String(globalThis.screen?.orientation?.type || \'\');\n      if (type.startsWith(\'landscape\')) return true;\n      if (type.startsWith(\'portrait\')) return false;\n    } catch (_) {}\n    try { return Boolean(window.matchMedia && window.matchMedia(\'(orientation: landscape)\').matches); } catch (_) {}\n    return false;\n  };\n  let nativeCameraPortraitRatio = 0;\n  let nativeCameraShortEdge = 0;\n  let nativeCameraLongEdge = 0;\n  const readNativeCameraDimensions = () => {\n    let width = 0;\n    let height = 0;\n    try {\n      const track = stream && stream.getVideoTracks ? stream.getVideoTracks()[0] : null;\n      const settings = (track && track.getSettings) ? track.getSettings() : {};\n      width = Math.max(0, Number(settings?.width || 0));\n      height = Math.max(0, Number(settings?.height || 0));\n    } catch (_) {}\n    if (!(width > 0 && height > 0)) {\n      width = Math.max(0, Number(video?.videoWidth || 0));\n      height = Math.max(0, Number(video?.videoHeight || 0));\n    }\n    return { width, height };\n  };\n  const syncNativeCameraFrame = () => {\n    if (!wrap) return;\n    const dims = readNativeCameraDimensions();\n    if (!(dims.width > 0 && dims.height > 0)) return;\n    const shortEdge = Math.min(dims.width, dims.height);\n    const longEdge = Math.max(dims.width, dims.height);\n    if (!(shortEdge > 0 && longEdge > 0)) return;\n    nativeCameraShortEdge = shortEdge;\n    nativeCameraLongEdge = longEdge;\n    nativeCameraPortraitRatio = shortEdge / longEdge;\n    wrap.style.setProperty(\'--camera-preview-aspect-ratio\', `${shortEdge} / ${longEdge}`);\n\n    let availableWidth = 0;\n    try { availableWidth = Math.max(0, Number(wrap.getBoundingClientRect()?.width || 0)); } catch (_) {}\n    if (!(availableWidth > 0)) {\n      try { availableWidth = Math.max(0, Number(parentElement?.getBoundingClientRect()?.width || 0)); } catch (_) {}\n    }\n    if (!(availableWidth > 0)) availableWidth = shortEdge;\n    let viewportHeight = 800;\n    try {\n      viewportHeight = Math.max(320, Number(window.visualViewport?.height || window.innerHeight || 800));\n    } catch (_) {}\n    const maxPreviewHeight = Math.min(760, viewportHeight * 0.72);\n    let previewWidth = availableWidth;\n    let previewHeight = previewWidth / nativeCameraPortraitRatio;\n    if (previewHeight > maxPreviewHeight) {\n      previewHeight = maxPreviewHeight;\n      previewWidth = previewHeight * nativeCameraPortraitRatio;\n    }\n    wrap.style.setProperty(\'--camera-preview-width\', `${Math.max(1, Math.floor(previewWidth))}px`);\n    wrap.style.setProperty(\'--camera-preview-height\', `${Math.max(1, Math.floor(previewHeight))}px`);\n  };\n  const applyNativePortraitConstraint = async () => {\n    if (!stream) return;\n    const dims = readNativeCameraDimensions();\n    if (!(dims.width > 0 && dims.height > 0)) {\n      syncNativeCameraFrame();\n      return;\n    }\n    const shortEdge = Math.min(dims.width, dims.height);\n    const longEdge = Math.max(dims.width, dims.height);\n    const portraitRatio = shortEdge / longEdge;\n    nativeCameraShortEdge = shortEdge;\n    nativeCameraLongEdge = longEdge;\n    nativeCameraPortraitRatio = portraitRatio;\n    // If the browser exposes the camera stream in landscape dimensions while the\n    // app is portrait-only, request the reciprocal orientation of that exact same\n    // camera ratio. No new 3:4, 9:16, 4:5, etc. ratio is invented here.\n    if (dims.width > dims.height) {\n      try {\n        const track = stream.getVideoTracks && stream.getVideoTracks()[0];\n        if (track && track.applyConstraints) {\n          await track.applyConstraints({\n            width: { ideal: shortEdge },\n            height: { ideal: longEdge },\n            aspectRatio: { ideal: portraitRatio }\n          });\n        }\n      } catch (err) {\n        console.warn(\'native portrait camera ratio could not be applied\', err);\n      }\n    }\n    syncNativeCameraFrame();\n  };\n  const syncOrientationUi = () => {\n    // v246: landscape mode is removed. Mode changes never invent a camera ratio.\n    const videoMode = cameraMode === \'video\';\n    const photoMode = !videoMode;\n    if (wrap) {\n      wrap.classList.toggle(\'camera-video-mode\', videoMode);\n      wrap.classList.toggle(\'camera-photo-mode\', photoMode);\n      wrap.classList.remove(\'camera-landscape\');\n      wrap.style.removeProperty(\'--camera-landscape-preview-height\');\n      wrap.style.removeProperty(\'--camera-landscape-preview-width\');\n      syncNativeCameraFrame();\n    }\n  };\n  const syncFacingUi = () => {\n    const front = cameraFacing === \'user\';\n    if (video) video.classList.toggle(\'front-facing\', front);\n    if (facingSwitchButton) {\n      facingSwitchButton.textContent = front ? \'📷 外側\' : \'🤳 内側\';\n      facingSwitchButton.setAttribute(\'aria-label\', front ? \'外側カメラに切り替える\' : \'内側カメラに切り替える\');\n      facingSwitchButton.title = front ? \'外側カメラに切り替える\' : \'内側カメラに切り替える\';\n    }\n  };\n  const persistCameraFacing = () => {\n    try { localStorage.setItem(\'tokyo_burari_camera_facing_v226\', cameraFacing); } catch (_) {}\n  };\n  const preferredVideoConstraints = () => {\n    // v314 keeps photo/video on the same physical camera geometry. Frame-rate is\n    // raised only after the stream opens so Android is less likely to switch lenses\n    // or change the field of view while satisfying the initial getUserMedia request.\n    const constraints = {\n      facingMode: { ideal: cameraFacing },\n      height: { ideal: 1600 }\n    };\n    try {\n      const supported = navigator.mediaDevices?.getSupportedConstraints?.() || {};\n      if (supported.resizeMode) constraints.resizeMode = { ideal: \'none\' };\n    } catch (_) {}\n    if (preferredCameraDeviceId) {\n      constraints.deviceId = { exact: preferredCameraDeviceId };\n      delete constraints.facingMode;\n    }\n    return constraints;\n  };\n\n  const applyHighVideoFrameRate = async () => {\n    if (!stream || cameraMode !== \'video\') return 0;\n    try {\n      const track = stream.getVideoTracks && stream.getVideoTracks()[0];\n      if (!track || !track.applyConstraints) return 0;\n      let capMax = 0;\n      try {\n        const caps = track.getCapabilities ? (track.getCapabilities() || {}) : {};\n        const frameCaps = caps.frameRate;\n        if (frameCaps && Number.isFinite(Number(frameCaps.max))) capMax = Number(frameCaps.max);\n      } catch (_) {}\n\n      // v398: 60fps keeps motion smooth while avoiding the extra sensor crop and\n      // startup negotiation cost that many phones introduce in their 90fps mode.\n      const targets = [];\n      if (capMax >= 59 || !capMax) targets.push(60);\n      if (capMax > 0 && capMax < 59) targets.push(Math.max(30, Math.floor(capMax)));\n      if (!targets.length) targets.push(60);\n\n      for (const target of [...new Set(targets)]) {\n        try {\n          await track.applyConstraints({ frameRate: { ideal: target, max: target } });\n          const settings = track.getSettings ? (track.getSettings() || {}) : {};\n          const actual = Number(settings.frameRate || 0);\n          if (actual >= 50 || target < 60) return actual || target;\n        } catch (_) {}\n      }\n      const settings = track.getSettings ? (track.getSettings() || {}) : {};\n      return Number(settings.frameRate || 0);\n    } catch (err) {\n      console.warn(\'high frame rate unavailable\', err);\n      return 0;\n    }\n  };\n\n  const applyWidestAvailableZoom = async () => {\n    if (!stream) return;\n    try {\n      const track = stream.getVideoTracks && stream.getVideoTracks()[0];\n      if (!track || !track.applyConstraints || !track.getCapabilities) return;\n      const caps = track.getCapabilities() || {};\n      const zoomCaps = caps.zoom;\n      if (!zoomCaps) return;\n      const minZoom = Number(zoomCaps.min);\n      if (!Number.isFinite(minZoom) || minZoom <= 0) return;\n      await track.applyConstraints({ advanced: [{ zoom: minZoom }] });\n    } catch (err) {\n      // Zoom is optional in getUserMedia. Devices that do not expose it keep their native view.\n      console.warn(\'minimum camera zoom unavailable\', err);\n    }\n  };\n  syncOrientationUi();\n  syncFacingUi();\n\n  let pendingMedia = null;\n  let pendingVideoBlob = null;\n  // v562: Gallery video upload lifetime is separate from camera recording.\n  // Cancelling/replacing a selected gallery clip invalidates outstanding callbacks.\n  let galleryVideoUploadControllerV562 = null;\n  let galleryVideoUploadGenerationV562 = 0;\n  // v323: gallery photos are shown from a local object URL immediately.\n  // Full-size decoding/resizing for save runs asynchronously so choosing a photo\n  // does not leave the screen looking frozen while a 12-50MP phone image is decoded.\n  let pendingPhotoPreparePromise = null;\n  let pendingPhotoPreviewUrl = \'\';\n  let pendingPhotoLoadGeneration = 0;\n  let pendingPhotoBatchFiles = [];\n  let pendingPhotoBatchPreparePromise = null;\n  let pendingPhotoBatchPreviewUrls = [];\n  const rotationByFile616=new WeakMap();\n  const rotatedPreview616=async(src,quarters)=>{\n    const image=await new Promise((resolve,reject)=>{const i=new Image();i.onload=()=>resolve(i);i.onerror=()=>reject(new Error(\'写真を読み込めませんでした\'));i.src=src;});\n    const q=((quarters%4)+4)%4,scale=Math.min(1,1600/Math.max(image.naturalWidth,image.naturalHeight));\n    const w=Math.max(1,Math.round(image.naturalWidth*scale)),h=Math.max(1,Math.round(image.naturalHeight*scale));\n    const c=document.createElement(\'canvas\');c.width=q%2?h:w;c.height=q%2?w:h;\n    const ctx=c.getContext(\'2d\');ctx.translate(c.width/2,c.height/2);ctx.rotate(q*Math.PI/2);ctx.drawImage(image,-w/2,-h/2,w,h);\n    return c.toDataURL(\'image/jpeg\',.95);\n  };\n  const rotationControls616=(image,original,getQuarter,setQuarter)=>{\n    const controls=document.createElement(\'div\');controls.className=\'photo-rotation-controls-v616\';\n    let busy=false;\n    for(const [label,direction] of [[\'↶ 左に90°\',-1],[\'↷ 右に90°\',1]]){\n      const b=document.createElement(\'button\');b.type=\'button\';b.textContent=label;\n      b.onclick=async e=>{\n        e.preventDefault();e.stopPropagation();if(busy||reviewSave.disabled)return;\n        busy=true;const media=pendingMedia;reviewSave.disabled=true;\n        if(reviewSaveNewOnly)reviewSaveNewOnly.disabled=true;\n        controls.querySelectorAll(\'button\').forEach(x=>x.disabled=true);\n        try{\n          const q=(getQuarter()+direction+4)%4;\n          const src=await rotatedPreview616(original,q);\n          if(media!==pendingMedia)return;\n          image.src=src;image.style.objectFit=\'contain\';image.style.height=\'auto\';image.style.aspectRatio=\'auto\';\n          setQuarter(q);\n        }catch(err){setStatus(String(err.message||err));}\n        finally{busy=false;controls.querySelectorAll(\'button\').forEach(x=>x.disabled=false);if(media===pendingMedia){reviewSave.disabled=false;if(reviewSaveNewOnly)reviewSaveNewOnly.disabled=false;}}\n      };\n      controls.appendChild(b);\n    }\n    return controls;\n  };\n\n  const GALLERY_PHOTO_BATCH_MAX = 20;\n  const GALLERY_PHOTO_BATCH_WORKERS = 2;\n  const revokePendingPhotoPreviewUrl = () => {\n    if (!pendingPhotoPreviewUrl) return;\n    try { URL.revokeObjectURL(pendingPhotoPreviewUrl); } catch (_) {}\n    pendingPhotoPreviewUrl = \'\';\n  };\n  const revokePendingPhotoBatchPreviewUrls = () => {\n    for (const url of pendingPhotoBatchPreviewUrls) {\n      try { URL.revokeObjectURL(url); } catch (_) {}\n    }\n    pendingPhotoBatchPreviewUrls = [];\n  };\n  const resetPendingPhotoBatch = () => {\n    pendingPhotoBatchFiles = [];\n    pendingPhotoBatchPreparePromise = null;\n    revokePendingPhotoBatchPreviewUrls();\n    if (reviewBatchGrid) reviewBatchGrid.replaceChildren();\n    if (reviewBatchCount) reviewBatchCount.textContent = \'\';\n    if (reviewBatch) reviewBatch.hidden = true;\n  };\n  const PHOTO_EMOTION_ORDER = [\'\', \'cozy\', \'joy\', \'surprise\', \'anger\', \'sadness\', \'frustration\', \'relaxed\', \'delicious\', \'beautiful\', \'mixed\'];\n  const PHOTO_EMOTIONS = {\n    cozy: { emoji: \'🥰\', color: \'#F3B6A0\', label: \'ほっこりした\' },\n    joy: { emoji: \'😊\', color: \'#F2C94C\', label: \'うれしい\' },\n    surprise: { emoji: \'😲\', color: \'#9B7BD3\', label: \'びっくり\' },\n    anger: { emoji: \'😠\', color: \'#E56B6F\', label: \'おこった\' },\n    sadness: { emoji: \'😢\', color: \'#6C9BD2\', label: \'かなしい\' },\n    frustration: { emoji: \'😣\', color: \'#A66A8A\', label: \'くやしい\' },\n    relaxed: { emoji: \'😌\', color: \'#9BCDB8\', label: \'のほほん\' },\n    delicious: { emoji: \'😋\', color: \'#F2A65A\', label: \'美味しい\' },\n    beautiful: { emoji: \'✨\', color: \'#6EC5D8\', label: \'きれい\' },\n    mixed: { emoji: \'😵\u200d💫\', color: \'#8D86A8\', label: \'複雑\' }\n  };\n  const PARENTING_ORDER = [\'\', \'effort\', \'challenge\', \'discovery\', \'kindness\', \'together\', \'tears\', \'hmm\', \'peace\', \'teach_me\', \'sharp\'];\n  const PARENTING_TAGS = {\n    effort: { emoji:\'⭐\', color:\'#E6B84A\', label:\'がんばった\' },\n    challenge: { emoji:\'💪\', color:\'#F2994A\', label:\'ちょうせん\' },\n    discovery: { emoji:\'💡\', color:\'#9BC53D\', label:\'はっけん\' },\n    kindness: { emoji:\'❤️\', color:\'#E57373\', label:\'やさしさ\' },\n    together: { emoji:\'🤝\', color:\'#4DB6AC\', label:\'いっしょに\' },\n    tears: { emoji:\'😭\', color:\'#6C9BD2\', label:\'なみだ\' },\n    hmm: { emoji:\'🤔\', color:\'#8E7CC3\', label:\'むーん\' },\n    peace: { emoji:\'✌️\', color:\'#5BBF9F\', label:\'ピース\' },\n    teach_me: { emoji:\'🙋\', color:\'#4C9BE8\', label:\'教えて\' },\n    sharp: { emoji:\'🫡\', color:\'#53657D\', label:\'キリッ\' }\n  };\n  let pendingEmotion = \'\';\n  let pendingParenting = \'\';\n  let reviewMode = \'normal\';\n  const normalizeEmotion = (value) => Object.prototype.hasOwnProperty.call(PHOTO_EMOTIONS, String(value || \'\')) ? String(value || \'\') : \'\';\n  const normalizeParenting = (value) => Object.prototype.hasOwnProperty.call(PARENTING_TAGS, String(value || \'\')) ? String(value || \'\') : \'\';\n  const syncReviewModeButtons = () => {\n    const normalMeta = PHOTO_EMOTIONS[normalizeEmotion(pendingEmotion)] || null;\n    const parentingMeta = PARENTING_TAGS[normalizeParenting(pendingParenting)] || null;\n    if (reviewModeNormal) {\n      reviewModeNormal.classList.toggle(\'active\', reviewMode === \'normal\');\n      reviewModeNormal.textContent = `${normalMeta ? normalMeta.emoji : \'🙂\'} 通常`;\n    }\n    if (reviewModeParenting) {\n      reviewModeParenting.classList.toggle(\'active\', reviewMode === \'parenting\');\n      reviewModeParenting.textContent = `${parentingMeta ? parentingMeta.emoji : \'🌱\'} こどもーど`;\n    }\n  };\n  const syncReviewEmotion = () => {\n    const normalKey = normalizeEmotion(pendingEmotion);\n    const parentingKey = normalizeParenting(pendingParenting);\n    const meta = normalKey ? (PHOTO_EMOTIONS[normalKey] || null) : (parentingKey ? (PARENTING_TAGS[parentingKey] || null) : null);\n    const selectedMode = normalKey ? \'通常\' : (parentingKey ? \'こどもーど\' : \'\');\n    if (reviewImageShell) {\n      reviewImageShell.style.borderColor = meta ? meta.color : \'#AEB6C2\';\n      reviewImageShell.style.background = meta ? `${meta.color}18` : \'rgba(174,182,194,.07)\';\n      reviewImageShell.setAttribute(\'aria-label\', meta ? `${selectedMode}：${meta.label}。タップすると現在のモードで変更します` : `${reviewMode === \'parenting\' ? \'こどもーど\' : \'通常\'}は未設定。タップして選びます`);\n    }\n    if (reviewEmotionBadge) {\n      reviewEmotionBadge.textContent = meta ? `${meta.emoji} ${meta.label}` : \'\';\n      reviewEmotionBadge.hidden = !meta;\n    }\n    syncReviewModeButtons();\n  };\n  const cycleReviewEmotion = (event) => {\n    event?.preventDefault?.(); event?.stopPropagation?.();\n    if (!pendingMedia || pendingMedia.kind !== \'photo\') return;\n    if (reviewMode === \'parenting\') {\n      const current = normalizeParenting(pendingParenting);\n      const currentIndex = Math.max(0, PARENTING_ORDER.indexOf(current));\n      pendingParenting = PARENTING_ORDER[(currentIndex + 1) % PARENTING_ORDER.length];\n      pendingEmotion = \'\';\n      pendingMedia.parenting = pendingParenting;\n      pendingMedia.emotion = \'\';\n    } else {\n      const current = normalizeEmotion(pendingEmotion);\n      const currentIndex = Math.max(0, PHOTO_EMOTION_ORDER.indexOf(current));\n      pendingEmotion = PHOTO_EMOTION_ORDER[(currentIndex + 1) % PHOTO_EMOTION_ORDER.length];\n      pendingParenting = \'\';\n      pendingMedia.emotion = pendingEmotion;\n      pendingMedia.parenting = \'\';\n    }\n    syncReviewEmotion();\n  };\n  const onReviewEmotionKeydown = (event) => {\n    if (event.key !== \'Enter\' && event.key !== \' \') return;\n    cycleReviewEmotion(event);\n  };\n  let reviewVideoUrl = \'\';\n  let mediaRecorder = null;\n  let videoRecordingStartBusy = false;\n  let videoUploadBusy = false;\n  let recordedChunks = [];\n  let recordingStartedAt = 0;\n  let recordingCapturedAt = \'\';\n  let recordingLocationPromise = null;\n  let recordingTimer = null;\n  let recordingMaxTimer = null;\n  let recordingCandidateTimer = null;\n  let recordingCandidateBusy = false;\n  let recordingCandidateFrames = [];\n  let recordingCancelled = false;\n  let photoCaptureBusy = false;\n  let photoPressResetTimer = null;\n  // v381: Android WebView can return a live microphone track whose actual capture\n  // level is extremely low. Keep a per-recording Web Audio gain/compressor graph so\n  // the encoded video receives a usable speech level without monitoring to speakers.\n  let recordingAudioPipeline = null;\n  // Good-moments search is a separate review action. The button remains hidden\n  // briefly after recording stops, so the stop gesture cannot fall through to it.\n  let videoReviewGeneration = 0;\n  let goodMomentsRevealTimer = null;\n\n  const setStatus = (message) => {\n    if (!status) return;\n    status.textContent = message || \'\';\n    status.hidden = !message;\n  };\n\n  const clearRecordingTimers = () => {\n    if (recordingTimer) {\n      clearInterval(recordingTimer);\n      recordingTimer = null;\n    }\n    if (recordingMaxTimer) {\n      clearTimeout(recordingMaxTimer);\n      recordingMaxTimer = null;\n    }\n    if (recordingCandidateTimer) {\n      clearInterval(recordingCandidateTimer);\n      recordingCandidateTimer = null;\n    }\n  };\n\n  const syncLibraryActions = (recording = false) => {\n    const streamLive = Boolean(stream && stream.getTracks && stream.getTracks().some((track) => track.readyState === \'live\'));\n    const activeVisible = Boolean(activeActions && !activeActions.hidden);\n    const shouldShow = Boolean(streamLive && activeVisible && !recording);\n    if (libraryActions) libraryActions.hidden = !shouldShow;\n    if (galleryPhotoLabel) galleryPhotoLabel.hidden = !shouldShow || cameraMode !== \'photo\';\n    if (galleryVideoLabel) galleryVideoLabel.hidden = !shouldShow || cameraMode !== \'video\';\n  };\n\n  const setPhotoCapturingUi = (capturing) => {\n    if (!shootButton) return;\n    shootButton.classList.toggle(\'photo-capturing\', Boolean(capturing));\n    if (capturing) {\n      shootButton.textContent = \'● 撮影中\';\n    } else if (cameraMode === \'photo\') {\n      shootButton.textContent = \'● 写真を撮る\';\n    }\n  };\n\n  const setRecordingUi = (recording) => {\n    if (recordingStatus) recordingStatus.hidden = !recording;\n    if (!shootButton) return;\n    if (wrap) wrap.classList.toggle(\'camera-recording-active\', Boolean(recording));\n    if (!recording) {\n      photoCaptureBusy = false;\n      setPhotoCapturingUi(false);\n    }\n    if (recording) {\n      shootButton.textContent = \'■ 撮影終了\';\n      shootButton.classList.add(\'recording\');\n    } else {\n      shootButton.classList.remove(\'recording\');\n      shootButton.textContent = cameraMode === \'video\' ? \'● 録画を開始\' : \'● 写真を撮る\';\n    }\n    if (facingSwitchButton) facingSwitchButton.disabled = Boolean(recording);\n    if (modeSwitchButton) {\n      modeSwitchButton.disabled = Boolean(recording) || (cameraMode !== \'video\' && !videoAllowed && !videoPrepareAvailable);\n      modeSwitchButton.textContent = cameraMode === \'video\'\n        ? \'📷 写真へ\'\n        : ((videoAllowed || videoPrepareAvailable) ? \'🎥 動画へ\' : `🎥 動画へ（${unavailableSuffix}）`);\n      modeSwitchButton.title = (!videoAllowed && !videoPrepareAvailable && cameraMode !== \'video\') ? videoCapacityMessage : \'\';\n    }\n    syncLibraryActions(Boolean(recording));\n  };\n\n  const updateRecordingClock = () => {\n    if (!recordingStatus || !recordingStartedAt) return;\n    const elapsed = Math.min(VIDEO_RECORD_MAX_SECONDS, Math.max(0, Math.floor((Date.now() - recordingStartedAt) / 1000)));\n    const mm = Math.floor(elapsed / 60);\n    const ss = String(elapsed % 60).padStart(2, \'0\');\n    const maxMm = Math.floor(VIDEO_RECORD_MAX_SECONDS / 60);\n    const maxSs = String(VIDEO_RECORD_MAX_SECONDS % 60).padStart(2, \'0\');\n    recordingStatus.textContent = `● 録画中 ${mm}:${ss} / ${maxMm}:${maxSs}`;\n  };\n\n  const clearGoodMomentsRevealTimer = () => {\n    if (goodMomentsRevealTimer) {\n      clearTimeout(goodMomentsRevealTimer);\n      goodMomentsRevealTimer = null;\n    }\n  };\n\n  const disarmGoodMomentsButton = () => {\n    clearGoodMomentsRevealTimer();\n    if (!reviewFindMoments) return;\n    reviewFindMoments.dataset.armedGeneration = \'\';\n    reviewFindMoments.hidden = true;\n    reviewFindMoments.disabled = false;\n    reviewFindMoments.textContent = \'\\u2728 \\u3044\\u3044\\u77ac\\u9593\\u3092\\u63a2\\u3059\';\n  };\n\n  const revokeReviewVideoUrl = () => {\n    if (reviewVideoUrl) {\n      try { URL.revokeObjectURL(reviewVideoUrl); } catch (_) {}\n      reviewVideoUrl = \'\';\n    }\n  };\n\n  const hideReview = () => {\n    disarmGoodMomentsButton();\n    revokePendingPhotoPreviewUrl();\n    resetPendingPhotoBatch();\n    if (review) review.hidden = true;\n    if (reviewImageShell) reviewImageShell.hidden = true;\n    if (reviewImportedBadge) reviewImportedBadge.hidden = true;\n    if (reviewSaveNewOnly) {\n      reviewSaveNewOnly.hidden = true;\n      reviewSaveNewOnly.disabled = false;\n      reviewSaveNewOnly.textContent = \'取り込み済み以外を残す\';\n    }\n    if (reviewEmotionHint) reviewEmotionHint.hidden = true;\n    if (reviewImage) {\n      reviewImage.hidden = true;\n      reviewImage.removeAttribute(\'src\');\n    }\n    pendingEmotion = \'\';\n    pendingParenting = \'\';\n    reviewMode = \'normal\';\n    if (reviewModeSwitch) reviewModeSwitch.hidden = true;\n    syncReviewEmotion();\n    if (reviewVideo) {\n      try { reviewVideo.pause(); } catch (_) {}\n      reviewVideo.hidden = true;\n      reviewVideo.removeAttribute(\'src\');\n      reviewVideo.removeAttribute(\'poster\');\n      try { reviewVideo.load(); } catch (_) {}\n    }\n    revokeReviewVideoUrl();\n    if (reviewFindMoments) {\n      reviewFindMoments.dataset.armedGeneration = \'\';\n      reviewFindMoments.hidden = true;\n      reviewFindMoments.disabled = false;\n      reviewFindMoments.textContent = \'✨ いい瞬間を探す\';\n    }\n    if (reviewBuild) reviewBuild.hidden = true;\n  };\n\n  const showMenu = () => {\n    if (wrap) { wrap.classList.remove(\'camera-live\'); wrap.classList.remove(\'camera-reviewing\'); }\n    if (menu) menu.hidden = false;\n    if (activeActions) activeActions.hidden = true;\n    if (libraryActions) libraryActions.hidden = true;\n    if (video) video.hidden = true;\n    setRecordingUi(false);\n    hideReview();\n  };\n\n  const showCameraActions = () => {\n    syncOrientationUi();\n    syncFacingUi();\n    if (wrap) { wrap.classList.add(\'camera-live\'); wrap.classList.remove(\'camera-reviewing\'); }\n    if (menu) menu.hidden = true;\n    if (activeActions) activeActions.hidden = false;\n    if (video) video.hidden = false;\n    hideReview();\n    setRecordingUi(false);\n    primeCaptureLocation();\n  };\n\n  const showPhotoReview = (dataUrl) => {\n    syncOrientationUi();\n    if (wrap) { wrap.classList.remove(\'camera-live\'); wrap.classList.add(\'camera-reviewing\'); }\n    if (menu) menu.hidden = true;\n    if (activeActions) activeActions.hidden = true;\n    if (libraryActions) libraryActions.hidden = true;\n    if (video) video.hidden = true;\n    hideReview();\n    pendingEmotion = normalizeEmotion(pendingMedia?.emotion);\n    pendingParenting = normalizeParenting(pendingMedia?.parenting);\n    reviewMode = \'normal\';\n    if (reviewImage) {\n      reviewImage.src = dataUrl;\n      reviewImage.hidden = false;\n    }\n    if (reviewImageShell) {\n      reviewImageShell.hidden = false;\n      reviewImageShell.querySelectorAll(\'.photo-rotation-controls-v616\').forEach(n=>n.remove());\n      const media=pendingMedia; if(media)media.rotation_quarters_v616=0;\n      if(media)reviewImageShell.appendChild(rotationControls616(reviewImage,dataUrl,()=>Number(media.rotation_quarters_v616||0),q=>media.rotation_quarters_v616=q));\n    }\n    if (reviewImportedBadge) reviewImportedBadge.hidden = true;\n    if (reviewEmotionHint) reviewEmotionHint.hidden = false;\n    if (reviewModeSwitch) reviewModeSwitch.hidden = false;\n    syncReviewEmotion();\n    reviewSave.textContent = \'この写真を残す\';\n    reviewRetry.textContent = \'撮りなおす／選びなおす\';\n    if (reviewFindMoments) reviewFindMoments.hidden = true;\n    if (reviewBuild) reviewBuild.hidden = true;\n    if (review) review.hidden = false;\n  };\n\n  const showPhotoBatchReview = (files) => {\n    const cleanFiles = Array.isArray(files) ? files.filter(Boolean) : [];\n    syncOrientationUi();\n    if (wrap) { wrap.classList.remove(\'camera-live\'); wrap.classList.add(\'camera-reviewing\'); }\n    if (menu) menu.hidden = true;\n    if (activeActions) activeActions.hidden = true;\n    if (libraryActions) libraryActions.hidden = true;\n    if (video) video.hidden = true;\n    hideReview();\n    if (reviewImageShell) reviewImageShell.hidden = true;\n    if (reviewImportedBadge) reviewImportedBadge.hidden = true;\n    if (reviewEmotionHint) reviewEmotionHint.hidden = true;\n    if (reviewModeSwitch) reviewModeSwitch.hidden = true;\n    if (reviewBatchCount) reviewBatchCount.textContent = `${cleanFiles.length}枚を選択しました。取り込み履歴を確認しています…`;\n    if (reviewBatchGrid) {\n      reviewBatchGrid.replaceChildren();\n      cleanFiles.forEach((file, index) => {\n        const item = document.createElement(\'div\');\n        item.className = \'camera-review-batch-item\';\n        item.dataset.importIndex = String(index);\n        const img = document.createElement(\'img\');\n        img.alt = `選択した写真 ${index + 1}`;\n        img.loading = index < 6 ? \'eager\' : \'lazy\';\n        const url = URL.createObjectURL(file);\n        pendingPhotoBatchPreviewUrls.push(url);\n        img.src = url;\n        const importedBadge = document.createElement(\'span\');\n        importedBadge.className = \'camera-review-batch-imported\';\n        importedBadge.textContent = \'✓ 取り込み済み\';\n        importedBadge.hidden = true;\n        const badge = document.createElement(\'span\');\n        badge.className = \'camera-review-batch-index\';\n        badge.textContent = String(index + 1);\n        item.appendChild(img);\n        item.appendChild(importedBadge);\n        item.appendChild(badge);\n        item.appendChild(rotationControls616(img,url,()=>rotationByFile616.get(file)||0,q=>rotationByFile616.set(file,q)));\n        reviewBatchGrid.appendChild(item);\n      });\n    }\n    if (reviewBatch) reviewBatch.hidden = false;\n    reviewSave.textContent = `${cleanFiles.length}枚をまとめて残す`;\n    reviewRetry.textContent = \'選びなおす\';\n    if (reviewFindMoments) reviewFindMoments.hidden = true;\n    if (reviewBuild) reviewBuild.hidden = true;\n    if (review) review.hidden = false;\n  };\n\n  const setSingleGalleryImportedBadgeV444 = (imported) => {\n    if (reviewImportedBadge) reviewImportedBadge.hidden = !Boolean(imported);\n  };\n\n  const setBatchGalleryImportedBadgeV444 = (index, imported) => {\n    if (!reviewBatchGrid) return;\n    const item = reviewBatchGrid.querySelector(`[data-import-index="${Number(index)}"]`);\n    const badge = item?.querySelector(\'.camera-review-batch-imported\');\n    if (badge) badge.hidden = !Boolean(imported);\n  };\n\n  const updateBatchImportedSummaryV445 = (items, totalCount) => {\n    const clean = Array.isArray(items) ? items.filter(Boolean) : [];\n    const importedCount = clean.filter((item) => Boolean(item?.already_imported)).length;\n    const freshCount = Math.max(0, clean.length - importedCount);\n    const total = Math.max(0, Number(totalCount || clean.length || 0));\n    if (reviewBatchCount) {\n      reviewBatchCount.textContent = importedCount\n        ? `${total}枚を選択しました。うち${importedCount}枚は ✓ 取り込み済み です。`\n        : `${total}枚を選択しました。取り込み済みの写真はありません。`;\n    }\n    if (reviewSaveNewOnly) {\n      reviewSaveNewOnly.hidden = importedCount <= 0;\n      reviewSaveNewOnly.disabled = importedCount <= 0 || freshCount <= 0;\n      reviewSaveNewOnly.textContent = freshCount > 0\n        ? `取り込み済み以外を残す（${freshCount}枚）`\n        : \'取り込み済み以外はありません\';\n    }\n  };\n\n  const showVideoReview = (blob, galleryPosterDataUrl = \'\') => {\n    syncOrientationUi();\n    if (wrap) { wrap.classList.remove(\'camera-live\'); wrap.classList.add(\'camera-reviewing\'); }\n    if (menu) menu.hidden = true;\n    if (activeActions) activeActions.hidden = true;\n    if (libraryActions) libraryActions.hidden = true;\n    if (video) video.hidden = true;\n    hideReview();\n    reviewVideoUrl = URL.createObjectURL(blob);\n    if (reviewVideo) {\n      if (galleryPosterDataUrl) reviewVideo.poster = galleryPosterDataUrl;\n      else reviewVideo.removeAttribute(\'poster\');\n      reviewVideo.preload = \'auto\';\n      reviewVideo.src = reviewVideoUrl;\n      reviewVideo.hidden = false;\n      try { reviewVideo.load(); } catch (_) {}\n      try { reviewVideo.currentTime = 0; } catch (_) {}\n    }\n    reviewSave.textContent = \'この動画を残す\';\n    reviewRetry.textContent = \'選びなおす\';\n    disarmGoodMomentsButton();\n    if (reviewBuild) reviewBuild.hidden = false;\n    if (review) review.hidden = false;\n    setStatus(\'\');\n  };\n\n  const stopActiveRecorderSilently = () => {\n    clearRecordingTimers();\n    if (mediaRecorder && mediaRecorder.state !== \'inactive\') {\n      recordingCancelled = true;\n      try { mediaRecorder.stop(); } catch (_) {}\n    }\n    mediaRecorder = null;\n    recordedChunks = [];\n    recordingStartedAt = 0;\n    void closeRecordingAudioPipeline();\n    setRecordingUi(false);\n  };\n\n  const stopMediaStream = (targetStream) => {\n    if (!targetStream) return;\n    try { targetStream.getTracks().forEach((track) => { try { track.stop(); } catch (_) {} }); } catch (_) {}\n  };\n\n  const releaseLiveCameraForUpload = () => {\n    if (stream) {\n      stopMediaStream(stream);\n      stream = null;\n    }\n    if (video) {\n      try { video.pause(); } catch (_) {}\n      video.srcObject = null;\n      video.hidden = true;\n    }\n  };\n\n  const releaseSubmittedReviewMedia = () => {\n    pendingMedia = null;\n    pendingVideoBlob = null;\n    pendingPhotoLoadGeneration += 1;\n    pendingPhotoPreparePromise = null;\n    revokePendingPhotoPreviewUrl();\n    resetPendingPhotoBatch();\n    hideReview();\n  };\n\n  const captureCameraTransitionPoster = () => {\n    if (!video || !canvas || !(video.videoWidth > 0) || !(video.videoHeight > 0)) return \'\';\n    try {\n      const maxEdge = 960;\n      const scale = Math.min(1, maxEdge / Math.max(video.videoWidth, video.videoHeight));\n      canvas.width = Math.max(1, Math.round(video.videoWidth * scale));\n      canvas.height = Math.max(1, Math.round(video.videoHeight * scale));\n      const ctx = canvas.getContext(\'2d\', { alpha: false });\n      if (!ctx) return \'\';\n      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);\n      return canvas.toDataURL(\'image/jpeg\', 0.76);\n    } catch (_) {\n      return \'\';\n    }\n  };\n\n  const clearCameraTransitionPoster = () => {\n    cameraTransitionPoster = \'\';\n    if (video) {\n      try { video.removeAttribute(\'poster\'); } catch (_) {}\n    }\n  };\n\n  const releaseCurrentCameraForModeSwitch = () => {\n    // Keep the camera area in place while Android/WebView reopens the same lens in\n    // photo/video mode. The old implementation called showMenu(), which made a mode\n    // switch look like the camera had closed and then reopened.\n    stopActiveRecorderSilently();\n    cameraTransitionPoster = captureCameraTransitionPoster();\n    if (stream) {\n      stopMediaStream(stream);\n      stream = null;\n    }\n    if (video) {\n      try { video.pause(); } catch (_) {}\n      video.srcObject = null;\n      if (cameraTransitionPoster) video.poster = cameraTransitionPoster;\n      video.hidden = false;\n    }\n    pendingMedia = null;\n    pendingVideoBlob = null;\n    pendingPhotoLoadGeneration += 1;\n    pendingPhotoPreparePromise = null;\n    revokePendingPhotoPreviewUrl();\n    resetPendingPhotoBatch();\n    if (wrap) { wrap.classList.add(\'camera-live\'); wrap.classList.remove(\'camera-reviewing\'); }\n    if (menu) menu.hidden = true;\n    if (activeActions) activeActions.hidden = false;\n    if (libraryActions) libraryActions.hidden = true;\n    hideReview();\n  };\n\n  const clearCurrentCameraStream = () => {\n    stopActiveRecorderSilently();\n    releaseLiveCameraForUpload();\n    clearCameraTransitionPoster();\n    pendingMedia = null;\n    pendingVideoBlob = null;\n    pendingPhotoLoadGeneration += 1;\n    pendingPhotoPreparePromise = null;\n    revokePendingPhotoPreviewUrl();\n    resetPendingPhotoBatch();\n    showMenu();\n  };\n\n  const stopStream = () => {\n    // Invalidate every in-flight camera/microphone start before releasing the current stream.\n    // This prevents an older failed video+mic request from tearing down a newer photo preview.\n    cameraStartGeneration += 1;\n    clearCurrentCameraStream();\n  };\n\n  const errorMessage = (err, mode = cameraMode) => {\n    const name = (err && err.name) ? err.name : \'\';\n    const videoMode = String(mode || \'\') === \'video\';\n    if (name === \'NotAllowedError\' || name === \'PermissionDeniedError\') {\n      return videoMode\n        ? \'動画撮影にはカメラとマイクの許可が必要です。端末またはブラウザの権限設定でカメラ・マイクを「許可」にして、このページを再読み込みしてください。\'\n        : \'カメラが許可されていません。ブラウザのサイト設定でカメラを「許可」にして、このページを再読み込みしてください。\';\n    }\n    if (name === \'NotFoundError\' || name === \'DevicesNotFoundError\') {\n      return videoMode ? \'利用できるカメラまたはマイクが見つかりませんでした。\' : \'利用できるカメラが見つかりませんでした。\';\n    }\n    if (name === \'NotReadableError\' || name === \'TrackStartError\') {\n      return videoMode ? \'カメラまたはマイクを開けませんでした。ほかのアプリが使用していないか確認してください。\' : \'カメラを開けませんでした。ほかのアプリがカメラを使っていないか確認してください。\';\n    }\n    if (name === \'SecurityError\') return videoMode ? \'セキュリティ設定でカメラまたはマイクがブロックされています。\' : \'ブラウザのセキュリティ設定でカメラがブロックされています。\';\n    return videoMode ? \'動画撮影用のカメラまたはマイクを開けませんでした。権限設定を確認してください。\' : \'カメラを開けませんでした。ブラウザのカメラ権限を確認してください。\';\n  };\n\n  const startCamera = async (mode = \'photo\', options = {}) => {\n    if (galleryOnly) return;\n    const requestedMode = mode === \'video\' ? \'video\' : \'photo\';\n    const fromModeSwitch = Boolean(options?.fromModeSwitch);\n    if (requestedMode === \'video\' && !videoAllowed) {\n      if (videoPrepareAvailable && !videoPrepareRequested) {\n        videoPrepareRequested = true;\n        cameraModeSwitchInProgress = fromModeSwitch;\n        if (fromModeSwitch) {\n          // Keep the current photo preview visible while the server prepares the\n          // signed video destination. Make the intended mode obvious immediately.\n          cameraMode = \'video\';\n          syncOrientationUi();\n          if (shootButton) { shootButton.disabled = true; shootButton.textContent = \'● 動画準備中\'; }\n          if (modeSwitchButton) { modeSwitchButton.disabled = true; modeSwitchButton.textContent = \'📷 写真へ\'; }\n          if (facingSwitchButton) facingSwitchButton.disabled = true;\n          if (libraryActions) libraryActions.hidden = true;\n        }\n        if (videoStartButton) videoStartButton.disabled = true;\n        setStatus(\'動画の保存先を準備しています…\');\n        setTriggerValue(\'video_prepare\', { requested_at: Date.now() });\n        return;\n      }\n      cameraModeSwitchInProgress = false;\n      setStatus(videoCapacityMessage);\n      return;\n    }\n\n    // Each open request owns a generation token. A slow/failed older request is not\n    // allowed to stop or overwrite a camera that the user opened afterwards.\n    const generation = ++cameraStartGeneration;\n    const liveBeforeSwitch = Boolean(\n      fromModeSwitch && stream && stream.getTracks && stream.getTracks().some((track) => track.readyState === \'live\')\n    );\n    if (liveBeforeSwitch) releaseCurrentCameraForModeSwitch();\n    else clearCurrentCameraStream();\n    cameraMode = requestedMode;\n    cameraModeSwitchInProgress = fromModeSwitch;\n    syncOrientationUi();\n    if (fromModeSwitch && shootButton) {\n      shootButton.disabled = true;\n      shootButton.textContent = requestedMode === \'video\' ? \'● 動画準備中\' : \'● 写真準備中\';\n    }\n\n    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {\n      const message = \'このブラウザでは直接カメラを開けません。ChromeまたはSafariの最新版で開いてください。\';\n      setStatus(message);\n      setTriggerValue(\'camera_error\', { name: \'Unsupported\', message });\n      return;\n    }\n    if (requestedMode === \'video\' && typeof MediaRecorder === \'undefined\') {\n      const message = \'このブラウザでは動画録画に対応していません。ChromeまたはSafariの最新版で開いてください。\';\n      setStatus(message);\n      setTriggerValue(\'camera_error\', { name: \'MediaRecorderUnsupported\', message });\n      return;\n    }\n\n    const stillCurrent = () => generation === cameraStartGeneration;\n    const pause = (ms) => new Promise((resolve) => setTimeout(resolve, Math.max(0, Number(ms) || 0)));\n    setStatus(requestedMode === \'video\' ? \'カメラを開いています…\' : \'カメラの使用を確認しています…\');\n\n    let localCameraStream = null;\n    let localAudioStream = null;\n    try {\n      // v379: photos remain camera-only. For video, request camera + microphone in\n      // the SAME getUserMedia call so Android WebView/Chromium creates one native A/V\n      // capture session. The previous v373 path opened the camera first and added a\n      // separately acquired microphone track afterwards; on this Android/WebView that\n      // track could report readyState=live while MediaRecorder still produced silence.\n      const requestCameraOnly = async () => {\n        const constraints = preferredVideoConstraints();\n        return await navigator.mediaDevices.getUserMedia({ audio: false, video: constraints });\n      };\n      const requestVideoWithAudio = async () => {\n        const constraints = preferredVideoConstraints();\n        return await navigator.mediaDevices.getUserMedia({\n          video: constraints,\n          audio: {\n            channelCount: { ideal: 1 },\n            sampleRate: { ideal: 48000 },\n            autoGainControl: { ideal: true },\n            // Keep ambient/distant sound intact. A phone/browser may otherwise treat\n            // a quiet child or a nearby external speaker as noise/echo and remove it.\n            noiseSuppression: { ideal: false },\n            echoCancellation: { ideal: false },\n            voiceIsolation: { ideal: false }\n          }\n        });\n      };\n\n      // v382: getUserMedia "ideal" values can be ignored by Android WebView. Re-apply\n      // the far-field choices independently to the live track so one unsupported setting\n      // cannot cancel all of the others. Every call is best-effort and never blocks video.\n      const tuneFarFieldAudioTrack = async (track) => {\n        if (!track || !track.applyConstraints) return;\n        let supported = {};\n        try { supported = navigator.mediaDevices.getSupportedConstraints?.() || {}; } catch (_) {}\n        if (supported.autoGainControl) {\n          try { await track.applyConstraints({ autoGainControl: true }); } catch (_) {}\n        }\n        if (supported.noiseSuppression) {\n          try { await track.applyConstraints({ noiseSuppression: false }); } catch (_) {}\n        }\n        if (supported.echoCancellation) {\n          try { await track.applyConstraints({ echoCancellation: false }); } catch (_) {}\n        }\n        if (supported.voiceIsolation) {\n          try { await track.applyConstraints({ voiceIsolation: false }); } catch (_) {}\n        }\n      };\n\n      let combinedAvError = null;\n      if (requestedMode === \'video\') {\n        try {\n          localCameraStream = await requestVideoWithAudio();\n        } catch (firstErr) {\n          combinedAvError = firstErr;\n          // A stale preferred camera id can make the combined request fail. Retry once\n          // with the browser\'s current default device before falling back to camera-only.\n          if (preferredCameraDeviceId) {\n            preferredCameraDeviceId = null;\n            try {\n              localCameraStream = await requestVideoWithAudio();\n              combinedAvError = null;\n            } catch (retryErr) {\n              combinedAvError = retryErr;\n            }\n          }\n          if (!localCameraStream) {\n            // Keep silent recording available as a last-resort path. Microphone-only\n            // acquisition below will get one more chance before the UI says audio is off.\n            localCameraStream = await requestCameraOnly();\n          }\n        }\n      } else {\n        try {\n          localCameraStream = await requestCameraOnly();\n        } catch (firstErr) {\n          if (!preferredCameraDeviceId) throw firstErr;\n          preferredCameraDeviceId = null;\n          localCameraStream = await requestCameraOnly();\n        }\n      }\n      if (!stillCurrent()) {\n        stopMediaStream(localCameraStream);\n        return;\n      }\n\n      stream = localCameraStream;\n      video.srcObject = stream;\n      clearCameraTransitionPoster();\n      try {\n        await video.play();\n      } catch (playErr) {\n        if (!stillCurrent()) return;\n        throw playErr;\n      }\n      if (!stillCurrent()) {\n        if (stream === localCameraStream) stream = null;\n        stopMediaStream(localCameraStream);\n        return;\n      }\n\n      // Reveal video as soon as its first frame plays. The remaining tuning runs\n      // with the preview visible instead of leaving the screen waiting.\n      if (requestedMode === \'video\') {\n        syncOrientationUi();\n        syncFacingUi();\n        showCameraActions();\n        shootButton.disabled = true;\n        shootButton.textContent = \'● 準備中\';\n        setStatus(\'録画の準備をしています…\');\n      }\n\n      await applyNativePortraitConstraint();\n      if (!stillCurrent()) return;\n      // Request smooth 60fps and then explicitly restore the widest hardware zoom.\n      const appliedVideoFps = await applyHighVideoFrameRate();\n      if (!stillCurrent()) return;\n      await applyWidestAvailableZoom();\n      if (!stillCurrent()) return;\n      syncNativeCameraFrame();\n\n      try {\n        const cameraTrack = stream.getVideoTracks && stream.getVideoTracks()[0];\n        const settings = (cameraTrack && cameraTrack.getSettings) ? cameraTrack.getSettings() : {};\n        const actualFacing = String(settings?.facingMode || \'\');\n        if (actualFacing === \'user\' || actualFacing === \'environment\') cameraFacing = actualFacing;\n        const actualDeviceId = String(settings?.deviceId || \'\');\n        if (actualDeviceId) preferredCameraDeviceId = actualDeviceId;\n      } catch (_) {}\n      persistCameraFacing();\n      syncOrientationUi();\n      syncFacingUi();\n      if (requestedMode !== \'video\') showCameraActions();\n\n      let audioReady = requestedMode !== \'video\';\n      let audioError = requestedMode === \'video\' ? combinedAvError : null;\n      if (requestedMode === \'video\') {\n        // Preferred v379 path: the audio track already belongs to the same native media\n        // stream as the camera. This is materially more reliable for Android WebView\n        // MediaRecorder than adding a microphone track after the video stream is live.\n        let audioTrack = stream && stream.getAudioTracks\n          ? stream.getAudioTracks().find((track) => track.readyState === \'live\')\n          : null;\n        if (audioTrack) {\n          try { audioTrack.enabled = true; } catch (_) {}\n          await tuneFarFieldAudioTrack(audioTrack);\n          audioReady = true;\n          audioError = null;\n        } else {\n          setStatus(\'カメラを開きました。マイクを再接続しています…\');\n          const requestMicrophoneOnly = async () => {\n            return await navigator.mediaDevices.getUserMedia({\n              video: false,\n              audio: {\n                channelCount: { ideal: 1 },\n                sampleRate: { ideal: 48000 },\n                autoGainControl: { ideal: true },\n                noiseSuppression: { ideal: false },\n                echoCancellation: { ideal: false },\n                voiceIsolation: { ideal: false }\n              }\n            });\n          };\n          for (let attempt = 0; attempt < 2 && stillCurrent(); attempt += 1) {\n            try {\n              if (attempt > 0) await pause(450);\n              localAudioStream = await requestMicrophoneOnly();\n              audioTrack = localAudioStream && localAudioStream.getAudioTracks\n                ? localAudioStream.getAudioTracks().find((track) => track.readyState === \'live\')\n                : null;\n              if (!audioTrack) throw new Error(\'audio track is unavailable\');\n              if (!stillCurrent()) {\n                stopMediaStream(localAudioStream);\n                return;\n              }\n              try { audioTrack.enabled = true; } catch (_) {}\n              await tuneFarFieldAudioTrack(audioTrack);\n              // Build a NEW combined MediaStream instead of mutating the already-playing\n              // camera stream. This gives MediaRecorder a stable A/V track set from birth.\n              const videoTracks = stream && stream.getVideoTracks ? stream.getVideoTracks() : [];\n              const combinedStream = new MediaStream([...videoTracks, audioTrack]);\n              stream = combinedStream;\n              video.srcObject = stream;\n              try { await video.play(); } catch (_) {}\n              // Stop only extra tracks; the audio track retained in combinedStream stays live.\n              try {\n                localAudioStream.getTracks().forEach((track) => {\n                  if (track !== audioTrack) { try { track.stop(); } catch (_) {} }\n                });\n              } catch (_) {}\n              localAudioStream = null;\n              audioReady = true;\n              audioError = null;\n              break;\n            } catch (micErr) {\n              audioError = micErr;\n              stopMediaStream(localAudioStream);\n              localAudioStream = null;\n            }\n          }\n        }\n      }\n\n      if (!stillCurrent()) return;\n      shootButton.disabled = false;\n      shootButton.textContent = requestedMode === \'video\'\n        ? (audioReady ? \'● 録画を開始\' : \'● 音声なしで録画\')\n        : \'● 写真を撮る\';\n\n      try {\n        const openedAt = Date.now();\n        localStorage.setItem(\'tokyo_burari_last_camera_open_v1\', String(openedAt));\n        localStorage.setItem(\'tokyo_burari_last_camera_mode_v1\', requestedMode);\n      } catch (_) {}\n\n      cameraModeSwitchInProgress = false;\n      if (requestedMode === \'video\') {\n        const fpsLabel = Number(appliedVideoFps || 0) >= 50 ? \'60fps\' : \'端末対応フレームレート\';\n        if (audioReady) {\n          setStatus(`動画は最大60秒です。${fpsLabel}・音声付きで撮影します。${cameraFacing === \'user\' ? \' 内側カメラ使用中。\' : \'\'}`);\n        } else {\n          const detail = audioError && audioError.message ? String(audioError.message).replace(/\\s+/g, \' \').trim().slice(0, 180) : \'\';\n          const message = \'カメラは使用できますが、マイクを開始できませんでした。今回は音声なしでも録画できます。音声付きにする場合は、端末の「ぶらり旅」のマイク権限を許可してから動画を開き直してください。\';\n          // Microphone failure is non-fatal in v374. Keep the camera component alive\n          // and avoid a Streamlit rerun here; the red button remains usable as\n          // "音声なしで録画". A rerun at this point could reset a working camera preview.\n          setStatus(message);\n        }\n      } else {\n        setStatus(cameraFacing === \'user\' ? \'内側カメラ使用中です。\' : \'\');\n      }\n    } catch (err) {\n      console.error(err);\n      cameraModeSwitchInProgress = false;\n      clearCameraTransitionPoster();\n      stopMediaStream(localAudioStream);\n      // Only the request that is still current may tear down its own camera. An older\n      // rejected play()/getUserMedia() promise must not break a newer photo/video request.\n      if (!stillCurrent()) {\n        if (localCameraStream && stream !== localCameraStream) stopMediaStream(localCameraStream);\n        return;\n      }\n      if (stream === localCameraStream) {\n        clearCurrentCameraStream();\n      } else {\n        stopMediaStream(localCameraStream);\n      }\n      const message = errorMessage(err, requestedMode);\n      setStatus(message);\n      setTriggerValue(\'camera_error\', {\n        name: (err && err.name) ? err.name : \'CameraError\',\n        message,\n        detail: (err && err.message) ? String(err.message) : \'\'\n      });\n    }\n  };\n\n  const goodMomentsSamplePlan = (durationSeconds) => {\n    const duration = Math.max(0.001, Math.min(VIDEO_IMPORT_MAX_SECONDS, Number(durationSeconds || 0) || VIDEO_IMPORT_MAX_SECONDS));\n    const intervalSeconds = Math.max(\n      GOOD_MOMENTS_MIN_INTERVAL_SECONDS,\n      duration / GOOD_MOMENTS_MAX_CANDIDATES\n    );\n    const count = Math.max(\n      1,\n      Math.min(GOOD_MOMENTS_MAX_CANDIDATES, Math.ceil(duration / intervalSeconds))\n    );\n    return { intervalSeconds, count };\n  };\n\n  const blobToDataUrl = (blob) => new Promise((resolve, reject) => {\n    const reader = new FileReader();\n    reader.onload = () => resolve(reader.result);\n    reader.onerror = reject;\n    reader.readAsDataURL(blob);\n  });\n\n  const uploadRawBlobToSignedUrl = async (blob, signedUrl, contentType, label) => {\n    if (!signedUrl) throw new Error(`${label || \'ファイル\'}のアップロード先がありません`);\n    if (!blob || !Number(blob.size || 0)) throw new Error(`${label || \'ファイル\'}が空です`);\n    let lastError = null;\n    for (let attempt = 0; attempt < 2; attempt += 1) {\n      try {\n        const response = await fetch(signedUrl, {\n          method: \'PUT\',\n          headers: {\n            \'cache-control\': \'max-age=3600\',\n            \'content-type\': contentType || \'application/octet-stream\'\n          },\n          body: blob\n        });\n        if (response.ok) return true;\n        let detail = \'\';\n        try { detail = await response.text(); } catch (_) {}\n        const compact = String(detail || \'\').replace(/\\s+/g, \' \').trim().slice(0, 220);\n        lastError = new Error(`Supabase Storage ${response.status}${compact ? `: ${compact}` : \'\'}`);\n        if ([400, 401, 403, 409, 413, 415].includes(response.status)) break;\n      } catch (err) {\n        lastError = err;\n      }\n      if (attempt === 0) await new Promise((resolve) => setTimeout(resolve, 450));\n    }\n    throw lastError || new Error(`${label || \'ファイル\'}アップロードに失敗しました`);\n  };\n\n  const buildCandidateSheet = async (frames) => {\n    const source = Array.isArray(frames) ? frames.slice(0, GOOD_MOMENTS_MAX_CANDIDATES) : [];\n    if (!source.length) return null;\n    const loaded = [];\n    for (const frame of source) {\n      const dataUrl = String(frame?.data_url || \'\');\n      if (!dataUrl) continue;\n      try {\n        const image = await new Promise((resolve, reject) => {\n          const node = new Image();\n          node.onload = () => resolve(node);\n          node.onerror = reject;\n          node.src = dataUrl;\n        });\n        loaded.push({ frame, image });\n      } catch (_) {}\n    }\n    if (!loaded.length) return null;\n    const columns = Math.min(10, loaded.length);\n    const rows = Math.ceil(loaded.length / columns);\n    const tileWidth = Math.max(1, loaded[0].image.naturalWidth || loaded[0].image.width || 320);\n    const tileHeight = Math.max(1, loaded[0].image.naturalHeight || loaded[0].image.height || 180);\n    const sheet = document.createElement(\'canvas\');\n    sheet.width = tileWidth * columns;\n    sheet.height = tileHeight * rows;\n    const ctx = sheet.getContext(\'2d\', { alpha: false });\n    ctx.fillStyle = \'#000\';\n    ctx.fillRect(0, 0, sheet.width, sheet.height);\n    const manifest = [];\n    loaded.forEach((entry, index) => {\n      const col = index % columns;\n      const row = Math.floor(index / columns);\n      ctx.drawImage(entry.image, col * tileWidth, row * tileHeight, tileWidth, tileHeight);\n      manifest.push({\n        frame_id: String(entry.frame?.frame_id || `F${String(index + 1).padStart(2, \'0\')}`),\n        timestamp_ms: Math.max(0, Number(entry.frame?.timestamp_ms || 0)),\n        tile_index: index\n      });\n    });\n    const blob = await new Promise((resolve) => sheet.toBlob(resolve, \'image/jpeg\', 0.80));\n    if (!blob) return null;\n    return { blob, manifest, columns, rows, tile_width: tileWidth, tile_height: tileHeight };\n  };\n\n  const uploadVideoBlobToSignedUrl = async (blob) => {\n    if (!videoUploadSignedUrl || !videoUploadStoragePath) {\n      throw new Error(\'動画のアップロード先がありません\');\n    }\n    const contentType = String(blob.type || \'\').split(\';\', 1)[0] || \'video/webm\';\n    try {\n      await uploadRawBlobToSignedUrl(blob, videoUploadSignedUrl, contentType, \'動画\');\n      return videoUploadStoragePath;\n    } catch (err) {\n      const detail = String(err?.message || \'\').toLowerCase();\n      const isCollision = detail.includes(\'keyalreadyexists\')\n        || detail.includes(\'resource already exists\')\n        || detail.includes(\'storage 409\')\n        || detail.includes(\'\\"duplicate\\"\');\n      if (!isCollision || !videoUploadFallbackSignedUrl || !videoUploadFallbackStoragePath) throw err;\n      await uploadRawBlobToSignedUrl(blob, videoUploadFallbackSignedUrl, contentType, \'動画\');\n      return videoUploadFallbackStoragePath;\n    }\n  };\n\n\n  // v562: The former gallery path awaited an unbounded fetch(PUT). On Android a\n  // stalled upload left both review actions disabled forever, with the video preview\n  // frozen on its initial frame. Keep the existing recording uploader untouched; use\n  // this monitored transport ONLY for manually selected gallery video files.\n  const GALLERY_UPLOAD_STALL_MS_V562 = 90000;\n  const GALLERY_UPLOAD_MAX_MS_V562 = 480000;\n  const galleryUploadCancelledErrorV562 = () => {\n    const error = new Error(\'動画の送信を中止しました。\');\n    error.name = \'AbortError\';\n    return error;\n  };\n\n  const sendGalleryVideoPutOnceV562 = (blob, signedUrl, contentType, reportProgress, signal) => new Promise((resolve, reject) => {\n    if (!signedUrl) { reject(new Error(\'動画のアップロード先がありません。\')); return; }\n    if (!blob || !(Number(blob.size) > 0)) { reject(new Error(\'動画ファイルが空です。\')); return; }\n    if (signal?.aborted) { reject(galleryUploadCancelledErrorV562()); return; }\n\n    let xhr;\n    try { xhr = new XMLHttpRequest(); }\n    catch (error) { reject(error); return; }\n    let settled = false;\n    let stalled = false;\n    let stallTimer = null;\n    let previousBytes = -1;\n    const cleanup = () => {\n      if (stallTimer !== null) { clearTimeout(stallTimer); stallTimer = null; }\n      try { signal?.removeEventListener(\'abort\', abortFromUser); } catch (_) {}\n      xhr.onload = null;\n      xhr.onerror = null;\n      xhr.onabort = null;\n      xhr.ontimeout = null;\n      if (xhr.upload) { xhr.upload.onprogress = null; xhr.upload.onload = null; }\n    };\n    const finish = (error) => {\n      if (settled) return;\n      settled = true;\n      cleanup();\n      if (error) reject(error); else resolve(true);\n    };\n    const abortFromUser = () => {\n      try { xhr.abort(); } catch (_) {}\n      finish(galleryUploadCancelledErrorV562());\n    };\n    const resetStallTimer = () => {\n      if (stallTimer !== null) clearTimeout(stallTimer);\n      stallTimer = setTimeout(() => {\n        stalled = true;\n        try { xhr.abort(); } catch (_) {}\n        finish(new Error(\'動画の送信が90秒間進まなかったため停止しました。通信状態を確認してもう一度お試しください。\'));\n      }, GALLERY_UPLOAD_STALL_MS_V562);\n    };\n    if (signal) signal.addEventListener(\'abort\', abortFromUser, { once: true });\n    xhr.upload.onprogress = (event) => {\n      if (settled || signal?.aborted) return;\n      const sent = Math.max(0, Number(event?.loaded || 0));\n      if (sent <= previousBytes) return;\n      previousBytes = sent;\n      resetStallTimer();\n      try { reportProgress?.(sent, Number(blob.size)); } catch (_) {}\n    };\n    // The request may still be awaiting Storage\'s final commit after all bytes leave\n    // the device. Keep the deadline active until the HTTP result arrives.\n    xhr.onload = () => {\n      const statusCode = Number(xhr.status || 0);\n      if (statusCode >= 200 && statusCode < 300) { finish(null); return; }\n      let errorBody = \'\';\n      try { errorBody = String(xhr.responseText || \'\').replace(/\\s+/g, \' \').trim().slice(0, 200); } catch (_) {}\n      finish(new Error(`Supabase Storage ${statusCode}${errorBody ? `: ${errorBody}` : \'\'}`));\n    };\n    xhr.onerror = () => finish(new Error(\'動画の送信中に通信エラーが発生しました。ネットワークまたは保存先への接続を確認してください。\'));\n    xhr.onabort = () => finish(signal?.aborted\n      ? galleryUploadCancelledErrorV562()\n      : new Error(stalled ? \'動画の送信が90秒間停止しました。再度お試しください。\' : \'動画の送信が中断されました。\'));\n    xhr.ontimeout = () => finish(new Error(\'動画の送信時間が上限を超えました。通信状態を確認して再度お試しください。\'));\n\n    try {\n      xhr.open(\'PUT\', signedUrl, true);\n      xhr.timeout = GALLERY_UPLOAD_MAX_MS_V562;\n      xhr.setRequestHeader(\'cache-control\', \'max-age=3600\');\n      xhr.setRequestHeader(\'content-type\', contentType || \'application/octet-stream\');\n      resetStallTimer();\n      if (signal?.aborted) { abortFromUser(); return; }\n      xhr.send(blob);\n    } catch (error) {\n      finish(error);\n    }\n  });\n\n  // Supabase recommends TUS in fixed 6 MiB chunks for files above 6 MiB.\n  // The signed token comes from the same URL already reserved server-side. No\n  // privileged key or extra dependency is sent to the browser. A failed TUS\n  // negotiation can fall back to the bounded single-PUT path above.\n  const GALLERY_TUS_CHUNK_BYTES_V562 = 6 * 1024 * 1024;\n  const galleryTusSignedTargetV562 = (signedUrl, storagePath) => {\n    try {\n      const parsed = new URL(signedUrl);\n      const marker = \'/storage/v1/object/upload/sign/\';\n      const index = parsed.pathname.indexOf(marker);\n      const signature = parsed.searchParams.get(\'token\');\n      if (index < 0 || !signature || !/^https:$/.test(parsed.protocol)) return null;\n      const tail = decodeURIComponent(parsed.pathname.slice(index + marker.length));\n      const slash = tail.indexOf(\'/\');\n      if (slash <= 0 || tail.slice(slash + 1) !== storagePath) return null;\n      return {\n        endpoint: `${parsed.origin}/storage/v1/upload/resumable`,\n        signature, bucket: tail.slice(0, slash), objectName: storagePath\n      };\n    } catch (_) { return null; }\n  };\n\n  const galleryTusRequestV562 = async (method, url, headers, body, signal) => {\n    if (signal?.aborted) throw galleryUploadCancelledErrorV562();\n    const controller = new AbortController();\n    let timedOut = false;\n    const abortWithUser = () => controller.abort();\n    signal?.addEventListener(\'abort\', abortWithUser, { once: true });\n    const timer = setTimeout(() => {\n      timedOut = true;\n      controller.abort();\n    }, GALLERY_UPLOAD_STALL_MS_V562);\n    try {\n      const response = await fetch(url, {\n        method, headers, body: body || undefined, signal: controller.signal\n      });\n      if (!response.ok) {\n        let responseText = \'\';\n        try { responseText = String(await response.text()).replace(/\\s+/g, \' \').trim().slice(0, 200); } catch (_) {}\n        throw new Error(`Supabase Storage ${response.status}${responseText ? `: ${responseText}` : \'\'}`);\n      }\n      return response;\n    } catch (error) {\n      if (signal?.aborted) throw galleryUploadCancelledErrorV562();\n      if (timedOut) throw new Error(\'動画の分割送信が90秒間進まず中断されました。\');\n      throw error;\n    } finally {\n      clearTimeout(timer);\n      signal?.removeEventListener(\'abort\', abortWithUser);\n    }\n  };\n\n  const uploadGalleryVideoTusV562 = async (blob, signedUrl, storagePath, contentType, reportProgress, signal) => {\n    const target = galleryTusSignedTargetV562(signedUrl, storagePath);\n    if (!target) throw new Error(\'分割アップロード用の署名を確認できません。\');\n    const tusHeaders = { \'Tus-Resumable\': \'1.0.0\', \'x-signature\': target.signature };\n    const metadata = [\n      [\'bucketName\', target.bucket],\n      [\'objectName\', target.objectName],\n      [\'contentType\', contentType],\n      [\'cacheControl\', \'3600\']\n    ].map(([key, value]) => `${key} ${btoa(value)}`).join(\',\');\n    const creation = await galleryTusRequestV562(\'POST\', target.endpoint, {\n      ...tusHeaders, \'Upload-Length\': String(blob.size), \'Upload-Metadata\': metadata\n    }, null, signal);\n    const location = creation.headers?.get?.(\'Location\');\n    if (!location) throw new Error(\'分割アップロードの再開先を取得できませんでした。\');\n    const resumeUrl = new URL(location, target.endpoint).href;\n    // Reject a cross-domain Location before forwarding the one-use signing token.\n    if (new URL(resumeUrl).origin !== new URL(target.endpoint).origin) {\n      throw new Error(\'分割アップロードの保存先を確認できませんでした。\');\n    }\n    let offset = 0;\n    let consecutiveFailures = 0;\n    const offsetFrom = (response) => {\n      const text = response?.headers?.get?.(\'Upload-Offset\');\n      const value = Number(text);\n      return text != null && Number.isSafeInteger(value) && value >= 0 && value <= blob.size ? value : null;\n    };\n    while (offset < blob.size) {\n      if (signal?.aborted) throw galleryUploadCancelledErrorV562();\n      const start = offset;\n      const end = Math.min(blob.size, start + GALLERY_TUS_CHUNK_BYTES_V562);\n      try {\n        const response = await galleryTusRequestV562(\'PATCH\', resumeUrl, {\n          ...tusHeaders, \'Upload-Offset\': String(start),\n          \'Content-Type\': \'application/offset+octet-stream\'\n        }, blob.slice(start, end), signal);\n        const serverOffset = offsetFrom(response);\n        if (serverOffset !== null && serverOffset < end) {\n          throw new Error(\'分割送信でサーバーの受信済み位置が一致しません。\');\n        }\n        offset = serverOffset === null ? end : serverOffset;\n        consecutiveFailures = 0;\n        reportProgress?.(offset, blob.size);\n      } catch (error) {\n        if (signal?.aborted || error?.name === \'AbortError\') throw error;\n        const message = String(error?.message || \'\').toLowerCase();\n        if (/storage\\s+(400|401|403|413|415)\\b/.test(message)) throw error;\n        consecutiveFailures += 1;\n        if (consecutiveFailures >= 3) throw error;\n        // A lost PATCH response may still have committed the chunk. HEAD tells\n        // us the exact offset so that a retry cannot duplicate/corrupt its bytes.\n        try {\n          const checked = await galleryTusRequestV562(\'HEAD\', resumeUrl, tusHeaders, null, signal);\n          const checkedOffset = offsetFrom(checked);\n          if (checkedOffset !== null && checkedOffset >= offset) {\n            offset = checkedOffset;\n            reportProgress?.(offset, blob.size);\n            if (offset >= blob.size) return;\n            if (offset > start) consecutiveFailures = 0;\n          }\n        } catch (headError) {\n          if (signal?.aborted || headError?.name === \'AbortError\') throw headError;\n        }\n        await new Promise((resolve) => setTimeout(resolve, 600 * consecutiveFailures));\n      }\n    }\n  };\n\n  const uploadGalleryVideoToSignedUrlV562 = async (blob, reportProgress, signal) => {\n    if (!videoUploadSignedUrl || !videoUploadStoragePath) {\n      throw new Error(\'動画のアップロード先がありません。\');\n    }\n    const contentType = String(blob?.type || inferGalleryVideoMime(blob) || \'video/mp4\').split(\';\', 1)[0] || \'video/mp4\';\n    const sendTarget = async (targetUrl, targetPath) => {\n      if (Number(blob?.size || 0) > GALLERY_TUS_CHUNK_BYTES_V562) {\n        try {\n          await uploadGalleryVideoTusV562(blob, targetUrl, targetPath, contentType, reportProgress, signal);\n          return;\n        } catch (error) {\n          if (signal?.aborted || error?.name === \'AbortError\') throw error;\n          // A destination consumed by an earlier upload must go through the\n          // existing secondary signed path, not a re-POST to the same object.\n          const message = String(error?.message || \'\').toLowerCase();\n          if (message.includes(\'keyalreadyexists\') || message.includes(\'resource already exists\')\n              || message.includes(\'storage 409\') || message.includes(\'"duplicate"\')) throw error;\n          reportProgress?.(0, Number(blob?.size || 0), true);\n        }\n      }\n      let lastError = null;\n      for (let attempt = 0; attempt < 2; attempt += 1) {\n        if (signal?.aborted) throw galleryUploadCancelledErrorV562();\n        try {\n          if (attempt > 0) reportProgress?.(0, Number(blob?.size || 0), true);\n          await sendGalleryVideoPutOnceV562(blob, targetUrl, contentType, reportProgress, signal);\n          return;\n        } catch (error) {\n          if (signal?.aborted || error?.name === \'AbortError\') throw error;\n          lastError = error;\n          const message = String(error?.message || \'\').toLowerCase();\n          // Non-transient responses cannot be repaired by re-sending the same body.\n          if (/storage\\s+(400|401|403|409|413|415)\\b/.test(message)) break;\n          if (attempt === 0) await new Promise((resolve) => setTimeout(resolve, 450));\n        }\n      }\n      throw lastError || new Error(\'動画の送信に失敗しました。\');\n    };\n    try {\n      await sendTarget(videoUploadSignedUrl, videoUploadStoragePath);\n      return videoUploadStoragePath;\n    } catch (error) {\n      if (signal?.aborted || error?.name === \'AbortError\') throw error;\n      const message = String(error?.message || \'\').toLowerCase();\n      const collision = message.includes(\'keyalreadyexists\')\n        || message.includes(\'resource already exists\')\n        || message.includes(\'storage 409\')\n        || message.includes(\'"duplicate"\');\n      if (!collision || !videoUploadFallbackSignedUrl || !videoUploadFallbackStoragePath) throw error;\n      reportProgress?.(0, Number(blob?.size || 0), true);\n      await sendTarget(videoUploadFallbackSignedUrl, videoUploadFallbackStoragePath);\n      return videoUploadFallbackStoragePath;\n    }\n  };\n\n  // Capture small candidate stills while recording. This avoids reopening/seeking\n  // the finished video before upload and keeps the component payload small.\n  const captureRecordingCandidateFrame = async () => {\n    if (recordingCandidateBusy || !recordingStartedAt || !video.videoWidth || !video.videoHeight) return;\n    if (!mediaRecorder || mediaRecorder.state !== \'recording\') return;\n    if (recordingCandidateFrames.length >= GOOD_MOMENTS_MAX_CANDIDATES) return;\n    recordingCandidateBusy = true;\n    try {\n      const frameCanvas = document.createElement(\'canvas\');\n      const srcW = video.videoWidth || 960;\n      const srcH = video.videoHeight || 540;\n      const maxSide = 240;\n      const scale = Math.min(1, maxSide / Math.max(srcW, srcH));\n      frameCanvas.width = Math.max(1, Math.round(srcW * scale));\n      frameCanvas.height = Math.max(1, Math.round(srcH * scale));\n      const ctx = frameCanvas.getContext(\'2d\', { alpha: false });\n      ctx.drawImage(video, 0, 0, frameCanvas.width, frameCanvas.height);\n      const jpegBlob = await new Promise((resolve) => frameCanvas.toBlob(resolve, \'image/jpeg\', 0.58));\n      if (!jpegBlob || jpegBlob.size > 45 * 1024) return;\n      const timestampMs = Math.max(0, Date.now() - recordingStartedAt);\n      const dataUrl = await blobToDataUrl(jpegBlob);\n      const index = recordingCandidateFrames.length + 1;\n      recordingCandidateFrames.push({\n        frame_id: `F${String(index).padStart(3, \'0\')}`,\n        timestamp_ms: timestampMs,\n        data_url: dataUrl\n      });\n    } catch (err) {\n      console.warn(\'live candidate frame skipped\', err);\n    } finally {\n      recordingCandidateBusy = false;\n    }\n  };\n\n  // v227: every direct photo/video capture starts a fresh high-accuracy GPS fix.\n  // Do not reuse a cached position. Keep the best fix seen for a few seconds and\n  // finish early once the phone reaches useful street-level accuracy.\n  let prefetchedLocationPromise = null;\n  let prefetchedLocationStartedAt = 0;\n\n  const getLocationAtCapture = () => new Promise((resolve) => {\n    if (!navigator.geolocation) {\n      resolve({\n        ok: false,\n        error_code: \'UNSUPPORTED\',\n        error_message: \'このブラウザでは位置情報を取得できません。\'\n      });\n      return;\n    }\n\n    // Android\'s native tracker keeps GPS warm. Reuse a fresh fix and cap browser\n    // waiting so location acquisition never holds the camera screen for 7 seconds.\n    const targetAccuracyM = 45;\n    const waitMs = 2500;\n    const requestedAtMs = Date.now();\n    let watchId = null;\n    let hardTimer = null;\n    let settled = false;\n    let best = null;\n    let lastError = null;\n\n    const cleanup = () => {\n      if (hardTimer) {\n        clearTimeout(hardTimer);\n        hardTimer = null;\n      }\n      if (watchId !== null) {\n        try { navigator.geolocation.clearWatch(watchId); } catch (_) {}\n        watchId = null;\n      }\n    };\n\n    const finish = (payload) => {\n      if (settled) return;\n      settled = true;\n      cleanup();\n      resolve(payload);\n    };\n\n    const errorPayload = (error) => {\n      let code = \'POSITION_ERROR\';\n      let message = \'位置情報を取得できませんでした。\';\n      if (error && error.code === 1) {\n        code = \'PERMISSION_DENIED\';\n        message = \'位置情報が許可されていません。\';\n      } else if (error && error.code === 2) {\n        code = \'POSITION_UNAVAILABLE\';\n        message = \'端末の位置情報を利用できません。\';\n      } else if (error && error.code === 3) {\n        code = \'TIMEOUT\';\n        message = \'位置情報の取得が時間切れになりました。\';\n      }\n      return { ok: false, error_code: code, error_message: message };\n    };\n\n    const positionPayload = (position) => ({\n      ok: true,\n      latitude: position.coords.latitude,\n      longitude: position.coords.longitude,\n      accuracy_m: position.coords.accuracy,\n      altitude_m: position.coords.altitude,\n      heading_deg: position.coords.heading,\n      speed_mps: position.coords.speed,\n      measured_at: new Date(position.timestamp).toISOString(),\n      requested_at: new Date(requestedAtMs).toISOString(),\n      age_ms: Math.max(0, Date.now() - Number(position.timestamp || Date.now()))\n    });\n\n    const onPosition = (position) => {\n      const candidate = positionPayload(position);\n      const accuracy = Number(candidate.accuracy_m);\n      const bestAccuracy = best ? Number(best.accuracy_m) : Number.POSITIVE_INFINITY;\n      if (!best || (Number.isFinite(accuracy) && (!Number.isFinite(bestAccuracy) || accuracy < bestAccuracy))) {\n        best = candidate;\n      }\n      if (Number.isFinite(accuracy) && accuracy <= targetAccuracyM) {\n        finish(candidate);\n      }\n    };\n\n    const onError = (error) => {\n      lastError = errorPayload(error);\n      if (error && error.code === 1) finish(lastError);\n    };\n\n    hardTimer = setTimeout(() => {\n      if (best) finish(best);\n      else finish(lastError || { ok: false, error_code: \'TIMEOUT\', error_message: \'位置情報の取得が時間切れになりました。\' });\n    }, waitMs);\n\n    try {\n      watchId = navigator.geolocation.watchPosition(\n        onPosition,\n        onError,\n        { enableHighAccuracy: true, timeout: waitMs, maximumAge: 5000 }\n      );\n    } catch (err) {\n      finish(errorPayload(err));\n    }\n  });\n\n  const primeCaptureLocation = () => {\n    const age = Date.now() - Number(prefetchedLocationStartedAt || 0);\n    if (prefetchedLocationPromise && age >= 0 && age <= 6000) return prefetchedLocationPromise;\n    prefetchedLocationStartedAt = Date.now();\n    prefetchedLocationPromise = getLocationAtCapture();\n    return prefetchedLocationPromise;\n  };\n\n  const consumeCaptureLocation = () => {\n    const current = primeCaptureLocation();\n    prefetchedLocationPromise = null;\n    prefetchedLocationStartedAt = 0;\n    return current;\n  };\n\n  const releaseCaptureCanvas = () => {\n    try {\n      const context = canvas.getContext(\'2d\');\n      if (context) context.clearRect(0, 0, canvas.width, canvas.height);\n    } catch (_) {}\n    // Resetting dimensions releases the backing pixel buffer immediately on WebView.\n    try { canvas.width = 1; canvas.height = 1; } catch (_) {}\n  };\n\n  const capturePosterDataUrl = async () => {\n    if (!video.videoWidth || !video.videoHeight) throw new Error(\'video frame unavailable\');\n    const srcW = video.videoWidth;\n    const srcH = video.videoHeight;\n    const maxSide = 1600;\n    const scale = Math.min(1, maxSide / Math.max(srcW, srcH));\n    const width = Math.max(1, Math.round(srcW * scale));\n    const height = Math.max(1, Math.round(srcH * scale));\n    canvas.width = width;\n    canvas.height = height;\n    const ctx = canvas.getContext(\'2d\', { alpha: false });\n    ctx.drawImage(video, 0, 0, width, height);\n    const blob = await new Promise((resolve) => canvas.toBlob(resolve, \'image/jpeg\', 0.86));\n    if (!blob) {\n      releaseCaptureCanvas();\n      throw new Error(\'canvas conversion failed\');\n    }\n    releaseCaptureCanvas();\n    return await blobToDataUrl(blob);\n  };\n\n\n  const captureVideoPosterDataUrl = async () => {\n    if (!video.videoWidth || !video.videoHeight) throw new Error(\'video frame unavailable\');\n    const srcW = video.videoWidth;\n    const srcH = video.videoHeight;\n    const maxSide = 900;\n    const scale = Math.min(1, maxSide / Math.max(srcW, srcH));\n    const width = Math.max(1, Math.round(srcW * scale));\n    const height = Math.max(1, Math.round(srcH * scale));\n    canvas.width = width;\n    canvas.height = height;\n    const ctx = canvas.getContext(\'2d\', { alpha: false });\n    ctx.drawImage(video, 0, 0, width, height);\n    const blob = await new Promise((resolve) => canvas.toBlob(resolve, \'image/jpeg\', 0.72));\n    if (!blob) {\n      releaseCaptureCanvas();\n      throw new Error(\'video poster conversion failed\');\n    }\n    releaseCaptureCanvas();\n    return await blobToDataUrl(blob);\n  };\n\n\n  const seekVideoFrame = (node, seconds) => new Promise((resolve, reject) => {\n    let settled = false;\n    const cleanup = () => {\n      node.removeEventListener(\'seeked\', onSeeked);\n      node.removeEventListener(\'error\', onError);\n      clearTimeout(timer);\n    };\n    const finish = (fn, value) => {\n      if (settled) return;\n      settled = true;\n      cleanup();\n      fn(value);\n    };\n    const onSeeked = () => finish(resolve);\n    const onError = () => finish(reject, new Error(\'video seek failed\'));\n    const timer = setTimeout(() => finish(reject, new Error(\'video seek timeout\')), 3500);\n    node.addEventListener(\'seeked\', onSeeked, { once: true });\n    node.addEventListener(\'error\', onError, { once: true });\n    try {\n      node.currentTime = Math.max(0, seconds);\n    } catch (err) {\n      finish(reject, err);\n    }\n  });\n\n  const extractVideoCandidateFrames = async (blob, durationMs) => {\n    const objectUrl = URL.createObjectURL(blob);\n    const probe = document.createElement(\'video\');\n    let frameCanvas = null;\n    probe.preload = \'auto\';\n    probe.muted = true;\n    probe.playsInline = true;\n    probe.src = objectUrl;\n    try {\n      await new Promise((resolve, reject) => {\n        const timer = setTimeout(() => reject(new Error(\'video metadata timeout\')), 5000);\n        const ready = () => {\n          clearTimeout(timer);\n          resolve();\n        };\n        const failed = () => {\n          clearTimeout(timer);\n          reject(new Error(\'video metadata failed\'));\n        };\n        probe.addEventListener(\'loadedmetadata\', ready, { once: true });\n        probe.addEventListener(\'error\', failed, { once: true });\n      });\n\n      const measuredDuration = Number.isFinite(probe.duration) && probe.duration > 0\n        ? probe.duration\n        : Math.max(0.2, Number(durationMs || 0) / 1000);\n      const samplePlan = goodMomentsSamplePlan(measuredDuration);\n      const sampleCount = samplePlan.count;\n      const sampleIntervalSeconds = samplePlan.intervalSeconds;\n      frameCanvas = document.createElement(\'canvas\');\n      const srcW = probe.videoWidth || video.videoWidth || 1280;\n      const srcH = probe.videoHeight || video.videoHeight || 720;\n      const maxSide = 240;\n      const scale = Math.min(1, maxSide / Math.max(srcW, srcH));\n      frameCanvas.width = Math.max(1, Math.round(srcW * scale));\n      frameCanvas.height = Math.max(1, Math.round(srcH * scale));\n      const ctx = frameCanvas.getContext(\'2d\', { alpha: false });\n      const frames = [];\n\n      for (let i = 0; i < sampleCount; i += 1) {\n        // Duration-aware timeline positions, capped at 20 samples.\n        const seconds = Math.min(Math.max(0, measuredDuration - 0.02), i * sampleIntervalSeconds);\n        try {\n          await seekVideoFrame(probe, Math.min(Math.max(0, measuredDuration - 0.02), seconds));\n          ctx.drawImage(probe, 0, 0, frameCanvas.width, frameCanvas.height);\n          const jpegBlob = await new Promise((resolve) => frameCanvas.toBlob(resolve, \'image/jpeg\', 0.60));\n          if (!jpegBlob) continue;\n          const dataUrl = await blobToDataUrl(jpegBlob);\n          frames.push({\n            frame_id: `F${String(i + 1).padStart(3, \'0\')}`,\n            timestamp_ms: Math.max(0, Math.round(seconds * 1000)),\n            data_url: dataUrl\n          });\n        } catch (err) {\n          console.warn(\'candidate frame skipped\', err);\n        }\n      }\n      return frames;\n    } finally {\n      try { probe.pause(); } catch (_) {}\n      probe.removeAttribute(\'src\');\n      try { probe.load(); } catch (_) {}\n      URL.revokeObjectURL(objectUrl);\n      if (frameCanvas) {\n        try {\n          const context = frameCanvas.getContext(\'2d\');\n          if (context) context.clearRect(0, 0, frameCanvas.width, frameCanvas.height);\n          frameCanvas.width = 1;\n          frameCanvas.height = 1;\n        } catch (_) {}\n        frameCanvas = null;\n      }\n    }\n  };\n\n  const GALLERY_PHOTO_METADATA_SCAN_BYTES_V441 = 2 * 1024 * 1024;\n\n  const galleryPhotoFallbackCaptureMetaV441 = (file) => {\n    const modified = Number(file?.lastModified || 0);\n    if (Number.isFinite(modified) && modified > 0) {\n      const date = new Date(modified);\n      if (Number.isFinite(date.getTime())) {\n        return {\n          captured_at: date.toISOString(),\n          capture_time_source: \'file_last_modified\',\n          capture_time_raw: String(file?.lastModified || \'\'),\n        };\n      }\n    }\n    const now = new Date();\n    return {\n      captured_at: now.toISOString(),\n      capture_time_source: \'imported_at\',\n      capture_time_raw: \'\',\n    };\n  };\n\n  const parsePhotoCaptureDateV441 = (rawValue, offsetValue = \'\') => {\n    const raw = String(rawValue || \'\').replace(/\\0/g, \'\').trim();\n    if (!raw) return \'\';\n    const exifMatch = /^(\\d{4}):(\\d{2}):(\\d{2})\\s+(\\d{2}):(\\d{2}):(\\d{2})(?:\\.(\\d{1,6}))?$/.exec(raw);\n    if (exifMatch) {\n      const year = Number(exifMatch[1]);\n      const month = Number(exifMatch[2]);\n      const day = Number(exifMatch[3]);\n      const hour = Number(exifMatch[4]);\n      const minute = Number(exifMatch[5]);\n      const second = Number(exifMatch[6]);\n      if (!(year >= 1900 && year <= 2200 && month >= 1 && month <= 12 && day >= 1 && day <= 31 && hour <= 23 && minute <= 59 && second <= 60)) {\n        return \'\';\n      }\n      const fraction = String(exifMatch[7] || \'\').slice(0, 3).padEnd(3, \'0\');\n      const offset = String(offsetValue || \'\').replace(/\\0/g, \'\').trim();\n      if (/^(?:Z|[+-]\\d{2}:?\\d{2})$/.test(offset)) {\n        const normalizedOffset = offset === \'Z\'\n          ? \'Z\'\n          : (offset.includes(\':\') ? offset : `${offset.slice(0, 3)}:${offset.slice(3)}`);\n        const iso = `${String(year).padStart(4, \'0\')}-${String(month).padStart(2, \'0\')}-${String(day).padStart(2, \'0\')}T${String(hour).padStart(2, \'0\')}:${String(minute).padStart(2, \'0\')}:${String(second).padStart(2, \'0\')}.${fraction || \'000\'}${normalizedOffset}`;\n        const ms = Date.parse(iso);\n        if (Number.isFinite(ms)) return new Date(ms).toISOString();\n      }\n      // EXIF often omits the timezone. In that case interpret the camera clock in\n      // the phone/browser\'s local timezone instead of pretending it is UTC.\n      const local = new Date(year, month - 1, day, hour, minute, second, Number(fraction || 0));\n      if (\n        local.getFullYear() === year && local.getMonth() === month - 1 && local.getDate() === day &&\n        local.getHours() === hour && local.getMinutes() === minute\n      ) {\n        return local.toISOString();\n      }\n      return \'\';\n    }\n    // XMP CreateDate is normally ISO-8601. Date.parse handles timezone-qualified\n    // strings directly and treats timezone-less date-time values as local time.\n    const parsed = Date.parse(raw);\n    return Number.isFinite(parsed) ? new Date(parsed).toISOString() : \'\';\n  };\n\n  const parseTiffExifV441 = (buffer, tiffStart, tiffEnd) => {\n    const view = new DataView(buffer);\n    const start = Number(tiffStart || 0);\n    const end = Math.min(view.byteLength, Number(tiffEnd || view.byteLength));\n    const result = {};\n    if (!(start >= 0 && start + 8 <= end)) return result;\n    const order = view.getUint16(start, false);\n    const little = order === 0x4949 ? true : (order === 0x4d4d ? false : null);\n    if (little === null) return result;\n    const safe = (offset, size = 1) => Number.isFinite(offset) && offset >= start && offset + size <= end;\n    const u16 = (offset) => safe(offset, 2) ? view.getUint16(offset, little) : null;\n    const u32 = (offset) => safe(offset, 4) ? view.getUint32(offset, little) : null;\n    if (u16(start + 2) !== 42) return result;\n    const typeSizes = {1: 1, 2: 1, 3: 2, 4: 4, 5: 8, 7: 1, 9: 4, 10: 8};\n\n    const collectIfd = (relativeOffset) => {\n      const map = new Map();\n      const rel = Number(relativeOffset || 0);\n      const base = start + rel;\n      if (!safe(base, 2)) return map;\n      const count = u16(base);\n      if (!Number.isFinite(count) || count < 0 || count > 512) return map;\n      for (let i = 0; i < count; i += 1) {\n        const entry = base + 2 + i * 12;\n        if (!safe(entry, 12)) break;\n        const tag = u16(entry);\n        const type = u16(entry + 2);\n        const itemCount = u32(entry + 4);\n        const itemSize = typeSizes[type] || 0;\n        if (!Number.isFinite(tag) || !itemSize || !Number.isFinite(itemCount) || itemCount < 0 || itemCount > 100000) continue;\n        const byteLength = itemSize * itemCount;\n        let valueOffset = entry + 8;\n        if (byteLength > 4) {\n          const pointer = u32(entry + 8);\n          if (!Number.isFinite(pointer)) continue;\n          valueOffset = start + pointer;\n        }\n        if (!safe(valueOffset, Math.max(0, byteLength))) continue;\n        map.set(tag, {type, count: itemCount, offset: valueOffset, byteLength});\n      }\n      return map;\n    };\n\n    const readAscii = (entry) => {\n      if (!entry || !safe(entry.offset, entry.byteLength)) return \'\';\n      const bytes = new Uint8Array(buffer, entry.offset, entry.byteLength);\n      let out = \'\';\n      for (const value of bytes) {\n        if (value === 0) break;\n        out += String.fromCharCode(value);\n      }\n      return out.trim();\n    };\n    const readLong = (entry) => {\n      if (!entry || entry.count < 1) return null;\n      if (entry.type === 3) return safe(entry.offset, 2) ? view.getUint16(entry.offset, little) : null;\n      if (entry.type === 4) return safe(entry.offset, 4) ? view.getUint32(entry.offset, little) : null;\n      if (entry.type === 9) return safe(entry.offset, 4) ? view.getInt32(entry.offset, little) : null;\n      return null;\n    };\n    const readRationals = (entry) => {\n      if (!entry || ![5, 10].includes(entry.type) || entry.count < 1) return [];\n      const values = [];\n      for (let i = 0; i < entry.count; i += 1) {\n        const offset = entry.offset + i * 8;\n        if (!safe(offset, 8)) break;\n        const signed = entry.type === 10;\n        const numerator = signed ? view.getInt32(offset, little) : view.getUint32(offset, little);\n        const denominator = signed ? view.getInt32(offset + 4, little) : view.getUint32(offset + 4, little);\n        values.push(denominator ? numerator / denominator : 0);\n      }\n      return values;\n    };\n\n    const firstIfdOffset = u32(start + 4);\n    if (!Number.isFinite(firstIfdOffset)) return result;\n    const ifd0 = collectIfd(firstIfdOffset);\n    result.date_time = readAscii(ifd0.get(0x0132));\n\n    const exifPointer = readLong(ifd0.get(0x8769));\n    if (Number.isFinite(exifPointer) && exifPointer > 0) {\n      const exifIfd = collectIfd(exifPointer);\n      result.date_time_original = readAscii(exifIfd.get(0x9003));\n      result.date_time_digitized = readAscii(exifIfd.get(0x9004));\n      result.offset_time = readAscii(exifIfd.get(0x9010));\n      result.offset_time_original = readAscii(exifIfd.get(0x9011));\n      result.offset_time_digitized = readAscii(exifIfd.get(0x9012));\n    }\n\n    const gpsPointer = readLong(ifd0.get(0x8825));\n    if (Number.isFinite(gpsPointer) && gpsPointer > 0) {\n      const gpsIfd = collectIfd(gpsPointer);\n      const latRef = readAscii(gpsIfd.get(0x0001)).toUpperCase();\n      const lonRef = readAscii(gpsIfd.get(0x0003)).toUpperCase();\n      const latParts = readRationals(gpsIfd.get(0x0002));\n      const lonParts = readRationals(gpsIfd.get(0x0004));\n      if (latParts.length >= 3 && lonParts.length >= 3) {\n        let latitude = Number(latParts[0]) + Number(latParts[1]) / 60 + Number(latParts[2]) / 3600;\n        let longitude = Number(lonParts[0]) + Number(lonParts[1]) / 60 + Number(lonParts[2]) / 3600;\n        if (latRef === \'S\') latitude *= -1;\n        if (lonRef === \'W\') longitude *= -1;\n        if (Number.isFinite(latitude) && Number.isFinite(longitude) && Math.abs(latitude) <= 90 && Math.abs(longitude) <= 180) {\n          result.latitude = latitude;\n          result.longitude = longitude;\n        }\n      }\n    }\n    return result;\n  };\n\n  const parseXmpCreateDateV441 = (text) => {\n    const source = String(text || \'\');\n    if (!source) return \'\';\n    const attribute = /(?:xmp:CreateDate|photoshop:DateCreated)\\s*=\\s*["\']([^"\']+)["\']/i.exec(source);\n    if (attribute && attribute[1]) return String(attribute[1]).trim();\n    const element = /<(?:xmp:CreateDate|photoshop:DateCreated)[^>]*>([^<]+)<\\/(?:xmp:CreateDate|photoshop:DateCreated)>/i.exec(source);\n    return element && element[1] ? String(element[1]).trim() : \'\';\n  };\n\n  const hexFromBytesV444 = (bytes) => Array.from(bytes || []).map((value) => Number(value).toString(16).padStart(2, \'0\')).join(\'\');\n\n  const sha256TextPrefixV444 = async (text, prefixLength = 24) => {\n    try {\n      if (!globalThis.crypto?.subtle || typeof TextEncoder === \'undefined\') return \'\';\n      const input = new TextEncoder().encode(String(text || \'\'));\n      const digest = new Uint8Array(await globalThis.crypto.subtle.digest(\'SHA-256\', input));\n      return hexFromBytesV444(digest).slice(0, Math.max(8, Number(prefixLength || 24)));\n    } catch (_) { return \'\'; }\n  };\n\n  const galleryPhotoFingerprintV444 = async (file) => {\n    try {\n      if (!file || !globalThis.crypto?.subtle || typeof TextEncoder === \'undefined\') return \'\';\n      const size = Math.max(0, Number(file.size || 0));\n      if (!(size > 0)) return \'\';\n      const sampleBytes = 65536;\n      const headLength = Math.min(sampleBytes, size);\n      const tailStart = Math.max(headLength, size - sampleBytes);\n      const head = new Uint8Array(await file.slice(0, headLength).arrayBuffer());\n      const tail = tailStart < size ? new Uint8Array(await file.slice(tailStart, size).arrayBuffer()) : new Uint8Array(0);\n      const prefix = new TextEncoder().encode(`tokyo-burari-gallery-v444|${size}|${head.length}|${tail.length}|`);\n      const combined = new Uint8Array(prefix.length + head.length + tail.length);\n      combined.set(prefix, 0); combined.set(head, prefix.length);\n      if (tail.length) combined.set(tail, prefix.length + head.length);\n      const digest = new Uint8Array(await globalThis.crypto.subtle.digest(\'SHA-256\', combined));\n      return `sha256_sample_v1:${hexFromBytesV444(digest)}`;\n    } catch (err) {\n      console.warn(\'gallery fingerprint skipped\', err);\n      return \'\';\n    }\n  };\n\n  const galleryImportLegacyIdentityV444 = (file, importMeta) => {\n    const meta = importMeta?.import_metadata && typeof importMeta.import_metadata === \'object\' ? importMeta.import_metadata : {};\n    const name = String(meta.original_name || file?.name || \'\').trim().toLowerCase();\n    const source = String(meta.capture_time_source || importMeta?.capture_time_source || \'\').trim();\n    const raw = String(meta.capture_time_raw || importMeta?.capture_time_raw || \'\').trim();\n    return name && source && raw ? `${name}|${source}|${raw}` : \'\';\n  };\n\n  const galleryPhotoAlreadyImportedV444 = async (file, importMeta, fingerprint = \'\') => {\n    const fp = String(fingerprint || \'\').trim();\n    if (fp && galleryImportedFingerprintsV444.has(fp)) return true;\n    const identity = galleryImportLegacyIdentityV444(file, importMeta);\n    if (!identity) return false;\n    const hash = await sha256TextPrefixV444(identity, 24);\n    return Boolean(hash && galleryImportedIdentityHashesV444.has(hash));\n  };\n\n  const extractGalleryPhotoMetadataV441 = async (file) => {\n    const fallback = galleryPhotoFallbackCaptureMetaV441(file);\n    const output = {\n      captured_at: fallback.captured_at,\n      capture_time_source: fallback.capture_time_source,\n      capture_time_raw: fallback.capture_time_raw,\n      location: {\n        ok: false,\n        source: \'gallery\',\n        error_code: \'GALLERY_NO_EXIF_GPS\',\n        error_message: \'写真の内部データに撮影位置がないため、位置情報は取得していません。\'\n      },\n      import_metadata: {\n        capture_time_source: fallback.capture_time_source,\n        capture_time_raw: fallback.capture_time_raw,\n        original_name: String(file?.name || \'\'),\n        original_type: String(file?.type || \'\'),\n        original_size_bytes: Math.max(0, Number(file?.size || 0)),\n        original_last_modified_ms: Math.max(0, Number(file?.lastModified || 0)),\n        exif_gps: false,\n      }\n    };\n    try {\n      const scanSize = Math.min(Number(file?.size || 0), GALLERY_PHOTO_METADATA_SCAN_BYTES_V441);\n      if (!(scanSize > 0)) return output;\n      const buffer = await file.slice(0, scanSize).arrayBuffer();\n      const bytes = new Uint8Array(buffer);\n      const view = new DataView(buffer);\n      let exif = {};\n      let xmpCreateDate = \'\';\n      const asciiAt = (offset, length) => {\n        if (offset < 0 || length < 0 || offset + length > bytes.length) return \'\';\n        let out = \'\';\n        for (let i = 0; i < length; i += 1) out += String.fromCharCode(bytes[offset + i]);\n        return out;\n      };\n      const mergeExif = (candidate) => {\n        if (!candidate || typeof candidate !== \'object\') return;\n        exif = {...exif, ...Object.fromEntries(Object.entries(candidate).filter(([, value]) => value !== \'\' && value !== undefined && value !== null))};\n      };\n      const scanXmpText = (start, length) => {\n        if (!(length > 0) || start < 0 || start + length > bytes.length) return;\n        try {\n          const text = new TextDecoder(\'utf-8\', {fatal: false}).decode(bytes.slice(start, start + length));\n          xmpCreateDate = xmpCreateDate || parseXmpCreateDateV441(text);\n        } catch (_) {}\n      };\n\n      // JPEG APP1: standard EXIF and XMP both live before the compressed image stream.\n      if (bytes.length >= 4 && bytes[0] === 0xff && bytes[1] === 0xd8) {\n        let pos = 2;\n        while (pos + 4 <= bytes.length) {\n          if (bytes[pos] !== 0xff) { pos += 1; continue; }\n          while (pos < bytes.length && bytes[pos] === 0xff) pos += 1;\n          if (pos >= bytes.length) break;\n          const marker = bytes[pos]; pos += 1;\n          if (marker === 0xda || marker === 0xd9) break;\n          if (marker === 0x01 || (marker >= 0xd0 && marker <= 0xd7)) continue;\n          if (pos + 2 > bytes.length) break;\n          const segmentLength = (bytes[pos] << 8) | bytes[pos + 1];\n          if (segmentLength < 2) break;\n          const dataStart = pos + 2;\n          const segmentEnd = pos + segmentLength;\n          if (segmentEnd > bytes.length) break;\n          if (marker === 0xe1) {\n            if (asciiAt(dataStart, 6) === \'Exif\\0\\0\') {\n              mergeExif(parseTiffExifV441(buffer, dataStart + 6, segmentEnd));\n            } else {\n              scanXmpText(dataStart, segmentEnd - dataStart);\n            }\n          }\n          pos = segmentEnd;\n        }\n      // PNG eXIf chunk contains a raw TIFF structure.\n      } else if (bytes.length >= 8 && asciiAt(1, 3) === \'PNG\') {\n        let pos = 8;\n        while (pos + 12 <= bytes.length) {\n          const length = view.getUint32(pos, false);\n          const type = asciiAt(pos + 4, 4);\n          const dataStart = pos + 8;\n          const dataEnd = dataStart + length;\n          if (dataEnd + 4 > bytes.length) break;\n          if (type === \'eXIf\') mergeExif(parseTiffExifV441(buffer, dataStart, dataEnd));\n          if (type === \'iTXt\' || type === \'tEXt\') scanXmpText(dataStart, length);\n          pos = dataEnd + 4;\n        }\n      // WebP EXIF/XMP chunks.\n      } else if (bytes.length >= 12 && asciiAt(0, 4) === \'RIFF\' && asciiAt(8, 4) === \'WEBP\') {\n        let pos = 12;\n        while (pos + 8 <= bytes.length) {\n          const type = asciiAt(pos, 4);\n          const length = view.getUint32(pos + 4, true);\n          const dataStart = pos + 8;\n          const dataEnd = dataStart + length;\n          if (dataEnd > bytes.length) break;\n          if (type === \'EXIF\') {\n            const hasPrefix = asciiAt(dataStart, 6) === \'Exif\\0\\0\';\n            mergeExif(parseTiffExifV441(buffer, dataStart + (hasPrefix ? 6 : 0), dataEnd));\n          } else if (type === \'XMP \') {\n            scanXmpText(dataStart, length);\n          }\n          pos = dataEnd + (length % 2);\n        }\n      }\n\n      // Some formats/encoders store XMP outside the standard chunk scanned above.\n      if (!xmpCreateDate) scanXmpText(0, bytes.length);\n\n      const dateCandidates = [\n        [\'exif_datetime_original\', exif.date_time_original, exif.offset_time_original || exif.offset_time],\n        [\'exif_datetime_digitized\', exif.date_time_digitized, exif.offset_time_digitized || exif.offset_time],\n        [\'exif_datetime\', exif.date_time, exif.offset_time],\n        [\'xmp_create_date\', xmpCreateDate, \'\'],\n      ];\n      for (const [source, raw, offset] of dateCandidates) {\n        const parsed = parsePhotoCaptureDateV441(raw, offset);\n        if (!parsed) continue;\n        output.captured_at = parsed;\n        output.capture_time_source = source;\n        output.capture_time_raw = String(raw || \'\').trim();\n        output.import_metadata.capture_time_source = source;\n        output.import_metadata.capture_time_raw = String(raw || \'\').trim();\n        if (offset) output.import_metadata.capture_time_offset = String(offset || \'\').trim();\n        break;\n      }\n\n      const latitude = Number(exif.latitude);\n      const longitude = Number(exif.longitude);\n      if (Number.isFinite(latitude) && Number.isFinite(longitude) && Math.abs(latitude) <= 90 && Math.abs(longitude) <= 180) {\n        output.location = {\n          ok: true,\n          source: \'exif_gps\',\n          latitude,\n          longitude,\n          accuracy_m: null,\n          measured_at: output.captured_at,\n          place_label: \'\',\n          place_provider: \'photo_exif\',\n        };\n        output.import_metadata.exif_gps = true;\n      }\n      return output;\n    } catch (err) {\n      console.warn(\'photo metadata parse failed; using safe fallback timestamp\', err);\n      return output;\n    }\n  };\n\n  const prepareImageFile = async (file) => {\n    // Keep the saved-photo quality target (max 1600px / JPEG 0.86), but prefer\n    // createImageBitmap + OffscreenCanvas so decoding/resizing can happen away from\n    // the most visible UI path on modern Android WebView/Chrome.\n    let bitmap = null;\n    let fallbackUrl = \'\';\n    let source = null;\n    let offscreen = null;\n    let workCanvas = null;\n    try {\n      if (typeof globalThis.createImageBitmap === \'function\') {\n        try {\n          bitmap = await globalThis.createImageBitmap(file, { imageOrientation: \'from-image\' });\n          source = bitmap;\n        } catch (err) {\n          console.warn(\'createImageBitmap unavailable for this photo; using Image fallback\', err);\n        }\n      }\n      if (!source) {\n        fallbackUrl = URL.createObjectURL(file);\n        source = await new Promise((resolve, reject) => {\n          const node = new Image();\n          node.decoding = \'async\';\n          node.onload = () => resolve(node);\n          node.onerror = reject;\n          node.src = fallbackUrl;\n        });\n      }\n\n      const srcW = Number(source.width || source.naturalWidth || 0);\n      const srcH = Number(source.height || source.naturalHeight || 0);\n      if (!(srcW > 0 && srcH > 0)) throw new Error(\'invalid image dimensions\');\n      const maxSide = 1600;\n      const scale = Math.min(1, maxSide / Math.max(srcW, srcH));\n      const width = Math.max(1, Math.round(srcW * scale));\n      const height = Math.max(1, Math.round(srcH * scale));\n\n      let blob = null;\n      if (typeof globalThis.OffscreenCanvas === \'function\') {\n        try {\n          offscreen = new globalThis.OffscreenCanvas(width, height);\n          const ctx = offscreen.getContext(\'2d\', { alpha: false, desynchronized: true });\n          ctx.drawImage(source, 0, 0, width, height);\n          blob = await offscreen.convertToBlob({ type: \'image/jpeg\', quality: 0.86 });\n        } catch (err) {\n          console.warn(\'OffscreenCanvas conversion unavailable; using DOM canvas\', err);\n        }\n      }\n      if (!blob) {\n        workCanvas = document.createElement(\'canvas\');\n        workCanvas.width = width;\n        workCanvas.height = height;\n        const ctx = workCanvas.getContext(\'2d\', { alpha: false });\n        ctx.drawImage(source, 0, 0, width, height);\n        blob = await new Promise((resolve) => workCanvas.toBlob(resolve, \'image/jpeg\', 0.86));\n      }\n      if (!blob) throw new Error(\'image conversion failed\');\n      return await blobToDataUrl(blob);\n    } finally {\n      if (bitmap && typeof bitmap.close === \'function\') { try { bitmap.close(); } catch (_) {} }\n      if (fallbackUrl) { try { URL.revokeObjectURL(fallbackUrl); } catch (_) {} }\n      if (workCanvas) {\n        try { workCanvas.width = 1; workCanvas.height = 1; } catch (_) {}\n        workCanvas = null;\n      }\n      if (offscreen) {\n        try { offscreen.width = 1; offscreen.height = 1; } catch (_) {}\n        offscreen = null;\n      }\n      source = null;\n    }\n  };\n\n  const takePhoto = async () => {\n    if (photoCaptureBusy) return;\n    if (!stream || !video.videoWidth || !video.videoHeight) {\n      setPhotoCapturingUi(false);\n      return;\n    }\n    photoCaptureBusy = true;\n    setPhotoCapturingUi(true);\n    shootButton.disabled = true;\n    const capturedAt = new Date().toISOString();\n    try {\n      // Yield one frame so Android paints the pressed state before image encoding.\n      await new Promise((resolve) => requestAnimationFrame(() => resolve()));\n      const locationPromise = consumeCaptureLocation();\n      const dataUrl = await capturePosterDataUrl();\n      pendingMedia = {\n        kind: \'photo\',\n        data_url: dataUrl,\n        name: \'camera.jpg\',\n        source: \'camera\',\n        camera_facing: cameraFacing,\n        capture_orientation: isDeviceLandscape() ? \'landscape\' : \'portrait\',\n        captured_at: capturedAt,\n        location: { ok: false, error_code: \'LOCATION_PENDING\' },\n        location_promise: locationPromise,\n        emotion: \'\',\n        parenting: \'\'\n      };\n      showPhotoReview(dataUrl);\n      photoCaptureBusy = false;\n      setPhotoCapturingUi(false);\n      setStatus(\'\');\n      const capturedMedia = pendingMedia;\n      locationPromise.then((location) => {\n        if (pendingMedia === capturedMedia && location) capturedMedia.location = location;\n      }).catch(() => {});\n    } catch (err) {\n      console.error(err);\n      photoCaptureBusy = false;\n      setPhotoCapturingUi(false);\n      shootButton.disabled = false;\n      const message = \'撮影した画像を作れませんでした。もう一度お試しください。\';\n      setStatus(message);\n      setTriggerValue(\'camera_error\', { name: \'CaptureError\', message });\n    }\n  };\n\n  const chooseRecorderMimeType = (hasAudio = true) => {\n    const candidates = hasAudio ? [\n      \'video/mp4;codecs=h264,aac\',\n      \'video/mp4\',\n      \'video/webm;codecs=vp8,opus\',\n      \'video/webm\'\n    ] : [\n      \'video/mp4;codecs=h264\',\n      \'video/mp4\',\n      \'video/webm;codecs=vp8\',\n      \'video/webm\'\n    ];\n    for (const type of candidates) {\n      try {\n        if (MediaRecorder.isTypeSupported(type)) return type;\n      } catch (_) {}\n    }\n    return \'\';\n  };\n\n  const closeRecordingAudioPipeline = async () => {\n    const pipeline = recordingAudioPipeline;\n    recordingAudioPipeline = null;\n    if (!pipeline) return;\n    try { if (pipeline.timer) clearInterval(pipeline.timer); } catch (_) {}\n    try { pipeline.source && pipeline.source.disconnect(); } catch (_) {}\n    try { pipeline.highpass && pipeline.highpass.disconnect(); } catch (_) {}\n    try { pipeline.analyser && pipeline.analyser.disconnect(); } catch (_) {}\n    try { pipeline.gainNode && pipeline.gainNode.disconnect(); } catch (_) {}\n    try { pipeline.compressor && pipeline.compressor.disconnect(); } catch (_) {}\n    try {\n      if (pipeline.destination && pipeline.destination.stream) {\n        pipeline.destination.stream.getTracks().forEach((track) => { try { track.stop(); } catch (_) {} });\n      }\n    } catch (_) {}\n    if (pipeline.audioContext) {\n      try { await pipeline.audioContext.close(); } catch (_) {}\n    }\n  };\n\n  const buildVideoRecorderStream = async (hasAudio) => {\n    const videoTracks = stream && stream.getVideoTracks\n      ? stream.getVideoTracks().filter((track) => track.readyState === \'live\')\n      : [];\n    if (!hasAudio) return new MediaStream(videoTracks);\n\n    const rawAudioTrack = stream && stream.getAudioTracks\n      ? stream.getAudioTracks().find((track) => track.readyState === \'live\' && track.enabled !== false)\n      : null;\n    if (!rawAudioTrack) return new MediaStream(videoTracks);\n\n    // `autoGainControl` can still be weak even when the track reports it as enabled.\n    // v382 therefore uses a stronger far-field adaptive gain before encoding. Very quiet\n    // sound can be lifted substantially, while the compressor protects nearby/loud speech.\n    const AudioContextCtor = window.AudioContext || window.webkitAudioContext;\n    if (!AudioContextCtor) return new MediaStream([...videoTracks, rawAudioTrack]);\n\n    try {\n      await closeRecordingAudioPipeline();\n      let audioContext;\n      try { audioContext = new AudioContextCtor({ sampleRate: 48000 }); }\n      catch (_) { audioContext = new AudioContextCtor(); }\n      await audioContext.resume();\n\n      const sourceStream = new MediaStream([rawAudioTrack]);\n      const source = audioContext.createMediaStreamSource(sourceStream);\n      const highpass = audioContext.createBiquadFilter();\n      highpass.type = \'highpass\';\n      highpass.frequency.value = 70;\n      highpass.Q.value = 0.7;\n\n      const analyser = audioContext.createAnalyser();\n      analyser.fftSize = 2048;\n      analyser.smoothingTimeConstant = 0.60;\n\n      const gainNode = audioContext.createGain();\n      // Start noticeably above unity so the first words are not lost before the\n      // adaptive meter has collected enough samples.\n      gainNode.gain.value = 6.0;\n\n      const compressor = audioContext.createDynamicsCompressor();\n      compressor.threshold.value = -20;\n      compressor.knee.value = 24;\n      compressor.ratio.value = 5;\n      compressor.attack.value = 0.003;\n      compressor.release.value = 0.30;\n\n      const destination = audioContext.createMediaStreamDestination();\n      source.connect(highpass);\n      highpass.connect(analyser);\n      highpass.connect(gainNode);\n      gainNode.connect(compressor);\n      compressor.connect(destination);\n      // Intentionally do NOT connect to audioContext.destination: recording only,\n      // with no speaker monitoring/feedback.\n\n      const values = new Float32Array(analyser.fftSize);\n      const timer = setInterval(() => {\n        try {\n          analyser.getFloatTimeDomainData(values);\n          let sum = 0;\n          for (let i = 0; i < values.length; i += 1) sum += values[i] * values[i];\n          const rms = Math.sqrt(sum / Math.max(1, values.length));\n          // v382 far-field AGC: aim quiet material at roughly -20 dBFS. The previous\n          // 4.8x ceiling was enough for nearby loud speech but not for a quiet external\n          // speaker around 50 cm away on the affected Android device. Cap at 16x so\n          // room noise does not become unbounded; loud input quickly falls back near 1x.\n          const safeRms = Math.max(0.0008, rms);\n          let targetGain = Math.min(16.0, Math.max(1.15, 0.10 / safeRms));\n          if (rms >= 0.10) targetGain = 1.05;\n          else if (rms >= 0.07) targetGain = Math.min(targetGain, 1.45);\n          else if (rms >= 0.05) targetGain = Math.min(targetGain, 2.0);\n          gainNode.gain.setTargetAtTime(targetGain, audioContext.currentTime, 0.16);\n        } catch (_) {}\n      }, 100);\n\n      recordingAudioPipeline = {\n        audioContext, source, highpass, analyser, gainNode, compressor, destination, timer\n      };\n      const processedTrack = destination.stream.getAudioTracks()[0];\n      if (!processedTrack || processedTrack.readyState !== \'live\') {\n        await closeRecordingAudioPipeline();\n        return new MediaStream([...videoTracks, rawAudioTrack]);\n      }\n      return new MediaStream([...videoTracks, processedTrack]);\n    } catch (err) {\n      console.warn(\'video audio gain pipeline unavailable; using raw microphone\', err);\n      await closeRecordingAudioPipeline();\n      return new MediaStream([...videoTracks, rawAudioTrack]);\n    }\n  };\n\n  const stopVideoRecording = () => {\n    clearRecordingTimers();\n    if (mediaRecorder && mediaRecorder.state !== \'inactive\') {\n      try { mediaRecorder.stop(); } catch (_) {}\n    }\n  };\n\n  const startVideoRecording = async () => {\n    if (videoRecordingStartBusy || videoUploadBusy) return;\n    if (mediaRecorder && mediaRecorder.state !== \'inactive\') return;\n    if (!stream || !video.videoWidth || !video.videoHeight) return;\n    videoRecordingStartBusy = true;\n    if (shootButton) shootButton.disabled = true;\n    const hasAudio = !!(stream.getAudioTracks && stream.getAudioTracks().some((track) => {\n      try { track.enabled = true; } catch (_) {}\n      return track.readyState === \'live\' && track.enabled !== false;\n    }));\n    // v374: the button label already tells the user when the microphone is unavailable.\n    // Do not block recording in that state. MediaRecorder can safely record the live\n    // camera stream without an audio track; chooseRecorderMimeType(false) selects a\n    // video-only format and the saved metadata records has_audio=false.\n    recordedChunks = [];\n    recordingCandidateFrames = [];\n    recordingCandidateBusy = false;\n    recordingCancelled = false;\n    recordingCapturedAt = new Date().toISOString();\n    recordingLocationPromise = getLocationAtCapture();\n    const mimeType = chooseRecorderMimeType(hasAudio);\n    const captureTrack = stream.getVideoTracks && stream.getVideoTracks()[0];\n    const captureSettings = (captureTrack && captureTrack.getSettings) ? captureTrack.getSettings() : {};\n    const captureWidth = Math.max(0, Number(captureSettings?.width || video.videoWidth || 0));\n    const captureHeight = Math.max(0, Number(captureSettings?.height || video.videoHeight || 0));\n    const captureFrameRate = Math.max(0, Number(captureSettings?.frameRate || 0));\n    const capturePixels = captureWidth * captureHeight;\n    // v314: keep enough bitrate for 60/90fps so motion does not become blocky.\n    // The source camera frame rate still depends on the hardware/browser capability.\n    const veryHighFps = captureFrameRate >= 80;\n    const highFps = captureFrameRate >= 50;\n    const requestedVideoBitrate = veryHighFps\n      ? (capturePixels >= 800000 ? 7000000 : 5600000)\n      : (highFps\n          ? (capturePixels >= 800000 ? 5200000 : 4200000)\n          : (capturePixels >= 1700000 ? 3600000 : (capturePixels >= 800000 ? 2800000 : 2000000)));\n    try {\n      const options = {\n        videoBitsPerSecond: requestedVideoBitrate\n      };\n      if (hasAudio) options.audioBitsPerSecond = 96000;\n      if (mimeType) options.mimeType = mimeType;\n      // v382: MediaRecorder receives a stronger far-field processed audio track. This changes actual sample\n      // amplitude; audioBitsPerSecond only controls encoding rate and cannot make a quiet\n      // microphone louder.\n      const recorderStream = await buildVideoRecorderStream(hasAudio);\n      try {\n        mediaRecorder = new MediaRecorder(recorderStream, options);\n      } catch (_) {\n        mediaRecorder = new MediaRecorder(recorderStream, mimeType ? { mimeType } : undefined);\n      }\n      mediaRecorder.ondataavailable = (event) => {\n        if (event.data && event.data.size > 0) recordedChunks.push(event.data);\n      };\n      mediaRecorder.onerror = (event) => {\n        console.error(event);\n        clearRecordingTimers();\n        const failedRecorder = mediaRecorder;\n        recordingCancelled = true;\n        mediaRecorder = null;\n        if (failedRecorder) {\n          failedRecorder.ondataavailable = null;\n          failedRecorder.onerror = null;\n          failedRecorder.onstop = null;\n          try { if (failedRecorder.state !== \'inactive\') failedRecorder.stop(); } catch (_) {}\n        }\n        recordedChunks = [];\n        recordingCandidateFrames = [];\n        void closeRecordingAudioPipeline();\n        releaseLiveCameraForUpload();\n        setRecordingUi(false);\n        const message = \'動画の録画中にエラーが発生しました。もう一度お試しください。\';\n        setStatus(message);\n        setTriggerValue(\'camera_error\', { name: \'VideoRecordError\', message });\n      };\n      mediaRecorder.onstop = async () => {\n        clearRecordingTimers();\n        setRecordingUi(false);\n        const recorder = mediaRecorder;\n        mediaRecorder = null;\n        if (recordingCancelled) {\n          recordedChunks = [];\n          recordingCandidateFrames = [];\n          recordingCancelled = false;\n          if (recorder) {\n            recorder.ondataavailable = null;\n            recorder.onerror = null;\n            recorder.onstop = null;\n          }\n          return;\n        }\n        try {\n          if (videoUploadBusy) return;\n          videoUploadBusy = true;\n          const durationMs = Math.max(1, Date.now() - recordingStartedAt);\n          const finalType = (recorder && recorder.mimeType) || mimeType || \'video/webm\';\n          const blob = new Blob(recordedChunks, { type: finalType });\n          recordedChunks = [];\n          // Recorder has emitted its final data; the processing graph can now be released.\n          await closeRecordingAudioPipeline();\n          if (!blob.size) throw new Error(\'recorded video is empty\');\n          if (videoMaxBytes > 0 && blob.size > videoMaxBytes) {\n            const sizeMb = (blob.size / (1024 * 1024)).toFixed(1);\n            const limitMb = (videoMaxBytes / (1024 * 1024)).toFixed(1);\n            throw new Error(`録画データが大きすぎます（${sizeMb}MB）。この時点で保存できる上限は${limitMb}MBです。`);\n          }\n\n          // Preserve recording quality. No Good Moments JPEG extraction runs while\n          // MediaRecorder is active. The untouched original is uploaded first; only\n          // after recording has ended do we decode lightweight AI thumbnails.\n          if (menu) menu.hidden = true;\n          if (activeActions) activeActions.hidden = true;\n          if (video) video.hidden = true;\n          setStatus(\'動画を自動保存する準備をしています…\');\n\n          let candidateFrames = [];\n          recordingCandidateFrames = [];\n\n          // Poster/location are useful metadata, but neither is allowed to block the\n          // original video save. If poster capture fails, use the first lightweight\n          // candidate still; the server can also create a neutral placeholder.\n          let posterDataUrl = \'\';\n          try {\n            posterDataUrl = await captureVideoPosterDataUrl();\n          } catch (posterErr) {\n            console.warn(\'video poster skipped\', posterErr);\n          }\n          if (!posterDataUrl && candidateFrames.length) {\n            posterDataUrl = String(candidateFrames[0]?.data_url || \'\');\n          }\n          let location = { ok: false, error_code: \'UNAVAILABLE\', error_message: \'位置情報を取得できませんでした。\' };\n          try {\n            location = await (recordingLocationPromise || getLocationAtCapture());\n          } catch (locationErr) {\n            console.warn(\'video location skipped\', locationErr);\n          }\n\n          // Poster and capture location are ready. Release camera decoder/sensor buffers\n          // before holding the large recorded Blob during network upload.\n          releaseLiveCameraForUpload();\n\n          // Upload the original first. The trigger payload sent to Streamlit contains\n          // only metadata and small JPEG stills, never the multi-megabyte video itself.\n          setStatus(\'動画を保管庫へ送信しています…\');\n          const actualVideoStoragePath = await uploadVideoBlobToSignedUrl(blob);\n\n          // Do not build any browser-side candidate JPEG sheet. The saved\n          // original video is now the single source of truth. The server extracts\n          // native-resolution duration-aware frames once, then creates separate small\n          // AI copies. This removes duplicated work and avoids low-resolution paths.\n          let candidateSheetPath = \'\';\n          let candidateManifest = [];\n          let candidateSheetColumns = 0;\n          let candidateSheetRows = 0;\n\n          const recordingId = (globalThis.crypto && typeof globalThis.crypto.randomUUID === \'function\')\n            ? globalThis.crypto.randomUUID()\n            : `video_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;\n          const mediaToSave = {\n            kind: \'video_uploaded\',\n            recording_id: recordingId,\n            video_storage_path: actualVideoStoragePath,\n            video_size_bytes: blob.size,\n            poster_data_url: posterDataUrl,\n            candidate_frames: [],\n            candidate_sheet_path: candidateSheetPath,\n            candidate_manifest: candidateManifest,\n            candidate_sheet_columns: candidateSheetColumns,\n            candidate_sheet_rows: candidateSheetRows,\n            mime_type: finalType,\n            duration_ms: durationMs,\n            capture_width: captureWidth,\n            capture_height: captureHeight,\n            capture_frame_rate: captureFrameRate,\n            video_bitrate_bps: Number((recorder && recorder.videoBitsPerSecond) || requestedVideoBitrate || 0),\n            has_audio: hasAudio,\n            audio_bitrate_bps: Number((recorder && recorder.audioBitsPerSecond) || (hasAudio ? 96000 : 0) || 0),\n            name: finalType.includes(\'mp4\') ? \'camera.mp4\' : \'camera.webm\',\n            source: \'video_camera\',\n            camera_facing: cameraFacing,\n            capture_orientation: isDeviceLandscape() ? \'landscape\' : \'portrait\',\n            captured_at: recordingCapturedAt || new Date().toISOString(),\n            location,\n            auto_save: true,\n            upload_complete: true\n          };\n\n          setStatus(\'動画を保管庫へ送信しました。記録を登録しています…\');\n          setTriggerValue(\'video\', mediaToSave);\n        } catch (err) {\n          console.error(err);\n          const detail = (err && err.message) ? String(err.message).replace(/\\s+/g, \' \').trim().slice(0, 240) : \'\';\n          const message = detail\n            ? `動画を保存できませんでした。${detail}`\n            : \'動画を保存できませんでした。もう一度お試しください。\';\n          setStatus(message);\n          setTriggerValue(\'camera_error\', { name: \'VideoPrepareError\', message, detail });\n        } finally {\n          videoUploadBusy = false;\n          videoRecordingStartBusy = false;\n          await closeRecordingAudioPipeline();\n          if (recorder) {\n            recorder.ondataavailable = null;\n            recorder.onerror = null;\n            recorder.onstop = null;\n          }\n          recordedChunks = [];\n          recordingCandidateFrames = [];\n          releaseCaptureCanvas();\n          recordingStartedAt = 0;\n          recordingLocationPromise = null;\n        }\n      };\n\n      mediaRecorder.start(1000);\n      recordingStartedAt = Date.now();\n      // v508: the shutter is disabled only while MediaRecorder is being prepared.\n      // Once recording has actually started, re-enable it so the same button can\n      // receive the user\'s "撮影終了" tap and stop the active recorder.\n      videoRecordingStartBusy = false;\n      if (shootButton) shootButton.disabled = false;\n      setRecordingUi(true);\n      updateRecordingClock();\n      recordingTimer = setInterval(updateRecordingClock, 500);\n      // v139 quality-first recording: do not generate JPEG candidates while the\n      // MediaRecorder encoder is running. Candidate extraction starts after stop.\n      recordingMaxTimer = setTimeout(stopVideoRecording, VIDEO_RECORD_MAX_SECONDS * 1000);\n      setStatus(hasAudio ? \'\' : \'音声なしで動画を録画しています。\');\n    } catch (err) {\n      console.error(err);\n      videoRecordingStartBusy = false;\n      if (shootButton) shootButton.disabled = false;\n      await closeRecordingAudioPipeline();\n      setRecordingUi(false);\n      const message = \'この端末では動画録画を開始できませんでした。ブラウザを最新版にしてください。\';\n      setStatus(message);\n      setTriggerValue(\'camera_error\', { name: \'VideoStartError\', message });\n    }\n  };\n\n  const inferGalleryVideoMime = (file) => {\n    const direct = String(file?.type || \'\').split(\';\', 1)[0].trim().toLowerCase();\n    if (direct.startsWith(\'video/\')) return direct;\n    const name = String(file?.name || \'\').toLowerCase();\n    if (name.endsWith(\'.mov\')) return \'video/quicktime\';\n    if (name.endsWith(\'.m4v\')) return \'video/x-m4v\';\n    if (name.endsWith(\'.webm\')) return \'video/webm\';\n    return \'video/mp4\';\n  };\n\n  const prepareGalleryVideoFile = async (file) => {\n    if (!file || !file.size) throw new Error(\'動画ファイルが空です。\');\n    if (videoMaxBytes > 0 && file.size > videoMaxBytes) {\n      const sizeMb = (file.size / (1024 * 1024)).toFixed(1);\n      const limitMb = (videoMaxBytes / (1024 * 1024)).toFixed(1);\n      throw new Error(`動画が大きすぎます（${sizeMb}MB）。保存可能な上限は${limitMb}MBです。`);\n    }\n    const objectUrl = URL.createObjectURL(file);\n    const probe = document.createElement(\'video\');\n    probe.preload = \'auto\';\n    probe.muted = true;\n    probe.playsInline = true;\n    probe.src = objectUrl;\n    try {\n      await new Promise((resolve, reject) => {\n        const timer = setTimeout(() => reject(new Error(\'動画情報の読み込みが時間切れになりました。\')), 8000);\n        const ready = () => { clearTimeout(timer); resolve(); };\n        const failed = () => { clearTimeout(timer); reject(new Error(\'この動画形式をブラウザで読み込めませんでした。\')); };\n        probe.addEventListener(\'loadedmetadata\', ready, { once: true });\n        probe.addEventListener(\'error\', failed, { once: true });\n      });\n      const durationSeconds = Number(probe.duration || 0);\n      if (!Number.isFinite(durationSeconds) || durationSeconds <= 0) {\n        throw new Error(\'動画の長さを確認できませんでした。\');\n      }\n      if (durationSeconds > VIDEO_IMPORT_MAX_SECONDS + 0.15) {\n        throw new Error(`取り込める動画は最大${VIDEO_IMPORT_MAX_SECONDS}秒までです。選んだ動画は${durationSeconds.toFixed(1)}秒あります。`);\n      }\n      try {\n        if (probe.readyState < 2) {\n          await new Promise((resolve) => {\n            const timer = setTimeout(resolve, 2500);\n            probe.addEventListener(\'loadeddata\', () => { clearTimeout(timer); resolve(); }, { once: true });\n          });\n        }\n      } catch (_) {}\n      const width = Math.max(0, Number(probe.videoWidth || 0));\n      const height = Math.max(0, Number(probe.videoHeight || 0));\n      let posterDataUrl = \'\';\n      try {\n        if (durationSeconds > 0.12) {\n          const target = Math.min(Math.max(0, durationSeconds - 0.05), Math.min(0.25, durationSeconds * 0.10));\n          await seekVideoFrame(probe, target);\n        }\n        if (width > 0 && height > 0) {\n          const frameCanvas = document.createElement(\'canvas\');\n          const maxSide = 900;\n          const scale = Math.min(1, maxSide / Math.max(width, height));\n          frameCanvas.width = Math.max(1, Math.round(width * scale));\n          frameCanvas.height = Math.max(1, Math.round(height * scale));\n          const ctx = frameCanvas.getContext(\'2d\', { alpha: false });\n          ctx.drawImage(probe, 0, 0, frameCanvas.width, frameCanvas.height);\n          const posterBlob = await new Promise((resolve) => frameCanvas.toBlob(resolve, \'image/jpeg\', 0.72));\n          if (posterBlob) posterDataUrl = await blobToDataUrl(posterBlob);\n        }\n      } catch (posterErr) {\n        console.warn(\'gallery video poster skipped\', posterErr);\n      }\n      return {\n        mime_type: inferGalleryVideoMime(file),\n        duration_ms: Math.max(1, Math.round(durationSeconds * 1000)),\n        capture_width: width,\n        capture_height: height,\n        poster_data_url: posterDataUrl,\n      };\n    } finally {\n      try { probe.pause(); } catch (_) {}\n      probe.removeAttribute(\'src\');\n      try { probe.load(); } catch (_) {}\n      URL.revokeObjectURL(objectUrl);\n    }\n  };\n\n  const chooseGalleryVideo = async () => {\n    const file = galleryVideoInput?.files && galleryVideoInput.files[0];\n    if (!file) return;\n    try {\n      if (!videoAllowed) throw new Error(videoCapacityMessage);\n      setStatus(\'選んだ動画を確認しています…\');\n      const prepared = await prepareGalleryVideoFile(file);\n      pendingVideoBlob = file;\n      pendingMedia = {\n        kind: \'video\',\n        name: file.name || \'gallery-video\',\n        source: \'video_gallery\',\n        captured_at: file.lastModified ? new Date(file.lastModified).toISOString() : new Date().toISOString(),\n        mime_type: prepared.mime_type,\n        duration_ms: prepared.duration_ms,\n        poster_data_url: prepared.poster_data_url,\n        capture_width: prepared.capture_width,\n        capture_height: prepared.capture_height,\n        capture_frame_rate: 0,\n        video_bitrate_bps: 0,\n        location: {\n          ok: false,\n          error_code: \'GALLERY_VIDEO\',\n          error_message: \'動画フォルダから選んだ動画の撮影位置は自動取得しません。\'\n        }\n      };\n      showVideoReview(file, prepared.poster_data_url);\n      setStatus(\'\');\n    } catch (err) {\n      console.error(err);\n      const detail = String(err?.message || \'\').trim();\n      const message = detail ? `動画を選べませんでした。${detail}` : \'動画を選べませんでした。別の動画を選んでください。\';\n      setStatus(message);\n      setTriggerValue(\'camera_error\', { name: \'GalleryVideoError\', message, detail });\n    } finally {\n      if (galleryVideoInput) galleryVideoInput.value = \'\';\n    }\n  };\n\n  const prepareGalleryPhotoBatch = async (files, generation) => {\n    const sourceFiles = Array.isArray(files) ? files.slice() : [];\n    const results = new Array(sourceFiles.length);\n    let cursor = 0;\n    let completed = 0;\n    const worker = async () => {\n      while (true) {\n        const index = cursor;\n        cursor += 1;\n        if (index >= sourceFiles.length) return;\n        if (generation !== pendingPhotoLoadGeneration) throw new Error(\'gallery batch preparation cancelled\');\n        const file = sourceFiles[index];\n        const [dataUrl, importMeta, fingerprint] = await Promise.all([\n          prepareImageFile(file),\n          extractGalleryPhotoMetadataV441(file),\n          galleryPhotoFingerprintV444(file),\n        ]);\n        if (importMeta?.import_metadata && fingerprint) importMeta.import_metadata.source_fingerprint = fingerprint;\n        const alreadyImported = await galleryPhotoAlreadyImportedV444(file, importMeta, fingerprint);\n        setBatchGalleryImportedBadgeV444(index, alreadyImported);\n        if (generation !== pendingPhotoLoadGeneration) throw new Error(\'gallery batch preparation cancelled\');\n        results[index] = {\n          data_url: dataUrl,\n          name: file.name || `gallery_${index + 1}.jpg`,\n          source: \'gallery_batch\',\n          captured_at: String(importMeta?.captured_at || galleryPhotoFallbackCaptureMetaV441(file).captured_at),\n          capture_time_source: String(importMeta?.capture_time_source || \'file_last_modified\'),\n          location: importMeta?.location || {\n            ok: false, source: \'gallery\', error_code: \'GALLERY_NO_EXIF_GPS\',\n            error_message: \'写真の内部データに撮影位置がないため、位置情報は取得していません。\'\n          },\n          import_metadata: importMeta?.import_metadata || {},\n          already_imported: alreadyImported,\n        };\n        completed += 1;\n        setStatus(`保存用データを準備しています… ${completed}/${sourceFiles.length}`);\n      }\n    };\n    const workerCount = Math.max(1, Math.min(GALLERY_PHOTO_BATCH_WORKERS, sourceFiles.length));\n    await Promise.all(Array.from({ length: workerCount }, () => worker()));\n    const cleanResults = results.filter((item) => item && item.data_url);\n    updateBatchImportedSummaryV445(cleanResults, sourceFiles.length);\n    return cleanResults;\n  };\n\n  const chooseGalleryPhoto = async () => {\n    const selectedFiles = Array.from(galleryInput.files || []).filter((file) => file && (!file.type || file.type.startsWith(\'image/\')));\n    if (!selectedFiles.length) return;\n    if (selectedFiles.length > GALLERY_PHOTO_BATCH_MAX) {\n      const message = `一度に選べる写真は${GALLERY_PHOTO_BATCH_MAX}枚までです。枚数を減らして選びなおしてください。`;\n      setStatus(message);\n      setTriggerValue(\'camera_error\', { name: \'GalleryPhotoBatchLimit\', message });\n      galleryInput.value = \'\';\n      return;\n    }\n\n    const generation = ++pendingPhotoLoadGeneration;\n    let previewUrl = \'\';\n    try {\n      if (selectedFiles.length === 1) {\n        const file = selectedFiles[0];\n        // Preserve the established single-photo review path exactly.\n        previewUrl = URL.createObjectURL(file);\n        const fallbackMeta = galleryPhotoFallbackCaptureMetaV441(file);\n        pendingMedia = {\n          kind: \'photo\',\n          data_url: \'\',\n          name: file.name || \'gallery.jpg\',\n          source: \'gallery\',\n          captured_at: fallbackMeta.captured_at,\n          capture_time_source: fallbackMeta.capture_time_source,\n          emotion: \'\',\n          parenting: \'\',\n          location: {\n            ok: false,\n            source: \'gallery\',\n            error_code: \'GALLERY_NO_EXIF_GPS\',\n            error_message: \'写真の内部データに撮影位置がないため、位置情報は取得していません。\'\n          },\n          import_metadata: {\n            capture_time_source: fallbackMeta.capture_time_source,\n            capture_time_raw: fallbackMeta.capture_time_raw,\n            original_name: String(file.name || \'\'),\n            original_type: String(file.type || \'\'),\n            original_size_bytes: Math.max(0, Number(file.size || 0)),\n            original_last_modified_ms: Math.max(0, Number(file.lastModified || 0)),\n            exif_gps: false,\n          }\n        };\n        showPhotoReview(previewUrl);\n        pendingPhotoPreviewUrl = previewUrl;\n        previewUrl = \'\';\n        setStatus(\'写真を表示しました。保存用データを準備しています…\');\n        pendingPhotoPreparePromise = Promise.all([\n          prepareImageFile(file),\n          extractGalleryPhotoMetadataV441(file),\n          galleryPhotoFingerprintV444(file),\n        ]).then(async ([dataUrl, importMeta, fingerprint]) => {\n          if (generation !== pendingPhotoLoadGeneration) return \'\';\n          if (importMeta?.import_metadata && fingerprint) importMeta.import_metadata.source_fingerprint = fingerprint;\n          const alreadyImported = await galleryPhotoAlreadyImportedV444(file, importMeta, fingerprint);\n          if (generation !== pendingPhotoLoadGeneration) return \'\';\n          if (pendingMedia && pendingMedia.kind === \'photo\' && pendingMedia.source === \'gallery\') {\n            pendingMedia.data_url = dataUrl;\n            pendingMedia.already_imported = alreadyImported;\n            if (importMeta && typeof importMeta === \'object\') {\n              pendingMedia.captured_at = String(importMeta.captured_at || pendingMedia.captured_at || \'\');\n              pendingMedia.capture_time_source = String(importMeta.capture_time_source || pendingMedia.capture_time_source || \'\');\n              pendingMedia.location = importMeta.location || pendingMedia.location;\n              pendingMedia.import_metadata = importMeta.import_metadata || pendingMedia.import_metadata || {};\n            }\n            setSingleGalleryImportedBadgeV444(alreadyImported);\n            setStatus(alreadyImported ? \'✓ この写真はすでにアプリへ取り込み済みです。\' : \'\');\n          }\n          return dataUrl;\n        });\n        pendingPhotoPreparePromise.catch(() => {});\n        return;\n      }\n\n      const files = selectedFiles.slice();\n      showPhotoBatchReview(files);\n      pendingPhotoBatchFiles = files;\n      const batchId = (globalThis.crypto && typeof globalThis.crypto.randomUUID === \'function\')\n        ? globalThis.crypto.randomUUID()\n        : `photo_batch_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;\n      pendingMedia = {\n        kind: \'photo_batch\',\n        source: \'gallery_batch\',\n        batch_id: batchId,\n        selected_count: files.length,\n        items: []\n      };\n      setStatus(`保存用データを準備しています… 0/${files.length}`);\n      pendingPhotoBatchPreparePromise = prepareGalleryPhotoBatch(files, generation).then((items) => {\n        if (generation !== pendingPhotoLoadGeneration) return [];\n        if (pendingMedia && pendingMedia.kind === \'photo_batch\' && pendingMedia.batch_id === batchId) {\n          pendingMedia.items = items;\n          const importedCount = items.filter((item) => Boolean(item?.already_imported)).length;\n          setStatus(importedCount ? `${items.length}枚の準備ができました。${importedCount}枚は取り込み済みです。` : `${items.length}枚の準備ができました。`);\n        }\n        return items;\n      });\n      pendingPhotoBatchPreparePromise.catch(() => {});\n    } catch (err) {\n      console.error(err);\n      if (previewUrl) { try { URL.revokeObjectURL(previewUrl); } catch (_) {} }\n      const message = selectedFiles.length > 1\n        ? \'複数の写真を読み込めませんでした。枚数を減らすか、別の写真を選んでください。\'\n        : \'写真を読み込めませんでした。別の写真を選んでください。\';\n      setStatus(message);\n      setTriggerValue(\'camera_error\', { name: \'GalleryError\', message });\n    } finally {\n      galleryInput.value = \'\';\n    }\n  };\n\n  const findGoodMoments = async (event) => {\n    // Hard gate: only a real click on the separately armed review button may\n    // start frame extraction. Recording stop and review rendering never call it.\n    if (!event || event.isTrusted !== true) return;\n    if (!reviewFindMoments || event.currentTarget !== reviewFindMoments) return;\n    if (reviewFindMoments.dataset.armedGeneration !== String(videoReviewGeneration)) return;\n    if (!pendingMedia || pendingMedia.kind !== \'video\' || !pendingVideoBlob) return;\n    if (!review || review.hidden || reviewFindMoments.hidden) return;\n\n    event.preventDefault();\n    event.stopPropagation();\n    reviewFindMoments.dataset.armedGeneration = \'\';\n    if (reviewFindMoments) {\n      reviewFindMoments.disabled = true;\n      reviewFindMoments.textContent = \'候補を準備しています…\';\n    }\n    reviewSave.disabled = true;\n    reviewRetry.disabled = true;\n    setStatus(\'動画からいい瞬間の候補を準備しています…\');\n\n    try {\n      const candidateFrames = await extractVideoCandidateFrames(\n        pendingVideoBlob,\n        pendingMedia.duration_ms\n      );\n      if (!Array.isArray(candidateFrames) || candidateFrames.length < 1) {\n        throw new Error(\'not enough candidate frames\');\n      }\n      const requestId = (globalThis.crypto && typeof globalThis.crypto.randomUUID === \'function\')\n        ? globalThis.crypto.randomUUID()\n        : `selection_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;\n      const request = {\n        ...pendingMedia,\n        candidate_frames: candidateFrames,\n        selection_requested: true,\n        selection_request_id: requestId,\n        selection_requested_at: new Date().toISOString()\n      };\n      setTriggerValue(\'video_selection\', request);\n    } catch (err) {\n      console.error(err);\n      const message = \'良い瞬間を探す準備ができませんでした。もう一度お試しください。\';\n      setStatus(message);\n      reviewSave.disabled = false;\n      reviewRetry.disabled = false;\n      if (reviewFindMoments) {\n        reviewFindMoments.textContent = \'✨ いい瞬間を探す\';\n      }\n      setTriggerValue(\'camera_error\', { name: \'VideoSelectionPrepareError\', message });\n    }\n  };\n\n  const savePendingMedia = async (options = null) => {\n    if (!pendingMedia) return;\n    const excludeAlreadyImported = Boolean(options && options.excludeAlreadyImported === true);\n    reviewSave.disabled = true;\n    if (reviewSaveNewOnly) reviewSaveNewOnly.disabled = true;\n    reviewRetry.disabled = true;\n    const mediaToSave = pendingMedia;\n\n    if (mediaToSave.kind === \'photo_batch\') {\n      try {\n        let items = Array.isArray(mediaToSave.items) ? mediaToSave.items : [];\n        if (!items.length && pendingPhotoBatchPreparePromise) {\n          setStatus(`選んだ${pendingPhotoBatchFiles.length || mediaToSave.selected_count || 0}枚を保存する準備をしています…`);\n          items = await pendingPhotoBatchPreparePromise;\n          if (mediaToSave !== pendingMedia) throw new Error(\'gallery batch preparation cancelled\');\n          mediaToSave.items = items;\n        }\n        if (!items.length) throw new Error(\'複数写真の保存データを準備できませんでした。\');\n        items = await Promise.all(items.map(async(item,index)=>{\n          const q=rotationByFile616.get(pendingPhotoBatchFiles[index])||0;\n          return q?{...item,data_url:await rotatedPreview616(item.data_url,q)}:item;\n        }));\n        if(mediaToSave!==pendingMedia)throw new Error(\'gallery batch preparation cancelled\');\n        const itemsToSave = excludeAlreadyImported\n          ? items.filter((item) => !Boolean(item?.already_imported))\n          : items;\n        if (!itemsToSave.length) {\n          reviewSave.disabled = false;\n          reviewRetry.disabled = false;\n          updateBatchImportedSummaryV445(items, mediaToSave.selected_count || items.length);\n          setStatus(\'選んだ写真はすべて取り込み済みです。新しく保存する写真はありません。\');\n          return;\n        }\n        setStatus(excludeAlreadyImported\n          ? `${itemsToSave.length}枚の未取り込み写真を保存しています…`\n          : `${itemsToSave.length}枚の写真をまとめて保存しています…`);\n        releaseLiveCameraForUpload();\n        setTriggerValue(\'photo_batch\', {\n          kind: \'photo_batch\',\n          source: \'gallery_batch\',\n          batch_id: String(mediaToSave.batch_id || \'\'),\n          selected_count: itemsToSave.length,\n          items: itemsToSave\n        });\n        releaseSubmittedReviewMedia();\n      } catch (err) {\n        console.error(err);\n        reviewSave.disabled = false;\n        reviewRetry.disabled = false;\n        updateBatchImportedSummaryV445(Array.isArray(mediaToSave.items) ? mediaToSave.items : [], mediaToSave.selected_count || 0);\n        const message = \'複数の写真を保存する準備ができませんでした。もう一度選びなおしてください。\';\n        setStatus(message);\n        setTriggerValue(\'camera_error\', { name: \'GalleryPhotoBatchPrepareError\', message, detail: String(err?.message || \'\') });\n      }\n      return;\n    }\n\n    if (mediaToSave.kind === \'video\') {\n      const uploadGeneration = ++galleryVideoUploadGenerationV562;\n      const uploadController = new AbortController();\n      galleryVideoUploadControllerV562 = uploadController;\n      try {\n        if (!pendingVideoBlob) throw new Error(\'選んだ動画を確認できません。\');\n        if (!videoAllowed || !videoUploadSignedUrl || !videoUploadStoragePath) throw new Error(videoCapacityMessage);\n        if (videoMaxBytes > 0 && pendingVideoBlob.size > videoMaxBytes) {\n          throw new Error(\'選んだ動画が現在の保存可能容量を超えています。\');\n        }\n        // Keep Cancel available during a slow mobile upload. All late responses\n        // from an aborted or replaced upload are ignored.\n        reviewRetry.disabled = false;\n        reviewRetry.textContent = \'送信を中止する\';\n        setStatus(\'選んだ動画を保管庫へ送信しています… 0%\');\n        const mimeType = String(mediaToSave.mime_type || inferGalleryVideoMime(pendingVideoBlob) || \'video/mp4\');\n        releaseLiveCameraForUpload();\n        const progressV562 = (loaded, total, retrying = false) => {\n          if (uploadGeneration !== galleryVideoUploadGenerationV562 || uploadController.signal.aborted) return;\n          if (retrying) {\n            setStatus(\'動画の送信を再試行しています… 0%\');\n          } else if (total > 0) {\n            const percent = Math.max(0, Math.min(100, Math.floor(100 * loaded / total)));\n            setStatus(percent >= 100\n              ? \'動画の送信が完了しました。保存先の確認を待っています…\'\n              : `選んだ動画を保管庫へ送信しています… ${percent}%`);\n          }\n        };\n        const actualVideoStoragePath = await uploadGalleryVideoToSignedUrlV562(\n          pendingVideoBlob, progressV562, uploadController.signal\n        );\n        if (uploadGeneration !== galleryVideoUploadGenerationV562 || uploadController.signal.aborted || mediaToSave !== pendingMedia) return;\n        // Do not claim saved here: the server still needs to register the uploaded\n        // original and its poster. Reuse the existing registration payload verbatim.\n        const recordingId = (globalThis.crypto && typeof globalThis.crypto.randomUUID === \'function\')\n          ? globalThis.crypto.randomUUID()\n          : `gallery_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;\n        const uploadedPayload = {\n          kind: \'video_uploaded\',\n          recording_id: recordingId,\n          video_storage_path: actualVideoStoragePath,\n          video_size_bytes: pendingVideoBlob.size,\n          poster_data_url: String(mediaToSave.poster_data_url || \'\'),\n          candidate_frames: [],\n          candidate_sheet_path: \'\',\n          candidate_manifest: [],\n          candidate_sheet_columns: 0,\n          candidate_sheet_rows: 0,\n          mime_type: mimeType,\n          duration_ms: Number(mediaToSave.duration_ms || 0),\n          capture_width: Number(mediaToSave.capture_width || 0),\n          capture_height: Number(mediaToSave.capture_height || 0),\n          capture_frame_rate: Number(mediaToSave.capture_frame_rate || 0),\n          video_bitrate_bps: Number(mediaToSave.video_bitrate_bps || 0),\n          name: String(mediaToSave.name || \'gallery-video\'),\n          source: \'video_gallery\',\n          captured_at: String(mediaToSave.captured_at || new Date().toISOString()),\n          location: mediaToSave.location || { ok: false, error_code: \'GALLERY_VIDEO\' },\n          auto_save: true,\n          upload_complete: true\n        };\n        setStatus(\'動画を保管庫へ送信しました。記録を登録しています…\');\n        setTriggerValue(\'video\', uploadedPayload);\n        releaseSubmittedReviewMedia();\n      } catch (err) {\n        if (uploadGeneration !== galleryVideoUploadGenerationV562 || uploadController.signal.aborted || err?.name === \'AbortError\') return;\n        console.error(err);\n        reviewSave.disabled = false;\n        reviewRetry.disabled = false;\n        reviewRetry.textContent = \'選びなおす\';\n        const detail = String(err?.message || \'\').trim();\n        const message = detail ? `動画を保存できませんでした。${detail}` : \'動画を保存できませんでした。\';\n        setStatus(message);\n        setTriggerValue(\'camera_error\', { name: \'GalleryVideoUploadError\', message, detail });\n      } finally {\n        if (galleryVideoUploadControllerV562 === uploadController) galleryVideoUploadControllerV562 = null;\n      }\n      return;\n    }\n\n    try {\n      if (mediaToSave.kind === \'photo\' && mediaToSave.source === \'gallery\' && !mediaToSave.data_url && pendingPhotoPreparePromise) {\n        setStatus(\'写真を保存する準備をしています…\');\n        const preparedDataUrl = await pendingPhotoPreparePromise;\n        if (!preparedDataUrl) throw new Error(\'gallery image preparation cancelled\');\n        mediaToSave.data_url = preparedDataUrl;\n      }\n      if (!mediaToSave.data_url) throw new Error(\'写真データを準備できませんでした。\');\n      if (mediaToSave.location_promise) {\n        setStatus(\'撮影地点を確認しています…\');\n        try {\n          const resolvedLocation = await mediaToSave.location_promise;\n          if (resolvedLocation) mediaToSave.location = resolvedLocation;\n        } catch (_) {}\n        delete mediaToSave.location_promise;\n      }\n      if(mediaToSave.rotation_quarters_v616){\n        mediaToSave.data_url=await rotatedPreview616(mediaToSave.data_url,mediaToSave.rotation_quarters_v616);\n        mediaToSave.rotation_quarters_v616=0;\n        if(mediaToSave!==pendingMedia)throw new Error(\'gallery image preparation cancelled\');\n      }\n      setStatus(\'写真を保存しています…\');\n      releaseLiveCameraForUpload();\n      setTriggerValue(\'photo\', mediaToSave);\n      releaseSubmittedReviewMedia();\n    } catch (err) {\n      console.error(err);\n      reviewSave.disabled = false;\n      reviewRetry.disabled = false;\n      const message = \'写真を保存する準備ができませんでした。もう一度選びなおしてください。\';\n      setStatus(message);\n      setTriggerValue(\'camera_error\', { name: \'GalleryPhotoPrepareError\', message });\n    }\n  };\n\n  const retryPendingMedia = async () => {\n    if (!pendingMedia) return;\n    const source = pendingMedia.source;\n    if (source === \'video_gallery\' && galleryVideoUploadControllerV562) {\n      ++galleryVideoUploadGenerationV562;\n      galleryVideoUploadControllerV562.abort();\n      galleryVideoUploadControllerV562 = null;\n    }\n    pendingMedia = null;\n    pendingVideoBlob = null;\n    pendingPhotoLoadGeneration += 1;\n    pendingPhotoPreparePromise = null;\n    revokePendingPhotoPreviewUrl();\n    resetPendingPhotoBatch();\n    reviewSave.disabled = false;\n    if (reviewSaveNewOnly) { reviewSaveNewOnly.hidden = true; reviewSaveNewOnly.disabled = false; }\n    reviewRetry.disabled = false;\n    disarmGoodMomentsButton();\n    setStatus(\'\');\n    hideReview();\n\n    if ((source === \'camera\' || source === \'gallery\' || source === \'gallery_batch\' || source === \'video_camera\' || source === \'video_gallery\') && stream && stream.getTracks().some((track) => track.readyState === \'live\')) {\n      cameraMode = (source === \'video_camera\' || source === \'video_gallery\') ? \'video\' : \'photo\';\n      if (video.srcObject !== stream) video.srcObject = stream;\n      await video.play();\n      shootButton.disabled = false;\n      showCameraActions();\n      return;\n    }\n    showMenu();\n  };\n\n  const closeCamera = () => {\n    stopStream();\n    setStatus(\'\');\n  };\n\n  const handleShoot = () => {\n    if (cameraMode === \'video\') {\n      if (videoRecordingStartBusy || videoUploadBusy) return;\n      if (mediaRecorder && mediaRecorder.state === \'recording\') stopVideoRecording();\n      else startVideoRecording();\n    } else {\n      takePhoto();\n    }\n  };\n\n  const showImmediatePhotoPress = () => {\n    if (cameraMode !== \'photo\' || photoCaptureBusy || shootButton.disabled) return;\n    if (photoPressResetTimer) {\n      clearTimeout(photoPressResetTimer);\n      photoPressResetTimer = null;\n    }\n    setPhotoCapturingUi(true);\n  };\n\n  const safelyResetPhotoPress = () => {\n    if (photoPressResetTimer) clearTimeout(photoPressResetTimer);\n    photoPressResetTimer = setTimeout(() => {\n      photoPressResetTimer = null;\n      if (!photoCaptureBusy) setPhotoCapturingUi(false);\n    }, 180);\n  };\n\n  const switchCameraMode = () => {\n    if (videoRecordingStartBusy || videoUploadBusy) return;\n    if (mediaRecorder && mediaRecorder.state === \'recording\') return;\n    if (cameraModeSwitchInProgress) return;\n    const targetMode = cameraMode === \'video\' ? \'photo\' : \'video\';\n    cameraModeSwitchInProgress = true;\n    startCamera(targetMode, { fromModeSwitch: true });\n  };\n\n  const switchCameraFacing = () => {\n    if (videoRecordingStartBusy || videoUploadBusy) return;\n    if (mediaRecorder && mediaRecorder.state === \'recording\') return;\n    cameraFacing = cameraFacing === \'user\' ? \'environment\' : \'user\';\n    preferredCameraDeviceId = null;\n    persistCameraFacing();\n    syncFacingUi();\n    setStatus(cameraFacing === \'user\' ? \'内側カメラに切り替えています…\' : \'外側カメラに切り替えています…\');\n    startCamera(cameraMode);\n  };\n\n  let orientationConstraintTimer = null;\n  const handleOrientationChange = () => {\n    // Horizontal camera mode is intentionally disabled. A viewport resize only\n    // recalculates the size of the same native-ratio portrait frame.\n    syncOrientationUi();\n    if (orientationConstraintTimer) clearTimeout(orientationConstraintTimer);\n    orientationConstraintTimer = setTimeout(() => {\n      orientationConstraintTimer = null;\n      syncNativeCameraFrame();\n      syncFacingUi();\n    }, 180);\n  };\n\n  const startPhotoCamera = () => { cameraModeSwitchInProgress = false; startCamera(\'photo\'); };\n  const startVideoCamera = () => { cameraModeSwitchInProgress = false; startCamera(\'video\'); };\n\n  startButton.addEventListener(\'click\', startPhotoCamera);\n  videoStartButton.addEventListener(\'click\', startVideoCamera);\n  facingSwitchButton?.addEventListener(\'click\', switchCameraFacing);\n  modeSwitchButton.addEventListener(\'click\', switchCameraMode);\n  shootButton.addEventListener(\'pointerdown\', showImmediatePhotoPress, { passive: true });\n  shootButton.addEventListener(\'pointerup\', safelyResetPhotoPress, { passive: true });\n  shootButton.addEventListener(\'pointercancel\', safelyResetPhotoPress, { passive: true });\n  shootButton.addEventListener(\'click\', handleShoot);\n  stopButton.addEventListener(\'click\', closeCamera);\n  galleryInput.addEventListener(\'change\', chooseGalleryPhoto);\n  galleryVideoInput?.addEventListener(\'change\', chooseGalleryVideo);\n  if (reviewModeNormal) reviewModeNormal.addEventListener(\'click\', (event) => {\n    event.preventDefault(); event.stopPropagation(); reviewMode = \'normal\'; syncReviewEmotion();\n  });\n  if (reviewModeParenting) reviewModeParenting.addEventListener(\'click\', (event) => {\n    event.preventDefault(); event.stopPropagation(); reviewMode = \'parenting\'; syncReviewEmotion();\n  });\n  const saveOnlyUnimportedGalleryPhotosV445 = () => savePendingMedia({ excludeAlreadyImported: true });\n  reviewSave.addEventListener(\'click\', savePendingMedia);\n  reviewSaveNewOnly?.addEventListener(\'click\', saveOnlyUnimportedGalleryPhotosV445);\n  reviewRetry.addEventListener(\'click\', retryPendingMedia);\n  reviewImageShell?.addEventListener(\'click\', cycleReviewEmotion);\n  reviewImageShell?.addEventListener(\'keydown\', onReviewEmotionKeydown);\n  reviewFindMoments?.addEventListener(\'click\', findGoodMoments);\n  window.addEventListener(\'orientationchange\', handleOrientationChange);\n  window.addEventListener(\'resize\', handleOrientationChange);\n  try { globalThis.screen?.orientation?.addEventListener?.(\'change\', handleOrientationChange); } catch (_) {}\n\n  if (galleryOnly) {\n    showMenu();\n  } else if (data?.auto_start_mode === \'video\') {\n    queueMicrotask(() => startCamera(\'video\'));\n  } else if (data?.auto_start) {\n    queueMicrotask(() => startCamera(\'photo\'));\n  }\n\n  return () => {\n    startButton.removeEventListener(\'click\', startPhotoCamera);\n    videoStartButton.removeEventListener(\'click\', startVideoCamera);\n    facingSwitchButton?.removeEventListener(\'click\', switchCameraFacing);\n    modeSwitchButton.removeEventListener(\'click\', switchCameraMode);\n    shootButton.removeEventListener(\'pointerdown\', showImmediatePhotoPress);\n    shootButton.removeEventListener(\'pointerup\', safelyResetPhotoPress);\n    shootButton.removeEventListener(\'pointercancel\', safelyResetPhotoPress);\n    shootButton.removeEventListener(\'click\', handleShoot);\n    stopButton.removeEventListener(\'click\', closeCamera);\n    galleryInput.removeEventListener(\'change\', chooseGalleryPhoto);\n    galleryVideoInput?.removeEventListener(\'change\', chooseGalleryVideo);\n    ++galleryVideoUploadGenerationV562;\n    if (galleryVideoUploadControllerV562) {\n      galleryVideoUploadControllerV562.abort();\n      galleryVideoUploadControllerV562 = null;\n    }\n    pendingPhotoLoadGeneration += 1;\n    pendingPhotoPreparePromise = null;\n    revokePendingPhotoPreviewUrl();\n    resetPendingPhotoBatch();\n    reviewSave.removeEventListener(\'click\', savePendingMedia);\n    reviewSaveNewOnly?.removeEventListener(\'click\', saveOnlyUnimportedGalleryPhotosV445);\n    reviewRetry.removeEventListener(\'click\', retryPendingMedia);\n    reviewImageShell?.removeEventListener(\'click\', cycleReviewEmotion);\n    reviewImageShell?.removeEventListener(\'keydown\', onReviewEmotionKeydown);\n    reviewFindMoments?.removeEventListener(\'click\', findGoodMoments);\n    window.removeEventListener(\'orientationchange\', handleOrientationChange);\n    window.removeEventListener(\'resize\', handleOrientationChange);\n    try { globalThis.screen?.orientation?.removeEventListener?.(\'change\', handleOrientationChange); } catch (_) {}\n    if (orientationConstraintTimer) { clearTimeout(orientationConstraintTimer); orientationConstraintTimer = null; }\n    if (photoPressResetTimer) { clearTimeout(photoPressResetTimer); photoPressResetTimer = null; }\n    clearGoodMomentsRevealTimer();\n    stopStream();\n    hideReview();\n  };\n}\n'
 
 LIVE_CAMERA_COMPONENT_BUILD = "v562"
 
@@ -5652,7 +1666,7 @@ def _get_live_camera_component():
     _live_camera_component_initialized = True
     try:
         live_camera_component = st.components.v2.component(
-            "tokyo_burari_live_camera_v562",
+            "tokyo_burari_live_camera_v616",
             html=_LIVE_CAMERA_HTML,
             css=_LIVE_CAMERA_CSS,
             js=_perf_instrument_js_v466(_LIVE_CAMERA_JS),
@@ -7287,605 +3301,9 @@ _DIARY_GALLERY_HTML = """
 <div id="diary-photo-grid" class="diary-photo-grid"></div>
 """
 
-_DIARY_GALLERY_CSS = """
-.diary-photo-grid {
-  width: 100%;
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 8px;
-  box-sizing: border-box;
-}
-.diary-photo-batch-toolbar {
-  width:100%; display:grid; grid-template-columns:minmax(0,1fr) auto auto; gap:7px; align-items:center;
-  margin:0 0 8px; padding:7px 8px; box-sizing:border-box;
-  border:1px solid rgba(128,128,128,.22); border-radius:12px; background:rgba(128,128,128,.055);
-}
-.diary-photo-batch-toolbar[hidden] { display:none !important; }
-.diary-photo-batch-count { min-width:0; font-size:12px; line-height:1.2; font-weight:850; }
-.diary-photo-batch-toolbar button {
-  appearance:none; -webkit-appearance:none; min-height:34px; margin:0; padding:6px 11px;
-  border:1px solid rgba(128,128,128,.24); border-radius:9px; background:rgba(255,255,255,.72);
-  color:var(--st-text-color); font-size:11px; line-height:1; font-weight:820; cursor:pointer;
-  touch-action:manipulation; -webkit-tap-highlight-color:transparent;
-}
-.diary-photo-batch-toolbar button.danger { border-color:rgba(221,72,72,.52); background:rgba(221,72,72,.12); color:#C83D3D; }
-.diary-photo-card.batch-selected {
-  border-color:#E14B4B !important; background:rgba(225,75,75,.14) !important;
-  box-shadow:0 0 0 2px rgba(225,75,75,.24) inset !important;
-}
-.diary-photo-card.batch-selected::after {
-  content:'✓'; position:absolute; right:7px; top:7px; z-index:20; width:26px; height:26px;
-  border-radius:999px; display:flex; align-items:center; justify-content:center;
-  background:#E14B4B; color:#fff; border:2px solid #fff; box-shadow:0 2px 7px rgba(0,0,0,.25);
-  font-size:15px; line-height:1; font-weight:900; pointer-events:none;
-}
-.diary-photo-grid.batch-mode .diary-photo-delete,
-.diary-photo-grid.batch-mode .diary-photo-favorite { opacity:.18; pointer-events:none; }
-.diary-photo-single-nav {
-  display:grid; grid-template-columns:1fr 1.05fr 1fr; gap:7px; align-items:center;
-  width:100%; max-width:620px; margin:0 auto 8px; box-sizing:border-box;
-}
-.diary-photo-single-nav[hidden] { display:none !important; }
-.diary-photo-single-nav button {
-  appearance:none; -webkit-appearance:none; width:100%; min-height:40px; margin:0; padding:7px 9px;
-  border:1px solid rgba(128,128,128,.22); border-radius:11px; background:rgba(128,128,128,.045);
-  color:var(--st-text-color); font-size:13px; line-height:1.1; font-weight:780; cursor:pointer;
-  touch-action:manipulation; -webkit-tap-highlight-color:transparent;
-}
-.diary-photo-single-nav button:disabled { opacity:.34; cursor:default; }
-.diary-photo-count { text-align:center; font-size:13px; line-height:1.1; font-weight:850; }
-.diary-photo-tags { display:none; margin-top:6px; font-size:10px; line-height:1.35; opacity:.72; overflow-wrap:anywhere; }
-.diary-photo-grid.single .diary-photo-tags { display:block; }
-.diary-photo-grid.single {
-  grid-template-columns: minmax(0, 1fr);
-  max-width: 620px;
-  margin: 0 auto;
-}
-.diary-photo-grid.single .diary-photo-card img {
-  aspect-ratio: auto;
-  width: 100%;
-  max-height: 68vh;
-  object-fit: contain;
-  background: rgba(128,128,128,.045);
-}
-.diary-photo-wrap { position: relative; min-width: 0; }
-.diary-photo-card {
-  appearance: none; -webkit-appearance: none;
-  position: relative; width: 100%; min-width: 0; margin: 0; padding: 5px;
-  border: 3px solid #AEB6C2; background: rgba(174,182,194,.14);
-  border-radius: 14px; box-sizing: border-box; cursor: pointer;
-  touch-action: manipulation; -webkit-tap-highlight-color: transparent;
-  overflow: hidden; box-shadow: 0 0 0 1px rgba(174,182,194,.08) inset;
-}
-.diary-photo-card.emotion-cozy { border-color:#F3B6A0; background:rgba(243,182,160,.18); box-shadow:0 0 0 1px rgba(243,182,160,.10) inset; }
-.diary-photo-card.emotion-joy { border-color:#F2C94C; background:rgba(242,201,76,.18); box-shadow:0 0 0 1px rgba(242,201,76,.10) inset; }
-.diary-photo-card.emotion-surprise { border-color:#9B7BD3; background:rgba(155,123,211,.17); box-shadow:0 0 0 1px rgba(155,123,211,.10) inset; }
-.diary-photo-card.emotion-anger { border-color:#E56B6F; background:rgba(229,107,111,.16); box-shadow:0 0 0 1px rgba(229,107,111,.10) inset; }
-.diary-photo-card.emotion-sadness { border-color:#6C9BD2; background:rgba(108,155,210,.16); box-shadow:0 0 0 1px rgba(108,155,210,.10) inset; }
-.diary-photo-card.emotion-frustration { border-color:#A66A8A; background:rgba(166,106,138,.17); box-shadow:0 0 0 1px rgba(166,106,138,.10) inset; }
-.diary-photo-card.emotion-relaxed { border-color:#9BCDB8; background:rgba(155,205,184,.18); box-shadow:0 0 0 1px rgba(155,205,184,.10) inset; }
-.diary-photo-card.emotion-delicious { border-color:#F2A65A; background:rgba(242,166,90,.18); box-shadow:0 0 0 1px rgba(242,166,90,.10) inset; }
-.diary-photo-card.emotion-beautiful { border-color:#6EC5D8; background:rgba(110,197,216,.18); box-shadow:0 0 0 1px rgba(110,197,216,.10) inset; }
-.diary-photo-card.emotion-mixed { border-color:#8D86A8; background:rgba(141,134,168,.18); box-shadow:0 0 0 1px rgba(141,134,168,.10) inset; }
-.diary-photo-card:active { transform: scale(.985); }
-.diary-photo-card img { display:block; width:100%; aspect-ratio:1/1; object-fit:cover; border-radius:9px; background:rgba(128,128,128,.08); }
-.diary-emotion-badge {
-  position:absolute; right:7px; bottom:7px; z-index:3; min-width:28px; height:24px; padding:0 6px;
-  border-radius:999px; display:flex; align-items:center; justify-content:center;
-  background:rgba(255,255,255,.92); border:1.5px solid rgba(255,255,255,.96);
-  box-shadow:0 2px 8px rgba(0,0,0,.22); font-size:8.5px; line-height:1; font-weight:800; white-space:nowrap; pointer-events:none;
-}
-.diary-emotion-badge[hidden] { display:none !important; }
-.diary-mode-switch {
-  display:grid; grid-template-columns:1fr 1fr; gap:3px; margin-top:4px; width:100%;
-}
-.diary-mode-button {
-  appearance:none; -webkit-appearance:none; min-width:0; min-height:27px; margin:0; padding:4px 3px;
-  border:1px solid rgba(128,128,128,.22); border-radius:8px; background:rgba(128,128,128,.045);
-  color:var(--st-text-color); font-size:8.5px; line-height:1; font-weight:760; cursor:pointer;
-  touch-action:manipulation; -webkit-tap-highlight-color:transparent;
-}
-.diary-mode-button.active { border-color:#6C9BD2; background:rgba(108,155,210,.13); }
-.diary-mode-button.parenting.active { border-color:#6FBA9C; background:rgba(111,186,156,.14); }
-.diary-photo-delete {
-  position:absolute; top:3px; right:3px; z-index:12; width:25px; height:25px; padding:0; margin:0;
-  border-radius:999px; border:1.5px solid rgba(255,255,255,.92); background:rgba(49,54,63,.72);
-  color:#fff; font-size:18px; line-height:20px; font-weight:700; display:flex; align-items:center;
-  justify-content:center; cursor:pointer; box-shadow:0 1px 5px rgba(0,0,0,.22); touch-action:manipulation;
-  -webkit-tap-highlight-color:transparent;
-}
-.diary-photo-delete:active { transform:scale(.94); }
-.diary-photo-favorite {
-  appearance:none; -webkit-appearance:none; position:absolute; top:7px; left:7px; z-index:11;
-  width:30px; height:30px; padding:0; margin:0; border-radius:999px;
-  border:1.5px solid rgba(255,255,255,.92); background:rgba(35,40,50,.58);
-  color:#fff; display:flex; align-items:center; justify-content:center;
-  font-size:19px; line-height:1; font-weight:800; cursor:pointer;
-  box-shadow:0 1px 6px rgba(0,0,0,.24); touch-action:manipulation; -webkit-tap-highlight-color:transparent;
-}
-.diary-photo-favorite.active { color:#FFD54A; background:rgba(35,40,50,.72); }
-.diary-photo-favorite.indicator-only { pointer-events:none; cursor:default; }
-.diary-photo-favorite:active { transform:scale(.94); }
-.diary-photo-share {
-  appearance:none; -webkit-appearance:none; width:100%; min-height:29px; margin:4px 0 0; padding:4px 5px;
-  border:1px solid rgba(97,132,185,.34); border-radius:8px; background:rgba(97,132,185,.07);
-  color:var(--st-text-color); font-size:8.8px; line-height:1.15; font-weight:780; cursor:pointer;
-  touch-action:manipulation; -webkit-tap-highlight-color:transparent;
-}
-.diary-photo-share.shared { border-color:rgba(93,166,133,.58); background:rgba(93,166,133,.13); }
-.diary-photo-share:active { transform:scale(.985); }
-.diary-photo-share:disabled { opacity:.62; cursor:wait; }
-.diary-photo-open {
-  appearance:none; -webkit-appearance:none; width:100%; min-height:29px; margin:4px 0 0; padding:4px 5px;
-  border:1px solid rgba(128,128,128,.26); border-radius:8px; background:rgba(128,128,128,.055);
-  color:var(--st-text-color); font-size:8.8px; line-height:1.15; font-weight:780; cursor:pointer;
-  touch-action:manipulation; -webkit-tap-highlight-color:transparent;
-}
-.diary-photo-open:active { transform:scale(.985); }
-.diary-photo-voice {
-  appearance:none; -webkit-appearance:none; width:100%; min-height:34px; margin:6px 0 0; padding:6px 8px;
-  border:1px solid rgba(111,134,170,.36); border-radius:9px; background:rgba(111,134,170,.08);
-  color:var(--st-text-color); font-size:10px; line-height:1.15; font-weight:800; cursor:pointer;
-  touch-action:manipulation; -webkit-tap-highlight-color:transparent;
-}
-.diary-photo-voice.has-voice { border-color:rgba(93,166,133,.58); background:rgba(93,166,133,.13); }
-.diary-photo-voice:active { transform:scale(.985); }
-.diary-photo-voice-preview {
-  width:100%; margin:7px 0 0; padding:7px 8px; box-sizing:border-box;
-  border:1px solid rgba(93,166,133,.34); border-radius:10px; background:rgba(93,166,133,.075);
-}
-.diary-photo-voice-preview-title { font-size:10px; line-height:1.25; font-weight:820; margin:0 0 5px; }
-.diary-photo-voice-preview audio { display:block; width:100%; min-height:34px; }
-.diary-photo-voice-preview-text { margin-top:4px; font-size:9px; line-height:1.35; opacity:.72; overflow-wrap:anywhere; }
-.diary-photo-shared-meta { margin-top:5px; font-size:9.5px; line-height:1.35; font-weight:730; opacity:.78; overflow-wrap:anywhere; }
-.diary-photo-location { margin-top:4px; font-size:10px; line-height:1.25; color:var(--st-text-color); opacity:.78; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-@media (max-width:640px) {
-  .diary-photo-single-nav { gap:5px; margin-bottom:6px; }
-  .diary-photo-single-nav button { min-height:36px; padding:6px 5px; font-size:11px; border-radius:9px; }
-  .diary-photo-count { font-size:11px; }
-  .diary-photo-tags { font-size:9px; }
-  .diary-photo-grid { gap:6px; }
-  .diary-photo-card { padding:4px; border-radius:12px; }
-  .diary-photo-card img { border-radius:8px; }
-  .diary-photo-location { font-size:9px; }
-  .diary-photo-delete { top:2px; right:2px; width:23px; height:23px; font-size:17px; }
-  .diary-photo-favorite { top:5px; left:5px; width:27px; height:27px; font-size:17px; }
-  .diary-photo-share { min-height:27px; font-size:7.7px; padding:3px 3px; }
-  .diary-photo-open { min-height:27px; font-size:7.7px; padding:3px 3px; }
-  .diary-photo-voice { min-height:32px; font-size:9px; padding:5px 6px; }
-  .diary-photo-voice-preview { padding:6px 7px; }
-  .diary-photo-voice-preview-title { font-size:9px; }
-  .diary-photo-voice-preview-text { font-size:8px; }
-  .diary-photo-shared-meta { font-size:8.5px; }
-  .diary-emotion-badge { right:5px; bottom:5px; min-width:25px; height:22px; padding:0 5px; font-size:7.5px; }
-  .diary-mode-button { min-height:25px; font-size:7.5px; padding:3px 2px; }
-  .diary-photo-grid.single { max-width: 100%; }
-  .diary-photo-grid.single .diary-photo-card img { max-height: 62vh; }
-  .diary-photo-grid.single .diary-mode-button { min-height:34px; font-size:10px; }
-}
-"""
+_DIARY_GALLERY_CSS = "\n.diary-photo-grid {\n  width: 100%;\n  display: grid;\n  grid-template-columns: repeat(3, minmax(0, 1fr));\n  gap: 8px;\n  box-sizing: border-box;\n}\n.diary-photo-batch-toolbar {\n  width:100%; display:grid; grid-template-columns:minmax(0,1fr) auto auto; gap:7px; align-items:center;\n  margin:0 0 8px; padding:7px 8px; box-sizing:border-box;\n  border:1px solid rgba(128,128,128,.22); border-radius:12px; background:rgba(128,128,128,.055);\n}\n.diary-photo-batch-toolbar[hidden] { display:none !important; }\n.diary-photo-batch-count { min-width:0; font-size:12px; line-height:1.2; font-weight:850; }\n.diary-photo-batch-toolbar button {\n  appearance:none; -webkit-appearance:none; min-height:34px; margin:0; padding:6px 11px;\n  border:1px solid rgba(128,128,128,.24); border-radius:9px; background:rgba(255,255,255,.72);\n  color:var(--st-text-color); font-size:11px; line-height:1; font-weight:820; cursor:pointer;\n  touch-action:manipulation; -webkit-tap-highlight-color:transparent;\n}\n.diary-photo-batch-toolbar button.danger { border-color:rgba(221,72,72,.52); background:rgba(221,72,72,.12); color:#C83D3D; }\n.diary-photo-card.batch-selected {\n  border-color:#E14B4B !important; background:rgba(225,75,75,.14) !important;\n  box-shadow:0 0 0 2px rgba(225,75,75,.24) inset !important;\n}\n.diary-photo-card.batch-selected::after {\n  content:'✓'; position:absolute; right:7px; top:7px; z-index:20; width:26px; height:26px;\n  border-radius:999px; display:flex; align-items:center; justify-content:center;\n  background:#E14B4B; color:#fff; border:2px solid #fff; box-shadow:0 2px 7px rgba(0,0,0,.25);\n  font-size:15px; line-height:1; font-weight:900; pointer-events:none;\n}\n.diary-photo-grid.batch-mode .diary-photo-delete,\n.diary-photo-grid.batch-mode .diary-photo-favorite { opacity:.18; pointer-events:none; }\n.diary-photo-single-nav {\n  display:grid; grid-template-columns:1fr 1.05fr 1fr; gap:7px; align-items:center;\n  width:100%; max-width:620px; margin:0 auto 8px; box-sizing:border-box;\n}\n.diary-photo-single-nav[hidden] { display:none !important; }\n.diary-photo-single-nav button {\n  appearance:none; -webkit-appearance:none; width:100%; min-height:40px; margin:0; padding:7px 9px;\n  border:1px solid rgba(128,128,128,.22); border-radius:11px; background:rgba(128,128,128,.045);\n  color:var(--st-text-color); font-size:13px; line-height:1.1; font-weight:780; cursor:pointer;\n  touch-action:manipulation; -webkit-tap-highlight-color:transparent;\n}\n.diary-photo-single-nav button:disabled { opacity:.34; cursor:default; }\n.diary-photo-count { text-align:center; font-size:13px; line-height:1.1; font-weight:850; }\n.diary-photo-tags { display:none; margin-top:6px; font-size:10px; line-height:1.35; opacity:.72; overflow-wrap:anywhere; }\n.diary-photo-grid.single .diary-photo-tags { display:block; }\n.diary-photo-grid.single {\n  grid-template-columns: minmax(0, 1fr);\n  max-width: 620px;\n  margin: 0 auto;\n}\n.diary-photo-grid.single .diary-photo-card img {\n  aspect-ratio: auto;\n  width: 100%;\n  max-height: 68vh;\n  object-fit: contain;\n  background: rgba(128,128,128,.045);\n}\n.diary-photo-wrap { position: relative; min-width: 0; }\n.diary-photo-card {\n  appearance: none; -webkit-appearance: none;\n  position: relative; width: 100%; min-width: 0; margin: 0; padding: 5px;\n  border: 3px solid #AEB6C2; background: rgba(174,182,194,.14);\n  border-radius: 14px; box-sizing: border-box; cursor: pointer;\n  touch-action: manipulation; -webkit-tap-highlight-color: transparent;\n  overflow: hidden; box-shadow: 0 0 0 1px rgba(174,182,194,.08) inset;\n}\n.diary-photo-card.emotion-cozy { border-color:#F3B6A0; background:rgba(243,182,160,.18); box-shadow:0 0 0 1px rgba(243,182,160,.10) inset; }\n.diary-photo-card.emotion-joy { border-color:#F2C94C; background:rgba(242,201,76,.18); box-shadow:0 0 0 1px rgba(242,201,76,.10) inset; }\n.diary-photo-card.emotion-surprise { border-color:#9B7BD3; background:rgba(155,123,211,.17); box-shadow:0 0 0 1px rgba(155,123,211,.10) inset; }\n.diary-photo-card.emotion-anger { border-color:#E56B6F; background:rgba(229,107,111,.16); box-shadow:0 0 0 1px rgba(229,107,111,.10) inset; }\n.diary-photo-card.emotion-sadness { border-color:#6C9BD2; background:rgba(108,155,210,.16); box-shadow:0 0 0 1px rgba(108,155,210,.10) inset; }\n.diary-photo-card.emotion-frustration { border-color:#A66A8A; background:rgba(166,106,138,.17); box-shadow:0 0 0 1px rgba(166,106,138,.10) inset; }\n.diary-photo-card.emotion-relaxed { border-color:#9BCDB8; background:rgba(155,205,184,.18); box-shadow:0 0 0 1px rgba(155,205,184,.10) inset; }\n.diary-photo-card.emotion-delicious { border-color:#F2A65A; background:rgba(242,166,90,.18); box-shadow:0 0 0 1px rgba(242,166,90,.10) inset; }\n.diary-photo-card.emotion-beautiful { border-color:#6EC5D8; background:rgba(110,197,216,.18); box-shadow:0 0 0 1px rgba(110,197,216,.10) inset; }\n.diary-photo-card.emotion-mixed { border-color:#8D86A8; background:rgba(141,134,168,.18); box-shadow:0 0 0 1px rgba(141,134,168,.10) inset; }\n.diary-photo-card:active { transform: scale(.985); }\n.diary-photo-card img { display:block; width:100%; aspect-ratio:1/1; object-fit:cover; border-radius:9px; background:rgba(128,128,128,.08); }\n.diary-emotion-badge {\n  position:absolute; right:7px; bottom:7px; z-index:3; min-width:28px; height:24px; padding:0 6px;\n  border-radius:999px; display:flex; align-items:center; justify-content:center;\n  background:rgba(255,255,255,.92); border:1.5px solid rgba(255,255,255,.96);\n  box-shadow:0 2px 8px rgba(0,0,0,.22); font-size:8.5px; line-height:1; font-weight:800; white-space:nowrap; pointer-events:none;\n}\n.diary-emotion-badge[hidden] { display:none !important; }\n.diary-mode-switch {\n  display:grid; grid-template-columns:1fr 1fr; gap:3px; margin-top:4px; width:100%;\n}\n.diary-mode-button {\n  appearance:none; -webkit-appearance:none; min-width:0; min-height:27px; margin:0; padding:4px 3px;\n  border:1px solid rgba(128,128,128,.22); border-radius:8px; background:rgba(128,128,128,.045);\n  color:var(--st-text-color); font-size:8.5px; line-height:1; font-weight:760; cursor:pointer;\n  touch-action:manipulation; -webkit-tap-highlight-color:transparent;\n}\n.diary-mode-button.active { border-color:#6C9BD2; background:rgba(108,155,210,.13); }\n.diary-mode-button.parenting.active { border-color:#6FBA9C; background:rgba(111,186,156,.14); }\n.diary-photo-delete {\n  position:absolute; top:3px; right:3px; z-index:12; width:25px; height:25px; padding:0; margin:0;\n  border-radius:999px; border:1.5px solid rgba(255,255,255,.92); background:rgba(49,54,63,.72);\n  color:#fff; font-size:18px; line-height:20px; font-weight:700; display:flex; align-items:center;\n  justify-content:center; cursor:pointer; box-shadow:0 1px 5px rgba(0,0,0,.22); touch-action:manipulation;\n  -webkit-tap-highlight-color:transparent;\n}\n.diary-photo-delete:active { transform:scale(.94); }\n.diary-photo-favorite {\n  appearance:none; -webkit-appearance:none; position:absolute; top:7px; left:7px; z-index:11;\n  width:30px; height:30px; padding:0; margin:0; border-radius:999px;\n  border:1.5px solid rgba(255,255,255,.92); background:rgba(35,40,50,.58);\n  color:#fff; display:flex; align-items:center; justify-content:center;\n  font-size:19px; line-height:1; font-weight:800; cursor:pointer;\n  box-shadow:0 1px 6px rgba(0,0,0,.24); touch-action:manipulation; -webkit-tap-highlight-color:transparent;\n}\n.diary-photo-favorite.active { color:#FFD54A; background:rgba(35,40,50,.72); }\n.diary-photo-favorite.indicator-only { pointer-events:none; cursor:default; }\n.diary-photo-favorite:active { transform:scale(.94); }\n.diary-photo-share {\n  appearance:none; -webkit-appearance:none; width:100%; min-height:29px; margin:4px 0 0; padding:4px 5px;\n  border:1px solid rgba(97,132,185,.34); border-radius:8px; background:rgba(97,132,185,.07);\n  color:var(--st-text-color); font-size:8.8px; line-height:1.15; font-weight:780; cursor:pointer;\n  touch-action:manipulation; -webkit-tap-highlight-color:transparent;\n}\n.diary-photo-share.shared { border-color:rgba(93,166,133,.58); background:rgba(93,166,133,.13); }\n.diary-photo-share:active { transform:scale(.985); }\n.diary-photo-share:disabled { opacity:.62; cursor:wait; }\n.diary-photo-open {\n  appearance:none; -webkit-appearance:none; width:100%; min-height:29px; margin:4px 0 0; padding:4px 5px;\n  border:1px solid rgba(128,128,128,.26); border-radius:8px; background:rgba(128,128,128,.055);\n  color:var(--st-text-color); font-size:8.8px; line-height:1.15; font-weight:780; cursor:pointer;\n  touch-action:manipulation; -webkit-tap-highlight-color:transparent;\n}\n.diary-photo-open:active { transform:scale(.985); }\n.diary-photo-voice {\n  appearance:none; -webkit-appearance:none; width:100%; min-height:34px; margin:6px 0 0; padding:6px 8px;\n  border:1px solid rgba(111,134,170,.36); border-radius:9px; background:rgba(111,134,170,.08);\n  color:var(--st-text-color); font-size:10px; line-height:1.15; font-weight:800; cursor:pointer;\n  touch-action:manipulation; -webkit-tap-highlight-color:transparent;\n}\n.diary-photo-voice.has-voice { border-color:rgba(93,166,133,.58); background:rgba(93,166,133,.13); }\n.diary-photo-voice:active { transform:scale(.985); }\n.diary-photo-voice-preview {\n  width:100%; margin:7px 0 0; padding:7px 8px; box-sizing:border-box;\n  border:1px solid rgba(93,166,133,.34); border-radius:10px; background:rgba(93,166,133,.075);\n}\n.diary-photo-voice-preview-title { font-size:10px; line-height:1.25; font-weight:820; margin:0 0 5px; }\n.diary-photo-voice-preview audio { display:block; width:100%; min-height:34px; }\n.diary-photo-voice-preview-text { margin-top:4px; font-size:9px; line-height:1.35; opacity:.72; overflow-wrap:anywhere; }\n.diary-photo-shared-meta { margin-top:5px; font-size:9.5px; line-height:1.35; font-weight:730; opacity:.78; overflow-wrap:anywhere; }\n.diary-photo-location { margin-top:4px; font-size:10px; line-height:1.25; color:var(--st-text-color); opacity:.78; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }\n@media (max-width:640px) {\n  .diary-photo-single-nav { gap:5px; margin-bottom:6px; }\n  .diary-photo-single-nav button { min-height:36px; padding:6px 5px; font-size:11px; border-radius:9px; }\n  .diary-photo-count { font-size:11px; }\n  .diary-photo-tags { font-size:9px; }\n  .diary-photo-grid { gap:6px; }\n  .diary-photo-card { padding:4px; border-radius:12px; }\n  .diary-photo-card img { border-radius:8px; }\n  .diary-photo-location { font-size:9px; }\n  .diary-photo-delete { top:2px; right:2px; width:23px; height:23px; font-size:17px; }\n  .diary-photo-favorite { top:5px; left:5px; width:27px; height:27px; font-size:17px; }\n  .diary-photo-share { min-height:27px; font-size:7.7px; padding:3px 3px; }\n  .diary-photo-open { min-height:27px; font-size:7.7px; padding:3px 3px; }\n  .diary-photo-voice { min-height:32px; font-size:9px; padding:5px 6px; }\n  .diary-photo-voice-preview { padding:6px 7px; }\n  .diary-photo-voice-preview-title { font-size:9px; }\n  .diary-photo-voice-preview-text { font-size:8px; }\n  .diary-photo-shared-meta { font-size:8.5px; }\n  .diary-emotion-badge { right:5px; bottom:5px; min-width:25px; height:22px; padding:0 5px; font-size:7.5px; }\n  .diary-mode-button { min-height:25px; font-size:7.5px; padding:3px 2px; }\n  .diary-photo-grid.single { max-width: 100%; }\n  .diary-photo-grid.single .diary-photo-card img { max-height: 62vh; }\n  .diary-photo-grid.single .diary-mode-button { min-height:34px; font-size:10px; }\n}\n\n.photo-rotation-controls-v616{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:8px 0}.photo-rotation-controls-v616 button{min-height:44px;border:1px solid #b9c7d7;border-radius:10px;background:#fff;color:#193650;font:inherit;font-size:13px;padding:8px;touch-action:manipulation;cursor:pointer}.photo-rotation-controls-v616 button:disabled{opacity:.5}\n"
 
-_DIARY_GALLERY_JS = r"""
-export default function(component) {
-  const { parentElement, data, setTriggerValue } = component;
-  const grid = parentElement.querySelector('#diary-photo-grid');
-  const singleNav = parentElement.querySelector('#diary-photo-single-nav');
-  const prevButton = parentElement.querySelector('#diary-photo-prev');
-  const nextButton = parentElement.querySelector('#diary-photo-next');
-  const countNode = parentElement.querySelector('#diary-photo-count');
-  const batchToolbar = parentElement.querySelector('#diary-photo-batch-toolbar');
-  const batchCount = parentElement.querySelector('#diary-photo-batch-count');
-  const batchCancel = parentElement.querySelector('#diary-photo-batch-cancel');
-  const batchDelete = parentElement.querySelector('#diary-photo-batch-delete');
-  if (!grid) return;
-
-  grid.replaceChildren();
-  const single = Boolean(data?.single);
-  grid.classList.toggle('single', single);
-  const photos = Array.isArray(data?.photos) ? data.photos : [];
-  const allowDelete = data?.allow_delete !== false;
-  const allowBatchDelete = Boolean(data?.allow_batch_delete) && !single;
-  const allowEmotion = data?.allow_emotion !== false;
-  const allowShare = Boolean(data?.allow_share);
-  const allowVoice = Boolean(data?.allow_voice);
-  const allowVoicePreview = Boolean(data?.allow_voice_preview);
-  const allowFavorite = Boolean(data?.allow_favorite);
-  const openOnClick = Boolean(data?.open_on_click);
-  const carouselKey = String(data?.carousel_key || 'default');
-  const carouselStore = `tokyo_burari_diary_carousel_v180_${carouselKey}`;
-  const pendingStore = 'tokyo_burari_pending_tags_v166';
-  const pendingParam = String(data?.pending_param || 'feel_v159');
-  const compatStore = 'tokyo_burari_pending_feelings_v159';
-  const familyKey = String(data?.family_key || '');
-  const memberKey = String(data?.member_key || '');
-  const modeByPhoto = (data?.mode_by_photo && typeof data.mode_by_photo === 'object') ? {...data.mode_by_photo} : {};
-
-  let batchMode = false;
-  const batchSelected = new Set();
-  const cardByPhotoId = new Map();
-  const syncBatchUi = () => {
-    if (!allowBatchDelete) {
-      if (batchToolbar) batchToolbar.hidden = true;
-      grid.classList.remove('batch-mode');
-      return;
-    }
-    grid.classList.toggle('batch-mode', batchMode);
-    if (batchToolbar) batchToolbar.hidden = !batchMode;
-    if (batchCount) batchCount.textContent = `${batchSelected.size}枚選択`;
-    if (batchDelete) batchDelete.disabled = batchSelected.size === 0;
-    for (const [photoId, cardNode] of cardByPhotoId.entries()) {
-      cardNode.classList.toggle('batch-selected', batchSelected.has(photoId));
-    }
-  };
-  const leaveBatchMode = () => {
-    batchMode = false;
-    batchSelected.clear();
-    syncBatchUi();
-  };
-  const toggleBatchPhoto = (photoId) => {
-    const id = String(photoId || '');
-    if (!id) return;
-    if (batchSelected.has(id)) batchSelected.delete(id); else batchSelected.add(id);
-    if (!batchSelected.size) batchMode = false;
-    syncBatchUi();
-  };
-  const enterBatchMode = (photoId) => {
-    if (!allowBatchDelete) return;
-    batchMode = true;
-    batchSelected.add(String(photoId || ''));
-    syncBatchUi();
-    try { navigator.vibrate?.(28); } catch (_) {}
-  };
-  batchCancel?.addEventListener('click', (event) => {
-    event.preventDefault(); event.stopPropagation(); leaveBatchMode();
-  });
-  batchDelete?.addEventListener('click', (event) => {
-    event.preventDefault(); event.stopPropagation();
-    const ids = Array.from(batchSelected);
-    if (!ids.length) return;
-    setTriggerValue('batch_delete_photos', {photo_ids:ids, token:`${Date.now()}_${Math.random().toString(36).slice(2)}`});
-  });
-
-  if (singleNav) singleNav.hidden = !(single && photos.length > 1);
-  if (batchToolbar) batchToolbar.hidden = true;
-
-  const normalOrder = ['cozy', 'joy', 'surprise', 'anger', 'sadness', 'frustration', 'relaxed', 'delicious', 'beautiful', 'mixed'];
-  const normalMeta = {
-    cozy:{emoji:'🥰',color:'#F3B6A0',label:'ほっこりした'}, joy:{emoji:'😊',color:'#F2C94C',label:'うれしい'},
-    surprise:{emoji:'😲',color:'#9B7BD3',label:'びっくり'}, anger:{emoji:'😠',color:'#E56B6F',label:'おこった'},
-    sadness:{emoji:'😢',color:'#6C9BD2',label:'かなしい'}, frustration:{emoji:'😣',color:'#A66A8A',label:'くやしい'},
-    relaxed:{emoji:'😌',color:'#9BCDB8',label:'のほほん'}, delicious:{emoji:'😋',color:'#F2A65A',label:'美味しい'},
-    beautiful:{emoji:'✨',color:'#6EC5D8',label:'きれい'}, mixed:{emoji:'😵‍💫',color:'#8D86A8',label:'複雑'}
-  };
-  const parentingOrder = ['effort', 'challenge', 'discovery', 'kindness', 'together', 'tears', 'hmm', 'peace', 'teach_me', 'sharp'];
-  const parentingMeta = {
-    effort:{emoji:'⭐',color:'#E6B84A',label:'がんばった'}, challenge:{emoji:'💪',color:'#F2994A',label:'ちょうせん'},
-    discovery:{emoji:'💡',color:'#9BC53D',label:'はっけん'}, kindness:{emoji:'❤️',color:'#E57373',label:'やさしさ'},
-    together:{emoji:'🤝',color:'#4DB6AC',label:'いっしょに'}, tears:{emoji:'😭',color:'#6C9BD2',label:'なみだ'},
-    hmm:{emoji:'🤔',color:'#8E7CC3',label:'むーん'}, peace:{emoji:'✌️',color:'#5BBF9F',label:'ピース'},
-    teach_me:{emoji:'🙋',color:'#4C9BE8',label:'教えて'}, sharp:{emoji:'🫡',color:'#53657D',label:'キリッ'}
-  };
-  const normalizeNormal = (value) => Object.prototype.hasOwnProperty.call(normalMeta, String(value || '')) ? String(value || '') : '';
-  const normalizeParenting = (value) => Object.prototype.hasOwnProperty.call(parentingMeta, String(value || '')) ? String(value || '') : '';
-
-  const encodeCompat = (payload) => {
-    try {
-      const bytes = new TextEncoder().encode(JSON.stringify(payload));
-      let binary = '';
-      for (let i = 0; i < bytes.length; i += 0x4000) binary += String.fromCharCode(...bytes.subarray(i, i + 0x4000));
-      return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
-    } catch (_) { return ''; }
-  };
-  const mirrorCompat = (envelope) => {
-    try {
-      if (!envelope || !envelope.t || !familyKey || !memberKey) return;
-      const compat = {...envelope, v:159, f:familyKey, m:memberKey};
-      const encoded = encodeCompat(compat);
-      if (!encoded) return;
-      const url = new URL(window.location.href);
-      url.searchParams.set(pendingParam, encoded);
-      localStorage.setItem(compatStore, encoded);
-      window.history.replaceState(window.history.state || {}, '', url.pathname + url.search + url.hash);
-    } catch (_) {}
-  };
-  const readPending = () => {
-    try {
-      const parsed = JSON.parse(String(localStorage.getItem(pendingStore) || 'null'));
-      if (parsed && Number(parsed.v) === 166 && String(parsed.f || '') === familyKey && String(parsed.m || '') === memberKey) {
-        mirrorCompat(parsed);
-        return parsed;
-      }
-    } catch (_) {}
-    return {v:166,f:familyKey,m:memberKey,p:{},g:{},x:{}};
-  };
-  const mutatePending = (mutator) => {
-    if (!familyKey || !memberKey) return;
-    try {
-      const envelope = readPending();
-      if (!envelope.p || typeof envelope.p !== 'object') envelope.p = {};
-      if (!envelope.g || typeof envelope.g !== 'object') envelope.g = {};
-      if (!envelope.x || typeof envelope.x !== 'object') envelope.x = {};
-      mutator(envelope);
-      envelope.t = `${Date.now()}_${Math.random().toString(36).slice(2)}`;
-      localStorage.setItem(pendingStore, JSON.stringify(envelope));
-      mirrorCompat(envelope);
-    } catch (_) {}
-  };
-  const persistNormal = (photoId, value) => mutatePending((envelope) => {
-    const id=String(photoId); envelope.p[id]=normalizeNormal(value); envelope.g[id]='';
-  });
-  const persistParenting = (photoId, value) => mutatePending((envelope) => {
-    const id=String(photoId); envelope.g[id]=normalizeParenting(value); envelope.p[id]='';
-  });
-  const discardPendingPhoto = (photoId) => mutatePending((envelope) => {
-    delete envelope.p[String(photoId)]; delete envelope.g[String(photoId)];
-  });
-
-  const nextValue = (value, order, normalize) => {
-    const cycle = ['', ...order];
-    const index = Math.max(0, cycle.indexOf(normalize(value)));
-    return cycle[(index + 1) % cycle.length];
-  };
-  const pendingSnapshot = readPending();
-  const wraps = [];
-
-  for (let photoIndex = 0; photoIndex < photos.length; photoIndex += 1) {
-    const sourcePhoto = photos[photoIndex];
-    const photoId = String(sourcePhoto?.id || '');
-    const photo = {
-      ...sourcePhoto,
-      emotion: Object.prototype.hasOwnProperty.call(pendingSnapshot.p || {}, photoId) ? normalizeNormal(pendingSnapshot.p[photoId]) : normalizeNormal(sourcePhoto?.emotion),
-      parenting: Object.prototype.hasOwnProperty.call(pendingSnapshot.g || {}, photoId) ? normalizeParenting(pendingSnapshot.g[photoId]) : normalizeParenting(sourcePhoto?.parenting),
-    };
-    if (photo.emotion && photo.parenting) {
-      if (String(modeByPhoto[photoId] || '') === 'parenting') photo.emotion=''; else photo.parenting='';
-    }
-    let activeMode = String(modeByPhoto[String(photo.id)] || '') === 'parenting' ? 'parenting' : (photo.parenting ? 'parenting' : 'normal');
-    const wrap = document.createElement('div'); wrap.className = 'diary-photo-wrap';
-    const card = document.createElement('div'); card.className = 'diary-photo-card'; card.setAttribute('role','button'); card.tabIndex = (allowEmotion || openOnClick || allowBatchDelete) ? 0 : -1;
-    cardByPhotoId.set(String(photo.id || ''), card);
-    const img = document.createElement('img'); img.src = photo.src || ''; img.alt = 'ぶらり旅の写真'; img.loading='lazy'; img.decoding='async'; img.fetchPriority='low'; card.appendChild(img);
-    const badge = document.createElement('div'); badge.className='diary-emotion-badge'; card.appendChild(badge);
-    if (photo.location) { const location=document.createElement('div'); location.className='diary-photo-location'; location.textContent=`📍 ${photo.location}`; card.appendChild(location); }
-
-    const sharedMeta = String(photo?.shared_meta || '').trim();
-    if (sharedMeta) { const sharedNode=document.createElement('div'); sharedNode.className='diary-photo-shared-meta'; sharedNode.textContent=sharedMeta; wrap.appendChild(sharedNode); }
-    const tags = Array.isArray(photo?.tags) ? photo.tags.map((tag) => String(tag || '').trim()).filter(Boolean).slice(0, 12) : [];
-    if (tags.length) { const tagNode=document.createElement('div'); tagNode.className='diary-photo-tags'; tagNode.textContent=`🏷️ ${tags.join(' ／ ')}`; wrap.appendChild(tagNode); }
-
-    const modeSwitch = document.createElement('div'); modeSwitch.className='diary-mode-switch';
-    const normalButton = document.createElement('button'); normalButton.type='button'; normalButton.className='diary-mode-button';
-    const parentingButton = document.createElement('button'); parentingButton.type='button'; parentingButton.className='diary-mode-button parenting';
-    modeSwitch.appendChild(normalButton); modeSwitch.appendChild(parentingButton);
-
-    const syncVisual = () => {
-      for (const value of [...normalOrder, ...parentingOrder]) card.classList.remove(`emotion-${value}`);
-      const normal = normalizeNormal(photo.emotion); const parenting = normalizeParenting(photo.parenting);
-      const meta = normal ? (normalMeta[normal] || null) : (parenting ? (parentingMeta[parenting] || null) : null);
-      const selectedMode = normal ? '通常' : (parenting ? 'こどもーど' : '');
-      if (meta) { card.style.borderColor=meta.color; card.style.background=`${meta.color}20`; card.style.boxShadow=`0 0 0 1px ${meta.color}18 inset`; }
-      else { card.style.borderColor=''; card.style.background=''; card.style.boxShadow=''; }
-      badge.textContent = meta ? `${meta.emoji} ${meta.label}` : ''; badge.hidden = !meta;
-      const normalSelected = normalMeta[normal] || null; const parentingSelected = parentingMeta[parenting] || null;
-      normalButton.textContent = `${normalSelected ? normalSelected.emoji : '🙂'} 通常`;
-      parentingButton.textContent = `${parentingSelected ? parentingSelected.emoji : '🌱'} こどもーど`;
-      normalButton.classList.toggle('active', activeMode === 'normal'); parentingButton.classList.toggle('active', activeMode === 'parenting');
-      card.setAttribute('aria-label', meta ? `${selectedMode}：${meta.label}。タップすると現在のモードで変更します` : `${activeMode === 'parenting' ? 'こどもーど' : '通常'}は未設定。タップして選びます`);
-    };
-    syncVisual();
-
-    normalButton.addEventListener('click', (event) => { event.preventDefault(); event.stopPropagation(); activeMode='normal'; modeByPhoto[String(photo.id)]='normal'; syncVisual(); });
-    parentingButton.addEventListener('click', (event) => { event.preventDefault(); event.stopPropagation(); activeMode='parenting'; modeByPhoto[String(photo.id)]='parenting'; syncVisual(); });
-
-    let suppressCardClickUntil = 0;
-    if (allowEmotion) {
-      const cycle = (event) => {
-        event?.preventDefault?.(); event?.stopPropagation?.();
-        if (Date.now() < suppressCardClickUntil) return;
-        if (allowBatchDelete && batchMode) { toggleBatchPhoto(photo.id); return; }
-        if (activeMode === 'parenting') {
-          photo.parenting = nextValue(photo.parenting, parentingOrder, normalizeParenting);
-          photo.emotion = '';
-          persistParenting(photo.id, photo.parenting);
-        } else {
-          photo.emotion = nextValue(photo.emotion, normalOrder, normalizeNormal);
-          photo.parenting = '';
-          persistNormal(photo.id, photo.emotion);
-        }
-        syncVisual();
-      };
-      card.addEventListener('click', cycle);
-      card.addEventListener('keydown', (event) => { if (event.key === 'Enter' || event.key === ' ') cycle(event); });
-    } else if (openOnClick) {
-      const openPhoto = (event) => {
-        event?.preventDefault?.(); event?.stopPropagation?.();
-        setTriggerValue('photo_id', String(photo.id || ''));
-      };
-      card.style.cursor='pointer';
-      card.addEventListener('click', openPhoto);
-      card.addEventListener('keydown', (event) => { if (event.key === 'Enter' || event.key === ' ') openPhoto(event); });
-    } else card.style.cursor='default';
-
-    if (allowBatchDelete) {
-      let pressTimer = null;
-      let startX = 0;
-      let startY = 0;
-      let longPressed = false;
-      const cancelPress = () => {
-        if (pressTimer) { clearTimeout(pressTimer); pressTimer = null; }
-      };
-      card.addEventListener('pointerdown', (event) => {
-        if (event.pointerType === 'mouse' && Number(event.button || 0) !== 0) return;
-        if (event.target?.closest?.('button,audio,input,select,textarea')) return;
-        startX = Number(event.clientX || 0); startY = Number(event.clientY || 0); longPressed = false;
-        cancelPress();
-        pressTimer = setTimeout(() => {
-          pressTimer = null; longPressed = true; suppressCardClickUntil = Date.now() + 850; enterBatchMode(photo.id);
-        }, 520);
-      }, {passive:true});
-      card.addEventListener('pointermove', (event) => {
-        if (!pressTimer) return;
-        const dx = Number(event.clientX || 0) - startX;
-        const dy = Number(event.clientY || 0) - startY;
-        if ((dx * dx + dy * dy) > 196) cancelPress();
-      }, {passive:true});
-      card.addEventListener('pointerup', () => {
-        cancelPress();
-        if (longPressed) setTimeout(() => { longPressed = false; }, 0);
-      }, {passive:true});
-      card.addEventListener('pointercancel', cancelPress, {passive:true});
-      card.addEventListener('contextmenu', (event) => {
-        if (!allowBatchDelete) return;
-        event.preventDefault();
-      });
-    }
-
-    wrap.insertBefore(card, wrap.firstChild);
-    if (allowEmotion) wrap.appendChild(modeSwitch);
-    if (openOnClick && allowEmotion) {
-      const openButton=document.createElement('button');
-      openButton.type='button';
-      openButton.className='diary-photo-open';
-      openButton.textContent='🔍 拡大';
-      openButton.setAttribute('aria-label','この写真を拡大して見る');
-      openButton.addEventListener('click', (event) => {
-        event.preventDefault(); event.stopPropagation();
-        setTriggerValue('photo_id', String(photo.id || ''));
-      });
-      wrap.appendChild(openButton);
-    }
-    if (allowShare) {
-      const share=document.createElement('button'); share.type='button'; share.className='diary-photo-share';
-      const syncShare=()=>{
-        const active=Boolean(photo.shared);
-        share.classList.toggle('shared', active);
-        share.textContent = active ? (single ? '✓ 家族に共有中（解除）' : '✓ 共有中') : (single ? '👨‍👩‍👦 家族に共有' : '👨‍👩‍👦 共有');
-        share.setAttribute('aria-label', active ? 'この写真の家族共有を解除する' : 'この写真を家族に共有する');
-      };
-      syncShare();
-      share.addEventListener('click', (event) => {
-        event.preventDefault(); event.stopPropagation();
-        const next=!Boolean(photo.shared); photo.shared=next; syncShare(); share.disabled=true;
-        setTriggerValue('share_photo', {photo_id:String(photo.id), enabled:next, emotion:String(photo.emotion||''), parenting:String(photo.parenting||''), token:`${Date.now()}_${Math.random().toString(36).slice(2)}`});
-      });
-      wrap.appendChild(share);
-    }
-    if (single && allowVoicePreview && Boolean(photo.has_voice) && String(photo.voice_url || '')) {
-      const preview=document.createElement('div');
-      preview.className='diary-photo-voice-preview';
-      const previewTitle=document.createElement('div');
-      previewTitle.className='diary-photo-voice-preview-title';
-      previewTitle.textContent='🎙 この写真の声';
-      preview.appendChild(previewTitle);
-      const audio=document.createElement('audio');
-      audio.controls=true; audio.preload='metadata'; audio.src=String(photo.voice_url || '');
-      preview.appendChild(audio);
-      const transcript=String(photo.voice_transcript || '').trim();
-      if (transcript) {
-        const text=document.createElement('div'); text.className='diary-photo-voice-preview-text';
-        text.textContent=`文字起こし: ${transcript}`; preview.appendChild(text);
-      }
-      wrap.appendChild(preview);
-    }
-    if (single && allowVoice) {
-      const voice=document.createElement('button');
-      voice.type='button';
-      voice.className='diary-photo-voice';
-      const hasVoice=Boolean(photo.has_voice);
-      voice.classList.toggle('has-voice', hasVoice);
-      voice.textContent = hasVoice ? '🎙 声を確認・変更する' : '🎙 この写真に声を残す';
-      voice.setAttribute('aria-label', hasVoice ? 'この写真の声を確認または変更する' : 'この写真に声を残す');
-      voice.addEventListener('click', (event) => {
-        event.preventDefault(); event.stopPropagation();
-        setTriggerValue('voice_photo_id', String(photo.id));
-      });
-      wrap.appendChild(voice);
-    }
-    if (Boolean(photo.favorite) || allowFavorite) {
-      const favorite=document.createElement('button');
-      favorite.type='button';
-      favorite.className='diary-photo-favorite';
-      const syncFavorite=()=>{
-        const active=Boolean(photo.favorite);
-        favorite.classList.toggle('active', active);
-        favorite.textContent = active ? '★' : '☆';
-        favorite.setAttribute('aria-pressed', active ? 'true' : 'false');
-        favorite.setAttribute('aria-label', active ? 'お気に入りを解除する' : 'お気に入りに追加する');
-      };
-      syncFavorite();
-      if (allowFavorite) {
-        favorite.addEventListener('click', (event) => {
-          event.preventDefault(); event.stopPropagation();
-          const next=!Boolean(photo.favorite);
-          photo.favorite=next;
-          syncFavorite();
-          favorite.disabled=true;
-          setTriggerValue('favorite_photo', {photo_id:String(photo.id), enabled:next, token:`${Date.now()}_${Math.random().toString(36).slice(2)}`});
-        });
-      } else {
-        favorite.classList.add('indicator-only');
-        favorite.tabIndex=-1;
-      }
-      card.appendChild(favorite);
-    }
-    if (allowDelete) {
-      const remove=document.createElement('button'); remove.type='button'; remove.className='diary-photo-delete'; remove.textContent='×'; remove.setAttribute('aria-label','この写真を削除');
-      remove.addEventListener('click', (event) => { event.preventDefault(); event.stopPropagation(); discardPendingPhoto(photo.id); setTriggerValue('delete_photo_id', String(photo.id)); });
-      wrap.appendChild(remove);
-    }
-    wraps.push(wrap);
-    grid.appendChild(wrap);
-  }
-
-  let currentIndex = 0;
-  if (single && wraps.length) {
-    try {
-      const stored = Number(sessionStorage.getItem(carouselStore));
-      if (Number.isFinite(stored)) currentIndex = Math.max(0, Math.min(wraps.length - 1, Math.trunc(stored)));
-    } catch (_) {}
-  }
-
-  const preloadAt = (index) => {
-    if (!single || index < 0 || index >= photos.length) return;
-    const src = String(photos[index]?.src || '');
-    if (!src) return;
-    try { const pre = new Image(); pre.decoding='async'; pre.src=src; } catch (_) {}
-  };
-
-  const showSingleIndex = (nextIndex) => {
-    if (!single || !wraps.length) return;
-    currentIndex = Math.max(0, Math.min(wraps.length - 1, Number(nextIndex) || 0));
-    wraps.forEach((wrap, index) => { wrap.hidden = index !== currentIndex; });
-    const currentImg = wraps[currentIndex]?.querySelector('img');
-    if (currentImg) { currentImg.loading='eager'; currentImg.fetchPriority='high'; }
-    if (countNode) countNode.textContent = `${currentIndex + 1} / ${wraps.length}`;
-    if (prevButton) prevButton.disabled = currentIndex <= 0;
-    if (nextButton) nextButton.disabled = currentIndex >= wraps.length - 1;
-    try { sessionStorage.setItem(carouselStore, String(currentIndex)); } catch (_) {}
-    preloadAt(currentIndex - 1);
-    preloadAt(currentIndex + 1);
-    preloadAt(currentIndex + 2);
-  };
-
-  if (single) {
-    showSingleIndex(currentIndex);
-    prevButton?.addEventListener('click', (event) => { event.preventDefault(); showSingleIndex(currentIndex - 1); });
-    nextButton?.addEventListener('click', (event) => { event.preventDefault(); showSingleIndex(currentIndex + 1); });
-    let touchStartX = null;
-    grid.addEventListener('touchstart', (event) => { touchStartX = Number(event.touches?.[0]?.clientX); }, {passive:true});
-    grid.addEventListener('touchend', (event) => {
-      if (!Number.isFinite(touchStartX)) return;
-      const endX = Number(event.changedTouches?.[0]?.clientX);
-      const delta = endX - touchStartX;
-      touchStartX = null;
-      if (Math.abs(delta) < 45) return;
-      if (delta < 0) showSingleIndex(currentIndex + 1); else showSingleIndex(currentIndex - 1);
-    }, {passive:true});
-  } else {
-    wraps.forEach((wrap) => { wrap.hidden = false; });
-  }
-}
-"""
+_DIARY_GALLERY_JS = "\nexport default function(component) {\n  const { parentElement, data, setTriggerValue } = component;\n  const grid = parentElement.querySelector('#diary-photo-grid');\n  const singleNav = parentElement.querySelector('#diary-photo-single-nav');\n  const prevButton = parentElement.querySelector('#diary-photo-prev');\n  const nextButton = parentElement.querySelector('#diary-photo-next');\n  const countNode = parentElement.querySelector('#diary-photo-count');\n  const batchToolbar = parentElement.querySelector('#diary-photo-batch-toolbar');\n  const batchCount = parentElement.querySelector('#diary-photo-batch-count');\n  const batchCancel = parentElement.querySelector('#diary-photo-batch-cancel');\n  const batchDelete = parentElement.querySelector('#diary-photo-batch-delete');\n  if (!grid) return;\n\n  grid.replaceChildren();\n  const single = Boolean(data?.single);\n  grid.classList.toggle('single', single);\n  const photos = Array.isArray(data?.photos) ? data.photos : [];\n  const allowDelete = data?.allow_delete !== false;\n  const allowBatchDelete = Boolean(data?.allow_batch_delete) && !single;\n  const allowEmotion = data?.allow_emotion !== false;\n  const allowShare = Boolean(data?.allow_share);\n  const allowVoice = Boolean(data?.allow_voice);\n  const allowVoicePreview = Boolean(data?.allow_voice_preview);\n  const allowFavorite = Boolean(data?.allow_favorite);\n  const openOnClick = Boolean(data?.open_on_click);\n  const carouselKey = String(data?.carousel_key || 'default');\n  const carouselStore = `tokyo_burari_diary_carousel_v180_${carouselKey}`;\n  const pendingStore = 'tokyo_burari_pending_tags_v166';\n  const pendingParam = String(data?.pending_param || 'feel_v159');\n  const compatStore = 'tokyo_burari_pending_feelings_v159';\n  const familyKey = String(data?.family_key || '');\n  const memberKey = String(data?.member_key || '');\n  const modeByPhoto = (data?.mode_by_photo && typeof data.mode_by_photo === 'object') ? {...data.mode_by_photo} : {};\n\n  let batchMode = false;\n  const batchSelected = new Set();\n  const cardByPhotoId = new Map();\n  const syncBatchUi = () => {\n    if (!allowBatchDelete) {\n      if (batchToolbar) batchToolbar.hidden = true;\n      grid.classList.remove('batch-mode');\n      return;\n    }\n    grid.classList.toggle('batch-mode', batchMode);\n    if (batchToolbar) batchToolbar.hidden = !batchMode;\n    if (batchCount) batchCount.textContent = `${batchSelected.size}枚選択`;\n    if (batchDelete) batchDelete.disabled = batchSelected.size === 0;\n    for (const [photoId, cardNode] of cardByPhotoId.entries()) {\n      cardNode.classList.toggle('batch-selected', batchSelected.has(photoId));\n    }\n  };\n  const leaveBatchMode = () => {\n    batchMode = false;\n    batchSelected.clear();\n    syncBatchUi();\n  };\n  const toggleBatchPhoto = (photoId) => {\n    const id = String(photoId || '');\n    if (!id) return;\n    if (batchSelected.has(id)) batchSelected.delete(id); else batchSelected.add(id);\n    if (!batchSelected.size) batchMode = false;\n    syncBatchUi();\n  };\n  const enterBatchMode = (photoId) => {\n    if (!allowBatchDelete) return;\n    batchMode = true;\n    batchSelected.add(String(photoId || ''));\n    syncBatchUi();\n    try { navigator.vibrate?.(28); } catch (_) {}\n  };\n  batchCancel?.addEventListener('click', (event) => {\n    event.preventDefault(); event.stopPropagation(); leaveBatchMode();\n  });\n  batchDelete?.addEventListener('click', (event) => {\n    event.preventDefault(); event.stopPropagation();\n    const ids = Array.from(batchSelected);\n    if (!ids.length) return;\n    setTriggerValue('batch_delete_photos', {photo_ids:ids, token:`${Date.now()}_${Math.random().toString(36).slice(2)}`});\n  });\n\n  if (singleNav) singleNav.hidden = !(single && photos.length > 1);\n  if (batchToolbar) batchToolbar.hidden = true;\n\n  const normalOrder = ['cozy', 'joy', 'surprise', 'anger', 'sadness', 'frustration', 'relaxed', 'delicious', 'beautiful', 'mixed'];\n  const normalMeta = {\n    cozy:{emoji:'🥰',color:'#F3B6A0',label:'ほっこりした'}, joy:{emoji:'😊',color:'#F2C94C',label:'うれしい'},\n    surprise:{emoji:'😲',color:'#9B7BD3',label:'びっくり'}, anger:{emoji:'😠',color:'#E56B6F',label:'おこった'},\n    sadness:{emoji:'😢',color:'#6C9BD2',label:'かなしい'}, frustration:{emoji:'😣',color:'#A66A8A',label:'くやしい'},\n    relaxed:{emoji:'😌',color:'#9BCDB8',label:'のほほん'}, delicious:{emoji:'😋',color:'#F2A65A',label:'美味しい'},\n    beautiful:{emoji:'✨',color:'#6EC5D8',label:'きれい'}, mixed:{emoji:'😵\u200d💫',color:'#8D86A8',label:'複雑'}\n  };\n  const parentingOrder = ['effort', 'challenge', 'discovery', 'kindness', 'together', 'tears', 'hmm', 'peace', 'teach_me', 'sharp'];\n  const parentingMeta = {\n    effort:{emoji:'⭐',color:'#E6B84A',label:'がんばった'}, challenge:{emoji:'💪',color:'#F2994A',label:'ちょうせん'},\n    discovery:{emoji:'💡',color:'#9BC53D',label:'はっけん'}, kindness:{emoji:'❤️',color:'#E57373',label:'やさしさ'},\n    together:{emoji:'🤝',color:'#4DB6AC',label:'いっしょに'}, tears:{emoji:'😭',color:'#6C9BD2',label:'なみだ'},\n    hmm:{emoji:'🤔',color:'#8E7CC3',label:'むーん'}, peace:{emoji:'✌️',color:'#5BBF9F',label:'ピース'},\n    teach_me:{emoji:'🙋',color:'#4C9BE8',label:'教えて'}, sharp:{emoji:'🫡',color:'#53657D',label:'キリッ'}\n  };\n  const normalizeNormal = (value) => Object.prototype.hasOwnProperty.call(normalMeta, String(value || '')) ? String(value || '') : '';\n  const normalizeParenting = (value) => Object.prototype.hasOwnProperty.call(parentingMeta, String(value || '')) ? String(value || '') : '';\n\n  const encodeCompat = (payload) => {\n    try {\n      const bytes = new TextEncoder().encode(JSON.stringify(payload));\n      let binary = '';\n      for (let i = 0; i < bytes.length; i += 0x4000) binary += String.fromCharCode(...bytes.subarray(i, i + 0x4000));\n      return btoa(binary).replace(/\\+/g, '-').replace(/\\//g, '_').replace(/=+$/g, '');\n    } catch (_) { return ''; }\n  };\n  const mirrorCompat = (envelope) => {\n    try {\n      if (!envelope || !envelope.t || !familyKey || !memberKey) return;\n      const compat = {...envelope, v:159, f:familyKey, m:memberKey};\n      const encoded = encodeCompat(compat);\n      if (!encoded) return;\n      const url = new URL(window.location.href);\n      url.searchParams.set(pendingParam, encoded);\n      localStorage.setItem(compatStore, encoded);\n      window.history.replaceState(window.history.state || {}, '', url.pathname + url.search + url.hash);\n    } catch (_) {}\n  };\n  const readPending = () => {\n    try {\n      const parsed = JSON.parse(String(localStorage.getItem(pendingStore) || 'null'));\n      if (parsed && Number(parsed.v) === 166 && String(parsed.f || '') === familyKey && String(parsed.m || '') === memberKey) {\n        mirrorCompat(parsed);\n        return parsed;\n      }\n    } catch (_) {}\n    return {v:166,f:familyKey,m:memberKey,p:{},g:{},x:{}};\n  };\n  const mutatePending = (mutator) => {\n    if (!familyKey || !memberKey) return;\n    try {\n      const envelope = readPending();\n      if (!envelope.p || typeof envelope.p !== 'object') envelope.p = {};\n      if (!envelope.g || typeof envelope.g !== 'object') envelope.g = {};\n      if (!envelope.x || typeof envelope.x !== 'object') envelope.x = {};\n      mutator(envelope);\n      envelope.t = `${Date.now()}_${Math.random().toString(36).slice(2)}`;\n      localStorage.setItem(pendingStore, JSON.stringify(envelope));\n      mirrorCompat(envelope);\n    } catch (_) {}\n  };\n  const persistNormal = (photoId, value) => mutatePending((envelope) => {\n    const id=String(photoId); envelope.p[id]=normalizeNormal(value); envelope.g[id]='';\n  });\n  const persistParenting = (photoId, value) => mutatePending((envelope) => {\n    const id=String(photoId); envelope.g[id]=normalizeParenting(value); envelope.p[id]='';\n  });\n  const discardPendingPhoto = (photoId) => mutatePending((envelope) => {\n    delete envelope.p[String(photoId)]; delete envelope.g[String(photoId)];\n  });\n\n  const nextValue = (value, order, normalize) => {\n    const cycle = ['', ...order];\n    const index = Math.max(0, cycle.indexOf(normalize(value)));\n    return cycle[(index + 1) % cycle.length];\n  };\n  const pendingSnapshot = readPending();\n  const wraps = [];\n\n  for (let photoIndex = 0; photoIndex < photos.length; photoIndex += 1) {\n    const sourcePhoto = photos[photoIndex];\n    const photoId = String(sourcePhoto?.id || '');\n    const photo = {\n      ...sourcePhoto,\n      emotion: Object.prototype.hasOwnProperty.call(pendingSnapshot.p || {}, photoId) ? normalizeNormal(pendingSnapshot.p[photoId]) : normalizeNormal(sourcePhoto?.emotion),\n      parenting: Object.prototype.hasOwnProperty.call(pendingSnapshot.g || {}, photoId) ? normalizeParenting(pendingSnapshot.g[photoId]) : normalizeParenting(sourcePhoto?.parenting),\n    };\n    if (photo.emotion && photo.parenting) {\n      if (String(modeByPhoto[photoId] || '') === 'parenting') photo.emotion=''; else photo.parenting='';\n    }\n    let activeMode = String(modeByPhoto[String(photo.id)] || '') === 'parenting' ? 'parenting' : (photo.parenting ? 'parenting' : 'normal');\n    const wrap = document.createElement('div'); wrap.className = 'diary-photo-wrap';\n    const card = document.createElement('div'); card.className = 'diary-photo-card'; card.setAttribute('role','button'); card.tabIndex = (allowEmotion || openOnClick || allowBatchDelete) ? 0 : -1;\n    cardByPhotoId.set(String(photo.id || ''), card);\n    const img = document.createElement('img'); img.src = photo.src || ''; img.alt = 'ぶらり旅の写真'; img.loading='lazy'; img.decoding='async'; img.fetchPriority='low'; card.appendChild(img);\n    const badge = document.createElement('div'); badge.className='diary-emotion-badge'; card.appendChild(badge);\n    if (photo.location) { const location=document.createElement('div'); location.className='diary-photo-location'; location.textContent=`📍 ${photo.location}`; card.appendChild(location); }\n\n    const sharedMeta = String(photo?.shared_meta || '').trim();\n    if (sharedMeta) { const sharedNode=document.createElement('div'); sharedNode.className='diary-photo-shared-meta'; sharedNode.textContent=sharedMeta; wrap.appendChild(sharedNode); }\n    const tags = Array.isArray(photo?.tags) ? photo.tags.map((tag) => String(tag || '').trim()).filter(Boolean).slice(0, 12) : [];\n    if (tags.length) { const tagNode=document.createElement('div'); tagNode.className='diary-photo-tags'; tagNode.textContent=`🏷️ ${tags.join(' ／ ')}`; wrap.appendChild(tagNode); }\n\n    const modeSwitch = document.createElement('div'); modeSwitch.className='diary-mode-switch';\n    const normalButton = document.createElement('button'); normalButton.type='button'; normalButton.className='diary-mode-button';\n    const parentingButton = document.createElement('button'); parentingButton.type='button'; parentingButton.className='diary-mode-button parenting';\n    modeSwitch.appendChild(normalButton); modeSwitch.appendChild(parentingButton);\n\n    const syncVisual = () => {\n      for (const value of [...normalOrder, ...parentingOrder]) card.classList.remove(`emotion-${value}`);\n      const normal = normalizeNormal(photo.emotion); const parenting = normalizeParenting(photo.parenting);\n      const meta = normal ? (normalMeta[normal] || null) : (parenting ? (parentingMeta[parenting] || null) : null);\n      const selectedMode = normal ? '通常' : (parenting ? 'こどもーど' : '');\n      if (meta) { card.style.borderColor=meta.color; card.style.background=`${meta.color}20`; card.style.boxShadow=`0 0 0 1px ${meta.color}18 inset`; }\n      else { card.style.borderColor=''; card.style.background=''; card.style.boxShadow=''; }\n      badge.textContent = meta ? `${meta.emoji} ${meta.label}` : ''; badge.hidden = !meta;\n      const normalSelected = normalMeta[normal] || null; const parentingSelected = parentingMeta[parenting] || null;\n      normalButton.textContent = `${normalSelected ? normalSelected.emoji : '🙂'} 通常`;\n      parentingButton.textContent = `${parentingSelected ? parentingSelected.emoji : '🌱'} こどもーど`;\n      normalButton.classList.toggle('active', activeMode === 'normal'); parentingButton.classList.toggle('active', activeMode === 'parenting');\n      card.setAttribute('aria-label', meta ? `${selectedMode}：${meta.label}。タップすると現在のモードで変更します` : `${activeMode === 'parenting' ? 'こどもーど' : '通常'}は未設定。タップして選びます`);\n    };\n    syncVisual();\n\n    normalButton.addEventListener('click', (event) => { event.preventDefault(); event.stopPropagation(); activeMode='normal'; modeByPhoto[String(photo.id)]='normal'; syncVisual(); });\n    parentingButton.addEventListener('click', (event) => { event.preventDefault(); event.stopPropagation(); activeMode='parenting'; modeByPhoto[String(photo.id)]='parenting'; syncVisual(); });\n\n    let suppressCardClickUntil = 0;\n    if (allowEmotion) {\n      const cycle = (event) => {\n        event?.preventDefault?.(); event?.stopPropagation?.();\n        if (Date.now() < suppressCardClickUntil) return;\n        if (allowBatchDelete && batchMode) { toggleBatchPhoto(photo.id); return; }\n        if (activeMode === 'parenting') {\n          photo.parenting = nextValue(photo.parenting, parentingOrder, normalizeParenting);\n          photo.emotion = '';\n          persistParenting(photo.id, photo.parenting);\n        } else {\n          photo.emotion = nextValue(photo.emotion, normalOrder, normalizeNormal);\n          photo.parenting = '';\n          persistNormal(photo.id, photo.emotion);\n        }\n        syncVisual();\n      };\n      card.addEventListener('click', cycle);\n      card.addEventListener('keydown', (event) => { if (event.key === 'Enter' || event.key === ' ') cycle(event); });\n    } else if (openOnClick) {\n      const openPhoto = (event) => {\n        event?.preventDefault?.(); event?.stopPropagation?.();\n        setTriggerValue('photo_id', String(photo.id || ''));\n      };\n      card.style.cursor='pointer';\n      card.addEventListener('click', openPhoto);\n      card.addEventListener('keydown', (event) => { if (event.key === 'Enter' || event.key === ' ') openPhoto(event); });\n    } else card.style.cursor='default';\n\n    if (allowBatchDelete) {\n      let pressTimer = null;\n      let startX = 0;\n      let startY = 0;\n      let longPressed = false;\n      const cancelPress = () => {\n        if (pressTimer) { clearTimeout(pressTimer); pressTimer = null; }\n      };\n      card.addEventListener('pointerdown', (event) => {\n        if (event.pointerType === 'mouse' && Number(event.button || 0) !== 0) return;\n        if (event.target?.closest?.('button,audio,input,select,textarea')) return;\n        startX = Number(event.clientX || 0); startY = Number(event.clientY || 0); longPressed = false;\n        cancelPress();\n        pressTimer = setTimeout(() => {\n          pressTimer = null; longPressed = true; suppressCardClickUntil = Date.now() + 850; enterBatchMode(photo.id);\n        }, 520);\n      }, {passive:true});\n      card.addEventListener('pointermove', (event) => {\n        if (!pressTimer) return;\n        const dx = Number(event.clientX || 0) - startX;\n        const dy = Number(event.clientY || 0) - startY;\n        if ((dx * dx + dy * dy) > 196) cancelPress();\n      }, {passive:true});\n      card.addEventListener('pointerup', () => {\n        cancelPress();\n        if (longPressed) setTimeout(() => { longPressed = false; }, 0);\n      }, {passive:true});\n      card.addEventListener('pointercancel', cancelPress, {passive:true});\n      card.addEventListener('contextmenu', (event) => {\n        if (!allowBatchDelete) return;\n        event.preventDefault();\n      });\n    }\n\n    wrap.insertBefore(card, wrap.firstChild);\n    if (allowEmotion) wrap.appendChild(modeSwitch);\n    if (openOnClick && allowEmotion) {\n      const openButton=document.createElement('button');\n      openButton.type='button';\n      openButton.className='diary-photo-open';\n      openButton.textContent='🔍 拡大';\n      openButton.setAttribute('aria-label','この写真を拡大して見る');\n      openButton.addEventListener('click', (event) => {\n        event.preventDefault(); event.stopPropagation();\n        setTriggerValue('photo_id', String(photo.id || ''));\n      });\n      wrap.appendChild(openButton);\n    }\n    if (allowShare) {\n      const share=document.createElement('button'); share.type='button'; share.className='diary-photo-share';\n      const syncShare=()=>{\n        const active=Boolean(photo.shared);\n        share.classList.toggle('shared', active);\n        share.textContent = active ? (single ? '✓ 家族に共有中（解除）' : '✓ 共有中') : (single ? '👨\u200d👩\u200d👦 家族に共有' : '👨\u200d👩\u200d👦 共有');\n        share.setAttribute('aria-label', active ? 'この写真の家族共有を解除する' : 'この写真を家族に共有する');\n      };\n      syncShare();\n      share.addEventListener('click', (event) => {\n        event.preventDefault(); event.stopPropagation();\n        const next=!Boolean(photo.shared); photo.shared=next; syncShare(); share.disabled=true;\n        setTriggerValue('share_photo', {photo_id:String(photo.id), enabled:next, emotion:String(photo.emotion||''), parenting:String(photo.parenting||''), token:`${Date.now()}_${Math.random().toString(36).slice(2)}`});\n      });\n      wrap.appendChild(share);\n    }\n    if (single && allowVoicePreview && Boolean(photo.has_voice) && String(photo.voice_url || '')) {\n      const preview=document.createElement('div');\n      preview.className='diary-photo-voice-preview';\n      const previewTitle=document.createElement('div');\n      previewTitle.className='diary-photo-voice-preview-title';\n      previewTitle.textContent='🎙 この写真の声';\n      preview.appendChild(previewTitle);\n      const audio=document.createElement('audio');\n      audio.controls=true; audio.preload='metadata'; audio.src=String(photo.voice_url || '');\n      preview.appendChild(audio);\n      const transcript=String(photo.voice_transcript || '').trim();\n      if (transcript) {\n        const text=document.createElement('div'); text.className='diary-photo-voice-preview-text';\n        text.textContent=`文字起こし: ${transcript}`; preview.appendChild(text);\n      }\n      wrap.appendChild(preview);\n    }\n    if(single && data?.allow_rotate && !photo.is_video){\n      const controls=document.createElement('div');controls.className='photo-rotation-controls-v616';\n      for(const [label,direction] of [['↶ 左に90°',-1],['↷ 右に90°',1]]){\n        const b=document.createElement('button');b.type='button';b.textContent=label;\n        b.onclick=e=>{e.preventDefault();e.stopPropagation();controls.querySelectorAll('button').forEach(x=>x.disabled=true);setTriggerValue('rotate_photo',{photo_id:String(photo.id),direction,token:`${Date.now()}:${Math.random()}`});};controls.appendChild(b);\n      }\n      wrap.appendChild(controls);\n    }\n    if (single && allowVoice) {\n      const voice=document.createElement('button');\n      voice.type='button';\n      voice.className='diary-photo-voice';\n      const hasVoice=Boolean(photo.has_voice);\n      voice.classList.toggle('has-voice', hasVoice);\n      voice.textContent = hasVoice ? '🎙 声を確認・変更する' : '🎙 この写真に声を残す';\n      voice.setAttribute('aria-label', hasVoice ? 'この写真の声を確認または変更する' : 'この写真に声を残す');\n      voice.addEventListener('click', (event) => {\n        event.preventDefault(); event.stopPropagation();\n        setTriggerValue('voice_photo_id', String(photo.id));\n      });\n      wrap.appendChild(voice);\n    }\n    if (Boolean(photo.favorite) || allowFavorite) {\n      const favorite=document.createElement('button');\n      favorite.type='button';\n      favorite.className='diary-photo-favorite';\n      const syncFavorite=()=>{\n        const active=Boolean(photo.favorite);\n        favorite.classList.toggle('active', active);\n        favorite.textContent = active ? '★' : '☆';\n        favorite.setAttribute('aria-pressed', active ? 'true' : 'false');\n        favorite.setAttribute('aria-label', active ? 'お気に入りを解除する' : 'お気に入りに追加する');\n      };\n      syncFavorite();\n      if (allowFavorite) {\n        favorite.addEventListener('click', (event) => {\n          event.preventDefault(); event.stopPropagation();\n          const next=!Boolean(photo.favorite);\n          photo.favorite=next;\n          syncFavorite();\n          favorite.disabled=true;\n          setTriggerValue('favorite_photo', {photo_id:String(photo.id), enabled:next, token:`${Date.now()}_${Math.random().toString(36).slice(2)}`});\n        });\n      } else {\n        favorite.classList.add('indicator-only');\n        favorite.tabIndex=-1;\n      }\n      card.appendChild(favorite);\n    }\n    if (allowDelete) {\n      const remove=document.createElement('button'); remove.type='button'; remove.className='diary-photo-delete'; remove.textContent='×'; remove.setAttribute('aria-label','この写真を削除');\n      remove.addEventListener('click', (event) => { event.preventDefault(); event.stopPropagation(); discardPendingPhoto(photo.id); setTriggerValue('delete_photo_id', String(photo.id)); });\n      wrap.appendChild(remove);\n    }\n    wraps.push(wrap);\n    grid.appendChild(wrap);\n  }\n\n  let currentIndex = 0;\n  if (single && wraps.length) {\n    try {\n      const stored = Number(sessionStorage.getItem(carouselStore));\n      if (Number.isFinite(stored)) currentIndex = Math.max(0, Math.min(wraps.length - 1, Math.trunc(stored)));\n    } catch (_) {}\n  }\n\n  const preloadAt = (index) => {\n    if (!single || index < 0 || index >= photos.length) return;\n    const src = String(photos[index]?.src || '');\n    if (!src) return;\n    try { const pre = new Image(); pre.decoding='async'; pre.src=src; } catch (_) {}\n  };\n\n  const showSingleIndex = (nextIndex) => {\n    if (!single || !wraps.length) return;\n    currentIndex = Math.max(0, Math.min(wraps.length - 1, Number(nextIndex) || 0));\n    wraps.forEach((wrap, index) => { wrap.hidden = index !== currentIndex; });\n    const currentImg = wraps[currentIndex]?.querySelector('img');\n    if (currentImg) { currentImg.loading='eager'; currentImg.fetchPriority='high'; }\n    if (countNode) countNode.textContent = `${currentIndex + 1} / ${wraps.length}`;\n    if (prevButton) prevButton.disabled = currentIndex <= 0;\n    if (nextButton) nextButton.disabled = currentIndex >= wraps.length - 1;\n    try { sessionStorage.setItem(carouselStore, String(currentIndex)); } catch (_) {}\n    preloadAt(currentIndex - 1);\n    preloadAt(currentIndex + 1);\n    preloadAt(currentIndex + 2);\n  };\n\n  if (single) {\n    showSingleIndex(currentIndex);\n    prevButton?.addEventListener('click', (event) => { event.preventDefault(); showSingleIndex(currentIndex - 1); });\n    nextButton?.addEventListener('click', (event) => { event.preventDefault(); showSingleIndex(currentIndex + 1); });\n    let touchStartX = null;\n    grid.addEventListener('touchstart', (event) => { touchStartX = Number(event.touches?.[0]?.clientX); }, {passive:true});\n    grid.addEventListener('touchend', (event) => {\n      if (!Number.isFinite(touchStartX)) return;\n      const endX = Number(event.changedTouches?.[0]?.clientX);\n      const delta = endX - touchStartX;\n      touchStartX = null;\n      if (Math.abs(delta) < 45) return;\n      if (delta < 0) showSingleIndex(currentIndex + 1); else showSingleIndex(currentIndex - 1);\n    }, {passive:true});\n  } else {\n    wraps.forEach((wrap) => { wrap.hidden = false; });\n  }\n}\n"
 
 diary_gallery_component = None
 _diary_gallery_component_initialized = False
@@ -7898,12 +3316,13 @@ def _get_diary_gallery_component():
         return diary_gallery_component
     _diary_gallery_component_initialized = True
     try:
-        diary_gallery_component = st.components.v2.component(
-            "tokyo_burari_diary_gallery_v504",
+        raw_gallery_v616 = st.components.v2.component(
+            "tokyo_burari_diary_gallery_v616",
             html=_DIARY_GALLERY_HTML,
             css=_DIARY_GALLERY_CSS,
             js=_perf_instrument_js_v466(_DIARY_GALLERY_JS),
         )
+        diary_gallery_component = lambda **kwargs: _rotation_gallery_v616(raw_gallery_v616, **kwargs)
     except Exception:
         diary_gallery_component = None
     return diary_gallery_component
@@ -14559,6 +9978,11 @@ def photo_all_storage_paths(photo):
         sheet_path = str(selection_meta.get("candidate_sheet_path") or "").strip()
         if sheet_path and sheet_path not in paths:
             paths.append(sheet_path)
+    sources = [photo_media_metadata(photo)] + list(video_ai_selection_items(photo))
+    for source in sources:
+        original = str((source.get("image_rotation_v616") or {}).get("source_path") or "").strip()
+        if original and original not in paths:
+            paths.append(original)
     return paths
 
 
@@ -33112,6 +28536,149 @@ def render_conversation(conversation):
             st.markdown(f'<div class="child-line"><b>ぼく</b><br>{text}</div>', unsafe_allow_html=True)
 
 
+@st.cache_resource
+def _image_rotation_lock_v616():
+    return threading.RLock()
+
+
+def _rotate_image_bytes_v616(raw, quarters):
+    from PIL import Image, ImageOps
+    quarters = int(quarters) % 4
+    if not quarters:
+        return bytes(raw)
+    with Image.open(io.BytesIO(raw)) as image:
+        image = ImageOps.exif_transpose(image).convert("RGB")
+        operation = {1: Image.Transpose.ROTATE_270, 2: Image.Transpose.ROTATE_180, 3: Image.Transpose.ROTATE_90}[quarters]
+        image = image.transpose(operation)
+        out = io.BytesIO()
+        image.save(out, format="JPEG", quality=95)
+        return out.getvalue()
+
+
+def _rotation_row_v616(photo_id):
+    rows = (supabase_client().table(PHOTO_TABLE).select("*").eq("id", str(photo_id))
+        .eq("family_key", current_family_key()).eq("member_key", current_member_key()).limit(1).execute()).data or []
+    if not rows:
+        raise ValueError("この写真を編集できません。")
+    return rows[0]
+
+
+def _rotate_photo_v616(photo_id, direction, token, rank=None):
+    if isinstance(direction, bool) or direction not in (-1, 1) or not str(token or ""):
+        raise ValueError("回転操作を確認できません。")
+    with _image_rotation_lock_v616():
+        client = supabase_client()
+        row = _rotation_row_v616(photo_id)
+        reflection = json.loads(json.dumps(photo_media_metadata(row)))
+        if rank is None:
+            if photo_is_video(row):
+                raise ValueError("動画は切り抜き写真を拡大して回転してください。")
+            target = reflection
+            current_path = str(row.get("storage_path") or "")
+        else:
+            target = next((item for item in (reflection.get("ai_selection") or {}).get("items", [])
+                if isinstance(item, dict) and int(item.get("rank") or 0) == int(rank)), None)
+            if target is None:
+                raise ValueError("切り抜き写真が見つかりません。")
+            current_path = str(target.get("storage_path") or "")
+        previous = target.get("image_rotation_v616") or {}
+        if previous.get("token") == str(token):
+            return row
+        original_path = str(previous.get("source_path") or current_path)
+        owner_prefix = str(current_family_key()) + "/" + str(current_member_key()) + "/"
+        if not current_path.startswith(owner_prefix) or not original_path.startswith(owner_prefix):
+            raise ValueError("写真の保存先を確認できません。")
+        quarters = (int(previous.get("quarters") or 0) + direction) % 4
+        new_path = original_path
+        if quarters:
+            raw = _rotate_image_bytes_v616(download_photo(original_path), quarters)
+            new_path = owner_prefix + str(row.get("trip_id") or "rotation") + "/rotation_" + uuid.uuid4().hex + ".jpg"
+            client.storage.from_(PHOTO_BUCKET).upload(path=new_path, file=raw,
+                file_options={"content-type": "image/jpeg", "cache-control": "3600"})
+        target["image_rotation_v616"] = {"source_path": original_path, "quarters": quarters, "token": str(token)}
+        if rank is None:
+            result = (client.table(PHOTO_TABLE).update({"storage_path": new_path, "reflection_json": reflection})
+                .eq("id", str(photo_id)).eq("family_key", current_family_key()).eq("member_key", current_member_key())
+                .eq("storage_path", current_path).execute())
+            if not result.data:
+                raise ValueError("写真が更新されています。再読み込みしてから回転してください。")
+        else:
+            saved_id = str(target.get("saved_photo_id") or "")
+            if saved_id:
+                # A saved still keeps the same photo id, feeling and voice note.
+                rows = (client.table(PHOTO_TABLE).select("*").eq("id", saved_id)
+                    .eq("family_key", current_family_key()).eq("member_key", current_member_key()).limit(1).execute()).data or []
+                if rows:
+                    saved = rows[0]
+                    saved_meta = json.loads(json.dumps(photo_media_metadata(saved)))
+                    # Keep diary copies independent: deleting the source video must
+                    # never remove either the saved picture or its rotation baseline.
+                    saved_base = owner_prefix + str(saved.get("trip_id") or "rotation") + "/rotation_base_" + uuid.uuid4().hex + ".jpg"
+                    client.storage.from_(PHOTO_BUCKET).upload(path=saved_base, file=download_photo(original_path),
+                        file_options={"content-type": "image/jpeg", "cache-control": "3600"})
+                    saved_path = saved_base
+                    if quarters:
+                        saved_path = owner_prefix + str(saved.get("trip_id") or "rotation") + "/rotation_" + uuid.uuid4().hex + ".jpg"
+                        client.storage.from_(PHOTO_BUCKET).upload(path=saved_path, file=raw,
+                            file_options={"content-type": "image/jpeg", "cache-control": "3600"})
+                    saved_meta["image_rotation_v616"] = {**target["image_rotation_v616"], "source_path": saved_base}
+                    (client.table(PHOTO_TABLE).update({"storage_path": saved_path, "reflection_json": saved_meta})
+                        .eq("id", saved_id).eq("family_key", current_family_key()).eq("member_key", current_member_key()).execute())
+            target["storage_path"] = new_path
+            _write_photo_reflection(photo_id, reflection)
+        signed_photo_url_map.clear()
+        _invalidate_fast_db_cache()
+        _invalidate_active_trip_snapshot()
+        row = dict(row)
+        row["reflection_json"] = reflection
+        if rank is None:
+            row["storage_path"] = new_path
+        return row
+
+
+def _rotation_capture_v616(component_key, inbox_key):
+    value = st.session_state.get(component_key)
+    event = value.get("rotate_photo") if isinstance(value, dict) else getattr(value, "rotate_photo", None)
+    if isinstance(event, dict) and event.get("token"):
+        st.session_state[inbox_key] = dict(event)
+
+
+def _rotation_gallery_v616(component, **kwargs):
+    data = dict(kwargs.get("data") or {})
+    key = str(kwargs.get("key") or "")
+    enabled = bool(data.get("single")) and key.startswith(("diary_emotion_gallery_", "history_photo_fast_"))
+    data["allow_rotate"] = enabled
+    kwargs["data"] = data
+    inbox = "_rotation_inbox_v616_" + str(current_family_key()) + "_" + str(current_member_key()) + "_" + key
+    if enabled:
+        valid = {str(p.get("id")) for p in data.get("photos", [])}
+        event = st.session_state.pop(inbox, None)
+        ack_key = inbox + "_applied"
+        if isinstance(event, dict) and str(event.get("photo_id")) in valid and str(event.get("token")) != str(st.session_state.get(ack_key) or ""):
+            st.session_state[ack_key] = str(event.get("token"))
+            try:
+                _rotate_photo_v616(event["photo_id"], event.get("direction"), event.get("token"))
+                st.rerun()
+            except Exception as exc:
+                _app_error_record_v610("photo.rotation", exc)
+                st.error("写真を回転できませんでした。" + str(exc))
+        kwargs["on_rotate_photo_change"] = lambda: _rotation_capture_v616(key, inbox)
+    return component(**kwargs)
+
+
+def _render_rotation_buttons_v616(photo_id, key, rank=None):
+    cols = st.columns(2, gap="small")
+    for col, direction, label in [(cols[0], -1, "↶ 左に90°"), (cols[1], 1, "↷ 右に90°")]:
+        with col:
+            if st.button(label, key="rotate_v616_"+str(key)+"_"+str(direction), use_container_width=True):
+                try:
+                    _rotate_photo_v616(photo_id, direction, uuid.uuid4().hex, rank=rank)
+                    st.rerun()
+                except Exception as exc:
+                    _app_error_record_v610("photo.rotation", exc)
+                    st.error("写真を回転できませんでした。" + str(exc))
+
+
 def render_saved_media_preview(photo, image_alt="ぶらり旅の写真", compact=True, delete_key_prefix="saved_media"):
     """Render a saved video when present, otherwise its normal still image."""
     if photo_is_video(photo):
@@ -33140,6 +28707,7 @@ def render_saved_media_preview(photo, image_alt="ぶらり旅の写真", compact
             """,
             unsafe_allow_html=True,
         )
+        _render_rotation_buttons_v616(photo.get("id"), str(delete_key_prefix)+"_"+str(photo.get("id")))
         return True
     return False
 
@@ -33815,6 +29383,7 @@ def render_history_photo_viewer(photos, trip_id):
                     unsafe_allow_html=True,
                 )
             if single_mode:
+                _render_rotation_buttons_v616(photo.get("id"), "history_"+str(photo.get("id")))
                 favorite = photo_favorite_is_enabled(photo)
                 if st.button(
                     "★ お気に入りタグを解除" if favorite else "☆ お気に入りタグに登録",
@@ -44134,572 +39703,9 @@ _MOMENTS_SELECT_HTML = """
 <button id="moments-save-selection" class="moments-action-button primary" type="button" hidden></button>
 """
 
-_MOMENTS_SELECT_CSS = """
-.moments-view-toggle {
-  width:100%; display:grid; grid-template-columns:1fr 1fr; gap:6px;
-  margin:0 0 7px; box-sizing:border-box;
-}
-.moments-view-button {
-  appearance:none; -webkit-appearance:none; min-height:34px; margin:0; padding:6px 8px;
-  border:1px solid rgba(128,128,128,.24); border-radius:10px;
-  background:rgba(128,128,128,.045); color:var(--st-text-color);
-  font-size:12px; font-weight:800; cursor:pointer; touch-action:manipulation;
-  -webkit-tap-highlight-color:transparent;
-}
-.moments-view-button.active {
-  border-color:#6C9BD2; background:rgba(108,155,210,.14); color:var(--st-text-color);
-}
-.moments-view-button:active { transform:scale(.99); }
-.moments-select-grid:not(.enlarge-mode) .moments-mode-switch,
-.moments-select-grid:not(.enlarge-mode) .moments-voice-open-button { display:none; }
-.moments-select-grid {
-  width: 100%;
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 8px;
-  box-sizing: border-box;
-  margin: 4px 0 8px;
-}
-.moments-select-card,
-.moments-select-empty {
-  width: 100%;
-  min-width: 0;
-  box-sizing: border-box;
-  border-radius: 13px;
-}
-.moments-select-card {
-  appearance: none;
-  -webkit-appearance: none;
-  position: relative;
-  margin: 0;
-  padding: 4px;
-  border: 3px solid rgba(174, 182, 194, .72);
-  background: rgba(174, 182, 194, .07);
-  cursor: pointer;
-  touch-action: manipulation;
-  -webkit-tap-highlight-color: transparent;
-  overflow: hidden;
-  color: var(--st-text-color);
-  text-align: left;
-}
-.moments-select-card.selected {
-  border-color: #F59E0B;
-  background: rgba(245, 158, 11, .16);
-  box-shadow: 0 0 0 2px rgba(245, 158, 11, .12);
-}
-.moments-select-card:active { transform: scale(.985); }
-.moments-select-card:disabled {
-  cursor: default;
-  opacity: 1;
-}
-.moments-select-image-wrap {
-  position: relative;
-  width: 100%;
-  aspect-ratio: 1 / 1;
-  overflow: hidden;
-  border-radius: 9px;
-  background: rgba(128,128,128,.08);
-}
-.moments-select-image-wrap img {
-  display: block;
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-}
-.moments-select-rank,
-.moments-select-picked {
-  position: absolute;
-  z-index: 2;
-  border-radius: 999px;
-  color: #fff;
-  font-weight: 800;
-  line-height: 1.15;
-  box-shadow: 0 1px 4px rgba(0,0,0,.22);
-}
-.moments-select-rank {
-  left: 5px;
-  top: 5px;
-  padding: 3px 6px;
-  background: rgba(17,24,39,.72);
-  font-size: 9px;
-}
-.moments-select-picked {
-  right: 5px;
-  bottom: 5px;
-  padding: 4px 7px;
-  background: #F59E0B;
-  font-size: 9px;
-}
-.moments-emotion-badge {
-  position: absolute;
-  z-index: 3;
-  right: 6px;
-  bottom: 6px;
-  min-width: 28px;
-  height: 24px;
-  padding: 0 7px;
-  box-sizing: border-box;
-  border-radius: 999px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: rgba(255,255,255,.92);
-  border: 1px solid rgba(17,24,39,.10);
-  box-shadow: 0 2px 7px rgba(0,0,0,.18);
-  font-size: 8.5px;
-  line-height: 1;
-  font-weight: 800;
-  white-space: nowrap;
-  pointer-events: none;
-}
-.moments-emotion-badge[hidden] { display: none !important; }
-.moments-mode-switch {
-  display:grid; grid-template-columns:1fr 1fr; gap:3px; margin-top:4px;
-}
-.moments-mode-button {
-  appearance:none; -webkit-appearance:none; min-height:26px; margin:0; padding:4px 3px;
-  border:1px solid #D1D5DB; border-radius:8px; background:#FFFFFF;
-  color:#111827 !important; font-size:8.5px; line-height:1; font-weight:760; cursor:pointer;
-  touch-action:manipulation; -webkit-tap-highlight-color:transparent;
-}
-.moments-mode-button.active { border-color:#6C9BD2; background:#DBEAFE; color:#1E3A8A !important; }
-.moments-mode-button.parenting.active { border-color:#6FBA9C; background:#DCFCE7; color:#166534 !important; }
-.moments-select-card.large-card .moments-mode-switch { gap:7px; margin-top:7px; }
-.moments-select-card.large-card .moments-mode-button { min-height:40px; font-size:11px; }
-.moments-voice-open-button {
-  appearance:none; -webkit-appearance:none; position:absolute; z-index:5; left:6px; bottom:6px;
-  min-width:29px; height:27px; padding:0 7px; margin:0; border:1px solid rgba(17,24,39,.12);
-  border-radius:999px; background:rgba(255,255,255,.94); color:#111827 !important;
-  box-shadow:0 2px 7px rgba(0,0,0,.18); font-size:11px; font-weight:850; line-height:1;
-  cursor:pointer; touch-action:manipulation; -webkit-tap-highlight-color:transparent;
-}
-.moments-voice-open-button.has-voice { background:#EAF7F0; border-color:#67A987; color:#166534 !important; }
-.moments-voice-open-button:active { transform:scale(.97); }
-.moments-select-card.large-card .moments-voice-open-button { left:10px; bottom:10px; min-width:54px; height:34px; padding:0 9px; font-size:11px; }
-.moments-select-meta {
-  margin-top: 5px;
-  font-size: 10px;
-  line-height: 1.2;
-  font-weight: 700;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.moments-select-reason {
-  margin-top: 2px;
-  min-height: 2.3em;
-  font-size: 9px;
-  line-height: 1.18;
-  opacity: .75;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-}
-.moments-select-empty {
-  aspect-ratio: 1 / 1;
-  border: 1px dashed rgba(128,128,128,.18);
-  background: rgba(128,128,128,.035);
-}
+_MOMENTS_SELECT_CSS = '\n.moments-view-toggle {\n  width:100%; display:grid; grid-template-columns:1fr 1fr; gap:6px;\n  margin:0 0 7px; box-sizing:border-box;\n}\n.moments-view-button {\n  appearance:none; -webkit-appearance:none; min-height:34px; margin:0; padding:6px 8px;\n  border:1px solid rgba(128,128,128,.24); border-radius:10px;\n  background:rgba(128,128,128,.045); color:var(--st-text-color);\n  font-size:12px; font-weight:800; cursor:pointer; touch-action:manipulation;\n  -webkit-tap-highlight-color:transparent;\n}\n.moments-view-button.active {\n  border-color:#6C9BD2; background:rgba(108,155,210,.14); color:var(--st-text-color);\n}\n.moments-view-button:active { transform:scale(.99); }\n.moments-select-grid:not(.enlarge-mode) .moments-mode-switch,\n.moments-select-grid:not(.enlarge-mode) .moments-voice-open-button { display:none; }\n.moments-select-grid {\n  width: 100%;\n  display: grid;\n  grid-template-columns: repeat(3, minmax(0, 1fr));\n  gap: 8px;\n  box-sizing: border-box;\n  margin: 4px 0 8px;\n}\n.moments-select-card,\n.moments-select-empty {\n  width: 100%;\n  min-width: 0;\n  box-sizing: border-box;\n  border-radius: 13px;\n}\n.moments-select-card {\n  appearance: none;\n  -webkit-appearance: none;\n  position: relative;\n  margin: 0;\n  padding: 4px;\n  border: 3px solid rgba(174, 182, 194, .72);\n  background: rgba(174, 182, 194, .07);\n  cursor: pointer;\n  touch-action: manipulation;\n  -webkit-tap-highlight-color: transparent;\n  overflow: hidden;\n  color: var(--st-text-color);\n  text-align: left;\n}\n.moments-select-card.selected {\n  border-color: #F59E0B;\n  background: rgba(245, 158, 11, .16);\n  box-shadow: 0 0 0 2px rgba(245, 158, 11, .12);\n}\n.moments-select-card:active { transform: scale(.985); }\n.moments-select-card:disabled {\n  cursor: default;\n  opacity: 1;\n}\n.moments-select-image-wrap {\n  position: relative;\n  width: 100%;\n  aspect-ratio: 1 / 1;\n  overflow: hidden;\n  border-radius: 9px;\n  background: rgba(128,128,128,.08);\n}\n.moments-select-image-wrap img {\n  display: block;\n  width: 100%;\n  height: 100%;\n  object-fit: cover;\n}\n.moments-select-rank,\n.moments-select-picked {\n  position: absolute;\n  z-index: 2;\n  border-radius: 999px;\n  color: #fff;\n  font-weight: 800;\n  line-height: 1.15;\n  box-shadow: 0 1px 4px rgba(0,0,0,.22);\n}\n.moments-select-rank {\n  left: 5px;\n  top: 5px;\n  padding: 3px 6px;\n  background: rgba(17,24,39,.72);\n  font-size: 9px;\n}\n.moments-select-picked {\n  right: 5px;\n  bottom: 5px;\n  padding: 4px 7px;\n  background: #F59E0B;\n  font-size: 9px;\n}\n.moments-emotion-badge {\n  position: absolute;\n  z-index: 3;\n  right: 6px;\n  bottom: 6px;\n  min-width: 28px;\n  height: 24px;\n  padding: 0 7px;\n  box-sizing: border-box;\n  border-radius: 999px;\n  display: flex;\n  align-items: center;\n  justify-content: center;\n  background: rgba(255,255,255,.92);\n  border: 1px solid rgba(17,24,39,.10);\n  box-shadow: 0 2px 7px rgba(0,0,0,.18);\n  font-size: 8.5px;\n  line-height: 1;\n  font-weight: 800;\n  white-space: nowrap;\n  pointer-events: none;\n}\n.moments-emotion-badge[hidden] { display: none !important; }\n.moments-mode-switch {\n  display:grid; grid-template-columns:1fr 1fr; gap:3px; margin-top:4px;\n}\n.moments-mode-button {\n  appearance:none; -webkit-appearance:none; min-height:26px; margin:0; padding:4px 3px;\n  border:1px solid #D1D5DB; border-radius:8px; background:#FFFFFF;\n  color:#111827 !important; font-size:8.5px; line-height:1; font-weight:760; cursor:pointer;\n  touch-action:manipulation; -webkit-tap-highlight-color:transparent;\n}\n.moments-mode-button.active { border-color:#6C9BD2; background:#DBEAFE; color:#1E3A8A !important; }\n.moments-mode-button.parenting.active { border-color:#6FBA9C; background:#DCFCE7; color:#166534 !important; }\n.moments-select-card.large-card .moments-mode-switch { gap:7px; margin-top:7px; }\n.moments-select-card.large-card .moments-mode-button { min-height:40px; font-size:11px; }\n.moments-voice-open-button {\n  appearance:none; -webkit-appearance:none; position:absolute; z-index:5; left:6px; bottom:6px;\n  min-width:29px; height:27px; padding:0 7px; margin:0; border:1px solid rgba(17,24,39,.12);\n  border-radius:999px; background:rgba(255,255,255,.94); color:#111827 !important;\n  box-shadow:0 2px 7px rgba(0,0,0,.18); font-size:11px; font-weight:850; line-height:1;\n  cursor:pointer; touch-action:manipulation; -webkit-tap-highlight-color:transparent;\n}\n.moments-voice-open-button.has-voice { background:#EAF7F0; border-color:#67A987; color:#166534 !important; }\n.moments-voice-open-button:active { transform:scale(.97); }\n.moments-select-card.large-card .moments-voice-open-button { left:10px; bottom:10px; min-width:54px; height:34px; padding:0 9px; font-size:11px; }\n.moments-select-meta {\n  margin-top: 5px;\n  font-size: 10px;\n  line-height: 1.2;\n  font-weight: 700;\n  overflow: hidden;\n  text-overflow: ellipsis;\n  white-space: nowrap;\n}\n.moments-select-reason {\n  margin-top: 2px;\n  min-height: 2.3em;\n  font-size: 9px;\n  line-height: 1.18;\n  opacity: .75;\n  display: -webkit-box;\n  -webkit-line-clamp: 2;\n  -webkit-box-orient: vertical;\n  overflow: hidden;\n}\n.moments-select-empty {\n  aspect-ratio: 1 / 1;\n  border: 1px dashed rgba(128,128,128,.18);\n  background: rgba(128,128,128,.035);\n}\n\n/* v148 enlarged single-photo viewer. */\n.moments-select-grid.enlarge-mode {\n  display: block;\n  margin: 4px 0 10px;\n}\n.moments-enlarge-shell {\n  width: 100%;\n  box-sizing: border-box;\n}\n.moments-enlarge-viewer {\n  width: 100%;\n  min-height: 1px;\n  box-sizing: border-box;\n}\n.moments-save-current-button {\n  width: 100%;\n  margin-top: 10px;\n  min-height: 46px;\n  border: none;\n  border-radius: 14px;\n  background: linear-gradient(180deg, #ff8a3d 0%, #ff6f1f 100%);\n  color: #fff;\n  font-size: 15px;\n  font-weight: 800;\n  box-shadow: 0 10px 22px rgba(255,111,31,.20);\n}\n.moments-save-current-button[hidden] {\n  display: none !important;\n}\n.moments-save-current-button:disabled {\n  opacity: .55;\n  box-shadow: none;\n}\n.moments-enlarge-nav {\n  display: grid;\n  grid-template-columns: 1fr 1.4fr 1fr;\n  gap: 8px;\n  align-items: center;\n  margin: 0 0 8px;\n}\n.moments-enlarge-nav button {\n  appearance: none;\n  -webkit-appearance: none;\n  width: 100%;\n  min-width: 0;\n  padding: 8px 4px;\n  min-height: 44px;\n  border: 1px solid rgba(128,128,128,.28);\n  border-radius: 12px;\n  background: rgba(128,128,128,.06);\n  color: var(--st-text-color);\n  font-size: 12px;\n  font-weight: 800;\n  cursor: pointer;\n  touch-action: manipulation;\n}\n.moments-enlarge-nav button:disabled {\n  opacity: .28;\n  cursor: default;\n}\n.moments-enlarge-counter {\n  text-align: center;\n  font-size: 13px;\n  font-weight: 800;\n  opacity: .78;\n}\n.moments-select-card.large-card {\n  display: block;\n  width: 100%;\n  padding: 6px;\n  border-radius: 18px;\n}\n.moments-select-card.large-card .moments-select-image-wrap {\n  aspect-ratio: 4 / 5;\n  border-radius: 13px;\n  background: #111;\n}\n.moments-select-card.large-card .moments-select-image-wrap img {\n  object-fit: contain;\n}\n.moments-select-card.large-card .moments-select-rank {\n  left: 10px;\n  top: 10px;\n  padding: 6px 10px;\n  font-size: 12px;\n}\n.moments-select-card.large-card .moments-select-picked {\n  right: 10px;\n  bottom: 10px;\n  padding: 7px 11px;\n  font-size: 12px;\n}\n.moments-select-card.large-card .moments-emotion-badge {\n  right: 12px;\n  bottom: 12px;\n  min-width: 38px;\n  height: 38px;\n  font-size: 25px;\n}\n.moments-select-card.large-card .moments-select-meta {\n  margin-top: 8px;\n  font-size: 14px;\n  white-space: normal;\n}\n.moments-select-card.large-card .moments-select-reason {\n  margin-top: 4px;\n  min-height: 0;\n  font-size: 13px;\n  line-height: 1.35;\n  display: block;\n  opacity: .82;\n}\n.moments-action-button {\n  appearance:none; -webkit-appearance:none; width:100%; min-height:44px; margin:7px 0 0; padding:9px 12px;\n  border-radius:12px; font-size:14px; font-weight:800; cursor:pointer; touch-action:manipulation;\n  -webkit-tap-highlight-color:transparent; box-sizing:border-box;\n}\n.moments-action-button.primary {\n  border:1px solid #2563EB; background:#2563EB; color:#FFFFFF !important;\n}\n.moments-action-button.secondary {\n  border:1px solid #D1D5DB; background:#F3F4F6; color:#111827 !important;\n}\n.moments-action-button:active { transform:scale(.99); }\n.moments-action-button[hidden] { display:none !important; }\n.moments-enlarge-hint {\n  margin-top: 7px;\n  text-align: center;\n  font-size: 12px;\n  opacity: .70;\n}\n@media (max-width: 640px) {\n  .moments-select-grid { gap: 6px; }\n  .moments-select-card { padding: 3px; border-radius: 11px; }\n  .moments-select-image-wrap { border-radius: 7px; }\n  .moments-select-meta { font-size: 9px; }\n  .moments-select-reason { font-size: 8px; }\n  .moments-select-rank, .moments-select-picked { font-size: 8px; }\n  .moments-select-card.large-card { padding: 5px; border-radius: 16px; }\n  .moments-select-card.large-card .moments-select-image-wrap { border-radius: 11px; }\n  .moments-select-card.large-card .moments-select-meta { font-size: 13px; }\n  .moments-select-card.large-card .moments-select-reason { font-size: 12px; }\n}\n\n.photo-rotation-controls-v616{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:8px 0}.photo-rotation-controls-v616 button{min-height:44px;border:1px solid #b9c7d7;border-radius:10px;background:#fff;color:#193650;font:inherit;font-size:13px;padding:8px;touch-action:manipulation;cursor:pointer}.photo-rotation-controls-v616 button:disabled{opacity:.5}\n'
 
-/* v148 enlarged single-photo viewer. */
-.moments-select-grid.enlarge-mode {
-  display: block;
-  margin: 4px 0 10px;
-}
-.moments-enlarge-shell {
-  width: 100%;
-  box-sizing: border-box;
-}
-.moments-enlarge-viewer {
-  width: 100%;
-  min-height: 1px;
-  box-sizing: border-box;
-}
-.moments-save-current-button {
-  width: 100%;
-  margin-top: 10px;
-  min-height: 46px;
-  border: none;
-  border-radius: 14px;
-  background: linear-gradient(180deg, #ff8a3d 0%, #ff6f1f 100%);
-  color: #fff;
-  font-size: 15px;
-  font-weight: 800;
-  box-shadow: 0 10px 22px rgba(255,111,31,.20);
-}
-.moments-save-current-button[hidden] {
-  display: none !important;
-}
-.moments-save-current-button:disabled {
-  opacity: .55;
-  box-shadow: none;
-}
-.moments-enlarge-nav {
-  display: grid;
-  grid-template-columns: 1fr 1.4fr 1fr;
-  gap: 8px;
-  align-items: center;
-  margin: 0 0 8px;
-}
-.moments-enlarge-nav button {
-  appearance: none;
-  -webkit-appearance: none;
-  width: 100%;
-  min-width: 0;
-  padding: 8px 4px;
-  min-height: 44px;
-  border: 1px solid rgba(128,128,128,.28);
-  border-radius: 12px;
-  background: rgba(128,128,128,.06);
-  color: var(--st-text-color);
-  font-size: 12px;
-  font-weight: 800;
-  cursor: pointer;
-  touch-action: manipulation;
-}
-.moments-enlarge-nav button:disabled {
-  opacity: .28;
-  cursor: default;
-}
-.moments-enlarge-counter {
-  text-align: center;
-  font-size: 13px;
-  font-weight: 800;
-  opacity: .78;
-}
-.moments-select-card.large-card {
-  display: block;
-  width: 100%;
-  padding: 6px;
-  border-radius: 18px;
-}
-.moments-select-card.large-card .moments-select-image-wrap {
-  aspect-ratio: 4 / 5;
-  border-radius: 13px;
-  background: #111;
-}
-.moments-select-card.large-card .moments-select-image-wrap img {
-  object-fit: contain;
-}
-.moments-select-card.large-card .moments-select-rank {
-  left: 10px;
-  top: 10px;
-  padding: 6px 10px;
-  font-size: 12px;
-}
-.moments-select-card.large-card .moments-select-picked {
-  right: 10px;
-  bottom: 10px;
-  padding: 7px 11px;
-  font-size: 12px;
-}
-.moments-select-card.large-card .moments-emotion-badge {
-  right: 12px;
-  bottom: 12px;
-  min-width: 38px;
-  height: 38px;
-  font-size: 25px;
-}
-.moments-select-card.large-card .moments-select-meta {
-  margin-top: 8px;
-  font-size: 14px;
-  white-space: normal;
-}
-.moments-select-card.large-card .moments-select-reason {
-  margin-top: 4px;
-  min-height: 0;
-  font-size: 13px;
-  line-height: 1.35;
-  display: block;
-  opacity: .82;
-}
-.moments-action-button {
-  appearance:none; -webkit-appearance:none; width:100%; min-height:44px; margin:7px 0 0; padding:9px 12px;
-  border-radius:12px; font-size:14px; font-weight:800; cursor:pointer; touch-action:manipulation;
-  -webkit-tap-highlight-color:transparent; box-sizing:border-box;
-}
-.moments-action-button.primary {
-  border:1px solid #2563EB; background:#2563EB; color:#FFFFFF !important;
-}
-.moments-action-button.secondary {
-  border:1px solid #D1D5DB; background:#F3F4F6; color:#111827 !important;
-}
-.moments-action-button:active { transform:scale(.99); }
-.moments-action-button[hidden] { display:none !important; }
-.moments-enlarge-hint {
-  margin-top: 7px;
-  text-align: center;
-  font-size: 12px;
-  opacity: .70;
-}
-@media (max-width: 640px) {
-  .moments-select-grid { gap: 6px; }
-  .moments-select-card { padding: 3px; border-radius: 11px; }
-  .moments-select-image-wrap { border-radius: 7px; }
-  .moments-select-meta { font-size: 9px; }
-  .moments-select-reason { font-size: 8px; }
-  .moments-select-rank, .moments-select-picked { font-size: 8px; }
-  .moments-select-card.large-card { padding: 5px; border-radius: 16px; }
-  .moments-select-card.large-card .moments-select-image-wrap { border-radius: 11px; }
-  .moments-select-card.large-card .moments-select-meta { font-size: 13px; }
-  .moments-select-card.large-card .moments-select-reason { font-size: 12px; }
-}
-"""
-
-_MOMENTS_SELECT_JS = r"""
-export default function(component) {
-  const { parentElement, data, setTriggerValue } = component;
-  const grid = parentElement.querySelector('#moments-select-grid');
-  if (!grid) return;
-
-  const photos = Array.isArray(data?.photos) ? data.photos.slice(0,100).sort((a,b)=>(Number(a?.timestamp_ms)||0)-(Number(b?.timestamp_ms)||0)||(Number(a?.rank)||0)-(Number(b?.rank)||0)) : [];
-  const disabled = Boolean(data?.disabled);
-  const familyKey=String(data?.family_key||''), memberKey=String(data?.member_key||''), videoId=String(data?.video_id||'');
-  const roundNumber=Math.max(0,Number(data?.round_number||0)||0);
-  const listViewButton=parentElement.querySelector('#moments-view-list');
-  const enlargeViewButton=parentElement.querySelector('#moments-view-enlarge');
-  const viewStoreKey=videoId?`tokyo_burari_moments_view_mode_v607_${videoId}_${roundNumber}_${data?.view_session||0}`:'';
-  const activeStoreKey=videoId?`tokyo_burari_moments_active_rank_v370_${videoId}_${roundNumber}`:'';
-  let viewMode='list';
-  try {
-    const savedMode=viewStoreKey?String(localStorage.getItem(viewStoreKey)||''):'';
-    if(savedMode==='enlarge'||savedMode==='list')viewMode=savedMode;
-    else if(String(data?.view_mode||'')==='enlarge')viewMode='enlarge';
-  } catch (_) {
-    viewMode=String(data?.view_mode||'')==='enlarge'?'enlarge':'list';
-  }
-  const pendingStore='tokyo_burari_pending_tags_v166';
-  const pendingParam=String(data?.pending_param||'feel_v159');
-  const compatStore='tokyo_burari_pending_feelings_v159';
-  const selected=new Set((Array.isArray(data?.selected_ranks)?data.selected_ranks:[]).map(Number).filter(v=>Number.isFinite(v)&&v>0));
-  const nextVideoButton=parentElement.querySelector('#moments-next-video');
-  const saveSelectionButton=parentElement.querySelector('#moments-save-selection');
-
-  const normalOrder=['cozy','joy','surprise','anger','sadness','frustration','relaxed','delicious','beautiful','mixed'];
-  const normalMeta={
-    cozy:{emoji:'🥰',color:'#F3B6A0',label:'ほっこりした'},joy:{emoji:'😊',color:'#F2C94C',label:'うれしい'},
-    surprise:{emoji:'😲',color:'#9B7BD3',label:'びっくり'},anger:{emoji:'😠',color:'#E56B6F',label:'おこった'},
-    sadness:{emoji:'😢',color:'#6C9BD2',label:'かなしい'},frustration:{emoji:'😣',color:'#A66A8A',label:'くやしい'},
-    relaxed:{emoji:'😌',color:'#9BCDB8',label:'のほほん'},delicious:{emoji:'😋',color:'#F2A65A',label:'美味しい'},
-    beautiful:{emoji:'✨',color:'#6EC5D8',label:'きれい'},mixed:{emoji:'😵‍💫',color:'#8D86A8',label:'複雑'}
-  };
-  const parentingOrder=['effort','challenge','discovery','kindness','together','tears','hmm','peace','teach_me','sharp'];
-  const parentingMeta={
-    effort:{emoji:'⭐',color:'#E6B84A',label:'がんばった'},challenge:{emoji:'💪',color:'#F2994A',label:'ちょうせん'},
-    discovery:{emoji:'💡',color:'#9BC53D',label:'はっけん'},kindness:{emoji:'❤️',color:'#E57373',label:'やさしさ'},
-    together:{emoji:'🤝',color:'#4DB6AC',label:'いっしょに'},tears:{emoji:'😭',color:'#6C9BD2',label:'なみだ'},
-    hmm:{emoji:'🤔',color:'#8E7CC3',label:'むーん'},peace:{emoji:'✌️',color:'#5BBF9F',label:'ピース'},
-    teach_me:{emoji:'🙋',color:'#4C9BE8',label:'教えて'},sharp:{emoji:'🫡',color:'#53657D',label:'キリッ'}
-  };
-  const normalizeNormal=(v)=>Object.prototype.hasOwnProperty.call(normalMeta,String(v||''))?String(v||''):'';
-  const normalizeParenting=(v)=>Object.prototype.hasOwnProperty.call(parentingMeta,String(v||''))?String(v||''):'';
-  const rankFor=(photo,index)=>Number(photo?.rank||(index+1));
-  const emotions=new Map(), parenting=new Map();
-  for(let i=0;i<photos.length;i+=1){ const rank=rankFor(photos[i],i); if(Number.isFinite(rank)&&rank>0){ emotions.set(rank,normalizeNormal(photos[i]?.emotion)); parenting.set(rank,normalizeParenting(photos[i]?.parenting)); } }
-  const validRanks=photos.map(rankFor).filter(v=>Number.isFinite(v)&&v>0);
-  let activeRank=Number(data?.active_rank||0);
-  try {
-    const savedActive=activeStoreKey?Number(localStorage.getItem(activeStoreKey)||0):0;
-    if(validRanks.includes(savedActive))activeRank=savedActive;
-  } catch (_) {}
-  if(!validRanks.includes(activeRank)) activeRank=validRanks.length?validRanks[0]:0;
-  const persistActiveRank=()=>{
-    try{if(activeStoreKey&&validRanks.includes(activeRank))localStorage.setItem(activeStoreKey,String(activeRank));}catch(_){}
-  };
-  persistActiveRank();
-  let preferredMode=String(data?.preferred_mode||'')==='parenting'?'parenting':'normal';
-  const selectionTouched=new Set();
-
-  const encodeCompat=(payload)=>{
-    try{const bytes=new TextEncoder().encode(JSON.stringify(payload));let binary='';for(let i=0;i<bytes.length;i+=0x4000)binary+=String.fromCharCode(...bytes.subarray(i,i+0x4000));return btoa(binary).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/g,'');}catch(_){return '';}
-  };
-  const mirrorCompat=(envelope)=>{
-    try{if(!envelope||!envelope.t||!familyKey||!memberKey)return;const compat={...envelope,v:159,f:familyKey,m:memberKey};const encoded=encodeCompat(compat);if(!encoded)return;const url=new URL(window.location.href);url.searchParams.set(pendingParam,encoded);localStorage.setItem(compatStore,encoded);window.history.replaceState(window.history.state||{},'',url.pathname+url.search+url.hash);}catch(_){}
-  };
-  const readPending=()=>{
-    try{
-      const parsed=JSON.parse(String(localStorage.getItem(pendingStore)||'null'));
-      if(parsed&&Number(parsed.v)===166&&String(parsed.f||'')===familyKey&&String(parsed.m||'')===memberKey){mirrorCompat(parsed);return parsed;}
-    }catch(_){}
-    return {v:166,f:familyKey,m:memberKey,p:{},g:{},x:{}};
-  };
-  const pendingSnapshot=readPending();
-  const pendingMoment=(pendingSnapshot.x&&typeof pendingSnapshot.x==='object')?pendingSnapshot.x[videoId]:null;
-  if(pendingMoment&&typeof pendingMoment==='object'&&Number(pendingMoment.r||0)===roundNumber){
-    if(pendingMoment.e&&typeof pendingMoment.e==='object')for(const [rankValue,value] of Object.entries(pendingMoment.e)){const rank=Number(rankValue);if(validRanks.includes(rank))emotions.set(rank,normalizeNormal(value));}
-    if(pendingMoment.g&&typeof pendingMoment.g==='object')for(const [rankValue,value] of Object.entries(pendingMoment.g)){const rank=Number(rankValue);if(validRanks.includes(rank))parenting.set(rank,normalizeParenting(value));}
-    if(Array.isArray(pendingMoment.s)){selected.clear();for(const value of pendingMoment.s.map(Number)){if(validRanks.includes(value))selected.add(value);}}
-  }
-  for(const rank of validRanks){
-    if(normalizeNormal(emotions.get(rank))&&normalizeParenting(parenting.get(rank))){
-      if(preferredMode==='parenting')emotions.set(rank,'');else parenting.set(rank,'');
-    }
-  }
-
-  const writePending=(envelope)=>{
-    try{
-      envelope.t=`${Date.now()}_${Math.random().toString(36).slice(2)}`;
-      localStorage.setItem(pendingStore,JSON.stringify(envelope));
-      mirrorCompat(envelope);
-    }catch(_){}
-  };
-  const persistMomentState=(rank)=>{
-    if(!familyKey||!memberKey||!videoId)return;
-    try{
-      const envelope=readPending();
-      if(!envelope.p||typeof envelope.p!=='object')envelope.p={}; if(!envelope.g||typeof envelope.g!=='object')envelope.g={}; if(!envelope.x||typeof envelope.x!=='object')envelope.x={};
-      let state=envelope.x[videoId]; if(!state||typeof state!=='object'||Number(state.r||0)!==roundNumber)state={r:roundNumber,e:{},g:{},s:[]};
-      if(!state.e||typeof state.e!=='object')state.e={}; if(!state.g||typeof state.g!=='object')state.g={};
-      state.e[String(rank)]=normalizeNormal(emotions.get(rank)); state.g[String(rank)]=normalizeParenting(parenting.get(rank)); state.s=Array.from(selected).sort((a,b)=>a-b); envelope.x[videoId]=state;
-      writePending(envelope);
-    }catch(_){}
-  };
-  const buildActionPayload=(action)=>({
-    action:String(action||''),
-    changes:validRanks.map(rank=>({rank,emotion:normalizeNormal(emotions.get(rank)),parenting:normalizeParenting(parenting.get(rank))})),
-    selected_ranks:Array.from(selected).sort((a,b)=>a-b),
-    active_rank:activeRank,
-    preferred_mode:preferredMode,
-    pending_payload:readPending(),
-    nonce:`${Date.now()}:${Math.random()}`,
-  });
-  const emitAction=(action)=>{
-    if(disabled)return;
-    const payload=buildActionPayload(action);
-    setTriggerValue('picker_action',payload);
-  };
-  if(nextVideoButton){
-    nextVideoButton.hidden=!Boolean(data?.show_next_video);
-    nextVideoButton.textContent=String(data?.next_label||'次の動画の写真へ →');
-    nextVideoButton.onclick=(event)=>{event.preventDefault();event.stopPropagation();emitAction('next_video');};
-  }
-  if(saveSelectionButton){
-    saveSelectionButton.hidden=disabled||!Boolean(data?.show_save_button!==false);
-    saveSelectionButton.textContent=String(data?.save_label||'感情をつけた写真を残す');
-    saveSelectionButton.onclick=(event)=>{event.preventDefault();event.stopPropagation();emitAction('save_selection');};
-  }
-
-  const nextValue=(value,order,normalize)=>{const cycle=['',...order];const index=Math.max(0,cycle.indexOf(normalize(value)));return cycle[(index+1)%cycle.length];};
-
-  const makeCard=(photo,index,large=false)=>{
-    const rank=rankFor(photo,index); let activeMode=preferredMode;
-    const card=document.createElement('div'); card.className=large?'moments-select-card large-card':'moments-select-card'; card.setAttribute('role','button'); card.tabIndex=disabled?-1:0; card.setAttribute('aria-disabled',disabled?'true':'false');
-    const imageWrap=document.createElement('div'); imageWrap.className='moments-select-image-wrap';
-    if(photo?.src){const img=document.createElement('img');img.src=String(photo.src);img.alt=`いい瞬間 ${rank}`;img.loading=large?'eager':'lazy';img.decoding='async';img.fetchPriority=large?'high':'auto';imageWrap.appendChild(img);}
-    const rankBadge=document.createElement('div');rankBadge.className='moments-select-rank';rankBadge.textContent=photo?.ai_best?'★ BEST':`#${rank}`;imageWrap.appendChild(rankBadge);
-    const pickedBadge=document.createElement('div');pickedBadge.className='moments-select-picked';pickedBadge.textContent='選択中';imageWrap.appendChild(pickedBadge);
-    const badge=document.createElement('div');badge.className='moments-emotion-badge';imageWrap.appendChild(badge);
-    const voiceButton=document.createElement('button');
-    voiceButton.type='button';voiceButton.className='moments-voice-open-button';
-    const voiceRank=Math.max(0,Number(photo?.voice_candidate_rank||0)||0);
-    voiceButton.classList.toggle('has-voice',voiceRank>0);
-    voiceButton.textContent=large?(voiceRank>0?'🎙 ✓':'🎙 声'):'🎙';
-    voiceButton.title=voiceRank>0?`声候補 ${voiceRank} を設定中。タップして変更`:'この写真に動画の声をつける';
-    voiceButton.setAttribute('aria-label',voiceButton.title);
-    voiceButton.addEventListener('click',(event)=>{
-      event.preventDefault();event.stopPropagation();
-      activeRank=rank;persistActiveRank();
-      voiceButton.textContent='声を開いています…';voiceButton.setAttribute('aria-busy','true');
-      try{emitAction('open_voice');}catch(_){voiceButton.textContent='🎙 もう一度';voiceButton.removeAttribute('aria-busy');}
-    });
-    imageWrap.appendChild(voiceButton);
-    const modeSwitch=document.createElement('div');modeSwitch.className='moments-mode-switch';
-    const normalButton=document.createElement('button');normalButton.type='button';normalButton.className='moments-mode-button';
-    const parentingButton=document.createElement('button');parentingButton.type='button';parentingButton.className='moments-mode-button parenting';modeSwitch.appendChild(normalButton);modeSwitch.appendChild(parentingButton);
-    const metaText=document.createElement('div');metaText.className='moments-select-meta';metaText.textContent=String(photo?.meta||'');
-    const reason=document.createElement('div');reason.className='moments-select-reason';reason.textContent=String(photo?.reason||'');
-
-    const syncVisual=()=>{
-      const normal=normalizeNormal(emotions.get(rank)), parent=normalizeParenting(parenting.get(rank));
-      const meta=normal?(normalMeta[normal]||null):(parent?(parentingMeta[parent]||null):null);
-      const selectedMode=normal?'通常':(parent?'こどもーど':'');
-      // Keep an already-reviewed human selection visible even for older records that
-      // predate feeling tags. Once this card is edited, the one-tag rule is authoritative.
-      const tagged=Boolean(normal||parent);
-      let active=selectionTouched.has(rank)?tagged:(selected.has(rank)||tagged);
-      if(active)selected.add(rank);else selected.delete(rank);
-      card.classList.toggle('selected',active&&!meta);
-      if(meta){card.style.borderColor=meta.color;card.style.background=`${meta.color}1F`;card.style.boxShadow=`0 0 0 2px ${meta.color}24`;}else{card.style.borderColor='';card.style.background='';card.style.boxShadow='';}
-      pickedBadge.style.display=active&&!meta?'block':'none'; badge.textContent=meta?`${meta.emoji} ${meta.label}`:'';badge.hidden=!meta;
-      const nm=normalMeta[normal]||null, pm=parentingMeta[parent]||null; normalButton.textContent=`${nm?nm.emoji:'🙂'} 通常`; parentingButton.textContent=`${pm?pm.emoji:'🌱'} こどもーど`;
-      normalButton.classList.toggle('active',activeMode==='normal');parentingButton.classList.toggle('active',activeMode==='parenting');
-      if(!large){card.setAttribute('aria-label',`いい瞬間 ${rank} を拡大表示`);return;}
-      card.setAttribute('aria-pressed',active?'true':'false');card.setAttribute('aria-label',meta?`${selectedMode}：${meta.label}。タップすると現在のモードで変更します`:`${activeMode==='parenting'?'こどもーど':'通常'}は未設定。タップして選びます`);
-    };
-    syncVisual(); card.appendChild(imageWrap); card.appendChild(modeSwitch); card.appendChild(metaText); card.appendChild(reason);
-    normalButton.addEventListener('click',(event)=>{event.preventDefault();event.stopPropagation();activeMode='normal';preferredMode='normal';syncVisual();});
-    parentingButton.addEventListener('click',(event)=>{event.preventDefault();event.stopPropagation();activeMode='parenting';preferredMode='parenting';syncVisual();});
-    if(!disabled){
-      const cycle=(event)=>{event?.preventDefault?.();event?.stopPropagation?.(); selectionTouched.add(rank); if(activeMode==='parenting'){parenting.set(rank,nextValue(parenting.get(rank),parentingOrder,normalizeParenting));emotions.set(rank,'');}else{emotions.set(rank,nextValue(emotions.get(rank),normalOrder,normalizeNormal));parenting.set(rank,'');} syncVisual(); persistMomentState(rank);};
-      const activate=(event)=>{if(large){cycle(event);return;}event?.preventDefault?.();event?.stopPropagation?.();activeRank=rank;persistActiveRank();setViewMode('enlarge');};
-      card.addEventListener('click',activate);card.addEventListener('keydown',(event)=>{if(event.key==='Enter'||event.key===' ')activate(event);});
-    }
-    return card;
-  };
-
-  const syncViewButtons=()=>{
-    if(listViewButton)listViewButton.classList.toggle('active',viewMode==='list');
-    if(enlargeViewButton)enlargeViewButton.classList.toggle('active',viewMode==='enlarge');
-  };
-
-  const renderGallery=()=>{
-    grid.replaceChildren();
-    grid.classList.toggle('enlarge-mode',viewMode==='enlarge');
-    if(viewMode==='enlarge'){
-      const shell=document.createElement('div');shell.className='moments-enlarge-shell';
-      if(!photos.length){const empty=document.createElement('div');empty.className='moments-select-empty';shell.appendChild(empty);grid.appendChild(shell);return;}
-      let activeIndex=photos.findIndex((photo,index)=>rankFor(photo,index)===activeRank);if(activeIndex<0)activeIndex=0;
-      const nav=document.createElement('div');nav.className='moments-enlarge-nav';
-      const prev=document.createElement('button');prev.type='button';prev.textContent='前の写真';prev.setAttribute('aria-label','前の写真');
-      const backList=document.createElement('button');backList.type='button';backList.textContent='一覧表示に戻る';backList.addEventListener('click',(event)=>{event.preventDefault();event.stopPropagation();setViewMode('list');});
-      const counter=document.createElement('div');counter.className='moments-enlarge-counter';
-      const next=document.createElement('button');next.type='button';next.textContent='次の写真';next.setAttribute('aria-label','次の写真');
-      const viewer=document.createElement('div');viewer.className='moments-enlarge-viewer';
-      const saveCurrent=document.createElement('button');saveCurrent.type='button';saveCurrent.className='moments-save-current-button';
-      saveCurrent.textContent='この写真を日記に登録';
-      saveCurrent.setAttribute('aria-label','いま拡大している写真を日記に登録');
-      saveCurrent.addEventListener('click',(event)=>{event.preventDefault();event.stopPropagation();emitAction('save_current_photo');});
-      const renderActive=()=>{
-        const activePhoto=photos[activeIndex]; activeRank=rankFor(activePhoto,activeIndex);
-        persistActiveRank();
-        counter.textContent=`${activeIndex+1} / ${photos.length}`; prev.disabled=activeIndex<=0; next.disabled=activeIndex>=photos.length-1;
-        viewer.replaceChildren(makeCard(activePhoto,activeIndex,true));
-        const alreadySaved=Boolean(activePhoto?.saved);
-        saveCurrent.hidden=disabled||alreadySaved;
-        saveCurrent.disabled=disabled||alreadySaved;
-        // Warm only the adjacent frame; never decode all large images at once.
-        for(const neighborIndex of [activeIndex-1,activeIndex+1]){
-          const neighbor=photos[neighborIndex];
-          if(neighbor?.src){try{const prefetch=new Image();prefetch.decoding='async';prefetch.src=String(neighbor.src);}catch(_){}}
-        }
-      };
-      const move=(delta)=>{const target=Math.max(0,Math.min(photos.length-1,activeIndex+delta));if(target===activeIndex)return;activeIndex=target;renderActive();};
-      prev.addEventListener('click',(event)=>{event.preventDefault();event.stopPropagation();move(-1);});
-      next.addEventListener('click',(event)=>{event.preventDefault();event.stopPropagation();move(1);});
-      let touchStartX=null;
-      viewer.addEventListener('touchstart',(event)=>{const touch=event.touches&&event.touches[0];touchStartX=touch?touch.clientX:null;},{passive:true});
-      viewer.addEventListener('touchend',(event)=>{if(touchStartX===null)return;const touch=event.changedTouches&&event.changedTouches[0];const dx=touch?touch.clientX-touchStartX:0;touchStartX=null;if(Math.abs(dx)>=45)move(dx<0?1:-1);},{passive:true});
-      shell.tabIndex=0;shell.addEventListener('keydown',(event)=>{if(event.key==='ArrowLeft'){event.preventDefault();move(-1);}else if(event.key==='ArrowRight'){event.preventDefault();move(1);}});
-      nav.appendChild(prev);nav.appendChild(backList);nav.appendChild(next);shell.appendChild(nav);shell.appendChild(counter);shell.appendChild(viewer);shell.appendChild(saveCurrent);grid.appendChild(shell);renderActive();return;
-    }
-    for(let index=0;index<photos.length;index+=1){const photo=photos[index];if(!photo)continue;grid.appendChild(makeCard(photo,index,false));}
-  };
-
-  const setViewMode=(nextMode)=>{
-    const normalized=nextMode==='enlarge'?'enlarge':'list';
-    if(viewMode===normalized)return;
-    viewMode=normalized;
-    try{if(viewStoreKey)localStorage.setItem(viewStoreKey,viewMode);}catch(_){}
-    syncViewButtons();
-    renderGallery();
-  };
-  if(listViewButton)listViewButton.onclick=(event)=>{event.preventDefault();event.stopPropagation();setViewMode('list');};
-  if(enlargeViewButton)enlargeViewButton.onclick=(event)=>{event.preventDefault();event.stopPropagation();setViewMode('enlarge');};
-  syncViewButtons();
-  renderGallery();
-}
-"""
+_MOMENTS_SELECT_JS = "\nexport default function(component) {\n  const { parentElement, data, setTriggerValue } = component;\n  const grid = parentElement.querySelector('#moments-select-grid');\n  if (!grid) return;\n\n  const photos = Array.isArray(data?.photos) ? data.photos.slice(0,100).sort((a,b)=>(Number(a?.timestamp_ms)||0)-(Number(b?.timestamp_ms)||0)||(Number(a?.rank)||0)-(Number(b?.rank)||0)) : [];\n  const disabled = Boolean(data?.disabled);\n  const familyKey=String(data?.family_key||''), memberKey=String(data?.member_key||''), videoId=String(data?.video_id||'');\n  const roundNumber=Math.max(0,Number(data?.round_number||0)||0);\n  const listViewButton=parentElement.querySelector('#moments-view-list');\n  const enlargeViewButton=parentElement.querySelector('#moments-view-enlarge');\n  const viewStoreKey=videoId?`tokyo_burari_moments_view_mode_v607_${videoId}_${roundNumber}_${data?.view_session||0}`:'';\n  const activeStoreKey=videoId?`tokyo_burari_moments_active_rank_v370_${videoId}_${roundNumber}`:'';\n  let viewMode='list';\n  try {\n    const savedMode=viewStoreKey?String(localStorage.getItem(viewStoreKey)||''):'';\n    if(savedMode==='enlarge'||savedMode==='list')viewMode=savedMode;\n    else if(String(data?.view_mode||'')==='enlarge')viewMode='enlarge';\n  } catch (_) {\n    viewMode=String(data?.view_mode||'')==='enlarge'?'enlarge':'list';\n  }\n  const pendingStore='tokyo_burari_pending_tags_v166';\n  const pendingParam=String(data?.pending_param||'feel_v159');\n  const compatStore='tokyo_burari_pending_feelings_v159';\n  const selected=new Set((Array.isArray(data?.selected_ranks)?data.selected_ranks:[]).map(Number).filter(v=>Number.isFinite(v)&&v>0));\n  const nextVideoButton=parentElement.querySelector('#moments-next-video');\n  const saveSelectionButton=parentElement.querySelector('#moments-save-selection');\n\n  const normalOrder=['cozy','joy','surprise','anger','sadness','frustration','relaxed','delicious','beautiful','mixed'];\n  const normalMeta={\n    cozy:{emoji:'🥰',color:'#F3B6A0',label:'ほっこりした'},joy:{emoji:'😊',color:'#F2C94C',label:'うれしい'},\n    surprise:{emoji:'😲',color:'#9B7BD3',label:'びっくり'},anger:{emoji:'😠',color:'#E56B6F',label:'おこった'},\n    sadness:{emoji:'😢',color:'#6C9BD2',label:'かなしい'},frustration:{emoji:'😣',color:'#A66A8A',label:'くやしい'},\n    relaxed:{emoji:'😌',color:'#9BCDB8',label:'のほほん'},delicious:{emoji:'😋',color:'#F2A65A',label:'美味しい'},\n    beautiful:{emoji:'✨',color:'#6EC5D8',label:'きれい'},mixed:{emoji:'😵\u200d💫',color:'#8D86A8',label:'複雑'}\n  };\n  const parentingOrder=['effort','challenge','discovery','kindness','together','tears','hmm','peace','teach_me','sharp'];\n  const parentingMeta={\n    effort:{emoji:'⭐',color:'#E6B84A',label:'がんばった'},challenge:{emoji:'💪',color:'#F2994A',label:'ちょうせん'},\n    discovery:{emoji:'💡',color:'#9BC53D',label:'はっけん'},kindness:{emoji:'❤️',color:'#E57373',label:'やさしさ'},\n    together:{emoji:'🤝',color:'#4DB6AC',label:'いっしょに'},tears:{emoji:'😭',color:'#6C9BD2',label:'なみだ'},\n    hmm:{emoji:'🤔',color:'#8E7CC3',label:'むーん'},peace:{emoji:'✌️',color:'#5BBF9F',label:'ピース'},\n    teach_me:{emoji:'🙋',color:'#4C9BE8',label:'教えて'},sharp:{emoji:'🫡',color:'#53657D',label:'キリッ'}\n  };\n  const normalizeNormal=(v)=>Object.prototype.hasOwnProperty.call(normalMeta,String(v||''))?String(v||''):'';\n  const normalizeParenting=(v)=>Object.prototype.hasOwnProperty.call(parentingMeta,String(v||''))?String(v||''):'';\n  const rankFor=(photo,index)=>Number(photo?.rank||(index+1));\n  const emotions=new Map(), parenting=new Map();\n  for(let i=0;i<photos.length;i+=1){ const rank=rankFor(photos[i],i); if(Number.isFinite(rank)&&rank>0){ emotions.set(rank,normalizeNormal(photos[i]?.emotion)); parenting.set(rank,normalizeParenting(photos[i]?.parenting)); } }\n  const validRanks=photos.map(rankFor).filter(v=>Number.isFinite(v)&&v>0);\n  let activeRank=Number(data?.active_rank||0);\n  try {\n    const savedActive=activeStoreKey?Number(localStorage.getItem(activeStoreKey)||0):0;\n    if(validRanks.includes(savedActive))activeRank=savedActive;\n  } catch (_) {}\n  if(!validRanks.includes(activeRank)) activeRank=validRanks.length?validRanks[0]:0;\n  const persistActiveRank=()=>{\n    try{if(activeStoreKey&&validRanks.includes(activeRank))localStorage.setItem(activeStoreKey,String(activeRank));}catch(_){}\n  };\n  persistActiveRank();\n  let preferredMode=String(data?.preferred_mode||'')==='parenting'?'parenting':'normal';\n  const selectionTouched=new Set();\n\n  const encodeCompat=(payload)=>{\n    try{const bytes=new TextEncoder().encode(JSON.stringify(payload));let binary='';for(let i=0;i<bytes.length;i+=0x4000)binary+=String.fromCharCode(...bytes.subarray(i,i+0x4000));return btoa(binary).replace(/\\+/g,'-').replace(/\\//g,'_').replace(/=+$/g,'');}catch(_){return '';}\n  };\n  const mirrorCompat=(envelope)=>{\n    try{if(!envelope||!envelope.t||!familyKey||!memberKey)return;const compat={...envelope,v:159,f:familyKey,m:memberKey};const encoded=encodeCompat(compat);if(!encoded)return;const url=new URL(window.location.href);url.searchParams.set(pendingParam,encoded);localStorage.setItem(compatStore,encoded);window.history.replaceState(window.history.state||{},'',url.pathname+url.search+url.hash);}catch(_){}\n  };\n  const readPending=()=>{\n    try{\n      const parsed=JSON.parse(String(localStorage.getItem(pendingStore)||'null'));\n      if(parsed&&Number(parsed.v)===166&&String(parsed.f||'')===familyKey&&String(parsed.m||'')===memberKey){mirrorCompat(parsed);return parsed;}\n    }catch(_){}\n    return {v:166,f:familyKey,m:memberKey,p:{},g:{},x:{}};\n  };\n  const pendingSnapshot=readPending();\n  const pendingMoment=(pendingSnapshot.x&&typeof pendingSnapshot.x==='object')?pendingSnapshot.x[videoId]:null;\n  if(pendingMoment&&typeof pendingMoment==='object'&&Number(pendingMoment.r||0)===roundNumber){\n    if(pendingMoment.e&&typeof pendingMoment.e==='object')for(const [rankValue,value] of Object.entries(pendingMoment.e)){const rank=Number(rankValue);if(validRanks.includes(rank))emotions.set(rank,normalizeNormal(value));}\n    if(pendingMoment.g&&typeof pendingMoment.g==='object')for(const [rankValue,value] of Object.entries(pendingMoment.g)){const rank=Number(rankValue);if(validRanks.includes(rank))parenting.set(rank,normalizeParenting(value));}\n    if(Array.isArray(pendingMoment.s)){selected.clear();for(const value of pendingMoment.s.map(Number)){if(validRanks.includes(value))selected.add(value);}}\n  }\n  for(const rank of validRanks){\n    if(normalizeNormal(emotions.get(rank))&&normalizeParenting(parenting.get(rank))){\n      if(preferredMode==='parenting')emotions.set(rank,'');else parenting.set(rank,'');\n    }\n  }\n\n  const writePending=(envelope)=>{\n    try{\n      envelope.t=`${Date.now()}_${Math.random().toString(36).slice(2)}`;\n      localStorage.setItem(pendingStore,JSON.stringify(envelope));\n      mirrorCompat(envelope);\n    }catch(_){}\n  };\n  const persistMomentState=(rank)=>{\n    if(!familyKey||!memberKey||!videoId)return;\n    try{\n      const envelope=readPending();\n      if(!envelope.p||typeof envelope.p!=='object')envelope.p={}; if(!envelope.g||typeof envelope.g!=='object')envelope.g={}; if(!envelope.x||typeof envelope.x!=='object')envelope.x={};\n      let state=envelope.x[videoId]; if(!state||typeof state!=='object'||Number(state.r||0)!==roundNumber)state={r:roundNumber,e:{},g:{},s:[]};\n      if(!state.e||typeof state.e!=='object')state.e={}; if(!state.g||typeof state.g!=='object')state.g={};\n      state.e[String(rank)]=normalizeNormal(emotions.get(rank)); state.g[String(rank)]=normalizeParenting(parenting.get(rank)); state.s=Array.from(selected).sort((a,b)=>a-b); envelope.x[videoId]=state;\n      writePending(envelope);\n    }catch(_){}\n  };\n  const buildActionPayload=(action)=>({\n    action:String(action||''),\n    changes:validRanks.map(rank=>({rank,emotion:normalizeNormal(emotions.get(rank)),parenting:normalizeParenting(parenting.get(rank))})),\n    selected_ranks:Array.from(selected).sort((a,b)=>a-b),\n    active_rank:activeRank,\n    preferred_mode:preferredMode,\n    pending_payload:readPending(),\n    nonce:`${Date.now()}:${Math.random()}`,\n  });\n  const emitAction=(action)=>{\n    if(disabled)return;\n    const payload=buildActionPayload(action);\n    setTriggerValue('picker_action',payload);\n  };\n  if(nextVideoButton){\n    nextVideoButton.hidden=!Boolean(data?.show_next_video);\n    nextVideoButton.textContent=String(data?.next_label||'次の動画の写真へ →');\n    nextVideoButton.onclick=(event)=>{event.preventDefault();event.stopPropagation();emitAction('next_video');};\n  }\n  if(saveSelectionButton){\n    saveSelectionButton.hidden=disabled||!Boolean(data?.show_save_button!==false);\n    saveSelectionButton.textContent=String(data?.save_label||'感情をつけた写真を残す');\n    saveSelectionButton.onclick=(event)=>{event.preventDefault();event.stopPropagation();emitAction('save_selection');};\n  }\n\n  const nextValue=(value,order,normalize)=>{const cycle=['',...order];const index=Math.max(0,cycle.indexOf(normalize(value)));return cycle[(index+1)%cycle.length];};\n\n  const makeCard=(photo,index,large=false)=>{\n    const rank=rankFor(photo,index); let activeMode=preferredMode;\n    const card=document.createElement('div'); card.className=large?'moments-select-card large-card':'moments-select-card'; card.setAttribute('role','button'); card.tabIndex=disabled?-1:0; card.setAttribute('aria-disabled',disabled?'true':'false');\n    const imageWrap=document.createElement('div'); imageWrap.className='moments-select-image-wrap';\n    if(photo?.src){const img=document.createElement('img');img.src=String(photo.src);img.alt=`いい瞬間 ${rank}`;img.loading=large?'eager':'lazy';img.decoding='async';img.fetchPriority=large?'high':'auto';imageWrap.appendChild(img);}\n    const rankBadge=document.createElement('div');rankBadge.className='moments-select-rank';rankBadge.textContent=photo?.ai_best?'★ BEST':`#${rank}`;imageWrap.appendChild(rankBadge);\n    const pickedBadge=document.createElement('div');pickedBadge.className='moments-select-picked';pickedBadge.textContent='選択中';imageWrap.appendChild(pickedBadge);\n    const badge=document.createElement('div');badge.className='moments-emotion-badge';imageWrap.appendChild(badge);\n    const voiceButton=document.createElement('button');\n    voiceButton.type='button';voiceButton.className='moments-voice-open-button';\n    const voiceRank=Math.max(0,Number(photo?.voice_candidate_rank||0)||0);\n    voiceButton.classList.toggle('has-voice',voiceRank>0);\n    voiceButton.textContent=large?(voiceRank>0?'🎙 ✓':'🎙 声'):'🎙';\n    voiceButton.title=voiceRank>0?`声候補 ${voiceRank} を設定中。タップして変更`:'この写真に動画の声をつける';\n    voiceButton.setAttribute('aria-label',voiceButton.title);\n    voiceButton.addEventListener('click',(event)=>{\n      event.preventDefault();event.stopPropagation();\n      activeRank=rank;persistActiveRank();\n      voiceButton.textContent='声を開いています…';voiceButton.setAttribute('aria-busy','true');\n      try{emitAction('open_voice');}catch(_){voiceButton.textContent='🎙 もう一度';voiceButton.removeAttribute('aria-busy');}\n    });\n    imageWrap.appendChild(voiceButton);\n    const modeSwitch=document.createElement('div');modeSwitch.className='moments-mode-switch';\n    const normalButton=document.createElement('button');normalButton.type='button';normalButton.className='moments-mode-button';\n    const parentingButton=document.createElement('button');parentingButton.type='button';parentingButton.className='moments-mode-button parenting';modeSwitch.appendChild(normalButton);modeSwitch.appendChild(parentingButton);\n    const metaText=document.createElement('div');metaText.className='moments-select-meta';metaText.textContent=String(photo?.meta||'');\n    const reason=document.createElement('div');reason.className='moments-select-reason';reason.textContent=String(photo?.reason||'');\n\n    const syncVisual=()=>{\n      const normal=normalizeNormal(emotions.get(rank)), parent=normalizeParenting(parenting.get(rank));\n      const meta=normal?(normalMeta[normal]||null):(parent?(parentingMeta[parent]||null):null);\n      const selectedMode=normal?'通常':(parent?'こどもーど':'');\n      // Keep an already-reviewed human selection visible even for older records that\n      // predate feeling tags. Once this card is edited, the one-tag rule is authoritative.\n      const tagged=Boolean(normal||parent);\n      let active=selectionTouched.has(rank)?tagged:(selected.has(rank)||tagged);\n      if(active)selected.add(rank);else selected.delete(rank);\n      card.classList.toggle('selected',active&&!meta);\n      if(meta){card.style.borderColor=meta.color;card.style.background=`${meta.color}1F`;card.style.boxShadow=`0 0 0 2px ${meta.color}24`;}else{card.style.borderColor='';card.style.background='';card.style.boxShadow='';}\n      pickedBadge.style.display=active&&!meta?'block':'none'; badge.textContent=meta?`${meta.emoji} ${meta.label}`:'';badge.hidden=!meta;\n      const nm=normalMeta[normal]||null, pm=parentingMeta[parent]||null; normalButton.textContent=`${nm?nm.emoji:'🙂'} 通常`; parentingButton.textContent=`${pm?pm.emoji:'🌱'} こどもーど`;\n      normalButton.classList.toggle('active',activeMode==='normal');parentingButton.classList.toggle('active',activeMode==='parenting');\n      if(!large){card.setAttribute('aria-label',`いい瞬間 ${rank} を拡大表示`);return;}\n      card.setAttribute('aria-pressed',active?'true':'false');card.setAttribute('aria-label',meta?`${selectedMode}：${meta.label}。タップすると現在のモードで変更します`:`${activeMode==='parenting'?'こどもーど':'通常'}は未設定。タップして選びます`);\n    };\n    syncVisual(); card.appendChild(imageWrap); card.appendChild(modeSwitch); card.appendChild(metaText); card.appendChild(reason);\n    normalButton.addEventListener('click',(event)=>{event.preventDefault();event.stopPropagation();activeMode='normal';preferredMode='normal';syncVisual();});\n    parentingButton.addEventListener('click',(event)=>{event.preventDefault();event.stopPropagation();activeMode='parenting';preferredMode='parenting';syncVisual();});\n    if(!disabled){\n      const cycle=(event)=>{event?.preventDefault?.();event?.stopPropagation?.(); selectionTouched.add(rank); if(activeMode==='parenting'){parenting.set(rank,nextValue(parenting.get(rank),parentingOrder,normalizeParenting));emotions.set(rank,'');}else{emotions.set(rank,nextValue(emotions.get(rank),normalOrder,normalizeNormal));parenting.set(rank,'');} syncVisual(); persistMomentState(rank);};\n      const activate=(event)=>{if(large){cycle(event);return;}event?.preventDefault?.();event?.stopPropagation?.();activeRank=rank;persistActiveRank();setViewMode('enlarge');};\n      card.addEventListener('click',activate);card.addEventListener('keydown',(event)=>{if(event.key==='Enter'||event.key===' ')activate(event);});\n    }\n    return card;\n  };\n\n  const syncViewButtons=()=>{\n    if(listViewButton)listViewButton.classList.toggle('active',viewMode==='list');\n    if(enlargeViewButton)enlargeViewButton.classList.toggle('active',viewMode==='enlarge');\n  };\n\n  const renderGallery=()=>{\n    grid.replaceChildren();\n    grid.classList.toggle('enlarge-mode',viewMode==='enlarge');\n    if(viewMode==='enlarge'){\n      const shell=document.createElement('div');shell.className='moments-enlarge-shell';\n      if(!photos.length){const empty=document.createElement('div');empty.className='moments-select-empty';shell.appendChild(empty);grid.appendChild(shell);return;}\n      let activeIndex=photos.findIndex((photo,index)=>rankFor(photo,index)===activeRank);if(activeIndex<0)activeIndex=0;\n      const nav=document.createElement('div');nav.className='moments-enlarge-nav';\n      const prev=document.createElement('button');prev.type='button';prev.textContent='前の写真';prev.setAttribute('aria-label','前の写真');\n      const backList=document.createElement('button');backList.type='button';backList.textContent='一覧表示に戻る';backList.addEventListener('click',(event)=>{event.preventDefault();event.stopPropagation();setViewMode('list');});\n      const counter=document.createElement('div');counter.className='moments-enlarge-counter';\n      const next=document.createElement('button');next.type='button';next.textContent='次の写真';next.setAttribute('aria-label','次の写真');\n      const viewer=document.createElement('div');viewer.className='moments-enlarge-viewer';\n      const saveCurrent=document.createElement('button');saveCurrent.type='button';saveCurrent.className='moments-save-current-button';\n      saveCurrent.textContent='この写真を日記に登録';\n      saveCurrent.setAttribute('aria-label','いま拡大している写真を日記に登録');\n      saveCurrent.addEventListener('click',(event)=>{event.preventDefault();event.stopPropagation();emitAction('save_current_photo');});\n      const rotateControls=document.createElement('div');rotateControls.className='photo-rotation-controls-v616';\n      for(const [label,action] of [['↶ 左に90°','rotate_left'],['↷ 右に90°','rotate_right']]){\n        const b=document.createElement('button');b.type='button';b.textContent=label;b.disabled=disabled;\n        b.onclick=e=>{e.preventDefault();e.stopPropagation();rotateControls.querySelectorAll('button').forEach(x=>x.disabled=true);emitAction(action);};rotateControls.appendChild(b);\n      }\n      const renderActive=()=>{\n        const activePhoto=photos[activeIndex]; activeRank=rankFor(activePhoto,activeIndex);\n        persistActiveRank();\n        counter.textContent=`${activeIndex+1} / ${photos.length}`; prev.disabled=activeIndex<=0; next.disabled=activeIndex>=photos.length-1;\n        viewer.replaceChildren(makeCard(activePhoto,activeIndex,true));\n        const alreadySaved=Boolean(activePhoto?.saved);\n        saveCurrent.hidden=disabled||alreadySaved;\n        saveCurrent.disabled=disabled||alreadySaved;\n        // Warm only the adjacent frame; never decode all large images at once.\n        for(const neighborIndex of [activeIndex-1,activeIndex+1]){\n          const neighbor=photos[neighborIndex];\n          if(neighbor?.src){try{const prefetch=new Image();prefetch.decoding='async';prefetch.src=String(neighbor.src);}catch(_){}}\n        }\n      };\n      const move=(delta)=>{const target=Math.max(0,Math.min(photos.length-1,activeIndex+delta));if(target===activeIndex)return;activeIndex=target;renderActive();};\n      prev.addEventListener('click',(event)=>{event.preventDefault();event.stopPropagation();move(-1);});\n      next.addEventListener('click',(event)=>{event.preventDefault();event.stopPropagation();move(1);});\n      let touchStartX=null;\n      viewer.addEventListener('touchstart',(event)=>{const touch=event.touches&&event.touches[0];touchStartX=touch?touch.clientX:null;},{passive:true});\n      viewer.addEventListener('touchend',(event)=>{if(touchStartX===null)return;const touch=event.changedTouches&&event.changedTouches[0];const dx=touch?touch.clientX-touchStartX:0;touchStartX=null;if(Math.abs(dx)>=45)move(dx<0?1:-1);},{passive:true});\n      shell.tabIndex=0;shell.addEventListener('keydown',(event)=>{if(event.key==='ArrowLeft'){event.preventDefault();move(-1);}else if(event.key==='ArrowRight'){event.preventDefault();move(1);}});\n      nav.appendChild(prev);nav.appendChild(backList);nav.appendChild(next);shell.appendChild(nav);shell.appendChild(counter);shell.appendChild(viewer);shell.appendChild(rotateControls);shell.appendChild(saveCurrent);grid.appendChild(shell);renderActive();return;\n    }\n    for(let index=0;index<photos.length;index+=1){const photo=photos[index];if(!photo)continue;grid.appendChild(makeCard(photo,index,false));}\n  };\n\n  const setViewMode=(nextMode)=>{\n    const normalized=nextMode==='enlarge'?'enlarge':'list';\n    if(viewMode===normalized)return;\n    viewMode=normalized;\n    try{if(viewStoreKey)localStorage.setItem(viewStoreKey,viewMode);}catch(_){}\n    syncViewButtons();\n    renderGallery();\n  };\n  if(listViewButton)listViewButton.onclick=(event)=>{event.preventDefault();event.stopPropagation();setViewMode('list');};\n  if(enlargeViewButton)enlargeViewButton.onclick=(event)=>{event.preventDefault();event.stopPropagation();setViewMode('enlarge');};\n  syncViewButtons();\n  renderGallery();\n}\n"
 
 moments_select_component = None
 _moments_select_component_initialized = False
@@ -44712,7 +39718,7 @@ def _get_moments_select_component():
     _moments_select_component_initialized = True
     try:
         moments_select_component = st.components.v2.component(
-            "tokyo_burari_moments_select_v464",
+            "tokyo_burari_moments_select_v616",
             html=_MOMENTS_SELECT_HTML,
             css=_MOMENTS_SELECT_CSS,
             js=_perf_instrument_js_v466(_MOMENTS_SELECT_JS),
@@ -45436,6 +40442,13 @@ def _render_moments_picker(photo, index, view_mode=None, next_video_action=None)
 
                 action_name = str(picker_action.get("action") or "")
                 selected_rank_set = set(selected_ranks)
+                if action_name in {"rotate_left", "rotate_right"} and current_active_rank in valid_ranks:
+                    try:
+                        _rotate_photo_v616(video_id, -1 if action_name == "rotate_left" else 1, nonce, rank=current_active_rank)
+                        st.rerun(scope="app")
+                    except Exception as exc:
+                        _app_error_record_v610("moments.rotation", exc)
+                        st.error("写真を回転できませんでした。" + str(exc))
                 if action_name == "open_voice" and current_active_rank in valid_ranks:
                     st.session_state[voice_panel_open_key] = True
                     st.session_state[voice_panel_target_key] = int(current_active_rank)
@@ -45574,6 +40587,7 @@ def _render_moments_picker(photo, index, view_mode=None, next_video_action=None)
                     '</div>',
                     unsafe_allow_html=True,
                 )
+            _render_rotation_buttons_v616(video_id, f"moments_{video_id}_{round_number}_{rank}", rank=rank)
             st.caption(f'{active_card.get("meta") or ""}　{active_card.get("reason") or ""}'.strip())
             if st.button(
                 "選択解除" if rank in selected_ranks else "この写真を選択",
@@ -47581,6 +42595,7 @@ def render_diary_emotion_gallery(trip_id, photos, trip=None, is_pending=False):
                     unsafe_allow_html=True,
                 )
             if single_mode:
+                _render_rotation_buttons_v616(photo.get("id"), "diary_fallback_"+str(trip_id)+"_"+str(photo.get("id")))
                 favorite = photo_favorite_is_enabled(photo)
                 if st.button(
                     "★ お気に入りタグを解除" if favorite else "☆ お気に入りタグに登録",
@@ -47806,6 +42821,7 @@ def render_photo_library_single_v420(photo, photo_number, total_count):
     else:
         st.warning("この写真を表示できませんでした。")
 
+    _render_rotation_buttons_v616(photo.get("id"), "library_"+str(photo.get("id")))
     st.caption(f"{photo_number} / {total_count}　・　{_photo_library_captured_label_v418(photo.get('captured_at'))}")
     location = str(photo_location_label(photo) or "").strip()
     if location:
@@ -60612,7 +55628,7 @@ def _salt_lookup_json_v609(web, url, params, operation):
         remaining = getattr(web, "deadline", time.monotonic() + 4.0) - time.monotonic()
         if remaining < 0.25:
             raise TimeoutError("検索の通信待ち時間を超えました。")
-        with urlopen(request, timeout=min(4.0, remaining)) as response:
+        with urlopen(request, timeout=min(10.0 if operation == "bakery_search" else 4.0, remaining)) as response:
             info.update(status=response.status, content_type=response.headers.get("Content-Type", ""))
             raw = response.read(4 * 1024 * 1024 + 1)
         if len(raw) > 4 * 1024 * 1024:
@@ -60626,6 +55642,7 @@ def _salt_lookup_json_v609(web, url, params, operation):
         exc.landmark_diagnostic = info
         _salt_trace_v609(web, "request_failed", info, "ERROR")
         raise
+
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -61038,7 +56055,7 @@ def _salt_form_v609(place, entry_id=""):
 
 @st.cache_resource
 def _salt_component_v609():
-    return st.components.v2.component("burari_salt_bread_v615", html=_SALT_HTML_V609, css=_SALT_CSS_V609, js=_SALT_JS_V609)
+    return st.components.v2.component("burari_salt_bread_v617", html=_SALT_HTML_V609, css=_SALT_CSS_V609, js=_SALT_JS_V609)
 
 
 def _salt_remember_map_v615(owner, entry, action=None):
@@ -61105,6 +56122,272 @@ def _salt_edit_form_v615(doc, entry, visit):
                 st.error(str(exc))
 
 
+def _salt_expiry_v617(at):
+    import calendar
+    month = at.month + 3
+    year = at.year + (month-1)//12
+    month = (month-1)%12 + 1
+    return at.replace(year=year, month=month, day=min(at.day, calendar.monthrange(year, month)[1]))
+
+
+def _salt_discovery_load_v617(force=False):
+    key = "_salt_discovery_v617_" + _salt_owner_v609()
+    cached = None if force else _session_cache_get(key, max_age_seconds=20)
+    if cached is not None:
+        return json.loads(json.dumps(cached))
+    try:
+        raw = supabase_client().storage.from_(GPS_TRACK_BUCKET).download(_salt_prefix_v609()+"/discovery.json")
+    except Exception as exc:
+        if not _salt_missing_v609(exc):
+            raise RuntimeError("保存済みの検索結果を読み込めませんでした。") from exc
+        doc = {"owner": _salt_owner_v609(), "searches": [], "hidden": []}
+    else:
+        doc = json.loads(_storage_bytes(raw).decode())
+        if not isinstance(doc, dict) or doc.get("owner") != _salt_owner_v609() or not isinstance(doc.get("searches"), list) or not isinstance(doc.get("hidden"), list):
+            raise ValueError("保存済み検索結果を確認できません。上書きせず停止しました。")
+    active = []
+    for search in doc["searches"]:
+        if not isinstance(search, dict):
+            raise ValueError("検索結果の形式を確認できません。")
+        try:
+            valid = datetime.fromisoformat(search["expires_at"]) > now_jst()
+        except (KeyError, ValueError, TypeError):
+            raise ValueError("検索結果の保存期限を確認できません。")
+        if valid:
+            active.append(search)
+    if len(active) != len(doc["searches"]):
+        # Expired candidates disappear and are removed from the result store on access.
+        doc["searches"] = active
+        _salt_discovery_write_v617(doc)
+    _session_cache_set(key, doc)
+    return json.loads(json.dumps(doc))
+
+
+def _salt_discovery_write_v617(doc):
+    supabase_client().storage.from_(GPS_TRACK_BUCKET).upload(path=_salt_prefix_v609()+"/discovery.json",
+        file=json.dumps(doc, ensure_ascii=False).encode(),
+        file_options={"content-type": GPS_TRACK_STORAGE_MIME, "cache-control": "0", "upsert": "true"})
+    _session_cache_set("_salt_discovery_v617_"+_salt_owner_v609(), doc)
+
+
+def _salt_discovery_rows_v617(doc):
+    rows = {}
+    for search in doc.get("searches", []):
+        if datetime.fromisoformat(search["expires_at"]) <= now_jst():
+            continue
+        for row in search.get("results", []):
+            if row["id"] not in doc.get("hidden", []):
+                rows[row["id"]] = {**row, "searched_at": search["searched_at"], "expires_at": search["expires_at"]}
+    return list(rows.values())
+
+
+def _salt_official_evidence_v617(url):
+    # Pin each connection to a validated public IP, including after redirects.
+    import ipaddress, socket, ssl, http.client
+    from urllib.parse import urlsplit, urljoin, quote
+    target=str(url)
+    for redirect in range(4):
+        parts=urlsplit(target)
+        if parts.scheme not in ("https","http") or not parts.hostname or parts.username or parts.password or parts.port not in (None,80,443) or any(c in target for c in ("\r","\n")):
+            raise ValueError("店舗サイトのURL形式を確認できません。")
+        port=parts.port or (443 if parts.scheme=="https" else 80)
+        addresses=socket.getaddrinfo(parts.hostname,port,type=socket.SOCK_STREAM)
+        if not addresses or any(not ipaddress.ip_address(a[4][0]).is_global for a in addresses):
+            raise ValueError("公開店舗サイト以外は参照しません。")
+        address=addresses[0][4][0]
+        connection=http.client.HTTPConnection(parts.hostname,port,timeout=3)
+        connection.sock=socket.create_connection((address,port),timeout=3)
+        if parts.scheme=="https":
+            connection.sock=ssl.create_default_context().wrap_socket(connection.sock,server_hostname=parts.hostname)
+        try:
+            path=quote(parts.path or '/',safe='/%:@!$&()*+,;=-._~')
+            if parts.query:path+='?'+quote(parts.query,safe='/%:@!$&()*+,;=?-._~')
+            connection.request('GET',path,headers={'Host':parts.netloc,'User-Agent':'BurariSaltBreadMap/1.0','Accept':'text/html'})
+            response=connection.getresponse()
+            if response.status in (301,302,303,307,308):
+                target=urljoin(target,response.getheader('Location') or '')
+                if redirect==3:raise ValueError('店舗サイトの転送が多すぎます。')
+                continue
+            if response.status>=400:raise ValueError('店舗サイト HTTP '+str(response.status))
+            if 'text/html' not in (response.getheader('Content-Type') or ''):return '',target
+            raw=response.read(512*1024)
+            charset=response.headers.get_content_charset() or 'utf-8'
+            text=raw.decode(charset,errors='replace');final_url=target
+            break
+        finally:
+            connection.close()
+    from html.parser import HTMLParser
+    class Visible(HTMLParser):
+        def __init__(self):
+            super().__init__();self.parts=[];self.skip=0
+        def handle_starttag(self, tag, attrs):
+            if tag in ("script", "style", "noscript"):
+                self.skip += 1
+        def handle_endtag(self, tag):
+            if tag in ("script", "style", "noscript"):
+                self.skip = max(0,self.skip-1)
+        def handle_data(self, data):
+            if not self.skip:self.parts.append(data)
+    parser = Visible();parser.feed(text)
+    text = re.sub(r"\s+", " ", " ".join(parser.parts))
+    match = re.search(r"塩パン|塩ぱん|しおパン|しおぱん|salt\s+bread", text, re.I)
+    return (text[max(0, match.start()-50):match.end()+100] if match else ""), final_url
+
+
+def _salt_discover_v617(lat, lng, radius):
+    lat,lng = _salt_coordinates_v609(lat,lng)
+    radius = max(100, min(5000, int(radius)))
+    web = _SaltWebV609()
+    web.deadline = time.monotonic()+24
+    # An OSM shop query discovers stores; product claims always carry evidence.
+    around = f"(around:{radius},{lat:.6f},{lng:.6f})"
+    query = '[out:json][timeout:6];('+''.join('nwr'+selector+around+';' for selector in
+        ('["shop"="bakery"]','["amenity"="cafe"]["name"~"パン|ベーカリー|bakery|bread",i]','["name"~"塩パン|塩ぱん|しおぱん|salt.bread",i]'))+');out center tags;'
+    try:
+        for endpoint in ('https://overpass-api.de/api/interpreter','https://overpass.private.coffee/api/interpreter'):
+            try:
+                data,info = _salt_lookup_json_v609(web,endpoint,{"data":query},"bakery_search")
+                if not isinstance(data,dict) or not isinstance(data.get("elements"),list) or data.get("remark"):
+                    raise ValueError("パン屋検索の応答を確認できませんでした。")
+                break
+            except Exception as exc:
+                if endpoint.endswith('private.coffee/api/interpreter') or not _salt_transient_v612(exc):raise
+        results = [];seen=set()
+        for element in data["elements"]:
+            tags = element.get("tags") or {};point=element.get("center") or element
+            try:
+                plat,plng = _salt_coordinates_v609(point["lat"],point["lon"])
+                name = _salt_normal_v609(tags.get("name:ja") or tags.get("name"))
+                identity = str(element.get("type"))+":"+str(element["id"])
+                if not name or identity in seen:continue
+                seen.add(identity)
+                address = _salt_normal_v609(tags.get("addr:full")) or ''.join(str(tags.get(k) or '') for k in ('addr:province','addr:city','addr:suburb','addr:quarter','addr:street','addr:housenumber'))
+                evidence = next((str(tags[k]) for k in ('name','description','product','cuisine') if re.search(r'塩パン|塩ぱん|しおぱん|salt\s+bread',str(tags.get(k) or ''),re.I)), '')
+                website = str(tags.get('website') or tags.get('contact:website') or '')
+                results.append({"id":"candidate_"+hashlib.sha256(identity.encode()).hexdigest()[:24],"name":name,"address":address,
+                    "lat":plat,"lng":plng,"source":"OpenStreetMap","osm_id":identity,"website":website,
+                    "evidence":evidence[:180],"evidence_url":"https://www.openstreetmap.org/"+str(element.get('type'))+'/'+str(element['id']),
+                    "product_mentioned":bool(evidence),"checked_at":now_jst().isoformat()})
+            except (KeyError,TypeError,ValueError):continue
+        def check(row):
+            if not row['product_mentioned'] and row['website']:
+                try:
+                    evidence,url = _salt_official_evidence_v617(row['website'])
+                    if evidence:row.update(evidence=evidence,evidence_url=url,product_mentioned=True)
+                    return row,{"event":"website_checked","detail":{"name":row['name'],"url":url,"product_mentioned":bool(evidence)}}
+                except Exception as exc:
+                    return row,{"event":"website_check_failed","detail":{"name":row['name'],"url":row['website'],"error":str(exc)}}
+            return row,None
+        # Explicit search only, bounded concurrency; no website scans on page load.
+        with ThreadPoolExecutor(max_workers=3) as executor:
+            checked = list(executor.map(check,results))
+        results=[]
+        for row,log in checked:
+            results.append(row)
+            if log:web.logs.append(log)
+        results.sort(key=lambda row:(not row['product_mentioned'],row['name']))
+        at=now_jst()
+        _salt_trace_v609(web,"bakery_search_complete",{"count":len(results),"product_mentioned":sum(r['product_mentioned'] for r in results)})
+        return {"id":uuid.uuid4().hex,"lat":lat,"lng":lng,"radius_m":radius,"searched_at":at.isoformat(),
+            "expires_at":_salt_expiry_v617(at).isoformat(),"results":results,"logs":web.logs}
+    except Exception as exc:
+        error=RuntimeError("周辺のパン屋を検索できませんでした。保存済みのピンは引き続き表示します。")
+        error.salt_logs=web.logs+[{"event":"bakery_search_failed","error":str(exc)}]
+        raise error from exc
+
+
+@st.cache_resource
+def _salt_discovery_jobs_v617():
+    return {"executor":ThreadPoolExecutor(max_workers=2,thread_name_prefix="salt-discovery"),"jobs":{},"lock":threading.RLock()}
+
+
+def _salt_discovery_start_v617(lat,lng,radius):
+    owner=_salt_owner_v609();registry=_salt_discovery_jobs_v617()
+    with registry['lock']:
+        job=registry['jobs'].get(owner)
+        if job and not job['future'].done():return
+        registry['jobs'][owner]={"future":registry['executor'].submit(_salt_discover_v617,lat,lng,radius)}
+
+
+def _salt_discovery_collect_v617():
+    owner=_salt_owner_v609();registry=_salt_discovery_jobs_v617()
+    with registry['lock']:
+        job=registry['jobs'].get(owner)
+    if not job or not job['future'].done() or time.monotonic()<job.get('retry_at',0):return False
+    # Do not discard a completed result until Storage writes succeed; a retry can
+    # save the same immutable log/result without issuing another provider request.
+    try:
+        result=job['future'].result()
+    except Exception as exc:
+        result={"id":uuid.uuid4().hex,"searched_at":now_jst().isoformat(),"error":str(exc),"logs":getattr(exc,'salt_logs',[])}
+        job['result']=job.get('result') or result
+        result=job['result']
+    try:
+        bucket=supabase_client().storage.from_(GPS_TRACK_BUCKET)
+        bucket.upload(path=_salt_prefix_v609()+"/search_logs/"+re.sub(r"[^0-9]","",result["searched_at"][:19])+"_"+result['id']+".json",file=json.dumps(result if result.get('error') else {k:v for k,v in result.items() if k!='results'},ensure_ascii=False).encode(),
+            file_options={"content-type":GPS_TRACK_STORAGE_MIME,"upsert":"true","cache-control":"0"})
+        if not result.get('error'):
+            with _salt_write_lock_v609():
+                doc=_salt_discovery_load_v617(force=True)
+                doc['searches']=[s for s in doc['searches'] if s['id']!=result['id']]+[result]
+                _salt_discovery_write_v617(doc)
+        st.session_state['_salt_discovery_notice_v617']=result.get('error') or f"パン屋 {len(result['results'])}店を保存しました。塩パンの記載を確認できた候補は {sum(r['product_mentioned'] for r in result['results'])}店です。"
+        with registry['lock']:
+            if registry['jobs'].get(owner) is job:registry['jobs'].pop(owner,None)
+        return True
+    except Exception as exc:
+        job['retry_at']=time.monotonic()+30
+        _app_error_record_v610('salt.discovery_save',exc)
+        st.warning('検索結果・ログを保存できませんでした。再試行すると検索せず保存を再開します。')
+        return False
+
+
+@st.fragment(run_every=1)
+def _salt_discovery_progress_v617():
+    if st.session_state.get('main_page')!='salt_bread':return
+    if _salt_discovery_collect_v617():st.rerun(scope='app')
+    st.info('周辺のパン屋と、店舗サイトの塩パンの記載を確認しています。戻る操作も使えます。')
+
+
+def _salt_discovery_map_rows_v617(discovery,recorded,include_unknown=False):
+    rows=[]
+    for row in _salt_discovery_rows_v617(discovery):
+        if not include_unknown and not row['product_mentioned']:continue
+        if any(abs(float(e['lat'])-row['lat'])<.00025 and abs(float(e['lng'])-row['lng'])<.00025 and _salt_normal_v609(e['name'])==row['name'] for e in recorded.values()):continue
+        rows.append({**row,'candidate':True,'src':''})
+    return rows
+
+
+def _salt_discovery_logs_settings_v617():
+    with st.expander('塩パンマップの検索ログ'):
+        if st.button('保存済み検索ログを読み込む',key='salt_discovery_logs_v617'):
+            try:
+                folder=_salt_prefix_v609()+'/search_logs';bucket=supabase_client().storage.from_(GPS_TRACK_BUCKET)
+                files=[];offset=0
+                while True:
+                    page=_coerce_storage_list_rows(bucket.list(folder,{'limit':100,'offset':offset,'sortBy':{'column':'name','order':'desc'}}))
+                    files.extend(page)
+                    if len(page)<100:break
+                    offset+=len(page)
+                logs=[]
+                for item in files:
+                    name=str(item.get('name') or '')
+                    if re.fullmatch(r'[0-9]{14}_[0-9a-f]{32}\.json',name):logs.append(json.loads(_storage_bytes(bucket.download(folder+'/'+name)).decode()))
+                st.session_state['_salt_discovery_logs_v617_'+_salt_owner_v609()]=logs
+            except Exception as exc:st.error(str(exc))
+        logs=st.session_state.get('_salt_discovery_logs_v617_'+_salt_owner_v609())
+        if logs is not None:st.download_button('塩パン検索ログを出力（JSON）',json.dumps(logs,ensure_ascii=False,indent=2),'salt_bread_search_logs.json','application/json')
+
+
+def _salt_discovery_cache_log_v617(search):
+    at=now_jst();identity=uuid.uuid4().hex
+    log={"id":identity,"searched_at":at.isoformat(),"logs":[{"event":"saved_search_reused","detail":{
+        "search_id":search['id'],"lat":search['lat'],"lng":search['lng'],"radius_m":search['radius_m'],"expires_at":search['expires_at']}}]}
+    supabase_client().storage.from_(GPS_TRACK_BUCKET).upload(
+        path=_salt_prefix_v609()+"/search_logs/"+at.strftime('%Y%m%d%H%M%S')+"_"+identity+".json",
+        file=json.dumps(log,ensure_ascii=False).encode(),file_options={"content-type":GPS_TRACK_STORAGE_MIME,"upsert":"true","cache-control":"0"})
+
+
 def page_salt_bread_v609():
     page_top("🍞 塩パンマップ", "食べた塩パンを、写真と感想で残そう。")
     notice = st.session_state.pop("_salt_notice_v609", None)
@@ -61120,6 +56403,15 @@ def page_salt_bread_v609():
         return
     owner = _salt_owner_v609()
     _salt_collect_search_v609()
+    _salt_discovery_collect_v617()
+    try:
+        discovery = _salt_discovery_load_v617()
+    except Exception as exc:
+        discovery = {"searches": [], "hidden": []}
+        st.warning(str(exc))
+    discovery_notice = st.session_state.pop("_salt_discovery_notice_v617", None)
+    if discovery_notice:
+        st.info(discovery_notice)
     component_key, inbox_key = "salt_map_v609_" + owner, "_salt_inbox_v609_" + owner
     action = st.session_state.pop(inbox_key, None)
     if isinstance(action, dict) and action.get("nonce") != st.session_state.get("_salt_action_ack_v609_" + owner):
@@ -61133,6 +56425,27 @@ def page_salt_bread_v609():
                 st.session_state["_salt_entry_v609"] = str(action["id"])
                 _set_page_state("salt_bread_detail")
                 st.rerun()
+            elif action.get("action") == "search_bakeries":
+                lat,lng = _salt_coordinates_v609(action.get("lat"), action.get("lng"))
+                radius = int(st.session_state.get("salt_discovery_radius_v617") or 1000)
+                cached = next((q for q in reversed(discovery['searches']) if abs(q['lat']-lat)<.0003 and abs(q['lng']-lng)<.0003 and q['radius_m']==radius),None)
+                if cached and not st.session_state.get("salt_discovery_refresh_v617"):
+                    _salt_discovery_cache_log_v617(cached)
+                    st.info("3か月の保存期間内の検索結果を表示しています。更新する場合は「保存済みでも再検索」を選んでください。")
+                else:
+                    _salt_discovery_start_v617(lat,lng,radius)
+            elif action.get("action") == "open_candidate":
+                picked = next((r for r in _salt_discovery_rows_v617(discovery) if r['id']==str(action.get('id'))),None)
+                if picked:
+                    _salt_preview_v609(picked)
+            elif action.get("action") == "hide_candidate":
+                with _salt_write_lock_v609():
+                    fresh = _salt_discovery_load_v617(force=True)
+                    identity = str(action.get('id') or '')
+                    if any(r['id']==identity for r in _salt_discovery_rows_v617(fresh)):
+                        fresh['hidden'] = list(set(fresh['hidden']+[identity]))
+                        _salt_discovery_write_v617(fresh)
+                        discovery = fresh
             elif action.get("action") == "delete_pin":
                 entry_id = str(action.get("id") or "")
                 doc = _salt_commit_v609("pin_visibility", {"entry_id": entry_id, "visible": False}, action.get("revision"))
@@ -61159,9 +56472,21 @@ def page_salt_bread_v609():
             except Exception:
                 return
     mode = st.radio("表示", ["地図", "ランキング"], horizontal=True, key="salt_mode_v609", label_visibility="collapsed")
+    registry = _salt_discovery_jobs_v617()
+    with registry['lock']:
+        searching = owner in registry['jobs']
+    st.number_input("周辺検索の半径（m）", min_value=100, max_value=5000, step=100, value=1000, key="salt_discovery_radius_v617")
+    include_unknown = st.checkbox("塩パンの取り扱い未確認のパン屋も表示", value=False, key="salt_discovery_unknown_v617")
+    st.checkbox("保存済みでも再検索", value=False, key="salt_discovery_refresh_v617")
+    st.caption("地図を探したい場所へ動かし「この周辺の塩パンを探す」を押してください。候補は3か月保存。塩パンの記載があっても、現在の販売・在庫を保証するものではありません。")
+    if searching:
+        _salt_discovery_progress_v617()
+    candidates_saved = _salt_discovery_rows_v617(discovery)
+    if candidates_saved:
+        st.caption(f"保存中の候補 {len(candidates_saved)}店 ／ 塩パンの記載あり {sum(bool(r['product_mentioned']) for r in candidates_saved)}店")
     candidate = st.session_state.get("_salt_candidate_v609")
     try:
-        _salt_component_v609()(data={"owner": owner, "entries": _salt_cards_v609(doc), "revision": doc["revision"], "mode": mode,
+        _salt_component_v609()(data={"owner": owner, "entries": _salt_cards_v609(doc)+_salt_discovery_map_rows_v617(discovery,doc['entries'],include_unknown), "search_enabled": not searching, "revision": doc["revision"], "mode": mode,
             "restore": st.session_state.pop("_salt_map_restore_v615_" + owner, None), "preview": candidate, "manual": st.session_state.get("_salt_manual_v613_" + owner), "ack": st.session_state.get("_salt_action_ack_v609_" + owner, "")}, key=component_key,
             on_salt_action_change=lambda: _salt_capture_v609(component_key, inbox_key),
             on_salt_diagnostic_change=lambda: _app_error_capture_v610(component_key, "salt_diagnostic", owner))
@@ -61219,8 +56544,12 @@ def page_salt_bread_v609():
             with st.expander("検索ログ"):
                 st.download_button("検索ログを保存", json.dumps(result["logs"], ensure_ascii=False, indent=2), "burari_salt_search.json", "application/json", key="salt_search_log_v609")
         if candidate:
+            if candidate.get("evidence"):
+                st.caption("公開情報の塩パンの記載：" + str(candidate['evidence']))
+                st.link_button("記載元を確認", candidate['evidence_url'])
             st.markdown("**このお店の塩パンを記録**")
             _salt_form_v609(candidate)
+
 
 
 def page_salt_bread_detail_v609():
@@ -61491,15 +56820,9 @@ def _salt_overpass_document_v609(web,query,pattern):
                       'match_mode':mode,'reason':str(exc),'exception_type':type(exc).__name__},'WARNING','landmark.name_search')
         if doc['elements'] or mode=='partial':return doc,info
 
-_SALT_HTML_V609 = '<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"><div id="salt-status" role="status" aria-live="polite"></div><div id="salt-map" style="height:420px;width:100%;border-radius:18px"></div><div id="salt-ranking"></div>'
-_SALT_CSS_V609 = """
-:host{color:#173a5e;background:#fff;font-family:inherit}#salt-status{font-size:12px;margin:6px 0 10px;color:#485d6f}#salt-map[hidden],#salt-ranking[hidden]{display:none!important}
-.salt-bread-pin{width:40px;height:40px;background:#fff3d6;border:3px solid #b66b25;border-radius:50% 50% 50% 6px;transform:rotate(-45deg);box-shadow:0 3px 8px #0003;display:flex;align-items:center;justify-content:center}.salt-bread-pin span{transform:rotate(45deg);font-size:27px}.salt-bread-pin.preview{border-style:dashed;background:#e1efff}
-.salt-popup{min-width:160px;max-width:220px;color:#173a5e}.salt-popup img{width:100%;height:115px;object-fit:cover;border-radius:10px}.salt-popup p{font-size:11px}.salt-shop-name{display:block;font-size:12px;line-height:1.4;text-align:center;margin-top:5px;overflow-wrap:anywhere;color:#173a5e}
-.salt-rank-card{display:grid;grid-template-columns:28px minmax(0,1fr) 44px;gap:10px;padding:10px;margin:8px 0;border:2px solid #e6e2d9;border-radius:16px;background:#fffaf0;align-items:center}.salt-rank-card.selected{border-color:#c17a28}.salt-rank-card.dragging{opacity:.65}.salt-rank-card.drop-target{border-top:4px solid #c17a28}.salt-rank-number{font-size:22px;color:#a45c18}.salt-rank-photo{background:none;border:0;cursor:pointer;padding:0;color:#173a5e}.salt-rank-photo img{width:100%;height:120px;object-fit:contain;display:block;border-radius:12px;background:#f2eadb}.salt-no-photo{display:block;font-size:48px;text-align:center;background:#f2eadb;border-radius:12px}
-.salt-button,.salt-drag-handle{background:#fff;border:1px solid #cfb28c;color:#173a5e;border-radius:10px;min-height:44px;font:inherit;font-size:12px;font-weight:700;padding:6px;touch-action:manipulation;cursor:pointer}.salt-button:disabled{opacity:.4}.salt-drag-handle{font-size:27px;touch-action:none;user-select:none;-webkit-user-select:none}.salt-rank-controls{grid-column:1/-1;display:grid;grid-template-columns:1fr 1fr 1.3fr;gap:6px}
-"""
-_SALT_JS_V609 = 'export default function(component) {\n  const {parentElement:root,data,setTriggerValue}=component;\n  let mapEl=root.querySelector(\'#salt-map\');\n  const list=root.querySelector(\'#salt-ranking\'), status=root.querySelector(\'#salt-status\');\n  if(!mapEl||!list||!status)return;\n  let disposed=false, map=null, selected=\'\', drag=null, busy=false;\n  const lease={dispose(){if(disposed)return;disposed=true;try{map?.remove();}catch(error){reportError610(\'salt.map_cleanup\',error);}map=null;}};\n  const reportError610=(stage,error,detail={})=>{\n    const message=String(error?.message||error||\'Unknown error\').slice(0,3000);\n    const owner=String(data?.owner||\'\');\n    const row={id:(globalThis.crypto?.randomUUID?.()||`${Date.now().toString(16)}${Math.random().toString(16).slice(2)}`).replace(/-/g,\'\').padEnd(32,\'0\').slice(0,32),\n      at:new Date().toISOString(),stage,message,detail:{...detail,stack:String(error?.stack||\'\').slice(0,5000),user_agent:navigator.userAgent,build:\'v611\'}};\n    try{const key=\'burari_errors_v610_\'+owner;let rows=JSON.parse(localStorage.getItem(key)||\'[]\');if(!Array.isArray(rows))rows=[];rows.push(row);localStorage.setItem(key,JSON.stringify(rows.slice(-200)));}catch(_){}\n    try{\n      const throttles=window.__burariErrorThrottle610||(window.__burariErrorThrottle610=new Map());\n      const signature=owner+\'|\'+stage+\'|\'+message;\n      if(Date.now()-(throttles.get(signature)||0)<30000)return;\n      if(throttles.size>100)throttles.clear();throttles.set(signature,Date.now());\n      setTriggerValue(\'salt_diagnostic\',row);\n    }catch(_){}\n  };\n\n  // Ownership belongs to the actual container, not the renderer\'s wrapper.\n  // Streamlit may supply a different wrapper for the same DOM during reruns.\n  const prior=mapEl.__saltMapLease611 || root.__saltMapLease610;\n  if(prior)prior.dispose();\n  if(mapEl._leaflet_id){const fresh=mapEl.cloneNode(false);mapEl.replaceWith(fresh);mapEl=fresh;}\n  mapEl.__saltMapLease611=lease;\n  root.__saltMapLease610=lease;\n  let entries=Array.isArray(data?.entries)?data.entries.slice():[];\n  const emit=(action,extra={})=>setTriggerValue(\'salt_action\',{action,...extra,revision:Number(data?.revision||0),nonce:`${Date.now()}:${Math.random()}`});\n  const saveOrder=()=>{busy=true;status.textContent=\'順位を保存しています…\';emit(\'order\',{order:entries.map(e=>e.id)});};\n  const el=(tag,cls,text)=>{const n=document.createElement(tag);if(cls)n.className=cls;if(text!==undefined)n.textContent=text;return n;};\n  const button=(text,fn)=>{const n=el(\'button\',\'salt-button\',text);n.type=\'button\';n.addEventListener(\'click\',e=>{e.preventDefault();e.stopPropagation();fn();});return n;};\n  const move=(id,delta)=>{if(busy)return;const i=entries.findIndex(e=>e.id===id),j=i+delta;if(i<0||j<0||j>=entries.length)return;const [entry]=entries.splice(i,1);entries.splice(j,0,entry);renderList();saveOrder();};\n  const renderList=()=>{\n    list.replaceChildren();\n    if(!entries.length){list.appendChild(el(\'p\',\'\',\'まだ記録がありません。店名や住所で検索して、最初の塩パンを登録しましょう。\'));return;}\n    entries.forEach((entry,index)=>{\n      const card=el(\'div\',\'salt-rank-card\');card.dataset.id=String(entry.id);card.classList.toggle(\'selected\',selected===entry.id);\n      const rank=el(\'strong\',\'salt-rank-number\',`${index+1}`);card.appendChild(rank);\n      const main=button(\'\',()=>{if(busy)return;selected=entry.id;renderList();});main.className=\'salt-rank-photo\';main.setAttribute(\'aria-label\',`${index+1}位 ${entry.name}を選ぶ`);\n      if(entry.src){const img=el(\'img\');img.src=String(entry.src);img.alt=String(entry.name);img.loading=\'lazy\';img.decoding=\'async\';main.appendChild(img);}else main.appendChild(el(\'span\',\'salt-no-photo\',\'🍞\'));\n      main.appendChild(el(\'small\',\'salt-shop-name\',String(entry.name||\'\')));card.appendChild(main);\n      const handle=button(\'⠿\',()=>{if(!busy){selected=entry.id;renderList();}});handle.className=\'salt-drag-handle\';handle.setAttribute(\'aria-label\',`${entry.name}の順位を指で移動`);\n      handle.addEventListener(\'pointerdown\',e=>{\n        if(busy||e.button>0)return;e.preventDefault();e.stopPropagation();selected=entry.id;\n        drag={id:entry.id,startY:e.clientY,startIndex:index,target:index,pointer:e.pointerId,moved:false};handle.setPointerCapture?.(e.pointerId);card.classList.add(\'dragging\');\n      });\n      handle.addEventListener(\'pointermove\',e=>{\n        if(!drag||drag.pointer!==e.pointerId)return;e.preventDefault();drag.moved=drag.moved||Math.abs(e.clientY-drag.startY)>6;\n        const cards=Array.from(list.querySelectorAll(\'.salt-rank-card\'));\n        let target=0,distance=Infinity;\n        cards.forEach((c,i)=>{const box=c.getBoundingClientRect(),d=Math.abs(e.clientY-(box.top+box.height/2));if(d<distance){distance=d;target=i;}});\n        drag.target=target;\n        cards.forEach((c,i)=>c.classList.toggle(\'drop-target\',i===drag.target));\n        if(e.clientY<80)window.scrollBy?.(0,-14);else if(e.clientY>window.innerHeight-100)window.scrollBy?.(0,14);\n      });\n      const finish=(e,cancel=false)=>{\n        if(!drag||drag.pointer!==e.pointerId)return;const d=drag;drag=null;handle.releasePointerCapture?.(e.pointerId);\n        if(!cancel&&d.moved&&d.target!==d.startIndex){const [item]=entries.splice(d.startIndex,1);entries.splice(d.target,0,item);renderList();saveOrder();}else renderList();\n      };\n      handle.addEventListener(\'pointerup\',e=>finish(e));handle.addEventListener(\'pointercancel\',e=>finish(e,true));card.appendChild(handle);\n      if(selected===entry.id){\n        const controls=el(\'div\',\'salt-rank-controls\');\n        const up=button(\'↑ 上へ\',()=>move(entry.id,-1)), down=button(\'↓ 下へ\',()=>move(entry.id,1));up.disabled=index===0||busy;down.disabled=index===entries.length-1||busy;\n        controls.appendChild(up);controls.appendChild(down);controls.appendChild(button(\'記録を見る\',()=>{if(!busy)emit(\'open\',{id:entry.id});}));card.appendChild(controls);\n      }\n      list.appendChild(card);\n    });\n  };\n  const ranking=data?.mode===\'ランキング\';mapEl.hidden=ranking;list.hidden=!ranking;\n  if(ranking){status.textContent=\'写真をタップして上下ボタン、または右の⠿を押して指で移動\';renderList();}\n  else{\n    status.textContent=\'パンのピンをタップすると、写真と感想を開きます。\';\n    const load=()=>{\n      if(window.L)return Promise.resolve(window.L);\n      if(window.__burariSaltLeaflet609)return window.__burariSaltLeaflet609;\n      window.__burariSaltLeaflet609=new Promise((resolve,reject)=>{const script=document.createElement(\'script\');script.src=\'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js\';script.crossOrigin=\'\';script.onload=()=>window.L?resolve(window.L):reject(new Error(\'地図の準備に失敗しました\'));script.onerror=()=>reject(new Error(\'地図を読み込めませんでした\'));document.head.appendChild(script);}).catch(e=>{window.__burariSaltLeaflet609=null;throw e;});\n      return window.__burariSaltLeaflet609;\n    };\n    load().then(L=>{\n      if(disposed||mapEl.__saltMapLease611!==lease)return;\n      map=L.map(mapEl,{scrollWheelZoom:false}).setView([35.66,139.72],12);\n      L.tileLayer(\'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png\',{maxZoom:19,attribution:\'© OpenStreetMap contributors\'}).addTo(map);\n      const points=[], markers=new Map();\n      const mapView=()=>{const c=map.getCenter();return {lat:c.lat,lng:c.lng,zoom:map.getZoom()};};\n      const icon=(preview=false)=>L.divIcon({className:\'salt-pin-container\',iconSize:[44,52],iconAnchor:[22,49],html:`<div class="salt-bread-pin ${preview?\'preview\':\'\'}"><span>🍞</span></div>`});\n      entries.forEach(entry=>{\n        if(entry.pin_hidden)return;\n        const lat=Number(entry.lat),lng=Number(entry.lng);if(!Number.isFinite(lat)||!Number.isFinite(lng))return;\n        const marker=L.marker([lat,lng],{icon:icon(),title:String(entry.name||\'\'),keyboard:true}).addTo(map);\n        const content=el(\'div\',\'salt-popup\');if(entry.src){const img=el(\'img\');img.src=String(entry.src);img.alt=String(entry.name);img.loading=\'lazy\';content.appendChild(img);}\n        content.appendChild(el(\'small\',\'salt-shop-name\',String(entry.name||\'\')));content.appendChild(el(\'p\',\'\',String(entry.address||\'\')));\n        content.appendChild(button(\'写真と感想を見る\',()=>emit(\'open\',{id:entry.id,view:mapView()})));\n        content.appendChild(button(\'ピンを削除\',()=>{if(busy)return;busy=true;emit(\'delete_pin\',{id:entry.id});}));\n        marker.bindPopup(content);markers.set(String(entry.id),marker);points.push([lat,lng]);\n      });\n      if(data?.manual){\n        status.textContent=\'登録するお店の位置を地図でタップしてください。\';\n        map.on(\'click\',event=>{if(disposed||busy)return;busy=true;status.textContent=\'選んだ場所を確認しています…\';emit(\'manual_place\',{lat:event.latlng.lat,lng:event.latlng.lng});});\n      }\n      const preview=data?.preview;\n      if(preview&&Number.isFinite(Number(preview.lat))&&Number.isFinite(Number(preview.lng))){\n        const p=[Number(preview.lat),Number(preview.lng)];const marker=L.marker(p,{icon:icon(true),title:\'登録前の確認\',draggable:true}).addTo(map).bindPopup(el(\'div\',\'\',`${preview.name||\'\'}\u3000${preview.address||\'\'}`)).openPopup();\n        marker.on(\'dragend\',()=>{const point=marker.getLatLng();status.textContent=\'ピンの位置を更新しています…\';emit(\'preview\',{lat:point.lat,lng:point.lng});});\n        status.textContent=\'登録前のパンのピンは、指で動かして位置を調整できます。\';map.setView(p,17);\n      }else if(points.length===1)map.setView(points[0],16);else if(points.length>1)map.fitBounds(points,{padding:[35,35],maxZoom:16});\n      const restore=data?.restore;\n      if(!preview&&restore&&markers.has(String(restore.id))){\n        const lat=Number(restore.lat),lng=Number(restore.lng),zoom=Number(restore.zoom);\n        if(Number.isFinite(lat)&&Number.isFinite(lng)&&Number.isFinite(zoom)){\n          map.setView([lat,lng],Math.max(10,Math.min(19,zoom)));\n          markers.get(String(restore.id)).openPopup();\n        }\n      }\n      map.invalidateSize();\n    }).catch(e=>{if(!disposed){status.textContent=String(e.message||e);reportError610(\'salt.map_initialization\',e,{container_initialized:Boolean(mapEl._leaflet_id),mode:data?.mode,lifecycle:\'container-owner-v611\'});mapEl.textContent=\'地図を表示できません。お店の一覧・ランキングから記録を開けます。\';}});\n  }\n  return()=>{lease.dispose();if(mapEl.__saltMapLease611===lease)delete mapEl.__saltMapLease611;if(root.__saltMapLease610===lease)delete root.__saltMapLease610;};\n}\n'
+_SALT_HTML_V609 = '<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"><div id="salt-status" role="status" aria-live="polite"></div><button id="salt-search-area-v617" class="salt-button" type="button" hidden>この周辺の塩パンを探す</button><div id="salt-map" style="height:420px;width:100%;border-radius:18px"></div><div id="salt-ranking"></div>'
+_SALT_CSS_V609 = '\n:host{color:#173a5e;background:#fff;font-family:inherit}#salt-status{font-size:12px;margin:6px 0 10px;color:#485d6f}#salt-map[hidden],#salt-ranking[hidden]{display:none!important}\n.salt-bread-pin{width:40px;height:40px;background:#fff3d6;border:3px solid #b66b25;border-radius:50% 50% 50% 6px;transform:rotate(-45deg);box-shadow:0 3px 8px #0003;display:flex;align-items:center;justify-content:center}.salt-bread-pin span{transform:rotate(45deg);font-size:27px}.salt-bread-pin.preview{border-style:dashed;background:#e1efff}\n.salt-popup{min-width:160px;max-width:220px;color:#173a5e}.salt-popup img{width:100%;height:115px;object-fit:cover;border-radius:10px}.salt-popup p{font-size:11px}.salt-shop-name{display:block;font-size:12px;line-height:1.4;text-align:center;margin-top:5px;overflow-wrap:anywhere;color:#173a5e}\n.salt-rank-card{display:grid;grid-template-columns:28px minmax(0,1fr) 44px;gap:10px;padding:10px;margin:8px 0;border:2px solid #e6e2d9;border-radius:16px;background:#fffaf0;align-items:center}.salt-rank-card.selected{border-color:#c17a28}.salt-rank-card.dragging{opacity:.65}.salt-rank-card.drop-target{border-top:4px solid #c17a28}.salt-rank-number{font-size:22px;color:#a45c18}.salt-rank-photo{background:none;border:0;cursor:pointer;padding:0;color:#173a5e}.salt-rank-photo img{width:100%;height:120px;object-fit:contain;display:block;border-radius:12px;background:#f2eadb}.salt-no-photo{display:block;font-size:48px;text-align:center;background:#f2eadb;border-radius:12px}\n.salt-button,.salt-drag-handle{background:#fff;border:1px solid #cfb28c;color:#173a5e;border-radius:10px;min-height:44px;font:inherit;font-size:12px;font-weight:700;padding:6px;touch-action:manipulation;cursor:pointer}.salt-button:disabled{opacity:.4}.salt-drag-handle{font-size:27px;touch-action:none;user-select:none;-webkit-user-select:none}.salt-rank-controls{grid-column:1/-1;display:grid;grid-template-columns:1fr 1fr 1.3fr;gap:6px}\n\n#salt-search-area-v617{width:100%;margin:6px 0 10px}.salt-discovery-mentioned{border-color:#137d69;background:#d9fff0}.salt-discovery-unknown{border-color:#64748b;background:#edf0f5}\n'
+_SALT_JS_V609 = 'export default function(component) {\n  const {parentElement:root,data,setTriggerValue}=component;\n  let mapEl=root.querySelector(\'#salt-map\');\n  const list=root.querySelector(\'#salt-ranking\'), status=root.querySelector(\'#salt-status\');\n  if(!mapEl||!list||!status)return;\n  let disposed=false, map=null, selected=\'\', drag=null, busy=false;\n  const lease={dispose(){if(disposed)return;disposed=true;try{map?.remove();}catch(error){reportError610(\'salt.map_cleanup\',error);}map=null;}};\n  const reportError610=(stage,error,detail={})=>{\n    const message=String(error?.message||error||\'Unknown error\').slice(0,3000);\n    const owner=String(data?.owner||\'\');\n    const row={id:(globalThis.crypto?.randomUUID?.()||`${Date.now().toString(16)}${Math.random().toString(16).slice(2)}`).replace(/-/g,\'\').padEnd(32,\'0\').slice(0,32),\n      at:new Date().toISOString(),stage,message,detail:{...detail,stack:String(error?.stack||\'\').slice(0,5000),user_agent:navigator.userAgent,build:\'v611\'}};\n    try{const key=\'burari_errors_v610_\'+owner;let rows=JSON.parse(localStorage.getItem(key)||\'[]\');if(!Array.isArray(rows))rows=[];rows.push(row);localStorage.setItem(key,JSON.stringify(rows.slice(-200)));}catch(_){}\n    try{\n      const throttles=window.__burariErrorThrottle610||(window.__burariErrorThrottle610=new Map());\n      const signature=owner+\'|\'+stage+\'|\'+message;\n      if(Date.now()-(throttles.get(signature)||0)<30000)return;\n      if(throttles.size>100)throttles.clear();throttles.set(signature,Date.now());\n      setTriggerValue(\'salt_diagnostic\',row);\n    }catch(_){}\n  };\n\n  // Ownership belongs to the actual container, not the renderer\'s wrapper.\n  // Streamlit may supply a different wrapper for the same DOM during reruns.\n  const prior=mapEl.__saltMapLease611 || root.__saltMapLease610;\n  if(prior)prior.dispose();\n  if(mapEl._leaflet_id){const fresh=mapEl.cloneNode(false);mapEl.replaceWith(fresh);mapEl=fresh;}\n  mapEl.__saltMapLease611=lease;\n  root.__saltMapLease610=lease;\n  let entries=Array.isArray(data?.entries)?data.entries.slice():[];\n  const candidateEntries=entries.filter(e=>e.candidate);entries=entries.filter(e=>!e.candidate);\n  const emit=(action,extra={})=>setTriggerValue(\'salt_action\',{action,...extra,revision:Number(data?.revision||0),nonce:`${Date.now()}:${Math.random()}`});\n  const saveOrder=()=>{busy=true;status.textContent=\'順位を保存しています…\';emit(\'order\',{order:entries.map(e=>e.id)});};\n  const el=(tag,cls,text)=>{const n=document.createElement(tag);if(cls)n.className=cls;if(text!==undefined)n.textContent=text;return n;};\n  const button=(text,fn)=>{const n=el(\'button\',\'salt-button\',text);n.type=\'button\';n.addEventListener(\'click\',e=>{e.preventDefault();e.stopPropagation();fn();});return n;};\n  const move=(id,delta)=>{if(busy)return;const i=entries.findIndex(e=>e.id===id),j=i+delta;if(i<0||j<0||j>=entries.length)return;const [entry]=entries.splice(i,1);entries.splice(j,0,entry);renderList();saveOrder();};\n  const renderList=()=>{\n    list.replaceChildren();\n    if(!entries.length){list.appendChild(el(\'p\',\'\',\'まだ記録がありません。店名や住所で検索して、最初の塩パンを登録しましょう。\'));return;}\n    entries.forEach((entry,index)=>{\n      const card=el(\'div\',\'salt-rank-card\');card.dataset.id=String(entry.id);card.classList.toggle(\'selected\',selected===entry.id);\n      const rank=el(\'strong\',\'salt-rank-number\',`${index+1}`);card.appendChild(rank);\n      const main=button(\'\',()=>{if(busy)return;selected=entry.id;renderList();});main.className=\'salt-rank-photo\';main.setAttribute(\'aria-label\',`${index+1}位 ${entry.name}を選ぶ`);\n      if(entry.src){const img=el(\'img\');img.src=String(entry.src);img.alt=String(entry.name);img.loading=\'lazy\';img.decoding=\'async\';main.appendChild(img);}else main.appendChild(el(\'span\',\'salt-no-photo\',\'🍞\'));\n      main.appendChild(el(\'small\',\'salt-shop-name\',String(entry.name||\'\')));card.appendChild(main);\n      const handle=button(\'⠿\',()=>{if(!busy){selected=entry.id;renderList();}});handle.className=\'salt-drag-handle\';handle.setAttribute(\'aria-label\',`${entry.name}の順位を指で移動`);\n      handle.addEventListener(\'pointerdown\',e=>{\n        if(busy||e.button>0)return;e.preventDefault();e.stopPropagation();selected=entry.id;\n        drag={id:entry.id,startY:e.clientY,startIndex:index,target:index,pointer:e.pointerId,moved:false};handle.setPointerCapture?.(e.pointerId);card.classList.add(\'dragging\');\n      });\n      handle.addEventListener(\'pointermove\',e=>{\n        if(!drag||drag.pointer!==e.pointerId)return;e.preventDefault();drag.moved=drag.moved||Math.abs(e.clientY-drag.startY)>6;\n        const cards=Array.from(list.querySelectorAll(\'.salt-rank-card\'));\n        let target=0,distance=Infinity;\n        cards.forEach((c,i)=>{const box=c.getBoundingClientRect(),d=Math.abs(e.clientY-(box.top+box.height/2));if(d<distance){distance=d;target=i;}});\n        drag.target=target;\n        cards.forEach((c,i)=>c.classList.toggle(\'drop-target\',i===drag.target));\n        if(e.clientY<80)window.scrollBy?.(0,-14);else if(e.clientY>window.innerHeight-100)window.scrollBy?.(0,14);\n      });\n      const finish=(e,cancel=false)=>{\n        if(!drag||drag.pointer!==e.pointerId)return;const d=drag;drag=null;handle.releasePointerCapture?.(e.pointerId);\n        if(!cancel&&d.moved&&d.target!==d.startIndex){const [item]=entries.splice(d.startIndex,1);entries.splice(d.target,0,item);renderList();saveOrder();}else renderList();\n      };\n      handle.addEventListener(\'pointerup\',e=>finish(e));handle.addEventListener(\'pointercancel\',e=>finish(e,true));card.appendChild(handle);\n      if(selected===entry.id){\n        const controls=el(\'div\',\'salt-rank-controls\');\n        const up=button(\'↑ 上へ\',()=>move(entry.id,-1)), down=button(\'↓ 下へ\',()=>move(entry.id,1));up.disabled=index===0||busy;down.disabled=index===entries.length-1||busy;\n        controls.appendChild(up);controls.appendChild(down);controls.appendChild(button(\'記録を見る\',()=>{if(!busy)emit(\'open\',{id:entry.id});}));card.appendChild(controls);\n      }\n      list.appendChild(card);\n    });\n  };\n  const searchArea=root.querySelector(\'#salt-search-area-v617\');if(searchArea){searchArea.hidden=true;searchArea.onclick=null;}\n  const ranking=data?.mode===\'ランキング\';mapEl.hidden=ranking;list.hidden=!ranking;\n  if(ranking){status.textContent=\'写真をタップして上下ボタン、または右の⠿を押して指で移動\';renderList();}\n  else{\n    status.textContent=\'パンのピンをタップすると、写真と感想を開きます。\';\n    const load=()=>{\n      if(window.L)return Promise.resolve(window.L);\n      if(window.__burariSaltLeaflet609)return window.__burariSaltLeaflet609;\n      window.__burariSaltLeaflet609=new Promise((resolve,reject)=>{const script=document.createElement(\'script\');script.src=\'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js\';script.crossOrigin=\'\';script.onload=()=>window.L?resolve(window.L):reject(new Error(\'地図の準備に失敗しました\'));script.onerror=()=>reject(new Error(\'地図を読み込めませんでした\'));document.head.appendChild(script);}).catch(e=>{window.__burariSaltLeaflet609=null;throw e;});\n      return window.__burariSaltLeaflet609;\n    };\n    load().then(L=>{\n      if(disposed||mapEl.__saltMapLease611!==lease)return;\n      map=L.map(mapEl,{scrollWheelZoom:false}).setView([35.66,139.72],12);\n      L.tileLayer(\'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png\',{maxZoom:19,attribution:\'© OpenStreetMap contributors\'}).addTo(map);\n      const points=[], markers=new Map();\n      const mapView=()=>{const c=map.getCenter();return {lat:c.lat,lng:c.lng,zoom:map.getZoom()};};\n      const icon=(preview=false)=>L.divIcon({className:\'salt-pin-container\',iconSize:[44,52],iconAnchor:[22,49],html:`<div class="salt-bread-pin ${preview?\'preview\':\'\'}"><span>🍞</span></div>`});\n      entries.forEach(entry=>{\n        if(entry.pin_hidden)return;\n        const lat=Number(entry.lat),lng=Number(entry.lng);if(!Number.isFinite(lat)||!Number.isFinite(lng))return;\n        const marker=L.marker([lat,lng],{icon:icon(),title:String(entry.name||\'\'),keyboard:true}).addTo(map);\n        const content=el(\'div\',\'salt-popup\');if(entry.src){const img=el(\'img\');img.src=String(entry.src);img.alt=String(entry.name);img.loading=\'lazy\';content.appendChild(img);}\n        content.appendChild(el(\'small\',\'salt-shop-name\',String(entry.name||\'\')));content.appendChild(el(\'p\',\'\',String(entry.address||\'\')));\n        content.appendChild(button(\'写真と感想を見る\',()=>emit(\'open\',{id:entry.id,view:mapView()})));\n        content.appendChild(button(\'ピンを削除\',()=>{if(busy)return;busy=true;emit(\'delete_pin\',{id:entry.id});}));\n        marker.bindPopup(content);markers.set(String(entry.id),marker);points.push([lat,lng]);\n      });\n      if(data?.manual){\n        status.textContent=\'登録するお店の位置を地図でタップしてください。\';\n        map.on(\'click\',event=>{if(disposed||busy)return;busy=true;status.textContent=\'選んだ場所を確認しています…\';emit(\'manual_place\',{lat:event.latlng.lat,lng:event.latlng.lng});});\n      }\n      candidateEntries.forEach(entry=>{\n        const point=[Number(entry.lat),Number(entry.lng)];if(!point.every(Number.isFinite))return;\n        const marker=L.marker(point,{icon:L.divIcon({className:\'salt-pin-container\',iconSize:[44,52],iconAnchor:[22,49],html:`<div class="salt-bread-pin ${entry.product_mentioned?\'salt-discovery-mentioned\':\'salt-discovery-unknown\'}"><span>🍞</span></div>`}),title:String(entry.name||\'\')}).addTo(map);\n        const content=el(\'div\',\'salt-popup\');content.appendChild(el(\'small\',\'salt-shop-name\',String(entry.name)));\n        content.appendChild(el(\'p\',\'\',entry.product_mentioned?\'塩パンの記載あり（公開情報）\':\'取り扱い未確認のパン屋\'));\n        content.appendChild(el(\'p\',\'\',String(entry.address||\'\')));\n        content.appendChild(el(\'p\',\'\',`検索日 ${String(entry.searched_at||\'\').slice(0,10)} ／ 保存期限 ${String(entry.expires_at||\'\').slice(0,10)}`));\n        if(entry.evidence){content.appendChild(el(\'p\',\'\',String(entry.evidence)));const link=el(\'a\',\'\',\'記載元を見る\');link.href=String(entry.evidence_url);link.target=\'_blank\';link.rel=\'noopener noreferrer\';content.appendChild(link);}\n        content.appendChild(button(\'このお店の写真と感想を登録\',()=>emit(\'open_candidate\',{id:entry.id})));\n        content.appendChild(button(\'候補のピンを非表示\',()=>emit(\'hide_candidate\',{id:entry.id})));\n        marker.bindPopup(content);points.push(point);\n      });\n      const searchButton=root.querySelector(\'#salt-search-area-v617\');\n      if(searchButton){searchButton.hidden=false;searchButton.disabled=data?.search_enabled===false;\n        searchButton.onclick=e=>{e.preventDefault();const center=map.getCenter();searchButton.disabled=true;emit(\'search_bakeries\',{lat:center.lat,lng:center.lng});};}\n      const preview=data?.preview;\n      if(preview&&Number.isFinite(Number(preview.lat))&&Number.isFinite(Number(preview.lng))){\n        const p=[Number(preview.lat),Number(preview.lng)];const marker=L.marker(p,{icon:icon(true),title:\'登録前の確認\',draggable:true}).addTo(map).bindPopup(el(\'div\',\'\',`${preview.name||\'\'}\u3000${preview.address||\'\'}`)).openPopup();\n        marker.on(\'dragend\',()=>{const point=marker.getLatLng();status.textContent=\'ピンの位置を更新しています…\';emit(\'preview\',{lat:point.lat,lng:point.lng});});\n        status.textContent=\'登録前のパンのピンは、指で動かして位置を調整できます。\';map.setView(p,17);\n      }else if(points.length===1)map.setView(points[0],16);else if(points.length>1)map.fitBounds(points,{padding:[35,35],maxZoom:16});\n      const restore=data?.restore;\n      if(!preview&&restore&&markers.has(String(restore.id))){\n        const lat=Number(restore.lat),lng=Number(restore.lng),zoom=Number(restore.zoom);\n        if(Number.isFinite(lat)&&Number.isFinite(lng)&&Number.isFinite(zoom)){\n          map.setView([lat,lng],Math.max(10,Math.min(19,zoom)));\n          markers.get(String(restore.id)).openPopup();\n        }\n      }\n      map.invalidateSize();\n    }).catch(e=>{if(!disposed){status.textContent=String(e.message||e);reportError610(\'salt.map_initialization\',e,{container_initialized:Boolean(mapEl._leaflet_id),mode:data?.mode,lifecycle:\'container-owner-v611\'});mapEl.textContent=\'地図を表示できません。お店の一覧・ランキングから記録を開けます。\';}});\n  }\n  return()=>{lease.dispose();if(mapEl.__saltMapLease611===lease)delete mapEl.__saltMapLease611;if(root.__saltMapLease610===lease)delete root.__saltMapLease610;};\n}\n'
 
 def page_good_moments_menu():
     page_top("✨ いい瞬間の設定をする")
@@ -62869,6 +58192,7 @@ def page_settings():
     # A divider separates the heading from the individual setting controls.
     st.markdown("### ⚙️ 設定")
     st.divider()
+    _salt_discovery_logs_settings_v617()
 
     settings_notice = st.session_state.pop("_settings_notice", None)
     if settings_notice:
@@ -62943,6 +58267,7 @@ def page_settings():
     _events_source_log_settings_v587()
     render_performance_log_v457()
     st.caption(f"アプリビルド：{APP_BUILD}")
+
 
 # ============================================================
 # v458: detailed, bounded bottleneck tracing
