@@ -1,3 +1,4 @@
+# v621: Whole landscape replay frames (live/export/legacy snapshots); valid library enlargement transitions and durable share callbacks.
 # v620: Recover missing Photon website tags; inspect store menus and log every product check; upgrade cached searches.
 # v619: Fix Photon unsupported language; fixed 1/3/5/10km radius choices and service error response logging.
 # v618: Independent Photon bakery fallback, failed-provider cooldown, POST Overpass queries and precise transport diagnostics.
@@ -75,7 +76,7 @@ def _app_css_v473(markup, **_ignored):
 # Review menu-only update: 2026-09-19 JST
 GENERATED_UPDATE_JST = "2026-09-19T14:54:38+09:00"
 
-APP_BUILD = "v620"
+APP_BUILD = "v621"
 # v598: Passing the focus gate is mandatory before any weighted ranking or reroll.
 # Never fill the twenty-image target with focus-rejected candidates.
 # v597: Compare 30 FPS candidates across the whole saved video offline. Disk-backed
@@ -3320,7 +3321,7 @@ def _get_diary_gallery_component():
     _diary_gallery_component_initialized = True
     try:
         raw_gallery_v616 = st.components.v2.component(
-            "tokyo_burari_diary_gallery_v616",
+            "tokyo_burari_diary_gallery_v621",
             html=_DIARY_GALLERY_HTML,
             css=_DIARY_GALLERY_CSS,
             js=_perf_instrument_js_v466(_DIARY_GALLERY_JS),
@@ -20398,11 +20399,9 @@ def _replay_primary_people(people, width, height):
 def _replay_photo_framing_meta(storage_path, _raw=None):
     """Choose replay framing without altering the stored photo.
 
-    Portrait photos retain the established 9:16 cover behavior. Square/landscape photos
-    return a people-safe *maximum* zoom and source dimensions. The browser then applies the
-    final quality cap from the actual rendered movie-stage width, so there is no fixed 960 px
-    quality reference. Small/partial edge background detections no longer force the main
-    subjects to stay unnecessarily small.
+    Portrait photos retain the established 9:16 cover behavior.
+    Landscape/square photos fit their full width; person detection never decides
+    which family member is allowed to remain in the movie frame.
     """
     default = {
         "fit": "cover",
@@ -20449,67 +20448,10 @@ def _replay_photo_framing_meta(storage_path, _raw=None):
 
             if height > width:
                 return base
+            # Whole landscape/square photographs preserve every person even when
+            # side faces, overlapping bodies or seated people evade detection.
+            return {**base, 'fit': 'smart', 'zoom': 1.0, 'focus_x': 50.0, 'focus_y': 50.0}
 
-            people = _estimate_person_focus_boxes(src)
-            primary_people = _replay_primary_people(people, width, height)
-            person_count = len(people)
-            primary_count = len(primary_people)
-
-            if not primary_people:
-                # Without a reliable main person, keep framing conservative. The browser still
-                # applies its actual-stage quality cap, so this is an aesthetic limit only.
-                aesthetic_zoom_limit = 1.70 if width > height else 1.55
-                return {
-                    **base,
-                    "fit": "smart",
-                    "person_count": person_count,
-                    "primary_person_count": 0,
-                    "zoom": round(aesthetic_zoom_limit, 4),
-                    "focus_x": 50.0,
-                    "focus_y": 50.0,
-                }
-
-            # Only primary subjects constrain the crop. This is what allows a main child/adult
-            # to become larger even when a small passer-by or cropped background person appears
-            # near an edge of the same frame.
-            x1 = min(float(item["box"][0]) for item in primary_people)
-            y1 = min(float(item["box"][1]) for item in primary_people)
-            x2 = max(float(item["box"][2]) for item in primary_people)
-            y2 = max(float(item["box"][3]) for item in primary_people)
-            union_w = max(1.0, x2 - x1)
-            union_h = max(1.0, y2 - y1)
-
-            multi = primary_count >= 2
-            # Use tighter replay-specific breathing room than v431. The detector regions already
-            # include shoulders/hands, so the previous extra margin made subjects too small.
-            margin_x = max(width * 0.012, union_w * (0.035 if not multi else 0.045))
-            margin_y = max(height * 0.012, union_h * (0.030 if not multi else 0.040))
-            safe_x1 = max(0.0, x1 - margin_x)
-            safe_x2 = min(float(width), x2 + margin_x)
-            safe_y1 = max(0.0, y1 - margin_y)
-            safe_y2 = min(float(height), y2 + margin_y)
-            safe_w = max(1.0, safe_x2 - safe_x1)
-            safe_h = max(1.0, safe_y2 - safe_y1)
-
-            # This is only the people-safe limit. v433 intentionally does NOT apply a 960 px
-            # quality rule here; the client computes that from the real stage width at playback.
-            max_zoom_people_x = (float(width) / safe_w) * 0.992
-            max_zoom_people_y = ((16.0 / 9.0) * float(width) / safe_h) * 0.992
-            people_zoom_limit = max(1.0, min(3.35, max_zoom_people_x, max_zoom_people_y))
-            focus_x = ((safe_x1 + safe_x2) / 2.0) / float(width) * 100.0
-            focus_y = ((safe_y1 + safe_y2) / 2.0) / float(height) * 100.0
-            return {
-                **base,
-                "fit": "smart",
-                "person_count": person_count,
-                "primary_person_count": primary_count,
-                "zoom": round(people_zoom_limit, 4),
-                "focus_x": round(max(0.0, min(100.0, focus_x)), 3),
-                "focus_y": round(max(0.0, min(100.0, focus_y)), 3),
-                "position_x": round(max(0.0, min(100.0, focus_x)), 3),
-                "position_y": round(max(0.0, min(100.0, focus_y)), 3),
-                "use_backdrop": False,
-            }
     except Exception:
         # No fixed pixel quality fallback: preserve dimensions when possible and let the
         # browser decide the final quality cap from the actual rendered stage size.
@@ -20529,7 +20471,7 @@ def _replay_photo_framing_meta(storage_path, _raw=None):
                             "source_ratio": round(source_ratio, 6),
                             "source_width": max(1, int(round(src.width * delivered_scale))),
                             "source_height": max(1, int(round(src.height * delivered_scale))),
-                            "zoom": 1.45,
+                            "zoom": 1.0,
                             "focus_x": 50.0,
                             "focus_y": 50.0,
                             "use_backdrop": False,
@@ -20537,6 +20479,7 @@ def _replay_photo_framing_meta(storage_path, _raw=None):
         except Exception:
             pass
         return default
+
 
 
 def _refresh_replay_photo_metadata_v448(photos):
@@ -23019,9 +22962,13 @@ def _replay_export_frame_jpeg(image_bytes, framing=None, width=720, height=1280)
             resampling = getattr(getattr(Image, "Resampling", Image), "LANCZOS")
             frame_w = max(1, int(width))
             frame_h = max(1, int(height))
-            meta = framing if isinstance(framing, dict) else {}
+            meta = _replay_full_photo_meta_v621(framing if isinstance(framing, dict) else {})
             fit = str(meta.get("replay_fit") or meta.get("fit") or "cover").lower()
 
+            if src.width >= src.height:
+                meta.update({'replay_fit':'smart','replay_zoom':1.0,'replay_source_ratio':float(src.width)/src.height,
+                             'replay_focus_x':50.0,'replay_focus_y':50.0})
+                fit='smart'
             if fit == "smart" and src.width > 0 and src.height > 0:
                 source_ratio = float(meta.get("replay_source_ratio") or meta.get("source_ratio") or (float(src.width) / float(src.height)))
                 source_ratio = max(0.05, source_ratio)
@@ -23063,6 +23010,7 @@ def _replay_export_frame_jpeg(image_bytes, framing=None, width=720, height=1280)
             return out.getvalue()
     except Exception:
         return b""
+
 
 
 def build_replay_visual_mp4(photo_items, display_ms, duration_seconds):
@@ -23193,6 +23141,7 @@ def render_replay_download_controls(period_label, playback, photo_items, display
 
 
 def render_monthly_replay_player(period_label, review, playback, photo_items, curated_mode=False):
+    photo_items = [_replay_full_photo_meta_v621(item) for item in (photo_items or [])]
     if not photo_items:
         return
     video_id = str((playback or {}).get("video_id") or "").strip() or parse_youtube_video_id((playback or {}).get("youtube_url"))
@@ -24053,7 +24002,7 @@ function burariStartSlideVoiceV469() {{
         if (requestedFit === 'smart') {{
           const stageRatio = 16 / 9; // stage height in units of stage width
           const sourceRatio = Math.max(0.05, Number((item && item.replay_source_ratio) || 1));
-          const peopleSafeZoom = Math.max(1, Math.min(3.35, Number((item && item.replay_zoom) || 1)));
+          const peopleSafeZoom = sourceRatio >= 1 ? 1 : Math.max(1, Math.min(3.35, Number((item && item.replay_zoom) || 1)));
           const sourceWidth = Math.max(0, Number((item && item.replay_source_width) || 0));
           const stageWidth = Math.max(
             1,
@@ -24858,6 +24807,7 @@ function burariStartSlideVoiceV469() {{
         display_ms,
         duration_seconds,
     )
+
 
 
 
@@ -28639,6 +28589,49 @@ def _rotate_photo_v616(photo_id, direction, token, rank=None):
         return row
 
 
+def _photo_library_queue_open_v621(photo_id):
+    st.session_state['_all_photo_library_pending_open_v621'] = str(photo_id or '')
+
+
+def _gallery_capture_event_v621(component_key, inbox, event_name, previous=None):
+    value = st.session_state.get(component_key)
+    event = value.get(event_name) if isinstance(value, dict) else getattr(value, event_name, None)
+    if isinstance(event, dict):
+        st.session_state[inbox] = dict(event)
+    if callable(previous):
+        previous()
+
+
+class _GalleryEventResultV621:
+    def __init__(self, base, overrides):
+        self.base = base
+        self.overrides = overrides
+
+    def __getattr__(self, name):
+        if name in self.overrides:
+            return self.overrides[name]
+        if isinstance(self.base, dict):
+            return self.base.get(name)
+        return getattr(self.base, name, None)
+
+
+def _replay_full_photo_meta_v621(meta):
+    """Keep all of a non-portrait photo, including legacy shared snapshots."""
+    value = dict(meta or {})
+    prefix = 'replay_' if any(str(key).startswith('replay_') for key in value) else ''
+    orientation = str(value.get(prefix+'orientation') or '')
+    try:
+        ratio = float(value.get(prefix+'source_ratio') or 0)
+        known_size = float(value.get(prefix+'source_width') or 0) > 0
+    except (ValueError, TypeError):
+        return value
+    known_nonportrait = orientation in ('landscape', 'square') or (ratio >= 1 and (known_size or value.get(prefix+'fit') == 'smart'))
+    if known_nonportrait:
+        value.update({prefix+'fit':'smart',prefix+'zoom':1.0,prefix+'focus_x':50.0,
+                      prefix+'focus_y':50.0,prefix+'position_x':50.0,prefix+'position_y':50.0})
+    return value
+
+
 def _rotation_capture_v616(component_key, inbox_key):
     value = st.session_state.get(component_key)
     event = value.get("rotate_photo") if isinstance(value, dict) else getattr(value, "rotate_photo", None)
@@ -28666,7 +28659,18 @@ def _rotation_gallery_v616(component, **kwargs):
                 _app_error_record_v610("photo.rotation", exc)
                 st.error("写真を回転できませんでした。" + str(exc))
         kwargs["on_rotate_photo_change"] = lambda: _rotation_capture_v616(key, inbox)
-    return component(**kwargs)
+    # Capture share toggles in the pre-render callback, retaining the payload
+    # even if another rerun/navigation interrupts the component return value.
+    share_inbox = inbox + '_share'
+    previous = kwargs.get('on_share_photo_change')
+    if data.get('allow_share'):
+        kwargs['on_share_photo_change'] = lambda: _gallery_capture_event_v621(key, share_inbox, 'share_photo', previous)
+    pending_share = st.session_state.pop(share_inbox, None)
+    result = component(**kwargs)
+    if isinstance(pending_share, dict):
+        return _GalleryEventResultV621(result, {'share_photo': pending_share})
+    return result
+
 
 
 def _render_rotation_buttons_v616(photo_id, key, rank=None):
@@ -42886,6 +42890,12 @@ def page_photo_library_v418():
     st.caption(f"保存している写真：{len(photos)}枚")
     st.caption("写真を長押しすると複数削除モードになります。")
 
+    pending_open = str(st.session_state.pop('_all_photo_library_pending_open_v621', '') or '')
+    if pending_open:
+        target = next((i for i, row in enumerate(photos) if str(row.get('id') or '') == pending_open), None)
+        if target is not None:
+            st.session_state['_all_photo_library_enlarged_index_v419'] = target
+            st.session_state['_all_photo_library_view_mode_v419'] = '拡大モード'
     mode_key = "_all_photo_library_view_mode_v419"
     current_mode = str(st.session_state.get(mode_key) or "一覧モード")
     if current_mode not in {"一覧モード", "拡大モード"}:
@@ -43057,8 +43067,7 @@ def page_photo_library_v418():
 
         clicked = str(getattr(result, "photo_id", "") or "")
         if clicked in photo_ids:
-            st.session_state[index_key] = start + photo_ids.index(clicked)
-            st.session_state[mode_key] = "拡大モード"
+            _photo_library_queue_open_v621(clicked)
             st.rerun()
     else:
         # Fallback for older component runtimes. Keep three columns where supported.
@@ -43094,9 +43103,9 @@ def page_photo_library_v418():
                         "拡大",
                         use_container_width=True,
                         key=f"all_photo_open_fallback_v420_{current_page}_{photo_id}",
+                        on_click=_photo_library_queue_open_v621,
+                        args=(photo_id,),
                     ):
-                        st.session_state[index_key] = absolute_index
-                        st.session_state[mode_key] = "拡大モード"
                         st.rerun()
 
     if page_count > 1:
@@ -43120,6 +43129,7 @@ def page_photo_library_v418():
             ):
                 st.session_state[page_key] = min(page_count - 1, current_page + 1)
                 st.rerun()
+
 
 
 # ============================================================
