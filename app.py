@@ -1,3 +1,4 @@
+# v628: Bakery map; show every bakery without salt-bread filters or product crawling. Preserve existing storage, records, ranks and revisit marks.
 # v627: Subtle fixed 4px muted-gold revisit border; no glow or animation; preserve bread appearance and saved status.
 # v626: Revisit gold border has a visible, slowly breathing outer halo; reduced-motion uses a steady glow.
 # v625: High-visibility double gold border and front stacking for revisit pins; unchanged bread artwork, fill and inner center.
@@ -82,7 +83,7 @@ def _app_css_v473(markup, **_ignored):
 # Review menu-only update: 2026-09-19 JST
 GENERATED_UPDATE_JST = "2026-09-19T14:54:38+09:00"
 
-APP_BUILD = "v627"
+APP_BUILD = "v628"
 # v598: Passing the focus gate is mandatory before any weighted ranking or reroll.
 # Never fill the twenty-image target with focus-rejected candidates.
 # v597: Compare 30 FPS candidates across the whole saved video offline. Disk-backed
@@ -34574,7 +34575,7 @@ def page_home():
                 with settings_col:
                     render_home_button("設定", "settings", "home_settings")
 
-        st.button("🍞 食べ歩き・塩パンマップ", key="home_salt_bread_v609", use_container_width=True,
+        st.button("🍞 食べ歩き・パン屋マップ", key="home_salt_bread_v609", use_container_width=True,
                   on_click=_go_page_callback, args=("salt_bread", "push"))
         with st.container(key="home_secondary"):
             with st.container(key="home_review_large_v524"):
@@ -38720,7 +38721,7 @@ def page_nearby():
         "📍 近くに寄る",
         "おやつ・ランチ・観光・観光（雨）から条件を選ぶと、その瞬間の現在地を高精度で取り直して周辺を調べます。観光（雨）は屋内・屋根ありの候補に絞ります。",
     )
-    st.button("🍞 塩パンマップ", key="nearby_salt_bread_v609", use_container_width=True,
+    st.button("🍞 パン屋マップ", key="nearby_salt_bread_v609", use_container_width=True,
               on_click=_go_page_callback, args=("salt_bread", "push"))
     st.markdown(
         """
@@ -55519,13 +55520,12 @@ def _salt_map_cards_v622(doc, discovery, include_unknown=False):
         key=_salt_shop_key_v622(row)
         if key in recorded_keys or key in seen:continue
         mark=states.get(key);status=mark['status'] if mark else 'unmarked'
-        if not include_unknown and not row.get('product_mentioned') and status=='unmarked':continue
         rows.append({**row,'candidate':True,'src':'','shop_state_key':key,'shop_status':status})
         seen.add(key)
     for key,mark in states.items():
         if key in seen or key in recorded_keys or mark['status']=='unmarked':continue
         rows.append({**mark,'id':'saved_status_'+key,'candidate':True,'status_only':True,
-            'src':'','shop_status':mark['status'],'product_mentioned':False,
+            'src':'','shop_status':mark['status'],
             'searched_at':'','expires_at':'','evidence':''})
     return rows
 
@@ -55564,14 +55564,14 @@ def _salt_load_v609(force=False):
         raw = supabase_client().storage.from_(GPS_TRACK_BUCKET).download(_salt_prefix_v609() + "/map.json")
     except Exception as exc:
         if not _salt_missing_v609(exc):
-            raise RuntimeError("塩パンの記録を読み込めませんでした。再読み込みしてください。") from exc
+            raise RuntimeError("パンの記録を読み込めませんでした。再読み込みしてください。") from exc
         doc = _salt_empty_v609()
     else:
         doc = json.loads(_storage_bytes(raw).decode("utf-8"))
         if not isinstance(doc, dict) or doc.get("owner") != _salt_owner_v609() or not isinstance(doc.get("entries"), dict) or not isinstance(doc.get("order"), list):
-            raise ValueError("塩パンの保存データを確認できません。上書きせず停止しました。")
+            raise ValueError("パンの保存データを確認できません。上書きせず停止しました。")
         if set(doc["order"]) != set(doc["entries"]) or len(doc["order"]) != len(set(doc["order"])):
-            raise ValueError("塩パンの順位データを確認できません。")
+            raise ValueError("パンの順位データを確認できません。")
         for key, entry in doc["entries"].items():
             if not isinstance(entry, dict) or entry.get("id") != key or not re.fullmatch(r"[0-9a-f]{32}", key):
                 raise ValueError("お店の記録を確認できません。")
@@ -56134,12 +56134,12 @@ def _salt_form_v609(place, entry_id=""):
             try:
                 token_key = "_salt_visit_token_" + key
                 visit_id = st.session_state.setdefault(token_key, uuid.uuid4().hex)
-                with st.spinner("塩パンの記録を保存しています…"):
+                with st.spinner("パンの記録を保存しています…"):
                     doc = _salt_save_visit_v609({**place, "name": name, "address": address}, files, note, date_value, again, entry_id, visit_id)
                 st.session_state.pop(token_key, None)
                 st.session_state.pop(photo_scope_key, None)
                 st.session_state.pop(photo_scope_key + "_error", None)
-                st.session_state["_salt_notice_v609"] = "塩パンの記録を保存しました。"
+                st.session_state["_salt_notice_v609"] = "パンの記録を保存しました。"
                 st.session_state.pop("_salt_candidate_v609", None)
                 _set_page_state("salt_bread", history_mode="replace")
                 st.rerun()
@@ -56152,7 +56152,7 @@ def _salt_form_v609(place, entry_id=""):
 
 @st.cache_resource
 def _salt_component_v609():
-    return st.components.v2.component("burari_salt_bread_v622", html=_SALT_HTML_V609, css=_SALT_CSS_V609, js=_SALT_JS_V609)
+    return st.components.v2.component("burari_bakery_map_v628", html=_SALT_HTML_V609, css=_SALT_CSS_V609, js=_SALT_JS_V609)
 
 
 def _salt_remember_map_v615(owner, entry, action=None):
@@ -56278,9 +56278,7 @@ def _salt_discovery_rows_v617(doc):
     return list(rows.values())
 
 
-def _salt_official_evidence_v617(url):
-    evidence,final_url,_=_salt_site_evidence_v620(url)
-    return evidence,final_url
+
 
 
 
@@ -56361,170 +56359,22 @@ def _salt_bakery_document_v618(web,query,lat,lng,radius):
     return _salt_photon_bakeries_v618(web,lat,lng,radius)
 
 
-def _salt_site_document_v620(url, deadline=None):
-    # Pin each connection to a validated public IP, including after redirects.
-    import ipaddress, socket, ssl, http.client
-    from urllib.parse import urlsplit, urljoin, quote
-    deadline=deadline or time.monotonic()+12
-    target=str(url)
-    for redirect in range(4):
-        parts=urlsplit(target)
-        if parts.scheme not in ("https","http") or not parts.hostname or parts.username or parts.password or parts.port not in (None,80,443) or any(c in target for c in ("\r","\n")):
-            raise ValueError("店舗サイトのURL形式を確認できません。")
-        if time.monotonic()>=deadline:raise TimeoutError("店舗サイトの確認時間を超えました。")
-        port=parts.port or (443 if parts.scheme=="https" else 80)
-        addresses=socket.getaddrinfo(parts.hostname,port,type=socket.SOCK_STREAM)
-        if not addresses or any(not ipaddress.ip_address(a[4][0]).is_global for a in addresses):
-            raise ValueError("公開店舗サイト以外は参照しません。")
-        address=addresses[0][4][0]
-        connection=http.client.HTTPConnection(parts.hostname,port,timeout=max(.1,min(3,deadline-time.monotonic())))
-        connection.sock=socket.create_connection((address,port),timeout=max(.1,min(3,deadline-time.monotonic())))
-        if parts.scheme=="https":
-            connection.sock=ssl.create_default_context().wrap_socket(connection.sock,server_hostname=parts.hostname)
-        try:
-            path=quote(parts.path or '/',safe='/%:@!$&()*+,;=-._~')
-            if parts.query:path+='?'+quote(parts.query,safe='/%:@!$&()*+,;=?-._~')
-            connection.request('GET',path,headers={'Host':parts.netloc,'User-Agent':'BurariSaltBreadMap/1.0','Accept':'text/html'})
-            response=connection.getresponse()
-            if response.status in (301,302,303,307,308):
-                target=urljoin(target,response.getheader('Location') or '')
-                if redirect==3:raise ValueError('店舗サイトの転送が多すぎます。')
-                continue
-            if response.status>=400:raise ValueError('店舗サイト HTTP '+str(response.status))
-            if 'text/html' not in (response.getheader('Content-Type') or ''):return '',[],target
-            raw=response.read(512*1024)
-            charset=response.headers.get_content_charset() or 'utf-8'
-            text=raw.decode(charset,errors='replace');final_url=target
-            break
-        finally:
-            connection.close()
-    return _salt_site_content_v620(text, final_url)
 
 
-def _salt_site_content_v620(text, final_url):
-    from html.parser import HTMLParser
-    class Visible(HTMLParser):
-        def __init__(self):
-            super().__init__();self.parts=[];self.links=[];self.skip=0;self.anchor=None
-        def handle_starttag(self,tag,attrs):
-            attrs=dict(attrs)
-            if tag in ('script','style','noscript'):self.skip+=1
-            if not self.skip:
-                if tag=='img' and attrs.get('alt'):self.parts.append(attrs['alt'])
-                if tag=='a' and attrs.get('href'):
-                    self.links.append([attrs['href'],attrs.get('title','')]);self.anchor=len(self.links)-1
-        def handle_endtag(self,tag):
-            if tag in ('script','style','noscript'):self.skip=max(0,self.skip-1)
-            if tag=='a':self.anchor=None
-        def handle_data(self,data):
-            if not self.skip:
-                self.parts.append(data)
-                if self.anchor is not None:self.links[self.anchor][1]+=' '+data
-    parser=Visible();parser.feed(text)
-    return re.sub(r"\s+"," "," ".join(parser.parts)),parser.links,final_url
 
 
-def _salt_product_match_v620(text):
-    # A missing mention is unknown, never proof that a shop does not sell it.
-    for match in re.finditer(r"塩(?:バター)?[パぱ][ンん]|しお[パぱ][ンん]|salt(?:ed)?\s+(?:butter\s+)?bread", text, re.I):
-        context = text[max(0, match.start()-25):match.end()+45]
-        if re.search(r"販売(?:を)?終了|販売して(?:いません|おりません)|取り扱い(?:は|が)?(?:ありません|なし)", context):
-            continue
-        return text[max(0, match.start()-45):match.end()+95]
-    return ''
 
 
-def _salt_site_evidence_v620(url, deadline=None):
-    from urllib.parse import urlsplit, urljoin, urldefrag, unquote
-    deadline = deadline or time.monotonic()+12
-    queue=[str(url)];visited=set();logs=[];origin=None
-    while queue and len(visited)<3 and time.monotonic()<deadline:
-        target=queue.pop(0)
-        if target in visited:continue
-        visited.add(target)
-        try:
-            text, links, final = _salt_site_document_v620(target, deadline)
-            if origin is None:origin=urlsplit(final).netloc.lower()
-            evidence=_salt_product_match_v620(text)
-            logs.append({'event':'product_page_checked','detail':{'url':final,'product_mentioned':bool(evidence),'characters':len(text)}})
-            if evidence:return evidence,final,logs
-            ranked=[]
-            for href,label in links:
-                next_url=urldefrag(urljoin(final,href))[0];parts=urlsplit(next_url)
-                # Only menu/product links on the same site; no general crawling.
-                if parts.scheme not in ('http','https') or parts.netloc.lower()!=origin or next_url in visited:continue
-                hint=unquote(parts.path)+' '+label
-                if re.search(r'塩[パぱ][ンん]|しおぱん|shiopan|salt.?bread',hint,re.I):priority=0
-                elif re.search(r'menu|product|bread|メニュー|商品|パンの紹介',hint,re.I):priority=1
-                else:continue
-                ranked.append((priority,next_url))
-            queue=sorted(set(queue+[u for _,u in sorted(set(ranked))]), key=lambda u:next((p for p,v in ranked if v==u),2))
-        except Exception as exc:
-            logs.append({'event':'product_page_failed','detail':{'url':target,'error':str(exc)[:500]}})
-    return '',str(url),logs
 
 
-def _salt_product_rows_v620(rows, web, enrich=False):
-    # Photon omits most OSM website/product tags. Fetch only known object IDs,
-    # in batches, then keep each shop's original identity and coordinates.
-    if enrich:
-        by_id={row['osm_id']:row for row in rows if row.get('osm_id')}
-        for kind,plural in (('node','nodes'),('way','ways'),('relation','relations')):
-            ids=[key.split(':')[1] for key in by_id if re.fullmatch(kind+r':[1-9][0-9]*',key)]
-            for offset in range(0,len(ids),50):
-                batch=ids[offset:offset+50]
-                try:
-                    web.deadline=max(getattr(web,'deadline',0),time.monotonic()+12)
-                    doc,_=_salt_lookup_json_v609(web,'https://api.openstreetmap.org/api/0.6/'+plural+'.json',{plural:','.join(batch)},'bakery_details')
-                    if not isinstance(doc,dict) or not isinstance(doc.get('elements'),list):raise ValueError('店舗詳細の応答形式を確認できません。')
-                    added=0
-                    for element in doc['elements']:
-                        identity=str(element.get('type'))+':'+str(element.get('id'))
-                        if element.get('type')!=kind or str(element.get('id')) not in batch or identity not in by_id:continue
-                        tags=element.get('tags') or {};row=by_id[identity]
-                        if not isinstance(tags,dict):continue
-                        site=str(tags.get('website') or tags.get('contact:website') or '')
-                        if site and not row.get('website'):row['website']=site;added+=1
-                        if not row.get('product_mentioned'):
-                            evidence=next((_salt_product_match_v620(str(tags.get(key) or '')) for key in ('name','description','product','cuisine') if _salt_product_match_v620(str(tags.get(key) or ''))),'')
-                            if evidence:row.update(evidence=evidence,product_mentioned=True,evidence_url='https://www.openstreetmap.org/'+kind+'/'+str(element['id']))
-                    _salt_trace_v609(web,'bakery_details_complete',{'requested':len(batch),'website_urls_added':added,'kind':kind})
-                except Exception as exc:
-                    _salt_trace_v609(web,'bakery_details_failed',{'kind':kind,'count':len(batch),'error':str(exc)[:500]},'WARNING')
-                    # Stop subsequent detail requests on an access/rate refusal.
-                    if getattr(exc,'code',None) in (401,403,429):break
-    deadline=time.monotonic()+35
-    def check(row):
-        logs=[];row['checked_at']=now_jst().isoformat()
-        if row.get('product_mentioned'):status='mention_found'
-        elif not row.get('website'):status='no_website'
-        elif time.monotonic()>=deadline:status='budget_exceeded'
-        else:
-            evidence,url,logs=_salt_site_evidence_v620(row['website'],deadline)
-            if evidence:
-                row.update(evidence=evidence,evidence_url=url,product_mentioned=True,
-                    evidence_scope='店舗・ブランドサイトの記載です。支店ごとの取り扱い・現在の在庫は未確認です。')
-                status='mention_found'
-            else:status='checked_no_mention' if any(x['event']=='product_page_checked' for x in logs) else 'site_failed'
-        row['product_check_status']=status
-        logs.append({'event':'store_product_check','detail':{'osm_id':row.get('osm_id'),'name':row['name'],'website':row.get('website',''),'status':status,'product_mentioned':bool(row.get('product_mentioned')),'evidence_url':row.get('evidence_url') if row.get('product_mentioned') else None}})
-        return row,logs
-    with ThreadPoolExecutor(max_workers=3) as executor:
-        checked=list(executor.map(check,rows))
-    result=[];counts={}
-    for row,logs in checked:
-        result.append(row);web.logs.extend(logs);status=row['product_check_status'];counts[status]=counts.get(status,0)+1
-    _salt_trace_v609(web,'product_check_summary',counts)
-    result.sort(key=lambda row:(not row['product_mentioned'],row['name']))
-    return result
 
 
-def _salt_recheck_products_v620(search):
-    # Reuse the 3-month store cache, retaining its original expiry date.
-    result=json.loads(json.dumps(search));web=_SaltWebV609()
-    result['results']=_salt_product_rows_v620(result.get('results',[]),web,enrich=result.get('provider')=='Photon')
-    result.update(id=uuid.uuid4().hex,source_search_id=search['id'],product_checked_at=now_jst().isoformat(),evidence_version=620,logs=web.logs)
-    return result
+
+
+
+
+
+
 
 
 def _salt_discover_v617(lat, lng, radius):
@@ -56532,10 +56382,10 @@ def _salt_discover_v617(lat, lng, radius):
     radius = max(1000, min(10000, int(radius)))
     web = _SaltWebV609()
     web.deadline = time.monotonic()+24
-    # An OSM shop query discovers stores; product claims always carry evidence.
+    # Discover bakeries and bakery cafes; no product-specific scanning.
     around = f"(around:{radius},{lat:.6f},{lng:.6f})"
     query = '[out:json][timeout:6];('+''.join('nwr'+selector+around+';' for selector in
-        ('["shop"="bakery"]','["amenity"="cafe"]["name"~"パン|ベーカリー|bakery|bread",i]','["name"~"塩パン|塩ぱん|しおぱん|salt.bread",i]'))+');out center tags;'
+        ('["shop"="bakery"]','["amenity"="cafe"]["name"~"パン|ベーカリー|bakery|bread",i]'))+');out center tags;'
     try:
         data,info = _salt_bakery_document_v618(web,query,lat,lng,radius)
         results = [];seen=set()
@@ -56548,18 +56398,16 @@ def _salt_discover_v617(lat, lng, radius):
                 if not name or identity in seen:continue
                 seen.add(identity)
                 address = _salt_normal_v609(tags.get("addr:full")) or ''.join(str(tags.get(k) or '') for k in ('addr:province','addr:city','addr:suburb','addr:quarter','addr:street','addr:housenumber'))
-                evidence = next((str(tags[k]) for k in ('name','description','product','cuisine') if re.search(r'塩パン|塩ぱん|しおぱん|salt\s+bread',str(tags.get(k) or ''),re.I)), '')
                 website = str(tags.get('website') or tags.get('contact:website') or '')
                 results.append({"id":"candidate_"+hashlib.sha256(identity.encode()).hexdigest()[:24],"name":name,"address":address,
                     "lat":plat,"lng":plng,"source":str(info.get('provider') or 'OpenStreetMap')+" / OpenStreetMap","osm_id":identity,"website":website,
-                    "evidence":evidence[:180],"evidence_url":"https://www.openstreetmap.org/"+str(element.get('type'))+'/'+str(element['id']),
-                    "product_mentioned":bool(evidence),"checked_at":now_jst().isoformat()})
+                    "checked_at":now_jst().isoformat()})
             except (KeyError,TypeError,ValueError):continue
-        results=_salt_product_rows_v620(results,web,enrich=info.get('provider')=='Photon')
+        results.sort(key=lambda row:row['name'])
         at=now_jst()
-        _salt_trace_v609(web,"bakery_search_complete",{"count":len(results),"product_mentioned":sum(r['product_mentioned'] for r in results)})
+        _salt_trace_v609(web,"bakery_search_complete",{"count":len(results)})
         return {"id":uuid.uuid4().hex,"lat":lat,"lng":lng,"radius_m":radius,"searched_at":at.isoformat(),
-            "expires_at":_salt_expiry_v617(at).isoformat(),"evidence_version":620,"provider":info.get('provider'),"partial_results":bool(info.get('partial_results')),"results":results,"logs":web.logs}
+            "expires_at":_salt_expiry_v617(at).isoformat(),"search_scope":"bakery","provider":info.get('provider'),"partial_results":bool(info.get('partial_results')),"results":results,"logs":web.logs}
     except Exception as exc:
         error=RuntimeError("周辺のパン屋を検索できませんでした。保存済みのピンは引き続き表示します。")
         error.salt_logs=web.logs+[{"event":"bakery_search_failed","error":str(exc)}]
@@ -56573,12 +56421,13 @@ def _salt_discovery_jobs_v617():
     return {"executor":ThreadPoolExecutor(max_workers=2,thread_name_prefix="salt-discovery"),"jobs":{},"lock":threading.RLock()}
 
 
-def _salt_discovery_start_v617(lat,lng,radius,seed_search=None):
+def _salt_discovery_start_v617(lat,lng,radius):
     owner=_salt_owner_v609();registry=_salt_discovery_jobs_v617()
     with registry['lock']:
         job=registry['jobs'].get(owner)
         if job and not job['future'].done():return
-        registry['jobs'][owner]={"future":registry['executor'].submit(_salt_recheck_products_v620,seed_search) if seed_search else registry['executor'].submit(_salt_discover_v617,lat,lng,radius)}
+        registry['jobs'][owner]={"future":registry['executor'].submit(_salt_discover_v617,lat,lng,radius)}
+
 
 
 
@@ -56604,7 +56453,7 @@ def _salt_discovery_collect_v617():
                 doc=_salt_discovery_load_v617(force=True)
                 doc['searches']=[s for s in doc['searches'] if s['id']!=result['id']]+[result]
                 _salt_discovery_write_v617(doc)
-        st.session_state['_salt_discovery_notice_v617']=result.get('error') or f"パン屋 {len(result['results'])}店を保存しました。塩パンの記載を確認できた候補は {sum(r['product_mentioned'] for r in result['results'])}店です。"
+        st.session_state['_salt_discovery_notice_v617']=result.get('error') or f"パン屋 {len(result['results'])}店を保存しました。地図にピンを表示します。"
         if result.get('partial_results'):
             st.session_state['_salt_discovery_notice_v617'] += " 代替検索の候補です。周辺全店舗の網羅は保証されません。"
         with registry['lock']:
@@ -56618,24 +56467,19 @@ def _salt_discovery_collect_v617():
 
 
 
-@st.fragment(run_every=1)
+
 def _salt_discovery_progress_v617():
     if st.session_state.get('main_page')!='salt_bread':return
     if _salt_discovery_collect_v617():st.rerun(scope='app')
-    st.info('周辺のパン屋と、店舗サイトの塩パンの記載を確認しています。戻る操作も使えます。')
+    st.info('周辺のパン屋を検索しています。戻る操作も使えます。')
 
 
-def _salt_discovery_map_rows_v617(discovery,recorded,include_unknown=False):
-    rows=[]
-    for row in _salt_discovery_rows_v617(discovery):
-        if not include_unknown and not row['product_mentioned']:continue
-        if any(abs(float(e['lat'])-row['lat'])<.00025 and abs(float(e['lng'])-row['lng'])<.00025 and _salt_normal_v609(e['name'])==row['name'] for e in recorded.values()):continue
-        rows.append({**row,'candidate':True,'src':''})
-    return rows
+
+
 
 
 def _salt_discovery_logs_settings_v617():
-    with st.expander('塩パンマップの検索ログ'):
+    with st.expander('パン屋マップの検索ログ'):
         if st.button('保存済み検索ログを読み込む',key='salt_discovery_logs_v617'):
             try:
                 folder=_salt_prefix_v609()+'/search_logs';bucket=supabase_client().storage.from_(GPS_TRACK_BUCKET)
@@ -56652,7 +56496,7 @@ def _salt_discovery_logs_settings_v617():
                 st.session_state['_salt_discovery_logs_v617_'+_salt_owner_v609()]=logs
             except Exception as exc:st.error(str(exc))
         logs=st.session_state.get('_salt_discovery_logs_v617_'+_salt_owner_v609())
-        if logs is not None:st.download_button('塩パン検索ログを出力（JSON）',json.dumps(logs,ensure_ascii=False,indent=2),'salt_bread_search_logs.json','application/json')
+        if logs is not None:st.download_button('パン屋検索ログを出力（JSON）',json.dumps(logs,ensure_ascii=False,indent=2),'bakery_search_logs.json','application/json')
 
 
 def _salt_discovery_cache_log_v617(search):
@@ -56665,7 +56509,7 @@ def _salt_discovery_cache_log_v617(search):
 
 
 def page_salt_bread_v609():
-    page_top("🍞 塩パンマップ", "食べた塩パンを、写真と感想で残そう。")
+    page_top("🍞 パン屋マップ", "食べたパンを、写真と感想で残そう。")
     notice = st.session_state.pop("_salt_notice_v609", None)
     if notice:
         st.success(notice)
@@ -56706,12 +56550,8 @@ def page_salt_bread_v609():
                 radius = int(st.session_state.get("salt_discovery_radius_v619") or 1000)
                 cached = next((q for q in reversed(discovery['searches']) if abs(q['lat']-lat)<.0003 and abs(q['lng']-lng)<.0003 and q['radius_m']==radius),None)
                 if cached and not st.session_state.get("salt_discovery_refresh_v617"):
-                    if cached.get('evidence_version') != 620:
-                        _salt_discovery_start_v617(lat,lng,radius,seed_search=cached)
-                        st.info("保存済みのパン屋を使って、店舗サイト・メニューの塩パン情報を追加確認しています。")
-                    else:
-                        _salt_discovery_cache_log_v617(cached)
-                        st.info("3か月の保存期間内の検索結果を表示しています。更新する場合は「保存済みでも再検索」を選んでください。")
+                    _salt_discovery_cache_log_v617(cached)
+                    st.info("3か月の保存期間内のパン屋情報を表示しています。更新する場合は「保存済みでも再検索」を選んでください。")
                 else:
                     _salt_discovery_start_v617(lat,lng,radius)
             elif action.get('action') == 'shop_status':
@@ -56766,25 +56606,17 @@ def page_salt_bread_v609():
     with registry['lock']:
         searching = owner in registry['jobs']
     st.selectbox("周辺検索の半径", [1000, 3000, 5000, 10000], format_func=lambda value: f"{value // 1000}km", key="salt_discovery_radius_v619")
-    include_unknown = st.checkbox("塩パンの取り扱い未確認のパン屋も表示", value=False, key="salt_discovery_unknown_v617")
     st.checkbox("保存済みでも再検索", value=False, key="salt_discovery_refresh_v617")
-    st.caption("地図を探したい場所へ動かし「この周辺の塩パンを探す」を押してください。候補は3か月保存。塩パンの記載があっても、現在の販売・在庫を保証するものではありません。")
+    st.caption("地図を探したい場所へ動かし「この周辺のパン屋を探す」を押してください。取得したパン屋情報は3か月保存します。")
     if searching:
         _salt_discovery_progress_v617()
     candidates_saved = _salt_discovery_rows_v617(discovery)
     if candidates_saved:
-        st.caption(f"保存中の候補 {len(candidates_saved)}店 ／ 塩パンの記載あり {sum(bool(r['product_mentioned']) for r in candidates_saved)}店")
-    if candidates_saved and any(r.get('product_check_status') for r in candidates_saved):
-        counts={}
-        for row in candidates_saved:
-            status=row.get('product_check_status','not_checked');counts[status]=counts.get(status,0)+1
-        st.caption(f"店舗サイト確認：記載あり {counts.get('mention_found',0)}店 ／ 確認したページに記載なし {counts.get('checked_no_mention',0)}店 ／ URLなし {counts.get('no_website',0)}店 ／ 接続失敗 {counts.get('site_failed',0)}店 ／ 時間内に未確認 {counts.get('budget_exceeded',0)}店。未確認・記載なしは『販売していない』という意味ではありません。")
-    if candidates_saved and not any(r['product_mentioned'] for r in candidates_saved) and not include_unknown:
-        st.info("パン屋の候補は取得済みですが、塩パンの記載は未確認です。「塩パンの取り扱い未確認のパン屋も表示」で候補を表示できます。")
-    st.caption('金枠：また行ってみたい（再訪したい）　灰枠：行ったことがある　薄い灰枠：未設定。ピンをタップして変更できます。付けた印は検索結果の保存期限後も残ります。')
+        st.caption(f"保存中のパン屋 {len(candidates_saved)}店")
+    st.caption('黄色枠：また行ってみたい（再訪したい）　灰枠：行ったことがある　薄い灰枠：未設定。ピンをタップして変更できます。付けた印は検索結果の保存期限後も残ります。')
     candidate = st.session_state.get("_salt_candidate_v609")
     try:
-        _salt_component_v609()(data={"owner": owner, "entries": _salt_map_cards_v622(doc,discovery,include_unknown), "search_enabled": not searching, "revision": doc["revision"], "mode": mode,
+        _salt_component_v609()(data={"owner": owner, "entries": _salt_map_cards_v622(doc,discovery), "search_enabled": not searching, "revision": doc["revision"], "mode": mode,
             "restore": st.session_state.pop("_salt_map_restore_v615_" + owner, None), "preview": candidate, "manual": st.session_state.get("_salt_manual_v613_" + owner), "ack": st.session_state.get("_salt_action_ack_v609_" + owner, "")}, key=component_key,
             on_salt_action_change=lambda: _salt_capture_v609(component_key, inbox_key),
             on_salt_diagnostic_change=lambda: _app_error_capture_v610(component_key, "salt_diagnostic", owner))
@@ -56840,12 +56672,9 @@ def page_salt_bread_v609():
                     st.rerun()
         if result.get("logs"):
             with st.expander("検索ログ"):
-                st.download_button("検索ログを保存", json.dumps(result["logs"], ensure_ascii=False, indent=2), "burari_salt_search.json", "application/json", key="salt_search_log_v609")
+                st.download_button("検索ログを保存", json.dumps(result["logs"], ensure_ascii=False, indent=2), "bakery_place_search.json", "application/json", key="salt_search_log_v609")
         if candidate:
-            if candidate.get("evidence"):
-                st.caption("公開情報の塩パンの記載：" + str(candidate['evidence']))
-                st.link_button("記載元を確認", candidate['evidence_url'])
-            st.markdown("**このお店の塩パンを記録**")
+            st.markdown("**このお店のパンを記録**")
             _salt_form_v609(candidate)
 
 
@@ -56854,7 +56683,7 @@ def page_salt_bread_v609():
 
 
 def page_salt_bread_detail_v609():
-    page_top("🍞 塩パンの記録")
+    page_top("🍞 パンの記録")
     try:
         doc = _salt_load_v609()
     except Exception as exc:
@@ -57122,9 +56951,9 @@ def _salt_overpass_document_v609(web,query,pattern):
                       'match_mode':mode,'reason':str(exc),'exception_type':type(exc).__name__},'WARNING','landmark.name_search')
         if doc['elements'] or mode=='partial':return doc,info
 
-_SALT_HTML_V609 = '<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"><div id="salt-status" role="status" aria-live="polite"></div><button id="salt-search-area-v617" class="salt-button" type="button" hidden>この周辺の塩パンを探す</button><div id="salt-map" style="height:420px;width:100%;border-radius:18px"></div><div id="salt-ranking"></div>'
-_SALT_CSS_V609 = '\n:host{color:#173a5e;background:#fff;font-family:inherit}#salt-status{font-size:12px;margin:6px 0 10px;color:#485d6f}#salt-map[hidden],#salt-ranking[hidden]{display:none!important}\n.salt-bread-pin{width:40px;height:40px;background:#fff3d6;border:3px solid #b66b25;border-radius:50% 50% 50% 6px;transform:rotate(-45deg);box-shadow:0 3px 8px #0003;display:flex;align-items:center;justify-content:center}.salt-bread-pin span{transform:rotate(45deg);font-size:27px}.salt-bread-pin.preview{border-style:dashed;background:#e1efff}\n.salt-popup{min-width:160px;max-width:220px;color:#173a5e}.salt-popup img{width:100%;height:115px;object-fit:cover;border-radius:10px}.salt-popup p{font-size:11px}.salt-shop-name{display:block;font-size:12px;line-height:1.4;text-align:center;margin-top:5px;overflow-wrap:anywhere;color:#173a5e}\n.salt-rank-card{display:grid;grid-template-columns:28px minmax(0,1fr) 44px;gap:10px;padding:10px;margin:8px 0;border:2px solid #e6e2d9;border-radius:16px;background:#fffaf0;align-items:center}.salt-rank-card.selected{border-color:#c17a28}.salt-rank-card.dragging{opacity:.65}.salt-rank-card.drop-target{border-top:4px solid #c17a28}.salt-rank-number{font-size:22px;color:#a45c18}.salt-rank-photo{background:none;border:0;cursor:pointer;padding:0;color:#173a5e}.salt-rank-photo img{width:100%;height:120px;object-fit:contain;display:block;border-radius:12px;background:#f2eadb}.salt-no-photo{display:block;font-size:48px;text-align:center;background:#f2eadb;border-radius:12px}\n.salt-button,.salt-drag-handle{background:#fff;border:1px solid #cfb28c;color:#173a5e;border-radius:10px;min-height:44px;font:inherit;font-size:12px;font-weight:700;padding:6px;touch-action:manipulation;cursor:pointer}.salt-button:disabled{opacity:.4}.salt-drag-handle{font-size:27px;touch-action:none;user-select:none;-webkit-user-select:none}.salt-rank-controls{grid-column:1/-1;display:grid;grid-template-columns:1fr 1fr 1.3fr;gap:6px}\n\n#salt-search-area-v617{width:100%;margin:6px 0 10px}.salt-discovery-mentioned{border-color:#137d69;background:#d9fff0}.salt-discovery-unknown{border-color:#64748b;background:#edf0f5}\n\n.salt-shop-revisit-v622{width:38px;height:38px;border-width:4px;border-color:#bc8f24;box-shadow:0 3px 8px #0003}.salt-shop-visited-v622{border-color:#94a3b8}.salt-shop-unmarked-v622{border-color:#cbd5e1}\n'
-_SALT_JS_V609 = 'export default function(component) {\n  const {parentElement:root,data,setTriggerValue}=component;\n  let mapEl=root.querySelector(\'#salt-map\');\n  const list=root.querySelector(\'#salt-ranking\'), status=root.querySelector(\'#salt-status\');\n  if(!mapEl||!list||!status)return;\n  let disposed=false, map=null, selected=\'\', drag=null, busy=false;\n  const lease={dispose(){if(disposed)return;disposed=true;try{map?.remove();}catch(error){reportError610(\'salt.map_cleanup\',error);}map=null;}};\n  const reportError610=(stage,error,detail={})=>{\n    const message=String(error?.message||error||\'Unknown error\').slice(0,3000);\n    const owner=String(data?.owner||\'\');\n    const row={id:(globalThis.crypto?.randomUUID?.()||`${Date.now().toString(16)}${Math.random().toString(16).slice(2)}`).replace(/-/g,\'\').padEnd(32,\'0\').slice(0,32),\n      at:new Date().toISOString(),stage,message,detail:{...detail,stack:String(error?.stack||\'\').slice(0,5000),user_agent:navigator.userAgent,build:\'v611\'}};\n    try{const key=\'burari_errors_v610_\'+owner;let rows=JSON.parse(localStorage.getItem(key)||\'[]\');if(!Array.isArray(rows))rows=[];rows.push(row);localStorage.setItem(key,JSON.stringify(rows.slice(-200)));}catch(_){}\n    try{\n      const throttles=window.__burariErrorThrottle610||(window.__burariErrorThrottle610=new Map());\n      const signature=owner+\'|\'+stage+\'|\'+message;\n      if(Date.now()-(throttles.get(signature)||0)<30000)return;\n      if(throttles.size>100)throttles.clear();throttles.set(signature,Date.now());\n      setTriggerValue(\'salt_diagnostic\',row);\n    }catch(_){}\n  };\n\n  // Ownership belongs to the actual container, not the renderer\'s wrapper.\n  // Streamlit may supply a different wrapper for the same DOM during reruns.\n  const prior=mapEl.__saltMapLease611 || root.__saltMapLease610;\n  if(prior)prior.dispose();\n  if(mapEl._leaflet_id){const fresh=mapEl.cloneNode(false);mapEl.replaceWith(fresh);mapEl=fresh;}\n  mapEl.__saltMapLease611=lease;\n  root.__saltMapLease610=lease;\n  let entries=Array.isArray(data?.entries)?data.entries.slice():[];\n  const candidateEntries=entries.filter(e=>e.candidate);entries=entries.filter(e=>!e.candidate);\n  const emit=(action,extra={})=>setTriggerValue(\'salt_action\',{action,...extra,revision:Number(data?.revision||0),nonce:`${Date.now()}:${Math.random()}`});\n  const saveOrder=()=>{busy=true;status.textContent=\'順位を保存しています…\';emit(\'order\',{order:entries.map(e=>e.id)});};\n  const el=(tag,cls,text)=>{const n=document.createElement(tag);if(cls)n.className=cls;if(text!==undefined)n.textContent=text;return n;};\n  const button=(text,fn)=>{const n=el(\'button\',\'salt-button\',text);n.type=\'button\';n.addEventListener(\'click\',e=>{e.preventDefault();e.stopPropagation();fn();});return n;};\n  const move=(id,delta)=>{if(busy)return;const i=entries.findIndex(e=>e.id===id),j=i+delta;if(i<0||j<0||j>=entries.length)return;const [entry]=entries.splice(i,1);entries.splice(j,0,entry);renderList();saveOrder();};\n  const renderList=()=>{\n    list.replaceChildren();\n    if(!entries.length){list.appendChild(el(\'p\',\'\',\'まだ記録がありません。店名や住所で検索して、最初の塩パンを登録しましょう。\'));return;}\n    entries.forEach((entry,index)=>{\n      const card=el(\'div\',\'salt-rank-card\');card.dataset.id=String(entry.id);card.classList.toggle(\'selected\',selected===entry.id);\n      const rank=el(\'strong\',\'salt-rank-number\',`${index+1}`);card.appendChild(rank);\n      const main=button(\'\',()=>{if(busy)return;selected=entry.id;renderList();});main.className=\'salt-rank-photo\';main.setAttribute(\'aria-label\',`${index+1}位 ${entry.name}を選ぶ`);\n      if(entry.src){const img=el(\'img\');img.src=String(entry.src);img.alt=String(entry.name);img.loading=\'lazy\';img.decoding=\'async\';main.appendChild(img);}else main.appendChild(el(\'span\',\'salt-no-photo\',\'🍞\'));\n      main.appendChild(el(\'small\',\'salt-shop-name\',String(entry.name||\'\')));card.appendChild(main);\n      const handle=button(\'⠿\',()=>{if(!busy){selected=entry.id;renderList();}});handle.className=\'salt-drag-handle\';handle.setAttribute(\'aria-label\',`${entry.name}の順位を指で移動`);\n      handle.addEventListener(\'pointerdown\',e=>{\n        if(busy||e.button>0)return;e.preventDefault();e.stopPropagation();selected=entry.id;\n        drag={id:entry.id,startY:e.clientY,startIndex:index,target:index,pointer:e.pointerId,moved:false};handle.setPointerCapture?.(e.pointerId);card.classList.add(\'dragging\');\n      });\n      handle.addEventListener(\'pointermove\',e=>{\n        if(!drag||drag.pointer!==e.pointerId)return;e.preventDefault();drag.moved=drag.moved||Math.abs(e.clientY-drag.startY)>6;\n        const cards=Array.from(list.querySelectorAll(\'.salt-rank-card\'));\n        let target=0,distance=Infinity;\n        cards.forEach((c,i)=>{const box=c.getBoundingClientRect(),d=Math.abs(e.clientY-(box.top+box.height/2));if(d<distance){distance=d;target=i;}});\n        drag.target=target;\n        cards.forEach((c,i)=>c.classList.toggle(\'drop-target\',i===drag.target));\n        if(e.clientY<80)window.scrollBy?.(0,-14);else if(e.clientY>window.innerHeight-100)window.scrollBy?.(0,14);\n      });\n      const finish=(e,cancel=false)=>{\n        if(!drag||drag.pointer!==e.pointerId)return;const d=drag;drag=null;handle.releasePointerCapture?.(e.pointerId);\n        if(!cancel&&d.moved&&d.target!==d.startIndex){const [item]=entries.splice(d.startIndex,1);entries.splice(d.target,0,item);renderList();saveOrder();}else renderList();\n      };\n      handle.addEventListener(\'pointerup\',e=>finish(e));handle.addEventListener(\'pointercancel\',e=>finish(e,true));card.appendChild(handle);\n      if(selected===entry.id){\n        const controls=el(\'div\',\'salt-rank-controls\');\n        const up=button(\'↑ 上へ\',()=>move(entry.id,-1)), down=button(\'↓ 下へ\',()=>move(entry.id,1));up.disabled=index===0||busy;down.disabled=index===entries.length-1||busy;\n        controls.appendChild(up);controls.appendChild(down);controls.appendChild(button(\'記録を見る\',()=>{if(!busy)emit(\'open\',{id:entry.id});}));card.appendChild(controls);\n      }\n      list.appendChild(card);\n    });\n  };\n  const searchArea=root.querySelector(\'#salt-search-area-v617\');if(searchArea){searchArea.hidden=true;searchArea.onclick=null;}\n  const ranking=data?.mode===\'ランキング\';mapEl.hidden=ranking;list.hidden=!ranking;\n  if(ranking){status.textContent=\'写真をタップして上下ボタン、または右の⠿を押して指で移動\';renderList();}\n  else{\n    status.textContent=\'パンのピンをタップすると、写真と感想を開きます。\';\n    const load=()=>{\n      if(window.L)return Promise.resolve(window.L);\n      if(window.__burariSaltLeaflet609)return window.__burariSaltLeaflet609;\n      window.__burariSaltLeaflet609=new Promise((resolve,reject)=>{const script=document.createElement(\'script\');script.src=\'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js\';script.crossOrigin=\'\';script.onload=()=>window.L?resolve(window.L):reject(new Error(\'地図の準備に失敗しました\'));script.onerror=()=>reject(new Error(\'地図を読み込めませんでした\'));document.head.appendChild(script);}).catch(e=>{window.__burariSaltLeaflet609=null;throw e;});\n      return window.__burariSaltLeaflet609;\n    };\n    load().then(L=>{\n      if(disposed||mapEl.__saltMapLease611!==lease)return;\n      map=L.map(mapEl,{scrollWheelZoom:false}).setView([35.66,139.72],12);\n      L.tileLayer(\'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png\',{maxZoom:19,attribution:\'© OpenStreetMap contributors\'}).addTo(map);\n      const points=[], markers=new Map();\n      const mapView=()=>{const c=map.getCenter();return {lat:c.lat,lng:c.lng,zoom:map.getZoom()};};\n      const stateClass=entry=>entry?.shop_status===\'revisit\'?\'salt-shop-revisit-v622\':entry?.shop_status===\'visited\'?\'salt-shop-visited-v622\':\'salt-shop-unmarked-v622\';\n      const icon=(preview=false,entry={})=>L.divIcon({className:\'salt-pin-container\',iconSize:[44,52],iconAnchor:[22,49],html:`<div class="salt-bread-pin ${preview?\'preview\':stateClass(entry)}"><span>🍞</span></div>`});\n      const statusControls=(content,entry)=>{\n        const labels={unmarked:\'未設定\',revisit:\'また行ってみたい（再訪したい）\',visited:\'行ったことがある\'};\n        content.appendChild(el(\'p\',\'\',`現在の状態：${labels[entry.shop_status]||\'未設定\'}`));\n        for(const [value,label] of [[\'revisit\',\'金枠：また行ってみたい（再訪したい）\'],[\'visited\',\'灰枠：行ったことがある\'],[\'unmarked\',\'未設定に戻す\']]){\n          const b=button(label,()=>{if(busy)return;busy=true;status.textContent=\'お店の色を保存しています…\';emit(\'shop_status\',{id:entry.id,status:value,view:mapView()});});\n          b.disabled=entry.shop_status===value;content.appendChild(b);\n        }\n      };\n      entries.forEach(entry=>{\n        if(entry.pin_hidden)return;\n        const lat=Number(entry.lat),lng=Number(entry.lng);if(!Number.isFinite(lat)||!Number.isFinite(lng))return;\n        const marker=L.marker([lat,lng],{icon:icon(false,entry),zIndexOffset:entry.shop_status===\'revisit\'?10000:0,title:String(entry.name||\'\'),keyboard:true}).addTo(map);\n        const content=el(\'div\',\'salt-popup\');if(entry.src){const img=el(\'img\');img.src=String(entry.src);img.alt=String(entry.name);img.loading=\'lazy\';content.appendChild(img);}\n        content.appendChild(el(\'small\',\'salt-shop-name\',String(entry.name||\'\')));content.appendChild(el(\'p\',\'\',String(entry.address||\'\')));\n        statusControls(content,entry);\n        content.appendChild(button(\'写真と感想を見る\',()=>emit(\'open\',{id:entry.id,view:mapView()})));\n        content.appendChild(button(\'ピンを削除\',()=>{if(busy)return;busy=true;emit(\'delete_pin\',{id:entry.id});}));\n        marker.bindPopup(content);markers.set(String(entry.id),marker);points.push([lat,lng]);\n      });\n      if(data?.manual){\n        status.textContent=\'登録するお店の位置を地図でタップしてください。\';\n        map.on(\'click\',event=>{if(disposed||busy)return;busy=true;status.textContent=\'選んだ場所を確認しています…\';emit(\'manual_place\',{lat:event.latlng.lat,lng:event.latlng.lng});});\n      }\n      candidateEntries.forEach(entry=>{\n        const point=[Number(entry.lat),Number(entry.lng)];if(!point.every(Number.isFinite))return;\n        const marker=L.marker(point,{icon:icon(false,entry),zIndexOffset:entry.shop_status===\'revisit\'?10000:0,title:String(entry.name||\'\')}).addTo(map);\n        const content=el(\'div\',\'salt-popup\');content.appendChild(el(\'small\',\'salt-shop-name\',String(entry.name)));\n        content.appendChild(el(\'p\',\'\',entry.product_mentioned?\'塩パンの記載あり（公開情報）\':\'取り扱い未確認のパン屋\'));\n        content.appendChild(el(\'p\',\'\',String(entry.address||\'\')));\n        if(!entry.status_only)content.appendChild(el(\'p\',\'\',`検索日 ${String(entry.searched_at||\'\').slice(0,10)} ／ 保存期限 ${String(entry.expires_at||\'\').slice(0,10)}`));\n        if(entry.evidence){content.appendChild(el(\'p\',\'\',String(entry.evidence)));const link=el(\'a\',\'\',\'記載元を見る\');link.href=String(entry.evidence_url);link.target=\'_blank\';link.rel=\'noopener noreferrer\';content.appendChild(link);}\n        statusControls(content,entry);\n        content.appendChild(button(\'このお店の写真と感想を登録\',()=>emit(\'open_candidate\',{id:entry.id})));\n        content.appendChild(button(entry.status_only?\'印を外す\':\'候補のピンを非表示\',()=>emit(entry.status_only?\'shop_status\':\'hide_candidate\',{id:entry.id,status:\'unmarked\',view:mapView()})));\n        marker.bindPopup(content);markers.set(String(entry.id),marker);points.push(point);\n      });\n      const searchButton=root.querySelector(\'#salt-search-area-v617\');\n      if(searchButton){searchButton.hidden=false;searchButton.disabled=data?.search_enabled===false;\n        searchButton.onclick=e=>{e.preventDefault();const center=map.getCenter();searchButton.disabled=true;emit(\'search_bakeries\',{lat:center.lat,lng:center.lng});};}\n      const preview=data?.preview;\n      if(preview&&Number.isFinite(Number(preview.lat))&&Number.isFinite(Number(preview.lng))){\n        const p=[Number(preview.lat),Number(preview.lng)];const marker=L.marker(p,{icon:icon(true),title:\'登録前の確認\',draggable:true}).addTo(map).bindPopup(el(\'div\',\'\',`${preview.name||\'\'}\u3000${preview.address||\'\'}`)).openPopup();\n        marker.on(\'dragend\',()=>{const point=marker.getLatLng();status.textContent=\'ピンの位置を更新しています…\';emit(\'preview\',{lat:point.lat,lng:point.lng});});\n        status.textContent=\'登録前のパンのピンは、指で動かして位置を調整できます。\';map.setView(p,17);\n      }else if(points.length===1)map.setView(points[0],16);else if(points.length>1)map.fitBounds(points,{padding:[35,35],maxZoom:16});\n      const restore=data?.restore;\n      if(!preview&&restore&&markers.has(String(restore.id))){\n        const lat=Number(restore.lat),lng=Number(restore.lng),zoom=Number(restore.zoom);\n        if(Number.isFinite(lat)&&Number.isFinite(lng)&&Number.isFinite(zoom)){\n          map.setView([lat,lng],Math.max(10,Math.min(19,zoom)));\n          markers.get(String(restore.id)).openPopup();\n        }\n      }\n      map.invalidateSize();\n    }).catch(e=>{if(!disposed){status.textContent=String(e.message||e);reportError610(\'salt.map_initialization\',e,{container_initialized:Boolean(mapEl._leaflet_id),mode:data?.mode,lifecycle:\'container-owner-v611\'});mapEl.textContent=\'地図を表示できません。お店の一覧・ランキングから記録を開けます。\';}});\n  }\n  return()=>{lease.dispose();if(mapEl.__saltMapLease611===lease)delete mapEl.__saltMapLease611;if(root.__saltMapLease610===lease)delete root.__saltMapLease610;};\n}\n'
+_SALT_HTML_V609 = '<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"><div id="salt-status" role="status" aria-live="polite"></div><button id="salt-search-area-v617" class="salt-button" type="button" hidden>この周辺のパン屋を探す</button><div id="salt-map" style="height:420px;width:100%;border-radius:18px"></div><div id="salt-ranking"></div>'
+_SALT_CSS_V609 = '\n:host{color:#173a5e;background:#fff;font-family:inherit}#salt-status{font-size:12px;margin:6px 0 10px;color:#485d6f}#salt-map[hidden],#salt-ranking[hidden]{display:none!important}\n.salt-bread-pin{width:40px;height:40px;background:#fff3d6;border:3px solid #b66b25;border-radius:50% 50% 50% 6px;transform:rotate(-45deg);box-shadow:0 3px 8px #0003;display:flex;align-items:center;justify-content:center}.salt-bread-pin span{transform:rotate(45deg);font-size:27px}.salt-bread-pin.preview{border-style:dashed;background:#e1efff}\n.salt-popup{min-width:160px;max-width:220px;color:#173a5e}.salt-popup img{width:100%;height:115px;object-fit:cover;border-radius:10px}.salt-popup p{font-size:11px}.salt-shop-name{display:block;font-size:12px;line-height:1.4;text-align:center;margin-top:5px;overflow-wrap:anywhere;color:#173a5e}\n.salt-rank-card{display:grid;grid-template-columns:28px minmax(0,1fr) 44px;gap:10px;padding:10px;margin:8px 0;border:2px solid #e6e2d9;border-radius:16px;background:#fffaf0;align-items:center}.salt-rank-card.selected{border-color:#c17a28}.salt-rank-card.dragging{opacity:.65}.salt-rank-card.drop-target{border-top:4px solid #c17a28}.salt-rank-number{font-size:22px;color:#a45c18}.salt-rank-photo{background:none;border:0;cursor:pointer;padding:0;color:#173a5e}.salt-rank-photo img{width:100%;height:120px;object-fit:contain;display:block;border-radius:12px;background:#f2eadb}.salt-no-photo{display:block;font-size:48px;text-align:center;background:#f2eadb;border-radius:12px}\n.salt-button,.salt-drag-handle{background:#fff;border:1px solid #cfb28c;color:#173a5e;border-radius:10px;min-height:44px;font:inherit;font-size:12px;font-weight:700;padding:6px;touch-action:manipulation;cursor:pointer}.salt-button:disabled{opacity:.4}.salt-drag-handle{font-size:27px;touch-action:none;user-select:none;-webkit-user-select:none}.salt-rank-controls{grid-column:1/-1;display:grid;grid-template-columns:1fr 1fr 1.3fr;gap:6px}\n\n#salt-search-area-v617{width:100%;margin:6px 0 10px}.salt-discovery-mentioned{border-color:#137d69;background:#d9fff0}.salt-discovery-unknown{border-color:#64748b;background:#edf0f5}\n\n.salt-shop-revisit-v622{width:38px;height:38px;border-width:4px;border-color:#ffd400;box-shadow:0 3px 8px #0003}.salt-shop-visited-v622{border-color:#94a3b8}.salt-shop-unmarked-v622{border-color:#cbd5e1}\n'
+_SALT_JS_V609 = 'export default function(component) {\n  const {parentElement:root,data,setTriggerValue}=component;\n  let mapEl=root.querySelector(\'#salt-map\');\n  const list=root.querySelector(\'#salt-ranking\'), status=root.querySelector(\'#salt-status\');\n  if(!mapEl||!list||!status)return;\n  let disposed=false, map=null, selected=\'\', drag=null, busy=false;\n  const lease={dispose(){if(disposed)return;disposed=true;try{map?.remove();}catch(error){reportError610(\'salt.map_cleanup\',error);}map=null;}};\n  const reportError610=(stage,error,detail={})=>{\n    const message=String(error?.message||error||\'Unknown error\').slice(0,3000);\n    const owner=String(data?.owner||\'\');\n    const row={id:(globalThis.crypto?.randomUUID?.()||`${Date.now().toString(16)}${Math.random().toString(16).slice(2)}`).replace(/-/g,\'\').padEnd(32,\'0\').slice(0,32),\n      at:new Date().toISOString(),stage,message,detail:{...detail,stack:String(error?.stack||\'\').slice(0,5000),user_agent:navigator.userAgent,build:\'v611\'}};\n    try{const key=\'burari_errors_v610_\'+owner;let rows=JSON.parse(localStorage.getItem(key)||\'[]\');if(!Array.isArray(rows))rows=[];rows.push(row);localStorage.setItem(key,JSON.stringify(rows.slice(-200)));}catch(_){}\n    try{\n      const throttles=window.__burariErrorThrottle610||(window.__burariErrorThrottle610=new Map());\n      const signature=owner+\'|\'+stage+\'|\'+message;\n      if(Date.now()-(throttles.get(signature)||0)<30000)return;\n      if(throttles.size>100)throttles.clear();throttles.set(signature,Date.now());\n      setTriggerValue(\'salt_diagnostic\',row);\n    }catch(_){}\n  };\n\n  // Ownership belongs to the actual container, not the renderer\'s wrapper.\n  // Streamlit may supply a different wrapper for the same DOM during reruns.\n  const prior=mapEl.__saltMapLease611 || root.__saltMapLease610;\n  if(prior)prior.dispose();\n  if(mapEl._leaflet_id){const fresh=mapEl.cloneNode(false);mapEl.replaceWith(fresh);mapEl=fresh;}\n  mapEl.__saltMapLease611=lease;\n  root.__saltMapLease610=lease;\n  let entries=Array.isArray(data?.entries)?data.entries.slice():[];\n  const candidateEntries=entries.filter(e=>e.candidate);entries=entries.filter(e=>!e.candidate);\n  const emit=(action,extra={})=>setTriggerValue(\'salt_action\',{action,...extra,revision:Number(data?.revision||0),nonce:`${Date.now()}:${Math.random()}`});\n  const saveOrder=()=>{busy=true;status.textContent=\'順位を保存しています…\';emit(\'order\',{order:entries.map(e=>e.id)});};\n  const el=(tag,cls,text)=>{const n=document.createElement(tag);if(cls)n.className=cls;if(text!==undefined)n.textContent=text;return n;};\n  const button=(text,fn)=>{const n=el(\'button\',\'salt-button\',text);n.type=\'button\';n.addEventListener(\'click\',e=>{e.preventDefault();e.stopPropagation();fn();});return n;};\n  const move=(id,delta)=>{if(busy)return;const i=entries.findIndex(e=>e.id===id),j=i+delta;if(i<0||j<0||j>=entries.length)return;const [entry]=entries.splice(i,1);entries.splice(j,0,entry);renderList();saveOrder();};\n  const renderList=()=>{\n    list.replaceChildren();\n    if(!entries.length){list.appendChild(el(\'p\',\'\',\'まだ記録がありません。店名や住所で検索して、最初のパンを登録しましょう。\'));return;}\n    entries.forEach((entry,index)=>{\n      const card=el(\'div\',\'salt-rank-card\');card.dataset.id=String(entry.id);card.classList.toggle(\'selected\',selected===entry.id);\n      const rank=el(\'strong\',\'salt-rank-number\',`${index+1}`);card.appendChild(rank);\n      const main=button(\'\',()=>{if(busy)return;selected=entry.id;renderList();});main.className=\'salt-rank-photo\';main.setAttribute(\'aria-label\',`${index+1}位 ${entry.name}を選ぶ`);\n      if(entry.src){const img=el(\'img\');img.src=String(entry.src);img.alt=String(entry.name);img.loading=\'lazy\';img.decoding=\'async\';main.appendChild(img);}else main.appendChild(el(\'span\',\'salt-no-photo\',\'🍞\'));\n      main.appendChild(el(\'small\',\'salt-shop-name\',String(entry.name||\'\')));card.appendChild(main);\n      const handle=button(\'⠿\',()=>{if(!busy){selected=entry.id;renderList();}});handle.className=\'salt-drag-handle\';handle.setAttribute(\'aria-label\',`${entry.name}の順位を指で移動`);\n      handle.addEventListener(\'pointerdown\',e=>{\n        if(busy||e.button>0)return;e.preventDefault();e.stopPropagation();selected=entry.id;\n        drag={id:entry.id,startY:e.clientY,startIndex:index,target:index,pointer:e.pointerId,moved:false};handle.setPointerCapture?.(e.pointerId);card.classList.add(\'dragging\');\n      });\n      handle.addEventListener(\'pointermove\',e=>{\n        if(!drag||drag.pointer!==e.pointerId)return;e.preventDefault();drag.moved=drag.moved||Math.abs(e.clientY-drag.startY)>6;\n        const cards=Array.from(list.querySelectorAll(\'.salt-rank-card\'));\n        let target=0,distance=Infinity;\n        cards.forEach((c,i)=>{const box=c.getBoundingClientRect(),d=Math.abs(e.clientY-(box.top+box.height/2));if(d<distance){distance=d;target=i;}});\n        drag.target=target;\n        cards.forEach((c,i)=>c.classList.toggle(\'drop-target\',i===drag.target));\n        if(e.clientY<80)window.scrollBy?.(0,-14);else if(e.clientY>window.innerHeight-100)window.scrollBy?.(0,14);\n      });\n      const finish=(e,cancel=false)=>{\n        if(!drag||drag.pointer!==e.pointerId)return;const d=drag;drag=null;handle.releasePointerCapture?.(e.pointerId);\n        if(!cancel&&d.moved&&d.target!==d.startIndex){const [item]=entries.splice(d.startIndex,1);entries.splice(d.target,0,item);renderList();saveOrder();}else renderList();\n      };\n      handle.addEventListener(\'pointerup\',e=>finish(e));handle.addEventListener(\'pointercancel\',e=>finish(e,true));card.appendChild(handle);\n      if(selected===entry.id){\n        const controls=el(\'div\',\'salt-rank-controls\');\n        const up=button(\'↑ 上へ\',()=>move(entry.id,-1)), down=button(\'↓ 下へ\',()=>move(entry.id,1));up.disabled=index===0||busy;down.disabled=index===entries.length-1||busy;\n        controls.appendChild(up);controls.appendChild(down);controls.appendChild(button(\'記録を見る\',()=>{if(!busy)emit(\'open\',{id:entry.id});}));card.appendChild(controls);\n      }\n      list.appendChild(card);\n    });\n  };\n  const searchArea=root.querySelector(\'#salt-search-area-v617\');if(searchArea){searchArea.hidden=true;searchArea.onclick=null;}\n  const ranking=data?.mode===\'ランキング\';mapEl.hidden=ranking;list.hidden=!ranking;\n  if(ranking){status.textContent=\'写真をタップして上下ボタン、または右の⠿を押して指で移動\';renderList();}\n  else{\n    status.textContent=\'パンのピンをタップすると、写真と感想を開きます。\';\n    const load=()=>{\n      if(window.L)return Promise.resolve(window.L);\n      if(window.__burariSaltLeaflet609)return window.__burariSaltLeaflet609;\n      window.__burariSaltLeaflet609=new Promise((resolve,reject)=>{const script=document.createElement(\'script\');script.src=\'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js\';script.crossOrigin=\'\';script.onload=()=>window.L?resolve(window.L):reject(new Error(\'地図の準備に失敗しました\'));script.onerror=()=>reject(new Error(\'地図を読み込めませんでした\'));document.head.appendChild(script);}).catch(e=>{window.__burariSaltLeaflet609=null;throw e;});\n      return window.__burariSaltLeaflet609;\n    };\n    load().then(L=>{\n      if(disposed||mapEl.__saltMapLease611!==lease)return;\n      map=L.map(mapEl,{scrollWheelZoom:false}).setView([35.66,139.72],12);\n      L.tileLayer(\'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png\',{maxZoom:19,attribution:\'© OpenStreetMap contributors\'}).addTo(map);\n      const points=[], markers=new Map();\n      const mapView=()=>{const c=map.getCenter();return {lat:c.lat,lng:c.lng,zoom:map.getZoom()};};\n      const stateClass=entry=>entry?.shop_status===\'revisit\'?\'salt-shop-revisit-v622\':entry?.shop_status===\'visited\'?\'salt-shop-visited-v622\':\'salt-shop-unmarked-v622\';\n      const icon=(preview=false,entry={})=>L.divIcon({className:\'salt-pin-container\',iconSize:[44,52],iconAnchor:[22,49],html:`<div class="salt-bread-pin ${preview?\'preview\':stateClass(entry)}"><span>🍞</span></div>`});\n      const statusControls=(content,entry)=>{\n        const labels={unmarked:\'未設定\',revisit:\'また行ってみたい（再訪したい）\',visited:\'行ったことがある\'};\n        content.appendChild(el(\'p\',\'\',`現在の状態：${labels[entry.shop_status]||\'未設定\'}`));\n        for(const [value,label] of [[\'revisit\',\'黄色枠：また行ってみたい（再訪したい）\'],[\'visited\',\'灰枠：行ったことがある\'],[\'unmarked\',\'未設定に戻す\']]){\n          const b=button(label,()=>{if(busy)return;busy=true;status.textContent=\'お店の色を保存しています…\';emit(\'shop_status\',{id:entry.id,status:value,view:mapView()});});\n          b.disabled=entry.shop_status===value;content.appendChild(b);\n        }\n      };\n      entries.forEach(entry=>{\n        if(entry.pin_hidden)return;\n        const lat=Number(entry.lat),lng=Number(entry.lng);if(!Number.isFinite(lat)||!Number.isFinite(lng))return;\n        const marker=L.marker([lat,lng],{icon:icon(false,entry),zIndexOffset:entry.shop_status===\'revisit\'?10000:0,title:String(entry.name||\'\'),keyboard:true}).addTo(map);\n        const content=el(\'div\',\'salt-popup\');if(entry.src){const img=el(\'img\');img.src=String(entry.src);img.alt=String(entry.name);img.loading=\'lazy\';content.appendChild(img);}\n        content.appendChild(el(\'small\',\'salt-shop-name\',String(entry.name||\'\')));content.appendChild(el(\'p\',\'\',String(entry.address||\'\')));\n        statusControls(content,entry);\n        content.appendChild(button(\'写真と感想を見る\',()=>emit(\'open\',{id:entry.id,view:mapView()})));\n        content.appendChild(button(\'ピンを削除\',()=>{if(busy)return;busy=true;emit(\'delete_pin\',{id:entry.id});}));\n        marker.bindPopup(content);markers.set(String(entry.id),marker);points.push([lat,lng]);\n      });\n      if(data?.manual){\n        status.textContent=\'登録するお店の位置を地図でタップしてください。\';\n        map.on(\'click\',event=>{if(disposed||busy)return;busy=true;status.textContent=\'選んだ場所を確認しています…\';emit(\'manual_place\',{lat:event.latlng.lat,lng:event.latlng.lng});});\n      }\n      candidateEntries.forEach(entry=>{\n        const point=[Number(entry.lat),Number(entry.lng)];if(!point.every(Number.isFinite))return;\n        const marker=L.marker(point,{icon:icon(false,entry),zIndexOffset:entry.shop_status===\'revisit\'?10000:0,title:String(entry.name||\'\')}).addTo(map);\n        const content=el(\'div\',\'salt-popup\');content.appendChild(el(\'small\',\'salt-shop-name\',String(entry.name)));\n        content.appendChild(el(\'p\',\'\',String(entry.address||\'\')));\n        if(!entry.status_only)content.appendChild(el(\'p\',\'\',`検索日 ${String(entry.searched_at||\'\').slice(0,10)} ／ 保存期限 ${String(entry.expires_at||\'\').slice(0,10)}`));\n        statusControls(content,entry);\n        content.appendChild(button(\'このお店の写真と感想を登録\',()=>emit(\'open_candidate\',{id:entry.id})));\n        content.appendChild(button(entry.status_only?\'印を外す\':\'候補のピンを非表示\',()=>emit(entry.status_only?\'shop_status\':\'hide_candidate\',{id:entry.id,status:\'unmarked\',view:mapView()})));\n        marker.bindPopup(content);markers.set(String(entry.id),marker);points.push(point);\n      });\n      const searchButton=root.querySelector(\'#salt-search-area-v617\');\n      if(searchButton){searchButton.hidden=false;searchButton.disabled=data?.search_enabled===false;\n        searchButton.onclick=e=>{e.preventDefault();const center=map.getCenter();searchButton.disabled=true;emit(\'search_bakeries\',{lat:center.lat,lng:center.lng});};}\n      const preview=data?.preview;\n      if(preview&&Number.isFinite(Number(preview.lat))&&Number.isFinite(Number(preview.lng))){\n        const p=[Number(preview.lat),Number(preview.lng)];const marker=L.marker(p,{icon:icon(true),title:\'登録前の確認\',draggable:true}).addTo(map).bindPopup(el(\'div\',\'\',`${preview.name||\'\'}\u3000${preview.address||\'\'}`)).openPopup();\n        marker.on(\'dragend\',()=>{const point=marker.getLatLng();status.textContent=\'ピンの位置を更新しています…\';emit(\'preview\',{lat:point.lat,lng:point.lng});});\n        status.textContent=\'登録前のパンのピンは、指で動かして位置を調整できます。\';map.setView(p,17);\n      }else if(points.length===1)map.setView(points[0],16);else if(points.length>1)map.fitBounds(points,{padding:[35,35],maxZoom:16});\n      const restore=data?.restore;\n      if(!preview&&restore&&markers.has(String(restore.id))){\n        const lat=Number(restore.lat),lng=Number(restore.lng),zoom=Number(restore.zoom);\n        if(Number.isFinite(lat)&&Number.isFinite(lng)&&Number.isFinite(zoom)){\n          map.setView([lat,lng],Math.max(10,Math.min(19,zoom)));\n          markers.get(String(restore.id)).openPopup();\n        }\n      }\n      map.invalidateSize();\n    }).catch(e=>{if(!disposed){status.textContent=String(e.message||e);reportError610(\'salt.map_initialization\',e,{container_initialized:Boolean(mapEl._leaflet_id),mode:data?.mode,lifecycle:\'container-owner-v611\'});mapEl.textContent=\'地図を表示できません。お店の一覧・ランキングから記録を開けます。\';}});\n  }\n  return()=>{lease.dispose();if(mapEl.__saltMapLease611===lease)delete mapEl.__saltMapLease611;if(root.__saltMapLease610===lease)delete root.__saltMapLease610;};\n}'
 
 def page_good_moments_menu():
     page_top("✨ いい瞬間の設定をする")
