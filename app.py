@@ -1,3 +1,4 @@
+# v633: Exclude explicit inactive stores; complete Overpass refresh replaces old candidates within its circle, preserving other areas and private records.
 # v632: Compact click-to-load popup photos; prefer saved family photos, otherwise explicit Commons references with license/attribution metadata.
 # v631: Bakery search and persistence both run in an owner-captured background worker; reopening the map refreshes its cache.
 # v630: Bakery search uses Overpass first, Photon only after transient failures; bounded queue-aware retries, exact radius and background polling.
@@ -87,7 +88,7 @@ def _app_css_v473(markup, **_ignored):
 # Review menu-only update: 2026-09-19 JST
 GENERATED_UPDATE_JST = "2026-09-19T14:54:38+09:00"
 
-APP_BUILD = "v632"
+APP_BUILD = "v633"
 # v598: Passing the focus gate is mandatory before any weighted ranking or reroll.
 # Never fill the twenty-image target with focus-rejected candidates.
 # v597: Compare 30 FPS candidates across the whole saved video offline. Disk-backed
@@ -55779,7 +55780,7 @@ def _salt_search_v609(query):
     if not 2 <= len(query) <= 180:
         raise ValueError("店名や住所を2文字以上で入力してください。")
     web = _SaltWebV609()
-    web.search_policy = "overpass_photon_v630"
+    web.search_policy = "overpass_photon_v633"
     compact = re.sub(r"\s+", "", query)
     pattern = ".*".join(re.sub(r"([.\[\]{}()*+?^$|\\])", r"\\\1", token) for token in query.split())
     try:
@@ -55810,6 +55811,9 @@ def _salt_search_v609(query):
             except (ValueError, KeyError, TypeError):
                 continue
             name = _salt_normal_v609(tags.get("name:ja") or tags.get("name"))
+            if _salt_closed_reason_v633(tags):
+                _salt_trace_v609(web,"inactive_name_candidate_excluded",{"name":name,"reason":_salt_closed_reason_v633(tags)})
+                continue
             if not name:
                 continue
             address = _salt_normal_v609(tags.get("addr:full")) or "".join(_salt_normal_v609(tags.get(k)) for k in ("addr:province", "addr:city", "addr:suburb", "addr:quarter", "addr:neighbourhood", "addr:street", "addr:block_number", "addr:housenumber"))
@@ -56342,7 +56346,8 @@ def _salt_photon_bakeries_v618(web,lat,lng,radius):
             if not kind:raise ValueError('invalid OSM type')
             extra=props.get('extra') if isinstance(props.get('extra'),dict) else {}
             tags={str(k):str(v) for k,v in extra.items() if isinstance(v,(str,int,float))}
-            tags.update(name=name,shop='bakery')
+            tags['name']=name
+            tags.setdefault('shop','bakery')
             for key in ('website','contact:website','description','product','cuisine'):
                 if props.get(key):tags[key]=str(props[key])
             parts=[]
@@ -56360,10 +56365,70 @@ def _salt_photon_bakeries_v618(web,lat,lng,radius):
     return {'elements':elements},info
 
 
+def _salt_closed_reason_v633(tags):
+    """Reject explicit inactivity, never infer closure from an old check date."""
+    norm = lambda value: str(value or '').strip().lower()
+    for key in ('disused', 'abandoned', 'demolished', 'removed', 'razed', 'destroyed', 'closed'):
+        if norm(tags.get(key)) in ('yes', 'true', '1'):
+            return key+'='+str(tags[key])
+        for feature in ('shop', 'amenity'):
+            # A former flower shop becoming a current bakery is not a closure.
+            value = norm(tags.get(key+':'+feature))
+            current = norm(tags.get(feature))
+            other = norm(tags.get('amenity' if feature == 'shop' else 'shop'))
+            matches_current = value in ('yes', current) if current else not other
+            if value and value not in ('no', 'false', '0') and matches_current:
+                return key+':'+feature+'='+value
+    if norm(tags.get('shop')) in ('closed', 'vacant', 'disused', 'abandoned', 'no'):
+        return 'shop='+str(tags['shop'])
+    if norm(tags.get('business_status')) in ('closed_permanently', 'permanently_closed', 'closed_temporarily'):
+        return 'business_status='+str(tags['business_status'])
+    if norm(tags.get('opening_hours')) in ('closed', 'off'):
+        return 'opening_hours='+str(tags['opening_hours'])
+    # Only a fully specified date strictly in the past is decisive. Do not
+    # treat weekly closing hours, stale survey dates or a future end as closed.
+    value = str(tags.get('end_date') or '').strip()
+    if re.fullmatch(r'\d{4}-\d{2}-\d{2}', value):
+        try:
+            if datetime.fromisoformat(value).date() < now_jst().date():
+                return 'end_date='+value
+        except ValueError:
+            pass
+    return ''
+
+
+def _salt_reconcile_searches_v633(active, result):
+    """Replace old public candidates only inside a complete Overpass refresh."""
+    complete = (result.get('provider') == 'Overpass' and not result.get('partial_results')
+                and result.get('search_scope') == 'bakery')
+    closed_ids = set(result.get('closed_candidate_ids') or [])
+    removed = 0
+    for search in active:
+        kept = []
+        for row in search.get('results', []):
+            replace = row.get('id') in closed_ids
+            if complete and not replace:
+                try:
+                    lat, lng = float(result['lat']), float(result['lng'])
+                    plat, plng = float(row['lat']), float(row['lng'])
+                    a = math.sin(math.radians(plat-lat)/2)**2 + math.cos(math.radians(lat))*math.cos(math.radians(plat))*math.sin(math.radians(plng-lng)/2)**2
+                    distance = 6371000*2*math.asin(min(1,math.sqrt(a)))
+                    replace = distance <= float(result['radius_m'])
+                except (ValueError, TypeError, KeyError):
+                    replace = False
+            if replace:
+                removed += 1
+                search['superseded'] = True
+            else:
+                kept.append(row)
+        search['results'] = kept
+    return removed
+
+
 def _salt_overpass_cache_usable_v630(search):
     # A truncated Photon response must not suppress a fresh Overpass request.
     return (search.get('provider') == 'Overpass' and not search.get('partial_results')
-            and search.get('search_scope') == 'bakery')
+            and search.get('search_scope') == 'bakery' and not search.get('superseded') and search.get('status_filter_version') == 1)
 
 
 
@@ -56474,7 +56539,7 @@ def _salt_discover_v617(lat, lng, radius, progress=None):
         ('["shop"="bakery"]','["amenity"="cafe"]["name"~"パン|ベーカリー|bakery|bread",i]'))+');out center tags;'
     try:
         data,info = _salt_bakery_document_v618(web,query,lat,lng,radius)
-        results = [];seen=set();outside_radius=0
+        results = [];seen=set();outside_radius=0;closed=[]
         for element in data["elements"]:
             tags = element.get("tags") or {};point=element.get("center") or element
             try:
@@ -56486,19 +56551,24 @@ def _salt_discover_v617(lat, lng, radius, progress=None):
                     continue
                 name = _salt_normal_v609(tags.get("name:ja") or tags.get("name"))
                 identity = str(element.get("type"))+":"+str(element["id"])
+                reason = _salt_closed_reason_v633(tags)
+                if reason:
+                    closed.append({'osm_id':identity,'name':name,'reason':reason,
+                        'id':'candidate_'+hashlib.sha256(identity.encode()).hexdigest()[:24]})
+                    continue
                 if not name or identity in seen:continue
                 seen.add(identity)
                 address = _salt_normal_v609(tags.get("addr:full")) or ''.join(str(tags.get(k) or '') for k in ('addr:province','addr:city','addr:suburb','addr:quarter','addr:street','addr:housenumber'))
                 website = str(tags.get('website') or tags.get('contact:website') or '')
                 results.append({"id":"candidate_"+hashlib.sha256(identity.encode()).hexdigest()[:24],"name":name,"address":address,
                     "lat":plat,"lng":plng,"source":str(info.get('provider') or 'OpenStreetMap')+" / OpenStreetMap","osm_id":identity,"website":website,"photo_ref":_salt_commons_photo_ref_v632(tags),
-                    "checked_at":now_jst().isoformat()})
+                    "checked_at":now_jst().isoformat(),"operating_status":"unverified"})
             except (KeyError,TypeError,ValueError):continue
         results.sort(key=lambda row:row['name'])
         at=now_jst()
-        _salt_trace_v609(web,"bakery_search_complete",{"count":len(results),"received":len(data["elements"]),"outside_radius":outside_radius})
+        _salt_trace_v609(web,"bakery_search_complete",{"count":len(results),"received":len(data["elements"]),"outside_radius":outside_radius,"inactive_excluded":closed})
         return {"id":uuid.uuid4().hex,"lat":lat,"lng":lng,"radius_m":radius,"searched_at":at.isoformat(),
-            "expires_at":_salt_expiry_v617(at).isoformat(),"search_scope":"bakery","provider":info.get('provider'),"partial_results":bool(info.get('partial_results')),"osm_base_timestamp":info.get("osm_base_timestamp"),"results":results,"logs":web.logs}
+            "expires_at":_salt_expiry_v617(at).isoformat(),"status_filter_version":1,"closed_candidate_ids":[row["id"] for row in closed],"search_scope":"bakery","provider":info.get('provider'),"partial_results":bool(info.get('partial_results')),"osm_base_timestamp":info.get("osm_base_timestamp"),"results":results,"logs":web.logs}
     except Exception as exc:
         error=RuntimeError("パン屋情報を取得できませんでした。保存済みのピンは引き続き表示します。検索ログを設定から出力できます。")
         error.salt_logs=web.logs+[{"event":"bakery_search_failed","error":str(exc)}]
@@ -56539,6 +56609,7 @@ def _salt_discovery_persist_v631(result, owner, bucket, lock):
         # another search saved while this network request was in progress.
         active = [row for row in doc['searches']
                   if datetime.fromisoformat(row['expires_at']) > now_jst() and row['id'] != result['id']]
+        _salt_reconcile_searches_v633(active, public_result)
         doc['searches'] = active + [public_result]
         bucket.upload(path=prefix+'/discovery.json', file=json.dumps(doc, ensure_ascii=False).encode(), file_options=options)
 
