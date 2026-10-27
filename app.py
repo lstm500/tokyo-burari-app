@@ -1,3 +1,4 @@
+# v637: Strict official-listing existence checks; unconfirmed/expired shops never become default map pins.
 # v636: Retain store-level search evidence and export current pin provenance without family photos/notes.
 # v635: Set bakery initial center and zoom atomically without bounds-fit animations; preview/return viewport is immediate.
 # v634: Bakery map defaults to zoom 14; preserve preview and detail-return zoom.
@@ -91,7 +92,7 @@ def _app_css_v473(markup, **_ignored):
 # Review menu-only update: 2026-09-19 JST
 GENERATED_UPDATE_JST = "2026-09-19T14:54:38+09:00"
 
-APP_BUILD = "v636"
+APP_BUILD = "v637"
 # v598: Passing the focus gate is mandatory before any weighted ranking or reroll.
 # Never fill the twenty-image target with focus-rejected candidates.
 # v597: Compare 30 FPS candidates across the whole saved video offline. Disk-backed
@@ -55540,6 +55541,200 @@ def _salt_commons_photo_ref_v632(tags):
     return ''
 
 
+def _salt_existence_valid_v637(check):
+    try:
+        return (isinstance(check, dict) and check.get('policy_version') == 1
+            and check.get('status') == 'confirmed' and bool(check.get('url'))
+            and datetime.fromisoformat(check['checked_at']) <= now_jst()
+            < datetime.fromisoformat(check['expires_at']))
+    except (KeyError, ValueError, TypeError):
+        return False
+
+
+def _salt_existence_index_v637(discovery):
+    index = {}
+    for search in discovery.get('searches', []):
+        for row in search.get('results', []):
+            check = row.get('existence_check')
+            if not isinstance(check, dict):
+                continue
+            key = _salt_shop_key_v622(row)
+            if str(check.get('checked_at') or '') >= str((index.get(key) or {}).get('checked_at') or ''):
+                index[key] = check
+    return index
+
+
+def _salt_existence_parse_v637(row, document, url):
+    """Conservative evidence: registered official shop listing, matching identity/location and hours."""
+    from html.parser import HTMLParser
+    import unicodedata
+    class Page(HTMLParser):
+        def __init__(self):
+            super().__init__(convert_charrefs=True)
+            self.parts=[];self.structured=[];self.links=[];self.ignore=0;self.ld=False;self.script=[]
+        def handle_starttag(self, tag, attrs):
+            a=dict(attrs)
+            if tag in ('script','style','noscript'):
+                self.ignore+=1
+                if tag=='script':self.ld='ld+json' in a.get('type','');self.script=[]
+            if tag=='a':self.links.append((a.get('href',''),a.get('title','')))
+        def handle_endtag(self, tag):
+            if tag in ('script','style','noscript'):
+                if tag=='script' and self.ld:
+                    try:self.structured.append(json.loads(''.join(self.script)))
+                    except (ValueError,TypeError):pass
+                self.ignore=max(0,self.ignore-1);self.ld=False
+        def handle_data(self, data):
+            if self.ld:self.script.append(data)
+            if not self.ignore:self.parts.append(data)
+    page=Page();page.feed(document)
+    text=' '.join(page.parts)
+    norm=lambda x:re.sub(r'[^a-z0-9ぁ-んァ-ヶ一-龥]', '', unicodedata.normalize('NFKC',str(x)).casefold())
+    tags=row.get('source_tags') or {}
+    names=[row.get('name','')]+[tags.get(k,'') for k in ('name','name:ja','name:en','brand')]
+    names += re.findall(r'[A-Za-z][A-Za-z &\-]{3,}|[ァ-ヶー]{4,}',str(row.get('name','')))
+    names=[norm(n) for n in names if len(norm(n))>=4 and norm(n) not in ('bakery','bread','coffee','カフェ','ベーカリー')]
+    normalized=norm(text)
+    if not any(n in normalized for n in names):return None,'shop_name_not_matched'
+    # Conservative exclusion; do not infer closure from an HTTP error or a missing page.
+    if re.search(r'閉店|閉業|営業終了|営業を終了|閉鎖|移転|permanently\s+closed|no\s+longer\s+open|temporarily\s+closed|休業',text,re.I):
+        return {'status':'closed_or_relocated','url':url,'evidence':'公式登録ページに閉店・休業・移転の記載あり'},'closure_notice'
+    def objects(x):
+        if isinstance(x,dict):
+            yield x
+            for value in x.values():yield from objects(value)
+        elif isinstance(x,list):
+            for value in x:yield from objects(value)
+    located=''
+    # A name-matched LocalBusiness needs its own matching coordinates; unrelated JSON-LD is ignored.
+    for item in objects(page.structured):
+        typ=item.get('@type',[]);typ=[typ] if isinstance(typ,str) else typ
+        if not any(t in ('Bakery','CafeOrCoffeeShop','FoodEstablishment','Restaurant','LocalBusiness','Store') for t in typ):continue
+        if not any(n in norm(item.get('name','')) for n in names):continue
+        geo=item.get('geo') or {}
+        try:
+            lat,lng=float(geo['latitude']),float(geo['longitude'])
+            a=math.sin(math.radians(lat-float(row['lat']))/2)**2+math.cos(math.radians(lat))*math.cos(math.radians(float(row['lat'])))*math.sin(math.radians(lng-float(row['lng']))/2)**2
+            if 6371000*2*math.asin(min(1,math.sqrt(a)))<=120:located='structured_geo_within_120m'
+        except (KeyError,ValueError,TypeError):pass
+    for key in ('phone','contact:phone'):
+        phone=re.sub(r'\D','',str(tags.get(key) or ''))
+        if phone.startswith('81'):phone='0'+phone[2:]
+        if len(phone)>=10 and phone in re.sub(r'\D','',text):located='matching_phone'
+    # Exact street/block numbers are needed; a city or town name alone is insufficient.
+    address=norm(row.get('address') or tags.get('addr:full') or '')
+    numbers=re.findall(r'\d+',unicodedata.normalize('NFKC',str(row.get('address') or tags.get('addr:full') or '')))
+    if len(address)>=10 and len(numbers)>=2 and address in normalized:located='matching_street_address'
+    if not located:return None,'shop_location_not_matched'
+    path=urlparse(url).path.lower()
+    if re.search(r'/(?:news|blog|archive|article|press|posts?)(?:/|$)',path):return None,'historical_article_not_store_listing'
+    # Recent fetch alone is insufficient. Require an actual business-hours listing.
+    if not re.search(r'営業時間|[Oo]pening\s*[Hh]ours|[Oo]pen\s*[:：]|[Hh]ours\s*[:：]',text):return None,'opening_hours_not_found'
+    if not re.search(r'\d{1,2}\s*[:：]\s*\d{2}\s*(?:[〜～~\-–—]|to)\s*\d{1,2}\s*[:：]\s*\d{2}',text,re.I):return None,'opening_hours_not_found'
+    return {'status':'confirmed','url':url,'identity_method':located,
+            'evidence':'公式として登録された店舗ページで店名・所在地情報・営業時間を照合',
+            'document_sha256':hashlib.sha256(document.encode()).hexdigest()},'official_store_listing_matched'
+
+
+def _salt_existence_fetch_v637(url, host):
+    """Public HTTPS only; redirects are checked before requesting, robots fail closed."""
+    import socket,ipaddress
+    from urllib.request import build_opener,HTTPRedirectHandler
+    from urllib.robotparser import RobotFileParser
+    def validate(value):
+        p=urlparse(value);name=(p.hostname or '').lower().rstrip('.')
+        if p.scheme!='https' or p.port not in (None,443) or p.username or p.password or name!=host:
+            raise ValueError('untrusted_url_or_redirect')
+        ips=socket.getaddrinfo(name,443,type=socket.SOCK_STREAM)
+        if not ips or any(not ipaddress.ip_address(item[4][0]).is_global for item in ips):
+            raise ValueError('nonpublic_destination')
+    class Redirect(HTTPRedirectHandler):
+        def redirect_request(self,req,fp,code,msg,headers,newurl):
+            validate(newurl)
+            return super().redirect_request(req,fp,code,msg,headers,newurl)
+    validate(url)
+    opener=build_opener(Redirect());agent='TokyoBurariBakeryVerifier/1.0'
+    robot='https://'+host+'/robots.txt';validate(robot)
+    try:
+        with opener.open(Request(robot,headers={'User-Agent':agent}),timeout=5) as response:
+            raw=response.read(200001)
+            if len(raw)>200000:raise ValueError('robots_too_large')
+        parser=RobotFileParser();parser.parse(raw.decode('utf-8','replace').splitlines())
+        if not parser.can_fetch(agent,url):raise ValueError('robots_disallowed')
+    except HTTPError as exc:
+        if exc.code not in (404,410):raise
+    with opener.open(Request(url,headers={'User-Agent':agent,'Accept':'text/html','Accept-Encoding':'identity'}),timeout=6) as response:
+        if int(response.status)!=200 or 'html' not in str(response.headers.get('Content-Type','')).lower():raise ValueError('not_a_live_html_page')
+        raw=response.read(900001)
+        if len(raw)>900000:raise ValueError('page_too_large')
+        return raw.decode(response.headers.get_content_charset() or 'utf-8','replace')
+
+
+def _salt_verify_existence_v637(rows, progress=None):
+    from urllib.parse import urljoin
+    from datetime import timedelta
+    from html.parser import HTMLParser
+    cache={};guard=threading.RLock();host_locks={};started=[0]
+    def verify(item):
+        index,row=item
+        at=now_jst()
+        check={'policy_version':1,'status':'unverified','checked_at':at.isoformat(),
+               'expires_at':(at+timedelta(hours=24)).isoformat(),'attempts':[]}
+        with guard:
+            started[0]+=1
+            if isinstance(progress,dict):progress['message']=f'店舗の存在を確認しています（{started[0]}/{len(rows)}店）。未確認の店舗は表示しません。'
+        raw=str(row.get('website') or '').strip()
+        try:
+            p=urlparse(raw);host=(p.hostname or '').lower().rstrip('.')
+            if p.scheme=='http':raw='https://'+p.netloc+p.path+('?' + p.query if p.query else '');p=urlparse(raw)
+            if not host or p.scheme!='https' or any(host==h or host.endswith('.'+h) for h in
+                ('openstreetmap.org','google.com','google.co.jp','tabelog.com','retty.me','instagram.com','facebook.com','x.com','twitter.com')):
+                raise ValueError('official_website_unavailable')
+            urls=[raw];seen=set()
+            while urls and len(seen)<4:
+                url=urls.pop(0)
+                if url in seen:continue
+                seen.add(url)
+                attempt={'url':url}
+                try:
+                    with guard:host_lock=host_locks.setdefault(host,threading.RLock())
+                    with host_lock:
+                        if url not in cache:
+                            try:cache[url]=_salt_existence_fetch_v637(url,host)
+                            except Exception as exc:cache[url]=exc
+                        doc=cache[url]
+                    if isinstance(doc,Exception):raise doc
+                    decision,reason=_salt_existence_parse_v637(row,doc,url)
+                    attempt['reason']=reason;attempt['http_status']=200
+                    check['attempts'].append(attempt)
+                    if decision:check.update(decision);break
+                    # Same-domain links only, with a name or a store-information label.
+                    class Links(HTMLParser):
+                        def __init__(self):super().__init__();self.items=[];self.href='';self.parts=[]
+                        def handle_starttag(self,tag,attrs):
+                            if tag=='a':self.href=dict(attrs).get('href','');self.parts=[]
+                        def handle_data(self,data):self.parts.append(data)
+                        def handle_endtag(self,tag):
+                            if tag=='a':self.items.append((self.href,' '.join(self.parts)));self.href=''
+                    links=Links();links.feed(doc)
+                    tokens=[t.casefold() for t in re.findall(r'[A-Za-z]{4,}|[ァ-ヶー]{4,}',row.get('name','')) if t.casefold() not in ('bread','coffee','bakery')]
+                    ranked=[]
+                    for href,title in links.items:
+                        target=urljoin(url,href).split('#')[0];tp=urlparse(target)
+                        if tp.scheme!='https' or (tp.hostname or '').lower().rstrip('.')!=host or target in seen:continue
+                        matched=any(t in (title+' '+href).casefold() for t in tokens)
+                        if matched or re.search(r'店舗|ショップ|アクセス|shop|store|access',title+' '+href,re.I):ranked.append((0 if matched else 1,target))
+                    urls.extend(t for _,t in sorted(set(ranked))[:4])
+                except Exception as exc:
+                    attempt.update(reason=str(exc)[:200],http_status=getattr(exc,'code',None));check['attempts'].append(attempt)
+            if 'reason' not in check:check['reason']=check['attempts'][-1]['reason'] if check['attempts'] else 'no_store_page'
+        except Exception as exc:check['reason']=str(exc)[:200]
+        return {**row,'existence_check':check}
+    if not rows:return []
+    with ThreadPoolExecutor(max_workers=3,thread_name_prefix='bakery-existence') as pool:
+        return list(pool.map(verify,enumerate(rows)))
+
+
 def _salt_map_cards_v622(doc, discovery, include_unknown=False):
     states=doc.get('shop_states') or {}
     recorded=_salt_cards_v609(doc)
@@ -55562,7 +55757,11 @@ def _salt_map_cards_v622(doc, discovery, include_unknown=False):
         rows.append({**mark,'id':'saved_status_'+key,'candidate':True,'status_only':True,
             'src':'','shop_status':mark['status'],
             'searched_at':'','expires_at':'','evidence':''})
-    return rows
+    checks=_salt_existence_index_v637(discovery)
+    for row in rows:
+        row['existence_check']=checks.get(_salt_shop_key_v622(row), {})
+    return rows if include_unknown else [row for row in rows if _salt_existence_valid_v637(row.get('existence_check'))]
+
 
 
 def _salt_owner_v609():
@@ -55783,7 +55982,7 @@ def _salt_search_v609(query):
     if not 2 <= len(query) <= 180:
         raise ValueError("店名や住所を2文字以上で入力してください。")
     web = _SaltWebV609()
-    web.search_policy = "overpass_photon_v633"
+    web.search_policy = "overpass_photon_existence_v637"
     compact = re.sub(r"\s+", "", query)
     pattern = ".*".join(re.sub(r"([.\[\]{}()*+?^$|\\])", r"\\\1", token) for token in query.split())
     try:
@@ -55824,11 +56023,14 @@ def _salt_search_v609(query):
             if key in seen:
                 continue
             seen.add(key)
-            results.append({"name": name, "address": address or "住所未取得・地図の位置を確認してください", "lat": lat, "lng": lng, "source": "Google Maps" if info.get("provider") == "Google Places" else info.get("provider", "Overpass") + " / OpenStreetMap", "_rank": _salt_candidate_rank_v613(query, tags, index)})
+            results.append({"name": name, "address": address or "住所未取得・地図の位置を確認してください", "lat": lat, "lng": lng, "source": "Google Maps" if info.get("provider") == "Google Places" else info.get("provider", "Overpass") + " / OpenStreetMap", "source_tags":dict(tags),"website":str(tags.get("website") or tags.get("contact:website") or ""),"osm_id":str(element.get("type"))+":"+str(element.get("id")),"_rank": _salt_candidate_rank_v613(query, tags, index)})
         results.sort(key=lambda p: p["_rank"])
         for result in results:
             result.pop("_rank", None)
-        return {"candidates": results, "logs": web.logs}
+        checked=_salt_verify_existence_v637(results)
+        for row in checked:
+            _salt_trace_v609(web,'bakery_existence_check',{'name':row['name'],'osm_id':row.get('osm_id'),'check':row['existence_check']})
+        return {"candidates": [r for r in checked if _salt_existence_valid_v637(r.get('existence_check'))], "logs": web.logs}
     except Exception as exc:
         # Preserve technical evidence without putting a saved location at a guessed point.
         info = getattr(exc, "landmark_diagnostic", {}) or {}
@@ -55844,6 +56046,7 @@ def _salt_search_v609(query):
         error = RuntimeError(message)
         error.salt_logs = web.logs + [{"event": "search_failed", "detail": getattr(exc, "landmark_diagnostic", {}), "error": str(exc)}]
         raise error from exc
+
 
 
 def _salt_save_visit_v609(place, files, note, date_value, again, entry_id="", visit_id=None):
@@ -56432,7 +56635,10 @@ def _salt_reconcile_searches_v633(active, result):
 def _salt_overpass_cache_usable_v630(search):
     # A truncated Photon response must not suppress a fresh Overpass request.
     return (search.get('provider') == 'Overpass' and not search.get('partial_results')
-            and search.get('search_scope') == 'bakery' and not search.get('superseded') and search.get('status_filter_version') == 1)
+            and search.get('search_scope') == 'bakery' and not search.get('superseded') and search.get('status_filter_version') == 1
+            and search.get('existence_policy_version') == 1
+            and all(isinstance(r.get('existence_check'),dict) and r['existence_check'].get('expires_at','') > now_jst().isoformat() for r in search.get('results',[])))
+
 
 
 
@@ -56569,14 +56775,18 @@ def _salt_discover_v617(lat, lng, radius, progress=None):
                     "checked_at":now_jst().isoformat(),"operating_status":"unverified","source_tags":dict(tags)})
             except (KeyError,TypeError,ValueError):continue
         results.sort(key=lambda row:row['name'])
+        results=_salt_verify_existence_v637(results, progress)
+        for row in results:
+            _salt_trace_v609(web, 'bakery_existence_check', {'id':row['id'],'osm_id':row['osm_id'],'name':row['name'],'check':row['existence_check']})
         at=now_jst()
-        _salt_trace_v609(web,"bakery_search_complete",{"count":len(results),"received":len(data["elements"]),"outside_radius":outside_radius,"inactive_excluded":closed})
+        _salt_trace_v609(web,"bakery_search_complete",{"count":len(results),"existence_confirmed":sum(_salt_existence_valid_v637(r.get("existence_check")) for r in results),"received":len(data["elements"]),"outside_radius":outside_radius,"inactive_excluded":closed})
         return {"id":uuid.uuid4().hex,"lat":lat,"lng":lng,"radius_m":radius,"searched_at":at.isoformat(),
-            "expires_at":_salt_expiry_v617(at).isoformat(),"diagnostic_schema":2,"status_filter_version":1,"closed_candidate_ids":[row["id"] for row in closed],"search_scope":"bakery","provider":info.get('provider'),"partial_results":bool(info.get('partial_results')),"osm_base_timestamp":info.get("osm_base_timestamp"),"results":results,"logs":web.logs}
+            "expires_at":_salt_expiry_v617(at).isoformat(),"diagnostic_schema":3,"existence_policy_version":1,"status_filter_version":1,"closed_candidate_ids":[row["id"] for row in closed],"search_scope":"bakery","provider":info.get('provider'),"partial_results":bool(info.get('partial_results')),"osm_base_timestamp":info.get("osm_base_timestamp"),"results":results,"logs":web.logs}
     except Exception as exc:
         error=RuntimeError("パン屋情報を取得できませんでした。保存済みのピンは引き続き表示します。検索ログを設定から出力できます。")
         error.salt_logs=web.logs+[{"event":"bakery_search_failed","error":str(exc)}]
         raise error from exc
+
 
 
 
@@ -56697,7 +56907,7 @@ def _salt_discovery_collect_v617():
             return False
         # The map may have cached the old document before navigation away.
         st.session_state.pop('_salt_discovery_v617_'+owner, None)
-        st.session_state['_salt_discovery_notice_v617'] = result.get('error') or f"パン屋 {len(result['results'])}店を保存しました。地図にピンを表示します。"
+        st.session_state['_salt_discovery_notice_v617'] = result.get('error') or f"候補 {len(result['results'])}店を保存しました。存在確認済み {sum(_salt_existence_valid_v637(r.get('existence_check')) for r in result['results'])}店のみピンを表示します。"
         if result.get('partial_results'):
             st.session_state['_salt_discovery_notice_v617'] += ' 代替検索の候補です。周辺全店舗の網羅は保証されません。'
         with registry['lock']:
@@ -56709,6 +56919,7 @@ def _salt_discovery_collect_v617():
         _app_error_record_v610('salt.discovery_save', exc)
         st.warning('検索結果・ログを保存できませんでした。検索を繰り返さず、保存を再試行します。')
         return False
+
 
 
 
@@ -56767,9 +56978,10 @@ def _salt_diagnostic_export_v636(logs):
                 ('id','name','address','lat','lng','shop_state_key','pin_hidden','again') if k in entry}
             safe_doc['entries'][key]['visits'] = [{}] if entry.get('visits') else []
         pins = []
-        for row in _salt_map_cards_v622(safe_doc, discovery):
+        for row in _salt_map_cards_v622(safe_doc, discovery, True):
             pin = {k:v for k,v in row.items() if k not in ('src','note','photo_ref')}
-            pin['visible'] = not bool(row.get('pin_hidden'))
+            pin['visible'] = not bool(row.get('pin_hidden')) and _salt_existence_valid_v637(row.get('existence_check'))
+            pin['visibility_reason'] = 'pin_hidden' if row.get('pin_hidden') else 'existence_confirmed' if pin['visible'] else 'existence_unconfirmed_or_expired'
             pin['display_origin'] = ('saved_visit_status' if row.get('status_only') else
                                      'saved_search_result' if row.get('candidate') else 'personal_record')
             pins.append(pin)
@@ -56779,6 +56991,7 @@ def _salt_diagnostic_export_v636(logs):
         # Logs remain exportable when current storage cannot be read; never present a partial snapshot as complete.
         report['snapshot_error'] = _safe_error_text(str(exc), 1000)
     return report
+
 
 
 def _salt_discovery_logs_settings_v617():
@@ -56912,12 +57125,13 @@ def page_salt_bread_v609():
         searching = owner in registry['jobs']
     st.selectbox("周辺検索の半径", [1000, 3000, 5000, 10000], format_func=lambda value: f"{value // 1000}km", key="salt_discovery_radius_v619")
     st.checkbox("保存済みでも再検索", value=False, key="salt_discovery_refresh_v617")
-    st.caption("地図を探したい場所へ動かし「この周辺のパン屋を探す」を押してください。取得したパン屋情報は3か月保存します。")
+    st.caption("地図を探したい場所へ動かし「この周辺のパン屋を探す」を押してください。候補は3か月保存します。公式登録ページで存在確認できた店舗のみピンを表示します。存在確認は24時間で再確認が必要です。")
     if searching:
         _salt_discovery_progress_v617()
+    map_cards = _salt_map_cards_v622(doc,discovery,mode=="ランキング")
     candidates_saved = _salt_discovery_rows_v617(discovery)
     if candidates_saved:
-        st.caption(f"保存中のパン屋 {len(candidates_saved)}店")
+        st.caption(f"保存中の候補 {len(candidates_saved)}店 ／ 存在確認済みのピン {sum(_salt_existence_valid_v637(r.get('existence_check')) for r in map_cards if not r.get('pin_hidden'))}店")
         latest = discovery['searches'][-1] if discovery.get('searches') else {}
         if latest.get('provider') == 'Photon':
             st.caption('直近の取得元：Photon（代替検索・返却上限50件）。再検索ではOverpassを優先します。')
@@ -56926,7 +57140,7 @@ def page_salt_bread_v609():
     st.caption('黄色枠：また行ってみたい（再訪したい）　灰枠：行ったことがある　薄い灰枠：未設定。ピンをタップして変更できます。付けた印は検索結果の保存期限後も残ります。')
     candidate = st.session_state.get("_salt_candidate_v609")
     try:
-        _salt_component_v609()(data={"owner": owner, "entries": _salt_map_cards_v622(doc,discovery), "search_enabled": not searching, "revision": doc["revision"], "mode": mode,
+        _salt_component_v609()(data={"owner": owner, "entries": map_cards, "search_enabled": not searching, "revision": doc["revision"], "mode": mode,
             "restore": st.session_state.pop("_salt_map_restore_v615_" + owner, None), "preview": candidate, "manual": st.session_state.get("_salt_manual_v613_" + owner), "ack": st.session_state.get("_salt_action_ack_v609_" + owner, "")}, key=component_key,
             on_salt_action_change=lambda: _salt_capture_v609(component_key, inbox_key),
             on_salt_diagnostic_change=lambda: _app_error_capture_v610(component_key, "salt_diagnostic", owner))
@@ -56986,6 +57200,7 @@ def page_salt_bread_v609():
         if candidate:
             st.markdown("**このお店のパンを記録**")
             _salt_form_v609(candidate)
+
 
 
 
