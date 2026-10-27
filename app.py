@@ -1,3 +1,4 @@
+# v630: Bakery search uses Overpass first, Photon only after transient failures; bounded queue-aware retries, exact radius and background polling.
 # v629: Compact bakery popup with directions, visited and edit; secondary status/photo/hide controls shown only after Edit.
 # v628: Bakery map; show every bakery without salt-bread filters or product crawling. Preserve existing storage, records, ranks and revisit marks.
 # v627: Subtle fixed 4px muted-gold revisit border; no glow or animation; preserve bread appearance and saved status.
@@ -84,7 +85,7 @@ def _app_css_v473(markup, **_ignored):
 # Review menu-only update: 2026-09-19 JST
 GENERATED_UPDATE_JST = "2026-09-19T14:54:38+09:00"
 
-APP_BUILD = "v629"
+APP_BUILD = "v630"
 # v598: Passing the focus gate is mandatory before any weighted ranking or reroll.
 # Never fill the twenty-image target with focus-rejected candidates.
 # v597: Compare 30 FPS candidates across the whole saved video offline. Disk-backed
@@ -55717,11 +55718,11 @@ def _salt_lookup_json_v609(web, url, params, operation):
         remaining = getattr(web, "deadline", time.monotonic() + 4.0) - time.monotonic()
         if remaining < 0.25:
             raise TimeoutError("検索の通信待ち時間を超えました。")
-        with urlopen(request, timeout=min(10.0 if operation in ("bakery_search", "bakery_photon", "bakery_details") else 4.0, remaining)) as response:
+        with urlopen(request, timeout=min(60.0 if operation == "bakery_search" else 10.0 if operation in ("bakery_photon", "bakery_details") else 4.0, remaining)) as response:
             info.update(status=response.status, content_type=response.headers.get("Content-Type", ""))
             raw = response.read(4 * 1024 * 1024 + 1)
         if len(raw) > 4 * 1024 * 1024:
-            raise ValueError("検索結果が大きすぎます。店名を詳しく入力してください。")
+            raise ValueError("検索結果が大きすぎます。検索範囲を狭めるか、店名を詳しく入力してください。")
         info["failed_stage"] = operation + ".json"
         doc = json.loads(raw.decode())
         _salt_trace_v609(web, "response", {**info, "elapsed_ms": round((time.monotonic() - started) * 1000)})
@@ -55749,6 +55750,7 @@ def _salt_search_v609(query):
     if not 2 <= len(query) <= 180:
         raise ValueError("店名や住所を2文字以上で入力してください。")
     web = _SaltWebV609()
+    web.search_policy = "overpass_photon_v630"
     compact = re.sub(r"\s+", "", query)
     pattern = ".*".join(re.sub(r"([.\[\]{}()*+?^$|\\])", r"\\\1", token) for token in query.split())
     try:
@@ -56329,35 +56331,80 @@ def _salt_photon_bakeries_v618(web,lat,lng,radius):
     return {'elements':elements},info
 
 
-def _salt_bakery_document_v618(web,query,lat,lng,radius):
-    health=_salt_provider_health_v618()
-    for endpoint in ('https://overpass-api.de/api/interpreter','https://overpass.private.coffee/api/interpreter'):
-        with health['lock']:
-            retry=health['retry_after'].get(endpoint,0)
-        if retry>time.monotonic():
-            _salt_trace_v609(web,'provider_cooldown',{'url':endpoint,'retry_in_seconds':round(retry-time.monotonic())})
-            continue
+def _salt_overpass_cache_usable_v630(search):
+    # A truncated Photon response must not suppress a fresh Overpass request.
+    return (search.get('provider') == 'Overpass' and not search.get('partial_results')
+            and search.get('search_scope') == 'bakery')
+
+
+
+def _salt_overpass_request_v630(web, query):
+    # Retry transient transport/server errors on another Overpass instance.
+    endpoints = ('https://overpass-api.de/api/interpreter',
+                 'https://overpass.private.coffee/api/interpreter')
+    last_error = None
+    for attempt, endpoint in enumerate(endpoints, 1):
+        if time.monotonic() >= web.deadline:
+            break
+        message = f'Overpassに問い合わせています（{attempt}/{len(endpoints)}）。混雑時は応答まで時間がかかります。'
+        if isinstance(getattr(web, 'progress', None), dict):
+            web.progress['message'] = message
+        _salt_trace_v609(web, 'overpass_attempt', {'attempt': attempt, 'url': endpoint,
+            'request_timeout_seconds': 60, 'query_timeout_seconds': 25,
+            'deadline_remaining_seconds': round(web.deadline-time.monotonic(), 1)})
         try:
-            data,info=_salt_lookup_json_v609(web,endpoint,{'data':query},'bakery_search')
-            if not isinstance(data,dict) or not isinstance(data.get('elements'),list):
-                raise ValueError('パン屋検索の応答を確認できませんでした。')
-            remark=str(data.get('remark') or '')
+            data, info = _salt_lookup_json_v609(web, endpoint, {'data': query}, 'bakery_search')
+            if not isinstance(data, dict) or not isinstance(data.get('elements'), list):
+                raise ValueError('Overpassの応答形式を確認できませんでした。')
+            # Overpass can return HTTP 200 plus a runtime error and incomplete
+            # elements. Do not label this as a complete, three-month result.
+            remark = str(data.get('remark') or '').strip()
             if remark:
-                _salt_trace_v609(web,'bakery_provider_remark',{'url':endpoint,'remark':remark[:1000],'elements':len(data['elements'])},'WARNING')
-                if not data['elements']:
-                    if re.search(r'timed out|timeout|out of memory|busy|runtime error|exceeded',remark,re.I):raise TimeoutError(remark[:1000])
-                    raise ValueError('パン屋検索の応答を確認できませんでした。'+remark[:300])
-            info.update(provider='Overpass',partial_results=bool(remark))
-            return data,info
+                _salt_trace_v609(web, 'overpass_incomplete', {'url': endpoint,
+                    'remark': remark[:1000], 'elements': len(data['elements'])}, 'WARNING')
+                if re.search(r'timed out|timeout|out of memory|busy|runtime error|exceeded', remark, re.I):
+                    raise TimeoutError('Overpassの検索処理が完了しませんでした。'+remark[:300])
+                raise ValueError('Overpassの検索処理でエラーが返されました。'+remark[:300])
+            base = data.get('osm3s') if isinstance(data.get('osm3s'), dict) else {}
+            info.update(provider='Overpass', partial_results=False,
+                osm_base_timestamp=base.get('timestamp_osm_base'))
+            _salt_trace_v609(web, 'overpass_complete', {'url': endpoint,
+                'elements': len(data['elements']), 'attempt': attempt,
+                'osm_base_timestamp': info.get('osm_base_timestamp')})
+            if isinstance(getattr(web, 'progress', None), dict):
+                web.progress['message'] = 'Overpassの検索結果を確認・保存しています。'
+            return data, info
         except Exception as exc:
-            if not _salt_transient_v612(exc):raise
-            with health['lock']:
-                health['retry_after'][endpoint]=time.monotonic()+300
-            _salt_trace_v609(web,'bakery_provider_failed',{'url':endpoint,'error':str(exc),'cooldown_seconds':300},'WARNING')
-    # Give this independent provider its own small budget after Overpass failed.
-    web.deadline=max(getattr(web,'deadline',0),time.monotonic()+12)
-    _salt_trace_v609(web,'bakery_provider_fallback',{'next_provider':'Photon','reason':'Overpass transport failure or temporary cooldown'},'WARNING')
-    return _salt_photon_bakeries_v618(web,lat,lng,radius)
+            last_error = exc
+            _salt_trace_v609(web, 'overpass_attempt_failed', {'attempt': attempt,
+                'url': endpoint, 'error': str(exc), **_salt_exception_details_v609(exc)}, 'ERROR')
+            # Bad queries, access denials and rate limits are not server outages.
+            # In particular, never switch hosts to circumvent HTTP 429.
+            if not _salt_transient_v612(exc):
+                raise
+            if attempt < len(endpoints) and web.deadline-time.monotonic() > 2:
+                if isinstance(getattr(web, 'progress', None), dict):
+                    web.progress['message'] = 'Overpassの応答を得られなかったため、2秒後に別のOverpass接続先で再試行します。'
+                time.sleep(2)
+    if last_error is not None:
+        raise last_error
+    raise TimeoutError('Overpass検索の待ち時間を超えました。')
+
+
+
+def _salt_bakery_document_v618(web, query, lat, lng, radius):
+    try:
+        return _salt_overpass_request_v630(web, query)
+    except Exception as exc:
+        if not _salt_transient_v612(exc):
+            raise
+        _salt_trace_v609(web, 'bakery_provider_fallback', {
+            'from_provider': 'Overpass', 'next_provider': 'Photon',
+            'reason': str(exc)}, 'WARNING')
+        if isinstance(getattr(web, 'progress', None), dict):
+            web.progress['message'] = 'Overpassの接続先2か所で取得できなかったため、Photonで検索しています。'
+        web.deadline = time.monotonic() + 15
+        return _salt_photon_bakeries_v618(web, lat, lng, radius)
 
 
 
@@ -56378,22 +56425,36 @@ def _salt_bakery_document_v618(web,query,lat,lng,radius):
 
 
 
-def _salt_discover_v617(lat, lng, radius):
+
+def _salt_discover_v617(lat, lng, radius, progress=None):
     lat,lng = _salt_coordinates_v609(lat,lng)
     radius = max(1000, min(10000, int(radius)))
     web = _SaltWebV609()
-    web.deadline = time.monotonic()+24
+    web.deadline = time.monotonic()+130
+    web.progress = progress
     # Discover bakeries and bakery cafes; no product-specific scanning.
-    around = f"(around:{radius},{lat:.6f},{lng:.6f})"
-    query = '[out:json][timeout:6];('+''.join('nwr'+selector+around+';' for selector in
+    # A spatial bounding-box index avoids the expensive large-radius geometry
+    # search. A one-metre padding covers rounding; exact radius is checked below.
+    angle = (radius + 1.0) / 6371000.0
+    dlat = math.degrees(angle)
+    dlng = math.degrees(math.asin(math.sin(angle) / math.cos(math.radians(lat))))
+    around = f"({lat-dlat:.7f},{lng-dlng:.7f},{lat+dlat:.7f},{lng+dlng:.7f})"
+    _salt_trace_v609(web, "overpass_search_area", {"strategy": "bbox_then_exact_radius",
+        "bbox": around, "radius_m": radius, "lat": lat, "lng": lng})
+    query = '[out:json][timeout:25][maxsize:33554432];('+''.join('nwr'+selector+around+';' for selector in
         ('["shop"="bakery"]','["amenity"="cafe"]["name"~"パン|ベーカリー|bakery|bread",i]'))+');out center tags;'
     try:
         data,info = _salt_bakery_document_v618(web,query,lat,lng,radius)
-        results = [];seen=set()
+        results = [];seen=set();outside_radius=0
         for element in data["elements"]:
             tags = element.get("tags") or {};point=element.get("center") or element
             try:
                 plat,plng = _salt_coordinates_v609(point["lat"],point["lon"])
+                a = math.sin(math.radians(plat-lat)/2)**2 + math.cos(math.radians(lat))*math.cos(math.radians(plat))*math.sin(math.radians(plng-lng)/2)**2
+                distance = 6371000*2*math.asin(min(1,math.sqrt(a)))
+                if distance > radius:
+                    outside_radius += 1
+                    continue
                 name = _salt_normal_v609(tags.get("name:ja") or tags.get("name"))
                 identity = str(element.get("type"))+":"+str(element["id"])
                 if not name or identity in seen:continue
@@ -56406,11 +56467,11 @@ def _salt_discover_v617(lat, lng, radius):
             except (KeyError,TypeError,ValueError):continue
         results.sort(key=lambda row:row['name'])
         at=now_jst()
-        _salt_trace_v609(web,"bakery_search_complete",{"count":len(results)})
+        _salt_trace_v609(web,"bakery_search_complete",{"count":len(results),"received":len(data["elements"]),"outside_radius":outside_radius})
         return {"id":uuid.uuid4().hex,"lat":lat,"lng":lng,"radius_m":radius,"searched_at":at.isoformat(),
-            "expires_at":_salt_expiry_v617(at).isoformat(),"search_scope":"bakery","provider":info.get('provider'),"partial_results":bool(info.get('partial_results')),"results":results,"logs":web.logs}
+            "expires_at":_salt_expiry_v617(at).isoformat(),"search_scope":"bakery","provider":info.get('provider'),"partial_results":bool(info.get('partial_results')),"osm_base_timestamp":info.get("osm_base_timestamp"),"results":results,"logs":web.logs}
     except Exception as exc:
-        error=RuntimeError("周辺のパン屋を検索できませんでした。保存済みのピンは引き続き表示します。")
+        error=RuntimeError("パン屋情報を取得できませんでした。保存済みのピンは引き続き表示します。検索ログを設定から出力できます。")
         error.salt_logs=web.logs+[{"event":"bakery_search_failed","error":str(exc)}]
         raise error from exc
 
@@ -56422,12 +56483,18 @@ def _salt_discovery_jobs_v617():
     return {"executor":ThreadPoolExecutor(max_workers=2,thread_name_prefix="salt-discovery"),"jobs":{},"lock":threading.RLock()}
 
 
-def _salt_discovery_start_v617(lat,lng,radius):
-    owner=_salt_owner_v609();registry=_salt_discovery_jobs_v617()
+def _salt_discovery_start_v617(lat, lng, radius):
+    owner = _salt_owner_v609()
+    registry = _salt_discovery_jobs_v617()
     with registry['lock']:
-        job=registry['jobs'].get(owner)
-        if job and not job['future'].done():return
-        registry['jobs'][owner]={"future":registry['executor'].submit(_salt_discover_v617,lat,lng,radius)}
+        # A completed job can still hold an unsaved result. Retain it until the
+        # collector has saved both result and log, without another API call.
+        if owner in registry['jobs']:
+            return
+        progress = {'message': 'Overpass検索を開始しています。', 'started_at': time.monotonic()}
+        registry['jobs'][owner] = {'progress': progress,
+            'future': registry['executor'].submit(_salt_discover_v617, lat, lng, radius, progress)}
+
 
 
 
@@ -56469,10 +56536,24 @@ def _salt_discovery_collect_v617():
 
 
 
+@st.fragment(run_every=1)
 def _salt_discovery_progress_v617():
-    if st.session_state.get('main_page')!='salt_bread':return
-    if _salt_discovery_collect_v617():st.rerun(scope='app')
-    st.info('周辺のパン屋を検索しています。戻る操作も使えます。')
+    if st.session_state.get('main_page') != 'salt_bread':
+        return
+    if _salt_discovery_collect_v617():
+        st.rerun(scope='app')
+    owner = _salt_owner_v609()
+    registry = _salt_discovery_jobs_v617()
+    with registry['lock']:
+        job = registry['jobs'].get(owner)
+    if not job:
+        return
+    progress = job.get('progress') or {}
+    elapsed = max(0, int(time.monotonic()-progress.get('started_at', time.monotonic())))
+    message = ('検索結果・ログの保存を再試行待ちです。' if job.get('retry_at')
+               else progress.get('message', 'Overpassで周辺のパン屋を検索しています。'))
+    st.info(f'{message}（{elapsed}秒経過）戻る操作も使えます。')
+
 
 
 
@@ -56549,7 +56630,7 @@ def page_salt_bread_v609():
             elif action.get("action") == "search_bakeries":
                 lat,lng = _salt_coordinates_v609(action.get("lat"), action.get("lng"))
                 radius = int(st.session_state.get("salt_discovery_radius_v619") or 1000)
-                cached = next((q for q in reversed(discovery['searches']) if abs(q['lat']-lat)<.0003 and abs(q['lng']-lng)<.0003 and q['radius_m']==radius),None)
+                cached = next((q for q in reversed(discovery['searches']) if abs(q['lat']-lat)<.0003 and abs(q['lng']-lng)<.0003 and q['radius_m']==radius and _salt_overpass_cache_usable_v630(q)),None)
                 if cached and not st.session_state.get("salt_discovery_refresh_v617"):
                     _salt_discovery_cache_log_v617(cached)
                     st.info("3か月の保存期間内のパン屋情報を表示しています。更新する場合は「保存済みでも再検索」を選んでください。")
@@ -56614,6 +56695,11 @@ def page_salt_bread_v609():
     candidates_saved = _salt_discovery_rows_v617(discovery)
     if candidates_saved:
         st.caption(f"保存中のパン屋 {len(candidates_saved)}店")
+        latest = discovery['searches'][-1] if discovery.get('searches') else {}
+        if latest.get('provider') == 'Photon':
+            st.caption('直近の取得元：Photon（代替検索・返却上限50件）。再検索ではOverpassを優先します。')
+        elif latest.get('provider') == 'Overpass':
+            st.caption('直近の取得元：Overpass')
     st.caption('黄色枠：また行ってみたい（再訪したい）　灰枠：行ったことがある　薄い灰枠：未設定。ピンをタップして変更できます。付けた印は検索結果の保存期限後も残ります。')
     candidate = st.session_state.get("_salt_candidate_v609")
     try:
@@ -56883,36 +56969,33 @@ def _salt_photon_document_v609(web,query):
         exc.landmark_diagnostic=info
         raise
 
-def _salt_name_document_v609(web,query,pattern):
-    if GOOGLE_PLACES_API_KEY:
-        try:
-            google_doc, google_info = _salt_google_document_v613(web, query)
-            if google_doc['elements']:
-                return google_doc, google_info
-        except Exception:
-            # Google failure is logged; the independent OSM search remains usable.
-            pass
+def _salt_name_document_v609(web, query, pattern):
+    # Bakery-map name searches use the same free provider order, regardless of
+    # whether other app features have a Google API key configured.
+    web.deadline = time.monotonic() + 130
+    bbox = '(35.45,139.4,35.95,140.05)'
+    literal = json.dumps(pattern, ensure_ascii=False)
+    keys = ('name', 'name:ja', 'name:en', 'alt_name', 'short_name', 'brand')
+    q = '[out:json][timeout:25][maxsize:33554432];(' + ''.join(
+        'nwr["'+key+'"~'+literal+',i]'+bbox+';' for key in keys) + ');out center tags;'
     try:
-        for attempt in range(2):
-            try:
-                doc,info=_salt_photon_document_v609(web,query)
-                break
-            except Exception as retry_exc:
-                detail=getattr(retry_exc,'landmark_diagnostic',{}) or {}
-                if attempt or not _salt_transient_v612(retry_exc) or time.monotonic() >= getattr(web,'deadline',float('inf')):
-                    raise
-                _salt_trace_v609(web,'landmark_retry',{'provider':'Photon','attempt':2,'reason':str(retry_exc),'status':detail.get('status')},'WARNING','landmark.name_search')
-        if doc['elements']:return doc,info
-        if len(query.split()) > 1:
-            doc,info=_salt_photon_document_v609(web,query.split()[0])
-            if doc['elements']:return doc,info
-        _salt_trace_v609(web,'landmark_geocoder_empty',{'query':query,'provider':'Photon','next_provider':'Overpass'},stage='landmark.name_search')
+        doc, info = _salt_overpass_request_v630(web, q)
+        if doc['elements']:
+            return doc, info
+        reason = 'Overpassに該当する店名がありませんでした。'
     except Exception as exc:
-        detail={**(getattr(exc,'diagnostic',{}) or {}),**(getattr(exc,'landmark_diagnostic',{}) or {}),**_salt_exception_details_v609(exc)}
-        _salt_trace_v609(web,'landmark_geocoder_failed',{**detail,'query':query,'provider':'Photon','reason':str(exc),'exception_type':type(exc).__name__},'ERROR','landmark.name_search')
-        status=detail.get('status') or getattr(exc,'code',None)
-        if str(status) in ('401','403','429'):raise
-    return _salt_overpass_document_v609(web,query,pattern)
+        if not _salt_transient_v612(exc):
+            raise
+        reason = str(exc)
+    _salt_trace_v609(web, 'landmark_provider_fallback', {
+        'query': query, 'from_provider': 'Overpass', 'next_provider': 'Photon',
+        'reason': reason}, 'WARNING', 'landmark.name_search')
+    web.deadline = time.monotonic() + 15
+    doc, info = _salt_photon_document_v609(web, query)
+    if not doc['elements'] and len(query.split()) > 1:
+        doc, info = _salt_photon_document_v609(web, query.split()[0])
+    return doc, info
+
 
 def _salt_overpass_document_v609(web,query,pattern):
     """ASCII names use case-insensitive substring/English-alias lookup directly.
