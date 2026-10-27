@@ -1,3 +1,4 @@
+# v631: Bakery search and persistence both run in an owner-captured background worker; reopening the map refreshes its cache.
 # v630: Bakery search uses Overpass first, Photon only after transient failures; bounded queue-aware retries, exact radius and background polling.
 # v629: Compact bakery popup with directions, visited and edit; secondary status/photo/hide controls shown only after Edit.
 # v628: Bakery map; show every bakery without salt-bread filters or product crawling. Preserve existing storage, records, ranks and revisit marks.
@@ -85,7 +86,7 @@ def _app_css_v473(markup, **_ignored):
 # Review menu-only update: 2026-09-19 JST
 GENERATED_UPDATE_JST = "2026-09-19T14:54:38+09:00"
 
-APP_BUILD = "v630"
+APP_BUILD = "v631"
 # v598: Passing the focus gate is mandatory before any weighted ranking or reroll.
 # Never fill the twenty-image target with focus-rejected candidates.
 # v597: Compare 30 FPS candidates across the whole saved video offline. Disk-backed
@@ -56483,55 +56484,121 @@ def _salt_discovery_jobs_v617():
     return {"executor":ThreadPoolExecutor(max_workers=2,thread_name_prefix="salt-discovery"),"jobs":{},"lock":threading.RLock()}
 
 
+def _salt_discovery_persist_v631(result, owner, bucket, lock):
+    """Persist an owner-captured result without accessing Streamlit session state."""
+    prefix = 'salt_bread_v609/' + owner
+    options = {'content-type': GPS_TRACK_STORAGE_MIME, 'upsert': 'true', 'cache-control': '0'}
+    log_name = re.sub(r'[^0-9]', '', result['searched_at'][:19]) + '_' + result['id'] + '.json'
+    public_result = {k: v for k, v in result.items() if not k.startswith('_background_')}
+    log = public_result if result.get('error') else {k: v for k, v in public_result.items() if k != 'results'}
+    bucket.upload(path=prefix+'/search_logs/'+log_name,
+        file=json.dumps(log, ensure_ascii=False).encode(), file_options=options)
+    if result.get('error'):
+        return
+    with lock:
+        try:
+            raw = bucket.download(prefix+'/discovery.json')
+        except Exception as exc:
+            if not _salt_missing_v609(exc):
+                raise
+            doc = {'owner': owner, 'searches': [], 'hidden': []}
+        else:
+            doc = json.loads(_storage_bytes(raw).decode())
+            if (not isinstance(doc, dict) or doc.get('owner') != owner
+                    or not isinstance(doc.get('searches'), list) or not isinstance(doc.get('hidden'), list)):
+                raise ValueError('保存済み検索結果を確認できません。上書きせず停止しました。')
+        # Fresh read plus the same lock as map actions preserves hidden pins and
+        # another search saved while this network request was in progress.
+        active = [row for row in doc['searches']
+                  if datetime.fromisoformat(row['expires_at']) > now_jst() and row['id'] != result['id']]
+        doc['searches'] = active + [public_result]
+        bucket.upload(path=prefix+'/discovery.json', file=json.dumps(doc, ensure_ascii=False).encode(), file_options=options)
+
+
+
+def _salt_discovery_worker_v631(lat, lng, radius, progress, owner, bucket, lock):
+    try:
+        result = _salt_discover_v617(lat, lng, radius, progress)
+    except Exception as exc:
+        result = {'id': uuid.uuid4().hex, 'searched_at': now_jst().isoformat(),
+                  'error': str(exc), 'logs': getattr(exc, 'salt_logs', [])}
+    return _salt_discovery_save_result_v631(result, progress, owner, bucket, lock)
+
+
+
+def _salt_discovery_save_result_v631(result, progress, owner, bucket, lock):
+    progress['message'] = '検索結果・ログをバックグラウンドで保存しています。'
+    try:
+        _salt_discovery_persist_v631(result, owner, bucket, lock)
+        result['_background_saved'] = True
+        progress['message'] = '検索結果・ログの保存が完了しました。'
+    except Exception as exc:
+        # Retain the result in the completed future. On reopening the map only
+        # persistence is retried; the provider search is never repeated.
+        result['_background_saved'] = False
+        result['_background_save_error'] = _safe_error_text(str(exc), 1000)
+        progress['message'] = '検索は終了しました。保存の再試行が必要です。'
+    return result
+
+
+
 def _salt_discovery_start_v617(lat, lng, radius):
     owner = _salt_owner_v609()
     registry = _salt_discovery_jobs_v617()
+    # Capture account and storage on the UI thread. Background workers must not
+    # read whichever account happens to be active when their request finishes.
+    bucket = supabase_client().storage.from_(GPS_TRACK_BUCKET)
+    lock = _salt_write_lock_v609()
     with registry['lock']:
-        # A completed job can still hold an unsaved result. Retain it until the
-        # collector has saved both result and log, without another API call.
         if owner in registry['jobs']:
             return
         progress = {'message': 'Overpass検索を開始しています。', 'started_at': time.monotonic()}
         registry['jobs'][owner] = {'progress': progress,
-            'future': registry['executor'].submit(_salt_discover_v617, lat, lng, radius, progress)}
+            'future': registry['executor'].submit(_salt_discovery_worker_v631,
+                lat, lng, radius, progress, owner, bucket, lock)}
+
 
 
 
 
 
 def _salt_discovery_collect_v617():
-    owner=_salt_owner_v609();registry=_salt_discovery_jobs_v617()
+    owner = _salt_owner_v609()
+    registry = _salt_discovery_jobs_v617()
     with registry['lock']:
-        job=registry['jobs'].get(owner)
-    if not job or not job['future'].done() or time.monotonic()<job.get('retry_at',0):return False
-    # Do not discard a completed result until Storage writes succeed; a retry can
-    # save the same immutable log/result without issuing another provider request.
+        job = registry['jobs'].get(owner)
+    if not job or not job['future'].done():
+        return False
     try:
-        result=job['future'].result()
+        result = job['future'].result()
     except Exception as exc:
-        result={"id":uuid.uuid4().hex,"searched_at":now_jst().isoformat(),"error":str(exc),"logs":getattr(exc,'salt_logs',[])}
-        job['result']=job.get('result') or result
-        result=job['result']
+        result = job.get('result') or {'id': uuid.uuid4().hex,
+            'searched_at': now_jst().isoformat(), 'error': str(exc), 'logs': getattr(exc, 'salt_logs', [])}
+        job['result'] = result
     try:
-        bucket=supabase_client().storage.from_(GPS_TRACK_BUCKET)
-        bucket.upload(path=_salt_prefix_v609()+"/search_logs/"+re.sub(r"[^0-9]","",result["searched_at"][:19])+"_"+result['id']+".json",file=json.dumps(result if result.get('error') else {k:v for k,v in result.items() if k!='results'},ensure_ascii=False).encode(),
-            file_options={"content-type":GPS_TRACK_STORAGE_MIME,"upsert":"true","cache-control":"0"})
-        if not result.get('error'):
-            with _salt_write_lock_v609():
-                doc=_salt_discovery_load_v617(force=True)
-                doc['searches']=[s for s in doc['searches'] if s['id']!=result['id']]+[result]
-                _salt_discovery_write_v617(doc)
-        st.session_state['_salt_discovery_notice_v617']=result.get('error') or f"パン屋 {len(result['results'])}店を保存しました。地図にピンを表示します。"
+        if not result.get('_background_saved'):
+            if time.monotonic() < job.get('retry_at', 0):
+                return False
+            job['retry_at'] = time.monotonic()+30
+            job['future'] = registry['executor'].submit(_salt_discovery_save_result_v631,
+                result, job.get('progress', {}), owner,
+                supabase_client().storage.from_(GPS_TRACK_BUCKET), _salt_write_lock_v609())
+            return False
+        # The map may have cached the old document before navigation away.
+        st.session_state.pop('_salt_discovery_v617_'+owner, None)
+        st.session_state['_salt_discovery_notice_v617'] = result.get('error') or f"パン屋 {len(result['results'])}店を保存しました。地図にピンを表示します。"
         if result.get('partial_results'):
-            st.session_state['_salt_discovery_notice_v617'] += " 代替検索の候補です。周辺全店舗の網羅は保証されません。"
+            st.session_state['_salt_discovery_notice_v617'] += ' 代替検索の候補です。周辺全店舗の網羅は保証されません。'
         with registry['lock']:
-            if registry['jobs'].get(owner) is job:registry['jobs'].pop(owner,None)
+            if registry['jobs'].get(owner) is job:
+                registry['jobs'].pop(owner, None)
         return True
     except Exception as exc:
-        job['retry_at']=time.monotonic()+30
-        _app_error_record_v610('salt.discovery_save',exc)
-        st.warning('検索結果・ログを保存できませんでした。再試行すると検索せず保存を再開します。')
+        job['retry_at'] = time.monotonic()+30
+        _app_error_record_v610('salt.discovery_save', exc)
+        st.warning('検索結果・ログを保存できませんでした。検索を繰り返さず、保存を再試行します。')
         return False
+
 
 
 
@@ -56552,7 +56619,7 @@ def _salt_discovery_progress_v617():
     elapsed = max(0, int(time.monotonic()-progress.get('started_at', time.monotonic())))
     message = ('検索結果・ログの保存を再試行待ちです。' if job.get('retry_at')
                else progress.get('message', 'Overpassで周辺のパン屋を検索しています。'))
-    st.info(f'{message}（{elapsed}秒経過）戻る操作も使えます。')
+    st.info(f'{message}（{elapsed}秒経過）別画面に移動しても、アプリを開いている間は検索・保存を続けます。')
 
 
 
