@@ -1,3 +1,4 @@
+# v636: Retain store-level search evidence and export current pin provenance without family photos/notes.
 # v635: Set bakery initial center and zoom atomically without bounds-fit animations; preview/return viewport is immediate.
 # v634: Bakery map defaults to zoom 14; preserve preview and detail-return zoom.
 # v633: Exclude explicit inactive stores; complete Overpass refresh replaces old candidates within its circle, preserving other areas and private records.
@@ -90,7 +91,7 @@ def _app_css_v473(markup, **_ignored):
 # Review menu-only update: 2026-09-19 JST
 GENERATED_UPDATE_JST = "2026-09-19T14:54:38+09:00"
 
-APP_BUILD = "v635"
+APP_BUILD = "v636"
 # v598: Passing the focus gate is mandatory before any weighted ranking or reroll.
 # Never fill the twenty-image target with focus-rejected candidates.
 # v597: Compare 30 FPS candidates across the whole saved video offline. Disk-backed
@@ -56312,8 +56313,9 @@ def _salt_discovery_rows_v617(doc):
             continue
         for row in search.get("results", []):
             if row["id"] not in doc.get("hidden", []):
-                rows[row["id"]] = {**row, "searched_at": search["searched_at"], "expires_at": search["expires_at"]}
+                rows[row["id"]] = {**row, "searched_at": search["searched_at"], "expires_at": search["expires_at"], "search_id":search["id"], "provider":search.get("provider"), "partial_results":bool(search.get("partial_results"))}
     return list(rows.values())
+
 
 
 
@@ -56556,7 +56558,7 @@ def _salt_discover_v617(lat, lng, radius, progress=None):
                 reason = _salt_closed_reason_v633(tags)
                 if reason:
                     closed.append({'osm_id':identity,'name':name,'reason':reason,
-                        'id':'candidate_'+hashlib.sha256(identity.encode()).hexdigest()[:24]})
+                        'id':'candidate_'+hashlib.sha256(identity.encode()).hexdigest()[:24], 'source_tags':dict(tags)})
                     continue
                 if not name or identity in seen:continue
                 seen.add(identity)
@@ -56564,17 +56566,18 @@ def _salt_discover_v617(lat, lng, radius, progress=None):
                 website = str(tags.get('website') or tags.get('contact:website') or '')
                 results.append({"id":"candidate_"+hashlib.sha256(identity.encode()).hexdigest()[:24],"name":name,"address":address,
                     "lat":plat,"lng":plng,"source":str(info.get('provider') or 'OpenStreetMap')+" / OpenStreetMap","osm_id":identity,"website":website,"photo_ref":_salt_commons_photo_ref_v632(tags),
-                    "checked_at":now_jst().isoformat(),"operating_status":"unverified"})
+                    "checked_at":now_jst().isoformat(),"operating_status":"unverified","source_tags":dict(tags)})
             except (KeyError,TypeError,ValueError):continue
         results.sort(key=lambda row:row['name'])
         at=now_jst()
         _salt_trace_v609(web,"bakery_search_complete",{"count":len(results),"received":len(data["elements"]),"outside_radius":outside_radius,"inactive_excluded":closed})
         return {"id":uuid.uuid4().hex,"lat":lat,"lng":lng,"radius_m":radius,"searched_at":at.isoformat(),
-            "expires_at":_salt_expiry_v617(at).isoformat(),"status_filter_version":1,"closed_candidate_ids":[row["id"] for row in closed],"search_scope":"bakery","provider":info.get('provider'),"partial_results":bool(info.get('partial_results')),"osm_base_timestamp":info.get("osm_base_timestamp"),"results":results,"logs":web.logs}
+            "expires_at":_salt_expiry_v617(at).isoformat(),"diagnostic_schema":2,"status_filter_version":1,"closed_candidate_ids":[row["id"] for row in closed],"search_scope":"bakery","provider":info.get('provider'),"partial_results":bool(info.get('partial_results')),"osm_base_timestamp":info.get("osm_base_timestamp"),"results":results,"logs":web.logs}
     except Exception as exc:
         error=RuntimeError("パン屋情報を取得できませんでした。保存済みのピンは引き続き表示します。検索ログを設定から出力できます。")
         error.salt_logs=web.logs+[{"event":"bakery_search_failed","error":str(exc)}]
         raise error from exc
+
 
 
 
@@ -56590,7 +56593,8 @@ def _salt_discovery_persist_v631(result, owner, bucket, lock):
     options = {'content-type': GPS_TRACK_STORAGE_MIME, 'upsert': 'true', 'cache-control': '0'}
     log_name = re.sub(r'[^0-9]', '', result['searched_at'][:19]) + '_' + result['id'] + '.json'
     public_result = {k: v for k, v in result.items() if not k.startswith('_background_')}
-    log = public_result if result.get('error') else {k: v for k, v in public_result.items() if k != 'results'}
+    # Individual results must survive log export, including after cache expiry/reconciliation.
+    log = {**public_result, 'diagnostic_schema':2, 'persistence_state':'search_failed' if result.get('error') else 'pending'}
     bucket.upload(path=prefix+'/search_logs/'+log_name,
         file=json.dumps(log, ensure_ascii=False).encode(), file_options=options)
     if result.get('error'):
@@ -56614,6 +56618,12 @@ def _salt_discovery_persist_v631(result, owner, bucket, lock):
         _salt_reconcile_searches_v633(active, public_result)
         doc['searches'] = active + [public_result]
         bucket.upload(path=prefix+'/discovery.json', file=json.dumps(doc, ensure_ascii=False).encode(), file_options=options)
+
+    log['persistence_state'] = 'saved'
+    log['persisted_at'] = now_jst().isoformat()
+    bucket.upload(path=prefix+'/search_logs/'+log_name,
+        file=json.dumps(log, ensure_ascii=False).encode(), file_options=options)
+
 
 
 
@@ -56728,6 +56738,49 @@ def _salt_discovery_progress_v617():
 
 
 
+def _salt_diagnostic_export_v636(logs):
+    """Read current store state on explicit export, never on a map render."""
+    owner = _salt_owner_v609()
+    prefix = 'salt_bread_v609/' + owner
+    report = {'schema_version': 2, 'exported_at': now_jst().isoformat(),
+              'search_logs': logs, 'snapshot_kind': 'current_storage_at_export',
+              'limitations': ['Legacy search logs may omit individual results. A current snapshot is not a historical screen capture.',
+                              'Acquisition time and OSM classification do not prove a store is operating.']}
+    try:
+        bucket = supabase_client().storage.from_(GPS_TRACK_BUCKET)
+        def read_doc(name, fallback):
+            try:
+                value = json.loads(_storage_bytes(bucket.download(prefix+'/'+name)).decode())
+            except Exception as exc:
+                if _salt_missing_v609(exc):
+                    return fallback
+                raise
+            if not isinstance(value, dict) or value.get('owner') != owner:
+                raise ValueError('診断データの所有者を確認できません。')
+            return value
+        discovery = read_doc('discovery.json', {'owner':owner, 'searches':[], 'hidden':[]})
+        doc = read_doc('map.json', {'owner':owner, 'entries':{}, 'order':[], 'shop_states':{}})
+        # Preserve matching/status behaviour, without reading image URLs or exporting family notes/photos.
+        safe_doc = {'entries':{}, 'order':list(doc['order']), 'shop_states':doc.get('shop_states') or {}}
+        for key, entry in doc['entries'].items():
+            safe_doc['entries'][key] = {k:entry[k] for k in
+                ('id','name','address','lat','lng','shop_state_key','pin_hidden','again') if k in entry}
+            safe_doc['entries'][key]['visits'] = [{}] if entry.get('visits') else []
+        pins = []
+        for row in _salt_map_cards_v622(safe_doc, discovery):
+            pin = {k:v for k,v in row.items() if k not in ('src','note','photo_ref')}
+            pin['visible'] = not bool(row.get('pin_hidden'))
+            pin['display_origin'] = ('saved_visit_status' if row.get('status_only') else
+                                     'saved_search_result' if row.get('candidate') else 'personal_record')
+            pins.append(pin)
+        report['current_snapshot'] = {'read_at':now_jst().isoformat(),
+            'searches':discovery['searches'], 'hidden_candidate_ids':discovery['hidden'], 'map_pins':pins}
+    except Exception as exc:
+        # Logs remain exportable when current storage cannot be read; never present a partial snapshot as complete.
+        report['snapshot_error'] = _safe_error_text(str(exc), 1000)
+    return report
+
+
 def _salt_discovery_logs_settings_v617():
     with st.expander('パン屋マップの検索ログ'):
         if st.button('保存済み検索ログを読み込む',key='salt_discovery_logs_v617'):
@@ -56743,19 +56796,21 @@ def _salt_discovery_logs_settings_v617():
                 for item in files:
                     name=str(item.get('name') or '')
                     if re.fullmatch(r'[0-9]{14}_[0-9a-f]{32}\.json',name):logs.append(json.loads(_storage_bytes(bucket.download(folder+'/'+name)).decode()))
-                st.session_state['_salt_discovery_logs_v617_'+_salt_owner_v609()]=logs
+                st.session_state['_salt_discovery_logs_v617_'+_salt_owner_v609()]=_salt_diagnostic_export_v636(logs)
             except Exception as exc:st.error(str(exc))
         logs=st.session_state.get('_salt_discovery_logs_v617_'+_salt_owner_v609())
         if logs is not None:st.download_button('パン屋検索ログを出力（JSON）',json.dumps(logs,ensure_ascii=False,indent=2),'bakery_search_logs.json','application/json')
 
 
+
 def _salt_discovery_cache_log_v617(search):
     at=now_jst();identity=uuid.uuid4().hex
-    log={"id":identity,"searched_at":at.isoformat(),"logs":[{"event":"saved_search_reused","detail":{
+    log={"diagnostic_schema":2,"provider":search.get("provider"),"results":search.get("results",[]),"id":identity,"searched_at":at.isoformat(),"logs":[{"event":"saved_search_reused","detail":{
         "search_id":search['id'],"lat":search['lat'],"lng":search['lng'],"radius_m":search['radius_m'],"expires_at":search['expires_at']}}]}
     supabase_client().storage.from_(GPS_TRACK_BUCKET).upload(
         path=_salt_prefix_v609()+"/search_logs/"+at.strftime('%Y%m%d%H%M%S')+"_"+identity+".json",
         file=json.dumps(log,ensure_ascii=False).encode(),file_options={"content-type":GPS_TRACK_STORAGE_MIME,"upsert":"true","cache-control":"0"})
+
 
 
 def page_salt_bread_v609():
