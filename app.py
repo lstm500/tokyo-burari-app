@@ -1,3 +1,6 @@
+# v640: Bounded nested function/I-O/queue/lock diagnostics; one-click combined HTTP export with on-demand serialization.
+# v639: Google Places for explicit shop-name searches only; isolated attributed results, bounded monthly calls, unchanged OSM discovery.
+# v638: Enrich Photon candidates from original OSM objects before strict existence checks; support proxy DNS without skipping public-host validation.
 # v637: Strict official-listing existence checks; unconfirmed/expired shops never become default map pins.
 # v636: Retain store-level search evidence and export current pin provenance without family photos/notes.
 # v635: Set bakery initial center and zoom atomically without bounds-fit animations; preview/return viewport is immediate.
@@ -92,7 +95,7 @@ def _app_css_v473(markup, **_ignored):
 # Review menu-only update: 2026-09-19 JST
 GENERATED_UPDATE_JST = "2026-09-19T14:54:38+09:00"
 
-APP_BUILD = "v637"
+APP_BUILD = "v640"
 # v598: Passing the focus gate is mandatory before any weighted ranking or reroll.
 # Never fill the twenty-image target with focus-rejected candidates.
 # v597: Compare 30 FPS candidates across the whole saved video offline. Disk-backed
@@ -2449,13 +2452,13 @@ def set_photo_favorite(photo_id, enabled=True):
 
     client = supabase_client()
     rows = (
-        client.table(PHOTO_TABLE)
+        _diag_invoke_v640('execute:set_photo_favorite:L2454', lambda: (client.table(PHOTO_TABLE)
         .select("id,reflection_json")
         .eq("id", photo_id)
         .eq("family_key", current_family_key())
         .eq("member_key", current_member_key())
         .limit(1)
-        .execute()
+        .execute()))
     ).data or []
     row = rows[0] if rows else None
     if not isinstance(row, dict) or not row.get("id"):
@@ -2506,12 +2509,12 @@ def set_photo_favorite(photo_id, enabled=True):
         reflection.pop("ai_tags", None)
 
     (
-        client.table(PHOTO_TABLE)
+        _diag_invoke_v640('execute:set_photo_favorite:L2511', lambda: (client.table(PHOTO_TABLE)
         .update({"reflection_json": reflection})
         .eq("id", photo_id)
         .eq("family_key", current_family_key())
         .eq("member_key", current_member_key())
-        .execute()
+        .execute()))
     )
     signed_photo_url_map.clear()
     _invalidate_fast_db_cache()
@@ -2639,13 +2642,13 @@ def set_photo_family_share(photo_id, enabled=True, emotion_key=None, parenting_k
 
     client = supabase_client()
     row = (
-        client.table(PHOTO_TABLE)
+        _diag_invoke_v640('execute:set_photo_family_share:L2644', lambda: (client.table(PHOTO_TABLE)
         .select("id,trip_id,storage_path,reflection_json")
         .eq("id", photo_id)
         .eq("family_key", current_family_key())
         .eq("member_key", current_member_key())
         .limit(1)
-        .execute()
+        .execute()))
     ).data or []
     photo = row[0] if row else None
     if not isinstance(photo, dict) or not photo.get("id"):
@@ -2695,12 +2698,12 @@ def set_photo_family_share(photo_id, enabled=True, emotion_key=None, parenting_k
         reflection.pop(PHOTO_FAMILY_SHARE_KEY, None)
 
     (
-        client.table(PHOTO_TABLE)
+        _diag_invoke_v640('execute:set_photo_family_share:L2700', lambda: (client.table(PHOTO_TABLE)
         .update({"reflection_json": reflection})
         .eq("id", photo_id)
         .eq("family_key", current_family_key())
         .eq("member_key", current_member_key())
-        .execute()
+        .execute()))
     )
     _invalidate_fast_db_cache()
     return bool(enabled)
@@ -2719,13 +2722,13 @@ def list_family_shared_photos(limit=90):
     query_limit = max(180, min(800, requested * 6))
     try:
         rows = (
-            supabase_client()
+            _diag_invoke_v640('execute:list_family_shared_photos:L2724', lambda: (supabase_client()
             .table(PHOTO_TABLE)
             .select("id,member_key,trip_id,storage_path,captured_at,reflection_json,signals_json")
             .eq("family_key", current_family_key())
             .order("captured_at", desc=True)
             .limit(query_limit)
-            .execute()
+            .execute()))
         ).data or []
     except Exception:
         return []
@@ -2914,9 +2917,9 @@ def _invalidate_monthly_review_for_trip(trip_id):
         if not month_key:
             return
         first_day, _ = month_bounds(month_key)
-        supabase_client().table(MONTHLY_TABLE).delete().eq(
+        _diag_invoke_v640('execute:_invalidate_monthly_review_for_trip:L2919', lambda: (supabase_client().table(MONTHLY_TABLE).delete().eq(
             "review_month", first_day
-        ).eq("family_key", current_family_key()).eq("member_key", current_member_key()).execute()
+        ).eq("family_key", current_family_key()).eq("member_key", current_member_key()).execute()))
         _invalidate_fast_db_cache()
         for key in (
             f"monthly_review_{month_key}",
@@ -2946,13 +2949,13 @@ def update_photo_emotion(photo_id, emotion_key, trip_id=None, refresh_related=Tr
 
     client = supabase_client()
     query = (
-        client
+        _diag_invoke_v640('execute:update_photo_emotion:L2951', lambda: (client
         .table(PHOTO_TABLE)
         .select("id,trip_id,reflection_json")
         .eq("id", photo_id)
         .eq("family_key", current_family_key()).eq("member_key", current_member_key())
         .limit(1)
-        .execute()
+        .execute()))
     )
     row = (query.data or [None])[0] or {}
     if not row.get("id"):
@@ -2970,12 +2973,12 @@ def update_photo_emotion(photo_id, emotion_key, trip_id=None, refresh_related=Tr
     reflection = _sync_photo_family_share_tag_snapshot(reflection)
 
     (
-        client
+        _diag_invoke_v640('execute:update_photo_emotion:L2975', lambda: (client
         .table(PHOTO_TABLE)
         .update({"reflection_json": reflection})
         .eq("id", photo_id)
         .eq("family_key", current_family_key()).eq("member_key", current_member_key())
-        .execute()
+        .execute()))
     )
     if refresh_related:
         _refresh_after_photo_emotion_changes([resolved_trip_id] if resolved_trip_id else [])
@@ -3006,12 +3009,12 @@ def update_photo_emotions_batch(changes, valid_photo_ids=None, trip_id=None):
     if not touched_trips:
         try:
             rows = (
-                supabase_client().table(PHOTO_TABLE)
+                _diag_invoke_v640('execute:update_photo_emotions_batch:L3011', lambda: (supabase_client().table(PHOTO_TABLE)
                 .select("id,trip_id")
                 .in_("id", list(latest.keys()))
                 .eq("family_key", current_family_key())
                 .eq("member_key", current_member_key())
-                .execute()
+                .execute()))
             ).data or []
             touched_trips.update(str(row.get("trip_id") or "") for row in rows if row.get("trip_id"))
         except Exception:
@@ -3028,12 +3031,12 @@ def update_photo_parenting_tag(photo_id, tag_key, trip_id=None, refresh_related=
 
     client = supabase_client()
     query = (
-        client.table(PHOTO_TABLE)
+        _diag_invoke_v640('execute:update_photo_parenting_tag:L3033', lambda: (client.table(PHOTO_TABLE)
         .select("id,trip_id,reflection_json")
         .eq("id", photo_id)
         .eq("family_key", current_family_key()).eq("member_key", current_member_key())
         .limit(1)
-        .execute()
+        .execute()))
     )
     row = (query.data or [None])[0] or {}
     if not row.get("id"):
@@ -3051,11 +3054,11 @@ def update_photo_parenting_tag(photo_id, tag_key, trip_id=None, refresh_related=
     reflection = _sync_photo_family_share_tag_snapshot(reflection)
 
     (
-        client.table(PHOTO_TABLE)
+        _diag_invoke_v640('execute:update_photo_parenting_tag:L3056', lambda: (client.table(PHOTO_TABLE)
         .update({"reflection_json": reflection})
         .eq("id", photo_id)
         .eq("family_key", current_family_key()).eq("member_key", current_member_key())
-        .execute()
+        .execute()))
     )
     if refresh_related:
         _refresh_after_photo_emotion_changes([resolved_trip_id] if resolved_trip_id else [])
@@ -3084,12 +3087,12 @@ def update_photo_parenting_tags_batch(changes, valid_photo_ids=None, trip_id=Non
     if not touched_trips:
         try:
             rows = (
-                supabase_client().table(PHOTO_TABLE)
+                _diag_invoke_v640('execute:update_photo_parenting_tags_batch:L3089', lambda: (supabase_client().table(PHOTO_TABLE)
                 .select("id,trip_id")
                 .in_("id", list(latest.keys()))
                 .eq("family_key", current_family_key())
                 .eq("member_key", current_member_key())
-                .execute()
+                .execute()))
             ).data or []
             touched_trips.update(str(row.get("trip_id") or "") for row in rows if row.get("trip_id"))
         except Exception:
@@ -3277,13 +3280,13 @@ def consume_pending_emotion_query():
                     continue
 
                 row = (
-                    supabase_client().table(PHOTO_TABLE)
+                    _diag_invoke_v640('execute:consume_pending_emotion_query:L3282', lambda: (supabase_client().table(PHOTO_TABLE)
                     .select("*")
                     .eq("id", vid)
                     .eq("family_key", current_family_key())
                     .eq("member_key", current_member_key())
                     .limit(1)
-                    .execute()
+                    .execute()))
                 ).data or []
                 video_photo = row[0] if row else None
                 if video_photo and photo_is_video(video_photo):
@@ -3562,13 +3565,13 @@ def _apply_pending_tag_payload_v166(payload):
                 if not emotion_changes and not parenting_rank_changes:
                     continue
                 row = (
-                    supabase_client().table(PHOTO_TABLE)
+                    _diag_invoke_v640('execute:_apply_pending_tag_payload_v166:L3567', lambda: (supabase_client().table(PHOTO_TABLE)
                     .select("*")
                     .eq("id", vid)
                     .eq("family_key", current_family_key())
                     .eq("member_key", current_member_key())
                     .limit(1)
-                    .execute()
+                    .execute()))
                 ).data or []
                 video_photo = row[0] if row else None
                 if video_photo and photo_is_video(video_photo):
@@ -3614,9 +3617,9 @@ def sync_pending_tags_from_browser_v166():
 # Streamlit session-state navigation does not create browser history entries by
 # itself. This small component mirrors each app screen into window.history so
 # Chrome/Safari back and forward buttons move between app screens first.
-_PERF_BROWSER_JS_V466 = 'function installBurariPerf466(host, page, run, serverSession, serverDetails={}) {\n  const KEY=\'__burariPerf466\', STORE=\'burari_perf_v466\';\n  if(host[KEY]) { host[KEY].run(page,run,serverSession,serverDetails); return host[KEY]; }\n  const doc=host.document, mono=()=>host.performance.now(), rounded=x=>Math.round(x*10)/10;\n  const boot=host.crypto?.randomUUID?.() || Date.now().toString(36)+\'-\'+Math.random().toString(36).slice(2);\n  let seq=0, rows=[], dropped=0, persistenceError=false, active=null, current={page,run:Number(run)||0,session:serverSession};\n  let deadline=null, quiet=null, persistTimer=null, checking=false, pointer=null;\n  // Passive, bounded diagnostics. No network request or Streamlit trigger is added.\n  const diagEvents603=[];\n  let diagDropped603=0,diagLagTimer603=null,diagMutations603=0,diagObserverMs603=0;\n  const diagCapabilities603={longtask:false,event:false,resource:false,socket_send:false};\n  function diagEvent603(kind, detail={}, at=mono()) {\n    const item={kind,at_ms:rounded(at),wall_ms:Math.round(host.performance.timeOrigin+at),...detail};\n    if(active){item.operation_id=active.row.id;item.since_press_ms=rounded(at-active.start);}\n    diagEvents603.push(item);\n    if(diagEvents603.length>400){diagEvents603.shift();diagDropped603++;}\n  }\n  function blocked603(reason){\n    if(active){active.row.endpoint_blocker=reason;active.row.endpoint_checked_ms=rounded(mono()-active.start);}\n    return null;\n  }\n  function startLag603(){\n    host.clearTimeout(diagLagTimer603);\n    if(!active || doc.hidden)return;\n    const expected=mono()+250;\n    diagLagTimer603=host.setTimeout(()=>{\n      if(!active || doc.hidden)return;\n      const delay=mono()-expected;\n      if(delay>=150)diagEvent603(\'event_loop_delay\',{delay_ms:rounded(delay)});\n      startLag603();\n    },250);\n  }\n  function installDiagnostics603(){\n    diagEvent603(\'server_run_seen\',{run:current.run,page:current.page,server_sent_ms:serverDetails.server_sent_ms||null,script_started_ms:serverDetails.script_started_ms||null});\n    const supported=host.PerformanceObserver?.supportedEntryTypes||[];\n    function observe(type, callback, extra={}){\n      if(!supported.includes(type))return;\n      try{const observer=new host.PerformanceObserver(list=>safe(()=>callback(list.getEntries())));\n        observer.observe({type,buffered:false,...extra});diagCapabilities603[type]=true;\n      }catch(_){}\n    }\n    observe(\'longtask\',entries=>{\n      for(const e of entries)diagEvent603(\'long_task\',{duration_ms:rounded(e.duration),attribution_available:!!e.attribution?.length},e.startTime);\n    });\n    observe(\'event\',entries=>{\n      for(const e of entries)if([\'pointerdown\',\'pointerup\',\'click\',\'keydown\'].includes(e.name))\n        diagEvent603(\'input_timing\',{event:e.name,duration_ms:rounded(e.duration),queue_ms:rounded(Math.max(0,e.processingStart-e.startTime)),handler_ms:rounded(Math.max(0,e.processingEnd-e.processingStart))},e.startTime);\n    },{durationThreshold:16});\n    observe(\'resource\',entries=>{\n      for(const e of entries){\n        if(e.duration<200 && !(e.responseStatus>=400))continue;\n        let origin=\'\';try{origin=new URL(e.name).origin;}catch(_){}\n        // Do not store paths/query strings, signed URLs, bodies, media IDs or tokens.\n        diagEvent603(\'resource_finished\',{initiator:String(e.initiatorType||\'\'),origin,duration_ms:rounded(e.duration),start_ms:rounded(e.startTime),response_start_ms:rounded(e.responseStart),transfer_bytes:e.transferSize||0,status:Number(e.responseStatus)||null,timing_details_available:e.responseStart>0},e.startTime+e.duration);\n      }\n    });\n    // Observe the existing socket on its next normal send. Never decode its payload.\n    try{\n      const proto=host.WebSocket?.prototype;\n      if(proto && typeof proto.send===\'function\'){\n        const original=proto.send,seen=new WeakSet();\n        proto.send=function(...args){\n          const socket=this;\n          safe(()=>{\n            if(!seen.has(socket)){\n              seen.add(socket);\n              socket.addEventListener(\'message\',event=>safe(()=>{\n                if(!active)return;\n                if(active.row.socket_first_message_ms==null)active.row.socket_first_message_ms=rounded(mono()-active.start);\n                diagEvent603(\'socket_message\',{bytes:event.data?.byteLength??event.data?.size??(typeof event.data===\'string\'?event.data.length:null)});\n              }));\n              for(const kind of [\'close\',\'error\'])socket.addEventListener(kind,()=>safe(()=>diagEvent603(\'socket_\'+kind)));\n            }\n            if(active){\n              if(active.row.socket_first_send_ms==null)active.row.socket_first_send_ms=rounded(mono()-active.start);\n              diagEvent603(\'socket_send\',{buffered_bytes:Number(socket.bufferedAmount)||0});\n            }\n          });\n          return Reflect.apply(original,socket,args);\n        };\n        diagCapabilities603.socket_send=true;\n      }\n    }catch(_){}\n    host.addEventListener(\'message\',event=>safe(()=>{\n      if(!event.data || event.data.burari_diag_v603!==true)return;\n      // Only accept readiness from an iframe this monitor actually observes.\n      const frame=[...frameHandlers.keys()].find(f=>f.isConnected&&f.contentWindow===event.source);\n      if(!frame)return;\n      const kind=event.data.kind;\n      if(![\'replay_script_started\',\'replay_player_ready\',\'replay_playing\',\'replay_player_error\'].includes(kind))return;\n      diagEvent603(kind);\n      if(kind===\'replay_playing\' && active && [\'burariReplayStart\',\'burariReplayAgain\'].includes(active.control)\n         && active.button.ownerDocument===safe(()=>frame.contentDocument)){\n        const a=active;afterPaint(()=>{if(active===a)end(\'completed\',\'replay_playing\',mono(),\'media_event\');});\n      }\n    }),{passive:true});\n  }\n\n  const observers=new Map(), frameHandlers=new Map(), handledEvents=new WeakSet(), counts=new Map();\n  try { const saved=JSON.parse(host.sessionStorage.getItem(STORE)||\'null\'); if(saved?.version===466 && Array.isArray(saved.rows)) { rows=saved.rows.slice(-2000); dropped=Number(saved.dropped)||0; for(const row of rows) if(row.status===\'pending\'){row.status=\'interrupted\';row.reason=\'document_reloaded\';row.result_ms=null;} } } catch(_){persistenceError=true;}\n  function persistNow(){try{host.sessionStorage.setItem(STORE,JSON.stringify({version:466,rows,dropped}));}catch(_){persistenceError=true;}}\n  function persist(){if(persistTimer!==null)return;persistTimer=host.setTimeout(()=>{persistTimer=null;persistNow();},50);}\n  function safe(fn){try{return fn();}catch(_){return undefined;}}\n  function afterPaint(fn){host.requestAnimationFrame(()=>host.requestAnimationFrame(()=>safe(fn)));}\n  function visible(el){if(!el?.isConnected)return false;const w=el.ownerDocument?.defaultView||host;return !!el.getClientRects().length && w.getComputedStyle(el).visibility!==\'hidden\';}\n  function viewport(el){if(!visible(el))return false;const r=el.getBoundingClientRect(),w=el.ownerDocument?.defaultView||host;return r.bottom>0&&r.right>0&&r.top<w.innerHeight&&r.left<w.innerWidth;}\n  function connected(root){return root===doc || (root.host?root.host.isConnected:!!root.defaultView?.frameElement?.isConnected);}\n  function prune(){for(const [root,state] of observers) if(!connected(root)){state.observer.disconnect();for(const [name,fn]of state.listeners)root.removeEventListener(name,fn,true);observers.delete(root);}for(const [frame,fn]of frameHandlers)if(!frame.isConnected){frame.removeEventListener(\'load\',fn);frameHandlers.delete(frame);}}\n  function query(selector){const result=[];for(const root of observers.keys())safe(()=>result.push(...root.querySelectorAll(selector)));return result;}\n  function signature(el){return el?.isConnected?[el.textContent,el.getAttribute(\'class\'),el.getAttribute(\'style\'),el.getAttribute(\'disabled\'),el.getAttribute(\'aria-pressed\')].join(\'|\'):\'removed\';}\n  function busy(){return query(\'[data-testid="stSpinner"],[data-stale="true"],[aria-busy="true"]\').some(visible);}\n  function imageReady(el){return visible(el)&&el.complete&&el.naturalWidth>0;}\n  function stamp(row,ms){return new Date(Date.parse(row.pressed_at)+ms).toISOString();}\n  function end(status,reason,observedAt=null,kind=null){\n    if(!active)return;const a=active;active=null;host.clearTimeout(deadline);host.clearTimeout(quiet);host.clearTimeout(diagLagTimer603);\n    a.row.status=status;a.row.reason=reason;a.row.observed_until_ms=rounded(mono()-a.start);\n    a.row.measurement_kind=kind;\n    // No success duration is fabricated for timeouts, interruptions or failures.\n    a.row.result_ms=status===\'completed\'&&observedAt!==null?rounded(observedAt-a.start):null;\n    a.row.result_at=a.row.result_ms===null?null:stamp(a.row,a.row.result_ms);\n    a.row.confirmation_ms=observedAt===null?null:rounded(mono()-observedAt);\n    persist();\n  }\n  function response(){const a=active;if(!a||a.row.first_response_ms!==null||signature(a.button)===a.before)return;\n    afterPaint(()=>{if(active!==a||doc.hidden)return;a.row.first_response_ms=rounded(mono()-a.start);a.row.first_response_at=stamp(a.row,a.row.first_response_ms);});}\n  function endpoint(){const a=active;if(!a)return null;\n    if(a.control===\'live-camera-shoot\'){\n      const img=query(\'#camera-review-image\').find(e=>imageReady(e)&&e.currentSrc!==a.preview);\n      return img?{kind:\'camera_preview_loaded\',explicit:true}:null;\n    }\n    if([\'live-camera-start\',\'live-video-start\',\'live-camera-facing-switch\'].includes(a.control)){\n      const v=query(\'#live-camera-video\').find(e=>visible(e)&&e.readyState>=2&&!e.paused&&(!a.cameraWasReady||a.control===\'live-camera-facing-switch\'&&a.cameraStream!==e.srcObject));\n      return v?{kind:\'camera_video_ready\',explicit:true}:null;\n    }\n    // A render marker is only a UI estimate, never confirmation of a database save,\n    // map tile completion or media playback. Local-only actions cannot use it.\n    if(a.localOnly && !a.submitted)return blocked603(\'awaiting_local_or_media_endpoint\');\n    if(!a.row.server_runs.some(x=>x.session===current.session && x.run!==a.initialRun))return blocked603(\'awaiting_new_server_run\');\n    const marker=query(\'[data-burari-perf-done]\').find(e=>Number(e.getAttribute(\'data-burari-perf-done\'))===current.run&&e.getAttribute(\'data-burari-perf-session\')===current.session&&current.run!==a.initialRun);\n    if(!marker)return blocked603(\'awaiting_done_marker\');\n    const targetPage=marker.getAttribute(\'data-burari-perf-page\');\n    if(!targetPage || targetPage!==current.page)return blocked603(\'page_marker_mismatch\');\n    if(a.row.expected_page && targetPage!==a.row.expected_page)return blocked603(\'awaiting_target_page\');\n    if(a.requirePageChange && targetPage===a.row.page)return blocked603(\'awaiting_page_change\');\n    if(a.movieNavigation && marker.getAttribute(\'data-burari-perf-operation\')!==a.row.id)return blocked603(\'awaiting_matching_operation\');\n    if(a.movieNavigation && ![\'review_tag\',\'review_monthly\',\'review_shared\'].includes(targetPage))return blocked603(\'awaiting_replay_page\');\n    if(a.row.target_marker_seen_ms==null){a.row.target_marker_seen_ms=rounded(mono()-a.start);a.row.target_page=targetPage;\n      diagEvent603(\'target_marker_seen\',{page:targetPage,server_generated_wall_ms:Number(marker.getAttribute(\'data-burari-perf-generated-ms\'))||null});}\n    if(busy())return blocked603(\'visible_busy_or_stale\');\n    if(query(\'img\').some(e=>viewport(e)&&(!e.complete||!e.naturalWidth)))return blocked603(\'viewport_image_not_ready\');\n    a.row.endpoint_blocker=null;\n    return {kind:\'server_ui_render_estimate\',explicit:false};\n  }\n  function consider(){if(!active||doc.hidden||checking)return;response();const candidate=endpoint();if(!candidate)return;\n    const a=active,revision=a.revision;checking=true;\n    afterPaint(()=>{checking=false;if(active!==a||doc.hidden)return;if(a.revision!==revision){consider();return;}\n      const again=endpoint();if(!again||again.kind!==candidate.kind)return;\n      const paintedAt=mono();\n      if(candidate.explicit){end(\'completed\',candidate.kind,paintedAt,\'explicit_ui_state\');return;}\n      // Confirmation delay is excluded from result_ms. Reject candidates that\n      // change during the quiet window rather than adding a fixed 200 ms latency.\n      host.clearTimeout(quiet);quiet=host.setTimeout(()=>safe(()=>{\n        if(active===a&&a.revision===revision&&!doc.hidden&&endpoint()?.kind===candidate.kind)end(\'completed\',candidate.kind,paintedAt,\'render_estimate\');\n      }),200);\n    });\n  }\n  function mutations(records){const diagStart603=mono();diagMutations603+=records.length;prune();for(const r of records)for(const node of r.addedNodes||[])scan(node);\n    if(!active){diagObserverMs603+=mono()-diagStart603;return;}\n    // Ignore clock text/continuous style animations outside the clicked control\n    // for confirmation; use structural/result mutations to invalidate candidates.\n    if(records.some(r=>r.type===\'childList\'||r.attributeName===\'src\'||r.attributeName===\'data-burari-perf-done\'))active.revision++;\n    consider();diagObserverMs603+=mono()-diagStart603;\n  }\n  function getButton(event){const path=event.composedPath?event.composedPath():[event.target];return path.find(e=>e?.matches?.(\'button,[role="button"],input[type="submit"]\'));}\n  function isLog(button){return button.closest?.(\'[data-burari-perf-ui]\')||/動作ログ|操作時間ログ|ログを|ログ消去/.test(button.textContent||\'\');}\n  function down(event){const button=getButton(event);if(!button||button.disabled||isLog(button))return;const eventAt=Number(event.timeStamp)>1e12?Number(event.timeStamp)-host.performance.timeOrigin:Number(event.timeStamp);const p={button,at:mono(),wall:Date.now(),id:event.pointerId,before:signature(button),responseAt:null,inputQueueMs:Number.isFinite(eventAt)&&eventAt>0?Math.max(0,mono()-eventAt):null};pointer=p;afterPaint(()=>{if(pointer===p&&signature(button)!==p.before)p.responseAt=mono();});}\n  function click(event){if(!event.isTrusted||handledEvents.has(event))return;\n    const button=getButton(event);if(!button||button.disabled||isLog(button))return;handledEvents.add(event);\n    if(active)end(\'interrupted\',\'next_operation\');prune();\n    const label=String(button.getAttribute(\'aria-label\')||button.textContent||button.value||\'\').trim().replace(/\\s+/g,\' \').slice(0,80);\n    const widget=button.closest?.(\'[class*="st-key-"]\');\n    const widgetKey=Array.from(widget?.classList||[]).find(x=>x.startsWith(\'st-key-\'))||\'\';\n    const control=button.id||widgetKey||button.getAttribute(\'data-testid\')||label;\n    const group=current.page+\'|\'+control;\n    const attempt=(counts.get(group)||0)+1;counts.set(group,attempt);if(counts.size>2000)counts.delete(counts.keys().next().value);\n    const pressed=pointer?.button===button&&mono()-pointer.at<30000?pointer:{at:mono(),wall:Date.now()};pointer=null;\n    const row={id:boot+\'-\'+(++seq),build:603,page:current.page,control,button:label,\n      expected_page:({"st-key-home_review":"review","st-key-home_settings":"settings","st-key-home_diary":"diary","st-key-home_camera":"camera","st-key-home_video":"camera"})[control]||null,\n      monotonic_pressed_ms:rounded(pressed.at), input_queue_delay_ms:pressed.inputQueueMs==null?null:rounded(pressed.inputQueueMs),\n      pressed_at:new Date(pressed.wall).toISOString(),activation_delay_ms:rounded(mono()-pressed.at),\n      input_method:event.detail===0?\'keyboard_or_accessibility\':\'pointer\',\n      first_response_ms:pressed.responseAt==null?null:rounded(pressed.responseAt-pressed.at),first_response_at:pressed.responseAt==null?null:new Date(pressed.wall+pressed.responseAt-pressed.at).toISOString(),result_ms:null,result_at:null,status:\'pending\',\n      attempt_in_document:attempt,visit_class:attempt===1?\'first_in_document\':\'repeat_in_document\',\n      server_runs:[],correlation:\'temporal_candidates_only\',measurement_kind:null};\n    const camera=query(\'#live-camera-video\')[0];\n    active={row,button,control:button.id||\'\',before:pressed.before||signature(button),start:pressed.at,initialRun:current.run,revision:0,\n      requirePageChange:control.startsWith(\'st-key-parent_back_\'),\n      localOnly:!!button.getRootNode?.().host || button.ownerDocument!==doc,\n      preview:query(\'#camera-review-image\')[0]?.currentSrc||\'\',cameraWasReady:camera?.readyState>=2&&!camera?.paused,cameraStream:camera?.srcObject};\n    rows.push(row);if(rows.length>2000){rows.shift();dropped++;}persist();\n    deadline=host.setTimeout(()=>safe(()=>end(\'timeout\',\'no_confirmed_endpoint_120s\')),120000);\n    diagEvent603(\'operation_started\',{expected_page:row.expected_page});startLag603();\n    afterPaint(()=>safe(consider));\n  }\n  function media(event){const a=active;if(!a)return;\n    if(event.type===\'playing\'&&[\'moments-voice-play\',\'burariReplayStart\',\'burariReplayAgain\'].includes(a.control)){\n      // Only a media element inside the same document as the pressed control.\n      if(event.target.ownerDocument===a.button.ownerDocument)afterPaint(()=>{if(active===a)end(\'completed\',\'media_playing\',mono(),\'media_event\');});\n    }\n    consider();\n  }\n  function watch(root){if(observers.has(root))return;\n    const listeners=[[\'error\',e=>safe(()=>{if(active&&[\'IMG\',\'AUDIO\',\'VIDEO\',\'SCRIPT\'].includes(e.target?.tagName))diagEvent603(\'asset_error\',{tag:e.target.tagName});})],[\'waiting\',e=>safe(()=>{if(active)diagEvent603(\'media_waiting\',{tag:e.target?.tagName});})],[\'pointerdown\',e=>safe(()=>down(e))],[\'pointercancel\',()=>{pointer=null;}],[\'click\',e=>safe(()=>click(e))],[\'load\',()=>safe(consider)],[\'loadeddata\',e=>safe(()=>media(e))],[\'playing\',e=>safe(()=>media(e))]];\n    for(const [name,fn]of listeners)root.addEventListener(name,fn,{capture:true,passive:true});\n    const observer=new host.MutationObserver(r=>safe(()=>mutations(r)));\n    observers.set(root,{observer,listeners});observer.observe(root,{subtree:true,childList:true,attributes:true,attributeFilter:[\'src\',\'hidden\',\'disabled\',\'class\',\'style\',\'aria-pressed\',\'aria-busy\',\'data-stale\',\'data-burari-perf-done\'],characterData:true});scan(root);\n  }\n  function scan(node){if(!node?.querySelectorAll)return;if(node.shadowRoot)watch(node.shadowRoot);\n    const list=[node,...node.querySelectorAll(\'*\')];\n    for(const el of list){if(el.shadowRoot)watch(el.shadowRoot);\n      if(el.tagName===\'IFRAME\'&&!frameHandlers.has(el)){\n        const attach=()=>safe(()=>{if(active)diagEvent603(\'iframe_loaded\',{same_origin:!!el.contentDocument});if(el.contentDocument)watch(el.contentDocument);});frameHandlers.set(el,attach);el.addEventListener(\'load\',attach,{passive:true});attach();\n      }\n    }\n  }\n  function quantile(values,q){const v=[...values].sort((a,b)=>a-b),i=(v.length-1)*q,lo=Math.floor(i),hi=Math.ceil(i);return rounded(v[lo]+(v[hi]-v[lo])*(i-lo));}\n  function summary(){const groups=new Map();\n    for(const row of rows){const key=[row.build,row.page,row.control,row.visit_class,row.measurement_kind||\'unresolved\',row.input_method].join(\'|\');\n      if(!groups.has(key))groups.set(key,{key,page:row.page,control:row.control,visit_class:row.visit_class,measurement_kind:row.measurement_kind,input_method:row.input_method,n:0,completed:0,interrupted:0,timeout:0,pending:0,error:0,values:[]});\n      const g=groups.get(key);g.n++;if(row.status in g)g[row.status]++;if(row.status===\'completed\'&&Number.isFinite(row.result_ms))g.values.push(row.result_ms);\n    }\n    return [...groups.values()].map(g=>{const v=g.values;delete g.values;return {...g,median_ms:v.length?quantile(v,.5):null,p90_ms:v.length>=20?quantile(v,.9):null,p95_ms:v.length>=100?quantile(v,.95):null,minimum_ms:v.length?Math.min(...v):null,maximum_ms:v.length?Math.max(...v):null,sample_note:v.length<20?\'small_sample\':\'descriptive_only\'};});\n  }\n  const api={version:603,submitted(name,root,value){if(!active||!root?.contains?.(active.button))return;active.submitted=true;active.row.component_event=String(name).slice(0,64);active.row.submitted_ms=rounded(mono()-active.start);\n      diagEvent603(\'component_submitted\',{event:String(name).slice(0,40)});\n      if(name===\'action\'&&value&&typeof value===\'object\'&&!Array.isArray(value)&&root.querySelector?.(\'#replay-movie-list-v357\')){\n        active.movieNavigation=[\'view\',\'edit\'].includes(value.action);\n        return {...value,_burari_diag_v603:{operation_id:active.row.id}};\n      }\n      if(/error/i.test(name))end(\'error\',\'component_error\');\n    },run(p,r,session,details={}){if(active&&current.session&&session!==current.session)end(\'interrupted\',\'server_session_changed\');current={page:p,run:Number(r)||0,session};diagEvent603(\'server_run_seen\',{run:current.run,page:p,server_sent_ms:details.server_sent_ms||null,script_started_ms:details.script_started_ms||null});if(active){const list=active.row.server_runs;if(!list.some(x=>x.run===current.run&&x.session===session)){if(list.length<32)list.push({session,run:current.run});else active.row.correlation_truncated=true;}}safe(consider);},\n    snapshot(){if(active)active.row.observed_until_ms=rounded(mono()-active.start);persistNow();return JSON.parse(JSON.stringify({version:603,diagnostic_version:603,document_id:boot,captured_at:new Date().toISOString(),limit:2000,dropped_operations:dropped,persistence_error:persistenceError,rows,summary:summary(),diagnostics:{events:diagEvents603.slice(),limit:400,dropped:diagDropped603,capabilities:diagCapabilities603,mutation_records:diagMutations603,observer_cpu_ms:rounded(diagObserverMs603),clock_note:\'Only monotonic intervals within the same process are directly comparable; server/browser wall clocks may differ\',socket_note:\'Socket events are temporal candidates; no message payload is decoded\',memory:host.performance.memory?{used_js_heap_bytes:host.performance.memory.usedJSHeapSize,total_js_heap_bytes:host.performance.memory.totalJSHeapSize}:null},coverage:{watched_roots:observers.size,inaccessible_iframes:[...frameHandlers.keys()].filter(f=>!safe(()=>f.contentDocument)).length},limitations:[\'Framework queueing before script entry and WebSocket ingress are not directly measured\',\'Resource timing omits cross-origin details and in-flight transfers\',\'Existing sockets become observable after their next send\',\'Physical screen presentation is not measured\',\'Render estimates are not business-operation completion\',\'First/repeat means this document, not cache hit/miss\',\'Cross-origin frames and external apps are not measured\',\'Server links are temporal candidates; do not sum nested phase times\',\'Timeouts and interruptions are excluded from successful latency distributions\']}));},\n    clear(){host.clearTimeout(deadline);host.clearTimeout(quiet);active=null;rows=[];dropped=0;counts.clear();host.clearTimeout(diagLagTimer603);diagEvents603.length=0;diagDropped603=0;diagMutations603=0;diagObserverMs603=0;persistNow();}};\n  host[KEY]=api;watch(doc);installDiagnostics603();\n  doc.addEventListener(\'visibilitychange\',()=>safe(()=>{if(doc.hidden&&active)end(\'interrupted\',\'background\');persistNow();}),{passive:true});\n  host.addEventListener(\'pagehide\',()=>safe(()=>{if(active)end(\'interrupted\',\'pagehide\');persistNow();}),{passive:true});\n  return api;\n}\n'
+_PERF_BROWSER_JS_V466 = 'function installBurariPerf466(host, page, run, serverSession, serverDetails={}) {\n  const KEY=\'__burariPerf466\', STORE=\'burari_perf_v466\';\n  if(host[KEY]) { host[KEY].run(page,run,serverSession,serverDetails); return host[KEY]; }\n  const doc=host.document, mono=()=>host.performance.now(), rounded=x=>Math.round(x*10)/10;\n  const boot=host.crypto?.randomUUID?.() || Date.now().toString(36)+\'-\'+Math.random().toString(36).slice(2);\n  let seq=0, rows=[], dropped=0, persistenceError=false, active=null, current={page,run:Number(run)||0,session:serverSession};\n  let deadline=null, quiet=null, persistTimer=null, checking=false, pointer=null;\n  // Passive, bounded diagnostics. No network request or Streamlit trigger is added.\n  const diagEvents603=[];\n  let diagDropped603=0,diagLagTimer603=null,diagMutations603=0,diagObserverMs603=0;\n  const diagCapabilities603={longtask:false,event:false,resource:false,socket_send:false};\n  function diagEvent603(kind, detail={}, at=mono()) {\n    const item={kind,at_ms:rounded(at),wall_ms:Math.round(host.performance.timeOrigin+at),...detail};\n    if(active){item.operation_id=active.row.id;item.since_press_ms=rounded(at-active.start);}\n    diagEvents603.push(item);\n    if(diagEvents603.length>400){diagEvents603.shift();diagDropped603++;}\n  }\n  function blocked603(reason){\n    if(active){active.row.endpoint_blocker=reason;active.row.endpoint_checked_ms=rounded(mono()-active.start);}\n    return null;\n  }\n  function startLag603(){\n    host.clearTimeout(diagLagTimer603);\n    if(!active || doc.hidden)return;\n    const expected=mono()+250;\n    diagLagTimer603=host.setTimeout(()=>{\n      if(!active || doc.hidden)return;\n      const delay=mono()-expected;\n      if(delay>=150)diagEvent603(\'event_loop_delay\',{delay_ms:rounded(delay)});\n      startLag603();\n    },250);\n  }\n  function installDiagnostics603(){\n    diagEvent603(\'server_run_seen\',{run:current.run,page:current.page,server_sent_ms:serverDetails.server_sent_ms||null,script_started_ms:serverDetails.script_started_ms||null});\n    const supported=host.PerformanceObserver?.supportedEntryTypes||[];\n    function observe(type, callback, extra={}){\n      if(!supported.includes(type))return;\n      try{const observer=new host.PerformanceObserver(list=>safe(()=>callback(list.getEntries())));\n        observer.observe({type,buffered:false,...extra});diagCapabilities603[type]=true;\n      }catch(_){}\n    }\n    observe(\'longtask\',entries=>{\n      for(const e of entries)diagEvent603(\'long_task\',{duration_ms:rounded(e.duration),attribution_available:!!e.attribution?.length},e.startTime);\n    });\n    observe(\'event\',entries=>{\n      for(const e of entries)if([\'pointerdown\',\'pointerup\',\'click\',\'keydown\'].includes(e.name))\n        diagEvent603(\'input_timing\',{event:e.name,duration_ms:rounded(e.duration),queue_ms:rounded(Math.max(0,e.processingStart-e.startTime)),handler_ms:rounded(Math.max(0,e.processingEnd-e.processingStart))},e.startTime);\n    },{durationThreshold:16});\n    observe(\'resource\',entries=>{\n      for(const e of entries){\n        if(e.duration<200 && !(e.responseStatus>=400))continue;\n        let origin=\'\';try{origin=new URL(e.name).origin;}catch(_){}\n        // Do not store paths/query strings, signed URLs, bodies, media IDs or tokens.\n        diagEvent603(\'resource_finished\',{initiator:String(e.initiatorType||\'\'),origin,duration_ms:rounded(e.duration),start_ms:rounded(e.startTime),response_start_ms:rounded(e.responseStart),transfer_bytes:e.transferSize||0,status:Number(e.responseStatus)||null,timing_details_available:e.responseStart>0},e.startTime+e.duration);\n      }\n    });\n    // Observe the existing socket on its next normal send. Never decode its payload.\n    try{\n      const proto=host.WebSocket?.prototype;\n      if(proto && typeof proto.send===\'function\'){\n        const original=proto.send,seen=new WeakSet();\n        proto.send=function(...args){\n          const socket=this;\n          safe(()=>{\n            if(!seen.has(socket)){\n              seen.add(socket);\n              socket.addEventListener(\'message\',event=>safe(()=>{\n                if(!active)return;\n                if(active.row.socket_first_message_ms==null)active.row.socket_first_message_ms=rounded(mono()-active.start);\n                diagEvent603(\'socket_message\',{bytes:event.data?.byteLength??event.data?.size??(typeof event.data===\'string\'?event.data.length:null)});\n              }));\n              for(const kind of [\'close\',\'error\'])socket.addEventListener(kind,()=>safe(()=>diagEvent603(\'socket_\'+kind)));\n            }\n            if(active){\n              if(active.row.socket_first_send_ms==null)active.row.socket_first_send_ms=rounded(mono()-active.start);\n              diagEvent603(\'socket_send\',{buffered_bytes:Number(socket.bufferedAmount)||0});\n            }\n          });\n          return Reflect.apply(original,socket,args);\n        };\n        diagCapabilities603.socket_send=true;\n      }\n    }catch(_){}\n    host.addEventListener(\'message\',event=>safe(()=>{\n      if(!event.data || event.data.burari_diag_v603!==true)return;\n      // Only accept readiness from an iframe this monitor actually observes.\n      const frame=[...frameHandlers.keys()].find(f=>f.isConnected&&f.contentWindow===event.source);\n      if(!frame)return;\n      const kind=event.data.kind;\n      if(![\'replay_script_started\',\'replay_player_ready\',\'replay_playing\',\'replay_player_error\'].includes(kind))return;\n      diagEvent603(kind);\n      if(kind===\'replay_playing\' && active && [\'burariReplayStart\',\'burariReplayAgain\'].includes(active.control)\n         && active.button.ownerDocument===safe(()=>frame.contentDocument)){\n        const a=active;afterPaint(()=>{if(active===a)end(\'completed\',\'replay_playing\',mono(),\'media_event\');});\n      }\n    }),{passive:true});\n  }\n\n  const observers=new Map(), frameHandlers=new Map(), handledEvents=new WeakSet(), counts=new Map();\n  try { const saved=JSON.parse(host.sessionStorage.getItem(STORE)||\'null\'); if(saved?.version===466 && Array.isArray(saved.rows)) { rows=saved.rows.slice(-2000); dropped=Number(saved.dropped)||0; for(const row of rows) if(row.status===\'pending\'){row.status=\'interrupted\';row.reason=\'document_reloaded\';row.result_ms=null;} } } catch(_){persistenceError=true;}\n  function persistNow(){try{host.sessionStorage.setItem(STORE,JSON.stringify({version:466,rows,dropped}));}catch(_){persistenceError=true;}}\n  function persist(){if(persistTimer!==null)return;persistTimer=host.setTimeout(()=>{persistTimer=null;persistNow();},50);}\n  function safe(fn){try{return fn();}catch(_){return undefined;}}\n  function afterPaint(fn){host.requestAnimationFrame(()=>host.requestAnimationFrame(()=>safe(fn)));}\n  function visible(el){if(!el?.isConnected)return false;const w=el.ownerDocument?.defaultView||host;return !!el.getClientRects().length && w.getComputedStyle(el).visibility!==\'hidden\';}\n  function viewport(el){if(!visible(el))return false;const r=el.getBoundingClientRect(),w=el.ownerDocument?.defaultView||host;return r.bottom>0&&r.right>0&&r.top<w.innerHeight&&r.left<w.innerWidth;}\n  function connected(root){return root===doc || (root.host?root.host.isConnected:!!root.defaultView?.frameElement?.isConnected);}\n  function prune(){for(const [root,state] of observers) if(!connected(root)){state.observer.disconnect();for(const [name,fn]of state.listeners)root.removeEventListener(name,fn,true);observers.delete(root);}for(const [frame,fn]of frameHandlers)if(!frame.isConnected){frame.removeEventListener(\'load\',fn);frameHandlers.delete(frame);}}\n  function query(selector){const result=[];for(const root of observers.keys())safe(()=>result.push(...root.querySelectorAll(selector)));return result;}\n  function signature(el){return el?.isConnected?[el.textContent,el.getAttribute(\'class\'),el.getAttribute(\'style\'),el.getAttribute(\'disabled\'),el.getAttribute(\'aria-pressed\')].join(\'|\'):\'removed\';}\n  function busy(){return query(\'[data-testid="stSpinner"],[data-stale="true"],[aria-busy="true"]\').some(visible);}\n  function imageReady(el){return visible(el)&&el.complete&&el.naturalWidth>0;}\n  function stamp(row,ms){return new Date(Date.parse(row.pressed_at)+ms).toISOString();}\n  function end(status,reason,observedAt=null,kind=null){\n    if(!active)return;const a=active;active=null;host.clearTimeout(deadline);host.clearTimeout(quiet);host.clearTimeout(diagLagTimer603);\n    a.row.status=status;a.row.reason=reason;a.row.observed_until_ms=rounded(mono()-a.start);\n    a.row.measurement_kind=kind;\n    // No success duration is fabricated for timeouts, interruptions or failures.\n    a.row.result_ms=status===\'completed\'&&observedAt!==null?rounded(observedAt-a.start):null;\n    a.row.result_at=a.row.result_ms===null?null:stamp(a.row,a.row.result_ms);\n    a.row.confirmation_ms=observedAt===null?null:rounded(mono()-observedAt);\n    persist();\n  }\n  function response(){const a=active;if(!a||a.row.first_response_ms!==null||signature(a.button)===a.before)return;\n    afterPaint(()=>{if(active!==a||doc.hidden)return;a.row.first_response_ms=rounded(mono()-a.start);a.row.first_response_at=stamp(a.row,a.row.first_response_ms);});}\n  function endpoint(){const a=active;if(!a)return null;\n    if(a.control===\'live-camera-shoot\'){\n      const img=query(\'#camera-review-image\').find(e=>imageReady(e)&&e.currentSrc!==a.preview);\n      return img?{kind:\'camera_preview_loaded\',explicit:true}:null;\n    }\n    if([\'live-camera-start\',\'live-video-start\',\'live-camera-facing-switch\'].includes(a.control)){\n      const v=query(\'#live-camera-video\').find(e=>visible(e)&&e.readyState>=2&&!e.paused&&(!a.cameraWasReady||a.control===\'live-camera-facing-switch\'&&a.cameraStream!==e.srcObject));\n      return v?{kind:\'camera_video_ready\',explicit:true}:null;\n    }\n    // A render marker is only a UI estimate, never confirmation of a database save,\n    // map tile completion or media playback. Local-only actions cannot use it.\n    if(a.localOnly && !a.submitted)return blocked603(\'awaiting_local_or_media_endpoint\');\n    if(!a.row.server_runs.some(x=>x.session===current.session && x.run!==a.initialRun))return blocked603(\'awaiting_new_server_run\');\n    const marker=query(\'[data-burari-perf-done]\').find(e=>Number(e.getAttribute(\'data-burari-perf-done\'))===current.run&&e.getAttribute(\'data-burari-perf-session\')===current.session&&current.run!==a.initialRun);\n    if(!marker)return blocked603(\'awaiting_done_marker\');\n    const targetPage=marker.getAttribute(\'data-burari-perf-page\');\n    if(!targetPage || targetPage!==current.page)return blocked603(\'page_marker_mismatch\');\n    if(a.row.expected_page && targetPage!==a.row.expected_page)return blocked603(\'awaiting_target_page\');\n    if(a.requirePageChange && targetPage===a.row.page)return blocked603(\'awaiting_page_change\');\n    if(a.movieNavigation && marker.getAttribute(\'data-burari-perf-operation\')!==a.row.id)return blocked603(\'awaiting_matching_operation\');\n    if(a.movieNavigation && ![\'review_tag\',\'review_monthly\',\'review_shared\'].includes(targetPage))return blocked603(\'awaiting_replay_page\');\n    if(a.row.target_marker_seen_ms==null){a.row.target_marker_seen_ms=rounded(mono()-a.start);a.row.target_page=targetPage;\n      diagEvent603(\'target_marker_seen\',{page:targetPage,server_generated_wall_ms:Number(marker.getAttribute(\'data-burari-perf-generated-ms\'))||null});}\n    if(busy())return blocked603(\'visible_busy_or_stale\');\n    if(query(\'img\').some(e=>viewport(e)&&(!e.complete||!e.naturalWidth)))return blocked603(\'viewport_image_not_ready\');\n    a.row.endpoint_blocker=null;\n    return {kind:\'server_ui_render_estimate\',explicit:false};\n  }\n  function consider(){if(!active||doc.hidden||checking)return;response();const candidate=endpoint();if(!candidate)return;\n    const a=active,revision=a.revision;checking=true;\n    afterPaint(()=>{checking=false;if(active!==a||doc.hidden)return;if(a.revision!==revision){consider();return;}\n      const again=endpoint();if(!again||again.kind!==candidate.kind)return;\n      const paintedAt=mono();\n      if(candidate.explicit){end(\'completed\',candidate.kind,paintedAt,\'explicit_ui_state\');return;}\n      // Confirmation delay is excluded from result_ms. Reject candidates that\n      // change during the quiet window rather than adding a fixed 200 ms latency.\n      host.clearTimeout(quiet);quiet=host.setTimeout(()=>safe(()=>{\n        if(active===a&&a.revision===revision&&!doc.hidden&&endpoint()?.kind===candidate.kind)end(\'completed\',candidate.kind,paintedAt,\'render_estimate\');\n      }),200);\n    });\n  }\n  function mutations(records){const diagStart603=mono();diagMutations603+=records.length;prune();for(const r of records)for(const node of r.addedNodes||[])scan(node);\n    if(!active){diagObserverMs603+=mono()-diagStart603;return;}\n    // Ignore clock text/continuous style animations outside the clicked control\n    // for confirmation; use structural/result mutations to invalidate candidates.\n    if(records.some(r=>r.type===\'childList\'||r.attributeName===\'src\'||r.attributeName===\'data-burari-perf-done\'))active.revision++;\n    consider();diagObserverMs603+=mono()-diagStart603;\n  }\n  function getButton(event){const path=event.composedPath?event.composedPath():[event.target];return path.find(e=>e?.matches?.(\'button,[role="button"],input[type="submit"]\'));}\n  function isLog(button){return button.closest?.(\'[data-burari-perf-ui]\')||/動作ログ|操作時間ログ|ログを|ログ消去/.test(button.textContent||\'\');}\n  function down(event){const button=getButton(event);if(!button||button.disabled||isLog(button))return;const eventAt=Number(event.timeStamp)>1e12?Number(event.timeStamp)-host.performance.timeOrigin:Number(event.timeStamp);const p={button,at:mono(),wall:Date.now(),id:event.pointerId,before:signature(button),responseAt:null,inputQueueMs:null};pointer=p;afterPaint(()=>{if(pointer===p&&signature(button)!==p.before)p.responseAt=mono();});}\n  function click(event){if(!event.isTrusted||handledEvents.has(event))return;\n    const button=getButton(event);if(!button||button.disabled||isLog(button))return;handledEvents.add(event);\n    if(active)end(\'interrupted\',\'next_operation\');prune();\n    const label=String(button.getAttribute(\'aria-label\')||button.textContent||button.value||\'\').trim().replace(/\\s+/g,\' \').slice(0,80);\n    const widget=button.closest?.(\'[class*="st-key-"]\');\n    const widgetKey=Array.from(widget?.classList||[]).find(x=>x.startsWith(\'st-key-\'))||\'\';\n    const control=button.id||widgetKey||button.getAttribute(\'data-testid\')||label;\n    const group=current.page+\'|\'+control;\n    const attempt=(counts.get(group)||0)+1;counts.set(group,attempt);if(counts.size>2000)counts.delete(counts.keys().next().value);\n    const pressed=pointer?.button===button&&mono()-pointer.at<30000?pointer:{at:mono(),wall:Date.now()};pointer=null;\n    const row={id:boot+\'-\'+(++seq),build:603,page:current.page,control,button:label,\n      expected_page:({"st-key-home_review":"review","st-key-home_settings":"settings","st-key-home_diary":"diary","st-key-home_camera":"camera","st-key-home_video":"camera"})[control]||null,\n      monotonic_pressed_ms:rounded(pressed.at), input_queue_delay_ms:pressed.inputQueueMs==null?null:rounded(pressed.inputQueueMs),\n      pressed_at:new Date(pressed.wall).toISOString(),activation_delay_ms:rounded(mono()-pressed.at),\n      input_method:event.detail===0?\'keyboard_or_accessibility\':\'pointer\',\n      first_response_ms:pressed.responseAt==null?null:rounded(pressed.responseAt-pressed.at),first_response_at:pressed.responseAt==null?null:new Date(pressed.wall+pressed.responseAt-pressed.at).toISOString(),result_ms:null,result_at:null,status:\'pending\',\n      attempt_in_document:attempt,visit_class:attempt===1?\'first_in_document\':\'repeat_in_document\',\n      server_runs:[],correlation:\'temporal_candidates_only\',measurement_kind:null};\n    const camera=query(\'#live-camera-video\')[0];\n    active={row,button,control:button.id||\'\',before:pressed.before||signature(button),start:pressed.at,initialRun:current.run,revision:0,\n      requirePageChange:control.startsWith(\'st-key-parent_back_\'),\n      localOnly:!widgetKey && (!!button.getRootNode?.().host || button.ownerDocument!==doc),\n      preview:query(\'#camera-review-image\')[0]?.currentSrc||\'\',cameraWasReady:camera?.readyState>=2&&!camera?.paused,cameraStream:camera?.srcObject};\n    rows.push(row);if(rows.length>2000){rows.shift();dropped++;}persist();\n    deadline=host.setTimeout(()=>safe(()=>end(\'timeout\',\'no_confirmed_endpoint_120s\')),120000);\n    diagEvent603(\'operation_started\',{expected_page:row.expected_page});startLag603();\n    afterPaint(()=>safe(consider));\n  }\n  function media(event){const a=active;if(!a)return;\n    if(event.type===\'playing\'&&[\'moments-voice-play\',\'burariReplayStart\',\'burariReplayAgain\'].includes(a.control)){\n      // Only a media element inside the same document as the pressed control.\n      if(event.target.ownerDocument===a.button.ownerDocument)afterPaint(()=>{if(active===a)end(\'completed\',\'media_playing\',mono(),\'media_event\');});\n    }\n    consider();\n  }\n  function watch(root){if(observers.has(root))return;\n    const listeners=[[\'error\',e=>safe(()=>{if(active&&[\'IMG\',\'AUDIO\',\'VIDEO\',\'SCRIPT\'].includes(e.target?.tagName))diagEvent603(\'asset_error\',{tag:e.target.tagName});})],[\'waiting\',e=>safe(()=>{if(active)diagEvent603(\'media_waiting\',{tag:e.target?.tagName});})],[\'pointerdown\',e=>safe(()=>down(e))],[\'pointercancel\',()=>{pointer=null;}],[\'click\',e=>safe(()=>click(e))],[\'load\',()=>safe(consider)],[\'loadeddata\',e=>safe(()=>media(e))],[\'playing\',e=>safe(()=>media(e))]];\n    for(const [name,fn]of listeners)root.addEventListener(name,fn,{capture:true,passive:true});\n    const observer=new host.MutationObserver(r=>safe(()=>mutations(r)));\n    observers.set(root,{observer,listeners});observer.observe(root,{subtree:true,childList:true,attributes:true,attributeFilter:[\'src\',\'hidden\',\'disabled\',\'class\',\'style\',\'aria-pressed\',\'aria-busy\',\'data-stale\',\'data-burari-perf-done\'],characterData:true});scan(root);\n  }\n  function scan(node){if(!node?.querySelectorAll)return;if(node.shadowRoot)watch(node.shadowRoot);\n    const list=[node,...node.querySelectorAll(\'*\')];\n    for(const el of list){if(el.shadowRoot)watch(el.shadowRoot);\n      if(el.tagName===\'IFRAME\'&&!frameHandlers.has(el)){\n        const attach=()=>safe(()=>{if(active)diagEvent603(\'iframe_loaded\',{same_origin:!!el.contentDocument});if(el.contentDocument)watch(el.contentDocument);});frameHandlers.set(el,attach);el.addEventListener(\'load\',attach,{passive:true});attach();\n      }\n    }\n  }\n  function quantile(values,q){const v=[...values].sort((a,b)=>a-b),i=(v.length-1)*q,lo=Math.floor(i),hi=Math.ceil(i);return rounded(v[lo]+(v[hi]-v[lo])*(i-lo));}\n  function summary(){const groups=new Map();\n    for(const row of rows){const key=[row.build,row.page,row.control,row.visit_class,row.measurement_kind||\'unresolved\',row.input_method].join(\'|\');\n      if(!groups.has(key))groups.set(key,{key,page:row.page,control:row.control,visit_class:row.visit_class,measurement_kind:row.measurement_kind,input_method:row.input_method,n:0,completed:0,interrupted:0,timeout:0,pending:0,error:0,values:[]});\n      const g=groups.get(key);g.n++;if(row.status in g)g[row.status]++;if(row.status===\'completed\'&&Number.isFinite(row.result_ms))g.values.push(row.result_ms);\n    }\n    return [...groups.values()].map(g=>{const v=g.values;delete g.values;return {...g,median_ms:v.length?quantile(v,.5):null,p90_ms:v.length>=20?quantile(v,.9):null,p95_ms:v.length>=100?quantile(v,.95):null,minimum_ms:v.length?Math.min(...v):null,maximum_ms:v.length?Math.max(...v):null,sample_note:v.length<20?\'small_sample\':\'descriptive_only\'};});\n  }\n  const api={version:603,submitted(name,root,value){if(!active||!root?.contains?.(active.button))return;active.submitted=true;active.row.component_event=String(name).slice(0,64);active.row.submitted_ms=rounded(mono()-active.start);\n      diagEvent603(\'component_submitted\',{event:String(name).slice(0,40)});\n      if(name===\'action\'&&value&&typeof value===\'object\'&&!Array.isArray(value)&&root.querySelector?.(\'#replay-movie-list-v357\')){\n        active.movieNavigation=[\'view\',\'edit\'].includes(value.action);\n        return {...value,_burari_diag_v603:{operation_id:active.row.id}};\n      }\n      if(/error/i.test(name))end(\'error\',\'component_error\');\n    },run(p,r,session,details={}){if(active&&current.session&&session!==current.session)end(\'interrupted\',\'server_session_changed\');current={page:p,run:Number(r)||0,session};diagEvent603(\'server_run_seen\',{run:current.run,page:p,server_sent_ms:details.server_sent_ms||null,script_started_ms:details.script_started_ms||null});if(active){const list=active.row.server_runs;if(!list.some(x=>x.run===current.run&&x.session===session)){if(list.length<32)list.push({session,run:current.run});else active.row.correlation_truncated=true;}}safe(consider);},\n    snapshot(){if(active)active.row.observed_until_ms=rounded(mono()-active.start);persistNow();return JSON.parse(JSON.stringify({version:603,diagnostic_version:603,document_id:boot,captured_at:new Date().toISOString(),limit:2000,dropped_operations:dropped,persistence_error:persistenceError,rows,summary:summary(),diagnostics:{events:diagEvents603.slice(),limit:400,dropped:diagDropped603,capabilities:diagCapabilities603,mutation_records:diagMutations603,observer_cpu_ms:rounded(diagObserverMs603),clock_note:\'Only monotonic intervals within the same process are directly comparable; server/browser wall clocks may differ\',socket_note:\'Socket events are temporal candidates; no message payload is decoded\',memory:host.performance.memory?{used_js_heap_bytes:host.performance.memory.usedJSHeapSize,total_js_heap_bytes:host.performance.memory.totalJSHeapSize}:null},coverage:{watched_roots:observers.size,inaccessible_iframes:[...frameHandlers.keys()].filter(f=>!safe(()=>f.contentDocument)).length},limitations:[\'Framework queueing before script entry and WebSocket ingress are not directly measured\',\'Resource timing omits cross-origin details and in-flight transfers\',\'Existing sockets become observable after their next send\',\'Physical screen presentation is not measured\',\'Render estimates are not business-operation completion\',\'First/repeat means this document, not cache hit/miss\',\'Cross-origin frames and external apps are not measured\',\'Server links are temporal candidates; do not sum nested phase times\',\'Timeouts and interruptions are excluded from successful latency distributions\']}));},\n    clear(){host.clearTimeout(deadline);host.clearTimeout(quiet);active=null;rows=[];dropped=0;counts.clear();host.clearTimeout(diagLagTimer603);diagEvents603.length=0;diagDropped603=0;diagMutations603=0;diagObserverMs603=0;persistNow();}};\n  host[KEY]=api;watch(doc);installDiagnostics603();\n  doc.addEventListener(\'visibilitychange\',()=>safe(()=>{if(doc.hidden&&active)end(\'interrupted\',\'background\');persistNow();}),{passive:true});\n  host.addEventListener(\'pagehide\',()=>safe(()=>{if(active)end(\'interrupted\',\'pagehide\');persistNow();}),{passive:true});\n  return api;\n}\n'
 
-_HISTORY_JS = _PERF_BROWSER_JS_V466 + '\nexport default function(component) {\n  const { data, setTriggerValue } = component;\n  const validPages = new Set([\'salt_bread\', \'salt_bread_detail\', \'home\', \'camera\', \'videos\', \'moments\', \'diary\', \'photos\', \'review\', \'review_project\', \'review_monthly\', \'review_tag\', \'review_random\', \'review_shared\', \'review_history\', \'nearby\', \'discovery_results\', \'evening_review\', \'toilets\', \'help_places\', \'field_notes\', \'experience\', \'events\', \'settings\', \'settings_moments\', \'settings_moments_definition\', \'settings_location\', \'settings_account\', \'settings_media_import\']);\n  const marker = \'__tokyo_burari_page__\';\n  const guardMarker = \'__tokyo_burari_first_level_guard__\';\n  const requestedPage = validPages.has(data?.page) ? data.page : \'home\';\n  const action = data?.action || \'sync\';\n  const navigationNode = String(data?.node || requestedPage);\n  const interceptHierarchyBack = Boolean(data?.intercept_hierarchy_back) && requestedPage !== \'home\';\n  const firstLevelBackToHome = requestedPage !== \'home\' && navigationNode === requestedPage && !interceptHierarchyBack;\n  const pendingFeelingParam = \'feel_v159\';\n  const pendingFeelingStore = \'tokyo_burari_pending_feelings_v159\';\n  const foregroundHiddenStore = \'tokyo_burari_hidden_at_v457\';\n  let hiddenAtV457 = 0;\n  let lastForegroundEmitV457 = 0;\n  let hostWindowV457 = window;\n  let hostDocumentV457 = document;\n  try {\n    if (window.parent && window.parent !== window && window.parent.document) {\n      hostWindowV457 = window.parent;\n      hostDocumentV457 = window.parent.document;\n    }\n  } catch (_) {}\n\n  try { installBurariPerf466(hostWindowV457, requestedPage, data?.perf_run, data?.perf_session, {server_sent_ms:data?.diag_server_sent_ms, script_started_ms:data?.diag_script_started_ms}); } catch (_) {}\n\n  const refreshLayoutV457 = () => {\n    const refresh = () => {\n      try { if (hostDocumentV457.body) void hostDocumentV457.body.offsetHeight; } catch (_) {}\n      try { hostWindowV457.dispatchEvent(new Event(\'resize\')); } catch (_) {}\n    };\n    try { requestAnimationFrame(refresh); } catch (_) { refresh(); }\n    setTimeout(refresh, 180);\n  };\n\n  const foregroundSnapshotV457 = () => {\n    let staleCount = 0, rootCount = 0, iframeCount = 0, spinnerCount = 0;\n    try { staleCount = hostDocumentV457.querySelectorAll(\'[data-stale="true"]\').length; } catch (_) {}\n    try { rootCount = hostDocumentV457.querySelectorAll(\'.st-key-app_page_root_v280\').length; } catch (_) {}\n    try { iframeCount = hostDocumentV457.querySelectorAll(\'iframe\').length; } catch (_) {}\n    try { spinnerCount = hostDocumentV457.querySelectorAll(\'[data-testid="stSpinner"]\').length; } catch (_) {}\n    return { stale_count: staleCount, root_count: rootCount, iframe_count: iframeCount, spinner_count: spinnerCount };\n  };\n\n  const emitForegroundRestoreV457 = (reason, persisted) => {\n    if (hostDocumentV457.hidden) return;\n    const now = Date.now();\n    let storedAt = 0;\n    try { storedAt = Number(localStorage.getItem(foregroundHiddenStore) || 0); } catch (_) {}\n    const startedAt = Number(hiddenAtV457 || storedAt || 0);\n    const hiddenMs = startedAt > 0 ? Math.max(0, now - startedAt) : 0;\n    if (!persisted && hiddenMs < 1200) {\n      try { localStorage.removeItem(foregroundHiddenStore); } catch (_) {}\n      hiddenAtV457 = 0;\n      return;\n    }\n    if (now - lastForegroundEmitV457 < 3500) return;\n    lastForegroundEmitV457 = now;\n    refreshLayoutV457();\n    const stats = foregroundSnapshotV457();\n    const token = `${now}:${Math.random()}`;\n    queueMicrotask(() => setTriggerValue(\'foreground_restore\', {\n      token, reason: String(reason || \'visible\'), hidden_ms: Math.round(hiddenMs),\n      visible_at_ms: now, persisted: Boolean(persisted), ...stats\n    }));\n    hiddenAtV457 = 0;\n    try { localStorage.removeItem(foregroundHiddenStore); } catch (_) {}\n  };\n\n  const onVisibilityV457 = () => {\n    if (hostDocumentV457.hidden) {\n      hiddenAtV457 = Date.now();\n      try { localStorage.setItem(foregroundHiddenStore, String(hiddenAtV457)); } catch (_) {}\n    } else {\n      emitForegroundRestoreV457(\'visibility\', false);\n    }\n  };\n  const onPageHideV457 = () => {\n    hiddenAtV457 = Date.now();\n    try { localStorage.setItem(foregroundHiddenStore, String(hiddenAtV457)); } catch (_) {}\n  };\n  const onPageShowV457 = (event) => {\n    if (event && event.persisted) emitForegroundRestoreV457(\'pageshow_bfcache\', true);\n    else if (!hostDocumentV457.hidden) {\n      let storedAt = 0;\n      try { storedAt = Number(localStorage.getItem(foregroundHiddenStore) || 0); } catch (_) {}\n      if (storedAt > 0 && Date.now() - storedAt >= 1200) emitForegroundRestoreV457(\'pageshow\', false);\n    }\n  };\n  const restorePendingFeelingParam = () => {\n    try {\n      const url = new URL(hostWindowV457.location.href);\n      if (url.searchParams.get(pendingFeelingParam)) return false;\n      const raw = String(localStorage.getItem(pendingFeelingStore) || \'\');\n      if (!raw) return false;\n      url.searchParams.set(pendingFeelingParam, raw);\n      hostWindowV457.history.replaceState(hostWindowV457.history.state || {}, \'\', url.pathname + url.search + url.hash);\n      return true;\n    } catch (_) { return false; }\n  };\n\n  const restoredPendingFeeling = restorePendingFeelingParam();\n  if(restoredPendingFeeling)queueMicrotask(()=>setTriggerValue(\'pending_restore\', `${Date.now()}:${Math.random()}`));\n  // Buttons keep their native Streamlit callbacks. Never cancel or swallow their clicks.\n  const h=hostWindowV457,d=hostDocumentV457;\n  const guard=\'__burari_navigation_guard_v604\';\n  const previous=h.__burariNavigation604;\n  if(previous && !previous.retired605){\n    if(previous.onClick)d.removeEventListener(\'click\',previous.onClick,true);\n    if(previous.onPop)h.removeEventListener(\'popstate\',previous.onPop);\n    previous.pending=null;previous.queued=null;previous.emit=null;previous.retired605=true;\n    h.__burariNavigationBusy604=false;d.documentElement?.removeAttribute(\'data-burari-navigation\');\n  }\n  let nav=h.__burariNavigation605;\n  if(!nav){\n    nav={page:\'home\',node:\'home\',objectId:\'\',context:\'\',emit:null,seq:0,pending:null};\n    const urlFor=page=>{const url=new URL(h.location.href);if(page===\'home\')url.searchParams.delete(\'view\');else url.searchParams.set(\'view\',page);return url.pathname+url.search+url.hash;};\n    nav.arm=()=>{\n      const state={...(h.history.state||{}),[marker]:nav.page,[guard]:true};delete state[guardMarker];\n      if(!h.history.state?.[guard]){\n        h.history.replaceState({...state,[guard]:false},\'\',urlFor(nav.page));\n        h.history.pushState(state,\'\',urlFor(nav.page));\n      }else h.history.replaceState(state,\'\',urlFor(nav.page));\n    };\n    nav.quietMedia=()=>{\n      try{d.querySelectorAll(\'audio,video\').forEach(el=>{if(!el.paused)el.pause();});}catch(_){}\n      try{d.querySelectorAll(\'iframe\').forEach(frame=>frame.contentWindow?.postMessage({burari_navigation_v604:true},\'*\'));}catch(_){}\n    };\n    nav.findButton=kind=>{\n      const selector=kind===\'home\'\n        ? \'[class*="st-key-global_bottom_home_"] button,[class*="st-key-history_home_"] button\'\n        : \'[class*="st-key-parent_back_"] button,.st-key-camera_back_parent button,[class*="st-key-global_parent_back_"] button\';\n      const roots=[d],seen=new Set();\n      if(typeof document!==\'undefined\'&&document!==d)roots.push(document);\n      // Some Android builds expose the bridge on a same-origin parent document.\n      // Find the actual Streamlit widget there or in its visible child frames.\n      for(let index=0;index<roots.length&&index<24;index++){\n        const root=roots[index];if(!root||seen.has(root))continue;seen.add(root);\n        const button=Array.from(root.querySelectorAll(selector)).find(b=>!b.disabled&&b.isConnected!==false&&b.getClientRects().length&&!b.closest?.(\'[data-stale="true"]\'));\n        if(button)return button;\n        for(const frame of root.querySelectorAll(\'iframe\')){\n          try{if(frame.contentDocument&&frame.getClientRects().length)roots.push(frame.contentDocument);}catch(_){}\n        }\n      }\n      return undefined;\n    };\n    nav.request=kind=>{\n      if(![\'parent\',\'home\'].includes(kind))return true;\n      // Prefer the same real widget callback as an on-screen tap. No component ACK lock.\n      const button=nav.findButton(kind);\n      if(button){nav.quietMedia();button.click();return true;}\n      if(nav.page===\'home\'&&nav.node===\'home\'){nav.arm();return true;}\n      if(!nav.emit)return false; // Not mounted yet: a later press remains usable.\n      // A retry retains its operation token, preventing a lost acknowledgement from\n      // applying the same parent step twice. Home supersedes a queued parent action.\n      const existing=nav.pending;\n      let request=existing&&existing.kind===kind&&existing.context===nav.context?existing.request:null;\n      if(!request){\n        const token=`nav605-${Date.now()}-${++nav.seq}-${Math.random().toString(36).slice(2)}`;\n        request={token,kind,page:nav.page,node:nav.node,object_id:nav.objectId,context:nav.context};\n      }\n      nav.pending={kind,context:nav.context,request,token:request.token};\n      nav.quietMedia();\n      try{nav.emit(\'navigation_request\',{...request,attempt:++nav.seq});return true;}catch(_){return false;}\n    };\n    nav.onPop=()=>{restorePendingFeelingParam();nav.arm();nav.request(\'parent\');};\n    nav.onClick=event=>{\n      const path=event.composedPath?event.composedPath():[event.target];\n      const button=path.find(el=>el?.matches?.(\'button,[role="button"]\'));\n      const widget=button?.closest?.(\'[class*="st-key-"]\');\n      const keys=Array.from(widget?.classList||[]);\n      if(keys.some(k=>k.startsWith(\'st-key-parent_back_\')||k.startsWith(\'st-key-global_parent_back_\')||k.startsWith(\'st-key-global_bottom_home_\')||k.startsWith(\'st-key-history_home_\')||k===\'st-key-camera_back_parent\'))nav.quietMedia();\n      // Intentionally no preventDefault/stopPropagation: React must receive the tap.\n    };\n    h.addEventListener(\'popstate\',nav.onPop);\n    d.addEventListener(\'click\',nav.onClick,{capture:true,passive:true});\n    h.__burariNavigation605=nav;\n  }\n  const binding={};nav.binding=binding;nav.emit=setTriggerValue;\n  const nextContext=JSON.stringify([requestedPage,navigationNode,String(data?.navigation_object||\'\')]);\n  if(nav.pending&&(nav.pending.token===data?.navigation_ack||nav.context!==nextContext))nav.pending=null;\n  nav.page=requestedPage;nav.node=navigationNode;nav.objectId=String(data?.navigation_object||\'\');nav.context=nextContext;\n  // Keep the v13 APK entry working; a new APK is not needed for this fix.\n  h.__burariNavigateParent604=h.__burariNavigateParent605=()=>nav.request(\'parent\');\n  h.__burariNavigateHome604=h.__burariNavigateHome605=()=>nav.request(\'home\');\n  nav.arm();\n  hostDocumentV457.addEventListener(\'visibilitychange\',onVisibilityV457,{passive:true});\n  hostWindowV457.addEventListener(\'pagehide\',onPageHideV457,{passive:true});\n  hostWindowV457.addEventListener(\'pageshow\',onPageShowV457,{passive:true});\n  return ()=>{\n    if(nav.binding===binding)nav.emit=null;\n    hostDocumentV457.removeEventListener(\'visibilitychange\',onVisibilityV457);\n    hostWindowV457.removeEventListener(\'pagehide\',onPageHideV457);\n    hostWindowV457.removeEventListener(\'pageshow\',onPageShowV457);\n  };\n}\n'
+_HISTORY_JS = _PERF_BROWSER_JS_V466 + '\nexport default function(component) {\n  const { data, setTriggerValue } = component;\n  const validPages = new Set([\'bakery_google_results_v639\', \'salt_bread\', \'salt_bread_detail\', \'home\', \'camera\', \'videos\', \'moments\', \'diary\', \'photos\', \'review\', \'review_project\', \'review_monthly\', \'review_tag\', \'review_random\', \'review_shared\', \'review_history\', \'nearby\', \'discovery_results\', \'evening_review\', \'toilets\', \'help_places\', \'field_notes\', \'experience\', \'events\', \'settings\', \'settings_moments\', \'settings_moments_definition\', \'settings_location\', \'settings_account\', \'settings_media_import\']);\n  const marker = \'__tokyo_burari_page__\';\n  const guardMarker = \'__tokyo_burari_first_level_guard__\';\n  const requestedPage = validPages.has(data?.page) ? data.page : \'home\';\n  const action = data?.action || \'sync\';\n  const navigationNode = String(data?.node || requestedPage);\n  const interceptHierarchyBack = Boolean(data?.intercept_hierarchy_back) && requestedPage !== \'home\';\n  const firstLevelBackToHome = requestedPage !== \'home\' && navigationNode === requestedPage && !interceptHierarchyBack;\n  const pendingFeelingParam = \'feel_v159\';\n  const pendingFeelingStore = \'tokyo_burari_pending_feelings_v159\';\n  const foregroundHiddenStore = \'tokyo_burari_hidden_at_v457\';\n  let hiddenAtV457 = 0;\n  let lastForegroundEmitV457 = 0;\n  let hostWindowV457 = window;\n  let hostDocumentV457 = document;\n  try {\n    if (window.parent && window.parent !== window && window.parent.document) {\n      hostWindowV457 = window.parent;\n      hostDocumentV457 = window.parent.document;\n    }\n  } catch (_) {}\n\n  try { installBurariPerf466(hostWindowV457, requestedPage, data?.perf_run, data?.perf_session, {server_sent_ms:data?.diag_server_sent_ms, script_started_ms:data?.diag_script_started_ms}); } catch (_) {}\n\n  const refreshLayoutV457 = () => {\n    const refresh = () => {\n      try { if (hostDocumentV457.body) void hostDocumentV457.body.offsetHeight; } catch (_) {}\n      try { hostWindowV457.dispatchEvent(new Event(\'resize\')); } catch (_) {}\n    };\n    try { requestAnimationFrame(refresh); } catch (_) { refresh(); }\n    setTimeout(refresh, 180);\n  };\n\n  const foregroundSnapshotV457 = () => {\n    let staleCount = 0, rootCount = 0, iframeCount = 0, spinnerCount = 0;\n    try { staleCount = hostDocumentV457.querySelectorAll(\'[data-stale="true"]\').length; } catch (_) {}\n    try { rootCount = hostDocumentV457.querySelectorAll(\'.st-key-app_page_root_v280\').length; } catch (_) {}\n    try { iframeCount = hostDocumentV457.querySelectorAll(\'iframe\').length; } catch (_) {}\n    try { spinnerCount = hostDocumentV457.querySelectorAll(\'[data-testid="stSpinner"]\').length; } catch (_) {}\n    return { stale_count: staleCount, root_count: rootCount, iframe_count: iframeCount, spinner_count: spinnerCount };\n  };\n\n  const emitForegroundRestoreV457 = (reason, persisted) => {\n    if (hostDocumentV457.hidden) return;\n    const now = Date.now();\n    let storedAt = 0;\n    try { storedAt = Number(localStorage.getItem(foregroundHiddenStore) || 0); } catch (_) {}\n    const startedAt = Number(hiddenAtV457 || storedAt || 0);\n    const hiddenMs = startedAt > 0 ? Math.max(0, now - startedAt) : 0;\n    if (!persisted && hiddenMs < 1200) {\n      try { localStorage.removeItem(foregroundHiddenStore); } catch (_) {}\n      hiddenAtV457 = 0;\n      return;\n    }\n    if (now - lastForegroundEmitV457 < 3500) return;\n    lastForegroundEmitV457 = now;\n    refreshLayoutV457();\n    const stats = foregroundSnapshotV457();\n    const token = `${now}:${Math.random()}`;\n    queueMicrotask(() => setTriggerValue(\'foreground_restore\', {\n      token, reason: String(reason || \'visible\'), hidden_ms: Math.round(hiddenMs),\n      visible_at_ms: now, persisted: Boolean(persisted), ...stats\n    }));\n    hiddenAtV457 = 0;\n    try { localStorage.removeItem(foregroundHiddenStore); } catch (_) {}\n  };\n\n  const onVisibilityV457 = () => {\n    if (hostDocumentV457.hidden) {\n      hiddenAtV457 = Date.now();\n      try { localStorage.setItem(foregroundHiddenStore, String(hiddenAtV457)); } catch (_) {}\n    } else {\n      emitForegroundRestoreV457(\'visibility\', false);\n    }\n  };\n  const onPageHideV457 = () => {\n    hiddenAtV457 = Date.now();\n    try { localStorage.setItem(foregroundHiddenStore, String(hiddenAtV457)); } catch (_) {}\n  };\n  const onPageShowV457 = (event) => {\n    if (event && event.persisted) emitForegroundRestoreV457(\'pageshow_bfcache\', true);\n    else if (!hostDocumentV457.hidden) {\n      let storedAt = 0;\n      try { storedAt = Number(localStorage.getItem(foregroundHiddenStore) || 0); } catch (_) {}\n      if (storedAt > 0 && Date.now() - storedAt >= 1200) emitForegroundRestoreV457(\'pageshow\', false);\n    }\n  };\n  const restorePendingFeelingParam = () => {\n    try {\n      const url = new URL(hostWindowV457.location.href);\n      if (url.searchParams.get(pendingFeelingParam)) return false;\n      const raw = String(localStorage.getItem(pendingFeelingStore) || \'\');\n      if (!raw) return false;\n      url.searchParams.set(pendingFeelingParam, raw);\n      hostWindowV457.history.replaceState(hostWindowV457.history.state || {}, \'\', url.pathname + url.search + url.hash);\n      return true;\n    } catch (_) { return false; }\n  };\n\n  const restoredPendingFeeling = restorePendingFeelingParam();\n  if(restoredPendingFeeling)queueMicrotask(()=>setTriggerValue(\'pending_restore\', `${Date.now()}:${Math.random()}`));\n  // Buttons keep their native Streamlit callbacks. Never cancel or swallow their clicks.\n  const h=hostWindowV457,d=hostDocumentV457;\n  const guard=\'__burari_navigation_guard_v604\';\n  const previous=h.__burariNavigation604;\n  if(previous && !previous.retired605){\n    if(previous.onClick)d.removeEventListener(\'click\',previous.onClick,true);\n    if(previous.onPop)h.removeEventListener(\'popstate\',previous.onPop);\n    previous.pending=null;previous.queued=null;previous.emit=null;previous.retired605=true;\n    h.__burariNavigationBusy604=false;d.documentElement?.removeAttribute(\'data-burari-navigation\');\n  }\n  let nav=h.__burariNavigation605;\n  if(!nav){\n    nav={page:\'home\',node:\'home\',objectId:\'\',context:\'\',emit:null,seq:0,pending:null};\n    const urlFor=page=>{const url=new URL(h.location.href);if(page===\'home\')url.searchParams.delete(\'view\');else url.searchParams.set(\'view\',page);return url.pathname+url.search+url.hash;};\n    nav.arm=()=>{\n      const state={...(h.history.state||{}),[marker]:nav.page,[guard]:true};delete state[guardMarker];\n      if(!h.history.state?.[guard]){\n        h.history.replaceState({...state,[guard]:false},\'\',urlFor(nav.page));\n        h.history.pushState(state,\'\',urlFor(nav.page));\n      }else h.history.replaceState(state,\'\',urlFor(nav.page));\n    };\n    nav.quietMedia=()=>{\n      try{d.querySelectorAll(\'audio,video\').forEach(el=>{if(!el.paused)el.pause();});}catch(_){}\n      try{d.querySelectorAll(\'iframe\').forEach(frame=>frame.contentWindow?.postMessage({burari_navigation_v604:true},\'*\'));}catch(_){}\n    };\n    nav.findButton=kind=>{\n      const selector=kind===\'home\'\n        ? \'[class*="st-key-global_bottom_home_"] button,[class*="st-key-history_home_"] button\'\n        : \'[class*="st-key-parent_back_"] button,.st-key-camera_back_parent button,[class*="st-key-global_parent_back_"] button\';\n      const roots=[d],seen=new Set();\n      if(typeof document!==\'undefined\'&&document!==d)roots.push(document);\n      // Some Android builds expose the bridge on a same-origin parent document.\n      // Find the actual Streamlit widget there or in its visible child frames.\n      for(let index=0;index<roots.length&&index<24;index++){\n        const root=roots[index];if(!root||seen.has(root))continue;seen.add(root);\n        const button=Array.from(root.querySelectorAll(selector)).find(b=>!b.disabled&&b.isConnected!==false&&b.getClientRects().length&&!b.closest?.(\'[data-stale="true"]\'));\n        if(button)return button;\n        for(const frame of root.querySelectorAll(\'iframe\')){\n          try{if(frame.contentDocument&&frame.getClientRects().length)roots.push(frame.contentDocument);}catch(_){}\n        }\n      }\n      return undefined;\n    };\n    nav.request=kind=>{\n      if(![\'parent\',\'home\'].includes(kind))return true;\n      // Prefer the same real widget callback as an on-screen tap. No component ACK lock.\n      const button=nav.findButton(kind);\n      if(button){nav.quietMedia();button.click();return true;}\n      if(nav.page===\'home\'&&nav.node===\'home\'){nav.arm();return true;}\n      if(!nav.emit)return false; // Not mounted yet: a later press remains usable.\n      // A retry retains its operation token, preventing a lost acknowledgement from\n      // applying the same parent step twice. Home supersedes a queued parent action.\n      const existing=nav.pending;\n      let request=existing&&existing.kind===kind&&existing.context===nav.context?existing.request:null;\n      if(!request){\n        const token=`nav605-${Date.now()}-${++nav.seq}-${Math.random().toString(36).slice(2)}`;\n        request={token,kind,page:nav.page,node:nav.node,object_id:nav.objectId,context:nav.context};\n      }\n      nav.pending={kind,context:nav.context,request,token:request.token};\n      nav.quietMedia();\n      try{nav.emit(\'navigation_request\',{...request,attempt:++nav.seq});return true;}catch(_){return false;}\n    };\n    nav.onPop=()=>{restorePendingFeelingParam();nav.arm();nav.request(\'parent\');};\n    nav.onClick=event=>{\n      const path=event.composedPath?event.composedPath():[event.target];\n      const button=path.find(el=>el?.matches?.(\'button,[role="button"]\'));\n      const widget=button?.closest?.(\'[class*="st-key-"]\');\n      const keys=Array.from(widget?.classList||[]);\n      if(keys.some(k=>k.startsWith(\'st-key-parent_back_\')||k.startsWith(\'st-key-global_parent_back_\')||k.startsWith(\'st-key-global_bottom_home_\')||k.startsWith(\'st-key-history_home_\')||k===\'st-key-camera_back_parent\'))nav.quietMedia();\n      // Intentionally no preventDefault/stopPropagation: React must receive the tap.\n    };\n    h.addEventListener(\'popstate\',nav.onPop);\n    d.addEventListener(\'click\',nav.onClick,{capture:true,passive:true});\n    h.__burariNavigation605=nav;\n  }\n  const binding={};nav.binding=binding;nav.emit=setTriggerValue;\n  const nextContext=JSON.stringify([requestedPage,navigationNode,String(data?.navigation_object||\'\')]);\n  if(nav.pending&&(nav.pending.token===data?.navigation_ack||nav.context!==nextContext))nav.pending=null;\n  nav.page=requestedPage;nav.node=navigationNode;nav.objectId=String(data?.navigation_object||\'\');nav.context=nextContext;\n  // Keep the v13 APK entry working; a new APK is not needed for this fix.\n  h.__burariNavigateParent604=h.__burariNavigateParent605=()=>nav.request(\'parent\');\n  h.__burariNavigateHome604=h.__burariNavigateHome605=()=>nav.request(\'home\');\n  nav.arm();\n  hostDocumentV457.addEventListener(\'visibilitychange\',onVisibilityV457,{passive:true});\n  hostWindowV457.addEventListener(\'pagehide\',onPageHideV457,{passive:true});\n  hostWindowV457.addEventListener(\'pageshow\',onPageShowV457,{passive:true});\n  return ()=>{\n    if(nav.binding===binding)nav.emit=null;\n    hostDocumentV457.removeEventListener(\'visibilitychange\',onVisibilityV457);\n    hostWindowV457.removeEventListener(\'pagehide\',onPageHideV457);\n    hostWindowV457.removeEventListener(\'pageshow\',onPageShowV457);\n  };\n}\n'
 
 try:
     browser_history_component = st.components.v2.component(
@@ -4097,8 +4100,8 @@ def _verify_remote_schema_cached():
     # Two probes are enough to confirm the v44 personal-account migration. Avoid
     # touching every table on cold start; real page queries will surface any later
     # table-specific problem only when that page is actually opened.
-    client.table(MEMBER_TABLE).select("family_key,member_key").limit(1).execute()
-    client.table(TRIP_TABLE).select("id,family_key,member_key").limit(1).execute()
+    _diag_invoke_v640('execute:_verify_remote_schema_cached:L4102', lambda: (client.table(MEMBER_TABLE).select("family_key,member_key").limit(1).execute()))
+    _diag_invoke_v640('execute:_verify_remote_schema_cached:L4103', lambda: (client.table(TRIP_TABLE).select("id,family_key,member_key").limit(1).execute()))
     return True
 
 
@@ -4140,23 +4143,23 @@ def get_family_account(family_key):
     if not family_key:
         return None
     result = (
-        supabase_client()
+        _diag_invoke_v640('execute:get_family_account:L4145', lambda: (supabase_client()
         .table(FAMILY_TABLE)
         .select("*")
         .eq("family_key", family_key)
         .limit(1)
-        .execute()
+        .execute()))
     )
     return (result.data or [None])[0]
 
 
 def list_family_accounts():
     result = (
-        supabase_client()
+        _diag_invoke_v640('execute:list_family_accounts:L4157', lambda: (supabase_client()
         .table(FAMILY_TABLE)
         .select("family_key,display_name,created_at")
         .order("created_at")
-        .execute()
+        .execute()))
     )
     return result.data or []
 
@@ -4183,13 +4186,13 @@ def create_family_account(family_key, display_name, member_key, member_name, pin
         "created_at": now_jst().isoformat(),
         "updated_at": now_jst().isoformat(),
     }
-    client.table(FAMILY_TABLE).insert(family_payload).execute()
+    _diag_invoke_v640('execute:create_family_account:L4188', lambda: (client.table(FAMILY_TABLE).insert(family_payload).execute()))
     try:
         member = create_member_account(member_key, member_name, pin, family_key=family_key)
     except Exception:
         # 個人アカウントが作れなければ、ログイン不能な空家族を残さない。
         try:
-            client.table(FAMILY_TABLE).delete().eq("family_key", family_key).execute()
+            _diag_invoke_v640('execute:create_family_account:L4194', lambda: (client.table(FAMILY_TABLE).delete().eq("family_key", family_key).execute()))
         except Exception:
             pass
         raise
@@ -4203,9 +4206,9 @@ def update_current_family_name(display_name):
         raise ValueError("家族名を入力してください。")
     if len(display_name) > 40:
         raise ValueError("家族名は40文字以内にしてください。")
-    supabase_client().table(FAMILY_TABLE).update(
+    _diag_invoke_v640('execute:update_current_family_name:L4208', lambda: (supabase_client().table(FAMILY_TABLE).update(
         {"display_name": display_name, "updated_at": now_jst().isoformat()}
-    ).eq("family_key", current_family_key()).execute()
+    ).eq("family_key", current_family_key()).execute()))
     st.session_state["_current_family_name"] = display_name
     return display_name
 
@@ -4216,7 +4219,7 @@ def ensure_default_family_account():
     account = get_family_account("default")
     if account:
         return
-    supabase_client().table(FAMILY_TABLE).insert(
+    _diag_invoke_v640('execute:ensure_default_family_account:L4221', lambda: (supabase_client().table(FAMILY_TABLE).insert(
         {
             "family_key": "default",
             "display_name": "家族1",
@@ -4225,7 +4228,7 @@ def ensure_default_family_account():
             "created_at": now_jst().isoformat(),
             "updated_at": now_jst().isoformat(),
         }
-    ).execute()
+    ).execute()))
 
 
 def _normalize_member_key(value):
@@ -4245,13 +4248,13 @@ def get_member_account(family_key, member_key):
     if not family_key or not member_key:
         return None
     result = (
-        supabase_client()
+        _diag_invoke_v640('execute:get_member_account:L4250', lambda: (supabase_client()
         .table(MEMBER_TABLE)
         .select("*")
         .eq("family_key", family_key)
         .eq("member_key", member_key)
         .limit(1)
-        .execute()
+        .execute()))
     )
     return (result.data or [None])[0]
 
@@ -4259,12 +4262,12 @@ def get_member_account(family_key, member_key):
 def list_family_members(family_key=None):
     family_key = str(family_key or current_family_key()).strip()
     result = (
-        supabase_client()
+        _diag_invoke_v640('execute:list_family_members:L4264', lambda: (supabase_client()
         .table(MEMBER_TABLE)
         .select("family_key,member_key,display_name,created_at")
         .eq("family_key", family_key)
         .order("created_at")
-        .execute()
+        .execute()))
     )
     return result.data or []
 
@@ -4296,7 +4299,7 @@ def create_member_account(member_key, display_name, pin, family_key=None):
         "created_at": now_jst().isoformat(),
         "updated_at": now_jst().isoformat(),
     }
-    supabase_client().table(MEMBER_TABLE).insert(payload).execute()
+    _diag_invoke_v640('execute:create_member_account:L4301', lambda: (supabase_client().table(MEMBER_TABLE).insert(payload).execute()))
     return payload
 
 
@@ -4307,12 +4310,12 @@ def update_current_member_name(display_name):
     if len(display_name) > 40:
         raise ValueError("個人名は40文字以内にしてください。")
     (
-        supabase_client()
+        _diag_invoke_v640('execute:update_current_member_name:L4312', lambda: (supabase_client()
         .table(MEMBER_TABLE)
         .update({"display_name": display_name, "updated_at": now_jst().isoformat()})
         .eq("family_key", current_family_key())
         .eq("member_key", current_member_key())
-        .execute()
+        .execute()))
     )
     st.session_state["_current_member_name"] = display_name
     return display_name
@@ -4346,7 +4349,7 @@ def update_current_member_pin(new_pin):
     salt = uuid.uuid4().hex
     pin_hash = _family_pin_hash(new_pin, salt)
     (
-        supabase_client()
+        _diag_invoke_v640('execute:update_current_member_pin:L4351', lambda: (supabase_client()
         .table(MEMBER_TABLE)
         .update(
             {
@@ -4357,7 +4360,7 @@ def update_current_member_pin(new_pin):
         )
         .eq("family_key", family_key)
         .eq("member_key", member_key)
-        .execute()
+        .execute()))
     )
 
     # Tokens on other browsers were derived from the old hash and become invalid.
@@ -4379,13 +4382,13 @@ def ensure_default_member_account():
         # before the app could copy FAMILY_PIN. Fill only an empty credential.
         if FAMILY_PIN and not str(existing.get("pin_hash") or "").strip():
             salt = str(existing.get("pin_salt") or "").strip() or uuid.uuid4().hex
-            supabase_client().table(MEMBER_TABLE).update(
+            _diag_invoke_v640('execute:ensure_default_member_account:L4384', lambda: (supabase_client().table(MEMBER_TABLE).update(
                 {
                     "pin_salt": salt,
                     "pin_hash": _family_pin_hash(FAMILY_PIN, salt),
                     "updated_at": now_jst().isoformat(),
                 }
-            ).eq("family_key", "default").eq("member_key", "main").execute()
+            ).eq("family_key", "default").eq("member_key", "main").execute()))
         return
     family = get_family_account("default") or {}
     # Prefer the old family credential if v43 had already populated it; otherwise
@@ -4401,7 +4404,7 @@ def ensure_default_member_account():
     else:
         salt = ""
         pin_hash = ""
-    supabase_client().table(MEMBER_TABLE).insert(
+    _diag_invoke_v640('execute:ensure_default_member_account:L4406', lambda: (supabase_client().table(MEMBER_TABLE).insert(
         {
             "family_key": "default",
             "member_key": "main",
@@ -4411,7 +4414,7 @@ def ensure_default_member_account():
             "created_at": now_jst().isoformat(),
             "updated_at": now_jst().isoformat(),
         }
-    ).execute()
+    ).execute()))
 
 
 def current_family_key():
@@ -4451,16 +4454,233 @@ def current_member_name():
 # ============================================================
 # Lightweight per-session DB cache
 # ============================================================
+import contextvars as _diag_contextvars_v640
+
+from collections import deque as _diag_deque_v640
+
+_DIAG_CONTEXT_V640 = _diag_contextvars_v640.ContextVar('burari_trace_v640', default=None)
+
+_DIAG_LIMIT_V640 = 10000
+
+class _DiagSinkV640:
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.rows = _diag_deque_v640(maxlen=_DIAG_LIMIT_V640)
+        self.active = {}
+        self.seq = 0
+        self.dropped = 0
+        self.recorder_ns = 0
+
+    def emit(self, row, begin=False):
+        overhead = time.perf_counter_ns()
+        with self.lock:
+            if len(self.rows) == self.rows.maxlen:
+                self.dropped += 1
+            self.rows.append(row)
+            if begin and len(self.active) < 256:
+                self.active[row['span']] = row
+            else:
+                self.active.pop(row['span'], None)
+            self.recorder_ns += time.perf_counter_ns() - overhead
+
+    def snapshot(self):
+        # Copy under a short lock; JSON encoding occurs after releasing it.
+        with self.lock:
+            return {'schema': 640, 'limit': _DIAG_LIMIT_V640,
+                    'dropped': self.dropped, 'recorder_append_ms': round(self.recorder_ns / 1e6, 3),
+                    'rows': list(self.rows), 'active': list(self.active.values()),
+                    'limits': 'Function-level spans; non_cpu_ms includes I/O, scheduling and lock waits. It is not a measured network-only duration.'}
+
+def _diag_sink_v640():
+    value = st.session_state.get('_diag_sink_v640')
+    if value is None:
+        value = _DiagSinkV640()
+        st.session_state['_diag_sink_v640'] = value
+    return value
+
+class _DiagSpanV640:
+    def __init__(self, phase, meta=None):
+        self.phase = phase
+        self.meta = meta or {}
+        self.context = None
+        self.token = None
+
+    def __enter__(self):
+        try:
+            return self._enter()
+        except Exception:
+            self.context = None
+            return self
+
+    def _enter(self):
+        parent = _DIAG_CONTEXT_V640.get()
+        if parent is None:
+            return self
+        self.context = parent
+        sink = parent['sink']
+        with sink.lock:
+            sink.seq += 1
+            self.identity = sink.seq
+        self.start = time.perf_counter_ns()
+        self.cpu = time.thread_time_ns()
+        row = {'span': self.identity, 'parent': parent.get('span'),
+               'phase': str(self.phase)[:120], 'state': 'started',
+               'run': parent['run'], 'operation': parent['operation'],
+               'server_session': parent['session'], 'page': parent['page'],
+               'thread': threading.get_ident(), 'at_ms': int(time.time() * 1000),
+               'monotonic_ns': self.start}
+        row.update(self.meta)
+        sink.emit(row, begin=True)
+        self.token = _DIAG_CONTEXT_V640.set({**parent, 'span': self.identity})
+        return self
+
+    def __exit__(self, typ, value, tb):
+        if self.context is None:
+            return False
+        try:
+            elapsed = (time.perf_counter_ns() - self.start) / 1e6
+            cpu = (time.thread_time_ns() - self.cpu) / 1e6
+            status = 'completed' if typ is None else 'rerun' if typ.__name__ == 'RerunException' else 'stopped' if typ.__name__ == 'StopException' else 'error'
+            row = {'span': self.identity, 'parent': self.context.get('span'),
+                   'phase': str(self.phase)[:120], 'state': status,
+                   'ms': round(elapsed, 3), 'cpu_ms': round(cpu, 3),
+                   'non_cpu_ms': round(max(0, elapsed - cpu), 3),
+                   'run': self.context['run'], 'operation': self.context['operation'],
+                   'server_session': self.context['session'], 'page': self.context['page'],
+                   'thread': threading.get_ident(), 'at_ms': int(time.time() * 1000)}
+            if typ is not None:
+                row['exception_type'] = typ.__name__
+            row.update(self.meta)
+            self.context['sink'].emit(row)
+        except Exception:
+            pass
+        finally:
+            _DIAG_CONTEXT_V640.reset(self.token)
+        return False
+
+def _diag_invoke_v640(phase, func, *args, **kwargs):
+    if _DIAG_CONTEXT_V640.get() is None:
+        return func(*args, **kwargs)
+    with _DiagSpanV640(phase):
+        return func(*args, **kwargs)
+
+def _diag_root_call_v640(phase, func, *args, **kwargs):
+    if _DIAG_CONTEXT_V640.get() is not None:
+        return _diag_invoke_v640(phase, func, *args, **kwargs)
+    context = {'sink': _diag_sink_v640(), 'span': None,
+               'run': int(st.session_state.get('_performance_current_run_v457') or 0),
+               'operation': str(st.session_state.get('_diag_operation_v603') or '')[:100],
+               'session': str(st.session_state.get('_perf_session_v466') or ''),
+               'page': str(st.session_state.get('main_page') or 'home')}
+    token = _DIAG_CONTEXT_V640.set(context)
+    try:
+        return _diag_invoke_v640(phase, func, *args, **kwargs)
+    finally:
+        _DIAG_CONTEXT_V640.reset(token)
+
+def _diag_submit_v640(executor, func, *args, **kwargs):
+    if _DIAG_CONTEXT_V640.get() is None:
+        return executor.submit(func, *args, **kwargs)
+    context = _diag_contextvars_v640.copy_context()
+    submitted = time.perf_counter_ns()
+    phase = 'worker:' + str(getattr(func, '__name__', 'task'))[:80]
+    def run():
+        def traced():
+            with _DiagSpanV640(phase, {'queue_ms': round((time.perf_counter_ns() - submitted) / 1e6, 3)}):
+                return func(*args, **kwargs)
+        return context.run(traced)
+    return executor.submit(run)
+
+def _diag_future_v640(future, *args, **kwargs):
+    return _diag_invoke_v640('future:result_wait', future.result, *args, **kwargs)
+
+class _DiagLockV640:
+    def __init__(self, lock, phase):
+        self.lock = lock
+        self.phase = phase
+    def __enter__(self):
+        with _DiagSpanV640('lock_wait:' + self.phase):
+            return self.lock.__enter__()
+    def __exit__(self, typ, value, tb):
+        return self.lock.__exit__(typ, value, tb)
+
+def _diag_wrap_v640(original, phase):
+    @functools.wraps(original)
+    def measured(*args, **kwargs):
+        return _diag_invoke_v640(phase, original, *args, **kwargs)
+    if callable(getattr(original, 'clear', None)):
+        measured.clear = original.clear
+    return measured
+
+def _install_diag_v640():
+    # Function boundary tracing only. Never sys.settrace/profile or per-frame/per-pixel traces.
+    names = ('get_summary_feedback_status', '_summary_feedback_entries',
+             '_salt_discovery_logs_settings_v617', '_render_notification_logs_v599',
+             '_notification_log_exports_v599', '_events_source_log_settings_v587',
+             '_events_source_log_export_v587', '_events_source_log_history_v587',
+             '_salt_diagnostic_export_v636', '_salt_discovery_load_v617',
+             '_performance_log_text_v457', 'render_performance_log_v457',
+             'read_browser_persistence', 'read_browser_review_state')
+    for name in names:
+        original = globals().get(name)
+        if callable(original):
+            globals()[name] = _diag_wrap_v640(original, 'function:' + name)
+
+_PERF_EXPORT_JS_V640 = r"""
+export default function(component) {
+  const {parentElement, setTriggerValue, data} = component;
+  let host=window;
+  try {if(window.parent.document)host=window.parent;}catch(_){}
+  const button=parentElement.querySelector('button');
+  const status=parentElement.querySelector('[role="status"]');
+  const registry=host.__burariExports640||(host.__burariExports640=new Map());
+  const id='performance';
+  let state=registry.get(id);
+  if(!state){state={pending:'',downloaded:''};registry.set(id,state);}
+  const reset=data?.reset_token;
+  if(reset&&host.__burariPerfReset466!==reset){host.__burariPerf466?.clear();host.__burariPerfReset466=reset;}
+  const ready=String(data?.ready_token||'');
+  if(data?.error_token&&data.error_token===state.pending){state.pending='';status.textContent='ログを出力できませんでした。もう一度押してください。';}
+  // Retain request state across the fragment rerender; start no timer/polling.
+  if(ready&&ready===state.pending&&ready!==state.downloaded){
+    const target=host.document.querySelector('.st-key-perf_auto_download_v640 button');
+    if(target){state.downloaded=ready;state.pending='';queueMicrotask(()=>target.click());status.textContent='保存を開始しました。';}
+    else {state.pending='';status.textContent='保存ボタンを確認できません。もう一度押してください。';}
+  }
+  button.disabled=!!state.pending;
+  button.onclick=()=>{
+    if(state.pending)return;
+    const token=host.crypto?.randomUUID?.()||`${Date.now()}-${Math.random()}`;
+    state.pending=token;button.disabled=true;status.textContent='ログを取得しています…';
+    let browser;
+    try{browser=host.__burariPerf466?.snapshot();}catch(_){}
+    setTriggerValue('snapshot',{token,browser:browser||{error:'browser_logger_unavailable'}});
+  };
+  return()=>{button.onclick=null;};
+}
+"""
+
+def _diag_export_rerun_v640():
+    from streamlit.runtime.scriptrunner import get_script_run_ctx
+    context = get_script_run_ctx()
+    # A component can also deliver during a full-page reconnect/rerun.
+    st.rerun(scope='fragment' if getattr(context, 'fragment_ids_this_run', None) else 'app')
+
+
+
 def _session_cache_get(key, max_age_seconds=12):
     entry = st.session_state.get(key)
     if not isinstance(entry, dict):
+        _diag_invoke_v640("cache:session_miss", lambda: None)
         return None
     try:
         age = time.time() - float(entry.get("at") or 0.0)
     except Exception:
         return None
     if age < 0 or age > float(max_age_seconds):
+        _diag_invoke_v640("cache:session_expired", lambda: None)
         return None
+    _diag_invoke_v640("cache:session_hit", lambda: None)
     return entry.get("value")
 
 
@@ -4533,7 +4753,7 @@ def _install_diag_callback_wrappers_v603():
             target = args[0] if name in {"_home_nav_callback", "_go_page_callback"} and args else None
             operation = _diag_action_received_v603(name, target=target)
             try:
-                return original(*args, **kwargs)
+                return _diag_root_call_v640("callback:" + name, original, *args, **kwargs)
             finally:
                 _perf_log_v457("action:callback_finished", started_at=started, force=True,
                                meta={"kind": name, "operation_id": operation})
@@ -4600,6 +4820,11 @@ def _perf_log_v457(phase, *, started_at=None, duration_ms=None, page=None, meta=
 
 
 def _perf_call_v457(phase, func, *args, force=False, meta=None, **kwargs):
+    return _diag_root_call_v640(phase, _perf_call_untraced_v640, phase, func, *args,
+                               force=force, meta=meta, **kwargs)
+
+
+def _perf_call_untraced_v640(phase, func, *args, force=False, meta=None, **kwargs):
     started = time.perf_counter()
     _perf_log_v457(phase + ":start", duration_ms=0, meta=meta, force=True)
     status = "completed"
@@ -4663,163 +4888,72 @@ export default function(component) {
 
 @st.cache_resource(show_spinner=False)
 def _perf_export_component_v465():
-    return st.components.v2.component("burari_perf_export_v465",
-        html='<div data-burari-perf-ui><button type="button">最新の動作ログをまとめる</button></div>',
-        css='button{width:100%;padding:12px;border:1px solid #aaa;border-radius:8px;background:white;color:#222;cursor:pointer}',
-        js=_perf_instrument_js_v466(_PERF_EXPORT_JS_V465))
+    return st.components.v2.component('burari_perf_export_v640',
+        html='<div data-burari-perf-ui><button type="button">動作ログを保存</button><p role="status" aria-live="polite"></p></div>',
+        css='button{width:100%;padding:12px;border:1px solid #aaa;border-radius:8px;background:white;color:#222;cursor:pointer}p{font-size:12px}',
+        js=_PERF_EXPORT_JS_V640)
 
 
+
+@st.fragment
 def _render_interaction_export_v465():
-    st.caption("遅い操作を再現したあと「最新の動作ログをまとめる」→「操作時間ログを保存」。画面遷移、端末の処理停止、通信、再生準備を記録します。")
+    key = '_perf_export_v640'
+    exported = st.session_state.get(key)
+    token = st.session_state.get('_perf_export_token_v465', '')
+    # HTTP download uses Streamlit's normal download handler; Android DownloadManager
+    # cannot handle a blob/data URL. This hidden button is activated automatically.
+    if exported:
+        st.markdown('<style>.st-key-perf_auto_download_v640{display:none!important}</style>', unsafe_allow_html=True)
+        st.download_button('動作ログを保存', exported, f'burari_diagnostics_{today_iso()}.json',
+                           'application/json', key='perf_auto_download_v640', on_click='ignore')
     try:
-        result = _perf_export_component_v465()(key="perf_export_v465", data={"reset_token": st.session_state.get("_perf_reset_v466", "")}, on_snapshot_change=lambda: None)
-        payload = getattr(result, "snapshot", None)
-        if isinstance(payload, dict):
-            token = str(payload.get("token") or "")
-            if token and token != st.session_state.get("_perf_export_token_v465"):
-                st.session_state["_perf_export_token_v465"] = token
-                # Freeze both sources together; rendering the download widget must not
-                # silently change the snapshot in a subsequent rerun.
-                st.session_state["_perf_export_v465"] = json.dumps({
-                    "format": "burari_interaction_v603", "build": APP_BUILD,
-                    "diagnostic_contract": {
-                        "server_receive": "instrumented callback/body entry; not WebSocket ingress",
-                        "script_entry": "before imports; excludes framework queue and compilation",
-                        "socket_events": "temporal only; binary payloads are never inspected",
-                        "clocks": "browser and server wall clocks are not synchronized; use monotonic intervals within each",
-                        "completion": "target-page DOM estimate; media readiness/playback recorded separately",
-                    },
-                    "browser": payload.get("browser"),
-                    "server": list(st.session_state.get(PERF_LOG_KEY_V457) or []),
-                    "server_limit": PERF_LOG_LIMIT_V457,
-                    "server_dropped_rows": int(st.session_state.get("_perf_dropped_v466", 0)),
-                    "gps_native_diagnostic": dict(st.session_state.get("_gps_native_diag_v491") or {}),
-                    "gps_diagnostic_probe": dict(st.session_state.get("_gps_diag_probe_v492") or {}),
-                    "gps_last_sync": dict(st.session_state.get("_gps_last_sync_v491") or {}),
-                    "server_clock": "server wall time for labels; perf_counter for durations",
-                    "server_session": st.session_state.setdefault("_perf_session_v466", uuid.uuid4().hex),
-                }, ensure_ascii=False, indent=2)
-        exported = st.session_state.get("_perf_export_v465")
-        if exported:
-            st.download_button("操作時間ログを保存", data=exported,
-                file_name=f"burari_interaction_{today_iso()}.log", mime="text/plain",
-                key="perf_interaction_download_v465", use_container_width=True)
+        result = _perf_export_component_v465()(key='perf_export_v640',
+            data={'ready_token': token, 'error_token': st.session_state.get('_perf_export_error_v640',''), 'reset_token': st.session_state.get('_perf_reset_v466', '')},
+            on_snapshot_change=lambda: None)
+        payload = getattr(result, 'snapshot', None)
+        if isinstance(payload, dict) and payload.get('token') and payload['token'] not in (token, st.session_state.get('_perf_export_error_v640')):
+            sink = st.session_state.get('_diag_sink_v640')
+            with _DiagSpanV640('export:json'):
+                body = {'format': 'burari_diagnostics_v640', 'build': APP_BUILD,
+                        'browser': payload.get('browser'),
+                        'server': list(st.session_state.get(PERF_LOG_KEY_V457) or []),
+                        'detailed_spans': sink.snapshot() if sink is not None else {},
+                        'server_dropped_rows': st.session_state.get('_perf_dropped_v466', 0),
+                        'gps_native_diagnostic': st.session_state.get('_gps_native_diag_v491') or {},
+                        'gps_diagnostic_probe': st.session_state.get('_gps_diag_probe_v492') or {},
+                        'gps_last_sync': st.session_state.get('_gps_last_sync_v491') or {},
+                        'diagnostic_contract': {'clocks': 'Compare monotonic intervals within each process only.',
+                            'correlation': 'Callback IDs and browser events are temporal unless an explicit component token matches.',
+                            'render': 'DOM readiness is an estimate, not physical presentation.',
+                            'nested_spans': 'Parent durations include children; do not sum nested durations.'}}
+                st.session_state[key] = _diag_root_call_v640('export:serialize', json.dumps, body, ensure_ascii=False, separators=(',', ':'))
+            st.session_state['_perf_export_token_v465'] = payload['token']
+            _diag_export_rerun_v640()
     except Exception as exc:
-        st.warning("端末ログを取得できません。下の処理ログは保存できます。")
-        _perf_log_v457("browser_log_export_error", duration_ms=0,
-                       meta={"error_type": type(exc).__name__}, force=True)
+        st.warning('ログを出力できませんでした。再度保存を押してください。')
+        _perf_log_v457('export:error', duration_ms=0, meta={'type': type(exc).__name__}, force=True)
+        failed = payload.get('token') if isinstance(locals().get('payload'), dict) else ''
+        if failed and failed != st.session_state.get('_perf_export_error_v640'):
+            st.session_state['_perf_export_error_v640'] = failed
+            _diag_export_rerun_v640()
+
 
 
 def render_performance_log_v457():
-    rows = st.session_state.get(PERF_LOG_KEY_V457)
-    rows = list(rows) if isinstance(rows, list) else []
-    with st.expander("⚡ 動作ログ", expanded=False):
-        st.caption("ログ保持上限：端末操作 2,000件 / サーバー処理 10,000件（古い順に自動整理）")
-        gps_diag = st.session_state.get("_gps_native_diag_v491") or {}
-        gps_probe = st.session_state.get("_gps_diag_probe_v492") or {}
-        gps_sync = st.session_state.get("_gps_last_sync_v491") or {}
-
-        def _gps_log_time_v491(value):
-            try:
-                value = int(float(value or 0))
-                if value <= 0:
-                    return "--"
-                return datetime.fromtimestamp(value / 1000.0, ZoneInfo(APP_TIMEZONE)).strftime("%m/%d %H:%M:%S")
-            except Exception:
-                return "--"
-
-        # v492: Always show the GPS diagnosis section. In v491 it disappeared when
-        # Android did not return diagnosticStatus(), which made the failure itself invisible.
-        st.markdown("**GPS診断（直近）**")
-        if isinstance(gps_diag, dict) and gps_diag:
-            st.code(
-                "\n".join([
-                    f"診断受信: あり ({_gps_log_time_v491(gps_diag.get('received_at_ms'))})",
-                    f"ブリッジ: {gps_diag.get('bridge_path','--')} / v{gps_diag.get('bridge_version','--')}",
-                    f"GPSサービス: {'稼働中' if gps_diag.get('gps_service_running') is True else '停止/不明' if gps_diag.get('gps_service_running') is not False else '停止'}",
-                    f"Android最新GPS: {_gps_log_time_v491(gps_diag.get('device_latest_ts_ms'))}",
-                    f"Android最新GPS精度: {gps_diag.get('device_latest_accuracy_m','--')} m",
-                    f"端末未同期GPS: {gps_diag.get('pending_count','--')} 点 / 端末総GPS: {gps_diag.get('device_total_count','--')} 点",
-                    f"GPSサービス開始: {_gps_log_time_v491(gps_diag.get('service_started_ms'))}",
-                    f"GPSコールバック: {_gps_log_time_v491(gps_diag.get('service_last_callback_ms'))}",
-                    f"端末GPS保存: {_gps_log_time_v491(gps_diag.get('service_last_accepted_ms'))}",
-                    f"位置情報権限: fine={gps_diag.get('fine_location_granted','--')} / coarse={gps_diag.get('coarse_location_granted','--')}",
-                    f"直近同期: {_gps_log_time_v491(gps_sync.get('at_ms'))} / 受信{gps_sync.get('received','--')}点 / 保存{gps_sync.get('accepted','--')}点 / {gps_sync.get('status','--')}",
-                    f"Android診断エラー: {gps_diag.get('status_error') or '--'}",
-                ]),
-                language="text",
-            )
-        else:
-            st.code(
-                "\n".join([
-                    "診断受信: なし",
-                    f"Androidアプリ判定: {'あり' if gps_probe.get('native_android') is True else 'なし/不明'}",
-                    f"ブリッジトークン: {'あり' if gps_probe.get('bridge_token_present') is True else 'なし'}",
-                    f"ネイティブGPSモード: {'有効' if gps_probe.get('native_mode') is True else '無効'}",
-                    f"GPSコンポーネント: {'利用可' if gps_probe.get('component_available') is True else '利用不可/未確認'}",
-                    f"診断要求: {'実行' if gps_probe.get('diagnostic_requested') is True else '未実行'}",
-                    f"診断要求結果: {'応答あり' if gps_probe.get('diagnostic_received') is True else ('応答なし' if gps_probe.get('diagnostic_requested') is True else '未要求')}",
-                    f"最終診断確認: {_gps_log_time_v491(gps_probe.get('checked_at_ms'))}",
-                    f"確認時ページ: {gps_probe.get('page') or '--'}",
-                    f"直近同期: {_gps_log_time_v491(gps_sync.get('at_ms'))} / 受信{gps_sync.get('received','--')}点 / 保存{gps_sync.get('accepted','--')}点 / {gps_sync.get('status','--')}",
-                ]),
-                language="text",
-            )
-            st.caption("Androidから詳細GPS診断を受信できていません。上の項目で、APK認識・ブリッジ・GPSコンポーネントのどこまで到達しているか確認できます。")
-        pending_errors = st.session_state.get("_background_errors_v468") or []
-        if pending_errors:
-            st.caption("\u4e00\u90e8\u306e\u4e8b\u524d\u51e6\u7406\u306f\u518d\u8a66\u884c\u5f85\u3061\u3067\u3059\u3002\u4fdd\u5b58\u6e08\u307f\u306e\u5199\u771f\u3084\u6c17\u6301\u3061\u306f\u6b8b\u3063\u3066\u3044\u307e\u3059\u3002")
-            st.code("\n".join(x.get("phase", "") + ": " + x.get("type", "") for x in pending_errors[-6:]), language="text")
+    with st.expander('⚡ 動作ログ', expanded=False):
+        st.caption('操作・サーバー処理・通信・待ち時間をまとめて保存します。')
         _render_interaction_export_v465()
-        if rows:
-            recent_totals = [row for row in rows if str(row.get("phase") or "") == "rerun_total"][-8:]
-            if recent_totals:
-                last = recent_totals[-1]
-                st.caption(f"直近 {float(last.get('ms') or 0):.0f} ms / 記録 {len(rows)}件")
+        if st.button('ログを消去', key='clear_performance_log_v457', use_container_width=True):
+            st.session_state[PERF_LOG_KEY_V457] = []
+            st.session_state['_diag_sink_v640'] = _DiagSinkV640()
+            st.session_state['_performance_seq_v458'] = 0
+            st.session_state['_perf_dropped_v466'] = 0
+            st.session_state['_perf_reset_v466'] = uuid.uuid4().hex
+            st.session_state.pop('_perf_export_v640', None)
+            st.session_state.pop('_perf_export_token_v465', None)
+            st.session_state.pop('_perf_export_error_v640', None)
+            st.rerun(scope='app')
 
-            # Show the slowest concrete operations, not only page totals.
-            details = [
-                row for row in rows
-                if float(row.get("ms") or 0) >= 8.0
-                and str(row.get("phase") or "") != "rerun_total"
-            ]
-            slow = sorted(details, key=lambda row: float(row.get("ms") or 0), reverse=True)[:18]
-            if slow:
-                st.markdown("**時間がかかった処理**")
-                st.code("\n".join(
-                    f"{float(row.get('ms') or 0):7.1f} ms  run={row.get('run',0)}  {row.get('page','')}  {row.get('phase','')}"
-                    + ("  " + " ".join(f"{k}={v}" for k, v in (row.get('meta') or {}).items()) if isinstance(row.get('meta'), dict) and row.get('meta') else "")
-                    for row in slow
-                ), language="text")
-
-            recent = rows[-35:]
-            if recent:
-                st.markdown("**直近の処理順**")
-                st.code("\n".join(
-                    f"#{int(row.get('seq') or 0):04d}  {float(row.get('ms') or 0):7.1f} ms  {row.get('phase','')}"
-                    + ("  " + " ".join(f"{k}={v}" for k, v in (row.get('meta') or {}).items()) if isinstance(row.get('meta'), dict) and row.get('meta') else "")
-                    for row in recent
-                ), language="text")
-
-            st.download_button(
-                "動作ログを保存",
-                data=_performance_log_text_v457(),
-                file_name=f"burari_performance_{today_iso()}.log",
-                mime="text/plain",
-                use_container_width=True,
-                key="download_performance_log_v457",
-            )
-            if st.button("ログを消去", use_container_width=True, key="clear_performance_log_v457"):
-                st.session_state[PERF_LOG_KEY_V457] = []
-                st.session_state["_performance_seq_v458"] = 0
-                st.session_state["_perf_dropped_v466"] = 0
-                st.session_state["_perf_reset_v466"] = uuid.uuid4().hex
-                st.session_state.pop("_perf_export_v465", None)
-                st.session_state.pop("_gps_native_diag_v491", None)
-                st.session_state.pop("_gps_last_sync_v491", None)
-                st.rerun(scope="app")
-        else:
-            st.caption("ログはまだありません。")
 
 
 def _set_authenticated_family(family_account, member_account, persist=False):
@@ -5359,7 +5493,7 @@ def reverse_geocode_rough(latitude, longitude):
         },
     )
     try:
-        with urlopen(req, timeout=3.5) as response:
+        with _diag_invoke_v640('http:reverse_geocode_rough:L5364', lambda: (urlopen(req, timeout=3.5))) as response:
             data = json.loads(response.read().decode("utf-8"))
     except Exception:
         return ""
@@ -5494,13 +5628,13 @@ def _photo_place_enrichment_worker_v394(photo_id, family_key, member_key, latitu
         from supabase import create_client as _create_client
         client = _create_client(SUPABASE_URL, SUPABASE_SECRET_KEY)
         rows = (
-            client.table(PHOTO_TABLE)
+            _diag_invoke_v640('execute:_photo_place_enrichment_worker_v394:L5499', lambda: (client.table(PHOTO_TABLE)
             .select("reflection_json")
             .eq("id", photo_id)
             .eq("family_key", family_key)
             .eq("member_key", member_key)
             .limit(1)
-            .execute()
+            .execute()))
         ).data or []
         if not rows:
             return
@@ -5518,12 +5652,12 @@ def _photo_place_enrichment_worker_v394(photo_id, family_key, member_key, latitu
         updated_reflection = dict(reflection)
         updated_reflection["location"] = updated_location
         (
-            client.table(PHOTO_TABLE)
+            _diag_invoke_v640('execute:_photo_place_enrichment_worker_v394:L5523', lambda: (client.table(PHOTO_TABLE)
             .update({"reflection_json": updated_reflection})
             .eq("id", photo_id)
             .eq("family_key", family_key)
             .eq("member_key", member_key)
-            .execute()
+            .execute()))
         )
     except Exception:
         return
@@ -5540,7 +5674,7 @@ def launch_photo_place_enrichment_v394(photo, location):
     except (TypeError, ValueError):
         return
     try:
-        _photo_place_enrichment_executor_v394().submit(
+        _diag_submit_v640(_photo_place_enrichment_executor_v394(), 
             _photo_place_enrichment_worker_v394,
             str(photo["id"]),
             str(current_family_key()),
@@ -6333,7 +6467,7 @@ def geocode_nearby_place_text(place_text):
         },
     )
     try:
-        with urlopen(req, timeout=4.5) as response:
+        with _diag_invoke_v640('http:geocode_nearby_place_text:L6338', lambda: (urlopen(req, timeout=4.5))) as response:
             data = json.loads(response.read().decode("utf-8"))
     except Exception:
         return None
@@ -6933,7 +7067,7 @@ def search_nearby_quick_stops_google(latitude, longitude, kind, subkind, radius_
             method="POST",
         )
         try:
-            with urlopen(req, timeout=7.0) as response:
+            with _diag_invoke_v640('http:search_nearby_quick_stops_google:L6938', lambda: (urlopen(req, timeout=7.0))) as response:
                 data = json.loads(response.read().decode("utf-8"))
         except Exception as exc:
             return {
@@ -7012,7 +7146,7 @@ def search_nearby_quick_stops_google(latitude, longitude, kind, subkind, radius_
 
             def _fetch(req, label):
                 try:
-                    with urlopen(req, timeout=6.0) as response:
+                    with _diag_invoke_v640('http:_fetch:L7017', lambda: (urlopen(req, timeout=6.0))) as response:
                         payload = json.loads(response.read().decode("utf-8"))
                     return label, list((payload or {}).get("places") or []), ""
                 except Exception as exc:
@@ -7029,9 +7163,9 @@ def search_nearby_quick_stops_google(latitude, longitude, kind, subkind, radius_
                     errors.append(label + ":" + error)
             else:
                 with ThreadPoolExecutor(max_workers=2) as pair_pool:
-                    futures = [pair_pool.submit(_fetch, req, label) for label, req in jobs]
+                    futures = [_diag_submit_v640(pair_pool, _fetch, req, label) for label, req in jobs]
                     for future in futures:
-                        label, rows, error = future.result()
+                        label, rows, error = _diag_future_v640(future)
                         collected.extend(rows)
                         if error:
                             errors.append(label + ":" + error)
@@ -7469,7 +7603,7 @@ def _nearby_google_photo_data_url(photo_ref, max_px=760):
         headers={"User-Agent": "TokyoBurariApp/1.0", "Accept": "image/*"},
     )
     try:
-        with urlopen(req, timeout=3.8) as response:
+        with _diag_invoke_v640('http:_nearby_google_photo_data_url:L7474', lambda: (urlopen(req, timeout=3.8))) as response:
             raw = response.read()
             content_type = str(response.headers.get("Content-Type") or "image/jpeg").split(";", 1)[0].strip()
         if not raw or not content_type.startswith("image/"):
@@ -7720,7 +7854,7 @@ def _nearby_google_place_details(place_id):
         method="GET",
     )
     try:
-        with urlopen(req, timeout=6.5) as response:
+        with _diag_invoke_v640('http:_nearby_google_place_details:L7725', lambda: (urlopen(req, timeout=6.5))) as response:
             data = json.loads(response.read().decode("utf-8"))
         return data if isinstance(data, dict) else {}
     except Exception:
@@ -7810,7 +7944,7 @@ def _auto_discovery_google_match(place_name, latitude, longitude):
         method="POST",
     )
     try:
-        with urlopen(req, timeout=6.0) as response:
+        with _diag_invoke_v640('http:_auto_discovery_google_match:L7815', lambda: (urlopen(req, timeout=6.0))) as response:
             payload = json.loads(response.read().decode("utf-8"))
     except HTTPError as exc:
         return {"_lookup_status_v586": "api_error", "_http_code_v586": int(exc.code)}
@@ -7905,7 +8039,7 @@ def search_nearby_quick_stops(latitude, longitude, kind, subkind, radius_m):
             },
         )
         try:
-            with urlopen(req, timeout=7.5) as response:
+            with _diag_invoke_v640('http:search_nearby_quick_stops:L7910', lambda: (urlopen(req, timeout=7.5))) as response:
                 data = json.loads(response.read().decode("utf-8"))
             if isinstance(data, dict):
                 break
@@ -8786,7 +8920,7 @@ def _toilet_google_fallback(latitude, longitude, radius_m):
             method="POST",
         )
         try:
-            with urlopen(req, timeout=5.0) as response:
+            with _diag_invoke_v640('http:_request_group:L8791', lambda: (urlopen(req, timeout=5.0))) as response:
                 data = json.loads(response.read().decode("utf-8"))
             return data if isinstance(data, dict) else {}, ""
         except Exception as exc:
@@ -8795,10 +8929,10 @@ def _toilet_google_fallback(latitude, longitude, radius_m):
     results = []
     errors = []
     with ThreadPoolExecutor(max_workers=3) as executor:
-        futures = [executor.submit(_request_group, group) for group in type_groups]
+        futures = [_diag_submit_v640(executor, _request_group, group) for group in type_groups]
         for future in futures:
             try:
-                data, error = future.result()
+                data, error = _diag_future_v640(future)
             except Exception as exc:
                 data, error = {}, str(exc)[:180]
             results.append(data)
@@ -9036,7 +9170,7 @@ def _toilet_overpass_fetch(query, *, timeout=3.6, one_endpoint=False):
             },
         )
         try:
-            with urlopen(req, timeout=float(timeout)) as response:
+            with _diag_invoke_v640('http:_toilet_overpass_fetch:L9041', lambda: (urlopen(req, timeout=float(timeout)))) as response:
                 data = json.loads(response.read().decode("utf-8"))
             if isinstance(data, dict):
                 return data, ""
@@ -9244,21 +9378,21 @@ def search_nearby_toilets(
     # The previous sequence could wait for OSM and only then begin Google, which made a
     # near-me tap feel slow. This keeps total wait close to the slowest provider instead.
     with ThreadPoolExecutor(max_workers=3) as executor:
-        future_standalone = executor.submit(_toilet_overpass_fetch, standalone_query, timeout=2.6)
-        future_hosts = executor.submit(_toilet_overpass_fetch, host_query, timeout=2.6)
-        future_google = executor.submit(_toilet_google_fallback, latitude, longitude, radius_m) if GOOGLE_PLACES_API_KEY else None
+        future_standalone = _diag_submit_v640(executor, _toilet_overpass_fetch, standalone_query, timeout=2.6)
+        future_hosts = _diag_submit_v640(executor, _toilet_overpass_fetch, host_query, timeout=2.6)
+        future_google = _diag_submit_v640(executor, _toilet_google_fallback, latitude, longitude, radius_m) if GOOGLE_PLACES_API_KEY else None
 
         try:
-            primary_data, primary_error = future_standalone.result()
+            primary_data, primary_error = _diag_future_v640(future_standalone)
         except Exception as exc:
             primary_data, primary_error = None, str(exc)[:180]
         try:
-            host_data, host_error = future_hosts.result()
+            host_data, host_error = _diag_future_v640(future_hosts)
         except Exception as exc:
             host_data, host_error = None, str(exc)[:180]
         if future_google is not None:
             try:
-                google_result = future_google.result()
+                google_result = _diag_future_v640(future_google)
             except Exception as exc:
                 google_result = {"places": [], "error": str(exc)[:180], "provider": "Google Places"}
         else:
@@ -9551,11 +9685,11 @@ def unique_auto_diary_title(base_title, exclude_trip_id=None):
 
     try:
         rows = (
-            supabase_client()
+            _diag_invoke_v640('execute:unique_auto_diary_title:L9556', lambda: (supabase_client()
             .table(DIARY_TABLE)
             .select("trip_id,title")
             .eq("family_key", current_family_key()).eq("member_key", current_member_key())
-            .execute()
+            .execute()))
         ).data or []
     except Exception:
         # Title de-duplication must never prevent the diary itself from being shown/saved.
@@ -9601,20 +9735,20 @@ def update_diary_title(trip_id, title):
         raise ValueError("タイトルを入力してください。")
 
     client = supabase_client()
-    client.table(DIARY_TABLE).update(
+    _diag_invoke_v640('execute:update_diary_title:L9606', lambda: (client.table(DIARY_TABLE).update(
         {"title": value, "updated_at": now_jst().isoformat()}
-    ).eq("trip_id", trip_id).eq("family_key", current_family_key()).eq("member_key", current_member_key()).execute()
+    ).eq("trip_id", trip_id).eq("family_key", current_family_key()).eq("member_key", current_member_key()).execute()))
 
     # Supabase update() can complete without raising even if no row matched. Read it
     # back so the user never sees a success message when the title was not stored.
     check = (
-        client
+        _diag_invoke_v640('execute:update_diary_title:L9613', lambda: (client
         .table(DIARY_TABLE)
         .select("trip_id,title")
         .eq("trip_id", trip_id)
         .eq("family_key", current_family_key()).eq("member_key", current_member_key())
         .limit(1)
-        .execute()
+        .execute()))
     )
     row = (check.data or [None])[0]
     stored = str((row or {}).get("title") or "").strip()
@@ -9645,12 +9779,12 @@ def normalize_duplicate_saved_diary_titles():
     client = supabase_client()
     try:
         rows = (
-            client
+            _diag_invoke_v640('execute:normalize_duplicate_saved_diary_titles:L9650', lambda: (client
             .table(DIARY_TABLE)
             .select("id,trip_id,title,created_at")
             .eq("family_key", current_family_key()).eq("member_key", current_member_key())
             .order("created_at")
-            .execute()
+            .execute()))
         ).data or []
     except Exception:
         return
@@ -9680,9 +9814,9 @@ def normalize_duplicate_saved_diary_titles():
             suffix += 1
             candidate = f"{stem}{suffix}）"
 
-        client.table(DIARY_TABLE).update(
+        _diag_invoke_v640('execute:normalize_duplicate_saved_diary_titles:L9685', lambda: (client.table(DIARY_TABLE).update(
             {"title": candidate, "updated_at": now_jst().isoformat()}
-        ).eq("id", row.get("id")).eq("family_key", current_family_key()).eq("member_key", current_member_key()).execute()
+        ).eq("id", row.get("id")).eq("family_key", current_family_key()).eq("member_key", current_member_key()).execute()))
         used_titles.add(candidate)
         seen.add(candidate)
         changed = True
@@ -9728,7 +9862,7 @@ def normalize_camera_photo_v394(raw_bytes, capture_source="camera"):
 
 @st.cache_data(ttl=1800, max_entries=96, show_spinner=False)
 def download_photo(storage_path):
-    return supabase_client().storage.from_(PHOTO_BUCKET).download(storage_path)
+    return _diag_invoke_v640('download:download_photo:L9733', lambda: (supabase_client().storage.from_(PHOTO_BUCKET).download(storage_path)))
 
 
 @st.cache_data(ttl=1800, max_entries=192, show_spinner=False)
@@ -9833,7 +9967,7 @@ def _signed_path_cache_v467():
 
 def _clear_signed_paths_v467():
     cache = _signed_path_cache_v467()
-    with cache["lock"]:
+    with _DiagLockV640(cache["lock"], '_clear_signed_paths_v467'):
         cache["entries"].clear()
         cache["generation"] += 1
 
@@ -9848,7 +9982,7 @@ def signed_photo_url_map(storage_paths, expires_in=900):
     scope = (str(SUPABASE_URL), str(PHOTO_BUCKET))
     minimum_remaining = max(1, ttl - max(0, min(540, ttl - 30)))
     result, missing = {}, []
-    with cache["lock"]:
+    with _DiagLockV640(cache["lock"], 'signed_photo_url_map'):
         generation = cache["generation"]
         for path in paths:
             entry = cache["entries"].get((*scope, path))
@@ -9867,7 +10001,7 @@ def signed_photo_url_map(storage_paths, expires_in=900):
         signed = {}
         for mapping in maps:
             signed.update(mapping)
-        with cache["lock"]:
+        with _DiagLockV640(cache["lock"], 'signed_photo_url_map'):
             if generation == cache["generation"]:
                 for path, url in signed.items():
                     cache["entries"][(*scope, path)] = (started + ttl - 1, url)
@@ -10033,18 +10167,18 @@ def upload_photo(trip_id, image_bytes, location=None, captured_at=None, capture_
 
     storage_saved = False
     try:
-        client.storage.from_(PHOTO_BUCKET).upload(
+        _diag_invoke_v640('upload:upload_photo:L10038', lambda: (client.storage.from_(PHOTO_BUCKET).upload(
             path=path,
             file=compressed,
             file_options={
                 "content-type": "image/jpeg",
                 "cache-control": "3600",
             },
-        )
+        )))
         storage_saved = True
 
         result = (
-            client
+            _diag_invoke_v640('execute:upload_photo:L10049', lambda: (client
             .table(PHOTO_TABLE)
             .insert(
                 {
@@ -10057,7 +10191,7 @@ def upload_photo(trip_id, image_bytes, location=None, captured_at=None, capture_
                     "signals_json": signals_payload,
                 }
             )
-            .execute()
+            .execute()))
         )
         download_photo.clear()
         _invalidate_fast_db_cache()
@@ -10270,13 +10404,13 @@ def save_photo_voice_note_bytes(
 
     client = supabase_client()
     current = (
-        client
+        _diag_invoke_v640('execute:save_photo_voice_note_bytes:L10275', lambda: (client
         .table(PHOTO_TABLE)
         .select("id,reflection_json")
         .eq("id", photo_id)
         .eq("family_key", current_family_key()).eq("member_key", current_member_key())
         .limit(1)
-        .execute()
+        .execute()))
     )
     row = (current.data or [None])[0] or {}
     if not row:
@@ -10318,14 +10452,14 @@ def save_photo_voice_note_bytes(
     final_transcript = str(transcript or "").strip()
     uploaded = False
     try:
-        client.storage.from_(PHOTO_BUCKET).upload(
+        _diag_invoke_v640('upload:save_photo_voice_note_bytes:L10323', lambda: (client.storage.from_(PHOTO_BUCKET).upload(
             path=storage_path,
             file=processed_raw,
             file_options={
                 "content-type": storage_content_type,
                 "cache-control": "3600",
             },
-        )
+        )))
         uploaded = True
 
         if auto_transcribe and not final_transcript:
@@ -10354,12 +10488,12 @@ def save_photo_voice_note_bytes(
         reflection["voice_note"] = voice_note
 
         (
-            client
+            _diag_invoke_v640('execute:save_photo_voice_note_bytes:L10359', lambda: (client
             .table(PHOTO_TABLE)
             .update({"reflection_json": reflection})
             .eq("id", photo_id)
             .eq("family_key", current_family_key()).eq("member_key", current_member_key())
-            .execute()
+            .execute()))
         )
 
         if existing_path and existing_path != storage_path:
@@ -10415,13 +10549,13 @@ def delete_photo_voice_note(photo_id):
         return
     client = supabase_client()
     current = (
-        client
+        _diag_invoke_v640('execute:delete_photo_voice_note:L10420', lambda: (client
         .table(PHOTO_TABLE)
         .select("id,reflection_json")
         .eq("id", photo_id)
         .eq("family_key", current_family_key()).eq("member_key", current_member_key())
         .limit(1)
-        .execute()
+        .execute()))
     )
     row = (current.data or [None])[0] or {}
     if not row:
@@ -10434,12 +10568,12 @@ def delete_photo_voice_note(photo_id):
     if "voice_note" in reflection:
         reflection.pop("voice_note", None)
     (
-        client
+        _diag_invoke_v640('execute:delete_photo_voice_note:L10439', lambda: (client
         .table(PHOTO_TABLE)
         .update({"reflection_json": reflection})
         .eq("id", photo_id)
         .eq("family_key", current_family_key()).eq("member_key", current_member_key())
-        .execute()
+        .execute()))
     )
     if path:
         try:
@@ -10626,11 +10760,11 @@ def _member_db_storage_references():
     page_size = 1000
     while True:
         rows = (
-            client.table(PHOTO_TABLE)
+            _diag_invoke_v640('execute:_member_db_storage_references:L10631', lambda: (client.table(PHOTO_TABLE)
             .select("storage_path,reflection_json")
             .eq("family_key", current_family_key()).eq("member_key", current_member_key())
             .range(offset, offset + page_size - 1)
-            .execute()
+            .execute()))
         ).data or []
         for row in rows:
             if not isinstance(row, dict):
@@ -10659,22 +10793,22 @@ def _member_storage_inventory_v467(force=False, max_age_seconds=45):
     runtime = _runtime_v468()
     owner = _owner_v468()
     state = _owner_state_v468(runtime, owner)
-    with runtime["lock"]:
+    with _DiagLockV640(runtime["lock"], '_member_storage_inventory_v467'):
         value = state["storage"]
         generation = state["storage_generation"]
         future = state["storage_future"]
     if not force and value and value["generation"] == generation and time.monotonic() - value["at"] <= max_age_seconds:
         return _session_cache_set(key, value["inventory"])
     if not force and future and not future.done():
-        value = future.result()
-        with runtime["lock"]:
+        value = _diag_future_v640(future)
+        with _DiagLockV640(runtime["lock"], '_member_storage_inventory_v467'):
             if value["generation"] == state["storage_generation"]:
                 return _session_cache_set(key, value["inventory"])
     # This synchronous path is only for actual capacity/repair checks, not page display.
     objects = _list_member_storage_objects()
     usage = sum(max(0, int(x.get("size_bytes") or 0)) for x in objects
                 if _storage_path_is_original_video(x.get("path"), x.get("mime_type")))
-    with runtime["lock"]:
+    with _DiagLockV640(runtime["lock"], '_member_storage_inventory_v467'):
         if generation == state["storage_generation"]:
             state["storage"] = {"usage": usage, "inventory": objects,
                                 "at": time.monotonic(), "generation": generation}
@@ -10789,11 +10923,11 @@ def current_video_storage_usage_bytes(max_age_seconds=30):
     page_size = 1000
     while True:
         rows = (
-            client.table(PHOTO_TABLE)
+            _diag_invoke_v640('execute:current_video_storage_usage_bytes:L10794', lambda: (client.table(PHOTO_TABLE)
             .select("reflection_json,signals_json")
             .eq("family_key", current_family_key()).eq("member_key", current_member_key())
             .range(offset, offset + page_size - 1)
-            .execute()
+            .execute()))
         ).data or []
         for row in rows:
             reflection = row.get("reflection_json") or {}
@@ -10984,7 +11118,7 @@ def _create_signed_video_upload_url(path):
         headers["Authorization"] = f"Bearer {SUPABASE_SECRET_KEY}"
     request = Request(endpoint, data=b"{}", method="POST", headers=headers)
     try:
-        with urlopen(request, timeout=15) as http_response:
+        with _diag_invoke_v640('http:_create_signed_video_upload_url:L10989', lambda: (urlopen(request, timeout=15))) as http_response:
             raw = http_response.read().decode("utf-8", errors="replace")
         payload = json.loads(raw or "{}")
         signed_url = _normalize_supabase_storage_signed_url(
@@ -11172,13 +11306,13 @@ def register_browser_uploaded_video(
     # Treat an existing DB row for this deterministic poster path as already saved.
     try:
         existing_result = (
-            client.table(PHOTO_TABLE)
+            _diag_invoke_v640('execute:register_browser_uploaded_video:L11177', lambda: (client.table(PHOTO_TABLE)
             .select("id,trip_id,storage_path,captured_at,reflection_json,signals_json")
             .eq("trip_id", trip_id)
             .eq("family_key", current_family_key()).eq("member_key", current_member_key())
             .eq("storage_path", poster_path)
             .limit(1)
-            .execute()
+            .execute()))
         )
         existing_rows = existing_result.data or []
         if existing_rows and isinstance(existing_rows[0], dict):
@@ -11215,14 +11349,14 @@ def register_browser_uploaded_video(
     }
     signals_payload = {}
     try:
-        client.storage.from_(PHOTO_BUCKET).upload(
+        _diag_invoke_v640('upload:register_browser_uploaded_video:L11220', lambda: (client.storage.from_(PHOTO_BUCKET).upload(
             path=poster_path,
             file=poster,
             file_options={"content-type": "image/jpeg", "cache-control": "3600", "upsert": "true"},
-        )
+        )))
         poster_uploaded = True
         result = (
-            client.table(PHOTO_TABLE)
+            _diag_invoke_v640('execute:register_browser_uploaded_video:L11227', lambda: (client.table(PHOTO_TABLE)
             .insert(
                 {
                     "trip_id": trip_id,
@@ -11234,7 +11368,7 @@ def register_browser_uploaded_video(
                     "signals_json": signals_payload,
                 }
             )
-            .execute()
+            .execute()))
         )
         saved_row = (result.data or [None])[0]
         if not isinstance(saved_row, dict):
@@ -11242,13 +11376,13 @@ def register_browser_uploaded_video(
         if not saved_row.get("id"):
             try:
                 lookup = (
-                    client.table(PHOTO_TABLE)
+                    _diag_invoke_v640('execute:register_browser_uploaded_video:L11247', lambda: (client.table(PHOTO_TABLE)
                     .select("id,trip_id,storage_path,captured_at,reflection_json,signals_json")
                     .eq("trip_id", trip_id)
                     .eq("family_key", current_family_key()).eq("member_key", current_member_key())
                     .eq("storage_path", poster_path)
                     .limit(1)
-                    .execute()
+                    .execute()))
                 )
                 rows = lookup.data or []
                 if rows and isinstance(rows[0], dict):
@@ -11348,21 +11482,21 @@ def upload_video(
     signals_payload = {}
 
     try:
-        client.storage.from_(PHOTO_BUCKET).upload(
+        _diag_invoke_v640('upload:upload_video:L11353', lambda: (client.storage.from_(PHOTO_BUCKET).upload(
             path=poster_path,
             file=poster,
             file_options={"content-type": "image/jpeg", "cache-control": "3600"},
-        )
+        )))
         uploaded_paths.append(poster_path)
-        client.storage.from_(PHOTO_BUCKET).upload(
+        _diag_invoke_v640('upload:upload_video:L11359', lambda: (client.storage.from_(PHOTO_BUCKET).upload(
             path=video_path,
             file=video_bytes,
             file_options={"content-type": clean_mime, "cache-control": "3600"},
-        )
+        )))
         uploaded_paths.append(video_path)
 
         result = (
-            client
+            _diag_invoke_v640('execute:upload_video:L11367', lambda: (client
             .table(PHOTO_TABLE)
             .insert(
                 {
@@ -11375,7 +11509,7 @@ def upload_video(
                     "signals_json": signals_payload,
                 }
             )
-            .execute()
+            .execute()))
         )
         saved_row = (result.data or [None])[0]
         if not isinstance(saved_row, dict):
@@ -11386,14 +11520,14 @@ def upload_video(
         if not saved_row.get("id"):
             try:
                 lookup = (
-                    client
+                    _diag_invoke_v640('execute:upload_video:L11391', lambda: (client
                     .table(PHOTO_TABLE)
                     .select("id,trip_id,storage_path,captured_at,reflection_json,signals_json")
                     .eq("trip_id", trip_id)
                     .eq("family_key", current_family_key()).eq("member_key", current_member_key())
                     .eq("storage_path", poster_path)
                     .limit(1)
-                    .execute()
+                    .execute()))
                 )
                 rows = lookup.data or []
                 if rows and isinstance(rows[0], dict):
@@ -11571,13 +11705,13 @@ def _load_video_moment_factor_settings_for_owner(client, family_key, member_key)
     defaults = default_video_moment_factor_weights()
     try:
         result = (
-            client.table(MONTHLY_TABLE)
+            _diag_invoke_v640('execute:_load_video_moment_factor_settings_for_owner:L11576', lambda: (client.table(MONTHLY_TABLE)
             .select("review_json")
             .eq("family_key", str(family_key))
             .eq("member_key", str(member_key))
             .eq("review_month", VIDEO_MOMENT_SETTINGS_REVIEW_DATE)
             .limit(1)
-            .execute()
+            .execute()))
         )
         row = (result.data or [None])[0] or {}
         review_json = row.get("review_json") or {}
@@ -11627,13 +11761,13 @@ def save_video_moment_factor_settings(weights):
 
     client = supabase_client()
     existing = (
-        client.table(MONTHLY_TABLE)
+        _diag_invoke_v640('execute:save_video_moment_factor_settings:L11632', lambda: (client.table(MONTHLY_TABLE)
         .select("id")
         .eq("family_key", current_family_key())
         .eq("member_key", current_member_key())
         .eq("review_month", VIDEO_MOMENT_SETTINGS_REVIEW_DATE)
         .limit(1)
-        .execute()
+        .execute()))
     )
     row = (existing.data or [None])[0]
     now_value = now_jst().isoformat()
@@ -11651,16 +11785,16 @@ def save_video_moment_factor_settings(weights):
     }
     if row:
         (
-            client.table(MONTHLY_TABLE)
+            _diag_invoke_v640('execute:save_video_moment_factor_settings:L11656', lambda: (client.table(MONTHLY_TABLE)
             .update(payload)
             .eq("id", row["id"])
             .eq("family_key", current_family_key())
             .eq("member_key", current_member_key())
-            .execute()
+            .execute()))
         )
     else:
         payload["created_at"] = now_value
-        client.table(MONTHLY_TABLE).insert(payload).execute()
+        _diag_invoke_v640('execute:save_video_moment_factor_settings:L11665', lambda: (client.table(MONTHLY_TABLE).insert(payload).execute()))
     st.session_state[_video_moment_factor_settings_session_key()] = dict(normalized_input)
     return dict(normalized_input)
 
@@ -12367,7 +12501,7 @@ def choose_video_ai_frames(
             progress_callback("local_analysis", 0, len(frame_items or []), "ピント・明るさ・顔の見やすさを確認しています")
         except Exception:
             pass
-    with _video_moment_analysis_lock_v595:
+    with _DiagLockV640(_video_moment_analysis_lock_v595, 'choose_video_ai_frames'):
         records = _video_moment_local_features_v594(frame_items, progress_callback=progress_callback)
     selection = _video_moment_local_pick_v594(
         records, preference_context=preference_context, excluded_frame_ids=excluded_frame_ids
@@ -12392,12 +12526,12 @@ def _video_selection_base_path(photo):
 
 def _write_photo_reflection(photo_id, reflection):
     (
-        supabase_client()
+        _diag_invoke_v640('execute:_write_photo_reflection:L12397', lambda: (supabase_client()
         .table(PHOTO_TABLE)
         .update({"reflection_json": reflection if isinstance(reflection, dict) else {}})
         .eq("id", photo_id)
         .eq("family_key", current_family_key()).eq("member_key", current_member_key())
-        .execute()
+        .execute()))
     )
     signed_photo_url_map.clear()
     _invalidate_fast_db_cache()
@@ -12410,13 +12544,13 @@ def _write_photo_reflection_for_owner(photo_id, reflection, family_key, member_k
         from supabase import create_client as _create_client
         db = _create_client(SUPABASE_URL, SUPABASE_SECRET_KEY)
     (
-        db
+        _diag_invoke_v640('execute:_write_photo_reflection_for_owner:L12415', lambda: (db
         .table(PHOTO_TABLE)
         .update({"reflection_json": reflection if isinstance(reflection, dict) else {}})
         .eq("id", photo_id)
         .eq("family_key", str(family_key))
         .eq("member_key", str(member_key))
-        .execute()
+        .execute()))
     )
 
 
@@ -12603,7 +12737,7 @@ def _load_video_ai_candidate_frames(client, selection_meta):
         return []
     sheet_path = str(selection_meta.get("candidate_sheet_path") or "").strip()
     if sheet_path:
-        raw = _storage_bytes(client.storage.from_(PHOTO_BUCKET).download(sheet_path))
+        raw = _storage_bytes(_diag_invoke_v640('download:_load_video_ai_candidate_frames:L12608', lambda: (client.storage.from_(PHOTO_BUCKET).download(sheet_path))))
         return _read_video_candidate_sheet(
             raw,
             selection_meta.get("candidate_manifest") or [],
@@ -12612,7 +12746,7 @@ def _load_video_ai_candidate_frames(client, selection_meta):
         )
     bundle_path = str(selection_meta.get("candidate_bundle_path") or "").strip()
     if bundle_path:
-        raw = _storage_bytes(client.storage.from_(PHOTO_BUCKET).download(bundle_path))
+        raw = _storage_bytes(_diag_invoke_v640('download:_load_video_ai_candidate_frames:L12617', lambda: (client.storage.from_(PHOTO_BUCKET).download(bundle_path))))
         return _read_video_candidate_bundle(raw)
     return []
 
@@ -12704,7 +12838,7 @@ def _ensure_video_stabilized_copy(client, photo, family_key, member_key, force=F
         )
 
     try:
-        original_raw = _storage_bytes(client.storage.from_(PHOTO_BUCKET).download(original_path))
+        original_raw = _storage_bytes(_diag_invoke_v640('download:_ensure_video_stabilized_copy:L12709', lambda: (client.storage.from_(PHOTO_BUCKET).download(original_path))))
     except Exception as exc:
         return persist(
             "error",
@@ -12820,11 +12954,11 @@ def _ensure_video_stabilized_copy(client, photo, family_key, member_key, force=F
     stabilized_path = f"{base}_stabilized_v135_{uuid.uuid4().hex[:8]}.mp4"
     uploaded = False
     try:
-        client.storage.from_(PHOTO_BUCKET).upload(
+        _diag_invoke_v640('upload:_ensure_video_stabilized_copy:L12825', lambda: (client.storage.from_(PHOTO_BUCKET).upload(
             path=stabilized_path,
             file=stabilized_raw,
             file_options={"content-type": "video/mp4", "cache-control": "3600"},
-        )
+        )))
         uploaded = True
         updated = persist(
             "ready",
@@ -12956,7 +13090,7 @@ def _background_extract_video_candidate_frames(client, photo):
         root = Path(workspace.name)
         suffix = ".mp4" if str(video_path).lower().endswith(".mp4") else ".webm"
         original = root / ("original" + suffix)
-        raw = _storage_bytes(client.storage.from_(PHOTO_BUCKET).download(video_path))
+        raw = _storage_bytes(_diag_invoke_v640('download:_background_extract_video_candidate_frames:L12961', lambda: (client.storage.from_(PHOTO_BUCKET).download(video_path))))
         if not raw:
             raise ValueError("保存済みの元動画を読み込めませんでした。")
         original.write_bytes(raw)
@@ -13002,11 +13136,11 @@ def _background_store_video_ai_candidate_bundle(client, photo, family_key, membe
     if not base:
         raise ValueError("動画の保存先を確認できませんでした。")
     bundle_path = f"{base}_candidates_auto_{uuid.uuid4().hex[:8]}.zip"
-    client.storage.from_(PHOTO_BUCKET).upload(
+    _diag_invoke_v640('upload:_background_store_video_ai_candidate_bundle:L13007', lambda: (client.storage.from_(PHOTO_BUCKET).upload(
         path=bundle_path,
         file=bundle_bytes,
         file_options={"content-type": "application/zip", "cache-control": "3600"},
-    )
+    )))
 
     reflection = dict(photo_media_metadata(photo))
     previous = reflection.get("ai_selection") or {}
@@ -13057,11 +13191,11 @@ def store_video_ai_candidate_bundle(photo, frame_items):
         raise ValueError("動画の保存先を確認できませんでした。")
     bundle_path = f"{base}_candidates_v105.zip"
     client = supabase_client()
-    client.storage.from_(PHOTO_BUCKET).upload(
+    _diag_invoke_v640('upload:store_video_ai_candidate_bundle:L13062', lambda: (client.storage.from_(PHOTO_BUCKET).upload(
         path=bundle_path,
         file=bundle_bytes,
         file_options={"content-type": "application/zip", "cache-control": "3600"},
-    )
+    )))
 
     reflection = dict(photo_media_metadata(photo))
     reflection["ai_selection"] = {
@@ -13163,14 +13297,14 @@ def _favorite_tag_tendencies_from_rows(rows, max_tags=8):
 def _load_video_ai_preference_context_for_owner(client, family_key, member_key, max_rows=240, include_reference_images=True):
     """Build per-person Good Moments preferences, led by ★ favorite tag tendencies."""
     rows = (
-        client
+        _diag_invoke_v640('execute:_load_video_ai_preference_context_for_owner:L13168', lambda: (client
         .table(PHOTO_TABLE)
         .select("id,captured_at,storage_path,reflection_json")
         .eq("family_key", str(family_key))
         .eq("member_key", str(member_key))
         .order("captured_at", desc=True)
         .limit(int(max_rows))
-        .execute()
+        .execute()))
     ).data or []
 
     quality_counts = {}
@@ -13245,7 +13379,7 @@ def _load_video_ai_preference_context_for_owner(client, family_key, member_key, 
             ordered_reference_paths.append(path)
     for path in (ordered_reference_paths[:4] if include_reference_images and int(factor_weights.get("preference") or 0) > 0 else []):
         try:
-            raw = _storage_bytes(client.storage.from_(PHOTO_BUCKET).download(path))
+            raw = _storage_bytes(_diag_invoke_v640('download:_load_video_ai_preference_context_for_owner:L13250', lambda: (client.storage.from_(PHOTO_BUCKET).download(path))))
             if raw:
                 reference_images.append(normalize_photo(raw, max_side=640, quality=72))
                 reference_image_tags.append(list(favorite_path_tags.get(path) or []))
@@ -13601,11 +13735,11 @@ def _background_store_video_ai_selection(
                 raise ValueError("元動画由来の高画質画像を読み込めませんでした。")
             processed_bytes = _normalize_video_frame_photo_bytes(image_bytes) or image_bytes
             path = f"{base}_ai_r{int(round_number):02d}_{job_token}_{rank:02d}.jpg"
-            client.storage.from_(PHOTO_BUCKET).upload(
+            _diag_invoke_v640('upload:_background_store_video_ai_selection:L13606', lambda: (client.storage.from_(PHOTO_BUCKET).upload(
                 path=path,
                 file=processed_bytes,
                 file_options={"content-type": "image/jpeg", "cache-control": "3600"},
-            )
+            )))
             uploaded_paths.append(path)
             items.append(
                 {
@@ -13630,13 +13764,13 @@ def _background_store_video_ai_selection(
             raise ValueError("元動画由来の高画質画像を必要枚数保存できませんでした。")
 
         fresh = (
-            client.table(PHOTO_TABLE)
+            _diag_invoke_v640('execute:_background_store_video_ai_selection:L13635', lambda: (client.table(PHOTO_TABLE)
             .select("*")
             .eq("id", photo.get("id"))
             .eq("family_key", str(family_key))
             .eq("member_key", str(member_key))
             .limit(1)
-            .execute()
+            .execute()))
         )
         row = (fresh.data or [None])[0] or photo
         reflection = dict(photo_media_metadata(row))
@@ -13706,13 +13840,13 @@ def _run_video_ai_background_job(photo_id, family_key, member_key):
     """Run one complete Good Moments job synchronously in the active Streamlit run."""
     client = _background_clients()
     result = (
-        client.table(PHOTO_TABLE)
+        _diag_invoke_v640('execute:_run_video_ai_background_job:L13711', lambda: (client.table(PHOTO_TABLE)
         .select("*")
         .eq("id", str(photo_id))
         .eq("family_key", str(family_key))
         .eq("member_key", str(member_key))
         .limit(1)
-        .execute()
+        .execute()))
     )
     photo = (result.data or [None])[0]
     if not photo or not photo_is_video(photo):
@@ -13826,13 +13960,13 @@ def _run_video_ai_background_job(photo_id, family_key, member_key):
     except Exception as exc:
         try:
             fresh = (
-                client.table(PHOTO_TABLE)
+                _diag_invoke_v640('execute:_run_video_ai_background_job:L13831', lambda: (client.table(PHOTO_TABLE)
                 .select("reflection_json")
                 .eq("id", str(photo_id))
                 .eq("family_key", str(family_key))
                 .eq("member_key", str(member_key))
                 .limit(1)
-                .execute()
+                .execute()))
             )
             row = (fresh.data or [None])[0] or {}
             latest_reflection = row.get("reflection_json") or reflection
@@ -13869,7 +14003,7 @@ def _video_ai_job_is_running(photo_id):
     if not photo_id:
         return False
     registry = _video_ai_job_registry()
-    with registry["lock"]:
+    with _DiagLockV640(registry["lock"], '_video_ai_job_is_running'):
         future = registry["futures"].get(photo_id)
         if future is None:
             return False
@@ -13886,12 +14020,12 @@ def _video_ai_job_done(photo_id, future, registry):
     touches Streamlit session state and is safe to run outside the UI thread.
     """
     try:
-        future.result()
+        _diag_future_v640(future)
     except Exception:
         # _run_video_ai_background_job already persists a terminal error when possible.
         pass
     try:
-        with registry["lock"]:
+        with _DiagLockV640(registry["lock"], '_video_ai_job_done'):
             if registry["futures"].get(str(photo_id)) is future:
                 registry["futures"].pop(str(photo_id), None)
     except Exception:
@@ -13906,7 +14040,7 @@ def _video_ai_job_done(photo_id, future, registry):
         pass
     try:
         runtime = _runtime_v468()
-        with runtime["lock"]:
+        with _DiagLockV640(runtime["lock"], '_video_ai_job_done'):
             for state in runtime["accounts"].values():
                 state["epoch"] += 1
     except Exception:
@@ -13935,14 +14069,14 @@ def launch_video_ai_background_job(photo):
     fresh = photo
     try:
         result = (
-            supabase_client()
+            _diag_invoke_v640('execute:launch_video_ai_background_job:L13940', lambda: (supabase_client()
             .table(PHOTO_TABLE)
             .select("*")
             .eq("id", photo_id)
             .eq("family_key", family_key)
             .eq("member_key", member_key)
             .limit(1)
-            .execute()
+            .execute()))
         )
         row = (result.data or [None])[0]
         if isinstance(row, dict) and row:
@@ -13961,14 +14095,14 @@ def launch_video_ai_background_job(photo):
         return False
 
     registry = _video_ai_job_registry()
-    with registry["lock"]:
+    with _DiagLockV640(registry["lock"], 'launch_video_ai_background_job'):
         existing = registry["futures"].get(photo_id)
         if existing is not None and not existing.done():
             return False
         if existing is not None:
             registry["futures"].pop(photo_id, None)
 
-        future = _video_ai_executor().submit(
+        future = _diag_submit_v640(_video_ai_executor(), 
             _run_video_ai_background_job,
             photo_id,
             family_key,
@@ -13990,14 +14124,14 @@ def resume_member_video_background_jobs(limit=24, min_interval_seconds=5):
 
     try:
         rows = (
-            supabase_client()
+            _diag_invoke_v640('execute:resume_member_video_background_jobs:L13995', lambda: (supabase_client()
             .table(PHOTO_TABLE)
             .select("*")
             .eq("family_key", current_family_key())
             .eq("member_key", current_member_key())
             .order("captured_at", desc=True)
             .limit(max(1, int(limit)))
-            .execute()
+            .execute()))
         ).data or []
     except Exception:
         return 0
@@ -14108,14 +14242,14 @@ def request_video_ai_reroll(photo, record_rejection=True):
     if not isinstance(photo, dict) or not photo.get("id") or not photo_is_video(photo):
         raise ValueError("動画が見つかりません。")
     current = (
-        supabase_client()
+        _diag_invoke_v640('execute:request_video_ai_reroll:L14113', lambda: (supabase_client()
         .table(PHOTO_TABLE)
         .select("*")
         .eq("id", photo.get("id"))
         .eq("family_key", current_family_key())
         .eq("member_key", current_member_key())
         .limit(1)
-        .execute()
+        .execute()))
     )
     fresh = (current.data or [None])[0] or photo
     home_counts_before = home_video_counts()
@@ -14175,14 +14309,14 @@ def record_video_ai_human_choices(video_photo, selected_ranks):
     if not ranks:
         return video_photo
     current = (
-        supabase_client()
+        _diag_invoke_v640('execute:record_video_ai_human_choices:L14180', lambda: (supabase_client()
         .table(PHOTO_TABLE)
         .select("*")
         .eq("id", video_photo.get("id"))
         .eq("family_key", current_family_key())
         .eq("member_key", current_member_key())
         .limit(1)
-        .execute()
+        .execute()))
     )
     fresh = (current.data or [None])[0] or video_photo
     reflection = dict(photo_media_metadata(fresh))
@@ -14279,10 +14413,10 @@ def update_video_ai_selection_tags(video_photo, emotion_changes=None, parenting_
 
     client = supabase_client()
     current = (
-        client.table(PHOTO_TABLE).select("*")
+        _diag_invoke_v640('execute:update_video_ai_selection_tags:L14284', lambda: (client.table(PHOTO_TABLE).select("*")
         .eq("id", video_photo.get("id"))
         .eq("family_key", current_family_key()).eq("member_key", current_member_key())
-        .limit(1).execute()
+        .limit(1).execute()))
     )
     fresh = (current.data or [None])[0] or video_photo
     reflection = dict(photo_media_metadata(fresh))
@@ -14381,13 +14515,13 @@ def record_video_ai_no_choice(video_photo):
 
     client = supabase_client()
     current = (
-        client.table(PHOTO_TABLE)
+        _diag_invoke_v640('execute:record_video_ai_no_choice:L14386', lambda: (client.table(PHOTO_TABLE)
         .select("*")
         .eq("id", video_photo.get("id"))
         .eq("family_key", current_family_key())
         .eq("member_key", current_member_key())
         .limit(1)
-        .execute()
+        .execute()))
     )
     fresh = (current.data or [None])[0] or video_photo
     reflection = dict(photo_media_metadata(fresh))
@@ -14499,11 +14633,11 @@ def store_preselected_video_ai_selection(photo, selections, candidate_count=0):
                 raise ValueError("AIセレクション画像を元動画から読み込めませんでした。")
             processed_bytes = _normalize_video_frame_photo_bytes(image_bytes) or image_bytes
             path = f"{base}_ai_{rank:02d}.jpg"
-            client.storage.from_(PHOTO_BUCKET).upload(
+            _diag_invoke_v640('upload:store_preselected_video_ai_selection:L14504', lambda: (client.storage.from_(PHOTO_BUCKET).upload(
                 path=path,
                 file=processed_bytes,
                 file_options={"content-type": "image/jpeg", "cache-control": "3600"},
-            )
+            )))
             uploaded_paths.append(path)
             items.append(
                 {
@@ -14962,10 +15096,10 @@ def generate_video_ai_voice_candidates(photo, force=False):
 
     client = supabase_client()
     current = (
-        client.table(PHOTO_TABLE).select("*")
+        _diag_invoke_v640('execute:generate_video_ai_voice_candidates:L14967', lambda: (client.table(PHOTO_TABLE).select("*")
         .eq("id", photo.get("id"))
         .eq("family_key", current_family_key()).eq("member_key", current_member_key())
-        .limit(1).execute()
+        .limit(1).execute()))
     )
     fresh = (current.data or [None])[0] or photo
     existing = video_ai_voice_candidate_items(fresh)
@@ -14975,7 +15109,7 @@ def generate_video_ai_voice_candidates(photo, force=False):
     video_path = photo_video_storage_path(fresh)
     if not video_path:
         raise ValueError("元動画の保存先を確認できませんでした。")
-    video_raw = _storage_bytes(client.storage.from_(PHOTO_BUCKET).download(video_path))
+    video_raw = _storage_bytes(_diag_invoke_v640('download:generate_video_ai_voice_candidates:L14980', lambda: (client.storage.from_(PHOTO_BUCKET).download(video_path))))
     if not video_raw:
         raise ValueError("元動画を読み込めませんでした。")
 
@@ -15123,11 +15257,11 @@ def generate_video_ai_voice_candidates(photo, force=False):
                 processed_filename = f"voice_candidate_{candidate_rank:02d}_original.m4a" if candidate_audio_source == "original" else f"voice_candidate_{candidate_rank:02d}_fallback.m4a"
                 storage_path = f"{base}_voice_original_{stamp}_{candidate_rank:02d}.m4a" if candidate_audio_source == "original" else f"{base}_voice_fallback_{stamp}_{candidate_rank:02d}.m4a"
                 storage_mime_type = _voice_storage_upload_mime("audio/mp4", processed_filename)
-                client.storage.from_(PHOTO_BUCKET).upload(
+                _diag_invoke_v640('upload:generate_video_ai_voice_candidates:L15128', lambda: (client.storage.from_(PHOTO_BUCKET).upload(
                     path=storage_path,
                     file=processed_raw,
                     file_options={"content-type": storage_mime_type, "cache-control": "3600"},
-                )
+                )))
                 uploaded_paths.append(storage_path)
 
                 transcript = ""
@@ -15388,10 +15522,10 @@ def _sync_video_voice_candidates_to_saved_photos_v517(video_photo, selection=Non
         elif clear_removed and bool(item.get("voice_candidate_cleared_by_regeneration")):
             try:
                 current = (
-                    supabase_client().table(PHOTO_TABLE).select("id,reflection_json")
+                    _diag_invoke_v640('execute:_sync_video_voice_candidates_to_saved_photos_v517:L15393', lambda: (supabase_client().table(PHOTO_TABLE).select("id,reflection_json")
                     .eq("id", saved_photo_id)
                     .eq("family_key", current_family_key()).eq("member_key", current_member_key())
-                    .limit(1).execute()
+                    .limit(1).execute()))
                 )
                 saved_row = (current.data or [None])[0] or {}
                 if saved_row and _moments_voice_note_owned_v517(saved_row, source_video_id):
@@ -15411,10 +15545,10 @@ def update_video_ai_selection_voice_choice(video_photo, rank, candidate_rank):
 
     client = supabase_client()
     current = (
-        client.table(PHOTO_TABLE).select("*")
+        _diag_invoke_v640('execute:update_video_ai_selection_voice_choice:L15416', lambda: (client.table(PHOTO_TABLE).select("*")
         .eq("id", video_photo.get("id"))
         .eq("family_key", current_family_key()).eq("member_key", current_member_key())
-        .limit(1).execute()
+        .limit(1).execute()))
     )
     fresh = (current.data or [None])[0] or video_photo
     reflection = dict(photo_media_metadata(fresh))
@@ -15496,10 +15630,10 @@ def _existing_photo_ids_for_current_member(photo_ids):
         return set()
     try:
         rows = (
-            supabase_client().table(PHOTO_TABLE).select("id")
+            _diag_invoke_v640('execute:_existing_photo_ids_for_current_member:L15501', lambda: (supabase_client().table(PHOTO_TABLE).select("id")
             .in_("id", ids)
             .eq("family_key", current_family_key()).eq("member_key", current_member_key())
-            .execute()
+            .execute()))
         ).data or []
     except Exception:
         return set()
@@ -15529,10 +15663,10 @@ def _clear_video_ai_saved_photo_link(source_video_id, selection_rank, stale_save
         return False
     try:
         current = (
-            supabase_client().table(PHOTO_TABLE).select("id,reflection_json")
+            _diag_invoke_v640('execute:_clear_video_ai_saved_photo_link:L15534', lambda: (supabase_client().table(PHOTO_TABLE).select("id,reflection_json")
             .eq("id", source_video_id)
             .eq("family_key", current_family_key()).eq("member_key", current_member_key())
-            .limit(1).execute()
+            .limit(1).execute()))
         )
         row = (current.data or [None])[0] or {}
     except Exception:
@@ -15584,10 +15718,10 @@ def save_video_ai_selection_as_photo(video_photo, selection_item):
 
     try:
         current_rows = (
-            supabase_client().table(PHOTO_TABLE).select("*")
+            _diag_invoke_v640('execute:save_video_ai_selection_as_photo:L15589', lambda: (supabase_client().table(PHOTO_TABLE).select("*")
             .eq("id", video_photo.get("id"))
             .eq("family_key", current_family_key()).eq("member_key", current_member_key())
-            .limit(1).execute()
+            .limit(1).execute()))
         ).data or []
         fresh_video = current_rows[0] if current_rows else video_photo
         fresh_item = next(
@@ -15659,13 +15793,13 @@ def save_video_ai_selection_as_photo(video_photo, selection_item):
         raise RuntimeError("写真として保存できませんでした。")
 
     current = (
-        supabase_client()
+        _diag_invoke_v640('execute:save_video_ai_selection_as_photo:L15664', lambda: (supabase_client()
         .table(PHOTO_TABLE)
         .select("reflection_json")
         .eq("id", video_photo.get("id"))
         .eq("family_key", current_family_key()).eq("member_key", current_member_key())
         .limit(1)
-        .execute()
+        .execute()))
     )
     row = (current.data or [None])[0] or {}
     current_reflection = row.get("reflection_json") or {}
@@ -15752,10 +15886,10 @@ def _sync_moments_metadata_into_saved_photos_v417(photos):
 
     try:
         source_rows = (
-            supabase_client().table(PHOTO_TABLE).select("*")
+            _diag_invoke_v640('execute:_sync_moments_metadata_into_saved_photos_v417:L15757', lambda: (supabase_client().table(PHOTO_TABLE).select("*")
             .in_("id", sorted(source_ids))
             .eq("family_key", current_family_key()).eq("member_key", current_member_key())
-            .execute()
+            .execute()))
         ).data or []
     except Exception:
         return False
@@ -15889,7 +16023,7 @@ def _sync_moments_metadata_into_saved_photos_v417(photos):
 # ============================================================
 def create_trip(destination=""):
     result = (
-        supabase_client()
+        _diag_invoke_v640('execute:create_trip:L15894', lambda: (supabase_client()
         .table(TRIP_TABLE)
         .insert(
             {
@@ -15901,7 +16035,7 @@ def create_trip(destination=""):
                 "started_at": now_jst().isoformat(),
             }
         )
-        .execute()
+        .execute()))
     )
     created = (result.data or [None])[0]
     _invalidate_fast_db_cache()
@@ -15910,21 +16044,21 @@ def create_trip(destination=""):
 
 def get_latest_active_trip():
     result = (
-        supabase_client()
+        _diag_invoke_v640('execute:get_latest_active_trip:L15915', lambda: (supabase_client()
         .table(TRIP_TABLE)
         .select("*")
         .eq("family_key", current_family_key()).eq("member_key", current_member_key())
         .eq("status", "active")
         .order("started_at", desc=True)
         .limit(1)
-        .execute()
+        .execute()))
     )
     return (result.data or [None])[0]
 
 
 def get_today_active_trip():
     result = (
-        supabase_client()
+        _diag_invoke_v640('execute:get_today_active_trip:L15929', lambda: (supabase_client()
         .table(TRIP_TABLE)
         .select("*")
         .eq("family_key", current_family_key()).eq("member_key", current_member_key())
@@ -15932,7 +16066,7 @@ def get_today_active_trip():
         .eq("trip_date", today_iso())
         .order("started_at", desc=True)
         .limit(1)
-        .execute()
+        .execute()))
     )
     return (result.data or [None])[0]
 
@@ -16006,7 +16140,7 @@ def get_or_create_gallery_import_trip_v443(captured_at, cache=None):
 
     client = supabase_client()
     rows = (
-        client
+        _diag_invoke_v640('execute:get_or_create_gallery_import_trip_v443:L16011', lambda: (client
         .table(TRIP_TABLE)
         .select("*")
         .eq("family_key", current_family_key()).eq("member_key", current_member_key())
@@ -16014,7 +16148,7 @@ def get_or_create_gallery_import_trip_v443(captured_at, cache=None):
         .in_("status", ["ready_for_diary", "active"])
         .order("started_at", desc=True)
         .limit(12)
-        .execute()
+        .execute()))
     ).data or []
 
     candidate_ids = [str(row.get("id") or "") for row in rows if isinstance(row, dict) and row.get("id")]
@@ -16022,12 +16156,12 @@ def get_or_create_gallery_import_trip_v443(captured_at, cache=None):
     if candidate_ids:
         try:
             diary_rows = (
-                client
+                _diag_invoke_v640('execute:get_or_create_gallery_import_trip_v443:L16027', lambda: (client
                 .table(DIARY_TABLE)
                 .select("trip_id")
                 .eq("family_key", current_family_key()).eq("member_key", current_member_key())
                 .in_("trip_id", candidate_ids)
-                .execute()
+                .execute()))
             ).data or []
             diary_trip_ids = {str(row.get("trip_id") or "") for row in diary_rows if isinstance(row, dict)}
         except Exception:
@@ -16049,18 +16183,18 @@ def get_or_create_gallery_import_trip_v443(captured_at, cache=None):
     if isinstance(trip, dict) and trip.get("id"):
         if str(trip.get("status") or "") == "active":
             updated = (
-                client
+                _diag_invoke_v640('execute:get_or_create_gallery_import_trip_v443:L16054', lambda: (client
                 .table(TRIP_TABLE)
                 .update({"status": "ready_for_diary", "ended_at": capture_timestamp})
                 .eq("id", trip["id"])
                 .eq("family_key", current_family_key()).eq("member_key", current_member_key())
-                .execute()
+                .execute()))
             )
             trip = (updated.data or [trip])[0] or trip
             _invalidate_fast_db_cache()
     else:
         created = (
-            client
+            _diag_invoke_v640('execute:get_or_create_gallery_import_trip_v443:L16065', lambda: (client
             .table(TRIP_TABLE)
             .insert(
                 {
@@ -16073,7 +16207,7 @@ def get_or_create_gallery_import_trip_v443(captured_at, cache=None):
                     "ended_at": capture_timestamp,
                 }
             )
-            .execute()
+            .execute()))
         )
         trip = (created.data or [None])[0]
         if not isinstance(trip, dict) or not trip.get("id"):
@@ -16120,23 +16254,23 @@ def repair_misdated_gallery_imports_v443(max_items=5000):
 
     client = supabase_client()
     source_trips = (
-        client
+        _diag_invoke_v640('execute:repair_misdated_gallery_imports_v443:L16125', lambda: (client
         .table(TRIP_TABLE)
         .select("*")
         .eq("family_key", current_family_key()).eq("member_key", current_member_key())
         .in_("id", list(source_trip_ids))
-        .execute()
+        .execute()))
     ).data or []
     trip_by_id = {str(row.get("id") or ""): row for row in source_trips if isinstance(row, dict) and row.get("id")}
 
     try:
         diary_rows = (
-            client
+            _diag_invoke_v640('execute:repair_misdated_gallery_imports_v443:L16136', lambda: (client
             .table(DIARY_TABLE)
             .select("trip_id")
             .eq("family_key", current_family_key()).eq("member_key", current_member_key())
             .in_("trip_id", list(source_trip_ids))
-            .execute()
+            .execute()))
         ).data or []
         diary_trip_ids = {str(row.get("trip_id") or "") for row in diary_rows if isinstance(row, dict)}
     except Exception:
@@ -16163,13 +16297,13 @@ def repair_misdated_gallery_imports_v443(max_items=5000):
             if not target_trip_id or target_trip_id == source_trip_id:
                 continue
             (
-                client
+                _diag_invoke_v640('execute:repair_misdated_gallery_imports_v443:L16168', lambda: (client
                 .table(PHOTO_TABLE)
                 .update({"trip_id": target_trip_id})
                 .eq("id", photo.get("id"))
                 .eq("trip_id", source_trip_id)
                 .eq("family_key", current_family_key()).eq("member_key", current_member_key())
-                .execute()
+                .execute()))
             )
             moved += 1
         except Exception:
@@ -16193,22 +16327,22 @@ def update_trip_destination(trip_id, destination):
     destination = str(destination or "").strip()
     client = supabase_client()
     result = (
-        client
+        _diag_invoke_v640('execute:update_trip_destination:L16198', lambda: (client
         .table(TRIP_TABLE)
         .update({"destination": destination})
         .eq("id", trip_id)
         .eq("family_key", current_family_key()).eq("member_key", current_member_key())
-        .execute()
+        .execute()))
     )
 
     try:
         photos = (
-            client
+            _diag_invoke_v640('execute:update_trip_destination:L16208', lambda: (client
             .table(PHOTO_TABLE)
             .select("id,reflection_json")
             .eq("trip_id", trip_id)
             .eq("family_key", current_family_key()).eq("member_key", current_member_key())
-            .execute()
+            .execute()))
         ).data or []
         for photo in photos:
             reflection = photo.get("reflection_json") or {}
@@ -16231,12 +16365,12 @@ def update_trip_destination(trip_id, destination):
                 }
             )
             (
-                client
+                _diag_invoke_v640('execute:update_trip_destination:L16236', lambda: (client
                 .table(PHOTO_TABLE)
                 .update({"reflection_json": reflection})
                 .eq("id", photo["id"])
                 .eq("family_key", current_family_key()).eq("member_key", current_member_key())
-                .execute()
+                .execute()))
             )
     except Exception:
         pass
@@ -16258,25 +16392,25 @@ def get_trip(trip_id):
     if cached is not None:
         return cached
     result = (
-        supabase_client()
+        _diag_invoke_v640('execute:get_trip:L16263', lambda: (supabase_client()
         .table(TRIP_TABLE)
         .select("*")
         .eq("id", trip_id)
         .eq("family_key", current_family_key()).eq("member_key", current_member_key())
         .limit(1)
-        .execute()
+        .execute()))
     )
     return _session_cache_set(cache_key, (result.data or [None])[0])
 
 
 def finish_trip(trip_id):
     (
-        supabase_client()
+        _diag_invoke_v640('execute:finish_trip:L16276', lambda: (supabase_client()
         .table(TRIP_TABLE)
         .update({"status": "ready_for_diary", "ended_at": now_jst().isoformat()})
         .eq("id", trip_id)
         .eq("family_key", current_family_key()).eq("member_key", current_member_key())
-        .execute()
+        .execute()))
     )
     if st.session_state.get("active_trip_id") == trip_id:
         st.session_state.active_trip_id = None
@@ -16293,13 +16427,13 @@ def list_trip_photos(trip_id):
         return cached
     started = time.perf_counter()
     result = (
-        supabase_client()
+        _diag_invoke_v640('execute:list_trip_photos:L16298', lambda: (supabase_client()
         .table(PHOTO_TABLE)
         .select("*")
         .eq("trip_id", trip_id)
         .eq("family_key", current_family_key()).eq("member_key", current_member_key())
         .order("captured_at")
-        .execute()
+        .execute()))
     )
     rows = result.data or []
     _perf_log_v457("db:trip_photos", started_at=started, meta={"count": len(rows)}, force=True)
@@ -16309,13 +16443,13 @@ def list_trip_photos(trip_id):
 def update_photo_reflection(photo_id, conversation, signals, done=None):
     client = supabase_client()
     current = (
-        client
+        _diag_invoke_v640('execute:update_photo_reflection:L16314', lambda: (client
         .table(PHOTO_TABLE)
         .select("reflection_json,signals_json")
         .eq("id", photo_id)
         .eq("family_key", current_family_key()).eq("member_key", current_member_key())
         .limit(1)
-        .execute()
+        .execute()))
     )
     row = (current.data or [None])[0] or {}
     reflection = row.get("reflection_json") or {}
@@ -16341,19 +16475,19 @@ def update_photo_reflection(photo_id, conversation, signals, done=None):
             next_signals[metadata_key] = existing_signals[metadata_key]
 
     (
-        client
+        _diag_invoke_v640('execute:update_photo_reflection:L16346', lambda: (client
         .table(PHOTO_TABLE)
         .update({"reflection_json": reflection, "signals_json": next_signals})
         .eq("id", photo_id)
         .eq("family_key", current_family_key()).eq("member_key", current_member_key())
-        .execute()
+        .execute()))
     )
     _invalidate_fast_db_cache()
 
 
 def list_recent_trips_for_diary(limit=40):
     result = (
-        supabase_client()
+        _diag_invoke_v640('execute:list_recent_trips_for_diary:L16358', lambda: (supabase_client()
         .table(TRIP_TABLE)
         .select("*")
         .eq("family_key", current_family_key()).eq("member_key", current_member_key())
@@ -16361,7 +16495,7 @@ def list_recent_trips_for_diary(limit=40):
         .order("trip_date", desc=True)
         .order("started_at", desc=True)
         .limit(limit)
-        .execute()
+        .execute()))
     )
     return result.data or []
 
@@ -16370,13 +16504,13 @@ def get_diary_for_trip(trip_id):
     if not trip_id:
         return None
     result = (
-        supabase_client()
+        _diag_invoke_v640('execute:get_diary_for_trip:L16375', lambda: (supabase_client()
         .table(DIARY_TABLE)
         .select("*")
         .eq("trip_id", trip_id)
         .eq("family_key", current_family_key()).eq("member_key", current_member_key())
         .limit(1)
-        .execute()
+        .execute()))
     )
     return (result.data or [None])[0]
 
@@ -16387,12 +16521,12 @@ def diaries_for_trip_ids(trip_ids):
     if not ids:
         return {}
     rows = (
-        supabase_client()
+        _diag_invoke_v640('execute:diaries_for_trip_ids:L16392', lambda: (supabase_client()
         .table(DIARY_TABLE)
         .select("*")
         .eq("family_key", current_family_key()).eq("member_key", current_member_key())
         .in_("trip_id", ids)
-        .execute()
+        .execute()))
     ).data or []
     return {str(row.get("trip_id")): row for row in rows if row.get("trip_id")}
 
@@ -16404,13 +16538,13 @@ def photos_for_trip_ids(trip_ids):
     if not ids:
         return grouped
     rows = (
-        supabase_client()
+        _diag_invoke_v640('execute:photos_for_trip_ids:L16409', lambda: (supabase_client()
         .table(PHOTO_TABLE)
         .select("*")
         .eq("family_key", current_family_key()).eq("member_key", current_member_key())
         .in_("trip_id", ids)
         .order("captured_at")
-        .execute()
+        .execute()))
     ).data or []
     for row in rows:
         trip_id = str(row.get("trip_id") or "")
@@ -16451,23 +16585,23 @@ def save_diary(trip_id, title, diary_text, raw_conversation, ai_meta):
     }
     if existing:
         (
-            supabase_client()
+            _diag_invoke_v640('execute:save_diary:L16456', lambda: (supabase_client()
             .table(DIARY_TABLE)
             .update(payload)
             .eq("id", existing["id"])
             .eq("family_key", current_family_key()).eq("member_key", current_member_key())
-            .execute()
+            .execute()))
         )
     else:
         payload["created_at"] = now_jst().isoformat()
-        supabase_client().table(DIARY_TABLE).insert(payload).execute()
+        _diag_invoke_v640('execute:save_diary:L16465', lambda: (supabase_client().table(DIARY_TABLE).insert(payload).execute()))
     (
-        supabase_client()
+        _diag_invoke_v640('execute:save_diary:L16467', lambda: (supabase_client()
         .table(TRIP_TABLE)
         .update({"status": "diary_done", "ended_at": trip.get("ended_at") or now_jst().isoformat()})
         .eq("id", trip_id)
         .eq("family_key", current_family_key()).eq("member_key", current_member_key())
-        .execute()
+        .execute()))
     )
     _invalidate_fast_db_cache()
     return get_diary_for_trip(trip_id)
@@ -16490,11 +16624,11 @@ def delete_diary_and_related_data(trip_id):
 
     # A photo's reflection_json contains per-photo metadata, so
     # deleting the photo rows deletes those comments together with the photo record.
-    client.table(PHOTO_TABLE).delete().eq("trip_id", trip_id).eq("family_key", current_family_key()).eq("member_key", current_member_key()).execute()
-    client.table(DIARY_TABLE).delete().eq("trip_id", trip_id).eq("family_key", current_family_key()).eq("member_key", current_member_key()).execute()
+    _diag_invoke_v640('execute:delete_diary_and_related_data:L16495', lambda: (client.table(PHOTO_TABLE).delete().eq("trip_id", trip_id).eq("family_key", current_family_key()).eq("member_key", current_member_key()).execute()))
+    _diag_invoke_v640('execute:delete_diary_and_related_data:L16496', lambda: (client.table(DIARY_TABLE).delete().eq("trip_id", trip_id).eq("family_key", current_family_key()).eq("member_key", current_member_key()).execute()))
     # Once its diary/photos are gone, remove the trip container as well so the
     # deleted day cannot reappear as an empty trip in diary/monthly screens.
-    client.table(TRIP_TABLE).delete().eq("id", trip_id).eq("family_key", current_family_key()).eq("member_key", current_member_key()).execute()
+    _diag_invoke_v640('execute:delete_diary_and_related_data:L16499', lambda: (client.table(TRIP_TABLE).delete().eq("id", trip_id).eq("family_key", current_family_key()).eq("member_key", current_member_key()).execute()))
 
     # A saved monthly review can contain wording derived from the deleted diary.
     # Remove that month's snapshot so it cannot continue showing deleted material.
@@ -16502,7 +16636,7 @@ def delete_diary_and_related_data(trip_id):
     month_key = trip_date[:7] if len(trip_date) >= 7 else ""
     if month_key:
         first_day, _ = month_bounds(month_key)
-        client.table(MONTHLY_TABLE).delete().eq("review_month", first_day).eq("family_key", current_family_key()).eq("member_key", current_member_key()).execute()
+        _diag_invoke_v640('execute:delete_diary_and_related_data:L16507', lambda: (client.table(MONTHLY_TABLE).delete().eq("review_month", first_day).eq("family_key", current_family_key()).eq("member_key", current_member_key()).execute()))
         for key in (
             f"monthly_review_{month_key}",
             f"monthly_audio_{month_key}",
@@ -16660,9 +16794,9 @@ def delete_photos_in_batches_v589(photo_ids, photos=None, *, skip_existing_diary
         return {"deleted_count": 0, "failures": failures}
 
     trip_rows = (
-        client.table(TRIP_TABLE).select("id,trip_date")
+        _diag_invoke_v640('execute:delete_photos_in_batches_v589:L16665', lambda: (client.table(TRIP_TABLE).select("id,trip_date")
         .eq("family_key", family_key).eq("member_key", member_key)
-        .in_("id", list(dict.fromkeys(p["trip_id"] for p in selected))).execute()
+        .in_("id", list(dict.fromkeys(p["trip_id"] for p in selected))).execute()))
     ).data or []
     trips_by_id = {str(p.get("id")): p for p in trip_rows}
     selected = [p for p in selected if str(p.get("trip_id")) in trips_by_id]
@@ -16699,9 +16833,9 @@ def delete_photos_in_batches_v589(photo_ids, photos=None, *, skip_existing_diary
             paths = list(dict.fromkeys(path for p in rows for path in photo_all_storage_paths(p) if path))
             if paths:
                 client.storage.from_(PHOTO_BUCKET).remove(paths)
-            client.table(PHOTO_TABLE).delete().in_("id", ids).eq(
+            _diag_invoke_v640('execute:remove_chunk:L16704', lambda: (client.table(PHOTO_TABLE).delete().in_("id", ids).eq(
                 "family_key", family_key
-            ).eq("member_key", member_key).execute()
+            ).eq("member_key", member_key).execute()))
             for photo in rows:
                 deleted[str(photo["id"])] = photo
         except Exception as exc:
@@ -16743,12 +16877,12 @@ def delete_photos_in_batches_v589(photo_ids, photos=None, *, skip_existing_diary
         try:
             if diary_deleted:
                 if not skip_existing_diary_lookup:
-                    client.table(DIARY_TABLE).delete().eq("trip_id", trip_id).eq(
+                    _diag_invoke_v640('execute:delete_photos_in_batches_v589:L16748', lambda: (client.table(DIARY_TABLE).delete().eq("trip_id", trip_id).eq(
                         "family_key", family_key
-                    ).eq("member_key", member_key).execute()
-                client.table(TRIP_TABLE).delete().eq("id", trip_id).eq(
+                    ).eq("member_key", member_key).execute()))
+                _diag_invoke_v640('execute:delete_photos_in_batches_v589:L16751', lambda: (client.table(TRIP_TABLE).delete().eq("id", trip_id).eq(
                     "family_key", family_key
-                ).eq("member_key", member_key).execute()
+                ).eq("member_key", member_key).execute()))
             elif existing:
                 raw = dict(existing.get("raw_conversation") or {}) if isinstance(existing.get("raw_conversation") or {}, dict) else {}
                 for pid in removed_ids:
@@ -16771,13 +16905,13 @@ def delete_photos_in_batches_v589(photo_ids, photos=None, *, skip_existing_diary
                 ai_meta["reflection_summary"] = ""
                 ai_meta["trip_summary"] = ""
                 _clear_summary_feedback_fields(ai_meta, clear_history=True)
-                client.table(DIARY_TABLE).update({
+                _diag_invoke_v640('execute:delete_photos_in_batches_v589:L16776', lambda: (client.table(DIARY_TABLE).update({
                     "raw_conversation": raw,
                     "ai_meta": ai_meta,
                     "updated_at": now_jst().isoformat(),
                 }).eq("id", existing["id"]).eq(
                     "family_key", family_key
-                ).eq("member_key", member_key).execute()
+                ).eq("member_key", member_key).execute()))
             _photo_batch_sync_trip_state_v589(trip_id, removed_ids, remaining, diary_deleted)
             if not skip_existing_diary_lookup:
                 month = str(trips_by_id.get(trip_id, {}).get("trip_date") or "")[:7]
@@ -16789,9 +16923,9 @@ def delete_photos_in_batches_v589(photo_ids, photos=None, *, skip_existing_diary
     for month in month_keys:
         try:
             first_day, _ = month_bounds(month)
-            client.table(MONTHLY_TABLE).delete().eq("review_month", first_day).eq(
+            _diag_invoke_v640('execute:delete_photos_in_batches_v589:L16794', lambda: (client.table(MONTHLY_TABLE).delete().eq("review_month", first_day).eq(
                 "family_key", family_key
-            ).eq("member_key", member_key).execute()
+            ).eq("member_key", member_key).execute()))
             for prefix in ("monthly_review_", "monthly_audio_", "monthly_audio_pending_"):
                 st.session_state.pop(prefix + month, None)
         except Exception as exc:
@@ -16838,9 +16972,9 @@ def delete_photo_and_related_data(
     if storage_paths:
         client.storage.from_(PHOTO_BUCKET).remove(storage_paths)
 
-    client.table(PHOTO_TABLE).delete().eq("id", photo_id).eq("trip_id", trip_id).eq(
+    _diag_invoke_v640('execute:delete_photo_and_related_data:L16843', lambda: (client.table(PHOTO_TABLE).delete().eq("id", photo_id).eq("trip_id", trip_id).eq(
         "family_key", current_family_key()
-    ).eq("member_key", current_member_key()).execute()
+    ).eq("member_key", current_member_key()).execute()))
 
     # We already have the gallery's photo metadata, so normal deletions need no
     # second photo-list query. Only when it looks like the last image was removed do
@@ -16849,13 +16983,13 @@ def delete_photo_and_related_data(
     remaining_photos = [p for p in photos if p.get("id") != photo_id]
     if not remaining_photos:
         remaining_photos = (
-            client
+            _diag_invoke_v640('execute:delete_photo_and_related_data:L16854', lambda: (client
             .table(PHOTO_TABLE)
             .select("id,trip_id,storage_path,captured_at,reflection_json,signals_json")
             .eq("trip_id", trip_id)
             .eq("family_key", current_family_key()).eq("member_key", current_member_key())
             .order("captured_at")
-            .execute()
+            .execute()))
         ).data or []
     existing = None if skip_existing_diary_lookup else get_diary_for_trip(trip_id)
     diary_deleted = not remaining_photos
@@ -16864,12 +16998,12 @@ def delete_photo_and_related_data(
         # An image-less record has no source material in this app. Pending trips have
         # no diary row, so skip that unnecessary delete request in the fast path.
         if not skip_existing_diary_lookup:
-            client.table(DIARY_TABLE).delete().eq("trip_id", trip_id).eq(
+            _diag_invoke_v640('execute:delete_photo_and_related_data:L16869', lambda: (client.table(DIARY_TABLE).delete().eq("trip_id", trip_id).eq(
                 "family_key", current_family_key()
-            ).eq("member_key", current_member_key()).execute()
-        client.table(TRIP_TABLE).delete().eq("id", trip_id).eq(
+            ).eq("member_key", current_member_key()).execute()))
+        _diag_invoke_v640('execute:delete_photo_and_related_data:L16872', lambda: (client.table(TRIP_TABLE).delete().eq("id", trip_id).eq(
             "family_key", current_family_key()
-        ).eq("member_key", current_member_key()).execute()
+        ).eq("member_key", current_member_key()).execute()))
     elif existing:
         raw = existing.get("raw_conversation") or {}
         if not isinstance(raw, dict):
@@ -16900,7 +17034,7 @@ def delete_photo_and_related_data(
         _clear_summary_feedback_fields(ai_meta, clear_history=True)
 
         (
-            client
+            _diag_invoke_v640('execute:delete_photo_and_related_data:L16905', lambda: (client
             .table(DIARY_TABLE)
             .update(
                 {
@@ -16911,7 +17045,7 @@ def delete_photo_and_related_data(
             )
             .eq("id", existing["id"])
             .eq("family_key", current_family_key()).eq("member_key", current_member_key())
-            .execute()
+            .execute()))
         )
 
     # A monthly summary may contain content from the removed image/emotion.
@@ -16919,9 +17053,9 @@ def delete_photo_and_related_data(
     month_key = trip_date[:7] if len(trip_date) >= 7 else ""
     if month_key and not skip_existing_diary_lookup:
         first_day, _ = month_bounds(month_key)
-        client.table(MONTHLY_TABLE).delete().eq("review_month", first_day).eq(
+        _diag_invoke_v640('execute:delete_photo_and_related_data:L16924', lambda: (client.table(MONTHLY_TABLE).delete().eq("review_month", first_day).eq(
             "family_key", current_family_key()
-        ).eq("member_key", current_member_key()).execute()
+        ).eq("member_key", current_member_key()).execute()))
         for key in (
             f"monthly_review_{month_key}",
             f"monthly_audio_{month_key}",
@@ -17016,7 +17150,7 @@ def delete_video_and_related_data(video_photo):
     # but later DB writes are owner/id guarded and will simply find no row.
     try:
         registry = _video_ai_job_registry()
-        with registry["lock"]:
+        with _DiagLockV640(registry["lock"], 'delete_video_and_related_data'):
             future = registry["futures"].pop(photo_id, None)
             if future is not None:
                 future.cancel()
@@ -17559,7 +17693,7 @@ def reset_photo_conversation(trip_id, photo_id):
         ai_meta["signals"] = merged_signals
 
         (
-            client
+            _diag_invoke_v640('execute:reset_photo_conversation:L17564', lambda: (client
             .table(DIARY_TABLE)
             .update(
                 {
@@ -17570,7 +17704,7 @@ def reset_photo_conversation(trip_id, photo_id):
             )
             .eq("id", existing["id"])
             .eq("family_key", current_family_key()).eq("member_key", current_member_key())
-            .execute()
+            .execute()))
         )
 
     # A saved monthly review may contain wording from this photo conversation.
@@ -17578,7 +17712,7 @@ def reset_photo_conversation(trip_id, photo_id):
     month_key = trip_date[:7] if len(trip_date) >= 7 else ""
     if month_key:
         first_day, _ = month_bounds(month_key)
-        client.table(MONTHLY_TABLE).delete().eq("review_month", first_day).eq("family_key", current_family_key()).eq("member_key", current_member_key()).execute()
+        _diag_invoke_v640('execute:reset_photo_conversation:L17583', lambda: (client.table(MONTHLY_TABLE).delete().eq("review_month", first_day).eq("family_key", current_family_key()).eq("member_key", current_member_key()).execute()))
         for key in (
             f"monthly_review_{month_key}",
             f"monthly_audio_{month_key}",
@@ -17886,13 +18020,13 @@ def _list_recent_diaries_uncached(limit=60, _owner=None, _client=None):
     try:
         relation = TRIP_TABLE
         rows = (
-            client
+            _diag_invoke_v640('execute:_list_recent_diaries_uncached:L17891', lambda: (client
             .table(DIARY_TABLE)
             .select(f"*,{relation}(*)")
             .eq("family_key", owner[2]).eq("member_key", owner[3])
             .order("created_at", desc=True)
             .limit(limit)
-            .execute()
+            .execute()))
         ).data or []
         bundled = []
         for diary in rows:
@@ -17909,25 +18043,25 @@ def _list_recent_diaries_uncached(limit=60, _owner=None, _client=None):
     # Compatibility fallback for PostgREST schemas where relationship embedding is
     # not exposed yet. Still batched: two requests total, never N+1.
     result = (
-        client
+        _diag_invoke_v640('execute:_list_recent_diaries_uncached:L17914', lambda: (client
         .table(DIARY_TABLE)
         .select("*")
         .eq("family_key", owner[2]).eq("member_key", owner[3])
         .order("created_at", desc=True)
         .limit(limit)
-        .execute()
+        .execute()))
     )
     diaries = result.data or []
     if not diaries:
         return []
     trip_ids = list({d["trip_id"] for d in diaries if d.get("trip_id")})
     trip_result = (
-        client
+        _diag_invoke_v640('execute:_list_recent_diaries_uncached:L17927', lambda: (client
         .table(TRIP_TABLE)
         .select("*")
         .eq("family_key", owner[2]).eq("member_key", owner[3])
         .in_("id", trip_ids)
-        .execute()
+        .execute()))
     )
     trip_map = {t["id"]: t for t in (trip_result.data or [])}
     return [
@@ -17978,13 +18112,13 @@ def _month_has_photo_input(month_key):
 
     try:
         rows = (
-            client
+            _diag_invoke_v640('execute:_month_has_photo_input:L17983', lambda: (client
             .table(TRIP_TABLE)
             .select(f"id,{DIARY_TABLE}(id),{PHOTO_TABLE}(id,reflection_json)")
             .eq("family_key", current_family_key()).eq("member_key", current_member_key())
             .gte("trip_date", start)
             .lt("trip_date", end)
-            .execute()
+            .execute()))
         ).data or []
         for row in rows:
             diaries = (row or {}).get(DIARY_TABLE) or []
@@ -18000,35 +18134,35 @@ def _month_has_photo_input(month_key):
         return False
     except Exception:
         trips = (
-            client
+            _diag_invoke_v640('execute:_month_has_photo_input:L18005', lambda: (client
             .table(TRIP_TABLE)
             .select("id")
             .eq("family_key", current_family_key()).eq("member_key", current_member_key())
             .gte("trip_date", start)
             .lt("trip_date", end)
-            .execute()
+            .execute()))
         ).data or []
         trip_ids = [str(row.get("id")) for row in trips if row.get("id")]
         if not trip_ids:
             return False
         diaries = (
-            client
+            _diag_invoke_v640('execute:_month_has_photo_input:L18017', lambda: (client
             .table(DIARY_TABLE)
             .select("id")
             .eq("family_key", current_family_key()).eq("member_key", current_member_key())
             .in_("trip_id", trip_ids)
             .limit(1)
-            .execute()
+            .execute()))
         ).data or []
         if diaries:
             return True
         photos = (
-            client
+            _diag_invoke_v640('execute:_month_has_photo_input:L18028', lambda: (client
             .table(PHOTO_TABLE)
             .select("id,reflection_json")
             .eq("family_key", current_family_key()).eq("member_key", current_member_key())
             .in_("trip_id", trip_ids)
-            .execute()
+            .execute()))
         ).data or []
         return any(photo_has_emotion(photo) for photo in photos)
 
@@ -18105,7 +18239,7 @@ def get_month_bundle(month_key):
     client = supabase_client()
     try:
         rows = (
-            client
+            _diag_invoke_v640('execute:get_month_bundle:L18110', lambda: (client
             .table(TRIP_TABLE)
             .select(
                 f"*,{DIARY_TABLE}(*),"
@@ -18115,7 +18249,7 @@ def get_month_bundle(month_key):
             .gte("trip_date", start)
             .lt("trip_date", end)
             .order("trip_date")
-            .execute()
+            .execute()))
         ).data or []
         trips, diaries, photos = [], [], []
         for row in rows:
@@ -18136,35 +18270,35 @@ def get_month_bundle(month_key):
         pass
 
     trips_result = (
-        client
+        _diag_invoke_v640('execute:get_month_bundle:L18141', lambda: (client
         .table(TRIP_TABLE)
         .select("*")
         .eq("family_key", current_family_key()).eq("member_key", current_member_key())
         .gte("trip_date", start)
         .lt("trip_date", end)
         .order("trip_date")
-        .execute()
+        .execute()))
     )
     trips = trips_result.data or []
     if not trips:
         return {"trips": [], "diaries": [], "photos": []}
     trip_ids = [t["id"] for t in trips]
     diaries_result = (
-        client
+        _diag_invoke_v640('execute:get_month_bundle:L18155', lambda: (client
         .table(DIARY_TABLE)
         .select("*")
         .eq("family_key", current_family_key()).eq("member_key", current_member_key())
         .in_("trip_id", trip_ids)
-        .execute()
+        .execute()))
     )
     photos_result = (
-        client
+        _diag_invoke_v640('execute:get_month_bundle:L18163', lambda: (client
         .table(PHOTO_TABLE)
         .select("id,trip_id,storage_path,captured_at,reflection_json,signals_json")
         .eq("family_key", current_family_key()).eq("member_key", current_member_key())
         .in_("trip_id", trip_ids)
         .order("captured_at")
-        .execute()
+        .execute()))
     )
     return {
         "trips": trips,
@@ -18175,13 +18309,13 @@ def get_month_bundle(month_key):
 def get_saved_monthly_review(month_key):
     first_day, _ = month_bounds(month_key)
     result = (
-        supabase_client()
+        _diag_invoke_v640('execute:get_saved_monthly_review:L18180', lambda: (supabase_client()
         .table(MONTHLY_TABLE)
         .select("*")
         .eq("family_key", current_family_key()).eq("member_key", current_member_key())
         .eq("review_month", first_day)
         .limit(1)
-        .execute()
+        .execute()))
     )
     return (result.data or [None])[0]
 
@@ -18198,16 +18332,16 @@ def save_monthly_review(month_key, review_json):
     }
     if existing:
         (
-            supabase_client()
+            _diag_invoke_v640('execute:save_monthly_review:L18203', lambda: (supabase_client()
             .table(MONTHLY_TABLE)
             .update(payload)
             .eq("id", existing["id"])
             .eq("family_key", current_family_key()).eq("member_key", current_member_key())
-            .execute()
+            .execute()))
         )
     else:
         payload["created_at"] = now_jst().isoformat()
-        supabase_client().table(MONTHLY_TABLE).insert(payload).execute()
+        _diag_invoke_v640('execute:save_monthly_review:L18212', lambda: (supabase_client().table(MONTHLY_TABLE).insert(payload).execute()))
     _invalidate_fast_db_cache()
 
 
@@ -18233,7 +18367,7 @@ AI_TAG_REVIEW_PRIORITY_TAGS = ("子ども", "大人", "複数人")
 def _ai_tag_review_rows():
     try:
         rows = (
-            supabase_client()
+            _diag_invoke_v640('execute:_ai_tag_review_rows:L18238', lambda: (supabase_client()
             .table(MONTHLY_TABLE)
             .select("id,review_month,review_json,created_at,updated_at")
             .eq("family_key", current_family_key())
@@ -18241,7 +18375,7 @@ def _ai_tag_review_rows():
             .gte("review_month", AI_TAG_REVIEW_SENTINEL_START)
             .lt("review_month", AI_TAG_REVIEW_SENTINEL_END_EXCLUSIVE)
             .order("review_month")
-            .execute()
+            .execute()))
         ).data or []
         return [row for row in rows if isinstance(row, dict)]
     except Exception:
@@ -18322,9 +18456,9 @@ def get_tag_review_source(limit=AI_TAG_REVIEW_SOURCE_LIMIT):
     chunks = [trip_ids[offset:offset + 100] for offset in range(0, len(trip_ids), 100)]
     def fetch(chunk):
         try:
-            batch = (client.table(TRIP_TABLE).select("*")
+            batch = (_diag_invoke_v640('execute:fetch:L18327', lambda: (client.table(TRIP_TABLE).select("*")
                      .eq("family_key", family).eq("member_key", member)
-                     .in_("id", chunk).execute()).data or []
+                     .in_("id", chunk).execute()))).data or []
             return [row for row in batch if isinstance(row, dict)]
         except Exception:
             return []
@@ -19135,14 +19269,14 @@ def get_saved_music_library(force=False):
         return _sorted_music_library_v469(st.session_state.get(cache_key) or [])
 
     result = (
-        supabase_client()
+        _diag_invoke_v640('execute:get_saved_music_library:L19140', lambda: (supabase_client()
         .table(MONTHLY_TABLE)
         .select("id,review_json,updated_at")
         .eq("family_key", current_family_key())
         .eq("member_key", current_member_key())
         .eq("review_month", MUSIC_LIBRARY_REVIEW_DATE)
         .limit(1)
-        .execute()
+        .execute()))
     )
     row = (result.data or [None])[0]
     review_json = (row or {}).get("review_json") or {}
@@ -19179,13 +19313,13 @@ def _write_saved_music_library(items):
 
     client = supabase_client()
     existing = (
-        client.table(MONTHLY_TABLE)
+        _diag_invoke_v640('execute:_write_saved_music_library:L19184', lambda: (client.table(MONTHLY_TABLE)
         .select("id")
         .eq("family_key", current_family_key())
         .eq("member_key", current_member_key())
         .eq("review_month", MUSIC_LIBRARY_REVIEW_DATE)
         .limit(1)
-        .execute()
+        .execute()))
     )
     row = (existing.data or [None])[0]
     now_value = now_jst().isoformat()
@@ -19198,16 +19332,16 @@ def _write_saved_music_library(items):
     }
     if row:
         (
-            client.table(MONTHLY_TABLE)
+            _diag_invoke_v640('execute:_write_saved_music_library:L19203', lambda: (client.table(MONTHLY_TABLE)
             .update(payload)
             .eq("id", row["id"])
             .eq("family_key", current_family_key())
             .eq("member_key", current_member_key())
-            .execute()
+            .execute()))
         )
     else:
         payload["created_at"] = now_value
-        client.table(MONTHLY_TABLE).insert(payload).execute()
+        _diag_invoke_v640('execute:_write_saved_music_library:L19212', lambda: (client.table(MONTHLY_TABLE).insert(payload).execute()))
     normalized = _sorted_music_library_v469(normalized)
     st.session_state[_music_library_session_key()] = normalized
     return normalized
@@ -19329,14 +19463,14 @@ def get_experience_card_state_v497(force=False):
     if not force and isinstance(st.session_state.get(cache_key), dict):
         return dict(st.session_state.get(cache_key) or {})
     result = (
-        supabase_client()
+        _diag_invoke_v640('execute:get_experience_card_state_v497:L19334', lambda: (supabase_client()
         .table(MONTHLY_TABLE)
         .select("id,review_json,updated_at")
         .eq("family_key", current_family_key())
         .eq("member_key", current_member_key())
         .eq("review_month", EXPERIENCE_CARD_REVIEW_DATE)
         .limit(1)
-        .execute()
+        .execute()))
     )
     row = (result.data or [None])[0] or {}
     payload = row.get("review_json") or {}
@@ -19370,13 +19504,13 @@ def _write_experience_card_state_v497(state):
     }
     client = supabase_client()
     existing = (
-        client.table(MONTHLY_TABLE)
+        _diag_invoke_v640('execute:_write_experience_card_state_v497:L19375', lambda: (client.table(MONTHLY_TABLE)
         .select("id")
         .eq("family_key", current_family_key())
         .eq("member_key", current_member_key())
         .eq("review_month", EXPERIENCE_CARD_REVIEW_DATE)
         .limit(1)
-        .execute()
+        .execute()))
     )
     row = (existing.data or [None])[0]
     payload = {
@@ -19388,16 +19522,16 @@ def _write_experience_card_state_v497(state):
     }
     if row:
         (
-            client.table(MONTHLY_TABLE)
+            _diag_invoke_v640('execute:_write_experience_card_state_v497:L19393', lambda: (client.table(MONTHLY_TABLE)
             .update(payload)
             .eq("id", row["id"])
             .eq("family_key", current_family_key())
             .eq("member_key", current_member_key())
-            .execute()
+            .execute()))
         )
     else:
         payload["created_at"] = now_value
-        client.table(MONTHLY_TABLE).insert(payload).execute()
+        _diag_invoke_v640('execute:_write_experience_card_state_v497:L19402', lambda: (client.table(MONTHLY_TABLE).insert(payload).execute()))
     normalized = {"version": 1, "cards": cards}
     st.session_state[_experience_state_session_key_v497()] = normalized
     return normalized
@@ -19420,14 +19554,14 @@ def _list_recent_experience_photos_v497(limit=EXPERIENCE_RECENT_PHOTO_LIMIT_V497
     except Exception:
         limit = EXPERIENCE_RECENT_PHOTO_LIMIT_V497
     result = (
-        supabase_client()
+        _diag_invoke_v640('execute:_list_recent_experience_photos_v497:L19425', lambda: (supabase_client()
         .table(PHOTO_TABLE)
         .select("id,trip_id,storage_path,captured_at,reflection_json,signals_json")
         .eq("family_key", current_family_key())
         .eq("member_key", current_member_key())
         .order("captured_at", desc=True)
         .limit(limit)
-        .execute()
+        .execute()))
     )
     return [
         row for row in diary_photos_only(result.data or [])
@@ -19577,11 +19711,11 @@ def _upload_experience_audio_v497(raw_bytes, file_name, card_id):
         f"{current_family_key()}/{current_member_key()}/"
         f"_experience_cards/v1/{str(card_id)}.{extension}"
     )
-    supabase_client().storage.from_(PHOTO_BUCKET).upload(
+    _diag_invoke_v640('upload:_upload_experience_audio_v497:L19582', lambda: (supabase_client().storage.from_(PHOTO_BUCKET).upload(
         path=path,
         file=raw_bytes,
         file_options={"content-type": storage_mime_type, "cache-control": "3600", "upsert": "true"},
-    )
+    )))
     return path
 
 
@@ -19817,14 +19951,14 @@ def get_field_note_state(force=False, *, nonblocking=False):
             # rerun can pick up the real state without overwriting user data.
             return {"version": 1, "items": []}
     result = (
-        supabase_client()
+        _diag_invoke_v640('execute:get_field_note_state:L19822', lambda: (supabase_client()
         .table(MONTHLY_TABLE)
         .select("id,review_json,updated_at")
         .eq("family_key", current_family_key())
         .eq("member_key", current_member_key())
         .eq("review_month", FIELD_NOTE_REVIEW_DATE)
         .limit(1)
-        .execute()
+        .execute()))
     )
     row = (result.data or [None])[0] or {}
     payload = row.get("review_json") or {}
@@ -19860,13 +19994,13 @@ def _write_field_note_state(state):
     }
     client = supabase_client()
     existing = (
-        client.table(MONTHLY_TABLE)
+        _diag_invoke_v640('execute:_write_field_note_state:L19865', lambda: (client.table(MONTHLY_TABLE)
         .select("id")
         .eq("family_key", current_family_key())
         .eq("member_key", current_member_key())
         .eq("review_month", FIELD_NOTE_REVIEW_DATE)
         .limit(1)
-        .execute()
+        .execute()))
     )
     row = (existing.data or [None])[0]
     payload = {
@@ -19878,16 +20012,16 @@ def _write_field_note_state(state):
     }
     if row:
         (
-            client.table(MONTHLY_TABLE)
+            _diag_invoke_v640('execute:_write_field_note_state:L19883', lambda: (client.table(MONTHLY_TABLE)
             .update(payload)
             .eq("id", row["id"])
             .eq("family_key", current_family_key())
             .eq("member_key", current_member_key())
-            .execute()
+            .execute()))
         )
     else:
         payload["created_at"] = now_value
-        client.table(MONTHLY_TABLE).insert(payload).execute()
+        _diag_invoke_v640('execute:_write_field_note_state:L19892', lambda: (client.table(MONTHLY_TABLE).insert(payload).execute()))
     normalized_state = {"version": 1, "items": items}
     st.session_state[_field_note_state_session_key()] = normalized_state
     try:
@@ -19920,11 +20054,11 @@ def _upload_field_note_audio(audio_file, note_id):
         f"{current_family_key()}/{current_member_key()}/"
         f"_field_notes/v1/{str(note_id)}.{extension}"
     )
-    supabase_client().storage.from_(PHOTO_BUCKET).upload(
+    _diag_invoke_v640('upload:_upload_field_note_audio:L19925', lambda: (supabase_client().storage.from_(PHOTO_BUCKET).upload(
         path=path,
         file=raw,
         file_options={"content-type": mime_type, "cache-control": "3600", "upsert": "true"},
-    )
+    )))
     return path
 
 
@@ -20220,7 +20354,7 @@ def fetch_youtube_oembed(url):
     api_url = "https://www.youtube.com/oembed?" + urlencode({"url": url, "format": "json"})
     request = Request(api_url, headers={"User-Agent": "Mozilla/5.0"})
     try:
-        with urlopen(request, timeout=6) as response:
+        with _diag_invoke_v640('http:fetch_youtube_oembed:L20225', lambda: (urlopen(request, timeout=6))) as response:
             data = json.loads(response.read().decode("utf-8", "ignore"))
         if isinstance(data, dict):
             return {
@@ -20537,10 +20671,10 @@ def _refresh_replay_photo_metadata_v448(photos):
         family, member = current_family_key(), current_member_key()
         chunks = [photo_ids[offset:offset + 100] for offset in range(0, len(photo_ids), 100)]
         def fetch(chunk):
-            batch = (client.table(PHOTO_TABLE)
+            batch = (_diag_invoke_v640('execute:fetch:L20542', lambda: (client.table(PHOTO_TABLE)
                      .select("id,trip_id,storage_path,captured_at,reflection_json,signals_json")
                      .in_("id", chunk).eq("family_key", family).eq("member_key", member)
-                     .execute()).data or []
+                     .execute()))).data or []
             return [row for row in batch if isinstance(row, dict)]
         batches = _read_executor_v467().map(fetch, chunks) if len(chunks) > 1 else map(fetch, chunks)
         for batch in batches:
@@ -21194,12 +21328,12 @@ def build_family_shared_replay_photo_items(share):
     if owner_member_key:
         try:
             current_rows = (
-                supabase_client().table(PHOTO_TABLE)
+                _diag_invoke_v640('execute:build_family_shared_replay_photo_items:L21199', lambda: (supabase_client().table(PHOTO_TABLE)
                 .select("id,storage_path,reflection_json")
                 .in_("storage_path", paths)
                 .eq("family_key", current_family_key())
                 .eq("member_key", owner_member_key)
-                .execute()
+                .execute()))
             ).data or []
             current_photo_by_path = {
                 str(row.get("storage_path") or "").strip(): row
@@ -21343,7 +21477,7 @@ def _movie_share_owner_v555():
 
 
 def _movie_share_state_v555(runtime, owner):
-    with runtime["lock"]:
+    with _DiagLockV640(runtime["lock"], '_movie_share_state_v555'):
         state = runtime["states"].get(owner)
         if state is None:
             state = {
@@ -21381,12 +21515,12 @@ def _fetch_family_shared_movies_worker_v555(owner, limit=120):
     requested = max(1, min(240, int(limit or 120)))
     scan_limit = max(240, min(900, requested * 6))
     result = (
-        client.table(MONTHLY_TABLE)
+        _diag_invoke_v640('execute:_fetch_family_shared_movies_worker_v555:L21386', lambda: (client.table(MONTHLY_TABLE)
         .select("id,member_key,review_month,review_json,created_at,updated_at")
         .eq("family_key", family_key)
         .order("updated_at", desc=True)
         .limit(scan_limit)
-        .execute()
+        .execute()))
     )
     movies = []
     for row in result.data or []:
@@ -21524,12 +21658,12 @@ def _prepare_family_shared_movie_media_worker_v556(owner, item):
             for offset in range(0, len(paths), 100):
                 chunk = paths[offset:offset + 100]
                 batch = (
-                    client.table(PHOTO_TABLE)
+                    _diag_invoke_v640('execute:_prepare_family_shared_movie_media_worker_v556:L21529', lambda: (client.table(PHOTO_TABLE)
                     .select("id,storage_path,reflection_json")
                     .in_("storage_path", chunk)
                     .eq("family_key", family_key)
                     .eq("member_key", source_member_key)
-                    .execute()
+                    .execute()))
                 ).data or []
                 rows.extend(x for x in batch if isinstance(x, dict))
             current_photo_by_path = {
@@ -21549,7 +21683,7 @@ def _prepare_family_shared_movie_media_worker_v556(owner, item):
         if not url:
             # Rare fallback is still background work. It never blocks the Play action.
             try:
-                raw = client.storage.from_(PHOTO_BUCKET).download(path)
+                raw = _diag_invoke_v640('download:_prepare_family_shared_movie_media_worker_v556:L21554', lambda: (client.storage.from_(PHOTO_BUCKET).download(path)))
                 if raw:
                     url = "data:image/jpeg;base64," + base64.b64encode(raw).decode("ascii")
             except Exception:
@@ -21593,7 +21727,7 @@ def _fetch_and_prefetch_family_shared_movies_worker_v556(owner, limit, runtime, 
     """Background-only pipeline: metadata first, then replay media preparation newest-first."""
     rows = _fetch_family_shared_movies_worker_v555(owner, limit=limit)
     now = time.monotonic()
-    with runtime["lock"]:
+    with _DiagLockV640(runtime["lock"], '_fetch_and_prefetch_family_shared_movies_worker_v556'):
         state["rows"] = [dict(x) for x in rows]
         state["fetched_at"] = now
         state["metadata_ready"] = True
@@ -21606,7 +21740,7 @@ def _fetch_and_prefetch_family_shared_movies_worker_v556(owner, limit, runtime, 
     for index, row in enumerate(rows):
         key = _shared_movie_prepare_key_v556(row)
         prepared = None
-        with runtime["lock"]:
+        with _DiagLockV640(runtime["lock"], '_fetch_and_prefetch_family_shared_movies_worker_v556'):
             cached = prepared_cache.get(key)
             if isinstance(cached, dict):
                 try:
@@ -21621,7 +21755,7 @@ def _fetch_and_prefetch_family_shared_movies_worker_v556(owner, limit, runtime, 
             except Exception as exc:
                 prepared = []
                 error = f"{type(exc).__name__}: {exc}"
-        with runtime["lock"]:
+        with _DiagLockV640(runtime["lock"], '_fetch_and_prefetch_family_shared_movies_worker_v556'):
             current_rows = state.get("rows") or []
             if index < len(current_rows) and str(current_rows[index].get("id") or "") == str(row.get("id") or ""):
                 current_rows[index]["_prepared_photo_items_v556"] = list(prepared or [])
@@ -21640,7 +21774,7 @@ def _fetch_and_prefetch_family_shared_movies_worker_v556(owner, limit, runtime, 
                 )[: len(prepared_cache) - 140]
                 for old_key, _old_value in oldest:
                     prepared_cache.pop(old_key, None)
-    with runtime["lock"]:
+    with _DiagLockV640(runtime["lock"], '_fetch_and_prefetch_family_shared_movies_worker_v556'):
         return {
             "rows": [dict(x) for x in (state.get("rows") or [])],
             "media_total": int(state.get("media_total") or 0),
@@ -21651,17 +21785,17 @@ def _fetch_and_prefetch_family_shared_movies_worker_v556(owner, limit, runtime, 
 
 def _harvest_family_shared_movie_future_v555(runtime, state):
     """Consume a finished family-share pipeline Future without blocking the UI thread."""
-    with runtime["lock"]:
+    with _DiagLockV640(runtime["lock"], '_harvest_family_shared_movie_future_v555'):
         future = state.get("future")
     if future is None or not future.done():
         return False
     try:
-        payload = future.result(timeout=0)
+        payload = _diag_future_v640(future, timeout=0)
         error = ""
     except Exception as exc:
         payload = None
         error = f"{type(exc).__name__}: {exc}"
-    with runtime["lock"]:
+    with _DiagLockV640(runtime["lock"], '_harvest_family_shared_movie_future_v555'):
         if state.get("future") is future:
             state["future"] = None
             if isinstance(payload, dict) and isinstance(payload.get("rows"), list):
@@ -21684,7 +21818,7 @@ def start_family_shared_movie_lookup_v555(force=False, limit=120):
     state = _movie_share_state_v555(runtime, owner)
     _harvest_family_shared_movie_future_v555(runtime, state)
     now = time.monotonic()
-    with runtime["lock"]:
+    with _DiagLockV640(runtime["lock"], 'start_family_shared_movie_lookup_v555'):
         future = state.get("future")
         if future is not None and not future.done():
             return True
@@ -21699,7 +21833,7 @@ def start_family_shared_movie_lookup_v555(force=False, limit=120):
         state["media_total"] = 0
         state["media_ready"] = 0
         state["media_failed"] = 0
-        state["future"] = runtime["io"].submit(
+        state["future"] = _diag_submit_v640(runtime["io"], 
             _fetch_and_prefetch_family_shared_movies_worker_v556,
             owner,
             limit,
@@ -21718,7 +21852,7 @@ def family_shared_movie_snapshot_v555(start_if_needed=False, limit=120):
     if start_if_needed:
         start_family_shared_movie_lookup_v555(force=False, limit=limit)
         _harvest_family_shared_movie_future_v555(runtime, state)
-    with runtime["lock"]:
+    with _DiagLockV640(runtime["lock"], 'family_shared_movie_snapshot_v555'):
         future = state.get("future")
         return [dict(x) for x in (state.get("rows") or [])], bool(future is not None and not future.done()), str(state.get("error") or "")
 
@@ -21728,7 +21862,7 @@ def family_shared_movie_progress_v556():
     owner = _movie_share_owner_v555()
     state = _movie_share_state_v555(runtime, owner)
     _harvest_family_shared_movie_future_v555(runtime, state)
-    with runtime["lock"]:
+    with _DiagLockV640(runtime["lock"], 'family_shared_movie_progress_v556'):
         return {
             "metadata_ready": bool(state.get("metadata_ready")),
             "total": int(state.get("media_total") or 0),
@@ -21772,14 +21906,14 @@ def list_own_replay_movies(limit=120):
         return cached
     requested = max(1, min(300, int(limit or 120)))
     result = (
-        supabase_client()
+        _diag_invoke_v640('execute:list_own_replay_movies:L21777', lambda: (supabase_client()
         .table(MONTHLY_TABLE)
         .select("id,review_month,review_json,created_at,updated_at")
         .eq("family_key", current_family_key())
         .eq("member_key", current_member_key())
         .order("updated_at", desc=True)
         .limit(max(180, requested * 4))
-        .execute()
+        .execute()))
     )
     rows = result.data or []
     movies = []
@@ -21857,12 +21991,12 @@ def _bundle_from_owned_photo_ids(photo_ids):
     for offset in range(0, len(ordered_ids), 100):
         chunk = ordered_ids[offset:offset + 100]
         batch = (
-            client.table(PHOTO_TABLE)
+            _diag_invoke_v640('execute:_bundle_from_owned_photo_ids:L21862', lambda: (client.table(PHOTO_TABLE)
             .select("id,trip_id,storage_path,captured_at,reflection_json,signals_json")
             .eq("family_key", current_family_key())
             .eq("member_key", current_member_key())
             .in_("id", chunk)
-            .execute()
+            .execute()))
         ).data or []
         rows.extend(row for row in batch if isinstance(row, dict))
 
@@ -21882,12 +22016,12 @@ def _bundle_from_owned_photo_ids(photo_ids):
         if not chunk:
             continue
         batch = (
-            client.table(TRIP_TABLE)
+            _diag_invoke_v640('execute:_bundle_from_owned_photo_ids:L21887', lambda: (client.table(TRIP_TABLE)
             .select("*")
             .eq("family_key", current_family_key())
             .eq("member_key", current_member_key())
             .in_("id", chunk)
-            .execute()
+            .execute()))
         ).data or []
         trips.extend(row for row in batch if isinstance(row, dict))
     return {"trips": trips, "diaries": [], "photos": photos}
@@ -21921,7 +22055,7 @@ def _invalidate_family_shared_movie_runtime_v557(family_key=None):
     target_family = str(family_key or current_family_key() or "default").strip() or "default"
     try:
         runtime = _movie_share_runtime_v555()
-        with runtime["lock"]:
+        with _DiagLockV640(runtime["lock"], '_invalidate_family_shared_movie_runtime_v557'):
             states = runtime.get("states") or {}
             for owner in list(states.keys()):
                 try:
@@ -21936,13 +22070,13 @@ def _invalidate_family_shared_movie_runtime_v557(family_key=None):
 
 def _read_owned_replay_movie_review_v557(client, row_id):
     result = (
-        client.table(MONTHLY_TABLE)
+        _diag_invoke_v640('execute:_read_owned_replay_movie_review_v557:L21941', lambda: (client.table(MONTHLY_TABLE)
         .select("id,review_month,review_json,updated_at")
         .eq("id", str(row_id or "").strip())
         .eq("family_key", current_family_key())
         .eq("member_key", current_member_key())
         .limit(1)
-        .execute()
+        .execute()))
     )
     row = (result.data or [None])[0]
     if not isinstance(row, dict) or not row.get("id"):
@@ -22019,12 +22153,12 @@ def set_owned_replay_movie_share(row_id, enabled=True):
 
     now_value = now_jst().isoformat()
     update_result = (
-        client.table(MONTHLY_TABLE)
+        _diag_invoke_v640('execute:set_owned_replay_movie_share:L22024', lambda: (client.table(MONTHLY_TABLE)
         .update({"review_json": review, "updated_at": now_value})
         .eq("id", row_id)
         .eq("family_key", current_family_key())
         .eq("member_key", current_member_key())
-        .execute()
+        .execute()))
     )
     # Some Supabase client versions return an empty data list for UPDATE even when the write
     # succeeds. Do not infer success from the response body; always verify with a fresh SELECT.
@@ -22101,13 +22235,13 @@ def delete_owned_replay_movie(row_id):
 
     client = supabase_client()
     result = (
-        client.table(MONTHLY_TABLE)
+        _diag_invoke_v640('execute:delete_owned_replay_movie:L22106', lambda: (client.table(MONTHLY_TABLE)
         .select("id,review_month,review_json")
         .eq("id", row_id)
         .eq("family_key", current_family_key())
         .eq("member_key", current_member_key())
         .limit(1)
-        .execute()
+        .execute()))
     )
     row = (result.data or [None])[0]
     if not isinstance(row, dict) or not row.get("id"):
@@ -22130,12 +22264,12 @@ def delete_owned_replay_movie(row_id):
 
     now_value = now_jst().isoformat()
     (
-        client.table(MONTHLY_TABLE)
+        _diag_invoke_v640('execute:delete_owned_replay_movie:L22135', lambda: (client.table(MONTHLY_TABLE)
         .update({"review_json": review, "updated_at": now_value})
         .eq("id", row_id)
         .eq("family_key", current_family_key())
         .eq("member_key", current_member_key())
-        .execute()
+        .execute()))
     )
 
     if month_key:
@@ -22959,7 +23093,7 @@ def _replay_export_image_bytes(item):
     if url.startswith("https://") or url.startswith("http://"):
         try:
             req = Request(url, headers={"User-Agent": "TokyoBurariReplayExport/1.0"})
-            with urlopen(req, timeout=15.0) as response:
+            with _diag_invoke_v640('http:_replay_export_image_bytes:L22964', lambda: (urlopen(req, timeout=15.0))) as response:
                 return response.read()
         except Exception:
             return b""
@@ -25653,7 +25787,7 @@ def tag_untagged_photos_with_ai(photos, batch_size=AI_PHOTO_TAG_BATCH_SIZE, max_
     for start in range(0, len(candidates), batch_size):
         if _owner is not None and _runtime:
             state = _owner_state_v468(_runtime, _owner)
-            with _runtime["lock"]:
+            with _DiagLockV640(_runtime["lock"], 'tag_untagged_photos_with_ai'):
                 capture_busy = state["page"] == "camera" and time.monotonic() - state["page_at"] < 120
             if capture_busy:
                 errors.append("deferred_for_camera")
@@ -25664,7 +25798,7 @@ def tag_untagged_photos_with_ai(photos, batch_size=AI_PHOTO_TAG_BATCH_SIZE, max_
         for index, photo in enumerate(raw_batch, start=1):
             slot = f"F{index}"
             try:
-                raw = (_storage_bytes(client.storage.from_(PHOTO_BUCKET).download(str(photo.get("storage_path") or "")))
+                raw = (_storage_bytes(_diag_invoke_v640('download:tag_untagged_photos_with_ai:L25669', lambda: (client.storage.from_(PHOTO_BUCKET).download(str(photo.get("storage_path") or "")))))
                        if _owner is not None else download_photo(str(photo.get("storage_path") or "")))
                 if not raw:
                     raise ValueError("写真データが空です")
@@ -25708,12 +25842,12 @@ def tag_untagged_photos_with_ai(photos, batch_size=AI_PHOTO_TAG_BATCH_SIZE, max_
         latest_rows = {}
         try:
             rows = (
-                client.table(PHOTO_TABLE)
+                _diag_invoke_v640('execute:tag_untagged_photos_with_ai:L25713', lambda: (client.table(PHOTO_TABLE)
                 .select("id,reflection_json")
                 .in_("id", photo_ids)
                 .eq("family_key", owner[2])
                 .eq("member_key", owner[3])
-                .execute()
+                .execute()))
             ).data or []
             latest_rows = {str(row.get("id") or ""): row for row in rows if isinstance(row, dict)}
         except Exception as exc:
@@ -25798,13 +25932,13 @@ def list_member_still_photos_for_tags(max_items=5000):
     client = supabase_client()
     while offset < int(max_items):
         chunk = (
-            client.table(PHOTO_TABLE)
+            _diag_invoke_v640('execute:list_member_still_photos_for_tags:L25803', lambda: (client.table(PHOTO_TABLE)
             .select("id,trip_id,storage_path,captured_at,reflection_json,signals_json")
             .eq("family_key", current_family_key())
             .eq("member_key", current_member_key())
             .order("captured_at", desc=True)
             .range(offset, min(offset + page_size - 1, int(max_items) - 1))
-            .execute()
+            .execute()))
         ).data or []
         rows.extend(row for row in chunk if isinstance(row, dict))
         if len(chunk) < page_size:
@@ -26018,13 +26152,13 @@ def _summary_feedback_entries(limit=SUMMARY_FEEDBACK_SCAN_LIMIT):
         if rows is None:
             try:
                 rows = (
-                    supabase_client()
+                    _diag_invoke_v640('execute:_summary_feedback_entries:L26023', lambda: (supabase_client()
                     .table(DIARY_TABLE)
                     .select("id,trip_id,ai_meta,updated_at")
                     .eq("family_key", current_family_key()).eq("member_key", current_member_key())
                     .order("updated_at", desc=True)
                     .limit(limit)
-                    .execute()
+                    .execute()))
                 ).data or []
             except Exception:
                 return []
@@ -26168,12 +26302,12 @@ def save_summary_feedback(trip_id, rating):
         raise ValueError("日記が見つかりませんでした。")
     meta = _apply_summary_feedback_to_meta(diary.get("ai_meta") or {}, rating)
     (
-        supabase_client()
+        _diag_invoke_v640('execute:save_summary_feedback:L26173', lambda: (supabase_client()
         .table(DIARY_TABLE)
         .update({"ai_meta": meta, "updated_at": now_jst().isoformat()})
         .eq("trip_id", trip_id)
         .eq("family_key", current_family_key()).eq("member_key", current_member_key())
-        .execute()
+        .execute()))
     )
     _invalidate_fast_db_cache()
     return meta
@@ -26183,10 +26317,10 @@ def reset_summary_feedback_learning():
     """Return AI summary generation to its pre-feedback behavior without deleting summaries."""
     client = supabase_client()
     rows = (
-        client.table(DIARY_TABLE)
+        _diag_invoke_v640('execute:reset_summary_feedback_learning:L26188', lambda: (client.table(DIARY_TABLE)
         .select("id,ai_meta")
         .eq("family_key", current_family_key()).eq("member_key", current_member_key())
-        .execute()
+        .execute()))
     ).data or []
     changed = 0
     for row in rows:
@@ -26199,12 +26333,12 @@ def reset_summary_feedback_learning():
         if before == after:
             continue
         (
-            client
+            _diag_invoke_v640('execute:reset_summary_feedback_learning:L26204', lambda: (client
             .table(DIARY_TABLE)
             .update({"ai_meta": meta, "updated_at": now_jst().isoformat()})
             .eq("id", row["id"])
             .eq("family_key", current_family_key()).eq("member_key", current_member_key())
-            .execute()
+            .execute()))
         )
         changed += 1
 
@@ -26399,12 +26533,12 @@ def save_burari_ai_summary(trip_id, result):
     meta.pop("child_points", None)
     meta["photo_emotion_summary_updated_at"] = now_jst().isoformat()
     (
-        supabase_client()
+        _diag_invoke_v640('execute:save_burari_ai_summary:L26404', lambda: (supabase_client()
         .table(DIARY_TABLE)
         .update({"ai_meta": meta, "updated_at": now_jst().isoformat()})
         .eq("trip_id", trip_id)
         .eq("family_key", current_family_key()).eq("member_key", current_member_key())
-        .execute()
+        .execute()))
     )
     _invalidate_fast_db_cache()
     return meta
@@ -27041,7 +27175,7 @@ def page_evening_review():
                     )
 
 
-VALID_APP_PAGES = {"salt_bread", "salt_bread_detail", "home", "camera", "videos", "moments", "diary", "photos", "review", "review_project", "review_monthly", "review_tag", "review_random", "review_shared", "review_history", "nearby", "discovery_results", "evening_review", "toilets", "help_places", "field_notes", "experience", "events", "settings", "settings_moments", "settings_moments_definition", "settings_location", "settings_account", "settings_media_import"}
+VALID_APP_PAGES = {"bakery_google_results_v639", "salt_bread", "salt_bread_detail", "home", "camera", "videos", "moments", "diary", "photos", "review", "review_project", "review_monthly", "review_tag", "review_random", "review_shared", "review_history", "nearby", "discovery_results", "evening_review", "toilets", "help_places", "field_notes", "experience", "events", "settings", "settings_moments", "settings_moments_definition", "settings_location", "settings_account", "settings_media_import"}
 
 
 def _current_ui_refresh_epoch():
@@ -27254,6 +27388,7 @@ def navigation_parent_node(node=None):
     if node is None:
         node, _ = current_navigation_context()
     parents = {
+        "bakery_google_results_v639": "salt_bread",
         "salt_bread": "home",
         "salt_bread_detail": "salt_bread",        "photos_detail": "photos",
         "experience_cards": "experience",
@@ -28102,7 +28237,7 @@ def finalize_previous_days_into_diaries():
     client = supabase_client()
     try:
         result = (
-            client
+            _diag_invoke_v640('execute:finalize_previous_days_into_diaries:L28108', lambda: (client
             .table(TRIP_TABLE)
             .select("*")
             .eq("family_key", current_family_key()).eq("member_key", current_member_key())
@@ -28110,7 +28245,7 @@ def finalize_previous_days_into_diaries():
             .lt("trip_date", today)
             .order("trip_date")
             .order("started_at")
-            .execute()
+            .execute()))
         )
         stale_trips = result.data or []
     except Exception as exc:
@@ -28141,7 +28276,7 @@ def finalize_previous_days_into_diaries():
         existing = get_diary_for_trip(trip_id)
         if existing:
             if trip.get("status") != "diary_done":
-                client.table(TRIP_TABLE).update({"status": "diary_done"}).eq("id", trip_id).eq("family_key", current_family_key()).eq("member_key", current_member_key()).execute()
+                _diag_invoke_v640('execute:finalize_previous_days_into_diaries:L28147', lambda: (client.table(TRIP_TABLE).update({"status": "diary_done"}).eq("id", trip_id).eq("family_key", current_family_key()).eq("member_key", current_member_key()).execute()))
             continue
 
         # First make the photos visible in the normal diary selector. Even if the
@@ -28149,12 +28284,12 @@ def finalize_previous_days_into_diaries():
         if trip.get("status") == "active":
             ended_at = str(photos[-1].get("captured_at") or now_jst().isoformat())
             (
-                client
+                _diag_invoke_v640('execute:finalize_previous_days_into_diaries:L28155', lambda: (client
                 .table(TRIP_TABLE)
                 .update({"status": "ready_for_diary", "ended_at": ended_at})
                 .eq("id", trip_id)
                 .eq("family_key", current_family_key()).eq("member_key", current_member_key())
-                .execute()
+                .execute()))
             )
             rescued_count += 1
 
@@ -28255,7 +28390,7 @@ def _list_pending_photo_trips_uncached(limit=40, _owner=None, _client=None):
     client = _client or supabase_client()
     try:
         rows = (
-            client
+            _diag_invoke_v640('execute:_list_pending_photo_trips_uncached:L28261', lambda: (client
             .table(TRIP_TABLE)
             .select(
                 f"*,{DIARY_TABLE}(id,trip_id,title),"
@@ -28266,7 +28401,7 @@ def _list_pending_photo_trips_uncached(limit=40, _owner=None, _client=None):
             .order("trip_date", desc=True)
             .order("started_at", desc=True)
             .limit(limit)
-            .execute()
+            .execute()))
         ).data or []
         pending = []
         for row in rows:
@@ -28293,7 +28428,7 @@ def _list_pending_photo_trips_uncached(limit=40, _owner=None, _client=None):
 
     # Relationship embedding fallback for older PostgREST metadata caches.
     result = (
-        client
+        _diag_invoke_v640('execute:_list_pending_photo_trips_uncached:L28299', lambda: (client
         .table(TRIP_TABLE)
         .select("*")
         .eq("family_key", owner[2]).eq("member_key", owner[3])
@@ -28301,7 +28436,7 @@ def _list_pending_photo_trips_uncached(limit=40, _owner=None, _client=None):
         .order("trip_date", desc=True)
         .order("started_at", desc=True)
         .limit(limit)
-        .execute()
+        .execute()))
     )
     trips = result.data or []
     if not trips:
@@ -28351,11 +28486,11 @@ def pending_diary_titles(pending_rows, used_titles=None):
     """Number pending titles too, reusing already-loaded diary titles when available."""
     if used_titles is None:
         saved = (
-            supabase_client()
+            _diag_invoke_v640('execute:pending_diary_titles:L28357', lambda: (supabase_client()
             .table(DIARY_TABLE)
             .select("title")
             .eq("family_key", current_family_key()).eq("member_key", current_member_key())
-            .execute()
+            .execute()))
         ).data or []
         used = {str(row.get("title") or "").strip() for row in saved if str(row.get("title") or "").strip()}
     else:
@@ -28525,8 +28660,8 @@ def _rotate_image_bytes_v616(raw, quarters):
 
 
 def _rotation_row_v616(photo_id):
-    rows = (supabase_client().table(PHOTO_TABLE).select("*").eq("id", str(photo_id))
-        .eq("family_key", current_family_key()).eq("member_key", current_member_key()).limit(1).execute()).data or []
+    rows = (_diag_invoke_v640('execute:_rotation_row_v616:L28531', lambda: (supabase_client().table(PHOTO_TABLE).select("*").eq("id", str(photo_id))
+        .eq("family_key", current_family_key()).eq("member_key", current_member_key()).limit(1).execute()))).data or []
     if not rows:
         raise ValueError("この写真を編集できません。")
     return rows[0]
@@ -28535,7 +28670,7 @@ def _rotation_row_v616(photo_id):
 def _rotate_photo_v616(photo_id, direction, token, rank=None):
     if isinstance(direction, bool) or direction not in (-1, 1) or not str(token or ""):
         raise ValueError("回転操作を確認できません。")
-    with _image_rotation_lock_v616():
+    with _DiagLockV640(_image_rotation_lock_v616(), '_rotate_photo_v616'):
         client = supabase_client()
         row = _rotation_row_v616(photo_id)
         reflection = json.loads(json.dumps(photo_media_metadata(row)))
@@ -28562,37 +28697,37 @@ def _rotate_photo_v616(photo_id, direction, token, rank=None):
         if quarters:
             raw = _rotate_image_bytes_v616(download_photo(original_path), quarters)
             new_path = owner_prefix + str(row.get("trip_id") or "rotation") + "/rotation_" + uuid.uuid4().hex + ".jpg"
-            client.storage.from_(PHOTO_BUCKET).upload(path=new_path, file=raw,
-                file_options={"content-type": "image/jpeg", "cache-control": "3600"})
+            _diag_invoke_v640('upload:_rotate_photo_v616:L28568', lambda: (client.storage.from_(PHOTO_BUCKET).upload(path=new_path, file=raw,
+                file_options={"content-type": "image/jpeg", "cache-control": "3600"})))
         target["image_rotation_v616"] = {"source_path": original_path, "quarters": quarters, "token": str(token)}
         if rank is None:
-            result = (client.table(PHOTO_TABLE).update({"storage_path": new_path, "reflection_json": reflection})
+            result = (_diag_invoke_v640('execute:_rotate_photo_v616:L28572', lambda: (client.table(PHOTO_TABLE).update({"storage_path": new_path, "reflection_json": reflection})
                 .eq("id", str(photo_id)).eq("family_key", current_family_key()).eq("member_key", current_member_key())
-                .eq("storage_path", current_path).execute())
+                .eq("storage_path", current_path).execute())))
             if not result.data:
                 raise ValueError("写真が更新されています。再読み込みしてから回転してください。")
         else:
             saved_id = str(target.get("saved_photo_id") or "")
             if saved_id:
                 # A saved still keeps the same photo id, feeling and voice note.
-                rows = (client.table(PHOTO_TABLE).select("*").eq("id", saved_id)
-                    .eq("family_key", current_family_key()).eq("member_key", current_member_key()).limit(1).execute()).data or []
+                rows = (_diag_invoke_v640('execute:_rotate_photo_v616:L28581', lambda: (client.table(PHOTO_TABLE).select("*").eq("id", saved_id)
+                    .eq("family_key", current_family_key()).eq("member_key", current_member_key()).limit(1).execute()))).data or []
                 if rows:
                     saved = rows[0]
                     saved_meta = json.loads(json.dumps(photo_media_metadata(saved)))
                     # Keep diary copies independent: deleting the source video must
                     # never remove either the saved picture or its rotation baseline.
                     saved_base = owner_prefix + str(saved.get("trip_id") or "rotation") + "/rotation_base_" + uuid.uuid4().hex + ".jpg"
-                    client.storage.from_(PHOTO_BUCKET).upload(path=saved_base, file=download_photo(original_path),
-                        file_options={"content-type": "image/jpeg", "cache-control": "3600"})
+                    _diag_invoke_v640('upload:_rotate_photo_v616:L28589', lambda: (client.storage.from_(PHOTO_BUCKET).upload(path=saved_base, file=download_photo(original_path),
+                        file_options={"content-type": "image/jpeg", "cache-control": "3600"})))
                     saved_path = saved_base
                     if quarters:
                         saved_path = owner_prefix + str(saved.get("trip_id") or "rotation") + "/rotation_" + uuid.uuid4().hex + ".jpg"
-                        client.storage.from_(PHOTO_BUCKET).upload(path=saved_path, file=raw,
-                            file_options={"content-type": "image/jpeg", "cache-control": "3600"})
+                        _diag_invoke_v640('upload:_rotate_photo_v616:L28594', lambda: (client.storage.from_(PHOTO_BUCKET).upload(path=saved_path, file=raw,
+                            file_options={"content-type": "image/jpeg", "cache-control": "3600"})))
                     saved_meta["image_rotation_v616"] = {**target["image_rotation_v616"], "source_path": saved_base}
-                    (client.table(PHOTO_TABLE).update({"storage_path": saved_path, "reflection_json": saved_meta})
-                        .eq("id", saved_id).eq("family_key", current_family_key()).eq("member_key", current_member_key()).execute())
+                    (_diag_invoke_v640('execute:_rotate_photo_v616:L28597', lambda: (client.table(PHOTO_TABLE).update({"storage_path": saved_path, "reflection_json": saved_meta})
+                        .eq("id", saved_id).eq("family_key", current_family_key()).eq("member_key", current_member_key()).execute())))
             target["storage_path"] = new_path
             _write_photo_reflection(photo_id, reflection)
         signed_photo_url_map.clear()
@@ -29542,13 +29677,13 @@ def open_diary_photo_talk(trip_id, photo_id, state):
 def _home_video_counts_cached(family_key, member_key):
     """Return (saved videos, videos not yet accepted as diary stills)."""
     rows = (
-        supabase_client()
+        _diag_invoke_v640('execute:_home_video_counts_cached:L29548', lambda: (supabase_client()
         .table(PHOTO_TABLE)
         .select("id,reflection_json")
         .eq("family_key", str(family_key))
         .eq("member_key", str(member_key))
         .limit(1000)
-        .execute()
+        .execute()))
     ).data or []
 
     saved_count = 0
@@ -29584,7 +29719,7 @@ def _home_video_publish_counts_v602(counts, owner=None):
         return
     runtime = _runtime_v468()
     owner = owner or _owner_v468()
-    with runtime["lock"]:
+    with _DiagLockV640(runtime["lock"], '_home_video_publish_counts_v602'):
         state = _owner_state_v468(runtime, owner)
         state["home_video_counts_v602"] = (max(0, int(counts[0])), max(0, int(counts[1])), [], max(0, int(counts[3])))
 
@@ -29599,7 +29734,7 @@ def home_video_counts():
             st.session_state.pop("_home_video_count_wait_v602", None)
         else:
             runtime = _runtime_v468()
-            with runtime["lock"]:
+            with _DiagLockV640(runtime["lock"], 'home_video_counts'):
                 state = _owner_state_v468(runtime, owner)
                 counts = state.get("home_video_counts_v602")
                 # A prefetch can finish while the user is on Moments. Recover its
@@ -29608,7 +29743,7 @@ def home_video_counts():
                     entry = state.get("read_ahead", {}).get(_read_ahead_session_token_v520() + ":home_video_counts") or {}
                     future = entry.get("future")
                     if future is not None and future.done():
-                        try: counts = future.result()
+                        try: counts = _diag_future_v640(future)
                         except Exception: counts = None
             if counts is not None:
                 _home_video_publish_counts_v602(counts, owner)
@@ -29641,7 +29776,7 @@ def _home_video_note_reroll_v602(previous_status, previously_has_items, counts):
 
 def _home_video_counts_refreshing_v602():
     runtime = _runtime_v468()
-    with runtime["lock"]:
+    with _DiagLockV640(runtime["lock"], '_home_video_counts_refreshing_v602'):
         state = _owner_state_v468(runtime, _owner_v468())
         entry = state.get("read_ahead", {}).get(_read_ahead_session_token_v520() + ":home_video_counts") or {}
         future = entry.get("future")
@@ -30686,7 +30821,7 @@ def _events_venue_google_location_v570(venue, address, lat_rough, lon_rough, rad
         "X-Goog-FieldMask": "places.displayName,places.formattedAddress,places.location,places.businessStatus",
     })
     try:
-        with urlopen(req, timeout=6.5) as response:
+        with _diag_invoke_v640('http:_events_venue_google_location_v570:L30692', lambda: (urlopen(req, timeout=6.5))) as response:
             items = list((json.loads(response.read().decode("utf-8")) or {}).get("places") or [])
     except Exception:
         return None
@@ -30733,7 +30868,7 @@ def _events_venue_osm_location_v570(venue, address):
             "q": query, "format": "jsonv2", "limit": 2, "countrycodes": "jp", "accept-language": "ja",
         }), headers={"User-Agent": "TokyoBurariApp/1.0 (user-initiated event search)", "Accept": "application/json"})
         try:
-            with urlopen(req, timeout=5.0) as response:
+            with _diag_invoke_v640('http:_events_venue_osm_location_v570:L30739', lambda: (urlopen(req, timeout=5.0))) as response:
                 rows = json.loads(response.read().decode("utf-8"))
             if isinstance(rows, list) and rows:
                 return (float(rows[0]["lat"]), float(rows[0]["lon"]))
@@ -30764,13 +30899,13 @@ def _events_geocode_missing_v570(items, *, day, category, lat, lon, radius_km, s
     lookup = unresolved[:max_queries]
     if GOOGLE_PLACES_API_KEY and lookup:
         with ThreadPoolExecutor(max_workers=3, thread_name_prefix="burari-event-geo") as pool:
-            futures = {pool.submit(_events_venue_google_location_v570,
+            futures = {_diag_submit_v640(pool, _events_venue_google_location_v570,
                                    str(item.get("venue") or ""), str(item.get("address") or ""),
                                    round(float(lat), 2), round(float(lon), 2), int(radius_km)): item
                        for item in lookup}
             for future in as_completed(futures):
                 try:
-                    coords = future.result()
+                    coords = _diag_future_v640(future)
                 except Exception:
                     coords = None
                 if coords:
@@ -30779,7 +30914,7 @@ def _events_geocode_missing_v570(items, *, day, category, lat, lon, radius_km, s
                     # Geocoded venues outside the radius are excluded below.
     elif lookup:
         for item in lookup:
-            with _events_nominatim_lock_v570:
+            with _DiagLockV640(_events_nominatim_lock_v570, '_events_geocode_missing_v570'):
                 global _events_nominatim_last_at_v570
                 elapsed = time.monotonic() - _events_nominatim_last_at_v570
                 if elapsed < 1.1:
@@ -31311,7 +31446,7 @@ def _events_web_search_request_v582(*, prompt, domains, context_size, timeout_se
     # A top-level municipal domain covers many municipalities: search it via
     # model instructions rather than fragile provider allowlist validation.
     if valid_domains and not any(d in EVENT_SEARCH_BROAD_SUFFIXES_V583 for d in valid_domains):
-        with _events_filter_lock_v582:
+        with _DiagLockV640(_events_filter_lock_v582, '_events_web_search_request_v582'):
             allowed_supported = _events_allowed_filter_available_v583
         if allowed_supported:
             tool["filters"] = {"allowed_domains": valid_domains[:100]}
@@ -31342,7 +31477,7 @@ def _events_web_search_request_v582(*, prompt, domains, context_size, timeout_se
         bare = dict(tool)
         bare.pop("filters", None)
         result = request_with(bare)
-        with _events_filter_lock_v582:
+        with _DiagLockV640(_events_filter_lock_v582, '_events_web_search_request_v582'):
             _events_allowed_filter_available_v583 = False
         return result
 
@@ -31949,9 +32084,9 @@ def _events_fetch_category_v570(day, category, latitude, longitude, radius_km, p
             if results[1].get("failed"):
                 return _events_fast_failure_v582(results)
     with ThreadPoolExecutor(max_workers=3, thread_name_prefix="burari-event-web") as pool:
-        futures = [pool.submit(search_plan, plan) for plan in plans[consumed:]]
+        futures = [_diag_submit_v640(pool, search_plan, plan) for plan in plans[consumed:]]
         for future in futures:
-            results.append(future.result())
+            results.append(_diag_future_v640(future))
     # If there was a transient service outage after a successful probe, do
     # not compound it with supplementary/verification calls.
     if all(r.get("failed") for r in results):
@@ -31990,13 +32125,13 @@ def _events_fetch_category_v570(day, category, latitude, longitude, radius_km, p
                        (_events_supplement_plans_v573(category, latitude, longitude)
                         if needs_breadth else []))
         with ThreadPoolExecutor(max_workers=3, thread_name_prefix="burari-event-extra") as pool:
-            extra_futures = [pool.submit(_events_search_one_source_v571, plan,
+            extra_futures = [_diag_submit_v640(pool, _events_search_one_source_v571, plan,
                                          day=day, category=category, coarse_lat=coarse_lat,
                                          coarse_lon=coarse_lon, radius_km=radius_km,
                                          place_label=area) for plan in extra_plans]
             for future in extra_futures:
                 try:
-                    results.append(future.result())
+                    results.append(_diag_future_v640(future))
                 except Exception:
                     results.append({"items": [], "sources": set(), "failed": True,
                                     "failure_type": "SupplementWorkerError"})
@@ -32165,7 +32300,7 @@ def _events_job_v570(day, category, location, radius_km, *, refresh=False):
     key = ("v584", day, category, round(latitude, 2), round(longitude, 2), int(radius_km))
     runtime = _events_runtime_v570()
     now = time.monotonic()
-    with runtime["lock"]:
+    with _DiagLockV640(runtime["lock"], '_events_job_v570'):
         jobs = runtime["jobs"]
 
         def ttl_for(old_key, future):
@@ -32173,7 +32308,7 @@ def _events_job_v570(day, category, location, radius_km, *, refresh=False):
                    else EVENT_SEARCH_CACHE_TODAY_V584)
             if future.done():
                 try:
-                    data = future.result()
+                    data = _diag_future_v640(future)
                     if not (data.get("items") or data.get("unverified")):
                         return EVENT_SEARCH_CACHE_EMPTY_V584
                 except Exception:
@@ -32193,7 +32328,7 @@ def _events_job_v570(day, category, location, radius_km, *, refresh=False):
             started, future = stored
             if not future.done() or (not refresh and now - started < ttl_for(key, future)):
                 return future
-        future = runtime["pool"].submit(
+        future = _diag_submit_v640(runtime["pool"], 
             _events_fetch_category_v584, day, category, latitude,
             longitude, int(radius_km), str(location.get("place_label") or ""))
         jobs[key] = (now, future)
@@ -32394,8 +32529,8 @@ def _events_source_log_save_v587(report):
         if len(blob) > 120000:
             return False, "ログが大きすぎるため、端末内の一時ログのみ保持しました。"
         bucket = supabase_client().storage.from_(GPS_TRACK_BUCKET)
-        uploaded = bucket.upload(path=path, file=blob, file_options={"content-type": GPS_TRACK_STORAGE_MIME,
-                                                                      "cache-control": "0"})
+        uploaded = _diag_invoke_v640('upload:_events_source_log_save_v587:L32400', lambda: (bucket.upload(path=path, file=blob, file_options={"content-type": GPS_TRACK_STORAGE_MIME,
+                                                                      "cache-control": "0"})))
         if (isinstance(uploaded, dict) and uploaded.get("error")) or getattr(uploaded, "error", None):
             return False, "Supabase Storageからログの保存エラーが返されました。設定から一時ログを出力できます。"
         return True, ""
@@ -32437,7 +32572,7 @@ def _events_source_log_history_v587(max_files=60):
         if not re.fullmatch(r"\d{8}T\d{6}_[0-9a-f]{32}\.json", name):
             continue
         try:
-            blob = _storage_bytes(bucket.download(f"{folder}/{name}"))
+            blob = _storage_bytes(_diag_invoke_v640('download:_events_source_log_history_v587:L32443', lambda: (bucket.download(f"{folder}/{name}"))))
             if len(blob) > 120000:
                 continue
             doc = json.loads(blob.decode("utf-8"))
@@ -32677,7 +32812,7 @@ def _events_robots_allowed_v588(url, domain):
     if not _events_source_url_allowed_v588(url, domain):
         return False, "domain_not_allowed"
     now = time.monotonic()
-    with _events_source_robots_lock_v588:
+    with _DiagLockV640(_events_source_robots_lock_v588, '_events_robots_allowed_v588'):
         cached = _events_source_robots_cache_v588.get(host)
         if cached and now - cached[0] < 6 * 3600:
             parser, status = cached[1:]
@@ -32686,7 +32821,7 @@ def _events_robots_allowed_v588(url, domain):
     parser, status = None, "robots_unavailable"
     try:
         req = Request(robots_url, headers={"User-Agent": EVENTS_SOURCE_AGENT_V588})
-        with urlopen(req, timeout=3) as response:
+        with _diag_invoke_v640('http:_events_robots_allowed_v588:L32692', lambda: (urlopen(req, timeout=3))) as response:
             payload = response.read(200_001)
             if len(payload) <= 200_000 and (urlparse(response.geturl()).hostname or "") == host:
                 parser = RobotFileParser()
@@ -32702,7 +32837,7 @@ def _events_robots_allowed_v588(url, domain):
     except Exception as exc:
         status = "robots_" + type(exc).__name__
     # Fail closed if robots.txt could not be examined.
-    with _events_source_robots_lock_v588:
+    with _DiagLockV640(_events_source_robots_lock_v588, '_events_robots_allowed_v588'):
         _events_source_robots_cache_v588[host] = (now, parser, status)
     return bool(parser and parser.can_fetch(EVENTS_SOURCE_AGENT_V588, url)), status
 
@@ -32720,7 +32855,7 @@ def _events_public_html_v588(url, domain):
         req = Request(url, headers={"User-Agent": EVENTS_SOURCE_AGENT_V588,
                                     "Accept": "text/html,application/xhtml+xml",
                                     "Accept-Encoding": "identity"})
-        with urlopen(req, timeout=EVENTS_SOURCE_REQUEST_TIMEOUT_V588) as response:
+        with _diag_invoke_v640('http:_events_public_html_v588:L32726', lambda: (urlopen(req, timeout=EVENTS_SOURCE_REQUEST_TIMEOUT_V588))) as response:
             code = int(getattr(response, "status", 200))
             end_url = response.geturl()
             result["http_status"] = code
@@ -33179,11 +33314,11 @@ def _events_direct_collect_v588(days):
     """Bounded 6-site pass shared by all three category jobs; per-site failures isolated."""
     results = {}
     with ThreadPoolExecutor(max_workers=3, thread_name_prefix="burari-event-source") as pool:
-        tasks = {pool.submit(_events_direct_one_portal_v588, portal, days): portal
+        tasks = {_diag_submit_v640(pool, _events_direct_one_portal_v588, portal, days): portal
                  for portal in EVENT_SOURCE_PORTALS_V587}
         for task, portal in tasks.items():
             try:
-                results[portal["domain"]] = task.result(timeout=27)
+                results[portal["domain"]] = _diag_future_v640(task, timeout=27)
             except Exception as exc:
                 results[portal["domain"]] = {
                     "domain": portal["domain"], "name": portal["name"], "index_url": portal["url"],
@@ -33200,14 +33335,14 @@ _events_direct_pool_v588 = ThreadPoolExecutor(max_workers=1, thread_name_prefix=
 def _events_direct_future_v588(days):
     key = tuple(days)
     now = time.monotonic()
-    with _events_source_fetch_lock_v588:
+    with _DiagLockV640(_events_source_fetch_lock_v588, '_events_direct_future_v588'):
         for old, (ts, task) in list(_events_source_fetch_jobs_v588.items()):
             if task.done() and now - ts > EVENTS_SOURCE_FETCH_TTL_V588:
                 _events_source_fetch_jobs_v588.pop(old, None)
         cached = _events_source_fetch_jobs_v588.get(key)
         if cached and (not cached[1].done() or now - cached[0] < EVENTS_SOURCE_FETCH_TTL_V588):
             return cached[1]
-        future = _events_direct_pool_v588.submit(_events_direct_collect_v588, list(days))
+        future = _diag_submit_v640(_events_direct_pool_v588, _events_direct_collect_v588, list(days))
         _events_source_fetch_jobs_v588[key] = (now, future)
         return future
 
@@ -33216,7 +33351,7 @@ def _events_direct_shared_v588(days):
     """One in-flight Future for all categories and callers with same week."""
     key = tuple(days)
     now = time.monotonic()
-    with _events_source_fetch_lock_v588:
+    with _DiagLockV640(_events_source_fetch_lock_v588, '_events_direct_shared_v588'):
         for old, (ts, task) in list(_events_source_fetch_jobs_v588.items()):
             if task.done() and now - ts > EVENTS_SOURCE_FETCH_TTL_V588:
                 _events_source_fetch_jobs_v588.pop(old, None)
@@ -33231,7 +33366,7 @@ def _events_direct_shared_v588(days):
             future.set_result(_events_direct_collect_v588(list(days)))
         except Exception as exc:
             future.set_result({"_error": {"status": type(exc).__name__}})
-    return future.result(timeout=60)
+    return _diag_future_v640(future, timeout=60)
 
 
 def _events_direct_audit_merge_v588(audits, direct, category, direct_rows):
@@ -33381,13 +33516,13 @@ def _events_week_job_v585(start_day, category, location, radius_km, *, days, ref
     key = ("v593-week", start_day, category, round(latitude, 2), round(longitude, 2), int(radius_km), tuple(days))
     runtime = _events_runtime_v570()
     now = time.monotonic()
-    with runtime["lock"]:
+    with _DiagLockV640(runtime["lock"], '_events_week_job_v585'):
         jobs = runtime["jobs"]
         def life(old_key, future):
             ttl = EVENT_SEARCH_CACHE_FUTURE_V584 if old_key[1] > now_jst().date().isoformat() else EVENT_SEARCH_CACHE_TODAY_V584
             if future.done():
                 try:
-                    result = future.result()
+                    result = _diag_future_v640(future)
                     if result.get("failed") or not any(x.get("items") or x.get("unverified")
                                                       for x in (result.get("days") or {}).values()):
                         return EVENT_SEARCH_CACHE_EMPTY_V584
@@ -33406,7 +33541,7 @@ def _events_week_job_v585(start_day, category, location, radius_km, *, days, ref
             started, future = stored
             if not future.done() or (not refresh and now - started < life(key, future)):
                 return future
-        future = runtime["pool"].submit(
+        future = _diag_submit_v640(runtime["pool"], 
             _events_week_fetch_category_v585, start_day, category, latitude,
             longitude, int(radius_km), str(location.get("place_label") or ""), days=list(days))
         jobs[key] = (now, future)
@@ -33548,7 +33683,7 @@ def _events_complete_refinement_v585(snapshot):
     supplements_for_log = {}
     for category, future in futures.items():
         try:
-            supplement = future.result()
+            supplement = _diag_future_v640(future)
         except Exception:
             supplement = {"items": [], "unverified": [], "error": "追加検索に失敗しました。"}
         supplements_for_log[category] = supplement
@@ -33591,7 +33726,7 @@ def _events_week_cached_v588(start_day, location, radius, days, *, force_refresh
         key = ("v593-week", start_day, category,
                round(float(location["latitude"]), 2), round(float(location["longitude"]), 2),
                int(radius), tuple(days))
-        with runtime["lock"]:
+        with _DiagLockV640(runtime["lock"], '_events_week_cached_v588'):
             item = runtime["jobs"].get(key)
         if not item or force_refresh:
             hit[category] = False
@@ -33601,7 +33736,7 @@ def _events_week_cached_v588(start_day, location, radius, days, *, force_refresh
                else EVENT_SEARCH_CACHE_TODAY_V584)
         if future.done():
             try:
-                result = future.result()
+                result = _diag_future_v640(future)
                 if result.get("failed") or not any(
                         x.get("items") or x.get("unverified")
                         for x in (result.get("days") or {}).values()):
@@ -33632,7 +33767,7 @@ def _events_start_explicit_search_v579(location, *, day=None, radius_km=None, fo
     # making new category futures while the shared HTML cache is warm would
     # silently reuse stale pages for up to 30 minutes.
     if force_refresh:
-        with _events_source_fetch_lock_v588:
+        with _DiagLockV640(_events_source_fetch_lock_v588, '_events_start_explicit_search_v579'):
             cached = _events_source_fetch_jobs_v588.get(tuple(days))
             if cached and cached[1].done():
                 _events_source_fetch_jobs_v588.pop(tuple(days), None)
@@ -33667,7 +33802,7 @@ def _events_complete_explicit_search_v579(snapshot):
             results[category] = {"items": [], "unverified": [], "error": "検索されていません。"}
             continue
         try:
-            results[category] = _events_strip_blocked_v581(future.result())
+            results[category] = _events_strip_blocked_v581(_diag_future_v640(future))
         except Exception:
             results[category] = {"items": [], "unverified": [], "error": "検索に失敗しました。再検索してください。"}
     snapshot["results"] = results
@@ -33824,7 +33959,7 @@ def _events_selected_results_v576(futures, selection):
         if not future.done():
             return None
         try:
-            results[cat] = future.result()
+            results[cat] = _diag_future_v640(future)
         except Exception:
             results[cat] = {"items": [], "error": f"{cat}の検索に失敗しました。更新をお試しください。"}
     if selection == EVENT_SEARCH_ALL_CATEGORY_V576:
@@ -35817,7 +35952,7 @@ def _experience_google_food_text_candidates_v505(latitude, longitude, food_query
         method="POST",
     )
     try:
-        with urlopen(request, timeout=6.0) as response:
+        with _diag_invoke_v640('http:_experience_google_food_text_candidates_v505:L35823', lambda: (urlopen(request, timeout=6.0))) as response:
             payload = json.loads(response.read().decode("utf-8"))
     except Exception:
         return []
@@ -35948,17 +36083,17 @@ def infer_experience_store_candidates_v505(photos):
     lon = center["longitude"]
     if GOOGLE_PLACES_API_KEY:
         with ThreadPoolExecutor(max_workers=2) as executor:
-            f_text = executor.submit(_experience_google_food_text_candidates_v505, lat, lon, food_query, EXPERIENCE_STORE_RADIUS_M_V505)
-            f_near = executor.submit(
+            f_text = _diag_submit_v640(executor, _experience_google_food_text_candidates_v505, lat, lon, food_query, EXPERIENCE_STORE_RADIUS_M_V505)
+            f_near = _diag_submit_v640(executor, 
                 search_nearby_quick_stops_google,
                 lat, lon, "snack", snack_style, EXPERIENCE_STORE_RADIUS_M_V505, False, False, None,
             )
             try:
-                text_rows = list(f_text.result() or [])
+                text_rows = list(_diag_future_v640(f_text) or [])
             except Exception:
                 text_rows = []
             try:
-                nearby_result = f_near.result()
+                nearby_result = _diag_future_v640(f_near)
                 nearby_rows = list((nearby_result or {}).get("places") or []) if isinstance(nearby_result, dict) else []
             except Exception:
                 nearby_rows = []
@@ -36135,20 +36270,20 @@ def infer_experience_store_candidates_manual_v509(photos, food_query, base_infer
     nearby_rows = []
     if GOOGLE_PLACES_API_KEY:
         with ThreadPoolExecutor(max_workers=2) as executor:
-            f_text = executor.submit(
+            f_text = _diag_submit_v640(executor, 
                 _experience_google_food_text_candidates_v505,
                 lat, lon, food_query, EXPERIENCE_STORE_RADIUS_M_V505,
             )
-            f_near = executor.submit(
+            f_near = _diag_submit_v640(executor, 
                 search_nearby_quick_stops_google,
                 lat, lon, "snack", snack_style, EXPERIENCE_STORE_RADIUS_M_V505, False, False, None,
             )
             try:
-                text_rows = list(f_text.result() or [])
+                text_rows = list(_diag_future_v640(f_text) or [])
             except Exception:
                 text_rows = []
             try:
-                nearby_result = f_near.result()
+                nearby_result = _diag_future_v640(f_near)
                 nearby_rows = list((nearby_result or {}).get("places") or []) if isinstance(nearby_result, dict) else []
             except Exception:
                 nearby_rows = []
@@ -37613,7 +37748,7 @@ def _help_google_nearby_search_v523(latitude, longitude):
         method="POST",
     )
     try:
-        with urlopen(req, timeout=7.0) as response:
+        with _diag_invoke_v640('http:_help_google_nearby_search_v523:L37619', lambda: (urlopen(req, timeout=7.0))) as response:
             payload = json.loads(response.read().decode("utf-8"))
     except Exception:
         return []
@@ -37673,7 +37808,7 @@ def _help_google_text_search_v523(query, category, latitude, longitude):
         method="POST",
     )
     try:
-        with urlopen(req, timeout=6.5) as response:
+        with _diag_invoke_v640('http:_help_google_text_search_v523:L37679', lambda: (urlopen(req, timeout=6.5))) as response:
             payload = json.loads(response.read().decode("utf-8"))
     except Exception:
         return []
@@ -37713,7 +37848,7 @@ def _help_osm_search_v523(latitude, longitude):
             method="POST",
         )
         try:
-            with urlopen(req, timeout=8.0) as response:
+            with _diag_invoke_v640('http:_help_osm_search_v523:L37719', lambda: (urlopen(req, timeout=8.0))) as response:
                 payload = json.loads(response.read().decode("utf-8"))
             if isinstance(payload, dict):
                 break
@@ -38313,7 +38448,7 @@ def page_toilets():
         # Run only the reverse-geocode call in parallel, so it no longer adds up to
         # 3.5 seconds before the real search begins. GPS coordinates are unchanged.
         label_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="burari-toilet-label")
-        label_future = label_pool.submit(reverse_geocode_rough, search_latitude, search_longitude)
+        label_future = _diag_submit_v640(label_pool, reverse_geocode_rough, search_latitude, search_longitude)
         fresh_signature = _toilet_signature_v320(search_latitude, search_longitude, cfg)
         with st.spinner("現在地の近くにあるトイレを高速検索しています…"):
             live_result = search_nearby_toilets(
@@ -38326,7 +38461,7 @@ def page_toilets():
                 usable_now_preferred=usable_now_preferred,
             )
         try:
-            fresh_label = str(label_future.result(timeout=0.15) or "").strip() or "現在地付近"
+            fresh_label = str(_diag_future_v640(label_future, timeout=0.15) or "").strip() or "現在地付近"
         except Exception:
             fresh_label = "現在地付近"
         finally:
@@ -39126,7 +39261,7 @@ def page_nearby():
         # v319: reverse geocoding runs beside the provider lookup instead of before it.
         # The fresh high-accuracy GPS coordinate is still the sole basis of the search.
         label_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="burari-nearby-label")
-        label_future = label_pool.submit(reverse_geocode_rough, search_latitude, search_longitude)
+        label_future = _diag_submit_v640(label_pool, reverse_geocode_rough, search_latitude, search_longitude)
         # Store exactly the filter signature active when Search was pressed.
         # The newly measured GPS coordinates are stored separately in _nearby_location.
         fresh_signature = _nearby_signature_v320(cfg)
@@ -39151,7 +39286,7 @@ def page_nearby():
                         fallback["rating_sort_unavailable"] = True
                 live_result = fallback
         try:
-            fresh_label = str(label_future.result(timeout=0.15) or "").strip() or "現在地付近"
+            fresh_label = str(_diag_future_v640(label_future, timeout=0.15) or "").strip() or "現在地付近"
         except Exception:
             fresh_label = "現在地付近"
         finally:
@@ -39657,14 +39792,14 @@ def auto_recover_one_video_candidate_sheet():
         return False
     try:
         rows = (
-            supabase_client()
+            _diag_invoke_v640('execute:auto_recover_one_video_candidate_sheet:L39663', lambda: (supabase_client()
             .table(PHOTO_TABLE)
             .select("*")
             .eq("family_key", current_family_key())
             .eq("member_key", current_member_key())
             .order("captured_at", desc=True)
             .limit(24)
-            .execute()
+            .execute()))
         ).data or []
     except Exception:
         return False
@@ -39690,14 +39825,14 @@ def list_member_videos_for_moments(limit=300):
     if cached is not None:
         return cached
     rows = (
-        supabase_client()
+        _diag_invoke_v640('execute:list_member_videos_for_moments:L39696', lambda: (supabase_client()
         .table(PHOTO_TABLE)
         .select("*")
         .eq("family_key", current_family_key())
         .eq("member_key", current_member_key())
         .order("captured_at", desc=True)
         .limit(max(1, int(limit)))
-        .execute()
+        .execute()))
     ).data or []
     # The query is already newest-first. page_moments groups by review status
     # without disturbing that order inside each group.
@@ -45092,7 +45227,7 @@ def _coerce_track_point_v271(raw):
 def _read_track_month_uncached_v271(month_key, family_key=None, member_key=None):
     path = _gps_track_month_path(month_key, family_key, member_key)
     try:
-        raw = supabase_client().storage.from_(GPS_TRACK_BUCKET).download(path)
+        raw = _diag_invoke_v640('download:_read_track_month_uncached_v271:L45098', lambda: (supabase_client().storage.from_(GPS_TRACK_BUCKET).download(path)))
     except Exception:
         return []
     try:
@@ -45172,7 +45307,7 @@ def _upsert_track_month_v271(month_key, incoming_points):
     options = {"content-type": GPS_TRACK_STORAGE_MIME, "cache-control": "0", "upsert": "true"}
     first_error = None
     try:
-        bucket.upload(path=path, file=blob, file_options=options)
+        _diag_invoke_v640('upload:_upsert_track_month_v271:L45178', lambda: (bucket.upload(path=path, file=blob, file_options=options)))
     except Exception as exc:
         first_error = exc
         try:
@@ -45186,7 +45321,7 @@ def _upsert_track_month_v271(month_key, incoming_points):
             except Exception:
                 pass
             try:
-                bucket.upload(path=path, file=blob, file_options={"content-type": GPS_TRACK_STORAGE_MIME, "cache-control": "0"})
+                _diag_invoke_v640('upload:_upsert_track_month_v271:L45192', lambda: (bucket.upload(path=path, file=blob, file_options={"content-type": GPS_TRACK_STORAGE_MIME, "cache-control": "0"})))
             except Exception:
                 raise first_error
     return len(points)
@@ -45210,7 +45345,7 @@ def _gps_sync_runtime_v561():
 def _read_track_month_for_owner_v561(client, month_key, family_key, member_key):
     path = _gps_track_month_path(month_key, family_key, member_key)
     try:
-        raw = client.storage.from_(GPS_TRACK_BUCKET).download(path)
+        raw = _diag_invoke_v640('download:_read_track_month_for_owner_v561:L45216', lambda: (client.storage.from_(GPS_TRACK_BUCKET).download(path)))
         payload = json.loads(bytes(raw).decode("utf-8"))
     except Exception:
         return []
@@ -45248,7 +45383,7 @@ def _upsert_track_month_for_owner_v561(client, family_key, member_key, month_key
     options = {"content-type": GPS_TRACK_STORAGE_MIME, "cache-control": "0", "upsert": "true"}
     first_error = None
     try:
-        bucket.upload(path=path, file=blob, file_options=options)
+        _diag_invoke_v640('upload:_upsert_track_month_for_owner_v561:L45254', lambda: (bucket.upload(path=path, file=blob, file_options=options)))
     except Exception as exc:
         first_error = exc
         try:
@@ -45259,7 +45394,7 @@ def _upsert_track_month_for_owner_v561(client, family_key, member_key, month_key
             except Exception:
                 pass
             try:
-                bucket.upload(path=path, file=blob, file_options={"content-type": GPS_TRACK_STORAGE_MIME, "cache-control": "0"})
+                _diag_invoke_v640('upload:_upsert_track_month_for_owner_v561:L45265', lambda: (bucket.upload(path=path, file=blob, file_options={"content-type": GPS_TRACK_STORAGE_MIME, "cache-control": "0"})))
             except Exception:
                 raise first_error
     return len(points)
@@ -45302,7 +45437,7 @@ def _gps_sync_enqueue_v561(batch):
     runtime = _gps_sync_runtime_v561()
     owner = (current_family_key(), current_member_key())
     token = str((batch or {}).get("token") or "")
-    with runtime["lock"]:
+    with _DiagLockV640(runtime["lock"], '_gps_sync_enqueue_v561'):
         state = runtime["owners"].setdefault(owner, {"future": None, "token": "", "queued": None, "queued_token": ""})
         future = state.get("future")
         if future is not None and not future.done():
@@ -45312,7 +45447,7 @@ def _gps_sync_enqueue_v561(batch):
                 state["queued"] = dict(batch or {})
                 state["queued_token"] = token
             return False
-        state["future"] = runtime["executor"].submit(_gps_sync_worker_v561, owner[0], owner[1], dict(batch or {}))
+        state["future"] = _diag_submit_v640(runtime["executor"], _gps_sync_worker_v561, owner[0], owner[1], dict(batch or {}))
         state["token"] = token
         state["queued"] = None
         state["queued_token"] = ""
@@ -45324,7 +45459,7 @@ def _gps_sync_harvest_v561():
     runtime = _gps_sync_runtime_v561()
     owner = (current_family_key(), current_member_key())
     completed = []
-    with runtime["lock"]:
+    with _DiagLockV640(runtime["lock"], '_gps_sync_harvest_v561'):
         state = runtime["owners"].get(owner)
         if not isinstance(state, dict):
             return []
@@ -45332,7 +45467,7 @@ def _gps_sync_harvest_v561():
         if future is None or not future.done():
             return []
         try:
-            completed.append(future.result(timeout=0))
+            completed.append(_diag_future_v640(future, timeout=0))
         except Exception as exc:
             completed.append({"status": "error", "at_ms": int(time.time() * 1000),
                               "source": "background", "received": 0, "accepted": 0,
@@ -45343,7 +45478,7 @@ def _gps_sync_harvest_v561():
         state["queued"] = None
         state["queued_token"] = ""
         if isinstance(queued, dict) and queued.get("points"):
-            state["future"] = runtime["executor"].submit(_gps_sync_worker_v561, owner[0], owner[1], dict(queued))
+            state["future"] = _diag_submit_v640(runtime["executor"], _gps_sync_worker_v561, owner[0], owner[1], dict(queued))
             state["token"] = queued_token
     for result in completed:
         if not isinstance(result, dict):
@@ -45614,13 +45749,13 @@ def _read_native_track_points_v338(family_key, member_key):
         while offset < max_rows:
             end = min(max_rows, offset + page_size) - 1
             result = (
-                client.table(GPS_NATIVE_TRACK_TABLE_V338)
+                _diag_invoke_v640('execute:_read_native_track_points_v338:L45620', lambda: (client.table(GPS_NATIVE_TRACK_TABLE_V338)
                 .select("id,ts_ms,lat,lon,accuracy_m,speed_mps,heading,session_id,source")
                 .eq("family_key", family)
                 .eq("member_key", member)
                 .order("ts_ms")
                 .range(offset, end)
-                .execute()
+                .execute()))
             )
             batch = list(getattr(result, "data", None) or [])
             if not batch:
@@ -47062,7 +47197,7 @@ def _project_osm_station_mosaic_v291(lat, lon, zoom=GPS_TRACK_STATION_VISION_ZOO
                 "Accept": "image/png,image/*;q=0.8,*/*;q=0.5",
             })
             try:
-                with urlopen(req, timeout=5.5) as resp:
+                with _diag_invoke_v640('http:fetch_one:L47068', lambda: (urlopen(req, timeout=5.5))) as resp:
                     return pair, resp.read()
             except Exception:
                 return pair, None
@@ -47406,7 +47541,7 @@ def _coerce_station_zone_record_v292(payload):
 @st.cache_data(ttl=STATION_ZONE_CACHE_READ_TTL_SECONDS, max_entries=256, show_spinner=False)
 def _read_station_zone_record_v292(path):
     try:
-        raw = supabase_client().storage.from_(GPS_TRACK_BUCKET).download(str(path))
+        raw = _diag_invoke_v640('download:_read_station_zone_record_v292:L47412', lambda: (supabase_client().storage.from_(GPS_TRACK_BUCKET).download(str(path))))
     except Exception:
         return None
     try:
@@ -47469,7 +47604,7 @@ def _save_station_zone_record_v292(name, lat, lon, footprint):
     options = {"content-type": GPS_TRACK_STORAGE_MIME, "cache-control": "3600", "upsert": "true"}
     first_error = None
     try:
-        bucket.upload(path=path, file=blob, file_options=options)
+        _diag_invoke_v640('upload:_save_station_zone_record_v292:L47475', lambda: (bucket.upload(path=path, file=blob, file_options=options)))
     except Exception as exc:
         first_error = exc
         try:
@@ -47480,7 +47615,7 @@ def _save_station_zone_record_v292(name, lat, lon, footprint):
             except Exception:
                 pass
             try:
-                bucket.upload(path=path, file=blob, file_options={"content-type": GPS_TRACK_STORAGE_MIME, "cache-control": "3600"})
+                _diag_invoke_v640('upload:_save_station_zone_record_v292:L47486', lambda: (bucket.upload(path=path, file=blob, file_options={"content-type": GPS_TRACK_STORAGE_MIME, "cache-control": "3600"})))
             except Exception:
                 if first_error:
                     raise first_error
@@ -47666,7 +47801,7 @@ def _station_state_row_document_v293(row):
 def _read_station_visit_state_v293(family_key, member_key):
     path = _station_visit_state_path_v293(family_key, member_key)
     try:
-        raw = supabase_client().storage.from_(GPS_TRACK_BUCKET).download(path)
+        raw = _diag_invoke_v640('download:_read_station_visit_state_v293:L47672', lambda: (supabase_client().storage.from_(GPS_TRACK_BUCKET).download(path)))
         payload = json.loads(bytes(raw).decode("utf-8"))
     except Exception:
         return None
@@ -47720,7 +47855,7 @@ def _save_station_visit_state_v293(family_key, member_key, checked_through_ts_ms
     bucket = supabase_client().storage.from_(GPS_TRACK_BUCKET)
     options = {"content-type": GPS_TRACK_STORAGE_MIME, "cache-control": "120", "upsert": "true"}
     try:
-        bucket.upload(path=path, file=blob, file_options=options)
+        _diag_invoke_v640('upload:_save_station_visit_state_v293:L47726', lambda: (bucket.upload(path=path, file=blob, file_options=options)))
     except Exception:
         try:
             bucket.update(path=path, file=blob, file_options={"content-type": GPS_TRACK_STORAGE_MIME, "cache-control": "120"})
@@ -47729,7 +47864,7 @@ def _save_station_visit_state_v293(family_key, member_key, checked_through_ts_ms
                 bucket.remove([path])
             except Exception:
                 pass
-            bucket.upload(path=path, file=blob, file_options={"content-type": GPS_TRACK_STORAGE_MIME, "cache-control": "120"})
+            _diag_invoke_v640('upload:_save_station_visit_state_v293:L47735', lambda: (bucket.upload(path=path, file=blob, file_options={"content-type": GPS_TRACK_STORAGE_MIME, "cache-control": "120"})))
     _read_station_visit_state_v293.clear()
     return True
 
@@ -48489,7 +48624,7 @@ def _photo_legacy_seed_assignment_path_v307(family_key=None):
 def _read_photo_legacy_seed_assignment_v307(family_key):
     path = _photo_legacy_seed_assignment_path_v307(family_key)
     try:
-        raw = supabase_client().storage.from_(GPS_TRACK_BUCKET).download(path)
+        raw = _diag_invoke_v640('download:_read_photo_legacy_seed_assignment_v307:L48495', lambda: (supabase_client().storage.from_(GPS_TRACK_BUCKET).download(path)))
         payload = json.loads(bytes(raw).decode("utf-8"))
     except Exception:
         return {}
@@ -48521,7 +48656,7 @@ def _claim_photo_legacy_seed_v307(family_key, member_key):
     bucket = supabase_client().storage.from_(GPS_TRACK_BUCKET)
     options = {"content-type": GPS_TRACK_STORAGE_MIME, "cache-control": "60", "upsert": "true"}
     try:
-        bucket.upload(path=path, file=blob, file_options=options)
+        _diag_invoke_v640('upload:_claim_photo_legacy_seed_v307:L48527', lambda: (bucket.upload(path=path, file=blob, file_options=options)))
     except Exception:
         try:
             bucket.update(path=path, file=blob, file_options={"content-type": GPS_TRACK_STORAGE_MIME, "cache-control": "60"})
@@ -49098,10 +49233,10 @@ def _photo_legacy_pair_route_v301(name_a, name_b):
                 best_points = _photo_legacy_coerce_segment_v300(route.get('points') or []) if isinstance(route, dict) else []
     else:
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = [executor.submit(_job, job) for job in candidate_jobs]
+            futures = [_diag_submit_v640(executor, _job, job) for job in candidate_jobs]
             for future in futures:
                 try:
-                    score, route = future.result()
+                    score, route = _diag_future_v640(future)
                 except Exception:
                     continue
                 if math.isfinite(score) and score < best_score:
@@ -49176,7 +49311,7 @@ def _photo_legacy_route_document_v302(segments):
 def _read_photo_legacy_route_cache_v302(family_key, member_key):
     path = f"{_gps_track_prefix(family_key, member_key)}/{PHOTO_LEGACY_ROUTE_STORAGE_FILE_V302}"
     try:
-        raw = supabase_client().storage.from_(GPS_TRACK_BUCKET).download(path)
+        raw = _diag_invoke_v640('download:_read_photo_legacy_route_cache_v302:L49182', lambda: (supabase_client().storage.from_(GPS_TRACK_BUCKET).download(path)))
     except Exception:
         return []
     try:
@@ -49198,7 +49333,7 @@ def _save_photo_legacy_route_cache_v302(segments):
     bucket = supabase_client().storage.from_(GPS_TRACK_BUCKET)
     options = {"content-type": GPS_TRACK_STORAGE_MIME, "cache-control": "3600", "upsert": "true"}
     try:
-        bucket.upload(path=path, file=blob, file_options=options)
+        _diag_invoke_v640('upload:_save_photo_legacy_route_cache_v302:L49204', lambda: (bucket.upload(path=path, file=blob, file_options=options)))
     except Exception:
         try:
             bucket.update(path=path, file=blob, file_options={"content-type": GPS_TRACK_STORAGE_MIME, "cache-control": "3600"})
@@ -49208,7 +49343,7 @@ def _save_photo_legacy_route_cache_v302(segments):
             except Exception:
                 pass
             try:
-                bucket.upload(path=path, file=blob, file_options={"content-type": GPS_TRACK_STORAGE_MIME, "cache-control": "3600"})
+                _diag_invoke_v640('upload:_save_photo_legacy_route_cache_v302:L49214', lambda: (bucket.upload(path=path, file=blob, file_options={"content-type": GPS_TRACK_STORAGE_MIME, "cache-control": "3600"})))
             except Exception:
                 return False
     _read_photo_legacy_route_cache_v302.clear()
@@ -49738,10 +49873,10 @@ def _project_snap_display_segments_v298(segments):
     indexed = list(enumerate(rows))
     out = [None] * len(indexed)
     with ThreadPoolExecutor(max_workers=worker_count) as executor:
-        future_map = {executor.submit(_project_snap_segment_to_roads_v298, seg): idx for idx, seg in indexed}
+        future_map = {_diag_submit_v640(executor, _project_snap_segment_to_roads_v298, seg): idx for idx, seg in indexed}
         for future, idx in [(f, future_map[f]) for f in future_map]:
             try:
-                out[idx] = future.result()
+                out[idx] = _diag_future_v640(future)
             except Exception:
                 out[idx] = rows[idx]
     return [seg for seg in out if isinstance(seg, list) and len(seg) >= 2]
@@ -49768,7 +49903,7 @@ def _project_live_road_read_state_v525(client, family_key, member_key):
     state = _project_live_road_default_state_v525(family_key, member_key)
     path = _project_live_road_state_path_v525(family_key, member_key)
     try:
-        raw = _storage_bytes(client.storage.from_(GPS_TRACK_BUCKET).download(path))
+        raw = _storage_bytes(_diag_invoke_v640('download:_project_live_road_read_state_v525:L49774', lambda: (client.storage.from_(GPS_TRACK_BUCKET).download(path))))
         payload = json.loads(raw.decode("utf-8")) if raw else {}
     except Exception:
         return state
@@ -49827,7 +49962,7 @@ def _project_live_road_save_state_v525(client, family_key, member_key, state):
     bucket = client.storage.from_(GPS_TRACK_BUCKET)
     options = {"content-type": GPS_TRACK_STORAGE_MIME, "cache-control": "0", "upsert": "true"}
     try:
-        bucket.upload(path=path, file=blob, file_options=options)
+        _diag_invoke_v640('upload:_project_live_road_save_state_v525:L49833', lambda: (bucket.upload(path=path, file=blob, file_options=options)))
     except Exception:
         try:
             bucket.update(path=path, file=blob, file_options={"content-type": GPS_TRACK_STORAGE_MIME, "cache-control": "0"})
@@ -49836,7 +49971,7 @@ def _project_live_road_save_state_v525(client, family_key, member_key, state):
                 bucket.remove([path])
             except Exception:
                 pass
-            bucket.upload(path=path, file=blob, file_options={"content-type": GPS_TRACK_STORAGE_MIME, "cache-control": "0"})
+            _diag_invoke_v640('upload:_project_live_road_save_state_v525:L49842', lambda: (bucket.upload(path=path, file=blob, file_options={"content-type": GPS_TRACK_STORAGE_MIME, "cache-control": "0"})))
     return True
 
 
@@ -50115,7 +50250,7 @@ def _project_live_road_request_geometry_v526(anchors, *, continue_straight=True)
     url = f"{PROJECT_LIVE_ROAD_BASE_URL_V525}/{coords}?{params}"
     req = Request(url, headers={"User-Agent": "TokyoBurariProjectRoadMatchV526/1.0"})
     try:
-        with urlopen(req, timeout=float(PROJECT_LIVE_ROAD_REQUEST_TIMEOUT_V525)) as response:
+        with _diag_invoke_v640('http:_project_live_road_request_geometry_v526:L50121', lambda: (urlopen(req, timeout=float(PROJECT_LIVE_ROAD_REQUEST_TIMEOUT_V525)))) as response:
             payload = json.loads(response.read().decode("utf-8"))
     except Exception:
         return []
@@ -50350,7 +50485,7 @@ def _project_live_road_launch_v525(source_chunks, state):
             break
     runtime = _project_live_road_runtime_v525()
     owner = (current_family_key(), current_member_key())
-    with runtime["lock"]:
+    with _DiagLockV640(runtime["lock"], '_project_live_road_launch_v525'):
         future = runtime["jobs"].get(owner)
         if future is not None:
             if not future.done():
@@ -50360,7 +50495,7 @@ def _project_live_road_launch_v525(source_chunks, state):
             return True
         if not missing:
             return False
-        runtime["jobs"][owner] = runtime["executor"].submit(_project_live_road_worker_v525, owner, source_chunks)
+        runtime["jobs"][owner] = _diag_submit_v640(runtime["executor"], _project_live_road_worker_v525, owner, source_chunks)
         return True
 
 
@@ -50454,9 +50589,9 @@ def _project_gps_match_default_state_v527(family_key=None, member_key=None):
 def _project_gps_match_read_state_v527(client, family_key, member_key):
     state = _project_gps_match_default_state_v527(family_key, member_key)
     try:
-        raw = _storage_bytes(client.storage.from_(GPS_TRACK_BUCKET).download(
+        raw = _storage_bytes(_diag_invoke_v640('download:_project_gps_match_read_state_v527:L50460', lambda: (client.storage.from_(GPS_TRACK_BUCKET).download(
             _project_gps_match_state_path_v527(family_key, member_key)
-        ))
+        ))))
         payload = json.loads(raw.decode("utf-8")) if raw else {}
     except Exception:
         return state
@@ -50519,7 +50654,7 @@ def _project_gps_match_save_state_v527(client, family_key, member_key, state):
     bucket = client.storage.from_(GPS_TRACK_BUCKET)
     options = {"content-type": GPS_TRACK_STORAGE_MIME, "cache-control": "0", "upsert": "true"}
     try:
-        bucket.upload(path=path, file=blob, file_options=options)
+        _diag_invoke_v640('upload:_project_gps_match_save_state_v527:L50525', lambda: (bucket.upload(path=path, file=blob, file_options=options)))
     except Exception:
         try:
             bucket.update(path=path, file=blob, file_options={"content-type": GPS_TRACK_STORAGE_MIME, "cache-control": "0"})
@@ -50528,7 +50663,7 @@ def _project_gps_match_save_state_v527(client, family_key, member_key, state):
                 bucket.remove([path])
             except Exception:
                 pass
-            bucket.upload(path=path, file=blob, file_options={"content-type": GPS_TRACK_STORAGE_MIME, "cache-control": "0"})
+            _diag_invoke_v640('upload:_project_gps_match_save_state_v527:L50534', lambda: (bucket.upload(path=path, file=blob, file_options={"content-type": GPS_TRACK_STORAGE_MIME, "cache-control": "0"})))
     return True
 
 
@@ -50759,7 +50894,7 @@ def _project_gps_match_request_v527(rows, *, rate_state=None):
     url = f"{PROJECT_GPS_MATCH_BASE_URL_V527}/{coords}?{params}"
     req = Request(url, headers={"User-Agent": "TokyoBurariProjectGpsMatchV529/1.0"})
     try:
-        with urlopen(req, timeout=float(PROJECT_GPS_MATCH_REQUEST_TIMEOUT_V527)) as response:
+        with _diag_invoke_v640('http:_project_gps_match_request_v527:L50765', lambda: (urlopen(req, timeout=float(PROJECT_GPS_MATCH_REQUEST_TIMEOUT_V527)))) as response:
             payload = json.loads(response.read().decode("utf-8"))
     except HTTPError as exc:
         status = int(getattr(exc, "code", 0) or 0)
@@ -51133,7 +51268,7 @@ def _project_gps_match_launch_v527(source_chunks, state):
     unfinished = any(str(row.get("key") or "") not in chunks for row in source_chunks)
     runtime = _project_gps_match_runtime_v527()
     owner = (current_family_key(), current_member_key())
-    with runtime["lock"]:
+    with _DiagLockV640(runtime["lock"], '_project_gps_match_launch_v527'):
         future = runtime["jobs"].get(owner)
         if future is not None:
             if not future.done():
@@ -51143,7 +51278,7 @@ def _project_gps_match_launch_v527(source_chunks, state):
             runtime["jobs"].pop(owner, None)
         if not unfinished:
             return False
-        runtime["jobs"][owner] = runtime["executor"].submit(
+        runtime["jobs"][owner] = _diag_submit_v640(runtime["executor"], 
             _project_gps_match_worker_v527,
             owner,
             [dict(row) for row in source_chunks],
@@ -51293,7 +51428,7 @@ def _project_image_road_save_progress_v553(client, family_key, member_key, state
         bucket = client.storage.from_(GPS_TRACK_BUCKET)
         options = {"content-type": "application/json", "cache-control": "0", "upsert": "true"}
         try:
-            bucket.upload(path=path, file=blob, file_options=options)
+            _diag_invoke_v640('upload:_project_image_road_save_progress_v553:L51299', lambda: (bucket.upload(path=path, file=blob, file_options=options)))
         except Exception:
             bucket.update(path=path, file=blob, file_options={"content-type": "application/json", "cache-control": "0"})
         return True
@@ -51317,7 +51452,7 @@ def _project_image_road_save_render_snapshot_v561(client, family_key, member_key
         bucket = client.storage.from_(GPS_TRACK_BUCKET)
         options = {"content-type": "application/json", "cache-control": "0", "upsert": "true"}
         try:
-            bucket.upload(path=path, file=blob, file_options=options)
+            _diag_invoke_v640('upload:_project_image_road_save_render_snapshot_v561:L51323', lambda: (bucket.upload(path=path, file=blob, file_options=options)))
         except Exception:
             bucket.update(path=path, file=blob, file_options={"content-type": "application/json", "cache-control": "0"})
         return True
@@ -51327,9 +51462,9 @@ def _project_image_road_save_render_snapshot_v561(client, family_key, member_key
 
 def _project_image_road_read_render_snapshot_v561(client, family_key, member_key):
     try:
-        raw = _storage_bytes(client.storage.from_(GPS_TRACK_BUCKET).download(
+        raw = _storage_bytes(_diag_invoke_v640('download:_project_image_road_read_render_snapshot_v561:L51333', lambda: (client.storage.from_(GPS_TRACK_BUCKET).download(
             _project_image_road_render_snapshot_path_v561(family_key, member_key)
-        ))
+        ))))
         payload = json.loads(raw.decode("utf-8")) if raw else {}
     except Exception:
         return {}
@@ -51376,7 +51511,7 @@ def _project_image_road_schedule_snapshot_migration_v561(family_key, member_key,
         return False
     runtime = _project_image_road_snapshot_runtime_v561()
     owner = (str(family_key or ""), str(member_key or ""))
-    with runtime["lock"]:
+    with _DiagLockV640(runtime["lock"], '_project_image_road_schedule_snapshot_migration_v561'):
         prior = runtime["jobs"].get(owner)
         if prior is not None and not prior.done():
             return True
@@ -51395,22 +51530,22 @@ def _project_image_road_schedule_snapshot_migration_v561(family_key, member_key,
             bucket = client.storage.from_(GPS_TRACK_BUCKET)
             options = {"content-type": "application/json", "cache-control": "0", "upsert": "true"}
             try:
-                bucket.upload(path=path, file=blob, file_options=options)
+                _diag_invoke_v640('upload:worker:L51401', lambda: (bucket.upload(path=path, file=blob, file_options=options)))
             except Exception:
                 bucket.update(path=path, file=blob, file_options={"content-type": "application/json", "cache-control": "0"})
             return True
         except Exception:
             return False
-    with runtime["lock"]:
-        runtime["jobs"][owner] = runtime["executor"].submit(worker)
+    with _DiagLockV640(runtime["lock"], '_project_image_road_schedule_snapshot_migration_v561'):
+        runtime["jobs"][owner] = _diag_submit_v640(runtime["executor"], worker)
     return True
 
 
 def _project_image_road_read_progress_v561(client, family_key, member_key):
     try:
-        raw = _storage_bytes(client.storage.from_(GPS_TRACK_BUCKET).download(
+        raw = _storage_bytes(_diag_invoke_v640('download:_project_image_road_read_progress_v561:L51414', lambda: (client.storage.from_(GPS_TRACK_BUCKET).download(
             _project_image_road_progress_path_v553(family_key, member_key)
-        ))
+        ))))
         payload = json.loads(raw.decode("utf-8")) if raw else {}
         return payload if isinstance(payload, dict) and payload.get("schema") == PROJECT_IMAGE_ROAD_PROGRESS_SCHEMA_V553 else {}
     except Exception:
@@ -51439,9 +51574,9 @@ def _project_image_road_read_work_log_v535(client, family_key, member_key):
     """Read the single authoritative persisted road-rebuild work log."""
     result = {"events": [], "saved_at": "", "save_error": "", "schema": PROJECT_IMAGE_ROAD_WORK_LOG_SCHEMA_V535}
     try:
-        raw = _storage_bytes(client.storage.from_(GPS_TRACK_BUCKET).download(
+        raw = _storage_bytes(_diag_invoke_v640('download:_project_image_road_read_work_log_v535:L51445', lambda: (client.storage.from_(GPS_TRACK_BUCKET).download(
             _project_image_road_work_log_path_v535(family_key, member_key)
-        ))
+        ))))
         payload = json.loads(raw.decode("utf-8")) if raw else {}
         if isinstance(payload, dict) and str(payload.get("schema") or "") == PROJECT_IMAGE_ROAD_WORK_LOG_SCHEMA_V535:
             result["events"] = [row for row in (payload.get("events") or []) if isinstance(row, dict)][-int(PROJECT_IMAGE_ROAD_WORK_LOG_PERSIST_MAX_V535):]
@@ -51470,7 +51605,7 @@ def _project_image_road_save_work_log_v535(client, family_key, member_key, event
     for method in ("upload", "update"):
         try:
             if method == "upload":
-                bucket.upload(path=path, file=blob, file_options=options)
+                _diag_invoke_v640('upload:_project_image_road_save_work_log_v535:L51476', lambda: (bucket.upload(path=path, file=blob, file_options=options)))
             else:
                 bucket.update(path=path, file=blob, file_options={"content-type": GPS_TRACK_STORAGE_MIME, "cache-control": "0"})
             return {"ok": True, "saved_at": document["saved_at"], "bytes": len(blob), "error": ""}
@@ -51478,7 +51613,7 @@ def _project_image_road_save_work_log_v535(client, family_key, member_key, event
             last_error = exc
     try:
         bucket.remove([path])
-        bucket.upload(path=path, file=blob, file_options={"content-type": GPS_TRACK_STORAGE_MIME, "cache-control": "0"})
+        _diag_invoke_v640('upload:_project_image_road_save_work_log_v535:L51484', lambda: (bucket.upload(path=path, file=blob, file_options={"content-type": GPS_TRACK_STORAGE_MIME, "cache-control": "0"})))
         return {"ok": True, "saved_at": document["saved_at"], "bytes": len(blob), "error": ""}
     except Exception as exc:
         last_error = exc
@@ -51505,9 +51640,9 @@ def _project_image_road_default_state_v531(family_key=None, member_key=None):
 def _project_image_road_read_state_v531(client, family_key, member_key):
     state = _project_image_road_default_state_v531(family_key, member_key)
     try:
-        raw = _storage_bytes(client.storage.from_(GPS_TRACK_BUCKET).download(
+        raw = _storage_bytes(_diag_invoke_v640('download:_project_image_road_read_state_v531:L51511', lambda: (client.storage.from_(GPS_TRACK_BUCKET).download(
             _project_image_road_state_path_v531(family_key, member_key)
-        ))
+        ))))
         payload = json.loads(raw.decode("utf-8")) if raw else {}
     except Exception:
         return state
@@ -51583,7 +51718,7 @@ def _project_image_road_save_state_v531(client, family_key, member_key, state):
     bucket = client.storage.from_(GPS_TRACK_BUCKET)
     options = {"content-type": GPS_TRACK_STORAGE_MIME, "cache-control": "0", "upsert": "true"}
     try:
-        bucket.upload(path=path, file=blob, file_options=options)
+        _diag_invoke_v640('upload:_project_image_road_save_state_v531:L51589', lambda: (bucket.upload(path=path, file=blob, file_options=options)))
     except Exception:
         try:
             bucket.update(path=path, file=blob, file_options={"content-type": GPS_TRACK_STORAGE_MIME, "cache-control": "0"})
@@ -51592,7 +51727,7 @@ def _project_image_road_save_state_v531(client, family_key, member_key, state):
                 bucket.remove([path])
             except Exception:
                 pass
-            bucket.upload(path=path, file=blob, file_options={"content-type": GPS_TRACK_STORAGE_MIME, "cache-control": "0"})
+            _diag_invoke_v640('upload:_project_image_road_save_state_v531:L51598', lambda: (bucket.upload(path=path, file=blob, file_options={"content-type": GPS_TRACK_STORAGE_MIME, "cache-control": "0"})))
     # v553: progress is a separate tiny object. The browser polls it directly, so
     # progress updates never trigger Streamlit/Python work.
     _project_image_road_save_progress_v553(client, family_key, member_key, state)
@@ -51717,7 +51852,7 @@ def _project_image_road_tile_v531(z, x, y, diag=None):
     from PIL import Image
     tile_started = time.monotonic()
     key = (int(z), int(x), int(y))
-    with _PROJECT_IMAGE_ROAD_TILE_LOCK_V531:
+    with _DiagLockV640(_PROJECT_IMAGE_ROAD_TILE_LOCK_V531, '_project_image_road_tile_v531'):
         cached = _PROJECT_IMAGE_ROAD_TILE_CACHE_V531.get(key)
         if cached is not None:
             _project_image_road_diag_v534(diag, "tile.cache", "ok", z=int(z), x=int(x), y=int(y), elapsed_ms=round((time.monotonic()-tile_started)*1000,1))
@@ -51739,7 +51874,7 @@ def _project_image_road_tile_v531(z, x, y, diag=None):
         _project_image_road_diag_v534(diag, "tile.download.start", "info", z=int(z), x=x_wrapped, y=int(y), attempt=attempt+1, url=url)
         try:
             with _PROJECT_IMAGE_ROAD_TILE_SEMAPHORE_V531:
-                with urlopen(req, timeout=float(PROJECT_IMAGE_ROAD_TILE_TIMEOUT_SECONDS_V531)) as response:
+                with _diag_invoke_v640('http:_project_image_road_tile_v531:L51745', lambda: (urlopen(req, timeout=float(PROJECT_IMAGE_ROAD_TILE_TIMEOUT_SECONDS_V531)))) as response:
                     status_code = getattr(response, "status", None) or getattr(response, "code", None)
                     content_type = str(response.headers.get("Content-Type", "")) if getattr(response, "headers", None) is not None else ""
                     raw = response.read()
@@ -51780,7 +51915,7 @@ def _project_image_road_tile_v531(z, x, y, diag=None):
         _project_image_road_diag_v534(diag, "tile.mask", "error", z=int(z), x=x_wrapped, y=int(y), error=_project_image_road_exc_text_v534(exc))
         raise
     bundle = (image, mask)
-    with _PROJECT_IMAGE_ROAD_TILE_LOCK_V531:
+    with _DiagLockV640(_PROJECT_IMAGE_ROAD_TILE_LOCK_V531, '_project_image_road_tile_v531'):
         _PROJECT_IMAGE_ROAD_TILE_CACHE_V531[key] = bundle
         _PROJECT_IMAGE_ROAD_TILE_CACHE_ORDER_V531.append(key)
         while len(_PROJECT_IMAGE_ROAD_TILE_CACHE_ORDER_V531) > int(PROJECT_IMAGE_ROAD_TILE_CACHE_MAX_V531):
@@ -53438,7 +53573,7 @@ def _project_image_road_gap_launch_v547(source_chunks, state):
     source_signature = _project_image_road_gap_source_signature_v551(source_chunks)
     runtime = _project_image_road_runtime_v552(PROJECT_IMAGE_ROAD_SCHEMA_V531 + "|gap|" + PROJECT_IMAGE_ROAD_GAP_REVISION_V547 + "|" + PROJECT_IMAGE_ROAD_WORKFLOW_REVISION_V548)
     job_key = (owner[0], owner[1], "gap", PROJECT_IMAGE_ROAD_GAP_REVISION_V547, PROJECT_IMAGE_ROAD_WORKFLOW_REVISION_V548, source_signature)
-    with runtime["lock"]:
+    with _DiagLockV640(runtime["lock"], '_project_image_road_gap_launch_v547'):
         for existing_key, existing_proc in list(runtime["jobs"].items()):
             try:
                 same_owner = len(existing_key) >= 2 and existing_key[0] == owner[0] and existing_key[1] == owner[1]
@@ -53636,7 +53771,7 @@ def _project_image_road_worker_v531(owner, source_chunks, chain_gap=True):
         nonlocal processed_since_save, last_save
         if not force and processed_since_save < int(PROJECT_IMAGE_ROAD_CHECKPOINT_EVERY_V531) and (time.monotonic() - last_save) < float(PROJECT_IMAGE_ROAD_CHECKPOINT_SECONDS_V531):
             return
-        with lock:
+        with _DiagLockV640(lock, 'checkpoint'):
             if len(chunks) > int(PROJECT_IMAGE_ROAD_MAX_STATE_CHUNKS_V531):
                 active = {str(row.get("key") or "") for row in ordered}
                 trimmed = {key: value for key, value in chunks.items() if key in active}
@@ -53668,11 +53803,11 @@ def _project_image_road_worker_v531(owner, source_chunks, chain_gap=True):
     # No 1.05-second request pacing: road recognition is local image analysis. Tile images
     # are shared/cached and fetched with a small independent concurrency cap.
     with ThreadPoolExecutor(max_workers=int(PROJECT_IMAGE_ROAD_WORKERS_V531)) as pool:
-        futures = [(row, pool.submit(_project_image_road_match_chunk_v531, row)) for row in pending]
+        futures = [(row, _diag_submit_v640(pool, _project_image_road_match_chunk_v531, row)) for row in pending]
         for row, future in futures:
             key = str(row.get("key") or "")
             try:
-                result = future.result()
+                result = _diag_future_v640(future)
             except Exception as exc:
                 result = {"status": "tile_error", "geometries": [], "error": _project_image_road_exc_text_v534(exc), "saved_at": now_jst().isoformat(), "diagnostics": [{"at": now_jst().isoformat(), "stage": "worker.future", "status": "error", "error": _project_image_road_exc_text_v534(exc)}]}
             append_work_log(key, 1, result, persist_now=(str((result or {}).get("status") or "") == "tile_error"))
@@ -53687,7 +53822,7 @@ def _project_image_road_worker_v531(owner, source_chunks, chain_gap=True):
                     retry_result = {"status": "tile_error", "geometries": [], "error": _project_image_road_exc_text_v534(exc), "saved_at": now_jst().isoformat(), "diagnostics": [{"at": now_jst().isoformat(), "stage": "worker.retry.future", "status": "error", "error": _project_image_road_exc_text_v534(exc)}]}
                 append_work_log(key, 2, retry_result, persist_now=True)
                 result = retry_result
-            with lock:
+            with _DiagLockV640(lock, '_project_image_road_worker_v531'):
                 chunks[key] = _project_image_road_compact_result_v537(result)
                 total_processed += 1; processed_since_save += 1; progress_since_save += 1
             publish_progress(force=False)
@@ -53749,7 +53884,7 @@ def _project_image_road_launch_v531(source_chunks, state):
         PROJECT_IMAGE_ROAD_FALLBACK_REVISION_V540, PROJECT_IMAGE_ROAD_SOURCE_REVISION_V543,
         PROJECT_IMAGE_ROAD_WORKFLOW_REVISION_V548,
     )
-    with runtime["lock"]:
+    with _DiagLockV640(runtime["lock"], '_project_image_road_launch_v531'):
         proc = runtime["jobs"].get(job_key)
         if proc is not None:
             try:
@@ -54006,7 +54141,7 @@ def _project_image_road_start_workflow_v553(points, stations, state, photo_is_ne
         return False
     runtime = _project_image_road_runtime_v552("workflow|" + PROJECT_IMAGE_ROAD_WORKFLOW_REVISION_V548)
     job_key = (owner[0], owner[1], "workflow", signature, PROJECT_IMAGE_ROAD_WORKFLOW_REVISION_V548)
-    with runtime["lock"]:
+    with _DiagLockV640(runtime["lock"], '_project_image_road_start_workflow_v553'):
         # Never run two road workflows for one account at the same time.
         for existing_key, existing_proc in list(runtime["jobs"].items()):
             try:
@@ -54323,7 +54458,7 @@ def _photo_legacy_default_state_v305():
 def _read_photo_legacy_route_state_v305(family_key, member_key):
     path = _photo_legacy_route_storage_path_v305(family_key, member_key)
     try:
-        raw = supabase_client().storage.from_(GPS_TRACK_BUCKET).download(path)
+        raw = _diag_invoke_v640('download:_read_photo_legacy_route_state_v305:L54329', lambda: (supabase_client().storage.from_(GPS_TRACK_BUCKET).download(path)))
         payload = json.loads(bytes(raw).decode("utf-8"))
     except Exception:
         return {}
@@ -54351,7 +54486,7 @@ def _save_photo_legacy_route_state_v305(state):
     bucket = supabase_client().storage.from_(GPS_TRACK_BUCKET)
     options = {"content-type": GPS_TRACK_STORAGE_MIME, "cache-control": "60", "upsert": "true"}
     try:
-        bucket.upload(path=path, file=blob, file_options=options)
+        _diag_invoke_v640('upload:_save_photo_legacy_route_state_v305:L54357', lambda: (bucket.upload(path=path, file=blob, file_options=options)))
     except Exception:
         try:
             bucket.update(path=path, file=blob, file_options={"content-type": GPS_TRACK_STORAGE_MIME, "cache-control": "60"})
@@ -54361,7 +54496,7 @@ def _save_photo_legacy_route_state_v305(state):
             except Exception:
                 pass
             try:
-                bucket.upload(path=path, file=blob, file_options={"content-type": GPS_TRACK_STORAGE_MIME, "cache-control": "60"})
+                _diag_invoke_v640('upload:_save_photo_legacy_route_state_v305:L54367', lambda: (bucket.upload(path=path, file=blob, file_options={"content-type": GPS_TRACK_STORAGE_MIME, "cache-control": "60"})))
             except Exception:
                 return False
     try:
@@ -54410,7 +54545,7 @@ def _photo_legacy_route_request_names_v306(names):
         },
     )
     try:
-        with urlopen(req, timeout=float(PHOTO_LEGACY_ROUTE_REQUEST_TIMEOUT_V306)) as response:
+        with _diag_invoke_v640('http:_photo_legacy_route_request_names_v306:L54416', lambda: (urlopen(req, timeout=float(PHOTO_LEGACY_ROUTE_REQUEST_TIMEOUT_V306)))) as response:
             payload = json.loads(response.read().decode("utf-8"))
     except Exception as exc:
         return {"ok": False, "points": [], "waypoints": [], "error": type(exc).__name__}
@@ -55168,11 +55303,11 @@ def _random_photo_source_v473(force=False):
     photos, seen = [], set()
     offset, page_size = 0, 400
     while True:
-        response = (client.table(PHOTO_TABLE)
+        response = (_diag_invoke_v640('execute:_random_photo_source_v473:L55174', lambda: (client.table(PHOTO_TABLE)
             .select("id,trip_id,storage_path,captured_at,reflection_json")
             .eq("family_key", family).eq("member_key", member)
             .order("captured_at").order("id")
-            .range(offset, offset + page_size - 1).execute())
+            .range(offset, offset + page_size - 1).execute())))
         rows = response.data
         if not isinstance(rows, list):
             raise RuntimeError("\u5199\u771f\u4e00\u89a7\u3092\u8aad\u307f\u8fbc\u3081\u307e\u305b\u3093\u3067\u3057\u305f\u3002")
@@ -55541,6 +55676,233 @@ def _salt_commons_photo_ref_v632(tags):
     return ''
 
 
+_SALT_PUBLIC_DNS_CACHE_V638 = {}
+_SALT_PUBLIC_DNS_LOCK_V638 = threading.RLock()
+
+
+def _salt_public_host_v638(host):
+    """Validate public destinations, including deployments whose HTTPS proxy resolves DNS."""
+    import socket,ipaddress
+    from urllib.request import getproxies
+    with _DiagLockV640(_SALT_PUBLIC_DNS_LOCK_V638, '_salt_public_host_v638'):
+        saved=_SALT_PUBLIC_DNS_CACHE_V638.get(host)
+        if saved and saved>time.monotonic():return
+    if not re.fullmatch(r'[A-Za-z0-9.-]+',host) or '.' not in host or host.endswith(('.local','.internal','.localhost')):
+        raise ValueError('nonpublic_destination')
+    try:
+        addresses=[item[4][0] for item in socket.getaddrinfo(host,443,type=socket.SOCK_STREAM)]
+    except socket.gaierror:
+        # The HTTPS proxy can reach sites even where the application's local resolver cannot.
+        # Keep the public-address check: obtain DNS records over HTTPS instead of skipping it.
+        if not getproxies().get('https'):raise
+        target='https://dns.google/resolve?'+urlencode({'name':host,'type':'A','edns_client_subnet':'0.0.0.0/0'})
+        with _diag_invoke_v640('http:_salt_public_host_v638:L55567', lambda: (urlopen(Request(target,headers={'Accept':'application/json','User-Agent':'TokyoBurariBakeryVerifier/1.0'}),timeout=12))) as response:
+            raw=response.read(64001)
+        if len(raw)>64000:raise ValueError('dns_response_too_large')
+        doc=json.loads(raw.decode())
+        if doc.get('Status')!=0 or doc.get('TC') or not any(q.get('name','').lower().rstrip('.')==host and q.get('type')==1 for q in doc.get('Question',[])):
+            raise ValueError('dns_resolution_not_confirmed')
+        addresses=[answer['data'] for answer in doc.get('Answer',[]) if answer.get('type')==1]
+    if not addresses or any(not ipaddress.ip_address(address).is_global for address in addresses):
+        raise ValueError('nonpublic_destination')
+    with _DiagLockV640(_SALT_PUBLIC_DNS_LOCK_V638, '_salt_public_host_v638'):_SALT_PUBLIC_DNS_CACHE_V638[host]=time.monotonic()+60
+
+
+def _salt_enrich_official_v638(rows):
+    """Photon is a geocoder, not a full-tag source. Read original OSM objects by ID in bounded batches."""
+    output=[{**row,'geocoder_address':row.get('geocoder_address') or row.get('address','')} for row in rows];groups={kind:[] for kind in ('node','way','relation')}
+    for row in output:
+        match=re.fullmatch(r'(node|way|relation):([0-9]+)',str(row.get('osm_id') or ''))
+        if match and (not row.get('website') or str(row.get('source') or '').startswith('Photon')):
+            groups[match[1]].append(match[2])
+    web=_SaltWebV609();web.deadline=time.monotonic()+90
+    objects={};failures={};stop=False
+    for kind,values in groups.items():
+        ids=list(dict.fromkeys(values))
+        for start in range(0,len(ids),50):
+            batch=ids[start:start+50]
+            if stop:
+                for identity in batch:failures[kind+':'+identity]='metadata_not_requested_after_access_denied'
+                continue
+            try:
+                doc,info=_salt_lookup_json_v609(web,'https://api.openstreetmap.org/api/0.6/'+kind+'s.json',{kind+'s':','.join(batch)},'bakery_details')
+                if not isinstance(doc,dict) or not isinstance(doc.get('elements'),list):raise ValueError('invalid_osm_metadata_response')
+                requested=set(batch)
+                for element in doc['elements']:
+                    if element.get('type')==kind and str(element.get('id')) in requested:objects[kind+':'+str(element['id'])]=element
+            except Exception as exc:
+                stop=getattr(exc,'code',None) in (401,403,429)
+                for identity in batch:failures[kind+':'+identity]=str(exc)[:200]
+    requested={kind+':'+identity for kind,ids in groups.items() for identity in ids}
+    for row in output:
+        identity=str(row.get('osm_id') or '')
+        if identity not in requested:continue
+        meta={'source':'OSM API','osm_id':identity,'fetched_at':now_jst().isoformat()}
+        element=objects.get(identity)
+        if element is None:
+            meta.update(status='unavailable',reason=failures.get(identity,'object_not_returned'))
+        elif element.get('visible') is False:
+            meta.update(status='deleted',reason='osm_object_deleted')
+            row['website']='';row['source_tags']={}
+        else:
+            tags=dict(element.get('tags') or {})
+            meta.update(status='loaded',osm_version=element.get('version'),osm_timestamp=element.get('timestamp'))
+            row['source_tags']=tags
+            row['website']=str(tags.get('website') or tags.get('contact:website') or '')
+            row['name']=_salt_normal_v609(tags.get('name:ja') or tags.get('name') or row.get('name'))
+            full=_salt_normal_v609(tags.get('addr:full'))
+            if full:row['address']=full
+            elif tags.get('addr:housenumber') and any(tags.get(k) for k in ('addr:street','addr:quarter','addr:suburb')):
+                row['address']=''.join(str(tags.get(k) or '') for k in ('addr:province','addr:city','addr:suburb','addr:quarter','addr:street','addr:housenumber'))
+            reason=_salt_closed_reason_v633(tags)
+            if reason:meta.update(status='inactive',reason=reason)
+            elif not (tags.get('shop')=='bakery' or tags.get('amenity')=='cafe' and re.search(r'パン|ベーカリー|bakery|bread',row['name'],re.I)):
+                meta.update(status='not_a_bakery',reason='current_osm_tags_do_not_describe_a_bakery')
+            if element.get('type')=='node' and 'lat' in element and 'lon' in element:
+                try:
+                    dlat=math.radians(float(element['lat'])-float(row['lat']));dlng=math.radians(float(element['lon'])-float(row['lng']))
+                    a=math.sin(dlat/2)**2+math.cos(math.radians(float(row['lat'])))*math.cos(math.radians(float(element['lat'])))*math.sin(dlng/2)**2
+                    if 6371000*2*math.asin(min(1,math.sqrt(a)))>25:meta.update(status='location_changed',reason='current_osm_location_differs_from_candidate')
+                except (ValueError,TypeError):meta.update(status='invalid_location',reason='invalid_osm_location')
+        row['official_metadata']=meta
+        row['metadata_requests']=web.logs
+    return output
+
+
+_SALT_NAME_SEARCH_LOCK_V638 = threading.RLock()
+_SALT_NAME_SEARCH_CLOCK_V638 = [0.0]
+
+
+def _salt_name_sources_v638(row, state):
+    """Public name search is only URL discovery. Snippets never constitute existence evidence."""
+    from html.parser import HTMLParser
+    from urllib.parse import parse_qs,unquote
+    from urllib.robotparser import RobotFileParser
+    name=str(row.get('name') or '')[:110]
+    location=str(row.get('geocoder_address') or row.get('address') or '東京都')[:30]
+    query=name+' '+location+' 店舗 公式'
+    report={'provider':'DuckDuckGo HTML','query':query,'results':[],'status':'not_started'}
+    try:
+        with _DiagLockV640(_SALT_NAME_SEARCH_LOCK_V638, '_salt_name_sources_v638'):
+            if state.get('blocked'):raise ValueError('name_search_stopped_after_access_denied')
+            # Serialize public search requests; no cookies, login, captcha solving or alternate hosts.
+            delay=2-(time.monotonic()-_SALT_NAME_SEARCH_CLOCK_V638[0])
+            if delay>0:time.sleep(delay)
+            _SALT_NAME_SEARCH_CLOCK_V638[0]=time.monotonic()
+            agent='TokyoBurariBakeryVerifier/1.0'
+            if 'robots' not in state:
+                with _diag_invoke_v640('http:_salt_name_sources_v638:L55662', lambda: (urlopen(Request('https://html.duckduckgo.com/robots.txt',headers={'User-Agent':agent}),timeout=8))) as response:
+                    robots=response.read(100001)
+                if len(robots)>100000:raise ValueError('name_search_robots_too_large')
+                parser=RobotFileParser();parser.parse(robots.decode('utf-8','replace').splitlines());state['robots']=parser
+            url='https://html.duckduckgo.com/html/?'+urlencode({'q':query})
+            if not state['robots'].can_fetch(agent,url):raise ValueError('name_search_robots_disallowed')
+            with _diag_invoke_v640('http:_salt_name_sources_v638:L55668', lambda: (urlopen(Request(url,headers={'User-Agent':agent,'Accept':'text/html'}),timeout=12))) as response:
+                status=int(response.status);raw=response.read(600001)
+            if status in (202,401,403,429):state['blocked']=True
+            if status!=200 or len(raw)>600000:raise ValueError('name_search_unusable_response_'+str(status))
+            document=raw.decode('utf-8','replace')
+            if any(marker in document.lower() for marker in ('challenge-form','anomaly.js','captcha')):
+                state['blocked']=True;raise ValueError('name_search_access_challenge')
+        class Results(HTMLParser):
+            def __init__(self):super().__init__();self.items=[];self.current=None
+            def handle_starttag(self,tag,attrs):
+                a=dict(attrs)
+                if tag=='a' and 'result__a' in a.get('class',''):self.current={'url':a.get('href',''),'title':''}
+            def handle_data(self,data):
+                if self.current is not None:self.current['title']+=data
+            def handle_endtag(self,tag):
+                if tag=='a' and self.current is not None:self.items.append(self.current);self.current=None
+        parser=Results();parser.feed(document)
+        for item in parser.items:
+            url=item['url'];parsed=urlparse(url)
+            if parsed.hostname in ('duckduckgo.com','www.duckduckgo.com'):
+                url=(parse_qs(parsed.query).get('uddg') or [''])[0]
+            if url.startswith('http://'):url='https://'+url[len('http://'):]
+            parsed=urlparse(url);host=(parsed.hostname or '').lower().rstrip('.')
+            if parsed.scheme!='https' or parsed.port not in (None,443) or parsed.username or parsed.password:continue
+            if any(host==h or host.endswith('.'+h) for h in ('tabelog.com','retty.me','google.com','google.co.jp','openstreetmap.org','instagram.com','facebook.com','x.com','twitter.com','yelp.com','tripadvisor.com','wheree.com','ameblo.jp','yahoo.co.jp','hotpepper.jp','gnavi.co.jp','ekiten.jp','navitime.co.jp','mapion.co.jp','restaurantguru.com')):continue
+            if url not in [r['url'] for r in report['results']]:report['results'].append({'url':url,'title':item['title'][:160]})
+        report['results']=report['results'][:4];report['status']='searched'
+    except Exception as exc:
+        if getattr(exc,'code',None) in (401,403,429):state['blocked']=True
+        report.update(status='unavailable',error=str(exc)[:240],http_status=getattr(exc,'code',None))
+    return report
+
+
+def _salt_official_identity_v638(row, document, url, known_hosts):
+    """Do not accept a review/blog page simply because it mentions a shop."""
+    from html.parser import HTMLParser
+    host=(urlparse(url).hostname or '').lower().removeprefix('www.')
+    if host in known_hosts or host.endswith('.lg.jp'):return True
+    class Page(HTMLParser):
+        def __init__(self):super().__init__();self.in_title=False;self.title='';self.parts=[];self.ld=False;self.raw='';self.items=[]
+        def handle_starttag(self,tag,attrs):
+            if tag=='title':self.in_title=True
+            if tag=='script' and 'ld+json' in dict(attrs).get('type',''):self.ld=True;self.raw=''
+        def handle_data(self,data):
+            if self.in_title:self.title+=data
+            if self.ld:self.raw+=data
+            self.parts.append(data)
+        def handle_endtag(self,tag):
+            if tag=='title':self.in_title=False
+            if tag=='script' and self.ld:
+                try:self.items.append(json.loads(self.raw))
+                except ValueError:pass
+                self.ld=False
+    page=Page();page.feed(document)
+    compact=lambda x:re.sub(r'[\W_]+','',_salt_normal_v609(x).casefold())
+    name=compact(row.get('name',''));title=compact(page.title)
+    tokens=[compact(t) for t in re.findall(r'[A-Za-z]{4,}|[ァ-ヶー]{4,}',row.get('name','')) if t.casefold() not in ('bread','coffee','bakery')]
+    matches=bool(name and name in title) or any(t and t in title for t in tokens)
+    if matches and re.search(r'公式|official',' '.join(page.parts),re.I) and re.search(r'店舗情報|会社概要|運営会社|企業情報|shop\s*list',' '.join(page.parts),re.I):return True
+    def objects(value):
+        if isinstance(value,dict):
+            yield value
+            for part in value.values():yield from objects(part)
+        elif isinstance(value,list):
+            for part in value:yield from objects(part)
+    for obj in objects(page.items):
+        kinds=obj.get('@type',[]);kinds=[kinds] if isinstance(kinds,str) else kinds
+        if any(k in ('Bakery','CafeOrCoffeeShop','FoodEstablishment','LocalBusiness','Store','Organization') for k in kinds):
+            objname=compact(obj.get('name',''));objhost=(urlparse(str(obj.get('url') or '')).hostname or '').lower().removeprefix('www.')
+            if objhost==host and objname and (objname in name or name in objname or any(t in objname for t in tokens)):return True
+    return False
+
+
+def _salt_name_verify_v638(rows, progress=None):
+    """Second verification route for URL-less or unsuccessfully checked candidates."""
+    from datetime import timedelta
+    state={};known_hosts={(urlparse(r.get('website') or '').hostname or '').lower().removeprefix('www.') for r in rows if r.get('website')}
+    guard=threading.RLock();started=[0]
+    def verify(item):
+        index,row=item
+        check=row.get('existence_check') or {}
+        if _salt_existence_valid_v637(check) or check.get('status')=='closed_or_relocated' or (row.get('official_metadata') or {}).get('status') in ('deleted','inactive','not_a_bakery','location_changed','invalid_location'):
+            return row
+        with guard:
+            started[0]+=1
+            if isinstance(progress,dict):progress['message']=f'店名から公式店舗情報を確認しています（{started[0]}/{len(rows)}店）。'
+        report=_salt_name_sources_v638(row,state)
+        at=now_jst();updated={**check,'policy_version':1,'status':'unverified','checked_at':at.isoformat(),'expires_at':(at+timedelta(hours=24)).isoformat(),'name_search':report,'attempts':list(check.get('attempts') or [])}
+        for hit in report['results'][:3]:
+            url=hit['url'];host=(urlparse(url).hostname or '').lower().rstrip('.')
+            attempt={'url':url,'source':'name_search'}
+            try:
+                page=_salt_existence_fetch_v637(url,host)
+                if not _salt_official_identity_v638(row,page,url,known_hosts):
+                    attempt['reason']='official_source_not_confirmed';updated['attempts'].append(attempt);continue
+                decision,reason=_salt_existence_parse_v637(row,page,url)
+                attempt.update(reason=reason,http_status=200);updated['attempts'].append(attempt)
+                if decision:
+                    updated.update(decision);updated.update(reason=reason,verification_route='name_search');break
+            except Exception as exc:attempt.update(reason=str(exc)[:240],http_status=getattr(exc,'code',None));updated['attempts'].append(attempt)
+        if updated['status']=='unverified':updated['reason']=('name_search_'+report['status'] if report['status']!='searched' else 'no_matching_official_store_page')
+        return {**row,'existence_check':updated}
+    with ThreadPoolExecutor(max_workers=3,thread_name_prefix='bakery-name-verifier') as pool:
+        return list(pool.map(verify,enumerate(rows)))
+
+
 def _salt_existence_valid_v637(check):
     try:
         return (isinstance(check, dict) and check.get('policy_version') == 1
@@ -55571,12 +55933,13 @@ def _salt_existence_parse_v637(row, document, url):
     class Page(HTMLParser):
         def __init__(self):
             super().__init__(convert_charrefs=True)
-            self.parts=[];self.structured=[];self.links=[];self.ignore=0;self.ld=False;self.script=[]
+            self.parts=[];self.structured=[];self.links=[];self.map_sources=[];self.ignore=0;self.ld=False;self.script=[]
         def handle_starttag(self, tag, attrs):
             a=dict(attrs)
             if tag in ('script','style','noscript'):
                 self.ignore+=1
                 if tag=='script':self.ld='ld+json' in a.get('type','');self.script=[]
+            if tag=='iframe':self.map_sources.append(a.get('src',''))
             if tag=='a':self.links.append((a.get('href',''),a.get('title','')))
         def handle_endtag(self, tag):
             if tag in ('script','style','noscript'):
@@ -55605,7 +55968,17 @@ def _salt_existence_parse_v637(row, document, url):
             for value in x.values():yield from objects(value)
         elif isinstance(x,list):
             for value in x:yield from objects(value)
-    located=''
+    def address_norm(value):
+        value=unicodedata.normalize('NFKC',str(value))
+        digits={'一':1,'二':2,'三':3,'四':4,'五':5,'六':6,'七':7,'八':8,'九':9}
+        def chome(m):
+            parts=m.group(1).split('十')
+            number=(digits.get(parts[0],1)*10+digits.get(parts[1],0)) if len(parts)==2 else digits.get(parts[0],0)
+            return str(number)+'-'
+        value=re.sub(r'([一二三四五六七八九十]+)丁目',chome,value)
+        value=re.sub(r'丁目|番地|番|号','-',value)
+        return norm(value)
+    located='' 
     # A name-matched LocalBusiness needs its own matching coordinates; unrelated JSON-LD is ignored.
     for item in objects(page.structured):
         typ=item.get('@type',[]);typ=[typ] if isinstance(typ,str) else typ
@@ -55619,21 +55992,38 @@ def _salt_existence_parse_v637(row, document, url):
         except (KeyError,ValueError,TypeError):pass
     for key in ('phone','contact:phone'):
         phone=re.sub(r'\D','',str(tags.get(key) or ''))
-        if phone.startswith('81'):phone='0'+phone[2:]
+        if phone.startswith('81'):phone='0'+phone[2:].lstrip('0')
         if len(phone)>=10 and phone in re.sub(r'\D','',text):located='matching_phone'
     # Exact street/block numbers are needed; a city or town name alone is insufficient.
-    address=norm(row.get('address') or tags.get('addr:full') or '')
+    address=address_norm(row.get('address') or tags.get('addr:full') or '')
     numbers=re.findall(r'\d+',unicodedata.normalize('NFKC',str(row.get('address') or tags.get('addr:full') or '')))
-    if len(address)>=10 and len(numbers)>=2 and address in normalized:located='matching_street_address'
-    if not located:return None,'shop_location_not_matched'
+    if len(address)>=10 and len(numbers)>=2 and address in address_norm(text):located='matching_street_address'
+    if not located:
+        for lat_raw,lng_raw in re.findall(r'!3d(-?[0-9.]+)!4d(-?[0-9.]+)',document):
+            try:
+                lat,lng=float(lat_raw),float(lng_raw)
+                a=math.sin(math.radians(lat-float(row['lat']))/2)**2+math.cos(math.radians(lat))*math.cos(math.radians(float(row['lat'])))*math.sin(math.radians(lng-float(row['lng']))/2)**2
+                if 6371000*2*math.asin(min(1,math.sqrt(a)))<=120:located='official_page_map_marker_within_120m'
+            except (ValueError,TypeError):pass
+    if not located and len(page.map_sources)==1 and urlparse(url).path.strip('/'):
+        source=urlparse(page.map_sources[0])
+        if source.scheme=='https' and source.hostname in ('www.google.com','maps.google.com','www.google.co.jp','maps.google.co.jp') and source.path.startswith('/maps/embed'):
+            for span,lng_raw,lat_raw in re.findall(r'!1d([0-9.]+)!2d(-?[0-9.]+)!3d(-?[0-9.]+)',page.map_sources[0]):
+                try:
+                    lat,lng=float(lat_raw),float(lng_raw)
+                    a=math.sin(math.radians(lat-float(row['lat']))/2)**2+math.cos(math.radians(lat))*math.cos(math.radians(float(row['lat'])))*math.sin(math.radians(lng-float(row['lng']))/2)**2
+                    if 0<float(span)<=1500 and 6371000*2*math.asin(min(1,math.sqrt(a)))<=120:located='official_branch_map_center_within_120m'
+                except (ValueError,TypeError):pass
+    if not located:return None,'shop_location_not_matched' 
     path=urlparse(url).path.lower()
     if re.search(r'/(?:news|blog|archive|article|press|posts?)(?:/|$)',path):return None,'historical_article_not_store_listing'
     # Recent fetch alone is insufficient. Require an actual business-hours listing.
     if not re.search(r'営業時間|[Oo]pening\s*[Hh]ours|[Oo]pen\s*[:：]|[Hh]ours\s*[:：]',text):return None,'opening_hours_not_found'
     if not re.search(r'\d{1,2}\s*[:：]\s*\d{2}\s*(?:[〜～~\-–—]|to)\s*\d{1,2}\s*[:：]\s*\d{2}',text,re.I):return None,'opening_hours_not_found'
     return {'status':'confirmed','url':url,'identity_method':located,
-            'evidence':'公式として登録された店舗ページで店名・所在地情報・営業時間を照合',
+            'evidence':'公式店舗ページで店名・所在地情報・営業時間を照合',
             'document_sha256':hashlib.sha256(document.encode()).hexdigest()},'official_store_listing_matched'
+
 
 
 def _salt_existence_fetch_v637(url, host):
@@ -55643,11 +56033,10 @@ def _salt_existence_fetch_v637(url, host):
     from urllib.robotparser import RobotFileParser
     def validate(value):
         p=urlparse(value);name=(p.hostname or '').lower().rstrip('.')
-        if p.scheme!='https' or p.port not in (None,443) or p.username or p.password or name!=host:
+        if p.scheme!='https' or p.port not in (None,443) or p.username or p.password or name.removeprefix('www.')!=host.removeprefix('www.'):
             raise ValueError('untrusted_url_or_redirect')
-        ips=socket.getaddrinfo(name,443,type=socket.SOCK_STREAM)
-        if not ips or any(not ipaddress.ip_address(item[4][0]).is_global for item in ips):
-            raise ValueError('nonpublic_destination')
+        try:_salt_public_host_v638(name)
+        except Exception as exc:exc.salt_phase="dns_resolution";raise
     class Redirect(HTTPRedirectHandler):
         def redirect_request(self,req,fp,code,msg,headers,newurl):
             validate(newurl)
@@ -55656,24 +56045,26 @@ def _salt_existence_fetch_v637(url, host):
     opener=build_opener(Redirect());agent='TokyoBurariBakeryVerifier/1.0'
     robot='https://'+host+'/robots.txt';validate(robot)
     try:
-        with opener.open(Request(robot,headers={'User-Agent':agent}),timeout=5) as response:
+        with opener.open(Request(robot,headers={'User-Agent':agent}),timeout=8) as response:
             raw=response.read(200001)
             if len(raw)>200000:raise ValueError('robots_too_large')
         parser=RobotFileParser();parser.parse(raw.decode('utf-8','replace').splitlines())
         if not parser.can_fetch(agent,url):raise ValueError('robots_disallowed')
     except HTTPError as exc:
         if exc.code not in (404,410):raise
-    with opener.open(Request(url,headers={'User-Agent':agent,'Accept':'text/html','Accept-Encoding':'identity'}),timeout=6) as response:
+    with opener.open(Request(url,headers={'User-Agent':agent,'Accept':'text/html','Accept-Encoding':'identity'}),timeout=12) as response:
         if int(response.status)!=200 or 'html' not in str(response.headers.get('Content-Type','')).lower():raise ValueError('not_a_live_html_page')
         raw=response.read(900001)
         if len(raw)>900000:raise ValueError('page_too_large')
         return raw.decode(response.headers.get_content_charset() or 'utf-8','replace')
 
 
+
 def _salt_verify_existence_v637(rows, progress=None):
     from urllib.parse import urljoin
     from datetime import timedelta
     from html.parser import HTMLParser
+    rows=_salt_enrich_official_v638(rows)
     cache={};guard=threading.RLock();host_locks={};started=[0]
     def verify(item):
         index,row=item
@@ -55685,6 +56076,9 @@ def _salt_verify_existence_v637(rows, progress=None):
             if isinstance(progress,dict):progress['message']=f'店舗の存在を確認しています（{started[0]}/{len(rows)}店）。未確認の店舗は表示しません。'
         raw=str(row.get('website') or '').strip()
         try:
+            metadata=row.get('official_metadata') or {}
+            if metadata.get('status') in ('deleted','inactive','not_a_bakery','location_changed','invalid_location'):
+                raise ValueError(metadata.get('reason') or metadata['status'])
             p=urlparse(raw);host=(p.hostname or '').lower().rstrip('.')
             if p.scheme=='http':raw='https://'+p.netloc+p.path+('?' + p.query if p.query else '');p=urlparse(raw)
             if not host or p.scheme!='https' or any(host==h or host.endswith('.'+h) for h in
@@ -55698,7 +56092,7 @@ def _salt_verify_existence_v637(rows, progress=None):
                 attempt={'url':url}
                 try:
                     with guard:host_lock=host_locks.setdefault(host,threading.RLock())
-                    with host_lock:
+                    with _DiagLockV640(host_lock, 'verify'):
                         if url not in cache:
                             try:cache[url]=_salt_existence_fetch_v637(url,host)
                             except Exception as exc:cache[url]=exc
@@ -55721,7 +56115,7 @@ def _salt_verify_existence_v637(rows, progress=None):
                     ranked=[]
                     for href,title in links.items:
                         target=urljoin(url,href).split('#')[0];tp=urlparse(target)
-                        if tp.scheme!='https' or (tp.hostname or '').lower().rstrip('.')!=host or target in seen:continue
+                        if tp.scheme!='https' or (tp.hostname or '').lower().rstrip('.').removeprefix('www.')!=host.removeprefix('www.') or target in seen:continue
                         matched=any(t in (title+' '+href).casefold() for t in tokens)
                         if matched or re.search(r'店舗|ショップ|アクセス|shop|store|access',title+' '+href,re.I):ranked.append((0 if matched else 1,target))
                     urls.extend(t for _,t in sorted(set(ranked))[:4])
@@ -55732,7 +56126,9 @@ def _salt_verify_existence_v637(rows, progress=None):
         return {**row,'existence_check':check}
     if not rows:return []
     with ThreadPoolExecutor(max_workers=3,thread_name_prefix='bakery-existence') as pool:
-        return list(pool.map(verify,enumerate(rows)))
+        checked=list(pool.map(verify,enumerate(rows)))
+    return _salt_name_verify_v638(checked,progress)
+
 
 
 def _salt_map_cards_v622(doc, discovery, include_unknown=False):
@@ -55795,7 +56191,7 @@ def _salt_load_v609(force=False):
     if cached is not None:
         return json.loads(json.dumps(cached))
     try:
-        raw = supabase_client().storage.from_(GPS_TRACK_BUCKET).download(_salt_prefix_v609() + "/map.json")
+        raw = _diag_invoke_v640('download:_salt_load_v609:L56062', lambda: (supabase_client().storage.from_(GPS_TRACK_BUCKET).download(_salt_prefix_v609() + "/map.json")))
     except Exception as exc:
         if not _salt_missing_v609(exc):
             raise RuntimeError("パンの記録を読み込めませんでした。再読み込みしてください。") from exc
@@ -55831,7 +56227,7 @@ def _salt_write_lock_v609():
 
 def _salt_commit_v609(operation, payload, expected_revision=None):
     # Re-read immediately before a mutation so a cached page cannot erase newer visits.
-    with _salt_write_lock_v609():
+    with _DiagLockV640(_salt_write_lock_v609(), '_salt_commit_v609'):
         doc = _salt_load_v609(force=True)
         if expected_revision is not None and int(expected_revision) != int(doc.get("revision") or 0):
             raise ValueError("別の画面で記録が更新されました。再読み込みしてから操作してください。")
@@ -55902,10 +56298,10 @@ def _salt_commit_v609(operation, payload, expected_revision=None):
         doc["updated_at"] = now_jst().isoformat()
         raw = json.dumps(doc, ensure_ascii=False, separators=(",", ":")).encode()
         # Reuse the app's existing metadata-bucket compatibility configuration.
-        supabase_client().storage.from_(GPS_TRACK_BUCKET).upload(
+        _diag_invoke_v640('upload:_salt_commit_v609:L56169', lambda: (supabase_client().storage.from_(GPS_TRACK_BUCKET).upload(
             path=_salt_prefix_v609() + "/map.json", file=raw,
             file_options={"content-type": GPS_TRACK_STORAGE_MIME, "cache-control": "0", "upsert": "true"},
-        )
+        )))
         _session_cache_set("_salt_doc_v609_" + _salt_owner_v609(), doc)
         return doc
 
@@ -55950,7 +56346,7 @@ def _salt_lookup_json_v609(web, url, params, operation):
         remaining = getattr(web, "deadline", time.monotonic() + 4.0) - time.monotonic()
         if remaining < 0.25:
             raise TimeoutError("検索の通信待ち時間を超えました。")
-        with urlopen(request, timeout=min(60.0 if operation == "bakery_search" else 10.0 if operation in ("bakery_photon", "bakery_details") else 4.0, remaining)) as response:
+        with _diag_invoke_v640('http:_salt_lookup_json_v609:L56217', lambda: (urlopen(request, timeout=min(60.0 if operation == "bakery_search" else 10.0 if operation in ("bakery_photon", "bakery_details") else 4.0, remaining)))) as response:
             info.update(status=response.status, content_type=response.headers.get("Content-Type", ""))
             raw = response.read(4 * 1024 * 1024 + 1)
         if len(raw) > 4 * 1024 * 1024:
@@ -55982,7 +56378,7 @@ def _salt_search_v609(query):
     if not 2 <= len(query) <= 180:
         raise ValueError("店名や住所を2文字以上で入力してください。")
     web = _SaltWebV609()
-    web.search_policy = "overpass_photon_existence_v637"
+    web.search_policy = "overpass_photon_existence_v638"
     compact = re.sub(r"\s+", "", query)
     pattern = ".*".join(re.sub(r"([.\[\]{}()*+?^$|\\])", r"\\\1", token) for token in query.split())
     try:
@@ -56049,6 +56445,7 @@ def _salt_search_v609(query):
 
 
 
+
 def _salt_save_visit_v609(place, files, note, date_value, again, entry_id="", visit_id=None):
     visit_id = visit_id or uuid.uuid4().hex
     paths = []
@@ -56062,7 +56459,7 @@ def _salt_save_visit_v609(place, files, note, date_value, again, entry_id="", vi
                 buffer = io.BytesIO()
                 image.save(buffer, format="JPEG", quality=90)
             path = f"{_salt_prefix_v609()}/images/{visit_id}_{index}.jpg"
-            supabase_client().storage.from_(PHOTO_BUCKET).upload(path=path, file=buffer.getvalue(), file_options={"content-type": "image/jpeg", "cache-control": "3600", "upsert": "true"})
+            _diag_invoke_v640('upload:_salt_save_visit_v609:L56330', lambda: (supabase_client().storage.from_(PHOTO_BUCKET).upload(path=path, file=buffer.getvalue(), file_options={"content-type": "image/jpeg", "cache-control": "3600", "upsert": "true"})))
             paths.append(path)
         return _salt_commit_v609("visit", {"place": place, "entry_id": entry_id, "again": again,
             "visit": {"id": visit_id, "date": str(date_value), "note": str(note or "")[:4000], "photos": paths}})
@@ -56089,13 +56486,171 @@ def _salt_search_jobs_v609():
     return {"executor": ThreadPoolExecutor(max_workers=2, thread_name_prefix="salt-search"), "jobs": {}, "lock": threading.RLock()}
 
 
+def _salt_google_reserve_v639(api_key):
+    """Conservative per-key/month allowance; failed requests also consume a slot.
+
+    Configure the SQLite file on persistent storage when running on ephemeral or
+    multiple servers. A Google Cloud quota is still needed for account-wide caps.
+    """
+    import sqlite3
+    from pathlib import Path
+    from datetime import datetime, timezone
+    cap = max(0, min(1000, int(secret('BAKERY_GOOGLE_MONTHLY_LIMIT', 300))))
+    path = Path(str(secret('BAKERY_GOOGLE_USAGE_DB', '~/.burari/bakery_google_usage.sqlite3'))).expanduser()
+    month = datetime.now(timezone.utc).strftime('%Y-%m')
+    identity = hashlib.sha256(api_key.encode()).hexdigest()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(str(path), timeout=5) as db:
+        _diag_invoke_v640('execute:_salt_google_reserve_v639:L56372', lambda: (db.execute('CREATE TABLE IF NOT EXISTS monthly_usage (api_key_hash TEXT, month TEXT, used INTEGER NOT NULL, PRIMARY KEY(api_key_hash, month))')))
+        _diag_invoke_v640('execute:_salt_google_reserve_v639:L56373', lambda: (db.execute('BEGIN IMMEDIATE')))
+        row = _diag_invoke_v640('execute:_salt_google_reserve_v639:L56374', lambda: (db.execute('SELECT used FROM monthly_usage WHERE api_key_hash=? AND month=?', (identity, month)))).fetchone()
+        used = int(row[0]) if row else 0
+        if used >= cap:
+            raise ValueError('店名検索の月間利用上限に達しました。追加のAPI呼び出しは行いません。')
+        _diag_invoke_v640('execute:_salt_google_reserve_v639:L56378', lambda: (db.execute('INSERT INTO monthly_usage VALUES (?,?,1) ON CONFLICT(api_key_hash,month) DO UPDATE SET used=used+1', (identity, month))))
+    return {'month': month, 'used': used + 1, 'limit': cap}
+
+
+def _salt_google_search_v639(query, api_key):
+    # No st.cache_data: Google place content must not enter our 3-month OSM cache.
+    import urllib.request
+    import urllib.error
+    from urllib.parse import urlencode
+    query = _salt_normal_v609(query)
+    if not 2 <= len(query) <= 180:
+        raise ValueError('店名や住所を2文字以上で入力してください。')
+    result = {'provider': 'Google Places', 'candidates': [], 'google_places': [],
+              'query': query, 'received_at': time.time(), 'logs': []}
+    log = {'event': 'google_text_search', 'query': query, 'provider': 'Google Places',
+           'at': now_jst().isoformat(), 'sku': 'Text Search Pro'}
+    result['logs'].append(log)
+    started = time.monotonic()
+    try:
+        if not api_key:
+            raise ValueError('GOOGLE_PLACES_API_KEYを設定し、Places API（New）を有効にしてください。')
+        result['usage'] = _salt_google_reserve_v639(api_key)
+        body = {'textQuery': query, 'languageCode': 'ja', 'regionCode': 'JP',
+                'pageSize': 5, 'locationBias': {'rectangle': {
+                    'low': {'latitude': 35.45, 'longitude': 139.4},
+                    'high': {'latitude': 35.95, 'longitude': 140.05}}}}
+        mask = 'places.id,places.displayName,places.formattedAddress,places.businessStatus,places.attributions'
+        request = urllib.request.Request('https://places.googleapis.com/v1/places:searchText',
+            data=json.dumps(body, ensure_ascii=False).encode('utf-8'), method='POST',
+            headers={'Content-Type': 'application/json; charset=utf-8',
+                     'X-Goog-Api-Key': api_key, 'X-Goog-FieldMask': mask})
+        class NoRedirect(urllib.request.HTTPRedirectHandler):
+            def redirect_request(self, req, fp, code, msg, headers, newurl):
+                return None
+        # Exactly one call; no pagination, auto retry, details, photos, or hours API.
+        with urllib.request.build_opener(NoRedirect()).open(request, timeout=15) as response:
+            raw = response.read(500001)
+            if len(raw) > 500000:
+                raise ValueError('検索サービスの応答が大きすぎます。')
+            document = json.loads(raw)
+        if not isinstance(document, dict) or not isinstance(document.get('places', []), list):
+            raise ValueError('検索結果の形式を確認できませんでした。')
+        excluded = {}; seen = set()
+        for place in document.get('places', [])[:5]:
+            if not isinstance(place, dict):
+                continue
+            status = place.get('businessStatus')
+            if status != 'OPERATIONAL':
+                reason = str(status or 'STATUS_UNAVAILABLE')
+                excluded[reason] = excluded.get(reason, 0) + 1
+                continue
+            identity = str(place.get('id') or '')
+            display = place.get('displayName') or {}
+            name = str(display.get('text') or '') if isinstance(display, dict) else ''
+            if not re.fullmatch(r'[A-Za-z0-9_-]{1,256}', identity) or not name or identity in seen:
+                continue
+            seen.add(identity)
+            # Do not propagate Google's coordinates into any OSM map data.
+            result['google_places'].append({'place_id': identity, 'name': name,
+                'address': str(place.get('formattedAddress') or ''), 'business_status': status,
+                'maps_url': 'https://www.google.com/maps/search/?' + urlencode({
+                    'api': 1, 'query': query, 'query_place_id': identity}),
+                'attributions': place.get('attributions') if isinstance(place.get('attributions'), list) else []})
+        # Logs contain counts/statuses and the user's query, never API keys or
+        # Google's names, addresses, response bodies, or persistent coordinates.
+        log.update(status='completed', returned=len(document.get('places', [])),
+                   accepted=len(result['google_places']), excluded=excluded)
+    except urllib.error.HTTPError as exc:
+        code = int(exc.code)
+        log.update(status='failed', http_status=code)
+        result['error'] = ('Google Placesへの接続が拒否されました。APIキー・APIの有効化・請求設定を確認してください。'
+                           if code in (400, 401, 403) else
+                           'Google Placesの利用上限または混雑により検索できませんでした。' if code == 429 else
+                           'Google Placesで通信エラーが発生しました。再度検索してください。')
+    except ValueError as exc:
+        # Never expose raw response text or JSON decode documents.
+        result['error'] = str(exc) if not isinstance(exc, json.JSONDecodeError) else '検索結果を読み取れませんでした。'
+        log.update(status='failed', error=result['error'])
+    except Exception as exc:
+        result['error'] = 'Google Placesに接続できませんでした。通信状態を確認して再検索してください。'
+        log.update(status='failed', exception_type=type(exc).__name__)
+    log['elapsed_ms'] = round((time.monotonic() - started) * 1000)
+    return result
+
+
+def _salt_keyword_search_v639(query, api_key):
+    # Explicit address lookups retain the existing address-registration flow.
+    if re.search(r'東京都|[市区町村].*[0-9０-９]|丁目', query):
+        return _salt_search_v609(query)
+    return _salt_google_search_v639(query, api_key)
+
+
+def page_bakery_google_results_v639():
+    from html import escape
+    from urllib.parse import urlparse
+    page_top('🍞 店名の検索結果')
+    result = st.session_state.get('_salt_search_result_v609') or {}
+    if result.get('provider') != 'Google Places':
+        st.info('パン屋マップの「場所を検索」から検索してください。')
+        return
+    st.caption('Google Maps の検索結果です。店舗の表示は、現在営業中であることや在庫を保証するものではありません。')
+    usage = result.get('usage') or {}
+    if usage:
+        st.caption(f"このアプリの今月の店名検索：{usage['used']} / {usage['limit']}回")
+    expired = time.time() - float(result.get('received_at', 0)) > 900
+    if expired:
+        result['google_places'] = []
+        st.info('検索結果の表示期限が切れました。パン屋マップへ戻って再検索してください。')
+    elif result.get('error'):
+        st.info(result['error'])
+    elif not result.get('google_places'):
+        st.info('営業状態を確認できる候補がありません。地域名を加えて再検索してください。')
+    else:
+        # Attribution is kept with the data; this page contains no non-Google map.
+        st.markdown('<div translate="no" style="font:400 16px sans-serif;margin:10px 0;white-space:nowrap">Google Maps</div>', unsafe_allow_html=True)
+        for index, place in enumerate(result['google_places']):
+            with st.container(border=True):
+                st.text(place['name'])
+                st.caption(place['address'])
+                st.link_button('Googleマップで見る・経路案内', place['maps_url'], use_container_width=True)
+                for attribution in place.get('attributions', []):
+                    if not isinstance(attribution, dict):
+                        continue
+                    title = str(attribution.get('provider') or '')
+                    url = str(attribution.get('providerUri') or '')
+                    if urlparse(url).scheme == 'https':
+                        st.markdown('<small><a href="' + escape(url, quote=True) + '" target="_blank" rel="noopener noreferrer">' + escape(title) + '</a></small>', unsafe_allow_html=True)
+                    elif title:
+                        st.caption(title)
+    st.caption('Google由来の候補は、この画面で確認できます。パン屋マップへの自動登録は行いません。')
+    st.markdown('[Google利用規約](https://policies.google.com/terms) · [Googleプライバシーポリシー](https://policies.google.com/privacy)')
+    if result.get('logs'):
+        with st.expander('検索ログ'):
+            st.download_button('検索ログを保存', json.dumps(result['logs'], ensure_ascii=False, indent=2),
+                               'bakery_place_search.json', 'application/json', key='google_bakery_logs_v639')
+
+
 def _salt_start_search_v609(query):
     query = _salt_normal_v609(query)
     if not 2 <= len(query) <= 180:
         raise ValueError("店名や住所を2文字以上で入力してください。")
     owner = _salt_owner_v609()
     registry = _salt_search_jobs_v609()
-    with registry["lock"]:
+    with _DiagLockV640(registry["lock"], '_salt_start_search_v609'):
         # Keep one outstanding lookup per owner and expire abandoned completed jobs.
         for key, job in list(registry["jobs"].items()):
             if job["future"].done() and time.monotonic() - job["at"] > 3600:
@@ -56103,13 +56658,13 @@ def _salt_start_search_v609(query):
         previous = registry["jobs"].get(owner)
         if previous and not previous["future"].done():
             return
-        registry["jobs"][owner] = {"future": registry["executor"].submit(_salt_search_v609, query), "at": time.monotonic()}
+        registry["jobs"][owner] = {"future": _diag_submit_v640(registry["executor"], _salt_keyword_search_v639, query, GOOGLE_PLACES_API_KEY), "at": time.monotonic()}
     st.session_state["_salt_search_wait_v609_" + owner] = True
 
 
 def _salt_collect_search_v609():
     owner, registry = _salt_owner_v609(), _salt_search_jobs_v609()
-    with registry["lock"]:
+    with _DiagLockV640(registry["lock"], '_salt_collect_search_v609'):
         job = registry["jobs"].get(owner)
         if not job:
             st.session_state.pop("_salt_search_wait_v609_" + owner, None)
@@ -56119,10 +56674,12 @@ def _salt_collect_search_v609():
             return False
         registry["jobs"].pop(owner, None)
     try:
-        result = job["future"].result()
+        result = _diag_future_v640(job["future"])
     except Exception as exc:
         result = {"candidates": [], "error": str(exc), "logs": getattr(exc, "salt_logs", [])}
     st.session_state["_salt_search_result_v609"] = result
+    if result.get("provider") == "Google Places":
+        _set_page_state("bakery_google_results_v639", history_mode="push")
     if result.get("error"):
         _app_error_record_v610("salt.place_search", result["error"], {"events": result.get("logs") or []})
     st.session_state.pop("_salt_candidate_v609", None)
@@ -56171,8 +56728,8 @@ def _app_error_jobs_v610():
 
 
 def _app_error_store_v610(client, path, blob):
-    result = client.storage.from_(GPS_TRACK_BUCKET).upload(path=path, file=blob,
-        file_options={"content-type": GPS_TRACK_STORAGE_MIME, "cache-control": "0", "upsert": "true"})
+    result = _diag_invoke_v640('upload:_app_error_store_v610:L56599', lambda: (client.storage.from_(GPS_TRACK_BUCKET).upload(path=path, file=blob,
+        file_options={"content-type": GPS_TRACK_STORAGE_MIME, "cache-control": "0", "upsert": "true"})))
     if (isinstance(result, dict) and result.get("error")) or getattr(result, "error", None):
         raise RuntimeError("エラーログの保存先からエラーが返されました。")
     return True
@@ -56201,7 +56758,7 @@ def _app_error_record_v610(stage, error, detail=None, event_id=None, source="ser
         rows.append(row)
         st.session_state[key] = rows[-200:]
         registry = _app_error_jobs_v610()
-        with registry["lock"]:
+        with _DiagLockV640(registry["lock"], '_app_error_record_v610'):
             pending = [future for future in registry["pending"] if not future.done()]
             registry["pending"] = pending
             if len(pending) >= 100:
@@ -56209,7 +56766,7 @@ def _app_error_record_v610(stage, error, detail=None, event_id=None, source="ser
                 return
             stamp = now_jst().strftime("%Y%m%dT%H%M%S")
             path = _salt_prefix_v609() + f"/errors/{stamp}_{safe_id}.json"
-            future = registry["executor"].submit(_app_error_store_v610, supabase_client(), path, json.dumps(row, ensure_ascii=False).encode())
+            future = _diag_submit_v640(registry["executor"], _app_error_store_v610, supabase_client(), path, json.dumps(row, ensure_ascii=False).encode())
             pending.append(future)
             st.session_state["_app_error_future_v610_" + owner] = future
     except Exception:
@@ -56244,7 +56801,7 @@ def _app_error_history_v610():
         name = str(item.get("name") or "")
         if not re.fullmatch(r"\d{8}T\d{6}_[0-9a-f]{32}\.json", name):
             continue
-        blob = _storage_bytes(bucket.download(folder + "/" + name))
+        blob = _storage_bytes(_diag_invoke_v640('download:_app_error_history_v610:L56672', lambda: (bucket.download(folder + "/" + name))))
         if len(blob) > 60000:
             continue
         row = json.loads(blob.decode())
@@ -56422,8 +56979,8 @@ def _salt_edit_visit_v615(entry, visit, files, removed, name, address, note, dat
             image.save(buffer, format="JPEG", quality=90)
         # New immutable paths cannot overwrite a photograph from a previous visit.
         path = f"{_salt_prefix_v609()}/images/{visit['id']}_{uuid.uuid4().hex}_{index}.jpg"
-        supabase_client().storage.from_(PHOTO_BUCKET).upload(path=path, file=buffer.getvalue(),
-            file_options={"content-type": "image/jpeg", "cache-control": "3600", "upsert": "true"})
+        _diag_invoke_v640('upload:_salt_edit_visit_v615:L56850', lambda: (supabase_client().storage.from_(PHOTO_BUCKET).upload(path=path, file=buffer.getvalue(),
+            file_options={"content-type": "image/jpeg", "cache-control": "3600", "upsert": "true"})))
         paths.append(path)
     return _salt_commit_v609("edit_visit", {"entry_id": entry["id"], "visit_id": visit["id"],
         "name": name, "address": address, "note": note, "date": str(date_value), "again": again, "photos": paths}, revision)
@@ -56475,7 +57032,7 @@ def _salt_discovery_load_v617(force=False):
     if cached is not None:
         return json.loads(json.dumps(cached))
     try:
-        raw = supabase_client().storage.from_(GPS_TRACK_BUCKET).download(_salt_prefix_v609()+"/discovery.json")
+        raw = _diag_invoke_v640('download:_salt_discovery_load_v617:L56903', lambda: (supabase_client().storage.from_(GPS_TRACK_BUCKET).download(_salt_prefix_v609()+"/discovery.json")))
     except Exception as exc:
         if not _salt_missing_v609(exc):
             raise RuntimeError("保存済みの検索結果を読み込めませんでした。") from exc
@@ -56503,9 +57060,9 @@ def _salt_discovery_load_v617(force=False):
 
 
 def _salt_discovery_write_v617(doc):
-    supabase_client().storage.from_(GPS_TRACK_BUCKET).upload(path=_salt_prefix_v609()+"/discovery.json",
+    _diag_invoke_v640('upload:_salt_discovery_write_v617:L56931', lambda: (supabase_client().storage.from_(GPS_TRACK_BUCKET).upload(path=_salt_prefix_v609()+"/discovery.json",
         file=json.dumps(doc, ensure_ascii=False).encode(),
-        file_options={"content-type": GPS_TRACK_STORAGE_MIME, "cache-control": "0", "upsert": "true"})
+        file_options={"content-type": GPS_TRACK_STORAGE_MIME, "cache-control": "0", "upsert": "true"})))
     _session_cache_set("_salt_discovery_v617_"+_salt_owner_v609(), doc)
 
 
@@ -56636,8 +57193,9 @@ def _salt_overpass_cache_usable_v630(search):
     # A truncated Photon response must not suppress a fresh Overpass request.
     return (search.get('provider') == 'Overpass' and not search.get('partial_results')
             and search.get('search_scope') == 'bakery' and not search.get('superseded') and search.get('status_filter_version') == 1
-            and search.get('existence_policy_version') == 1
+            and search.get('existence_policy_version') == 2
             and all(isinstance(r.get('existence_check'),dict) and r['existence_check'].get('expires_at','') > now_jst().isoformat() for r in search.get('results',[])))
+
 
 
 
@@ -56781,11 +57339,12 @@ def _salt_discover_v617(lat, lng, radius, progress=None):
         at=now_jst()
         _salt_trace_v609(web,"bakery_search_complete",{"count":len(results),"existence_confirmed":sum(_salt_existence_valid_v637(r.get("existence_check")) for r in results),"received":len(data["elements"]),"outside_radius":outside_radius,"inactive_excluded":closed})
         return {"id":uuid.uuid4().hex,"lat":lat,"lng":lng,"radius_m":radius,"searched_at":at.isoformat(),
-            "expires_at":_salt_expiry_v617(at).isoformat(),"diagnostic_schema":3,"existence_policy_version":1,"status_filter_version":1,"closed_candidate_ids":[row["id"] for row in closed],"search_scope":"bakery","provider":info.get('provider'),"partial_results":bool(info.get('partial_results')),"osm_base_timestamp":info.get("osm_base_timestamp"),"results":results,"logs":web.logs}
+            "expires_at":_salt_expiry_v617(at).isoformat(),"diagnostic_schema":3,"existence_policy_version":2,"status_filter_version":1,"closed_candidate_ids":[row["id"] for row in closed],"search_scope":"bakery","provider":info.get('provider'),"partial_results":bool(info.get('partial_results')),"osm_base_timestamp":info.get("osm_base_timestamp"),"results":results,"logs":web.logs}
     except Exception as exc:
         error=RuntimeError("パン屋情報を取得できませんでした。保存済みのピンは引き続き表示します。検索ログを設定から出力できます。")
         error.salt_logs=web.logs+[{"event":"bakery_search_failed","error":str(exc)}]
         raise error from exc
+
 
 
 
@@ -56805,13 +57364,13 @@ def _salt_discovery_persist_v631(result, owner, bucket, lock):
     public_result = {k: v for k, v in result.items() if not k.startswith('_background_')}
     # Individual results must survive log export, including after cache expiry/reconciliation.
     log = {**public_result, 'diagnostic_schema':2, 'persistence_state':'search_failed' if result.get('error') else 'pending'}
-    bucket.upload(path=prefix+'/search_logs/'+log_name,
-        file=json.dumps(log, ensure_ascii=False).encode(), file_options=options)
+    _diag_invoke_v640('upload:_salt_discovery_persist_v631:L57235', lambda: (bucket.upload(path=prefix+'/search_logs/'+log_name,
+        file=json.dumps(log, ensure_ascii=False).encode(), file_options=options)))
     if result.get('error'):
         return
-    with lock:
+    with _DiagLockV640(lock, '_salt_discovery_persist_v631'):
         try:
-            raw = bucket.download(prefix+'/discovery.json')
+            raw = _diag_invoke_v640('download:_salt_discovery_persist_v631:L57241', lambda: (bucket.download(prefix+'/discovery.json')))
         except Exception as exc:
             if not _salt_missing_v609(exc):
                 raise
@@ -56827,12 +57386,12 @@ def _salt_discovery_persist_v631(result, owner, bucket, lock):
                   if datetime.fromisoformat(row['expires_at']) > now_jst() and row['id'] != result['id']]
         _salt_reconcile_searches_v633(active, public_result)
         doc['searches'] = active + [public_result]
-        bucket.upload(path=prefix+'/discovery.json', file=json.dumps(doc, ensure_ascii=False).encode(), file_options=options)
+        _diag_invoke_v640('upload:_salt_discovery_persist_v631:L57257', lambda: (bucket.upload(path=prefix+'/discovery.json', file=json.dumps(doc, ensure_ascii=False).encode(), file_options=options)))
 
     log['persistence_state'] = 'saved'
     log['persisted_at'] = now_jst().isoformat()
-    bucket.upload(path=prefix+'/search_logs/'+log_name,
-        file=json.dumps(log, ensure_ascii=False).encode(), file_options=options)
+    _diag_invoke_v640('upload:_salt_discovery_persist_v631:L57261', lambda: (bucket.upload(path=prefix+'/search_logs/'+log_name,
+        file=json.dumps(log, ensure_ascii=False).encode(), file_options=options)))
 
 
 
@@ -56870,12 +57429,12 @@ def _salt_discovery_start_v617(lat, lng, radius):
     # read whichever account happens to be active when their request finishes.
     bucket = supabase_client().storage.from_(GPS_TRACK_BUCKET)
     lock = _salt_write_lock_v609()
-    with registry['lock']:
+    with _DiagLockV640(registry['lock'], '_salt_discovery_start_v617'):
         if owner in registry['jobs']:
             return
         progress = {'message': 'Overpass検索を開始しています。', 'started_at': time.monotonic()}
         registry['jobs'][owner] = {'progress': progress,
-            'future': registry['executor'].submit(_salt_discovery_worker_v631,
+            'future': _diag_submit_v640(registry['executor'], _salt_discovery_worker_v631,
                 lat, lng, radius, progress, owner, bucket, lock)}
 
 
@@ -56886,12 +57445,12 @@ def _salt_discovery_start_v617(lat, lng, radius):
 def _salt_discovery_collect_v617():
     owner = _salt_owner_v609()
     registry = _salt_discovery_jobs_v617()
-    with registry['lock']:
+    with _DiagLockV640(registry['lock'], '_salt_discovery_collect_v617'):
         job = registry['jobs'].get(owner)
     if not job or not job['future'].done():
         return False
     try:
-        result = job['future'].result()
+        result = _diag_future_v640(job['future'])
     except Exception as exc:
         result = job.get('result') or {'id': uuid.uuid4().hex,
             'searched_at': now_jst().isoformat(), 'error': str(exc), 'logs': getattr(exc, 'salt_logs', [])}
@@ -56901,7 +57460,7 @@ def _salt_discovery_collect_v617():
             if time.monotonic() < job.get('retry_at', 0):
                 return False
             job['retry_at'] = time.monotonic()+30
-            job['future'] = registry['executor'].submit(_salt_discovery_save_result_v631,
+            job['future'] = _diag_submit_v640(registry['executor'], _salt_discovery_save_result_v631,
                 result, job.get('progress', {}), owner,
                 supabase_client().storage.from_(GPS_TRACK_BUCKET), _salt_write_lock_v609())
             return False
@@ -56910,7 +57469,7 @@ def _salt_discovery_collect_v617():
         st.session_state['_salt_discovery_notice_v617'] = result.get('error') or f"候補 {len(result['results'])}店を保存しました。存在確認済み {sum(_salt_existence_valid_v637(r.get('existence_check')) for r in result['results'])}店のみピンを表示します。"
         if result.get('partial_results'):
             st.session_state['_salt_discovery_notice_v617'] += ' 代替検索の候補です。周辺全店舗の網羅は保証されません。'
-        with registry['lock']:
+        with _DiagLockV640(registry['lock'], '_salt_discovery_collect_v617'):
             if registry['jobs'].get(owner) is job:
                 registry['jobs'].pop(owner, None)
         return True
@@ -56933,7 +57492,7 @@ def _salt_discovery_progress_v617():
         st.rerun(scope='app')
     owner = _salt_owner_v609()
     registry = _salt_discovery_jobs_v617()
-    with registry['lock']:
+    with _DiagLockV640(registry['lock'], '_salt_discovery_progress_v617'):
         job = registry['jobs'].get(owner)
     if not job:
         return
@@ -56961,7 +57520,7 @@ def _salt_diagnostic_export_v636(logs):
         bucket = supabase_client().storage.from_(GPS_TRACK_BUCKET)
         def read_doc(name, fallback):
             try:
-                value = json.loads(_storage_bytes(bucket.download(prefix+'/'+name)).decode())
+                value = json.loads(_storage_bytes(_diag_invoke_v640('download:read_doc:L57391', lambda: (bucket.download(prefix+'/'+name)))).decode())
             except Exception as exc:
                 if _salt_missing_v609(exc):
                     return fallback
@@ -57008,7 +57567,7 @@ def _salt_discovery_logs_settings_v617():
                 logs=[]
                 for item in files:
                     name=str(item.get('name') or '')
-                    if re.fullmatch(r'[0-9]{14}_[0-9a-f]{32}\.json',name):logs.append(json.loads(_storage_bytes(bucket.download(folder+'/'+name)).decode()))
+                    if re.fullmatch(r'[0-9]{14}_[0-9a-f]{32}\.json',name):logs.append(json.loads(_storage_bytes(_diag_invoke_v640('download:_salt_discovery_logs_settings_v617:L57438', lambda: (bucket.download(folder+'/'+name)))).decode()))
                 st.session_state['_salt_discovery_logs_v617_'+_salt_owner_v609()]=_salt_diagnostic_export_v636(logs)
             except Exception as exc:st.error(str(exc))
         logs=st.session_state.get('_salt_discovery_logs_v617_'+_salt_owner_v609())
@@ -57020,9 +57579,9 @@ def _salt_discovery_cache_log_v617(search):
     at=now_jst();identity=uuid.uuid4().hex
     log={"diagnostic_schema":2,"provider":search.get("provider"),"results":search.get("results",[]),"id":identity,"searched_at":at.isoformat(),"logs":[{"event":"saved_search_reused","detail":{
         "search_id":search['id'],"lat":search['lat'],"lng":search['lng'],"radius_m":search['radius_m'],"expires_at":search['expires_at']}}]}
-    supabase_client().storage.from_(GPS_TRACK_BUCKET).upload(
+    _diag_invoke_v640('upload:_salt_discovery_cache_log_v617:L57450', lambda: (supabase_client().storage.from_(GPS_TRACK_BUCKET).upload(
         path=_salt_prefix_v609()+"/search_logs/"+at.strftime('%Y%m%d%H%M%S')+"_"+identity+".json",
-        file=json.dumps(log,ensure_ascii=False).encode(),file_options={"content-type":GPS_TRACK_STORAGE_MIME,"upsert":"true","cache-control":"0"})
+        file=json.dumps(log,ensure_ascii=False).encode(),file_options={"content-type":GPS_TRACK_STORAGE_MIME,"upsert":"true","cache-control":"0"})))
 
 
 
@@ -57041,6 +57600,8 @@ def page_salt_bread_v609():
         return
     owner = _salt_owner_v609()
     _salt_collect_search_v609()
+    if st.session_state.get("main_page") == "bakery_google_results_v639":
+        st.rerun()
     _salt_discovery_collect_v617()
     try:
         discovery = _salt_discovery_load_v617()
@@ -57084,7 +57645,7 @@ def page_salt_bread_v609():
                 if picked:
                     _salt_preview_v609(picked)
             elif action.get("action") == "hide_candidate":
-                with _salt_write_lock_v609():
+                with _DiagLockV640(_salt_write_lock_v609(), 'page_salt_bread_v609'):
                     fresh = _salt_discovery_load_v617(force=True)
                     identity = str(action.get('id') or '')
                     if any(r['id']==identity for r in _salt_discovery_rows_v617(fresh)):
@@ -57121,11 +57682,11 @@ def page_salt_bread_v609():
                 return
     mode = st.radio("表示", ["地図", "ランキング"], horizontal=True, key="salt_mode_v609", label_visibility="collapsed")
     registry = _salt_discovery_jobs_v617()
-    with registry['lock']:
+    with _DiagLockV640(registry['lock'], 'page_salt_bread_v609'):
         searching = owner in registry['jobs']
     st.selectbox("周辺検索の半径", [1000, 3000, 5000, 10000], format_func=lambda value: f"{value // 1000}km", key="salt_discovery_radius_v619")
     st.checkbox("保存済みでも再検索", value=False, key="salt_discovery_refresh_v617")
-    st.caption("地図を探したい場所へ動かし「この周辺のパン屋を探す」を押してください。候補は3か月保存します。公式登録ページで存在確認できた店舗のみピンを表示します。存在確認は24時間で再確認が必要です。")
+    st.caption("地図を探したい場所へ動かし「この周辺のパン屋を探す」を押してください。候補は3か月保存します。公式店舗ページで存在確認できた店舗のみピンを表示します。存在確認は24時間で再確認が必要です。")
     if searching:
         _salt_discovery_progress_v617()
     map_cards = _salt_map_cards_v622(doc,discovery,mode=="ランキング")
@@ -57182,6 +57743,9 @@ def page_salt_bread_v609():
             if st.button("この場所を地図で確認", key="salt_preview_v609", use_container_width=True,
                          on_click=_salt_preview_v609, args=(picked,)):
                 st.rerun()
+        elif result.get("provider") == "Google Places":
+            st.button("Googleの検索結果を見る", key="bakery_google_reopen_v639", use_container_width=True,
+                      on_click=_go_page_callback, args=("bakery_google_results_v639", "push"))
         elif result:
             st.info(result.get("error") or "候補がありません。正式名称や住所を入力し直してください。")
         with st.expander("検索できないとき・地図から直接登録"):
@@ -57200,6 +57764,7 @@ def page_salt_bread_v609():
         if candidate:
             st.markdown("**このお店のパンを記録**")
             _salt_form_v609(candidate)
+
 
 
 
@@ -57271,7 +57836,7 @@ def _salt_google_document_v613(web, query):
         remaining = getattr(web, "deadline", time.monotonic() + 5) - time.monotonic()
         if remaining < .25:
             raise TimeoutError("検索の通信待ち時間を超えました。")
-        with urlopen(request, timeout=min(5., remaining)) as response:
+        with _diag_invoke_v640('http:_salt_google_document_v613:L57707', lambda: (urlopen(request, timeout=min(5., remaining)))) as response:
             info["status"] = response.status
             raw = response.read(4 * 1024 * 1024 + 1)
         if len(raw) > 4 * 1024 * 1024:
@@ -57327,7 +57892,7 @@ def _salt_manual_begin_v613(owner):
     st.session_state["salt_mode_v609"] = "地図"
     # Ignore a late search result once the user explicitly starts choosing a point.
     registry = _salt_search_jobs_v609()
-    with registry["lock"]:
+    with _DiagLockV640(registry["lock"], '_salt_manual_begin_v613'):
         previous = registry["jobs"].pop(owner, None)
     if previous:
         previous["future"].cancel()
@@ -58016,13 +58581,13 @@ def _native_media_duplicate_index_v485(max_items=5000):
         offset = 0
         while offset < int(max_items):
             chunk = (
-                client.table(PHOTO_TABLE)
+                _diag_invoke_v640('execute:_native_media_duplicate_index_v485:L58452', lambda: (client.table(PHOTO_TABLE)
                 .select("id,captured_at,reflection_json")
                 .eq("family_key", current_family_key())
                 .eq("member_key", current_member_key())
                 .order("captured_at", desc=True)
                 .range(offset, min(offset + page_size - 1, int(max_items) - 1))
-                .execute()
+                .execute()))
             ).data or []
             rows.extend(row for row in chunk if isinstance(row, dict))
             if len(chunk) < page_size:
@@ -58266,7 +58831,7 @@ def _native_media_register_uploaded_v485(reservation):
         storage_path = remote_path
 
     result = (
-        supabase_client().table(PHOTO_TABLE).insert({
+        _diag_invoke_v640('execute:_native_media_register_uploaded_v485:L58702', lambda: (supabase_client().table(PHOTO_TABLE).insert({
             "trip_id": trip_id,
             "family_key": current_family_key(),
             "member_key": current_member_key(),
@@ -58274,7 +58839,7 @@ def _native_media_register_uploaded_v485(reservation):
             "captured_at": captured_at,
             "reflection_json": reflection,
             "signals_json": {},
-        }).execute()
+        }).execute()))
     )
     saved_row = (result.data or [None])[0]
     if not isinstance(saved_row, dict):
@@ -58944,7 +59509,7 @@ def _runtime_v468():
 
 
 def _owner_state_v468(runtime, owner):
-    with runtime["lock"]:
+    with _DiagLockV640(runtime["lock"], '_owner_state_v468'):
         accounts = runtime["accounts"]
         state = accounts.get(owner)
         if state is None:
@@ -59002,11 +59567,11 @@ def _read_ahead_session_token_v520():
 def _read_ahead_field_notes_worker_v520(runtime, owner):
     client = _worker_client_v468(runtime)
     result = (
-        client.table(MONTHLY_TABLE)
+        _diag_invoke_v640('execute:_read_ahead_field_notes_worker_v520:L59438', lambda: (client.table(MONTHLY_TABLE)
         .select("id,review_json,updated_at")
         .eq("family_key", owner[2]).eq("member_key", owner[3])
         .eq("review_month", FIELD_NOTE_REVIEW_DATE)
-        .limit(1).execute()
+        .limit(1).execute()))
     )
     row = (result.data or [None])[0] or {}
     payload = row.get("review_json") or {}
@@ -59023,14 +59588,14 @@ def _read_ahead_field_notes_worker_v520(runtime, owner):
 
 
 def _read_ahead_home_video_counts_worker_v520(runtime, owner):
-    with runtime["lock"]:
+    with _DiagLockV640(runtime["lock"], '_read_ahead_home_video_counts_worker_v520'):
         started_epoch = int(_owner_state_v468(runtime, owner).get("epoch") or 0)
     client = _worker_client_v468(runtime)
     rows = (
-        client.table(PHOTO_TABLE)
+        _diag_invoke_v640('execute:_read_ahead_home_video_counts_worker_v520:L59463', lambda: (client.table(PHOTO_TABLE)
         .select("id,reflection_json")
         .eq("family_key", owner[2]).eq("member_key", owner[3])
-        .limit(1000).execute()
+        .limit(1000).execute()))
     ).data or []
     saved_count = 0
     before_clip_count = 0
@@ -59055,7 +59620,7 @@ def _read_ahead_home_video_counts_worker_v520(runtime, owner):
         elif status == "error":
             error_count += 1
     counts = (saved_count, before_clip_count, processing_rows, error_count)
-    with runtime["lock"]:
+    with _DiagLockV640(runtime["lock"], '_read_ahead_home_video_counts_worker_v520'):
         if int(_owner_state_v468(runtime, owner).get("epoch") or 0) == started_epoch:
             _home_video_publish_counts_v602(counts, owner)
     return counts
@@ -59064,11 +59629,11 @@ def _read_ahead_home_video_counts_worker_v520(runtime, owner):
 def _read_ahead_feedback_rows_worker_v520(runtime, owner):
     client = _worker_client_v468(runtime)
     return (
-        client.table(DIARY_TABLE)
+        _diag_invoke_v640('execute:_read_ahead_feedback_rows_worker_v520:L59500', lambda: (client.table(DIARY_TABLE)
         .select("id,trip_id,ai_meta,updated_at")
         .eq("family_key", owner[2]).eq("member_key", owner[3])
         .order("updated_at", desc=True)
-        .limit(SUMMARY_FEEDBACK_SCAN_LIMIT).execute()
+        .limit(SUMMARY_FEEDBACK_SCAN_LIMIT).execute()))
     ).data or []
 
 
@@ -59086,11 +59651,11 @@ def _read_ahead_month_review_worker_v563(runtime, owner):
         return bool(photo_selected_tag_key(photo))
     try:
         rows = (
-            client.table(TRIP_TABLE)
+            _diag_invoke_v640('execute:_read_ahead_month_review_worker_v563:L59522', lambda: (client.table(TRIP_TABLE)
             .select(f"id,{DIARY_TABLE}(id),{PHOTO_TABLE}(id,reflection_json)")
             .eq("family_key", owner[2]).eq("member_key", owner[3])
             .gte("trip_date", start).lt("trip_date", end)
-            .execute()
+            .execute()))
         ).data or []
         found = False
         for row in rows:
@@ -59105,25 +59670,25 @@ def _read_ahead_month_review_worker_v563(runtime, owner):
                 break
     except Exception:
         trips = (
-            client.table(TRIP_TABLE).select("id")
+            _diag_invoke_v640('execute:_read_ahead_month_review_worker_v563:L59541', lambda: (client.table(TRIP_TABLE).select("id")
             .eq("family_key", owner[2]).eq("member_key", owner[3])
-            .gte("trip_date", start).lt("trip_date", end).execute()
+            .gte("trip_date", start).lt("trip_date", end).execute()))
         ).data or []
         trip_ids = [str(row.get("id")) for row in trips if row.get("id")]
         found = False
         if trip_ids:
             diaries = (
-                client.table(DIARY_TABLE).select("id")
+                _diag_invoke_v640('execute:_read_ahead_month_review_worker_v563:L59549', lambda: (client.table(DIARY_TABLE).select("id")
                 .eq("family_key", owner[2]).eq("member_key", owner[3])
-                .in_("trip_id", trip_ids).limit(1).execute()
+                .in_("trip_id", trip_ids).limit(1).execute()))
             ).data or []
             if diaries:
                 found = True
             else:
                 photos = (
-                    client.table(PHOTO_TABLE).select("id,reflection_json")
+                    _diag_invoke_v640('execute:_read_ahead_month_review_worker_v563:L59557', lambda: (client.table(PHOTO_TABLE).select("id,reflection_json")
                     .eq("family_key", owner[2]).eq("member_key", owner[3])
-                    .in_("trip_id", trip_ids).execute()
+                    .in_("trip_id", trip_ids).execute()))
                 ).data or []
                 found = any(has_emotion(p) for p in photos)
     return {"month": current_month, "previous_month": prior_month,
@@ -59174,7 +59739,7 @@ def _prime_read_ahead_v520(page_name, *, post_paint=False):
     state = _owner_state_v468(runtime, owner)
     session_token = _read_ahead_session_token_v520()
     now = time.monotonic()
-    with runtime["lock"]:
+    with _DiagLockV640(runtime["lock"], '_prime_read_ahead_v520'):
         read_ahead = state.setdefault("read_ahead", {})
         # Bound finished entries from older browser sessions.
         for key, entry in list(read_ahead.items()):
@@ -59193,7 +59758,7 @@ def _prime_read_ahead_v520(page_name, *, post_paint=False):
                 if same_epoch and fresh and future is not None:
                     continue
             executor = _home_video_count_executor_v602() if name == "home_video_counts" else _read_ahead_executor_v561()
-            future = executor.submit(_run_read_ahead_v520, runtime, owner, name, worker)
+            future = _diag_submit_v640(executor, _run_read_ahead_v520, runtime, owner, name, worker)
             read_ahead[key] = {"future": future, "epoch": epoch, "started": now, "ttl": float(ttl)}
 
 
@@ -59203,7 +59768,7 @@ def _read_ahead_value_v520(name, *, block=False):
     state = _owner_state_v468(runtime, owner)
     session_token = _read_ahead_session_token_v520()
     key = session_token + ":" + str(name or "")
-    with runtime["lock"]:
+    with _DiagLockV640(runtime["lock"], '_read_ahead_value_v520'):
         entry = (state.get("read_ahead") or {}).get(key)
         epoch = int(state.get("epoch") or 0)
         if not isinstance(entry, dict) or int(entry.get("epoch", -1)) != epoch:
@@ -59215,9 +59780,9 @@ def _read_ahead_value_v520(name, *, block=False):
         return None
     started = time.perf_counter()
     try:
-        value = future.result()
+        value = _diag_future_v640(future)
     except Exception:
-        with runtime["lock"]:
+        with _DiagLockV640(runtime["lock"], '_read_ahead_value_v520'):
             (state.get("read_ahead") or {}).pop(key, None)
         return None
     _perf_log_v457(f"read_ahead:wait:{name}", started_at=started, meta={"prefetched": True})
@@ -59234,7 +59799,7 @@ def _rows_v468(client, table, owner, column, ids, fields="*", order="id"):
         while True:
             q = (client.table(table).select(fields).eq("family_key", owner[2])
                  .eq("member_key", owner[3]).in_(column, chunk))
-            batch = q.order(order).range(offset, offset + 499).execute().data or []
+            batch = _diag_invoke_v640('execute:_rows_v468:L59670', lambda: (q.order(order).range(offset, offset + 499).execute())).data or []
             rows.extend(x for x in batch if isinstance(x, dict))
             if len(batch) < 500:
                 break
@@ -59250,8 +59815,8 @@ def _json_cas_v468(client, table, owner, row_id, field, transform, attempts=4, i
     """
     for attempt in range(attempts):
         rows = [initial_row] if attempt == 0 and initial_row is not None else (
-            client.table(table).select("id," + field).eq("id", row_id)
-            .eq("family_key", owner[2]).eq("member_key", owner[3]).limit(1).execute()).data or []
+            _diag_invoke_v640('execute:_json_cas_v468:L59686', lambda: (client.table(table).select("id," + field).eq("id", row_id)
+            .eq("family_key", owner[2]).eq("member_key", owner[3]).limit(1).execute()))).data or []
         if not rows:
             return None  # deleted photos are never recreated
         original = rows[0].get(field)
@@ -59262,12 +59827,12 @@ def _json_cas_v468(client, table, owner, row_id, field, transform, attempts=4, i
         q = (client.table(table).update({field: updated}).eq("id", row_id)
              .eq("family_key", owner[2]).eq("member_key", owner[3]))
         q = q.is_(field, "null") if original is None else q.eq(field, json.dumps(original, ensure_ascii=False, separators=(",", ":")))
-        result = q.execute()
+        result = _diag_invoke_v640('execute:_json_cas_v468:L59698', lambda: (q.execute()))
         if result.data:
             return updated
         # Some deployments do not return UPDATE representations. Verify the write.
-        check = (client.table(table).select(field).eq("id", row_id)
-                 .eq("family_key", owner[2]).eq("member_key", owner[3]).limit(1).execute()).data or []
+        check = (_diag_invoke_v640('execute:_json_cas_v468:L59702', lambda: (client.table(table).select(field).eq("id", row_id)
+                 .eq("family_key", owner[2]).eq("member_key", owner[3]).limit(1).execute()))).data or []
         if not check:
             return None
         if check[0].get(field) == updated:
@@ -59277,7 +59842,7 @@ def _json_cas_v468(client, table, owner, row_id, field, transform, attempts=4, i
 
 def _background_result_v468(runtime, owner, phase, started, error=None):
     state = _owner_state_v468(runtime, owner)
-    with runtime["lock"]:
+    with _DiagLockV640(runtime["lock"], '_background_result_v468'):
         state["timings"].append((phase, (time.perf_counter() - started) * 1000.0, not bool(error)))
         state["timings"] = state["timings"][-40:]
         if not error:
@@ -59290,7 +59855,7 @@ def _background_result_v468(runtime, owner, phase, started, error=None):
 
 def _bump_owner_v468(owner, runtime=None):
     runtime = runtime or _runtime_v468()
-    with runtime["lock"]:
+    with _DiagLockV640(runtime["lock"], '_bump_owner_v468'):
         _owner_state_v468(runtime, owner)["epoch"] += 1
 
 
@@ -59298,7 +59863,7 @@ def _consume_background_results_v468():
     runtime = _runtime_v468()
     owner = _owner_v468()
     state = _owner_state_v468(runtime, owner)
-    with runtime["lock"]:
+    with _DiagLockV640(runtime["lock"], '_consume_background_results_v468'):
         state["page"] = str(st.session_state.get("main_page") or "home")
         state["page_at"] = time.monotonic()
         epoch = state["epoch"]
@@ -59338,7 +59903,7 @@ def _queue_framing_rows_v468(photos, computed=None, limit=24):
     owner = _owner_v468()
     state = _owner_state_v468(runtime, owner)
     added = 0
-    with runtime["lock"]:
+    with _DiagLockV640(runtime["lock"], '_queue_framing_rows_v468'):
         for photo in photos or []:
             if not isinstance(photo, dict) or photo_is_video(photo) or _json_frame_v468(photo):
                 continue
@@ -59370,7 +59935,7 @@ def _run_framing_queue_v468(runtime, owner):
         client = _worker_client_v468(runtime)
         # A single worker yields after at most 24 photos; capture always wins.
         for _ in range(24):
-            with runtime["lock"]:
+            with _DiagLockV640(runtime["lock"], '_run_framing_queue_v468'):
                 if state["page"] == "camera" and time.monotonic() - state["page_at"] < 120:
                     break
                 item = next(iter(state["frames"].values()), None)
@@ -59381,7 +59946,7 @@ def _run_framing_queue_v468(runtime, owner):
             if rows and rows[0].get("storage_path") == item["path"] and not _json_frame_v468(rows[0]):
                 frame = item.get("frame")
                 if not frame:
-                    raw = _storage_bytes(client.storage.from_(PHOTO_BUCKET).download(item["path"]))
+                    raw = _storage_bytes(_diag_invoke_v640('download:_run_framing_queue_v468:L59817', lambda: (client.storage.from_(PHOTO_BUCKET).download(item["path"]))))
                     frame = _replay_photo_framing_meta(item["path"], _raw=raw)
                 if not frame or not frame.get("source_width") or not frame.get("source_height"):
                     _replay_photo_framing_meta.clear(item["path"])
@@ -59391,11 +59956,11 @@ def _run_framing_queue_v468(runtime, owner):
                     signals[FRAMING_KEY_V468] = value
                     return signals
                 _json_cas_v468(client, PHOTO_TABLE, owner, item["id"], "signals_json", merge, initial_row=rows[0])
-            with runtime["lock"]:
+            with _DiagLockV640(runtime["lock"], '_run_framing_queue_v468'):
                 state["frames"].pop(item["id"], None)
     except Exception as exc:
         error = exc
-        with runtime["lock"]:
+        with _DiagLockV640(runtime["lock"], '_run_framing_queue_v468'):
             state["frame_retry"] = time.monotonic() + 60.0
             if item:
                 state["frames"].pop(item["id"], None)
@@ -59419,11 +59984,11 @@ def _persist_ai_job_v468(photos):
         return
     path = owner[2] + "/" + owner[3] + "/_postsave_v468/" + uuid.uuid4().hex + ".jpg"
     payload = {"v": 468, "family": owner[2], "member": owner[3], "ids": ids, "created_at": now_jst().isoformat()}
-    supabase_client().storage.from_(PHOTO_BUCKET).upload(path=path,
+    _diag_invoke_v640('upload:_persist_ai_job_v468:L59855', lambda: (supabase_client().storage.from_(PHOTO_BUCKET).upload(path=path,
         file=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-        file_options={"content-type": "image/jpeg", "cache-control": "0"})
+        file_options={"content-type": "image/jpeg", "cache-control": "0"})))
     # Same allowed JSON-in-image metadata convention as the existing GPS store.
-    with runtime["lock"]:
+    with _DiagLockV640(runtime["lock"], '_persist_ai_job_v468'):
         state["ai_paths"].add(path)
     remembered = dict(remembered)
     remembered[digest] = True
@@ -59443,15 +60008,15 @@ def _run_ai_jobs_v468(runtime, owner, recover=False):
         if recover:
             # Bounded recovery. Unlisted jobs stay durable for the next pass.
             rows = _coerce_storage_list_rows(bucket.list(prefix, {"limit": 100, "offset": 0}))
-            with runtime["lock"]:
+            with _DiagLockV640(runtime["lock"], '_run_ai_jobs_v468'):
                 state["ai_paths"].update(prefix + "/" + str(x.get("name")) for x in rows
                                          if re.fullmatch(r"[0-9a-f]{32}\.jpg", str(x.get("name") or "")))
-        with runtime["lock"]:
+        with _DiagLockV640(runtime["lock"], '_run_ai_jobs_v468'):
             paths = sorted(state["ai_paths"])[:8]
         jobs = []
         ids = set()
         for path in paths:
-            payload = json.loads(_storage_bytes(bucket.download(path)).decode("utf-8"))
+            payload = json.loads(_storage_bytes(_diag_invoke_v640('download:_run_ai_jobs_v468:L59887', lambda: (bucket.download(path)))).decode("utf-8"))
             if payload.get("v") != 468 or (payload.get("family"), payload.get("member")) != owner[2:]:
                 continue
             jobs.append(path)
@@ -59468,12 +60033,12 @@ def _run_ai_jobs_v468(runtime, owner, recover=False):
             _bump_owner_v468(owner, runtime)
             return  # untouched remainder stays in the durable job, not an unbounded worker
         bucket.remove(jobs)
-        with runtime["lock"]:
+        with _DiagLockV640(runtime["lock"], '_run_ai_jobs_v468'):
             state["ai_paths"].difference_update(jobs)
             state["epoch"] += 1
     except Exception as exc:
         error = exc
-        with runtime["lock"]:
+        with _DiagLockV640(runtime["lock"], '_run_ai_jobs_v468'):
             state["ai_retry"] = time.monotonic() + 90.0
     finally:
         _background_result_v468(runtime, owner, "background:photo_ai_tags", started, error)
@@ -59485,23 +60050,23 @@ def _maintenance_tick_v468():
     owner = _owner_v468()
     state = _owner_state_v468(runtime, owner)
     now = time.monotonic()
-    with runtime["lock"]:
+    with _DiagLockV640(runtime["lock"], '_maintenance_tick_v468'):
         state["page"] = str(st.session_state.get("main_page") or "home")
         state["page_at"] = now
         if state["page"] == "camera":
             return
         if state["frames"] and now >= state["frame_retry"] and (not state["frame_future"] or state["frame_future"].done()):
-            state["frame_future"] = runtime["image"].submit(_run_framing_queue_v468, runtime, owner)
+            state["frame_future"] = _diag_submit_v640(runtime["image"], _run_framing_queue_v468, runtime, owner)
         recover = not state["recovery_at"] or now - state["recovery_at"] >= 300.0
         if (state["ai_paths"] or recover) and now >= state["ai_retry"] and (not state["ai_future"] or state["ai_future"].done()):
             state["recovery_at"] = now
-            state["ai_future"] = runtime["ai"].submit(_run_ai_jobs_v468, runtime, owner, recover)
+            state["ai_future"] = _diag_submit_v640(runtime["ai"], _run_ai_jobs_v468, runtime, owner, recover)
 
 
 def _invalidate_storage_v468():
     runtime = _runtime_v468()
     state = _owner_state_v468(runtime, _owner_v468())
-    with runtime["lock"]:
+    with _DiagLockV640(runtime["lock"], '_invalidate_storage_v468'):
         state["storage_generation"] += 1
         if state["storage"]:
             state["storage"]["at"] = 0.0  # keep old DISPLAY value, never authorize saves with it
@@ -59518,13 +60083,13 @@ def _storage_scan_v468(runtime, owner, generation):
         usage = sum(max(0, int(x.get("size_bytes") or 0)) for x in rows
                     if _storage_path_is_original_video(x.get("path"), x.get("mime_type")))
         value = {"usage": usage, "inventory": rows, "at": time.monotonic(), "generation": generation}
-        with runtime["lock"]:
+        with _DiagLockV640(runtime["lock"], '_storage_scan_v468'):
             if generation == state["storage_generation"]:
                 state["storage"] = value
         return value
     except Exception as exc:
         error = exc
-        with runtime["lock"]:
+        with _DiagLockV640(runtime["lock"], '_storage_scan_v468'):
             state["storage_retry"] = time.monotonic() + 30.0
         raise
     finally:
@@ -59536,13 +60101,13 @@ def _display_storage_v468(max_age=300):
     owner = _owner_v468()
     state = _owner_state_v468(runtime, owner)
     now = time.monotonic()
-    with runtime["lock"]:
+    with _DiagLockV640(runtime["lock"], '_display_storage_v468'):
         value = state["storage"]
         fresh = bool(value and value["generation"] == state["storage_generation"] and now - value["at"] <= max_age)
         future = state["storage_future"]
         if not fresh and (not future or future.done()) and now >= state["storage_retry"]:
             state["storage_started"] = now
-            future = runtime["io"].submit(_storage_scan_v468, runtime, owner, state["storage_generation"])
+            future = _diag_submit_v640(runtime["io"], _storage_scan_v468, runtime, owner, state["storage_generation"])
             state["storage_future"] = future
         pending = bool(future and not future.done())
         # No infinite heartbeat and no repeated storage enumeration in the heartbeat.
@@ -59599,9 +60164,9 @@ def _diary_overview_v468():
     functions = [_list_recent_diaries_uncached, _list_pending_photo_trips_uncached]
     for index, limit in enumerate((80, 40)):
         if values[index] is None:
-            futures[index] = _read_executor_v467().submit(functions[index], limit, _owner=owner, _client=client)
+            futures[index] = _diag_submit_v640(_read_executor_v467(), functions[index], limit, _owner=owner, _client=client)
     for index, future in futures.items():
-        values[index] = _session_cache_set(keys[index], future.result())
+        values[index] = _session_cache_set(keys[index], _diag_future_v640(future))
     return values[0], values[1]
 
 
@@ -59652,7 +60217,7 @@ def _refresh_diaries_batched_v468(trip_ids):
         # Preserve titles, raw child comments and concurrent manual edits.
         if old.get("updated_at"):
             q = q.eq("updated_at", old["updated_at"])
-        result = q.execute()
+        result = _diag_invoke_v640('execute:save:L60088', lambda: (q.execute()))
         if not result.data:
             check = _rows_v468(client, DIARY_TABLE, owner, "id", [old["id"]], "id,diary_text,ai_meta")
             if check and (check[0].get("diary_text") != text or check[0].get("ai_meta") != meta):
@@ -59661,7 +60226,7 @@ def _refresh_diaries_batched_v468(trip_ids):
     for tid, old, text, meta in updates:
         trip = tmap.get(tid) or {}
         if trip.get("status") != "diary_done" or not trip.get("ended_at"):
-            client.table(TRIP_TABLE).update({"status": "diary_done", "ended_at": trip.get("ended_at") or now_jst().isoformat()}).eq("id", tid).eq("family_key", owner[2]).eq("member_key", owner[3]).execute()
+            _diag_invoke_v640('execute:_refresh_diaries_batched_v468:L60097', lambda: (client.table(TRIP_TABLE).update({"status": "diary_done", "ended_at": trip.get("ended_at") or now_jst().isoformat()}).eq("id", tid).eq("family_key", owner[2]).eq("member_key", owner[3]).execute()))
     months = {str(t.get("trip_date") or "")[:7] for t in trips}
     _invalidate_months_batched_v468(months)
     _queue_framing_rows_v468(ai_photos)
@@ -59690,7 +60255,7 @@ def _invalidate_months_batched_v468(months):
         else:
             delete_ids.append(row["id"])
     for start in range(0, len(delete_ids), 80):
-        client.table(MONTHLY_TABLE).delete().eq("family_key", owner[2]).eq("member_key", owner[3]).in_("id", delete_ids[start:start + 80]).execute()
+        _diag_invoke_v640('execute:_invalidate_months_batched_v468:L60126', lambda: (client.table(MONTHLY_TABLE).delete().eq("family_key", owner[2]).eq("member_key", owner[3]).in_("id", delete_ids[start:start + 80]).execute()))
     for month in months:
         for prefix in ("monthly_review_", "monthly_audio_", "monthly_audio_pending_"):
             st.session_state.pop(prefix + month, None)
@@ -59888,6 +60453,7 @@ def _install_detailed_perf_wrappers_v458():
 
 
 _install_detailed_perf_wrappers_v458()
+_install_diag_v640()
 _install_diag_callback_wrappers_v603()
 _diag_checkpoint_v603("definitions_and_wrappers")
 
@@ -60045,6 +60611,8 @@ with st.container(key="app_page_root_v280"):
         _perf_call_v457("page:review_shared", page_family_shared_replay_v555, force=True)
     elif page == "review_history":
         _perf_call_v457("page:review_history", page_history, embedded=False, force=True)
+    elif page == "bakery_google_results_v639":
+        _perf_call_v457("page:bakery_google_results_v639", page_bakery_google_results_v639, force=True)
     elif page == "salt_bread":
         _perf_call_v457("page:salt_bread", page_salt_bread_v609, force=True)
     elif page == "salt_bread_detail":
@@ -60088,7 +60656,7 @@ with st.container(key="app_page_root_v280"):
         live_page = str(st.session_state.get("main_page") or "home")
         if (
             page == live_page
-            and page in {"salt_bread", "salt_bread_detail", "camera", "videos", "moments", "diary", "photos", "review", "review_project", "review_monthly", "review_tag", "review_random", "review_shared", "review_history", "nearby", "discovery_results", "evening_review", "toilets", "help_places", "field_notes", "experience", "events", "settings", "settings_moments", "settings_moments_definition", "settings_location", "settings_account", "settings_media_import"}
+            and page in {"bakery_google_results_v639", "salt_bread", "salt_bread_detail", "camera", "videos", "moments", "diary", "photos", "review", "review_project", "review_monthly", "review_tag", "review_random", "review_shared", "review_history", "nearby", "discovery_results", "evening_review", "toilets", "help_places", "field_notes", "experience", "events", "settings", "settings_moments", "settings_moments_definition", "settings_location", "settings_account", "settings_media_import"}
         ):
             _perf_call_v457("ui:bottom_navigation", render_global_bottom_navigation, page)
 
