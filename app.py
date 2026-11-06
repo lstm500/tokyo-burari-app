@@ -1,3 +1,4 @@
+# v641: Consistent settings cards and shared neutral buttons; load only selected details/logs.
 # v640: Bounded nested function/I-O/queue/lock diagnostics; one-click combined HTTP export with on-demand serialization.
 # v639: Google Places for explicit shop-name searches only; isolated attributed results, bounded monthly calls, unchanged OSM discovery.
 # v638: Enrich Photon candidates from original OSM objects before strict existence checks; support proxy DNS without skipping public-host validation.
@@ -95,7 +96,7 @@ def _app_css_v473(markup, **_ignored):
 # Review menu-only update: 2026-09-19 JST
 GENERATED_UPDATE_JST = "2026-09-19T14:54:38+09:00"
 
-APP_BUILD = "v640"
+APP_BUILD = "v641"
 # v598: Passing the focus gate is mandatory before any weighted ranking or reroll.
 # Never fill the twenty-image target with focus-rejected candidates.
 # v597: Compare 30 FPS candidates across the whole saved video offline. Disk-backed
@@ -528,23 +529,13 @@ _app_css_v473(
       [class*="st-key-photo_batch_delete_running_"] div.stButton > button:disabled p {
         color: #fff !important;
       }
-      /* v401: Settings uses one calm red family instead of one isolated primary
-         button followed by unrelated neutral buttons. */
-      [class*="st-key-settings_"] div.stButton > button:not(:disabled) {
-        border-color: #d94855 !important;
-        background: linear-gradient(145deg, #f06a73, #dc4855) !important;
-        color: #fff !important;
-        box-shadow: 0 5px 14px rgba(205, 63, 77, .20), 0 0 0 2px rgba(255,255,255,.14) inset !important;
-      }
-      [class*="st-key-settings_"] div.stButton > button:not(:disabled) p {
-        color: #fff !important;
-      }
-      [class*="st-key-settings_"] div.stButton > button:not(:disabled):active {
-        border-color: #9f2734 !important;
-        background: linear-gradient(145deg, #c83a47, #a92836) !important;
-        color: #fff !important;
-        filter: none !important;
-        box-shadow: 0 2px 7px rgba(146, 31, 45, .30), 0 0 0 3px rgba(217,72,85,.18) !important;
+      /* v641: Settings inherits the shared neutral controls used by other pages.
+         Navigation rows have the same spacing, border and text alignment. */
+      .st-key-settings_features_v641 div.stButton > button,
+      .st-key-settings_management_v641 div.stButton > button {
+        justify-content: flex-start;
+        text-align: left;
+        box-shadow: none;
       }
       div.stButton > button {
         min-height: 3.2rem;
@@ -4939,8 +4930,8 @@ def _render_interaction_export_v465():
 
 
 
-def render_performance_log_v457():
-    with st.expander('⚡ 動作ログ', expanded=False):
+def render_performance_log_v457(*, expanded=False):
+    with st.expander('⚡ 動作ログ', expanded=expanded):
         st.caption('操作・サーバー処理・通信・待ち時間をまとめて保存します。')
         _render_interaction_export_v465()
         if st.button('ログを消去', key='clear_performance_log_v457', use_container_width=True):
@@ -32646,8 +32637,8 @@ def _events_source_log_export_v587(reports):
     }, ensure_ascii=False, indent=2).encode("utf-8")
 
 
-def _events_source_log_settings_v587():
-    with st.expander("イベント検索・情報ソースログ", expanded=False):
+def _events_source_log_settings_v587(*, expanded=False):
+    with st.expander("イベント検索・情報ソースログ", expanded=expanded):
         st.caption("登録サイトのHTML取得可否、robots確認、候補数、除外理由、キャッシュ利用を記録します。"
                    "イベント検索の外部AI API使用回数は0回です。取得失敗は『イベントなし』を意味しません。")
         scope = _events_source_scope_v587()
@@ -56826,8 +56817,8 @@ def _app_error_reader_v610():
         }''')
 
 
-def _app_error_settings_v610():
-    with st.expander("エラーログ"):
+def _app_error_settings_v610(*, expanded=False):
+    with st.expander("エラーログ", expanded=expanded):
         owner = _salt_owner_v609()
         key = "_app_errors_v610_" + owner
         component_key = "app_error_reader_v610_" + owner
@@ -57553,8 +57544,8 @@ def _salt_diagnostic_export_v636(logs):
 
 
 
-def _salt_discovery_logs_settings_v617():
-    with st.expander('パン屋マップの検索ログ'):
+def _salt_discovery_logs_settings_v617(*, expanded=False):
+    with st.expander('パン屋マップの検索ログ', expanded=expanded):
         if st.button('保存済み検索ログを読み込む',key='salt_discovery_logs_v617'):
             try:
                 folder=_salt_prefix_v609()+'/search_logs';bucket=supabase_client().storage.from_(GPS_TRACK_BUCKET)
@@ -59360,8 +59351,8 @@ def _notification_log_component_v599():
     )
 
 
-def _render_notification_logs_v599():
-    with st.expander("自動通知ログ"):
+def _render_notification_logs_v599(*, expanded=False):
+    with st.expander("自動通知ログ", expanded=expanded):
         st.caption("おやつ・観光・夜の振り返りの通知結果と見送った理由を、端末に直近2,000件保存します。更新前の履歴は含まれません。")
         st.caption("「accepted_by_android」はAndroidへ送信した記録です。実際の表示・閲覧を保証する記録ではありません。")
         token = str(_query_param_scalar("native_bridge_token") or "").strip()
@@ -59406,86 +59397,78 @@ def _render_notification_logs_v599():
 
 
 def page_settings():
-    # v415: The page title comes first so the user immediately knows this is Settings.
-    # A divider separates the heading from the individual setting controls.
-    st.markdown("### ⚙️ 設定")
-    st.divider()
-    _salt_discovery_logs_settings_v617()
-
+    page_top("⚙️ 設定")
     settings_notice = st.session_state.pop("_settings_notice", None)
     if settings_notice:
         st.success(settings_notice)
 
-    with st.container(key="settings_good_moments_entry_v387"):
+    with st.container(border=True, key="settings_features_v641"):
+        st.markdown("#### 機能の設定")
         st.button(
-            "✨ いい瞬間の設定をする",
-            type="primary",
-            use_container_width=True,
+            "✨ いい瞬間の設定　›", use_container_width=True,
             key="settings_open_good_moments_v387",
-            on_click=_go_page_callback,
-            args=("settings_moments", "push"),
+            on_click=_go_page_callback, args=("settings_moments", "push"),
         )
+        if st.toggle("AIまとめの調整を開く", key="settings_feedback_open_v641"):
+            feedback_status = get_summary_feedback_status()
+            good_count = int(feedback_status.get("good_count") or 0)
+            bad_count = int(feedback_status.get("bad_count") or 0)
+            if good_count == 0 and bad_count == 0:
+                st.write("現在は**標準のまとめ方**です。Good/Badの影響はありません。")
+            else:
+                st.write(f"これまでの評価：**Good {good_count}件** ／ **Bad {bad_count}件**")
+                with st.expander("現在参考にしているGood / Badを見る"):
+                    good_examples = feedback_status.get("good_examples") or []
+                    bad_examples = feedback_status.get("bad_examples") or []
+                    if good_examples:
+                        st.markdown("**Goodとして参考にしている例**")
+                        for idx, item in enumerate(good_examples, start=1):
+                            value = _feedback_example_text(item, max_chars=360)
+                            if value:
+                                st.write(f"{idx}. {value}")
+                    if bad_examples:
+                        st.markdown("**Badとして弱く避けている例**")
+                        for idx, item in enumerate(bad_examples, start=1):
+                            value = _feedback_example_text(item, max_chars=360)
+                            if value:
+                                st.write(f"{idx}. {value}")
+            if st.button(
+                "Good/Bad反映前の標準に戻す",
+                use_container_width=True,
+                key="settings_reset_summary_feedback",
+            ):
+                confirm_summary_feedback_reset_dialog()
 
-    st.markdown("#### AIまとめの調整")
-    feedback_status = get_summary_feedback_status()
-    good_count = int(feedback_status.get("good_count") or 0)
-    bad_count = int(feedback_status.get("bad_count") or 0)
-    if good_count == 0 and bad_count == 0:
-        st.write("現在は**標準のまとめ方**です。Good/Badの影響はありません。")
-    else:
-        st.write(f"これまでの評価：**Good {good_count}件** ／ **Bad {bad_count}件**")
-        with st.expander("現在参考にしているGood / Badを見る"):
-            good_examples = feedback_status.get("good_examples") or []
-            bad_examples = feedback_status.get("bad_examples") or []
-            if good_examples:
-                st.markdown("**Goodとして参考にしている例**")
-                for idx, item in enumerate(good_examples, start=1):
-                    value = _feedback_example_text(item, max_chars=360)
-                    if value:
-                        st.write(f"{idx}. {value}")
-            if bad_examples:
-                st.markdown("**Badとして弱く避けている例**")
-                for idx, item in enumerate(bad_examples, start=1):
-                    value = _feedback_example_text(item, max_chars=360)
-                    if value:
-                        st.write(f"{idx}. {value}")
-    if st.button(
-        "Good/Bad反映前の標準に戻す",
-        use_container_width=True,
-        key="settings_reset_summary_feedback",
-    ):
-        confirm_summary_feedback_reset_dialog()
+    with st.container(border=True, key="settings_management_v641"):
+        st.markdown("#### 確認・管理")
+        for label, key, target in (
+            ("🖼 写真・動画の自動取込　›", "settings_open_media_import_v485", "settings_media_import"),
+            ("📍 位置情報を確認　›", "settings_open_location_v387", "settings_location"),
+            ("👤 アカウントを確認　›", "settings_open_account_v387", "settings_account"),
+        ):
+            st.button(label, use_container_width=True, key=key,
+                      on_click=_go_page_callback, args=(target, "push"))
 
-    st.divider()
-    st.markdown("#### 確認・管理")
-    st.button(
-        "🖼 写真・動画の自動取込",
-        use_container_width=True,
-        key="settings_open_media_import_v485",
-        on_click=_go_page_callback,
-        args=("settings_media_import", "push"),
-    )
-    st.button(
-        "📍 位置情報を確認",
-        use_container_width=True,
-        key="settings_open_location_v387",
-        on_click=_go_page_callback,
-        args=("settings_location", "push"),
-    )
-    st.button(
-        "👤 アカウントを確認",
-        use_container_width=True,
-        key="settings_open_account_v387",
-        on_click=_go_page_callback,
-        args=("settings_account", "push"),
-    )
-
-    st.divider()
-    _render_notification_logs_v599()
-    _events_source_log_settings_v587()
-    render_performance_log_v457()
+    with st.container(border=True, key="settings_logs_v641"):
+        st.markdown("#### ログの確認・保存")
+        selected_log = st.selectbox(
+            "確認するログ", ("選択してください", "動作ログ", "自動通知ログ",
+                           "パン屋マップの検索ログ", "イベント検索・情報ソースログ", "エラーログ"),
+            key="settings_log_kind_v641",
+        )
+        # Closed expanders still execute their contents. Dispatch only the selected
+        # panel so navigation does not collect/serialize every diagnostic payload.
+        if selected_log == "動作ログ":
+            render_performance_log_v457(expanded=True)
+        elif selected_log == "自動通知ログ":
+            _render_notification_logs_v599(expanded=True)
+        elif selected_log == "パン屋マップの検索ログ":
+            _salt_discovery_logs_settings_v617(expanded=True)
+        elif selected_log == "イベント検索・情報ソースログ":
+            _events_source_log_settings_v587(expanded=True)
+        elif selected_log == "エラーログ":
+            _app_error_settings_v610(expanded=True)
     st.caption(f"アプリビルド：{APP_BUILD}")
-
 
 # ============================================================
 # v458: detailed, bounded bottleneck tracing
