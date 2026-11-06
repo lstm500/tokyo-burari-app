@@ -1,3 +1,4 @@
+# v642: Direct log buttons with inline, on-demand panels; no category picker.
 # v641: Consistent settings cards and shared neutral buttons; load only selected details/logs.
 # v640: Bounded nested function/I-O/queue/lock diagnostics; one-click combined HTTP export with on-demand serialization.
 # v639: Google Places for explicit shop-name searches only; isolated attributed results, bounded monthly calls, unchanged OSM discovery.
@@ -96,7 +97,7 @@ def _app_css_v473(markup, **_ignored):
 # Review menu-only update: 2026-09-19 JST
 GENERATED_UPDATE_JST = "2026-09-19T14:54:38+09:00"
 
-APP_BUILD = "v641"
+APP_BUILD = "v642"
 # v598: Passing the focus gate is mandatory before any weighted ranking or reroll.
 # Never fill the twenty-image target with focus-rejected candidates.
 # v597: Compare 30 FPS candidates across the whole saved video offline. Disk-backed
@@ -59396,6 +59397,11 @@ def _render_notification_logs_v599(*, expanded=False):
             st.info("まだログがありません。Androidアプリの更新後に、位置情報記録を開始すると蓄積されます。")
 
 
+def _settings_log_toggle_v642(log_id):
+    key = "_settings_open_log_v642"
+    st.session_state[key] = None if st.session_state.get(key) == log_id else log_id
+
+
 def page_settings():
     page_top("⚙️ 設定")
     settings_notice = st.session_state.pop("_settings_notice", None)
@@ -59451,23 +59457,22 @@ def page_settings():
 
     with st.container(border=True, key="settings_logs_v641"):
         st.markdown("#### ログの確認・保存")
-        selected_log = st.selectbox(
-            "確認するログ", ("選択してください", "動作ログ", "自動通知ログ",
-                           "パン屋マップの検索ログ", "イベント検索・情報ソースログ", "エラーログ"),
-            key="settings_log_kind_v641",
-        )
-        # Closed expanders still execute their contents. Dispatch only the selected
-        # panel so navigation does not collect/serialize every diagnostic payload.
-        if selected_log == "動作ログ":
-            render_performance_log_v457(expanded=True)
-        elif selected_log == "自動通知ログ":
-            _render_notification_logs_v599(expanded=True)
-        elif selected_log == "パン屋マップの検索ログ":
-            _salt_discovery_logs_settings_v617(expanded=True)
-        elif selected_log == "イベント検索・情報ソースログ":
-            _events_source_log_settings_v587(expanded=True)
-        elif selected_log == "エラーログ":
-            _app_error_settings_v610(expanded=True)
+        for log_id, label, renderer in (
+            ("performance", "⚡ 動作ログ", render_performance_log_v457),
+            ("notification", "🔔 自動通知ログ", _render_notification_logs_v599),
+            ("bakery", "🍞 パン屋マップの検索ログ", _salt_discovery_logs_settings_v617),
+            ("event", "📅 イベント検索・情報ソースログ", _events_source_log_settings_v587),
+            ("error", "⚠️ エラーログ", _app_error_settings_v610),
+        ):
+            opened = st.session_state.get("_settings_open_log_v642") == log_id
+            st.button(
+                label + ("　閉じる" if opened else "　開く"),
+                key="settings_log_open_v642_" + log_id,
+                use_container_width=True,
+                on_click=_settings_log_toggle_v642, args=(log_id,),
+            )
+            if opened:
+                renderer(expanded=True)
     st.caption(f"アプリビルド：{APP_BUILD}")
 
 # ============================================================
