@@ -1,3 +1,5 @@
+# v648: Select one focus-passing frame per 250ms; 60s yields up to 240 photos, with variable-count completion and chronological galleries.
+# v647: Replace unsupported -vsync with -fps_mode passthrough; automatically recover jobs stranded under the old command.
 # v646: Automatically retry failed Good Moments jobs with durable budgets/backoff and exact native-frame batch recovery.
 # v645: Preserve FFmpeg stderr/count/exit/timeout diagnostics and allow retry of any failed Good Moments job.
 # v644: Recover persisted Good Moments errors directly on log open, asynchronously and owner-scoped.
@@ -101,7 +103,7 @@ def _app_css_v473(markup, **_ignored):
 # Review menu-only update: 2026-09-19 JST
 GENERATED_UPDATE_JST = "2026-09-19T14:54:38+09:00"
 
-APP_BUILD = "v646"
+APP_BUILD = "v648"
 # v598: Passing the focus gate is mandatory before any weighted ranking or reroll.
 # Never fill the twenty-image target with focus-rejected candidates.
 # v597: Compare 30 FPS candidates across the whole saved video offline. Disk-backed
@@ -112,7 +114,7 @@ APP_BUILD = "v646"
 # diversity, suppress transient smile detections and compare structural duplicates offline.
 # v594: Score Good Moments by six distinguishable local signals, including optional offline OpenCV smile/eye/face evidence, camera-motion-compensated action, scene changes and actual favorite-photo similarity. Apply saved percentages exactly; no paid AI calls.
 # v593: Event search uses zero paid AI/search/geocoding API calls: directly read robots-permitted public event listings, validate published dates locally, group 7 dates, preserve audit logs and category filters. Manual day detail search is also API-free.
-# v592: Re-enable "別の100枚を作る" even when existing candidates have emotion/parenting selections. Persisted diary photos are untouched; the unsaved current selection is replaced when reroll completes.
+# v592: Re-enable "別の候補写真を作る" even when existing candidates have emotion/parenting selections. Persisted diary photos are untouched; the unsaved current selection is replaced when reroll completes.
 # v591: Select nine Good Moments using on-server, offline Pillow/NumPy image analysis.
 # No OpenAI/vision API calls in automatic video-frame selection or rerolls.
 # Preserve 0.5-second sampling / max 120 frames, and avoid prior rejected frames.
@@ -1174,7 +1176,8 @@ VIDEO_PROCESSING_MAX_SECONDS = 75
 # conservative margin because browser/device bitrates vary.
 VIDEO_RECORDING_RESERVE_BYTES = 36 * 1024 * 1024
 VIDEO_MAX_BYTES = 150 * 1024 * 1024
-VIDEO_AI_MAX_SELECTIONS = 100  # いい瞬間の切り抜き枚数
+VIDEO_AI_MAX_SELECTIONS = VIDEO_IMPORT_MAX_SECONDS * 4  # 安全上限：65秒で260枚
+VIDEO_MOMENT_INTERVAL_MS_V648 = 250  # 60秒なら最大240枚
 # Full-video analysis at 30 FPS; legacy bundles keep the same count ceiling.
 VIDEO_ANALYSIS_FPS_V597 = 30
 VIDEO_AI_MIN_SAMPLE_INTERVAL_MS = 1000.0 / VIDEO_ANALYSIS_FPS_V597
@@ -12328,12 +12331,8 @@ def _video_moment_local_pick_v594(records, preference_context=None, excluded_fra
         unique.setdefault(str(row["frame_id"]), dict(row))
     entries = sorted((row for row in unique.values() if _video_moment_focus_passes_v598(row)),
                      key=lambda row: row["timestamp_ms"])
-    target = VIDEO_AI_MAX_SELECTIONS
-    if len(entries) < target:
-        raise ValueError(
-            f"ピントの基準を満たす候補は{len(entries)}枚で、100枚に足りません。"
-            "ぼけた写真で枚数を補わず、作成を中止しました。"
-        )
+    if not entries:
+        raise ValueError("ピントの基準を満たす写真がないため、切り抜きを作成しませんでした。")
     context = preference_context if isinstance(preference_context, dict) else {}
     weights = _normalize_video_moment_factor_weights(context.get("factor_weights"))
     excluded = {str(fid) for fid in (excluded_frame_ids or []) if str(fid)}
@@ -12452,53 +12451,23 @@ def _video_moment_local_pick_v594(records, preference_context=None, excluded_fra
         row["reason"] = reasons[primary] if tier == 2 else "ピントの基準を満たす候補から、明るさ・構図を比較"
         if similarity is not None and similarity >= .85 and weights["preference"]:
             row["reason"] += "／お気に入り写真との見た目も比較"
-    # Respect rerolls unless doing so would force poor frames over usable ones.
-    unused = [row for row in entries if row["frame_id"] not in excluded]
-    usable = [row for row in entries if row["tier_v595"] == 2]
-    unused_usable = [row for row in unused if row["tier_v595"] == 2]
-    candidates = unused if len(unused) >= target else entries
-    if len(usable) >= target and len(unused_usable) < target:
-        candidates = entries
+    # One sharp frame per quarter-second; never fill a blurry interval from
+    # another interval, or weaken focus to reach an arbitrary total.
+    buckets = {}
+    for row in entries:
+        bucket = int(row['timestamp_ms']) // VIDEO_MOMENT_INTERVAL_MS_V648
+        if bucket < VIDEO_AI_MAX_SELECTIONS:
+            buckets.setdefault(bucket, []).append(row)
     selected = []
-    comparisons = {}
-    duration = max(1, entries[-1]["timestamp_ms"] - entries[0]["timestamp_ms"])
-    min_gap = min(1400, max(80, duration // (target * 2)))
-    for tier in (2, 1, 0):
-        remaining = [row for row in candidates if row["tier_v595"] == tier]
-        for relax in (0, 1, 2):
-            while remaining and len(selected) < target:
-                best, best_priority = None, -1e20
-                for item in remaining:
-                    distance = min((abs(item["timestamp_ms"] - other["timestamp_ms"]) for other in selected), default=duration)
-                    state = comparisons.setdefault(item["frame_id"], [0, False, None])
-                    for other in selected[state[0]:]:
-                        duplicate, diff = _video_moment_similarity_v595(item, other)
-                        state[1] = state[1] or duplicate
-                        state[2] = diff if state[2] is None else min(state[2], diff)
-                    state[0] = len(selected)
-                    same = state[1]
-                    diffs = [] if state[2] is None else [state[2]]
-                    if relax == 0 and (same or distance < min_gap):
-                        continue
-                    if relax == 1 and distance < min(400, min_gap // 2):
-                        continue
-                    novelty = unit(min(diffs, default=.18) / .18)
-                    spread = unit(distance / max(1, duration / target))
-                    # Diversity breaks close-quality ties; it cannot rescue a poor tier.
-                    priority = (.92 * item["base"] + .05 * novelty + .03 * spread
-                                - (.045 if item["frame_id"] in excluded else 0.) - (.06 if same else 0.))
-                    if best is None or priority > best_priority:
-                        best, best_priority = item, priority
-                if best is None:
-                    break
-                selected.append(best)
-                remaining = [row for row in remaining if row["frame_id"] != best["frame_id"]]
-            if len(selected) >= target:
-                break
-        if len(selected) >= target:
-            break
-    if len(selected) < target:
-        raise ValueError("いい瞬間を100枚そろえられませんでした。")
+    for bucket in sorted(buckets):
+        candidates = buckets[bucket]
+        unused = [row for row in candidates if row['frame_id'] not in excluded]
+        candidates = unused or candidates
+        def focus_key(row):
+            q = row.get('face_quality_v595') or row['quality_v595']
+            return (float(q['clarity']), float(q['focus']), float(row['base']),
+                    -abs(row['timestamp_ms'] - (bucket * VIDEO_MOMENT_INTERVAL_MS_V648 + 125)))
+        selected.append(max(candidates, key=focus_key))
     # Rank 1 (BEST) must actually be the highest quality-weighted selected frame.
     selected.sort(key=lambda row: (-row["tier_v595"], -row["base"], row["timestamp_ms"]))
     return [{"frame": row["frame"], "score": int(round(row["base"] * 100.)),
@@ -12537,7 +12506,7 @@ def choose_video_ai_frames(
     selection = _video_moment_native_stills_v597(selection, frame_items, progress_callback)
     if callable(progress_callback):
         try:
-            progress_callback("final_selection", 1, 1, "30FPSの比較から100枚を選びました")
+            progress_callback("final_selection", 1, 1, f"ぼやけを除外し、{len(selection)}枚を選びました（1秒あたり約4枚）")
         except Exception:
             pass
     return selection
@@ -13071,15 +13040,25 @@ def _video_moment_frame_bytes_v597(frame):
 
 
 
+def _video_retry_attempts_v647(selection):
+    # A corrected extraction command gets one new durable budget. Do not regrant
+    # it on each app launch or reopen; the worker persists this revision first.
+    if int(selection.get('auto_recovery_version_v646') or 0) != 648:
+        return 0
+    return max(0, int(selection.get('auto_attempts_v646') or 0))
+
+
 def _video_auto_retryable_v646(selection):
     if not isinstance(selection, dict) or str(selection.get('status') or '').lower() != 'error':
         return False
-    if int(selection.get('auto_attempts_v646') or 0) >= 3:
+    if _video_retry_attempts_v647(selection) >= 3:
         return False
     message = str(selection.get('last_error') or selection.get('message') or '')
     # A quality/length constraint cannot be repaired by repeating the same video.
-    if message.startswith('ピント') or '長さの動画がありません' in message:
+    if ((message.startswith('ピント') and not (int(selection.get('auto_recovery_version_v646') or 0) != 648 and '100枚に足りません' in message)) or '長さの動画がありません' in message):
         return False
+    if int(selection.get('auto_recovery_version_v646') or 0) != 648:
+        return True
     try:
         due = datetime.fromisoformat(str(selection.get('auto_retry_at_v646') or ''))
         if due.tzinfo is None:
@@ -13121,8 +13100,8 @@ def _video_moment_native_stills_v597(selection, frames, progress_callback=None):
     if frames.closed:
         raise RuntimeError('動画の解析用ファイルを読み込めませんでした。')
     indices = sorted({int(item['frame']['analysis_index_v597']) for item in selection})
-    if len(indices) != VIDEO_AI_MAX_SELECTIONS:
-        raise ValueError('異なる100枚の元動画フレームを確定できませんでした。')
+    if not indices or len(indices) != len(selection) or len(indices) > VIDEO_AI_MAX_SELECTIONS:
+        raise ValueError('元動画フレームの時刻または枚数を確定できませんでした。')
     diagnostics = {'stage': 'native_stills', 'expected_count': len(indices), 'analysis_fps': frames.fps,
                    'original_size_bytes': Path(frames.original_path).stat().st_size, 'attempts': []}
     # Heavy ffmpeg extraction cannot fan out across simultaneous video jobs.
@@ -13139,11 +13118,17 @@ def _video_moment_native_stills_v597(selection, frames, progress_callback=None):
                 if callable(progress_callback):
                     progress_callback('native_stills', start, len(indices),
                         '元解像度で切り出しています' if strategy == 'single_thread' else '負荷を抑えて自動で切り出し直しています')
-                expression = '+'.join(f'eq(n\\,{index})' for index in batch)
+                terms = [f'eq(n\\,{index})' for index in batch]
+                # Balanced addition avoids FFmpeg's expression-depth limit when
+                # selecting 240+ indices. A linear sum fails above ~100 terms.
+                while len(terms) > 1:
+                    terms = [f'({terms[i]}+{terms[i+1]})' if i+1 < len(terms) else terms[i]
+                             for i in range(0, len(terms), 2)]
+                expression = terms[0]
                 vf = f'fps={frames.fps:.9f}:start_time=0:round=near,select={expression}'
                 command = [_ffmpeg_executable(), '-nostdin', '-hide_banner', '-loglevel', 'error',
                     '-threads', '1', '-filter_threads', '1', '-i', frames.original_path,
-                    '-map', '0:v:0', '-an', '-vf', vf, '-vsync', '0', '-frames:v', str(len(batch)),
+                    '-map', '0:v:0', '-an', '-vf', vf, '-fps_mode', 'passthrough', '-frames:v', str(len(batch)),
                     '-threads', '1', '-q:v', '1', str(directory / 'selected_%03d.jpg')]
                 record = {'strategy': strategy, 'start': start, 'expected_count': len(batch)}
                 try:
@@ -13205,9 +13190,9 @@ def _run_video_ai_background_job(photo_id, family_key, member_key):
         reflection = dict(photo_media_metadata(photo))
         selection = dict(reflection.get('ai_selection') or {})
         status = str(selection.get('status') or '').lower()
-        if status == 'reviewed' or (status == 'ready' and len(video_ai_selection_items(photo)) >= VIDEO_AI_MAX_SELECTIONS):
+        if status == 'reviewed' or (status == 'ready' and _video_selection_complete_v648(photo)):
             return True
-        attempts = int(selection.get('auto_attempts_v646') or 0)
+        attempts = _video_retry_attempts_v647(selection)
         if attempts >= 3:
             if status != 'error':
                 selection.update(status='error', last_error=selection.get('last_error') or '自動復旧の実行中に処理が中断され、再試行の上限に達しました。', updated_at=now_jst().isoformat())
@@ -13217,7 +13202,7 @@ def _run_video_ai_background_job(photo_id, family_key, member_key):
         if status == 'error' and not _video_auto_retryable_v646(selection):
             return False
         selection['auto_attempts_v646'] = attempts + 1
-        selection['auto_recovery_version_v646'] = 646
+        selection['auto_recovery_version_v646'] = 648
         selection['status'] = 'processing'
         selection['progress_message'] = f'自動処理中（{attempts + 1}/3回目）'
         selection['updated_at'] = now_jst().isoformat()
@@ -13281,8 +13266,8 @@ def _background_extract_video_candidate_frames(client, photo):
         if result.returncode:
             detail = result.stderr.decode("utf-8", errors="replace").replace("\n", " ")[-180:]
             raise RuntimeError("30FPSで動画全体を解析できませんでした。" + detail)
-        if len(files) < VIDEO_AI_MAX_SELECTIONS:
-            raise ValueError("異なる時刻で100枚切り出せる長さの動画がありません。")
+        if not files:
+            raise ValueError("元動画から解析用の画像を切り出せませんでした。")
         for index, path in enumerate(files):
             if not path.stat().st_size:
                 raise RuntimeError("30FPS解析用の画像が空でした。")
@@ -13879,8 +13864,8 @@ def _background_store_video_ai_selection(
     selected_items = list(selections or [])[:VIDEO_AI_MAX_SELECTIONS]
     if any(not (item.get("quality_metrics") or {}).get("focus_passed") for item in selected_items):
         raise ValueError("ピントの必須確認を通過していない写真は保存できません。")
-    if len(selected_items) < VIDEO_AI_MAX_SELECTIONS:
-        raise ValueError(f"いい瞬間を{VIDEO_AI_MAX_SELECTIONS}枚そろえられませんでした。")
+    if not selected_items:
+        raise ValueError("ピントの基準を満たす写真がありません。")
 
     # v591 never performs a second seek/re-extraction pass. The initial native
     # ffmpeg pass already produced native-resolution source frames. Refuse anything
@@ -13957,7 +13942,9 @@ def _background_store_video_ai_selection(
                 "final_frame_mode": "original_native_30fps_v597",
                 "selection_engine": "offline_quality_first_30fps_v597",
                 "high_quality_count": len(items),
-                "selection_target_count": VIDEO_AI_MAX_SELECTIONS,
+                "selection_target_count": len(items),
+                "selection_result_count_v648": len(items),
+                "selection_policy_v648": "focus_4fps",
                 "progress_message": "完了",
                 "last_error": "",
             }
@@ -14270,7 +14257,7 @@ def launch_video_ai_background_job(photo):
     existing_items = video_ai_selection_items(fresh)
     if status == "reviewed":
         return False
-    if status == "ready" and len(existing_items) >= VIDEO_AI_MAX_SELECTIONS:
+    if status == "ready" and _video_selection_complete_v648(fresh):
         return False
 
     registry = _video_ai_job_registry()
@@ -14325,7 +14312,7 @@ def resume_member_video_background_jobs(limit=24, min_interval_seconds=5):
         status = str(selection.get("status") or "").strip().lower()
         selection_items = video_ai_selection_items(row)
         has_items = bool(selection_items)
-        has_full_selection = len(selection_items) >= VIDEO_AI_MAX_SELECTIONS
+        has_full_selection = _video_selection_complete_v648(row)
         photo_id = str(row.get("id") or "")
 
         if status == "reviewed":
@@ -14445,7 +14432,7 @@ def request_video_ai_reroll(photo, record_rejection=True):
     selection["updated_at"] = selection["queued_at"]
     selection["reroll_target_round_v596"] = int(selection.get("round") or 0) + 1
     selection["stage"] = "queued"
-    selection["progress_message"] = "新しい100枚を作成しています。完了まで前の候補は表示しません。"
+    selection["progress_message"] = "新しい候補写真を作成しています。完了まで前の候補は表示しません。"
     selection["progress_completed"] = 0
     selection["progress_total"] = 0
     selection["last_error"] = ""
@@ -14755,8 +14742,10 @@ def store_preselected_video_ai_selection(photo, selections, candidate_count=0):
     if not isinstance(photo, dict) or not photo.get("id") or not photo_is_video(photo):
         raise ValueError("AIセレクション対象の動画が見つかりません。")
     selected_items = list(selections or [])[:VIDEO_AI_MAX_SELECTIONS]
-    if len(selected_items) < VIDEO_AI_MAX_SELECTIONS:
-        raise ValueError(f"AIセレクションを{VIDEO_AI_MAX_SELECTIONS}枚そろえられませんでした。")
+    if not selected_items:
+        raise ValueError("ピントの基準を満たす写真がありません。")
+    if any(not (item.get("quality_metrics") or {}).get("focus_passed") for item in selected_items):
+        raise ValueError("ピントの必須確認を通過していない写真は保存できません。")
     base = _video_selection_base_path(photo)
     if not base:
         raise ValueError("動画の保存先を確認できませんでした。")
@@ -14822,7 +14811,9 @@ def store_preselected_video_ai_selection(photo, selections, candidate_count=0):
             "items": items,
             "final_frame_mode": "original_native_dynamic20_single_pass_v153",
             "high_quality_count": len(items),
-            "selection_target_count": VIDEO_AI_MAX_SELECTIONS,
+            "selection_target_count": len(items),
+                "selection_result_count_v648": len(items),
+                "selection_policy_v648": "focus_4fps",
         }
         _write_photo_reflection(photo["id"], reflection)
         updated = dict(photo)
@@ -14906,6 +14897,13 @@ def video_ai_selection_items(photo):
     return sorted(clean, key=lambda item: (max(0, int(item.get("timestamp_ms") or 0)), int(item.get("rank") or 0)))[:VIDEO_AI_MAX_SELECTIONS]
 
 
+def _video_selection_complete_v648(photo):
+    selection = photo_media_metadata(photo).get('ai_selection') or {}
+    items = video_ai_selection_items(photo)
+    expected = max(1, int(selection.get('selection_result_count_v648') or selection.get('selection_target_count') or len(items)))
+    return bool(items) and len(items) >= min(expected, VIDEO_AI_MAX_SELECTIONS)
+
+
 def video_ai_effective_status(photo):
     """Prefer a durable completed result over a stale processing label."""
     selection = photo_media_metadata(photo).get("ai_selection") or {}
@@ -14928,7 +14926,7 @@ def video_ai_effective_status(photo):
     if (
         status in {"processing", "waiting_candidates", "waiting_browser_candidates", ""}
         and completed_after_queue
-        and len(items) >= VIDEO_AI_MAX_SELECTIONS
+        and _video_selection_complete_v648(photo)
         and progress in {"完了", "complete", "completed"}
     ):
         return "ready"
@@ -29204,7 +29202,7 @@ def render_pending_video_ai_review():
     if not isinstance(pending, dict):
         return False
     selections = list(pending.get("selections") or [])[:VIDEO_AI_MAX_SELECTIONS]
-    if len(selections) < VIDEO_AI_MAX_SELECTIONS or not pending.get("video_raw") or not pending.get("poster_raw"):
+    if not selections or not pending.get("video_raw") or not pending.get("poster_raw"):
         st.session_state.pop("_pending_video_ai_review", None)
         return False
 
@@ -29258,7 +29256,7 @@ def render_pending_video_ai_review():
             ai_selection_ok = False
             if isinstance(saved_video, dict) and saved_video.get("id"):
                 try:
-                    with st.spinner(f"選んだ{VIDEO_AI_MAX_SELECTIONS}枚を保存しています…"):
+                    with st.spinner(f"選んだ{len(selections)}枚を保存しています…"):
                         saved_video = store_preselected_video_ai_selection(
                             saved_video,
                             selections,
@@ -29285,7 +29283,7 @@ def render_pending_video_ai_review():
             st.session_state.pop("_pending_video_ai_review_digest", None)
             st.session_state.capture_serial += 1
             st.session_state["_camera_notice"] = (
-                f"動画を保存し、AIセレクション{VIDEO_AI_MAX_SELECTIONS}枚も保存しました。"
+                f"動画を保存し、候補写真{len(selections)}枚も保存しました。"
                 if ai_selection_ok else
                 "動画を保存しました。AIセレクションの保存には失敗しました。"
             )
@@ -40037,7 +40035,7 @@ _MOMENTS_SELECT_HTML = """
 
 _MOMENTS_SELECT_CSS = '\n.moments-view-toggle {\n  width:100%; display:grid; grid-template-columns:1fr 1fr; gap:6px;\n  margin:0 0 7px; box-sizing:border-box;\n}\n.moments-view-button {\n  appearance:none; -webkit-appearance:none; min-height:34px; margin:0; padding:6px 8px;\n  border:1px solid rgba(128,128,128,.24); border-radius:10px;\n  background:rgba(128,128,128,.045); color:var(--st-text-color);\n  font-size:12px; font-weight:800; cursor:pointer; touch-action:manipulation;\n  -webkit-tap-highlight-color:transparent;\n}\n.moments-view-button.active {\n  border-color:#6C9BD2; background:rgba(108,155,210,.14); color:var(--st-text-color);\n}\n.moments-view-button:active { transform:scale(.99); }\n.moments-select-grid:not(.enlarge-mode) .moments-mode-switch,\n.moments-select-grid:not(.enlarge-mode) .moments-voice-open-button { display:none; }\n.moments-select-grid {\n  width: 100%;\n  display: grid;\n  grid-template-columns: repeat(3, minmax(0, 1fr));\n  gap: 8px;\n  box-sizing: border-box;\n  margin: 4px 0 8px;\n}\n.moments-select-card,\n.moments-select-empty {\n  width: 100%;\n  min-width: 0;\n  box-sizing: border-box;\n  border-radius: 13px;\n}\n.moments-select-card {\n  appearance: none;\n  -webkit-appearance: none;\n  position: relative;\n  margin: 0;\n  padding: 4px;\n  border: 3px solid rgba(174, 182, 194, .72);\n  background: rgba(174, 182, 194, .07);\n  cursor: pointer;\n  touch-action: manipulation;\n  -webkit-tap-highlight-color: transparent;\n  overflow: hidden;\n  color: var(--st-text-color);\n  text-align: left;\n}\n.moments-select-card.selected {\n  border-color: #F59E0B;\n  background: rgba(245, 158, 11, .16);\n  box-shadow: 0 0 0 2px rgba(245, 158, 11, .12);\n}\n.moments-select-card:active { transform: scale(.985); }\n.moments-select-card:disabled {\n  cursor: default;\n  opacity: 1;\n}\n.moments-select-image-wrap {\n  position: relative;\n  width: 100%;\n  aspect-ratio: 1 / 1;\n  overflow: hidden;\n  border-radius: 9px;\n  background: rgba(128,128,128,.08);\n}\n.moments-select-image-wrap img {\n  display: block;\n  width: 100%;\n  height: 100%;\n  object-fit: cover;\n}\n.moments-select-rank,\n.moments-select-picked {\n  position: absolute;\n  z-index: 2;\n  border-radius: 999px;\n  color: #fff;\n  font-weight: 800;\n  line-height: 1.15;\n  box-shadow: 0 1px 4px rgba(0,0,0,.22);\n}\n.moments-select-rank {\n  left: 5px;\n  top: 5px;\n  padding: 3px 6px;\n  background: rgba(17,24,39,.72);\n  font-size: 9px;\n}\n.moments-select-picked {\n  right: 5px;\n  bottom: 5px;\n  padding: 4px 7px;\n  background: #F59E0B;\n  font-size: 9px;\n}\n.moments-emotion-badge {\n  position: absolute;\n  z-index: 3;\n  right: 6px;\n  bottom: 6px;\n  min-width: 28px;\n  height: 24px;\n  padding: 0 7px;\n  box-sizing: border-box;\n  border-radius: 999px;\n  display: flex;\n  align-items: center;\n  justify-content: center;\n  background: rgba(255,255,255,.92);\n  border: 1px solid rgba(17,24,39,.10);\n  box-shadow: 0 2px 7px rgba(0,0,0,.18);\n  font-size: 8.5px;\n  line-height: 1;\n  font-weight: 800;\n  white-space: nowrap;\n  pointer-events: none;\n}\n.moments-emotion-badge[hidden] { display: none !important; }\n.moments-mode-switch {\n  display:grid; grid-template-columns:1fr 1fr; gap:3px; margin-top:4px;\n}\n.moments-mode-button {\n  appearance:none; -webkit-appearance:none; min-height:26px; margin:0; padding:4px 3px;\n  border:1px solid #D1D5DB; border-radius:8px; background:#FFFFFF;\n  color:#111827 !important; font-size:8.5px; line-height:1; font-weight:760; cursor:pointer;\n  touch-action:manipulation; -webkit-tap-highlight-color:transparent;\n}\n.moments-mode-button.active { border-color:#6C9BD2; background:#DBEAFE; color:#1E3A8A !important; }\n.moments-mode-button.parenting.active { border-color:#6FBA9C; background:#DCFCE7; color:#166534 !important; }\n.moments-select-card.large-card .moments-mode-switch { gap:7px; margin-top:7px; }\n.moments-select-card.large-card .moments-mode-button { min-height:40px; font-size:11px; }\n.moments-voice-open-button {\n  appearance:none; -webkit-appearance:none; position:absolute; z-index:5; left:6px; bottom:6px;\n  min-width:29px; height:27px; padding:0 7px; margin:0; border:1px solid rgba(17,24,39,.12);\n  border-radius:999px; background:rgba(255,255,255,.94); color:#111827 !important;\n  box-shadow:0 2px 7px rgba(0,0,0,.18); font-size:11px; font-weight:850; line-height:1;\n  cursor:pointer; touch-action:manipulation; -webkit-tap-highlight-color:transparent;\n}\n.moments-voice-open-button.has-voice { background:#EAF7F0; border-color:#67A987; color:#166534 !important; }\n.moments-voice-open-button:active { transform:scale(.97); }\n.moments-select-card.large-card .moments-voice-open-button { left:10px; bottom:10px; min-width:54px; height:34px; padding:0 9px; font-size:11px; }\n.moments-select-meta {\n  margin-top: 5px;\n  font-size: 10px;\n  line-height: 1.2;\n  font-weight: 700;\n  overflow: hidden;\n  text-overflow: ellipsis;\n  white-space: nowrap;\n}\n.moments-select-reason {\n  margin-top: 2px;\n  min-height: 2.3em;\n  font-size: 9px;\n  line-height: 1.18;\n  opacity: .75;\n  display: -webkit-box;\n  -webkit-line-clamp: 2;\n  -webkit-box-orient: vertical;\n  overflow: hidden;\n}\n.moments-select-empty {\n  aspect-ratio: 1 / 1;\n  border: 1px dashed rgba(128,128,128,.18);\n  background: rgba(128,128,128,.035);\n}\n\n/* v148 enlarged single-photo viewer. */\n.moments-select-grid.enlarge-mode {\n  display: block;\n  margin: 4px 0 10px;\n}\n.moments-enlarge-shell {\n  width: 100%;\n  box-sizing: border-box;\n}\n.moments-enlarge-viewer {\n  width: 100%;\n  min-height: 1px;\n  box-sizing: border-box;\n}\n.moments-save-current-button {\n  width: 100%;\n  margin-top: 10px;\n  min-height: 46px;\n  border: none;\n  border-radius: 14px;\n  background: linear-gradient(180deg, #ff8a3d 0%, #ff6f1f 100%);\n  color: #fff;\n  font-size: 15px;\n  font-weight: 800;\n  box-shadow: 0 10px 22px rgba(255,111,31,.20);\n}\n.moments-save-current-button[hidden] {\n  display: none !important;\n}\n.moments-save-current-button:disabled {\n  opacity: .55;\n  box-shadow: none;\n}\n.moments-enlarge-nav {\n  display: grid;\n  grid-template-columns: 1fr 1.4fr 1fr;\n  gap: 8px;\n  align-items: center;\n  margin: 0 0 8px;\n}\n.moments-enlarge-nav button {\n  appearance: none;\n  -webkit-appearance: none;\n  width: 100%;\n  min-width: 0;\n  padding: 8px 4px;\n  min-height: 44px;\n  border: 1px solid rgba(128,128,128,.28);\n  border-radius: 12px;\n  background: rgba(128,128,128,.06);\n  color: var(--st-text-color);\n  font-size: 12px;\n  font-weight: 800;\n  cursor: pointer;\n  touch-action: manipulation;\n}\n.moments-enlarge-nav button:disabled {\n  opacity: .28;\n  cursor: default;\n}\n.moments-enlarge-counter {\n  text-align: center;\n  font-size: 13px;\n  font-weight: 800;\n  opacity: .78;\n}\n.moments-select-card.large-card {\n  display: block;\n  width: 100%;\n  padding: 6px;\n  border-radius: 18px;\n}\n.moments-select-card.large-card .moments-select-image-wrap {\n  aspect-ratio: 4 / 5;\n  border-radius: 13px;\n  background: #111;\n}\n.moments-select-card.large-card .moments-select-image-wrap img {\n  object-fit: contain;\n}\n.moments-select-card.large-card .moments-select-rank {\n  left: 10px;\n  top: 10px;\n  padding: 6px 10px;\n  font-size: 12px;\n}\n.moments-select-card.large-card .moments-select-picked {\n  right: 10px;\n  bottom: 10px;\n  padding: 7px 11px;\n  font-size: 12px;\n}\n.moments-select-card.large-card .moments-emotion-badge {\n  right: 12px;\n  bottom: 12px;\n  min-width: 38px;\n  height: 38px;\n  font-size: 25px;\n}\n.moments-select-card.large-card .moments-select-meta {\n  margin-top: 8px;\n  font-size: 14px;\n  white-space: normal;\n}\n.moments-select-card.large-card .moments-select-reason {\n  margin-top: 4px;\n  min-height: 0;\n  font-size: 13px;\n  line-height: 1.35;\n  display: block;\n  opacity: .82;\n}\n.moments-action-button {\n  appearance:none; -webkit-appearance:none; width:100%; min-height:44px; margin:7px 0 0; padding:9px 12px;\n  border-radius:12px; font-size:14px; font-weight:800; cursor:pointer; touch-action:manipulation;\n  -webkit-tap-highlight-color:transparent; box-sizing:border-box;\n}\n.moments-action-button.primary {\n  border:1px solid #2563EB; background:#2563EB; color:#FFFFFF !important;\n}\n.moments-action-button.secondary {\n  border:1px solid #D1D5DB; background:#F3F4F6; color:#111827 !important;\n}\n.moments-action-button:active { transform:scale(.99); }\n.moments-action-button[hidden] { display:none !important; }\n.moments-enlarge-hint {\n  margin-top: 7px;\n  text-align: center;\n  font-size: 12px;\n  opacity: .70;\n}\n@media (max-width: 640px) {\n  .moments-select-grid { gap: 6px; }\n  .moments-select-card { padding: 3px; border-radius: 11px; }\n  .moments-select-image-wrap { border-radius: 7px; }\n  .moments-select-meta { font-size: 9px; }\n  .moments-select-reason { font-size: 8px; }\n  .moments-select-rank, .moments-select-picked { font-size: 8px; }\n  .moments-select-card.large-card { padding: 5px; border-radius: 16px; }\n  .moments-select-card.large-card .moments-select-image-wrap { border-radius: 11px; }\n  .moments-select-card.large-card .moments-select-meta { font-size: 13px; }\n  .moments-select-card.large-card .moments-select-reason { font-size: 12px; }\n}\n\n.photo-rotation-controls-v616{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:8px 0}.photo-rotation-controls-v616 button{min-height:44px;border:1px solid #b9c7d7;border-radius:10px;background:#fff;color:#193650;font:inherit;font-size:13px;padding:8px;touch-action:manipulation;cursor:pointer}.photo-rotation-controls-v616 button:disabled{opacity:.5}\n'
 
-_MOMENTS_SELECT_JS = "\nexport default function(component) {\n  const { parentElement, data, setTriggerValue } = component;\n  const grid = parentElement.querySelector('#moments-select-grid');\n  if (!grid) return;\n\n  const photos = Array.isArray(data?.photos) ? data.photos.slice(0,100).sort((a,b)=>(Number(a?.timestamp_ms)||0)-(Number(b?.timestamp_ms)||0)||(Number(a?.rank)||0)-(Number(b?.rank)||0)) : [];\n  const disabled = Boolean(data?.disabled);\n  const familyKey=String(data?.family_key||''), memberKey=String(data?.member_key||''), videoId=String(data?.video_id||'');\n  const roundNumber=Math.max(0,Number(data?.round_number||0)||0);\n  const listViewButton=parentElement.querySelector('#moments-view-list');\n  const enlargeViewButton=parentElement.querySelector('#moments-view-enlarge');\n  const viewStoreKey=videoId?`tokyo_burari_moments_view_mode_v607_${videoId}_${roundNumber}_${data?.view_session||0}`:'';\n  const activeStoreKey=videoId?`tokyo_burari_moments_active_rank_v370_${videoId}_${roundNumber}`:'';\n  let viewMode='list';\n  try {\n    const savedMode=viewStoreKey?String(localStorage.getItem(viewStoreKey)||''):'';\n    if(savedMode==='enlarge'||savedMode==='list')viewMode=savedMode;\n    else if(String(data?.view_mode||'')==='enlarge')viewMode='enlarge';\n  } catch (_) {\n    viewMode=String(data?.view_mode||'')==='enlarge'?'enlarge':'list';\n  }\n  const pendingStore='tokyo_burari_pending_tags_v166';\n  const pendingParam=String(data?.pending_param||'feel_v159');\n  const compatStore='tokyo_burari_pending_feelings_v159';\n  const selected=new Set((Array.isArray(data?.selected_ranks)?data.selected_ranks:[]).map(Number).filter(v=>Number.isFinite(v)&&v>0));\n  const nextVideoButton=parentElement.querySelector('#moments-next-video');\n  const saveSelectionButton=parentElement.querySelector('#moments-save-selection');\n\n  const normalOrder=['cozy','joy','surprise','anger','sadness','frustration','relaxed','delicious','beautiful','mixed'];\n  const normalMeta={\n    cozy:{emoji:'🥰',color:'#F3B6A0',label:'ほっこりした'},joy:{emoji:'😊',color:'#F2C94C',label:'うれしい'},\n    surprise:{emoji:'😲',color:'#9B7BD3',label:'びっくり'},anger:{emoji:'😠',color:'#E56B6F',label:'おこった'},\n    sadness:{emoji:'😢',color:'#6C9BD2',label:'かなしい'},frustration:{emoji:'😣',color:'#A66A8A',label:'くやしい'},\n    relaxed:{emoji:'😌',color:'#9BCDB8',label:'のほほん'},delicious:{emoji:'😋',color:'#F2A65A',label:'美味しい'},\n    beautiful:{emoji:'✨',color:'#6EC5D8',label:'きれい'},mixed:{emoji:'😵\u200d💫',color:'#8D86A8',label:'複雑'}\n  };\n  const parentingOrder=['effort','challenge','discovery','kindness','together','tears','hmm','peace','teach_me','sharp'];\n  const parentingMeta={\n    effort:{emoji:'⭐',color:'#E6B84A',label:'がんばった'},challenge:{emoji:'💪',color:'#F2994A',label:'ちょうせん'},\n    discovery:{emoji:'💡',color:'#9BC53D',label:'はっけん'},kindness:{emoji:'❤️',color:'#E57373',label:'やさしさ'},\n    together:{emoji:'🤝',color:'#4DB6AC',label:'いっしょに'},tears:{emoji:'😭',color:'#6C9BD2',label:'なみだ'},\n    hmm:{emoji:'🤔',color:'#8E7CC3',label:'むーん'},peace:{emoji:'✌️',color:'#5BBF9F',label:'ピース'},\n    teach_me:{emoji:'🙋',color:'#4C9BE8',label:'教えて'},sharp:{emoji:'🫡',color:'#53657D',label:'キリッ'}\n  };\n  const normalizeNormal=(v)=>Object.prototype.hasOwnProperty.call(normalMeta,String(v||''))?String(v||''):'';\n  const normalizeParenting=(v)=>Object.prototype.hasOwnProperty.call(parentingMeta,String(v||''))?String(v||''):'';\n  const rankFor=(photo,index)=>Number(photo?.rank||(index+1));\n  const emotions=new Map(), parenting=new Map();\n  for(let i=0;i<photos.length;i+=1){ const rank=rankFor(photos[i],i); if(Number.isFinite(rank)&&rank>0){ emotions.set(rank,normalizeNormal(photos[i]?.emotion)); parenting.set(rank,normalizeParenting(photos[i]?.parenting)); } }\n  const validRanks=photos.map(rankFor).filter(v=>Number.isFinite(v)&&v>0);\n  let activeRank=Number(data?.active_rank||0);\n  try {\n    const savedActive=activeStoreKey?Number(localStorage.getItem(activeStoreKey)||0):0;\n    if(validRanks.includes(savedActive))activeRank=savedActive;\n  } catch (_) {}\n  if(!validRanks.includes(activeRank)) activeRank=validRanks.length?validRanks[0]:0;\n  const persistActiveRank=()=>{\n    try{if(activeStoreKey&&validRanks.includes(activeRank))localStorage.setItem(activeStoreKey,String(activeRank));}catch(_){}\n  };\n  persistActiveRank();\n  let preferredMode=String(data?.preferred_mode||'')==='parenting'?'parenting':'normal';\n  const selectionTouched=new Set();\n\n  const encodeCompat=(payload)=>{\n    try{const bytes=new TextEncoder().encode(JSON.stringify(payload));let binary='';for(let i=0;i<bytes.length;i+=0x4000)binary+=String.fromCharCode(...bytes.subarray(i,i+0x4000));return btoa(binary).replace(/\\+/g,'-').replace(/\\//g,'_').replace(/=+$/g,'');}catch(_){return '';}\n  };\n  const mirrorCompat=(envelope)=>{\n    try{if(!envelope||!envelope.t||!familyKey||!memberKey)return;const compat={...envelope,v:159,f:familyKey,m:memberKey};const encoded=encodeCompat(compat);if(!encoded)return;const url=new URL(window.location.href);url.searchParams.set(pendingParam,encoded);localStorage.setItem(compatStore,encoded);window.history.replaceState(window.history.state||{},'',url.pathname+url.search+url.hash);}catch(_){}\n  };\n  const readPending=()=>{\n    try{\n      const parsed=JSON.parse(String(localStorage.getItem(pendingStore)||'null'));\n      if(parsed&&Number(parsed.v)===166&&String(parsed.f||'')===familyKey&&String(parsed.m||'')===memberKey){mirrorCompat(parsed);return parsed;}\n    }catch(_){}\n    return {v:166,f:familyKey,m:memberKey,p:{},g:{},x:{}};\n  };\n  const pendingSnapshot=readPending();\n  const pendingMoment=(pendingSnapshot.x&&typeof pendingSnapshot.x==='object')?pendingSnapshot.x[videoId]:null;\n  if(pendingMoment&&typeof pendingMoment==='object'&&Number(pendingMoment.r||0)===roundNumber){\n    if(pendingMoment.e&&typeof pendingMoment.e==='object')for(const [rankValue,value] of Object.entries(pendingMoment.e)){const rank=Number(rankValue);if(validRanks.includes(rank))emotions.set(rank,normalizeNormal(value));}\n    if(pendingMoment.g&&typeof pendingMoment.g==='object')for(const [rankValue,value] of Object.entries(pendingMoment.g)){const rank=Number(rankValue);if(validRanks.includes(rank))parenting.set(rank,normalizeParenting(value));}\n    if(Array.isArray(pendingMoment.s)){selected.clear();for(const value of pendingMoment.s.map(Number)){if(validRanks.includes(value))selected.add(value);}}\n  }\n  for(const rank of validRanks){\n    if(normalizeNormal(emotions.get(rank))&&normalizeParenting(parenting.get(rank))){\n      if(preferredMode==='parenting')emotions.set(rank,'');else parenting.set(rank,'');\n    }\n  }\n\n  const writePending=(envelope)=>{\n    try{\n      envelope.t=`${Date.now()}_${Math.random().toString(36).slice(2)}`;\n      localStorage.setItem(pendingStore,JSON.stringify(envelope));\n      mirrorCompat(envelope);\n    }catch(_){}\n  };\n  const persistMomentState=(rank)=>{\n    if(!familyKey||!memberKey||!videoId)return;\n    try{\n      const envelope=readPending();\n      if(!envelope.p||typeof envelope.p!=='object')envelope.p={}; if(!envelope.g||typeof envelope.g!=='object')envelope.g={}; if(!envelope.x||typeof envelope.x!=='object')envelope.x={};\n      let state=envelope.x[videoId]; if(!state||typeof state!=='object'||Number(state.r||0)!==roundNumber)state={r:roundNumber,e:{},g:{},s:[]};\n      if(!state.e||typeof state.e!=='object')state.e={}; if(!state.g||typeof state.g!=='object')state.g={};\n      state.e[String(rank)]=normalizeNormal(emotions.get(rank)); state.g[String(rank)]=normalizeParenting(parenting.get(rank)); state.s=Array.from(selected).sort((a,b)=>a-b); envelope.x[videoId]=state;\n      writePending(envelope);\n    }catch(_){}\n  };\n  const buildActionPayload=(action)=>({\n    action:String(action||''),\n    changes:validRanks.map(rank=>({rank,emotion:normalizeNormal(emotions.get(rank)),parenting:normalizeParenting(parenting.get(rank))})),\n    selected_ranks:Array.from(selected).sort((a,b)=>a-b),\n    active_rank:activeRank,\n    preferred_mode:preferredMode,\n    pending_payload:readPending(),\n    nonce:`${Date.now()}:${Math.random()}`,\n  });\n  const emitAction=(action)=>{\n    if(disabled)return;\n    const payload=buildActionPayload(action);\n    setTriggerValue('picker_action',payload);\n  };\n  if(nextVideoButton){\n    nextVideoButton.hidden=!Boolean(data?.show_next_video);\n    nextVideoButton.textContent=String(data?.next_label||'次の動画の写真へ →');\n    nextVideoButton.onclick=(event)=>{event.preventDefault();event.stopPropagation();emitAction('next_video');};\n  }\n  if(saveSelectionButton){\n    saveSelectionButton.hidden=disabled||!Boolean(data?.show_save_button!==false);\n    saveSelectionButton.textContent=String(data?.save_label||'感情をつけた写真を残す');\n    saveSelectionButton.onclick=(event)=>{event.preventDefault();event.stopPropagation();emitAction('save_selection');};\n  }\n\n  const nextValue=(value,order,normalize)=>{const cycle=['',...order];const index=Math.max(0,cycle.indexOf(normalize(value)));return cycle[(index+1)%cycle.length];};\n\n  const makeCard=(photo,index,large=false)=>{\n    const rank=rankFor(photo,index); let activeMode=preferredMode;\n    const card=document.createElement('div'); card.className=large?'moments-select-card large-card':'moments-select-card'; card.setAttribute('role','button'); card.tabIndex=disabled?-1:0; card.setAttribute('aria-disabled',disabled?'true':'false');\n    const imageWrap=document.createElement('div'); imageWrap.className='moments-select-image-wrap';\n    if(photo?.src){const img=document.createElement('img');img.src=String(photo.src);img.alt=`いい瞬間 ${rank}`;img.loading=large?'eager':'lazy';img.decoding='async';img.fetchPriority=large?'high':'auto';imageWrap.appendChild(img);}\n    const rankBadge=document.createElement('div');rankBadge.className='moments-select-rank';rankBadge.textContent=photo?.ai_best?'★ BEST':`#${rank}`;imageWrap.appendChild(rankBadge);\n    const pickedBadge=document.createElement('div');pickedBadge.className='moments-select-picked';pickedBadge.textContent='選択中';imageWrap.appendChild(pickedBadge);\n    const badge=document.createElement('div');badge.className='moments-emotion-badge';imageWrap.appendChild(badge);\n    const voiceButton=document.createElement('button');\n    voiceButton.type='button';voiceButton.className='moments-voice-open-button';\n    const voiceRank=Math.max(0,Number(photo?.voice_candidate_rank||0)||0);\n    voiceButton.classList.toggle('has-voice',voiceRank>0);\n    voiceButton.textContent=large?(voiceRank>0?'🎙 ✓':'🎙 声'):'🎙';\n    voiceButton.title=voiceRank>0?`声候補 ${voiceRank} を設定中。タップして変更`:'この写真に動画の声をつける';\n    voiceButton.setAttribute('aria-label',voiceButton.title);\n    voiceButton.addEventListener('click',(event)=>{\n      event.preventDefault();event.stopPropagation();\n      activeRank=rank;persistActiveRank();\n      voiceButton.textContent='声を開いています…';voiceButton.setAttribute('aria-busy','true');\n      try{emitAction('open_voice');}catch(_){voiceButton.textContent='🎙 もう一度';voiceButton.removeAttribute('aria-busy');}\n    });\n    imageWrap.appendChild(voiceButton);\n    const modeSwitch=document.createElement('div');modeSwitch.className='moments-mode-switch';\n    const normalButton=document.createElement('button');normalButton.type='button';normalButton.className='moments-mode-button';\n    const parentingButton=document.createElement('button');parentingButton.type='button';parentingButton.className='moments-mode-button parenting';modeSwitch.appendChild(normalButton);modeSwitch.appendChild(parentingButton);\n    const metaText=document.createElement('div');metaText.className='moments-select-meta';metaText.textContent=String(photo?.meta||'');\n    const reason=document.createElement('div');reason.className='moments-select-reason';reason.textContent=String(photo?.reason||'');\n\n    const syncVisual=()=>{\n      const normal=normalizeNormal(emotions.get(rank)), parent=normalizeParenting(parenting.get(rank));\n      const meta=normal?(normalMeta[normal]||null):(parent?(parentingMeta[parent]||null):null);\n      const selectedMode=normal?'通常':(parent?'こどもーど':'');\n      // Keep an already-reviewed human selection visible even for older records that\n      // predate feeling tags. Once this card is edited, the one-tag rule is authoritative.\n      const tagged=Boolean(normal||parent);\n      let active=selectionTouched.has(rank)?tagged:(selected.has(rank)||tagged);\n      if(active)selected.add(rank);else selected.delete(rank);\n      card.classList.toggle('selected',active&&!meta);\n      if(meta){card.style.borderColor=meta.color;card.style.background=`${meta.color}1F`;card.style.boxShadow=`0 0 0 2px ${meta.color}24`;}else{card.style.borderColor='';card.style.background='';card.style.boxShadow='';}\n      pickedBadge.style.display=active&&!meta?'block':'none'; badge.textContent=meta?`${meta.emoji} ${meta.label}`:'';badge.hidden=!meta;\n      const nm=normalMeta[normal]||null, pm=parentingMeta[parent]||null; normalButton.textContent=`${nm?nm.emoji:'🙂'} 通常`; parentingButton.textContent=`${pm?pm.emoji:'🌱'} こどもーど`;\n      normalButton.classList.toggle('active',activeMode==='normal');parentingButton.classList.toggle('active',activeMode==='parenting');\n      if(!large){card.setAttribute('aria-label',`いい瞬間 ${rank} を拡大表示`);return;}\n      card.setAttribute('aria-pressed',active?'true':'false');card.setAttribute('aria-label',meta?`${selectedMode}：${meta.label}。タップすると現在のモードで変更します`:`${activeMode==='parenting'?'こどもーど':'通常'}は未設定。タップして選びます`);\n    };\n    syncVisual(); card.appendChild(imageWrap); card.appendChild(modeSwitch); card.appendChild(metaText); card.appendChild(reason);\n    normalButton.addEventListener('click',(event)=>{event.preventDefault();event.stopPropagation();activeMode='normal';preferredMode='normal';syncVisual();});\n    parentingButton.addEventListener('click',(event)=>{event.preventDefault();event.stopPropagation();activeMode='parenting';preferredMode='parenting';syncVisual();});\n    if(!disabled){\n      const cycle=(event)=>{event?.preventDefault?.();event?.stopPropagation?.(); selectionTouched.add(rank); if(activeMode==='parenting'){parenting.set(rank,nextValue(parenting.get(rank),parentingOrder,normalizeParenting));emotions.set(rank,'');}else{emotions.set(rank,nextValue(emotions.get(rank),normalOrder,normalizeNormal));parenting.set(rank,'');} syncVisual(); persistMomentState(rank);};\n      const activate=(event)=>{if(large){cycle(event);return;}event?.preventDefault?.();event?.stopPropagation?.();activeRank=rank;persistActiveRank();setViewMode('enlarge');};\n      card.addEventListener('click',activate);card.addEventListener('keydown',(event)=>{if(event.key==='Enter'||event.key===' ')activate(event);});\n    }\n    return card;\n  };\n\n  const syncViewButtons=()=>{\n    if(listViewButton)listViewButton.classList.toggle('active',viewMode==='list');\n    if(enlargeViewButton)enlargeViewButton.classList.toggle('active',viewMode==='enlarge');\n  };\n\n  const renderGallery=()=>{\n    grid.replaceChildren();\n    grid.classList.toggle('enlarge-mode',viewMode==='enlarge');\n    if(viewMode==='enlarge'){\n      const shell=document.createElement('div');shell.className='moments-enlarge-shell';\n      if(!photos.length){const empty=document.createElement('div');empty.className='moments-select-empty';shell.appendChild(empty);grid.appendChild(shell);return;}\n      let activeIndex=photos.findIndex((photo,index)=>rankFor(photo,index)===activeRank);if(activeIndex<0)activeIndex=0;\n      const nav=document.createElement('div');nav.className='moments-enlarge-nav';\n      const prev=document.createElement('button');prev.type='button';prev.textContent='前の写真';prev.setAttribute('aria-label','前の写真');\n      const backList=document.createElement('button');backList.type='button';backList.textContent='一覧表示に戻る';backList.addEventListener('click',(event)=>{event.preventDefault();event.stopPropagation();setViewMode('list');});\n      const counter=document.createElement('div');counter.className='moments-enlarge-counter';\n      const next=document.createElement('button');next.type='button';next.textContent='次の写真';next.setAttribute('aria-label','次の写真');\n      const viewer=document.createElement('div');viewer.className='moments-enlarge-viewer';\n      const saveCurrent=document.createElement('button');saveCurrent.type='button';saveCurrent.className='moments-save-current-button';\n      saveCurrent.textContent='この写真を日記に登録';\n      saveCurrent.setAttribute('aria-label','いま拡大している写真を日記に登録');\n      saveCurrent.addEventListener('click',(event)=>{event.preventDefault();event.stopPropagation();emitAction('save_current_photo');});\n      const rotateControls=document.createElement('div');rotateControls.className='photo-rotation-controls-v616';\n      for(const [label,action] of [['↶ 左に90°','rotate_left'],['↷ 右に90°','rotate_right']]){\n        const b=document.createElement('button');b.type='button';b.textContent=label;b.disabled=disabled;\n        b.onclick=e=>{e.preventDefault();e.stopPropagation();rotateControls.querySelectorAll('button').forEach(x=>x.disabled=true);emitAction(action);};rotateControls.appendChild(b);\n      }\n      const renderActive=()=>{\n        const activePhoto=photos[activeIndex]; activeRank=rankFor(activePhoto,activeIndex);\n        persistActiveRank();\n        counter.textContent=`${activeIndex+1} / ${photos.length}`; prev.disabled=activeIndex<=0; next.disabled=activeIndex>=photos.length-1;\n        viewer.replaceChildren(makeCard(activePhoto,activeIndex,true));\n        const alreadySaved=Boolean(activePhoto?.saved);\n        saveCurrent.hidden=disabled||alreadySaved;\n        saveCurrent.disabled=disabled||alreadySaved;\n        // Warm only the adjacent frame; never decode all large images at once.\n        for(const neighborIndex of [activeIndex-1,activeIndex+1]){\n          const neighbor=photos[neighborIndex];\n          if(neighbor?.src){try{const prefetch=new Image();prefetch.decoding='async';prefetch.src=String(neighbor.src);}catch(_){}}\n        }\n      };\n      const move=(delta)=>{const target=Math.max(0,Math.min(photos.length-1,activeIndex+delta));if(target===activeIndex)return;activeIndex=target;renderActive();};\n      prev.addEventListener('click',(event)=>{event.preventDefault();event.stopPropagation();move(-1);});\n      next.addEventListener('click',(event)=>{event.preventDefault();event.stopPropagation();move(1);});\n      let touchStartX=null;\n      viewer.addEventListener('touchstart',(event)=>{const touch=event.touches&&event.touches[0];touchStartX=touch?touch.clientX:null;},{passive:true});\n      viewer.addEventListener('touchend',(event)=>{if(touchStartX===null)return;const touch=event.changedTouches&&event.changedTouches[0];const dx=touch?touch.clientX-touchStartX:0;touchStartX=null;if(Math.abs(dx)>=45)move(dx<0?1:-1);},{passive:true});\n      shell.tabIndex=0;shell.addEventListener('keydown',(event)=>{if(event.key==='ArrowLeft'){event.preventDefault();move(-1);}else if(event.key==='ArrowRight'){event.preventDefault();move(1);}});\n      nav.appendChild(prev);nav.appendChild(backList);nav.appendChild(next);shell.appendChild(nav);shell.appendChild(counter);shell.appendChild(viewer);shell.appendChild(rotateControls);shell.appendChild(saveCurrent);grid.appendChild(shell);renderActive();return;\n    }\n    for(let index=0;index<photos.length;index+=1){const photo=photos[index];if(!photo)continue;grid.appendChild(makeCard(photo,index,false));}\n  };\n\n  const setViewMode=(nextMode)=>{\n    const normalized=nextMode==='enlarge'?'enlarge':'list';\n    if(viewMode===normalized)return;\n    viewMode=normalized;\n    try{if(viewStoreKey)localStorage.setItem(viewStoreKey,viewMode);}catch(_){}\n    syncViewButtons();\n    renderGallery();\n  };\n  if(listViewButton)listViewButton.onclick=(event)=>{event.preventDefault();event.stopPropagation();setViewMode('list');};\n  if(enlargeViewButton)enlargeViewButton.onclick=(event)=>{event.preventDefault();event.stopPropagation();setViewMode('enlarge');};\n  syncViewButtons();\n  renderGallery();\n}\n"
+_MOMENTS_SELECT_JS = "\nexport default function(component) {\n  const { parentElement, data, setTriggerValue } = component;\n  const grid = parentElement.querySelector('#moments-select-grid');\n  if (!grid) return;\n\n  const photos = Array.isArray(data?.photos) ? data.photos.slice(0,260).sort((a,b)=>(Number(a?.timestamp_ms)||0)-(Number(b?.timestamp_ms)||0)||(Number(a?.rank)||0)-(Number(b?.rank)||0)) : [];\n  const disabled = Boolean(data?.disabled);\n  const familyKey=String(data?.family_key||''), memberKey=String(data?.member_key||''), videoId=String(data?.video_id||'');\n  const roundNumber=Math.max(0,Number(data?.round_number||0)||0);\n  const listViewButton=parentElement.querySelector('#moments-view-list');\n  const enlargeViewButton=parentElement.querySelector('#moments-view-enlarge');\n  const viewStoreKey=videoId?`tokyo_burari_moments_view_mode_v607_${videoId}_${roundNumber}_${data?.view_session||0}`:'';\n  const activeStoreKey=videoId?`tokyo_burari_moments_active_rank_v370_${videoId}_${roundNumber}`:'';\n  let viewMode='list';\n  try {\n    const savedMode=viewStoreKey?String(localStorage.getItem(viewStoreKey)||''):'';\n    if(savedMode==='enlarge'||savedMode==='list')viewMode=savedMode;\n    else if(String(data?.view_mode||'')==='enlarge')viewMode='enlarge';\n  } catch (_) {\n    viewMode=String(data?.view_mode||'')==='enlarge'?'enlarge':'list';\n  }\n  const pendingStore='tokyo_burari_pending_tags_v166';\n  const pendingParam=String(data?.pending_param||'feel_v159');\n  const compatStore='tokyo_burari_pending_feelings_v159';\n  const selected=new Set((Array.isArray(data?.selected_ranks)?data.selected_ranks:[]).map(Number).filter(v=>Number.isFinite(v)&&v>0));\n  const nextVideoButton=parentElement.querySelector('#moments-next-video');\n  const saveSelectionButton=parentElement.querySelector('#moments-save-selection');\n\n  const normalOrder=['cozy','joy','surprise','anger','sadness','frustration','relaxed','delicious','beautiful','mixed'];\n  const normalMeta={\n    cozy:{emoji:'🥰',color:'#F3B6A0',label:'ほっこりした'},joy:{emoji:'😊',color:'#F2C94C',label:'うれしい'},\n    surprise:{emoji:'😲',color:'#9B7BD3',label:'びっくり'},anger:{emoji:'😠',color:'#E56B6F',label:'おこった'},\n    sadness:{emoji:'😢',color:'#6C9BD2',label:'かなしい'},frustration:{emoji:'😣',color:'#A66A8A',label:'くやしい'},\n    relaxed:{emoji:'😌',color:'#9BCDB8',label:'のほほん'},delicious:{emoji:'😋',color:'#F2A65A',label:'美味しい'},\n    beautiful:{emoji:'✨',color:'#6EC5D8',label:'きれい'},mixed:{emoji:'😵\u200d💫',color:'#8D86A8',label:'複雑'}\n  };\n  const parentingOrder=['effort','challenge','discovery','kindness','together','tears','hmm','peace','teach_me','sharp'];\n  const parentingMeta={\n    effort:{emoji:'⭐',color:'#E6B84A',label:'がんばった'},challenge:{emoji:'💪',color:'#F2994A',label:'ちょうせん'},\n    discovery:{emoji:'💡',color:'#9BC53D',label:'はっけん'},kindness:{emoji:'❤️',color:'#E57373',label:'やさしさ'},\n    together:{emoji:'🤝',color:'#4DB6AC',label:'いっしょに'},tears:{emoji:'😭',color:'#6C9BD2',label:'なみだ'},\n    hmm:{emoji:'🤔',color:'#8E7CC3',label:'むーん'},peace:{emoji:'✌️',color:'#5BBF9F',label:'ピース'},\n    teach_me:{emoji:'🙋',color:'#4C9BE8',label:'教えて'},sharp:{emoji:'🫡',color:'#53657D',label:'キリッ'}\n  };\n  const normalizeNormal=(v)=>Object.prototype.hasOwnProperty.call(normalMeta,String(v||''))?String(v||''):'';\n  const normalizeParenting=(v)=>Object.prototype.hasOwnProperty.call(parentingMeta,String(v||''))?String(v||''):'';\n  const rankFor=(photo,index)=>Number(photo?.rank||(index+1));\n  const emotions=new Map(), parenting=new Map();\n  for(let i=0;i<photos.length;i+=1){ const rank=rankFor(photos[i],i); if(Number.isFinite(rank)&&rank>0){ emotions.set(rank,normalizeNormal(photos[i]?.emotion)); parenting.set(rank,normalizeParenting(photos[i]?.parenting)); } }\n  const validRanks=photos.map(rankFor).filter(v=>Number.isFinite(v)&&v>0);\n  let activeRank=Number(data?.active_rank||0);\n  try {\n    const savedActive=activeStoreKey?Number(localStorage.getItem(activeStoreKey)||0):0;\n    if(validRanks.includes(savedActive))activeRank=savedActive;\n  } catch (_) {}\n  if(!validRanks.includes(activeRank)) activeRank=validRanks.length?validRanks[0]:0;\n  const persistActiveRank=()=>{\n    try{if(activeStoreKey&&validRanks.includes(activeRank))localStorage.setItem(activeStoreKey,String(activeRank));}catch(_){}\n  };\n  persistActiveRank();\n  let preferredMode=String(data?.preferred_mode||'')==='parenting'?'parenting':'normal';\n  const selectionTouched=new Set();\n\n  const encodeCompat=(payload)=>{\n    try{const bytes=new TextEncoder().encode(JSON.stringify(payload));let binary='';for(let i=0;i<bytes.length;i+=0x4000)binary+=String.fromCharCode(...bytes.subarray(i,i+0x4000));return btoa(binary).replace(/\\+/g,'-').replace(/\\//g,'_').replace(/=+$/g,'');}catch(_){return '';}\n  };\n  const mirrorCompat=(envelope)=>{\n    try{if(!envelope||!envelope.t||!familyKey||!memberKey)return;const compat={...envelope,v:159,f:familyKey,m:memberKey};const encoded=encodeCompat(compat);if(!encoded)return;const url=new URL(window.location.href);url.searchParams.set(pendingParam,encoded);localStorage.setItem(compatStore,encoded);window.history.replaceState(window.history.state||{},'',url.pathname+url.search+url.hash);}catch(_){}\n  };\n  const readPending=()=>{\n    try{\n      const parsed=JSON.parse(String(localStorage.getItem(pendingStore)||'null'));\n      if(parsed&&Number(parsed.v)===166&&String(parsed.f||'')===familyKey&&String(parsed.m||'')===memberKey){mirrorCompat(parsed);return parsed;}\n    }catch(_){}\n    return {v:166,f:familyKey,m:memberKey,p:{},g:{},x:{}};\n  };\n  const pendingSnapshot=readPending();\n  const pendingMoment=(pendingSnapshot.x&&typeof pendingSnapshot.x==='object')?pendingSnapshot.x[videoId]:null;\n  if(pendingMoment&&typeof pendingMoment==='object'&&Number(pendingMoment.r||0)===roundNumber){\n    if(pendingMoment.e&&typeof pendingMoment.e==='object')for(const [rankValue,value] of Object.entries(pendingMoment.e)){const rank=Number(rankValue);if(validRanks.includes(rank))emotions.set(rank,normalizeNormal(value));}\n    if(pendingMoment.g&&typeof pendingMoment.g==='object')for(const [rankValue,value] of Object.entries(pendingMoment.g)){const rank=Number(rankValue);if(validRanks.includes(rank))parenting.set(rank,normalizeParenting(value));}\n    if(Array.isArray(pendingMoment.s)){selected.clear();for(const value of pendingMoment.s.map(Number)){if(validRanks.includes(value))selected.add(value);}}\n  }\n  for(const rank of validRanks){\n    if(normalizeNormal(emotions.get(rank))&&normalizeParenting(parenting.get(rank))){\n      if(preferredMode==='parenting')emotions.set(rank,'');else parenting.set(rank,'');\n    }\n  }\n\n  const writePending=(envelope)=>{\n    try{\n      envelope.t=`${Date.now()}_${Math.random().toString(36).slice(2)}`;\n      localStorage.setItem(pendingStore,JSON.stringify(envelope));\n      mirrorCompat(envelope);\n    }catch(_){}\n  };\n  const persistMomentState=(rank)=>{\n    if(!familyKey||!memberKey||!videoId)return;\n    try{\n      const envelope=readPending();\n      if(!envelope.p||typeof envelope.p!=='object')envelope.p={}; if(!envelope.g||typeof envelope.g!=='object')envelope.g={}; if(!envelope.x||typeof envelope.x!=='object')envelope.x={};\n      let state=envelope.x[videoId]; if(!state||typeof state!=='object'||Number(state.r||0)!==roundNumber)state={r:roundNumber,e:{},g:{},s:[]};\n      if(!state.e||typeof state.e!=='object')state.e={}; if(!state.g||typeof state.g!=='object')state.g={};\n      state.e[String(rank)]=normalizeNormal(emotions.get(rank)); state.g[String(rank)]=normalizeParenting(parenting.get(rank)); state.s=Array.from(selected).sort((a,b)=>a-b); envelope.x[videoId]=state;\n      writePending(envelope);\n    }catch(_){}\n  };\n  const buildActionPayload=(action)=>({\n    action:String(action||''),\n    changes:validRanks.map(rank=>({rank,emotion:normalizeNormal(emotions.get(rank)),parenting:normalizeParenting(parenting.get(rank))})),\n    selected_ranks:Array.from(selected).sort((a,b)=>a-b),\n    active_rank:activeRank,\n    preferred_mode:preferredMode,\n    pending_payload:readPending(),\n    nonce:`${Date.now()}:${Math.random()}`,\n  });\n  const emitAction=(action)=>{\n    if(disabled)return;\n    const payload=buildActionPayload(action);\n    setTriggerValue('picker_action',payload);\n  };\n  if(nextVideoButton){\n    nextVideoButton.hidden=!Boolean(data?.show_next_video);\n    nextVideoButton.textContent=String(data?.next_label||'次の動画の写真へ →');\n    nextVideoButton.onclick=(event)=>{event.preventDefault();event.stopPropagation();emitAction('next_video');};\n  }\n  if(saveSelectionButton){\n    saveSelectionButton.hidden=disabled||!Boolean(data?.show_save_button!==false);\n    saveSelectionButton.textContent=String(data?.save_label||'感情をつけた写真を残す');\n    saveSelectionButton.onclick=(event)=>{event.preventDefault();event.stopPropagation();emitAction('save_selection');};\n  }\n\n  const nextValue=(value,order,normalize)=>{const cycle=['',...order];const index=Math.max(0,cycle.indexOf(normalize(value)));return cycle[(index+1)%cycle.length];};\n\n  const makeCard=(photo,index,large=false)=>{\n    const rank=rankFor(photo,index); let activeMode=preferredMode;\n    const card=document.createElement('div'); card.className=large?'moments-select-card large-card':'moments-select-card'; card.setAttribute('role','button'); card.tabIndex=disabled?-1:0; card.setAttribute('aria-disabled',disabled?'true':'false');\n    const imageWrap=document.createElement('div'); imageWrap.className='moments-select-image-wrap';\n    if(photo?.src){const img=document.createElement('img');img.src=String(photo.src);img.alt=`いい瞬間 ${rank}`;img.loading=large?'eager':'lazy';img.decoding='async';img.fetchPriority=large?'high':'auto';imageWrap.appendChild(img);}\n    const rankBadge=document.createElement('div');rankBadge.className='moments-select-rank';rankBadge.textContent=photo?.ai_best?'★ BEST':`#${rank}`;imageWrap.appendChild(rankBadge);\n    const pickedBadge=document.createElement('div');pickedBadge.className='moments-select-picked';pickedBadge.textContent='選択中';imageWrap.appendChild(pickedBadge);\n    const badge=document.createElement('div');badge.className='moments-emotion-badge';imageWrap.appendChild(badge);\n    const voiceButton=document.createElement('button');\n    voiceButton.type='button';voiceButton.className='moments-voice-open-button';\n    const voiceRank=Math.max(0,Number(photo?.voice_candidate_rank||0)||0);\n    voiceButton.classList.toggle('has-voice',voiceRank>0);\n    voiceButton.textContent=large?(voiceRank>0?'🎙 ✓':'🎙 声'):'🎙';\n    voiceButton.title=voiceRank>0?`声候補 ${voiceRank} を設定中。タップして変更`:'この写真に動画の声をつける';\n    voiceButton.setAttribute('aria-label',voiceButton.title);\n    voiceButton.addEventListener('click',(event)=>{\n      event.preventDefault();event.stopPropagation();\n      activeRank=rank;persistActiveRank();\n      voiceButton.textContent='声を開いています…';voiceButton.setAttribute('aria-busy','true');\n      try{emitAction('open_voice');}catch(_){voiceButton.textContent='🎙 もう一度';voiceButton.removeAttribute('aria-busy');}\n    });\n    imageWrap.appendChild(voiceButton);\n    const modeSwitch=document.createElement('div');modeSwitch.className='moments-mode-switch';\n    const normalButton=document.createElement('button');normalButton.type='button';normalButton.className='moments-mode-button';\n    const parentingButton=document.createElement('button');parentingButton.type='button';parentingButton.className='moments-mode-button parenting';modeSwitch.appendChild(normalButton);modeSwitch.appendChild(parentingButton);\n    const metaText=document.createElement('div');metaText.className='moments-select-meta';metaText.textContent=String(photo?.meta||'');\n    const reason=document.createElement('div');reason.className='moments-select-reason';reason.textContent=String(photo?.reason||'');\n\n    const syncVisual=()=>{\n      const normal=normalizeNormal(emotions.get(rank)), parent=normalizeParenting(parenting.get(rank));\n      const meta=normal?(normalMeta[normal]||null):(parent?(parentingMeta[parent]||null):null);\n      const selectedMode=normal?'通常':(parent?'こどもーど':'');\n      // Keep an already-reviewed human selection visible even for older records that\n      // predate feeling tags. Once this card is edited, the one-tag rule is authoritative.\n      const tagged=Boolean(normal||parent);\n      let active=selectionTouched.has(rank)?tagged:(selected.has(rank)||tagged);\n      if(active)selected.add(rank);else selected.delete(rank);\n      card.classList.toggle('selected',active&&!meta);\n      if(meta){card.style.borderColor=meta.color;card.style.background=`${meta.color}1F`;card.style.boxShadow=`0 0 0 2px ${meta.color}24`;}else{card.style.borderColor='';card.style.background='';card.style.boxShadow='';}\n      pickedBadge.style.display=active&&!meta?'block':'none'; badge.textContent=meta?`${meta.emoji} ${meta.label}`:'';badge.hidden=!meta;\n      const nm=normalMeta[normal]||null, pm=parentingMeta[parent]||null; normalButton.textContent=`${nm?nm.emoji:'🙂'} 通常`; parentingButton.textContent=`${pm?pm.emoji:'🌱'} こどもーど`;\n      normalButton.classList.toggle('active',activeMode==='normal');parentingButton.classList.toggle('active',activeMode==='parenting');\n      if(!large){card.setAttribute('aria-label',`いい瞬間 ${rank} を拡大表示`);return;}\n      card.setAttribute('aria-pressed',active?'true':'false');card.setAttribute('aria-label',meta?`${selectedMode}：${meta.label}。タップすると現在のモードで変更します`:`${activeMode==='parenting'?'こどもーど':'通常'}は未設定。タップして選びます`);\n    };\n    syncVisual(); card.appendChild(imageWrap); card.appendChild(modeSwitch); card.appendChild(metaText); card.appendChild(reason);\n    normalButton.addEventListener('click',(event)=>{event.preventDefault();event.stopPropagation();activeMode='normal';preferredMode='normal';syncVisual();});\n    parentingButton.addEventListener('click',(event)=>{event.preventDefault();event.stopPropagation();activeMode='parenting';preferredMode='parenting';syncVisual();});\n    if(!disabled){\n      const cycle=(event)=>{event?.preventDefault?.();event?.stopPropagation?.(); selectionTouched.add(rank); if(activeMode==='parenting'){parenting.set(rank,nextValue(parenting.get(rank),parentingOrder,normalizeParenting));emotions.set(rank,'');}else{emotions.set(rank,nextValue(emotions.get(rank),normalOrder,normalizeNormal));parenting.set(rank,'');} syncVisual(); persistMomentState(rank);};\n      const activate=(event)=>{if(large){cycle(event);return;}event?.preventDefault?.();event?.stopPropagation?.();activeRank=rank;persistActiveRank();setViewMode('enlarge');};\n      card.addEventListener('click',activate);card.addEventListener('keydown',(event)=>{if(event.key==='Enter'||event.key===' ')activate(event);});\n    }\n    return card;\n  };\n\n  const syncViewButtons=()=>{\n    if(listViewButton)listViewButton.classList.toggle('active',viewMode==='list');\n    if(enlargeViewButton)enlargeViewButton.classList.toggle('active',viewMode==='enlarge');\n  };\n\n  const renderGallery=()=>{\n    grid.replaceChildren();\n    grid.classList.toggle('enlarge-mode',viewMode==='enlarge');\n    if(viewMode==='enlarge'){\n      const shell=document.createElement('div');shell.className='moments-enlarge-shell';\n      if(!photos.length){const empty=document.createElement('div');empty.className='moments-select-empty';shell.appendChild(empty);grid.appendChild(shell);return;}\n      let activeIndex=photos.findIndex((photo,index)=>rankFor(photo,index)===activeRank);if(activeIndex<0)activeIndex=0;\n      const nav=document.createElement('div');nav.className='moments-enlarge-nav';\n      const prev=document.createElement('button');prev.type='button';prev.textContent='前の写真';prev.setAttribute('aria-label','前の写真');\n      const backList=document.createElement('button');backList.type='button';backList.textContent='一覧表示に戻る';backList.addEventListener('click',(event)=>{event.preventDefault();event.stopPropagation();setViewMode('list');});\n      const counter=document.createElement('div');counter.className='moments-enlarge-counter';\n      const next=document.createElement('button');next.type='button';next.textContent='次の写真';next.setAttribute('aria-label','次の写真');\n      const viewer=document.createElement('div');viewer.className='moments-enlarge-viewer';\n      const saveCurrent=document.createElement('button');saveCurrent.type='button';saveCurrent.className='moments-save-current-button';\n      saveCurrent.textContent='この写真を日記に登録';\n      saveCurrent.setAttribute('aria-label','いま拡大している写真を日記に登録');\n      saveCurrent.addEventListener('click',(event)=>{event.preventDefault();event.stopPropagation();emitAction('save_current_photo');});\n      const rotateControls=document.createElement('div');rotateControls.className='photo-rotation-controls-v616';\n      for(const [label,action] of [['↶ 左に90°','rotate_left'],['↷ 右に90°','rotate_right']]){\n        const b=document.createElement('button');b.type='button';b.textContent=label;b.disabled=disabled;\n        b.onclick=e=>{e.preventDefault();e.stopPropagation();rotateControls.querySelectorAll('button').forEach(x=>x.disabled=true);emitAction(action);};rotateControls.appendChild(b);\n      }\n      const renderActive=()=>{\n        const activePhoto=photos[activeIndex]; activeRank=rankFor(activePhoto,activeIndex);\n        persistActiveRank();\n        counter.textContent=`${activeIndex+1} / ${photos.length}`; prev.disabled=activeIndex<=0; next.disabled=activeIndex>=photos.length-1;\n        viewer.replaceChildren(makeCard(activePhoto,activeIndex,true));\n        const alreadySaved=Boolean(activePhoto?.saved);\n        saveCurrent.hidden=disabled||alreadySaved;\n        saveCurrent.disabled=disabled||alreadySaved;\n        // Warm only the adjacent frame; never decode all large images at once.\n        for(const neighborIndex of [activeIndex-1,activeIndex+1]){\n          const neighbor=photos[neighborIndex];\n          if(neighbor?.src){try{const prefetch=new Image();prefetch.decoding='async';prefetch.src=String(neighbor.src);}catch(_){}}\n        }\n      };\n      const move=(delta)=>{const target=Math.max(0,Math.min(photos.length-1,activeIndex+delta));if(target===activeIndex)return;activeIndex=target;renderActive();};\n      prev.addEventListener('click',(event)=>{event.preventDefault();event.stopPropagation();move(-1);});\n      next.addEventListener('click',(event)=>{event.preventDefault();event.stopPropagation();move(1);});\n      let touchStartX=null;\n      viewer.addEventListener('touchstart',(event)=>{const touch=event.touches&&event.touches[0];touchStartX=touch?touch.clientX:null;},{passive:true});\n      viewer.addEventListener('touchend',(event)=>{if(touchStartX===null)return;const touch=event.changedTouches&&event.changedTouches[0];const dx=touch?touch.clientX-touchStartX:0;touchStartX=null;if(Math.abs(dx)>=45)move(dx<0?1:-1);},{passive:true});\n      shell.tabIndex=0;shell.addEventListener('keydown',(event)=>{if(event.key==='ArrowLeft'){event.preventDefault();move(-1);}else if(event.key==='ArrowRight'){event.preventDefault();move(1);}});\n      nav.appendChild(prev);nav.appendChild(backList);nav.appendChild(next);shell.appendChild(nav);shell.appendChild(counter);shell.appendChild(viewer);shell.appendChild(rotateControls);shell.appendChild(saveCurrent);grid.appendChild(shell);renderActive();return;\n    }\n    for(let index=0;index<photos.length;index+=1){const photo=photos[index];if(!photo)continue;grid.appendChild(makeCard(photo,index,false));}\n  };\n\n  const setViewMode=(nextMode)=>{\n    const normalized=nextMode==='enlarge'?'enlarge':'list';\n    if(viewMode===normalized)return;\n    viewMode=normalized;\n    try{if(viewStoreKey)localStorage.setItem(viewStoreKey,viewMode);}catch(_){}\n    syncViewButtons();\n    renderGallery();\n  };\n  if(listViewButton)listViewButton.onclick=(event)=>{event.preventDefault();event.stopPropagation();setViewMode('list');};\n  if(enlargeViewButton)enlargeViewButton.onclick=(event)=>{event.preventDefault();event.stopPropagation();setViewMode('enlarge');};\n  syncViewButtons();\n  renderGallery();\n}\n"
 
 moments_select_component = None
 _moments_select_component_initialized = False
@@ -40968,7 +40966,7 @@ def _render_moments_picker(photo, index, view_mode=None, next_video_action=None)
                         with st.expander("保護者向け詳細"):
                             st.code(str(exc))
         else:
-            for row_start in range(0, VIDEO_AI_MAX_SELECTIONS, 3):
+            for row_start in range(0, len(cards), 3):
                 row_columns = st.columns(3, gap="small")
                 for column_offset in range(3):
                     item_index = row_start + column_offset
@@ -41076,9 +41074,9 @@ def _render_moments_picker(photo, index, view_mode=None, next_video_action=None)
 
     can_reroll = bool(_video_ai_has_candidate_source(selection_meta) or photo_video_storage_path(photo))
     if can_reroll and status != "reviewed":
-        with st.expander("候補の100枚が合わないとき"):
+        with st.expander("候補の写真が合わないとき"):
             if st.button(
-                "🔄 別の100枚を作る",
+                "🔄 別の候補写真を作る",
                 use_container_width=True,
                 help="写真を選択した状態でも再作成できます。日記に登録済みの写真は残ります。未保存の選択は新しい候補には引き継がれません。",
                 key=f"moments_reroll_{video_id}_{round_number}",
@@ -41807,7 +41805,7 @@ def page_moments():
                                 st.code(_app_error_clean_v610(focus_error))
                                 st.caption("処理段階：" + str(selection.get("stage") or "不明"))
                     if status == "error":
-                        if int(selection.get('auto_attempts_v646') or 0) >= 3:
+                        if _video_retry_attempts_v647(selection) >= 3:
                             st.caption('自動復旧を3回試しました。完了できなかった理由はエラーログに保存されています。')
                         elif _video_auto_retryable_v646(selection):
                             _queue_video_recovery_v646(video, current_family_key(), current_member_key())
