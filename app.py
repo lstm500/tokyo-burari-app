@@ -1,3 +1,5 @@
+# v646: Automatically retry failed Good Moments jobs with durable budgets/backoff and exact native-frame batch recovery.
+# v645: Preserve FFmpeg stderr/count/exit/timeout diagnostics and allow retry of any failed Good Moments job.
 # v644: Recover persisted Good Moments errors directly on log open, asynchronously and owner-scoped.
 # v643: Wait for the HTTP export widget to mount; retain and surface video pipeline failures.
 # v642: Direct log buttons with inline, on-demand panels; no category picker.
@@ -99,7 +101,7 @@ def _app_css_v473(markup, **_ignored):
 # Review menu-only update: 2026-09-19 JST
 GENERATED_UPDATE_JST = "2026-09-19T14:54:38+09:00"
 
-APP_BUILD = "v644"
+APP_BUILD = "v646"
 # v598: Passing the focus gate is mandatory before any weighted ranking or reroll.
 # Never fill the twenty-image target with focus-rejected candidates.
 # v597: Compare 30 FPS candidates across the whole saved video offline. Disk-backed
@@ -13066,38 +13068,180 @@ def _video_moment_frame_bytes_v597(frame):
     return None
 
 
+
+
+
+def _video_auto_retryable_v646(selection):
+    if not isinstance(selection, dict) or str(selection.get('status') or '').lower() != 'error':
+        return False
+    if int(selection.get('auto_attempts_v646') or 0) >= 3:
+        return False
+    message = str(selection.get('last_error') or selection.get('message') or '')
+    # A quality/length constraint cannot be repaired by repeating the same video.
+    if message.startswith('ピント') or '長さの動画がありません' in message:
+        return False
+    try:
+        due = datetime.fromisoformat(str(selection.get('auto_retry_at_v646') or ''))
+        if due.tzinfo is None:
+            due = due.replace(tzinfo=ZoneInfo('Asia/Tokyo'))
+        return now_jst() >= due
+    except (ValueError, TypeError):
+        return True
+
+
+def _queue_video_recovery_v646(photo, family, member):
+    """Use an already fetched snapshot; no DB/network work in the UI thread."""
+    selection = photo_media_metadata(photo).get('ai_selection') or {}
+    if not _video_auto_retryable_v646(selection) or not photo.get('id'):
+        return False
+    registry = _video_ai_job_registry()
+    pid = str(photo['id'])
+    with registry['lock']:
+        if sum(not f.done() for f in registry['futures'].values()) >= 16:
+            return False
+        existing = registry['futures'].get(pid)
+        if existing is not None and not existing.done():
+            return False
+        future = _diag_submit_v640(_video_ai_executor(), _run_video_ai_background_job, pid, str(family), str(member))
+        registry['futures'][pid] = future
+    # Register outside the non-reentrant lock: an already finished Future calls immediately.
+    future.add_done_callback(lambda done: _video_ai_job_done(pid, done, registry))
+    return True
+
+
+@st.cache_resource(show_spinner=False)
+def _video_native_lock_v646():
+    return threading.Lock()
+
+
 def _video_moment_native_stills_v597(selection, frames, progress_callback=None):
-    """Repeat the same FPS filter and select exact indices at original resolution."""
+    """Automatically recover exact native stills, serially and with bounded work."""
     if not isinstance(frames, _VideoMomentFramePoolV597):
-        return selection  # compatibility with original-resolution in-memory callers
+        return selection
     if frames.closed:
-        raise RuntimeError("動画の解析用ファイルを読み込めませんでした。")
-    indices = sorted({int(item["frame"]["analysis_index_v597"]) for item in selection})
+        raise RuntimeError('動画の解析用ファイルを読み込めませんでした。')
+    indices = sorted({int(item['frame']['analysis_index_v597']) for item in selection})
     if len(indices) != VIDEO_AI_MAX_SELECTIONS:
-        raise ValueError("異なる100枚の元動画フレームを確定できませんでした。")
-    if callable(progress_callback):
-        progress_callback("native_stills", 0, len(indices), "選んだ100枚を元の解像度で切り出しています")
-    directory = Path(frames.workspace.name) / "native"
-    directory.mkdir(exist_ok=True)
-    expression = "+".join(f"eq(n\\,{index})" for index in indices)
-    vf = f"fps={frames.fps:.9f}:start_time=0:round=near,select={expression}"
-    command = [_ffmpeg_executable(), "-nostdin", "-hide_banner", "-loglevel", "error",
-               "-threads", "1", "-i", frames.original_path, "-map", "0:v:0", "-an",
-               "-vf", vf, "-vsync", "0", "-frames:v", str(len(indices)),
-               "-threads", "1", "-q:v", "1", str(directory / "selected_%03d.jpg")]
-    result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=180, check=False)
-    paths = sorted(directory.glob("selected_*.jpg"))
-    if result.returncode or len(paths) != len(indices):
-        raise RuntimeError("選定した100枚を元の解像度で切り出せませんでした。")
-    originals = {index: path.read_bytes() for index, path in zip(indices, paths)}
-    if any(not value for value in originals.values()):
-        raise RuntimeError("元動画の切り抜き画像が空でした。")
-    for item in selection:
-        frame = item["frame"]
-        index = int(frame["analysis_index_v597"])
-        frame["image_bytes"] = originals[index]
-        frame["output_source"] = "original_video_native_30fps_v597"
-    return selection
+        raise ValueError('異なる100枚の元動画フレームを確定できませんでした。')
+    diagnostics = {'stage': 'native_stills', 'expected_count': len(indices), 'analysis_fps': frames.fps,
+                   'original_size_bytes': Path(frames.original_path).stat().st_size, 'attempts': []}
+    # Heavy ffmpeg extraction cannot fan out across simultaneous video jobs.
+    with _video_native_lock_v646():
+        for strategy, batch_size in (('single_thread', len(indices)), ('batches_of_20', 20)):
+            deadline = time.monotonic() + 180
+            originals = {}
+            attempt_root = Path(tempfile.mkdtemp(prefix='native-v646-', dir=frames.workspace.name))
+            failed = False
+            for start in range(0, len(indices), batch_size):
+                batch = indices[start:start + batch_size]
+                directory = attempt_root / str(start)
+                directory.mkdir()
+                if callable(progress_callback):
+                    progress_callback('native_stills', start, len(indices),
+                        '元解像度で切り出しています' if strategy == 'single_thread' else '負荷を抑えて自動で切り出し直しています')
+                expression = '+'.join(f'eq(n\\,{index})' for index in batch)
+                vf = f'fps={frames.fps:.9f}:start_time=0:round=near,select={expression}'
+                command = [_ffmpeg_executable(), '-nostdin', '-hide_banner', '-loglevel', 'error',
+                    '-threads', '1', '-filter_threads', '1', '-i', frames.original_path,
+                    '-map', '0:v:0', '-an', '-vf', vf, '-vsync', '0', '-frames:v', str(len(batch)),
+                    '-threads', '1', '-q:v', '1', str(directory / 'selected_%03d.jpg')]
+                record = {'strategy': strategy, 'start': start, 'expected_count': len(batch)}
+                try:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise subprocess.TimeoutExpired(command, 180)
+                    result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                            timeout=remaining, check=False)
+                    paths = sorted(directory.glob('selected_*.jpg'))
+                    record.update(returncode=result.returncode, actual_count=len(paths),
+                        stderr=_app_error_clean_v610(result.stderr.decode('utf-8', errors='replace')[-1200:]))
+                    if result.returncode or len(paths) != len(batch):
+                        failed = True
+                    else:
+                        native = {index: path.read_bytes() for index, path in zip(batch, paths)}
+                        if any(not raw.startswith(b'\xff\xd8') for raw in native.values()):
+                            failed = True; record['invalid_jpeg'] = True
+                        else:
+                            originals.update(native)
+                except subprocess.TimeoutExpired as exc:
+                    failed = True
+                    record.update(timeout_seconds=180,
+                        stderr=_app_error_clean_v610((exc.stderr or b'').decode('utf-8', errors='replace')[-1200:]))
+                except OSError as exc:
+                    failed = True
+                    record.update(error_type=type(exc).__name__, stderr=_app_error_clean_v610(exc))
+                diagnostics['attempts'].append(record)
+                if failed:
+                    break
+            if not failed and len(originals) == len(indices):
+                diagnostics['strategy'] = strategy
+                diagnostics['actual_count'] = len(originals)
+                for item in selection:
+                    frame = item['frame']
+                    frame['image_bytes'] = originals[int(frame['analysis_index_v597'])]
+                    frame['output_source'] = 'original_video_native_30fps_v597'
+                    frame['native_report_v646'] = diagnostics
+                import shutil
+                shutil.rmtree(attempt_root, ignore_errors=True)
+                return selection
+            import shutil
+            originals.clear()
+            shutil.rmtree(attempt_root, ignore_errors=True)
+        error = RuntimeError('元解像度の切り抜きを通常方式・分割方式で自動再試行しましたが完了できませんでした。')
+        error.video_diagnostic_v645 = diagnostics
+        raise error
+
+
+def _run_video_ai_background_job(photo_id, family_key, member_key):
+    """Durable three-attempt recovery; waits and DB work stay off the UI thread."""
+    client = _background_clients()
+    while True:
+        result = _diag_invoke_v640('execute:video_auto_retry_v646', lambda: client.table(PHOTO_TABLE)
+            .select('*').eq('id', str(photo_id)).eq('family_key', str(family_key))
+            .eq('member_key', str(member_key)).limit(1).execute())
+        photo = (result.data or [None])[0]
+        if not photo or not photo_is_video(photo):
+            return False
+        reflection = dict(photo_media_metadata(photo))
+        selection = dict(reflection.get('ai_selection') or {})
+        status = str(selection.get('status') or '').lower()
+        if status == 'reviewed' or (status == 'ready' and len(video_ai_selection_items(photo)) >= VIDEO_AI_MAX_SELECTIONS):
+            return True
+        attempts = int(selection.get('auto_attempts_v646') or 0)
+        if attempts >= 3:
+            if status != 'error':
+                selection.update(status='error', last_error=selection.get('last_error') or '自動復旧の実行中に処理が中断され、再試行の上限に達しました。', updated_at=now_jst().isoformat())
+                reflection['ai_selection'] = selection
+                _write_photo_reflection_for_owner(photo_id, reflection, family_key, member_key, client=client)
+            return False
+        if status == 'error' and not _video_auto_retryable_v646(selection):
+            return False
+        selection['auto_attempts_v646'] = attempts + 1
+        selection['auto_recovery_version_v646'] = 646
+        selection['status'] = 'processing'
+        selection['progress_message'] = f'自動処理中（{attempts + 1}/3回目）'
+        selection['updated_at'] = now_jst().isoformat()
+        selection.pop('auto_retry_at_v646', None)
+        reflection['ai_selection'] = selection
+        _write_photo_reflection_for_owner(photo_id, reflection, family_key, member_key, client=client)
+        succeeded = _run_video_ai_attempt_v646(photo_id, family_key, member_key)
+        if succeeded:
+            return True
+        result = _diag_invoke_v640('execute:video_retry_result_v646', lambda: client.table(PHOTO_TABLE)
+            .select('*').eq('id', str(photo_id)).eq('family_key', str(family_key))
+            .eq('member_key', str(member_key)).limit(1).execute())
+        photo = (result.data or [None])[0]
+        if not photo:
+            return False
+        reflection = dict(photo_media_metadata(photo)); selection = dict(reflection.get('ai_selection') or {})
+        if not _video_auto_retryable_v646(selection):
+            return False
+        delay = 30 if attempts == 0 else 120
+        selection['auto_retry_at_v646'] = (now_jst() + timedelta(seconds=delay)).isoformat()
+        selection['progress_message'] = f'{delay}秒後に自動で再試行します'
+        reflection['ai_selection'] = selection
+        _write_photo_reflection_for_owner(photo_id, reflection, family_key, member_key, client=client)
+        threading.Event().wait(delay)
 
 
 def _background_extract_video_candidate_frames(client, photo):
@@ -13432,10 +13576,9 @@ def _background_clients():
 
 @st.cache_resource(show_spinner=False)
 def _video_ai_executor():
-    # Four slots leave room for recovery if a provider/network call from an old
-    # Streamlit run is still unwinding. The registry still limits normal work to
-    # one current job per video.
-    return ThreadPoolExecutor(max_workers=4, thread_name_prefix="burari-video-ai")
+    # Two workers bound recovery CPU/I-O pressure; the registry also prevents
+    # duplicate active jobs for the same video.
+    return ThreadPoolExecutor(max_workers=2, thread_name_prefix="burari-video-ai")
 
 
 @st.cache_resource(show_spinner=False)
@@ -13805,6 +13948,7 @@ def _background_store_video_ai_selection(
             selection_meta = {}
         selection_meta.update(
             {
+                "native_extraction_v646": (selected_items[0].get('frame') or {}).get('native_report_v646') or {},
                 "status": "ready",
                 "generated_at": now_jst().isoformat(),
                 "updated_at": now_jst().isoformat(),
@@ -13862,7 +14006,7 @@ def video_ai_processing_is_stale(selection_meta):
     return age is not None and age >= float(VIDEO_AI_STALE_SECONDS)
 
 
-def _run_video_ai_background_job(photo_id, family_key, member_key):
+def _run_video_ai_attempt_v646(photo_id, family_key, member_key):
     """Run one complete Good Moments job synchronously in the active Streamlit run."""
     client = _background_clients()
     result = (
@@ -14013,6 +14157,7 @@ def _run_video_ai_background_job(photo_id, family_key, member_key):
                 "error_type": type(exc).__name__,
                 "stage": str(selection_meta.get("stage") or "pipeline"),
                 "traceback": _app_error_clean_v610("".join(traceback.format_exception(type(exc), exc, exc.__traceback__))),
+                "video_extraction": getattr(exc, "video_diagnostic_v645", None),
             }
             latest_selection["updated_at"] = now_jst().isoformat()
             latest_selection["stage"] = str(latest_selection.get("stage") or "pipeline")
@@ -14120,6 +14265,8 @@ def launch_video_ai_background_job(photo):
     if not isinstance(selection, dict):
         selection = {}
     status = str(selection.get("status") or "").strip().lower()
+    if status == "error" and not _video_auto_retryable_v646(selection):
+        return False
     existing_items = video_ai_selection_items(fresh)
     if status == "reviewed":
         return False
@@ -14141,7 +14288,7 @@ def launch_video_ai_background_job(photo):
             member_key,
         )
         registry["futures"][photo_id] = future
-        future.add_done_callback(lambda done, pid=photo_id, reg=registry: _video_ai_job_done(pid, done, reg))
+    future.add_done_callback(lambda done, pid=photo_id, reg=registry: _video_ai_job_done(pid, done, reg))
     return True
 
 
@@ -14211,30 +14358,9 @@ def resume_member_video_background_jobs(limit=24, min_interval_seconds=5):
             # A different worker may still own this recent job. Wait for stale recovery.
             continue
 
-        # One automatic recovery attempt for an initial failure. The original video
-        # remains untouched and is the source for the retry.
+        # Old v145 retry flags must not permanently strand failed videos.
         if status == "error":
-            if has_items or selection.get("v145_auto_retry"):
-                continue
-            try:
-                selection["v145_auto_retry"] = True
-                selection["status"] = "waiting_candidates"
-                selection["stage"] = "candidate_preparation"
-                selection["queued_at"] = now_jst().isoformat()
-                selection["updated_at"] = selection["queued_at"]
-                selection["last_error"] = ""
-                selection["pipeline_mode"] = "offline_fixed500ms_max120_v591"
-                reflection = dict(photo_media_metadata(row))
-                reflection["ai_selection"] = selection
-                _write_photo_reflection_for_owner(
-                    row.get("id"),
-                    reflection,
-                    row.get("family_key") or current_family_key(),
-                    row.get("member_key") or current_member_key(),
-                )
-                row = dict(row)
-                row["reflection_json"] = reflection
-            except Exception:
+            if not _video_auto_retryable_v646(selection):
                 continue
         elif status in {"waiting_browser_candidates", ""}:
             try:
@@ -14311,6 +14437,8 @@ def request_video_ai_reroll(photo, record_rejection=True):
         history_entry["reroll_rejected"] = False
         history_entry["manual_recut"] = True
     history.append(history_entry)
+    selection['auto_attempts_v646'] = 0
+    selection.pop('auto_retry_at_v646', None)
     selection["history"] = history[-12:]
     selection["status"] = "processing"
     selection["queued_at"] = now_jst().isoformat()
@@ -41678,16 +41806,14 @@ def page_moments():
                             with st.expander("切り抜きエラーの詳細"):
                                 st.code(_app_error_clean_v610(focus_error))
                                 st.caption("処理段階：" + str(selection.get("stage") or "不明"))
-                    if status == "error" and _video_ai_reroll_pending_v596(selection):
-                        st.warning("新しい100枚を作成できませんでした。前の候補は表示していません。")
-                        if st.button("もう一度作成する", key=f"moments_retry_reroll_v596_{video.get('id')}"):
-                            try:
-                                request_video_ai_reroll(video, record_rejection=False)
-                                st.session_state["_moments_notice"] = "新しい100枚を作成しています。"
-                                st.rerun()
-                            except Exception as exc:
-                                st.error("再作成を開始できませんでした。")
-                                st.code(_safe_error_text(exc, 240))
+                    if status == "error":
+                        if int(selection.get('auto_attempts_v646') or 0) >= 3:
+                            st.caption('自動復旧を3回試しました。完了できなかった理由はエラーログに保存されています。')
+                        elif _video_auto_retryable_v646(selection):
+                            _queue_video_recovery_v646(video, current_family_key(), current_member_key())
+                            st.caption('バックグラウンドで自動復旧します。操作は不要です。')
+                        elif selection.get('auto_retry_at_v646'):
+                            st.caption(str(selection.get('progress_message') or '待機後に自動で再試行します。'))
                     render_video_delete_controls(
                         video,
                         f"moments_pending_delete_{video.get('id')}_{idx}",
@@ -59794,6 +59920,7 @@ def _read_ahead_home_video_counts_worker_v520(runtime, owner):
             processing_rows.append(job_row)
         elif status == "error":
             error_count += 1
+            _queue_video_recovery_v646(row, owner[2], owner[3])
     counts = (saved_count, before_clip_count, processing_rows, error_count)
     with _DiagLockV640(runtime["lock"], '_read_ahead_home_video_counts_worker_v520'):
         if int(_owner_state_v468(runtime, owner).get("epoch") or 0) == started_epoch:
