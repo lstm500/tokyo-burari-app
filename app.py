@@ -1,3 +1,4 @@
+# v644: Recover persisted Good Moments errors directly on log open, asynchronously and owner-scoped.
 # v643: Wait for the HTTP export widget to mount; retain and surface video pipeline failures.
 # v642: Direct log buttons with inline, on-demand panels; no category picker.
 # v641: Consistent settings cards and shared neutral buttons; load only selected details/logs.
@@ -98,7 +99,7 @@ def _app_css_v473(markup, **_ignored):
 # Review menu-only update: 2026-09-19 JST
 GENERATED_UPDATE_JST = "2026-09-19T14:54:38+09:00"
 
-APP_BUILD = "v643"
+APP_BUILD = "v644"
 # v598: Passing the focus gate is mandatory before any weighted ranking or reroll.
 # Never fill the twenty-image target with focus-rejected candidates.
 # v597: Compare 30 FPS candidates across the whole saved video offline. Disk-backed
@@ -56841,9 +56842,11 @@ def _app_error_capture_v610(component_key, event_key, owner):
                                   row.get("detail") or {}, row.get("id"), source="browser")
 
 
-def _app_error_history_v610():
-    owner, bucket = _salt_owner_v609(), supabase_client().storage.from_(GPS_TRACK_BUCKET)
-    folder = _salt_prefix_v609() + "/errors"
+def _app_error_history_v610(*, client=None, owner=None):
+    owner = owner or _salt_owner_v609()
+    client = client if client is not None else supabase_client()
+    bucket = client.storage.from_(GPS_TRACK_BUCKET)
+    folder = "salt_bread_v609/" + owner + "/errors"
     listing = bucket.list(folder, {"limit": 100, "offset": 0, "sortBy": {"column": "name", "order": "desc"}})
     rows = []
     for item in _coerce_storage_list_rows(listing):
@@ -56875,6 +56878,119 @@ def _app_error_reader_v610():
         }''')
 
 
+def _video_error_row_v644(photo_id, selection, owner):
+    if not isinstance(selection, dict):
+        return None
+    message = str(selection.get('last_error') or selection.get('message') or '').strip()
+    if not message and str(selection.get('status') or '').lower() != 'error':
+        return None
+    message = message or '動画の切り抜きに失敗しました。（保存済みの詳細なし）'
+    fingerprint = json.dumps([str(photo_id), selection.get('updated_at'), message], ensure_ascii=False)
+    failure = selection.get('error_detail_v643') or {}
+    return {'schema': 'burari_errors_v610', 'id': hashlib.sha256(fingerprint.encode()).hexdigest()[:32],
+            'owner': owner, 'build': 'unknown', 'source': 'stored_video', 'page': 'moments',
+            'at': str(selection.get('updated_at') or selection.get('generated_at') or ''),
+            'stage': 'video.good_moments',
+            'error_type': str(failure.get('error_type') or 'StoredVideoError') if isinstance(failure, dict) else 'StoredVideoError',
+            'message': _app_error_clean_v610(message),
+            'detail': _app_error_clean_v610(json.dumps({'photo_id': str(photo_id),
+                'stage': str(selection.get('stage') or 'unknown'), 'attempt': selection.get('attempt'),
+                'updated_at': selection.get('updated_at'), 'failure': failure,
+                'recovered_from': 'saved_video_metadata',
+                'traceback_available': bool(isinstance(failure, dict) and failure.get('traceback'))}, ensure_ascii=False, default=str))}
+
+
+def _video_error_history_v644(client, family, member, owner):
+    """Read persisted error fields only; no video/image downloads or per-video calls."""
+    expected_owner = hashlib.sha256((str(family) + '\0' + str(member)).encode()).hexdigest()
+    if owner != expected_owner:
+        raise ValueError('ログのアカウントが一致しません。')
+    fields = ('id,family_key,member_key,selection_status:reflection_json->ai_selection->>status,'
+              'last_error:reflection_json->ai_selection->>last_error,'
+              'message:reflection_json->ai_selection->>message,'
+              'error_stage:reflection_json->ai_selection->>stage,'
+              'error_at:reflection_json->ai_selection->>updated_at,'
+              'error_generated_at:reflection_json->ai_selection->>generated_at,'
+              'attempt:reflection_json->ai_selection->attempt,'
+              'failure:reflection_json->ai_selection->error_detail_v643')
+    rows, cursor, seen = [], None, set()
+    started = time.monotonic()
+    while True:
+        if time.monotonic() - started > 45:
+            raise RuntimeError('保存済み動画の確認が時間内に終わりませんでした。再読み込みしてください。')
+        query = client.table(PHOTO_TABLE).select(fields).eq('family_key', str(family)).eq('member_key', str(member)).order('id').limit(200)
+        if cursor is not None:
+            query = query.gt('id', cursor)
+        page = _diag_invoke_v640('execute:video_error_history_v644', query.execute).data or []
+        if not page:
+            break
+        for item in page:
+            if str(item.get('family_key')) != str(family) or str(item.get('member_key')) != str(member):
+                continue
+            selection = {'status': item.get('selection_status'), 'last_error': item.get('last_error'),
+                         'message': item.get('message'), 'stage': item.get('error_stage'),
+                         'updated_at': item.get('error_at'), 'generated_at': item.get('error_generated_at'),
+                         'attempt': item.get('attempt'), 'error_detail_v643': item.get('failure')}
+            row = _video_error_row_v644(item.get('id'), selection, owner)
+            if row and row['id'] not in seen:
+                seen.add(row['id']); rows.append(row)
+        next_cursor = page[-1].get('id')
+        if next_cursor is None or next_cursor == cursor:
+            raise RuntimeError('動画エラーの続きの取得位置を確認できませんでした。')
+        cursor = next_cursor
+    return rows
+
+
+@st.cache_resource(show_spinner=False)
+def _error_import_executor_v644():
+    return ThreadPoolExecutor(max_workers=1, thread_name_prefix='burari-error-import')
+
+
+def _error_import_worker_v644(family, member, owner, include_history=False):
+    # Captured identity only: never read Streamlit session state in the worker.
+    client = _background_clients()
+    result = {'owner': owner, 'warnings': [], 'video_rows': None, 'history_rows': None}
+    try:
+        result['video_rows'] = _video_error_history_v644(client, family, member, owner)
+    except Exception as exc:
+        result['warnings'].append('動画の既存エラーを取得できませんでした：' + _app_error_clean_v610(exc))
+    if include_history:
+        try:
+            result['history_rows'] = _app_error_history_v610(client=client, owner=owner)
+        except Exception as exc:
+            result['warnings'].append('保存済みログを取得できませんでした：' + _app_error_clean_v610(exc))
+    return result
+
+
+def _error_import_collect_v644(owner):
+    future_key = '_error_import_future_v644_' + owner
+    future = st.session_state.get(future_key)
+    if future is None or not future.done():
+        return False
+    st.session_state.pop(future_key, None)
+    try:
+        result = _diag_future_v640(future)
+        if result.get('owner') != owner or _salt_owner_v609() != owner:
+            return True
+        if result.get('video_rows') is not None:
+            st.session_state['_video_error_history_v644_' + owner] = result['video_rows']
+        if result.get('history_rows') is not None:
+            st.session_state['_app_error_history_v610_' + owner] = result['history_rows']
+        st.session_state['_error_import_warnings_v644_' + owner] = result.get('warnings') or []
+    except Exception as exc:
+        st.session_state['_error_import_warnings_v644_' + owner] = ['エラーログを取得できませんでした：' + _app_error_clean_v610(exc)]
+    return True
+
+
+@st.fragment(run_every=1)
+def _error_import_progress_v644(owner):
+    if _salt_owner_v609() != owner:
+        return
+    if _error_import_collect_v644(owner):
+        st.rerun(scope='app')
+    st.caption('保存済み動画のエラー情報をバックグラウンドで確認しています…')
+
+
 def _app_error_settings_v610(*, expanded=False):
     with st.expander("エラーログ", expanded=expanded):
         owner = _salt_owner_v609()
@@ -56882,24 +56998,38 @@ def _app_error_settings_v610(*, expanded=False):
         component_key = "app_error_reader_v610_" + owner
         _app_error_reader_v610()(data={"owner": owner}, key=component_key,
             on_client_logs_change=lambda: _app_error_capture_v610(component_key, "client_logs", owner))
-        if st.button("保存済みのエラーログも読み込む", key="error_history_v610"):
-            try:
-                st.session_state["_app_error_history_v610_" + owner] = _app_error_history_v610()
-            except Exception as exc:
-                _app_error_record_v610("diagnostics.history_read", exc)
-                st.warning("保存済みログを読み込めませんでした。端末内のログは出力できます。")
-        rows = list(st.session_state.get("_app_error_history_v610_" + owner) or []) + list(st.session_state.get(key) or [])
+        _error_import_collect_v644(owner)
+        future_key = '_error_import_future_v644_' + owner
+        pending = st.session_state.get(future_key)
+        refresh = st.button("保存済みのエラーログも読み込む", key="error_history_v610", disabled=pending is not None)
+        started_key = '_error_import_started_v644_' + owner
+        if (not st.session_state.get(started_key) or refresh) and pending is None:
+            st.session_state[started_key] = True
+            pending = _diag_submit_v640(_error_import_executor_v644(), _error_import_worker_v644,
+                str(current_family_key()), str(current_member_key()), owner, bool(refresh))
+            st.session_state[future_key] = pending
+        if pending is not None:
+            _error_import_progress_v644(owner)
+        for warning in st.session_state.get('_error_import_warnings_v644_' + owner) or []:
+            st.warning(warning)
+        video_rows = st.session_state.get('_video_error_history_v644_' + owner)
+        if video_rows is not None:
+            st.caption(f"保存済み動画から取り込んだエラー：{len(video_rows)}件。動画画面を開く必要はありません。")
+        rows = list(st.session_state.get("_app_error_history_v610_" + owner) or []) + list(video_rows or []) + list(st.session_state.get(key) or [])
         merged = {row.get("id"): row for row in rows if isinstance(row, dict) and row.get("owner") == owner}
         rows = sorted(merged.values(), key=lambda row: str(row.get("at") or ""))
-        st.caption(f"出力対象 {len(rows)}件。保存済みログは直近100件を読み込みます。")
+        st.caption(f"出力対象 {len(rows)}件。動画エラーと端末・保存済みログをまとめて出力します。保存済みログは直近100件です。")
         future = st.session_state.get("_app_error_future_v610_" + owner)
         if future and future.done() and future.exception():
             st.caption("ログの保存先への送信に失敗しました。端末内のログをダウンロードしてください。")
-        payload = {"build": APP_BUILD, "exported_at": now_jst().isoformat(), "errors": rows}
+        payload = {"build": APP_BUILD, "exported_at": now_jst().isoformat(), "errors": rows,
+                   "video_error_import": {"loaded": video_rows is not None, "count": len(video_rows or []),
+                       "pending": st.session_state.get(future_key) is not None,
+                       "warnings": st.session_state.get('_error_import_warnings_v644_' + owner) or []}}
         st.download_button("エラーログを出力（JSON）", json.dumps(payload, ensure_ascii=False, indent=2),
-                           "burari_errors.json", "application/json", key="app_errors_json_v610")
+                           "burari_errors.json", "application/json", key="app_errors_json_v610", disabled=st.session_state.get(future_key) is not None)
         text = "\n\n".join(f"{row.get('at')} [{row.get('stage')}] {row.get('message')}\n{row.get('detail')}" for row in rows)
-        st.download_button("エラーログを出力（TXT）", text or "記録されたエラーはありません。", "burari_errors.txt", "text/plain", key="app_errors_txt_v610")
+        st.download_button("エラーログを出力（TXT）", text or "記録されたエラーはありません。", "burari_errors.txt", "text/plain", key="app_errors_txt_v610", disabled=st.session_state.get(future_key) is not None)
 
 
 def _salt_photo_capture_v610(component_key, scope_key):
