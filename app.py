@@ -1,3 +1,4 @@
+# v643: Wait for the HTTP export widget to mount; retain and surface video pipeline failures.
 # v642: Direct log buttons with inline, on-demand panels; no category picker.
 # v641: Consistent settings cards and shared neutral buttons; load only selected details/logs.
 # v640: Bounded nested function/I-O/queue/lock diagnostics; one-click combined HTTP export with on-demand serialization.
@@ -97,7 +98,7 @@ def _app_css_v473(markup, **_ignored):
 # Review menu-only update: 2026-09-19 JST
 GENERATED_UPDATE_JST = "2026-09-19T14:54:38+09:00"
 
-APP_BUILD = "v642"
+APP_BUILD = "v643"
 # v598: Passing the focus gate is mandatory before any weighted ranking or reroll.
 # Never fill the twenty-image target with focus-rejected candidates.
 # v597: Compare 30 FPS candidates across the whole saved video offline. Disk-backed
@@ -4626,29 +4627,50 @@ export default function(component) {
   const button=parentElement.querySelector('button');
   const status=parentElement.querySelector('[role="status"]');
   const registry=host.__burariExports640||(host.__burariExports640=new Map());
-  const id='performance';
-  let state=registry.get(id);
-  if(!state){state={pending:'',downloaded:''};registry.set(id,state);}
+  let state=registry.get('performance');
+  if(!state){state={pending:'',downloaded:''};registry.set('performance',state);}
+  let observer=null,deadline=null,disposed=false;
+  const stop=()=>{if(observer){observer.disconnect();observer=null;}if(deadline!==null){host.clearTimeout(deadline);deadline=null;}};
   const reset=data?.reset_token;
   if(reset&&host.__burariPerfReset466!==reset){host.__burariPerf466?.clear();host.__burariPerfReset466=reset;}
   const ready=String(data?.ready_token||'');
   if(data?.error_token&&data.error_token===state.pending){state.pending='';status.textContent='ログを出力できませんでした。もう一度押してください。';}
-  // Retain request state across the fragment rerender; start no timer/polling.
-  if(ready&&ready===state.pending&&ready!==state.downloaded){
-    const target=host.document.querySelector('.st-key-perf_auto_download_v640 button');
-    if(target){state.downloaded=ready;state.pending='';queueMicrotask(()=>target.click());status.textContent='保存を開始しました。';}
-    else {state.pending='';status.textContent='保存ボタンを確認できません。もう一度押してください。';}
-  }
+  const activate=()=>{
+    if(disposed||!ready||ready!==state.pending||ready===state.downloaded)return false;
+    const target=host.document.querySelector('.st-key-perf_export_http_v643 button');
+    if(!target||target.disabled)return false;
+    stop();
+    // Commit only when the HTTP button exists. React may mount it after this component.
+    state.downloaded=ready;state.pending='';button.disabled=false;
+    target.click();status.textContent='保存を開始しました。';return true;
+  };
   button.disabled=!!state.pending;
+  if(ready&&ready===state.pending&&ready!==state.downloaded){
+    status.textContent='保存の準備をしています…';
+    if(!activate()){
+      observer=new host.MutationObserver(activate);
+      observer.observe(host.document.documentElement,{childList:true,subtree:true,attributes:true,attributeFilter:['disabled']});
+      deadline=host.setTimeout(()=>{
+        stop();if(disposed||state.pending!==ready)return;
+        state.pending='';button.disabled=false;
+        host.document.getElementById('burari-perf-download-hide-v643')?.remove();
+        status.textContent='自動保存を開始できませんでした。下の保存ボタンを押してください。';
+        setTriggerValue('download_error',{token:ready,reason:'http_download_button_not_mounted'});
+      },10000);
+      // Close the race between the first lookup and observer registration.
+      activate();
+    }
+  }
   button.onclick=()=>{
     if(state.pending)return;
+    stop();
     const token=host.crypto?.randomUUID?.()||`${Date.now()}-${Math.random()}`;
     state.pending=token;button.disabled=true;status.textContent='ログを取得しています…';
     let browser;
     try{browser=host.__burariPerf466?.snapshot();}catch(_){}
     setTriggerValue('snapshot',{token,browser:browser||{error:'browser_logger_unavailable'}});
   };
-  return()=>{button.onclick=null;};
+  return()=>{disposed=true;stop();button.onclick=null;};
 }
 """
 
@@ -4895,13 +4917,22 @@ def _render_interaction_export_v465():
     # HTTP download uses Streamlit's normal download handler; Android DownloadManager
     # cannot handle a blob/data URL. This hidden button is activated automatically.
     if exported:
-        st.markdown('<style>.st-key-perf_auto_download_v640{display:none!important}</style>', unsafe_allow_html=True)
-        st.download_button('動作ログを保存', exported, f'burari_diagnostics_{today_iso()}.json',
-                           'application/json', key='perf_auto_download_v640', on_click='ignore')
+        if not st.session_state.get('_perf_download_fallback_v643'):
+            st.markdown('<style id="burari-perf-download-hide-v643">.st-key-perf_export_http_v643{display:none!important}</style>', unsafe_allow_html=True)
+        with st.container(key='perf_export_http_v643'):
+            st.download_button('動作ログを保存', exported, f'burari_diagnostics_{today_iso()}.json',
+                               'application/json', key='perf_auto_download_v640', on_click='ignore')
     try:
         result = _perf_export_component_v465()(key='perf_export_v640',
             data={'ready_token': token, 'error_token': st.session_state.get('_perf_export_error_v640',''), 'reset_token': st.session_state.get('_perf_reset_v466', '')},
-            on_snapshot_change=lambda: None)
+            on_snapshot_change=lambda: None, on_download_error_change=lambda: None)
+        download_error = getattr(result, 'download_error', None)
+        if isinstance(download_error, dict) and download_error.get('token') != st.session_state.get('_perf_download_error_v643'):
+            st.session_state['_perf_download_error_v643'] = download_error.get('token')
+            st.session_state['_perf_download_fallback_v643'] = True
+            _app_error_record_v610('diagnostics.download', 'HTTP保存ボタンの配置待ちがタイムアウトしました。',
+                                  {'reason': str(download_error.get('reason') or '')[:120]})
+            _diag_export_rerun_v640()
         payload = getattr(result, 'snapshot', None)
         if isinstance(payload, dict) and payload.get('token') and payload['token'] not in (token, st.session_state.get('_perf_export_error_v640')):
             sink = st.session_state.get('_diag_sink_v640')
@@ -4944,6 +4975,8 @@ def render_performance_log_v457(*, expanded=False):
             st.session_state.pop('_perf_export_v640', None)
             st.session_state.pop('_perf_export_token_v465', None)
             st.session_state.pop('_perf_export_error_v640', None)
+            st.session_state.pop('_perf_download_error_v643', None)
+            st.session_state.pop('_perf_download_fallback_v643', None)
             st.rerun(scope='app')
 
 
@@ -13974,6 +14007,12 @@ def _run_video_ai_background_job(photo_id, family_key, member_key):
             else:
                 latest_selection["status"] = "error"
             latest_selection["last_error"] = str(exc)[:240]
+            import traceback
+            latest_selection["error_detail_v643"] = {
+                "error_type": type(exc).__name__,
+                "stage": str(selection_meta.get("stage") or "pipeline"),
+                "traceback": _app_error_clean_v610("".join(traceback.format_exception(type(exc), exc, exc.__traceback__))),
+            }
             latest_selection["updated_at"] = now_jst().isoformat()
             latest_selection["stage"] = str(latest_selection.get("stage") or "pipeline")
             latest_selection["pipeline_mode"] = "offline_quality_first_30fps_v597"
@@ -14676,6 +14715,20 @@ def store_video_ai_selection(photo, frame_items):
         selections,
         candidate_count=len(frame_items or []),
     )
+
+def _capture_video_error_v643(photo, selection):
+    """Import durable video failure evidence once; called only by the UI thread."""
+    message = str(selection.get("last_error") or selection.get("message") or "動画の切り抜きに失敗しました。")
+    fingerprint = json.dumps([str(photo.get("id")), selection.get("updated_at"), message], ensure_ascii=False)
+    event_id = hashlib.sha256(fingerprint.encode()).hexdigest()[:32]
+    _app_error_record_v610("video.good_moments", message, {
+        "photo_id": str(photo.get("id") or ""),
+        "stage": str(selection.get("stage") or "unknown"),
+        "attempt": selection.get("attempt"),
+        "updated_at": selection.get("updated_at"),
+        "failure": selection.get("error_detail_v643") or {},
+    }, event_id=event_id)
+
 
 def mark_video_ai_selection_error(photo, message):
     if not isinstance(photo, dict) or not photo.get("id"):
@@ -41618,8 +41671,12 @@ def page_moments():
                     label = "処理中" if status != "error" else "エラー"
                     st.write(f"{idx}. {_moments_video_title(video)}　— {label}")
                     focus_error = str((selection or {}).get("last_error") or "")
-                    if status == "error" and focus_error.startswith("ピント"):
-                        st.warning(focus_error)
+                    if status == "error":
+                        _capture_video_error_v643(video, selection)
+                        if focus_error:
+                            with st.expander("切り抜きエラーの詳細"):
+                                st.code(_app_error_clean_v610(focus_error))
+                                st.caption("処理段階：" + str(selection.get("stage") or "不明"))
                     if status == "error" and _video_ai_reroll_pending_v596(selection):
                         st.warning("新しい100枚を作成できませんでした。前の候補は表示していません。")
                         if st.button("もう一度作成する", key=f"moments_retry_reroll_v596_{video.get('id')}"):
