@@ -1,3 +1,4 @@
+# v649: Streaming voice level control during replay; bounded gain, limiter and safe unprocessed fallback.
 # v648: Select one focus-passing frame per 250ms; 60s yields up to 240 photos, with variable-count completion and chronological galleries.
 # v647: Replace unsupported -vsync with -fps_mode passthrough; automatically recover jobs stranded under the old command.
 # v646: Automatically retry failed Good Moments jobs with durable budgets/backoff and exact native-frame batch recovery.
@@ -103,7 +104,7 @@ def _app_css_v473(markup, **_ignored):
 # Review menu-only update: 2026-09-19 JST
 GENERATED_UPDATE_JST = "2026-09-19T14:54:38+09:00"
 
-APP_BUILD = "v648"
+APP_BUILD = "v649"
 # v598: Passing the focus gate is mandatory before any weighted ranking or reroll.
 # Never fill the twenty-image target with focus-rejected candidates.
 # v597: Compare 30 FPS candidates across the whole saved video offline. Disk-backed
@@ -23960,7 +23961,7 @@ function burariStartSlideVoiceV469() {{
 
       const burariVoiceProbeCancelsV469 = new Set();
       let burariReplayDisposedV469 = false;
-      window.addEventListener("pagehide", (event) => {{ if (!event.persisted) {{burariReplayDisposedV469 = true; for (const cancel of Array.from(burariVoiceProbeCancelsV469)) cancel();}} }});
+      window.addEventListener("pagehide", (event) => {{ if (!event.persisted) {{burariReplayDisposedV469 = true; burariStopVoice(false); burariDisposeVoiceLevelV649(); for (const cancel of Array.from(burariVoiceProbeCancelsV469)) cancel();}} }});
       function burariLoadVoiceDurationMs(url) {{
         return new Promise((resolve) => {{
           const src = String(url || '');
@@ -24105,6 +24106,7 @@ function burariStartSlideVoiceV469() {{
       }}
 
       function burariRestoreReplayAfterForeground() {{
+        burariResumeVoiceLevelV649();
         if (!burariReplayPlaybackActive || !burariPlayerReady || !burariPlayer) return;
         const now = Date.now();
         if (now - burariLastForegroundRestoreAt < 350) return;
@@ -24258,6 +24260,7 @@ function burariStartSlideVoiceV469() {{
       }}
 
       function burariFinishVoice(statusText = '写真の声を聞き終わりました。', resumeMusic = true) {{
+        burariStopVoiceLevelV649();
         burariStopVoiceBgmKeepAlive();
         if (burariVoiceRetryTimerV489) {{
           clearTimeout(burariVoiceRetryTimerV489);
@@ -24617,6 +24620,7 @@ function burariStartSlideVoiceV469() {{
       }}
 
       function burariResumeReplay() {{
+        burariResumeVoiceLevelV649();
         if (!burariReplayPausedByUser || !burariPlayerReady || !burariPlayer) return;
         let current = NaN;
         try {{ current = Number(burariPlayer.getCurrentTime()); }} catch (_) {{}}
@@ -24696,21 +24700,165 @@ function burariStartSlideVoiceV469() {{
         }}
       }}
 
+      // Streaming level control: no extra fetch, decode, storage write or scan of the photo pool.
+      let burariVoiceLevelV649 = null;
+      let burariVoiceLevelDisabledV649 = false;
+      function burariVoiceGainTargetV649(samples) {{
+        let sum = 0, peak = 0;
+        for (let i = 0; i < samples.length; i++) {{
+          const value = Number(samples[i]);
+          if (!Number.isFinite(value)) return null;
+          sum += value * value;
+          peak = Math.max(peak, Math.abs(value));
+        }}
+        const rms = Math.sqrt(sum / Math.max(1, samples.length));
+        // Hold through silence; do not wind up the gain between words.
+        if (rms < 0.008 || !peak) return null;
+        return Math.max(0.125, Math.min(4, 0.10 / rms, 0.89 / peak));
+      }}
+      function burariStopVoiceLevelV649() {{
+        const level = burariVoiceLevelV649;
+        if (level && level.timer !== null) clearInterval(level.timer);
+        if (level) level.timer = null;
+      }}
+      function burariConnectVoiceLevelV649(audio) {{
+        if (burariVoiceLevelDisabledV649) return;
+        let context = null;
+        try {{
+          const Ctor = window.AudioContext || window.webkitAudioContext;
+          if (!Ctor) throw new Error('unsupported');
+          context = new Ctor();
+          const analyser = context.createAnalyser();
+          analyser.fftSize = 1024;
+          const gain = context.createGain();
+          gain.gain.value = 0.5;
+          const limiter = context.createDynamicsCompressor();
+          limiter.threshold.value = -1;
+          limiter.knee.value = 0;
+          limiter.ratio.value = 20;
+          limiter.attack.value = 0.003;
+          limiter.release.value = 0.15;
+          const source = context.createMediaElementSource(audio);
+          source.connect(analyser);
+          analyser.connect(gain);
+          gain.connect(limiter);
+          limiter.connect(context.destination);
+          burariVoiceLevelV649 = {{context, source, analyser, gain, limiter,
+            samples: new Float32Array(1024), timer: null}};
+        }} catch (_) {{
+          if (context) {{ try {{ context.close().catch(() => {{}}); }} catch (_) {{}} }}
+          // Recreate the element if a partially attached graph failed: a routed
+          // media element must never be reused as an unprocessed fallback.
+          burariVoiceLevelDisabledV649 = true;
+          throw new Error('voice_level_unavailable');
+        }}
+      }}
+      function burariResumeVoiceLevelV649() {{
+        const level = burariVoiceLevelV649;
+        if (!level || level.context.state === 'closed') return;
+        try {{
+          const result = level.context.resume();
+          if (result && result.catch) result.catch(() => {{
+            if (burariVoicePlaybackActive) burariFallbackVoiceLevelV649();
+          }});
+        }} catch (_) {{ if (burariVoicePlaybackActive) burariFallbackVoiceLevelV649(); }}
+      }}
+      function burariStartVoiceLevelV649() {{
+        burariStopVoiceLevelV649();
+        const level = burariVoiceLevelV649;
+        if (!level || !burariVoicePlaybackActive) return;
+        burariResumeVoiceLevelV649();
+        const tick = () => {{
+          if (!burariVoicePlaybackActive || !burariVoiceAudio || burariVoiceAudio.paused ||
+              burariVoiceAudio.ended || burariReplayDisposedV469) {{
+            burariStopVoiceLevelV649(); return;
+          }}
+          if (level.context.state !== 'running') return;
+          try {{
+            level.analyser.getFloatTimeDomainData(level.samples);
+            const target = burariVoiceGainTargetV649(level.samples);
+            if (target === null) return;
+            const now = level.context.currentTime;
+            const current = level.gain.gain.value;
+            level.gain.gain.cancelScheduledValues(now);
+            level.gain.gain.setValueAtTime(current, now);
+            level.gain.gain.setTargetAtTime(target, now, target < current ? 0.025 : 0.25);
+          }} catch (_) {{ burariFallbackVoiceLevelV649(); }}
+        }};
+        tick();
+        if (burariVoiceLevelV649 === level && burariVoicePlaybackActive)
+          level.timer = setInterval(tick, 80);
+      }}
+      function burariResetVoiceLevelV649() {{
+        burariStopVoiceLevelV649();
+        const level = burariVoiceLevelV649;
+        if (!level) return;
+        const now = level.context.currentTime;
+        level.gain.gain.cancelScheduledValues(now);
+        level.gain.gain.setValueAtTime(0.5, now);
+      }}
+      function burariDisposeVoiceLevelV649() {{
+        burariStopVoiceLevelV649();
+        const level = burariVoiceLevelV649;
+        burariVoiceLevelV649 = null;
+        if (!level) return;
+        for (const node of [level.source, level.analyser, level.gain, level.limiter]) {{
+          try {{ node.disconnect(); }} catch (_) {{}}
+        }}
+        try {{ level.context.close().catch(() => {{}}); }} catch (_) {{}}
+      }}
+      function burariFallbackVoiceLevelV649() {{
+        if (burariVoiceLevelDisabledV649) return false;
+        burariVoiceLevelDisabledV649 = true;
+        const old = burariVoiceAudio;
+        const position = Number(old && old.currentTime) || 0;
+        const url = String(old && old.dataset.burariVoiceUrl || burariCurrentVoiceUrl || '');
+        burariDisposeVoiceLevelV649();
+        burariVoiceAudio = null; // stale element events are ignored by their listeners
+        if (old) {{
+          try {{ old.pause(); old.removeAttribute('src'); old.load(); }} catch (_) {{}}
+        }}
+        const fresh = burariEnsureVoiceAudioV489();
+        if (url) {{
+          fresh.dataset.burariVoiceUrl = url;
+          fresh.addEventListener('loadedmetadata', () => {{
+            if (fresh !== burariVoiceAudio) return;
+            try {{ fresh.currentTime = position; }} catch (_) {{}}
+          }}, {{once: true}});
+          fresh.src = url;
+          fresh.load();
+        }}
+        burariDiag603('replay_voice_level_fallback');
+        if (burariStatus) burariStatus.textContent = '音量調整を利用できないため、元の音量で声を再生します。';
+        if (burariVoicePlaybackActive && !burariReplayPausedByUser)
+          burariAttemptVoicePlayV489(true, 0, url, burariVoiceGenerationV489);
+        return true;
+      }}
+
       function burariEnsureVoiceAudioV489() {{
         if (burariVoiceAudio) return burariVoiceAudio;
         const audio = new Audio();
         audio.preload = 'auto';
         audio.setAttribute('playsinline', '');
+        if (!burariVoiceLevelDisabledV649) {{
+          audio.crossOrigin = 'anonymous'; // must precede src and source-node creation
+          try {{ burariConnectVoiceLevelV649(audio); }}
+          catch (_) {{ burariVoiceAudio = null; return burariEnsureVoiceAudioV489(); }}
+        }}
         audio.addEventListener('ended', () => {{
+          if (audio !== burariVoiceAudio) return;
           if (burariVoicePlaybackActive) burariFinishVoice();
         }});
         audio.addEventListener('error', () => {{
+          if (audio !== burariVoiceAudio) return;
+          if (burariFallbackVoiceLevelV649()) return;
           if (!burariVoicePlaybackActive) return;
           const generation = burariVoiceGenerationV489;
           const expected = burariCurrentVoiceUrl;
           burariAttemptVoicePlayV489(true, 1, expected, generation);
         }});
         audio.addEventListener('loadedmetadata', () => {{
+          if (audio !== burariVoiceAudio) return;
           if (burariVoiceSafetyTimer) clearTimeout(burariVoiceSafetyTimer);
           const duration = Number(audio.duration);
           if (Number.isFinite(duration) && duration > 0 && burariIndex >= 0 && burariIndex < burariSlides.length) {{
@@ -24728,11 +24876,15 @@ function burariStartSlideVoiceV469() {{
           }}, safetyMs);
         }});
         audio.addEventListener('playing', () => {{
+          if (audio !== burariVoiceAudio) return;
+          burariStartVoiceLevelV649();
           if (!burariVoicePlaybackActive) return;
           burariVoiceUnexpectedPauseCountV489 = 0;
           burariKeepBgmDuringVoice();
         }});
         audio.addEventListener('pause', () => {{
+          if (audio !== burariVoiceAudio) return;
+          burariStopVoiceLevelV649();
           if (!burariVoicePlaybackActive || burariVoiceIntentionalPauseV489 || burariReplayPausedByUser || audio.ended) return;
           const duration = Number(audio.duration);
           const current = Number(audio.currentTime || 0);
@@ -24845,6 +24997,8 @@ function burariStartSlideVoiceV469() {{
             audio.load();
           }} catch (_) {{}}
         }}
+        burariResumeVoiceLevelV649();
+        burariResetVoiceLevelV649();
         burariVoiceIntentionalPauseV489 = true;
         try {{ audio.currentTime = 0; }} catch (_) {{}}
         burariVoiceIntentionalPauseV489 = false;
@@ -24972,6 +25126,10 @@ function burariStartSlideVoiceV469() {{
           return;
         }}
         if (!burariBuildReplayPlan()) return;
+        if (burariSlides.some(item => item.voice_url)) {{
+          burariEnsureVoiceAudioV489();
+          burariResumeVoiceLevelV649(); // user gesture, before auto voice starts
+        }}
         burariPendingStart = false;
         burariRequestNativeAudioFocus();
         burariStopTimers();
