@@ -1,3 +1,4 @@
+# v650: Sort all replay playback and visual exports by capture instant ascending, preserving random selection.
 # v649: Streaming voice level control during replay; bounded gain, limiter and safe unprocessed fallback.
 # v648: Select one focus-passing frame per 250ms; 60s yields up to 240 photos, with variable-count completion and chronological galleries.
 # v647: Replace unsupported -vsync with -fps_mode passthrough; automatically recover jobs stranded under the old command.
@@ -104,7 +105,7 @@ def _app_css_v473(markup, **_ignored):
 # Review menu-only update: 2026-09-19 JST
 GENERATED_UPDATE_JST = "2026-09-19T14:54:38+09:00"
 
-APP_BUILD = "v649"
+APP_BUILD = "v650"
 # v598: Passing the focus gate is mandatory before any weighted ranking or reroll.
 # Never fill the twenty-image target with focus-rejected candidates.
 # v597: Compare 30 FPS candidates across the whole saved video offline. Disk-backed
@@ -20612,6 +20613,24 @@ def guess_monthly_replay_window(youtube_url, month_key, review):
     }
 
 
+def _replay_capture_key_v650(item, fallback_date=""):
+    """Use capture instants across all replay paths; undated items sort last."""
+    row = dict(item or {})
+    key = _random_capture_key_v473(row)
+    if math.isfinite(key[0]):
+        return key
+    # Old shared snapshots have a date-prefixed caption but no capture timestamp.
+    for raw in (fallback_date, row.get("trip_date"), str(row.get("caption") or "")[:10]):
+        value = str(raw or "").strip()
+        try:
+            date.fromisoformat(value)
+        except (ValueError, TypeError):
+            continue
+        row["captured_at"] = value
+        return _random_capture_key_v473(row)
+    return key
+
+
 def _monthly_replay_selected_photos(bundle, limit=None):
     """Return replay photos in chronological order.
 
@@ -20621,10 +20640,8 @@ def _monthly_replay_selected_photos(bundle, limit=None):
     """
     trip_map = {str(t.get("id")): t for t in (bundle or {}).get("trips", []) if isinstance(t, dict) and t.get("id")}
     photos = [p for p in (bundle or {}).get("photos", []) if isinstance(p, dict)]
-    photos.sort(key=lambda p: (
-        str(trip_map.get(str(p.get("trip_id")), {}).get("trip_date") or ""),
-        str(p.get("captured_at") or ""),
-        str(p.get("id") or ""),
+    photos.sort(key=lambda p: _replay_capture_key_v650(
+        p, trip_map.get(str(p.get("trip_id")), {}).get("trip_date") or ""
     ))
     if limit is not None:
         try:
@@ -21461,6 +21478,7 @@ def build_monthly_family_share_photo_snapshot(bundle, limit=None):
         snapshots.append({
             "photo_id": str(photo.get("id") or ""),
             "storage_path": storage_path,
+            "captured_at": str(photo.get("captured_at") or ""),
             "caption": _monthly_replay_photo_caption(photo, trip, idx),
             "emotion": str(emotion.get("key") or ""),
             "emotion_label": str(emotion.get("label") or ""),
@@ -21550,6 +21568,7 @@ def build_family_shared_replay_photo_items(share):
         framing = framing_map[path]
         items.append({
             "url": url,
+            "captured_at": str(snap.get("captured_at") or ""),
             "caption": str(snap.get("caption") or ""),
             "emotion": str(current_emotion.get("key") if current_emotion else snap.get("emotion") or ""),
             "emotion_label": str(current_emotion.get("label") if current_emotion else snap.get("emotion_label") or ""),
@@ -21868,6 +21887,7 @@ def _prepare_family_shared_movie_media_worker_v556(owner, item):
         voice_path = str(snap.get("voice_storage_path") or "").strip()
         items.append({
             "url": url,
+            "captured_at": str(snap.get("captured_at") or ""),
             "caption": str(snap.get("caption") or ""),
             "emotion": str(current_emotion.get("key") if current_emotion else snap.get("emotion") or ""),
             "emotion_label": str(current_emotion.get("label") if current_emotion else snap.get("emotion_label") or ""),
@@ -23346,7 +23366,7 @@ def build_replay_visual_mp4(photo_items, display_ms, duration_seconds):
     ffmpeg = _ffmpeg_executable()
     if not ffmpeg:
         raise RuntimeError("この実行環境ではMP4作成用のffmpegを利用できません。")
-    items = [dict(x) for x in (photo_items or []) if isinstance(x, dict)]
+    items = sorted([dict(x) for x in (photo_items or []) if isinstance(x, dict)], key=_replay_capture_key_v650)
     if not items:
         raise ValueError("保存できる写真がありません。")
 
@@ -23464,7 +23484,10 @@ def render_replay_download_controls(period_label, playback, photo_items, display
 
 
 def render_monthly_replay_player(period_label, review, playback, photo_items, curated_mode=False):
-    photo_items = [_replay_full_photo_meta_v621(item) for item in (photo_items or [])]
+    photo_items = sorted(
+        [_replay_full_photo_meta_v621(item) for item in (photo_items or [])],
+        key=_replay_capture_key_v650,
+    )
     if not photo_items:
         return
     video_id = str((playback or {}).get("video_id") or "").strip() or parse_youtube_video_id((playback or {}).get("youtube_url"))
