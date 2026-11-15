@@ -1,3 +1,4 @@
+# v652: Measure each complete voice clip before replay; fixed per-clip gain, bounded private cache and preparation concurrency.
 # v651: Improve voice audibility: approximately +3 dB RMS target and lower BGM during photo voice playback.
 # v650: Sort all replay playback and visual exports by capture instant ascending, preserving random selection.
 # v649: Streaming voice level control during replay; bounded gain, limiter and safe unprocessed fallback.
@@ -106,7 +107,7 @@ def _app_css_v473(markup, **_ignored):
 # Review menu-only update: 2026-09-19 JST
 GENERATED_UPDATE_JST = "2026-09-19T14:54:38+09:00"
 
-APP_BUILD = "v651"
+APP_BUILD = "v652"
 # v598: Passing the focus gate is mandatory before any weighted ranking or reroll.
 # Never fill the twenty-image target with focus-rejected candidates.
 # v597: Compare 30 FPS candidates across the whole saved video offline. Disk-backed
@@ -23985,7 +23986,7 @@ function burariStartSlideVoiceV469() {{
 
       const burariVoiceProbeCancelsV469 = new Set();
       let burariReplayDisposedV469 = false;
-      window.addEventListener("pagehide", (event) => {{ if (!event.persisted) {{burariReplayDisposedV469 = true; burariStopVoice(false); burariDisposeVoiceLevelV649(); for (const cancel of Array.from(burariVoiceProbeCancelsV469)) cancel();}} }});
+      window.addEventListener("pagehide", (event) => {{ if (!event.persisted) {{burariReplayDisposedV469 = true; burariStopVoice(false); burariDisposeVoiceClipsV652(); burariDisposeVoiceLevelV649(); for (const cancel of Array.from(burariVoiceProbeCancelsV469)) cancel();}} }});
       function burariLoadVoiceDurationMs(url) {{
         return new Promise((resolve) => {{
           const src = String(url || '');
@@ -24153,7 +24154,7 @@ function burariStartSlideVoiceV469() {{
           // at the ducked volume; otherwise it is resumed when the voice ends.
           if (burariVoicePlaybackActive && burariVoiceAudio) {{
             try {{
-              const voicePromise = burariVoiceAudio.play();
+              const voicePromise = burariVoicePreparingV652 ? Promise.resolve() : burariVoiceAudio.play();
               if (voicePromise && typeof voicePromise.then === 'function') {{
                 voicePromise.then(() => burariKeepBgmDuringVoice()).catch(() => {{
                   burariAttemptVoicePlayV489(true, 1, burariCurrentVoiceUrl, burariVoiceGenerationV489);
@@ -24319,6 +24320,8 @@ function burariStartSlideVoiceV469() {{
       }}
 
       function burariStopVoice(resumeMusic = true) {{
+        ++burariVoicePrepareSerialV652;
+        burariVoicePreparingV652 = false;
         burariVoiceGenerationV489 += 1;
         if (burariVoiceRetryTimerV489) {{
           clearTimeout(burariVoiceRetryTimerV489);
@@ -24678,7 +24681,7 @@ function burariStartSlideVoiceV469() {{
             burariVoiceSafetyTimer = setTimeout(() => {{
               if (burariVoicePlaybackActive) burariFinishVoice('写真の声の再生を終了しました。', true);
             }}, remainingVoiceMs);
-            const voicePromise = burariVoiceAudio.play();
+            const voicePromise = burariVoicePreparingV652 ? Promise.resolve() : burariVoiceAudio.play();
             if (voicePromise && typeof voicePromise.catch === 'function') {{
               voicePromise.catch(() => burariFinishVoice('写真の声を再開できなかったため、BGMを続けます。', true));
             }}
@@ -24724,6 +24727,131 @@ function burariStartSlideVoiceV469() {{
         }}
       }}
 
+      // One gain per recording, measured before its first sample is played.
+      const burariVoiceClipsV652 = new Map();
+      const burariVoiceClipControllersV652 = new Map();
+      let burariVoicePreparingV652 = false;
+      let burariVoicePrepareSerialV652 = 0;
+      async function burariMeasureVoiceClipV652(buffer, cancelled = () => false) {{
+        if (!buffer || !Number.isFinite(buffer.duration) || buffer.duration > 120 ||
+            buffer.duration <= 0 || buffer.numberOfChannels > 2) throw new Error('clip_limit');
+        const channels = Array.from({{length: buffer.numberOfChannels}}, (_, i) => buffer.getChannelData(i));
+        if (!channels.length) throw new Error('empty_channels');
+        const step = Math.max(1, Math.round(buffer.sampleRate * 0.02));
+        const windows = [];
+        for (let offset = 0, block = 0; offset < buffer.length; offset += step, block++) {{
+          if (cancelled()) throw new Error('cancelled');
+          let sum = 0, count = 0;
+          for (const channel of channels) {{
+            for (let i = offset; i < Math.min(buffer.length, offset + step); i++) {{
+              const value = channel[i];
+              if (!Number.isFinite(value)) throw new Error('invalid_sample');
+              sum += value * value; count++;
+            }}
+          }}
+          const rms = Math.sqrt(sum / Math.max(1, count));
+          if (rms > 1e-7) windows.push(rms);
+          if (block && block % 64 === 0) await new Promise(resolve => setTimeout(resolve, 0));
+        }}
+        windows.sort((a, b) => a - b);
+        if (!windows.length) return {{gain: 1, level: 0, silent: true}};
+        const reference = windows[Math.floor((windows.length - 1) * 0.85)];
+        // Relative gate retains very quiet speech; silence/isolated clicks do not
+        // dictate the level. This measures signal level, not speaker identity.
+        const active = windows.filter(value => value >= reference * 0.15);
+        const level = active[Math.floor((active.length - 1) * 0.5)] || reference;
+        return {{gain: Math.max(0.0625, Math.min(128, 0.14 / level)), level, silent: false}};
+      }}
+      function burariTrimVoiceClipsV652() {{
+        let bytes = Array.from(burariVoiceClipsV652.values()).reduce((n, row) => n + (row.bytes || 0), 0);
+        for (const [key, row] of burariVoiceClipsV652) {{
+          if (bytes <= 8 * 1024 * 1024 && burariVoiceClipsV652.size <= 12) break;
+          if (!row.ready || key === burariCurrentVoiceUrl) continue;
+          bytes -= row.bytes || 0;
+          if (row.blobUrl) URL.revokeObjectURL(row.blobUrl);
+          burariVoiceClipsV652.delete(key);
+        }}
+      }}
+      function burariPrepareVoiceClipV652(url) {{
+        const src = String(url || '');
+        const fallback = {{src, gain: null}};
+        if (!src || burariVoiceLevelDisabledV649 || !burariVoiceLevelV649 || burariReplayDisposedV469)
+          return Promise.resolve(fallback);
+        const cached = burariVoiceClipsV652.get(src);
+        if (cached) return cached.promise;
+        // At most current + one upcoming voice. Rapid restarts cannot grow a queue.
+        if (burariVoiceClipControllersV652.size >= 2) {{
+          const [oldUrl, oldController] = burariVoiceClipControllersV652.entries().next().value;
+          oldController.abort(); burariVoiceClipControllersV652.delete(oldUrl);
+        }}
+        const controller = new AbortController();
+        burariVoiceClipControllersV652.set(src, controller);
+        const row = {{ready: false, bytes: 0, blobUrl: ''}};
+        burariVoiceClipsV652.set(src, row);
+        row.promise = (async () => {{
+          let timer = setTimeout(() => controller.abort(), 12000);
+          try {{
+            const response = await fetch(src, {{signal: controller.signal, credentials: 'omit'}});
+            if (!response.ok) throw new Error('http_' + response.status);
+            const maximum = 4 * 1024 * 1024;
+            if (Number(response.headers.get('content-length') || 0) > maximum) throw new Error('byte_limit');
+            let raw;
+            if (response.body && response.body.getReader) {{
+              const reader = response.body.getReader(), chunks = [];
+              let length = 0;
+              while (true) {{
+                const {{done, value}} = await reader.read();
+                if (done) break;
+                length += value.byteLength;
+                if (length > maximum) {{ await reader.cancel(); throw new Error('byte_limit'); }}
+                chunks.push(value);
+              }}
+              raw = new Uint8Array(length);
+              let offset = 0;
+              for (const chunk of chunks) {{ raw.set(chunk, offset); offset += chunk.byteLength; }}
+            }} else raw = new Uint8Array(await response.arrayBuffer());
+            if (!raw.byteLength || raw.byteLength > maximum) throw new Error('byte_limit');
+            clearTimeout(timer);
+            const context = burariVoiceLevelV649 && burariVoiceLevelV649.context;
+            if (!context) throw new Error('audio_context');
+            const decoded = await Promise.race([
+              context.decodeAudioData(raw.slice().buffer),
+              new Promise((_, reject) => {{ timer = setTimeout(() => reject(new Error('decode_timeout')), 8000); }})
+            ]);
+            const measured = await burariMeasureVoiceClipV652(decoded, () => controller.signal.aborted || burariReplayDisposedV469);
+            if (controller.signal.aborted || burariReplayDisposedV469) throw new Error('cancelled');
+            row.blobUrl = URL.createObjectURL(new Blob([raw], {{type: response.headers.get('content-type') || 'audio/mp4'}}));
+            row.bytes = raw.byteLength;
+            row.ready = true;
+            burariTrimVoiceClipsV652();
+            burariDiag603('replay_voice_clip_level_ready');
+            return {{src: row.blobUrl, gain: measured.gain}};
+          }} catch (error) {{
+            row.ready = true;
+            if (!burariReplayDisposedV469 && !controller.signal.aborted)
+              burariDiag603('replay_voice_clip_level_failed_' + String(error.message || 'unknown').slice(0, 40));
+            if (burariVoiceClipsV652.get(src) === row) burariVoiceClipsV652.delete(src);
+            return fallback;
+          }} finally {{
+            clearTimeout(timer);
+            if (burariVoiceClipControllersV652.get(src) === controller) burariVoiceClipControllersV652.delete(src);
+          }}
+        }})();
+        return row.promise;
+      }}
+      function burariPrefetchNextVoiceV652() {{
+        const next = burariSlides[burariIndex + 1];
+        if (next && next.voice_url) burariPrepareVoiceClipV652(next.voice_url);
+      }}
+      function burariDisposeVoiceClipsV652() {{
+        ++burariVoicePrepareSerialV652;
+        burariVoicePreparingV652 = false;
+        for (const controller of burariVoiceClipControllersV652.values()) controller.abort();
+        burariVoiceClipControllersV652.clear();
+        for (const row of burariVoiceClipsV652.values()) if (row.blobUrl) URL.revokeObjectURL(row.blobUrl);
+        burariVoiceClipsV652.clear();
+      }}
+
       // Streaming level control: no extra fetch, decode, storage write or scan of the photo pool.
       let burariVoiceLevelV649 = null;
       let burariVoiceLevelDisabledV649 = false;
@@ -24757,7 +24885,7 @@ function burariStartSlideVoiceV469() {{
           const gain = context.createGain();
           gain.gain.value = 0.5;
           const limiter = context.createDynamicsCompressor();
-          limiter.threshold.value = -1;
+          limiter.threshold.value = -3; // headroom for very quiet recordings amplified before the limiter
           limiter.knee.value = 0;
           limiter.ratio.value = 20;
           limiter.attack.value = 0.003;
@@ -24790,7 +24918,7 @@ function burariStartSlideVoiceV469() {{
       function burariStartVoiceLevelV649() {{
         burariStopVoiceLevelV649();
         const level = burariVoiceLevelV649;
-        if (!level || !burariVoicePlaybackActive) return;
+        if (!level || !burariVoicePlaybackActive || burariVoiceAudio?.dataset.burariFixedGainV652) return;
         burariResumeVoiceLevelV649();
         const tick = () => {{
           if (!burariVoicePlaybackActive || !burariVoiceAudio || burariVoiceAudio.paused ||
@@ -24894,6 +25022,7 @@ function burariStartSlideVoiceV469() {{
               measuredMs + burariVoiceAutoDelayMs + burariVoiceTimingSafetyMs
             );
           }}
+          if (!burariVoicePlaybackActive || burariReplayPausedByUser) return;
           const safetyMs = Number.isFinite(duration) ? Math.max(5000, duration * 1000 + 4000) : 90000;
           burariVoiceSafetyTimer = setTimeout(() => {{
             if (burariVoicePlaybackActive) burariFinishVoice('写真の声の再生を終了しました。', true);
@@ -24932,31 +25061,41 @@ function burariStartSlideVoiceV469() {{
       function burariPrimeCurrentVoiceV489() {{
         const url = String(burariCurrentVoiceUrl || '');
         if (!url) return;
-        const audio = burariEnsureVoiceAudioV489();
-        const loadedUrl = String(audio.dataset.burariVoiceUrl || '');
-        if (loadedUrl === url && String(audio.currentSrc || audio.src || '')) return;
-        burariVoiceIntentionalPauseV489 = true;
-        try {{ audio.pause(); }} catch (_) {{}}
-        burariVoiceIntentionalPauseV489 = false;
-        try {{
-          audio.src = url;
-          audio.dataset.burariVoiceUrl = url;
-          audio.preload = 'auto';
-          audio.load();
-        }} catch (_) {{}}
+        burariEnsureVoiceAudioV489();
+        burariPrepareVoiceClipV652(url).then(() => {{
+          if (!burariReplayDisposedV469 && url === burariCurrentVoiceUrl) burariPrefetchNextVoiceV652();
+        }});
       }}
 
-      function burariAttemptVoicePlayV489(autoTriggered, attempt, expectedUrl, generation) {{
+      async function burariAttemptVoicePlayV489(autoTriggered, attempt, expectedUrl, generation) {{
         if (!burariVoicePlaybackActive || generation !== burariVoiceGenerationV489 ||
             !expectedUrl || String(burariCurrentVoiceUrl || '') !== String(expectedUrl)) return;
+        const request = ++burariVoicePrepareSerialV652;
+        burariVoicePreparingV652 = true;
+        if (burariStatus) burariStatus.textContent = '写真の声の音量を合わせています…';
+        const prepared = await burariPrepareVoiceClipV652(expectedUrl);
+        if (request !== burariVoicePrepareSerialV652 || !burariVoicePlaybackActive ||
+            generation !== burariVoiceGenerationV489 || burariReplayDisposedV469 ||
+            String(burariCurrentVoiceUrl || '') !== String(expectedUrl)) return;
+        burariVoicePreparingV652 = false;
         const audio = burariEnsureVoiceAudioV489();
+        audio.dataset.burariFixedGainV652 = prepared.gain !== null ? String(prepared.gain) : '';
+        burariStopVoiceLevelV649();
+        if (burariVoiceLevelV649 && prepared.gain !== null) {{
+          const level = burariVoiceLevelV649;
+          level.gain.gain.cancelScheduledValues(level.context.currentTime);
+          level.gain.gain.setValueAtTime(prepared.gain, level.context.currentTime);
+        }}
         if (String(audio.dataset.burariVoiceUrl || '') !== String(expectedUrl)) {{
           try {{
-            audio.src = String(expectedUrl);
+            audio.src = prepared.src;
             audio.dataset.burariVoiceUrl = String(expectedUrl);
             audio.load();
           }} catch (_) {{}}
         }}
+        if (burariReplayPausedByUser) return;
+        burariResumeVoiceLevelV649();
+        burariPrefetchNextVoiceV652();
         // Replay already requested native audio focus on the user's Play tap. Re-request
         // only for a standalone/manual voice, avoiding focus churn between iframe/audio.
         if (!burariReplayPlaybackActive) burariRequestNativeAudioFocus();
@@ -24967,7 +25106,9 @@ function burariStartSlideVoiceV469() {{
           if (promise && typeof promise.then === 'function') {{
             promise.then(() => {{
               if (!burariVoicePlaybackActive || generation !== burariVoiceGenerationV489) return;
-              if (burariStatus) burariStatus.textContent = autoTriggered
+              if (burariStatus) burariStatus.textContent = prepared.gain === null
+                ? 'この声の音量を揃えられなかったため、通常の方法で再生しています。'
+                : autoTriggered
                 ? '写真に付いた声を自動再生しています。'
                 : 'この写真の声を再生しています。';
               burariKeepBgmDuringVoice();
@@ -25014,13 +25155,6 @@ function burariStartSlideVoiceV469() {{
         burariVoicePlaybackActive = true;
         burariSetMusicVolume(burariVoiceMusicVolume);
         const audio = burariEnsureVoiceAudioV489();
-        if (String(audio.dataset.burariVoiceUrl || '') !== url) {{
-          try {{
-            audio.src = url;
-            audio.dataset.burariVoiceUrl = url;
-            audio.load();
-          }} catch (_) {{}}
-        }}
         burariResumeVoiceLevelV649();
         burariResetVoiceLevelV649();
         burariVoiceIntentionalPauseV489 = true;
