@@ -1,3 +1,4 @@
+# v653: Raise BGM during voice playback from 40 to 55; lower voice RMS target from 0.14 to 0.13.
 # v652: Measure each complete voice clip before replay; fixed per-clip gain, bounded private cache and preparation concurrency.
 # v651: Improve voice audibility: approximately +3 dB RMS target and lower BGM during photo voice playback.
 # v650: Sort all replay playback and visual exports by capture instant ascending, preserving random selection.
@@ -107,7 +108,7 @@ def _app_css_v473(markup, **_ignored):
 # Review menu-only update: 2026-09-19 JST
 GENERATED_UPDATE_JST = "2026-09-19T14:54:38+09:00"
 
-APP_BUILD = "v652"
+APP_BUILD = "v653"
 # v598: Passing the focus gate is mandatory before any weighted ranking or reroll.
 # Never fill the twenty-image target with focus-rejected candidates.
 # v597: Compare 30 FPS candidates across the whole saved video offline. Disk-backed
@@ -23842,7 +23843,7 @@ function burariStartSlideVoiceV469() {{
       let burariVoiceFallbackBgmPausedV489 = false;
       let burariVoiceUnexpectedPauseCountV489 = 0;
       const burariNormalMusicVolume = 100;
-      const burariVoiceMusicVolume = 40;
+      const burariVoiceMusicVolume = 55;
       let burariVoiceAutoTimer = null;
       let burariReplayPlaybackActive = false;
       let burariReplayPausedByUser = false;
@@ -24760,7 +24761,7 @@ function burariStartSlideVoiceV469() {{
         // dictate the level. This measures signal level, not speaker identity.
         const active = windows.filter(value => value >= reference * 0.15);
         const level = active[Math.floor((active.length - 1) * 0.5)] || reference;
-        return {{gain: Math.max(0.0625, Math.min(128, 0.14 / level)), level, silent: false}};
+        return {{gain: Math.max(0.0625, Math.min(128, 0.13 / level)), level, silent: false}};
       }}
       function burariTrimVoiceClipsV652() {{
         let bytes = Array.from(burariVoiceClipsV652.values()).reduce((n, row) => n + (row.bytes || 0), 0);
@@ -24866,7 +24867,7 @@ function burariStartSlideVoiceV469() {{
         const rms = Math.sqrt(sum / Math.max(1, samples.length));
         // Hold through silence; do not wind up the gain between words.
         if (rms < 0.008 || !peak) return null;
-        return Math.max(0.125, Math.min(4, 0.14 / rms, 0.89 / peak));
+        return Math.max(0.125, Math.min(4, 0.13 / rms, 0.89 / peak));
       }}
       function burariStopVoiceLevelV649() {{
         const level = burariVoiceLevelV649;
